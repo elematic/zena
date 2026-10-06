@@ -1,0 +1,352 @@
+/**
+ * How long the compiler takes, by phase.
+ *
+ * The rest of `benchmarks/` times the code the compiler emits. This
+ * times the compiler itself, which is the number a person waiting on
+ * `zena build` experiences, and the one that drifted 235ms to 2979ms
+ * over five weeks with nothing to notice it.
+ *
+ * Each sample is a fresh `zena-cli build`, not a loop inside one
+ * process. The compiler's speed depends heavily on the state of its
+ * GC heap, so a second compile in a warm process is not the compile a
+ * user gets; measuring in-process would report a number nobody sees.
+ *
+ * The compiler prints its phase table as JSON under ZENA_TIME_JSON,
+ * and this aggregates those across samples:
+ *
+ *   npm run bench:compile
+ *   npm run bench:compile -- minimal       # one fixture
+ *   npm run bench:compile -- --json        # machine-readable
+ *
+ * It measures the compiler that is BUILT, not the working tree: the
+ * compiler `zena-cli build` runs is the one inside `out/zena.wasm`, so
+ * a change to the compiler's source does not appear here until
+ * `npm run build -w @zena-lang/zena-cli` has rebuilt it.
+ */
+
+import { getArguments, getEnv, exit } from 'zena:cli';
+import { StringBuilder } from 'zena:core';
+import { exists } from 'zena:fs';
+import { JsonArray, JsonBuilder, JsonObject, JsonValue, parseJson } from 'zena:json';
+import { run } from 'zena:process';
+
+/**
+ * A program to compile, and how many times. Sample counts are chosen
+ * so that every fixture costs roughly the same wall time: the compiler
+ * itself is two orders of magnitude slower than a three-line program,
+ * and sampling both ten times would mean waiting minutes for the one
+ * number that moves least.
+ */
+final class Fixture {
+  name: String;
+  path: String;
+  samples: i32;
+  /** Extra arguments, for a fixture that needs a particular target. */
+  args: Array<String>;
+  new(this.name, this.path, this.samples, this.args);
+}
+
+let fixtures = (): Array<Fixture> => {
+  let base = 'packages/zena-compiler/test-files/benchmarks';
+  let all = new Array<Fixture>(6);
+  // The floor: what any program pays before its own code is looked at.
+  all.push(new Fixture('minimal', `${base}/minimal.zena`, 5, []));
+  all.push(new Fixture('stdlib-moderate', `${base}/stdlib_moderate.zena`, 5, []));
+  // The same program on the target that does not build a component, so
+  // the gap between the two is what the component path costs.
+  all.push(new Fixture('minimal-core', `${base}/minimal.zena`, 5,
+      ['--target', 'js']));
+  // Generated files of the same shape at two sizes: the ratio between
+  // them is how the compiler scales, independent of the fixed cost.
+  all.push(new Fixture('iter-50', `${base}/iter-step-distinct-50.zena`, 3, []));
+  all.push(new Fixture('iter-150', `${base}/iter-step-distinct-150.zena`, 3, []));
+  // A real program large enough for codegen to dominate.
+  all.push(new Fixture('portable-semantics',
+      'packages/zena-compiler/zena/test/portable_semantics.zena', 2, []));
+  return all;
+};
+
+/** One phase's time across the samples of one fixture. */
+final class PhaseStat {
+  name: String;
+  parent: String | null;
+  var total: f64 = 0.0;
+  var min: f64 = -1.0;
+  var max: f64 = 0.0;
+  var samples: i32 = 0;
+  var count: i32 = 0;
+  new(this.name, this.parent);
+
+  add(ms: f64, entries: i32): void {
+    this.total = this.total + ms;
+    if (this.min < 0.0 || ms < this.min) { this.min = ms; }
+    if (ms > this.max) { this.max = ms; }
+    this.samples += 1;
+    this.count = entries;
+  }
+
+  mean(): f64 {
+    if (this.samples == 0) { return 0.0; }
+    return this.total / (this.samples as f64);
+  }
+}
+
+/** Every phase of one fixture, in the order the compiler entered them. */
+final class FixtureResult {
+  name: String;
+  var failed = false;
+  #byName = new Map<String, PhaseStat>();
+  var #inOrder = new GrowableArray<PhaseStat>();
+  new(this.name);
+
+  record(phase: String, parent: String | null, ms: f64, entries: i32): void {
+    if (let (true, existing) = this.#byName.get(phase)) {
+      existing.add(ms, entries);
+      return;
+    }
+    let created = new PhaseStat(phase, parent);
+    created.add(ms, entries);
+    this.#byName[phase] = created;
+    this.#inOrder.push(created);
+  }
+
+  phases(): Array<PhaseStat> {
+    let all = new Array<PhaseStat>(this.#inOrder.length);
+    for (let p in this.#inOrder) { all.push(p); }
+    return all;
+  }
+
+  /** The sum of the phases nothing contains: one compile, end to end. */
+  totalMean(): f64 {
+    var sum = 0.0;
+    for (let p in this.#inOrder) {
+      if (p.parent == null) { sum = sum + p.mean(); }
+    }
+    return sum;
+  }
+}
+
+/** JSON accessors: the parser returns a union, so each shape is asked for. */
+let asString = (value: JsonValue, what: String): String => {
+  if (value is String) { return value; }
+  throw new Error(`compile bench: expected a string for ${what}`);
+};
+
+let asNumber = (value: JsonValue, what: String): f64 => {
+  if (value is Box<f64>) { return value.value; }
+  throw new Error(`compile bench: expected a number for ${what}`);
+};
+
+let asArray = (value: JsonValue, what: String): JsonArray => {
+  if (value is JsonArray) { return value; }
+  throw new Error(`compile bench: expected an array for ${what}`);
+};
+
+let asObject = (value: JsonValue, what: String): JsonObject => {
+  if (value is JsonObject) { return value; }
+  throw new Error(`compile bench: expected an object for ${what}`);
+};
+
+let zenaCli = (): String => {
+  let named = getEnv('ZENA_CLI');
+  if (named != null) { return named as String; }
+  return './target/release/zena-cli';
+};
+
+/**
+ * Compiles `fixture` once and folds its phase table into `into`.
+ * Returns whether the compile succeeded; a failure is reported once
+ * per fixture rather than once per sample.
+ */
+let sampleOnce = (fixture: Fixture, into: FixtureResult): boolean => {
+  let args = new GrowableArray<String>();
+  args.push(zenaCli());
+  args.push('build');
+  args.push(fixture.path);
+  for (let a in fixture.args) { args.push(a); }
+  args.push('-o');
+  args.push(`/tmp/bench-${fixture.name}.wasm`);
+  args.push('--time');
+  // ZENA_TIME_JSON reaches the child by inheritance: the host spawns
+  // with the parent's environment, and `SpawnOptions` has no env field.
+  // `main` refuses to start without it set.
+  let result = run(args);
+  if (result.exitCode != 0) {
+    return false;
+  }
+  // The report is the last line: the compiler may have printed
+  // progress before it.
+  var payload = '';
+  for (let line in result.stdout.split('\n')) {
+    let trimmed = line;
+    if (trimmed.startsWith('{')) { payload = trimmed; }
+  }
+  if (payload == '') {
+    return false;
+  }
+  let root = asObject(parseJson(payload), 'report');
+  let phases = asArray(root['phases'], 'phases');
+  var i = 0;
+  while (i < phases.length) {
+    let p = asObject(phases[i], 'phase');
+    let parentValue = p['parent'];
+    let parent = if (parentValue is String) { parentValue } else { null };
+    into.record(asString(p['name'], 'phase name'), parent,
+        asNumber(p['totalMs'], 'totalMs'),
+        asNumber(p['count'], 'count') as i32);
+    i += 1;
+  }
+  return true;
+};
+
+let pad = (text: String, width: i32, left: boolean): String => {
+  let b = new StringBuilder();
+  if (left) {
+    var i = text.length;
+    while (i < width) { b.append(' '); i += 1; }
+    b.append(text);
+    return b.toString();
+  }
+  b.append(text);
+  var i = text.length;
+  while (i < width) { b.append(' '); i += 1; }
+  return b.toString();
+};
+
+let ms1 = (value: f64): String =>
+    f64ToString(((value * 10.0) as i64 as f64) / 10.0);
+
+let printTable = (results: Array<FixtureResult>): void => {
+  for (let r in results) {
+    console.log('');
+    if (r.failed) {
+      console.log(`${r.name}: did not compile`);
+      continue;
+    }
+    console.log(`${r.name}  (${ms1(r.totalMean())} ms)`);
+    console.log('  ' + pad('phase', 30, false) + pad('mean', 10, true) +
+        pad('min', 10, true) + pad('max', 10, true) + '   entries');
+    for (let p in r.phases()) {
+      var depth = 0;
+      var walk = p.parent;
+      // Names nest by prefix, so depth is how many '-' separated
+      // prefixes of this name are themselves phases.
+      while (walk != null) {
+        depth += 1;
+        var next: String | null = null;
+        for (let q in r.phases()) {
+          if (q.name == walk) { next = q.parent; }
+        }
+        walk = next;
+      }
+      let label = if (p.parent == null) {
+        p.name
+      } else {
+        p.name.sliceBytes((p.parent as String).length + 1, p.name.length)
+      };
+      let entries = if (p.count == 1) { '' } else { i32ToString(p.count) };
+      console.log('  ' + pad(`${pad('', depth * 2, false)}${label}`, 30, false) +
+          pad(ms1(p.mean()), 10, true) + pad(ms1(p.min), 10, true) +
+          pad(ms1(p.max), 10, true) + '   ' + entries);
+    }
+  }
+};
+
+let printJson = (results: Array<FixtureResult>): void => {
+  let b = new JsonBuilder();
+  b.beginObject();
+  b.key('schemaVersion').i32(1);
+  b.key('fixtures').beginArray();
+  for (let r in results) {
+    b.beginObject();
+    b.key('name').string(r.name);
+    b.key('failed').bool(r.failed);
+    b.key('totalMeanMs').f64(r.totalMean());
+    b.key('phases').beginArray();
+    for (let p in r.phases()) {
+      b.beginObject();
+      b.key('name').string(p.name);
+      b.key('parent');
+      if (p.parent != null) { b.string(p.parent as String); } else { b.nullValue(); }
+      b.key('meanMs').f64(p.mean());
+      b.key('minMs').f64(p.min);
+      b.key('maxMs').f64(p.max);
+      b.key('samples').i32(p.samples);
+      b.key('entries').i32(p.count);
+      b.endObject();
+    }
+    b.endArray();
+    b.endObject();
+  }
+  b.endArray();
+  b.endObject();
+  console.log(b.toString());
+};
+
+export let main = (): i32 => {
+  if (getEnv('ZENA_TIME_JSON') == null) {
+    console.error(
+        'Set ZENA_TIME_JSON=1: the compilers this spawns inherit it, and ' +
+        'without it they print the timing table instead of JSON.');
+    return 2;
+  }
+  let args = getArguments();
+  var asJson = false;
+  let selected = new GrowableArray<String>();
+  var i = 1;
+  while (i < args.length) {
+    if (args[i] == '--json') {
+      asJson = true;
+    } else if (!args[i].startsWith('-')) {
+      selected.push(args[i]);
+    }
+    i += 1;
+  }
+
+  let chosen = new GrowableArray<Fixture>();
+  for (let f in fixtures()) {
+    if (selected.length == 0) {
+      chosen.push(f);
+      continue;
+    }
+    for (let s in selected) {
+      if (s == f.name) { chosen.push(f); }
+    }
+  }
+  if (chosen.length == 0) {
+    console.error('No fixtures matched. Known fixtures:');
+    for (let f in fixtures()) { console.error(`  ${f.name}`); }
+    return 1;
+  }
+
+  let results = new Array<FixtureResult>(chosen.length);
+  var failures = 0;
+  for (let f in chosen) {
+    if (!exists(f.path)) {
+      console.error(`Missing fixture: ${f.path}`);
+      failures += 1;
+      continue;
+    }
+    if (!asJson) {
+      console.error(`Compiling ${f.name} ×${i32ToString(f.samples)}...`);
+    }
+    let result = new FixtureResult(f.name);
+    var s = 0;
+    while (s < f.samples) {
+      if (!sampleOnce(f, result)) {
+        result.failed = true;
+        failures += 1;
+        break;
+      }
+      s += 1;
+    }
+    results.push(result);
+  }
+
+  if (asJson) {
+    printJson(results);
+  } else {
+    printTable(results);
+  }
+  return if (failures > 0) { 1 } else { 0 };
+};
