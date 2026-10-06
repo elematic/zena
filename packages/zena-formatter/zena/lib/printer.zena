@@ -1394,7 +1394,7 @@ let printMethodChain = (expr: CallExpression): Doc => {
   }
 
   // Print the head (non-chain part)
-  let head = printExpression(current);
+  let head = printPostfixOperand(current, true);
 
   // Reverse segments to get correct order (outermost first)
   let ordered = new Array<Doc>(segments.length);
@@ -1417,9 +1417,45 @@ let printMethodChain = (expr: CallExpression): Doc => {
   return group(concat(docs2(head, indent(concat(chainParts)))));
 };
 
+/**
+ * The object of a `.` or `[]` access, or the callee of a call, parenthesized
+ * when it binds looser than the postfix operator being applied to it.
+ *
+ * The AST has no node for parentheses, so the printer is what decides where
+ * they go. Without them `(value as Point).x` prints as `value as Point.x`,
+ * where `.x` binds to the type instead of the cast, and the result does not
+ * parse.
+ */
+let printPostfixOperand = (expr: Expression, beforeDot: boolean): Doc => {
+  let needsParens = match (expr) {
+    case AsExpression {}: true
+    case IsExpression {}: true
+    case BinaryExpression {}: true
+    case AssignmentExpression {}: true
+    case RangeExpression {}: true
+    case PipelineExpression {}: true
+    case FunctionExpression {}: true
+    case MatchExpression {}: true
+    case IfExpression {}: true
+    case ThrowExpression {}: true
+    case AwaitExpression {}: true
+    case TryExpression {}: true
+    // A postfix unary binds as tightly as the access; a prefix one does not.
+    case UnaryExpression {prefix}: prefix
+    // `1.toString()` lexes `1.` as the start of a float, so a numeric literal
+    // needs parentheses before a `.`. Before a `[` or a `(` it does not.
+    case NumberLiteral {}: beforeDot
+    case _: false
+  };
+  if (needsParens) {
+    return concat(docs3(text('('), printExpression(expr), text(')')));
+  }
+  return printExpression(expr);
+};
+
 let printMemberExpression = (expr: MemberExpression): Doc => {
   let parts = new Array<Doc>();
-  parts.push(printExpression(expr.object));
+  parts.push(printPostfixOperand(expr.object, true));
   if (expr.optional) { parts.push(text('?.')); } else { parts.push(text('.')); }
   parts.push(text(expr.property.name));
   return concat(parts);
@@ -1427,7 +1463,7 @@ let printMemberExpression = (expr: MemberExpression): Doc => {
 
 let printIndexExpression = (expr: IndexExpression): Doc => {
   let parts = new Array<Doc>();
-  parts.push(printExpression(expr.object));
+  parts.push(printPostfixOperand(expr.object, false));
   if (expr.optional) { parts.push(text('?.[')); } else { parts.push(text('[')); }
   parts.push(printExpression(expr.index));
   parts.push(text(']'));
@@ -1445,7 +1481,7 @@ let printCallExpression = (expr: CallExpression): Doc => {
   }
 
   let parts = new Array<Doc>();
-  parts.push(printExpression(expr.callee));
+  parts.push(printPostfixOperand(expr.callee, false));
   if (expr.typeArguments != null) {
     let tas = expr.typeArguments as GrowableArray<TypeAnnotation>;
     if (tas.length > 0) {
