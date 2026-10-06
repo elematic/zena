@@ -204,6 +204,31 @@ let tests = suite('formatter', () => {
     `);
   });
 
+  test('keeps parentheses around a member or index object that binds looser', (t: TestContext) => {
+    // The AST has no node for parentheses, so the printer has to put them back
+    // wherever `.x` or `[i]` would otherwise bind to part of the object.
+    checkStable('as before member', 'let x = (value as Point).x;');
+    checkStable('as before index', "let x = (value as Map<String, i32>)['a'];");
+    checkStable('as before optional member', 'let x = (value as Point)?.x;');
+    checkStable('is before member', 'let x = (value is Point).hashCode;');
+    checkStable('await before member', 'let x = (await load()).body;');
+    checkStable('binary before member', 'let x = (a + b).hashCode;');
+    checkStable('binary before index', 'let x = (a + b)[0];');
+    // A call's callee and the head of a method chain are the same position.
+    checkStable('as before call', 'let x = (f as Fn)();');
+    checkStable('await before call', 'let x = (await load())();');
+    checkStable('as before a method chain', 'let x = (value as Point).a().b();');
+    // `1.toString()` would lex `1.` as the start of a float.
+    checkStable('number before member', 'let x = (1).toString();');
+  });
+
+  test('adds no parentheses around a member object that binds tighter', (t: TestContext) => {
+    checkStable('call before member', 'let x = load().body;');
+    checkStable('new before member', 'let x = new Point(1, 2).y;');
+    checkStable('index before member', 'let x = items[0].name;');
+    checkStable('member before member', 'let x = a.b.c;');
+  });
+
   test('formats a map literal', (t: TestContext) => {
     // `docs/design/syntax-overhaul.md` replaced `#{k: v}` with `{k => v}`.
     // The printer still emitted the old form, which no longer parses.
