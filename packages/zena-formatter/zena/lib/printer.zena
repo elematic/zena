@@ -1612,19 +1612,26 @@ let printTupleLiteral = (expr: TupleLiteral): Doc => {
   return concat(docs3(text('('), join(text(', '), elemDocs), text(')')));
 };
 
+/**
+ * `{key => value, ...}`. The `#{key: value}` spelling this used to print was
+ * replaced by `docs/design/syntax-overhaul.md` and no longer parses.
+ *
+ * A map literal with no entries cannot be written — `{}` is an empty record —
+ * so the empty case is only a fallback.
+ */
 let printMapLiteral = (expr: MapLiteral): Doc => {
-  if (expr.entries.length == 0) { return text('#{}'); }
+  if (expr.entries.length == 0) { return text('{}'); }
   let entryDocs = new Array<Doc>();
   var i = 0;
   while (i < expr.entries.length) {
     let entry = expr.entries[i];
-    entryDocs.push(concat(docs3(printExpression(entry.key), text(': '), printExpression(entry.value))));
+    entryDocs.push(concat(docs3(printExpression(entry.key), text(' => '), printExpression(entry.value))));
     i += 1;
   }
   let inner = new Array<Doc>();
-  inner.push(text('#{'));
-  inner.push(indent(concat(docs2(line, join(concat(docs2(text(','), line)), entryDocs)))));
-  inner.push(line);
+  inner.push(text('{'));
+  inner.push(indent(concat(docs2(softline, join(concat(docs2(text(','), line)), entryDocs)))));
+  inner.push(softline);
   inner.push(text('}'));
   return group(concat(inner));
 };
