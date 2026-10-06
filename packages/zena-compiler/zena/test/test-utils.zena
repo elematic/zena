@@ -63,8 +63,14 @@ export class MockHost implements CompilerHost {
  * re-export the stubs behind it — that entry is how the prelude scope
  * reaches any of them. The files it re-exports have no module name of
  * their own, the way the real library is arranged.
+ *
+ * `userPackages` registers packages the test's program imports by
+ * specifier, so a test can set a file behind `pkg:mod` against one
+ * behind `./mod.zena`.
  */
-export let makeCompiler = (host: MockHost): Compiler => {
+export let makeCompiler = (
+    host: MockHost,
+    userPackages: Map<String, PackageConfig> | null = null): Compiler => {
   host.addFile("zena:core/index.zena",
       "export * from './string.zena';\n" +
       "export * from './array.zena';\n" +
@@ -79,7 +85,7 @@ export let makeCompiler = (host: MockHost): Compiler => {
   host.addFile("zena:async", "export class Future<T> {}");
   host.addFile("zena:console", "export let console = null;");
 
-  let packages = new Map<String, PackageConfig>();
+  let packages = userPackages ?? new Map<String, PackageConfig>();
   let options = new CompilerOptions("host", "/stdlib", packages);
   return createCompiler(host, options);
 };

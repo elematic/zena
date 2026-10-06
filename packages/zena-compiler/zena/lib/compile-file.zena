@@ -15,7 +15,8 @@ import { CompilerHost } from './library-loader.zena';
 import { PackageConfig, stdlibIdToRelativeFile } from './module-resolver.zena';
 import { loadPackageMap } from './package-manifest.zena';
 import {
-  createCompiler, CompilerOptions, checkCompilation, withBuiltinPackages
+  createCompiler, CompilerOptions, checkCompilation, withBuiltinPackages,
+  setCheckAllBodies
 } from './compiler.zena';
 import { DiagnosticSeverity, SourceSpan, SyntaxError } from './diagnostics.zena';
 import { BinaryGenerator } from './codegen/binary-generator.zena';
@@ -160,6 +161,11 @@ let reportDiagnosticLine = (kind: String, file: String, line: i32, column: i32, 
  * ends the process, so a caller can compile again.
  */
 export let compileFile = (options: CompileFileOptions): i32 => {
+  // ZENA_CHECK_ALL_BODIES=1 checks every loaded module's bodies when
+  // its module is checked, instead of leaving a dependency's for
+  // reachability to ask for. See docs/design/lazy-body-checking.md.
+  setCheckAllBodies(getEnv("ZENA_CHECK_ALL_BODIES") != null);
+
   let filename = options.entry;
   let outPath = options.outPath;
   let target = options.target;

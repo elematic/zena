@@ -1,0 +1,111 @@
+/**
+ * Which bodies a compile checks, and whose diagnostics it reports.
+ *
+ * Reachability decides cost: a body nothing reaches is never checked.
+ * Locality decides diagnostics: the entry point and everything it
+ * reaches by relative import make up the local project, and every one
+ * of those files is checked in full whether or not anything reaches
+ * it. A file behind a package specifier is a dependency, and only the
+ * parts of it something reaches are checked. See
+ * docs/design/lazy-body-checking.md.
+ */
+
+import { suite, test } from 'zena:test';
+import { equal } from 'zena:assert';
+import { PackageConfig } from '../lib/module-resolver.zena';
+import { checkCompilation, setCheckAllBodies } from '../lib/compiler.zena';
+import { SourceSpan } from '../lib/diagnostics.zena';
+import { MockHost, makeCompiler, errorDiagnostics } from './test-utils.zena';
+
+/** The body error every case below plants, in a function nothing calls. */
+let badBody = "export let unused = (): i32 => {\n  let s: i32 = true;\n  return s;\n};\n";
+
+/** A package named `dep`, rooted where the tests write `/dep/mod.zena`. */
+let depPackage = (): Map<String, PackageConfig> => {
+  let packages = new Map<String, PackageConfig>();
+  packages["dep"] = new PackageConfig("/dep", null);
+  return packages;
+};
+
+export let tests = suite('Local project bodies', () => {
+
+  test('an unreached body in a relative import is checked', () => {
+    let host = new MockHost();
+    host.addFile("/project/helper.zena", badBody);
+    host.addFile("/project/main.zena",
+        "import { unused } from './helper.zena';\nexport let main = (): i32 => 0;\n");
+    let compiler = makeCompiler(host);
+    let checked = checkCompilation(compiler.compile("/project/main.zena"));
+    let errors = errorDiagnostics(checked.diagnostics);
+    equal(errors.length, 1);
+    let span = errors[0].location as SourceSpan;
+    equal(span.file, "/project/helper.zena");
+  });
+
+  test('a relative import two hops out is still local', () => {
+    let host = new MockHost();
+    host.addFile("/project/deep.zena", badBody);
+    host.addFile("/project/helper.zena",
+        "export * from './deep.zena';\nexport let helper = (): i32 => 1;\n");
+    host.addFile("/project/main.zena",
+        "import { helper } from './helper.zena';\nexport let main = (): i32 => helper();\n");
+    let compiler = makeCompiler(host);
+    let checked = checkCompilation(compiler.compile("/project/main.zena"));
+    let errors = errorDiagnostics(checked.diagnostics);
+    equal(errors.length, 1);
+    let span = errors[0].location as SourceSpan;
+    equal(span.file, "/project/deep.zena");
+  });
+
+  test('an unreached body in a package dependency is not checked', () => {
+    let host = new MockHost();
+    host.addFile("/dep/mod.zena", badBody + "export let used = (): i32 => 2;\n");
+    host.addFile("/project/main.zena",
+        "import { used } from 'dep:mod';\nexport let main = (): i32 => used();\n");
+    let compiler = makeCompiler(host, depPackage());
+    let checked = checkCompilation(compiler.compile("/project/main.zena"));
+    equal(errorDiagnostics(checked.diagnostics).length, 0);
+  });
+
+  test('ZENA_CHECK_ALL_BODIES checks a package dependency too', () => {
+    let host = new MockHost();
+    host.addFile("/dep/mod.zena", badBody + "export let used = (): i32 => 2;\n");
+    host.addFile("/project/main.zena",
+        "import { used } from 'dep:mod';\nexport let main = (): i32 => used();\n");
+    let compiler = makeCompiler(host, depPackage());
+    setCheckAllBodies(true);
+    let checked = checkCompilation(compiler.compile("/project/main.zena"));
+    setCheckAllBodies(false);
+    let errors = errorDiagnostics(checked.diagnostics);
+    equal(errors.length, 1);
+    let span = errors[0].location as SourceSpan;
+    equal(span.file, "/dep/mod.zena");
+  });
+
+  test('a reached dependency function still type-checks its caller', () => {
+    // The signature is registered whether or not the body is checked,
+    // so a caller that gets the arguments wrong is still wrong.
+    let host = new MockHost();
+    host.addFile("/dep/mod.zena", "export let twice = (n: i32): i32 => n + n;\n");
+    host.addFile("/project/main.zena",
+        "import { twice } from 'dep:mod';\nexport let main = (): i32 => twice(true);\n");
+    let compiler = makeCompiler(host, depPackage());
+    let checked = checkCompilation(compiler.compile("/project/main.zena"));
+    let errors = errorDiagnostics(checked.diagnostics);
+    equal(errors.length, 1);
+    let span = errors[0].location as SourceSpan;
+    equal(span.file, "/project/main.zena");
+  });
+
+  test('a dependency function with an inferred return type has a signature', () => {
+    // Nothing annotates the return, so the signature cannot come from
+    // annotations: the first reference checks the body to get it.
+    let host = new MockHost();
+    host.addFile("/dep/mod.zena", "export let twice = (n: i32) => n + n;\n");
+    host.addFile("/project/main.zena",
+        "import { twice } from 'dep:mod';\nexport let main = (): i32 => twice(21);\n");
+    let compiler = makeCompiler(host, depPackage());
+    let checked = checkCompilation(compiler.compile("/project/main.zena"));
+    equal(errorDiagnostics(checked.diagnostics).length, 0);
+  });
+});

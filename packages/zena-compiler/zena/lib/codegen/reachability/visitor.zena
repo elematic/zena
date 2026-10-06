@@ -2589,6 +2589,13 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
    * struct.
    */
   discoverFunctionDeclaration(symId: SymbolId, funcDecl: FunctionDeclaration, moduleModel: SemanticModel): void {
+    // Everything below reads node types the body check writes, and
+    // this is reached on demand from a use site as well as from the
+    // queue walk — so the module whose bodies waited is asked here too.
+    let deferredDecl = moduleModel.deferredBodies;
+    if (deferredDecl != null) {
+      deferredDecl.checkGlobalBody(symId);
+    }
     let funcType = moduleModel.getNodeType(funcDecl.func);
     if (funcType != null) {
       // The declaration's own type is a SIGNATURE, not a value: a
@@ -2604,6 +2611,12 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
   }
 
   discoverVariableDeclaration(symId: SymbolId, varDecl: VariableDeclaration, moduleModel: SemanticModel): void {
+    // See discoverFunctionDeclaration: the node types below exist only
+    // once the declaration's body has been checked.
+    let deferredDecl = moduleModel.deferredBodies;
+    if (deferredDecl != null) {
+      deferredDecl.checkGlobalBody(symId);
+    }
     let typeLowerer = this.pass.typeLowerer;
     let varType = moduleModel.getNodeType(varDecl);
     if (varType != null) {

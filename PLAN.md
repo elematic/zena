@@ -21,6 +21,7 @@ This document tracks completed work and planned features. For project instructio
 - **Error Handling**: WASM-GC exception handling (`throw` and `try`/`catch`).
 - **Standard Library**: Core library modules (`String`, `StringBuilder`, `Array`, `Map`, `HashSet`, `Option`, `JSON`, `Regex`, file I/O).
 - **Optimization**: Compiler-driven dead code elimination (DCE) for functions, classes, methods, and WASM types.
+- **Compile Speed**: Bodies outside the local project are checked only where reachability reaches them ([lazy-body-checking.md](./docs/design/lazy-body-checking.md)).
 - **Tooling & IDE**: Incremental type-checking (ScopeResult caching, export signature comparison) and language service support.
 
 ## Planned / Next Milestones

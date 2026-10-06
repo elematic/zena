@@ -506,6 +506,19 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
         this.reachedFunctionsSet.add(func);
         func.isReached = true;
 
+        // A reached function is a lowered function, and lowering reads
+        // the node types of its body. The queue walk checks the bodies
+        // it dequeues, and a function can be reached without ever
+        // being dequeued — a vtable slot, a synthesized trampoline's
+        // target — so a module with deferred bodies is asked here too.
+        let deferred = func.model.deferredBodies;
+        if (deferred != null) {
+          let {node} = func;
+          if (node != null) {
+            deferred.checkBodyOfNode((node as Node).id as i32);
+          }
+        }
+
         // A synthesized case-class == compares fields through the
         // equality diamond, which dispatches through class-vtable
         // ==/hashCode slots on erased fields. The eq/hash INTRINSICS
@@ -1163,15 +1176,16 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
           initNode = decl.func;
         }
         if (initNode is FunctionExpression) {
-          let funcTypeNode = model.getNodeType(initNode);
-          if (funcTypeNode is FunctionType) {
-            let hasParams = funcTypeNode.typeParameters != null;
-            let {typeParameters} = funcTypeNode;
-            let len = if (typeParameters != null) typeParameters.length else 0;
-            if (hasParams && len > 0) {
-              this.wasm.genericFunctions[id] = initNode;
-              this.wasm.genericFunctionModels[id] = model;
-            }
+          // Read off the declaration rather than its checked type: a
+          // module whose bodies are deferred has not checked this
+          // declaration yet, and the index is built before the walk
+          // that would ask for it. The two agree — the checked
+          // signature's type parameters are the written ones.
+          let {typeParameters} = initNode as FunctionExpression;
+          let len = if (typeParameters != null) typeParameters.length else 0;
+          if (len > 0) {
+            this.wasm.genericFunctions[id] = initNode;
+            this.wasm.genericFunctionModels[id] = model;
           }
         }
       }
@@ -4131,7 +4145,15 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
             if (refItem.isReachable) {
               this.reachedGlobals.add(symId);
             }
-            
+
+            // A global of a module whose bodies waited to be reached.
+            // Check it before reading its node types or its dependency
+            // record, both of which checking is what writes.
+            let deferredGlobal = model.deferredBodies;
+            if (deferredGlobal != null) {
+              deferredGlobal.checkGlobalBody(symId);
+            }
+
             var funcExpr: Node | null = null;
             if (let (true, decl) = model.globalDeclarations.get(symId)) {
               let {visitor} = this;
@@ -4185,6 +4207,15 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
               this.reachedMembers.add(memberKey);
             }
             
+            // A member of a module whose bodies waited to be reached.
+            // Check it before anything below reads its node types or
+            // its dependency record, both of which checking is what
+            // writes.
+            let deferredMember = model.deferredBodies;
+            if (deferredMember != null) {
+              deferredMember.checkBodyOfNode(nodeId);
+            }
+
             let node = if (this.nodeIdToNode.has(nodeId)) this.nodeIdToNode[nodeId] else null;
              if (node != null) {
               let {classType} = refItem;
