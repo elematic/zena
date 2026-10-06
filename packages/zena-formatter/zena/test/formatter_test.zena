@@ -1,5 +1,6 @@
 import { suite, test, TestContext } from 'zena:test';
 import { equal, isTrue } from 'zena:assert';
+import { dedentRaw } from 'zena:core';
 import { format } from '../lib/printer.zena';
 
 let check = (name: String, actual: String, expected: String): void => {
@@ -11,89 +12,113 @@ let check = (name: String, actual: String, expected: String): void => {
   equal(actual, expected, name);
 };
 
+/**
+ * The trailing newline the formatter always emits. A `dedentRaw` block already
+ * ends in one; a one-line source written as a plain string does not, and
+ * saying so at every call site is noise. 'adds trailing newline' below is the
+ * test that the formatter emits it.
+ */
+let ensureNewline = (source: String): String =>
+  if (source.endsWith('\n')) source else source + '\n';
+
+/** Checks that `source` formats to `expected`. */
+let checkFormat = (name: String, source: String, expected: String): void =>
+  check(name, format(source), ensureNewline(expected));
+
+/** Checks that `source` is already formatted, and comes back unchanged. */
+let checkStable = (name: String, source: String): void =>
+  checkFormat(name, source, source);
+
 let tests = suite('formatter', () => {
   test('formats variable declaration', (t: TestContext) => {
-    let result = format('let x = 1;');
-    check('var decl', result, 'let x = 1;\n');
+    checkStable('var decl', 'let x = 1;');
   });
 
   test('formats a tail return', (t: TestContext) => {
-    let result = format('function down(n:i32):i32{tail   return down(n-1);}');
-    check('tail return', result,
-        'function down(n: i32): i32 {\n  tail return down(n - 1);\n}\n');
+    checkFormat('tail return', 'function down(n:i32):i32{tail   return down(n-1);}', dedentRaw`
+      function down(n: i32): i32 {
+        tail return down(n - 1);
+      }
+    `);
   });
 
   test('leaves `tail` alone as a name', (t: TestContext) => {
-    let result = format('let tail = 1;');
-    check('tail identifier', result, 'let tail = 1;\n');
+    checkStable('tail identifier', 'let tail = 1;');
   });
 
   test('formats exported variable', (t: TestContext) => {
-    let result = format('export let x = 1;');
-    check('exported var', result, 'export let x = 1;\n');
+    checkStable('exported var', 'export let x = 1;');
   });
 
   test('formats mutable variable', (t: TestContext) => {
-    let result = format('var y = 42;');
-    check('mutable var', result, 'var y = 42;\n');
+    checkStable('mutable var', 'var y = 42;');
   });
 
   test('keeps the array element mutability modifier', (t: TestContext) => {
-    let result = format('let a: array<var i32> = x;');
-    check('array var element', result, 'let a: array<var i32> = x;\n');
+    checkStable('array var element', 'let a: array<var i32> = x;');
   });
 
   test('keeps the scoped type-parameter modifier', (t: TestContext) => {
-    let result = format('let keep = <scoped T>(x: T): T => x;');
-    check('scoped type param', result, 'let keep = <scoped T>(x: T): T => x;\n');
+    checkStable('scoped type param', 'let keep = <scoped T>(x: T): T => x;');
   });
 
   test('leaves `scoped` alone as a type-parameter name', (t: TestContext) => {
-    let result = format('let id = <scoped>(x: scoped): scoped => x;');
-    check('scoped as name', result, 'let id = <scoped>(x: scoped): scoped => x;\n');
+    checkStable('scoped as name', 'let id = <scoped>(x: scoped): scoped => x;');
   });
 
   test('formats binary expression', (t: TestContext) => {
-    let result = format('let x = 1 + 2;');
-    check('binary expr', result, 'let x = 1 + 2;\n');
+    checkStable('binary expr', 'let x = 1 + 2;');
   });
 
   test('formats function expression', (t: TestContext) => {
-    let result = format('let add = (a: i32, b: i32): i32 => a + b;');
-    check('function expr', result, 'let add = (a: i32, b: i32): i32 => a + b;\n');
+    checkStable('function expr', 'let add = (a: i32, b: i32): i32 => a + b;');
   });
 
   test('formats function declaration', (t: TestContext) => {
-    let result = format('function   add(a:i32,b:i32):i32{return a+b;}');
-    check('function decl', result,
-        'function add(a: i32, b: i32): i32 {\n  return a + b;\n}\n');
+    checkFormat('function decl', 'function   add(a:i32,b:i32):i32{return a+b;}', dedentRaw`
+      function add(a: i32, b: i32): i32 {
+        return a + b;
+      }
+    `);
   });
 
   test('formats exported function declaration', (t: TestContext) => {
-    let result = format('export function main():i32{return 0;}');
-    check('exported function decl', result,
-        'export function main(): i32 {\n  return 0;\n}\n');
+    checkFormat('exported function decl', 'export function main():i32{return 0;}', dedentRaw`
+      export function main(): i32 {
+        return 0;
+      }
+    `);
   });
 
   test('formats generator and generic function declarations', (t: TestContext) => {
-    let generatorDecl = format('gen function items():Iterator<i32>{yield 1;}');
-    check('gen function decl', generatorDecl,
-        'gen function items(): Iterator<i32> {\n  yield 1;\n}\n');
-    let generic = format('function identity<T>(value:T):T{return value;}');
-    check('generic function decl', generic,
-        'function identity<T>(value: T): T {\n  return value;\n}\n');
+    checkFormat('gen function decl', 'gen function items():Iterator<i32>{yield 1;}', dedentRaw`
+      gen function items(): Iterator<i32> {
+        yield 1;
+      }
+    `);
+    checkFormat('generic function decl', 'function identity<T>(value:T):T{return value;}', dedentRaw`
+      function identity<T>(value: T): T {
+        return value;
+      }
+    `);
   });
 
   test('formats using statements', (t: TestContext) => {
-    let bound = format('function f():void{using    g  =  acquire();}');
-    check('bound using', bound,
-        'function f(): void {\n  using g = acquire();\n}\n');
-    let annotated = format('function f():void{using g:Guard=acquire();}');
-    check('annotated using', annotated,
-        'function f(): void {\n  using g: Guard = acquire();\n}\n');
-    let unbound = format('function f():void{using   acquire(lock);}');
-    check('unbound using', unbound,
-        'function f(): void {\n  using acquire(lock);\n}\n');
+    checkFormat('bound using', 'function f():void{using    g  =  acquire();}', dedentRaw`
+      function f(): void {
+        using g = acquire();
+      }
+    `);
+    checkFormat('annotated using', 'function f():void{using g:Guard=acquire();}', dedentRaw`
+      function f(): void {
+        using g: Guard = acquire();
+      }
+    `);
+    checkFormat('unbound using', 'function f():void{using   acquire(lock);}', dedentRaw`
+      function f(): void {
+        using acquire(lock);
+      }
+    `);
   });
 
   test('formats arrow function with block body', (t: TestContext) => {
@@ -102,99 +127,101 @@ let tests = suite('formatter', () => {
   });
 
   test('formats string literal with single quotes', (t: TestContext) => {
-    let result = format("let s = 'hello';");
-    check('string literal', result, "let s = 'hello';\n");
+    checkStable('string literal', "let s = 'hello';");
   });
 
   test('escapes single quote in double-quoted string', (t: TestContext) => {
     // Input: let s = "it's";  (double-quoted, contains single quote)
     // The lexer decodes this to: it's  (literal single quote in value)
     // The formatter must re-escape: let s = 'it\'s';
-    let result = format('let s = "it\'s";');
-    check('escape single quote', result, "let s = 'it\\'s';\n");
+    checkFormat('escape single quote', 'let s = "it\'s";', "let s = 'it\\'s';");
   });
 
   test('escapes backslash in string', (t: TestContext) => {
     // Input: let s = "a\\b";  (contains escaped backslash)
     // The lexer decodes this to: a\b  (literal backslash in value)
     // The formatter must re-escape: let s = 'a\\b';
-    let result = format('let s = "a\\\\b";');
-    check('escape backslash', result, "let s = 'a\\\\b';\n");
+    checkFormat('escape backslash', 'let s = "a\\\\b";', "let s = 'a\\\\b';");
   });
 
   test('preserves escape sequences in single-quoted string', (t: TestContext) => {
     // Input already single-quoted with escape: let s = 'hello\nworld';
     // Lexer decodes \n to literal newline, formatter re-escapes
-    let result = format("let s = 'hello\\nworld';");
-    check('preserve escapes', result, "let s = 'hello\\nworld';\n");
+    checkStable('preserve escapes', "let s = 'hello\\nworld';");
   });
 
   test('formats boolean literals', (t: TestContext) => {
-    let result = format('let a = true;');
-    check('boolean', result, 'let a = true;\n');
+    checkStable('boolean', 'let a = true;');
   });
 
   test('formats null literal', (t: TestContext) => {
-    let result = format('let a = null;');
-    check('null', result, 'let a = null;\n');
+    checkStable('null', 'let a = null;');
   });
 
   test('formats call expression', (t: TestContext) => {
-    let result = format('let x = add(1, 2);');
-    check('call expr', result, 'let x = add(1, 2);\n');
+    checkStable('call expr', 'let x = add(1, 2);');
   });
 
   test('formats member expression', (t: TestContext) => {
-    let result = format('let x = a.b;');
-    check('member expr', result, 'let x = a.b;\n');
+    checkStable('member expr', 'let x = a.b;');
   });
 
   test('formats a static call with explicit type arguments', (t: TestContext) => {
-    let result = format('let x = Holder.of<i32>(7);');
-    check('static call type args', result, 'let x = Holder.of<i32>(7);\n');
+    checkStable('static call type args', 'let x = Holder.of<i32>(7);');
   });
 
   test('formats array literal', (t: TestContext) => {
-    let result = format('let a = [1, 2, 3];');
-    check('array literal', result, 'let a = [1, 2, 3];\n');
+    checkStable('array literal', 'let a = [1, 2, 3];');
   });
 
   test('formats assignment', (t: TestContext) => {
-    let input = "let f = () => {\n  x = 1;\n};\n";
-    check('assignment', format(input), input);
+    checkStable('assignment', dedentRaw`
+      let f = () => {
+        x = 1;
+      };
+    `);
   });
 
   test('formats compound assignment', (t: TestContext) => {
     // The parser stores `+=` as the operator `+` plus an assignment, so the
     // printer has to put the operator back. Printing `=` alone compiles, and
     // computes something else.
-    let input = "let f = () => {\n  x += 2;\n  x -= 1;\n  x *= 3;\n  x /= 4;\n  x %= 5;\n  x **= 6;\n  x ??= 7;\n};\n";
-    check('compound assignment', format(input), input);
-    let member = "let f = () => {\n  this.#count += 1;\n};\n";
-    check('compound member assignment', format(member), member);
+    checkStable('compound assignment', dedentRaw`
+      let f = () => {
+        x += 2;
+        x -= 1;
+        x *= 3;
+        x /= 4;
+        x %= 5;
+        x **= 6;
+        x ??= 7;
+      };
+    `);
+    checkStable('compound member assignment', dedentRaw`
+      let f = () => {
+        this.#count += 1;
+      };
+    `);
   });
 
   // === Transformation tests — verify the formatter changes input ===
 
   test('normalizes extra whitespace', (t: TestContext) => {
-    let result = format('let   x=1;');
-    check('normalize ws', result, 'let x = 1;\n');
+    checkFormat('normalize ws', 'let   x=1;', 'let x = 1;');
   });
 
   test('normalizes double quotes to single quotes', (t: TestContext) => {
-    let result = format('let s = "hello";');
-    check('normalize quotes', result, "let s = 'hello';\n");
+    checkFormat('normalize quotes', 'let s = "hello";', "let s = 'hello';");
   });
 
   test('normalizes extra operator spacing', (t: TestContext) => {
-    let result = format('let a = 1  +  2;');
-    check('normalize ops', result, 'let a = 1 + 2;\n');
+    checkFormat('normalize ops', 'let a = 1  +  2;', 'let a = 1 + 2;');
   });
 
   test('adds trailing newline', (t: TestContext) => {
-    let result = format('let x = 1;');
-    // Last char should be newline
-    check('trailing newline', result, 'let x = 1;\n');
+    // Spelled out rather than run through `checkFormat`, whose `ensureNewline`
+    // would be supplying the very newline under test.
+    check('trailing newline', format('let x = 1;'), 'let x = 1;\n');
   });
 
   test('is idempotent', (t: TestContext) => {
@@ -207,26 +234,55 @@ let tests = suite('formatter', () => {
   // === Structures with hardlines (exercises propagateBreaks) ===
 
   test('formats class with fields', (t: TestContext) => {
-    let input = "class Point {\n  x: i32;\n  y: i32;\n}\n";
-    let result = format(input);
-    check('class fields', result, input);
+    checkStable('class fields', dedentRaw`
+      class Point {
+        x: i32;
+        y: i32;
+      }
+    `);
   });
 
   test('formats member decorators and decorator declarations', (t: TestContext) => {
-    let input = "class Counter {\n  @signal var count: i32 = 0;\n  @intrinsic('array.len') length(): i32 {\n    return 0;\n  }\n}\n";
-    let members = format(input);
+    let members = format(dedentRaw`
+      class Counter {
+        @signal var count: i32 = 0;
+        @intrinsic('array.len') length(): i32 {
+          return 0;
+        }
+      }
+    `);
     check('member decorators idempotent', format(members), members);
     isTrue(members.contains('  @signal var count: i32 = 0;\n'), 'field decorator kept');
     isTrue(members.contains("  @intrinsic('array.len') length(): i32 {\n"), 'method decorator kept');
-    let decl = "export decorator signal<T>(var value: T) {\n  var #value: T;\n  value: T {\n    get {\n      return this.#value;\n    }\n    set(v) {\n      this.#value = v;\n    }\n  }\n}\n";
-    let formatted = format(decl);
+    let formatted = format(dedentRaw`
+      export decorator signal<T>(var value: T) {
+        var #value: T;
+        value: T {
+          get {
+            return this.#value;
+          }
+          set(v) {
+            this.#value = v;
+          }
+        }
+      }
+    `);
     check('decorator declaration idempotent', format(formatted), formatted);
     isTrue(formatted.startsWith('export decorator signal<T>(var value: T) {'), 'decorator header');
   });
 
   test('formats class with method', (t: TestContext) => {
-    let input = "class Point {\n  x: i32;\n\n  getX(): i32 {\n    return this.x;\n  }\n}\n";
-    let result = format(input);
+    // Exact text is not compared: the printer leaves indentation on the blank
+    // line between members, so the result differs from the input.
+    let result = format(dedentRaw`
+      class Point {
+        x: i32;
+
+        getX(): i32 {
+          return this.x;
+        }
+      }
+    `);
     // Verify round-trip of the formatted output
     let second = format(result);
     check('class method idempotent', second, result);
@@ -237,98 +293,128 @@ let tests = suite('formatter', () => {
     // `extends Resource` the parser synthesizes for it is one it has to
     // leave off: printed, it would say an ordinary class extends a
     // resource, which is an error rather than the same class again.
-    let input = "resource class File {\n  #fd: i32;\n}\n";
-    check('resource class', format(input), input);
-    let derived = "resource class Derived extends File {}\n";
-    check('resource subclass', format(derived), derived);
-    let abstractResource = "export resource abstract class Base {}\n";
-    check('abstract resource', format(abstractResource), abstractResource);
+    checkStable('resource class', dedentRaw`
+      resource class File {
+        #fd: i32;
+      }
+    `);
+    checkStable('resource subclass', 'resource class Derived extends File {}');
+    checkStable('abstract resource', 'export resource abstract class Base {}');
   });
 
   test('formats an extension class hierarchy', (t: TestContext) => {
     // `on` is written before `extends`, and an extension class that
     // extends another may leave it out entirely. Printing the two
     // clauses the other way round produces source the parser rejects.
-    let base = "extension class Meters on i32 {}\n";
-    check('extension on', format(base), base);
-    let derived = "extension class Altitude extends Meters {}\n";
-    check('extension extends', format(derived), derived);
-    let both = "extension class Depth on i32 extends Meters {}\n";
-    check('extension on and extends', format(both), both);
+    checkStable('extension on', 'extension class Meters on i32 {}');
+    checkStable('extension extends', 'extension class Altitude extends Meters {}');
+    checkStable('extension on and extends', 'extension class Depth on i32 extends Meters {}');
   });
 
   test('formats a declared receiver', (t: TestContext) => {
     // The receiver leads the parameter list without being a parameter, so
     // printing has to put it back — dropping it would silently turn a
     // consuming method into a borrowing one.
-    let alone = format("resource class File {\n  dispose(this: Own<this>): void {}\n}\n");
-    check('receiver alone', alone,
-        "resource class File {\n  dispose(this: Own<this>): void {}\n}\n");
-    let withParams = format("resource class File {\n  into(this: Own<this>, n: i32): i32 {\n    return n;\n  }\n}\n");
-    check('receiver with params', withParams,
-        "resource class File {\n  into(this: Own<this>, n: i32): i32 {\n    return n;\n  }\n}\n");
+    checkStable('receiver alone', dedentRaw`
+      resource class File {
+        dispose(this: Own<this>): void {}
+      }
+    `);
+    checkStable('receiver with params', dedentRaw`
+      resource class File {
+        into(this: Own<this>, n: i32): i32 {
+          return n;
+        }
+      }
+    `);
   });
 
   test('formats interface', (t: TestContext) => {
-    let input = "interface Drawable {\n  draw(): void;\n}\n";
-    let result = format(input);
-    check('interface', result, input);
+    checkStable('interface', dedentRaw`
+      interface Drawable {
+        draw(): void;
+      }
+    `);
   });
 
   test('formats class constructors', (t: TestContext) => {
     // Exact text is not compared: the printer leaves indentation on the
     // blank line between members (see 'formats class with method').
-    let input = "class Point {\n  x: i32;\n  new(x: i32) : x = x;\n  new origin() : x = 0 {\n    return;\n  }\n}\n";
-    let result = format(input);
+    let result = format(dedentRaw`
+      class Point {
+        x: i32;
+        new(x: i32) : x = x;
+        new origin() : x = 0 {
+          return;
+        }
+      }
+    `);
     isTrue(result.contains("\n  new(x: i32) : x = x {}\n"));
     isTrue(result.contains("\n  new origin() : x = 0 {\n    return;\n  }\n"));
     check('class constructors idempotent', format(result), result);
   });
 
   test('formats interface constructors', (t: TestContext) => {
-    let input = "interface Shape {\n  new() {\n    return new Circle();\n  }\n  new unit(radius: i32): Circle {\n    return new Circle();\n  }\n  area(): i32;\n}\n";
-    let result = format(input);
-    check('interface constructors', result, input);
+    checkStable('interface constructors', dedentRaw`
+      interface Shape {
+        new() {
+          return new Circle();
+        }
+        new unit(radius: i32): Circle {
+          return new Circle();
+        }
+        area(): i32;
+      }
+    `);
   });
 
   test('formats an interface constructor that restates type parameters', (t: TestContext) => {
-    let input = "interface Table<K, V> {\n  new<K extends Hashable, V>() {\n    return new HashTable<K, V>();\n  }\n  new ordered<K extends Hashable, V>(): HashTable<K, V> {\n    return new HashTable<K, V>();\n  }\n}\n";
-    let result = format(input);
-    check('interface constructors', result, input);
+    checkStable('interface constructors', dedentRaw`
+      interface Table<K, V> {
+        new<K extends Hashable, V>() {
+          return new HashTable<K, V>();
+        }
+        new ordered<K extends Hashable, V>(): HashTable<K, V> {
+          return new HashTable<K, V>();
+        }
+      }
+    `);
   });
 
   test('formats enum', (t: TestContext) => {
-    let input = "enum Color {\n  Red,\n  Green,\n  Blue\n}\n";
-    let result = format(input);
-    check('enum', result, input);
+    checkStable('enum', dedentRaw`
+      enum Color {
+        Red,
+        Green,
+        Blue
+      }
+    `);
   });
 
   test('formats import declaration', (t: TestContext) => {
-    let result = format("import {Array} from 'zena:array';");
-    check('import', result, "import {Array} from 'zena:array';\n");
+    checkStable('import', "import {Array} from 'zena:array';");
   });
 
   test('formats type alias', (t: TestContext) => {
-    let result = format('type ID = i32;');
-    check('type alias', result, 'type ID = i32;\n');
+    checkStable('type alias', 'type ID = i32;');
   });
 
   test('formats distinct type alias', (t: TestContext) => {
-    let result = format('distinct type ID = i32;');
-    check('distinct type alias', result, 'distinct type ID = i32;\n');
+    checkStable('distinct type alias', 'distinct type ID = i32;');
   });
 
   // `opaque` implies isDistinct, so the printer must emit one modifier, not
   // both — `distinct opaque type` does not parse.
   test('formats opaque type alias', (t: TestContext) => {
-    let result = format('export opaque type ID = i32;');
-    check('opaque type alias', result, 'export opaque type ID = i32;\n');
+    checkStable('opaque type alias', 'export opaque type ID = i32;');
   });
 
   test('blank line between class and variable', (t: TestContext) => {
-    let input = "class Foo {}\n\nlet x = 1;\n";
-    let result = format(input);
-    check('blank between class and var', result, input);
+    checkStable('blank between class and var', dedentRaw`
+      class Foo {}
+
+      let x = 1;
+    `);
   });
 
   // ========================================================================
@@ -336,39 +422,41 @@ let tests = suite('formatter', () => {
   // ========================================================================
 
   test('preserves line comment before statement', (t: TestContext) => {
-    let input = "// hello\nlet x = 1;\n";
-    let result = format(input);
-    check('leading line comment', result, "// hello\nlet x = 1;\n");
+    checkStable('leading line comment', dedentRaw`
+      // hello
+      let x = 1;
+    `);
   });
 
   test('preserves trailing line comment', (t: TestContext) => {
-    let input = "let x = 1; // a comment\n";
-    let result = format(input);
-    check('trailing line comment', result, "let x = 1; // a comment\n");
+    checkStable('trailing line comment', 'let x = 1; // a comment');
   });
 
   test('preserves block comment before statement', (t: TestContext) => {
-    let input = "/* block */\nlet x = 1;\n";
-    let result = format(input);
-    check('leading block comment', result, "/* block */\nlet x = 1;\n");
+    checkStable('leading block comment', dedentRaw`
+      /* block */
+      let x = 1;
+    `);
   });
 
   test('preserves comment between statements', (t: TestContext) => {
-    let input = "let a = 1;\n// between\nlet b = 2;\n";
-    let result = format(input);
-    check('comment between stmts', result, "let a = 1;\n// between\nlet b = 2;\n");
+    checkStable('comment between stmts', dedentRaw`
+      let a = 1;
+      // between
+      let b = 2;
+    `);
   });
 
   test('preserves multiple leading comments', (t: TestContext) => {
-    let input = "// first\n// second\nlet x = 1;\n";
-    let result = format(input);
-    check('multiple leading', result, "// first\n// second\nlet x = 1;\n");
+    checkStable('multiple leading', dedentRaw`
+      // first
+      // second
+      let x = 1;
+    `);
   });
 
   test('preserves comment in empty module', (t: TestContext) => {
-    let input = "// only a comment\n";
-    let result = format(input);
-    check('comment-only module', result, "// only a comment\n");
+    checkStable('comment-only module', '// only a comment');
   });
 
   // ========================================================================
@@ -376,39 +464,54 @@ let tests = suite('formatter', () => {
   // ========================================================================
 
   test('preserves jsdoc comment on variable', (t: TestContext) => {
-    let input = "/** Docs for x */\nlet x = 1;\n";
-    let result = format(input);
-    check('jsdoc on var', result, "/** Docs for x */\nlet x = 1;\n");
+    checkStable('jsdoc on var', dedentRaw`
+      /** Docs for x */
+      let x = 1;
+    `);
   });
 
   test('preserves jsdoc comment on class', (t: TestContext) => {
-    let input = "/** The Foo class */\nclass Foo {}\n";
-    let result = format(input);
-    check('jsdoc on class', result, "/** The Foo class */\nclass Foo {}\n");
+    checkStable('jsdoc on class', dedentRaw`
+      /** The Foo class */
+      class Foo {}
+    `);
   });
 
   test('preserves jsdoc comment on interface', (t: TestContext) => {
-    let input = "/** Drawable things */\ninterface Drawable {\n  draw(): void;\n}\n";
-    let result = format(input);
-    check('jsdoc on interface', result, "/** Drawable things */\ninterface Drawable {\n  draw(): void;\n}\n");
+    checkStable('jsdoc on interface', dedentRaw`
+      /** Drawable things */
+      interface Drawable {
+        draw(): void;
+      }
+    `);
   });
 
   test('preserves jsdoc comment on enum', (t: TestContext) => {
-    let input = "/** Color options */\nenum Color {\n  Red,\n  Green,\n  Blue\n}\n";
-    let result = format(input);
-    check('jsdoc on enum', result, "/** Color options */\nenum Color {\n  Red,\n  Green,\n  Blue\n}\n");
+    checkStable('jsdoc on enum', dedentRaw`
+      /** Color options */
+      enum Color {
+        Red,
+        Green,
+        Blue
+      }
+    `);
   });
 
   test('preserves jsdoc on each of multiple declarations', (t: TestContext) => {
-    let input = "/** Docs for a */\nlet a = 1;\n/** Docs for b */\nlet b = 2;\n";
-    let result = format(input);
-    check('jsdoc on multiple decls', result, "/** Docs for a */\nlet a = 1;\n/** Docs for b */\nlet b = 2;\n");
+    checkStable('jsdoc on multiple decls', dedentRaw`
+      /** Docs for a */
+      let a = 1;
+      /** Docs for b */
+      let b = 2;
+    `);
   });
 
   test('preserves copyright header with jsdoc', (t: TestContext) => {
-    let input = "// Copyright 2026\n/** Main entry */\nlet main = 0;\n";
-    let result = format(input);
-    check('header + jsdoc', result, "// Copyright 2026\n/** Main entry */\nlet main = 0;\n");
+    checkStable('header + jsdoc', dedentRaw`
+      // Copyright 2026
+      /** Main entry */
+      let main = 0;
+    `);
   });
 
   // ========================================================================
@@ -416,27 +519,39 @@ let tests = suite('formatter', () => {
   // ========================================================================
 
   test('preserves comment on class field', (t: TestContext) => {
-    let input = "class Foo {\n  // The name\n  name: String;\n}\n";
-    let result = format(input);
-    check('comment on field', result, "class Foo {\n  // The name\n  name: String;\n}\n");
+    checkStable('comment on field', dedentRaw`
+      class Foo {
+        // The name
+        name: String;
+      }
+    `);
   });
 
   test('preserves comment on class method', (t: TestContext) => {
-    let input = "class Foo {\n  /** Does stuff */\n  doStuff(): void {}\n}\n";
-    let result = format(input);
-    check('comment on method', result, "class Foo {\n  /** Does stuff */\n  doStuff(): void {}\n}\n");
+    checkStable('comment on method', dedentRaw`
+      class Foo {
+        /** Does stuff */
+        doStuff(): void {}
+      }
+    `);
   });
 
   test('preserves trailing comment on class field', (t: TestContext) => {
-    let input = "class Foo {\n  name: String; // the name\n}\n";
-    let result = format(input);
-    check('trailing comment on field', result, "class Foo {\n  name: String; // the name\n}\n");
+    checkStable('trailing comment on field', dedentRaw`
+      class Foo {
+        name: String; // the name
+      }
+    `);
   });
 
   test('preserves comment between class members', (t: TestContext) => {
-    let input = "class Foo {\n  x: i32;\n  // between\n  y: i32;\n}\n";
-    let result = format(input);
-    check('comment between members', result, "class Foo {\n  x: i32;\n  // between\n  y: i32;\n}\n");
+    checkStable('comment between members', dedentRaw`
+      class Foo {
+        x: i32;
+        // between
+        y: i32;
+      }
+    `);
   });
 
   // ========================================================================
@@ -444,9 +559,12 @@ let tests = suite('formatter', () => {
   // ========================================================================
 
   test('preserves comment on interface method', (t: TestContext) => {
-    let input = "interface Foo {\n  // Do it\n  doIt(): void;\n}\n";
-    let result = format(input);
-    check('comment on interface method', result, "interface Foo {\n  // Do it\n  doIt(): void;\n}\n");
+    checkStable('comment on interface method', dedentRaw`
+      interface Foo {
+        // Do it
+        doIt(): void;
+      }
+    `);
   });
 
   // ========================================================================
@@ -454,9 +572,14 @@ let tests = suite('formatter', () => {
   // ========================================================================
 
   test('preserves comment on enum member', (t: TestContext) => {
-    let input = "enum Color {\n  // Primary\n  Red,\n  Green,\n  Blue\n}\n";
-    let result = format(input);
-    check('comment on enum member', result, "enum Color {\n  // Primary\n  Red,\n  Green,\n  Blue\n}\n");
+    checkStable('comment on enum member', dedentRaw`
+      enum Color {
+        // Primary
+        Red,
+        Green,
+        Blue
+      }
+    `);
   });
 
   // ========================================================================
@@ -464,27 +587,35 @@ let tests = suite('formatter', () => {
   // ========================================================================
 
   test('inner comment in empty block', (t: TestContext) => {
-    let input = "let f = () => {\n  // todo\n};\n";
-    let result = format(input);
-    check('inner block comment', result, "let f = () => {\n  // todo\n};\n");
+    checkStable('inner block comment', dedentRaw`
+      let f = () => {
+        // todo
+      };
+    `);
   });
 
   test('inner comment in empty class', (t: TestContext) => {
-    let input = "class Foo {\n  // todo\n}\n";
-    let result = format(input);
-    check('inner class comment', result, "class Foo {\n  // todo\n}\n");
+    checkStable('inner class comment', dedentRaw`
+      class Foo {
+        // todo
+      }
+    `);
   });
 
   test('inner comment in empty interface', (t: TestContext) => {
-    let input = "interface Foo {\n  // todo\n}\n";
-    let result = format(input);
-    check('inner interface comment', result, "interface Foo {\n  // todo\n}\n");
+    checkStable('inner interface comment', dedentRaw`
+      interface Foo {
+        // todo
+      }
+    `);
   });
 
   test('inner comment in empty enum', (t: TestContext) => {
-    let input = "enum Color {\n  // todo\n}\n";
-    let result = format(input);
-    check('inner enum comment', result, "enum Color {\n  // todo\n}\n");
+    checkStable('inner enum comment', dedentRaw`
+      enum Color {
+        // todo
+      }
+    `);
   });
 
   // ========================================================================
@@ -492,15 +623,17 @@ let tests = suite('formatter', () => {
   // ========================================================================
 
   test('preserves trailing comment on expression', (t: TestContext) => {
-    let input = "let x = 1 + 2; // math\n";
-    let result = format(input);
-    check('trailing comment on expr', result, "let x = 1 + 2; // math\n");
+    checkStable('trailing comment on expr', 'let x = 1 + 2; // math');
   });
 
   test('preserves comment before function arg', (t: TestContext) => {
-    let input = "let x = foo(\n  // first arg\n  1,\n  2\n);\n";
-    let result = format(input);
-    check('comment before arg', result, "let x = foo(\n  // first arg\n  1,\n  2\n);\n");
+    checkStable('comment before arg', dedentRaw`
+      let x = foo(
+        // first arg
+        1,
+        2
+      );
+    `);
   });
 
   // ========================================================================
@@ -508,27 +641,27 @@ let tests = suite('formatter', () => {
   // ========================================================================
 
   test('short method chain stays on one line', (t: TestContext) => {
-    let input = "let x = foo.bar().baz();";
-    let result = format(input);
-    check('short chain', result, "let x = foo.bar().baz();\n");
+    checkStable('short chain', 'let x = foo.bar().baz();');
   });
 
   test('long method chain breaks with indentation', (t: TestContext) => {
-    let input = "let x = something.veryLongMethodName().anotherLongMethodName().yetAnotherMethod();";
-    let result = format(input);
-    check('long chain', result, "let x = something\n  .veryLongMethodName()\n  .anotherLongMethodName()\n  .yetAnotherMethod();\n");
+    checkFormat('long chain',
+        'let x = something.veryLongMethodName().anotherLongMethodName().yetAnotherMethod();',
+        dedentRaw`
+          let x = something
+            .veryLongMethodName()
+            .anotherLongMethodName()
+            .yetAnotherMethod();
+        `);
   });
 
   test('method chain with arguments', (t: TestContext) => {
-    let input = "let x = arr.map(transform).filter(predicate).reduce(accumulator, initial);";
-    let result = format(input);
-    check('chain with args', result, "let x = arr.map(transform).filter(predicate).reduce(accumulator, initial);\n");
+    checkStable('chain with args',
+        'let x = arr.map(transform).filter(predicate).reduce(accumulator, initial);');
   });
 
   test('single method call is not grouped as chain', (t: TestContext) => {
-    let input = "let x = foo.bar();";
-    let result = format(input);
-    check('single call', result, "let x = foo.bar();\n");
+    checkStable('single call', 'let x = foo.bar();');
   });
 
   // ========================================================================
@@ -536,96 +669,97 @@ let tests = suite('formatter', () => {
   // ========================================================================
 
   test('short binary chain stays on one line', (t: TestContext) => {
-    let input = "let x = a + b + c;";
-    let result = format(input);
-    check('short binary chain', result, "let x = a + b + c;\n");
+    checkStable('short binary chain', 'let x = a + b + c;');
   });
 
   test('long binary chain breaks before operators', (t: TestContext) => {
-    let input = "let x = someLongVariable + anotherLongVariable + yetAnotherVariable + oneMoreVariable;";
-    let result = format(input);
-    check('long binary chain', result, "let x = someLongVariable\n  + anotherLongVariable\n  + yetAnotherVariable\n  + oneMoreVariable;\n");
+    checkFormat('long binary chain',
+        'let x = someLongVariable + anotherLongVariable + yetAnotherVariable + oneMoreVariable;',
+        dedentRaw`
+          let x = someLongVariable
+            + anotherLongVariable
+            + yetAnotherVariable
+            + oneMoreVariable;
+        `);
   });
 
   test('simple binary expression stays flat', (t: TestContext) => {
-    let input = "let x = 1 + 2;";
-    let result = format(input);
-    check('simple binary', result, "let x = 1 + 2;\n");
+    checkStable('simple binary', 'let x = 1 + 2;');
   });
 
   test('mixed operators are not flattened', (t: TestContext) => {
-    let input = "let x = a + b * c;";
-    let result = format(input);
-    check('mixed ops', result, "let x = a + b * c;\n");
+    checkStable('mixed ops', 'let x = a + b * c;');
   });
 
   test('formats nullable type shorthand', (t: TestContext) => {
-    let result = format('let x: String? = null;');
-    check('nullable type', result, 'let x: String? = null;\n');
+    checkStable('nullable type', 'let x: String? = null;');
   });
 
   test('formats nullable type in generic argument', (t: TestContext) => {
-    let result = format('let x: Array<String?> = a;');
-    check('nullable in generic', result, 'let x: Array<String?> = a;\n');
+    checkStable('nullable in generic', 'let x: Array<String?> = a;');
   });
 
   test('formats nullable union member with tight binding', (t: TestContext) => {
-    let result = format('let x: String | Widget? = null;');
-    check('nullable union member', result, 'let x: String | Widget? = null;\n');
+    checkStable('nullable union member', 'let x: String | Widget? = null;');
   });
 
   test('parenthesizes nullable of a union', (t: TestContext) => {
-    let result = format('let x: (A | B)? = null;');
-    check('nullable of union', result, 'let x: (A | B)? = null;\n');
+    checkStable('nullable of union', 'let x: (A | B)? = null;');
   });
 
   test('parenthesizes nullable of a function type', (t: TestContext) => {
-    let result = format('let f: (() => i32)? = null;');
-    check('nullable of function type', result, 'let f: (() => i32)? = null;\n');
+    checkStable('nullable of function type', 'let f: (() => i32)? = null;');
   });
 
   test('parenthesizes doubled nullable', (t: TestContext) => {
-    let result = format('let x: (String?)? = null;');
-    check('doubled nullable', result, 'let x: (String?)? = null;\n');
+    checkStable('doubled nullable', 'let x: (String?)? = null;');
   });
 
   test('formats nullable field without initializer', (t: TestContext) => {
-    let result = format('class Foo {\n  var bar: Bar?;\n}');
-    check('nullable field', result, 'class Foo {\n  var bar: Bar?;\n}\n');
+    checkStable('nullable field', dedentRaw`
+      class Foo {
+        var bar: Bar?;
+      }
+    `);
   });
 
   test('keeps the presence marker on optional record properties', (t: TestContext) => {
-    let result = format('let x: {a?: String, b: i32} = y;');
-    check('optional record property', result, 'let x: {a?: String, b: i32} = y;\n');
+    checkStable('optional record property', 'let x: {a?: String, b: i32} = y;');
   });
 
   // An interface's `static symbol` had no printer arm at all, so it came
   // out as `/* unknown interface member */` — formatting a file deleted
   // the declaration.
   test('keeps an interface static symbol declaration', (t: TestContext) => {
-    let result = format('interface D{static symbol dispose;}');
-    check('static symbol', result,
-        'interface D {\n  static symbol dispose;\n}\n');
+    checkFormat('static symbol', 'interface D{static symbol dispose;}', dedentRaw`
+      interface D {
+        static symbol dispose;
+      }
+    `);
   });
 
   // A symbol-keyed signature's name is a SymbolPropertyName, which the
   // interface-member printer cast straight to Identifier.
   test('keeps a symbol-keyed method signature', (t: TestContext) => {
-    let result = format('interface D{static symbol dispose;[D.dispose]():void;}');
-    check('symbol-keyed signature', result,
-        'interface D {\n  static symbol dispose;\n  [D.dispose](): void;\n}\n');
+    checkFormat('symbol-keyed signature', 'interface D{static symbol dispose;[D.dispose]():void;}', dedentRaw`
+      interface D {
+        static symbol dispose;
+        [D.dispose](): void;
+      }
+    `);
   });
 
   test('keeps a symbol-keyed method definition', (t: TestContext) => {
-    let result = format('class C implements D{[D.dispose]():void{}}');
-    check('symbol-keyed method', result,
-        'class C implements D {\n  [D.dispose](): void {}\n}\n');
+    checkFormat('symbol-keyed method', 'class C implements D{[D.dispose]():void{}}', dedentRaw`
+      class C implements D {
+        [D.dispose](): void {}
+      }
+    `);
   });
 
   // A top-level symbol keeps its own spelling, without a `static`.
   test('keeps a top-level symbol declaration', (t: TestContext) => {
-    let result = format('export symbol shared;');
-    check('top-level symbol', result, 'export symbol shared;\n');
+    checkStable('top-level symbol', 'export symbol shared;');
   });
 });
 
