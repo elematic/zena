@@ -79,11 +79,10 @@ export let compileSource = (
   host.entryPath = entryPath;
   host.entrySource = source;
   let packages = new Map<String, PackageConfig>();
-  let options = new CompilerOptions(target, stdlibRoot, packages);
-  let compiler = createCompiler(host, options);
+  let compiler = createCompiler(host, {stdlibRoot, packages});
 
-  let compResult = compiler.compile(entryPath);
-  let checkResults = checkCompilation(compResult, null, false);
+  let compResult = compiler.compile({entry: entryPath, target});
+  let checkResults = checkCompilation(compResult);
 
   let sb = new StringBuilder();
   var errorCount = 0;
@@ -121,7 +120,7 @@ export let compileSource = (
   let generator = new BinaryGenerator(target, false);
   if (targetEmitsComponent(target)) {
     generator.runtimeMemoryModule =
-        compileComponentRuntimeModule(host, stdlibRoot, packages);
+        compileComponentRuntimeModule(compiler, stdlibRoot);
     generator.importEncoder = makeImportEncoder();
   }
   lastOutput = generator.generate(program).toByteArray();

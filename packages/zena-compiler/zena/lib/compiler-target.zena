@@ -1,0 +1,576 @@
+/**
+ * Everything a compiler holds for one target: specifier resolution, the
+ * loaded library set, scope building and import wiring.
+ *
+ * Libraries are kept per target because a specifier does not name one
+ * library. `zena:memory` is the free-list allocator on `freestanding`
+ * and the library that delegates to the component's memory on
+ * `component`, so a library importing it has a different dependency on
+ * each target, and therefore a different import wiring, a different
+ * scope and a different check. One `CompilerTarget` per target is what
+ * keeps those apart; a `Compiler` owns one for each target it has
+ * compiled.
+ *
+ * The symbol and node id generators are per target for the same reason
+ * they are per loader: ids key the semantic model and order what
+ * reachability walks, so a target's output must not depend on which
+ * other targets the compiler happened to compile first.
+ */
+
+import { Set } from 'zena:collections';
+
+import {
+  ImportDeclaration, ImportSpecifier, StringLiteral, ExportFromDeclaration,
+  ExportAllDeclaration, Node, SourceLocation,
+} from './ast.zena';
+import { CompileOptions, CompilerOptions } from './compiler-options.zena';
+import {
+  ComponentEntryWrapper, componentEntryWrapperFor
+} from './component-entry.zena';
+import {
+  CompilerHost, LibraryLoader, SourceFile, moduleStatements
+} from './library-loader.zena';
+import { ModuleResolver, ResolvedModule } from './module-resolver.zena';
+import {
+  buildStdlibConfig, withBuiltinPackages
+} from './package-manifest.zena';
+import { getStandardPrelude, getTargetRuntimeModules } from './prelude.zena';
+import {
+  ModuleExports as ScopeModuleExports, ScopeBuilder, ScopeResult, UnresolvedName
+} from './scope/scope-builder.zena';
+import { Symbol, makeSymbolIdGenerator } from './scope/symbol.zena';
+import {
+  canonicalTarget, isKnownTarget, knownTargetsDescription, targetEmitsComponent
+} from './targets.zena';
+import { performance } from './time.zena';
+
+/** The result of a compilation. */
+export final class CompilationResult(
+  /** All source files in topological order (dependencies before dependents). */
+  files: GrowableArray<SourceFile>,
+
+  /** The entry point source file. */
+  entry: SourceFile,
+
+  /** Whether a circular dependency was detected. */
+  hasCycle: boolean,
+
+  /** The request this is the result of. */
+  options: CompileOptions,
+
+  /**
+   * The options of the compiler that produced it. `checkCompilation`
+   * reads the checking flags from here rather than taking them itself:
+   * they are the compiler's for the whole of its life, so every result
+   * it produces is checked the same way and can be carried forward.
+   */
+  compilerOptions: CompilerOptions
+)
+
+/**
+ * One target's half of a compiler: a resolver bound to the target, the
+ * loader whose cache is the library set reached on it, and the scope
+ * analysis and import wiring over that set.
+ */
+export final class CompilerTarget {
+  /** The target, by its current name — "host" is stored as "js". */
+  target: String;
+
+  /** The options of the compiler this belongs to. */
+  options: CompilerOptions;
+
+  #resolver: ModuleResolver;
+  #loader: LibraryLoader;
+
+  /**
+   * Each module's export map as the scope builder produced it (local
+   * declarations only), snapshotted before any import wiring. Wiring
+   * rebuilds the live export map from this base on every fixpoint
+   * pass, so re-export copies never accumulate stale entries and
+   * statement order keeps its last-writer-wins semantics.
+   */
+  #localExports = new Map<String, ScopeModuleExports>();
+  #symbolIdGenerator = makeSymbolIdGenerator();
+
+  new(
+    this.target: String,
+    this.options: CompilerOptions,
+    resolver: ModuleResolver,
+    loader: LibraryLoader
+  ) : #resolver = resolver, #loader = loader;
+
+  /** The specifier resolver bound to this target. */
+  resolver: ModuleResolver {
+    get { return this.#resolver; }
+  }
+
+  loadTime: f64 {
+    get { return this.#loader.loadTime; }
+  }
+
+  parseTime: f64 {
+    get { return this.#loader.parseTime; }
+  }
+
+  /** Delete a file from the loader cache (push-based). */
+  delete(path: String): void {
+    this.#loader.delete(path);
+  }
+
+  /** Invalidate a single cached file and re-load it (push-based). */
+  invalidate(path: String): void {
+    this.#loader.invalidate(path);
+  }
+
+  /** Re-read all cached non-stdlib files from the host (pull-based). */
+  refreshCache(): void {
+    this.#loader.refreshCache();
+  }
+
+  /** Get a previously loaded source file by canonical path. */
+  getSourceFile(path: String): SourceFile | null {
+    return this.#loader.get(path);
+  }
+
+  /** Resolve a specifier relative to a referrer, on this target. */
+  resolve(specifier: String, referrer: String): ResolvedModule {
+    return this.#resolver.resolve(specifier, referrer);
+  }
+
+  /**
+   * Compile a program starting from an entry point:
+   * 1. Load and parse the entry point and all transitive dependencies.
+   * 2. Run scope analysis and wire up imports between libraries.
+   * 3. Compute the dependency graph in topological order.
+   *
+   * Type checking is `checkCompilation`'s, over the result.
+   *
+   * NOTE: this does NOT detect file changes. In push-based environments,
+   * call `invalidate(path)` first; in pull-based ones, `refreshCache()`.
+   */
+  compile(options: CompileOptions): CompilationResult {
+    // The request's target is the `Compiler`'s routing key, so by the
+    // time it gets here it names this one. Reaching a target's library
+    // set directly with another target's request would compile the
+    // wrong libraries and say it had compiled the right ones.
+    if (canonicalTarget(options.target) != this.target) {
+      throw new Error(
+          `Cannot compile for '${options.target}' on the '${this.target}' ` +
+          `library set; call Compiler.compile, which routes by target.`);
+    }
+
+    let entries = new Array<SourceFile>();
+
+    // Load prelude modules first.
+    let prelude = getStandardPrelude(this.target);
+    for (let specifier in prelude.keys()) {
+      let resolved = this.#resolver.resolve(specifier, "");
+      entries.push(this.#loader.load(resolved.path, null));
+    }
+
+    // Load the entry point and all transitive dependencies.
+    let entry = this.#loader.load(options.entry, options.version ?? null);
+    entries.push(entry);
+
+    // The component target's entry wrapper, when the program's async
+    // `main` returns a value: a module the compiler writes beside the
+    // entry, importing it (see component-entry.zena). After the entry
+    // for the same reason as the runtime modules below.
+    if (targetEmitsComponent(this.target)) {
+      let wrapper = if (let {componentWrapperSynth} = options) {
+        componentWrapperSynth(options.entry, entry.ast)
+      } else {
+        componentEntryWrapperFor(options.entry, entry.ast)
+      };
+      if (wrapper != null) {
+        let pinned = new Map<String, String>();
+        pinned[wrapper.entrySpecifier] = wrapper.entryPath;
+        entries.push(this.#loader.loadSynthesized(
+            wrapper.path, wrapper.source, pinned));
+      }
+    }
+
+    // The target's own runtime modules, after the entry so that they
+    // cannot shift its symbol ids — see getTargetRuntimeModules.
+    for (let specifier in getTargetRuntimeModules(this.target)) {
+      let resolved = this.#resolver.resolve(specifier, "");
+      entries.push(this.#loader.load(resolved.path, null));
+    }
+
+    // Run scope analysis on every loaded file. This gives each file's
+    // implicit prelude imports their edges, so it comes first.
+    let tScope = performance.start("scope");
+    this.#resolveScopes(this.#loader.computeGraph(entries).files);
+    performance.end(tScope);
+
+    // Compute topological order, over explicit and implicit imports alike.
+    let graph = this.#loader.computeGraph(entries);
+
+    return new CompilationResult(
+        graph.files, entry, graph.hasCycle, options, this.options);
+  }
+
+  /**
+   * Run scope analysis on all source files.
+   *
+   * Scope building is file-local; import wiring copies exported
+   * symbols between files. Because import graphs may contain cycles
+   * (docs/design/import-cycles.md), wiring cannot assume a
+   * dependency was wired first: all scopes are built up front, then
+   * wiring runs as a fixpoint (re-export chains grow export maps, so
+   * one pass can expose names an earlier pass missed), and missing
+   * names are recorded only after the fixpoint settles.
+   *
+   * The prelude is a set of imports every module gets without writing
+   * them, and nothing more. Each module's scope sits inside a prelude
+   * scope with one import binding per prelude name, so a name resolves
+   * there by the same scope lookup as any other. The bindings a module
+   * reads are its implicit imports: once the export maps are wired,
+   * each gets the import declaration it stands for, naming the module
+   * that declares the name, and an edge in the module graph. From then
+   * on it is ordered, wired, checked and cycle-checked like any other
+   * import. The graph is computed after this, so it sees those edges.
+   *
+   * Optimisation: a SourceFile reused from the loader cache keeps its
+   * scope tree (source unchanged) and the implicit imports already
+   * added to its AST, but wiring still runs — a changed dependency may
+   * carry fresh symbols.
+   */
+  #resolveScopes(files: GrowableArray<SourceFile>): void {
+    let preludeNames = this.#preludeNames();
+    let withImplicit = new Array<SourceFile>();
+    for (let lib in files) {
+      if (lib.scopeResult == null) {
+        let builder = new ScopeBuilder(lib.path, preludeNames, this.#symbolIdGenerator,
+            this.#loader.nodeIdGenerator);
+        let scopeResult = builder.build(lib.ast);
+        lib.scopeResult = scopeResult;
+        this.#snapshotLocalExports(lib);
+        if (scopeResult.implicitImports.length > 0) {
+          withImplicit.push(lib);
+        }
+      }
+    }
+
+    // The prelude's export maps are complete once re-exports are wired,
+    // which is what naming each implicit import's module reads.
+    this.#wireToFixpoint(files, null);
+    for (let lib in withImplicit) {
+      this.#attachImplicitImports(lib);
+    }
+
+    // Wire again, now including the implicit imports, then record what
+    // is still missing.
+    this.#wireToFixpoint(files, null);
+    for (let lib in files) {
+      let {scopeResult} = lib;
+      if (scopeResult != null) {
+        this.#wireImports(lib, scopeResult, true);
+        this.#addDeclaringModules(lib, scopeResult);
+      }
+    }
+  }
+
+  /**
+   * Make each module depend on the modules that declare what it imports.
+   *
+   * An import through a facade names the facade, and the facade's
+   * re-export is what finds the declaration — but the module that
+   * declares the name is the real dependency, and the one whose check
+   * has to come first. Without the edge, a facade that sits on an import
+   * cycle hides that dependency from the evaluation order: `zena:async`'s
+   * `step.zena` imported `Option` from `zena:core`, the facade was a
+   * member of the cycle, and `core/option.zena` was checked after
+   * `Step` had been built around `Option`'s empty placeholder.
+   *
+   * The edge is keyed by the declaring module's own path, the way an
+   * implicit prelude import names it.
+   */
+  #addDeclaringModules(lib: SourceFile, scopeResult: ScopeResult): void {
+    for (let stmt in moduleStatements(lib)) {
+      if (let ImportDeclaration {imports} = stmt) {
+        for (let spec in imports) {
+          if (spec.imported.name == "*") {
+            continue;
+          }
+          let localSym = scopeResult.symbols.getByNode(spec);
+          if (localSym != null && localSym.importTarget != null) {
+            let declaredIn = localSym.resolveTarget().modulePath;
+            if (declaredIn != "" && declaredIn != lib.path && this.#loader.get(declaredIn) != null) {
+              lib.imports[declaredIn] = declaredIn;
+            }
+          }
+        }
+      }
+    }
+  }
+
+  /** Each prelude name, mapped to the specifier it is listed under. */
+  #preludeNames(): Map<String, String> {
+    let names = new Map<String, String>();
+    let prelude = getStandardPrelude(this.target);
+    for (let specifier in prelude.keys()) {
+      for (let name in prelude[specifier]) {
+        names[name] = specifier;
+      }
+    }
+    return names;
+  }
+
+  /**
+   * Give a module's implicit prelude imports their import declarations.
+   *
+   * Each names the module that declares the name, found by following
+   * the prelude specifier's export to its declaration — the dependency
+   * the name really is. Naming the prelude specifier instead would put
+   * every module a facade re-exports on a cycle with that facade the
+   * moment it used a sibling's name, which is not how any of them would
+   * write the import by hand either.
+   *
+   * The declarations are kept beside the module's AST rather than in it
+   * (`ScopeResult.implicitImportDeclarations`); the parent map records
+   * them as the module's children, as a parser would have.
+   */
+  #attachImplicitImports(lib: SourceFile): void {
+    let scopeResult = lib.scopeResult as ScopeResult;
+    let origins = new Array<String>();
+    let byOrigin = new Map<String, GrowableArray<ImportSpecifier>>();
+    for (let implicit in scopeResult.implicitImports) {
+      let name = implicit.spec.imported.name;
+      let preludePath = this.#resolver.resolve(implicit.preludeSpecifier, "").path;
+      var origin = preludePath;
+      let preludeLib = this.#loader.get(preludePath);
+      if (preludeLib != null && preludeLib.scopeResult != null) {
+        let exports = (preludeLib.scopeResult as ScopeResult).exports;
+        if (let (true, exp) = exports.get(name)) {
+          let declaredIn = exp.resolveTarget().modulePath;
+          if (declaredIn != "") {
+            origin = declaredIn;
+          }
+        }
+      }
+      if (!byOrigin.has(origin)) {
+        origins.push(origin);
+        byOrigin[origin] = new Array<ImportSpecifier>();
+      }
+      byOrigin[origin].push(implicit.spec);
+    }
+
+    let nodeIds = this.#loader.nodeIdGenerator;
+    let parents = scopeResult.parents;
+    for (let origin in origins) {
+      // Located at the first name it imports, like its specifiers.
+      let specs = byOrigin[origin];
+      let loc = specs[0].loc;
+      let specifier = new StringLiteral(origin, loc);
+      specifier.id = nodeIds.next();
+      let decl = new ImportDeclaration(specifier, specs, loc);
+      decl.id = nodeIds.next();
+      scopeResult.implicitImportDeclarations.push(decl);
+      parents[decl] = lib.ast;
+      parents[specifier] = decl;
+      for (let spec in specs) {
+        parents[spec] = decl;
+        parents[spec.imported] = spec;
+        parents[spec.local] = spec;
+      }
+      // The specifier is the module's own canonical path, so it maps to
+      // itself; the resolver is not asked, as a user could not name a
+      // library's private member file this way.
+      lib.imports[origin] = origin;
+    }
+  }
+
+  /**
+   * Repeat import wiring until no pass makes progress. When `only` is
+   * non-null, wiring is restricted to that set of module paths.
+   */
+  #wireToFixpoint(files: GrowableArray<SourceFile>, only: Set<String> | null): void {
+    var changed = true;
+    while (changed) {
+      changed = false;
+      for (let lib in files) {
+        if (only != null && !only.has(lib.path)) {
+          continue;
+        }
+        let {scopeResult} = lib;
+        if (scopeResult != null) {
+          if (this.#wireImports(lib, scopeResult, false)) {
+            changed = true;
+          }
+        }
+      }
+    }
+  }
+
+  /**
+   * Wire up import specifiers to their resolved symbols from dependency
+   * modules.
+   *
+   * For each import in this library:
+   *   import { Foo } from './other';
+   *
+   * We look up './other' -> canonical path -> dependency SourceFile ->
+   * its ModuleExports, then find 'Foo' and update the importing scope's
+   * bindings. Re-export declarations copy dependency exports into this
+   * module's own export map.
+   *
+   * Runs repeatedly under #wireToFixpoint (import graphs may be
+   * cyclic), so every arm is idempotent and reports whether it made
+   * progress. Names that never resolve are recorded as UnresolvedName
+   * only when `record` is set — the one pass that runs after the
+   * fixpoint settles (with a duplicate guard: a cached file keeps its
+   * recordings from the previous compile).
+   */
+  #wireImports(lib: SourceFile, result: ScopeResult, record: boolean): boolean {
+    var changed = false;
+
+    // The export map is rebuilt from the local-declaration snapshot on
+    // every pass: re-export statements overwrite in statement order
+    // (last writer wins, matching single-pass behavior), and the
+    // rebuilt map replaces the live one only when it differs.
+    let base = this.#localExports.get(lib.path) ?? result.exports;
+    let rebuilt = new Map<String, Symbol>();
+    for (let key in base.keys()) {
+      if (let (true, info) = base.get(key)) {
+        rebuilt[key] = info;
+      }
+    }
+
+    /** The scope result of the module a specifier names, if it is loaded. */
+    let depScopeOf = (specifier: String): ScopeResult | null => {
+      if (!lib.imports.has(specifier)) {
+        return null;
+      }
+      let depLib = this.#loader.get(lib.imports[specifier]);
+      return depLib?.scopeResult;
+    };
+
+    for (let statement in moduleStatements(lib)) {
+      match (statement) {
+        case ImportDeclaration {moduleSpecifier, imports}: {
+          let depExports = depScopeOf(moduleSpecifier.value)?.exports;
+          if (depExports != null) {
+            for (let spec in imports) {
+              let importedName = spec.imported.name;
+              if (importedName == "*") {
+                continue;
+              }
+              let exp = depExports.get(importedName) ?? null;
+              if (exp == null) {
+                if (record) {
+                  this.#recordUnresolved(result, importedName, spec);
+                }
+              } else {
+                let localSym = result.symbols.getByNode(spec);
+                if (localSym != null && localSym.importTarget != exp) {
+                  localSym.importTarget = exp;
+                  changed = true;
+                }
+              }
+            }
+          }
+        }
+        case ExportAllDeclaration {moduleSpecifier}: {
+          let depExports = depScopeOf(moduleSpecifier.value)?.exports;
+          if (depExports != null) {
+            for (let key in depExports.keys()) {
+              if (let (true, info) = depExports.get(key)) {
+                rebuilt[key] = info;
+              }
+            }
+          }
+        }
+        case ExportFromDeclaration {moduleSpecifier, specifiers}: {
+          let depExports = depScopeOf(moduleSpecifier.value)?.exports;
+          if (depExports != null) {
+            for (let spec in specifiers) {
+              let exp = depExports.get(spec.imported.name) ?? null;
+              if (exp == null) {
+                if (record) {
+                  this.#recordUnresolved(result, spec.imported.name, spec);
+                }
+              } else {
+                rebuilt[spec.local.name] = exp;
+              }
+            }
+          }
+        }
+        case _: {}
+      }
+    }
+
+    // Replace the live export map in place (other components hold a
+    // reference to the same HashMap object) when the rebuild differs.
+    var same = rebuilt.size == result.exports.size;
+    if (same) {
+      for (let key in rebuilt.keys()) {
+        let cur = result.exports.get(key) ?? null;
+        if (cur == null || cur != rebuilt[key]) {
+          same = false;
+        }
+      }
+    }
+    if (!same) {
+      result.exports.clear();
+      for (let key in rebuilt.keys()) {
+        if (let (true, info) = rebuilt.get(key)) {
+          result.exports[key] = info;
+        }
+      }
+      changed = true;
+    }
+    return changed;
+  }
+
+  /** Snapshot a freshly built module's local-declaration exports. */
+  #snapshotLocalExports(lib: SourceFile): void {
+    let {scopeResult} = lib;
+    if (scopeResult != null) {
+      let snap = new Map<String, Symbol>();
+      for (let key in scopeResult.exports.keys()) {
+        if (let (true, info) = scopeResult.exports.get(key)) {
+          snap[key] = info;
+        }
+      }
+      this.#localExports[lib.path] = snap;
+    }
+  }
+
+  /** Record an unresolved import name, once per (name, node). */
+  #recordUnresolved(result: ScopeResult, name: String, node: Node): void {
+    for (let existing in result.unresolvedNames) {
+      if (existing.name == name && existing.node == node) {
+        return;
+      }
+    }
+    result.unresolvedNames.push(new UnresolvedName(name, node));
+  }
+}
+
+/**
+ * Build a target's half of a compiler: the package map it resolves
+ * through, a resolver bound to the target, and a loader over both.
+ *
+ * An unknown target name is rejected here, before anything resolves
+ * against it. Without that a typo reads as a target where every virtual
+ * library is unavailable, and the first error names one of the standard
+ * library's own libraries rather than the target.
+ */
+export let makeCompilerTarget = (
+  host: CompilerHost,
+  target: String,
+  options: CompilerOptions
+): CompilerTarget => {
+  if (!isKnownTarget(target)) {
+    throw new Error(
+        `Unknown target '${target}' (expected ${knownTargetsDescription()})`);
+  }
+  let canonical = canonicalTarget(target);
+  let packages = withBuiltinPackages(options.stdlibRoot, options.packages);
+  packages["zena"] = buildStdlibConfig(options.stdlibRoot);
+  let resolver = new ModuleResolver(packages, canonical);
+  let loader = new LibraryLoader(
+      host, resolver, options.recoverFromParseErrors ?? false);
+  return new CompilerTarget(canonical, options, resolver, loader);
+};

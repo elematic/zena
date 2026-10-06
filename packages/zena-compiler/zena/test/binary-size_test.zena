@@ -25,7 +25,7 @@ import { isTrue, isFalse, equal } from 'zena:assert';
 import { readFile, writeFile, exists, mkdir } from 'zena:fs';
 import { CompilerHost } from '../lib/library-loader.zena';
 import {
-  createCompiler, CompilerOptions, checkCompilation,
+  Compiler, createCompiler, checkCompilation,
 } from '../lib/compiler.zena';
 import { loadPackageMap } from '../lib/package-manifest.zena';
 import { stdlibIdToRelativeFile } from '../lib/module-resolver.zena';
@@ -90,11 +90,9 @@ class PlainHost implements CompilerHost {
  * program's.
  */
 let compile = (path: String, target: String = 'freestanding'): ByteArray => {
-  let host = new PlainHost();
-  let packages = loadPackageMap(host, 'zena-packages.json');
-  let c = createCompiler(host, new CompilerOptions(target, stdlibRoot, packages));
-  let result = c.compile(path);
-  let checked = checkCompilation(result, null, false);
+  let c = newCompiler();
+  let result = c.compile({entry: path, target});
+  let checked = checkCompilation(result);
   for (let diag in checked.diagnostics) {
     if (diag.severity == DiagnosticSeverity.Error) {
       throw new Error(`${path}: ${diag.message}`);
@@ -615,24 +613,38 @@ export let tests = suite('Binary size', (): void => {
  */
 let compileComponent = (path: String, target: String): ByteArray => {
   let host = new PlainHost();
-  let packages = loadPackageMap(host, 'zena-packages.json');
+  let c = newCompilerOn(host);
   let generator = new BinaryGenerator(target, false);
-  generator.runtimeMemoryModule =
-      compileComponentRuntimeModule(host, stdlibRoot, packages);
+  let program = programOf(path, target, c);
+  // On the same compiler as the program, at its `freestanding` target.
+  generator.runtimeMemoryModule = compileComponentRuntimeModule(c, stdlibRoot);
   // The WIT-backed packages the stdlib carries, as the CLI passes them.
   let packagesWit = readWitSource(host, `${stdlibRoot}/wit`) + '\n' +
       readWitSource(host, `${stdlibRoot}/host-wit`);
   generator.importEncoder = makeImportEncoder(null, '', packagesWit);
-  return generator.generate(programOf(path, target)).toByteArray();
+  return generator.generate(program).toByteArray();
+};
+
+/** A compiler over the real standard library and package map. */
+let newCompiler = (): Compiler => newCompilerOn(new PlainHost());
+
+/** The same, over a host the caller also needs — to read WIT through. */
+let newCompilerOn = (host: PlainHost): Compiler => {
+  return createCompiler(host, {
+    stdlibRoot,
+    packages: loadPackageMap(host, 'zena-packages.json'),
+  });
 };
 
 /** The `Program` for a path, for a second generate() over the same input. */
-let programOf = (path: String, target: String = 'freestanding'): Program => {
-  let host = new PlainHost();
-  let packages = loadPackageMap(host, 'zena-packages.json');
-  let c = createCompiler(host, new CompilerOptions(target, stdlibRoot, packages));
-  let result = c.compile(path);
-  let checked = checkCompilation(result, null, false);
+let programOf = (
+  path: String,
+  target: String = 'freestanding',
+  compiler: Compiler | null = null
+): Program => {
+  let c = compiler ?? newCompiler();
+  let result = c.compile({entry: path, target});
+  let checked = checkCompilation(result);
   let entryAst = result.entry.ast;
   let units = new Array<CompilationUnit>();
   var entryUnit: CompilationUnit | null = null;

@@ -24,7 +24,7 @@ import { isTrue } from 'zena:assert';
 import { readFile } from 'zena:fs';
 import { CompilerHost } from '../lib/library-loader.zena';
 import {
-  Compiler, createCompiler, CompilerOptions, checkCompilation, CompilationResult
+  Compiler, createCompiler, checkCompilation, CompilationResult
 } from '../lib/compiler.zena';
 import { loadPackageMap } from '../lib/package-manifest.zena';
 import { stdlibIdToRelativeFile } from '../lib/module-resolver.zena';
@@ -88,13 +88,13 @@ let newCompiler = (host: MutableHost): Compiler => {
   let packages = loadPackageMap(host, 'zena-packages.json');
   // The core module with no host beneath it: the bytes compared are
   // the program's own.
-  return createCompiler(host, new CompilerOptions('freestanding', stdlibRoot, packages));
+  return createCompiler(host, {stdlibRoot, packages});
 };
 
 /** Compiles to wasm, throwing on any check error. */
 let compileToWasm = (c: Compiler, path: String): ByteArray => {
-  let result = c.compile(path);
-  let checked = checkCompilation(result, null, false);
+  let result = c.compile({entry: path, target: 'freestanding'});
+  let checked = checkCompilation(result);
   for (let diag in checked.diagnostics) {
     if (diag.severity == DiagnosticSeverity.Error) {
       throw new Error(`${path}: ${diag.message}`);
@@ -140,7 +140,7 @@ export let tests = suite('Compiler.invalidate', (): void => {
     let host = new MutableHost();
     let c = newCompiler(host);
     c.invalidate(heavyEntry);
-    let result = c.compile(heavyEntry);
+    let result = c.compile({entry: heavyEntry, target: 'freestanding'});
     isTrue(collisionCount(result) == 0,
       `${collisionCount(result)} node ids are claimed by more than one file`);
   });
@@ -153,11 +153,11 @@ export let tests = suite('Compiler.invalidate', (): void => {
     // by being identical — and pinning it would pin load order rather
     // than anything the compiler owes a caller.
     let plain = newCompiler(new MutableHost());
-    let expected = idsOf(plain.compile(heavyEntry));
+    let expected = idsOf(plain.compile({entry: heavyEntry, target: 'freestanding'}));
 
     let invalidated = newCompiler(new MutableHost());
     invalidated.invalidate(heavyEntry);
-    let actual = idsOf(invalidated.compile(heavyEntry));
+    let actual = idsOf(invalidated.compile({entry: heavyEntry, target: 'freestanding'}));
 
     isTrue(actual.length == expected.length,
       `${actual.length} nodes after invalidate, ${expected.length} without`);
@@ -199,7 +199,7 @@ export let tests = suite('Compiler.invalidate', (): void => {
     let c = newCompiler(host);
 
     host.overrides[mutableEntry] = 'export let main = (): i32 => { return 1; };';
-    let clean = checkCompilation(c.compile(mutableEntry), null, false);
+    let clean = checkCompilation(c.compile({entry: mutableEntry, target: 'freestanding'}));
     var cleanErrors = 0;
     for (let d in clean.diagnostics) {
       if (d.severity == DiagnosticSeverity.Error) { cleanErrors += 1; }
@@ -208,7 +208,7 @@ export let tests = suite('Compiler.invalidate', (): void => {
 
     host.overrides[mutableEntry] = 'export let main = (): i32 => { return "not an i32"; };';
     c.invalidate(mutableEntry);
-    let broken = checkCompilation(c.compile(mutableEntry), null, false);
+    let broken = checkCompilation(c.compile({entry: mutableEntry, target: 'freestanding'}));
     var brokenErrors = 0;
     for (let d in broken.diagnostics) {
       if (d.severity == DiagnosticSeverity.Error) { brokenErrors += 1; }

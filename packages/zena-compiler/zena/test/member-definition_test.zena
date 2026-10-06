@@ -9,7 +9,7 @@
 import { suite, test } from 'zena:test';
 import { equal, isTrue } from 'zena:assert';
 import {
-  Compiler, checkCompilation, resolveMemberDefinition,
+  CompilerTarget, checkCompilation, resolveMemberDefinition,
 } from '../lib/compiler.zena';
 import { ScopeResult } from '../lib/scope/scope-builder.zena';
 import { SemanticModel } from '../lib/semantic-model.zena';
@@ -21,8 +21,8 @@ class ResolveContext {
   ast: Module;
   model: SemanticModel;
   scopeResult: ScopeResult;
-  compiler: Compiler;
-  new(this.ast, this.model, this.scopeResult, this.compiler);
+  modules: CompilerTarget;
+  new(this.ast, this.model, this.scopeResult, this.modules);
 }
 
 /** 
@@ -34,11 +34,11 @@ let prepare = (source: String): ResolveContext => {
   let path = "/test/main.zena";
   host.addFile(path, source);
   let compiler = makeCompiler(host);
-  let compilation = compiler.compile(path);
+  let compilation = compiler.compile({entry: path, target: 'js'});
   let checkResult = checkCompilation(compilation);
   let entryModel = checkResult.results[path].model;
   let scopeResult = compilation.entry.scopeResult as ScopeResult;
-  return new ResolveContext(compilation.entry.ast, entryModel, scopeResult, compiler);
+  return new ResolveContext(compilation.entry.ast, entryModel, scopeResult, compiler.forTarget('js'));
 };
 
 /** 
@@ -73,7 +73,7 @@ export let tests = suite('Member Definition Resolution', () => {
       let src = "class Point { x: f64; y: f64; new(this.x, this.y); }\nlet p = new Point(1.0, 2.0);\nlet v = p.x;";
       let rc = prepare(src);
       let offset = indexOf(src, ".x;") + 1; // land on 'x' after dot
-      let span = resolveMemberDefinition(rc.ast, offset, rc.model, rc.scopeResult, rc.compiler);
+      let span = resolveMemberDefinition(rc.ast, offset, rc.model, rc.scopeResult, rc.modules);
       isTrue(span != null);
       let s = span as SourceSpan;
       // Line 1 is the class body with "x: f64"
@@ -84,7 +84,7 @@ export let tests = suite('Member Definition Resolution', () => {
       let src = "class Point { x: f64; y: f64; new(this.x, this.y); }\nlet p = new Point(1.0, 2.0);\nlet v = p.y;";
       let rc = prepare(src);
       let offset = indexOf(src, ".y;") + 1;
-      let span = resolveMemberDefinition(rc.ast, offset, rc.model, rc.scopeResult, rc.compiler);
+      let span = resolveMemberDefinition(rc.ast, offset, rc.model, rc.scopeResult, rc.modules);
       isTrue(span != null);
       let s = span as SourceSpan;
       equal(s.line, 1);
@@ -94,7 +94,7 @@ export let tests = suite('Member Definition Resolution', () => {
       let src = "class Pair(first: i32, second: i32)\nlet p = new Pair(1, 2);\nlet v = p.first;";
       let rc = prepare(src);
       let offset = indexOf(src, ".first;") + 1;
-      let span = resolveMemberDefinition(rc.ast, offset, rc.model, rc.scopeResult, rc.compiler);
+      let span = resolveMemberDefinition(rc.ast, offset, rc.model, rc.scopeResult, rc.modules);
       isTrue(span != null);
       let s = span as SourceSpan;
       equal(s.line, 1);
@@ -107,7 +107,7 @@ export let tests = suite('Member Definition Resolution', () => {
       let src = "class Counter {\n  var count: i32 = 0;\n  increment(): void { this.count += 1; }\n}\nlet c = new Counter();\nc.increment();";
       let rc = prepare(src);
       let offset = indexOf(src, ".increment();") + 1;
-      let span = resolveMemberDefinition(rc.ast, offset, rc.model, rc.scopeResult, rc.compiler);
+      let span = resolveMemberDefinition(rc.ast, offset, rc.model, rc.scopeResult, rc.modules);
       isTrue(span != null);
       let s = span as SourceSpan;
       equal(s.line, 3);
@@ -120,7 +120,7 @@ export let tests = suite('Member Definition Resolution', () => {
       let src = "class Wallet {\n  #balance: f64 = 0.0;\n  deposit(amount: f64): void { this.#balance += amount; }\n}";
       let rc = prepare(src);
       let offset = indexOf(src, ".#balance +=") + 2; // land on '#'
-      let span = resolveMemberDefinition(rc.ast, offset, rc.model, rc.scopeResult, rc.compiler);
+      let span = resolveMemberDefinition(rc.ast, offset, rc.model, rc.scopeResult, rc.modules);
       isTrue(span != null);
       let s = span as SourceSpan;
       equal(s.line, 2);
@@ -130,7 +130,7 @@ export let tests = suite('Member Definition Resolution', () => {
       let src = "class Wallet {\n  #balance: f64 = 0.0;\n  new(amount: f64) : #balance = amount;\n  equals(other: Wallet): boolean { return this.#balance == other.#balance; }\n}";
       let rc = prepare(src);
       let offset = indexOf(src, "other.#balance;") + 7; // land on 'b' after "other.#"
-      let span = resolveMemberDefinition(rc.ast, offset, rc.model, rc.scopeResult, rc.compiler);
+      let span = resolveMemberDefinition(rc.ast, offset, rc.model, rc.scopeResult, rc.modules);
       isTrue(span != null);
       let s = span as SourceSpan;
       equal(s.line, 2);
@@ -140,7 +140,7 @@ export let tests = suite('Member Definition Resolution', () => {
       let src = "class Wallet {\n  #balance: f64 = 0.0;\n  new(amount: f64) : #balance = amount;\n  equals(other: Wallet): boolean { return this.#balance == other.#balance; }\n}";
       let rc = prepare(src);
       let offset = indexOf(src, "other.#balance;") + 6; // land on '#'
-      let span = resolveMemberDefinition(rc.ast, offset, rc.model, rc.scopeResult, rc.compiler);
+      let span = resolveMemberDefinition(rc.ast, offset, rc.model, rc.scopeResult, rc.modules);
       isTrue(span != null);
       let s = span as SourceSpan;
       equal(s.line, 2);
@@ -153,14 +153,14 @@ export let tests = suite('Member Definition Resolution', () => {
       let src = "class Point { x: f64; new(this.x); }\nlet p = new Point(1.0);\nlet v = p.x;";
       let rc = prepare(src);
       let offset = indexOf(src, "p.x;"); // land on 'p', not 'x'
-      let span = resolveMemberDefinition(rc.ast, offset, rc.model, rc.scopeResult, rc.compiler);
+      let span = resolveMemberDefinition(rc.ast, offset, rc.model, rc.scopeResult, rc.modules);
       isTrue(span == null);
     });
 
     test('offset on non-member returns null', () => {
       let src = "let x = 42;";
       let rc = prepare(src);
-      let span = resolveMemberDefinition(rc.ast, 4, rc.model, rc.scopeResult, rc.compiler);
+      let span = resolveMemberDefinition(rc.ast, 4, rc.model, rc.scopeResult, rc.modules);
       isTrue(span == null);
     });
   });

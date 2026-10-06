@@ -12,7 +12,7 @@
 
 import { Set } from 'zena:collections';
 import {
-  Module, ImportDeclaration, ExportAllDeclaration, ExportFromDeclaration, makeNodeIdGenerator, IdGenerator, NodeId,
+  Module, ImportDeclaration, ExportAllDeclaration, ExportFromDeclaration, Statement, makeNodeIdGenerator, IdGenerator, NodeId,
 } from './ast.zena';
 import { parse, parseRecovering, ParseCompleteness } from './parser.zena';
 import { Diagnostic } from './diagnostics.zena';
@@ -125,6 +125,24 @@ export class SourceFile {
     this.version: String
   );
 }
+
+/**
+ * A module's top-level statements, preceded by the import declarations
+ * its implicit prelude imports stand for — every import it makes.
+ */
+export let moduleStatements = (lib: SourceFile): GrowableArray<Statement> => {
+  let statements = new Array<Statement>(lib.ast.body.length);
+  let {scopeResult} = lib;
+  if (scopeResult != null) {
+    for (let decl in scopeResult.implicitImportDeclarations) {
+      statements.push(decl);
+    }
+  }
+  for (let stmt in lib.ast.body) {
+    statements.push(stmt);
+  }
+  return statements;
+};
 
 // ============================================================================
 // Library Graph

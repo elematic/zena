@@ -15,7 +15,7 @@
 
 import { readFile } from 'zena:fs';
 import {
-  createCompiler, CompilerOptions, checkCompilation, CompilerHost,
+  createCompiler, checkCompilation, CompilerHost,
   PackageConfig, ModuleExport, ProgramCheckResult, Diagnostic,
   DiagnosticSeverity,
 } from 'zena-compiler:compiler';
@@ -162,9 +162,8 @@ let documentBatch = (
     }
     packages[pkg.name] = new PackageConfig(pkg.root, exports);
   }
-  let compilerOptions = new CompilerOptions(options.target, options.stdlibRoot,
-      packages);
-  let compiler = createCompiler(host, compilerOptions);
+  let compiler = createCompiler(host, {stdlibRoot: options.stdlibRoot, packages});
+  let target = compiler.forTarget(options.target);
 
   // Threaded across the batch's entry points so that a file whose source
   // has not changed — the whole standard library, on every entry after
@@ -176,8 +175,8 @@ let documentBatch = (
   while (i < to) {
     let module = pkg.modules[i];
     try {
-      let entry = compiler.resolve(pkg.name + ':' + module.name, '');
-      let result = compiler.compile(entry.path);
+      let entry = target.resolve(`${pkg.name}:${module.name}`, '');
+      let result = compiler.compile({entry: entry.path, target: options.target});
       let checkResults = checkCompilation(result, previous);
       previous = checkResults;
       for (let diagnostic in checkResults.entry.diagnostics) {
@@ -195,7 +194,7 @@ let documentBatch = (
       // A module's own walk is what a facade re-exporting it should copy
       // from, so it goes in the cache before any re-export is followed.
       cache.put(result.entry.path, documented);
-      resolveReexports(documented, pkg.name, pkg.root, compiler, result,
+      resolveReexports(documented, pkg.name, pkg.root, target, result,
           checkResults, extractOptions, cache);
       out.docs.modules.push(documented);
     } catch (e) {

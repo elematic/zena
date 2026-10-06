@@ -683,7 +683,8 @@ The `LibraryLoader` conflates two responsibilities:
    the module graph (stateful)
 
 The `CompilationResult` is a snapshot of a single compilation — `files` in
-topological order, the `entry` module, and a `hasCycle` flag.
+topological order, the `entry` module, a `hasCycle` flag, and the options
+it was produced from.
 `checkCompilation` type-checks all non-stdlib modules in dependency order,
 using per-module `depExports` and `depModels` maps wired from dependency
 `ScopeResult`s and `CheckResult`s. Each module gets its own `SemanticModel`.
@@ -710,8 +711,18 @@ using per-module `depExports` and `depModels` maps wired from dependency
   optional `previous: ProgramCheckResult` and carries forward `CheckResult`s
   for files whose source is unchanged and whose imports are unaffected.
 - **Language service wired to push-based invalidation** — `lsp.zena`'s
-  `check()` calls `compiler.invalidate(path)` then `compiler.compile(path)`.
+  `check()` calls `compiler.invalidate(path)` then `compiler.compile(...)`.
   No version bumping needed.
+- **One compiler, several targets** — the target is a property of a
+  compile (`CompileOptions`), not of the compiler (`CompilerOptions`).
+  A compiler keeps a `CompilerTarget` per target: a `ModuleResolver`
+  bound to it, the `LibraryLoader` whose cache is that target's file
+  set, and the scopes over it. The file sets are separate because a
+  specifier does not name one file — `zena:memory` is the free-list
+  allocator on `freestanding` and the component's delegating module on
+  `component`. A `ProgramCheckResult` records the `CheckSettings` it
+  was produced under (target plus the flags that change what a check
+  produces) and only carries forward into a compile that agrees.
 
 **Design:** Three new abstractions that separate concerns cleanly:
 

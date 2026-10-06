@@ -129,6 +129,39 @@ let parseModuleExport = (value: JsonValue): ModuleExport => {
   return new ModuleExport(null, null, internal);
 };
 
+/**
+ * The user's packages plus the ones the stdlib carries: `wasi`, the
+ * WIT-backed package whose interfaces the stdlib itself imports
+ * (`zena:fetch` on the component target speaks `wasi:http`), rooted
+ * at the WIT shipped under the stdlib. A user manifest that declares
+ * `wasi` keeps its own — a test's fixture package, say. The `zena`
+ * package is not here: it is built from the manifest, not a path.
+ */
+export let withBuiltinPackages = (
+  stdlibRoot: String,
+  packages: Map<String, PackageConfig>
+): Map<String, PackageConfig> => {
+  let all = new Map<String, PackageConfig>();
+  for (let name in packages.keys()) {
+    all[name] = packages[name];
+  }
+  if (!all.has("wasi")) {
+    let wasi = new PackageConfig("", null);
+    wasi.witRoot = `${stdlibRoot}/wit`;
+    all["wasi"] = wasi;
+  }
+  // The `zena` command's host interfaces (`zena-cli:host`): what the
+  // standard library's process, wasm and error-stack modules import on
+  // that host's target. Only a program that uses one of those links
+  // any of it.
+  if (!all.has("zena-cli")) {
+    let host = new PackageConfig("", null);
+    host.witRoot = `${stdlibRoot}/host-wit`;
+    all["zena-cli"] = host;
+  }
+  return all;
+};
+
 // The stdlib's own manifest lives in ./stdlib-manifest.zena; re-exported
 // here so callers keep one import for both manifests.
 export { buildStdlibConfig } from './stdlib-manifest.zena';

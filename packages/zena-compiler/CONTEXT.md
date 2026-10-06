@@ -56,6 +56,87 @@ Code generation separates semantic discovery from lowering and emission
 - **`wat-emitter.zena`**: `WatEmitter`. Implements `WasmEmitter` to output
   string `.wat` format representation.
 
+## One Compiler, Several Targets
+
+Terminology, which older code and prose do not yet follow: a **library**
+is a `.zena` file, a **module** is a Wasm module the compiler emits, and
+a **component** is a WASI component. Write new code and comments this
+way even where the surrounding text is mixed.
+
+The target is a property of a compile, not of a compiler.
+`Compiler.compile` takes a `CompileOptions` record — entry point and
+target — and the compiler keeps a `CompilerTarget` per target
+(`zena/lib/compiler-target.zena`): a `ModuleResolver` bound to it, the
+`LibraryLoader` whose cache is that target's library set, the symbol and
+node id generators, and the scope building and import wiring over it.
+
+The library sets are separate because a specifier does not name one
+library. `zena:memory` is the free-list allocator on `freestanding` and
+the library that delegates to the component's memory on `component`, so
+a library importing it has a different dependency on each target, and
+therefore a different wiring and a different check. What one compiler
+saves is the second compiler, plus everything a repeat compile on the
+same target would reload; nothing is shared between two targets yet
+(see below).
+
+What a compiler holds (`CompilerOptions`) is the standard library root,
+the package map, and the flags that change what parsing and checking
+**produce**: `recoverFromParseErrors`, `emitLocations`,
+`warnUnnecessaryCasts`. Those are deliberately not per-compile — a
+`CheckResult` carried forward from a compile that set them differently
+answers a different question. `ProgramCheckResult.settings` records them
+along with the target, and `checkCompilation` drops a `previous` that
+disagrees rather than mixing the two. Flags that only change the emitted
+bytes (`-g`, `-O`) belong to the generator and never affect sharing.
+
+`compileComponentRuntimeModule` is the first caller to use this: a
+component build's second core module is compiled at the enclosing
+compiler's `freestanding` target rather than on a compiler of its own.
+`zena/test/multi-target_test.zena` covers the whole arrangement.
+
+### Nothing is shared between targets yet, and what it would take
+
+Each target re-reads, re-parses and re-checks everything it loads. That
+is correct but coarse, and it is the next thing to fix.
+
+A library can share one `CheckResult` across two targets when every
+specifier in its **transitive closure** resolves to the same library on
+both. Then its AST, its dependencies' paths and its dependencies'
+Symbols are the same objects, so one result is correct by construction.
+Nothing weaker works: sharing a result _downstream_ of a divergence
+would need the two implementations of a virtual library to agree on type
+**identity**, not merely on signatures, and codegen keys on identity —
+the `instantiationKeyOf` bug below is what conflating it produces.
+
+There is one more condition. `SharedCheckerState.preludeTypes` and
+`wellKnownTypes` are filled per compile from whichever standard library
+libraries the compile checked, and every result reads them — an `await`
+consults `Future` without importing it. So the libraries declaring
+prelude and well-known names must be target-invariant too, or nothing is
+shareable.
+
+How much that buys, counting libraries in the union of two targets'
+closures:
+
+| pair                          | shareable |
+| ----------------------------- | --------- |
+| `freestanding` vs `component` | 36 / 45   |
+| `js` vs `component`           | 4 / 47    |
+| `js` vs `freestanding`        | 4 / 46    |
+
+The pair that matters for a component build — its own target and the
+`freestanding` one its runtime memory module needs — shares 80%.
+
+The `js` column collapses because of one import. `core/error.zena`
+declares `Error` and imports `zena:error-stack`, which is virtual
+(`stack-host` on `js`, `stack-none` on `freestanding` and `component`).
+`Error` is a prelude name and a well-known type, so every library that
+mentions it inherits the divergence. `freestanding` and `component` both
+resolve `error-stack` to `stack-none`, which is why that pair is
+unaffected. Moving the stack-trace dependency out from under the library
+that declares `Error` would take `js` vs `component` to roughly 36/46 —
+worth more than the keying work itself.
+
 ## WebAssembly Code Generation Constraints
 
 - Zena emits **WebAssembly GC** and **Exceptions** native standards. Wasm

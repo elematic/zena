@@ -5,11 +5,11 @@
  * module owning the memory and the allocator
  * (docs/design/component-emission.md, 1.3). Its source is fixed —
  * `component-memory.zena` in the standard library — so this is a small,
- * deterministic nested compile: same compiler, `freestanding` target,
- * fresh `Compiler` instance. Drivers call it once per component build
- * and hand the bytes to `BinaryGenerator`; a driver that skips it gets
- * a loud error from `emitComponent` the moment a program needs memory,
- * not a component that fails validation.
+ * deterministic nested compile, on the `freestanding` target of the
+ * compiler that is already running the enclosing build. Drivers call it
+ * once per component build and hand the bytes to `BinaryGenerator`; a
+ * driver that skips it gets a loud error from `emitComponent` the
+ * moment a program needs memory, not a component that fails validation.
  *
  * This lives beside the generators rather than in `compiler.zena`
  * because it needs both halves — the compiler to check the source and
@@ -18,11 +18,7 @@
  */
 
 import { ByteBuffer } from 'zena:core';
-import { CompilerHost } from '../library-loader.zena';
-import { PackageConfig } from '../module-resolver.zena';
-import {
-  createCompiler, CompilerOptions, checkCompilation
-} from '../compiler.zena';
+import { Compiler, checkCompilation } from '../compiler.zena';
 import { DiagnosticSeverity } from '../diagnostics.zena';
 import { Program, CompilationUnit } from '../program.zena';
 import { BinaryGenerator } from './binary-generator.zena';
@@ -49,25 +45,25 @@ let cachedByStdlibRoot = new Map<String, ByteBuffer>();
 /**
  * Compile the runtime memory module; the finished core-module bytes.
  *
- * `stdlibRoot` and `packages` are the same values the enclosing compile
- * was created with — the nested compile reads the same standard library
- * through the same host, just on the `freestanding` target, where
- * `zena:memory` is the real free-list allocator rather than the
- * delegating one.
+ * It compiles on the compiler running the enclosing build, which
+ * already has the host and the standard library root it needs — only
+ * the target differs. On `freestanding`, `zena:memory` is the real
+ * free-list allocator rather than the module that delegates to the
+ * component's memory, which is the whole reason this is a second
+ * compile rather than part of the first.
  */
 export let compileComponentRuntimeModule = (
-  host: CompilerHost,
-  stdlibRoot: String,
-  packages: Map<String, PackageConfig>
+  compiler: Compiler,
+  stdlibRoot: String
 ): ByteBuffer => {
   if (let (true, cached) = cachedByStdlibRoot.get(stdlibRoot)) {
     return cached;
   }
-  let options = new CompilerOptions("freestanding", stdlibRoot, packages);
-  let compiler = createCompiler(host, options);
-  let entryPath = stdlibRoot + "/" + runtimeEntry;
-  let compResult = compiler.compile(entryPath);
-  let checkResults = checkCompilation(compResult, null, false);
+  let compResult = compiler.compile({
+    entry: `${stdlibRoot}/${runtimeEntry}`,
+    target: "freestanding",
+  });
+  let checkResults = checkCompilation(compResult);
   for (let diag in checkResults.diagnostics) {
     if (diag.severity == DiagnosticSeverity.Error) {
       // Program code cannot reach this compile; an error here means the

@@ -25,7 +25,7 @@ import { suite, test, TestContext } from 'zena:test';
 import { isTrue } from 'zena:assert';
 import { readFile } from 'zena:fs';
 import { CompilerHost } from '../lib/library-loader.zena';
-import { createCompiler, CompilerOptions, checkCompilation } from '../lib/compiler.zena';
+import { createCompiler, checkCompilation } from '../lib/compiler.zena';
 import { loadPackageMap } from '../lib/package-manifest.zena';
 import { PackageConfig, stdlibIdToRelativeFile } from '../lib/module-resolver.zena';
 import { isWitModulePath, synthesizeWitModule } from '../lib/wit-module-synth.zena';
@@ -62,10 +62,9 @@ let compileToWasm = (
     host: FsHost,
     packages: Map<String, PackageConfig>,
     path: String): ByteArray => {
-  let options = new CompilerOptions('freestanding', stdlibRoot, packages);
-  let compiler = createCompiler(host, options);
-  let compResult = compiler.compile(path);
-  let checkResults = checkCompilation(compResult, null, false);
+  let compiler = createCompiler(host, {stdlibRoot, packages});
+  let compResult = compiler.compile({entry: path, target: 'freestanding'});
+  let checkResults = checkCompilation(compResult);
   for (let diag in checkResults.diagnostics) {
     if (diag.severity == DiagnosticSeverity.Error) {
       throw new Error(`${path}: ${diag.message}`);

@@ -11,7 +11,7 @@ import { suite, test, TestContext } from 'zena:test';
 import { equal } from 'zena:assert';
 import { readFile } from 'zena:fs';
 import { CompilerHost } from '../lib/library-loader.zena';
-import { createCompiler, CompilerOptions, checkCompilation, ProgramCheckResult } from '../lib/compiler.zena';
+import { createCompiler, checkCompilation, ProgramCheckResult } from '../lib/compiler.zena';
 import { loadPackageMap } from '../lib/package-manifest.zena';
 import { stdlibIdToRelativeFile } from '../lib/module-resolver.zena';
 import { directoryNames } from '../lib/fs-host.zena';
@@ -51,26 +51,25 @@ export let tests = suite('cycle members across incremental compiles', (): void =
     let stdlibRoot = "packages/stdlib/zena";
     let host = new FsHost(stdlibRoot);
     let packages = loadPackageMap(host, "zena-packages.json");
-    let options = new CompilerOptions("host", stdlibRoot, packages);
-    let compiler = createCompiler(host, options);
+    let compiler = createCompiler(host, {stdlibRoot, packages});
     let a = "tests/language/semantics/modules/cyclic_functions_ok.zena";
     let b = "tests/language/semantics/modules/cyclic_functions_ok_first.zena";
 
     compiler.invalidate(a);
-    let first = checkCompilation(compiler.compile(a), null);
+    let first = checkCompilation(compiler.compile({entry: a, target: 'js'}));
     let firstErrors = errorsOf(first);
     for (let e in firstErrors) { console.log("first: " + e); }
     equal(firstErrors.length, 0);
 
     compiler.invalidate(b);
-    let second = checkCompilation(compiler.compile(b), first);
+    let second = checkCompilation(compiler.compile({entry: b, target: 'js'}), first);
     let secondErrors = errorsOf(second);
     for (let e in secondErrors) { console.log("second: " + e); }
     equal(secondErrors.length, 0);
 
     // And a third compilation of the first entry again, everything
     // unchanged: every module carries forward and it is still clean.
-    let third = checkCompilation(compiler.compile(a), second);
+    let third = checkCompilation(compiler.compile({entry: a, target: 'js'}), second);
     let thirdErrors = errorsOf(third);
     for (let e in thirdErrors) { console.log("third: " + e); }
     equal(thirdErrors.length, 0);

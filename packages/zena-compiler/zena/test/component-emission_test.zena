@@ -16,7 +16,7 @@ import { readFile, exists, mkdir } from 'zena:fs';
 import { newByteArray } from 'zena:core';
 import { CompilerHost } from '../lib/library-loader.zena';
 import {
-  createCompiler, CompilerOptions, checkCompilation, withBuiltinPackages
+  Compiler, createCompiler, CompileOptions, checkCompilation, withBuiltinPackages
 } from '../lib/compiler.zena';
 import { loadPackageMap } from '../lib/package-manifest.zena';
 import { stdlibIdToRelativeFile } from '../lib/module-resolver.zena';
@@ -87,27 +87,36 @@ let testPackages = (host: CompilerHost): Map<String, PackageConfig> => {
   return packages;
 };
 
+/** A compiler over the test's host and packages. */
+let newCompiler = (): Compiler => {
+  let host = new PlainHost();
+  return createCompiler(host, {stdlibRoot, packages: testPackages(host)});
+};
+
 /** The compiled program, ready for whichever generator wants it. */
 let programFor = (
+  c: Compiler,
   path: String,
   target: String,
   witSource: String = '',
   worldName: String = ''
 ): Program => {
-  let host = new PlainHost();
-  let packages = testPackages(host);
-  let options = new CompilerOptions(target, stdlibRoot, packages);
-  if (witSource != '') {
-    // As the CLI injects it under --wit: the entry wrapper also
-    // implements the declared world's async exports.
-    options.componentWrapperSynth =
-        (entryPath: String, ast: Module): ComponentEntryWrapper | null =>
-            synthesizeExportWrapper(witSource, worldName, entryPath, ast,
-                packagesWit());
-  }
-  let c = createCompiler(host, options);
-  let result = c.compile(path);
-  let checked = checkCompilation(result, null, false);
+  // With a declared world, the entry wrapper also implements the
+  // world's async exports, as the CLI injects it under --wit.
+  let options: CompileOptions = if (witSource == '') {
+    {entry: path, target}
+  } else {
+    {
+      entry: path,
+      target,
+      componentWrapperSynth:
+          (entryPath: String, ast: Module): ComponentEntryWrapper | null =>
+              synthesizeExportWrapper(witSource, worldName, entryPath, ast,
+                  packagesWit()),
+    }
+  };
+  let result = c.compile(options);
+  let checked = checkCompilation(result);
   for (let diag in checked.diagnostics) {
     if (diag.severity == DiagnosticSeverity.Error) {
       throw new Error(`${path}: ${diag.message}`);
@@ -128,17 +137,19 @@ let programFor = (
 };
 
 let compileFor = (path: String, target: String): ByteArray => {
+  let c = newCompiler();
   let generator = new BinaryGenerator(target, false);
+  let program = programFor(c, path, target);
   if (target == 'component') {
-    let host = new PlainHost();
-    generator.runtimeMemoryModule = compileComponentRuntimeModule(
-        host, stdlibRoot, loadPackageMap(host, 'zena-packages.json'));
+    // On the same compiler as the program: the runtime module is the
+    // `freestanding` target of this compile, not a compile of its own.
+    generator.runtimeMemoryModule = compileComponentRuntimeModule(c, stdlibRoot);
     // The test `wasi` package's WIT, as the CLI passes its WIT-backed
     // packages' sources: the encoder emits those interfaces' true
     // types rather than deriving them from synthesized declarations.
     generator.importEncoder = makeImportEncoder(null, '', packagesWit());
   }
-  return generator.generate(programFor(path, target)).toByteArray();
+  return generator.generate(program).toByteArray();
 };
 
 /** Compile against a declared world (`--wit`/`--world`'s path). */
@@ -147,14 +158,13 @@ let compileForWorld = (
   witSource: String,
   worldName: String
 ): ByteArray => {
+  let c = newCompiler();
   let generator = new BinaryGenerator('component', false);
-  let host = new PlainHost();
-  generator.runtimeMemoryModule = compileComponentRuntimeModule(
-      host, stdlibRoot, loadPackageMap(host, 'zena-packages.json'));
+  let program = programFor(c, path, 'component', witSource, worldName);
+  generator.runtimeMemoryModule = compileComponentRuntimeModule(c, stdlibRoot);
   generator.importEncoder = makeImportEncoder(witSource, worldName,
       packagesWit());
-  return generator.generate(
-      programFor(path, 'component', witSource, worldName)).toByteArray();
+  return generator.generate(program).toByteArray();
 };
 
 /** The payload of the (`skip`+1)-th section with `id`, or empty. */
@@ -194,7 +204,7 @@ let sectionPayloadAfter = (bytes: ByteArray, id: i32, skip: i32): ByteArray => {
  * the synthesized wrappers live.
  */
 let watFor = (path: String, target: String): String =>
-  new WatGenerator(target, false).generate(programFor(path, target));
+  new WatGenerator(target, false).generate(programFor(newCompiler(), path, target));
 
 /**
  * The section ids of a component or core module, in order. Both formats

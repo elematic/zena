@@ -18,7 +18,7 @@
  */
 
 import {
-  Compiler, createCompiler, checkCompilation, CompilerOptions, ProgramCheckResult, findNodeAtOffset, resolveMemberDefinition, CompilationResult,
+  Compiler, CompilerTarget, createCompiler, checkCompilation, ProgramCheckResult, findNodeAtOffset, resolveMemberDefinition, CompilationResult,
 } from 'zena-compiler:compiler';
 import { parse as parseSource, ParseCompleteness } from 'zena-compiler:parser';
 import { PackageConfig } from 'zena-compiler:module-resolver';
@@ -98,18 +98,31 @@ let diagnosticFromError = (message: String, source: String): Diagnostic => {
 export class LanguageService {
   #host: DocumentHost;
   #compiler: Compiler;
+  /** The target the editor's code is analyzed for; fixed for the service's life. */
+  #targetName: String;
   var #checked: ProgramCheckResult | null = null;
-  /** Scopes of every file the last compiles reached, by normalized path. */
+  /** Scopes of every library the last compiles reached, by normalized path. */
   #scopes = new Map<String, ScopeResult>();
   /** The last compile of each document checked, by normalized path. */
   #compilations = new Map<String, CompilationResult>();
 
-  new(host: DocumentHost, compiler: Compiler) : #host = host, #compiler = compiler;
+  new(host: DocumentHost, compiler: Compiler, targetName: String)
+    : #host = host, #compiler = compiler, #targetName = targetName;
+
+  /** The compiler's library set for this service's target. */
+  #target: CompilerTarget {
+    get { return this.#compiler.forTarget(this.#targetName); }
+  }
+
+  /** Compile `entry` on this service's target. */
+  #compile(entry: String): CompilationResult {
+    return this.#compiler.compile({entry, target: this.#targetName});
+  }
 
   preloadStdlib(): void {
     try {
-      let result = this.#compiler.compile('zena:core/index.zena');
-      this.#checked = checkCompilation(result, this.#checked);
+      this.#checked =
+          checkCompilation(this.#compile('zena:core/index.zena'), this.#checked);
     } catch (e) {
       // Best-effort preload
     }
@@ -151,7 +164,7 @@ export class LanguageService {
     this.openDocument(path, source);
 
     let diagnostics = try {
-      let result = this.#compiler.compile(path);
+      let result = this.#compile(path);
 
       // Scopes for every file the compile reached, so that definition
       // and hover work in a dependency the editor navigates into.
@@ -195,7 +208,7 @@ export class LanguageService {
   checkProgram(path: String, source: String): Program | null {
     this.#host.setDocument(path, source);
     this.#compiler.invalidate(path);
-    let compiled = this.#compiler.compile(path);
+    let compiled = this.#compile(path);
 
     // A recovered AST holds stand-ins where the user has not finished
     // typing, so it must not reach codegen. Check here rather than
@@ -207,7 +220,7 @@ export class LanguageService {
       }
     }
 
-    let checked = checkCompilation(compiled, this.#checked, false);
+    let checked = checkCompilation(compiled, this.#checked);
     this.#checked = checked;
     for (let diagnostic in checked.diagnostics) {
       if (diagnostic.severity == DiagnosticSeverity.Error) {
@@ -257,7 +270,7 @@ export class LanguageService {
       }
     }
     if (let (true, result) = checked.results.get(key)) {
-      let source = this.#compiler.getSourceFile(key);
+      let source = this.#target.getSourceFile(key);
       if (source != null) {
         return {ast: source.ast, model: result.model, scopes: scopes};
       }
@@ -308,7 +321,7 @@ export class LanguageService {
     if (file == null) {
       return null;
     }
-    return resolveMemberDefinition(file.ast, offset, file.model, scopes, this.#compiler);
+    return resolveMemberDefinition(file.ast, offset, file.model, scopes, this.#target);
   }
 
   /** Hover for a byte offset in a checked file, or null for none. */
@@ -318,7 +331,7 @@ export class LanguageService {
     if (checked == null || file == null) {
       return null;
     }
-    return hoverAt(file, offset, checked, this.#compiler);
+    return hoverAt(file, offset, checked, this.#target);
   }
 
   /** Completions at a byte offset. */
@@ -365,14 +378,16 @@ export let createLanguageService = (
 ): LanguageService => {
   let host = new DocumentHost(stdlibRoot, readFile);
   let packages = packageMap ?? new Map<String, PackageConfig>();
-  let options = new CompilerOptions(target, stdlibRoot, packages);
   // Source in an editor is source mid-edit: recover from what can be
   // recovered from, so an unfinished import still yields an AST to
   // answer completions and symbols against. The errors are still
   // reported — check() folds them in with the rest.
-  options.recoverFromParseErrors = true;
-  let compiler = createCompiler(host, options);
-  let ls = new LanguageService(host, compiler);
+  let compiler = createCompiler(host, {
+    stdlibRoot,
+    packages,
+    recoverFromParseErrors: true,
+  });
+  let ls = new LanguageService(host, compiler, target);
   ls.preloadStdlib();
   return ls;
 };
