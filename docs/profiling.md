@@ -79,6 +79,58 @@ Once compilation finishes, `samply` will automatically spin up a local web serve
 
 ---
 
+## Linux
+
+`samply` works on Linux too, with three differences from the macOS
+instructions above.
+
+**Permissions.** `samply` opens perf events, which needs
+`perf_event_paranoid` at 1 or lower, and a ring buffer larger than the
+default 516 KiB:
+
+```bash
+echo 1    | sudo tee /proc/sys/kernel/perf_event_paranoid
+echo 2048 | sudo tee /proc/sys/kernel/perf_event_mlock_kb
+```
+
+Without the first, `samply` says so and names the file. Without the
+second it fails with `Failed to start profiling: mmap failed`, which
+does not. Both are reset by a reboot; set them back afterwards if the
+machine is shared.
+
+**Recording.** `--save-only` writes a profile without opening a
+browser, which is what you want over SSH or in a VM:
+
+```bash
+ZENA_PROFILE=1 ZENA_GC_RESERVE_MB=1536 \
+  ZENA_COMPILER_WASM=packages/zena-compiler/zena/out/cli-self.wasm \
+  samply record --save-only -o /tmp/prof.json.gz -- \
+  ./target/release/zena-cli -g build <file>.zena -o /tmp/out.wasm
+```
+
+Upload the `.json.gz` to [profiler.firefox.com](https://profiler.firefox.com),
+or read it directly — it is gzipped JSON, and the thread with the most
+samples has a `stackTable`, `frameTable` and `funcTable` that a short
+script can walk.
+
+**Symbols.** Wasmtime writes its JIT symbols to `/tmp/perf-<pid>.map`,
+and `samply` does not read that file, so frames inside the compiled
+Zena code come back as bare addresses. Native frames — everything in
+`zena-cli` itself, including wasmtime's runtime and GC — are also bare
+addresses, and those resolve against the binary:
+
+```bash
+nm -C --defined-only target/release/zena-cli | sort > /tmp/syms.txt
+# then for an address, take the last symbol at or below it
+```
+
+A cluster of adjacent addresses is one function. That is how
+`StoreOpaque::is_subtype_cached` was found to be 49% of a compile: a
+run of addresses from `0x4dec68` to `0x4decba`, all resolving to the
+same symbol, called from `vm::libcalls::raw::is_subtype`.
+
+---
+
 ## Tuning Wasmtime Performance
 
 By default, Wasmtime compiles with `native_unwind_info` enabled to support external unwinders (like `samply`). However, registering and deregistering DWARF frames for thousands of functions dynamically introduces significant process startup/teardown overhead (~130ms or ~24% of compiler process runtime).
