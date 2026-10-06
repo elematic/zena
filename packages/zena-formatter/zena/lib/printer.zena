@@ -1288,26 +1288,20 @@ let flattenBinaryChain = (expr: BinaryExpression): Array<Expression> => {
   return result;
 };
 
+/**
+ * `a + b + c`, breaking before each operator when the whole chain does not fit:
+ *
+ *     a
+ *       + b
+ *       + c
+ *
+ * Every chain gets that break opportunity, a two-operand one included. A
+ * single operator used to print with no `line` in it, so the group had nothing
+ * to break at, and a long condition broke in whatever group was nested inside
+ * it — the argument list of a call, say — leaving the operator on one line.
+ */
 let printBinaryExpression = (expr: BinaryExpression): Doc => {
   let operands = flattenBinaryChain(expr);
-
-  // Short chain (single binary op) — simple flat output
-  if (operands.length <= 2) {
-    let parts = new Array<Doc>();
-    parts.push(printExpression(expr.left));
-    parts.push(text(' '));
-    parts.push(text(expr.operator));
-    parts.push(text(' '));
-    parts.push(printExpression(expr.right));
-    return group(concat(parts));
-  }
-
-  // Chain of 3+ operands: group with indent and line breaks before operators
-  // Flat:   a + b + c + d
-  // Broken: a
-  //           + b
-  //           + c
-  //           + d
   let op = expr.operator;
   let parts = new Array<Doc>();
   parts.push(printExpression(operands[0]));

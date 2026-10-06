@@ -817,6 +817,31 @@ let tests = suite('formatter', () => {
         `);
   });
 
+  test('a long condition breaks at its operator, not inside a call', (t: TestContext) => {
+    // A two-operand binary expression had no line break in it at all, so the
+    // only group that could break was the argument list of a call inside it.
+    checkStable('long condition', dedentRaw`
+      class Footer {
+        visible(): boolean {
+          if (this.attribute('completed') != '0'
+            && this.attribute('completed') != '') {
+            return true;
+          }
+          return false;
+        }
+      }
+    `);
+  });
+
+  test('breaks a long two-operand expression before its operator', (t: TestContext) => {
+    checkFormat('two-operand break',
+        'let ok = someRatherLongFunctionName(argument) && anotherRatherLongName(argument);',
+        dedentRaw`
+          let ok = someRatherLongFunctionName(argument)
+            && anotherRatherLongName(argument);
+        `);
+  });
+
   test('simple binary expression stays flat', (t: TestContext) => {
     checkStable('simple binary', 'let x = 1 + 2;');
   });
