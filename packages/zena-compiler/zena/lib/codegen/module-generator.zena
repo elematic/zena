@@ -800,6 +800,36 @@ export final class ModuleGenerator {
           i32ToString(wasm.types.length));
     }
 
+    // Which laid-out types some other type declares as a supertype.
+    // Everything else is emitted `final`: subtyping in wasm is by
+    // declaration, so a type no declaration names cannot have a
+    // subtype, and a `ref.test`/`ref.cast` against a final type is an
+    // inline type-index comparison in wasmtime instead of a call into
+    // the runtime's `is_subtype` (docs/design/struct-finality.md).
+    // Computed here rather than in layout() because pruneTypes above
+    // can delete the last subtype a type had.
+    let isExtended = new Array<boolean>();
+    for (var i = 0; i < wasm.types.length; i += 1) {
+      isExtended.push(false);
+    }
+    for (let t in wasm.types) {
+      var superIndex = -1;
+      if (t is WasmStruct) {
+        let sup = (t as WasmStruct).superStruct;
+        if (sup != null) {
+          superIndex = (sup as WasmStruct).index;
+        }
+      } else if (t is WasmArray) {
+        let sup = (t as WasmArray).superArray;
+        if (sup != null) {
+          superIndex = (sup as WasmArray).index;
+        }
+      }
+      if (superIndex >= 0) {
+        isExtended[superIndex] = true;
+      }
+    }
+
     this.emitter.emitTypeSectionStart(recGroupSizes.length);
 
     let emitTypeAtIndex = (idx: i32): void => {
@@ -822,7 +852,8 @@ export final class ModuleGenerator {
         let superIdx =
           if (t.superStruct != null) (t.superStruct as WasmStruct).index 
           else -1;
-        this.emitter.emitStructTypeStart(idx, t.name, superIdx);
+        this.emitter.emitStructTypeStart(idx, t.name, superIdx,
+            !isExtended[idx]);
         
         this.emitter.emitStructTypeFieldsStart(t.fields.length);
         for (let field in t.fields) {
@@ -834,7 +865,8 @@ export final class ModuleGenerator {
         let arraySuperIdx =
           if (t.superArray != null) (t.superArray as WasmArray).index
           else -1;
-        this.emitter.emitArrayType(idx, t.elementType, t.isMutable, arraySuperIdx);
+        this.emitter.emitArrayType(idx, t.elementType, t.isMutable,
+            arraySuperIdx, !isExtended[idx]);
       }
     };
 

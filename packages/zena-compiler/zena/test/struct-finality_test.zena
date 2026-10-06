@@ -1,0 +1,150 @@
+/**
+ * A struct type nothing extends is declared `final`.
+ *
+ * Wasmtime compiles `ref.test`/`ref.cast` against a concrete type as an
+ * inline comparison of the object's type index with the target's. When
+ * the two differ it calls the `is_subtype` libcall, which leaves JIT
+ * code, re-enters the runtime and takes the store — unless the target
+ * type is declared `final`, in which case `a == b` is the whole answer
+ * and wasmtime emits no libcall and no branch to one
+ * (`wasmtime-internal-cranelift`, `func_environ::gc::is_subtype`).
+ *
+ * A `match` over a sealed hierarchy is a run of `ref.test`s that all
+ * fail but one, so an open leaf struct costs a libcall per arm tried.
+ * Declaring every struct nothing extends `final` is what keeps those
+ * tests inline; see docs/design/struct-finality.md.
+ */
+import { suite, test, TestContext } from 'zena:test';
+import { isTrue } from 'zena:assert';
+import { WatGenerator } from '../lib/codegen/wat-generator.zena';
+import { Program, CompilationUnit } from '../lib/program.zena';
+import { makeCompiler, MockHost } from './test-utils.zena';
+import { checkCompilation } from '../lib/compiler.zena';
+
+let compileToWat = (source: String): String => {
+  let host = new MockHost();
+  host.addFile("test.zena", source);
+
+  let compiler = makeCompiler(host);
+  let compResult = compiler.compile("test.zena");
+  let checkRes = checkCompilation(compResult, null, false);
+
+  let entryAst = compResult.entry.ast;
+  let units = new Array<CompilationUnit>();
+  var entryUnit: CompilationUnit | null = null;
+
+  for (let file in compResult.files) {
+    if (!file.isStdlib) {
+      let res = checkRes.results[file.path];
+      if (res != null) {
+        let unit = {ast: file.ast, model: res.model};
+        units.push(unit);
+        if (file.ast.path == entryAst.path) {
+          entryUnit = unit;
+        }
+      }
+    }
+  }
+
+  let program = new Program(units, entryUnit);
+  let generator = new WatGenerator("zena-cli", false);
+  return generator.generate(program);
+};
+
+/**
+ * The subtype header of the struct type named `name`: everything the
+ * emitter writes between the type's name and its `(struct`, which is
+ * the index comment and the `(sub ...)` clause. Empty when the module
+ * declares no such type.
+ */
+let subtypeHeader = (wat: String, name: String): String => {
+  let chunks = wat.split(`(type $${name} `);
+  if (chunks.length < 2) {
+    return '';
+  }
+  return chunks[1].split('(struct')[0];
+};
+
+/**
+ * Whether the struct named `name` is emitted open. A bare
+ * `(struct ...)` with no `(sub ...)` clause already means `sub final`,
+ * so open means the clause is present and does not say `final`.
+ */
+let isOpenStruct = (header: String): boolean => {
+  return header.contains('(sub ') && !header.contains('final');
+};
+
+/** The struct named `name` must be emitted, and declared `final`. */
+let assertFinal = (wat: String, name: String, why: String): void => {
+  let header = subtypeHeader(wat, name);
+  isTrue(header.length > 0, `no struct type $${name} in the emitted module`);
+  isTrue(!isOpenStruct(header), `$${name} is not declared final: ${why}`);
+};
+
+/** The struct named `name` must be emitted, and left open. */
+let assertOpen = (wat: String, name: String, why: String): void => {
+  let header = subtypeHeader(wat, name);
+  isTrue(header.length > 0, `no struct type $${name} in the emitted module`);
+  isTrue(isOpenStruct(header), `$${name} is declared final: ${why}`);
+};
+
+export let tests = suite('struct finality', (): void => {
+  test('a class nothing extends is final; its superclass is open',
+      (ctx: TestContext): void => {
+    // Base is extended, so its struct has to stay open — Derived
+    // declares it as a supertype. Derived is a leaf, and so is Tag,
+    // which is in no hierarchy at all.
+    let wat = compileToWat(`
+class Base {
+  x: i32;
+  new(this.x);
+  area(): i32 { return this.x; }
+}
+class Derived extends Base {
+  y: i32;
+  new(x: i32, y: i32) : y = y, super(x);
+  area(): i32 { return this.x * this.y; }
+}
+class Tag {
+  value: i32;
+  new(this.value);
+}
+export let main = (): i32 => {
+  let d = new Derived(3, 4);
+  let base: Base = d;
+  let t = new Tag(base.area());
+  return t.value;
+};
+`);
+
+    assertOpen(wat, 'Base', 'Derived declares it as a supertype');
+    assertFinal(wat, 'Derived', 'nothing extends it');
+    assertFinal(wat, 'Tag', 'it is in no hierarchy');
+  });
+
+  test('a sealed hierarchy leaves only the root open',
+      (ctx: TestContext): void => {
+    // The shape a match compiles against: one `ref.test` per case,
+    // all but one of them failing. Every case struct is a leaf.
+    let wat = compileToWat(`
+sealed class Expr {
+  case Lit(value: i32)
+  case Neg(inner: Expr)
+}
+export let main = (): i32 => {
+  let e: Expr = new Neg(new Lit(7));
+  return match (e) {
+    case Lit {value}: value
+    case Neg {inner}: match (inner) {
+      case Lit {value}: 0 - value
+      case Neg: 0
+    }
+  };
+};
+`);
+
+    assertOpen(wat, 'Expr', 'Lit and Neg declare it as a supertype');
+    assertFinal(wat, 'Lit', 'nothing extends a case class');
+    assertFinal(wat, 'Neg', 'nothing extends a case class');
+  });
+});

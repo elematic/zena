@@ -46,6 +46,13 @@ Code generation separates semantic discovery from lowering and emission
   groups before instruction bytecodes are constructed.
 - `ByteBuffer` abstractions generate isolated payloads per section, then combine
   them efficiently into a parent buffer prefixed by `length`.
+- A struct or array type is emitted `sub final` unless some other type in
+  the module declares it as a supertype. Wasmtime's `ref.test`/`ref.cast`
+  against a final type is an inline type-index comparison; against an open
+  one a failing test calls the `is_subtype` libcall, which leaves JIT code.
+  `ModuleGenerator.compile` decides this just before the type section,
+  after `pruneTypes` — which can delete the last subtype a type had. See
+  `docs/design/struct-finality.md`.
 
 ## Language Quirks & Best Practices
 

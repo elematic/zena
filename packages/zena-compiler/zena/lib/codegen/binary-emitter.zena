@@ -1,4 +1,4 @@
-import { ValTypeRef, ValTypeRefNull, isRefValType } from './wasm.zena';
+import { ValTypeRef, ValTypeRefNull } from './wasm.zena';
 import { ByteBuffer } from 'zena:core';
 import { WasmEmitter } from './wasm-emitter.zena';
 import {
@@ -142,11 +142,15 @@ export final class BinaryEmitter implements WasmEmitter {
   
   emitFunctionTypeEnd(): void {}
 
-  emitStructTypeStart(index: i32, name: String | null, superTypeIndex: i32): void {
+  emitStructTypeStart(index: i32, name: String | null, superTypeIndex: i32,
+      isFinal: boolean): void {
     if (this.currentSection == null) {
       return;
     }
-    (this.currentSection as ByteBuffer).writeByte(0x50); // sub form
+    // 0x4F is `sub final`, 0x50 the open `sub`. Final is the default
+    // here because almost every struct is a leaf, and it is what keeps
+    // a cast against one inline in wasmtime (struct-finality.md).
+    (this.currentSection as ByteBuffer).writeByte(if (isFinal) 0x4F else 0x50);
     if (superTypeIndex >= 0) {
       (this.currentSection as ByteBuffer).writeULEB128(1); // 1 supertype
       (this.currentSection as ByteBuffer).writeULEB128(superTypeIndex); // index of supertype
@@ -962,27 +966,24 @@ export final class BinaryEmitter implements WasmEmitter {
     }
   }
 
-  emitArrayType(index: i32, elementType: ValType, isMutable: boolean, superTypeIndex: i32): void {
+  emitArrayType(index: i32, elementType: ValType, isMutable: boolean,
+      superTypeIndex: i32, isFinal: boolean): void {
     let b = this.currentSection;
     if (b == null) {
       return;
     }
-    // An immutable array of references is declared open, with its
-    // element's supertype's array as its supertype, so an immutable
-    // array of a subclass is a subtype of its superclass's array. A
-    // mutable array, or an array of values, can have no subtype and
-    // stays final.
-    if (!isMutable && isRefValType(elementType)) {
-      b.writeByte(0x50); // sub form
-      if (superTypeIndex >= 0) {
-        b.writeULEB128(1);
-        b.writeULEB128(superTypeIndex);
-      } else {
-        b.writeULEB128(0);
-      }
+    // Only an immutable array of references declares a supertype — the
+    // array of its element's supertype, which is what makes an
+    // immutable array of a subclass a subtype of its superclass's array
+    // (WasmArray.superArray). Declaring one and being one are separate:
+    // the array is open only when another type in this module names it
+    // as a supertype.
+    b.writeByte(if (isFinal) 0x4F else 0x50);
+    if (superTypeIndex >= 0) {
+      b.writeULEB128(1);
+      b.writeULEB128(superTypeIndex);
     } else {
-      b.writeByte(0x4F); // sub final form
-      b.writeULEB128(0); // 0 supertypes
+      b.writeULEB128(0);
     }
     b.writeByte(0x5E); // array form
     emitValType(b, elementType);
