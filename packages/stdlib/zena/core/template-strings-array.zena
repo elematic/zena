@@ -214,6 +214,26 @@ let contentEnd = (last: String): i32 => {
 };
 
 /**
+ * Where the content ends in the last literal when the closing line's break is
+ * kept: `contentEnd` plus the line break it dropped.
+ *
+ * `contentEnd` points at the `\n` that ends the last content line, or at the
+ * `\r` of its CRLF pair, so stepping past the break is one byte or two. When
+ * the closing line has content there is no break to keep, and `contentEnd`
+ * has already returned the literal's length.
+ */
+let contentEndKeepingBreak = (last: String): i32 => {
+  let end = contentEnd(last);
+  if (end >= last.length) {
+    return last.length;
+  }
+  if (last.getByteAt(end) == 0x0D) {
+    return end + 2;
+  }
+  return end + 1;
+};
+
+/**
  * Walks one literal's retained region `[start, end)`, dropping the
  * indentation at every line start, and copies it into `data` when `data` is
  * non-null. Returns the number of bytes written.
@@ -251,6 +271,95 @@ let copySegment = (
     atLineStart = nl >= 0;
   }
   return written;
+};
+
+/**
+ * The body of `dedent` and `dedentRaw`. `useRaw` picks which of the two
+ * literal arrays to measure and copy, and `keepTrailingBreak` says whether
+ * the line break that ends the last content line survives the closing line
+ * being dropped.
+ */
+let dedentImpl = (
+    strings: TemplateStringsArray,
+    values: FixedArray<String>,
+    useRaw: boolean,
+    keepTrailingBreak: boolean): String => {
+  // The literals, read cooked or raw. Everything below works on bytes, and
+  // the two arrays differ only in whether an escape has been decoded.
+  let segAt = (i: i32): String => if (useRaw) strings.raw[i] else strings[i];
+
+  let segCount = strings.length;
+  let start0 = contentStart(segAt(0));
+  let last = segAt(segCount - 1);
+  var endN = if (keepTrailingBreak) contentEndKeepingBreak(last) else contentEnd(last);
+  if (segCount == 1 && endN < start0) {
+    // An entirely blank template: both trims found the same line break.
+    endN = start0;
+  }
+
+  // Pass one: the common indentation of the content lines.
+  var indent: String | null = null;
+  for (var s = 0; s < segCount; s += 1) {
+    let seg = segAt(s);
+    let segEnd = if (s == segCount - 1) endN else seg.length;
+    let valueFollows = s < segCount - 1;
+    var pos = if (s == 0) start0 else 0;
+    // A literal after a value continues the line that value is on; only the
+    // first literal starts a line at its own start.
+    var atLineStart = s == 0;
+    while (true) {
+      if (atLineStart) {
+        let wsEnd = indentEnd(seg, pos, segEnd);
+        if (!isBlankRest(seg, wsEnd, segEnd, valueFollows)) {
+          let run = seg.sliceBytes(pos, wsEnd);
+          indent = if (indent == null) run else commonIndent(indent as String, run);
+        }
+      }
+      let nl = nextNewline(seg, pos, segEnd);
+      if (nl < 0) {
+        break;
+      }
+      pos = nl + 1;
+      atLineStart = true;
+    }
+  }
+  let indentLen = if (indent == null) 0 else (indent as String).length;
+
+  if (segCount == 1 && indentLen == 0 && start0 == 0 && endN == segAt(0).length) {
+    // Nothing to strip and nothing to trim: hand back the literal itself.
+    return segAt(0);
+  }
+
+  // Pass two: measure the result, allocate once, then fill it.
+  var total = 0;
+  for (var s = 0; s < segCount; s += 1) {
+    let seg = segAt(s);
+    let segStart = if (s == 0) start0 else 0;
+    let segEnd = if (s == segCount - 1) endN else seg.length;
+    total += copySegment(
+        seg, segStart, segEnd, s == 0, s < segCount - 1, indentLen, null, 0);
+    if (s < segCount - 1) {
+      total += values[s].length;
+    }
+  }
+
+  let data = __byte_array_new(total);
+  var out = 0;
+  for (var s = 0; s < segCount; s += 1) {
+    let seg = segAt(s);
+    let segStart = if (s == 0) start0 else 0;
+    let segEnd = if (s == segCount - 1) endN else seg.length;
+    out += copySegment(
+        seg, segStart, segEnd, s == 0, s < segCount - 1, indentLen, data, out);
+    if (s < segCount - 1) {
+      let value = values[s];
+      value.copyBytesTo(data, out, 0, value.length);
+      out += value.length;
+    }
+  }
+  // WTF-8: nothing in the stdlib constructs a WTF-16 String today, and a
+  // literal's bytes are the compiler's, which are WTF-8.
+  return String.fromByteArray(data, 0, total, Encoding.WTF8);
 };
 
 /**
@@ -292,80 +401,45 @@ let copySegment = (
  *
  * The text dedented is the cooked strings, so an escape is processed before
  * the indentation is measured: a `\n` written as an escape breaks a line here
- * exactly as a real newline does. Today that is theory rather than practice —
- * a tagged template whose literal contains any escape sequence fails to
- * compile, whatever the tag (see elematic/zena#84).
+ * exactly as a real newline does, and the line it opens takes part in the
+ * common-indent computation like any other. Use `dedentRaw` to dedent text
+ * whose escapes are meant to stay as written.
  */
-export let dedent = (strings: TemplateStringsArray, values: FixedArray<String>): String => {
-  let segCount = strings.length;
-  let start0 = contentStart(strings[0]);
-  var endN = contentEnd(strings[segCount - 1]);
-  if (segCount == 1 && endN < start0) {
-    // An entirely blank template: both trims found the same line break.
-    endN = start0;
-  }
+export let dedent = (strings: TemplateStringsArray, values: FixedArray<String>): String =>
+  dedentImpl(strings, values, false, false);
 
-  // Pass one: the common indentation of the content lines.
-  var indent: String | null = null;
-  for (var s = 0; s < segCount; s += 1) {
-    let seg = strings[s];
-    let segEnd = if (s == segCount - 1) endN else seg.length;
-    let valueFollows = s < segCount - 1;
-    var pos = if (s == 0) start0 else 0;
-    // A literal after a value continues the line that value is on; only the
-    // first literal starts a line at its own start.
-    var atLineStart = s == 0;
-    while (true) {
-      if (atLineStart) {
-        let wsEnd = indentEnd(seg, pos, segEnd);
-        if (!isBlankRest(seg, wsEnd, segEnd, valueFollows)) {
-          let run = seg.sliceBytes(pos, wsEnd);
-          indent = if (indent == null) run else commonIndent(indent as String, run);
-        }
-      }
-      let nl = nextNewline(seg, pos, segEnd);
-      if (nl < 0) {
-        break;
-      }
-      pos = nl + 1;
-      atLineStart = true;
-    }
-  }
-  let indentLen = if (indent == null) 0 else (indent as String).length;
-
-  if (segCount == 1 && indentLen == 0 && start0 == 0 && endN == strings[0].length) {
-    // Nothing to strip and nothing to trim: hand back the literal itself.
-    return strings[0];
-  }
-
-  // Pass two: measure the result, allocate once, then fill it.
-  var total = 0;
-  for (var s = 0; s < segCount; s += 1) {
-    let seg = strings[s];
-    let segStart = if (s == 0) start0 else 0;
-    let segEnd = if (s == segCount - 1) endN else seg.length;
-    total += copySegment(
-        seg, segStart, segEnd, s == 0, s < segCount - 1, indentLen, null, 0);
-    if (s < segCount - 1) {
-      total += values[s].length;
-    }
-  }
-
-  let data = __byte_array_new(total);
-  var out = 0;
-  for (var s = 0; s < segCount; s += 1) {
-    let seg = strings[s];
-    let segStart = if (s == 0) start0 else 0;
-    let segEnd = if (s == segCount - 1) endN else seg.length;
-    out += copySegment(
-        seg, segStart, segEnd, s == 0, s < segCount - 1, indentLen, data, out);
-    if (s < segCount - 1) {
-      let value = values[s];
-      value.copyBytesTo(data, out, 0, value.length);
-      out += value.length;
-    }
-  }
-  // WTF-8: nothing in the stdlib constructs a WTF-16 String today, and a
-  // literal's bytes are the compiler's, which are WTF-8.
-  return String.fromByteArray(data, 0, total, Encoding.WTF8);
-};
+/**
+ * `dedent` over the raw literals, keeping the trailing line break: the tag for
+ * embedding source code in a test.
+ *
+ * It differs from `dedent` in two ways, both of which matter when the text
+ * being embedded is itself code:
+ *
+ * - The text dedented is `strings.raw`, so an escape stays the characters
+ *   that were written. ``dedentRaw`let s = 'a\\nb';` `` yields a backslash
+ *   followed by an `n`, which is the source line someone typed. Under
+ *   `dedent` the same literal yields a real line break, which splits that
+ *   Zena string literal across two lines, and because the second of them has
+ *   no indentation it also drops the common indent to nothing.
+ * - The line break that ends the last content line survives the closing line
+ *   being dropped, so the result ends in a newline when the closing backtick
+ *   sits on its own line. Source files end in a newline, and so does the
+ *   output of a formatter, so a round-trip comparison needs one here.
+ *
+ * ```
+ * let source = dedentRaw`
+ *   let f = () => {
+ *     x += 2;
+ *   };
+ * `;
+ * // "let f = () => {\n  x += 2;\n};\n"
+ * ```
+ *
+ * Nothing is added that was not written: a template whose closing backtick
+ * follows the last line's content has no trailing break to keep, and the
+ * result has none. Every other rule — which lines the common indent is taken
+ * from, how blank lines are treated, how interpolations are spliced in — is
+ * `dedent`'s, described above.
+ */
+export let dedentRaw = (strings: TemplateStringsArray, values: FixedArray<String>): String =>
+  dedentImpl(strings, values, true, true);
