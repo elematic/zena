@@ -456,6 +456,38 @@ let tests = suite('formatter', () => {
     check('class constructors idempotent', format(result), result);
   });
 
+  test('keeps a `this.` constructor parameter', (t: TestContext) => {
+    // The parser turns `this.x` into a plain parameter plus an `x = x`
+    // initializer entry. Printing that desugared form dropped the type the
+    // parameter took from its field, and the compiler then failed on the class.
+    checkStable('this params', dedentRaw`
+      final class Point {
+        x: i32;
+        y: i32;
+
+        new(this.x, this.y) {}
+      }
+    `);
+    checkStable('this param beside a plain one', dedentRaw`
+      class Sized {
+        width: i32;
+
+        new(this.width, scale: i32) {}
+      }
+    `);
+  });
+
+  test('keeps an explicit initializer alongside a `this.` parameter', (t: TestContext) => {
+    checkStable('this param and explicit entry', dedentRaw`
+      class Point {
+        x: i32;
+        y: i32;
+
+        new(this.x, n: i32) : y = n {}
+      }
+    `);
+  });
+
   test('formats interface constructors', (t: TestContext) => {
     checkStable('interface constructors', dedentRaw`
       interface Shape {
