@@ -269,7 +269,11 @@ let printStatementInner = (stmt: Statement): Doc => match (stmt) {
 // Variable Declaration
 // ============================================================================
 
-let printVariableDeclaration = (decl: VariableDeclaration): Doc => {
+/**
+ * `let name: T = init`, without a terminating `;`. A C-style `for` header
+ * supplies its own separators, so it prints the declaration this way.
+ */
+let printVariableDeclarator = (decl: VariableDeclaration): Doc => {
   let parts = new Array<Doc>();
   if (decl.exported) { parts.push(text('export ')); }
   parts.push(text(decl.kind));
@@ -281,9 +285,11 @@ let printVariableDeclaration = (decl: VariableDeclaration): Doc => {
   }
   parts.push(text(' = '));
   parts.push(printExpression(decl.init));
-  parts.push(text(';'));
-  return group(concat(parts));
+  return concat(parts);
 };
+
+let printVariableDeclaration = (decl: VariableDeclaration): Doc =>
+  group(concat(docs2(printVariableDeclarator(decl), text(';'))));
 
 /** `using name: T = init;`, or the unbound `using init;`. */
 let printUsingStatement = (stmt: UsingStatement): Doc => {
@@ -405,11 +411,25 @@ let printWhileStatement = (stmt: WhileStatement): Doc => {
 let printForStatement = (stmt: ForStatement): Doc => {
   let parts = new Array<Doc>();
   parts.push(text('for ('));
-  if (stmt.init != null) { parts.push(printNode(stmt.init as Node)); }
-  parts.push(text('; '));
-  if (stmt.test != null) { parts.push(printExpression(stmt.test as Expression)); }
-  parts.push(text('; '));
-  if (stmt.update != null) { parts.push(printExpression(stmt.update as Expression)); }
+  // The header owns its `;` separators, and a space belongs after one only
+  // when a clause follows it — `for (;;)` has three empty clauses.
+  if (stmt.init != null) {
+    let init = stmt.init as Node;
+    parts.push(match (init) {
+      case VariableDeclaration {}: printVariableDeclarator(init as VariableDeclaration)
+      case _: printExpression(init as Expression)
+    });
+  }
+  parts.push(text(';'));
+  if (stmt.test != null) {
+    parts.push(text(' '));
+    parts.push(printExpression(stmt.test as Expression));
+  }
+  parts.push(text(';'));
+  if (stmt.update != null) {
+    parts.push(text(' '));
+    parts.push(printExpression(stmt.update as Expression));
+  }
   parts.push(text(') '));
   parts.push(printStatement(stmt.body));
   return concat(parts);
