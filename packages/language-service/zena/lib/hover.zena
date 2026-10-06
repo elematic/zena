@@ -4,7 +4,7 @@
  */
 
 import {
-  Compiler, ProgramCheckResult, SemanticModel, findNodeAtOffset, typeToString,
+  CompilerTarget, ProgramCheckResult, SemanticModel, findNodeAtOffset, typeToString,
 } from 'zena-compiler:compiler';
 import { Type, ClassType, FieldInfo, MethodInfo } from 'zena-compiler:types';
 import { Symbol, ScopeResult } from 'zena-compiler:scope';
@@ -133,9 +133,9 @@ let symbolType = (sym: Symbol, model: SemanticModel, program: ProgramCheckResult
  * The doc comment on a symbol's declaration, following an import to the
  * module that declares it.
  */
-let symbolDoc = (sym: Symbol, file: FileAnalysis, compiler: Compiler): DocComment | null => {
-  let target = sym.resolveTarget();
-  let decl = target.declaration;
+let symbolDoc = (sym: Symbol, file: FileAnalysis, target: CompilerTarget): DocComment | null => {
+  let declaredBy = sym.resolveTarget();
+  let decl = declaredBy.declaration;
   // An import that did not resolve has only its import specifier.
   if (decl == null || decl is ImportSpecifier) {
     return null;
@@ -143,7 +143,7 @@ let symbolDoc = (sym: Symbol, file: FileAnalysis, compiler: Compiler): DocCommen
   if (sym.importTarget == null) {
     return declarationDoc(decl, file.ast, attachComments(file.ast));
   }
-  let source = compiler.getSourceFile(target.modulePath);
+  let source = target.getSourceFile(declaredBy.modulePath);
   if (source == null) {
     return null;
   }
@@ -218,7 +218,7 @@ export let hoverAt = (
   file: FileAnalysis,
   offset: i32,
   program: ProgramCheckResult,
-  compiler: Compiler,
+  target: CompilerTarget,
 ): HoverResult | null => {
   let node = findNodeAtOffset(file.ast, offset);
   if (node == null) {
@@ -260,6 +260,6 @@ export let hoverAt = (
     return null;
   }
   let typeStr = typeToString(nodeType);
-  let doc = if (sym == null) { null } else { symbolDoc(sym, file, compiler) };
+  let doc = if (sym == null) { null } else { symbolDoc(sym, file, target) };
   return new HoverResult(typeStr, hoverLabel(node, typeStr, file.scopes), docText(doc));
 };

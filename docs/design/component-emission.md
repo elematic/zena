@@ -1277,7 +1277,9 @@ Three decisions worth recording:
   that nested compile (`compileComponentRuntimeModule`) and hands the
   bytes to `BinaryGenerator`; hand-writing a free list in raw bytes
   inside the emitter would restate what the standard library already
-  says, in a form nothing can review.
+  says, in a form nothing can review. It runs on the compiler already
+  building the component, at that compiler's `freestanding` target —
+  the target is a property of a compile, not of a compiler.
 - **`zena:memory` is now a virtual module.** Every target but
   `component` keeps the single implementation; the component entry
   (`memory/component.zena`) holds no allocation state and routes

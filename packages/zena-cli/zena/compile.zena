@@ -25,7 +25,7 @@ import { AbsolutePath, basename, dirname, extname } from 'zena:path';
 import { monotonic } from 'zena:time';
 import { runModule } from 'zena:wasm';
 import {
-  CompileFileOptions, compileFile, parseOptLevel
+  CompileFileOptions, compileFile, defaultOptLevel, defaultTarget, parseOptLevel
 } from 'zena-compiler:compile-file';
 import { sha256HexOfString } from 'zb:sha256';
 import {
@@ -107,35 +107,33 @@ let compileRecording = (
     compileWith(compiler, request, options, out, quiet);
     return;
   }
-  let compileOptions = new CompileFileOptions(repoRelative(request.source), out.value);
-  compileOptions.stdlibRoot = stdlibDir().value;
-  compileOptions.testMode = request.testMode;
-  compileOptions.time = request.time;
-  compileOptions.debugNames = options.debug;
-  compileOptions.warnUnnecessaryCasts = envSet('ZENA_WARN_UNNECESSARY_CASTS');
-  compileOptions.onRead = onRead;
-  let target = request.target;
-  if (target != null) {
-    compileOptions.target = target;
-  }
-  let wit = request.wit;
-  if (wit != null) {
-    compileOptions.witPath = repoRelative(wit);
-  }
-  let world = request.world;
-  if (world != null) {
-    compileOptions.worldName = world;
-  }
   let level = optLevelText(options);
-  if (level != '') {
+  let optLevel = if (level == '') {
+    defaultOptLevel
+  } else {
     let parsed = parseOptLevel(level);
     if (parsed < 0) {
       throw new CompileFailure(
         `invalid optimization level '${level}' (expected 0, 1, 2, or s)`,
       );
     }
-    compileOptions.optLevel = parsed;
-  }
+    parsed
+  };
+  let wit = request.wit;
+  let compileOptions: CompileFileOptions = {
+    entry: repoRelative(request.source),
+    outPath: out.value,
+    stdlibRoot: stdlibDir().value,
+    testMode: request.testMode,
+    time: request.time,
+    debugNames: options.debug,
+    warnUnnecessaryCasts: envSet('ZENA_WARN_UNNECESSARY_CASTS'),
+    onRead,
+    target: request.target ?? defaultTarget,
+    witPath: if (wit == null) { '' } else { repoRelative(wit) },
+    worldName: request.world ?? '',
+    optLevel,
+  };
   var status = 1;
   try {
     status = compileFile(compileOptions);

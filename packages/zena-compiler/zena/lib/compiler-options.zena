@@ -1,0 +1,114 @@
+/**
+ * What a compiler is, and what one compile is.
+ *
+ * A `Compiler` holds the host, the standard library root, the package
+ * map and the flags the checker reads, and lives across compiles. A
+ * compile names an entry point and a target. Several compiles, at
+ * several targets, share one warm compiler.
+ */
+
+import { Module } from './ast.zena';
+import { ComponentEntryWrapper } from './component-entry.zena';
+import { PackageConfig } from './module-resolver.zena';
+
+/**
+ * Where a compiler reads source from, what packages exist, and what the
+ * checker is told.
+ *
+ * The stdlib (the `zena` package) is always included: the caller gives
+ * `stdlibRoot` and configures only its own packages.
+ *
+ * A flag belongs here when it changes what parsing or checking
+ * *produces*, because then two compiles that disagree on it cannot
+ * share a file's `CheckResult` — the result would answer the other
+ * one's question. A flag that only changes what is emitted belongs to
+ * the compile, or to the generator.
+ */
+export type CompilerOptions = {
+  /**
+   * Absolute path to the stdlib's zena source directory, e.g.
+   * "/path/to/packages/stdlib/zena". Required because the self-hosted
+   * compiler does not yet embed the stdlib sources.
+   */
+  stdlibRoot: String,
+
+  /**
+   * User package map: name → PackageConfig, typically loaded from
+   * `zena-packages.json` by `loadPackageMap()`. The `zena` package is
+   * added automatically from `stdlibRoot` and does not belong here.
+   */
+  packages: Map<String, PackageConfig>,
+
+  /**
+   * Keep a partial AST for source the parser can recover from, instead
+   * of letting the error abort the compile. The errors still get
+   * reported, on `SourceFile.parseErrors`; this only decides whether the
+   * rest of the file is still analyzed. Tools that answer questions
+   * about source being typed want it on, builds want it off.
+   */
+  recoverFromParseErrors?: boolean,
+
+  /** Emit source locations for `__LOCATION__` defaults. */
+  emitLocations?: boolean,
+
+  /** Warn when an `as` cast targets the type the expression already has. */
+  warnUnnecessaryCasts?: boolean,
+};
+
+/**
+ * What the checker was told, beyond the program itself.
+ *
+ * A `ProgramCheckResult` only carries forward into a compile that
+ * agrees on all of it. The target is here because a path names a
+ * different library on each target; the other two because they change
+ * what a check produces.
+ */
+export type CheckSettings = {
+  target: String,
+  emitLocations: boolean,
+  warnUnnecessaryCasts: boolean,
+};
+
+/** Whether two checks asked the same question, and so may share results. */
+export let sameCheckSettings = (a: CheckSettings, b: CheckSettings): boolean =>
+    a.target == b.target &&
+    a.emitLocations == b.emitLocations &&
+    a.warnUnnecessaryCasts == b.warnUnnecessaryCasts;
+
+/**
+ * One compile: an entry point and a target.
+ *
+ * Only `target` changes what the checker produces, and a compiler keeps
+ * one file set per target, so compiles that differ only here still
+ * share everything they can.
+ */
+export type CompileOptions = {
+  /**
+   * The entry point, as a canonical path: an absolute file path, or a
+   * "package:name" specifier.
+   */
+  entry: String,
+
+  /** Compilation target; see targets.zena for the names. */
+  target: String,
+
+  /**
+   * Opaque version tag for the entry, compared against the loader's
+   * cached copy: a cached entry with a different version is re-loaded.
+   * The compiler does not interpret it — the language service passes
+   * the editor's document version.
+   */
+  version?: String,
+
+  /**
+   * The component target's entry wrapper writer, when the driver has one
+   * that knows more than the compiler alone: given the entry's path and
+   * syntax, the wrapper to load beside it, or null. Absent means the
+   * default, which writes `main`'s wrapper (component-entry.zena); a
+   * driver compiling against a declared world passes wit-module-synth's,
+   * which also wraps the world's async exports, because the compiler
+   * does not link the WIT parser.
+   */
+  componentWrapperSynth?:
+      (entryPath: String, ast: Module) => ComponentEntryWrapper | null,
+};

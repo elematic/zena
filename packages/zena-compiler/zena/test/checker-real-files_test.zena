@@ -11,7 +11,7 @@ import { equal } from 'zena:assert';
 import { readFile } from 'zena:fs';
 import { CompilerHost } from '../lib/library-loader.zena';
 import {
-  createCompiler, CompilerOptions, checkCompilation,
+  createCompiler, checkCompilation,
 } from '../lib/compiler.zena';
 import { loadPackageMap } from '../lib/package-manifest.zena';
 import { stdlibIdToRelativeFile } from '../lib/module-resolver.zena';
@@ -70,10 +70,8 @@ let checkFile = (entryPath: String, target: String = "host"): Array<Diagnostic> 
   let stdlibRoot = "packages/stdlib/zena";
   let host = new FsHost(stdlibRoot);
   let packages = loadPackageMap(host, "zena-packages.json");
-  let options = new CompilerOptions(target, stdlibRoot, packages);
-  let compiler = createCompiler(host, options);
-  // console.log("Compiling " + entryPath + "...");
-  let result = compiler.compile(entryPath);
+  let compiler = createCompiler(host, {stdlibRoot, packages});
+  let result = compiler.compile({entry: entryPath, target});
   // console.log("Checking compilation for " + entryPath + "...");
   let checkResult = checkCompilation(result);
   // Only return errors from the entry file, not dependencies.

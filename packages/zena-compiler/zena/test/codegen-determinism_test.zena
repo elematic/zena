@@ -32,7 +32,7 @@ import { isTrue } from 'zena:assert';
 import { readFile } from 'zena:fs';
 import { CompilerHost } from '../lib/library-loader.zena';
 import {
-  Compiler, createCompiler, CompilerOptions, checkCompilation
+  Compiler, createCompiler, checkCompilation
 } from '../lib/compiler.zena';
 import { loadPackageMap } from '../lib/package-manifest.zena';
 import { stdlibIdToRelativeFile } from '../lib/module-resolver.zena';
@@ -66,14 +66,14 @@ let newCompiler = (): Compiler => {
   let packages = loadPackageMap(host, 'zena-packages.json');
   // The core module with no host beneath it: the bytes compared are
   // the program's own.
-  return createCompiler(host, new CompilerOptions('freestanding', stdlibRoot, packages));
+  return createCompiler(host, {stdlibRoot, packages});
 };
 
 /** Compiles to wasm with a fresh compiler, throwing on any check error. */
 let compileFresh = (path: String): ByteArray => {
   let c = newCompiler();
-  let result = c.compile(path);
-  let checked = checkCompilation(result, null, false);
+  let result = c.compile({entry: path, target: 'freestanding'});
+  let checked = checkCompilation(result);
   for (let diag in checked.diagnostics) {
     if (diag.severity == DiagnosticSeverity.Error) {
       throw new Error(`${path}: ${diag.message}`);

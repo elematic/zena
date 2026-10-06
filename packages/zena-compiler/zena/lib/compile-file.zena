@@ -16,7 +16,7 @@ import { CompilerHost } from './library-loader.zena';
 import { PackageConfig, stdlibIdToRelativeFile } from './module-resolver.zena';
 import { loadPackageMap } from './package-manifest.zena';
 import {
-  createCompiler, CompilerOptions, checkCompilation, withBuiltinPackages,
+  createCompiler, CompileOptions, checkCompilation, withBuiltinPackages,
   setCheckAllBodies
 } from './compiler.zena';
 import { DiagnosticSeverity, SourceSpan, SyntaxError } from './diagnostics.zena';
@@ -48,43 +48,50 @@ export let parseOptLevel = (text: String): i32 => {
   return -1;
 };
 
+/** What `target` means when a request leaves it out. */
+export let defaultTarget = "zena-cli";
+
+/** What `optLevel` means when a request leaves it out. */
+export let defaultOptLevel = 1;
+
 /** What to compile, where to put it, and how. */
-export class CompileFileOptions {
+export type CompileFileOptions = {
   /** The source file, relative to the working directory. */
-  entry: String;
+  entry: String,
   /** Where to write the module; a `.wat` path writes the text form. */
-  outPath: String;
-  var target = "zena-cli";
+  outPath: String,
+  target?: String,
   /**
    * Compile a test suite: a file without its own `main` gets one that
    * runs `tests` through `zena:test`'s `runAndReport`.
    */
-  var testMode = false;
+  testMode?: boolean,
   /** Print a report of how long each compiler phase took. */
-  var time = false;
+  time?: boolean,
   /** A WIT file or directory declaring the component's world. */
-  var witPath = "";
+  witPath?: String,
   /** Which world in `witPath`, when it declares several. */
-  var worldName = "";
+  worldName?: String,
   /** Emit a name section, so traps name functions. */
-  var debugNames = false;
-  var warnUnnecessaryCasts = false;
+  debugNames?: boolean,
+  warnUnnecessaryCasts?: boolean,
   /** 0, 1 or 2; see docs/design/optimization-pipeline.md. */
-  var optLevel = 1;
+  optLevel?: i32,
   /** Where the standard library's `zena/` directory is. */
-  var stdlibRoot = "/stdlib";
+  stdlibRoot?: String,
   /** Print "Compiling ..." and "Success: wrote ..." lines. */
-  var progress = false;
+  progress?: boolean,
   /**
    * Called with each source file's path just before the compiler reads
    * it, as the compiler names it: relative to the working directory, or
    * under `stdlibRoot`. A compile cache records these to know when its
    * entry is stale.
    */
-  var onRead = (path: String): void => {};
+  onRead?: (path: String) => void,
+};
 
-  new(this.entry, this.outPath);
-}
+/** The default `onRead`: a compile nothing is caching ignores it. */
+function ignoreRead(path: String): void {}
 
 /**
  * The host the compiler reads source through: files from the working
@@ -267,12 +274,23 @@ export let compileFile = (options: CompileFileOptions): i32 => {
   // reachability to ask for. See docs/design/lazy-body-checking.md.
   setCheckAllBodies(getEnv("ZENA_CHECK_ALL_BODIES") != null);
 
-  let filename = options.entry;
-  let outPath = options.outPath;
-  let target = options.target;
-  let witPath = options.witPath;
-  let worldName = options.worldName;
-  let stdlibRoot = options.stdlibRoot;
+  let {entry: filename, outPath} = options;
+  let {
+    witPath = "",
+    worldName = "",
+    stdlibRoot = "/stdlib",
+    testMode = false,
+    time = false,
+    debugNames = false,
+    warnUnnecessaryCasts = false,
+    progress = false,
+  } = options;
+  // Read with `??` rather than a destructuring default: a default in a
+  // destructuring pattern does not see module-level bindings, and these
+  // three name theirs rather than writing it out.
+  let target = options.target ?? defaultTarget;
+  let optLevel = options.optLevel ?? defaultOptLevel;
+  let onRead = options.onRead ?? ignoreRead;
 
   if (!isKnownTarget(target)) {
     console.error("Error: invalid target '" + target + "' (expected " +
@@ -294,7 +312,7 @@ export let compileFile = (options: CompileFileOptions): i32 => {
     return 1;
   }
 
-  let host = new FileHost(options.testMode, filename, stdlibRoot, options.onRead);
+  let host = new FileHost(testMode, filename, stdlibRoot, onRead);
   // The declared world's WIT: one file, or a directory whose *.wit
   // files are concatenated in name order into one document.
   var witSource = "";
@@ -321,8 +339,7 @@ export let compileFile = (options: CompileFileOptions): i32 => {
       packages[namespace] = declared;
     }
   }
-  let compilerOptions = new CompilerOptions(target, stdlibRoot, packages);
-  compilerOptions.time = options.time;
+  let compiler = createCompiler(host, {stdlibRoot, packages, warnUnnecessaryCasts});
   // The WIT-backed packages' real source, so the encoder emits their
   // interfaces' true types rather than deriving them from the
   // synthesized declarations (which are flattened core shapes), and so
@@ -368,27 +385,32 @@ export let compileFile = (options: CompileFileOptions): i32 => {
     }
     host.packagesWit = packagesWit;
   }
-  if (witSource != "") {
-    // Against a declared world the entry wrapper also implements the
-    // world's async exports, which takes the WIT the compiler itself
-    // does not link.
-    let declaredWit = witSource;
-    let declaredWorld = worldName;
-    let declaredPackages = packagesWit;
-    compilerOptions.componentWrapperSynth =
-        (entryPath: String, ast: Module): ComponentEntryWrapper | null =>
-            synthesizeExportWrapper(declaredWit, declaredWorld, entryPath,
-                ast, declaredPackages);
-  }
-  let compiler = createCompiler(host, compilerOptions);
+  // Against a declared world the entry wrapper also implements the
+  // world's async exports, which takes the WIT the compiler itself does
+  // not link. Without a declared world the compiler writes its own.
+  let declaredWit = witSource;
+  let declaredWorld = worldName;
+  let declaredPackages = packagesWit;
+  let compileOptions: CompileOptions = if (witSource == "") {
+    {entry: filename, target}
+  } else {
+    {
+      entry: filename,
+      target,
+      componentWrapperSynth:
+          (entryPath: String, ast: Module): ComponentEntryWrapper | null =>
+              synthesizeExportWrapper(declaredWit, declaredWorld, entryPath,
+                  ast, declaredPackages),
+    }
+  };
 
-  if (options.progress) {
+  if (progress) {
     console.log("Compiling " + filename + "...");
   }
   try {
-    let compResult = compiler.compile(filename);
+    let compResult = compiler.compile(compileOptions);
 
-    let checkResults = checkCompilation(compResult, null, false, options.warnUnnecessaryCasts);
+    let checkResults = checkCompilation(compResult);
     let {diagnostics} = checkResults;
     var hasError = false;
     for (let diag in diagnostics) {
@@ -400,7 +422,7 @@ export let compileFile = (options: CompileFileOptions): i32 => {
           console.error("Error: " + diag.message);
         }
         hasError = true;
-      } else if (options.warnUnnecessaryCasts && diag.severity == DiagnosticSeverity.Warning) {
+      } else if (warnUnnecessaryCasts && diag.severity == DiagnosticSeverity.Warning) {
         if (diag.location != null) {
           let loc = diag.location as SourceSpan;
           reportDiagnosticLine("Warning", loc.file, loc.line, loc.column, diag.message);
@@ -444,17 +466,17 @@ export let compileFile = (options: CompileFileOptions): i32 => {
     // exactly what the binary build would contain, for inspecting a
     // program's emitted shape (`zena build hello.zena -o hello.wat`).
     if (outPath.endsWith(".wat")) {
-      let watOnly = new WatGenerator(target, zirStats, options.optLevel);
+      let watOnly = new WatGenerator(target, zirStats, optLevel);
       watOnly.wideArithmetic = wideArithmetic;
       writeFile(outPath, watOnly.generate(program));
       performance.end(tCodegen);
-      if (options.progress) {
+      if (progress) {
         console.log("Success: wrote " + outPath);
       }
       return 0;
     }
 
-    let generator = new BinaryGenerator(target, zirStats, options.debugNames, options.optLevel);
+    let generator = new BinaryGenerator(target, zirStats, debugNames, optLevel);
     generator.wideArithmetic = wideArithmetic;
     if (targetEmitsComponent(target)) {
       // The component's second core module, owning linear memory and
@@ -468,7 +490,7 @@ export let compileFile = (options: CompileFileOptions): i32 => {
       // build is this module.
       let tRuntimeModule = nowMs();
       generator.runtimeMemoryModule =
-          compileComponentRuntimeModule(host, stdlibRoot, packages);
+          compileComponentRuntimeModule(compiler, stdlibRoot);
       performance.add("codegen-runtime-module", nowMs() - tRuntimeModule);
       // A declared world compiles against its own document, with the
       // WIT-backed packages spliced in so it can import their
@@ -487,17 +509,17 @@ export let compileFile = (options: CompileFileOptions): i32 => {
     // dwarfs the binary (~30x — the tests module's dump is ~135 MB),
     // so it is opt-in for debugging.
     if (getEnv("ZENA_EMIT_WAT") != null) {
-      let watGenerator = new WatGenerator(target, false, options.optLevel);
+      let watGenerator = new WatGenerator(target, false, optLevel);
       let watString = watGenerator.generate(program);
       writeFile(outPath + ".wat", watString);
     }
     performance.end(tCodegen);
 
-    if (options.progress) {
+    if (progress) {
       console.log("Success: wrote " + outPath);
     }
 
-    if (options.time) {
+    if (time) {
       printTimingReport();
     }
   } catch (e) {

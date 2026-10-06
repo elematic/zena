@@ -18,7 +18,7 @@ import { directoryNames } from '../lib/fs-host.zena';
 import {
   Diagnostic, DiagnosticSeverity, formatDiagnostic,
 } from '../lib/diagnostics.zena';
-import { Compiler, createCompiler, CompilerOptions, checkCompilation, ProgramCheckResult } from '../lib/compiler.zena';
+import { Compiler, createCompiler, checkCompilation, ProgramCheckResult } from '../lib/compiler.zena';
 import { CompilerHost } from '../lib/library-loader.zena';
 import { loadPackageMap } from '../lib/package-manifest.zena';
 import { Discovery, TestFile, registerSuites } from './portable-harness.zena';
@@ -53,36 +53,51 @@ class FsHost implements CompilerHost {
   }
 }
 
-// One compiler instance is shared across the whole suite so that
-// checking is incremental — which is also why discovery order has to be
+// A compiler is shared across the suite so that checking is
+// incremental — which is also why discovery order has to be
 // deterministic (see portable-harness.zena).
+//
+// There are two, because `warnUnnecessaryCasts` is a compiler option:
+// it changes the diagnostics a check produces, so a result checked
+// under one setting cannot carry forward into a compile under the
+// other. The handful of tests that set `@warnUnnecessaryCasts: true`
+// share a compiler of their own, and everything else shares the one
+// with the warning off.
 let stdlibRoot = 'packages/stdlib/zena';
 let host = new FsHost(stdlibRoot);
-// Made on first use rather than at module init: loading the package
-// map reads files, and a component's module initializers run in the
-// instance's start function, before any task exists to block in.
-var sharedOptions: CompilerOptions | null = null;
-var sharedCompiler: Compiler | null = null;
-let optionsOnce = (): CompilerOptions => {
-  let existing = sharedOptions;
-  if (existing != null) {
-    return existing;
+
+/** One shared compiler and the check result threaded through it. */
+final class SharedCompiler {
+  warnUnnecessaryCasts: boolean;
+  var #compiler: Compiler | null = null;
+  var checked: ProgramCheckResult | null = null;
+
+  new(this.warnUnnecessaryCasts);
+
+  /**
+   * Made on first use rather than at module init: loading the package
+   * map reads files, and a component's module initializers run in the
+   * instance's start function, before any task exists to block in.
+   */
+  compiler: Compiler {
+    get {
+      let existing = this.#compiler;
+      if (existing != null) {
+        return existing;
+      }
+      let fresh = createCompiler(host, {
+        stdlibRoot,
+        packages: loadPackageMap(host, 'zena-packages.json'),
+        warnUnnecessaryCasts: this.warnUnnecessaryCasts,
+      });
+      this.#compiler = fresh;
+      return fresh;
+    }
   }
-  let packages = loadPackageMap(host, 'zena-packages.json');
-  let fresh = new CompilerOptions('host', stdlibRoot, packages);
-  sharedOptions = fresh;
-  return fresh;
-};
-let compilerOnce = (): Compiler => {
-  let existing = sharedCompiler;
-  if (existing != null) {
-    return existing;
-  }
-  let fresh = createCompiler(host, optionsOnce());
-  sharedCompiler = fresh;
-  return fresh;
-};
-var prevCheckResult: ProgramCheckResult | null = null;
+}
+
+let plain = new SharedCompiler(false);
+let warningCasts = new SharedCompiler(true);
 
 /** Renders diagnostics one per line for a failure message. */
 let formatAll = (diagnostics: Array<Diagnostic>, source: String): String => {
@@ -163,14 +178,14 @@ let runSemanticTest = (f: TestFile): void => {
   host.filePathOverride = f.path;
   host.fileSourceOverride = f.source;
 
+  let shared = if (warnUnnecessaryCasts) { warningCasts } else { plain };
   // Invalidate the loader cache for this path so the file is re-read.
-  let compiler = compilerOnce();
+  let compiler = shared.compiler;
   compiler.invalidate(f.path);
-  optionsOnce().warnUnnecessaryCasts = warnUnnecessaryCasts;
 
-  let result = compiler.compile(f.path);
-  let checkResult = checkCompilation(result, prevCheckResult, false, warnUnnecessaryCasts);
-  prevCheckResult = checkResult;
+  let result = compiler.compile({entry: f.path, target: 'js'});
+  let checkResult = checkCompilation(result, shared.checked);
+  shared.checked = checkResult;
 
   // Aggregate diagnostics from every non-stdlib module of this
   // compilation, not just the entry: import-cycle diagnostics land in

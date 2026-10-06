@@ -4,7 +4,7 @@ import { BinaryGenerator } from '../lib/codegen/binary-generator.zena';
 import { ByteBuffer } from 'zena:core';
 import { Program, CompilationUnit } from '../lib/program.zena';
 import { MockHost } from './test-utils.zena';
-import { checkCompilation, createCompiler, CompilerOptions } from '../lib/compiler.zena';
+import { checkCompilation, createCompiler } from '../lib/compiler.zena';
 import { PackageConfig } from '../lib/module-resolver.zena';
 
 let compileToBinary = (source: String): ByteBuffer => {
@@ -19,11 +19,10 @@ let compileToBinary = (source: String): ByteBuffer => {
   host.addFile("test.zena", source);
 
   let packages = new Map<String, PackageConfig>();
-  let options = new CompilerOptions("host", "/stdlib", packages);
-  let compiler = createCompiler(host, options);
+  let compiler = createCompiler(host, {stdlibRoot: "/stdlib", packages});
 
-  let compResult = compiler.compile("test.zena");
-  let checkRes = checkCompilation(compResult, null, false);
+  let compResult = compiler.compile({entry: "test.zena", target: 'js'});
+  let checkRes = checkCompilation(compResult);
   
   let entryAst = compResult.entry.ast;
   let units = new Array<CompilationUnit>();

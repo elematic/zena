@@ -279,7 +279,7 @@ yet and composition needs.
    exports (`service.wit` / `service.zena`, e2e): `wit-module-synth`'s
    `synthesizeExportWrapper` writes one `<name>_export` wrapper per
    async export, injected into `compile` through
-   `CompilerOptions.componentWrapperSynth` because the compiler does
+   `CompileOptions.componentWrapperSynth` because the compiler does
    not link the WIT parser; the encoder writes each lift's type from
    the WIT (`EncodedImports.exportTypeIndices`) and the typed return's
    result (`return:<interface>#<type>`, the interface empty at world

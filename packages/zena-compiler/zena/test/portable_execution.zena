@@ -61,7 +61,7 @@ import {
 } from './portable-harness.zena';
 import { CompilerHost } from '../lib/library-loader.zena';
 import {
-  Compiler, createCompiler, CompilerOptions, checkCompilation, ProgramCheckResult
+  Compiler, CompilerOptions, createCompiler, checkCompilation, ProgramCheckResult
 } from '../lib/compiler.zena';
 import { loadPackageMap } from '../lib/package-manifest.zena';
 import { stdlibIdToRelativeFile } from '../lib/module-resolver.zena';
@@ -432,8 +432,8 @@ let compileOne = (
   settings: ComponentSettings
 ): ProgramCheckResult | null => {
   return try {
-    let compResult = compiler.compile(f.path);
-    let checked = checkCompilation(compResult, previous, false);
+    let compResult = compiler.compile({entry: f.path, target: 'zena-cli'});
+    let checked = checkCompilation(compResult, previous);
 
     let errors = new StringBuilder();
     var hasError = false;
@@ -512,10 +512,10 @@ let compileSlice = (args: Array<String>): i32 => {
   let files = selectedTests(filter);
   let host = new FsHost();
   let packages = loadPackageMap(host, 'zena-packages.json');
-  let options = new CompilerOptions('zena-cli', stdlibRoot, packages);
+  let options: CompilerOptions = {stdlibRoot, packages};
   var compiler = createCompiler(host, options);
   let settings = new ComponentSettings(
-      compileComponentRuntimeModule(host, stdlibRoot, packages),
+      compileComponentRuntimeModule(compiler, stdlibRoot),
       readWitSource(host, `${stdlibRoot}/wit`) + '\n' +
           readWitSource(host, `${stdlibRoot}/host-wit`));
 
