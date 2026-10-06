@@ -753,6 +753,111 @@ let tests = suite('formatter', () => {
   });
 
   // ========================================================================
+  // Comments inside bodies
+  //
+  // Comment attachment looks for a child node whose range contains the
+  // comment and recurses into its body. A node kind it cannot take a body
+  // from is not descended into, and the comment falls out to the enclosing
+  // list — landing before or after the construct it was written in.
+  // ========================================================================
+
+  test('keeps a comment at the start of a nested block', (t: TestContext) => {
+    checkStable('comment in if block', dedentRaw`
+      let f = () => {
+        // First, start at one.
+        var x = 1;
+        if (x > 0) {
+          // Then add one.
+          x += 1;
+        }
+        return x;
+      };
+    `);
+  });
+
+  test('keeps comments inside a method body', (t: TestContext) => {
+    checkStable('comments in method', dedentRaw`
+      class Steps {
+        first(): i32 {
+          return 1;
+        }
+
+        second(flag: boolean): i32 {
+          if (flag) {
+            // A.
+            return 2;
+          }
+          // B.
+          return 3;
+        }
+      }
+    `);
+  });
+
+  test('keeps a comment at the start of a method body', (t: TestContext) => {
+    checkStable('comment first in method', dedentRaw`
+      class Steps {
+        first(flag: boolean): i32 {
+          // One.
+          if (flag) {
+            return 1;
+          }
+          return 2;
+        }
+
+        second(): i32 {
+          // Two.
+          return 3;
+        }
+      }
+    `);
+  });
+
+  test('keeps a comment inside a loop body', (t: TestContext) => {
+    checkStable('comment in while', dedentRaw`
+      let f = () => {
+        while (x > 0) {
+          // down one
+          x -= 1;
+        }
+        return x;
+      };
+    `);
+    checkStable('comment in for', dedentRaw`
+      let f = () => {
+        for (var i = 0; i < 3; i += 1) {
+          // add it
+          sum += i;
+        }
+        return sum;
+      };
+    `);
+    checkStable('comment in for-in', dedentRaw`
+      let f = () => {
+        for (let item in items) {
+          // each one
+          sum += item;
+        }
+        return sum;
+      };
+    `);
+  });
+
+  test('keeps a comment inside an else block', (t: TestContext) => {
+    checkStable('comment in else', dedentRaw`
+      let f = () => {
+        if (x > 0) {
+          // positive
+          return 1;
+        } else {
+          // not positive
+          return 2;
+        }
+      };
+    `);
+  });
+
+  // ========================================================================
   // Expression-level comments
   // ========================================================================
 

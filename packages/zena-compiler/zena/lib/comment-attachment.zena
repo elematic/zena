@@ -17,7 +17,7 @@
 
 import { NodeMap } from './node-map.zena';
 import {
-  Comment, Node, Module, Statement, Expression, BlockStatement, ClassDeclaration, InterfaceDeclaration, MixinDeclaration, EnumDeclaration, EnumMember, VariableDeclaration, FunctionDeclaration, FunctionExpression, BinaryExpression, UnaryExpression, AssignmentExpression, CallExpression, MemberExpression, IndexExpression, NewExpression, ArrayLiteral, IfExpression, MatchExpression, AsExpression, IsExpression, SpreadElement,
+  Comment, Node, Module, Statement, Expression, BlockStatement, ClassDeclaration, InterfaceDeclaration, MixinDeclaration, EnumDeclaration, EnumMember, VariableDeclaration, FunctionDeclaration, FunctionExpression, BinaryExpression, UnaryExpression, AssignmentExpression, CallExpression, MemberExpression, IndexExpression, NewExpression, ArrayLiteral, IfExpression, MatchExpression, MatchCase, AsExpression, IsExpression, SpreadElement, IfStatement, WhileStatement, ForStatement, ForInStatement, ReturnStatement, YieldStatement, ExpressionStatement, UsingStatement, ShieldedStatement, MethodDefinition, AccessorDeclaration, SetterInfo, FieldDefinition,
 } from './ast.zena';
 
 /**
@@ -189,6 +189,48 @@ let getChildBody = (node: Node): GrowableArray<Node> | null => match (node) {
   case InterfaceDeclaration {body}: body
   case MixinDeclaration {body}: body
   case EnumDeclaration {members}: enumMembersToNodes(members)
+  // Statements that hold a body. Without these a comment written inside the
+  // body is not descended into, and ends up attached outside the statement.
+  case IfStatement {test, consequent, alternate}: {
+    let result = new Array<Node>(3);
+    result.push(test);
+    result.push(consequent);
+    if (alternate != null) { result.push(alternate as Node); }
+    result
+  }
+  case WhileStatement {test, body}: twoNodes(test, body)
+  case ForStatement {init, test, update, body}: {
+    let result = new Array<Node>(4);
+    if (init != null) { result.push(init as Node); }
+    if (test != null) { result.push(test as Node); }
+    if (update != null) { result.push(update as Node); }
+    result.push(body);
+    result
+  }
+  case ForInStatement {iterable, body}: twoNodes(iterable, body)
+  case ReturnStatement {argument}: {
+    if (argument == null) { null } else { singleNode(argument as Node) }
+  }
+  case YieldStatement {argument}: singleNode(argument)
+  case ExpressionStatement {expression}: singleNode(expression)
+  case UsingStatement {init}: singleNode(init)
+  case ShieldedStatement {body}: singleNode(body)
+  // Class members that hold a body, so a comment in a method or an accessor
+  // stays in it rather than becoming a trailing comment on the member before.
+  case MethodDefinition {body}: {
+    if (body == null) { null } else { singleNode(body as Node) }
+  }
+  case AccessorDeclaration {getter, setter}: {
+    let result = new Array<Node>(2);
+    if (getter != null) { result.push(getter as Node); }
+    if (setter != null) { result.push(setter as Node); }
+    if (result.length == 0) { null } else { result }
+  }
+  case SetterInfo {body}: singleNode(body)
+  case FieldDefinition {value}: {
+    if (value == null) { null } else { singleNode(value as Node) }
+  }
+  case MatchCase {body}: singleNode(body)
   case VariableDeclaration {init}: singleNode(init as Node)
   case FunctionDeclaration {func}: singleNode(func as Node)
   case FunctionExpression {body}: singleNode(body)
@@ -225,7 +267,12 @@ let getChildBody = (node: Node): GrowableArray<Node> | null => match (node) {
     if (alternate != null) { result.push(alternate); }
     result
   }
-  case MatchExpression {discriminant}: singleNode(discriminant)
+  case MatchExpression {discriminant, cases}: {
+    let result = new Array<Node>(cases.length + 1);
+    result.push(discriminant);
+    for (let c in cases) { result.push(c); }
+    result
+  }
   case AsExpression {expression}: singleNode(expression)
   case IsExpression {expression}: singleNode(expression)
   case SpreadElement {argument}: singleNode(argument)
