@@ -159,6 +159,21 @@ let tests = suite('formatter', () => {
     check('array literal', result, 'let a = [1, 2, 3];\n');
   });
 
+  test('formats assignment', (t: TestContext) => {
+    let input = "let f = () => {\n  x = 1;\n};\n";
+    check('assignment', format(input), input);
+  });
+
+  test('formats compound assignment', (t: TestContext) => {
+    // The parser stores `+=` as the operator `+` plus an assignment, so the
+    // printer has to put the operator back. Printing `=` alone compiles, and
+    // computes something else.
+    let input = "let f = () => {\n  x += 2;\n  x -= 1;\n  x *= 3;\n  x /= 4;\n  x %= 5;\n  x **= 6;\n  x ??= 7;\n};\n";
+    check('compound assignment', format(input), input);
+    let member = "let f = () => {\n  this.#count += 1;\n};\n";
+    check('compound member assignment', format(member), member);
+  });
+
   // === Transformation tests — verify the formatter changes input ===
 
   test('normalizes extra whitespace', (t: TestContext) => {
