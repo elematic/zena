@@ -204,6 +204,27 @@ let tests = suite('formatter', () => {
     `);
   });
 
+  test('formats a map literal', (t: TestContext) => {
+    // `docs/design/syntax-overhaul.md` replaced `#{k: v}` with `{k => v}`.
+    // The printer still emitted the old form, which no longer parses.
+    checkStable('map literal', "let names = {'a' => 'b'};");
+    checkStable('map literal with several entries',
+        "let names = {'a' => 1, 'b' => 2};");
+  });
+
+  test('breaks a long map literal at its entries', (t: TestContext) => {
+    checkFormat('long map literal',
+        "let m = {'alpha' => 'one', 'bravo' => 'two', 'charlie' => 'three', 'delta' => 'four'};",
+        dedentRaw`
+          let m = {
+            'alpha' => 'one',
+            'bravo' => 'two',
+            'charlie' => 'three',
+            'delta' => 'four'
+          };
+        `);
+  });
+
   test('formats a C-style for loop', (t: TestContext) => {
     // The declaration in the header is a VariableDeclaration, which carries
     // its own `;`. Printing it as a statement and then adding the header's
