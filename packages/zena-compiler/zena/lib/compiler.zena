@@ -57,6 +57,26 @@ export { SemanticModel } from './semantic-model.zena';
 export { Diagnostic, DiagnosticSeverity, DiagnosticCode, SourceSpan } from './diagnostics.zena';
 export { typeToString } from './types.zena';
 
+/**
+ * Whether to check every body of every module loaded, the way the
+ * compiler did before bodies outside the local project waited for
+ * reachability to ask for them. Diagnostics in a dependency are
+ * reported again under it, which is what makes it worth having: a
+ * type error in the standard library is otherwise invisible to a
+ * program that merely uses it.
+ *
+ * Set from the environment by whoever reads one — `compileFile` reads
+ * ZENA_CHECK_ALL_BODIES. Not read here, because this module is
+ * compiled for the browser and for `lsp.wasm` too, and `zena:cli` is
+ * not a library those targets have.
+ */
+var checkAllBodies = false;
+
+/** See `checkAllBodies`. */
+export let setCheckAllBodies = (value: boolean): void => {
+  checkAllBodies = value;
+};
+
 // ============================================================================
 // Compiler Options
 // ============================================================================
@@ -1585,7 +1605,8 @@ let beginFile = (
   emitLocations: boolean,
   sharedState: SharedCheckerState,
   warnUnnecessaryCasts: boolean,
-  recheckPaths: Set<String> | null
+  recheckPaths: Set<String> | null,
+  deferBodies: boolean
 ): ModuleCheck => {
   let inputs = fileCheckInputs(file, allResults, inProgress, allFiles, recheckPaths);
   return beginModule(
@@ -1598,7 +1619,8 @@ let beginFile = (
     warnUnnecessaryCasts,
     inputs.laterPaths,
     recheckPaths,
-    null);
+    null,
+    deferBodies);
 };
 
 /**
@@ -1639,7 +1661,8 @@ let checkFile = (
   emitLocations: boolean,
   sharedState: SharedCheckerState,
   warnUnnecessaryCasts: boolean,
-  recheckPaths: Set<String> | null
+  recheckPaths: Set<String> | null,
+  deferBodies: boolean
 ): CheckResult => {
   let inputs = fileCheckInputs(file, allResults, null, allFiles, recheckPaths);
   let depExports = inputs.depExports;
@@ -1663,7 +1686,8 @@ let checkFile = (
     warnUnnecessaryCasts,
     laterPaths,
     recheckPaths,
-    priorModel);
+    priorModel,
+    deferBodies);
 };
 
 /**
@@ -1827,6 +1851,41 @@ export let checkCompilation = (
       sharedState.invalidatePath(path);
     }
   }
+
+  // The local project: the entry point and everything it reaches by
+  // relative import. A package specifier ('zena:core',
+  // 'wit-parser:parser') crosses out of the project, and what lies
+  // beyond it is a dependency. A local file is checked in full — a
+  // typo in a function nobody calls yet is still the author's to fix —
+  // and a dependency has its function and class bodies checked only
+  // where reachability reaches them.
+  let localPaths = new Set<String>();
+  let byPath = new Map<String, SourceFile>();
+  for (let f in result.files) {
+    byPath[f.path] = f;
+  }
+  let localQueue = new Array<String>(result.files.length);
+  localQueue.push(result.entry.path);
+  localPaths.add(result.entry.path);
+  var lq = 0;
+  while (lq < localQueue.length) {
+    let path = localQueue[lq];
+    lq += 1;
+    if (let (true, f) = byPath.get(path)) {
+      for (let entry in f.imports) {
+        let specifier = entry.key;
+        if (!specifier.startsWith("./") && !specifier.startsWith("../")) {
+          continue;
+        }
+        let target = entry.value;
+        if (localPaths.add(target)) {
+          localQueue.push(target);
+        }
+      }
+    }
+  }
+  let defersBodies = (path: String): boolean =>
+      !checkAllBodies && !localPaths.has(path);
 
   let tCheck = performance.start("check");
 
@@ -2035,11 +2094,11 @@ export let checkCompilation = (
       // its bodies wait until every member has registered
       // (docs/design/import-cycles.md): a body may construct a class
       // from later in the cycle, and needs that class's constructor.
-      let mc = beginFile(file, allResults, inProgress, result.files, emitLocations, sharedState, warnUnnecessaryCasts, recheckPaths);
+      let mc = beginFile(file, allResults, inProgress, result.files, emitLocations, sharedState, warnUnnecessaryCasts, recheckPaths, defersBodies(file.path));
       inProgress[file.path] = mc;
       sharedState.inProgressModules[file.path] = mc.ctx;
     } else {
-      recordChecked(file, checkFile(file, allResults, result.files, emitLocations, sharedState, warnUnnecessaryCasts, recheckPaths));
+      recordChecked(file, checkFile(file, allResults, result.files, emitLocations, sharedState, warnUnnecessaryCasts, recheckPaths, defersBodies(file.path)));
     }
 
     // The last member of a cycle has registered. Every canonical type
@@ -2067,7 +2126,7 @@ export let checkCompilation = (
       }
       for (let member in members) {
         if (inProgress.has(member.path)) {
-          let again = beginFile(member, allResults, inProgress, result.files, emitLocations, sharedState, warnUnnecessaryCasts, recheckPaths);
+          let again = beginFile(member, allResults, inProgress, result.files, emitLocations, sharedState, warnUnnecessaryCasts, recheckPaths, defersBodies(member.path));
           inProgress[member.path] = again;
           sharedState.inProgressModules[member.path] = again.ctx;
         }

@@ -1,0 +1,36 @@
+// A forward reference resolves a function's signature from its
+// annotations without checking its body. A nullable return type has to
+// survive that path: the wasm signature is built from it, and the
+// body's `return null` is lowered against it.
+// @mode: run
+// @result: 7
+
+distinct type Handle = anyref;
+
+var hook: (() => Handle | null) | null = null;
+
+let install = (f: () => Handle | null): void => {
+  hook = f;
+};
+
+function run(): i32 {
+  // Forward references: both are declared below.
+  install(capture);
+  let h = hook;
+  if (h == null) {
+    return 0;
+  }
+  let g = h as () => Handle | null;
+  if (g() == null) {
+    return 7;
+  }
+  return call();
+}
+
+let capture = (): Handle | null => {
+  return null;
+};
+
+let call = (): i32 => 1;
+
+export let main = (): i32 => run();

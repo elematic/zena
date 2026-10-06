@@ -257,8 +257,35 @@ export final class FunctionAdaptation {
   new(this.source, this.target);
 }
 
+/**
+ * The bodies of a module that are checked when something reaches
+ * them, rather than when the module is checked. The checker implements
+ * this; reachability calls it from its walk, through the model, so that
+ * neither pass has to import the other.
+ *
+ * Both calls are no-ops for a body that has already been checked, and
+ * for an id that names nothing this module defers.
+ */
+export interface DeferredBodies {
+  /** Check the top-level declaration that binds `symId`. */
+  checkGlobalBody(symId: SymbolId): void;
+  /**
+   * Check the body `nodeId` belongs to: the class member it names, or
+   * the top-level `let` or `function` whose arrow it is.
+   */
+  checkBodyOfNode(nodeId: i32): void;
+}
+
 export final class SemanticModel {
   var typeIdGenerator: IdGenerator<TypeId> | null = null;
+
+  /**
+   * Set on a module whose bodies wait for something to reach them: a
+   * dependency, outside the local project. Null on a module checked in
+   * full, which is every module of the local project and every module
+   * at all when the whole compilation is checked eagerly.
+   */
+  var deferredBodies: DeferredBodies | null = null;
   /**
    * The index that can name the owner of a node this model does not
    * own. Set once, when this model's check finishes; never by a

@@ -3,6 +3,27 @@
 For the broader architecture, see [self-hosted-compiler.md](../../docs/design/self-hosted-compiler.md).
 For the current progress and roadmap of codegen, see the new [IR design doc](../../docs/design/ir.md).
 
+## Checking Waits for Reachability
+
+A module outside the local project — one the entry point reaches only
+across a package specifier, so the whole standard library for an
+ordinary program — registers every signature when it is checked and
+leaves its function and class member bodies for something to reach.
+Reachability asks for one through `SemanticModel.deferredBodies`, just
+before it reads node types the body check is what writes. So a body
+nothing reaches is never checked, while every file of the local project
+is checked in full, reached or not, because its diagnostics are the
+author's to see.
+
+That makes checking re-entrant from the reachability walk, which is the
+thing to keep in mind when adding a pass that reads
+`model.getNodeType`: if it can run on a dependency's body before the
+queue walk dequeues it, it has to ask for the body first. See
+[lazy-body-checking.md](../../docs/design/lazy-body-checking.md), which
+lists the call sites that ask today. `ZENA_CHECK_ALL_BODIES=1` turns
+the deferral off — the way to tell a compiler bug apart from a deferral
+bug, and the way to see diagnostics in standard library source.
+
 ## WebAssembly Code Generation
 
 Code generation separates semantic discovery from lowering and emission

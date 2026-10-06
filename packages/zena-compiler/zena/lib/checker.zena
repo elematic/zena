@@ -114,7 +114,7 @@ import {
   isSecondClass, typeContainsSecondClass, typeContainsScoped,
   typeContainsConcreteSecondClass, borrowInnerRestricts
 , ErasedType} from './types.zena';
-import { SemanticModel, ModelIndex, InterfaceAdaptation, SymbolDependencies, ClosureDependency, FunctionAdaptationDependency, EdgeDrop } from './semantic-model.zena';
+import { SemanticModel, ModelIndex, InterfaceAdaptation, SymbolDependencies, ClosureDependency, FunctionAdaptationDependency, EdgeDrop, DeferredBodies } from './semantic-model.zena';
 import {
   Diagnostic, DiagnosticBag, DiagnosticCode, DiagnosticSeverity
 } from './diagnostics.zena';
@@ -256,6 +256,16 @@ export final class SharedCheckerState {
    * cycle be checked in one pass over each member.
    */
   inProgressModules = new Map<String, CheckerContext>();
+
+  /**
+   * The modules whose bodies wait to be reached, by path, for as long
+   * as the state lives. `inProgressModules` holds a module only
+   * between its two halves; this holds it afterwards too, which is
+   * what lets an importer ask a finished module to resolve a function
+   * signature its deferred body never bound
+   * (CheckerContext.resolveInProgressFunction).
+   */
+  moduleContexts = new Map<String, CheckerContext>();
 
   invalidatePath(path: String): void {
     let tpKeys = this.typeParameterTypes.keys();
@@ -1134,6 +1144,10 @@ final class CheckerContext {
 
         // Store result so subsequent references find it immediately.
         this.declareBinding(si, funcType);
+        // On the arrow as well as the binding: codegen asks the arrow
+        // for the signature it builds a wasm function from, and a
+        // body that has not been checked yet has no type there.
+        this.setNodeType(fe as Node, funcType);
 
         // Clean up resolving state.
         this.#resolving.delete(si.id);
@@ -2108,17 +2122,24 @@ final class CheckerContext {
   }
 
   /**
-   * The type of `origin`, a function declared by another module of the
-   * same import cycle that has registered but not finished — resolved
-   * from that module's context. Null when there is no such module, or
-   * the symbol is not a function it can resolve.
+   * The type of `origin`, a function another module declares, resolved
+   * from that module's own context. Two modules answer this way: one of
+   * the same import cycle that has registered but not finished, and a
+   * dependency whose bodies are deferred — in both cases the binding
+   * `depModels` would hold has not been made yet, and the origin's
+   * pending-function index can resolve the signature from annotations.
+   * Null when the symbol is not a function that module can resolve.
    */
   resolveInProgressFunction(origin: Symbol): Type | null {
     if (origin.modulePath == this.#filePath) {
       return null;
     }
-    if (let (true, other) = this.#sharedState.inProgressModules.get(origin.modulePath)) {
+    let {inProgressModules} = this.#sharedState;
+    if (let (true, other) = inProgressModules.get(origin.modulePath)) {
       return other.resolveExportedFunction(origin);
+    }
+    if (let (true, owner) = this.#sharedState.moduleContexts.get(origin.modulePath)) {
+      return owner.resolveExportedFunction(origin);
     }
     return null;
   }
@@ -4049,7 +4070,190 @@ export final class ModuleCheck {
   ast: Module;
   scopeResult: ScopeResult;
   state: SharedCheckerState;
+  /**
+   * Whether finishModule leaves this module's function and class
+   * bodies for something to reach. True for a dependency — a module
+   * the entry point reaches only across a package specifier — whose
+   * unreached bodies would cost a check and report diagnostics on code
+   * this compilation does not run. Its signatures are registered
+   * either way, which is what importers resolve against.
+   */
+  var deferBodies = false;
   new(this.ctx, this.ast, this.scopeResult, this.state);
+}
+
+/**
+ * The body-level check of one top-level statement — the body half of
+ * checkModule, for one statement of it. Phase 1 registered the
+ * signatures this reads.
+ *
+ * `deferred` is non-null for a module whose function and class member
+ * bodies wait for reachability to ask for them; the statement is
+ * indexed there instead of checked, and a class registers everything
+ * but its member bodies.
+ */
+let checkTopLevelStatement = (
+    ctx: CheckerContext,
+    stmt: Statement,
+    deferred: DeferredModule | null = null): void => {
+  match (stmt) {
+    case ClassDeclaration as cd: { checkClassBodies(ctx, cd, deferred); }
+    case InterfaceDeclaration as id: { checkInterfaceConstructorBodies(ctx, id); }
+    // Already fully handled in Phase 1.
+    case ImportDeclaration {}: {}
+    case EnumDeclaration {}: {}
+    case MixinDeclaration {}: {}
+    case TypeAliasDeclaration as ta: { checkTypeAliasDeclaration(ctx, ta); }
+    case DeclareFunction {}: {}
+    case SymbolDeclaration {}: {}
+    case ExportAllDeclaration {}: {}
+    case ExportFromDeclaration {}: {}
+    case FunctionDeclaration as fd: {
+      let sym = ctx.model.resolveDeclaration(fd.name as Node);
+      if (deferred != null) {
+        let d = deferred as DeferredModule;
+        if (sym != null) { d.addGlobal(sym.id, stmt); }
+        d.addGlobalNode(fd.func as Node, stmt);
+        resolveDeferredSignature(ctx, fd.func, sym);
+        return;
+      }
+      if (sym != null) {
+        let symId = sym.id;
+        ctx.enterSymbolReferrer(symId);
+        checkStatement(ctx, fd);
+        ctx.exitSymbolReferrer(symId);
+      } else {
+        checkStatement(ctx, fd);
+      }
+    }
+    // Everything else: variable declarations, expression statements, etc.
+    case VariableDeclaration as vd: {
+      let syms = new Array<Symbol>();
+      collectPatternSymbols(ctx, vd.pattern, syms);
+      let {init} = vd;
+      // Only a `let` holding a function waits. Anything else is a
+      // value an importer reads the type of, and checking the
+      // expression that gives it that type is not what this is trying
+      // to avoid.
+      if (deferred != null && init is FunctionExpression) {
+        let d = deferred as DeferredModule;
+        for (let s in syms) { d.addGlobal(s.id, stmt); }
+        d.addGlobalNode(init as Node, stmt);
+        resolveDeferredSignature(ctx, init as FunctionExpression,
+            if (syms.length > 0) syms[0] else null);
+        return;
+      }
+      if (syms.length > 0) {
+        let primarySymId = syms[0].id;
+        ctx.enterSymbolReferrer(primarySymId);
+        checkStatement(ctx, vd);
+        ctx.exitSymbolReferrer(primarySymId);
+      } else {
+        checkStatement(ctx, vd);
+      }
+    }
+    case _: {
+      ctx.enterNodeReferrer(stmt.id as i32);
+      checkStatement(ctx, stmt);
+      ctx.exitNodeReferrer(stmt.id as i32);
+    }
+  }
+};
+
+/**
+ * Resolve a deferred function's signature from its annotations, so
+ * that every reader of the declaration's type has one before the body
+ * is checked: the importer, and the wasm signature reachability
+ * builds for it. Only a function with a return annotation — inferring
+ * a return type means checking the body, which is the work the
+ * deferral exists to avoid, and the first reference resolves those
+ * through the same lazy path.
+ */
+let resolveDeferredSignature = (
+    ctx: CheckerContext,
+    fe: FunctionExpression,
+    sym: Symbol | null): void => {
+  if (sym == null || fe.returnType == null) { return; }
+  if (ctx.model.getBindingTypeDirect(sym) != null) { return; }
+  ctx.lazyResolveFunction(sym, fe as Node);
+};
+
+/**
+ * The deferred bodies of one module: what its check left for
+ * reachability to ask for, and the context to check them in. The
+ * module's `SemanticModel` carries this, so the reachability walk can
+ * reach it without the two passes importing each other.
+ */
+final class DeferredModule implements DeferredBodies {
+  #ctx: CheckerContext;
+  /** The top-level statement that declares each deferred binding. */
+  #globals = new Map<SymbolId, Statement>();
+  /** The top-level statement an arrow in value position belongs to. */
+  #globalNodes = new Map<i32, Statement>();
+  /** The class a deferred member body belongs to, by member node id. */
+  #memberClasses = new Map<i32, ClassDeclaration>();
+  /** The member a node id names: the accessor a setter belongs to. */
+  #memberNodes = new Map<i32, Node>();
+  /** Node ids of the statements and members already checked. */
+  #checked = new Set<i32>();
+
+  new(ctx: CheckerContext) : #ctx = ctx;
+
+  addGlobal(symId: SymbolId, stmt: Statement): void {
+    this.#globals[symId] = stmt;
+  }
+
+  addGlobalNode(node: Node, stmt: Statement): void {
+    this.#globalNodes[node.id as i32] = stmt;
+  }
+
+  /**
+   * Index one member body. A setter is indexed under its own id as
+   * well as the accessor's: both are nodes reachability can name, and
+   * the accessor is what gets checked either way — its getter and
+   * setter share the declared type.
+   */
+  addMember(member: Node, cd: ClassDeclaration): void {
+    let id = member.id as i32;
+    this.#memberClasses[id] = cd;
+    this.#memberNodes[id] = member;
+    match (member) {
+      case AccessorDeclaration {setter}: {
+        match (setter) {
+          case SetterInfo as si: {
+            let sid = si.id as i32;
+            this.#memberClasses[sid] = cd;
+            this.#memberNodes[sid] = member;
+          }
+          case _: {}
+        }
+      }
+      case _: {}
+    }
+  }
+
+  #checkStatement(stmt: Statement): void {
+    if (!this.#checked.add(stmt.id as i32)) { return; }
+    checkTopLevelStatement(this.#ctx, stmt, null);
+  }
+
+  checkGlobalBody(symId: SymbolId): void {
+    if (let (true, stmt) = this.#globals.get(symId)) {
+      this.#checkStatement(stmt);
+    }
+  }
+
+  checkBodyOfNode(nodeId: i32): void {
+    if (let (true, member) = this.#memberNodes.get(nodeId)) {
+      if (this.#checked.add(member.id as i32)) {
+        checkDeferredClassMember(this.#ctx, this.#memberClasses[nodeId], member);
+      }
+      return;
+    }
+    if (let (true, stmt) = this.#globalNodes.get(nodeId)) {
+      this.#checkStatement(stmt);
+    }
+  }
 }
 
 /**
@@ -4067,11 +4271,12 @@ export let checkModule = (
   warnUnnecessaryCasts: boolean = false,
   cyclicLaterPaths: Set<String> | null = null,
   cyclicRecheckPaths: Set<String> | null = null,
-  priorModel: SemanticModel | null = null
+  priorModel: SemanticModel | null = null,
+  deferBodies: boolean = false
 ): CheckResult => {
   return finishModule(beginModule(ast, scopeResult, depExports, depModels,
       emitLocations, sharedState, warnUnnecessaryCasts, cyclicLaterPaths,
-      cyclicRecheckPaths, priorModel));
+      cyclicRecheckPaths, priorModel, deferBodies));
 };
 
 /**
@@ -4090,7 +4295,8 @@ export let beginModule = (
   warnUnnecessaryCasts: boolean = false,
   cyclicLaterPaths: Set<String> | null = null,
   cyclicRecheckPaths: Set<String> | null = null,
-  priorModel: SemanticModel | null = null
+  priorModel: SemanticModel | null = null,
+  deferBodies: boolean = false
 ): ModuleCheck => {
   let state = if (sharedState != null) sharedState else new SharedCheckerState();
   let ctx = new CheckerContext(state, ast.path, scopeResult, depExports, depModels, emitLocations, warnUnnecessaryCasts);
@@ -4098,6 +4304,18 @@ export let beginModule = (
   ctx.cyclicRecheckPaths = cyclicRecheckPaths;
   ctx.priorModel = priorModel;
   ctx.model.typeIdGenerator = state.typeIdGenerator;
+  // Set here rather than when the check finishes: a deferred body is
+  // checked long afterwards, from a walk that found this model and has
+  // only the path to name it by.
+  ctx.model.sourcePath = ast.path;
+  if (deferBodies) {
+    // Only a module that defers: the context has to outlive its check
+    // so an importer can ask it for a signature its deferred body
+    // never bound, and that is the only module anyone asks. Keeping
+    // every module's would hold the flow-analysis state of the whole
+    // local project for the length of the compile.
+    state.moduleContexts[ast.path] = ctx;
+  }
 
   // Register standard prelude types only once per shared state.
   if (!state.preludeRegistered) {
@@ -4214,7 +4432,32 @@ export let beginModule = (
     ri += 1;
   }
 
-  return new ModuleCheck(ctx, ast, scopeResult, state);
+  // Index the module's top-level value declarations. Reachability
+  // reads `globalDeclarations` to find the declaration behind a symbol
+  // it reached, and for a deferred module that lookup comes before the
+  // body check that would otherwise have registered it.
+  for (let stmt in ast.body) {
+    match (stmt) {
+      case FunctionDeclaration as fd: {
+        let sym = ctx.model.resolveDeclaration(fd.name as Node);
+        if (sym != null) {
+          ctx.model.addDeclaredGlobal(sym.id, fd);
+        }
+      }
+      case VariableDeclaration as vd: {
+        let syms = new Array<Symbol>();
+        collectPatternSymbols(ctx, vd.pattern, syms);
+        for (let s in syms) {
+          ctx.model.addDeclaredGlobal(s.id, vd);
+        }
+      }
+      case _: {}
+    }
+  }
+
+  let mc = new ModuleCheck(ctx, ast, scopeResult, state);
+  mc.deferBodies = deferBodies;
+  return mc;
 };
 
 /**
@@ -4232,54 +4475,18 @@ export let finishModule = (mc: ModuleCheck): CheckResult => {
   // This is the actual checking phase where the full structure is validated
   // (bodies, statements, type aliases, etc.), relying on the signatures
   // registered in Phase 1 to seamlessly resolve forward references.
+  //
+  // In a module whose bodies are deferred, a function body and a
+  // class's member bodies are indexed instead of checked, and each is
+  // checked when reachability asks for it. Everything else runs here
+  // as it always does — including a class's field initializers, which
+  // are what give an unannotated field its type, and the class rules
+  // that mutate the class.
+  let deferred = if (mc.deferBodies) new DeferredModule(ctx) else null;
   for (let stmt in ast.body) {
-    match (stmt) {
-      case ClassDeclaration as cd: { checkClassBodies(ctx, cd); }
-      case InterfaceDeclaration as id: { checkInterfaceConstructorBodies(ctx, id); }
-      // Already fully handled in Phase 1.
-      case ImportDeclaration {}: {}
-      case EnumDeclaration {}: {}
-      case MixinDeclaration {}: {}
-      case TypeAliasDeclaration as ta: { checkTypeAliasDeclaration(ctx, ta); }
-      case DeclareFunction {}: {}
-      case SymbolDeclaration {}: {}
-      case ExportAllDeclaration {}: {}
-      case ExportFromDeclaration {}: {}
-      case FunctionDeclaration as fd: {
-        let sym = ctx.model.resolveDeclaration(fd.name as Node);
-        if (sym != null) {
-          let symId = sym.id;
-          ctx.model.addDeclaredGlobal(symId, fd);
-          ctx.enterSymbolReferrer(symId);
-          checkStatement(ctx, fd);
-          ctx.exitSymbolReferrer(symId);
-        } else {
-          checkStatement(ctx, fd);
-        }
-      }
-      // Everything else: variable declarations, expression statements, etc.
-      case VariableDeclaration as vd: {
-        let syms = new Array<Symbol>();
-        collectPatternSymbols(ctx, vd.pattern, syms);
-        if (syms.length > 0) {
-          for (let s in syms) {
-            ctx.model.addDeclaredGlobal(s.id, vd);
-          }
-          let primarySymId = syms[0].id;
-          ctx.enterSymbolReferrer(primarySymId);
-          checkStatement(ctx, vd);
-          ctx.exitSymbolReferrer(primarySymId);
-        } else {
-          checkStatement(ctx, vd);
-        }
-      }
-      case _: {
-        ctx.enterNodeReferrer(stmt.id as i32);
-        checkStatement(ctx, stmt);
-        ctx.exitNodeReferrer(stmt.id as i32);
-      }
-    }
+    checkTopLevelStatement(ctx, stmt, deferred);
   }
+  ctx.model.deferredBodies = deferred;
 
   // Collect diagnostics from the bag into the model.
   for (let diagnostic in ctx.diagnostics.diagnostics) {
@@ -4319,6 +4526,15 @@ export let finishModule = (mc: ModuleCheck): CheckResult => {
       let localSi = ctx.model.resolveDeclaration(declaration);
       if (localSi != null) {
         valueType = ctx.model.getBindingType(localSi);
+        if (valueType == null && deferred != null) {
+          // An exported `let f = (…) => …` whose body is deferred. Its
+          // signature is still owed to importers, and resolving it
+          // from the annotations costs nothing like checking the
+          // body; a function with no return annotation does have its
+          // body checked, which is the price of inferring a return
+          // type at all.
+          valueType = ctx.resolveExportedFunction(localSi);
+        }
       }
     }
     if (valueType == null) {
@@ -15177,20 +15393,30 @@ let checkFieldInitializer = (
   ctx.exitNodeReferrer(fd.id as i32);
 };
 
-let checkClassBodies = (ctx: CheckerContext, cd: ClassDeclaration): void => {
+/**
+ * The class type `registerClassDeclaration` registered for a
+ * declaration, or a fresh empty one when the name resolves to
+ * something else.
+ */
+let classTypeOfDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): ClassType => {
   let className = cd.name.name;
-
-  // Look up the ClassType registered by registerClassDeclaration.
-  var classType: ClassType = new ClassType(ctx.freshTypeId(), noSymbolId, className);
   let resolved = ctx.resolveTypeName(className);
   if (resolved != null) {
     match (resolved) {
-      case ClassType as ct: { classType = ct; }
+      case ClassType as ct: { return ct; }
       case _: {}
     }
   }
+  return new ClassType(ctx.freshTypeId(), noSymbolId, className);
+};
 
-  // Re-enter scope for type parameters so method bodies can reference them.
+/**
+ * The scope a class's member bodies are checked in: the class's type
+ * parameters by name, the class itself as the enclosing one, and
+ * `this`. Paired with exitClassBodyScope, which restores what the
+ * previous `this` was.
+ */
+let enterClassBodyScope = (ctx: CheckerContext, classType: ClassType): Type | null => {
   ctx.enterScope();
   let {typeParameters} = classType;
   if (typeParameters != null) {
@@ -15199,14 +15425,166 @@ let checkClassBodies = (ctx: CheckerContext, cd: ClassDeclaration): void => {
       ctx.declareTypeName(tp.name, tp);
     }
   }
-
   ctx.enterClass(classType);
-  // Every body below belongs to this class, so a `this` written in
-  // one of them means this class. Saved and restored rather than
-  // cleared, so a class nested inside another class's body gets its
-  // own binding back when it finishes.
+  // Every body checked under this scope belongs to this class, so a
+  // `this` written in one of them means this class. Saved and
+  // restored rather than cleared, so a class nested inside another
+  // class's body gets its own binding back when it finishes.
   let prevBodyThis = ctx.bodyThisType;
   ctx.setBodyThisType(selfTypeOfClass(classType));
+  return prevBodyThis;
+};
+
+let exitClassBodyScope = (ctx: CheckerContext, prevBodyThis: Type | null): void => {
+  ctx.setBodyThisType(prevBodyThis);
+  ctx.exitClass();
+  ctx.exitScope();
+};
+
+/**
+ * The body of one method or accessor, under a scope
+ * enterClassBodyScope has already set up. Split out of
+ * checkClassBodies so a module whose bodies wait to be reached can
+ * check one member at a time, long after the rest of the class
+ * registered.
+ */
+let checkClassMemberBody = (
+    ctx: CheckerContext,
+    classType: ClassType,
+    member: Node): void => {
+  match (member) {
+    case MethodDefinition as md: {
+      if (md.body == null) { return; }
+      ctx.enterNodeReferrer(md.id as i32);
+      let methodName = getMemberName(ctx, md.name as Node);
+      if (md.isConstructor) {
+        let ctorType = if (classType.constructors.has(methodName)) {
+          classType.constructors[methodName]
+        } else {
+          classType.constructorType
+        };
+        if (ctorType != null) {
+          checkMethodBody(ctx, classType, ctorType, md);
+        }
+        // Derived class constructors must call super() — except when the
+        // superclass is a root nobody wrote. A `resource class` with no
+        // extends clause is given `Resource` as its superclass, and
+        // `Resource` declares no constructor, so there is nothing for
+        // `super()` to call and requiring it would be an artifact of the
+        // desugaring rather than anything the author owes.
+        var superNeedsInit = false;
+        var scWalk: ClassType | null = classType.superType;
+        while (scWalk != null) {
+          if (!scWalk.isMixinIntermediate) {
+            if (scWalk.constructorType != null ||
+                scWalk.constructors.size > 0 ||
+                !isWellKnown(WellKnown.ResourceClass, scWalk.name,
+                    scWalk.sourcePath)) {
+              superNeedsInit = true;
+            }
+            break;
+          }
+          scWalk = scWalk.superType;
+        }
+        if (superNeedsInit && md.superInitializer == null && !classType.isCaseClass) {
+          ctx.error(
+            "Constructors in derived classes must call super().",
+            DiagnosticCode.IncompatibleTypes,
+            md.loc
+          );
+        }
+      } else {
+        if (classType.members.has(methodName)) {
+          let methodType = checkMethodSignature(ctx, classType, md);
+          checkMethodBody(ctx, classType, methodType, md);
+        }
+      }
+      ctx.exitNodeReferrer(md.id as i32);
+    }
+    case AccessorDeclaration as acc: {
+      let accType = resolveTypeAnnotation(ctx, acc.typeAnnotation);
+
+      // Check getter body.
+      let {getter} = acc;
+      if (getter != null) {
+        ctx.enterNodeReferrer(acc.id as i32);
+        let getterBlock = getter;
+        ctx.enterScope();
+        let prevReturnType = ctx.returnType;
+        ctx.setReturnType(accType);
+        let prevFlowState = ctx.enterBodyFlow(false);
+        var gi = 0;
+        while (gi < getterBlock.body.length) {
+          checkStatement(ctx, getterBlock.body[gi]);
+          gi += 1;
+        }
+        ctx.exitBodyFlow(prevFlowState);
+        ctx.setReturnType(prevReturnType);
+        ctx.exitScope();
+        ctx.exitNodeReferrer(acc.id as i32);
+      }
+
+      // Check setter body.
+      let {setter} = acc;
+      if (setter != null) {
+        match (setter) {
+          case SetterInfo as si: {
+            ctx.enterNodeReferrer(si.id as i32);
+            ctx.enterScope();
+            let paramInfo = ctx.model.resolveDeclaration(si.param);
+            if (paramInfo != null) {
+              ctx.declareBinding(paramInfo, accType);
+            }
+            let prevFlowState = ctx.enterBodyFlow(false);
+            for (let stmt in si.body.body) {
+              checkStatement(ctx, stmt);
+            }
+            ctx.exitBodyFlow(prevFlowState);
+            ctx.exitScope();
+            ctx.exitNodeReferrer(si.id as i32);
+          }
+          case _: {}
+        }
+      }
+    }
+    case _: {}
+  }
+};
+
+/**
+ * Check one deferred member's body, rebuilding the class scope around
+ * it. The whole class registered when its module was checked; this is
+ * the one body that waited.
+ */
+let checkDeferredClassMember = (
+    ctx: CheckerContext,
+    cd: ClassDeclaration,
+    member: Node): void => {
+  let classType = classTypeOfDeclaration(ctx, cd);
+  let prevBodyThis = enterClassBodyScope(ctx, classType);
+  checkClassMemberBody(ctx, classType, member);
+  exitClassBodyScope(ctx, prevBodyThis);
+};
+
+/**
+ * Everything a class declaration contributes beyond its registered
+ * signatures: field initializers, member bodies, and the conformance
+ * and resource rules the class as a whole has to satisfy.
+ *
+ * `deferred` is non-null for a module whose bodies wait to be
+ * reached. Only the member BODIES wait: a field initializer is what
+ * gives an unannotated field its type, and the rules below mutate the
+ * class — `:dispose` is synthesized here — so both run whether or not
+ * anything reaches the class.
+ */
+let checkClassBodies = (
+    ctx: CheckerContext,
+    cd: ClassDeclaration,
+    deferred: DeferredModule | null = null): void => {
+  let className = cd.name.name;
+
+  let classType = classTypeOfDeclaration(ctx, cd);
+  let prevBodyThis = enterClassBodyScope(ctx, classType);
 
   // Check method bodies and field initializers.
   // Collect field names in declaration order for forward-reference detection.
@@ -15237,100 +15615,18 @@ let checkClassBodies = (ctx: CheckerContext, cd: ClassDeclaration): void => {
         }
         fieldIndex = fieldIndex + 1;
       }
-      case MethodDefinition as md: {
-        if (md.body != null) {
-          ctx.enterNodeReferrer(md.id as i32);
-          let methodName = getMemberName(ctx, md.name as Node);
-          if (md.isConstructor) {
-            let ctorType = if (classType.constructors.has(methodName)) {
-              classType.constructors[methodName]
-            } else {
-              classType.constructorType
-            };
-            if (ctorType != null) {
-              checkMethodBody(ctx, classType, ctorType, md);
-            }
-            // Derived class constructors must call super() — except when the
-            // superclass is a root nobody wrote. A `resource class` with no
-            // extends clause is given `Resource` as its superclass, and
-            // `Resource` declares no constructor, so there is nothing for
-            // `super()` to call and requiring it would be an artifact of the
-            // desugaring rather than anything the author owes.
-            var superNeedsInit = false;
-            var scWalk: ClassType | null = classType.superType;
-            while (scWalk != null) {
-              if (!scWalk.isMixinIntermediate) {
-                if (scWalk.constructorType != null ||
-                    scWalk.constructors.size > 0 ||
-                    !isWellKnown(WellKnown.ResourceClass, scWalk.name,
-                        scWalk.sourcePath)) {
-                  superNeedsInit = true;
-                }
-                break;
-              }
-              scWalk = scWalk.superType;
-            }
-            if (superNeedsInit && md.superInitializer == null && !classType.isCaseClass) {
-              ctx.error(
-                "Constructors in derived classes must call super().",
-                DiagnosticCode.IncompatibleTypes,
-                md.loc
-              );
-            }
-          } else {
-            if (classType.members.has(methodName)) {
-              let methodType = checkMethodSignature(ctx, classType, md);
-              checkMethodBody(ctx, classType, methodType, md);
-            }
-          }
-          ctx.exitNodeReferrer(md.id as i32);
+      case MethodDefinition {}: {
+        if (deferred != null) {
+          deferred.addMember(member as Node, cd);
+        } else {
+          checkClassMemberBody(ctx, classType, member as Node);
         }
       }
-      case AccessorDeclaration as acc: {
-        let accName = getMemberName(ctx, acc.name as Node);
-        let accType = resolveTypeAnnotation(ctx, acc.typeAnnotation);
-
-        // Check getter body.
-        let {getter} = acc;
-        if (getter != null) {
-          ctx.enterNodeReferrer(acc.id as i32);
-          let getterBlock = getter;
-          ctx.enterScope();
-          let prevReturnType = ctx.returnType;
-          ctx.setReturnType(accType);
-          let prevFlowState = ctx.enterBodyFlow(false);
-          var gi = 0;
-          while (gi < getterBlock.body.length) {
-            checkStatement(ctx, getterBlock.body[gi]);
-            gi += 1;
-          }
-          ctx.exitBodyFlow(prevFlowState);
-          ctx.setReturnType(prevReturnType);
-          ctx.exitScope();
-          ctx.exitNodeReferrer(acc.id as i32);
-        }
-
-        // Check setter body.
-        let {setter} = acc;
-        if (setter != null) {
-          match (setter) {
-            case SetterInfo as si: {
-              ctx.enterNodeReferrer(si.id as i32);
-              ctx.enterScope();
-              let paramInfo = ctx.model.resolveDeclaration(si.param);
-              if (paramInfo != null) {
-                ctx.declareBinding(paramInfo, accType);
-              }
-              let prevFlowState = ctx.enterBodyFlow(false);
-              for (let stmt in si.body.body) {
-                checkStatement(ctx, stmt);
-              }
-              ctx.exitBodyFlow(prevFlowState);
-              ctx.exitScope();
-              ctx.exitNodeReferrer(si.id as i32);
-            }
-            case _: {}
-          }
+      case AccessorDeclaration {}: {
+        if (deferred != null) {
+          deferred.addMember(member as Node, cd);
+        } else {
+          checkClassMemberBody(ctx, classType, member as Node);
         }
       }
       case _: {}
@@ -15604,9 +15900,7 @@ let checkClassBodies = (ctx: CheckerContext, cd: ClassDeclaration): void => {
     }
   }
 
-  ctx.setBodyThisType(prevBodyThis);
-  ctx.exitClass();
-  ctx.exitScope();
+  exitClassBodyScope(ctx, prevBodyThis);
 };
 
 /**
