@@ -312,4 +312,46 @@ export let tests = suite('one compiler, several targets', (): void => {
         'the warning compile reused the other setting\'s checker state');
   });
 
+  test('a virtual library resolves to the implementation this compile linked',
+      (ctx: TestContext): void => {
+    // What a shared check result will need from codegen. A Symbol
+    // carries the implementation its own compile resolved
+    // (`zena:console/host.zena`), and a compile for another target has
+    // a different library under that name. `Program.unitFor` maps the
+    // path id back through the manifest to the library, so the unit
+    // it answers with is this compile's.
+    let compiler = newCompiler();
+    let checked = compileAndCheck(compiler, allocating, 'component');
+    let result = compiler.compile({entry: allocating, target: 'component'});
+
+    let units = new Array<CompilationUnit>();
+    for (let file in result.files) {
+      let res = checked.results[file.path];
+      if (res != null) {
+        units.push({ast: file.ast, model: res.model});
+      }
+    }
+    let program = new Program(units, null);
+
+    // The component target linked the component console, so that is
+    // what it answers with — asked by its own path, by the library name,
+    // and by the path of the implementation it did *not* link.
+    let own = program.unitFor('zena:console/component.zena');
+    isTrue(own != null, 'the linked implementation resolves by its own path');
+    equal((own as CompilationUnit).ast.path, 'zena:console/component.zena');
+
+    let byModule = program.unitFor('zena:console');
+    isTrue(byModule != null, 'the library name resolves');
+    equal((byModule as CompilationUnit).ast.path, 'zena:console/component.zena');
+
+    let byOtherImpl = program.unitFor('zena:console/host.zena');
+    isTrue(byOtherImpl != null,
+        'the other target\'s implementation path resolves to this one');
+    equal((byOtherImpl as CompilationUnit).ast.path,
+        'zena:console/component.zena');
+
+    // A library that is not virtual still answers for itself only.
+    isTrue(program.unitFor('zena:nonexistent/thing.zena') == null,
+        'an unknown path resolves to nothing');
+  });
 });

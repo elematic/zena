@@ -119,6 +119,37 @@ export final class Program {
   }
 
   /**
+   * The unit this compile linked for `path`, or null.
+   *
+   * `path` is a library path as a Symbol carries it, which for a virtual
+   * library is the implementation its own compile resolved —
+   * `zena:console/host.zena`, not `zena:console`. A compile for another
+   * target linked a different library under that name, so a direct
+   * lookup would miss. Mapping the path id back to the name finds
+   * whichever implementation *this* compile has, which is what a shared
+   * check result will need: the model names the library, and the unit
+   * answering for it is the target's.
+   *
+   * The manifest already indexes every virtual implementation path under
+   * its name (`buildLibraryIndex`), so the reverse hop is a lookup
+   * rather than a search.
+   */
+  unitFor(path: String): CompilationUnit | null {
+    if (let (true, unit) = this.unitsByPath.get(path)) {
+      return unit;
+    }
+    if (!path.startsWith("zena:")) {
+      return null;
+    }
+    let moduleName = stdlibModuleNameForEntryPath(
+        path.sliceBytes(5, path.length));
+    if (moduleName == null) {
+      return null;
+    }
+    return this.unitsByPath.get(`zena:${moduleName}`) ?? null;
+  }
+
+  /**
    * Record a module-level value binding (a `let`/`var` name or a
    * `function` declaration's name) under both its file path key and, for
    * stdlib modules, its `zena:<name>` key.
