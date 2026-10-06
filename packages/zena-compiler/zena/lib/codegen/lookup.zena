@@ -94,12 +94,16 @@ export let findDeclaration = (wasm: WasmModule, sym: Symbol, expectedType: Type 
 
   let prog = wasm.program;
   if (prog != null && resolved.modulePath != "") {
-    let canonicalPath = resolved.modulePath;
-    if (prog.unitsByPath.has(canonicalPath)) {
-      let targetUnit = prog.unitsByPath[canonicalPath];
+    let targetUnit = prog.unitFor(resolved.modulePath);
+    if (targetUnit != null) {
       let importedName = resolved.name;
-      
-      let key = canonicalPath + "::" + importedName;
+
+      // Keyed by the unit this compile linked, not by the path the
+      // symbol was declared under. For a virtual library those differ
+      // the moment a check result is shared between targets: the
+      // symbol names the implementation its own compile resolved, and
+      // this compile has another library under that name.
+      let key = `${targetUnit.ast.path}::${importedName}`;
       if (let (true, list) = prog.exportedFunctions.get(key)) {
         var fallback: DeclareFunction | null = null;
         for (let df in list) {
