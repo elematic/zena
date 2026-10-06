@@ -11,6 +11,7 @@
 
 import { getEnv } from 'zena:cli';
 import { StringBuilder } from 'zena:core';
+import { JsonBuilder } from 'zena:json';
 import { readFile, writeFileBytes, writeFile, exists } from 'zena:fs';
 import { CompilerHost } from './library-loader.zena';
 import { PackageConfig, stdlibIdToRelativeFile } from './module-resolver.zena';
@@ -238,6 +239,42 @@ let parentPhaseOf = (name: String, names: Array<String>): String | null => {
     }
   }
   return best;
+};
+
+/**
+ * The phase list as JSON, for a caller that is going to do arithmetic
+ * on it. `ZENA_TIME_JSON=1` with `--time` prints this instead of the
+ * table; an env var rather than a flag so that neither command line
+ * has to carry it.
+ *
+ * One object per phase, in the order the compiler entered them, each
+ * with its name, total milliseconds, how many times it was entered,
+ * and the phase that contains it. Parsing the table instead would mean
+ * a benchmark breaking whenever a column moved.
+ */
+let printTimingJson = (): void => {
+  let phases = performance.phases();
+  let names = new Array<String>(phases.length);
+  for (let phase in phases) {
+    names.push(phase.name);
+  }
+  let b = new JsonBuilder();
+  b.beginObject();
+  b.key("schemaVersion").i32(1);
+  b.key("phases").beginArray();
+  for (let phase in phases) {
+    b.beginObject();
+    b.key("name").string(phase.name);
+    b.key("totalMs").f64(phase.total);
+    b.key("count").i32(phase.count);
+    b.key("parent");
+    let parent = parentPhaseOf(phase.name, names);
+    if (parent != null) { b.string(parent as String); } else { b.nullValue(); }
+    b.endObject();
+  }
+  b.endArray();
+  b.endObject();
+  console.log(b.toString());
 };
 
 /**
@@ -561,7 +598,11 @@ export let compileFile = (options: CompileFileOptions): i32 => {
     }
 
     if (time) {
-      printTimingReport();
+      if (getEnv("ZENA_TIME_JSON") != null) {
+        printTimingJson();
+      } else {
+        printTimingReport();
+      }
     }
   } catch (e) {
     // A syntax error is a fault in the input, and the parser has already
