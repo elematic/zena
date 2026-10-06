@@ -89,13 +89,19 @@ export let tests = suite('zena:bench runner', (): void => {
     });
 
     let report = runner.run();
-    var wholeMean = 0.0;
-    var sliceMean = 0.0;
+    var wholeFloor = 0.0;
+    var sliceFloor = 0.0;
     for (let r in report.results) {
-      if (r.name == 'whole') { wholeMean = r.stats.mean; }
-      if (r.name == 'timed-slice') { sliceMean = r.stats.mean; }
+      if (r.name == 'whole') { wholeFloor = r.stats.min; }
+      if (r.name == 'timed-slice') { sliceFloor = r.stats.min; }
     }
-    isTrue(sliceMean * 5.0 < wholeMean,
+    // Compared on the fastest sample, not the mean. The question is
+    // whether the timed region excludes the setup, and the work either
+    // side is sub-millisecond, so a single preemption between `start()`
+    // and `stop()` moves a mean by more than the 100x the two workloads
+    // differ by. The minimum is the sample least polluted by the
+    // scheduler, which is the one that answers the question.
+    isTrue(sliceFloor * 5.0 < wholeFloor,
       'manually timed slice is far below the whole invocation');
   });
 
