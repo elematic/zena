@@ -204,6 +204,50 @@ let tests = suite('formatter', () => {
     `);
   });
 
+  test('formats a C-style for loop', (t: TestContext) => {
+    // The declaration in the header is a VariableDeclaration, which carries
+    // its own `;`. Printing it as a statement and then adding the header's
+    // separator produced `for (var i = 0;; ...)`, which does not parse.
+    checkStable('for with var', dedentRaw`
+      let f = () => {
+        for (var i = 0; i < 3; i += 1) {
+          sum += i;
+        }
+      };
+    `);
+    checkStable('for with let', dedentRaw`
+      let f = () => {
+        for (let i = 0; i < 3; i += 1) {
+          sum += i;
+        }
+      };
+    `);
+    checkStable('for with a typed declaration', dedentRaw`
+      let f = () => {
+        for (var i: i32 = 0; i < 3; i += 1) {
+          sum += i;
+        }
+      };
+    `);
+  });
+
+  test('formats a for loop whose header parts are expressions or absent', (t: TestContext) => {
+    checkStable('for with expression init', dedentRaw`
+      let f = () => {
+        for (i = 0; i < 3; i += 1) {
+          sum += i;
+        }
+      };
+    `);
+    checkStable('for with an empty header', dedentRaw`
+      let f = () => {
+        for (;;) {
+          break;
+        }
+      };
+    `);
+  });
+
   // === Transformation tests — verify the formatter changes input ===
 
   test('normalizes extra whitespace', (t: TestContext) => {
