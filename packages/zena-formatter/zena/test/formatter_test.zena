@@ -242,6 +242,23 @@ let tests = suite('formatter', () => {
     `);
   });
 
+  test('leaves a blank line between class members empty', (t: TestContext) => {
+    // The blank line is a hardline inside the class body's `indent`, and the
+    // printer used to write that indentation before knowing the line had
+    // nothing on it, leaving two spaces behind.
+    checkStable('class blank line', dedentRaw`
+      class Counter {
+        var count: i32 = 0;
+
+        next(): i32 {
+          return this.count;
+        }
+
+        reset(): void {}
+      }
+    `);
+  });
+
   test('formats member decorators and decorator declarations', (t: TestContext) => {
     let members = format(dedentRaw`
       class Counter {
@@ -272,9 +289,7 @@ let tests = suite('formatter', () => {
   });
 
   test('formats class with method', (t: TestContext) => {
-    // Exact text is not compared: the printer leaves indentation on the blank
-    // line between members, so the result differs from the input.
-    let result = format(dedentRaw`
+    checkStable('class method', dedentRaw`
       class Point {
         x: i32;
 
@@ -283,9 +298,6 @@ let tests = suite('formatter', () => {
         }
       }
     `);
-    // Verify round-trip of the formatted output
-    let second = format(result);
-    check('class method idempotent', second, result);
   });
 
   test('formats a resource class', (t: TestContext) => {

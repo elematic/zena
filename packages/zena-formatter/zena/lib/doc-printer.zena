@@ -298,6 +298,27 @@ let fits = (
 // printDocToString — the main algorithm
 // ============================================================================
 
+/**
+ * Writes `pending` spaces of deferred indentation and returns the new pending
+ * count, which is zero.
+ *
+ * Indentation is written when the line turns out to have content on it rather
+ * than when the newline before it is emitted. A line that holds nothing —
+ * the blank line between two class members, say — then ends at its newline
+ * instead of carrying the indentation of the member that follows. Deferring
+ * only ever withholds spaces the printer was about to add; it never removes
+ * bytes a `text` contributed, so trailing spaces written inside a template
+ * literal survive.
+ */
+let flushIndent = (out: StringBuilder, pending: i32): i32 => {
+  var remaining = pending;
+  while (remaining > 0) {
+    out.append(' ');
+    remaining -= 1;
+  }
+  return 0;
+};
+
 export let printDocToString = (doc: Doc, options: PrintOptions): String => {
   propagateBreaks(doc);
   let out = new StringBuilder();
@@ -308,6 +329,8 @@ export let printDocToString = (doc: Doc, options: PrintOptions): String => {
   cmds.push(new PrintCommand(0, Mode.Break, doc));
 
   var pos: i32 = 0; // current column position
+  // Indentation owed to the current line, written once it has content.
+  var pendingIndent: i32 = 0;
 
   while (cmds.length > 0) {
     let cmd = cmds.pop();
@@ -317,6 +340,7 @@ export let printDocToString = (doc: Doc, options: PrintOptions): String => {
 
     if (d.kind == DocKind.Text) {
       let td = d as TextDoc;
+      pendingIndent = flushIndent(out, pendingIndent);
       out.append(td.value);
       pos = pos + td.value.length;
 
@@ -447,6 +471,7 @@ export let printDocToString = (doc: Doc, options: PrintOptions): String => {
 
     } else if (d.kind == DocKind.Line) {
       if (mode == Mode.Flat) {
+        pendingIndent = flushIndent(out, pendingIndent);
         out.append(' ');
         pos = pos + 1;
       } else {
@@ -463,14 +488,8 @@ export let printDocToString = (doc: Doc, options: PrintOptions): String => {
           lineSuffixes = new Array<PrintCommand>();
         } else {
           out.append('\n');
-          pos = 0;
-          // Emit indentation
-          var spaces = indentLevel * INDENT_WIDTH;
-          while (spaces > 0) {
-            out.append(' ');
-            spaces = spaces - 1;
-          }
-          pos = indentLevel * INDENT_WIDTH;
+          pendingIndent = indentLevel * INDENT_WIDTH;
+          pos = pendingIndent;
         }
       }
 
@@ -491,13 +510,8 @@ export let printDocToString = (doc: Doc, options: PrintOptions): String => {
           lineSuffixes = new Array<PrintCommand>();
         } else {
           out.append('\n');
-          pos = 0;
-          var spaces = indentLevel * INDENT_WIDTH;
-          while (spaces > 0) {
-            out.append(' ');
-            spaces = spaces - 1;
-          }
-          pos = indentLevel * INDENT_WIDTH;
+          pendingIndent = indentLevel * INDENT_WIDTH;
+          pos = pendingIndent;
         }
       }
 
@@ -515,17 +529,13 @@ export let printDocToString = (doc: Doc, options: PrintOptions): String => {
         lineSuffixes = new Array<PrintCommand>();
       } else {
         out.append('\n');
-        pos = 0;
-        var spaces = indentLevel * INDENT_WIDTH;
-        while (spaces > 0) {
-          out.append(' ');
-          spaces = spaces - 1;
-        }
-        pos = indentLevel * INDENT_WIDTH;
+        pendingIndent = indentLevel * INDENT_WIDTH;
+        pos = pendingIndent;
       }
 
     } else if (d.kind == DocKind.LiteralLine) {
       out.append('\n');
+      pendingIndent = 0;
       pos = 0;
       // No indentation for literal lines
 
@@ -575,6 +585,7 @@ export let printDocToString = (doc: Doc, options: PrintOptions): String => {
     let d = cmd.doc;
     if (d.kind == DocKind.Text) {
       let td = d as TextDoc;
+      pendingIndent = flushIndent(out, pendingIndent);
       out.append(td.value);
     }
     i += 1;
