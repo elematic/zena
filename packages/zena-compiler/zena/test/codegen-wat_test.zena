@@ -28,12 +28,17 @@ let assertSnapshot = (name: String, content: String): void => {
   }
 };
 
-let compileAndGenerateWatWith = (source: String, wideArithmetic: boolean): String => {
-  let host = new MockHost();
-  host.addFile("test.zena", source);
-  
-  let compiler = makeCompiler(host);
-  let compResult = compiler.compile({entry: "test.zena", target: 'js'});
+/**
+ * Generate wat for `entry` out of `host`, with `packages` registered on
+ * the compiler so the program can import across a package specifier.
+ */
+let generateWat = (
+    host: MockHost,
+    entry: String,
+    packages: Map<String, PackageConfig> | null,
+    wideArithmetic: boolean): String => {
+  let compiler = makeCompiler(host, packages);
+  let compResult = compiler.compile({entry, target: 'js'});
   let checkRes = checkCompilation(compResult);
   
   let entryAst = compResult.entry.ast;
@@ -57,6 +62,12 @@ let compileAndGenerateWatWith = (source: String, wideArithmetic: boolean): Strin
   let generator = new WatGenerator();
   generator.wideArithmetic = wideArithmetic;
   return generator.generate(program);
+};
+
+let compileAndGenerateWatWith = (source: String, wideArithmetic: boolean): String => {
+  let host = new MockHost();
+  host.addFile("test.zena", source);
+  return generateWat(host, "test.zena", null, wideArithmetic);
 };
 
 let compileAndGenerateWat = (source: String): String => {
@@ -574,5 +585,31 @@ export let tests = suite('WatGenerator', (): void => {
     absent.push('return_call');
     assertFunctionOmits(result, '$down', absent,
         'tail-call elimination is opt-in; nothing infers it');
+  });
+
+  // A `function` declaration imported across a package specifier and
+  // handed to a higher-order function. The value needs a wrapper that
+  // reachability registers, and the wrapper is keyed by the declaration
+  // the import names. Resolving the import by its specifier text does
+  // not find that declaration — "dep:mod" is no unit's path — so
+  // reachability follows the specifier's symbol link instead. Without
+  // that, nothing registers the wrapper and lowering fails with
+  // "non-local identifier: addOne". See
+  // https://github.com/elematic/zena/issues/159.
+  test('a package-imported function used as a value lowers', (ctx: TestContext): void => {
+    let host = new MockHost();
+    host.addFile('/dep/mod.zena',
+        'export function addOne(x: i32): i32 { return x + 1; }\n');
+    host.addFile('/project/main.zena',
+        "import { addOne } from 'dep:mod';\n" +
+        'let apply = (f: (x: i32) => i32, x: i32): i32 => f(x);\n' +
+        'export let main = (): i32 => apply(addOne, 41);\n');
+    let packages = new Map<String, PackageConfig>();
+    packages['dep'] = new PackageConfig('/dep', null);
+
+    let result = generateWat(host, '/project/main.zena', packages, false);
+
+    isTrue(result.contains('$addOne_valwrapper_'),
+        'the module has no value wrapper around the imported addOne');
   });
 });

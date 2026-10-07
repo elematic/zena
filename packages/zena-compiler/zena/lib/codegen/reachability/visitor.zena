@@ -2407,6 +2407,16 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
     let {declaration} = sym;
     if (declaration is ImportSpecifier) {
       targetSymId = resolveImportedSymbolId(this.pass.program, model, declaration, null);
+      if (targetSymId == noSymbolId) {
+        // `resolveImportedSymbolId` answers from the specifier text and
+        // the map of declarations each unit makes, so it has no answer
+        // for a package specifier ("wit-parser:document" is no unit's
+        // path) or for a name a module re-exports rather than declares.
+        // The checker already linked the specifier to the declaration it
+        // names, so follow that link instead of leaving the function
+        // value without a wrapper.
+        targetSymId = sym.resolveTarget().id;
+      }
     }
     let resolvedArgs = new Array<Type>();
     let {typeArguments} = nodeType;
