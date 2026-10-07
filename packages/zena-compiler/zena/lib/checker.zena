@@ -118,6 +118,7 @@ import { SemanticModel, ModelIndex, InterfaceAdaptation, SymbolDependencies, Clo
 import {
   Diagnostic, DiagnosticBag, DiagnosticCode, DiagnosticSeverity
 } from './diagnostics.zena';
+import { lineAt } from './line-index.zena';
 import { Symbol, SymbolId, noSymbolId } from './scope/symbol.zena';
 import { ScopeResult, ModuleExports } from './scope/scope-builder.zena';
 import { WellKnown, isWellKnown, wellKnownLibrary, wellKnownName, protocolSymbolKey } from './well-known.zena';
@@ -4317,6 +4318,8 @@ export let beginModule = (
   // checked long afterwards, from a walk that found this model and has
   // only the path to name it by.
   ctx.model.sourcePath = ast.path;
+  // The per-node tables become arrays over the module's id range.
+  ctx.model.setNodeRange(ast.id, ast.lastNodeId);
   if (deferBodies) {
     // Only a module that defers: the context has to outlive its check
     // so an importer can ask it for a signature its deferred body
@@ -16271,7 +16274,7 @@ let checkSuperInitArgs = (
             if (name == "__LOCATION__") {
               if (ctx.emitLocations) {
                 let locStr = if (loc != null) {
-                  `${ctx.filePath}:${loc.line}`
+                  `${ctx.filePath}:${i32ToString(lineAt(ctx.filePath, loc.start))}`
                 } else {
                   `${ctx.filePath}:0`
                 };
@@ -18247,7 +18250,7 @@ let checkConstructorArguments = (
                 if (name == "__LOCATION__") {
                   if (ctx.emitLocations) {
                     let locStr = if (loc != null) {
-                      `${ctx.filePath}:${loc.line}`
+                      `${ctx.filePath}:${i32ToString(lineAt(ctx.filePath, loc.start))}`
                     } else {
                       `${ctx.filePath}:0`
                     };
@@ -22262,7 +22265,7 @@ let checkCallExpressionInner = (
                 if (name == "__LOCATION__") {
                   if (ctx.emitLocations) {
                     let locStr = if (loc != null) {
-                      `${ctx.filePath}:${loc.line}`
+                      `${ctx.filePath}:${i32ToString(lineAt(ctx.filePath, loc.start))}`
                     } else {
                       `${ctx.filePath}:0`
                     };

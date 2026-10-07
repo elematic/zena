@@ -12,8 +12,14 @@ export final class GrowableArray<T> implements MutableArray<T>, Iterable<T> {
    * would be visible through the other. `from` copies; this adopts.
    * (A constructor parameter rather than a static so it works from
    * generic bodies — see the issue linked from `growable` below.)
+   *
+   * The default capacity is zero: an empty buffer is 32 bytes in
+   * wasmtime's GC heap where an eight-slot one is 64, and most arrays
+   * a program builds stay empty or are filled once and never grown
+   * (`#grow` takes zero to eight, then doubles). Pass a capacity to
+   * pre-size an array that is known to fill.
    */
-  new(capacity: i32 = 8, adopting: FixedArray<T> | null = null)
+  new(capacity: i32 = 0, adopting: FixedArray<T> | null = null)
     : #buffer = adopting ?? (__array_new_empty<T>(capacity) as FixedArray<T>) {
     if (adopting != null) {
       this.#length = this.#buffer.length;

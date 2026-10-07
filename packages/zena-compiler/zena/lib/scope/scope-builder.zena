@@ -1,5 +1,5 @@
 import { Set } from 'zena:collections';
-import { NodeMap } from '../node-map.zena';
+import { NodeMap, DenseNodeMap } from '../node-map.zena';
 import {
   Node, NodeId, Module, SourceLocation, IdGenerator, makeNodeIdGenerator,
   // Sealed base types
@@ -175,7 +175,7 @@ export final class ScopeResult(
   /**
    * Parent pointer map from node → parent node.
    */
-  parents: NodeMap<Node>,
+  parents: DenseNodeMap<Node>,
 
   /** The prelude names this module uses, bound as implicit imports. */
   implicitImports: GrowableArray<ImplicitImport>,
@@ -190,7 +190,7 @@ export final class ScopeResult(
   implicitImportDeclarations: GrowableArray<ImportDeclaration>
 )
 
-let populateParents = (ast: Node, parents: NodeMap<Node>): void => {
+let populateParents = (ast: Node, parents: DenseNodeMap<Node>): void => {
   walkChildren(ast, (child) => {
     parents[child] = ast;
     populateParents(child, parents);
@@ -222,7 +222,8 @@ export final class ScopeBuilder {
   #unresolvedNames = new Array<UnresolvedName>();
   #symbols = new SymbolMap();
   #duplicateDeclarations = new Array<UnresolvedName>();
-  #parents = new NodeMap<Node>();
+  // Sized to the module's node-id range when `build` sees the AST.
+  #parents = new DenseNodeMap<Node>(0 as NodeId, -1 as NodeId);
   #isRead = new Map<SymbolId, boolean>();
   #isWritten = new Map<SymbolId, boolean>();
   #allVariables = new Array<Symbol>();
@@ -280,6 +281,9 @@ export final class ScopeBuilder {
    * Build scopes for a module AST.
    */
   build(ast: Node): ScopeResult {
+    if (ast is Module) {
+      this.#parents.reserve(ast.id, (ast as Module).lastNodeId);
+    }
     populateParents(ast, this.#parents);
     this.#declareBuiltins();
     this.#declarePrelude(ast.loc);

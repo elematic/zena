@@ -1,6 +1,7 @@
 import { Token, TokenType, Tokenizer } from './tokenizer.zena';
 import { Diagnostic, DiagnosticCode, DiagnosticSeverity, SourceSpan, SyntaxError } from './diagnostics.zena';
 import { walkEnter } from './visitor.zena';
+import { registerSource } from './line-index.zena';
 import { 
   SourceLocation,
   Comment,
@@ -308,7 +309,7 @@ export final class Parser {
   #missingModuleSpecifier(): StringLiteral {
     let token = this.#peek();
     return new StringLiteral("", new SourceLocation(
-      token.line, token.column, token.start, token.start, this.#path));
+      token.start, token.start, this.#path));
   }
 
   /**
@@ -499,13 +500,7 @@ export final class Parser {
 
   #makeLocation(startToken: Token): SourceLocation {
     let endToken = this.#previous();
-    return new SourceLocation(
-      startToken.line,
-      startToken.column,
-      startToken.start,
-      endToken.end,
-      this.#path
-    );
+    return new SourceLocation(startToken.start, endToken.end, this.#path);
   }
   
   // ==========================================================================
@@ -4308,9 +4303,11 @@ export let assignNodeIds = (node: Node, idGen: IdGenerator<NodeId>): void => {
  * nodes are numbered starting from 1 locally.
  */
 export let parse = (source: String, path: String, nodeIdGenerator: IdGenerator<NodeId> = makeNodeIdGenerator()): Module => {
+  registerSource(path, source);
   let parser = new Parser(source, path);
   let mod = parser.parse();
   assignNodeIds(mod, nodeIdGenerator);
+  mod.lastNodeId = (nodeIdGenerator.peek() - 1) as NodeId;
   return mod;
 };
 
@@ -4323,9 +4320,11 @@ export let parse = (source: String, path: String, nodeIdGenerator: IdGenerator<N
  * cannot recover from are still thrown, so a caller must handle both.
  */
 export let parseRecovering = (source: String, path: String, nodeIdGenerator: IdGenerator<NodeId> = makeNodeIdGenerator()): ParseResult => {
+  registerSource(path, source);
   let parser = new Parser(source, path, true);
   let mod = parser.parse();
   assignNodeIds(mod, nodeIdGenerator);
+  mod.lastNodeId = (nodeIdGenerator.peek() - 1) as NodeId;
   return {
     ast: mod,
     completeness: parser.completeness,

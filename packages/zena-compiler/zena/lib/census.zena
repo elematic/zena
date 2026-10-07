@@ -1,0 +1,512 @@
+/**
+ * A memory census of what one compile retains, for issue #199.
+ *
+ * `ZENA_CENSUS=1` prints a table of object counts and the bytes they
+ * occupy in the wasm GC heap, so a change aimed at the collector's live
+ * set can be measured rather than guessed at.
+ *
+ * Bytes come from wasmtime's copying collector layout, which is the
+ * only one worth sizing for: a 16-byte object header, fields at their
+ * natural alignment in declaration order, and the total rounded up to
+ * a multiple of 16 (`wasmtime-environ`'s `common_struct_layout`, with
+ * `copying::HEADER_SIZE` and `ALIGN` both 16). Every AST node field is
+ * a reference, an i32 or a boolean, so each is 4 bytes and a node of
+ * `n` fields occupies `ceil16(16 + 4n)`.
+ *
+ * The 16-byte quantum is the thing to keep in mind reading the table:
+ * shaving one field off a 13-field node saves nothing, and shaving one
+ * off a 4-field node saves a quarter of it.
+ *
+ * The AST and side-table rows come from walking the program, so they
+ * are what the compile RETAINS. The rows under "minted over the
+ * process" are totals, which for interned types is nearly the same
+ * thing and for anything transient is an upper bound.
+ */
+
+import { walkEnter } from './visitor.zena';
+import {
+  Node, Module, VariableDeclaration, UsingStatement, ShieldedStatement, FunctionDeclaration, ExpressionStatement, BlockStatement, IfStatement, WhileStatement, ForStatement, ForInStatement, LetPatternCondition, ReturnStatement, YieldStatement, BreakStatement, ContinueStatement, Identifier, BindingPattern, IdentifierPattern, NumberLiteral, StringLiteral, BooleanLiteral, NullLiteral, TemplateElement, TemplateLiteral, TaggedTemplateExpression, BinaryExpression, UnaryExpression, AssignmentExpression, AsExpression, IsExpression, RangeExpression, PipelineExpression, PipePlaceholder, FunctionExpression, Parameter, CallExpression, TypeParameter, MemberExpression, IndexExpression, ThisExpression, NewExpression, ArrayLiteral, RecordLiteral, TupleLiteral, PropertyAssignment, SpreadElement, MapLiteral, MapEntry, RecordPattern, TuplePattern, ArrayPattern, RestPattern, BindingProperty, AsPattern, ClassPattern, LogicalPattern, AssignmentPattern, AbsencePattern, LiteralPattern, MatchExpression, MatchCase, IfExpression, ThrowExpression, TryExpression, AwaitExpression, CatchClause, NamedTypeAnnotation, UnionTypeAnnotation, NullableTypeAnnotation, FunctionTypeAnnotation, LiteralTypeAnnotation, RecordTypeAnnotation, TupleTypeAnnotation, InlineTupleTypeAnnotation, ThisTypeAnnotation, PropertySignature, TypeAliasDeclaration, CaseClassParam, SealedVariant, ClassDeclaration, FieldDefinition, MethodDefinition, AccessorDeclaration, SetterInfo, SuperExpression, FieldInitializer, SuperInitializer, InterfaceDeclaration, MixinDeclaration, MethodSignature, AccessorSignature, EnumDeclaration, EnumMember, ImportDeclaration, ImportSpecifier, ExportAllDeclaration, ExportFromDeclaration, Decorator, DeclareFunction, SymbolDeclaration, SymbolPropertyName,
+} from './ast.zena';
+import { Program } from './program.zena';
+import {
+  typesCreated, classTypesCreated, functionTypesCreated,
+  interfaceTypesCreated, mixinTypesCreated, typeParameterTypesCreated,
+  typeKeysCached, typeKeyBytes,
+  instantiationHits, instantiationMisses, substitutedNominals,
+  substitutionCacheHits, parametricSubstitutions
+} from './types.zena';
+
+/**
+ * The wasm GC heap size of an object with `fields` 4-byte fields: the
+ * 16-byte header plus the fields, rounded up to the 16-byte quantum.
+ */
+export let objectBytes = (fields: i32): i32 => {
+  return (((16 + 4 * fields + 15) / 16) as i32) * 16;
+};
+
+/**
+ * What one entry in a `Map<K, V>` costs: a `MapEntry` (key, value,
+ * next) plus its share of the bucket array, which grows at a 0.75 load
+ * factor, so about 1.33 four-byte slots per live entry.
+ */
+let mapEntryBytes = (entries: i32): i32 => entries * (objectBytes(3) + 5);
+
+/**
+ * The same for an ordered map, whose entry adds forward and backward
+ * links and a `removed` flag.
+ */
+let orderedEntryBytes = (entries: i32): i32 => entries * (objectBytes(6) + 5);
+
+/**
+ * How many fields each AST node kind declares, counting the two it
+ * inherits from `Node` (`loc` and `id`). Generated from the
+ * declarations in ast.zena; a kind that gains a field and is not
+ * updated here is reported too small, which its row's name makes
+ * findable.
+ */
+let nodeFieldCount = (node: Node): i32 => {
+  return match (node) {
+    case AbsencePattern: 2
+    case AccessorDeclaration: 9
+    case AccessorSignature: 6
+    case ArrayLiteral: 3
+    case ArrayPattern: 3
+    case AsExpression: 4
+    case AsPattern: 4
+    case AssignmentExpression: 5
+    case AssignmentPattern: 4
+    case AwaitExpression: 3
+    case BinaryExpression: 5
+    case BindingPattern: 4
+    case BindingProperty: 4
+    case BlockStatement: 3
+    case BooleanLiteral: 3
+    case BreakStatement: 2
+    case CallExpression: 6
+    case CaseClassParam: 6
+    case CatchClause: 4
+    case ClassDeclaration: 17
+    case ClassPattern: 4
+    case ContinueStatement: 2
+    case DeclareFunction: 10
+    case Decorator: 5
+    case EnumDeclaration: 5
+    case EnumMember: 4
+    case ExportAllDeclaration: 3
+    case ExportFromDeclaration: 4
+    case ExpressionStatement: 3
+    case FieldDefinition: 13
+    case FieldInitializer: 4
+    case ForInStatement: 6
+    case ForStatement: 6
+    case FunctionDeclaration: 5
+    case FunctionExpression: 8
+    case FunctionTypeAnnotation: 5
+    case Identifier: 3
+    case IdentifierPattern: 3
+    case IfExpression: 5
+    case IfStatement: 5
+    case ImportDeclaration: 4
+    case ImportSpecifier: 4
+    case IndexExpression: 5
+    case InlineTupleTypeAnnotation: 3
+    case InterfaceDeclaration: 7
+    case IsExpression: 4
+    case LetPatternCondition: 4
+    case LiteralPattern: 3
+    case LiteralTypeAnnotation: 3
+    case LogicalPattern: 5
+    case MapEntry: 4
+    case MapLiteral: 3
+    case MatchCase: 5
+    case MatchExpression: 4
+    case MemberExpression: 7
+    case MethodDefinition: 19
+    case MethodSignature: 6
+    case MixinDeclaration: 9
+    case Module: 6
+    case NamedTypeAnnotation: 5
+    case NewExpression: 6
+    case NullLiteral: 2
+    case NullableTypeAnnotation: 3
+    case NumberLiteral: 3
+    case Parameter: 8
+    case PipePlaceholder: 2
+    case PipelineExpression: 4
+    case PropertyAssignment: 4
+    case PropertySignature: 5
+    case RangeExpression: 4
+    case RecordLiteral: 3
+    case RecordPattern: 3
+    case RecordTypeAnnotation: 3
+    case RestPattern: 3
+    case ReturnStatement: 4
+    case SealedVariant: 4
+    case SetterInfo: 4
+    case ShieldedStatement: 3
+    case SpreadElement: 3
+    case StringLiteral: 3
+    case SuperExpression: 2
+    case SuperInitializer: 4
+    case SymbolDeclaration: 4
+    case SymbolPropertyName: 3
+    case TaggedTemplateExpression: 4
+    case TemplateElement: 5
+    case TemplateLiteral: 4
+    case ThisExpression: 2
+    case ThisTypeAnnotation: 2
+    case ThrowExpression: 3
+    case TryExpression: 6
+    case TupleLiteral: 3
+    case TuplePattern: 3
+    case TupleTypeAnnotation: 3
+    case TypeAliasDeclaration: 9
+    case TypeParameter: 6
+    case UnaryExpression: 5
+    case UnionTypeAnnotation: 3
+    case UsingStatement: 5
+    case VariableDeclaration: 7
+    case WhileStatement: 4
+    case YieldStatement: 3
+  };
+};
+
+/** The declaration name of a node kind, for the census row. */
+let nodeKindName = (node: Node): String => {
+  return match (node) {
+    case AbsencePattern: 'AbsencePattern'
+    case AccessorDeclaration: 'AccessorDeclaration'
+    case AccessorSignature: 'AccessorSignature'
+    case ArrayLiteral: 'ArrayLiteral'
+    case ArrayPattern: 'ArrayPattern'
+    case AsExpression: 'AsExpression'
+    case AsPattern: 'AsPattern'
+    case AssignmentExpression: 'AssignmentExpression'
+    case AssignmentPattern: 'AssignmentPattern'
+    case AwaitExpression: 'AwaitExpression'
+    case BinaryExpression: 'BinaryExpression'
+    case BindingPattern: 'BindingPattern'
+    case BindingProperty: 'BindingProperty'
+    case BlockStatement: 'BlockStatement'
+    case BooleanLiteral: 'BooleanLiteral'
+    case BreakStatement: 'BreakStatement'
+    case CallExpression: 'CallExpression'
+    case CaseClassParam: 'CaseClassParam'
+    case CatchClause: 'CatchClause'
+    case ClassDeclaration: 'ClassDeclaration'
+    case ClassPattern: 'ClassPattern'
+    case ContinueStatement: 'ContinueStatement'
+    case DeclareFunction: 'DeclareFunction'
+    case Decorator: 'Decorator'
+    case EnumDeclaration: 'EnumDeclaration'
+    case EnumMember: 'EnumMember'
+    case ExportAllDeclaration: 'ExportAllDeclaration'
+    case ExportFromDeclaration: 'ExportFromDeclaration'
+    case ExpressionStatement: 'ExpressionStatement'
+    case FieldDefinition: 'FieldDefinition'
+    case FieldInitializer: 'FieldInitializer'
+    case ForInStatement: 'ForInStatement'
+    case ForStatement: 'ForStatement'
+    case FunctionDeclaration: 'FunctionDeclaration'
+    case FunctionExpression: 'FunctionExpression'
+    case FunctionTypeAnnotation: 'FunctionTypeAnnotation'
+    case Identifier: 'Identifier'
+    case IdentifierPattern: 'IdentifierPattern'
+    case IfExpression: 'IfExpression'
+    case IfStatement: 'IfStatement'
+    case ImportDeclaration: 'ImportDeclaration'
+    case ImportSpecifier: 'ImportSpecifier'
+    case IndexExpression: 'IndexExpression'
+    case InlineTupleTypeAnnotation: 'InlineTupleTypeAnnotation'
+    case InterfaceDeclaration: 'InterfaceDeclaration'
+    case IsExpression: 'IsExpression'
+    case LetPatternCondition: 'LetPatternCondition'
+    case LiteralPattern: 'LiteralPattern'
+    case LiteralTypeAnnotation: 'LiteralTypeAnnotation'
+    case LogicalPattern: 'LogicalPattern'
+    case MapEntry: 'MapEntry'
+    case MapLiteral: 'MapLiteral'
+    case MatchCase: 'MatchCase'
+    case MatchExpression: 'MatchExpression'
+    case MemberExpression: 'MemberExpression'
+    case MethodDefinition: 'MethodDefinition'
+    case MethodSignature: 'MethodSignature'
+    case MixinDeclaration: 'MixinDeclaration'
+    case Module: 'Module'
+    case NamedTypeAnnotation: 'NamedTypeAnnotation'
+    case NewExpression: 'NewExpression'
+    case NullLiteral: 'NullLiteral'
+    case NullableTypeAnnotation: 'NullableTypeAnnotation'
+    case NumberLiteral: 'NumberLiteral'
+    case Parameter: 'Parameter'
+    case PipePlaceholder: 'PipePlaceholder'
+    case PipelineExpression: 'PipelineExpression'
+    case PropertyAssignment: 'PropertyAssignment'
+    case PropertySignature: 'PropertySignature'
+    case RangeExpression: 'RangeExpression'
+    case RecordLiteral: 'RecordLiteral'
+    case RecordPattern: 'RecordPattern'
+    case RecordTypeAnnotation: 'RecordTypeAnnotation'
+    case RestPattern: 'RestPattern'
+    case ReturnStatement: 'ReturnStatement'
+    case SealedVariant: 'SealedVariant'
+    case SetterInfo: 'SetterInfo'
+    case ShieldedStatement: 'ShieldedStatement'
+    case SpreadElement: 'SpreadElement'
+    case StringLiteral: 'StringLiteral'
+    case SuperExpression: 'SuperExpression'
+    case SuperInitializer: 'SuperInitializer'
+    case SymbolDeclaration: 'SymbolDeclaration'
+    case SymbolPropertyName: 'SymbolPropertyName'
+    case TaggedTemplateExpression: 'TaggedTemplateExpression'
+    case TemplateElement: 'TemplateElement'
+    case TemplateLiteral: 'TemplateLiteral'
+    case ThisExpression: 'ThisExpression'
+    case ThisTypeAnnotation: 'ThisTypeAnnotation'
+    case ThrowExpression: 'ThrowExpression'
+    case TryExpression: 'TryExpression'
+    case TupleLiteral: 'TupleLiteral'
+    case TuplePattern: 'TuplePattern'
+    case TupleTypeAnnotation: 'TupleTypeAnnotation'
+    case TypeAliasDeclaration: 'TypeAliasDeclaration'
+    case TypeParameter: 'TypeParameter'
+    case UnaryExpression: 'UnaryExpression'
+    case UnionTypeAnnotation: 'UnionTypeAnnotation'
+    case UsingStatement: 'UsingStatement'
+    case VariableDeclaration: 'VariableDeclaration'
+    case WhileStatement: 'WhileStatement'
+    case YieldStatement: 'YieldStatement'
+  };
+};
+
+/** One row of the census: a kind, how many there are, and their bytes. */
+final class Row {
+  name: String;
+  var count: i32 = 0;
+  var bytes: i32 = 0;
+  new(this.name);
+}
+
+/** Rows accumulated by name, reported by descending bytes. */
+final class Table {
+  #rows = new Map<String, Row>();
+  #order = new GrowableArray<Row>();
+
+  add(name: String, count: i32, bytes: i32): void {
+    if (count == 0) { return; }
+    let row = if (let (true, existing) = this.#rows.get(name)) {
+      existing
+    } else {
+      let created = new Row(name);
+      this.#rows[name] = created;
+      this.#order.push(created);
+      created
+    };
+    row.count = row.count + count;
+    row.bytes = row.bytes + bytes;
+  }
+
+  rowsByBytes(): GrowableArray<Row> {
+    let out = new GrowableArray<Row>();
+    for (let row in this.#order) {
+      out.push(row);
+    }
+    var i = 1;
+    while (i < out.length) {
+      let current = out[i];
+      var j = i - 1;
+      while (j >= 0 && out[j].bytes < current.bytes) {
+        out[j + 1] = out[j];
+        j -= 1;
+      }
+      out[j + 1] = current;
+      i += 1;
+    }
+    return out;
+  }
+
+  totalBytes(): i32 {
+    var total = 0;
+    for (let row in this.#order) {
+      total = total + row.bytes;
+    }
+    return total;
+  }
+
+  totalCount(): i32 {
+    var total = 0;
+    for (let row in this.#order) {
+      total = total + row.count;
+    }
+    return total;
+  }
+}
+
+let padRight = (s: String, width: i32): String => {
+  var out = s;
+  while (out.length < width) { out = out + " "; }
+  return out;
+};
+
+let padLeft = (s: String, width: i32): String => {
+  var out = s;
+  while (out.length < width) { out = " " + out; }
+  return out;
+};
+
+/** A byte count as MiB to one decimal, for a table a human reads. */
+let mib = (bytes: i32): String => {
+  let tenths = (((bytes as f64) / 1048576.0) * 10.0) as i32;
+  let whole = (tenths / 10) as i32;
+  return `${i32ToString(whole)}.${i32ToString(tenths - whole * 10)}`;
+};
+
+let printTable = (title: String, table: Table, limit: i32): void => {
+  console.log("");
+  console.log(`-- ${title}: ${i32ToString(table.totalCount())} objects, ${mib(table.totalBytes())} MiB`);
+  var shown = 0;
+  for (let row in table.rowsByBytes()) {
+    if (shown >= limit) { break; }
+    console.log(`   ${padRight(row.name, 32)}${padLeft(i32ToString(row.count), 11)}${padLeft(mib(row.bytes), 10)}`);
+    shown += 1;
+  }
+};
+
+let line = (label: String, value: i32): void => {
+  console.log(`   ${padRight(label, 32)}${padLeft(i32ToString(value), 11)}`);
+};
+
+/**
+ * Prints the census for a compile's `Program`.
+ *
+ * Walks every unit's AST once, which is a second traversal of the whole
+ * program — hence the flag.
+ */
+export let reportCensus = (program: Program): void => {
+  let ast = new Table();
+  let side = new Table();
+  let other = new Table();
+
+  var nodeCount = 0;
+  var withLocation = 0;
+  var sourceBytes = 0;
+  var commentCount = 0;
+
+  for (let unit in program.units) {
+    walkEnter(unit.ast, (n: Node): void => {
+      nodeCount += 1;
+      ast.add(nodeKindName(n), 1, objectBytes(nodeFieldCount(n)));
+      if (n.loc != null) { withLocation += 1; }
+    });
+    sourceBytes = sourceBytes + unit.ast.source.length;
+    commentCount = commentCount + unit.ast.comments.length;
+
+    let m = unit.model;
+    // The dense tables cost one 4-byte slot per id in the module's
+    // range, present or not, plus the array header; entries for nodes
+    // minted after parsing are map entries as before.
+    let range = (m.lastNodeId as i32) - (m.firstNodeId as i32) + 1;
+    let denseBytes = (if (range > 0) range * 4 + 32 else 0);
+    side.add("nodeTypes (dense)", m.nodeTypes.size, denseBytes);
+    side.add("parents (dense)", m.parents.size, denseBytes);
+    side.add("memberKeys", m.memberKeys.size, mapEntryBytes(m.memberKeys.size));
+    side.add("bindingTypes", m.bindingTypes.size, mapEntryBytes(m.bindingTypes.size));
+    side.add("staticAccesses", m.staticAccesses.size, mapEntryBytes(m.staticAccesses.size));
+    side.add("recordAdaptations", m.recordAdaptations.size,
+        mapEntryBytes(m.recordAdaptations.size));
+    side.add("interfaceAdaptations", m.interfaceAdaptations.size,
+        mapEntryBytes(m.interfaceAdaptations.size));
+    side.add("functionAdaptations", m.functionAdaptations.size,
+        mapEntryBytes(m.functionAdaptations.size));
+    side.add("unionCallCalleeTypes", m.unionCallCalleeTypes.size,
+        mapEntryBytes(m.unionCallCalleeTypes.size));
+    side.add("originalArgCounts", m.originalArgCounts.size,
+        mapEntryBytes(m.originalArgCounts.size));
+    side.add("defaultArgsOwners", m.defaultArgsOwners.size,
+        mapEntryBytes(m.defaultArgsOwners.size));
+    side.add("defaultArgParamNames", m.defaultArgParamNames.size,
+        mapEntryBytes(m.defaultArgParamNames.size));
+    side.add("scopeExitDrops", m.scopeExitDrops.size,
+        mapEntryBytes(m.scopeExitDrops.size));
+    side.add("ownDropIntervals", m.ownDropIntervals.size,
+        mapEntryBytes(m.ownDropIntervals.size));
+    side.add("assignmentReleases", m.assignmentReleases.size,
+        mapEntryBytes(m.assignmentReleases.size));
+    side.add("edgeDrops", m.edgeDrops.size, mapEntryBytes(m.edgeDrops.size));
+    side.add("movedOutFields", m.movedOutFields.size,
+        mapEntryBytes(m.movedOutFields.size));
+    side.add("symbolDependencies", m.symbolDependencies.size,
+        mapEntryBytes(m.symbolDependencies.size));
+    side.add("nodeDependencies", m.nodeDependencies.size,
+        mapEntryBytes(m.nodeDependencies.size));
+    side.add("symbolNames", m.symbolNames.size, mapEntryBytes(m.symbolNames.size));
+    side.add("classDeclarations", m.classDeclarations.size,
+        mapEntryBytes(m.classDeclarations.size));
+    side.add("interfaceDeclarations", m.interfaceDeclarations.size,
+        mapEntryBytes(m.interfaceDeclarations.size));
+    side.add("mixinDeclarations", m.mixinDeclarations.size,
+        mapEntryBytes(m.mixinDeclarations.size));
+    side.add("enumDeclarations", m.enumDeclarations.size,
+        mapEntryBytes(m.enumDeclarations.size));
+    side.add("globalDeclarations", m.globalDeclarations.size,
+        orderedEntryBytes(m.globalDeclarations.size));
+  }
+
+  let index = program.modelIndex;
+  // Parsed nodes are indexed by module range (a ModelRange of three
+  // fields per module); only nodes minted after parsing get an entry.
+  side.add("index.ranges", index.rangeCount, index.rangeCount * objectBytes(3));
+  side.add("index.nodeToModel (overflow)", index.overflowCount,
+      mapEntryBytes(index.overflowCount));
+  side.add("index.symbolToModel", index.symbolToModel.size,
+      mapEntryBytes(index.symbolToModel.size));
+
+  // One SourceLocation per node that has one: start, end, path. The
+  // parser mints a fresh one per node, never shared.
+  other.add("SourceLocation", withLocation, withLocation * objectBytes(3));
+  // Comment: value, isBlock, start, end, line, column — plus the
+  // String view over the module source that `value` is.
+  other.add("Comment", commentCount, commentCount * objectBytes(6));
+  other.add("Comment value (String)", commentCount, commentCount * objectBytes(5));
+  // Module.source holds the whole file; every String sliced out of it
+  // keeps the same ByteArray alive, so this is counted once per unit.
+  other.add("Module source (ByteArray)", program.units.length,
+      sourceBytes + 16 * program.units.length);
+
+  console.log("");
+  console.log("=== memory census ===");
+  printTable("AST nodes", ast, 25);
+  printTable("semantic model side tables", side, 20);
+  printTable("other retained", other, 10);
+
+  console.log("");
+  console.log("-- totals");
+  line("units", program.units.length);
+  line("AST nodes", nodeCount);
+  line("nodes with a location", withLocation);
+  line("source bytes", sourceBytes);
+  line("comments", commentCount);
+
+  console.log("");
+  console.log("-- minted over the process (not all live)");
+  line("Types, all kinds", typesCreated());
+  line("  ClassType", classTypesCreated());
+  line("  FunctionType", functionTypesCreated());
+  line("  InterfaceType", interfaceTypesCreated());
+  line("  MixinType", mixinTypesCreated());
+  line("  TypeParameterType", typeParameterTypesCreated());
+  line("type key strings cached", typeKeysCached());
+  line("type key string bytes", typeKeyBytes());
+  line("instantiation cache hits", instantiationHits());
+  line("instantiation cache misses", instantiationMisses());
+  line("nominal substitutions built", substitutedNominals());
+  line("nominal substitutions cached", substitutionCacheHits());
+  line("  of built, parametric (uncacheable)", parametricSubstitutions());
+
+  console.log("");
+  console.log("-- retained, by group (MiB)");
+  console.log(`   ${padRight("AST nodes", 32)}${padLeft(mib(ast.totalBytes()), 11)}`);
+  console.log(`   ${padRight("side tables", 32)}${padLeft(mib(side.totalBytes()), 11)}`);
+  console.log(`   ${padRight("locations, comments, source", 32)}${padLeft(mib(other.totalBytes()), 11)}`);
+  console.log(`   ${padRight("type key strings", 32)}${padLeft(mib(typeKeyBytes()), 11)}`);
+};

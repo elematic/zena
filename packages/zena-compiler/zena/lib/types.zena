@@ -39,6 +39,50 @@ let nextTypeUid = (): i32 => {
   return id;
 };
 
+// Counts for the memory census (census.zena). Every Type takes a uid,
+// so the total is free; the kinds with a constructor of their own
+// count themselves there. Key strings are counted where they are
+// cached (codegen-utils.zena), which is the only place they are made.
+var _classTypes = 0;
+var _functionTypes = 0;
+var _interfaceTypes = 0;
+var _mixinTypes = 0;
+var _typeParameterTypes = 0;
+var _typeKeysCached = 0;
+var _typeKeyBytes = 0;
+// How the nominal instantiation caches fare: a hit still rebuilds the
+// instantiation's supertypes, constructor and lists today, so the hit
+// count is the allocation the cache does not save.
+var _instantiationHits = 0;
+var _instantiationMisses = 0;
+// Nominal types `substituteInType` builds outside any cache.
+var _substitutedNominals = 0;
+var _substitutionCacheHits = 0;
+// Substitutions whose arguments mention a type parameter, built fresh
+// because they cannot be cached (see substituteInType's class case).
+var _parametricSubstitutions = 0;
+
+export let substitutionCacheHits = (): i32 => _substitutionCacheHits;
+export let parametricSubstitutions = (): i32 => _parametricSubstitutions;
+export let instantiationHits = (): i32 => _instantiationHits;
+export let instantiationMisses = (): i32 => _instantiationMisses;
+export let substitutedNominals = (): i32 => _substitutedNominals;
+
+export let typesCreated = (): i32 => _nextTypeUid - 1;
+export let classTypesCreated = (): i32 => _classTypes;
+export let functionTypesCreated = (): i32 => _functionTypes;
+export let interfaceTypesCreated = (): i32 => _interfaceTypes;
+export let mixinTypesCreated = (): i32 => _mixinTypes;
+export let typeParameterTypesCreated = (): i32 => _typeParameterTypes;
+export let typeKeysCached = (): i32 => _typeKeysCached;
+export let typeKeyBytes = (): i32 => _typeKeyBytes;
+
+/** Records one cached type key string of `bytes` bytes. */
+export let countTypeKey = (bytes: i32): void => {
+  _typeKeysCached += 1;
+  _typeKeyBytes = _typeKeyBytes + bytes;
+};
+
 export sealed class Type implements Hashable {
   var uniqueKeyCache: String | null = null;
   var specializationKeyCache: String | null = null;
@@ -289,7 +333,9 @@ export final class FunctionType extends Type {
   ) : parameters = parameters,
       parameterNames = parameterNames,
       returnType = returnType,
-      super();
+      super() {
+    _functionTypes += 1;
+  }
 }
 
 export final class ClassType extends Type {
@@ -383,6 +429,24 @@ export final class ClassType extends Type {
   var forwardVariantNames: Set<String> | null = null;
   instantiations = new Map<String, ClassType>();
 
+  /**
+   * The instantiations `substituteInType` has built from this mention
+   * with closed arguments, by argument identity, so a generic class
+   * substituted a thousand times through one signature is
+   * instantiated once per argument list rather than once per
+   * substitution (issue #199: 610K of them in a large build). Null
+   * until the first substitution through this mention.
+   */
+  var substitutionCache: Map<String, ClassType> | null = null;
+  /**
+   * On a cached instantiation: `classShapeStamp` of its source when it
+   * was built. The checker fills a class in phases, and a substitution
+   * before its constructor or supertypes are set must not fix the
+   * instantiation in that state, so a hit whose stamp no longer
+   * matches is rebuilt in place.
+   */
+  var shapeStamp: i32 = 0;
+
   /** The file path where this class was declared (set by the checker). */
   var sourcePath: String = "";
 
@@ -390,7 +454,9 @@ export final class ClassType extends Type {
   // that takes a generic class to copy. This will allow us to make as many
   // of these fields immutable as possible instead of reassigning them in
   // `instantiateClassType`.
-  new(id: TypeId, symbolId: SymbolId, name: String) : id = id, symbolId = symbolId, name = name, super();
+  new(id: TypeId, symbolId: SymbolId, name: String) : id = id, symbolId = symbolId, name = name, super() {
+    _classTypes += 1;
+  }
 
   /**
    * The original declaration this class was instantiated from:
@@ -437,6 +503,51 @@ export final class DecoratedField(
 final class SubstitutionFrame(source: Type, key: String, result: Type)
 
 var substitutionFrames = new Array<SubstitutionFrame>();
+
+/** The identities of `args`, as a cache key: `"12,34,"`. */
+let argumentUidKey = (args: Array<Type>): String => {
+  var key = "";
+  for (let arg in args) {
+    key = key + i32ToString(arg.uid) + ",";
+  }
+  return key;
+};
+
+/**
+ * A number that changes whenever any input of `substituteInType`'s
+ * class instantiation other than the arguments does: the supertype,
+ * mixins and interfaces, the constructors, the `on` type, and the
+ * flags it copies. Members are shared by reference and need no stamp.
+ */
+let classShapeStamp = (ct: ClassType): i32 => {
+  var stamp = ct.implementsList.length * 7 + ct.mixins.length * 13
+      + ct.constructors.size * 17;
+  let sup = ct.superType;
+  if (sup != null) { stamp = stamp * 31 + sup.uid; }
+  let ctor = ct.constructorType;
+  if (ctor != null) { stamp = stamp * 31 + ctor.uid; }
+  let on = ct.onType;
+  if (on != null) { stamp = stamp * 31 + on.uid; }
+  for (let impl in ct.implementsList) { stamp = stamp * 31 + impl.uid; }
+  for (let m in ct.mixins) { stamp = stamp * 31 + m.uid; }
+  var flags = 0;
+  if (ct.isFinal) { flags = flags | 1; }
+  if (ct.isCaseClass) { flags = flags | 2; }
+  if (ct.isResource) { flags = flags | 4; }
+  if (ct.hasSyntheticDispose) { flags = flags | 8; }
+  if (ct.isAbstract) { flags = flags | 16; }
+  if (ct.isExtension) { flags = flags | 32; }
+  if (ct.isSealed) { flags = flags | 64; }
+  if (ct.isMixinIntermediate) { flags = flags | 128; }
+  return stamp * 256 + flags + 1;
+};
+
+/** As `classShapeStamp`, for an interface: its extends list. */
+let interfaceShapeStamp = (it: InterfaceType): i32 => {
+  var stamp = it.extendsList.length;
+  for (let ext in it.extendsList) { stamp = stamp * 31 + ext.uid; }
+  return stamp + 1;
+};
 
 let reentrantSubstitution = (source: Type, key: String): Type | null => {
   for (let frame in substitutionFrames) {
@@ -563,15 +674,72 @@ let substituteInType = (
           newArgs.push((sub ?? arg));
         }
 
-        let frameKey = getInstantiationKey(newArgs);
+        // Cached on `ct` — the mention, which may itself be an
+        // instance — keyed by the arguments' identities. Not on the
+        // template: what a mention's supertypes and constructor say is
+        // not always what the template's do. The checker's
+        // self-instantiation of a class (the `MapEntry<K, V>` its own
+        // constructor names) is made before the constructor is
+        // registered and never learns of it, and a copy built from
+        // the template instead would close a cycle through that
+        // parameter that codegen's substitution cannot walk.
+        // Only a closed argument list is cached. With a type parameter
+        // among the arguments — a bare mention inside a generic body
+        // is `Foo<T>` at the class's own `T` — the cached object
+        // becomes its own descendant through a self-mentioning
+        // supertype (`class Foo<T> extends Bar<Foo<T>>`), and codegen's
+        // substitution, which memoizes only after recursing into
+        // supertypes, does not terminate on a cycle. A fresh copy per
+        // mention keeps those chains finite, as they always were.
+        var cacheable = true;
+        for (let arg in newArgs) {
+          if (typeContainsTypeParameter(arg)) { cacheable = false; }
+        }
+        // A closed list is keyed by its arguments' identities, which
+        // the cache entry — stored before the build — also answers a
+        // re-entrant mention by. A parametric build keeps the
+        // structural key: a union argument is a fresh object each
+        // round, and only its spelling tells a re-entrant mention
+        // from a new one.
+        let frameKey = if (cacheable) argumentUidKey(newArgs) else getInstantiationKey(newArgs);
         let reentrant = reentrantSubstitution(ct as Type, frameKey);
         if (reentrant != null) {
           return reentrant;
         }
-        let inst = new ClassType(ct.id, ct.symbolId, ct.name);
+        let stamp = classShapeStamp(ct);
+        var cache: Map<String, ClassType> | null = null;
+        var hit: ClassType | null = null;
+        if (cacheable) {
+          let table = ct.substitutionCache ?? new Map<String, ClassType>();
+          ct.substitutionCache = table;
+          cache = table;
+          if (let (true, cached) = table.get(frameKey)) {
+            hit = cached;
+          }
+        } else {
+          _parametricSubstitutions += 1;
+        }
+        if (hit != null && (hit as ClassType).shapeStamp == stamp) {
+          _substitutionCacheHits += 1;
+          return hit;
+        }
+        let inst = if (hit != null) {
+          // The ct changed shape since this was built: rebuild
+          // in place, so everything holding it sees the new shape.
+          let stale = hit as ClassType;
+          stale.implementsList = new Array<InterfaceType>();
+          stale.mixins = new Array<MixinType>();
+          stale
+        } else {
+          let fresh = new ClassType(ct.id, ct.symbolId, ct.name);
+          if (cache != null) { cache[frameKey] = fresh; }
+          fresh
+        };
+        _substitutedNominals += 1;
         inst.typeParameters = ctParams;
         inst.typeArguments = newArgs;
         inst.genericSource = ct.genericSource ?? ct;
+        inst.shapeStamp = stamp;
         substitutionFrames.push(new SubstitutionFrame(ct as Type, frameKey, inst as Type));
         let combinedParams = new Array<TypeParameterType>();
         let combinedArgs = new Array<Type>();
@@ -701,15 +869,46 @@ let substituteInType = (
           let sub = substituteInType(arg, typeParameters, typeArguments);
           newArgs.push((sub ?? arg));
         }
-        let frameKey = getInstantiationKey(newArgs);
+        // Cached on the mention by argument identity, closed argument
+        // lists only; see the class case for both.
+        var cacheable = true;
+        for (let arg in newArgs) {
+          if (typeContainsTypeParameter(arg)) { cacheable = false; }
+        }
+        let frameKey = if (cacheable) argumentUidKey(newArgs) else getInstantiationKey(newArgs);
         let reentrant = reentrantSubstitution(it as Type, frameKey);
         if (reentrant != null) {
           return reentrant;
         }
-        let inst = new InterfaceType(it.id, it.symbolId, it.name);
+        let stamp = interfaceShapeStamp(it);
+        var cache: Map<String, InterfaceType> | null = null;
+        var hit: InterfaceType | null = null;
+        if (cacheable) {
+          let table = it.substitutionCache ?? new Map<String, InterfaceType>();
+          it.substitutionCache = table;
+          cache = table;
+          if (let (true, cached) = table.get(frameKey)) {
+            hit = cached;
+          }
+        } else {
+          _parametricSubstitutions += 1;
+        }
+        if (hit != null && (hit as InterfaceType).shapeStamp == stamp) {
+          _substitutionCacheHits += 1;
+          return hit;
+        }
+        let inst = if (hit != null) {
+          hit as InterfaceType
+        } else {
+          let fresh = new InterfaceType(it.id, it.symbolId, it.name);
+          if (cache != null) { cache[frameKey] = fresh; }
+          fresh
+        };
+        _substitutedNominals += 1;
         inst.typeParameters = itParams;
         inst.typeArguments = newArgs;
         inst.genericSource = it.genericSource ?? it;
+        inst.shapeStamp = stamp;
         substitutionFrames.push(new SubstitutionFrame(it as Type, frameKey, inst as Type));
         let combinedParams = new Array<TypeParameterType>();
         let combinedArgs = new Array<Type>();
@@ -1024,8 +1223,10 @@ export let instantiateClassType = (
 ): ClassType => {
   let key = getInstantiationKey(typeArguments);
   let result = if (let (true, cached) = source.instantiations.get(key)) {
+    _instantiationHits += 1;
     cached
   } else {
+    _instantiationMisses += 1;
     let res = new ClassType(source.id, source.symbolId, source.name);
     source.instantiations[key] = res;
     res
@@ -1170,7 +1371,13 @@ export final class InterfaceType extends Type {
    */
   var constructors: Map<String, FunctionType> = new Map<String, FunctionType>();
 
-  new(id: TypeId, symbolId: SymbolId, name: String) : id = id, symbolId = symbolId, name = name, super();
+  /** As `ClassType.substitutionCache` and `shapeStamp`. */
+  var substitutionCache: Map<String, InterfaceType> | null = null;
+  var shapeStamp: i32 = 0;
+
+  new(id: TypeId, symbolId: SymbolId, name: String) : id = id, symbolId = symbolId, name = name, super() {
+    _interfaceTypes += 1;
+  }
 }
 
 /**
@@ -1182,8 +1389,10 @@ export let instantiateInterfaceType = (
 ): InterfaceType => {
   let key = getInstantiationKey(typeArguments);
   let result = if (let (true, cached) = source.instantiations.get(key)) {
+    _instantiationHits += 1;
     cached
   } else {
+    _instantiationMisses += 1;
     let res = new InterfaceType(source.id, source.symbolId, source.name);
     source.instantiations[key] = res;
     res
@@ -1271,7 +1480,9 @@ export final class MixinType extends Type {
     return (this.genericSource ?? this).decoratorSubjectName != null;
   }
 
-  new(name: String) : name = name, super();
+  new(name: String) : name = name, super() {
+    _mixinTypes += 1;
+  }
 }
 
 export let instantiateMixinType = (
@@ -1280,8 +1491,10 @@ export let instantiateMixinType = (
 ): MixinType => {
   let key = getInstantiationKey(typeArguments);
   let result = if (let (true, cached) = source.instantiations.get(key)) {
+    _instantiationHits += 1;
     cached
   } else {
+    _instantiationMisses += 1;
     let res = new MixinType(source.name);
     source.instantiations[key] = res;
     res
@@ -1319,7 +1532,9 @@ export final class TypeParameterType extends Type {
    */
   var isScoped: boolean = false;
 
-  new(this.name, this.constraint, this.defaultType) : super();
+  new(this.name, this.constraint, this.defaultType) : super() {
+    _typeParameterTypes += 1;
+  }
 }
 
 
