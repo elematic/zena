@@ -1,32 +1,33 @@
 #!/usr/bin/env node
 /**
- * Build the zena-compiler test programs for wasmtime.
+ * Build the zena-compiler test program for wasmtime.
  *
- * Two kinds of program are produced:
+ * One module holds everything: the unit suites (`zena/test/*_test.zena`,
+ * each exporting a `tests` Suite) and the three portable-test runners,
+ * bundled by a generated wrapper that dispatches on a subcommand.
  *
- * - The unit suites (`zena/test/*_test.zena`), which export a `tests`
- *   Suite. They are bundled into one generated wrapper module that
- *   imports every suite and runs them with `runAndReport`.
- * - The portable-test runners (`zena/test/portable_*.zena`), which are
- *   already whole programs with their own `main`, and are compiled as-is.
+ * It used to be four programs. The runners import no compiler module
+ * the unit suites do not already import — `parser`, `compiler`,
+ * `library-loader`, `codegen/*` and the rest are all in both — so the
+ * four builds were four copies of one compiler: 9.77MB of output and
+ * 87.9s of compiling, against 4.3MB and about 45s for the single
+ * module, and one process peaking near 4.6GB instead of three.
+ *
+ * The four test scripts still exist, each invoking this module with its
+ * own subcommand, so each keeps its own Wireit inputs and its own
+ * caching.
  *
  * Everything is compiled with the self-hosted compiler, so this script
- * only decides *what* to build; `run-wasmtime.js` runs the results.
+ * only decides *what* to build; `run-wasmtime.js` runs the result.
  *
- * The programs are independent, so they build concurrently — but each
- * is a whole compile of the compiler and wants a GiB of GC heap and
- * several more of resident memory, so the width is bounded by memory
- * rather than by cores. Measured on this machine at
- * ZENA_GC_RESERVE_MB=512: `__all_tests__` 44.0s and 4609MB resident,
- * `portable_execution` 36.5s and 2669MB, `portable_semantics` 5.7s and
- * 1644MB, `portable_syntax` 1.7s and 1644MB. Two of the four dominate
- * and two are trivial, so running two at a time finishes within a few
- * seconds of running all four and peaks about 3GB lower.
+ * The build keeps its GC heap reserve: wasmtime's copying collector
+ * grows the heap only when an allocation still does not fit after a
+ * full collection, so starting at nothing leaves an allocation-heavy
+ * program collecting most of the time.
  */
 
 import {execFile} from 'node:child_process';
-import {mkdirSync, readFileSync, writeFileSync} from 'node:fs';
-import {availableParallelism, totalmem} from 'node:os';
+import {mkdirSync, writeFileSync} from 'node:fs';
 import {basename, dirname, join} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {promisify} from 'node:util';
@@ -40,7 +41,20 @@ const outDir = join(zenaDir, 'out', 'test-self');
 const repoRoot = join(pkgDir, '..', '..');
 const zenaCli = join(repoRoot, 'target', 'release', 'zena-cli');
 
-/** A module that imports every unit suite and runs them as one. */
+/**
+ * One module holding every compiler test: the unit suites and the three
+ * portable-test runners, selected by a subcommand.
+ *
+ * They are built together because the runners need no compiler module
+ * the unit suites do not already import, so four programs that each
+ * linked a whole compiler were four copies of the same thing. The
+ * subcommand keeps them four Wireit scripts with their own inputs and
+ * their own caching.
+ *
+ * `compile-slice` reaches the execution runner unchanged: it is how
+ * that runner re-invokes this module for one slice of its compile
+ * phase, and it reads the argument vector itself.
+ */
 const generateWrapper = (testFileNames: string[]): string => {
   const imports = testFileNames
     .map((file, i) => `import { tests as t${i} } from './${file}';`)
@@ -51,13 +65,46 @@ const generateWrapper = (testFileNames: string[]): string => {
 
   return `\
 ${imports}
+import { getArguments } from 'zena:cli';
 import { Suite, runAndReport } from 'zena:test';
+import { runPortableSyntax } from './portable_syntax.zena';
+import { runPortableSemantics } from './portable_semantics.zena';
+import { runPortableExecution } from './portable_execution.zena';
 
-export let main = (): i32 => {
+let runUnitSuites = (): i32 => {
   let root = new Suite('Compiler Tests');
 ${pushes}
 
   return runAndReport(root, (s: String): void => { console.log(s); });
+};
+
+export let main = (): i32 => {
+  let args = getArguments();
+  let command = if (args.length > 1) { args[1] } else { 'unit' };
+  if (command == 'syntax') {
+    return runPortableSyntax();
+  }
+  if (command == 'semantics') {
+    return runPortableSemantics();
+  }
+  if (command == 'compile-slice') {
+    // The execution runner's own re-invocation, which reads the vector
+    // from args[1] onwards: pass it through untouched.
+    return runPortableExecution(args);
+  }
+  if (command == 'execution') {
+    // Drop the subcommand so the runner sees the vector it always has:
+    // args[1] is the zena-cli path, args[2] the worker count.
+    let forwarded = new Array<String>(args.length);
+    forwarded.push(args[0]);
+    var i = 2;
+    while (i < args.length) {
+      forwarded.push(args[i]);
+      i += 1;
+    }
+    return runPortableExecution(forwarded);
+  }
+  return runUnitSuites();
 };
 `;
 };
@@ -71,16 +118,14 @@ writeFileSync(
   generateWrapper(unitTestFiles.map((f) => basename(f))),
 );
 
-const portableRunners = (await glob(join(testDir, 'portable_*.zena'))).sort();
-
-/** Every program to compile, as [label, source, output]. */
+/**
+ * One program, holding the unit suites and the portable runners. The
+ * runners import no compiler module the unit suites do not already
+ * import, so building them separately compiled the same compiler four
+ * times over.
+ */
 const targets: Array<[string, string, string]> = [
-  ['compiler unit tests', wrapperPath, join(outDir, '__all_tests__.wasm')],
-  ...portableRunners.map((src): [string, string, string] => [
-    basename(src, '.zena').replace(/_/g, ' '),
-    src,
-    join(outDir, `${basename(src, '.zena')}.wasm`),
-  ]),
+  ['compiler tests', wrapperPath, join(outDir, '__all_tests__.wasm')],
 ];
 
 const env = {
@@ -96,41 +141,6 @@ const env = {
 };
 
 const run = promisify(execFile);
-
-/**
- * Memory the kernel thinks is available, in MiB. `os.freemem()` counts
- * only unused pages and reads far too low on a machine with a warm page
- * cache, which would serialize these builds for no reason.
- */
-const availableMemoryMb = (): number => {
-  try {
-    const meminfo = readFileSync('/proc/meminfo', 'utf-8');
-    const match = meminfo.match(/^MemAvailable:\s+(\d+) kB$/m);
-    if (match !== null) {
-      return Number(match[1]) / 1024;
-    }
-  } catch {
-    // Not Linux, or /proc is not mounted.
-  }
-  return totalmem() / (1024 * 1024);
-};
-
-/**
- * How many of these to build at once. The largest peaks near 4.6GB
- * resident, so that is the budget one slot has to fit in: a 16GB CI
- * runner gets three, this machine gets all four, and a smaller one
- * degrades to building them one at a time rather than being killed
- * part way through.
- */
-const PEAK_MB_PER_BUILD = 4600;
-const concurrency = Math.max(
-  1,
-  Math.min(
-    targets.length,
-    availableParallelism(),
-    Math.floor(availableMemoryMb() / PEAK_MB_PER_BUILD),
-  ),
-);
 
 /** Builds one target, with its output held back until it finishes. */
 const build = async ([label, src, dest]: [string, string, string]) => {
@@ -162,17 +172,10 @@ const build = async ([label, src, dest]: [string, string, string]) => {
   }
 };
 
-console.log(
-  `Building ${targets.length} test programs, ${concurrency} at a time...`,
-);
-const queue = [...targets];
 const results: boolean[] = [];
-const worker = async (): Promise<void> => {
-  for (let next = queue.shift(); next !== undefined; next = queue.shift()) {
-    results.push(await build(next));
-  }
-};
-await Promise.all(Array.from({length: concurrency}, () => worker()));
+for (const target of targets) {
+  results.push(await build(target));
+}
 const failed = results.includes(false);
 
 if (failed) {
