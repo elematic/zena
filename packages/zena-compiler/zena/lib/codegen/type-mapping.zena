@@ -5,7 +5,8 @@ import {
   UnknownType, ErrorType, AnyRefType, EqRefType, NeverType, HoleType,
   FieldInfo, MethodInfo, typeToString, TypeParameterType, ThisType,
   UnionType, InlineTupleType, baseType, BoolLiteralType, NumLiteralType, StringLiteralType,
-  RecordType, TupleType, MixinType, ErasedType, countCodegenFunctionType} from '../types.zena';
+  RecordType, TupleType, MixinType, ErasedType, countCodegenFunctionType,
+  countCodegenSubstitution} from '../types.zena';
 import { 
   WasmModule, WasmStruct, WasmField, WasmSignature, WasmFunction, RecordDispatchInfo,
   sortWasmFields, WasmArray
@@ -26,7 +27,25 @@ export let getInterfaceTypeParameters = (it: InterfaceType): Array<TypeParameter
   return (it.genericSource ?? it).typeParameters;
 };
 
+/**
+ * Counts each outermost call for the census; the recursion below goes
+ * through `substituteTypeParamsInCodegenInner` directly.
+ */
 export let substituteTypeParamsInCodegen = (
+  wasm: WasmModule,
+  typeParams: Array<TypeParameterType> | null,
+  typeArgs: Array<Type> | null,
+  t: Type
+): Type => {
+  if (typeParams == null || typeArgs == null || typeParams.length == 0 || typeArgs.length == 0) {
+    return t;
+  }
+  let result = substituteTypeParamsInCodegenInner(wasm, typeParams, typeArgs, t);
+  countCodegenSubstitution(t, typeArgs, result);
+  return result;
+};
+
+let substituteTypeParamsInCodegenInner = (
   wasm: WasmModule,
   typeParams: Array<TypeParameterType> | null,
   typeArgs: Array<Type> | null,
@@ -50,7 +69,7 @@ export let substituteTypeParamsInCodegen = (
       t
     }
     case ArrayType {elementType, elementsMutable}: {
-      let sub = substituteTypeParamsInCodegen(wasm, typeParams, typeArgs, elementType);
+      let sub = substituteTypeParamsInCodegenInner(wasm, typeParams, typeArgs, elementType);
       if (sub == elementType) {
         return t;
       }
@@ -60,7 +79,7 @@ export let substituteTypeParamsInCodegen = (
       let newElems = new Array<Type>(elementTypes.length);
       var elemsChanged = false;
       for (let el in elementTypes) {
-        let sub = substituteTypeParamsInCodegen(wasm, typeParams, typeArgs, el);
+        let sub = substituteTypeParamsInCodegenInner(wasm, typeParams, typeArgs, el);
         newElems.push(sub);
         if (sub != el) {
           elemsChanged = true;
@@ -75,7 +94,7 @@ export let substituteTypeParamsInCodegen = (
       let newElems = new Array<Type>(elementTypes.length);
       var elemsChanged = false;
       for (let el in elementTypes) {
-        let sub = substituteTypeParamsInCodegen(wasm, typeParams, typeArgs, el);
+        let sub = substituteTypeParamsInCodegenInner(wasm, typeParams, typeArgs, el);
         newElems.push(sub);
         if (sub != el) {
           elemsChanged = true;
@@ -90,7 +109,7 @@ export let substituteTypeParamsInCodegen = (
       let newTypes = new Array<Type>(types.length);
       var typesChanged = false;
       for (let ut in types) {
-        let sub = substituteTypeParamsInCodegen(wasm, typeParams, typeArgs, ut);
+        let sub = substituteTypeParamsInCodegenInner(wasm, typeParams, typeArgs, ut);
         newTypes.push(sub);
         if (sub != ut) {
           typesChanged = true;
@@ -107,7 +126,7 @@ export let substituteTypeParamsInCodegen = (
       let keys = rec.properties.keys();
       for (let key in keys) {
         let original = rec.properties[key];
-        let sub = substituteTypeParamsInCodegen(wasm, typeParams, typeArgs, original);
+        let sub = substituteTypeParamsInCodegenInner(wasm, typeParams, typeArgs, original);
         newProps[key] = sub;
         if (sub != original) {
           propsChanged = true;
@@ -124,13 +143,13 @@ export let substituteTypeParamsInCodegen = (
       let newParams = new Array<Type>(ft.parameters.length);
       var paramsChanged = false;
       for (let p in ft.parameters) {
-        let sub = substituteTypeParamsInCodegen(wasm, typeParams, typeArgs, p);
+        let sub = substituteTypeParamsInCodegenInner(wasm, typeParams, typeArgs, p);
         newParams.push(sub);
         if (sub != p) {
           paramsChanged = true;
         }
       }
-      let newRet = substituteTypeParamsInCodegen(wasm, typeParams, typeArgs, ft.returnType);
+      let newRet = substituteTypeParamsInCodegenInner(wasm, typeParams, typeArgs, ft.returnType);
       let retChanged = newRet != ft.returnType;
       
       var argsChanged = false;
@@ -139,7 +158,7 @@ export let substituteTypeParamsInCodegen = (
       if (typeArguments != null) {
         newArgs = new Array<Type>(typeArguments.length);
         for (let arg in typeArguments) {
-          let sub = substituteTypeParamsInCodegen(wasm, typeParams, typeArgs, arg);
+          let sub = substituteTypeParamsInCodegenInner(wasm, typeParams, typeArgs, arg);
           newArgs.push(sub);
           if (sub != arg) {
             argsChanged = true;
@@ -184,7 +203,7 @@ export let substituteTypeParamsInCodegen = (
         let srcArgs = typeArguments;
         let acc = new Array<Type>(srcArgs.length);
         for (let arg in srcArgs) {
-          let sub = substituteTypeParamsInCodegen(wasm, typeParams, typeArgs, arg);
+          let sub = substituteTypeParamsInCodegenInner(wasm, typeParams, typeArgs, arg);
           acc.push(sub);
           if (sub != arg) { changed = true; }
         }
@@ -195,7 +214,7 @@ export let substituteTypeParamsInCodegen = (
       let newTarget = if (ta.resolving) {
         ta.target
       } else {
-        substituteTypeParamsInCodegen(wasm, typeParams, typeArgs, ta.target)
+        substituteTypeParamsInCodegenInner(wasm, typeParams, typeArgs, ta.target)
       };
       if (newTarget != ta.target) { changed = true; }
       if (!changed) { return ta; }
@@ -234,7 +253,7 @@ export let substituteTypeParamsInCodegen = (
         let newArgs = new Array<Type>(ctArgsVal.length);
         var argsChanged = false;
         for (let arg in ctArgsVal) {
-          let sub = substituteTypeParamsInCodegen(wasm, typeParams, typeArgs, arg);
+          let sub = substituteTypeParamsInCodegenInner(wasm, typeParams, typeArgs, arg);
           newArgs.push(sub);
           if (sub != arg) {
             argsChanged = true;
@@ -292,13 +311,13 @@ export let substituteTypeParamsInCodegen = (
 
         let {superType} = ct;
         if (superType != null) {
-          inst.superType = substituteTypeParamsInCodegen(wasm, combinedParams, combinedArgs, superType as Type) as ClassType;
+          inst.superType = substituteTypeParamsInCodegenInner(wasm, combinedParams, combinedArgs, superType as Type) as ClassType;
         }
         for (let impl in ct.implementsList) {
-          inst.implementsList.push(substituteTypeParamsInCodegen(wasm, combinedParams, combinedArgs, impl) as InterfaceType);
+          inst.implementsList.push(substituteTypeParamsInCodegenInner(wasm, combinedParams, combinedArgs, impl) as InterfaceType);
         }
         for (let m in ct.mixins) {
-          let subM = substituteTypeParamsInCodegen(wasm, combinedParams, combinedArgs, m);
+          let subM = substituteTypeParamsInCodegenInner(wasm, combinedParams, combinedArgs, m);
           inst.mixins.push(subM as MixinType);
         }
         inst.members = ct.members;
@@ -306,7 +325,7 @@ export let substituteTypeParamsInCodegen = (
           let ctor = ct.constructorType as FunctionType;
           let newParams = new Array<Type>(ctor.parameters.length);
           for (let p in ctor.parameters) {
-            let sub = substituteTypeParamsInCodegen(wasm, combinedParams, combinedArgs, p);
+            let sub = substituteTypeParamsInCodegenInner(wasm, combinedParams, combinedArgs, p);
             newParams.push(sub);
           }
           let newFt = new FunctionType(newParams, ctor.parameterNames, ctor.returnType);
@@ -337,7 +356,7 @@ export let substituteTypeParamsInCodegen = (
         inst.forwardVariantNames = ct.forwardVariantNames;
         let {onType} = ct;
         if (onType != null) {
-          inst.onType = substituteTypeParamsInCodegen(wasm, combinedParams, combinedArgs, onType);
+          inst.onType = substituteTypeParamsInCodegenInner(wasm, combinedParams, combinedArgs, onType);
         }
         inst.sourcePath = ct.sourcePath;
         // Register only after the instantiation is fully built: a
@@ -369,7 +388,7 @@ export let substituteTypeParamsInCodegen = (
         let newArgs = new Array<Type>(itArgsVal.length);
         var argsChanged = false;
         for (let arg in itArgsVal) {
-          let sub = substituteTypeParamsInCodegen(wasm, typeParams, typeArgs, arg);
+          let sub = substituteTypeParamsInCodegenInner(wasm, typeParams, typeArgs, arg);
           newArgs.push(sub);
           if (sub != arg) {
             argsChanged = true;
@@ -400,7 +419,7 @@ export let substituteTypeParamsInCodegen = (
         }
         let newExtends = new Array<InterfaceType>(it.extendsList.length);
         for (let ext in it.extendsList) {
-          newExtends.push(substituteTypeParamsInCodegen(wasm, combinedParams, combinedArgs, ext) as InterfaceType);
+          newExtends.push(substituteTypeParamsInCodegenInner(wasm, combinedParams, combinedArgs, ext) as InterfaceType);
         }
         inst.extendsList = newExtends;
         inst.members = it.members;
@@ -429,7 +448,7 @@ export let substituteTypeParamsInCodegen = (
       if (hasArgs && mtArgsVal.length > 0) {
         let newArgs = new Array<Type>(mtArgsVal.length);
         for (let arg in mtArgsVal) {
-          newArgs.push(substituteTypeParamsInCodegen(wasm, typeParams, typeArgs, arg));
+          newArgs.push(substituteTypeParamsInCodegenInner(wasm, typeParams, typeArgs, arg));
         }
         let inst = new MixinType(mt.name);
         inst.typeParameters = mtParams;
@@ -453,10 +472,10 @@ export let substituteTypeParamsInCodegen = (
         }
         let {onType} = mt;
         if (onType != null) {
-          inst.onType = substituteTypeParamsInCodegen(wasm, combinedParams, combinedArgs, onType);
+          inst.onType = substituteTypeParamsInCodegenInner(wasm, combinedParams, combinedArgs, onType);
         }
         for (let m in mt.mixins) {
-          let subM = substituteTypeParamsInCodegen(wasm, combinedParams, combinedArgs, m);
+          let subM = substituteTypeParamsInCodegenInner(wasm, combinedParams, combinedArgs, m);
           inst.mixins.push(subM as MixinType);
         }
         inst.members = mt.members;

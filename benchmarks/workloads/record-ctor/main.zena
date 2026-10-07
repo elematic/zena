@@ -1,0 +1,50 @@
+// A class constructed through a record parameter with optional fields —
+// the named-argument pattern an immutable type class would use — two
+// million times. Compares itself against `positional-ctor`, the same
+// class built positionally, to see what the record temporary costs at
+// each optimization level: at -O1 nothing removes it; at -O2 inlining
+// the constructor and forwarding the record's fields should.
+
+type NodeInit = {
+  kind: i32,
+  left: Node | null,
+  right: Node | null,
+  weight?: i32,
+  depth?: i32,
+  flagged?: boolean,
+  label?: String,
+};
+
+final class Node {
+  kind: i32;
+  left: Node | null;
+  right: Node | null;
+  weight: i32;
+  depth: i32;
+  flagged: boolean;
+  label: String | null;
+
+  new(init: NodeInit)
+    : kind = init.kind,
+      left = init.left,
+      right = init.right,
+      weight = init.weight ?? 0,
+      depth = init.depth ?? 0,
+      flagged = init.flagged ?? false,
+      label = init.label ?? null;
+}
+
+export function main(): i32 {
+  var last: Node | null = null;
+  var total = 0;
+  var i = 0;
+  while (i < 2000000) {
+    let n = new Node({kind: i & 7, left: last, right: null, weight: i});
+    total = total + n.kind + n.weight - n.depth;
+    // Keep only the previous node alive, so the loop's garbage is the
+    // nodes it drops plus whatever the construction pattern adds.
+    last = n;
+    i += 1;
+  }
+  return total & 0xFFFF;
+}
