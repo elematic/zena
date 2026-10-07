@@ -567,8 +567,14 @@ export let compileFile = (options: CompileFileOptions): i32 => {
       // own. Timed separately so the report says how much of a component
       // build is this module.
       let tRuntimeModule = nowMs();
+      // Suspended: this is a compile of its own, and its load, parse,
+      // scope and check would otherwise be added to this program's,
+      // which made the report's total exceed wall-clock time by the
+      // whole nested compile.
+      performance.suspend();
       generator.runtimeMemoryModule =
           compileComponentRuntimeModule(compiler, stdlibRoot);
+      performance.resume();
       performance.add("codegen-runtime-module", nowMs() - tRuntimeModule);
       // A declared world compiles against its own document, with the
       // WIT-backed packages spliced in so it can import their
