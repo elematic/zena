@@ -204,6 +204,75 @@ let tests = suite('formatter', () => {
     `);
   });
 
+  // ========================================================================
+  // Operator precedence and parentheses
+  //
+  // The AST has no node for parentheses, so the printer decides where they
+  // go. An operand that binds looser than the operator applied to it needs
+  // them, or the reprinted source parses into a different tree.
+  // ========================================================================
+
+  test('keeps parentheses an operand needs for precedence', (t: TestContext) => {
+    checkStable('sum times', 'let x = (a + b) * c;');
+    checkStable('times sum', 'let x = c * (a + b);');
+    checkStable('or and', 'let x = (a || b) && c;');
+    checkStable('and bitor', 'let x = (a && b) | c;');
+    // `==` is left-associative, so the left-nested form needs no
+    // parentheses and the right-nested one does.
+    checkFormat('equality left nested', 'let x = (a == b) == c;', 'let x = a == b == c;');
+    checkStable('equality right nested', 'let x = a == (b == c);');
+    // `+` binds tighter than `<<` in this chain, so those are redundant.
+    checkFormat('shift of sum', 'let x = (a + b) << c;', 'let x = a + b << c;');
+    checkStable('shift of equality', 'let x = (a == b) << c;');
+    checkStable('and as cast', 'let x = (a && b) as i32;');
+    checkStable('and is test', 'let x = (a && b) is i32;');
+    checkFormat('chained cast', 'let x = (a as i32) as i64;', 'let x = a as i32 as i64;');
+    checkStable('range before cast', 'let x = (a..b) as Range;');
+  });
+
+  test('keeps parentheses a right operand needs for associativity', (t: TestContext) => {
+    // `-` and `/` are left-associative, so a right operand of equal
+    // precedence is a different tree and keeps its parentheses.
+    checkStable('minus of minus', 'let x = a - (b - c);');
+    checkStable('divide of divide', 'let x = a * (b / c);');
+    checkStable('plus of plus', 'let x = a + (b + c);');
+  });
+
+  test('keeps parentheses around a looser unary operand', (t: TestContext) => {
+    checkStable('negate sum', 'let x = -(a + b);');
+    checkStable('not and', 'let x = !(a && b);');
+    checkStable('negate power', 'let x = -(a ** b);');
+  });
+
+  test('parenthesizes for exponentiation, which is right associative', (t: TestContext) => {
+    // `a ** b ** c` is `a ** (b ** c)`, so the left-nested form needs
+    // parentheses and the right-nested form does not.
+    checkStable('left nested power', 'let x = (a ** b) ** c;');
+    checkStable('right nested power', 'let x = a ** b ** c;');
+    checkStable('power of sum', 'let x = (a + b) ** c;');
+  });
+
+  test('keeps parentheses a range or pipeline operand needs', (t: TestContext) => {
+    checkStable('range of and', 'let x = (a && b)..c;');
+    // `&&` binds tighter than `|>`, so those parentheses are redundant.
+    checkFormat('pipeline of and', 'let x = (a && b) |> f;', 'let x = a && b |> f;');
+    checkStable('pipeline right nested', 'let x = a |> (b |> c);');
+    checkFormat('pipeline left nested', 'let x = (a |> b) |> c;', 'let x = a |> b |> c;');
+  });
+
+  test('adds no parentheses an operand does not need', (t: TestContext) => {
+    checkStable('tighter right', 'let x = a + b * c;');
+    checkStable('tighter left', 'let x = a * b + c;');
+    checkStable('left assoc chain', 'let x = a - b - c;');
+    checkStable('and before or', 'let x = a && b || c;');
+    checkStable('unary operand', 'let x = -a + b;');
+    checkStable('sum before cast', 'let x = a + b as i32;');
+    checkStable('calls as operands', 'let x = f(a) * g(b);');
+    // `await` is at unary precedence, so it binds tighter than any binary
+    // operator and needs nothing.
+    checkStable('await operand', 'let x = a + await f();');
+  });
+
   test('keeps parentheses around a member or index object that binds looser', (t: TestContext) => {
     // The AST has no node for parentheses, so the printer has to put them back
     // wherever `.x` or `[i]` would otherwise bind to part of the object.

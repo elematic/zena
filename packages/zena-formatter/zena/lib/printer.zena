@@ -44,6 +44,92 @@ let docs3 = (a: Doc, b: Doc, c: Doc): Array<Doc> => {
 };
 
 // ============================================================================
+// Operator precedence
+//
+// The AST has no node for parentheses, so the printer is what decides where
+// they go. These ranks mirror the descent in `parser.zena`, from
+// `#parseAssignment` down to `#parseUnary`: a smaller rank binds looser. Only
+// the order matters, not the values.
+// ============================================================================
+
+let PREC_LOOSEST: i32 = 1;      // assignment, arrow, throw, if, match, try
+let PREC_PIPELINE: i32 = 2;     // |>
+let PREC_OR: i32 = 3;           // || ??
+let PREC_AND: i32 = 4;          // &&
+let PREC_BIT_OR: i32 = 5;       // |
+let PREC_BIT_XOR: i32 = 6;      // ^
+let PREC_BIT_AND: i32 = 7;      // &
+let PREC_EQUALITY: i32 = 8;     // == != === !==
+let PREC_COMPARISON: i32 = 9;   // < <= > >=
+let PREC_SHIFT: i32 = 10;       // << >> >>>
+let PREC_RANGE: i32 = 11;       // ..
+let PREC_AS: i32 = 12;          // as is
+let PREC_TERM: i32 = 13;        // + -
+let PREC_FACTOR: i32 = 14;      // * / %
+let PREC_EXPONENT: i32 = 15;    // **
+let PREC_UNARY: i32 = 16;       // prefix ! -, await
+let PREC_PRIMARY: i32 = 17;     // a call, a member, a literal — never wrapped
+
+/**
+ * The precedence of a binary operator. Every operator `parser.zena` builds a
+ * `BinaryExpression` from is named here.
+ */
+let binaryOperatorRank = (op: String): i32 => {
+  if (op == '||' || op == '??') { return PREC_OR; }
+  if (op == '&&') { return PREC_AND; }
+  if (op == '|') { return PREC_BIT_OR; }
+  if (op == '^') { return PREC_BIT_XOR; }
+  if (op == '&') { return PREC_BIT_AND; }
+  if (op == '==' || op == '!=' || op == '===' || op == '!==') { return PREC_EQUALITY; }
+  if (op == '<' || op == '<=' || op == '>' || op == '>=') { return PREC_COMPARISON; }
+  if (op == '<<' || op == '>>' || op == '>>>') { return PREC_SHIFT; }
+  if (op == '+' || op == '-') { return PREC_TERM; }
+  if (op == '*' || op == '/' || op == '%') { return PREC_FACTOR; }
+  if (op == '**') { return PREC_EXPONENT; }
+  // Unreachable for a parsed tree. Reporting the loosest rank means an
+  // operand of an unknown operator keeps its parentheses.
+  return PREC_LOOSEST;
+};
+
+/**
+ * How tightly an expression's own top-level operator binds.
+ *
+ * Anything without one — a call, a member access, a literal, `new` — is
+ * `PREC_PRIMARY`, so it is never parenthesized. `await` sits at unary
+ * precedence because `#parseUnary` is where the parser reads it.
+ */
+let expressionRank = (expr: Expression): i32 => match (expr) {
+  case BinaryExpression {operator}: binaryOperatorRank(operator)
+  case UnaryExpression {prefix}: if (prefix) PREC_UNARY else PREC_PRIMARY
+  case AwaitExpression {}: PREC_UNARY
+  case AsExpression {}: PREC_AS
+  case IsExpression {}: PREC_AS
+  case RangeExpression {}: PREC_RANGE
+  case PipelineExpression {}: PREC_PIPELINE
+  case AssignmentExpression {}: PREC_LOOSEST
+  case FunctionExpression {}: PREC_LOOSEST
+  case ThrowExpression {}: PREC_LOOSEST
+  case IfExpression {}: PREC_LOOSEST
+  case MatchExpression {}: PREC_LOOSEST
+  case TryExpression {}: PREC_LOOSEST
+  case _: PREC_PRIMARY
+};
+
+/**
+ * An operand, parenthesized when it binds looser than its position allows.
+ *
+ * `minRank` is the precedence of the parser function that reads this
+ * position: the operand of a `*` is read by `#parseExponentiation`, so it
+ * must bind at least that tightly to survive a round trip.
+ */
+let printOperand = (expr: Expression, minRank: i32): Doc => {
+  if (expressionRank(expr) < minRank) {
+    return concat(docs3(text('('), printExpression(expr), text(')')));
+  }
+  return printExpression(expr);
+};
+
+// ============================================================================
 // Comment Printing Helpers
 // ============================================================================
 
@@ -1161,10 +1247,10 @@ let printExpressionInner = (expr: Expression): Doc => match (expr) {
   case TupleLiteral {}: printTupleLiteral(expr)
   case MapLiteral {}: printMapLiteral(expr)
   case AsExpression {expression, typeAnnotation}: {
-    concat(docs3(printExpression(expression), text(' as '), printTypeAnnotation(typeAnnotation)))
+    concat(docs3(printOperand(expression, PREC_AS), text(' as '), printTypeAnnotation(typeAnnotation)))
   }
   case IsExpression {expression, typeAnnotation}: {
-    concat(docs3(printExpression(expression), text(' is '), printTypeAnnotation(typeAnnotation)))
+    concat(docs3(printOperand(expression, PREC_AS), text(' is '), printTypeAnnotation(typeAnnotation)))
   }
   case RangeExpression {}: printRangeExpression(expr)
   case PipelineExpression {}: printPipelineExpression(expr)
@@ -1301,10 +1387,30 @@ let flattenBinaryChain = (expr: BinaryExpression): Array<Expression> => {
  * it — the argument list of a call, say — leaving the operator on one line.
  */
 let printBinaryExpression = (expr: BinaryExpression): Doc => {
-  let operands = flattenBinaryChain(expr);
   let op = expr.operator;
+  let rank = binaryOperatorRank(op);
+  // `**` is the one right-associative binary operator. Flattening its left
+  // spine would reassociate it: `(a ** b) ** c` is not `a ** b ** c`.
+  let rightAssociative = op == '**';
+
+  var operands = flattenBinaryChain(expr);
+  if (rightAssociative) {
+    // The walk above collects the left spine, which is the reassociation.
+    // Take the two operands as written instead.
+    let pair = new Array<Expression>(2);
+    pair.push(expr.left);
+    pair.push(expr.right);
+    operands = pair;
+  }
+
+  // A left-associative operator accepts an operand of its own precedence on
+  // the left but not on the right: `a - b - c` needs no parentheses, while
+  // `a - (b - c)` does. A right-associative one is the mirror image.
+  let leftMin = if (rightAssociative) rank + 1 else rank;
+  let rightMin = if (rightAssociative) rank else rank + 1;
+
   let parts = new Array<Doc>();
-  parts.push(printExpression(operands[0]));
+  parts.push(printOperand(operands[0], leftMin));
 
   let rest = new Array<Doc>(operands.length * 3);
   var j: i32 = 1;
@@ -1312,7 +1418,7 @@ let printBinaryExpression = (expr: BinaryExpression): Doc => {
     rest.push(line);
     rest.push(text(op));
     rest.push(text(' '));
-    rest.push(printExpression(operands[j]));
+    rest.push(printOperand(operands[j], rightMin));
     j += 1;
   }
   parts.push(indent(concat(rest)));
@@ -1325,9 +1431,11 @@ let printBinaryExpression = (expr: BinaryExpression): Doc => {
 
 let printUnaryExpression = (expr: UnaryExpression): Doc => {
   if (expr.prefix) {
-    return concat(docs2(text(expr.operator), printExpression(expr.argument)));
+    // `#parseUnary` reads the operand, so anything looser needs parentheses:
+    // without them `-(a + b)` prints as `-a + b`, which negates `a` alone.
+    return concat(docs2(text(expr.operator), printOperand(expr.argument, PREC_UNARY)));
   }
-  return concat(docs2(printExpression(expr.argument), text(expr.operator)));
+  return concat(docs2(printOperand(expr.argument, PREC_UNARY), text(expr.operator)));
 };
 
 // ============================================================================
@@ -1461,30 +1569,19 @@ let printMethodChain = (expr: CallExpression): Doc => {
  * parse.
  */
 let printPostfixOperand = (expr: Expression, beforeDot: boolean): Doc => {
-  let needsParens = match (expr) {
-    case AsExpression {}: true
-    case IsExpression {}: true
-    case BinaryExpression {}: true
-    case AssignmentExpression {}: true
-    case RangeExpression {}: true
-    case PipelineExpression {}: true
-    case FunctionExpression {}: true
-    case MatchExpression {}: true
-    case IfExpression {}: true
-    case ThrowExpression {}: true
-    case AwaitExpression {}: true
-    case TryExpression {}: true
-    // A postfix unary binds as tightly as the access; a prefix one does not.
-    case UnaryExpression {prefix}: prefix
-    // `1.toString()` lexes `1.` as the start of a float, so a numeric literal
-    // needs parentheses before a `.`. Before a `[` or a `(` it does not.
-    case NumberLiteral {}: beforeDot
+  // `1.toString()` lexes `1.` as the start of a float, so a numeric literal
+  // needs parentheses before a `.` despite binding as tightly as anything.
+  // Before a `[` or a `(` it does not.
+  let numberBeforeDot = beforeDot && match (expr) {
+    case NumberLiteral {}: true
     case _: false
   };
-  if (needsParens) {
+  if (numberBeforeDot) {
     return concat(docs3(text('('), printExpression(expr), text(')')));
   }
-  return printExpression(expr);
+  // A postfix operator reads a primary, so every operand with an operator of
+  // its own needs parentheses here.
+  return printOperand(expr, PREC_PRIMARY);
 };
 
 let printMemberExpression = (expr: MemberExpression): Doc => {
@@ -1716,16 +1813,20 @@ let printMapLiteral = (expr: MapLiteral): Doc => {
 
 let printRangeExpression = (expr: RangeExpression): Doc => {
   let parts = new Array<Doc>();
-  if (expr.start != null) { parts.push(printExpression(expr.start as Expression)); }
+  // Both ends are read by `#parseAs`, so `a + b..c` is already `(a + b)..(c)`
+  // and only an operand looser than that needs parentheses.
+  if (expr.start != null) { parts.push(printOperand(expr.start as Expression, PREC_AS)); }
   parts.push(text('..'));
-  if (expr.end != null) { parts.push(printExpression(expr.end as Expression)); }
+  if (expr.end != null) { parts.push(printOperand(expr.end as Expression, PREC_AS)); }
   return concat(parts);
 };
 
 let printPipelineExpression = (expr: PipelineExpression): Doc => {
   let parts = new Array<Doc>();
-  parts.push(printExpression(expr.left));
-  parts.push(indent(concat(docs3(line, text('|> '), printExpression(expr.right)))));
+  // `|>` is left-associative, so the left side may be another pipeline while
+  // the right side is read by `#parseLogicalOr`.
+  parts.push(printOperand(expr.left, PREC_PIPELINE));
+  parts.push(indent(concat(docs3(line, text('|> '), printOperand(expr.right, PREC_PIPELINE + 1)))));
   return group(concat(parts));
 };
 
