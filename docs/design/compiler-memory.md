@@ -64,16 +64,16 @@ compile allocates more than that, so it only works for small inputs.
 The census of the `cli-module` compile before any change, 236
 libraries and 557K AST nodes:
 
-| retained                         | objects | MiB  |
-| -------------------------------- | ------- | ---- |
-| AST nodes                        | 557,549 | 20.9 |
-| `SourceLocation`, one per node   | 556,576 | 25.4 |
-| `ModelIndex.nodeToModel`         | 561,168 | 19.8 |
-| `SemanticModel.parents`          | 553,656 | 19.5 |
-| `SemanticModel.nodeTypes`        | 344,302 | 12.1 |
-| type key strings                 | 343,268 | 23.2 |
-| module source text               | 236     | 5.2  |
-| comments and their strings       | 15,869  | 1.4  |
+| retained                       | objects | MiB  |
+| ------------------------------ | ------- | ---- |
+| AST nodes                      | 557,549 | 20.9 |
+| `SourceLocation`, one per node | 556,576 | 25.4 |
+| `ModelIndex.nodeToModel`       | 561,168 | 19.8 |
+| `SemanticModel.parents`        | 553,656 | 19.5 |
+| `SemanticModel.nodeTypes`      | 344,302 | 12.1 |
+| type key strings               | 343,268 | 23.2 |
+| module source text             | 236     | 5.2  |
+| comments and their strings     | 15,869  | 1.4  |
 
 And over the process, 2,559,668 `Type` objects were minted: 771K
 `FunctionType`, 524K `ClassType`, 387K `InterfaceType`. At 96 to 176
@@ -179,10 +179,10 @@ Types minted in the `cli-module` compile went from 2,559,668 to
 else running; wall time at the reserve the build script uses
 (1536 MiB for both):
 
-| workload      | peak RSS at reserve 0 | wall time        |
-| ------------- | --------------------- | ---------------- |
-| `cli-module`  | 4154 → 2108 MiB       | 28.5 → 27.5 s    |
-| `self-hosted` | 2108 → 2108 MiB       | 69.5 → 65.5 s    |
+| workload      | peak RSS at reserve 0 | wall time     |
+| ------------- | --------------------- | ------------- |
+| `cli-module`  | 4154 → 2108 MiB       | 28.5 → 27.5 s |
+| `self-hosted` | 2108 → 2108 MiB       | 69.5 → 65.5 s |
 
 The `cli-module` RSS halved because its live set fell below a heap
 doubling threshold; `self-hosted` stayed in the same step. The census
