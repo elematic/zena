@@ -304,6 +304,15 @@ the compiler at `-O2`. Interning cuts constructions by the duplication
 factor first, which makes the temporary's cost matter less either
 way.
 
+Building the compiler at `-O2` pays on its own. The `-O2` self-build
+the fixpoint check already produces (`cli-self.wasm`) compiles the
+`zena` module in 20.0 s where the `-O1` build (`cli.wasm`) takes
+26.9 s, two runs each at the same peak RSS. `build:cli` would take
+longer — the bootstrap compiling the compiler at `-O2` is the
+`self-hosted` workload, 65 s against about 25 s — and every compile
+downstream of it, which is every other build and test step, would
+take a quarter less.
+
 In descending order of expected payoff, from the census after these
 changes:
 
