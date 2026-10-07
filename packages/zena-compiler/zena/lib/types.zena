@@ -64,6 +64,38 @@ var _parametricSubstitutions = 0;
 
 export let substitutionCacheHits = (): i32 => _substitutionCacheHits;
 export let parametricSubstitutions = (): i32 => _parametricSubstitutions;
+
+/** The type counters as they stood when a phase boundary was passed. */
+export final class TypeMark {
+  label: String;
+  total: i32;
+  classes: i32;
+  functions: i32;
+  interfaces: i32;
+  new(this.label, this.total, this.classes, this.functions, this.interfaces);
+}
+
+var _typeMarks = new GrowableArray<TypeMark>();
+
+/** Records the counters under `label`, for the census to difference. */
+export let markTypes = (label: String): void => {
+  _typeMarks.push(new TypeMark(label, _nextTypeUid - 1, _classTypes,
+      _functionTypes, _interfaceTypes));
+};
+
+export let typeMarks = (): GrowableArray<TypeMark> => _typeMarks;
+
+/**
+ * How many FunctionTypes each of codegen's substitution sites built
+ * (type-mapping.zena numbers them), to say which path makes them.
+ */
+var _codegenFunctionSites = new FixedArray<i32>(16, 0);
+
+export let countCodegenFunctionType = (site: i32): void => {
+  _codegenFunctionSites[site] = _codegenFunctionSites[site] + 1;
+};
+
+export let codegenFunctionTypeSite = (site: i32): i32 => _codegenFunctionSites[site];
 export let instantiationHits = (): i32 => _instantiationHits;
 export let instantiationMisses = (): i32 => _instantiationMisses;
 export let substitutedNominals = (): i32 => _substitutedNominals;
@@ -643,6 +675,7 @@ let substituteInType = (
       newFt.overloads = ft.overloads;
       newFt.functionSymbolId = ft.functionSymbolId;
       newFt.functionSymbolName = ft.functionSymbolName;
+      countCodegenFunctionType(5);
       newFt
     }
     case ClassType as ct: {
@@ -1339,6 +1372,7 @@ export let instantiateFunctionType = (
   newFt.overloads = source.overloads;
   newFt.functionSymbolId = source.functionSymbolId;
   newFt.functionSymbolName = source.functionSymbolName;
+  countCodegenFunctionType(6);
   return newFt;
 };
 

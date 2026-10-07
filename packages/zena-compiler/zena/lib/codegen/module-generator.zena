@@ -17,7 +17,7 @@ import {
   prepareResourceDestructors
 } from './ir/component-adapters.zena';
 import { getClassKey, getInterfaceKey, getInterfaceMemberKey, sortStringsByLengthDescending, parseI64OrU64Literal, parseI32WithHex } from './codegen-utils.zena';
-import { ClassType } from '../types.zena';
+import { ClassType, markTypes } from '../types.zena';
 import { Program } from '../program.zena';
 import {
   NumberLiteral, StringLiteral, BooleanLiteral, EnumDeclaration, ImportDeclaration, Module,
@@ -315,6 +315,7 @@ export final class ModuleGenerator {
     }
 
 
+    markTypes("discovery");
     let tLayout = performance.start("codegen-layout");
     let {stringClass} = wasm;
     if (stringClass != null) {
@@ -569,6 +570,7 @@ export final class ModuleGenerator {
     // name by index. The export list is built now for the same reason
     // — harvest roots liveness in it — and emitted later unchanged.
     let functionExports = this.#collectFunctionExports(wasm);
+    markTypes("layout, generators, async");
     let tLower = performance.start("codegen-lower-optimize");
     var zirLowered = 0;
     var zirGraduated = 0;
@@ -782,6 +784,7 @@ export final class ModuleGenerator {
       zirTypesRemoved = pruneTypes(wasm, bodies);
     }
 
+    markTypes("lower, optimize");
     let tEmitOther = performance.start("codegen-emit-other");
     this.emitter.emitModuleStart();
     // Rec groups come from layout()'s SCC pass: one group per

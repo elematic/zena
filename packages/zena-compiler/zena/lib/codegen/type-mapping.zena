@@ -5,7 +5,7 @@ import {
   UnknownType, ErrorType, AnyRefType, EqRefType, NeverType, HoleType,
   FieldInfo, MethodInfo, typeToString, TypeParameterType, ThisType,
   UnionType, InlineTupleType, baseType, BoolLiteralType, NumLiteralType, StringLiteralType,
-  RecordType, TupleType, MixinType, ErasedType} from '../types.zena';
+  RecordType, TupleType, MixinType, ErasedType, countCodegenFunctionType} from '../types.zena';
 import { 
   WasmModule, WasmStruct, WasmField, WasmSignature, WasmFunction, RecordDispatchInfo,
   sortWasmFields, WasmArray
@@ -152,6 +152,7 @@ export let substituteTypeParamsInCodegen = (
       }
       
       let newFt = new FunctionType(newParams, ft.parameterNames, newRet);
+      countCodegenFunctionType(0);
       newFt.typeParameters = ft.typeParameters;
       newFt.typeArguments = newArgs;
       newFt.genericSource = ft.genericSource;
@@ -309,6 +310,7 @@ export let substituteTypeParamsInCodegen = (
             newParams.push(sub);
           }
           let newFt = new FunctionType(newParams, ctor.parameterNames, ctor.returnType);
+          countCodegenFunctionType(1);
           newFt.parameterInitializers = ctor.parameterInitializers;
           newFt.parameterSymbols = ctor.parameterSymbols;
           newFt.optionalParameters = ctor.optionalParameters;
@@ -967,6 +969,7 @@ export let substituteThisTypeInCodegen = (receiverType: Type, t: Type): Type => 
       let subRet = substituteThisTypeInCodegen(receiverType, ft.returnType);
       if (!changed && subRet === ft.returnType) { return t; }
       let newFt = new FunctionType(subParams, ft.parameterNames, subRet);
+      countCodegenFunctionType(2);
       newFt.typeParameters = ft.typeParameters;
       newFt.optionalParameters = ft.optionalParameters;
       newFt.parameterInitializers = ft.parameterInitializers;
@@ -1127,6 +1130,7 @@ export let eraseTypeParameters = (wasm: WasmModule, t: Type): Type => {
             newParams.push(eraseTypeParameters(wasm, p));
           }
           let newFt = new FunctionType(newParams, ctor.parameterNames, eraseTypeParameters(wasm, ctor.returnType));
+          countCodegenFunctionType(3);
           newFt.parameterInitializers = ctor.parameterInitializers;
           newFt.parameterSymbols = ctor.parameterSymbols;
           newFt.optionalParameters = ctor.optionalParameters;
@@ -1181,6 +1185,7 @@ export let eraseTypeParameters = (wasm: WasmModule, t: Type): Type => {
       if (newRet != ft.returnType) { changed = true; }
       if (!changed) { return t; }
       let inst = new FunctionType(newParams, ft.parameterNames, newRet);
+      countCodegenFunctionType(4);
       inst.typeParameters = ft.typeParameters;
       inst.typeArguments = ft.typeArguments;
       inst.genericSource = ft.genericSource;
@@ -2006,6 +2011,7 @@ export let mapMixinThisInType = (ct: ClassType, type: Type): Type => {
               newParams.push(mapMixinThisInType(ct, p));
             }
             let newFt = new FunctionType(newParams, ctor.parameterNames, ctor.returnType);
+            countCodegenFunctionType(8);
             newFt.parameterInitializers = ctor.parameterInitializers;
             newFt.parameterSymbols = ctor.parameterSymbols;
             newFt.optionalParameters = ctor.optionalParameters;
@@ -2071,6 +2077,7 @@ export let mapMixinThisInType = (ct: ClassType, type: Type): Type => {
       }
       let newRet = mapMixinThisInType(ct, ft.returnType);
       let newFt = new FunctionType(newParams, ft.parameterNames, newRet);
+      countCodegenFunctionType(7);
       newFt.typeParameters = ft.typeParameters;
       newFt.typeArguments = ft.typeArguments;
       newFt.genericSource = ft.genericSource;

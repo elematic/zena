@@ -192,7 +192,47 @@ than the live set did, so most of what the collector copies is still
 outside what the census itemizes: the minted types and codegen's own
 structures, which the list below starts with.
 
+## Where the types come from
+
+1.65M types for a 557K-node program is three per node, and the census
+says which phase mints them (`markTypes` at each phase boundary; the
+`zena` module is a component target, so a small nested compile of the
+runtime memory module runs first):
+
+| phase                         | types     | class   | function | interface |
+| ----------------------------- | --------- | ------- | -------- | --------- |
+| check                         | 50,168    | 6,119   | 14,253   | 3,602     |
+| nested runtime-module compile | 29,650    | 5,387   | 7,804    | 2,463     |
+| reachability (discovery)      | 1,492,837 | 280,423 | 524,436  | 126,892   |
+| layout, generators, async     | 157       | 23      | 10       | 44        |
+| lower, optimize               | 83,021    | 8,394   | 6,776    | 9,288     |
+
+Checking a 236-library program mints 50K types. Reachability mints 30
+times that, because it re-substitutes a member's signature for every
+reached (function, specialization) pair through
+`substituteTypeParamsInCodegen`, and that function's caches
+(`ClassSubstitutions.substCache` and `instantiations`, keyed by the
+input object's identity) miss whenever the input is a different mention
+of the same type, which is most of the time. Of the 524K
+`FunctionType`s, 136K come from that function's own `FunctionType`
+case, 51K from the constructor it copies onto each class
+instantiation, 81K from `eraseTypeParameters` and its constructor
+copy, and most of the rest from the constructor copies in the
+checker's `substituteInType` when reachability calls it. A type here
+is a plain value: nothing hash-conses a union, an array type or a
+substituted signature, so equal types are built again at every site
+that needs them.
+
 ## What is left
+
+- **Reachability's substitution**, 1.49M types per `cli-module`
+  compile. The caches in `substituteTypeParamsInCodegen` key on input
+  identity; keying on (source instance, argument uids) for function
+  and union results as the class case already does, or hash-consing
+  substitution results on the `WasmModule`, would remove most of it.
+  Whether those types are retained or garbage decides whether this
+  is a live-set win or an allocation-rate win; either reduces
+  collections.
 
 In descending order of expected payoff, from the census after these
 changes:
