@@ -33,7 +33,8 @@ import {
   interfaceTypesCreated, mixinTypesCreated, typeParameterTypesCreated,
   typeKeysCached, typeKeyBytes,
   instantiationHits, instantiationMisses, substitutedNominals,
-  substitutionCacheHits, parametricSubstitutions
+  substitutionCacheHits, parametricSubstitutions,
+  typeMarks, codegenFunctionTypeSite
 } from './types.zena';
 
 /**
@@ -502,6 +503,33 @@ export let reportCensus = (program: Program): void => {
   line("nominal substitutions built", substitutedNominals());
   line("nominal substitutions cached", substitutionCacheHits());
   line("  of built, parametric (uncacheable)", parametricSubstitutions());
+
+  console.log("");
+  console.log("-- types minted per phase (total / class / function / interface)");
+  var prevTotal = 0;
+  var prevClasses = 0;
+  var prevFunctions = 0;
+  var prevInterfaces = 0;
+  for (let mark in typeMarks()) {
+    console.log(`   ${padRight(mark.label, 32)}${padLeft(i32ToString(mark.total - prevTotal), 11)}${padLeft(i32ToString(mark.classes - prevClasses), 9)}${padLeft(i32ToString(mark.functions - prevFunctions), 9)}${padLeft(i32ToString(mark.interfaces - prevInterfaces), 9)}`);
+    prevTotal = mark.total;
+    prevClasses = mark.classes;
+    prevFunctions = mark.functions;
+    prevInterfaces = mark.interfaces;
+  }
+
+  console.log("");
+  console.log("-- FunctionTypes by substitution site");
+  line("checker substituteInType", codegenFunctionTypeSite(5));
+  line("checker instantiateFunctionType", codegenFunctionTypeSite(6));
+  line("codegen substituteTypeParams", codegenFunctionTypeSite(0));
+  line("codegen class ctor copy", codegenFunctionTypeSite(1));
+  line("codegen substituteThisType", codegenFunctionTypeSite(2));
+  line("codegen erase ctor copy", codegenFunctionTypeSite(3));
+  line("codegen eraseTypeParameters", codegenFunctionTypeSite(4));
+  line("codegen mapMixinThisInType", codegenFunctionTypeSite(7));
+  line("codegen mapMixinThis ctor copy", codegenFunctionTypeSite(8));
+  line("codegen-utils substituteTypeParams", codegenFunctionTypeSite(10));
 
   console.log("");
   console.log("-- retained, by group (MiB)");

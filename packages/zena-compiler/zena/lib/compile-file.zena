@@ -29,6 +29,7 @@ import { nowMs, performance } from './time.zena';
 import { isKnownTarget, knownTargetsDescription, targetEmitsComponent } from './targets.zena';
 import { compileComponentRuntimeModule } from './codegen/component-runtime.zena';
 import { reportCensus } from './census.zena';
+import { markTypes } from './types.zena';
 import { makeImportEncoder } from './codegen/wit-imports.zena';
 import {
   isWitModulePath, synthesizeWitModule, synthesizeExportWrapper,
@@ -529,6 +530,7 @@ export let compileFile = (options: CompileFileOptions): i32 => {
         }
       }
     }
+    markTypes("check");
     let tCodegen = performance.start("codegen");
     let program = new Program(units, entryUnit);
 
@@ -588,6 +590,7 @@ export let compileFile = (options: CompileFileOptions): i32 => {
       };
     }
     let wasmBytes = generator.generate(program).toByteArray();
+    markTypes("emit");
     writeFileBytes(outPath, wasmBytes);
 
     // The WAT dump runs a SECOND full generator pass and its text
