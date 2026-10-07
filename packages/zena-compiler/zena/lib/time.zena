@@ -44,13 +44,44 @@ export final class Phase {
  */
 export final class Performance {
   var #nextId: i32 = 0;
+  // How many nested compiles deep we are. A depth rather than a flag
+  // so that a nested compile inside a nested compile still resumes at
+  // the right level.
+  var #suspendDepth: i32 = 0;
   #active = new Map<i32, Measure>();
   #byName = new Map<String, Phase>();
   // The same phases in the order each was first measured, which is the
   // order they run in, and so the order to report them in.
   var #inOrder = new GrowableArray<Phase>();
 
+  /**
+   * Stops recording until the matching `resume`, for a nested compile
+   * whose phases would otherwise be added to the enclosing compile's.
+   *
+   * A compile inside a compile — the component target builds the
+   * runtime memory module this way — loads, parses and checks its own
+   * files, and counting that work in the same totals made the report
+   * exceed wall-clock time: once inside the phase that contains the
+   * nested compile, and again in the top-level `load`, `parse`,
+   * `scope` and `check`. The nested compile's own breakdown is lost,
+   * which is the price; the caller still times it as one phase.
+   */
+  suspend(): void {
+    this.#suspendDepth += 1;
+  }
+
+  /** Resumes recording. See `suspend`. */
+  resume(): void {
+    if (this.#suspendDepth > 0) {
+      this.#suspendDepth -= 1;
+    }
+  }
+
   start(name: String): i32 {
+    if (this.#suspendDepth > 0) {
+      // -1 is not a key in `#active`, so the matching `end` is a no-op.
+      return -1;
+    }
     // Register the phase now rather than when it closes, so that a
     // phase that encloses others is ordered — and so reported — ahead
     // of them. `check` opens first and closes last.
@@ -84,6 +115,9 @@ export final class Performance {
    * reason the loop is hot.
    */
   add(name: String, ms: f64, times: i32 = 1): void {
+    if (this.#suspendDepth > 0) {
+      return;
+    }
     let phase = this.#phase(name);
     phase.total = phase.total + ms;
     phase.count = phase.count + times;
