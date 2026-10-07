@@ -4301,18 +4301,27 @@ export final class FunctionLowerer {
   }
 
   #lowerIdentifier(ident: Identifier): i32 {
-    if (this.#isZeroWidthExpr(ident as Expression)) {
-      // A zero-width binding (a `void` parameter) holds no value and
-      // reading it has no effect, so it yields nothing. Bailing out
-      // here keeps NO_VALUE away from #valueType.
-      return NO_VALUE;
-    }
+    // A use typed `void` or `never` may still have an ordinary slot
+    // behind it, because narrowing can empty a use's type (see the
+    // `never` note further down). So this is only a question; the slot
+    // lookups below answer it, and a read with no slot is the one that
+    // yields nothing.
+    let zeroWidthUse = this.#isZeroWidthExpr(ident as Expression);
     let sym = this.func.model.resolve(ident);
     if (sym == null) {
+      if (zeroWidthUse) {
+        return NO_VALUE;
+      }
       this.#bail('unresolved identifier');
     }
     let resolved = sym.resolveTarget();
     if (!this.#cx().env.has(resolved.id)) {
+      if (zeroWidthUse) {
+        // A zero-width binding (a `void` parameter) holds no value and
+        // reading it has no effect, so it yields nothing. Returning
+        // NO_VALUE here keeps it away from #valueType.
+        return NO_VALUE;
+      }
       // Module-level globals read via global.get; the checked type of
       // the identifier reasserts non-nullness where the global's wasm
       // type is a nullable ref.
@@ -4352,6 +4361,12 @@ export final class FunctionLowerer {
       this.#bail('non-local identifier');
     }
     var value = this.#cx().env[resolved.id];
+    if (value == NO_VALUE) {
+      // A zero-width binding bound by a pattern: `bindPatternSym` parks
+      // NO_VALUE in the environment for one, so the slot is absent even
+      // though the symbol is present.
+      return NO_VALUE;
+    }
     if (this.#isCelled(resolved.id)) {
       value = this.#cellRead(value);
     }
@@ -4361,7 +4376,14 @@ export final class FunctionLowerer {
     // non-nullness when the narrowed type demands it; subtype narrowing
     // (casts to a subclass) is not lowered yet and bails.
     let nodeType = this.func.model.getNodeType(ident);
-    if (nodeType == null) {
+    if (nodeType == null || isVoidOrNeverType(nodeType)) {
+      // `never` here is narrowing that emptied the type, which happens
+      // when the test that narrowed it was a tautology: `catch (e)`
+      // binds `Error`, so after `if (e is Error) { return ... }` the
+      // rest of the handler reads `e` at `never`. There is no wasm type
+      // to conform to and nothing to re-assert — the slot still holds
+      // the `Error` it was bound to, and control cannot reach the read
+      // anyway, so read it as it stands.
       return value;
     }
     let wantVt = typeToValTypeWithSub(this.wasm, nodeType, this.func);

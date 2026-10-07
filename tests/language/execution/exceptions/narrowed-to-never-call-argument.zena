@@ -1,0 +1,38 @@
+// @mode: run
+// @invoke: main
+// @result: 0
+// @skip: lowering bails with "zir unsupported: call arity adaptation" —
+//   a binding narrowed to the empty type is counted zero-width at a call
+//   argument, so the call's live argument count stops matching the
+//   callee's signature. The same read as a `throw` operand works; see
+//   rethrow-after-narrowing-return.zena for why the type is empty.
+
+let boom = (): void => {
+  throw new Error('boom');
+};
+
+let describe = (e: Error): String => e.message;
+
+let attempt = (): String | null => {
+  try {
+    boom();
+  } catch (e) {
+    if (e is Error) {
+      return describe(e as Error);
+    }
+    // Dead: `e` is the empty type here.
+    return describe(e);
+  }
+  return null;
+};
+
+export function main(): i32 {
+  let caught = attempt();
+  if (caught == null) {
+    return 1;
+  }
+  if ((caught as String) != 'boom') {
+    return 2;
+  }
+  return 0;
+}
