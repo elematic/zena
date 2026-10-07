@@ -1,0 +1,40 @@
+// @mode: run
+// @invoke: main
+// @result: 0
+
+// A catch binding rethrown after an arm that narrowed it and returned.
+//
+// `catch (e)` binds the stdlib `Error`, so `e is Error` always holds and
+// the checker narrows `e` to the empty type on the path after the arm —
+// a path control cannot take. Reading `e` there used to yield lowering's
+// NO_VALUE, which `#lowerThrowStatement` passed on as a value and
+// `conformToSlot` used to index the IR's value tables: "Index out of
+// bounds". The `throw` is dead code, so what this test asserts is that
+// the function compiles and the live path still runs.
+
+let boom = (): void => {
+  throw new Error('boom');
+};
+
+let attempt = (): String | null => {
+  try {
+    boom();
+  } catch (e) {
+    if (e is Error) {
+      return (e as Error).message;
+    }
+    throw e;
+  }
+  return null;
+};
+
+export function main(): i32 {
+  let caught = attempt();
+  if (caught == null) {
+    return 1;
+  }
+  if ((caught as String) != 'boom') {
+    return 2;
+  }
+  return 0;
+}
