@@ -1,0 +1,108 @@
+/**
+ * A malformed `--wit` document is reported the way a malformed `.zena`
+ * file is: the WIT file, the line, the column, the offending line and an
+ * underline. See https://github.com/elematic/zena/issues/158.
+ *
+ * Undoing the join is the part worth testing. A directory of WIT is
+ * parsed as one document, so the parser's spans are offsets into the
+ * concatenation and have to be mapped back to the file a reader should
+ * open.
+ */
+
+import { suite, test, TestContext } from 'zena:test';
+import { equal, equalText, isNotNull } from 'zena:assert';
+import { parseSyntax } from 'wit-parser:wit';
+import { WitDocument, witDiagnostic } from 'wit-parser:document';
+import { DiskHost } from '../lib/fs-host.zena';
+import { readWitDocument } from '../lib/wit-source.zena';
+import { compileFile } from '../lib/compile-file.zena';
+
+let fixtures = 'packages/zena-compiler/test-files/wit-diagnostics';
+
+let documentAt = (path: String): WitDocument =>
+    readWitDocument(new DiskHost(), path);
+
+/** The diagnostic parsing `doc` produces, or null if it parsed. */
+let parseFailureText = (doc: WitDocument): String | null => {
+  var text: String | null = null;
+  try {
+    parseSyntax(doc.source);
+  } catch (e) {
+    if (e is Error) {
+      text = witDiagnostic(doc, e);
+    }
+  }
+  return text;
+};
+
+export let tests = suite("WIT diagnostics", (): void => {
+
+  test("a keyword as a parameter name names the file and position",
+      (t: TestContext): void => {
+    let doc = documentAt(`${fixtures}/single/world.wit`);
+    let text = parseFailureText(doc);
+    isNotNull(text);
+    equalText(text as String,
+        `${fixtures}/single/world.wit:4:22 - Error: ` +
+        "expected an identifier or string, found keyword `world`" +
+        "; write `%world` to use a keyword as a name\n" +
+        "  export greet: func(world: string) -> string;\n" +
+        "                     ^^^^^");
+  });
+
+  test("a directory names the file the offending token is actually in",
+      (t: TestContext): void => {
+    // `greeter.wit` comes first in name order, so the world's offsets
+    // are nowhere near the start of the document the parser saw.
+    let doc = documentAt(`${fixtures}/split`);
+    let text = parseFailureText(doc);
+    isNotNull(text);
+    equalText(text as String,
+        `${fixtures}/split/world.wit:2:22 - Error: ` +
+        "expected an identifier or string, found keyword `world`" +
+        "; write `%world` to use a keyword as a name\n" +
+        "  export greet: func(world: string) -> string;\n" +
+        "                     ^^^^^");
+  });
+
+  test("locate puts an offset in the file it came from", (t: TestContext): void => {
+    let doc = documentAt(`${fixtures}/split`);
+    equal(doc.files.length, 2);
+    equal(doc.files[0].name, `${fixtures}/split/greeter.wit`);
+    equal(doc.files[1].name, `${fixtures}/split/world.wit`);
+
+    let first = doc.locate(0);
+    equal(first.file, `${fixtures}/split/greeter.wit`);
+    equal(first.line, 1);
+    equal(first.column, 1);
+
+    // The second file's first byte: line 1 of that file, not of the
+    // concatenation.
+    let second = doc.locate(doc.files[1].start);
+    equal(second.file, `${fixtures}/split/world.wit`);
+    equal(second.line, 1);
+    equal(second.column, 1);
+  });
+
+  test("a single file is one file starting at zero", (t: TestContext): void => {
+    let doc = documentAt(`${fixtures}/single/world.wit`);
+    equal(doc.files.length, 1);
+    equal(doc.files[0].name, `${fixtures}/single/world.wit`);
+    equal(doc.files[0].start, 0);
+  });
+
+  test("a malformed declared world fails the compile, not the compiler",
+      (t: TestContext): void => {
+    // The diagnostic goes to stderr, so what is asserted here is the
+    // status: `compileFile` reports and returns 1 where it used to throw
+    // past its own caller.
+    equal(compileFile({
+      entry: `${fixtures}/main.zena`,
+      outPath: 'packages/zena-compiler/zena/out/wit-diagnostics.wasm',
+      target: 'component',
+      witPath: `${fixtures}/single`,
+      worldName: 'app',
+    }), 1);
+  });
+
+});

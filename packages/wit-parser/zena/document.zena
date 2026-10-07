@@ -3,19 +3,23 @@
  *
  * The parser takes a source string; these are the steps just before
  * and after it that every consumer repeats — joining a package
- * directory's files into one document in a canonical way, and finding
- * an interface in the parsed result. They live here rather than in
- * each consumer because their behavior is contract: the compiler's
- * `--wit` flag and its WIT-backed packages must agree on what "a
- * directory of WIT" means, whether the host reads it from disk or
- * holds it in memory.
+ * directory's files into one document in a canonical way, finding an
+ * interface in the parsed result, and naming the file and line a
+ * failure happened at. They live here rather than in each consumer
+ * because their behavior is contract: the compiler's `--wit` flag and
+ * its WIT-backed packages must agree on what "a directory of WIT"
+ * means, whether the host reads it from disk or holds it in memory.
  *
  * Nothing here does I/O. The caller reads the files.
  */
 
+import { StringBuilder } from 'zena:core';
+import { Span } from './token.zena';
+import { LexError } from './lexer.zena';
 import {
-  Ast, AstItem, AstItemTag, InterfaceDef, PackageName
+  Ast, AstItem, AstItemTag, InterfaceDef, PackageName, ParseError
 } from './parser.zena';
+import { ResolveError } from './resolver.zena';
 
 /** Byte-wise string order, for a listing that reads the same everywhere. */
 let byteCompare = (a: String, b: String): i32 => {
@@ -39,13 +43,91 @@ export final class WitFile {
   new(this.name, this.source);
 }
 
+/** Where one of a joined document's files begins in it. */
+export final class WitFileStart {
+  name: String;
+  start: i32;
+  new(this.name, this.start);
+}
+
+/** Where a byte offset in a document falls, for a reader to go look. */
+export final class WitLocation {
+  /** The file the offset came from, named as the document's files were. */
+  file: String;
+  /** 1-based line within that file. */
+  line: i32;
+  /** 1-based column, in bytes. */
+  column: i32;
+  new(this.file, this.line, this.column);
+}
+
+/**
+ * A joined document and where each of its files begins in it.
+ *
+ * A directory of WIT is parsed as one document, so a `Span` from the
+ * parser is an offset into the concatenation while a reader needs a
+ * file and a line in it. The starts are recorded as the document is
+ * joined, which keeps `locate` the only code that knows how it was put
+ * together.
+ */
+export final class WitDocument {
+  /** The joined source, as the parser sees it. */
+  source: String;
+  /** Each `.wit` file in document order. Empty for an empty document. */
+  files: Array<WitFileStart>;
+
+  new(this.source, this.files);
+
+  /** Which file `offset` is in, and where in it. */
+  locate(offset: i32): WitLocation {
+    var at = offset;
+    if (at < 0) { at = 0; }
+    if (at > this.source.length) { at = this.source.length; }
+    var file = "";
+    var fileStart = 0;
+    for (let f in this.files) {
+      if (f.start <= at) {
+        file = f.name;
+        fileStart = f.start;
+      }
+    }
+    // Lines count from the file's own start, not the document's, so the
+    // number is the one an editor shows.
+    var line = 1;
+    var lineStart = fileStart;
+    for (var i = fileStart; i < at; i += 1) {
+      if (this.source.getByteAt(i) == 10) { // '\n'
+        line += 1;
+        lineStart = i + 1;
+      }
+    }
+    return new WitLocation(file, line, at - lineStart + 1);
+  }
+
+  /** The text of the line `offset` is on, without its newline. */
+  lineTextAt(offset: i32): String {
+    var at = offset;
+    if (at < 0) { at = 0; }
+    if (at > this.source.length) { at = this.source.length; }
+    var start = at;
+    while (start > 0 && this.source.getByteAt(start - 1) != 10) {
+      start -= 1;
+    }
+    var end = at;
+    while (end < this.source.length && this.source.getByteAt(end) != 10) {
+      end += 1;
+    }
+    return this.source.sliceBytes(start, end);
+  }
+}
+
 /**
  * The document a directory of WIT makes: its `.wit` files concatenated
- * in byte order of their names, each followed by a newline. Files with
- * other extensions are left out, and with no `.wit` files the document
- * is empty.
+ * in byte order of their names, each followed by a newline, and where
+ * each of them begins in the result. Files with other extensions are
+ * left out, and with no `.wit` files the document is empty.
  */
-export function joinWitFiles(files: Array<WitFile>): String {
+export function joinWitDocument(files: Array<WitFile>): WitDocument {
   let wit = new GrowableArray<WitFile>();
   for (let file in files) {
     if (file.name.endsWith(".wit")) {
@@ -62,11 +144,77 @@ export function joinWitFiles(files: Array<WitFile>): String {
       }
     }
   }
+  let starts = new Array<WitFileStart>();
   var source = "";
   for (let file in wit) {
+    starts.push(new WitFileStart(file.name, source.length));
     source = source + file.source + "\n";
   }
-  return source;
+  return new WitDocument(source, starts);
+}
+
+/**
+ * `joinWitDocument`'s source alone, for a caller with nothing to
+ * report against it.
+ */
+export function joinWitFiles(files: Array<WitFile>): String {
+  return joinWitDocument(files).source;
+}
+
+/**
+ * The span `e` happened at, when `e` is one of the three failures the
+ * parser raises against a document: `LexError`, `ParseError`,
+ * `ResolveError`. Anything else is a fault in the parser itself and
+ * carries no position.
+ */
+export function witErrorSpan(e: Error): Span | null {
+  if (e is LexError) {
+    return (e as LexError).span;
+  }
+  if (e is ParseError) {
+    return (e as ParseError).span;
+  }
+  if (e is ResolveError) {
+    return (e as ResolveError).span;
+  }
+  return null;
+}
+
+/**
+ * `e` rendered against `doc` as a terminal diagnostic: the file, line
+ * and column it happened at, then the offending line and an underline.
+ * The header is `file:line:column - Error: `, which is what the Zena
+ * compiler's own syntax errors carry.
+ *
+ * Null when `e` carries no span, and null when its span is past the end
+ * of `doc`: the compiler splices a program's WIT-backed packages onto a
+ * document before parsing it, and a failure in that spliced text has no
+ * file this document can name. The caller reports the message plainly.
+ */
+export function witDiagnostic(doc: WitDocument, e: Error): String | null {
+  let span = witErrorSpan(e);
+  if (span == null) {
+    return null;
+  }
+  let at = span as Span;
+  if (at.start > doc.source.length) {
+    return null;
+  }
+  let loc = doc.locate(at.start);
+  let sb = new StringBuilder();
+  sb.append(`${loc.file}:${loc.line}:${loc.column} - Error: ${e.message}\n`);
+  sb.append(`${doc.lineTextAt(at.start)}\n`);
+  for (var i = 1; i < loc.column; i += 1) {
+    sb.append(" ");
+  }
+  // A zero-width span — the end of the document — still gets one caret
+  // to point with.
+  var width = at.end - at.start;
+  if (width < 1) { width = 1; }
+  for (var i = 0; i < width; i += 1) {
+    sb.append("^");
+  }
+  return sb.toString();
 }
 
 /** One interface of a parsed document, with its package's name. */
