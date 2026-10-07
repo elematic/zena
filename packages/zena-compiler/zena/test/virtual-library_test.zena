@@ -1,0 +1,399 @@
+/**
+ * The standard library's virtual libraries, held to the two rules that
+ * let a check result be shared between targets.
+ *
+ * A virtual library has one entry per target in the manifest, and a
+ * compile loads only the implementation its own target selected. So
+ * nothing on an ordinary compile ever sees two implementations at once,
+ * and nothing notices when they drift apart. This suite is where they
+ * are compared: once, here, rather than on every compile of every
+ * program — verifying means loading and checking the implementations a
+ * compile did *not* select, which no program needs.
+ *
+ * **Rule one: a shared name means the same thing.** A name two
+ * implementations both export must have the same signature. A name only
+ * one exports is a target-specific capability rather than drift —
+ * `installStackTraceHooks` exists on `stack-hooked` because only
+ * `zena-cli` installs host hooks — and a consumer naming it gets "not
+ * exported" at the import, as it would for `zena:fs` on a target without
+ * it. Two meanings for one name is what a consumer cannot survive.
+ *
+ * **Rule two: the types are declared elsewhere.** A type an
+ * implementation exports must be declared in a library no target varies.
+ * Rule one cannot enforce this: two implementations may each declare
+ * `export distinct type StackRef = anyref;` and compare equal by
+ * signature while being two distinct types, which is what `Error` was
+ * before they imported one declaration (see `core/error/stack-ref.zena`).
+ * Codegen keys types by identity, so a shared check result needs the
+ * declaration to be shared, not merely to match.
+ *
+ * Rule two is necessary and not sufficient. It reads the types a library
+ * exports, so an implementation can satisfy it by keeping a concrete
+ * class private while still handing a consumer a per-target type through
+ * an exported *value* — `export let console = new ComponentConsole()`
+ * gives `console` the concrete class as its type, and annotating it to
+ * the shared `Console` interface is the actual fix. Checking that
+ * properly means walking every type reachable from the signature, which
+ * is work for the conformance check in issue #191.
+ */
+
+import { Set } from 'zena:collections';
+import { suite, test, TestContext } from 'zena:test';
+import { isTrue, equal } from 'zena:assert';
+import { readFile } from 'zena:fs';
+import { StringBuilder } from 'zena:core';
+import { CompilerHost } from '../lib/library-loader.zena';
+import { PackageConfig } from '../lib/module-resolver.zena';
+import {
+  Compiler, ProgramCheckResult, checkCompilation, createCompiler,
+  signatureTypeEquals,
+} from '../lib/compiler.zena';
+import { buildStdlibConfig } from '../lib/package-manifest.zena';
+import { ModuleExport, stdlibIdToRelativeFile } from '../lib/module-resolver.zena';
+import { DiagnosticSeverity } from '../lib/diagnostics.zena';
+import { FunctionType, Type, declaringModuleOf, typeToString } from '../lib/types.zena';
+import { isWitModulePath, synthesizeWitModule } from '../lib/wit-module-synth.zena';
+import { directoryNames } from '../lib/fs-host.zena';
+
+let stdlibRoot = 'packages/stdlib/zena';
+
+class PlainHost implements CompilerHost {
+  readFile(path: String): String {
+    if (isWitModulePath(path)) {
+      return synthesizeWitModule(this, path);
+    }
+    if (path.startsWith('zena:')) {
+      return readFile(`${stdlibRoot}/${stdlibIdToRelativeFile(path)}`);
+    }
+    return readFile(path);
+  }
+
+  listDir(path: String): Array<String> | null {
+    return directoryNames(path);
+  }
+}
+
+/** One implementation of a virtual library: the target that picks it. */
+final class Implementation(target: String, path: String)
+
+/**
+ * Every virtual standard library entry that has more than one distinct
+ * implementation, as (library name, implementations). An entry whose
+ * targets all name the same file — `console` on the three hostless
+ * targets — has nothing to compare and is left out.
+ */
+let virtualLibraries = (): GrowableArray<
+    (String, GrowableArray<Implementation>)> => {
+  let out = new Array<(String, GrowableArray<Implementation>)>();
+  let config = buildStdlibConfig(stdlibRoot);
+  let exports = config.exports as Map<String, ModuleExport>;
+  for (let name in exports.keys()) {
+    let {virtual} = exports[name];
+    if (virtual == null) { continue; }
+    let impls = new Array<Implementation>();
+    let seen = new Array<String>();
+    for (let target in virtual.keys()) {
+      let path = virtual[target];
+      var isNew = true;
+      for (let had in seen) {
+        if (had == path) { isNew = false; }
+      }
+      if (isNew) {
+        seen.push(path);
+        impls.push(new Implementation(target, path));
+      }
+    }
+    if (impls.length > 1) {
+      out.push((name, impls));
+    }
+  }
+  return out;
+};
+
+/**
+ * One implementation, checked: its signature, and every library the
+ * compile loaded. The paths are what rule two needs — a type may be
+ * declared in a library that is itself one implementation, so long as
+ * every other implementation loads that same library at that same path.
+ * `memory/component.zena` re-exports `Allocator` from `../memory.zena`,
+ * so both targets share the one declaration even though `memory.zena` is
+ * the implementation the other targets select.
+ */
+final class CheckedImplementation(
+  impl: Implementation,
+  checked: ProgramCheckResult,
+  paths: Set<String>
+)
+
+/**
+ * Check one implementation as an entry point on the target that selects
+ * it, and return the whole result — the signature map is keyed by path,
+ * and rule two needs the types themselves.
+ */
+let checkImplementation = (
+  compiler: Compiler,
+  impl: Implementation
+): CheckedImplementation => {
+  let result = compiler.compile({
+    entry: `zena:${impl.path}`,
+    target: impl.target,
+  });
+  let checked = checkCompilation(result);
+  for (let diagnostic in checked.diagnostics) {
+    if (diagnostic.severity == DiagnosticSeverity.Error) {
+      throw new Error(
+          `${impl.path} on ${impl.target} does not check: ${diagnostic.message}`);
+    }
+  }
+  let paths = new Set<String>();
+  for (let file in result.files) {
+    paths.add(file.path);
+  }
+  return new CheckedImplementation(impl, checked, paths);
+};
+
+/** The export signature of `impl`, by exported name. */
+let signatureOf = (
+  checked: ProgramCheckResult,
+  impl: Implementation
+): Map<String, Type> =>
+    checked.exportSignatures.get(`zena:${impl.path}`) ?? new Map<String, Type>();
+
+/**
+ * Which part of two signatures differs, for a failure message.
+ *
+ * `signatureTypeEquals` answers "did this library's API change between
+ * two checks of the same source", which is a stricter question than
+ * "can a consumer tell these two implementations apart" — it compares
+ * `isFinal` and `isAbstract`, and a `declare function` need not agree
+ * with a defined one on those to be interchangeable. Naming the part
+ * that differs keeps a failure actionable instead of leaving the reader
+ * to guess which of those it was.
+ */
+let describeDifference = (a: Type, b: Type): String => {
+  if (a is FunctionType && b is FunctionType) {
+    let fa = a as FunctionType;
+    let fb = b as FunctionType;
+    if (fa.parameters.length != fb.parameters.length) {
+      return `arity ${i32ToString(fa.parameters.length)} vs ` +
+          i32ToString(fb.parameters.length);
+    }
+    for (var i = 0; i < fa.parameters.length; i += 1) {
+      if (!signatureTypeEquals(fa.parameters[i], fb.parameters[i])) {
+        return `parameter ${i32ToString(i)}: ` +
+            `${typeToString(fa.parameters[i])} vs ${typeToString(fb.parameters[i])}`;
+      }
+    }
+    if (!signatureTypeEquals(fa.returnType, fb.returnType)) {
+      return `return ${typeToString(fa.returnType)} vs ` +
+          typeToString(fb.returnType);
+    }
+    if (fa.isAbstract != fb.isAbstract) {
+      return 'isAbstract differs (a `declare function` against a defined one)';
+    }
+    if (fa.isFinal != fb.isFinal) { return 'isFinal differs'; }
+    return 'the parameters and return agree; some other signature field differs';
+  }
+  return `${typeToString(a)} vs ${typeToString(b)}`;
+};
+
+/**
+ * Virtual libraries whose implementations disagree on a shared name, and
+ * why each is not fixed.
+ *
+ * An entry is a known gap, not a licence, and it asserts the gap: the
+ * test fails if a listed library stops disagreeing, so fixing one forces
+ * removing its entry rather than leaving a stale exemption behind. Same
+ * idea as `@missing-error:` in the portable tests.
+ */
+let signatureGaps = (): Map<String, String> => {
+  let out = new Map<String, String>();
+  out['fetch'] =
+      '`Response` is a class declared in both implementations, so the two ' +
+      '`Response` types compare unequal and `fetch`\'s `Future<Response>` ' +
+      'return follows. One root cause; see typeDeclarationGaps. Issue #191.';
+  out['console'] =
+      '`console` is exported as `new HostConsole()` / ' +
+      '`new ComponentConsole()`, so the value\'s type is the per-target ' +
+      'class rather than the shared `Console` interface the two implement. ' +
+      'The fix is to annotate it `console: Console`, which puts an ' +
+      'interface dispatch on every `console.log`. Issue #191.';
+  out['memory'] =
+      '`defaultAllocator` is annotated `FreeListAllocator` in `memory.zena` ' +
+      'and `Allocator` in `memory/component.zena`. The component target ' +
+      'already pays the interface dispatch; annotating both `Allocator` ' +
+      'would extend it to allocation on `js` and `freestanding`, which is ' +
+      'a hot path. Issue #191.';
+  return out;
+};
+
+/**
+ * Virtual libraries that declare a type no sibling implementation
+ * loads, and why each is not fixed. As above, an entry asserts its gap.
+ */
+let typeDeclarationGaps = (): Map<String, String> => {
+  let out = new Map<String, String>();
+  out['fetch'] =
+      '`Response` is a class both implementations declare, so the name ' +
+      'stands for two types. Sharing it needs either a shared interface ' +
+      'with per-target classes, as `console` does for `Console`, or the ' +
+      'canonical-declaration machinery for class bodies, which does not ' +
+      'exist yet. Issue #191.';
+  return out;
+};
+
+/** Whether `x` sorts before `y` by bytes; `String` has no `<`. */
+let byteLess = (x: String, y: String): boolean => {
+  var minLen = x.length;
+  if (y.length < minLen) { minLen = y.length; }
+  for (var i = 0; i < minLen; i += 1) {
+    let d = x.getByteAt(i) - y.getByteAt(i);
+    if (d != 0) { return d < 0; }
+  }
+  return x.length < y.length;
+};
+
+let sortedKeys = (sig: Map<String, Type>): GrowableArray<String> => {
+  let keys = new Array<String>(sig.size);
+  for (let key in sig.keys()) {
+    keys.push(key);
+  }
+  // A HashMap iterates in uid order, which depends on what the process
+  // did earlier; a failure message must not.
+  for (var i = 0; i < keys.length; i += 1) {
+    for (var j = i + 1; j < keys.length; j += 1) {
+      if (byteLess(keys[j], keys[i])) {
+        let t = keys[i];
+        keys[i] = keys[j];
+        keys[j] = t;
+      }
+    }
+  }
+  return keys;
+};
+
+export let tests = suite('virtual library implementations', (): void => {
+  // One compiler for every implementation across every target, which is
+  // what makes this affordable: the standard library each target draws
+  // on is loaded once per target rather than once per implementation.
+  let newCompiler = (): Compiler => createCompiler(new PlainHost(), {
+    stdlibRoot,
+    packages: new Map<String, PackageConfig>(),
+  });
+
+  /** Every implementation of every multi-implementation virtual library. */
+  let checkAll = (
+    compiler: Compiler
+  ): GrowableArray<(String, GrowableArray<CheckedImplementation>)> => {
+    let out = new Array<(String, GrowableArray<CheckedImplementation>)>();
+    for (let (name, impls) in virtualLibraries()) {
+      let checked = new Array<CheckedImplementation>();
+      for (let impl in impls) {
+        checked.push(checkImplementation(compiler, impl));
+      }
+      out.push((name, checked));
+    }
+    return out;
+  };
+
+  test('implementations agree on every name they share', (ctx: TestContext): void => {
+    let gaps = signatureGaps();
+    var compared = 0;
+    for (let (name, impls) in checkAll(newCompiler())) {
+      let first = impls[0];
+      let firstSig = signatureOf(first.checked, first.impl);
+      let complaints = new StringBuilder();
+      for (var i = 1; i < impls.length; i += 1) {
+        let other = impls[i];
+        let otherSig = signatureOf(other.checked, other.impl);
+        for (let key in sortedKeys(firstSig)) {
+          if (let (true, otherType) = otherSig.get(key)) {
+            if (!signatureTypeEquals(firstSig[key], otherType)) {
+              complaints.append(`\n  ${key} (${first.impl.path} vs ` +
+                  `${other.impl.path}): ` +
+                  describeDifference(firstSig[key], otherType));
+            }
+          }
+        }
+        compared += 1;
+      }
+
+      if (let (true, reason) = gaps.get(name)) {
+        isTrue(complaints.toString() != '',
+            `zena:${name} implementations now agree — remove its entry from ` +
+            `signatureGaps(). Recorded reason: ${reason}`);
+      } else {
+        equal(complaints.toString(), '',
+            `zena:${name} implementations disagree:${complaints.toString()}`);
+      }
+    }
+    // A guard on the collection itself: were the manifest to stop
+    // reporting virtual entries, this suite would pass vacuously.
+    isTrue(compared >= 4,
+        `expected several implementation pairs, compared ${i32ToString(compared)}`);
+  });
+
+  test('every exported type is declared where all implementations see it',
+      (ctx: TestContext): void => {
+    let gaps = typeDeclarationGaps();
+    var checkedTypes = 0;
+    for (let (name, impls) in checkAll(newCompiler())) {
+      // A declaration is shared when every implementation's compile
+      // loaded that library, at that path. `memory.zena` qualifies even
+      // though it is itself the implementation three targets select,
+      // because `memory/component.zena` re-exports from it.
+      let shared = new Set<String>();
+      for (let path in impls[0].paths) {
+        var inAll = true;
+        for (let other in impls) {
+          if (!other.paths.has(path)) { inAll = false; }
+        }
+        if (inAll) { shared.add(path); }
+      }
+
+      let unshared = new StringBuilder();
+      for (let impl in impls) {
+        let sig = signatureOf(impl.checked, impl.impl);
+        for (let key in sortedKeys(sig)) {
+          // The type half only; a "v:" entry is a value, and rule one
+          // compares those.
+          if (!key.startsWith('t:')) { continue; }
+          // A type only one implementation exports is a target-specific
+          // capability, as with a function: `Clock` comes from
+          // `time/queue.zena`, which only the p3 implementation loads, and
+          // a consumer naming it is a consumer that builds on p3 targets.
+          // The harm is one *shared* name standing for two declarations.
+          var exporters = 0;
+          for (let other in impls) {
+            if (signatureOf(other.checked, other.impl).has(key)) {
+              exporters += 1;
+            }
+          }
+          if (exporters < 2) { continue; }
+          let declaredIn = declaringModuleOf(sig[key]);
+          if (declaredIn == null) { continue; }
+          checkedTypes += 1;
+          if (!shared.has(declaredIn)) {
+            unshared.append(`\n  ${key} is declared in ${declaredIn}, which ` +
+                `only some implementations load`);
+          }
+        }
+      }
+
+      if (let (true, reason) = gaps.get(name)) {
+        isTrue(unshared.toString() != '',
+            `zena:${name} now declares every exported type where all its ` +
+            `implementations see it — remove its entry from ` +
+            `typeDeclarationGaps(). Recorded reason: ${reason}`);
+      } else {
+        equal(unshared.toString(), '',
+            `zena:${name} exports a type whose declaration not every ` +
+            `implementation loads, which makes it a different type per ` +
+            `target:${unshared.toString()}\nDeclare it in a library they all ` +
+            `load and import it, as core/error/stack-ref.zena does.`);
+      }
+    }
+    isTrue(checkedTypes > 0,
+        'expected the virtual libraries to export some types');
+  });
+});
