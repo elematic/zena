@@ -17,10 +17,10 @@
  */
 
 import {spawnSync} from 'node:child_process';
+import {existsSync} from 'node:fs';
 import {availableParallelism} from 'node:os';
-import {dirname, join, relative, resolve} from 'node:path';
+import {dirname, join} from 'node:path';
 import {fileURLToPath} from 'node:url';
-import {glob} from 'glob';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const pkgDir = join(__dirname, '..');
@@ -39,21 +39,18 @@ if (process.env.HOST_PATH) {
   process.env.PATH = `${process.env.HOST_PATH}:${process.env.PATH ?? ''}`;
 }
 
-const [target, filter] = process.argv.slice(2);
+// Everything lives in one module, selected by a subcommand: `syntax`,
+// `semantics`, `execution`, or `unit` for the compiler's own suites.
+// A bare run means the unit suites.
+const [command = 'unit', filter] = process.argv.slice(2);
+const wasmFile = join(outDir, 'test-self', '__all_tests__.wasm');
 
-// The portable runners are whole programs of their own and are invoked
-// by name; a bare run means "the unit suites".
-const wasmFiles = target
-  ? [resolve(target)]
-  : (await glob(join(outDir, 'test-self', '**/*.wasm')))
-      .filter((f) => !/portable_[^/]*\.wasm$/.test(f))
-      .sort();
-
-if (wasmFiles.length === 0) {
-  console.error(`${YELLOW}No .wasm files found${NC}`);
+if (!existsSync(wasmFile)) {
+  console.error(`${YELLOW}${wasmFile} not found${NC}`);
   console.error('Run `npm run build` first.');
   process.exit(1);
 }
+const wasmFiles = [wasmFile];
 
 // Workers a runner may keep in flight. Bounded well below the CPU count
 // by default: each worker is a wasmtime process with its own GC heap,
@@ -81,7 +78,7 @@ let failed = 0;
 let totalTests = 0;
 
 for (const wasmFile of wasmFiles) {
-  const relPath = relative(outDir, wasmFile);
+  const relPath = command;
 
   const result = spawnSync(
     zenaCli,
@@ -98,6 +95,7 @@ for (const wasmFile of wasmFiles) {
       '--invoke',
       'main',
       wasmFile,
+      command,
       zenaCli,
       String(parallelism),
       ...(filter ? [filter] : []),
@@ -120,7 +118,7 @@ for (const wasmFile of wasmFiles) {
   totalTests += parseSummary(report);
 
   if (result.status === 0 && returnValue === '0') {
-    const displayName = relPath.replace(/\.wasm$/, '');
+    const displayName = relPath;
     console.log(
       `${GREEN}✔${NC} ${displayName} ${DIM}(${parseSummary(report)} tests)${NC}`,
     );
