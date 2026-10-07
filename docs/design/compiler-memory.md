@@ -223,16 +223,86 @@ is a plain value: nothing hash-conses a union, an array type or a
 substituted signature, so equal types are built again at every site
 that needs them.
 
+Two more counters say how much of that is repeated work. Of the
+376K outermost calls to `substituteTypeParamsInCodegen`, 205K hand
+back their input unchanged (and still allocate the argument arrays
+they built to find that out), and only 248K distinct (input,
+arguments) pairs occur — so a cache keyed on input identity, as the
+class case has, would save a third at most, because the inputs are
+themselves fresh copies. Among the 342K types codegen gave a
+structural key, 28K are distinct: twelve copies of each type, on
+average. The duplication is in the inputs, and a cache on the
+outputs cannot remove it.
+
+Where the collector's time goes follows from the same compile timed
+with no reserve against the build's 1536 MiB (`--time`, ms):
+
+| phase                          | reserve 1536 | reserve 0 |
+| ------------------------------ | ------------ | --------- |
+| load, parse, scope, check      | 1,118        | 2,056     |
+| discovery: queues              | 11,764       | 30,886    |
+| discovery: class/vtable layout | 4,304        | 80,026    |
+| lower, optimize                | 4,434        | 5,503     |
+| emit code                      | 5,701        | 8,866     |
+
+All of the 100 s of collection cost is in reachability, 76 s of it
+in the class-linking and vtable passes between the queue drains,
+which run while everything discovered is live.
+
 ## What is left
 
-- **Reachability's substitution**, 1.49M types per `cli-module`
-  compile. The caches in `substituteTypeParamsInCodegen` key on input
-  identity; keying on (source instance, argument uids) for function
-  and union results as the class case already does, or hash-consing
-  substitution results on the `WasmModule`, would remove most of it.
-  Whether those types are retained or garbage decides whether this
-  is a live-set win or an allocation-rate win; either reduces
-  collections.
+- **Hash-consing types.** Types are values with structural equality
+  (`typesEqual`), identity equality for nominal ones, and every site
+  that needs one builds it. Interning on construction — unions by
+  member identity, arrays and tuples by element identity, class and
+  interface instantiations by (template, argument identity) — would
+  make equal types the same object. That collapses the 1.65M minted
+  to the distinct ones (28K among the keyed 342K), turns identity
+  caches like `substCache` into hits, and replaces the 24 MiB of key
+  strings with pointer comparison. Interning retains each distinct
+  type for the compile, which the checker's side tables already do
+  for the types that matter. `UnionType` has eight construction sites
+  and no mutation after construction, so it is the place to start;
+  `FunctionType` is the obstacle: `functionSymbolId`,
+  `parameterSymbols`, `parameterInitializers`, `overloads` and
+  `isFinal` are declaration facts set on the type after construction
+  (16 write sites each), so two structurally equal signatures are not
+  interchangeable until those move to the declaration.
+- **Allocation on the no-change path.** `substituteTypeParamsInCodegen`
+  builds two argument arrays before it knows nothing changed, 205K
+  times per compile.
+
+## Immutable type classes
+
+Interning needs types that do not change after construction, and the
+type classes are built the other way: a bare object, then fields set
+one by one, because a class with thirty fields cannot take thirty
+positional parameters. A record parameter with optional fields —
+`new FunctionType({parameters, returnType, isFinal: true})` — can,
+which would let the classes become immutable and their constructors
+intern.
+
+What the record temporary costs was measured with the
+`record-ctor` and `positional-ctor` workloads: a seven-field class
+built two million times through a record parameter and positionally.
+Total allocation is from the null collector, which never frees:
+
+| build        | total allocation | wall, no reserve |
+| ------------ | ---------------- | ---------------- |
+| positional   | 90 MB            | 0.11 s           |
+| record `-O1` | 215 MB           | 1.36 s           |
+| record `-O2` | 90 MB            | 0.13 s           |
+
+At `-O2` the constructor inlines and `simplify`'s allocation
+forwarding reads the record's fields off the `struct_new`, so the
+record is never allocated and the two variants compile to the same
+bytes. At `-O1` nothing removes it: one 48-byte object per
+construction, and in a loop that allocates nothing else, twelve times
+the running time. The compiler is built at `-O1` (`build:cli` passes
+no `-O`), so adopting the pattern in the compiler goes with building
+the compiler at `-O2`. Interning cuts constructions by the duplication
+factor first, which makes the temporary's cost matter less either
+way.
 
 In descending order of expected payoff, from the census after these
 changes:

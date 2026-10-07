@@ -96,6 +96,31 @@ export let countCodegenFunctionType = (site: i32): void => {
 };
 
 export let codegenFunctionTypeSite = (site: i32): i32 => _codegenFunctionSites[site];
+
+// How much of codegen's substitution is repeated work: every call,
+// the calls that hand back their input unchanged, and the distinct
+// (input, arguments) pairs among them. The distinct count keeps a set
+// of key strings, so it is only gathered when the census asks.
+var _censusEnabled = false;
+var _codegenSubstCalls = 0;
+var _codegenSubstUnchanged = 0;
+var _codegenSubstDistinct = new Set<String>();
+
+export let setCensusEnabled = (on: boolean): void => { _censusEnabled = on; };
+export let codegenSubstCalls = (): i32 => _codegenSubstCalls;
+export let codegenSubstUnchanged = (): i32 => _codegenSubstUnchanged;
+export let codegenSubstDistinct = (): i32 => _codegenSubstDistinct.size;
+
+/** Records one top-level codegen substitution of `t` under `args`. */
+export let countCodegenSubstitution = (
+    t: Type, args: Array<Type>, result: Type): void => {
+  _codegenSubstCalls += 1;
+  if (result === t) { _codegenSubstUnchanged += 1; }
+  if (!_censusEnabled) { return; }
+  var key = i32ToString(t.uid) + "|";
+  for (let a in args) { key = key + i32ToString(a.uid) + ","; }
+  _codegenSubstDistinct.add(key);
+};
 export let instantiationHits = (): i32 => _instantiationHits;
 export let instantiationMisses = (): i32 => _instantiationMisses;
 export let substitutedNominals = (): i32 => _substitutedNominals;
@@ -109,11 +134,21 @@ export let typeParameterTypesCreated = (): i32 => _typeParameterTypes;
 export let typeKeysCached = (): i32 => _typeKeysCached;
 export let typeKeyBytes = (): i32 => _typeKeyBytes;
 
-/** Records one cached type key string of `bytes` bytes. */
-export let countTypeKey = (bytes: i32): void => {
+var _distinctTypeKeys = new Set<String>();
+
+/**
+ * Records one cached type key string. Under the census the distinct
+ * keys are kept too: types with equal keys are structurally the same
+ * type built more than once, so distinct keys against keys cached is
+ * what hash-consing would leave.
+ */
+export let countTypeKey = (key: String): void => {
   _typeKeysCached += 1;
-  _typeKeyBytes = _typeKeyBytes + bytes;
+  _typeKeyBytes = _typeKeyBytes + key.length;
+  if (_censusEnabled) { _distinctTypeKeys.add(key); }
 };
+
+export let distinctTypeKeys = (): i32 => _distinctTypeKeys.size;
 
 export sealed class Type implements Hashable {
   var uniqueKeyCache: String | null = null;
