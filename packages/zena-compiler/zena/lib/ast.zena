@@ -34,6 +34,11 @@ export final class IdGenerator<T> {
     this.#nextId += 1;
     return this.#mint(id);
   }
+
+  /** The raw value the next `next()` will mint, without minting it. */
+  peek(): i32 {
+    return this.#nextId;
+  }
 }
 
 /**
@@ -44,11 +49,14 @@ export final class IdGenerator<T> {
 export let makeNodeIdGenerator = (nextId: i32 = 1): IdGenerator<NodeId> =>
   new IdGenerator<NodeId>((id: i32): NodeId => id as NodeId, nextId);
 
+/**
+ * Where a node came from: a byte range in a file. There is one per
+ * node, so it is kept to three fields — 32 bytes in wasmtime's GC heap,
+ * where five was 48. The line and column a diagnostic prints are
+ * derived from `start` on demand (`line-index.zena`), since nothing
+ * reads them until something is reported.
+ */
 export final class SourceLocation(
-  /** 1-based line number */
-  line: i32,
-  /** 1-based column number */
-  column: i32,
   /** 0-based start index (inclusive) */
   start: i32,
   /** 0-based end index (exclusive) */
@@ -56,7 +64,8 @@ export final class SourceLocation(
   /**
    * Path of the source file this location belongs to. Lets diagnostics
    * report the correct file when an error is raised against a node from
-   * another module than the one being checked.
+   * another module than the one being checked, and is the key the line
+   * index answers for.
    */
   path?: String)
 
@@ -115,7 +124,19 @@ export final class Module(
   path: String,
   source: String,
   comments: GrowableArray<Comment>,
-  loc?: SourceLocation) extends Node
+  loc?: SourceLocation) extends Node {
+  /**
+   * The last node id the parser assigned under this module. Ids are
+   * minted in one pre-order walk, so every node parsed as part of this
+   * module has an id in `[id, lastNodeId]`, contiguous and starting at
+   * the module's own — which is what lets a per-node side table be a
+   * dense array (`DenseNodeMap`) and the node-to-module index a range
+   * lookup (`ModelIndex`). A node minted later, by the scope builder or
+   * the checker, falls outside every module's range and those
+   * structures keep a hash map for it.
+   */
+  var lastNodeId: NodeId = 0 as NodeId;
+}
 
 // ============================================================================
 // Expressions

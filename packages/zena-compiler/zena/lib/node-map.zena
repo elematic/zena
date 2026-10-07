@@ -1,3 +1,4 @@
+import { KeyNotFoundError } from 'zena:core';
 import { Node, NodeId } from './ast.zena';
 
 export final class NodeMap<V> {
@@ -25,5 +26,119 @@ export final class NodeMap<V> {
 
   map: Map<NodeId, V> {
     get { return this.#map; }
+  }
+}
+
+/**
+ * A node-keyed table for a side table that has an entry for most nodes
+ * of one module: `parents`, `nodeTypes`.
+ *
+ * A hash map costs about 37 bytes per entry in wasmtime's GC heap — a
+ * 32-byte `MapEntry` plus its share of the bucket array — and a table
+ * with an entry per node of a large program is tens of MiB that the
+ * collector copies on every cycle (issue #199). A module's node ids
+ * are one contiguous range (`Module.lastNodeId`), so this stores a
+ * value at `id - first` in one array: 4 bytes per node, present or
+ * not, and no entry objects at all.
+ *
+ * A node minted after parsing — by the scope builder or the checker —
+ * has an id outside the range and goes in an ordinary map, created on
+ * first need. `V` must be a reference type: an empty slot is null.
+ */
+export final class DenseNodeMap<V> {
+  var #first: i32;
+  var #slots: FixedArray<V | null>;
+  var #count = 0;
+  var #overflow: Map<NodeId, V> | null = null;
+
+  /** A table for the ids `first..last` inclusive; `last < first` is empty. */
+  new(first: NodeId, last: NodeId)
+    : #first = first as i32,
+      #slots = new FixedArray<V | null>(
+          if ((last as i32) < (first as i32)) 0 else (last as i32) - (first as i32) + 1,
+          null);
+
+  /**
+   * Gives a table built before its module's range was known the
+   * range, moving anything already stored that falls inside it out of
+   * the overflow map.
+   */
+  reserve(first: NodeId, last: NodeId): void {
+    if (this.#slots.length > 0) { return; }
+    let length = (last as i32) - (first as i32) + 1;
+    if (length <= 0) { return; }
+    this.#first = first as i32;
+    this.#slots = new FixedArray<V | null>(length, null);
+    let overflow = this.#overflow;
+    if (overflow == null) { return; }
+    let moved = new GrowableArray<NodeId>();
+    for (let entry in overflow) {
+      let i = (entry.key as i32) - this.#first;
+      if (i >= 0 && i < length) {
+        this.#slots[i] = entry.value;
+        moved.push(entry.key);
+      }
+    }
+    for (let key in moved) {
+      overflow.delete(key);
+    }
+  }
+
+  operator []=(node: Node, value: V): void {
+    let i = (node.id as i32) - this.#first;
+    if (i >= 0 && i < this.#slots.length) {
+      if (this.#slots[i] == null) { this.#count += 1; }
+      this.#slots[i] = value;
+      return;
+    }
+    let overflow = this.#overflow ?? new Map<NodeId, V>();
+    this.#overflow = overflow;
+    if (!overflow.has(node.id)) { this.#count += 1; }
+    overflow[node.id] = value;
+  }
+
+  /** The value for `node`. Throws KeyNotFoundError if it has none. */
+  operator [](node: Node): V {
+    if (let (true, value) = this.get(node)) {
+      return value;
+    }
+    throw new KeyNotFoundError();
+  }
+
+  get(node: Node): inline (true, V) | inline (false, _) {
+    let i = (node.id as i32) - this.#first;
+    if (i >= 0 && i < this.#slots.length) {
+      let value = this.#slots[i];
+      if (value != null) {
+        return (true, value);
+      }
+      return (false, _);
+    }
+    let overflow = this.#overflow;
+    if (overflow == null) { return (false, _); }
+    return overflow.get(node.id);
+  }
+
+  has(node: Node): boolean {
+    if (let (true, _) = this.get(node)) { return true; }
+    return false;
+  }
+
+  /** How many nodes have a value. */
+  size: i32 {
+    get { return this.#count; }
+  }
+
+  /**
+   * The ids stored outside the module's range — the ones a
+   * `ModelIndex` has to record one by one, since the range answers for
+   * the rest.
+   */
+  overflowKeys(): Iterator<NodeId> {
+    let overflow = this.#overflow;
+    if (overflow == null) {
+      return new GrowableArray<NodeId>().[Iterable.iterator]();
+    }
+    return overflow.keys();
   }
 }

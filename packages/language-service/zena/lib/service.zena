@@ -23,7 +23,7 @@ import {
 import { parse as parseSource, ParseCompleteness } from 'zena-compiler:parser';
 import { PackageConfig } from 'zena-compiler:module-resolver';
 import {
-  Diagnostic, DiagnosticCode, SourceSpan, DiagnosticSeverity
+  Diagnostic, DiagnosticCode, SourceSpan, DiagnosticSeverity, spanOf
 } from 'zena-compiler:diagnostics';
 import { Symbol, ScopeResult } from 'zena-compiler:scope';
 import { Program, CompilationUnit } from 'zena-compiler:program';
@@ -300,7 +300,11 @@ export class LanguageService {
     } else {
       key
     };
-    return new SourceSpan(file, loc.start, loc.end - loc.start, loc.line, loc.column);
+    // Line and column come from the location's own path (the module it
+    // was parsed under); the span names the filesystem path the editor
+    // wants.
+    let span = spanOf(loc, file);
+    return new SourceSpan(file, span.start, span.length, span.line, span.column);
   }
 
   /** The definition of what is at a byte offset in a checked file. */

@@ -2,6 +2,10 @@
 
 This guide explains how to profile the self-hosted compiler (`cli.wasm`) executing under Wasmtime JIT on macOS using **`samply`** and the Firefox Profiler.
 
+For memory rather than time — what a compile retains in the GC heap and
+how to measure it (`ZENA_CENSUS=1`, `scripts/mem-bench.sh`) — see
+[design/compiler-memory.md](design/compiler-memory.md).
+
 ---
 
 ## How It Works

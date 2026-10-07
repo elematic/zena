@@ -7,6 +7,19 @@
  */
 
 import { SourceLocation } from './ast.zena';
+import { lineAt, columnAt } from './line-index.zena';
+
+/**
+ * The span a diagnostic reports for a node's location: the location's
+ * own file when it has one (the node may belong to another module than
+ * the one being checked), else `file`; line and column derived from
+ * the start offset.
+ */
+export let spanOf = (loc: SourceLocation, file: String): SourceSpan => {
+  let path = loc.path ?? file;
+  return new SourceSpan(path, loc.start, loc.end - loc.start,
+      lineAt(path, loc.start), columnAt(path, loc.start));
+};
 
 export enum DiagnosticSeverity {
   Error,
@@ -119,11 +132,7 @@ export final class DiagnosticBag {
   reportError(message: String, code: DiagnosticCode, loc: SourceLocation | null): void {
     var location: SourceSpan | null = null;
     if (loc != null) {
-      // Prefer the location's own file: the node may belong to a different
-      // module than the one this bag was created for.
-      location = new SourceSpan(
-        loc.path ?? this.#file, loc.start, loc.end - loc.start, loc.line, loc.column
-      );
+      location = spanOf(loc, this.#file);
     } else {
       // Even without a source location, include the file for context.
       location = new SourceSpan(this.#file, 0, 0, 0, 0);
@@ -137,10 +146,7 @@ export final class DiagnosticBag {
   reportWarning(message: String, code: DiagnosticCode, loc: SourceLocation | null): void {
     var location: SourceSpan | null = null;
     if (loc != null) {
-      // Prefer the location's own file (see reportError).
-      location = new SourceSpan(
-        loc.path ?? this.#file, loc.start, loc.end - loc.start, loc.line, loc.column
-      );
+      location = spanOf(loc, this.#file);
     } else {
       // Even without a source location, include the file for context.
       location = new SourceSpan(this.#file, 0, 0, 0, 0);

@@ -2,6 +2,11 @@
 
 For the broader architecture, see [self-hosted-compiler.md](../../docs/design/self-hosted-compiler.md).
 For the current progress and roadmap of codegen, see the new [IR design doc](../../docs/design/ir.md).
+For what a compile keeps in the GC heap and how to measure it
+(`ZENA_CENSUS=1`), see [compiler-memory.md](../../docs/design/compiler-memory.md);
+sizing rules that decide what pays are there too — a wasm GC object is
+`ceil16(16 + 4 * fields)` bytes, so removing a field helps only across a
+16-byte boundary and removing an object always does.
 
 ## Checking Waits for Reachability
 

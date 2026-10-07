@@ -1,0 +1,96 @@
+/**
+ * Line and column numbers for byte offsets, computed on demand.
+ *
+ * A `SourceLocation` carries only byte offsets and a path. Lines and
+ * columns were fields of it once, and every one of the half-million
+ * locations a large compile retains paid 8 bytes for two numbers that
+ * are only read when a diagnostic is printed (issue #199). They are
+ * derived here instead: each parsed module registers its source under
+ * its path, and the first question about a path builds that file's
+ * table of line starts — 4 bytes a line, for the files something
+ * actually asks about, which for a clean build is none.
+ *
+ * Line and column are 1-based and the column counts bytes, as the
+ * tokenizer counted them.
+ */
+
+/** The line-start table of one file, built on first use. */
+final class LineIndex {
+  #source: String;
+  var #lineStarts: GrowableArray<i32> | null = null;
+
+  new(source: String) : #source = source;
+
+  #starts(): GrowableArray<i32> {
+    let built = this.#lineStarts;
+    if (built != null) { return built; }
+    let starts = new GrowableArray<i32>(64);
+    starts.push(0);
+    let source = this.#source;
+    let length = source.length;
+    var i = 0;
+    while (i < length) {
+      if (source.getByteAt(i) == 10) {
+        starts.push(i + 1);
+      }
+      i += 1;
+    }
+    this.#lineStarts = starts;
+    return starts;
+  }
+
+  /** The index into the line-start table of the line holding `offset`. */
+  #lineIndexOf(offset: i32): i32 {
+    let starts = this.#starts();
+    var lo = 0;
+    var hi = starts.length - 1;
+    while (lo < hi) {
+      let mid = lo + (((hi - lo + 1) / 2) as i32);
+      if (starts[mid] <= offset) {
+        lo = mid;
+      } else {
+        hi = mid - 1;
+      }
+    }
+    return lo;
+  }
+
+  lineOf(offset: i32): i32 {
+    return this.#lineIndexOf(offset) + 1;
+  }
+
+  columnOf(offset: i32): i32 {
+    let starts = this.#starts();
+    return offset - starts[this.#lineIndexOf(offset)] + 1;
+  }
+}
+
+let indexes = new Map<String, LineIndex>();
+
+/**
+ * Makes `source` the text that answers for `path`. The parser calls
+ * this for every module it parses; a later parse of the same path
+ * replaces the earlier one, which is what an editor re-parsing a file
+ * wants.
+ */
+export let registerSource = (path: String, source: String): void => {
+  indexes[path] = new LineIndex(source);
+};
+
+/** The 1-based line of byte `offset` in `path`, or 0 if `path` is unknown. */
+export let lineAt = (path: String | null, offset: i32): i32 => {
+  if (path == null) { return 0; }
+  if (let (true, index) = indexes.get(path)) {
+    return index.lineOf(offset);
+  }
+  return 0;
+};
+
+/** The 1-based byte column of `offset` in `path`, or 0 if `path` is unknown. */
+export let columnAt = (path: String | null, offset: i32): i32 => {
+  if (path == null) { return 0; }
+  if (let (true, index) = indexes.get(path)) {
+    return index.columnOf(offset);
+  }
+  return 0;
+};

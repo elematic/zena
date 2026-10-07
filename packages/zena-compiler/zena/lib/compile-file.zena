@@ -28,6 +28,7 @@ import { Module } from './ast.zena';
 import { nowMs, performance } from './time.zena';
 import { isKnownTarget, knownTargetsDescription, targetEmitsComponent } from './targets.zena';
 import { compileComponentRuntimeModule } from './codegen/component-runtime.zena';
+import { reportCensus } from './census.zena';
 import { makeImportEncoder } from './codegen/wit-imports.zena';
 import {
   isWitModulePath, synthesizeWitModule, synthesizeExportWrapper,
@@ -601,6 +602,13 @@ export let compileFile = (options: CompileFileOptions): i32 => {
 
     if (progress) {
       console.log("Success: wrote " + outPath);
+    }
+
+    // ZENA_CENSUS=1 prints what the compile retained, by object kind
+    // (census.zena). After codegen, so the type-key counters have
+    // everything the generator interned.
+    if (getEnv("ZENA_CENSUS") != null) {
+      reportCensus(program);
     }
 
     if (time) {
