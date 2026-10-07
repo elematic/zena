@@ -33,7 +33,8 @@ import {
   declaredPackageNamespaces
 } from './wit-module-synth.zena';
 import { ComponentEntryWrapper } from './component-entry.zena';
-import { readWitSource } from './wit-source.zena';
+import { readWitSource, readWitDocument } from './wit-source.zena';
+import { WitDocument, witDiagnostic } from 'wit-parser:document';
 import { directoryNames } from './fs-host.zena';
 
 /**
@@ -160,6 +161,31 @@ let loadPackages = (host: CompilerHost): Map<String, PackageConfig> => {
 
 let reportDiagnosticLine = (kind: String, file: String, line: i32, column: i32, message: String): void => {
   console.error(file + ":" + i32ToString(line) + ":" + i32ToString(column) + " - " + kind + ": " + message);
+};
+
+/**
+ * Reports a fault in the `--wit` document with its file, line, column
+ * and an underline, the way a fault in a `.zena` file is reported, and
+ * returns whether `e` was one — so a caller can go on to whatever else
+ * `e` means.
+ *
+ * A malformed WIT document is a mistake in the input, so it is a
+ * diagnostic and a status of 1. The parser signals it by throwing, and
+ * letting that escape `compileFile` loses the position: `zena-cli`
+ * printed "the compiler failed on main.zena: expected identifier", and a
+ * compiler running as a component printed nothing at all. See
+ * https://github.com/elematic/zena/issues/158.
+ */
+let reportWitFailure = (doc: WitDocument | null, e: Error): boolean => {
+  if (doc == null) {
+    return false;
+  }
+  let text = witDiagnostic(doc as WitDocument, e);
+  if (text == null) {
+    return false;
+  }
+  console.error(text as String);
+  return true;
 };
 
 /** `text` followed by spaces, up to `width` bytes. */
@@ -316,12 +342,18 @@ export let compileFile = (options: CompileFileOptions): i32 => {
   // The declared world's WIT: one file, or a directory whose *.wit
   // files are concatenated in name order into one document.
   var witSource = "";
+  // Kept so a failure anywhere in the compile can be pinned to the file
+  // and line it came from; the parser only knows offsets into the
+  // joined document.
+  var witDoc: WitDocument | null = null;
   if (witPath != "") {
     if (!exists(witPath)) {
       console.error("Error: --wit path does not exist: " + witPath);
       return 1;
     }
-    witSource = readWitSource(host, witPath);
+    let doc = readWitDocument(host, witPath);
+    witDoc = doc;
+    witSource = doc.source;
   }
   let packages = loadPackages(host);
   // A declared world's document answers for its own packages: the
@@ -332,11 +364,20 @@ export let compileFile = (options: CompileFileOptions): i32 => {
   // package — a document vendoring `wasi:clocks` does not take over
   // `wasi` — and its interfaces are reached as before.
   if (witSource != "") {
-    for (let namespace in declaredPackageNamespaces(witSource)) {
-      if (namespace == "wasi" || packages.has(namespace)) { continue; }
-      let declared = new PackageConfig("", null);
-      declared.witRoot = witPath;
-      packages[namespace] = declared;
+    // The first thing that parses the document, so a malformed one is
+    // reported here rather than from deeper in the compile.
+    try {
+      for (let namespace in declaredPackageNamespaces(witSource)) {
+        if (namespace == "wasi" || packages.has(namespace)) { continue; }
+        let declared = new PackageConfig("", null);
+        declared.witRoot = witPath;
+        packages[namespace] = declared;
+      }
+    } catch (e) {
+      if (e is Error && reportWitFailure(witDoc, e)) {
+        return 1;
+      }
+      throw e;
     }
   }
   let compiler = createCompiler(host, {stdlibRoot, packages, warnUnnecessaryCasts});
@@ -530,6 +571,11 @@ export let compileFile = (options: CompileFileOptions): i32 => {
     // printing them here says the wrong thing about whose bug it is.
     if (e is SyntaxError) {
       console.error(e.message);
+      return 1;
+    }
+    // The same for a fault in the declared world's WIT, which the
+    // encoder and the wrapper synthesizer reach only here.
+    if (e is Error && reportWitFailure(witDoc, e)) {
       return 1;
     }
     console.log("Exception caught in CLI compiler!");

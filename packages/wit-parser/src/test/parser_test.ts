@@ -287,6 +287,36 @@ suite('WIT Parser', () => {
     assert.match(output, /ParseError/);
   });
 
+  // https://github.com/elematic/zena/issues/158: a keyword where a name
+  // belongs used to be "expected identifier", which named neither the
+  // keyword nor the one-character fix.
+  test('names the keyword found where an identifier belongs', async () => {
+    const harness = await instantiateParserHarness(`
+      package foo:test;
+      world app {
+        export greet: func(world: string) -> string;
+      }
+    `);
+    const output = harness.parse();
+    assert.match(
+      output,
+      /expected an identifier or string, found keyword `world`/,
+    );
+    assert.match(output, /write `%world` to use a keyword as a name/);
+  });
+
+  test('accepts a keyword escaped with % as a parameter name', async () => {
+    const harness = await instantiateParserHarness(`
+      package foo:test;
+      world app {
+        export greet: func(%world: string) -> string;
+      }
+    `);
+    const output = harness.parse();
+    assert.doesNotMatch(output, /ParseError/);
+    assert.match(output, /world app/);
+  });
+
   test('parses multiple interfaces', async () => {
     const harness = await instantiateParserHarness(`
       package foo:test;

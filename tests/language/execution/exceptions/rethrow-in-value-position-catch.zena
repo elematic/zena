@@ -1,0 +1,37 @@
+// @mode: run
+// @invoke: main
+// @result: 0
+// @skip: lowering crashes with "Index out of bounds" in
+//   LoweringContext.conformToSlot — a `throw e` of the catch binding as
+//   the last statement of a `catch` block, where the enclosing `try` is
+//   lowered as a value-producing expression. Moving the `throw` out of
+//   last position, or dropping the rethrow, compiles.
+
+let boom = (): void => {
+  throw new Error('boom');
+};
+
+// The `try` sits in front of a `return`, so it is lowered for a value,
+// and the catch block ends in a rethrow.
+let attempt = (): String | null => {
+  try {
+    boom();
+  } catch (e) {
+    if (e is Error) {
+      return (e as Error).message;
+    }
+    throw e;
+  }
+  return null;
+};
+
+export function main(): i32 {
+  let caught = attempt();
+  if (caught == null) {
+    return 1;
+  }
+  if ((caught as String) != 'boom') {
+    return 2;
+  }
+  return 0;
+}

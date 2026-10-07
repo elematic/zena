@@ -10,7 +10,7 @@
  */
 
 import {StringBuilder} from 'zena:core';
-import {TokenType, Span, Token} from './token.zena';
+import {TokenType, Span, Token, describeToken, isKeyword} from './token.zena';
 import {Lexer, LexError} from './lexer.zena';
 
 // ============================================================================
@@ -1077,7 +1077,7 @@ export class Parser {
   #expect(type: TokenType): Token {
     if (!this.#check(type)) {
       throw new ParseError(
-        "unexpected token",
+        `expected ${describeToken(type)}, found ${describeToken(this.#current.type)}`,
         this.#current.span
       );
     }
@@ -1113,7 +1113,18 @@ export class Parser {
       }
       return new Id(text, token.span);
     }
-    throw new ParseError("expected identifier", token.span);
+    // A keyword where a name belongs — `world` as a parameter name,
+    // `type` as a field name — is a common mistake with a one character
+    // fix, so the message gives the fix. Everything else is only named.
+    if (isKeyword(token.type)) {
+      throw new ParseError(
+        `expected an identifier or string, found ${describeToken(token.type)}` +
+        `; write \`%${this.#text(token.span)}\` to use a keyword as a name`,
+        token.span);
+    }
+    throw new ParseError(
+      `expected an identifier or string, found ${describeToken(token.type)}`,
+      token.span);
   }
 
   // --------------------------------------------------------------------------

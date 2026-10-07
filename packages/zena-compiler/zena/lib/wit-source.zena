@@ -8,26 +8,46 @@
  * in memory serves WIT exactly as it serves source.
  */
 
-import { WitFile, joinWitFiles } from 'wit-parser:document';
+import {
+  WitFile, WitFileStart, WitDocument, joinWitDocument
+} from 'wit-parser:document';
 import { CompilerHost } from './library-loader.zena';
 
 /**
  * The WIT document at `path`: one file, or a directory's `.wit` files
- * joined by `joinWitFiles`.
+ * joined by `joinWitDocument`.
+ *
+ * A directory's files are named by their path rather than by the bare
+ * name the host listed, so a diagnostic against the document names a
+ * file the reader can open. Every name under one directory shares its
+ * prefix, so this does not change the order they are joined in.
+ *
+ * A single file is its own document, taken verbatim: `--wit` names it
+ * directly, so it is read whatever it is called.
  */
-export function readWitSource(host: CompilerHost, path: String): String {
+export function readWitDocument(host: CompilerHost, path: String): WitDocument {
   let names = host.listDir(path);
   if (names == null) {
-    return host.readFile(path);
+    let starts = new Array<WitFileStart>();
+    starts.push(new WitFileStart(path, 0));
+    return new WitDocument(host.readFile(path), starts);
   }
   let files = new GrowableArray<WitFile>();
   for (let name in names as Array<String>) {
     if (name.endsWith(".wit")) {
-      files.push(new WitFile(name, host.readFile(`${path}/${name}`)));
+      files.push(new WitFile(`${path}/${name}`, host.readFile(`${path}/${name}`)));
     }
   }
   if (files.length == 0) {
     throw new Error("No .wit files in directory: " + path);
   }
-  return joinWitFiles(files);
+  return joinWitDocument(files);
+}
+
+/**
+ * `readWitDocument`'s source alone, for a caller with nothing to report
+ * against it.
+ */
+export function readWitSource(host: CompilerHost, path: String): String {
+  return readWitDocument(host, path).source;
 }
