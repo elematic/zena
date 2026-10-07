@@ -1,0 +1,124 @@
+// Formatting must not change the tree.
+//
+// The parentheses bugs (#163, #188) were not layout problems: the AST has no
+// node for parentheses, so dropping one that precedence needed made the
+// reprinted source parse into a different tree and compute a different answer,
+// while still compiling. The tests in `formatter_test.zena` pin the exact text
+// the printer produces; these compare the AST of a source against the AST of
+// its formatted form, which is the property that actually matters and which
+// holds for every expression form without any of them having to typecheck.
+import {suite, test, TestContext} from 'zena:test';
+import {equal} from 'zena:assert';
+import {parse} from '../../../zena-compiler/zena/lib/parser.zena';
+import {astToJsonString} from '../../../zena-compiler/zena/lib/ast-json.zena';
+import {format} from '../lib/printer.zena';
+
+/** Checks that formatting `source` leaves the parsed tree unchanged. */
+let preservesTree = (source: String): void => {
+  let before = astToJsonString(parse(source, 'test.zena'));
+  let formatted = format(source);
+  let after = astToJsonString(parse(formatted, 'test.zena'));
+  if (before != after) {
+    console.log('FAIL: formatting changed the tree');
+    console.log('  source:    ' + source);
+    console.log('  formatted: ' + formatted);
+  }
+  equal(after, before, source);
+};
+
+let tests = suite('ast preservation', (): void => {
+  test('binary precedence', (t: TestContext) => {
+    preservesTree('let x = (a + b) * c;');
+    preservesTree('let x = c * (a + b);');
+    preservesTree('let x = (a + b) / c;');
+    preservesTree('let x = (a || b) && c;');
+    preservesTree('let x = a || (b && c);');
+    preservesTree('let x = (a && b) | c;');
+    preservesTree('let x = (a | b) & c;');
+    preservesTree('let x = (a ^ b) & c;');
+    preservesTree('let x = (a < b) == c;');
+    preservesTree('let x = (a == b) << c;');
+    preservesTree('let x = (a + b) << c;');
+  });
+
+  test('binary associativity', (t: TestContext) => {
+    preservesTree('let x = a - (b - c);');
+    preservesTree('let x = a + (b + c);');
+    preservesTree('let x = a * (b / c);');
+    preservesTree('let x = a % (b % c);');
+    preservesTree('let x = (a == b) == c;');
+    preservesTree('let x = a == (b == c);');
+    preservesTree('let x = a << (b << c);');
+    preservesTree('let x = (a ?? b) ?? c;');
+    preservesTree('let x = a ?? (b ?? c);');
+  });
+
+  test('exponentiation, which is right associative', (t: TestContext) => {
+    preservesTree('let x = (a ** b) ** c;');
+    preservesTree('let x = a ** b ** c;');
+    preservesTree('let x = (a + b) ** c;');
+    preservesTree('let x = a ** (b + c);');
+  });
+
+  test('unary operands', (t: TestContext) => {
+    preservesTree('let x = -(a + b);');
+    preservesTree('let x = !(a && b);');
+    preservesTree('let x = -(-a);');
+    preservesTree('let x = !(!a);');
+    preservesTree('let x = -(a ** b);');
+    preservesTree('let x = -a + b;');
+  });
+
+  test('casts, ranges and pipelines', (t: TestContext) => {
+    preservesTree('let x = (a && b) as i32;');
+    preservesTree('let x = (a + b) as i32;');
+    preservesTree('let x = (a as i32) as i64;');
+    preservesTree('let x = (a..b) as Range;');
+    preservesTree('let x = (a && b)..c;');
+    preservesTree('let x = (a + b)..(c + d);');
+    preservesTree('let x = (a && b) |> f;');
+    preservesTree('let x = a |> (b |> c);');
+    preservesTree('let x = (a |> b) |> c;');
+  });
+
+  test('postfix operands', (t: TestContext) => {
+    preservesTree('let x = (value as Point).x;');
+    preservesTree("let x = (value as Map<String, i32>)['a'];");
+    preservesTree('let x = (a + b).hashCode;');
+    preservesTree('let x = (f as Fn)();');
+    preservesTree('let x = (1).toString();');
+    preservesTree('let x = (await load()).body;');
+    preservesTree('let x = (-a).abs;');
+    preservesTree('let x = (value as Point).a().b();');
+  });
+
+  test('operands that need nothing', (t: TestContext) => {
+    preservesTree('let x = f(a) * g(b);');
+    preservesTree('let x = a.b.c + d;');
+    preservesTree('let x = items[0] * 2;');
+    preservesTree('let x = new Point(1, 2).y + 1;');
+    preservesTree('let x = a + await f();');
+    preservesTree('let x = a + b * c;');
+    preservesTree('let x = a && b || c;');
+  });
+
+  test('statements and declarations', (t: TestContext) => {
+    preservesTree('let f = () => {\n  for (var i = 0; i < 3; i += 1) {\n    x += i;\n  }\n};');
+    preservesTree('class Point {\n  x: i32;\n\n  new(this.x) {}\n}');
+    preservesTree("let m = {'a' => 1, 'b' => 2};");
+    preservesTree('let f = () => {\n  x += 2;\n  x **= 3;\n};');
+  });
+});
+
+export let main = (): i32 => {
+  let result = tests.run();
+  for (let tr in result.tests) {
+    if (!tr.passed) {
+      console.log('FAIL: ' + tr.name);
+      if (tr.error !== null) {
+        console.log('  error: ' + tr.error);
+      }
+    }
+  }
+  return result.failed;
+};
