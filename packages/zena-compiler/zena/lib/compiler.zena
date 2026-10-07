@@ -397,7 +397,7 @@ let computeExportSignature = (
  * breaks cycles in recursive types like `class Node { next: Node | null }`.
  * Optimistic assumption: if already visiting a pair, return true.
  */
-let signatureTypeEquals = (a: Type, b: Type): boolean => {
+export let signatureTypeEquals = (a: Type, b: Type): boolean => {
   let visited = new Set<String>();
   return signatureTypeEqualsRec(a, b, visited);
 };
@@ -759,16 +759,30 @@ let functionTypeEquals = (
   if (fa.isAbstract != fb.isAbstract) { return false; }
   if (!typeParamsEqual(fa.typeParameters, fb.typeParameters, visited)) { return false; }
   if (!typeArgsEqual(fa.typeArguments, fb.typeArguments, visited)) { return false; }
-  // Compare optional parameters.
-  if (fa.optionalParameters == null && fb.optionalParameters == null) { return true; }
-  if (fa.optionalParameters == null || fb.optionalParameters == null) { return false; }
-  let optA = fa.optionalParameters as GrowableArray<boolean>;
-  let optB = fb.optionalParameters as GrowableArray<boolean>;
-  if (optA.length != optB.length) { return false; }
-  var oi = 0;
-  while (oi < optA.length) {
-    if (optA[oi] != optB[oi]) { return false; }
-    oi += 1;
+  return optionalFlagsEqual(fa.optionalParameters, fb.optionalParameters);
+};
+
+/**
+ * Whether two signatures mark the same parameters optional.
+ *
+ * `null` and an array of all `false` both mean "none are", so they
+ * compare equal. It used to be a difference, which no re-check of one
+ * library's own source could expose — both sides come from the same
+ * declaration — but which made two interchangeable signatures compare
+ * unequal as soon as anything compared a `declare function` against a
+ * defined one. A missing flag is a flag that is false.
+ */
+let optionalFlagsEqual = (
+  a: Array<boolean> | null,
+  b: Array<boolean> | null
+): boolean => {
+  let aLen = if (a == null) { 0 } else { a.length };
+  let bLen = if (b == null) { 0 } else { b.length };
+  let len = if (aLen > bLen) { aLen } else { bLen };
+  for (var i = 0; i < len; i += 1) {
+    let aFlag = a != null && i < a.length && a[i];
+    let bFlag = b != null && i < b.length && b[i];
+    if (aFlag != bFlag) { return false; }
   }
   return true;
 };
