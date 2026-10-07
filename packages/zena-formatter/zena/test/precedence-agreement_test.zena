@@ -1,0 +1,153 @@
+// The printer's precedence ranks must agree with the parser.
+//
+// `printer.zena` carries a rank per operator, because deciding where a
+// parenthesis goes needs precedence as data, and the parser holds it as the
+// shape of its call chain — `#parseTerm` calling `#parseFactor` is what makes
+// `*` bind tighter than `+`. There is nothing there to import.
+//
+// So the ranks restate a fact the parser already encodes, and this file keeps
+// the two honest. The expected order comes from `binaryOperatorRank` and the
+// actual order is read back out of real parses, so neither side is written down
+// twice: move a level in `parser.zena` without the table following, or reorder
+// the table, and a pair fails here rather than reappearing later as a formatter
+// that drops a parenthesis it needed.
+import {suite, test, TestContext} from 'zena:test';
+import {equal, isTrue} from 'zena:assert';
+import {parse} from '../../../zena-compiler/zena/lib/parser.zena';
+import {
+  Node, Expression, VariableDeclaration, BinaryExpression, RangeExpression,
+  AsExpression, UnaryExpression
+} from '../../../zena-compiler/zena/lib/ast.zena';
+import {binaryOperatorRank} from '../lib/printer.zena';
+
+/** The initializer of `let x = <expr>;`. */
+let initOf = (source: String): Expression => {
+  let module = parse(source, 'test.zena');
+  let first = module.body[0];
+  return match (first) {
+    case VariableDeclaration {init}: init
+    case _: throw new Error('expected a variable declaration: ' + source)
+  };
+};
+
+/** The operator at the root of `let x = <expr>;`, or '' if it is not binary. */
+let rootOperator = (source: String): String => match (initOf(source)) {
+  case BinaryExpression {operator}: operator
+  case _: ''
+};
+
+/** Every operator the printer's table ranks. */
+let allOperators = (): GrowableArray<String> => {
+  let ops = new Array<String>(23);
+  for (let op in ['||', '??', '&&', '|', '^', '&', '==', '!=', '===', '!==',
+      '<', '<=', '>', '>=', '<<', '>>', '>>>', '+', '-', '*', '/', '%', '**']) {
+    ops.push(op);
+  }
+  return ops;
+};
+
+let tests = suite('precedence agreement', (): void => {
+  test('every ranked pair binds the way the parser groups it', (t: TestContext) => {
+    // For each pair the table calls distinct, the looser operator must end up
+    // at the root of `a <looser> b <tighter> c`, with the tighter one gathered
+    // into its right operand. Same-rank pairs are skipped: they associate
+    // rather than nest, and the two associativity tests below cover that.
+    let ops = allOperators();
+    var compared = 0;
+    for (let looser in ops) {
+      for (let tighter in ops) {
+        if (binaryOperatorRank(looser) < binaryOperatorRank(tighter)) {
+          let source = 'let x = a ' + looser + ' b ' + tighter + ' c;';
+          equal(rootOperator(source), looser, source);
+          compared += 1;
+        }
+      }
+    }
+    // A guard on the loop itself: if the table collapsed to one rank, every
+    // pair would be skipped and the test would pass having checked nothing.
+    isTrue(compared > 100, 'the table distinguishes many pairs');
+  });
+
+  test('`??` shares a level with `||`', (t: TestContext) => {
+    // Both are read by `#parseLogicalOr`, so they associate left to right
+    // instead of one binding tighter.
+    equal(binaryOperatorRank('??'), binaryOperatorRank('||'), 'same rank');
+    equal(rootOperator('let x = a ?? b || c;'), '||', 'left to right');
+  });
+
+  test('a binary operator is left associative', (t: TestContext) => {
+    // `a - b - c` is `(a - b) - c`, so the nested operand is the left one.
+    let expr = initOf('let x = a - b - c;');
+    let leftIsNested = match (expr) {
+      case BinaryExpression {left}: match (left) {
+        case BinaryExpression {}: true
+        case _: false
+      }
+      case _: false
+    };
+    isTrue(leftIsNested, '`-` nests on the left');
+  });
+
+  test('`**` is right associative', (t: TestContext) => {
+    // `a ** b ** c` is `a ** (b ** c)`, which is why the printer must not
+    // flatten its left spine.
+    let expr = initOf('let x = a ** b ** c;');
+    let rightIsNested = match (expr) {
+      case BinaryExpression {right}: match (right) {
+        case BinaryExpression {}: true
+        case _: false
+      }
+      case _: false
+    };
+    isTrue(rightIsNested, '`**` nests on the right');
+  });
+
+  // `..`, `as` and prefix `-` are not `BinaryExpression`s, so the table ranks
+  // them by node kind and the parser places them by tree shape.
+  test('`..` is looser than `as`, which is looser than `+`', (t: TestContext) => {
+    let expr = initOf('let x = a + b..c as T;');
+    let shape = match (expr) {
+      case RangeExpression {start, end}: {
+        let startIsSum = match (start as Node) {
+          case BinaryExpression {operator}: operator == '+'
+          case _: false
+        };
+        let endIsCast = match (end as Node) {
+          case AsExpression {}: true
+          case _: false
+        };
+        startIsSum && endIsCast
+      }
+      case _: false
+    };
+    isTrue(shape, '`..` is the root, with a sum on its left and a cast right');
+  });
+
+  test('prefix `-` binds tighter than any binary operator', (t: TestContext) => {
+    let expr = initOf('let x = -a + b;');
+    let shape = match (expr) {
+      case BinaryExpression {operator, left}: {
+        let leftIsNegation = match (left) {
+          case UnaryExpression {prefix}: prefix
+          case _: false
+        };
+        operator == '+' && leftIsNegation
+      }
+      case _: false
+    };
+    isTrue(shape, '`+` is the root and its left operand is the negation');
+  });
+});
+
+export let main = (): i32 => {
+  let result = tests.run();
+  for (let tr in result.tests) {
+    if (!tr.passed) {
+      console.log('FAIL: ' + tr.name);
+      if (tr.error !== null) {
+        console.log('  error: ' + tr.error);
+      }
+    }
+  }
+  return result.failed;
+};
