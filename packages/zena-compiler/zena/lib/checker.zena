@@ -13618,7 +13618,7 @@ let applyFieldDecorator = (
     let member = source.members[key];
     let isPrivateKey = key.startsWith("#") || key.startsWith("get##") || key.startsWith("set##");
     var storeKey: String | null = null;
-    if (source.sharedMembers.has(key)) {
+    if (source.sharedMembers != null && (source.sharedMembers as Set<String>).has(key)) {
       if (!sharedPlaced) {
         storeKey = declScope + "::" + key;
       }
@@ -17578,7 +17578,9 @@ let checkMixinDeclaration = (ctx: CheckerContext, md: MixinDeclaration): void =>
             ctx.error("'shared' applies only to a decorator's private members.",
                 DiagnosticCode.TypeMismatch, fd.loc);
           } else {
-            mixinType.sharedMembers.add(fieldName);
+            let shared = mixinType.sharedMembers ?? new Set<String>();
+            mixinType.sharedMembers = shared;
+            shared.add(fieldName);
           }
         }
 
@@ -17638,7 +17640,9 @@ let checkMixinDeclaration = (ctx: CheckerContext, md: MixinDeclaration): void =>
               ctx.error("'shared' applies only to a decorator's private members.",
                   DiagnosticCode.TypeMismatch, methDef.loc);
             } else {
-              mixinType.sharedMembers.add(methodName);
+              let shared = mixinType.sharedMembers ?? new Set<String>();
+              mixinType.sharedMembers = shared;
+              shared.add(methodName);
             }
           }
         }
