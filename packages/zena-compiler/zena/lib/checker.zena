@@ -98,7 +98,7 @@ import {
   AnyRefType, EqRefType,
   BoolLiteralType, StringLiteralType, NumLiteralType,
   ArrayType, TupleType as TupleT, InlineTupleType as InlineTupleT,
-  UnionType as UnionT, internUnion, RecordType as RecordT,
+  UnionType as UnionT, TypeInterner, RecordType as RecordT,
   FunctionType, ClassType, InterfaceType, MixinType, MemberInfo, FieldInfo, MethodInfo,
   DecoratedField, ReceiverKind,
   TypeParameterType, TypeAliasType, SymbolType, ThisType,
@@ -174,6 +174,8 @@ export final class CanonicalEnum(type: TypeAliasType, value: RecordT)
 
 export final class SharedCheckerState {
   var typeIdGenerator = makeTypeIdGenerator();
+  /** The compiler's interned types, shared with its codegen. */
+  interner = new TypeInterner();
   preludeTypes = new Map<String, Type>();
   preludeValues = new Map<String, Type>();
   var preludeRegistered: boolean = false;
@@ -939,6 +941,11 @@ final class CheckerContext {
    */
   freshTypeId(): TypeId {
     return this.#sharedState.typeIdGenerator.next();
+  }
+
+  /** The compiler's interned types; see `TypeInterner`. */
+  interner: TypeInterner {
+    get { return this.#sharedState.interner; }
   }
 
   mixinApplications(): Map<String, ClassType> {
@@ -6089,7 +6096,7 @@ let createUnionType = (types: Array<Type>, ctx: CheckerContext | null = null, lo
     }
   }
 
-  return internUnion(deduped);
+  return if (ctx != null) ctx.interner.union(deduped) else new UnionT(deduped);
 };
 
 /**
@@ -8746,7 +8753,7 @@ let subtractNullFromType = (t: Type): Type => {
       }
       if (remaining.length == 0) { return new NeverType(); }
       if (remaining.length == 1) { return remaining[0]; }
-      return internUnion(remaining);
+      return new UnionT(remaining);
     }
     case NullType: { return new NeverType(); }
     case _: { return t; }
@@ -8772,7 +8779,7 @@ let subtractTypeFromUnion = (original: Type, toRemove: Type): Type => {
       }
       if (remaining.length == 0) { return new NeverType(); }
       if (remaining.length == 1) { return remaining[0]; }
-      return internUnion(remaining);
+      return new UnionT(remaining);
     }
     case _: {
       if (typesEqual(original, toRemove)) { return new NeverType(); }
@@ -8800,7 +8807,7 @@ let unwrapNullableForMemberLookup = (t: Type): Type | null => {
       if (remaining.length == 1) {
         return remaining[0];
       }
-      return internUnion(remaining);
+      return new UnionT(remaining);
     }
     case _: {
       return t;
@@ -18726,7 +18733,7 @@ let checkMemberExpression = (
       if (nonNull.length == 1) {
         receiverType = nonNull[0];
       } else if (nonNull.length > 1) {
-        receiverType = internUnion(nonNull);
+        receiverType = ctx.interner.union(nonNull);
       }
     }
     case NullType: { isNullable = true; }
@@ -19171,7 +19178,7 @@ let checkIndexExpression = (
       if (nonNull.length == 1) {
         baseType_ = nonNull[0];
       } else if (nonNull.length > 1) {
-        baseType_ = internUnion(nonNull);
+        baseType_ = ctx.interner.union(nonNull);
       }
     }
     case NullType: { isNullable = true; }
@@ -20060,7 +20067,7 @@ let subtractEnumFromType = (t: Type, ed: EnumDeclaration): Type => {
       }
       if (remaining.length == 0) { return new NeverType(); }
       if (remaining.length == 1) { return remaining[0]; }
-      return internUnion(remaining);
+      return new UnionT(remaining);
     }
     case _: { return t; }
   }
@@ -21896,7 +21903,7 @@ let checkCallExpression = (
       if (nonNull.length == 1) {
         baseCalleeType = nonNull[0];
       } else if (nonNull.length > 1) {
-        baseCalleeType = internUnion(nonNull);
+        baseCalleeType = ctx.interner.union(nonNull);
       }
     }
     case NullType: { isNullable = true; }

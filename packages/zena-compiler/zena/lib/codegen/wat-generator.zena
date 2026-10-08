@@ -2,6 +2,7 @@ import { StringBuilder } from 'zena:core';
 import { Program } from '../program.zena';
 import { CodeGenerator } from './code-generator.zena';
 import { ModuleGenerator } from './module-generator.zena';
+import { TypeInterner } from '../types.zena';
 import { WatEmitter } from './wat-emitter.zena';
 
 export class WatGenerator implements CodeGenerator<String> {
@@ -20,6 +21,9 @@ export class WatGenerator implements CodeGenerator<String> {
    */
   var wideArithmetic: boolean = false;
 
+  /** The checker's interned types, passed on to the module; see `WasmModule.interner`. */
+  var interner: TypeInterner | null = null;
+
   /** Optimization level, forwarded to ModuleGenerator. */
   optLevel: i32;
 
@@ -31,6 +35,7 @@ export class WatGenerator implements CodeGenerator<String> {
     let generator = new ModuleGenerator(program, emitter, this.target, this.zirStats,
         this.optLevel);
     generator.wideArithmetic = this.wideArithmetic;
+    generator.interner = this.interner;
     generator.compile();
     return this.sb.toString();
   }

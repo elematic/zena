@@ -12,7 +12,7 @@ import {
 } from './wasm.zena';
 import { NodeMap } from '../node-map.zena';
 import {
-  ClassType, FunctionType, InterfaceType, Type, TypeParameterType,
+  ClassType, FunctionType, InterfaceType, Type, TypeInterner, TypeParameterType,
 } from '../types.zena';
 import { Program, CompilationUnit } from '../program.zena';
 import { stdlibLibraryOf, stdlibLibraryAnswers } from '../stdlib-manifest.zena';
@@ -934,6 +934,15 @@ export final class WasmModule {
    * itself erases to one object rather than recursing without end.
    */
   erasures = new Map<i32, Type>();
+
+  /**
+   * The interned types this module's codegen builds unions through.
+   * The generator sets it to the checker's, so the compile's unions
+   * share identity across checking and codegen; a module generated
+   * without one (the tests build generators directly) interns on its
+   * own, which only loses the sharing.
+   */
+  var interner = new TypeInterner();
 
   /**
    * `substituteTypeParamsInCodegen` results, by the input's uid and
