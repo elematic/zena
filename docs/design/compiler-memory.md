@@ -260,6 +260,44 @@ All of the 100 s of collection cost is in reachability, 76 s of it
 in the class-linking and vtable passes between the queue drains,
 which run while everything discovered is live.
 
+## Interning types
+
+Four changes, each measured on the `zena` module compile (types
+minted; wall time interleaved against `main`, three runs each):
+
+1. Unions are interned (`internUnion`): one object per member list,
+   keyed by member identity in a trie, with field-less primitives
+   mapped to singletons so that two `T | null` can match. Only unions
+   whose members all have stable identity are interned; a union over
+   a substitution copy is built fresh, since interned it would pin the
+   copy for the compile and never match. Alone this did nothing:
+   313 unions interned, 335K built fresh, 314K of them because the
+   first member was a class instantiation that was a fresh copy at
+   every mention.
+2. Codegen's `substituteTypeParamsInCodegen` registers a class
+   instantiation before substituting its supertypes and constructor,
+   and interfaces get the same per-source table. This is what lets
+   the checker hand codegen an instantiation whose constructor
+   parameter names itself (the checker's self-instantiation of
+   `MapEntry<K, V>` has no constructor; one built from the template
+   does), which codegen's walk previously recursed on without end.
+   `eraseTypeParameters` memoizes per module for the same reason.
+3. The checker's `substituteInType` caches one instantiation per
+   (template, argument identities) and builds it from the template.
+   Types minted 1.62M to 745K: ClassType 301K to 48K, InterfaceType
+   111K to 46K. Union hits 9.8K to 52.7K.
+4. Outermost codegen substitution results are memoized per module by
+   (input, parameters, arguments) identity, and `instantiateClassType`
+   returns a cached instantiation as is when its source's shape stamp
+   still matches. Types minted 745K to 536K.
+
+Wall time over the four: 20.5–20.8 s against 20.5–20.9 s. Three
+times fewer type objects bought no time at the build's 1.5 GB
+reserve, so the type objects were not what the collector's time went
+to; what reachability retains, and allocates other than types, is
+the next measurement — a census that walks `WasmModule` (functions,
+structs, `classInfos`, vtables) and the type graph reachable from it.
+
 ## What is left
 
 - **Hash-consing types.** Types are values with structural equality
