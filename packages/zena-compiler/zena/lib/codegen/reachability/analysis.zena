@@ -2134,8 +2134,14 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
    * `ct` has no such slot (static, private and constructor members).
    */
   #slotOwnerKey(ct: ClassType, slotName: String): String | null {
-    let cacheKey = (getClassKey(ct) as String) + "|" + slotName;
-    if (let (true, cached) = this.#slotOwnerCache.get(cacheKey)) {
+    // Cached per class by identity, then by slot name, so a lookup
+    // builds no key string: the concatenated keys were 70K strings
+    // held for the whole compile.
+    let perClass = this.#slotOwnerCache.getOr(ct.uid, null)
+        ?? new Map<String, String>();
+    this.#slotOwnerCache[ct.uid] = perClass;
+    let cacheKey = slotName;
+    if (let (true, cached) = perClass.get(cacheKey)) {
       return if (cached == "") null else cached;
     }
     var owner: ClassType | null = null;
@@ -2155,16 +2161,16 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
       c = cc.superType;
     }
     if (owner == null) {
-      this.#slotOwnerCache[cacheKey] = "";
+      perClass[cacheKey] = "";
       return null;
     }
     let o = owner as ClassType;
     let key = (getClassKey(o.genericSource ?? o) as String) + "|" + slotName;
-    this.#slotOwnerCache[cacheKey] = key;
+    perClass[cacheKey] = key;
     return key;
   }
-  #slotOwnerCache = new Map<String, String>();
-  #pendingStaticTargets = new Array<PendingStaticTarget>();
+  #slotOwnerCache = new Map<i32, Map<String, String> | null>();
+  var #pendingStaticTargets = new Array<PendingStaticTarget>();
 
   /**
    * The slot keys of every reached class method. `ownOnly` keeps only
@@ -2237,6 +2243,17 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
         c = cc.superType;
       }
     }
+    // A resolved target is never looked at again, so the list keeps
+    // only what the next round has to retry. Left as it was, the list
+    // held every target ever noted — 200K entries, each with its own
+    // mangled name string — for the rest of the compile.
+    let unresolved = new Array<PendingStaticTarget>();
+    for (let pend in this.#pendingStaticTargets) {
+      if (!pend.resolved) {
+        unresolved.push(pend);
+      }
+    }
+    this.#pendingStaticTargets = unresolved;
     let keys = this.#reachedSlotKeys(false);
     for (let cPair in this.wasm.classInfos) {
       let info = cPair.value;

@@ -332,7 +332,7 @@ through the run:
 | `String` + `ByteArray`                             | 773K + 573K | 78  | 570K strings own a store: map keys, the type-key caches (~125K), `PendingStaticTarget.memberName` (133K distinct), function names. 154K are identifier names, one `String` per `Identifier`. |
 | `WasmFunction`                                     | 41K         | 17  | 432 bytes each                                                                                                                                                                               |
 | `SourceLocation`                                   | 437K        | 17  | one per node                                                                                                                                                                                 |
-| `MapEntry<i32, Symbol>`                            | 294K        | 14  | the lowering context's `symbols` map, alive during discovery                                                                                                                                 |
+| `MapEntry<i32, Symbol>`                            | 294K        | 14  | the scope builder's `SymbolMap`, by node and by source offset                                                                                                                                |
 | `FunctionType`                                     | 94K         | 13  | `Map<String, Type>` tables 43K, the codegen `substCache` 41K, class constructors 16K                                                                                                         |
 | `PendingStaticTarget`                              | 202K        | 10  | a push-only list on the reachability pass                                                                                                                                                    |
 | `GrowableArray<Type>` + `Array<Type>` fat pointers | 186K + 152K | 12  | `FunctionType.parameters` is interface-typed, so each signature carries a fat pointer around its array                                                                                       |
@@ -340,6 +340,25 @@ through the run:
 
 The type graph is a tenth of it. Strings are a fifth, and most of
 them are keys and caches rather than source text.
+
+## What the snapshot bought first
+
+Three retained structures the snapshot ranked, each a few lines:
+
+- The reachability pass's `#pendingStaticTargets` list marked an
+  entry resolved and kept it; the drain now keeps only the entries it
+  has to retry. 202K objects and their 133K mangled-name strings were
+  live for the rest of the compile.
+- `SymbolMap.#byNode` is a `DenseNodeMap`, as the semantic model's
+  node tables are; its offset index, which only the language service
+  reads, is two parallel arrays built into a map on the first lookup.
+  294K `MapEntry<i32, Symbol>` became 4.8K.
+- `#slotOwnerKey` caches per class by identity and then by slot name,
+  instead of under a concatenated `classKey|slot` string; and
+  `MixinType.sharedMembers` is null until a decorator declares one.
+
+Snapshot inside discovery, same point: 6.48M objects and 394 MiB to
+5.77M and 359 MiB; strings 773K to 650K.
 
 ## What is left
 
@@ -349,21 +368,14 @@ snapshot afterwards:
 - **Strings.** 773K live, 570K with a store of their own. The
   type-key caches (`uniqueKeyCache`, `specializationKeyCache`) hold
   ~125K of them and exist to compare types that identity now
-  compares; `PendingStaticTarget.memberName` holds 133K distinct
-  mangled names on a list nothing compacts; the `Map<String, …>`
+  compares; the `Map<String, …>`
   tables of the checker and the module hold most of the rest.
   Identifier names are 154K `String`s for far fewer distinct names,
   because the tokenizer slices a new one per token — interning them in
   the tokenizer makes every identifier of one spelling one object.
-- **`PendingStaticTarget`.** A push-only list of 202K entries on the
-  reachability pass, each with its own string; drop or compact once
-  resolved.
 - **`FunctionType.parameters` as a concrete array.** It is
   `Array<Type>`, an interface, so every signature carries a fat
   pointer (152K live) around its `GrowableArray`.
-- **The lowering context's `symbols` map**, 294K entries alive during
-  discovery, which has not lowered anything yet: either contexts
-  outlive their function or something builds them early.
 - **`WasmFunction`**, 41K at 432 bytes: lazy `captures`/`mutableCaptures`,
   and the per-kind nullable fields to side records.
 - **`SourceLocation`** folded into the node: 437K objects.

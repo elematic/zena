@@ -69,11 +69,24 @@ export final class UnresolvedName(
  * original declaration.
  */
 export final class SymbolMap {
-    #byNode = new NodeMap<Symbol>();
-    #byOffset = new Map<i32, Symbol>();
+    // One slot per node id of the module, as `SemanticModel.nodeTypes`:
+    // a hash entry per resolved node was 37 bytes each, 150K per large
+    // compile, held for its whole life.
+    #byNode = new DenseNodeMap<Symbol>(0 as NodeId, -1 as NodeId);
+    // The offset index only the language service reads, kept as two
+    // parallel arrays (8 bytes a record) and built into a map on the
+    // first lookup, which a build never makes.
+    #offsets = new GrowableArray<i32>();
+    #offsetSymbols = new GrowableArray<Symbol>();
+    var #byOffset: Map<i32, Symbol> | null = null;
 
-    byNode: NodeMap<Symbol> {
+    byNode: DenseNodeMap<Symbol> {
       get { return this.#byNode; }
+    }
+
+    /** Sizes the node table to the module's id range; see `DenseNodeMap`. */
+    reserve(first: NodeId, last: NodeId): void {
+      this.#byNode.reserve(first, last);
     }
 
     /**
@@ -83,7 +96,12 @@ export final class SymbolMap {
       this.#byNode[node] = info;
       let loc = node.loc;
       if (loc != null) {
-        this.#byOffset[loc.start] = info;
+        this.#offsets.push(loc.start);
+        this.#offsetSymbols.push(info);
+        let built = this.#byOffset;
+        if (built != null) {
+          built[loc.start] = info;
+        }
       }
     }
 
@@ -101,7 +119,17 @@ export final class SymbolMap {
    * Look up by source offset (0-based). For LSP position-based queries.
    */
   getByOffset(offset: i32): Symbol | null {
-    return if (let (true, info) = this.#byOffset.get(offset)) {
+    var built = this.#byOffset;
+    if (built == null) {
+      // Later records win, as they did when every record wrote the map.
+      let map = new Map<i32, Symbol>(this.#offsets.length);
+      for (var i = 0; i < this.#offsets.length; i += 1) {
+        map[this.#offsets[i]] = this.#offsetSymbols[i];
+      }
+      this.#byOffset = map;
+      built = map;
+    }
+    return if (let (true, info) = built.get(offset)) {
       info
     } else {
       null
@@ -283,6 +311,7 @@ export final class ScopeBuilder {
   build(ast: Node): ScopeResult {
     if (ast is Module) {
       this.#parents.reserve(ast.id, (ast as Module).lastNodeId);
+      this.#symbols.reserve(ast.id, (ast as Module).lastNodeId);
     }
     populateParents(ast, this.#parents);
     this.#declareBuiltins();
