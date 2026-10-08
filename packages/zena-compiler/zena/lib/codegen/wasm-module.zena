@@ -936,6 +936,22 @@ export final class WasmModule {
   erasures = new Map<i32, Type>();
 
   /**
+   * `substituteTypeParamsInCodegen` results, by the input's uid and
+   * then by the parameter and argument uids; see the memo there.
+   */
+  substitutionResults = new Map<i32, Map<String, Type>>();
+
+  /** The result table for input `t`, created on first use. */
+  substitutionResultsFor(t: Type): Map<String, Type> {
+    if (let (true, existing) = this.substitutionResults.get(t.uid)) {
+      return existing;
+    }
+    let fresh = new Map<String, Type>();
+    this.substitutionResults[t.uid] = fresh;
+    return fresh;
+  }
+
+  /**
    * Whether to emit the wide-arithmetic proposal's instructions
    * natively (`i64.mul_wide_u` and friends, 0xFC 19..22) instead of
    * the equivalent 32-bit-halves sequences.

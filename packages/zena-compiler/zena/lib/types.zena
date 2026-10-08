@@ -752,7 +752,7 @@ export let resetInternedTypes = (): void => {
 };
 
 /** The identities of `args`, as a cache key: `"12,34,"`. */
-let argumentUidKey = (args: Array<Type>): String => {
+export let argumentUidKey = (args: Array<Type>): String => {
   var key = "";
   for (let arg in args) {
     key = key + i32ToString(arg.uid) + ",";
@@ -766,7 +766,7 @@ let argumentUidKey = (args: Array<Type>): String => {
  * mixins and interfaces, the constructors, the `on` type, and the
  * flags it copies. Members are shared by reference and need no stamp.
  */
-let classShapeStamp = (ct: ClassType): i32 => {
+export let classShapeStamp = (ct: ClassType): i32 => {
   var stamp = ct.implementsList.length * 7 + ct.mixins.length * 13
       + ct.constructors.size * 17;
   let sup = ct.superType;
@@ -790,7 +790,7 @@ let classShapeStamp = (ct: ClassType): i32 => {
 };
 
 /** As `classShapeStamp`, for an interface: its extends list. */
-let interfaceShapeStamp = (it: InterfaceType): i32 => {
+export let interfaceShapeStamp = (it: InterfaceType): i32 => {
   var stamp = it.extendsList.length;
   for (let ext in it.extendsList) { stamp = stamp * 31 + ext.uid; }
   return stamp + 1;
@@ -1451,8 +1451,15 @@ export let instantiateClassType = (
   let key = getInstantiationKey(typeArguments);
   let instantiations = source.instantiations ?? new Map<String, ClassType>();
   source.instantiations = instantiations;
+  // A hit built from the source as it stands is returned as is; one
+  // built before the source gained a constructor or supertype (the
+  // stamp differs) is rebuilt in place below, as substituteInType does.
+  let stamp = classShapeStamp(source);
   let result = if (let (true, cached) = instantiations.get(key)) {
     _instantiationHits += 1;
+    if (cached.shapeStamp == stamp) {
+      return cached;
+    }
     cached
   } else {
     _instantiationMisses += 1;
@@ -1460,6 +1467,7 @@ export let instantiateClassType = (
     instantiations[key] = res;
     res
   };
+  result.shapeStamp = stamp;
   result.typeParameters = source.typeParameters;
   result.typeArguments = toGrowable(typeArguments);
   result.genericSource = source;
@@ -1621,8 +1629,12 @@ export let instantiateInterfaceType = (
   let key = getInstantiationKey(typeArguments);
   let instantiations = source.instantiations ?? new Map<String, InterfaceType>();
   source.instantiations = instantiations;
+  let stamp = interfaceShapeStamp(source);
   let result = if (let (true, cached) = instantiations.get(key)) {
     _instantiationHits += 1;
+    if (cached.shapeStamp == stamp) {
+      return cached;
+    }
     cached
   } else {
     _instantiationMisses += 1;
@@ -1630,6 +1642,7 @@ export let instantiateInterfaceType = (
     instantiations[key] = res;
     res
   };
+  result.shapeStamp = stamp;
   result.typeParameters = source.typeParameters;
   result.typeArguments = toGrowable(typeArguments);
   result.genericSource = source;

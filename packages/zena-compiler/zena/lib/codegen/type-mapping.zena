@@ -6,7 +6,8 @@ import {
   FieldInfo, MethodInfo, typeToString, TypeParameterType, ThisType,
   UnionType, InlineTupleType, baseType, BoolLiteralType, NumLiteralType, StringLiteralType,
   RecordType, TupleType, MixinType, ErasedType, countCodegenFunctionType,
-  countCodegenSubstitution, internUnion} from '../types.zena';
+  countCodegenSubstitution, internUnion, classShapeStamp, interfaceShapeStamp,
+  argumentUidKey} from '../types.zena';
 import { 
   WasmModule, WasmStruct, WasmField, WasmSignature, WasmFunction, RecordDispatchInfo,
   sortWasmFields, WasmArray
@@ -40,7 +41,22 @@ export let substituteTypeParamsInCodegen = (
   if (typeParams == null || typeArgs == null || typeParams.length == 0 || typeArgs.length == 0) {
     return t;
   }
+  // Memoized per module on (input, parameters, arguments), all by
+  // identity. The class and interface cases below have tables of their
+  // own; this one covers the function, union, array and tuple results
+  // they return — which were built afresh at every call, 137K
+  // function types in the `zena` module compile.
+  let table = wasm.substitutionResultsFor(t);
+  var key = "";
+  for (let p in typeParams) {
+    key = key + i32ToString(p.uid) + ",";
+  }
+  key = key + "|" + argumentUidKey(typeArgs);
+  if (let (true, done) = table.get(key)) {
+    return done;
+  }
   let result = substituteTypeParamsInCodegenInner(wasm, typeParams, typeArgs, t);
+  table[key] = result;
   countCodegenSubstitution(t, typeArgs, result);
   return result;
 };
@@ -292,6 +308,9 @@ let substituteTypeParamsInCodegenInner = (
         // do. Registering only once built made that recursion
         // unbounded on any cyclic input.
         icacheVal[instKey] = inst;
+        // One object per (source, arguments) for this module, which is
+        // what the stamp marks: union interning keys on it.
+        inst.shapeStamp = classShapeStamp(ct);
         inst.typeParameters = ctParams;
         inst.typeArguments = newArgs;
         inst.genericSource = ct.genericSource ?? ct;
@@ -416,6 +435,7 @@ let substituteTypeParamsInCodegenInner = (
         }
         let inst = new InterfaceType(it.id, it.symbolId, it.name);
         icacheVal[instKey] = inst;
+        inst.shapeStamp = interfaceShapeStamp(it);
         inst.typeParameters = itParams;
         inst.typeArguments = newArgs;
         inst.genericSource = it.genericSource ?? it;
