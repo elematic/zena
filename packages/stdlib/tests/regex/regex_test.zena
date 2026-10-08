@@ -2,7 +2,7 @@ import {suite, test, TestContext} from 'zena:test';
 import {equal, isTrue, isFalse} from 'zena:assert';
 import { Regex, Match, parsePattern, Op, Flags } from 'zena:regex';
 
-let literalTests = suite('Regex (literal engine)', (): void => {
+let literalTests = (): void => {
   test('test() matches literal substring', (ctx: TestContext): void => {
     let re = new Regex('ab');
     isTrue(re.test('zabz'));
@@ -66,9 +66,9 @@ let literalTests = suite('Regex (literal engine)', (): void => {
     equal(parts[1], 'b');
     equal(parts[2], 'c');
   });
-});
+};
 
-let nfaTests = suite('Regex (NFA engine)', (): void => {
+let nfaTests = (): void => {
   test('dot matches any character', (ctx: TestContext): void => {
     let re = new Regex('a.c');
     isTrue(re.test('abc'));
@@ -118,6 +118,27 @@ let nfaTests = suite('Regex (NFA engine)', (): void => {
     isTrue(re.test('m'));
     isFalse(re.test('5'));
     isFalse(re.test('M'));
+  });
+
+  test('a hyphen last in a class is a literal', (ctx: TestContext): void => {
+    // `+-]` used to read as the range `+` through `]`, which ate the closing
+    // bracket and left the class unterminated: this threw "Unclosed
+    // character class".
+    let re = new Regex('[\\w.+-]+');
+    isTrue(re.test('1.0.0-rc-1'));
+    isTrue(re.test('1.0.0+build'));
+    let m = re.exec('@1.0.0-alpha;');
+    isTrue(m != null);
+    if (m != null) {
+      equal(m.value, '1.0.0-alpha');
+    }
+  });
+
+  test('a hyphen first in a class is a literal', (ctx: TestContext): void => {
+    let re = new Regex('[-a]+');
+    isTrue(re.test('-'));
+    isTrue(re.test('a'));
+    isFalse(re.test('b'));
   });
 
   test('digit escape matches digits', (ctx: TestContext): void => {
@@ -171,9 +192,9 @@ let nfaTests = suite('Regex (NFA engine)', (): void => {
     equal(parts[1], 'b');
     equal(parts[2], 'c');
   });
-});
+};
 
-let parserTests = suite('Regex Pattern Parser', (): void => {
+let parserTests = (): void => {
   test('parses single literal', (ctx: TestContext): void => {
     let ast = parsePattern('a', Flags.None);
     equal(ast.op, Op.Literal);
@@ -404,10 +425,10 @@ let parserTests = suite('Regex Pattern Parser', (): void => {
     equal(ast.sub[1].op, Op.Literal); // @
     equal(ast.sub[2].op, Op.Plus);
   });
-});
+};
 
 // Tests for inline flags (?i), (?m), (?s)
-let flagTests = suite('Regex flags', (): void => {
+let flagTests = (): void => {
   test('(?i) enables case-insensitive matching', (ctx: TestContext): void => {
     let re = new Regex('(?i)hello');
     isTrue(re.test('hello'));
@@ -493,10 +514,17 @@ let flagTests = suite('Regex flags', (): void => {
     isTrue(re.test('HELLO'));
     isTrue(re.test("world\nHELLO\nfoo"));
   });
-});
+};
 
-export let tests = suite('Regex', (): void => {});
-tests.suites.push(literalTests);
-tests.suites.push(nfaTests);
-tests.suites.push(parserTests);
-tests.suites.push(flagTests);
+// Registered from inside the parent's body, which is what parents them:
+// `suite()` attaches a new suite to whichever one is being built. Four
+// top-level `tests.suites.push(...)` statements did the same job on paper and
+// none of it in fact — a statement at the top level of a module is checked
+// and never runs, so this file reported "0 of 0 test(s) passed" while holding
+// 71 tests. See https://github.com/elematic/zena/issues/205.
+export let tests = suite('Regex', (): void => {
+  suite('Regex (literal engine)', literalTests);
+  suite('Regex (NFA engine)', nfaTests);
+  suite('Regex Pattern Parser', parserTests);
+  suite('Regex flags', flagTests);
+});
