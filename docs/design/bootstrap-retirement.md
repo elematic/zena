@@ -294,11 +294,11 @@ plan can be redone.
 
    _Wave two progress 2026-08-05: both restructures are DONE. The
    `runtime` tests and the `wit-parser` build/tests compile through the
-   self-hosted compiler as a library: `api.wasm` (`build:api`) exports
-   `compileSource()` plus error/output accessors, and the packages
-   instantiate it in-process (`packages/runtime/src/test/compile-zena.ts`,
-   `packages/wit-parser/src/lib/compile.ts`) — no file round-trips, and
-   neither package depends on `@zena-lang/compiler`. Six self-hosted
+   self-hosted compiler as a library, instantiated in-process — no file
+   round-trips, and neither package depends on `@zena-lang/compiler`.
+   (Both have moved on since: the wit-parser's tests are Zena tests, and
+   `packages/runtime/src/test/compile-zena.ts` uses `lsp.wasm`, so the
+   `api.wasm` build those two shared is gone.) Six self-hosted
    compiler bugs fell out of the wit-parser swap, each fixed with a
    portable test: deterministic vtable reach, distributed sealed
    variants, block-scoped function bindings, celled captures,

@@ -75,8 +75,8 @@ Artifacts that are debugged rather than shipped keep their names
 explicitly: `build:self-hosted`, `check-fixpoint`, `build-wasi-tests`
 and the portable-execution runner all pass `-g`. `backtrace_test.zena`
 asserts on symbolized frames and is the test that fails if that is
-dropped. Published artifacts (`api.wasm`, `lsp.wasm`) take the new
-default and get smaller.
+dropped. The published `lsp.wasm` takes the new default and gets
+smaller.
 
 ## 2. Reachability: 227 functions for `return 42`
 
