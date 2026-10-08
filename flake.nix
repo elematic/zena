@@ -28,15 +28,21 @@
         # One root holding every pinned source as <root>/<name>, matching the
         # layout dev/fetch-wit-corpus.js produces, so the checks address a
         # source the same way however it arrived.
-        witCorpus = pkgs.linkFarm "zena-wit-corpus" (pkgs.lib.mapAttrsToList
-          (name: src: {
-            inherit name;
-            path = pkgs.fetchzip {
-              url = src.url;
-              hash = src.nixHash;
-            };
-          })
-          witCorpusPin.sources);
+        #
+        # Copied rather than symlinked: the check that reads this tree is a
+        # Zena program under WASI, and cap-std refuses to follow a symlink to
+        # an absolute path, so a linkFarm root reads as empty to it.
+        witCorpus = pkgs.runCommand "zena-wit-corpus" { } ''
+          mkdir -p $out
+          ${pkgs.lib.concatStringsSep "\n" (pkgs.lib.mapAttrsToList
+            (name: src: ''
+              cp -R --no-preserve=mode,ownership ${pkgs.fetchzip {
+                url = src.url;
+                hash = src.nixHash;
+              }} $out/${name}
+            '')
+            witCorpusPin.sources)}
+        '';
 
         wasmtime =
           let

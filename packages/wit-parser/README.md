@@ -93,13 +93,16 @@ packages/wit-parser/
 │   ├── parser.zena
 │   ├── resolver.zena
 │   ├── ast-json.zena      # .wit.json serialization
-│   └── *-test-harness.zena
-├── src/scripts/
-│   └── run-tests.ts       # Node-based test runner
+│   ├── wit.zena           # The public entry point
+│   └── test/              # The tests, in Zena
+│       ├── syntax_test.zena   # Lexer and parser
+│       ├── corpus_test.zena   # The ported wasm-tools corpus
+│       └── encoder_test.zena  # Component encoder round-trip
 ├── dev/
-│   ├── parse-real-wit.js  # Run the parser over real-world WIT
+│   ├── parse-real-wit.zena # Run the parser over real-world WIT
+│   ├── encode-wit.zena    # Encode a world as a types-only component
 │   ├── fetch-wit-corpus.js # Download the pinned corpus (non-Nix checkouts)
-│   └── wit-corpus.js      # Locate + verify the corpus (shared)
+│   └── wit-corpus.js      # Locate + verify the corpus (for the fetcher)
 └── tests/                 # Ported test files (mirrors wasm-tools ui/ structure)
     ├── empty.wit              # Success test input
     ├── empty.wit.json         # Expected parsed output
@@ -118,9 +121,10 @@ npm test -w @zena-lang/wit-parser
 npm test
 ```
 
-The runner compiles the Zena parser to WASM, instantiates it, feeds each test's
-WIT in, and compares the result against the expected `.wit.json` or
-`.wit.result`.
+The tests are Zena tests, run by `zena-cli test` like the standard library's.
+`corpus_test.zena` walks `tests/`, parses each case and compares the serialized
+AST against the `.wit.json` beside it, or requires that the case fail when a
+`.wit.result` is what sits there.
 
 ### The real-world WIT corpus
 
@@ -160,14 +164,22 @@ Both pins are deliberately behind upstream (0.2 is now at 0.2.12, and 0.3 has
 newer RCs). They are fixtures, not a dependency — bump them when there is a
 reason to.
 
-Other modes take explicit directories, so they work on any WIT:
+Other modes take explicit directories, so they work on any WIT. Run them from
+the repository root; `--dir .` is where the program finds `wit-corpus.json`, and
+`--dir /` is what lets it read a Nix store path.
 
 ```bash
-node dev/parse-real-wit.js --check                      # what npm test runs
-node dev/parse-real-wit.js .wit-corpus/wasi/proposals   # resolve a tree
-node dev/parse-real-wit.js --files .wit-corpus/wasi-http/wit  # per-file breakdown
-node dev/parse-real-wit.js --probe                      # known-gap repros
+ZC="./target/release/zena-cli run --dir . --dir /"
+WIT="packages/wit-parser/dev/parse-real-wit.zena"
+
+$ZC $WIT --check                                   # what npm test runs
+$ZC $WIT "$ZENA_WASI_WIT/wasi/proposals"           # resolve a tree
+$ZC $WIT --files "$ZENA_WASI_WIT/wasi-http/wit"    # per-file breakdown
 ```
+
+Minimal repros of the constructs that used to fail — a prerelease version in a
+`use` path, a versioned interface path in a world, a doc comment in a parameter
+list — are tests, in `zena/test/syntax_test.zena`.
 
 ## Test Formats
 

@@ -1,0 +1,123 @@
+/**
+ * The component encoder, round-tripped through `wasm-tools`.
+ *
+ * For each fixture in `test-files/encoder/`, the named world is encoded as a
+ * types-only component. The bytes must validate, and `wasm-tools component
+ * wit` must print them back as the golden beside the fixture. Only correct
+ * type and import sections survive that trip: an off-by-one index or a
+ * missing export fails validation, and a wrong type shape prints as the wrong
+ * WIT.
+ *
+ * Goldens are checked in; regenerate them with `UPDATE_WIT_GOLDENS=1`.
+ */
+
+import { suite, test } from 'zena:test';
+import { isTrue } from 'zena:assert';
+import { getEnv } from 'zena:cli';
+import { GlobOptions, exists, glob, mkdir, readFile, writeFile, writeFileBytes } from 'zena:fs';
+import { runIn } from 'zena:process';
+import { encodeTypesOnlyComponent } from '../component-encoder.zena';
+import { parse } from '../wit.zena';
+
+/** Paths relative to the repository root, which is where a test runs. */
+let FIXTURES = 'packages/wit-parser/test-files/encoder';
+let OUT = 'packages/wit-parser/.encoder-out';
+
+/** The world each fixture's encoding is asked for. */
+let worldFor = (fixture: String): String => {
+  if (fixture == 'async.wit') { return 'event-host'; }
+  if (fixture == 'resources.wit') { return 'store'; }
+  if (fixture == 'shapes.wit') { return 'shapes'; }
+  if (fixture == 'uses.wit') { return 'web'; }
+  if (fixture == 'wide.wit') { return 'wide'; }
+  if (fixture == 'world-funcs.wit') { return 'tools'; }
+  return '';
+};
+
+/** The fixtures, by file name, goldens excluded. */
+let fixtureNames = (): Array<String> => {
+  let options = new GlobOptions();
+  options.cwd = FIXTURES;
+  let names = new GrowableArray<String>();
+  for (let name in glob('*.wit', options)) {
+    if (!name.endsWith('.golden.wit')) {
+      names.push(name);
+    }
+  }
+  return names;
+};
+
+/** Runs wasm-tools in the repository root, where the paths here start. */
+let wasmTools = (args: Array<String>): (boolean, String, String) => {
+  let result = runIn(args, '.');
+  return (result.succeeded(), result.stdout, result.stderr);
+};
+
+export let tests = suite('WIT component encoder', (): void => {
+  test('each fixture encodes, validates and round-trips', () => {
+    if (!exists(OUT)) {
+      mkdir(OUT);
+    }
+    let updating = getEnv('UPDATE_WIT_GOLDENS') != null;
+    let names = fixtureNames();
+    isTrue(names.length > 0, `no fixtures in ${FIXTURES}`);
+
+    let failures = new GrowableArray<String>();
+    for (let name in names) {
+      let world = worldFor(name);
+      if (world == '') {
+        failures.push(`${name}: no world known for this fixture — add it to worldFor`);
+        continue;
+      }
+      let base = name.sliceBytes(0, name.length - 4);
+      let out = `${OUT}/${base}.wasm`;
+      let golden = `${FIXTURES}/${base}.golden.wit`;
+
+      let encoded = try {
+        let component = encodeTypesOnlyComponent(parse(readFile(`${FIXTURES}/${name}`)), world);
+        writeFileBytes(out, component.bytes.toByteArray());
+        true
+      } catch (e) {
+        failures.push(`${name}: ${e.message}`);
+        false
+      };
+      if (!encoded) {
+        continue;
+      }
+
+      let (valid, _, invalidWhy) = wasmTools(['wasm-tools', 'validate', '--features', 'all', out]);
+      if (!valid) {
+        failures.push(`${name}: does not validate as a component: ${invalidWhy}`);
+        continue;
+      }
+
+      let (printed, text, printWhy) = wasmTools(['wasm-tools', 'component', 'wit', out]);
+      if (!printed) {
+        failures.push(`${name}: wasm-tools component wit failed: ${printWhy}`);
+        continue;
+      }
+
+      if (updating) {
+        writeFile(golden, text);
+        console.log(`${name}: golden updated`);
+        continue;
+      }
+      if (!exists(golden)) {
+        failures.push(`${name}: no golden at ${golden}; run with UPDATE_WIT_GOLDENS=1`);
+        continue;
+      }
+      let want = readFile(golden);
+      if (text != want) {
+        failures.push(
+          `${name}: round-tripped WIT differs from the golden\n--- golden\n${want}\n--- got\n${text}`,
+        );
+      }
+    }
+
+    console.log(`${names.length} fixtures, ${failures.length} failed`);
+    for (let line in failures) {
+      console.log(`  ${line}`);
+    }
+    isTrue(failures.length == 0, `${failures.length} of ${names.length} fixtures failed`);
+  });
+});

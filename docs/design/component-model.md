@@ -948,7 +948,7 @@ records, variants, and resource bodies. Only parameter lists break.
 **Blocks: `wasi:io/streams`, `wasi:filesystem/types`, `wasi:sockets/*`** — which
 transitively blocks nearly every WASI world.
 
-Reproduce with `node packages/wit-parser/dev/parse-real-wit.js --probe`.
+Each gap above has a minimal repro in `packages/wit-parser/zena/test/syntax_test.zena`.
 
 ### Gap 4 — an interface name shadowed by a type bound from an earlier `use`
 
