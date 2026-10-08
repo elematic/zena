@@ -577,6 +577,174 @@ final class SubstitutionFrame(source: Type, key: String, result: Type)
 
 var substitutionFrames = new Array<SubstitutionFrame>();
 
+// Interned unions. A union is a value: equal member lists are equal
+// types (`typesEqual` compares members in order), and nothing changes
+// a union's members after construction. So one object per member list
+// serves every site that would build it — `T | null` for one `T` is
+// built once rather than at every mention and every substitution — and
+// identity-keyed caches downstream (`substCache`, `substitutionsFor`)
+// hit where they used to miss on a fresh copy. Keyed by the members'
+// identities in order, which is exactly what `typesEqual` compares for
+// interned members and a conservative key otherwise.
+/**
+ * One node of the union table: a trie over member uids, so a lookup
+ * walks one map per member and allocates nothing — a string key would
+ * cost several allocations per lookup, at a few hundred thousand
+ * lookups a compile.
+ */
+final class UnionTrie {
+  var children: Map<i32, UnionTrie> | null = null;
+  var union: UnionType | null = null;
+}
+
+var unionTable = new UnionTrie();
+var _unionHits = 0;
+var _unionMisses = 0;
+var _unionFresh = 0;
+// Why a union was built fresh: the kind of its first uninternable
+// member (class instance, interface instance, function, array, tuple,
+// record, alias, union, other).
+var _unionFreshByKind = new FixedArray<i32>(9, 0);
+export let unionFreshByKind = (kind: i32): i32 => _unionFreshByKind[kind];
+
+// The one object per field-less primitive kind that an interned
+// union's members are replaced with. Every site that writes `T | null`
+// builds its own `NullType`, so without this no two `T | null` keys
+// could ever match.
+let nullSingleton = new NullType();
+let i32Singleton = new I32Type();
+let u32Singleton = new U32Type();
+let i64Singleton = new I64Type();
+let u64Singleton = new U64Type();
+let f32Singleton = new F32Type();
+let f64Singleton = new F64Type();
+let u8Singleton = new U8Type();
+let u16Singleton = new U16Type();
+let i8Singleton = new I8Type();
+let i16Singleton = new I16Type();
+let v128Singleton = new V128Type();
+let booleanSingleton = new BooleanType();
+let voidSingleton = new VoidType();
+let neverSingleton = new NeverType();
+let anyRefSingleton = new AnyRefType();
+let eqRefSingleton = new EqRefType();
+
+/** The singleton for a field-less primitive, or null for any other type. */
+let primitiveSingleton = (t: Type): Type | null => match (t) {
+  case NullType: nullSingleton
+  case I32Type: i32Singleton
+  case U32Type: u32Singleton
+  case I64Type: i64Singleton
+  case U64Type: u64Singleton
+  case F32Type: f32Singleton
+  case F64Type: f64Singleton
+  case U8Type: u8Singleton
+  case U16Type: u16Singleton
+  case I8Type: i8Singleton
+  case I16Type: i16Singleton
+  case V128Type: v128Singleton
+  case BooleanType: booleanSingleton
+  case VoidType: voidSingleton
+  case NeverType: neverSingleton
+  case AnyRefType: anyRefSingleton
+  case EqRefType: eqRefSingleton
+  case _: null
+};
+
+/**
+ * Whether `t`'s identity is stable enough to key an interned union on:
+ * a primitive (canonicalized above), a type parameter, a declared class
+ * or interface rather than an instantiation of one, or an interned
+ * union of such. A substitution copy is not — it is one of many equal
+ * copies, and a union interned over it would pin the copy, and
+ * everything the copy references, for the whole compile without ever
+ * matching another copy's union.
+ */
+let internableMember = (t: Type): boolean => match (t) {
+  case TypeParameterType: true
+  case ClassType as ct: ct.typeArguments == null && ct.genericSource == null
+  case InterfaceType as it: it.typeArguments == null && it.genericSource == null
+  case UnionType {types}: {
+    var all = true;
+    for (let m in types) {
+      if (primitiveSingleton(m) == null && !internableMember(m)) { all = false; }
+    }
+    all
+  }
+  case _: primitiveSingleton(t) != null
+};
+
+/**
+ * The union of `members`, in order: the interned object for that list
+ * when every member can be keyed on, else a fresh union, as before.
+ */
+export let internUnion = (members: Array<Type>): UnionType => {
+  var canonical: GrowableArray<Type> | null = null;
+  var i = 0;
+  for (let m in members) {
+    let single = primitiveSingleton(m);
+    if (single == null && !internableMember(m)) {
+      _unionFresh += 1;
+      let kind = match (m) {
+        case ClassType: 0
+        case InterfaceType: 1
+        case FunctionType: 2
+        case ArrayType: 3
+        case TupleType: 4
+        case InlineTupleType: 4
+        case RecordType: 5
+        case TypeAliasType: 6
+        case UnionType: 7
+        case _: 8
+      };
+      _unionFreshByKind[kind] = _unionFreshByKind[kind] + 1;
+      return new UnionType(toGrowable(members));
+    }
+    if (single != null && single !== m) {
+      let copy = canonical ?? GrowableArray.from<Type>(members);
+      copy[i] = single;
+      canonical = copy;
+    }
+    i += 1;
+  }
+  let keyed: Array<Type> = canonical ?? members;
+  var node = unionTable;
+  for (let m in keyed) {
+    let children = node.children ?? new Map<i32, UnionTrie>();
+    node.children = children;
+    if (let (true, child) = children.get(m.uid)) {
+      node = child;
+    } else {
+      let child = new UnionTrie();
+      children[m.uid] = child;
+      node = child;
+    }
+  }
+  let existing = node.union;
+  if (existing != null) {
+    _unionHits += 1;
+    return existing;
+  }
+  _unionMisses += 1;
+  let created = new UnionType(toGrowable(keyed));
+  node.union = created;
+  return created;
+};
+
+export let unionInternHits = (): i32 => _unionHits;
+export let unionInternMisses = (): i32 => _unionMisses;
+export let unionInternFresh = (): i32 => _unionFresh;
+
+/**
+ * Drops the intern tables. A compiler's types are its own — nothing
+ * is shared between compilers — so a new compiler starts with empty
+ * tables, which keeps a process that makes many (the test runners)
+ * from retaining every union every earlier compiler built.
+ */
+export let resetInternedTypes = (): void => {
+  unionTable = new UnionTrie();
+};
+
 /** The identities of `args`, as a cache key: `"12,34,"`. */
 let argumentUidKey = (args: Array<Type>): String => {
   var key = "";
@@ -684,7 +852,7 @@ let substituteInType = (
         let sub = substituteInType(ut, typeParameters, typeArguments);
         newTypes.push((sub ?? ut));
       }
-      new UnionType(newTypes)
+      internUnion(newTypes)
     }
     case RecordType as rec: {
       let newProps = new Map<String, Type>();
@@ -1953,7 +2121,7 @@ export let awaitedTypeOf = (t: Type): Type => {
     if (mapped.length == 1) {
       return mapped[0];
     }
-    return new UnionType(mapped);
+    return internUnion(mapped);
   }
   return unwrapArm(t);
 };

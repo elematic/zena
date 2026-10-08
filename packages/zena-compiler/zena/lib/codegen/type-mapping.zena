@@ -6,7 +6,7 @@ import {
   FieldInfo, MethodInfo, typeToString, TypeParameterType, ThisType,
   UnionType, InlineTupleType, baseType, BoolLiteralType, NumLiteralType, StringLiteralType,
   RecordType, TupleType, MixinType, ErasedType, countCodegenFunctionType,
-  countCodegenSubstitution} from '../types.zena';
+  countCodegenSubstitution, internUnion} from '../types.zena';
 import { 
   WasmModule, WasmStruct, WasmField, WasmSignature, WasmFunction, RecordDispatchInfo,
   sortWasmFields, WasmArray
@@ -118,7 +118,7 @@ let substituteTypeParamsInCodegenInner = (
       if (!typesChanged) {
         return t;
       }
-      new UnionType(newTypes)
+      internUnion(newTypes)
     }
     case RecordType as rec: {
       var propsChanged = false;
@@ -1008,7 +1008,7 @@ export let substituteThisTypeInCodegen = (receiverType: Type, t: Type): Type => 
         substituted.push(sub);
       }
       if (!changed) { return t; }
-      return new UnionType(substituted);
+      return internUnion(substituted);
     }
     case ArrayType {elementType, elementsMutable}: {
       let sub = substituteThisTypeInCodegen(receiverType, elementType);
@@ -1254,7 +1254,7 @@ export let eraseTypeParameters = (wasm: WasmModule, t: Type): Type => {
         newTypes.push(sub);
       }
       if (!changed) { return t; }
-      new UnionType(newTypes)
+      internUnion(newTypes)
     }
     case TupleType {elementTypes}: {
       let newElems = new Array<Type>();
@@ -1651,7 +1651,7 @@ export let typeToValType = (wasm: WasmModule, t: Type): ValType => {
             case _: v
           }
         } else {
-          typeToValType(wasm, new UnionType(nonNeverTypes))
+          typeToValType(wasm, internUnion(nonNeverTypes))
         }
       } else {
         let nonNullTypes = new Array<Type>();
@@ -2070,7 +2070,7 @@ export let mapMixinThisInType = (ct: ClassType, type: Type): Type => {
       for (let ut in types) {
         newTypes.push(mapMixinThisInType(ct, ut));
       }
-      new UnionType(newTypes) as Type
+      internUnion(newTypes) as Type
     }
     case ArrayType {elementType, elementsMutable}: {
       new ArrayType(mapMixinThisInType(ct, elementType), elementsMutable) as Type
