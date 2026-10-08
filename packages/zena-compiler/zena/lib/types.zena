@@ -494,7 +494,13 @@ export final class ClassType extends Type {
   var declaredFields: Set<String> | null = null;
   var sealedVariants: GrowableArray<ClassType> | null = null;
   var forwardVariantNames: Set<String> | null = null;
-  instantiations = new Map<String, ClassType>();
+  /**
+   * On a generic template: its instantiations by argument key, created
+   * by `instantiateClassType` on the first one. Null on every other
+   * class — which is nearly every ClassType object a compile builds, so
+   * an eager table here was 96 bytes of garbage per instantiation.
+   */
+  var instantiations: Map<String, ClassType> | null = null;
 
   /**
    * The instantiations `substituteInType` has built from this mention
@@ -1290,13 +1296,15 @@ export let instantiateClassType = (
   typeArguments: Array<Type>,
 ): ClassType => {
   let key = getInstantiationKey(typeArguments);
-  let result = if (let (true, cached) = source.instantiations.get(key)) {
+  let instantiations = source.instantiations ?? new Map<String, ClassType>();
+  source.instantiations = instantiations;
+  let result = if (let (true, cached) = instantiations.get(key)) {
     _instantiationHits += 1;
     cached
   } else {
     _instantiationMisses += 1;
     let res = new ClassType(source.id, source.symbolId, source.name);
-    source.instantiations[key] = res;
+    instantiations[key] = res;
     res
   };
   result.typeParameters = source.typeParameters;
@@ -1431,7 +1439,8 @@ export final class InterfaceType extends Type {
   var genericSource: InterfaceType | null = null;
   var interfaceKey: String | null = null;
   var sourcePath: String = "";
-  instantiations = new Map<String, InterfaceType>();
+  /** As `ClassType.instantiations`: null until the first instantiation. */
+  var instantiations: Map<String, InterfaceType> | null = null;
   /**
    * The interface's constructors, keyed like a class's: "<constructor>"
    * for `new(...)`, the bare name for `new name(...)`. Each is a factory
@@ -1457,13 +1466,15 @@ export let instantiateInterfaceType = (
   typeArguments: Array<Type>,
 ): InterfaceType => {
   let key = getInstantiationKey(typeArguments);
-  let result = if (let (true, cached) = source.instantiations.get(key)) {
+  let instantiations = source.instantiations ?? new Map<String, InterfaceType>();
+  source.instantiations = instantiations;
+  let result = if (let (true, cached) = instantiations.get(key)) {
     _instantiationHits += 1;
     cached
   } else {
     _instantiationMisses += 1;
     let res = new InterfaceType(source.id, source.symbolId, source.name);
-    source.instantiations[key] = res;
+    instantiations[key] = res;
     res
   };
   result.typeParameters = source.typeParameters;
@@ -1542,7 +1553,8 @@ export final class MixinType extends Type {
    * genericSource.
    */
   var sharedMembers: Set<String> = new Set<String>();
-  instantiations = new Map<String, MixinType>();
+  /** As `ClassType.instantiations`: null until the first instantiation. */
+  var instantiations: Map<String, MixinType> | null = null;
 
   /** Whether this is a `decorator` declaration rather than a mixin. */
   isDecorator(): boolean {
@@ -1559,13 +1571,15 @@ export let instantiateMixinType = (
   typeArguments: Array<Type>,
 ): MixinType => {
   let key = getInstantiationKey(typeArguments);
-  let result = if (let (true, cached) = source.instantiations.get(key)) {
+  let instantiations = source.instantiations ?? new Map<String, MixinType>();
+  source.instantiations = instantiations;
+  let result = if (let (true, cached) = instantiations.get(key)) {
     _instantiationHits += 1;
     cached
   } else {
     _instantiationMisses += 1;
     let res = new MixinType(source.name);
-    source.instantiations[key] = res;
+    instantiations[key] = res;
     res
   };
   result.symbolId = source.symbolId;

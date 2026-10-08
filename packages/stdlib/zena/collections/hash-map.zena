@@ -64,17 +64,7 @@ export class HashMap<K extends Hashable, V> with IterableUtils<MapEntry<K, V>> i
   var #buckets: FixedArray<MapEntry<K, V> | null>;
   var #size = 0;
 
-  /**
-   * The default table has one bucket, not sixteen: most maps a program
-   * builds hold nothing or a handful of entries, and a sixteen-slot
-   * table costs 96 bytes in wasmtime's GC heap against 32 for one. (The
-   * Zena compiler's `ClassType` carries four maps and instantiates
-   * half a million of them in a large build.) A one-slot table is a
-   * table like any other — every mask is `h & 0` — so no path needs a
-   * special case; it merely doubles earlier. Pass a capacity to
-   * pre-size a map that is known to fill.
-   */
-  new(capacity: i32 = 1)
+  new(capacity: i32 = 16)
     : #buckets = __array_new_empty<MapEntry<K, V> | null>(getPowerOfTwoCapacity(capacity)) as FixedArray<MapEntry<K, V> | null>;
 
   size: i32 {
@@ -294,7 +284,7 @@ export final class OrderedMap<K extends Hashable, V> extends HashMap<K, V> {
   var #head: OrderedEntry<K, V> | null = null;
   var #tail: OrderedEntry<K, V> | null = null;
 
-  new(capacity: i32 = 1) : super(capacity);
+  new(capacity: i32 = 16) : super(capacity);
 
   /** Stores a list node, and appends it. New keys always go last. */
   [newEntry](key: K, value: V, nextEntry: MapEntry<K, V> | null): MapEntry<K, V> {
