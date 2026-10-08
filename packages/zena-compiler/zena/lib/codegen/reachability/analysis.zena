@@ -2137,9 +2137,13 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
     // Cached per class by identity, then by slot name, so a lookup
     // builds no key string: the concatenated keys were 70K strings
     // held for the whole compile.
-    let perClass = this.#slotOwnerCache.getOr(ct.uid, null)
-        ?? new Map<String, String>();
-    this.#slotOwnerCache[ct.uid] = perClass;
+    let perClass = if (let (true, existing) = this.#slotOwnerCache.get(ct)) {
+      existing
+    } else {
+      let created = new Map<String, String>();
+      this.#slotOwnerCache[ct] = created;
+      created
+    };
     let cacheKey = slotName;
     if (let (true, cached) = perClass.get(cacheKey)) {
       return if (cached == "") null else cached;
@@ -2169,7 +2173,7 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
     perClass[cacheKey] = key;
     return key;
   }
-  #slotOwnerCache = new Map<i32, Map<String, String> | null>();
+  #slotOwnerCache = new Map<ClassType, Map<String, String>>();
   var #pendingStaticTargets = new Array<PendingStaticTarget>();
 
   /**
