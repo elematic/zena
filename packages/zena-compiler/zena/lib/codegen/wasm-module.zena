@@ -12,7 +12,7 @@ import {
 } from './wasm.zena';
 import { NodeMap } from '../node-map.zena';
 import {
-  ClassType, FunctionType, Type, TypeParameterType,
+  ClassType, FunctionType, InterfaceType, Type, TypeParameterType,
 } from '../types.zena';
 import { Program, CompilationUnit } from '../program.zena';
 import { stdlibLibraryOf, stdlibLibraryAnswers } from '../stdlib-manifest.zena';
@@ -905,6 +905,24 @@ export final class WasmModule {
     }
     let fresh = new ClassSubstitutions();
     this.classSubstitutions[ct.uid] = fresh;
+    return fresh;
+  }
+
+  /**
+   * Instantiations of each interface by substituted argument uids, the
+   * interface counterpart of `ClassSubstitutions.instantiations`, so a
+   * generic interface mentioned in many signatures is instantiated once
+   * per argument list here too.
+   */
+  interfaceInstantiations = new Map<i32, Map<String, InterfaceType>>();
+
+  /** The instantiation table for `it`, created on first use. */
+  interfaceInstantiationsFor(it: InterfaceType): Map<String, InterfaceType> {
+    if (let (true, existing) = this.interfaceInstantiations.get(it.uid)) {
+      return existing;
+    }
+    let fresh = new Map<String, InterfaceType>();
+    this.interfaceInstantiations[it.uid] = fresh;
     return fresh;
   }
 
