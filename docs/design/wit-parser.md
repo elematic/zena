@@ -48,112 +48,68 @@ The canonical WIT parser lives in
 
 ## Phase 1: Test Infrastructure ✅ COMPLETE
 
-Test infrastructure is in place with 194 tests ported from wasm-tools.
+216 cases are ported from wasm-tools: 78 that must resolve and 138 that must
+fail.
 
 ### 1.1 Test Format
 
-Tests will be ported from wasm-tools' `tests/ui/` directory. Each test consists
-of:
+The cases come from wasm-tools' `tests/ui/` directory and live under
+`packages/wit-parser/tests/`. A case is:
 
-- **Input**: A `.wit` file (or directory of `.wit` files)
-- **Expected Output**: A `.wit.json` file with the parsed/resolved AST
-- **Error Cases**: Tests in `parse-fail/` that should produce errors
-
-We'll organize these under `packages/stdlib/tests/wit-parser/`:
+- **Input**: a `.wit` file, a directory of them, or a component carrying WIT
+  (`.wat` or `.wasm`), which `wasm-tools component wit` decodes
+- **Expected output**: a `.wit.json` file holding the resolved AST, in the shape
+  `wasm-tools component wit --json` emits
+- **Error case**: a `.wit.result` file in place of the JSON, holding the error
+  upstream reports; the document has to fail to parse or resolve
 
 ```
-packages/stdlib/tests/wit-parser/
-├── ui/                          # Ported from wasm-tools
-│   ├── types.wit                # Input WIT file
-│   ├── types.wit.json           # Expected parsed output
-│   ├── async.wit
-│   ├── async.wit.json
+packages/wit-parser/
+├── tests/                       # Ported from wasm-tools
+│   ├── types.wit                # Input
+│   ├── types.wit.json           # Expected resolved AST
+│   ├── complex-include/         # One package over several files
+│   ├── complex-include.wit.json
 │   ├── parse-fail/              # Error cases
-│   │   ├── bad-syntax.wit
-│   │   └── bad-syntax.wit.stderr
-│   └── ...
-├── wit-parser_test.zena         # Test runner in Zena
-└── test-suite.json              # Suite metadata
+│   │   ├── bad-list.wit
+│   │   └── bad-list.wit.result
+│   └── test-config.json         # Cases held out by name
+└── zena/test/
+    ├── syntax_test.zena         # Lexer and parser
+    ├── corpus_test.zena         # This corpus
+    └── encoder_test.zena        # Component encoder round-trip
 ```
 
-### 1.2 Test Categories
+### 1.2 Test Runner
 
-We'll port tests in phases, starting with simpler cases:
+`corpus_test.zena` is a Zena test, run by `zena test` like the standard
+library's, which gives it `zena:fs` under WASI with the repository preopened as
+`.`:
 
-| Category           | Description                            | Test Count (approx) |
-| ------------------ | -------------------------------------- | ------------------- |
-| Basic Types        | Primitives, lists, options, results    | ~10                 |
-| Records & Variants | Composite types, enums, flags          | ~10                 |
-| Functions          | Parameters, results, async             | ~10                 |
-| Resources          | Handles, methods, constructors         | ~15                 |
-| Packages & Worlds  | Package syntax, imports, exports       | ~15                 |
-| Advanced           | Nested packages, versioning, stability | ~15                 |
+1. It walks `tests/`, pairing each input with the expectation beside it
+2. It reads a case's document and parses and resolves it through `wit.zena`
+3. For a `.wit.json` case it serializes the AST with `toJson` and compares it to
+   the golden with `zena:assert`'s `jsonEqual`
+4. A `.wit.result` case has to throw; the message is not compared yet
+5. `zena:test` reports, and a failure is what wireit sees
 
-### 1.3 Test Runner Architecture
+A directory case is one package spread over several files, possibly with
+vendored dependencies under `deps/`. The parser takes a single string, so the
+files are concatenated: main files first, then deps, each group sorted by path,
+and within one directory the file carrying the `package ...;` header first — a
+package's header has to precede its items, which `wasm-tools` does not require
+because it parses each file separately and merges by package name.
 
-Since `zena:fs` only works in wasmtime (WASI), we need a runner that can:
+Two faults in the corpus are properties of a file rather than of a document, so
+concatenating destroys them and the test checks for them textually: two files
+declaring different packages, and a file using an alias a sibling created.
 
-1. Read `.wit` input files from the filesystem
-2. Read `.wit.json` expected output files
-3. Run the parser and compare results
-4. Report pass/fail using `zena:test`
-
-**Architecture**:
-
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│                        Test Execution Flow                          │
-├─────────────────────────────────────────────────────────────────────┤
-│                                                                     │
-│  1. TypeScript Runner (packages/cli)                                │
-│     ├── Discovers test files (Node.js glob)                         │
-│     ├── Compiles wit-parser_test.zena to WASM                       │
-│     └── Invokes wasmtime with --dir flags                           │
-│                                                                     │
-│  2. Wasmtime Runtime                                                │
-│     ├── Loads WASM module                                           │
-│     ├── Provides WASI filesystem access                             │
-│     └── Runs main() entry point                                     │
-│                                                                     │
-│  3. Zena Test Module (wit-parser_test.zena)                         │
-│     ├── Uses zena:fs to read .wit files                             │
-│     ├── Calls WIT parser (in Zena)                                  │
-│     ├── Compares output to .wit.json                                │
-│     └── Reports via zena:test                                       │
-│                                                                     │
-│  4. Result Collection                                               │
-│     ├── wasmtime exit code indicates pass/fail                      │
-│     └── TypeScript runner collects and reports                      │
-│                                                                     │
-└─────────────────────────────────────────────────────────────────────┘
-```
-
-**What landed** differs in two ways. The tests live in `packages/wit-parser/`,
-not under the standard library, and nothing TypeScript is involved: `zena-cli
-test` compiles and runs `packages/wit-parser/zena/test/*_test.zena` the way it
-runs any other Zena test, so step 1 is the `zena` command and steps 2 to 4 are
-as drawn.
-
-### 1.4 Wasmtime Test Runner CLI Command
-
-We need to extend the CLI to support running tests via wasmtime. This builds on
-the existing test infrastructure but uses wasmtime instead of Node's WASM
-runtime.
+Run the whole set, or one file with its own output:
 
 ```bash
-# Run WIT parser tests via wasmtime
-zena test --runtime wasmtime --dir ./tests/wit-parser packages/stdlib/tests/wit-parser
-
-# The --dir flag maps to wasmtime's --dir for WASI preopens
+npm test -w @zena-lang/wit-parser
+./target/release/zena-cli test --single packages/wit-parser/zena/test/corpus_test.zena
 ```
-
-**Implementation in `packages/cli/src/lib/test.ts`**:
-
-1. Detect `@requires: wasmtime` directive in test files
-2. Compile to WASM as usual
-3. Instead of `WebAssembly.instantiate`, spawn `wasmtime run`
-4. Pass `--dir` flags for filesystem access
-5. Collect exit code and stdout for results
 
 ---
 
@@ -414,12 +370,9 @@ for full details.
 - [x] Validate the test format works end-to-end
 - [x] Adjust test format if needed before mass porting
 
-**Results**: the runner discovers tests recursively, validates file pairs, and
-reports results. Format kept as-is: single-file tests use sibling
-`.wit.json`/`.wit.result`, multi-file tests use directories. It started as a
-TypeScript program driving the parser through a Wasm harness; it is now a Zena
-test, `packages/wit-parser/zena/test/corpus_test.zena`, which calls the parser
-directly.
+**Results**: the runner discovers cases recursively and validates file pairs.
+Format kept as-is: a single-file case uses a sibling `.wit.json`/`.wit.result`,
+a multi-file case a directory.
 
 ### Phase 1c: Port Remaining Tests ✅ COMPLETE
 
