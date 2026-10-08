@@ -76,6 +76,12 @@ export final class BinaryEmitter implements WasmEmitter {
   #removableLocals = new Array<i32>();
   var #graduatedLocals: Array<boolean> | null = null;
   functionsList = new Array<WasmFunction>();
+  // Struct type names for the name section's type subsection, recorded
+  // as the type section is written. A heap profiler (V8's snapshots)
+  // labels wasm GC objects by their type's name, or by a bare index
+  // without one.
+  #typeNameIndices = new Array<i32>();
+  #typeNames = new Array<String>();
   /**
    * Emit the `name` custom section. Debug metadata only, and by far the
    * largest section of a small module — so it is opt-in (`-g`) rather
@@ -146,6 +152,10 @@ export final class BinaryEmitter implements WasmEmitter {
       isFinal: boolean): void {
     if (this.currentSection == null) {
       return;
+    }
+    if (this.debugNames && name != null) {
+      this.#typeNameIndices.push(index);
+      this.#typeNames.push(name);
     }
     // 0x4F is `sub final`, 0x50 the open `sub`. Final is the default
     // here because almost every struct is a leaf, and it is what keeps
@@ -497,6 +507,23 @@ export final class BinaryEmitter implements WasmEmitter {
       payload.writeByte(1); // subsection id for function names
       payload.writeULEB128(subPayload.length);
       payload.writeBuffer(subPayload);
+
+      // Subsection 4: type names. Subsections go in ascending id order.
+      if (this.#typeNames.length > 0) {
+        let typePayload = new ByteBuffer();
+        typePayload.writeULEB128(this.#typeNames.length);
+        for (var t = 0; t < this.#typeNames.length; t += 1) {
+          typePayload.writeULEB128(this.#typeNameIndices[t]);
+          let typeName = this.#typeNames[t];
+          typePayload.writeULEB128(typeName.length);
+          for (var i = 0; i < typeName.length; i += 1) {
+            typePayload.writeByte(typeName.getByteAt(i));
+          }
+        }
+        payload.writeByte(4);
+        payload.writeULEB128(typePayload.length);
+        payload.writeBuffer(typePayload);
+      }
 
       this.writeSection(0, payload); // section id 0 for custom sections
     }
