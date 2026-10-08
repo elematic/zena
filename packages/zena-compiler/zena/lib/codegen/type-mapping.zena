@@ -284,6 +284,14 @@ let substituteTypeParamsInCodegenInner = (
         }
 
         let inst = new ClassType(ct.id, ct.symbolId, ct.name);
+        // Registered before its supertypes and constructor are
+        // substituted: a class whose constructor or supertype mentions
+        // its own instantiation (`MapEntry<K, V>`'s `next` parameter)
+        // reaches this same entry on the way down and gets the object
+        // under construction back, as the checker's substitution frames
+        // do. Registering only once built made that recursion
+        // unbounded on any cyclic input.
+        icacheVal[instKey] = inst;
         inst.typeParameters = ctParams;
         inst.typeArguments = newArgs;
         inst.genericSource = ct.genericSource ?? ct;
@@ -359,10 +367,6 @@ let substituteTypeParamsInCodegenInner = (
           inst.onType = substituteTypeParamsInCodegenInner(wasm, combinedParams, combinedArgs, onType);
         }
         inst.sourcePath = ct.sourcePath;
-        // Register only after the instantiation is fully built: a
-        // half-built instance escaping into identity-keyed caches would
-        // memoize wrong context for every later user.
-        icacheVal[instKey] = inst;
         inst
       } else {
         ct
@@ -397,7 +401,21 @@ let substituteTypeParamsInCodegenInner = (
         if (!argsChanged && it.typeArguments != null) {
           return it;
         }
+        // One instantiation per (source, argument uids), registered
+        // before its extends list is substituted so that an interface
+        // whose extends list mentions it again (`Iterable<T>` through
+        // `Iterator<T>`) gets this one back rather than recursing
+        // without end.
+        var instKey = "";
+        for (let arg in newArgs) {
+          instKey = instKey + i32ToString(arg.uid) + ",";
+        }
+        let icacheVal = wasm.interfaceInstantiationsFor(it);
+        if (let (true, hit) = icacheVal.get(instKey)) {
+          return hit;
+        }
         let inst = new InterfaceType(it.id, it.symbolId, it.name);
+        icacheVal[instKey] = inst;
         inst.typeParameters = itParams;
         inst.typeArguments = newArgs;
         inst.genericSource = it.genericSource ?? it;
