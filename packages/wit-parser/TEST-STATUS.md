@@ -1,16 +1,17 @@
 # WIT Parser Test Status
 
-**Last Updated**: 2026-08-05
-**Summary**: 213/213 passing (100%)
+**Last Updated**: 2026-10-08
+**Summary**: green
 
-- 130/130 error tests (`parse-fail/*`)
-- 81/81 ported success tests (resolve + `.wit.json` compare)
-- 2/2 tests of our own, covering gaps the ported corpus missed
+- 138/138 error cases (`parse-fail/*`, which must fail to parse or resolve)
+- 78/78 ported success cases (resolve + `.wit.json` compare), one of which is a
+  component the check decodes with `wasm-tools` rather than WIT text
+- 34 lexer and parser tests, including the constructs the ported corpus missed
+- 6 component-encoder fixtures, validated and round-tripped through `wasm-tools`
 
-Run with `npm test -w @zena-lang/wit-parser` (~11s). Run it through npm, not
-`node scripts/run-tests.js` — the compiled runner goes stale against
-`src/scripts/run-tests.ts`, and a stale one fails every test on a stdlib path
-that no longer exists.
+Run with `npm test -w @zena-lang/wit-parser`. The tests are Zena tests under
+`zena/test/`, run by `zena-cli test`; `zena test --single <file>` prints one
+file's output, which is how to see the per-case counts.
 
 Per-test tables are not maintained here — the suite is green, so the runner's
 own output is the source of truth.
@@ -56,7 +57,7 @@ has no vendored deps and one `wit/` per proposal, so it exercises the
 topological package ordering rather than a `deps/` directory.
 
 Both are asserted by `npm test`, against a pinned copy of the real WIT
-(`test:real-wit` → `node dev/parse-real-wit.js --check`), with exact counts so
+(`test:real-wit` → `dev/parse-real-wit.zena --check`), with exact counts so
 they cannot regress silently. See the README for how the corpus is fetched; the
 check fails rather than skips when it is missing.
 

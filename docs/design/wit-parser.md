@@ -128,6 +128,12 @@ Since `zena:fs` only works in wasmtime (WASI), we need a runner that can:
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
+**What landed** differs in two ways. The tests live in `packages/wit-parser/`,
+not under the standard library, and nothing TypeScript is involved: `zena-cli
+test` compiles and runs `packages/wit-parser/zena/test/*_test.zena` the way it
+runs any other Zena test, so step 1 is the `zena` command and steps 2 to 4 are
+as drawn.
+
 ### 1.4 Wasmtime Test Runner CLI Command
 
 We need to extend the CLI to support running tests via wasmtime. This builds on
@@ -256,9 +262,10 @@ packages/wit-parser/zena/
 ├── token.zena              # Token types, Span           ✅ COMPLETE
 ├── lexer.zena              # Tokenizer class             ✅ COMPLETE
 ├── parser.zena             # Recursive descent parser    ✅ COMPLETE
-├── parser-test-harness.zena # WASM test harness          ✅ COMPLETE
 ├── resolver.zena           # Name resolution             ✅ COMPLETE (under testing/polish)
-└── ast-json.zena           # JSON serialization          ✅ COMPLETE (under testing/polish)
+├── ast-json.zena           # JSON serialization          ✅ COMPLETE (under testing/polish)
+├── wit.zena                # Public entry point          ✅ COMPLETE
+└── test/                   # The tests, in Zena          ✅ COMPLETE
 ```
 
 ### 4.2 Implementation Order
@@ -407,10 +414,12 @@ for full details.
 - [x] Validate the test format works end-to-end
 - [x] Adjust test format if needed before mass porting
 
-**Results**: TypeScript test runner in `packages/wit-parser/src/run-tests.ts`
-discovers tests recursively, validates file pairs, and reports results. Format
-kept as-is: single-file tests use sibling `.wit.json`/`.wit.result`, multi-file
-tests use directories.
+**Results**: the runner discovers tests recursively, validates file pairs, and
+reports results. Format kept as-is: single-file tests use sibling
+`.wit.json`/`.wit.result`, multi-file tests use directories. It started as a
+TypeScript program driving the parser through a Wasm harness; it is now a Zena
+test, `packages/wit-parser/zena/test/corpus_test.zena`, which calls the parser
+directly.
 
 ### Phase 1c: Port Remaining Tests ✅ COMPLETE
 

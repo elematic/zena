@@ -1,0 +1,495 @@
+/**
+ * The ported wasm-tools UI corpus: every `.wit` file under `tests/`, and
+ * every directory of them, checked against the expectation beside it.
+ *
+ * A `<name>.wit.json` says the document must parse and resolve, and that
+ * serializing the result must equal that JSON — the same shape
+ * `wasm-tools component wit --json` emits, which is where the goldens come
+ * from. A `<name>.wit.result` says it must fail; the message is not compared
+ * yet.
+ *
+ * A directory case is one package spread over several files, possibly with
+ * vendored dependencies under `deps/`. The parser takes a single string, so
+ * the files are concatenated: main files first, then deps, each group sorted
+ * by path. Two of them carry their dependencies as `.wat`/`.wasm` instead of
+ * WIT text, which `wasm-tools component wit` decodes.
+ *
+ * `tests/test-config.json` can hold out a case by name: `skip` means do not
+ * run it, `expectedFailures` means run it and require that it still fails.
+ */
+
+import { suite, test } from 'zena:test';
+import { fail, isTrue, jsonEqual } from 'zena:assert';
+import { HashSet } from 'zena:collections';
+import { StringBuilder } from 'zena:core';
+import { exists, isDirectory, listDir, readFile } from 'zena:fs';
+import { JsonArray, JsonObject, JsonValue, parseJson } from 'zena:json';
+import { runIn } from 'zena:process';
+import { regex } from 'zena:regex';
+import { Ast } from '../parser.zena';
+import { parse, toJson } from '../wit.zena';
+
+/** The corpus root, relative to the repository root. */
+let TESTS = 'packages/wit-parser/tests';
+
+/** One case: a `.wit` file, or a directory of them, and its expectation. */
+final class Case {
+  /** The path under `tests/`, which is the name `test-config.json` uses. */
+  name: String;
+  /** The `.wit` file, or the directory holding several. */
+  path: String;
+  /** The `.wit.json` or `.wit.result` beside it. */
+  expected: String;
+  /** Whether the expectation is a `.wit.json`, so the document must parse. */
+  mustParse: boolean;
+  isDirectory: boolean;
+
+  new(this.name, this.path, this.expected, this.mustParse, this.isDirectory);
+}
+
+/** Insertion sort, in place: directory listings are nearly sorted. */
+let sortStrings = (values: GrowableArray<String>): void => {
+  for (var i = 1; i < values.length; i += 1) {
+    let current = values[i];
+    var j = i - 1;
+    for (; j >= 0 && values[j].compareTo(current) > 0; j -= 1) {
+      values[j + 1] = values[j];
+    }
+    values[j + 1] = current;
+  }
+};
+
+/** The names in a directory, sorted. */
+let entryNames = (dir: String): GrowableArray<String> => {
+  let names = new GrowableArray<String>();
+  for (let entry in listDir(dir)) {
+    if (entry.name != '.' && entry.name != '..') {
+      names.push(entry.name);
+    }
+  }
+  sortStrings(names);
+  return names;
+};
+
+let join = (values: GrowableArray<String>, separator: String): String => {
+  let out = new StringBuilder();
+  for (var i = 0; i < values.length; i += 1) {
+    if (i > 0) {
+      out.append(separator);
+    }
+    out.append(values[i]);
+  }
+  return out.toString();
+};
+
+/** Collects the cases under `dir`, with `prefix` their path under `tests/`. */
+let discover = (dir: String, prefix: String, out: GrowableArray<Case>): void => {
+  for (let name in entryNames(dir)) {
+    let path = `${dir}/${name}`;
+    let relative = if (prefix == '') { name } else { `${prefix}/${name}` };
+    if (isDirectory(path)) {
+      // A directory is a case when its expectation sits beside it rather
+      // than inside it; otherwise it just holds more cases.
+      if (exists(`${path}.wit.json`)) {
+        out.push(new Case(relative, path, `${path}.wit.json`, true, true));
+      } else if (exists(`${path}.wit.result`)) {
+        out.push(new Case(relative, path, `${path}.wit.result`, false, true));
+      } else {
+        discover(path, relative, out);
+      }
+      continue;
+    }
+    // A case's input is WIT text, or a component carrying WIT that
+    // `wasm-tools` decodes; the expectation is named after the input either
+    // way.
+    let base = if (name.endsWith('.wit')) {
+      path.sliceBytes(0, path.length - 4)
+    } else if (name.endsWith('.wat')) {
+      path.sliceBytes(0, path.length - 4)
+    } else if (name.endsWith('.wasm')) {
+      path.sliceBytes(0, path.length - 5)
+    } else {
+      ''
+    };
+    if (base == '') {
+      continue;
+    }
+    if (exists(`${base}.wit.json`)) {
+      out.push(new Case(relative, path, `${base}.wit.json`, true, false));
+    } else if (exists(`${base}.wit.result`)) {
+      out.push(new Case(relative, path, `${base}.wit.result`, false, false));
+    }
+  }
+};
+
+/** Collects a directory case's files, splitting out the vendored deps. */
+let collectFiles = (
+  dir: String,
+  isDep: boolean,
+  main: GrowableArray<String>,
+  deps: GrowableArray<String>,
+): void => {
+  for (let name in entryNames(dir)) {
+    let path = `${dir}/${name}`;
+    if (isDirectory(path)) {
+      collectFiles(path, isDep || name == 'deps', main, deps);
+    } else if (name.endsWith('.wit') || name.endsWith('.wat') || name.endsWith('.wasm')) {
+      if (isDep) {
+        deps.push(path);
+      } else {
+        main.push(path);
+      }
+    }
+  }
+};
+
+/**
+ * `package ns:name;` at the start of a line: a file-level declaration.
+ *
+ * The hyphen in the version class is escaped because `zena:regex` reads the
+ * `+-]` in `[\w.+-]` as the range `+` through `]`, eats the closing bracket
+ * and throws "Unclosed character class" — https://github.com/elematic/zena/issues/206.
+ */
+let PACKAGE_DECL = regex`^\s*package\s+([\w-]+):([\w-]+)(@[\w.+\-]+)?\s*;`;
+
+/** `use x as y;` at the top level, which names `y` in that file alone. */
+let USE_ALIAS = regex`^\s*use\s+[\w-]+(?::[\w-]+/[\w-]+)?\s+as\s+([\w-]+)\s*;`;
+
+/** `use y;` at the top level, which refers to a name. */
+let USE_NAME = regex`^\s*use\s+([\w-]+)\s*;`;
+
+/** An interface or world declaration, whose name is visible package-wide. */
+let DEFINITION = regex`^\s*(?:interface|world)\s+([\w-]+)\s*\{`;
+
+/** An item, which may not sit between two file-level package declarations. */
+let ITEM_KEYWORD = regex`\b(interface|world|use)\b`;
+
+/** The `ns:name` a file declares, or '' when it declares no package. */
+let declaredPackage = (source: String): String => {
+  let found = PACKAGE_DECL.exec(source);
+  if (found == null) {
+    return '';
+  }
+  return `${found.groups[0]}:${found.groups[1]}`;
+};
+
+/** A directory case's main files, sorted: everything not under `deps/`. */
+let mainFiles = (dir: String): GrowableArray<String> => {
+  let main = new GrowableArray<String>();
+  let deps = new GrowableArray<String>();
+  collectFiles(dir, false, main, deps);
+  sortStrings(main);
+  return main;
+};
+
+/**
+ * The fault a directory case's files have between them, or '' when they
+ * agree.
+ *
+ * Two faults in the corpus are properties of a file rather than of a
+ * document, so the harness has to find them: the parser takes one string,
+ * and by the time it runs the files have been concatenated and their
+ * boundaries are gone. Upstream parses each file on its own and merges by
+ * package name, so it sees both.
+ */
+let fileLevelFault = (dir: String): String => {
+  let paths = mainFiles(dir);
+  if (paths.length < 2) {
+    return '';
+  }
+  let sources = new GrowableArray<String>();
+  for (let path in paths) {
+    sources.push(readFile(path));
+  }
+
+  // Every file of one package declares the same package, or none.
+  var declared = '';
+  for (let source in sources) {
+    let name = declaredPackage(source);
+    if (name == '') {
+      continue;
+    }
+    if (declared == '') {
+      declared = name;
+    } else if (name != declared) {
+      return `package identifier \`${name}\` does not match previous package name of \`${declared}\``;
+    }
+  }
+
+  // `use x as y;` names `y` in the file that wrote it, so a sibling file
+  // referring to `y` is referring to nothing — unless an interface or world
+  // of that name exists, which is visible across the package.
+  let definitions = new HashSet<String>();
+  for (let source in sources) {
+    for (let found in DEFINITION.matchAll(source)) {
+      definitions.add(found.groups[0]);
+    }
+  }
+  for (var i = 0; i < sources.length; i += 1) {
+    for (let used in USE_NAME.matchAll(sources[i])) {
+      let name = used.groups[0];
+      if (definitions.has(name)) {
+        continue;
+      }
+      for (var j = 0; j < sources.length; j += 1) {
+        if (j == i) {
+          continue;
+        }
+        for (let alias in USE_ALIAS.matchAll(sources[j])) {
+          if (alias.groups[0] == name) {
+            return `interface or world \`${name}\` does not exist`;
+          }
+        }
+      }
+    }
+  }
+  return '';
+};
+
+/**
+ * Whether a file declares a package twice at file level with an item in
+ * between. WIT requires the second to be written `package ns:name { ... }`,
+ * and the parser accepts the concatenated form because that is how a
+ * directory case's files reach it.
+ */
+let declaresPackageTwice = (source: String): boolean => {
+  let declarations = PACKAGE_DECL.matchAll(source);
+  if (declarations.length < 2) {
+    return false;
+  }
+  let first = declarations[0];
+  let between = source.sliceBytes(
+    first.index + first.value.length,
+    declarations[1].index,
+  );
+  return ITEM_KEYWORD.test(between);
+};
+
+/** Whether a path holds a component rather than WIT text. */
+let isBinary = (path: String): boolean =>
+  path.endsWith('.wat') || path.endsWith('.wasm');
+
+/** The WIT a component decodes to, through the wasm-tools CLI. */
+let decodeBinary = (path: String): String => {
+  // The child runs on the host; '.' as its directory is the repository root,
+  // which is what the paths here are relative to.
+  let result = runIn(['wasm-tools', 'component', 'wit', path], '.');
+  if (!result.succeeded()) {
+    throw new Error(
+      `wasm-tools component wit failed on ${path}: ${result.stderr}`,
+    );
+  }
+  return result.stdout;
+};
+
+/** The single document a case parses: its files, in order, concatenated. */
+let inputOf = (c: Case): String => {
+  if (!c.isDirectory) {
+    if (isBinary(c.path)) {
+      return decodeBinary(c.path);
+    }
+    return readFile(c.path);
+  }
+  let main = new GrowableArray<String>();
+  let deps = new GrowableArray<String>();
+  collectFiles(c.path, false, main, deps);
+  sortStrings(main);
+  sortStrings(deps);
+  let ordered = new GrowableArray<String>();
+  for (let path in main) {
+    ordered.push(path);
+  }
+  for (let path in deps) {
+    ordered.push(path);
+  }
+  if (ordered.length == 0) {
+    throw new Error(`no .wit files in ${c.path}`);
+  }
+  let contents = new GrowableArray<String>();
+  for (let path in ordered) {
+    if (isBinary(path)) {
+      contents.push(decodeBinary(path));
+    } else {
+      contents.push(readFile(path));
+    }
+  }
+  return join(contents, '\n');
+};
+
+/**
+ * The order the golden lists packages in, as `a,b,c`, or null when it lists
+ * none. A concatenated multi-package document has no inherent order, so the
+ * serializer is told which one to emit.
+ */
+let packageOrder = (expected: JsonValue): String | null => {
+  if (!(expected is JsonObject)) {
+    return null;
+  }
+  let packages = expected['packages'];
+  if (!(packages is JsonArray)) {
+    return null;
+  }
+  let names = new GrowableArray<String>();
+  for (var i = 0; i < packages.length; i += 1) {
+    let entry = packages[i];
+    if (entry is JsonObject) {
+      let name = entry['name'];
+      if (name is String) {
+        names.push(name);
+      }
+    }
+  }
+  if (names.length == 0) {
+    return null;
+  }
+  return join(names, ',');
+};
+
+/** Parses a case's document, or fails the test naming what went wrong. */
+let parseOrFail = (c: Case, input: String): Ast => try {
+  parse(input)
+} catch (e) {
+  fail(`${c.name} no longer parses: ${e.message}`)
+};
+
+/** The message a case fails with, or '' when it parses and resolves. */
+let failureOf = (input: String): String => try {
+  parse(input);
+  ''
+} catch (e) {
+  e.message
+};
+
+/** The fault the harness itself finds, or '' when it finds none. */
+let harnessFault = (c: Case): String => {
+  if (c.isDirectory) {
+    return fileLevelFault(c.path);
+  }
+  if (!isBinary(c.path) && declaresPackageTwice(readFile(c.path))) {
+    return "expected '{', found ';'";
+  }
+  return '';
+};
+
+let runCase = (c: Case): void => {
+  let fault = harnessFault(c);
+  if (fault != '') {
+    isTrue(!c.mustParse, `${c.name}: ${fault}`);
+    return;
+  }
+  let input = inputOf(c);
+  if (!c.mustParse) {
+    isTrue(failureOf(input) != '', `${c.name} parsed, but must fail`);
+    return;
+  }
+  let expected = parseJson(readFile(c.expected), {
+    allowComments: false,
+    trackLocations: true,
+  });
+  let actual = parseJson(toJson(parseOrFail(c, input), packageOrder(expected)));
+  jsonEqual(actual, expected, `${c.name} serialized differently`);
+};
+
+/** The names `test-config.json` lists under `key`. */
+let namesFrom = (config: JsonValue, key: String): HashSet<String> => {
+  let names = new HashSet<String>();
+  if (!(config is JsonObject)) {
+    return names;
+  }
+  let section = config[key];
+  if (!(section is JsonObject)) {
+    return names;
+  }
+  let tests = section['tests'];
+  if (!(tests is JsonArray)) {
+    return names;
+  }
+  for (var i = 0; i < tests.length; i += 1) {
+    let name = tests[i];
+    if (name is String) {
+      names.add(name);
+    }
+  }
+  return names;
+};
+
+/** The corpus, and what `test-config.json` holds out of it. */
+final class Corpus {
+  cases: GrowableArray<Case>;
+  skip: HashSet<String>;
+  expectedFailures: HashSet<String>;
+
+  new(this.cases, this.skip, this.expectedFailures);
+}
+
+/**
+ * Reads the corpus from disk. A test calls this rather than the suite body:
+ * the body runs while the module is still starting, and a blocking host call
+ * there traps with "cannot block a synchronous task before returning".
+ */
+let readCorpus = (): Corpus => {
+  let config = parseJson(readFile(`${TESTS}/test-config.json`), {
+    allowComments: true,
+    trackLocations: false,
+  });
+  let cases = new GrowableArray<Case>();
+  discover(TESTS, '', cases);
+  return new Corpus(
+    cases,
+    namesFrom(config, 'skip'),
+    namesFrom(config, 'expectedFailures'),
+  );
+};
+
+/**
+ * Runs every case whose expectation is a `.wit.json` when `mustParse`, and
+ * every `.wit.result` case otherwise, printing a line per failure.
+ */
+let runGroup = (mustParse: boolean, label: String): void => {
+  let corpus = readCorpus();
+  var ran = 0;
+  var skipped = 0;
+  let failures = new GrowableArray<String>();
+  for (let c in corpus.cases) {
+    if (c.mustParse != mustParse) {
+      continue;
+    }
+    if (corpus.skip.has(c.name)) {
+      skipped += 1;
+      continue;
+    }
+    ran += 1;
+    let message = try {
+      runCase(c);
+      ''
+    } catch (e) {
+      e.message
+    };
+    // An expected failure is asserted rather than tolerated: a case that
+    // starts passing has to come off the list, or nothing ever would.
+    if (corpus.expectedFailures.has(c.name)) {
+      if (message == '') {
+        failures.push(
+          `${c.name}: passes now — remove it from expectedFailures in test-config.json`,
+        );
+      }
+    } else if (message != '') {
+      failures.push(`${c.name}: ${message}`);
+    }
+  }
+  console.log(`${label}: ${ran} ran, ${skipped} skipped, ${failures.length} failed`);
+  for (let line in failures) {
+    console.log(`  ${line}`);
+  }
+  isTrue(failures.length == 0, `${failures.length} of ${ran} ${label} failed`);
+};
+
+export let tests = suite('WIT corpus', (): void => {
+  test('documents that must parse', () => {
+    runGroup(true, 'success cases');
+  });
+
+  test('documents that must fail', () => {
+    runGroup(false, 'error cases');
+  });
+});

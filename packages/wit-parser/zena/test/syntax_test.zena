@@ -1,0 +1,456 @@
+/**
+ * The WIT lexer and parser, called directly.
+ *
+ * These used to run under `node --test`, which cannot call Zena: each case
+ * compiled `lexer-test-harness.zena` or `parser-test-harness.zena` through
+ * the compiler-as-a-library (`api.wasm`), instantiated it, pushed the source
+ * in one byte at a time through an `input` import and read a formatted
+ * summary back out one byte at a time. The assertions were then regular
+ * expressions over that summary. Here a test calls `Lexer` and `wit.zena`
+ * and looks at the AST.
+ */
+
+import { suite, test } from 'zena:test';
+import { equal, fail, isNotNull, isTrue } from 'zena:assert';
+import { glob, readFile } from 'zena:fs';
+import { Lexer } from '../lexer.zena';
+import { TokenType } from '../token.zena';
+import { Ast, InterfaceDef, PackageName, WorldDef } from '../parser.zena';
+import { parse, parseSyntax } from '../wit.zena';
+
+/** The corpus the lexer is swept over, relative to the repository root. */
+let CORPUS = 'packages/wit-parser/tests/**/*.wit';
+
+/** The header a one-construct probe document needs to be a WIT file at all. */
+let PROBE = 'package test:probe;\n';
+
+/** The number of tokens in `source`, end of input aside. */
+let tokenCount = (source: String): i32 => {
+  let lexer = new Lexer(source);
+  var count = 0;
+  var token = lexer.next();
+  while (token.type != TokenType.Eof) {
+    count += 1;
+    token = lexer.next();
+  }
+  return count;
+};
+
+/** The type of the first token; trivia is skipped. */
+let firstTokenType = (source: String): TokenType => new Lexer(source).next().type;
+
+/** The source text of the first token. */
+let firstTokenText = (source: String): String => {
+  let lexer = new Lexer(source);
+  return lexer.getSpanText(lexer.next().span);
+};
+
+/** The interface `name`, or null if the document declares no such thing. */
+let interfaceNamed = (ast: Ast, name: String): InterfaceDef | null => {
+  for (let item in ast.items) {
+    let def = item.interfaceDef;
+    if (def != null && (def as InterfaceDef).name.name == name) {
+      return def;
+    }
+  }
+  return null;
+};
+
+/** The world `name`, or null if the document declares no such thing. */
+let worldNamed = (ast: Ast, name: String): WorldDef | null => {
+  for (let item in ast.items) {
+    let def = item.worldDef;
+    if (def != null && (def as WorldDef).name.name == name) {
+      return def;
+    }
+  }
+  return null;
+};
+
+/** The package a document declares, as `ns:name` or `ns:name@version`. */
+let packageOf = (ast: Ast): String => {
+  let pkg = ast.packageName;
+  if (pkg == null) {
+    return '';
+  }
+  let name = pkg as PackageName;
+  let base = `${name.namespace.name}:${name.name.name}`;
+  let version = name.version;
+  if (version == null) {
+    return base;
+  }
+  return `${base}@${version as String}`;
+};
+
+/** The number of top-level items, or -1 when the source does not parse. */
+let itemCount = (source: String): i32 => try {
+  parseSyntax(source).items.length
+} catch (e) {
+  0 - 1
+};
+
+/**
+ * The message `parse` fails with, or '' when the document parses and
+ * resolves. Both a syntax fault (`ParseError`) and a name fault
+ * (`ResolveError`) arrive as a throw; a test that cares which asserts on
+ * the message.
+ */
+let parseFailure = (source: String): String => try {
+  parse(source);
+  ''
+} catch (e) {
+  e.message
+};
+
+/** Asserts that a construct parses, naming it when it does not. */
+let parses = (label: String, source: String): void => {
+  let message = try {
+    parseSyntax(source);
+    ''
+  } catch (e) {
+    e.message
+  };
+  isTrue(message == '', `${label}: ${message}`);
+};
+
+export let tests = suite('WIT syntax', (): void => {
+  test('tokenizes empty input', () => {
+    equal(tokenCount(''), 0);
+  });
+
+  test('tokenizes punctuation', () => {
+    equal(firstTokenType('='), TokenType.Equals);
+    equal(firstTokenType(':'), TokenType.Colon);
+    equal(firstTokenType('->'), TokenType.RArrow);
+  });
+
+  test('tokenizes a keyword', () => {
+    equal(firstTokenType('func'), TokenType.Func);
+  });
+
+  test('tokenizes an identifier', () => {
+    equal(firstTokenType('my-func'), TokenType.Id);
+  });
+
+  test('tokenizes an explicit identifier', () => {
+    equal(firstTokenType('%bool'), TokenType.ExplicitId);
+  });
+
+  test('tokenizes integers', () => {
+    equal(firstTokenType('42'), TokenType.Integer);
+    equal(firstTokenType('0xDEAD'), TokenType.Integer);
+  });
+
+  test('skips comments', () => {
+    equal(firstTokenType('// comment\nfunc'), TokenType.Func);
+    equal(firstTokenType('/* comment */func'), TokenType.Func);
+  });
+
+  test('counts tokens', () => {
+    // func, foo, :, i32, ->, string
+    equal(tokenCount('func foo: i32 -> string'), 6);
+    // interface, greeter, {, greet, :, func, (, name, :, string, ), ->,
+    // string, ;, }
+    equal(
+      tokenCount('interface greeter { greet: func(name: string) -> string; }'),
+      15,
+    );
+    // result, <, _, ,, error, > — `_` is the wildcard in `result<_, error>`
+    equal(tokenCount('result<_, error>'), 6);
+  });
+
+  test('reports the text of a token', () => {
+    equal(firstTokenText('hello-world'), 'hello-world');
+  });
+
+  test('lexes every file in the corpus', () => {
+    let files = glob(CORPUS);
+    // A floor rather than an exact count: the corpus is synced from
+    // wasm-tools and grows. Zero would mean the glob stopped matching, which
+    // otherwise reads as a pass.
+    isTrue(files.length > 200, `only ${files.length} .wit files matched ${CORPUS}`);
+    for (let file in files) {
+      try {
+        tokenCount(readFile(file));
+      } catch (e) {
+        fail(`${file}: ${e.message}`);
+      }
+    }
+  });
+
+  test('parses empty input', () => {
+    equal(itemCount(''), 0);
+  });
+
+  test('parses an empty interface', () => {
+    let ast = parseSyntax('package foo:test; interface empty {}');
+    equal(ast.items.length, 1);
+    isNotNull(interfaceNamed(ast, 'empty'));
+  });
+
+  test('parses an interface with a function', () => {
+    let ast = parse(`
+      package foo:test;
+      interface greet {
+        hello: func(name: string) -> string;
+      }
+    `);
+    let greet = interfaceNamed(ast, 'greet');
+    isNotNull(greet);
+    equal((greet as InterfaceDef).items.length, 1);
+  });
+
+  test('parses a package declaration with a version', () => {
+    let ast = parse(`
+      package wasi:cli@0.2.0;
+
+      interface terminal {
+        print: func(msg: string);
+      }
+    `);
+    equal(packageOf(ast), 'wasi:cli@0.2.0');
+    isNotNull(interfaceNamed(ast, 'terminal'));
+  });
+
+  test('parses a world with imports and exports', () => {
+    let ast = parse(`
+      package foo:test;
+      interface printer {}
+      world example {
+        import printer;
+        export run: func();
+      }
+    `);
+    let example = worldNamed(ast, 'example');
+    isNotNull(example);
+    equal((example as WorldDef).items.length, 2);
+  });
+
+  test('parses a record', () => {
+    let ast = parse(`
+      package foo:test;
+      interface types {
+        record point {
+          x: s32,
+          y: s32,
+        }
+      }
+    `);
+    isNotNull(interfaceNamed(ast, 'types'));
+  });
+
+  test('parses a variant', () => {
+    let ast = parse(`
+      package foo:test;
+      interface result-types {
+        variant my-result {
+          ok(string),
+          err(u32),
+        }
+      }
+    `);
+    isNotNull(interfaceNamed(ast, 'result-types'));
+  });
+
+  test('parses an enum', () => {
+    let ast = parse(`
+      package foo:test;
+      interface colors {
+        enum color {
+          red,
+          green,
+          blue,
+        }
+      }
+    `);
+    isNotNull(interfaceNamed(ast, 'colors'));
+  });
+
+  test('parses flags', () => {
+    let ast = parse(`
+      package foo:test;
+      interface perms {
+        flags permission {
+          read,
+          write,
+          execute,
+        }
+      }
+    `);
+    isNotNull(interfaceNamed(ast, 'perms'));
+  });
+
+  test('parses type aliases', () => {
+    let ast = parse(`
+      package foo:test;
+      interface aliases {
+        type my-string = string;
+        type my-list = list<u8>;
+      }
+    `);
+    let aliases = interfaceNamed(ast, 'aliases');
+    isNotNull(aliases);
+    equal((aliases as InterfaceDef).items.length, 2);
+  });
+
+  test('parses a resource', () => {
+    let ast = parse(`
+      package foo:test;
+      interface files {
+        resource file {
+          constructor(path: string);
+          read: func(len: u64) -> list<u8>;
+          write: func(data: list<u8>);
+        }
+      }
+    `);
+    isNotNull(interfaceNamed(ast, 'files'));
+  });
+
+  test('parses a use inside an interface', () => {
+    let ast = parse(`
+      package foo:test;
+      interface types {
+        record point { x: s32, y: s32 }
+        record size { w: u32, h: u32 }
+      }
+      interface consumer {
+        use types.{point, size};
+      }
+    `);
+    isNotNull(interfaceNamed(ast, 'consumer'));
+  });
+
+  test('parses tuples', () => {
+    let ast = parse(`
+      package foo:test;
+      interface tuples {
+        type pair = tuple<u32, u32>;
+        get-pair: func() -> tuple<string, u64>;
+      }
+    `);
+    isNotNull(interfaceNamed(ast, 'tuples'));
+  });
+
+  test('parses results', () => {
+    let ast = parse(`
+      package foo:test;
+      interface results {
+        get-value: func() -> result<string, u32>;
+        try-get: func() -> result<string>;
+        no-error: func() -> result;
+      }
+    `);
+    isNotNull(interfaceNamed(ast, 'results'));
+  });
+
+  test('parses options', () => {
+    let ast = parse(`
+      package foo:test;
+      interface options {
+        find: func(key: string) -> option<string>;
+      }
+    `);
+    isNotNull(interfaceNamed(ast, 'options'));
+  });
+
+  test('parses multiple interfaces', () => {
+    equal(
+      itemCount(`
+        package foo:test;
+        interface one {}
+        interface two {}
+        interface three {}
+      `),
+      3,
+    );
+  });
+
+  test('parses an async function', () => {
+    let ast = parse(`
+      package foo:test;
+      interface async-example {
+        do-work: async func() -> string;
+      }
+    `);
+    isNotNull(interfaceNamed(ast, 'async-example'));
+  });
+
+  test('reports a fault in invalid input', () => {
+    isTrue(parseFailure('not valid wit') != '');
+  });
+
+  // https://github.com/elematic/zena/issues/158: a keyword where a name
+  // belongs used to be "expected identifier", which named neither the
+  // keyword nor the one-character fix.
+  test('names the keyword found where an identifier belongs', () => {
+    let message = parseFailure(`
+      package foo:test;
+      world app {
+        export greet: func(world: string) -> string;
+      }
+    `);
+    isTrue(
+      message.contains('expected an identifier or string, found keyword `world`'),
+      message,
+    );
+    isTrue(message.contains('write `%world` to use a keyword as a name'), message);
+  });
+
+  test('accepts a keyword escaped with % as a parameter name', () => {
+    let ast = parse(`
+      package foo:test;
+      world app {
+        export greet: func(%world: string) -> string;
+      }
+    `);
+    isNotNull(worldNamed(ast, 'app'));
+  });
+
+  // The three constructs below are the ones every shipping WASI package uses
+  // and the ported wasm-tools corpus never exercises. They are asserted on
+  // their own, as minimal documents, so a failure names the construct rather
+  // than a WASI tree that happens to contain it. See
+  // docs/design/component-model.md, Part 9.
+  test('parses a version with prerelease or build metadata in a use path', () => {
+    parses('plain semver', `${PROBE} interface i { use foo:bar/baz@1.0.0.{a}; }`);
+    parses('prerelease', `${PROBE} interface i { use foo:bar/baz@1.0.0-alpha.{a}; }`);
+    parses('hyphenated prerelease', `${PROBE} interface i { use foo:bar/baz@1.0.0-rc-1.{a}; }`);
+    parses('dotted prerelease', `${PROBE} interface i { use foo:bar/baz@1.0.0-rc.1.{a}; }`);
+    // Every package in WASI 0.3's release candidate carries this version.
+    parses('dated prerelease', `${PROBE} interface i { use foo:bar/baz@0.3.0-rc-2025-09-16.{a}; }`);
+    parses('build metadata', `${PROBE} interface i { use foo:bar/baz@1.0.0+build.{a}; }`);
+  });
+
+  test('parses a dated prerelease version in a declaration and an attribute', () => {
+    parses(
+      'package declaration',
+      'package wasi:http@0.3.0-rc-2025-09-16;\ninterface i { }',
+    );
+    parses(
+      '@since',
+      `${PROBE} @since(version = 0.3.0-rc-2025-09-16)\ninterface i { }`,
+    );
+  });
+
+  test('parses a versioned interface path in a world', () => {
+    parses('import', `${PROBE} world w { import wasi:clocks/monotonic-clock@0.2.8; }`);
+    parses('export', `${PROBE} world w { export wasi:http/incoming-handler@0.2.8; }`);
+    parses('include', `${PROBE} world w { include wasi:http/imports@0.2.8; }`);
+  });
+
+  test('parses a comment inside a parameter list', () => {
+    parses(
+      'doc comment',
+      `${PROBE} interface i {\n  f: func(\n    /// how many\n    len: u64\n  ) -> u32;\n}`,
+    );
+    parses(
+      'line comment',
+      `${PROBE} interface i {\n  f: func(\n    // how many\n    len: u64\n  ) -> u32;\n}`,
+    );
+    parses(
+      'doc comment in a record',
+      `${PROBE} interface i {\n  record r {\n    /// a field\n    a: u64,\n  }\n}`,
+    );
+  });
+});

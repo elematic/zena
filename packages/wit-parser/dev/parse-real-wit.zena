@@ -1,0 +1,551 @@
+/**
+ * Run the Zena WIT parser over real-world WIT, outside the ported wasm-tools
+ * UI corpus.
+ *
+ * The UI corpus is synthetic and does not exercise several combinations that
+ * every shipping WASI package uses, so passing it is not evidence that we can
+ * parse `wasi:http`. This program closes that gap.
+ *
+ *     zena-cli run --dir . --dir / packages/wit-parser/dev/parse-real-wit.zena --check
+ *     zena-cli run --dir . --dir / ... parse-real-wit.zena <wit-dir>...
+ *     zena-cli run --dir . --dir / ... parse-real-wit.zena --files <wit-dir>
+ *
+ * `--check` is what `npm test` runs: it asserts the pinned corpus, which
+ * arrives either from `nix develop` (ZENA_WASI_WIT) or from
+ * `node dev/fetch-wit-corpus.js`. The other modes take explicit directories,
+ * so they work on any WIT, pinned or not. Minimal repros of the constructs
+ * that used to fail are tests, in `zena/test/syntax_test.zena`.
+ *
+ * It needs `/` preopened because the Nix corpus is a store path, outside the
+ * repository; a `zena test` test gets only the repository, the standard
+ * library and a scratch directory.
+ */
+
+import { getArguments, getEnv } from 'zena:cli';
+import { StringBuilder } from 'zena:core';
+import { isDirectory, listDir, readFile, readFileBytes } from 'zena:fs';
+import { JsonArray, JsonObject, JsonValue, parseJson } from 'zena:json';
+import { regex } from 'zena:regex';
+import { sha256Hex, sha256HexOfString } from 'zb:sha256';
+import { parse, parseSyntax, toJson } from '../zena/wit.zena';
+
+/** Paths relative to the repository root, which is this program's `.`. */
+let MANIFEST = 'packages/wit-parser/wit-corpus.json';
+let LOCAL_CORPUS = 'packages/wit-parser/.wit-corpus';
+
+/** `package ns:name;` — the file-level declaration a WIT file may carry. */
+let PKG_HEADER = regex`^\s*package\s+[\w-]+:[\w-]+(@[\w.+\-]+)?\s*;`;
+
+/** The same, capturing `ns:name`: the package a directory declares. */
+let PKG_DECL = regex`^\s*package\s+([\w-]+:[\w-]+)(?:@[\w.+\-]+)?\s*;`;
+
+/** `ns:name/iface` inside a path — a reference to another package. */
+let PKG_REF = regex`\b([a-z0-9][\w-]*:[\w-]+)(?:@[\w.+\-]+)?/`;
+
+/** Only these lines carry real references; doc comments mention packages too. */
+let REF_LINE = regex`^\s*(?:use|import|export|include)\b`;
+
+let MISSING_CORPUS = `The real-world WIT corpus is not present.
+
+It is third-party WIT with its own license, so it is not checked in. Get it
+with either:
+
+  nix develop                     (exports ZENA_WASI_WIT; no download needed)
+  node dev/fetch-wit-corpus.js    (downloads to .wit-corpus/, needs network)
+
+Both are pinned by packages/wit-parser/wit-corpus.json.`;
+
+/** Where the corpus is, and how it was found. */
+final class Corpus {
+  dir: String;
+  source: String;
+
+  new(this.dir, this.source);
+}
+
+/** What one pinned tree must resolve to. */
+final class Expectation {
+  label: String;
+  /** The tree, as `<source>/<subdir>` under the corpus root. */
+  dir: String;
+  packages: i32;
+  interfaces: i32;
+  worlds: i32;
+
+  new(this.label, this.dir, this.packages, this.interfaces, this.worlds);
+}
+
+/**
+ * The trees the check asserts, with exact counts so a regression cannot hide.
+ * The pins are fixed commits, so the counts do not drift.
+ */
+let expectations = (): GrowableArray<Expectation> => {
+  let wanted = new GrowableArray<Expectation>();
+  wanted.push(new Expectation('wasi 0.2 (wasi:http@0.2.8)', 'wasi-http/wit', 7, 31, 9));
+  wanted.push(
+    new Expectation('wasi 0.3.0-rc-2025-09-16 draft', 'wasi-http/wit-0.3.0-draft', 6, 25, 8),
+  );
+  // Released 0.3, and a different shape: one wit/ per proposal, no vendored
+  // deps, so this leans on the topological package ordering.
+  wanted.push(new Expectation('wasi 0.3.0 (released)', 'wasi/proposals', 6, 25, 8));
+  return wanted;
+};
+
+/** Insertion sort, in place. */
+let sortStrings = (values: GrowableArray<String>): void => {
+  for (var i = 1; i < values.length; i += 1) {
+    let current = values[i];
+    var j = i - 1;
+    for (; j >= 0 && values[j].compareTo(current) > 0; j -= 1) {
+      values[j + 1] = values[j];
+    }
+    values[j + 1] = current;
+  }
+};
+
+/** The names in a directory, sorted. */
+let entryNames = (dir: String): GrowableArray<String> => {
+  let names = new GrowableArray<String>();
+  for (let entry in listDir(dir)) {
+    if (entry.name != '.' && entry.name != '..') {
+      names.push(entry.name);
+    }
+  }
+  sortStrings(names);
+  return names;
+};
+
+/** Every `.wit` file under `dir`, as paths relative to it, sorted. */
+let witFilesUnder = (dir: String, prefix: String, found: GrowableArray<String>): void => {
+  for (let name in entryNames(dir)) {
+    let relative = if (prefix == '') { name } else { `${prefix}/${name}` };
+    if (isDirectory(`${dir}/${name}`)) {
+      witFilesUnder(`${dir}/${name}`, relative, found);
+    } else if (name.endsWith('.wit')) {
+      found.push(relative);
+    }
+  }
+};
+
+/**
+ * A digest of a source's content, independent of how it was packaged.
+ *
+ * Hashing the tarball instead would be brittle: GitHub regenerates archives
+ * and the gzip framing changes even when no file does, which would fail the
+ * check for a corpus that is in fact correct. `dev/wit-corpus.js` computes the
+ * same digest, which is what `dev/fetch-wit-corpus.js` verifies on download.
+ */
+let contentDigest = (dir: String): String => {
+  let summary = new StringBuilder();
+  let files = new GrowableArray<String>();
+  witFilesUnder(dir, '', files);
+  sortStrings(files);
+  for (let relative in files) {
+    summary.append(`${relative} ${sha256Hex(readFileBytes(`${dir}/${relative}`))}\n`);
+  }
+  return `sha256:${sha256HexOfString(summary.toString())}`;
+};
+
+/** Where the corpus root is, or null. */
+let findCorpus = (): Corpus | null => {
+  let fromNix = getEnv('ZENA_WASI_WIT');
+  if (fromNix != null && fromNix != '' && isDirectory(fromNix as String)) {
+    return new Corpus(fromNix as String, 'ZENA_WASI_WIT (nix)');
+  }
+  if (isDirectory(LOCAL_CORPUS)) {
+    return new Corpus(LOCAL_CORPUS, '.wit-corpus');
+  }
+  return null;
+};
+
+/** The `sources` object of the pin manifest. */
+let manifestSources = (): JsonObject => {
+  let manifest = parseJson(readFile(MANIFEST));
+  if (!(manifest is JsonObject)) {
+    throw new Error(`${MANIFEST} is not an object`);
+  }
+  let sources = manifest['sources'];
+  if (!(sources is JsonObject)) {
+    throw new Error(`${MANIFEST} has no "sources" object`);
+  }
+  return sources;
+};
+
+/**
+ * Every pinned source present under `root` and matching its digest, as a list
+ * of problems; empty means good.
+ */
+let verifyCorpus = (root: String, sources: JsonObject): GrowableArray<String> => {
+  let problems = new GrowableArray<String>();
+  sources.forEach((name: String, source: JsonValue): void => {
+    let dir = `${root}/${name}`;
+    if (!isDirectory(dir)) {
+      problems.push(`source \`${name}\` is missing from the corpus`);
+      return;
+    }
+    var pinned: String | null = null;
+    if (source is JsonObject) {
+      let value = source['contentDigest'];
+      if (value is String) {
+        pinned = value;
+      }
+    }
+    if (pinned == null) {
+      problems.push(
+        `source \`${name}\` has no contentDigest in wit-corpus.json ` +
+          '(compute it with: node dev/fetch-wit-corpus.js --print-digest)',
+      );
+      return;
+    }
+    let digest = contentDigest(dir);
+    if (digest != (pinned as String)) {
+      problems.push(
+        `source \`${name}\` does not match its pin\n` +
+          `    expected ${pinned as String}\n` +
+          `    actual   ${digest}`,
+      );
+    }
+  });
+  return problems;
+};
+
+/** One directory's worth of WIT: its files, the package it declares, its refs. */
+final class Unit {
+  dir: String;
+  isDep: boolean;
+  var files = new GrowableArray<String>();
+  var sources = new GrowableArray<String>();
+  /** The package this directory declares, or '' if it declares none. */
+  var own: String = '';
+  refs = new GrowableArray<String>();
+  var done = false;
+  var onStack = false;
+
+  new(this.dir, this.isDep);
+}
+
+/**
+ * The directories under `root` that hold `.wit` files, each as a unit.
+ *
+ * Visiting entries in sorted order, files before subdirectories, puts the
+ * units in sorted order by path: every descendant of a directory starts with
+ * that directory's name and a separator.
+ */
+let collectUnits = (root: String, isDep: boolean, units: GrowableArray<Unit>): void => {
+  let names = entryNames(root);
+  var unit: Unit | null = null;
+  for (let name in names) {
+    if (!name.endsWith('.wit') || isDirectory(`${root}/${name}`)) {
+      continue;
+    }
+    if (unit == null) {
+      unit = new Unit(root, isDep);
+      units.push(unit as Unit);
+    }
+    (unit as Unit).files.push(`${root}/${name}`);
+  }
+  for (let name in names) {
+    if (isDirectory(`${root}/${name}`)) {
+      collectUnits(`${root}/${name}`, isDep || name == 'deps', units);
+    }
+  }
+};
+
+/**
+ * Reads a unit's files, putting the one that carries the `package ...;` header
+ * first.
+ *
+ * The parser takes a single string, so a package's header has to appear before
+ * that package's items. wasm-tools has no such constraint — it parses each
+ * file on its own and merges them by package name — and WASI depends on that:
+ * `wasi:sockets` declares its header only in `world.wit`, which sorts last, so
+ * plain alphabetical order puts seven interfaces ahead of their own package.
+ */
+let readUnit = (unit: Unit): void => {
+  let paths = new GrowableArray<String>();
+  let sources = new GrowableArray<String>();
+  for (let path in unit.files) {
+    paths.push(path);
+    sources.push(readFile(path));
+  }
+  let ordered = new GrowableArray<String>();
+  let orderedSources = new GrowableArray<String>();
+  for (var pass = 0; pass < 2; pass += 1) {
+    let wantHeader = pass == 0;
+    for (var i = 0; i < paths.length; i += 1) {
+      if (PKG_HEADER.test(sources[i]) == wantHeader) {
+        ordered.push(paths[i]);
+        orderedSources.push(sources[i]);
+      }
+    }
+  }
+  unit.files = ordered;
+  unit.sources = orderedSources;
+
+  let text = join(unit.sources, '\n');
+  let declared = PKG_DECL.exec(text);
+  if (declared != null) {
+    unit.own = declared.groups[0];
+  }
+  for (let line in text.split('\n')) {
+    if (!REF_LINE.test(line)) {
+      continue;
+    }
+    for (let reference in PKG_REF.matchAll(line)) {
+      let name = reference.groups[0];
+      if (name != unit.own && !contains(unit.refs, name)) {
+        unit.refs.push(name);
+      }
+    }
+  }
+};
+
+let contains = (values: GrowableArray<String>, value: String): boolean => {
+  for (let candidate in values) {
+    if (candidate == value) {
+      return true;
+    }
+  }
+  return false;
+};
+
+let join = (values: GrowableArray<String>, separator: String): String => {
+  let out = new StringBuilder();
+  for (var i = 0; i < values.length; i += 1) {
+    if (i > 0) {
+      out.append(separator);
+    }
+    out.append(values[i]);
+  }
+  return out.toString();
+};
+
+/** The unit declaring `name`, or null when nothing under the root does. */
+let providerOf = (units: GrowableArray<Unit>, name: String): Unit | null => {
+  for (let unit in units) {
+    if (unit.own != '' && unit.own == name) {
+      return unit;
+    }
+  }
+  return null;
+};
+
+/**
+ * Emits a unit after everything it references. A cycle among packages is left
+ * in discovery order rather than being an error — this is a diagnostic tool,
+ * and the parser should be the one to complain.
+ */
+let visit = (unit: Unit, units: GrowableArray<Unit>, ordered: GrowableArray<Unit>): void => {
+  if (unit.done || unit.onStack) {
+    return;
+  }
+  unit.onStack = true;
+  for (let reference in unit.refs) {
+    let provider = providerOf(units, reference);
+    if (provider != null && (provider as Unit).dir != unit.dir) {
+      visit(provider as Unit, units, ordered);
+    }
+  }
+  unit.onStack = false;
+  unit.done = true;
+  ordered.push(unit);
+};
+
+/**
+ * A tree's `.wit` files in an order the parser can consume: a package is
+ * declared before anything that references it.
+ *
+ * Directory order is topological, not alphabetical — `deps/cli` sorts first
+ * but depends on `io`, `clocks`, `filesystem`, `sockets` and `random`.
+ */
+let orderedUnits = (dir: String): GrowableArray<Unit> => {
+  let units = new GrowableArray<Unit>();
+  collectUnits(dir, false, units);
+  for (let unit in units) {
+    readUnit(unit);
+  }
+  let ordered = new GrowableArray<Unit>();
+  for (let unit in units) {
+    if (unit.isDep) {
+      visit(unit, units, ordered);
+    }
+  }
+  for (let unit in units) {
+    visit(unit, units, ordered);
+  }
+  return ordered;
+};
+
+/** A tree as one document, and how many files went into it. */
+final class Document {
+  text: String;
+  files: i32;
+
+  new(this.text, this.files);
+}
+
+let documentOf = (dir: String): Document => {
+  let sources = new GrowableArray<String>();
+  var files = 0;
+  for (let unit in orderedUnits(dir)) {
+    for (let source in unit.sources) {
+      sources.push(source);
+      files += 1;
+    }
+  }
+  return new Document(join(sources, '\n'), files);
+};
+
+/** What a tree resolved to. */
+final class Counts {
+  packages: i32;
+  interfaces: i32;
+  worlds: i32;
+
+  new(this.packages, this.interfaces, this.worlds);
+
+  describe(): String {
+    return `${this.packages} packages, ${this.interfaces} interfaces, ${this.worlds} worlds`;
+  }
+}
+
+let lengthOf = (document: JsonValue, key: String): i32 => {
+  if (!(document is JsonObject)) {
+    return 0;
+  }
+  let value = document[key];
+  if (!(value is JsonArray)) {
+    return 0;
+  }
+  return value.length;
+};
+
+/** Parses and resolves a document, and counts what came out. */
+let resolveCounts = (text: String): Counts => {
+  let document = parseJson(toJson(parse(text)));
+  return new Counts(
+    lengthOf(document, 'packages'),
+    lengthOf(document, 'interfaces'),
+    lengthOf(document, 'worlds'),
+  );
+};
+
+/** `--check`: assert every pinned tree still resolves. */
+let check = (): i32 => {
+  let found = findCorpus();
+  if (found == null) {
+    console.error(MISSING_CORPUS);
+    return 1;
+  }
+  let corpus = found as Corpus;
+  let sources = manifestSources();
+  let problems = verifyCorpus(corpus.dir, sources);
+  if (problems.length > 0) {
+    console.error(`✗ corpus at ${corpus.source} does not match wit-corpus.json`);
+    for (let problem in problems) {
+      console.error(`  ${problem}`);
+    }
+    console.error('  Re-fetch with: node dev/fetch-wit-corpus.js');
+    return 1;
+  }
+  let pins = new GrowableArray<String>();
+  sources.forEach((name: String, source: JsonValue): void => {
+    var reference = '';
+    if (source is JsonObject) {
+      let value = source['ref'];
+      if (value is String) {
+        reference = value;
+      }
+    }
+    pins.push(`${name}@${reference}`);
+  });
+  console.log(`corpus: ${corpus.source} (${join(pins, ', ')})`);
+
+  let failures = new GrowableArray<String>();
+  for (let wanted in expectations()) {
+    let document = documentOf(`${corpus.dir}/${wanted.dir}`);
+    var resolved: Counts | null = null;
+    let message = try {
+      resolved = resolveCounts(document.text);
+      ''
+    } catch (e) {
+      e.message
+    };
+    if (message != '') {
+      failures.push(`${wanted.label} no longer resolves: ${message}`);
+      continue;
+    }
+    let got = resolved as Counts;
+    if (got.packages != wanted.packages || got.interfaces != wanted.interfaces ||
+        got.worlds != wanted.worlds) {
+      let expected = new Counts(wanted.packages, wanted.interfaces, wanted.worlds);
+      failures.push(
+        `${wanted.label} resolved to ${got.describe()}, expected ${expected.describe()}`,
+      );
+    } else {
+      console.log(`✔ ${wanted.label}: ${got.describe()}`);
+    }
+  }
+  if (failures.length > 0) {
+    console.error('');
+    for (let failure in failures) {
+      console.error(`✗ ${failure}`);
+    }
+    return 1;
+  }
+  return 0;
+};
+
+/** Resolves one whole tree, reporting what it holds. */
+let parseDir = (dir: String): boolean => {
+  let document = documentOf(dir);
+  console.log(`\n=== ${dir} === (${document.files} files, ${document.text.length} bytes)`);
+  return try {
+    console.log(`  ✅ ${resolveCounts(document.text).describe()}`);
+    true
+  } catch (e) {
+    console.log(`  ❌ ${e.message}`);
+    false
+  };
+};
+
+/** Parses each file alone. Cross-file `use` fails; syntax faults still show. */
+let parseFiles = (dir: String): void => {
+  for (let unit in orderedUnits(dir)) {
+    for (var i = 0; i < unit.files.length; i += 1) {
+      let outcome = try {
+        parseSyntax(unit.sources[i]);
+        ''
+      } catch (e) {
+        e.message
+      };
+      if (outcome == '') {
+        console.log(`✅ ${unit.files[i]}`);
+      } else {
+        console.log(`❌ ${unit.files[i]} — ${outcome}`);
+      }
+    }
+  }
+};
+
+export let main = (): i32 => {
+  let args = getArguments();
+  if (args.length < 2) {
+    console.error('usage: parse-real-wit.zena [--check|--files] <wit-dir>...');
+    return 1;
+  }
+  if (args[1] == '--check') {
+    return check();
+  }
+  if (args[1] == '--files') {
+    for (var i = 2; i < args.length; i += 1) {
+      parseFiles(args[i]);
+    }
+    return 0;
+  }
+  var ok = true;
+  for (var i = 1; i < args.length; i += 1) {
+    ok = parseDir(args[i]) && ok;
+  }
+  return if (ok) { 0 } else { 1 };
+};
