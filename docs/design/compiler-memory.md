@@ -94,16 +94,27 @@ when a diagnostic is printed.
 Each is independent; together they pass the compiler suite including
 the stage-1/stage-2 fixpoint check.
 
-### Empty collections cost one slot
+### Empty collections, measured and left alone
 
-`HashMap`, `HashSet` and `OrderedMap` defaulted to 16 buckets and
-`GrowableArray` to 8 slots: 96 and 64 bytes for an empty table. Most
-maps a program builds hold nothing or a few entries — `ClassType`
-alone carries four maps and two arrays, and `staticSymbols` is
-documented as always empty on a class — so the defaults are now 1
-bucket and 0 slots. A one-bucket table needs no special case, since
-`h & 0` is a valid index; it doubles on the first resize like any
-other. Callers that know a size pass it.
+`HashMap`, `HashSet` and `OrderedMap` default to 16 buckets and
+`GrowableArray` to 8 slots: 96 and 64 bytes for an empty table, and
+`ClassType` carries four maps and two arrays, so 300K instantiations
+allocate about 115 MB of empty tables. Defaults of 1 bucket and 0
+slots were tried and measured against the originals with two
+compilers built from the same bootstrap: the `cli-module` compile
+took 19.9 s against 20.2 s at the build's reserve, and peaked at the
+same RSS with no reserve. The empty tables are allocation, and nearly
+all of it is garbage by the next collection; at a 1.5 GB reserve
+115 MB is a fraction of one collection. Against that, a map that does
+fill would pay four extra rehashes (1→2→4→8→16), each re-creating
+every entry, in every Zena program. The defaults stay as they were.
+
+What the measurement says to do instead is in the compiler: a map a
+class rarely uses should not exist until it does. `staticSymbols` is
+always empty on a class, `instantiations` is used only by generic
+templates, `constructors` only by classes with named constructors,
+and `substitutionCache` is already a nullable field created on first
+use.
 
 ### Dense per-node tables
 
