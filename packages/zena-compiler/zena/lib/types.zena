@@ -662,8 +662,14 @@ let primitiveSingleton = (t: Type): Type | null => match (t) {
  */
 let internableMember = (t: Type): boolean => match (t) {
   case TypeParameterType: true
-  case ClassType as ct: ct.typeArguments == null && ct.genericSource == null
-  case InterfaceType as it: it.typeArguments == null && it.genericSource == null
+  // A declared class, or a canonical instantiation of one: the
+  // substitution cache keys those on the template and the arguments'
+  // identities, and marks them with a shape stamp, so one object
+  // stands for each (class, arguments) and can be keyed on in turn.
+  case ClassType as ct:
+    (ct.typeArguments == null && ct.genericSource == null) || ct.shapeStamp != 0
+  case InterfaceType as it:
+    (it.typeArguments == null && it.genericSource == null) || it.shapeStamp != 0
   case UnionType {types}: {
     var all = true;
     for (let m in types) {
@@ -916,73 +922,58 @@ let substituteInType = (
           newArgs.push((sub ?? arg));
         }
 
-        // Cached on `ct` — the mention, which may itself be an
-        // instance — keyed by the arguments' identities. Not on the
-        // template: what a mention's supertypes and constructor say is
-        // not always what the template's do. The checker's
-        // self-instantiation of a class (the `MapEntry<K, V>` its own
-        // constructor names) is made before the constructor is
-        // registered and never learns of it, and a copy built from
-        // the template instead would close a cycle through that
-        // parameter that codegen's substitution cannot walk.
-        // Only a closed argument list is cached. With a type parameter
-        // among the arguments — a bare mention inside a generic body
-        // is `Foo<T>` at the class's own `T` — the cached object
-        // becomes its own descendant through a self-mentioning
-        // supertype (`class Foo<T> extends Bar<Foo<T>>`), and codegen's
-        // substitution, which memoizes only after recursing into
-        // supertypes, does not terminate on a cycle. A fresh copy per
-        // mention keeps those chains finite, as they always were.
-        var cacheable = true;
-        for (let arg in newArgs) {
-          if (typeContainsTypeParameter(arg)) { cacheable = false; }
-        }
-        // A closed list is keyed by its arguments' identities, which
-        // the cache entry — stored before the build — also answers a
-        // re-entrant mention by. A parametric build keeps the
-        // structural key: a union argument is a fresh object each
-        // round, and only its spelling tells a re-entrant mention
-        // from a new one.
-        let frameKey = if (cacheable) argumentUidKey(newArgs) else getInstantiationKey(newArgs);
-        let reentrant = reentrantSubstitution(ct as Type, frameKey);
+        // One instantiation per (class, arguments) for the compile:
+        // cached on the class's template, keyed by the arguments'
+        // identities, and built from the template, so a copy is never
+        // made from another copy. An instance's supertypes are the
+        // template's with the instance's arguments folded in, so the
+        // result is the same whichever mention asked for it.
+        //
+        // The template's own constructor may name the class — the
+        // checker resolves `MapEntry<K, V>` inside `MapEntry` to a
+        // self-instantiation made before the constructor was
+        // registered, with no constructor of its own — so an
+        // instantiation built from the template has a constructor
+        // parameter that is the instantiation itself. The substitution
+        // frames answer the re-entrant mention here, and codegen's
+        // substitution registers before it recurses, so both walk the
+        // cycle. The stamp catches a template that gained a
+        // constructor or supertype since the instantiation was built.
+        let template = ct.canonical();
+        let frameKey = argumentUidKey(newArgs);
+        let reentrant = reentrantSubstitution(template as Type, frameKey);
         if (reentrant != null) {
           return reentrant;
         }
-        let stamp = classShapeStamp(ct);
-        var cache: Map<String, ClassType> | null = null;
+        let stamp = classShapeStamp(template);
+        let cache = template.substitutionCache ?? new Map<String, ClassType>();
+        template.substitutionCache = cache;
         var hit: ClassType | null = null;
-        if (cacheable) {
-          let table = ct.substitutionCache ?? new Map<String, ClassType>();
-          ct.substitutionCache = table;
-          cache = table;
-          if (let (true, cached) = table.get(frameKey)) {
-            hit = cached;
-          }
-        } else {
-          _parametricSubstitutions += 1;
+        if (let (true, cached) = cache.get(frameKey)) {
+          hit = cached;
         }
         if (hit != null && (hit as ClassType).shapeStamp == stamp) {
           _substitutionCacheHits += 1;
           return hit;
         }
         let inst = if (hit != null) {
-          // The ct changed shape since this was built: rebuild
+          // The template changed shape since this was built: rebuild
           // in place, so everything holding it sees the new shape.
           let stale = hit as ClassType;
           stale.implementsList = new Array<InterfaceType>();
           stale.mixins = new Array<MixinType>();
           stale
         } else {
-          let fresh = new ClassType(ct.id, ct.symbolId, ct.name);
-          if (cache != null) { cache[frameKey] = fresh; }
+          let fresh = new ClassType(template.id, template.symbolId, template.name);
+          cache[frameKey] = fresh;
           fresh
         };
         _substitutedNominals += 1;
         inst.typeParameters = ctParams;
         inst.typeArguments = newArgs;
-        inst.genericSource = ct.genericSource ?? ct;
+        inst.genericSource = template;
         inst.shapeStamp = stamp;
-        substitutionFrames.push(new SubstitutionFrame(ct as Type, frameKey, inst as Type));
+        substitutionFrames.push(new SubstitutionFrame(template as Type, frameKey, inst as Type));
         let combinedParams = new Array<TypeParameterType>();
         let combinedArgs = new Array<Type>();
         if (ctParams != null) {
@@ -1002,20 +993,20 @@ let substituteInType = (
           }
         }
 
-        if (ct.superType != null) {
-          let subSuper = substituteInType(ct.superType, combinedParams, combinedArgs);
-          inst.superType = (subSuper ?? ct.superType) as ClassType;
+        if (template.superType != null) {
+          let subSuper = substituteInType(template.superType, combinedParams, combinedArgs);
+          inst.superType = (subSuper ?? template.superType) as ClassType;
         }
-        for (let impl in ct.implementsList) {
+        for (let impl in template.implementsList) {
           let subImpl = substituteInType(impl, combinedParams, combinedArgs);
           inst.implementsList.push((subImpl ?? impl) as InterfaceType);
         }
-        for (let m in ct.mixins) {
+        for (let m in template.mixins) {
           let subM = substituteInType(m, combinedParams, combinedArgs);
           inst.mixins.push((subM ?? m) as MixinType);
         }
-        inst.constructorType = if (ct.constructorType != null) {
-          let ctor = ct.constructorType as FunctionType;
+        inst.constructorType = if (template.constructorType != null) {
+          let ctor = template.constructorType as FunctionType;
           let newParams = new Array<Type>();
           for (let p in ctor.parameters) {
             let sub = substituteInType(p, combinedParams, combinedArgs);
@@ -1032,7 +1023,7 @@ let substituteInType = (
           null
         };
         inst.constructors = new Map<String, FunctionType>();
-        for (let entry in ct.constructors) {
+        for (let entry in template.constructors) {
           let ctorName = entry.key;
           let ctor = entry.value;
           let newParams = new Array<Type>();
@@ -1048,35 +1039,35 @@ let substituteInType = (
           newFt.functionSymbolName = ctor.functionSymbolName;
           inst.constructors[ctorName] = newFt;
         }
-        inst.fieldSetterNames = ct.fieldSetterNames;
-        inst.isFinal = ct.isFinal;
-        inst.isCaseClass = ct.isCaseClass;
+        inst.fieldSetterNames = template.fieldSetterNames;
+        inst.isFinal = template.isFinal;
+        inst.isCaseClass = template.isCaseClass;
         // Resource-ness is a property of the class, uniform across every
         // mention of it (ownership.md §"Resource-ness and affineness are
         // separate"), so an instantiation of a generic resource class is
         // still a resource class. Codegen keys the hidden lifecycle field
         // off this flag, and an instantiation that dropped it would get
         // no field and silently skip disown/adopt's state check.
-        inst.isResource = ct.isResource;
-        inst.hasSyntheticDispose = ct.hasSyntheticDispose;
-        inst.isAbstract = ct.isAbstract;
-        inst.isExtension = ct.isExtension;
-        inst.isSealed = ct.isSealed;
-        inst.isMixinIntermediate = ct.isMixinIntermediate;
-        inst.privateScopeKey = ct.privateScopeKey;
-        inst.decoratorSubjectName = ct.decoratorSubjectName;
-        inst.decoratorFieldName = ct.decoratorFieldName;
-        inst.decoratorSharedScopeKey = ct.decoratorSharedScopeKey;
-        inst.decoratedFields = ct.decoratedFields;
-        inst.sealedVariants = ct.sealedVariants;
-        inst.declaredFields = ct.declaredFields;
-        inst.forwardVariantNames = ct.forwardVariantNames;
-        inst.members = ct.members;
-        inst.staticSymbols = ct.staticSymbols;
-        if (ct.onType != null) {
-          inst.onType = substituteInType(ct.onType, combinedParams, combinedArgs);
+        inst.isResource = template.isResource;
+        inst.hasSyntheticDispose = template.hasSyntheticDispose;
+        inst.isAbstract = template.isAbstract;
+        inst.isExtension = template.isExtension;
+        inst.isSealed = template.isSealed;
+        inst.isMixinIntermediate = template.isMixinIntermediate;
+        inst.privateScopeKey = template.privateScopeKey;
+        inst.decoratorSubjectName = template.decoratorSubjectName;
+        inst.decoratorFieldName = template.decoratorFieldName;
+        inst.decoratorSharedScopeKey = template.decoratorSharedScopeKey;
+        inst.decoratedFields = template.decoratedFields;
+        inst.sealedVariants = template.sealedVariants;
+        inst.declaredFields = template.declaredFields;
+        inst.forwardVariantNames = template.forwardVariantNames;
+        inst.members = template.members;
+        inst.staticSymbols = template.staticSymbols;
+        if (template.onType != null) {
+          inst.onType = substituteInType(template.onType, combinedParams, combinedArgs);
         }
-        inst.sourcePath = ct.sourcePath;
+        inst.sourcePath = template.sourcePath;
         substitutionFrames.pop();
         inst
       } else {
@@ -1111,29 +1102,23 @@ let substituteInType = (
           let sub = substituteInType(arg, typeParameters, typeArguments);
           newArgs.push((sub ?? arg));
         }
-        // Cached on the mention by argument identity, closed argument
-        // lists only; see the class case for both.
-        var cacheable = true;
-        for (let arg in newArgs) {
-          if (typeContainsTypeParameter(arg)) { cacheable = false; }
+        // One instantiation per (interface, arguments), on the
+        // template; see the class case.
+        var template = it;
+        while (template.genericSource != null) {
+          template = template.genericSource as InterfaceType;
         }
-        let frameKey = if (cacheable) argumentUidKey(newArgs) else getInstantiationKey(newArgs);
-        let reentrant = reentrantSubstitution(it as Type, frameKey);
+        let frameKey = argumentUidKey(newArgs);
+        let reentrant = reentrantSubstitution(template as Type, frameKey);
         if (reentrant != null) {
           return reentrant;
         }
-        let stamp = interfaceShapeStamp(it);
-        var cache: Map<String, InterfaceType> | null = null;
+        let stamp = interfaceShapeStamp(template);
+        let cache = template.substitutionCache ?? new Map<String, InterfaceType>();
+        template.substitutionCache = cache;
         var hit: InterfaceType | null = null;
-        if (cacheable) {
-          let table = it.substitutionCache ?? new Map<String, InterfaceType>();
-          it.substitutionCache = table;
-          cache = table;
-          if (let (true, cached) = table.get(frameKey)) {
-            hit = cached;
-          }
-        } else {
-          _parametricSubstitutions += 1;
+        if (let (true, cached) = cache.get(frameKey)) {
+          hit = cached;
         }
         if (hit != null && (hit as InterfaceType).shapeStamp == stamp) {
           _substitutionCacheHits += 1;
@@ -1142,16 +1127,16 @@ let substituteInType = (
         let inst = if (hit != null) {
           hit as InterfaceType
         } else {
-          let fresh = new InterfaceType(it.id, it.symbolId, it.name);
-          if (cache != null) { cache[frameKey] = fresh; }
+          let fresh = new InterfaceType(template.id, template.symbolId, template.name);
+          cache[frameKey] = fresh;
           fresh
         };
         _substitutedNominals += 1;
         inst.typeParameters = itParams;
         inst.typeArguments = newArgs;
-        inst.genericSource = it.genericSource ?? it;
+        inst.genericSource = template;
         inst.shapeStamp = stamp;
-        substitutionFrames.push(new SubstitutionFrame(it as Type, frameKey, inst as Type));
+        substitutionFrames.push(new SubstitutionFrame(template as Type, frameKey, inst as Type));
         let combinedParams = new Array<TypeParameterType>();
         let combinedArgs = new Array<Type>();
         if (itParams != null) {
@@ -1171,15 +1156,15 @@ let substituteInType = (
           }
         }
         let newExtends = new Array<InterfaceType>();
-        for (let ext in it.extendsList) {
+        for (let ext in template.extendsList) {
           let subExt = substituteInType(ext, combinedParams, combinedArgs);
           newExtends.push((subExt ?? ext) as InterfaceType);
         }
         inst.extendsList = newExtends;
-        inst.members = it.members;
-        inst.staticSymbols = it.staticSymbols;
-        inst.constructors = it.constructors;
-        inst.sourcePath = it.sourcePath;
+        inst.members = template.members;
+        inst.staticSymbols = template.staticSymbols;
+        inst.constructors = template.constructors;
+        inst.sourcePath = template.sourcePath;
         substitutionFrames.pop();
         inst
       } else {

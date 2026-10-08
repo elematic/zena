@@ -1116,6 +1116,9 @@ export let eraseTypeParameters = (wasm: WasmModule, t: Type): Type => {
     case ClassType as ct: {
       let {typeArguments} = ct;
       if (typeArguments != null && typeArguments.length > 0) {
+        if (let (true, done) = wasm.erasures.get(ct.uid)) {
+          return done;
+        }
         let args = typeArguments;
         let newArgs = new Array<Type>();
         var changed = false;
@@ -1124,9 +1127,15 @@ export let eraseTypeParameters = (wasm: WasmModule, t: Type): Type => {
           if (sub != arg) { changed = true; }
           newArgs.push(sub);
         }
-        if (!changed) { return t; }
+        if (!changed) {
+          wasm.erasures[ct.uid] = t;
+          return t;
+        }
 
         let inst = new ClassType(ct.id, ct.symbolId, ct.name);
+        // Registered before the supertypes and constructor are erased;
+        // see `WasmModule.erasures`.
+        wasm.erasures[ct.uid] = inst;
         inst.typeArguments = newArgs;
         let {superType} = ct;
         if (superType != null) {
@@ -1187,6 +1196,9 @@ export let eraseTypeParameters = (wasm: WasmModule, t: Type): Type => {
     case InterfaceType as it: {
       let {typeArguments} = it;
       if (typeArguments != null && typeArguments.length > 0) {
+        if (let (true, done) = wasm.erasures.get(it.uid)) {
+          return done;
+        }
         let args = typeArguments;
         let newArgs = new Array<Type>();
         var changed = false;
@@ -1195,8 +1207,12 @@ export let eraseTypeParameters = (wasm: WasmModule, t: Type): Type => {
           if (sub != arg) { changed = true; }
           newArgs.push(sub);
         }
-        if (!changed) { return t; }
+        if (!changed) {
+          wasm.erasures[it.uid] = t;
+          return t;
+        }
         let inst = new InterfaceType(it.id, it.symbolId, it.name);
+        wasm.erasures[it.uid] = inst;
         inst.typeArguments = newArgs;
         inst.members = it.members;
         inst.typeParameters = it.typeParameters;
