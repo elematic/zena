@@ -547,7 +547,11 @@ final class Parser {
           this.#appendClassRange(ast.runes, nextC, nextC);
           pos = pos + 2;
         }
-      } else if (pos + 2 < len && pattern.getByteAt(pos + 1) == 45) { // '-' range
+      } else if (pos + 2 < len && pattern.getByteAt(pos + 1) == 45 &&
+                 pattern.getByteAt(pos + 2) != 93) { // '-' range, not '-]'
+        // A hyphen last in the class is a literal, as it is in JavaScript,
+        // Go and RE2. Reading it as a range consumed the `]` and ran off the
+        // end: `[\w.+-]` threw "Unclosed character class".
         let hi = pattern.getByteAt(pos + 2);
         if (c > hi) {
           throw new Error('Invalid character class range: ' + pattern);
@@ -908,8 +912,8 @@ final class Parser {
         }
         i += 1;
       } else if (c == 109) {  // 'm' - multiline (^ and $ match line boundaries)
-        // Note: in RE2/Go, multiline is the default. OneLine makes ^/$ match only text boundaries.
-        // We'll treat (?m) as enabling multiline (clear OneLine flag)
+        // Clearing OneLine is what turns them on: it is set by default, so
+        // that `^` and `$` anchor to the text until `(?m)` says otherwise.
         if (negating) {
           setFlags = setFlags | (Flags.OneLine as i32);
         } else {
@@ -2010,9 +2014,16 @@ export final class Regex {
     return true;
   }
 
-  // Parse flag string into Flags enum
+  /**
+   * The flags a flag string asks for.
+   *
+   * `OneLine` is on unless `m` turns it off: `^` and `$` anchor to the whole
+   * text, as they do in JavaScript, Go and RE2, and `m` — or an inline
+   * `(?m)` — makes them match at line boundaries too. `parsePattern` takes
+   * its flags as given, so it still reads `Flags.None` as line anchoring.
+   */
   #parseFlags(flagStr: String): Flags {
-    var flags: i32 = 0;
+    var flags: i32 = Flags.OneLine as i32;
     var i = 0;
     while (i < flagStr.length) {
       let c = flagStr.getByteAt(i);
@@ -2020,8 +2031,8 @@ export final class Regex {
         flags = flags | (Flags.FoldCase as i32);
       } else if (c == 115) {  // 's'
         flags = flags | (Flags.DotNL as i32);
-      } else if (c == 109) {  // 'm' - multi-line, opposite of OneLine
-        // OneLine is the default, 'm' disables it
+      } else if (c == 109) {  // 'm'
+        flags = flags & ((Flags.OneLine as i32) ^ (0 - 1));
       }
       i += 1;
     }
