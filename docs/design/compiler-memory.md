@@ -298,27 +298,80 @@ to; what reachability retains, and allocates other than types, is
 the next measurement — a census that walks `WasmModule` (functions,
 structs, `classInfos`, vtables) and the type graph reachable from it.
 
+## Heap snapshots under V8
+
+The census counts what the compiler knows to count. A heap snapshot
+counts everything, with retainers, and V8 writes one on request:
+`scripts/heap-snapshot.mjs` runs the `js`-target compiler build
+(`lsp.wasm`, whose `compileToWasm` runs the whole pipeline) under
+Node, compiles an entry, and calls `v8.writeHeapSnapshot` — after the
+compile, which is the retained set after a full collection, or at the
+N-th read of the clock, which the phase timer takes at every phase
+boundary, so a snapshot can be aimed inside discovery (`clocks` lists
+the reads with timestamps). Wasm GC objects appear by type, labeled
+through the name section's type-name subsection, which the binary
+emitter writes under `-g`; `analyze` sums a snapshot by class and
+`retainers <class>` sums the holders of every object of one class,
+by distinct target and by edge. V8's sizes differ from wasmtime's (no
+16-byte rounding, a different header), so counts are exact and bytes
+are proportions. Node's default stack is too small for the compiler's
+recursion: `--stack-size=200000` with `ulimit -s unlimited`.
+
+The workload is the language service's own entry,
+`packages/language-service/zena/lsp.zena`: a `js`-target program that
+pulls in the whole compiler. It takes 6.6 s under V8 and 14.8 s
+under wasmtime with the same module and inputs.
+
+### The live set inside discovery
+
+6.48M objects, 394 MiB, compiling `lsp.zena`, snapshot 60% of the way
+through the run:
+
+| class                                              | live        | MiB | held by                                                                                                                                                                                      |
+| -------------------------------------------------- | ----------- | --- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `String` + `ByteArray`                             | 773K + 573K | 78  | 570K strings own a store: map keys, the type-key caches (~125K), `PendingStaticTarget.memberName` (133K distinct), function names. 154K are identifier names, one `String` per `Identifier`. |
+| `WasmFunction`                                     | 41K         | 17  | 432 bytes each                                                                                                                                                                               |
+| `SourceLocation`                                   | 437K        | 17  | one per node                                                                                                                                                                                 |
+| `MapEntry<i32, Symbol>`                            | 294K        | 14  | the lowering context's `symbols` map, alive during discovery                                                                                                                                 |
+| `FunctionType`                                     | 94K         | 13  | `Map<String, Type>` tables 43K, the codegen `substCache` 41K, class constructors 16K                                                                                                         |
+| `PendingStaticTarget`                              | 202K        | 10  | a push-only list on the reachability pass                                                                                                                                                    |
+| `GrowableArray<Type>` + `Array<Type>` fat pointers | 186K + 152K | 12  | `FunctionType.parameters` is interface-typed, so each signature carries a fat pointer around its array                                                                                       |
+| `MapEntry<Type, Type>`                             | 81K         | 4   | `substCache`                                                                                                                                                                                 |
+
+The type graph is a tenth of it. Strings are a fifth, and most of
+them are keys and caches rather than source text.
+
 ## What is left
 
-- **Hash-consing types.** Types are values with structural equality
-  (`typesEqual`), identity equality for nominal ones, and every site
-  that needs one builds it. Interning on construction — unions by
-  member identity, arrays and tuples by element identity, class and
-  interface instantiations by (template, argument identity) — would
-  make equal types the same object. That collapses the 1.65M minted
-  to the distinct ones (28K among the keyed 342K), turns identity
-  caches like `substCache` into hits, and replaces the 24 MiB of key
-  strings with pointer comparison. Interning retains each distinct
-  type for the compile, which the checker's side tables already do
-  for the types that matter. `UnionType` has eight construction sites
-  and no mutation after construction, so it is the place to start;
-  `FunctionType` is the obstacle: `functionSymbolId`,
-  `parameterSymbols`, `parameterInitializers`, `overloads` and
-  `isFinal` are declaration facts set on the type after construction
-  (16 write sites each), so two structurally equal signatures are not
-  interchangeable until those move to the declaration.
+In the order the snapshot ranks them, each measurable by the same
+snapshot afterwards:
+
+- **Strings.** 773K live, 570K with a store of their own. The
+  type-key caches (`uniqueKeyCache`, `specializationKeyCache`) hold
+  ~125K of them and exist to compare types that identity now
+  compares; `PendingStaticTarget.memberName` holds 133K distinct
+  mangled names on a list nothing compacts; the `Map<String, …>`
+  tables of the checker and the module hold most of the rest.
+  Identifier names are 154K `String`s for far fewer distinct names,
+  because the tokenizer slices a new one per token — interning them in
+  the tokenizer makes every identifier of one spelling one object.
+- **`PendingStaticTarget`.** A push-only list of 202K entries on the
+  reachability pass, each with its own string; drop or compact once
+  resolved.
+- **`FunctionType.parameters` as a concrete array.** It is
+  `Array<Type>`, an interface, so every signature carries a fat
+  pointer (152K live) around its `GrowableArray`.
+- **The lowering context's `symbols` map**, 294K entries alive during
+  discovery, which has not lowered anything yet: either contexts
+  outlive their function or something builds them early.
+- **`WasmFunction`**, 41K at 432 bytes: lazy `captures`/`mutableCaptures`,
+  and the per-kind nullable fields to side records.
+- **`SourceLocation`** folded into the node: 437K objects.
+- **`FunctionType`'s declaration fields** onto the declaration, which
+  is what would let function types intern as unions and
+  instantiations now do.
 - **Allocation on the no-change path.** `substituteTypeParamsInCodegen`
-  builds two argument arrays before it knows nothing changed, 205K
+  builds two argument arrays before it knows nothing changed, 194K
   times per compile.
 
 ## Immutable type classes
