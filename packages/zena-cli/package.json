@@ -5,9 +5,11 @@
   "scripts": {
     "build": "wireit",
     "build:host": "wireit",
+    "build:host:cargo": "wireit",
     "build:module": "wireit",
     "build:bundle-assets": "wireit",
     "build:bundle": "wireit",
+    "build:bundle:cargo": "wireit",
     "test": "wireit",
     "zena": "wireit"
   },
@@ -25,8 +27,19 @@
       ]
     },
     "build:bundle": {
+      "#": "The binary with out/zena.wasm and the standard library embedded. Split the way build:host is, and for the same reasons.",
+      "files": [
+        "../../target/release/zena-cli"
+      ],
+      "dependencies": [
+        {
+          "script": "build:bundle:cargo",
+          "cascade": false
+        }
+      ]
+    },
+    "build:bundle:cargo": {
       "#": "Recompiles zena-cli to embed out/zena.wasm and stdlib into the host binary once built.",
-      "#files": "Absent for the same reason as build:host: this rewrites ../../target/release/zena-cli, which wireit does not track.",
       "command": "cargo build --release -p zena-cli",
       "output": [],
       "dependencies": [
@@ -52,8 +65,20 @@
       ]
     },
     "build:host": {
+      "#": "Two scripts for one build. `build:host:cargo` declares no inputs, so wireit never calls it fresh and cargo is always consulted — cargo tracks its own inputs better than a `files` list could, and a no-op is a quarter of a second. This one names the binary cargo produced as an *input*, so its fingerprint changes exactly when the binary does, and that is what dependents inherit. `cascade: false` keeps `build:host:cargo`'s own fingerprint out: a script with no `files` is not `fullyTracked`, and wireit propagates that to everything downstream, where nothing can ever be fresh — which is why one `npm test` with no changes used to rebuild the whole bootstrap chain. Hashing the binary also makes freshness imply the binary exists, so the exit-127 case that a `files` list alone would have allowed cannot happen.",
+      "files": [
+        "../../target/release/zena-cli"
+      ],
+      "dependencies": [
+        {
+          "script": "build:host:cargo",
+          "cascade": false
+        }
+      ]
+    },
+    "build:host:cargo": {
+      "#": "Always runs; `build:host` is what dependents read. See its comment.",
       "command": "cargo build --release -p zena-cli",
-      "#files": "Deliberately absent, so wireit runs cargo every time. The binary lands in the workspace target dir (../../target/release/zena-cli), which wireit does not track, so a script with inputs and no outputs can be restored from the GitHub Actions cache as fresh on a machine whose target dir is empty. The 19 scripts that run ../../target/release/zena-cli then fail with exit 127. cargo is a fast no-op when its own fingerprints are current.",
       "output": [],
       "dependencies": []
     },

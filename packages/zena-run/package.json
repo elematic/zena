@@ -4,6 +4,7 @@
   "private": true,
   "scripts": {
     "build": "wireit",
+    "build:cargo": "wireit",
     "test": "wireit",
     "zena-run": "wireit"
   },
@@ -15,8 +16,20 @@
       ]
     },
     "build": {
+      "#": "Two scripts for one build. `build:cargo` declares no inputs, so wireit never calls it fresh and cargo is always consulted — cargo tracks its own inputs better than a `files` list could, and a no-op is a quarter of a second. This one names the binary cargo produced as an *input*, so its fingerprint changes exactly when the binary does, and that is what dependents inherit. `cascade: false` keeps `build:cargo`'s own fingerprint out: a script with no `files` is not `fullyTracked`, and wireit propagates that to everything downstream, where nothing can ever be fresh — which is why one `npm test` with no changes used to rebuild the whole bootstrap chain. Hashing the binary also makes freshness imply the binary exists, so the exit-127 case that a `files` list alone would have allowed cannot happen.",
+      "files": [
+        "../../target/release/zena-run"
+      ],
+      "dependencies": [
+        {
+          "script": "build:cargo",
+          "cascade": false
+        }
+      ]
+    },
+    "build:cargo": {
+      "#": "Always runs; `build` is what dependents read. See its comment.",
       "command": "cargo build --release -p zena-run",
-      "#files": "Deliberately absent, so wireit runs cargo every time. The binary lands in the workspace target dir (../../target/release/zena-run), which wireit does not track, so a script with inputs and no outputs can be restored from the GitHub Actions cache as fresh on a machine whose target dir is empty. The four scripts that run ../../target/release/zena-run then fail with exit 127. cargo is a fast no-op when its own fingerprints are current.",
       "output": [],
       "dependencies": []
     },
