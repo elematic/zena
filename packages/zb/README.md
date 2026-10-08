@@ -141,7 +141,8 @@ whose outputs changed on disk.
 - `zena/fs-walk.zena` — input discovery: walks each glob's literal base
   directory and keeps what `zena:glob`'s `GlobSet` matches
 - `zena/disk-cache.zena`, `zena/state-json.zena` — the `.zb/` formats
-- `zena/sha256.zena` — content fingerprints
+
+Fingerprints are `sha256:<hex>`, hashed with `zena:crypto`.
 
 Tests: `npm test -w @zena-lang/zb`. The end-to-end tests build fixture
 workspaces under `/tmp` through the real filesystem and shell.

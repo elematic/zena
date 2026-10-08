@@ -4,6 +4,8 @@
 
 import { suite, test } from 'zena:test';
 import { equal, isTrue, isFalse } from 'zena:assert';
+import { readFile } from 'zena:fs';
+import { JsonObject, JsonValue, parseJson } from 'zena:json';
 import { ModuleExport } from '../lib/module-resolver.zena';
 import { loadPackageMap, buildStdlibConfig } from '../lib/package-manifest.zena';
 import { stdlibLibraryOf, stdlibLibraryAnswers } from '../lib/stdlib-manifest.zena';
@@ -145,6 +147,32 @@ export let tests = suite("Package Manifest", () => {
       isFalse(exports.has("console-host"));
       isFalse(exports.has("console-wasi"));
       isFalse(exports.has("console-interface"));
+    });
+
+    // The module list in `lib/stdlib-manifest.zena` is a second copy of the
+    // one in `packages/stdlib/stdlib-manifest.json`, and its comment says to
+    // keep them in sync. Nothing checked that, so a module added to the JSON
+    // alone built fine and then failed to resolve, with "Library not found"
+    // naming the import rather than the list that was missing it.
+    //
+    // Read inside the test: registration runs in the instance's start
+    // function, where a file system call blocks a task that does not exist
+    // yet.
+    test("exports every module the standard library's manifest declares", () => {
+      let manifest = parseJson(readFile('packages/stdlib/stdlib-manifest.json'));
+      let modules = (manifest as JsonObject)['modules'] as JsonObject;
+      let exports = buildStdlibConfig("/stdlib").exports as Map<String, ModuleExport>;
+      var missing = '';
+      modules.forEach((name: String, config: JsonValue): void => {
+        if (!exports.has(name)) {
+          missing = `${missing} ${name}`;
+        }
+      });
+      equal(
+        missing,
+        '',
+        `declared in stdlib-manifest.json, missing from lib/stdlib-manifest.zena:${missing}`,
+      );
     });
   });
 

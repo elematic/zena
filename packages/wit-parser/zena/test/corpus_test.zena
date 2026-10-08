@@ -272,8 +272,16 @@ let isBinary = (path: String): boolean =>
 /** The WIT a component decodes to, through the wasm-tools CLI. */
 let decodeBinary = (path: String): String => {
   // The child runs on the host; '.' as its directory is the repository root,
-  // which is what the paths here are relative to.
-  let result = runIn(['wasm-tools', 'component', 'wit', path], '.');
+  // which is what the paths here are relative to. The host resolves the
+  // program name — a test cannot search PATH itself, because the preopens it
+  // gets are the repository, the standard library and a scratch directory.
+  let result = try {
+    runIn(['wasm-tools', 'component', 'wit', path], '.')
+  } catch (e) {
+    throw new Error(
+      `${e.message} — wasm-tools has to be on PATH; enter the dev shell (nix develop, or direnv)`,
+    )
+  };
   if (!result.succeeded()) {
     throw new Error(
       `wasm-tools component wit failed on ${path}: ${result.stderr}`,

@@ -47,9 +47,21 @@ let fixtureNames = (): Array<String> => {
   return names;
 };
 
-/** Runs wasm-tools in the repository root, where the paths here start. */
+/**
+ * Runs wasm-tools in the repository root, where the paths here start.
+ *
+ * The host resolves the program name, so it comes from whatever PATH the
+ * `zena` command has; a test cannot search PATH itself, because the preopens
+ * it gets are the repository, the standard library and a scratch directory.
+ */
 let wasmTools = (args: Array<String>): (boolean, String, String) => {
-  let result = runIn(args, '.');
+  let result = try {
+    runIn(args, '.')
+  } catch (e) {
+    throw new Error(
+      `${e.message} — wasm-tools has to be on PATH; enter the dev shell (nix develop, or direnv)`,
+    )
+  };
   return (result.succeeded(), result.stdout, result.stderr);
 };
 

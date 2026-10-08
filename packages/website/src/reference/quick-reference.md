@@ -2365,6 +2365,19 @@ groups (capturing and non-capturing), anchors (`^`, `$`, `\b`).
 **Not supported** (by design): Backreferences and lookahead/lookbehind—these
 require backtracking which breaks the linear time guarantee.
 
+### zena:crypto
+
+SHA-256, for content fingerprints. `sha256` returns the 32 digest bytes;
+`sha256Hex` and `sha256HexOfString` return them as 64 lowercase hex
+characters, and `toHex` renders any `ByteArray` that way.
+
+```zena
+import {sha256Hex, sha256HexOfString} from 'zena:crypto';
+
+sha256HexOfString('abc'); // 'ba7816bf8f01cfea...'
+sha256Hex(readFileBytes(path));
+```
+
 ### zena:json
 
 JSON parsing with typed accessors and optional comment support.
