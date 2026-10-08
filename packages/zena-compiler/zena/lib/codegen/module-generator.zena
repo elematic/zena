@@ -17,7 +17,7 @@ import {
   prepareResourceDestructors
 } from './ir/component-adapters.zena';
 import { getClassKey, getInterfaceKey, getInterfaceMemberKey, sortStringsByLengthDescending, parseI64OrU64Literal, parseI32WithHex } from './codegen-utils.zena';
-import { ClassType, markTypes } from '../types.zena';
+import { ClassType, TypeInterner, markTypes } from '../types.zena';
 import { Program } from '../program.zena';
 import {
   NumberLiteral, StringLiteral, BooleanLiteral, EnumDeclaration, ImportDeclaration, Module,
@@ -84,6 +84,12 @@ export final class ModuleGenerator {
    * than the sequences they replace (`WasmModule.wideArithmetic`).
    */
   var wideArithmetic: boolean = false;
+
+  /**
+   * The checker's interned types, for the module to build unions
+   * through; null when the generator is used without a compile.
+   */
+  var interner: TypeInterner | null = null;
 
   /**
    * Optimization level (docs/design/optimization-pipeline.md). 0 =
@@ -287,6 +293,10 @@ export final class ModuleGenerator {
     let wasm = new WasmModule();
     wasm.program = this.program;
     wasm.wideArithmetic = this.wideArithmetic;
+    let interner = this.interner;
+    if (interner != null) {
+      wasm.interner = interner;
+    }
 
 
     let tDiscovery = performance.start("codegen-discovery");

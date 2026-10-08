@@ -552,6 +552,7 @@ export let compileFile = (options: CompileFileOptions): i32 => {
     if (outPath.endsWith(".wat")) {
       let watOnly = new WatGenerator(target, zirStats, optLevel);
       watOnly.wideArithmetic = wideArithmetic;
+      watOnly.interner = checkResults.sharedState.interner;
       writeFile(outPath, watOnly.generate(program));
       performance.end(tCodegen);
       if (progress) {
@@ -562,6 +563,9 @@ export let compileFile = (options: CompileFileOptions): i32 => {
 
     let generator = new BinaryGenerator(target, zirStats, debugNames, optLevel);
     generator.wideArithmetic = wideArithmetic;
+    // Codegen builds its unions through the checker's interner, so a
+    // union means one object across the whole compile.
+    generator.interner = checkResults.sharedState.interner;
     if (targetEmitsComponent(target)) {
       // The component's second core module, owning linear memory and
       // the allocator. Compiled up front — whether the program needs it

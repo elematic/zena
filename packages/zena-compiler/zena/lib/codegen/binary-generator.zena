@@ -3,6 +3,7 @@ import { ByteBuffer } from 'zena:core';
 import { Program } from '../program.zena';
 import { BinaryEmitter } from './binary-emitter.zena';
 import { ModuleGenerator } from './module-generator.zena';
+import { TypeInterner } from '../types.zena';
 import { emitComponent, ComponentShape, ImportTypeEncoder } from './component-emitter.zena';
 import { targetEmitsComponent } from '../targets.zena';
 
@@ -46,6 +47,9 @@ export final class BinaryGenerator implements CodeGenerator<ByteBuffer> {
    */
   var wideArithmetic: boolean = false;
 
+  /** The checker's interned types, passed on to the module; see `WasmModule.interner`. */
+  var interner: TypeInterner | null = null;
+
   /** Optimization level, forwarded to ModuleGenerator. */
   optLevel: i32;
 
@@ -58,6 +62,7 @@ export final class BinaryGenerator implements CodeGenerator<ByteBuffer> {
     let generator = new ModuleGenerator(program, emitter, this.target, this.zirStats,
         this.optLevel);
     generator.wideArithmetic = this.wideArithmetic;
+    generator.interner = this.interner;
     generator.importEncoder = this.importEncoder;
     generator.compile();
     // A component is the same core module with a wrapper around it: the
