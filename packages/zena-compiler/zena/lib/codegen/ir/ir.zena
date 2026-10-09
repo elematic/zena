@@ -1544,6 +1544,8 @@ export final class IrUseLists {
  * growth of large ones. A list taken in a scope must not outlive it;
  * a loop that takes lists per iteration scopes each iteration.
  */
+let retainLimit = 262144;
+
 export final class IrScratch {
   #freeI32 = new Array<GrowableArray<i32>>();
   #freeBool = new Array<GrowableArray<boolean>>();
@@ -1557,18 +1559,27 @@ export final class IrScratch {
     this.#scopes.push(this.#takenBool.length);
   }
 
+  /**
+   * Ends the scope. A list that grew past `retainLimit` entries is
+   * dropped rather than pooled: one large function would otherwise
+   * leave its tables in the pool for the rest of the compile.
+   */
   exit(): void {
     let bools = this.#scopes.pop();
     let ints = this.#scopes.pop();
     while (this.#takenBool.length > bools) {
       let list = this.#takenBool.pop();
-      list.clear();
-      this.#freeBool.push(list);
+      if (list.length <= retainLimit) {
+        list.clear();
+        this.#freeBool.push(list);
+      }
     }
     while (this.#takenI32.length > ints) {
       let list = this.#takenI32.pop();
-      list.clear();
-      this.#freeI32.push(list);
+      if (list.length <= retainLimit) {
+        list.clear();
+        this.#freeI32.push(list);
+      }
     }
   }
 

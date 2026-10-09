@@ -68,7 +68,7 @@ export final class EscapeSummaries {
           if (row[k]) {
             continue;
           }
-          if (this.#paramEscapes(bodies[f], users, k)) {
+          if (this.#paramEscapes(bodies[f], users, k, scratch)) {
             row[k] = true;
             changed = true;
           }
@@ -96,13 +96,20 @@ export final class EscapeSummaries {
     return row[k];
   }
 
-  #paramEscapes(body: IrBody, users: IrUseLists, k: i32): boolean {
+  #paramEscapes(body: IrBody, users: IrUseLists, k: i32, scratch: IrScratch): boolean {
+    scratch.enter();
+    let result = this.#paramEscapesOn(body, users, k, scratch);
+    scratch.exit();
+    return result;
+  }
+
+  #paramEscapesOn(body: IrBody, users: IrUseLists, k: i32, scratch: IrScratch): boolean {
     let count = body.instCount();
-    let alias = new Array<boolean>(count);
+    let alias = scratch.bool();
     for (var i = 0; i < count; i += 1) {
       alias.push(false);
     }
-    let work = new Array<i32>();
+    let work = scratch.i32();
     let start = body.blocks[0].params[k];
     alias[start] = true;
     work.push(start);

@@ -23,8 +23,7 @@ import { ValType, ValTypeVoid, ValTypeRef, ValTypeRefNull, ValTypeAnyRef, ValTyp
 import { WasmModule, WasmFunction, WasmSignature, WasmArray } from '../wasm-module.zena';
 import { WasmEmitter } from '../wasm-emitter.zena';
 import {
-  IrBody, IrOp, IrSuccessor, IrRefFunc, IrRefGlobal, IrRefType, IrRefField, IrRefTag, irOpName, isUnaryNumericOp, isBinaryNumericOp, isCommutativeOp, isIrTerminator, simdExtraOperandCount, isWideArithOp, isWideMulOp, wideArithOpcode,
-} from './ir.zena';
+  IrBody, IrOp, IrSuccessor, IrRefFunc, IrRefGlobal, IrRefType, IrRefField, IrRefTag, irOpName, isUnaryNumericOp, isBinaryNumericOp, isCommutativeOp, isIrTerminator, simdExtraOperandCount, isWideArithOp, isWideMulOp, wideArithOpcode, IrScratch } from './ir.zena';
 import { WasmStruct } from '../wasm-module.zena';
 import { IrCfg } from './cfg.zena';
 
@@ -183,7 +182,10 @@ export final class ZirFunctionEmitter {
   var graduatedLocals = 0;
   var demotedLocals = 0;
 
-  new(this.wasm, this.emitter, this.func, this.body, this.cfg);
+  /** Reusable per-function tables; the emission is one scope of it. */
+  scratch: IrScratch;
+
+  new(this.wasm, this.emitter, this.func, this.body, this.cfg, this.scratch);
 
   emit(): void {
     this.emitter.emitFunctionCodeStart(this.func);
@@ -550,7 +552,7 @@ export final class ZirFunctionEmitter {
     // before every instruction. mv_get projections adopt their call's
     // position: the call's emission is what writes projection locals,
     // so their live ranges must start there.
-    let posOf = new Array<i32>(count);
+    let posOf = this.scratch.i32();
     for (var i = 0; i < count; i += 1) {
       posOf.push(-1);
     }
@@ -571,6 +573,8 @@ export final class ZirFunctionEmitter {
     // function's four of them pushed from empty doubled through half a
     // gigabyte of discarded buffers.
     let words = (count + 31) >> 5;
+    // Fresh and sized up front rather than pooled: built once per
+    // function, and for a large function too big to keep around.
     let liveIn = new Array<i32>(nb * words);
     let liveOut = new Array<i32>(nb * words);
     let defs = new Array<i32>(nb * words);
@@ -937,12 +941,13 @@ export final class ZirFunctionEmitter {
   #scheduleStack(): void {
     let {body} = this;
     let count = body.instCount();
-    let useCount = new Array<i32>(count);
+    let useCount = this.scratch.i32();
     for (var i = 0; i < count; i += 1) {
       useCount.push(0);
     }
+    let operands = this.scratch.i32();
     for (var i = 0; i < count; i += 1) {
-      let operands = new Array<i32>();
+      operands.clear();
       body.appendValueOperands(i, operands);
       for (let v in operands) {
         if (v >= 0 && v < count) {
@@ -954,18 +959,19 @@ export final class ZirFunctionEmitter {
     // teed value leaves one copy on the stack (later uses read the
     // local), so a second consumer matching it in its prefix would
     // find the copy already consumed and read its operands swapped.
-    let stackClaimed = new Array<boolean>(count);
+    let stackClaimed = this.scratch.bool();
     for (var sc = 0; sc < count; sc += 1) {
       stackClaimed.push(false);
     }
     // Where each instruction sits, for the early-read check below: a
     // leading operand read before a chain must be defined before it.
-    let instBlock = new Array<i32>();
-    let instPos = new Array<i32>();
+    let instBlock = this.scratch.i32();
+    let instPos = this.scratch.i32();
     for (var ip = 0; ip < count; ip += 1) {
       instBlock.push(-1);
       instPos.push(-1);
     }
+    let ops = this.scratch.i32();
     for (var bi = 0; bi < body.blocks.length; bi += 1) {
       let bl = body.blocks[bi];
       for (var q = 0; q < bl.insts.length; q += 1) {
@@ -989,7 +995,7 @@ export final class ZirFunctionEmitter {
         let cop = body.op(consumer);
         if (cop == IrOp.nop || cop == IrOp.mv_get) { continue; }
         if (!this.#streamsFirstOperand(cop)) { continue; }
-        let ops = new Array<i32>();
+        ops.clear();
         body.appendValueOperands(consumer, ops);
         if (ops.length == 0) { continue; }
         // A LEADING run of operands streams when its producers are
@@ -2629,9 +2635,11 @@ export final class ZirFunctionEmitter {
 }
 
 /** Emits one function; returns (graduated, kept-nullable) ref-local counts. */
-export let emitZirFunction = (wasm: WasmModule, emitter: WasmEmitter, func: WasmFunction, body: IrBody): (i32, i32) => {
+export let emitZirFunction = (wasm: WasmModule, emitter: WasmEmitter, func: WasmFunction, body: IrBody, scratch: IrScratch): (i32, i32) => {
+  scratch.enter();
   let cfg = new IrCfg(body);
-  let zirEmitter = new ZirFunctionEmitter(wasm, emitter, func, body, cfg);
+  let zirEmitter = new ZirFunctionEmitter(wasm, emitter, func, body, cfg, scratch);
   zirEmitter.emit();
+  scratch.exit();
   return (zirEmitter.graduatedLocals, zirEmitter.demotedLocals);
 };
