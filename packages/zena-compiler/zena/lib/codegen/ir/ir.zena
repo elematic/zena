@@ -1511,3 +1511,74 @@ export let irOpName = (op: IrOp): String => {
   }
   return `op#${raw}`;
 };
+
+/**
+ * The users of every value of a body, packed: value `v`'s users are
+ * `list[start[v] .. start[v + 1])`. One table per body rather than one
+ * list per instruction, which constant propagation, scalar
+ * replacement, jump threading and the escape analysis each built on
+ * every visit — 128M lists in an -O2 compile of the zena-cli module.
+ */
+export final class IrUseLists {
+  start: GrowableArray<i32>;
+  list: GrowableArray<i32>;
+  new(this.start, this.list);
+
+  count(v: i32): i32 {
+    return this.start[v + 1] - this.start[v];
+  }
+
+  at(v: i32, k: i32): i32 {
+    return this.list[this.start[v] + k];
+  }
+}
+
+/** The use lists of `body`'s non-nop instructions. */
+export let buildUseLists = (body: IrBody): IrUseLists => {
+  let count = body.instCount();
+  let start = new Array<i32>(count + 2);
+  for (var i = 0; i <= count; i += 1) {
+    start.push(0);
+  }
+  let operands = new Array<i32>();
+  // Count users per value into start[v + 1], then prefix-sum, so the
+  // second pass places each user at its value's cursor.
+  for (var i = 0; i < count; i += 1) {
+    if (body.op(i) == IrOp.nop) {
+      continue;
+    }
+    operands.clear();
+    body.appendValueOperands(i, operands);
+    for (let v in operands) {
+      if (v >= 0 && v < count) {
+        start[v + 1] = start[v + 1] + 1;
+      }
+    }
+  }
+  for (var v = 0; v < count; v += 1) {
+    start[v + 1] = start[v + 1] + start[v];
+  }
+  let total = start[count];
+  let list = new Array<i32>(total + 1);
+  for (var i = 0; i < total; i += 1) {
+    list.push(0);
+  }
+  let next = new Array<i32>(count + 1);
+  for (var v = 0; v < count; v += 1) {
+    next.push(start[v]);
+  }
+  for (var i = 0; i < count; i += 1) {
+    if (body.op(i) == IrOp.nop) {
+      continue;
+    }
+    operands.clear();
+    body.appendValueOperands(i, operands);
+    for (let v in operands) {
+      if (v >= 0 && v < count) {
+        list[next[v]] = i;
+        next[v] = next[v] + 1;
+      }
+    }
+  }
+  return new IrUseLists(start, list);
+};

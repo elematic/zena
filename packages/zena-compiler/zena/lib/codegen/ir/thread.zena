@@ -35,7 +35,7 @@
  *
  * Determinism: blocks in id order, one threading per CFG rebuild.
  */
-import { IrBody, IrOp } from './ir.zena';
+import { IrBody, IrOp, buildUseLists } from './ir.zena';
 import { IrCfg } from './cfg.zena';
 import { retarget } from './blockmerge.zena';
 import { i32ToString } from 'zena:core';
@@ -108,30 +108,6 @@ let conditionNegated = (body: IrBody, c: i32): boolean => {
   return body.op(body.a[term]) == IrOp.i32_eqz;
 };
 
-/** Users of every value, from the non-nop instructions. */
-let userLists = (body: IrBody): GrowableArray<GrowableArray<i32>> => {
-  let count = body.instCount();
-  let users = new Array<GrowableArray<i32>>();
-  for (var i = 0; i < count; i += 1) {
-    users.push(new Array<i32>());
-  }
-  let operands = new Array<i32>();
-  for (var i = 0; i < count; i += 1) {
-    if (body.op(i) == IrOp.nop) {
-      continue;
-    }
-    while (operands.length > 0) {
-      operands.pop();
-    }
-    body.appendValueOperands(i, operands);
-    for (let v in operands) {
-      if (v >= 0 && v < count) {
-        users[v].push(i);
-      }
-    }
-  }
-  return users;
-};
 
 let eligible = (body: IrBody, cfg: IrCfg, c: i32): boolean => {
   let blk = body.blocks[c];
@@ -182,10 +158,11 @@ let eligible = (body: IrBody, cfg: IrCfg, c: i32): boolean => {
   }
   // Every other use of a parameter sits under one of the targets, and
   // a target that would need parameters has no other predecessor.
-  let users = userLists(body);
+  let users = buildUseLists(body);
   if (cond != p) {
     // The eqz belongs to the branch alone.
-    for (let u in users[cond]) {
+    for (var k = 0; k < users.count(cond); k += 1) {
+      let u = users.at(cond, k);
       if (u != term) {
         return false;
       }
@@ -194,7 +171,8 @@ let eligible = (body: IrBody, cfg: IrCfg, c: i32): boolean => {
   var needT = false;
   var needF = false;
   for (let q in blk.params) {
-    for (let u in users[q]) {
+    for (var k = 0; k < users.count(q); k += 1) {
+      let u = users.at(q, k);
       if (u == term || u == cond) {
         continue;
       }
@@ -260,7 +238,7 @@ let threadThrough = (body: IrBody, cfg: IrCfg, c: i32): void => {
   let targets = new Array<i32>();
   targets.push(succs[0].target);
   targets.push(succs[1].target);
-  let users = userLists(body);
+  let users = buildUseLists(body);
   let count = body.instCount();
   var j = -1;
   for (var k = 0; k < blk.params.length; k += 1) {
@@ -280,7 +258,8 @@ let threadThrough = (body: IrBody, cfg: IrCfg, c: i32): void => {
     let used = new Array<i32>();
     for (let q in blk.params) {
       var usedHere = false;
-      for (let u in users[q]) {
+      for (var k = 0; k < users.count(q); k += 1) {
+        let u = users.at(q, k);
         if (u == term || u == body.a[term]) {
           continue;
         }
