@@ -26,7 +26,7 @@
  * Determinism: functions in module order, uses in instruction order;
  * the function map is used for lookups only.
  */
-import { IrBody, IrOp, IrRefFunc } from './ir.zena';
+import { IrBody, IrOp, IrRefFunc, IrUseLists, buildUseLists } from './ir.zena';
 import { WasmModule, WasmFunction } from '../wasm-module.zena';
 
 export final class EscapeSummaries {
@@ -46,6 +46,12 @@ export final class EscapeSummaries {
       }
       this.escapes.push(row);
     }
+    // The bodies do not change during the fixpoint, so each one's use
+    // lists are built once, on the first round that needs them.
+    let tables = new Array<IrUseLists | null>(bodies.length);
+    for (var f = 0; f < bodies.length; f += 1) {
+      tables.push(null);
+    }
     var round = 0;
     var changed = true;
     while (changed && round < 8) {
@@ -55,7 +61,8 @@ export final class EscapeSummaries {
         if (row.length == 0) {
           continue;
         }
-        let users = buildUsers(bodies[f]);
+        let users = tables[f] ?? buildUseLists(bodies[f]);
+        tables[f] = users;
         for (var k = 0; k < row.length; k += 1) {
           if (row[k]) {
             continue;
@@ -87,8 +94,7 @@ export final class EscapeSummaries {
     return row[k];
   }
 
-  #paramEscapes(body: IrBody, users: GrowableArray<GrowableArray<i32>>,
-      k: i32): boolean {
+  #paramEscapes(body: IrBody, users: IrUseLists, k: i32): boolean {
     let count = body.instCount();
     let alias = new Array<boolean>();
     for (var i = 0; i < count; i += 1) {
@@ -100,7 +106,8 @@ export final class EscapeSummaries {
     work.push(start);
     while (work.length > 0) {
       let v = work.pop();
-      for (let u in users[v]) {
+      for (var ui = 0; ui < users.count(v); ui += 1) {
+        let u = users.at(v, ui);
         let op = body.op(u);
         let av = body.a[u];
         if (op == IrOp.ref_cast || op == IrOp.ref_as_non_null) {
@@ -181,27 +188,3 @@ export final class EscapeSummaries {
   }
 }
 
-/** users[v]: the instructions reading value v, in id order. */
-let buildUsers = (body: IrBody): GrowableArray<GrowableArray<i32>> => {
-  let count = body.instCount();
-  let users = new Array<GrowableArray<i32>>();
-  for (var i = 0; i < count; i += 1) {
-    users.push(new Array<i32>());
-  }
-  let operands = new Array<i32>();
-  for (var i = 0; i < count; i += 1) {
-    if (body.op(i) == IrOp.nop) {
-      continue;
-    }
-    while (operands.length > 0) {
-      operands.pop();
-    }
-    body.appendValueOperands(i, operands);
-    for (let o in operands) {
-      if (o >= 0 && o < count) {
-        users[o].push(i);
-      }
-    }
-  }
-  return users;
-};

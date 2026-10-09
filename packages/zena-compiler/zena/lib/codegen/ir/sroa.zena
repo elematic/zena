@@ -29,7 +29,7 @@
  * Determinism: candidates in id order, blocks in id order, no hash
  * containers.
  */
-import { IrBody, IrOp, IrRefField } from './ir.zena';
+import { IrBody, IrOp, IrRefField, buildUseLists } from './ir.zena';
 import { IrCfg } from './cfg.zena';
 import { WasmStruct } from '../wasm-module.zena';
 import { allocatedStruct } from './simplify.zena';
@@ -43,25 +43,7 @@ export let runSroa = (body: IrBody): i32 => {
   }
 
   // Users of every value, for the escape test.
-  let users = new Array<GrowableArray<i32>>();
-  for (var i = 0; i < count; i += 1) {
-    users.push(new Array<i32>());
-  }
-  let operands = new Array<i32>();
-  for (var i = 0; i < count; i += 1) {
-    if (body.op(i) == IrOp.nop) {
-      continue;
-    }
-    while (operands.length > 0) {
-      operands.pop();
-    }
-    body.appendValueOperands(i, operands);
-    for (let v in operands) {
-      if (v >= 0 && v < count) {
-        users[v].push(i);
-      }
-    }
-  }
+  let users = buildUseLists(body);
 
   // Candidates: a struct_new whose every use is a field read or a
   // field write with it as the receiver (a write storing it somewhere
@@ -80,7 +62,8 @@ export let runSroa = (body: IrBody): i32 => {
       continue;
     }
     var local = true;
-    for (let u in users[i]) {
+    for (var k = 0; k < users.count(i); k += 1) {
+      let u = users.at(i, k);
       let op = body.op(u);
       if (op == IrOp.struct_get && body.a[u] == i) {
         continue;

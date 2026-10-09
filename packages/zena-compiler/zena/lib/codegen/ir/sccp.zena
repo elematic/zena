@@ -38,7 +38,7 @@
  * Determinism: the lattice fixpoint does not depend on worklist
  * order, and the rewrites read only the fixpoint, in id order.
  */
-import { IrBlock, IrBody, IrOp } from './ir.zena';
+import { IrBlock, IrBody, IrOp, buildUseLists } from './ir.zena';
 import { ValTypeRef } from '../wasm.zena';
 import {
   IrConst, castOutcome, constOf, evalBinary, evalUnary, foldInstTo,
@@ -95,25 +95,7 @@ export let runSccp = (body: IrBody): i32 => {
   // Def → users, for the SSA worklist. Branch arguments make the
   // terminator a user, which is what re-meets a target's parameters
   // when an argument lowers.
-  let users = new Array<GrowableArray<i32>>();
-  for (var i = 0; i < count; i += 1) {
-    users.push(new Array<i32>());
-  }
-  let operands = new Array<i32>();
-  for (var i = 0; i < count; i += 1) {
-    if (body.op(i) == IrOp.nop) {
-      continue;
-    }
-    while (operands.length > 0) {
-      operands.pop();
-    }
-    body.appendValueOperands(i, operands);
-    for (let v in operands) {
-      if (v >= 0 && v < count) {
-        users[v].push(i);
-      }
-    }
-  }
+  let users = buildUseLists(body);
 
   let state = new Array<i32>();
   let value = new Array<IrConst | null>();
@@ -153,8 +135,8 @@ export let runSccp = (body: IrBody): i32 => {
     }
     state[inst] = newState;
     value[inst] = newValue;
-    for (let u in users[inst]) {
-      ssaWork.push(u);
+    for (var k = 0; k < users.count(inst); k += 1) {
+      ssaWork.push(users.at(inst, k));
     }
   };
 
