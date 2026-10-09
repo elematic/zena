@@ -510,6 +510,63 @@ What the census still shows, in the order it ranks them:
 - **`MapEntry<String, Type>`**, 2.2M: the substitution caches keyed by
   string.
 
+## The -O2 compile, and keys without strings
+
+The census so far was of the `-O1` compile of the `zena-cli` module.
+The self-build — the bootstrap compiling the compiler at `-O2`, which
+`build:cli` runs and everything in CI waits on — was five times
+worse: 22.5 GiB for the same module at `-O2`, 405M objects, and a
+profile with 44% of its time in one function.
+
+| compile          | main     | this branch |
+| ---------------- | -------- | ----------- |
+| `-O1`, allocated | 4.41 GiB | 4.30 GiB    |
+| `-O1`, objects   | 88.7M    | 86.3M       |
+| `-O2`, allocated | 22.5 GiB | 12.3 GiB    |
+| `-O2`, objects   | 405M     | 190M        |
+| `-O2`, wall      | 68 s     | 33 s        |
+
+(Allocation with the census running; the walls without it, two runs
+each on a near-idle machine, the "main" module being #218's head.)
+
+- **Use lists per pass.** Constant propagation, scalar replacement,
+  jump threading and the escape analysis each built a
+  `GrowableArray<i32>` of users per instruction on every visit, and
+  the escape fixpoint rebuilt its tables on every one of up to eight
+  rounds, per inlining round: 128M lists, 17 of the 22 GB. One packed
+  `IrUseLists` per body (`buildUseLists`) serves all four, and the
+  escape summaries build each body's once per fixpoint.
+- **`inlinableSize` per call site.** The inliner walked the whole
+  callee body at every call that named it: 44% of the `-O2` profile.
+  The size is memoized per callee for the sweep.
+- **The CFG's per-block lists** (predecessors, successors, dominator
+  children), built 474K times at `-O2`: packed the same way.
+- **The function index**, rebuilt per sweep by four passes: memoized
+  on the module and dropped when the function list changes.
+
+Keys without strings. Everything that identified a generic type by
+the identities of other types wrote those uids into a string and
+hashed it: the instantiation caches on a class or interface template
+(`argumentUidKey`), the substitution frames that answer a re-entrant
+mention, codegen's substitution memo, the referrers RTA dedups when
+they carry type arguments. `TypeArgTrie` keys them all: the node for
+an argument list is reached by walking one `Map<i32, …>` per element,
+so a hit allocates nothing, and the interner's union table is the
+same trie. This is structural interning of generic types for every
+argument that already has identity — primitives, declared types,
+canonical instantiations, interned unions. A function, record or
+tuple argument still has a fresh uid per substitution, so an
+instantiation over one is not shared; interning those needs
+`FunctionType`'s declaration fields moved off the type first.
+
+What the `-O2` census still shows: 36M small `Array<i32>` lists, now
+mostly the inliner's per-site argument lists and the per-block
+tables of block cleanup and constant propagation; a long tail of
+per-instruction tables sized to large inlined bodies (10K arrays of
+64–128 KB, a gigabyte), which only fewer passes or a per-body scratch
+arena would remove; and `successors()` lists from the `-O2` passes,
+7.5M.
+
 ## What is left
 
 In the order the snapshot ranks them, each measurable by the same
