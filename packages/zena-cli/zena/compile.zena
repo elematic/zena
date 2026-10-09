@@ -27,6 +27,7 @@ import { runModule } from 'zena:wasm';
 import {
   CompileFileOptions, compileFile, defaultOptLevel, defaultTarget, parseOptLevel
 } from 'zena-compiler:compile-file';
+import { targetEmitsComponent } from 'zena-compiler:targets';
 import { sha256HexOfString } from 'zena:crypto';
 import {
   Options, cliModule, envSet, repoRelative, repoRoot, resolveUserPath, stdlibDir
@@ -94,6 +95,70 @@ export let compileTo = (
   compileRecording(request, options, out, quiet, (path: String): void => {});
 };
 
+var runtimeMemoryModuleThisProcess: AbsolutePath | null = null;
+
+/**
+ * The component runtime memory module, through the compile cache.
+ *
+ * Every component embeds it, and its bytes do not vary with the
+ * program: core module 0 has no imports, and the program module imports
+ * its exports at the component level. Compiling it is about two thirds
+ * of a small component build, and `zena test` runs one process per test
+ * file, so without this every one of those processes compiles the same
+ * 1459 bytes again.
+ *
+ * It goes through `compileCached` rather than a build-time artifact
+ * because the cache already answers the two hard questions: where to
+ * put it so that an installed `zena` can reach it, and when it is
+ * stale. Its `.deps` records the standard library files the module
+ * read, so editing the allocator rebuilds it; the key covers the
+ * compiler's own identity, so a new compiler does too. The request's
+ * target is `freestanding`, which is not a component target, so this
+ * does not recurse.
+ */
+let cachedRuntimeMemoryModule = (options: Options): AbsolutePath => {
+  let already = runtimeMemoryModuleThisProcess;
+  if (already != null) {
+    return already;
+  }
+  let request = new CompileRequest(
+      new AbsolutePath(`${stdlibDir().value}/wasi/memory.zena`));
+  request.target = 'freestanding';
+  let path = compileCached(request, options);
+  // Held for the process: the standard library cannot change under a
+  // running command, and `compileCached` asks about it twice — once
+  // before a program's own freshness check, once while compiling.
+  runtimeMemoryModuleThisProcess = path;
+  return path;
+};
+
+/**
+ * The files a cached entry recorded reading, from its `.deps`.
+ *
+ * Empty when there is no `.deps` beside the module, which is what a
+ * compile that was not cached leaves — the caller then records nothing
+ * and its own entry is rebuilt next time, which is safe.
+ */
+let recordedDeps = (modulePath: AbsolutePath): GrowableArray<String> => {
+  let paths = new GrowableArray<String>();
+  let depsPath = `${modulePath.value.sliceBytes(0, modulePath.value.length - 5)}.deps`;
+  if (!isFile(depsPath)) {
+    return paths;
+  }
+  for (let line in readFile(depsPath).split('\n')) {
+    if (line == '') {
+      continue;
+    }
+    // "<modified> <size> <path>"; the path may contain spaces.
+    let second = spaceAfter(line, spaceAfter(line, 0) + 1);
+    if (second < 0) {
+      continue;
+    }
+    paths.push(line.sliceBytes(second + 1, line.length));
+  }
+  return paths;
+};
+
 let compileRecording = (
   request: CompileRequest,
   options: Options,
@@ -120,6 +185,25 @@ let compileRecording = (
     parsed
   };
   let wit = request.wit;
+  let target = request.target ?? defaultTarget;
+  // Empty for a target that embeds no runtime memory module, as
+  // `witPath` is empty for a compile with no declared world.
+  let runtimeMemory = if (!targetEmitsComponent(target)) {
+    ''
+  } else {
+    let runtime = cachedRuntimeMemoryModule(options);
+    // The sources behind those bytes are sources of *this* module: the
+    // program embeds the runtime module's output, so a change to the
+    // allocator changes the program. Recording the output's path
+    // instead would read fresh here until something else rebuilt it —
+    // an ordering a refactor could break without any test noticing,
+    // and the symptom would be a program embedding an allocator that
+    // no longer matches its source.
+    for (let path in recordedDeps(runtime)) {
+      onRead(path);
+    }
+    runtime.value
+  };
   let compileOptions: CompileFileOptions = {
     entry: repoRelative(request.source),
     outPath: out.value,
@@ -129,10 +213,11 @@ let compileRecording = (
     debugNames: options.debug,
     warnUnnecessaryCasts: envSet('ZENA_WARN_UNNECESSARY_CASTS'),
     onRead,
-    target: request.target ?? defaultTarget,
+    target,
     witPath: if (wit == null) { '' } else { repoRelative(wit) },
     worldName: request.world ?? '',
     optLevel,
+    runtimeMemoryPath: runtimeMemory,
   };
   var status = 1;
   try {
