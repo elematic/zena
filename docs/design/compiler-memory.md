@@ -360,6 +360,61 @@ Three retained structures the snapshot ranked, each a few lines:
 Snapshot inside discovery, same point: 6.48M objects and 394 MiB to
 5.77M and 359 MiB; strings 773K to 650K.
 
+Then three more, from the same table:
+
+- Identifier names are interned: the tokenizer hands each name through
+  a `StringInterner` the library loader owns, so every identifier of
+  one spelling is one `String`, and the name maps downstream hash a
+  string that has hashed before. 154K live name strings become a few
+  thousand.
+- `FunctionType.parameters` is a `GrowableArray<Type>` rather than the
+  `Array<Type>` interface, which cost a fat pointer beside each
+  signature's array: 153K of them.
+- `WasmFunction.captures` and `mutableCaptures` are null until a
+  closure captures something, in place of an empty array and set on
+  each of 41K functions.
+
+Snapshot at the same point: 5.27M objects, 335 MiB; strings 475K.
+
+## A 2 s swing that is not in the compiler
+
+The interning and lazy-capture changes above made the `zena` module
+compile 2 s slower under wasmtime (18.0 s to 20.0 s, interleaved) and
+no slower under V8 (5.93–5.96 s against 5.99–6.00 s). Each change
+alone cost the 2 s, both together cost the 2 s, and reordering two
+functions in a pristine tree cost nothing. The collector was not it:
+`zena-run` now installs a logger when `ZENA_RUST_LOG` is set, and
+`ZENA_RUST_LOG=wasmtime::runtime::store::gc=trace,wasmtime::runtime::vm::gc::enabled::copying=trace`
+showed ten collections totalling 3.06 s against 3.00 s. Emitted code
+was not it: `call_ref`, `ref.cast` and `ref.test` counts, the ZIR pass
+statistics and the set of open struct types were the same.
+
+`samply` (docs/profiling.md) with `scripts/samply-diff.py`, which
+resolves wasm frames through the perf map and native frames through
+`nm`, put all of it in one native function:
+`StoreOpaque::is_subtype_cached`, 2,330 samples to 4,489, with every
+wasm caller's share roughly doubled. A patched wasmtime showed both
+runs make the same number of subtype checks (67M at the same
+milestones) over the same 425 distinct (subtype, supertype) pairs.
+
+The cache is `HashMap<u64, bool, NopHasher>` keyed by
+`(sub << 32) | sup`, and `NopHasher` returns the key as the hash. So
+hashbrown's bucket index is the low bits of the supertype's engine
+type index and its tag the high bits of the subtype's: every pair that
+casts to one common supertype (`Type`, `Node`, `Array`) lands in one
+bucket group, and with 425 entries in a 512-slot table the probe
+length is whatever the exact index values make it. Those values shift
+with any change to the module, so any edit can flip a compile between
+the fast and slow placements. Reserving 8,192 slots in the patched
+runtime took the slow build from 24.3 s to 22.3 s, level with the fast
+one (22.0–22.6 s; the patch's per-call env lookup inflates both).
+
+This is wasmtime's to fix — a real hasher, or sizing the cache for a
+few thousand pairs — and the reproduction is the two modules and
+`samply-diff.py --callers is_subtype`. Until then, a 2 s step in the
+`zena` module compile between two builds says nothing about the change
+between them unless the subtype-check count or a profile says so too.
+
 ## What is left
 
 In the order the snapshot ranks them, each measurable by the same
@@ -370,14 +425,8 @@ snapshot afterwards:
   ~125K of them and exist to compare types that identity now
   compares; the `Map<String, …>`
   tables of the checker and the module hold most of the rest.
-  Identifier names are 154K `String`s for far fewer distinct names,
-  because the tokenizer slices a new one per token — interning them in
-  the tokenizer makes every identifier of one spelling one object.
-- **`FunctionType.parameters` as a concrete array.** It is
-  `Array<Type>`, an interface, so every signature carries a fat
-  pointer (152K live) around its `GrowableArray`.
-- **`WasmFunction`**, 41K at 432 bytes: lazy `captures`/`mutableCaptures`,
-  and the per-kind nullable fields to side records.
+- **`WasmFunction`**, 41K at 432 bytes: the per-kind nullable fields
+  to side records.
 - **`SourceLocation`** folded into the node: 437K objects.
 - **`FunctionType`'s declaration fields** onto the declaration, which
   is what would let function types intern as unions and
