@@ -186,12 +186,20 @@ export let runInline = (wasm: WasmModule, bodies: GrowableArray<IrBody>,
       }
     }
   }
+  // inlinableSize per callee, computed on first use and forgotten
+  // once a body has taken splices: walking the callee at every call
+  // site was 44% of an -O2 compile.
+  let sizes = new Array<i32>(bodies.length);
+  for (var i = 0; i < bodies.length; i += 1) {
+    sizes.push(-2);
+  }
   var total = 0;
   for (var i = 0; i < bodies.length; i += 1) {
     let n = inlineIntoBody(bodies[i], bodyIndex, bodies, i, siteCounts,
-        escapes);
+        escapes, sizes);
     if (n > 0) {
       changed[i] = true;
+      sizes[i] = -2;
       total += n;
     }
   }
@@ -363,7 +371,8 @@ let nopOut = (body: IrBody, inst: i32): void => {
 
 let inlineIntoBody = (caller: IrBody, bodyIndex: Map<WasmFunction, i32>,
     bodies: GrowableArray<IrBody>, callerIdx: i32,
-    siteCounts: GrowableArray<i32>, escapes: EscapeSummaries): i32 => {
+    siteCounts: GrowableArray<i32>, escapes: EscapeSummaries,
+    sizes: GrowableArray<i32>): i32 => {
   var count = 0;
   var generalSplices = 0;
   let perCallee = new Map<i32, i32>();
@@ -442,7 +451,11 @@ let inlineIntoBody = (caller: IrBody, bodyIndex: Map<WasmFunction, i32>,
         continue;
       }
       let callee = bodies[calleeIdx];
-      let size = inlinableSize(callee);
+      var size = sizes[calleeIdx];
+      if (size == -2) {
+        size = inlinableSize(callee);
+        sizes[calleeIdx] = size;
+      }
       if (size < 0) {
         j += 1;
         continue;
