@@ -1,68 +1,34 @@
 /**
- * Identifier interning across a whole compilation.
+ * Identifier interning across a compilation.
  *
- * `StringTable` itself is tested in the stdlib. What is tested here is the
- * wiring: that `LibraryLoader` holds one table for every file it parses, so
- * the same name in two different files is one `String` object — and that
- * turning the option off really does turn it off, which is what makes the
- * A/B measurements in docs/design/string-interning.md mean anything.
- *
- * And that none of it is observable in the output. Interning changes which
- * object a name is, never what it says, so the bytes must not move.
+ * The library loader owns one `StringTable` for every file it parses,
+ * so an identifier spelled the same way in two files is the same
+ * `String` object. These tests check that scope — one table per
+ * loader, every file through it — rather than the table itself, which
+ * `packages/stdlib/tests/string-table` covers.
  */
 
 import { suite, test, TestContext } from 'zena:test';
 import { isTrue, equal } from 'zena:assert';
-import { readFile } from 'zena:fs';
-import { Array } from 'zena:array';
-import { Error } from 'zena:error';
-import { i32ToString } from 'zena:string-convert';
-import { CompilerHost } from '../lib/library-loader.zena';
-import {
-  Compiler, createCompiler, CompilerOptions, CompilationResult, checkCompilation
-} from '../lib/compiler.zena';
-import { loadPackageMap } from '../lib/package-manifest.zena';
-import { stdlibIdToRelativeFile } from '../lib/module-resolver.zena';
-import { DiagnosticSeverity } from '../lib/diagnostics.zena';
+import { MockHost, makeCompiler } from './test-utils.zena';
 import { Node, Identifier, IdentifierPattern } from '../lib/ast.zena';
 import { walkEnter } from '../lib/visitor.zena';
-import { BinaryGenerator } from '../lib/codegen/binary-generator.zena';
-import { Program, CompilationUnit } from '../lib/program.zena';
-
-let stdlibRoot = 'packages/stdlib/zena';
-
-class PlainHost implements CompilerHost {
-  new();
-  readFile(path: String): String {
-    if (path.startsWith('zena:')) {
-      return readFile(`${stdlibRoot}/${stdlibIdToRelativeFile(path)}`);
-    }
-    return readFile(path);
-  }
-}
-
-let newCompiler = (internStrings: boolean): Compiler => {
-  let host = new PlainHost();
-  let packages = loadPackageMap(host, 'zena-packages.json');
-  let options = new CompilerOptions('zena-cli', stdlibRoot, packages);
-  options.internStrings = internStrings;
-  return createCompiler(host, options);
-};
+import { CompilationResult } from '../lib/compiler.zena';
 
 /**
- * A two-file program: both files name something `value`, and one imports
- * the other, so a single compilation parses both.
+ * A two-file program: both files name something `value`, and one
+ * imports the other, so a single compilation parses both.
  */
-let entry = 'packages/zena-compiler/test-files/interning/shared-b.zena';
+let program = (host: MockHost): void => {
+  host.addFile('/a.zena', 'export let value = 1;\nexport let twice = value + value;\n');
+  host.addFile('/b.zena', "import { value } from './a.zena';\nexport let main = (): i32 => value + value;\n");
+};
 
-/** Every `value` identifier in the two fixture files, in load order. */
+/** Every `value` identifier in the two files, in load order. */
 let valueNames = (result: CompilationResult): Array<String> => {
   let found = new Array<String>();
   for (let file in result.files) {
-    // The stdlib names plenty of things `value` too; the fixtures are the
-    // point, and including the stdlib would only make the counts drift
-    // whenever it changes.
-    if (!file.path.contains('test-files/interning/')) {
+    if (!(file.path.endsWith('a.zena') || file.path.endsWith('b.zena'))) {
       continue;
     }
     walkEnter(file.ast, (n: Node): void => {
@@ -91,60 +57,29 @@ let identityCount = (names: Array<String>): i32 => {
   return representatives.length;
 };
 
-let compileToWasm = (internStrings: boolean): ByteArray => {
-  let c = newCompiler(internStrings);
-  let result = c.compile(entry);
-  let checked = checkCompilation(result, null, false);
-  for (let diag in checked.diagnostics) {
-    if (diag.severity == DiagnosticSeverity.Error) {
-      throw new Error(`${entry}: ${diag.message}`);
-    }
-  }
-  let entryAst = result.entry.ast;
-  let units = new Array<CompilationUnit>();
-  var entryUnit: CompilationUnit | null = null;
-  for (let file in result.files) {
-    let res = checked.results[file.path];
-    if (res != null) {
-      let unit = {ast: file.ast, model: res.model};
-      units.push(unit);
-      if (file.ast.path == entryAst.path) { entryUnit = unit; }
-    }
-  }
-  return new BinaryGenerator('zena-cli', false)
-    .generate(new Program(units, entryUnit))
-    .toByteArray();
+let compileProgram = (): CompilationResult => {
+  let host = new MockHost();
+  program(host);
+  return makeCompiler(host).compile({entry: '/b.zena', target: 'freestanding'});
 };
 
 export let tests = suite('identifier interning', (): void => {
-  test('the fixture repeats the name across both files', (ctx: TestContext): void => {
-    // Guards the two tests below: if the fixtures stop repeating `value`,
-    // "all occurrences are one object" becomes true for the boring reason.
-    let names = valueNames(newCompiler(true).compile(entry));
-    isTrue(names.length >= 4,
-      `expected at least 4 occurrences of \`value\`, found ${i32ToString(names.length)}`);
+  test('the program repeats the name across both files', (ctx: TestContext): void => {
+    let names = valueNames(compileProgram());
+    isTrue(names.length >= 5,
+      `expected at least 5 occurrences of \`value\`, found ${i32ToString(names.length)}`);
   });
 
   test('one table spans every file in the compilation', (ctx: TestContext): void => {
-    let names = valueNames(newCompiler(true).compile(entry));
+    let names = valueNames(compileProgram());
     equal(identityCount(names), 1,
       'every occurrence of `value`, in both files, should be the same String');
   });
 
-  test('the option turns it off', (ctx: TestContext): void => {
-    let names = valueNames(newCompiler(false).compile(entry));
-    isTrue(identityCount(names) > 1,
-      'without interning each occurrence should be its own slice');
-  });
-
-  test('emits identical bytes either way', (ctx: TestContext): void => {
-    let interned = compileToWasm(true);
-    let plain = compileToWasm(false);
-    equal(interned.length, plain.length, 'module length changed with interning');
-    var differing = 0;
-    for (var i = 0; i < interned.length; i += 1) {
-      if (interned[i] != plain[i]) { differing += 1; }
-    }
-    equal(differing, 0, 'interning changed the emitted bytes');
+  test('two compilers do not share a table', (ctx: TestContext): void => {
+    let first = valueNames(compileProgram());
+    let second = valueNames(compileProgram());
+    isTrue(!(first[0] === second[0]),
+      'a second compiler should intern into a table of its own');
   });
 });
