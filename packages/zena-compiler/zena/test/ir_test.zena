@@ -93,6 +93,42 @@ export let tests = suite('ir: core', (): void => {
     equal(verifyIr(body).length, 0);
   });
 
+  test('successor records match the decoded successors', (ctx: TestContext): void => {
+    let b = new IrBuilder();
+    let entry = b.newBlock();
+    let thenBlk = b.newBlock();
+    let elseBlk = b.newBlock();
+    let cond = b.blockParam(entry, i32Type());       // %0
+    let v = b.blockParam(entry, i32Type());          // %1
+    b.switchTo(entry);
+    b.brIf(cond, thenBlk, noArgs(), elseBlk, args2(v, cond)); // %2
+    b.switchTo(thenBlk);
+    b.ret(v);                                        // %3
+    let p = b.blockParam(elseBlk, i32Type());        // %4
+    let q = b.blockParam(elseBlk, i32Type());        // %5
+    b.switchTo(elseBlk);
+    b.br(thenBlk, noArgs());                         // %6
+    let body = b.finish();
+
+    for (let term in [2, 3, 6]) {
+      let decoded = body.successors(term);
+      equal(body.successorCount(term), decoded.length);
+      for (var k = 0; k < decoded.length; k += 1) {
+        let rec = body.successorRecord(term, k);
+        equal(body.extra[rec], decoded[k].target);
+        equal(body.extra[rec + 1], decoded[k].argCount);
+        equal(rec + 2, decoded[k].argStart);
+      }
+    }
+    equal(body.successorCount(3), 0);
+    let second = body.successorRecord(2, 1);
+    equal(body.extra[second], elseBlk);
+    equal(body.extra[second + 1], 2);
+    equal(body.extra[second + 2], v);
+    equal(body.extra[second + 3], cond);
+    throws((): void => { body.successorRecord(2, 2); });
+  });
+
   test('types and refs are interned', (ctx: TestContext): void => {
     let b = new IrBuilder();
     let entry = b.newBlock();

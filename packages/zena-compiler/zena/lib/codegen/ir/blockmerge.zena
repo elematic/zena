@@ -84,13 +84,36 @@ let forwardEmptyBlocks = (body: IrBody): i32 => {
     if (body.op(i) == IrOp.nop) {
       continue;
     }
-    while (operands.length > 0) {
-      operands.pop();
-    }
+    operands.clear();
     body.appendValueOperands(i, operands);
     for (let v in operands) {
       if (v >= 0 && v < count) {
         useCount[v] += 1;
+      }
+    }
+  }
+  // The predecessors of every block along the edges this pass moves,
+  // kept current as it moves them, so each candidate looks only at
+  // the terminators that reach it rather than at every block's.
+  let preds = new Array<GrowableArray<i32>>();
+  for (var b = 0; b < nb; b += 1) {
+    preds.push(new Array<i32>());
+  }
+  for (var b = 0; b < nb; b += 1) {
+    let insts = body.blocks[b].insts;
+    if (insts.length == 0) {
+      continue;
+    }
+    let term = insts[insts.length - 1];
+    let op = body.op(term);
+    if (op != IrOp.br && op != IrOp.br_if && op != IrOp.br_table) {
+      continue;
+    }
+    let n = body.successorCount(term);
+    for (var k = 0; k < n; k += 1) {
+      let target = body.extra[body.successorRecord(term, k)];
+      if (target >= 0 && target < nb) {
+        preds[target].push(b);
       }
     }
   }
@@ -113,14 +136,16 @@ let forwardEmptyBlocks = (body: IrBody): i32 => {
     if (!empty) {
       continue;
     }
+    let onward = body.successorRecord(term, 0);
+    let onwardTarget = body.extra[onward];
+    let onwardArgc = body.extra[onward + 1];
     // Each parameter's uses are all in the br's argument list.
     var paramsLocal = true;
     for (let p in blk.params) {
       var inArgs = 0;
-      let onwardArgs = body.successors(term)[0];
       var i = 0;
-      while (i < onwardArgs.argCount) {
-        if (body.extra[onwardArgs.argStart + i] == p) {
+      while (i < onwardArgc) {
+        if (body.extra[onward + 2 + i] == p) {
           inArgs += 1;
         }
         i += 1;
@@ -132,50 +157,44 @@ let forwardEmptyBlocks = (body: IrBody): i32 => {
     if (!paramsLocal) {
       continue;
     }
-    let onward = body.successors(term)[0];
-    if (onward.target == e) {
+    if (onwardTarget == e) {
       continue;
     }
-    for (var b = 0; b < nb; b += 1) {
+    let ps = preds[e];
+    for (var pi = 0; pi < ps.length; pi += 1) {
+      let b = ps[pi];
       if (b == e) {
         continue;
       }
       let pInsts = body.blocks[b].insts;
-      if (pInsts.length == 0) {
-        continue;
-      }
       let pTerm = pInsts[pInsts.length - 1];
-      let pop = body.op(pTerm);
-      if (pop != IrOp.br && pop != IrOp.br_if && pop != IrOp.br_table) {
-        continue;
-      }
       // Successor slots are re-decoded after every rewrite, since a
       // rewrite appends a fresh record.
       var k = 0;
       while (true) {
-        let succs = body.successors(pTerm);
-        if (k >= succs.length) {
+        if (k >= body.successorCount(pTerm)) {
           break;
         }
-        let s = succs[k];
-        if (s.target != e) {
+        let rec = body.successorRecord(pTerm, k);
+        if (body.extra[rec] != e) {
           k += 1;
           continue;
         }
         let args = new Array<i32>();
         var i = 0;
-        while (i < onward.argCount) {
-          let v = body.extra[onward.argStart + i];
+        while (i < onwardArgc) {
+          let v = body.extra[onward + 2 + i];
           var mapped = v;
           for (var q = 0; q < blk.params.length; q += 1) {
             if (blk.params[q] == v) {
-              mapped = body.extra[s.argStart + q];
+              mapped = body.extra[rec + 2 + q];
             }
           }
           args.push(mapped);
           i += 1;
         }
-        retarget(body, pTerm, k, onward.target, args);
+        retarget(body, pTerm, k, onwardTarget, args);
+        preds[onwardTarget].push(b);
         forwarded += 1;
         k += 1;
       }
@@ -207,8 +226,10 @@ let fuseStraightLine = (body: IrBody): i32 => {
       if (insts.length == 0) {
         continue;
       }
-      for (let s in body.successors(insts[insts.length - 1])) {
-        incoming[s.target] += 1;
+      let term = insts[insts.length - 1];
+      let n = body.successorCount(term);
+      for (var k = 0; k < n; k += 1) {
+        incoming[body.extra[body.successorRecord(term, k)]] += 1;
       }
     }
     for (var p = 0; p < nb; p += 1) {
@@ -264,30 +285,34 @@ export let retarget = (body: IrBody, term: i32, k: i32, target: i32,
     prefixLen = 1;
   }
   let recordStart = if (op == IrOp.br) body.a[term] else body.b[term];
-  let succs = body.successors(term);
+  let count = body.successorCount(term);
   let idx = body.extra.length;
   var p = 0;
   while (p < prefixLen) {
     body.extra.push(body.extra[recordStart + p]);
     p += 1;
   }
-  for (var n = 0; n < succs.length; n += 1) {
-    let s = succs[n];
+  // The old records are read as the new ones are appended; the
+  // terminator still points at the old ones until the end.
+  var rec = body.successorRecord(term, 0);
+  for (var n = 0; n < count; n += 1) {
+    let argc = body.extra[rec + 1];
     if (n == k) {
       body.extra.push(target);
       body.extra.push(args.length);
       for (let v in args) {
         body.extra.push(v);
       }
-      continue;
+    } else {
+      body.extra.push(body.extra[rec]);
+      body.extra.push(argc);
+      var i = 0;
+      while (i < argc) {
+        body.extra.push(body.extra[rec + 2 + i]);
+        i += 1;
+      }
     }
-    body.extra.push(s.target);
-    body.extra.push(s.argCount);
-    var i = 0;
-    while (i < s.argCount) {
-      body.extra.push(body.extra[s.argStart + i]);
-      i += 1;
-    }
+    rec += 2 + argc;
   }
   if (op == IrOp.br) {
     body.a[term] = idx;
