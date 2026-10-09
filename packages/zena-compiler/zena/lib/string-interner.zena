@@ -1,0 +1,31 @@
+/**
+ * One `String` per spelling.
+ *
+ * The tokenizer slices a new `String` out of the source for every
+ * identifier it reads, and each `Identifier` node keeps its own: in a
+ * large compile 154K live strings for a few thousand distinct names
+ * (docs/design/compiler-memory.md). Interning names through one of
+ * these makes every identifier of one spelling the same object, which
+ * also makes the name maps downstream hash and compare a string that
+ * has hashed before.
+ *
+ * Owned by a `LibraryLoader`, so the table lives as long as the
+ * compiler's library set does and no longer; two compilers in one
+ * process keep separate tables.
+ */
+export final class StringInterner {
+  #table = new Map<String, String>();
+
+  /** The interned string equal to `s`: `s` itself the first time. */
+  intern(s: String): String {
+    if (let (true, existing) = this.#table.get(s)) {
+      return existing;
+    }
+    this.#table[s] = s;
+    return s;
+  }
+
+  size: i32 {
+    get { return this.#table.size; }
+  }
+}

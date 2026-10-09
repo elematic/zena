@@ -15,6 +15,7 @@ import {
   Module, ImportDeclaration, ExportAllDeclaration, ExportFromDeclaration, Statement, makeNodeIdGenerator, IdGenerator, NodeId,
 } from './ast.zena';
 import { parse, parseRecovering, ParseCompleteness } from './parser.zena';
+import { StringInterner } from './string-interner.zena';
 import { Diagnostic } from './diagnostics.zena';
 import { ModuleResolver, normalizePath } from './module-resolver.zena';
 import { ScopeResult } from './scope/scope-builder.zena';
@@ -193,6 +194,8 @@ export class LibraryLoader {
    * colliding with everything already cached.
    */
   #nodeIdGenerator = makeNodeIdGenerator();
+  /** Identifier names of every library this loader parses; see `StringInterner`. */
+  #interner = new StringInterner();
 
   /**
    * The generator every node this loader's modules contain draws its id
@@ -278,14 +281,14 @@ export class LibraryLoader {
     var parseErrors: GrowableArray<Diagnostic> = new Array<Diagnostic>(0);
     var completeness = ParseCompleteness.Complete;
     let ast = if (this.#recover) {
-      let result = parseRecovering(source, path, this.#nodeIdGenerator);
+      let result = parseRecovering(source, path, this.#nodeIdGenerator, this.#interner);
       parseErrors = result.diagnostics;
       completeness = result.completeness;
       result.ast
     } else {
       // Without recovery an incomplete parse throws, so reaching here at
       // all means the AST accounts for the whole file.
-      parse(source, path, this.#nodeIdGenerator)
+      parse(source, path, this.#nodeIdGenerator, this.#interner)
     };
     this.parseTime = this.parseTime + performance.end(tParse);
 

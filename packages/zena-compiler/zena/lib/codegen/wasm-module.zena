@@ -478,6 +478,10 @@ let heapSubtype = (a: WasmType, b: WasmType): boolean => {
  * Represents a single compiled WebAssembly function.
  * Tracks its eventual index, signature, and the AST node it was derived from.
  */
+/** The shared empty capture lists a function without captures reads. */
+export let noCaptures = new Array<SymbolId>();
+export let noMutableCaptures = new Set<SymbolId>();
+
 export final class WasmFunction implements Hashable {
   /** The semantic model of the module that declares this function. */
   var model: SemanticModel;
@@ -616,8 +620,14 @@ export final class WasmFunction implements Hashable {
   var isClosure: boolean = false;
   var isReferenceTaken: boolean = false;
   var contextStruct: WasmStruct | null = null;
-  var captures = new Array<SymbolId>();
-  var mutableCaptures = new Set<SymbolId>();
+  /**
+   * The symbols a closure captures, null for the great majority of
+   * functions that capture nothing: an array and a set per function
+   * were two empty tables on each of 41K functions. Readers go through
+   * `noCaptures`/`noMutableCaptures` for the null case.
+   */
+  var captures: GrowableArray<SymbolId> | null = null;
+  var mutableCaptures: Set<SymbolId> | null = null;
   var capturesThis: boolean = false;
   var isFunctionAdaptation: boolean = false;
   var functionAdaptationSource: FunctionType | null = null;
@@ -1700,7 +1710,7 @@ export final class WasmModule {
       this.functionAdaptations[key] = func;
     }
     if (func.isClosure) {
-      for (let symId in func.mutableCaptures) {
+      for (let symId in func.mutableCaptures ?? noMutableCaptures) {
         this.mutableCapturedSymbols.add(symId);
       }
     }

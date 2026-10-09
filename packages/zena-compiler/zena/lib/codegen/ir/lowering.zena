@@ -33,6 +33,7 @@ import { dirName, normalizePath } from '../../module-resolver.zena';
 import { ValType, ValTypeVoid, ValTypeI32, ValTypeI64, ValTypeF32, ValTypeF64, ValTypeV128, ValTypeRef, ValTypeRefNull, ValTypeAnyRef, ValTypeEqRef, ValTypeStructRef, ValTypeExternRef, ValTypeI8, ValTypeI16, valTypeEquals, isWasmSubtype, isRefValType, WasmType, refTargetOf } from '../wasm.zena';
 import {
   WasmModule, WasmFunction, WasmStruct, WasmField, WasmGlobal, WasmSignature, ClassCodegenInfo, isValSubtype, sortWasmFields, RecordDispatchInfo, asWasmStruct, asWasmSignature, asWasmArray, valTypeIdentical, ClosureForwarderSpec,
+  noCaptures,
 } from '../wasm-module.zena';
 import {
   typeToValTypeWithSub, eraseTypeParameters, substituteTypeParamsInClassContext, substituteTypeParamsInFunctionContext, inlineLaneValTypes, getClosureStruct, getClosureKey, getNonNullableType, recordWasmFields, sortedOptionalNames, interfaceCallSlotName,
@@ -975,7 +976,7 @@ let lowerFunctionOrThrow = (wasm: WasmModule, func: WasmFunction): IrBody => {
     if (func.contextStruct == null) {
       throw new ZirUnsupported("closure without context struct");
     }
-  } else if (func.captures.length > 0 || func.capturesThis ||
+  } else if ((func.captures ?? noCaptures).length > 0 || func.capturesThis ||
              func.contextStruct != null) {
     // Capture state on a non-closure is a shape lowering doesn't know.
     throw new ZirUnsupported("function shape");
@@ -2069,7 +2070,7 @@ export final class FunctionLowerer {
       this.#cx().thisValue = this.b.emit(IrOp.struct_get, field.type, casted, fieldRef);
       fieldIdx = 1;
     }
-    for (let symId in this.func.captures) {
+    for (let symId in this.func.captures ?? noCaptures) {
       let field = cs.fields[fieldIdx];
       let fieldName = field.name;
       if (fieldName == null) {
@@ -7652,7 +7653,7 @@ export final class FunctionLowerer {
     if (target.typeParameters != null || target.typeArguments != null ||
         target.intrinsic != null || target.isFunctionAdaptation ||
         target.isClosure || target.contextStruct != null ||
-        target.captures.length > 0 || target.capturesThis ||
+        (target.captures ?? noCaptures).length > 0 || target.capturesThis ||
         target.classType != null || target.structType != null) {
       this.#bail('callee shape');
     }
@@ -7767,7 +7768,7 @@ export final class FunctionLowerer {
         ctxArgs.push(this.#cx().thisValue);
         fieldIdx = 1;
       }
-      for (let symId in impl.captures) {
+      for (let symId in impl.captures ?? noCaptures) {
         if (!this.#cx().env.has(symId)) {
           this.#bail('captured symbol not local');
         }
