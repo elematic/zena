@@ -377,31 +377,129 @@ export final class RecordType(
   }
 }
 
+/**
+ * What a declaration says about a function beyond its signature: the
+ * parameters' names, symbols, initializers and optionality, and the
+ * `final`/`abstract` modifiers. One per declaration (or per function
+ * type written in source), shared by every instantiation and
+ * substitution of its type: these never change under substitution,
+ * and copying them onto each result was most of what a FunctionType
+ * carried. Immutable.
+ */
+export final class FunctionDeclInfo {
+  parameterNames: Array<String> | null;
+  parameterSymbols: Array<SymbolId> | null;
+  parameterInitializers: Array<Expression | null> | null;
+  optionalParameters: Array<boolean> | null;
+  isFinal: boolean;
+  isAbstract: boolean;
+
+  new(
+    this.parameterNames,
+    this.parameterSymbols = null,
+    this.parameterInitializers = null,
+    this.optionalParameters = null,
+    this.isFinal = false,
+    this.isAbstract = false,
+  );
+}
+
+/**
+ * A function's signature. The parameters, return type and type
+ * parameters are what the type is; an instantiation records its
+ * arguments and source; and `info` holds what the declaration added,
+ * shared by its instantiations. All of those are fixed at
+ * construction — `withReturnType` and `withTypeParameters` make a
+ * changed copy — and the getters below read through `info`, so a
+ * type without one answers as an anonymous function type.
+ *
+ * Two fields are set after construction. `overloads`: the checker
+ * fills a declaration's list in as it meets the later overloads (a
+ * substitution sets its own, substituted, list when built). The
+ * symbol tag, `functionSymbolId`/`functionSymbolName`: the checker
+ * stamps a function's type with the symbol an identifier resolved it
+ * through, which RTA and lowering use to reach the function; an
+ * instantiation copies the tag its source had when it was made.
+ */
 export final class FunctionType extends Type {
   parameters: Array<Type>;
-  parameterNames: Array<String> | null = null;
-  var returnType: Type;
-  var typeParameters: Array<TypeParameterType> | null = null;
-  var typeArguments: Array<Type> | null = null;
-  var genericSource: FunctionType | null = null;
-  var parameterInitializers: Array<Expression | null> | null = null;
-  var parameterSymbols: Array<SymbolId> | null = null;
-  var optionalParameters: Array<boolean> | null = null;
-  var isFinal: boolean = false;
-  var isAbstract: boolean = false;
-  var overloads: GrowableArray<FunctionType> | null = null;
+  returnType: Type;
+  info: FunctionDeclInfo | null;
+  typeParameters: Array<TypeParameterType> | null;
+  typeArguments: Array<Type> | null;
+  genericSource: FunctionType | null;
+  var overloads: GrowableArray<FunctionType> | null;
   var functionSymbolId: SymbolId = noSymbolId;
   var functionSymbolName: String = "";
 
   new(
-    parameters: Array<Type>,
-    parameterNames: Array<String> | null,
-    returnType: Type
-  ) : parameters = parameters,
-      parameterNames = parameterNames,
-      returnType = returnType,
-      super() {
-    _functionTypes += 1;
+    this.parameters,
+    this.returnType,
+    this.info = null,
+    this.typeParameters = null,
+    this.typeArguments = null,
+    this.genericSource = null,
+    this.overloads = null,
+  ) : super();
+
+  /** The same signature with another return type (constructors). */
+  withReturnType(returnType: Type): FunctionType {
+    let copy = new FunctionType(this.parameters, returnType, this.info,
+        this.typeParameters, this.typeArguments, this.genericSource, this.overloads);
+    copy.functionSymbolId = this.functionSymbolId;
+    copy.functionSymbolName = this.functionSymbolName;
+    return copy;
+  }
+
+  /** The same signature with other type parameters (interface constructors). */
+  withTypeParameters(typeParameters: Array<TypeParameterType> | null): FunctionType {
+    let copy = new FunctionType(this.parameters, this.returnType, this.info,
+        typeParameters, this.typeArguments, this.genericSource, this.overloads);
+    copy.functionSymbolId = this.functionSymbolId;
+    copy.functionSymbolName = this.functionSymbolName;
+    return copy;
+  }
+
+  parameterNames: Array<String> | null {
+    get {
+      let info = this.info;
+      return if (info != null) info.parameterNames else null;
+    }
+  }
+
+  parameterSymbols: Array<SymbolId> | null {
+    get {
+      let info = this.info;
+      return if (info != null) info.parameterSymbols else null;
+    }
+  }
+
+  parameterInitializers: Array<Expression | null> | null {
+    get {
+      let info = this.info;
+      return if (info != null) info.parameterInitializers else null;
+    }
+  }
+
+  optionalParameters: Array<boolean> | null {
+    get {
+      let info = this.info;
+      return if (info != null) info.optionalParameters else null;
+    }
+  }
+
+  isFinal: boolean {
+    get {
+      let info = this.info;
+      return info != null && info.isFinal;
+    }
+  }
+
+  isAbstract: boolean {
+    get {
+      let info = this.info;
+      return info != null && info.isAbstract;
+    }
   }
 }
 
@@ -885,16 +983,7 @@ let substituteInType = (
         newParams.push((sub ?? p));
       }
       let newRet = substituteInType(ft.returnType, typeParameters, typeArguments);
-      let newFt = new FunctionType(newParams, ft.parameterNames, (newRet ?? ft.returnType));
-      newFt.typeParameters = ft.typeParameters;
-      newFt.typeArguments = ft.typeArguments;
-      newFt.genericSource = ft.genericSource;
-      newFt.parameterInitializers = ft.parameterInitializers;
-      newFt.parameterSymbols = ft.parameterSymbols;
-      newFt.optionalParameters = ft.optionalParameters;
-      newFt.isFinal = ft.isFinal;
-      newFt.isAbstract = ft.isAbstract;
-      newFt.overloads = ft.overloads;
+      let newFt = new FunctionType(newParams, (newRet ?? ft.returnType), ft.info, ft.typeParameters, ft.typeArguments, ft.genericSource, ft.overloads);
       newFt.functionSymbolId = ft.functionSymbolId;
       newFt.functionSymbolName = ft.functionSymbolName;
       countCodegenFunctionType(5);
@@ -1020,10 +1109,7 @@ let substituteInType = (
             let sub = substituteInType(p, combinedParams, combinedArgs);
             newParams.push((sub ?? p));
           }
-          let newFt = new FunctionType(newParams, ctor.parameterNames, ctor.returnType);
-          newFt.parameterInitializers = ctor.parameterInitializers;
-          newFt.parameterSymbols = ctor.parameterSymbols;
-          newFt.optionalParameters = ctor.optionalParameters;
+          let newFt = new FunctionType(newParams, ctor.returnType, ctor.info);
           newFt.functionSymbolId = ctor.functionSymbolId;
           newFt.functionSymbolName = ctor.functionSymbolName;
           newFt
@@ -1039,10 +1125,7 @@ let substituteInType = (
             let sub = substituteInType(p, combinedParams, combinedArgs);
             newParams.push((sub ?? p));
           }
-          let newFt = new FunctionType(newParams, ctor.parameterNames, ctor.returnType);
-          newFt.parameterInitializers = ctor.parameterInitializers;
-          newFt.parameterSymbols = ctor.parameterSymbols;
-          newFt.optionalParameters = ctor.optionalParameters;
+          let newFt = new FunctionType(newParams, ctor.returnType, ctor.info);
           newFt.functionSymbolId = ctor.functionSymbolId;
           newFt.functionSymbolName = ctor.functionSymbolName;
           inst.constructors[ctorName] = newFt;
@@ -1509,10 +1592,7 @@ export let instantiateClassType = (
       let sub = substituteInType(p, source.typeParameters, typeArguments);
       newParams.push((sub ?? p));
     }
-    let newFt = new FunctionType(newParams, ctor.parameterNames, ctor.returnType);
-    newFt.parameterInitializers = ctor.parameterInitializers;
-    newFt.parameterSymbols = ctor.parameterSymbols;
-    newFt.optionalParameters = ctor.optionalParameters;
+    let newFt = new FunctionType(newParams, ctor.returnType, ctor.info);
     newFt.functionSymbolId = ctor.functionSymbolId;
     newFt.functionSymbolName = ctor.functionSymbolName;
     newFt
@@ -1528,10 +1608,7 @@ export let instantiateClassType = (
       let sub = substituteInType(p, source.typeParameters, typeArguments);
       newParams.push((sub ?? p));
     }
-    let newFt = new FunctionType(newParams, ctor.parameterNames, ctor.returnType);
-    newFt.parameterInitializers = ctor.parameterInitializers;
-    newFt.parameterSymbols = ctor.parameterSymbols;
-    newFt.optionalParameters = ctor.optionalParameters;
+    let newFt = new FunctionType(newParams, ctor.returnType, ctor.info);
     newFt.functionSymbolId = ctor.functionSymbolId;
     newFt.functionSymbolName = ctor.functionSymbolName;
     result.constructors[ctorName] = newFt;
@@ -1573,16 +1650,7 @@ export let instantiateFunctionType = (
     newParams.push((sub ?? p));
   }
   let newRet = substituteInType(source.returnType, source.typeParameters, typeArguments);
-  let newFt = new FunctionType(newParams, source.parameterNames, (newRet ?? source.returnType));
-  newFt.typeParameters = null;
-  newFt.typeArguments = toGrowable(typeArguments);
-  newFt.genericSource = source.genericSource ?? source;
-  newFt.parameterInitializers = source.parameterInitializers;
-  newFt.parameterSymbols = source.parameterSymbols;
-  newFt.optionalParameters = source.optionalParameters;
-  newFt.isFinal = source.isFinal;
-  newFt.isAbstract = source.isAbstract;
-  newFt.overloads = source.overloads;
+  let newFt = new FunctionType(newParams, (newRet ?? source.returnType), source.info, null, toGrowable(typeArguments), source.genericSource ?? source, source.overloads);
   newFt.functionSymbolId = source.functionSymbolId;
   newFt.functionSymbolName = source.functionSymbolName;
   countCodegenFunctionType(6);
@@ -2723,7 +2791,7 @@ export let typeToString = (t: Type): String => match (t) {
     var i = 0;
     while (i < ft.parameters.length) {
       if (i > 0) { s = s + ", "; }
-      let {parameterNames} = ft;
+      let parameterNames = ft.parameterNames;
       if (parameterNames != null) {
         let names = parameterNames;
         if (i < names.length) {

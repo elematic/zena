@@ -2,7 +2,7 @@ import {
   Referrer, ReachabilityContext, SpecializerInterface, ClassInterfacePair,
 } from './context.zena';
 import { SemanticModel, memberKeyOf } from '../../semantic-model.zena';
-import { Type, ClassType, InterfaceType, FunctionType, TypeParameterType, VoidType, BooleanType, I32Type, MethodInfo, FieldInfo } from '../../types.zena';
+import { Type, ClassType, InterfaceType, FunctionType, TypeParameterType, VoidType, BooleanType, I32Type, MethodInfo, FieldInfo, FunctionDeclInfo } from '../../types.zena';
 import {
   Node, ClassDeclaration, FieldDefinition, MethodDefinition, AccessorDeclaration, VariableDeclaration, FunctionDeclaration, IdentifierPattern, Decorator, decoratorStringArg, Identifier, SymbolPropertyName, MemberExpression, TypeParameter, SealedVariant, InterfaceDeclaration, Expression, MixinDeclaration, BlockStatement, SuperInitializer, isSymbolFieldDeclaration,
 } from '../../ast.zena';
@@ -1130,9 +1130,9 @@ export final class Specializer implements SpecializerInterface {
           if (methName == "==") {
             let eqParams = new Array<Type>();
             eqParams.push(cType);
-            methodTypeNode = new FunctionType(eqParams, null, new BooleanType());
+            methodTypeNode = new FunctionType(eqParams, new BooleanType());
           } else if (methName == "hashCode") {
-            methodTypeNode = new FunctionType(new Array<Type>(), null, new I32Type());
+            methodTypeNode = new FunctionType(new Array<Type>(), new I32Type());
           } else if (strippedMethName.startsWith("get#")) {
             let fieldName = strippedMethName.sliceBytes(4, strippedMethName.length);
             var pType: Type | null = null;
@@ -1182,7 +1182,7 @@ export final class Specializer implements SpecializerInterface {
               curr = cc.superType;
             }
             if (pType != null) {
-              methodTypeNode = new FunctionType(new Array<Type>(), null, pType);
+              methodTypeNode = new FunctionType(new Array<Type>(), pType);
             }
           } else if (strippedMethName.startsWith("set#")) {
             let fieldName = strippedMethName.sliceBytes(4, strippedMethName.length);
@@ -1255,7 +1255,7 @@ export final class Specializer implements SpecializerInterface {
             if (pType != null) {
               let params = new Array<Type>();
               params.push(pType);
-              methodTypeNode = new FunctionType(params, null, new VoidType());
+              methodTypeNode = new FunctionType(params, new VoidType());
             }
           }
         }
@@ -1663,7 +1663,7 @@ export final class Specializer implements SpecializerInterface {
         eqParams.push(ct);
         let eqNames = new Array<String>();
         eqNames.push("other");
-        ct.members["=="] = new MethodInfo(new FunctionType(eqParams, eqNames, new BooleanType()), false, false, false, false);
+        ct.members["=="] = new MethodInfo(new FunctionType(eqParams, new BooleanType(), new FunctionDeclInfo(eqNames)), false, false, false, false);
       }
       if (!vtableSet.has("==")) {
         ctVtable.push("==");
@@ -1671,7 +1671,7 @@ export final class Specializer implements SpecializerInterface {
       }
 
       if (!ct.members.has("hashCode")) {
-        ct.members["hashCode"] = new MethodInfo(new FunctionType(new Array<Type>(), null, new I32Type()), false, false, false, false);
+        ct.members["hashCode"] = new MethodInfo(new FunctionType(new Array<Type>(), new I32Type()), false, false, false, false);
       }
       if (!vtableSet.has("hashCode")) {
         ctVtable.push("hashCode");
