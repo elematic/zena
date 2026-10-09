@@ -569,6 +569,18 @@ tuple argument still has a fresh uid per substitution, so an
 instantiation over one is not shared; interning those needs
 `FunctionType`'s declaration fields moved off the type first.
 
+The trie was then replaced by `TypeListTable`, an open-addressing
+table with one slot per distinct list: the key is the list's uids as
+one i32 array, and a lookup builds its probe in the table's scratch,
+hashes the uids in place and compares them against the stored keys,
+so a hit still allocates nothing and a miss allocates one entry and
+one key. The trie had cost about one node and one map entry per
+element of every distinct list — 1.1M nodes, 0.8M maps, 1.5M
+entries, 190 MB and 4% of the zena-cli compile's allocation — and n
+map lookups per probe. The table holds the same keys in 289K entries
+and 42K tables, about 25 MB, and the compile allocates 4.00 GiB
+where it allocated 4.13 (9.11 GiB at `-O2`, from 9.25).
+
 What the `-O2` census still shows: 36M small `Array<i32>` lists, now
 mostly the inliner's per-site argument lists and the per-block
 tables of block cleanup and constant propagation; a long tail of
