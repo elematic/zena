@@ -7,7 +7,7 @@
  */
 
 import { StringBuilder } from 'zena:core';
-import { parse } from 'zena-compiler:parser';
+import { parseAllowingStatements } from 'zena-compiler:parser';
 import {
   Comment, Node, Module, // Expressions
   Expression, Identifier, NumberLiteral, StringLiteral, BooleanLiteral, NullLiteral, TemplateLiteral, TaggedTemplateExpression, BinaryExpression, UnaryExpression, AssignmentExpression, AsExpression, IsExpression, RangeExpression, PipelineExpression, PipePlaceholder, FunctionExpression, CallExpression, MemberExpression, IndexExpression, ThisExpression, SuperExpression, NewExpression, ArrayLiteral, RecordLiteral, MapLiteral, TupleLiteral, MatchExpression, IfExpression, ThrowExpression, TryExpression, AwaitExpression, // Statements
@@ -217,7 +217,10 @@ let printEmptyBody = (node: Node, spaceBeforeOpen: boolean): Doc => {
 // ============================================================================
 
 export let format = (source: String): String => {
-  let module = parse(source, '<input>');
+  // The module-body rule is off. Where a statement may run is not a
+  // question the formatter has to answer to lay it out, and a file the
+  // compiler rejects is one a user may still want formatted.
+  let module = parseAllowingStatements(source, '<input>');
   currentCommentMap = attachComments(module);
   let doc = printModule(module);
   let options = new PrintOptions(80);

@@ -150,6 +150,33 @@ export type ParseResult = {
   diagnostics: GrowableArray<Diagnostic>
 };
 
+/**
+ * Whether a statement is one of the twelve declarations a module body
+ * may hold. A module body runs nothing of its own, so anything else
+ * there would never execute. Holding a body to declarations is also
+ * what keeps importing a library free of side effects, which is what
+ * lets a build drop an unused one. See language-reference.md §8.
+ *
+ * The checker's `checkTopLevelStatement` matches the same twelve, so a
+ * new declaration node belongs in both.
+ */
+let isModuleDeclaration = (stmt: Statement): boolean =>
+  match (stmt) {
+    case VariableDeclaration {}: true
+    case FunctionDeclaration {}: true
+    case ClassDeclaration {}: true
+    case InterfaceDeclaration {}: true
+    case EnumDeclaration {}: true
+    case MixinDeclaration {}: true
+    case TypeAliasDeclaration {}: true
+    case SymbolDeclaration {}: true
+    case DeclareFunction {}: true
+    case ImportDeclaration {}: true
+    case ExportAllDeclaration {}: true
+    case ExportFromDeclaration {}: true
+    case _: false
+  };
+
 export final class Parser {
   var #tokens: GrowableArray<Token>;
   var #comments: GrowableArray<Comment>;
@@ -160,12 +187,20 @@ export final class Parser {
   #errors: GrowableArray<Diagnostic>;
   var #completeness: ParseCompleteness;
   #recover: boolean;
+  /**
+   * Whether a module body may hold statements as well as declarations.
+   * Off for the language; on for callers that are handed one statement
+   * written at module level and have no use for the rule — the parser
+   * tests and the formatter. See `parseAllowingStatements`.
+   */
+  #allowTopLevelStatements: boolean;
   #source: String;
   #path: String;
 
   new(source: String, path: String, recover: boolean = false,
-      table: StringTable | null = null)
-    : #source = source, #path = path, #recover = recover, #tokens = new Array<Token>(0), #comments = new Array<Comment>(0), #current = 0, #extraGreaters = 0, #destructParamCounter = 0, #combinedTypeAnnotation = null, #errors = new Array<Diagnostic>(0), #completeness = ParseCompleteness.Complete
+      table: StringTable | null = null,
+      allowTopLevelStatements: boolean = false)
+    : #source = source, #path = path, #recover = recover, #allowTopLevelStatements = allowTopLevelStatements, #tokens = new Array<Token>(0), #comments = new Array<Comment>(0), #current = 0, #extraGreaters = 0, #destructParamCounter = 0, #combinedTypeAnnotation = null, #errors = new Array<Diagnostic>(0), #completeness = ParseCompleteness.Complete
   {
     let tokenizer = new Tokenizer(source, table);
     this.#tokens = tokenizer.tokenize();
@@ -202,10 +237,16 @@ export final class Parser {
     }
 
     while (!this.#isAtEnd()) {
+      let startToken = this.#peek();
       let stmt = this.#parseStatement(true);
+      if (!this.#allowTopLevelStatements && !isModuleDeclaration(stmt)) {
+        this.#recoverableError(
+            "A module body may only contain declarations. Move this statement into a function.",
+            DiagnosticCode.StatementOutsideFunction, startToken);
+      }
       body.push(stmt);
     }
-    
+
     return new Module(body, this.#path, this.#source, this.#comments, null);
   }
   
@@ -408,9 +449,14 @@ export final class Parser {
    * The error to throw where the grammar ran out, formatted for a
    * terminal: the same `file:line:column - Error: ` header a type error
    * carries, then the offending line and an underline of the token.
+   *
+   * `at` names the token to point at, for an error the parser only sees
+   * once it is past the token it is about. The default is where the
+   * parser stopped, which is what every error raised as it happens
+   * wants.
    */
-  #error(message: String): SyntaxError {
-    let token = this.#peek();
+  #error(message: String, at: Token | null = null): SyntaxError {
+    let token = at ?? this.#peek();
     let {line} = token;
     let col = token.column;
     let header = `${this.#path}:${i32ToString(line)}:${i32ToString(col)} - Error: `;
@@ -479,14 +525,17 @@ export final class Parser {
    * leaving the caller an AST and the full list of what is wrong with
    * it. The source is invalid either way; only the reporting differs.
    */
-  #recoverableError(message: String): void {
+  #recoverableError(
+      message: String,
+      code: DiagnosticCode = DiagnosticCode.ExpectedToken,
+      at: Token | null = null): void {
     if (!this.#recover) {
-      throw this.#error(message);
+      throw this.#error(message, at);
     }
     this.#completeness = ParseCompleteness.Recovered;
-    let token = this.#peek();
+    let token = at ?? this.#peek();
     this.#errors.push(new Diagnostic(
-      DiagnosticCode.ExpectedToken,
+      code,
       message,
       DiagnosticSeverity.Error,
       new SourceSpan(
@@ -4307,6 +4356,30 @@ export let assignNodeIds = (node: Node, idGen: IdGenerator<NodeId>): void => {
 export let parse = (source: String, path: String, nodeIdGenerator: IdGenerator<NodeId> = makeNodeIdGenerator(), table: StringTable | null = null): Module => {
   registerSource(path, source);
   let parser = new Parser(source, path, false, table);
+  let mod = parser.parse();
+  assignNodeIds(mod, nodeIdGenerator);
+  mod.lastNodeId = (nodeIdGenerator.peek() - 1) as NodeId;
+  return mod;
+};
+
+/**
+ * Parse with the module-body rule off, so a statement written at module
+ * level is accepted as the AST it parses to.
+ *
+ * Two callers want this. The parser tests hand the parser one statement
+ * or one expression at a time and compare the node it produces, so
+ * every `@target: statement` and `@target: expression` case is a
+ * statement at module level by construction. And the formatter prints
+ * whatever it is given: the rule is about where a statement may run,
+ * which is not a question a formatter has to answer to lay the
+ * statement out.
+ *
+ * Nothing that goes on to check or compile the result should use this —
+ * `parse` is the language.
+ */
+export let parseAllowingStatements = (source: String, path: String, nodeIdGenerator: IdGenerator<NodeId> = makeNodeIdGenerator(), table: StringTable | null = null): Module => {
+  registerSource(path, source);
+  let parser = new Parser(source, path, false, table, true);
   let mod = parser.parse();
   assignNodeIds(mod, nodeIdGenerator);
   mod.lastNodeId = (nodeIdGenerator.peek() - 1) as NodeId;
