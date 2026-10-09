@@ -75,7 +75,7 @@ let forwardEmptyBlocks = (body: IrBody): i32 => {
   // nothing but the block's own br, since a block it dominates could
   // otherwise read it and the forwarded edges would carry no value.
   let count = body.instCount();
-  let useCount = new Array<i32>();
+  let useCount = new Array<i32>(count);
   for (var i = 0; i < count; i += 1) {
     useCount.push(0);
   }
@@ -95,7 +95,7 @@ let forwardEmptyBlocks = (body: IrBody): i32 => {
   // The predecessors of every block along the edges this pass moves,
   // kept current as it moves them, so each candidate looks only at
   // the terminators that reach it rather than at every block's.
-  let preds = new Array<GrowableArray<i32>>();
+  let preds = new Array<GrowableArray<i32>>(nb);
   for (var b = 0; b < nb; b += 1) {
     preds.push(new Array<i32>());
   }
@@ -217,7 +217,7 @@ let fuseStraightLine = (body: IrBody): i32 => {
   while (progress) {
     progress = false;
     // Incoming edge counts.
-    let incoming = new Array<i32>();
+    let incoming = new Array<i32>(nb);
     for (var b = 0; b < nb; b += 1) {
       incoming.push(0);
     }
@@ -326,7 +326,7 @@ let removeUnreachable = (body: IrBody): i32 => {
   if (nb == 0) {
     return 0;
   }
-  let reachable = new Array<boolean>();
+  let reachable = new Array<boolean>(nb);
   for (var i = 0; i < nb; i += 1) {
     reachable.push(false);
   }
@@ -337,10 +337,12 @@ let removeUnreachable = (body: IrBody): i32 => {
     let b = stack.pop();
     let insts = body.blocks[b].insts;
     let term = insts[insts.length - 1];
-    for (let s in body.successors(term)) {
-      if (!reachable[s.target]) {
-        reachable[s.target] = true;
-        stack.push(s.target);
+    let n = body.successorCount(term);
+    for (var k = 0; k < n; k += 1) {
+      let target = body.extra[body.successorRecord(term, k)];
+      if (!reachable[target]) {
+        reachable[target] = true;
+        stack.push(target);
       }
     }
   }
@@ -482,7 +484,7 @@ let removeUnreachable = (body: IrBody): i32 => {
  */
 let removeTrivialParams = (body: IrBody): i32 => {
   let nb = body.blocks.length;
-  let incoming = new Array<GrowableArray<i32>>();
+  let incoming = new Array<GrowableArray<i32>>(nb);
   for (var i = 0; i < nb; i += 1) {
     incoming.push(new Array<i32>());
   }
@@ -491,17 +493,18 @@ let removeTrivialParams = (body: IrBody): i32 => {
       continue;
     }
     let term = blk.insts[blk.insts.length - 1];
-    for (let s in body.successors(term)) {
+    let n = body.successorCount(term);
+    for (var k = 0; k < n; k += 1) {
       // Once per terminator: a branch whose edges both reach the same
       // block would otherwise have the argument dropped twice.
-      let list = incoming[s.target];
+      let list = incoming[body.extra[body.successorRecord(term, k)]];
       if (list.length == 0 || list[list.length - 1] != term) {
         list.push(term);
       }
     }
   }
   let count = body.instCount();
-  let repl = new Array<i32>();
+  let repl = new Array<i32>(count);
   for (var i = 0; i < count; i += 1) {
     repl.push(i);
   }
@@ -528,11 +531,13 @@ let removeTrivialParams = (body: IrBody): i32 => {
       var value = -1;
       var trivial = true;
       for (let term in edges) {
-        for (let s in body.successors(term)) {
-          if (s.target != b) {
+        let n = body.successorCount(term);
+        for (var k = 0; k < n; k += 1) {
+          let rec = body.successorRecord(term, k);
+          if (body.extra[rec] != b) {
             continue;
           }
-          let arg = canon(body.extra[s.argStart + j]);
+          let arg = canon(body.extra[rec + 2 + j]);
           if (arg == p) {
             continue;
           }

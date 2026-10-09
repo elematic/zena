@@ -94,7 +94,7 @@ export final class EscapeSummaries {
 
   #paramEscapes(body: IrBody, users: IrUseLists, k: i32): boolean {
     let count = body.instCount();
-    let alias = new Array<boolean>();
+    let alias = new Array<boolean>(count);
     for (var i = 0; i < count; i += 1) {
       alias.push(false);
     }
@@ -160,11 +160,14 @@ export final class EscapeSummaries {
           // As a branch argument the value flows into the target's
           // parameter, another alias; as a condition or scrutinee it
           // is only tested.
-          for (let s in body.successors(u)) {
+          let n = body.successorCount(u);
+          for (var k = 0; k < n; k += 1) {
+            let rec = body.successorRecord(u, k);
+            let argc = body.extra[rec + 1];
             var i = 0;
-            while (i < s.argCount) {
-              if (body.extra[s.argStart + i] == v) {
-                let p = body.blocks[s.target].params[i];
+            while (i < argc) {
+              if (body.extra[rec + 2 + i] == v) {
+                let p = body.blocks[body.extra[rec]].params[i];
                 if (!alias[p]) {
                   alias[p] = true;
                   work.push(p);
