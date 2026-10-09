@@ -533,13 +533,18 @@ export final class ZirFunctionEmitter {
     let nb = blocks.length;
     let {streamed} = this;
     let {localOf} = this;
-    // Decoded value operands (uses) per instruction, computed once.
-    let usesOf = new Array<Array<i32>>();
+    // Decoded value operands (uses) per instruction, computed once and
+    // packed end to end: instruction i's are
+    // useList[useStart[i] .. useStart[i + 1]). One list rather than one
+    // per instruction, which was the compiler's single largest source
+    // of garbage.
+    let useStart = new Array<i32>(count + 1);
+    let useList = new Array<i32>(count * 2);
     for (var i = 0; i < count; i += 1) {
-      let ops = new Array<i32>();
-      body.appendValueOperands(i, ops);
-      usesOf.push(ops);
+      useStart.push(useList.length);
+      body.appendValueOperands(i, useList);
     }
+    useStart.push(useList.length);
 
     // Position of each instruction within its block; params sit at -1,
     // before every instruction. mv_get projections adopt their call's
@@ -562,18 +567,21 @@ export final class ZirFunctionEmitter {
     }
 
     // Block-granularity liveness bitsets, flattened [block * words + w].
+    // Sized up front: they are blocks x values bits, and a large
+    // function's four of them pushed from empty doubled through half a
+    // gigabyte of discarded buffers.
     let words = (count + 31) >> 5;
-    let liveIn = new Array<i32>();
-    let liveOut = new Array<i32>();
-    let defs = new Array<i32>();
-    let upUse = new Array<i32>();
+    let liveIn = new Array<i32>(nb * words);
+    let liveOut = new Array<i32>(nb * words);
+    let defs = new Array<i32>(nb * words);
+    let upUse = new Array<i32>(nb * words);
     for (var i = 0; i < nb * words; i += 1) {
       liveIn.push(0);
       liveOut.push(0);
       defs.push(0);
       upUse.push(0);
     }
-    let bitGet = (arr: Array<i32>, blk: i32, v: i32): boolean =>
+    let bitGet = (arr: GrowableArray<i32>, blk: i32, v: i32): boolean =>
         (arr[blk * words + (v >> 5)] & (1 << (v & 31))) != 0;
     let bitSet = (arr: GrowableArray<i32>, blk: i32, v: i32): void => {
       let at = blk * words + (v >> 5);
@@ -590,7 +598,8 @@ export final class ZirFunctionEmitter {
         if (body.producesValue(inst)) {
           bitSet(defs, b, inst);
         }
-        for (let v in usesOf[inst]) {
+        for (var ui = useStart[inst]; ui < useStart[inst + 1]; ui += 1) {
+          let v = useList[ui];
           if (v >= 0 && v < count && body.instBlock[v] != b) {
             bitSet(upUse, b, v);
           }
@@ -612,11 +621,13 @@ export final class ZirFunctionEmitter {
         if (blk.insts.length > 0) {
           let term = blk.insts[blk.insts.length - 1];
           if (isIrTerminator(body.op(term))) {
-            for (let s in body.successors(term)) {
+            let n = body.successorCount(term);
+            for (var k = 0; k < n; k += 1) {
+              let target = body.extra[body.successorRecord(term, k)];
               var w = 0;
               while (w < words) {
                 let merged = liveOut[b * words + w] |
-                    liveIn[s.target * words + w];
+                    liveIn[target * words + w];
                 if (merged != liveOut[b * words + w]) {
                   liveOut[b * words + w] = merged;
                   changed = true;
@@ -652,7 +663,9 @@ export final class ZirFunctionEmitter {
       let insts = blocks[yb].insts;
       var k = posOf[y] + 1;
       while (k < insts.length) {
-        for (let v in usesOf[insts[k]]) {
+        let user = insts[k];
+        for (var ui = useStart[user]; ui < useStart[user + 1]; ui += 1) {
+          let v = useList[ui];
           if (v == x) {
             return true;
           }
