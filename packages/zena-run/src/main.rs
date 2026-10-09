@@ -55,6 +55,14 @@ struct Cli {
 }
 
 fn main() -> Result<()> {
+    // ZENA_RUST_LOG=wasmtime::runtime::store::gc=trace prints one line per
+    // collection and per heap growth, which is how a compile's collector
+    // work is counted (docs/design/compiler-memory.md). Off unless set.
+    if std::env::var_os("ZENA_RUST_LOG").is_some() {
+        env_logger::Builder::from_env("ZENA_RUST_LOG")
+            .format_timestamp_micros()
+            .init();
+    }
     let cli = Cli::parse();
     let path = Path::new(&cli.file);
     if path.extension().is_some_and(|e| e == "zena") {
