@@ -44,8 +44,8 @@ export let runGvn = (body: IrBody, cfg: IrCfg): void => {
     return c;
   };
 
-  let table = new Map<String, i32>();
-  let scopeKeys = new Array<String>();
+  let table = new Map<GvnKey, i32>();
+  let scopeKeys = new Array<GvnKey>();
 
   // Iterative dominator-tree DFS: negative entries mark subtree exits
   // (pop this block's insertions from the scope table).
@@ -107,46 +107,51 @@ export let runGvn = (body: IrBody, cfg: IrCfg): void => {
  * two casts to the same type from two inlined bodies name it at two
  * indices, and the point of numbering them is that they are one.
  */
-let typeKey = (vt: ValType): String => {
+let typeCode = (vt: ValType): i32 => {
   if (vt is ValTypeRef) {
-    return 'r' + i32ToString(vt.target.uid);
+    return vt.target.uid * 4 + 1;
   }
   if (vt is ValTypeRefNull) {
-    return 'n' + i32ToString(vt.target.uid);
+    return vt.target.uid * 4 + 2;
   }
-  return 'v' + i32ToString(valTypeToOpcode(vt));
+  return valTypeToOpcode(vt) * 4 + 3;
 };
 
-let gvnKey = (body: IrBody, inst: i32): String | null => {
+/**
+ * A value-numbering key. A case class rather than a string: the
+ * string form cost about eleven allocations per instruction, one per
+ * number and per concatenation, a fifth of all the strings a large
+ * compile built. `kind` tells the shapes apart; `name` is a field
+ * name for struct loads and empty otherwise.
+ */
+final class GvnKey(kind: i32, a: i32, b: i32, c: i32, ty: i32, name: String)
+
+let gvnKey = (body: IrBody, inst: i32): GvnKey | null => {
   let op = body.op(inst);
   let av = body.a[inst];
   let bv = body.b[inst];
-  let ty = if (body.typeId[inst] >= 0) typeKey(body.typeTable[body.typeId[inst]]) else '-';
+  let ty = if (body.typeId[inst] >= 0) typeCode(body.typeTable[body.typeId[inst]]) else 0;
   if (op == IrOp.const_i32) {
     // a IS the value.
-    return 'c32|' + i32ToString(av) + '|' + ty;
+    return new GvnKey(0, av, 0, 0, ty, '');
   }
   if (op == IrOp.const_i64 || op == IrOp.const_f32 || op == IrOp.const_f64) {
     // a is a pool index; identical indices are identical values
     // (missing equal-value pool duplicates is fine).
-    return 'cp|' + i32ToString(op as i32) + '|' + i32ToString(av) +
-        '|' + ty;
+    return new GvnKey(1, av, 0, op as i32, ty, '');
   }
   if (isBinaryNumericOp(op) || op == IrOp.ref_eq) {
-    return 'b|' + i32ToString(op as i32) + '|' + i32ToString(av) + '|' +
-        i32ToString(bv) + '|' + ty;
+    return new GvnKey(2, av, bv, op as i32, ty, '');
   }
   if (op == IrOp.ref_test || op == IrOp.ref_cast) {
     // a = value operand; b = the target type's table index, keyed by
     // the type it names.
-    return 'u|' + i32ToString(op as i32) + '|' + i32ToString(av) + '|' +
-        typeKey(body.typeTable[bv]) + '|' + ty;
+    return new GvnKey(3, av, typeCode(body.typeTable[bv]), op as i32, ty, '');
   }
   if (isUnaryNumericOp(op) || op == IrOp.ref_as_non_null ||
       op == IrOp.iface_instance || op == IrOp.iface_vtable) {
     // a = value operand; b = -1 or an immediate.
-    return 'u|' + i32ToString(op as i32) + '|' + i32ToString(av) + '|' +
-        i32ToString(bv) + '|' + ty;
+    return new GvnKey(3, av, bv, op as i32, ty, '');
   }
   // The wide-arithmetic ops are pure, but numbering one means
   // redirecting its mv_get projections too, and nothing generates the
@@ -155,7 +160,7 @@ let gvnKey = (body: IrBody, inst: i32): String | null => {
     // Only immutable globals (vtables, singletons) are pure reads.
     let r = body.refTable[bv];
     if (r is IrRefGlobal && !r.target.isMutable) {
-      return 'g|' + i32ToString(r.target.index) + '|' + ty;
+      return new GvnKey(4, r.target.index, 0, 0, ty, '');
     }
     return null;
   }
@@ -171,8 +176,7 @@ let gvnKey = (body: IrBody, inst: i32): String | null => {
     if (r is IrRefField) {
       let idx = r.owner.fieldIndexByName(r.fieldName);
       if (idx >= 0 && !r.owner.fields[idx].isMutable) {
-        return 'sg|' + i32ToString(av) + '|' + i32ToString(r.owner.uid) +
-            '|' + r.fieldName + '|' + ty;
+        return new GvnKey(5, av, r.owner.uid, 0, ty, r.fieldName);
       }
     }
     return null;
@@ -180,7 +184,7 @@ let gvnKey = (body: IrBody, inst: i32): String | null => {
   if (op == IrOp.array_len) {
     // An array's length is fixed at allocation; same trap-equivalence
     // argument as immutable fields.
-    return 'al|' + i32ToString(av) + '|' + ty;
+    return new GvnKey(6, av, 0, 0, ty, '');
   }
   return null;
 };
