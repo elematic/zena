@@ -415,6 +415,98 @@ few thousand pairs — and the reproduction is the two modules and
 `zena` module compile between two builds says nothing about the change
 between them unless the subtype-check count or a profile says so too.
 
+## Where the allocation goes
+
+The live set is a tenth of what a compile allocates. The snapshot
+work above found where the retained tenth was; the rest, the garbage
+the collector copies around, needed a different instrument, because a
+snapshot shows what survives and V8's allocation tracking sees no wasm
+objects.
+
+`scripts/wasmtime-alloc-hist.patch` is a local patch to wasmtime's
+copying collector (applied to a copy of the crate through
+`[patch.crates-io]`, never shipped). Bump allocation is contiguous,
+so walking the active semi-space from the previous collection's bump
+pointer at the start of each collection sees every object allocated
+in between, including the ones compiled code allocated inline, and
+counts them by type. `scripts/alloc-hist.py` joins the counts with
+the type names of a `-g` build; `scripts/alloc-hist.sh` runs a
+compile with it. `ZENA_GC_RESERVE_MB` reserves the heap by allocating
+one giant i64 array, which the walk leaves out. Two things the census
+made plain about the language's cost model: a tuple returned from a
+method is a heap struct per call even when the caller destructures
+it, and passing a `GrowableArray<T>` where `Array<T>` is expected
+allocates a 32-byte fat pointer per call.
+
+Callers come from a samply profile and `scripts/samply-callers.py`,
+with samples whose leaf is in the collector left out: a collection is
+charged to whichever allocation tripped it, which made `i32ToString`
+look like 3% of a compile.
+
+The `zena-cli` module compile at `-O2` (`cli-module` in
+`mem-bench.sh`), before and after the changes below, on the same
+machine with the census running:
+
+| build       | allocated | objects | collections | wall   |
+| ----------- | --------- | ------- | ----------- | ------ |
+| origin/main | 11.1 GiB  | 233M    | 11          | 22.4 s |
+| this branch | 4.4 GiB   | 89M     | 5           | 15.6 s |
+
+Where the 11 GiB went, and what was done about each:
+
+- **The checker's flow walk**, 1.4 GB. Every join evaluation purged
+  the provisional-result buckets above its depth by replacing each
+  with a fresh `Array<i64>` (9.3M of them, 0.9 GB), and built an
+  `Array<Type>` for its antecedents' results before knowing they agree
+  (5.7M, 0.5 GB). The buckets are cleared in place
+  (`GrowableArray.clear`); the result list is built on the second
+  distinct type.
+- **Referrer keys in RTA**, 2.3 GB of strings. `queueReferrer`
+  built a string key per referrer (prefix, `i32ToString`, class key,
+  concatenations) and hashed it into two `Set<String>`s: 24M of the
+  compile's 42M strings, plus 5% of its time in the lookups. The key
+  is now an i64 (class uid, symbol/node bit, id) except when the
+  referrer carries type arguments, and the hot sites check it before
+  constructing the `Referrer` — 194K of the 6M were new.
+- **`successors()`**, 1.2 GB. The decoder allocates a list, a fat
+  pointer and a record per edge, and the passes call it in loops:
+  7.3M calls, most from `forwardEmptyBlocks`, which decoded every
+  terminator once per empty block. `successorCount` and
+  `successorRecord` read the records in place; `forwardEmptyBlocks`
+  keeps a predecessor list.
+- **Liveness in copy coalescing**, 1.3 GB. `bitGet` took its bitset
+  as `Array<i32>`, so every query from `liveAtDef` allocated a fat
+  pointer (25M); the four bitsets, blocks × values bits, were pushed
+  from empty, so one large function doubled each through half a
+  gigabyte of discarded buffers; and the use list was one array per
+  instruction.
+- **Extension types in `typeToValType`**. An extension class's `on`
+  type was resolved through the flattened class context, which keys
+  the class's supertypes and interfaces, once per mention of
+  `FixedArray<T>`. Only the class's own parameters can appear in
+  `on`.
+- **GVN keys**: a string per pure instruction built from about eleven
+  allocations. Now a case class.
+- **Substitution memo keys**: one string per type parameter and
+  argument; now one `StringBuilder`. The two together were 9M
+  strings.
+
+What the census still shows, in the order it ranks them:
+
+- **Small `Array<i32>` lists**, 8M at 64 bytes each that never grow
+  (plus their 32-byte `GrowableArray` objects): the lowering's
+  argument and operand lists, one per expression. Some of those could
+  be scratch lists cleared per use, as `forwardEmptyBlocks` now does.
+- **Strings**, 9.5M, a fifth of the bytes (from 42M). The remaining
+  builders are spread thin: `getTypeUniqueKey`, the closure and
+  member-path keys, `#walkPathType`'s memo key
+  (`i32ToString(join.id) + "|" + path`).
+- **Type lists from substitution**, 2.6M: the no-change path of
+  `substituteTypeParamsInCodegen` builds the argument array before it
+  knows nothing changed.
+- **`MapEntry<String, Type>`**, 2.2M: the substitution caches keyed by
+  string.
+
 ## What is left
 
 In the order the snapshot ranks them, each measurable by the same
