@@ -117,6 +117,18 @@ let findDeclaringMixinIntermediate = (ct: ClassType, classDecls: Map<SymbolId, N
  * ReachabilityAnalysis manages the whole-program reachability tracking,
  * driving queues of reachable functions/types and triggering monomorphization.
  */
+/**
+ * A referrer naming a node or symbol, within at most a class, as one
+ * i64: the class's uid, then the symbol/node distinction, then the id
+ * offset into the non-negative range, each in its own bits. Referrers
+ * carrying type arguments are keyed by string instead.
+ */
+let referrerKey = (isSymbol: boolean, id: i32, ct: ClassType | null): i64 => {
+  let ctUid = if (ct != null) (ct as ClassType).uid else 0;
+  let sym: i64 = if (isSymbol) 1 else 0;
+  return ((ctUid as i64) * 2 + sym) * 4294967296 + ((id as i64) + 2147483648);
+};
+
 export final class ReachabilityAnalysis implements ReachabilityContext {
   program: Program;
   wasm: WasmModule;
@@ -234,6 +246,11 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
   var reachHead = 0;
   var checkHead = 0;
   var globalsHead = 0;
+  // Referrers seen, keyed two ways: packed into an i64 when the referrer
+  // names a node or symbol within at most a class, which is nearly all
+  // of them, and by string when it carries type arguments too.
+  visitedIds = new Set<i64>();
+  reachedIds = new Set<i64>();
   visited = new Set<String>();
   reached = new Set<String>();
 
@@ -426,51 +443,88 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
       if (let (true, reachedSet) = this.reachedReachableClassMembers.get(lookupId)) {
         let rrKeys = reachedSet.keys();
         for (let nid in rrKeys) {
-          this.queueReferrer(new Referrer(false, noSymbolId, nid, model, ct, true));
+          this.queueMember(nid, model, ct, true);
         }
       }
     }
   }
 
-  queueReferrer(ref: Referrer): void {
-    var suffix = if (ref.classType != null) "@" + (getClassKey(ref.classType as ClassType) as String) else "";
-    let {typeArguments} = ref;
-    if (typeArguments != null) {
-      suffix += "<" + getSpecializedName("", typeArguments) + ">";
+  /**
+   * queueReferrer for a class member named by node, skipping the
+   * Referrer when its key has already been seen: the per-dependency
+   * walks re-derive the same members over and over, and nearly all of
+   * what they queue has been queued before.
+   */
+  queueMember(nodeId: i32, model: SemanticModel, classType: ClassType | null, isReachable: boolean): void {
+    let key = referrerKey(false, nodeId, classType);
+    let seen = if (isReachable) this.reachedIds.has(key) else this.visitedIds.has(key);
+    if (seen) {
+      return;
     }
-    let key = (if (ref.isSymbol) "sym:" + i32ToString(ref.symId as i32) else "node:" + i32ToString(ref.nodeId)) + suffix;
+    this.queueReferrer(new Referrer(false, noSymbolId, nodeId, model, classType, isReachable));
+  }
 
-
-
-    if (ref.isReachable) {
-      if (!this.reached.has(key)) {
-        this.reached.add(key);
-        this.visited.add(key);
-        this.reachableQueue.push(ref);
-        if (!ref.isSymbol && ref.classType != null) {
-          let ct = ref.classType as ClassType;
-          // Only a referrer against the generic TEMPLATE is evidence
-          // about every specialization. One against a concrete
-          // specialization names its own, and fanning that out claims
-          // `Array<i32>.push` is used because `Array<String>.push` is
-          // — which emits a member on every instantiation as soon as
-          // one of them uses it.
-          if (!isConcrete(ct)) {
-            let lookupId = (ct.genericSource ?? ct).symbolId;
-            this.recordReachedClassMember(lookupId, ref.nodeId, ref.model, true);
-          }
+  queueReferrer(ref: Referrer): void {
+    let {typeArguments} = ref;
+    var isNew = false;
+    if (typeArguments == null) {
+      let key = referrerKey(ref.isSymbol,
+          if (ref.isSymbol) ref.symId as i32 else ref.nodeId, ref.classType);
+      if (ref.isReachable) {
+        isNew = !this.reachedIds.has(key);
+        if (isNew) {
+          this.reachedIds.add(key);
+          this.visitedIds.add(key);
+        }
+      } else {
+        isNew = !this.visitedIds.has(key);
+        if (isNew) {
+          this.visitedIds.add(key);
         }
       }
     } else {
-      if (!this.visited.has(key)) {
-        this.visited.add(key);
-        this.checkableQueue.push(ref);
-        if (!ref.isSymbol && ref.classType != null) {
-          let ct = ref.classType as ClassType;
-          if (!isConcrete(ct)) {
-            let lookupId = (ct.genericSource ?? ct).symbolId;
-            this.recordReachedClassMember(lookupId, ref.nodeId, ref.model, false);
-          }
+      var suffix = if (ref.classType != null) "@" + (getClassKey(ref.classType as ClassType) as String) else "";
+      suffix += "<" + getSpecializedName("", typeArguments) + ">";
+      let key = (if (ref.isSymbol) "sym:" + i32ToString(ref.symId as i32) else "node:" + i32ToString(ref.nodeId)) + suffix;
+      if (ref.isReachable) {
+        isNew = !this.reached.has(key);
+        if (isNew) {
+          this.reached.add(key);
+          this.visited.add(key);
+        }
+      } else {
+        isNew = !this.visited.has(key);
+        if (isNew) {
+          this.visited.add(key);
+        }
+      }
+    }
+    if (!isNew) {
+      return;
+    }
+
+    if (ref.isReachable) {
+      this.reachableQueue.push(ref);
+      if (!ref.isSymbol && ref.classType != null) {
+        let ct = ref.classType as ClassType;
+        // Only a referrer against the generic TEMPLATE is evidence
+        // about every specialization. One against a concrete
+        // specialization names its own, and fanning that out claims
+        // `Array<i32>.push` is used because `Array<String>.push` is
+        // — which emits a member on every instantiation as soon as
+        // one of them uses it.
+        if (!isConcrete(ct)) {
+          let lookupId = (ct.genericSource ?? ct).symbolId;
+          this.recordReachedClassMember(lookupId, ref.nodeId, ref.model, true);
+        }
+      }
+    } else {
+      this.checkableQueue.push(ref);
+      if (!ref.isSymbol && ref.classType != null) {
+        let ct = ref.classType as ClassType;
+        if (!isConcrete(ct)) {
+          let lookupId = (ct.genericSource ?? ct).symbolId;
+          this.recordReachedClassMember(lookupId, ref.nodeId, ref.model, false);
         }
       }
     }
@@ -3579,12 +3633,12 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
               let mds = cha.findImplementingMethods(subCt, mName);
               if (mds.length > 0) {
                 for (let md in mds) {
-                  this.queueReferrer(new Referrer(false, noSymbolId, (md as Node).id as i32, this.getNodeModel(md as Node, subModel), subCt, this.currentReachable));
+                  this.queueMember((md as Node).id as i32, this.getNodeModel(md as Node, subModel), subCt, this.currentReachable);
                 }
               } else {
                 let acc = cha.findImplementingAccessor(subCt, mName);
                 if (acc != null) {
-                  this.queueReferrer(new Referrer(false, noSymbolId, (acc as Node).id as i32, this.getNodeModel(acc as Node, subModel), subCt, this.currentReachable));
+                  this.queueMember((acc as Node).id as i32, this.getNodeModel(acc as Node, subModel), subCt, this.currentReachable);
                 } else if (mName == "==" || mName == "hashCode" ||
                     (mName == ":dispose" && subCt.hasSyntheticDispose)) {
                   // A case class's synthesized ==/hashCode — and a
@@ -3598,7 +3652,7 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
                   let fieldName = mName.sliceBytes(4, mName.length);
                   let fd = cha.findImplementingField(subCt, fieldName);
                   if (fd != null) {
-                    this.queueReferrer(new Referrer(false, noSymbolId, (fd as Node).id as i32, this.getNodeModel(fd as Node, subModel), subCt, this.currentReachable));
+                    this.queueMember((fd as Node).id as i32, this.getNodeModel(fd as Node, subModel), subCt, this.currentReachable);
                   }
                 }
               }
