@@ -400,7 +400,7 @@ export final class FunctionDeclInfo {
    * identities of their parts (`internFunctionType`): memo state, not
    * a fact about the declaration.
    */
-  instances = new TypeArgTrie();
+  instances = new TypeListTable();
 
   new(
     this.parameterNames,
@@ -436,21 +436,22 @@ export let internFunctionType = (
     return new FunctionType(parameters, returnType, null, typeParameters,
         typeArguments, genericSource, overloads);
   }
-  // Separators (no uid is negative) keep the lists apart.
-  var node = info.instances.at(parameters).child(-1).child(returnType.uid).child(-1);
+  let table = info.instances.begin().addAll(parameters).sep()
+      .add(returnType.uid).sep();
   if (typeParameters != null) {
     for (let tp in typeParameters) {
-      node = node.child(tp.uid);
+      table.add(tp.uid);
     }
   }
-  node = node.child(-1);
+  table.sep();
   if (typeArguments != null) {
-    node = node.at(typeArguments);
+    table.addAll(typeArguments);
   }
-  node = node.child(-1);
+  table.sep();
   if (genericSource != null) {
-    node = node.child(genericSource.uid);
+    table.add(genericSource.uid);
   }
+  let node = table.entry();
   let existing = node.value;
   if (existing != null) {
     _functionTypeHits += 1;
@@ -666,7 +667,7 @@ export final class ClassType extends Type {
    * substitution (issue #199: 610K of them in a large build). Null
    * until the first substitution through this mention.
    */
-  var substitutionCache: TypeArgTrie | null = null;
+  var substitutionCache: TypeListTable | null = null;
   /**
    * On a cached instantiation: `classShapeStamp` of its source when it
    * was built. The checker fills a class in phases, and a substitution
@@ -729,9 +730,22 @@ export final class DecoratedField(
  * back the instantiation already under construction rather than start
  * another, which would never finish.
  */
-final class SubstitutionFrame(source: Type, key: TypeArgTrie, result: Type)
+final class SubstitutionFrame(source: Type, key: TypeListEntry, result: Type)
 
 var substitutionFrames = new Array<SubstitutionFrame>();
+
+/**
+ * One list's slot in a TypeListTable: the uids it was filed under,
+ * the value stored for it, and membership bits for the tables that
+ * store only membership. Its identity stands for the list (the
+ * substitution frames compare entries).
+ */
+export final class TypeListEntry {
+  key: FixedArray<i32>;
+  var value: Type | null = null;
+  var marks: i32 = 0;
+  new(this.key);
+}
 
 /**
  * A map from a list of types to one value, keyed by the identities
@@ -741,56 +755,147 @@ var substitutionFrames = new Array<SubstitutionFrame>();
  * function types, codegen's substitution memo, RTA's referrers with
  * type arguments.
  *
- * It is used as a map, never as a key. The key is the path: a lookup
- * starts at a root node and walks one child per element of the list
- * (`at`), and the node it ends on holds the value for that list in
- * `value`, or membership bits in `marks` for the tables that store
- * only membership. The list itself is never built as a key object,
- * which is why a hit allocates nothing — a string of the uids used
- * to cost several allocations per lookup, millions of times a
- * compile. Where one table keys several lists in sequence (the
- * substitution memo: the parameters, then the arguments; a function
- * type: parameters, return, type parameters, arguments, source),
- * callers walk `child(-1)` between them: uids are never negative, so
- * the separator cannot collide with an element, and lists of
- * different lengths cannot alias.
+ * Open addressing over one slot per distinct list. A lookup builds
+ * its probe in the table's own scratch — `begin`, then `add`, `addAll`
+ * and `sep` in the key's order, then `entry` — hashes the uids in
+ * place and compares them against the stored key arrays, so a hit
+ * allocates nothing and a miss allocates the entry and its key once.
+ * `sep` walks a -1 between lists keyed in sequence (uids are never
+ * negative), so lists of different lengths cannot alias. The probe
+ * must be completed by `entry` before the table is probed again: the
+ * callers build and look up back to back.
  *
- * Each node is one object plus, once it has children, one
- * `HashMap<i32, TypeArgTrie>`, so a distinct list of n elements costs
- * about n nodes and n map entries: on the zena-cli module compile,
- * 1.1M nodes, 0.8M maps and 1.5M entries, some 190 MB, 4% of what
- * the compile allocates. A flat table — one open-addressing slot per
- * distinct list, holding the uids as one i32 array and found by
- * hashing the probe's uids in place — would hold the same keys in a
- * fifth of the space and one probe instead of n map lookups; the
- * trie is the simpler structure that got the strings out.
+ * This replaced a trie of hash maps, which cost about one node and
+ * one map entry per element of every distinct list — 190 MB and 4% of
+ * a large compile's allocation, and n map lookups per probe.
  */
-export final class TypeArgTrie {
-  var #children: HashMap<i32, TypeArgTrie> | null = null;
-  var value: Type | null = null;
-  var marks: i32 = 0;
+export final class TypeListTable {
+  var #slots: FixedArray<TypeListEntry | null>;
+  var #mask: i32;
+  var #count: i32 = 0;
+  var #limit: i32;
+  #probe = new Array<i32>(8);
 
-  /** The child for one uid, created if absent. */
-  child(uid: i32): TypeArgTrie {
-    let children = this.#children ?? new HashMap<i32, TypeArgTrie>();
-    this.#children = children;
-    if (let (true, existing) = children.get(uid)) {
-      return existing;
+  new(capacity: i32 = 8)
+    : #slots = new FixedArray<TypeListEntry | null>(tablePow2(capacity), null),
+      #mask = tablePow2(capacity) - 1,
+      #limit = (tablePow2(capacity) >>> 2) * 3;
+
+  /** Starts a probe. */
+  begin(): TypeListTable {
+    this.#probe.clear();
+    return this;
+  }
+
+  add(uid: i32): TypeListTable {
+    this.#probe.push(uid);
+    return this;
+  }
+
+  addAll(types: Array<Type>): TypeListTable {
+    for (let t in types) {
+      this.#probe.push(t.uid);
     }
-    let created = new TypeArgTrie();
-    children[uid] = created;
+    return this;
+  }
+
+  /** A separator between lists keyed in sequence. */
+  sep(): TypeListTable {
+    this.#probe.push(-1);
+    return this;
+  }
+
+  /** The entry for `types` alone: `begin().addAll(types).entry()`. */
+  at(types: Array<Type>): TypeListEntry {
+    return this.begin().addAll(types).entry();
+  }
+
+  /** The entry for the probe built since `begin`, made if absent. */
+  entry(): TypeListEntry {
+    let probe = this.#probe;
+    let n = probe.length;
+    var h = 0x811c9dc5;
+    var i = 0;
+    while (i < n) {
+      h = (h ^ probe[i]) * 16777619;
+      i += 1;
+    }
+    h = h ^ (h >>> 15);
+    var slot = h & this.#mask;
+    while (true) {
+      let existing = this.#slots[slot];
+      if (existing == null) {
+        break;
+      }
+      if (keyEquals(existing.key, probe)) {
+        return existing;
+      }
+      slot = (slot + 1) & this.#mask;
+    }
+    let key = new FixedArray<i32>(n, 0);
+    i = 0;
+    while (i < n) {
+      key[i] = probe[i];
+      i += 1;
+    }
+    let created = new TypeListEntry(key);
+    this.#slots[slot] = created;
+    this.#count += 1;
+    if (this.#count > this.#limit) {
+      this.#grow();
+    }
     return created;
   }
 
-  /** The node for `types`, in order, below this one. */
-  at(types: Array<Type>): TypeArgTrie {
-    var node = this;
-    for (let t in types) {
-      node = node.child(t.uid);
+  #grow(): void {
+    let old = this.#slots;
+    let size = old.length * 2;
+    this.#slots = new FixedArray<TypeListEntry | null>(size, null);
+    this.#mask = size - 1;
+    this.#limit = (size >>> 2) * 3;
+    for (let e in old) {
+      if (e != null) {
+        this.#place(e);
+      }
     }
-    return node;
+  }
+
+  #place(e: TypeListEntry): void {
+    let key = e.key;
+    var h = 0x811c9dc5;
+    for (let uid in key) {
+      h = (h ^ uid) * 16777619;
+    }
+    h = h ^ (h >>> 15);
+    var slot = h & this.#mask;
+    while (this.#slots[slot] != null) {
+      slot = (slot + 1) & this.#mask;
+    }
+    this.#slots[slot] = e;
   }
 }
+
+let keyEquals = (key: FixedArray<i32>, probe: GrowableArray<i32>): boolean => {
+  if (key.length != probe.length) {
+    return false;
+  }
+  var i = 0;
+  while (i < key.length) {
+    if (key[i] != probe[i]) {
+      return false;
+    }
+    i += 1;
+  }
+  return true;
+};
+
+let tablePow2 = (n: i32): i32 => {
+  var size = 8;
+  while (size < n) {
+    size = size * 2;
+  }
+  return size;
+};
 
 // The one object per field-less primitive kind that an interned
 // union's members are replaced with. Every site that writes `T | null`
@@ -894,7 +999,7 @@ export let unionFreshByKind = (kind: i32): i32 => _unionFreshByKind[kind];
  * for an interleaved compile to pull out from under another.
  */
 export final class TypeInterner {
-  #unions = new TypeArgTrie();
+  #unions = new TypeListTable();
 
   /**
    * The union of `members`, in order: the interned object for that list
@@ -981,7 +1086,7 @@ export let interfaceShapeStamp = (it: InterfaceType): i32 => {
   return stamp + 1;
 };
 
-let reentrantSubstitution = (source: Type, key: TypeArgTrie): Type | null => {
+let reentrantSubstitution = (source: Type, key: TypeListEntry): Type | null => {
   for (let frame in substitutionFrames) {
     if (frame.source === source && frame.key === key) {
       return frame.result;
@@ -1116,7 +1221,7 @@ let substituteInType = (
         // cycle. The stamp catches a template that gained a
         // constructor or supertype since the instantiation was built.
         let template = ct.canonical();
-        let cache = template.substitutionCache ?? new TypeArgTrie();
+        let cache = template.substitutionCache ?? new TypeListTable();
         template.substitutionCache = cache;
         let frameKey = cache.at(newArgs);
         let reentrant = reentrantSubstitution(template as Type, frameKey);
@@ -1279,7 +1384,7 @@ let substituteInType = (
         while (template.genericSource != null) {
           template = template.genericSource as InterfaceType;
         }
-        let cache = template.substitutionCache ?? new TypeArgTrie();
+        let cache = template.substitutionCache ?? new TypeListTable();
         template.substitutionCache = cache;
         let frameKey = cache.at(newArgs);
         let reentrant = reentrantSubstitution(template as Type, frameKey);
@@ -1768,7 +1873,7 @@ export final class InterfaceType extends Type {
   var constructors: Map<String, FunctionType> = new Map<String, FunctionType>();
 
   /** As `ClassType.substitutionCache` and `shapeStamp`. */
-  var substitutionCache: TypeArgTrie | null = null;
+  var substitutionCache: TypeListTable | null = null;
   var shapeStamp: i32 = 0;
 
   new(id: TypeId, symbolId: SymbolId, name: String) : id = id, symbolId = symbolId, name = name, super() {
