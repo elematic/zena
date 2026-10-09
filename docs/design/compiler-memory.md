@@ -577,6 +577,49 @@ per-instruction tables sized to large inlined bodies (10K arrays of
 arena would remove; and `successors()` lists from the `-O2` passes,
 7.5M.
 
+## Function types with identity
+
+Interning class and interface instantiations through the uid trie
+left one family of types with no identity: a `FunctionType` was made
+fresh by every substitution, so an instantiation over a function
+argument never shared, and every cache keyed by type identity below
+it missed. The type also carried eighteen fields, nine of them facts
+about the declaration — parameter names, symbols, initializers and
+optionality, `final`/`abstract`, the overload list, the symbol tag —
+copied onto each copy and set one by one after construction, which
+is what made it impossible to intern.
+
+Now the signature is immutable: parameters, return type, type
+parameters, and for an instantiation its arguments and source, all
+fixed at construction (`withReturnType` and `withTypeParameters`
+make a changed copy, which is what the constructor-type overrides
+became). The declaration's facts are a `FunctionDeclInfo`, one per
+declaration, immutable, shared by every instantiation and
+substitution of its type; getters on the type read through it, so
+the readers did not change. `internFunctionType` then keys a
+declaration's instantiations by the identities of their parts in a
+trie on the info, so a signature substituted a thousand times
+through one declaration is one object. A type without info, an
+anonymous function type, has nothing to share under and stays fresh.
+
+Two fields are still set after construction, and the class says
+why: the overload list, which the checker fills in as it meets a
+declaration's later overloads (a substitution sets its own list when
+built), and the symbol tag, which the resolution of an identifier
+stamps on the function's type for RTA and lowering to reach the
+function by. The tag is per type object, as before, so an interned
+instantiation carries the tag its source had when it was made.
+
+What it bought, on the `zena-cli` module compile at `-O1`: a
+`FunctionType` is 80 bytes rather than 96, 12K `FunctionDeclInfo`
+records serve 154K types, and 84K of the function types the codegen
+substitutions asked for were already there — 238K minted before,
+154K now. Allocation overall did not move (4.10 GiB to 4.13 GiB):
+the trie nodes cost about what the shared types save. The gain is
+identity: every cache keyed by a function type's uid below the
+substitution now hits where it missed, and a union or instantiation
+over a function argument interns where it could not before.
+
 ## What is left
 
 In the order the snapshot ranks them, each measurable by the same
