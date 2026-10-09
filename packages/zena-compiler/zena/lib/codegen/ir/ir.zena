@@ -1533,14 +1533,68 @@ export final class IrUseLists {
   }
 }
 
-/** The use lists of `body`'s non-nop instructions. */
-export let buildUseLists = (body: IrBody): IrUseLists => {
+/**
+ * Reusable lists for a pass's per-body tables. A pass takes what it
+ * needs (`i32`, `bool`) inside a scope (`enter` … `exit`), and the
+ * scope's end returns every list taken in it, cleared but keeping
+ * its buffer, so a table sized to the body is allocated once per
+ * compile rather than once per visit: those tables, pushed from
+ * empty on every visit of every pass, were a third of what an -O2
+ * compile allocated as small lists and most of another tenth as the
+ * growth of large ones. A list taken in a scope must not outlive it;
+ * a loop that takes lists per iteration scopes each iteration.
+ */
+export final class IrScratch {
+  #freeI32 = new Array<GrowableArray<i32>>();
+  #freeBool = new Array<GrowableArray<boolean>>();
+  #takenI32 = new Array<GrowableArray<i32>>();
+  #takenBool = new Array<GrowableArray<boolean>>();
+  /** Pairs of taken counts at each open scope. */
+  #scopes = new Array<i32>();
+
+  enter(): void {
+    this.#scopes.push(this.#takenI32.length);
+    this.#scopes.push(this.#takenBool.length);
+  }
+
+  exit(): void {
+    let bools = this.#scopes.pop();
+    let ints = this.#scopes.pop();
+    while (this.#takenBool.length > bools) {
+      let list = this.#takenBool.pop();
+      list.clear();
+      this.#freeBool.push(list);
+    }
+    while (this.#takenI32.length > ints) {
+      let list = this.#takenI32.pop();
+      list.clear();
+      this.#freeI32.push(list);
+    }
+  }
+
+  /** An empty i32 list for the current scope. */
+  i32(): GrowableArray<i32> {
+    let list = if (this.#freeI32.length > 0) this.#freeI32.pop() else new Array<i32>();
+    this.#takenI32.push(list);
+    return list;
+  }
+
+  /** An empty boolean list for the current scope. */
+  bool(): GrowableArray<boolean> {
+    let list = if (this.#freeBool.length > 0) this.#freeBool.pop() else new Array<boolean>();
+    this.#takenBool.push(list);
+    return list;
+  }
+}
+
+/** The use lists of `body`'s non-nop instructions, in `scratch`'s scope. */
+export let buildUseLists = (body: IrBody, scratch: IrScratch): IrUseLists => {
   let count = body.instCount();
-  let start = new Array<i32>(count + 2);
+  let start = scratch.i32();
   for (var i = 0; i <= count; i += 1) {
     start.push(0);
   }
-  let operands = new Array<i32>();
+  let operands = scratch.i32();
   // Count users per value into start[v + 1], then prefix-sum, so the
   // second pass places each user at its value's cursor.
   for (var i = 0; i < count; i += 1) {
@@ -1559,11 +1613,11 @@ export let buildUseLists = (body: IrBody): IrUseLists => {
     start[v + 1] = start[v + 1] + start[v];
   }
   let total = start[count];
-  let list = new Array<i32>(total + 1);
+  let list = scratch.i32();
   for (var i = 0; i < total; i += 1) {
     list.push(0);
   }
-  let next = new Array<i32>(count + 1);
+  let next = scratch.i32();
   for (var v = 0; v < count; v += 1) {
     next.push(start[v]);
   }

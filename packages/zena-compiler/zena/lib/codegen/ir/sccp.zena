@@ -38,7 +38,7 @@
  * Determinism: the lattice fixpoint does not depend on worklist
  * order, and the rewrites read only the fixpoint, in id order.
  */
-import { IrBlock, IrBody, IrOp, buildUseLists } from './ir.zena';
+import { IrBlock, IrBody, IrOp, buildUseLists, IrScratch } from './ir.zena';
 import { ValTypeRef } from '../wasm.zena';
 import {
   IrConst, castOutcome, constOf, evalBinary, evalUnary, foldInstTo,
@@ -53,7 +53,14 @@ let CONST = 1;
 let BOTTOM = 2;
 
 /** Runs the pass; returns the number of rewrites made. */
-export let runSccp = (body: IrBody): i32 => {
+export let runSccp = (body: IrBody, scratch: IrScratch): i32 => {
+  scratch.enter();
+  let result = runSccpOn(body, scratch);
+  scratch.exit();
+  return result;
+};
+
+let runSccpOn = (body: IrBody, scratch: IrScratch): i32 => {
   let nb = body.blocks.length;
   let count = body.instCount();
   if (nb == 0) {
@@ -62,12 +69,12 @@ export let runSccp = (body: IrBody): i32 => {
 
   // Control-flow edges, numbered in block order so a terminator's
   // edges are contiguous: edge k of block b is termFirstEdge[b] + k.
-  let edgeTerm = new Array<i32>();
-  let edgeTarget = new Array<i32>();
-  let edgeArgStart = new Array<i32>();
-  let edgeExec = new Array<boolean>();
-  let termFirstEdge = new Array<i32>();
-  let termEdgeCount = new Array<i32>();
+  let edgeTerm = scratch.i32();
+  let edgeTarget = scratch.i32();
+  let edgeArgStart = scratch.i32();
+  let edgeExec = scratch.bool();
+  let termFirstEdge = scratch.i32();
+  let termEdgeCount = scratch.i32();
   let incoming = new Array<GrowableArray<i32>>();
   for (var b = 0; b < nb; b += 1) {
     termFirstEdge.push(-1);
@@ -97,20 +104,20 @@ export let runSccp = (body: IrBody): i32 => {
   // Def → users, for the SSA worklist. Branch arguments make the
   // terminator a user, which is what re-meets a target's parameters
   // when an argument lowers.
-  let users = buildUseLists(body);
+  let users = buildUseLists(body, scratch);
 
-  let state = new Array<i32>();
+  let state = scratch.i32();
   let value = new Array<IrConst | null>();
   for (var i = 0; i < count; i += 1) {
     state.push(TOP);
     value.push(null);
   }
-  let blockExec = new Array<boolean>(nb);
+  let blockExec = scratch.bool();
   for (var b = 0; b < nb; b += 1) {
     blockExec.push(false);
   }
-  let ssaWork = new Array<i32>();
-  let flowWork = new Array<i32>();
+  let ssaWork = scratch.i32();
+  let flowWork = scratch.i32();
 
   // Moves an instruction's lattice value down to (s, v). Values only
   // descend: a constant that meets a different constant varies.
@@ -397,7 +404,7 @@ export let runSccp = (body: IrBody): i32 => {
   // Constant block parameters: a constant at the head of the block
   // takes the parameter's uses, and the parameter and its arguments
   // go. Higher indices first, so a deletion leaves the lower ones.
-  let repl = new Array<i32>(count);
+  let repl = scratch.i32();
   for (var i = 0; i < count; i += 1) {
     repl.push(i);
   }

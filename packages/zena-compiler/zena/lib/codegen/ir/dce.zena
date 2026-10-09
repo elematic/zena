@@ -27,17 +27,24 @@
  * and field-initializer effects live in the operands' own
  * instructions, which stay unless they too are removable.
  */
-import { IrBody, IrOp, isBinaryNumericOp, isUnaryNumericOp } from './ir.zena';
+import { IrBody, IrOp, isBinaryNumericOp, isUnaryNumericOp, IrScratch } from './ir.zena';
 import { ValTypeRef } from '../wasm.zena';
 
 /** Runs the pass; returns the number of instructions removed. */
-export let runDce = (body: IrBody): i32 => {
+export let runDce = (body: IrBody, scratch: IrScratch): i32 => {
+  scratch.enter();
+  let result = runDceOn(body, scratch);
+  scratch.exit();
+  return result;
+};
+
+let runDceOn = (body: IrBody, scratch: IrScratch): i32 => {
   let count = body.instCount();
-  let useCount = new Array<i32>(count);
+  let useCount = scratch.i32();
   for (var i = 0; i < count; i += 1) {
     useCount.push(0);
   }
-  let operands = new Array<i32>();
+  let operands = scratch.i32();
   for (var i = 0; i < count; i += 1) {
     while (operands.length > 0) {
       operands.pop();

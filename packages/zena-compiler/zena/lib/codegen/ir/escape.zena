@@ -27,7 +27,7 @@ import { HashMap } from 'zena:collections';
  * Determinism: functions in module order, uses in instruction order;
  * the function map is used for lookups only.
  */
-import { IrBody, IrOp, IrRefFunc, IrUseLists, buildUseLists } from './ir.zena';
+import { IrBody, IrOp, IrRefFunc, IrUseLists, IrScratch, buildUseLists } from './ir.zena';
 import { WasmModule, WasmFunction } from '../wasm-module.zena';
 
 export final class EscapeSummaries {
@@ -35,7 +35,10 @@ export final class EscapeSummaries {
   escapes = new Array<GrowableArray<boolean>>();
   #bodyIndex: HashMap<WasmFunction, i32>;
 
-  new(wasm: WasmModule, bodies: GrowableArray<IrBody>) : #bodyIndex = wasm.functionIndex() {
+  new(wasm: WasmModule, bodies: GrowableArray<IrBody>, scratch: IrScratch) : #bodyIndex = wasm.functionIndex() {
+    // The use lists live for the fixpoint; the per-parameter walks
+    // scope their own.
+    scratch.enter();
     for (let body in bodies) {
       let row = new Array<boolean>();
       let n = if (body.blocks.length > 0) body.blocks[0].params.length else 0;
@@ -59,7 +62,7 @@ export final class EscapeSummaries {
         if (row.length == 0) {
           continue;
         }
-        let users = tables[f] ?? buildUseLists(bodies[f]);
+        let users = tables[f] ?? buildUseLists(bodies[f], scratch);
         tables[f] = users;
         for (var k = 0; k < row.length; k += 1) {
           if (row[k]) {
@@ -82,6 +85,7 @@ export final class EscapeSummaries {
         }
       }
     }
+    scratch.exit();
   }
 
   paramEscapes(f: i32, k: i32): boolean {

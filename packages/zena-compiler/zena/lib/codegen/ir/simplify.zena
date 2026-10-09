@@ -24,8 +24,7 @@
  * Determinism: a single id-order walk, no hash containers.
  */
 import {
-  IrBody, IrOp, IrRefField, IrRefGlobal, IrRefType, IrSuccessor,
-} from './ir.zena';
+  IrBody, IrOp, IrRefField, IrRefGlobal, IrRefType, IrSuccessor, IrScratch } from './ir.zena';
 import { WasmStruct, isValSubtype } from '../wasm-module.zena';
 import { ValTypeRef } from '../wasm.zena';
 import {
@@ -34,7 +33,14 @@ import {
 } from './fold.zena';
 
 /** Runs the pass; returns the number of instructions rewritten. */
-export let runSimplify = (body: IrBody): i32 => {
+export let runSimplify = (body: IrBody, scratch: IrScratch): i32 => {
+  scratch.enter();
+  let result = runSimplifyOn(body, scratch);
+  scratch.exit();
+  return result;
+};
+
+let runSimplifyOn = (body: IrBody, scratch: IrScratch): i32 => {
   let count = body.instCount();
   var rewrites = 0;
 
@@ -43,11 +49,11 @@ export let runSimplify = (body: IrBody): i32 => {
   // into the shift count 3, which is only sound if nothing else reads
   // that constant). Later in-place rewrites only ever REMOVE uses, so
   // a count of one stays trustworthy for the rest of the pass.
-  let useCount = new Array<i32>(count);
+  let useCount = scratch.i32();
   for (var i = 0; i < count; i += 1) {
     useCount.push(0);
   }
-  let operands = new Array<i32>();
+  let operands = scratch.i32();
   for (var i = 0; i < count; i += 1) {
     while (operands.length > 0) {
       operands.pop();
@@ -60,7 +66,7 @@ export let runSimplify = (body: IrBody): i32 => {
     }
   }
 
-  let repl = new Array<i32>(count);
+  let repl = scratch.i32();
   for (var i = 0; i < count; i += 1) {
     repl.push(i);
   }
