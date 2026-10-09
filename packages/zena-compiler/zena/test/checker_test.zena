@@ -506,7 +506,7 @@ export let tests = suite('Checker API', (): void => {
     test('block scope isolates variables', (ctx: TestContext): void => {
       // The inner x should not conflict with the outer x
       let result = checkOk(
-        "let x = 1;\n{\n  let x = 2;\n}"
+        "let f = (): void => {\n  let x = 1;\n  {\n    let x = 2;\n  }\n};"
       );
       isTrue(errorDiagnostics(result.diagnostics).length == 0);
     });
@@ -617,7 +617,7 @@ export let tests = suite('Checker API', (): void => {
 
     test('array push method', (ctx: TestContext): void => {
       checkOk(
-        "let arr = new GrowableArray<i32>();\narr.push(42);"
+        "let arr = new GrowableArray<i32>();\nlet f = (): void => {\n  arr.push(42);\n};"
       );
     });
   });
@@ -661,13 +661,13 @@ export let tests = suite('Checker API', (): void => {
 
     test('HashMap index access', (ctx: TestContext): void => {
       checkOk(
-        "import { HashMap } from 'zena:collections';\nlet m = new HashMap<String, i32>();\nm[\"x\"] = 42;"
+        "import { HashMap } from 'zena:collections';\nlet m = new HashMap<String, i32>();\nlet f = (): void => {\n  m[\"x\"] = 42;\n};"
       );
     });
 
     test('HashMap get method', (ctx: TestContext): void => {
       checkOk(
-        "import { HashMap } from 'zena:collections';\nlet m = new HashMap<String, i32>();\nif (let (true, v) = m.get(\"x\")) { let _ = v; }"
+        "import { HashMap } from 'zena:collections';\nlet m = new HashMap<String, i32>();\nlet f = (): void => {\n  if (let (true, v) = m.get(\"x\")) { let _ = v; }\n};"
       );
     });
 
@@ -723,13 +723,13 @@ export let tests = suite('Checker API', (): void => {
 
     test('if != null narrows in then branch', (ctx: TestContext): void => {
       checkOk(
-        "class Foo {\n  x: i32;\n  new(this.x);\n}\nlet foo: Foo | null = null;\nif (foo != null) {\n  let y: Foo = foo;\n}"
+        "class Foo {\n  x: i32;\n  new(this.x);\n}\nlet f = (): void => {\n  let foo: Foo | null = null;\n  if (foo != null) {\n    let y: Foo = foo;\n  }\n};"
       );
     });
 
     test('if == null narrows in else branch', (ctx: TestContext): void => {
       checkOk(
-        "class Foo {\n  x: i32;\n  new(this.x);\n}\nlet foo: Foo | null = null;\nif (foo == null) {\n  let y: i32 = 0;\n} else {\n  let y: Foo = foo;\n}"
+        "class Foo {\n  x: i32;\n  new(this.x);\n}\nlet f = (): void => {\n  let foo: Foo | null = null;\n  if (foo == null) {\n    let y: i32 = 0;\n  } else {\n    let y: Foo = foo;\n  }\n};"
       );
     });
 
@@ -792,7 +792,7 @@ export let tests = suite('Checker API', (): void => {
     test('narrowing allows non-null assignment in if body', (ctx: TestContext): void => {
       // With narrowing, foo should be Foo (not Foo | null) inside the if body
       checkOk(
-        "class Foo {\n  x: i32;\n  new(this.x);\n}\nlet foo: Foo | null = null;\nif (foo != null) {\n  let y: Foo = foo;\n}"
+        "class Foo {\n  x: i32;\n  new(this.x);\n}\nlet f = (): void => {\n  let foo: Foo | null = null;\n  if (foo != null) {\n    let y: Foo = foo;\n  }\n};"
       );
     });
   });

@@ -4343,6 +4343,32 @@ are in [decorators.md](design/decorators.md).
 
 ## 8. Libraries & Exports
 
+### Library Bodies
+
+A library body contains **declarations only**: `import`, `let`, `var`,
+`function`, `class`, `interface`, `mixin`, `decorator`, `enum`, `type`,
+`symbol`, `declare`, and their `export` forms. A statement at the top level
+is an error:
+
+```zena
+let names = new GrowableArray<String>();
+
+names.push('side effect');   // Error: A module body may only contain
+                             //        declarations. Move this statement
+                             //        into a function.
+
+export function main(): i32 {
+  names.push('fine here');
+  return 0;
+}
+```
+
+Nothing in a library body runs on its own, so a statement there would never
+execute. The rule also keeps importing a library free of side effects, which
+is what lets the compiler drop an unused library from a build. Variable
+initializers are the remaining exception: `let x = f();` runs `f` when the
+module starts.
+
 ### Imports
 
 Libraries bring exported names from other files into scope using the `import` keyword:
@@ -5269,9 +5295,12 @@ A minimal Zena program can compile to as few as 41 bytes.
 ## 15. Grammar (Simplified)
 
 ```ebnf
-Library ::= Statement*
+Library ::= Declaration*
 
-Statement ::= ExportStatement | VariableDeclaration | UsingStatement | ExpressionStatement | BlockStatement | ReturnStatement | BreakStatement | ContinueStatement | IfStatement | WhileStatement | ForStatement
+Declaration ::= ImportDeclaration | ExportStatement | VariableDeclaration | FunctionDeclaration | ClassDeclaration | InterfaceDeclaration | MixinDeclaration | DecoratorDeclaration | EnumDeclaration | TypeAliasDeclaration | SymbolDeclaration | DeclareFunction
+
+// Statements appear in function bodies and blocks, never in a library body.
+Statement ::= VariableDeclaration | UsingStatement | ExpressionStatement | BlockStatement | ReturnStatement | BreakStatement | ContinueStatement | IfStatement | WhileStatement | ForStatement
 
 ExportStatement ::= "export" (VariableDeclaration | ClassDeclaration | InterfaceDeclaration | MixinDeclaration | DecoratorDeclaration | DeclareFunction)
 
