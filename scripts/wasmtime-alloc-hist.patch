@@ -1,0 +1,208 @@
+--- /home/dev/work/wasmtime-patched/wasmtime/src/runtime/vm/gc/enabled/copying.rs.orig	2026-10-09 05:32:21.974625894 +0000
++++ /home/dev/work/wasmtime-patched/wasmtime/src/runtime/vm/gc/enabled/copying.rs	2026-10-09 06:06:43.588730724 +0000
+@@ -297,12 +297,116 @@
+ 
+     /// Like `active_extern_ref_set_head` but for the idle semi-space.
+     idle_extern_ref_set_head: Option<VMExternRef>,
++
++    /// zena: per-type allocation histogram, on when ZENA_ALLOC_HIST is set.
++    alloc_hist: Option<AllocHist>,
++}
++
++/// zena: counts every object allocated in the heap, by its shared type
++/// index. Bump allocation lays objects out contiguously, so walking the
++/// active space from the last collection's bump pointer to the current
++/// one at the start of each collection (and at detach/drop) sees each
++/// allocation exactly once, whether it was made inline by compiled code
++/// or through `alloc_raw`.
++struct AllocHist {
++    scan_start: u32,
++    by_type: std::collections::HashMap<u32, (u64, u64)>,
++    total: (u64, u64),
++    walks: u64,
++    /// ZENA_ALLOC_HIST_SIZES=<shared type index>: a size histogram
++    /// (log2 buckets) for that one type.
++    sizes_of: Option<u32>,
++    sizes: [u64; 40],
+ }
+ 
+ impl CopyingHeap {
++    fn hist_mark(&mut self) {
++        let bp = self.bump_ptr();
++        if let Some(h) = self.alloc_hist.as_mut() {
++            h.scan_start = bp;
++        }
++    }
++
++    fn hist_scan(&mut self) {
++        let Some(mut hist) = self.alloc_hist.take() else {
++            return;
++        };
++        let end = self.bump_ptr();
++        let mut idx = hist.scan_start.max(self.active_space_start);
++        if self.memory.is_some() && idx < end {
++            hist.walks += 1;
++            let slice = self.heap_slice();
++            while idx < end {
++                let i = usize::try_from(idx).unwrap();
++                let ty = u32::from_le_bytes(slice[i + 4..i + 8].try_into().unwrap());
++                let size = u32::from_le_bytes(slice[i + 8..i + 12].try_into().unwrap());
++                if size == 0 || !size.is_multiple_of(ALIGN) {
++                    std::eprintln!("[alloc-hist] bad object at {idx}: size {size}");
++                    break;
++                }
++                // The GC heap reserve (zena-runtime's reserve_gc_heap) is
++                // one array of hundreds of MiB, allocated to grow the heap
++                // and dropped: not a compile's allocation, so left out.
++                if size >= (256 << 20) {
++                    std::eprintln!("[alloc-hist] skipped a {size}-byte object of ty={ty}");
++                    idx += size;
++                    continue;
++                }
++                if hist.sizes_of == Some(ty) {
++                    hist.sizes[(32 - size.leading_zeros()) as usize] += 1;
++                }
++                let e = hist.by_type.entry(ty).or_insert((0, 0));
++                e.0 += 1;
++                e.1 += u64::from(size);
++                hist.total.0 += 1;
++                hist.total.1 += u64::from(size);
++                idx += size;
++            }
++        }
++        hist.scan_start = end;
++        self.alloc_hist = Some(hist);
++    }
++
++    fn hist_dump(&mut self) {
++        let Some(hist) = self.alloc_hist.as_mut() else {
++            return;
++        };
++        if hist.total.0 == 0 {
++            return;
++        }
++        std::eprintln!(
++            "[alloc-hist] total objects={} bytes={} walks={}",
++            hist.total.0,
++            hist.total.1,
++            hist.walks
++        );
++        let mut rows: std::vec::Vec<_> = hist.by_type.iter().map(|(k, v)| (*k, *v)).collect();
++        rows.sort_by(|a, b| b.1 .1.cmp(&a.1 .1));
++        for (ty, (n, b)) in rows {
++            std::eprintln!("[alloc-hist] ty={ty} count={n} bytes={b}");
++        }
++        if let Some(ty) = hist.sizes_of {
++            for (i, n) in hist.sizes.iter().enumerate() {
++                if *n > 0 {
++                    std::eprintln!("[alloc-hist] sizes ty={ty} lt={} count={n}", 1u64 << i);
++                }
++            }
++        }
++        hist.by_type.clear();
++        hist.total = (0, 0);
++    }
++
+     fn new() -> Result<Self> {
+         log::trace!("allocating new copying heap");
+         Ok(Self {
++            alloc_hist: std::env::var_os("ZENA_ALLOC_HIST").map(|_| AllocHist {
++                scan_start: 0,
++                by_type: std::collections::HashMap::new(),
++                total: (0, 0),
++                walks: 0,
++                sizes_of: std::env::var("ZENA_ALLOC_HIST_SIZES").ok().and_then(|v| v.parse().ok()),
++                sizes: [0; 40],
++            }),
+             trace_infos: TraceInfos::new(),
+             no_gc_count: 0,
+             memory: None,
+@@ -399,6 +503,7 @@
+         }
+         self.set_bump_ptr(bp);
+         debug_assert!(self.bump_ptr().is_multiple_of(ALIGN));
++        self.hist_mark();
+     }
+ 
+     /// Allocate `size` bytes from the active semi-space bump pointer.
+@@ -706,6 +811,8 @@
+ 
+     fn detach(&mut self) -> crate::vm::Memory {
+         assert!(self.is_attached());
++        self.hist_scan();
++        self.hist_dump();
+ 
+         self.set_bump_ptr(0);
+         self.set_active_space_end(0);
+@@ -722,6 +829,7 @@
+             active_extern_ref_set_head,
+             idle_extern_ref_set_head,
+             trace_infos,
++            alloc_hist: _,
+         } = self;
+ 
+         *no_gc_count = 0;
+@@ -964,6 +1072,7 @@
+         'b: 'a,
+     {
+         assert_eq!(self.no_gc_count, 0, "Cannot GC inside a no-GC scope!");
++        self.hist_scan();
+         Box::new(CopyingCollection {
+             roots: Some(roots),
+             trace_state,
+@@ -1175,6 +1284,7 @@
+         }
+ 
+         log::trace!("End copying collection");
++        self.heap.hist_mark();
+         self.phase = CopyingCollectionPhase::Done;
+         Ok(GcProgress::Complete)
+     }
+@@ -1191,6 +1301,15 @@
+     }
+ }
+ 
++impl Drop for CopyingHeap {
++    fn drop(&mut self) {
++        if self.memory.is_some() {
++            self.hist_scan();
++        }
++        self.hist_dump();
++    }
++}
++
+ impl Drop for CopyingCollection<'_, '_> {
+     fn drop(&mut self) {
+         // A collection is logically atomic with respect to the mutator: the
+--- /home/dev/work/wasmtime-patched/wasmtime/src/runtime/module.rs.orig	2026-10-09 05:32:21.982293077 +0000
++++ /home/dev/work/wasmtime-patched/wasmtime/src/runtime/module.rs	2026-10-09 05:33:56.707306239 +0000
+@@ -522,7 +522,6 @@
+         // within the text section.
+         let signatures = engine
+             .register_and_canonicalize_types(&mut types, core::iter::once(&mut info.module))?;
+-
+         // Package up all our data into an `EngineCode` and delegate to the final
+         // step of module compilation.
+         let code = try_new::<Arc<_>>(EngineCode::new(code_memory, signatures, types.into())?)?;
+@@ -538,6 +537,21 @@
+         serializable: bool,
+     ) -> Result<Self> {
+         let checksum = info.checksum;
++        // zena: log wasm type index -> engine shared type index, so an
++        // allocation histogram keyed by shared index can be named.
++        if std::env::var_os("ZENA_ALLOC_HIST").is_some() {
++            std::eprintln!("[type-map] module types={}", info.module.types.len());
++            for (i, t) in info.module.types.iter() {
++                let shared = match *t {
++                    wasmtime_environ::EngineOrModuleTypeIndex::Engine(s) => Some(s),
++                    wasmtime_environ::EngineOrModuleTypeIndex::Module(m) => code.signatures().shared_type(m),
++                    _ => None,
++                };
++                if let Some(s) = shared {
++                    std::eprintln!("[type-map] {} {}", i.as_u32(), s.bits());
++                }
++            }
++        }
+         let module = CompiledModule::from_artifacts(code.clone(), info, index, engine.profiler())?;
+ 
+         // Validate the module can be used with the current instance allocator.
