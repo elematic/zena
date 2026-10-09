@@ -249,7 +249,7 @@ let fuseStraightLine = (body: IrBody, scratch: IrScratch): i32 => {
       if (body.op(pTerm) != IrOp.br) {
         continue;
       }
-      let s = body.successors(pTerm)[0].target;
+      let s = body.extra[body.successorRecord(pTerm, 0)];
       if (s == p || s == 0 || incoming[s] != 1 || isIn(joins, s)) {
         continue;
       }
@@ -429,8 +429,10 @@ let removeUnreachable = (body: IrBody, scratch: IrScratch): i32 => {
     }
     let insts = body.blocks[i].insts;
     let term = insts[insts.length - 1];
-    for (let s in body.successors(term)) {
-      body.extra[s.argStart - 2] = map[s.target];
+    let sN = body.successorCount(term);
+    for (var sK = 0; sK < sN; sK += 1) {
+      let sRec = body.successorRecord(term, sK);
+      body.extra[(sRec + 2) - 2] = map[body.extra[sRec]];
     }
   }
   let newJoin = new Map<i32, i32>();
@@ -613,21 +615,22 @@ export let dropBranchArg = (body: IrBody, term: i32, target: i32, j: i32): void 
     prefixLen = 1;
   }
   let recordStart = if (op == IrOp.br) body.a[term] else body.b[term];
-  let succs = body.successors(term);
+  let sN = body.successorCount(term);
   let idx = body.extra.length;
   var p = 0;
   while (p < prefixLen) {
     body.extra.push(body.extra[recordStart + p]);
     p += 1;
   }
-  for (let s in succs) {
-    body.extra.push(s.target);
-    let drop = s.target == target;
-    body.extra.push(if (drop) s.argCount - 1 else s.argCount);
+  for (var sK = 0; sK < sN; sK += 1) {
+    let sRec = body.successorRecord(term, sK);
+    body.extra.push(body.extra[sRec]);
+    let drop = body.extra[sRec] == target;
+    body.extra.push(if (drop) body.extra[sRec + 1] - 1 else body.extra[sRec + 1]);
     var i = 0;
-    while (i < s.argCount) {
+    while (i < body.extra[sRec + 1]) {
       if (!(drop && i == j)) {
-        body.extra.push(body.extra[s.argStart + i]);
+        body.extra.push(body.extra[(sRec + 2) + i]);
       }
       i += 1;
     }

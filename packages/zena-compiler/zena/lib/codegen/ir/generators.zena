@@ -507,8 +507,10 @@ export let computeLiveIn = (body: IrBody, cfg: IrCfg): Array<Set<i32>> => {
       ri -= 1;
       let inSet = liveIn[b];
       let term = body.blocks[b].insts[body.blocks[b].insts.length - 1];
-      for (let s in body.successors(term)) {
-        for (let v in liveIn[s.target]) {
+      let sN = body.successorCount(term);
+      for (var sK = 0; sK < sN; sK += 1) {
+        let sRec = body.successorRecord(term, sK);
+        for (let v in liveIn[body.extra[sRec]]) {
           if (!defs[b].has(v) && !inSet.has(v)) {
             inSet.add(v);
             changed = true;
@@ -712,7 +714,7 @@ let prepareOne = (
       let term = insts[insts.length - 1];
       if (presplit.op(term) == IrOp.yield_) {
         yieldBlocks.push(bi);
-        resumeOf.push(presplit.successors(term)[0].target);
+        resumeOf.push(presplit.extra[presplit.successorRecord(term, 0)]);
       }
     }
     bi += 1;
@@ -1385,7 +1387,7 @@ let buildNextBody = (
     let term = block.insts[block.insts.length - 1];
     let op = body.op(term);
     if (op == IrOp.yield_) {
-      let resumeTarget = body.successors(term)[0].target;
+      let resumeTarget = body.extra[body.successorRecord(term, 0)];
       let pc = pcOfBlock[resumeTarget];
       let yieldVal = body.a[term];
       let rebuilt = new Array<i32>(block.insts.length - 1);

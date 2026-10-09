@@ -4,7 +4,7 @@
  * emitter. Computed once per body on demand; bodies are not mutated
  * between construction and use in the current pipeline.
  */
-import { IrBody } from './ir.zena';
+import { IrBody, IrScratch } from './ir.zena';
 
 export final class IrCfg {
   body: IrBody;
@@ -12,20 +12,22 @@ export final class IrCfg {
   // list[start[b] .. start[b + 1]): one array per table rather than one
   // per block, for a structure built several times per body per pass.
   /** Predecessor block ids per block. */
-  predStart = new Array<i32>();
-  predList = new Array<i32>();
+  predStart: GrowableArray<i32>;
+  predList: GrowableArray<i32>;
   /** Successor block ids per block (edge order, duplicates preserved). */
-  succStart = new Array<i32>();
-  succList = new Array<i32>();
+  succStart: GrowableArray<i32>;
+  succList: GrowableArray<i32>;
   /** Blocks in reverse postorder (entry first). */
-  rpo = new Array<i32>();
+  rpo: GrowableArray<i32>;
   /** Reverse-postorder number per block; -1 = unreachable from entry. */
-  rpoIndex = new Array<i32>();
+  rpoIndex: GrowableArray<i32>;
   /** Immediate dominator per block; entry's is itself; -1 = unreachable. */
-  idom = new Array<i32>();
+  idom: GrowableArray<i32>;
   /** Dominator-tree children per block, in ascending RPO order. */
-  domChildStart = new Array<i32>();
-  domChildList = new Array<i32>();
+  domChildStart: GrowableArray<i32>;
+  domChildList: GrowableArray<i32>;
+  /** Where the tables came from; null means fresh lists of its own. */
+  #scratch: IrScratch | null;
 
   predCount(block: i32): i32 {
     return this.predStart[block + 1] - this.predStart[block];
@@ -51,7 +53,18 @@ export final class IrCfg {
     return this.domChildList[this.domChildStart[block] + k];
   }
 
-  new(this.body) {
+  /**
+   * With a pool, the tables and the temporaries come from the caller's
+   * current scope, and the CFG must not outlive it: a pass builds its
+   * CFG inside its own scope. Without one, the lists are fresh.
+   */
+  new(this.body, scratch: IrScratch | null = null)
+    : predStart = listFrom(scratch), predList = listFrom(scratch),
+      succStart = listFrom(scratch), succList = listFrom(scratch),
+      rpo = listFrom(scratch), rpoIndex = listFrom(scratch),
+      idom = listFrom(scratch),
+      domChildStart = listFrom(scratch), domChildList = listFrom(scratch),
+      #scratch = scratch {
     this.#computePreds();
     this.#computeRpo();
     this.#computeDominators();
@@ -131,8 +144,8 @@ export final class IrCfg {
       this.predStart[b + 1] = this.predStart[b + 1] + this.predStart[b];
       this.succStart[b + 1] = this.succStart[b + 1] + this.succStart[b];
     }
-    let predNext = new Array<i32>(nb + 1);
-    let succNext = new Array<i32>(nb + 1);
+    let predNext = listFrom(this.#scratch);
+    let succNext = listFrom(this.#scratch);
     for (var b = 0; b < nb; b += 1) {
       predNext.push(this.predStart[b]);
       succNext.push(this.succStart[b]);
@@ -175,10 +188,10 @@ export final class IrCfg {
     // each stack entry keeps a cursor into its successor list — the
     // simpler push-all-successors form finishes nodes too early and
     // produces orderings where a forward edge looks like a back edge.
-    let postorder = new Array<i32>();
-    let stack = new Array<i32>();
-    let cursor = new Array<i32>();
-    let visited = new Array<boolean>();
+    let postorder = listFrom(this.#scratch);
+    let stack = listFrom(this.#scratch);
+    let cursor = listFrom(this.#scratch);
+    let visited = boolsFrom(this.#scratch);
     i = 0;
     while (i < body.blocks.length) {
       visited.push(false);
@@ -281,7 +294,7 @@ export final class IrCfg {
     for (var b = 0; b < nb; b += 1) {
       this.domChildStart[b + 1] = this.domChildStart[b + 1] + this.domChildStart[b];
     }
-    let next = new Array<i32>(nb + 1);
+    let next = listFrom(this.#scratch);
     for (var b = 0; b < nb; b += 1) {
       next.push(this.domChildStart[b]);
     }
@@ -302,3 +315,9 @@ export final class IrCfg {
     }
   }
 }
+
+let listFrom = (scratch: IrScratch | null): GrowableArray<i32> =>
+    if (scratch != null) scratch.i32() else new Array<i32>();
+
+let boolsFrom = (scratch: IrScratch | null): GrowableArray<boolean> =>
+    if (scratch != null) scratch.bool() else new Array<boolean>();

@@ -69,7 +69,14 @@ let runLicmOn = (body: IrBody, scratch: IrScratch): i32 => {
 };
 
 let hoistOnce = (body: IrBody, scratch: IrScratch): i32 => {
-  let cfg = new IrCfg(body);
+  scratch.enter();
+  let result = hoistOnceOn(body, scratch);
+  scratch.exit();
+  return result;
+};
+
+let hoistOnceOn = (body: IrBody, scratch: IrScratch): i32 => {
+  let cfg = new IrCfg(body, scratch);
   let nb = body.blocks.length;
   let dominates = (a: i32, b: i32): boolean => {
     var cur = b;
@@ -133,8 +140,10 @@ let hoistOnce = (body: IrBody, scratch: IrScratch): i32 => {
     // path that never reaches the loop.
     var straightIn = destBlk.insts.length > 0;
     if (straightIn) {
-      for (let s in body.successors(destBlk.insts[destBlk.insts.length - 1])) {
-        if (s.target != h) {
+      let sN = body.successorCount(destBlk.insts[destBlk.insts.length - 1]);
+      for (var sK = 0; sK < sN; sK += 1) {
+        let sRec = body.successorRecord(destBlk.insts[destBlk.insts.length - 1], sK);
+        if (body.extra[sRec] != h) {
           straightIn = false;
         }
       }

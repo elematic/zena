@@ -764,11 +764,13 @@ export final class ZirFunctionEmitter {
       if (blk.insts.length > 0) {
         let term = blk.insts[blk.insts.length - 1];
         if (isIrTerminator(body.op(term))) {
-          for (let s in body.successors(term)) {
-            let params = blocks[s.target].params;
+          let sN = body.successorCount(term);
+          for (var sK = 0; sK < sN; sK += 1) {
+            let sRec = body.successorRecord(term, sK);
+            let params = blocks[body.extra[sRec]].params;
             var i = 0;
-            while (i < s.argCount) {
-              tryUnion(body.extra[s.argStart + i], params[i]);
+            while (i < body.extra[sRec + 1]) {
+              tryUnion(body.extra[(sRec + 2) + i], params[i]);
               i += 1;
             }
           }
@@ -803,8 +805,10 @@ export final class ZirFunctionEmitter {
       if (!isIrTerminator(body.op(term))) {
         continue;
       }
-      for (let s in body.successors(term)) {
-        let params = body.blocks[s.target].params;
+      let sN = body.successorCount(term);
+      for (var sK = 0; sK < sN; sK += 1) {
+        let sRec = body.successorRecord(term, sK);
+        let params = body.blocks[body.extra[sRec]].params;
         if (params.length == 0) {
           continue;
         }
@@ -813,7 +817,7 @@ export final class ZirFunctionEmitter {
         let paramIds = new Array<i32>();
         var i = 0;
         while (i < params.length) {
-          let arg = body.extra[s.argStart + i];
+          let arg = body.extra[(sRec + 2) + i];
           let src = this.localOf[arg];
           let dst = this.localOf[params[i]];
           if (src < 0 || dst < 0) {
@@ -886,7 +890,7 @@ export final class ZirFunctionEmitter {
             }
           }
         }
-        this.#movePlans[s.argStart] = plan;
+        this.#movePlans[(sRec + 2)] = plan;
       }
     }
   }
@@ -919,9 +923,11 @@ export final class ZirFunctionEmitter {
       if (blk.insts.length == 0) { continue; }
       let term = blk.insts[blk.insts.length - 1];
       if (!isIrTerminator(body.op(term))) { continue; }
-      for (let s in body.successors(term)) {
-        for (var ai = 0; ai < s.argCount; ai += 1) {
-          let arg = body.extra[s.argStart + ai];
+      let sN = body.successorCount(term);
+      for (var sK = 0; sK < sN; sK += 1) {
+        let sRec = body.successorRecord(term, sK);
+        for (var ai = 0; ai < body.extra[sRec + 1]; ai += 1) {
+          let arg = body.extra[(sRec + 2) + ai];
           if (arg >= 0 && arg < count) {
             this.remat[arg] = false;
           }
@@ -2637,7 +2643,7 @@ export final class ZirFunctionEmitter {
 /** Emits one function; returns (graduated, kept-nullable) ref-local counts. */
 export let emitZirFunction = (wasm: WasmModule, emitter: WasmEmitter, func: WasmFunction, body: IrBody, scratch: IrScratch): (i32, i32) => {
   scratch.enter();
-  let cfg = new IrCfg(body);
+  let cfg = new IrCfg(body, scratch);
   let zirEmitter = new ZirFunctionEmitter(wasm, emitter, func, body, cfg, scratch);
   zirEmitter.emit();
   scratch.exit();
