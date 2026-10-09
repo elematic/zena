@@ -6,8 +6,7 @@ import {
   FieldInfo, MethodInfo, typeToString, TypeParameterType, ThisType,
   UnionType, InlineTupleType, baseType, BoolLiteralType, NumLiteralType, StringLiteralType,
   RecordType, TupleType, MixinType, ErasedType, countCodegenFunctionType,
-  countCodegenSubstitution, classShapeStamp, interfaceShapeStamp,
-  } from '../types.zena';
+  countCodegenSubstitution, classShapeStamp, interfaceShapeStamp, internFunctionType } from '../types.zena';
 import { 
   WasmModule, WasmStruct, WasmField, WasmSignature, WasmFunction, RecordDispatchInfo,
   sortWasmFields, WasmArray
@@ -188,7 +187,7 @@ let substituteTypeParamsInCodegenInner = (
         return ft;
       }
       
-      let newFt = new FunctionType(newParams, newRet, ft.info, ft.typeParameters, newArgs, ft.genericSource, ft.overloads);
+      let newFt = internFunctionType(newParams, newRet, ft.info, ft.typeParameters, newArgs, ft.genericSource, ft.overloads);
       newFt.functionSymbolId = ft.functionSymbolId;
       newFt.functionSymbolName = ft.functionSymbolName;
       countCodegenFunctionType(0);
@@ -348,7 +347,7 @@ let substituteTypeParamsInCodegenInner = (
             let sub = substituteTypeParamsInCodegenInner(wasm, combinedParams, combinedArgs, p);
             newParams.push(sub);
           }
-          let newFt = new FunctionType(newParams, ctor.returnType, ctor.info);
+          let newFt = internFunctionType(newParams, ctor.returnType, ctor.info);
           newFt.functionSymbolId = ctor.functionSymbolId;
           newFt.functionSymbolName = ctor.functionSymbolName;
           countCodegenFunctionType(1);
@@ -1015,7 +1014,7 @@ export let substituteThisTypeInCodegen = (receiverType: Type, t: Type): Type => 
       }
       let subRet = substituteThisTypeInCodegen(receiverType, ft.returnType);
       if (!changed && subRet === ft.returnType) { return t; }
-      let newFt = new FunctionType(subParams, subRet, ft.info, ft.typeParameters);
+      let newFt = internFunctionType(subParams, subRet, ft.info, ft.typeParameters);
       newFt.functionSymbolId = ft.functionSymbolId;
       newFt.functionSymbolName = ft.functionSymbolName;
       countCodegenFunctionType(2);
@@ -1179,7 +1178,7 @@ export let eraseTypeParameters = (wasm: WasmModule, t: Type): Type => {
           for (let p in ctor.parameters) {
             newParams.push(eraseTypeParameters(wasm, p));
           }
-          let newFt = new FunctionType(newParams, eraseTypeParameters(wasm, ctor.returnType), ctor.info);
+          let newFt = internFunctionType(newParams, eraseTypeParameters(wasm, ctor.returnType), ctor.info);
           newFt.functionSymbolId = ctor.functionSymbolId;
           newFt.functionSymbolName = ctor.functionSymbolName;
           countCodegenFunctionType(3);
@@ -1238,7 +1237,7 @@ export let eraseTypeParameters = (wasm: WasmModule, t: Type): Type => {
       let newRet = eraseTypeParameters(wasm, ft.returnType);
       if (newRet != ft.returnType) { changed = true; }
       if (!changed) { return t; }
-      let inst = new FunctionType(newParams, newRet, ft.info, ft.typeParameters, ft.typeArguments, ft.genericSource, ft.overloads);
+      let inst = internFunctionType(newParams, newRet, ft.info, ft.typeParameters, ft.typeArguments, ft.genericSource, ft.overloads);
       inst.functionSymbolId = ft.functionSymbolId;
       inst.functionSymbolName = ft.functionSymbolName;
       countCodegenFunctionType(4);
@@ -2062,7 +2061,7 @@ export let mapMixinThisInType = (ct: ClassType, type: Type): Type => {
             for (let p in ctor.parameters) {
               newParams.push(mapMixinThisInType(ct, p));
             }
-            let newFt = new FunctionType(newParams, ctor.returnType, ctor.info);
+            let newFt = internFunctionType(newParams, ctor.returnType, ctor.info);
             newFt.functionSymbolId = ctor.functionSymbolId;
             newFt.functionSymbolName = ctor.functionSymbolName;
             countCodegenFunctionType(8);
@@ -2125,7 +2124,7 @@ export let mapMixinThisInType = (ct: ClassType, type: Type): Type => {
         newParams.push(mapMixinThisInType(ct, p));
       }
       let newRet = mapMixinThisInType(ct, ft.returnType);
-      let newFt = new FunctionType(newParams, newRet, ft.info, ft.typeParameters, ft.typeArguments, ft.genericSource, ft.overloads);
+      let newFt = internFunctionType(newParams, newRet, ft.info, ft.typeParameters, ft.typeArguments, ft.genericSource, ft.overloads);
       newFt.functionSymbolId = ft.functionSymbolId;
       newFt.functionSymbolName = ft.functionSymbolName;
       countCodegenFunctionType(7);

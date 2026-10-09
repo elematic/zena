@@ -58,6 +58,8 @@ var _instantiationMisses = 0;
 // Nominal types `substituteInType` builds outside any cache.
 var _substitutedNominals = 0;
 var _substitutionCacheHits = 0;
+var _functionTypeHits = 0;
+export let functionTypeHits = (): i32 => _functionTypeHits;
 // Substitutions whose arguments mention a type parameter, built fresh
 // because they cannot be cached (see substituteInType's class case).
 var _parametricSubstitutions = 0;
@@ -393,6 +395,12 @@ export final class FunctionDeclInfo {
   optionalParameters: Array<boolean> | null;
   isFinal: boolean;
   isAbstract: boolean;
+  /**
+   * The declaration's instantiations and substitutions, by the
+   * identities of their parts (`internFunctionType`): memo state, not
+   * a fact about the declaration.
+   */
+  instances = new TypeArgTrie();
 
   new(
     this.parameterNames,
@@ -403,6 +411,56 @@ export final class FunctionDeclInfo {
     this.isAbstract = false,
   );
 }
+
+/**
+ * The function type with these parts. One that carries declaration
+ * info is shared: the info's trie, walked by the parameters', return
+ * type's, type parameters', arguments' and source's identities,
+ * holds one object per distinct list, so a signature substituted a
+ * thousand times through one declaration is one type, which every
+ * cache keyed by type identity then hits. A type without info — an
+ * anonymous function type — has nothing to share under and is fresh.
+ * Only arguments that have identity of their own share: a record or
+ * tuple argument is a fresh uid each time, as before.
+ */
+export let internFunctionType = (
+  parameters: Array<Type>,
+  returnType: Type,
+  info: FunctionDeclInfo | null,
+  typeParameters: Array<TypeParameterType> | null = null,
+  typeArguments: Array<Type> | null = null,
+  genericSource: FunctionType | null = null,
+  overloads: GrowableArray<FunctionType> | null = null,
+): FunctionType => {
+  if (info == null) {
+    return new FunctionType(parameters, returnType, null, typeParameters,
+        typeArguments, genericSource, overloads);
+  }
+  // Separators (no uid is negative) keep the lists apart.
+  var node = info.instances.at(parameters).child(-1).child(returnType.uid).child(-1);
+  if (typeParameters != null) {
+    for (let tp in typeParameters) {
+      node = node.child(tp.uid);
+    }
+  }
+  node = node.child(-1);
+  if (typeArguments != null) {
+    node = node.at(typeArguments);
+  }
+  node = node.child(-1);
+  if (genericSource != null) {
+    node = node.child(genericSource.uid);
+  }
+  let existing = node.value;
+  if (existing != null) {
+    _functionTypeHits += 1;
+    return existing as FunctionType;
+  }
+  let created = new FunctionType(parameters, returnType, info, typeParameters,
+      typeArguments, genericSource, overloads);
+  node.value = created;
+  return created;
+};
 
 /**
  * A function's signature. The parameters, return type and type
@@ -983,7 +1041,7 @@ let substituteInType = (
         newParams.push((sub ?? p));
       }
       let newRet = substituteInType(ft.returnType, typeParameters, typeArguments);
-      let newFt = new FunctionType(newParams, (newRet ?? ft.returnType), ft.info, ft.typeParameters, ft.typeArguments, ft.genericSource, ft.overloads);
+      let newFt = internFunctionType(newParams, (newRet ?? ft.returnType), ft.info, ft.typeParameters, ft.typeArguments, ft.genericSource, ft.overloads);
       newFt.functionSymbolId = ft.functionSymbolId;
       newFt.functionSymbolName = ft.functionSymbolName;
       countCodegenFunctionType(5);
@@ -1109,7 +1167,7 @@ let substituteInType = (
             let sub = substituteInType(p, combinedParams, combinedArgs);
             newParams.push((sub ?? p));
           }
-          let newFt = new FunctionType(newParams, ctor.returnType, ctor.info);
+          let newFt = internFunctionType(newParams, ctor.returnType, ctor.info);
           newFt.functionSymbolId = ctor.functionSymbolId;
           newFt.functionSymbolName = ctor.functionSymbolName;
           newFt
@@ -1125,7 +1183,7 @@ let substituteInType = (
             let sub = substituteInType(p, combinedParams, combinedArgs);
             newParams.push((sub ?? p));
           }
-          let newFt = new FunctionType(newParams, ctor.returnType, ctor.info);
+          let newFt = internFunctionType(newParams, ctor.returnType, ctor.info);
           newFt.functionSymbolId = ctor.functionSymbolId;
           newFt.functionSymbolName = ctor.functionSymbolName;
           inst.constructors[ctorName] = newFt;
@@ -1592,7 +1650,7 @@ export let instantiateClassType = (
       let sub = substituteInType(p, source.typeParameters, typeArguments);
       newParams.push((sub ?? p));
     }
-    let newFt = new FunctionType(newParams, ctor.returnType, ctor.info);
+    let newFt = internFunctionType(newParams, ctor.returnType, ctor.info);
     newFt.functionSymbolId = ctor.functionSymbolId;
     newFt.functionSymbolName = ctor.functionSymbolName;
     newFt
@@ -1608,7 +1666,7 @@ export let instantiateClassType = (
       let sub = substituteInType(p, source.typeParameters, typeArguments);
       newParams.push((sub ?? p));
     }
-    let newFt = new FunctionType(newParams, ctor.returnType, ctor.info);
+    let newFt = internFunctionType(newParams, ctor.returnType, ctor.info);
     newFt.functionSymbolId = ctor.functionSymbolId;
     newFt.functionSymbolName = ctor.functionSymbolName;
     result.constructors[ctorName] = newFt;
@@ -1650,7 +1708,7 @@ export let instantiateFunctionType = (
     newParams.push((sub ?? p));
   }
   let newRet = substituteInType(source.returnType, source.typeParameters, typeArguments);
-  let newFt = new FunctionType(newParams, (newRet ?? source.returnType), source.info, null, toGrowable(typeArguments), source.genericSource ?? source, source.overloads);
+  let newFt = internFunctionType(newParams, (newRet ?? source.returnType), source.info, null, toGrowable(typeArguments), source.genericSource ?? source, source.overloads);
   newFt.functionSymbolId = source.functionSymbolId;
   newFt.functionSymbolName = source.functionSymbolName;
   countCodegenFunctionType(6);

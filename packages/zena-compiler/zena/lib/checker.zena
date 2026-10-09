@@ -113,7 +113,7 @@ import {
   isScopedType, scopedInner,
   isSecondClass, typeContainsSecondClass, typeContainsScoped,
   typeContainsConcreteSecondClass, borrowInnerRestricts
-, ErasedType, FunctionDeclInfo} from './types.zena';
+, ErasedType, FunctionDeclInfo, internFunctionType } from './types.zena';
 import { SemanticModel, ModelIndex, InterfaceAdaptation, SymbolDependencies, ClosureDependency, FunctionAdaptationDependency, EdgeDrop, DeferredBodies } from './semantic-model.zena';
 import {
   Diagnostic, DiagnosticBag, DiagnosticCode, DiagnosticSeverity
@@ -6365,7 +6365,7 @@ let substituteTypeParams = (
         subParams.push(substituteTypeParams(typeParams, typeArgs, param));
       }
       let subRet = substituteTypeParams(typeParams, typeArgs, ft.returnType);
-      let res = new FunctionType(subParams, subRet, ft.info, ft.typeParameters,
+      let res = internFunctionType(subParams, subRet, ft.info, ft.typeParameters,
           ft.typeArguments, ft.genericSource);
       let {overloads} = ft;
       if (overloads != null) {
@@ -6509,7 +6509,7 @@ let substituteThisType = (receiverType: Type, t: Type): Type => {
       }
       let subRet = substituteThisType(receiverType, ft.returnType);
       if (!changed && subRet === ft.returnType) { return t; }
-      let newFt = new FunctionType(subParams, subRet, ft.info, ft.typeParameters);
+      let newFt = internFunctionType(subParams, subRet, ft.info, ft.typeParameters);
       let {overloads} = ft;
       if (overloads != null) {
         let subOvs = new Array<FunctionType>();
@@ -22157,7 +22157,7 @@ let checkCallExpressionInner = (
               subParams.push(substituteTypeParams(typeParams, typeArgs, param));
             }
             let subRet = substituteTypeParams(typeParams, typeArgs, effectiveFt.returnType);
-            let newFt = new FunctionType(subParams, subRet, effectiveFt.info, effectiveFt.typeParameters, typeArgs, effectiveFt);
+            let newFt = internFunctionType(subParams, subRet, effectiveFt.info, effectiveFt.typeParameters, typeArgs, effectiveFt);
             newFt.functionSymbolId = effectiveFt.functionSymbolId;
             newFt.functionSymbolName = effectiveFt.functionSymbolName;
             effectiveFt = newFt;
@@ -22229,7 +22229,7 @@ let checkCallExpressionInner = (
               subParams.push(substituteTypeParams(typeParams, typeArgs, param));
             }
             let subRet = substituteTypeParams(typeParams, typeArgs, effectiveFt.returnType);
-            let newFt = new FunctionType(subParams, subRet, effectiveFt.info, effectiveFt.typeParameters, typeArgs, effectiveFt);
+            let newFt = internFunctionType(subParams, subRet, effectiveFt.info, effectiveFt.typeParameters, typeArgs, effectiveFt);
             newFt.functionSymbolId = effectiveFt.functionSymbolId;
             newFt.functionSymbolName = effectiveFt.functionSymbolName;
             effectiveFt = newFt;
