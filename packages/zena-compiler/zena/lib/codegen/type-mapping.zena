@@ -188,19 +188,10 @@ let substituteTypeParamsInCodegenInner = (
         return ft;
       }
       
-      let newFt = new FunctionType(newParams, ft.parameterNames, newRet);
-      countCodegenFunctionType(0);
-      newFt.typeParameters = ft.typeParameters;
-      newFt.typeArguments = newArgs;
-      newFt.genericSource = ft.genericSource;
-      newFt.parameterInitializers = ft.parameterInitializers;
-      newFt.parameterSymbols = ft.parameterSymbols;
-      newFt.optionalParameters = ft.optionalParameters;
-      newFt.isFinal = ft.isFinal;
-      newFt.isAbstract = ft.isAbstract;
-      newFt.overloads = ft.overloads;
+      let newFt = new FunctionType(newParams, newRet, ft.info, ft.typeParameters, newArgs, ft.genericSource, ft.overloads);
       newFt.functionSymbolId = ft.functionSymbolId;
       newFt.functionSymbolName = ft.functionSymbolName;
+      countCodegenFunctionType(0);
       newFt
     }
     case TypeAliasType as ta: {
@@ -357,13 +348,10 @@ let substituteTypeParamsInCodegenInner = (
             let sub = substituteTypeParamsInCodegenInner(wasm, combinedParams, combinedArgs, p);
             newParams.push(sub);
           }
-          let newFt = new FunctionType(newParams, ctor.parameterNames, ctor.returnType);
-          countCodegenFunctionType(1);
-          newFt.parameterInitializers = ctor.parameterInitializers;
-          newFt.parameterSymbols = ctor.parameterSymbols;
-          newFt.optionalParameters = ctor.optionalParameters;
+          let newFt = new FunctionType(newParams, ctor.returnType, ctor.info);
           newFt.functionSymbolId = ctor.functionSymbolId;
           newFt.functionSymbolName = ctor.functionSymbolName;
+          countCodegenFunctionType(1);
           newFt
         } else {
           null
@@ -1027,16 +1015,10 @@ export let substituteThisTypeInCodegen = (receiverType: Type, t: Type): Type => 
       }
       let subRet = substituteThisTypeInCodegen(receiverType, ft.returnType);
       if (!changed && subRet === ft.returnType) { return t; }
-      let newFt = new FunctionType(subParams, ft.parameterNames, subRet);
-      countCodegenFunctionType(2);
-      newFt.typeParameters = ft.typeParameters;
-      newFt.optionalParameters = ft.optionalParameters;
-      newFt.parameterInitializers = ft.parameterInitializers;
-      newFt.parameterSymbols = ft.parameterSymbols;
-      newFt.isFinal = ft.isFinal;
-      newFt.isAbstract = ft.isAbstract;
+      let newFt = new FunctionType(subParams, subRet, ft.info, ft.typeParameters);
       newFt.functionSymbolId = ft.functionSymbolId;
       newFt.functionSymbolName = ft.functionSymbolName;
+      countCodegenFunctionType(2);
       return newFt;
     }
     case UnionType {types}: {
@@ -1197,13 +1179,10 @@ export let eraseTypeParameters = (wasm: WasmModule, t: Type): Type => {
           for (let p in ctor.parameters) {
             newParams.push(eraseTypeParameters(wasm, p));
           }
-          let newFt = new FunctionType(newParams, ctor.parameterNames, eraseTypeParameters(wasm, ctor.returnType));
-          countCodegenFunctionType(3);
-          newFt.parameterInitializers = ctor.parameterInitializers;
-          newFt.parameterSymbols = ctor.parameterSymbols;
-          newFt.optionalParameters = ctor.optionalParameters;
+          let newFt = new FunctionType(newParams, eraseTypeParameters(wasm, ctor.returnType), ctor.info);
           newFt.functionSymbolId = ctor.functionSymbolId;
           newFt.functionSymbolName = ctor.functionSymbolName;
+          countCodegenFunctionType(3);
           newFt
         } else {
           null
@@ -1259,19 +1238,10 @@ export let eraseTypeParameters = (wasm: WasmModule, t: Type): Type => {
       let newRet = eraseTypeParameters(wasm, ft.returnType);
       if (newRet != ft.returnType) { changed = true; }
       if (!changed) { return t; }
-      let inst = new FunctionType(newParams, ft.parameterNames, newRet);
-      countCodegenFunctionType(4);
-      inst.typeParameters = ft.typeParameters;
-      inst.typeArguments = ft.typeArguments;
-      inst.genericSource = ft.genericSource;
-      inst.parameterInitializers = ft.parameterInitializers;
-      inst.parameterSymbols = ft.parameterSymbols;
-      inst.optionalParameters = ft.optionalParameters;
-      inst.isFinal = ft.isFinal;
-      inst.isAbstract = ft.isAbstract;
-      inst.overloads = ft.overloads;
+      let inst = new FunctionType(newParams, newRet, ft.info, ft.typeParameters, ft.typeArguments, ft.genericSource, ft.overloads);
       inst.functionSymbolId = ft.functionSymbolId;
       inst.functionSymbolName = ft.functionSymbolName;
+      countCodegenFunctionType(4);
       inst
     }
     case MixinType as mt: {
@@ -2092,13 +2062,10 @@ export let mapMixinThisInType = (ct: ClassType, type: Type): Type => {
             for (let p in ctor.parameters) {
               newParams.push(mapMixinThisInType(ct, p));
             }
-            let newFt = new FunctionType(newParams, ctor.parameterNames, ctor.returnType);
-            countCodegenFunctionType(8);
-            newFt.parameterInitializers = ctor.parameterInitializers;
-            newFt.parameterSymbols = ctor.parameterSymbols;
-            newFt.optionalParameters = ctor.optionalParameters;
+            let newFt = new FunctionType(newParams, ctor.returnType, ctor.info);
             newFt.functionSymbolId = ctor.functionSymbolId;
             newFt.functionSymbolName = ctor.functionSymbolName;
+            countCodegenFunctionType(8);
             newFt
           } else {
             null
@@ -2158,19 +2125,10 @@ export let mapMixinThisInType = (ct: ClassType, type: Type): Type => {
         newParams.push(mapMixinThisInType(ct, p));
       }
       let newRet = mapMixinThisInType(ct, ft.returnType);
-      let newFt = new FunctionType(newParams, ft.parameterNames, newRet);
-      countCodegenFunctionType(7);
-      newFt.typeParameters = ft.typeParameters;
-      newFt.typeArguments = ft.typeArguments;
-      newFt.genericSource = ft.genericSource;
-      newFt.parameterInitializers = ft.parameterInitializers;
-      newFt.parameterSymbols = ft.parameterSymbols;
-      newFt.optionalParameters = ft.optionalParameters;
-      newFt.isFinal = ft.isFinal;
-      newFt.isAbstract = ft.isAbstract;
-      newFt.overloads = ft.overloads;
+      let newFt = new FunctionType(newParams, newRet, ft.info, ft.typeParameters, ft.typeArguments, ft.genericSource, ft.overloads);
       newFt.functionSymbolId = ft.functionSymbolId;
       newFt.functionSymbolName = ft.functionSymbolName;
+      countCodegenFunctionType(7);
       newFt as Type
     }
     case _: type

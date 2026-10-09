@@ -113,7 +113,7 @@ import {
   isScopedType, scopedInner,
   isSecondClass, typeContainsSecondClass, typeContainsScoped,
   typeContainsConcreteSecondClass, borrowInnerRestricts
-, ErasedType} from './types.zena';
+, ErasedType, FunctionDeclInfo} from './types.zena';
 import { SemanticModel, ModelIndex, InterfaceAdaptation, SymbolDependencies, ClosureDependency, FunctionAdaptationDependency, EdgeDrop, DeferredBodies } from './semantic-model.zena';
 import {
   Diagnostic, DiagnosticBag, DiagnosticCode, DiagnosticSeverity
@@ -1269,16 +1269,11 @@ final class CheckerContext {
     this.exitScope();
 
     // Build the FunctionType.
-    let funcType = new FunctionType(paramTypes, paramNames, retType);
-    if (resolvedTypeParams != null) {
-      funcType.typeParameters = resolvedTypeParams;
-    }
-    if (hasOptionals) {
-      funcType.optionalParameters = optionals;
-    }
-    if (hasInitializers) {
-      funcType.parameterInitializers = initializers;
-    }
+    let funcType = new FunctionType(paramTypes, retType,
+        new FunctionDeclInfo(paramNames, null,
+            if (hasInitializers) initializers else null,
+            if (hasOptionals) optionals else null),
+        resolvedTypeParams);
 
     return funcType as Type;
   }
@@ -3843,20 +3838,20 @@ let registerCompilerIntrinsics = (ctx: CheckerContext): void => {
   // __byte_array_new(size: i32): ByteArray
   let baNewParams = new Array<Type>();
   baNewParams.push(new I32Type());
-  let baNewType = new FunctionType(baNewParams, null, byteArrayType);
+  let baNewType = new FunctionType(baNewParams, byteArrayType);
   ctx.registerPreludeValue("__byte_array_new", baNewType);
 
   // __byte_array_length(arr: ByteArray): i32
   let baLenParams = new Array<Type>();
   baLenParams.push(byteArrayType);
-  let baLenType = new FunctionType(baLenParams, null, new I32Type());
+  let baLenType = new FunctionType(baLenParams, new I32Type());
   ctx.registerPreludeValue("__byte_array_length", baLenType);
 
   // __byte_array_get(arr: ByteArray, index: i32): i32
   let baGetParams = new Array<Type>();
   baGetParams.push(byteArrayType);
   baGetParams.push(new I32Type());
-  let baGetType = new FunctionType(baGetParams, null, new I32Type());
+  let baGetType = new FunctionType(baGetParams, new I32Type());
   ctx.registerPreludeValue("__byte_array_get", baGetType);
 
   // __byte_array_set(arr: ByteArray, index: i32, value: i32): void
@@ -3864,7 +3859,7 @@ let registerCompilerIntrinsics = (ctx: CheckerContext): void => {
   baSetParams.push(byteArrayType);
   baSetParams.push(new I32Type());
   baSetParams.push(new I32Type());
-  let baSetType = new FunctionType(baSetParams, null, new VoidType());
+  let baSetType = new FunctionType(baSetParams, new VoidType());
   ctx.registerPreludeValue("__byte_array_set", baSetType);
 
   // __byte_array_copy(dest: ByteArray, destOffset: i32, src: ByteArray, srcOffset: i32, len: i32): void
@@ -3874,7 +3869,7 @@ let registerCompilerIntrinsics = (ctx: CheckerContext): void => {
   baCopyParams.push(byteArrayType);
   baCopyParams.push(new I32Type());
   baCopyParams.push(new I32Type());
-  let baCopyType = new FunctionType(baCopyParams, null, new VoidType());
+  let baCopyType = new FunctionType(baCopyParams, new VoidType());
   ctx.registerPreludeValue("__byte_array_copy", baCopyType);
 
   // Primitive array intrinsics
@@ -3887,16 +3882,14 @@ let registerCompilerIntrinsics = (ctx: CheckerContext): void => {
   // __array_len<T>(arr: array<T>): i32
   let arrLenParams = new Array<Type>();
   arrLenParams.push(primArrayType);
-  let arrLenType = new FunctionType(arrLenParams, null, new I32Type());
-  arrLenType.typeParameters = primArrayTParams;
+  let arrLenType = new FunctionType(arrLenParams, new I32Type(), null, primArrayTParams);
   ctx.registerPreludeValue("__array_len", arrLenType);
 
   // __array_get<T>(arr: array<T>, index: i32): T
   let arrGetParams = new Array<Type>();
   arrGetParams.push(primArrayType);
   arrGetParams.push(new I32Type());
-  let arrGetType = new FunctionType(arrGetParams, null, primArrayTParam);
-  arrGetType.typeParameters = primArrayTParams;
+  let arrGetType = new FunctionType(arrGetParams, primArrayTParam, null, primArrayTParams);
   ctx.registerPreludeValue("__array_get", arrGetType);
 
   // __array_set<T>(arr: array<T>, index: i32, value: T): void
@@ -3904,23 +3897,20 @@ let registerCompilerIntrinsics = (ctx: CheckerContext): void => {
   arrSetParams.push(primArrayType);
   arrSetParams.push(new I32Type());
   arrSetParams.push(primArrayTParam);
-  let arrSetType = new FunctionType(arrSetParams, null, new VoidType());
-  arrSetType.typeParameters = primArrayTParams;
+  let arrSetType = new FunctionType(arrSetParams, new VoidType(), null, primArrayTParams);
   ctx.registerPreludeValue("__array_set", arrSetType);
 
   // __array_new<T>(size: i32, value: T): array<T>
   let arrNewParams = new Array<Type>();
   arrNewParams.push(new I32Type());
   arrNewParams.push(primArrayTParam);
-  let arrNewType = new FunctionType(arrNewParams, null, primArrayType);
-  arrNewType.typeParameters = primArrayTParams;
+  let arrNewType = new FunctionType(arrNewParams, primArrayType, null, primArrayTParams);
   ctx.registerPreludeValue("__array_new", arrNewType);
 
   // __array_new_empty<T>(size: i32): array<T>
   let arrNewEmptyParams = new Array<Type>();
   arrNewEmptyParams.push(new I32Type());
-  let arrNewEmptyType = new FunctionType(arrNewEmptyParams, null, primArrayType);
-  arrNewEmptyType.typeParameters = primArrayTParams;
+  let arrNewEmptyType = new FunctionType(arrNewEmptyParams, primArrayType, null, primArrayTParams);
   ctx.registerPreludeValue("__array_new_empty", arrNewEmptyType);
 };
 
@@ -5859,7 +5849,7 @@ let resolveTypeAnnotationInner = (ctx: CheckerContext, ann: TypeAnnotation, allo
       i += 1;
     }
     let retType = resolveTypeAnnotation(ctx, returnType, true);
-    new FunctionType(paramTypes, null, retType)
+    new FunctionType(paramTypes, retType)
   }
   case LiteralTypeAnnotation {value}: {
     match (value) {
@@ -6378,11 +6368,8 @@ let substituteTypeParams = (
         subParams.push(substituteTypeParams(typeParams, typeArgs, param));
       }
       let subRet = substituteTypeParams(typeParams, typeArgs, ft.returnType);
-      let res = new FunctionType(subParams, ft.parameterNames, subRet);
-      res.typeParameters = ft.typeParameters;
-      res.optionalParameters = ft.optionalParameters;
-      res.parameterInitializers = ft.parameterInitializers;
-      res.parameterSymbols = ft.parameterSymbols;
+      let res = new FunctionType(subParams, subRet, ft.info, ft.typeParameters,
+          ft.typeArguments, ft.genericSource);
       let {overloads} = ft;
       if (overloads != null) {
         let subOvs = new Array<FunctionType>();
@@ -6396,10 +6383,6 @@ let substituteTypeParams = (
         }
         res.overloads = subOvs;
       }
-      res.isFinal = ft.isFinal;
-      res.isAbstract = ft.isAbstract;
-      res.typeArguments = ft.typeArguments;
-      res.genericSource = ft.genericSource;
       res.functionSymbolId = ft.functionSymbolId;
       res.functionSymbolName = ft.functionSymbolName;
       return res;
@@ -6529,11 +6512,7 @@ let substituteThisType = (receiverType: Type, t: Type): Type => {
       }
       let subRet = substituteThisType(receiverType, ft.returnType);
       if (!changed && subRet === ft.returnType) { return t; }
-      let newFt = new FunctionType(subParams, ft.parameterNames, subRet);
-      newFt.typeParameters = ft.typeParameters;
-      newFt.optionalParameters = ft.optionalParameters;
-      newFt.parameterInitializers = ft.parameterInitializers;
-      newFt.parameterSymbols = ft.parameterSymbols;
+      let newFt = new FunctionType(subParams, subRet, ft.info, ft.typeParameters);
       let {overloads} = ft;
       if (overloads != null) {
         let subOvs = new Array<FunctionType>();
@@ -6547,8 +6526,6 @@ let substituteThisType = (receiverType: Type, t: Type): Type => {
         }
         newFt.overloads = subOvs;
       }
-      newFt.isFinal = ft.isFinal;
-      newFt.isAbstract = ft.isAbstract;
       newFt.functionSymbolId = ft.functionSymbolId;
       newFt.functionSymbolName = ft.functionSymbolName;
       return newFt;
@@ -13416,12 +13393,12 @@ let signaturesMayOverlap = (
  * initializers, or accessor bodies — that happens in checkClassBodies.
  */
 let synthesizeCaseClassMembers = (ctx: CheckerContext, ct: ClassType): void => {
-  let hashType = new FunctionType(new Array<Type>(), null, new I32Type());
+  let hashType = new FunctionType(new Array<Type>(), new I32Type());
   ct.members["hashCode"] = new MethodInfo(hashType, false, false, false, false);
 
   let eqParams = new Array<Type>();
   eqParams.push(ct);
-  let eqType = new FunctionType(eqParams, null, new BooleanType());
+  let eqType = new FunctionType(eqParams, new BooleanType());
   ct.members["=="] = new MethodInfo(eqType, false, false, false, false);
 
   // Case classes nominally implement Hashable: their synthesized
@@ -14488,8 +14465,7 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
     }
 
     // Auto-generate constructor type.
-    let ctorType = new FunctionType(ctorParamTypes, ctorParamNames, classType);
-    ctorType.optionalParameters = ctorOptionalParams;
+    let ctorType = new FunctionType(ctorParamTypes, classType, new FunctionDeclInfo(ctorParamNames, null, null, ctorOptionalParams));
     classType.constructorType = ctorType;
     classType.constructors["<constructor>"] = ctorType;
   }
@@ -14589,7 +14565,7 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
           if (!classType.members.has(getterName)) {
             let isPrivate = getterName.length > 0 && getterName.sliceBytes(0, 1) == "#";
             classType.members[getterName] = new MethodInfo(
-              new FunctionType(new Array<Type>(), null, fieldType),
+              new FunctionType(new Array<Type>(), fieldType),
               true, // isAbstract
               fd.isStatic,
               isPrivate,
@@ -14605,7 +14581,7 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
               setterParams.push(fieldType);
               let isPrivate = setterName.length > 0 && setterName.sliceBytes(0, 1) == "#";
               classType.members[setterName] = new MethodInfo(
-                new FunctionType(setterParams, null, new VoidType()),
+                new FunctionType(setterParams, new VoidType()),
                 true, // isAbstract
                 fd.isStatic,
                 isPrivate,
@@ -14728,7 +14704,7 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
             if (!classType.members.has(getterName)) {
               let isPrivate = getterName.length > 0 && getterName.sliceBytes(0, 1) == "#";
               classType.members[getterName] = new MethodInfo(
-                new FunctionType(new Array<Type>(), null, fieldType),
+                new FunctionType(new Array<Type>(), fieldType),
                 false, // isAbstract
                 fd.isStatic,
                 isPrivate,
@@ -14761,8 +14737,7 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
               );
             } else {
               ownConstructorNames.add("<constructor>");
-              let ctorType = checkMethodSignature(ctx, classType, md);
-              ctorType.returnType = classType;
+              let ctorType = checkMethodSignature(ctx, classType, md).withReturnType(classType);
               classType.constructorType = ctorType;
               classType.constructors["<constructor>"] = ctorType;
             }
@@ -14793,8 +14768,7 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
                 );
               }
             }
-            let ctorType = checkMethodSignature(ctx, classType, md);
-            ctorType.returnType = classType;
+            let ctorType = checkMethodSignature(ctx, classType, md).withReturnType(classType);
             classType.constructors[methodName] = ctorType;
           }
         } else {
@@ -15027,8 +15001,7 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
               }
             }
           }
-          let getterType = new FunctionType(new Array<Type>(), null, accType);
-          getterType.isFinal = acc.isFinal;
+          let getterType = new FunctionType(new Array<Type>(), accType, new FunctionDeclInfo(null, null, null, null, acc.isFinal));
           let isPrivate = getterName.length > 0 && getterName.sliceBytes(0, 1) == "#";
           classType.members[getterName] = new MethodInfo(
             getterType,
@@ -15064,8 +15037,7 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
           }
           let setterParams = new Array<Type>();
           setterParams.push(accType);
-          let setterType = new FunctionType(setterParams, null, new VoidType());
-          setterType.isFinal = acc.isFinal;
+          let setterType = new FunctionType(setterParams, new VoidType(), new FunctionDeclInfo(null, null, null, null, acc.isFinal));
           let isPrivate = setterName.length > 0 && setterName.sliceBytes(0, 1) == "#";
           classType.members[setterName] = new MethodInfo(
             setterType,
@@ -15117,7 +15089,7 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
               paramNames.push(paramName);
               pi = pi + 1;
             }
-            let ctorType = new FunctionType(paramTypes, paramNames, classType);
+            let ctorType = new FunctionType(paramTypes, classType, new FunctionDeclInfo(paramNames));
             classType.constructorType = ctorType;
           }
         } else {
@@ -15140,7 +15112,7 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
           }
           let isPrivate = methodName.length > 0 && methodName.sliceBytes(0, 1) == "#";
           classType.members[methodName] = new MethodInfo(
-            new FunctionType(paramTypes, null, retType),
+            new FunctionType(paramTypes, retType),
             false, // isAbstract
             false, // isStatic
             isPrivate,
@@ -15224,10 +15196,7 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
           vCtorOptionalParams.push(vp.optional);
           vpi = vpi + 1;
         }
-        let vCtorType = new FunctionType(
-          vCtorParams, vCtorNames, variantType
-        );
-        vCtorType.optionalParameters = vCtorOptionalParams;
+        let vCtorType = new FunctionType(vCtorParams, variantType, new FunctionDeclInfo(vCtorNames, null, null, vCtorOptionalParams));
         variantType.constructorType = vCtorType;
         variantType.constructors["<constructor>"] = vCtorType;
         synthesizeCaseClassMembers(ctx, variantType);
@@ -15271,9 +15240,7 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
                   ct.members[pmk] = classType.members[pmk];
                 }
                 if (ct.constructorType == null) {
-                  ct.constructorType = new FunctionType(
-                    new Array<Type>(), new Array<String>(), ct
-                  );
+                  ct.constructorType = new FunctionType(new Array<Type>(), ct, new FunctionDeclInfo(new Array<String>()));
                 }
                 synthesizeCaseClassMembers(ctx, ct);
               }
@@ -15293,9 +15260,7 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
               unitType.members[key2] = classType.members[key2];
             }
             // Unit variant: zero-arg constructor.
-            unitType.constructorType = new FunctionType(
-              new Array<Type>(), new Array<String>(), unitType
-            );
+            unitType.constructorType = new FunctionType(new Array<Type>(), unitType, new FunctionDeclInfo(new Array<String>()));
             unitType.constructors["<constructor>"] = unitType.constructorType as FunctionType;
             synthesizeCaseClassMembers(ctx, unitType);
 
@@ -15882,9 +15847,7 @@ let checkClassBodies = (
       // The fields ARE the release action: synthesize the `:dispose`
       // the resource contract asks for. Lowering emits the field glue
       // as its whole body, so holding owners needs no ceremony.
-      let dt = new FunctionType(
-        new Array<Type>(), new Array<String>(),
-        new VoidType());
+      let dt = new FunctionType(new Array<Type>(), new VoidType(), new FunctionDeclInfo(new Array<String>()));
       let dm = new MethodInfo(dt);
       dm.receiverKind = ReceiverKind.Owning;
       classType.members[":dispose"] = dm;
@@ -16215,17 +16178,12 @@ let checkMethodSignature = (
     pi += 1;
   }
 
-  let ft = new FunctionType(paramTypes, paramNames, retType);
-  ft.parameterSymbols = paramSymbols;
-  ft.typeParameters = resolvedTypeParams;
-  ft.isFinal = md.isFinal;
-  ft.isAbstract = md.isAbstract;
-  if (hasOptionals) {
-    ft.optionalParameters = optionals;
-  }
-  if (hasInitializers) {
-    ft.parameterInitializers = initializers;
-  }
+  let ft = new FunctionType(paramTypes, retType,
+      new FunctionDeclInfo(paramNames, paramSymbols,
+          if (hasInitializers) initializers else null,
+          if (hasOptionals) optionals else null,
+          md.isFinal, md.isAbstract),
+      resolvedTypeParams);
   ctx.setNodeType(md, ft);
   ctx.exitScope();
   return ft;
@@ -16313,7 +16271,7 @@ let checkSuperInitArgs = (
   };
 
   // Fill in missing arguments with default values.
-  let {parameterInitializers} = ctorType;
+  let parameterInitializers = ctorType.parameterInitializers;
   if (parameterInitializers != null) {
     let mutArgs = args as GrowableArray<Expression>;
     var a = args.length;
@@ -16853,8 +16811,7 @@ let checkInterfaceDeclaration = (ctx: CheckerContext, id: InterfaceDeclaration):
           retType = resolveTypeAnnotation(ctx, returnType, true);
         }
         let methodName = getMemberName(ctx, ms.name as Node);
-        let ft = new FunctionType(paramTypes, null, retType);
-        ft.typeParameters = typeParams;
+        let ft = new FunctionType(paramTypes, retType, null, typeParams);
         // A second signature with the same name is an overload, collected
         // the way a class's are. The first one in this pass replaces any
         // earlier registration, so registering twice adds nothing.
@@ -16907,7 +16864,7 @@ let checkInterfaceDeclaration = (ctx: CheckerContext, id: InterfaceDeclaration):
       case AccessorSignature as as_: {
         let accType = resolveTypeAnnotation(ctx, as_.typeAnnotation);
         if (as_.hasGetter) {
-          let getterFt = new FunctionType(new Array<Type>(), null, accType);
+          let getterFt = new FunctionType(new Array<Type>(), accType);
           let isPrivate = as_.name.name.length > 0 && as_.name.name.sliceBytes(0, 1) == "#";
           ifaceType.members["get#" + as_.name.name] = new MethodInfo(
             getterFt,
@@ -17019,7 +16976,7 @@ let registerInterfaceConstructor = (
     return;
   }
   ownConstructorNames.add(ctorName);
-  let ctorType = checkMethodSignature(ctx, null, md);
+  var ctorType = checkMethodSignature(ctx, null, md);
   // The constructor's type parameters are the interface's own — codegen
   // mints one copy per type-argument list, the way it does for a
   // generic function, and finds the parameters those arguments bind
@@ -17058,10 +17015,10 @@ let registerInterfaceConstructor = (
         DiagnosticCode.IncompatibleTypes,
         md.loc
       );
-      ctorType.typeParameters = ifaceType.typeParameters;
+      ctorType = ctorType.withTypeParameters(ifaceType.typeParameters);
     }
   } else {
-    ctorType.typeParameters = ifaceType.typeParameters;
+    ctorType = ctorType.withTypeParameters(ifaceType.typeParameters);
   }
   // The result is the interface at the constructor's type parameters
   // unless the constructor declares a narrower type — `new():
@@ -17071,7 +17028,7 @@ let registerInterfaceConstructor = (
   // because a class declared below the interface has no `implements`
   // list yet.
   if (md.returnType == null) {
-    ctorType.returnType = constructorSelfType(ifaceType, ctorType);
+    ctorType = ctorType.withReturnType(constructorSelfType(ifaceType, ctorType));
   }
   ifaceType.constructors[ctorName] = ctorType;
   ctx.setNodeType(md, ctorType);
@@ -17699,7 +17656,7 @@ let checkMixinDeclaration = (ctx: CheckerContext, md: MixinDeclaration): void =>
           // application, and the bare getter-MethodInfo mistyped
           // reads as '() => T').
           if (acc.getter != null) {
-            let getterFt = new FunctionType(new Array<Type>(), null, accType);
+            let getterFt = new FunctionType(new Array<Type>(), accType);
             let gi = new MethodInfo(getterFt, false, acc.isStatic, true, acc.isFinal);
             mixinType.members["get#" + accName] = gi;
             thisType.members["get#" + accName] = gi;
@@ -17707,7 +17664,7 @@ let checkMixinDeclaration = (ctx: CheckerContext, md: MixinDeclaration): void =>
           if (acc.setter != null) {
             let setterParams = new Array<Type>();
             setterParams.push(accType);
-            let setterFt = new FunctionType(setterParams, null, new VoidType());
+            let setterFt = new FunctionType(setterParams, new VoidType());
             let si = new MethodInfo(setterFt, false, acc.isStatic, true, acc.isFinal);
             mixinType.members["set#" + accName] = si;
             thisType.members["set#" + accName] = si;
@@ -17720,7 +17677,7 @@ let checkMixinDeclaration = (ctx: CheckerContext, md: MixinDeclaration): void =>
           // MethodInfo reads as '() => T' at the use site instead of
           // T. The setter had no entry at all.
           if (acc.getter != null) {
-            let getterFt = new FunctionType(new Array<Type>(), null, accType);
+            let getterFt = new FunctionType(new Array<Type>(), accType);
             let gi = new MethodInfo(getterFt, false, acc.isStatic, isPrivate, acc.isFinal);
             mixinType.members["get#" + accName] = gi;
             thisType.members["get#" + accName] = gi;
@@ -17728,7 +17685,7 @@ let checkMixinDeclaration = (ctx: CheckerContext, md: MixinDeclaration): void =>
           if (acc.setter != null) {
             let setterParams = new Array<Type>();
             setterParams.push(accType);
-            let setterFt = new FunctionType(setterParams, null, new VoidType());
+            let setterFt = new FunctionType(setterParams, new VoidType());
             let si = new MethodInfo(setterFt, false, acc.isStatic, isPrivate, acc.isFinal);
             mixinType.members["set#" + accName] = si;
             thisType.members["set#" + accName] = si;
@@ -17936,12 +17893,9 @@ let checkDeclareFunction = (ctx: CheckerContext, df: DeclareFunction): void => {
   ctx.exitScope();
 
   // Build function type.
-  let funcType = new FunctionType(paramTypes, paramNames, retType);
-  funcType.optionalParameters = optionals;
-  funcType.parameterInitializers = initializers;
-  if (resolvedTypeParams != null) {
-    funcType.typeParameters = resolvedTypeParams;
-  }
+  let funcType = new FunctionType(paramTypes, retType,
+      new FunctionDeclInfo(paramNames, null, initializers, optionals),
+      resolvedTypeParams);
 
   // Declare in value namespace.
   let info = ctx.model.resolveDeclaration(df);
@@ -18293,7 +18247,7 @@ let checkConstructorArguments = (
   loc: SourceLocation | null
 ): void => {
       // Fill in missing arguments with default values
-      let {parameterInitializers} = ctorType;
+      let parameterInitializers = ctorType.parameterInitializers;
       if (parameterInitializers != null) {
         let mutArgs = args as GrowableArray<Expression>;
         var a = args.length;
@@ -21829,15 +21783,11 @@ let checkFunctionExpression = (
 
   checkBorrowDerivation(ctx, paramTypes, finalRetType, false, fe.loc);
 
-  let fnType = new FunctionType(paramTypes, paramNames, finalRetType);
-  fnType.parameterSymbols = paramSymbols;
-  fnType.typeParameters = resolvedTypeParams;
-  if (hasOptionals) {
-    fnType.optionalParameters = optionals;
-  }
-  if (hasInitializers) {
-    fnType.parameterInitializers = initializers;
-  }
+  let fnType = new FunctionType(paramTypes, finalRetType,
+      new FunctionDeclInfo(paramNames, paramSymbols,
+          if (hasInitializers) initializers else null,
+          if (hasOptionals) optionals else null),
+      resolvedTypeParams);
   let deps = ctx.currentDependencies();
   if (deps != null) {
     deps.referencedTypes.add(fnType);
@@ -22046,7 +21996,7 @@ let checkCallExpressionInner = (
       };
       if (args.length > callerArgCount) {
         ctx.model.setOriginalArgCount(call, callerArgCount);
-        let {parameterNames} = matchedFt;
+        let parameterNames = matchedFt.parameterNames;
         if (parameterNames != null) {
           ctx.model.setDefaultArgParamNames(call, parameterNames);
         }
@@ -22210,13 +22160,7 @@ let checkCallExpressionInner = (
               subParams.push(substituteTypeParams(typeParams, typeArgs, param));
             }
             let subRet = substituteTypeParams(typeParams, typeArgs, effectiveFt.returnType);
-            let newFt = new FunctionType(subParams, effectiveFt.parameterNames, subRet);
-            newFt.typeParameters = effectiveFt.typeParameters;
-            newFt.optionalParameters = effectiveFt.optionalParameters;
-            newFt.parameterInitializers = effectiveFt.parameterInitializers;
-            newFt.parameterSymbols = effectiveFt.parameterSymbols;
-            newFt.typeArguments = typeArgs;
-            newFt.genericSource = effectiveFt;
+            let newFt = new FunctionType(subParams, subRet, effectiveFt.info, effectiveFt.typeParameters, typeArgs, effectiveFt);
             newFt.functionSymbolId = effectiveFt.functionSymbolId;
             newFt.functionSymbolName = effectiveFt.functionSymbolName;
             effectiveFt = newFt;
@@ -22288,13 +22232,7 @@ let checkCallExpressionInner = (
               subParams.push(substituteTypeParams(typeParams, typeArgs, param));
             }
             let subRet = substituteTypeParams(typeParams, typeArgs, effectiveFt.returnType);
-            let newFt = new FunctionType(subParams, effectiveFt.parameterNames, subRet);
-            newFt.typeParameters = effectiveFt.typeParameters;
-            newFt.optionalParameters = effectiveFt.optionalParameters;
-            newFt.parameterInitializers = effectiveFt.parameterInitializers;
-            newFt.parameterSymbols = effectiveFt.parameterSymbols;
-            newFt.typeArguments = typeArgs;
-            newFt.genericSource = effectiveFt;
+            let newFt = new FunctionType(subParams, subRet, effectiveFt.info, effectiveFt.typeParameters, typeArgs, effectiveFt);
             newFt.functionSymbolId = effectiveFt.functionSymbolId;
             newFt.functionSymbolName = effectiveFt.functionSymbolName;
             effectiveFt = newFt;
@@ -22308,7 +22246,7 @@ let checkCallExpressionInner = (
 
       // Fill in missing arguments with default values
       var hasDefaults = false;
-      let {parameterInitializers} = effectiveFt;
+      let parameterInitializers = effectiveFt.parameterInitializers;
       if (parameterInitializers != null) {
         let mutArgs = args as GrowableArray<Expression>;
         var a = args.length;
@@ -22349,7 +22287,7 @@ let checkCallExpressionInner = (
         // bindings.
         if (hasDefaults || args.length > originalActualCount) {
           ctx.model.setOriginalArgCount(call, originalActualCount);
-          let {parameterNames} = effectiveFt;
+          let parameterNames = effectiveFt.parameterNames;
           if (parameterNames != null) {
             ctx.model.setDefaultArgParamNames(call, parameterNames);
           }
