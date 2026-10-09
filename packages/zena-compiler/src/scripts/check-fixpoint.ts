@@ -16,6 +16,9 @@
  *
  * That is a blind spot for the rest of the suite, which exercises the
  * compiler's output on other programs rather than on itself.
+ *
+ * The stages are defined in docs/design/bootstrapping.md, "The stages",
+ * which also records which artifact each lands in and what uses it.
  */
 import {execFileSync} from 'node:child_process';
 import {readFileSync, statSync} from 'node:fs';

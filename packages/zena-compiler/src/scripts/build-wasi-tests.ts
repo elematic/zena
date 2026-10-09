@@ -130,7 +130,12 @@ const targets: Array<[string, string, string]> = [
 
 const env = {
   ...process.env,
-  ZENA_COMPILER_WASM: 'packages/zena-compiler/zena/out/cli-self.wasm',
+  // Stage A, like everything else in the repository: what these 2630 tests
+  // exercise is the current implementation, and a test compiled by stage B
+  // would exercise stage B instead of the output the bootstrap produced.
+  // Building it with B also made the four suites wait 64s for B first. See
+  // docs/design/bootstrapping.md, "Which stage to use".
+  ZENA_COMPILER_WASM: 'packages/zena-compiler/zena/out/cli.wasm',
   // Wasmtime's copying collector grows the GC heap only when an
   // allocation still does not fit after a full collection, so a heap
   // that starts at nothing leaves an allocation-heavy program

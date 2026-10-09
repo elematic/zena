@@ -23,7 +23,8 @@
     "test:interop": "wireit",
     "test:fixpoint": "wireit",
     "reseed": "wireit",
-    "test:component": "wireit"
+    "test:component": "wireit",
+    "test:smoke": "wireit"
   },
   "wireit": {
     "build": {
@@ -113,19 +114,16 @@
       ],
       "dependencies": [
         "build:scripts",
-        "build:self-hosted",
+        "precompile:cli",
         "../zena-cli:build",
         "../stdlib:lib"
-      ]
+      ],
+      "#dependencies": "precompile:cli, not build:self-hosted: this program is built by stage A (see build-wasi-tests.ts), and precompiling it is what keeps running it off Cranelift. Depending on stage B put the four suites behind its 64s."
     },
     "test": {
+      "#": "Everything, which is what CI runs. `test:smoke` is this minus the fixpoint check, so the two cannot drift.",
       "dependencies": [
-        "test:unit",
-        "test:component",
-        "test:syntax",
-        "test:semantics",
-        "test:execution",
-        "test:interop",
+        "test:smoke",
         "test:fixpoint"
       ]
     },
@@ -247,9 +245,20 @@
       ],
       "dependencies": [
         "build:scripts",
-        "build:self-hosted",
+        "precompile:cli",
         "../zena-cli:build",
         "../stdlib:lib"
+      ]
+    },
+    "test:smoke": {
+      "#": "Every compiler test but the fixpoint check. See the root package's test:smoke for when to reach for it.",
+      "dependencies": [
+        "test:unit",
+        "test:component",
+        "test:syntax",
+        "test:semantics",
+        "test:execution",
+        "test:interop"
       ]
     }
   },

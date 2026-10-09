@@ -37,7 +37,11 @@ if (process.env.HOST_PATH) {
 
 const env = {
   ...process.env,
-  ZENA_COMPILER_WASM: 'packages/zena-compiler/zena/out/cli-self.wasm',
+  // Stage A, like everything else in the repository: what this asserts is
+  // the current implementation of component emission, not that the
+  // compiler emitting it was itself built by the current implementation.
+  // See docs/design/bootstrapping.md, "Which stage to use".
+  ZENA_COMPILER_WASM: 'packages/zena-compiler/zena/out/cli.wasm',
 };
 
 interface Invocation {
