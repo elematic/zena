@@ -1270,12 +1270,13 @@ all.
 
 Three decisions worth recording:
 
-- **The runtime module is compiled from Zena, per build.** Its source is
-  `component-memory.zena` in the standard library — a re-export of
-  `zena:component-abi`'s `realloc`, built `--target freestanding`,
-  where `zena:memory` is the real free-list allocator. The driver runs
-  that nested compile (`compileComponentRuntimeModule`) and hands the
-  bytes to `BinaryGenerator`; hand-writing a free list in raw bytes
+- **The runtime module is compiled from Zena.** Its source is
+  `wasi/memory.zena`, under the standard library root but in neither
+  manifest, so nothing can import it — a wrapper over `wasi/abi.zena`'s
+  `realloc`, built `--target freestanding`, where `zena:memory` is the
+  real free-list allocator. The driver runs that nested compile
+  (`compileComponentRuntimeModule`) and hands the bytes to
+  `BinaryGenerator`, or passes the path to a copy it built earlier; hand-writing a free list in raw bytes
   inside the emitter would restate what the standard library already
   says, in a form nothing can review. It runs on the compiler already
   building the component, at that compiler's `freestanding` target —
