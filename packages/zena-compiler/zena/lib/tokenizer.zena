@@ -1,3 +1,4 @@
+import { StringInterner } from './string-interner.zena';
 import { StringReader, StringBuilder } from 'zena:core';
 import { Comment } from './ast.zena';
 
@@ -261,8 +262,12 @@ export final class Tokenizer {
   var #column: i32;
   var #lineStart: i32;
 
-  new(source: String)
+  /** Where identifier names are interned; null keeps each slice. */
+  #interner: StringInterner | null;
+
+  new(source: String, interner: StringInterner | null = null)
     : #reader = new StringReader(source),
+      #interner = interner,
       #tokens = new Array<Token>(64),
       #comments = new Array<Comment>(8),
       #templateStack = new Array<i32>(8),
@@ -423,7 +428,9 @@ export final class Tokenizer {
     if (let (true, tokenType) = KEYWORDS.get(value)) {
       this.#addToken(tokenType, value, startPos, startCol);
     } else {
-      this.#addToken(TokenType.Identifier, value, startPos, startCol);
+      let interner = this.#interner;
+      let name = if (interner != null) interner.intern(value) else value;
+      this.#addToken(TokenType.Identifier, name, startPos, startCol);
     }
   }
 
