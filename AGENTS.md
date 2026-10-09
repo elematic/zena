@@ -355,6 +355,9 @@ There is no `wireit` command. Use `npm test`.
 # Run all tests
 npm test
 
+# Everything except the fixpoint check, for a faster local loop
+npm run test:smoke
+
 # Run tests for a specific package
 npm test -w @zena-lang/zena-compiler
 
@@ -367,6 +370,12 @@ npm test -w @zena-lang/runtime -- --test-only test/runtime_test.js
 
 - Packages are referred to by **package name** (`@zena-lang/zena-compiler`), not path.
 - **NEVER** use `npm test packages/zena-compiler/...` or `npm test -- some/path`.
+- `npm run test:smoke` is `npm test` without `test:fixpoint`, which builds
+  stage B and stage C of the compiler to compare them and is the longest
+  chain in a cold run. It catches the compiler miscompiling itself, which no
+  other test can see, so CI runs the full `npm test` on every PR. Use the
+  smoke target locally; run `npm test` before asking for review.
+  See `docs/design/bootstrapping.md`.
 - If test output is large and written to a file by the system, use the
   `read_file` tool, which supports `startLine` and `endLine` parameters, to read
   the file.

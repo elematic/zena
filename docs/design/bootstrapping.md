@@ -36,6 +36,57 @@ complete build environment: hermetic, offline, and
 carries a bootstrap that can build it. The cost is a few MB of
 repository history per re-baseline, which is on-demand and rare.
 
+## The stages
+
+A, B and C are the same program — the self-hosted compiler, built from the
+source in the tree. They differ only in which compiler emitted them.
+
+| Stage     | Built by           | Artifact                                       | Differs from the stage before it when                                                                                                  |
+| --------- | ------------------ | ---------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| bootstrap | a past re-baseline | `bootstrap/cli.wasm`, checked in               | —                                                                                                                                      |
+| A         | the bootstrap      | `zena/out/cli.wasm` (`build:cli`)              | the compiler's **source** has changed since the re-baseline                                                                            |
+| B         | stage A            | `zena/out/cli-self.wasm` (`build:self-hosted`) | the compiler's **output** has changed: A emits what the source in the tree says to, and the bootstrap emitted what its own commit said |
+| C         | stage B            | `zena/out/cli-self2.wasm` (`test:fixpoint`)    | never — **B ≡ C** is the invariant below                                                                                               |
+
+A and B are expected to differ, and nothing compares them. B and C are
+emitted by compilers built from the same source, so they must emit the same
+bytes for the same input: a difference means the compiler miscompiles
+itself, which is a blind spot for every other test, since the rest of the
+suite exercises the compiler's output on other programs rather than on
+itself.
+
+What each stage is for:
+
+- **A** is what everything in the repository compiles with. `zena-cli`'s
+  module (`packages/zena-cli/out/zena.wasm`) is compiled by it, and so
+  every package that compiles Zena reaches A's output, along with the
+  compiler's own test program and the component fixtures.
+- **B** is the re-baseline candidate and the subject of the fixpoint check.
+  Nothing else uses it.
+- **C** is compared with B and then has no further use.
+
+### Which stage to use
+
+**Stage A.** What matters is that the compiler has the current
+implementation, not that it was itself built by the current
+implementation. A stage A built from the source in the tree implements
+exactly what that source says, whoever emitted its bytes — so a script
+that wants the compiler's current behaviour wants A, and paying for B
+first buys it nothing.
+
+When being built by the current implementation does matter — a
+performance change the compiler itself should benefit from, say — the way
+to get it is a re-baseline. That makes the new bytes the bootstrap, and so
+makes them stage A for every build afterwards. It is a deliberate step
+with a gate in front of it, which is the right shape for a change of that
+kind: `reseed` runs the full suite, fixpoint included, before it copies
+anything.
+
+The cost of reaching for B instead is not only the 64s it takes to build.
+It also moves what a test exercises: the suite's job is to show that the
+bootstrap builds a HEAD that passes, and a test compiled by B exercises B
+rather than the bootstrap's output.
+
 ## Provenance
 
 The bootstrap's provenance is its git history: the commit that last
@@ -43,10 +94,9 @@ changed `bootstrap/cli.wasm` is the re-baseline commit, and the
 re-baseline procedure (below) builds the artifact from that same
 commit's source. There is no separate provenance file to keep in sync.
 
-The artifact is also self-certifying: the bootstrap is always the
-_self-hosted-built_ compiler (stage B of the fixpoint gate), and
-because the B≡C fixpoint held when it was made, the bootstrap
-compiling its own source reproduces itself **byte-for-byte**. To audit a bootstrap, check out its re-baseline
+The artifact is also self-certifying: the bootstrap is always a stage B,
+and because B ≡ C held when it was made, the bootstrap compiling its own
+source reproduces itself **byte-for-byte**. To audit a bootstrap, check out its re-baseline
 commit, run `build:cli`, and `cmp` the output against it.
 
 ## The invariant
@@ -58,10 +108,9 @@ current HEAD; the compiler it produces must itself be correct. The
 gate is automatic and continuous: every `npm test` run builds
 `zena/out/cli.wasm` from the bootstrap and then exercises that output
 — the portable execution suites, every package that compiles Zena, and
-`test:fixpoint`, which requires the stage-1 compiler compiling itself
-(stage 2) and stage 2 compiling itself again (stage 3) to agree
-byte-for-byte. CI (`nix flake check`) runs all of it hermetically from
-a clean copy of the tree.
+`test:fixpoint`, which requires stage B and stage C to agree
+byte-for-byte. CI (`nix flake check`) runs all of it hermetically from a
+clean copy of the tree.
 
 There is deliberately **no** requirement that the bootstrap stay
 current, and no per-commit re-baselining. An old bootstrap that still
@@ -100,7 +149,7 @@ npm run reseed -w @zena-lang/zena-compiler
 
 `reseed` is gated: it depends on the full compiler test suite
 (fixpoint included) and only then copies `zena/out/cli-self.wasm` —
-the self-hosted-built stage — over `bootstrap/cli.wasm`. After it
+stage B — over `bootstrap/cli.wasm`. After it
 runs, run `npm test` once more: the changed bootstrap invalidates
 `build:cli`, so this second pass rebuilds and tests everything _from
 the new bootstrap_, which is exactly the "is the new bootstrap good?"

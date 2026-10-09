@@ -25,7 +25,9 @@
     "bench:build": "./target/release/zena-cli run --allow-spawn --dir .::. benchmarks/zena/build.zena",
     "bench:size": "./target/release/zena-cli run --allow-spawn --dir .::. benchmarks/zena/size.zena",
     "bench:speed": "./target/release/zena-cli run --allow-spawn --dir .::. benchmarks/zena/run.zena -- --speed",
-    "bench:compile": "ZENA_TIME_JSON=1 ./target/release/zena-cli run --allow-spawn --dir .::. benchmarks/zena/compile.zena"
+    "bench:compile": "ZENA_TIME_JSON=1 ./target/release/zena-cli run --allow-spawn --dir .::. benchmarks/zena/compile.zena",
+    "test:smoke": "wireit",
+    "test:others": "wireit"
   },
   "wireit": {
     "build": {
@@ -45,6 +47,21 @@
       ]
     },
     "test": {
+      "#": "The gate, and what CI runs: every package's tests, the compiler's fixpoint check included.",
+      "dependencies": [
+        "test:others",
+        "./packages/zena-compiler:test"
+      ]
+    },
+    "test:smoke": {
+      "#": "Everything except the fixpoint check (stage B, then stage C, then a byte comparison), which is two compiler builds and the longest chain in a cold run. It catches the compiler miscompiling itself, which nothing else can see, so `npm test` keeps it and CI runs that on every PR \u2014 the window for finding such a bug stays one commit wide. This target is for the local loop, where paying it on every run is what hurts. See docs/design/bootstrapping.md, \"The invariant\".",
+      "dependencies": [
+        "test:others",
+        "./packages/zena-compiler:test:smoke"
+      ]
+    },
+    "test:others": {
+      "#": "Every package but the compiler, so `test` and `test:smoke` differ only in which of the compiler's aggregates they name.",
       "dependencies": [
         "./packages/language-service:test",
         "./packages/playground:test",
@@ -55,7 +72,6 @@
         "./packages/workflow:test",
         "./packages/zb:test",
         "./packages/zena-cli:test",
-        "./packages/zena-compiler:test",
         "./packages/zena-formatter:test",
         "./packages/zena-run:test",
         "./packages/zenadoc:test",
