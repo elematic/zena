@@ -1641,7 +1641,14 @@ export let typeToValType = (wasm: WasmModule, t: Type): ValType => {
       return new ValTypeRef(wasm.getByteArrayType());
     }
     if (ct.isExtension && ct.onType != null) {
-      let subOn = substituteTypeParamsInClassContext(wasm, ct, ct.onType as Type);
+      // `on` can only name the class's own type parameters (an inherited
+      // clause arrives already rewritten in them), so substitute just
+      // those. The flattened class context would also walk the class's
+      // supertypes and interfaces and key each — once per mention of
+      // `FixedArray<T>`, whose instantiations are rarely shared — which
+      // was most of the strings a compile built.
+      let subOn = substituteTypeParamsInCodegen(wasm,
+          getClassTypeParameters(ct), ct.typeArguments, ct.onType as Type);
       return typeToValType(wasm, subOn);
     }
     if (let (true, ctInfo) = wasm.classInfos.get(getClassKey(ct))) {
