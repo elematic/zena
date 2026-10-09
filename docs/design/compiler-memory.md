@@ -632,6 +632,38 @@ identity: every cache keyed by a function type's uid below the
 substitution now hits where it missed, and a union or instantiation
 over a function argument interns where it could not before.
 
+## A scratch pool for the passes
+
+After the tables were pre-sized, the `-O2` census still showed 36M
+`Array<i32>` lists that never grew past their first buffer and a
+tail of large ones. The per-walk census put all of them in codegen,
+and a profile spread their pushes across every pass: each pass
+built its tables — use counts, replacement maps, worklists, edge
+tables, reachability and liveness bitsets, the inliner's per-splice
+id map, the emitter's schedule — fresh on every visit of every body,
+and at `-O2` a body is visited by a dozen passes over several
+rounds.
+
+`IrScratch` pools the lists. A pass takes what it needs (`i32()`,
+`bool()`) inside a scope its entry opens (`enter` … `exit`), and the
+scope's end returns every list taken in it, cleared but keeping its
+buffer, so a table sized to the body is allocated once per compile
+rather than once per visit; the driver holds the one pool. A list
+must not outlive its scope, so a loop that takes lists per iteration
+— the inliner per splice, the escape analysis per parameter — scopes
+each iteration. Lists that escape a visit (a CFG's tables, kept by
+the object that owns them) stay as they were, and so do the
+emitter's liveness bitsets: built once per function and, for a large
+one, too big to keep. The pool drops any list returned with more
+than 256K entries for the same reason — pooling them kept one giant
+function's tables alive for the rest of the compile, and made the
+`-O1` compile allocate more, not less, until it did.
+
+| compile | before   | passes pooled | + inliner, escape, emitter |
+| ------- | -------- | ------------- | -------------------------- |
+| `-O1`   | 4.00 GiB | 3.89 GiB      | 3.79 GiB                   |
+| `-O2`   | 9.11 GiB | 8.17 GiB      | 6.77 GiB                   |
+
 ## What is left
 
 In the order the snapshot ranks them, each measurable by the same
