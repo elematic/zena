@@ -42,7 +42,7 @@ import { HashMap } from 'zena:collections';
  * over hash containers.
  */
 import { String, i32ToString } from 'zena:core';
-import { IrBlock, IrBody, IrOp, IrRefFunc } from './ir.zena';
+import { IrBlock, IrBody, IrOp, IrRefFunc, IrScratch } from './ir.zena';
 import {
   WasmModule, WasmFunction, WasmSignature, asWasmSignature,
 } from '../wasm-module.zena';
@@ -164,7 +164,8 @@ let tailCallSignature = (body: IrBody, inst: i32): WasmSignature | null => {
  * those). Returns the number of sites inlined.
  */
 export let runInline = (wasm: WasmModule, bodies: GrowableArray<IrBody>,
-    changed: GrowableArray<boolean>, escapes: EscapeSummaries): i32 => {
+    changed: GrowableArray<boolean>, escapes: EscapeSummaries,
+    scratch: IrScratch): i32 => {
   let bodyIndex = wasm.functionIndex();
   // Direct call sites per callee, over the module as it stands at the
   // start of the sweep.
@@ -193,8 +194,10 @@ export let runInline = (wasm: WasmModule, bodies: GrowableArray<IrBody>,
   }
   var total = 0;
   for (var i = 0; i < bodies.length; i += 1) {
+    scratch.enter();
     let n = inlineIntoBody(bodies[i], bodyIndex, bodies, i, siteCounts,
-        escapes, sizes);
+        escapes, sizes, scratch);
+    scratch.exit();
     if (n > 0) {
       changed[i] = true;
       sizes[i] = -2;
@@ -214,8 +217,8 @@ final class Splice {
   var typeOffset = 0;
   var refOffset = 0;
   var varOffset = 0;
-  map = new Array<i32>();
-  new(this.caller, this.callee) {
+  map: GrowableArray<i32>;
+  new(this.caller, this.callee, scratch: IrScratch) : map = scratch.i32() {
     this.typeOffset = this.caller.typeTable.length;
     for (let t in this.callee.typeTable) {
       this.caller.typeTable.push(t);
@@ -370,7 +373,7 @@ let nopOut = (body: IrBody, inst: i32): void => {
 let inlineIntoBody = (caller: IrBody, bodyIndex: HashMap<WasmFunction, i32>,
     bodies: GrowableArray<IrBody>, callerIdx: i32,
     siteCounts: GrowableArray<i32>, escapes: EscapeSummaries,
-    sizes: GrowableArray<i32>): i32 => {
+    sizes: GrowableArray<i32>, scratch: IrScratch): i32 => {
   var count = 0;
   var generalSplices = 0;
   let perCallee = new Map<i32, i32>();
@@ -378,12 +381,12 @@ let inlineIntoBody = (caller: IrBody, bodyIndex: HashMap<WasmFunction, i32>,
   // Use counts of the caller's values as the sweep starts, for the
   // only-use-is-this-call test. Values the sweep creates are past the
   // end and never qualify.
-  let useCount = new Array<i32>();
+  let useCount = scratch.i32();
   let originalCount = caller.instCount();
   for (var i = 0; i < originalCount; i += 1) {
     useCount.push(0);
   }
-  let operands = new Array<i32>();
+  let operands = scratch.i32();
   for (var i = 0; i < originalCount; i += 1) {
     while (operands.length > 0) {
       operands.pop();
@@ -415,7 +418,7 @@ let inlineIntoBody = (caller: IrBody, bodyIndex: HashMap<WasmFunction, i32>,
   // demand: a general splice copies a callee body into new blocks the
   // sweep goes on to visit, so a copied call (with a fresh, larger
   // id) can itself be inlined and replaced.
-  let repl = new Array<i32>();
+  let repl = scratch.i32();
   let growRepl = (): void => {
     while (repl.length < caller.instCount()) {
       repl.push(repl.length);
@@ -527,7 +530,9 @@ let inlineIntoBody = (caller: IrBody, bodyIndex: HashMap<WasmFunction, i32>,
       };
 
       if (isStraightLine(callee)) {
-        mapResults(spliceStraight(caller, callee, b, j, inst, args));
+        scratch.enter();
+        mapResults(spliceStraight(caller, callee, b, j, inst, args, scratch));
+        scratch.exit();
         count += 1;
         // The copies were inserted before the call; skip past them
         // and the nop-ed call.
@@ -546,7 +551,9 @@ let inlineIntoBody = (caller: IrBody, bodyIndex: HashMap<WasmFunction, i32>,
         continue;
       }
       perCallee[calleeIdx] = soFar + 1;
-      mapResults(spliceGeneral(caller, callee, b, j, inst, args, sig));
+      scratch.enter();
+      mapResults(spliceGeneral(caller, callee, b, j, inst, args, sig, scratch));
+      scratch.exit();
       count += 1;
       generalSplices += 1;
       // The rest of this block moved to the continuation, which the
@@ -572,8 +579,8 @@ let inlineIntoBody = (caller: IrBody, bodyIndex: HashMap<WasmFunction, i32>,
  * call's values map to, one per result.
  */
 let spliceStraight = (caller: IrBody, callee: IrBody, b: i32, j: i32,
-    inst: i32, args: GrowableArray<i32>): GrowableArray<i32> => {
-  let sp = new Splice(caller, callee);
+    inst: i32, args: GrowableArray<i32>, scratch: IrScratch): GrowableArray<i32> => {
+  let sp = new Splice(caller, callee, scratch);
   let params = callee.blocks[0].params;
   for (var p = 0; p < params.length; p += 1) {
     sp.map[params[p]] = args[p];
@@ -581,7 +588,7 @@ let spliceStraight = (caller: IrBody, callee: IrBody, b: i32, j: i32,
   let calleeBlk = callee.blocks[0];
   let term = calleeBlk.insts[calleeBlk.insts.length - 1];
   // Pre-assign ids in copy order, then copy in the same order.
-  let order = new Array<i32>();
+  let order = scratch.i32();
   var next = caller.instCount();
   for (let ci in calleeBlk.insts) {
     if (ci == term || callee.op(ci) == IrOp.nop) {
@@ -592,7 +599,7 @@ let spliceStraight = (caller: IrBody, callee: IrBody, b: i32, j: i32,
     order.push(ci);
   }
   let identity = (blockId: i32): i32 => blockId;
-  let copied = new Array<i32>();
+  let copied = scratch.i32();
   for (let ci in order) {
     let newId = caller.copyFrom(callee, ci, (v: i32): i32 => sp.mapValue(v),
         sp.typeOffset, sp.refOffset, sp.varOffset, identity);
@@ -602,7 +609,7 @@ let spliceStraight = (caller: IrBody, callee: IrBody, b: i32, j: i32,
     caller.instBlock[newId] = b;
     copied.push(newId);
   }
-  var results = new Array<i32>();
+  var results = scratch.i32();
   if (callee.op(term) == IrOp.ret) {
     let retVal = callee.a[term];
     if (retVal >= 0) {
@@ -621,7 +628,7 @@ let spliceStraight = (caller: IrBody, callee: IrBody, b: i32, j: i32,
   nopOut(caller, inst);
   // Rebuild the block: prefix, copies, the nop-ed call, suffix.
   let blk = caller.blocks[b];
-  let rebuilt = new Array<i32>();
+  let rebuilt = scratch.i32();
   for (var k = 0; k < blk.insts.length; k += 1) {
     if (k == j) {
       for (let c in copied) {
@@ -646,8 +653,9 @@ let spliceStraight = (caller: IrBody, callee: IrBody, b: i32, j: i32,
  * continuation parameters, one per result of `sig`.
  */
 let spliceGeneral = (caller: IrBody, callee: IrBody, b: i32, j: i32,
-    inst: i32, args: GrowableArray<i32>, sig: WasmSignature): GrowableArray<i32> => {
-  let sp = new Splice(caller, callee);
+    inst: i32, args: GrowableArray<i32>, sig: WasmSignature,
+    scratch: IrScratch): GrowableArray<i32> => {
+  let sp = new Splice(caller, callee, scratch);
   let nb = callee.blocks.length;
   let blockBase = caller.blocks.length;
   for (var k = 0; k < nb; k += 1) {
@@ -675,7 +683,7 @@ let spliceGeneral = (caller: IrBody, callee: IrBody, b: i32, j: i32,
 
   // Continuation parameters: the call's values. A call that is a value
   // itself lends its type; otherwise the signature's return types.
-  let results = new Array<i32>();
+  let results = scratch.i32();
   let resultCount = sig.returns.length;
   for (var k = 0; k < resultCount; k += 1) {
     var ty = caller.typeId[inst];
@@ -697,7 +705,7 @@ let spliceGeneral = (caller: IrBody, callee: IrBody, b: i32, j: i32,
   // branches created during the copy, at the same position), then
   // copy in that order.
   var next = caller.instCount();
-  let order = new Array<i32>();
+  let order = scratch.i32();
   for (var k = 0; k < nb; k += 1) {
     for (let ci in callee.blocks[k].insts) {
       let op = callee.op(ci);
@@ -721,14 +729,14 @@ let spliceGeneral = (caller: IrBody, callee: IrBody, b: i32, j: i32,
     let op = callee.op(ci);
     var newId = -1;
     if (op == IrOp.ret) {
-      let brArgs = new Array<i32>();
+      let brArgs = scratch.i32();
       let rv = callee.a[ci];
       if (rv >= 0 && results.length > 0) {
         brArgs.push(sp.mapValue(rv));
       }
       newId = sp.newBr(contId, brArgs, dstBlock);
     } else if (op == IrOp.ret_multi) {
-      let brArgs = new Array<i32>();
+      let brArgs = scratch.i32();
       let idx = callee.a[ci];
       let argc = callee.extra[idx];
       for (var k = 0; k < argc; k += 1) {
@@ -736,12 +744,12 @@ let spliceGeneral = (caller: IrBody, callee: IrBody, b: i32, j: i32,
       }
       newId = sp.newBr(contId, brArgs, dstBlock);
     } else if (op == IrOp.ret_call || op == IrOp.ret_call_ref) {
-      let made = new Array<i32>();
+      let made = scratch.i32();
       let values = sp.newCallResults(ci, dstBlock, made);
       for (let m in made) {
         caller.blocks[dstBlock].insts.push(m);
       }
-      let brArgs = new Array<i32>();
+      let brArgs = scratch.i32();
       if (results.length > 0) {
         for (let v in values) {
           brArgs.push(v);
