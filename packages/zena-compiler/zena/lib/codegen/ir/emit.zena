@@ -1418,7 +1418,8 @@ export final class ZirFunctionEmitter {
       }
       inLoop[x] = true;
       let work = new Array<i32>();
-      for (let p in this.cfg.preds[x]) {
+      for (var pK = 0; pK < this.cfg.predCount(x); pK += 1) {
+        let p = this.cfg.pred(x, pK);
         if (this.cfg.rpoIndex[p] >= this.cfg.rpoIndex[x]) {
           work.push(p);
         }
@@ -1427,14 +1428,16 @@ export final class ZirFunctionEmitter {
         let m = work.pop();
         if (!inLoop[m]) {
           inLoop[m] = true;
-          for (let q in this.cfg.preds[m]) {
+          for (var qK = 0; qK < this.cfg.predCount(m); qK += 1) {
+            let q = this.cfg.pred(m, qK);
             work.push(q);
           }
         }
       }
       let inLoopMerge = new Array<i32>();
       let exits = new Array<i32>();
-      for (let c in this.cfg.domChildren[x]) {
+      for (var cK = 0; cK < this.cfg.domChildCount(x); cK += 1) {
+        let c = this.cfg.domChild(x, cK);
         if (!inLoop[c]) {
           exits.push(c);
         } else if (this.cfg.isMergeNode(c)) {
@@ -1444,7 +1447,8 @@ export final class ZirFunctionEmitter {
       this.#loopWithExits(x, inLoopMerge, exits, exits.length);
     } else {
       let mergeChildren = new Array<i32>();
-      for (let c in this.cfg.domChildren[x]) {
+      for (var cK = 0; cK < this.cfg.domChildCount(x); cK += 1) {
+        let c = this.cfg.domChild(x, cK);
         if (this.cfg.isMergeNode(c)) {
           mergeChildren.push(c);
         }
