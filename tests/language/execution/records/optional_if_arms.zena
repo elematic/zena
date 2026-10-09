@@ -1,0 +1,43 @@
+// @mode: run
+// @result: 60103
+// @invoke: main
+
+// An `if` whose two arms are records differing in whether an optional
+// field is present, with the result annotated. The annotation is what
+// makes this work: each arm is adapted to `Opts` where it is built, so
+// the `if` has one record type rather than a union of two.
+//
+// Without it the arms stay their own types and the `if` is a union,
+// which type-checks at a record-typed use and traps — see
+// record-union-arm-adaptation.zena.
+type Opts = {url: String, timeout?: i32};
+
+let request = (opts: Opts): i32 => {
+  let {timeout = 30000} = opts;
+  return timeout;
+};
+
+let viaLiterals = (withTimeout: boolean): i32 => {
+  let opts: Opts = if (withTimeout) {
+    {url: 'x', timeout: 100}
+  } else {
+    {url: 'x'}
+  };
+  return request(opts);
+};
+
+let viaSpread = (withTimeout: boolean): i32 => {
+  let base: Opts = {url: 'x'};
+  let opts: Opts = if (withTimeout) {
+    {...base, timeout: 3}
+  } else {
+    base
+  };
+  return request(opts);
+};
+
+export let main = (): i32 => {
+  // 100 + 30000 + 3 + 30000
+  return viaLiterals(true) + viaLiterals(false) +
+      viaSpread(true) + viaSpread(false);
+};

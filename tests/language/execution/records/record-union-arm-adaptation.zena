@@ -1,0 +1,50 @@
+// @mode: run
+// @invoke: main
+// @result: 13
+
+// @skip: a union of two record types is not adapted at a record-typed
+//   use — the call type-checks and traps with "cast failure" at run
+//   time. An unannotated `if` with differently shaped record arms has
+//   the union type, and nothing adapts whichever arm is taken to the
+//   parameter's layout. Annotating the `if` adapts each arm where it is
+//   built and works (see optional_if_arms.zena), so there is a fix, but
+//   the broken form has no diagnostic: the checker refuses `.name` on
+//   the union and accepts passing it to something that reads it.
+//   https://github.com/elematic/zena/issues/229
+
+type Named = {name: String};
+type MaybeRanked = {name: String, rank?: i32};
+
+let nameLength = (o: Named): i32 => {
+  return o.name.length;
+};
+
+let rankOf = (o: MaybeRanked): i32 => {
+  let {rank = 9} = o;
+  return rank;
+};
+
+/** The union's members differ in width; the target has neither field optional. */
+let widthDiffers = (): i32 => {
+  let o = if (nameLength({name: 'ab'}) == 2) {
+    {name: 'abc', rank: 1}
+  } else {
+    {name: 'ab'}
+  };
+  return nameLength(o);
+};
+
+/** The same union, against a target that declares the extra field optional. */
+let againstOptional = (taken: boolean): i32 => {
+  let o = if (taken) {
+    {name: 'abc', rank: 1}
+  } else {
+    {name: 'ab'}
+  };
+  return rankOf(o);
+};
+
+export let main = (): i32 => {
+  // 3 + 1 + 9
+  return widthDiffers() + againstOptional(true) + againstOptional(false);
+};
