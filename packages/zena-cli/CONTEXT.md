@@ -64,6 +64,14 @@ the `zena` command. The design is in
      at a time. Each copy compiles its file in test mode and runs it with
      `zena:wasm`, with the repository as `.`, the stdlib as `/stdlib` and a
      temporary directory as `/tmp`.
+   - This package's own tests are `cargo test`'s, because what they need
+     to vary is the command's environment: the compile cache's directory
+     and which standard library it reads. A test module cannot — its
+     world is the repository as `.`, `/stdlib` and `/tmp`, and the cache
+     is in neither. So `tests/compile_cache.rs` runs the built binary
+     against a copy of the standard library it may edit, with
+     `ZENA_STDLIB_DIR` and `ZENA_CACHE_DIR` pointed at a scratch
+     directory and the variables that would redirect either one removed.
 
 5. **The bootstrap and the build order**
    - `zena-run` runs the checked-in bootstrap to build the compiler
