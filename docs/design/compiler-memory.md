@@ -543,6 +543,16 @@ each on a near-idle machine, the "main" module being #218's head.)
   children), built 474K times at `-O2`: packed the same way.
 - **The function index**, rebuilt per sweep by four passes: memoized
   on the module and dropped when the function list changes.
+- **Tables pushed from empty.** Every table a pass sizes to the body
+  (`repl`, `useCount`, `posOf`, the bitsets, the edge tables) grew by
+  doubling from eight slots, so a large inlined body left a chain of
+  discarded buffers behind each: 16M of the 45M i32 arrays at `-O2`,
+  and most of their bytes. Forty-eight of them now take their bound
+  as capacity, and the remaining hot `successors()` callers
+  (`removeTrivialParams`, `removeUnreachable`, constant propagation's
+  edge table, the escape walk) read records in place. That took the
+  `-O2` compile from 12.3 GiB and 189M objects to 9.2 GiB and 161M,
+  and `-O1` from 4.29 GiB to 4.10 GiB.
 
 Keys without strings. Everything that identified a generic type by
 the identities of other types wrote those uids into a string and
