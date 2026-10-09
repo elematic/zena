@@ -664,6 +664,22 @@ function's tables alive for the rest of the compile, and made the
 | `-O1`   | 4.00 GiB | 3.89 GiB      | 3.79 GiB                   |
 | `-O2`   | 9.11 GiB | 8.17 GiB      | 6.77 GiB                   |
 
+The CFG followed. `IrCfg` takes its tables and its temporaries from
+a pool when given one, and each pass that needs a CFG builds it
+inside its own scope — value numbering, scalar replacement,
+loop-invariant motion, the verifier, the emitter, and jump threading,
+which builds one per step and scopes each step — so a CFG, built
+474K times in an `-O2` compile, no longer leaves nine lists behind
+each time. Without a pool (the generator and async splits) it is
+fresh, as before. The per-visit successor walks that still decoded
+lists — the emitter's loop and merge analysis, the verifier's edge
+check, jump threading's predecessor scan, the extension of branch
+records in scalar replacement and block cleanup — read records in
+place; the rare rewrite paths (a folded branch, a threaded edge)
+keep the decoded `IrSuccessor`. The `-O1` compile allocates 3.43 GiB
+where it allocated 3.79, the `-O2` compile 5.45 GiB where it
+allocated 6.77, and the successor lists went from 2.5M to 75K.
+
 ## What is left
 
 In the order the snapshot ranks them, each measurable by the same
