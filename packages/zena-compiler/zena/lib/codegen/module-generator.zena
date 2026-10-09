@@ -30,7 +30,7 @@ import { WasmEmitter } from './wasm-emitter.zena';
 import { performance } from '../time.zena';
 import { dirName, normalizePath } from '../module-resolver.zena';
 import { lowerFunction } from './ir/lowering.zena';
-import { IrBody } from './ir/ir.zena';
+import { IrBody, IrScratch } from './ir/ir.zena';
 import { verifyIr } from './ir/verifier.zena';
 import { runGvn } from './ir/gvn.zena';
 import { runSimplify } from './ir/simplify.zena';
@@ -586,6 +586,8 @@ export final class ModuleGenerator {
     var zirGraduated = 0;
     var zirDemoted = 0;
     var zirSimplified = 0;
+    // Reusable per-body tables for every pass visit below.
+    let scratch = new IrScratch();
     var zirBlocksRemoved = 0;
     var zirDceRemoved = 0;
     let bodies = new Array<IrBody>();
@@ -599,12 +601,12 @@ export final class ModuleGenerator {
       // ended up unused. GVN runs at every level — emission quality
       // and the narrowing cast-dedup contract depend on it.
       if (this.optLevel >= 1) {
-        zirSimplified += runSimplify(body);
-        zirBlocksRemoved += runBlockCleanup(body);
+        zirSimplified += runSimplify(body, scratch);
+        zirBlocksRemoved += runBlockCleanup(body, scratch);
       }
-      runGvn(body, new IrCfg(body));
+      runGvn(body, new IrCfg(body), scratch);
       if (this.optLevel >= 1) {
-        zirDceRemoved += runDce(body);
+        zirDceRemoved += runDce(body, scratch);
       }
       // Loud on verifier failure: a broken lowering must never limp
       // into emission.
@@ -665,11 +667,11 @@ export final class ModuleGenerator {
           // Block cleanup runs before simplify as well as after:
           // deleting a continuation's parameter is what lets the
           // forwarding rules see the allocation behind it.
-          zirBlocksRemoved += runBlockCleanup(body);
-          zirSimplified += runSimplify(body);
-          zirBlocksRemoved += runBlockCleanup(body);
-          runGvn(body, new IrCfg(body));
-          zirDceRemoved += runDce(body);
+          zirBlocksRemoved += runBlockCleanup(body, scratch);
+          zirSimplified += runSimplify(body, scratch);
+          zirBlocksRemoved += runBlockCleanup(body, scratch);
+          runGvn(body, new IrCfg(body), scratch);
+          zirDceRemoved += runDce(body, scratch);
           let errors = verifyIr(body);
           if (errors.length > 0) {
             let f = wasm.functions[i];
@@ -692,7 +694,7 @@ export final class ModuleGenerator {
       let runRounds = (maxRounds: i32): void => {
       var round = 0;
       while (round < maxRounds) {
-        let escapes = new EscapeSummaries(wasm, bodies);
+        let escapes = new EscapeSummaries(wasm, bodies, scratch);
         let inlined = runInline(wasm, bodies, changed, escapes);
         cleanupChanged("inlining");
         var devirtualized = 0;
@@ -714,17 +716,17 @@ export final class ModuleGenerator {
         var propagated = 0;
         for (var i = 0; i < bodies.length; i += 1) {
           if (round == 0 || changed[i]) {
-            let s = runSroa(bodies[i]);
+            let s = runSroa(bodies[i], scratch);
             if (s > 0) {
               changed[i] = true;
               scalarized += s;
             }
-            let t = runJumpThreading(bodies[i]);
+            let t = runJumpThreading(bodies[i], scratch);
             if (t > 0) {
               changed[i] = true;
               threaded += t;
             }
-            let n = runSccp(bodies[i]);
+            let n = runSccp(bodies[i], scratch);
             if (n > 0) {
               changed[i] = true;
               propagated += n;
@@ -755,7 +757,7 @@ export final class ModuleGenerator {
       // loops what they will be; GVN then merges what hoisting made
       // adjacent.
       for (var i = 0; i < bodies.length; i += 1) {
-        let hoisted = runLicm(bodies[i]);
+        let hoisted = runLicm(bodies[i], scratch);
         if (hoisted > 0) {
           zirHoisted += hoisted;
           changed[i] = true;

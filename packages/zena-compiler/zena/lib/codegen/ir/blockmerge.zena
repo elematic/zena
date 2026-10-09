@@ -25,7 +25,7 @@
  * back to an if/else with the exit's code inside the loop, which
  * wasmtime compiles a good deal worse.
  */
-import { IrBlock, IrBody, IrOp } from './ir.zena';
+import { IrBlock, IrBody, IrOp, IrScratch } from './ir.zena';
 import { isValSubtype } from '../wasm-module.zena';
 
 /**
@@ -33,19 +33,26 @@ import { isValSubtype } from '../wasm-module.zena';
  * number of block parameters deleted plus the number of edges
  * forwarded and blocks fused.
  */
-export let runBlockCleanup = (body: IrBody): i32 => {
-  var n = removeUnreachable(body) + removeTrivialParams(body);
-  let forwarded = forwardEmptyBlocks(body);
-  let fused = fuseStraightLine(body);
+export let runBlockCleanup = (body: IrBody, scratch: IrScratch): i32 => {
+  scratch.enter();
+  let result = runBlockCleanupOn(body, scratch);
+  scratch.exit();
+  return result;
+};
+
+let runBlockCleanupOn = (body: IrBody, scratch: IrScratch): i32 => {
+  var n = removeUnreachable(body, scratch) + removeTrivialParams(body, scratch);
+  let forwarded = forwardEmptyBlocks(body, scratch);
+  let fused = fuseStraightLine(body, scratch);
   if (forwarded > 0 || fused > 0) {
-    n += forwarded + fused + removeUnreachable(body) + removeTrivialParams(body);
+    n += forwarded + fused + removeUnreachable(body, scratch) + removeTrivialParams(body, scratch);
   }
   return n;
 };
 
 /** The join blocks of the function's user tries, which stay as they are. */
-let tryJoins = (body: IrBody): GrowableArray<i32> => {
-  let joins = new Array<i32>();
+let tryJoins = (body: IrBody, scratch: IrScratch): GrowableArray<i32> => {
+  let joins = scratch.i32();
   for (let k in body.tryJoin.keys()) {
     joins.push(body.tryJoin[k]);
   }
@@ -68,18 +75,18 @@ let isIn = (list: GrowableArray<i32>, b: i32): boolean => {
  * moved (a try_br's targets keep their shape for the emitter); a
  * block some other edge still reaches keeps working as it was.
  */
-let forwardEmptyBlocks = (body: IrBody): i32 => {
+let forwardEmptyBlocks = (body: IrBody, scratch: IrScratch): i32 => {
   let nb = body.blocks.length;
-  let joins = tryJoins(body);
+  let joins = tryJoins(body, scratch);
   // Users of every value: a parameter of a forwarded block must feed
   // nothing but the block's own br, since a block it dominates could
   // otherwise read it and the forwarded edges would carry no value.
   let count = body.instCount();
-  let useCount = new Array<i32>(count);
+  let useCount = scratch.i32();
   for (var i = 0; i < count; i += 1) {
     useCount.push(0);
   }
-  let operands = new Array<i32>();
+  let operands = scratch.i32();
   for (var i = 0; i < count; i += 1) {
     if (body.op(i) == IrOp.nop) {
       continue;
@@ -209,15 +216,16 @@ let forwardEmptyBlocks = (body: IrBody): i32 => {
  * (a single edge's parameters are trivial and already gone). Chains
  * fuse in one call: the predecessor's new terminator is checked again.
  */
-let fuseStraightLine = (body: IrBody): i32 => {
+let fuseStraightLine = (body: IrBody, scratch: IrScratch): i32 => {
   let nb = body.blocks.length;
-  let joins = tryJoins(body);
+  let joins = tryJoins(body, scratch);
   var fused = 0;
   var progress = true;
+  let incoming = scratch.i32();
   while (progress) {
     progress = false;
     // Incoming edge counts.
-    let incoming = new Array<i32>(nb);
+    incoming.clear();
     for (var b = 0; b < nb; b += 1) {
       incoming.push(0);
     }
@@ -321,16 +329,16 @@ export let retarget = (body: IrBody, term: i32, k: i32, target: i32,
   }
 };
 
-let removeUnreachable = (body: IrBody): i32 => {
+let removeUnreachable = (body: IrBody, scratch: IrScratch): i32 => {
   let nb = body.blocks.length;
   if (nb == 0) {
     return 0;
   }
-  let reachable = new Array<boolean>(nb);
+  let reachable = scratch.bool();
   for (var i = 0; i < nb; i += 1) {
     reachable.push(false);
   }
-  let stack = new Array<i32>();
+  let stack = scratch.i32();
   reachable[0] = true;
   stack.push(0);
   while (stack.length > 0) {
@@ -382,7 +390,7 @@ let removeUnreachable = (body: IrBody): i32 => {
     return 0;
   }
 
-  let map = new Array<i32>();
+  let map = scratch.i32();
   var next = 0;
   for (var i = 0; i < nb; i += 1) {
     if (reachable[i]) {
@@ -435,7 +443,7 @@ let removeUnreachable = (body: IrBody): i32 => {
   }
   // tryJoin's field is immutable; rebuild its contents in place, in
   // instruction-id order for determinism.
-  let oldKeys = new Array<i32>();
+  let oldKeys = scratch.i32();
   for (let k in body.tryJoin.keys()) {
     oldKeys.push(k);
   }
@@ -482,7 +490,7 @@ let removeUnreachable = (body: IrBody): i32 => {
  * coalesces a parameter with its incoming copies, and a redirected
  * use defeats that — so the parameter and the arguments go too.)
  */
-let removeTrivialParams = (body: IrBody): i32 => {
+let removeTrivialParams = (body: IrBody, scratch: IrScratch): i32 => {
   let nb = body.blocks.length;
   let incoming = new Array<GrowableArray<i32>>(nb);
   for (var i = 0; i < nb; i += 1) {
@@ -504,7 +512,7 @@ let removeTrivialParams = (body: IrBody): i32 => {
     }
   }
   let count = body.instCount();
-  let repl = new Array<i32>(count);
+  let repl = scratch.i32();
   for (var i = 0; i < count; i += 1) {
     repl.push(i);
   }

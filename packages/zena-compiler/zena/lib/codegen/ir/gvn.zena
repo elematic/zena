@@ -20,16 +20,21 @@
  */
 import {
   IrBody, IrOp, IrRefField, IrRefGlobal, isBinaryNumericOp,
-  isUnaryNumericOp,
-} from './ir.zena';
+  isUnaryNumericOp, IrScratch } from './ir.zena';
 import { IrCfg } from './cfg.zena';
 import {
   ValType, ValTypeRef, ValTypeRefNull, valTypeToOpcode,
 } from '../wasm.zena';
 
-export let runGvn = (body: IrBody, cfg: IrCfg): void => {
+export let runGvn = (body: IrBody, cfg: IrCfg, scratch: IrScratch): void => {
+  scratch.enter();
+  runGvnOn(body, cfg, scratch);
+  scratch.exit();
+};
+
+let runGvnOn = (body: IrBody, cfg: IrCfg, scratch: IrScratch): void => {
   let count = body.instCount();
-  let repl = new Array<i32>(count);
+  let repl = scratch.i32();
   for (var i = 0; i < count; i += 1) {
     repl.push(i);
   }
@@ -49,8 +54,8 @@ export let runGvn = (body: IrBody, cfg: IrCfg): void => {
 
   // Iterative dominator-tree DFS: negative entries mark subtree exits
   // (pop this block's insertions from the scope table).
-  let work = new Array<i32>();
-  let marks = new Array<i32>();
+  let work = scratch.i32();
+  let marks = scratch.i32();
   work.push(0);
   while (work.length > 0) {
     let item = work.pop();

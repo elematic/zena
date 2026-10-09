@@ -35,28 +35,35 @@
  *
  * Determinism: blocks in id order, one threading per CFG rebuild.
  */
-import { IrBody, IrOp, buildUseLists } from './ir.zena';
+import { IrBody, IrOp, buildUseLists, IrScratch } from './ir.zena';
 import { IrCfg } from './cfg.zena';
 import { retarget } from './blockmerge.zena';
 import { i32ToString } from 'zena:core';
 
 /** Runs the pass; returns the number of blocks threaded through. */
-export let runJumpThreading = (body: IrBody): i32 => {
+export let runJumpThreading = (body: IrBody, scratch: IrScratch): i32 => {
+  scratch.enter();
+  let result = runJumpThreadingOn(body, scratch);
+  scratch.exit();
+  return result;
+};
+
+let runJumpThreadingOn = (body: IrBody, scratch: IrScratch): i32 => {
   var threaded = 0;
   while (threaded < 64) {
     let cfg = new IrCfg(body);
-    let c = findCandidate(body, cfg);
+    let c = findCandidate(body, cfg, scratch);
     if (c < 0) {
       break;
     }
-    threadThrough(body, cfg, c);
+    threadThrough(body, cfg, c, scratch);
     threaded += 1;
   }
   return threaded;
 };
 
 /** The first block eligible for threading, or -1. */
-let findCandidate = (body: IrBody, cfg: IrCfg): i32 => {
+let findCandidate = (body: IrBody, cfg: IrCfg, scratch: IrScratch): i32 => {
   let joins = new Array<i32>();
   for (let k in body.tryJoin.keys()) {
     joins.push(body.tryJoin[k]);
@@ -75,7 +82,7 @@ let findCandidate = (body: IrBody, cfg: IrCfg): i32 => {
     if (isJoin) {
       continue;
     }
-    if (eligible(body, cfg, c)) {
+    if (eligible(body, cfg, c, scratch)) {
       return c;
     }
   }
@@ -109,7 +116,7 @@ let conditionNegated = (body: IrBody, c: i32): boolean => {
 };
 
 
-let eligible = (body: IrBody, cfg: IrCfg, c: i32): boolean => {
+let eligible = (body: IrBody, cfg: IrCfg, c: i32, scratch: IrScratch): boolean => {
   let blk = body.blocks[c];
   if (blk.params.length == 0 || blk.insts.length == 0) {
     return false;
@@ -159,7 +166,7 @@ let eligible = (body: IrBody, cfg: IrCfg, c: i32): boolean => {
   }
   // Every other use of a parameter sits under one of the targets, and
   // a target that would need parameters has no other predecessor.
-  let users = buildUseLists(body);
+  let users = buildUseLists(body, scratch);
   if (cond != p) {
     // The eqz belongs to the branch alone.
     for (var k = 0; k < users.count(cond); k += 1) {
@@ -231,7 +238,7 @@ let onlyPredIs = (cfg: IrCfg, b: i32, c: i32): boolean => {
   return true;
 };
 
-let threadThrough = (body: IrBody, cfg: IrCfg, c: i32): void => {
+let threadThrough = (body: IrBody, cfg: IrCfg, c: i32, scratch: IrScratch): void => {
   let blk = body.blocks[c];
   let term = blk.insts[blk.insts.length - 1];
   let p = conditionParam(body, c);
@@ -240,7 +247,7 @@ let threadThrough = (body: IrBody, cfg: IrCfg, c: i32): void => {
   let targets = new Array<i32>();
   targets.push(succs[0].target);
   targets.push(succs[1].target);
-  let users = buildUseLists(body);
+  let users = buildUseLists(body, scratch);
   let count = body.instCount();
   var j = -1;
   for (var k = 0; k < blk.params.length; k += 1) {

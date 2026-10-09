@@ -42,17 +42,23 @@
  */
 import {
   IrBody, IrOp, IrRefField, IrRefGlobal, isBinaryNumericOp,
-  isUnaryNumericOp,
-} from './ir.zena';
+  isUnaryNumericOp, IrScratch } from './ir.zena';
 import { IrCfg } from './cfg.zena';
 import { ValTypeRef } from '../wasm.zena';
 
 /** Runs the pass; returns the number of instructions moved. */
-export let runLicm = (body: IrBody): i32 => {
+export let runLicm = (body: IrBody, scratch: IrScratch): i32 => {
+  scratch.enter();
+  let result = runLicmOn(body, scratch);
+  scratch.exit();
+  return result;
+};
+
+let runLicmOn = (body: IrBody, scratch: IrScratch): i32 => {
   var total = 0;
   var pass = 0;
   while (pass < 3) {
-    let moved = hoistOnce(body);
+    let moved = hoistOnce(body, scratch);
     total += moved;
     if (moved == 0) {
       break;
@@ -62,7 +68,7 @@ export let runLicm = (body: IrBody): i32 => {
   return total;
 };
 
-let hoistOnce = (body: IrBody): i32 => {
+let hoistOnce = (body: IrBody, scratch: IrScratch): i32 => {
   let cfg = new IrCfg(body);
   let nb = body.blocks.length;
   let dominates = (a: i32, b: i32): boolean => {
