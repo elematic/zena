@@ -3363,18 +3363,20 @@ final class CheckerContext {
   #purgeTaintedFrom(depth: i32): void {
     var b = depth;
     while (b < this.#taintedBindingBuckets.length) {
-      for (let bKey in this.#taintedBindingBuckets[b]) {
+      let bucket = this.#taintedBindingBuckets[b];
+      for (let bKey in bucket) {
         this.#taintedBindingMemo.delete(bKey);
       }
-      this.#taintedBindingBuckets[b] = new Array<i64>();
+      bucket.clear();
       b += 1;
     }
     var pb = depth;
     while (pb < this.#taintedPathBuckets.length) {
-      for (let pKey in this.#taintedPathBuckets[pb]) {
+      let bucket = this.#taintedPathBuckets[pb];
+      for (let pKey in bucket) {
         this.#taintedPathMemo.delete(pKey);
       }
-      this.#taintedPathBuckets[pb] = new Array<String>();
+      bucket.clear();
       pb += 1;
     }
   }
@@ -3491,19 +3493,34 @@ final class CheckerContext {
           // from what the siblings already saw.
           let outerMin = this.#walkCycleMin;
           this.#walkCycleMin = 2147483647;
-          let results = new Array<Type>();
+          // The antecedents nearly always agree on one type, so the
+          // list of distinct results is only built once a second one
+          // appears: this walk runs millions of times in a large
+          // compile, and an array per join was a tenth of its garbage.
+          var first: Type | null = null;
+          var results: GrowableArray<Type> | null = null;
           var sawCycle = false;
           for (let a in join.antecedents) {
             let r = this.#walkBindingType(
               a, symId, pathKey, declared, inProgress);
             if (r == null) {
               sawCycle = true;
+            } else if (first == null) {
+              first = r;
+            } else if (results == null) {
+              if (!typesEqual(first as Type, r)) {
+                let list = new Array<Type>();
+                list.push(first as Type);
+                list.push(r);
+                results = list;
+              }
             } else {
+              let list = results as GrowableArray<Type>;
               var dup = false;
-              for (let existing in results) {
+              for (let existing in list) {
                 if (typesEqual(existing, r)) { dup = true; }
               }
-              if (!dup) { results.push(r); }
+              if (!dup) { list.push(r); }
             }
           }
           let myMin = this.#walkCycleMin;
@@ -3511,7 +3528,7 @@ final class CheckerContext {
           // Anything provisional that depended on this join dies with
           // its evaluation.
           this.#purgeTaintedFrom(depth);
-          if (results.length == 0) {
+          if (first == null) {
             this.#walkCycleMin = if (outerMin < myMin) { outerMin } else { myMin };
             if (sawCycle) { return null; }
             return declared;
@@ -3521,8 +3538,12 @@ final class CheckerContext {
           // member lookup cannot see through an A | B union of
           // subclasses, so the union would reject code the un-narrowed
           // type accepts.
-          let kept = this.#dropSubsumed(results);
-          let result = if (kept.length == 1) { kept[0] } else { declared };
+          let result = if (results == null) {
+            first as Type
+          } else {
+            let kept = this.#dropSubsumed(results as GrowableArray<Type>);
+            if (kept.length == 1) { kept[0] } else { declared }
+          };
           if (myMin >= depth) {
             // Cycles, if any, pointed only at this join: it is a
             // completed loop header and this is its fixpoint.
@@ -3678,19 +3699,32 @@ final class CheckerContext {
           inProgress.push(join.id);
           let outerMin = this.#walkCycleMin;
           this.#walkCycleMin = 2147483647;
-          let results = new Array<Type>();
+          // As in the binding walk, the list of distinct results is
+          // only built once a second one appears.
+          var first: Type | null = null;
+          var results: GrowableArray<Type> | null = null;
           var vetoed = false;
           for (let a in join.antecedents) {
             let r = this.#walkPathType(a, path, rootId, inProgress);
             if (r != null) {
               if (r.uid == this.#pathVeto.uid) {
                 vetoed = true;
+              } else if (first == null) {
+                first = r;
+              } else if (results == null) {
+                if (!typesEqual(first as Type, r)) {
+                  let list = new Array<Type>();
+                  list.push(first as Type);
+                  list.push(r);
+                  results = list;
+                }
               } else {
+                let list = results as GrowableArray<Type>;
                 var dup = false;
-                for (let existing in results) {
+                for (let existing in list) {
                   if (typesEqual(existing, r)) { dup = true; }
                 }
-                if (!dup) { results.push(r); }
+                if (!dup) { list.push(r); }
               }
             }
           }
@@ -3700,12 +3734,12 @@ final class CheckerContext {
           var result: Type | null = null;
           if (vetoed) {
             result = this.#pathVeto;
-          } else if (results.length == 1) {
-            result = results[0];
-          } else if (results.length > 1) {
+          } else if (results == null) {
+            result = first;
+          } else {
             // As in the binding walk: distinct narrowings meeting means
             // the path is no longer usefully narrowed.
-            let kept = this.#dropSubsumed(results);
+            let kept = this.#dropSubsumed(results as GrowableArray<Type>);
             result = if (kept.length == 1) { kept[0] } else { this.#pathVeto };
           }
           if (result == null) {
