@@ -18,7 +18,7 @@
 import {
   ValType, ValTypeI32, ValTypeI64, ValTypeF32, ValTypeF64, ValTypeAnyRef, ValTypeEqRef, ValTypeStructRef, ValTypeRef, ValTypeRefNull,
 } from '../wasm.zena';
-import { IrBody, IrOp, isIrTerminator, irOpName, isWideArithOp } from './ir.zena';
+import { IrBody, IrOp, isIrTerminator, irOpName, isWideArithOp, IrScratch } from './ir.zena';
 import { isValSubtype, WasmStruct } from '../wasm-module.zena';
 import { IrCfg } from './cfg.zena';
 
@@ -46,8 +46,9 @@ export final class IrVerifier {
   // body instructions follow. -1 = never placed in any block list.
   #instPos = new Array<i32>();
   var #cfg: IrCfg | null = null;
+  #scratch: IrScratch | null;
 
-  new(this.body);
+  new(this.body, scratch: IrScratch | null = null) : #scratch = scratch;
 
   verify(): Array<String> {
     if (this.body.blocks.length == 0) {
@@ -63,7 +64,7 @@ export final class IrVerifier {
     if (this.errors.length > 0) {
       return this.errors;
     }
-    this.#cfg = new IrCfg(this.body);
+    this.#cfg = new IrCfg(this.body, this.#scratch);
     this.#checkReachability();
     this.#checkUses();
     this.#checkVars();
@@ -168,23 +169,24 @@ export final class IrVerifier {
     while (blockId < body.blocks.length) {
       let blk = body.blocks[blockId];
       let term = blk.insts[blk.insts.length - 1];
-      let succs = body.successors(term);
-      for (let s in succs) {
-        if (s.target < 0 || s.target >= body.blocks.length) {
+      let sN = body.successorCount(term);
+      for (var sK = 0; sK < sN; sK += 1) {
+        let sRec = body.successorRecord(term, sK);
+        if (body.extra[sRec] < 0 || body.extra[sRec] >= body.blocks.length) {
           this.#error('b' + i32ToString(blockId) + ': branch to missing b' +
-              i32ToString(s.target));
+              i32ToString(body.extra[sRec]));
           continue;
         }
-        let targetParams = body.blocks[s.target].params;
-        if (s.argCount != targetParams.length) {
+        let targetParams = body.blocks[body.extra[sRec]].params;
+        if (body.extra[sRec + 1] != targetParams.length) {
           this.#error('b' + i32ToString(blockId) + ': branch to b' +
-              i32ToString(s.target) + ' passes ' + i32ToString(s.argCount) +
+              i32ToString(body.extra[sRec]) + ' passes ' + i32ToString(body.extra[sRec + 1]) +
               ' args, expected ' + i32ToString(targetParams.length));
           continue;
         }
         var i = 0;
-        while (i < s.argCount) {
-          let arg = body.extra[s.argStart + i];
+        while (i < body.extra[sRec + 1]) {
+          let arg = body.extra[(sRec + 2) + i];
           let param = targetParams[i];
           if (arg >= 0 && arg < body.instCount() &&
               body.producesValue(arg) && body.producesValue(param)) {
@@ -193,7 +195,7 @@ export final class IrVerifier {
             if (!isValSubtype(argType, paramType)) {
               this.#error('b' + i32ToString(blockId) + ': branch arg %' +
                   i32ToString(arg) + ' type does not match param %' +
-                  i32ToString(param) + ' of b' + i32ToString(s.target) +
+                  i32ToString(param) + ' of b' + i32ToString(body.extra[sRec]) +
                   ' [arg ' + debugValType(argType) + ' vs param ' +
                   debugValType(paramType) + '; arg op ' +
                   irOpName(body.op(arg)) + ', param op ' +
@@ -280,7 +282,14 @@ export final class IrVerifier {
   }
 }
 
-export let verifyIr = (body: IrBody): Array<String> => {
-  let verifier = new IrVerifier(body);
-  return verifier.verify();
+export let verifyIr = (body: IrBody, scratch: IrScratch | null = null): Array<String> => {
+  if (scratch != null) {
+    scratch.enter();
+  }
+  let verifier = new IrVerifier(body, scratch);
+  let errors = verifier.verify();
+  if (scratch != null) {
+    scratch.exit();
+  }
+  return errors;
 };
