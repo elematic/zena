@@ -46,10 +46,7 @@ export let pruneUnreached = (wasm: WasmModule,
     bodies: GrowableArray<IrBody>,
     roots: GrowableArray<WasmFunction>): HarvestResult => {
   let fcount = wasm.functions.length;
-  let bodyIndex = new Map<WasmFunction, i32>();
-  for (var i = 0; i < fcount; i += 1) {
-    bodyIndex[wasm.functions[i]] = i;
-  }
+  let bodyIndex = wasm.functionIndex();
   // Globals are looked up by their index, which layout assigned as
   // the position in wasm.globals and which this pass rebinds the same
   // way, so it stays the position across harvests.
@@ -166,6 +163,7 @@ export let pruneUnreached = (wasm: WasmModule,
   for (let f in keptFunctions) {
     wasm.functions.push(f);
   }
+  wasm.invalidateFunctionIndex();
   for (let b in keptBodies) {
     bodies.push(b);
   }

@@ -1693,12 +1693,39 @@ export final class WasmModule {
     return fresh;
   }
 
+  /**
+   * Each function's index in `functions`, built on first use and
+   * dropped whenever the list changes: the ZIR passes that look bodies
+   * up by function each rebuilt it per sweep, 4M entries in an -O2
+   * compile.
+   */
+  var #functionIndex: Map<WasmFunction, i32> | null = null;
+
+  functionIndex(): Map<WasmFunction, i32> {
+    let existing = this.#functionIndex;
+    if (existing != null) {
+      return existing;
+    }
+    let index = new Map<WasmFunction, i32>();
+    for (var i = 0; i < this.functions.length; i += 1) {
+      index[this.functions[i]] = i;
+    }
+    this.#functionIndex = index;
+    return index;
+  }
+
+  /** To call after replacing or reordering `functions` in place. */
+  invalidateFunctionIndex(): void {
+    this.#functionIndex = null;
+  }
+
   addFunction(func: WasmFunction): void {
     if (func.isAdded) {
       return;
     }
     func.isAdded = true;
     this.functions.push(func);
+    this.#functionIndex = null;
     let {classType} = func;
     if (classType != null && func.methodName != null) {
       let key = getClassMethodKey(getClassKey(classType), func.methodName as String);
