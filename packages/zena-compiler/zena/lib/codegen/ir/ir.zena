@@ -1177,87 +1177,116 @@ export final class IrBody {
   }
 
   #rewriteSuccessorArgs(inst: i32, map: (v: i32) => i32): void {
-    for (let s in this.successors(inst)) {
+    let n = this.successorCount(inst);
+    for (var k = 0; k < n; k += 1) {
+      let rec = this.successorRecord(inst, k);
+      let argc = this.extra[rec + 1];
       var i = 0;
-      while (i < s.argCount) {
-        this.extra[s.argStart + i] = map(this.extra[s.argStart + i]);
+      while (i < argc) {
+        this.extra[rec + 2 + i] = map(this.extra[rec + 2 + i]);
         i += 1;
       }
     }
   }
 
   #appendSuccessorArgs(inst: i32, out: GrowableArray<i32>): void {
-    let succs = this.successors(inst);
-    for (let s in succs) {
+    let n = this.successorCount(inst);
+    for (var k = 0; k < n; k += 1) {
+      let rec = this.successorRecord(inst, k);
+      let argc = this.extra[rec + 1];
       var i = 0;
-      while (i < s.argCount) {
-        out.push(this.extra[s.argStart + i]);
+      while (i < argc) {
+        out.push(this.extra[rec + 2 + i]);
         i += 1;
       }
     }
   }
 
 
-  /** Decodes the control-flow successors of a terminator instruction. */
-  successors(inst: i32): Array<IrSuccessor> {
-    let result = new Array<IrSuccessor>();
+  /**
+   * Where a terminator's successor records start in `extra`, or -1 for
+   * one with no successors. Each record is `target, argc, args...`,
+   * so they are walked, not indexed. (Start and count are separate
+   * queries rather than one tuple: a tuple return is a heap struct,
+   * and these run once per edge visit.)
+   */
+  #successorStart(inst: i32): i32 {
     let op = this.op(inst);
+    if (op == IrOp.br) {
+      return this.a[inst];
+    }
+    if (op == IrOp.br_if || op == IrOp.try_br ||
+        op == IrOp.yield_ || op == IrOp.await_) {
+      return this.b[inst];
+    }
+    if (op == IrOp.br_on_cast || op == IrOp.br_on_cast_fail) {
+      return this.b[inst] + 1; // skip target type
+    }
+    if (op == IrOp.br_table) {
+      return this.b[inst] + 1; // skip the count
+    }
     if (op == IrOp.ret || op == IrOp.ret_multi || op == IrOp.throw ||
         op == IrOp.ret_call || op == IrOp.ret_call_ref ||
         op == IrOp.unreachable) {
-      return result;
-    }
-    if (op == IrOp.br) {
-      let idx = this.a[inst];
-      let argc = this.extra[idx + 1];
-      result.push(new IrSuccessor(this.extra[idx], idx + 2, argc));
-      return result;
-    }
-    if (op == IrOp.br_if || op == IrOp.try_br) {
-      var idx = this.b[inst];
-      var i = 0;
-      while (i < 2) {
-        let target = this.extra[idx];
-        let argc = this.extra[idx + 1];
-        result.push(new IrSuccessor(target, idx + 2, argc));
-        idx += 2 + argc;
-        i += 1;
-      }
-      return result;
-    }
-    if (op == IrOp.br_on_cast || op == IrOp.br_on_cast_fail) {
-      var idx = this.b[inst] + 1; // skip target type
-      var i = 0;
-      while (i < 2) {
-        let target = this.extra[idx];
-        let argc = this.extra[idx + 1];
-        result.push(new IrSuccessor(target, idx + 2, argc));
-        idx += 2 + argc;
-        i += 1;
-      }
-      return result;
-    }
-    if (op == IrOp.br_table) {
-      var idx = this.b[inst];
-      let count = this.extra[idx];
-      idx += 1;
-      var i = 0;
-      while (i < count) {
-        let target = this.extra[idx];
-        let argc = this.extra[idx + 1];
-        result.push(new IrSuccessor(target, idx + 2, argc));
-        idx += 2 + argc;
-        i += 1;
-      }
-      return result;
-    }
-    if (op == IrOp.yield_ || op == IrOp.await_) {
-      let idx = this.b[inst];
-      let argc = this.extra[idx + 1];
-      result.push(new IrSuccessor(this.extra[idx], idx + 2, argc));
-      return result;
+      return -1;
     }
     throw new Error(`successors: not a terminator: ${irOpName(op)}`);
+  }
+
+  /** How many control-flow successors a terminator has. */
+  successorCount(inst: i32): i32 {
+    let op = this.op(inst);
+    if (op == IrOp.br || op == IrOp.yield_ || op == IrOp.await_) {
+      return 1;
+    }
+    if (op == IrOp.br_if || op == IrOp.try_br ||
+        op == IrOp.br_on_cast || op == IrOp.br_on_cast_fail) {
+      return 2;
+    }
+    if (op == IrOp.br_table) {
+      return this.extra[this.b[inst]];
+    }
+    if (op == IrOp.ret || op == IrOp.ret_multi || op == IrOp.throw ||
+        op == IrOp.ret_call || op == IrOp.ret_call_ref ||
+        op == IrOp.unreachable) {
+      return 0;
+    }
+    throw new Error(`successors: not a terminator: ${irOpName(op)}`);
+  }
+
+  /**
+   * The index in `extra` of a terminator's `k`th successor record: the
+   * target is at it, the argument count one past, the arguments two
+   * past. The allocation-free form of `successors`, for passes that
+   * walk edges in a loop; a rewrite appends a fresh record, so an index
+   * is good until the next `retarget` of the same terminator.
+   */
+  successorRecord(inst: i32, k: i32): i32 {
+    if (k >= this.successorCount(inst)) {
+      throw new Error(`successorRecord: ${irOpName(this.op(inst))} has ${i32ToString(this.successorCount(inst))} successors, asked for ${i32ToString(k)}`);
+    }
+    var idx = this.#successorStart(inst);
+    var i = 0;
+    while (i < k) {
+      idx += 2 + this.extra[idx + 1];
+      i += 1;
+    }
+    return idx;
+  }
+
+  /** Decodes the control-flow successors of a terminator instruction. */
+  successors(inst: i32): Array<IrSuccessor> {
+    let result = new Array<IrSuccessor>();
+    let count = this.successorCount(inst);
+    var idx = this.#successorStart(inst);
+    var i = 0;
+    while (i < count) {
+      let argc = this.extra[idx + 1];
+      result.push(new IrSuccessor(this.extra[idx], idx + 2, argc));
+      idx += 2 + argc;
+      i += 1;
+    }
+    return result;
   }
 }
 
