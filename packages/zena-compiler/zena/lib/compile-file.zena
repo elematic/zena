@@ -10,9 +10,9 @@
  */
 
 import { getEnv } from 'zena:cli';
-import { StringBuilder } from 'zena:core';
+import { ByteBuffer, StringBuilder } from 'zena:core';
 import { JsonBuilder } from 'zena:json';
-import { readFile, writeFileBytes, writeFile, exists } from 'zena:fs';
+import { readFile, readFileBytes, writeFileBytes, writeFile, exists } from 'zena:fs';
 import { CompilerHost } from './library-loader.zena';
 import { PackageConfig, stdlibIdToRelativeFile } from './module-resolver.zena';
 import { loadPackageMap } from './package-manifest.zena';
@@ -92,6 +92,20 @@ export type CompileFileOptions = {
    * entry is stale.
    */
   onRead?: (path: String) => void,
+  /**
+   * A component's runtime memory module, already compiled, as the path
+   * to its `.wasm`. Absent or empty means compile one
+   * (`component-runtime.zena`), as an empty `witPath` means no declared
+   * world.
+   *
+   * Its bytes do not vary with the program — core module 0 has no
+   * imports, and the program module imports its exports at the
+   * component level — so a driver that can keep them between builds
+   * should, because compiling them is about two thirds of a small
+   * component build. A caller passing this is asserting the bytes were
+   * built from the same standard library this compile is reading.
+   */
+  runtimeMemoryPath?: String,
 };
 
 /** The default `onRead`: a compile nothing is caching ignores it. */
@@ -357,6 +371,7 @@ export let compileFile = (options: CompileFileOptions): i32 => {
   // destructuring pattern does not see module-level bindings, and these
   // three name theirs rather than writing it out.
   let target = options.target ?? defaultTarget;
+  let runtimeMemoryPath = options.runtimeMemoryPath ?? "";
   let optLevel = options.optLevel ?? defaultOptLevel;
   let onRead = options.onRead ?? ignoreRead;
 
@@ -582,8 +597,12 @@ export let compileFile = (options: CompileFileOptions): i32 => {
       // which made the report's total exceed wall-clock time by the
       // whole nested compile.
       performance.suspend();
-      generator.runtimeMemoryModule =
-          compileComponentRuntimeModule(compiler, stdlibRoot);
+      generator.runtimeMemoryModule = if (runtimeMemoryPath == "") {
+        compileComponentRuntimeModule(compiler, stdlibRoot)
+      } else {
+        // Already built, by a driver that keeps them between builds.
+        new ByteBuffer().writeBytes(readFileBytes(runtimeMemoryPath))
+      };
       performance.resume();
       performance.add("codegen-runtime-module", nowMs() - tRuntimeModule);
       // A declared world compiles against its own document, with the
