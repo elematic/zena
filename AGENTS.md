@@ -358,6 +358,9 @@ npm test
 # Everything except the fixpoint check, for a faster local loop
 npm run test:smoke
 
+# One area's Zena tests, with the compiler that is already built
+npm run test:quick -- packages/stdlib/tests/regex
+
 # Run tests for a specific package
 npm test -w @zena-lang/zena-compiler
 
@@ -376,6 +379,24 @@ npm test -w @zena-lang/runtime -- --test-only test/runtime_test.js
   other test can see, so CI runs the full `npm test` on every PR. Use the
   smoke target locally; run `npm test` before asking for review.
   See `docs/design/bootstrapping.md`.
+- `npm run test:quick -- <path>` runs `zena test` on a path, directory or
+  glob with **the compiler that is already built**. It is not a wireit
+  script, so it rebuilds nothing. This is the inner loop for a standard
+  library change: editing `zena/regex.zena` and running
+  `npm run test:quick -- packages/stdlib/tests/regex` takes 1.5s, where
+  `npm test -w @zena-lang/stdlib` takes 97s, because the standard library is
+  an input to the compiler and a change to it rebuilds stage A, the CLI
+  module and the bundle.
+
+  What it gives up is exactly that rebuild. The compiler reads the standard
+  library from disk when it compiles, so your test does compile against the
+  sources you just edited — but the compiler running it still has the old
+  ones linked in, and 66 of the standard library's 92 files are in its
+  closure. So a change that affects the compiler can pass here and fail once
+  the compiler is rebuilt. Finish with `npm run test:smoke` or `npm test`.
+
+  It needs the `zena` command built: `npm run build -w @zena-lang/zena-cli`.
+
 - If test output is large and written to a file by the system, use the
   `read_file` tool, which supports `startLine` and `endLine` parameters, to read
   the file.
