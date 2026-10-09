@@ -133,6 +133,15 @@ A cluster of adjacent addresses is one function. That is how
 run of addresses from `0x4dec68` to `0x4decba`, all resolving to the
 same symbol, called from `vm::libcalls::raw::is_subtype`.
 
+**Callers and allocation.** `scripts/samply-callers.py` ranks the
+wasm callers of any function in a profile (`--callers '<regex>'
+--depth N`), leaving out samples whose leaf is the collector, which
+would otherwise charge a whole collection to the allocation that
+tripped it. For where a compile's allocation goes by object type,
+`scripts/alloc-hist.sh` runs a compile under a wasmtime patched with
+`scripts/wasmtime-alloc-hist.patch`; see "Where the allocation goes"
+in docs/design/compiler-memory.md.
+
 ---
 
 ## Tuning Wasmtime Performance
