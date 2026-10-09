@@ -1,4 +1,3 @@
-import { StringBuilder } from 'zena:core';
 import { 
   Type, FunctionType, I32Type, F32Type, F64Type, VoidType, BooleanType, ClassType, 
   InterfaceType, TypeAliasType, applyTypeIntrinsic, U32Type, I64Type, U64Type, ArrayType, NullType,
@@ -8,7 +7,7 @@ import {
   UnionType, InlineTupleType, baseType, BoolLiteralType, NumLiteralType, StringLiteralType,
   RecordType, TupleType, MixinType, ErasedType, countCodegenFunctionType,
   countCodegenSubstitution, classShapeStamp, interfaceShapeStamp,
-  appendUidKey} from '../types.zena';
+  } from '../types.zena';
 import { 
   WasmModule, WasmStruct, WasmField, WasmSignature, WasmFunction, RecordDispatchInfo,
   sortWasmFields, WasmArray
@@ -47,21 +46,19 @@ export let substituteTypeParamsInCodegen = (
   // own; this one covers the function, union, array and tuple results
   // they return — which were built afresh at every call, 137K
   // function types in the `zena` module compile.
-  let table = wasm.substitutionResultsFor(t);
-  // One builder and one string, not one string per number.
-  let sb = new StringBuilder();
+  // The parameters, a separator (no uid is negative), the arguments.
+  var node = wasm.substitutionResultsFor(t);
   for (let p in typeParams) {
-    sb.appendI32(p.uid);
-    sb.appendByte(44); // ','
+    node = node.child(p.uid);
   }
-  sb.appendByte(124); // '|'
-  appendUidKey(sb, typeArgs);
-  let key = sb.toString();
-  if (let (true, done) = table.get(key)) {
+  node = node.child(-1);
+  node = node.at(typeArgs);
+  let done = node.value;
+  if (done != null) {
     return done;
   }
   let result = substituteTypeParamsInCodegenInner(wasm, typeParams, typeArgs, t);
-  table[key] = result;
+  node.value = result;
   countCodegenSubstitution(t, typeArgs, result);
   return result;
 };

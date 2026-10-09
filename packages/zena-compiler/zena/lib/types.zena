@@ -510,7 +510,7 @@ export final class ClassType extends Type {
    * substitution (issue #199: 610K of them in a large build). Null
    * until the first substitution through this mention.
    */
-  var substitutionCache: Map<String, ClassType> | null = null;
+  var substitutionCache: TypeArgTrie | null = null;
   /**
    * On a cached instantiation: `classShapeStamp` of its source when it
    * was built. The checker fills a class in phases, and a substitution
@@ -573,19 +573,45 @@ export final class DecoratedField(
  * back the instantiation already under construction rather than start
  * another, which would never finish.
  */
-final class SubstitutionFrame(source: Type, key: String, result: Type)
+final class SubstitutionFrame(source: Type, key: TypeArgTrie, result: Type)
 
 var substitutionFrames = new Array<SubstitutionFrame>();
 
 /**
- * One node of an interner's union table: a trie over member uids, so
- * a lookup walks one map per member and allocates nothing — a string
- * key would cost several allocations per lookup, at a few hundred
- * thousand lookups a compile.
+ * A trie over type uids: the node for a list of types is reached by
+ * walking one map per element, allocating nothing on a hit. It keys
+ * everything that identifies a type by the identities of other types
+ * — the interner's unions, the instantiations cached on a generic's
+ * template, codegen's substitution memo — where a string of the uids
+ * cost several allocations per lookup, millions of times a compile.
+ * `value` is whatever the table stores at that list; `marks` is a
+ * bit set for tables that store only membership.
  */
-final class UnionTrie {
-  var children: Map<i32, UnionTrie> | null = null;
-  var union: UnionType | null = null;
+export final class TypeArgTrie {
+  var #children: Map<i32, TypeArgTrie> | null = null;
+  var value: Type | null = null;
+  var marks: i32 = 0;
+
+  /** The child for one uid, created if absent. */
+  child(uid: i32): TypeArgTrie {
+    let children = this.#children ?? new Map<i32, TypeArgTrie>();
+    this.#children = children;
+    if (let (true, existing) = children.get(uid)) {
+      return existing;
+    }
+    let created = new TypeArgTrie();
+    children[uid] = created;
+    return created;
+  }
+
+  /** The node for `types`, in order, below this one. */
+  at(types: Array<Type>): TypeArgTrie {
+    var node = this;
+    for (let t in types) {
+      node = node.child(t.uid);
+    }
+    return node;
+  }
 }
 
 // The one object per field-less primitive kind that an interned
@@ -690,7 +716,7 @@ export let unionFreshByKind = (kind: i32): i32 => _unionFreshByKind[kind];
  * for an interleaved compile to pull out from under another.
  */
 export final class TypeInterner {
-  #unions = new UnionTrie();
+  #unions = new TypeArgTrie();
 
   /**
    * The union of `members`, in order: the interned object for that list
@@ -726,45 +752,20 @@ export final class TypeInterner {
       i += 1;
     }
     let keyed: Array<Type> = canonical ?? members;
-    var node = this.#unions;
-    for (let m in keyed) {
-      let children = node.children ?? new Map<i32, UnionTrie>();
-      node.children = children;
-      if (let (true, child) = children.get(m.uid)) {
-        node = child;
-      } else {
-        let child = new UnionTrie();
-        children[m.uid] = child;
-        node = child;
-      }
-    }
-    let existing = node.union;
+    let node = this.#unions.at(keyed);
+    let existing = node.value;
     if (existing != null) {
       _unionHits += 1;
-      return existing;
+      return existing as UnionType;
     }
     _unionMisses += 1;
     let created = new UnionType(toGrowable(keyed));
-    node.union = created;
+    node.value = created;
     return created;
   }
 }
 
 
-/** The identities of `args`, as a cache key: `"12,34,"`. */
-export let argumentUidKey = (args: Array<Type>): String => {
-  let sb = new StringBuilder();
-  appendUidKey(sb, args);
-  return sb.toString();
-};
-
-/** Appends `argumentUidKey`'s form of `args` to a builder. */
-export let appendUidKey = (sb: StringBuilder, args: Array<Type>): void => {
-  for (let arg in args) {
-    sb.appendI32(arg.uid);
-    sb.appendByte(44); // ','
-  }
-};
 
 /**
  * A number that changes whenever any input of `substituteInType`'s
@@ -802,9 +803,9 @@ export let interfaceShapeStamp = (it: InterfaceType): i32 => {
   return stamp + 1;
 };
 
-let reentrantSubstitution = (source: Type, key: String): Type | null => {
+let reentrantSubstitution = (source: Type, key: TypeArgTrie): Type | null => {
   for (let frame in substitutionFrames) {
-    if (frame.source === source && frame.key == key) {
+    if (frame.source === source && frame.key === key) {
       return frame.result;
     }
   }
@@ -946,17 +947,18 @@ let substituteInType = (
         // cycle. The stamp catches a template that gained a
         // constructor or supertype since the instantiation was built.
         let template = ct.canonical();
-        let frameKey = argumentUidKey(newArgs);
+        let cache = template.substitutionCache ?? new TypeArgTrie();
+        template.substitutionCache = cache;
+        let frameKey = cache.at(newArgs);
         let reentrant = reentrantSubstitution(template as Type, frameKey);
         if (reentrant != null) {
           return reentrant;
         }
         let stamp = classShapeStamp(template);
-        let cache = template.substitutionCache ?? new Map<String, ClassType>();
-        template.substitutionCache = cache;
         var hit: ClassType | null = null;
-        if (let (true, cached) = cache.get(frameKey)) {
-          hit = cached;
+        let cached = frameKey.value;
+        if (cached != null) {
+          hit = cached as ClassType;
         }
         if (hit != null && (hit as ClassType).shapeStamp == stamp) {
           _substitutionCacheHits += 1;
@@ -971,7 +973,7 @@ let substituteInType = (
           stale
         } else {
           let fresh = new ClassType(template.id, template.symbolId, template.name);
-          cache[frameKey] = fresh;
+          frameKey.value = fresh;
           fresh
         };
         _substitutedNominals += 1;
@@ -1114,17 +1116,18 @@ let substituteInType = (
         while (template.genericSource != null) {
           template = template.genericSource as InterfaceType;
         }
-        let frameKey = argumentUidKey(newArgs);
+        let cache = template.substitutionCache ?? new TypeArgTrie();
+        template.substitutionCache = cache;
+        let frameKey = cache.at(newArgs);
         let reentrant = reentrantSubstitution(template as Type, frameKey);
         if (reentrant != null) {
           return reentrant;
         }
         let stamp = interfaceShapeStamp(template);
-        let cache = template.substitutionCache ?? new Map<String, InterfaceType>();
-        template.substitutionCache = cache;
         var hit: InterfaceType | null = null;
-        if (let (true, cached) = cache.get(frameKey)) {
-          hit = cached;
+        let cached = frameKey.value;
+        if (cached != null) {
+          hit = cached as InterfaceType;
         }
         if (hit != null && (hit as InterfaceType).shapeStamp == stamp) {
           _substitutionCacheHits += 1;
@@ -1134,7 +1137,7 @@ let substituteInType = (
           hit as InterfaceType
         } else {
           let fresh = new InterfaceType(template.id, template.symbolId, template.name);
-          cache[frameKey] = fresh;
+          frameKey.value = fresh;
           fresh
         };
         _substitutedNominals += 1;
@@ -1617,7 +1620,7 @@ export final class InterfaceType extends Type {
   var constructors: Map<String, FunctionType> = new Map<String, FunctionType>();
 
   /** As `ClassType.substitutionCache` and `shapeStamp`. */
-  var substitutionCache: Map<String, InterfaceType> | null = null;
+  var substitutionCache: TypeArgTrie | null = null;
   var shapeStamp: i32 = 0;
 
   new(id: TypeId, symbolId: SymbolId, name: String) : id = id, symbolId = symbolId, name = name, super() {

@@ -4,7 +4,7 @@ import {
 } from '../wasm-module.zena';
 import { SemanticModel, SymbolDependencies, memberKeyOf } from '../../semantic-model.zena';
 import {
-  Type, ClassType, InterfaceType, FunctionType, TypeId, makeTypeIdGenerator, TypeParameterType, MethodInfo, FieldInfo, isVoidOrNeverType, UnionType, TupleType, InlineTupleType, ArrayType, RecordType, TypeAliasType,
+  Type, ClassType, InterfaceType, FunctionType, TypeId, makeTypeIdGenerator, TypeParameterType, MethodInfo, FieldInfo, isVoidOrNeverType, UnionType, TupleType, InlineTupleType, ArrayType, RecordType, TypeAliasType, TypeArgTrie,
 } from '../../types.zena';
 import {
   Node, ClassDeclaration, InterfaceDeclaration, MixinDeclaration, MethodDefinition, AccessorDeclaration, FieldDefinition, VariableDeclaration, FunctionDeclaration, DeclareFunction, ImportDeclaration, IdentifierPattern, FunctionExpression, SealedVariant, SourceLocation, Module, Identifier, SymbolPropertyName, MemberExpression, CallExpression, ExportAllDeclaration, ExportFromDeclaration, IdGenerator, ShieldedStatement, TryExpression,
@@ -251,8 +251,12 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
   // of them, and by string when it carries type arguments too.
   visitedIds = new Set<i64>();
   reachedIds = new Set<i64>();
-  visited = new Set<String>();
-  reached = new Set<String>();
+  /**
+   * The referrers carrying type arguments, by the same i64 and then
+   * the arguments' identities; the node's marks hold visited (1) and
+   * reached (2).
+   */
+  genericReferrers = new Map<i64, TypeArgTrie>();
 
   reachedFunctionsSet = new Set<WasmFunction>();
   reachedTypesSet = new Set<WasmType>();
@@ -483,19 +487,20 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
         }
       }
     } else {
-      var suffix = if (ref.classType != null) "@" + (getClassKey(ref.classType as ClassType) as String) else "";
-      suffix += "<" + getSpecializedName("", typeArguments) + ">";
-      let key = (if (ref.isSymbol) "sym:" + i32ToString(ref.symId as i32) else "node:" + i32ToString(ref.nodeId)) + suffix;
+      let key = referrerKey(ref.isSymbol,
+          if (ref.isSymbol) ref.symId as i32 else ref.nodeId, ref.classType);
+      let root = this.genericReferrers.get(key) ?? new TypeArgTrie();
+      this.genericReferrers[key] = root;
+      let node = root.at(typeArguments);
       if (ref.isReachable) {
-        isNew = !this.reached.has(key);
+        isNew = (node.marks & 2) == 0;
         if (isNew) {
-          this.reached.add(key);
-          this.visited.add(key);
+          node.marks = node.marks | 3;
         }
       } else {
-        isNew = !this.visited.has(key);
+        isNew = (node.marks & 1) == 0;
         if (isNew) {
-          this.visited.add(key);
+          node.marks = node.marks | 1;
         }
       }
     }
