@@ -3,24 +3,32 @@
  *
  * The component target's runtime memory module.
  *
- * Not an importable library — this file is a compilation *entry point*.
- * The compiler builds it `--target freestanding` and embeds the result
- * as the component's first core module: the one that owns linear memory
- * and the free list, instantiated before the program module so that a
- * lowered import's canonical options have a memory to name (see
- * docs/design/component-emission.md, 1.3). It is deliberately not in
- * the stdlib manifest; nothing can `import` it by name.
+ * Not a library — this file is a compilation *entry point*. The compiler
+ * builds it `--target freestanding` and embeds the result as the
+ * component's first core module: the one that owns linear memory and the
+ * free list, instantiated before the program module so that a lowered
+ * import's canonical options have a memory to name (see
+ * docs/design/component-emission.md, 1.3). It is deliberately in neither
+ * standard library manifest; nothing can `import` it by name, and the
+ * compiler reaches it by path (`codegen/component-runtime.zena`). It
+ * would read better in a directory that says so rather than beside
+ * `zena:wasi`'s own files, but the checked-in bootstrap compiler has
+ * this path in it, so moving it needs a reseed — see
+ * https://github.com/elematic/zena/issues/182.
  *
- * The program module imports this module's two exports under the
- * reserved `zena:runtime` namespace — `memory` as its own memory 0, and
- * `realloc` behind `zena:memory`'s delegating allocator — so there is
- * exactly one allocator over the pages, and it lives here.
+ * Five exports reach the program module under the reserved
+ * `zena:runtime` namespace: `memory` as its own memory 0, `realloc`
+ * behind `zena:memory`'s delegating allocator, `$stringCreate` and
+ * `$stringSetByte` for marshalling strings into those pages, and the
+ * `__zena_exception` tag so a throw crossing the two modules is one
+ * exception. Only `realloc` is declared here; codegen adds the rest.
  *
  * The wrapper below would rather be
- * `export { realloc } from 'zena:wasi';` — but a re-export
- * binding is module-system surface only, and an entry consisting of one
- * emits an empty module with no exports at all. Until re-exports reach
- * the export section, the function is declared here and delegates.
+ * `export { realloc } from 'zena:wasi';` — but a re-export binding is
+ * module-system surface only, and an entry consisting of one emits an
+ * empty module with no exports at all (8 bytes), so the function is
+ * declared here and delegates. See
+ * https://github.com/elematic/zena/issues/88.
  */
 
 import { realloc as abiRealloc } from './abi.zena';
