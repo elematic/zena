@@ -1,0 +1,77 @@
+/**
+ * TypeListTable keys a value by a list of types' identities. The
+ * table is open addressing over the probe's uids, so these pin what
+ * a map keyed by a list must do: the same list finds the same entry,
+ * a different list a different one, a separator keeps `[a], [b]`
+ * apart from `[a, b]`, and growing past the initial capacity keeps
+ * every entry findable.
+ */
+
+import { suite, test, TestContext } from 'zena:test';
+import { equal, isTrue, isFalse } from 'zena:assert';
+import {
+  ClassType, Type, TypeId, TypeListTable
+} from '../lib/types.zena';
+import { SymbolId } from '../lib/scope/symbol.zena';
+
+let fresh = (n: i32): Type => new ClassType(n as TypeId, n as SymbolId, 'C') as Type;
+
+let list = (types: Array<Type>): GrowableArray<Type> => GrowableArray.from<Type>(types);
+
+export let tests = suite('TypeListTable', (): void => {
+  test('the same list finds the same entry', (ctx: TestContext): void => {
+    let table = new TypeListTable();
+    let a = fresh(1);
+    let b = fresh(2);
+    let first = table.at(list([a, b]));
+    first.value = a;
+    let again = table.at(list([a, b]));
+    isTrue(first === again);
+    isTrue(again.value === a);
+  });
+
+  test('a different list is a different entry', (ctx: TestContext): void => {
+    let table = new TypeListTable();
+    let a = fresh(1);
+    let b = fresh(2);
+    let ab = table.at(list([a, b]));
+    let ba = table.at(list([b, a]));
+    let aa = table.at(list([a, a]));
+    isFalse(ab === ba);
+    isFalse(ab === aa);
+    isFalse(ba === aa);
+  });
+
+  test('lists of different lengths and separated lists do not alias', (ctx: TestContext): void => {
+    let table = new TypeListTable();
+    let a = fresh(1);
+    let b = fresh(2);
+    let joined = table.at(list([a, b]));
+    let split = table.begin().add(a.uid).sep().add(b.uid).entry();
+    let shorter = table.at(list([a]));
+    let empty = table.begin().entry();
+    isFalse(joined === split);
+    isFalse(joined === shorter);
+    isFalse(shorter === empty);
+    isTrue(table.begin().add(a.uid).sep().add(b.uid).entry() === split);
+  });
+
+  test('entries survive growth', (ctx: TestContext): void => {
+    let table = new TypeListTable(8);
+    let types = new Array<Type>();
+    for (var i = 0; i < 200; i += 1) {
+      types.push(fresh(i));
+    }
+    let entries = new Array<i32>();
+    for (var i = 0; i < 200; i += 1) {
+      let e = table.at(list([types[i], types[(i + 1) % 200]]));
+      e.marks = i;
+      entries.push(e.marks);
+    }
+    for (var i = 0; i < 200; i += 1) {
+      let e = table.at(list([types[i], types[(i + 1) % 200]]));
+      equal(e.marks, i);
+    }
+    equal(entries.length, 200);
+  });
+});

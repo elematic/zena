@@ -4,7 +4,7 @@ import {
 } from '../wasm-module.zena';
 import { SemanticModel, SymbolDependencies, memberKeyOf } from '../../semantic-model.zena';
 import {
-  Type, ClassType, InterfaceType, FunctionType, TypeId, makeTypeIdGenerator, TypeParameterType, MethodInfo, FieldInfo, isVoidOrNeverType, UnionType, TupleType, InlineTupleType, ArrayType, RecordType, TypeAliasType, TypeArgTrie,
+  Type, ClassType, InterfaceType, FunctionType, TypeId, makeTypeIdGenerator, TypeParameterType, MethodInfo, FieldInfo, isVoidOrNeverType, UnionType, TupleType, InlineTupleType, ArrayType, RecordType, TypeAliasType, TypeListTable,
 } from '../../types.zena';
 import {
   Node, ClassDeclaration, InterfaceDeclaration, MixinDeclaration, MethodDefinition, AccessorDeclaration, FieldDefinition, VariableDeclaration, FunctionDeclaration, DeclareFunction, ImportDeclaration, IdentifierPattern, FunctionExpression, SealedVariant, SourceLocation, Module, Identifier, SymbolPropertyName, MemberExpression, CallExpression, ExportAllDeclaration, ExportFromDeclaration, IdGenerator, ShieldedStatement, TryExpression,
@@ -253,10 +253,10 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
   reachedIds = new Set<i64>();
   /**
    * The referrers carrying type arguments, by the same i64 and then
-   * the arguments' identities; the node's marks hold visited (1) and
+   * the arguments' identities; the entry's marks hold visited (1) and
    * reached (2).
    */
-  genericReferrers = new Map<i64, TypeArgTrie>();
+  genericReferrers = new Map<i64, TypeListTable>();
 
   reachedFunctionsSet = new Set<WasmFunction>();
   reachedTypesSet = new Set<WasmType>();
@@ -489,7 +489,7 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
     } else {
       let key = referrerKey(ref.isSymbol,
           if (ref.isSymbol) ref.symId as i32 else ref.nodeId, ref.classType);
-      let root = this.genericReferrers.get(key) ?? new TypeArgTrie();
+      let root = this.genericReferrers.get(key) ?? new TypeListTable();
       this.genericReferrers[key] = root;
       let node = root.at(typeArguments);
       if (ref.isReachable) {

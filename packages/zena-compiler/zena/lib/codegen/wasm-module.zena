@@ -13,7 +13,7 @@ import {
 import { NodeMap } from '../node-map.zena';
 import {
   ClassType, FunctionType, InterfaceType, Type, TypeInterner, TypeParameterType,
-  TypeArgTrie,
+  TypeListTable,
 } from '../types.zena';
 import { Program, CompilationUnit } from '../program.zena';
 import { stdlibLibraryOf, stdlibLibraryAnswers } from '../stdlib-manifest.zena';
@@ -959,17 +959,17 @@ export final class WasmModule {
    * `substituteTypeParamsInCodegen` results, by the input's uid and
    * then by the parameter and argument uids; see the memo there.
    */
-  substitutionResults = new Map<i32, TypeArgTrie>();
+  substitutionResults = new Map<i32, TypeListTable>();
 
   /**
-   * The result table for input `t`, created on first use: a trie
-   * walked by the parameters' uids, then the arguments'.
+   * The result table for input `t`, created on first use: a table
+   * keyed by the parameters' uids, then the arguments'.
    */
-  substitutionResultsFor(t: Type): TypeArgTrie {
+  substitutionResultsFor(t: Type): TypeListTable {
     if (let (true, existing) = this.substitutionResults.get(t.uid)) {
       return existing;
     }
-    let fresh = new TypeArgTrie();
+    let fresh = new TypeListTable();
     this.substitutionResults[t.uid] = fresh;
     return fresh;
   }
