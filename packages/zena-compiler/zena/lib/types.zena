@@ -734,14 +734,36 @@ final class SubstitutionFrame(source: Type, key: TypeArgTrie, result: Type)
 var substitutionFrames = new Array<SubstitutionFrame>();
 
 /**
- * A trie over type uids: the node for a list of types is reached by
- * walking one map per element, allocating nothing on a hit. It keys
- * everything that identifies a type by the identities of other types
- * — the interner's unions, the instantiations cached on a generic's
- * template, codegen's substitution memo — where a string of the uids
- * cost several allocations per lookup, millions of times a compile.
- * `value` is whatever the table stores at that list; `marks` is a
- * bit set for tables that store only membership.
+ * A map from a list of types to one value, keyed by the identities
+ * (uids) of the list's members: the table behind everything that
+ * identifies a type by other types — the interner's unions, the
+ * instantiations cached on a generic's template, a declaration's
+ * function types, codegen's substitution memo, RTA's referrers with
+ * type arguments.
+ *
+ * It is used as a map, never as a key. The key is the path: a lookup
+ * starts at a root node and walks one child per element of the list
+ * (`at`), and the node it ends on holds the value for that list in
+ * `value`, or membership bits in `marks` for the tables that store
+ * only membership. The list itself is never built as a key object,
+ * which is why a hit allocates nothing — a string of the uids used
+ * to cost several allocations per lookup, millions of times a
+ * compile. Where one table keys several lists in sequence (the
+ * substitution memo: the parameters, then the arguments; a function
+ * type: parameters, return, type parameters, arguments, source),
+ * callers walk `child(-1)` between them: uids are never negative, so
+ * the separator cannot collide with an element, and lists of
+ * different lengths cannot alias.
+ *
+ * Each node is one object plus, once it has children, one
+ * `HashMap<i32, TypeArgTrie>`, so a distinct list of n elements costs
+ * about n nodes and n map entries: on the zena-cli module compile,
+ * 1.1M nodes, 0.8M maps and 1.5M entries, some 190 MB, 4% of what
+ * the compile allocates. A flat table — one open-addressing slot per
+ * distinct list, holding the uids as one i32 array and found by
+ * hashing the probe's uids in place — would hold the same keys in a
+ * fifth of the space and one probe instead of n map lookups; the
+ * trie is the simpler structure that got the strings out.
  */
 export final class TypeArgTrie {
   var #children: HashMap<i32, TypeArgTrie> | null = null;
