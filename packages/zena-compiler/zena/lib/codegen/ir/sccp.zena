@@ -80,14 +80,16 @@ export let runSccp = (body: IrBody): i32 => {
       continue;
     }
     let term = insts[insts.length - 1];
-    let succs = body.successors(term);
+    let n = body.successorCount(term);
     termFirstEdge[b] = edgeTerm.length;
-    termEdgeCount[b] = succs.length;
-    for (let s in succs) {
-      incoming[s.target].push(edgeTerm.length);
+    termEdgeCount[b] = n;
+    for (var k = 0; k < n; k += 1) {
+      let rec = body.successorRecord(term, k);
+      let target = body.extra[rec];
+      incoming[target].push(edgeTerm.length);
       edgeTerm.push(term);
-      edgeTarget.push(s.target);
-      edgeArgStart.push(s.argStart);
+      edgeTarget.push(target);
+      edgeArgStart.push(rec + 2);
       edgeExec.push(false);
     }
   }
@@ -103,7 +105,7 @@ export let runSccp = (body: IrBody): i32 => {
     state.push(TOP);
     value.push(null);
   }
-  let blockExec = new Array<boolean>();
+  let blockExec = new Array<boolean>(nb);
   for (var b = 0; b < nb; b += 1) {
     blockExec.push(false);
   }
@@ -395,7 +397,7 @@ export let runSccp = (body: IrBody): i32 => {
   // Constant block parameters: a constant at the head of the block
   // takes the parameter's uses, and the parameter and its arguments
   // go. Higher indices first, so a deletion leaves the lower ones.
-  let repl = new Array<i32>();
+  let repl = new Array<i32>(count);
   for (var i = 0; i < count; i += 1) {
     repl.push(i);
   }
