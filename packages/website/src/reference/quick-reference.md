@@ -74,6 +74,18 @@ let y = if (x > 0) 1 else 2;  // Required (expression context)
 Every Zena source file is a library. Libraries provide namespacing and control
 visibility—top-level declarations are private by default.
 
+A library body contains declarations only. A statement there is an error:
+nothing in a library body runs on its own, and keeping a library free of side
+effects is what lets the compiler drop an unused one from a build.
+
+```zena
+let names = new GrowableArray<String>();
+
+names.push('side effect');   // ❌ Error: A module body may only contain
+                             //    declarations. Move this statement into
+                             //    a function.
+```
+
 ### Imports
 
 Use `import` to bring declarations from other libraries into scope:
@@ -87,7 +99,7 @@ import {StringBuilder as SB} from 'zena:core';
 
 // Namespace import
 import * as regex from 'zena:regex';
-regex.match(pattern, text);
+// ...then `regex.match(pattern, text)` inside a function.
 
 // Alternative syntax (from ... import)
 from 'zena:core' import {String};

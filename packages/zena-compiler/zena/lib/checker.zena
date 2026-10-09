@@ -4206,7 +4206,14 @@ let checkTopLevelStatement = (
         checkStatement(ctx, vd);
       }
     }
+    // Anything that is not a declaration. A module body runs nothing,
+    // so the statement would never execute. Rejecting it also keeps
+    // importing a library free of side effects, which is what lets an
+    // unused library be dropped from a build.
     case _: {
+      ctx.error(
+          "A module body may only contain declarations. Move this statement into a function.",
+          DiagnosticCode.StatementOutsideFunction, stmt.loc);
       ctx.enterNodeReferrer(stmt.id as i32);
       checkStatement(ctx, stmt);
       ctx.exitNodeReferrer(stmt.id as i32);
