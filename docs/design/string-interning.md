@@ -5,7 +5,7 @@ identifiers with the same bytes become the same `String` object. It is
 exported from `zena:string-reader`, and a `StringReader` given one returns
 interned strings from `internFrom`/`internRange`.
 
-Interning is opt-in and off by default. A reader, tokenizer or parser
+Interning is on for every compile: the library loader owns one table and every parse goes through it (a reader, tokenizer or parser
 constructed without a table behaves exactly as before.
 
 ## What interning is for
@@ -42,10 +42,10 @@ enough that collisions are rare, and a collision costs only an extra compare.
 Measured against a structurally identical table using FNV-1a over the whole
 string (`FnvStringTable` in the benchmark), interning 43,616 identifiers:
 
-| variant     | mean    | 95% CI           |
-| ----------- | ------- | ---------------- |
-| bucket-hash | 2.735ms | [2.493, 2.978]   |
-| fnv         | 3.212ms | [2.888, 3.535]   |
+| variant     | mean    | 95% CI         |
+| ----------- | ------- | -------------- |
+| bucket-hash | 2.735ms | [2.493, 2.978] |
+| fnv         | 3.212ms | [2.888, 3.535] |
 
 bucket-hash faster by 2.5%–27.2%.
 
@@ -77,8 +77,9 @@ useful scope is exactly the set of files it caches.
 That is also the only arrangement in which interning can pay. The cost is
 charged in the tokenizer, per file; the benefit is collected in the checker,
 across the whole module graph, where a name introduced in one file is looked
-up while checking another. `CompilerOptions.internStrings` selects it, and
-`ZENA_INTERN=1` turns it on — which is what makes the A/B below possible, and
+up while checking another. While this was being measured a
+`CompilerOptions.internStrings` option selected it and `ZENA_INTERN=1` turned
+it on — which is what made the A/B below possible, and
 what `zena/test/interning_test.zena` pins in both directions.
 
 ### Declining long strings
@@ -101,7 +102,7 @@ is best-effort and `===` is only ever a fast path for equality.
 Interning a three-byte identifier sliced out of a source file would otherwise
 keep that whole file alive for as long as the table, and a table shared
 across a compilation would accumulate every file it ever read. `intern`
-copies, once per *distinct* string, and the canonical instance then sits on
+copies, once per _distinct_ string, and the canonical instance then sits on
 tight storage that its own byte loops walk.
 
 `prime` skips the copy for strings that already own their storage
@@ -148,14 +149,14 @@ using the machine; several of its intervals were wide enough to point the
 wrong way, and one did. What follows is three consecutive runs of the same
 benchmark, reported in full.
 
-| runner | run 1 | run 2 | run 3 |
-| ------ | ----- | ----- | ----- |
-| tokenize | intern slower 1.3%–11.3% | slower 1.1%–8.1% | slower 1.2%–8.1% |
-| parse | unresolved | unresolved | intern slower 1.0%–4.7% |
-| tokenize + 2 map ops | intern **slower** 7.6%–17.2% | intern **faster** 0.5%–2.8% | unresolved |
-| front end (load+parse+scope+check) | unresolved ±20% | intern **faster** 0.8%–5.2% | unresolved ±8% |
-| flag off: `internRange` vs `sliceRange` | intern path slower 15.9%–20.3% | 20.4%–23.9% | 18.8%–20.5% |
-| bucket hash vs FNV | bucket faster 11.4%–16.7% | 11.7%–12.2% | 11.1%–13.6% |
+| runner                                  | run 1                          | run 2                       | run 3                   |
+| --------------------------------------- | ------------------------------ | --------------------------- | ----------------------- |
+| tokenize                                | intern slower 1.3%–11.3%       | slower 1.1%–8.1%            | slower 1.2%–8.1%        |
+| parse                                   | unresolved                     | unresolved                  | intern slower 1.0%–4.7% |
+| tokenize + 2 map ops                    | intern **slower** 7.6%–17.2%   | intern **faster** 0.5%–2.8% | unresolved              |
+| front end (load+parse+scope+check)      | unresolved ±20%                | intern **faster** 0.8%–5.2% | unresolved ±8%          |
+| flag off: `internRange` vs `sliceRange` | intern path slower 15.9%–20.3% | 20.4%–23.9%                 | 18.8%–20.5%             |
+| bucket hash vs FNV                      | bucket faster 11.4%–16.7%      | 11.7%–12.2%                 | 11.1%–13.6%             |
 
 What reproduces:
 
@@ -181,14 +182,14 @@ What does not reproduce:
 alternating pairs of `zena-cli build zena/cli/main.zena --time`, paired
 differences with 95% CIs:
 
-| phase | baseline | difference with interning | |
-| ----- | -------- | ------------------------- | - |
-| parse | 225.2ms | −12.88 [−30.33, +4.56] | unresolved |
-| scope | 238.8ms | −2.42 [−32.62, +27.77] | unresolved |
-| check | 535.1ms | −28.73 [−60.47, +3.00] | unresolved |
-| front end | 999.2ms | −44.04 [−100.61, +12.53] | unresolved |
-| codegen | 4857.1ms | −58.93 [−370.57, +252.71] | unresolved |
-| total | 5919.6ms | −120.72 [−460.23, +218.79] | unresolved |
+| phase     | baseline | difference with interning  |            |
+| --------- | -------- | -------------------------- | ---------- |
+| parse     | 225.2ms  | −12.88 [−30.33, +4.56]     | unresolved |
+| scope     | 238.8ms  | −2.42 [−32.62, +27.77]     | unresolved |
+| check     | 535.1ms  | −28.73 [−60.47, +3.00]     | unresolved |
+| front end | 999.2ms  | −44.04 [−100.61, +12.53]   | unresolved |
+| codegen   | 4857.1ms | −58.93 [−370.57, +252.71]  | unresolved |
+| total     | 5919.6ms | −120.72 [−460.23, +218.79] | unresolved |
 
 Every point estimate leans toward interning and no interval excludes zero.
 Two things stand between this measurement and an answer: process-level noise
@@ -199,30 +200,34 @@ still be reporting 0.7% of build time.
 
 ## Status
 
-The capability is in place, and **off by default everywhere** — a
-`StringReader`, tokenizer or parser built without a table behaves exactly as
-before, and `CompilerOptions.internStrings` is false unless `ZENA_INTERN=1`
-is set.
+On, for every compile, with no option: the library loader owns one table,
+primed with the keywords, and every file it parses interns identifiers into
+it. A `StringReader`, tokenizer or parser built without a table still behaves
+exactly as before.
 
-Off by default because the evidence does not justify on. The cost is
-reproducible and the benefit is not. That could change, and the experiment
-that would change it has not been run: every measurement here builds a
-compiler, uses it once and drops it, which is interning's worst case — the
-table is paid for in full and collected from only within a single
-compilation. A long-lived compiler that re-checks as files change (the LSP,
-`Compiler.invalidate`, the incremental check path) amortizes one table across
-many checks and never runs codegen at all, so the ratio that matters there is
-nothing like 13% front end to 82% codegen. That is the next thing to measure.
+The measurements above could not justify this on time, and they still
+cannot: at the reserve the real builds use, wall time under wasmtime cannot
+resolve a change this size, for reasons that are wasmtime's rather than the
+compiler's (docs/design/compiler-memory.md, "A 2 s swing that is not in the
+compiler"). What justifies it is the live set. A V8 heap snapshot inside
+discovery of a large compile (`scripts/heap-snapshot.mjs`) showed 154K live
+`String` objects that were identifier names, one per `Identifier` node, for
+a few thousand distinct spellings; interning them through the loader's table
+makes each spelling one object, and with keywords classified before any
+`String` is made (`matchKeyword`), a keyword token allocates nothing and an
+identifier token allocates only the first time its spelling is seen.
 
-The JSON and WIT parsers can already opt in by passing a table to their
-`StringReader`. Neither is wired to a flag of its own, for the same reason:
-on this evidence it should be justified per parser by measurement. For JSON
-the target would be object keys only, not string values, which are mostly
-distinct — and `maxLength` already declines the long ones.
+The experiment that is still worth running is the one named below: a
+long-lived compiler — the language service, `Compiler.invalidate`, the
+incremental check path — amortizes one table across many checks and never
+runs codegen, which is where interning's cost sits against its benefit.
 
-`StringTable` lives in `packages/stdlib/zena/string-table.zena` but is
-exported from `zena:string-reader` rather than as `zena:string-table`: a new
-stdlib module name is a change the checked-in bootstrap compiler cannot
-compile, since its module list is baked in, and would cost a re-baseline of
-that artifact (see [bootstrapping.md](bootstrapping.md)). Promoting it is a
-manifest entry plus a reseed whenever that is worth doing.
+The JSON and WIT parsers can opt in by passing a table to their
+`StringReader`. Neither does yet, for the reason above: it should be
+justified per parser by measurement. For JSON the target would be object keys
+only, not string values, which are mostly distinct — and `maxLength` already
+declines the long ones.
+
+`StringTable` lives in `packages/stdlib/zena/core/string-table.zena` and is
+exported through `zena:core` with `StringReader`, the reader being what feeds
+`internRange`.

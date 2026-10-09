@@ -362,10 +362,13 @@ Snapshot inside discovery, same point: 6.48M objects and 394 MiB to
 
 Then three more, from the same table:
 
-- Identifier names are interned: the tokenizer hands each name through
-  a `StringInterner` the library loader owns, so every identifier of
-  one spelling is one `String`, and the name maps downstream hash a
-  string that has hashed before. 154K live name strings become a few
+- Identifier names are interned through a `StringTable` the library
+  loader owns (docs/design/string-interning.md): a keyword is
+  classified against the source bytes before any `String` exists, and
+  an identifier is probed against them in place, so a token allocates
+  only the first time its spelling is seen. Every identifier of one
+  spelling is one `String`, and the name maps downstream hash a string
+  that has hashed before. 154K live name strings become a few
   thousand.
 - `FunctionType.parameters` is a `GrowableArray<Type>` rather than the
   `Array<Type>` interface, which cost a fat pointer beside each
