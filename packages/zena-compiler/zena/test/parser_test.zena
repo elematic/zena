@@ -1,6 +1,9 @@
 import { suite, test, TestContext } from 'zena:test';
 import { equal, isTrue, isFalse, throws, greater } from 'zena:assert';
-import { parse, parseRecovering } from '../lib/parser.zena';
+// `parseAllowingStatements` is for the cases below whose whole source is
+// one expression or statement: the node they assert on is what the
+// parser built, and the module-body rule is not what they are testing.
+import { parse, parseRecovering, parseAllowingStatements } from '../lib/parser.zena';
 import { SourceSpan } from '../lib/diagnostics.zena';
 import {
   VariableDeclaration, Identifier, IdentifierPattern, NumberLiteral, StringLiteral, BooleanLiteral, BinaryExpression, ExpressionStatement, MemberExpression, BlockStatement, FunctionExpression, ClassDeclaration, TypeAnnotation, NamedTypeAnnotation, CallExpression, ImportDeclaration, SourceLocation,
@@ -70,7 +73,7 @@ export let tests = suite('Parser', (): void => {
   suite('Expressions', (): void => {
     test('should parse binary expression', (ctx: TestContext): void => {
       let source = 'x + 1;';
-      let mod = parse(source, 'test.zena');
+      let mod = parseAllowingStatements(source, 'test.zena');
       
       equal(mod.body.length, 1);
       
@@ -87,7 +90,7 @@ export let tests = suite('Parser', (): void => {
 
     test('should parse subtraction', (ctx: TestContext): void => {
       let source = 'a - b;';
-      let mod = parse(source, 'test.zena');
+      let mod = parseAllowingStatements(source, 'test.zena');
       
       let stmt = mod.body[0] as ExpressionStatement;
       let expr = stmt.expression as BinaryExpression;
@@ -97,7 +100,7 @@ export let tests = suite('Parser', (): void => {
 
     test('should parse multiplication', (ctx: TestContext): void => {
       let source = 'a * b;';
-      let mod = parse(source, 'test.zena');
+      let mod = parseAllowingStatements(source, 'test.zena');
       
       let stmt = mod.body[0] as ExpressionStatement;
       let expr = stmt.expression as BinaryExpression;
@@ -107,7 +110,7 @@ export let tests = suite('Parser', (): void => {
 
     test('should parse division', (ctx: TestContext): void => {
       let source = 'a / b;';
-      let mod = parse(source, 'test.zena');
+      let mod = parseAllowingStatements(source, 'test.zena');
       
       let stmt = mod.body[0] as ExpressionStatement;
       let expr = stmt.expression as BinaryExpression;
@@ -117,7 +120,7 @@ export let tests = suite('Parser', (): void => {
 
     test('should parse exponentiation', (ctx: TestContext): void => {
       let source = 'a ** b;';
-      let mod = parse(source, 'test.zena');
+      let mod = parseAllowingStatements(source, 'test.zena');
       
       let stmt = mod.body[0] as ExpressionStatement;
       let expr = stmt.expression as BinaryExpression;
@@ -127,7 +130,7 @@ export let tests = suite('Parser', (): void => {
 
     test('should parse right-associative exponentiation', (ctx: TestContext): void => {
       let source = 'a ** b ** c;';
-      let mod = parse(source, 'test.zena');
+      let mod = parseAllowingStatements(source, 'test.zena');
       
       let stmt = mod.body[0] as ExpressionStatement;
       let expr = stmt.expression as BinaryExpression;
@@ -146,7 +149,7 @@ export let tests = suite('Parser', (): void => {
 
     test('should respect exponentiation over multiplication precedence', (ctx: TestContext): void => {
       let source = 'a * b ** c;';
-      let mod = parse(source, 'test.zena');
+      let mod = parseAllowingStatements(source, 'test.zena');
       
       let stmt = mod.body[0] as ExpressionStatement;
       let expr = stmt.expression as BinaryExpression;
@@ -167,7 +170,7 @@ export let tests = suite('Parser', (): void => {
   suite('Literals', (): void => {
     test('should parse boolean true', (ctx: TestContext): void => {
       let source = 'true;';
-      let mod = parse(source, 'test.zena');
+      let mod = parseAllowingStatements(source, 'test.zena');
       
       let stmt = mod.body[0] as ExpressionStatement;
       let expr = stmt.expression as BooleanLiteral;
@@ -177,7 +180,7 @@ export let tests = suite('Parser', (): void => {
 
     test('should parse boolean false', (ctx: TestContext): void => {
       let source = 'false;';
-      let mod = parse(source, 'test.zena');
+      let mod = parseAllowingStatements(source, 'test.zena');
       
       let stmt = mod.body[0] as ExpressionStatement;
       let expr = stmt.expression as BooleanLiteral;
@@ -187,7 +190,7 @@ export let tests = suite('Parser', (): void => {
 
     test('should parse string literal', (ctx: TestContext): void => {
       let source = "'hello';";
-      let mod = parse(source, 'test.zena');
+      let mod = parseAllowingStatements(source, 'test.zena');
       
       let stmt = mod.body[0] as ExpressionStatement;
       let expr = stmt.expression as StringLiteral;

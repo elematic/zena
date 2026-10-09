@@ -15,7 +15,7 @@ import { runAndReport, suite } from 'zena:test';
 import { jsonEqual } from 'zena:assert';
 import { readFile, writeFile, exists } from 'zena:fs';
 import { parseJson, stringify } from 'zena:json';
-import { parse } from '../lib/parser.zena';
+import { parse, parseAllowingStatements } from '../lib/parser.zena';
 import { nodeToJson } from '../lib/ast-json.zena';
 import { ExpressionStatement } from '../lib/ast.zena';
 import { Discovery, TestFile, registerSuites } from './portable-harness.zena';
@@ -48,7 +48,11 @@ let runSyntaxTest = (f: TestFile): void => {
     return;
   }
 
-  let mod = parse(f.source, f.name);
+  // A snapshot test is about the shape of a node, and a `statement` or
+  // `expression` target is one statement written at module level, so
+  // the module-body rule is off here. An `@error:` test above asserts
+  // rejection and so goes through `parse`, which enforces it.
+  let mod = parseAllowingStatements(f.source, f.name);
   let actual = match (targetOf(f)) {
     case 'statement': {
       nodeToJson(mod.body[0]);

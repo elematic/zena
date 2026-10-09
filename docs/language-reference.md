@@ -4348,7 +4348,7 @@ are in [decorators.md](design/decorators.md).
 A library body contains **declarations only**: `import`, `let`, `var`,
 `function`, `class`, `interface`, `mixin`, `decorator`, `enum`, `type`,
 `symbol`, `declare`, and their `export` forms. A statement at the top level
-is an error:
+is a syntax error — the grammar in §15 says `Library ::= Declaration*`:
 
 ```zena
 let names = new GrowableArray<String>();
