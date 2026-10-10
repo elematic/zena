@@ -1,0 +1,62 @@
+// @mode: check
+
+// Destructuring a union of record types. The fields the pattern names
+// are merged into one shape — a field some member lacks becomes
+// optional — so the ordinary rules for destructuring a record decide
+// what is legal: a field that may be absent needs a default in an
+// irrefutable position and is a presence test in a refutable one.
+
+type Ranked = {name: String, rank: i32};
+type Named = {name: String};
+
+/** A field every member holds binds like any required field. */
+let shared = (o: Ranked | Named): i32 => {
+  let {name} = o;
+  return name.length;
+};
+
+/** A field only one member holds may be absent, so it needs a default. */
+let needsDefault = (o: Ranked | Named): i32 => {
+  let {rank} = o; // @error: Optional field 'rank' requires a default value
+  return 0;
+};
+
+let withDefault = (o: Ranked | Named): i32 => {
+  let {rank = 9} = o;
+  return rank;
+};
+
+/** Named without a default in a refutable position, it is a presence test. */
+let presenceTest = (o: Ranked | Named): i32 => {
+  if (let {rank} = o) {
+    return rank;
+  }
+  return 0;
+};
+
+let noMemberHasIt = (o: Ranked | Named): i32 => {
+  let {nope} = o; // @error: No member of '{ name: String, rank: i32 } | { name: String }' has property 'nope'
+  return 0;
+};
+
+let typesDisagree = (
+  o: {name: String, rank: i32} | {name: String, rank: String}
+): i32 => {
+  let {rank} = o; // @error: Field 'rank' is 'i32' in one member of the union
+  return 0;
+};
+
+/** `!field` tests absence, so the field has to be one that can be absent. */
+let absenceTest = (o: Ranked | Named): i32 => {
+  if (let {!rank} = o) {
+    return 1;
+  }
+  return 0;
+};
+
+let absenceOfRequired = (o: Ranked | {name: String, rank: i32}): i32 => {
+  if (let {!rank} = o) { // @error: tests absence, but 'rank' is not an optional field here
+    return 1;
+  }
+  return 0;
+};

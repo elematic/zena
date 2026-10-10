@@ -7931,18 +7931,18 @@ let checkAndRegisterInterfaceAdaptation = (ctx: CheckerContext, node: Node, sour
   // the union — codegen picks the member at run time and repacks that
   // one. The join that produced the union cannot do it earlier: it has
   // no one shape to adapt the arms to.
-  if (nonNullSrc is UnionT && nonNullTgt is RecordT) {
-    let members = new Array<RecordT>();
-    var allRecords = true;
-    for (let member in nonNullSrc.types) {
-      if (member is RecordT) {
-        members.push(member);
-      } else {
-        allRecords = false;
-      }
-    }
-    if (allRecords && members.length > 1) {
-      ctx.model.setRecordUnionAdaptation(node, members, nonNullTgt,
+  //
+  // The target here is the DECLARED one rather than the member
+  // `effectiveTarget` narrowed to. A union target reads the value per
+  // member itself, so repacking to one of its members drops what the
+  // others hold — and the repack is a view, so the member chain at the
+  // next use then casts that view's instance to the wrong layout and
+  // traps.
+  let declaredTgt = subtractNullFromType(targetType);
+  if (nonNullSrc is UnionT && declaredTgt is RecordT) {
+    let members = recordUnionMembersOf(nonNullSrc);
+    if (members != null) {
+      ctx.model.setRecordUnionAdaptation(node, members, declaredTgt,
           sourceIsNullable);
     }
   }
@@ -11252,11 +11252,12 @@ let bindPattern = (ctx: CheckerContext, pattern: Pattern, t: Type): void => {
     case RecordPattern as recordPat: {
       let {properties} = recordPat;
       // For record destructuring: { x, y } = record.
-      match (t) {
+      let matched = recordPatternMatchedType(ctx, t, recordPat);
+      match (matched) {
         case RecordT {properties as recordProps, optionalProperties}: {
           // Codegen reads the matched record type off the pattern node
           // for presence tests and guarded defaults.
-          ctx.setNodeType(recordPat, t);
+          ctx.setNodeType(recordPat, matched);
           for (let prop in properties) {
             let propName = prop.name.name;
             if (recordProps.has(propName)) {
@@ -11279,7 +11280,7 @@ let bindPattern = (ctx: CheckerContext, pattern: Pattern, t: Type): void => {
               }
             } else {
               ctx.error(
-                "Type '" + typeToString(t) + "' has no property '" + displayMemberName(propName) + "'.",
+                "Type '" + typeToString(matched) + "' has no property '" + displayMemberName(propName) + "'.",
                 DiagnosticCode.PropertyNotFound,
                 prop.loc
               );
@@ -11294,10 +11295,10 @@ let bindPattern = (ctx: CheckerContext, pattern: Pattern, t: Type): void => {
           }
         }
         case _: {
-          if (!(t is ErrorType) && !(t is UnknownType)) {
+          if (!(matched is ErrorType) && !(matched is UnknownType)) {
             ctx.error(
               "A record pattern cannot match a value of type '" +
-                  typeToString(t) + "'.",
+                  typeToString(matched) + "'.",
               DiagnosticCode.TypeMismatch,
               recordPat.loc
             );
@@ -18942,6 +18943,112 @@ let checkMemberExpression = (
 };
 
 /**
+ * The members of a union whose every member is a record type, or null
+ * for any other union. A record union is read, destructured and
+ * repacked one member at a time; see `RecordUnionAdaptation`.
+ */
+let recordUnionMembersOf = (ut: UnionT): Array<RecordT> | null => {
+  let members = new Array<RecordT>();
+  for (let memberType in ut.types) {
+    let rec = baseType(memberType);
+    if (!(rec is RecordT)) { return null; }
+    members.push(rec);
+  }
+  if (members.length < 2) { return null; }
+  return members;
+};
+
+/**
+ * The one record shape a record pattern runs against for every member
+ * of a record union: the fields the pattern names, each at the type the
+ * members agree on, and optional when any member lacks it or has it
+ * optional.
+ *
+ * Every member is assignable to that shape, so the member a value is
+ * repacks to it in one hop (`RecordUnionAdaptation`) and the pattern
+ * then works as it does against any single record type. The presence
+ * mask carries which member the value came from, which is what makes
+ * `{rank = 9}` take its default on the members with no `rank` and
+ * `{rank}` a presence test.
+ *
+ * `ErrorType` when the members disagree about a field's type or no
+ * member has one the pattern names, both of which are reported. Null
+ * when the pattern names nothing.
+ */
+let recordUnionPatternShape = (
+  ctx: CheckerContext,
+  ut: UnionT,
+  members: Array<RecordT>,
+  recordPat: RecordPattern
+): Type | null => {
+  let props = new Map<String, Type>();
+  let optionals = new Set<String>();
+  for (let prop in recordPat.properties) {
+    let propName = prop.name.name;
+    if (props.has(propName)) { continue; }
+    var fieldType: Type | null = null;
+    var anyAbsent = false;
+    for (let rec in members) {
+      if (!rec.properties.has(propName)) {
+        anyAbsent = true;
+        continue;
+      }
+      if (rec.isOptional(propName)) { anyAbsent = true; }
+      let memberFieldType = rec.properties[propName];
+      if (fieldType == null) {
+        fieldType = memberFieldType;
+      } else if (!typesEqual(fieldType as Type, memberFieldType)) {
+        ctx.error(
+          "Field '" + displayMemberName(propName) + "' is '" +
+              typeToString(fieldType as Type) + "' in one member of the " +
+              "union and '" + typeToString(memberFieldType) +
+              "' in another, so one pattern cannot bind it.",
+          DiagnosticCode.TypeMismatch,
+          prop.loc
+        );
+        return new ErrorType();
+      }
+    }
+    if (fieldType == null) {
+      ctx.error(
+        "No member of '" + typeToString(ut) + "' has property '" +
+            displayMemberName(propName) + "'.",
+        DiagnosticCode.PropertyNotFound,
+        prop.loc
+      );
+      return new ErrorType();
+    }
+    props[propName] = fieldType as Type;
+    if (anyAbsent) { optionals.add(propName); }
+  }
+  if (props.size == 0) { return null; }
+  let optionalNames: Set<String> | null =
+      if (optionals.size > 0) { optionals } else { null };
+  return new RecordT(props, optionalNames);
+};
+
+/**
+ * The matched type for a record pattern whose value is a union of
+ * record types, and the adaptation that gets a value there: the shape
+ * above, recorded on the pattern node so codegen repacks the member
+ * before destructuring. `t` itself for anything else.
+ */
+let recordPatternMatchedType = (
+  ctx: CheckerContext,
+  t: Type,
+  recordPat: RecordPattern
+): Type => {
+  if (!(t is UnionT)) { return t; }
+  let members = recordUnionMembersOf(t);
+  if (members == null) { return t; }
+  let shape = recordUnionPatternShape(ctx, t, members, recordPat);
+  if (shape == null) { return t; }
+  if (!(shape is RecordT)) { return shape; }
+  ctx.model.setRecordUnionAdaptation(recordPat, members, shape);
+  return shape;
+};
+
+/**
  * The type of `propName` read off a union of record types: the field
  * every member holds, required, at one type.
  *
@@ -18956,10 +19063,10 @@ let resolveRecordUnionMemberType = (
   propName: String,
   loc: SourceLocation | null
 ): Type | null => {
+  let membersOpt = recordUnionMembersOf(ut);
+  if (membersOpt == null) { return null; }
   var shared: Type | null = null;
-  for (let memberType in ut.types) {
-    let rec = baseType(memberType);
-    if (!(rec is RecordT)) { return null; }
+  for (let rec in membersOpt) {
     if (!rec.properties.has(propName)) {
       ctx.error(
         "Property '" + displayMemberName(propName) + "' does not exist on '" +
@@ -20963,12 +21070,13 @@ let checkPattern = (ctx: CheckerContext, pattern: Node, expectedType: Type): voi
     }
     case RecordPattern as recordPat: {
       let {properties} = recordPat;
-      if (expectedType is RecordT) {
+      let matched = recordPatternMatchedType(ctx, expectedType, recordPat);
+      if (matched is RecordT) {
         // Codegen reads the matched record type off the pattern node
         // for presence tests: an optional field named without a
         // default is a refutable presence pattern here (a match arm or
         // if-let), unlike in irrefutable destructuring.
-        ctx.setNodeType(recordPat, expectedType);
+        ctx.setNodeType(recordPat, matched);
       }
       if (expectedType is ClassType) {
         // Structural patterns match structural types. Classes are
@@ -20990,7 +21098,7 @@ let checkPattern = (ctx: CheckerContext, pattern: Node, expectedType: Type): voi
         let propName = prop.name.name;
         var propType: Type = new ErrorType();
         var propOptional = false;
-        match (expectedType) {
+        match (matched) {
           case RecordT as rec: {
             if (rec.properties.has(propName)) {
               propType = rec.properties[propName];
@@ -21001,7 +21109,7 @@ let checkPattern = (ctx: CheckerContext, pattern: Node, expectedType: Type): voi
         }
         if (prop.value is AbsencePattern) {
           // `{!field}` — only meaningful where the field CAN be absent.
-          if (!(expectedType is ErrorType) && !propOptional) {
+          if (!(matched is ErrorType) && !propOptional) {
             ctx.error(
               "'!" + propName + "' tests absence, but '" + propName +
                   "' is not an optional field here.",

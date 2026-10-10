@@ -4110,8 +4110,19 @@ o.name.length;   // every member holds `name`, required, as `String`
 
 A field read off the union needs it present, required, and at one type
 in every member: the read has one value type, and an optional field is
-unreadable directly in a plain record too. A record *pattern* names one
-shape, so `let {name} = o` is an error — read the fields one at a time.
+unreadable directly in a plain record too.
+
+Destructuring works on the fields the pattern names, merged into one
+shape where a field some member lacks is optional. So the ordinary rules
+for an optional field apply — a default in an irrefutable position, a
+presence test in a refutable one:
+
+```zena
+let {name} = o;            // in every member
+let {rank = 9} = o;        // only in one, so the rest take the default
+if (let {rank} = o) { … }  // matches only the member that has it
+if (let {!rank} = o) { … } // and this matches the ones that do not
+```
 
 Writing the type on the binding is the cheaper form: the arms are then
 checked against it, there is no union, and nothing has to pick a member

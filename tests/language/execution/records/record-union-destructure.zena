@@ -1,0 +1,123 @@
+// @mode: run
+// @invoke: main
+// @result: 1466
+
+// Destructuring a union of record types. The fields the pattern names
+// are merged into one shape — a field some member lacks becomes
+// optional — and the member the value is repacks to that shape before
+// the pattern runs, so the presence mask says which member it came
+// from. That is what makes a default apply on the members without the
+// field, and a bare name a presence test.
+
+type Options = {path: String, limit: i32};
+type Runtimed = {path: String, limit: i32, runtime: String};
+
+let limitOf = (o: Options): i32 => {
+  return o.limit;
+};
+
+/** A record union built from two arms, for the positions below. */
+let pick = (withRuntime: boolean): Options | Runtimed => {
+  return if (withRuntime) {
+    {path: 'a', limit: 3, runtime: 'js'}
+  } else {
+    {path: 'a', limit: 3}
+  };
+};
+
+/** Fields every member has bind directly. */
+let shared = (flag: boolean): i32 => {
+  let o = if (flag) {
+    {path: 'a', limit: 7, runtime: 'js'}
+  } else {
+    {path: 'bb', limit: 9}
+  };
+  let {path, limit} = o;
+  return path.length * 100 + limit;
+};
+
+/** A field only one member has needs a default, which the others take. */
+let withDefault = (tag: i32): i32 => {
+  let o = if (tag == 0) {
+    {path: 'a', limit: 1, runtime: 'wasmtime'}
+  } else if (tag == 1) {
+    {path: 'a', limit: 2}
+  } else {
+    {path: 'a', limit: 3, extra: true}
+  };
+  let {limit, runtime = 'none'} = o;
+  return limit * 100 + runtime.length;
+};
+
+/** Named without a default, the same field is a presence test. */
+let presenceTest = (tag: i32): i32 => {
+  let o = if (tag == 0) {
+    {path: 'a', limit: 1, runtime: 'js'}
+  } else {
+    {path: 'a', limit: 1}
+  };
+  if (let {runtime} = o) {
+    return 10 + runtime.length;
+  }
+  return 1;
+};
+
+/** And `!field` is the absence test. */
+let absenceTest = (tag: i32): i32 => {
+  let o = if (tag == 0) {
+    {path: 'a', limit: 1, runtime: 'js'}
+  } else {
+    {path: 'a', limit: 1}
+  };
+  if (let {!runtime} = o) {
+    return 5;
+  }
+  return 2;
+};
+
+/** A `match` arm destructuring the union, beside a call that takes it whole. */
+let viaMatch = (tag: i32): i32 => {
+  let o = if (tag == 0) {
+    {path: 'abc', limit: 4, runtime: 'js'}
+  } else {
+    {path: 'ab', limit: 6}
+  };
+  let fromArm = match (o) {
+    case {path, runtime}: path.length * 10 + runtime.length
+    case {path}: path.length
+    case _: 0
+  };
+  return fromArm * 10 + limitOf(o);
+};
+
+/**
+ * The parameter itself destructured, with the union declared. Passing
+ * the union to a union-typed parameter must not repack it to one
+ * member: the member it is is already one of them, and repacking to
+ * the other would drop the field only one of them holds.
+ */
+let paramDestructure = ({limit, runtime = 'none'}: Options | Runtimed): i32 => {
+  return limit * 10 + runtime.length;
+};
+
+/** A for-in binding destructuring each element. */
+let viaForIn = (): i32 => {
+  let items: Array<Options | Runtimed> = [pick(true), pick(false), pick(true)];
+  var total = 0;
+  for (let {limit, runtime = 'none'} in items) {
+    total += limit * 10 + runtime.length;
+  }
+  return total;
+};
+
+export let main = (): i32 => {
+  // (107 + 209) + (108 + 204 + 304) + (12 + 1) + (2 + 5) + (324 + 26)
+  //   + (32 + 34) + 98 = 1466
+  return shared(true) + shared(false) +
+      withDefault(0) + withDefault(1) + withDefault(2) +
+      presenceTest(0) + presenceTest(1) +
+      absenceTest(0) + absenceTest(1) +
+      viaMatch(0) + viaMatch(1) +
+      paramDestructure(pick(true)) + paramDestructure(pick(false)) +
+      viaForIn();
+};

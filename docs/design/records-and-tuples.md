@@ -469,8 +469,27 @@ the non-null side of the guard. A member that lacks the field, holds it
 optionally, or holds it at another type is named in the error rather
 than left to "property access not supported".
 
-A record pattern names one shape, so `let {name} = o` on a union is
-still refused. Reading the fields one at a time is what works.
+A record pattern destructures the union through the repack rather than
+the read chain, because a pattern can read several fields and test
+presence. The checker merges the fields the pattern names into one
+shape — a field some member lacks becomes optional — records that on the
+pattern node, and codegen repacks the member the value is to it before
+matching. From there the pattern runs against a single record type, so
+the ordinary rules decide what is legal: a field that may be absent
+needs a default in an irrefutable position (`let {rank = 9} = o`) and is
+a presence test in a refutable one (`if (let {rank} = o)`), with
+`{!rank}` the absence test. The presence mask the repack builds is what
+carries which member the value came from.
+
+```zena
+let {name} = o;            // in every member: binds like any field
+let {rank = 9} = o;        // in one member: the others take the default
+if (let {rank} = o) { … }  // present only in the member that has it
+```
+
+This is the one place the repack is reached from a node that is not an
+expression, which is why reachability's registration of the per-member
+dispatches does not sit under its `n is Expression` guard.
 
 ### 5.2 Type Syntax
 

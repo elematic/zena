@@ -36,12 +36,26 @@ import {
   LoweringContext, ZirUnsupported, noValues, oneValue, twoValues,
 } from './lowering-context.zena';
 import { lowerStringLiteral } from './templates.zena';
-import { lowerExpr } from './lowering.zena';
+import { lowerExpr, repackRecordUnion } from './lowering.zena';
 
 
 /** Bail with the lowering-side message shape (reason @function). */
 let bail = (cx: LoweringContext, reason: String): never => {
   throw new ZirUnsupported(reason + ' @' + (cx.func.name ?? '?'));
+};
+
+/**
+ * The value a record pattern destructures. A pattern whose value is a
+ * union of record types carries an adaptation to the one shape the
+ * checker merged for it: the member the value is repacks to that shape
+ * here, and everything downstream — the presence mask, guarded
+ * defaults, nested patterns — works against a single record type.
+ */
+let recordPatternValue = (cx: LoweringContext, rp: RecordPattern,
+    value: i32): i32 => {
+  let raOpt = cx.func.model.getRecordUnionAdaptation(rp as Node);
+  if (raOpt == null) { return value; }
+  return repackRecordUnion(cx, raOpt, value);
 };
 
 /** Branches to `failB` when `cond` is false; continues in a new block. */
@@ -769,7 +783,8 @@ export let lowerPatternTest = (cx: LoweringContext, pattern: Node,
       lowerPatternTest(cx, rp.pattern, value, failB);
     }
     case RecordPattern as rp: {
-      let dispatchOpt = recordDispatchOfValue(cx, value);
+      let recordValue = recordPatternValue(cx, rp, value);
+      let dispatchOpt = recordDispatchOfValue(cx, recordValue);
       if (dispatchOpt == null) {
         bail(cx, 'record pattern operand');
       }
@@ -782,7 +797,7 @@ export let lowerPatternTest = (cx: LoweringContext, pattern: Node,
           if (bit < 0) {
             bail(cx, 'absence pattern on required field');
           }
-          let present = maskBitTest(cx, dispatch, bit, value);
+          let present = maskBitTest(cx, dispatch, bit, recordValue);
           let absent = cx.b.emit(IrOp.i32_eqz,
               new ValTypeI32() as ValType, present, -1);
           branchUnless(cx, absent, failB);
@@ -792,11 +807,11 @@ export let lowerPatternTest = (cx: LoweringContext, pattern: Node,
         // presence: test the mask bit before any value test. (Repeated
         // word reads deduplicate in GVN.)
         if (bit >= 0 && !(prop.value is AssignmentPattern)) {
-          branchUnless(cx, maskBitTest(cx, dispatch, bit, value), failB);
+          branchUnless(cx, maskBitTest(cx, dispatch, bit, recordValue), failB);
         }
         if (patternRefutable(cx, prop.value)) {
           let read = cx.recordDispatchRead(
-              dispatch, prop.name.name, value);
+              dispatch, prop.name.name, recordValue);
           lowerPatternTest(cx, prop.value, read, failB);
         }
       }
@@ -895,16 +910,17 @@ export let lowerPatternBindings = (cx: LoweringContext, pattern: Node,
       lowerPatternBindings(cx, rp.pattern, value);
     }
     case RecordPattern as rp: {
-      let dispatchOpt = recordDispatchOfValue(cx, value);
+      let recordValue = recordPatternValue(cx, rp, value);
+      let dispatchOpt = recordDispatchOfValue(cx, recordValue);
       let tOpt = cx.func.model.getNodeType(rp);
       let recOpt: RecordType | null =
           if (tOpt is RecordType) tOpt else null;
       for (let prop in rp.properties) {
         if (patternBinds(cx, prop.value)) {
           if (dispatchOpt != null) {
-            bindRecordProp(cx, dispatchOpt, recOpt, prop, value);
+            bindRecordProp(cx, dispatchOpt, recOpt, prop, recordValue);
           } else {
-            let read = cx.objectPropertyRead(prop.name.name, value);
+            let read = cx.objectPropertyRead(prop.name.name, recordValue);
             lowerPatternBindings(cx, prop.value, read);
           }
         }

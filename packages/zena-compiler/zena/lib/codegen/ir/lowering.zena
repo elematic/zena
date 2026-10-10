@@ -3000,7 +3000,7 @@ export final class FunctionLowerer {
       return;
     }
     if (pat is RecordPattern) {
-      this.#lowerObjectPatternDeclaration(vd, pat.properties);
+      this.#lowerObjectPatternDeclaration(vd, pat);
       return;
     }
     if (!(pat is IdentifierPattern)) {
@@ -3195,24 +3195,40 @@ export final class FunctionLowerer {
    * record dispatch), with the binding's own checked type.
    */
   #lowerObjectPatternDeclaration(vd: VariableDeclaration,
-      properties: Array<BindingProperty>): void {
+      recordPat: RecordPattern): void {
     if (vd.init == null) {
       this.#bail('destructuring without initializer');
     }
+    let properties = recordPat.properties;
     let source = this.#lowerExpression(vd.init);
     let initTypeOpt = this.#substitutedNodeType(vd.init);
     if (initTypeOpt == null) {
       this.#bail('untyped destructuring source');
     }
-    let initBase = baseType(getNonNullableType(initTypeOpt));
-    if (initBase is RecordType) {
-      let dispatch = this.#cx().recordDispatchOf(initBase);
-      let recv = this.#conformRecordReceiver(dispatch, source);
+    // A union of record types repacks to the one shape the checker
+    // merged for this pattern; from there it destructures like any
+    // single record.
+    var recordSource = source;
+    var recordTypeOpt: RecordType | null = null;
+    let raOpt = this.func.model.getRecordUnionAdaptation(recordPat as Node);
+    if (raOpt != null) {
+      recordSource = this.#applyRecordUnionAdaptation(raOpt, source);
+      recordTypeOpt = raOpt.target;
+    } else {
+      let initBase = baseType(getNonNullableType(initTypeOpt));
+      if (initBase is RecordType) {
+        recordTypeOpt = initBase;
+      }
+    }
+    if (recordTypeOpt != null) {
+      let recordType = recordTypeOpt as RecordType;
+      let dispatch = this.#cx().recordDispatchOf(recordType);
+      let recv = this.#conformRecordReceiver(dispatch, recordSource);
       for (let prop in properties) {
         if (!this.#patternBinds(prop.value)) {
           continue;
         }
-        bindRecordProp(this.#cx(), dispatch, initBase, prop, recv);
+        bindRecordProp(this.#cx(), dispatch, recordType, prop, recv);
       }
       return;
     }
@@ -7609,6 +7625,9 @@ export final class FunctionLowerer {
   hostOptionalHit(expr: Expression, recv: i32): i32 {
     return this.#lowerOptionalHit(expr, recv);
   }
+  hostRepackRecordUnion(ra: RecordUnionAdaptation, value: i32): i32 {
+    return this.#applyRecordUnionAdaptation(ra, value);
+  }
   hostSuspendOnFuture(ct: ClassType, future: i32): i32 {
     return this.#suspendOnFuture(ct, future);
   }
@@ -8654,6 +8673,14 @@ export let multiSource = (cx: LoweringContext, init: Expression): Array<i32> =>
 /** Optional-chain hit arm (member machinery). */
 export let optionalHit = (cx: LoweringContext, expr: Expression, recv: i32): i32 =>
     hostOf(cx).hostOptionalHit(expr, recv);
+
+/**
+ * Repacks a record-union value to one record shape, picking the member
+ * at run time (patterns, which destructure the repacked value).
+ */
+export let repackRecordUnion = (cx: LoweringContext,
+    ra: RecordUnionAdaptation, value: i32): i32 =>
+    hostOf(cx).hostRepackRecordUnion(ra, value);
 
 /**
  * Suspends on `future`, typed `ct`, and resumes with its settled value:
