@@ -251,6 +251,9 @@ export final class ModelIndex {
     let raKeys = model.recordAdaptations.map.keys();
     for (let k in raKeys) { this.#claim(model, k); }
 
+    let ruKeys = model.recordUnionAdaptations.map.keys();
+    for (let k in ruKeys) { this.#claim(model, k); }
+
     let iaKeys = model.interfaceAdaptations.map.keys();
     for (let k in iaKeys) { this.#claim(model, k); }
 
@@ -321,6 +324,26 @@ export final class RecordAdaptation {
   target: RecordType;
 
   new(this.source, this.target);
+}
+
+/**
+ * A use that reads a union of record types by one record shape. The
+ * value is one of `members` at run time, each with its own layout, so
+ * the repack that `RecordAdaptation` does for a known source shape has
+ * to pick the member first — codegen tests the value against each
+ * member's fat pointer type and repacks that member to `target`.
+ */
+export final class RecordUnionAdaptation {
+  members: Array<RecordType>;
+  target: RecordType;
+  /**
+   * The adapted expression can be null (`{a} | {a, b} | null` flowing
+   * into `{a} | null`), so null branches around the member chain
+   * instead of matching no member and trapping.
+   */
+  sourceNullable: boolean;
+
+  new(this.members, this.target, this.sourceNullable = false);
 }
 
 export final class InterfaceAdaptation {
@@ -430,6 +453,37 @@ export final class SemanticModel {
       let owner = (this.index as ModelIndex).ownerOfNode(node.id);
       if (owner != null && owner != this) {
         return owner.getRecordAdaptationDirect(node);
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Map from node.id → RecordUnionAdaptation, for a use that reads a
+   * union of record types by one record shape.
+   */
+  #recordUnionAdaptations = new NodeMap<RecordUnionAdaptation>();
+
+  setRecordUnionAdaptation(node: Node, members: Array<RecordType>,
+      target: RecordType, sourceNullable: boolean = false): void {
+    this.#recordUnionAdaptations[node] =
+        new RecordUnionAdaptation(members, target, sourceNullable);
+  }
+
+  getRecordUnionAdaptationDirect(node: Node): RecordUnionAdaptation | null {
+    if (let (true, t) = this.#recordUnionAdaptations.get(node)) {
+      return t;
+    }
+    return null;
+  }
+
+  getRecordUnionAdaptation(node: Node): RecordUnionAdaptation | null {
+    let t = this.getRecordUnionAdaptationDirect(node);
+    if (t != null) return t;
+    if (this.index != null) {
+      let owner = (this.index as ModelIndex).ownerOfNode(node.id);
+      if (owner != null && owner != this) {
+        return owner.getRecordUnionAdaptationDirect(node);
       }
     }
     return null;
@@ -1205,6 +1259,7 @@ export final class SemanticModel {
   }
 
   recordAdaptations: NodeMap<RecordAdaptation> { get { return this.#recordAdaptations; } }
+  recordUnionAdaptations: NodeMap<RecordUnionAdaptation> { get { return this.#recordUnionAdaptations; } }
   interfaceAdaptations: NodeMap<InterfaceAdaptation> { get { return this.#interfaceAdaptations; } }
   functionAdaptations: NodeMap<FunctionAdaptation> { get { return this.#functionAdaptations; } }
   unionCallCalleeTypes: NodeMap<UnionType> { get { return this.#unionCallCalleeTypes; } }

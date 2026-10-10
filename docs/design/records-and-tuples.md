@@ -419,6 +419,50 @@ let process = (opts: {timeout?: i32, retries?: i32}) => {
 
 For code that cannot tolerate any dispatch overhead, use **exact record types**.
 
+### 5.5 Unions of Record Types
+
+An `if` or `match` whose arms are records of different shapes has the
+union of their types, because nothing in the expression says which shape
+to settle on:
+
+```zena
+type Named = {name: String};
+
+let nameLength = (o: Named): i32 => o.name.length;
+
+// `{name: String, rank: i32} | {name: String}`
+let o = if (flag) { {name: 'abc', rank: 1} } else { {name: 'ab'} };
+let n = nameLength(o);
+```
+
+Each member is assignable to `Named` by width subtyping, so the call
+checks. The repack §5.1 describes cannot happen at the `if`, though:
+the vtable a record carries is generated for one source shape, so there
+is no single repack that fits both members.
+
+So the repack happens at the use, per member. A union of two record
+types lowers to `eqref` and each member's fat pointer is its own wasm
+struct, so `ref.test` against a member's fat pointer type identifies the
+member; the matching arm repacks that member to the shape the use reads
+and branches to a join. The checker records the members and the target
+shape on the use (`RecordUnionAdaptation`), reachability registers a
+dispatch per member, and lowering emits the chain
+(`#applyRecordUnionAdaptation`). A nullable source tests for null first
+and passes it through, since null matches no member.
+
+Writing the type on the binding is still the cheaper form, and gives
+the same result by a different route: the arms are then checked against
+the declared type and built in its shape, so there is no union and
+nothing to repack.
+
+```zena
+let o: Named = if (flag) { {name: 'abc', rank: 1} } else { {name: 'ab'} };
+```
+
+A property access on the union is a compile error, for a field every
+member has as much as for one only some have. The access names no
+shape to read the value by, and the member chain needs one.
+
 ### 5.2 Type Syntax
 
 We will adopt TypeScript's syntax.

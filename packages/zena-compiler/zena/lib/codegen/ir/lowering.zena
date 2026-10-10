@@ -21,7 +21,8 @@ import {
   ownershipHandleName, soleNonNullMember,
 } from '../../types.zena';
 import {
-  RecordAdaptation, FunctionAdaptation, SemanticModel, memberKeyOf, accessKeyOf,
+  RecordAdaptation, RecordUnionAdaptation, FunctionAdaptation, SemanticModel,
+  memberKeyOf, accessKeyOf,
 } from '../../semantic-model.zena';
 import { SymbolId, Symbol, noSymbolId } from '../../scope/symbol.zena';
 import { Program, CompilationUnit } from '../../program.zena';
@@ -3492,6 +3493,10 @@ export final class FunctionLowerer {
     if (raOpt != null) {
       v = this.#applyRecordAdaptation(raOpt, v);
     }
+    let ruOpt = this.func.model.getRecordUnionAdaptation(expr);
+    if (ruOpt != null) {
+      v = this.#applyRecordUnionAdaptation(ruOpt, v);
+    }
     v = this.#applyInterfaceAdaptation(expr, v);
     let faOpt = this.func.model.getFunctionAdaptation(expr);
     if (faOpt != null) {
@@ -3532,6 +3537,105 @@ export final class FunctionLowerer {
     return this.b.emit(IrOp.iface_pack,
         new ValTypeRef(outInfo.fatPtrType) as ValType, inst,
         this.b.addRef(new IrRefGlobal(outInfo.vtableGlobal)));
+  }
+
+  /**
+   * Record repack for a union of record shapes: the shape to repack
+   * from is the member the value actually is, which only the run time
+   * knows, so the repack is a chain of type tests.
+   *
+   * A union of two record types lowers to `eqref`, and each member's
+   * fat pointer is its own wasm struct, so `ref.test` against a
+   * member's fat pointer type identifies the member. The arm that
+   * matches repacks that member to the target shape exactly as
+   * `#applyRecordAdaptation` does, and branches to a join block
+   * carrying the result. All members share the join's type: the adapted
+   * vtable's getter signatures come from the target's fields alone, so
+   * every member's adapted fat pointer is the same struct.
+   *
+   * Falling off the end of the chain means the value was none of the
+   * union's members. A null is the one way that happens in a
+   * well-typed program (`{a} | {a, b} | null` read as `{a} | null`), so
+   * a nullable source tests for null up front and passes it through,
+   * and the tail of the chain traps.
+   */
+  #applyRecordUnionAdaptation(ra: RecordUnionAdaptation, value: i32): i32 {
+    if (value < 0 || this.b.body.typeId[value] < 0) {
+      this.#bail('record union adaptation without value');
+    }
+    if (!isRefValType(this.#valueType(value))) {
+      this.#bail('record union adaptation operand');
+    }
+    // The dispatches before any block: the join's type comes from them,
+    // and the null guard that precedes the chain branches to the join.
+    let outOptionals = sortedOptionalNames(ra.target);
+    let inInfos = new Array<RecordDispatchInfo>();
+    let outInfos = new Array<RecordDispatchInfo>();
+    for (let member in ra.members) {
+      let inFields = recordWasmFields(this.wasm, member, this.func);
+      let inOptionals = sortedOptionalNames(member);
+      inInfos.push(this.wasm.getRecordDispatch(
+          this.func.model, inFields, inOptionals));
+      // A fresh field list per member: getAdaptedRecordDispatch keeps
+      // the one it is handed in the dispatch it records.
+      let outFields = recordWasmFields(this.wasm, ra.target, this.func);
+      let outInfo = this.wasm.getAdaptedRecordDispatch(
+          this.func.model, inFields, inOptionals,
+          outFields, outOptionals);
+      if (outInfo.vtableGlobal.index < 0) {
+        this.#bail('record union adaptation vtable unregistered');
+      }
+      outInfos.push(outInfo);
+    }
+    if (outInfos.length == 0) {
+      return this.#bailValue('record union adaptation without members');
+    }
+
+    let packedVt = new ValTypeRef(outInfos[0].fatPtrType) as ValType;
+    let mergeVt = if (ra.sourceNullable) {
+      new ValTypeRefNull(outInfos[0].fatPtrType) as ValType
+    } else {
+      packedVt
+    };
+    let mergeB = this.b.newBlock();
+    let resultParam = this.b.blockParam(mergeB, mergeVt);
+
+    if (ra.sourceNullable) {
+      let isNull = this.b.emit(
+          IrOp.ref_is_null, new ValTypeI32() as ValType, value, -1);
+      let nullB = this.b.newBlock();
+      let chainB = this.b.newBlock();
+      this.b.brIf(isNull, nullB, this.#noArgs(), chainB, this.#noArgs());
+      this.b.switchTo(nullB);
+      this.b.br(mergeB, this.#oneArg(this.#nullDefault(mergeVt)));
+      this.b.switchTo(chainB);
+    }
+
+    for (var i = 0; i < outInfos.length; i += 1) {
+      let inInfo = inInfos[i];
+      let inVt = new ValTypeRef(inInfo.fatPtrType) as ValType;
+      let isMember = this.b.emit(IrOp.ref_test, new ValTypeI32() as ValType,
+          value, this.b.internType(inVt));
+      let hitB = this.b.newBlock();
+      let nextB = this.b.newBlock();
+      this.b.brIf(isMember, hitB, this.#noArgs(), nextB, this.#noArgs());
+
+      this.b.switchTo(hitB);
+      let src = this.b.emit(IrOp.ref_cast, inVt, value,
+          this.b.internType(inVt));
+      let inst = this.b.emit(IrOp.iface_instance,
+          inInfo.fatPtrType.fields[0].type, src, -1);
+      let packed = this.b.emit(IrOp.iface_pack, packedVt, inst,
+          this.b.addRef(new IrRefGlobal(outInfos[i].vtableGlobal)));
+      this.b.br(mergeB, this.#oneArg(packed));
+
+      this.b.switchTo(nextB);
+    }
+    this.b.unreachable();
+
+    this.b.switchTo(mergeB);
+    this.#cx().reachable = true;
+    return resultParam;
   }
 
   /**
