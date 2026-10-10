@@ -18,7 +18,7 @@ collected here.
 | Label               | Meaning                                                     | Defined in                                                  |
 | ------------------- | ----------------------------------------------------------- | ----------------------------------------------------------- |
 | **Track G** — G0–G3 | Generators, then async                                      | Track: below. Milestones: [generators.md](generators.md) §9 |
-| **Track V** — V0–V2 | Equality/identity contractions                              | Below; decisions D1–D4 in [equality.md](equality.md)        |
+| **Track V** — V0–V2 | Equality and identity                                       | Below; decisions in [equality.md](equality.md)              |
 | **Track A** — A0–A3 | Rows and config records                                     | Below; detail in [row-types.md](row-types.md) §9            |
 | **R3**              | "The flip" — the single breaking record-semantics migration | Below                                                       |
 | **Track B**         | Representation harvest, post-flip                           | Below                                                       |
@@ -91,23 +91,28 @@ The async-specific refinement:
   `gen`/`yield`, so a later effect-row generalization — if it ever
   happens — is a new surface over the same transform, not a rewrite.
 
-## Track V — equality/identity contractions (cheap, early)
+## Track V — equality and identity
 
 - **V0 — DONE:** `===`/`!==` on record/tuple operands is a compile
-  error (equality.md D1). `adaptation_identity.zena` and
+  error ([Identity on records and
+  tuples](equality.md#identity-on-records-and-tuples)).
+  `adaptation_identity.zena` and
   `identity_nullable_matrix.zena` retired in favor of
   `tests/language/semantics/records/no-identity.zena`. No codegen
   changes; Track B's lowerings are now unconditional.
-- **V1 (survey first; lands in both compilers or at retirement,
-  survey decides):** no-fallback `==` on classes + the
-  `Equatable`/`Hashable` interfaces with derived value conformance
-  (equality.md D2/D3). Prerequisite survey: every bare `==` on class
-  operands in compiler + stdlib becomes `===` or gains declared
-  equality. Separable; blocks nothing else.
+- **V1:** virtual `==` with an identity default, and hash keys that
+  declare their equality ([Virtual equality with an identity
+  default](equality.md#virtual-equality-with-an-identity-default),
+  [Hash keys declare equality](equality.md#hash-keys-declare-equality)).
+  Steps and their order are in [equality.md](equality.md#migration); the first is
+  converting the compiler's `Type` and AST `Node` comparisons to `===`.
+  Separable; blocks nothing else. (An earlier V1, `==` on a class
+  without `operator ==` as a compile error, was implemented in #286 and
+  reversed before merging.)
 - **V2 (opportunistic, class-only, independent of the records flip):**
   identity-hash injection + `IdentityMap` + inverted `WeakMap`
   (weak-references.md). Depends only on RTA field-injection machinery
-  and V1's interface shapes.
+  and V1's `Hashable` rule.
 
 ## Track A — rows and config records (additive, self-hosted-only)
 
@@ -115,8 +120,8 @@ Per row-types.md §9, refined:
 
 - **A0 — bounds infrastructure** (prerequisite; generics.md still says
   "unconstrained"): `T extends X` bounds on type parameters, plus
-  member-level `where` clauses (equality.md D4 — needed for
-  `contains where T extends Equatable`, and by A1).
+  member-level `where` clauses ([equality.md](equality.md#member-level-where-bounds);
+  needed by ownership's container work and by A1).
 - **A1 — row generics**: `R extends record`/`tuple`, type-level spread,
   lacks constraints, monomorphized instantiation with
   `ZENA_ZIR_STATS` counters. Coordinate with **M5** (template ZIR) for
@@ -198,7 +203,7 @@ Error>` becomes writable.
 Closed-by-default record types; literal exactness; `...` existential
 syntax; width-by-projection replacing adaptation between static shapes;
 `?` re-scoped to existential/parameter positions (A3 covers configs);
-exhaustive destructuring; V1 lands here if its survey deferred it.
+exhaustive destructuring.
 Because V0 and Track A shipped earlier, flip day is
 assignability-and-representation only, and signatures can migrate to
 `...R` forms ahead of time.
@@ -221,8 +226,8 @@ shared lowering (row-types.md §7.4) wired to `-Osize`; SoA/`MultiList`;
 | Async v1                | G1 + Future + one host driver     | G2 fusion, rows      |
 | G2 fusion               | splice machinery (becomes M3's)   | async                |
 | V0 `===` ban            | nothing                           | everything           |
-| V1 `==` overhaul        | survey                            | G-track, rows        |
-| V2 IdentityMap/WeakMap  | RTA injection + V1 interfaces     | records flip         |
+| V1 virtual `==`         | `Type`/`Node` sites made `===`    | G-track, rows        |
+| V2 IdentityMap/WeakMap  | RTA injection + V1 `Hashable`     | records flip         |
 | A0/A1/A2 rows           | bounds infra; M5 for scale        | G-track              |
 | A3 config records       | nothing (better after M4)         | A0/A1                |
 | R3 flip                 | bootstrap retirement, V0, Track A | —                    |

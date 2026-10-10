@@ -1117,8 +1117,9 @@ collection serving restricted elements can offer only its moving
 subset (`pop`, `take`, draining iteration). Drop shapes fail it too:
 `HashMap.[]=` never consumes the key on the already-present path.
 Gating methods per instantiation ("`get` exists when `T` is
-unrestricted") is exactly the member-level `where` clause equality.md
-D4 already calls for, so the collections audit waits on it.
+unrestricted") is exactly the member-level `where` clause in
+[equality.md](./equality.md#member-level-where-bounds), so the
+collections audit waits on it.
 
 All of it is implemented: the operator, the container shapes, scoped
 and `ScopedFrom` returns on static async methods, and the stdlib
@@ -1743,7 +1744,7 @@ records, and nothing here forecloses it.
 Implementation stages, in order: the field rule with reads-as-borrows and
 dispose glue; consuming-method move-out with per-field path checking; then
 `scoped T` and the container work, which waits on member-level `where`
-bounds (equality.md D4).
+bounds ([equality.md](./equality.md#member-level-where-bounds)).
 
 ### Affine type arguments
 
@@ -1799,9 +1800,9 @@ conditionally available, which is what member-level `where` bounds are for:
 new(length: i32, value: T) where T extends Copyable : super(__array_new(length, value));
 ```
 
-That mechanism is not specific to ownership — it is [equality.md](./equality.md)
-D4, planned as part of Track A's bounds work for `contains where T extends
-Equatable`.
+That mechanism is not specific to ownership — it is the member-level `where`
+bound in [equality.md](./equality.md#member-level-where-bounds), planned as
+part of Track A's bounds work.
 
 The broader cost is a signature question rather than a body question: containers
 hand out elements by value (`operator [](key): V`, `Iterator.next(): (true, T)`,
