@@ -1271,8 +1271,8 @@ all.
 Three decisions worth recording:
 
 - **The runtime module is compiled from Zena.** Its source is
-  `wasi/memory.zena`, under the standard library root but in neither
-  manifest, so nothing can import it — a wrapper over `wasi/abi.zena`'s
+  `component-runtime/memory.zena`, under the standard library root but
+  in neither manifest, so nothing can import it — a wrapper over `wasi/abi.zena`'s
   `realloc`, built `--target freestanding`, where `zena:memory` is the
   real free-list allocator. The driver runs that nested compile
   (`compileComponentRuntimeModule`) and hands the bytes to

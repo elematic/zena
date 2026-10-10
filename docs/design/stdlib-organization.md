@@ -35,11 +35,12 @@ modules (`map.zena` re-exports `zena:hashable`). Facades therefore need no
 new language feature.
 
 Two manifest entries are dead. `sequence` is listed in both manifests with
-no file behind it. `wasi/memory.zena` is the reverse: a file in neither
-manifest, named as a string literal by `codegen/component-runtime.zena`
-and injected into the build. It is a compilation entry point rather than
-a library, and moving it somewhere that says so needs a bootstrap reseed
-(#182): the checked-in bootstrap compiler has the old path in it.
+no file behind it. `component-runtime/memory.zena` is the reverse: a
+file in neither manifest, named as a string literal by
+`codegen/component-runtime.zena` and injected into the build. It is a
+compilation entry point rather than a library, and has a directory of
+its own to say so — moving it there took a bootstrap re-baseline,
+because the old path was compiled into the bootstrap.
 
 ## Dependency structure
 
@@ -381,7 +382,7 @@ The full inventory:
 | `__concat<N>` in `zena:string`                                                                  | `visitor.zena:1373`, `ir/templates.zena:91`                                             |
 | `zena:string-convert` conversion functions                                                      | `visitor.zena:1369`                                                                     |
 | `currentScope` in `zena:async`; `scheduleTask`, `drainMicrotasks` in `zena:async/executor.zena` | `visitor.zena:1084,1138,1205,1232`                                                      |
-| `wasi/memory.zena` as the injected component runtime entry                                      | `codegen/component-runtime.zena:27`                                                     |
+| `component-runtime/memory.zena` as the injected component runtime entry                         | `codegen/component-runtime.zena:27`                                                     |
 | `awaitPacked` from `zena:component-async` in synthesized source                                 | `wit-module-synth.zena:179`                                                             |
 | 16 prelude module names, plus `zena:component-abi` as a target runtime module                   | `prelude.zena`                                                                          |
 
