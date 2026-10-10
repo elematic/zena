@@ -18942,6 +18942,65 @@ let checkMemberExpression = (
 };
 
 /**
+ * The type of `propName` read off a union of record types: the field
+ * every member holds, required, at one type.
+ *
+ * Null when some member is not a record type, which leaves the caller
+ * its own diagnostic. `ErrorType` when the members are all records but
+ * disagree about the field — those name what is wrong, which the
+ * caller's "not supported" cannot.
+ */
+let resolveRecordUnionMemberType = (
+  ctx: CheckerContext,
+  ut: UnionT,
+  propName: String,
+  loc: SourceLocation | null
+): Type | null => {
+  var shared: Type | null = null;
+  for (let memberType in ut.types) {
+    let rec = baseType(memberType);
+    if (!(rec is RecordT)) { return null; }
+    if (!rec.properties.has(propName)) {
+      ctx.error(
+        "Property '" + displayMemberName(propName) + "' does not exist on '" +
+            typeToString(rec) + "', one member of '" + typeToString(ut) + "'.",
+        DiagnosticCode.PropertyNotFound,
+        loc
+      );
+      return new ErrorType();
+    }
+    if (rec.isOptional(propName)) {
+      // Same rule as a plain record: the field may be absent, so a
+      // direct read has no value to produce.
+      ctx.error(
+        "Property '" + displayMemberName(propName) + "' is optional in '" +
+            typeToString(rec) + "', one member of '" + typeToString(ut) +
+            "', so it may be absent. Destructure it with a default or match " +
+            "on its presence.",
+        DiagnosticCode.PropertyNotFound,
+        loc
+      );
+      return new ErrorType();
+    }
+    let fieldType = rec.properties[propName];
+    if (shared == null) {
+      shared = fieldType;
+    } else if (!typesEqual(shared as Type, fieldType)) {
+      ctx.error(
+        "Property '" + displayMemberName(propName) + "' is '" +
+            typeToString(shared as Type) + "' in one member of '" +
+            typeToString(ut) + "' and '" + typeToString(fieldType) +
+            "' in another, so the read has no one type.",
+        DiagnosticCode.PropertyNotFound,
+        loc
+      );
+      return new ErrorType();
+    }
+  }
+  return shared;
+};
+
+/**
  * Look up a member (field or method) on a type.
  */
 let resolveMemberType = (
@@ -19162,6 +19221,23 @@ let resolveMemberType = (
       }
       ctx.error(
         "Property '" + displayMemberName(propName) + "' does not exist on record type.",
+        DiagnosticCode.PropertyNotFound,
+        loc
+      );
+      return new ErrorType();
+    }
+    case UnionT as ut: {
+      // A union of record types is read one field at a time, by a
+      // shape every member has: the read dispatches on the member the
+      // value is, the way a use that passes the whole union repacks
+      // the member it gets (RecordUnionAdaptation). A union of
+      // anything else has no member to read.
+      let shared = resolveRecordUnionMemberType(ctx, ut, propName, loc);
+      if (shared != null) {
+        return shared;
+      }
+      ctx.error(
+        "Property access not supported on type '" + typeToString(objectType) + "'.",
         DiagnosticCode.PropertyNotFound,
         loc
       );

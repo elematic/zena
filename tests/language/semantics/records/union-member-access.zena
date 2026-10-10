@@ -1,21 +1,46 @@
 // @mode: check
 
-// A union of record types is read one record shape at a time: passing
-// it where a record type is expected works, because the use names the
-// shape to read and codegen picks the member (see
-// execution/records/record-union-arm-adaptation.zena). A property
-// access on the union names no shape, and is refused even for a field
-// every member has.
-type Named = {name: String};
+// A union of record types is read one field at a time, by a shape every
+// member has. The field has to be present, required, and at one type in
+// every member; each way of failing that names itself.
 
-let nameLength = (o: Named): i32 => o.name.length;
+let nameLength = (o: {name: String}): i32 => o.name.length;
 
-let check = (flag: boolean): i32 => {
-  let o = if (flag) {
-    {name: 'abc', rank: 1}
-  } else {
-    {name: 'ab'}
-  };
-  let direct = o.name; // @error: Property access not supported
-  return nameLength(o);
+/** `name` is in both members, required, and `String` in both. */
+let shared = (o: {name: String, rank: i32} | {name: String}): i32 => {
+  return o.name.length + nameLength(o);
+};
+
+let missingInOneMember = (o: {name: String, rank: i32} | {name: String}): i32 => {
+  return o.rank; // @error: Property 'rank' does not exist on
+};
+
+let optionalInOneMember = (
+  o: {name: String, rank?: i32} | {name: String, rank: i32}
+): i32 => {
+  return o.rank; // @error: Property 'rank' is optional in
+};
+
+let differentTypes = (
+  o: {name: String, rank: i32} | {name: String, rank: String}
+): i32 => {
+  let r = o.rank; // @error: Property 'rank' is 'i32' in one member of
+  return 0;
+};
+
+/**
+ * A record pattern names one shape, so it does not match a union of
+ * two. Reading the fields one at a time is what works.
+ */
+let destructured = (o: {name: String, rank: i32} | {name: String}): i32 => {
+  let {name} = o; // @error: A record pattern cannot match a value of type
+  return name.length;
+};
+
+/** A union of classes still has no member to read. */
+class Cat { meow(): i32 { return 1; } }
+class Dog { bark(): i32 { return 2; } }
+
+let notRecords = (o: Cat | Dog): i32 => {
+  return o.meow(); // @error: Property access not supported on type
 };

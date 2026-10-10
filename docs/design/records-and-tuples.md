@@ -459,9 +459,18 @@ nothing to repack.
 let o: Named = if (flag) { {name: 'abc', rank: 1} } else { {name: 'ab'} };
 ```
 
-A property access on the union is a compile error, for a field every
-member has as much as for one only some have. The access names no
-shape to read the value by, and the member chain needs one.
+A property access on the union reads one field by the same dispatch.
+`o.name` is allowed when every member holds `name`, required, at one
+type — the read has one value type, and an optional field is unreadable
+directly in a plain record too — and each arm of the chain reads the
+field through its own member's vtable, so nothing is repacked and
+nothing is allocated. `o?.name` on a nullable union is the same chain on
+the non-null side of the guard. A member that lacks the field, holds it
+optionally, or holds it at another type is named in the error rather
+than left to "property access not supported".
+
+A record pattern names one shape, so `let {name} = o` on a union is
+still refused. Reading the fields one at a time is what works.
 
 ### 5.2 Type Syntax
 

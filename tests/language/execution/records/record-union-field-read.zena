@@ -1,0 +1,85 @@
+// @mode: run
+// @invoke: main
+// @result: 1692
+
+// Reading a field off a union of record types. The getter that reads the
+// field belongs to the member the value is, so the read dispatches on
+// the member the way a record-typed use repacks it
+// (record-union-arm-adaptation.zena).
+
+type Named = {name: String};
+
+let nameLength = (o: Named): i32 => {
+  return o.name.length;
+};
+
+/** The field read directly off the union, beside the same read through a call. */
+let bothWays = (flag: boolean): i32 => {
+  let o = if (flag) {
+    {name: 'abc', rank: 1}
+  } else {
+    {name: 'ab'}
+  };
+  return o.name.length * 10 + nameLength(o);
+};
+
+/** Two fields of one union, where the members differ in a third. */
+let twoFields = (tag: i32): i32 => {
+  let o = if (tag == 0) {
+    {width: 3, height: 4}
+  } else if (tag == 1) {
+    {width: 5, height: 6, depth: 7}
+  } else {
+    {width: 8, height: 9, label: 'box'}
+  };
+  return o.width * 100 + o.height;
+};
+
+/** A reference-typed field, read off a three-member union. */
+let referenceField = (tag: i32): i32 => {
+  let o = if (tag == 0) {
+    {name: 'a'}
+  } else if (tag == 1) {
+    {name: 'bb', rank: 1}
+  } else {
+    {name: 'ccc', extra: true}
+  };
+  return o.name.length;
+};
+
+/** The read in a loop: one member per iteration, no state carried across. */
+let inLoop = (): i32 => {
+  var total = 0;
+  for (let i in 0..4) {
+    let o = if (i % 2 == 0) {
+      {width: i, height: 1}
+    } else {
+      {width: i, height: 1, depth: 2}
+    };
+    total += o.width;
+  }
+  return total;
+};
+
+/** The same read through an optional chain, past a `null` member. */
+let viaOptionalChain = (tag: i32): i32 => {
+  let o = if (tag == 0) {
+    {name: 'abcd', rank: 1}
+  } else if (tag == 1) {
+    {name: 'ab'}
+  } else {
+    null
+  };
+  let n = o?.name;
+  if (n == null) { return 0; }
+  return n.length;
+};
+
+export let main = (): i32 => {
+  // (33 + 22) + (304 + 506 + 809) + (1 + 2 + 3) + 6 + (4 + 2 + 0) = 1692
+  return bothWays(true) + bothWays(false) +
+      twoFields(0) + twoFields(1) + twoFields(2) +
+      referenceField(0) + referenceField(1) + referenceField(2) +
+      inLoop() +
+      viaOptionalChain(0) + viaOptionalChain(1) + viaOptionalChain(2);
+};

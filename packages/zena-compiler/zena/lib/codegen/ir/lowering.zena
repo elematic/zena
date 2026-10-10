@@ -18,7 +18,7 @@ import {
 } from '../../ast.zena';
 import {
   Type, VoidType, NeverType, ClassType, InterfaceType, FunctionType, FieldInfo, MethodInfo, ArrayType, InlineTupleType, TupleType, RecordType, TypeParameterType, UnionType, baseType, isVoidOrNeverType, isRefType, AnyRefType, EqRefType, arrayElementType, isSignedNarrowIntType, typeToString,
-  ownershipHandleName, soleNonNullMember,
+  ownershipHandleName, soleNonNullMember, NullType,
 } from '../../types.zena';
 import {
   RecordAdaptation, RecordUnionAdaptation, FunctionAdaptation, SemanticModel,
@@ -103,6 +103,29 @@ export let NO_VALUE = -1;
  * super() arguments.
  */
 type CtorLevel = {values: Map<String, i32>, superArgs: GrowableArray<i32>};
+
+/**
+ * The record members of a union whose every member is a record type or
+ * `null`, or null for any other union. A field read off such a union
+ * dispatches on the member
+ * (`FunctionLowerer.#lowerRecordUnionRead`).
+ *
+ * A `null` member drops out because by the time either caller runs it
+ * is accounted for: a plain `o.f` on a nullable receiver is a checker
+ * error, and `o?.f` reaches the read only on the non-null side of the
+ * chain's guard.
+ */
+let recordUnionMembers = (ut: UnionType): Array<RecordType> | null => {
+  let members = new Array<RecordType>();
+  for (let memberType in ut.types) {
+    if (memberType is NullType) { continue; }
+    let rec = baseType(memberType);
+    if (!(rec is RecordType)) { return null; }
+    members.push(rec);
+  }
+  if (members.length < 2) { return null; }
+  return members;
+};
 
 /** Bail-reason tag for expression kinds without a dispatch arm. */
 
@@ -4265,6 +4288,52 @@ export final class FunctionLowerer {
     return this.#lowerRecordReadOn(rt, member, recv);
   }
 
+  /**
+   * Reading a field off a union of record types: the getter that reads
+   * it belongs to the member the value is, and only the run time knows
+   * the member, so the read is a chain of type tests like
+   * `#applyRecordUnionAdaptation`'s. Each arm reads the field through
+   * its own member's dispatch and branches to a join carrying the
+   * value. The field has one type across the members — the checker
+   * requires it — so the join takes one parameter, and the tail of the
+   * chain traps.
+   */
+  #lowerRecordUnionRead(members: Array<RecordType>,
+      member: MemberExpression): i32 {
+    let recv = this.#lowerExpression(member.object);
+    return this.#lowerRecordUnionReadOn(members, member, recv);
+  }
+
+  /** The receiver-value core of a record-union member read. */
+  #lowerRecordUnionReadOn(members: Array<RecordType>,
+      member: MemberExpression, recv: i32): i32 {
+    if (!isRefValType(this.#valueType(recv))) {
+      this.#bail('record union read receiver');
+    }
+    let mergeB = this.b.newBlock();
+    let resultParam = this.b.blockParam(mergeB, this.#exprValType(member));
+    for (let rt in members) {
+      let dispatch = this.#cx().recordDispatchOf(rt);
+      let fatVt = new ValTypeRef(dispatch.fatPtrType) as ValType;
+      let isMember = this.b.emit(IrOp.ref_test, new ValTypeI32() as ValType,
+          recv, this.b.internType(fatVt));
+      let hitB = this.b.newBlock();
+      let nextB = this.b.newBlock();
+      this.b.brIf(isMember, hitB, this.#noArgs(), nextB, this.#noArgs());
+
+      this.b.switchTo(hitB);
+      let field = this.#lowerRecordReadOn(rt, member, recv);
+      this.b.br(mergeB, this.#oneArg(field));
+
+      this.b.switchTo(nextB);
+    }
+    this.b.unreachable();
+
+    this.b.switchTo(mergeB);
+    this.#cx().reachable = true;
+    return resultParam;
+  }
+
   /** The receiver-value core of a record member read. */
   #lowerRecordReadOn(rt: RecordType, member: MemberExpression,
       recvIn: i32): i32 {
@@ -5335,6 +5404,12 @@ export final class FunctionLowerer {
       }
       return this.#lowerRecordRead(rt, member);
     }
+    if (objectType != null && baseType(objectType) is UnionType) {
+      let members = recordUnionMembers(baseType(objectType) as UnionType);
+      if (members != null) {
+        return this.#lowerRecordUnionRead(members, member);
+      }
+    }
     if (objectType != null &&
         this.#resolveSelfType(objectType) is InterfaceType) {
       if (this.func.model.isStaticAccess(member)) {
@@ -5903,6 +5978,12 @@ export final class FunctionLowerer {
         let nonNull = baseType(getNonNullableType(objectType));
         if (nonNull is RecordType) {
           return this.#lowerRecordReadOn(nonNull, expr, receiver);
+        }
+        if (nonNull is UnionType) {
+          let members = recordUnionMembers(nonNull);
+          if (members != null) {
+            return this.#lowerRecordUnionReadOn(members, expr, receiver);
+          }
         }
       }
       return this.#lowerMemberReadOn(expr, receiver);

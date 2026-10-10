@@ -4088,6 +4088,39 @@ let p = { x: 1, y: 2 };
 let p2 = { ...p, x: 10 }; // { x: 10, y: 2 }
 ```
 
+#### Unions of Record Types
+
+An `if` or `match` whose arms are records of different shapes has the
+union of their types, because nothing in the expression says which shape
+to settle on. The union can go anywhere a record type every member
+satisfies is expected, and a field every member holds can be read off it
+directly:
+
+```zena
+type Named = {name: String};
+
+let nameLength = (o: Named): i32 => o.name.length;
+
+// `{name: String, rank: i32} | {name: String}`
+let o = if (flag) { {name: 'abc', rank: 1} } else { {name: 'ab'} };
+
+nameLength(o);   // every member satisfies `Named`
+o.name.length;   // every member holds `name`, required, as `String`
+```
+
+A field read off the union needs it present, required, and at one type
+in every member: the read has one value type, and an optional field is
+unreadable directly in a plain record too. A record *pattern* names one
+shape, so `let {name} = o` is an error — read the fields one at a time.
+
+Writing the type on the binding is the cheaper form: the arms are then
+checked against it, there is no union, and nothing has to pick a member
+at run time.
+
+```zena
+let o: Named = if (flag) { {name: 'abc', rank: 1} } else { {name: 'ab'} };
+```
+
 ### Tuples
 
 Tuples are immutable, structural types that hold a fixed sequence of typed
