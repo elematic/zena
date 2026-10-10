@@ -238,7 +238,7 @@ compiler prerequisites land.
      Tokio executor on a worker thread.
    - Configure Wasmtime engine with Zena's GC and Component Model settings.
    - Link `wasi-webgpu-wasmtime`, `surface-wasmtime`, `frame-buffer-wasmtime`,
-     and `wasmtime_wasi::p2`.
+     and `wasmtime_wasi::p3` (WASI 0.3, the surface the zena host links).
 3. **Host Verification**:
    - Build the reference `triangle` example from Rust into a component.
    - Run the component with `zfx` and confirm native window creation,
