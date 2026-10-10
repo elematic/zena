@@ -2,15 +2,13 @@
 // @invoke: main
 // @result: 13
 
-// @skip: a union of two record types is not adapted at a record-typed
-//   use — the call type-checks and traps with "cast failure" at run
-//   time. An unannotated `if` with differently shaped record arms has
-//   the union type, and nothing adapts whichever arm is taken to the
-//   parameter's layout. Annotating the `if` adapts each arm where it is
-//   built and works (see optional_if_arms.zena), so there is a fix, but
-//   the broken form has no diagnostic: the checker refuses `.name` on
-//   the union and accepts passing it to something that reads it.
-//   https://github.com/elematic/zena/issues/229
+// An unannotated `if` with differently shaped record arms has the union
+// of their types, and each member of that union has its own layout. A
+// record-typed use picks the member the value is at run time and adapts
+// that member to the shape it reads.
+//
+// optional_if_arms.zena covers the annotated form, where the arms are
+// built in the declared shape and there is no union to adapt.
 
 type Named = {name: String};
 type MaybeRanked = {name: String, rank?: i32};
@@ -24,7 +22,7 @@ let rankOf = (o: MaybeRanked): i32 => {
   return rank;
 };
 
-/** The union's members differ in width; the target has neither field optional. */
+/** The members differ in width; the target has neither field optional. */
 let widthDiffers = (): i32 => {
   let o = if (nameLength({name: 'ab'}) == 2) {
     {name: 'abc', rank: 1}

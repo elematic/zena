@@ -7894,6 +7894,27 @@ let checkAndRegisterInterfaceAdaptation = (ctx: CheckerContext, node: Node, sour
       ctx.model.setRecordAdaptation(node, nonNullSrc, nonNullTgt);
     }
   }
+
+  // A union of record types reaches the use as one of its members, and
+  // each member has its own layout, so there is no single repack for
+  // the union — codegen picks the member at run time and repacks that
+  // one. The join that produced the union cannot do it earlier: it has
+  // no one shape to adapt the arms to.
+  if (nonNullSrc is UnionT && nonNullTgt is RecordT) {
+    let members = new Array<RecordT>();
+    var allRecords = true;
+    for (let member in nonNullSrc.types) {
+      if (member is RecordT) {
+        members.push(member);
+      } else {
+        allRecords = false;
+      }
+    }
+    if (allRecords && members.length > 1) {
+      ctx.model.setRecordUnionAdaptation(node, members, nonNullTgt,
+          sourceIsNullable);
+    }
+  }
 };
 
 /**
