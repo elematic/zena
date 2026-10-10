@@ -1128,9 +1128,10 @@ let p2 = {...p, z: 3}; // { x: 1, y: 2, z: 3 }
 
 An `if` or `match` whose arms are records of different shapes has the union
 of their types. It goes anywhere a record type every member satisfies is
-expected, and a field every member holds (present, required, one type) can
-be read off it. A record pattern names one shape, so destructuring the union
-is an error.
+expected, a field every member holds (present, required, one type) can be
+read off it, and destructuring works on the fields the pattern names — one
+a member lacks is optional there, so it takes a default or becomes a
+presence test.
 
 ```zena
 type Named = {name: String};
@@ -1140,7 +1141,9 @@ let nameLength = (o: Named): i32 => o.name.length;
 let o = if (flag) { {name: 'abc', rank: 1} } else { {name: 'ab'} };
 nameLength(o); // ✅
 o.name.length; // ✅
-let {name} = o; // ❌ a record pattern cannot match a union
+let {name} = o; // ✅
+let {rank = 9} = o; // ✅ 9 on the member with no rank
+if (let {rank} = o) { … } // ✅ matches only the member that has one
 ```
 
 Annotating the binding (`let o: Named = if ...`) builds both arms in that

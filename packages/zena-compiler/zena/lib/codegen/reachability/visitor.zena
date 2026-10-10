@@ -2050,6 +2050,25 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
           this.queueExplicitCtor(rangeCt);
         }
       }
+      // A record union's repack is recorded on an expression, and on a
+      // record PATTERN for the destructuring that repacks before it
+      // matches, so this is not under the `n is Expression` guard.
+      let unionAdaptation = model.getRecordUnionAdaptation(n);
+      if (unionAdaptation != null) {
+        // Every member needs both its own dispatch, to test the value
+        // against, and a dispatch adapted to the target shape.
+        let tgtRec = resolveType(unionAdaptation.target) as RecordType;
+        typeLowerer.discoverType(tgtRec, model);
+        for (let member in unionAdaptation.members) {
+          let srcRec = resolveType(member) as RecordType;
+          typeLowerer.discoverType(srcRec, model);
+          let inFields = recordWasmFields(this.pass.wasm, srcRec, null);
+          let outFields = recordWasmFields(this.pass.wasm, tgtRec, null);
+          this.pass.wasm.getAdaptedRecordDispatch(model,
+              inFields, sortedOptionalNames(srcRec),
+              outFields, sortedOptionalNames(tgtRec));
+        }
+      }
       if (n is Expression) {
         let adaptation = model.getRecordAdaptation(n);
         if (adaptation != null) {
@@ -2062,25 +2081,6 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
           this.pass.wasm.getAdaptedRecordDispatch(model,
               inFields, sortedOptionalNames(srcRec),
               outFields, sortedOptionalNames(tgtRec));
-        }
-
-        // The same registration per member of a record union: lowering
-        // picks the member at run time, so every member needs both its
-        // own dispatch (to test the value against) and a dispatch
-        // adapted to the target shape.
-        let unionAdaptation = model.getRecordUnionAdaptation(n);
-        if (unionAdaptation != null) {
-          let tgtRec = resolveType(unionAdaptation.target) as RecordType;
-          typeLowerer.discoverType(tgtRec, model);
-          for (let member in unionAdaptation.members) {
-            let srcRec = resolveType(member) as RecordType;
-            typeLowerer.discoverType(srcRec, model);
-            let inFields = recordWasmFields(this.pass.wasm, srcRec, null);
-            let outFields = recordWasmFields(this.pass.wasm, tgtRec, null);
-            this.pass.wasm.getAdaptedRecordDispatch(model,
-                inFields, sortedOptionalNames(srcRec),
-                outFields, sortedOptionalNames(tgtRec));
-          }
         }
 
         let ifaceAdaptation = model.getInterfaceAdaptation(n);
