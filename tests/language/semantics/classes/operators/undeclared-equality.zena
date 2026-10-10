@@ -1,0 +1,83 @@
+// @mode: check
+// `==` and `!=` are a type's declared equality. A class declares it with
+// `operator ==` (a case class derives one); a class that declares none
+// has only identity, and identity is `===`. Comparing such a class with
+// `==` is an error rather than a silent identity comparison, so adding
+// `operator ==` to a class later never changes what an existing `==`
+// means.
+
+class Session {}
+
+class Point {
+  x: i32;
+  new(this.x);
+
+  operator ==(other: Point): boolean {
+    return this.x == other.x;
+  }
+}
+
+class Point3 extends Point {
+  z: i32;
+  new(x: i32, this.z) : super(x);
+}
+
+class Pair(first: i32, second: i32)
+
+sealed class Expr {
+  case Lit(value: i32)
+  case Neg(operand: Expr)
+}
+
+interface Named {
+  name(): String;
+}
+
+class Person implements Named {
+  name(): String { return 'p'; }
+}
+
+let s1 = new Session();
+let s2 = new Session();
+let maybe: Session | null = null;
+
+let a = s1 == s2; // @error: 'Session' does not declare equality: use '===' to compare identity, or declare 'operator ==' on the class.
+let b = s1 != s2; // @error: 'Session' does not declare equality: use '!==' to compare identity, or declare 'operator ==' on the class.
+let c = maybe == s1; // @error: 'Session' does not declare equality
+let d = s1 == maybe; // @error: 'Session' does not declare equality
+
+// Identity, and the null test, stay available.
+let e = s1 === s2;
+let f = s1 !== s2;
+let g = maybe == null;
+let h = s1 != null;
+
+// Declared, inherited, and derived equality.
+let p = new Point(1);
+let i = p == new Point(1);
+let j = new Point3(1, 2) == p;
+let k = new Pair(1, 2) != new Pair(1, 3);
+let l = 'a' == 'b';
+
+// A sealed base declares no `==` even when its cases derive one.
+let lit = new Lit(1);
+let expr: Expr = lit;
+let m = lit == new Lit(1);
+let n = expr == lit; // @error: 'Expr' does not declare equality
+
+// An interface, a union of classes, a function and an array have no
+// declared equality either.
+let named: Named = new Person();
+let either: Session | Person = s1;
+let fn = (): i32 => 1;
+let o = named == named; // @error: 'Named' does not declare equality: use '===' to compare identity.
+let q = either == s1; // @error: 'Session' does not declare equality
+let r = fn == fn; // @error: '() => i32' does not declare equality: use '===' to compare identity.
+let t = (x: array<i32>, y: array<i32>) => x != y; // @error: 'array<i32>' does not declare equality: use '!==' to compare identity.
+let u = named === named;
+let v = fn === fn;
+
+// Generic code compares type parameters with `==`, which resolves to
+// identity when the argument is a class without `operator ==`. It
+// should require `T extends Equatable` once that interface exists.
+let same = <T>(x: T, y: T): boolean => x == y; // @missing-error: does not declare equality

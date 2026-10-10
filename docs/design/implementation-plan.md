@@ -98,16 +98,27 @@ The async-specific refinement:
   `identity_nullable_matrix.zena` retired in favor of
   `tests/language/semantics/records/no-identity.zena`. No codegen
   changes; Track B's lowerings are now unconditional.
-- **V1 (survey first; lands in both compilers or at retirement,
-  survey decides):** no-fallback `==` on classes + the
-  `Equatable`/`Hashable` interfaces with derived value conformance
-  (equality.md D2/D3). Prerequisite survey: every bare `==` on class
-  operands in compiler + stdlib becomes `===` or gains declared
-  equality. Separable; blocks nothing else.
+- **V1a — DONE:** no-fallback `==` for concrete types (equality.md
+  D2). `==`/`!=` whose receiver declares no `operator ==` — a class
+  without one, an interface, mixin, function or array, or a union
+  containing one — is a compile error
+  (`tests/language/semantics/classes/operators/undeclared-equality.zena`).
+  The survey found 129 fallback sites in the compiler's own closure
+  (compiler, wit-parser, stdlib): 125 class operands and 1 interface,
+  every one an intended identity comparison and now `===`, plus 3 on
+  type parameters. Outside that closure, only tests compared classes
+  with `==`.
+- **V1b:** the `Equatable`/`Hashable` interfaces with derived value
+  conformance (equality.md D3), and with them the places that still
+  fall back to identity because they are generic: `==` on a type
+  parameter (`GrowableArray.contains`, `IterableUtils.contains`), the
+  `eq` intrinsic behind `HashMap`, and a case class's derived `==` on
+  a field whose class declares none. `==` on `anyref` (the erased
+  tiers) belongs here too (D5). Separable; blocks nothing else.
 - **V2 (opportunistic, class-only, independent of the records flip):**
   identity-hash injection + `IdentityMap` + inverted `WeakMap`
   (weak-references.md). Depends only on RTA field-injection machinery
-  and V1's interface shapes.
+  and V1b's interface shapes.
 
 ## Track A — rows and config records (additive, self-hosted-only)
 
@@ -198,7 +209,7 @@ Error>` becomes writable.
 Closed-by-default record types; literal exactness; `...` existential
 syntax; width-by-projection replacing adaptation between static shapes;
 `?` re-scoped to existential/parameter positions (A3 covers configs);
-exhaustive destructuring; V1 lands here if its survey deferred it.
+exhaustive destructuring.
 Because V0 and Track A shipped earlier, flip day is
 assignability-and-representation only, and signatures can migrate to
 `...R` forms ahead of time.
@@ -221,8 +232,8 @@ shared lowering (row-types.md §7.4) wired to `-Osize`; SoA/`MultiList`;
 | Async v1                | G1 + Future + one host driver     | G2 fusion, rows      |
 | G2 fusion               | splice machinery (becomes M3's)   | async                |
 | V0 `===` ban            | nothing                           | everything           |
-| V1 `==` overhaul        | survey                            | G-track, rows        |
-| V2 IdentityMap/WeakMap  | RTA injection + V1 interfaces     | records flip         |
+| V1b `Equatable`         | `This`-typed bounds               | G-track, rows        |
+| V2 IdentityMap/WeakMap  | RTA injection + V1b interfaces    | records flip         |
 | A0/A1/A2 rows           | bounds infra; M5 for scale        | G-track              |
 | A3 config records       | nothing (better after M4)         | A0/A1                |
 | R3 flip                 | bootstrap retirement, V0, Track A | —                    |

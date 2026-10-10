@@ -6403,7 +6403,7 @@ let substituteTypeParams = (
         let subOvs = new Array<FunctionType>();
         let ovs = overloads;
         for (let ov in ovs) {
-          if (ov == ft) {
+          if (ov === ft) {
             subOvs.push(res);
           } else {
             subOvs.push(substituteTypeParams(typeParams, typeArgs, ov) as FunctionType);
@@ -6546,7 +6546,7 @@ let substituteThisType = (receiverType: Type, t: Type): Type => {
         let subOvs = new Array<FunctionType>();
         let ovs = overloads;
         for (let ov in ovs) {
-          if (ov == ft) {
+          if (ov === ft) {
             subOvs.push(newFt);
           } else {
             subOvs.push(substituteThisType(receiverType, ov) as FunctionType);
@@ -7024,7 +7024,7 @@ let inferTypeArgsFromContext = (self: Type, expected: Type, inferred: Map<String
       var c: ClassType | null = if (self is ClassType) self else null;
       while (c != null) {
         let cur = c;
-        if (cur.canonical() == ec.canonical()) {
+        if (cur.canonical() === ec.canonical()) {
           inferTypeArgsPairwise(cur.typeArguments, ec.typeArguments, inferred);
           return;
         }
@@ -7284,6 +7284,36 @@ let widenType = (ctx: CheckerContext, t: Type): Type => match (t) {
     }
   }
   case _: t
+};
+
+/**
+ * The reference type in `type` that `==` cannot compare, or null.
+ *
+ * A class declares equality with `operator ==`, inherited or derived
+ * (case classes). Interfaces, mixins, functions and arrays have no
+ * way to declare one, so they have identity only. Type parameters are
+ * not checked yet: that needs an `Equatable` bound for generic code to
+ * state.
+ */
+let typeWithoutDeclaredEquality = (type: Type): Type | null => {
+  let t = baseType(type);
+  return match (t) {
+    case ClassType as ct: if (ct.members.has("==")) { null } else { ct }
+    case InterfaceType: t
+    case MixinType: t
+    case FunctionType: t
+    case ArrayType: t
+    case UnionT {types}: {
+      var found: Type | null = null;
+      for (let member in types) {
+        if (found == null) {
+          found = typeWithoutDeclaredEquality(member);
+        }
+      }
+      found
+    }
+    case _: null
+  };
 };
 
 let isValuePrimitive = (type: Type): boolean => {
@@ -9755,7 +9785,7 @@ let checkStatement = (ctx: CheckerContext, stmt: Statement): void => {
             }
           } else {
             let instantiated = tryInstantiateGenericFunction(ctx, argType, expectedReturn);
-            if (instantiated != argType) {
+            if (instantiated !== argType) {
               ctx.setNodeType(argument, instantiated);
             }
             checkAndRegisterInterfaceAdaptation(ctx, argument, instantiated, expectedReturn);
@@ -9849,7 +9879,7 @@ let checkStatement = (ctx: CheckerContext, stmt: Statement): void => {
             );
           } else {
             let instantiated = tryInstantiateGenericFunction(ctx, argType, expectedYield);
-            if (instantiated != argType) {
+            if (instantiated !== argType) {
               ctx.setNodeType(argument, instantiated);
             }
             checkAndRegisterInterfaceAdaptation(ctx, argument, instantiated, expectedYield);
@@ -10489,7 +10519,7 @@ let checkVariableDeclaration = (
       );
     } else {
       let instantiated = tryInstantiateGenericFunction(ctx, initType, expectedType);
-      if (instantiated != initType) {
+      if (instantiated !== initType) {
         ctx.setNodeType(init, instantiated);
       }
       if (instantiated is RecordT && expectedType is RecordT) {
@@ -11238,7 +11268,7 @@ let bindPattern = (ctx: CheckerContext, pattern: Pattern, t: Type): void => {
       let info = ctx.model.resolveDeclaration(pat);
       if (info != null) {
         let {declaration} = info;
-        if (declaration != null && declaration != pat) {
+        if (declaration != null && declaration !== pat) {
           ctx.error(
             "Variable '" + pat.name + "' is already declared in this scope.",
             DiagnosticCode.DuplicateDeclaration,
@@ -12381,7 +12411,7 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
       );
     } else {
       let instantiated = tryInstantiateGenericFunction(ctx, effectiveType, leftType);
-      if (instantiated != effectiveType) {
+      if (instantiated !== effectiveType) {
         ctx.setNodeType(value, instantiated);
         effectiveType = instantiated;
       }
@@ -13325,7 +13355,7 @@ let selectMostSpecificIndex = (
     );
   }
   for (var i = 0; i < applicableRes.length; i += 1) {
-    if (applicableRes[i] == winner) {
+    if (applicableRes[i] === winner) {
       return i;
     }
   }
@@ -15515,7 +15545,7 @@ let checkFieldInitializer = (
     );
   } else {
     let instantiatedVal = tryInstantiateGenericFunction(ctx, initType, fieldType);
-    if (instantiatedVal != initType) {
+    if (instantiatedVal !== initType) {
       ctx.setNodeType(value, instantiatedVal);
     }
   }
@@ -16131,7 +16161,7 @@ let checkMethodSignature = (
         );
       } else {
         let instantiatedVal = tryInstantiateGenericFunction(ctx, initType, paramType);
-        if (instantiatedVal != initType) {
+        if (instantiatedVal !== initType) {
           ctx.setNodeType(initExp, instantiatedVal);
         }
       }
@@ -16440,7 +16470,7 @@ let checkSuperInitArgs = (
       );
     } else {
       let instantiatedVal = tryInstantiateGenericFunction(ctx, argType, expectedParamType);
-      if (instantiatedVal != argType) {
+      if (instantiatedVal !== argType) {
         ctx.setNodeType(args[ai], instantiatedVal);
       }
       checkAndRegisterInterfaceAdaptation(ctx, args[ai], instantiatedVal, expectedParamType);
@@ -18005,7 +18035,7 @@ let checkDeclareFunction = (ctx: CheckerContext, df: DeclareFunction): void => {
       ctx.setNodeType(df, funcType);
     } else {
       ctx.declareBinding(info, funcType);
-      if (info.declaration != df) {
+      if (info.declaration !== df) {
         ctx.setNodeType(df, funcType);
       }
     }
@@ -18116,7 +18146,7 @@ let checkNewExpression = (
         if (name.length > 0 && name.sliceBytes(0, 1) == "#") {
           let cur = ctx.currentClass;
           let isInside = if (cur != null) {
-            (cur as ClassType).canonical() == ct.canonical()
+            (cur as ClassType).canonical() === ct.canonical()
           } else {
             false
           };
@@ -18229,7 +18259,7 @@ let checkNewExpression = (
       // type arguments must satisfy.
       let ctorParams = ctorType.typeParameters;
       if (ctorParams != null && instantiated.typeArguments != null &&
-          ctorParams != instantiated.typeParameters) {
+          ctorParams !== instantiated.typeParameters) {
         let boundArgs = new Array<Type>();
         for (let ta in instantiated.typeArguments as Array<Type>) {
           boundArgs.push(ta);
@@ -18421,7 +18451,7 @@ let checkConstructorArguments = (
           );
         } else {
           let instantiatedVal = tryInstantiateGenericFunction(ctx, argType, expectedParamType);
-          if (instantiatedVal != argType) {
+          if (instantiatedVal !== argType) {
             ctx.setNodeType(args[ai], instantiatedVal);
           }
           checkAndRegisterInterfaceAdaptation(ctx, args[ai], instantiatedVal, expectedParamType);
@@ -18865,7 +18895,7 @@ let checkMemberExpression = (
       var shares = false;
       var r: ClassType | null = receiverType;
       while (r != null && !shares) {
-        if (r.canonical() == lexicalCanonical) {
+        if (r.canonical() === lexicalCanonical) {
           shares = true;
         }
         r = r.superType;
@@ -20049,6 +20079,34 @@ let checkBinaryExpression = (
           ctx, candidates, receiver.typeParameters, receiver.typeArguments,
           operandTypes, operands, 1, applicableRaw, applicableRes);
       if (applicableRaw.length > 0) {
+        return new BooleanType();
+      }
+    }
+
+    // `==` is the type's declared equality, so a receiver with none is
+    // an error rather than an identity comparison (docs/design/
+    // equality.md, D2). Otherwise adding `operator ==` to a class would
+    // silently change what every existing `==` on it means.
+    //
+    // Only the receiver is checked. When it declares `operator ==` and
+    // the operator does not take the right operand, the relatedness
+    // rule below reports a mismatch, which says more than an error
+    // about the right operand's class would.
+    if (operator == "==" || operator == "!=") {
+      let undeclared = typeWithoutDeclaredEquality(leftType);
+      if (undeclared != null) {
+        let identityOp = if (operator == "==") { "===" } else { "!==" };
+        let fix = if (undeclared is ClassType) {
+          ", or declare 'operator ==' on the class."
+        } else {
+          "."
+        };
+        ctx.error(
+          `'${typeToString(undeclared)}' does not declare equality: use \
+'${identityOp}' to compare identity${fix}`,
+          DiagnosticCode.UndeclaredEquality,
+          loc
+        );
         return new BooleanType();
       }
     }
@@ -21957,7 +22015,7 @@ let checkFunctionExpression = (
           // array literal returned as `Array<T>` packs into the
           // interface here.
           let instantiated = tryInstantiateGenericFunction(ctx, bodyType, retType);
-          if (instantiated != bodyType) {
+          if (instantiated !== bodyType) {
             ctx.setNodeType(bodyExpr, instantiated);
           }
           checkAndRegisterInterfaceAdaptation(ctx, bodyExpr, instantiated, retType);
@@ -22290,7 +22348,7 @@ let checkCallExpressionInner = (
           );
         } else {
           let instantiated = tryInstantiateGenericFunction(ctx, argType, expectedParamType);
-          if (instantiated != argType) {
+          if (instantiated !== argType) {
             ctx.setNodeType(args[j], instantiated);
           }
           checkAndRegisterInterfaceAdaptation(ctx, args[j], instantiated, expectedParamType);
@@ -22629,7 +22687,7 @@ let checkCallExpressionInner = (
           );
         } else {
           let instantiated = tryInstantiateGenericFunction(ctx, argType, expectedParamType);
-          if (instantiated != argType) {
+          if (instantiated !== argType) {
             ctx.setNodeType(args[j], instantiated);
           }
           checkAndRegisterInterfaceAdaptation(ctx, args[j], instantiated, expectedParamType);

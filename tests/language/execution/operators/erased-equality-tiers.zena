@@ -4,13 +4,14 @@
 // `==` on erased operands means the same thing it means at the value's
 // own static type. The compiler knows one class here, `String`, whose
 // `==` IS content equality everywhere; everything else compares as its
-// own `==` does, and for a class without one that is identity.
+// own `==` does, and a class without one has only identity (`===` at
+// its static type, where `==` does not compile).
 //
 // It used to know `Box<T>` as well, unwrapping the five primitive
 // specializations and comparing the payloads. That made `==` answer
 // differently depending on the static type it was spelled at — `Box`
-// declares no `==`, so two `Box<f64>(1.5)` were unequal as `Box<f64>`
-// and equal through `anyref` — and `hash` never had a matching tier,
+// declares no `==`, so two `Box<f64>(1.5)` were different objects as
+// `Box<f64>` and equal through `anyref` — and `hash` never had a matching tier,
 // so the pair could not satisfy the eq/hash contract.
 
 import { Box } from 'zena:core';
@@ -27,7 +28,7 @@ export let main = (): i32 => {
   let b = new Box(1.5);
 
   // Same answer at the static type and through the erasure.
-  if (a == b) { r += 1; }
+  if (a === b) { r += 1; }
   let ea: anyref = a;
   let eb: anyref = b;
   if (ea == eb) { r += 10; }
@@ -47,7 +48,7 @@ export let main = (): i32 => {
   let q = new Point(1);
   let ep: anyref = p;
   let eq: anyref = q;
-  if (p == q) { r += 10000; }
+  if (p === q) { r += 10000; }
   if (ep == eq) { r += 100000; }
 
   return r; // 100 (identity) + 1000 (string content)

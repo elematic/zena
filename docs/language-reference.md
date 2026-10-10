@@ -1833,17 +1833,42 @@ let result = (1 + 2) * 3;
 
 ### Comparison Operators
 
-- `==` (Equal) - Supports value equality for strings.
-- `!=` (Not Equal) - Supports value equality for strings.
+- `==` (Equal) - The operand type's declared equality.
+- `!=` (Not Equal) - The negation of `==`.
 - `===` (Strict Equal) - Checks for reference equality, bypassing custom
   `operator ==`.
 - `!==` (Strict Not Equal) - Checks for reference inequality, bypassing custom
   `operator ==`.
 
+`==` compares primitives, strings, records and tuples by value. A class
+declares its equality with `operator ==` (inherited from a superclass,
+or generated for a case class). On a class that declares none, `==` and
+`!=` are compile errors: the class has identity only, and identity is
+`===`. The same goes for interface, function and array operands, which
+cannot declare `operator ==`.
+
+```zena
+class Session {}
+
+let a = new Session();
+let b = new Session();
+a == b;    // Error: 'Session' does not declare equality
+a === b;   // OK: identity
+a == null; // OK: the null test is always available
+```
+
+This is what lets a class add `operator ==` later without changing what
+any existing comparison means: before the operator exists, there are no
+`==` comparisons on the class to change.
+
 `===` and `!==` are compile errors on record and tuple operands:
 records and tuples are values with no observable identity (the
 compiler is free to copy or dissolve them), so `==` is their equality
 and `== null` their null test.
+
+Generic code is not held to this yet: `x == y` on a type parameter
+compiles, and resolves to identity when the type argument is a class
+without `operator ==`.
 
 - `<` (Less Than) - Signed comparison for `i32`, unsigned for `u32`.
 - `<=` (Less Than or Equal) - Signed comparison for `i32`, unsigned for `u32`.

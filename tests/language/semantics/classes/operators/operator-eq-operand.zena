@@ -4,11 +4,11 @@
 // WIDENS what is comparable — an operator taking an interface accepts
 // every implementation of it, well past what the fallback rule allows.
 //
-// The fallback, for a class with no `operator ==` or an operand its
-// operator does not take, is reference equality, and that needs the two
-// types to be RELATED: one assignable to the other. Two unrelated
-// classes name disjoint sets of objects, so the answer is statically
-// false.
+// An operand the operator does not take falls back to reference
+// equality, and that needs the two types to be RELATED: one assignable
+// to the other. Two unrelated classes name disjoint sets of objects, so
+// the answer is statically false. A class with no `operator ==` at all
+// has no `==` (undeclared-equality.zena).
 
 class Point {
   x: i32;
@@ -46,9 +46,9 @@ let e = p != maybe;
 let f = p != "hello"; // @error: Type mismatch
 let g = p == other; // @error: Type mismatch
 
-// Reference equality needs relatedness, so a class with no
-// `operator ==` gets the same answer.
-let h = other == p; // @error: cannot apply operator
+// The receiver's operator is what decides, so a receiver without one
+// has no `==`, whatever the other operand declares.
+let h = other == p; // @error: 'Unrelated' does not declare equality
 
 // `===` is identity and does not route through `operator ==`, but it
 // is subject to the same relatedness rule.
@@ -90,6 +90,6 @@ let tagged: Tagged = stamp;
 let l = coin == stamp;
 let m = coin != tagged;
 
-// The receiver's operator is what decides, so the reverse direction is
-// still reference equality — and Stamp is not related to Coin.
-let n = stamp == coin; // @error: cannot apply operator
+// The reverse direction has Stamp as the receiver, which declares no
+// `operator ==`.
+let n = stamp == coin; // @error: 'Stamp' does not declare equality

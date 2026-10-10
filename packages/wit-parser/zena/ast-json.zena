@@ -1192,7 +1192,7 @@ let renameType = (t: Type, renames: Array<IncludeName>): Type => {
   if (t.tag == TypeTag.List || t.tag == TypeTag.Option || t.tag == TypeTag.Future || t.tag == TypeTag.Stream || t.tag == TypeTag.Own || t.tag == TypeTag.Borrow) {
     if (t.inner != null) {
       let renamedInner = renameType(t.inner as Type, renames);
-      if (renamedInner != t.inner) {
+      if (renamedInner !== t.inner) {
         let tClone = match (t.tag) {
           case TypeTag.List: Type.list(renamedInner, t.span)
           case TypeTag.Option: Type.option(renamedInner, t.span)
@@ -1212,7 +1212,7 @@ let renameType = (t: Type, renames: Array<IncludeName>): Type => {
   if (t.tag == TypeTag.Result) {
     let newOk = if (t.okType != null) renameType(t.okType as Type, renames) else null;
     let newErr = if (t.errType != null) renameType(t.errType as Type, renames) else null;
-    if (newOk != t.okType || newErr != t.errType) {
+    if (newOk !== t.okType || newErr !== t.errType) {
       return Type.result(newOk, newErr, t.span);
     }
     return t;
@@ -1223,7 +1223,7 @@ let renameType = (t: Type, renames: Array<IncludeName>): Type => {
     let newTypes = new GrowableArray<Type>();
     for (let originalType in (t.types as GrowableArray<Type>)) {
       let renamedType = renameType(originalType, renames);
-      if (renamedType != originalType) {
+      if (renamedType !== originalType) {
         changed = true;
       }
       newTypes.push(renamedType);
@@ -1237,7 +1237,7 @@ let renameType = (t: Type, renames: Array<IncludeName>): Type => {
   if (t.tag == TypeTag.Map) {
     let newKey = renameType(t.keyType as Type, renames);
     let newVal = renameType(t.valueType as Type, renames);
-    if (newKey != t.keyType || newVal != t.valueType) {
+    if (newKey !== t.keyType || newVal !== t.valueType) {
       return Type.map(newKey, newVal, t.span);
     }
     return t;
@@ -1248,7 +1248,7 @@ let renameType = (t: Type, renames: Array<IncludeName>): Type => {
 
 let renameParam = (p: Param, renames: Array<IncludeName>): Param => {
   let renamedType = renameType(p.type, renames);
-  if (renamedType != p.type) {
+  if (renamedType !== p.type) {
     return new Param(p.name, renamedType);
   }
   return p;
@@ -1259,13 +1259,13 @@ let renameFunc = (f: Func, renames: Array<IncludeName>): Func => {
   let newParams = new GrowableArray<Param>();
   for (let p in f.params) {
     let renamedParam = renameParam(p, renames);
-    if (renamedParam != p) {
+    if (renamedParam !== p) {
       changed = true;
     }
     newParams.push(renamedParam);
   }
   let newResult = if (f.result != null) renameType(f.result as Type, renames) else null;
-  if (newResult != f.result) {
+  if (newResult !== f.result) {
     changed = true;
   }
   if (changed) {
@@ -1280,7 +1280,7 @@ let renameFunc = (f: Func, renames: Array<IncludeName>): Func => {
 
 let renameNamedFunc = (nf: NamedFunc, renames: Array<IncludeName>): NamedFunc => {
   let renamedFunc = renameFunc(nf.func, renames);
-  if (renamedFunc != nf.func) {
+  if (renamedFunc !== nf.func) {
     return new NamedFunc(nf.docs, nf.name, renamedFunc);
   }
   return nf;
@@ -1288,7 +1288,7 @@ let renameNamedFunc = (nf: NamedFunc, renames: Array<IncludeName>): NamedFunc =>
 
 let renameResourceFunc = (rf: ResourceFunc, renames: Array<IncludeName>): ResourceFunc => {
   let renamedFunc = renameNamedFunc(rf.func, renames);
-  if (renamedFunc != rf.func) {
+  if (renamedFunc !== rf.func) {
     return new ResourceFunc(rf.tag, renamedFunc);
   }
   return rf;
@@ -1301,7 +1301,7 @@ let renameTypeDef = (td: TypeDef, renames: Array<IncludeName>): TypeDef => {
   var newAlias = td.aliasType;
   if (td.tag == TypeDefTag.Alias && td.aliasType != null) {
     newAlias = renameType(td.aliasType as Type, renames);
-    if (newAlias != td.aliasType) {
+    if (newAlias !== td.aliasType) {
       changed = true;
     }
   }
@@ -1312,7 +1312,7 @@ let renameTypeDef = (td: TypeDef, renames: Array<IncludeName>): TypeDef => {
     let fields = new GrowableArray<Field>();
     for (let f in oldFields) {
       let renamedType = renameType(f.type, renames);
-      if (renamedType != f.type) {
+      if (renamedType !== f.type) {
         changed = true;
         fields.push(new Field(f.docs, f.name, renamedType));
       } else {
@@ -1330,11 +1330,11 @@ let renameTypeDef = (td: TypeDef, renames: Array<IncludeName>): TypeDef => {
       var renamedType = c.type;
       if (c.type != null) {
         renamedType = renameType(c.type as Type, renames);
-        if (renamedType != c.type) {
+        if (renamedType !== c.type) {
           changed = true;
         }
       }
-      if (renamedType != c.type) {
+      if (renamedType !== c.type) {
         let cClone = new Case(c.docs, c.name);
         cClone.type = renamedType;
         cases.push(cClone);
@@ -1351,7 +1351,7 @@ let renameTypeDef = (td: TypeDef, renames: Array<IncludeName>): TypeDef => {
     let funcs = new GrowableArray<ResourceFunc>();
     for (let rf in oldFuncs) {
       let renamedRf = renameResourceFunc(rf, renames);
-      if (renamedRf != rf) {
+      if (renamedRf !== rf) {
         changed = true;
       }
       funcs.push(renamedRf);
@@ -1390,7 +1390,7 @@ let renameImport = (imp: Import, renames: Array<IncludeName>): Import => {
   var newFuncDef = kind.funcDef;
   if (kind.tag == ExternKindTag.Func && kind.funcDef != null) {
     newFuncDef = renameFunc(kind.funcDef as Func, renames);
-    if (newFuncDef != kind.funcDef) {
+    if (newFuncDef !== kind.funcDef) {
       changed = true;
     }
   }
@@ -1422,7 +1422,7 @@ let renameExport = (exp: Export, renames: Array<IncludeName>): Export => {
   var newFuncDef = kind.funcDef;
   if (kind.tag == ExternKindTag.Func && kind.funcDef != null) {
     newFuncDef = renameFunc(kind.funcDef as Func, renames);
-    if (newFuncDef != kind.funcDef) {
+    if (newFuncDef !== kind.funcDef) {
       changed = true;
     }
   }
@@ -1466,25 +1466,25 @@ let renameWorldItem = (item: WorldItem, renames: Array<IncludeName>): WorldItem 
   if (item.tag == WorldItemTag.TypeDef) {
     let td = item.typeDef as TypeDef;
     let renamedTd = renameTypeDef(td, renames);
-    if (renamedTd != td) {
+    if (renamedTd !== td) {
       return WorldItem.fromTypeDef(renamedTd);
     }
   } else if (item.tag == WorldItemTag.Import) {
     let imp = item.importItem as Import;
     let renamedImp = renameImport(imp, renames);
-    if (renamedImp != imp) {
+    if (renamedImp !== imp) {
       return WorldItem.fromImport(renamedImp);
     }
   } else if (item.tag == WorldItemTag.Export) {
     let exp = item.exportItem as Export;
     let renamedExp = renameExport(exp, renames);
-    if (renamedExp != exp) {
+    if (renamedExp !== exp) {
       return WorldItem.fromExport(renamedExp);
     }
   } else if (item.tag == WorldItemTag.Use) {
     let u = item.use as Use;
     let renamedUse = renameUse(u, renames);
-    if (renamedUse != u) {
+    if (renamedUse !== u) {
       return WorldItem.fromUse(renamedUse);
     }
   }

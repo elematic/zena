@@ -20,14 +20,19 @@ The one-sentence rule the design optimizes for:
 ## 1. Current state (precise)
 
 - `==` is structural on records/tuples/strings/primitives; on classes it
-  calls `operator ==` **if declared, and silently falls back to
-  reference equality otherwise** (`stdlib/hashable.zena:6` documents
-  this). Case classes derive structural `==`/`hashCode`.
+  calls `operator ==`. D2's rule is implemented for concrete operand
+  types: `==`/`!=` on a class that declares no `operator ==`, or on an
+  interface, mixin, function or array, is a compile error
+  (`tests/language/semantics/classes/operators/undeclared-equality.zena`).
+  Case classes derive structural `==`/`hashCode`.
+- Generic code still falls back: `x == y` on a type parameter compiles,
+  and monomorphizes to identity for a class argument without
+  `operator ==`. So does the `eq` intrinsic behind `HashMap`, and the
+  case-class derived `==` on a field whose class declares none. These
+  wait for D3's `Equatable` bound.
 - `===` is reference equality, bypassing `operator ==`
-  (language-reference §Comparison Operators). It currently works on
-  records and observes identity through width adaptation — see
-  records-and-tuples.md §3.1 for the tests that pin this and the
-  decision that retires it.
+  (language-reference §Comparison Operators), and a compile error on
+  record and tuple operands (D1).
 - `HashMap`/`HashSet` keys require `Hashable`, enforced by
   checker special-casing; the case-class `hashCode` divergence in
   [#113](https://github.com/elematic/zena/issues/113) is an instance of the
@@ -234,12 +239,14 @@ Per the sequencing plan (row-types.md §9):
   operands; convert the two identity execution tests to expected-error
   tests; create `tests/language/semantics/records/`. Cheap contraction;
   freezes the contract before more code grows on it.
-- **V1 (survey, then both compilers or at retirement):** the D2
-  no-fallback rule. Prerequisite: survey compiler + stdlib for bare
-  `==` on class operands (each hit becomes `===` or gains an
-  operator/derive/mixin); the survey size decides the landing slot.
-  D3's interfaces and derived conformance land with it (formalizing the
-  Hashable special-case). D4's `where` rides the A1 bounds work.
+- **V1a (done, self-hosted compiler only):** the D2 no-fallback rule
+  for concrete receiver types. The survey of compiler + stdlib found
+  every class-typed `==` to be an intended identity comparison, so each
+  became `===`; no class gained an operator.
+- **V1b:** D3's interfaces and derived conformance (formalizing the
+  Hashable special-case), which extend D2 to generic code: `==` on a
+  type parameter then requires `T extends Equatable`. D4's `where`
+  rides the A1 bounds work.
 - `contains`/`includes` (D5) land with the collections work that needs
   them; nothing blocks on them.
 
