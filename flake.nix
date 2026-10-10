@@ -90,7 +90,7 @@
 
           src = ./.;
 
-          npmDepsHash = "sha256-sB2e0tdzWZMr+ogZsbxwC9AoOMWL4pee3hn1/2VdUMI=";
+          npmDepsHash = "sha256-MFx3jAyN7nfdvdpsNpx2mtmHlk8v2CwY2mHn4h2x0ek=";
 
           # Don't run dependency install scripts. buildNpmPackage runs `npm
           # rebuild` after the install, which executes any it finds: esbuild's
