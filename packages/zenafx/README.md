@@ -23,7 +23,7 @@ It provides host-side support for:
 - **`surface-webgpu`**: Presentation context connecting a `Surface` to a WebGPU
   `Device` to present rendered textures.
 - **`frame-buffer-wasmtime`**: 2D software framebuffer presentation.
-- **`wasi:cli`**: WASI Preview 2 CLI and stdio.
+- **`wasi:cli`**: WASI 0.3 CLI and stdio, the same surface the zena host links.
 
 Design document:
 [docs/design/graphical-runtime.md](../../docs/design/graphical-runtime.md).

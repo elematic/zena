@@ -281,7 +281,7 @@ Two details make this work per instance rather than per process.
 import name, so one shared linker gives every component the same bindings. A
 linker built for one instance can bind `zenafx:host/paint` to a paint proxy
 scoped to that component's viewport, and bind nothing at all where the policy
-says no. The blanket registrations — `wasmtime_wasi::p2::add_to_linker_sync`
+says no. The blanket registrations — `wasmtime_wasi::p3::add_to_linker`
 and friends — are still usable for the baseline that every component gets, and
 are simply not called for an instance that is not entitled to that surface.
 Building a `WasiCtx` per instance covers the rest: stdio, environment and

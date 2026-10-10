@@ -231,8 +231,10 @@ fn main() -> Result<()> {
     frame_buffer_wasmtime::add_to_linker(&mut linker)?;
     surface_wasmtime::add_all_to_linker(&mut linker)?;
 
-    // Register WASI preview 2
-    wasmtime_wasi::p2::add_to_linker_async(&mut linker)?;
+    // Register WASI 0.3: the same surface the zena host links, so a
+    // component built for it (`zena:console`, `zena:time`'s timers over
+    // `wasi:clocks`) runs here too.
+    wasmtime_wasi::p3::add_to_linker(&mut linker)?;
 
     // Convenience root/example print helper used by wasi-gfx example apps
     linker
