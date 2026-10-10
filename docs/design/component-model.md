@@ -48,9 +48,10 @@ timers and every task in the program freeze. An async-first language
 cannot ship standard-library APIs that stop its own event loop. p3
 makes every potentially-blocking operation an async import or a
 stream, which lands on the event loop the timer work already built.
-The one p2 surface in-tree — `zena:console` over p2 stdio — stays as
-the scaffold that proved the marshaling, flips to p3 when streams
-land, and grows no further.
+The one p2 surface there was — `zena:console` over p2 stdio — was the
+scaffold that proved the marshaling; it moved to `wasi:cli@0.3.0`'s
+`write-via-stream` when streams landed, and nothing in the tree imports
+a p2 interface now.
 
 The host is ready: `wasmtime -S p3=y`, on 46 and later, registers the complete 0.3
 surface — `wasi:cli` (stdio, environment, exit, run, terminals),
@@ -749,10 +750,11 @@ on its own.
 6. **Component emission.** Encode the `component-type` custom section from the
    resolved WIT, export `memory` + `cabi_realloc`, then `wasm-tools component
 new`. Shell out first; a native encoder later if it earns its keep.
-7. **p2 HTTP server end-to-end** under `wasmtime serve`. This is the milestone
-   that proves the stages above.
-8. **p3**, after async/CPS lands: re-run bindgen against the p3 world, add the
-   callback ABI, map `future`/`stream` onto Zena async.
+7. **HTTP server end-to-end** under `wasmtime serve`, exporting
+   `wasi:http/handler@0.3.0`. This is the milestone that proves the stages
+   above. (Written as a p2 milestone before the p3-first decision above.)
+8. **p3** — done: the callback ABI and `future`/`stream` over Zena async are
+   what `zena:wasi` is (see [component-emission.md](./component-emission.md)).
 
 ### Part 8a: `Result` as an inline union, measured against real WIT
 

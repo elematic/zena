@@ -41,16 +41,13 @@ the WASI sandbox, so this library is a **host capability**, not a plain
 stdlib module:
 
 - **Compile time**: `zena:process` is a virtual module mapped only for
-  the `wasi` and `zena-cli` targets. There is no `host` (JS) mapping.
-  The `wasi` mapping exists because artifacts compiled `--target wasi`
-  are still routinely _executed_ by zena-cli — the stdlib test runners
-  are built that way (`build-wasi-tests.js`), and the process tests run
-  through them. It also keeps the imports embedder-neutral: the module
-  compiles against a plain import contract (`zena_process`), so any
-  other WASI host could grant the same capability by providing those
-  imports; under a host that doesn't (e.g. the `wasmtime` CLI),
-  instantiation fails with an unknown-import error, which is the
-  capability model working as intended.
+  the `zena-cli` target. There is no `js` or `component` mapping: a
+  program that imports it is one the zena command runs. The module
+  compiles against the `zena-cli:host@1.0.0` WIT the standard library
+  carries (`host-wit/host.wit`), so any other host could grant the same
+  capability by implementing that interface; under a host that doesn't
+  (e.g. the `wasmtime` CLI), instantiation fails with an unknown-import
+  error, which is the capability model working as intended.
 - **Run time**: only the `zena-cli` host implements the `zena_process`
   wasm imports, and only for invocations it trusts — its own
   orchestrator programs (the bench and test runners) and repo tests get

@@ -10,13 +10,21 @@ This page hasn't been written yet. The headings below are the planned outline â€
 see `src/_data/sidebar.js` for the full content plan.
 :::
 
-## host
+## js
 
-<!-- TODO: host -->
+<!-- TODO: js -->
 
-## wasi
+## component
 
-<!-- TODO: wasi -->
+<!-- TODO: component -->
+
+## zena-cli
+
+<!-- TODO: zena-cli -->
+
+## freestanding
+
+<!-- TODO: freestanding -->
 
 ## Target-specific behaviour
 

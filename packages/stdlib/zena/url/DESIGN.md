@@ -85,7 +85,7 @@ and their supporting code from the binary. The manifest's `virtual` mechanism
 already swaps a module by target, and the seam fits it without extension:
 
 ```jsonc
-"url": {"virtual": {"host": "url/index-js.zena", "wasi": "url/index.zena"}}
+"url": {"virtual": {"js": "url/index-js.zena", "component": "url/index.zena"}}
 ```
 
 `index-js.zena` is a second entry point, not a second library. It re-exports
@@ -149,7 +149,7 @@ URL implementation work**, since they also pay off immediately for `console`.
 2. **Virtual modules map to files, not module names** (the `console` fix):
 
    ```json
-   "console": {"virtual": {"host": "console/host.zena", "wasi": "console/wasi.zena"}}
+   "console": {"virtual": {"js": "console/host.zena", "component": "console/component.zena"}}
    ```
 
    `console-host.zena`/`console-wasi.zena`/`console-interface.zena` move into

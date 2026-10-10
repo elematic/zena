@@ -195,14 +195,14 @@ Most functions return empty results on error rather than throwing:
 - `getEnvironment()` returns empty array on WASI error
 - `getEnv()` returns `null` if variable not found
 
-This matches WASI P2's design where these are always available (just possibly
+This matches WASI 0.3's design where these are always available (just possibly
 empty).
 
 ## Future Work
 
 ### Signal Handling
 
-WASI Preview 2 does not yet standardize signal handling (Ctrl+C, SIGTERM, etc.).
+WASI 0.3 does not yet standardize signal handling (Ctrl+C, SIGTERM, etc.).
 When `wasi:signals` or similar is standardized, we will add:
 
 ```zena
@@ -213,8 +213,9 @@ let onSignal = (signal: Signal, handler: () => void): void
 
 ### Terminal I/O
 
-WASI P2 includes terminal interfaces (`wasi:cli/terminal-input`,
-`wasi:cli/terminal-output`) for interactive terminal features:
+WASI 0.3 includes terminal interfaces (`wasi:cli/terminal-input`,
+`wasi:cli/terminal-output`), vendored under `packages/stdlib/zena/wit/`, for
+interactive terminal features:
 
 - Query terminal size
 - Detect if connected to a TTY

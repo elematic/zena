@@ -1,15 +1,16 @@
 /**
- * zena:time on a non-WASI host.
+ * zena:time on a JS host.
  *
- * The WASI side is covered by tests/language/execution/async/, which
- * runs under wasmtime. This covers the other entry: the same Zena
- * program, compiled with --target host, parking on the runtime's
- * `time` imports instead of `poll_oneoff`.
+ * The component side is covered by tests/language/execution/async/,
+ * which runs under wasmtime. This covers the other entry: the same Zena
+ * program, compiled with --target js, parking on the runtime's `time`
+ * imports instead of `wasi:clocks`.
  *
  * The host never waits: its clock schedules a `setTimeout` that pings
  * `__zena_drain`, and the drain unwinds in between. Both halves of that
- * matter and both are asserted — the observable results match the WASI
- * target exactly, and the JS event loop keeps running throughout.
+ * matter and both are asserted — the observable results match the
+ * component target exactly, and the JS event loop keeps running
+ * throughout.
  */
 import {suite, test} from 'node:test';
 import assert from 'node:assert';

@@ -38,7 +38,10 @@ internal structure. All paths are relative to the package root.
     "string": {},
     "url": {"path": "url/index.zena"},
     "console": {
-      "virtual": {"host": "console/host.zena", "wasi": "console/wasi.zena"}
+      "virtual": {
+        "js": "console/host.zena",
+        "component": "console/component.zena"
+      }
     }
   }
 }
@@ -89,8 +92,9 @@ are not importable by name.
 #### Virtual Module
 
 A virtual module resolves to different entry files depending on the
-compilation target (e.g., `host` for browser/Node.js, `wasi` for standalone
-WASM).
+compilation target (`js` for browser/Node.js, `component` for a WASI
+component, `zena-cli` for the zena command's host, `freestanding` for a
+core module with no imports).
 
 | Field     | Type                     | Required | Description                                                  |
 | --------- | ------------------------ | -------- | ------------------------------------------------------------ |
@@ -212,8 +216,8 @@ project/
         array.zena
         console/
           interface.zena          # private (unlisted)
-          host.zena               # private (virtual target)
-          wasi.zena               # private (virtual target)
+          host.zena               # private (virtual target: js)
+          component.zena          # private (virtual target: component)
     my-app/
       zena/
         main.zena
@@ -226,7 +230,10 @@ project/
   "exports": {
     "array": {},
     "console": {
-      "virtual": {"host": "console/host.zena", "wasi": "console/wasi.zena"}
+      "virtual": {
+        "js": "console/host.zena",
+        "component": "console/component.zena"
+      }
     }
   }
 }

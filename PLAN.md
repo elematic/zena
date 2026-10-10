@@ -82,7 +82,8 @@ This document tracks completed work and planned features. For project instructio
     `sleep(ms): Future<void>` and a monotonic clock, and `zena:async`
     grew a `Parker` hook so an empty microtask queue means "wait for
     the next external completion" rather than "done". The WASI entry
-    parks on `poll_oneoff`; the host entry parks on two imports from
+    parked on preview 1's `poll_oneoff` then, and arms a `wasi:clocks`
+    `wait-for` on 0.3 now; the JS entry parks on two imports from
     `@zena-lang/runtime`. No `zena-cli` changes. `sleep` is what
     `Future<void>` was blocking.
   - **A3 (external completions on a JS host) is done.** A JS host can
@@ -223,9 +224,9 @@ await x` pays the bare-value queue hop for nothing — return
     desugaring to an immediately-called async function expression,
     for awaiting inside sync contexts. 9. **JS interop**: Zena async exports surfacing as Promises, and
     the `AbortSignal` ↔ `CancelScope` bridge in both directions
-    (a signal cancels a scope; a scope hands `fetch` a signal). 10. **WASI p3 as the primary parker** for the wasi target,
-    retiring `poll_oneoff` — rides the components track's
-    `Stream<T>`-across-the-boundary work.
+    (a signal cancels a scope; a scope hands `fetch` a signal). 10. ~~WASI p3 as the
+    primary parker, retiring `poll_oneoff`~~ — done: `time/p3.zena` arms a
+    `wasi:clocks` `wait-for`, and preview 1 is gone.
   - Open type-system threads feeding this roadmap (from the #335
     review): `WithDefault<T>` (the honest type of a default-initialized
     generic field; de-boxes `Future.#value` and gives collections an
@@ -235,8 +236,8 @@ await x` pays the bare-value queue hop for nothing — return
     binding copies, in-place transitions).
   - Also next: richer fetch (headers, streamed bodies — streams are
     designed in [streams.md](docs/design/streams.md) with the
-    `zena:stream` rendezvous core implemented), the tokio-backed CLI,
-    and the WASI P3 backend.
+    `zena:stream` rendezvous core implemented); the tokio-backed CLI
+    and the WASI 0.3 host both exist now (`packages/zena-runtime`).
 - **WASI Component Model & WIT Support**: Direct parser and bindings generator for WebAssembly Interface Type (`.wit`) files, enabling Zena programs to natively import/export WIT interfaces and compile into compliant WASI Component Model binaries.
   - The WIT parser and resolver are **done** (real WASI p2 and p3 both parse and
     resolve); what remains is everything that turns a parsed WIT into a running
