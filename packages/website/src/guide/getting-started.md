@@ -13,9 +13,10 @@ once releases exist.
 
 Zena compiles to WebAssembly GC, so you need a runtime that supports it:
 
-- **Node.js 25 or newer** — for the `host` target, via
+- **Node.js 25 or newer** — for the `js` target, via
   `@zena-lang/runtime`
-- **[wasmtime](https://wasmtime.dev/) 24 or newer** — for the `wasi` target
+- **[wasmtime](https://wasmtime.dev/) 48 or newer** — for the `component`
+  target, and what `zena run` uses
 - Any browser released since 2023, if you're shipping to the web
 
 ## Install the toolchain
@@ -79,22 +80,22 @@ Pick the target that matches where the module will run:
 <zena-code-group class="code-group">
 
 <figure>
-<figcaption>host</figcaption>
+<figcaption>js</figcaption>
 
 ```bash
 # Core Wasm GC with console imports, for @zena-lang/runtime and the browser
-zena build main.zena -o main.wasm --target host
+zena build main.zena -o main.wasm --target js
 ```
 
 </figure>
 
 <figure>
-<figcaption>wasi</figcaption>
+<figcaption>component</figcaption>
 
 ```bash
-# Core Wasm GC with WASI imports, for wasmtime and jco
-zena build main.zena -o main.wasm --target wasi
-wasmtime main.wasm
+# A WASI 0.3 component, for wasmtime and any other component runtime
+zena build main.zena -o main.wasm --target component
+wasmtime run -S p3=y main.wasm
 ```
 
 </figure>

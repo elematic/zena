@@ -435,7 +435,14 @@ const guide = [
       {
         text: 'Compile Targets',
         link: '/guide/targets/',
-        outline: ['host', 'wasi', 'Choosing a target', 'Feature differences'],
+        outline: [
+          'js',
+          'component',
+          'zena-cli',
+          'freestanding',
+          'Choosing a target',
+          'Feature differences',
+        ],
       },
       {
         text: 'JavaScript Interop',
@@ -986,7 +993,13 @@ const reference = [
       {
         text: 'Compile Targets',
         link: '/reference/compile-targets/',
-        outline: ['host', 'wasi', 'Target-specific behaviour'],
+        outline: [
+          'js',
+          'component',
+          'zena-cli',
+          'freestanding',
+          'Target-specific behaviour',
+        ],
       },
       {
         text: 'Compiler Flags',

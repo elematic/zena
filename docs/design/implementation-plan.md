@@ -80,10 +80,12 @@ The async-specific refinement:
 - **The async v1 design is [async.md](async.md)** (milestones A0–A3
   there). Its driver conclusion revises the earlier sketch: the event
   loop is a plain Zena library inside the module, so Level 0 (tests,
-  internal completions) runs on today's unmodified hosts; timers ride
-  WASI p1 `poll_oneoff`; JS-host completions are a tiny runtime-lib
+  internal completions) runs on today's unmodified hosts; timers rode
+  WASI preview 1's `poll_oneoff` at first and ride `wasi:clocks`
+  `wait-for` on 0.3 now; JS-host completions are a tiny runtime-lib
   wrapper — **no JSPI**, no zena-cli changes until real native I/O;
-  WASI P3's callback ABI maps onto step()/drain later.
+  WASI 0.3's callback ABI is what `zena:wasi`'s event loop maps
+  step()/drain onto.
 - Churn guard: the split machinery is effect-kind-tagged from day one
   (generators.md §5.3) and G0 reserves `async`/`await` alongside
   `gen`/`yield`, so a later effect-row generalization — if it ever

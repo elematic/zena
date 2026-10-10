@@ -310,8 +310,8 @@ access using a package manifest file named `zena-packages.json`.
         "scanner": {"path": "lexer/scanner.zena"},
         "console": {
           "virtual": {
-            "host": "console/host.zena",
-            "wasi": "console/wasi.zena"
+            "js": "console/host.zena",
+            "component": "console/component.zena"
           }
         }
       }

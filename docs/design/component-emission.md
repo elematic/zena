@@ -9,8 +9,9 @@
   `"hello, world"`); the WIT type encoder round-trips through
   `wasm-tools component wit` and drives every imported interface's
   types; a memory-using program gets the two-core-module shape of 1.3;
-  and **a component prints** — `zena:console` over p2 stdio, the
-  write's lowering carrying the canonical memory options — and a
+  and **a component prints** — `zena:console` over `wasi:cli@0.3.0`
+  stdio, the write's lowering carrying the canonical memory options —
+  and a
   program can declare its own world with `--wit`/`--world`, which
   emission then follows and disagreements with which are compile
   errors. C4 is implemented too (2026-09-28): `zena:fs` and `zena:cli`

@@ -235,8 +235,9 @@ I/O) can wake the executor through the `Parker` interface:
 
 1. The executor drains all runnable microtasks.
 2. When the queue is empty and an external parker is registered, the executor
-   calls `parker.park()`, which blocks until the next external completion is ready
-   (e.g., via WASI `poll_oneoff`).
+   calls `parker.park()`, which waits until the next external completion is
+   ready (on WASI 0.3, by arming a `wasi:clocks` `wait-for` and letting the
+   host re-enter the component when it fires).
 3. Newly scheduled microtasks are drained, repeating until all work completes.
 
 ## Future and Completer

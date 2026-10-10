@@ -426,10 +426,11 @@ export interface TimeHost {
  * nothing polls, which is the only workable answer on a browser main
  * thread — and it means a timer needs no mechanism of its own.
  *
- * (WASI is the target that does need one, because it *can* block: its
- * drain sorts pending deadlines and sleeps on the nearest through
- * `poll_oneoff`. That machinery lives in `stdlib/zena/time/queue.zena`
- * and is reachable only from the WASI entry.)
+ * (A component is the target that does need one: its drain sorts
+ * pending deadlines and arms a `wasi:clocks` `wait-for` for the
+ * nearest, and the host re-enters the component when it fires. That
+ * machinery lives in `stdlib/zena/time/queue.zena` and `time/p3.zena`
+ * and is reachable only from the component entry.)
  *
  * Time crosses as f64 milliseconds so no BigInt marshalling is involved.
  *

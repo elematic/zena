@@ -12,16 +12,18 @@ import { Instant, Duration } from './types.zena';
 /**
  * Reading the monotonic clock, and waiting on it.
  *
- * `wait` reports which of two things it did, because not every host
- * can wait. A WASI host blocks on `poll_oneoff` and returns true. A JS
- * host cannot block — no browser will let the main thread stop — so it
- * schedules a wake, returns false, and the drain unwinds; the host then
- * calls the module's `__zena_drain` export when the deadline arrives and
- * the drain picks up where it left off.
+ * `wait` reports which of two things it did, because a host may not
+ * be able to wait. A clock that waited returns true. A JS host cannot
+ * block — no browser will let the main thread stop — so it schedules a
+ * wake, returns false, and the drain unwinds; the host then calls the
+ * module's `__zena_drain` export when the deadline arrives and the
+ * drain picks up where it left off. A component on WASI 0.3 does the
+ * same with a `wasi:clocks` `wait-for` (`time/p3.zena`): the host
+ * re-enters it through the event loop's callback when the timer fires.
  *
  * This is the whole of the difference between the targets. The timer
  * queue, the `Parker`, and the meaning of `drainMicrotasks()` — run
- * until nothing more can happen *now* — are identical on both.
+ * until nothing more can happen *now* — are identical on all of them.
  */
 export interface Clock {
   /** The monotonic clock's reading. Only differences are meaningful. */

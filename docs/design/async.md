@@ -330,20 +330,23 @@ target is the p3 clock described in
 reasoning about where timers live still applies.)
 
 `sleep(ms)`/timeouts need a clock and a way to park. WASI preview 1
-already provides both: `clock_time_get` and `poll_oneoff` with a
-clock subscription. The drain loop grows one arm: when the queue is
-empty but timers are pending, `poll_oneoff` until the next deadline,
-then complete the timer's `Completer` and keep draining. Still no
-zena-cli changes — this is stdlib code over existing WASI imports.
+provided both at the time this was written: `clock_time_get` and
+`poll_oneoff` with a clock subscription. The drain loop grows one arm:
+when the queue is empty but timers are pending, `poll_oneoff` until the
+next deadline, then complete the timer's `Completer` and keep draining.
+Still no zena-cli changes — this is stdlib code over existing WASI
+imports. (Preview 1 is gone now; on WASI 0.3 the same arm arms a
+`wasi:clocks` `wait-for` and the host re-enters the component when it
+fires — `time/p3.zena`.)
 
 On a JS host, timers need neither a clock arm nor a park: `sleep` is
 `setTimeout` completing a `Completer` through the Level-2 exports,
 and the JS event loop is the park. So yes, the timer module is
 **target-conditional stdlib** — but the conditionality is confined to
-that one module (park-on-`poll_oneoff` vs setTimeout-wrapper), rides
-the target distinction the compiler already has (`--target wasi` vs
-`--target host`), and the `Future`/`Completer`/executor core is
-target-independent.
+that one module (a clock that arms a host timer vs a setTimeout
+wrapper), rides the target distinction the compiler already has
+(`--target component` vs `--target js`), and the
+`Future`/`Completer`/executor core is target-independent.
 
 **Confirmed by the implementation, including the "no JSPI" call.**
 The `setTimeout` shape is what the host uses — but not by "completing a
@@ -468,9 +471,9 @@ Once a host can settle a future by handle, `sleep` is an ordinary
 host-async binding whose host side is `setTimeout`, and `zena:time`'s
 host entry is six lines with no mechanism of its own. The `Clock`
 interface, the timer queue and the `Parker` exist for the target that
-can genuinely _block_: WASI's drain sorts pending deadlines itself and
-sleeps on the nearest through `poll_oneoff`. `time/queue.zena` is
-reachable only from `time/wasi.zena`, and Level 1 above describes the
+wait on its own: the component's drain sorts pending deadlines itself
+and arms a `wasi:clocks` `wait-for` for the nearest. `time/queue.zena`
+is reachable only from `time/p3.zena`, and Level 1 above describes the
 WASI story.
 
 The p3 clock (`time/p3.zena`) is a third `Clock` on the non-blocking
