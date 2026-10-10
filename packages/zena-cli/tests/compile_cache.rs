@@ -1,11 +1,11 @@
 //! What a component build's cache entry depends on.
 //!
 //! A component embeds a second core module — the runtime memory module,
-//! `wasi/memory.zena` compiled `freestanding` — which the driver keeps
-//! between builds rather than compiling on every one. The program's own
-//! sources say nothing about that module. `wasi/memory.zena` is not in
-//! the standard library's manifest, so nothing can import it, and it is
-//! the one source the runtime module reads that the program does not —
+//! `component-runtime/memory.zena` compiled `freestanding` — which the
+//! driver keeps between builds rather than compiling on every one. The
+//! program's own sources say nothing about that module. It is in neither
+//! standard library manifest, so nothing can import it, and it is the
+//! one source the runtime module reads that the program does not:
 //! `wasi/abi.zena`, which it imports, the program reads for itself. So
 //! that one path is what says whether the driver recorded anything.
 //!
@@ -40,7 +40,8 @@ impl Scratch {
             .duration_since(UNIX_EPOCH)
             .expect("a clock after 1970")
             .as_nanos();
-        let path = std::env::temp_dir().join(format!("zena-{name}-{}-{unique}", std::process::id()));
+        let path =
+            std::env::temp_dir().join(format!("zena-{name}-{}-{unique}", std::process::id()));
         fs::create_dir_all(&path).expect("a scratch directory");
         Self(path)
     }
@@ -175,9 +176,11 @@ fn component_entry_depends_on_the_runtime_memory_module_sources() {
     let paths = fixture.dependency_paths(&module);
 
     assert!(
-        paths.iter().any(|path| path.ends_with("/wasi/memory.zena")),
-        "the entry does not list wasi/memory.zena, the runtime memory \
-         module's entry point; it listed {paths:?}",
+        paths
+            .iter()
+            .any(|path| path.ends_with("/component-runtime/memory.zena")),
+        "the entry does not list component-runtime/memory.zena, the \
+         runtime memory module's entry point; it listed {paths:?}",
     );
 
     for path in &paths {
@@ -198,13 +201,19 @@ fn a_change_only_the_runtime_memory_module_reads_invalidates_the_program() {
 
     // Nothing a program can import reaches this file, so only the
     // runtime memory module's own compile reads it.
-    let source = fixture.stdlib_root().join("wasi/memory.zena");
+    let source = fixture.stdlib_root().join("component-runtime/memory.zena");
     let text = fs::read_to_string(&source).expect("the runtime memory module's source");
-    fs::write(&source, format!("{text}\n// A change the program cannot see.\n"))
-        .expect("an edited source");
+    fs::write(
+        &source,
+        format!("{text}\n// A change the program cannot see.\n"),
+    )
+    .expect("an edited source");
 
     let again = fixture.run();
-    assert_eq!(again, module, "the cache key changed, which is not the point");
+    assert_eq!(
+        again, module,
+        "the cache key changed, which is not the point"
+    );
     assert_ne!(
         modified(&module),
         before,
