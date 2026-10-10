@@ -1126,6 +1126,26 @@ let p = {x, y}; // { x: 1, y: 2 }
 let p2 = {...p, z: 3}; // { x: 1, y: 2, z: 3 }
 ```
 
+An `if` or `match` whose arms are records of different shapes has the union
+of their types. It goes anywhere a record type every member satisfies is
+expected, and a field every member holds (present, required, one type) can
+be read off it. A record pattern names one shape, so destructuring the union
+is an error.
+
+```zena
+type Named = {name: String};
+let nameLength = (o: Named): i32 => o.name.length;
+
+// `{name: String, rank: i32} | {name: String}`
+let o = if (flag) { {name: 'abc', rank: 1} } else { {name: 'ab'} };
+nameLength(o); // ✅
+o.name.length; // ✅
+let {name} = o; // ❌ a record pattern cannot match a union
+```
+
+Annotating the binding (`let o: Named = if ...`) builds both arms in that
+shape instead, which is cheaper — no member to pick at run time.
+
 ### Tuples
 
 Tuples are fixed-length sequences where each position can have a different type.
