@@ -159,9 +159,9 @@ permanently unobservable:
 rejection and converted the two identity tests to an expected-error
 test.
 
-**Companion decisions**: the full equality design — no-fallback `==`,
-the `Equatable`/`Hashable` interfaces, `contains`/`includes` — is in
-[equality.md](equality.md). And the constructive counterpart of point 2
+**Companion decisions**: the full equality design — virtual `==` with
+an identity default, hash keys that declare their equality,
+`contains`/`includes` — is in [equality.md](equality.md). And the constructive counterpart of point 2
 above: classes _can_ be identity-keyed, cheaply, via compiler-injected
 identity-hash fields — `IdentityMap` and the inverted `WeakMap` in
 [weak-references.md](weak-references.md).

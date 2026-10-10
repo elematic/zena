@@ -12,7 +12,7 @@ Two missing primitives on wasm GC, not one:
    identity-hash instruction — so even a _strong_ identity-keyed map has
    no O(1) implementation without per-object storage. (This is why
    `Hashable` is permanently opt-in for classes — see
-   [equality.md](equality.md) D6.)
+   [Identity hashing](equality.md#identity-hashing) in equality.md.)
 
 The two problems have different solutions with different portability,
 and separating them is the core of this design:
@@ -72,8 +72,11 @@ are what prevent the field from spreading.
 A strong map keyed by `===` and `#idHash`. Ordinary open-addressed hash
 map otherwise; monomorphized per `K`/`V`; works identically on every
 host, today. This is the sanctioned home for the identity-keyed
-patterns that `==` and records deliberately do not serve
-(equality.md D1/D2).
+patterns that records and `HashMap` deliberately do not serve: records
+have no identity ([Identity on records and
+tuples](equality.md#identity-on-records-and-tuples)), and a `HashMap` key
+must declare its equality ([Hash keys declare
+equality](equality.md#hash-keys-declare-equality)).
 
 ## WeakMap: inverted storage (primary design)
 
