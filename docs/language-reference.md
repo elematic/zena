@@ -4080,8 +4080,8 @@ let p3 = { ...p, z: 3 }; // { x: 1, y: 2, z: 3 }
 ```
 
 The spread syntax produces the same keys that are available for destructuring.
-If a property is defined multiple times (e.g., via spread and explicit
-assignment), the last definition wins.
+When a spread and a later explicit property supply the same key, the later
+one wins.
 
 ```zena
 let p = { x: 1, y: 2 };
@@ -4104,14 +4104,23 @@ resolve({ timeout: 0 }); // { timeout: 0, retries: 3 }: a present 0 is supplied
 The result's field is required when an explicit property or a required
 spread field supplies it, and optional when only optional spread fields do.
 
+Each key appears once among a literal's explicit properties, and an
+explicit property may not come before a spread that always supplies the
+same key, since its value could never be read. Both are compile errors:
+
+```zena
+let q = { x: 1, x: 2 };     // Error: Duplicate property 'x'
+let r = { x: 1, ...p };     // Error: 'x' is always overwritten by the spread
+```
+
 #### Evaluation Order
 
 A record literal evaluates its properties left to right, as written,
-spreads included. A property whose key a later one overrides is still
-evaluated:
+spreads included. A spread is evaluated whole, even when a later
+property replaces one of its fields:
 
 ```zena
-let r = { b: f(), ...g(), a: h(), b: k() }; // calls f, g, h, k in that order; r.b is k()'s
+let r = { a: f(), ...g(), b: h() }; // calls f, g, h in that order
 ```
 
 #### Unions of Record Types
