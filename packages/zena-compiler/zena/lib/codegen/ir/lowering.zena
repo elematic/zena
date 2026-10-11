@@ -4198,21 +4198,22 @@ export final class FunctionLowerer {
         continue;
       }
       let optBit = dispatch.optionalBitOf(key);
+      // Scanning from the end, the sources of this field up to the first
+      // that always supplies it: an explicit property, a required spread
+      // field, a class field. A spread copies only the fields present in
+      // it, so each optional spread field after that source replaces the
+      // value only when present.
       var v = -1;
-      var found = false;
-      // Last property wins, scanning explicit assignments and spreads
-      // alike from the end — streaming's override order.
+      var definite = false;
+      let optionalProps = new Array<i32>();
+      let optionalDispatches = new Array<RecordDispatchInfo>();
       var pi = lit.properties.length - 1;
-      while (pi >= 0 && !found) {
+      while (pi >= 0 && !definite) {
         let prop = lit.properties[pi];
         if (prop is PropertyAssignment) {
           if (prop.name.name == key) {
             v = propVals[pi];
-            found = true;
-            if (optBit >= 0) {
-              maskConstWords[optBit >> 6] = maskConstWords[optBit >> 6] |
-                  ((1 as i64) << ((optBit & 63) as i64));
-            }
+            definite = true;
           }
         } else if (prop is SpreadElement) {
           let spT = this.#substitutedNodeType(prop.argument);
@@ -4221,25 +4222,12 @@ export final class FunctionLowerer {
             let nn = baseType(getNonNullableType(spT));
             if (nn is RecordType && nn.properties.has(key)) {
               let srcDispatch = this.#cx().recordDispatchOf(nn);
-              v = this.#recordDispatchRead(srcDispatch, key, sv);
-              found = true;
-              if (optBit >= 0) {
-                let srcBit = srcDispatch.optionalBitOf(key);
-                if (srcBit < 0) {
-                  maskConstWords[optBit >> 6] = maskConstWords[optBit >> 6] |
-                      ((1 as i64) << ((optBit & 63) as i64));
-                } else {
-                  // Present iff present in the source: remap its bit.
-                  let srcMask = this.#recordDispatchRead(
-                      srcDispatch, presentWordName(srcBit >> 6), sv);
-                  let bitVal = this.b.binary(IrOp.i64_and, i64Vt,
-                      this.b.binary(IrOp.i64_shr_u, i64Vt, srcMask,
-                          this.b.constI64((srcBit & 63) as i64, i64Vt)),
-                      this.b.constI64(1, i64Vt));
-                  maskDynWords.push(optBit >> 6);
-                  maskDynVals.push(this.b.binary(IrOp.i64_shl, i64Vt,
-                      bitVal, this.b.constI64((optBit & 63) as i64, i64Vt)));
-                }
+              if (srcDispatch.optionalBitOf(key) >= 0) {
+                optionalProps.push(pi);
+                optionalDispatches.push(srcDispatch);
+              } else {
+                v = this.#recordDispatchRead(srcDispatch, key, sv);
+                definite = true;
               }
             } else if (nn is ClassType) {
               // Class spreads copy PHYSICAL public fields; anything
@@ -4257,11 +4245,7 @@ export final class FunctionLowerer {
                         this.#fieldValType(st, key),
                         this.#coerceTo(sv, new ValTypeRef(st) as ValType),
                         fieldRef);
-                    found = true;
-                    if (optBit >= 0) {
-                      maskConstWords[optBit >> 6] = maskConstWords[optBit >> 6] |
-                          ((1 as i64) << ((optBit & 63) as i64));
-                    }
+                    definite = true;
                   }
                 }
               }
@@ -4270,15 +4254,66 @@ export final class FunctionLowerer {
         }
         pi -= 1;
       }
-      if (!found) {
-        if (optBit >= 0) {
-          // An omitted optional field: zero slot, mask bit stays 0.
-          v = zeroValueOf(this.b, f.type);
+      if (v >= 0) {
+        v = this.#conformToSlot(v, f.type, 'record literal field type');
+      }
+      // Fold in the optional sources, earliest first. `anyPresent` is
+      // whether any of them supplied the field (an i64 0 or 1), which is
+      // the field's presence when no source always supplies it.
+      var anyPresent = -1;
+      for (var oi = optionalProps.length - 1; oi >= 0; oi -= 1) {
+        let srcDispatch = optionalDispatches[oi];
+        let sv = propVals[optionalProps[oi]];
+        let srcBit = srcDispatch.optionalBitOf(key);
+        let srcMask = this.#recordDispatchRead(
+            srcDispatch, presentWordName(srcBit >> 6), sv);
+        let bitVal = this.b.binary(IrOp.i64_and, i64Vt,
+            this.b.binary(IrOp.i64_shr_u, i64Vt, srcMask,
+                this.b.constI64((srcBit & 63) as i64, i64Vt)),
+            this.b.constI64(1, i64Vt));
+        if (v < 0) {
+          // Nothing earlier: an absent slot already holds the absent
+          // representation.
+          v = this.#conformToSlot(this.#recordDispatchRead(srcDispatch, key, sv),
+              f.type, 'record literal field type');
         } else {
+          let presentB = this.b.newBlock();
+          let absentB = this.b.newBlock();
+          let merge = this.b.newBlock();
+          let chosen = this.b.blockParam(merge, f.type);
+          let cond = this.b.emit(IrOp.i32_wrap_i64,
+              new ValTypeI32() as ValType, bitVal, -1);
+          this.b.brIf(cond, presentB, this.#noArgs(), absentB, this.#noArgs());
+          this.b.switchTo(presentB);
+          let read = this.#conformToSlot(
+              this.#recordDispatchRead(srcDispatch, key, sv),
+              f.type, 'record literal field type');
+          this.b.br(merge, this.#oneArg(read));
+          this.b.switchTo(absentB);
+          this.b.br(merge, this.#oneArg(v));
+          this.b.switchTo(merge);
+          v = chosen;
+        }
+        anyPresent = if (anyPresent < 0) bitVal else
+            this.b.binary(IrOp.i64_or, i64Vt, anyPresent, bitVal);
+      }
+      if (v < 0) {
+        if (optBit < 0) {
           this.#bail('record literal field missing');
         }
+        // An omitted optional field: zero slot, mask bit stays 0.
+        v = zeroValueOf(this.b, f.type);
       }
-      v = this.#conformToSlot(v, f.type, 'record literal field type');
+      if (optBit >= 0) {
+        if (definite) {
+          maskConstWords[optBit >> 6] = maskConstWords[optBit >> 6] |
+              ((1 as i64) << ((optBit & 63) as i64));
+        } else if (anyPresent >= 0) {
+          maskDynWords.push(optBit >> 6);
+          maskDynVals.push(this.b.binary(IrOp.i64_shl, i64Vt,
+              anyPresent, this.b.constI64((optBit & 63) as i64, i64Vt)));
+        }
+      }
       args.push(v);
     }
     for (var w = 0; w < wordCount; w += 1) {
