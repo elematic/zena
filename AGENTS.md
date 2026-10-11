@@ -450,6 +450,10 @@ Do not skip step 1. A test that was never seen to fail proves nothing.
 - Prefer private fields (#)
 - Use for/in loops when iterating over arrays and other iterables
 - Use `HashSet`s when needed instead of `HashMap<T, boolean>`
+- Annotate collections with the class (`HashMap`, `HashSet`,
+  `GrowableArray`), not the interface, unless the slot is genuinely
+  polymorphic; an interface annotation costs a fat pointer per crossing
+  and an indirect call per use
 - Use `if` statements instead of a `match()` with one arm.
 - Don't put types on functions that can use contextual typing, like callbacks.
 - Use JSDoc-style multi-like comments (`/** */`)
