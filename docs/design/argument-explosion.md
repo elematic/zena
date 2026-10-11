@@ -103,20 +103,43 @@ factory too. It carries the factory's class, struct and declaration but
 no method name, because `layout()` rebuilds the class method map from
 method names and the core must not replace the factory there.
 
-A constructor is never called by name, so it is never a forward target;
-its own forwards still make its callees available. Reachability records
-literal `new` arguments in `recordLiteralCtorArgs`, keyed by class and
-constructor.
+Reachability records literal `new` arguments in
+`recordLiteralCtorArgs`, keyed by class and constructor. Candidates are
+keyed `f<symbol>` for functions and `c<class>` for constructors, so a
+forward can target either.
+
+**Phase functions.** A subclass never calls its superclass's factory.
+Its own factory evaluates the `super(...)` arguments, then calls the
+superclass's `<ctor-init>` (which computes the superclass's fields) and
+`<ctor-body>` (which runs its body on the new instance), both minted by
+reachability from the factory's signature. When the superclass's
+constructor explodes, those two get cores as well, `<ctor-body>`'s after
+its instance parameter. A core of a phase has no method name, so
+`lowerFunction` runs it as the phase its forwarder runs.
+
+- **Literal `super(...)` arguments** of exactly the parameter's record
+  type are lowered as fields in `#lowerCtorLevel`, and the record built
+  from them is registered in `explodedRecords`; literal super arguments
+  seed availability like literal `new` arguments.
+- **`super(init)`** counts as a forward to the superclass constructor's
+  parameter, so a subclass constructor that passes its own record up is
+  fields-only, and its core passes the fields it holds.
+- **A heap record** passed to `super(...)` is read once, in the
+  subclass's factory, and registered as held, so both phase cores take
+  the same values. Calling the phase forwarders instead would read it
+  twice, once in each.
+
+`#allocateInstance` makes these phase calls through
+`#explodedCallArgs`, so a phase with a core is always called through it.
 
 What stays boxed:
 
-- **The phase functions.** A subclass constructs through the
-  superclass's `<ctor-init>` and `<ctor-body>`, which reachability mints
-  from the factory's signature before this pass. They keep that boxed
-  signature, so `super({port: 1})` still builds its record. That is
-  correct, only not optimized; the factory's core never calls the
-  phases, so nothing has to rebuild a record for them.
-- **Named constructors** (`new C.origin(...)`).
+- **Arguments past the first superclass.** In `Leaf extends Middle
+extends Base`, `Middle`'s own `super({...})` is evaluated inside
+  `Middle.<ctor-init>` and returned to `Leaf`'s factory as a record, so
+  `Base`'s phase cores read it field by field. Passing fields would need
+  `<ctor-init>` to return them.
+- **Named constructors** (`new C.origin(...)`, `super.origin(...)`).
 
 A core called with a constant presence mask, which is what a record
 literal becomes, gets the inliner's argument budget (`inline.zena`).
@@ -305,8 +328,8 @@ verdict.
 
 ## Later phases
 
-- Constructor phase functions, so `super({...})` passes fields; named
-  constructors; generic classes' constructors.
+- Named constructors; generic classes' constructors; super arguments
+  past the first superclass, returned from `<ctor-init>` as fields.
 - Non-virtual methods; per-specialization explosion of generic
   functions; async functions and generators.
 - Multi-value returns.

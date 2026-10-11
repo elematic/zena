@@ -743,6 +743,48 @@ export let tests = suite('zir backend', (): void => {
         'the core reads the fields from its parameters');
   });
 
+  test('a record passed to super(...) is passed as its fields', (ctx: TestContext): void => {
+    // `Base` only reads fields of its record, so its phase functions
+    // take the fields too: `Sub`'s literal and `Pass`'s own exploded
+    // parameter reach `Base` without a record being built. Each
+    // constructor allocates only its instance.
+    let result = compileWithZir(
+        'type Init = {x: i32, y?: i32};\n' +
+        'class Base {\n' +
+        '  x: i32;\n' +
+        '  y: i32;\n' +
+        '  new(init: Init) : x = init.x, y = init.y ?? 7;\n' +
+        '}\n' +
+        'final class Sub extends Base {\n' +
+        '  z: i32;\n' +
+        '  new(z: i32) : z = z, super({x: z});\n' +
+        '}\n' +
+        'final class Pass extends Base {\n' +
+        '  new(init: Init) : super(init);\n' +
+        '}\n' +
+        'export let main = (): i32 => {\n' +
+        '  let s = new Sub(3);\n' +
+        '  let p = new Pass({x: 4});\n' +
+        '  return s.y + p.x;\n' +
+        '};');
+    let named = (prefix: String, suffix: String): String => {
+      var found = '';
+      for (let chunk in result.split('(func $')) {
+        let name = chunk.split(' ')[0];
+        if (name.startsWith(prefix) && name.endsWith(suffix)) {
+          found = '$' + name;
+        }
+      }
+      isTrue(found.length > 0, `no function ${prefix}…${suffix}`);
+      return found;
+    };
+    assertNoAllocation(result, '$main', 'both records arrive as fields');
+    assertFunctionUsesTimes(result, named('Sub_', '<constructor>'),
+        'struct.new', 1, 'the literal passed to super is never built');
+    assertFunctionUsesTimes(result, named('Pass_', '<constructor>.core'),
+        'struct.new', 1, 'a record passed on to super is never rebuilt');
+  });
+
   test('-O2 removes a local fat pointer entirely', (ctx: TestContext): void => {
     // Pack, dispatch, unpack, all in one body: devirtualization makes
     // the call direct, inlining brings the trampoline's receiver cast
