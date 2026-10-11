@@ -712,6 +712,37 @@ export let tests = suite('zir backend', (): void => {
         'no getter dispatch on the forwarded record');
   });
 
+  test('a record literal passed to a constructor is passed as its fields', (ctx: TestContext): void => {
+    // The named-arguments idiom for a class: `P`'s constructor only reads
+    // fields of its record parameter, so `new P({x: 3})` calls the
+    // factory's core with the fields and builds no record.
+    let result = compileWithZir(
+        'type Init = {x: i32, y?: i32};\n' +
+        'final class P {\n' +
+        '  x: i32;\n' +
+        '  y: i32;\n' +
+        '  new(init: Init) : x = init.x, y = init.y ?? 7;\n' +
+        '}\n' +
+        'export let main = (): i32 => {\n' +
+        '  let p = new P({x: 3});\n' +
+        '  return p.x + p.y;\n' +
+        '};');
+    assertNoAllocation(result, '$main',
+        'the record literal is never built; the core allocates P');
+    var core = '';
+    for (let chunk in result.split('(func $')) {
+      let name = chunk.split(' ')[0];
+      if (name.endsWith('<constructor>.core')) {
+        core = '$' + name;
+      }
+    }
+    isTrue(core.length > 0, 'the constructor has a core');
+    let absent = new Array<String>();
+    absent.push('call_ref');
+    assertFunctionOmits(result, core, absent,
+        'the core reads the fields from its parameters');
+  });
+
   test('-O2 removes a local fat pointer entirely', (ctx: TestContext): void => {
     // Pack, dispatch, unpack, all in one body: devirtualization makes
     // the call direct, inlining brings the trampoline's receiver cast

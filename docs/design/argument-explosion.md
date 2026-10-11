@@ -1,7 +1,7 @@
 # Argument Explosion
 
-**Status: Implemented for top-level functions** (`ir/explode.zena`).
-Constructors and the later phases below are not.
+**Status: Implemented for top-level functions and constructors**
+(`ir/explode.zena`). The later phases below are not.
 
 A function that takes a record parameter also gets a version whose
 signature carries the record's fields as individual parameters, and a
@@ -87,16 +87,58 @@ Being used as a value, exported, or called from a tagged template does
 not exclude a function, because explosion never changes the original
 function's signature (below).
 
-Not yet eligible:
+### Constructors
 
-- **Constructors.** Reachability mints a constructor's phase functions
-  (`mintConstructorPhases`) by copying the factory's signature, a
-  subclass's `<ctor-init>` returns the super factory's parameters, and
-  super-initializer arguments and synthesized default constructors
-  forward parameters directly. An exploded constructor needs all of
-  those to follow.
-- **Methods, generic functions, async functions and generators**, each
-  for the reasons the rest of this document's later phases list.
+A class's own unnamed, written constructor is eligible on a class that
+is not generic, an extension, a case class, a mixin intermediate or a
+resource, when the constructor is undecorated, synchronous, and has no
+parameter defaults or `this.` parameters. Its escape check walks the
+initializer list and the `super(...)` arguments as well as the body.
+
+`new C(...)` is one call to C's **factory**, which computes the field
+values, allocates and runs the body. The factory gets the core, like a
+function: `#constructInstance`, the one place `new` lowers to a call,
+calls the core when an argument is unpacked. The core lowers as a
+factory too. It carries the factory's class, struct and declaration but
+no method name, because `layout()` rebuilds the class method map from
+method names and the core must not replace the factory there.
+
+A constructor is never called by name, so it is never a forward target;
+its own forwards still make its callees available. Reachability records
+literal `new` arguments in `recordLiteralCtorArgs`, keyed by class and
+constructor.
+
+What stays boxed:
+
+- **The phase functions.** A subclass constructs through the
+  superclass's `<ctor-init>` and `<ctor-body>`, which reachability mints
+  from the factory's signature before this pass. They keep that boxed
+  signature, so `super({port: 1})` still builds its record. That is
+  correct, only not optimized; the factory's core never calls the
+  phases, so nothing has to rebuild a record for them.
+- **Named constructors** (`new C.origin(...)`).
+
+A core called with a constant presence mask, which is what a record
+literal becomes, gets the inliner's argument budget (`inline.zena`).
+Before explosion, the literal's allocation earned the boxed factory that
+budget, and at `-O2` the factory was inlined into its caller. Without
+the rule, removing the allocation would have stopped the inlining.
+
+Measured on the `record-ctor` benchmark (two million `new Node({...})`
+with optional fields), against `positional-ctor`, the same class built
+positionally:
+
+| build      | `record-ctor` before | after  | `positional-ctor` |
+| ---------- | -------------------- | ------ | ----------------- |
+| `-O1` time | 1198 ms              | 112 ms | 110 ms            |
+| `-O1` size | 762 B                | 361 B  | 228 B             |
+| `-O2` size | 190 B                | 190 B  | 190 B             |
+
+### Not yet eligible
+
+- **Methods, generic functions and constructors, async functions and
+  generators**, each for the reasons the rest of this document's later
+  phases list.
 
 ### Eligible parameters
 
@@ -263,7 +305,8 @@ verdict.
 
 ## Later phases
 
-- Constructors, with their phase functions (see Scope).
+- Constructor phase functions, so `super({...})` passes fields; named
+  constructors; generic classes' constructors.
 - Non-virtual methods; per-specialization explosion of generic
   functions; async functions and generators.
 - Multi-value returns.
