@@ -1,0 +1,76 @@
+// @mode: run
+// @result: 1
+// A constructor whose record parameter it only reads fields of is
+// called with record literals, with records held in variables, and
+// from a subclass's `super(...)`. Constructors that keep the record or
+// pass it on must still get it whole. Every shape must build the same
+// object.
+
+type Init = {x: i32, y?: i32, label?: String};
+
+let describe = (init: Init): i32 => init.x + (init.y ?? 0);
+
+class Point {
+  x: i32;
+  y: i32;
+  label: String;
+  sum: i32;
+
+  new(init: Init)
+    : x = init.x,
+      y = init.y ?? 7,
+      label = init.label ?? 'none',
+      sum = describe(init) {
+    if (this.x < 0) {
+      throw new Error('negative');
+    }
+  }
+
+  new origin(init: Init) : x = 0, y = init.y ?? 0, label = 'origin', sum = 0;
+}
+
+class Labeled extends Point {
+  tag: i32;
+  new(tag: i32) : tag = tag, super({x: tag, label: 'sub'});
+}
+
+class Keeper {
+  init: Init;
+  new(this.init);
+}
+
+class Passer {
+  inner: Keeper;
+  new(init: Init) : inner = new Keeper(init);
+}
+
+let check = (p: Point, x: i32, y: i32, labelLength: i32, sum: i32): boolean =>
+    p.x == x && p.y == y && p.label.length == labelLength && p.sum == sum;
+
+export let main = (): i32 => {
+  let held: Init = {x: 3, label: 'held'};
+  if (!check(new Point({x: 3}), 3, 7, 4, 3)) {
+    return 0;
+  }
+  if (!check(new Point({label: 'ab', y: 0, x: 3}), 3, 0, 2, 3)) {
+    return 0;
+  }
+  if (!check(new Point(held), 3, 7, 4, 3)) {
+    return 0;
+  }
+  if (!check(new Point.origin({x: 1, y: 2}), 0, 2, 6, 0)) {
+    return 0;
+  }
+  let sub = new Labeled(5);
+  if (sub.tag != 5 || !check(sub, 5, 7, 3, 5)) {
+    return 0;
+  }
+  let keeper = new Keeper({x: 9});
+  if (keeper.init.x != 9) {
+    return 0;
+  }
+  if (new Passer({x: 4}).inner.init.x != 4) {
+    return 0;
+  }
+  return 1;
+};

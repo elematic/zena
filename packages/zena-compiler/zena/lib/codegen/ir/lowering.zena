@@ -5093,6 +5093,17 @@ export final class FunctionLowerer {
         sig.returns.length != 1) {
       this.#bail('constructor arity adaptation');
     }
+    // A constructor whose record parameter explodes: a `new` with the
+    // fields on hand calls the factory's core (see #lowerDirectCallTo).
+    let explosion = ctor.explosion;
+    if (explosion != null && explosion.forwarder === ctor &&
+        this.#passesUnpackedArg(argExprs, explosion)) {
+      let coreRef = this.b.addRef(new IrRefFunc(explosion.core));
+      let built = this.b.callFunc(coreRef,
+          this.#lowerExplodedArgs(argExprs, explosion), sig.returns[0]);
+      this.#cx().exactValues.add(built);
+      return built;
+    }
     let args = new Array<i32>();
     var sIdx = 0;
     for (var i = 0; i < argExprs.length; i += 1) {
@@ -8034,9 +8045,9 @@ export final class FunctionLowerer {
     let explosion = target.explosion;
     if (defaults == null && explosion != null &&
         explosion.forwarder === target &&
-        this.#passesUnpackedArg(call, explosion)) {
+        this.#passesUnpackedArg(call.args, explosion)) {
       return this.#emitDirectCall(call, explosion.core,
-          this.#lowerExplodedArgs(call, explosion), multiOut);
+          this.#lowerExplodedArgs(call.args, explosion), multiOut);
     }
     let args = new Array<i32>();
     var sIdx = 0;
@@ -8060,14 +8071,15 @@ export final class FunctionLowerer {
    * to the core, so the unpacked argument is never built. Its other
    * exploded arguments are heap records, read field by field here.
    */
-  #passesUnpackedArg(call: CallExpression, spec: ExplosionSpec): boolean {
-    if (call.args.length != spec.params.length) {
+  #passesUnpackedArg(argExprs: GrowableArray<Expression>,
+      spec: ExplosionSpec): boolean {
+    if (argExprs.length != spec.params.length) {
       return false;
     }
     for (var i = 0; i < spec.params.length; i += 1) {
       let d = spec.params[i];
-      if (d != null && (this.#isExactRecordLiteral(call.args[i], d) ||
-          this.#explodedRecordOf(call.args[i], d) != null)) {
+      if (d != null && (this.#isExactRecordLiteral(argExprs[i], d) ||
+          this.#explodedRecordOf(argExprs[i], d) != null)) {
         return true;
       }
     }
@@ -8117,12 +8129,13 @@ export final class FunctionLowerer {
    * the fields it already has, and a heap record as its fields read
    * through its getters.
    */
-  #lowerExplodedArgs(call: CallExpression, spec: ExplosionSpec): GrowableArray<i32> {
+  #lowerExplodedArgs(argExprs: GrowableArray<Expression>,
+      spec: ExplosionSpec): GrowableArray<i32> {
     let coreParams = spec.core.signature.params;
     let boxedParams = spec.forwarder.signature.params;
     let args = new Array<i32>();
-    for (var i = 0; i < call.args.length; i += 1) {
-      let arg = call.args[i];
+    for (var i = 0; i < argExprs.length; i += 1) {
+      let arg = argExprs[i];
       let d = spec.params[i];
       if (d == null) {
         let paramVt = coreParams[args.length];

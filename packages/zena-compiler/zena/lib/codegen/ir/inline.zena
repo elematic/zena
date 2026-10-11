@@ -48,6 +48,7 @@ import {
 } from '../wasm-module.zena';
 import { ValType } from '../wasm.zena';
 import { EscapeSummaries } from './escape.zena';
+import { isPresentWordName } from '../codegen-utils.zena';
 
 /**
  * Callee real-instruction budgets (nops and returns excluded). A
@@ -75,6 +76,13 @@ let generalTinyBudget = 6;
  * every use of that object is in one body, so the forwarding rules
  * replace its field reads, calls through it become direct, and the
  * allocation is deleted. That is the `map`-over-a-closure shape.
+ *
+ * The same budget applies to a call to an exploded core
+ * (explode.zena) that passes a constant presence mask, which is what a
+ * record literal argument becomes: after inlining, every presence test
+ * on the mask folds. Without it, a constructor called with a record
+ * literal, inlined at -O2 under the allocation rule, would stop being
+ * inlined once explosion removed the allocation.
  */
 let argumentBudget = 64;
 /**
@@ -414,6 +422,34 @@ let inlineIntoBody = (caller: IrBody, bodyIndex: HashMap<WasmFunction, i32>,
     }
     return false;
   };
+  let constantPresence = (inst: i32, args: GrowableArray<i32>): boolean => {
+    let r = caller.refTable[caller.b[inst]];
+    if (!(r is IrRefFunc)) {
+      return false;
+    }
+    let spec = r.target.explosion;
+    if (spec == null || spec.core !== r.target) {
+      return false;
+    }
+    var slot = 0;
+    for (let d in spec.params) {
+      if (d == null) {
+        slot += 1;
+        continue;
+      }
+      for (let field in d.fields) {
+        let name = field.name;
+        if (name != null && isPresentWordName(name) && slot < args.length) {
+          let a = args[slot];
+          if (a >= 0 && caller.op(a) == IrOp.const_i64) {
+            return true;
+          }
+        }
+        slot += 1;
+      }
+    }
+    return false;
+  };
   // repl maps an inlined call to its replacement value. It grows on
   // demand: a general splice copies a callee body into new blocks the
   // sweep goes on to visit, so a copied call (with a fresh, larger
@@ -481,7 +517,7 @@ let inlineIntoBody = (caller: IrBody, bodyIndex: HashMap<WasmFunction, i32>,
             (siteCounts[calleeIdx] == 1 || size <= generalTinyBudget)
       };
       if (!allowed && size <= argumentBudget &&
-          freshArgument(calleeIdx, args)) {
+          (freshArgument(calleeIdx, args) || constantPresence(inst, args))) {
         allowed = true;
       }
       if (!allowed) {

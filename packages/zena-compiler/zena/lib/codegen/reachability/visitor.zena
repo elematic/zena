@@ -2,7 +2,7 @@ import { Set } from 'zena:collections';
 import { collectValueExports, findDeclaration } from '../lookup.zena';
 import {
   Referrer, ReachabilityContext, TypeLowererInterface, ReachabilityVisitorInterface,
-  recordLiteralArgKey,
+  recordLiteralArgKey, recordLiteralCtorArgKey,
 } from './context.zena';
 import { SemanticModel, memberKeyOf } from '../../semantic-model.zena';
 import {
@@ -885,6 +885,7 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
             specializer.instantiateClassType(resolved, model);
           }
           this.queueExplicitCtor(resolved, ctorMethodKey);
+          this.#noteRecordLiteralCtorArgs(n, resolved, ctorMethodKey);
         }
         // `new I<args>.name(...)` on an interface: the constructor is a
         // factory function specialized per type-argument list. The
@@ -986,6 +987,18 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
    * way a written `a == b` would. The intrinsic is recognized by its
    * decorator, since the call may be visited before the declaration is.
    */
+  /** Records the arguments of a `new` that are record literals. */
+  #noteRecordLiteralCtorArgs(n: NewExpression, ct: ClassType,
+      ctorMethodKey: String): void {
+    let classKey = getClassKey(ct) as String;
+    for (var i = 0; i < n.args.length; i += 1) {
+      if (n.args[i] is RecordLiteral) {
+        this.pass.recordLiteralCtorArgs.add(
+            recordLiteralCtorArgKey(classKey, ctorMethodKey, i));
+      }
+    }
+  }
+
   /** Records the arguments of a direct call that are record literals. */
   #noteRecordLiteralArgs(n: CallExpression, callee: SymbolId): void {
     for (var i = 0; i < n.args.length; i += 1) {
@@ -1985,6 +1998,7 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
             specializer.instantiateClassType(resolved, model);
           }
           this.queueExplicitCtor(resolved, ctorMethodKey);
+          this.#noteRecordLiteralCtorArgs(n, resolved, ctorMethodKey);
         }
         // `new I<args>.name(...)` on an interface: the constructor is a
         // factory function specialized per type-argument list. The
