@@ -13,6 +13,7 @@ import { ByteBuffer } from 'zena:core';
 import { ReachabilityAnalysis } from './reachability/analysis.zena';
 import { prepareGenerators } from './ir/generators.zena';
 import { prepareAsyncFunctions } from './ir/async.zena';
+import { explodeRecordParameters } from './ir/explode.zena';
 import {
   prepareComponentEntry, prepareComponentExports, prepareSyncExports,
   prepareResourceDestructors
@@ -571,6 +572,11 @@ export final class ModuleGenerator {
       prepareResourceDestructors(wasm, pass);
       prepareComponentExports(wasm, pass);
     }
+
+    // Argument explosion (ir/explode.zena): a core beside each function
+    // whose record parameter some direct call passes as a literal. After
+    // every pass above that adds callers, before layout() locks types.
+    explodeRecordParameters(wasm, pass);
 
     wasm.layout();
     performance.end(tLayout);

@@ -33,7 +33,7 @@ import { dirName, normalizePath } from '../../module-resolver.zena';
 
 import { ValType, ValTypeVoid, ValTypeI32, ValTypeI64, ValTypeF32, ValTypeF64, ValTypeV128, ValTypeRef, ValTypeRefNull, ValTypeAnyRef, ValTypeEqRef, ValTypeStructRef, ValTypeExternRef, ValTypeNullRef, ValTypeI8, ValTypeI16, valTypeEquals, isWasmSubtype, isRefValType, isNullableAnyRef, WasmType, refTargetOf } from '../wasm.zena';
 import {
-  WasmModule, WasmFunction, WasmStruct, WasmField, WasmGlobal, WasmSignature, ClassCodegenInfo, isValSubtype, sortWasmFields, RecordDispatchInfo, asWasmStruct, asWasmSignature, asWasmArray, valTypeIdentical, ClosureForwarderSpec,
+  WasmModule, WasmFunction, WasmStruct, WasmField, WasmGlobal, WasmSignature, ClassCodegenInfo, isValSubtype, sortWasmFields, RecordDispatchInfo, asWasmStruct, asWasmSignature, asWasmArray, valTypeIdentical, ClosureForwarderSpec, ExplosionSpec,
   noCaptures,
 } from '../wasm-module.zena';
 import {
@@ -53,7 +53,7 @@ import {
 import { lowerComponentAdapter } from './component-adapters.zena';
 import { lowerIntrinsic } from './intrinsics.zena';
 import {
-  LetCondBinds, LoweringContext, MergeState, ZirUnsupported,
+  ExplodedRecord, LetCondBinds, LoweringContext, MergeState, ZirUnsupported,
 } from './lowering-context.zena';
 import { lowerStringLiteral, lowerTaggedTemplate, lowerTemplateLiteral } from './templates.zena';
 import {
@@ -1144,6 +1144,13 @@ export final class FunctionLowerer {
     for (let rt in sig.returns) {
       this.#requireSupported(rt, 'return type');
     }
+    let explosion = this.func.explosion;
+    if (explosion != null && explosion.forwarder === this.func) {
+      return this.#lowerExplosionForwarder(explosion);
+    }
+    // In an exploded core, the parameters taken as their fields.
+    let exploded: GrowableArray<RecordDispatchInfo | null> | null =
+        if (explosion != null) explosion.params else null;
 
     var params: GrowableArray<Parameter> | null = null;
     var bodyNode: Node | null = null;
@@ -1214,7 +1221,9 @@ export final class FunctionLowerer {
     // the shape gate and the binding loop below count only the
     // parameters that survived, and the erased ones bind no value.
     // Source parameter index -> signature index, or -1 when the
-    // parameter is zero-width and has no slot at all.
+    // parameter is zero-width and has no slot at all. An exploded
+    // parameter's index is its first field's, and it spans one slot per
+    // field.
     let paramSigIndex = new Array<i32>();
     var liveParamCount = 0;
     for (var pi = 0; pi < params.length; pi += 1) {
@@ -1222,7 +1231,8 @@ export final class FunctionLowerer {
         paramSigIndex.push(-1);
       } else {
         paramSigIndex.push(liveParamCount + paramOffset);
-        liveParamCount += 1;
+        let d = if (exploded != null) exploded[pi] else null;
+        liveParamCount += if (d != null) d.fields.length else 1;
       }
     }
     if (sig.params.length != liveParamCount + paramOffset + setterExtra) {
@@ -1256,6 +1266,8 @@ export final class FunctionLowerer {
     }
     let patternParams = new Array<Node>();
     let patternValues = new Array<i32>();
+    let explodedIndexes = new Array<i32>();
+    let explodedValues = new Array<GrowableArray<i32>>();
     for (var i = 0; i < params.length; i += 1) {
       let p = params[i];
       // this-params bind like plain params — the parser already
@@ -1278,6 +1290,18 @@ export final class FunctionLowerer {
         if (p.pattern != null) {
           this.#bail('destructuring a zero-width parameter');
         }
+        continue;
+      }
+      let d = if (exploded != null) exploded[i] else null;
+      if (d != null) {
+        // Its record is rebuilt from these once instructions can emit.
+        let values = new Array<i32>();
+        for (var k = 0; k < d.fields.length; k += 1) {
+          this.#requireSupported(sig.params[sigIndex + k], 'parameter type');
+          values.push(this.b.blockParam(entry, sig.params[sigIndex + k]));
+        }
+        explodedIndexes.push(i);
+        explodedValues.push(values);
         continue;
       }
       let vt = sig.params[sigIndex];
@@ -1310,6 +1334,32 @@ export final class FunctionLowerer {
       this.#cx().symbols[sym.id] = sym;
     }
     this.b.switchTo(entry);
+    // An exploded parameter binds to a record rebuilt from its fields.
+    // Every read of it answers from the fields (`explodedRecords`), so
+    // the record itself is dead unless some use needs it whole.
+    for (var e = 0; e < explodedIndexes.length; e += 1) {
+      let p = params[explodedIndexes[e]];
+      let d = (exploded as GrowableArray<RecordDispatchInfo | null>)[explodedIndexes[e]]
+          as RecordDispatchInfo;
+      let values = explodedValues[e];
+      let record = this.#packRecord(d, values);
+      this.#cx().explodedRecords[record] = new ExplodedRecord(d, values);
+      let sym = this.func.model.resolveDeclaration(p.name);
+      if (sym != null) {
+        if (this.#isCelled(sym.id)) {
+          this.#bail('exploded parameter is celled');
+        }
+        this.#cx().env[sym.id] = record;
+        this.#cx().symbols[sym.id] = sym;
+      }
+      let {pattern} = p;
+      if (pattern != null) {
+        patternParams.push(pattern as Node);
+        patternValues.push(record);
+      } else if (sym == null) {
+        this.#bail('unresolved parameter');
+      }
+    }
     // Destructuring parameters bind now that instructions can emit.
     for (var i = 0; i < patternParams.length; i += 1) {
       this.#lowerPatternBindings(patternParams[i], patternValues[i]);
@@ -1320,6 +1370,9 @@ export final class FunctionLowerer {
       if (paramSigIndex[i] < 0) {
         // Nothing to spill: a zero-width parameter holds no value, so
         // capturing it through a closure captures nothing.
+        continue;
+      }
+      if (exploded != null && exploded[i] != null) {
         continue;
       }
       let sym = this.func.model.resolveDeclaration(params[i].name);
@@ -4136,10 +4189,48 @@ export final class FunctionLowerer {
   }
 
   /**
-   * `{ x: 1, y: 2 }`: every property evaluated in written order, then
-   * the field values in sorted-field order into one struct.new, packed
-   * with the shape's vtable global. The last property for a repeated
-   * key supplies the field.
+   * The body of a function whose record parameters were exploded: read
+   * each exploded record's fields and call the core with them. Every
+   * caller that does not pass literals arrives here.
+   */
+  #lowerExplosionForwarder(spec: ExplosionSpec): IrBody {
+    let sig = this.func.signature;
+    let entry = this.b.newBlock();
+    let params = new Array<i32>();
+    for (let vt in sig.params) {
+      this.#requireSupported(vt, 'parameter type');
+      params.push(this.b.blockParam(entry, vt));
+    }
+    this.b.switchTo(entry);
+    let coreSig = spec.core.signature;
+    let args = new Array<i32>();
+    for (var i = 0; i < params.length; i += 1) {
+      let d = spec.params[i];
+      if (d == null) {
+        args.push(params[i]);
+        continue;
+      }
+      for (let field in d.fields) {
+        let value = this.#cx().recordDispatchRead(
+            d, field.name as String, params[i]);
+        args.push(this.#conformToSlot(value, coreSig.params[args.length],
+            'exploded field type'));
+      }
+    }
+    let funcRef = this.b.addRef(new IrRefFunc(spec.core));
+    if (sig.returns.length == 1) {
+      this.b.ret(this.b.callFunc(funcRef, args, sig.returns[0]));
+    } else {
+      this.b.callFunc(funcRef, args, null);
+      this.b.retVoid();
+    }
+    return this.b.finish();
+  }
+
+  /**
+   * `{ x: 1, y: 2 }`: the struct of the literal's own record type,
+   * built from #lowerRecordLiteralFields, packed with the shape's
+   * vtable global.
    */
   #lowerRecordLiteral(lit: RecordLiteral): i32 {
     let tOpt = this.#substitutedNodeType(lit);
@@ -4151,6 +4242,18 @@ export final class FunctionLowerer {
       this.#bail('record literal type');
     }
     let dispatch = this.#cx().recordDispatchOf(bt);
+    return this.#packRecord(dispatch,
+        this.#lowerRecordLiteralFields(lit, dispatch));
+  }
+
+  /**
+   * A record literal's field values for `dispatch`, in `dispatch.fields`
+   * order with the `$present` mask words in their slots: what the
+   * record struct is built from, or what an exploded parameter is
+   * passed as.
+   */
+  #lowerRecordLiteralFields(lit: RecordLiteral,
+      dispatch: RecordDispatchInfo): GrowableArray<i32> {
     // Every property is evaluated once, in written order: explicit
     // values and spread sources alike, including one whose key a later
     // property replaces. `propVals[i]` is property i's value; the
@@ -4326,6 +4429,11 @@ export final class FunctionLowerer {
       }
       args[presentWordSlots[w]] = mask;
     }
+    return args;
+  }
+
+  /** A record value: the struct built from `args`, packed with its vtable. */
+  #packRecord(dispatch: RecordDispatchInfo, args: GrowableArray<i32>): i32 {
     let instance = this.b.emit(IrOp.struct_new,
         new ValTypeRef(dispatch.concreteType) as ValType,
         this.b.pushArgList(args),
@@ -7923,6 +8031,13 @@ export final class FunctionLowerer {
       this.#requireSupported(sig.params[i], 'call param type');
     }
     let defaults = this.#defaultArgInfo(call);
+    let explosion = target.explosion;
+    if (defaults == null && explosion != null &&
+        explosion.forwarder === target &&
+        this.#passesExplodedLiterals(call, explosion)) {
+      return this.#emitDirectCall(call, explosion.core,
+          this.#lowerExplodedArgs(call, explosion), multiOut);
+    }
     let args = new Array<i32>();
     var sIdx = 0;
     for (var i = 0; i < call.args.length; i += 1) {
@@ -7935,6 +8050,66 @@ export final class FunctionLowerer {
       value = this.#conformToSlot(value, paramVt, 'call argument type');
       args.push(value);
     }
+    return this.#emitDirectCall(call, target, args, multiOut);
+  }
+
+  /**
+   * Whether every argument for an exploded parameter is a record literal
+   * of exactly that parameter's record type, so the call can pass the
+   * literals' fields to the core. Any other argument is a record value,
+   * which the forwarder reads the fields of.
+   */
+  #passesExplodedLiterals(call: CallExpression, spec: ExplosionSpec): boolean {
+    if (call.args.length != spec.params.length) {
+      return false;
+    }
+    for (var i = 0; i < spec.params.length; i += 1) {
+      let d = spec.params[i];
+      if (d == null) {
+        continue;
+      }
+      let arg = call.args[i];
+      if (!(arg is RecordLiteral)) {
+        return false;
+      }
+      if (this.func.model.getRecordAdaptation(arg) != null) {
+        return false;
+      }
+      let t = this.#substitutedNodeType(arg);
+      if (t == null) {
+        return false;
+      }
+      let bt = baseType(t);
+      if (!(bt is RecordType) || this.#cx().recordDispatchOf(bt) !== d) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  /** The core's arguments: each exploded literal as its field values. */
+  #lowerExplodedArgs(call: CallExpression, spec: ExplosionSpec): GrowableArray<i32> {
+    let coreParams = spec.core.signature.params;
+    let args = new Array<i32>();
+    for (var i = 0; i < call.args.length; i += 1) {
+      let d = spec.params[i];
+      if (d == null) {
+        let paramVt = coreParams[args.length];
+        let value = this.#lowerExpressionCtx(call.args[i], paramVt);
+        args.push(this.#conformToSlot(value, paramVt, 'call argument type'));
+      } else {
+        for (let value in this.#lowerRecordLiteralFields(
+            call.args[i] as RecordLiteral, d)) {
+          args.push(value);
+        }
+      }
+    }
+    return args;
+  }
+
+  #emitDirectCall(call: CallExpression, target: WasmFunction,
+      args: GrowableArray<i32>, multiOut: Array<i32> | null): i32 {
+    let sig = target.signature;
     let funcRef = this.b.addRef(new IrRefFunc(target));
     if (sig.returns.length > 1) {
       for (let r in sig.returns) {
