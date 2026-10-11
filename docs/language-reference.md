@@ -4088,6 +4088,16 @@ let p = { x: 1, y: 2 };
 let p2 = { ...p, x: 10 }; // { x: 10, y: 2 }
 ```
 
+#### Evaluation Order
+
+A record literal evaluates its properties left to right, as written,
+spreads included. A property whose key a later one overrides is still
+evaluated:
+
+```zena
+let r = { b: f(), ...g(), a: h(), b: k() }; // calls f, g, h, k in that order; r.b is k()'s
+```
+
 #### Unions of Record Types
 
 An `if` or `match` whose arms are records of different shapes has the

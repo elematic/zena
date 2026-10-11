@@ -4136,10 +4136,10 @@ export final class FunctionLowerer {
   }
 
   /**
-   * `{ x: 1, y: 2 }`: field values in sorted-field order into one
-   * struct.new, then the shape's vtable global packs the fat pointer
-   * — streaming's shape. Spread properties bail. The last assignment
-   * to a repeated key wins, matching streaming's back-to-front scan.
+   * `{ x: 1, y: 2 }`: every property evaluated in written order, then
+   * the field values in sorted-field order into one struct.new, packed
+   * with the shape's vtable global. The last property for a repeated
+   * key supplies the field.
    */
   #lowerRecordLiteral(lit: RecordLiteral): i32 {
     let tOpt = this.#substitutedNodeType(lit);
@@ -4151,14 +4151,24 @@ export final class FunctionLowerer {
       this.#bail('record literal type');
     }
     let dispatch = this.#cx().recordDispatchOf(bt);
-    // Spread sources evaluate first, once each (streaming's order);
-    // their values are looked up per field below.
-    let spreadIds = new Array<i32>();
-    let spreadVals = new Array<i32>();
+    // Every property is evaluated once, in written order: explicit
+    // values and spread sources alike, including a key that a later
+    // property overrides. `propVals[i]` is property i's value; the
+    // per-field loop below only selects among them.
+    let propVals = new Array<i32>();
     for (let prop in lit.properties) {
-      if (prop is SpreadElement) {
-        spreadIds.push((prop as Node).id as i32);
-        spreadVals.push(this.#lowerExpression(prop.argument));
+      if (prop is PropertyAssignment) {
+        var slotType: ValType | null = null;
+        for (let f in dispatch.fields) {
+          if (f.name != null && (f.name as String) == prop.name.name) {
+            slotType = f.type;
+          }
+        }
+        propVals.push(this.#lowerExpressionCtx(prop.value, slotType));
+      } else if (prop is SpreadElement) {
+        propVals.push(this.#lowerExpression(prop.argument));
+      } else {
+        propVals.push(-1);
       }
     }
     let args = new Array<i32>();
@@ -4197,7 +4207,7 @@ export final class FunctionLowerer {
         let prop = lit.properties[pi];
         if (prop is PropertyAssignment) {
           if (prop.name.name == key) {
-            v = this.#lowerExpressionCtx(prop.value, f.type);
+            v = propVals[pi];
             found = true;
             if (optBit >= 0) {
               maskConstWords[optBit >> 6] = maskConstWords[optBit >> 6] |
@@ -4207,12 +4217,7 @@ export final class FunctionLowerer {
         } else if (prop is SpreadElement) {
           let spT = this.#substitutedNodeType(prop.argument);
           if (spT != null) {
-            var sv = -1;
-            for (var si = 0; si < spreadIds.length; si += 1) {
-              if (spreadIds[si] == ((prop as Node).id as i32)) {
-                sv = spreadVals[si];
-              }
-            }
+            let sv = propVals[pi];
             let nn = baseType(getNonNullableType(spT));
             if (nn is RecordType && nn.properties.has(key)) {
               let srcDispatch = this.#cx().recordDispatchOf(nn);
