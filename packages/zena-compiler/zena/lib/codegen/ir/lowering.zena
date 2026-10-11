@@ -1,4 +1,4 @@
-import { Set } from 'zena:collections';
+import { Set, HashMap } from 'zena:collections';
 import { findDeclaration, collectValueExports, isArrayIntrinsic } from '../lookup.zena';
 /**
  * AST → ZIR lowering (docs/design/ir.md §6).
@@ -102,7 +102,7 @@ export let NO_VALUE = -1;
  * field values keyed by resolved struct field name, and the evaluated
  * super() arguments.
  */
-type CtorLevel = {values: Map<String, i32>, superArgs: GrowableArray<i32>};
+type CtorLevel = {values: HashMap<String, i32>, superArgs: GrowableArray<i32>};
 
 /**
  * The record members of a union whose every member is a record type or
@@ -115,7 +115,7 @@ type CtorLevel = {values: Map<String, i32>, superArgs: GrowableArray<i32>};
  * error, and `o?.f` reaches the read only on the non-null side of the
  * chain's guard.
  */
-let recordUnionMembers = (ut: UnionType): Array<RecordType> | null => {
+let recordUnionMembers = (ut: UnionType): GrowableArray<RecordType> | null => {
   let members = new Array<RecordType>();
   for (let memberType in ut.types) {
     if (memberType is NullType) { continue; }
@@ -291,7 +291,7 @@ let usesSynthesizedMachinery = (func: WasmFunction): boolean => {
  * argument values lowered so far. */
 final class DefaultArgInfo {
   originalCount: i32;
-  paramSymbols: Array<SymbolId> | null;
+  paramSymbols: GrowableArray<SymbolId> | null;
   owner: ClassType | null;
   values = new Array<i32>();
   new(this.originalCount, this.paramSymbols, this.owner);
@@ -341,7 +341,7 @@ export let lowerFunction = (wasm: WasmModule, func: WasmFunction): IrBody => {
 };
 
 /** Entry block with one param per signature slot; leaves it current. */
-let synthEntryParams = (b: IrBuilder, func: WasmFunction): Array<i32> => {
+let synthEntryParams = (b: IrBuilder, func: WasmFunction): GrowableArray<i32> => {
   let entry = b.newBlock();
   let params = new Array<i32>();
   for (let vt in func.signature.params) {
@@ -1090,7 +1090,7 @@ export final class FunctionLowerer {
    * field values, so `this.f` inside it reads the value instead of a
    * not-yet-existing object; the mixin scope mangles private names.
    */
-  var #ctorLevelFields: Map<String, i32> | null = null;
+  var #ctorLevelFields: HashMap<String, i32> | null = null;
   var #ctorLevelScope = '';
 
   /**
@@ -1145,7 +1145,7 @@ export final class FunctionLowerer {
       this.#requireSupported(rt, 'return type');
     }
 
-    var params: Array<Parameter> | null = null;
+    var params: GrowableArray<Parameter> | null = null;
     var bodyNode: Node | null = null;
     var paramOffset = 0;
     var ctorDef: MethodDefinition | null = null;
@@ -1867,7 +1867,7 @@ export final class FunctionLowerer {
   }
 
   #synthDefaultLevel(ct: ClassType, structType: WasmStruct,
-      cd: ClassDeclaration | null, params: Array<i32>): CtorLevel {
+      cd: ClassDeclaration | null, params: GrowableArray<i32>): CtorLevel {
     let values = new Map<String, i32>();
     if (cd != null) {
       for (let member in cd.body) {
@@ -1919,7 +1919,7 @@ export final class FunctionLowerer {
    * the class's own defaults (streaming's order). Private mixin field
    * names mangle with the MIXIN's scope key via #computeCtorField.
    */
-  #mixinFieldValues(values: Map<String, i32>, ct: ClassType,
+  #mixinFieldValues(values: HashMap<String, i32>, ct: ClassType,
       structType: WasmStruct, cd: ClassDeclaration,
       mapSetterNames: boolean): void {
     if (cd.mixins != null &&
@@ -1952,7 +1952,7 @@ export final class FunctionLowerer {
    * own-field pass already stored that, routed by #computeCtorField — and
    * the decorator's default otherwise.
    */
-  #decoratorFieldValues(values: Map<String, i32>, ct: ClassType,
+  #decoratorFieldValues(values: HashMap<String, i32>, ct: ClassType,
       structType: WasmStruct, cd: ClassDeclaration,
       mapSetterNames: boolean): void {
     let decorated = ct.decoratedFields;
@@ -1993,7 +1993,7 @@ export final class FunctionLowerer {
   }
 
   #synthCaseLevel(ct: ClassType, structType: WasmStruct,
-      cd: ClassDeclaration | null, params: Array<i32>): CtorLevel {
+      cd: ClassDeclaration | null, params: GrowableArray<i32>): CtorLevel {
     var superWithCtor: ClassType | null = ct.superType;
     while (superWithCtor != null && superWithCtor.isMixinIntermediate) {
       superWithCtor = superWithCtor.superType;
@@ -2094,7 +2094,8 @@ export final class FunctionLowerer {
       this.#cx().thisValue = this.b.emit(IrOp.struct_get, field.type, casted, fieldRef);
       fieldIdx = 1;
     }
-    for (let symId in this.func.captures ?? noCaptures) {
+    let coalesced2 = this.func.captures ?? noCaptures;
+    for (let symId in coalesced2) {
       let field = cs.fields[fieldIdx];
       let fieldName = field.name;
       if (fieldName == null) {
@@ -2202,13 +2203,13 @@ export final class FunctionLowerer {
    * skipped WITHOUT evaluating the value, matching the streaming
    * backend.
    */
-  #computeCtorField(values: Map<String, i32>, ct: ClassType, structType: WasmStruct, fieldName: String, value: Expression, mapSetterNames: boolean = true, mixinScope: String = ''): void {
+  #computeCtorField(values: HashMap<String, i32>, ct: ClassType, structType: WasmStruct, fieldName: String, value: Expression, mapSetterNames: boolean = true, mixinScope: String = ''): void {
     var actualName = fieldName;
     // Streaming's DEFAULT-constructor path stores by the raw field name;
     // the written-constructor and case-class paths apply the accessor
     // rename first. Mirror whichever the caller mirrors.
     if (mapSetterNames && ct.fieldSetterNames != null) {
-      let mapping = ct.fieldSetterNames as Map<String, String>;
+      let mapping = ct.fieldSetterNames as HashMap<String, String>;
       if (let (true, mapped) = mapping.get(fieldName)) {
         actualName = mapped;
       }
@@ -2263,7 +2264,7 @@ export final class FunctionLowerer {
    * not a plain field — a getter, a method — has no value yet and
    * bails.
    */
-  #ctorLevelFieldRead(values: Map<String, i32>,
+  #ctorLevelFieldRead(values: HashMap<String, i32>,
       member: MemberExpression): i32 {
     let ct = this.func.classType as ClassType;
     let structType = this.func.structType as WasmStruct;
@@ -2273,7 +2274,7 @@ export final class FunctionLowerer {
     let propName = accessKeyOf(this.func.model, member);
     var actualName = propName;
     if (ct.fieldSetterNames != null) {
-      let mapping = ct.fieldSetterNames as Map<String, String>;
+      let mapping = ct.fieldSetterNames as HashMap<String, String>;
       if (let (true, mapped) = mapping.get(propName)) {
         actualName = mapped;
       }
@@ -2316,7 +2317,7 @@ export final class FunctionLowerer {
    * default — the same contents struct.new_default gave it.
    */
   #ctorOwnFieldValues(structType: WasmStruct,
-      values: Map<String, i32>): GrowableArray<i32> {
+      values: HashMap<String, i32>): GrowableArray<i32> {
     var ownStart = 1;
     var s: WasmStruct | null = structType.superStruct;
     while (s != null) {
@@ -2374,10 +2375,10 @@ export final class FunctionLowerer {
     let ct = this.func.classType as ClassType;
     let structType = this.func.structType as WasmStruct;
     // Per-level own-field values, own class first, root last.
-    let levelValues = new Array<Array<i32>>();
+    let levelValues = new Array<GrowableArray<i32>>();
     levelValues.push(this.#ctorOwnFieldValues(structType, level.values));
     let bodyFns = new Array<WasmFunction | null>();
-    let bodyArgs = new Array<Array<i32>>();
+    let bodyArgs = new Array<GrowableArray<i32>>();
     var args = level.superArgs;
     var anc = ct.superType;
     var currentCtorNode: Node | null = this.func.node;
@@ -2568,7 +2569,7 @@ export final class FunctionLowerer {
     let lanes = this.#functionReturnLanes();
     let values = new Array<i32>();
     if (lanes != null) {
-      let semLanes = lanes as Array<ValType>;
+      let semLanes = lanes as GrowableArray<ValType>;
       if (arg.elements.length != semLanes.length) {
         this.#bail('multi-value return arity');
       }
@@ -2627,7 +2628,7 @@ export final class FunctionLowerer {
 
   /** The current function's semantic return lanes, when its declared
    * (substituted) return type is an inline-tuple shape. */
-  #functionReturnLanes(): Array<ValType> | null {
+  #functionReturnLanes(): GrowableArray<ValType> | null {
     let node = this.func.node;
     if (node == null) {
       return null;
@@ -2822,7 +2823,7 @@ export final class FunctionLowerer {
    * its region rather than to this loop — which is why this returns as
    * soon as it hands one over.
    */
-  #lowerStatementList(body: Array<Statement>, start: i32, end: i32 = -1): void {
+  #lowerStatementList(body: GrowableArray<Statement>, start: i32, end: i32 = -1): void {
     let last = if (end < 0) body.length else end;
     lowerStatementRange(this.#cx(), body, start, last);
   }
@@ -3063,7 +3064,7 @@ export final class FunctionLowerer {
    * receiver-only interface dispatch (iterator next()). Single-result
    * sources come back as one-element lists.
    */
-  #lowerMultiSource(init: Expression): Array<i32> {
+  #lowerMultiSource(init: Expression): GrowableArray<i32> {
     let out = new Array<i32>();
     if (init is TupleLiteral) {
       for (let el in init.elements) {
@@ -3170,7 +3171,7 @@ export final class FunctionLowerer {
    * Splits a boxed-tuple struct value (fields "0".."n-1") into its
    * element values, or null when the value is not that shape.
    */
-  #unboxTupleValue(value: i32, n: i32): Array<i32> | null {
+  #unboxTupleValue(value: i32, n: i32): GrowableArray<i32> | null {
     let st = asWasmStruct(this.#valueType(value));
     if (st == null) {
       return null;
@@ -3279,7 +3280,7 @@ export final class FunctionLowerer {
     return this.#cx().slotCallSingle(recv, memberName);
   }
 
-  #slotCallMulti(recv: i32, memberName: String): Array<i32> {
+  #slotCallMulti(recv: i32, memberName: String): GrowableArray<i32> {
     return this.#cx().slotCallMulti(recv, memberName);
   }
 
@@ -3291,7 +3292,7 @@ export final class FunctionLowerer {
    * receiver — streaming's shape exactly.
    */
   #lowerStaticCall(call: CallExpression, member: MemberExpression,
-      multiOut: Array<i32> | null): i32 {
+      multiOut: GrowableArray<i32> | null): i32 {
     let objectType = this.#substitutedNodeType(member.object);
     if (objectType == null) {
       this.#bail('untyped static receiver');
@@ -3407,7 +3408,7 @@ export final class FunctionLowerer {
 
   /** The call's semantic result lanes when its (substituted) type is
    * an inline-tuple shape, else null. */
-  #callResultLanes(call: CallExpression): Array<ValType> | null {
+  #callResultLanes(call: CallExpression): GrowableArray<ValType> | null {
     let t = this.#substitutedNodeType(call as Expression);
     if (t == null) {
       return null;
@@ -3419,7 +3420,7 @@ export final class FunctionLowerer {
    * arity: a zero-width lane contributes NO_VALUE, the convention
    * zero-width bindings and parameters already share, so
    * destructuring sites keep their one-slot-per-lane pairing. */
-  #pushMultiResults(call: CallExpression, projs: Array<i32>,
+  #pushMultiResults(call: CallExpression, projs: GrowableArray<i32>,
       outs: GrowableArray<i32>): void {
     let lanes = this.#callResultLanes(call);
     if (lanes == null) {
@@ -3477,7 +3478,7 @@ export final class FunctionLowerer {
    * specializations register under mangled classMethodMap slot names.
    */
   #lowerSpecializedCall(call: CallExpression, target: WasmFunction,
-      multiOut: Array<i32> | null): i32 {
+      multiOut: GrowableArray<i32> | null): i32 {
     let sig = target.signature;
     if (sig.returns.length > 1 && multiOut == null) {
       this.#bail('method multi-value return');
@@ -4314,14 +4315,14 @@ export final class FunctionLowerer {
    * requires it — so the join takes one parameter, and the tail of the
    * chain traps.
    */
-  #lowerRecordUnionRead(members: Array<RecordType>,
+  #lowerRecordUnionRead(members: GrowableArray<RecordType>,
       member: MemberExpression): i32 {
     let recv = this.#lowerExpression(member.object);
     return this.#lowerRecordUnionReadOn(members, member, recv);
   }
 
   /** The receiver-value core of a record-union member read. */
-  #lowerRecordUnionReadOn(members: Array<RecordType>,
+  #lowerRecordUnionReadOn(members: GrowableArray<RecordType>,
       member: MemberExpression, recv: i32): i32 {
     if (!isRefValType(this.#valueType(recv))) {
       this.#bail('record union read receiver');
@@ -4933,7 +4934,7 @@ export final class FunctionLowerer {
    * struct.new and returns the instance (non-nullable-refs.md).
    */
   #constructInstance(classInfo: ClassCodegenInfo, cKey: ClassKey,
-      argExprs: Array<Expression>, ctorMethName: String = '<constructor>'): i32 {
+      argExprs: GrowableArray<Expression>, ctorMethName: String = '<constructor>'): i32 {
     let ctorKey = getClassMethodKey(cKey, ctorMethName);
     let ctor = if (let (true, c) = this.wasm.classMethodMap.get(ctorKey)) c else null;
     if (ctor == null) {
@@ -5644,7 +5645,7 @@ export final class FunctionLowerer {
    * directly with `this` as the receiver.
    */
   #lowerSuperMethodCall(call: CallExpression, member: MemberExpression,
-      multiOut: Array<i32> | null): i32 {
+      multiOut: GrowableArray<i32> | null): i32 {
     let superCt = this.#superClassOfThis();
     let receiver = this.#lowerThis(member.object);
     let propName = accessKeyOf(this.func.model, member);
@@ -6071,7 +6072,7 @@ export final class FunctionLowerer {
    * generic methods, optional calls, dynamic dispatch — bails.
    */
   #lowerMethodCall(call: CallExpression, member: MemberExpression,
-      multiOut: Array<i32> | null = null): i32 {
+      multiOut: GrowableArray<i32> | null = null): i32 {
     if (member.optional || call.optional) {
       this.#bail('optional method call');
     }
@@ -6634,8 +6635,8 @@ export final class FunctionLowerer {
    * accessor. `argExprs` is null for accessor reads (receiver only).
    */
   #lowerInterfaceDispatch(it: InterfaceType, memberName: String,
-      receiverExpr: Expression, argExprs: Array<Expression> | null,
-      multiOut: Array<i32> | null = null): i32 {
+      receiverExpr: Expression, argExprs: GrowableArray<Expression> | null,
+      multiOut: GrowableArray<i32> | null = null): i32 {
     let iName = getInterfaceKey(it);
     let vst = if (let (true, v) = this.wasm.interfaceVTableStructs.get(iName)) v else null;
     let fatPtr = if (let (true, st) = this.wasm.interfaceStructs.get(iName)) st else null;
@@ -7619,7 +7620,7 @@ export final class FunctionLowerer {
   hostThrowStmt(thr: ThrowExpression): void {
     this.#lowerThrowStatement(thr);
   }
-  hostMultiSource(init: Expression): Array<i32> {
+  hostMultiSource(init: Expression): GrowableArray<i32> {
     return this.#lowerMultiSource(init);
   }
   hostOptionalHit(expr: Expression, recv: i32): i32 {
@@ -7750,7 +7751,7 @@ export final class FunctionLowerer {
     return value;
   }
 
-  #restoreEnvBindings(syms: Array<SymbolId>, vals: Array<i32>): void {
+  #restoreEnvBindings(syms: GrowableArray<SymbolId>, vals: GrowableArray<i32>): void {
     for (var j = 0; j < syms.length; j += 1) {
       if (vals[j] < 0) {
         this.#cx().env.delete(syms[j]);
@@ -7771,7 +7772,7 @@ export final class FunctionLowerer {
    * rejects void values in operand position, and if one ever slipped
    * through, the verifier's produces-no-value check fails loudly.
    */
-  #lowerCall(call: CallExpression, multiOut: Array<i32> | null = null): i32 {
+  #lowerCall(call: CallExpression, multiOut: GrowableArray<i32> | null = null): i32 {
     if (call.callee is MemberExpression) {
       return this.#lowerMethodCall(call, call.callee as MemberExpression, multiOut);
     }
@@ -7863,7 +7864,7 @@ export final class FunctionLowerer {
    * namespace-import members: shape gates, argument lowering (with
    * caller-side defaults), and the call itself. */
   #lowerDirectCallTo(call: CallExpression, target: WasmFunction,
-      multiOut: Array<i32> | null): i32 {
+      multiOut: GrowableArray<i32> | null): i32 {
     if (target.typeParameters != null || target.typeArguments != null ||
         target.intrinsic != null || target.isFunctionAdaptation ||
         target.isClosure || target.contextStruct != null ||
@@ -7982,7 +7983,8 @@ export final class FunctionLowerer {
         ctxArgs.push(this.#cx().thisValue);
         fieldIdx = 1;
       }
-      for (let symId in impl.captures ?? noCaptures) {
+      let coalesced3 = impl.captures ?? noCaptures;
+      for (let symId in coalesced3) {
         if (!this.#cx().env.has(symId)) {
           this.#bail('captured symbol not local');
         }
@@ -8317,7 +8319,7 @@ export final class FunctionLowerer {
   }
 
   /** Whether `syms` already contains `symId`. */
-  #containsSym(syms: Array<SymbolId>, symId: SymbolId): boolean {
+  #containsSym(syms: GrowableArray<SymbolId>, symId: SymbolId): boolean {
     for (let s in syms) {
       if (s == symId) {
         return true;
@@ -8427,7 +8429,7 @@ export final class FunctionLowerer {
    * `args.length`: the callee's signature dropped its zero-width
    * parameters, so the argument list has to be counted the same way.
    */
-  #liveArgCount(args: Array<Expression>): i32 {
+  #liveArgCount(args: GrowableArray<Expression>): i32 {
     var live = 0;
     for (var i = 0; i < args.length; i += 1) {
       if (!this.#isZeroWidthExpr(args[i])) {
@@ -8558,7 +8560,7 @@ export final class FunctionLowerer {
     this.#cx().mergeArm(m, value, armKind);
   }
 
-  #finishMerge(m: MergeState, saved: Map<SymbolId, i32>): i32 {
+  #finishMerge(m: MergeState, saved: HashMap<SymbolId, i32>): i32 {
     return this.#cx().finishMerge(m, saved);
   }
 
@@ -8574,11 +8576,11 @@ export final class FunctionLowerer {
     return this.#cx().envValues(syms);
   }
 
-  #copyEnv(): Map<SymbolId, i32> {
+  #copyEnv(): HashMap<SymbolId, i32> {
     return this.#cx().copyEnv();
   }
 
-  #copyOf(source: Map<SymbolId, i32>): Map<SymbolId, i32> {
+  #copyOf(source: HashMap<SymbolId, i32>): HashMap<SymbolId, i32> {
     return this.#cx().copyOf(source);
   }
 
@@ -8667,7 +8669,7 @@ export let throwStmt = (cx: LoweringContext, thr: ThrowExpression): void => {
 };
 
 /** Lower a let-condition multi-value source. */
-export let multiSource = (cx: LoweringContext, init: Expression): Array<i32> =>
+export let multiSource = (cx: LoweringContext, init: Expression): GrowableArray<i32> =>
     hostOf(cx).hostMultiSource(init);
 
 /** Optional-chain hit arm (member machinery). */

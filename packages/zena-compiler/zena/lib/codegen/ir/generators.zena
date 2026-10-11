@@ -28,7 +28,7 @@
  * land on it. The design calls for throwing an Error there; v1 traps
  * (unreachable) — loud either way, revisit with the async runtime.
  */
-import { Set } from 'zena:collections';
+import { Set, HashMap, HashSet } from 'zena:collections';
 import {
   ValType, ValTypeI32, ValTypeI64, ValTypeF32, ValTypeF64, ValTypeRef,
   ValTypeRefNull,
@@ -203,7 +203,7 @@ export let collectTryRegions = (body: IrBody): GrowableArray<TryRegion> => {
  */
 export let enclosingRegionsOf = (
   cfg: IrCfg,
-  regions: Array<TryRegion>,
+  regions: GrowableArray<TryRegion>,
   block: i32
 ): GrowableArray<TryRegion> => {
   let hits = new Array<TryRegion>();
@@ -250,8 +250,8 @@ export let enclosingRegionsOf = (
 export let dispatchRegionsOf = (
   body: IrBody,
   cfg: IrCfg,
-  pcOfBlock: Map<i32, i32>
-): Map<i32, GrowableArray<TryRegion>> => {
+  pcOfBlock: HashMap<i32, i32>
+): HashMap<i32, GrowableArray<TryRegion>> => {
   let regions = collectTryRegions(body);
   let out = new Map<i32, GrowableArray<TryRegion>>();
   var b = 0;
@@ -278,9 +278,9 @@ export let dispatchRegionsOf = (
  * first place (they ride cells, ir.md §5.1).
  */
 export let spillCatchLiveIns = (
-  liveIn: Array<Set<i32>>,
-  dispatchRegions: Map<i32, GrowableArray<TryRegion>>,
-  spilled: Set<i32>
+  liveIn: GrowableArray<HashSet<i32>>,
+  dispatchRegions: HashMap<i32, GrowableArray<TryRegion>>,
+  spilled: HashSet<i32>
 ): void => {
   dispatchRegions.forEach((target: i32, regions: GrowableArray<TryRegion>): void => {
     for (let r in regions) {
@@ -327,7 +327,7 @@ export let varFieldsOf = (body: IrBody, fields: GrowableArray<WasmField>): void 
  */
 export let rewriteVarsToFrame = (
   body: IrBody,
-  bodyBlocks: Array<i32>,
+  bodyBlocks: GrowableArray<i32>,
   frame: WasmStruct,
   frameParam: i32
 ): void => {
@@ -388,7 +388,7 @@ export let rewriteVarsToFrame = (
 
 /** Replaces dst's contents with src's, in place (IrBlock fields are
  * immutable bindings; the arrays themselves are mutable). */
-export let replaceContents = (dst: GrowableArray<i32>, src: Array<i32>): void => {
+export let replaceContents = (dst: GrowableArray<i32>, src: GrowableArray<i32>): void => {
   truncate(dst);
   for (let v in src) {
     dst.push(v);
@@ -467,11 +467,11 @@ let rawDefaultOf = (body: IrBody, vt: ValType): i32 => {
 // ---------------------------------------------------------------------------
 
 /** live-in set per block: values live on entry (block params excluded). */
-export let computeLiveIn = (body: IrBody, cfg: IrCfg): Array<Set<i32>> => {
+export let computeLiveIn = (body: IrBody, cfg: IrCfg): GrowableArray<HashSet<i32>> => {
   let n = body.blocks.length;
-  let uses = new Array<Set<i32>>(n);
-  let defs = new Array<Set<i32>>(n);
-  let liveIn = new Array<Set<i32>>(n);
+  let uses = new Array<HashSet<i32>>(n);
+  let defs = new Array<HashSet<i32>>(n);
+  let liveIn = new Array<HashSet<i32>>(n);
   var bi = 0;
   while (bi < n) {
     let use = new Set<i32>();
@@ -870,7 +870,7 @@ export let loopContainsSuspend = (
   body: IrBody,
   cfg: IrCfg,
   h: i32,
-  suspendBlocks: Array<i32>
+  suspendBlocks: GrowableArray<i32>
 ): boolean => {
   if (suspendBlocks.length == 0) {
     return false;
@@ -923,7 +923,7 @@ let buildRamp = (
   frame: WasmStruct,
   fatPtr: WasmStruct,
   vtableGlobal: WasmGlobal,
-  entryParamIds: Array<i32>
+  entryParamIds: GrowableArray<i32>
 ): IrBody => {
   let b = new IrBuilder();
   let entry = b.newBlock();
@@ -960,12 +960,12 @@ let buildNextBody = (
   body: IrBody,
   cfg: IrCfg,
   frame: WasmStruct,
-  spilled: Set<i32>,
-  pcOfBlockIn: Map<i32, i32>,
-  dTargetsIn: Array<i32>,
+  spilled: HashSet<i32>,
+  pcOfBlockIn: HashMap<i32, i32>,
+  dTargetsIn: GrowableArray<i32>,
   slotSig: WasmSignature,
-  resumeOf: Array<i32>,
-  dispatchRegions: Map<i32, GrowableArray<TryRegion>>,
+  resumeOf: GrowableArray<i32>,
+  dispatchRegions: HashMap<i32, GrowableArray<TryRegion>>,
   cancelTag: WasmTag | null
 ): IrBody => {
   let origCount = body.blocks.length;
@@ -974,7 +974,7 @@ let buildNextBody = (
 
   // Snapshot the dispatch targets' params (cleared below; edges into
   // them turn into frame stores).
-  let dParams = new Map<i32, Array<i32>>();
+  let dParams = new Map<i32, GrowableArray<i32>>();
   for (let d in dTargetsIn) {
     let copy = new Array<i32>();
     for (let p in body.blocks[d].params) {
@@ -1008,7 +1008,7 @@ let buildNextBody = (
     }
     pcOfBlock[d] = pcOfBlockIn[d];
   }
-  let dParamsById = new Map<i32, Array<i32>>();
+  let dParamsById = new Map<i32, GrowableArray<i32>>();
   for (let d in dTargetsIn) {
     let mapped = if (d == 0) { entryCopyId } else { d };
     dParamsById[mapped] = dParams[d];
@@ -1032,7 +1032,7 @@ let buildNextBody = (
     placeInst(body, blockId, inst);
     return inst;
   };
-  let brTo = (fromBlock: i32, target: i32, args: Array<i32>): void => {
+  let brTo = (fromBlock: i32, target: i32, args: GrowableArray<i32>): void => {
     let idx = body.extra.length;
     body.extra.push(target);
     body.extra.push(args.length);
@@ -1488,8 +1488,8 @@ let buildNextBody = (
 export let rerouteEdges = (
   body: IrBody,
   blockId: i32,
-  pcOfBlock: Map<i32, i32>,
-  dParamsById: Map<i32, Array<i32>>,
+  pcOfBlock: HashMap<i32, i32>,
+  dParamsById: HashMap<i32, GrowableArray<i32>>,
   dispatcher: i32,
   frameParam: i32,
   frame: WasmStruct,
@@ -1513,7 +1513,7 @@ export let rerouteEdges = (
   let succs = body.successors(term);
   var touchesDispatch = false;
   let targets = new Array<i32>();
-  let argLists = new Array<Array<i32>>();
+  let argLists = new Array<GrowableArray<i32>>();
   for (let s in succs) {
     var target = s.target;
     if (target == 0) {

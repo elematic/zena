@@ -7,6 +7,7 @@
 // `types.zena` can reach the stdlib layout without a cycle.
 
 import { PackageConfig, ModuleExport } from './module-resolver.zena';
+import { HashMap } from 'zena:collections';
 
 // Build the standard library PackageConfig.
 //
@@ -211,17 +212,17 @@ export let buildStdlibConfig = (stdlibRoot: String): PackageConfig => {
 // Built once. The stdlib layout is compiled into the compiler rather than
 // read from the program being compiled, so the index is the same for every
 // compilation and a long-lived compiler can keep it.
-var libraryIndex: Map<String, String> | null = null;
+var libraryIndex: HashMap<String, String> | null = null;
 
 // Every id the manifest names outright: each library's own name, and each
 // entry file a `path` or `virtual` mapping points at. A library's private
 // files are not in here — `stdlibLibraryOf` attributes those by directory.
-let buildLibraryIndex = (): Map<String, String> => {
+let buildLibraryIndex = (): HashMap<String, String> => {
   let index = new Map<String, String>();
   // The root is only used to resolve entry files on disk, which nothing
   // reading this index does.
   let config = buildStdlibConfig("");
-  let exports = config.exports as Map<String, ModuleExport>;
+  let exports = config.exports as HashMap<String, ModuleExport>;
   exports.forEach((name: String, entry: ModuleExport): void => {
     index[name] = name;
     let path = entry.path;
@@ -230,7 +231,7 @@ let buildLibraryIndex = (): Map<String, String> => {
     }
     let virtual = entry.virtual;
     if (virtual != null) {
-      (virtual as Map<String, String>).forEach(
+      (virtual as HashMap<String, String>).forEach(
         (target: String, entryPath: String): void => {
           index[entryPath] = name;
         });
@@ -285,7 +286,7 @@ let firstSegment = (id: String): String => {
  */
 export let stdlibModuleNameForEntryPath = (entryPath: String): String | null => {
   let index = if (libraryIndex != null) {
-    libraryIndex as Map<String, String>
+    libraryIndex as HashMap<String, String>
   } else {
     buildLibraryIndex()
   };
@@ -300,7 +301,7 @@ export let stdlibLibraryOf = (moduleId: String): String | null => {
     return null;
   }
   let index = if (libraryIndex != null) {
-    libraryIndex as Map<String, String>
+    libraryIndex as HashMap<String, String>
   } else {
     buildLibraryIndex()
   };
@@ -340,9 +341,9 @@ export let stdlibLibraryOf = (moduleId: String): String | null => {
  * lookup that should have failed find something plausible in another
  * library. Each entry is deleted by the reseed after its files land.
  */
-var libraryMoves: Map<String, String> | null = null;
+var libraryMoves: HashMap<String, String> | null = null;
 
-let buildLibraryMoves = (): Map<String, String> => {
+let buildLibraryMoves = (): HashMap<String, String> => {
   // Empty between migrations, which is the resting state: every library is
   // where the manifest says it is, so a lookup naming one has exactly one
   // answer. An entry is added for the length of a move and deleted by the
@@ -361,7 +362,7 @@ export let stdlibLibraryAnswers = (owner: String, library: String): boolean => {
     return true;
   }
   let moves = if (libraryMoves != null) {
-    libraryMoves as Map<String, String>
+    libraryMoves as HashMap<String, String>
   } else {
     buildLibraryMoves()
   };

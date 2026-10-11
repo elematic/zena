@@ -3,7 +3,7 @@ import { WasmModule, WasmFunction, WasmStruct } from '../wasm-module.zena';
 import { SemanticModel, SymbolDependencies } from '../../semantic-model.zena';
 import { Type, ClassType, InterfaceType, FunctionType } from '../../types.zena';
 import { Node, ClassDeclaration, InterfaceDeclaration, ImportDeclaration, VariableDeclaration, FunctionDeclaration, DeclareFunction } from '../../ast.zena';
-import { Set } from 'zena:collections';
+import { Set, HashMap, HashSet } from 'zena:collections';
 
 import { SymbolId } from '../../scope/symbol.zena';
 import { WasmType } from '../wasm.zena';
@@ -138,8 +138,8 @@ export interface ReachabilityVisitorInterface {
 export interface ReachabilityContext {
   isRtaActive: boolean;
   var instantiationClosed: boolean;
-  instantiatedSpecializedClasses: Set<String>;
-  instantiatedClasses: Set<SymbolId>;
+  instantiatedSpecializedClasses: HashSet<String>;
+  instantiatedClasses: HashSet<SymbolId>;
   /**
    * Class keys REACHED CODE NAMES — recorded by discoverType during a
    * reachable traversal. A lowered body can reference a class struct
@@ -148,8 +148,8 @@ export interface ReachabilityContext {
    * alone under-approximates which structs the type section needs;
    * declaration (all of classInfos) wildly over-approximates it.
    */
-  reachablyNamedClasses: Set<String>;
-  ctorDemandedGenerics: Set<SymbolId>;
+  reachablyNamedClasses: HashSet<String>;
+  ctorDemandedGenerics: HashSet<SymbolId>;
   var equalityDispatchUsed: boolean;
   notePendingStaticTargets(t: Type, memberName: String): void;
   var inQueueWalk: boolean;
@@ -196,12 +196,12 @@ export interface ReachabilityContext {
    * nothing emitted refers to, each dragging its impl signature into
    * the type section.
    */
-  reachablyNamedClosures: Set<WasmStruct>;
+  reachablyNamedClosures: HashSet<WasmStruct>;
   noteClosureStruct(cs: WasmStruct): void;
   noteCompositeType(t: Type): void;
   /** Anonymous (boxed tuple/record) structs named by reached code (same gate). */
-  reachablyNamedAnonStructs: Set<WasmStruct>;
-  specializedClassTypes: Map<SymbolId, GrowableArray<ClassType>>;
+  reachablyNamedAnonStructs: HashSet<WasmStruct>;
+  specializedClassTypes: HashMap<SymbolId, GrowableArray<ClassType>>;
   /**
    * Insertion-ordered (OrderedHashMap, values unused): these node-id sets
    * are REPLAYED into the queues per specialization, so their
@@ -209,13 +209,13 @@ export interface ReachabilityContext {
    * relabelling across invalidate() — hashing by id made the same
    * program emit differently after an invalidate that changed nothing.
    */
-  reachedClassMembers: Map<SymbolId, Map<i32, boolean>>;
-  reachedReachableClassMembers: Map<SymbolId, Map<i32, boolean>>;
+  reachedClassMembers: HashMap<SymbolId, HashMap<i32, boolean>>;
+  reachedReachableClassMembers: HashMap<SymbolId, HashMap<i32, boolean>>;
   currentReachable: boolean;
-  classDecls: Map<SymbolId, Node>;
-  classModels: Map<SymbolId, SemanticModel>;
-  interfaceDecls: Map<SymbolId, InterfaceDeclaration>;
-  interfaceModels: Map<SymbolId, SemanticModel>;
+  classDecls: HashMap<SymbolId, Node>;
+  classModels: HashMap<SymbolId, SemanticModel>;
+  interfaceDecls: HashMap<SymbolId, InterfaceDeclaration>;
+  interfaceModels: HashMap<SymbolId, SemanticModel>;
   program: Program;
   wasm: WasmModule;
   /** Whether a reached body can cause a cancellation — the
@@ -227,14 +227,14 @@ export interface ReachabilityContext {
    * cause discovered late still equips every frame. */
   asyncFrameFutures: GrowableArray<Type>;
   asyncFrameFutureModels: GrowableArray<SemanticModel>;
-  symbolIdToModel: Map<SymbolId, SemanticModel>;
-  symbolIdToDecl: Map<SymbolId, Node>;
-  symbolIdToTargetId: Map<SymbolId, SymbolId>;
-  nodeIdToNode: Map<i32, Node>;
-  nodeIdToModel: Map<i32, SemanticModel>;
-  reachedGlobals: Set<SymbolId>;
-  reachedMembers: Set<String>;
-  reachedFunctionsSet: Set<WasmFunction>;
+  symbolIdToModel: HashMap<SymbolId, SemanticModel>;
+  symbolIdToDecl: HashMap<SymbolId, Node>;
+  symbolIdToTargetId: HashMap<SymbolId, SymbolId>;
+  nodeIdToNode: HashMap<i32, Node>;
+  nodeIdToModel: HashMap<i32, SemanticModel>;
+  reachedGlobals: HashSet<SymbolId>;
+  reachedMembers: HashSet<String>;
+  reachedFunctionsSet: HashSet<WasmFunction>;
   specializedInterfaces: GrowableArray<InterfaceType>;
   /**
    * Demands for virtual generic-method slots, in discovery order.
@@ -245,16 +245,16 @@ export interface ReachabilityContext {
   genericInterfaceMethodDemands: GrowableArray<GenericInterfaceMethodDemand>;
   demandGenericInterfaceMethod(it: InterfaceType, methName: String, typeArgs: Array<Type>, model: SemanticModel): void;
   findGenericInterfaceDemand(iKey: String, slotName: String): GenericInterfaceMethodDemand | null;
-  mixinToClasses: Map<MixinKey, GrowableArray<ClassType>>;
+  mixinToClasses: HashMap<MixinKey, GrowableArray<ClassType>>;
   cha: ClassHierarchyAnalysis;
   specializer: SpecializerInterface;
   typeLowerer: TypeLowererInterface;
   visitor: ReachabilityVisitorInterface;
-  discoveredTypes: Set<String>;
-  reachedSemanticTypes: Set<String>;
-  instantiatedClassesByInterface: Map<SymbolId, GrowableArray<ClassInterfacePair>>;
-  referencedInterfaceMembersById: Map<SymbolId, GrowableArray<String>>;
-  referencedReachableInterfaceMembers: Set<String>;
+  discoveredTypes: HashSet<String>;
+  reachedSemanticTypes: HashSet<String>;
+  instantiatedClassesByInterface: HashMap<SymbolId, GrowableArray<ClassInterfacePair>>;
+  referencedInterfaceMembersById: HashMap<SymbolId, GrowableArray<String>>;
+  referencedReachableInterfaceMembers: HashSet<String>;
 
   queueReferrer(ref: Referrer): void;
   noteSpecialization(ct: ClassType, model: SemanticModel): void;

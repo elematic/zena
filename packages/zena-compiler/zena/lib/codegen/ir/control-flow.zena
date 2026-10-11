@@ -47,6 +47,7 @@ import {
   recordDispatchOfValue,
 } from './patterns.zena';
 import { WellKnown, isWellKnown } from '../../well-known.zena';
+import { HashMap } from 'zena:collections';
 
 /** Bail with the lowering-side message shape (reason @function). */
 let bail = (cx: LoweringContext, reason: String): never => {
@@ -246,7 +247,7 @@ export let lowerValueNode = (cx: LoweringContext, node: Node, isVoid: boolean, c
  * carries the tail's value out through the region's result variable,
  * exactly as a valued try/finally does.
  */
-let lowerBlockValueFrom = (cx: LoweringContext, body: Array<Statement>,
+let lowerBlockValueFrom = (cx: LoweringContext, body: GrowableArray<Statement>,
     start: i32, isVoid: boolean, ctxVt: ValType | null): i32 => {
   if (isVoid) {
     // A void block (a try body, a statement arm) is a statement list
@@ -367,7 +368,7 @@ let lowerBlockValueFrom = (cx: LoweringContext, body: Array<Statement>,
  * read, and every early exit and the unwind path release too.
  */
 let lowerValueRegionRest = (cx: LoweringContext, value: i32,
-    owners: Array<ClassType>, body: Array<Statement>, start: i32,
+    owners: GrowableArray<ClassType>, body: GrowableArray<Statement>, start: i32,
     ctxVt: ValType | null): i32 => {
   if (ctxVt == null) {
     bail(cx, 'value region result type');
@@ -390,7 +391,7 @@ let lowerValueRegionRest = (cx: LoweringContext, value: i32,
  * the exit (see lowerVarDropRegion).
  */
 let lowerValueRegionRestVar = (cx: LoweringContext, plan: VarDropPlan,
-    body: Array<Statement>, start: i32, ctxVt: ValType | null): i32 => {
+    body: GrowableArray<Statement>, start: i32, ctxVt: ValType | null): i32 => {
   if (ctxVt == null) {
     bail(cx, 'value region result type');
   }
@@ -447,7 +448,7 @@ let isInlineTupleUnionSource = (t: Type): boolean => {
  * discriminant selects.
  */
 let lowerInlineTupleArm = (cx: LoweringContext, pat: TuplePattern,
-    lanes: Array<i32>, failB: i32): void => {
+    lanes: GrowableArray<i32>, failB: i32): void => {
   if (lanes.length != pat.elements.length) {
     bail(cx, 'match inline union arity');
   }
@@ -516,7 +517,7 @@ export let lowerMatch = (cx: LoweringContext, expr: MatchExpression): i32 => {
       exhausted = true;
     }
     if (lanes != null) {
-      let laneVals = lanes as Array<i32>;
+      let laneVals = lanes as GrowableArray<i32>;
       if (mc.pattern is TuplePattern) {
         lowerInlineTupleArm(cx, mc.pattern as TuplePattern, laneVals, failB);
       } else if (patternBinds(cx, mc.pattern) || patternRefutable(cx, mc.pattern)) {
@@ -962,7 +963,7 @@ let finishProtectedArm = (cx: LoweringContext, scope: FinallyScope,
 let lowerFinallyRegion = (cx: LoweringContext, mirrored: GrowableArray<SymbolId>,
     isVoid: boolean, resultVt: ValType | null,
     lowerProtected: (scope: FinallyScope, resultVar: i32,
-        saved: Map<SymbolId, i32>) => void,
+        saved: HashMap<SymbolId, i32>) => void,
     lowerFinalizer: (scope: FinallyScope) => void,
     finalizeOnNormal: boolean = true): i32 => {
   if (cx.wasm.exceptionTag == null || cx.wasm.exceptionPayload == null) {
@@ -1248,7 +1249,7 @@ let lowerTryFinally = (cx: LoweringContext, expr: TryExpression): i32 => {
 
   let tag = cx.wasm.exceptionTag as WasmTag;
   let lowerArmsInto = (scope: FinallyScope, resultVar: i32,
-      saved: Map<SymbolId, i32>): void => {
+      saved: HashMap<SymbolId, i32>): void => {
     let handler = expr.handler;
     if (handler == null) {
       let bodyValue = lowerValueNode(cx, expr.body as Node, isVoid, resultVt);
@@ -1552,7 +1553,7 @@ export let lowerTryExpression = (cx: LoweringContext, expr: TryExpression): i32 
  * `Descriptor`'s member; the checker has already established that the
  * members exist, and that a `Borrow<R>` never reaches here.
  */
-export let disposeOwnerClasses = (cx: LoweringContext, t: Type): Array<ClassType> => {
+export let disposeOwnerClasses = (cx: LoweringContext, t: Type): GrowableArray<ClassType> => {
   // Peel the handle the way the checker did when it found the `:dispose`.
   // Neither `baseType` nor `unwrapAliases` gets here: the handles are
   // *generic* aliases, so `Own<T> = T` has the bare type parameter as its
@@ -1644,7 +1645,7 @@ let emitDispose = (cx: LoweringContext, value: i32, ownerClass: ClassType): void
  * because emitDispose dispatches virtually when a subclass overrides
  * `:dispose`.
  */
-let emitDisposeDispatch = (cx: LoweringContext, value: i32, owners: Array<ClassType>): void => {
+let emitDisposeDispatch = (cx: LoweringContext, value: i32, owners: GrowableArray<ClassType>): void => {
   if (owners.length == 1) {
     emitDispose(cx, value, owners[0]);
     return;
@@ -1680,7 +1681,7 @@ let emitDisposeDispatch = (cx: LoweringContext, value: i32, owners: Array<ClassT
  * nullable binding holds nothing when it holds null, and the dispose is
  * skipped rather than trapped — the same rule TC39 `using` adopted.
  */
-export let emitMaybeDispose = (cx: LoweringContext, value: i32, owners: Array<ClassType>): void => {
+export let emitMaybeDispose = (cx: LoweringContext, value: i32, owners: GrowableArray<ClassType>): void => {
   let vt = cx.valueTypeOf(value);
   if (!isRefValType(vt)) {
     bail(cx, 'dispose operand kind');
@@ -1733,12 +1734,12 @@ export let emitMaybeDispose = (cx: LoweringContext, value: i32, owners: Array<Cl
  */
 final class VarDropPlan {
   symId: SymbolId;
-  owners: Array<ClassType>;
+  owners: GrowableArray<ClassType>;
   intervals: GrowableArray<i32>;
   new(this.symId, this.owners, this.intervals);
 }
 
-let varDropPlans = (cx: LoweringContext, body: Array<Statement>): GrowableArray<VarDropPlan> => {
+let varDropPlans = (cx: LoweringContext, body: GrowableArray<Statement>): GrowableArray<VarDropPlan> => {
   let plans = new Array<VarDropPlan>();
   for (let s in body) {
     if (!(s is VariableDeclaration)) { continue; }
@@ -1796,7 +1797,7 @@ let emitVarDropRelease = (cx: LoweringContext, plan: VarDropPlan): void => {
  * completion the value is still the binding's.
  */
 let lowerVarDropRegion = (cx: LoweringContext, plan: VarDropPlan,
-    body: Array<Statement>, start: i32, end: i32, toBlockEnd: boolean): void => {
+    body: GrowableArray<Statement>, start: i32, end: i32, toBlockEnd: boolean): void => {
   let mirrored = new Array<SymbolId>();
   for (var k = start; k < end; k += 1) {
     cx.appendAssignedEnvSyms(body[k] as Node, mirrored);
@@ -1825,7 +1826,7 @@ let lowerVarDropRegion = (cx: LoweringContext, plan: VarDropPlan,
  * whose region is open are on the context, so a nested list (a
  * `using` region's rest) opens no second region for one.
  */
-export let lowerStatementRange = (cx: LoweringContext, body: Array<Statement>,
+export let lowerStatementRange = (cx: LoweringContext, body: GrowableArray<Statement>,
     start: i32, end: i32): void => {
   let plans = varDropPlans(cx, body);
   var i = start;
@@ -1863,7 +1864,7 @@ export let lowerStatementRange = (cx: LoweringContext, body: Array<Statement>,
 };
 
 export let lowerUsingRegion = (cx: LoweringContext, stmt: UsingStatement,
-    rest: Array<Statement>, restStart: i32, restEnd: i32): void => {
+    rest: GrowableArray<Statement>, restStart: i32, restEnd: i32): void => {
   let declType = cx.substitutedNodeType(stmt.init);
   if (declType == null) {
     bail(cx, 'untyped using initializer');
@@ -1918,7 +1919,7 @@ export let collectAffineDropFields = (cx: LoweringContext,
   // A field the dispose body moved out is the caller's (or a sink's)
   // to release; the glue skips it. The checker verified the move
   // happens on every path, which is what keeps this skip static.
-  var movedOut: Array<String> | null = null;
+  var movedOut: GrowableArray<String> | null = null;
   let nodeOpt = cx.func.node;
   if (nodeOpt != null) {
     movedOut = cx.func.model.movedOutFieldsOf(nodeOpt);
@@ -2026,9 +2027,9 @@ export let lowerSyntheticDispose = (cx: LoweringContext): IrBody => {
  * entry reads the value the finalizer releases.
  */
 export let lowerFieldDropRegions = (cx: LoweringContext,
-    names: Array<String>, types: Array<Type>, idx: i32,
-    paramSyms: Array<Symbol>,
-    body: Array<Statement>, start: i32, end: i32): void => {
+    names: GrowableArray<String>, types: Array<Type>, idx: i32,
+    paramSyms: GrowableArray<Symbol>,
+    body: GrowableArray<Statement>, start: i32, end: i32): void => {
   if (idx >= names.length) {
     lowerParamDropRegions(cx, paramSyms, 0, body, start, end);
     return;
@@ -2046,7 +2047,7 @@ export let lowerFieldDropRegions = (cx: LoweringContext,
   let st = info.structType;
   var lookupName = names[idx];
   if (ct.fieldSetterNames != null) {
-    let mapping = ct.fieldSetterNames as Map<String, String>;
+    let mapping = ct.fieldSetterNames as HashMap<String, String>;
     if (let (true, mapped) = mapping.get(lookupName)) {
       lookupName = mapped;
     }
@@ -2086,8 +2087,8 @@ export let lowerFieldDropRegions = (cx: LoweringContext,
  * using/scope-drop dispatch #lowerStatementList applies.
  */
 export let lowerParamDropRegions = (cx: LoweringContext,
-    dropSyms: Array<Symbol>, idx: i32,
-    body: Array<Statement>, start: i32, end: i32): void => {
+    dropSyms: GrowableArray<Symbol>, idx: i32,
+    body: GrowableArray<Statement>, start: i32, end: i32): void => {
   if (idx >= dropSyms.length) {
     lowerStatementRange(cx, body, start, end);
     return;
@@ -2124,7 +2125,7 @@ export let lowerParamDropRegions = (cx: LoweringContext,
  * by normal completion, the handler edge, and every early exit.
  */
 export let lowerScopeDropRegion = (cx: LoweringContext, vd: VariableDeclaration,
-    rest: Array<Statement>, restStart: i32, restEnd: i32): void => {
+    rest: GrowableArray<Statement>, restStart: i32, restEnd: i32): void => {
   let declType = cx.substitutedNodeType(vd.init);
   if (declType == null) {
     bail(cx, 'untyped implicit-drop binding');
@@ -2330,7 +2331,7 @@ let isProtocolUnion = (t: Type): boolean => {
  * merge. */
 let coalesceMerge = (cx: LoweringContext, bin: BinaryExpression,
     overallVt: ValType, mergeSyms: GrowableArray<SymbolId>,
-    rightB: i32, okValue: i32, saved: Map<SymbolId, i32>): i32 => {
+    rightB: i32, okValue: i32, saved: HashMap<SymbolId, i32>): i32 => {
   // The ok arm comes out of the left operand's maybe-form — a tuple
   // slot or an optional record field — so it is not an expression the
   // post-expression adaptation hook can reach. The checker records the

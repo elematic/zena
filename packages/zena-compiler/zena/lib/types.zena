@@ -12,7 +12,7 @@
  * - The AST is never mutated — types live in the SemanticModel side table.
  */
 import { StringBuilder } from 'zena:core';
-import { Set, HashMap } from 'zena:collections';
+import { Set, HashMap, HashSet, OrderedHashMap } from 'zena:collections';
 
 
 
@@ -249,9 +249,9 @@ export sealed class Type implements Hashable {
   // Until the surface default flips, every checker-built ArrayType has
   // mutable elements; `array<var T>` spells the mutability explicitly.
   case ArrayType(elementType: Type, elementsMutable: boolean)
-  case TupleType(elementTypes: GrowableArray<Type>)
-  case InlineTupleType(elementTypes: GrowableArray<Type>)
-  case UnionType(types: GrowableArray<Type>)
+  case TupleType(elementTypes: Array<Type>)
+  case InlineTupleType(elementTypes: Array<Type>)
+  case UnionType(types: Array<Type>)
   case RecordType, FunctionType, ClassType, InterfaceType
   case MixinType, TypeParameterType, TypeAliasType
   case SymbolType, ThisType
@@ -358,8 +358,8 @@ export final class MethodInfo extends MemberInfo {
 }
 
 export final class RecordType(
-  properties: Map<String, Type>,
-  optionalProperties: Set<String> | null
+  properties: HashMap<String, Type>,
+  optionalProperties: HashSet<String> | null
 ) extends Type {
   // If this RecordType represents the constant namespace for an enum (e.g.
   // `Color`), this points back to the original AST node (`EnumDeclaration`).
@@ -389,10 +389,10 @@ export final class RecordType(
  * carried. Immutable.
  */
 export final class FunctionDeclInfo {
-  parameterNames: Array<String> | null;
-  parameterSymbols: Array<SymbolId> | null;
-  parameterInitializers: Array<Expression | null> | null;
-  optionalParameters: Array<boolean> | null;
+  parameterNames: GrowableArray<String> | null;
+  parameterSymbols: GrowableArray<SymbolId> | null;
+  parameterInitializers: GrowableArray<Expression | null> | null;
+  optionalParameters: GrowableArray<boolean> | null;
   isFinal: boolean;
   isAbstract: boolean;
   /**
@@ -519,28 +519,28 @@ export final class FunctionType extends Type {
     return copy;
   }
 
-  parameterNames: Array<String> | null {
+  parameterNames: GrowableArray<String> | null {
     get {
       let info = this.info;
       return if (info != null) info.parameterNames else null;
     }
   }
 
-  parameterSymbols: Array<SymbolId> | null {
+  parameterSymbols: GrowableArray<SymbolId> | null {
     get {
       let info = this.info;
       return if (info != null) info.parameterSymbols else null;
     }
   }
 
-  parameterInitializers: Array<Expression | null> | null {
+  parameterInitializers: GrowableArray<Expression | null> | null {
     get {
       let info = this.info;
       return if (info != null) info.parameterInitializers else null;
     }
   }
 
-  optionalParameters: Array<boolean> | null {
+  optionalParameters: GrowableArray<boolean> | null {
     get {
       let info = this.info;
       return if (info != null) info.optionalParameters else null;
@@ -603,7 +603,7 @@ export final class ClassType extends Type {
    * passes that would otherwise register or initialize the field consult
    * this instead. Null when the class decorates nothing.
    */
-  var decoratedFields: Map<String, DecoratedField> | null = null;
+  var decoratedFields: HashMap<String, DecoratedField> | null = null;
   /**
    * Declared `resource class` — the class has no unwrapped form, so naming it
    * bare in a type position is an error. Declares resource-ness, not
@@ -629,17 +629,17 @@ export final class ClassType extends Type {
    * This map is mutated incrementally by the checker during class resolution,
    * but is treated as immutable during codegen to emit `WasmStruct`s.
    */
-  var members: Map<String, MemberInfo> = new Map<String, MemberInfo>.ordered();
+  var members: OrderedHashMap<String, MemberInfo> = new OrderedHashMap<String, MemberInfo>();
   /**
    * Always empty: only an interface declares `static symbol`s, and the
    * checker rejects one written on a class or mixin body. Carried so that
    * `Owner.sym` resolves against any named owner and answers "declares no
    * static symbol" rather than "is not a type that has them".
    */
-  var staticSymbols: Map<String, Type> = new Map<String, Type>.ordered();
+  var staticSymbols: OrderedHashMap<String, Type> = new OrderedHashMap<String, Type>();
   var constructorType: FunctionType | null = null;
-  var constructors: Map<String, FunctionType> = new Map<String, FunctionType>();
-  var fieldSetterNames: Map<String, String> | null = null;
+  var constructors: HashMap<String, FunctionType> = new Map<String, FunctionType>();
+  var fieldSetterNames: HashMap<String, String> | null = null;
   var isFinal = false;
   var isCaseClass = false;
   var isAbstract = false;
@@ -648,16 +648,16 @@ export final class ClassType extends Type {
   var isMixinIntermediate = false;
   var onType: Type | null = null;
   var genericSource: ClassType | null = null;
-  var declaredFields: Set<String> | null = null;
+  var declaredFields: HashSet<String> | null = null;
   var sealedVariants: GrowableArray<ClassType> | null = null;
-  var forwardVariantNames: Set<String> | null = null;
+  var forwardVariantNames: HashSet<String> | null = null;
   /**
    * On a generic template: its instantiations by argument key, created
    * by `instantiateClassType` on the first one. Null on every other
    * class — which is nearly every ClassType object a compile builds, so
    * an eager table here was 96 bytes of garbage per instantiation.
    */
-  var instantiations: Map<String, ClassType> | null = null;
+  var instantiations: HashMap<String, ClassType> | null = null;
 
   /**
    * The instantiations `substituteInType` has built from this mention
@@ -1688,7 +1688,7 @@ let namedKey = (name: String, args: Array<Type>): String => {
   return s + ">";
 };
 
-let toGrowable = (arr: Array<Type>): GrowableArray<Type> => {
+let toGrowable = (arr: Array<Type>): Array<Type> => {
   if (arr is GrowableArray<Type>) {
     return arr as GrowableArray<Type>;
   }
@@ -1849,7 +1849,7 @@ export final class InterfaceType extends Type {
   var typeParameters: Array<TypeParameterType> | null = null;
   var typeArguments: Array<Type> | null = null;
   var extendsList: GrowableArray<InterfaceType> = new Array<InterfaceType>();
-  var members: Map<String, MemberInfo> = new Map<String, MemberInfo>.ordered();
+  var members: OrderedHashMap<String, MemberInfo> = new OrderedHashMap<String, MemberInfo>();
   /**
    * The `static symbol` declarations this type makes, keyed by their
    * declared name. A static symbol is reached only through the type that
@@ -1858,19 +1858,19 @@ export final class InterfaceType extends Type {
    * canonical `SymbolType` per declaration, which is what gives a
    * symbol-keyed member an identity distinct from its spelling.
    */
-  var staticSymbols: Map<String, Type> = new Map<String, Type>.ordered();
+  var staticSymbols: OrderedHashMap<String, Type> = new OrderedHashMap<String, Type>();
   var genericSource: InterfaceType | null = null;
   var interfaceKey: String | null = null;
   var sourcePath: String = "";
   /** As `ClassType.instantiations`: null until the first instantiation. */
-  var instantiations: Map<String, InterfaceType> | null = null;
+  var instantiations: HashMap<String, InterfaceType> | null = null;
   /**
    * The interface's constructors, keyed like a class's: "<constructor>"
    * for `new(...)`, the bare name for `new name(...)`. Each is a factory
    * function whose return type is the interface at its own type
    * parameters; an instantiation shares the map and substitutes.
    */
-  var constructors: Map<String, FunctionType> = new Map<String, FunctionType>();
+  var constructors: HashMap<String, FunctionType> = new Map<String, FunctionType>();
 
   /** As `ClassType.substitutionCache` and `shapeStamp`. */
   var substitutionCache: TypeListTable | null = null;
@@ -1946,14 +1946,14 @@ export final class MixinType extends Type {
   var typeParameters: Array<TypeParameterType> | null = null;
   var typeArguments: Array<Type> | null = null;
   var onType: Type | null = null;
-  var members: Map<String, MemberInfo> = new Map<String, MemberInfo>.ordered();
+  var members: OrderedHashMap<String, MemberInfo> = new OrderedHashMap<String, MemberInfo>();
   /**
    * Always empty: only an interface declares `static symbol`s, and the
    * checker rejects one written on a class or mixin body. Carried so that
    * `Owner.sym` resolves against any named owner and answers "declares no
    * static symbol" rather than "is not a type that has them".
    */
-  var staticSymbols: Map<String, Type> = new Map<String, Type>.ordered();
+  var staticSymbols: OrderedHashMap<String, Type> = new OrderedHashMap<String, Type>();
   var genericSource: MixinType | null = null;
   var sourcePath: String = "";
   var mixins: GrowableArray<MixinType> = new Array<MixinType>();
@@ -1984,9 +1984,9 @@ export final class MixinType extends Type {
    * The names of a decorator's `shared` members; null until one is
    * declared, which for every mixin that is not a decorator is always.
    */
-  var sharedMembers: Set<String> | null = null;
+  var sharedMembers: HashSet<String> | null = null;
   /** As `ClassType.instantiations`: null until the first instantiation. */
-  var instantiations: Map<String, MixinType> | null = null;
+  var instantiations: HashMap<String, MixinType> | null = null;
 
   /** Whether this is a `decorator` declaration rather than a mixin. */
   isDecorator(): boolean {
@@ -2627,7 +2627,7 @@ export let isVoidOrNeverType = (t: Type): boolean => {
  * parameter's position fails its own assignability check.
  */
 export let requiredParameterCount = (
-    parameters: Array<Type>, optionals: Array<boolean> | null): i32 => {
+    parameters: Array<Type>, optionals: GrowableArray<boolean> | null): i32 => {
   var required = 0;
   for (var i = 0; i < parameters.length; i += 1) {
     let isOptional = if (optionals != null) {

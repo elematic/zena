@@ -18,6 +18,7 @@ import { compareStrings, presentWordCount, presentWordName, getSignatureKey } fr
 import {
   getMemberRootClass, getClassKey, getClassMethodKey, getInterfaceKey, InterfaceKey, CellKey, ClosureKey,
 } from './codegen-utils.zena';
+import { HashMap } from 'zena:collections';
 
 export let getClassTypeParameters = (ct: ClassType): Array<TypeParameterType> | null => {
   return (ct.genericSource ?? ct).typeParameters;
@@ -520,7 +521,7 @@ let addTransitiveInterfaces = (
   it: InterfaceType,
   allParams: GrowableArray<TypeParameterType>,
   allArgs: GrowableArray<Type>,
-  seen: Map<String, boolean>
+  seen: HashMap<String, boolean>
 ): void => {
   let key = getInterfaceKey(it) as String;
   if (seen.has(key)) {
@@ -556,7 +557,7 @@ let addClassTransitiveInterfaces = (
   ct: ClassType,
   allParams: GrowableArray<TypeParameterType>,
   allArgs: GrowableArray<Type>,
-  seen: Map<String, boolean>
+  seen: HashMap<String, boolean>
 ): void => {
   let ctParams = getClassTypeParameters(ct);
   for (let impl in ct.implementsList) {
@@ -596,7 +597,7 @@ let addTransitiveMixins = (
   mt: MixinType,
   allParams: GrowableArray<TypeParameterType>,
   allArgs: GrowableArray<Type>,
-  seen: Map<String, boolean>
+  seen: HashMap<String, boolean>
 ): void => {
   let key = mt.sourcePath + "::" + mt.name;
   if (seen.has(key)) {
@@ -626,7 +627,7 @@ let addClassTransitiveMixins = (
   ct: ClassType,
   allParams: GrowableArray<TypeParameterType>,
   allArgs: GrowableArray<Type>,
-  seen: Map<String, boolean>
+  seen: HashMap<String, boolean>
 ): void => {
   for (let m in ct.mixins) {
     addTransitiveMixins(m, allParams, allArgs, seen);
@@ -1467,7 +1468,7 @@ export let getValTypeKey = (type: ValType): String => match (type) {
   case _: i32ToString(valTypeToOpcode(type))
 };
 
-export let getClosureKey = (params: Array<ValType>, returns: Array<ValType>): ClosureKey => {
+export let getClosureKey = (params: GrowableArray<ValType>, returns: GrowableArray<ValType>): ClosureKey => {
   var keyStr = "";
   for (let p in params) {
     keyStr = keyStr + getValTypeKey(p) + ",";
@@ -1770,7 +1771,7 @@ export let typeToValType = (wasm: WasmModule, t: Type): ValType => {
  * these lanes with a separate wasm cursor, exactly as zero-width
  * arguments already pair against parameter lists.
  */
-export let inlineLaneValTypes = (wasm: WasmModule, type: Type): Array<ValType> | null => {
+export let inlineLaneValTypes = (wasm: WasmModule, type: Type): GrowableArray<ValType> | null => {
   if (type is InlineTupleType) {
     let lanes = new Array<ValType>();
     for (let el in type.elementTypes) {
@@ -1935,7 +1936,7 @@ export let getNonNullableType = (type: Type): Type => match (type) {
 
 /** A record type's optional field names in sorted order — the canonical
  *  presence-bit assignment shared by every consumer of the mask. */
-export let sortedOptionalNames = (rec: RecordType): Array<String> => {
+export let sortedOptionalNames = (rec: RecordType): GrowableArray<String> => {
   let names = new Array<String>();
   let optionals = rec.optionalProperties;
   if (optionals != null) {

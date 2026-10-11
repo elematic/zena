@@ -54,7 +54,7 @@
  * and layout through RTA; the extra allocation buys that complexity
  * back, and the observable semantics are identical.
  */
-import { Set } from 'zena:collections';
+import { Set, HashMap, HashSet } from 'zena:collections';
 import {
   ValType, ValTypeI32, ValTypeRef, ValTypeRefNull, WasmType, refTargetOf,
 } from '../wasm.zena';
@@ -825,7 +825,7 @@ let buildRamp = (
   futureInfo: ClassCodegenInfo,
   futureCtor: WasmFunction,
   stepFunc: WasmFunction,
-  entryParamIds: Array<i32>,
+  entryParamIds: GrowableArray<i32>,
   sm: ScopeMachinery | null,
   fatPtr: WasmStruct,
   vtableGlobal: WasmGlobal
@@ -907,28 +907,28 @@ let buildStepBody = (
   cfg: IrCfg,
   frame: WasmStruct,
   futureStruct: WasmStruct,
-  spilled: Set<i32>,
-  pcOfBlockIn: Map<i32, i32>,
-  dTargetsIn: Array<i32>,
-  subscribeOf: Map<i32, WasmFunction>,
-  subscribeCalleeOf: Map<i32, i32>,
-  hopTerms: Set<i32>,
+  spilled: HashSet<i32>,
+  pcOfBlockIn: HashMap<i32, i32>,
+  dTargetsIn: GrowableArray<i32>,
+  subscribeOf: HashMap<i32, WasmFunction>,
+  subscribeCalleeOf: HashMap<i32, i32>,
+  hopTerms: HashSet<i32>,
   scheduleFn: WasmFunction | null,
   completeFn: WasmFunction,
   adoptFn: WasmFunction,
   failFn: WasmFunction,
   sm: ScopeMachinery | null,
-  resumeTargets: Array<i32>,
-  shieldedAwaits: Set<i32>,
-  shieldedResumes: Set<i32>,
-  shieldedResumeFuture: Map<i32, i32>,
+  resumeTargets: GrowableArray<i32>,
+  shieldedAwaits: HashSet<i32>,
+  shieldedResumes: HashSet<i32>,
+  shieldedResumeFuture: HashMap<i32, i32>,
   shieldFn: WasmFunction | null,
   valueVt: ValType | null,
   fatPtr: WasmStruct,
   vtableGlobal: WasmGlobal,
   exceptionTag: WasmTag,
   exceptionPayload: WasmGlobal,
-  dispatchRegions: Map<i32, GrowableArray<TryRegion>>
+  dispatchRegions: HashMap<i32, GrowableArray<TryRegion>>
 ): IrBody => {
   let origCount = body.blocks.length;
   let stateRef = addRawRef(body, new IrRefField(frame, '$state'));
@@ -942,7 +942,7 @@ let buildStepBody = (
 
   // Snapshot the dispatch targets' params (cleared below; edges into
   // them turn into frame stores).
-  let dParams = new Map<i32, Array<i32>>();
+  let dParams = new Map<i32, GrowableArray<i32>>();
   for (let d in dTargetsIn) {
     let copy = new Array<i32>();
     for (let p in body.blocks[d].params) {
@@ -976,7 +976,7 @@ let buildStepBody = (
     }
     pcOfBlock[d] = pcOfBlockIn[d];
   }
-  let dParamsById = new Map<i32, Array<i32>>();
+  let dParamsById = new Map<i32, GrowableArray<i32>>();
   for (let d in dTargetsIn) {
     let mapped = if (d == 0) { entryCopyId } else { d };
     dParamsById[mapped] = dParams[d];
@@ -1008,7 +1008,7 @@ let buildStepBody = (
     placeInst(body, blockId, inst);
     return inst;
   };
-  let brTo = (fromBlock: i32, target: i32, args: Array<i32>): void => {
+  let brTo = (fromBlock: i32, target: i32, args: GrowableArray<i32>): void => {
     let idx = body.extra.length;
     body.extra.push(target);
     body.extra.push(args.length);
@@ -1045,7 +1045,7 @@ let buildStepBody = (
     return emitIn(blockId, IrOp.ref_as_non_null,
         internVt(body, new ValTypeRef(futureStruct)), weak, -1);
   };
-  let callIn = (blockId: i32, target: WasmFunction, args: Array<i32>): void => {
+  let callIn = (blockId: i32, target: WasmFunction, args: GrowableArray<i32>): void => {
     let idx = body.extra.length;
     body.extra.push(args.length);
     for (let v in args) {

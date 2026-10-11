@@ -1,4 +1,4 @@
-import { Set } from 'zena:collections';
+import { Set, HashMap } from 'zena:collections';
 import { NodeMap, DenseNodeMap } from '../node-map.zena';
 import {
   Node, NodeId, Module, SourceLocation, IdGenerator, makeNodeIdGenerator,
@@ -78,7 +78,7 @@ export final class SymbolMap {
     // first lookup, which a build never makes.
     #offsets = new GrowableArray<i32>();
     #offsetSymbols = new GrowableArray<Symbol>();
-    var #byOffset: Map<i32, Symbol> | null = null;
+    var #byOffset: HashMap<i32, Symbol> | null = null;
 
     byNode: DenseNodeMap<Symbol> {
       get { return this.#byNode; }
@@ -184,8 +184,8 @@ export final class ScopeResult(
    */
   symbols: SymbolMap,
 
-  isRead: Map<SymbolId, boolean>,
-  isWritten: Map<SymbolId, boolean>,
+  isRead: HashMap<SymbolId, boolean>,
+  isWritten: HashMap<SymbolId, boolean>,
 
   /**
    * Names that were declared twice in the same scope.
@@ -262,13 +262,13 @@ export final class ScopeBuilder {
    * mapped to the specifier it is listed under. Null builds a module
    * with no prelude at all.
    */
-  #preludeNames: Map<String, String> | null;
+  #preludeNames: HashMap<String, String> | null;
   #nodeIds: IdGenerator<NodeId>;
 
   /** The prelude scope's bindings, one per prelude name, in prelude order. */
   #preludeBindings = new Array<ImplicitImport>();
 
-  new(modulePath: String, preludeNames: Map<String, String> | null = null,
+  new(modulePath: String, preludeNames: HashMap<String, String> | null = null,
       symbolIdGenerator: IdGenerator<SymbolId> | null = null,
       nodeIds: IdGenerator<NodeId> | null = null)
     : #modulePath = modulePath,
@@ -488,7 +488,7 @@ export final class ScopeBuilder {
    * Two-pass: first pre-declares types and annotated functions (enabling
    * forward references), then processes all statements fully.
    */
-  #processStatements(statements: Array<Statement>): void {
+  #processStatements(statements: GrowableArray<Statement>): void {
     // First pass: pre-declare classes, interfaces, enums, type aliases,
     // and annotated functions (enables mutual recursion).
     for (let statement in statements) {
@@ -1208,7 +1208,7 @@ export final class ScopeBuilder {
   /**
    * Process class body members.
    */
-  #processClassBody(members: Array<Node>): void {
+  #processClassBody(members: GrowableArray<Node>): void {
     for (let member in members) {
       this.#processSymbolKeyedName(member);
       match (member) {
@@ -1302,7 +1302,7 @@ export final class ScopeBuilder {
   /**
    * Process interface body members for type annotation references.
    */
-  #processInterfaceBody(members: Array<Node>): void {
+  #processInterfaceBody(members: GrowableArray<Node>): void {
     for (let member in members) {
       this.#processSymbolKeyedName(member);
       match (member) {
@@ -1537,7 +1537,7 @@ export final class ScopeBuilder {
     }
   }
 
-  #declareTypeParameters(tps: Array<TypeParameter>): void {
+  #declareTypeParameters(tps: GrowableArray<TypeParameter>): void {
     for (let typeParam in tps) {
       this.#current.declare(typeParam.name, false, typeParam, this.#modulePath);
       // Record each TypeParameter in the declarations map so the checker can
