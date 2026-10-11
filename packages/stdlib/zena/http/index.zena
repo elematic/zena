@@ -1,64 +1,8 @@
 /**
- * Server-side HTTP request handling and response construction for WebAssembly
+ * HTTP server and middleware library for Zena.
+ *
+ * Provides an Express-like, Zipadee-inspired HTTP framework targeting WebAssembly GC
  * components implementing `wasi:http`.
- *
- * Provides helper functions for building text and stream responses to incoming
- * HTTP requests.
- *
- * ## Examples
- *
- * ```zena
- * import { textResponse } from 'zena:http';
- *
- * let response = textResponse('Hello, world!', 200, 'text/plain');
- * ```
  */
 
-import { Fields, Request, Response, ErrorCode } from 'wasi:http/types';
-import { Completer } from 'zena:async';
-import { Outcome, Ok } from 'zena:core';
-import { readAllText, textStream } from 'zena:stream';
-
-/** The one spellable value of type void, for a `result<_, e>` ok arm. */
-function unit(): void {}
-
-/**
- * Builds a response carrying `body` as text: the status, a
- * `content-type` header, and the body streamed out by a background
- * task once the response has been returned to the host — which is
- * when the host starts reading it. No trailers are sent.
- */
-export function textResponse(body: String, status: i32 = 200,
-    contentType: String = 'text/plain; charset=utf-8'): Response {
-  let headers = Fields.create();
-  if (let (false, _, err) = headers.append('content-type', contentType.toBytes())) {
-    throw new Error('zena:http: the content-type header was refused');
-  }
-  // The trailers are a future the sender settles; none are sent, so
-  // it settles up front.
-  let trailers = new Completer<Outcome<Option<Fields>, ErrorCode>>();
-  trailers.complete(new Ok<Option<Fields>, ErrorCode>(none));
-  let (response, transmitted) =
-      Response.new_(headers, some(textStream(body)), trailers.future);
-  if (status != 200) {
-    response.setStatusCode(status as u16);
-  }
-  return response;
-}
-
-/**
- * Reads the request's body to the end and decodes it as text. The
- * body stays on the host until it is read, so this is asynchronous,
- * and a body is consumed once: a second call throws on the host's
- * side, as it does for a response.
- */
-export async function requestText(request: Request): Future<String> {
-  // `consume-body` takes a future the reader settles to say how
-  // receiving went; it is settled with success once the stream has
-  // ended. The trailers future that comes back is left unobserved.
-  let received = new Completer<Outcome<void, ErrorCode>>();
-  let (body, trailers) = Request.consumeBody(request, received.future);
-  let text = await readAllText(body);
-  received.complete(new Ok<void, ErrorCode>(unit()));
-  return text;
-}
+export * from './component.zena';

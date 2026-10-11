@@ -1,0 +1,115 @@
+/**
+ * HTTP Application server orchestration.
+ */
+
+import { Request } from './request.zena';
+import { Response } from './response.zena';
+import { Middleware, compose } from './middleware.zena';
+import { HttpError } from './error.zena';
+import { Server } from './server.zena';
+
+/**
+ * Configuration options for the HTTP App.
+ */
+export class AppOptions {
+  /**
+   * If true, include error details in responses when errors are thrown.
+   */
+  var dev: boolean = false;
+
+  new() {}
+}
+
+/**
+ * An HTTP application managing a middleware pipeline.
+ *
+ * ## Examples
+ *
+ * ```zena
+ * import { App } from 'zena:http';
+ * import { Request as WireRequest, Response as WireResponse, ErrorCode } from 'wasi:http/types';
+ * import { Outcome } from 'zena:core';
+ *
+ * let app = new App();
+ *
+ * app.use(async (req, res, next) => {
+ *   res.body = 'Hello, world!';
+ * });
+ *
+ * export async function handle(request: WireRequest): Future<Outcome<WireResponse, ErrorCode>> {
+ *   return app.handle(request);
+ * }
+ * ```
+ */
+export class App {
+  var #middleware = new GrowableArray<Middleware>();
+  var #dev: boolean = false;
+
+  new(options: AppOptions | null = null) {
+    if (options != null) {
+      this.#dev = (options as AppOptions).dev;
+    }
+  }
+
+  /**
+   * Adds a middleware to the application pipeline.
+   */
+  use(middleware: Middleware): void {
+    this.#middleware.push(middleware);
+  }
+
+  /**
+   * Directly dispatches a Request and Response through the application pipeline.
+   *
+   * Catches thrown `HttpError` instances and translates them to HTTP status codes
+   * and responses. Any uncaught general `Error` results in a 500 Internal Server Error.
+   */
+  async handleRequest(req: Request, res: Response): Future<void> {
+    let pipeline = compose(this.#middleware);
+    try {
+      await pipeline(req, res, async (): Future<void> => {});
+    } catch (e) {
+      this.#handleError(res, e);
+    }
+  }
+
+  /**
+   * Starts an HTTP server on the specified port.
+   *
+   * By default, prints `Server listening on http://127.0.0.1:{port}` and runs
+   * the accept loop in the background. If `onListening` is provided, it is invoked before returning.
+   *
+   * Returns the running Server instance immediately.
+   */
+  listen(port: u16 = 8080 as u16, onListening: (() => void) | null = null): Server {
+    let server = new Server(this, port);
+    if (onListening != null) {
+      onListening();
+    } else {
+      console.log(`Server listening on http://127.0.0.1:${server.port}`);
+    }
+    server.start();
+    return server;
+  }
+
+  #handleError(res: Response, e: Error): void {
+    if (e is HttpError) {
+      let httpErr = e as HttpError;
+      res.statusCode = httpErr.status;
+      var msg = httpErr.message;
+      if (this.#dev && httpErr.privateMessage != null) {
+        msg = msg + '\n' + (httpErr.privateMessage as String);
+      }
+      res.type = 'text/plain; charset=utf-8';
+      res.body = msg;
+    } else {
+      res.statusCode = 500;
+      var msg = 'Internal Server Error';
+      if (this.#dev) {
+        msg = msg + '\n' + e.message;
+      }
+      res.type = 'text/plain; charset=utf-8';
+      res.body = msg;
+    }
+  }
+}

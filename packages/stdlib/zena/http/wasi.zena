@@ -1,0 +1,180 @@
+/**
+ * WASI HTTP wire adapter for WebAssembly components (wasi:http/types@0.3.0).
+ */
+
+import {
+  Fields,
+  Request as WireRequest,
+  Response as WireResponse,
+  ErrorCode,
+  Method,
+  MethodGet, MethodHead, MethodPost, MethodPut, MethodDelete,
+  MethodConnect, MethodOptions, MethodTrace, MethodPatch, MethodOther,
+  Scheme, SchemeHTTP, SchemeHTTPS, SchemeOther
+} from 'wasi:http/types';
+import { Completer } from 'zena:async';
+import { Outcome, Ok, Option, Some } from 'zena:core';
+import { Stream, textStream, readAllText } from 'zena:stream';
+import { URL } from 'zena:url';
+import { Request } from './request.zena';
+import { Response, bytesStream } from './response.zena';
+import { App as BaseApp, AppOptions } from './app.zena';
+
+export { Request as WireRequest, Response as WireResponse, ErrorCode, Fields } from 'wasi:http/types';
+export { AppOptions } from './app.zena';
+
+function unit(): void {}
+
+let methodToString = (m: Method): String => {
+  if (m is MethodGet) return 'GET';
+  if (m is MethodPost) return 'POST';
+  if (m is MethodPut) return 'PUT';
+  if (m is MethodDelete) return 'DELETE';
+  if (m is MethodHead) return 'HEAD';
+  if (m is MethodPatch) return 'PATCH';
+  if (m is MethodOptions) return 'OPTIONS';
+  if (m is MethodConnect) return 'CONNECT';
+  if (m is MethodTrace) return 'TRACE';
+  if (m is MethodOther) return (m as MethodOther).value;
+  return 'GET';
+};
+
+let schemeToString = (s: Scheme): String => {
+  if (s is SchemeHTTP) return 'http';
+  if (s is SchemeHTTPS) return 'https';
+  if (s is SchemeOther) return (s as SchemeOther).value;
+  return 'http';
+};
+
+/**
+ * Creates a Request from a low-level WASI HTTP Request resource.
+ */
+export function fromWireRequest(wire: WireRequest): Request {
+  let method = methodToString(wire.getMethod());
+  let wireHeaders = wire.getHeaders();
+  let entries = wireHeaders.copyAll();
+  let headers = new Map<String, GrowableArray<String>>();
+  for (let entry in entries) {
+    let (fieldName, fieldValueBytes) = entry;
+    let key = fieldName.asciiLowerCase();
+    let val = String.fromBytes(fieldValueBytes);
+    if (let (true, existing) = headers.get(key)) {
+      existing.push(val);
+    } else {
+      let list = new GrowableArray<String>(1);
+      list.push(val);
+      headers[key] = list;
+    }
+  }
+
+  let schemeOpt = wire.getScheme();
+  let scheme = if (schemeOpt is Some<Scheme>) schemeToString((schemeOpt as Some<Scheme>).value) else 'http';
+  let authOpt = wire.getAuthority();
+  var auth = if (authOpt is Some<String>) (authOpt as Some<String>).value else '';
+  if (auth.length == 0) {
+    if (let (true, hostList) = headers.get('host')) {
+      if (hostList.length > 0) auth = hostList[0];
+    }
+  }
+  if (auth.length == 0) auth = 'localhost';
+  let pathOpt = wire.getPathWithQuery();
+  let pathWithQuery = if (pathOpt is Some<String>) (pathOpt as Some<String>).value else '/';
+  let fullPath = if (pathWithQuery.startsWith('/')) pathWithQuery else '/' + pathWithQuery;
+  let href = `${scheme}://${auth}${fullPath}`;
+  let parsedUrl = URL.parse(href, null);
+  let url = if (parsedUrl != null) parsedUrl as URL else (URL.parse('http://localhost/', null) as URL);
+
+  let received = new Completer<Outcome<void, ErrorCode>>();
+  let (bodyStream, _trailers) = WireRequest.consumeBody(wire, received.future);
+  received.complete(new Ok<void, ErrorCode>(unit()));
+
+  return new Request(url, method, headers, bodyStream);
+}
+
+/**
+ * Converts a Response into a low-level WASI WireResponse resource.
+ */
+export function toWireResponse(res: Response): WireResponse {
+  let fields = Fields.create();
+  for (let name in res.headerNames()) {
+    let values = res.getHeaders(name);
+    for (let val in values) {
+      fields.append(name, val.toBytes());
+    }
+  }
+
+  let b = res.body;
+  var streamOpt: Option<Stream<u8>> = none;
+
+  if (b is String) {
+    if (!res.hasHeader('content-type')) {
+      fields.append('content-type', 'text/plain; charset=utf-8'.toBytes());
+    }
+    streamOpt = some(textStream(b as String));
+  } else if (b is FixedArray<u8>) {
+    if (!res.hasHeader('content-type')) {
+      fields.append('content-type', 'application/octet-stream'.toBytes());
+    }
+    streamOpt = some(bytesStream(b as FixedArray<u8>));
+  } else if (b is Stream<u8>) {
+    streamOpt = some(b as Stream<u8>);
+  }
+
+  let trailers = new Completer<Outcome<Option<Fields>, ErrorCode>>();
+  trailers.complete(new Ok<Option<Fields>, ErrorCode>(none));
+  let (wireResp, transmitted) = WireResponse.new_(fields, streamOpt, trailers.future);
+  wireResp.setStatusCode(res.statusCode as u16);
+  return wireResp;
+}
+
+/**
+ * Dispatches an incoming WASI wire request through an App's middleware pipeline.
+ */
+export async function handleWireRequest(app: BaseApp, wire: WireRequest): Future<Outcome<WireResponse, ErrorCode>> {
+  let req = fromWireRequest(wire);
+  let res = new Response();
+  await app.handleRequest(req, res);
+  return new Ok<WireResponse, ErrorCode>(toWireResponse(res));
+}
+
+/**
+ * An HTTP application with native WASI handler integration.
+ */
+export class App extends BaseApp {
+  async handle(wireRequest: WireRequest): Future<Outcome<WireResponse, ErrorCode>> {
+    return handleWireRequest(this, wireRequest);
+  }
+}
+
+/**
+ * Builds a low-level wire response carrying `body` as text.
+ */
+export function textResponse(
+  body: String,
+  status: i32 = 200,
+  contentType: String = 'text/plain; charset=utf-8'
+): WireResponse {
+  let headers = Fields.create();
+  if (let (false, _, err) = headers.append('content-type', contentType.toBytes())) {
+    throw new Error('zena:http: the content-type header was refused');
+  }
+  let trailers = new Completer<Outcome<Option<Fields>, ErrorCode>>();
+  trailers.complete(new Ok<Option<Fields>, ErrorCode>(none));
+  let (response, transmitted) =
+      WireResponse.new_(headers, some(textStream(body)), trailers.future);
+  if (status != 200) {
+    response.setStatusCode(status as u16);
+  }
+  return response;
+}
+
+/**
+ * Reads a wire request's body to the end and decodes it as text.
+ */
+export async function requestText(request: WireRequest): Future<String> {
+  let received = new Completer<Outcome<void, ErrorCode>>();
+  let (body, trailers) = WireRequest.consumeBody(request, received.future);
+  let text = await readAllText(body);
+  received.complete(new Ok<void, ErrorCode>(unit()));
+  return text;
+}

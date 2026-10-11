@@ -1,0 +1,102 @@
+/**
+ * Middleware types, composition, and mounting.
+ */
+
+import { Request } from './request.zena';
+import { Response } from './response.zena';
+
+/**
+ * A callback function invoked by middleware to pass control to the downstream middleware.
+ */
+export type NextFunction = () => Future<void>;
+
+/**
+ * A middleware function handling an HTTP request and response pair.
+ */
+export type Middleware = (req: Request, res: Response, next: NextFunction) => Future<void>;
+
+/**
+ * Composes an array of middleware functions into a single middleware.
+ *
+ * Middleware executes in the order given, unwinding in reverse order as
+ * downstream promises resolve (the onion model). Calling `next()` more than
+ * once within a single middleware invocation throws an error.
+ */
+export function compose(middleware: Array<Middleware>): Middleware {
+  return async (req: Request, res: Response, next: NextFunction): Future<void> => {
+    var currentNext: NextFunction = next;
+    var i = middleware.length - 1;
+    while (i >= 0) {
+      let fn = middleware[i];
+      let downstreamNext = currentNext;
+      var called = false;
+      currentNext = async (): Future<void> => {
+        if (called) {
+          throw new Error('next() called more than once');
+        }
+        called = true;
+        await fn(req, res, downstreamNext);
+      };
+      i -= 1;
+    }
+    await currentNext();
+  };
+}
+
+/**
+ * Mounts middleware at a URL path prefix.
+ *
+ * If `req.path` starts with `prefix`, `req.path` is rewritten to the matched subpath
+ * before `middleware` runs, and restored when passing control to `next()` or upon completion.
+ * If `req.path` does not start with `prefix`, `middleware` is bypassed and `next()` is called.
+ */
+export function mount(prefix: String, middleware: Middleware): Middleware {
+  return async (req: Request, res: Response, next: NextFunction): Future<void> => {
+    let originalPath = req.path;
+    let subpath = matchPath(prefix, originalPath);
+    if (subpath != null) {
+      req.path = subpath as String;
+      await middleware(req, res, async (): Future<void> => {
+        req.path = originalPath;
+        await next();
+        req.path = subpath as String;
+      });
+      req.path = originalPath;
+    } else {
+      await next();
+    }
+  };
+}
+
+/**
+ * Checks if `path` starts with `prefix` and returns the subpath.
+ *
+ * Returns `null` if `path` does not start with `prefix`.
+ *
+ * ## Examples
+ *
+ * ```zena
+ * matchPath('/prefix', '/prefix')       // => '/'
+ * matchPath('/prefix/', '/prefix')      // => null
+ * matchPath('/prefix', '/prefix/users') // => '/users'
+ * matchPath('/prefix/', '/prefix/users')// => '/users'
+ * matchPath('/prefix', '/other')        // => null
+ * ```
+ */
+export function matchPath(prefix: String, path: String): String | null {
+  if (!path.startsWith(prefix)) {
+    return null;
+  }
+  let subPath = path.sliceBytes(prefix.length, path.length);
+  if (subPath.length == 0) {
+    return '/';
+  }
+  if (prefix.length > 0 && prefix.getByteAt(prefix.length - 1) == 0x2F) {
+    return '/' + subPath;
+  }
+  if (subPath.getByteAt(0) != 0x2F) {
+    return null;
+  }
+  return subPath;
+}
+

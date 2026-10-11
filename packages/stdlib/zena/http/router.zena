@@ -1,0 +1,191 @@
+/**
+ * HTTP Router for method and path-based request routing.
+ */
+
+import { Request } from './request.zena';
+import { Response } from './response.zena';
+import { Middleware, NextFunction } from './middleware.zena';
+
+/**
+ * Route handler callback receiving the request, response, downstream next function,
+ * and extracted path parameters.
+ */
+export type RouteHandler = (
+  req: Request,
+  res: Response,
+  next: NextFunction,
+  params: Map<String, String>
+) => Future<void>;
+
+class RouteEntry {
+  method: String;
+  pattern: String;
+  segments: Array<String>;
+  handler: RouteHandler;
+
+  new(this.method, this.pattern, this.segments, this.handler);
+}
+
+let splitSegments = (path: String): Array<String> => {
+  let segs = new GrowableArray<String>();
+  var i = 0;
+  var start = 0;
+  while (i < path.length) {
+    if (path.getByteAt(i) == 0x2F) { // '/'
+      if (i > start) {
+        segs.push(path.sliceBytes(start, i));
+      }
+      start = i + 1;
+    }
+    i += 1;
+  }
+  if (start < path.length) {
+    segs.push(path.sliceBytes(start, path.length));
+  }
+  return segs;
+};
+
+let matchRoute = (patternSegs: Array<String>, pathSegs: Array<String>): Map<String, String> | null => {
+  let params = new Map<String, String>();
+  var pIdx = 0;
+  var pathIdx = 0;
+  while (pIdx < patternSegs.length && pathIdx < pathSegs.length) {
+    let pat = patternSegs[pIdx];
+    if (pat == '*') {
+      var rest = '';
+      var j = pathIdx;
+      while (j < pathSegs.length) {
+        if (rest.length > 0) rest = rest + '/';
+        rest = rest + pathSegs[j];
+        j += 1;
+      }
+      params['*'] = rest;
+      return params;
+    }
+    if (pat.startsWith(':')) {
+      let paramName = pat.sliceBytes(1, pat.length);
+      params[paramName] = pathSegs[pathIdx];
+    } else if (pat != pathSegs[pathIdx]) {
+      return null;
+    }
+    pIdx += 1;
+    pathIdx += 1;
+  }
+
+  if (pIdx < patternSegs.length && patternSegs[pIdx] == '*' && pathIdx == pathSegs.length) {
+    params['*'] = '';
+    pIdx += 1;
+  }
+
+  if (pIdx == patternSegs.length && pathIdx == pathSegs.length) {
+    return params;
+  }
+  return null;
+};
+
+/**
+ * A router that matches requests by HTTP method and URL path pattern.
+ *
+ * Supports named parameters (`:id`) and wildcards (`*`).
+ *
+ * ## Examples
+ *
+ * ```zena
+ * let router = new Router();
+ *
+ * router.get('/users', async (req, res, next, params) => {
+ *   res.body = 'Users list';
+ * });
+ *
+ * router.get('/users/:id', async (req, res, next, params) => {
+ *   let id = params['id'] ?? 'unknown';
+ *   res.body = 'User ' + id;
+ * });
+ *
+ * app.use(router.routes());
+ * ```
+ */
+export class Router {
+  var #routes = new GrowableArray<RouteEntry>();
+
+  new() {}
+
+  /**
+   * Registers a route for any HTTP method.
+   */
+  all(pattern: String, handler: RouteHandler): void {
+    this.#addRoute('ALL', pattern, handler);
+  }
+
+  /**
+   * Registers a GET route.
+   */
+  get(pattern: String, handler: RouteHandler): void {
+    this.#addRoute('GET', pattern, handler);
+  }
+
+  /**
+   * Registers a POST route.
+   */
+  post(pattern: String, handler: RouteHandler): void {
+    this.#addRoute('POST', pattern, handler);
+  }
+
+  /**
+   * Registers a PUT route.
+   */
+  put(pattern: String, handler: RouteHandler): void {
+    this.#addRoute('PUT', pattern, handler);
+  }
+
+  /**
+   * Registers a DELETE route.
+   */
+  delete(pattern: String, handler: RouteHandler): void {
+    this.#addRoute('DELETE', pattern, handler);
+  }
+
+  /**
+   * Registers a PATCH route.
+   */
+  patch(pattern: String, handler: RouteHandler): void {
+    this.#addRoute('PATCH', pattern, handler);
+  }
+
+  #addRoute(method: String, pattern: String, handler: RouteHandler): void {
+    let segs = splitSegments(pattern);
+    this.#routes.push(new RouteEntry(method, pattern, segs, handler));
+  }
+
+  /**
+   * Returns a Middleware function that dispatches matching routes.
+   */
+  routes(): Middleware {
+    return async (req: Request, res: Response, next: NextFunction): Future<void> => {
+      let method = req.method;
+      let path = req.path;
+      let pathSegs = splitSegments(path);
+
+      var routeIdx = 0;
+      let routes = this.#routes;
+
+      let dispatchNextRoute = async (): Future<void> => {
+        while (routeIdx < routes.length) {
+          let route = routes[routeIdx];
+          routeIdx += 1;
+          if (route.method == 'ALL' || route.method == method) {
+            let match = matchRoute(route.segments, pathSegs);
+            if (match != null) {
+              let params = match as Map<String, String>;
+              await route.handler(req, res, dispatchNextRoute, params);
+              return;
+            }
+          }
+        }
+        await next();
+      };
+
+      await dispatchNextRoute();
+    };
+  }
+}

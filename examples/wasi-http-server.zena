@@ -1,0 +1,48 @@
+/**
+ * WASI HTTP 0.3 Service Component Example.
+ *
+ * Demonstrates exporting wasi:http/handler@0.3.0 from a Zena application.
+ *
+ * Note: Exporting functions taking resource parameters (like `Request`) across
+ * the component boundary requires richer component model type emission
+ * (planned in C3, see docs/design/component-emission.md). For self-hosted
+ * servers running under zena-cli, use examples/http-server.zena instead.
+ *
+ * Build with:
+ *   ./target/release/zena-cli build examples/wasi-http-server.zena --target component -o examples/wasi-http-server.wasm
+ *
+ * Serve with:
+ *   wasmtime serve examples/wasi-http-server.wasm --addr 127.0.0.1:8080
+ */
+
+import { App, Router, handleWireRequest } from 'zena:http';
+import { Request as WireRequest, Response as WireResponse, ErrorCode } from 'wasi:http/types';
+import { Outcome } from 'zena:core';
+
+let app = new App();
+let router = new Router();
+
+// Logging middleware
+app.use(async (req, res, next) => {
+  let path = req.path;
+  await next();
+  console.log(`${req.method} ${path} -> ${res.statusCode}`);
+});
+
+router.get('/', async (req, res, next, params) => {
+  res.type = 'text/plain; charset=utf-8';
+  res.body = 'Hello from Zena WASI HTTP service!';
+});
+
+router.get('/greet/:name', async (req, res, next, params) => {
+  let name = params.getOr('name', 'stranger');
+  res.type = 'text/plain; charset=utf-8';
+  res.body = `Hello, ${name}! Welcome to WebAssembly GC on WASI 0.3 HTTP.\n`;
+});
+
+app.use(router.routes());
+
+export async function handle(request: WireRequest): Future<Outcome<WireResponse, ErrorCode>> {
+  return await handleWireRequest(app, request);
+}
+
