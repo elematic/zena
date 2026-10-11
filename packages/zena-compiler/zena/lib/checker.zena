@@ -7360,6 +7360,22 @@ let eitherType = (ctx: CheckerContext, a: Type, b: Type): Type => {
   return createUnionType(both, ctx);
 };
 
+/**
+ * Reports the explicit property for `key` in a record literal, if one
+ * came earlier, as dead: the spread now being merged always supplies
+ * `key`, so that property's value could never be read. Forgets the
+ * property, so one that is overwritten twice is reported once.
+ */
+let reportOverwrittenProperty = (ctx: CheckerContext,
+    explicitKeys: HashMap<String, Identifier>, key: String): void => {
+  if (let (true, name) = explicitKeys.get(key)) {
+    ctx.error(
+      `Property '${key}' is always overwritten by the spread that follows.`,
+      DiagnosticCode.DuplicateField, name.loc);
+    explicitKeys.delete(key);
+  }
+};
+
 let isValuePrimitive = (type: Type): boolean => {
   return match (type) {
     case I32Type: true
@@ -12841,10 +12857,19 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
     // the source's. An explicit assignment (or a required spread field)
     // later in the literal makes it definite again.
     var literalOptionals: HashSet<String> | null = null;
+    // Each explicit key, by the property that wrote it, so a repeat and
+    // a key a later spread always overwrites can be reported.
+    let explicitKeys = new HashMap<String, Identifier>();
     var i = 0;
     while (i < properties.length) {
       match (properties[i]) {
         case PropertyAssignment {name, value}: {
+          if (explicitKeys.has(name.name)) {
+            ctx.error(`Duplicate property '${name.name}' in record literal.`,
+                DiagnosticCode.DuplicateField, name.loc);
+          } else {
+            explicitKeys[name.name] = name;
+          }
           var propExpected: Type | null = null;
           if (expectedProps != null &&
               expectedProps.has(name.name)) {
@@ -12881,6 +12906,7 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
                   }
                 } else {
                   propTypes[key] = spreadT;
+                  reportOverwrittenProperty(ctx, explicitKeys, key);
                   if (literalOptionals != null) {
                     literalOptionals.delete(key);
                   }
@@ -12893,6 +12919,7 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
                 let member = ct.members[key];
                 if (member is FieldInfo && !member.isStatic && !member.isPrivate && !(key.length > 0 && key.sliceBytes(0, 1) == "#")) {
                   propTypes[key] = member.type;
+                  reportOverwrittenProperty(ctx, explicitKeys, key);
                 }
               }
             }

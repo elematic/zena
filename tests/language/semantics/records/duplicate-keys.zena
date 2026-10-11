@@ -1,0 +1,29 @@
+// @mode: check
+// A record literal names each key once. A key repeated among its
+// explicit properties is an error, and so is an explicit property that
+// a later spread always overwrites: that property's value could never
+// be read.
+
+type P = {a: i32, b: i32};
+type Q = {a?: i32, b: i32};
+
+class C {
+  x: i32;
+  new(this.x);
+}
+
+let p: P = {a: 1, b: 2};
+let q: Q = {b: 2};
+
+let repeated = {a: 1, a: 2}; // @error: Duplicate property 'a' in record literal.
+let repeatedLater = {a: 1, b: 2, a: 3}; // @error: Duplicate property 'a' in record literal.
+let overwritten = {a: 1, ...p}; // @error: Property 'a' is always overwritten by the spread that follows.
+let overwrittenByClass = {x: 1, ...new C(2)}; // @error: Property 'x' is always overwritten by the spread that follows.
+
+// A spread copies only the fields present in it, so where the key is
+// optional the property supplies it whenever the spread's is absent, and
+// the result's field is required.
+let defaulted: {a: i32, b: i32} = {a: 1, ...q};
+// A property after a spread replaces the spread's field: the update idiom.
+let updated = {...p, a: 10};
+let updatedTwice = {...p, ...q, b: 3};
