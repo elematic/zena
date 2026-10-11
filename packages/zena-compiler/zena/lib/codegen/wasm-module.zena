@@ -685,7 +685,9 @@ export final class WasmFunction implements Hashable {
  * its body becomes a forwarder that reads the exploded records' fields
  * and calls `core`. `core` takes those fields as parameters and holds
  * the declared body. A direct call whose exploded arguments are all
- * record literals calls `core` and allocates no record.
+ * record literals calls `core` and allocates no record. `core` may also
+ * return the fields of the record `forwarder` returns; the forwarder
+ * then builds the record from them.
  */
 export final class ExplosionSpec {
   /**
@@ -696,7 +698,12 @@ export final class ExplosionSpec {
   params: GrowableArray<RecordDispatchInfo | null>;
   forwarder: WasmFunction;
   core: WasmFunction;
-  new(this.params, this.forwarder, this.core);
+  /**
+   * The dispatch of the record the forwarder returns, when `core`
+   * returns its fields instead, in `dispatch.fields` order; else null.
+   */
+  result: RecordDispatchInfo | null;
+  new(this.params, this.forwarder, this.core, this.result);
 }
 
 /**
@@ -1070,6 +1077,12 @@ export final class WasmModule {
    * Used to resolve call targets. Anonymous functions will not be in this map.
    */
   functionMap = new Map<SymbolId, WasmFunction>();
+  /**
+   * The node ids of calls whose record result is only read for its
+   * fields (ir/explode.zena): lowering calls the callee's core there and
+   * holds the result as fields.
+   */
+  fieldsOnlyResultCalls = new Set<i32>();
   
   /**
    * Maps a Zena AST Node ID to its compiler intrinsic name (e.g. `memory.size`).

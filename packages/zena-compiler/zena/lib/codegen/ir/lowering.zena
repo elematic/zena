@@ -1545,7 +1545,10 @@ export final class FunctionLowerer {
           this.#lowerStatementList(stmts, 0, bodyCount);
         }
       }
-      if (tailExpr != null && this.#cx().reachable) {
+      if (tailExpr != null && this.#cx().reachable &&
+          this.#explodedResult() != null) {
+        this.#returnFields(tailExpr);
+      } else if (tailExpr != null && this.#cx().reachable) {
         let tailValue = this.#lowerExpressionCtx(
             tailExpr, this.#returnSlotVt());
         this.#emitCheckedRet(tailValue);
@@ -1585,12 +1588,13 @@ export final class FunctionLowerer {
         // expression body as one — a return when the function produces
         // a value (the value computes inside the region, before the
         // release), a bare expression statement when it is void.
-        if (sig.returns.length > 1) {
+        let fieldsResult = this.#explodedResult() != null;
+        if (sig.returns.length > 1 && !fieldsResult) {
           this.#bail('param drop multi-return');
         }
         let bodyExpr = body as Expression;
         let synthesized = new Array<Statement>();
-        if (sig.returns.length == 1) {
+        if (sig.returns.length == 1 || fieldsResult) {
           synthesized.push(
               new ReturnStatement(bodyExpr, false, bodyExpr.loc) as Statement);
         } else {
@@ -1618,7 +1622,9 @@ export final class FunctionLowerer {
         }
         return this.b.finish();
       }
-      if (sig.returns.length > 1) {
+      if (this.#explodedResult() != null) {
+        this.#returnFields(body as Expression);
+      } else if (sig.returns.length > 1) {
         this.#lowerMultiReturn(body as Expression);
       } else {
         let value = this.#lowerExpressionCtx(body as Expression, sig.returns[0]);
@@ -2849,8 +2855,67 @@ export final class FunctionLowerer {
     if (this.presplitAsync) {
       return this.presplitAsyncValueVt;
     }
+    // A core returning its record's fields still returns that record in
+    // the source: the slot is the forwarder's.
+    if (this.#explodedResult() != null) {
+      return (this.func.explosion as ExplosionSpec).forwarder.signature.returns[0];
+    }
     let sig = this.func.signature;
     return if (sig.returns.length == 1) sig.returns[0] else null;
+  }
+
+  /** In a core that returns its record's fields, that record's dispatch. */
+  #explodedResult(): RecordDispatchInfo | null {
+    let spec = this.func.explosion;
+    if (spec != null && spec.core === this.func) {
+      return spec.result;
+    }
+    return null;
+  }
+
+  /**
+   * Returns the record `expr` evaluates to as its fields, from a core
+   * that returns them (#explodedResult): a record literal is lowered
+   * straight to its fields, a record held as fields (`explodedRecords`)
+   * passes them, and any other record is read field by field.
+   */
+  #returnFields(expr: Expression): void {
+    let d = this.#explodedResult() as RecordDispatchInfo;
+    let coreReturns = this.func.signature.returns;
+    var values = new Array<i32>();
+    if (this.#isExactRecordLiteral(expr, d)) {
+      values = this.#lowerRecordLiteralFields(expr as RecordLiteral, d);
+    } else {
+      let record = this.#lowerExpressionCtx(expr, this.#returnSlotVt());
+      if (!this.#cx().reachable) {
+        return;
+      }
+      var held = false;
+      if (let (true, h) = this.#cx().explodedRecords.get(record)) {
+        if (h.dispatch === d) {
+          values = h.values;
+          held = true;
+        }
+      }
+      if (!held) {
+        for (let field in d.fields) {
+          let read = this.#cx().recordDispatchRead(
+              d, field.name as String, record);
+          values.push(this.#conformToSlot(read, coreReturns[values.length],
+              'exploded result field type'));
+        }
+      }
+    }
+    if (!this.#cx().reachable) {
+      return;
+    }
+    if (values.length == 1) {
+      if (!returnThroughFinally(this.#cx(), values[0])) {
+        this.b.ret(values[0]);
+      }
+    } else if (!returnMultiThroughFinally(this.#cx(), values)) {
+      this.b.retMulti(values);
+    }
   }
 
   /**
@@ -3052,6 +3117,8 @@ export final class FunctionLowerer {
           if (!returnThroughFinally(this.#cx(), -1)) {
             this.b.retVoid();
           }
+        } else if (this.#explodedResult() != null) {
+          this.#returnFields(argument);
         } else if (!this.presplitAsync &&
             (this.func.signature.returns.length > 1 ||
              (argument is TupleLiteral &&
@@ -4315,7 +4382,11 @@ export final class FunctionLowerer {
       }
     }
     let funcRef = this.b.addRef(new IrRefFunc(spec.core));
-    if (sig.returns.length > 1) {
+    let result = spec.result;
+    if (result != null) {
+      // The core returns the record's fields; this builds the record.
+      this.b.ret(this.#callForFields(spec.core, args, result));
+    } else if (sig.returns.length > 1) {
       this.b.retMulti(this.b.callFuncMulti(funcRef, args, sig.returns));
     } else if (sig.returns.length == 1) {
       this.b.ret(this.b.callFunc(funcRef, args, sig.returns[0]));
@@ -8144,9 +8215,14 @@ export final class FunctionLowerer {
     let explosion = target.explosion;
     if (defaults == null && explosion != null &&
         explosion.forwarder === target &&
-        this.#passesUnpackedArg(call.args, explosion)) {
-      return this.#emitDirectCall(call, explosion.core,
-          this.#lowerExplodedArgs(call.args, explosion), multiOut);
+        (this.#passesUnpackedArg(call.args, explosion) ||
+         this.#wantsResultFields(call, explosion))) {
+      let coreArgs = this.#lowerExplodedArgs(call.args, explosion);
+      let result = explosion.result;
+      if (result == null) {
+        return this.#emitDirectCall(call, explosion.core, coreArgs, multiOut);
+      }
+      return this.#callForFields(explosion.core, coreArgs, result);
     }
     let args = new Array<i32>();
     var sIdx = 0;
@@ -8183,6 +8259,35 @@ export final class FunctionLowerer {
       }
     }
     return false;
+  }
+
+  /**
+   * Whether `call`'s record result is only read for its fields
+   * (`wasm.fieldsOnlyResultCalls`) and `spec`'s core returns them.
+   */
+  #wantsResultFields(call: CallExpression, spec: ExplosionSpec): boolean {
+    return spec.result != null &&
+        this.wasm.fieldsOnlyResultCalls.has((call as Node).id as i32);
+  }
+
+  /**
+   * Calls `core`, which returns the fields of a record of `result`'s
+   * type, and holds them as that record (`explodedRecords`): the record
+   * built from them dies unless some use needs it whole.
+   */
+  #callForFields(core: WasmFunction, args: GrowableArray<i32>,
+      result: RecordDispatchInfo): i32 {
+    let returns = core.signature.returns;
+    let funcRef = this.b.addRef(new IrRefFunc(core));
+    var fields = new Array<i32>();
+    if (returns.length == 1) {
+      fields.push(this.b.callFunc(funcRef, args, returns[0]));
+    } else {
+      fields = this.b.callFuncMulti(funcRef, args, returns);
+    }
+    let record = this.#packRecord(result, fields);
+    this.#cx().explodedRecords[record] = new ExplodedRecord(result, fields);
+    return record;
   }
 
   /** A record literal of exactly `d`'s record type, with no adaptation. */

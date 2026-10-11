@@ -1,7 +1,8 @@
 # Argument Explosion
 
-**Status: Implemented for top-level functions and constructors**
-(`ir/explode.zena`). The later phases below are not.
+**Status: Implemented for top-level functions and constructors, and
+for top-level functions' record results** (`ir/explode.zena`). The later
+phases below are not.
 
 A function that takes a record parameter also gets a version whose
 signature carries the record's fields as individual parameters, and a
@@ -20,8 +21,9 @@ fetch({url: u, retries: 5});   // no record is ever allocated
 
 [records-and-tuples.md](records-and-tuples.md) §4.2.1 sketched this;
 [record-presence.md](record-presence.md) §7 defined how presence masks
-ride exploded signatures. Multi-value _returns_ (records-and-tuples.md
-§4.2's other half) are out of scope here.
+ride exploded signatures. The same machinery returns a record result as
+its fields when the callers only read the fields
+([Results](#results), records-and-tuples.md §4.2's other half).
 
 ## Semantics
 
@@ -326,13 +328,87 @@ explodes and turn any escaping use into a compile error. It is deferred
 only because it is syntax; the check is the escape check's existing
 verdict.
 
+## Results
+
+A top-level function returning a record can return the record's fields
+as wasm results instead, when some call only reads them:
+
+```zena
+let step = (p: V): V => ({x: p.x + 1, y: p.y});
+
+let {x, y} = step(v);   // step.core returns (x, y); no record is built
+```
+
+It is the same core and forwarder: `ExplosionSpec.result` is the
+record's dispatch, the core's results are its fields in
+`dispatch.fields` order, and the forwarder calls the core and builds the
+record for every caller that needs it whole. One core can take fields,
+return fields, or both.
+
+The two facts run the other way from parameters:
+
+- **Demand**, from the caller. Reachability records every direct call
+  whose result is a record (`recordResultCalls`). A call's result is
+  only read for its fields when the call is `f().field`, the source of
+  `let {...} = f()`, or the initializer of a `let` whose every use reads
+  a field, destructures it, or passes it to a fields-only parameter of
+  the same record type. A call returned from another function, as its
+  `return` operand, expression body or value block's tail, counts when
+  that function's result explodes.
+- **Availability**, from the callee. Some return produces the fields
+  without the record: a record literal, an exploded parameter of the
+  same record type, or a call whose result explodes.
+
+A result explodes when it is both. `return g(...)` makes each depend on
+the other function's verdict, so the pass iterates from "no result
+explodes" until nothing changes. It then marks the calls whose results
+lowering holds as fields (`wasm.fieldsOnlyResultCalls`, by node id).
+
+**Lowering.** In a core with an exploded result, every return site
+(`return`, an expression body, a value block's tail) goes through
+`#returnFields`: a record literal lowers straight to fields, a record
+held as fields passes them, and any other record is read field by field.
+Returns inside `finally` regions park the values like inline-tuple
+returns do. At a marked call, `#lowerDirectCallTo` calls the core, takes
+its results, and holds them as the record (`explodedRecords`), so field
+reads, destructuring and further fields-only uses read the values and
+the record built from them dies.
+
+Excluded: functions with a `tail return`, whose call the core could not
+turn into fields, and records with no fields.
+
+Measured on a loop calling an out-of-line function that returns a
+two-field record literal, destructured, bound and read, and returned on
+through a second function, two million iterations:
+
+| build | before | after |
+| ----- | ------ | ----- |
+| `-O1` | 127 ms | 15 ms |
+| `-O2` | 24 ms  | 15 ms |
+
+Before, at `-O2`, the callee was specialized and devirtualized but still
+allocated its result at every call.
+
+Not yet covered:
+
+- A result bound with `var`, as in `pos = step(pos)` in a loop: a
+  reassigned binding counts as needing the record.
+- A return whose value is an `if` or `match` expression with literal
+  arms: only a literal at the top of a return produces fields.
+- A parameter returned whole (`(v: V): V => v`): returning a parameter
+  is not yet a fields-only use of it, though it would be when the
+  result explodes.
+- A `let`-bound result passed to a fields-only parameter whose function
+  has no other unpacked caller: the call passes the record, because
+  availability does not yet propagate from results.
+- Methods and constructors' results.
+
 ## Later phases
 
 - Named constructors; generic classes' constructors; super arguments
   past the first superclass, returned from `<ctor-init>` as fields.
 - Non-virtual methods; per-specialization explosion of generic
   functions; async functions and generators.
-- Multi-value returns.
 - The `inline` parameter guarantee above.
 - Teaching spread and `==` to consume exploded bindings.
 - Weighting call sites, for example by loop depth, for a function with

@@ -2,7 +2,7 @@ import { Program } from '../../program.zena';
 import { WasmModule, WasmFunction, WasmStruct } from '../wasm-module.zena';
 import { SemanticModel, SymbolDependencies } from '../../semantic-model.zena';
 import { Type, ClassType, InterfaceType, FunctionType } from '../../types.zena';
-import { Node, ClassDeclaration, InterfaceDeclaration, ImportDeclaration, VariableDeclaration, FunctionDeclaration, DeclareFunction } from '../../ast.zena';
+import { Node, CallExpression, ClassDeclaration, InterfaceDeclaration, ImportDeclaration, VariableDeclaration, FunctionDeclaration, DeclareFunction } from '../../ast.zena';
 import { Set, HashMap, HashSet } from 'zena:collections';
 
 import { SymbolId } from '../../scope/symbol.zena';
@@ -150,6 +150,17 @@ export let recordLiteralCtorArgKey = (classKey: String, method: String,
 export let recordLiteralArgKey = (callee: SymbolId, index: i32): i64 =>
     ((callee as i32) as i64) * 65536 + (index as i64);
 
+/**
+ * A direct call to a module-level function whose result is a record,
+ * for argument explosion's result analysis (ir/explode.zena).
+ */
+export final class RecordResultCall {
+  call: CallExpression;
+  model: SemanticModel;
+  callee: SymbolId;
+  new(this.call, this.model, this.callee);
+}
+
 export interface ReachabilityContext {
   isRtaActive: boolean;
   var instantiationClosed: boolean;
@@ -278,6 +289,10 @@ export interface ReachabilityContext {
   recordLiteralArgs: HashSet<i64>;
   /** The same for constructors, keyed by `recordLiteralCtorArgKey`. */
   recordLiteralCtorArgs: HashSet<String>;
+  /** Reached direct calls whose result is a record, once each. */
+  recordResultCalls: GrowableArray<RecordResultCall>;
+  /** The node ids of `recordResultCalls`, to keep it to one entry per call. */
+  recordResultCallIds: HashSet<i32>;
 
   queueReferrer(ref: Referrer): void;
   noteSpecialization(ct: ClassType, model: SemanticModel): void;

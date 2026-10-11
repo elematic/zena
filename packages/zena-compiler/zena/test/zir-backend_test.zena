@@ -785,6 +785,26 @@ export let tests = suite('zir backend', (): void => {
         'struct.new', 1, 'a record passed on to super is never rebuilt');
   });
 
+  test('a record result only read for its fields is returned as its fields', (ctx: TestContext): void => {
+    // `step` builds its result from a literal and `main` only
+    // destructures it, so `step.core` returns the two fields as wasm
+    // results and neither side builds the record.
+    let result = compileWithZir(
+        'type V = {x: i32, y: i32};\n' +
+        'let step = (p: i32): V => ({x: p, y: p + 1});\n' +
+        'export let main = (): i32 => {\n' +
+        '  let {x, y} = step(3);\n' +
+        '  return x * y;\n' +
+        '};');
+    assertNoAllocation(result, '$step.core',
+        'the result literal is returned as its fields');
+    assertNoAllocation(result, '$main', 'the fields are never packed');
+    let coreCall = new Array<String>();
+    coreCall.push('call $step.core');
+    assertFunctionUses(result, '$main', coreCall,
+        'a fields-only result calls the core');
+  });
+
   test('-O2 removes a local fat pointer entirely', (ctx: TestContext): void => {
     // Pack, dispatch, unpack, all in one body: devirtualization makes
     // the call direct, inlining brings the trampoline's receiver cast

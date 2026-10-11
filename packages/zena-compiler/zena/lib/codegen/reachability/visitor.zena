@@ -2,7 +2,7 @@ import { Set } from 'zena:collections';
 import { collectValueExports, findDeclaration } from '../lookup.zena';
 import {
   Referrer, ReachabilityContext, TypeLowererInterface, ReachabilityVisitorInterface,
-  recordLiteralArgKey, recordLiteralCtorArgKey,
+  recordLiteralArgKey, recordLiteralCtorArgKey, RecordResultCall,
 } from './context.zena';
 import { SemanticModel, memberKeyOf } from '../../semantic-model.zena';
 import {
@@ -808,6 +808,7 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
               this.pass.queueReferrer(new Referrer(true,
                   calleeTarget.id, -1, model, null, true));
               this.#noteRecordLiteralArgs(n, calleeTarget.id);
+              this.#noteRecordResultCall(n, model, calleeTarget.id);
             }
           }
         }
@@ -939,6 +940,7 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
                   calleeTarget.id, -1, model, null,
                   this.pass.currentReachable));
               this.#noteRecordLiteralArgs(n, calleeTarget.id);
+              this.#noteRecordResultCall(n, model, calleeTarget.id);
             }
           }
         }
@@ -987,6 +989,20 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
    * way a written `a == b` would. The intrinsic is recognized by its
    * decorator, since the call may be visited before the declaration is.
    */
+  /** Records a direct call whose result is a record. */
+  #noteRecordResultCall(n: CallExpression, model: SemanticModel,
+      callee: SymbolId): void {
+    let t = model.getNodeType(n);
+    if (t == null || !(baseType(t) is RecordType)) {
+      return;
+    }
+    let id = (n as Node).id as i32;
+    if (!this.pass.recordResultCallIds.has(id)) {
+      this.pass.recordResultCallIds.add(id);
+      this.pass.recordResultCalls.push(new RecordResultCall(n, model, callee));
+    }
+  }
+
   /** Records the arguments of a `new` that are record literals. */
   #noteRecordLiteralCtorArgs(n: NewExpression, ct: ClassType,
       ctorMethodKey: String): void {
@@ -2052,6 +2068,7 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
                   calleeTarget.id, -1, model, null,
                   this.pass.currentReachable));
               this.#noteRecordLiteralArgs(n, calleeTarget.id);
+              this.#noteRecordResultCall(n, model, calleeTarget.id);
             }
           }
         }
