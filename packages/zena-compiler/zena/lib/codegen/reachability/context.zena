@@ -135,6 +135,13 @@ export interface ReachabilityVisitorInterface {
  * allowing child visitors and specializers to query and update the work queues without
  * introducing circular module imports.
  */
+/**
+ * The `recordLiteralArgs` key for argument `index` of a call to the
+ * function `callee`.
+ */
+export let recordLiteralArgKey = (callee: SymbolId, index: i32): i64 =>
+    ((callee as i32) as i64) * 65536 + (index as i64);
+
 export interface ReachabilityContext {
   isRtaActive: boolean;
   var instantiationClosed: boolean;
@@ -255,6 +262,12 @@ export interface ReachabilityContext {
   instantiatedClassesByInterface: HashMap<SymbolId, GrowableArray<ClassInterfacePair>>;
   referencedInterfaceMembersById: HashMap<SymbolId, GrowableArray<String>>;
   referencedReachableInterfaceMembers: HashSet<String>;
+  /**
+   * The parameters some reached direct call passes a record literal,
+   * keyed by `recordLiteralArgKey`. Argument explosion
+   * (ir/explode.zena) splits only these.
+   */
+  recordLiteralArgs: HashSet<i64>;
 
   queueReferrer(ref: Referrer): void;
   noteSpecialization(ct: ClassType, model: SemanticModel): void;

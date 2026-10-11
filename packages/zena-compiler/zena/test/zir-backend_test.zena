@@ -641,6 +641,49 @@ export let tests = suite('zir backend', (): void => {
         'reads off a fresh immutable allocation forward to its operands');
   });
 
+  test('a record literal argument is passed as its fields', (ctx: TestContext): void => {
+    // Argument explosion (ir/explode.zena) at level 1, where nothing
+    // inlines: `f` only reads fields of its record parameter, so `main`
+    // calls `f.core` with the literals' field values, omitted optional
+    // included, and the core reads them as parameters.
+    let result = compileWithZir(
+        'type Opts = {a: i32, b?: i32};\n' +
+        'let f = (o: Opts): i32 => o.a * (o.b ?? 2);\n' +
+        'export let main = (): i32 => f({a: 3}) + f({b: 4, a: 5});');
+    assertNoAllocation(result, '$main',
+        'a record literal argument is never built');
+    let coreCall = new Array<String>();
+    coreCall.push('call $f.core');
+    assertFunctionUses(result, '$main', coreCall,
+        'a call passing a literal goes to the core');
+    let absent = new Array<String>();
+    absent.push('call_ref');
+    assertFunctionOmits(result, '$f.core', absent,
+        'the core reads fields from its parameters, not through getters');
+    assertNoAllocation(result, '$f.core',
+        'the record the core rebuilds for its parameter has no uses');
+  });
+
+  test('a record value argument goes through the forwarder', (ctx: TestContext): void => {
+    // `g` passes a record it holds, so it calls `f` itself, whose body
+    // reads the fields and calls the core.
+    let result = compileWithZir(
+        'type Opts = {a: i32, b?: i32};\n' +
+        'let f = (o: Opts): i32 => o.a * (o.b ?? 2);\n' +
+        'let g = (o: Opts): i32 => f(o) + 1;\n' +
+        'export let main = (): i32 => f({a: 3}) + g({a: 5});');
+    let forwarded = new Array<String>();
+    forwarded.push('call $f');
+    assertFunctionUses(result, '$g', forwarded,
+        'a record value is passed to the forwarder');
+    let coreCall = new Array<String>();
+    coreCall.push('call $f.core');
+    assertFunctionOmits(result, '$g', coreCall,
+        'only a literal argument can be passed as fields');
+    assertFunctionUses(result, '$f', coreCall,
+        'the forwarder calls the core');
+  });
+
   test('-O2 removes a local fat pointer entirely', (ctx: TestContext): void => {
     // Pack, dispatch, unpack, all in one body: devirtualization makes
     // the call direct, inlining brings the trampoline's receiver cast

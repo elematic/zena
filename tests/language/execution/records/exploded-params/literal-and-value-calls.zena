@@ -1,0 +1,49 @@
+// @mode: run
+// @result: 1
+// A function whose record parameter is only read field by field is
+// called several ways: with record literals, with a record held in a
+// variable, with a wider record, and through a function value. The
+// literal calls pass the fields directly and the rest pass the record,
+// and all of them must compute the same thing.
+
+type Opts = {base: i32, scale: i32, offset?: i32};
+
+let work = (o: Opts): i32 => {
+  var acc = 0;
+  for (var i = 0; i < o.scale; i += 1) {
+    if ((i & 1) == 0) {
+      acc += o.base * i;
+    } else {
+      acc -= o.offset ?? 3;
+    }
+  }
+  return acc;
+};
+
+let forward = (o: Opts): i32 => work(o);
+
+export let main = (): i32 => {
+  let held: Opts = {base: 2, scale: 6, offset: 1};
+  let wide = {base: 2, scale: 6, offset: 1, label: 'unused'};
+  let asValue = work;
+
+  let fromLiteral = work({base: 2, scale: 6, offset: 1});
+  let fromReordered = work({offset: 1, scale: 6, base: 2});
+  let fromHeld = work(held);
+  let fromWide = work(wide);
+  let fromValue = asValue({base: 2, scale: 6, offset: 1});
+  let fromForward = forward({base: 2, scale: 6, offset: 1});
+
+  // 2*0 - 1 + 2*2 - 1 + 2*4 - 1 = 9
+  if (fromLiteral != 9 || fromReordered != 9 || fromHeld != 9 ||
+      fromWide != 9 || fromValue != 9 || fromForward != 9) {
+    return 0;
+  }
+  // The omitted optional reads as absent on both paths.
+  let omitted = work({base: 1, scale: 2});
+  let omittedHeld: Opts = {base: 1, scale: 2};
+  if (omitted != -3 || work(omittedHeld) != -3) {
+    return 0;
+  }
+  return 1;
+};

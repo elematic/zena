@@ -133,6 +133,16 @@ export final class LetCondBinds {
       this.patternValues);
 }
 
+/**
+ * An exploded parameter's record, rebuilt on entry to the core, and the
+ * field values it was built from, in `dispatch.fields` order.
+ */
+export final class ExplodedRecord {
+  dispatch: RecordDispatchInfo;
+  values: GrowableArray<i32>;
+  new(this.dispatch, this.values);
+}
+
 export final class LoweringContext {
   b: IrBuilder;
   wasm: WasmModule;
@@ -144,6 +154,15 @@ export final class LoweringContext {
   var env = new Map<SymbolId, i32>();
   /** Symbols behind env entries, for binding-type lookups at merges. */
   symbols = new Map<SymbolId, Symbol>();
+  /**
+   * In an exploded core (ExplosionSpec), the record rebuilt on entry
+   * for each exploded parameter, keyed by that record's value id, to
+   * the field values it was built from.
+   * `recordDispatchRead` answers a read off one of these records with
+   * the field value, so the rebuilt record has no uses and DCE deletes
+   * it.
+   */
+  explodedRecords = new Map<i32, ExplodedRecord>();
   loops = new Array<LoopCtx>();
   /** Values piped by enclosing |> expressions; $ reads the top. */
   pipelineValues = new Array<i32>();
@@ -642,6 +661,11 @@ export final class LoweringContext {
     }
     if (fieldIdx < 0) {
       this.fail('record member not found');
+    }
+    if (let (true, exploded) = this.explodedRecords.get(receiver)) {
+      if (exploded.dispatch === dispatch) {
+        return exploded.values[fieldIdx];
+      }
     }
     let recv = this.stripNonNull(receiver);
     let instance = this.b.emit(IrOp.iface_instance,
