@@ -1,0 +1,37 @@
+// @mode: run
+// @result: 6
+
+// A join of an interface-typed value and a class that implements it
+// is the interface, and the class arm is packed to it: `given` arrives
+// as the `Map` interface, `new Map()` is a `HashMap`. Before, the three
+// joins below typed as `HashMap | Map`, a union with no member access
+// and no one representation.
+
+let viaCoalesce = (given: Map<String, i32> | null): Map<String, i32> => {
+  let m = given ?? new Map<String, i32>();
+  m["a"] = 1;
+  return m;
+};
+
+let viaIf = (given: Map<String, i32> | null): Map<String, i32> => {
+  let m = if (given == null) { new Map<String, i32>() } else { given as Map<String, i32> };
+  m["b"] = 2;
+  return m;
+};
+
+let viaMatch = (given: Map<String, i32> | null): Map<String, i32> => {
+  let m = match (given) {
+    case null: new Map<String, i32>()
+    case _: given as Map<String, i32>
+  };
+  m["c"] = 3;
+  return m;
+};
+
+export let main = () => {
+  let own = new Map<String, i32>();
+  own["x"] = 0;
+  // Fresh maps hold one entry each; the shared one gains one per call.
+  return viaCoalesce(null).size + viaIf(null).size + viaMatch(null).size +
+      viaMatch(viaIf(viaCoalesce(own))).size - 1;
+};

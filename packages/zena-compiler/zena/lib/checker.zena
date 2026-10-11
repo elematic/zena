@@ -45,7 +45,7 @@
  */
 
 import { isValidIntrinsic } from './intrinsics.zena';
-import { Set } from 'zena:collections';
+import { Set, HashMap, HashSet, OrderedHashMap } from 'zena:collections';
 
 import { StringBuilder, growable } from 'zena:core';
 import { analyzeCaptures, analyzeTryBodyAssignments } from './analysis/capture.zena';
@@ -355,7 +355,7 @@ final class CheckerContext {
    * import cycle's back edge (docs/design/import-cycles.md). Null when
    * the compilation has no cycles.
    */
-  var cyclicLaterPaths: Set<String> | null = null;
+  var cyclicLaterPaths: HashSet<String> | null = null;
 
   /**
    * Modules the compiler re-checks because of import cycles. A type
@@ -363,14 +363,14 @@ final class CheckerContext {
    * originates OUTSIDE this set: such an origin is checked exactly
    * once, so its type objects are unique and stable.
    */
-  var cyclicRecheckPaths: Set<String> | null = null;
+  var cyclicRecheckPaths: HashSet<String> | null = null;
 
   /**
    * Type namespace map for built-in primitive types (i32, u32, f64, etc.).
    * Only index 0 is meaningful; the stack structure is retained because
    * enterScope/exitScope still push/pop frames for narrowing bookkeeping.
    */
-  #typeScopes = new Array<Map<String, Type>>();
+  #typeScopes = new Array<HashMap<String, Type>>();
 
   /**
    * Optional-chain nodes sanctioned as the immediate left operand of
@@ -507,7 +507,7 @@ final class CheckerContext {
 
   /** Record a match's arm ends for the branch-join decision. */
   recordPendingEdgeMatch(matchNode: Node, preBranch: FlowNode,
-      armEnds: Array<FlowNode>): void {
+      armEnds: GrowableArray<FlowNode>): void {
     if (!this.#hasOwnCandidates()) { return; }
     this.#pendingEdgeMatches.push(
       new PendingEdgeMatch(matchNode, preBranch, armEnds));
@@ -583,7 +583,7 @@ final class CheckerContext {
    * declared inside the loop is fresh every iteration, so its moves are
    * exempt from the back-edge rule.
    */
-  var #flowLoopDeclared = new Array<Set<i32>>();
+  var #flowLoopDeclared = new Array<HashSet<i32>>();
 
   /**
    * Nodes that already reported use-after-move. Several call paths check
@@ -637,7 +637,7 @@ final class CheckerContext {
    * Inferred return types collected from return statements.
    * Used when a function has no explicit return type annotation.
    */
-  var #inferredReturnTypes = new Array<Type>();
+  var #inferredReturnTypes: GrowableArray<Type> = new Array<Type>();
 
   /**
    * The current generator's expected yield type, or null when the
@@ -650,7 +650,7 @@ final class CheckerContext {
    * Inferred yield types collected from yield statements.
    * Used when a generator has no explicit yield type annotation.
    */
-  var #inferredYieldTypes = new Array<Type>();
+  var #inferredYieldTypes: GrowableArray<Type> = new Array<Type>();
 
   /**
    * Depth of enclosing try blocks within the current function body.
@@ -813,7 +813,7 @@ final class CheckerContext {
     this.#dependencyStack.push(new SymbolDependencies());
   }
 
-  exitClosureReferrer(fe: FunctionExpression, capturesThis: boolean, captures: Array<SymbolId>, mutableCaptures: Set<SymbolId>): void {
+  exitClosureReferrer(fe: FunctionExpression, capturesThis: boolean, captures: GrowableArray<SymbolId>, mutableCaptures: HashSet<SymbolId>): void {
     // A captured binding escapes its scope's timeline — the closure can
     // run after the scope ends — so it is never implicitly dropped.
     for (let capId in captures) {
@@ -860,14 +860,14 @@ final class CheckerContext {
    * Dependency exports map: import specifier → ModuleExports.
    * Populated by the compiler so the checker can resolve imported types.
    */
-  var #depExports: Map<String, ModuleExports> | null = null;
+  var #depExports: HashMap<String, ModuleExports> | null = null;
 
   /**
    * Dependency semantic models: import specifier → SemanticModel.
    * When provided, the checker can look up actual resolved types from
    * already-checked dependency modules instead of creating empty stubs.
    */
-  var #depModels: Map<String, SemanticModel> | null = null;
+  var #depModels: HashMap<String, SemanticModel> | null = null;
 
   /** The file path of the module being checked. */
   #filePath: String;
@@ -879,8 +879,8 @@ final class CheckerContext {
       sharedState: SharedCheckerState,
       file: String,
       scopeResult: ScopeResult,
-      depExports: Map<String, ModuleExports> | null,
-      depModels: Map<String, SemanticModel> | null,
+      depExports: HashMap<String, ModuleExports> | null,
+      depModels: HashMap<String, SemanticModel> | null,
       emitLocations: boolean = false,
       warnUnnecessaryCasts: boolean = false)
     : diagnostics = new DiagnosticBag(file),
@@ -948,7 +948,7 @@ final class CheckerContext {
     get { return this.#sharedState.interner; }
   }
 
-  mixinApplications(): Map<String, ClassType> {
+  mixinApplications(): HashMap<String, ClassType> {
     return this.#sharedState.mixinApplications;
   }
 
@@ -2094,14 +2094,14 @@ final class CheckerContext {
   /**
    * Get the dependency exports map (import specifier → ModuleExports).
    */
-  depExports: Map<String, ModuleExports> | null {
+  depExports: HashMap<String, ModuleExports> | null {
     get { return this.#depExports; }
   }
 
   /**
    * Get the dependency semantic models (import specifier → SemanticModel).
    */
-  depModels: Map<String, SemanticModel> | null {
+  depModels: HashMap<String, SemanticModel> | null {
     get { return this.#depModels; }
   }
 
@@ -2114,7 +2114,7 @@ final class CheckerContext {
     if (this.#depModels == null) {
       this.#depModels = new Map<String, SemanticModel>();
     }
-    (this.#depModels as Map<String, SemanticModel>)[key] = model;
+    (this.#depModels as HashMap<String, SemanticModel>)[key] = model;
   }
 
   /**
@@ -2609,7 +2609,7 @@ final class CheckerContext {
     return this.#mustMoveWalk(pathKey, from, memo);
   }
 
-  #mustMoveWalk(pathKey: String, node: FlowNode, memo: Map<i32, boolean>): boolean {
+  #mustMoveWalk(pathKey: String, node: FlowNode, memo: HashMap<i32, boolean>): boolean {
     if (let (true, m) = memo.get(node.id)) { return m; }
     memo[node.id] = false;
     let result = match (node) {
@@ -2824,7 +2824,7 @@ final class CheckerContext {
    * assumes consumed, so the acyclic paths decide.
    */
   #definitelyConsumed(id: SymbolId, from: FlowNode, birthId: i32,
-      memo: Map<i32, boolean>): boolean {
+      memo: HashMap<i32, boolean>): boolean {
     if (from.id == birthId) { return false; }
     if (let (true, v) = memo.get(from.id)) { return v; }
     memo[from.id] = true;
@@ -2913,7 +2913,7 @@ final class CheckerContext {
   }
 
   /** A simple-`let` `Own<resource>` declaration in the current block. */
-  registerOwnCandidate(sym: Symbol, patternNode: Node, resources: Array<ClassType>,
+  registerOwnCandidate(sym: Symbol, patternNode: Node, resources: GrowableArray<ClassType>,
       isVar: boolean = false, declNode: Node | null = null): void {
     if (this.#ownScopeStack.length == 0) { return; }
     let c = new OwnDropCandidate(sym, patternNode, resources, isVar, declNode,
@@ -3090,7 +3090,7 @@ final class CheckerContext {
    * on a full re-check clears the rest). Roots `:dispose` — the drop is
    * a plain call at the arm's end, so no exception region is needed.
    */
-  #addEdgeDrop(node: Node, symId: SymbolId, onTrue: boolean, armIndex: i32, resources: Array<ClassType>): void {
+  #addEdgeDrop(node: Node, symId: SymbolId, onTrue: boolean, armIndex: i32, resources: GrowableArray<ClassType>): void {
     let existing = this.model.edgeDropsOfDirect(node);
     let kept = new Array<EdgeDrop>();
     if (existing != null) {
@@ -3225,7 +3225,7 @@ final class CheckerContext {
     this.#flowLoopExits = new Array<FlowJoin>();
     this.#flowExceptionTargets = new Array<FlowJoin>();
     this.#flowLoopMoves = new Array<GrowableArray<FlowMove>>();
-    this.#flowLoopDeclared = new Array<Set<i32>>();
+    this.#flowLoopDeclared = new Array<HashSet<i32>>();
     this.#pendingEdgeIfs = new Array<PendingEdgeIf>();
     saved.borrowUses = this.#bodyBorrowUses;
     this.#bodyBorrowUses = new Array<BorrowUseRec>();
@@ -3493,7 +3493,7 @@ final class CheckerContext {
           // appears: this walk runs millions of times in a large
           // compile, and an array per join was a tenth of its garbage.
           var first: Type | null = null;
-          var results: GrowableArray<Type> | null = null;
+          var results: Array<Type> | null = null;
           var sawCycle = false;
           for (let a in join.antecedents) {
             let r = this.#walkBindingType(
@@ -3697,7 +3697,7 @@ final class CheckerContext {
           // As in the binding walk, the list of distinct results is
           // only built once a second one appears.
           var first: Type | null = null;
-          var results: GrowableArray<Type> | null = null;
+          var results: Array<Type> | null = null;
           var vetoed = false;
           for (let a in join.antecedents) {
             let r = this.#walkPathType(a, path, rootId, inProgress);
@@ -3923,7 +3923,7 @@ let registerCompilerIntrinsics = (ctx: CheckerContext): void => {
  */
 export final class CheckResult(
   model: SemanticModel,
-  diagnostics: Array<Diagnostic>
+  diagnostics: GrowableArray<Diagnostic>
 )
 
 let collectPatternSymbols = (ctx: CheckerContext, pattern: Pattern, symbols: GrowableArray<Symbol>): void => {
@@ -4021,7 +4021,7 @@ let checkCyclicImportRules = (
   // may cross freely — only the value/init-order rule applies to them.
   var originRechecked = false;
   if (ctx.cyclicRecheckPaths != null &&
-      (ctx.cyclicRecheckPaths as Set<String>).has(origin.modulePath)) {
+      (ctx.cyclicRecheckPaths as HashSet<String>).has(origin.modulePath)) {
     originRechecked = true;
   }
   match (origin.declaration) {
@@ -4312,13 +4312,13 @@ final class DeferredModule implements DeferredBodies {
 export let checkModule = (
   ast: Module,
   scopeResult: ScopeResult,
-  depExports: Map<String, ModuleExports> | null,
-  depModels: Map<String, SemanticModel> | null = null,
+  depExports: HashMap<String, ModuleExports> | null,
+  depModels: HashMap<String, SemanticModel> | null = null,
   emitLocations: boolean = false,
   sharedState: SharedCheckerState | null = null,
   warnUnnecessaryCasts: boolean = false,
-  cyclicLaterPaths: Set<String> | null = null,
-  cyclicRecheckPaths: Set<String> | null = null,
+  cyclicLaterPaths: HashSet<String> | null = null,
+  cyclicRecheckPaths: HashSet<String> | null = null,
   priorModel: SemanticModel | null = null,
   deferBodies: boolean = false
 ): CheckResult => {
@@ -4336,13 +4336,13 @@ export let checkModule = (
 export let beginModule = (
   ast: Module,
   scopeResult: ScopeResult,
-  depExports: Map<String, ModuleExports> | null,
-  depModels: Map<String, SemanticModel> | null = null,
+  depExports: HashMap<String, ModuleExports> | null,
+  depModels: HashMap<String, SemanticModel> | null = null,
   emitLocations: boolean = false,
   sharedState: SharedCheckerState | null = null,
   warnUnnecessaryCasts: boolean = false,
-  cyclicLaterPaths: Set<String> | null = null,
-  cyclicRecheckPaths: Set<String> | null = null,
+  cyclicLaterPaths: HashSet<String> | null = null,
+  cyclicRecheckPaths: HashSet<String> | null = null,
   priorModel: SemanticModel | null = null,
   deferBodies: boolean = false
 ): ModuleCheck => {
@@ -5057,7 +5057,7 @@ let rejectSecondClassTypeArguments = (
 let rejectSecondClassFunctionTypeArgs = (
   ctx: CheckerContext,
   typeParams: Array<TypeParameterType>,
-  typeArgs: GrowableArray<Type>,
+  typeArgs: Array<Type>,
   loc: SourceLocation | null
 ): void => {
   for (var i = 0; i < typeParams.length && i < typeArgs.length; i += 1) {
@@ -5313,7 +5313,7 @@ let recordArgumentMove = (ctx: CheckerContext, arg: Expression, paramType: Type)
 final class OwnDropCandidate {
   sym: Symbol;
   node: Node;
-  resources: Array<ClassType>;
+  resources: GrowableArray<ClassType>;
   /**
    * A `var` binding: released over intervals of its block's statements
    * rather than a region to the block's end, since a store may revive
@@ -5445,7 +5445,7 @@ let affineOwnerFieldType = (ctx: CheckerContext, lm: MemberExpression): Type | n
  * else appears (a non-resource member has no release obligation, so
  * the binding is not an implicit-drop candidate).
  */
-let ownedResourceClasses = (inner: Type): Array<ClassType> | null => {
+let ownedResourceClasses = (inner: Type): GrowableArray<ClassType> | null => {
   let result = new Array<ClassType>();
   let members: Array<Type> = match (inner) {
     case UnionT {types}: types
@@ -5525,7 +5525,7 @@ let registerOwnParamCandidates = (
  * droppable. Anything else leaves the binding alone, which leaks
  * exactly as the language did before implicit drop.
  */
-let classifyOwnUses = (ctx: CheckerContext, scope: Node, ids: Set<i32>): void => {
+let classifyOwnUses = (ctx: CheckerContext, scope: Node, ids: HashSet<i32>): void => {
   walkEnter(scope, (n: Node): void => {
     if (!(n is Identifier)) { return; }
     let info = ctx.model.resolve(n);
@@ -5863,7 +5863,7 @@ let resolveTypeAnnotationInner = (ctx: CheckerContext, ann: TypeAnnotation, allo
   }
   case RecordTypeAnnotation {properties}: {
     let props = new Map<String, Type>();
-    var optionals: Set<String> | null = null;
+    var optionals: HashSet<String> | null = null;
     for (let prop in properties) {
       let resolved = resolveTypeAnnotation(ctx, prop.typeAnnotation, allowInlineTuple);
       rejectSecondClassStorage(ctx, resolved, "a record field", prop.typeAnnotation.loc);
@@ -5963,7 +5963,7 @@ let combineArmTypes = (types: Array<Type>, ctx: CheckerContext | null = null, lo
  * carry different obligations.
  */
 let mergeHandleMembers = (
-  members: Array<Type>,
+  members: GrowableArray<Type>,
   ctx: CheckerContext | null,
   loc: SourceLocation | null
 ): GrowableArray<Type> => {
@@ -6030,6 +6030,63 @@ let mergeHandleMembers = (
   return result;
 };
 
+/**
+ * A class member of a union is absorbed by an interface member it is
+ * assignable to: `HashMap<K, V> | Map<K, V>` is `Map<K, V>`. The two
+ * arms of a `??`, an `if` or a `match` meet here when one is a map a
+ * caller passed as the interface and the other a `new Map()`, which
+ * is a `HashMap`; left as two members, the union has no member access
+ * and no single representation. The arm that produced the class is
+ * adapted to the interface where the join is typed (`adaptJoinedArm`).
+ */
+let foldClassesIntoInterfaces = (members: GrowableArray<Type>, ctx: CheckerContext | null): GrowableArray<Type> => {
+  if (ctx == null || members.length < 2) { return members; }
+  var hasInterface = false;
+  var hasClass = false;
+  for (let m in members) {
+    if (baseType(m) is InterfaceType) { hasInterface = true; }
+    if (baseType(m) is ClassType) { hasClass = true; }
+  }
+  if (!hasInterface || !hasClass) { return members; }
+  let kept = new Array<Type>();
+  for (let m in members) {
+    var absorbed = false;
+    if (baseType(m) is ClassType) {
+      for (let other in members) {
+        if (baseType(other) is InterfaceType && isAssignableTo(ctx, m, other)) {
+          absorbed = true;
+        }
+      }
+    }
+    if (!absorbed) { kept.push(m); }
+  }
+  return kept;
+};
+
+/**
+ * After a join's type is known: an arm whose own type is a class the
+ * join folded into an interface is adapted to that interface, as it
+ * would have been had the context asked for it.
+ */
+let adaptJoinedArm = (ctx: CheckerContext, arm: Node, armType: Type, joined: Type): void => {
+  if (!(baseType(armType) is ClassType)) { return; }
+  let target = subtractNullFromType(joined);
+  if (!(target is InterfaceType)) { return; }
+  if (typesEqual(armType, target)) { return; }
+  if (!isAssignableTo(ctx, armType, target)) { return; }
+  checkAndRegisterInterfaceAdaptation(ctx, arm, armType, target);
+};
+
+/** The expression a branch's value comes from: a block's last expression statement, else the node. */
+let armValueNode = (node: Node): Node | null => {
+  if (node is BlockStatement) {
+    if (node.body.length == 0) { return null; }
+    let last = node.body[node.body.length - 1];
+    return if (last is ExpressionStatement) last.expression else null;
+  }
+  return node;
+};
+
 let createUnionType = (types: Array<Type>, ctx: CheckerContext | null = null, loc: SourceLocation | null = null): Type => {
   var deduped = new Array<Type>();
   var hasBoolean = false;
@@ -6075,6 +6132,7 @@ let createUnionType = (types: Array<Type>, ctx: CheckerContext | null = null, lo
   }
 
   deduped = mergeHandleMembers(deduped, ctx, loc);
+  deduped = foldClassesIntoInterfaces(deduped, ctx);
 
   if (deduped.length == 0) { return new NeverType(); }
   if (deduped.length == 1) { return deduped[0]; }
@@ -6964,7 +7022,7 @@ let instantiateGenericClass = (
 
   // What the arguments left open, the context may name:
   // `let m: HashMap<String, i32> = new HashMap();`, or through an
-  // interface the class implements, `let m: Map<String, i32> = new
+  // interface the class implements, `let m: HashMap<String, i32> = new
   // HashMap();`. inferTypeArg keeps the first answer, so the
   // arguments win where both speak.
   if (expectedType != null) {
@@ -6999,14 +7057,14 @@ let instantiateGenericClass = (
  * superclass, or an interface the constructed interface extends, and the
  * matching type's arguments are paired with the expected type's.
  *
- *   let m: Map<String, i32> = new Map.ordered();   // K, V through HashMap
- *   let a: Array<i32> = new Array();          // T through MutableArray
- *   let s: Set<String> = new Set.ordered();           // T from Set itself
+ *   let m: HashMap<String, i32> = new Map.ordered();   // K, V through HashMap
+ *   let a: GrowableArray<i32> = new Array();          // T through MutableArray
+ *   let s: HashSet<String> = new Set.ordered();           // T from Set itself
  *
  * Only what the arguments left open is filled in: inferTypeArg keeps
  * the first answer for a parameter.
  */
-let inferTypeArgsFromContext = (self: Type, expected: Type, inferred: Map<String, Type>): void => {
+let inferTypeArgsFromContext = (self: Type, expected: Type, inferred: HashMap<String, Type>): void => {
   match (expected) {
     case InterfaceType as ei: {
       let name = (ei.genericSource ?? ei).name;
@@ -7038,7 +7096,7 @@ let inferTypeArgsFromContext = (self: Type, expected: Type, inferred: Map<String
 let inferTypeArgsPairwise = (
   fromArgs: Array<Type> | null,
   toArgs: Array<Type> | null,
-  inferred: Map<String, Type>
+  inferred: HashMap<String, Type>
 ): void => {
   if (fromArgs == null || toArgs == null) {
     return;
@@ -7077,7 +7135,7 @@ let findExtendedInterfaceTransitive = (it: InterfaceType, name: String): Interfa
  * argType: the actual argument type
  * inferred: map to store inferred type params
  */
-let inferTypeArg = (paramType: Type, argType: Type, inferred: Map<String, Type>): void => {
+let inferTypeArg = (paramType: Type, argType: Type, inferred: HashMap<String, Type>): void => {
   match (paramType) {
     case TypeParameterType {name}: {
       // Direct type parameter — infer from arg type.
@@ -7098,7 +7156,7 @@ let inferTypeArg = (paramType: Type, argType: Type, inferred: Map<String, Type>)
       // Array<T> against FixedArray<i32> → infer T = i32, through the
       // interface the argument implements. Without this, a signature
       // that takes an interface OF its own type parameter — which is
-      // what `Array.from(seq: Array<T>)` is — inferred nothing, and
+      // what `Array.from(seq: GrowableArray<T>)` is — inferred nothing, and
       // the call was then rejected against its own parameter.
       let ptName = if (pt.genericSource != null) {
         (pt.genericSource as InterfaceType).name
@@ -7735,7 +7793,7 @@ let castMintsTypeParameter = (
 
   let sArgs = castTypeArguments(source);
   let tArgs = castTypeArguments(target);
-  // An open generic naming itself -- `this as Array<T>` inside `Array<T>` --
+  // An open generic naming itself -- `this as GrowableArray<T>` inside `Array<T>` --
   // has no type arguments on the source side. Same head, nothing minted.
   if (sArgs == null) { return !sameGenericHead(source, target); }
   if (tArgs == null) { return true; }
@@ -7775,7 +7833,7 @@ let castMintsTypeParameter = (
  * out of an unrelated representation.
  *
  * A target that merely *mentions* a type parameter launders too --
- * `xs as Array<T>` mints a whole container of them -- so those are checked as
+ * `xs as GrowableArray<T>` mints a whole container of them -- so those are checked as
  * well, by comparing type arguments pairwise (see `castMintsTypeParameter`).
  */
 let checkTypeParameterCast = (
@@ -7996,7 +8054,7 @@ let adaptCoalescedArm = (
   return adaptArmToContext(ctx, node, armType, expectedType);
 };
 
-let inferTypeParameter = (sourceType: Type, targetType: Type, tpName: String, inferred: Map<String, Type>): boolean => {
+let inferTypeParameter = (sourceType: Type, targetType: Type, tpName: String, inferred: HashMap<String, Type>): boolean => {
   if (sourceType is TypeParameterType && sourceType.name == tpName) {
     inferred[tpName] = targetType;
     return true;
@@ -9308,8 +9366,8 @@ let extractNullGuardPathNarrowing = (
 };
 
 final class ConditionNarrowings {
-  bindings: Map<SymbolId, Type>;
-  paths: Map<String, Type>;
+  bindings: HashMap<SymbolId, Type>;
+  paths: HashMap<String, Type>;
   new() :
     bindings = new Map<SymbolId, Type>(),
     paths = new Map<String, Type>();
@@ -9529,7 +9587,7 @@ let extractIsPathNarrowing = (
  * Descends into nested functions on purpose — a closure created in the
  * body can run on any iteration.
  */
-let collectAssignedSymbolIds = (ctx: CheckerContext, node: Node): Array<SymbolId> => {
+let collectAssignedSymbolIds = (ctx: CheckerContext, node: Node): GrowableArray<SymbolId> => {
   let ids = new Array<SymbolId>();
   let seen = new Set<i32>();
   walkEnter(node, (n: Node): void => {
@@ -10975,7 +11033,7 @@ let getArrayPatternRestType = (ctx: CheckerContext, t: Type, elemType: Type): Ty
  * Extract element types for tuple-pattern binding/checking.
  * Supports TupleType, InlineTupleType, and unions of tuple-like members.
  */
-let getTuplePatternElementTypes = (t: Type): GrowableArray<Type> | null => {
+let getTuplePatternElementTypes = (t: Type): Array<Type> | null => {
   match (t) {
     case TupleT {elementTypes}: {
       return elementTypes;
@@ -10988,7 +11046,7 @@ let getTuplePatternElementTypes = (t: Type): GrowableArray<Type> | null => {
         return null;
       }
 
-      let tupleMembers = new Array<GrowableArray<Type>>();
+      let tupleMembers = new Array<Array<Type>>();
       for (let member in types) {
         match (member) {
           case TupleT {elementTypes}: {
@@ -11664,10 +11722,10 @@ let argumentAdaptsToParameter = (arg: Expression, target: Type): boolean => {
  */
 let collectApplicableOperatorOverloads = (
   ctx: CheckerContext,
-  candidates: Array<FunctionType>,
+  candidates: GrowableArray<FunctionType>,
   typeParams: Array<TypeParameterType> | null,
   typeArgs: Array<Type> | null,
-  operandTypes: GrowableArray<Type>,
+  operandTypes: Array<Type>,
   operands: GrowableArray<Expression>,
   adaptableCount: i32,
   applicableRaw: GrowableArray<FunctionType>,
@@ -12430,7 +12488,14 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
         let branches = new Array<Type>();
         branches.push(consType);
         branches.push(altType);
-        createUnionType(branches, ctx, loc)
+        let joined = createUnionType(branches, ctx, loc);
+        let consNode = armValueNode(consequent);
+        if (consNode != null) { adaptJoinedArm(ctx, consNode, consType, joined); }
+        if (alternate != null) {
+          let altNode = armValueNode(alternate as Node);
+          if (altNode != null) { adaptJoinedArm(ctx, altNode, altType, joined); }
+        }
+        joined
       }
       case _: {
         let testExpr = test as Expression;
@@ -12460,7 +12525,14 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
         let branches = new Array<Type>();
         branches.push(consType);
         branches.push(altType);
-        createUnionType(branches, ctx, loc)
+        let joined = createUnionType(branches, ctx, loc);
+        let consNode = armValueNode(consequent);
+        if (consNode != null) { adaptJoinedArm(ctx, consNode, consType, joined); }
+        if (alternate != null) {
+          let altNode = armValueNode(alternate as Node);
+          if (altNode != null) { adaptJoinedArm(ctx, altNode, altType, joined); }
+        }
+        joined
       }
     }
   }
@@ -12544,7 +12616,7 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
   case AsExpression {expression, typeAnnotation, loc}: {
     let targetType = resolveTypeAnnotation(ctx, typeAnnotation);
     // A cast to a reference type hands its operand a contextual type:
-    // `[] as Array<String>` has no other way to learn its element type,
+    // `[] as GrowableArray<String>` has no other way to learn its element type,
     // and without one it builds an array over an error type that codegen
     // later has no vtable for. Casts to primitives stay uncontextual,
     // because there the cast is a conversion and typing the operand as
@@ -12628,7 +12700,7 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
         }
       }
       if (allFitExpected) {
-        // `let xs: Array<Animal> = [dog, cat]`: arrays are invariant, so
+        // `let xs: GrowableArray<Animal> = [dog, cat]`: arrays are invariant, so
         // the literal has to be an array of the expected element type
         // itself for the assignment to go through.
         let target = expectedElementType as Type;
@@ -12725,7 +12797,7 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
     // so two literals of the same declared type must not come out as two
     // different mints ({p: null} and {p: somePofTypeP} against {p: P | null}) —
     // record dispatch casts the receiver to the declared type's mint.
-    var expectedProps: Map<String, Type> | null = null;
+    var expectedProps: HashMap<String, Type> | null = null;
     if (expectedType != null) {
       let baseExpected = baseType(expectedType);
       if (baseExpected is RecordT) {
@@ -12737,7 +12809,7 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
     // optional in the literal's own type — its runtime presence follows
     // the source's. An explicit assignment (or a required spread field)
     // later in the literal makes it definite again.
-    var literalOptionals: Set<String> | null = null;
+    var literalOptionals: HashSet<String> | null = null;
     var i = 0;
     while (i < properties.length) {
       match (properties[i]) {
@@ -12804,7 +12876,7 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
     // Inline tuple literals are parsed as TupleLiteral nodes.
     // If the expected type is an inline tuple (or union of inline tuples),
     // check against those element expectations and produce an InlineTupleType.
-    var expectedElementTypes: GrowableArray<Type> | null = null;
+    var expectedElementTypes: Array<Type> | null = null;
     var useInlineTuple = false;
     if (expectedType != null) {
       let maybeElems = getTuplePatternElementTypes(expectedType);
@@ -13207,7 +13279,7 @@ let hasSameSignature = (a: FunctionType, b: FunctionType): boolean => {
  * The signatures a member type stands for: each overload of an overloaded
  * method, or the type itself.
  */
-let functionSignatures = (t: Type): GrowableArray<Type> => {
+let functionSignatures = (t: Type): Array<Type> => {
   let signatures = new Array<Type>();
   if (t is FunctionType) {
     let {overloads} = t;
@@ -13271,7 +13343,7 @@ let atLeastAsSpecific = (
  */
 let pickMostSpecificOverload = (
   ctx: CheckerContext,
-  applicable: Array<FunctionType>,
+  applicable: GrowableArray<FunctionType>,
   argCount: i32
 ): (FunctionType, boolean) => {
   var best = applicable[0];
@@ -13306,7 +13378,7 @@ let pickMostSpecificOverload = (
  */
 let selectMostSpecificIndex = (
   ctx: CheckerContext,
-  applicableRes: Array<FunctionType>,
+  applicableRes: GrowableArray<FunctionType>,
   argCount: i32,
   loc: SourceLocation | null
 ): i32 => {
@@ -13352,12 +13424,12 @@ let selectMostSpecificIndex = (
  */
 let collectApplicableOverloads = (
   ctx: CheckerContext,
-  candidates: Array<FunctionType>,
+  candidates: GrowableArray<FunctionType>,
   args: GrowableArray<Expression>,
-  argTypes: GrowableArray<Type>,
+  argTypes: Array<Type>,
   callerArgCount: i32,
   adaptLiterals: boolean
-): Array<FunctionType> => {
+): GrowableArray<FunctionType> => {
   let applicable = new Array<FunctionType>();
   for (let candidate in candidates) {
     let expectedCount = candidate.parameters.length;
@@ -13728,7 +13800,7 @@ let applyFieldDecorator = (
     let member = source.members[key];
     let isPrivateKey = key.startsWith("#") || key.startsWith("get##") || key.startsWith("set##");
     var storeKey: String | null = null;
-    if (source.sharedMembers != null && (source.sharedMembers as Set<String>).has(key)) {
+    if (source.sharedMembers != null && (source.sharedMembers as HashSet<String>).has(key)) {
       if (!sharedPlaced) {
         storeKey = declScope + "::" + key;
       }
@@ -13758,7 +13830,7 @@ let applyFieldDecorator = (
     classType.decoratedFields = created;
     decorated = created;
   }
-  (decorated as Map<String, DecoratedField>)[fieldName] = new DecoratedField(
+  (decorated as HashMap<String, DecoratedField>)[fieldName] = new DecoratedField(
       fieldName, scope, scope + "::#" + subject, mt, fd, fieldType);
 };
 
@@ -14701,7 +14773,7 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
               if (classType.fieldSetterNames == null) {
                 classType.fieldSetterNames = new Map<String, String>();
               }
-              let m = classType.fieldSetterNames as Map<String, String>;
+              let m = classType.fieldSetterNames as HashMap<String, String>;
               m[fieldName] = (fd.setterName as Identifier).name;
             }
           }
@@ -16084,7 +16156,7 @@ let checkMethodSignature = (
     var paramType: Type = new ErrorType();
     var lookupName = paramName;
     if (classType != null && classType.fieldSetterNames != null) {
-      let m = classType.fieldSetterNames as Map<String, String>;
+      let m = classType.fieldSetterNames as HashMap<String, String>;
       if (m.has(paramName)) {
         lookupName = m[paramName];
       }
@@ -16647,8 +16719,8 @@ let checkMethodBody = (
     for (let param in md.params) {
       if (param.isThisParam) {
         let paramName = param.name.name;
-        let actualFieldName = if (classType.fieldSetterNames != null && (classType.fieldSetterNames as Map<String, String>).has(paramName)) {
-          (classType.fieldSetterNames as Map<String, String>)[paramName]
+        let actualFieldName = if (classType.fieldSetterNames != null && (classType.fieldSetterNames as HashMap<String, String>).has(paramName)) {
+          (classType.fieldSetterNames as HashMap<String, String>)[paramName]
         } else {
           paramName
         };
@@ -16683,7 +16755,7 @@ let checkMethodBody = (
         let {genericSource} = classType;
         if (genericSource != null) {
           let gs = genericSource;
-          if (gs.declaredFields != null && (gs.declaredFields as Set<String>).has(fieldName)) {
+          if (gs.declaredFields != null && (gs.declaredFields as HashSet<String>).has(fieldName)) {
             isDeclared = true;
           }
         }
@@ -17021,7 +17093,7 @@ let registerInterfaceConstructor = (
   ctx: CheckerContext,
   ifaceType: InterfaceType,
   md: MethodDefinition,
-  ownConstructorNames: Set<String>
+  ownConstructorNames: HashSet<String>
 ): void => {
   let ctorName = match (md.name) {
     case Identifier {name}: name
@@ -17886,7 +17958,7 @@ let checkMixinDeclaration = (ctx: CheckerContext, md: MixinDeclaration): void =>
 
 
 
-let validateFunctionDecorators = (ctx: CheckerContext, decorators: Array<Decorator> | null, needsIntrinsicOrExternal: boolean, loc: SourceLocation | null): void => {
+let validateFunctionDecorators = (ctx: CheckerContext, decorators: GrowableArray<Decorator> | null, needsIntrinsicOrExternal: boolean, loc: SourceLocation | null): void => {
   var paramCount = 0;
   var hasExternal = false;
   if (decorators != null) {
@@ -18301,7 +18373,7 @@ let instantiateGenericInterface = (
   ctx.setFlow(preInferFlow);
 
   // The context's type arguments for what the arguments left open —
-  // `let m: Map<String, i32> = new Map();` — through the interface
+  // `let m: HashMap<String, i32> = new Map();` — through the interface
   // itself or one it extends. The arguments win where both speak.
   if (expectedType != null) {
     inferTypeArgsFromContext(selfTypeOfInterface(it) as Type, subtractNullFromType(expectedType), inferred);
@@ -18438,7 +18510,7 @@ let checkConstructorArguments = (
 /**
  * The `staticSymbols` map of a named type, or null for anything else.
  */
-let staticSymbolsOf = (t: Type): Map<String, Type> | null => {
+let staticSymbolsOf = (t: Type): OrderedHashMap<String, Type> | null => {
   return match (t) {
     case ClassType as ct: ct.staticSymbols
     case InterfaceType as it: it.staticSymbols
@@ -18453,10 +18525,10 @@ let staticSymbolsOf = (t: Type): Map<String, Type> | null => {
  */
 let declaresStaticMember = (t: Type, name: String): boolean => {
   let symbols = staticSymbolsOf(t);
-  if (symbols != null && (symbols as Map<String, Type>).has(name)) {
+  if (symbols != null && (symbols as OrderedHashMap<String, Type>).has(name)) {
     return true;
   }
-  let members: Map<String, MemberInfo> | null = match (t) {
+  let members: OrderedHashMap<String, MemberInfo> | null = match (t) {
     case ClassType as ct: ct.members
     case InterfaceType as it: it.members
     case MixinType as mt: mt.members
@@ -18466,7 +18538,7 @@ let declaresStaticMember = (t: Type, name: String): boolean => {
     return false;
   }
   for (let key in [name, "get#" + name]) {
-    if (let (true, info) = (members as Map<String, MemberInfo>).get(key)) {
+    if (let (true, info) = (members as OrderedHashMap<String, MemberInfo>).get(key)) {
       if (info.isStatic) { return true; }
     }
   }
@@ -18544,7 +18616,7 @@ let lookupSymbolPath = (ctx: CheckerContext, path: Expression): SymbolType | nul
       if (symbols == null) {
         return null;
       }
-      if (let (true, sym) = (symbols as Map<String, Type>).get(property.name)) {
+      if (let (true, sym) = (symbols as OrderedHashMap<String, Type>).get(property.name)) {
         if (sym is SymbolType) {
           return sym as SymbolType;
         }
@@ -18630,8 +18702,8 @@ let memberNameNodeOf = (member: Node): Node | null => {
 let registerStaticSymbols = (
     ctx: CheckerContext,
     ownerName: String,
-    symbols: Map<String, Type>,
-    body: Array<Node>): void => {
+    symbols: HashMap<String, Type>,
+    body: GrowableArray<Node>): void => {
   for (let member in body) {
     var symName: String = "";
     var node: Node | null = null;
@@ -18684,8 +18756,8 @@ let registerStaticSymbols = (
 let recordSymbolKeyedMemberIdentities = (
     ctx: CheckerContext,
     owner: Type,
-    members: Map<String, MemberInfo>,
-    body: Array<Node>): void => {
+    members: OrderedHashMap<String, MemberInfo>,
+    body: GrowableArray<Node>): void => {
   for (let member in body) {
     let nameNode = memberNameNodeOf(member);
     if (nameNode == null) { continue; }
@@ -18765,7 +18837,7 @@ let checkMemberExpression = (
   if (!isSymbolAccess && namesDeclaredType(ctx, object)) {
     let symbols = staticSymbolsOf(baseType(objectTypeRaw));
     if (symbols != null) {
-      if (let (true, sym) = (symbols as Map<String, Type>).get(property.name)) {
+      if (let (true, sym) = (symbols as OrderedHashMap<String, Type>).get(property.name)) {
         return sym;
       }
     }
@@ -18947,7 +19019,7 @@ let checkMemberExpression = (
  * for any other union. A record union is read, destructured and
  * repacked one member at a time; see `RecordUnionAdaptation`.
  */
-let recordUnionMembersOf = (ut: UnionT): Array<RecordT> | null => {
+let recordUnionMembersOf = (ut: UnionT): GrowableArray<RecordT> | null => {
   let members = new Array<RecordT>();
   for (let memberType in ut.types) {
     let rec = baseType(memberType);
@@ -18978,7 +19050,7 @@ let recordUnionMembersOf = (ut: UnionT): Array<RecordT> | null => {
 let recordUnionPatternShape = (
   ctx: CheckerContext,
   ut: UnionT,
-  members: Array<RecordT>,
+  members: GrowableArray<RecordT>,
   recordPat: RecordPattern
 ): Type | null => {
   let props = new Map<String, Type>();
@@ -19022,7 +19094,7 @@ let recordUnionPatternShape = (
     if (anyAbsent) { optionals.add(propName); }
   }
   if (props.size == 0) { return null; }
-  let optionalNames: Set<String> | null =
+  let optionalNames: HashSet<String> | null =
       if (optionals.size > 0) { optionals } else { null };
   return new RecordT(props, optionalNames);
 };
@@ -19484,7 +19556,7 @@ let checkIndexExpression = (
  * first parameter of every candidate, joined with " or ".
  */
 let describeIndexParameters = (
-  candidates: Array<FunctionType>,
+  candidates: GrowableArray<FunctionType>,
   typeParams: Array<TypeParameterType> | null,
   typeArgs: Array<Type> | null
 ): String => {
@@ -20035,7 +20107,7 @@ let checkBinaryExpression = (
       candidates.push(baseMethod);
       let {overloads} = baseMethod;
       if (overloads != null) {
-        for (let ov in overloads as Array<FunctionType>) {
+        for (let ov in overloads as GrowableArray<FunctionType>) {
           candidates.push(ov);
         }
       }
@@ -20148,7 +20220,9 @@ let checkBinaryExpression = (
           let arms = new Array<Type>();
           arms.push(adaptCoalescedArm(ctx, node, leftType, expectedType));
           arms.push(rightType);
-          return createUnionType(arms, ctx, loc);
+          let joinedRec = createUnionType(arms, ctx, loc);
+          adaptJoinedArm(ctx, right, rightType, joinedRec);
+          return joinedRec;
         }
       }
     }
@@ -20161,7 +20235,9 @@ let checkBinaryExpression = (
       let arms = new Array<Type>();
       arms.push(adaptCoalescedArm(ctx, node, payloadOpt as Type, expectedType));
       arms.push(rightType);
-      return createUnionType(arms, ctx, loc);
+      let joinedPayload = createUnionType(arms, ctx, loc);
+      adaptJoinedArm(ctx, right, rightType, joinedPayload);
+      return joinedPayload;
     }
 
     // Extract non-null part of left type.
@@ -20187,8 +20263,18 @@ let checkBinaryExpression = (
               adaptCoalescedArm(ctx, node, nonNullMembers[0], expectedType);
         }
         // Result type: union of non-null left members with right type.
+        let leftArmType = if (nonNullMembers.length == 1) nonNullMembers[0] else leftType;
         nonNullMembers.push(rightType);
-        return createUnionType(nonNullMembers, ctx, left.loc);
+        let joined = createUnionType(nonNullMembers, ctx, left.loc);
+        // A class arm the join folded into an interface arm is packed
+        // on its own node; the left arm's pack rides on the `??`.
+        adaptJoinedArm(ctx, right, rightType, joined);
+        if (nonNullMembers.length == 2 && baseType(leftArmType) is ClassType &&
+            baseType(subtractNullFromType(joined)) is InterfaceType &&
+            !typesEqual(leftArmType, subtractNullFromType(joined))) {
+          adaptCoalescedArm(ctx, node, leftArmType, subtractNullFromType(joined));
+        }
+        return joined;
       }
       case NullType: {
         // Left is just null, result is right type.
@@ -20279,7 +20365,7 @@ let isFiniteType = (t: Type): boolean => {
  */
 final class EnumCoverage {
   declaration: EnumDeclaration;
-  covered: Set<String> = new Set<String>();
+  covered: HashSet<String> = new Set<String>();
   var complete: boolean = false;
   new(this.declaration);
 }
@@ -20360,7 +20446,7 @@ let collectCoveredEnumMembers = (
   ctx: CheckerContext,
   pattern: Node,
   ed: EnumDeclaration,
-  covered: Set<String>
+  covered: HashSet<String>
 ): void => {
   match (pattern) {
     case MemberExpression as me: {
@@ -20845,7 +20931,18 @@ let checkMatchExpr = (
   if (resultTypes.length == 1) {
     return resultTypes[0];
   }
-  return combineArmTypes(resultTypes, ctx, loc);
+  let joined = combineArmTypes(resultTypes, ctx, loc);
+  // A class arm the join folded into an interface arm is packed on
+  // its own value node.
+  var ci = 0;
+  for (let matchCase in cases) {
+    if (ci < resultTypes.length) {
+      let valueNode = armValueNode(matchCase.body);
+      if (valueNode != null) { adaptJoinedArm(ctx, valueNode, resultTypes[ci], joined); }
+    }
+    ci += 1;
+  }
+  return joined;
 };
 
 /**
