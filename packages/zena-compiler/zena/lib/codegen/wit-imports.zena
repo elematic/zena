@@ -540,34 +540,42 @@ let parseWithWasi = (witSource: String, packagesWit: String = ""): Ast => {
  * stay out of the way, all of them: a document that vendors a package
  * is taken to be self-contained.
  */
+/**
+ * `witSource` with the program's WIT-backed packages appended — the
+ * stdlib's vendored WASI among them — so a declared world can import
+ * their interfaces by name (`wasi:cli/stdout`, `wasi:http/types`)
+ * without vendoring them. Packages that `witSource` already declares
+ * are omitted so they do not conflict.
+ */
 export let withWasiPackages = (witSource: String,
     packagesWit: String = ""): String => {
-  var source = witSource;
-  if (packagesWit != "" && !declaresAnyOf(witSource, packagesWit)) {
-    source = source + "\n" + packagesWit;
+  if (packagesWit == "") {
+    return witSource;
   }
-  return source;
-};
-
-/**
- * Whether `source` declares any package `packagesWit` declares, in
- * either spelling: `package ns:pkg@v;` heading a file, or
- * `package ns:pkg@v {` nesting one.
- */
-let declaresAnyOf = (source: String, packagesWit: String): boolean => {
-  for (let line in packagesWit.split("\n")) {
-    if (!line.startsWith("package ")) { continue; }
-    var end = line.length;
-    for (var i = 8; i < line.length; i += 1) {
-      let c = line.getByteAt(i);
-      if (c == 59 || c == 32 || c == 123) { end = i; break; } // ';' ' ' '{'
+  let lines = packagesWit.split("\n");
+  let sb = new StringBuilder();
+  sb.append(witSource);
+  var currentSkipping = false;
+  var hasAppended = false;
+  for (let line in lines) {
+    if (line.startsWith("package ")) {
+      var end = line.length;
+      for (var i = 8; i < line.length; i += 1) {
+        let c = line.getByteAt(i);
+        if (c == 59 || c == 32 || c == 123) { end = i; break; } // ';' ' ' '{'
+      }
+      let name = line.sliceBytes(0, end);
+      currentSkipping = witSource.contains(name + ";") || witSource.contains(name + " {");
     }
-    let name = line.sliceBytes(0, end);
-    if (source.contains(name + ";") || source.contains(name + " {")) {
-      return true;
+    if (!currentSkipping) {
+      if (!hasAppended) {
+        sb.append("\n");
+        hasAppended = true;
+      }
+      sb.append(line).append("\n");
     }
   }
-  return false;
+  return sb.toString();
 };
 
 /**

@@ -2601,6 +2601,19 @@ function witRootOf(canonicalPath: String): String {
   return canonicalPath.sliceBytes(4, witRootEnd(canonicalPath));
 }
 
+var memoWasiDir = "";
+var memoWasiWit = "";
+
+function readWasiWit(host: CompilerHost, witDir: String): String {
+  if (memoWasiDir == witDir && memoWasiWit != "") {
+    return memoWasiWit;
+  }
+  let source = readWitSource(host, witDir);
+  memoWasiDir = witDir;
+  memoWasiWit = source;
+  return source;
+}
+
 /**
  * The synthesized Zena source for a `wit:<root>#<ns>:<iface-path>`
  * canonical path, its root's document read through `host`.
@@ -2623,9 +2636,24 @@ export function synthesizeWitModule(host: CompilerHost, canonicalPath: String,
   let namespace = spec.sliceBytes(0, colon);
   let interfacePath = spec.sliceBytes(colon + 1, spec.length);
 
+  var allPackages = packagesWit;
+  let root = witRootOf(canonicalPath);
+  if (root == "host-wit" || root.endsWith("/host-wit")) {
+    if (!allPackages.contains("wasi:http@0.3.0")) {
+      let prefix = if (root == "host-wit") "" else root.sliceBytes(0, root.length - 8);
+      let witDir = if (prefix == "") "wit" else prefix + "wit";
+      try {
+        let wasiWit = readWasiWit(host, witDir);
+        allPackages = if (allPackages == "") wasiWit else allPackages + "\n" + wasiWit;
+      } catch (e) {
+        // Leave allPackages as is if wit directory cannot be read
+      }
+    }
+  }
+
   // The splice appends, so the spans the type text is read from hold.
   let witSource = withWasiPackages(
-      readWitSource(host, witRootOf(canonicalPath)), packagesWit);
+      readWitSource(host, root), allPackages);
   reinterpretUsed = false;
   currentWitSource = witSource;
   let ast = parsedWit(witSource);
