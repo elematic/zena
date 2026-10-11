@@ -680,6 +680,74 @@ keep the decoded `IrSuccessor`. The `-O1` compile allocates 3.43 GiB
 where it allocated 3.79, the `-O2` compile 5.45 GiB where it
 allocated 6.77, and the successor lists went from 2.5M to 75K.
 
+## Classes over interfaces
+
+A field or parameter annotated with a collection interface (`Map`,
+`Set`, `Array`) makes the compiler wrap the class in a fat pointer at
+every store or call that hands it the class: a 32-byte object per
+crossing and an indirect call per use. `new Map<K, V>()` already
+produced a `HashMap`, but its constructor declared no return type, so
+the checker typed every inferred local as the interface, and the
+compiler's own code carried some 600 explicit interface annotations
+besides: 5.5M fat pointers in the `-O1` compile of the `zena-cli`
+module, 11M at `-O2` before #228 took the successor lists out.
+
+Two changes. The stdlib's `Map` and `Set` constructors declare the
+class they return (`HashMap`, `OrderedHashMap`, `HashSet`,
+`OrderedHashSet`), as `Array`'s already did, so `let m = new Map()`
+is a `HashMap`; that alone turned 273 of the sweep's type errors into
+none. And the compiler's annotations name the class unless the slot
+is one of the few that genuinely holds either representation — the
+type model's argument lists (`typeArguments: Array<Type>`), which are
+assigned from many sources and never pushed into, stay as the
+interface. The checker drove the sweep: narrowing a parameter fails
+to compile wherever an interface-typed value still flows in, so each
+rejection named the next declaration to narrow until the set closed.
+
+| compile | fat pointers before | after | allocation before | after    |
+| ------- | ------------------- | ----- | ----------------- | -------- |
+| `-O1`   | 5.5M                | 0.8M  | 3.43 GiB          | 3.30 GiB |
+| `-O2`   | 3.3M                | 0.8M  | 5.45 GiB          | 5.12 GiB |
+
+The 0.8M that remain are the public boundaries and the type-argument
+lists, which stay as interfaces on purpose. The allocation saved is
+small, as expected; what the sweep buys that the census cannot show is
+an indirect call fewer at every use of those 600 slots.
+
+The rule for new code is in the compiler's CONTEXT.md and in
+AGENTS.md: annotate with the class, and let `new` infer it; an
+interface annotation is for a slot that is genuinely polymorphic.
+
+Making `new Map()` a `HashMap` exposed a hole in the checker's joins.
+`given ?? new Map()`, with `given` the `Map` interface, typed as the
+union `HashMap<K, V> | Map<K, V>`: two members with two
+representations, no member access, and a cast failure when lowering
+merged them (the language server's `createLanguageService` was the
+first to trap). The same held for an `if` or a `match` whose arms
+were a class and an interface it implements. A union now folds a
+class member into an interface member it is assignable to
+(`foldClassesIntoInterfaces`), and the join sites pack the class arm
+to the interface on its own value node (`adaptJoinedArm`), as the
+context would have had it asked; the portable test
+`execution/interfaces/class-arm-joins-interface-arm.zena` pins the
+three shapes. Two other boundaries the sweep met are design, not
+bugs: a public interface other packages implement (`CompilerHost`)
+and the public option records (`CompilerOptions`) keep the interface,
+and so do their implementations.
+
+The same facts are now a diagnostic. With `ZENA_WARN_UNNECESSARY_CASTS`
+set — the gate the unnecessary-cast warning already used, so the one
+switch means "performance warnings" — the checker reports every
+adaptation it inserts: a class boxed to pass as an interface, a
+function value re-wrapped to another signature, a record copied to
+another shape, each at the expression that pays. The zena-cli module
+has 42 boxings and 13 record copies; the language service shows them
+as warnings. What the checker cannot say is whether `-O2` later
+removes one — that is whole-program knowledge the inliner and the
+scalar-replacement pass have and the checker does not — so the
+message states the cost at this site and nothing about the final
+binary.
+
 ## What is left
 
 In the order the snapshot ranks them, each measurable by the same
