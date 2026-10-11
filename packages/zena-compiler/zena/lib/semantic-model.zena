@@ -34,7 +34,7 @@
  * its own result, not overwrite this model. No third type level is
  * needed for single-module checking.
  */
-import { Set } from 'zena:collections';
+import { Set, HashMap, HashSet } from 'zena:collections';
 
 import { IterableUtils } from 'zena:core';
 import {
@@ -334,7 +334,7 @@ export final class RecordAdaptation {
  * member's fat pointer type and repacks that member to `target`.
  */
 export final class RecordUnionAdaptation {
-  members: Array<RecordType>;
+  members: GrowableArray<RecordType>;
   target: RecordType;
   /**
    * The adapted expression can be null (`{a} | {a, b} | null` flowing
@@ -464,7 +464,7 @@ export final class SemanticModel {
    */
   #recordUnionAdaptations = new NodeMap<RecordUnionAdaptation>();
 
-  setRecordUnionAdaptation(node: Node, members: Array<RecordType>,
+  setRecordUnionAdaptation(node: Node, members: GrowableArray<RecordType>,
       target: RecordType, sourceNullable: boolean = false): void {
     this.#recordUnionAdaptations[node] =
         new RecordUnionAdaptation(members, target, sourceNullable);
@@ -670,20 +670,20 @@ export final class SemanticModel {
   /**
    * Map from node.id -> Parameter names
    */
-  #defaultArgParamNames = new NodeMap<Array<String>>();
+  #defaultArgParamNames = new NodeMap<GrowableArray<String>>();
 
-  setDefaultArgParamNames(node: Node, names: Array<String>): void {
+  setDefaultArgParamNames(node: Node, names: GrowableArray<String>): void {
     this.#defaultArgParamNames[node] = names;
   }
 
-  getDefaultArgParamNamesDirect(node: Node): Array<String> | null {
+  getDefaultArgParamNamesDirect(node: Node): GrowableArray<String> | null {
     if (let (true, ns) = this.#defaultArgParamNames.get(node)) {
       return ns;
     }
     return null;
   }
 
-  getDefaultArgParamNames(node: Node): Array<String> | null {
+  getDefaultArgParamNames(node: Node): GrowableArray<String> | null {
     let ns = this.getDefaultArgParamNamesDirect(node);
     if (ns != null) return ns;
     let {index} = this;
@@ -876,20 +876,20 @@ export final class SemanticModel {
    * them (ownership.md §"The branch-join rule"). Lowering emits the
    * dispose at the flagged arm's end, before the merge.
    */
-  #edgeDrops = new NodeMap<Array<EdgeDrop>>();
+  #edgeDrops = new NodeMap<GrowableArray<EdgeDrop>>();
 
-  setEdgeDrops(node: Node, drops: Array<EdgeDrop>): void {
+  setEdgeDrops(node: Node, drops: GrowableArray<EdgeDrop>): void {
     this.#edgeDrops[node] = drops;
   }
 
-  edgeDropsOfDirect(node: Node): Array<EdgeDrop> | null {
+  edgeDropsOfDirect(node: Node): GrowableArray<EdgeDrop> | null {
     if (let (true, d) = this.#edgeDrops.get(node)) {
       return d;
     }
     return null;
   }
 
-  edgeDropsOf(node: Node): Array<EdgeDrop> | null {
+  edgeDropsOf(node: Node): GrowableArray<EdgeDrop> | null {
     let direct = this.edgeDropsOfDirect(node);
     if (direct != null) { return direct; }
     if (this.index != null) {
@@ -906,20 +906,20 @@ export final class SemanticModel {
    * its MethodDefinition: dispose glue skips them
    * (ownership.md §Affine fields).
    */
-  #movedOutFields = new NodeMap<Array<String>>();
+  #movedOutFields = new NodeMap<GrowableArray<String>>();
 
-  setMovedOutFields(node: Node, names: Array<String>): void {
+  setMovedOutFields(node: Node, names: GrowableArray<String>): void {
     this.#movedOutFields[node] = names;
   }
 
-  movedOutFieldsOfDirect(node: Node): Array<String> | null {
+  movedOutFieldsOfDirect(node: Node): GrowableArray<String> | null {
     if (let (true, d) = this.#movedOutFields.get(node)) {
       return d;
     }
     return null;
   }
 
-  movedOutFieldsOf(node: Node): Array<String> | null {
+  movedOutFieldsOf(node: Node): GrowableArray<String> | null {
     let direct = this.movedOutFieldsOfDirect(node);
     if (direct != null) { return direct; }
     if (this.index != null) {
@@ -1137,7 +1137,7 @@ export final class SemanticModel {
     this.#diagnostics.push(diagnostic);
   }
 
-  diagnostics: Array<Diagnostic> {
+  diagnostics: GrowableArray<Diagnostic> {
     get { return this.#diagnostics; }
   }
 
@@ -1177,51 +1177,51 @@ export final class SemanticModel {
   // functions permuted.
   #globalDeclarations = new Map<SymbolId, Node>.ordered();
 
-  symbolDependencies: Map<SymbolId, SymbolDependencies> {
+  symbolDependencies: HashMap<SymbolId, SymbolDependencies> {
     get { return this.#symbolDependencies; }
   }
 
-  nodeDependencies: Map<i32, SymbolDependencies> {
+  nodeDependencies: HashMap<i32, SymbolDependencies> {
     get { return this.#nodeDependencies; }
   }
 
-  declaredClasses: Array<SymbolId> {
+  declaredClasses: GrowableArray<SymbolId> {
     get { return this.#declaredClasses; }
   }
 
-  declaredInterfaces: Array<SymbolId> {
+  declaredInterfaces: GrowableArray<SymbolId> {
     get { return this.#declaredInterfaces; }
   }
 
-  declaredMixins: Array<SymbolId> {
+  declaredMixins: GrowableArray<SymbolId> {
     get { return this.#declaredMixins; }
   }
 
-  declaredEnums: Array<SymbolId> {
+  declaredEnums: GrowableArray<SymbolId> {
     get { return this.#declaredEnums; }
   }
 
-  declaredGlobals: Array<SymbolId> {
+  declaredGlobals: GrowableArray<SymbolId> {
     get { return this.#declaredGlobals; }
   }
 
-  classDeclarations: Map<SymbolId, ClassDeclaration> {
+  classDeclarations: HashMap<SymbolId, ClassDeclaration> {
     get { return this.#classDeclarations; }
   }
 
-  interfaceDeclarations: Map<SymbolId, InterfaceDeclaration> {
+  interfaceDeclarations: HashMap<SymbolId, InterfaceDeclaration> {
     get { return this.#interfaceDeclarations; }
   }
 
-  mixinDeclarations: Map<SymbolId, MixinDeclaration> {
+  mixinDeclarations: HashMap<SymbolId, MixinDeclaration> {
     get { return this.#mixinDeclarations; }
   }
 
-  enumDeclarations: Map<SymbolId, EnumDeclaration> {
+  enumDeclarations: HashMap<SymbolId, EnumDeclaration> {
     get { return this.#enumDeclarations; }
   }
 
-  globalDeclarations: Map<SymbolId, Node> {
+  globalDeclarations: HashMap<SymbolId, Node> {
     get { return this.#globalDeclarations; }
   }
 
@@ -1265,22 +1265,22 @@ export final class SemanticModel {
   unionCallCalleeTypes: NodeMap<UnionType> { get { return this.#unionCallCalleeTypes; } }
   originalArgCounts: NodeMap<i32> { get { return this.#originalArgCounts; } }
   defaultArgsOwners: NodeMap<Type> { get { return this.#defaultArgsOwners; } }
-  defaultArgParamNames: NodeMap<Array<String>> { get { return this.#defaultArgParamNames; } }
+  defaultArgParamNames: NodeMap<GrowableArray<String>> { get { return this.#defaultArgParamNames; } }
   staticAccesses: NodeMap<boolean> { get { return this.#staticAccesses; } }
   memberKeys: NodeMap<String> { get { return this.#memberKeys; } }
   scopeExitDrops: NodeMap<boolean> { get { return this.#scopeExitDrops; } }
-  edgeDrops: NodeMap<Array<EdgeDrop>> { get { return this.#edgeDrops; } }
-  movedOutFields: NodeMap<Array<String>> { get { return this.#movedOutFields; } }
+  edgeDrops: NodeMap<GrowableArray<EdgeDrop>> { get { return this.#edgeDrops; } }
+  movedOutFields: NodeMap<GrowableArray<String>> { get { return this.#movedOutFields; } }
   parents: DenseNodeMap<Node> { get { return this.#parents; } }
-  bindingTypes: Map<SymbolId, Type> { get { return this.#bindingTypes; } }
+  bindingTypes: HashMap<SymbolId, Type> { get { return this.#bindingTypes; } }
 }
 
 export final class ClosureDependency {
   id: i32;
   node: Node;
   capturesThis: boolean;
-  captures: Array<SymbolId>;
-  mutableCaptures: Set<SymbolId>;
+  captures: GrowableArray<SymbolId>;
+  mutableCaptures: HashSet<SymbolId>;
   dependencies: SymbolDependencies;
 
   new(this.id, this.node, this.capturesThis, this.captures, this.mutableCaptures, this.dependencies);

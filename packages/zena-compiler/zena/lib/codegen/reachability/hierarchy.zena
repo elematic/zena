@@ -1,4 +1,4 @@
-import { Set } from 'zena:collections';
+import { Set, HashMap, HashSet } from 'zena:collections';
 import { Program } from '../../program.zena';
 import { ClassType, FunctionType, MixinType, InterfaceType, TypeId } from '../../types.zena';
 import {
@@ -18,25 +18,25 @@ import { WasmModule } from '../wasm-module.zena';
  */
 export final class ClassHierarchyAnalysis {
   program: Program;
-  instantiatedSpecializedClasses: Set<String>;
+  instantiatedSpecializedClasses: HashSet<String>;
   wasm: WasmModule;
 
-  implementingMethodCache = new Map<TypeId, Map<String, MethodDefinition>>();
-  implementingMethodNulls = new Map<TypeId, Set<String>>();
-  implementingMethodsCache = new Map<TypeId, Map<String, Array<MethodDefinition>>>();
-  implementingFieldCache = new Map<TypeId, Map<String, FieldDefinition>>();
-  implementingFieldNulls = new Map<TypeId, Set<String>>();
-  implementingAccessorCache = new Map<TypeId, Map<String, AccessorDeclaration>>();
-  implementingAccessorNulls = new Map<TypeId, Set<String>>();
+  implementingMethodCache = new Map<TypeId, HashMap<String, MethodDefinition>>();
+  implementingMethodNulls = new Map<TypeId, HashSet<String>>();
+  implementingMethodsCache = new Map<TypeId, HashMap<String, GrowableArray<MethodDefinition>>>();
+  implementingFieldCache = new Map<TypeId, HashMap<String, FieldDefinition>>();
+  implementingFieldNulls = new Map<TypeId, HashSet<String>>();
+  implementingAccessorCache = new Map<TypeId, HashMap<String, AccessorDeclaration>>();
+  implementingAccessorNulls = new Map<TypeId, HashSet<String>>();
   subclassRelationCache = new Map<i32, boolean>();
   subclassesByBaseId = new Map<SymbolId, GrowableArray<ClassType>>();
   classDeclTypeCache = new Map<NodeId, ClassType>();
-  classMixinIdsCache = new Map<SymbolId, Map<SymbolId, boolean>>();
-  classModels: Map<SymbolId, SemanticModel>;
+  classMixinIdsCache = new Map<SymbolId, HashMap<SymbolId, boolean>>();
+  classModels: HashMap<SymbolId, SemanticModel>;
 
   new(this.program, this.instantiatedSpecializedClasses, this.wasm, this.classModels);
 
-  getClassMixinIds(cd: ClassDeclaration, symId: SymbolId, model: SemanticModel): Map<SymbolId, boolean> {
+  getClassMixinIds(cd: ClassDeclaration, symId: SymbolId, model: SemanticModel): HashMap<SymbolId, boolean> {
     if (let (true, cached) = this.classMixinIdsCache.get(symId)) {
       return cached;
     }
@@ -55,7 +55,7 @@ export final class ClassHierarchyAnalysis {
    * one. Without the composed mixins, a method a class gets through
    * `M` from `A` has no declaration to reach.
    */
-  #declarationBodies(ct: ClassType): Array<DeclarationBody> {
+  #declarationBodies(ct: ClassType): GrowableArray<DeclarationBody> {
     let out = new Array<DeclarationBody>();
     this.#appendDeclarationBodies((ct.genericSource ?? ct).symbolId,
         ct.sourcePath, ct.isMixinIntermediate, ct.mixins, out);
@@ -140,7 +140,7 @@ export final class ClassHierarchyAnalysis {
     return null;
   }
 
-  findImplementingMethods(cType: ClassType, mName: String): Array<MethodDefinition> {
+  findImplementingMethods(cType: ClassType, mName: String): GrowableArray<MethodDefinition> {
     let startClassId = if (cType.genericSource != null) (cType.genericSource as ClassType).id else cType.id;
     if (let (true, cache) = this.implementingMethodsCache.get(startClassId)) {
       if (let (true, cached) = cache.get(mName)) {
@@ -176,7 +176,7 @@ export final class ClassHierarchyAnalysis {
       curr = ct.superType;
     }
     if (!this.implementingMethodsCache.has(startClassId)) {
-      this.implementingMethodsCache[startClassId] = new Map<String, Array<MethodDefinition>>();
+      this.implementingMethodsCache[startClassId] = new Map<String, GrowableArray<MethodDefinition>>();
     }
     this.implementingMethodsCache[startClassId][mName] = methods;
     return methods;
@@ -302,7 +302,7 @@ export final class ClassHierarchyAnalysis {
     return false;
   }
 
-  collectAllBaseClassIds(ct: ClassType, list: Set<SymbolId>): void {
+  collectAllBaseClassIds(ct: ClassType, list: HashSet<SymbolId>): void {
     var curr: ClassType | null = ct;
     while (curr != null) {
       let currVal = curr;
@@ -326,7 +326,7 @@ export final class ClassHierarchyAnalysis {
     }
   }
 
-  findInstantiatedSubclasses(baseType: ClassType): Array<ClassType> {
+  findInstantiatedSubclasses(baseType: ClassType): GrowableArray<ClassType> {
     let baseSymId = baseType.symbolId;
     if (let (true, list) = this.subclassesByBaseId.get(baseSymId)) {
       return list;
@@ -334,7 +334,7 @@ export final class ClassHierarchyAnalysis {
     return new Array<ClassType>();
   }
 
-  collectAllImplementedInterfaces(ct: ClassType): Array<InterfaceType> {
+  collectAllImplementedInterfaces(ct: ClassType): GrowableArray<InterfaceType> {
     let list = new Array<InterfaceType>();
     let seen = new Map<InterfaceKey, boolean>();
     
@@ -358,7 +358,7 @@ export final class ClassHierarchyAnalysis {
     return list;
   }
 
-  addInterfaceToTransitiveList(it: InterfaceType, list: GrowableArray<InterfaceType>, seen: Map<InterfaceKey, boolean>): void {
+  addInterfaceToTransitiveList(it: InterfaceType, list: GrowableArray<InterfaceType>, seen: HashMap<InterfaceKey, boolean>): void {
     let key = getInterfaceKey(it);
     if (!seen.has(key)) {
       seen[key] = true;
@@ -394,7 +394,7 @@ let collectMixinSymbolIds = (
   program: Program,
   model: SemanticModel,
   mixinAnns: GrowableArray<TypeAnnotation> | null,
-  seenIds: Map<SymbolId, boolean>
+  seenIds: HashMap<SymbolId, boolean>
 ): void => {
   if (mixinAnns == null) { return; }
   for (let ann in mixinAnns) {
@@ -418,6 +418,6 @@ let collectMixinSymbolIds = (
 /** One declaration's member list, with the model that checked it. */
 final class DeclarationBody {
   model: SemanticModel;
-  body: Array<Node>;
+  body: GrowableArray<Node>;
   new(this.model, this.body);
 }

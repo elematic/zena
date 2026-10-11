@@ -171,6 +171,20 @@ worth more than the keying work itself.
   - Example: `if (!ok) { throw new Error("Parse check failed"); }`
 - Prefer strongly typed Zena structures (`class FunctionSignature`) rather than
   raw byte buffers internally while traversing semantic nodes.
+- **Classes, not collection interfaces, in annotations.** A field,
+  parameter or return typed `Map<K, V>`, `Set<T>` or `Array<T>` makes
+  the compiler wrap the class in an interface fat pointer at every
+  store or call that hands it a `HashMap`, `HashSet` or
+  `GrowableArray`: a 32-byte allocation per crossing and an indirect
+  call per use. Annotate with the class, and let `new` infer it
+  (`new Map()` is a `HashMap`). The interface is for a slot that is
+  genuinely polymorphic: a public entry point other packages implement
+  or call (`CompilerHost`, `CompilerOptions`), or a list that is
+  assigned from several representations and never pushed into (the
+  type model's `typeArguments: Array<Type>`). The checker enforces the
+  consequence: narrowing a parameter fails wherever an interface-typed
+  value still flows in, which is how the sweep in
+  docs/design/compiler-memory.md was driven.
 - **Structural Records vs Classes:** Prefer structural types/records (e.g.,
   `type CompilationUnit = {ast: Module, model: SemanticModel}`) over classes
   when identity or methods are unneeded. This reduces boilerplate and aligns

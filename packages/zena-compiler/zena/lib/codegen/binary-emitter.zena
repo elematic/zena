@@ -65,7 +65,7 @@ export final class BinaryEmitter implements WasmEmitter {
   
   var currentSection: ByteBuffer | null = null;
   var currentBuffer: ByteBuffer | null = null;
-  var currentLocals: Array<ValType> | null = null;
+  var currentLocals: GrowableArray<ValType> | null = null;
   /**
    * Byte offsets (into currentBuffer) and locals of the removable
    * ref.as_non_null asserts in the current function, in emission
@@ -74,7 +74,7 @@ export final class BinaryEmitter implements WasmEmitter {
    */
   #removableOffsets = new Array<i32>();
   #removableLocals = new Array<i32>();
-  var #graduatedLocals: Array<boolean> | null = null;
+  var #graduatedLocals: GrowableArray<boolean> | null = null;
   functionsList = new Array<WasmFunction>();
   // Struct type names for the name section's type subsection, recorded
   // as the type section is written. A heap profiler (V8's snapshots)
@@ -352,7 +352,7 @@ export final class BinaryEmitter implements WasmEmitter {
     }
   }
   
-  emitElementSection(indices: Array<i32>): void {
+  emitElementSection(indices: GrowableArray<i32>): void {
     if (indices.length == 0) return;
     let section = new ByteBuffer();
     section.writeULEB128(1); // 1 segment
@@ -531,7 +531,7 @@ export final class BinaryEmitter implements WasmEmitter {
 
   // Function lifecycle
   emitFunctionSignatureStart(name: String, typeIndex: i32): void {}
-  emitFunctionLocalsStart(locals: Array<ValType>): void {
+  emitFunctionLocalsStart(locals: GrowableArray<ValType>): void {
     this.currentLocals = locals;
   }
   
@@ -824,7 +824,7 @@ export final class BinaryEmitter implements WasmEmitter {
     b.writeByte(Opcode.ref_as_non_null as i32);
   }
 
-  dropAssertsForLocals(graduated: Array<boolean>): void {
+  dropAssertsForLocals(graduated: GrowableArray<boolean>): void {
     this.#graduatedLocals = graduated;
   }
 
@@ -986,7 +986,7 @@ export final class BinaryEmitter implements WasmEmitter {
     b.writeByte(lane);
   }
 
-  emitSimdBytes(opcode: i32, bytes: Array<i32>): void {
+  emitSimdBytes(opcode: i32, bytes: GrowableArray<i32>): void {
     let b = this.#simdPrefix(opcode);
     for (let byte in bytes) {
       b.writeByte(byte);
@@ -1064,7 +1064,7 @@ export final class BinaryEmitter implements WasmEmitter {
     this.writeSection(SectionId.DataCount as i32, payload);
   }
 
-  emitDataSection(datas: Array<ByteBuffer>, rawDatas: Array<ByteBuffer>): void {
+  emitDataSection(datas: GrowableArray<ByteBuffer>, rawDatas: GrowableArray<ByteBuffer>): void {
     if (datas.length == 0) return;
     let payload = new ByteBuffer();
     payload.writeULEB128(datas.length);

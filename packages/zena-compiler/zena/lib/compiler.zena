@@ -15,7 +15,7 @@
  *   }
  */
 
-import { Set } from 'zena:collections';
+import { Set, HashMap, HashSet, OrderedHashMap } from 'zena:collections';
 
 import {
   CheckSettings, CompileOptions, CompilerOptions, sameCheckSettings
@@ -104,13 +104,13 @@ export final class ProgramCheckResult {
   settings: CheckSettings;
 
   /** Per-module check results, keyed by file path. */
-  results: Map<String, CheckResult>;
+  results: HashMap<String, CheckResult>;
 
   /** Source text at the time each module was checked, keyed by file path. */
-  sources: Map<String, String>;
+  sources: HashMap<String, String>;
 
   /** AST Module at the time each module was checked, keyed by file path. */
-  asts: Map<String, Module>;
+  asts: HashMap<String, Module>;
 
   /**
    * Export signatures at the time each module was checked, keyed by file path.
@@ -118,7 +118,7 @@ export final class ProgramCheckResult {
    * Type objects. Used for incremental invalidation: if a file's exports
    * change, its dependents must be re-checked.
    */
-  exportSignatures: Map<String, Map<String, Type>>;
+  exportSignatures: HashMap<String, HashMap<String, Type>>;
 
   /** Aggregated diagnostics from all modules. */
   diagnostics = new Array<Diagnostic>();
@@ -142,10 +142,10 @@ export final class ProgramCheckResult {
 
   new(
     this.settings: CheckSettings,
-    this.results: Map<String, CheckResult>,
-    this.sources: Map<String, String>,
-    this.asts: Map<String, Module>,
-    this.exportSignatures: Map<String, Map<String, Type>>,
+    this.results: HashMap<String, CheckResult>,
+    this.sources: HashMap<String, String>,
+    this.asts: HashMap<String, Module>,
+    this.exportSignatures: HashMap<String, HashMap<String, Type>>,
     this.entry: CheckResult,
     this.sharedState: SharedCheckerState
   ) {
@@ -336,7 +336,7 @@ let computeExportSignature = (
   exports: ScopeModuleExports,
   rootScope: Scope,
   model: SemanticModel
-): Map<String, Type> => {
+): HashMap<String, Type> => {
   let sig = new Map<String, Type>();
 
   let iter = exports.keys();
@@ -402,7 +402,7 @@ export let signatureTypeEquals = (a: Type, b: Type): boolean => {
   return signatureTypeEqualsRec(a, b, visited);
 };
 
-let signatureTypeEqualsRec = (a: Type, b: Type, visited: Set<String>): boolean => {
+let signatureTypeEqualsRec = (a: Type, b: Type, visited: HashSet<String>): boolean => {
   // Fast path: referential identity (singletons, carried-forward objects).
   if (a === b) { return true; }
 
@@ -490,8 +490,8 @@ let signatureTypeEqualsRec = (a: Type, b: Type, visited: Set<String>): boolean =
           // Compare optional properties.
           if (ra.optionalProperties == null && rb.optionalProperties == null) { return true; }
           if (ra.optionalProperties == null || rb.optionalProperties == null) { return false; }
-          let optA = ra.optionalProperties as Set<String>;
-          let optB = rb.optionalProperties as Set<String>;
+          let optA = ra.optionalProperties as HashSet<String>;
+          let optB = rb.optionalProperties as HashSet<String>;
           stringSetEquals(optA, optB)
         }
         case _: false
@@ -564,7 +564,7 @@ let signatureTypeEqualsRec = (a: Type, b: Type, visited: Set<String>): boolean =
  * Compare two arrays of types elementwise.
  */
 let arrayTypesEqual = (
-  a: Array<Type>, b: Array<Type>, visited: Set<String>
+  a: Array<Type>, b: Array<Type>, visited: HashSet<String>
 ): boolean => {
   if (a.length != b.length) {
     return false;
@@ -583,7 +583,7 @@ let arrayTypesEqual = (
 let typeParamsEqual = (
   a: Array<TypeParameterType> | null,
   b: Array<TypeParameterType> | null,
-  visited: Set<String>
+  visited: HashSet<String>
 ): boolean => {
   if (a == null && b == null) {
     return true;
@@ -608,7 +608,7 @@ let typeParamsEqual = (
 let typeArgsEqual = (
   a: Array<Type> | null,
   b: Array<Type> | null,
-  visited: Set<String>
+  visited: HashSet<String>
 ): boolean => {
   if (a == null && b == null) {
     return true;
@@ -623,7 +623,7 @@ let typeArgsEqual = (
  * Compare two HashMaps of name → Type.
  */
 let typeMapEquals = (
-  a: Map<String, Type>, b: Map<String, Type>, visited: Set<String>
+  a: HashMap<String, Type>, b: HashMap<String, Type>, visited: HashSet<String>
 ): boolean => {
   if (a.size != b.size) {
     return false;
@@ -643,7 +643,7 @@ let typeMapEquals = (
  * Compare two Maps of name → MemberInfo.
  */
 let membersMapEquals = (
-  a: Map<String, MemberInfo>, b: Map<String, MemberInfo>, visited: Set<String>
+  a: OrderedHashMap<String, MemberInfo>, b: OrderedHashMap<String, MemberInfo>, visited: HashSet<String>
 ): boolean => {
   if (a.size != b.size) {
     return false;
@@ -700,7 +700,7 @@ let membersMapEquals = (
  * Compare two HashMaps of name → boolean.
  */
 let boolMapEquals = (
-  a: Map<String, boolean>, b: Map<String, boolean>
+  a: HashMap<String, boolean>, b: HashMap<String, boolean>
 ): boolean => {
   if (a.size != b.size) {
     return false;
@@ -716,7 +716,7 @@ let boolMapEquals = (
 /**
  * Compare two HashSets of String.
  */
-let stringSetEquals = (a: Set<String>, b: Set<String>): boolean => {
+let stringSetEquals = (a: HashSet<String>, b: HashSet<String>): boolean => {
   if (a.size != b.size) {
     return false;
   }
@@ -732,7 +732,7 @@ let stringSetEquals = (a: Set<String>, b: Set<String>): boolean => {
  * Compare nullable Set<String>.
  */
 let nullableStringSetEquals = (
-  a: Set<String> | null, b: Set<String> | null
+  a: HashSet<String> | null, b: HashSet<String> | null
 ): boolean => {
   if (a == null && b == null) {
     return true;
@@ -745,7 +745,7 @@ let nullableStringSetEquals = (
 
 /** Deep comparison of FunctionType for signature purposes. */
 let functionTypeEquals = (
-  fa: FunctionType, fb: FunctionType, visited: Set<String>
+  fa: FunctionType, fb: FunctionType, visited: HashSet<String>
 ): boolean => {
   if (fa === fb) { return true; }
   if (fa.parameters.length != fb.parameters.length) { return false; }
@@ -773,8 +773,8 @@ let functionTypeEquals = (
  * defined one. A missing flag is a flag that is false.
  */
 let optionalFlagsEqual = (
-  a: Array<boolean> | null,
-  b: Array<boolean> | null
+  a: GrowableArray<boolean> | null,
+  b: GrowableArray<boolean> | null
 ): boolean => {
   let aLen = if (a == null) { 0 } else { a.length };
   let bLen = if (b == null) { 0 } else { b.length };
@@ -789,7 +789,7 @@ let optionalFlagsEqual = (
 
 /** Deep comparison of ClassType for signature purposes. */
 let classTypeEquals = (
-  ca: ClassType, cb: ClassType, visited: Set<String>
+  ca: ClassType, cb: ClassType, visited: HashSet<String>
 ): boolean => {
   if (ca === cb) { return true; }
   if (ca.name != cb.name) { return false; }
@@ -858,7 +858,7 @@ let classTypeEquals = (
 
 /** Deep comparison of InterfaceType for signature purposes. */
 let interfaceTypeEquals = (
-  ia: InterfaceType, ib: InterfaceType, visited: Set<String>
+  ia: InterfaceType, ib: InterfaceType, visited: HashSet<String>
 ): boolean => {
   if (ia === ib) { return true; }
   if (ia.name != ib.name) { return false; }
@@ -884,7 +884,7 @@ let interfaceTypeEquals = (
 
 /** Deep comparison of MixinType for signature purposes. */
 let mixinTypeEquals = (
-  ma: MixinType, mb: MixinType, visited: Set<String>
+  ma: MixinType, mb: MixinType, visited: HashSet<String>
 ): boolean => {
   if (ma === mb) { return true; }
   if (ma.name != mb.name) { return false; }
@@ -922,8 +922,8 @@ let mixinTypeEquals = (
  */
 let buildReverseDeps = (
   files: GrowableArray<SourceFile>
-): Map<String, Map<String, GrowableArray<String>>> => {
-  let reverseDeps = new Map<String, Map<String, GrowableArray<String>>>();
+): HashMap<String, HashMap<String, GrowableArray<String>>> => {
+  let reverseDeps = new Map<String, HashMap<String, GrowableArray<String>>>();
 
   for (let file in files) {
     // Walk the AST to find import/re-export declarations and their names.
@@ -1009,18 +1009,18 @@ let buildReverseDeps = (
  * declarations.
  */
 final class FileCheckInputs {
-  depExports: Map<String, ScopeModuleExports>;
-  depModels: Map<String, SemanticModel>;
-  laterPaths: Set<String> | null;
+  depExports: HashMap<String, ScopeModuleExports>;
+  depModels: HashMap<String, SemanticModel>;
+  laterPaths: HashSet<String> | null;
   new(this.depExports, this.depModels, this.laterPaths);
 }
 
 let fileCheckInputs = (
   file: SourceFile,
-  allResults: Map<String, CheckResult>,
-  inProgress: Map<String, ModuleCheck> | null,
+  allResults: HashMap<String, CheckResult>,
+  inProgress: HashMap<String, ModuleCheck> | null,
   allFiles: GrowableArray<SourceFile>,
-  recheckPaths: Set<String> | null
+  recheckPaths: HashSet<String> | null
 ): FileCheckInputs => {
   let depExports = new Map<String, ScopeModuleExports>();
   let depModels = new Map<String, SemanticModel>();
@@ -1061,7 +1061,7 @@ let fileCheckInputs = (
   // whose declaration originates in one of them crosses an import
   // cycle's back edge (docs/design/import-cycles.md). Null in the
   // common acyclic case so the checker skips the bookkeeping.
-  var laterPaths: Set<String> | null = null;
+  var laterPaths: HashSet<String> | null = null;
   if (recheckPaths != null) {
     let later = new Set<String>();
     var seen = false;
@@ -1085,13 +1085,13 @@ let fileCheckInputs = (
  */
 let beginFile = (
   file: SourceFile,
-  allResults: Map<String, CheckResult>,
-  inProgress: Map<String, ModuleCheck>,
+  allResults: HashMap<String, CheckResult>,
+  inProgress: HashMap<String, ModuleCheck>,
   allFiles: GrowableArray<SourceFile>,
   emitLocations: boolean,
   sharedState: SharedCheckerState,
   warnUnnecessaryCasts: boolean,
-  recheckPaths: Set<String> | null,
+  recheckPaths: HashSet<String> | null,
   deferBodies: boolean
 ): ModuleCheck => {
   let inputs = fileCheckInputs(file, allResults, inProgress, allFiles, recheckPaths);
@@ -1116,8 +1116,8 @@ let beginFile = (
 let refreshDepModels = (
   mc: ModuleCheck,
   file: SourceFile,
-  allResults: Map<String, CheckResult>,
-  inProgress: Map<String, ModuleCheck>
+  allResults: HashMap<String, CheckResult>,
+  inProgress: HashMap<String, ModuleCheck>
 ): void => {
   let specIter = file.imports.keys();
   for (let specifier in specIter) {
@@ -1142,12 +1142,12 @@ let refreshDepModels = (
 
 let checkFile = (
   file: SourceFile,
-  allResults: Map<String, CheckResult>,
+  allResults: HashMap<String, CheckResult>,
   allFiles: GrowableArray<SourceFile>,
   emitLocations: boolean,
   sharedState: SharedCheckerState,
   warnUnnecessaryCasts: boolean,
-  recheckPaths: Set<String> | null,
+  recheckPaths: HashSet<String> | null,
   deferBodies: boolean
 ): CheckResult => {
   let inputs = fileCheckInputs(file, allResults, null, allFiles, recheckPaths);
@@ -1190,7 +1190,7 @@ let checkFile = (
  */
 final class ImportComponents {
   #files: GrowableArray<SourceFile>;
-  #pathIndex: Map<String, i32>;
+  #pathIndex: HashMap<String, i32>;
   #index = new Array<i32>();
   #low = new Array<i32>();
   #onStack = new Array<boolean>();
@@ -1198,7 +1198,7 @@ final class ImportComponents {
   var #next = 0;
   components = new Array<GrowableArray<i32>>();
 
-  new(files: GrowableArray<SourceFile>, pathIndex: Map<String, i32>)
+  new(files: GrowableArray<SourceFile>, pathIndex: HashMap<String, i32>)
     : #files = files, #pathIndex = pathIndex {
     var i = 0;
     while (i < files.length) {
@@ -1301,7 +1301,7 @@ export let checkCompilation = (
   let allResults = new Map<String, CheckResult>();
   let allSources = new Map<String, String>();
   let allAsts = new Map<String, Module>();
-  let allSignatures = new Map<String, Map<String, Type>>();
+  let allSignatures = new Map<String, HashMap<String, Type>>();
 
   let sharedState = previous?.sharedState ?? new SharedCheckerState();
 
@@ -1403,7 +1403,7 @@ export let checkCompilation = (
   // cycle's second pass now runs as soon as its last member has had
   // its first, before any module outside the cycle that imports from
   // it is checked, so those importers see final models and check once.
-  var recheckPaths: Set<String> | null = null;
+  var recheckPaths: HashSet<String> | null = null;
   // For the index of a cycle's last member in evaluation order: the
   // cycle's members, in evaluation order.
   let cyclesEndingAt = new Map<i32, GrowableArray<SourceFile>>();

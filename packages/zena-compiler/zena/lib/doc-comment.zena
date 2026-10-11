@@ -67,7 +67,7 @@ export final class DocComment(
   description: String,
 
   /** Block tags in source order. */
-  tags: Array<DocTag>,
+  tags: GrowableArray<DocTag>,
 
   /** The comment body with delimiters and star prefixes removed. */
   raw: String
@@ -83,7 +83,7 @@ export final class DocComment(
   }
 
   /** Every tag with this name, in source order. */
-  tagsNamed(name: String): Array<DocTag> {
+  tagsNamed(name: String): GrowableArray<DocTag> {
     let found = new Array<DocTag>(2);
     for (let tag in this.tags) {
       if (tag.name == name) {
@@ -173,7 +173,7 @@ let stripPrefix = (line: String): String => {
 };
 
 /** Splits on newlines, keeping empty lines. */
-let splitLines = (s: String): Array<String> => {
+let splitLines = (s: String): GrowableArray<String> => {
   let lines = new Array<String>(8);
   var start = 0;
   var i = 0;
@@ -189,7 +189,7 @@ let splitLines = (s: String): Array<String> => {
 };
 
 /** Strips the star prefix from every line, then drops blank edges. */
-let bodyLines = (body: String): Array<String> => {
+let bodyLines = (body: String): GrowableArray<String> => {
   let stripped = new Array<String>(8);
   for (let line in splitLines(body)) {
     stripped.push(stripPrefix(line));
@@ -212,7 +212,7 @@ let bodyLines = (body: String): Array<String> => {
 };
 
 /** Joins `lines[from..to)` with newlines, dropping trailing blanks. */
-let joinLines = (lines: Array<String>, from: i32, to: i32): String => {
+let joinLines = (lines: GrowableArray<String>, from: i32, to: i32): String => {
   let sb = new StringBuilder(64);
   var i = from;
   while (i < to) {
@@ -314,7 +314,7 @@ let summaryOf = (description: String): String => {
 };
 
 /** Index of the first line that opens a block tag, else `lines.length`. */
-let firstTagLine = (lines: Array<String>): i32 => {
+let firstTagLine = (lines: GrowableArray<String>): i32 => {
   var inFence = false;
   var i = 0;
   while (i < lines.length) {
@@ -334,7 +334,7 @@ let firstTagLine = (lines: Array<String>): i32 => {
  * A tag runs until the next tag line, so its text can span lines and
  * contain fenced code — which `@example` needs.
  */
-let parseTags = (lines: Array<String>, start: i32): Array<DocTag> => {
+let parseTags = (lines: GrowableArray<String>, start: i32): GrowableArray<DocTag> => {
   // Every line that opens a tag. A tag's text is the lines from its
   // opener up to the next one, so fenced code inside a tag is carried
   // along rather than ending it.
@@ -415,7 +415,7 @@ export let parseDocCommentBody = (body: String): DocComment => {
  * block of prose, so the closest one to the declaration is not
  * privileged.
  */
-export let parseLeadingDoc = (comments: Array<Comment> | null): DocComment | null => {
+export let parseLeadingDoc = (comments: GrowableArray<Comment> | null): DocComment | null => {
   if (comments == null) {
     return null;
   }
@@ -444,7 +444,7 @@ let spans = (node: Node, offset: i32): boolean => {
 };
 
 /** The member of a class or interface body around `offset`, or null. */
-let memberAt = (body: Array<Node>, offset: i32): Node | null => {
+let memberAt = (body: GrowableArray<Node>, offset: i32): Node | null => {
   for (let member in body) {
     if (spans(member, offset)) {
       return member;

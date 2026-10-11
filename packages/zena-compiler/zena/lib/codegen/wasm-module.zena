@@ -1,4 +1,4 @@
-import { Set, HashMap } from 'zena:collections';
+import { Set, HashMap, HashSet } from 'zena:collections';
 import {
   Node, Expression, NodeId, ImportSpecifier, FunctionExpression, MethodDefinition, DeclareFunction, VariableDeclaration, FunctionDeclaration, IdentifierPattern,
 } from '../ast.zena';
@@ -178,7 +178,7 @@ let stringEquals = (s1: String | null, s2: String | null): boolean => {
 
 export final class StructKey implements Hashable {
   name: String | null;
-  fields: Array<WasmField>;
+  fields: GrowableArray<WasmField>;
   new(this.name, this.fields);
 
   hashCode(): i32 {
@@ -232,7 +232,7 @@ let getSignatureKey = (params: GrowableArray<ValType>, returns: GrowableArray<Va
   return new SignatureKey(params, returns);
 };
 
-let getStructKey = (name: String | null, fields: Array<WasmField>): StructKey => {
+let getStructKey = (name: String | null, fields: GrowableArray<WasmField>): StructKey => {
   return new StructKey(name, fields);
 };
 
@@ -246,7 +246,7 @@ export final class WasmStruct extends WasmType {
   name: String | null;
   fields: GrowableArray<WasmField>;
   /** Lazy name→index cache; sized-guarded because RTA appends fields. */
-  var #fieldIndexCache: Map<String, i32> | null = null;
+  var #fieldIndexCache: HashMap<String, i32> | null = null;
   var #fieldIndexCacheSize = -1;
   new(this.name, this.fields) : super();
 
@@ -321,7 +321,7 @@ export final class WasmStruct extends WasmType {
       this.#fieldIndexCache = cache;
       this.#fieldIndexCacheSize = this.fields.length;
     }
-    let cache = this.#fieldIndexCache as Map<String, i32>;
+    let cache = this.#fieldIndexCache as HashMap<String, i32>;
     return if (let (true, idx) = cache.get(fieldName)) idx else -1;
   }
 }
@@ -485,7 +485,7 @@ let heapSubtype = (a: WasmType, b: WasmType): boolean => {
  */
 /** The shared empty capture lists a function without captures reads. */
 export let noCaptures = new Array<SymbolId>();
-export let noMutableCaptures = new Set<SymbolId>();
+export let noMutableCaptures: HashSet<SymbolId> = new Set<SymbolId>();
 
 export final class WasmFunction implements Hashable {
   /** The semantic model of the module that declares this function. */
@@ -605,7 +605,7 @@ export final class WasmFunction implements Hashable {
    * the source — -1 = absent (constant 0), -2 = required in the source
    * (constant 1), else the source's global bit index.
    */
-  var getterMaskSpec: Array<i32> | null = null;
+  var getterMaskSpec: GrowableArray<i32> | null = null;
   /** Which 64-bit word of the target mask this getter assembles. */
   var getterMaskWord: i32 = 0;
   /**
@@ -632,7 +632,7 @@ export final class WasmFunction implements Hashable {
    * `noCaptures`/`noMutableCaptures` for the null case.
    */
   var captures: GrowableArray<SymbolId> | null = null;
-  var mutableCaptures: Set<SymbolId> | null = null;
+  var mutableCaptures: HashSet<SymbolId> | null = null;
   var capturesThis: boolean = false;
   var isFunctionAdaptation: boolean = false;
   var functionAdaptationSource: FunctionType | null = null;
@@ -647,7 +647,7 @@ export final class WasmFunction implements Hashable {
    * Memoized results of substituteTypeParamsInFunctionContext for this
    * function, keyed by input type identity (codegen/type-mapping.zena).
    */
-  var codegenSubstCache: Map<Type, Type> | null = null;
+  var codegenSubstCache: HashMap<Type, Type> | null = null;
 
   var closureTrampoline: WasmFunction | null = null;
   var isClosureTrampoline: boolean = false;
@@ -714,7 +714,7 @@ export final class ForwarderParamPack {
 
 export final class VTableInit {
   structType: WasmStruct;
-  funcs: Array<WasmFunction>;
+  funcs: GrowableArray<WasmFunction>;
   /**
    * True for a class's method table. Its functions are reached only
    * where a call can dispatch to them (see ReachabilityAnalysis's
@@ -778,18 +778,18 @@ export final class RecordDispatchInfo {
   vtableType: WasmStruct;
   concreteType: WasmStruct;
   vtableGlobal: WasmGlobal;
-  fields: Array<WasmField>;
-  getterTypes: Array<WasmSignature>;
+  fields: GrowableArray<WasmField>;
+  getterTypes: GrowableArray<WasmSignature>;
   /**
    * Sorted optional field names of the (target) record type; position =
    * presence-bit index. Part of the dispatch key: two record types with
    * identical field lists but different optional sets have different
    * getter semantics.
    */
-  optionalNames: Array<String>;
+  optionalNames: GrowableArray<String>;
   /** For an adapted dispatch: the SOURCE shape's sorted optional names
    *  (equals optionalNames on a plain dispatch). */
-  inOptionalNames: Array<String>;
+  inOptionalNames: GrowableArray<String>;
 
   new(this.fatPtrType, this.vtableType, this.concreteType, this.vtableGlobal, this.fields, this.getterTypes, this.optionalNames, this.inOptionalNames);
 
@@ -801,7 +801,7 @@ export final class RecordDispatchInfo {
   }
 }
 
-let stringArraysEqual = (a: Array<String>, b: Array<String>): boolean => {
+let stringArraysEqual = (a: GrowableArray<String>, b: GrowableArray<String>): boolean => {
   if (a.length != b.length) { return false; }
   for (var i = 0; i < a.length; i += 1) {
     if (a[i] != b[i]) { return false; }
@@ -929,10 +929,10 @@ export final class WasmModule {
    * generic interface mentioned in many signatures is instantiated once
    * per argument list here too.
    */
-  interfaceInstantiations = new Map<i32, Map<String, InterfaceType>>();
+  interfaceInstantiations = new Map<i32, HashMap<String, InterfaceType>>();
 
   /** The instantiation table for `it`, created on first use. */
-  interfaceInstantiationsFor(it: InterfaceType): Map<String, InterfaceType> {
+  interfaceInstantiationsFor(it: InterfaceType): HashMap<String, InterfaceType> {
     if (let (true, existing) = this.interfaceInstantiations.get(it.uid)) {
       return existing;
     }
@@ -1320,7 +1320,7 @@ export final class WasmModule {
   functionAdaptationWrappers = new NodeMap<WasmFunction>();
   symbolNames = new Map<SymbolId, String>();
   
-  findRecordDispatch(fields: Array<WasmField>, optionalNames: Array<String>): RecordDispatchInfo | null {
+  findRecordDispatch(fields: GrowableArray<WasmField>, optionalNames: GrowableArray<String>): RecordDispatchInfo | null {
     for (var k = 0; k < this.recordDispatchInfos.length; k += 1) {
       let info = this.recordDispatchInfos[k];
       if (info.fields.length == fields.length &&
@@ -1338,7 +1338,7 @@ export final class WasmModule {
     return null;
   }
   
-  findAdaptedDispatch(inFields: Array<WasmField>, inOptionalNames: Array<String>, outFields: Array<WasmField>, outOptionalNames: Array<String>): RecordDispatchInfo | null {
+  findAdaptedDispatch(inFields: GrowableArray<WasmField>, inOptionalNames: GrowableArray<String>, outFields: GrowableArray<WasmField>, outOptionalNames: GrowableArray<String>): RecordDispatchInfo | null {
     for (var k = 0; k < this.adaptedDispatchInfos.length; k += 1) {
       let info = this.adaptedDispatchInfos[k];
       if (!stringArraysEqual(info.optionalNames, outOptionalNames) ||
@@ -1458,7 +1458,7 @@ export final class WasmModule {
     return sig;
   }
 
-  getStruct(name: String | null, fields: Array<WasmField>): WasmStruct {
+  getStruct(name: String | null, fields: GrowableArray<WasmField>): WasmStruct {
     let key = getStructKey(name, fields);
     if (let (true, cached) = this.#structCache.get(key)) {
       return cached;
@@ -1472,14 +1472,7 @@ export final class WasmModule {
       }
       throw new Error("Struct allocated after layout:" + fieldNames);
     }
-    let stFields = if (fields is GrowableArray<WasmField>) fields else {
-      let copy = new Array<WasmField>();
-      for (let f in fields) {
-        copy.push(f);
-      }
-      copy
-    };
-    let st = new WasmStruct(name, stFields);
+    let st = new WasmStruct(name, fields);
     this.types.push(st);
     this.#structCache[key] = st;
     if (name == null) {
@@ -1503,7 +1496,7 @@ export final class WasmModule {
     return this.getStruct(null, fields);
   }
   
-  getRecordDispatch(model: SemanticModel, fields: GrowableArray<WasmField>, optionalNames: Array<String>): RecordDispatchInfo {
+  getRecordDispatch(model: SemanticModel, fields: GrowableArray<WasmField>, optionalNames: GrowableArray<String>): RecordDispatchInfo {
     sortWasmFields(fields);
 
     let existing = this.findRecordDispatch(fields, optionalNames);
@@ -1564,7 +1557,7 @@ export final class WasmModule {
     return info;
   }
   
-  getAdaptedRecordDispatch(model: SemanticModel, inFields: GrowableArray<WasmField>, inOptionalNames: Array<String>, outFields: GrowableArray<WasmField>, outOptionalNames: Array<String>): RecordDispatchInfo {
+  getAdaptedRecordDispatch(model: SemanticModel, inFields: GrowableArray<WasmField>, inOptionalNames: GrowableArray<String>, outFields: GrowableArray<WasmField>, outOptionalNames: GrowableArray<String>): RecordDispatchInfo {
     sortWasmFields(inFields);
     sortWasmFields(outFields);
 
@@ -1745,7 +1738,8 @@ export final class WasmModule {
       this.functionAdaptations[key] = func;
     }
     if (func.isClosure) {
-      for (let symId in func.mutableCaptures ?? noMutableCaptures) {
+      let coalesced1 = func.mutableCaptures ?? noMutableCaptures;
+      for (let symId in coalesced1) {
         this.mutableCapturedSymbols.add(symId);
       }
     }

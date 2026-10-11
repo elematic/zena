@@ -9,7 +9,7 @@ import {
 import {
   Node, ClassDeclaration, InterfaceDeclaration, MixinDeclaration, MethodDefinition, AccessorDeclaration, FieldDefinition, VariableDeclaration, FunctionDeclaration, DeclareFunction, ImportDeclaration, IdentifierPattern, FunctionExpression, SealedVariant, SourceLocation, Module, Identifier, SymbolPropertyName, MemberExpression, CallExpression, ExportAllDeclaration, ExportFromDeclaration, IdGenerator, ShieldedStatement, TryExpression,
 } from '../../ast.zena';
-import { Set } from 'zena:collections';
+import { Set, HashMap, HashSet } from 'zena:collections';
 
 import { StringBuilder } from 'zena:core';
 import {
@@ -63,7 +63,7 @@ final class ParsedAdaptationRef {
  * a node alone names all of them (docs/design/decorators.md). Empty when
  * `node` is not a decorator's member.
  */
-let findDecoratorIntermediates = (ct: ClassType, classDecls: Map<SymbolId, Node>, node: Node): Array<ClassType> => {
+let findDecoratorIntermediates = (ct: ClassType, classDecls: HashMap<SymbolId, Node>, node: Node): GrowableArray<ClassType> => {
   let found = new Array<ClassType>();
   var scWalk: ClassType | null = ct.superType;
   while (scWalk != null && scWalk.isMixinIntermediate) {
@@ -89,7 +89,7 @@ let findDecoratorIntermediates = (ct: ClassType, classDecls: Map<SymbolId, Node>
   return found;
 };
 
-let findDeclaringMixinIntermediate = (ct: ClassType, classDecls: Map<SymbolId, Node>, node: Node): ClassType | null => {
+let findDeclaringMixinIntermediate = (ct: ClassType, classDecls: HashMap<SymbolId, Node>, node: Node): ClassType | null => {
   var scWalk: ClassType | null = ct.superType;
   while (scWalk != null && scWalk.isMixinIntermediate) {
     let sc = scWalk;
@@ -230,8 +230,8 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
   /** Demands keyed "<interfaceKey>.<slotName>" for dedup and slot lookup. */
   #genericInterfaceDemandsByKey = new Map<String, GenericInterfaceMethodDemand>();
   specializedClassTypes = new Map<SymbolId, GrowableArray<ClassType>>();
-  reachedClassMembers = new Map<SymbolId, Map<i32, boolean>>();
-  reachedReachableClassMembers = new Map<SymbolId, Map<i32, boolean>>();
+  reachedClassMembers = new Map<SymbolId, HashMap<i32, boolean>>();
+  reachedReachableClassMembers = new Map<SymbolId, HashMap<i32, boolean>>();
 
   // Tracks for interface dispatches: which instantiated classes implement an interface
   instantiatedClassesByInterface = new Map<SymbolId, GrowableArray<ClassInterfacePair>>();
@@ -923,7 +923,7 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
     }
   }
 
-  #linkSuperAndVT(ct: ClassType, model: SemanticModel, linkedClasses: Map<ClassKey, boolean>): void {
+  #linkSuperAndVT(ct: ClassType, model: SemanticModel, linkedClasses: HashMap<ClassKey, boolean>): void {
     let ctKey = getClassKey(ct);
     if (linkedClasses.has(ctKey)) { return; }
     linkedClasses[ctKey] = true;
@@ -991,7 +991,7 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
         this.reachablyNamedClasses.has(cKeyStr);
   }
 
-  #populateClassStruct(ct: ClassType, populated: Map<ClassKey, boolean>): void {
+  #populateClassStruct(ct: ClassType, populated: HashMap<ClassKey, boolean>): void {
     let key = getClassKey(ct);
     if (populated.has(key)) { return; }
     let {superType} = ct;
@@ -2197,7 +2197,7 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
     // Cached per class by identity, then by slot name, so a lookup
     // builds no key string: the concatenated keys were 70K strings
     // held for the whole compile.
-    let perClass = this.#slotOwnerCache.get(ct) ?? new Map<String, String>();
+    let perClass = this.#slotOwnerCache.get(ct) ?? new HashMap<String, String>();
     this.#slotOwnerCache[ct] = perClass;
     let cacheKey = slotName;
     if (let (true, cached) = perClass.get(cacheKey)) {
@@ -2228,7 +2228,7 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
     perClass[cacheKey] = key;
     return key;
   }
-  #slotOwnerCache = new Map<ClassType, Map<String, String>>();
+  #slotOwnerCache = new Map<ClassType, HashMap<String, String>>();
   var #pendingStaticTargets = new Array<PendingStaticTarget>();
 
   /**
@@ -2238,7 +2238,7 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
    * directly unless some subclass of the receiver's class has its own
    * reached version (`memberProvidedBySubclass`).
    */
-  #reachedSlotKeys(ownOnly: boolean): Set<String> {
+  #reachedSlotKeys(ownOnly: boolean): HashSet<String> {
     let keys = new Set<String>();
     for (let f in this.reachedFunctionsSet) {
       let {classType, methodName} = f;
@@ -3171,7 +3171,7 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
    * class-interface vtable pass or the final queue drain still has to
    * get a layout, and before this ran twice it silently did not.
    */
-  #layoutClassStructs(populated: Map<ClassKey, boolean>): void {
+  #layoutClassStructs(populated: HashMap<ClassKey, boolean>): void {
     var round = true;
     while (round) {
       round = false;
@@ -4348,7 +4348,7 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
               // name, scope key and type arguments — as the member
               // collection loops do. One node cannot say which
               // application a referrer meant, so every one is registered.
-              var decoratorInts: Array<ClassType> = new Array<ClassType>();
+              var decoratorInts: GrowableArray<ClassType> = new Array<ClassType>();
               if (refItem.classType != null && !refClassIsErasure) {
                 decoratorInts = findDecoratorIntermediates(refItem.classType as ClassType, this.classDecls, node);
               }

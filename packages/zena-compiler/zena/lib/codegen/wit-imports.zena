@@ -38,6 +38,7 @@ import {
   ImportTypeEncoder, ExportedInstanceType, NestedInstanceExport,
   NestedInstanceArg, ResourceDtorSlot
 } from './component-emitter.zena';
+import { HashMap } from 'zena:collections';
 
 /** The WIT spelling of a flat-scalar component value type opcode. */
 let scalarWitName = (opcode: i32): String => {
@@ -206,7 +207,7 @@ let docDeclaresPackage = (ast: Ast, packageKey: String): boolean => {
 
 let docDeclaresInterface = (ast: Ast, qualified: String): boolean => {
   let path = splitInterfaceName(qualified);
-  let matches = (pkg: PackageName | null, items: Array<AstItem>): boolean => {
+  let matches = (pkg: PackageName | null, items: GrowableArray<AstItem>): boolean => {
     if (pkg == null) {
       return false;
     }
@@ -380,8 +381,8 @@ export let encodeImportTypes = (
 };
 
 /** Copy every entry of `from` into `into`. */
-let copyIndices = (from: Map<String, i32>,
-    into: Map<String, i32>): void => {
+let copyIndices = (from: HashMap<String, i32>,
+    into: HashMap<String, i32>): void => {
   let keys = from.keys();
   for (let key in keys) {
     into[key] = from[key];
@@ -404,7 +405,7 @@ let copyIndices = (from: Map<String, i32>,
 let resolveCanonTypes = (
   encoder: ComponentTypeEncoder,
   shape: ComponentShape
-): Map<String, i32> => {
+): HashMap<String, i32> => {
   let indices = new Map<String, i32>();
   let split = (canonType: String, prefixLength: i32,
       expected: String): (String, String) => {
@@ -689,7 +690,7 @@ final class DeclaredWorldEncoder implements ImportTypeEncoder {
         throw new Error("The declared world exports '" + qualified +
             "', which the document does not declare.");
       }
-      for (let item in items as Array<InterfaceItem>) {
+      for (let item in items as GrowableArray<InterfaceItem>) {
         if (item.tag == InterfaceItemTag.Func) {
           let nf = item.func as NamedFunc;
           this.#declaredExports.push(
@@ -723,7 +724,7 @@ final class DeclaredWorldEncoder implements ImportTypeEncoder {
   }
 
   /** The items of the interface `qualified` declares, or null. */
-  #interfaceItems(qualified: String): Array<InterfaceItem> | null {
+  #interfaceItems(qualified: String): GrowableArray<InterfaceItem> | null {
     for (let item in this.#ast.items) {
       if (item.tag != AstItemTag.Interface) { continue; }
       let def = item.interfaceDef as InterfaceDef;

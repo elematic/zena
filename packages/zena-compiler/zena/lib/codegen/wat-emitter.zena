@@ -23,12 +23,12 @@ export final class WatEmitter implements WasmEmitter {
   var #outerSb: StringBuilder | null = null;
   var #funcHeadSb: StringBuilder | null = null;
   var #funcBodySb: StringBuilder | null = null;
-  var #currentLocals: Array<ValType> | null = null;
+  var #currentLocals: GrowableArray<ValType> | null = null;
   /** Byte ranges of removable asserts in the body builder, per local. */
   #removableStarts = new Array<i32>();
   #removableEnds = new Array<i32>();
   #removableLocals = new Array<i32>();
-  var #graduatedLocals: Array<boolean> | null = null;
+  var #graduatedLocals: GrowableArray<boolean> | null = null;
 
   new(this.sb);
 
@@ -228,7 +228,7 @@ export final class WatEmitter implements WasmEmitter {
   }
   emitTagSectionEnd(): void {}
 
-  emitElementSection(indices: Array<i32>): void {
+  emitElementSection(indices: GrowableArray<i32>): void {
     if (indices.length == 0) return;
     this.indent();
     this.sb.append('(elem declare func');
@@ -309,7 +309,7 @@ export final class WatEmitter implements WasmEmitter {
   }
 
 
-  emitFunctionLocalsStart(locals: Array<ValType>): void {
+  emitFunctionLocalsStart(locals: GrowableArray<ValType>): void {
     // Printing is deferred to emitFunctionCodeEnd: the ZIR emitter may
     // still graduate entries of this array to non-null after the body.
     this.#currentLocals = locals;
@@ -451,7 +451,7 @@ export final class WatEmitter implements WasmEmitter {
     this.#removableEnds.push(this.sb.length);
   }
 
-  dropAssertsForLocals(graduated: Array<boolean>): void {
+  dropAssertsForLocals(graduated: GrowableArray<boolean>): void {
     this.#graduatedLocals = graduated;
   }
 
@@ -693,7 +693,7 @@ export final class WatEmitter implements WasmEmitter {
    * the instruction actually carries; `i8x16.shuffle`'s bytes are lane
    * selectors and take no shape prefix.
    */
-  emitSimdBytes(opcode: i32, bytes: Array<i32>): void {
+  emitSimdBytes(opcode: i32, bytes: GrowableArray<i32>): void {
     this.indent();
     let name = simdName(opcode);
     this.sb.append(name);
@@ -756,7 +756,7 @@ export final class WatEmitter implements WasmEmitter {
 
   emitDataCountSection(count: i32): void {}
 
-  emitDataSection(datas: Array<ByteBuffer>, rawDatas: Array<ByteBuffer>): void {
+  emitDataSection(datas: GrowableArray<ByteBuffer>, rawDatas: GrowableArray<ByteBuffer>): void {
     var i = 0;
     for (let data in rawDatas) {
       this.indent();

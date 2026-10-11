@@ -26,6 +26,7 @@ import { PackageConfig, ModuleExport } from './module-resolver.zena';
 import { CompilerHost } from './library-loader.zena';
 import { dirName, normalizePath } from './module-resolver.zena';
 import { canonicalTarget } from './targets.zena';
+import { HashMap } from 'zena:collections';
 
 // ============================================================================
 // Package Map Loading
@@ -41,7 +42,7 @@ import { canonicalTarget } from './targets.zena';
 export let loadPackageMap = (
   host: CompilerHost,
   manifestPath: String
-): Map<String, PackageConfig> => {
+): HashMap<String, PackageConfig> => {
   let source = host.readFile(manifestPath);
   let json = parseJson(source);
   let root = json as JsonObject;
@@ -89,7 +90,7 @@ let parsePackageEntry = (value: JsonValue, manifestDir: String): PackageConfig =
   let root = normalizePath(manifestDir + "/" + rootValue);
 
   // Parse exports (optional).
-  var exports: Map<String, ModuleExport> | null = null;
+  var exports: HashMap<String, ModuleExport> | null = null;
   if (obj.has("exports")) {
     let exportsMap = new Map<String, ModuleExport>();
     let exportsObj = obj["exports"] as JsonObject;
@@ -140,7 +141,7 @@ let parseModuleExport = (value: JsonValue): ModuleExport => {
 export let withBuiltinPackages = (
   stdlibRoot: String,
   packages: Map<String, PackageConfig>
-): Map<String, PackageConfig> => {
+): HashMap<String, PackageConfig> => {
   let all = new Map<String, PackageConfig>();
   for (let name in packages.keys()) {
     all[name] = packages[name];

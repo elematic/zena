@@ -422,7 +422,7 @@ let fieldOffsets = (ty: Ty): GrowableArray<i32> => {
  * aliases transparently, enums/flags/records/variants to their
  * synthesized Zena types.
  */
-function classifyType(t: Type, ifaceItems: Array<InterfaceItem>): Ty {
+function classifyType(t: Type, ifaceItems: GrowableArray<InterfaceItem>): Ty {
   match (t.tag) {
     case TypeTag.Bool: { return scalarTy("boolean", 1); }
     case TypeTag.U8: { return scalarTy("u8", 1); }
@@ -565,7 +565,7 @@ function classifyType(t: Type, ifaceItems: Array<InterfaceItem>): Ty {
 }
 
 /** Classify a type by its declared name in the interface. */
-function classifyNamed(name: String, ifaceItems: Array<InterfaceItem>): Ty {
+function classifyNamed(name: String, ifaceItems: GrowableArray<InterfaceItem>): Ty {
   for (let item in ifaceItems) {
       if (item.tag != InterfaceItemTag.TypeDef) { continue; }
       let td = item.typeDef as TypeDef;
@@ -2420,7 +2420,7 @@ function renderResource(
   skipped: StringBuilder,
   td: TypeDef,
   interfaceName: String,
-  ifaceItems: Array<InterfaceItem>,
+  ifaceItems: GrowableArray<InterfaceItem>,
   uses: SynthUses
 ): void {
   uses.anyResource = true;
@@ -2503,7 +2503,7 @@ function renderResource(
 
 /** A WIT `record`, as a case class. */
 function renderRecord(sb: StringBuilder, td: TypeDef,
-    ifaceItems: Array<InterfaceItem>, uses: SynthUses): String {
+    ifaceItems: GrowableArray<InterfaceItem>, uses: SynthUses): String {
   let ty = classifyNamed(td.name.name, ifaceItems);
   let blocked = liftBlocker(ty, false);
   if (blocked != "") {
@@ -2525,7 +2525,7 @@ function renderRecord(sb: StringBuilder, td: TypeDef,
 
 /** A WIT `variant`, as a sealed case-class hierarchy. */
 function renderVariant(sb: StringBuilder, td: TypeDef,
-    ifaceItems: Array<InterfaceItem>, uses: SynthUses): String {
+    ifaceItems: GrowableArray<InterfaceItem>, uses: SynthUses): String {
   let ty = classifyNamed(td.name.name, ifaceItems);
   let blocked = liftBlocker(ty, false);
   if (blocked != "") {
@@ -2559,7 +2559,7 @@ function renderVariant(sb: StringBuilder, td: TypeDef,
  * namespace to a package; these are the namespaces the document
  * itself answers for.
  */
-export function declaredPackageNamespaces(witSource: String): Array<String> {
+export function declaredPackageNamespaces(witSource: String): GrowableArray<String> {
   // Syntax only: the world's `use` paths reach packages the compiler
   // splices in later, and the package names need no resolution.
   let ast = parseSyntax(witSource);
@@ -2965,7 +2965,7 @@ function renderFunc(
   sb: StringBuilder,
   nf: NamedFunc,
   interfaceName: String,
-  ifaceItems: Array<InterfaceItem>,
+  ifaceItems: GrowableArray<InterfaceItem>,
   uses: SynthUses
 ): String {
   let zenaName = camelName(nf.name.name);
@@ -2983,8 +2983,8 @@ function renderFunc(
  * returned, for an async lowering, since the callee reads the
  * parameters out of the caller's memory when it starts.
  */
-function emitSpilledParams(sb: StringBuilder, params: Array<Ty>,
-    paramNames: Array<String>, selfHandle: boolean,
+function emitSpilledParams(sb: StringBuilder, params: GrowableArray<Ty>,
+    paramNames: GrowableArray<String>, selfHandle: boolean,
     uses: SynthUses): void {
   var offset = 0;
   var maxAlign = 1;
@@ -3029,7 +3029,7 @@ function renderFuncIn(
   rawSink: StringBuilder,
   nf: NamedFunc,
   interfaceName: String,
-  ifaceItems: Array<InterfaceItem>,
+  ifaceItems: GrowableArray<InterfaceItem>,
   uses: SynthUses,
   mode: FnMode
 ): String {
@@ -3873,7 +3873,7 @@ export function synthesizeExportWrapper(
  * program export lifts on its own (component-adapters wraps the
  * string); anything richer is marshaled here, typed from the WIT.
  */
-function needsSyncWrapper(func: Func, items: Array<InterfaceItem>): boolean {
+function needsSyncWrapper(func: Func, items: GrowableArray<InterfaceItem>): boolean {
   let plain = (ty: Ty): boolean =>
       ty.kind == TyKind.Scalar || ty.kind == TyKind.Str;
   // Past sixteen core values the host spills the parameters into
@@ -3953,7 +3953,7 @@ final class WrapperParams {
 }
 
 function renderWrapperParams(target: ExportTarget, func: Func,
-    items: Array<InterfaceItem>, uses: SynthUses): WrapperParams {
+    items: GrowableArray<InterfaceItem>, uses: SynthUses): WrapperParams {
   let witName = target.witName;
   let refuse = (what: String, why: String): Error =>
       new Error("The declared world's export '" + witName + "', " +
@@ -4093,7 +4093,7 @@ function paramLiftBlocker(ty: Ty): String {
  * Throws with the reason on a parameter or result this cannot marshal.
  */
 function renderSyncExportWrapper(sb: StringBuilder, target: ExportTarget,
-    func: Func, items: Array<InterfaceItem>, uses: SynthUses): void {
+    func: Func, items: GrowableArray<InterfaceItem>, uses: SynthUses): void {
   let witName = target.witName;
   let base = target.base;
   let callee = target.callee();
@@ -4195,7 +4195,7 @@ function renderSyncExportWrapper(sb: StringBuilder, target: ExportTarget,
  * with the reason on a parameter or result this cannot marshal.
  */
 function renderExportWrapper(sb: StringBuilder, target: ExportTarget,
-    func: Func, items: Array<InterfaceItem>, uses: SynthUses,
+    func: Func, items: GrowableArray<InterfaceItem>, uses: SynthUses,
     returnScope: String): void {
   let witName = target.witName;
   let base = target.base;
