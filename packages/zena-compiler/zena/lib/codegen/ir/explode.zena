@@ -1,27 +1,48 @@
 /**
  * Argument explosion (docs/design/argument-explosion.md): a record
- * parameter that some direct call passes as a record literal is also
- * accepted as its fields, so that call allocates no record and the
- * callee reads each field from a parameter instead of through the
- * record's getters.
+ * parameter can be accepted as its fields, so a call that has the fields
+ * on hand allocates no record and the callee reads each field from a
+ * parameter instead of through the record's getters.
  *
  * The pass leaves every existing function as it is and adds a `core`
  * beside each eligible one, with the exploded parameters' fields in
  * their place. The original keeps its signature and becomes a
  * forwarder that reads the fields and calls the core, so function
  * values, exports, templates and every other reference to it keep
- * working unchanged. Only a direct call with literal arguments calls
- * the core (`#lowerDirectCallTo` in lowering.zena).
+ * working unchanged. Only a direct call that has some exploded
+ * argument's fields on hand calls the core (`#lowerDirectCallTo` in
+ * lowering.zena).
+ *
+ * Two facts decide which parameters explode, both kept per (function,
+ * parameter):
+ *
+ * - Demand, computed bottom-up: a parameter is fields-only when every
+ *   use reads a field, destructures it, or passes it whole to a callee
+ *   parameter that is itself fields-only. Otherwise the function needs
+ *   the record. Summaries start optimistic and only ever turn to
+ *   "needs the record" on evidence, so a recursive function that passes
+ *   its record to itself is fields-only.
+ * - Availability, computed top-down: some reached call passes the
+ *   parameter unpacked, as a record literal (reachability's
+ *   `recordLiteralArgs`) or as an exploded parameter of the calling
+ *   core passed on whole.
+ *
+ * A parameter explodes when it is both. A record that enters a chain of
+ * such functions as a literal is then never built, and one that enters
+ * as a heap value is unpacked once, by the first forwarder; no core
+ * rebuilds a record it was given as fields.
  *
  * Runs after reachability and every pass that synthesizes callers,
  * before `wasm.layout()`, because it interns signatures.
  */
+import { HashMap } from 'zena:collections';
 import {
-  FunctionExpression, FunctionDeclaration, VariableDeclaration,
-  IdentifierPattern, Identifier, MemberExpression, RecordPattern, Node,
+  CallExpression, FunctionExpression, FunctionDeclaration,
+  VariableDeclaration, IdentifierPattern, Identifier, MemberExpression,
+  RecordPattern, Node,
 } from '../../ast.zena';
 import { SemanticModel } from '../../semantic-model.zena';
-import { Symbol } from '../../scope/symbol.zena';
+import { Symbol, SymbolId } from '../../scope/symbol.zena';
 import { RecordType, baseType } from '../../types.zena';
 import { walkEnter } from '../../visitor.zena';
 import { ValType } from '../wasm.zena';
@@ -32,53 +53,161 @@ import { recordWasmFields, sortedOptionalNames } from '../type-mapping.zena';
 import { ReachabilityAnalysis } from '../reachability/analysis.zena';
 import { recordLiteralArgKey } from '../reachability/context.zena';
 
+/** A whole-record use of a parameter as argument `index` of a call to `callee`. */
+final class Forward {
+  callee: SymbolId;
+  index: i32;
+  new(this.callee, this.index);
+}
+
+/** A function whose record parameters might explode, and what is known about each. */
+final class Candidate {
+  f: WasmFunction;
+  self: Symbol;
+  /** Per parameter, its record dispatch, or null for a non-record parameter. */
+  dispatches: GrowableArray<RecordDispatchInfo | null>;
+  /** Per parameter, the calls it is passed to whole. */
+  forwards: GrowableArray<GrowableArray<Forward>>;
+  /** Per parameter, whether every use only needs its fields. */
+  fieldsOnly: GrowableArray<boolean>;
+  /** Per parameter, whether some reached call passes it unpacked. */
+  available: GrowableArray<boolean>;
+  new(this.f, this.self, this.dispatches, this.forwards, this.fieldsOnly,
+      this.available);
+}
+
 export let explodeRecordParameters = (
   wasm: WasmModule,
   pass: ReachabilityAnalysis
 ): void => {
-  // The core functions are appended as the loop goes; walk a snapshot.
-  let functions = new Array<WasmFunction>();
+  // Candidates in module order, for deterministic output; the map is
+  // for lookups only.
+  let candidates = new Array<Candidate>();
+  let byId = new HashMap<SymbolId, Candidate>();
   for (let f in wasm.functions) {
-    functions.push(f);
-  }
-  for (let f in functions) {
-    let params = explodedParams(wasm, pass, f);
-    if (params == null) {
-      continue;
+    let c = candidateFor(wasm, f);
+    if (c != null) {
+      candidates.push(c);
+      byId[c.self.id] = c;
     }
-    let sig = f.signature;
-    let coreParams = new Array<ValType>();
-    for (var i = 0; i < params.length; i += 1) {
-      let d = params[i];
-      if (d == null) {
-        coreParams.push(sig.params[i]);
-      } else {
-        for (let field in d.fields) {
-          coreParams.push(field.type);
+  }
+
+  // Demand: a forward keeps a parameter fields-only only while its
+  // target is fields-only too, through the same record type.
+  var changed = true;
+  while (changed) {
+    changed = false;
+    for (let c in candidates) {
+      for (var i = 0; i < c.fieldsOnly.length; i += 1) {
+        if (!c.fieldsOnly[i]) {
+          continue;
+        }
+        for (let fw in c.forwards[i]) {
+          if (!forwardKeepsFields(byId, c.dispatches[i], fw)) {
+            c.fieldsOnly[i] = false;
+            changed = true;
+            break;
+          }
         }
       }
     }
-    let coreSig = wasm.getSignature(coreParams, sig.returns);
-    pass.markTypeReached(coreSig);
-    let core = new WasmFunction(coreSig, f.node, f.model);
-    core.name = `${f.name ?? 'function'}.core`;
-    let spec = new ExplosionSpec(params, f, core);
-    f.explosion = spec;
-    core.explosion = spec;
-    wasm.addFunction(core);
-    pass.markFunctionReached(core);
+  }
+
+  // Availability: literal arguments, then exploded parameters passed on.
+  for (let c in candidates) {
+    for (var i = 0; i < c.available.length; i += 1) {
+      c.available[i] = c.fieldsOnly[i] &&
+          pass.recordLiteralArgs.has(recordLiteralArgKey(c.self.id, i));
+    }
+  }
+  changed = true;
+  while (changed) {
+    changed = false;
+    for (let c in candidates) {
+      for (var i = 0; i < c.available.length; i += 1) {
+        if (!c.available[i]) {
+          continue;
+        }
+        for (let fw in c.forwards[i]) {
+          // Demand settled every forward of a fields-only parameter to a
+          // fields-only target.
+          if (let (true, target) = byId.get(fw.callee)) {
+            if (!target.available[fw.index]) {
+              target.available[fw.index] = true;
+              changed = true;
+            }
+          }
+        }
+      }
+    }
+  }
+
+  for (let c in candidates) {
+    let params = new Array<RecordDispatchInfo | null>();
+    var any = false;
+    for (var i = 0; i < c.dispatches.length; i += 1) {
+      if (c.available[i]) {
+        params.push(c.dispatches[i]);
+        any = true;
+      } else {
+        params.push(null);
+      }
+    }
+    if (any) {
+      addCore(wasm, pass, c.f, params);
+    }
   }
 };
 
+/** Adds `f`'s core, taking each exploded parameter's fields. */
+let addCore = (wasm: WasmModule, pass: ReachabilityAnalysis, f: WasmFunction,
+    params: GrowableArray<RecordDispatchInfo | null>): void => {
+  let sig = f.signature;
+  let coreParams = new Array<ValType>();
+  for (var i = 0; i < params.length; i += 1) {
+    let d = params[i];
+    if (d == null) {
+      coreParams.push(sig.params[i]);
+    } else {
+      for (let field in d.fields) {
+        coreParams.push(field.type);
+      }
+    }
+  }
+  let coreSig = wasm.getSignature(coreParams, sig.returns);
+  pass.markTypeReached(coreSig);
+  let core = new WasmFunction(coreSig, f.node, f.model);
+  core.name = `${f.name ?? 'function'}.core`;
+  let spec = new ExplosionSpec(params, f, core);
+  f.explosion = spec;
+  core.explosion = spec;
+  wasm.addFunction(core);
+  pass.markFunctionReached(core);
+};
+
 /**
- * Per declared parameter of `f`, the dispatch of the record it takes
- * as fields, or null when `f` explodes nothing.
+ * Whether passing a record whole, as `fw`, needs only its fields: the
+ * callee is a candidate whose matching parameter takes the same record
+ * type and is fields-only.
  */
-let explodedParams = (
-  wasm: WasmModule,
-  pass: ReachabilityAnalysis,
-  f: WasmFunction
-): GrowableArray<RecordDispatchInfo | null> | null => {
+let forwardKeepsFields = (byId: HashMap<SymbolId, Candidate>,
+    dispatch: RecordDispatchInfo | null, fw: Forward): boolean => {
+  if (let (true, target) = byId.get(fw.callee)) {
+    if (fw.index >= target.dispatches.length) {
+      return false;
+    }
+    let targetDispatch = target.dispatches[fw.index];
+    return targetDispatch != null && targetDispatch === dispatch &&
+        target.fieldsOnly[fw.index];
+  }
+  return false;
+};
+
+/**
+ * `f` as a candidate, with each record parameter's uses classified, or
+ * null when `f` can take no core.
+ */
+let candidateFor = (wasm: WasmModule, f: WasmFunction): Candidate | null => {
   // A plain top-level function: no receiver, context, type parameters
   // or suspension machinery, and nothing synthesized.
   let captures = f.captures;
@@ -122,32 +251,33 @@ let explodedParams = (
       return null;
     }
   }
-  let out = new Array<RecordDispatchInfo | null>();
-  var any = false;
-  for (var i = 0; i < fn.params.length; i += 1) {
-    let d = explodedDispatch(wasm, pass, f, fn, self, i);
-    out.push(d);
-    if (d != null) {
-      any = true;
+  let dispatches = new Array<RecordDispatchInfo | null>();
+  let forwards = new Array<GrowableArray<Forward>>();
+  let fieldsOnly = new Array<boolean>();
+  let available = new Array<boolean>();
+  var anyRecord = false;
+  for (let p in fn.params) {
+    let out = new Array<Forward>();
+    let d = recordDispatchOfParam(wasm, f, p.name);
+    let usesFields = d != null && usesOnlyFields(fn, model, p.name, out);
+    dispatches.push(if (usesFields) d else null);
+    forwards.push(out);
+    fieldsOnly.push(usesFields);
+    available.push(false);
+    if (usesFields) {
+      anyRecord = true;
     }
   }
-  return if (any) out else null;
-};
-
-/** The dispatch of parameter `i` when it explodes, else null. */
-let explodedDispatch = (
-  wasm: WasmModule,
-  pass: ReachabilityAnalysis,
-  f: WasmFunction,
-  fn: FunctionExpression,
-  self: Symbol,
-  i: i32
-): RecordDispatchInfo | null => {
-  if (!pass.recordLiteralArgs.has(recordLiteralArgKey(self.id, i))) {
+  if (!anyRecord) {
     return null;
   }
-  let param = fn.params[i];
-  let sym = f.model.resolveDeclaration(param.name);
+  return new Candidate(f, self, dispatches, forwards, fieldsOnly, available);
+};
+
+/** The dispatch of a parameter whose declared type is a record type. */
+let recordDispatchOfParam = (wasm: WasmModule, f: WasmFunction,
+    name: Identifier): RecordDispatchInfo | null => {
+  let sym = f.model.resolveDeclaration(name);
   if (sym == null) {
     return null;
   }
@@ -157,9 +287,6 @@ let explodedDispatch = (
   }
   let rt = baseType(declared);
   if (!(rt is RecordType)) {
-    return null;
-  }
-  if (!usesOnlyFields(fn, f.model, sym)) {
     return null;
   }
   return wasm.findRecordDispatch(
@@ -182,17 +309,24 @@ let declaredSymbol = (fn: FunctionExpression, model: SemanticModel): Symbol | nu
 };
 
 /**
- * Whether every use of `param` in `fn` reads one of its fields. Any
- * other use needs the record itself, and the core would rebuild it on
- * entry, which moves the allocation instead of removing it.
+ * Whether every use of the parameter declared by `name` in `fn` reads a
+ * field or passes the record whole to a top-level function, recording
+ * each such call in `forwards`. Any other use needs the record itself,
+ * and the core would rebuild it on entry, which moves the allocation
+ * instead of removing it.
  */
 let usesOnlyFields = (fn: FunctionExpression, model: SemanticModel,
-    param: Symbol): boolean => {
+    name: Identifier, forwards: GrowableArray<Forward>): boolean => {
+  let param = model.resolveDeclaration(name);
+  if (param == null) {
+    return false;
+  }
   var ok = true;
   walkEnter(fn.body as Node, (n: Node): void => {
     if (ok && n is Identifier) {
       let sym = model.resolve(n);
-      if (sym != null && sym.id == param.id && !isFieldRead(n, fn, model)) {
+      if (sym != null && sym.id == param.id &&
+          !isFieldUse(n, fn, model, forwards)) {
         ok = false;
       }
     }
@@ -201,13 +335,15 @@ let usesOnlyFields = (fn: FunctionExpression, model: SemanticModel,
 };
 
 /**
- * `ident.field`, or `let {...} = ident`, outside any nested function:
- * a closure would capture the record.
+ * `ident.field`, `let {...} = ident`, or `g(..., ident, ...)` for a
+ * top-level function `g`, outside any nested function: a closure would
+ * capture the record.
  */
-let isFieldRead = (ident: Identifier, fn: FunctionExpression,
-    model: SemanticModel): boolean => {
+let isFieldUse = (ident: Identifier, fn: FunctionExpression,
+    model: SemanticModel, forwards: GrowableArray<Forward>): boolean => {
   let parent = model.getParent(ident);
   var accepted = false;
+  var forward: Forward | null = null;
   if (parent is MemberExpression) {
     accepted = (parent.object as Node) === (ident as Node) &&
         !parent.optional && !parent.isSymbolAccess;
@@ -215,6 +351,9 @@ let isFieldRead = (ident: Identifier, fn: FunctionExpression,
     let pattern = parent.pattern;
     accepted = (parent.init as Node) === (ident as Node) &&
         pattern is RecordPattern;
+  } else if (parent is CallExpression) {
+    forward = forwardOf(parent, ident, model);
+    accepted = forward != null;
   }
   if (!accepted) {
     return false;
@@ -226,5 +365,27 @@ let isFieldRead = (ident: Identifier, fn: FunctionExpression,
     }
     p = model.getParent(p);
   }
+  if (forward != null) {
+    forwards.push(forward);
+  }
   return true;
+};
+
+/** `ident` as an argument of a direct call to a module-level function. */
+let forwardOf = (call: CallExpression, ident: Identifier,
+    model: SemanticModel): Forward | null => {
+  let callee = call.callee;
+  if (!(callee is Identifier)) {
+    return null;
+  }
+  let calleeSym = model.resolve(callee);
+  if (calleeSym == null) {
+    return null;
+  }
+  for (var k = 0; k < call.args.length; k += 1) {
+    if ((call.args[k] as Node) === (ident as Node)) {
+      return new Forward(calleeSym.resolveTarget().id, k);
+    }
+  }
+  return null;
 };

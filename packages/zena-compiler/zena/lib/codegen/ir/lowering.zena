@@ -8034,7 +8034,7 @@ export final class FunctionLowerer {
     let explosion = target.explosion;
     if (defaults == null && explosion != null &&
         explosion.forwarder === target &&
-        this.#passesExplodedLiterals(call, explosion)) {
+        this.#passesUnpackedArg(call, explosion)) {
       return this.#emitDirectCall(call, explosion.core,
           this.#lowerExplodedArgs(call, explosion), multiOut);
     }
@@ -8054,54 +8054,104 @@ export final class FunctionLowerer {
   }
 
   /**
-   * Whether every argument for an exploded parameter is a record literal
-   * of exactly that parameter's record type, so the call can pass the
-   * literals' fields to the core. Any other argument is a record value,
-   * which the forwarder reads the fields of.
+   * Whether some argument for an exploded parameter is unpacked: a
+   * record literal of exactly that parameter's record type, or an
+   * exploded parameter of this core passed on whole. Such a call goes
+   * to the core, so the unpacked argument is never built. Its other
+   * exploded arguments are heap records, read field by field here.
    */
-  #passesExplodedLiterals(call: CallExpression, spec: ExplosionSpec): boolean {
+  #passesUnpackedArg(call: CallExpression, spec: ExplosionSpec): boolean {
     if (call.args.length != spec.params.length) {
       return false;
     }
     for (var i = 0; i < spec.params.length; i += 1) {
       let d = spec.params[i];
-      if (d == null) {
-        continue;
-      }
-      let arg = call.args[i];
-      if (!(arg is RecordLiteral)) {
-        return false;
-      }
-      if (this.func.model.getRecordAdaptation(arg) != null) {
-        return false;
-      }
-      let t = this.#substitutedNodeType(arg);
-      if (t == null) {
-        return false;
-      }
-      let bt = baseType(t);
-      if (!(bt is RecordType) || this.#cx().recordDispatchOf(bt) !== d) {
-        return false;
+      if (d != null && (this.#isExactRecordLiteral(call.args[i], d) ||
+          this.#explodedRecordOf(call.args[i], d) != null)) {
+        return true;
       }
     }
-    return true;
+    return false;
   }
 
-  /** The core's arguments: each exploded literal as its field values. */
+  /** A record literal of exactly `d`'s record type, with no adaptation. */
+  #isExactRecordLiteral(arg: Expression, d: RecordDispatchInfo): boolean {
+    if (!(arg is RecordLiteral)) {
+      return false;
+    }
+    if (this.func.model.getRecordAdaptation(arg) != null) {
+      return false;
+    }
+    let t = this.#substitutedNodeType(arg);
+    if (t == null) {
+      return false;
+    }
+    let bt = baseType(t);
+    return bt is RecordType && this.#cx().recordDispatchOf(bt) === d;
+  }
+
+  /**
+   * The field values of `arg` when it names an exploded parameter of
+   * this core whose record has dispatch `d`; else null.
+   */
+  #explodedRecordOf(arg: Expression, d: RecordDispatchInfo): ExplodedRecord | null {
+    if (!(arg is Identifier)) {
+      return null;
+    }
+    let sym = this.func.model.resolve(arg);
+    if (sym == null) {
+      return null;
+    }
+    if (let (true, value) = this.#cx().env.get(sym.id)) {
+      if (let (true, exploded) = this.#cx().explodedRecords.get(value)) {
+        if (exploded.dispatch === d) {
+          return exploded;
+        }
+      }
+    }
+    return null;
+  }
+
+  /**
+   * The core's arguments, left to right: an unpacked record argument as
+   * the fields it already has, and a heap record as its fields read
+   * through its getters.
+   */
   #lowerExplodedArgs(call: CallExpression, spec: ExplosionSpec): GrowableArray<i32> {
     let coreParams = spec.core.signature.params;
+    let boxedParams = spec.forwarder.signature.params;
     let args = new Array<i32>();
     for (var i = 0; i < call.args.length; i += 1) {
+      let arg = call.args[i];
       let d = spec.params[i];
       if (d == null) {
         let paramVt = coreParams[args.length];
-        let value = this.#lowerExpressionCtx(call.args[i], paramVt);
+        let value = this.#lowerExpressionCtx(arg, paramVt);
         args.push(this.#conformToSlot(value, paramVt, 'call argument type'));
-      } else {
+        continue;
+      }
+      if (this.#isExactRecordLiteral(arg, d)) {
         for (let value in this.#lowerRecordLiteralFields(
-            call.args[i] as RecordLiteral, d)) {
+            arg as RecordLiteral, d)) {
           args.push(value);
         }
+        continue;
+      }
+      let exploded = this.#explodedRecordOf(arg, d);
+      if (exploded != null) {
+        for (let value in exploded.values) {
+          args.push(value);
+        }
+        continue;
+      }
+      let record = this.#conformToSlot(
+          this.#lowerExpressionCtx(arg, boxedParams[i]), boxedParams[i],
+          'call argument type');
+      for (let field in d.fields) {
+        let value = this.#cx().recordDispatchRead(
+            d, field.name as String, record);
+        args.push(this.#conformToSlot(value, coreParams[args.length],
+            'exploded field type'));
       }
     }
     return args;

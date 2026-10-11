@@ -100,21 +100,45 @@ Not yet eligible:
 
 ### Eligible parameters
 
-A parameter explodes when its declared type is a record type, some
-reached direct call passes a record literal for it, and every use of it
-in the body reads a field:
+Two facts are kept per (function, parameter). They are function
+summaries in the usual interprocedural-analysis sense: each function's
+facts come from its own body and its callees' facts, never from a
+whole-program search. GHC's demand analysis keeps the same kind of fact
+("boxity": whether a function needs the box or only the fields) to drive
+its worker/wrapper split, which has the same shape as the core and
+forwarder here.
+
+**Demand**, computed bottom-up. A record parameter is _fields-only_ when
+every use of it, outside any nested function (which would capture it),
+is one of:
 
 - `p.field` (not `p?.field`), including under `??`;
 - `let {...} = p`, and a destructuring parameter's own pattern;
+- `g(..., p, ...)` for a top-level function `g` whose matching parameter
+  has the same record type and is itself fields-only.
 
-and none of those uses sits inside a nested function, which would
-capture the record. Any other use (passed to another call, stored,
-returned, spread, compared, matched) keeps the parameter boxed.
+Any other use (stored, returned, spread, compared, matched, captured,
+passed to anything else) means the function needs the record. Demand
+starts optimistic and only turns to "needs the record" on evidence, so a
+function that passes its record to itself, or to a mutually recursive
+partner, is fields-only.
 
-Reachability records which parameters receive a literal
-(`ReachabilityContext.recordLiteralArgs`, noted in the visitor's call
-walks). A parameter no call passes a literal for would gain a
-forwarding call and save nothing.
+**Availability**, computed top-down. A parameter is _available
+unpacked_ when some reached direct call passes it a record literal
+(reachability records these in
+`ReachabilityContext.recordLiteralArgs`), or when an exploded parameter
+of some core is passed on to it whole.
+
+A parameter explodes when it is both. Without availability, a function
+whose callers all hold heap records would gain a forwarding call and
+save nothing.
+
+Together the two keep the number of unpackings down across a chain of
+calls. A record that enters as a literal is never built: each core
+passes the fields it was given to the next core. A record that enters
+as a heap value is unpacked once, by the first forwarder it reaches.
+No core rebuilds a record it was given as fields, because a parameter
+that needs the record is never exploded.
 
 ## The explosion pass
 
@@ -157,11 +181,18 @@ correct; it only pays the allocation back.
 ### Call-site lowering
 
 `#lowerDirectCallTo` calls the core when the call injects no defaults
-and every argument for an exploded parameter is a record literal whose
-type is exactly the parameter's record type, with no record adaptation
-recorded on it. Each such literal is lowered by
-`#lowerRecordLiteralFields` against the parameter's dispatch, and its
-values are passed in place of the record. Any other call calls `f`.
+and at least one argument for an exploded parameter is unpacked:
+
+- a record literal whose type is exactly the parameter's record type,
+  with no record adaptation recorded on it, lowered by
+  `#lowerRecordLiteralFields` against the parameter's dispatch;
+- an exploded parameter of the calling core, passed as the field values
+  it was bound from (`LoweringContext.explodedRecords`).
+
+Any other exploded argument in that call is a heap record, and its
+fields are read through its getters at the call. Sending the whole call
+to the forwarder instead would make the calling core rebuild an
+unpacked argument. A call with no unpacked argument calls `f`.
 
 ### Record dispatch liveness
 
@@ -179,8 +210,13 @@ dispatch's getters and vtable with it if nothing else uses them.
     allocated four times.
   - "a record value argument goes through the forwarder": a caller
     passing a record it holds calls `f`, and `f` calls the core.
+  - "a record passed on whole stays as its fields": a literal passed to
+    `outer`, which passes it to `inner`, is never built, and
+    `outer.core` calls `inner.core` with its fields.
 - `tests/language/execution/records/exploded-params/`: literal, value,
   wider-record and function-value calls of one function agreeing;
+  records forwarded through chains, recursion, mutual recursion, and
+  into a function that keeps them; mixed literal and heap arguments;
   presence through exploded fields (explicit zero, omitted, defaults,
   `??`, a reference-typed optional field); evaluation order across
   arguments and inside literals with spreads; escaping parameters that
@@ -233,9 +269,9 @@ verdict.
 - Multi-value returns.
 - The `inline` parameter guarantee above.
 - Teaching spread and `==` to consume exploded bindings.
-- Treating "passed whole to an exploded parameter" as non-escaping, so
-  an option bag forwards through a call chain as fields end to end (a
-  call-graph fixpoint: each callee's verdict depends on its callees').
+- Weighting call sites, for example by loop depth, for a function with
+  few unpacked and many heap callers, whose heap callers each pay the
+  forwarder's up-front field reads.
 - A literal whose type differs from the parameter's (a wider literal,
   or one the checker adapts) passed as fields, instead of through the
   forwarder.

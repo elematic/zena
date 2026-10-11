@@ -665,13 +665,17 @@ export let tests = suite('zir backend', (): void => {
   });
 
   test('a record value argument goes through the forwarder', (ctx: TestContext): void => {
-    // `g` passes a record it holds, so it calls `f` itself, whose body
-    // reads the fields and calls the core.
+    // `g` is only ever given a record from the heap, so it passes that
+    // record to `f` itself, whose body reads the fields and calls the
+    // core.
     let result = compileWithZir(
         'type Opts = {a: i32, b?: i32};\n' +
         'let f = (o: Opts): i32 => o.a * (o.b ?? 2);\n' +
         'let g = (o: Opts): i32 => f(o) + 1;\n' +
-        'export let main = (): i32 => f({a: 3}) + g({a: 5});');
+        'export let main = (): i32 => {\n' +
+        '  let held: Opts = {a: 5};\n' +
+        '  return f({a: 3}) + g(held);\n' +
+        '};');
     let forwarded = new Array<String>();
     forwarded.push('call $f');
     assertFunctionUses(result, '$g', forwarded,
@@ -682,6 +686,30 @@ export let tests = suite('zir backend', (): void => {
         'only a literal argument can be passed as fields');
     assertFunctionUses(result, '$f', coreCall,
         'the forwarder calls the core');
+  });
+
+  test('a record passed on whole stays as its fields', (ctx: TestContext): void => {
+    // `outer` passes its record to `inner`, which only reads fields, so
+    // `outer` only needs the fields too. The literal is never built:
+    // `main` calls `outer.core`, which calls `inner.core` with the
+    // fields it was given, and neither core rebuilds the record.
+    let result = compileWithZir(
+        'type Opts = {a: i32, b?: i32};\n' +
+        'let inner = (o: Opts): i32 => o.a * (o.b ?? 2);\n' +
+        'let outer = (o: Opts): i32 => inner(o) + o.a;\n' +
+        'export let main = (): i32 => outer({a: 3});');
+    assertNoAllocation(result, '$main',
+        'the literal enters the chain as fields');
+    let innerCore = new Array<String>();
+    innerCore.push('call $inner.core');
+    assertFunctionUses(result, '$outer.core', innerCore,
+        'a forwarded field-only record is passed as its fields');
+    assertNoAllocation(result, '$outer.core',
+        'the forwarded record is never rebuilt');
+    let absent = new Array<String>();
+    absent.push('call_ref');
+    assertFunctionOmits(result, '$outer.core', absent,
+        'no getter dispatch on the forwarded record');
   });
 
   test('-O2 removes a local fat pointer entirely', (ctx: TestContext): void => {
