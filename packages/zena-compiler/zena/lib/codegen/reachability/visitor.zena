@@ -2,6 +2,7 @@ import { Set } from 'zena:collections';
 import { collectValueExports, findDeclaration } from '../lookup.zena';
 import {
   Referrer, ReachabilityContext, TypeLowererInterface, ReachabilityVisitorInterface,
+  recordLiteralArgKey,
 } from './context.zena';
 import { SemanticModel, memberKeyOf } from '../../semantic-model.zena';
 import {
@@ -806,6 +807,7 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
             if (model.globalDeclarations.has(calleeTarget.id)) {
               this.pass.queueReferrer(new Referrer(true,
                   calleeTarget.id, -1, model, null, true));
+              this.#noteRecordLiteralArgs(n, calleeTarget.id);
             }
           }
         }
@@ -935,6 +937,7 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
               this.pass.queueReferrer(new Referrer(true,
                   calleeTarget.id, -1, model, null,
                   this.pass.currentReachable));
+              this.#noteRecordLiteralArgs(n, calleeTarget.id);
             }
           }
         }
@@ -983,6 +986,15 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
    * way a written `a == b` would. The intrinsic is recognized by its
    * decorator, since the call may be visited before the declaration is.
    */
+  /** Records the arguments of a direct call that are record literals. */
+  #noteRecordLiteralArgs(n: CallExpression, callee: SymbolId): void {
+    for (var i = 0; i < n.args.length; i += 1) {
+      if (n.args[i] is RecordLiteral) {
+        this.pass.recordLiteralArgs.add(recordLiteralArgKey(callee, i));
+      }
+    }
+  }
+
   #noteIntrinsicEqTargets(n: CallExpression, model: SemanticModel,
       resolveType: (t: Type) => Type): void {
     if (!this.pass.currentReachable) {
@@ -2025,6 +2037,7 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
               this.pass.queueReferrer(new Referrer(true,
                   calleeTarget.id, -1, model, null,
                   this.pass.currentReachable));
+              this.#noteRecordLiteralArgs(n, calleeTarget.id);
             }
           }
         }

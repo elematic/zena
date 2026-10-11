@@ -1,0 +1,37 @@
+// @mode: run
+// @result: 1
+// Presence travels with exploded fields: an explicit zero is present,
+// an omitted field is absent, and defaults, `??` and reference-typed
+// optional fields behave as they do on a record value.
+
+type Opts = {name?: String, count?: i32, flag?: boolean};
+
+let describe = (o: Opts): i32 => {
+  let {name = '-'} = o;
+  let c = o.count ?? 100;
+  let f = if (o.flag ?? false) 1000 else 0;
+  return name.length + (o.name ?? '').length * 10000 + c + f;
+};
+
+let withDefaults = ({name = 'none', count = 7}: Opts): i32 =>
+    name.length * 10 + count;
+
+export let main = (): i32 => {
+  let empty: Opts = {};
+  if (describe({}) != 101 || describe(empty) != 101) {
+    return 0;
+  }
+  if (describe({count: 0}) != 1) {
+    return 0;
+  }
+  if (describe({name: 'abc', flag: true}) != 31103) {
+    return 0;
+  }
+  if (withDefaults({}) != 47 || withDefaults(empty) != 47) {
+    return 0;
+  }
+  if (withDefaults({count: 0, name: 'ab'}) != 20) {
+    return 0;
+  }
+  return 1;
+};

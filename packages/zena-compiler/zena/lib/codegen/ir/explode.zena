@@ -1,0 +1,230 @@
+/**
+ * Argument explosion (docs/design/argument-explosion.md): a record
+ * parameter that some direct call passes as a record literal is also
+ * accepted as its fields, so that call allocates no record and the
+ * callee reads each field from a parameter instead of through the
+ * record's getters.
+ *
+ * The pass leaves every existing function as it is and adds a `core`
+ * beside each eligible one, with the exploded parameters' fields in
+ * their place. The original keeps its signature and becomes a
+ * forwarder that reads the fields and calls the core, so function
+ * values, exports, templates and every other reference to it keep
+ * working unchanged. Only a direct call with literal arguments calls
+ * the core (`#lowerDirectCallTo` in lowering.zena).
+ *
+ * Runs after reachability and every pass that synthesizes callers,
+ * before `wasm.layout()`, because it interns signatures.
+ */
+import {
+  FunctionExpression, FunctionDeclaration, VariableDeclaration,
+  IdentifierPattern, Identifier, MemberExpression, RecordPattern, Node,
+} from '../../ast.zena';
+import { SemanticModel } from '../../semantic-model.zena';
+import { Symbol } from '../../scope/symbol.zena';
+import { RecordType, baseType } from '../../types.zena';
+import { walkEnter } from '../../visitor.zena';
+import { ValType } from '../wasm.zena';
+import {
+  WasmModule, WasmFunction, RecordDispatchInfo, ExplosionSpec,
+} from '../wasm-module.zena';
+import { recordWasmFields, sortedOptionalNames } from '../type-mapping.zena';
+import { ReachabilityAnalysis } from '../reachability/analysis.zena';
+import { recordLiteralArgKey } from '../reachability/context.zena';
+
+export let explodeRecordParameters = (
+  wasm: WasmModule,
+  pass: ReachabilityAnalysis
+): void => {
+  // The core functions are appended as the loop goes; walk a snapshot.
+  let functions = new Array<WasmFunction>();
+  for (let f in wasm.functions) {
+    functions.push(f);
+  }
+  for (let f in functions) {
+    let params = explodedParams(wasm, pass, f);
+    if (params == null) {
+      continue;
+    }
+    let sig = f.signature;
+    let coreParams = new Array<ValType>();
+    for (var i = 0; i < params.length; i += 1) {
+      let d = params[i];
+      if (d == null) {
+        coreParams.push(sig.params[i]);
+      } else {
+        for (let field in d.fields) {
+          coreParams.push(field.type);
+        }
+      }
+    }
+    let coreSig = wasm.getSignature(coreParams, sig.returns);
+    pass.markTypeReached(coreSig);
+    let core = new WasmFunction(coreSig, f.node, f.model);
+    core.name = `${f.name ?? 'function'}.core`;
+    let spec = new ExplosionSpec(params, f, core);
+    f.explosion = spec;
+    core.explosion = spec;
+    wasm.addFunction(core);
+    pass.markFunctionReached(core);
+  }
+};
+
+/**
+ * Per declared parameter of `f`, the dispatch of the record it takes
+ * as fields, or null when `f` explodes nothing.
+ */
+let explodedParams = (
+  wasm: WasmModule,
+  pass: ReachabilityAnalysis,
+  f: WasmFunction
+): GrowableArray<RecordDispatchInfo | null> | null => {
+  // A plain top-level function: no receiver, context, type parameters
+  // or suspension machinery, and nothing synthesized.
+  let captures = f.captures;
+  if (f.classType != null || f.structType != null || f.isClosure ||
+      f.contextStruct != null || (captures != null && captures.length > 0) ||
+      f.capturesThis || f.typeParameters != null ||
+      f.typeArguments != null || f.intrinsic != null || f.isImport ||
+      f.isFunctionAdaptation || f.isClosureWrapper ||
+      f.isClosureTrampoline || f.closureForwarder != null ||
+      f.explosion != null) {
+    return null;
+  }
+  let fn = f.node;
+  if (!(fn is FunctionExpression)) {
+    return null;
+  }
+  if (fn.isAsync || fn.isGenerator || fn.typeParameters != null) {
+    return null;
+  }
+  let sig = f.signature;
+  // One slot per declared parameter: no zero-width ones to skip.
+  if (sig.returns.length > 1 || sig.params.length != fn.params.length) {
+    return null;
+  }
+  let model = f.model;
+  let self = declaredSymbol(fn, model);
+  if (self == null) {
+    return null;
+  }
+  if (let (true, mapped) = wasm.functionMap.get(self.id)) {
+    if (mapped !== f) {
+      return null;
+    }
+  } else {
+    return null;
+  }
+  // An injected default can name an earlier parameter, which the core
+  // no longer has as one value; such calls would need the record.
+  for (let p in fn.params) {
+    if (p.defaultValue != null) {
+      return null;
+    }
+  }
+  let out = new Array<RecordDispatchInfo | null>();
+  var any = false;
+  for (var i = 0; i < fn.params.length; i += 1) {
+    let d = explodedDispatch(wasm, pass, f, fn, self, i);
+    out.push(d);
+    if (d != null) {
+      any = true;
+    }
+  }
+  return if (any) out else null;
+};
+
+/** The dispatch of parameter `i` when it explodes, else null. */
+let explodedDispatch = (
+  wasm: WasmModule,
+  pass: ReachabilityAnalysis,
+  f: WasmFunction,
+  fn: FunctionExpression,
+  self: Symbol,
+  i: i32
+): RecordDispatchInfo | null => {
+  if (!pass.recordLiteralArgs.has(recordLiteralArgKey(self.id, i))) {
+    return null;
+  }
+  let param = fn.params[i];
+  let sym = f.model.resolveDeclaration(param.name);
+  if (sym == null) {
+    return null;
+  }
+  let declared = f.model.getBindingType(sym);
+  if (declared == null) {
+    return null;
+  }
+  let rt = baseType(declared);
+  if (!(rt is RecordType)) {
+    return null;
+  }
+  if (!usesOnlyFields(fn, f.model, sym)) {
+    return null;
+  }
+  return wasm.findRecordDispatch(
+      recordWasmFields(wasm, rt, f), sortedOptionalNames(rt));
+};
+
+/** The symbol a top-level function's declaration binds. */
+let declaredSymbol = (fn: FunctionExpression, model: SemanticModel): Symbol | null => {
+  let parent = model.getParent(fn);
+  if (parent is FunctionDeclaration) {
+    return model.resolveDeclaration(parent.name);
+  }
+  if (parent is VariableDeclaration) {
+    let pattern = parent.pattern;
+    if (pattern is IdentifierPattern) {
+      return model.resolveDeclaration(pattern);
+    }
+  }
+  return null;
+};
+
+/**
+ * Whether every use of `param` in `fn` reads one of its fields. Any
+ * other use needs the record itself, and the core would rebuild it on
+ * entry, which moves the allocation instead of removing it.
+ */
+let usesOnlyFields = (fn: FunctionExpression, model: SemanticModel,
+    param: Symbol): boolean => {
+  var ok = true;
+  walkEnter(fn.body as Node, (n: Node): void => {
+    if (ok && n is Identifier) {
+      let sym = model.resolve(n);
+      if (sym != null && sym.id == param.id && !isFieldRead(n, fn, model)) {
+        ok = false;
+      }
+    }
+  });
+  return ok;
+};
+
+/**
+ * `ident.field`, or `let {...} = ident`, outside any nested function:
+ * a closure would capture the record.
+ */
+let isFieldRead = (ident: Identifier, fn: FunctionExpression,
+    model: SemanticModel): boolean => {
+  let parent = model.getParent(ident);
+  var accepted = false;
+  if (parent is MemberExpression) {
+    accepted = (parent.object as Node) === (ident as Node) &&
+        !parent.optional && !parent.isSymbolAccess;
+  } else if (parent is VariableDeclaration) {
+    let pattern = parent.pattern;
+    accepted = (parent.init as Node) === (ident as Node) &&
+        pattern is RecordPattern;
+  }
+  if (!accepted) {
+    return false;
+  }
+  var p = model.getParent(parent as Node);
+  while (p != null && p !== fn) {
+    if (p is FunctionExpression) {
+      return false;
+    }
+    p = model.getParent(p);
+  }
+  return true;
+};

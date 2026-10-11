@@ -1,0 +1,38 @@
+// @mode: run
+// @result: 123456
+// Passing a record literal as its fields keeps the evaluation order:
+// arguments left to right, and each literal's properties as written,
+// including a spread.
+
+var log = 0;
+
+let note = (n: i32): i32 => {
+  log = log * 10 + n;
+  return n;
+};
+
+let source = (n: i32): {b: i32} => {
+  log = log * 10 + n;
+  return {b: n};
+};
+
+let sum = (x: i32, o: {a: i32, b: i32}, y: i32): i32 => x + o.a + o.b + y;
+
+export let main = (): i32 => {
+  let first = sum(note(1), {b: note(2), a: note(3)}, note(4));
+  if (first != 10) {
+    return -1;
+  }
+  log = 0;
+  let second = sum(note(1), {...source(2), a: note(3)}, note(4));
+  if (second != 10) {
+    return -2;
+  }
+  log = 0;
+  let third = sum(note(1), {a: note(2), ...source(3)}, note(4)) +
+      sum(note(5), {a: 1, b: 1}, note(6));
+  if (third != 23) {
+    return -3;
+  }
+  return log;
+};
