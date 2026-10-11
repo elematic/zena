@@ -7343,6 +7343,23 @@ let widenType = (ctx: CheckerContext, t: Type): Type => match (t) {
   case _: t
 };
 
+/**
+ * The type of a value that is either an `a` or a `b`: the wider of the
+ * two when one is assignable to the other, else their union.
+ */
+let eitherType = (ctx: CheckerContext, a: Type, b: Type): Type => {
+  if (isAssignableTo(ctx, a, b)) {
+    return b;
+  }
+  if (isAssignableTo(ctx, b, a)) {
+    return a;
+  }
+  let both = new Array<Type>();
+  both.push(a);
+  both.push(b);
+  return createUnionType(both, ctx);
+};
+
 let isValuePrimitive = (type: Type): boolean => {
   return match (type) {
     case I32Type: true
@@ -12849,12 +12866,24 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
               let spreadProps = spreadRec.properties;
               let keys = spreadProps.keys();
               for (let key in keys) {
-                propTypes[key] = spreadProps[key];
+                let spreadT = spreadProps[key];
                 if (spreadRec.isOptional(key)) {
-                  literalOptionals ??= new Set<String>();
-                  literalOptionals.add(key);
-                } else if (literalOptionals != null) {
-                  literalOptionals.delete(key);
+                  // A spread copies only the fields present in it, so an
+                  // earlier source of the key still supplies it when the
+                  // spread's is absent: the key keeps that source's
+                  // presence, and takes either type.
+                  if (let (true, prior) = propTypes.get(key)) {
+                    propTypes[key] = eitherType(ctx, prior, spreadT);
+                  } else {
+                    propTypes[key] = spreadT;
+                    literalOptionals ??= new Set<String>();
+                    literalOptionals.add(key);
+                  }
+                } else {
+                  propTypes[key] = spreadT;
+                  if (literalOptionals != null) {
+                    literalOptionals.delete(key);
+                  }
                 }
               }
             }

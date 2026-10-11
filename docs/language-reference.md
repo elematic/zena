@@ -4088,6 +4088,22 @@ let p = { x: 1, y: 2 };
 let p2 = { ...p, x: 10 }; // { x: 10, y: 2 }
 ```
 
+A spread copies only the fields present in its record. Where the spread's
+field is optional and absent, the field keeps whatever an earlier property
+or spread supplied, so writing keys before spreading an options record gives
+defaults:
+
+```zena
+type Opts = { timeout?: i32, retries?: i32 };
+
+let resolve = (o: Opts) => ({ timeout: 30, retries: 3, ...o });
+resolve({ retries: 5 }); // { timeout: 30, retries: 5 }
+resolve({ timeout: 0 }); // { timeout: 0, retries: 3 }: a present 0 is supplied
+```
+
+The result's field is required when an explicit property or a required
+spread field supplies it, and optional when only optional spread fields do.
+
 #### Evaluation Order
 
 A record literal evaluates its properties left to right, as written,
