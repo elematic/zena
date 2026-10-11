@@ -186,8 +186,32 @@ Types minted in the `cli-module` compile went from 2,559,668 to
 
 ## Results
 
-`scripts/mem-bench.sh`, two runs each, on a 16-core VM with nothing
-else running; wall time at the reserve the build script uses
+The end of the series first, then the first step as it was measured
+at the time.
+
+After the last change and a reseed, each compiler module compiling
+the `zena-cli` module from the source of its own era (an old module
+run on today's source fails in a second on syntax it predates, and
+looks fast), interleaved, two rounds each within 0.1 s, on an idle
+16-core VM at the build's reserve:
+
+| compile | before (main at #199) | after #218 | end    |
+| ------- | --------------------- | ---------- | ------ |
+| `-O1`   | 19.9 s                | 14.1 s     | 13.5 s |
+| `-O2`   | 76.2 s                | 67.7 s     | 26.0 s |
+
+The `-O2` compile is the self-build that every CI run waits on. What
+it allocates went from 22.5 GiB and 405M objects to 5.1 GiB and 90M;
+the `-O1` compile from 11.1 GiB and 233M objects to 3.3 GiB and 64M.
+The `-O1` wall time moved a third and stopped: that compile is now
+bound by the checker and the collector together, and the collector's
+share of it is small. The `-O2` compile moved threefold, because its
+allocation was almost all the passes' per-visit tables and the
+inliner walking callees, which the census found and the pool
+removed.
+
+The first step, as it was measured then — `scripts/mem-bench.sh`,
+two runs each, wall time at the reserve the build script uses
 (1536 MiB for both):
 
 | workload      | peak RSS at reserve 0 | wall time     |
