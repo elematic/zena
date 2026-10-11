@@ -107,9 +107,40 @@ interface wasm {
   precompile: func(path: string, debug: bool) -> string;
 }
 
+/// Running an HTTP server for zena-cli.
+interface http-server {
+  use wasi:http/types@0.3.0.{request, response, error-code};
+
+  /// Single-use responder for an incoming HTTP request.
+  resource response-writer {
+    /// Sends the HTTP response for this request.
+    respond: func(response: response);
+
+    /// Aborts this request with an HTTP error code.
+    respond-error: func(error: error-code);
+  }
+
+  /// A host-managed HTTP server instance.
+  resource server {
+    /// Binds a TCP listener on `127.0.0.1:port` (or an ephemeral port if `port` is 0)
+    /// and returns the running server resource.
+    create: static func(port: u16) -> server;
+
+    /// The bound TCP port number.
+    port: func() -> u16;
+
+    /// Returns a stream of incoming HTTP requests paired with their response writers.
+    listen: func() -> stream<tuple<request, response-writer>>;
+
+    /// Closes the listener socket and terminates the request stream.
+    close: func();
+  }
+}
+
 /// The command's imports beyond WASI.
 world command {
   import stack-trace;
   import process;
   import wasm;
+  import http-server;
 }

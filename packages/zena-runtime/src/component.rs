@@ -22,7 +22,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use wasmtime::component::{Component, HasSelf, Instance, Linker, Resource, ResourceTable, Val};
 use wasmtime::error::Context as _;
-use wasmtime::{Engine, Result, Store, StoreContextMut, Trap, format_err};
+use wasmtime::{AsContextMut, Engine, Result, Store, StoreContextMut, Trap, format_err};
 use wasmtime_wasi::p2::pipe::MemoryOutputPipe;
 use wasmtime_wasi::{FsPerms, WasiCtx, WasiCtxBuilder, WasiCtxView, WasiView};
 
@@ -31,20 +31,26 @@ use crate::{Grant, PathMap};
 
 mod bindings {
     wasmtime::component::bindgen!({
-        path: "../stdlib/zena/host-wit",
-        world: "zena-cli:host/command",
+        path: "wit",
+        world: "zena:runtime/command",
         imports: {
             default: trappable,
+            "zena-cli:host/http-server.[method]server.listen": async | trappable | store,
+            "zena-cli:host/http-server.[method]response-writer.respond": trappable | store,
         },
         with: {
             "zena-cli:host/process.command": super::CommandState,
             "zena-cli:host/process.process": super::ProcessState,
             "zena-cli:host/wasm.run": super::RunState,
+            "zena-cli:host/http-server.server": super::ServerState,
+            "zena-cli:host/http-server.response-writer": super::ResponseWriterState,
+            "wasi:http/types.request": wasmtime_wasi_http::p3::bindings::http::types::Request,
+            "wasi:http/types.response": wasmtime_wasi_http::p3::bindings::http::types::Response,
         },
     });
 }
 
-use bindings::zena_cli::host::{process, wasm};
+use bindings::zena_cli::host::{http_server, process, wasm};
 
 /// The most output a captured run keeps from each stream.
 const CAPTURE_LIMIT: usize = 64 << 20;
@@ -54,6 +60,7 @@ const CAPTURE_LIMIT: usize = 64 << 20;
 /// interfaces check, and the engine a granted run starts children on.
 pub struct ComponentState {
     pub wasi: WasiCtx,
+    pub http: wasmtime_wasi_http::WasiHttpCtx,
     pub table: ResourceTable,
     grant: Option<Grant>,
     engine: Engine,
@@ -63,6 +70,7 @@ impl ComponentState {
     pub fn new(engine: &Engine, wasi: WasiCtx, grant: Option<Grant>) -> ComponentState {
         ComponentState {
             wasi,
+            http: wasmtime_wasi_http::WasiHttpCtx::new(),
             table: ResourceTable::new(),
             grant,
             engine: engine.clone(),
@@ -89,13 +97,25 @@ impl WasiView for ComponentState {
     }
 }
 
+impl wasmtime_wasi_http::WasiHttpView for ComponentState {
+    fn http(&mut self) -> wasmtime_wasi_http::WasiHttpCtxView<'_> {
+        wasmtime_wasi_http::WasiHttpCtxView {
+            ctx: &mut self.http,
+            table: &mut self.table,
+            hooks: Default::default(),
+        }
+    }
+}
+
 /// A linker with everything a Zena component imports: WASI 0.3 and the
 /// `zena-cli:host` interfaces.
 pub fn linker(engine: &Engine) -> Result<Linker<ComponentState>> {
     let mut linker: Linker<ComponentState> = Linker::new(engine);
     wasmtime_wasi::p3::add_to_linker(&mut linker)?;
+    wasmtime_wasi_http::p3::add_to_linker(&mut linker)?;
     process::add_to_linker::<_, HasSelf<_>>(&mut linker, |state| state)?;
     wasm::add_to_linker::<_, HasSelf<_>>(&mut linker, |state| state)?;
+    http_server::add_to_linker::<_, HasSelf<_>>(&mut linker, |state| state)?;
     // `capture` needs the store, for the backtrace: linked by hand
     // rather than through the generated trait.
     linker
@@ -837,3 +857,320 @@ fn precompile_core_module(path: &Path, debug: bool) -> anyhow::Result<()> {
     crate::cache::precompile_module(&engine, path, debug)?;
     Ok(())
 }
+
+// ============================================================================
+// zena-cli:host/http-server
+// ============================================================================
+
+type ResponseBody =
+    http_body_util::combinators::UnsyncBoxBody<bytes::Bytes, wasmtime_wasi_http::Error>;
+
+type PendingResponseSender = tokio::sync::oneshot::Sender<http::Response<ResponseBody>>;
+
+struct IncomingRequest {
+    req: http::Request<hyper::body::Incoming>,
+    res_tx: PendingResponseSender,
+}
+
+pub struct ResponseWriterState {
+    tx: Option<PendingResponseSender>,
+}
+
+impl Drop for ResponseWriterState {
+    fn drop(&mut self) {
+        if let Some(sender) = self.tx.take() {
+            use http_body_util::BodyExt as _;
+            let err_resp = http::Response::builder()
+                .status(http::StatusCode::INTERNAL_SERVER_ERROR)
+                .body(
+                    http_body_util::Full::new(bytes::Bytes::from_static(b"request handler aborted"))
+                        .map_err(|e: std::convert::Infallible| -> wasmtime_wasi_http::Error { match e {} })
+                        .boxed_unsync(),
+                )
+                .unwrap();
+            let _ = sender.send(err_resp);
+        }
+    }
+}
+
+pub struct ServerState {
+    port: u16,
+    request_rx: Arc<Mutex<tokio::sync::mpsc::UnboundedReceiver<IncomingRequest>>>,
+    request_waker: Arc<Mutex<Option<std::task::Waker>>>,
+    shutdown_flag: Arc<std::sync::atomic::AtomicBool>,
+}
+
+struct RequestStreamProducer {
+    rx: Arc<Mutex<tokio::sync::mpsc::UnboundedReceiver<IncomingRequest>>>,
+    waker: Arc<Mutex<Option<std::task::Waker>>>,
+    shutdown: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl wasmtime::component::StreamProducer<ComponentState> for RequestStreamProducer {
+    type Item = (
+        Resource<wasmtime_wasi_http::p3::Request>,
+        Resource<ResponseWriterState>,
+    );
+    type Buffer = Option<Self::Item>;
+
+    fn poll_produce<'a>(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        mut store: StoreContextMut<'a, ComponentState>,
+        mut destination: wasmtime::component::Destination<'a, Self::Item, Self::Buffer>,
+        _finish: bool,
+    ) -> std::task::Poll<Result<wasmtime::component::StreamResult>> {
+        let mut rx = self.rx.lock().unwrap();
+        match rx.try_recv() {
+            Ok(IncomingRequest { req, res_tx }) => {
+                let (wasi_req, body_fut) = wasmtime_wasi_http::p3::Request::from_http(
+                    wasmtime_wasi_http::default_hooks(),
+                    req,
+                );
+                tokio::spawn(body_fut);
+                let req_res = store.data_mut().table.push(wasi_req)?;
+                let writer_res = store.data_mut().table.push(ResponseWriterState {
+                    tx: Some(res_tx),
+                })?;
+                destination.set_buffer(Some((req_res, writer_res)));
+                std::task::Poll::Ready(Ok(wasmtime::component::StreamResult::Completed))
+            }
+            Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {
+                if self.shutdown.load(std::sync::atomic::Ordering::Relaxed) {
+                    std::task::Poll::Ready(Ok(wasmtime::component::StreamResult::Dropped))
+                } else {
+                    *self.waker.lock().unwrap() = Some(cx.waker().clone());
+                    std::task::Poll::Pending
+                }
+            }
+            Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
+                std::task::Poll::Ready(Ok(wasmtime::component::StreamResult::Dropped))
+            }
+        }
+    }
+}
+
+impl http_server::Host for ComponentState {}
+
+impl http_server::HostResponseWriterWithStore<ComponentState> for HasSelf<ComponentState> {
+    fn respond(
+        mut host: wasmtime::component::Access<'_, ComponentState, Self>,
+        self_: Resource<ResponseWriterState>,
+        response: Resource<wasmtime_wasi_http::p3::Response>,
+    ) -> Result<()> {
+        let tx = {
+            let mut store = host.as_context_mut();
+            let writer = store.data_mut().table.get_mut(&self_)?;
+            writer.tx.take()
+        };
+        let resp = host.as_context_mut().data_mut().table.delete(response)?;
+        if let Some(sender) = tx {
+            let http_res = resp.into_http(&mut host, async { Ok(()) })?;
+            let _ = sender.send(http_res);
+        }
+        Ok(())
+    }
+}
+
+impl http_server::HostResponseWriter for ComponentState {
+    fn respond_error(
+        &mut self,
+        self_: Resource<ResponseWriterState>,
+        _error: bindings::wasi::http::types::ErrorCode,
+    ) -> Result<()> {
+        let writer = self.table.get_mut(&self_)?;
+        if let Some(sender) = writer.tx.take() {
+            use http_body_util::BodyExt as _;
+            let err_resp = http::Response::builder()
+                .status(http::StatusCode::BAD_GATEWAY)
+                .body(
+                    http_body_util::Full::new(bytes::Bytes::from_static(b"gateway error"))
+                        .map_err(|e: std::convert::Infallible| -> wasmtime_wasi_http::Error { match e {} })
+                        .boxed_unsync(),
+                )
+                .unwrap();
+            let _ = sender.send(err_resp);
+        }
+        Ok(())
+    }
+
+    fn drop(&mut self, rep: Resource<ResponseWriterState>) -> Result<()> {
+        self.table.delete(rep)?;
+        Ok(())
+    }
+}
+
+impl http_server::HostServerWithStore<ComponentState> for HasSelf<ComponentState> {
+    async fn listen(
+        mut host: wasmtime::component::Access<'_, ComponentState, Self>,
+        self_: Resource<ServerState>,
+    ) -> Result<
+        wasmtime::component::StreamReader<(
+            Resource<wasmtime_wasi_http::p3::Request>,
+            Resource<ResponseWriterState>,
+        )>,
+    > {
+        let (rx, waker, shutdown) = {
+            let server = host.get().table.get(&self_)?;
+            (
+                server.request_rx.clone(),
+                server.request_waker.clone(),
+                server.shutdown_flag.clone(),
+            )
+        };
+        let producer = RequestStreamProducer {
+            rx,
+            waker,
+            shutdown,
+        };
+        wasmtime::component::StreamReader::new(&mut host, producer)
+    }
+}
+
+impl http_server::HostServer for ComponentState {
+    fn create(&mut self, port: u16) -> Result<Resource<ServerState>> {
+        let std_listener = std::net::TcpListener::bind(("127.0.0.1", port))
+            .map_err(|e| format_err!("failed to bind port {port}: {e}"))?;
+        let bound_port = std_listener
+            .local_addr()
+            .map_err(|e| format_err!("failed to get local address: {e}"))?
+            .port();
+        std_listener
+            .set_nonblocking(true)
+            .map_err(|e| format_err!("failed to set nonblocking: {e}"))?;
+
+        let (request_tx, request_rx) = tokio::sync::mpsc::unbounded_channel();
+        let request_waker: Arc<Mutex<Option<std::task::Waker>>> = Arc::new(Mutex::new(None));
+        let shutdown_flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
+
+        let s_waker = request_waker.clone();
+        let s_shutdown = shutdown_flag.clone();
+
+        std::thread::spawn(move || {
+            let rt = match tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+            {
+                Ok(r) => r,
+                Err(e) => {
+                    eprintln!("failed to create tokio runtime for http-server: {e}");
+                    return;
+                }
+            };
+            rt.block_on(async move {
+                let listener = match tokio::net::TcpListener::from_std(std_listener) {
+                    Ok(l) => l,
+                    Err(e) => {
+                        eprintln!("failed to wrap TcpListener in tokio: {e}");
+                        return;
+                    }
+                };
+
+                loop {
+                    tokio::select! {
+                        accept_res = listener.accept() => {
+                            if s_shutdown.load(std::sync::atomic::Ordering::Relaxed) {
+                                break;
+                            }
+                            let (stream, _) = match accept_res {
+                                Ok(conn) => conn,
+                                Err(_) => continue,
+                            };
+                            let io = wasmtime_wasi_http::io::TokioIo::new(stream);
+                            let req_tx = request_tx.clone();
+                            let s_waker = s_waker.clone();
+
+                            tokio::spawn(async move {
+                                use http_body_util::BodyExt as _;
+                                let service = hyper::service::service_fn(move |req: http::Request<hyper::body::Incoming>| {
+                                    let req_tx = req_tx.clone();
+                                    let s_waker = s_waker.clone();
+                                    async move {
+                                        let (res_tx, res_rx) = tokio::sync::oneshot::channel();
+
+                                        if req_tx.send(IncomingRequest { req, res_tx }).is_err() {
+                                            let err_resp = http::Response::builder()
+                                                .status(http::StatusCode::INTERNAL_SERVER_ERROR)
+                                                .body(
+                                                    http_body_util::Full::new(bytes::Bytes::from_static(b"server closed"))
+                                                        .map_err(|e: std::convert::Infallible| -> wasmtime_wasi_http::Error { match e {} })
+                                                        .boxed_unsync()
+                                                )
+                                                .unwrap();
+                                            return Ok::<_, std::convert::Infallible>(err_resp);
+                                        }
+                                        if let Some(waker) = s_waker.lock().unwrap().take() {
+                                            waker.wake();
+                                        }
+
+                                        match res_rx.await {
+                                            Ok(resp) => Ok(resp),
+                                            Err(_) => {
+                                                let err_resp = http::Response::builder()
+                                                    .status(http::StatusCode::INTERNAL_SERVER_ERROR)
+                                                    .body(
+                                                        http_body_util::Full::new(bytes::Bytes::from_static(b"response cancelled"))
+                                                            .map_err(|e: std::convert::Infallible| -> wasmtime_wasi_http::Error { match e {} })
+                                                            .boxed_unsync()
+                                                    )
+                                                    .unwrap();
+                                                Ok(err_resp)
+                                            }
+                                        }
+                                    }
+                                });
+
+                                let _ = hyper::server::conn::http1::Builder::new()
+                                    .serve_connection(io, service)
+                                    .await;
+                            });
+                        }
+                        _ = tokio::time::sleep(std::time::Duration::from_millis(100)) => {
+                            if s_shutdown.load(std::sync::atomic::Ordering::Relaxed) {
+                                break;
+                            }
+                        }
+                    }
+                }
+            });
+        });
+
+        let res = self.table.push(ServerState {
+            port: bound_port,
+            request_rx: Arc::new(Mutex::new(request_rx)),
+            request_waker,
+            shutdown_flag,
+        })?;
+        Ok(res)
+    }
+
+    fn port(&mut self, self_: Resource<ServerState>) -> Result<u16> {
+        let server = self.table.get(&self_)?;
+        Ok(server.port)
+    }
+
+    fn close(&mut self, self_: Resource<ServerState>) -> Result<()> {
+        let server = self.table.get(&self_)?;
+        if !server.shutdown_flag.swap(true, std::sync::atomic::Ordering::Relaxed) {
+            let _ = std::net::TcpStream::connect(("127.0.0.1", server.port));
+        }
+        if let Some(waker) = server.request_waker.lock().unwrap().take() {
+            waker.wake();
+        }
+        Ok(())
+    }
+
+    fn drop(&mut self, rep: Resource<ServerState>) -> Result<()> {
+        let server = self.table.delete(rep)?;
+        if !server.shutdown_flag.swap(true, std::sync::atomic::Ordering::Relaxed) {
+            let _ = std::net::TcpStream::connect(("127.0.0.1", server.port));
+        }
+        if let Some(waker) = server.request_waker.lock().unwrap().take() {
+            waker.wake();
+        }
+        Ok(())
+    }
+}
+
+
+

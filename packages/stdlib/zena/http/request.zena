@@ -1,0 +1,219 @@
+/**
+ * HTTP Request abstraction.
+ */
+
+import { HashMap } from 'zena:collections';
+import { Stream, StreamWriter, readAllBytes, readAllText } from 'zena:stream';
+import { URL } from 'zena:url';
+
+let fallbackUrl = (): URL => URL.parse('http://localhost/', null) as URL;
+
+/**
+ * Represents an incoming HTTP request.
+ *
+ * Provides typed access to the method, URL, headers, and body stream,
+ * as well as a mutable `path` property used by routers and prefix mounting.
+ */
+export class Request {
+  var #url: URL;
+  var #method: String;
+  var #headers: HashMap<String, GrowableArray<String>>;
+  var #path: String | null = null;
+  var #bodyStream: Stream<u8> | null = null;
+  var #bodyText: String | null = null;
+  var #bodyBytes: FixedArray<u8> | null = null;
+
+  /**
+   * Constructs a Request with explicit parameters.
+   */
+  new(
+    url: URL,
+    method: String = 'GET',
+    headers: HashMap<String, GrowableArray<String>> = new HashMap<String, GrowableArray<String>>(),
+    bodyStream: Stream<u8> | null = null
+  ) : #url = url,
+      #method = method.asciiUpperCase(),
+      #headers = headers,
+      #bodyStream = bodyStream {}
+
+  /**
+   * Constructs a Request from a string URL and optional headers.
+   */
+  new fromUrl(
+    urlString: String,
+    method: String = 'GET',
+    headers: Map<String, String> | null = null,
+    bodyStream: Stream<u8> | null = null
+  ) : #url = if (URL.parse(urlString, null) != null) URL.parse(urlString, null) as URL else fallbackUrl(),
+      #method = method.asciiUpperCase(),
+      #headers = new HashMap<String, GrowableArray<String>>(),
+      #bodyStream = bodyStream {
+    if (headers != null) {
+      let h = headers as Map<String, String>;
+      for (let entry in h) {
+        let key = entry.key.asciiLowerCase();
+        let arr = new GrowableArray<String>(1);
+        arr.push(entry.value);
+        this.#headers[key] = arr;
+      }
+    }
+  }
+
+  /**
+   * The HTTP method in uppercase ('GET', 'POST', 'PUT', etc.).
+   */
+  method: String {
+    get {
+      return this.#method;
+    }
+  }
+
+  /**
+   * The request URL.
+   */
+  url: URL {
+    get {
+      return this.#url;
+    }
+  }
+
+  /**
+   * The request path, defaults to `url.pathname` or `'/'`.
+   *
+   * Middleware like `mount()` or routers can rewrite `path` to represent
+   * the current subpath within a mounted handler hierarchy.
+   */
+  path: String {
+    get {
+      if (this.#path != null) {
+        return this.#path as String;
+      }
+      let p = this.#url.pathname;
+      return if (p.length == 0) '/' else p;
+    }
+    set(value) {
+      this.#path = value;
+    }
+  }
+
+  /**
+   * The origin of the request URL (e.g. "https://example.com:8080").
+   */
+  origin: String {
+    get {
+      return this.#url.origin();
+    }
+  }
+
+  /**
+   * The protocol of the request URL without the trailing colon (e.g. "http", "https").
+   */
+  protocol: String {
+    get {
+      let proto = this.#url.protocol;
+      if (proto.length > 0 && proto.getByteAt(proto.length - 1) == 0x3A) { // ':'
+        return proto.sliceBytes(0, proto.length - 1);
+      }
+      return proto;
+    }
+  }
+
+  /**
+   * The Host of the request.
+   */
+  host: String {
+    get {
+      return this.#url.host();
+    }
+  }
+
+  /**
+   * The query string including the leading '?', or empty if none.
+   */
+  query: String {
+    get {
+      return this.#url.search;
+    }
+  }
+
+  /**
+   * Returns the first value of the header with the given name, or null if absent.
+   */
+  getHeader(name: String): String | null {
+    let key = name.asciiLowerCase();
+    if (let (true, values) = this.#headers.get(key)) {
+      if (values.length > 0) {
+        return values[0];
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Returns all values of the header with the given name.
+   */
+  getHeaders(name: String): Array<String> {
+    let key = name.asciiLowerCase();
+    if (let (true, values) = this.#headers.get(key)) {
+      return values;
+    }
+    return new GrowableArray<String>(0);
+  }
+
+  /**
+   * Returns true if the header with the given name is present.
+   */
+  hasHeader(name: String): boolean {
+    return this.#headers.has(name.asciiLowerCase());
+  }
+
+  /**
+   * Returns all header names present in the request.
+   */
+  headerNames(): Array<String> {
+    let names = new GrowableArray<String>(this.#headers.size);
+    for (let entry in this.#headers) {
+      names.push(entry.key);
+    }
+    return names;
+  }
+
+  /**
+   * The body stream of the request.
+   */
+  body: Stream<u8> {
+    get {
+      if (this.#bodyStream != null) {
+        return this.#bodyStream as Stream<u8>;
+      }
+      let emptyWriter = new StreamWriter<u8>();
+      emptyWriter.close();
+      this.#bodyStream = emptyWriter.stream;
+      return emptyWriter.stream;
+    }
+  }
+
+  /**
+   * Reads and decodes the full request body as text.
+   */
+  async text(): Future<String> {
+    if (this.#bodyText != null) {
+      return this.#bodyText as String;
+    }
+    let str = await readAllText(this.body);
+    this.#bodyText = str;
+    return str;
+  }
+
+  /**
+   * Reads the full request body as bytes.
+   */
+  async bytes(): Future<FixedArray<u8>> {
+    if (this.#bodyBytes != null) {
+      return this.#bodyBytes as FixedArray<u8>;
+    }
+    let b = await readAllBytes(this.body);
+    this.#bodyBytes = b;
+    return b;
+  }
+}

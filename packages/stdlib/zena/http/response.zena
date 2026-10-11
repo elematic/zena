@@ -1,0 +1,216 @@
+/**
+ * HTTP Response abstraction.
+ */
+
+import { Option, Some } from 'zena:core';
+import { Stream, StreamWriter } from 'zena:stream';
+
+/**
+ * Valid body representations for a response.
+ */
+export type ResponseBody = String | FixedArray<u8> | Stream<u8> | null;
+
+/**
+ * Creates a stream that transmits a FixedArray of bytes.
+ */
+export function bytesStream(bytes: FixedArray<u8>): Stream<u8> {
+  let writer = new StreamWriter<u8>();
+  pumpBytes(writer, bytes);
+  return writer.stream;
+}
+
+async function pumpBytes(writer: StreamWriter<u8>, bytes: FixedArray<u8>): Future<void> {
+  if (bytes.length > 0) {
+    await writer.writeAll(bytes, bytes.length);
+  }
+  writer.close();
+}
+
+/**
+ * Represents an HTTP response being built by server middleware.
+ *
+ * Defaults to status code 404 until a body or status code is set.
+ * Setting `body` automatically updates `statusCode` to 200 if it was not
+ * explicitly set beforehand.
+ */
+export class Response {
+  var #statusCode: i32 = 404;
+  var #statusCodeSet: boolean = false;
+  var #body: ResponseBody = null;
+  var #headers = new Map<String, GrowableArray<String>>();
+
+  new() {}
+
+  /**
+   * The HTTP status code.
+   */
+  statusCode: i32 {
+    get {
+      return this.#statusCode;
+    }
+    set(value) {
+      this.#statusCode = value;
+      this.#statusCodeSet = true;
+    }
+  }
+
+  /**
+   * Whether the status code was explicitly set.
+   */
+  statusCodeSet: boolean {
+    get {
+      return this.#statusCodeSet;
+    }
+  }
+
+  /**
+   * The response body.
+   */
+  body: ResponseBody {
+    get {
+      return this.#body;
+    }
+    set(value) {
+      if (!this.#statusCodeSet) {
+        this.#statusCode = 200;
+      }
+      this.#body = value;
+    }
+  }
+
+  /**
+   * Sets a response header, replacing any previous values for this header.
+   */
+  setHeader(name: String, value: String): void {
+    let key = name.asciiLowerCase();
+    let values = new GrowableArray<String>(1);
+    values.push(value);
+    this.#headers[key] = values;
+  }
+
+  /**
+   * Appends a value to a response header without removing previous values.
+   */
+  appendHeader(name: String, value: String): void {
+    let key = name.asciiLowerCase();
+    if (let (true, existing) = this.#headers.get(key)) {
+      existing.push(value);
+    } else {
+      let values = new GrowableArray<String>(1);
+      values.push(value);
+      this.#headers[key] = values;
+    }
+  }
+
+  /**
+   * Returns the first value of a response header, or null if absent.
+   */
+  getHeader(name: String): String | null {
+    let key = name.asciiLowerCase();
+    if (let (true, values) = this.#headers.get(key)) {
+      if (values.length > 0) {
+        return values[0];
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Returns all values of a response header.
+   */
+  getHeaders(name: String): Array<String> {
+    let key = name.asciiLowerCase();
+    if (let (true, values) = this.#headers.get(key)) {
+      return values;
+    }
+    return new GrowableArray<String>(0);
+  }
+
+  /**
+   * Returns true if the response header is present.
+   */
+  hasHeader(name: String): boolean {
+    return this.#headers.has(name.asciiLowerCase());
+  }
+
+  /**
+   * Removes a response header.
+   */
+  removeHeader(name: String): void {
+    let key = name.asciiLowerCase();
+    this.#headers.delete(key);
+  }
+
+  /**
+   * Returns all header names currently set on this response.
+   */
+  headerNames(): Array<String> {
+    let names = new GrowableArray<String>(this.#headers.size);
+    for (let entry in this.#headers) {
+      names.push(entry.key);
+    }
+    return names;
+  }
+
+  /**
+   * The Content-Type header.
+   */
+  type: String | null {
+    get {
+      return this.getHeader('content-type');
+    }
+    set(value) {
+      if (value != null) {
+        this.setHeader('content-type', value as String);
+      } else {
+        this.removeHeader('content-type');
+      }
+    }
+  }
+
+  /**
+   * Sets Content-Length header.
+   */
+  setLength(value: i32): void {
+    this.setHeader('content-length', i32ToString(value));
+  }
+
+  /**
+   * The Content-Length header as an integer, or none if absent.
+   */
+  length: Option<i32> {
+    get {
+      let h = this.getHeader('content-length');
+      if (h != null) {
+        if (let (true, val) = parseI32(h as String)) {
+          return some(val);
+        }
+      }
+      return none;
+    }
+    set(value) {
+      if (value is Some<i32>) {
+        this.setHeader('content-length', i32ToString((value as Some<i32>).value));
+      } else {
+        this.removeHeader('content-length');
+      }
+    }
+  }
+
+  /**
+   * Performs an HTTP redirect.
+   *
+   * Sets the `Location` header to `url`. If the current status code is not
+   * a 3xx redirect status (300-399), it defaults to 302.
+   */
+  redirect(url: String, alt: String = '/'): void {
+    this.setHeader('location', url);
+    if (!(this.#statusCode >= 300 && this.#statusCode < 400)) {
+      this.statusCode = 302;
+    }
+    if (this.#body == null) {
+      this.type = 'text/plain; charset=utf-8';
+      this.body = `Redirecting to ${url}.`;
+    }
+  }
+}

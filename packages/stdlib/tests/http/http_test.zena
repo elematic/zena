@@ -1,0 +1,266 @@
+import { suite, test, TestContext } from 'zena:test';
+import { equal, isTrue } from 'zena:assert';
+import { runFuture, Completer } from 'zena:async';
+import { Some, None, Option, none, Outcome, Ok } from 'zena:core';
+import {
+  App, AppOptions, Request, Response, Router, Server,
+  compose, mount, matchPath, HttpError, statusText, Middleware,
+  Fields, WireRequest, ErrorCode, fromWireRequest
+} from 'zena:http';
+
+export let tests = suite('zena:http', (): void => {
+  test('HttpError has status and message', (ctx: TestContext): void => {
+    let err = new HttpError(404);
+    equal(err.status, 404);
+    equal(err.message, 'Not Found');
+
+    let custom = new HttpError(400, 'Invalid payload', 'Debug details');
+    equal(custom.status, 400);
+    equal(custom.message, 'Invalid payload');
+    equal(custom.privateMessage as String, 'Debug details');
+  });
+
+  test('statusText returns correct descriptions', (ctx: TestContext): void => {
+    equal(statusText(200), 'OK');
+    equal(statusText(302), 'Found');
+    equal(statusText(404), 'Not Found');
+    equal(statusText(500), 'Internal Server Error');
+  });
+
+  test('matchPath extracts subpaths correctly', (ctx: TestContext): void => {
+    equal(matchPath('/api', '/api') as String, '/');
+    equal(matchPath('/api', '/api/users') as String, '/users');
+    equal(matchPath('/api/', '/api/users') as String, '/users');
+    isTrue(matchPath('/api', '/other') == null);
+    isTrue(matchPath('/api', '/apipath') == null);
+  });
+
+  test('Response defaults to 404 and changes to 200 on body set', (ctx: TestContext): void => {
+    let res = new Response();
+    equal(res.statusCode, 404);
+    equal(res.statusCodeSet, false);
+
+    res.body = 'Hello world';
+    equal(res.statusCode, 200);
+    equal(res.statusCodeSet, false);
+    equal(res.body as String, 'Hello world');
+
+    // Explicit status code overrides
+    res.statusCode = 201;
+    equal(res.statusCode, 201);
+    equal(res.statusCodeSet, true);
+
+    res.body = 'Created!';
+    equal(res.statusCode, 201);
+  });
+
+  test('Response headers manipulation', (ctx: TestContext): void => {
+    let res = new Response();
+    res.setHeader('X-Custom', 'Value1');
+    equal(res.getHeader('x-custom') as String, 'Value1');
+    isTrue(res.hasHeader('X-CUSTOM'));
+
+    res.appendHeader('x-custom', 'Value2');
+    let vals = res.getHeaders('X-Custom');
+    equal(vals.length, 2);
+    equal(vals[0], 'Value1');
+    equal(vals[1], 'Value2');
+
+    res.type = 'application/json';
+    equal(res.type as String, 'application/json');
+    equal(res.getHeader('content-type') as String, 'application/json');
+
+    res.setLength(128);
+    equal((res.length as Some<i32>).value, 128);
+    equal(res.getHeader('content-length') as String, '128');
+
+    res.removeHeader('X-Custom');
+    isTrue(res.getHeader('X-Custom') == null);
+  });
+
+  test('Response redirect', (ctx: TestContext): void => {
+    let res = new Response();
+    res.redirect('/login');
+    equal(res.statusCode, 302);
+    equal(res.getHeader('location') as String, '/login');
+    equal(res.body as String, 'Redirecting to /login.');
+  });
+
+  test('Request exposes URL, method, and headers', (ctx: TestContext): void => {
+    let headers = new Map<String, String>();
+    headers['Authorization'] = 'Bearer token123';
+    let req = new Request.fromUrl('https://example.com:8080/users?sort=asc', 'POST', headers);
+
+    equal(req.method, 'POST');
+    equal(req.path, '/users');
+    equal(req.protocol, 'https');
+    equal(req.host, 'example.com:8080');
+    equal(req.query, '?sort=asc');
+    equal(req.getHeader('authorization') as String, 'Bearer token123');
+
+    // Path rewriting
+    req.path = '/custom';
+    equal(req.path, '/custom');
+  });
+
+  test('compose executes middleware in onion order', (ctx: TestContext): void => {
+    runFuture((async (): Future<void> => {
+      let trace = new GrowableArray<String>();
+
+      let m1 = async (req: Request, res: Response, next: () => Future<void>): Future<void> => {
+        trace.push('m1 in');
+        await next();
+        trace.push('m1 out');
+      };
+
+      let m2 = async (req: Request, res: Response, next: () => Future<void>): Future<void> => {
+        trace.push('m2 in');
+        await next();
+        trace.push('m2 out');
+      };
+
+      let mList = new GrowableArray<Middleware>();
+      mList.push(m1);
+      mList.push(m2);
+      let pipeline = compose(mList);
+      let req = new Request.fromUrl('http://localhost/');
+      let res = new Response();
+
+      await pipeline(req, res, async (): Future<void> => {
+        trace.push('core handler');
+      });
+
+      equal(trace.length, 5);
+      equal(trace[0], 'm1 in');
+      equal(trace[1], 'm2 in');
+      equal(trace[2], 'core handler');
+      equal(trace[3], 'm2 out');
+      equal(trace[4], 'm1 out');
+    })());
+  });
+
+  test('mount rewrites path for sub-middleware and restores it', (ctx: TestContext): void => {
+    runFuture((async (): Future<void> => {
+      var subpathSeen = '';
+
+      let subMiddleware = async (req: Request, res: Response, next: () => Future<void>): Future<void> => {
+        subpathSeen = req.path;
+        res.body = 'Mounted response';
+      };
+
+      let mounted = mount('/api', subMiddleware);
+      let req = new Request.fromUrl('http://localhost/api/v1/items');
+      let res = new Response();
+
+      await mounted(req, res, async (): Future<void> => {});
+
+      equal(subpathSeen, '/v1/items');
+      equal(req.path, '/api/v1/items');
+      equal(res.body as String, 'Mounted response');
+    })());
+  });
+
+  test('Router matches methods and extracts params', (ctx: TestContext): void => {
+    runFuture((async (): Future<void> => {
+      let router = new Router();
+
+      router.get('/users/:id', async (req: Request, res: Response, next: () => Future<void>, params: Map<String, String>): Future<void> => {
+        let id = params['id'] ?? '';
+        res.body = 'User ' + id;
+      });
+
+      router.get('/static/*', async (req: Request, res: Response, next: () => Future<void>, params: Map<String, String>): Future<void> => {
+        let file = params['*'] ?? '';
+        res.body = 'Static: ' + file;
+      });
+
+      let routes = router.routes();
+
+      // Test param match
+      let req1 = new Request.fromUrl('http://localhost/users/99');
+      let res1 = new Response();
+      await routes(req1, res1, async (): Future<void> => {});
+      equal(res1.body as String, 'User 99');
+
+      // Test wildcard match
+      let req2 = new Request.fromUrl('http://localhost/static/css/theme.css');
+      let res2 = new Response();
+      await routes(req2, res2, async (): Future<void> => {});
+      equal(res2.body as String, 'Static: css/theme.css');
+
+      // Test unhandled route passes to next()
+      var nextCalled = false;
+      let req3 = new Request.fromUrl('http://localhost/other');
+      let res3 = new Response();
+      await routes(req3, res3, async (): Future<void> => {
+        nextCalled = true;
+      });
+      equal(nextCalled, true);
+    })());
+  });
+
+  test('App handles requests and handles HttpError', (ctx: TestContext): void => {
+    runFuture((async (): Future<void> => {
+      let app = new App();
+
+      app.use(async (req: Request, res: Response, next: () => Future<void>): Future<void> => {
+        if (req.path == '/error') {
+          throw new HttpError(403, 'Forbidden action');
+        }
+        res.body = 'OK response';
+      });
+
+      let reqOk = new Request.fromUrl('http://localhost/');
+      let resOk = new Response();
+      await app.handleRequest(reqOk, resOk);
+      equal(resOk.statusCode, 200);
+      equal(resOk.body as String, 'OK response');
+
+      let reqErr = new Request.fromUrl('http://localhost/error');
+      let resErr = new Response();
+      await app.handleRequest(reqErr, resErr);
+      equal(resErr.statusCode, 403);
+      equal(resErr.body as String, 'Forbidden action');
+    })());
+  });
+
+  test('Server lifecycle (bind port, status, close, done)', (ctx: TestContext): void => {
+    let app = new App();
+    let server = new Server(app, 0 as u16);
+    isTrue(server.isOpen, 'server should be open after construction');
+    isTrue(server.port > 0 as u16, 'server should bind to an ephemeral port > 0');
+    isTrue(!server.isDone, 'server should not be done initially');
+    server.close();
+    isTrue(!server.isOpen, 'server should be closed after close()');
+    isTrue(server.isDone, 'server should be done after close()');
+  });
+
+  test('App.listen starts server and returns immediately', (ctx: TestContext): void => {
+    let app = new App();
+    var listeningCalled = false;
+    let server = app.listen(0 as u16, (): void => {
+      listeningCalled = true;
+    });
+    isTrue(listeningCalled, 'onListening callback should be invoked');
+    isTrue(server.isOpen, 'server should be open immediately');
+    isTrue(server.port > 0 as u16, 'server should bind to an ephemeral port > 0');
+    server.close();
+    isTrue(!server.isOpen, 'server should be closed');
+    isTrue(server.isDone, 'server should be done after close()');
+  });
+
+  test('fromWireRequest correctly parses method and consumes body without error', (ctx: TestContext): void => {
+    let fields = Fields.create();
+    fields.append('user-agent', 'curl/8.0.0'.toBytes());
+    let trailers = new Completer<Outcome<Option<Fields>, ErrorCode>>();
+    trailers.complete(new Ok<Option<Fields>, ErrorCode>(none));
+    let (wireReq, _) = WireRequest.new_(fields, none, trailers.future, none);
+    wireReq.setAuthority(some('127.0.0.1:8080'));
+    let req = fromWireRequest(wireReq);
+    equal(req.method, 'GET');
+    equal(req.host, '127.0.0.1:8080');
+    equal(req.getHeader('user-agent') as String, 'curl/8.0.0');
+  });
+});
+
+

@@ -1,0 +1,54 @@
+/**
+ * Example HTTP server application in Zena.
+ *
+ * Demonstrates:
+ * - App and middleware composition (logging, error handling)
+ * - Router with static routes and param matching (:name)
+ * - Running an HTTP server accessible via browser or curl
+ *
+ * Run with:
+ *   ./target/release/zena-cli run examples/http-server.zena
+ */
+
+import { App, Router, Request, Response, HttpError } from 'zena:http';
+
+export function main(): void {
+  let app = new App();
+  let router = new Router();
+
+  // 1. Logging middleware
+  app.use(async (req, res, next) => {
+    let path = req.path;
+    await next();
+    console.log(`${req.method} ${path} -> ${res.statusCode}`);
+  });
+
+  // 2. Define routes
+  router.get('/', async (req, res, next, params) => {
+    res.type = 'text/plain; charset=utf-8';
+    res.body = 'Welcome to the Zena HTTP server!\n';
+  });
+
+  router.get('/greet/:name', async (req, res, next, params) => {
+    let name = params.getOr('name', 'friend');
+    res.type = 'text/plain; charset=utf-8';
+    res.body = `Hello, ${name}!\n`;
+  });
+
+  router.get('/secret', async (req, res, next, params) => {
+    throw new HttpError(403, 'Forbidden: VIP access only');
+  });
+
+  app.use(router.routes());
+
+  // 3. Start the server
+  console.log('=== Zena HTTP Server ===');
+  console.log('Available routes:');
+  console.log('  GET  http://127.0.0.1:8080/');
+  console.log('  GET  http://127.0.0.1:8080/greet/:name');
+  console.log('  GET  http://127.0.0.1:8080/secret');
+  console.log('');
+
+  app.listen(8080 as u16);
+}
+

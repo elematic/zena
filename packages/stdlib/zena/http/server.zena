@@ -1,0 +1,119 @@
+/**
+ * Host HTTP server runner for zena-cli.
+ */
+
+import { Server as HostServer, ResponseWriter } from 'zena-cli:host/http-server';
+import {
+  Request as WireRequest,
+  Response as WireResponse,
+  ErrorCode
+} from 'wasi:http/types';
+import { fromWireRequest, toWireResponse, textResponse } from './wasi.zena';
+import { App } from './app.zena';
+import { Request } from './request.zena';
+import { Response } from './response.zena';
+import { Option, Some } from 'zena:core';
+import { Completer } from 'zena:async';
+
+function unit(): void {}
+
+type RequestTuple = (WireRequest, ResponseWriter);
+
+/**
+ * A running HTTP server instance.
+ */
+export class Server {
+  #hostServer: HostServer;
+  #app: App;
+  var #closed: boolean = false;
+  var #running: boolean = false;
+  var #isDone: boolean = false;
+  var #doneCompleter: Completer<void> = new Completer<void>();
+
+  new(app: App, port: u16)
+    : #hostServer = HostServer.create(port),
+      #app = app;
+
+  /**
+   * The port this server is listening on.
+   */
+  port: u16 {
+    get {
+      return this.#hostServer.port();
+    }
+  }
+
+  /**
+   * True if the server is still open.
+   */
+  isOpen: boolean {
+    get {
+      return !this.#closed;
+    }
+  }
+
+  /**
+   * Future that completes when the server is closed or stops running.
+   */
+  done: Future<void> {
+    get {
+      return this.#doneCompleter.future;
+    }
+  }
+
+  /**
+   * True if the server has finished running and is closed.
+   */
+  isDone: boolean {
+    get {
+      return this.#isDone;
+    }
+  }
+
+  /**
+   * Closes the server and releases its socket.
+   */
+  close(): void {
+    if (!this.#closed) {
+      this.#closed = true;
+      this.#hostServer.close();
+      this.#isDone = true;
+      this.#doneCompleter.tryComplete(unit());
+    }
+  }
+
+  /**
+   * Runs the server accept loop.
+   */
+  async start(): Future<void> {
+    if (this.#running) return;
+    this.#running = true;
+    let stream = this.#hostServer.listen();
+    while (!this.#closed) {
+      let opt = await stream.readOne();
+      if (opt is Some<RequestTuple>) {
+        let (wireReq, writer) = (opt as Some<RequestTuple>).value;
+        this.#dispatch(wireReq, writer);
+      } else {
+        break;
+      }
+    }
+    this.#isDone = true;
+    this.#doneCompleter.tryComplete(unit());
+  }
+
+  async #dispatch(wireReq: WireRequest, writer: ResponseWriter): Future<void> {
+    try {
+      let req = fromWireRequest(wireReq);
+      let res = new Response();
+      await this.#app.handleRequest(req, res);
+      let wireRes = toWireResponse(res);
+      writer.respond(wireRes);
+    } catch (e) {
+      let errRes = textResponse('Internal Server Error\n', 500);
+      writer.respond(errRes);
+    }
+    return;
+  }
+}
+
