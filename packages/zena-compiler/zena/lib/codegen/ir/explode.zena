@@ -37,14 +37,15 @@
  */
 import { HashMap, HashSet } from 'zena:collections';
 import {
-  CallExpression, ClassDeclaration, FunctionExpression, FunctionDeclaration,
+  BlockStatement, CallExpression, ClassDeclaration, Expression,
+  ExpressionStatement, FunctionExpression, FunctionDeclaration, ReturnStatement,
   VariableDeclaration, IdentifierPattern, Identifier, MemberExpression,
   MethodDefinition, Parameter, RecordLiteral, RecordPattern,
   SuperInitializer, Node,
 } from '../../ast.zena';
 import { SemanticModel } from '../../semantic-model.zena';
 import { Symbol, SymbolId } from '../../scope/symbol.zena';
-import { ClassType, RecordType, baseType } from '../../types.zena';
+import { ClassType, FunctionType, RecordType, baseType } from '../../types.zena';
 import { walkEnter } from '../../visitor.zena';
 import { ValType } from '../wasm.zena';
 import {
@@ -53,7 +54,7 @@ import {
 import { recordWasmFields, sortedOptionalNames } from '../type-mapping.zena';
 import { ReachabilityAnalysis } from '../reachability/analysis.zena';
 import {
-  recordLiteralArgKey, recordLiteralCtorArgKey,
+  RecordResultCall, recordLiteralArgKey, recordLiteralCtorArgKey,
 } from '../reachability/context.zena';
 import { getClassKey, getClassMethodKey } from '../codegen-utils.zena';
 
@@ -107,8 +108,17 @@ final class Candidate {
   fieldsOnly: GrowableArray<boolean>;
   /** Per parameter, whether some reached call passes it unpacked. */
   available: GrowableArray<boolean>;
+  /**
+   * A function's record result's dispatch, when it could return the
+   * fields instead; null for a constructor or a non-record result.
+   */
+  result: RecordDispatchInfo | null;
+  /** The expressions the function returns, for `result`. */
+  returns: GrowableArray<Expression>;
+  /** Whether the core returns `result`'s fields. */
+  var resultExplodes: boolean = false;
   new(this.f, this.self, this.ctorKey, this.dispatches, this.forwards,
-      this.fieldsOnly, this.available);
+      this.fieldsOnly, this.available, this.result, this.returns);
 
   /** This candidate's key in the pass's lookup. */
   key(): String {
@@ -203,9 +213,11 @@ export let explodeRecordParameters = (
     }
   }
 
+  explodeResults(wasm, pass, candidates, byKey);
+
   for (let c in candidates) {
     let params = new Array<RecordDispatchInfo | null>();
-    var any = false;
+    var any = c.resultExplodes;
     for (var i = 0; i < c.dispatches.length; i += 1) {
       if (c.available[i]) {
         params.push(c.dispatches[i]);
@@ -215,13 +227,320 @@ export let explodeRecordParameters = (
       }
     }
     if (any) {
-      addCore(wasm, pass, c.f, params, 0);
+      addCore(wasm, pass, c.f, params, 0,
+          if (c.resultExplodes) c.result else null);
       let {ctorKey} = c;
       if (ctorKey != null) {
         addPhaseCores(wasm, pass, c.f, params);
       }
     }
   }
+};
+
+/**
+ * How a call's record result is used: only for its fields (`direct`),
+ * returned from the function keyed `returnedFrom`, or neither.
+ */
+final class ResultUse {
+  rc: RecordResultCall;
+  callee: String;
+  direct: boolean;
+  returnedFrom: String | null;
+  new(this.rc, this.callee, this.direct, this.returnedFrom);
+}
+
+/**
+ * Decides which functions return their record result's fields: those
+ * some call uses only for its fields (demand) and that have the fields
+ * on hand at some return (availability). Both depend on other functions
+ * through `return g(...)`, so this iterates from "nothing explodes" up.
+ * Marks the calls whose results lowering holds as fields in
+ * `wasm.fieldsOnlyResultCalls`.
+ */
+let explodeResults = (wasm: WasmModule, pass: ReachabilityAnalysis,
+    candidates: GrowableArray<Candidate>,
+    byKey: HashMap<String, Candidate>): void => {
+  let uses = new Array<ResultUse>();
+  for (let rc in pass.recordResultCalls) {
+    let key = functionKey(rc.callee);
+    if (let (true, target) = byKey.get(key)) {
+      let result = target.result;
+      if (result != null) {
+        uses.push(classifyResultUse(rc, key, result, byKey));
+      }
+    }
+  }
+  var changed = true;
+  while (changed) {
+    changed = false;
+    for (let c in candidates) {
+      if (c.result != null && !c.resultExplodes &&
+          producesFields(c, byKey) && resultDemanded(c, uses, byKey)) {
+        c.resultExplodes = true;
+        changed = true;
+      }
+    }
+  }
+  for (let use in uses) {
+    if (resultUseHoldsFields(use, byKey)) {
+      wasm.fieldsOnlyResultCalls.add((use.rc.call as Node).id as i32);
+    }
+  }
+};
+
+/** Whether `use`'s callee returns fields and `use` only needs them. */
+let resultUseHoldsFields = (use: ResultUse,
+    byKey: HashMap<String, Candidate>): boolean => {
+  if (let (true, callee) = byKey.get(use.callee)) {
+    if (!callee.resultExplodes) {
+      return false;
+    }
+  } else {
+    return false;
+  }
+  if (use.direct) {
+    return true;
+  }
+  let from = use.returnedFrom;
+  if (from != null) {
+    if (let (true, owner) = byKey.get(from)) {
+      return owner.resultExplodes;
+    }
+  }
+  return false;
+};
+
+/** Whether some call of `c` uses its result only for the fields. */
+let resultDemanded = (c: Candidate, uses: GrowableArray<ResultUse>,
+    byKey: HashMap<String, Candidate>): boolean => {
+  let key = c.key();
+  for (let use in uses) {
+    if (use.callee != key) {
+      continue;
+    }
+    if (use.direct) {
+      return true;
+    }
+    let from = use.returnedFrom;
+    if (from != null) {
+      if (let (true, owner) = byKey.get(from)) {
+        if (owner.resultExplodes) {
+          return true;
+        }
+      }
+    }
+  }
+  return false;
+};
+
+/**
+ * Whether some return of `c` has its result's fields on hand: a record
+ * literal, an exploded parameter of the same record type, or a call whose
+ * result is returned as fields.
+ */
+let producesFields = (c: Candidate, byKey: HashMap<String, Candidate>): boolean => {
+  let fn = c.f.node as FunctionExpression;
+  let model = c.f.model;
+  for (let e in c.returns) {
+    if (e is RecordLiteral) {
+      return true;
+    }
+    if (e is Identifier) {
+      let sym = model.resolve(e);
+      if (sym != null) {
+        for (var i = 0; i < fn.params.length; i += 1) {
+          let ps = model.resolveDeclaration(fn.params[i].name);
+          if (ps != null && ps.id == sym.id && c.available[i] &&
+              c.dispatches[i] === c.result) {
+            return true;
+          }
+        }
+      }
+    }
+    if (e is CallExpression) {
+      let callee = e.callee;
+      if (callee is Identifier) {
+        let calleeSym = model.resolve(callee);
+        if (calleeSym != null) {
+          if (let (true, target) = byKey.get(
+              functionKey(calleeSym.resolveTarget().id))) {
+            if (target.resultExplodes && target.result === c.result) {
+              return true;
+            }
+          }
+        }
+      }
+    }
+  }
+  return false;
+};
+
+/** How `rc`'s result is used. */
+let classifyResultUse = (rc: RecordResultCall, calleeKey: String,
+    result: RecordDispatchInfo, byKey: HashMap<String, Candidate>): ResultUse => {
+  let call = rc.call;
+  let model = rc.model;
+  let owner = enclosingFunction(call, model);
+  let parent = model.getParent(call);
+  var direct = false;
+  var returnedFrom: String | null = null;
+  if (parent is MemberExpression) {
+    direct = (parent.object as Node) === (call as Node) &&
+        !parent.optional && !parent.isSymbolAccess;
+  } else if (parent is VariableDeclaration) {
+    let pattern = parent.pattern;
+    if ((parent.init as Node) === (call as Node)) {
+      if (pattern is RecordPattern) {
+        direct = true;
+      } else if (pattern is IdentifierPattern) {
+        if (parent.kind == 'let' && owner != null) {
+          direct = boundResultUsesFields(owner as Node, model, pattern,
+              result, byKey);
+        }
+      }
+    }
+  } else if (owner is FunctionExpression) {
+    if (returnsFrom(call, parent, owner)) {
+      let ownerSym = declaredSymbol(owner, model);
+      if (ownerSym != null) {
+        returnedFrom = functionKey(ownerSym.id);
+      }
+    }
+  }
+  return new ResultUse(rc, calleeKey, direct, returnedFrom);
+};
+
+/**
+ * Whether `call`, whose parent is `parent`, is a value `owner` returns:
+ * a `return` operand, the expression body, or a value block's tail.
+ */
+let returnsFrom = (call: CallExpression, parent: Node | null,
+    owner: FunctionExpression): boolean => {
+  if ((owner.body as Node) === (call as Node)) {
+    return true;
+  }
+  if (parent is ReturnStatement) {
+    let arg = parent.argument;
+    return arg != null && (arg as Node) === (call as Node) && !parent.isTail;
+  }
+  if (parent is ExpressionStatement) {
+    let body = owner.body;
+    if (body is BlockStatement) {
+      let stmts = body.body;
+      return stmts.length > 0 &&
+          (stmts[stmts.length - 1] as Node) === (parent as Node);
+    }
+  }
+  return false;
+};
+
+/**
+ * Whether the record bound by `let pattern = call` in `owner` is only
+ * read for its fields, or passed to parameters of the same record type
+ * that are.
+ */
+let boundResultUsesFields = (owner: Node, model: SemanticModel,
+    pattern: IdentifierPattern, result: RecordDispatchInfo,
+    byKey: HashMap<String, Candidate>): boolean => {
+  let roots = new Array<Node>();
+  if (owner is FunctionExpression) {
+    roots.push(owner.body as Node);
+  } else if (owner is MethodDefinition) {
+    let body = owner.body;
+    if (body != null) {
+      roots.push(body);
+    }
+    let inits = owner.initializerList;
+    if (inits != null) {
+      for (let init in inits) {
+        roots.push(init);
+      }
+    }
+  }
+  let forwards = new Array<Forward>();
+  if (!usesOnlyFields(owner, roots, model, pattern, forwards, null)) {
+    return false;
+  }
+  for (let fw in forwards) {
+    if (!forwardKeepsFields(byKey, result, fw)) {
+      return false;
+    }
+  }
+  return true;
+};
+
+/** The function or method whose code `node` is in, if any. */
+let enclosingFunction = (node: Node, model: SemanticModel): Node | null => {
+  var p = model.getParent(node);
+  while (p != null) {
+    if (p is FunctionExpression || p is MethodDefinition) {
+      return p;
+    }
+    p = model.getParent(p);
+  }
+  return null;
+};
+
+/**
+ * The dispatch of `f`'s record result, when it could be returned as
+ * fields: one wasm result, a record type with at least one field.
+ */
+let resultDispatchOf = (wasm: WasmModule, f: WasmFunction,
+    self: Symbol): RecordDispatchInfo | null => {
+  if (f.signature.returns.length != 1) {
+    return null;
+  }
+  let ft = f.model.getBindingType(self);
+  if (!(ft is FunctionType)) {
+    return null;
+  }
+  let rt = baseType(ft.returnType);
+  if (!(rt is RecordType)) {
+    return null;
+  }
+  let d = wasm.findRecordDispatch(
+      recordWasmFields(wasm, rt, f), sortedOptionalNames(rt));
+  if (d == null || d.fields.length == 0) {
+    return null;
+  }
+  return d;
+};
+
+/**
+ * Collects the expressions `fn` returns into `out`: `return` operands
+ * outside nested functions, the expression body, or a value block's
+ * tail. False when `fn` has a `tail return`, whose call the core could
+ * not turn into fields.
+ */
+let collectReturns = (fn: FunctionExpression, model: SemanticModel,
+    out: GrowableArray<Expression>): boolean => {
+  let body = fn.body;
+  if (!(body is BlockStatement)) {
+    out.push(body as Expression);
+    return true;
+  }
+  var ok = true;
+  walkEnter(body, (n: Node): void => {
+    if (n is ReturnStatement) {
+      if (enclosingFunction(n, model) === (fn as Node)) {
+        if (n.isTail) {
+          ok = false;
+        }
+        let arg = n.argument;
+        if (arg != null) {
+          out.push(arg);
+        }
+      }
+    }
+  });
+  let stmts = body.body;
+  if (stmts.length > 0) {
+    let last = stmts[stmts.length - 1];
+    if (last is ExpressionStatement) {
+      out.push(last.expression);
+    }
+  }
+  return ok;
 };
 
 /**
@@ -235,11 +554,11 @@ let addPhaseCores = (wasm: WasmModule, pass: ReachabilityAnalysis,
   let classKey = getClassKey(factory.classType as ClassType);
   if (let (true, init) = wasm.classMethodMap.get(
       getClassMethodKey(classKey, '<ctor-init>'))) {
-    addCore(wasm, pass, init, params, 0);
+    addCore(wasm, pass, init, params, 0, null);
   }
   if (let (true, body) = wasm.classMethodMap.get(
       getClassMethodKey(classKey, '<ctor-body>'))) {
-    addCore(wasm, pass, body, params, 1);
+    addCore(wasm, pass, body, params, 1, null);
   }
 };
 
@@ -285,7 +604,8 @@ let literalSuperArgs = (wasm: WasmModule): HashSet<String> => {
  * declared parameters and stay as they are.
  */
 let addCore = (wasm: WasmModule, pass: ReachabilityAnalysis, f: WasmFunction,
-    params: GrowableArray<RecordDispatchInfo | null>, leading: i32): void => {
+    params: GrowableArray<RecordDispatchInfo | null>, leading: i32,
+    result: RecordDispatchInfo | null): void => {
   let sig = f.signature;
   let coreParams = new Array<ValType>();
   for (var i = 0; i < leading; i += 1) {
@@ -301,7 +621,14 @@ let addCore = (wasm: WasmModule, pass: ReachabilityAnalysis, f: WasmFunction,
       }
     }
   }
-  let coreSig = wasm.getSignature(coreParams, sig.returns);
+  var coreReturns = sig.returns;
+  if (result != null) {
+    coreReturns = new Array<ValType>();
+    for (let field in result.fields) {
+      coreReturns.push(field.type);
+    }
+  }
+  let coreSig = wasm.getSignature(coreParams, coreReturns);
   pass.markTypeReached(coreSig);
   let core = new WasmFunction(coreSig, f.node, f.model);
   core.name = `${f.name ?? 'function'}.core`;
@@ -311,7 +638,7 @@ let addCore = (wasm: WasmModule, pass: ReachabilityAnalysis, f: WasmFunction,
   core.classType = f.classType;
   core.structType = f.structType;
   core.classDecl = f.classDecl;
-  let spec = new ExplosionSpec(params, f, core);
+  let spec = new ExplosionSpec(params, f, core, result);
   f.explosion = spec;
   core.explosion = spec;
   wasm.addFunction(core);
@@ -389,7 +716,13 @@ let candidateFor = (wasm: WasmModule, f: WasmFunction): Candidate | null => {
   }
   let roots = new Array<Node>();
   roots.push(fn.body as Node);
-  return classifyParams(wasm, f, fn, fn.params, roots, self, null, null);
+  var result = resultDispatchOf(wasm, f, self);
+  let returns = new Array<Expression>();
+  if (result != null && !collectReturns(fn, model, returns)) {
+    result = null;
+  }
+  return classifyParams(wasm, f, fn, fn.params, roots, self, null, null,
+      result, returns);
 };
 
 /**
@@ -454,7 +787,7 @@ let constructorCandidateFor = (wasm: WasmModule,
   let superKey = if (superCt != null)
       constructorKey(getClassKey(superCt) as String) else null;
   return classifyParams(wasm, f, md, md.params, roots, null,
-      classKey as String, superKey);
+      classKey as String, superKey, null, new Array<Expression>());
 };
 
 /**
@@ -465,7 +798,8 @@ let constructorCandidateFor = (wasm: WasmModule,
 let classifyParams = (wasm: WasmModule, f: WasmFunction, owner: Node,
     params: GrowableArray<Parameter>, roots: GrowableArray<Node>,
     self: Symbol | null, ctorKey: String | null,
-    superKey: String | null): Candidate | null => {
+    superKey: String | null, result: RecordDispatchInfo | null,
+    returns: GrowableArray<Expression>): Candidate | null => {
   let dispatches = new Array<RecordDispatchInfo | null>();
   let forwards = new Array<GrowableArray<Forward>>();
   let fieldsOnly = new Array<boolean>();
@@ -484,11 +818,11 @@ let classifyParams = (wasm: WasmModule, f: WasmFunction, owner: Node,
       anyRecord = true;
     }
   }
-  if (!anyRecord) {
+  if (!anyRecord && result == null) {
     return null;
   }
   return new Candidate(f, self, ctorKey, dispatches, forwards, fieldsOnly,
-      available);
+      available, result, returns);
 };
 
 /** The dispatch of a parameter whose declared type is a record type. */
@@ -533,7 +867,7 @@ let declaredSymbol = (fn: FunctionExpression, model: SemanticModel): Symbol | nu
  * instead of removing it.
  */
 let usesOnlyFields = (owner: Node, roots: GrowableArray<Node>,
-    model: SemanticModel, name: Identifier,
+    model: SemanticModel, name: Node,
     forwards: GrowableArray<Forward>, superKey: String | null): boolean => {
   let param = model.resolveDeclaration(name);
   if (param == null) {
