@@ -665,11 +665,38 @@ export final class WasmFunction implements Hashable {
   var trampolineResultPackIface: InterfaceKey | null = null;
   /** Set on a synthesized closure forwarder (see ClosureForwarderSpec). */
   var closureForwarder: ClosureForwarderSpec | null = null;
+  /**
+   * Set on both halves of a function whose record parameters were
+   * exploded (see ExplosionSpec): the original, which became the
+   * forwarder, and the core it calls.
+   */
+  var explosion: ExplosionSpec | null = null;
 
   new(this.signature, this.node, this.model);
   hashCode(): i32 {
     return this.uid;
   }
+}
+
+/**
+ * A function whose record parameters are passed as their fields
+ * (docs/design/argument-explosion.md). The original `WasmFunction`
+ * keeps its signature, so every existing reference to it stays valid;
+ * its body becomes a forwarder that reads the exploded records' fields
+ * and calls `core`. `core` takes those fields as parameters and holds
+ * the declared body. A direct call whose exploded arguments are all
+ * record literals calls `core` and allocates no record.
+ */
+export final class ExplosionSpec {
+  /**
+   * Per declared parameter, the dispatch whose fields replace it in
+   * `core`'s signature, in `dispatch.fields` order; null for a
+   * parameter passed as it is.
+   */
+  params: GrowableArray<RecordDispatchInfo | null>;
+  forwarder: WasmFunction;
+  core: WasmFunction;
+  new(this.params, this.forwarder, this.core);
 }
 
 /**

@@ -1,0 +1,36 @@
+// @mode: run
+// @result: 1
+// Two record parameters with a plain one between them, as a top-level
+// `function` and as a `let` arrow. Each record may be a literal or a
+// value independently; a call passes fields only when both are
+// literals, and every combination computes the same thing.
+
+type Size = {w: i32, h: i32};
+type Margin = {top?: i32, left?: i32};
+
+function area(s: Size, scale: i32, m: Margin): i32 {
+  return (s.w + (m.left ?? 0)) * (s.h + (m.top ?? 0)) * scale;
+}
+
+let perimeter = (s: Size, scale: i32, m: Margin): i32 =>
+    2 * (s.w + s.h + (m.left ?? 0) + (m.top ?? 0)) * scale;
+
+export let main = (): i32 => {
+  let size: Size = {w: 3, h: 4};
+  let margin: Margin = {left: 1};
+  let a1 = area({w: 3, h: 4}, 2, {left: 1});
+  let a2 = area(size, 2, {left: 1});
+  let a3 = area({w: 3, h: 4}, 2, margin);
+  let a4 = area(size, 2, margin);
+  // (3 + 1) * (4 + 0) * 2 = 32
+  if (a1 != 32 || a2 != 32 || a3 != 32 || a4 != 32) {
+    return 0;
+  }
+  let p1 = perimeter({h: 4, w: 3}, 1, {top: 2});
+  let p2 = perimeter(size, 1, {top: 2});
+  // 2 * (3 + 4 + 0 + 2) = 18
+  if (p1 != 18 || p2 != 18) {
+    return 0;
+  }
+  return 1;
+};
