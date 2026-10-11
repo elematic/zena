@@ -35,11 +35,12 @@
  * Runs after reachability and every pass that synthesizes callers,
  * before `wasm.layout()`, because it interns signatures.
  */
-import { HashMap } from 'zena:collections';
+import { HashMap, HashSet } from 'zena:collections';
 import {
   CallExpression, ClassDeclaration, FunctionExpression, FunctionDeclaration,
   VariableDeclaration, IdentifierPattern, Identifier, MemberExpression,
-  MethodDefinition, Parameter, RecordPattern, Node,
+  MethodDefinition, Parameter, RecordLiteral, RecordPattern,
+  SuperInitializer, Node,
 } from '../../ast.zena';
 import { SemanticModel } from '../../semantic-model.zena';
 import { Symbol, SymbolId } from '../../scope/symbol.zena';
@@ -56,12 +57,37 @@ import {
 } from '../reachability/context.zena';
 import { getClassKey, getClassMethodKey } from '../codegen-utils.zena';
 
-/** A whole-record use of a parameter as argument `index` of a call to `callee`. */
+/**
+ * A whole-record use of a parameter as argument `index` of a call to the
+ * candidate keyed `callee` (`functionKey` or `constructorKey`).
+ */
 final class Forward {
-  callee: SymbolId;
+  callee: String;
   index: i32;
   new(this.callee, this.index);
 }
+
+/** The candidate key of the top-level function `id`. */
+let functionKey = (id: SymbolId): String => `f${id as i32}`;
+
+/** The candidate key of the unnamed constructor of the class keyed `classKey`. */
+let constructorKey = (classKey: String): String => `c${classKey}`;
+
+/**
+ * The class a `super(...)` in a constructor of `ct` constructs through:
+ * the nearest superclass that is not a mixin's intermediate.
+ */
+let superWithConstructor = (ct: ClassType): ClassType | null => {
+  var s = ct.superType;
+  while (s != null) {
+    let cur = s as ClassType;
+    if (!cur.isMixinIntermediate) {
+      return cur;
+    }
+    s = cur.superType;
+  }
+  return null;
+};
 
 /**
  * A function or constructor whose record parameters might explode, and
@@ -84,14 +110,29 @@ final class Candidate {
   new(this.f, this.self, this.ctorKey, this.dispatches, this.forwards,
       this.fieldsOnly, this.available);
 
-  /** Whether some reached call passes parameter `i` a record literal. */
-  hasLiteralArg(pass: ReachabilityAnalysis, i: i32): boolean {
+  /** This candidate's key in the pass's lookup. */
+  key(): String {
+    let {self, ctorKey} = this;
+    return if (self != null) functionKey(self.id) else
+        constructorKey(ctorKey as String);
+  }
+
+  /**
+   * Whether some reached call passes parameter `i` a record literal: a
+   * call or `new`, or, for a constructor, a subclass's `super(...)`
+   * (`superLiterals`, keyed `recordLiteralCtorArgKey`).
+   */
+  hasLiteralArg(pass: ReachabilityAnalysis, superLiterals: HashSet<String>,
+      i: i32): boolean {
     let {self, ctorKey} = this;
     if (self != null) {
       return pass.recordLiteralArgs.has(recordLiteralArgKey(self.id, i));
     }
-    return ctorKey != null && pass.recordLiteralCtorArgs.has(
-        recordLiteralCtorArgKey(ctorKey, '<constructor>', i));
+    if (ctorKey == null) {
+      return false;
+    }
+    let key = recordLiteralCtorArgKey(ctorKey, '<constructor>', i);
+    return pass.recordLiteralCtorArgs.has(key) || superLiterals.has(key);
   }
 }
 
@@ -102,16 +143,12 @@ export let explodeRecordParameters = (
   // Candidates in module order, for deterministic output; the map is
   // for lookups only.
   let candidates = new Array<Candidate>();
-  let byId = new HashMap<SymbolId, Candidate>();
+  let byKey = new HashMap<String, Candidate>();
   for (let f in wasm.functions) {
     let c = candidateFor(wasm, f);
     if (c != null) {
       candidates.push(c);
-      // Only functions are forward targets: a forward is a call by name.
-      let {self} = c;
-      if (self != null) {
-        byId[self.id] = c;
-      }
+      byKey[c.key()] = c;
     }
   }
 
@@ -126,7 +163,7 @@ export let explodeRecordParameters = (
           continue;
         }
         for (let fw in c.forwards[i]) {
-          if (!forwardKeepsFields(byId, c.dispatches[i], fw)) {
+          if (!forwardKeepsFields(byKey, c.dispatches[i], fw)) {
             c.fieldsOnly[i] = false;
             changed = true;
             break;
@@ -137,9 +174,11 @@ export let explodeRecordParameters = (
   }
 
   // Availability: literal arguments, then exploded parameters passed on.
+  let superLiterals = literalSuperArgs(wasm);
   for (let c in candidates) {
     for (var i = 0; i < c.available.length; i += 1) {
-      c.available[i] = c.fieldsOnly[i] && c.hasLiteralArg(pass, i);
+      c.available[i] = c.fieldsOnly[i] &&
+          c.hasLiteralArg(pass, superLiterals, i);
     }
   }
   changed = true;
@@ -153,7 +192,7 @@ export let explodeRecordParameters = (
         for (let fw in c.forwards[i]) {
           // Demand settled every forward of a fields-only parameter to a
           // fields-only target.
-          if (let (true, target) = byId.get(fw.callee)) {
+          if (let (true, target) = byKey.get(fw.callee)) {
             if (!target.available[fw.index]) {
               target.available[fw.index] = true;
               changed = true;
@@ -176,20 +215,86 @@ export let explodeRecordParameters = (
       }
     }
     if (any) {
-      addCore(wasm, pass, c.f, params);
+      addCore(wasm, pass, c.f, params, 0);
+      let {ctorKey} = c;
+      if (ctorKey != null) {
+        addPhaseCores(wasm, pass, c.f, params);
+      }
     }
   }
 };
 
-/** Adds `f`'s core, taking each exploded parameter's fields. */
+/**
+ * Cores for the phase functions of a constructor whose parameters
+ * explode: a subclass's `super(...)` calls `<ctor-init>` and
+ * `<ctor-body>`, not the factory. They exist only for a class some
+ * reached constructor extends. `<ctor-body>` takes the instance first.
+ */
+let addPhaseCores = (wasm: WasmModule, pass: ReachabilityAnalysis,
+    factory: WasmFunction, params: GrowableArray<RecordDispatchInfo | null>): void => {
+  let classKey = getClassKey(factory.classType as ClassType);
+  if (let (true, init) = wasm.classMethodMap.get(
+      getClassMethodKey(classKey, '<ctor-init>'))) {
+    addCore(wasm, pass, init, params, 0);
+  }
+  if (let (true, body) = wasm.classMethodMap.get(
+      getClassMethodKey(classKey, '<ctor-body>'))) {
+    addCore(wasm, pass, body, params, 1);
+  }
+};
+
+/** Adds the literal arguments of `md`'s unnamed `super(...)` to `out`. */
+let noteLiteralSuperArgs = (md: MethodDefinition, ct: ClassType,
+    out: HashSet<String>): void => {
+  let si = md.superInitializer;
+  let superCt = superWithConstructor(ct);
+  if (si is SuperInitializer && superCt != null) {
+    if (si.constructorName == null) {
+      let superKey = getClassKey(superCt) as String;
+      for (var k = 0; k < si.args.length; k += 1) {
+        if (si.args[k] is RecordLiteral) {
+          out.add(recordLiteralCtorArgKey(superKey, '<constructor>', k));
+        }
+      }
+    }
+  }
+};
+
+/**
+ * The `recordLiteralCtorArgKey`s of the record literals reached
+ * constructors pass to an unnamed `super(...)`.
+ */
+let literalSuperArgs = (wasm: WasmModule): HashSet<String> => {
+  let out = new HashSet<String>();
+  for (let f in wasm.functions) {
+    let ct = f.classType;
+    let md = f.node;
+    let meth = f.methodName;
+    if (ct != null && meth != null &&
+        (meth as String).startsWith('<constructor>') &&
+        md is MethodDefinition) {
+      noteLiteralSuperArgs(md, ct, out);
+    }
+  }
+  return out;
+};
+
+/**
+ * Adds `f`'s core, taking each exploded parameter's fields. The first
+ * `leading` parameters of `f`'s signature (a phase's instance) are not
+ * declared parameters and stay as they are.
+ */
 let addCore = (wasm: WasmModule, pass: ReachabilityAnalysis, f: WasmFunction,
-    params: GrowableArray<RecordDispatchInfo | null>): void => {
+    params: GrowableArray<RecordDispatchInfo | null>, leading: i32): void => {
   let sig = f.signature;
   let coreParams = new Array<ValType>();
+  for (var i = 0; i < leading; i += 1) {
+    coreParams.push(sig.params[i]);
+  }
   for (var i = 0; i < params.length; i += 1) {
     let d = params[i];
     if (d == null) {
-      coreParams.push(sig.params[i]);
+      coreParams.push(sig.params[leading + i]);
     } else {
       for (let field in d.fields) {
         coreParams.push(field.type);
@@ -218,9 +323,9 @@ let addCore = (wasm: WasmModule, pass: ReachabilityAnalysis, f: WasmFunction,
  * callee is a candidate whose matching parameter takes the same record
  * type and is fields-only.
  */
-let forwardKeepsFields = (byId: HashMap<SymbolId, Candidate>,
+let forwardKeepsFields = (byKey: HashMap<String, Candidate>,
     dispatch: RecordDispatchInfo | null, fw: Forward): boolean => {
-  if (let (true, target) = byId.get(fw.callee)) {
+  if (let (true, target) = byKey.get(fw.callee)) {
     if (fw.index >= target.dispatches.length) {
       return false;
     }
@@ -284,7 +389,7 @@ let candidateFor = (wasm: WasmModule, f: WasmFunction): Candidate | null => {
   }
   let roots = new Array<Node>();
   roots.push(fn.body as Node);
-  return classifyParams(wasm, f, fn, fn.params, roots, self, null);
+  return classifyParams(wasm, f, fn, fn.params, roots, self, null, null);
 };
 
 /**
@@ -345,8 +450,11 @@ let constructorCandidateFor = (wasm: WasmModule,
   if (superInit != null) {
     roots.push(superInit);
   }
+  let superCt = superWithConstructor(ct);
+  let superKey = if (superCt != null)
+      constructorKey(getClassKey(superCt) as String) else null;
   return classifyParams(wasm, f, md, md.params, roots, null,
-      classKey as String);
+      classKey as String, superKey);
 };
 
 /**
@@ -356,7 +464,8 @@ let constructorCandidateFor = (wasm: WasmModule,
  */
 let classifyParams = (wasm: WasmModule, f: WasmFunction, owner: Node,
     params: GrowableArray<Parameter>, roots: GrowableArray<Node>,
-    self: Symbol | null, ctorKey: String | null): Candidate | null => {
+    self: Symbol | null, ctorKey: String | null,
+    superKey: String | null): Candidate | null => {
   let dispatches = new Array<RecordDispatchInfo | null>();
   let forwards = new Array<GrowableArray<Forward>>();
   let fieldsOnly = new Array<boolean>();
@@ -366,7 +475,7 @@ let classifyParams = (wasm: WasmModule, f: WasmFunction, owner: Node,
     let out = new Array<Forward>();
     let d = recordDispatchOfParam(wasm, f, p.name);
     let usesFields = d != null &&
-        usesOnlyFields(owner, roots, f.model, p.name, out);
+        usesOnlyFields(owner, roots, f.model, p.name, out, superKey);
     dispatches.push(if (usesFields) d else null);
     forwards.push(out);
     fieldsOnly.push(usesFields);
@@ -425,7 +534,7 @@ let declaredSymbol = (fn: FunctionExpression, model: SemanticModel): Symbol | nu
  */
 let usesOnlyFields = (owner: Node, roots: GrowableArray<Node>,
     model: SemanticModel, name: Identifier,
-    forwards: GrowableArray<Forward>): boolean => {
+    forwards: GrowableArray<Forward>, superKey: String | null): boolean => {
   let param = model.resolveDeclaration(name);
   if (param == null) {
     return false;
@@ -436,7 +545,7 @@ let usesOnlyFields = (owner: Node, roots: GrowableArray<Node>,
       if (ok && n is Identifier) {
         let sym = model.resolve(n);
         if (sym != null && sym.id == param.id &&
-            !isFieldUse(n, owner, model, forwards)) {
+            !isFieldUse(n, owner, model, forwards, superKey)) {
           ok = false;
         }
       }
@@ -446,12 +555,14 @@ let usesOnlyFields = (owner: Node, roots: GrowableArray<Node>,
 };
 
 /**
- * `ident.field`, `let {...} = ident`, or `g(..., ident, ...)` for a
- * top-level function `g`, outside any nested function: a closure would
- * capture the record.
+ * `ident.field`, `let {...} = ident`, `g(..., ident, ...)` for a
+ * top-level function `g`, or `super(..., ident, ...)` to the unnamed
+ * constructor keyed `superKey`, outside any nested function: a closure
+ * would capture the record.
  */
 let isFieldUse = (ident: Identifier, owner: Node,
-    model: SemanticModel, forwards: GrowableArray<Forward>): boolean => {
+    model: SemanticModel, forwards: GrowableArray<Forward>,
+    superKey: String | null): boolean => {
   let parent = model.getParent(ident);
   var accepted = false;
   var forward: Forward | null = null;
@@ -464,6 +575,15 @@ let isFieldUse = (ident: Identifier, owner: Node,
         pattern is RecordPattern;
   } else if (parent is CallExpression) {
     forward = forwardOf(parent, ident, model);
+    accepted = forward != null;
+  } else if (parent is SuperInitializer) {
+    if (superKey != null && parent.constructorName == null) {
+      for (var k = 0; k < parent.args.length; k += 1) {
+        if ((parent.args[k] as Node) === (ident as Node)) {
+          forward = new Forward(superKey, k);
+        }
+      }
+    }
     accepted = forward != null;
   }
   if (!accepted) {
@@ -495,7 +615,7 @@ let forwardOf = (call: CallExpression, ident: Identifier,
   }
   for (var k = 0; k < call.args.length; k += 1) {
     if ((call.args[k] as Node) === (ident as Node)) {
-      return new Forward(calleeSym.resolveTarget().id, k);
+      return new Forward(functionKey(calleeSym.resolveTarget().id), k);
     }
   }
   return null;

@@ -1,0 +1,79 @@
+// @mode: run
+// @result: 1
+// A superclass constructor that only reads fields of its record runs as
+// phase functions for its subclasses, and those take the fields too. A
+// subclass may pass `super(...)` a literal, its own record passed on,
+// or a record from the heap; every shape must build the same object and
+// run the superclass body once with the same values.
+
+type Init = {x: i32, y?: i32};
+
+var bodies = 0;
+
+class Base {
+  x: i32;
+  y: i32;
+
+  new(init: Init) : x = init.x, y = init.y ?? 7 {
+    bodies += init.x;
+  }
+}
+
+class Literal extends Base {
+  z: i32;
+  new(z: i32) : z = z, super({x: z, y: z + 1});
+}
+
+class Forwarding extends Base {
+  new(init: Init) : super(init);
+}
+
+class FromHeap extends Base {
+  new(held: Init) : super(held);
+}
+
+class Middle extends Base {
+  m: i32;
+  new(m: i32) : m = m, super({x: m * 10});
+}
+
+final class Leaf extends Middle {
+  new() : super(4);
+}
+
+class Keeper {
+  init: Init;
+  new(this.init);
+}
+
+final class KeeperSub extends Keeper {
+  new() : super({x: 2});
+}
+
+export let main = (): i32 => {
+  let literal = new Literal(3);
+  if (literal.z != 3 || literal.x != 3 || literal.y != 4) {
+    return 0;
+  }
+  let forwarding = new Forwarding({x: 5});
+  if (forwarding.x != 5 || forwarding.y != 7) {
+    return 0;
+  }
+  let held: Init = {x: 6, y: 1};
+  let fromHeap = new FromHeap(held);
+  if (fromHeap.x != 6 || fromHeap.y != 1) {
+    return 0;
+  }
+  let leaf = new Leaf();
+  if (leaf.m != 4 || leaf.x != 40 || leaf.y != 7) {
+    return 0;
+  }
+  if (new KeeperSub().init.x != 2) {
+    return 0;
+  }
+  // 3 + 5 + 6 + 40: each Base body ran once.
+  if (bodies != 54) {
+    return 0;
+  }
+  return 1;
+};

@@ -848,6 +848,20 @@ let lowerFunctionOrThrow = (wasm: WasmModule, func: WasmFunction): IrBody => {
   // constructor, lowered from the same AST (or synthesized shape) as
   // its factory. Dispatch is on the FUNCTION's method name — the node,
   // when present, is the factory's `<constructor>` MethodDefinition.
+  // A phase function's core (explode.zena) has no method name of its
+  // own; it runs the phase its forwarder runs.
+  let explosion = func.explosion;
+  if (explosion != null && explosion.core === func) {
+    let forwarderMeth = explosion.forwarder.methodName;
+    if (forwarderMeth != null) {
+      let fm = forwarderMeth as String;
+      if (fm == '<ctor-init>' || fm == '<ctor-body>') {
+        let lowerer = new FunctionLowerer(wasm, func);
+        lowerer.ctorPhase = if (fm == '<ctor-init>') 1 else 2;
+        return lowerer.lower();
+      }
+    }
+  }
   if (func.methodName != null) {
     let fMeth = func.methodName as String;
     if (fMeth == '<ctor-init>' || fMeth.startsWith('<ctor-init>.') ||
@@ -2233,13 +2247,30 @@ export final class FunctionLowerer {
       if (superSig.params.length != this.#liveArgCount(si.args)) {
         this.#bail('super constructor arity');
       }
+      // A super constructor whose record parameter explodes: a literal
+      // for it is built as fields, and its record registered as held in
+      // fields, so the phase calls (#allocateInstance) can pass the
+      // fields and the record dies.
+      let superExplosion = superCtor.explosion;
+      let superSpec = if (superExplosion != null &&
+          superExplosion.forwarder === superCtor) superExplosion else null;
       var sIdx = 0;
       for (var i = 0; i < si.args.length; i += 1) {
         if (this.#dropZeroWidthArg(si.args[i])) {
           continue;
         }
         let paramVt = superSig.params[sIdx];
+        let d = if (superSpec != null && sIdx < superSpec.params.length)
+            superSpec.params[sIdx] else null;
         sIdx += 1;
+        if (d != null && this.#isExactRecordLiteral(si.args[i], d)) {
+          let fields = this.#lowerRecordLiteralFields(
+              si.args[i] as RecordLiteral, d);
+          let record = this.#packRecord(d, fields);
+          this.#cx().explodedRecords[record] = new ExplodedRecord(d, fields);
+          superArgs.push(record);
+          continue;
+        }
         this.#requireSupported(paramVt, 'super arg type');
         var value = this.#lowerExpressionCtx(si.args[i], paramVt);
         value = this.#conformToSlot(value, paramVt, 'super argument type');
@@ -2474,8 +2505,11 @@ export final class FunctionLowerer {
       }
       let ownCount = ancStruct.fields.length - ancOwnStart;
       let rets = initFn.signature.returns;
+      let initCoreArgs = this.#explodedCallArgs(initFn, new Array<i32>(), args);
+      let initTarget = if (initCoreArgs != null)
+          (initFn.explosion as ExplosionSpec).core else initFn;
       let projs = this.b.callFuncMulti(
-          this.b.addRef(new IrRefFunc(initFn)), args, rets);
+          this.b.addRef(new IrRefFunc(initTarget)), initCoreArgs ?? args, rets);
       let vals = new Array<i32>(ownCount);
       var k = 0;
       while (k < ownCount) {
@@ -2518,16 +2552,72 @@ export final class FunctionLowerer {
     while (bi >= 0) {
       let bf = bodyFns[bi];
       if (bf != null) {
-        let callArgs = new Array<i32>();
-        callArgs.push(inst);
-        for (let a in bodyArgs[bi]) {
-          callArgs.push(a);
+        let receiver = new Array<i32>();
+        receiver.push(inst);
+        let coreArgs = this.#explodedCallArgs(bf, receiver, bodyArgs[bi]);
+        if (coreArgs != null) {
+          this.b.callFunc(this.b.addRef(new IrRefFunc(
+              (bf.explosion as ExplosionSpec).core)), coreArgs, null);
+        } else {
+          let callArgs = new Array<i32>();
+          callArgs.push(inst);
+          for (let a in bodyArgs[bi]) {
+            callArgs.push(a);
+          }
+          this.b.callFunc(this.b.addRef(new IrRefFunc(bf)), callArgs, null);
         }
-        this.b.callFunc(this.b.addRef(new IrRefFunc(bf)), callArgs, null);
       }
       bi -= 1;
     }
     return inst;
+  }
+
+  /**
+   * The arguments for the core of constructor phase `fn`, when it has
+   * one: `leading` as they are, then each exploded argument as its
+   * fields. A record this function already holds as fields
+   * (`explodedRecords`) passes them; any other record is read here, once,
+   * and registered as held, so the next phase call for the same
+   * arguments passes the same values instead of each phase's forwarder
+   * reading the record again. Null when `fn` has no core.
+   */
+  #explodedCallArgs(fn: WasmFunction, leading: GrowableArray<i32>,
+      args: GrowableArray<i32>): GrowableArray<i32> | null {
+    let spec = fn.explosion;
+    if (spec == null || spec.forwarder !== fn ||
+        args.length != spec.params.length) {
+      return null;
+    }
+    let coreParams = spec.core.signature.params;
+    let out = new Array<i32>();
+    for (let v in leading) {
+      out.push(v);
+    }
+    for (var i = 0; i < args.length; i += 1) {
+      let d = spec.params[i];
+      if (d == null) {
+        out.push(args[i]);
+        continue;
+      }
+      if (let (true, held) = this.#cx().explodedRecords.get(args[i])) {
+        if (held.dispatch === d) {
+          for (let v in held.values) {
+            out.push(v);
+          }
+          continue;
+        }
+      }
+      let reads = new Array<i32>();
+      for (let field in d.fields) {
+        let read = this.#cx().recordDispatchRead(
+            d, field.name as String, args[i]);
+        reads.push(this.#conformToSlot(read, coreParams[out.length],
+            'exploded field type'));
+        out.push(reads[reads.length - 1]);
+      }
+      this.#cx().explodedRecords[args[i]] = new ExplodedRecord(d, reads);
+    }
+    return out;
   }
 
   /** The <vtable> operand: the class's vtable global, or null. */
@@ -4203,22 +4293,31 @@ export final class FunctionLowerer {
     }
     this.b.switchTo(entry);
     let coreSig = spec.core.signature;
+    // Parameters ahead of the declared ones (a phase's instance) pass
+    // through as they are.
+    let leading = params.length - spec.params.length;
     let args = new Array<i32>();
-    for (var i = 0; i < params.length; i += 1) {
+    for (var i = 0; i < leading; i += 1) {
+      args.push(params[i]);
+    }
+    for (var i = 0; i < spec.params.length; i += 1) {
+      let value = params[leading + i];
       let d = spec.params[i];
       if (d == null) {
-        args.push(params[i]);
+        args.push(value);
         continue;
       }
       for (let field in d.fields) {
-        let value = this.#cx().recordDispatchRead(
-            d, field.name as String, params[i]);
-        args.push(this.#conformToSlot(value, coreSig.params[args.length],
+        let read = this.#cx().recordDispatchRead(
+            d, field.name as String, value);
+        args.push(this.#conformToSlot(read, coreSig.params[args.length],
             'exploded field type'));
       }
     }
     let funcRef = this.b.addRef(new IrRefFunc(spec.core));
-    if (sig.returns.length == 1) {
+    if (sig.returns.length > 1) {
+      this.b.retMulti(this.b.callFuncMulti(funcRef, args, sig.returns));
+    } else if (sig.returns.length == 1) {
       this.b.ret(this.b.callFunc(funcRef, args, sig.returns[0]));
     } else {
       this.b.callFunc(funcRef, args, null);
