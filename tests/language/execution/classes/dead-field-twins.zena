@@ -1,0 +1,23 @@
+// @mode: run
+// @result: 321
+
+// Two cases whose only fields nothing reads. Dead-field elimination
+// leaves their structs the same shape with the same supertype, and wasm
+// gives structurally identical types in separate recursion groups one
+// identity, so the match would stop telling them apart unless the types
+// are regrouped after the fields go.
+sealed class Shape {
+  case Circle(radius: i32)
+  case Square(side: i32)
+  case Dot
+}
+
+let code = (s: Shape): i32 => match (s) {
+  case Circle {}: 1
+  case Square {}: 2
+  case Dot: 3
+};
+
+export let main = (): i32 => {
+  return code(new Dot()) * 100 + code(new Square(4)) * 10 + code(new Circle(5));
+};

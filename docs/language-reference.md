@@ -4669,76 +4669,40 @@ are not assignable to `Hashable` as values, since that would require boxing):
   **`boolean`**, which hash by value.
 - **Enums** and **distinct types**, judged by their underlying type.
 
-### Pure Accessor Decorator (`@pure`)
+### Write-only fields and the `@pure` decorator
 
-The `@pure` decorator is used on **explicit accessor declarations** (properties
-with custom getters/setters) to indicate that the setter has no side effects
-beyond storing the value. This enables the compiler to perform dead code
-elimination on write-only accessors.
-
-**Plain fields are always pure** - they don't need the `@pure` decorator because
-they simply store values without side effects. Write-only plain fields are
-automatically eliminated.
+At `-O1` and above, a class field that nothing in the compiled program
+reads is removed: it takes no space in its objects, and writes to it
+are not emitted. The value written is still computed, so a call in a
+field initializer still runs. A property whose setter only stores into
+a field nothing else reads goes the same way, setter calls included.
 
 ```zena
 class Message {
-  // Plain fields - automatically eliminated if write-only (no decorator needed)
-  timestamp: i32;
-  sessionId: i32;
-
-  // Field that is used - kept
-  content: i32;
-
-  // Explicit accessor with side effects - requires @pure to enable elimination
-  @pure
-  metadata: i32 {
-    get {
-      return this.#backingStore;
-    }
-    set(v) {
-      this.#backingStore = v;  // Pure setter - just stores value
-    }
+  timestamp: i32;      // written, never read: removed
+  content: i32;        // read in getContent: kept
+  var #backing: i32 = 0;
+  metadata: i32 {      // only ever set: the setter and #backing go
+    get { return this.#backing; }
+    set(v) { this.#backing = v; }
   }
 
-  #backingStore: i32;
-
-  new(content: i32) {
-    this.timestamp = 1000;  // Written but never read → eliminated
-    this.sessionId = 999;   // Written but never read → eliminated
-    this.content = content;
-    this.metadata = 42;     // Written but never read → eliminated (marked @pure)
-  }
+  new(this.content) : timestamp = 1000;
 
   getContent(): i32 {
-    return this.content;  // Only content is read
+    return this.content;
   }
 }
 ```
 
-**Dead Code Elimination Rules**:
+A field counts as read wherever a function the program reaches reads
+it, including through a base class. A field read only to compute its
+own next value (`this.count = this.count + 1`) counts as read. Record
+fields are not removed.
 
-- **Plain fields**: Write-only fields are automatically eliminated (they're
-  always pure).
-- **Explicit accessors with `@pure`**: Write-only accessors marked `@pure` are
-  eliminated.
-- **Explicit accessors without `@pure`**: Kept even if write-only (may have side
-  effects).
-- **Read fields**: Always kept, regardless of `@pure` decorator.
-- **Polymorphic access**: Prevents elimination.
-
-**Use Cases**: This is particularly useful for generated code (like protocol
-buffers) where large schemas are defined but only a small subset of fields are
-actually used.
-
-**Example**:
-
-```zena
-// In the example above:
-// - timestamp, sessionId → eliminated (plain fields, write-only)
-// - metadata → eliminated (accessor marked @pure, write-only)
-// - content → kept (read in getContent)
-// Binary size reduced by eliminating 6 methods (3 getters + 3 setters)
-```
+`@pure` is accepted on a property and has no effect yet. It is reserved
+for marking a setter whose other effects may be dropped when the
+property is never read.
 
 ## 10. Standard Library
 

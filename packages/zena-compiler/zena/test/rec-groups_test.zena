@@ -146,7 +146,9 @@ export let main = (): i32 => {
   let b = new B();
   a.other = b;
   b.other = a;
-  return if (a.other != null) 1 else 0;
+  // Both fields are read, or dead-field elimination would delete the
+  // one that is only written, and the cycle with it.
+  return if (a.other != null && b.other != null) 1 else 0;
 };
 `);
     var cycleGroup = "";
@@ -188,10 +190,10 @@ export let main = (): i32 => {
     // P and Q have the same source shape; wasm-gc canonicalizes
     // identical groups to ONE type, which would make `is Q` true for a
     // P. Canonically-identical groups therefore merge into one rec
-    // group, where position keeps them distinct — here that lands on
-    // the two empty VTABLE structs, and the class structs (which each
-    // reference their own now-branded vtable) become distinct
-    // singletons for free. The runtime half of this pin is
+    // group, where position keeps them distinct. Nothing reads `x` or
+    // dispatches on either class, so dead-field elimination deletes both
+    // of each class's fields, and the twins are the two class structs
+    // themselves. The runtime half of this pin is
     // tests/language/execution/classes/structural-twins-distinct.zena.
     let wat = compileToWat(`
 class P {
@@ -210,21 +212,17 @@ export let main = (): i32 => {
 `);
     // Both classes are allocated: a type test the static types decide
     // folds away, and a class nothing names any more leaves the type
-    // section, which would take Q's vtable struct out of the group
-    // this test is about.
-    var vtGroup = "";
+    // section, which would take Q out of the group this test is about.
+    var twinGroup = "";
     for (let body in recGroupBodies(wat)) {
-      for (let name in groupTypeNames(body)) {
-        if (name == 'P_VTable' || name.startsWith('P_s') && name.contains('_VTable')) {
-          vtGroup = body;
-        }
+      if (groupHasClassStruct(body, 'P')) {
+        twinGroup = body;
       }
     }
-    isTrue(vtGroup.length > 0,
-        "P's empty vtable struct is a canonical twin and must sit in a " +
-        'shared rec group');
-    isTrue(vtGroup.contains('Q_VTable'),
-        "P's and Q's twin vtable structs must share one group so " +
-        'position brands them — and with them the classes — distinct');
+    isTrue(twinGroup.length > 0,
+        'P is a canonical twin of Q and must sit in a shared rec group');
+    isTrue(groupHasClassStruct(twinGroup, 'Q'),
+        "P's and Q's structs must share one group so position brands " +
+        'them distinct');
   });
 });

@@ -1,0 +1,161 @@
+/**
+ * Dead-field elimination (lib/codegen/ir/deadfields.zena): a class field
+ * no surviving function reads is deleted from the class's struct, with
+ * its writes. These look at the emitted struct types; the behaviour the
+ * deletion must keep is covered by the execution tests
+ * tests/language/execution/classes/dead-field-*.zena.
+ */
+import { suite, test } from 'zena:test';
+import { equal, isTrue } from 'zena:assert';
+import { WatGenerator } from '../lib/codegen/wat-generator.zena';
+import { Program, CompilationUnit } from '../lib/program.zena';
+import { makeCompiler, MockHost, errorDiagnostics } from './test-utils.zena';
+import { checkCompilation } from '../lib/compiler.zena';
+
+let compileToWat = (source: String, optLevel: i32): String => {
+  let host = new MockHost();
+  host.addFile("test.zena", source);
+
+  let compiler = makeCompiler(host);
+  let compResult = compiler.compile({entry: "test.zena", target: 'js'});
+  let checkRes = checkCompilation(compResult);
+  let errors = errorDiagnostics(checkRes.diagnostics);
+  if (errors.length > 0) {
+    throw new Error(`the fixture does not compile: ${errors[0].message}`);
+  }
+
+  let entryAst = compResult.entry.ast;
+  let units = new Array<CompilationUnit>();
+  var entryUnit: CompilationUnit | null = null;
+
+  for (let file in compResult.files) {
+    if (!file.isStdlib) {
+      let res = checkRes.results[file.path];
+      if (res != null) {
+        let unit = {ast: file.ast, model: res.model};
+        units.push(unit);
+        if (file.ast.path == entryAst.path) {
+          entryUnit = unit;
+        }
+      }
+    }
+  }
+
+  let program = new Program(units, entryUnit);
+  let generator = new WatGenerator("zena-cli", false, optLevel);
+  return generator.generate(program);
+};
+
+/**
+ * The number of fields of the struct type named `name`, or -1 when the
+ * module declares no such type. The emitter writes a type on one line.
+ */
+let fieldCount = (wat: String, name: String): i32 => {
+  let chunks = wat.split(`(type $${name} `);
+  if (chunks.length < 2) {
+    return -1;
+  }
+  let line = chunks[1].split('\n')[0];
+  return line.split('(field').length - 1;
+};
+
+export let tests = suite('dead-field elimination', (): void => {
+  test('deletes a field that is only written', () => {
+    let source = `
+      class Box {
+        value: i32;
+        var writes: i32 = 0;
+        new(this.value);
+        bump(): void { this.writes = 5; }
+      }
+      export let main = (): i32 => {
+        let b = new Box(3);
+        b.bump();
+        return b.value;
+      };
+    `;
+    // Nothing dispatches on a Box either, so its <vtable> goes too.
+    equal(fieldCount(compileToWat(source, 1), 'Box'), 1);
+    equal(fieldCount(compileToWat(source, 0), 'Box'), 3);
+  });
+
+  test('keeps a field read through a base class in the subclass', () => {
+    let source = `
+      class Base {
+        shared: i32;
+        new(this.shared);
+      }
+      class Derived extends Base {
+        own: i32;
+        new(shared: i32, this.own) : super(shared);
+      }
+      let read = (b: Base): i32 => b.shared;
+      export let main = (): i32 => read(new Derived(2, 9));
+    `;
+    let wat = compileToWat(source, 1);
+    equal(fieldCount(wat, 'Derived'), 1);
+  });
+
+  test('keeps the vtable of a hierarchy that dispatches', () => {
+    let source = `
+      class Animal {
+        sound(): i32 { return 1; }
+      }
+      class Dog extends Animal {
+        sound(): i32 { return 2; }
+      }
+      let speak = (a: Animal): i32 => a.sound();
+      export let main = (): i32 => speak(new Dog()) + speak(new Animal());
+    `;
+    let wat = compileToWat(source, 1);
+    equal(fieldCount(wat, 'Dog'), 1);
+    equal(fieldCount(wat, 'Animal'), 1);
+  });
+
+  test('deletes a write-only accessor with its backing field', () => {
+    let source = `
+      class Message {
+        content: i32;
+        var #backing: i32 = 0;
+        metadata: i32 {
+          get { return this.#backing; }
+          set(v) { this.#backing = v; }
+        }
+        new(this.content);
+      }
+      export let main = (): i32 => {
+        let m = new Message(4);
+        m.metadata = 42;
+        return m.content;
+      };
+    `;
+    let wat = compileToWat(source, 1);
+    equal(fieldCount(wat, 'Message'), 1);
+    // The setter stored to the backing field and did nothing else, so
+    // its call goes and harvest deletes it.
+    isTrue(!wat.contains('set#metadata'), wat);
+    isTrue(compileToWat(source, 0).contains('set#metadata'),
+        'the fixture should call the setter when nothing is eliminated');
+  });
+
+  test('keeps cases of a sealed class distinct once their fields go', () => {
+    let source = `
+      sealed class Shape {
+        case Circle(radius: i32)
+        case Square(side: i32)
+      }
+      let code = (s: Shape): i32 => match (s) {
+        case Circle {}: 1
+        case Square {}: 2
+      };
+      export let main = (): i32 => code(new Square(4)) * 10 + code(new Circle(5));
+    `;
+    let wat = compileToWat(source, 1);
+    equal(fieldCount(wat, 'Circle'), 0);
+    equal(fieldCount(wat, 'Square'), 0);
+    // Identical shapes with the same supertype share a recursion group,
+    // which is what keeps them two types.
+    let circleLine = wat.split('(type $Circle ')[1].split('\n')[0];
+    isTrue(circleLine.contains('(sub '), circleLine);
+  });
+});
