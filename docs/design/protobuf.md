@@ -77,15 +77,13 @@ remove it.
 - **Reachability at method granularity** ([binary-size.md](binary-size.md)
   §11, §14). Unreached functions and methods are not emitted, and vtable
   slots nothing dispatches through are pruned.
-- **No dead-field elimination yet** ([binary-size.md](binary-size.md),
-  "Not yet: dead-field elimination"). Every declared field of a class or
-  record stays in its struct, and every write to it stays live. A
-  generated class with one field per proto field keeps all of them.
-  Removing fields that are only ever written, and pure accessors over
-  them, is part of this work: a field nothing reads is unobservable. The
+- **Dead-field elimination** ([binary-size.md](binary-size.md),
+  "Dead-field elimination"). At `-O1` and above, a class field that no
+  surviving function reads is removed with its writes, and a setter left
+  empty goes with its calls. The value written is still computed, so a
+  call made to produce it still runs. Record fields are not removed. The
   views below do not depend on it; see
-  [Caching decoded fields](#caching-decoded-fields) for what it would
-  allow.
+  [Caching decoded fields](#caching-decoded-fields) for what it allows.
 - **Presence-optional record fields** ([record-presence.md](record-presence.md)).
   `{name: String, mask?: DocumentMask}` may or may not have `mask`, and
   the absence is observable through patterns. This matches proto3
@@ -214,14 +212,11 @@ first.
 ### Caching decoded fields
 
 A getter could keep what it decoded in a field of the view, so a second
-read costs nothing. Today each such field would stay in every view's
-struct whether or not its getter is reached, which would make every
-message as large as its field count. With dead-field elimination, a
-cache field that only its unreached getter reads is never read, so it is
-removed with the getter, and a program pays for the caches of the fields
-it reads. Whether to cache, and which types are worth it (strings and
-nested messages allocate; scalars are cheap to decode), waits on that
-work.
+read costs nothing. With dead-field elimination, a cache field that only
+its getter reads goes when the getter is unreached, so a program pays
+for the caches of the fields it reads and no others. Which types are
+worth caching is undecided: strings and nested messages allocate on
+every read, while scalars are cheap to decode again.
 
 ### Scalars, strings and bytes
 
@@ -679,12 +674,15 @@ baseline that uses the same standard library pieces (a future, a
 
 | Program                                                                                   | `-O0`   | `-O1`  | `-O2`  |
 | ----------------------------------------------------------------------------------------- | ------- | ------ | ------ |
-| `baseline.zena`                                                                           | 21,374  | 11,964 | 11,100 |
-| `firestore-get.zena`: get a document, read one field                                      | 116,363 | 30,603 | 27,049 |
-| `firestore-query.zena`: build a filtered, ordered query, stream results, read every field | 233,763 | 51,450 | 42,224 |
+| `baseline.zena`                                                                           | 21,461  | 11,380 | 10,159 |
+| `firestore-get.zena`: get a document, read one field                                      | 104,509 | 28,568 | 24,268 |
+| `firestore-query.zena`: build a filtered, ordered query, stream results, read every field | 224,484 | 47,840 | 36,919 |
 
-Sizes are in bytes. At `-O2` the get program adds 16 KB to the baseline
-and the query program 31 KB. In the get program the largest generated
+Sizes are in bytes, from main at 85805cf1. At `-O2` the get program adds
+14 KB to the baseline and the query program 27 KB. Dead-field
+elimination (#301) took the get program from 26,903 bytes at `-O2` to
+24,268 and the query program from 41,996 to 36,919, measured against
+the commit before it. In the get program the largest generated
 functions are `Value.of` and `Document.of`, which the program calls to
 build its canned response; a client that only reads would not reach
 them. The generated Firestore module is 9,405 lines, 91 message classes,
@@ -762,25 +760,26 @@ Done:
   entry point.
 - Generated Firestore code, checked in as a test fixture, with size
   measurements.
+- Dead-field elimination in the compiler (#301).
 
 Remaining:
 
-1. Dead-field elimination in the compiler: fields only ever written, and
-   pure accessors over them. Then decide on caching decoded fields.
-2. A fallback transport over the `wasi:http` bindings, tested against a
+1. A fallback transport over the `wasi:http` bindings, tested against a
    local `zena:http` server; then check whether Firestore's fallback
    serves server-streaming calls, using `RunQuery`.
-3. Per-call metadata in the transport interface, and the routing header
+2. Per-call metadata in the transport interface, and the routing header
    from `google.api.routing`.
-4. A Firestore package with its generated code, and metadata-server
+3. A Firestore package with its generated code, and metadata-server
    authentication.
-5. The hand-written client layer.
-6. Host: a `send_request` hook in `zena-runtime` that pools connections
+4. The hand-written client layer.
+5. Host: a `send_request` hook in `zena-runtime` that pools connections
    and negotiates HTTP/2; then the gRPC transport.
-7. Loader plugins, with WIT and protobuf as the first two users.
+6. Loader plugins, with WIT and protobuf as the first two users.
 
 ## Open questions
 
+- Whether getters should cache decoded values, and for which field types
+  (see [Caching decoded fields](#caching-decoded-fields)).
 - Whether the gRPC fallback protocol supports server streaming.
 - Whether to validate UTF-8 when reading a `string` field, and if so,
   whether once per view or per read.
@@ -797,10 +796,12 @@ Remaining:
 ## Alternatives considered
 
 - **Eager decoding into classes**, as most protobuf libraries do. One
-  decode function reads every field into a struct field. The function
-  reaches every field's decoder, and without dead-field elimination every
-  struct field stays. A program pays for the whole message whatever it
-  reads.
+  decode function reads every field into a struct field, so it reaches
+  every field's decoder. Dead-field elimination would remove the struct
+  fields the program never reads, but not the decoding: each value is
+  still read off the wire, strings and nested messages still allocate,
+  and their decoders are still emitted. A program pays for decoding the
+  whole message whatever it reads.
 - **Eager decoding into records.** Records give structural types and
   pattern matching, but the decode function still sets every field, so
   the cost is the same as eager decoding into classes.
