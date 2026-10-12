@@ -1,14 +1,17 @@
 // @mode: run
 // @result: 321
 
-// Two cases whose only fields nothing reads. Dead-field elimination
-// leaves their structs the same shape with the same supertype, and wasm
+// Two cases whose fields differ in type, so their structs differ, until
+// dead-field elimination removes the fields because nothing reads them.
+// Then the structs are the same shape with the same supertype, and wasm
 // gives structurally identical types in separate recursion groups one
 // identity, so the match would stop telling them apart unless the types
-// are regrouped after the fields go.
+// are regrouped after the fields go. The cases share the root's
+// `<vtable>` field, typed as the root's vtable struct, so that field
+// does not tell them apart either.
 sealed class Shape {
   case Circle(radius: i32)
-  case Square(side: i32)
+  case Square(label: String)
   case Dot
 }
 
@@ -19,5 +22,5 @@ let code = (s: Shape): i32 => match (s) {
 };
 
 export let main = (): i32 => {
-  return code(new Dot()) * 100 + code(new Square(4)) * 10 + code(new Circle(5));
+  return code(new Dot()) * 100 + code(new Square('four')) * 10 + code(new Circle(5));
 };

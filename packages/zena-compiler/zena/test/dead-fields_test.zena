@@ -142,19 +142,20 @@ export let tests = suite('dead-field elimination', (): void => {
     let source = `
       sealed class Shape {
         case Circle(radius: i32)
-        case Square(side: i32)
+        case Square(side: f64)
       }
       let code = (s: Shape): i32 => match (s) {
         case Circle {}: 1
         case Square {}: 2
       };
-      export let main = (): i32 => code(new Square(4)) * 10 + code(new Circle(5));
+      export let main = (): i32 => code(new Square(4.0)) * 10 + code(new Circle(5));
     `;
     let wat = compileToWat(source, 1);
     equal(fieldCount(wat, 'Circle'), 0);
     equal(fieldCount(wat, 'Square'), 0);
-    // Identical shapes with the same supertype share a recursion group,
-    // which is what keeps them two types.
+    // The cases differed until their fields went; identical shapes with
+    // the same supertype now share a recursion group, which is what keeps
+    // them two types.
     let circleLine = wat.split('(type $Circle ')[1].split('\n')[0];
     isTrue(circleLine.contains('(sub '), circleLine);
   });
