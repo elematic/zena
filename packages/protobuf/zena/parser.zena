@@ -1,0 +1,739 @@
+/**
+ * Parses `.proto` source into a syntax tree.
+ *
+ * The grammar is proto3's
+ * (https://protobuf.dev/reference/protobuf/proto3-spec/), plus the proto2
+ * field labels `optional` and `required`, so that proto2 files a proto3
+ * file imports still parse. Extensions, `extend` blocks and reserved
+ * ranges are parsed and dropped. Groups and editions are rejected.
+ *
+ * Options are kept as written, with aggregate values parsed in the text
+ * format, and are interpreted by the generator by name: the parser does
+ * not need the `.proto` file that declares an option's extension.
+ */
+
+import {Lexer, Token, TokenKind} from './lexer.zena';
+
+/** A malformed declaration, with the file position it was found at. */
+export class ParseError extends Error {
+  path: String;
+  line: i32;
+  column: i32;
+  new(message: String, path: String, line: i32, column: i32)
+    : path = path, line = line, column = column, super(`${path}:${line}:${column}: ${message}`);
+}
+
+/** The value of an option, as written. */
+export sealed class OptionValue {
+  /** An identifier: `true`, `false`, `inf`, an enum value name. */
+  case OptionIdent(name: String)
+  /** An integer or float literal, with its sign. */
+  case OptionNumber(text: String)
+  /** A string literal, after escapes and adjacent-literal concatenation. */
+  case OptionString(value: String)
+  /** A text-format message: `{ name: value ... }`. */
+  case OptionAggregate(fields: GrowableArray<OptionField>)
+  /** A text-format list: `[a, b]`. */
+  case OptionList(values: GrowableArray<OptionValue>)
+}
+
+/** One `name: value` entry of an aggregate option value. */
+export final class OptionField {
+  name: String;
+  value: OptionValue;
+  new(this.name, this.value);
+}
+
+/**
+ * An option: `option java_package = "x";`, or `[deprecated = true]` on a
+ * field. `name` is written as in the source, with parentheses around an
+ * extension name: `(google.api.field_behavior)`, `(google.api.http)`.
+ */
+export final class OptionDecl {
+  name: String;
+  value: OptionValue;
+  new(this.name, this.value);
+}
+
+/** The label written before a field's type. */
+export enum FieldLabel {
+  None,
+  Optional,
+  Repeated,
+  Required
+}
+
+/** A field of a message. A map field has `mapKey` set and the value type in `typeName`. */
+export final class FieldDecl {
+  name: String;
+  number: i32;
+  label: FieldLabel;
+  typeName: String;
+  mapKey: String | null;
+  /** The index of the enclosing `oneof` in the message's `oneofs`, or -1. */
+  oneofIndex: i32;
+  options: GrowableArray<OptionDecl>;
+  comment: String | null;
+  line: i32;
+  new(
+    this.name,
+    this.number,
+    this.label,
+    this.typeName,
+    this.mapKey,
+    this.oneofIndex,
+    this.options,
+    this.comment,
+    this.line
+  );
+}
+
+/** A `oneof` group. Its fields are in the message's `fields`, pointing back by index. */
+export final class OneofDecl {
+  name: String;
+  comment: String | null;
+  new(this.name, this.comment);
+}
+
+/** One value of an enum. */
+export final class EnumValueDecl {
+  name: String;
+  number: i32;
+  comment: String | null;
+  new(this.name, this.number, this.comment);
+}
+
+/** An enum declaration. */
+export final class EnumDecl {
+  name: String;
+  values: GrowableArray<EnumValueDecl>;
+  options: GrowableArray<OptionDecl>;
+  comment: String | null;
+  new(this.name, this.values, this.options, this.comment);
+}
+
+/** A message declaration, with its nested declarations. */
+export final class MessageDecl {
+  name: String;
+  fields: GrowableArray<FieldDecl>;
+  oneofs: GrowableArray<OneofDecl>;
+  messages: GrowableArray<MessageDecl>;
+  enums: GrowableArray<EnumDecl>;
+  options: GrowableArray<OptionDecl>;
+  comment: String | null;
+  new(
+    this.name,
+    this.fields,
+    this.oneofs,
+    this.messages,
+    this.enums,
+    this.options,
+    this.comment
+  );
+}
+
+/** One RPC of a service. */
+export final class MethodDecl {
+  name: String;
+  inputType: String;
+  inputStream: boolean;
+  outputType: String;
+  outputStream: boolean;
+  options: GrowableArray<OptionDecl>;
+  comment: String | null;
+  new(
+    this.name,
+    this.inputType,
+    this.inputStream,
+    this.outputType,
+    this.outputStream,
+    this.options,
+    this.comment
+  );
+}
+
+/** A service declaration. */
+export final class ServiceDecl {
+  name: String;
+  methods: GrowableArray<MethodDecl>;
+  options: GrowableArray<OptionDecl>;
+  comment: String | null;
+  new(this.name, this.methods, this.options, this.comment);
+}
+
+/** An `import` statement. */
+export final class ImportDecl {
+  path: String;
+  isPublic: boolean;
+  new(this.path, this.isPublic);
+}
+
+/** A parsed `.proto` file. */
+export final class ProtoFile {
+  /** The path the file was loaded under, as its importers spell it. */
+  path: String;
+  var syntax: String = 'proto2';
+  var package: String = '';
+  imports: GrowableArray<ImportDecl> = new GrowableArray<ImportDecl>();
+  options: GrowableArray<OptionDecl> = new GrowableArray<OptionDecl>();
+  messages: GrowableArray<MessageDecl> = new GrowableArray<MessageDecl>();
+  enums: GrowableArray<EnumDecl> = new GrowableArray<EnumDecl>();
+  services: GrowableArray<ServiceDecl> = new GrowableArray<ServiceDecl>();
+  new(this.path);
+}
+
+/** Parses one `.proto` file. `path` is recorded on the result and used in error messages. */
+export let parseProto = (path: String, source: String): ProtoFile =>
+  new Parser(path, source).parseFile();
+
+/** The value an integer literal denotes; hex (`0x`) and octal (leading `0`) included. */
+export let parseIntLiteral = (text: String): i64 => {
+  var value: i64 = 0;
+  if (text.length > 2 && text.getByteAt(0) == 0x30 &&
+      (text.getByteAt(1) == 0x78 || text.getByteAt(1) == 0x58)) {
+    for (var i = 2; i < text.length; i += 1) {
+      let b = text.getByteAt(i);
+      let digit = if (b <= 0x39) b - 0x30 else if (b >= 0x61) b - 0x61 + 10 else b - 0x41 + 10;
+      value = value * 16 + (digit as i64);
+    }
+    return value;
+  }
+  let radix: i64 = if (text.length > 1 && text.getByteAt(0) == 0x30) 8 else 10;
+  for (var i = 0; i < text.length; i += 1) {
+    value = value * radix + ((text.getByteAt(i) - 0x30) as i64);
+  }
+  return value;
+};
+
+final class Parser {
+  #path: String;
+  #lexer: Lexer;
+  var #token: Token;
+
+  new(path: String, source: String)
+    : #path = path, #lexer = new Lexer(source), #token = new Token(TokenKind.Eof, '', 0, 0, null) {
+    this.#token = this.#lexer.next();
+  }
+
+  parseFile(): ProtoFile {
+    let file = new ProtoFile(this.#path);
+    if (this.#isIdent('syntax')) {
+      this.#advance();
+      this.#expectSymbol('=');
+      file.syntax = this.#expectString();
+      if (file.syntax != 'proto2' && file.syntax != 'proto3') {
+        throw this.#error(`unsupported syntax "${file.syntax}"`);
+      }
+      this.#expectSymbol(';');
+    } else if (this.#isIdent('edition')) {
+      throw this.#error('editions are not supported');
+    }
+    while (this.#token.kind != TokenKind.Eof) {
+      if (this.#acceptSymbol(';')) {
+        continue;
+      }
+      let comment = this.#token.comment;
+      let keyword = this.#expectIdent();
+      if (keyword == 'package') {
+        file.package = this.#fullIdent();
+        this.#expectSymbol(';');
+      } else if (keyword == 'import') {
+        var isPublic = false;
+        if (this.#isIdent('public')) {
+          this.#advance();
+          isPublic = true;
+        } else if (this.#isIdent('weak')) {
+          this.#advance();
+        }
+        file.imports.push(new ImportDecl(this.#expectString(), isPublic));
+        this.#expectSymbol(';');
+      } else if (keyword == 'option') {
+        file.options.push(this.#optionStatement());
+      } else if (keyword == 'message') {
+        file.messages.push(this.#message(comment));
+      } else if (keyword == 'enum') {
+        file.enums.push(this.#enumDecl(comment));
+      } else if (keyword == 'service') {
+        file.services.push(this.#service(comment));
+      } else if (keyword == 'extend') {
+        this.#skipExtend();
+      } else {
+        throw this.#error(`unexpected '${keyword}' at top level`);
+      }
+    }
+    return file;
+  }
+
+  #message(comment: String | null): MessageDecl {
+    let name = this.#expectIdent();
+    let message = new MessageDecl(
+      name,
+      new GrowableArray<FieldDecl>(),
+      new GrowableArray<OneofDecl>(),
+      new GrowableArray<MessageDecl>(),
+      new GrowableArray<EnumDecl>(),
+      new GrowableArray<OptionDecl>(),
+      comment
+    );
+    this.#expectSymbol('{');
+    while (!this.#acceptSymbol('}')) {
+      this.#messageItem(message, -1);
+    }
+    return message;
+  }
+
+  /** One item of a message body, or of a `oneof` body when `oneofIndex` is not -1. */
+  #messageItem(message: MessageDecl, oneofIndex: i32): void {
+    if (this.#acceptSymbol(';')) {
+      return;
+    }
+    let comment = this.#token.comment;
+    let line = this.#token.line;
+    if (this.#token.kind == TokenKind.Symbol && this.#token.text == '.') {
+      message.fields.push(this.#field(FieldLabel.None, oneofIndex, comment, line));
+      return;
+    }
+    let word = this.#expectIdent();
+    if (oneofIndex < 0) {
+      if (word == 'message' && this.#token.kind == TokenKind.Ident) {
+        message.messages.push(this.#message(comment));
+        return;
+      }
+      if (word == 'enum' && this.#token.kind == TokenKind.Ident) {
+        message.enums.push(this.#enumDecl(comment));
+        return;
+      }
+      if (word == 'oneof' && this.#token.kind == TokenKind.Ident) {
+        let index = message.oneofs.length;
+        message.oneofs.push(new OneofDecl(this.#expectIdent(), comment));
+        this.#expectSymbol('{');
+        while (!this.#acceptSymbol('}')) {
+          this.#messageItem(message, index);
+        }
+        return;
+      }
+      if (word == 'reserved' || word == 'extensions') {
+        this.#skipStatement();
+        return;
+      }
+      if (word == 'extend') {
+        this.#skipExtend();
+        return;
+      }
+      if (word == 'map' && this.#isSymbol('<')) {
+        message.fields.push(this.#mapField(comment, line));
+        return;
+      }
+    }
+    if (word == 'option' && !this.#isSymbol('.')) {
+      let option = this.#optionStatement();
+      if (oneofIndex < 0) {
+        message.options.push(option);
+      }
+      return;
+    }
+    if (word == 'group') {
+      throw this.#error('groups are not supported');
+    }
+    var label = FieldLabel.None;
+    var typeStart: String | null = word;
+    if (word == 'repeated') {
+      label = FieldLabel.Repeated;
+      typeStart = null;
+    } else if (word == 'optional') {
+      label = FieldLabel.Optional;
+      typeStart = null;
+    } else if (word == 'required') {
+      label = FieldLabel.Required;
+      typeStart = null;
+    }
+    if (typeStart == null) {
+      if (this.#isIdent('group')) {
+        throw this.#error('groups are not supported');
+      }
+      message.fields.push(this.#field(label, oneofIndex, comment, line));
+      return;
+    }
+    message.fields.push(
+      this.#fieldAfterType(label, this.#restOfTypeName(typeStart as String), oneofIndex, comment, line)
+    );
+  }
+
+  #field(label: FieldLabel, oneofIndex: i32, comment: String | null, line: i32): FieldDecl {
+    return this.#fieldAfterType(label, this.#typeName(), oneofIndex, comment, line);
+  }
+
+  #fieldAfterType(
+    label: FieldLabel,
+    typeName: String,
+    oneofIndex: i32,
+    comment: String | null,
+    line: i32
+  ): FieldDecl {
+    let name = this.#expectIdent();
+    this.#expectSymbol('=');
+    let number = this.#fieldNumber();
+    let options = this.#fieldOptions();
+    this.#expectSymbol(';');
+    return new FieldDecl(name, number, label, typeName, null, oneofIndex, options, comment, line);
+  }
+
+  #mapField(comment: String | null, line: i32): FieldDecl {
+    this.#expectSymbol('<');
+    let key = this.#expectIdent();
+    this.#expectSymbol(',');
+    let value = this.#typeName();
+    this.#expectSymbol('>');
+    let name = this.#expectIdent();
+    this.#expectSymbol('=');
+    let number = this.#fieldNumber();
+    let options = this.#fieldOptions();
+    this.#expectSymbol(';');
+    return new FieldDecl(name, number, FieldLabel.Repeated, value, key, -1, options, comment, line);
+  }
+
+  #fieldNumber(): i32 {
+    if (this.#token.kind != TokenKind.Int) {
+      throw this.#error('expected a field number');
+    }
+    let value = parseIntLiteral(this.#token.text);
+    if (value < 1 || value > 536870911) {
+      throw this.#error(`field number ${this.#token.text} is out of range`);
+    }
+    this.#advance();
+    return value as i32;
+  }
+
+  /** The bracketed options after a field or enum value, or an empty list. */
+  #fieldOptions(): GrowableArray<OptionDecl> {
+    let options = new GrowableArray<OptionDecl>();
+    if (!this.#acceptSymbol('[')) {
+      return options;
+    }
+    while (true) {
+      let name = this.#optionName();
+      this.#expectSymbol('=');
+      options.push(new OptionDecl(name, this.#optionValue()));
+      if (this.#acceptSymbol(']')) {
+        return options;
+      }
+      this.#expectSymbol(',');
+    }
+    return options;
+  }
+
+  #enumDecl(comment: String | null): EnumDecl {
+    let name = this.#expectIdent();
+    let decl = new EnumDecl(name, new GrowableArray<EnumValueDecl>(), new GrowableArray<OptionDecl>(), comment);
+    this.#expectSymbol('{');
+    while (!this.#acceptSymbol('}')) {
+      if (this.#acceptSymbol(';')) {
+        continue;
+      }
+      let valueComment = this.#token.comment;
+      let word = this.#expectIdent();
+      if (word == 'option' && !this.#isSymbol('=')) {
+        decl.options.push(this.#optionStatement());
+        continue;
+      }
+      if (word == 'reserved' && !this.#isSymbol('=')) {
+        this.#skipStatement();
+        continue;
+      }
+      this.#expectSymbol('=');
+      let negative = this.#acceptSymbol('-');
+      if (this.#token.kind != TokenKind.Int) {
+        throw this.#error('expected an enum value number');
+      }
+      var number = parseIntLiteral(this.#token.text);
+      this.#advance();
+      if (negative) {
+        number = 0 - number;
+      }
+      if (number < -2147483648 || number > 2147483647) {
+        throw this.#error(`enum value ${word} is out of range`);
+      }
+      this.#fieldOptions();
+      this.#expectSymbol(';');
+      decl.values.push(new EnumValueDecl(word, number as i32, valueComment));
+    }
+    return decl;
+  }
+
+  #service(comment: String | null): ServiceDecl {
+    let name = this.#expectIdent();
+    let service = new ServiceDecl(name, new GrowableArray<MethodDecl>(), new GrowableArray<OptionDecl>(), comment);
+    this.#expectSymbol('{');
+    while (!this.#acceptSymbol('}')) {
+      if (this.#acceptSymbol(';')) {
+        continue;
+      }
+      let methodComment = this.#token.comment;
+      let word = this.#expectIdent();
+      if (word == 'option') {
+        service.options.push(this.#optionStatement());
+        continue;
+      }
+      if (word != 'rpc') {
+        throw this.#error(`expected 'rpc', found '${word}'`);
+      }
+      let methodName = this.#expectIdent();
+      this.#expectSymbol('(');
+      let inputStream = this.#acceptStreamKeyword();
+      let inputType = this.#typeName();
+      this.#expectSymbol(')');
+      if (this.#expectIdent() != 'returns') {
+        throw this.#error("expected 'returns'");
+      }
+      this.#expectSymbol('(');
+      let outputStream = this.#acceptStreamKeyword();
+      let outputType = this.#typeName();
+      this.#expectSymbol(')');
+      let options = new GrowableArray<OptionDecl>();
+      if (this.#acceptSymbol('{')) {
+        while (!this.#acceptSymbol('}')) {
+          if (this.#acceptSymbol(';')) {
+            continue;
+          }
+          if (this.#expectIdent() != 'option') {
+            throw this.#error("expected 'option' in an rpc body");
+          }
+          options.push(this.#optionStatement());
+        }
+      } else {
+        this.#expectSymbol(';');
+      }
+      service.methods.push(
+        new MethodDecl(methodName, inputType, inputStream, outputType, outputStream, options, methodComment)
+      );
+    }
+    return service;
+  }
+
+  /**
+   * `stream` before a type is the streaming keyword, unless it is the
+   * type itself (a message named `stream`), which is followed by `)`.
+   */
+  #acceptStreamKeyword(): boolean {
+    if (!this.#isIdent('stream')) {
+      return false;
+    }
+    let saved = this.#token;
+    this.#advance();
+    if (this.#isSymbol(')')) {
+      throw new ParseError('a message named `stream` is not supported', this.#path, saved.line, saved.column);
+    }
+    return true;
+  }
+
+  /** The rest of `option name = value;` after the `option` keyword. */
+  #optionStatement(): OptionDecl {
+    let name = this.#optionName();
+    this.#expectSymbol('=');
+    let value = this.#optionValue();
+    this.#expectSymbol(';');
+    return new OptionDecl(name, value);
+  }
+
+  /** An option name: `deprecated`, `(google.api.http)`, `(foo.bar).baz`. */
+  #optionName(): String {
+    var name = '';
+    if (this.#acceptSymbol('(')) {
+      let inner = if (this.#isSymbol('.')) {
+        this.#advance();
+        `.${this.#fullIdent()}`
+      } else {
+        this.#fullIdent()
+      };
+      this.#expectSymbol(')');
+      name = `(${inner})`;
+    } else {
+      name = this.#expectIdent();
+    }
+    while (this.#acceptSymbol('.')) {
+      if (this.#acceptSymbol('(')) {
+        let inner = this.#fullIdent();
+        this.#expectSymbol(')');
+        name = `${name}.(${inner})`;
+      } else {
+        name = `${name}.${this.#expectIdent()}`;
+      }
+    }
+    return name;
+  }
+
+  #optionValue(): OptionValue {
+    let token = this.#token;
+    if (token.kind == TokenKind.Str) {
+      return new OptionString(this.#expectString());
+    }
+    if (token.kind == TokenKind.Int || token.kind == TokenKind.Float) {
+      this.#advance();
+      return new OptionNumber(token.text);
+    }
+    if (token.kind == TokenKind.Ident) {
+      this.#advance();
+      return new OptionIdent(token.text);
+    }
+    if (this.#acceptSymbol('-') || this.#acceptSymbol('+')) {
+      let sign = token.text;
+      let number = this.#token;
+      if (number.kind == TokenKind.Int || number.kind == TokenKind.Float) {
+        this.#advance();
+        return new OptionNumber(if (sign == '-') `-${number.text}` else number.text);
+      }
+      if (number.kind == TokenKind.Ident && (number.text == 'inf' || number.text == 'nan')) {
+        this.#advance();
+        return new OptionNumber(if (sign == '-') `-${number.text}` else number.text);
+      }
+      throw this.#error('expected a number after a sign');
+    }
+    if (this.#acceptSymbol('{')) {
+      return new OptionAggregate(this.#aggregateFields('}'));
+    }
+    if (this.#acceptSymbol('<')) {
+      return new OptionAggregate(this.#aggregateFields('>'));
+    }
+    if (this.#acceptSymbol('[')) {
+      let values = new GrowableArray<OptionValue>();
+      if (this.#acceptSymbol(']')) {
+        return new OptionList(values);
+      }
+      while (true) {
+        values.push(this.#optionValue());
+        if (this.#acceptSymbol(']')) {
+          return new OptionList(values);
+        }
+        this.#expectSymbol(',');
+      }
+    }
+    throw this.#error('expected an option value');
+  }
+
+  /** The fields of a text-format message, up to and including `close`. */
+  #aggregateFields(close: String): GrowableArray<OptionField> {
+    let fields = new GrowableArray<OptionField>();
+    while (!this.#acceptSymbol(close)) {
+      var name = '';
+      if (this.#acceptSymbol('[')) {
+        name = `[${this.#fullIdent()}]`;
+        this.#expectSymbol(']');
+      } else {
+        name = this.#expectIdent();
+      }
+      let hasColon = this.#acceptSymbol(':');
+      if (!hasColon && !this.#isSymbol('{') && !this.#isSymbol('<')) {
+        throw this.#error(`expected ':' after '${name}'`);
+      }
+      fields.push(new OptionField(name, this.#optionValue()));
+      if (!this.#acceptSymbol(',')) {
+        this.#acceptSymbol(';');
+      }
+    }
+    return fields;
+  }
+
+  /** Skips an `extend Foo { ... }` block, whose fields extend options this generator reads by name. */
+  #skipExtend(): void {
+    this.#typeName();
+    this.#expectSymbol('{');
+    var depth = 1;
+    while (depth > 0) {
+      if (this.#token.kind == TokenKind.Eof) {
+        throw this.#error('unterminated extend block');
+      }
+      if (this.#isSymbol('{')) {
+        depth += 1;
+      } else if (this.#isSymbol('}')) {
+        depth -= 1;
+      }
+      this.#advance();
+    }
+  }
+
+  /** Skips to and past the next `;`. */
+  #skipStatement(): void {
+    while (!this.#acceptSymbol(';')) {
+      if (this.#token.kind == TokenKind.Eof) {
+        throw this.#error("expected ';'");
+      }
+      this.#advance();
+    }
+  }
+
+  /** A type reference: `string`, `Foo.Bar`, `.google.protobuf.Timestamp`. */
+  #typeName(): String {
+    if (this.#acceptSymbol('.')) {
+      return `.${this.#fullIdent()}`;
+    }
+    return this.#restOfTypeName(this.#expectIdent());
+  }
+
+  /** A type reference whose first identifier has been read. */
+  #restOfTypeName(first: String): String {
+    var name = first;
+    while (this.#acceptSymbol('.')) {
+      name = `${name}.${this.#expectIdent()}`;
+    }
+    return name;
+  }
+
+  #fullIdent(): String {
+    return this.#restOfTypeName(this.#expectIdent());
+  }
+
+  #advance(): void {
+    this.#token = this.#lexer.next();
+  }
+
+  #isIdent(text: String): boolean {
+    return this.#token.kind == TokenKind.Ident && this.#token.text == text;
+  }
+
+  #isSymbol(text: String): boolean {
+    return this.#token.kind == TokenKind.Symbol && this.#token.text == text;
+  }
+
+  #acceptSymbol(text: String): boolean {
+    if (this.#isSymbol(text)) {
+      this.#advance();
+      return true;
+    }
+    return false;
+  }
+
+  #expectSymbol(text: String): void {
+    if (!this.#acceptSymbol(text)) {
+      throw this.#error(`expected '${text}'`);
+    }
+  }
+
+  #expectIdent(): String {
+    let token = this.#token;
+    if (token.kind != TokenKind.Ident) {
+      throw this.#error('expected an identifier');
+    }
+    this.#advance();
+    return token.text;
+  }
+
+  /** A string literal, with adjacent literals concatenated. */
+  #expectString(): String {
+    if (this.#token.kind != TokenKind.Str) {
+      throw this.#error('expected a string literal');
+    }
+    var value = this.#token.text;
+    this.#advance();
+    while (this.#token.kind == TokenKind.Str) {
+      value = value + this.#token.text;
+      this.#advance();
+    }
+    return value;
+  }
+
+  #error(message: String): ParseError {
+    let token = this.#token;
+    let found = if (token.kind == TokenKind.Eof) 'end of input' else `'${token.text}'`;
+    return new ParseError(`${message}, found ${found}`, this.#path, token.line, token.column);
+  }
+}

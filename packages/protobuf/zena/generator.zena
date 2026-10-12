@@ -1,0 +1,52 @@
+/**
+ * Generates Zena source from `.proto` files.
+ *
+ *     import {generate} from 'protobuf:generator';
+ *     let source = generate({
+ *       files: ['google/firestore/v1/firestore.proto'],
+ *       read: (path) => ...,
+ *     });
+ *
+ * The generator does no I/O; `read` supplies every file, including
+ * imports, by its import path. See docs/design/protobuf.md for the shape
+ * of the generated code.
+ */
+
+import {joinStrings} from './text.zena';
+import {emitModule} from './emitter.zena';
+import {loadSchema, markReached} from './schema.zena';
+
+export {SchemaError} from './schema.zena';
+export {ParseError} from './parser.zena';
+export {LexError} from './lexer.zena';
+
+/** What to generate. */
+export type GenerateOptions = {
+  /** The files whose declarations are generated, by import path. */
+  files: Array<String>,
+  /** A file's source by import path, or null when there is no such file. */
+  read: (path: String) => String | null,
+  /**
+   * Full names of the messages, enums and services to generate, with
+   * everything they refer to. When absent, every declaration in `files`.
+   */
+  roots?: Array<String>,
+  /** The specifier the generated module imports the runtime from. */
+  runtimeImport?: String
+};
+
+/** Generates one Zena module from `options.files`. */
+export let generate = (options: GenerateOptions): String => {
+  var roots: Array<String> = new GrowableArray<String>();
+  if (let {roots as given} = options) {
+    roots = given;
+  }
+  var runtimeImport = 'protobuf:runtime';
+  if (let {runtimeImport as given} = options) {
+    runtimeImport = given;
+  }
+  let schema = loadSchema(options.files, options.read);
+  let services = markReached(schema, roots);
+  let primary = if (schema.rootFiles.length > 0) schema.rootFiles[0].package else '';
+  return emitModule(schema, services, primary, runtimeImport, joinStrings(options.files, ', '));
+};

@@ -1,0 +1,948 @@
+/**
+ * Turns a resolved schema into Zena source.
+ *
+ * For each message `M` it emits:
+ *
+ * - `class M`, a view over an encoded message, with one getter per field
+ *   that decodes the field when called;
+ * - `type MInit`, a record with one presence-optional field per proto
+ *   field, and `M.of(init)`, which encodes one;
+ * - for each `oneof`, a sealed class with a case per member.
+ *
+ * A message-typed field holds the field's view class on both sides, so
+ * `MInit` never refers to another `Init` record and a message read from
+ * one response can be put into the next request as it is.
+ *
+ * For each enum it emits a Zena enum, and for each service a client class
+ * over a `ProtoTransport`. The output imports only the runtime names it
+ * uses. See docs/design/protobuf.md.
+ */
+
+import {HashMap, HashSet} from 'zena:collections';
+import {StringBuilder} from 'zena:core';
+import {joinStrings} from './text.zena';
+import {
+  EnumInfo,
+  FieldInfo,
+  FieldType,
+  MessageInfo,
+  Scalar,
+  Schema,
+  SchemaError,
+  ServiceInfo
+} from './schema.zena';
+
+/** Words a generated member or record field cannot be named; the generator appends `_`. */
+let KEYWORDS: HashSet<String> = new HashSet<String>();
+
+/** Names the generated module imports or relies on, which a generated type must not take. */
+let RESERVED_TYPES: HashSet<String> = new HashSet<String>();
+
+let initNames = (): void => {
+  if (KEYWORDS.size > 0) {
+    return;
+  }
+  for (let word in [
+    'abstract', 'as', 'async', 'await', 'break', 'case', 'catch', 'class', 'continue',
+    'declare', 'decorator', 'distinct', 'else', 'enum', 'export', 'extends', 'extension',
+    'false', 'final', 'finally', 'for', 'function', 'gen', 'if', 'implements', 'import',
+    'in', 'inline', 'interface', 'is', 'let', 'match', 'mixin', 'new', 'null', 'on',
+    'opaque', 'operator', 'return', 'sealed', 'static', 'super', 'symbol', 'this', 'throw',
+    'true', 'try', 'type', 'using', 'var', 'while', 'with', 'yield'
+  ]) {
+    KEYWORDS.add(word);
+  }
+  for (let name in [
+    'Array', 'Box', 'ByteArray', 'Error', 'FixedArray', 'Future', 'GrowableArray', 'HashMap',
+    'ImmutableArray', 'Iterable', 'Iterator', 'Map', 'MapEntry', 'None', 'Option', 'ProtoBytes',
+    'ProtoError', 'ProtoList', 'ProtoMap', 'ProtoMapEntry', 'ProtoStream', 'ProtoTransport',
+    'ProtoView', 'ProtoWriter', 'Result', 'RpcMethod', 'Some', 'Step', 'String'
+  ]) {
+    RESERVED_TYPES.add(name);
+  }
+};
+
+/** `field_name` as `FieldName`. */
+export let pascalCase = (name: String): String => {
+  let out = new StringBuilder();
+  var upper = true;
+  for (var i = 0; i < name.length; i += 1) {
+    let b = name.getByteAt(i);
+    if (b == 0x5F) {
+      upper = true;
+      continue;
+    }
+    if (upper && b >= 0x61 && b <= 0x7A) {
+      out.appendByte(b - 0x20);
+    } else {
+      out.appendByte(b);
+    }
+    upper = b >= 0x30 && b <= 0x39;
+  }
+  return out.toString();
+};
+
+/** `field_name` as `fieldName`, as protoc derives JSON names. */
+export let camelCase = (name: String): String => {
+  let pascal = pascalCase(name);
+  if (pascal.length == 0) {
+    return pascal;
+  }
+  let first = pascal.getByteAt(0);
+  if (first >= 0x41 && first <= 0x5A && !(name.getByteAt(0) >= 0x41 && name.getByteAt(0) <= 0x5A)) {
+    let out = new StringBuilder();
+    out.appendByte(first + 0x20);
+    out.append(pascal.sliceBytes(1, pascal.length));
+    return out.toString();
+  }
+  return pascal;
+};
+
+/** `GetDocument` as `getDocument`. */
+let lowerFirst = (name: String): String => {
+  if (name.length == 0) {
+    return name;
+  }
+  let first = name.getByteAt(0);
+  if (first < 0x41 || first > 0x5A) {
+    return name;
+  }
+  let out = new StringBuilder();
+  out.appendByte(first + 0x20);
+  out.append(name.sliceBytes(1, name.length));
+  return out.toString();
+};
+
+/** `NullValue` as `NULL_VALUE`, for matching enum value prefixes. */
+let screamingCase = (name: String): String => {
+  let out = new StringBuilder();
+  for (var i = 0; i < name.length; i += 1) {
+    let b = name.getByteAt(i);
+    let isUpper = b >= 0x41 && b <= 0x5A;
+    if (isUpper && i > 0) {
+      let prev = name.getByteAt(i - 1);
+      if ((prev >= 0x61 && prev <= 0x7A) || (prev >= 0x30 && prev <= 0x39)) {
+        out.appendByte(0x5F);
+      }
+    }
+    out.appendByte(if (b >= 0x61 && b <= 0x7A) b - 0x20 else b);
+  }
+  return out.toString();
+};
+
+/** `LESS_THAN` as `LessThan`. */
+let enumMemberName = (value: String): String => {
+  let lower = new StringBuilder();
+  for (var i = 0; i < value.length; i += 1) {
+    let b = value.getByteAt(i);
+    lower.appendByte(if (b >= 0x41 && b <= 0x5A) b + 0x20 else b);
+  }
+  return pascalCase(lower.toString());
+};
+
+let memberName = (name: String): String =>
+  if (KEYWORDS.has(name)) `${name}_` else name;
+
+/** Accumulates lines of output at the current indentation. */
+final class CodeWriter {
+  #out: StringBuilder = new StringBuilder();
+  var #indent: i32 = 0;
+
+  new();
+
+  line(text: String): void {
+    if (text.length > 0) {
+      for (var i = 0; i < this.#indent; i += 1) {
+        this.#out.append('  ');
+      }
+      this.#out.append(text);
+    }
+    this.#out.appendByte(0x0A);
+  }
+
+  open(text: String): void {
+    this.line(text);
+    this.#indent += 1;
+  }
+
+  close(text: String): void {
+    this.#indent -= 1;
+    this.line(text);
+  }
+
+  /** A doc comment from proto comment text plus extra paragraphs; nothing when both are empty. */
+  doc(comment: String | null, extra: String | null): void {
+    let lines = new GrowableArray<String>();
+    if (comment != null) {
+      for (let line in (comment as String).split('\n')) {
+        lines.push(escapeComment(trimEnd(line)));
+      }
+      while (lines.length > 0 && lines[lines.length - 1].length == 0) {
+        lines.pop();
+      }
+    }
+    if (extra != null) {
+      if (lines.length > 0) {
+        lines.push('');
+      }
+      lines.push(extra as String);
+    }
+    if (lines.length == 0) {
+      return;
+    }
+    if (lines.length == 1) {
+      this.line(`/** ${lines[0]} */`);
+      return;
+    }
+    this.line('/**');
+    for (let line in lines) {
+      this.line(if (line.length == 0) ' *' else ` * ${line}`);
+    }
+    this.line(' */');
+  }
+
+  toString(): String {
+    return this.#out.toString();
+  }
+}
+
+/** `text` without trailing whitespace. */
+let trimEnd = (text: String): String => {
+  var end = text.length;
+  while (end > 0) {
+    let b = text.getByteAt(end - 1);
+    if (b != 0x20 && b != 0x09 && b != 0x0D) {
+      break;
+    }
+    end -= 1;
+  }
+  return text.sliceBytes(0, end);
+};
+
+/** `text` with `*\/` broken up, so it cannot end the doc comment it is placed in. */
+let escapeComment = (text: String): String => {
+  let parts = text.split('*/');
+  if (parts.length == 1) {
+    return text;
+  }
+  var out = parts[0];
+  for (var i = 1; i < parts.length; i += 1) {
+    out = `${out}*\\/${parts[i]}`;
+  }
+  return out;
+};
+
+/** A generated top-level type, for name assignment. */
+final class Named {
+  fullName: String;
+  package: String;
+  message: MessageInfo | null;
+  enumInfo: EnumInfo | null;
+  /** 0: the nested name; 1: prefixed with the package's last component; 2: with the whole package. */
+  var level: i32 = 0;
+  new(this.fullName, this.package, this.message, this.enumInfo);
+
+  nameAt(level: i32): String {
+    let local = if (this.package.length == 0) this.fullName
+      else this.fullName.sliceBytes(this.package.length + 1, this.fullName.length);
+    let base = pascalCase(joinStrings(local.split('.'), '_'));
+    if (level == 0 || this.package.length == 0) {
+      return base;
+    }
+    let segments = this.package.split('.');
+    if (level == 1) {
+      return pascalCase(segments[segments.length - 1]) + base;
+    }
+    return pascalCase(joinStrings(segments, '_')) + base;
+  }
+}
+
+/**
+ * Gives every reached message and enum its Zena name. A type keeps its
+ * nested name, `StructuredQueryFieldFilter`, unless that name is reserved
+ * or another type has it; then the types outside `primaryPackage` take a
+ * prefix from their package until the names are distinct.
+ */
+let assignNames = (schema: Schema, primaryPackage: String): void => {
+  let all = new GrowableArray<Named>();
+  for (let m in schema.messageOrder) {
+    if (m.reached) {
+      all.push(new Named(m.fullName, m.file.package, m, null));
+    }
+  }
+  for (let e in schema.enumOrder) {
+    if (e.reached) {
+      all.push(new Named(e.fullName, e.file.package, null, e));
+    }
+  }
+  for (var round = 0; round < 3; round += 1) {
+    let counts = new HashMap<String, i32>();
+    for (let n in all) {
+      let name = n.nameAt(n.level);
+      counts[name] = counts.getOr(name, 0) + 1;
+    }
+    var changed = false;
+    for (let n in all) {
+      let name = n.nameAt(n.level);
+      let clashes = counts.getOr(name, 0) > 1;
+      let reserved = RESERVED_TYPES.has(name);
+      if ((reserved || (clashes && n.package != primaryPackage)) && n.level < 2) {
+        n.level += 1;
+        changed = true;
+      }
+    }
+    if (!changed) {
+      break;
+    }
+  }
+  for (let n in all) {
+    let name = n.nameAt(n.level);
+    if (n.message != null) {
+      (n.message as MessageInfo).zenaName = name;
+    } else {
+      (n.enumInfo as EnumInfo).zenaName = name;
+    }
+  }
+};
+
+/** The Zena type a scalar reads as. */
+let scalarReadType = (scalar: i32): String => {
+  if (scalar == (Scalar.Double as i32)) { return 'f64'; }
+  if (scalar == (Scalar.Float as i32)) { return 'f32'; }
+  if (scalar == (Scalar.Int32 as i32) || scalar == (Scalar.Sint32 as i32) ||
+      scalar == (Scalar.Sfixed32 as i32)) { return 'i32'; }
+  if (scalar == (Scalar.Int64 as i32) || scalar == (Scalar.Sint64 as i32) ||
+      scalar == (Scalar.Sfixed64 as i32)) { return 'i64'; }
+  if (scalar == (Scalar.Uint32 as i32) || scalar == (Scalar.Fixed32 as i32)) { return 'u32'; }
+  if (scalar == (Scalar.Uint64 as i32) || scalar == (Scalar.Fixed64 as i32)) { return 'u64'; }
+  if (scalar == (Scalar.Bool as i32)) { return 'boolean'; }
+  if (scalar == (Scalar.String as i32)) { return 'String'; }
+  return 'ProtoBytes';
+};
+
+/** The runtime method, writer or reader suffix for a scalar: `int32`, `sfixed64`, `string`. */
+let scalarMethod = (scalar: i32): String => {
+  if (scalar == (Scalar.Double as i32)) { return 'double'; }
+  if (scalar == (Scalar.Float as i32)) { return 'float'; }
+  if (scalar == (Scalar.Int32 as i32)) { return 'int32'; }
+  if (scalar == (Scalar.Int64 as i32)) { return 'int64'; }
+  if (scalar == (Scalar.Uint32 as i32)) { return 'uint32'; }
+  if (scalar == (Scalar.Uint64 as i32)) { return 'uint64'; }
+  if (scalar == (Scalar.Sint32 as i32)) { return 'sint32'; }
+  if (scalar == (Scalar.Sint64 as i32)) { return 'sint64'; }
+  if (scalar == (Scalar.Fixed32 as i32)) { return 'fixed32'; }
+  if (scalar == (Scalar.Fixed64 as i32)) { return 'fixed64'; }
+  if (scalar == (Scalar.Sfixed32 as i32)) { return 'sfixed32'; }
+  if (scalar == (Scalar.Sfixed64 as i32)) { return 'sfixed64'; }
+  if (scalar == (Scalar.Bool as i32)) { return 'bool'; }
+  if (scalar == (Scalar.String as i32)) { return 'string'; }
+  return 'bytes';
+};
+
+let scalarWire = (scalar: i32): String => {
+  if (scalar == (Scalar.Double as i32) || scalar == (Scalar.Fixed64 as i32) ||
+      scalar == (Scalar.Sfixed64 as i32)) { return 'WIRE_I64'; }
+  if (scalar == (Scalar.Float as i32) || scalar == (Scalar.Fixed32 as i32) ||
+      scalar == (Scalar.Sfixed32 as i32)) { return 'WIRE_I32'; }
+  if (scalar == (Scalar.String as i32) || scalar == (Scalar.Bytes as i32)) { return 'WIRE_LEN'; }
+  return 'WIRE_VARINT';
+};
+
+let scalarDefault = (scalar: i32): String => {
+  if (scalar == (Scalar.Double as i32)) { return '0.0'; }
+  if (scalar == (Scalar.Float as i32)) { return '0.0 as f32'; }
+  if (scalar == (Scalar.Bool as i32)) { return 'false'; }
+  if (scalar == (Scalar.String as i32)) { return "''"; }
+  if (scalar == (Scalar.Bytes as i32)) { return 'ProtoBytes.empty()'; }
+  return '0';
+};
+
+/** Emits one generated module. */
+final class Emitter {
+  #schema: Schema;
+  #out: CodeWriter = new CodeWriter();
+  /** Runtime names the output uses, imported at the top. */
+  #uses: HashSet<String> = new HashSet<String>();
+  /** Every top-level name emitted, with what it was emitted for, to catch clashes. */
+  #topNames: HashMap<String, String> = new HashMap<String, String>();
+  /** The names of the generated messages, enums and `Init` records, which a oneof case must avoid. */
+  #typeNames: HashSet<String> = new HashSet<String>();
+
+  new(schema: Schema) : #schema = schema {
+    for (let m in schema.messageOrder) {
+      if (m.reached) {
+        this.#typeNames.add(m.zenaName);
+        this.#typeNames.add(`${m.zenaName}Init`);
+      }
+    }
+    for (let e in schema.enumOrder) {
+      if (e.reached) {
+        this.#typeNames.add(e.zenaName);
+      }
+    }
+  }
+
+  /**
+   * The case class for oneof member `field`: the message's name and the
+   * field's, or the oneof type's name and the field's when the first is a
+   * type's name (`TransactionOptions.read_write` beside the nested message
+   * `TransactionOptions.ReadWrite`).
+   */
+  #caseName(m: MessageInfo, field: FieldInfo, oneofType: String): String {
+    let short = `${m.zenaName}${pascalCase(field.decl.name)}`;
+    return if (this.#typeNames.has(short)) `${oneofType}${pascalCase(field.decl.name)}` else short;
+  }
+
+  emit(services: GrowableArray<ServiceInfo>, runtimeImport: String, sources: String): String {
+    for (let e in this.#schema.enumOrder) {
+      if (e.reached) {
+        this.#emitEnum(e);
+      }
+    }
+    for (let m in this.#schema.messageOrder) {
+      if (m.reached) {
+        this.#emitMessage(m);
+      }
+    }
+    for (let service in services) {
+      this.#emitService(service);
+    }
+    let head = new CodeWriter();
+    head.doc(`Generated from ${sources} by the Zena protobuf generator. Do not edit.`, null);
+    head.line('');
+    let names = new GrowableArray<String>();
+    for (let name in this.#uses) {
+      names.push(name);
+    }
+    sortStrings(names);
+    if (names.length > 0) {
+      head.open('import {');
+      for (var i = 0; i < names.length; i += 1) {
+        head.line(if (i == names.length - 1) names[i] else `${names[i]},`);
+      }
+      head.close(`} from '${runtimeImport}';`);
+    }
+    return head.toString() + this.#out.toString();
+  }
+
+  #declare(name: String, what: String): void {
+    if (let (true, previous) = this.#topNames.get(name)) {
+      throw new SchemaError(`the generated name ${name} is used for both ${previous} and ${what}`);
+    }
+    this.#topNames[name] = what;
+  }
+
+  #use(name: String): String {
+    this.#uses.add(name);
+    return name;
+  }
+
+  #emitEnum(e: EnumInfo): void {
+    let out = this.#out;
+    this.#declare(e.zenaName, e.fullName);
+    let values = e.decl.values;
+    let prefix = `${screamingCase(e.decl.name)}_`;
+    var strip = values.length > 0;
+    for (let value in values) {
+      if (!value.name.startsWith(prefix) || value.name.length == prefix.length) {
+        strip = false;
+      } else {
+        let first = value.name.getByteAt(prefix.length);
+        if (first >= 0x30 && first <= 0x39) {
+          strip = false;
+        }
+      }
+    }
+    out.line('');
+    out.doc(e.decl.comment, `Protobuf: \`${e.fullName}\`.`);
+    out.open(`export enum ${e.zenaName} {`);
+    let seen = new HashSet<i32>();
+    let members = new GrowableArray<String>();
+    let comments = new GrowableArray<String | null>();
+    for (let value in values) {
+      if (seen.has(value.number)) {
+        continue;
+      }
+      seen.add(value.number);
+      let raw = if (strip) value.name.sliceBytes(prefix.length, value.name.length) else value.name;
+      members.push(`${enumMemberName(raw)} = ${value.number}`);
+      comments.push(value.comment);
+    }
+    for (var i = 0; i < members.length; i += 1) {
+      out.doc(comments[i], null);
+      out.line(if (i == members.length - 1) members[i] else `${members[i]},`);
+    }
+    out.close('}');
+  }
+
+  #emitMessage(m: MessageInfo): void {
+    let out = this.#out;
+    let name = m.zenaName;
+    let decl = m.decl;
+    this.#declare(name, m.fullName);
+    this.#declare(`${name}Init`, `the record of ${m.fullName}`);
+    this.#use('ProtoView');
+
+    // Member names, distinct within the class. `protoView` and the statics
+    // are claimed first.
+    let taken = new HashSet<String>();
+    taken.add('protoView');
+    taken.add('of');
+    taken.add('decode');
+    let getters = new GrowableArray<String>();
+    for (let field in m.fields) {
+      getters.push(claim(taken, memberName(camelCase(field.decl.name))));
+    }
+    let hasGetters = new GrowableArray<String>();
+    for (let field in m.fields) {
+      hasGetters.push(
+        if (needsHas(field)) claim(taken, `has${pascalCase(field.decl.name)}`) else ''
+      );
+    }
+    let oneofGetters = new GrowableArray<String>();
+    let oneofTypes = new GrowableArray<String>();
+    for (let oneof in decl.oneofs) {
+      oneofGetters.push(claim(taken, memberName(camelCase(oneof.name))));
+      oneofTypes.push(`${name}${pascalCase(oneof.name)}`);
+    }
+
+    for (var o = 0; o < decl.oneofs.length; o += 1) {
+      this.#emitOneofType(m, o, oneofTypes[o]);
+    }
+
+    out.line('');
+    out.doc(
+      `The fields of a \`${m.fullName}\` to encode, for \`${name}.of\`.`,
+      null
+    );
+    out.open(`export type ${name}Init = {`);
+    for (var i = 0; i < m.fields.length; i += 1) {
+      let field = m.fields[i];
+      if (field.outputOnly) {
+        continue;
+      }
+      let optional = if (field.required) '' else '?';
+      out.line(`${getters[i]}${optional}: ${this.#writeType(field)},`);
+    }
+    out.close('};');
+
+    out.line('');
+    out.doc(decl.comment, `Protobuf: \`${m.fullName}\`.`);
+    out.open(`export final class ${name} {`);
+    out.line('#m: ProtoView;');
+    out.line('');
+    out.doc('A message over `m`, which must hold an encoded `' + m.fullName + '`.', null);
+    out.line(`new(m: ProtoView) : #m = m;`);
+    out.line('');
+    out.doc('Decodes `bytes`. Fields are decoded as they are read.', null);
+    out.open(`static decode(bytes: ByteArray): ${name} {`);
+    out.line(`return new ${name}(ProtoView.of(bytes));`);
+    out.close('}');
+    out.line('');
+    this.#emitOf(m, getters);
+    out.line('');
+    out.doc('The encoded message.', null);
+    out.open('protoView: ProtoView {');
+    out.line('get { return this.#m; }');
+    out.close('}');
+
+    for (var i = 0; i < m.fields.length; i += 1) {
+      let field = m.fields[i];
+      out.line('');
+      out.doc(field.decl.comment, null);
+      this.#emitGetter(m, field, getters[i]);
+      if (hasGetters[i].length > 0) {
+        out.line('');
+        out.doc(`Whether \`${getters[i]}\` is set.`, null);
+        out.open(`${hasGetters[i]}: boolean {`);
+        let test = if (field.decl.oneofIndex >= 0)
+          `this.#which${pascalCase(decl.oneofs[field.decl.oneofIndex].name)}() == ${field.decl.number}`
+          else `this.#m.has(${field.decl.number})`;
+        out.line(`get { return ${test}; }`);
+        out.close('}');
+      }
+    }
+
+    for (var o = 0; o < decl.oneofs.length; o += 1) {
+      this.#emitOneofGetter(m, o, oneofGetters[o], oneofTypes[o]);
+    }
+    out.close('}');
+  }
+
+  /** The `of` static: encodes an `Init` record, field by field. */
+  #emitOf(m: MessageInfo, getters: GrowableArray<String>): void {
+    let out = this.#out;
+    let name = m.zenaName;
+    this.#use('ProtoWriter');
+    out.doc(`Encodes \`init\` as a \`${m.fullName}\`.`, null);
+    out.open(`static of(init: ${name}Init): ${name} {`);
+    out.line('let w = new ProtoWriter();');
+    for (var i = 0; i < m.fields.length; i += 1) {
+      let field = m.fields[i];
+      if (field.outputOnly) {
+        continue;
+      }
+      let local = `f${field.decl.number}`;
+      if (field.required) {
+        out.line(`let ${local} = init.${getters[i]};`);
+        this.#emitWrite(field, local);
+      } else {
+        out.open(`if (let {${getters[i]} as ${local}} = init) {`);
+        this.#emitWrite(field, local);
+        out.close('}');
+      }
+    }
+    out.line(`return new ${name}(w.finish());`);
+    out.close('}');
+  }
+
+  /** The statements that write field `field`, whose value is in `local`. */
+  #emitWrite(field: FieldInfo, local: String): void {
+    let out = this.#out;
+    let n = field.decl.number;
+    if (field.isMap) {
+      out.open(`for (let entry in ${local}) {`);
+      out.line('let e = new ProtoWriter();');
+      out.line(`e.${scalarMethod(field.mapKey)}(1, entry.key);`);
+      out.line(this.#writeCall('e', 2, field.type, 'entry.value'));
+      out.line(`w.message(${n}, e.finish());`);
+      out.close('}');
+      return;
+    }
+    if (field.isRepeated) {
+      if (field.packed) {
+        out.line(`w.packed(${n}, ${local}, ${this.#elementWriter(field.type)});`);
+        return;
+      }
+      out.open(`for (let item in ${local}) {`);
+      out.line(this.#writeCall('w', n, field.type, 'item'));
+      out.close('}');
+      return;
+    }
+    out.line(this.#writeCall('w', n, field.type, local));
+  }
+
+  /** A call that writes one value of `type` as field `n`. */
+  #writeCall(writer: String, n: i32, type: FieldType, value: String): String {
+    if (type.message != null) {
+      return `${writer}.message(${n}, ${value}.protoView);`;
+    }
+    if (type.enumInfo != null) {
+      return `${writer}.int32(${n}, ${value} as i32);`;
+    }
+    return `${writer}.${scalarMethod(type.scalar)}(${n}, ${value});`;
+  }
+
+  /**
+   * The element writer `ProtoWriter.packed` takes for a packable type. It
+   * is an arrow over a `ProtoWriter` method rather than a function the
+   * runtime exports: an imported function used as a value only inside a
+   * class method does not compile (see
+   * tests/language/execution/imports/let_fn_value_in_class.zena).
+   */
+  #elementWriter(type: FieldType): String {
+    if (type.enumInfo != null) {
+      return '(pw, pv) => pw.rawInt32(pv as i32)';
+    }
+    return `(pw, pv) => pw.raw${pascalCase(scalarMethod(type.scalar))}(pv)`;
+  }
+
+  /** The type a getter of `field` returns. */
+  #readType(field: FieldInfo): String {
+    if (field.isMap) {
+      this.#use('ProtoMap');
+      return `ProtoMap<${scalarReadType(field.mapKey)}, ${this.#elementReadType(field.type)}>`;
+    }
+    if (field.isRepeated) {
+      this.#use('ProtoList');
+      return `ProtoList<${this.#elementReadType(field.type)}>`;
+    }
+    if (field.type.message != null) {
+      return `${(field.type.message as MessageInfo).zenaName} | null`;
+    }
+    return this.#elementReadType(field.type);
+  }
+
+  #elementReadType(type: FieldType): String {
+    if (type.message != null) {
+      return (type.message as MessageInfo).zenaName;
+    }
+    if (type.enumInfo != null) {
+      return (type.enumInfo as EnumInfo).zenaName;
+    }
+    let t = scalarReadType(type.scalar);
+    if (t == 'ProtoBytes') {
+      this.#use('ProtoBytes');
+    }
+    return t;
+  }
+
+  /** The type of `field` in its message's `Init` record. */
+  #writeType(field: FieldInfo): String {
+    if (field.isMap) {
+      return `Map<${scalarReadType(field.mapKey)}, ${this.#elementWriteType(field.type)}>`;
+    }
+    if (field.isRepeated) {
+      return `Array<${this.#elementWriteType(field.type)}>`;
+    }
+    return this.#elementWriteType(field.type);
+  }
+
+  #elementWriteType(type: FieldType): String {
+    if (type.scalar == (Scalar.Bytes as i32)) {
+      this.#use('ProtoBytes');
+      return 'ByteArray | ProtoBytes';
+    }
+    return this.#elementReadType(type);
+  }
+
+  /** An expression reading field `field` from `this.#m`, ignoring any `oneof`. */
+  #readExpr(field: FieldInfo): String {
+    let n = field.decl.number;
+    let type = field.type;
+    if (field.isMap) {
+      return `this.#m.map(${n}, (e) => e.${scalarMethod(field.mapKey)}(1), (e) => ${this.#entryValue(type)})`;
+    }
+    if (field.isRepeated) {
+      return `this.#m.repeated(${n}, ${this.#use(this.#wireOf(type))}, ${this.#elementReader(type)})`;
+    }
+    if (type.message != null) {
+      return `this.#m.message(${n})`;
+    }
+    if (type.enumInfo != null) {
+      return `this.#m.int32(${n}) as ${(type.enumInfo as EnumInfo).zenaName}`;
+    }
+    return `this.#m.${scalarMethod(type.scalar)}(${n})`;
+  }
+
+  /** How a map entry's value, field 2, is read from entry view `e`. */
+  #entryValue(type: FieldType): String {
+    if (type.message != null) {
+      return `new ${(type.message as MessageInfo).zenaName}(e.messageOrEmpty(2))`;
+    }
+    if (type.enumInfo != null) {
+      return `e.int32(2) as ${(type.enumInfo as EnumInfo).zenaName}`;
+    }
+    return `e.${scalarMethod(type.scalar)}(2)`;
+  }
+
+  #wireOf(type: FieldType): String {
+    if (type.message != null) {
+      return 'WIRE_LEN';
+    }
+    if (type.enumInfo != null) {
+      return 'WIRE_VARINT';
+    }
+    return scalarWire(type.scalar);
+  }
+
+  /** The element reader `ProtoView.repeated` takes. */
+  #elementReader(type: FieldType): String {
+    if (type.message != null) {
+      return `(v, p) => new ${(type.message as MessageInfo).zenaName}(v.messageAt(p))`;
+    }
+    if (type.enumInfo != null) {
+      return `(v, p) => v.int32At(p) as ${(type.enumInfo as EnumInfo).zenaName}`;
+    }
+    return `(v, p) => v.${scalarMethod(type.scalar)}At(p)`;
+  }
+
+  #emitGetter(m: MessageInfo, field: FieldInfo, getter: String): void {
+    let out = this.#out;
+    let type = this.#readType(field);
+    let oneofIndex = field.decl.oneofIndex;
+    let n = field.decl.number;
+    out.open(`${getter}: ${type} {`);
+    if (field.isMap || field.isRepeated || (oneofIndex < 0 && field.type.message == null)) {
+      out.line(`get { return ${this.#readExpr(field)}; }`);
+      out.close('}');
+      return;
+    }
+    out.open('get {');
+    if (oneofIndex >= 0) {
+      let which = `this.#which${pascalCase(m.decl.oneofs[oneofIndex].name)}()`;
+      out.open(`if (${which} != ${n}) {`);
+      out.line(`return ${this.#defaultOf(field.type)};`);
+      out.close('}');
+    }
+    if (field.type.message != null) {
+      out.line(`let m = this.#m.message(${n});`);
+      let mname = (field.type.message as MessageInfo).zenaName;
+      out.line(`return if (m == null) null else new ${mname}(m as ProtoView);`);
+    } else {
+      out.line(`return ${this.#readExpr(field)};`);
+    }
+    out.close('}');
+    out.close('}');
+  }
+
+  /** What a field reads as when absent, or when another member of its `oneof` is set. */
+  #defaultOf(type: FieldType): String {
+    if (type.message != null) {
+      return 'null';
+    }
+    if (type.enumInfo != null) {
+      return `0 as ${(type.enumInfo as EnumInfo).zenaName}`;
+    }
+    if (type.scalar == (Scalar.Bytes as i32)) {
+      this.#use('ProtoBytes');
+    }
+    return scalarDefault(type.scalar);
+  }
+
+  #emitOneofType(m: MessageInfo, index: i32, typeName: String): void {
+    let out = this.#out;
+    let oneof = m.decl.oneofs[index];
+    this.#declare(typeName, `${m.fullName}.${oneof.name}`);
+    let notSet = `${typeName}NotSet`;
+    out.line('');
+    out.doc(
+      oneof.comment,
+      `The member of \`${m.fullName}.${oneof.name}\` that is set, as \`${m.zenaName}.${camelCase(oneof.name)}\` reads it.`
+    );
+    out.open(`export sealed class ${typeName} {`);
+    for (let field in m.fields) {
+      if (field.decl.oneofIndex != index) {
+        continue;
+      }
+      let caseName = this.#caseName(m, field, typeName);
+      this.#declare(caseName, `${m.fullName}.${field.decl.name}`);
+      out.line(`case ${caseName}(value: ${this.#elementReadType(field.type)})`);
+    }
+    this.#declare(notSet, `${m.fullName}.${oneof.name} with no member set`);
+    out.line(`case ${notSet}`);
+    out.close('}');
+  }
+
+  #emitOneofGetter(m: MessageInfo, index: i32, getter: String, typeName: String): void {
+    let out = this.#out;
+    let oneof = m.decl.oneofs[index];
+    let pascal = pascalCase(oneof.name);
+    let numbers = new GrowableArray<String>();
+    for (let field in m.fields) {
+      if (field.decl.oneofIndex == index) {
+        numbers.push(`${field.decl.number}`);
+      }
+    }
+    out.line('');
+    out.doc(`The member of \`${oneof.name}\` that is set.`, null);
+    out.open(`${getter}: ${typeName} {`);
+    out.open('get {');
+    out.line(`let which = this.#which${pascal}();`);
+    for (let field in m.fields) {
+      if (field.decl.oneofIndex != index) {
+        continue;
+      }
+      let n = field.decl.number;
+      let caseName = this.#caseName(m, field, typeName);
+      let value = if (field.type.message != null)
+        `new ${(field.type.message as MessageInfo).zenaName}(this.#m.message(${n}) as ProtoView)`
+        else this.#readExpr(field);
+      out.open(`if (which == ${n}) {`);
+      out.line(`return new ${caseName}(${value});`);
+      out.close('}');
+    }
+    out.line(`return new ${typeName}NotSet();`);
+    out.close('}');
+    out.close('}');
+    out.line('');
+    out.open(`#which${pascal}(): i32 {`);
+    out.line(`return this.#m.whichOf([${joinStrings(numbers, ', ')}]);`);
+    out.close('}');
+  }
+
+  #emitService(service: ServiceInfo): void {
+    let out = this.#out;
+    let name = `${service.decl.name}Client`;
+    this.#declare(name, service.fullName);
+    this.#use('ProtoTransport');
+    this.#use('RpcMethod');
+    let skipped = new GrowableArray<String>();
+    for (let method in service.methods) {
+      if (method.decl.inputStream) {
+        skipped.push(`\`${method.decl.name}\``);
+      }
+    }
+    var extra = `A client for \`${service.fullName}\`.`;
+    if (skipped.length > 0) {
+      extra = `${extra} Not generated, because they stream requests: ${joinStrings(skipped, ', ')}.`;
+    }
+    out.line('');
+    out.doc(service.decl.comment, extra);
+    out.open(`export final class ${name} {`);
+    out.line('#transport: ProtoTransport;');
+    out.line('');
+    out.line('new(transport: ProtoTransport) : #transport = transport;');
+    let taken = new HashSet<String>();
+    for (let method in service.methods) {
+      if (method.decl.inputStream) {
+        continue;
+      }
+      let methodName = claim(taken, memberName(lowerFirst(method.decl.name)));
+      let input = method.input.zenaName;
+      let output = method.output.zenaName;
+      let rpc = `new RpcMethod('${service.fullName}', '${method.decl.name}')`;
+      out.line('');
+      out.doc(method.decl.comment, null);
+      if (method.decl.outputStream) {
+        this.#use('ProtoStream');
+        out.open(`${methodName}(request: ${input}Init): ProtoStream<${output}> {`);
+        out.open(`return new ProtoStream<${output}>(`);
+        out.line(`this.#transport.serverStream(${rpc}, ${input}.of(request).protoView),`);
+        out.line(`(view) => new ${output}(view)`);
+        out.close(');');
+        out.close('}');
+      } else {
+        out.open(`async ${methodName}(request: ${input}Init): Future<${output}> {`);
+        out.line(`let response = await this.#transport.unary(${rpc}, ${input}.of(request).protoView);`);
+        out.line(`return new ${output}(response);`);
+        out.close('}');
+      }
+    }
+    out.close('}');
+  }
+}
+
+/** Whether a field gets a `hasX` getter: a scalar or enum whose absence is observable. */
+let needsHas = (field: FieldInfo): boolean =>
+  field.explicitPresence && !field.isRepeated && field.type.message == null;
+
+/** `name`, or `name_`, `name__` ... if taken; the result is added to `taken`. */
+let claim = (taken: HashSet<String>, name: String): String => {
+  var candidate = name;
+  while (taken.has(candidate)) {
+    candidate = `${candidate}_`;
+  }
+  taken.add(candidate);
+  return candidate;
+};
+
+/** Sorts `names` in place by byte order. */
+let sortStrings = (names: GrowableArray<String>): void => {
+  for (var i = 1; i < names.length; i += 1) {
+    let item = names[i];
+    var j = i - 1;
+    while (j >= 0 && names[j].compareTo(item) > 0) {
+      names[j + 1] = names[j];
+      j -= 1;
+    }
+    names[j + 1] = item;
+  }
+};
+
+/**
+ * Emits the module for the reached part of `schema`. `primaryPackage`
+ * keeps its types' short names when another package's type has the same
+ * one. `sources` names the input files in the generated header.
+ */
+export let emitModule = (
+  schema: Schema,
+  services: GrowableArray<ServiceInfo>,
+  primaryPackage: String,
+  runtimeImport: String,
+  sources: String
+): String => {
+  initNames();
+  assignNames(schema, primaryPackage);
+  return new Emitter(schema).emit(services, runtimeImport, sources);
+};

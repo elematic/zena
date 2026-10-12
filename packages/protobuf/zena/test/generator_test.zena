@@ -1,0 +1,139 @@
+/**
+ * The generator, from `.proto` source to Zena source.
+ *
+ * The generated modules are checked in under `test-files/generated/`, and
+ * `generated_test.zena` compiles and runs them; this test fails when the
+ * generator's output no longer matches them. Regenerate them with
+ * `UPDATE_PROTO_GOLDENS=1`.
+ */
+
+import {suite, test} from 'zena:test';
+import {equal, isTrue} from 'zena:assert';
+import {getEnv} from 'zena:cli';
+import {exists, readFile, writeFile} from 'zena:fs';
+import {HashMap} from 'zena:collections';
+import {generate} from '../generator.zena';
+import {camelCase, pascalCase} from '../emitter.zena';
+
+/** Paths relative to the repository root, which is where a test runs. */
+let INCLUDES = ['packages/protobuf/test-files/protos', 'packages/protobuf/protos'];
+let GENERATED = 'packages/protobuf/test-files/generated';
+
+let readFromIncludes = (path: String): String | null => {
+  for (let dir in INCLUDES) {
+    let candidate = `${dir}/${path}`;
+    if (exists(candidate)) {
+      return readFile(candidate);
+    }
+  }
+  return null;
+};
+
+/** Generates from `file` and compares with, or with the env var writes, `golden`. */
+let checkGolden = (file: String, golden: String): void => {
+  let source = generate({files: [file], read: readFromIncludes});
+  let path = `${GENERATED}/${golden}`;
+  if (getEnv('UPDATE_PROTO_GOLDENS') != null) {
+    writeFile(path, source);
+    return;
+  }
+  isTrue(exists(path), `no golden at ${path}; run with UPDATE_PROTO_GOLDENS=1`);
+  isTrue(
+    readFile(path) == source,
+    `${path} does not match the generator's output; run with UPDATE_PROTO_GOLDENS=1 and review the diff`
+  );
+};
+
+/** A reader over in-memory files. */
+let filesOf = (files: HashMap<String, String>): (path: String) => String | null =>
+  (path: String): String | null => {
+    if (let (true, source) = files.get(path)) {
+      return source;
+    }
+    return null;
+  };
+
+/** The message `generate` fails with on `files`, or '' when it succeeds. */
+let failure = (files: HashMap<String, String>): String => try {
+  generate({files: ['a.proto'], read: filesOf(files)});
+  ''
+} catch (e) {
+  e.message
+};
+
+export let tests = suite('protobuf generator', (): void => {
+  test('generates the feature fixture', () => {
+    checkGolden('zena/test/v1/everything.proto', 'everything.zena');
+  });
+
+  test('generates Firestore', () => {
+    checkGolden('google/firestore/v1/firestore.proto', 'firestore.zena');
+  });
+
+  test('converts names', () => {
+    equal(pascalCase('field_filter'), 'FieldFilter');
+    equal(pascalCase('value_type'), 'ValueType');
+    equal(pascalCase('f_int32'), 'FInt32');
+    equal(camelCase('field_paths'), 'fieldPaths');
+    equal(camelCase('update_time'), 'updateTime');
+    equal(camelCase('name'), 'name');
+  });
+
+  test('reports an unknown type with the missing imports', () => {
+    let files = new HashMap<String, String>();
+    files['a.proto'] = 'syntax = "proto3"; import "gone.proto"; message A { Missing m = 1; }';
+    let message = failure(files);
+    isTrue(message.contains('A.m refers to unknown type Missing'), message);
+    isTrue(message.contains('gone.proto'), message);
+  });
+
+  test('ignores a missing import nothing needs', () => {
+    let files = new HashMap<String, String>();
+    files['a.proto'] = 'syntax = "proto3"; import "gone.proto"; message A { int32 x = 1; }';
+    equal(failure(files), '');
+  });
+
+  test('resolves names from the innermost scope out', () => {
+    let files = new HashMap<String, String>();
+    files['a.proto'] = 'syntax = "proto3"; package p.q; import "b.proto";'
+      + ' message Outer { message Inner {} Inner a = 1; p.Shared b = 2; .p.Shared c = 3; Shared d = 4; }';
+    files['b.proto'] = 'syntax = "proto3"; package p; message Shared { int32 x = 1; }';
+    let source = generate({files: ['a.proto'], read: filesOf(files)});
+    isTrue(source.contains('a: OuterInner | null'), source);
+    isTrue(source.contains('b: Shared | null'), source);
+    isTrue(source.contains('d: Shared | null'), source);
+  });
+
+  test('generates only what the roots reach', () => {
+    let files = new HashMap<String, String>();
+    files['a.proto'] = 'syntax = "proto3"; message A { B b = 1; } message B {} message C {}';
+    let source = generate({files: ['a.proto'], read: filesOf(files), roots: ['A']});
+    isTrue(source.contains('class A '), source);
+    isTrue(source.contains('class B '), source);
+    isTrue(!source.contains('class C '), source);
+  });
+
+  test('prefixes a type whose name another package uses', () => {
+    let files = new HashMap<String, String>();
+    files['a.proto'] = 'syntax = "proto3"; package app; import "b.proto";'
+      + ' message Value { other.Value v = 1; }';
+    files['b.proto'] = 'syntax = "proto3"; package other; message Value {}';
+    let source = generate({files: ['a.proto'], read: filesOf(files)});
+    isTrue(source.contains('class Value '), source);
+    isTrue(source.contains('class OtherValue '), source);
+  });
+
+  test('prefixes a type named like a Zena type the module uses', () => {
+    let files = new HashMap<String, String>();
+    files['a.proto'] = 'syntax = "proto3"; package geo; message Map { int32 x = 1; }';
+    let source = generate({files: ['a.proto'], read: filesOf(files)});
+    isTrue(source.contains('class GeoMap '), source);
+  });
+
+  test('reports a syntax error with its position', () => {
+    let files = new HashMap<String, String>();
+    files['a.proto'] = 'syntax = "proto3";\nmessage A {\n  int32 x = ;\n}';
+    let message = failure(files);
+    isTrue(message.contains('a.proto:3:13: expected a field number'), message);
+  });
+});

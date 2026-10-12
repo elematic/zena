@@ -1,0 +1,1049 @@
+/**
+ * The runtime that generated protobuf code calls.
+ *
+ * A decoded message is a `ProtoView`: the bytes it was received in and the
+ * range it occupies. Nothing is decoded until a field is read, and each
+ * read decodes only that field, so a program carries code for the fields
+ * it reads and no others. Unknown fields are skipped by wire type, which
+ * needs no schema.
+ *
+ * A message to send is encoded by a `ProtoWriter`. Generated code encodes
+ * a nested message before its parent and embeds the child's bytes, so a
+ * message's length is always known when it is written.
+ *
+ * Wire format: https://protobuf.dev/programming-guides/encoding/
+ */
+
+import {AsyncIterable, AsyncIterator, AsyncStep} from 'zena:async';
+import {HashMap} from 'zena:collections';
+import {ByteBuffer, Encoding, IterableUtils, Step, copyBytes, newByteArray} from 'zena:core';
+import {
+  f32_reinterpret_i32,
+  f64_reinterpret_i64,
+  i32_reinterpret_f32,
+  i64_reinterpret_f64
+} from 'zena:math';
+
+/** Malformed input: a truncated message, a bad varint, a wire type that does not match the schema. */
+export class ProtoError extends Error {
+  new(message: String) : super(message);
+}
+
+/** The wire type of a varint: `int32`, `int64`, `uint*`, `sint*`, `bool`, enums. */
+export let WIRE_VARINT = 0;
+/** The wire type of `fixed64`, `sfixed64` and `double`. */
+export let WIRE_I64 = 1;
+/** The wire type of a length-delimited value: strings, bytes, messages, packed repeated fields. */
+export let WIRE_LEN = 2;
+/** The wire type of `fixed32`, `sfixed32` and `float`. */
+export let WIRE_I32 = 5;
+
+/**
+ * Field numbers below this are indexed in an array, the rest in a map.
+ * Messages generated from `.proto` files rarely number fields past a few
+ * dozen, while the protocol allows up to 2^29 - 1.
+ */
+let DENSE_LIMIT = 1024;
+
+let EMPTY_BYTES: ByteArray = newByteArray(0);
+
+/**
+ * The low 32 bits of an i64. Typed so the literal is 2^32 - 1: untyped,
+ * `0xFFFFFFFF` beside an i64 is the i32 -1, sign-extended. Writing a
+ * `u32` masks with it because `u32 as i64` sign-extends too
+ * (elematic/zena#90).
+ */
+let MASK32: i64 = 0xFFFFFFFF;
+
+/** `n` zigzag-decoded: 0, -1, 1, -2, ... from 0, 1, 2, 3, ... */
+let unzigzag32 = (n: i32): i32 => (n >>> 1) ^ (0 - (n & 1));
+
+let unzigzag64 = (n: i64): i64 => (n >>> 1) ^ (0 - (n & 1));
+
+/**
+ * One encoded message, read on demand.
+ *
+ * The getters take a field number and return the field's value, or the
+ * field type's default when the field is absent. Where a field occurs more
+ * than once the last occurrence wins, except for a message field, whose
+ * occurrences are merged as the protobuf specification requires.
+ *
+ * The first read builds an index of where each field occurs, in one pass
+ * over the message; every read after that goes straight to its field.
+ */
+export final class ProtoView {
+  #bytes: ByteArray;
+  #start: i32;
+  #end: i32;
+  /**
+   * Per field number below `DENSE_LIMIT`, three entries: the offset of the
+   * first tag plus one, the offset of the last tag plus one, and the
+   * number of occurrences. Zero means absent.
+   */
+  var #dense: FixedArray<i32> | null = null;
+  /** The same three entries, for field numbers at or above `DENSE_LIMIT`. */
+  var #sparse: HashMap<i32, FixedArray<i32>> | null = null;
+  /** The position just past the value the last `read*` call decoded. */
+  var #cursor: i32 = 0;
+
+  /** A view of `bytes[start..end]`, which must hold one encoded message. */
+  new(bytes: ByteArray, start: i32, end: i32) : #bytes = bytes, #start = start, #end = end;
+
+  /** A view of all of `bytes`. */
+  static of(bytes: ByteArray): ProtoView {
+    return new ProtoView(bytes, 0, bytes.length);
+  }
+
+  /** A view of a message with no fields set. */
+  static empty(): ProtoView {
+    return new ProtoView(EMPTY_BYTES, 0, 0);
+  }
+
+  /** The array holding the encoded message. Other data may share it. */
+  buffer: ByteArray {
+    get { return this.#bytes; }
+  }
+
+  /** Where the message starts in `buffer`. */
+  start: i32 {
+    get { return this.#start; }
+  }
+
+  /** Where the message ends in `buffer`. */
+  end: i32 {
+    get { return this.#end; }
+  }
+
+  /** The encoded message's size in bytes. */
+  byteLength: i32 {
+    get { return this.#end - this.#start; }
+  }
+
+  /** A copy of the encoded message. */
+  toByteArray(): ByteArray {
+    let out = newByteArray(this.#end - this.#start);
+    copyBytes(out, 0, this.#bytes, this.#start, this.#end - this.#start);
+    return out;
+  }
+
+  /** The position just past the value the last `read*` or `tagAt` call decoded. */
+  cursor: i32 {
+    get { return this.#cursor; }
+  }
+
+  /** Whether field `field` occurs at least once. */
+  has(field: i32): boolean {
+    return this.#entry(field, 2) > 0;
+  }
+
+  /** How many times field `field` occurs. A packed repeated field counts once per run. */
+  count(field: i32): i32 {
+    return this.#entry(field, 2);
+  }
+
+  /** The offset of field `field`'s first tag, or -1. */
+  firstTag(field: i32): i32 {
+    return this.#entry(field, 0) - 1;
+  }
+
+  /** The offset of field `field`'s last tag, or -1. */
+  lastTag(field: i32): i32 {
+    return this.#entry(field, 1) - 1;
+  }
+
+  /**
+   * Of the fields in `fields`, the one that occurs last, or 0 when none
+   * occurs. This is the member of a `oneof` that is set: a later member
+   * replaces an earlier one.
+   */
+  whichOf(fields: ImmutableArray<i32>): i32 {
+    var best = 0;
+    var bestOffset = -1;
+    for (let field in fields) {
+      let offset = this.lastTag(field);
+      if (offset > bestOffset) {
+        best = field;
+        bestOffset = offset;
+      }
+    }
+    return best;
+  }
+
+  /** `int32` and enum fields. */
+  int32(field: i32): i32 {
+    let pos = this.#valueOf(field, WIRE_VARINT);
+    return if (pos < 0) 0 else this.int32At(pos);
+  }
+
+  /** `int64` fields. */
+  int64(field: i32): i64 {
+    let pos = this.#valueOf(field, WIRE_VARINT);
+    return if (pos < 0) 0 else this.int64At(pos);
+  }
+
+  /** `uint32` fields. */
+  uint32(field: i32): u32 {
+    let pos = this.#valueOf(field, WIRE_VARINT);
+    return if (pos < 0) 0 else this.uint32At(pos);
+  }
+
+  /** `uint64` fields. */
+  uint64(field: i32): u64 {
+    let pos = this.#valueOf(field, WIRE_VARINT);
+    return if (pos < 0) 0 else this.uint64At(pos);
+  }
+
+  /** `sint32` fields, which are zigzag-encoded. */
+  sint32(field: i32): i32 {
+    let pos = this.#valueOf(field, WIRE_VARINT);
+    return if (pos < 0) 0 else this.sint32At(pos);
+  }
+
+  /** `sint64` fields, which are zigzag-encoded. */
+  sint64(field: i32): i64 {
+    let pos = this.#valueOf(field, WIRE_VARINT);
+    return if (pos < 0) 0 else this.sint64At(pos);
+  }
+
+  /** `bool` fields. */
+  bool(field: i32): boolean {
+    let pos = this.#valueOf(field, WIRE_VARINT);
+    return if (pos < 0) false else this.boolAt(pos);
+  }
+
+  /** `fixed32` fields. */
+  fixed32(field: i32): u32 {
+    let pos = this.#valueOf(field, WIRE_I32);
+    return if (pos < 0) 0 else this.fixed32At(pos);
+  }
+
+  /** `sfixed32` fields. */
+  sfixed32(field: i32): i32 {
+    let pos = this.#valueOf(field, WIRE_I32);
+    return if (pos < 0) 0 else this.sfixed32At(pos);
+  }
+
+  /** `float` fields. */
+  float(field: i32): f32 {
+    let pos = this.#valueOf(field, WIRE_I32);
+    return if (pos < 0) 0.0 as f32 else this.floatAt(pos);
+  }
+
+  /** `fixed64` fields. */
+  fixed64(field: i32): u64 {
+    let pos = this.#valueOf(field, WIRE_I64);
+    return if (pos < 0) 0 else this.fixed64At(pos);
+  }
+
+  /** `sfixed64` fields. */
+  sfixed64(field: i32): i64 {
+    let pos = this.#valueOf(field, WIRE_I64);
+    return if (pos < 0) 0 else this.sfixed64At(pos);
+  }
+
+  /** `double` fields. */
+  double(field: i32): f64 {
+    let pos = this.#valueOf(field, WIRE_I64);
+    return if (pos < 0) 0.0 else this.doubleAt(pos);
+  }
+
+  /**
+   * `string` fields. The result shares this view's buffer; nothing is
+   * copied. The bytes are taken as WTF-8 without validation.
+   */
+  string(field: i32): String {
+    let pos = this.#valueOf(field, WIRE_LEN);
+    return if (pos < 0) '' else this.stringAt(pos);
+  }
+
+  /** `bytes` fields. The result shares this view's buffer. */
+  bytes(field: i32): ProtoBytes {
+    let pos = this.#valueOf(field, WIRE_LEN);
+    return if (pos < 0) ProtoBytes.empty() else this.bytesAt(pos);
+  }
+
+  /**
+   * A message field, or null when it is absent. When the field occurs
+   * more than once, the occurrences are merged: the result is a view of
+   * their concatenation, which the specification defines to be the merge.
+   */
+  message(field: i32): ProtoView | null {
+    let count = this.count(field);
+    if (count == 0) {
+      return null;
+    }
+    if (count == 1) {
+      return this.messageAt(this.#valueOf(field, WIRE_LEN));
+    }
+    let parts = new ByteBuffer();
+    var pos = this.firstTag(field);
+    while (pos < this.#end) {
+      let tag = this.tagAt(pos);
+      let valueStart = this.#cursor;
+      let next = this.skip(tag & 7, valueStart);
+      if ((tag >>> 3) == field) {
+        if ((tag & 7) != WIRE_LEN) {
+          throw new ProtoError(`field ${field} has wire type ${tag & 7}, expected 2`);
+        }
+        let len = this.readVarint(valueStart) as i32;
+        parts.writeBytesSlice(this.#bytes, this.#cursor, len);
+      }
+      pos = next;
+    }
+    return ProtoView.of(parts.toByteArray());
+  }
+
+  /** A message field, or a message with no fields set when it is absent. */
+  messageOrEmpty(field: i32): ProtoView {
+    let m = this.message(field);
+    return if (m == null) ProtoView.empty() else m as ProtoView;
+  }
+
+  /**
+   * A repeated field. `wireType` is the wire type of one element, and
+   * `read` decodes one element at a value position, leaving `cursor` past
+   * it: `(v, pos) => v.int32At(pos)`. Elements of a numeric type may arrive packed, unpacked, or both,
+   * and are accepted either way.
+   */
+  repeated<T>(field: i32, wireType: i32, read: (view: ProtoView, pos: i32) => T): ProtoList<T> {
+    return new ProtoList<T>(this, field, wireType, read);
+  }
+
+  /**
+   * A map field: a repeated message field whose entries hold the key in
+   * field 1 and the value in field 2. `key` and `value` read them from an
+   * entry.
+   */
+  map<K, V>(
+    field: i32,
+    key: (entry: ProtoView) => K,
+    value: (entry: ProtoView) => V
+  ): ProtoMap<K, V> {
+    return new ProtoMap<K, V>(this, field, key, value);
+  }
+
+  /** Reads the varint at `pos`. */
+  readVarint(pos: i32): i64 {
+    var result: i64 = 0;
+    var shift: i64 = 0;
+    var p = pos;
+    while (true) {
+      if (p >= this.#end) {
+        throw new ProtoError('truncated varint');
+      }
+      let b = this.#bytes[p] as i64;
+      p += 1;
+      result = result | ((b & 0x7F) << shift);
+      if ((b & 0x80) == 0) {
+        this.#cursor = p;
+        return result;
+      }
+      shift += 7;
+      if (shift >= 70) {
+        throw new ProtoError('varint is longer than 10 bytes');
+      }
+    }
+    return result;
+  }
+
+  /** Reads the four little-endian bytes at `pos`. */
+  readFixed32(pos: i32): i32 {
+    if (pos + 4 > this.#end) {
+      throw new ProtoError('truncated fixed32');
+    }
+    let b = this.#bytes;
+    this.#cursor = pos + 4;
+    return (b[pos] as i32) | ((b[pos + 1] as i32) << 8) | ((b[pos + 2] as i32) << 16) |
+      ((b[pos + 3] as i32) << 24);
+  }
+
+  /** Reads the eight little-endian bytes at `pos`. */
+  readFixed64(pos: i32): i64 {
+    if (pos + 8 > this.#end) {
+      throw new ProtoError('truncated fixed64');
+    }
+    let low = this.readFixed32(pos) as i64;
+    let high = this.readFixed32(pos + 4) as i64;
+    return (low & MASK32) | (high << 32);
+  }
+
+  /** Reads the length prefix at `pos` and returns where the value ends; `cursor` is where it starts. */
+  readLength(pos: i32): i32 {
+    let len = this.readVarint(pos);
+    let start = this.#cursor;
+    if (len < 0 || len > ((this.#end - start) as i64)) {
+      throw new ProtoError('length-delimited value runs past the end of its message');
+    }
+    return start + (len as i32);
+  }
+
+  /** Reads an `int32` or enum value at `pos`. */
+  int32At(pos: i32): i32 {
+    return this.readVarint(pos) as i32;
+  }
+
+  int64At(pos: i32): i64 {
+    return this.readVarint(pos);
+  }
+
+  uint32At(pos: i32): u32 {
+    return (this.readVarint(pos) as i32) as u32;
+  }
+
+  uint64At(pos: i32): u64 {
+    return this.readVarint(pos) as u64;
+  }
+
+  sint32At(pos: i32): i32 {
+    return unzigzag32(this.readVarint(pos) as i32);
+  }
+
+  sint64At(pos: i32): i64 {
+    return unzigzag64(this.readVarint(pos));
+  }
+
+  boolAt(pos: i32): boolean {
+    return this.readVarint(pos) != 0;
+  }
+
+  fixed32At(pos: i32): u32 {
+    return this.readFixed32(pos) as u32;
+  }
+
+  sfixed32At(pos: i32): i32 {
+    return this.readFixed32(pos);
+  }
+
+  floatAt(pos: i32): f32 {
+    return f32_reinterpret_i32(this.readFixed32(pos));
+  }
+
+  fixed64At(pos: i32): u64 {
+    return this.readFixed64(pos) as u64;
+  }
+
+  sfixed64At(pos: i32): i64 {
+    return this.readFixed64(pos);
+  }
+
+  doubleAt(pos: i32): f64 {
+    return f64_reinterpret_i64(this.readFixed64(pos));
+  }
+
+  /** Reads the string whose length prefix is at `pos`. */
+  stringAt(pos: i32): String {
+    let end = this.readLength(pos);
+    let start = this.#cursor;
+    this.#cursor = end;
+    return String.fromByteArray(this.#bytes, start, end, Encoding.WTF8);
+  }
+
+  /** Reads the bytes value whose length prefix is at `pos`. */
+  bytesAt(pos: i32): ProtoBytes {
+    let end = this.readLength(pos);
+    let start = this.#cursor;
+    this.#cursor = end;
+    return new ProtoBytes(this.#bytes, start, end);
+  }
+
+  /** Reads the message whose length prefix is at `pos`. */
+  messageAt(pos: i32): ProtoView {
+    let end = this.readLength(pos);
+    let start = this.#cursor;
+    this.#cursor = end;
+    return new ProtoView(this.#bytes, start, end);
+  }
+
+  /** Reads the tag at `pos`; `cursor` is where its value starts. */
+  tagAt(pos: i32): i32 {
+    let tag = this.readVarint(pos);
+    if (tag > MASK32 || (tag >>> 3) == 0) {
+      throw new ProtoError('invalid tag');
+    }
+    return tag as i32;
+  }
+
+  /** Where the value of wire type `wireType` starting at `pos` ends. */
+  skip(wireType: i32, pos: i32): i32 {
+    if (wireType == WIRE_VARINT) {
+      var p = pos;
+      while (true) {
+        if (p >= this.#end || p - pos >= 10) {
+          throw new ProtoError('truncated varint');
+        }
+        let b = this.#bytes[p] as i32;
+        p += 1;
+        if ((b & 0x80) == 0) {
+          return p;
+        }
+      }
+    }
+    if (wireType == WIRE_I64) {
+      return this.#within(pos + 8);
+    }
+    if (wireType == WIRE_I32) {
+      return this.#within(pos + 4);
+    }
+    if (wireType == WIRE_LEN) {
+      return this.readLength(pos);
+    }
+    throw new ProtoError(`unsupported wire type ${wireType}`);
+  }
+
+  #within(pos: i32): i32 {
+    if (pos > this.#end) {
+      throw new ProtoError('truncated value');
+    }
+    return pos;
+  }
+
+  /**
+   * Where the value of field `field`'s last occurrence starts, or -1 when
+   * the field is absent. Throws if it was written with another wire type.
+   */
+  #valueOf(field: i32, wireType: i32): i32 {
+    let tagPos = this.lastTag(field);
+    if (tagPos < 0) {
+      return -1;
+    }
+    let tag = this.tagAt(tagPos);
+    if ((tag & 7) != wireType) {
+      throw new ProtoError(`field ${field} has wire type ${tag & 7}, expected ${wireType}`);
+    }
+    return this.#cursor;
+  }
+
+  /** Entry `k` of field `field`'s index slot: see `#dense`. */
+  #entry(field: i32, k: i32): i32 {
+    if (this.#dense == null) {
+      this.#buildIndex();
+    }
+    if (field < DENSE_LIMIT) {
+      let dense = this.#dense as FixedArray<i32>;
+      let i = field * 3 + k;
+      return if (i < dense.length) dense[i] else 0;
+    }
+    let sparse = this.#sparse;
+    if (sparse == null) {
+      return 0;
+    }
+    if (let (true, slot) = (sparse as HashMap<i32, FixedArray<i32>>).get(field)) {
+      return slot[k];
+    }
+    return 0;
+  }
+
+  /** Scans the message once, recording where each field occurs. */
+  #buildIndex(): void {
+    var maxField = 0;
+    var pos = this.#start;
+    while (pos < this.#end) {
+      let tag = this.tagAt(pos);
+      let field = tag >>> 3;
+      if (field < DENSE_LIMIT && field > maxField) {
+        maxField = field;
+      }
+      pos = this.skip(tag & 7, this.#cursor);
+    }
+    let dense = new FixedArray<i32>((maxField + 1) * 3, 0);
+    pos = this.#start;
+    while (pos < this.#end) {
+      let tag = this.tagAt(pos);
+      let field = tag >>> 3;
+      let next = this.skip(tag & 7, this.#cursor);
+      if (field < DENSE_LIMIT) {
+        let i = field * 3;
+        if (dense[i] == 0) {
+          dense[i] = pos + 1;
+        }
+        dense[i + 1] = pos + 1;
+        dense[i + 2] = dense[i + 2] + 1;
+      } else {
+        this.#recordSparse(field, pos);
+      }
+      pos = next;
+    }
+    this.#dense = dense;
+  }
+
+  #recordSparse(field: i32, pos: i32): void {
+    if (this.#sparse == null) {
+      this.#sparse = new HashMap<i32, FixedArray<i32>>();
+    }
+    let sparse = this.#sparse as HashMap<i32, FixedArray<i32>>;
+    if (let (true, slot) = sparse.get(field)) {
+      slot[1] = pos + 1;
+      slot[2] = slot[2] + 1;
+      return;
+    }
+    let slot = new FixedArray<i32>(3, 0);
+    slot[0] = pos + 1;
+    slot[1] = pos + 1;
+    slot[2] = 1;
+    sparse[field] = slot;
+  }
+}
+
+/** The value of a `bytes` field: a range of a buffer, shared with the message it came from. */
+export final class ProtoBytes {
+  #bytes: ByteArray;
+  #start: i32;
+  #end: i32;
+
+  new(bytes: ByteArray, start: i32, end: i32) : #bytes = bytes, #start = start, #end = end;
+
+  /** A view of all of `bytes`, which must not change afterwards. */
+  static of(bytes: ByteArray): ProtoBytes {
+    return new ProtoBytes(bytes, 0, bytes.length);
+  }
+
+  /** No bytes. */
+  static empty(): ProtoBytes {
+    return new ProtoBytes(EMPTY_BYTES, 0, 0);
+  }
+
+  length: i32 {
+    get { return this.#end - this.#start; }
+  }
+
+  /** The byte at `index`, from 0 to 255. */
+  operator [](index: i32): i32 {
+    if (index < 0 || index >= this.#end - this.#start) {
+      throw new ProtoError(`index ${index} is out of range`);
+    }
+    return this.#bytes[this.#start + index] as i32;
+  }
+
+  /** A copy of the bytes. */
+  toByteArray(): ByteArray {
+    let out = newByteArray(this.#end - this.#start);
+    copyBytes(out, 0, this.#bytes, this.#start, this.#end - this.#start);
+    return out;
+  }
+
+  /** Appends the bytes to `buffer`. */
+  writeTo(buffer: ByteBuffer): void {
+    buffer.writeBytesSlice(this.#bytes, this.#start, this.#end - this.#start);
+  }
+}
+
+/** The elements of a repeated field, decoded as they are iterated. */
+export final class ProtoList<T> with IterableUtils<T> implements Iterable<T> {
+  #view: ProtoView;
+  #field: i32;
+  #wireType: i32;
+  #read: (view: ProtoView, pos: i32) => T;
+
+  new(view: ProtoView, field: i32, wireType: i32, read: (view: ProtoView, pos: i32) => T)
+    : #view = view, #field = field, #wireType = wireType, #read = read;
+
+  /** The number of elements. Counting a packed field decodes it. */
+  length: i32 {
+    get {
+      if (this.#wireType == WIRE_LEN) {
+        return this.#view.count(this.#field);
+      }
+      var n = 0;
+      let items = this.[Iterable.iterator]();
+      while (true) {
+        let (more, _, _) = items.next();
+        if (more == 0) {
+          return n;
+        }
+        n += 1;
+      }
+      return n;
+    }
+  }
+
+  [Iterable.iterator](): Iterator<T> {
+    return new ProtoListIterator<T>(this.#view, this.#field, this.#wireType, this.#read);
+  }
+
+  /** The elements, decoded into an array. */
+  toArray(): GrowableArray<T> {
+    let out = new GrowableArray<T>();
+    for (let item in this) {
+      out.push(item);
+    }
+    return out;
+  }
+}
+
+/** Walks a message for the occurrences of one field, and inside each packed run. */
+final class ProtoListIterator<T> implements Iterator<T> {
+  #view: ProtoView;
+  #field: i32;
+  #wireType: i32;
+  #read: (view: ProtoView, pos: i32) => T;
+  /** Where to look for the field's next occurrence. */
+  var #scan: i32;
+  /** The packed run being read, if any: next element and end. */
+  var #packedPos: i32 = 0;
+  var #packedEnd: i32 = 0;
+
+  new(view: ProtoView, field: i32, wireType: i32, read: (view: ProtoView, pos: i32) => T)
+    : #view = view, #field = field, #wireType = wireType, #read = read,
+      #scan = if (view.firstTag(field) < 0) view.end else view.firstTag(field);
+
+  next(): Step<T> {
+    let view = this.#view;
+    while (true) {
+      if (this.#packedPos < this.#packedEnd) {
+        let value = this.#read(view, this.#packedPos);
+        this.#packedPos = view.cursor;
+        return (1, value, _);
+      }
+      if (this.#scan >= view.end) {
+        return (0, _, _);
+      }
+      let tag = view.tagAt(this.#scan);
+      let valueStart = view.cursor;
+      let wireType = tag & 7;
+      if ((tag >>> 3) != this.#field) {
+        this.#scan = view.skip(wireType, valueStart);
+        continue;
+      }
+      if (wireType == WIRE_LEN && this.#wireType != WIRE_LEN) {
+        let end = view.readLength(valueStart);
+        this.#packedPos = view.cursor;
+        this.#packedEnd = end;
+        this.#scan = end;
+        continue;
+      }
+      if (wireType != this.#wireType) {
+        throw new ProtoError(`field ${this.#field} has wire type ${wireType}, expected ${this.#wireType}`);
+      }
+      this.#scan = view.skip(wireType, valueStart);
+      return (1, this.#read(view, valueStart), _);
+    }
+    return (0, _, _);
+  }
+}
+
+/** One entry of a `ProtoMap`. */
+export final class ProtoMapEntry<K, V> {
+  key: K;
+  value: V;
+  new(this.key, this.value);
+}
+
+/**
+ * The entries of a map field. Each lookup scans the entries; for many
+ * lookups, copy them into a `HashMap` first. When a key occurs more than
+ * once, the last entry wins.
+ */
+export final class ProtoMap<K, V> with IterableUtils<ProtoMapEntry<K, V>> implements Iterable<ProtoMapEntry<K, V>> {
+  #view: ProtoView;
+  #field: i32;
+  #key: (entry: ProtoView) => K;
+  #value: (entry: ProtoView) => V;
+
+  new(
+    view: ProtoView,
+    field: i32,
+    key: (entry: ProtoView) => K,
+    value: (entry: ProtoView) => V
+  ) : #view = view, #field = field, #key = key, #value = value;
+
+  /** The number of entries on the wire, counting a repeated key each time. */
+  length: i32 {
+    get { return this.#view.count(this.#field); }
+  }
+
+  /** Whether some entry has key `key`. */
+  has(key: K): boolean {
+    for (let entry in this.#entries()) {
+      if (this.#key(entry) == key) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /** The value of the last entry with key `key`, or `fallback` when there is none. */
+  getOr(key: K, fallback: V): V {
+    var found: ProtoView | null = null;
+    for (let entry in this.#entries()) {
+      if (this.#key(entry) == key) {
+        found = entry;
+      }
+    }
+    return if (found == null) fallback else this.#value(found as ProtoView);
+  }
+
+  [Iterable.iterator](): Iterator<ProtoMapEntry<K, V>> {
+    let out = new GrowableArray<ProtoMapEntry<K, V>>();
+    for (let entry in this.#entries()) {
+      out.push(new ProtoMapEntry<K, V>(this.#key(entry), this.#value(entry)));
+    }
+    return out.[Iterable.iterator]();
+  }
+
+  #entries(): ProtoList<ProtoView> {
+    return this.#view.repeated(this.#field, WIRE_LEN, (v, pos) => v.messageAt(pos));
+  }
+}
+
+/**
+ * Encodes one message. Each method writes one field: its tag, then its
+ * value. Fields may be written in any order, and a field written twice
+ * reads back as its last value.
+ */
+export final class ProtoWriter {
+  #buffer: ByteBuffer;
+
+  new() : #buffer = new ByteBuffer(64);
+
+  /** The bytes written so far, as a view. */
+  finish(): ProtoView {
+    return ProtoView.of(this.#buffer.toByteArray());
+  }
+
+  /** Writes a tag. */
+  tag(field: i32, wireType: i32): void {
+    this.#buffer.writeULEB128((field << 3) | wireType);
+  }
+
+  #varint(value: i64): void {
+    this.#buffer.writeULEB128_64(value);
+  }
+
+  /** Writes `int32` or enum value with no tag, as an element of a packed field. */
+  rawInt32(value: i32): void {
+    this.#varint(value as i64);
+  }
+
+  /** Writes `int64` value with no tag, as an element of a packed field. */
+  rawInt64(value: i64): void {
+    this.#varint(value);
+  }
+
+  /** Writes `uint32` value with no tag, as an element of a packed field. */
+  rawUint32(value: u32): void {
+    this.#varint((value as i64) & MASK32);
+  }
+
+  /** Writes `uint64` value with no tag, as an element of a packed field. */
+  rawUint64(value: u64): void {
+    this.#varint(value as i64);
+  }
+
+  /** Writes `sint32` value with no tag, as an element of a packed field. */
+  rawSint32(value: i32): void {
+    this.#varint((((value << 1) ^ (value >> 31)) as i64) & MASK32);
+  }
+
+  /** Writes `sint64` value with no tag, as an element of a packed field. */
+  rawSint64(value: i64): void {
+    this.#varint((value << 1) ^ (value >> 63));
+  }
+
+  /** Writes `bool` value with no tag, as an element of a packed field. */
+  rawBool(value: boolean): void {
+    this.#varint(if (value) 1 else 0);
+  }
+
+  /** Writes `fixed32` value with no tag, as an element of a packed field. */
+  rawFixed32(value: u32): void {
+    this.#buffer.writeU32(value as i32);
+  }
+
+  /** Writes `sfixed32` value with no tag, as an element of a packed field. */
+  rawSfixed32(value: i32): void {
+    this.#buffer.writeU32(value);
+  }
+
+  /** Writes `float` value with no tag, as an element of a packed field. */
+  rawFloat(value: f32): void {
+    this.#buffer.writeU32(i32_reinterpret_f32(value));
+  }
+
+  /** Writes `fixed64` value with no tag, as an element of a packed field. */
+  rawFixed64(value: u64): void {
+    this.#buffer.writeU64(value as i64);
+  }
+
+  /** Writes `sfixed64` value with no tag, as an element of a packed field. */
+  rawSfixed64(value: i64): void {
+    this.#buffer.writeU64(value);
+  }
+
+  /** Writes `double` value with no tag, as an element of a packed field. */
+  rawDouble(value: f64): void {
+    this.#buffer.writeU64(i64_reinterpret_f64(value));
+  }
+
+  int32(field: i32, value: i32): void {
+    this.tag(field, WIRE_VARINT);
+    this.rawInt32(value);
+  }
+
+  int64(field: i32, value: i64): void {
+    this.tag(field, WIRE_VARINT);
+    this.rawInt64(value);
+  }
+
+  uint32(field: i32, value: u32): void {
+    this.tag(field, WIRE_VARINT);
+    this.rawUint32(value);
+  }
+
+  uint64(field: i32, value: u64): void {
+    this.tag(field, WIRE_VARINT);
+    this.rawUint64(value);
+  }
+
+  sint32(field: i32, value: i32): void {
+    this.tag(field, WIRE_VARINT);
+    this.rawSint32(value);
+  }
+
+  sint64(field: i32, value: i64): void {
+    this.tag(field, WIRE_VARINT);
+    this.rawSint64(value);
+  }
+
+  bool(field: i32, value: boolean): void {
+    this.tag(field, WIRE_VARINT);
+    this.rawBool(value);
+  }
+
+  fixed32(field: i32, value: u32): void {
+    this.tag(field, WIRE_I32);
+    this.rawFixed32(value);
+  }
+
+  sfixed32(field: i32, value: i32): void {
+    this.tag(field, WIRE_I32);
+    this.rawSfixed32(value);
+  }
+
+  float(field: i32, value: f32): void {
+    this.tag(field, WIRE_I32);
+    this.rawFloat(value);
+  }
+
+  fixed64(field: i32, value: u64): void {
+    this.tag(field, WIRE_I64);
+    this.rawFixed64(value);
+  }
+
+  sfixed64(field: i32, value: i64): void {
+    this.tag(field, WIRE_I64);
+    this.rawSfixed64(value);
+  }
+
+  double(field: i32, value: f64): void {
+    this.tag(field, WIRE_I64);
+    this.rawDouble(value);
+  }
+
+  /** Writes a string field. The string must be WTF-8, as every string built in a component is. */
+  string(field: i32, value: String): void {
+    if (value.encoding != Encoding.WTF8) {
+      throw new ProtoError('only WTF-8 strings can be encoded');
+    }
+    let len = value.length;
+    this.tag(field, WIRE_LEN);
+    this.#buffer.writeULEB128(len);
+    let bytes = newByteArray(len);
+    value.copyBytesTo(bytes, 0);
+    this.#buffer.writeBytes(bytes);
+  }
+
+  /** Writes a bytes field. */
+  bytes(field: i32, value: ByteArray | ProtoBytes): void {
+    this.tag(field, WIRE_LEN);
+    if (value is ProtoBytes) {
+      let b = value as ProtoBytes;
+      this.#buffer.writeULEB128(b.length);
+      b.writeTo(this.#buffer);
+    } else {
+      let b = value as ByteArray;
+      this.#buffer.writeULEB128(b.length);
+      this.#buffer.writeBytes(b);
+    }
+  }
+
+  /** Writes a message field, copying the message's encoded bytes. */
+  message(field: i32, value: ProtoView): void {
+    this.tag(field, WIRE_LEN);
+    this.#buffer.writeULEB128(value.byteLength);
+    this.#buffer.writeBytesSlice(value.buffer, value.start, value.byteLength);
+  }
+
+  /**
+   * Writes a packed repeated field: one length-delimited run holding
+   * every element. `write` writes one element with no tag:
+   * `(w, v) => w.rawInt32(v)`. Nothing is written for an empty array.
+   */
+  packed<T>(field: i32, values: Array<T>, write: (w: ProtoWriter, value: T) => void): void {
+    if (values.length == 0) {
+      return;
+    }
+    let run = new ProtoWriter();
+    for (let value in values) {
+      write(run, value);
+    }
+    this.tag(field, WIRE_LEN);
+    this.#buffer.writeULEB128(run.#buffer.length);
+    this.#buffer.writeBuffer(run.#buffer);
+  }
+}
+
+/** An RPC's full name, which a transport turns into a URL path: `/service/method`. */
+export final class RpcMethod {
+  /** The service's full name: `google.firestore.v1.Firestore`. */
+  service: String;
+  /** The method's name: `GetDocument`. */
+  name: String;
+  new(this.service, this.name);
+}
+
+/**
+ * Carries encoded requests and responses. A gRPC transport frames them
+ * over HTTP/2; Google's fallback protocol posts them over HTTP/1.1.
+ * Generated service clients call this and know nothing of HTTP.
+ */
+export interface ProtoTransport {
+  /** Sends one request and receives one response. */
+  unary(method: RpcMethod, request: ProtoView): Future<ProtoView>;
+
+  /** Sends one request and receives a stream of responses. */
+  serverStream(method: RpcMethod, request: ProtoView): AsyncIterator<ProtoView>;
+}
+
+/** The responses of a server-streaming call, each wrapped as its generated message type. */
+export final class ProtoStream<T> implements AsyncIterator<T>, AsyncIterable<T> {
+  #inner: AsyncIterator<ProtoView>;
+  #wrap: (view: ProtoView) => T;
+
+  new(inner: AsyncIterator<ProtoView>, wrap: (view: ProtoView) => T) : #inner = inner, #wrap = wrap;
+
+  next(): AsyncStep<T> {
+    match (this.#inner.next()) {
+      case (1, let view, _): {
+        return (1, this.#wrap(view), _);
+      }
+      case (2, _, let pending): {
+        return (2, _, this.#later(pending));
+      }
+      case _: {
+        return (0, _, _);
+      }
+    }
+  }
+
+  [AsyncIterable.asyncIterator](): AsyncIterator<T> {
+    return this;
+  }
+
+  async #later(pending: Future<Option<ProtoView>>): Future<Option<T>> {
+    let next = await pending;
+    if (next is Some<ProtoView>) {
+      return some(this.#wrap((next as Some<ProtoView>).value));
+    }
+    return none;
+  }
+}

@@ -1,0 +1,348 @@
+/**
+ * The generated code, compiled and run: `test-files/generated/` holds the
+ * generator's output for `test-files/protos/` and for Firestore, which
+ * `generator_test.zena` keeps current.
+ */
+
+import {suite, test} from 'zena:test';
+import {equal, isFalse, isTrue} from 'zena:assert';
+import {Future, runFuture} from 'zena:async';
+import {AsyncIterator, AsyncStep} from 'zena:async';
+import {HashMap} from 'zena:collections';
+import {newByteArray} from 'zena:core';
+import {readFileBytes} from 'zena:fs';
+import {ProtoBytes, ProtoTransport, ProtoView, RpcMethod} from '../runtime.zena';
+import {
+  Color,
+  Node,
+  NodeChild,
+  NodeCount,
+  NodeInner,
+  NodeInnerKind,
+  NodeText,
+  NodeValueNotSet,
+  Scalars,
+  ThingsClient,
+  Timestamp
+} from '../../test-files/generated/everything.zena';
+import {
+  ArrayValue,
+  Document,
+  DocumentMask,
+  FirestoreClient,
+  MapValue,
+  StructuredQuery,
+  StructuredQueryFieldFilterOperator,
+  Value,
+  ValueIntegerValue,
+  ValueMapValue,
+  ValueStringValue
+} from '../../test-files/generated/firestore.zena';
+
+/** Answers every call by echoing the request, and streams it back three times. */
+final class EchoTransport implements ProtoTransport {
+  var calls: GrowableArray<String> = new GrowableArray<String>();
+
+  new();
+
+  unary(method: RpcMethod, request: ProtoView): Future<ProtoView> {
+    this.calls.push(`${method.service}/${method.name}`);
+    return Future.of(request);
+  }
+
+  serverStream(method: RpcMethod, request: ProtoView): AsyncIterator<ProtoView> {
+    this.calls.push(`${method.service}/${method.name}`);
+    return new Repeat(request, 3);
+  }
+}
+
+final class Repeat implements AsyncIterator<ProtoView> {
+  #view: ProtoView;
+  var #left: i32;
+  new(view: ProtoView, count: i32) : #view = view, #left = count;
+  next(): AsyncStep<ProtoView> {
+    if (this.#left == 0) {
+      return (0, _, _);
+    }
+    this.#left -= 1;
+    return (1, this.#view, _);
+  }
+}
+
+/** Paths relative to the repository root, which is where a test runs. */
+let PROTOC = 'packages/protobuf/test-files/protoc';
+
+/** Whether `a` and `b` hold the same bytes. */
+let sameBytes = (a: ByteArray, b: ByteArray): boolean => {
+  if (a.length != b.length) {
+    return false;
+  }
+  for (var i = 0; i < a.length; i += 1) {
+    if (a[i] != b[i]) {
+      return false;
+    }
+  }
+  return true;
+};
+
+/** The values of `test-files/protoc/node.txtpb`, encoded by the generated code. */
+let protocNode = (): Node => {
+  let byName = new HashMap<String, Node>();
+  byName['x'] = Node.of({name: 'x'});
+  let labels = new HashMap<i32, String>();
+  labels[2] = 'two';
+  let blob = newByteArray(3);
+  blob[0] = 1;
+  blob[1] = 2;
+  blob[2] = 3;
+  return Node.of({
+    name: 'root',
+    children: [Node.of({name: 'a'}), Node.of({name: 'b'})],
+    byName,
+    labels,
+    numbers: [1, 2, 300],
+    colors: [Color.Red, Color.Green],
+    tags: ['t1', 't2'],
+    unpacked: [-1 as i64, 5 as i64],
+    color: Color.Green,
+    count: 9 as i64,
+    inner: NodeInner.of({kind: NodeInnerKind.Big}),
+    type_: 16,
+    from: 'here',
+    blobs: [blob],
+  });
+};
+
+let collect = async (client: ThingsClient): Future<i32> => {
+  var total = 0;
+  for await (let node in client.listNodes({name: 'n', count: 2})) {
+    total += node.count as i32;
+  }
+  return total;
+};
+
+export let tests = suite('generated protobuf code', (): void => {
+  test('round-trips every scalar type', () => {
+    let bytes = newByteArray(2);
+    bytes[0] = 7;
+    bytes[1] = 255;
+    let s = Scalars.decode(Scalars.of({
+      fDouble: 1.25,
+      fFloat: 2.5 as f32,
+      fInt32: -3,
+      fInt64: -4000000000 as i64,
+      fUint32: 4000000000 as u32,
+      fUint64: 18000000000000000000 as u64,
+      fSint32: -5,
+      fSint64: -6 as i64,
+      fFixed32: 7 as u32,
+      fFixed64: 8 as u64,
+      fSfixed32: -9,
+      fSfixed64: -10 as i64,
+      fBool: true,
+      fString: 'eleven',
+      fBytes: bytes,
+    }).protoView.toByteArray());
+    equal(s.fDouble, 1.25);
+    equal(s.fFloat, 2.5 as f32);
+    equal(s.fInt32, -3);
+    equal(s.fInt64, -4000000000 as i64);
+    equal(s.fUint32, 4000000000 as u32);
+    equal(s.fUint64, 18000000000000000000 as u64);
+    equal(s.fSint32, -5);
+    equal(s.fSint64, -6 as i64);
+    equal(s.fFixed32, 7 as u32);
+    equal(s.fFixed64, 8 as u64);
+    equal(s.fSfixed32, -9);
+    equal(s.fSfixed64, -10 as i64);
+    isTrue(s.fBool);
+    equal(s.fString, 'eleven');
+    equal(s.fBytes[1], 255);
+    isFalse(s.hasMaybe);
+  });
+
+  test('decodes messages protoc encoded', () => {
+    let node = Node.decode(readFileBytes(`${PROTOC}/node.binpb`));
+    equal(node.name, 'root');
+    equal(node.children.toArray()[1].name, 'b');
+    equal(node.byName.getOr('x', Node.of({name: '?'})).name, 'x');
+    equal(node.labels.getOr(2, ''), 'two');
+    equal(node.numbers.toArray()[2], 300);
+    isTrue(node.colors.toArray()[0] == Color.Red);
+    equal(node.tags.toArray()[1], 't2');
+    equal(node.unpacked.toArray()[0], -1 as i64);
+    isTrue(node.color == Color.Green);
+    isTrue(node.value is NodeCount);
+    equal(node.count, 9 as i64);
+    isTrue((node.inner as NodeInner).kind == NodeInnerKind.Big);
+    equal(node.type_, 16);
+    equal(node.from, 'here');
+    equal(node.blobs.toArray()[0][2], 3);
+    let s = Scalars.decode(readFileBytes(`${PROTOC}/scalars.binpb`));
+    equal(s.fInt64, -4000000000 as i64);
+    equal(s.fUint64, 18000000000000000000 as u64);
+    equal(s.fSint32, -5);
+    equal(s.fFloat, 2.5 as f32);
+    equal(s.fBytes[1], 255);
+    isTrue(s.hasMaybe);
+  });
+
+  test('encodes the same bytes as protoc', () => {
+    let bytes = newByteArray(2);
+    bytes[0] = 7;
+    bytes[1] = 255;
+    let scalars = Scalars.of({
+      fDouble: 1.25,
+      fFloat: 2.5 as f32,
+      fInt32: -3,
+      fInt64: -4000000000 as i64,
+      fUint32: 4000000000 as u32,
+      fUint64: 18000000000000000000 as u64,
+      fSint32: -5,
+      fSint64: -6 as i64,
+      fFixed32: 7 as u32,
+      fFixed64: 8 as u64,
+      fSfixed32: -9,
+      fSfixed64: -10 as i64,
+      fBool: true,
+      fString: 'eleven',
+      fBytes: bytes,
+      maybe: 0,
+    });
+    isTrue(sameBytes(scalars.protoView.toByteArray(), readFileBytes(`${PROTOC}/scalars.binpb`)));
+    isTrue(sameBytes(protocNode().protoView.toByteArray(), readFileBytes(`${PROTOC}/node.binpb`)));
+  });
+
+  test('tells an absent optional scalar from a zero one', () => {
+    isFalse(Scalars.of({}).hasMaybe);
+    let zero = Scalars.of({maybe: 0});
+    isTrue(zero.hasMaybe);
+    equal(zero.maybe, 0);
+  });
+
+  test('round-trips repeated fields, maps, enums and nested messages', () => {
+    let labels = new HashMap<i32, String>();
+    labels[1] = 'one';
+    labels[2] = 'two';
+    let byName = new HashMap<String, Node>();
+    byName['x'] = Node.of({name: 'x'});
+    let node = Node.of({
+      name: 'root',
+      children: [Node.of({name: 'a'}), Node.of({name: 'b'})],
+      byName,
+      labels,
+      numbers: [1, 2, 300],
+      colors: [Color.Red, Color.Green],
+      tags: ['t1', 't2'],
+      unpacked: [-1 as i64, 5 as i64],
+      color: Color.Green,
+      inner: NodeInner.of({kind: NodeInnerKind.Big}),
+      type_: 16,
+      from: 'here',
+      blobs: [ProtoBytes.of(newByteArray(3))],
+    });
+    equal(node.name, 'root');
+    let children = node.children.toArray();
+    equal(children.length, 2);
+    equal(children[1].name, 'b');
+    equal(node.byName.getOr('x', Node.of({name: 'missing'})).name, 'x');
+    equal(node.labels.getOr(2, ''), 'two');
+    let numbers = node.numbers.toArray();
+    equal(numbers.length, 3);
+    equal(numbers[2], 300);
+    let colors = node.colors.toArray();
+    isTrue(colors[1] == Color.Green);
+    equal(node.tags.length, 2);
+    let unpacked = node.unpacked.toArray();
+    equal(unpacked[0], -1 as i64);
+    isTrue(node.color == Color.Green);
+    isTrue((node.inner as NodeInner).kind == NodeInnerKind.Big);
+    equal(node.type_, 16);
+    equal(node.from, 'here');
+    equal(node.blobs.toArray()[0].length, 3);
+    isTrue(node.created == null);
+  });
+
+  test('reads the oneof member set last', () => {
+    let text = Node.of({name: 'n', text: 'hello'});
+    isTrue(text.hasText);
+    isFalse(text.hasCount);
+    equal(text.count, 0 as i64);
+    let kind = match (text.value) {
+      case NodeText {value}: value
+      case NodeCount {value}: `${value}`
+      case NodeChild {value}: value.name
+      case _: 'other'
+    };
+    equal(kind, 'hello');
+    isTrue(Node.of({name: 'n'}).value is NodeValueNotSet);
+    let child = Node.of({name: 'n', child: Node.of({name: 'kid'})});
+    equal((child.child as Node).name, 'kid');
+    // A writer that sets two members: the later one on the wire wins.
+    let both = Node.of({name: 'n', text: 'a', count: 9});
+    isTrue(both.value is NodeCount);
+    equal(both.text, '');
+  });
+
+  test('embeds a decoded message in a new one without re-encoding it', () => {
+    let original = Node.decode(Node.of({name: 'orig', numbers: [4]}).protoView.toByteArray());
+    let parent = Node.of({name: 'parent', child: original});
+    let child = parent.child as Node;
+    equal(child.name, 'orig');
+    equal(child.numbers.toArray()[0], 4);
+  });
+
+  test('calls unary and server-streaming methods through the transport', () => {
+    let transport = new EchoTransport();
+    let client = new ThingsClient(transport);
+    let echoed = runFuture(client.getNode({name: 'ping', count: 5}));
+    equal(echoed.name, 'ping');
+    equal(echoed.count, 5 as i64);
+    equal(runFuture(collect(client)), 6);
+    equal(transport.calls[0], 'zena.test.v1.Things/GetNode');
+    equal(transport.calls[1], 'zena.test.v1.Things/ListNodes');
+  });
+
+  test('builds and reads a Firestore document', () => {
+    let fields = new HashMap<String, Value>();
+    fields['title'] = Value.of({stringValue: 'Hello'});
+    fields['views'] = Value.of({integerValue: 42 as i64});
+    fields['tags'] = Value.of({
+      arrayValue: ArrayValue.of({values: [Value.of({stringValue: 'a'})]}),
+    });
+    let nested = new HashMap<String, Value>();
+    nested['deep'] = Value.of({booleanValue: true});
+    fields['meta'] = Value.of({mapValue: MapValue.of({fields: nested})});
+    let doc = Document.of({name: 'projects/p/databases/(default)/documents/posts/1', fields});
+    let decoded = Document.decode(doc.protoView.toByteArray());
+    equal(decoded.name, 'projects/p/databases/(default)/documents/posts/1');
+    let title = decoded.fields.getOr('title', Value.of({}));
+    let text = match (title.valueType) {
+      case ValueStringValue {value}: value
+      case ValueIntegerValue {value}: `${value}`
+      case _: '?'
+    };
+    equal(text, 'Hello');
+    equal(decoded.fields.getOr('views', Value.of({})).integerValue, 42 as i64);
+    let meta = decoded.fields.getOr('meta', Value.of({}));
+    isTrue(meta.valueType is ValueMapValue);
+    let deep = (meta.mapValue as MapValue).fields.getOr('deep', Value.of({}));
+    isTrue(deep.booleanValue);
+    isTrue(decoded.updateTime == null);
+  });
+
+  test('sends a Firestore request through a client', () => {
+    let transport = new EchoTransport();
+    let client = new FirestoreClient(transport);
+    // GetDocument answers with a Document; the echo transport returns the
+    // request, whose field 1 is the document name, as Document's is.
+    let doc = runFuture(client.getDocument({
+      name: 'projects/p/databases/(default)/documents/posts/1',
+      mask: DocumentMask.of({fieldPaths: ['title']}),
+    }));
+    equal(doc.name, 'projects/p/databases/(default)/documents/posts/1');
+    equal(transport.calls[0], 'google.firestore.v1.Firestore/GetDocument');
+    isTrue(StructuredQueryFieldFilterOperator.LessThan as i32 == 1);
+    isTrue(StructuredQuery.of({}).protoView.byteLength == 0);
+  });
+});
