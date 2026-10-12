@@ -48,6 +48,7 @@ import { runSroa } from './ir/sroa.zena';
 import { runJumpThreading } from './ir/thread.zena';
 import { runSpecialize } from './ir/specialize.zena';
 import { pruneTypes } from './ir/typeprune.zena';
+import { eliminateDeadFields, removeEmptyCalls } from './ir/deadfields.zena';
 import { printIr } from './ir/printer.zena';
 import { IrCfg } from './ir/cfg.zena';
 import { emitZirFunction } from './ir/emit.zena';
@@ -796,12 +797,42 @@ export final class ModuleGenerator {
       zirHarvestedGlobals = harvested.globals;
     }
 
+    // Class fields no surviving body reads go, with their writes
+    // (ir/deadfields.zena). An allocation that loses its `<vtable>`
+    // operand leaves the vtable global's read dead; DCE deletes it and
+    // a second harvest the global.
+    var zirFieldsRemoved = 0;
+    var zirEmptyCallsRemoved = 0;
+    if (this.optLevel >= 1) {
+      let fieldsChanged = new Array<boolean>();
+      for (var i = 0; i < bodies.length; i += 1) {
+        fieldsChanged.push(false);
+      }
+      zirFieldsRemoved = eliminateDeadFields(wasm, bodies, fieldsChanged);
+      if (zirFieldsRemoved > 0) {
+        for (var i = 0; i < bodies.length; i += 1) {
+          if (fieldsChanged[i]) {
+            zirDceRemoved += runDce(bodies[i], scratch);
+          }
+        }
+        // A setter whose field went is now empty; its calls go too.
+        zirEmptyCallsRemoved = removeEmptyCalls(wasm, bodies, fieldsChanged);
+        let harvested = pruneUnreached(wasm, bodies, roots);
+        zirHarvestedFunctions += harvested.functions;
+        zirHarvestedGlobals += harvested.globals;
+      }
+    }
+
     // With the dead functions and globals gone, the types only they
     // named go too. Emission reads type indices off the objects, so
-    // this has to run before the type section is emitted.
+    // this has to run before the type section is emitted. The groups
+    // are then formed again: removed fields and types can leave two
+    // groups structurally identical, and wasm would merge them into
+    // one type.
     var zirTypesRemoved = 0;
     if (this.optLevel >= 1) {
       zirTypesRemoved = pruneTypes(wasm, bodies);
+      wasm.layoutTypes();
     }
 
     markTypes("lower, optimize");
@@ -1159,6 +1190,8 @@ export final class ModuleGenerator {
       console.log("zir harvest: " + i32ToString(zirHarvestedFunctions) +
           " unreachable functions and " + i32ToString(zirHarvestedGlobals) +
           " globals removed");
+      console.log("zir fields: " + i32ToString(zirFieldsRemoved) + " removed, " +
+          i32ToString(zirEmptyCallsRemoved) + " calls to emptied functions removed");
       console.log("zir types: " + i32ToString(zirTypesRemoved) +
           " unreferenced types removed");
       console.log("zir locals: " + i32ToString(zirGraduated) +

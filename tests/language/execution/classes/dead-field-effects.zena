@@ -1,0 +1,48 @@
+// @mode: run
+// @result: 2422
+
+// A field nothing reads goes, but what was computed for it stays: the
+// initializer's call still runs, once per instance and in order. The
+// fields around the dead one keep their values.
+var calls = 0;
+
+let tick = (): i32 => {
+  calls += 1;
+  return calls;
+};
+
+class Sample {
+  first: i32;
+  unused: i32 = tick();
+  var counter: i32 = 0;
+  last: i32;
+
+  new(this.first, this.last);
+
+  /** Writes `counter` without ever reading it. */
+  bump(): void {
+    this.counter = 7;
+  }
+}
+
+/** A base-class read of a field a subclass inherits keeps it in both. */
+class Base {
+  shared: i32;
+  new(this.shared);
+}
+
+class Derived extends Base {
+  own: i32;
+  new(shared: i32, this.own) : super(shared);
+}
+
+let readShared = (b: Base): i32 => b.shared;
+
+export let main = (): i32 => {
+  let a = new Sample(1, 3);
+  a.bump();
+  let b = new Sample(1, 2);
+  b.bump();
+  // calls 2, a.first + a.last 4, b.last 2, Derived's shared 2.
+  return calls * 1000 + (a.first + a.last) * 100 + b.last * 10 + readShared(new Derived(2, 9));
+};

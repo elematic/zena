@@ -947,14 +947,53 @@ late-instantiated classes Pass 1.5 deliberately skipped). Array-sum's
 5,625 → 5,635 is this repair being honest — those bytes are slots the
 evidence says could be dispatched.
 
-### Not yet: dead-field elimination
+### Dead-field elimination
 
-String's struct still carries `#encoding` and `#hashCode` — written
-as zeros by `string_from_shared`, read by nothing in hello-string.
-Eliminating dead FIELDS needs per-field access tracking and index
-rebaking across every accessor, scaffold body, and host helper — a
-separate pass, listed here so the two i32s stop looking like an
-oversight.
+String's struct carried `#encoding` and `#hashCode`, written as zeros
+by `string_from_shared` and read by nothing in hello-string, and a
+`<vtable>` field nothing dispatched through. Dead-field elimination
+(`ir/deadfields.zena`) deletes a class field that no surviving
+function reads, with its writes, at `-O1` and above.
+
+It needs no index rebaking. ZIR names a field by its struct and name
+(`IrRefField`), and the emitter looks the index up in the struct's
+field list, so the pass runs after the optimization loop and the first
+harvest, when the bodies that will be emitted are known, and only has
+to delete writes, drop operands from allocations, and shorten the
+field lists. A subclass's struct shares its superclass's field objects
+at the same indices, so a read through any struct of a hierarchy keeps
+the field in all of them. Records are not candidates: every record
+shape shares one struct, and its dispatch getters read every field.
+
+Deleting a `<vtable>` field leaves the vtable global's read unused,
+so DCE, a second harvest and type pruning take the global and its
+struct type. A setter whose field went is left empty, and calls to a
+function that does nothing are deleted too, so a write-only property
+goes with its backing field. Then `WasmModule.layoutTypes` regroups
+the types: two classes whose remaining fields match (the cases of a
+sealed class that differed only in fields nothing read) would
+otherwise be structurally identical in separate groups, and wasm
+would treat them as one type.
+
+| Fixture                  | before | after |
+| ------------------------ | ------ | ----- |
+| `hello-string`           | 386    | 349   |
+| `async-noop` (component) | 5,059  | 4,771 |
+| `print` (component)      | 8,425  | 7,971 |
+
+`examples/hello-world.zena` went from 9,822 to 9,355 bytes at `-O1`
+and from 9,055 to 8,307 at `-O2`. String is now three fields: the
+bytes, start and end.
+
+The compiler's own module, built from the same source at `-O2`, went
+from 2,149,851 to 1,831,992 bytes (−14.8%). It has 6,425 struct fields
+where it had 11,476 and 1,978 struct types where it had 3,981: most of
+the types that went are the vtable structs of hierarchies nothing
+dispatches through, which go with their `<vtable>` fields. Compiling
+the compiler with the module built this way is about 1% faster.
+
+A field read only to compute the next value written to it, such as a
+counter nothing else reads, still counts as read.
 
 ## 15. An erasure is not a specialization
 

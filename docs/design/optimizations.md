@@ -37,19 +37,18 @@ DCE eliminates unreachable code at multiple granularities:
 | Declaration | Unused functions, classes, interfaces                    | ✅ Implemented |
 | Method      | Methods never called (fully eliminated, no vtable entry) | ✅ Implemented |
 | VTable      | Empty vtables for extension classes                      | ✅ Implemented |
-| Field       | Write-only fields (limited)                              | 🔲 Partial     |
+| Field       | Fields of classes no surviving function reads            | ✅ Implemented |
 
 **Results**: 91% reduction for minimal programs (1957 → 175 bytes).
 
-### Write-Only Field Elimination (Partial) ✅
+### Write-Only Field Elimination ✅
 
-Currently eliminates fields that are written but never read, but only for simple
-cases. Does not handle:
+A class field that no surviving function reads is deleted with its
+writes, and a setter left empty by that goes with its calls; see
+binary-size.md, "Dead-field elimination". It does not handle:
 
-- Fields incremented in loops (`this.count = this.count + 1`)
-- Fields used in expressions that are themselves unused
-
-See [Compiler Architecture](#compiler-architecture) for how IR/SSA could improve this.
+- Fields read only to update themselves (`this.count = this.count + 1`)
+- Record fields
 
 ---
 

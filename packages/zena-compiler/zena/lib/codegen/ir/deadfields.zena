@@ -1,0 +1,345 @@
+/**
+ * Dead-field elimination: a field of a class that no surviving function
+ * reads is deleted from its struct, with every write to it.
+ *
+ * A field nothing reads is unobservable, so the value written to it
+ * does not matter, and neither does the slot. The pass runs after the
+ * optimization loop and the first harvest, when the bodies that will be
+ * emitted are known, and before type pruning: deleting a class's
+ * `<vtable>` field when nothing dispatches on it strands the vtable
+ * global and its type, which the later harvest and pruning remove.
+ *
+ * ZIR names fields symbolically (`IrRefField`), and emission resolves
+ * the index from the struct's field list, so removing a field from the
+ * list is all a read or write of the other fields needs. Writes of a
+ * removed field are deleted here, and allocations lose the operand
+ * for it.
+ *
+ * A field counts as read when some `struct_get` names it. A subclass's
+ * struct starts with its superclass's fields, the same `WasmField`
+ * objects at the same indices, so a field is identified by the struct
+ * that declares it and its index, and a read through any struct in the
+ * hierarchy keeps it in all of them.
+ *
+ * Only class structs are candidates. Records share one struct per
+ * shape and read every field through their dispatch getters; vtables,
+ * interface fat pointers, closures and suspension frames are laid out
+ * by the compiler for its own reads.
+ *
+ * A field read only to compute the next value written to it (a counter
+ * nothing else reads) still counts as read.
+ *
+ * Determinism: bodies and instructions in id order, structs in type
+ * order; the hash containers are only queried.
+ */
+import { HashMap, HashSet } from 'zena:collections';
+import { IrBody, IrOp, IrRefField, IrRefFunc, IrRefType } from './ir.zena';
+import { WasmModule, WasmStruct, WasmField, WasmFunction } from '../wasm-module.zena';
+import { ValTypeRef, ValTypeRefNull } from '../wasm.zena';
+
+/**
+ * Deletes the fields of class structs that no body in `bodies` reads,
+ * and their writes. Marks each body it rewrites in `changed`. Returns
+ * the number of fields deleted, counting an inherited field once per
+ * struct it is deleted from.
+ */
+export let eliminateDeadFields = (
+  wasm: WasmModule,
+  bodies: GrowableArray<IrBody>,
+  changed: GrowableArray<boolean>
+): i32 => {
+  let classStructs = new HashSet<WasmStruct>();
+  for (let entry in wasm.classInfos) {
+    classStructs.add(entry.value.structType);
+  }
+
+  // Which declared fields some body reads, by declaring struct.
+  let read = new HashMap<WasmStruct, GrowableArray<boolean>>();
+  for (let body in bodies) {
+    let count = body.instCount();
+    for (var inst = 0; inst < count; inst += 1) {
+      if (body.op(inst) != IrOp.struct_get) {
+        continue;
+      }
+      let ref = body.refTable[body.b[inst]];
+      if (!(ref is IrRefField)) {
+        continue;
+      }
+      let field = ref as IrRefField;
+      if (!classStructs.has(field.owner)) {
+        continue;
+      }
+      let index = field.owner.fieldIndexByName(field.fieldName);
+      if (index < 0) {
+        continue;
+      }
+      let declaring = declaringStruct(field.owner, index);
+      readsOf(read, declaring)[index] = true;
+    }
+  }
+
+  // Which fields each class struct keeps, against its current layout.
+  let keep = new HashMap<WasmStruct, GrowableArray<boolean>>();
+  var removed = 0;
+  for (let t in wasm.types) {
+    if (!(t is WasmStruct)) {
+      continue;
+    }
+    let s = t as WasmStruct;
+    if (!classStructs.has(s) || keep.has(s)) {
+      continue;
+    }
+    let flags = new GrowableArray<boolean>();
+    var anyDead = false;
+    for (var i = 0; i < s.fields.length; i += 1) {
+      let declaring = declaringStruct(s, i);
+      var live = false;
+      if (let (true, bits) = read.get(declaring)) {
+        live = i < bits.length && bits[i];
+      }
+      flags.push(live);
+      if (!live) {
+        anyDead = true;
+        removed += 1;
+      }
+    }
+    if (anyDead) {
+      keep[s] = flags;
+    }
+  }
+  if (removed == 0) {
+    return 0;
+  }
+
+  // Rewrite the writes and allocations, while the field lists still have
+  // the layout their indices refer to.
+  for (var bi = 0; bi < bodies.length; bi += 1) {
+    let body = bodies[bi];
+    let count = body.instCount();
+    for (var inst = 0; inst < count; inst += 1) {
+      let op = body.op(inst);
+      if (op == IrOp.struct_set) {
+        if (deleteDeadWrite(body, inst, keep)) {
+          changed[bi] = true;
+        }
+      } else if (op == IrOp.struct_new) {
+        if (dropDeadOperands(body, inst, keep)) {
+          changed[bi] = true;
+        }
+      }
+    }
+  }
+
+  for (let t in wasm.types) {
+    if (!(t is WasmStruct)) {
+      continue;
+    }
+    let s = t as WasmStruct;
+    if (let (true, flags) = keep.get(s)) {
+      s.retainFields(flags);
+    }
+  }
+  return removed;
+};
+
+/**
+ * The struct that declares field `index` of `s`: `s`, or the furthest
+ * ancestor whose list holds the same field at that index.
+ */
+let declaringStruct = (s: WasmStruct, index: i32): WasmStruct => {
+  var d = s;
+  let field = s.fields[index];
+  while (d.superStruct != null) {
+    let parent = d.superStruct as WasmStruct;
+    if (index >= parent.fields.length || !sameField(parent.fields[index], field)) {
+      break;
+    }
+    d = parent;
+  }
+  return d;
+};
+
+/**
+ * Whether `a` and `b` are the same field object: inherited fields are
+ * shared, not copied. `WasmField` defines no `==`, so this is identity.
+ */
+let sameField = (a: WasmField, b: WasmField): boolean => a == b;
+
+/** The read flags for the fields `s` declares, made on first use. */
+let readsOf = (
+  read: HashMap<WasmStruct, GrowableArray<boolean>>,
+  s: WasmStruct
+): GrowableArray<boolean> => {
+  if (let (true, bits) = read.get(s)) {
+    return bits;
+  }
+  let bits = new GrowableArray<boolean>();
+  for (var i = 0; i < s.fields.length; i += 1) {
+    bits.push(false);
+  }
+  read[s] = bits;
+  return bits;
+};
+
+/**
+ * Deletes `inst`, a `struct_set`, if it writes a removed field. A null
+ * receiver must still trap, so a nullable one keeps a non-null cast in
+ * the write's place; the cast's value goes unused.
+ */
+let deleteDeadWrite = (
+  body: IrBody,
+  inst: i32,
+  keep: HashMap<WasmStruct, GrowableArray<boolean>>
+): boolean => {
+  let ref = body.refTable[body.b[inst]];
+  if (!(ref is IrRefField)) {
+    return false;
+  }
+  let field = ref as IrRefField;
+  let flags = keepFlags(keep, field.owner);
+  if (flags == null) {
+    return false;
+  }
+  let index = field.owner.fieldIndexByName(field.fieldName);
+  if (index < 0 || (flags as GrowableArray<boolean>)[index]) {
+    return false;
+  }
+  let receiver = body.extra[body.a[inst]];
+  let receiverType = body.resultType(receiver);
+  if (receiverType is ValTypeRefNull) {
+    body.typeTable.push(new ValTypeRef((receiverType as ValTypeRefNull).target));
+    body.opcode[inst] = IrOp.ref_as_non_null as i32;
+    body.typeId[inst] = body.typeTable.length - 1;
+    body.a[inst] = receiver;
+    body.b[inst] = -1;
+    return true;
+  }
+  body.opcode[inst] = IrOp.nop as i32;
+  body.typeId[inst] = -1;
+  body.a[inst] = -1;
+  body.b[inst] = -1;
+  return true;
+};
+
+/** Drops the operands of `inst`, a `struct_new`, for removed fields. */
+let dropDeadOperands = (
+  body: IrBody,
+  inst: i32,
+  keep: HashMap<WasmStruct, GrowableArray<boolean>>
+): boolean => {
+  let ref = body.refTable[body.b[inst]];
+  if (!(ref is IrRefType)) {
+    return false;
+  }
+  let target = (ref as IrRefType).target;
+  if (!(target is WasmStruct)) {
+    return false;
+  }
+  let flags = keepFlags(keep, target as WasmStruct);
+  if (flags == null) {
+    return false;
+  }
+  let kept = flags as GrowableArray<boolean>;
+  let argsIdx = body.a[inst];
+  let argc = body.extra[argsIdx];
+  if (argc != kept.length) {
+    throw new Error(`dead fields: an allocation of ${(target as WasmStruct).name ?? '?'} has ${argc} operands for ${kept.length} fields`);
+  }
+  let newIdx = body.extra.length;
+  body.extra.push(0);
+  var newArgc = 0;
+  for (var i = 0; i < argc; i += 1) {
+    if (kept[i]) {
+      body.extra.push(body.extra[argsIdx + 1 + i]);
+      newArgc += 1;
+    }
+  }
+  body.extra[newIdx] = newArgc;
+  body.a[inst] = newIdx;
+  return true;
+};
+
+let keepFlags = (
+  keep: HashMap<WasmStruct, GrowableArray<boolean>>,
+  s: WasmStruct
+): GrowableArray<boolean> | null => {
+  if (let (true, flags) = keep.get(s)) {
+    return flags;
+  }
+  return null;
+};
+
+/**
+ * Deletes direct calls to functions that do nothing: one block of no-ops
+ * ending in a `ret` of no value. A setter whose field
+ * `eliminateDeadFields` removed is one, and so is a function that only
+ * called such setters once those calls are gone, so this repeats until
+ * no call goes. The arguments were computed before the call and stay,
+ * with whatever effects and null checks they carry; the inliner does the
+ * same at `-O2`, and this covers `-O1`. `bodies` is parallel to
+ * `wasm.functions`. Returns the number of calls deleted.
+ */
+export let removeEmptyCalls = (
+  wasm: WasmModule,
+  bodies: GrowableArray<IrBody>,
+  changed: GrowableArray<boolean>
+): i32 => {
+  let indexOf = new HashMap<WasmFunction, i32>();
+  for (var i = 0; i < wasm.functions.length; i += 1) {
+    indexOf[wasm.functions[i]] = i;
+  }
+  let empty = new GrowableArray<boolean>();
+  for (let body in bodies) {
+    empty.push(doesNothing(body));
+  }
+  var removed = 0;
+  var progress = true;
+  while (progress) {
+    progress = false;
+    for (var bi = 0; bi < bodies.length; bi += 1) {
+      let body = bodies[bi];
+      let count = body.instCount();
+      for (var inst = 0; inst < count; inst += 1) {
+        if (body.op(inst) != IrOp.call || body.typeId[inst] >= 0) {
+          continue;
+        }
+        let ref = body.refTable[body.b[inst]];
+        if (!(ref is IrRefFunc)) {
+          continue;
+        }
+        if (let (true, callee) = indexOf.get((ref as IrRefFunc).target)) {
+          if (callee != bi && empty[callee]) {
+            body.opcode[inst] = IrOp.nop as i32;
+            body.a[inst] = -1;
+            body.b[inst] = -1;
+            changed[bi] = true;
+            removed += 1;
+          }
+        }
+      }
+      if (!empty[bi] && doesNothing(body)) {
+        empty[bi] = true;
+        progress = true;
+      }
+    }
+  }
+  return removed;
+};
+
+/** Whether `body` is one block holding only no-ops and a `ret` of no value. */
+let doesNothing = (body: IrBody): boolean => {
+  if (body.blocks.length != 1) {
+    return false;
+  }
+  let insts = body.blocks[0].insts;
+  if (insts.length == 0) {
+    return false;
+  }
+  for (var k = 0; k < insts.length - 1; k += 1) {
+    if (body.op(insts[k]) != IrOp.nop) {
+      return false;
+    }
+  }
+  let last = insts[insts.length - 1];
+  return body.op(last) == IrOp.ret && body.a[last] < 0;
+};

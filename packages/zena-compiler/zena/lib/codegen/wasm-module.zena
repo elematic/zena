@@ -324,6 +324,26 @@ export final class WasmStruct extends WasmType {
     let cache = this.#fieldIndexCache as HashMap<String, i32>;
     return if (let (true, idx) = cache.get(fieldName)) idx else -1;
   }
+
+  /**
+   * Keeps the fields whose flag is true, in order, and drops the rest
+   * (dead-field elimination, ir/deadfields.zena). Clears the name cache,
+   * whose indices the removal shifts.
+   */
+  retainFields(keep: GrowableArray<boolean>): void {
+    let kept = new Array<WasmField>();
+    for (var i = 0; i < this.fields.length; i += 1) {
+      if (keep[i]) {
+        kept.push(this.fields[i]);
+      }
+    }
+    this.fields.clear();
+    for (let f in kept) {
+      this.fields.push(f);
+    }
+    this.#fieldIndexCache = null;
+    this.#fieldIndexCacheSize = -1;
+  }
 }
 
 /** The generic-source root's key: specializations compare equal to
@@ -2151,6 +2171,39 @@ export final class WasmModule {
       }
     }
     
+    this.layoutTypes();
+    for (let rd in this.recordDispatchInfos) {
+    }
+    for (var i = 0; i < this.tags.length; i += 1) {
+      let t = this.tags[i];
+      t.index = i;
+    }
+    var functionIndex = 0;
+    for (var i = 0; i < this.functionImports.length; i += 1) {
+      let f = this.functionImports[i];
+      f.index = functionIndex;
+      functionIndex += 1;
+    }
+    for (var i = 0; i < this.functions.length; i += 1) {
+      let f = this.functions[i];
+      f.index = functionIndex;
+      functionIndex += 1;
+    }
+    for (var i = 0; i < this.globals.length; i += 1) {
+      let g = this.globals[i];
+      g.index = i;
+    }
+  }
+
+  /**
+   * Orders the type section into recursion groups and assigns type
+   * indices: the type half of `layout()`. It runs again after dead-field
+   * elimination and type pruning (module-generator.zena), because
+   * removing fields can break a cycle a group was formed for, and can
+   * make two groups' types structurally identical, which wasm would then
+   * treat as one type.
+   */
+  layoutTypes(): void {
     // Minimal recursion groups: one rec group per strongly-connected
     // component of the type-reference graph (fields, array elements,
     // signature params/results, supertypes), in dependency order —
@@ -2532,27 +2585,6 @@ export final class WasmModule {
 
     for (var i = 0; i < this.types.length; i += 1) {
       this.types[i].index = i;
-    }
-    for (let rd in this.recordDispatchInfos) {
-    }
-    for (var i = 0; i < this.tags.length; i += 1) {
-      let t = this.tags[i];
-      t.index = i;
-    }
-    var functionIndex = 0;
-    for (var i = 0; i < this.functionImports.length; i += 1) {
-      let f = this.functionImports[i];
-      f.index = functionIndex;
-      functionIndex += 1;
-    }
-    for (var i = 0; i < this.functions.length; i += 1) {
-      let f = this.functions[i];
-      f.index = functionIndex;
-      functionIndex += 1;
-    }
-    for (var i = 0; i < this.globals.length; i += 1) {
-      let g = this.globals[i];
-      g.index = i;
     }
   }
 }
