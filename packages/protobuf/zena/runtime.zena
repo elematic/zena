@@ -16,7 +16,17 @@
 
 import {AsyncIterable, AsyncIterator, AsyncStep} from 'zena:async';
 import {HashMap} from 'zena:collections';
-import {ByteBuffer, Encoding, IterableUtils, Step, copyBytes, newByteArray} from 'zena:core';
+import {
+  ByteBuffer,
+  Encoding,
+  IterableUtils,
+  Step,
+  copyBytes,
+  newByteArray,
+  readU32,
+  readU64,
+  readULEB128_64
+} from 'zena:core';
 import {
   f32_reinterpret_i32,
   f64_reinterpret_i64,
@@ -324,26 +334,12 @@ export final class ProtoView {
 
   /** Reads the varint at `pos`. */
   readVarint(pos: i32): i64 {
-    var result: i64 = 0;
-    var shift: i64 = 0;
-    var p = pos;
-    while (true) {
-      if (p >= this.#end) {
-        throw new ProtoError('truncated varint');
-      }
-      let b = this.#bytes[p] as i64;
-      p += 1;
-      result = result | ((b & 0x7F) << shift);
-      if ((b & 0x80) == 0) {
-        this.#cursor = p;
-        return result;
-      }
-      shift += 7;
-      if (shift >= 70) {
-        throw new ProtoError('varint is longer than 10 bytes');
-      }
+    let (value, next) = readULEB128_64(this.#bytes, pos, this.#end);
+    if (next < 0) {
+      throw new ProtoError('truncated varint, or one longer than 10 bytes');
     }
-    return result;
+    this.#cursor = next;
+    return value;
   }
 
   /** Reads the four little-endian bytes at `pos`. */
@@ -351,10 +347,8 @@ export final class ProtoView {
     if (pos + 4 > this.#end) {
       throw new ProtoError('truncated fixed32');
     }
-    let b = this.#bytes;
     this.#cursor = pos + 4;
-    return (b[pos] as i32) | ((b[pos + 1] as i32) << 8) | ((b[pos + 2] as i32) << 16) |
-      ((b[pos + 3] as i32) << 24);
+    return readU32(this.#bytes, pos);
   }
 
   /** Reads the eight little-endian bytes at `pos`. */
@@ -362,9 +356,8 @@ export final class ProtoView {
     if (pos + 8 > this.#end) {
       throw new ProtoError('truncated fixed64');
     }
-    let low = this.readFixed32(pos) as i64;
-    let high = this.readFixed32(pos + 4) as i64;
-    return (low & MASK32) | (high << 32);
+    this.#cursor = pos + 8;
+    return readU64(this.#bytes, pos);
   }
 
   /** Reads the length prefix at `pos` and returns where the value ends; `cursor` is where it starts. */
@@ -466,17 +459,8 @@ export final class ProtoView {
   /** Where the value of wire type `wireType` starting at `pos` ends. */
   skip(wireType: i32, pos: i32): i32 {
     if (wireType == WIRE_VARINT) {
-      var p = pos;
-      while (true) {
-        if (p >= this.#end || p - pos >= 10) {
-          throw new ProtoError('truncated varint');
-        }
-        let b = this.#bytes[p] as i32;
-        p += 1;
-        if ((b & 0x80) == 0) {
-          return p;
-        }
-      }
+      this.readVarint(pos);
+      return this.#cursor;
     }
     if (wireType == WIRE_I64) {
       return this.#within(pos + 8);

@@ -77,10 +77,15 @@ remove it.
 - **Reachability at method granularity** ([binary-size.md](binary-size.md)
   §11, §14). Unreached functions and methods are not emitted, and vtable
   slots nothing dispatches through are pruned.
-- **No dead-field elimination** ([binary-size.md](binary-size.md), "Not
-  yet: dead-field elimination"). Every declared field of a class or
+- **No dead-field elimination yet** ([binary-size.md](binary-size.md),
+  "Not yet: dead-field elimination"). Every declared field of a class or
   record stays in its struct, and every write to it stays live. A
   generated class with one field per proto field keeps all of them.
+  Removing fields that are only ever written, and pure accessors over
+  them, is part of this work: a field nothing reads is unobservable. The
+  views below do not depend on it; see
+  [Caching decoded fields](#caching-decoded-fields) for what it would
+  allow.
 - **Presence-optional record fields** ([record-presence.md](record-presence.md)).
   `{name: String, mask?: DocumentMask}` may or may not have `mask`, and
   the absence is observable through patterns. This matches proto3
@@ -90,10 +95,13 @@ remove it.
   public, so a protobuf `string` field can be a `String` sharing the
   response buffer, with no copy, without the runtime living in the
   standard library.
-- **`ByteBuffer`** (`packages/stdlib/zena/core/byte-buffer.zena`) has
-  `writeULEB128` and `writeULEB128_64`, which are the protobuf varint
-  encoding. There is no reader type in the standard library; the
-  runtime has its own.
+- **`ByteBuffer` and `DataView`** (`packages/stdlib/zena/core/`).
+  `ByteBuffer` writes little-endian numbers and LEB128 varints, the
+  protobuf varint encoding among them. `data-view.zena` reads them back:
+  free functions over a `ByteArray` and an offset, which allocate
+  nothing, and a range-checked `DataView` class over them, as
+  [byte-buffer.md](byte-buffer.md) planned. The runtime decodes with the
+  free functions.
 - **WIT synthesis** (`packages/zena-compiler/zena/lib/wit-module-synth.zena`).
   The one existing case of generating Zena from an interface language. A
   `zena-packages.json` entry `{"wit": "./path"}` makes the CLI host turn a
@@ -201,9 +209,19 @@ a `ProtoError`, as do truncated values and varints longer than 10 bytes.
 
 Getters decode on every call. `doc.name` read twice creates two `String`
 slices. Code that reads a field in a loop should bind it to a local
-first. Caching decoded values would add a struct field per cached value,
-which reachability cannot remove (see "No dead-field elimination"
-above).
+first.
+
+### Caching decoded fields
+
+A getter could keep what it decoded in a field of the view, so a second
+read costs nothing. Today each such field would stay in every view's
+struct whether or not its getter is reached, which would make every
+message as large as its field count. With dead-field elimination, a
+cache field that only its unreached getter reads is never read, so it is
+removed with the getter, and a program pays for the caches of the fields
+it reads. Whether to cache, and which types are worth it (strings and
+nested messages allocate; scalars are cheap to decode), waits on that
+work.
 
 ### Scalars, strings and bytes
 
@@ -429,6 +447,15 @@ for await (let response in client.runQuery({parent, structuredQuery})) { ... }
 Per-call metadata, such as the `x-goog-request-params` header Firestore
 expects, is not in the interface yet.
 
+Transports are written against the `wasi:http` 0.3 bindings directly,
+the ones `zena:fetch` and `zena:http` are built on. `Request.new_`
+takes request headers, a body stream and a trailers future,
+`setMethod` sets `POST`, and `Response.consume-body` returns the body
+stream and a future for the trailers, which is everything gRPC and the
+fallback protocol need. `zena:fetch` is a convenience over the same
+bindings for simple requests and can grow a fuller request API, but a
+transport does not wait on it.
+
 ### gRPC over HTTP/2
 
 gRPC needs HTTP/2. Each message is framed with one compressed-flag byte
@@ -493,13 +520,16 @@ names, `int64` as strings, and per-type rules for the well-known types.
 
 ### Host requirements
 
-| Requirement                                     | Needed by                             | State                                  |
-| ----------------------------------------------- | ------------------------------------- | -------------------------------------- |
-| `zena:fetch` with method, request headers, body | every transport, auth                 | GET only, no request headers or body   |
-| Response trailers in `zena:fetch`               | gRPC                                  | ignored by `consumeBody`               |
-| Pooled connections                              | production servers                    | not in wasmtime's default handler      |
-| HTTP/2 to `*.googleapis.com`                    | gRPC                                  | not in wasmtime's default handler      |
-| An outgoing-request hook in `zena-runtime`      | running servers under Zena's own host | wasi-http linked, default handler only |
+| Requirement                                | Needed by                             | State                                  |
+| ------------------------------------------ | ------------------------------------- | -------------------------------------- |
+| Method, request headers and body           | every transport, auth                 | in the `wasi:http` bindings            |
+| Response trailers                          | gRPC                                  | in the `wasi:http` bindings            |
+| Pooled connections                         | production servers                    | not in wasmtime's default handler      |
+| HTTP/2 to `*.googleapis.com`               | gRPC                                  | not in wasmtime's default handler      |
+| An outgoing-request hook in `zena-runtime` | running servers under Zena's own host | wasi-http linked, default handler only |
+
+The guest side needs nothing new. The host's outgoing handler is the
+gap.
 
 ### Authentication on Cloud Run
 
@@ -507,8 +537,8 @@ On Cloud Run, a service gets an access token by requesting
 `http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token`
 with the header `Metadata-Flavor: Google`. The JSON response holds
 `access_token` and `expires_in`. The client caches the token until shortly
-before it expires, and sends it as `authorization: Bearer <token>`. This
-needs request headers in `zena:fetch` and nothing else.
+before it expires, and sends it as `authorization: Bearer <token>`. The
+request needs one header, which the `wasi:http` bindings set.
 
 Firestore also expects an `x-goog-request-params` header naming the
 database, as declared by the `google.api.routing` annotation on each
@@ -718,9 +748,7 @@ the two should share a design. That design is out of scope here.
 If production Firestore access is needed before the transports are
 built, a hand-written client over the REST API and `zena:json` can
 provide layer 3, calling REST endpoints with JSON in place of layers 1
-and 2. Its public API can stay the same when layer 2 is wired in. It
-needs `zena:fetch` with methods, headers and bodies, like every option
-here.
+and 2. Its public API can stay the same when layer 2 is wired in.
 
 ## Implementation plan
 
@@ -728,7 +756,8 @@ Done:
 
 - The runtime: `ProtoView` with its field index, `ProtoWriter`,
   `ProtoList`, `ProtoMap`, `ProtoBytes`, `ProtoStream` and the transport
-  interface.
+  interface; and in the standard library, the binary readers it decodes
+  with (`data-view.zena`).
 - The `.proto` parser, schema loader and emitter, with a command-line
   entry point.
 - Generated Firestore code, checked in as a test fixture, with size
@@ -736,9 +765,11 @@ Done:
 
 Remaining:
 
-1. `zena:fetch`: request method, headers and body; response trailers.
-2. Check whether the fallback protocol serves server-streaming calls,
-   using `RunQuery`; then a fallback transport.
+1. Dead-field elimination in the compiler: fields only ever written, and
+   pure accessors over them. Then decide on caching decoded fields.
+2. A fallback transport over the `wasi:http` bindings, tested against a
+   local `zena:http` server; then check whether Firestore's fallback
+   serves server-streaming calls, using `RunQuery`.
 3. Per-call metadata in the transport interface, and the routing header
    from `google.api.routing`.
 4. A Firestore package with its generated code, and metadata-server
