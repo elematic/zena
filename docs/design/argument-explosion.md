@@ -389,10 +389,48 @@ through a second function, two million iterations:
 Before, at `-O2`, the callee was specialized and devirtualized but still
 allocated its result at every call.
 
+### Held vars
+
+A `var` local of a record type is _held as its fields_ when every use
+reads a field, destructures it, is the target of a plain `=`, or passes
+it to a fields-only parameter of the same record type, and every value
+written to it (the initializer and each assignment) is a record literal,
+a call whose result explodes, or another held var:
+
+```zena
+var pos: V = {x: 0, y: 1};
+for (var i = 0; i < n; i += 1) {
+  pos = step(pos);   // step.core takes and returns the fields
+}
+return pos.x;
+```
+
+`pos = step(pos)` makes the var and the result depend on each other: the
+var is held only if the result explodes, and the result is demanded only
+if the var is held. So held vars start optimistic. Each round, the
+results are recomputed from "nothing explodes" given the current held
+vars, and any var with a write that lacks its fields is dropped, until
+none is. A held var passed to a fields-only parameter makes that
+parameter available unpacked, like an exploded parameter does.
+
+In lowering, a held var's initializer and assignments produce a held
+record (`#lowerHeldWrite`). At every join, `addParams` gives a held var
+one block parameter per field, `envValues` passes its fields, and
+`applyParams` rebuilds the record from the field parameters and holds
+it, so field reads read the parameters and the record dies. That needs
+the join block to be current when `applyParams` runs, which every join
+site now ensures.
+
+Measured on `pos = step(pos)` in a loop, two million iterations:
+
+| build | before       | after       |
+| ----- | ------------ | ----------- |
+| `-O1` | 47 ms, 305 B | 3 ms, 121 B |
+| `-O2` | 7 ms, 231 B  | 2 ms, 92 B  |
+
 Not yet covered:
 
-- A result bound with `var`, as in `pos = step(pos)` in a loop: a
-  reassigned binding counts as needing the record.
+- A var captured by a closure, which needs a cell holding the record.
 - A return whose value is an `if` or `match` expression with literal
   arms: only a literal at the top of a return produces fields.
 - A parameter returned whole (`(v: V): V => v`): returning a parameter

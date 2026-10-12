@@ -1271,8 +1271,8 @@ export final class LoweringContext {
       return -1;
     }
     this.env = saved;
-    this.applyParams(m.syms, m.params as GrowableArray<i32>);
     this.b.switchTo(m.block);
+    this.applyParams(m.syms, m.params as GrowableArray<i32>);
     this.reachable = true;
     return m.resultParam;
   }
@@ -1280,12 +1280,58 @@ export final class LoweringContext {
   addParams(block: i32, syms: GrowableArray<SymbolId>): GrowableArray<i32> {
     let params = new Array<i32>();
     for (let symId in syms) {
+      // A var held as its fields (ir/explode.zena) crosses the join as
+      // one parameter per field.
+      if (let (true, d) = this.wasm.fieldHeldVars.get(symId)) {
+        for (let field in d.fields) {
+          params.push(this.b.blockParam(block, field.type));
+        }
+        continue;
+      }
       // The binding's declared type is the stable merge type: incoming
       // values may be wasm subtypes (non-null refs, subclass structs,
       // typed nulls), which the verifier's subtype check admits.
       params.push(this.b.blockParam(block, this.bindingValType(symId)));
     }
     return params;
+  }
+
+  /**
+   * A record value built from field values in `d.fields` order, held
+   * as those fields (`explodedRecords`): it dies unless some use needs
+   * the record whole.
+   */
+  heldRecord(d: RecordDispatchInfo, values: GrowableArray<i32>): i32 {
+    let instance = this.b.emit(IrOp.struct_new,
+        new ValTypeRef(d.concreteType) as ValType,
+        this.b.pushArgList(values),
+        this.b.addRef(new IrRefType(d.concreteType)));
+    let record = this.b.emit(IrOp.iface_pack,
+        new ValTypeRef(d.fatPtrType) as ValType, instance,
+        this.b.addRef(new IrRefGlobal(d.vtableGlobal)));
+    this.explodedRecords[record] = new ExplodedRecord(d, values);
+    return record;
+  }
+
+  /**
+   * `record`'s fields for `d`: the values it is held as, or, for a
+   * record not held, each field read through its getter (after which it
+   * is held, so the next request reads nothing).
+   */
+  heldFields(d: RecordDispatchInfo, record: i32): GrowableArray<i32> {
+    if (let (true, held) = this.explodedRecords.get(record)) {
+      if (held.dispatch === d) {
+        return held.values;
+      }
+    }
+    let values = new Array<i32>();
+    for (let field in d.fields) {
+      values.push(this.coerceTo(
+          this.recordDispatchRead(d, field.name as String, record),
+          field.type));
+    }
+    this.explodedRecords[record] = new ExplodedRecord(d, values);
+    return values;
   }
 
   bindingValType(symId: SymbolId): ValType {
@@ -1302,8 +1348,21 @@ export final class LoweringContext {
   }
 
   applyParams(syms: GrowableArray<SymbolId>, params: GrowableArray<i32>): void {
-    for (var i = 0; i < syms.length; i += 1) {
-      this.env[syms[i]] = params[i];
+    // A held var's field parameters are rebuilt into a held record here,
+    // so this runs once the join block is current.
+    var p = 0;
+    for (let symId in syms) {
+      if (let (true, d) = this.wasm.fieldHeldVars.get(symId)) {
+        let values = new Array<i32>();
+        for (var k = 0; k < d.fields.length; k += 1) {
+          values.push(params[p + k]);
+        }
+        p += d.fields.length;
+        this.env[symId] = this.heldRecord(d, values);
+        continue;
+      }
+      this.env[symId] = params[p];
+      p += 1;
     }
   }
 
@@ -1316,6 +1375,12 @@ export final class LoweringContext {
       // can leave the current value at a different nullability than
       // the binding. conformToBinding re-asserts or downcasts; exact
       // matches pass through untouched.
+      if (let (true, d) = this.wasm.fieldHeldVars.get(symId)) {
+        for (let v in this.heldFields(d, this.env[symId])) {
+          values.push(v);
+        }
+        continue;
+      }
       values.push(this.conformToBinding(this.env[symId],
           this.bindingValType(symId)));
     }

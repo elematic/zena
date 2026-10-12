@@ -37,14 +37,14 @@
  */
 import { HashMap, HashSet } from 'zena:collections';
 import {
-  BlockStatement, CallExpression, ClassDeclaration, Expression,
+  AssignmentExpression, BlockStatement, CallExpression, ClassDeclaration, Expression,
   ExpressionStatement, FunctionExpression, FunctionDeclaration, ReturnStatement,
   VariableDeclaration, IdentifierPattern, Identifier, MemberExpression,
   MethodDefinition, Parameter, RecordLiteral, RecordPattern,
   SuperInitializer, Node,
 } from '../../ast.zena';
 import { SemanticModel } from '../../semantic-model.zena';
-import { Symbol, SymbolId } from '../../scope/symbol.zena';
+import { Symbol, SymbolId, noSymbolId } from '../../scope/symbol.zena';
 import { ClassType, FunctionType, RecordType, baseType } from '../../types.zena';
 import { walkEnter } from '../../visitor.zena';
 import { ValType } from '../wasm.zena';
@@ -191,29 +191,20 @@ export let explodeRecordParameters = (
           c.hasLiteralArg(pass, superLiterals, i);
     }
   }
-  changed = true;
-  while (changed) {
-    changed = false;
-    for (let c in candidates) {
-      for (var i = 0; i < c.available.length; i += 1) {
-        if (!c.available[i]) {
-          continue;
-        }
-        for (let fw in c.forwards[i]) {
-          // Demand settled every forward of a fields-only parameter to a
-          // fields-only target.
-          if (let (true, target) = byKey.get(fw.callee)) {
-            if (!target.available[fw.index]) {
-              target.available[fw.index] = true;
-              changed = true;
-            }
-          }
-        }
+  propagateAvailability(candidates, byKey);
+
+  let held = explodeResults(wasm, pass, candidates, byKey);
+  // A held var passed to a fields-only parameter is passed as its fields,
+  // so that parameter is available unpacked.
+  for (let hv in held) {
+    wasm.fieldHeldVars[hv.sym.id] = hv.dispatch;
+    for (let fw in hv.forwards) {
+      if (let (true, target) = byKey.get(fw.callee)) {
+        target.available[fw.index] = true;
       }
     }
   }
-
-  explodeResults(wasm, pass, candidates, byKey);
+  propagateAvailability(candidates, byKey);
 
   for (let c in candidates) {
     let params = new Array<RecordDispatchInfo | null>();
@@ -238,6 +229,35 @@ export let explodeRecordParameters = (
 };
 
 /**
+ * Makes every parameter an available exploded parameter is passed on
+ * to available too, to a fixpoint.
+ */
+let propagateAvailability = (candidates: GrowableArray<Candidate>,
+    byKey: HashMap<String, Candidate>): void => {
+  var changed = true;
+  while (changed) {
+    changed = false;
+    for (let c in candidates) {
+      for (var i = 0; i < c.available.length; i += 1) {
+        if (!c.available[i]) {
+          continue;
+        }
+        for (let fw in c.forwards[i]) {
+          // Demand settled every forward of a fields-only parameter to a
+          // fields-only target.
+          if (let (true, target) = byKey.get(fw.callee)) {
+            if (!target.available[fw.index]) {
+              target.available[fw.index] = true;
+              changed = true;
+            }
+          }
+        }
+      }
+    }
+  }
+};
+
+/**
  * How a call's record result is used: only for its fields (`direct`),
  * returned from the function keyed `returnedFrom`, or neither.
  */
@@ -246,7 +266,42 @@ final class ResultUse {
   callee: String;
   direct: boolean;
   returnedFrom: String | null;
-  new(this.rc, this.callee, this.direct, this.returnedFrom);
+  /** The `var` the result is assigned to or initializes, if any. */
+  assignedTo: SymbolId;
+  new(this.rc, this.callee, this.direct, this.returnedFrom, this.assignedTo);
+
+  /** Whether the result only needs its fields, given the current verdicts. */
+  holdsFields(byKey: HashMap<String, Candidate>,
+      held: HashMap<SymbolId, HeldVar>): boolean {
+    if (this.direct) {
+      return true;
+    }
+    if (this.assignedTo != noSymbolId) {
+      return held.has(this.assignedTo);
+    }
+    let from = this.returnedFrom;
+    if (from != null) {
+      if (let (true, owner) = byKey.get(from)) {
+        return owner.resultExplodes;
+      }
+    }
+    return false;
+  }
+}
+
+/**
+ * A `var` local of a record type that may be carried as its fields:
+ * every use reads a field, destructures it, is assigned to, or passes it
+ * to a fields-only parameter (`forwards`), so it is held as fields when
+ * every value written to it (`writes`) has its fields on hand.
+ */
+final class HeldVar {
+  sym: Symbol;
+  dispatch: RecordDispatchInfo;
+  model: SemanticModel;
+  writes: GrowableArray<Expression>;
+  forwards: GrowableArray<Forward>;
+  new(this.sym, this.dispatch, this.model, this.writes, this.forwards);
 }
 
 /**
@@ -259,7 +314,7 @@ final class ResultUse {
  */
 let explodeResults = (wasm: WasmModule, pass: ReachabilityAnalysis,
     candidates: GrowableArray<Candidate>,
-    byKey: HashMap<String, Candidate>): void => {
+    byKey: HashMap<String, Candidate>): GrowableArray<HeldVar> => {
   let uses = new Array<ResultUse>();
   for (let rc in pass.recordResultCalls) {
     let key = functionKey(rc.callee);
@@ -270,67 +325,232 @@ let explodeResults = (wasm: WasmModule, pass: ReachabilityAnalysis,
       }
     }
   }
-  var changed = true;
-  while (changed) {
-    changed = false;
+  // `pos = step(pos)` makes a held var and an exploding result each
+  // depend on the other, so vars start held and drop out while some
+  // write lacks its fields; results are recomputed from "nothing
+  // explodes" for each candidate set of held vars.
+  var heldList = heldVarCandidates(wasm, byKey);
+  var held = heldById(heldList);
+  while (true) {
     for (let c in candidates) {
-      if (c.result != null && !c.resultExplodes &&
-          producesFields(c, byKey) && resultDemanded(c, uses, byKey)) {
-        c.resultExplodes = true;
-        changed = true;
+      c.resultExplodes = false;
+    }
+    var changed = true;
+    while (changed) {
+      changed = false;
+      for (let c in candidates) {
+        if (c.result != null && !c.resultExplodes &&
+            producesFields(c, byKey) && resultDemanded(c, uses, byKey, held)) {
+          c.resultExplodes = true;
+          changed = true;
+        }
+      }
+    }
+    let next = new Array<HeldVar>();
+    for (let hv in heldList) {
+      if (writesHaveFields(hv, byKey, held)) {
+        next.push(hv);
+      }
+    }
+    if (next.length == heldList.length) {
+      break;
+    }
+    heldList = next;
+    held = heldById(heldList);
+  }
+  for (let use in uses) {
+    if (let (true, callee) = byKey.get(use.callee)) {
+      if (callee.resultExplodes && use.holdsFields(byKey, held)) {
+        wasm.fieldsOnlyResultCalls.add((use.rc.call as Node).id as i32);
       }
     }
   }
-  for (let use in uses) {
-    if (resultUseHoldsFields(use, byKey)) {
-      wasm.fieldsOnlyResultCalls.add((use.rc.call as Node).id as i32);
-    }
-  }
+  return heldList;
 };
 
-/** Whether `use`'s callee returns fields and `use` only needs them. */
-let resultUseHoldsFields = (use: ResultUse,
-    byKey: HashMap<String, Candidate>): boolean => {
-  if (let (true, callee) = byKey.get(use.callee)) {
-    if (!callee.resultExplodes) {
-      return false;
-    }
-  } else {
-    return false;
+let heldById = (list: GrowableArray<HeldVar>): HashMap<SymbolId, HeldVar> => {
+  let out = new HashMap<SymbolId, HeldVar>();
+  for (let hv in list) {
+    out[hv.sym.id] = hv;
   }
-  if (use.direct) {
-    return true;
-  }
-  let from = use.returnedFrom;
-  if (from != null) {
-    if (let (true, owner) = byKey.get(from)) {
-      return owner.resultExplodes;
+  return out;
+};
+
+/** Whether some call of `c` uses its result only for the fields. */
+let resultDemanded = (c: Candidate, uses: GrowableArray<ResultUse>,
+    byKey: HashMap<String, Candidate>,
+    held: HashMap<SymbolId, HeldVar>): boolean => {
+  let key = c.key();
+  for (let use in uses) {
+    if (use.callee == key && use.holdsFields(byKey, held)) {
+      return true;
     }
   }
   return false;
 };
 
-/** Whether some call of `c` uses its result only for the fields. */
-let resultDemanded = (c: Candidate, uses: GrowableArray<ResultUse>,
-    byKey: HashMap<String, Candidate>): boolean => {
-  let key = c.key();
-  for (let use in uses) {
-    if (use.callee != key) {
-      continue;
+/**
+ * Whether every value written to `hv` has its fields on hand: a record
+ * literal, a call whose result explodes, or another held var, of the
+ * same record type.
+ */
+let writesHaveFields = (hv: HeldVar, byKey: HashMap<String, Candidate>,
+    held: HashMap<SymbolId, HeldVar>): boolean => {
+  for (let w in hv.writes) {
+    if (!writeHasFields(w, hv, byKey, held)) {
+      return false;
     }
-    if (use.direct) {
-      return true;
+  }
+  return true;
+};
+
+let writeHasFields = (w: Expression, hv: HeldVar,
+    byKey: HashMap<String, Candidate>,
+    held: HashMap<SymbolId, HeldVar>): boolean => {
+  if (w is RecordLiteral) {
+    return true;
+  }
+  if (w is Identifier) {
+    let sym = hv.model.resolve(w);
+    if (sym != null) {
+      if (let (true, other) = held.get(sym.id)) {
+        return other.dispatch === hv.dispatch;
+      }
     }
-    let from = use.returnedFrom;
-    if (from != null) {
-      if (let (true, owner) = byKey.get(from)) {
-        if (owner.resultExplodes) {
-          return true;
+    return false;
+  }
+  if (w is CallExpression) {
+    let callee = w.callee;
+    if (callee is Identifier) {
+      let calleeSym = hv.model.resolve(callee);
+      if (calleeSym != null) {
+        if (let (true, target) = byKey.get(
+            functionKey(calleeSym.resolveTarget().id))) {
+          return target.resultExplodes && target.result === hv.dispatch;
         }
       }
     }
   }
   return false;
+};
+
+/**
+ * The `var` locals of record types, in reached functions, whose every
+ * use only needs the fields: field reads, destructuring, plain
+ * assignment, and passing it to a fields-only parameter of the same
+ * record type. Their writes are checked against the result verdicts by
+ * the caller.
+ */
+let heldVarCandidates = (wasm: WasmModule,
+    byKey: HashMap<String, Candidate>): GrowableArray<HeldVar> => {
+  let out = new Array<HeldVar>();
+  let declared = new HashSet<SymbolId>();
+  let seen = new HashSet<i32>();
+  for (let f in wasm.functions) {
+    let owner = f.node;
+    if (owner == null || seen.has((owner as Node).id as i32)) {
+      continue;
+    }
+    if (!(owner is FunctionExpression) && !(owner is MethodDefinition)) {
+      continue;
+    }
+    seen.add((owner as Node).id as i32);
+    let roots = codeRoots(owner as Node);
+    for (let root in roots) {
+      walkEnter(root, (n: Node): void => {
+        if (n is VariableDeclaration) {
+          noteHeldVarCandidate(wasm, f, owner as Node, roots, n, byKey,
+              declared, out);
+        }
+      });
+    }
+  }
+  return out;
+};
+
+/** Adds the `var` declared by `vd` in `owner` to `out` when it qualifies. */
+let noteHeldVarCandidate = (wasm: WasmModule, f: WasmFunction, owner: Node,
+    roots: GrowableArray<Node>, vd: VariableDeclaration,
+    byKey: HashMap<String, Candidate>, declared: HashSet<SymbolId>,
+    out: GrowableArray<HeldVar>): void => {
+  let model = f.model;
+  let pattern = vd.pattern;
+  if (vd.kind != 'var') {
+    return;
+  }
+  if (!(pattern is IdentifierPattern)) {
+    return;
+  }
+  if (enclosingFunction(vd, model) !== owner) {
+    return;
+  }
+  let sym = model.resolveDeclaration(pattern);
+  if (sym == null || declared.has(sym.id)) {
+    return;
+  }
+  declared.add(sym.id);
+  let bindingType = model.getBindingType(sym);
+  if (bindingType == null) {
+    return;
+  }
+  let rt = baseType(bindingType);
+  if (!(rt is RecordType)) {
+    return;
+  }
+  let d = wasm.findRecordDispatch(
+      recordWasmFields(wasm, rt, f), sortedOptionalNames(rt));
+  if (d == null || d.fields.length == 0) {
+    return;
+  }
+  let forwards = new Array<Forward>();
+  if (!usesOnlyFields(owner, roots, model, pattern, forwards, null, true)) {
+    return;
+  }
+  for (let fw in forwards) {
+    if (!forwardKeepsFields(byKey, d, fw)) {
+      return;
+    }
+  }
+  let writes = new Array<Expression>();
+  writes.push(vd.init);
+  for (let root in roots) {
+    walkEnter(root, (n: Node): void => {
+      if (n is AssignmentExpression) {
+        let left = n.left;
+        if (left is Identifier) {
+          let target = model.resolve(left);
+          if (target != null && target.id == sym.id) {
+            writes.push(n.value);
+          }
+        }
+      }
+    });
+  }
+  out.push(new HeldVar(sym, d, model, writes, forwards));
+};
+
+/** The code of a function or method: its body, and a constructor's initializers. */
+let codeRoots = (owner: Node): GrowableArray<Node> => {
+  let roots = new Array<Node>();
+  if (owner is FunctionExpression) {
+    roots.push(owner.body as Node);
+  } else if (owner is MethodDefinition) {
+    let body = owner.body;
+    if (body != null) {
+      roots.push(body);
+    }
+    let inits = owner.initializerList;
+    if (inits != null) {
+      for (let init in inits) {
+        roots.push(init);
+      }
+    }
+    let superInit = owner.superInitializer;
+    if (superInit != null) {
+      roots.push(superInit);
+    }
+  }
+  return roots;
 };
 
 /**
@@ -384,7 +604,18 @@ let classifyResultUse = (rc: RecordResultCall, calleeKey: String,
   let parent = model.getParent(call);
   var direct = false;
   var returnedFrom: String | null = null;
-  if (parent is MemberExpression) {
+  var assignedTo = noSymbolId;
+  if (parent is AssignmentExpression) {
+    let left = parent.left;
+    if ((parent.value as Node) === (call as Node) && parent.operator == null) {
+      if (left is Identifier) {
+        let target = model.resolve(left);
+        if (target != null) {
+          assignedTo = target.id;
+        }
+      }
+    }
+  } else if (parent is MemberExpression) {
     direct = (parent.object as Node) === (call as Node) &&
         !parent.optional && !parent.isSymbolAccess;
   } else if (parent is VariableDeclaration) {
@@ -396,6 +627,11 @@ let classifyResultUse = (rc: RecordResultCall, calleeKey: String,
         if (parent.kind == 'let' && owner != null) {
           direct = boundResultUsesFields(owner as Node, model, pattern,
               result, byKey);
+        } else if (parent.kind == 'var') {
+          let target = model.resolveDeclaration(pattern);
+          if (target != null) {
+            assignedTo = target.id;
+          }
         }
       }
     }
@@ -407,7 +643,7 @@ let classifyResultUse = (rc: RecordResultCall, calleeKey: String,
       }
     }
   }
-  return new ResultUse(rc, calleeKey, direct, returnedFrom);
+  return new ResultUse(rc, calleeKey, direct, returnedFrom, assignedTo);
 };
 
 /**
@@ -442,21 +678,7 @@ let returnsFrom = (call: CallExpression, parent: Node | null,
 let boundResultUsesFields = (owner: Node, model: SemanticModel,
     pattern: IdentifierPattern, result: RecordDispatchInfo,
     byKey: HashMap<String, Candidate>): boolean => {
-  let roots = new Array<Node>();
-  if (owner is FunctionExpression) {
-    roots.push(owner.body as Node);
-  } else if (owner is MethodDefinition) {
-    let body = owner.body;
-    if (body != null) {
-      roots.push(body);
-    }
-    let inits = owner.initializerList;
-    if (inits != null) {
-      for (let init in inits) {
-        roots.push(init);
-      }
-    }
-  }
+  let roots = codeRoots(owner);
   let forwards = new Array<Forward>();
   if (!usesOnlyFields(owner, roots, model, pattern, forwards, null)) {
     return false;
@@ -868,7 +1090,8 @@ let declaredSymbol = (fn: FunctionExpression, model: SemanticModel): Symbol | nu
  */
 let usesOnlyFields = (owner: Node, roots: GrowableArray<Node>,
     model: SemanticModel, name: Node,
-    forwards: GrowableArray<Forward>, superKey: String | null): boolean => {
+    forwards: GrowableArray<Forward>, superKey: String | null,
+    allowAssign: boolean = false): boolean => {
   let param = model.resolveDeclaration(name);
   if (param == null) {
     return false;
@@ -879,7 +1102,7 @@ let usesOnlyFields = (owner: Node, roots: GrowableArray<Node>,
       if (ok && n is Identifier) {
         let sym = model.resolve(n);
         if (sym != null && sym.id == param.id &&
-            !isFieldUse(n, owner, model, forwards, superKey)) {
+            !isFieldUse(n, owner, model, forwards, superKey, allowAssign)) {
           ok = false;
         }
       }
@@ -896,7 +1119,7 @@ let usesOnlyFields = (owner: Node, roots: GrowableArray<Node>,
  */
 let isFieldUse = (ident: Identifier, owner: Node,
     model: SemanticModel, forwards: GrowableArray<Forward>,
-    superKey: String | null): boolean => {
+    superKey: String | null, allowAssign: boolean): boolean => {
   let parent = model.getParent(ident);
   var accepted = false;
   var forward: Forward | null = null;
@@ -910,6 +1133,11 @@ let isFieldUse = (ident: Identifier, owner: Node,
   } else if (parent is CallExpression) {
     forward = forwardOf(parent, ident, model);
     accepted = forward != null;
+  } else if (parent is AssignmentExpression) {
+    // Being assigned to is a write, not a use of the record, for a
+    // `var` whose every write is itself checked (heldVarCandidates).
+    accepted = allowAssign && (parent.left as Node) === (ident as Node) &&
+        parent.operator == null;
   } else if (parent is SuperInitializer) {
     if (superKey != null && parent.constructorName == null) {
       for (var k = 0; k < parent.args.length; k += 1) {

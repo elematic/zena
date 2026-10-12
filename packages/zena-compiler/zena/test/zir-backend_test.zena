@@ -806,6 +806,26 @@ export let tests = suite('zir backend', (): void => {
         'a fields-only result calls the core');
   });
 
+  test('a var record updated through a call stays as its fields', (ctx: TestContext): void => {
+    // `pos` is only read for its fields and only assigned values that
+    // are fields already, so it is carried around the loop as its
+    // fields: `step.core` takes and returns them, and no iteration
+    // builds a record.
+    let result = compileWithZir(
+        'type V = {x: i32, y: i32};\n' +
+        'let step = (p: V): V => ({x: p.x + p.y, y: p.y + 1});\n' +
+        'export let main = (): i32 => {\n' +
+        '  var pos: V = {x: 0, y: 1};\n' +
+        '  for (var i = 0; i < 10; i += 1) {\n' +
+        '    pos = step(pos);\n' +
+        '  }\n' +
+        '  return pos.x;\n' +
+        '};');
+    assertNoAllocation(result, '$main', 'the var is carried as its fields');
+    assertNoAllocation(result, '$step.core',
+        'the result is returned as its fields');
+  });
+
   test('-O2 removes a local fat pointer entirely', (ctx: TestContext): void => {
     // Pack, dispatch, unpack, all in one body: devirtualization makes
     // the call direct, inlining brings the trampoline's receiver cast
