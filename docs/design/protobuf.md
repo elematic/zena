@@ -1,6 +1,9 @@
 # Protobuf and gRPC
 
-Status: **Proposed**.
+Status: **Partly implemented.** The generator and the runtime are in
+`packages/protobuf`, and generate a Firestore client that compiles and
+runs against a test transport. Transports, authentication and the
+hand-written Firestore client are not built.
 
 This document designs protobuf messages and gRPC clients for Zena. The
 first user is a Firestore client for servers running on Google Cloud Run.
@@ -20,19 +23,21 @@ It covers three decisions, in order of how much they affect the result:
   Reachability removes the getters a program never calls, and their
   decoders with them. A program that reads two fields of a 20-field
   message emits code for two fields.
-- A message to encode is a **record** with presence-optional fields,
-  encoded by one generated function per message type. Only the message
-  types a program sends have their encoders reached.
+- A message to encode is built from a **record** with presence-optional
+  fields by the message class's `of` method, which encodes it and
+  returns a view of the bytes. A message-typed field holds a view, on
+  both the reading and the writing side. Only the message types a
+  program builds have their encoders reached.
 - No descriptors, reflection tables, or `Any` type registries are
-  generated unless asked for.
-- Generated service stubs call a small transport interface. Unary calls
+  generated.
+- Generated service clients call a small transport interface. Unary calls
   can use Google's gRPC fallback protocol over HTTP/1.1. Streaming calls
   need gRPC over HTTP/2, which needs host work first.
 - The generator is a Zena library that turns `.proto` text into Zena
-  source. It runs first as a zb build step, and the Firestore package
-  checks in its output. Once the output shape is settled, the same
-  library moves behind a general loader-plugin mechanism, which the WIT
-  synthesizer moves onto too.
+  source. It runs as a command-line program or a build step, and the
+  output is checked in. Once the output shape is settled, the same
+  library can move behind a general loader-plugin mechanism, which the
+  WIT synthesizer would move onto too.
 
 ## Background
 
@@ -60,7 +65,7 @@ field number, or descriptor tables that reference every message. The
 design below keeps each field's code separate so that reachability can
 remove it.
 
-### What the compiler provides today
+### What the compiler provides
 
 - **Lazy body checking** ([lazy-body-checking.md](lazy-body-checking.md)).
   A module in a dependency package has its signatures checked. Its
@@ -81,11 +86,14 @@ remove it.
   the absence is observable through patterns. This matches proto3
   explicit presence.
 - **`String` as a view** ([strings.md](strings.md)). A `String` is a
-  `ByteArray`, a start and an end, in WTF-8. A protobuf `string` field
-  can be a `String` sharing the response buffer, with no copy.
+  `ByteArray`, a start and an end, in WTF-8. `String.fromByteArray` is
+  public, so a protobuf `string` field can be a `String` sharing the
+  response buffer, with no copy, without the runtime living in the
+  standard library.
 - **`ByteBuffer`** (`packages/stdlib/zena/core/byte-buffer.zena`) has
   `writeULEB128` and `writeULEB128_64`, which are the protobuf varint
-  encoding. There is no reader type and no varint decoder yet.
+  encoding. There is no reader type in the standard library; the
+  runtime has its own.
 - **WIT synthesis** (`packages/zena-compiler/zena/lib/wit-module-synth.zena`).
   The one existing case of generating Zena from an interface language. A
   `zena-packages.json` entry `{"wit": "./path"}` makes the CLI host turn a
@@ -95,7 +103,7 @@ remove it.
 ## Goals
 
 - A program pays in binary size for the fields it reads and the message
-  types it sends, and little for the rest of the schema.
+  types it builds, and little for the rest of the schema.
 - Compile time for an unused part of the schema stays at parsing and
   signature checking.
 - Messages are typed. A field read has the field's Zena type, a request
@@ -103,8 +111,9 @@ remove it.
   exhaustive.
 - Generated code is readable Zena that can be inspected and debugged.
 
-Non-goals for now: gRPC servers, the proto2 syntax and extensions, and
-the protobuf text format.
+Non-goals for now: gRPC servers, proto2 semantics (default values,
+extensions, groups), editions, and the protobuf text format. The parser
+reads proto2 files, so that a proto3 file can import one.
 
 ## Generated code shape
 
@@ -122,36 +131,45 @@ message Document {
 }
 ```
 
-the generator emits:
+the generator emits, doc comments aside:
 
 ```zena
 export final class Document {
   #m: ProtoView;
-  new(this.#m);
+
+  new(m: ProtoView) : #m = m;
+
+  static decode(bytes: ByteArray): Document {
+    return new Document(ProtoView.of(bytes));
+  }
+
+  static of(init: DocumentInit): Document { ... }
+
+  protoView: ProtoView {
+    get { return this.#m; }
+  }
 
   name: String {
-    get => this.#m.string(1);
-  }
-  fields: ProtoMap<String, Value> {
-    get => this.#m.map(2, ProtoView.readString, Value.view);
-  }
-  createTime: Timestamp | null {
-    get => this.#m.message(3, Timestamp.view);
-  }
-  updateTime: Timestamp | null {
-    get => this.#m.message(4, Timestamp.view);
+    get { return this.#m.string(1); }
   }
 
-  static view(m: ProtoView): Document {
-    return new Document(m);
+  fields: ProtoMap<String, Value> {
+    get { return this.#m.map(2, (e) => e.string(1), (e) => new Value(e.messageOrEmpty(2))); }
   }
+
+  createTime: Timestamp | null {
+    get {
+      let m = this.#m.message(3);
+      return if (m == null) null else new Timestamp(m as ProtoView);
+    }
+  }
+  ...
 }
 ```
 
 `Document` has one field for any size of message. A program that reads
 only `name` reaches the `name` getter and `ProtoView.string`. The other
-three getters, `ProtoMap`, and the whole `Value` decoder are never
-emitted.
+getters, `ProtoMap`, and the whole `Value` decoder are never emitted.
 
 Unknown fields cost nothing. The protobuf wire format makes every field
 skippable without its schema: the tag gives a wire type, and the wire
@@ -165,15 +183,21 @@ reading `doc.createTime` allocates one small object and copies nothing.
 
 `ProtoView` is the shared runtime type. It holds the byte array, the
 start and end offsets, and an index built on the first field access. The
-index-building pass reads tags and skips values. For each field number it
-records the offset of the last occurrence, and the first occurrence and
-count for repeated fields. The pass is the same code for every message
-type, so it adds no per-message code.
+index pass reads tags and skips values. For each field number it records
+the offsets of the first and last tags and the number of occurrences.
+The pass is the same code for every message type, so it adds no
+per-message code.
 
-Field numbers in the Firestore protos go up to 22. The generator passes
-each message's highest field number, so the index can be a small array
-indexed by field number. A message with sparse large field numbers falls
-back to a map.
+The index is an array indexed by field number for numbers below 1024,
+sized by the largest such number in the message. Larger numbers go in a
+map. Field numbers in the Firestore protos go up to 22.
+
+A scalar field that occurs more than once reads as its last occurrence.
+A message field that occurs more than once is merged, as the
+specification requires: the getter returns a view of the occurrences'
+concatenated bytes, because decoding a concatenation is defined to be the
+merge. A field written with a wire type its schema does not allow throws
+a `ProtoError`, as do truncated values and varints longer than 10 bytes.
 
 Getters decode on every call. `doc.name` read twice creates two `String`
 slices. Code that reads a field in a loop should bind it to a local
@@ -183,84 +207,109 @@ above).
 
 ### Scalars, strings and bytes
 
-| Proto type                                  | Zena type             |
-| ------------------------------------------- | --------------------- |
-| `int32`, `sint32`, `sfixed32`               | `i32`                 |
-| `uint32`, `fixed32`                         | `u32`                 |
-| `int64`, `sint64`, `sfixed64`               | `i64`                 |
-| `uint64`, `fixed64`                         | `u64`                 |
-| `float`, `double`                           | `f32`, `f64`          |
-| `bool`                                      | `boolean`             |
-| `string`                                    | `String`              |
-| `bytes`                                     | a read-only byte view |
-| `optional` scalar, or a message-typed field | `T \| null`           |
+| Proto type                    | Zena type when read            | Zena type in an `Init` record |
+| ----------------------------- | ------------------------------ | ----------------------------- |
+| `int32`, `sint32`, `sfixed32` | `i32`                          | `i32`                         |
+| `uint32`, `fixed32`           | `u32`                          | `u32`                         |
+| `int64`, `sint64`, `sfixed64` | `i64`                          | `i64`                         |
+| `uint64`, `fixed64`           | `u64`                          | `u64`                         |
+| `float`, `double`             | `f32`, `f64`                   | `f32`, `f64`                  |
+| `bool`                        | `boolean`                      | `boolean`                     |
+| `string`                      | `String`                       | `String`                      |
+| `bytes`                       | `ProtoBytes`                   | `ByteArray \| ProtoBytes`     |
+| an enum                       | the generated enum             | the generated enum            |
+| a message                     | the message's class, or `null` | the message's class           |
+| `repeated T`                  | `ProtoList<T>`                 | `Array<T>`                    |
+| `map<K, V>`                   | `ProtoMap<K, V>`               | `Map<K, V>`                   |
 
-A `string` field becomes a `String` sharing the response's byte array.
-This needs a constructor from a byte array and a range, which is
-internal to the standard library today. Because of that, the runtime
-(`ProtoView`, `ProtoMap`, the writer) belongs in the standard library as
-`zena:protobuf`. Proto3 requires `string` fields to be valid UTF-8, and
-WTF-8 accepts every valid UTF-8 sequence. Whether to validate on read is
-an open question.
+A `string` field becomes a `String` sharing the response's byte array,
+through the public `String.fromByteArray`. Proto3 requires `string`
+fields to be valid UTF-8, and WTF-8 accepts every valid UTF-8 sequence.
+The runtime does not validate.
 
 A scalar with implicit presence (proto3 without `optional`) reads as its
-default value when absent.
+default value when absent. A scalar with explicit presence (proto3
+`optional`, or a `oneof` member) also gets a `hasX` getter: Zena has no
+nullable primitives, so `i32 | null` is not a type.
 
 ### Repeated fields and maps
 
-A repeated field reads as an iterable that scans forward from the
-field's first occurrence. Repeated scalars must accept both the packed
-and the unpacked encoding, because proto3 parsers are required to. A
-`map<K, V>` reads as a `ProtoMap<K, V>`: a lookup scans the entries, and
-iteration yields keys and values as views. A caller that looks up many
-keys can copy it into a `HashMap`.
+A repeated field reads as a `ProtoList<T>`, an iterable that scans
+forward from the field's first occurrence. Repeated numeric fields
+accept both the packed and the unpacked encoding, and a mix of the two,
+because proto3 parsers are required to. `length` counts the elements,
+which decodes a packed run, and `toArray()` copies them out.
+
+A `map<K, V>` reads as a `ProtoMap<K, V>`. `has(key)` and
+`getOr(key, fallback)` scan the entries, and the last entry with a key
+wins. Iterating yields `ProtoMapEntry` objects with `key` and `value`.
+A caller that looks up many keys can copy the entries into a `HashMap`.
 
 ### oneof
 
-A `oneof` reads as a sealed class, built when the getter is called.
-Firestore's `Value` is the main case:
+A `oneof` reads as a sealed class, built when the getter is called. For
+Firestore's `Value`, whose `value_type` has 15 members, the generator
+emits:
 
 ```zena
-export sealed class ValueKind {
-  case ValueNull()
-  case ValueBoolean(value: boolean)
-  case ValueInteger(value: i64)
-  case ValueDouble(value: f64)
-  case ValueTimestamp(value: Timestamp)
-  case ValueString(value: String)
-  case ValueBytes(value: ProtoBytes)
-  case ValueReference(value: String)
-  case ValueGeoPoint(value: LatLng)
-  case ValueArray(value: ArrayValue)
-  case ValueMap(value: MapValue)
-  // ... and the four members used by pipeline queries
-  case ValueUnset()
+export sealed class ValueValueType {
+  case ValueNullValue(value: NullValue)
+  case ValueBooleanValue(value: boolean)
+  case ValueIntegerValue(value: i64)
+  case ValueDoubleValue(value: f64)
+  case ValueTimestampValue(value: Timestamp)
+  case ValueStringValue(value: String)
+  ...
+  case ValueValueTypeNotSet
 }
 ```
 
-`ValueUnset` stands for "no member set", which proto3 allows. A `match`
-over `value.kind` is checked for exhaustiveness. Reaching the `kind`
-getter reaches every case's decoder, since the getter builds whichever
-case is present. Per-member getters (`value.stringValue: String | null`)
-are also generated, for code that expects one member and should not pay
-for the others.
+and a caller writes:
+
+```zena
+let text = match (value.valueType) {
+  case ValueStringValue {value}: value
+  case ValueIntegerValue {value}: `${value}`
+  case _: '?'
+};
+```
+
+The member that is set is the one whose tag occurs last, as the
+specification requires. `ValueValueTypeNotSet` stands for no member set.
+Reaching the `valueType` getter reaches every member's decoder, since the
+getter builds whichever case is present. Each member also has its own
+getter, `value.stringValue`, for code that expects one member and should
+not pay for the others. It returns the default value, or null for a
+message, when another member is set.
 
 Zena has no nested declarations, so the generator flattens nested names
-with the parent's name as a prefix. The WIT synthesizer does the same
-for variant cases.
+with the parent's name as a prefix: `StructuredQuery.FieldFilter`
+becomes `StructuredQueryFieldFilter`. A case is named for its message and
+field, `ValueStringValue`, unless that is the name of a generated type.
+`TransactionOptions` has both a member `read_write` and a nested message
+`ReadWrite`, so that member's case takes the oneof type's name instead:
+`TransactionOptionsModeReadWrite`.
 
 ### Enums
 
-A proto enum becomes a Zena enum with explicit values. Proto3 enums are
-open: a newer server can send a value the generated code does not know.
-The enum cast in Zena is unchecked ([enums.md](enums.md)), so an
-unknown value is carried through. An exhaustive `match` then misses it,
-so each generated enum needs a way to test for an unknown value. The
-details are an open question.
+A proto enum becomes a Zena enum with explicit values. When every value
+starts with the enum's name in upper snake case, the prefix is dropped:
+`Color { COLOR_UNSPECIFIED, COLOR_RED }` becomes
+`Color { Unspecified, Red }`. Otherwise the values keep their full names
+in Pascal case, as `StructuredQuery.FieldFilter.Operator` does, since only
+its first value carries the prefix. Aliases (`allow_alias`) keep the
+first name for each number.
+
+Proto3 enums are open: a newer server can send a value the generated
+code does not know. The enum cast in Zena is unchecked
+([enums.md](enums.md)), so an unknown value is carried through, and
+`match` needs a `case _` arm to cover it.
 
 ### Records for encoding
 
-A request is a record. For `GetDocumentRequest`:
+Each message `M` has a record type `MInit` with one presence-optional
+field per proto field, and `M.of(init)` encodes one and returns a view
+of the bytes. For `GetDocumentRequest`:
 
 ```proto
 message GetDocumentRequest {
@@ -278,70 +327,68 @@ the generator emits:
 ```zena
 export type GetDocumentRequestInit = {
   name: String,
-  mask?: DocumentMaskInit,
-  consistencySelector?: GetDocumentRequestConsistencySelector,
+  mask?: DocumentMask,
+  transaction?: ByteArray | ProtoBytes,
+  readTime?: Timestamp,
 };
-
-export function encodeGetDocumentRequest(
-  w: ProtoWriter,
-  m: GetDocumentRequestInit,
-): void { ... }
 ```
 
 and a caller writes:
 
 ```zena
-let doc = await firestore.getDocument({name: path, mask: {fieldPaths: ['title']}});
+let doc = await firestore.getDocument({
+  name: path,
+  mask: DocumentMask.of({fieldPaths: ['title']}),
+});
 ```
 
-Most fields are presence-optional, so a literal names only the fields
-it sets. A field marked `(google.api.field_behavior) = REQUIRED` is a
-required record field, so leaving it out is a type error. The Firestore
-protos carry 28 such annotations.
+Most fields are presence-optional, so a literal names only the fields it
+sets. A field marked `(google.api.field_behavior) = REQUIRED` is a
+required record field, so leaving it out is a type error. A field marked
+`OUTPUT_ONLY` is left out of the record, because the server sets it and
+ignores it in requests.
 
-The record type has an `Init` suffix because a message that appears in
-both requests and responses, such as `Document`, needs two names: a view
-class for reading and a record for writing.
+A message-typed field holds the field's view class, `DocumentMask`, and
+not another record. So a nested message is encoded before its parent:
+`DocumentMask.of` runs first, and the parent copies its bytes. This was
+chosen over records nested in records for three reasons:
+
+- `Init` records never refer to each other, so they are never recursive.
+  Firestore's messages are recursive (`Value` holds a `MapValue`, whose
+  fields are `Value`s), and the checker cannot yet compare a record alias
+  that refers to itself through a type argument such as
+  `Map<String, Value>` with the record it names
+  (`tests/language/execution/records/recursive_alias_type_argument.zena`).
+- A nested message's length is known before it is written, so the parent
+  needs no scratch buffer or size pass.
+- A view read from one response can go straight into the next request.
+  Read-modify-write needs no conversion, and the copy carries fields the
+  generated code does not know.
+
+The cost is writing `MapValue.of(...)` at each level of a nested literal.
+
+The members of a `oneof` are separate optional fields in the record. The
+type does not stop a caller from setting two; the encoder writes both,
+and a reader takes the one written last.
 
 ### Encoder reachability
 
-The encoder for a message type tests each field's presence and encodes
-the fields that are present. Calling it reaches the code for every field
-of that type, and the encoders of nested message types. Encoders of
-message types that no reached call sends are never emitted. A program
-that calls only `getDocument` emits encoders for `GetDocumentRequest`,
-`DocumentMask` and `Timestamp`. The `StructuredQuery` tree is emitted
-only if the program also calls `runQuery`.
-
-Request types are the smaller half of most APIs, and within a request
-type the unused fields cost a presence test each. If the optimizer
-inlines an encoder at a record literal, the presence bits become
-constants and the tests for absent fields fold away. Nothing in this
-design depends on that happening.
-
-A nested message field is written as its length followed by its bytes,
-so the length must be known before the bytes are written. The writer
-encodes each nested message into a scratch buffer, then writes the
-length and copies. The alternative, computing every message's size
-first, would generate a second function per message. Requests are small,
-so the copy is cheap.
-
-### Embedding a view in a request
-
-Read-modify-write is common: read a document, change one field, write it
-back. A message-typed field in an `Init` record can accept either the
-record or a view of the same message, for example
-`DocumentInit | Document`. The encoder writes a view's byte range
-unchanged, without decoding or re-encoding it. This also passes through
-fields the generated code does not know.
+`M.of` tests each field's presence and encodes the fields that are
+present. Calling it reaches the code for every field of that type, and
+the `protoView` getters of the message types its fields hold. It does
+not reach those types' encoders: a nested message was encoded when it
+was built. A program that calls only `getDocument` reaches
+`GetDocumentRequest.of`, and `DocumentMask.of` only if it builds a mask.
+The `StructuredQuery` encoders are emitted only for a program that
+builds a query.
 
 ### Well-known types
 
 `Timestamp`, `Duration`, `Struct`, `Value`, `ListValue`, the wrapper
 types and `Empty` are generated from their `.proto` files like any other
-message. `zena:protobuf` adds conversions to and from Zena's own types
-where those exist. `Any` is generated as a type URL plus bytes; decoding
-its contents is up to the caller, so no type registry is needed.
+message. `Any` is generated as a type URL plus bytes; decoding its
+contents is up to the caller, so no type registry is needed. Conversions
+between these and Zena's own types are not written yet.
 
 ### What is not generated
 
@@ -349,8 +396,9 @@ its contents is up to the caller, so no type registry is needed.
   everything they reference would be reachable.
 - An `Any` type registry, for the same reason.
 - The proto3 JSON codec. It is needed only for the REST transport (see
-  [REST with JSON](#rest-with-json)). When needed, it is a separate output
-  the generator produces on request.
+  [REST with JSON](#rest-with-json)).
+- Client methods for RPCs that stream requests (`Write` and `Listen` in
+  Firestore). The class comment lists them.
 
 Each of these can be added as an opt-in output later without changing
 the views or records.
@@ -359,19 +407,27 @@ the views or records.
 
 ### Transport interface
 
-A generated service stub turns each RPC into a typed method that encodes
-the request, calls the transport, and wraps the response bytes in a
-view. The transport interface has no knowledge of messages:
+A generated client turns each RPC into a typed method that encodes the
+request, calls the transport, and wraps the response bytes in a view.
+The transport knows nothing of messages:
 
 ```zena
 export interface ProtoTransport {
-  unary(method: RpcMethod, request: ByteBuffer, metadata: Metadata): Future<ProtoView>;
-  serverStream(method: RpcMethod, request: ByteBuffer, metadata: Metadata): Stream<ProtoView>;
+  unary(method: RpcMethod, request: ProtoView): Future<ProtoView>;
+  serverStream(method: RpcMethod, request: ProtoView): AsyncIterator<ProtoView>;
 }
 ```
 
-`RpcMethod` holds the full service and method names. The bidirectional
-streaming method is left out until there is a user for it.
+`RpcMethod` holds the full service and method names. A unary method is
+`async` and returns `Future<Response>`. A server-streaming method returns
+a `ProtoStream<Response>`, which a `for await` consumes:
+
+```zena
+for await (let response in client.runQuery({parent, structuredQuery})) { ... }
+```
+
+Per-call metadata, such as the `x-goog-request-params` header Firestore
+expects, is not in the interface yet.
 
 ### gRPC over HTTP/2
 
@@ -401,9 +457,9 @@ HTTP/2 for trailers
 A new connection and TLS handshake per request costs every outbound
 call from a Cloud Run server, protobuf or not. That makes pooled
 connections and HTTP/2 a host requirement for production servers in
-general. Zena's own runtime (`packages/zena-runtime`) does not link
-`wasmtime-wasi-http` today, so HTTP programs run only under
-`wasmtime serve`.
+general. Zena's own runtime (`packages/zena-runtime`) links
+`wasmtime-wasi-http` since the HTTP server landed (b3930dad), with
+the default context, so its outgoing requests use the default handler.
 
 ### gRPC fallback over HTTP/1.1
 
@@ -437,13 +493,13 @@ names, `int64` as strings, and per-type rules for the well-known types.
 
 ### Host requirements
 
-| Requirement                                     | Needed by                             | State                                |
-| ----------------------------------------------- | ------------------------------------- | ------------------------------------ |
-| `zena:fetch` with method, request headers, body | every transport, auth                 | GET only, no request headers or body |
-| Response trailers in `zena:fetch`               | gRPC                                  | ignored by `consumeBody`             |
-| Pooled connections                              | production servers                    | not in wasmtime's default handler    |
-| HTTP/2 to `*.googleapis.com`                    | gRPC                                  | not in wasmtime's default handler    |
-| `wasmtime-wasi-http` in `zena-runtime`          | running servers under Zena's own host | not linked                           |
+| Requirement                                     | Needed by                             | State                                  |
+| ----------------------------------------------- | ------------------------------------- | -------------------------------------- |
+| `zena:fetch` with method, request headers, body | every transport, auth                 | GET only, no request headers or body   |
+| Response trailers in `zena:fetch`               | gRPC                                  | ignored by `consumeBody`               |
+| Pooled connections                              | production servers                    | not in wasmtime's default handler      |
+| HTTP/2 to `*.googleapis.com`                    | gRPC                                  | not in wasmtime's default handler      |
+| An outgoing-request hook in `zena-runtime`      | running servers under Zena's own host | wasi-http linked, default handler only |
 
 ### Authentication on Cloud Run
 
@@ -456,33 +512,47 @@ needs request headers in `zena:fetch` and nothing else.
 
 Firestore also expects an `x-goog-request-params` header naming the
 database, as declared by the `google.api.routing` annotation on each
-RPC. The generator can emit it from the annotation.
+RPC. The parser keeps that annotation's value, so the generator can emit
+the header once the transport interface carries metadata.
 
 ## Where generation runs
 
 ### Generator library
 
-The generator is a pure Zena library, `packages/protobuf`, with two
-parts:
+The generator is a pure Zena library in `packages/protobuf/zena`:
 
-- a parser for proto3 `.proto` text. It records the options the
-  generator uses (`field_behavior`, `routing`, `http`) and ignores the
-  rest;
-- an emitter that produces Zena source text with the `zena` template
-  tag from `packages/zena-compiler/zena/lib/code-template.zena`.
+- `lexer.zena` and `parser.zena` read `.proto` text into a syntax tree.
+  Options are kept as written, with aggregate values parsed in the text
+  format, and the generator reads the ones it uses by name, so the
+  `.proto` files declaring them need not be present.
+- `schema.zena` loads files and their imports through a function the
+  caller passes in, resolves type references with protoc's scoping rules,
+  and marks what the roots reach. A missing import is an error only if a
+  reached declaration needs a type from it.
+- `emitter.zena` writes the Zena source.
+- `generator.zena` is the entry point: `generate({files, read, roots?,
+runtimeImport?})` returns one module's source.
 
-Its input is a set of `.proto` files and a list of message and service
-names to generate. Its output is Zena source. It does no I/O. Parsing
-`.proto` text means users don't need `protoc`. The `google/api`,
-`google/protobuf`, `google/rpc` and `google/type` files Firestore imports
-are vendored with the package that uses them.
+It does no I/O. `bin/generate.zena` is a command-line program around it,
+with `protoc`-style `-I` include directories. Parsing `.proto` text means
+users don't need `protoc`. The Google `.proto` files Firestore needs are
+vendored in `packages/protobuf/protos`.
 
-The rest of this section is about where that library runs. It is the
-same library in every case.
+Names follow these rules:
+
+- A message or enum takes its nested name. A name that another reached
+  type also has, or that the generated module relies on (`String`,
+  `Map`, `ProtoView`, ...), gets a prefix from its package, unless it is
+  in the first input file's package: a `google.protobuf.Value` beside a
+  `google.firestore.v1.Value` becomes `ProtobufValue`.
+- Fields and methods are lower camel case. A name that is a Zena keyword
+  gets a trailing `_`, as `type` becomes `type_`. Contextual keywords
+  that work as member names, such as `from`, are left alone.
+- Two members of one class that would share a name get trailing `_`s.
 
 ### Build step
 
-A zb or Wireit script runs the generator from the CLI and writes `.zena`
+A zb or Wireit script can run `bin/generate.zena` and write `.zena`
 files. zb already supports this: it runs arbitrary commands, caches by
 content, and lets dependents rebuild only when the output's digest
 changes ([workflow.md](workflow.md)).
@@ -496,6 +566,11 @@ changes ([workflow.md](workflow.md)).
   build step yet ([package-manifest.md](package-manifest.md)).
 - Because the output sits in a package, its unused bodies are not
   checked, per [lazy-body-checking.md](lazy-body-checking.md).
+
+The package's own tests keep two generated modules checked in under
+`test-files/generated`: a fixture covering each feature, and Firestore.
+A test fails when the generator's output differs from them, and
+`UPDATE_PROTO_GOLDENS=1` rewrites them.
 
 ### Compiler-synthesized imports
 
@@ -530,7 +605,9 @@ The synthesizer is a pure function and receives only the bytes the host
 gives it. That matches the sandbox [macros.md](macros.md) requires of
 macros, which may not import file or network modules. WIT, protobuf, and
 later schemas such as SQL or GraphQL would share one mechanism. Adding
-editor support once in the language service would cover all of them.
+editor support once in the language service would cover all of them. The
+protobuf generator already has this shape: `generate` takes a read
+function and returns source.
 
 Its cost is infrastructure that does not exist. The compiler is itself a
 wasm module, and it would have to call a separately compiled synthesizer
@@ -554,22 +631,69 @@ types to Firestore documents (see [Typed documents](#typed-documents)).
 
 ### Order
 
-1. Build the generator library and the `zena:protobuf` runtime. Run the
-   generator as a zb step for the Firestore package and check in the
-   output. Iterate on the code shape with measurements. Changing the
-   generator does not touch the compiler, so it needs no bootstrap
-   reseed.
+1. Build the generator library and the runtime, run the generator from
+   the command line, and check in the output. Iterate on the code shape
+   with measurements. Changing the generator does not touch the
+   compiler, so it needs no bootstrap reseed. This is done.
 2. Once the shape is stable, build the loader-plugin mechanism. Move the
    WIT synthesizer and the protobuf generator onto it, and give the
    language service a way to run synthesizers.
+
+## Measurements
+
+`packages/protobuf/examples` holds two programs over the generated
+Firestore module, with a transport that answers with canned bytes, and a
+baseline that uses the same standard library pieces (a future, a
+`HashMap`, a console line) without protobuf. Built with
+`zena-cli -O <n> build`:
+
+| Program                                                                                   | `-O0`   | `-O1`  | `-O2`  |
+| ----------------------------------------------------------------------------------------- | ------- | ------ | ------ |
+| `baseline.zena`                                                                           | 21,374  | 11,964 | 11,100 |
+| `firestore-get.zena`: get a document, read one field                                      | 116,363 | 30,603 | 27,049 |
+| `firestore-query.zena`: build a filtered, ordered query, stream results, read every field | 233,763 | 51,450 | 42,224 |
+
+Sizes are in bytes. At `-O2` the get program adds 16 KB to the baseline
+and the query program 31 KB. In the get program the largest generated
+functions are `Value.of` and `Document.of`, which the program calls to
+build its canned response; a client that only reads would not reach
+them. The generated Firestore module is 9,405 lines, 91 message classes,
+9 enums and 30 oneof types, and neither program carries most of it.
+
+Compiling the get program takes about 1.1 s against 0.4 s for the
+baseline. The examples import the generated module by relative path, so
+it is part of the local project and every body in it is checked; behind a
+package import, unused bodies would not be.
+
+The runtime is checked against `protoc` 36.2: messages `protoc`
+encoded from text format decode correctly, and the generated encoders
+produce the same bytes for the same values
+(`packages/protobuf/test-files/protoc`).
+
+## Compiler limitations met
+
+- A record alias that refers to itself through a type argument does not
+  compile, which shaped the encoding side (see
+  [Records for encoding](#records-for-encoding)).
+  `tests/language/execution/records/recursive_alias_type_argument.zena`
+  reproduces it, skipped.
+- An imported function held by a top-level `let` and used as a value only
+  inside a class method fails in lowering with "non-local identifier".
+  The generated code passes arrows over runtime methods instead:
+  `(v, p) => v.int32At(p)`.
+  `tests/language/execution/imports/let_fn_value_in_class.zena`
+  reproduces it, skipped.
+- `u32 as i64` sign-extends
+  ([#90](https://github.com/elematic/zena/issues/90)). The writer masks
+  `uint32` values to 32 bits instead.
 
 ## Firestore client layering
 
 The Firestore package has four layers:
 
-1. `zena:protobuf`: `ProtoView`, `ProtoWriter`, `ProtoMap`, varints and
-   the transport interface.
-2. Generated views, records, encoders and the `Firestore` stub for
+1. `protobuf:runtime`: `ProtoView`, `ProtoWriter`, `ProtoList`,
+   `ProtoMap`, `ProtoBytes` and the transport interface.
+2. Generated views, records, encoders and the `FirestoreClient` for
    `google.firestore.v1`.
 3. A hand-written client: `db.collection('users').doc(id).get()`,
    transactions with retry, batched writes, query building, and token
@@ -591,46 +715,53 @@ the two should share a design. That design is out of scope here.
 
 ### Interim client
 
-If production Firestore access is needed before this design is built, a
-hand-written client over the REST API and `zena:json` can provide layer
-3, calling REST endpoints with JSON in place of layers 1 and 2. Its
-public API can stay the same when layer 2 arrives. It needs `zena:fetch` with methods, headers
-and bodies, like every option here.
+If production Firestore access is needed before the transports are
+built, a hand-written client over the REST API and `zena:json` can
+provide layer 3, calling REST endpoints with JSON in place of layers 1
+and 2. Its public API can stay the same when layer 2 is wired in. It
+needs `zena:fetch` with methods, headers and bodies, like every option
+here.
 
 ## Implementation plan
 
+Done:
+
+- The runtime: `ProtoView` with its field index, `ProtoWriter`,
+  `ProtoList`, `ProtoMap`, `ProtoBytes`, `ProtoStream` and the transport
+  interface.
+- The `.proto` parser, schema loader and emitter, with a command-line
+  entry point.
+- Generated Firestore code, checked in as a test fixture, with size
+  measurements.
+
+Remaining:
+
 1. `zena:fetch`: request method, headers and body; response trailers.
-2. `zena:protobuf` runtime: `ProtoView` with its field index, a varint
-   reader, `ProtoWriter` on `ByteBuffer`, `ProtoMap`, and a fallback
-   transport. Test against hand-written message classes before any
-   generator exists.
-3. Check whether the fallback protocol serves server-streaming calls,
-   using `RunQuery`.
-4. `.proto` parser and emitter in `packages/protobuf`, with a CLI entry
-   point.
-5. A Firestore package with checked-in generated code, built by a zb
-   step. Measure binary size for a `getDocument`-only program and for one
-   that also runs a query.
-6. Metadata-server authentication and the hand-written client layer.
-7. Host: `wasmtime-wasi-http` in `zena-runtime` with a `send_request`
-   hook that pools connections and negotiates HTTP/2; then the gRPC
-   transport.
-8. Loader plugins, with WIT and protobuf as the first two users.
+2. Check whether the fallback protocol serves server-streaming calls,
+   using `RunQuery`; then a fallback transport.
+3. Per-call metadata in the transport interface, and the routing header
+   from `google.api.routing`.
+4. A Firestore package with its generated code, and metadata-server
+   authentication.
+5. The hand-written client layer.
+6. Host: a `send_request` hook in `zena-runtime` that pools connections
+   and negotiates HTTP/2; then the gRPC transport.
+7. Loader plugins, with WIT and protobuf as the first two users.
 
 ## Open questions
 
 - Whether the gRPC fallback protocol supports server streaming.
-- A non-repeated message field that occurs more than once must be merged
-  under the protobuf specification. The index records only the last
-  occurrence. Google's servers do not split messages this way, but the
-  view should at least detect it.
 - Whether to validate UTF-8 when reading a `string` field, and if so,
   whether once per view or per read.
-- How generated code tests an enum for an unknown value.
-- The byte storage type. `String` is backed by `ByteArray`, while
-  `zena:stream` and `zena:fetch` deliver `FixedArray<u8>`. A view should
-  wrap the response buffer without copying it.
-- Naming of flattened nested messages and oneof types.
+- How generated code tests an enum for an unknown value, beyond a
+  `case _` arm.
+- The byte storage type. `String` and `ProtoView` use `ByteArray`, while
+  `zena:stream` and `zena:fetch` deliver `FixedArray<u8>`. Since
+  `FixedArray<u8>` is an extension class over the same array, a
+  transport should be able to wrap a response without copying it; this
+  is untested.
+- Whether `ProtoMap` should build a hash table on first lookup, as the
+  field index does, instead of scanning per lookup.
 
 ## Alternatives considered
 
@@ -642,6 +773,10 @@ and bodies, like every option here.
 - **Eager decoding into records.** Records give structural types and
   pattern matching, but the decode function still sets every field, so
   the cost is the same as eager decoding into classes.
+- **Records nested in records for encoding**, `{mask: {fieldPaths: [...]}}`.
+  This reads better in a literal, but Firestore's message types are
+  recursive, and recursive record aliases through type arguments do not
+  compile; see [Records for encoding](#records-for-encoding).
 - **`protoc` and a `FileDescriptorSet` as the generator's input.**
   Descriptors give an exact resolved schema, but users would need
   `protoc` or `buf` installed. Proto3's grammar is small enough to parse
