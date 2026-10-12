@@ -3244,8 +3244,13 @@ export final class FunctionLowerer {
     }
     let bindingVt = typeToValTypeWithSub(this.wasm, bindingType, this.func);
     this.#requireSupported(bindingVt, 'binding type');
-    let value = this.#conformToBinding(
-        this.#lowerExpressionCtx(vd.init, bindingVt), bindingVt);
+    let heldDispatch = this.#heldVarDispatch(sym.id);
+    let value = if (heldDispatch != null) {
+      this.#lowerHeldWrite(vd.init, heldDispatch)
+    } else {
+      this.#conformToBinding(
+          this.#lowerExpressionCtx(vd.init, bindingVt), bindingVt)
+    };
     if (this.#isCelled(sym.id)) {
       // The binding lives in a heap cell shared with capturing
       // closures; the environment holds the (invariant) cell ref.
@@ -3262,6 +3267,30 @@ export final class FunctionLowerer {
       this.#cx().env[sym.id] = value;
     }
     this.#cx().symbols[sym.id] = sym;
+  }
+
+  /** The dispatch of a `var` held as its fields (ir/explode.zena), or null. */
+  #heldVarDispatch(symId: SymbolId): RecordDispatchInfo | null {
+    if (let (true, d) = this.wasm.fieldHeldVars.get(symId)) {
+      return d;
+    }
+    return null;
+  }
+
+  /**
+   * A value written to a held var, as a held record: a record literal
+   * builds it from its fields, and any other value (a call whose result
+   * explodes, another held var) is held once lowered.
+   */
+  #lowerHeldWrite(expr: Expression, d: RecordDispatchInfo): i32 {
+    if (this.#isExactRecordLiteral(expr, d)) {
+      return this.#cx().heldRecord(d,
+          this.#lowerRecordLiteralFields(expr as RecordLiteral, d));
+    }
+    let value = this.#lowerExpressionCtx(expr,
+        new ValTypeRef(d.fatPtrType) as ValType);
+    this.#cx().heldFields(d, value);
+    return value;
   }
 
   #lowerLetCondition(lpc: LetPatternCondition): LetCondBinds {
@@ -8698,7 +8727,10 @@ export final class FunctionLowerer {
     if (operator != null && operator == "??") {
       return this.#lowerNullishAssign(assign, resolved.id, celled);
     }
-    if (assign.operator == null) {
+    let heldDispatch = this.#heldVarDispatch(resolved.id);
+    if (heldDispatch != null && assign.operator == null) {
+      value = this.#lowerHeldWrite(assign.value, heldDispatch);
+    } else if (assign.operator == null) {
       var assignCtx: ValType | null = null;
       let targetBinding = this.func.model.getBindingType(resolved);
       if (targetBinding != null) {
@@ -8711,12 +8743,14 @@ export final class FunctionLowerer {
           else this.#cx().env[resolved.id];
       value = this.#combineCompound(current, assign, assign.left);
     }
-    if (let (true, storeSym) = this.#cx().symbols.get(resolved.id)) {
-      let bt = this.func.model.getBindingType(storeSym);
-      if (bt != null) {
-        let bvt = typeToValTypeWithSub(this.wasm, bt, this.func);
-        this.#requireSupported(bvt, 'binding type');
-        value = this.#conformToBinding(value, bvt);
+    if (heldDispatch == null) {
+      if (let (true, storeSym) = this.#cx().symbols.get(resolved.id)) {
+        let bt = this.func.model.getBindingType(storeSym);
+        if (bt != null) {
+          let bvt = typeToValTypeWithSub(this.wasm, bt, this.func);
+          this.#requireSupported(bvt, 'binding type');
+          value = this.#conformToBinding(value, bvt);
+        }
       }
     }
     // A store into a `var` owner binding releases the value it held
@@ -8794,8 +8828,8 @@ export final class FunctionLowerer {
     this.b.br(mergeB, skipArgs);
 
     this.#cx().env = saved;
-    this.#applyParams(mergeSyms, mergeParams);
     this.b.switchTo(mergeB);
+    this.#applyParams(mergeSyms, mergeParams);
     this.#cx().reachable = true;
     return resultParam;
   }
