@@ -1,0 +1,129 @@
+// @stdlib: true
+import {suite, test} from 'zena:test';
+import {equal, throws} from 'zena:assert';
+import {
+  ByteBuffer,
+  DataView,
+  readF32,
+  readF64,
+  readSLEB128,
+  readSLEB128_64,
+  readU16,
+  readU32,
+  readU64,
+  readU8,
+  readULEB128,
+  readULEB128_64
+} from 'zena:core';
+
+/** The bytes `write` puts in a fresh ByteBuffer. */
+let written = (write: (b: ByteBuffer) => void): ByteArray => {
+  let buf = new ByteBuffer();
+  write(buf);
+  return buf.toByteArray();
+};
+
+export let tests = suite('DataView', (): void => {
+  test('reads what ByteBuffer writes, little-endian', () => {
+    let bytes = written((b) => {
+      b.writeByte(0xAB);
+      b.writeU16(0x1234);
+      b.writeU32(-2);
+      b.writeU64(-5000000000 as i64);
+      b.writeF32(1.5 as f32);
+      b.writeF64(-2.25);
+    });
+    equal(readU8(bytes, 0), 0xAB);
+    equal(readU16(bytes, 1), 0x1234);
+    equal(readU32(bytes, 3), -2);
+    equal(readU32(bytes, 3) as u32, 4294967294 as u32);
+    equal(readU64(bytes, 7), -5000000000 as i64);
+    equal(readF32(bytes, 15), 1.5 as f32);
+    equal(readF64(bytes, 19), -2.25);
+  });
+
+  test('reads a u64 whose low half has the top bit set', () => {
+    let bytes = written((b) => {
+      b.writeU64(0x80000000 as i64);
+    });
+    equal(readU64(bytes, 0), 0x80000000 as i64);
+  });
+
+  test('reads unsigned LEB128 and the offset after it', () => {
+    let bytes = written((b) => {
+      b.writeULEB128(624485);
+      b.writeULEB128_64(-1 as i64);
+    });
+    let (small, afterSmall) = readULEB128(bytes, 0, bytes.length);
+    equal(small, 624485);
+    equal(afterSmall, 3);
+    let (big, afterBig) = readULEB128_64(bytes, 3, bytes.length);
+    equal(big, -1 as i64);
+    equal(afterBig, 13);
+  });
+
+  test('reads signed LEB128', () => {
+    let bytes = written((b) => {
+      b.writeSLEB128(-123456);
+      b.writeSLEB128_64(-5000000000 as i64);
+      b.writeSLEB128(63);
+    });
+    let (a, next) = readSLEB128(bytes, 0, bytes.length);
+    equal(a, -123456);
+    let (b, after) = readSLEB128_64(bytes, next, bytes.length);
+    equal(b, -5000000000 as i64);
+    let (c, _) = readSLEB128(bytes, after, bytes.length);
+    equal(c, 63);
+  });
+
+  test('returns -1 for a varint that runs past its end or is too long', () => {
+    let bytes = written((b) => {
+      b.writeByte(0x80);
+      b.writeByte(0x80);
+      b.writeByte(0x01);
+    });
+    let (_, truncated) = readULEB128(bytes, 0, 2);
+    equal(truncated, -1);
+    let (value, whole) = readULEB128(bytes, 0, 3);
+    equal(value, 16384);
+    equal(whole, 3);
+    let long = written((b) => {
+      for (var i = 0; i < 5; i += 1) {
+        b.writeByte(0xFF);
+      }
+      b.writeByte(0x01);
+    });
+    let (_, tooLong) = readULEB128(long, 0, long.length);
+    equal(tooLong, -1);
+    let (_, fits64) = readULEB128_64(long, 0, long.length);
+    equal(fits64, 6);
+  });
+
+  test('a DataView reads relative to its range and checks bounds', () => {
+    let bytes = written((b) => {
+      b.writeByte(0xFF);
+      b.writeU32(7);
+      b.writeULEB128(300);
+    });
+    let view = new DataView(bytes, 1);
+    equal(view.byteLength, bytes.length - 1);
+    equal(view.byteOffset, 1);
+    equal(view.getU32(0), 7);
+    let (value, next) = view.getULEB128(4);
+    equal(value, 300);
+    equal(next, 6);
+    throws(() => {
+      view.getU32(3);
+    });
+    throws(() => {
+      view.getU8(-1);
+    });
+    let short = new DataView(bytes, 5, 1);
+    throws(() => {
+      short.getULEB128(0);
+    });
+    throws(() => {
+      new DataView(bytes, 2, 100);
+    });
+  });
+});
