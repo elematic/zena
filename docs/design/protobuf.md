@@ -500,9 +500,35 @@ status is the mapping of the `google.rpc.Code`, and the body is a binary
 `google.rpc.Status`. It works over HTTP/1.1 and uses the same message
 encoding, so the views and records do not change.
 
-The specification does not describe streaming. If the fallback cannot
-serve server-streaming calls, `RunQuery` needs one of the other two
-transports. This is the first thing to test.
+The specification does not describe streaming, but Firestore serves
+server-streaming methods over it. The body of a streaming method is a
+`google.rpc.StreamBody`: each response is an occurrence of field 1, the
+final `google.rpc.Status` is field 2, and field 15 is keep-alive
+padding. This was observed by posting an empty `GetDocument` and a
+`RunQuery` naming a nonexistent project to `firestore.googleapis.com`
+without credentials. The first answered 400 with a bare `Status`
+(`08 03 ...`, code 3), the second 403 with the `Status` inside field 2 of
+a `StreamBody` (`12 a1 03 08 07 ...`, code 7).
+
+`protobuf:fallback` (`packages/protobuf/zena/fallback.zena`) implements
+this as `FallbackTransport`, over the `wasi:http` bindings, so it runs
+under `wasmtime serve`, whose outgoing HTTP is HTTP/1.1 only.
+
+- `setHeader` sets headers sent on every call, such as `authorization`.
+- A streaming call reads the `StreamBody` as its bytes arrive, and hands
+  out each response once its bytes are buffered.
+- A failed call throws an `RpcError` with the `google.rpc.Code`, the
+  message and the encoded `Status`.
+- An error response without a `Status` body maps its HTTP status to a
+  code, as Google APIs do.
+
+Its tests run a `zena:http` server in the same program, answering as the
+fallback protocol does. `examples/firestore-fallback-probe.zena` calls
+the real Firestore without credentials, and gets code 7 from both
+`getDocument` and `runQuery`. `examples/fallback-service.zena` is a
+`wasi:http` service that runs the same `runQuery` while answering a
+request. Served by stock `wasmtime serve` 48.0.5, it gets code 7 the
+same way, through the host's HTTP/1.1 client.
 
 ### REST with JSON
 
@@ -761,35 +787,27 @@ Done:
 - Generated Firestore code, checked in as a test fixture, with size
   measurements.
 - Dead-field elimination in the compiler (#301).
+- The fallback transport, `protobuf:fallback`, with server streaming.
 
 Remaining:
 
-1. A fallback transport over the `wasi:http` bindings, tested against a
-   local `zena:http` server; then check whether Firestore's fallback
-   serves server-streaming calls, using `RunQuery`.
-2. Per-call metadata in the transport interface, and the routing header
+1. Per-call metadata in the transport interface, and the routing header
    from `google.api.routing`.
-3. A Firestore package with its generated code, and metadata-server
+2. A Firestore package with its generated code, and metadata-server
    authentication.
-4. The hand-written client layer.
-5. Host: a `send_request` hook in `zena-runtime` that pools connections
+3. The hand-written client layer.
+4. Host: a `send_request` hook in `zena-runtime` that pools connections
    and negotiates HTTP/2; then the gRPC transport.
-6. Loader plugins, with WIT and protobuf as the first two users.
+5. Loader plugins, with WIT and protobuf as the first two users.
 
 ## Open questions
 
 - Whether getters should cache decoded values, and for which field types
   (see [Caching decoded fields](#caching-decoded-fields)).
-- Whether the gRPC fallback protocol supports server streaming.
 - Whether to validate UTF-8 when reading a `string` field, and if so,
   whether once per view or per read.
 - How generated code tests an enum for an unknown value, beyond a
   `case _` arm.
-- The byte storage type. `String` and `ProtoView` use `ByteArray`, while
-  `zena:stream` and `zena:fetch` deliver `FixedArray<u8>`. Since
-  `FixedArray<u8>` is an extension class over the same array, a
-  transport should be able to wrap a response without copying it; this
-  is untested.
 - Whether `ProtoMap` should build a hash table on first lookup, as the
   field index does, instead of scanning per lookup.
 
