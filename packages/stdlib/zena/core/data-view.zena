@@ -1,0 +1,227 @@
+/**
+ * Reading binary data out of a `ByteArray`: little-endian integers and
+ * floats, and LEB128 varints, the counterparts of `ByteBuffer`'s writers.
+ *
+ * The functions take an absolute offset and do not allocate. The fixed-width
+ * readers leave bounds to the caller, as array indexing does: reading past
+ * the array traps. The LEB128 readers take an `end` to stop at, since a
+ * varint's length is not known until it is read, and return the offset just
+ * past the value, or -1 when the value runs past `end` or is too long.
+ *
+ * `DataView` wraps a range of an array and checks every read against it.
+ * See docs/design/byte-buffer.md.
+ */
+
+import {
+  f32_reinterpret_i32,
+  f64_reinterpret_i64
+} from 'zena:math';
+
+/**
+ * The low 32 bits of an i64. Typed so the literal is 2^32 - 1: an untyped
+ * `0xFFFFFFFF` beside an i64 is the i32 -1, sign-extended.
+ */
+let LOW32: i64 = 0xFFFFFFFF;
+
+let ALL_ONES: i64 = -1;
+
+/** The byte at `offset`, from 0 to 255. */
+export let readU8 = (bytes: ByteArray, offset: i32): i32 => bytes[offset] as i32;
+
+/** The two bytes at `offset`, little-endian, from 0 to 65535. */
+export let readU16 = (bytes: ByteArray, offset: i32): i32 =>
+  (bytes[offset] as i32) | ((bytes[offset + 1] as i32) << 8);
+
+/** The four bytes at `offset`, little-endian. Read `as u32` for the unsigned value. */
+export let readU32 = (bytes: ByteArray, offset: i32): i32 =>
+  (bytes[offset] as i32) | ((bytes[offset + 1] as i32) << 8) |
+    ((bytes[offset + 2] as i32) << 16) | ((bytes[offset + 3] as i32) << 24);
+
+/** The eight bytes at `offset`, little-endian. Read `as u64` for the unsigned value. */
+export let readU64 = (bytes: ByteArray, offset: i32): i64 => {
+  let low = readU32(bytes, offset) as i64;
+  let high = readU32(bytes, offset + 4) as i64;
+  // `low` was sign-extended from an i32; keep only its 32 bits.
+  return (low & LOW32) | (high << 32);
+};
+
+/** The `f32` whose bits are the four bytes at `offset`, little-endian. */
+export let readF32 = (bytes: ByteArray, offset: i32): f32 =>
+  f32_reinterpret_i32(readU32(bytes, offset));
+
+/** The `f64` whose bits are the eight bytes at `offset`, little-endian. */
+export let readF64 = (bytes: ByteArray, offset: i32): f64 =>
+  f64_reinterpret_i64(readU64(bytes, offset));
+
+/**
+ * The unsigned LEB128 value at `offset`, of at most 5 bytes, and the offset
+ * after it; that offset is -1 when the value does not end before `end`.
+ * Bits past the 32nd are dropped.
+ */
+export let readULEB128 = (bytes: ByteArray, offset: i32, end: i32): inline (i32, i32) => {
+  let (value, next) = readULEB128_64Within(bytes, offset, end, 5);
+  return (value as i32, next);
+};
+
+/**
+ * The unsigned LEB128 value at `offset`, of at most 10 bytes, and the
+ * offset after it; that offset is -1 when the value does not end before
+ * `end`. Read `as u64` for values of 2^63 and above.
+ */
+export let readULEB128_64 = (bytes: ByteArray, offset: i32, end: i32): inline (i64, i32) =>
+  readULEB128_64Within(bytes, offset, end, 10);
+
+/**
+ * The signed LEB128 value at `offset`, of at most 5 bytes, and the offset
+ * after it, or -1 as for `readULEB128`.
+ */
+export let readSLEB128 = (bytes: ByteArray, offset: i32, end: i32): inline (i32, i32) => {
+  let (value, next) = readSLEB128_64Within(bytes, offset, end, 5);
+  return (value as i32, next);
+};
+
+/**
+ * The signed LEB128 value at `offset`, of at most 10 bytes, and the offset
+ * after it, or -1 as for `readULEB128_64`.
+ */
+export let readSLEB128_64 = (bytes: ByteArray, offset: i32, end: i32): inline (i64, i32) =>
+  readSLEB128_64Within(bytes, offset, end, 10);
+
+let readULEB128_64Within = (bytes: ByteArray, offset: i32, end: i32, maxBytes: i32): inline (i64, i32) => {
+  var result: i64 = 0;
+  var shift: i64 = 0;
+  var pos = offset;
+  let limit = if (end - offset < maxBytes) end else offset + maxBytes;
+  while (pos < limit) {
+    let b = bytes[pos] as i64;
+    pos += 1;
+    result = result | ((b & 0x7F) << shift);
+    if ((b & 0x80) == 0) {
+      return (result, pos);
+    }
+    shift += 7;
+  }
+  return (0, -1);
+};
+
+let readSLEB128_64Within = (bytes: ByteArray, offset: i32, end: i32, maxBytes: i32): inline (i64, i32) => {
+  var result: i64 = 0;
+  var shift: i64 = 0;
+  var pos = offset;
+  let limit = if (end - offset < maxBytes) end else offset + maxBytes;
+  while (pos < limit) {
+    let b = bytes[pos] as i64;
+    pos += 1;
+    result = result | ((b & 0x7F) << shift);
+    shift += 7;
+    if ((b & 0x80) == 0) {
+      if (shift < 64 && (b & 0x40) != 0) {
+        result = result | (ALL_ONES << shift);
+      }
+      return (result, pos);
+    }
+  }
+  return (0, -1);
+};
+
+/**
+ * Typed reads from a range of a `ByteArray`. Offsets are relative to the
+ * start of the range, and a read that would leave it throws
+ * `IndexOutOfBoundsError`. The array is shared, not copied.
+ */
+export final class DataView {
+  #bytes: ByteArray;
+  #start: i32;
+  #end: i32;
+
+  /**
+   * A view of `bytes[start..start + length]`; with no `length`, to the end
+   * of the array.
+   */
+  new(bytes: ByteArray, start: i32 = 0, length: i32 = -1)
+    : #bytes = bytes, #start = start,
+      #end = if (length < 0) bytes.length else start + length {
+    if (start < 0 || this.#end > bytes.length || this.#end < start) {
+      throw new IndexOutOfBoundsError(start, bytes.length);
+    }
+  }
+
+  /** The array the view reads from. */
+  buffer: ByteArray {
+    get { return this.#bytes; }
+  }
+
+  /** Where the view starts in `buffer`. */
+  byteOffset: i32 {
+    get { return this.#start; }
+  }
+
+  /** The number of bytes in the view. */
+  byteLength: i32 {
+    get { return this.#end - this.#start; }
+  }
+
+  getU8(offset: i32): i32 {
+    return readU8(this.#bytes, this.#at(offset, 1));
+  }
+
+  getU16(offset: i32): i32 {
+    return readU16(this.#bytes, this.#at(offset, 2));
+  }
+
+  getU32(offset: i32): i32 {
+    return readU32(this.#bytes, this.#at(offset, 4));
+  }
+
+  getU64(offset: i32): i64 {
+    return readU64(this.#bytes, this.#at(offset, 8));
+  }
+
+  getF32(offset: i32): f32 {
+    return readF32(this.#bytes, this.#at(offset, 4));
+  }
+
+  getF64(offset: i32): f64 {
+    return readF64(this.#bytes, this.#at(offset, 8));
+  }
+
+  /** The unsigned LEB128 value at `offset`, and the offset after it. */
+  getULEB128(offset: i32): inline (i32, i32) {
+    let (value, next) = readULEB128(this.#bytes, this.#at(offset, 1), this.#end);
+    return (value, this.#relative(offset, next));
+  }
+
+  /** The 64-bit unsigned LEB128 value at `offset`, and the offset after it. */
+  getULEB128_64(offset: i32): inline (i64, i32) {
+    let (value, next) = readULEB128_64(this.#bytes, this.#at(offset, 1), this.#end);
+    return (value, this.#relative(offset, next));
+  }
+
+  /** The signed LEB128 value at `offset`, and the offset after it. */
+  getSLEB128(offset: i32): inline (i32, i32) {
+    let (value, next) = readSLEB128(this.#bytes, this.#at(offset, 1), this.#end);
+    return (value, this.#relative(offset, next));
+  }
+
+  /** The 64-bit signed LEB128 value at `offset`, and the offset after it. */
+  getSLEB128_64(offset: i32): inline (i64, i32) {
+    let (value, next) = readSLEB128_64(this.#bytes, this.#at(offset, 1), this.#end);
+    return (value, this.#relative(offset, next));
+  }
+
+  /** The absolute position of `size` bytes at `offset`, which must lie in the view. */
+  #at(offset: i32, size: i32): i32 {
+    if (offset < 0 || offset > this.#end - this.#start - size) {
+      throw new IndexOutOfBoundsError(offset, this.#end - this.#start);
+    }
+    return this.#start + offset;
+  }
+
+  /** `next`, an absolute offset from a LEB128 read, relative to the view; throws for -1. */
+  #relative(offset: i32, next: i32): i32 {
+    if (next < 0) {
+      throw new IndexOutOfBoundsError(offset, this.#end - this.#start);
+    }
+    return next - this.#start;
+  }
+}
