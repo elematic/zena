@@ -1,0 +1,21 @@
+// @mode: run
+// @invoke: main
+// @result: 12
+// @skip: an imported `let`-bound function used as a value only from inside a class method fails in lowering with "zir unsupported: non-local identifier: add". Referencing it once from a top-level function first makes it compile. #159 fixed the case outside a class.
+
+// An imported function value passed as an argument from a static method,
+// with no reference to it outside the class.
+import {add} from './let_fn_value_in_class_fn.zena';
+import {Sink} from './let_fn_value_in_class_sink.zena';
+
+final class User {
+  static viaStatic(sink: Sink, values: Array<i32>): void {
+    sink.each(values, add);
+  }
+}
+
+export let main = (): i32 => {
+  let sink = new Sink();
+  User.viaStatic(sink, [1, 4, 3, 4]);
+  return sink.total;
+};
