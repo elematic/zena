@@ -1,0 +1,75 @@
+/**
+ * Generates a Zena module from `.proto` files.
+ *
+ *     zena-cli run packages/protobuf/bin/generate.zena -- \
+ *         -I <include-dir> [-I ...] [--root <full.name> ...] \
+ *         [--runtime <specifier>] -o <out.zena> <file.proto> ...
+ *
+ * Each `.proto` path, and each import inside one, is looked up in the
+ * include directories in order, as `protoc -I` does.
+ */
+
+import {exit, getArguments} from 'zena:cli';
+import {exists, readFile, writeFile} from 'zena:fs';
+import {generate} from '../zena/generator.zena';
+
+let usage = 'Usage: generate -I <dir> [-I <dir> ...] [--root <name> ...] [--runtime <specifier>] -o <out.zena> <file.proto> ...';
+
+export let main = (): i32 => {
+  let args = getArguments();
+  let includes = new GrowableArray<String>();
+  let roots = new GrowableArray<String>();
+  let files = new GrowableArray<String>();
+  var output = '';
+  var runtime = 'protobuf:runtime';
+  var i = 1;
+  while (i < args.length) {
+    let arg = args[i];
+    let hasValue = i + 1 < args.length;
+    if ((arg == '-I' || arg == '-o' || arg == '--root' || arg == '--runtime') && !hasValue) {
+      console.error(`${arg} needs a value\n${usage}`);
+      exit(2);
+    }
+    if (arg == '-I') {
+      includes.push(args[i + 1]);
+      i += 2;
+    } else if (arg == '-o') {
+      output = args[i + 1];
+      i += 2;
+    } else if (arg == '--root') {
+      roots.push(args[i + 1]);
+      i += 2;
+    } else if (arg == '--runtime') {
+      runtime = args[i + 1];
+      i += 2;
+    } else if (arg == '--') {
+      i += 1;
+    } else {
+      files.push(arg);
+      i += 1;
+    }
+  }
+  if (output.length == 0 || files.length == 0) {
+    console.error(usage);
+    exit(2);
+  }
+  if (includes.length == 0) {
+    includes.push('.');
+  }
+  let read = (path: String): String | null => {
+    for (let dir in includes) {
+      let candidate = `${dir}/${path}`;
+      if (exists(candidate)) {
+        return readFile(candidate);
+      }
+    }
+    return null;
+  };
+  try {
+    writeFile(output, generate({files, read, roots, runtimeImport: runtime}));
+  } catch (e) {
+    console.error(`error: ${e.message}`);
+    exit(1);
+  }
+  return 0;
+};

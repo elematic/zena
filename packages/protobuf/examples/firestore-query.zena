@@ -1,0 +1,103 @@
+/**
+ * Runs a structured query and reads several fields of each result, through
+ * a transport that streams back canned responses. The larger counterpart
+ * of firestore-get.zena; see the package README.
+ */
+
+import {Future, runFuture} from 'zena:async';
+import {AsyncIterator, AsyncStep} from 'zena:async';
+import {HashMap} from 'zena:collections';
+import {ProtoTransport, ProtoView, RpcMethod} from 'protobuf:runtime';
+import {
+  Document,
+  FirestoreClient,
+  RunQueryResponse,
+  StructuredQuery,
+  StructuredQueryCollectionSelector,
+  StructuredQueryFieldFilter,
+  StructuredQueryFieldFilterOperator,
+  StructuredQueryFieldReference,
+  StructuredQueryFilter,
+  StructuredQueryOrder,
+  StructuredQueryDirection,
+  Timestamp,
+  Value,
+  ValueIntegerValue,
+  ValueStringValue,
+  ValueTimestampValue
+} from '../test-files/generated/firestore.zena';
+
+final class CannedStream implements AsyncIterator<ProtoView> {
+  #response: ProtoView;
+  var #left: i32 = 2;
+  new(response: ProtoView) : #response = response;
+  next(): AsyncStep<ProtoView> {
+    if (this.#left == 0) {
+      return (0, _, _);
+    }
+    this.#left -= 1;
+    return (1, this.#response, _);
+  }
+}
+
+final class CannedTransport implements ProtoTransport {
+  #response: ProtoView;
+  new(response: ProtoView) : #response = response;
+
+  unary(method: RpcMethod, request: ProtoView): Future<ProtoView> {
+    return Future.of(this.#response);
+  }
+
+  serverStream(method: RpcMethod, request: ProtoView): AsyncIterator<ProtoView> {
+    return new CannedStream(this.#response);
+  }
+}
+
+let describe = (v: Value): String => match (v.valueType) {
+  case ValueStringValue {value}: value
+  case ValueIntegerValue {value}: `${value}`
+  case ValueTimestampValue {value}: `${value.seconds}s`
+  case _: '?'
+};
+
+let run = async (client: FirestoreClient): Future<i32> => {
+  let query = StructuredQuery.of({
+    from: [StructuredQueryCollectionSelector.of({collectionId: 'posts'})],
+    where: StructuredQueryFilter.of({
+      fieldFilter: StructuredQueryFieldFilter.of({
+        field: StructuredQueryFieldReference.of({fieldPath: 'views'}),
+        op: StructuredQueryFieldFilterOperator.GreaterThan,
+        value: Value.of({integerValue: 10 as i64}),
+      }),
+    }),
+    orderBy: [StructuredQueryOrder.of({
+      field: StructuredQueryFieldReference.of({fieldPath: 'views'}),
+      direction: StructuredQueryDirection.Descending,
+    })],
+  });
+  var count = 0;
+  for await (let response in client.runQuery({
+    parent: 'projects/p/databases/(default)/documents',
+    structuredQuery: query,
+  })) {
+    let doc = response.document;
+    if (doc != null) {
+      for (let entry in (doc as Document).fields) {
+        console.log(`${entry.key} = ${describe(entry.value)}`);
+      }
+      count += 1;
+    }
+  }
+  return count;
+};
+
+export let main = (): i32 => {
+  let fields = new HashMap<String, Value>();
+  fields['title'] = Value.of({stringValue: 'Hello'});
+  fields['views'] = Value.of({integerValue: 42 as i64});
+  fields['posted'] = Value.of({timestampValue: Timestamp.of({seconds: 1700000000 as i64})});
+  let doc = Document.of({name: 'projects/p/databases/(default)/documents/posts/1', fields});
+  let response = RunQueryResponse.of({document: doc});
+  let client = new FirestoreClient(new CannedTransport(response.protoView));
+  return runFuture(run(client));
+};

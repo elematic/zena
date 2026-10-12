@@ -1,0 +1,302 @@
+/**
+ * Tokenizes `.proto` source text.
+ *
+ * The token set follows the protobuf language specification
+ * (https://protobuf.dev/reference/protobuf/proto3-spec/): identifiers,
+ * integer and float literals, string literals, and single-character
+ * symbols. Keywords are identifiers; the parser tells them apart by
+ * position, as protoc does, so `message message = 1;` stays legal.
+ *
+ * Each token carries the comment written directly above it, which the
+ * generator copies into the generated declaration's doc comment.
+ */
+
+import {StringBuilder, StringReader} from 'zena:core';
+
+/** The kind of a token. */
+export enum TokenKind {
+  Ident,
+  Int,
+  Float,
+  Str,
+  Symbol,
+  Eof
+}
+
+/**
+ * One token. `text` is the identifier, the literal as written, the decoded
+ * contents of a string literal, or the symbol character.
+ */
+export final class Token {
+  kind: TokenKind;
+  text: String;
+  line: i32;
+  column: i32;
+  /** The comment block that ends on the line above this token, if any. */
+  comment: String | null;
+  new(this.kind, this.text, this.line, this.column, this.comment);
+}
+
+/** A malformed token, with the position it starts at. */
+export class LexError extends Error {
+  line: i32;
+  column: i32;
+  new(message: String, line: i32, column: i32)
+    : line = line, column = column, super(`${line}:${column}: ${message}`);
+}
+
+let isDigit = (b: i32): boolean => b >= 0x30 && b <= 0x39;
+
+let isHexDigit = (b: i32): boolean =>
+  isDigit(b) || (b >= 0x41 && b <= 0x46) || (b >= 0x61 && b <= 0x66);
+
+let isLetter = (b: i32): boolean =>
+  (b >= 0x41 && b <= 0x5A) || (b >= 0x61 && b <= 0x7A) || b == 0x5F;
+
+let hexValue = (b: i32): i32 =>
+  if (isDigit(b)) b - 0x30 else if (b >= 0x61) b - 0x61 + 10 else b - 0x41 + 10;
+
+/** Produces the tokens of one `.proto` file, one per call to `next`. */
+export final class Lexer {
+  #reader: StringReader;
+  var #line: i32 = 1;
+  var #lineStart: i32 = 0;
+
+  new(source: String) : #reader = new StringReader(source);
+
+  /** The next token; `Eof` at the end of input, and on every call after. */
+  next(): Token {
+    let comment = this.#skipTrivia();
+    let reader = this.#reader;
+    let line = this.#line;
+    let column = reader.position - this.#lineStart + 1;
+    if (reader.isAtEnd) {
+      return new Token(TokenKind.Eof, '', line, column, comment);
+    }
+    let start = reader.position;
+    let b = reader.peekByte();
+    if (isLetter(b)) {
+      while (!reader.isAtEnd && (isLetter(reader.peekByte()) || isDigit(reader.peekByte()))) {
+        reader.advanceByte();
+      }
+      return new Token(TokenKind.Ident, reader.sliceFrom(start), line, column, comment);
+    }
+    if (isDigit(b) || (b == 0x2E && isDigit(reader.peekByteAt(1)))) {
+      return this.#number(line, column, comment);
+    }
+    if (b == 0x22 || b == 0x27) {
+      return new Token(TokenKind.Str, this.#string(b, line, column), line, column, comment);
+    }
+    reader.advanceByte();
+    return new Token(TokenKind.Symbol, reader.sliceFrom(start), line, column, comment);
+  }
+
+  /**
+   * Skips whitespace and comments, and returns the comment block that ends
+   * on the line before the next token. A blank line between a comment and
+   * the token detaches the comment, as in protoc.
+   */
+  #skipTrivia(): String | null {
+    let reader = this.#reader;
+    var comment: StringBuilder | null = null;
+    var commentEndLine = -1;
+    while (!reader.isAtEnd) {
+      let b = reader.peekByte();
+      if (b == 0x0A) {
+        reader.advanceByte();
+        this.#line += 1;
+        this.#lineStart = reader.position;
+        continue;
+      }
+      if (b == 0x20 || b == 0x09 || b == 0x0D || b == 0x0C || b == 0x0B) {
+        reader.advanceByte();
+        continue;
+      }
+      if (b == 0x2F && reader.peekByteAt(1) == 0x2F) {
+        let commentLine = this.#line;
+        reader.skipBytes(2);
+        let start = reader.position;
+        while (!reader.isAtEnd && reader.peekByte() != 0x0A) {
+          reader.advanceByte();
+        }
+        let text = stripLeadingSpace(reader.sliceFrom(start));
+        if (comment == null || commentEndLine < commentLine - 1) {
+          comment = new StringBuilder();
+        } else {
+          (comment as StringBuilder).appendByte(0x0A);
+        }
+        (comment as StringBuilder).append(text);
+        commentEndLine = commentLine;
+        continue;
+      }
+      if (b == 0x2F && reader.peekByteAt(1) == 0x2A) {
+        let startLine = this.#line;
+        let startColumn = reader.position - this.#lineStart + 1;
+        reader.skipBytes(2);
+        let start = reader.position;
+        var closed = false;
+        while (!reader.isAtEnd) {
+          let c = reader.peekByte();
+          if (c == 0x2A && reader.peekByteAt(1) == 0x2F) {
+            closed = true;
+            break;
+          }
+          if (c == 0x0A) {
+            this.#line += 1;
+            this.#lineStart = reader.position + 1;
+          }
+          reader.advanceByte();
+        }
+        if (!closed) {
+          throw new LexError('unterminated block comment', startLine, startColumn);
+        }
+        let text = blockCommentText(reader.sliceFrom(start));
+        reader.skipBytes(2);
+        comment = new StringBuilder();
+        (comment as StringBuilder).append(text);
+        commentEndLine = this.#line;
+        continue;
+      }
+      break;
+    }
+    if (comment == null || commentEndLine < this.#line - 1) {
+      return null;
+    }
+    return (comment as StringBuilder).toString();
+  }
+
+  #number(line: i32, column: i32, comment: String | null): Token {
+    let reader = this.#reader;
+    let start = reader.position;
+    if (reader.peekByte() == 0x30 && (reader.peekByteAt(1) == 0x78 || reader.peekByteAt(1) == 0x58)) {
+      reader.skipBytes(2);
+      if (!isHexDigit(reader.peekByte())) {
+        throw new LexError('expected a hex digit', line, column);
+      }
+      while (!reader.isAtEnd && isHexDigit(reader.peekByte())) {
+        reader.advanceByte();
+      }
+      return new Token(TokenKind.Int, reader.sliceFrom(start), line, column, comment);
+    }
+    var isFloat = false;
+    while (!reader.isAtEnd && isDigit(reader.peekByte())) {
+      reader.advanceByte();
+    }
+    if (reader.peekByte() == 0x2E) {
+      isFloat = true;
+      reader.advanceByte();
+      while (!reader.isAtEnd && isDigit(reader.peekByte())) {
+        reader.advanceByte();
+      }
+    }
+    let e = reader.peekByte();
+    if (e == 0x65 || e == 0x45) {
+      isFloat = true;
+      reader.advanceByte();
+      let sign = reader.peekByte();
+      if (sign == 0x2B || sign == 0x2D) {
+        reader.advanceByte();
+      }
+      if (!isDigit(reader.peekByte())) {
+        throw new LexError('expected an exponent', line, column);
+      }
+      while (!reader.isAtEnd && isDigit(reader.peekByte())) {
+        reader.advanceByte();
+      }
+    }
+    if (!reader.isAtEnd && isLetter(reader.peekByte())) {
+      throw new LexError('a number may not be followed by a letter', line, column);
+    }
+    let kind = if (isFloat) TokenKind.Float else TokenKind.Int;
+    return new Token(kind, reader.sliceFrom(start), line, column, comment);
+  }
+
+  /** Reads a string literal and returns its decoded contents. */
+  #string(quote: i32, line: i32, column: i32): String {
+    let reader = this.#reader;
+    reader.advanceByte();
+    let out = new StringBuilder();
+    while (true) {
+      if (reader.isAtEnd || reader.peekByte() == 0x0A) {
+        throw new LexError('unterminated string literal', line, column);
+      }
+      let b = reader.advanceByte();
+      if (b == quote) {
+        break;
+      }
+      if (b != 0x5C) {
+        out.appendByte(b);
+        continue;
+      }
+      let e = reader.advanceByte();
+      if (e == 0x6E) {
+        out.appendByte(0x0A);
+      } else if (e == 0x74) {
+        out.appendByte(0x09);
+      } else if (e == 0x72) {
+        out.appendByte(0x0D);
+      } else if (e == 0x61) {
+        out.appendByte(0x07);
+      } else if (e == 0x62) {
+        out.appendByte(0x08);
+      } else if (e == 0x66) {
+        out.appendByte(0x0C);
+      } else if (e == 0x76) {
+        out.appendByte(0x0B);
+      } else if (e == 0x78 || e == 0x58) {
+        var value = 0;
+        var digits = 0;
+        while (digits < 2 && isHexDigit(reader.peekByte())) {
+          value = value * 16 + hexValue(reader.advanceByte());
+          digits += 1;
+        }
+        if (digits == 0) {
+          throw new LexError('expected a hex digit after \\x', line, column);
+        }
+        out.appendByte(value);
+      } else if (e >= 0x30 && e <= 0x37) {
+        var value = e - 0x30;
+        var digits = 1;
+        while (digits < 3 && reader.peekByte() >= 0x30 && reader.peekByte() <= 0x37) {
+          value = value * 8 + (reader.advanceByte() - 0x30);
+          digits += 1;
+        }
+        out.appendByte(value & 0xFF);
+      } else if (e == 0x5C || e == 0x27 || e == 0x22 || e == 0x3F) {
+        out.appendByte(e);
+      } else {
+        throw new LexError('unknown escape sequence', line, column);
+      }
+    }
+    return out.toString();
+  }
+}
+
+/** Drops the one space conventionally written after `//`. */
+let stripLeadingSpace = (s: String): String =>
+  if (s.length > 0 && s.getByteAt(0) == 0x20) s.sliceBytes(1, s.length) else s;
+
+/**
+ * The text of a block comment: each line with its leading whitespace and
+ * `*` decoration removed, and blank first and last lines dropped.
+ */
+let blockCommentText = (body: String): String => {
+  let lines = body.split('\n');
+  let out = new StringBuilder();
+  var first = true;
+  for (var i = 0; i < lines.length; i += 1) {
+    var line = lines[i].trim();
+    if (line.startsWith('*')) {
+      line = stripLeadingSpace(line.sliceBytes(1, line.length));
+    }
+    if ((i == 0 || i == lines.length - 1) && line.length == 0) {
+      continue;
+    }
+    if (!first) {
+      out.appendByte(0x0A);
+    }
+    out.append(line);
+    first = false;
+  }
+  return out.toString();
+};

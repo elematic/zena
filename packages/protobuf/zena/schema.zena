@@ -1,0 +1,504 @@
+/**
+ * Loads `.proto` files with their imports, resolves type references, and
+ * computes which declarations a set of roots reaches.
+ *
+ * Nothing here does I/O: files are read through a function the caller
+ * passes in, which returns null for a file it cannot find. A missing
+ * import is an error only if a reached declaration refers to a type it
+ * would have declared, so a file can import `google/api/annotations.proto`
+ * for its options without that file being present.
+ */
+
+import {HashMap, HashSet} from 'zena:collections';
+import {joinStrings} from './text.zena';
+import {
+  EnumDecl,
+  FieldDecl,
+  FieldLabel,
+  MessageDecl,
+  MethodDecl,
+  OptionDecl,
+  OptionIdent,
+  OptionList,
+  OptionValue,
+  ProtoFile,
+  ServiceDecl,
+  parseProto
+} from './parser.zena';
+
+/** A schema that does not resolve: an unknown type, a missing file, a bad map key. */
+export class SchemaError extends Error {
+  new(message: String) : super(message);
+}
+
+/** The scalar types, by their `.proto` names. */
+export enum Scalar {
+  Double,
+  Float,
+  Int32,
+  Int64,
+  Uint32,
+  Uint64,
+  Sint32,
+  Sint64,
+  Fixed32,
+  Fixed64,
+  Sfixed32,
+  Sfixed64,
+  Bool,
+  String,
+  Bytes
+}
+
+/** The scalar a `.proto` type name denotes, or -1 when it names a message or enum. */
+export let scalarNamed = (name: String): i32 => {
+  if (name == 'double') { return Scalar.Double as i32; }
+  if (name == 'float') { return Scalar.Float as i32; }
+  if (name == 'int32') { return Scalar.Int32 as i32; }
+  if (name == 'int64') { return Scalar.Int64 as i32; }
+  if (name == 'uint32') { return Scalar.Uint32 as i32; }
+  if (name == 'uint64') { return Scalar.Uint64 as i32; }
+  if (name == 'sint32') { return Scalar.Sint32 as i32; }
+  if (name == 'sint64') { return Scalar.Sint64 as i32; }
+  if (name == 'fixed32') { return Scalar.Fixed32 as i32; }
+  if (name == 'fixed64') { return Scalar.Fixed64 as i32; }
+  if (name == 'sfixed32') { return Scalar.Sfixed32 as i32; }
+  if (name == 'sfixed64') { return Scalar.Sfixed64 as i32; }
+  if (name == 'bool') { return Scalar.Bool as i32; }
+  if (name == 'string') { return Scalar.String as i32; }
+  if (name == 'bytes') { return Scalar.Bytes as i32; }
+  return -1;
+};
+
+/** A message declaration with its place in the schema. */
+export final class MessageInfo {
+  decl: MessageDecl;
+  /** The fully qualified name, without a leading dot: `google.firestore.v1.Document`. */
+  fullName: String;
+  file: ProtoFile;
+  /** The fields, resolved, in declaration order. */
+  fields: GrowableArray<FieldInfo> = new GrowableArray<FieldInfo>();
+  /** Whether the generator emits this message. */
+  var reached: boolean = false;
+  /** The Zena name of the generated class. */
+  var zenaName: String = '';
+  new(this.decl, this.fullName, this.file);
+}
+
+/** An enum declaration with its place in the schema. */
+export final class EnumInfo {
+  decl: EnumDecl;
+  fullName: String;
+  file: ProtoFile;
+  var reached: boolean = false;
+  var zenaName: String = '';
+  new(this.decl, this.fullName, this.file);
+}
+
+/** A service declaration with its methods' types resolved. */
+export final class ServiceInfo {
+  decl: ServiceDecl;
+  fullName: String;
+  file: ProtoFile;
+  methods: GrowableArray<MethodInfo> = new GrowableArray<MethodInfo>();
+  new(this.decl, this.fullName, this.file);
+}
+
+/** One RPC, with its request and response messages. */
+export final class MethodInfo {
+  decl: MethodDecl;
+  input: MessageInfo;
+  output: MessageInfo;
+  new(this.decl, this.input, this.output);
+}
+
+/**
+ * What a field holds: a scalar, a message or an enum. A map field's
+ * value type is described here and its key in `FieldInfo.mapKey`.
+ */
+export final class FieldType {
+  /** A `Scalar` value, or -1 for a message or enum. */
+  scalar: i32;
+  message: MessageInfo | null;
+  enumInfo: EnumInfo | null;
+  new(this.scalar, this.message, this.enumInfo);
+}
+
+/** A field with its type resolved and its options interpreted. */
+export final class FieldInfo {
+  decl: FieldDecl;
+  type: FieldType;
+  /** For a map field, the key's `Scalar`; otherwise -1. */
+  mapKey: i32;
+  /** Whether reading the field can tell an absent value from a default one. */
+  explicitPresence: boolean;
+  /** Marked `(google.api.field_behavior) = REQUIRED`: the server rejects a request without it. */
+  required: boolean;
+  /** Marked `(google.api.field_behavior) = OUTPUT_ONLY`: the server sets it and ignores it in requests. */
+  outputOnly: boolean;
+  /** Written as one packed run, for a repeated numeric field. */
+  packed: boolean;
+  new(
+    this.decl,
+    this.type,
+    this.mapKey,
+    this.explicitPresence,
+    this.required,
+    this.outputOnly,
+    this.packed
+  );
+
+  isRepeated: boolean {
+    get { return this.decl.label == FieldLabel.Repeated; }
+  }
+
+  isMap: boolean {
+    get { return this.mapKey >= 0; }
+  }
+}
+
+/** Every file loaded, and every declaration in them by full name. */
+export final class Schema {
+  files: GrowableArray<ProtoFile> = new GrowableArray<ProtoFile>();
+  /** The files named by the caller, as opposed to their imports. */
+  rootFiles: GrowableArray<ProtoFile> = new GrowableArray<ProtoFile>();
+  messages: HashMap<String, MessageInfo> = new HashMap<String, MessageInfo>();
+  enums: HashMap<String, EnumInfo> = new HashMap<String, EnumInfo>();
+  /** Messages and enums in the order they were declared, across files. */
+  messageOrder: GrowableArray<MessageInfo> = new GrowableArray<MessageInfo>();
+  enumOrder: GrowableArray<EnumInfo> = new GrowableArray<EnumInfo>();
+  services: GrowableArray<ServiceInfo> = new GrowableArray<ServiceInfo>();
+  /** Imports that could not be read, as `importer: path`. */
+  missing: GrowableArray<String> = new GrowableArray<String>();
+}
+
+/**
+ * Loads `paths` and everything they import, and resolves every type
+ * reference in them. `read` returns a file's source, or null.
+ */
+export let loadSchema = (paths: Array<String>, read: (path: String) => String | null): Schema => {
+  let schema = new Schema();
+  let loaded = new HashSet<String>();
+  /** For each queued import, the file that imported it first; roots have none. */
+  let importers = new HashMap<String, String>();
+  let queue = new GrowableArray<String>();
+  for (let path in paths) {
+    queue.push(path);
+  }
+  var next = 0;
+  while (next < queue.length) {
+    let path = queue[next];
+    let isRoot = next < paths.length;
+    next += 1;
+    if (loaded.has(path)) {
+      continue;
+    }
+    loaded.add(path);
+    let source = read(path);
+    if (source == null) {
+      if (isRoot) {
+        throw new SchemaError(`cannot read ${path}`);
+      }
+      schema.missing.push(`${importers.getOr(path, '?')}: ${path}`);
+      continue;
+    }
+    let file = parseProto(path, source as String);
+    schema.files.push(file);
+    if (isRoot) {
+      schema.rootFiles.push(file);
+    }
+    for (let imp in file.imports) {
+      if (!loaded.has(imp.path) && !importers.has(imp.path)) {
+        importers[imp.path] = path;
+        queue.push(imp.path);
+      }
+    }
+  }
+  for (let file in schema.files) {
+    let prefix = file.package;
+    for (let message in file.messages) {
+      indexMessage(schema, file, message, prefix);
+    }
+    for (let e in file.enums) {
+      indexEnum(schema, file, e, prefix);
+    }
+  }
+  for (let message in schema.messageOrder) {
+    resolveFields(schema, message);
+  }
+  for (let file in schema.files) {
+    for (let service in file.services) {
+      let fullName = qualify(file.package, service.name);
+      let info = new ServiceInfo(service, fullName, file);
+      for (let method in service.methods) {
+        let input = resolveMessage(schema, method.inputType, file.package, file, method.name);
+        let output = resolveMessage(schema, method.outputType, file.package, file, method.name);
+        info.methods.push(new MethodInfo(method, input, output));
+      }
+      schema.services.push(info);
+    }
+  }
+  return schema;
+};
+
+let qualify = (scope: String, name: String): String =>
+  if (scope.length == 0) name else `${scope}.${name}`;
+
+let indexMessage = (schema: Schema, file: ProtoFile, message: MessageDecl, scope: String): void => {
+  let fullName = qualify(scope, message.name);
+  let info = new MessageInfo(message, fullName, file);
+  schema.messages[fullName] = info;
+  schema.messageOrder.push(info);
+  for (let nested in message.messages) {
+    indexMessage(schema, file, nested, fullName);
+  }
+  for (let e in message.enums) {
+    indexEnum(schema, file, e, fullName);
+  }
+};
+
+let indexEnum = (schema: Schema, file: ProtoFile, e: EnumDecl, scope: String): void => {
+  let fullName = qualify(scope, e.name);
+  let info = new EnumInfo(e, fullName, file);
+  schema.enums[fullName] = info;
+  schema.enumOrder.push(info);
+};
+
+/** Whether an option list sets `(google.api.field_behavior)` to `behavior`. */
+let hasFieldBehavior = (options: GrowableArray<OptionDecl>, behavior: String): boolean => {
+  for (let option in options) {
+    if (option.name != '(google.api.field_behavior)') {
+      continue;
+    }
+    if (optionNames(option.value, behavior)) {
+      return true;
+    }
+  }
+  return false;
+};
+
+/** Whether `value` is the identifier `name`, or a list containing it. */
+let optionNames = (value: OptionValue, name: String): boolean => {
+  if (value is OptionIdent) {
+    return (value as OptionIdent).name == name;
+  }
+  if (value is OptionList) {
+    for (let item in (value as OptionList).values) {
+      if (optionNames(item, name)) {
+        return true;
+      }
+    }
+  }
+  return false;
+};
+
+/** The identifier an option is set to, or null when the option is absent or not an identifier. */
+let optionIdent = (options: GrowableArray<OptionDecl>, name: String): String | null => {
+  for (let option in options) {
+    if (option.name == name && option.value is OptionIdent) {
+      return (option.value as OptionIdent).name;
+    }
+  }
+  return null;
+};
+
+let isPackable = (scalar: i32): boolean =>
+  scalar >= 0 && scalar != (Scalar.String as i32) && scalar != (Scalar.Bytes as i32);
+
+let resolveFields = (schema: Schema, message: MessageInfo): void => {
+  let file = message.file;
+  for (let field in message.decl.fields) {
+    let where = `${message.fullName}.${field.name}`;
+    let type = resolveFieldType(schema, field.typeName, message.fullName, file, where);
+    var mapKey = -1;
+    if (field.mapKey != null) {
+      mapKey = scalarNamed(field.mapKey as String);
+      if (mapKey < 0 || mapKey == (Scalar.Double as i32) || mapKey == (Scalar.Float as i32) ||
+          mapKey == (Scalar.Bytes as i32)) {
+        throw new SchemaError(`${file.path}:${field.line}: ${where} has an invalid map key type`);
+      }
+    }
+    let label = field.label;
+    let explicitPresence = label == FieldLabel.Optional || field.oneofIndex >= 0 ||
+      (label == FieldLabel.None && file.syntax == 'proto2');
+    let packedOption = optionIdent(field.options, 'packed');
+    let numeric = isPackable(type.scalar) || type.enumInfo != null;
+    let packed = label == FieldLabel.Repeated && mapKey < 0 && numeric &&
+      (if (packedOption == null) file.syntax == 'proto3' else packedOption == 'true');
+    message.fields.push(new FieldInfo(
+      field,
+      type,
+      mapKey,
+      explicitPresence,
+      field.oneofIndex < 0 && label != FieldLabel.Repeated &&
+        hasFieldBehavior(field.options, 'REQUIRED'),
+      hasFieldBehavior(field.options, 'OUTPUT_ONLY'),
+      packed
+    ));
+  }
+};
+
+let resolveFieldType = (
+  schema: Schema,
+  name: String,
+  scope: String,
+  file: ProtoFile,
+  where: String
+): FieldType => {
+  let scalar = scalarNamed(name);
+  if (scalar >= 0) {
+    return new FieldType(scalar, null, null);
+  }
+  let fullName = lookup(schema, name, scope);
+  if (fullName == null) {
+    throw unknownType(schema, name, file, where);
+  }
+  let found = fullName as String;
+  if (let (true, message) = schema.messages.get(found)) {
+    return new FieldType(-1, message, null);
+  }
+  if (let (true, e) = schema.enums.get(found)) {
+    return new FieldType(-1, null, e);
+  }
+  throw unknownType(schema, name, file, where);
+};
+
+let resolveMessage = (
+  schema: Schema,
+  name: String,
+  scope: String,
+  file: ProtoFile,
+  where: String
+): MessageInfo => {
+  let fullName = lookup(schema, name, scope);
+  if (fullName != null) {
+    if (let (true, message) = schema.messages.get(fullName as String)) {
+      return message;
+    }
+  }
+  throw unknownType(schema, name, file, where);
+};
+
+let unknownType = (schema: Schema, name: String, file: ProtoFile, where: String): SchemaError => {
+  var message = `${file.path}: ${where} refers to unknown type ${name}`;
+  if (schema.missing.length > 0) {
+    message = `${message} (imports not found: ${joinStrings(schema.missing, ', ')})`;
+  }
+  return new SchemaError(message);
+};
+
+/**
+ * The full name `name` refers to from inside `scope`, or null. A leading
+ * dot makes the name absolute. Otherwise the innermost enclosing scope
+ * that declares it wins, as in C++ name lookup: from scope `a.b.C`, the
+ * name `D.E` is tried as `a.b.C.D.E`, `a.b.D.E`, `a.D.E` and `D.E`.
+ */
+let lookup = (schema: Schema, name: String, scope: String): String | null => {
+  if (name.startsWith('.')) {
+    let absolute = name.sliceBytes(1, name.length);
+    return if (declares(schema, absolute)) absolute else null;
+  }
+  var current = scope;
+  while (true) {
+    let candidate = qualify(current, name);
+    if (declares(schema, candidate)) {
+      return candidate;
+    }
+    if (current.length == 0) {
+      return null;
+    }
+    current = parentScope(current);
+  }
+  return null;
+};
+
+let declares = (schema: Schema, fullName: String): boolean =>
+  schema.messages.has(fullName) || schema.enums.has(fullName);
+
+/** `a.b.c` without its last component; '' for a single component. */
+let parentScope = (scope: String): String => {
+  var i = scope.length - 1;
+  while (i >= 0) {
+    if (scope.getByteAt(i) == 0x2E) {
+      return scope.sliceBytes(0, i);
+    }
+    i -= 1;
+  }
+  return '';
+};
+
+/**
+ * Marks what the generator emits. With no `roots`, that is every service,
+ * message and enum declared in the root files, nested ones included. With
+ * `roots`, it is the messages, enums and services with those full names.
+ * Either way, every message and enum a marked declaration refers to is
+ * marked too.
+ */
+export let markReached = (schema: Schema, roots: Array<String>): GrowableArray<ServiceInfo> => {
+  let services = new GrowableArray<ServiceInfo>();
+  let work = new GrowableArray<MessageInfo>();
+  if (roots.length == 0) {
+    let rootPaths = new HashSet<String>();
+    for (let file in schema.rootFiles) {
+      rootPaths.add(file.path);
+    }
+    for (let message in schema.messageOrder) {
+      if (rootPaths.has(message.file.path)) {
+        work.push(message);
+      }
+    }
+    for (let e in schema.enumOrder) {
+      if (rootPaths.has(e.file.path)) {
+        e.reached = true;
+      }
+    }
+    for (let service in schema.services) {
+      if (rootPaths.has(service.file.path)) {
+        services.push(service);
+      }
+    }
+  } else {
+    for (let root in roots) {
+      var found = false;
+      if (let (true, message) = schema.messages.get(root)) {
+        work.push(message);
+        found = true;
+      }
+      if (let (true, e) = schema.enums.get(root)) {
+        e.reached = true;
+        found = true;
+      }
+      for (let service in schema.services) {
+        if (service.fullName == root) {
+          services.push(service);
+          found = true;
+        }
+      }
+      if (!found) {
+        throw new SchemaError(`no message, enum or service is named ${root}`);
+      }
+    }
+  }
+  for (let service in services) {
+    for (let method in service.methods) {
+      work.push(method.input);
+      work.push(method.output);
+    }
+  }
+  while (work.length > 0) {
+    let message = work.pop();
+    if (message.reached) {
+      continue;
+    }
+    message.reached = true;
+    for (let field in message.fields) {
+      if (field.type.message != null) {
+        work.push(field.type.message as MessageInfo);
+      }
+      if (field.type.enumInfo != null) {
+        (field.type.enumInfo as EnumInfo).reached = true;
+      }
+    }
+  }
+  return services;
+};

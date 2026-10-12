@@ -1,0 +1,35 @@
+/**
+ * Reads one field of one Firestore document, through a transport that
+ * answers with a canned response. Built to measure what a program that
+ * uses a small part of the Firestore API costs; see the package README.
+ */
+
+import {Future, runFuture} from 'zena:async';
+import {AsyncIterator} from 'zena:async';
+import {HashMap} from 'zena:collections';
+import {ProtoTransport, ProtoView, RpcMethod} from 'protobuf:runtime';
+import {Document, FirestoreClient, Value} from '../test-files/generated/firestore.zena';
+
+final class CannedTransport implements ProtoTransport {
+  #response: ProtoView;
+  new(response: ProtoView) : #response = response;
+
+  unary(method: RpcMethod, request: ProtoView): Future<ProtoView> {
+    return Future.of(this.#response);
+  }
+
+  serverStream(method: RpcMethod, request: ProtoView): AsyncIterator<ProtoView> {
+    throw new Error('not streamed');
+  }
+}
+
+export let main = (): i32 => {
+  let fields = new HashMap<String, Value>();
+  fields['title'] = Value.of({stringValue: 'Hello'});
+  let canned = Document.of({name: 'projects/p/databases/(default)/documents/posts/1', fields});
+  let client = new FirestoreClient(new CannedTransport(canned.protoView));
+  let doc = runFuture(client.getDocument({name: 'projects/p/databases/(default)/documents/posts/1'}));
+  let title = doc.fields.getOr('title', Value.of({}));
+  console.log(title.stringValue);
+  return 0;
+};

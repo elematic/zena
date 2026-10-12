@@ -1,0 +1,175 @@
+/**
+ * The `.proto` lexer and parser, called directly, plus a sweep over every
+ * vendored file.
+ */
+
+import {suite, test} from 'zena:test';
+import {equal, isFalse, isTrue} from 'zena:assert';
+import {glob, readFile} from 'zena:fs';
+import {Lexer, TokenKind} from '../lexer.zena';
+import {
+  FieldLabel,
+  OptionAggregate,
+  OptionIdent,
+  OptionList,
+  OptionNumber,
+  OptionString,
+  ProtoFile,
+  parseIntLiteral,
+  parseProto
+} from '../parser.zena';
+
+let parse = (source: String): ProtoFile => parseProto('test.proto', source);
+
+/** The message `parse` fails with, or '' when the source parses. */
+let failure = (source: String): String => try {
+  parse(source);
+  ''
+} catch (e) {
+  e.message
+};
+
+export let tests = suite('proto parser', (): void => {
+  test('lexes identifiers, numbers, strings and symbols', () => {
+    let lexer = new Lexer('foo 12 0x1F 1.5e3 "a\\n\\x41\\101" \'b\' ;');
+    let t1 = lexer.next();
+    isTrue(t1.kind == TokenKind.Ident);
+    equal(t1.text, 'foo');
+    isTrue(lexer.next().kind == TokenKind.Int);
+    equal(lexer.next().text, '0x1F');
+    isTrue(lexer.next().kind == TokenKind.Float);
+    equal(lexer.next().text, 'a\nAA');
+    equal(lexer.next().text, 'b');
+    equal(lexer.next().text, ';');
+    isTrue(lexer.next().kind == TokenKind.Eof);
+  });
+
+  test('attaches the comment directly above a token', () => {
+    let lexer = new Lexer('// detached\n\n// one\n// two\nfoo /* block */\nbar\n\nbaz');
+    let foo = lexer.next();
+    equal(foo.comment as String, 'one\ntwo');
+    equal(lexer.next().comment as String, 'block');
+    isTrue(lexer.next().comment == null);
+  });
+
+  test('reads integer literals in every base', () => {
+    equal(parseIntLiteral('42'), 42 as i64);
+    equal(parseIntLiteral('0x2A'), 42 as i64);
+    equal(parseIntLiteral('052'), 42 as i64);
+    equal(parseIntLiteral('0'), 0 as i64);
+  });
+
+  test('parses a file header', () => {
+    let file = parse(
+      'syntax = "proto3";\npackage a.b.c;\nimport "x.proto";\nimport public "y.proto";\n'
+        + 'option java_package = "com.example";'
+    );
+    equal(file.syntax, 'proto3');
+    equal(file.package, 'a.b.c');
+    equal(file.imports.length, 2);
+    isTrue(file.imports[1].isPublic);
+    equal(file.options[0].name, 'java_package');
+  });
+
+  test('defaults to proto2 and accepts its labels', () => {
+    let file = parse('message A { optional int32 a = 1; required string b = 2; repeated A c = 3; }');
+    equal(file.syntax, 'proto2');
+    let fields = file.messages[0].fields;
+    isTrue(fields[0].label == FieldLabel.Optional);
+    isTrue(fields[1].label == FieldLabel.Required);
+    isTrue(fields[2].label == FieldLabel.Repeated);
+  });
+
+  test('parses fields, maps, oneofs and nested declarations', () => {
+    let file = parse(
+      'syntax = "proto3";\n'
+        + 'message A {\n'
+        + '  // the id\n'
+        + '  int64 id = 1 [deprecated = true];\n'
+        + '  map<string, .p.B> things = 2;\n'
+        + '  oneof kind { string s = 3; A a = 4; }\n'
+        + '  message Inner { enum E { X = 0; Y = -1; } }\n'
+        + '  reserved 5, 7 to 9, 100 to max;\n'
+        + '  reserved "old";\n'
+        + '  extensions 1000 to 2000;\n'
+        + '  optional bool flag = 10;\n'
+        + '}'
+    );
+    let a = file.messages[0];
+    equal(a.fields.length, 5);
+    equal(a.fields[0].comment as String, 'the id');
+    equal(a.fields[0].options[0].name, 'deprecated');
+    equal(a.fields[1].mapKey as String, 'string');
+    equal(a.fields[1].typeName, '.p.B');
+    equal(a.fields[2].oneofIndex, 0);
+    equal(a.fields[3].oneofIndex, 0);
+    equal(a.oneofs[0].name, 'kind');
+    equal(a.messages[0].enums[0].values[1].number, -1);
+    isTrue(a.fields[4].label == FieldLabel.Optional);
+  });
+
+  test('parses option values of every kind', () => {
+    let file = parse(
+      'syntax = "proto3";\n'
+        + 'message A {\n'
+        + '  string a = 1 [(google.api.field_behavior) = REQUIRED, (x).y = -2.5, (z) = "s" "t"];\n'
+        + '}\n'
+        + 'service S {\n'
+        + '  rpc M(A) returns (stream A) {\n'
+        + '    option (google.api.http) = { get: "/v1/{name=*}" additional_bindings { post: "/p" body: "*" } };\n'
+        + '    option (r) = { routing_parameters: [ { field: "f" }, { field: "g" } ] };\n'
+        + '  }\n'
+        + '  rpc N(stream A) returns (A);\n'
+        + '}'
+    );
+    let options = file.messages[0].fields[0].options;
+    isTrue(options[0].value is OptionIdent);
+    equal((options[0].value as OptionIdent).name, 'REQUIRED');
+    equal(options[1].name, '(x).y');
+    equal((options[1].value as OptionNumber).text, '-2.5');
+    equal((options[2].value as OptionString).value, 'st');
+    let methods = file.services[0].methods;
+    isFalse(methods[0].inputStream);
+    isTrue(methods[0].outputStream);
+    isTrue(methods[1].inputStream);
+    let http = methods[0].options[0].value as OptionAggregate;
+    equal(http.fields[0].name, 'get');
+    equal((http.fields[0].value as OptionString).value, '/v1/{name=*}');
+    isTrue(http.fields[1].value is OptionAggregate);
+    let routing = methods[0].options[1].value as OptionAggregate;
+    equal((routing.fields[0].value as OptionList).values.length, 2);
+  });
+
+  test('skips extend blocks', () => {
+    let file = parse(
+      'syntax = "proto3"; import "google/protobuf/descriptor.proto";'
+        + ' extend google.protobuf.FieldOptions { string label = 50000; } message A {}'
+    );
+    equal(file.messages.length, 1);
+  });
+
+  test('allows keywords as names', () => {
+    let file = parse('syntax = "proto3"; message message { int32 message = 1; string option = 2; }');
+    equal(file.messages[0].name, 'message');
+    equal(file.messages[0].fields[1].name, 'option');
+  });
+
+  test('reports errors with a position', () => {
+    equal(failure('syntax = "proto4";'), 'test.proto:1:18: unsupported syntax "proto4", found \';\'');
+    isTrue(failure('edition = "2023";').contains('editions are not supported'));
+    isTrue(failure('message A { int32 a = 0; }').contains('field number 0 is out of range'));
+    isTrue(failure('message A { group G = 1 {} }').contains('groups are not supported'));
+    isTrue(failure('message A { int32 a = 1 }').contains("expected ';'"));
+    isTrue(failure('message A {').contains('end of input'));
+    isTrue(failure('message A { string s = "x }').contains('unterminated string literal'));
+  });
+
+  test('parses every vendored file', () => {
+    let paths = glob('packages/protobuf/protos/**/*.proto');
+    isTrue(paths.length > 10);
+    for (let path in paths) {
+      let file = parseProto(path, readFile(path));
+      isTrue(file.messages.length + file.enums.length + file.services.length > 0, path);
+    }
+  });
+});

@@ -1,0 +1,273 @@
+/**
+ * The wire-format runtime, called directly with hand-built messages. The
+ * expected bytes come from the protobuf encoding guide
+ * (https://protobuf.dev/programming-guides/encoding/) and from encoding
+ * by hand, so these do not depend on the generator.
+ */
+
+import {suite, test} from 'zena:test';
+import {equal, isFalse, isTrue, throws} from 'zena:assert';
+import {newByteArray} from 'zena:core';
+import {
+  ProtoBytes,
+  ProtoError,
+  ProtoView,
+  ProtoWriter,
+  WIRE_I32,
+  WIRE_LEN,
+  WIRE_VARINT
+} from '../runtime.zena';
+
+/** A ByteArray holding `values`, each 0 to 255. */
+let bytesOf = (values: ImmutableArray<i32>): ByteArray => {
+  let out = newByteArray(values.length);
+  for (var i = 0; i < values.length; i += 1) {
+    out[i] = values[i] as u8;
+  }
+  return out;
+};
+
+/** The bytes of `view` as space-separated hex, for comparing encodings. */
+let hex = (view: ProtoView): String => {
+  let digits = '0123456789abcdef';
+  var out = '';
+  let bytes = view.toByteArray();
+  for (var i = 0; i < bytes.length; i += 1) {
+    let b = bytes[i] as i32;
+    let pair = digits.sliceBytes(b >> 4, (b >> 4) + 1) + digits.sliceBytes(b & 15, (b & 15) + 1);
+    out = if (i == 0) pair else `${out} ${pair}`;
+  }
+  return out;
+};
+
+export let tests = suite('protobuf runtime', (): void => {
+  test('reads the encoding guide example: field 1 = 150', () => {
+    let view = ProtoView.of(bytesOf([0x08, 0x96, 0x01]));
+    equal(view.int32(1), 150);
+    isTrue(view.has(1));
+    isFalse(view.has(2));
+  });
+
+  test('writes the encoding guide examples', () => {
+    let a = new ProtoWriter();
+    a.int32(1, 150);
+    equal(hex(a.finish()), '08 96 01');
+    let b = new ProtoWriter();
+    b.string(2, 'testing');
+    equal(hex(b.finish()), '12 07 74 65 73 74 69 6e 67');
+    let c = new ProtoWriter();
+    c.message(3, a.finish());
+    equal(hex(c.finish()), '1a 03 08 96 01');
+  });
+
+  test('writes a negative int32 as ten bytes', () => {
+    let w = new ProtoWriter();
+    w.int32(1, -2);
+    equal(hex(w.finish()), '08 fe ff ff ff ff ff ff ff ff 01');
+    equal(w.finish().int32(1), -2);
+  });
+
+  test('zigzag-encodes sint32 and sint64', () => {
+    let w = new ProtoWriter();
+    w.sint32(1, -1);
+    w.sint32(2, 1);
+    w.sint64(3, -2);
+    equal(hex(w.finish()), '08 01 10 02 18 03');
+    let view = w.finish();
+    equal(view.sint32(1), -1);
+    equal(view.sint32(2), 1);
+    equal(view.sint64(3), -2 as i64);
+  });
+
+  test('round-trips every scalar type', () => {
+    let w = new ProtoWriter();
+    w.int64(1, -5000000000 as i64);
+    w.uint32(2, 4000000000 as u32);
+    w.uint64(3, 18000000000000000000 as u64);
+    w.bool(4, true);
+    w.fixed32(5, 4000000001 as u32);
+    w.sfixed32(6, -7);
+    w.float(7, 1.5 as f32);
+    w.fixed64(8, 12345678901234 as u64);
+    w.sfixed64(9, -12345678901234 as i64);
+    w.double(10, -2.25);
+    w.string(11, 'héllo');
+    w.bytes(12, bytesOf([1, 2, 255]));
+    let v = w.finish();
+    equal(v.int64(1), -5000000000 as i64);
+    equal(v.uint32(2), 4000000000 as u32);
+    equal(v.uint64(3), 18000000000000000000 as u64);
+    isTrue(v.bool(4));
+    equal(v.fixed32(5), 4000000001 as u32);
+    equal(v.sfixed32(6), -7);
+    equal(v.float(7), 1.5 as f32);
+    equal(v.fixed64(8), 12345678901234 as u64);
+    equal(v.sfixed64(9), -12345678901234 as i64);
+    equal(v.double(10), -2.25);
+    equal(v.string(11), 'héllo');
+    let b = v.bytes(12);
+    equal(b.length, 3);
+    equal(b[2], 255);
+  });
+
+  test('reads defaults for absent fields', () => {
+    let v = ProtoView.empty();
+    equal(v.int32(1), 0);
+    equal(v.string(2), '');
+    equal(v.bytes(3).length, 0);
+    isFalse(v.bool(4));
+    isTrue(v.message(5) == null);
+    equal(v.messageOrEmpty(5).byteLength, 0);
+  });
+
+  test('takes the last occurrence of a scalar field', () => {
+    let w = new ProtoWriter();
+    w.int32(1, 1);
+    w.string(2, 'a');
+    w.int32(1, 2);
+    equal(w.finish().int32(1), 2);
+    equal(w.finish().count(1), 2);
+  });
+
+  test('merges the occurrences of a message field', () => {
+    let first = new ProtoWriter();
+    first.int32(1, 7);
+    first.string(2, 'x');
+    let second = new ProtoWriter();
+    second.int32(3, 9);
+    second.string(2, 'y');
+    let w = new ProtoWriter();
+    w.message(4, first.finish());
+    w.int32(5, 1);
+    w.message(4, second.finish());
+    let merged = w.finish().message(4) as ProtoView;
+    equal(merged.int32(1), 7);
+    equal(merged.string(2), 'y');
+    equal(merged.int32(3), 9);
+  });
+
+  test('skips unknown fields of every wire type', () => {
+    let w = new ProtoWriter();
+    w.int64(100, 1);
+    w.fixed64(101, 2 as u64);
+    w.string(102, 'skip');
+    w.fixed32(103, 3 as u32);
+    w.int32(5000, 4);
+    w.int32(1, 42);
+    let v = w.finish();
+    equal(v.int32(1), 42);
+    equal(v.int32(5000), 4);
+  });
+
+  test('reads a repeated field written packed, unpacked, and both', () => {
+    let packed = new ProtoWriter();
+    packed.packed(4, [3, 270, 86942], (pw, v) => pw.rawInt32(v));
+    equal(hex(packed.finish()), '22 06 03 8e 02 9e a7 05');
+    let w = new ProtoWriter();
+    w.int32(4, 1);
+    w.packed(4, [2, 3], (pw, v) => pw.rawInt32(v));
+    w.string(5, 'between');
+    w.int32(4, 4);
+    let list = w.finish().repeated(4, WIRE_VARINT, (v, pos) => v.int32At(pos));
+    let items = list.toArray();
+    equal(items.length, 4);
+    equal(items[0], 1);
+    equal(items[1], 2);
+    equal(items[2], 3);
+    equal(items[3], 4);
+    equal(list.length, 4);
+  });
+
+  test('reads repeated strings and sint64s', () => {
+    let w = new ProtoWriter();
+    w.string(1, 'a');
+    w.string(1, 'b');
+    w.packed(2, [-1 as i64, 1 as i64], (pw, v) => pw.rawSint64(v));
+    let v = w.finish();
+    let strings = v.repeated(1, WIRE_LEN, (view, pos) => view.stringAt(pos)).toArray();
+    equal(strings.length, 2);
+    equal(strings[1], 'b');
+    let ints = v.repeated(2, WIRE_VARINT, (view, pos) => view.sint64At(pos)).toArray();
+    equal(ints[0], -1 as i64);
+    equal(ints[1], 1 as i64);
+  });
+
+  test('reads a map field, last entry winning', () => {
+    let entry = (key: String, value: i32): ProtoView => {
+      let e = new ProtoWriter();
+      e.string(1, key);
+      e.int32(2, value);
+      return e.finish();
+    };
+    let w = new ProtoWriter();
+    w.message(3, entry('a', 1));
+    w.message(3, entry('b', 2));
+    w.message(3, entry('a', 3));
+    let map = w.finish().map(3, (e) => e.string(1), (e) => e.int32(2));
+    isTrue(map.has('b'));
+    isFalse(map.has('c'));
+    equal(map.getOr('a', -1), 3);
+    equal(map.getOr('c', -1), -1);
+    var sum = 0;
+    for (let e in map) {
+      sum += e.value;
+    }
+    equal(sum, 6);
+  });
+
+  test('picks the oneof member written last', () => {
+    let w = new ProtoWriter();
+    w.int32(2, 1);
+    w.string(3, 'x');
+    let v = w.finish();
+    equal(v.whichOf([1, 2, 3]), 3);
+    equal(v.whichOf([1, 2]), 2);
+    equal(v.whichOf([4, 5]), 0);
+  });
+
+  test('shares a string field with the buffer it came from', () => {
+    let w = new ProtoWriter();
+    w.string(1, 'shared');
+    let v = w.finish();
+    let s = v.string(1);
+    equal(s, 'shared');
+    let backing = s.getBackingArrayIfFull();
+    isTrue(backing == null);
+  });
+
+  test('rejects malformed input', () => {
+    throws(() => {
+      ProtoView.of(bytesOf([0x08])).int32(1);
+    });
+    throws(() => {
+      ProtoView.of(bytesOf([0x12, 0x05, 0x61])).string(2);
+    });
+    throws(() => {
+      ProtoView.of(bytesOf([0x08, 0x01])).string(1);
+    });
+    throws(() => {
+      ProtoView.of(bytesOf([0x00, 0x01])).has(1);
+    });
+  });
+
+  test('writes nothing for an empty packed field', () => {
+    let w = new ProtoWriter();
+    w.packed(1, new GrowableArray<i32>(), (pw, v) => pw.rawInt32(v));
+    equal(w.finish().byteLength, 0);
+  });
+
+  test('copies a ProtoBytes value into a bytes field', () => {
+    let w = new ProtoWriter();
+    w.bytes(1, ProtoBytes.of(bytesOf([9, 8])));
+    let b = w.finish().bytes(1);
+    equal(b.length, 2);
+    equal(b[0], 9);
+  });
+
+  test('reads a fixed32 field as wire type 5', () => {
+    let w = new ProtoWriter();
+    w.sfixed32(1, -1);
+    equal(hex(w.finish()), '0d ff ff ff ff');
+    isTrue(WIRE_I32 == 5);
+  });
+});
