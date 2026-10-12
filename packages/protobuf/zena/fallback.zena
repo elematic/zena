@@ -1,0 +1,349 @@
+/**
+ * A `ProtoTransport` that speaks Google's gRPC fallback protocol
+ * (https://googleapis.github.io/HowToRPC.html) over `wasi:http`, for hosts
+ * whose outgoing HTTP is HTTP/1.1 only, such as `wasmtime serve`.
+ *
+ * A call is a `POST` of the binary request to
+ * `<origin>/$rpc/<service>/<method>` with `Content-Type:
+ * application/x-protobuf`.
+ *
+ * - A unary call answers 200 with the binary response, or another status
+ *   with a binary `google.rpc.Status`.
+ * - A server-streaming call answers with a `google.rpc.StreamBody`: each
+ *   response is one occurrence of field 1, the final status is field 2,
+ *   and field 15 carries keep-alive padding. The body is read as it
+ *   arrives, so each response is available as soon as its bytes are.
+ *
+ * Firestore answers both shapes on `firestore.googleapis.com`; the
+ * streaming one was confirmed on `RunQuery` (docs/design/protobuf.md).
+ * This module imports `wasi:http`, so it compiles for component targets
+ * only. Generated code does not import it.
+ */
+
+import { AsyncIterator, AsyncStep, Completer } from 'zena:async';
+import { HashMap } from 'zena:collections';
+import { Err, Ok, Option, Outcome, newByteArray, copyBytes, readULEB128_64 } from 'zena:core';
+import { Stream, StreamWriter, readAllBytes } from 'zena:stream';
+import { URL } from 'zena:url';
+import {
+  ErrorCode, Fields, MethodPost, Request, Response as WireResponse,
+  Scheme, SchemeHTTP, SchemeHTTPS
+} from 'wasi:http/types';
+import { send } from 'wasi:http/client';
+import { ProtoError, ProtoTransport, ProtoView, RpcMethod } from './runtime.zena';
+
+/** The one spellable value of type void, for a `result<_, e>` ok arm. */
+function unit(): void {}
+
+/** `google.rpc.Code` values this module produces itself. */
+let CODE_UNKNOWN = 2;
+let CODE_UNAVAILABLE = 14;
+
+/**
+ * A call that failed. `code` is a `google.rpc.Code`, `message` the server's
+ * explanation, and `status` the encoded `google.rpc.Status` the server
+ * sent, for its details; it is empty when the server sent none.
+ */
+export class RpcError extends Error {
+  code: i32;
+  status: ProtoView;
+  new(code: i32, message: String, status: ProtoView)
+    : code = code, status = status, super(message);
+}
+
+/**
+ * The `google.rpc.Code` for an HTTP status, as Google APIs map them, for
+ * an error response without a `google.rpc.Status` body.
+ */
+export let codeForHttpStatus = (status: i32): i32 => {
+  if (status == 400) { return 3; }
+  if (status == 401) { return 16; }
+  if (status == 403) { return 7; }
+  if (status == 404) { return 5; }
+  if (status == 409) { return 10; }
+  if (status == 429) { return 8; }
+  if (status == 499) { return 1; }
+  if (status == 501) { return 12; }
+  if (status == 503) { return 14; }
+  if (status == 504) { return 4; }
+  if (status >= 500) { return 13; }
+  return CODE_UNKNOWN;
+};
+
+/**
+ * Calls RPCs on one server with the fallback protocol. `origin` is the
+ * scheme and host, such as `https://firestore.googleapis.com`.
+ */
+export final class FallbackTransport implements ProtoTransport {
+  var #scheme: Scheme;
+  var #authority: String;
+  #headers: HashMap<String, String> = new HashMap<String, String>();
+
+  new(origin: String) : #scheme = new SchemeHTTPS(), #authority = '' {
+    let url = URL.parse(origin);
+    if (url == null) {
+      throw new ProtoError(`not a URL: ${origin}`);
+    }
+    let parsed = url as URL;
+    this.#scheme = if (parsed.protocol == 'http:') new SchemeHTTP() else new SchemeHTTPS();
+    this.#authority = parsed.host();
+  }
+
+  /**
+   * Sends `value` as header `name` on every later call, replacing any
+   * earlier value: `authorization: Bearer <token>`, for one.
+   */
+  setHeader(name: String, value: String): void {
+    this.#headers[name] = value;
+  }
+
+  async unary(method: RpcMethod, request: ProtoView): Future<ProtoView> {
+    let exchange = await this.#post(method, request);
+    let bytes = await readAllBytes(exchange.body);
+    exchange.finish();
+    let body = ProtoView.of(bytes as ByteArray);
+    if (exchange.status == 200) {
+      return body;
+    }
+    throw errorFor(exchange, body);
+  }
+
+  serverStream(method: RpcMethod, request: ProtoView): AsyncIterator<ProtoView> {
+    return new StreamBodyReader(this.#post(method, request));
+  }
+
+  async #post(method: RpcMethod, request: ProtoView): Future<Exchange> {
+    let headers = Fields.create();
+    headers.append('content-type', 'application/x-protobuf'.toBytes());
+    for (let entry in this.#headers) {
+      headers.append(entry.key, entry.value.toBytes());
+    }
+    // The trailers future is the sender's to settle, and the host does
+    // not consider the request body finished until it is.
+    let trailers = Future.of<Outcome<Option<Fields>, ErrorCode>>(
+        new Ok<Option<Fields>, ErrorCode>(none));
+    let (wire, transmitted) =
+        Request.new_(headers, some(bytesStream(request.toByteArray())), trailers, none);
+    wire.setMethod(new MethodPost());
+    wire.setScheme(some(this.#scheme));
+    wire.setAuthority(some(this.#authority));
+    wire.setPathWithQuery(some(`/$rpc/${method.service}/${method.name}`));
+    let sent = await send(wire);
+    if (sent is Err<WireResponse, ErrorCode>) {
+      throw new RpcError(
+        CODE_UNAVAILABLE,
+        `${method.service}/${method.name}: no response from ${this.#authority}`,
+        ProtoView.empty()
+      );
+    }
+    let response = (sent as Ok<WireResponse, ErrorCode>).value;
+    // Read the status and headers first: `consumeBody` takes the response.
+    let status = response.getStatusCode() as i32;
+    let contentType = response.getHeaders().get('content-type');
+    let isProto = contentType.length > 0 &&
+        String.fromBytes(contentType[0]).startsWith('application/x-protobuf');
+    let received = new Completer<Outcome<void, ErrorCode>>();
+    let (body, responseTrailers) = WireResponse.consumeBody(response, received.future);
+    return new Exchange(status, isProto, body, received);
+  }
+}
+
+/** One request's response: its status, whether its body is protobuf, and the body. */
+final class Exchange {
+  status: i32;
+  isProto: boolean;
+  body: Stream<u8>;
+  #received: Completer<Outcome<void, ErrorCode>>;
+
+  new(this.status, this.isProto, this.body, received: Completer<Outcome<void, ErrorCode>>)
+    : #received = received;
+
+  /** Tells the host the body has been read to its end. */
+  finish(): void {
+    this.#received.tryComplete(new Ok<void, ErrorCode>(unit()));
+  }
+}
+
+/**
+ * The error a non-200 response stands for: its `google.rpc.Status` when it
+ * carries one, otherwise the code for its HTTP status.
+ */
+let errorFor = (exchange: Exchange, body: ProtoView): RpcError => {
+  if (exchange.isProto) {
+    let status = try {
+      new RpcError(body.int32(1), body.string(2), body)
+    } catch (e) {
+      null
+    };
+    if (status != null && (status as RpcError).code != 0) {
+      return status as RpcError;
+    }
+  }
+  return new RpcError(
+    codeForHttpStatus(exchange.status),
+    `the server answered with HTTP ${exchange.status}`,
+    ProtoView.empty()
+  );
+};
+
+/** A stream that delivers `bytes` and ends. */
+let bytesStream = (bytes: ByteArray): Stream<u8> => {
+  let writer = new StreamWriter<u8>();
+  pump(writer, bytes as FixedArray<u8>);
+  return writer.stream;
+};
+
+let pump = async (writer: StreamWriter<u8>, bytes: FixedArray<u8>): Future<void> => {
+  if (bytes.length > 0) {
+    await writer.writeAll(bytes, bytes.length);
+  }
+  writer.close();
+};
+
+/**
+ * The responses in `body`, an encoded `google.rpc.StreamBody` arriving as a
+ * stream, each available as soon as its bytes are; the final status throws
+ * an `RpcError` unless it is OK. `FallbackTransport.serverStream` reads
+ * response bodies with it.
+ */
+export let readStreamBody = (body: Stream<u8>): AsyncIterator<ProtoView> =>
+  new StreamBodyReader(Future.of(new Exchange(200, true, body, new Completer<Outcome<void, ErrorCode>>())));
+
+/** The field numbers of `google.rpc.StreamBody`. */
+let STREAM_MESSAGE = 1;
+let STREAM_STATUS = 2;
+
+/**
+ * Reads the responses out of a `google.rpc.StreamBody` as its bytes
+ * arrive. A response is handed out once all of its bytes are buffered; the
+ * final status ends the stream, and throws an `RpcError` unless it is OK.
+ */
+final class StreamBodyReader implements AsyncIterator<ProtoView> {
+  #pending: Future<Exchange>;
+  var #exchange: Exchange | null = null;
+  /** Bytes received and not yet consumed: `#buffer[#start..#end]`. */
+  var #buffer: ByteArray = newByteArray(4096);
+  var #start: i32 = 0;
+  var #end: i32 = 0;
+  var #chunk: FixedArray<u8> = new FixedArray<u8>(4096, 0);
+  /** Set once the status arrived and was OK: nothing more is handed out. */
+  var #finished: boolean = false;
+
+  new(pending: Future<Exchange>) : #pending = pending;
+
+  next(): AsyncStep<ProtoView> {
+    if (this.#finished) {
+      return (0, _, _);
+    }
+    if (this.#exchange != null) {
+      let message = this.#take();
+      if (message != null) {
+        return (1, message as ProtoView, _);
+      }
+      if (this.#finished) {
+        return (0, _, _);
+      }
+    }
+    return (2, _, this.#pull());
+  }
+
+  /** The next response, reading more of the body until one is complete. */
+  async #pull(): Future<Option<ProtoView>> {
+    if (this.#exchange == null) {
+      this.#exchange = await this.#pending;
+    }
+    let exchange = this.#exchange as Exchange;
+    while (true) {
+      let message = this.#take();
+      if (message != null) {
+        return some(message as ProtoView);
+      }
+      if (this.#finished) {
+        return none;
+      }
+      let n = await exchange.body.read(this.#chunk);
+      if (n == 0) {
+        exchange.finish();
+        this.#finished = true;
+        if (this.#start != this.#end) {
+          throw new ProtoError('the response stream ended inside a message');
+        }
+        if (exchange.status != 200) {
+          throw errorFor(exchange, ProtoView.empty());
+        }
+        return none;
+      }
+      this.#append(n);
+    }
+    return none;
+  }
+
+  /**
+   * The next complete response in the buffer, or null when the buffer
+   * holds none. Consumes keep-alive padding and the status on the way;
+   * a status that is not OK throws.
+   */
+  #take(): ProtoView | null {
+    while (this.#start < this.#end) {
+      let (tag, afterTag) = readULEB128_64(this.#buffer, this.#start, this.#end);
+      if (afterTag < 0) {
+        return this.#incomplete();
+      }
+      let (length, afterLength) = readULEB128_64(this.#buffer, afterTag, this.#end);
+      if (afterLength < 0) {
+        return this.#incomplete();
+      }
+      if ((tag & 7) != 2) {
+        throw new ProtoError('a response stream field is not length-delimited');
+      }
+      if (length > ((this.#end - afterLength) as i64)) {
+        return null;
+      }
+      let valueEnd = afterLength + (length as i32);
+      let field = (tag >>> 3) as i32;
+      let value = newByteArray(valueEnd - afterLength);
+      copyBytes(value, 0, this.#buffer, afterLength, valueEnd - afterLength);
+      this.#start = valueEnd;
+      if (field == STREAM_MESSAGE) {
+        return ProtoView.of(value);
+      }
+      if (field == STREAM_STATUS) {
+        let status = ProtoView.of(value);
+        this.#finished = true;
+        if (status.int32(1) != 0) {
+          throw new RpcError(status.int32(1), status.string(2), status);
+        }
+        return null;
+      }
+    }
+    return null;
+  }
+
+  /** Null for a varint cut off by the end of the buffer; throws for one that cannot end. */
+  #incomplete(): ProtoView | null {
+    if (this.#end - this.#start >= 20) {
+      throw new ProtoError('a response stream field has a malformed header');
+    }
+    return null;
+  }
+
+  /** Appends the first `n` bytes of `#chunk` to the buffer, compacting or growing it. */
+  #append(n: i32): void {
+    let live = this.#end - this.#start;
+    if (this.#end + n > this.#buffer.length) {
+      var size = this.#buffer.length;
+      while (live + n > size) {
+        size = size * 2;
+      }
+      let next = if (size == this.#buffer.length) this.#buffer else newByteArray(size);
+      copyBytes(next, 0, this.#buffer, this.#start, live);
+      this.#buffer = next;
+      this.#start = 0;
+      this.#end = live;
+    }
+    for (var i = 0; i < n; i += 1) {
+      this.#buffer[this.#end + i] = this.#chunk[i];
+    }
+    this.#end += n;
+  }
+}

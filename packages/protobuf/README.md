@@ -55,13 +55,29 @@ A message-typed field takes the message's class, so nested messages are
 built inside out with `M.of`, and a message read from one response can
 go into the next request unchanged.
 
-For each service there is a client class over a `ProtoTransport`. No
-transport is implemented yet.
+For each service there is a client class over a `ProtoTransport`.
+`protobuf:fallback` provides one: `FallbackTransport` speaks Google's gRPC
+fallback protocol (binary protobuf posted to `/$rpc/<service>/<method>`)
+over `wasi:http`, so it works on hosts whose outgoing HTTP is HTTP/1.1,
+such as `wasmtime serve`, and supports server-streaming methods:
+
+```zena
+let transport = new FallbackTransport('https://firestore.googleapis.com');
+transport.setHeader('authorization', `Bearer ${token}`);
+let firestore = new FirestoreClient(transport);
+let doc = await firestore.getDocument({name: path});
+for await (let response in firestore.runQuery({parent, structuredQuery})) {
+  ...
+}
+```
+
+A failed call throws an `RpcError` carrying the `google.rpc.Code`.
 
 ## Layout
 
 - `zena/runtime.zena`: `ProtoView`, `ProtoWriter`, `ProtoList`, `ProtoMap`,
   `ProtoBytes`, `ProtoStream` and the transport interface.
+- `zena/fallback.zena`: `FallbackTransport`, for component targets.
 - `zena/lexer.zena`, `zena/parser.zena`: `.proto` source to a syntax tree.
 - `zena/schema.zena`: loading imports, resolving names, choosing what to
   generate.

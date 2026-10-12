@@ -1,0 +1,42 @@
+/**
+ * Calls the real Firestore with the fallback transport and no credentials,
+ * for a project that does not exist, so both calls fail with
+ * PERMISSION_DENIED (code 7): `getDocument` as a unary `google.rpc.Status`,
+ * `runQuery` as the status that ends a `google.rpc.StreamBody`. Needs the
+ * network:
+ *
+ *     zena-cli run packages/protobuf/examples/firestore-fallback-probe.zena
+ */
+
+import { Future, runFuture } from 'zena:async';
+import { FallbackTransport, RpcError } from 'protobuf:fallback';
+import { FirestoreClient } from '../test-files/generated/firestore.zena';
+
+let describe = async (call: () => Future<String>): Future<String> => {
+  try {
+    return await call();
+  } catch (e) {
+    if (e is RpcError) {
+      let error = e as RpcError;
+      return `RpcError ${error.code}: ${error.message}`;
+    }
+    return `error: ${e.message}`;
+  }
+};
+
+export let main = (): i32 => {
+  let client = new FirestoreClient(new FallbackTransport('https://firestore.googleapis.com'));
+  let database = 'projects/zena-fallback-probe-does-not-exist/databases/(default)';
+  console.log(runFuture(describe(async (): Future<String> => {
+    let doc = await client.getDocument({name: `${database}/documents/posts/1`});
+    return `got ${doc.name}`;
+  })));
+  console.log(runFuture(describe(async (): Future<String> => {
+    var count = 0;
+    for await (let response in client.runQuery({parent: `${database}/documents`})) {
+      count += 1;
+    }
+    return `${count} responses`;
+  })));
+  return 0;
+};

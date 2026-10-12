@@ -1,0 +1,38 @@
+/**
+ * A wasi:http service that calls Firestore through the fallback transport
+ * while answering a request, to show the transport working under stock
+ * `wasmtime serve`, whose outgoing HTTP is HTTP/1.1 only. It has no
+ * credentials and names a project that does not exist, so Firestore
+ * answers PERMISSION_DENIED (code 7) and the service reports that. From
+ * the repository root:
+ *
+ *     zena-cli build packages/protobuf/examples/fallback-service.zena \
+ *         --target component --wit packages/protobuf/examples/fallback-service.wit \
+ *         --world fallback-service -o fallback-service.wasm
+ *     wasmtime serve -S p3=y -S http=y --addr 127.0.0.1:8080 fallback-service.wasm
+ *     curl http://127.0.0.1:8080/
+ */
+
+import { Request, Response, ErrorCode } from 'wasi:http/types';
+import { Future } from 'zena:async';
+import { Outcome, Ok } from 'zena:core';
+import { textResponse } from 'zena:http';
+import { FallbackTransport, RpcError } from 'protobuf:fallback';
+import { FirestoreClient } from '../test-files/generated/firestore.zena';
+
+let database = 'projects/zena-fallback-probe-does-not-exist/databases/(default)';
+
+export async function handle(request: Request): Future<Outcome<Response, ErrorCode>> {
+  let client = new FirestoreClient(new FallbackTransport('https://firestore.googleapis.com'));
+  var report = '';
+  try {
+    var count = 0;
+    for await (let response in client.runQuery({parent: `${database}/documents`})) {
+      count += 1;
+    }
+    report = `runQuery returned ${count} responses`;
+  } catch (e) {
+    report = if (e is RpcError) `runQuery failed with code ${(e as RpcError).code}: ${e.message}` else `error: ${e.message}`;
+  }
+  return new Ok<Response, ErrorCode>(textResponse(`${report}\n`));
+}
