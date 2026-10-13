@@ -61,6 +61,9 @@ const CAPTURE_LIMIT: usize = 64 << 20;
 pub struct ComponentState {
     pub wasi: WasiCtx,
     pub http: wasmtime_wasi_http::WasiHttpCtx,
+    /// How outgoing requests are sent: the process-wide pooled client
+    /// unless the embedder sets other hooks.
+    pub http_hooks: crate::http_client::HttpHooks,
     pub table: ResourceTable,
     grant: Option<Grant>,
     engine: Engine,
@@ -71,6 +74,7 @@ impl ComponentState {
         ComponentState {
             wasi,
             http: wasmtime_wasi_http::WasiHttpCtx::new(),
+            http_hooks: Default::default(),
             table: ResourceTable::new(),
             grant,
             engine: engine.clone(),
@@ -102,7 +106,7 @@ impl wasmtime_wasi_http::WasiHttpView for ComponentState {
         wasmtime_wasi_http::WasiHttpCtxView {
             ctx: &mut self.http,
             table: &mut self.table,
-            hooks: Default::default(),
+            hooks: &mut self.http_hooks,
         }
     }
 }
@@ -924,7 +928,7 @@ impl wasmtime::component::StreamProducer<ComponentState> for RequestStreamProduc
         match rx.try_recv() {
             Ok(IncomingRequest { req, res_tx }) => {
                 let (wasi_req, body_fut) = wasmtime_wasi_http::p3::Request::from_http(
-                    wasmtime_wasi_http::default_hooks(),
+                    &mut store.data_mut().http_hooks,
                     req,
                 );
                 tokio::spawn(body_fut);

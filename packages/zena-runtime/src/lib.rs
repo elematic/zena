@@ -39,6 +39,7 @@ pub mod cache;
 pub mod component;
 pub mod core_module;
 pub mod engine;
+pub mod http_client;
 
 /// Whether this invocation may spawn processes and run components. The
 /// `--allow-spawn` flag comes through here so that ZENA_ALLOW_SPAWN=1
