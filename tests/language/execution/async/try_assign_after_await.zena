@@ -1,0 +1,43 @@
+// @mode: run
+// @result: 1
+// @skip: codegen bails "uncelled assignment to enclosing local in suspension try body"
+
+// A contextually typed async arrow that assigns its own local inside a
+// `try` body that awaits. The local lives across the suspension, so it
+// must be celled, and RTA does not cell it. Annotating the arrow's
+// parameters and return type (`async (method: String, next: ...):
+// Future<void> => ...`) compiles and returns 1; the `if` around the
+// try does not matter. Met in zena:http's `serve`.
+
+import { Future } from 'zena:async';
+
+type Handler = (method: String, next: () => Future<void>) => Future<void>;
+
+let found = async (): Future<boolean> => true;
+
+let makeHandler = (): Handler => {
+  return async (method, next) => {
+    var sent = false;
+    if (method == 'GET') {
+      try {
+        sent = await found();
+      } catch (e) {
+      }
+    }
+    if (!sent) {
+      await next();
+    }
+  };
+};
+
+export async function main(): Future<i32> {
+  var nextCalls = 0;
+  let handler = makeHandler();
+  await handler('GET', async (): Future<void> => {
+    nextCalls += 1;
+  });
+  await handler('POST', async (): Future<void> => {
+    nextCalls += 1;
+  });
+  return nextCalls;
+}
