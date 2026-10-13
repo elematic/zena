@@ -2942,7 +2942,14 @@ export final class FunctionLowerer {
     if (this.#isExactRecordLiteral(expr, d)) {
       values = this.#lowerRecordLiteralFields(expr as RecordLiteral, d);
     } else {
+      // A returned `if` or `match` merges its arms' fields instead of
+      // their records (MergeState.fields), and gives back a record held
+      // as the merged fields.
+      if (expr is IfExpression || expr is MatchExpression) {
+        this.#cx().resultFields = d;
+      }
       let record = this.#lowerExpressionCtx(expr, this.#returnSlotVt());
+      this.#cx().resultFields = null;
       if (!this.#cx().reachable) {
         return;
       }
@@ -8031,6 +8038,17 @@ export final class FunctionLowerer {
   hostVarDecl(vd: VariableDeclaration): void {
     this.#lowerVariableDeclaration(vd);
   }
+  hostExactLiteralFields(e: Expression, d: RecordDispatchInfo): GrowableArray<i32> | null {
+    if (!this.#isExactRecordLiteral(e, d)) {
+      return null;
+    }
+    return this.#lowerRecordLiteralFields(e as RecordLiteral, d);
+  }
+  hostPackHeldRecord(d: RecordDispatchInfo, values: GrowableArray<i32>): i32 {
+    let record = this.#packRecord(d, values);
+    this.#cx().explodedRecords[record] = new ExplodedRecord(d, values);
+    return record;
+  }
   hostThrowStmt(thr: ThrowExpression): void {
     this.#lowerThrowStatement(thr);
   }
@@ -9234,6 +9252,23 @@ export let lowerStmt = (cx: LoweringContext, st: Statement): void => {
 export let varDecl = (cx: LoweringContext, vd: VariableDeclaration): void => {
   hostOf(cx).hostVarDecl(vd);
 };
+
+/**
+ * `e`'s fields through `d` when `e` is a record literal of exactly that
+ * shape, lowered without building the record; null otherwise.
+ */
+export let exactLiteralFields = (cx: LoweringContext, e: Expression,
+    d: RecordDispatchInfo): GrowableArray<i32> | null =>
+    hostOf(cx).hostExactLiteralFields(e, d);
+
+/**
+ * A record of shape `d` packed from `values` and held as them
+ * (`explodedRecords`), so reads of it answer from the values and an
+ * otherwise unused record dies.
+ */
+export let packHeldRecord = (cx: LoweringContext, d: RecordDispatchInfo,
+    values: GrowableArray<i32>): i32 =>
+    hostOf(cx).hostPackHeldRecord(d, values);
 
 /** Lower a throw in statement position. */
 export let throwStmt = (cx: LoweringContext, thr: ThrowExpression): void => {

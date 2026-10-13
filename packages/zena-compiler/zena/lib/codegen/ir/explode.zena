@@ -38,7 +38,8 @@
 import { HashMap, HashSet } from 'zena:collections';
 import {
   AssignmentExpression, BlockStatement, CallExpression, ClassDeclaration, Expression,
-  ExpressionStatement, FunctionExpression, FunctionDeclaration, ReturnStatement,
+  ExpressionStatement, FunctionExpression, FunctionDeclaration, IfExpression,
+  MatchExpression, ReturnStatement,
   VariableDeclaration, IdentifierPattern, Identifier, MemberExpression,
   MethodDefinition, Parameter, RecordLiteral, RecordPattern,
   SuperInitializer, Node,
@@ -555,39 +556,73 @@ let codeRoots = (owner: Node): GrowableArray<Node> => {
 
 /**
  * Whether some return of `c` has its result's fields on hand: a record
- * literal, an exploded parameter of the same record type, or a call whose
- * result is returned as fields.
+ * literal, an exploded parameter of the same record type, a call whose
+ * result is returned as fields, or an `if` or `match` with such an arm.
  */
 let producesFields = (c: Candidate, byKey: HashMap<String, Candidate>): boolean => {
-  let fn = c.f.node as FunctionExpression;
-  let model = c.f.model;
   for (let e in c.returns) {
-    if (e is RecordLiteral) {
+    if (hasFieldsOnHand(c, byKey, e)) {
       return true;
     }
-    if (e is Identifier) {
-      let sym = model.resolve(e);
-      if (sym != null) {
-        for (var i = 0; i < fn.params.length; i += 1) {
-          let ps = model.resolveDeclaration(fn.params[i].name);
-          if (ps != null && ps.id == sym.id && c.available[i] &&
-              c.dispatches[i] === c.result) {
-            return true;
-          }
+  }
+  return false;
+};
+
+/**
+ * Whether the returned node `n` has `c`'s result fields on hand. The arms
+ * of an `if` or `match`, and a value block's tail, count: the core merges
+ * the arms' fields (control-flow.zena, lowerArmFields).
+ */
+let hasFieldsOnHand = (c: Candidate, byKey: HashMap<String, Candidate>,
+    n: Node): boolean => {
+  if (n is IfExpression) {
+    let alternate = n.alternate;
+    return hasFieldsOnHand(c, byKey, n.consequent) ||
+        (alternate != null && hasFieldsOnHand(c, byKey, alternate as Node));
+  }
+  if (n is MatchExpression) {
+    for (let mc in n.cases) {
+      if (hasFieldsOnHand(c, byKey, mc.body)) {
+        return true;
+      }
+    }
+    return false;
+  }
+  if (n is BlockStatement) {
+    let stmts = n.body;
+    if (stmts.length == 0) {
+      return false;
+    }
+    let last = stmts[stmts.length - 1];
+    return last is ExpressionStatement &&
+        hasFieldsOnHand(c, byKey, last.expression);
+  }
+  let fn = c.f.node as FunctionExpression;
+  let model = c.f.model;
+  if (n is RecordLiteral) {
+    return true;
+  }
+  if (n is Identifier) {
+    let sym = model.resolve(n);
+    if (sym != null) {
+      for (var i = 0; i < fn.params.length; i += 1) {
+        let ps = model.resolveDeclaration(fn.params[i].name);
+        if (ps != null && ps.id == sym.id && c.available[i] &&
+            c.dispatches[i] === c.result) {
+          return true;
         }
       }
     }
-    if (e is CallExpression) {
-      let callee = e.callee;
-      if (callee is Identifier) {
-        let calleeSym = model.resolve(callee);
-        if (calleeSym != null) {
-          if (let (true, target) = byKey.get(
-              functionKey(calleeSym.resolveTarget().id))) {
-            if (target.resultExplodes && target.result === c.result) {
-              return true;
-            }
-          }
+    return false;
+  }
+  if (n is CallExpression) {
+    let callee = n.callee;
+    if (callee is Identifier) {
+      let calleeSym = model.resolve(callee);
+      if (calleeSym != null) {
+        if (let (true, target) = byKey.get(
+            functionKey(calleeSym.resolveTarget().id))) {
+          return target.resultExplodes && target.result === c.result;
         }
       }
     }

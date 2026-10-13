@@ -806,6 +806,29 @@ export let tests = suite('zir backend', (): void => {
         'a fields-only result calls the core');
   });
 
+  test('a result returned from if and match arms is returned as its fields', (ctx: TestContext): void => {
+    // Each arm of the returned `if` and `match` is a literal, so the
+    // cores merge the arms' fields rather than their records, and
+    // neither the cores nor `main` build one.
+    let result = compileWithZir(
+        'type V = {x: i32, y: i32};\n' +
+        'let pick = (p: i32): V => if (p > 0) ({x: p, y: 1}) else ({x: 0, y: p});\n' +
+        'let classify = (p: i32): V => match (p) {\n' +
+        '  case 0: ({x: 0, y: 0})\n' +
+        '  case _: if (p > 10) ({x: 10, y: p}) else ({x: p, y: p * 2})\n' +
+        '};\n' +
+        'export let main = (): i32 => {\n' +
+        '  let {x, y} = pick(3);\n' +
+        '  let r = classify(4);\n' +
+        '  return x * y + r.x + r.y;\n' +
+        '};');
+    assertNoAllocation(result, '$pick.core',
+        'the if arms are merged as their fields');
+    assertNoAllocation(result, '$classify.core',
+        'the match arms, nested if included, are merged as their fields');
+    assertNoAllocation(result, '$main', 'the fields are never packed');
+  });
+
   test('a var record updated through a call stays as its fields', (ctx: TestContext): void => {
     // `pos` is only read for its fields and only assigned values that
     // are fields already, so it is carried around the loop as its
