@@ -905,7 +905,8 @@ Done:
   metadata-server credentials, and the hand-written client.
 - The gRPC transport, `protobuf:grpc`, and h2c in `zena-runtime` for
   `http://` gRPC requests. The Firestore client runs against the
-  emulator over it (`npm run test:emulator -w @zena-lang/google-cloud`).
+  emulator over it (`npm run test:emulator -w @zena-lang/google-cloud`,
+  which depends on the root `emulators:start` wireit service).
 
 Remaining:
 

@@ -283,6 +283,14 @@
         devShells.format = pkgs.mkShellNoCC {
           buildInputs = [ nodejs ];
         };
+
+        # The Firebase emulators, for `npm run emulators:start` (a wireit
+        # service that enters this shell itself) and the suites that depend
+        # on it. firebase-tools' closure is 1.4 GiB and the JDK's 618 MiB,
+        # so they stay out of the default shell, which CI downloads.
+        devShells.emulators = pkgs.mkShellNoCC {
+          buildInputs = [ pkgs.firebase-tools pkgs.jdk21_headless ];
+        };
       }
     );
 }
