@@ -13284,11 +13284,21 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
         deps.tryMutatedSymbols.add(symId);
       }
     }
-    if (catchType != null) {
+    // Like a match: a try in a void context (a statement) discards its
+    // value, so its arms need not join; otherwise they join as a match's
+    // do, which rejects a union no value representation can hold.
+    if (expectedType is VoidType) {
+      new VoidType() as Type
+    } else if (catchType != null) {
       let types = new Array<Type>();
       types.push(tryType);
       types.push(catchType);
-      combineArmTypes(types)
+      let joined = combineArmTypes(types, ctx, loc);
+      let bodyValue = armValueNode(body as Node);
+      if (bodyValue != null) { adaptJoinedArm(ctx, bodyValue, tryType, joined); }
+      let handlerValue = armValueNode((handler as CatchClause).body as Node);
+      if (handlerValue != null) { adaptJoinedArm(ctx, handlerValue, catchType, joined); }
+      joined
     } else {
       tryType
     }
