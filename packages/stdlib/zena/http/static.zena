@@ -1,0 +1,635 @@
+/**
+ * Static file serving: `send` one file, or `serve` a directory.
+ *
+ * Ported from Zipadee's `@zipadee/static`, itself from `koa-send`.
+ *
+ * A file's contents go to the response as the `stream<u8>` that
+ * `wasi:filesystem`'s `read-via-stream` returns. The guest never reads
+ * it, so `zena:wasi` hands that stream to `wasi:http` as it is and the
+ * host copies the file to the connection.
+ */
+
+import { Disposable, Ok, Err, Outcome, Some } from 'zena:core';
+import { FileStat, FileType } from 'zena:fs';
+import { div } from 'zena:math';
+import { basename } from 'zena:path';
+import { Duration } from 'zena:time';
+import { percentDecode } from 'zena:url';
+import { getDirectories } from 'wasi:filesystem/preopens';
+import {
+  Descriptor, DescriptorStat, DescriptorTypeDirectory, ErrorCode,
+  ErrorCodeNameTooLong, ErrorCodeNoEntry, ErrorCodeNotDirectory, OpenFlags,
+  descriptorFlagsRead, pathFlagsSymlinkFollow
+} from 'wasi:filesystem/types';
+import { Instant } from 'wasi:clocks/system-clock';
+import { HttpError } from './error.zena';
+import { Middleware } from './middleware.zena';
+import { mimeType } from './mime.zena';
+import { Request } from './request.zena';
+import { Response } from './response.zena';
+
+/** Options for `send` and `serve`. Every field is optional. */
+export type SendOptions = {
+  /**
+   * The directory files are served from. The working directory if
+   * absent. `serve` takes the root as its own argument and ignores
+   * this one.
+   */
+  root?: String,
+  /**
+   * The file to serve for a path naming a directory. None if absent
+   * for `send`; `index.html` if absent for `serve`. Null turns it off.
+   */
+  index?: String | null,
+  /** `Cache-Control` max-age. Zero if absent. */
+  maxAge?: Duration,
+  /**
+   * Add `immutable` to `Cache-Control`: the file at this URL never
+   * changes. Off if absent.
+   */
+  immutable?: boolean,
+  /**
+   * Serve paths with a segment that starts with a dot. Off if absent:
+   * such paths are passed over, as if missing.
+   */
+  hidden?: boolean,
+  /**
+   * Serve `<file>.br` with `Content-Encoding: br` when it exists and
+   * the client accepts brotli. On if absent.
+   */
+  brotli?: boolean,
+  /** Serve `<file>.gz` likewise, for gzip. On if absent. */
+  gzip?: boolean,
+  /**
+   * Serve the index file for a directory named without a trailing
+   * slash, as well as with one. On if absent.
+   */
+  format?: boolean,
+  /**
+   * Extensions to try, in order, for a path whose last segment has no
+   * extension: `['html']` serves `/about` from `about.html`. None if
+   * absent.
+   */
+  extensions?: Array<String>,
+  /**
+   * Called with the response, the file's path and its metadata before
+   * the default headers are set, so headers it sets win.
+   */
+  setHeaders?: (res: Response, path: String, stat: FileStat) => void,
+};
+
+/**
+ * Sends the file at `path`, relative to `options.root`, as the
+ * response: sets the status, `Content-Type`, `Content-Length`,
+ * `Last-Modified`, `ETag` and `Cache-Control`, and the file as the
+ * body. Answers a matching `If-None-Match` with 304 and a HEAD
+ * request without a body.
+ *
+ * Returns the path served, relative to the preopen it is under, or
+ * null when nothing was sent: a hidden path, or a directory with no
+ * index to serve. A missing file throws `HttpError(404)`, and a path
+ * that climbs out of the root throws `HttpError(403)`.
+ *
+ * ## Examples
+ *
+ * ```zena
+ * app.use(async (req, res, next) => {
+ *   if (req.path == '/hello') {
+ *     await send(req, res, 'hello.html', {root: 'pages'});
+ *   } else {
+ *     await next();
+ *   }
+ * });
+ * ```
+ */
+export async function send(
+  req: Request,
+  res: Response,
+  path: String,
+  options: SendOptions = {}
+): Future<String | null> {
+  var root = '.';
+  if (let {root: given} = options) {
+    root = given;
+  }
+  return await new StaticFiles(root, options, null).send(req, res, path);
+}
+
+/**
+ * Middleware that serves the files under `root` for GET and HEAD
+ * requests, at `req.path` (so under `mount`, at the path below the
+ * mount point). A request it does not answer — another method, a
+ * missing or hidden file — goes on to `next`.
+ *
+ * ## Examples
+ *
+ * ```zena
+ * let app = new App();
+ * app.use(serve('public'));
+ * app.use(mount('/assets', serve('dist', {maxAge: milliseconds(86400000)})));
+ * ```
+ */
+export function serve(root: String, options: SendOptions = {}): Middleware {
+  let files = new StaticFiles(root, options, 'index.html');
+  return async (req, res, next) => {
+    if (!await sendFound(files, req, res)) {
+      await next();
+    }
+  };
+}
+
+/**
+ * Whether `files` answered a GET or HEAD request; a 404 counts as not
+ * answered. (A helper rather than a `try` in `serve`'s closure: an
+ * assignment to the closure's local in a `try` body that awaits
+ * fails to compile, tests/language/execution/async/try_assign_after_await.zena.)
+ */
+async function sendFound(files: StaticFiles, req: Request, res: Response): Future<boolean> {
+  if (req.method != 'GET' && req.method != 'HEAD') {
+    return false;
+  }
+  try {
+    return (await files.send(req, res, req.path)) != null;
+  } catch (e) {
+    if (e is HttpError && (e as HttpError).status == 404) {
+      return false;
+    }
+    throw e;
+  }
+}
+
+let SLASH = 0x2F;
+let DOT = 0x2E;
+let NS_PER_SECOND: i64 = 1000000000;
+let NS_PER_MILLI: i64 = 1000000;
+let NO_OPEN_FLAGS = (0 as u32) as OpenFlags;
+
+/** One root directory and the options for serving it. */
+final class StaticFiles {
+  #root: String;
+  var #index: String | null;
+  var #maxAgeSeconds: i64 = 0;
+  var #immutable = false;
+  var #hidden = false;
+  var #brotli = true;
+  var #gzip = true;
+  var #format = true;
+  var #extensions: Array<String> | null = null;
+  var #setHeaders: ((res: Response, path: String, stat: FileStat) => void) | null = null;
+  /** The preopen `#root` is under, and `#root` relative to it: looked
+   * up on first use, since module initializers cannot reach the host. */
+  var #base: Descriptor | null = null;
+  var #baseRelative = '.';
+
+  new(root: String, options: SendOptions, defaultIndex: String | null)
+    : #root = root, #index = defaultIndex {
+    if (let {index} = options) {
+      this.#index = index;
+    }
+    if (let {maxAge} = options) {
+      this.#maxAgeSeconds = div(maxAge as i64, NS_PER_SECOND);
+    }
+    if (let {immutable} = options) {
+      this.#immutable = immutable;
+    }
+    if (let {hidden} = options) {
+      this.#hidden = hidden;
+    }
+    if (let {brotli} = options) {
+      this.#brotli = brotli;
+    }
+    if (let {gzip} = options) {
+      this.#gzip = gzip;
+    }
+    if (let {format} = options) {
+      this.#format = format;
+    }
+    if (let {extensions} = options) {
+      this.#extensions = extensions;
+    }
+    if (let {setHeaders} = options) {
+      this.#setHeaders = setHeaders;
+    }
+  }
+
+  async send(req: Request, res: Response, requestPath: String): Future<String | null> {
+    let trailingSlash = requestPath.endsWith('/');
+    var start = 0;
+    while (start < requestPath.length && requestPath.getByteAt(start) == SLASH) {
+      start += 1;
+    }
+    var relative = percentDecode(requestPath.sliceBytes(start, requestPath.length));
+    let index = this.#index;
+    if (index != null && trailingSlash) {
+      relative = relative + index;
+    }
+    relative = confine(relative);
+    if (!this.#hidden && hasHiddenSegment(relative)) {
+      return null;
+    }
+
+    let base = this.#descriptor();
+    var path = this.#under(relative);
+
+    // A precompressed variant, when the client takes it.
+    var encodingExt = '';
+    let accepted = acceptEncodingOf(req);
+    if (this.#brotli && acceptsEncoding(accepted, 'br') &&
+        await exists(base, path + '.br')) {
+      path = path + '.br';
+      encodingExt = '.br';
+      res.setHeader('content-encoding', 'br');
+    } else if (this.#gzip && acceptsEncoding(accepted, 'gzip') &&
+        await exists(base, path + '.gz')) {
+      path = path + '.gz';
+      encodingExt = '.gz';
+      res.setHeader('content-encoding', 'gzip');
+    }
+    if (encodingExt.length > 0) {
+      res.appendHeader('vary', 'Accept-Encoding');
+    }
+
+    let extensions = this.#extensions;
+    if (extensions != null && !basename(path).contains('.')) {
+      for (let given in extensions) {
+        let ext = if (given.startsWith('.')) given else '.' + given;
+        if (await exists(base, path + ext)) {
+          path = path + ext;
+          break;
+        }
+      }
+    }
+
+    var stat = await statOf(base, path);
+    if (stat.type is DescriptorTypeDirectory) {
+      let dirIndex = this.#index;
+      if (!this.#format || dirIndex == null) {
+        return null;
+      }
+      path = `${path}/${dirIndex as String}`;
+      stat = await statOf(base, path);
+    }
+    let info = fileStatOf(stat);
+
+    let setHeaders = this.#setHeaders;
+    if (setHeaders != null) {
+      setHeaders(res, path, info);
+    }
+
+    res.setHeader('content-length', `${info.size}`);
+    if (!res.hasHeader('last-modified')) {
+      res.setHeader('last-modified', httpDate(div(info.modified, NS_PER_SECOND)));
+    }
+    if (!res.hasHeader('cache-control')) {
+      let maxAge = `max-age=${this.#maxAgeSeconds}`;
+      res.setHeader('cache-control',
+          if (this.#immutable) maxAge + ',immutable' else maxAge);
+    }
+    if (!res.hasHeader('etag')) {
+      res.setHeader('etag', `W/"${info.size}-${div(info.modified, NS_PER_MILLI)}"`);
+    }
+    if (res.type == null) {
+      let unencoded = path.sliceBytes(0, path.length - encodingExt.length);
+      let type = mimeType(unencoded);
+      res.type = if (type != null) type else 'application/octet-stream';
+    }
+
+    let readOnly = req.method == 'GET' || req.method == 'HEAD';
+    if (readOnly &&
+        matchesEtag(req.getHeader('if-none-match'), res.getHeader('etag') as String)) {
+      res.statusCode = 304;
+      res.removeHeader('content-length');
+      res.removeHeader('content-type');
+      res.removeHeader('content-encoding');
+      return path;
+    }
+    if (req.method == 'HEAD') {
+      res.statusCode = 200;
+      return path;
+    }
+
+    let opened = await base.openAt(
+        pathFlagsSymlinkFollow, path, NO_OPEN_FLAGS, descriptorFlagsRead);
+    if (opened is Err<Descriptor, ErrorCode>) {
+      throw httpErrorOf((opened as Err<Descriptor, ErrorCode>).error);
+    }
+    let file = (opened as Ok<Descriptor, ErrorCode>).value;
+    let (contents, done) = file.readViaStream(0 as u64);
+    closeWhenRead(file, done);
+    res.body = contents;
+    return path;
+  }
+
+  /** The preopen the root is under, looked up once. */
+  #descriptor(): Descriptor {
+    let found = this.#base;
+    if (found != null) {
+      return found;
+    }
+    let (base, relative) = preopenFor(this.#root);
+    this.#base = base;
+    this.#baseRelative = relative;
+    return base;
+  }
+
+  /** A root-relative path as a path relative to the preopen. */
+  #under(relative: String): String {
+    if (relative == '.') {
+      return this.#baseRelative;
+    }
+    if (this.#baseRelative == '.') {
+      return relative;
+    }
+    return `${this.#baseRelative}/${relative}`;
+  }
+}
+
+/**
+ * A decoded request path as segments under the root, joined with `/`:
+ * `.` and empty segments dropped, `..` resolved. A path that climbs
+ * above the root, or holds a NUL byte, throws 403. `.` names the root.
+ */
+let confine = (path: String): String => {
+  if (path.contains('\u{0}')) {
+    throw new HttpError(403, 'Forbidden', `malicious path: ${path}`);
+  }
+  let kept = new GrowableArray<String>(4);
+  for (let segment in path.split('/')) {
+    if (segment == '..') {
+      if (kept.length == 0) {
+        throw new HttpError(403, 'Forbidden', `malicious path: ${path}`);
+      }
+      kept.pop();
+    } else if (segment != '' && segment != '.') {
+      kept.push(segment);
+    }
+  }
+  if (kept.length == 0) {
+    return '.';
+  }
+  var joined = kept[0];
+  for (var i = 1; i < kept.length; i += 1) {
+    joined = `${joined}/${kept[i]}`;
+  }
+  return joined;
+};
+
+/** Whether any segment of a confined path starts with a dot. */
+let hasHiddenSegment = (path: String): boolean => {
+  if (path == '.') {
+    return false;
+  }
+  for (let segment in path.split('/')) {
+    if (segment.length > 0 && segment.getByteAt(0) == DOT) {
+      return true;
+    }
+  }
+  return false;
+};
+
+var preopens: Array<(Descriptor, String)> | null = null;
+
+/**
+ * The preopen a root directory is under, and the root relative to it.
+ * A relative root is under the `.` preopen (else the first); an
+ * absolute one under its longest matching preopen.
+ */
+let preopenFor = (root: String): (Descriptor, String) => {
+  var cached = preopens;
+  if (cached == null) {
+    let all = new Array<(Descriptor, String)>();
+    for (let (descriptor, name) in getDirectories()) {
+      all.push((descriptor, name));
+    }
+    preopens = all;
+    cached = all;
+  }
+  let list = cached as Array<(Descriptor, String)>;
+  if (list.length == 0) {
+    throw new Error('zena:http: no preopened directories to serve files from');
+  }
+  var best = list[0][0];
+  var bestLength = -1;
+  var relative = root;
+  let absolute = root.startsWith('/');
+  for (let (descriptor, name) in list) {
+    if (!absolute) {
+      if (name == '.' && bestLength < 0) {
+        best = descriptor;
+        bestLength = 0;
+      }
+    } else if (name.startsWith('/')) {
+      let matches = name == '/' || root == name ||
+          (root.startsWith(name) && root.getByteAt(name.length) == SLASH);
+      if (matches && name.length > bestLength) {
+        best = descriptor;
+        bestLength = name.length;
+        relative = root.sliceBytes(name.length, root.length);
+      }
+    }
+  }
+  if (absolute && bestLength < 0) {
+    throw new Error(`zena:http: no preopened directory holds ${root}`);
+  }
+  return (best, confineRoot(relative));
+};
+
+/** A root's path under its preopen, with `.` for the preopen itself. */
+let confineRoot = (path: String): String => {
+  let kept = new GrowableArray<String>(4);
+  for (let segment in path.split('/')) {
+    if (segment != '' && segment != '.') {
+      kept.push(segment);
+    }
+  }
+  if (kept.length == 0) {
+    return '.';
+  }
+  var joined = kept[0];
+  for (var i = 1; i < kept.length; i += 1) {
+    joined = `${joined}/${kept[i]}`;
+  }
+  return joined;
+};
+
+/** The stat of a path, or the HttpError its failure maps to. */
+async function statOf(base: Descriptor, path: String): Future<DescriptorStat> {
+  let outcome = await base.statAt(pathFlagsSymlinkFollow, path);
+  if (outcome is Err<DescriptorStat, ErrorCode>) {
+    throw httpErrorOf((outcome as Err<DescriptorStat, ErrorCode>).error);
+  }
+  return (outcome as Ok<DescriptorStat, ErrorCode>).value;
+}
+
+/** Whether anything is at a path. */
+async function exists(base: Descriptor, path: String): Future<boolean> {
+  let outcome = await base.statAt(pathFlagsSymlinkFollow, path);
+  return outcome is Ok<DescriptorStat, ErrorCode>;
+}
+
+/** 404 for a path that does not name a file, 500 for anything else. */
+let httpErrorOf = (code: ErrorCode): HttpError => {
+  if (code is ErrorCodeNoEntry || code is ErrorCodeNameTooLong ||
+      code is ErrorCodeNotDirectory) {
+    return new HttpError(404);
+  }
+  return new HttpError(500);
+};
+
+let fileStatOf = (stat: DescriptorStat): FileStat => {
+  var modified = 0 as i64;
+  let stamp = stat.dataModificationTimestamp;
+  if (stamp is Some<Instant>) {
+    let at = (stamp as Some<Instant>).value;
+    modified = at.seconds * NS_PER_SECOND + (at.nanoseconds as i64);
+  }
+  let fileType = if (stat.type is DescriptorTypeDirectory) FileType.Directory
+      else FileType.RegularFile;
+  return {fileType: fileType, size: stat.size as i64, modified: modified};
+};
+
+/**
+ * Closes a file once its contents stream is done: the host signals
+ * that on `done`, after the last byte or when the reader drops the
+ * stream. A failure there arrives after the response has started, so
+ * there is nothing left to report it to.
+ */
+async function closeWhenRead(
+  file: Descriptor,
+  done: Future<Outcome<void, ErrorCode>>
+): Future<void> {
+  await done;
+  file.[Disposable.dispose]();
+}
+
+/** Every `Accept-Encoding` value of a request, as one list. */
+let acceptEncodingOf = (req: Request): String => {
+  let values = req.getHeaders('accept-encoding');
+  if (values.length == 0) {
+    return '';
+  }
+  var joined = values[0];
+  for (var i = 1; i < values.length; i += 1) {
+    joined = `${joined},${values[i]}`;
+  }
+  return joined;
+};
+
+/**
+ * Whether an `Accept-Encoding` list takes `coding` at least as
+ * readily as no encoding at all: its q-value is above zero and not
+ * below identity's. A coding not listed takes the `*` entry's q-value,
+ * and identity is acceptable at 1 unless the list says otherwise.
+ */
+let acceptsEncoding = (header: String, coding: String): boolean => {
+  let wanted = qualityOf(header, coding, 0);
+  return wanted > 0 && wanted >= qualityOf(header, 'identity', 1000);
+};
+
+/** A coding's q-value in thousandths, or `fallback` when unlisted. */
+let qualityOf = (header: String, coding: String, fallback: i32): i32 => {
+  var star = -1;
+  for (let item in header.split(',')) {
+    let parts = item.split(';');
+    let name = parts[0].trim().asciiLowerCase();
+    if (name.length == 0) {
+      continue;
+    }
+    var q = 1000;
+    for (var i = 1; i < parts.length; i += 1) {
+      let param = parts[i].trim();
+      if (param.startsWith('q=') || param.startsWith('Q=')) {
+        q = parseQuality(param.sliceBytes(2, param.length));
+      }
+    }
+    if (name == coding) {
+      return q;
+    }
+    if (name == '*') {
+      star = q;
+    }
+  }
+  return if (star >= 0) star else fallback;
+};
+
+/** A q-value (`0`, `0.5`, `1.000`) in thousandths; 0 if malformed. */
+let parseQuality = (text: String): i32 => {
+  if (text.length == 0) {
+    return 0;
+  }
+  let first = text.getByteAt(0);
+  if (first == 0x31) {
+    return 1000;
+  }
+  if (first != 0x30) {
+    return 0;
+  }
+  var q = 0;
+  var scale = 100;
+  for (var i = 2; i < text.length && i < 5; i += 1) {
+    let digit = text.getByteAt(i) - 0x30;
+    if (digit < 0 || digit > 9) {
+      return 0;
+    }
+    q += digit * scale;
+    scale = div(scale, 10);
+  }
+  return q;
+};
+
+/**
+ * Whether an `If-None-Match` header matches an entity tag, by weak
+ * comparison: `W/` prefixes are ignored.
+ */
+let matchesEtag = (header: String | null, etag: String): boolean => {
+  if (header == null) {
+    return false;
+  }
+  let target = stripWeak(etag);
+  for (let item in (header as String).split(',')) {
+    let tag = item.trim();
+    if (tag == '*' || stripWeak(tag) == target) {
+      return true;
+    }
+  }
+  return false;
+};
+
+let stripWeak = (tag: String): String =>
+    if (tag.startsWith('W/')) tag.sliceBytes(2, tag.length) else tag;
+
+let DAY_NAMES = ['Thu', 'Fri', 'Sat', 'Sun', 'Mon', 'Tue', 'Wed'];
+let MONTH_NAMES = [
+  'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct',
+  'Nov', 'Dec'
+];
+
+/** Two digits, zero-padded. */
+let pad2 = (n: i32): String => if (n < 10) `0${n}` else `${n}`;
+
+/**
+ * An HTTP date (RFC 9110 IMF-fixdate) for seconds since the Unix
+ * epoch: `Tue, 13 Oct 2026 15:16:23 GMT`. Times before the epoch are
+ * given as the epoch.
+ */
+export let httpDate = (epochSeconds: i64): String => {
+  let seconds = if (epochSeconds < (0 as i64)) 0 as i64 else epochSeconds;
+  let days = div(seconds, 86400 as i64) as i32;
+  let inDay = (seconds - (days as i64) * (86400 as i64)) as i32;
+  // Days to civil date, after Howard Hinnant's `civil_from_days`. The
+  // days are never negative, so `div` truncating is flooring.
+  let z = days + 719468;
+  let era = div(z, 146097);
+  let doe = z - era * 146097;
+  let yoe = div(doe - div(doe, 1460) + div(doe, 36524) - div(doe, 146096), 365);
+  let doy = doe - (365 * yoe + div(yoe, 4) - div(yoe, 100));
+  let mp = div(5 * doy + 2, 153);
+  let day = doy - div(153 * mp + 2, 5) + 1;
+  let month = if (mp < 10) mp + 3 else mp - 9;
+  let year = yoe + era * 400 + (if (month <= 2) 1 else 0);
+  let weekday = DAY_NAMES[days % 7];
+  let hh = pad2(div(inDay, 3600));
+  let mm = pad2(div(inDay % 3600, 60));
+  let ss = pad2(inDay % 60);
+  return `${weekday}, ${pad2(day)} ${MONTH_NAMES[month - 1]} ${year} ${hh}:${mm}:${ss} GMT`;
+};

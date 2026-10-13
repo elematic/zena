@@ -1,0 +1,25 @@
+/**
+ * Serving a directory of files with `zena:http`'s `serve`.
+ *
+ * Serves the repository's `docs/` directory, with `.md` tried for
+ * paths that have no extension, and logs each request.
+ *
+ * Run from the repository root with:
+ *   ./target/release/zena-cli run --dir .::. examples/static-server.zena
+ * then try:
+ *   curl -i http://127.0.0.1:8080/writing-style
+ *   curl -I http://127.0.0.1:8080/design/streams.md
+ */
+
+import { App, serve } from 'zena:http';
+
+export function main(): void {
+  let app = new App();
+  app.use(async (req, res, next) => {
+    let path = req.path;
+    await next();
+    console.log(`${req.method} ${path} -> ${res.statusCode}`);
+  });
+  app.use(serve('docs', {extensions: ['md']}));
+  app.listen(8080 as u16);
+}

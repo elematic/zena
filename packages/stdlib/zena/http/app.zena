@@ -7,6 +7,7 @@ import { Response } from './response.zena';
 import { Middleware, compose } from './middleware.zena';
 import { HttpError } from './error.zena';
 import { Server } from './server.zena';
+import { Stream } from 'zena:stream';
 
 /**
  * Configuration options for the HTTP App.
@@ -91,6 +92,12 @@ export class App {
   }
 
   #handleError(res: Response, e: Error): void {
+    // The error body replaces whatever was set, and nothing will read a
+    // stream body now: stop it, so a file's handle is released.
+    let abandoned = res.body;
+    if (abandoned is Stream<u8>) {
+      (abandoned as Stream<u8>).stop();
+    }
     if (e is HttpError) {
       let httpErr = e as HttpError;
       res.statusCode = httpErr.status;
