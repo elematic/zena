@@ -13,7 +13,7 @@ import { StreamWriter } from 'zena:stream';
 import { ErrorCode, Fields } from 'wasi:http/types';
 import { ProtoView, ProtoWriter, RpcError, RpcMethod } from '../runtime.zena';
 import {
-  codeForGrpcHttpStatus, decodeBase64, frame, readGrpcResponse, singleMessage, statusError
+  codeForGrpcHttpStatus, decodeBase64, frame, grpcTimeout, readGrpcResponse, singleMessage, statusError
 } from '../grpc.zena';
 import { Node } from '../../test-files/generated/everything.zena';
 
@@ -154,6 +154,15 @@ export let tests = suite('grpc transport', (): void => {
     equal(f[4] as i32, 5);
     equal(f[5] as i32, 0x0A);
     equal(f[6] as i32, 3);
+  });
+
+  test('formats deadlines', () => {
+    equal(grpcTimeout(0 as i64), '0n');
+    equal(grpcTimeout(1500 as i64), '1500n');
+    equal(grpcTimeout(250000000 as i64), '250000u');
+    equal(grpcTimeout(30000000000 as i64), '30000000u');
+    equal(grpcTimeout(300000000000 as i64), '300000m');
+    equal(grpcTimeout(200000000000001 as i64), '200001S');
   });
 
   test('decodes base64', () => {
