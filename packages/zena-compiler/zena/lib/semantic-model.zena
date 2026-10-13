@@ -1150,13 +1150,37 @@ export final class SemanticModel {
   symbolNames = new Map<SymbolId, String>();
 
   /**
-   * Locals that some closure assigns. Every closure that captures one
-   * of these captures its heap cell, including a closure that only
-   * reads it, so that the reader sees the writer's assignments. Filled
-   * by the checker as it leaves each closure, so the whole set is known
-   * before code generation lays out any closure's captured values.
+   * Locals that some closure assigns, or captures before their
+   * declaration runs. Every closure that captures one of these captures
+   * its heap cell, including a closure that only reads it, so that the
+   * reader sees the writer's assignments. Filled by the checker as it
+   * leaves each closure; `capturedInCell` adds the locals the declaring
+   * scope assigns after a capture.
    */
   mutablyCapturedSymbols = new Set<SymbolId>();
+
+  /**
+   * For each variable assigned after its declaration, the largest node
+   * id among its assignments. Node ids are handed out in source order,
+   * so this is the textually last one. See `capturedInCell`.
+   */
+  lastAssignment = new Map<SymbolId, i32>();
+
+  /**
+   * The locals closures capture, each with the closures that capture
+   * it. See `capturedInCell`.
+   */
+  capturedLocals = new Map<SymbolId, CapturedLocal>();
+
+  recordCapture(sym: Symbol, closure: Node): void {
+    if (let (true, local) = this.capturedLocals.get(sym.id)) {
+      local.closures.push(closure);
+      return;
+    }
+    let local = new CapturedLocal(sym);
+    local.closures.push(closure);
+    this.capturedLocals[sym.id] = local;
+  }
 
   #declaredClasses = new Array<SymbolId>();
   #declaredInterfaces = new Array<SymbolId>();
@@ -1275,15 +1299,22 @@ export final class SemanticModel {
   bindingTypes: HashMap<SymbolId, Type> { get { return this.#bindingTypes; } }
 }
 
+/** A local some closure captures, and every closure that captures it. */
+export final class CapturedLocal {
+  sym: Symbol;
+  closures = new Array<Node>();
+
+  new(this.sym);
+}
+
 export final class ClosureDependency {
   id: i32;
   node: Node;
   capturesThis: boolean;
   captures: GrowableArray<SymbolId>;
-  mutableCaptures: HashSet<SymbolId>;
   dependencies: SymbolDependencies;
 
-  new(this.id, this.node, this.capturesThis, this.captures, this.mutableCaptures, this.dependencies);
+  new(this.id, this.node, this.capturesThis, this.captures, this.dependencies);
 }
 
 export final class FunctionAdaptationDependency {

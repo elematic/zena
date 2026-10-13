@@ -1173,6 +1173,33 @@ let add5 = makeAdder(5);
 let result = add5(10); // 15
 ```
 
+A closure captures the variable, not the value it held when the closure was
+created. An assignment made after the closure exists, by the enclosing scope or
+by any closure, is visible wherever the variable is read:
+
+```zena
+var n = 2;
+let read = () => n;
+n = 5;
+read(); // 5
+```
+
+The variable a C-style `for` header declares is a fresh variable on each
+iteration, starting from the value the previous iteration ended with. A closure
+made in the loop body keeps the variable of the iteration that made it:
+
+```zena
+let reads = new GrowableArray<() => i32>();
+for (var i = 0; i < 3; i += 1) {
+  reads.push(() => i);
+}
+reads[0](); // 0
+reads[2](); // 2
+```
+
+A variable declared inside a loop body is likewise a new variable each time the
+declaration runs.
+
 ### Generic Functions
 
 Functions can be generic by specifying type parameters before the parameter

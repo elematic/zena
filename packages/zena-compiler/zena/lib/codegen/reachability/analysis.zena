@@ -9,6 +9,7 @@ import {
 import {
   Node, ClassDeclaration, InterfaceDeclaration, MixinDeclaration, MethodDefinition, AccessorDeclaration, FieldDefinition, VariableDeclaration, FunctionDeclaration, DeclareFunction, ImportDeclaration, IdentifierPattern, FunctionExpression, SealedVariant, SourceLocation, Module, Identifier, SymbolPropertyName, MemberExpression, CallExpression, ExportAllDeclaration, ExportFromDeclaration, IdGenerator, ShieldedStatement, TryExpression,
 } from '../../ast.zena';
+import { capturedInCell } from '../../analysis/capture.zena';
 import { Set, HashMap, HashSet } from 'zena:collections';
 
 import { StringBuilder } from 'zena:core';
@@ -3809,7 +3810,15 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
       wasmFunc.name = "closure_impl_" + fileBase + suffix + "_" + locStr;
       
       wasmFunc.capturesThis = closureDep.capturesThis;
-      wasmFunc.mutableCaptures = closureDep.mutableCaptures;
+      // A closure that only reads a celled variable still holds its
+      // cell, or it would read a stale copy (capturedInCell).
+      let celled = new Set<SymbolId>();
+      for (let symId in closureDep.captures) {
+        if (capturedInCell(symId, model)) {
+          celled.add(symId);
+        }
+      }
+      wasmFunc.mutableCaptures = celled;
       let caps = wasmFunc.captures ?? new Array<SymbolId>();
       wasmFunc.captures = caps;
       for (let symId in closureDep.captures) {
@@ -3864,10 +3873,7 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
         }
         let valType = typeToValType(this.wasm, symType as Type);
         var fieldType: ValType = valType;
-        // A closure that only reads a local still captures its cell when
-        // another closure assigns it, or it would read a stale copy.
-        if (closureDep.mutableCaptures.has(symId) ||
-            model.mutablyCapturedSymbols.has(symId)) {
+        if (celled.has(symId)) {
           let cellStruct = getCellStruct(this.wasm, valType);
           fieldType = new ValTypeRefNull(cellStruct);
         }

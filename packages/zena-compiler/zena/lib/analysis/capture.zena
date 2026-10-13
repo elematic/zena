@@ -1,6 +1,6 @@
 import { Set } from 'zena:collections';
 import {
-  Node, Identifier, ThisExpression, AssignmentExpression, FunctionExpression, Parameter, VariableDeclaration, IdentifierPattern, Module, ClassDeclaration, InterfaceDeclaration, EnumDeclaration, MixinDeclaration, MethodDefinition, BlockStatement,
+  Node, Identifier, ThisExpression, AssignmentExpression, FunctionExpression, Parameter, VariableDeclaration, IdentifierPattern, Module, ClassDeclaration, InterfaceDeclaration, EnumDeclaration, MixinDeclaration, MethodDefinition, BlockStatement, WhileStatement, ForStatement, ForInStatement,
 } from '../ast.zena';
 import { SemanticModel } from '../semantic-model.zena';
 import { Symbol, SymbolId } from '../scope/symbol.zena';
@@ -120,6 +120,72 @@ let isDeclaredWithin = (sym: Symbol, root: Node, model: SemanticModel): boolean 
     let parent = model.getParent(curr);
     if (parent == null) { return false; }
     curr = parent;
+  }
+  return false;
+};
+
+/**
+ * True when an assignment to `sym` can run after `closure` is created,
+ * while the closure still holds the same variable: one later in the
+ * source (`last` is the textually last assignment), one whose value
+ * contains the closure (`n = f(() => n)`), or any assignment at all
+ * when a loop encloses the closure but not the declaration, because
+ * the next iteration's assignments follow this iteration's closure. A
+ * `for` header's variable is fresh on each iteration (lowerFor), so the
+ * loop that declares it does not count.
+ */
+let assignedAfter = (sym: Symbol, closure: Node, last: i32, model: SemanticModel): boolean => {
+  if (last > (closure.id as i32)) { return true; }
+  var curr = closure;
+  while (true) {
+    let parent = model.getParent(curr);
+    if (parent == null) { return false; }
+    match (parent) {
+      case AssignmentExpression {left}: {
+        if (left is Identifier) {
+          let target = model.resolve(left);
+          if (target != null && target.resolveTarget().id == sym.id) { return true; }
+        }
+      }
+      case WhileStatement: {
+        if (!isDeclaredWithin(sym, parent, model)) { return true; }
+      }
+      case ForStatement: {
+        if (!isDeclaredWithin(sym, parent, model)) { return true; }
+      }
+      case ForInStatement: {
+        if (!isDeclaredWithin(sym, parent, model)) { return true; }
+      }
+      case _: {}
+    }
+    curr = parent;
+  }
+  return false;
+};
+
+/**
+ * True when the closures that capture this local share it with its
+ * declaring scope through a heap cell, rather than each copying its
+ * value when created. A closure captures the variable, so it needs the
+ * cell whenever the variable can change after some closure has
+ * captured it: a closure assigns it, a closure is created before its
+ * declaration runs (both in `mutablyCapturedSymbols`), or the
+ * declaring scope assigns it after creating a closure. A variable only
+ * ever assigned before the first capture reads the same either way,
+ * and keeps its copy.
+ *
+ * One answer per variable, not per closure: every closure that
+ * captures a celled variable must hold the same cell. Asked by code
+ * generation, after the declaring body has been checked in full.
+ */
+export let capturedInCell = (symId: SymbolId, model: SemanticModel): boolean => {
+  if (model.mutablyCapturedSymbols.has(symId)) { return true; }
+  if (let (true, last) = model.lastAssignment.get(symId)) {
+    if (let (true, local) = model.capturedLocals.get(symId)) {
+      for (let closure in local.closures) {
+        if (assignedAfter(local.sym, closure, last, model)) { return true; }
+      }
+    }
   }
   return false;
 };
