@@ -1,10 +1,10 @@
 # Protobuf and gRPC
 
-Status: **Partly implemented.** The generator, the runtime and the
-fallback transport are in `packages/protobuf`. `packages/google-cloud`
-holds the generated Firestore code, metadata-server credentials and a
-hand-written Firestore client. The gRPC transport and typed documents are
-not built.
+Status: **Partly implemented.** The generator, the runtime, the gRPC
+transport and the fallback transport are in `packages/protobuf`.
+`packages/google-cloud` holds the generated Firestore code,
+metadata-server credentials and a hand-written Firestore client. Typed
+documents and loader plugins are not built.
 
 This document designs protobuf messages and gRPC clients for Zena. The
 first user is a Firestore client for servers running on Google Cloud Run.
@@ -522,11 +522,31 @@ Zena's own runtime (`packages/zena-runtime`) overrides
 and `zena-run` get both. One client per process keeps idle
 connections open for reuse. `https://` connections offer `h2` and
 `http/1.1` through ALPN and use HTTP/2 when the server chooses it;
-`http://` connections use HTTP/1.1. Request and response trailers
-pass through on HTTP/2. A component run by stock `wasmtime serve` or
-`wasmtime run -S http` still gets the default handler, so a gRPC
-transport needs Zena's host there; under stock hosts, the fallback
-transport below works over HTTP/1.1.
+`http://` connections use HTTP/1.1, except gRPC requests. Request and
+response trailers pass through on HTTP/2. A component run by stock
+`wasmtime serve` or `wasmtime run -S http` still gets the default
+handler, so a gRPC transport needs Zena's host there; under stock hosts,
+the fallback transport below works over HTTP/1.1.
+
+A local gRPC server, the Firestore emulator among them, speaks
+cleartext HTTP/2 with prior knowledge (h2c): no TLS, so no ALPN, and
+HTTP/1.1 requests are refused. A `wasi:http` guest cannot ask for a
+protocol version, and gRPC is never valid over HTTP/1.1, so the host
+decides from the request: an `http://` request whose `content-type` is
+`application/grpc` or `application/grpc+<codec>` goes over h2c, on a
+pool of its own.
+
+`protobuf:grpc` is the transport. `GrpcTransport` posts the framed
+request to `/<service>/<method>` with `content-type: application/grpc`
+and `te: trailers`, and reads framed responses from the body as they
+arrive. The call's status comes from the trailers, or from the headers
+of a response that carries no messages. `grpc-message` is
+percent-decoded, and `grpc-status-details-bin` is decoded from base64
+into the `RpcError`'s `status`. A response that is not gRPC maps its
+HTTP status as the gRPC specification does (404 is UNIMPLEMENTED, 503
+is UNAVAILABLE). Requests are not compressed and no compression is
+offered, so a compressed response is an error. Deadlines
+(`grpc-timeout`) are not sent yet.
 
 ### gRPC fallback over HTTP/1.1
 
@@ -825,8 +845,11 @@ the two should share a design. That design is out of scope here.
 
 `Firestore` holds a project and database id and a `FirestoreClient`.
 Every call goes through the generated client, so the transport is a
-constructor option: the fallback transport to `firestore.googleapis.com`
-by default, and a gRPC transport once one exists.
+constructor option. Without one, `protocol` picks the transport to
+`firestore.googleapis.com`: the fallback transport by default, since it
+works on every host, or gRPC with `Protocol.Grpc`. `Firestore.connect()`
+reads `FIRESTORE_EMULATOR_HOST` as Google's client libraries do, and
+then talks gRPC to the emulator with the token `owner`.
 
 - `DocumentReference` and `CollectionReference` are paths. `get`, `set`,
   `create`, `update` and `delete` each make one call. `update` sends an
@@ -843,9 +866,13 @@ by default, and a gRPC transport once one exists.
   and the other functions build `Value`s for filters and arrays.
 - `runTransaction` begins a read-write transaction, runs the body with a
   `Transaction` that reads in it and collects writes, and commits them.
-  When the commit is ABORTED it begins again, passing the old id as
-  `retry_transaction`, up to five attempts. When the body throws, it
-  rolls back and rethrows.
+  When the server aborts the transaction for contention, in a read or
+  in the commit, it waits a random time that doubles with each attempt
+  and begins again, passing the old id as `retry_transaction`, up to
+  five attempts. When the body throws anything else, it rolls back and
+  rethrows. The emulator aborts a read that waits too long for another
+  transaction's lock; retrying only aborted commits missed that, and
+  the emulator tests found it.
 - `WriteBatch` commits several writes in one call.
 
 Not built yet: field transforms (server timestamps, increments), cursors,
@@ -872,12 +899,15 @@ Done:
   `google.api.routing` and `google.api.http`.
 - `packages/google-cloud`: the generated Firestore module,
   metadata-server credentials, and the hand-written client.
+- The gRPC transport, `protobuf:grpc`, and h2c in `zena-runtime` for
+  `http://` gRPC requests. The Firestore client runs against the
+  emulator over it (`npm run test:emulator -w @zena-lang/google-cloud`).
 
 Remaining:
 
-1. The gRPC transport over HTTP/2. Production servers will run under
-   `zena-cli`, whose outgoing requests use HTTP/2, so gRPC is the
-   transport to use there; it also reaches the Firestore emulator.
+1. A test against the real Firestore, with both transports, locally and
+   on Cloud Run under `zena-cli`, once the first draft of everything is
+   in.
 2. Typed documents.
 3. Loader plugins, with WIT and protobuf as the first two users.
 

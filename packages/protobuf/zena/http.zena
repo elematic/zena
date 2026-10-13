@@ -1,0 +1,161 @@
+/**
+ * The `wasi:http` plumbing the transports share: where calls go, the
+ * headers of a call, and one `POST` with its response.
+ *
+ * This module imports `wasi:http`, so it compiles for component targets
+ * only.
+ */
+
+import { Completer } from 'zena:async';
+import { HashMap } from 'zena:collections';
+import { Err, Ok, Option, Outcome } from 'zena:core';
+import { Stream, StreamWriter } from 'zena:stream';
+import { URL } from 'zena:url';
+import {
+  ErrorCode, Fields, MethodPost, Request, Response as WireResponse,
+  Scheme, SchemeHTTP, SchemeHTTPS
+} from 'wasi:http/types';
+import { send } from 'wasi:http/client';
+import { Credentials, ProtoError, ProtoView, RpcError, RpcMetadata, RpcMethod } from './runtime.zena';
+
+/** The one spellable value of type void, for a `result<_, e>` ok arm. */
+export function unit(): void {}
+
+/** `google.rpc.Code` UNAVAILABLE, for a server that could not be reached. */
+let CODE_UNAVAILABLE = 14;
+
+/** What a `wasi:http` request is sent with. */
+export type Trailers = Future<Outcome<Option<Fields>, ErrorCode>>;
+
+/** The scheme and authority of an origin such as `https://firestore.googleapis.com`. */
+export final class Origin {
+  scheme: Scheme;
+  authority: String;
+
+  new(this.scheme, this.authority);
+
+  /** Parses `origin`; throws a `ProtoError` when it is not a URL. */
+  static parse(origin: String): Origin {
+    let url = URL.parse(origin);
+    if (url == null) {
+      throw new ProtoError(`not a URL: ${origin}`);
+    }
+    let parsed = url as URL;
+    let scheme: Scheme = if (parsed.protocol == 'http:') new SchemeHTTP() else new SchemeHTTPS();
+    return new Origin(scheme, parsed.host());
+  }
+}
+
+/**
+ * The headers of one call: `content-type`, then the transport's own
+ * `fixed` headers, the call's `metadata`, and the `authorization`
+ * `credentials` give, when there are any.
+ */
+export let callHeaders = async (
+  contentType: String,
+  fixed: HashMap<String, String>,
+  metadata: RpcMetadata,
+  credentials: Credentials | null
+): Future<Fields> => {
+  let headers = Fields.create();
+  headers.append('content-type', contentType.toBytes());
+  for (let entry in fixed) {
+    headers.append(entry.key, entry.value.toBytes());
+  }
+  for (var i = 0; i < metadata.length; i += 1) {
+    headers.append(metadata.name(i), metadata.value(i).toBytes());
+  }
+  if (credentials != null) {
+    let authorization = await (credentials as Credentials).authorization();
+    if (authorization != null) {
+      headers.append('authorization', (authorization as String).toBytes());
+    }
+  }
+  return headers;
+};
+
+/** The first value of header `name` in `fields`, or null. */
+export let headerValue = (fields: Fields, name: String): String | null => {
+  let values = fields.get(name);
+  return if (values.length > 0) String.fromBytes(values[0]) else null;
+};
+
+/** One response: its status, headers, body, and the trailers after the body. */
+export final class Exchange {
+  status: i32;
+  headers: Fields;
+  body: Stream<u8>;
+  trailers: Trailers;
+  #received: Completer<Outcome<void, ErrorCode>>;
+
+  new(this.status, this.headers, this.body, this.trailers, received: Completer<Outcome<void, ErrorCode>>)
+    : #received = received;
+
+  /** A response made of the given parts, for reading a body that did not come from `post`. */
+  static of(status: i32, headers: Fields, body: Stream<u8>, trailers: Trailers): Exchange {
+    return new Exchange(status, headers, body, trailers, new Completer<Outcome<void, ErrorCode>>());
+  }
+
+  /** Whether the `content-type` header starts with `prefix`. */
+  contentTypeIs(prefix: String): boolean {
+    let contentType = headerValue(this.headers, 'content-type');
+    return contentType != null && (contentType as String).startsWith(prefix);
+  }
+
+  /** Tells the host the body has been read to its end. */
+  finish(): void {
+    this.#received.tryComplete(new Ok<void, ErrorCode>(unit()));
+  }
+}
+
+/**
+ * POSTs `body` with `headers` to `path` at `origin`. Throws an `RpcError`
+ * with code UNAVAILABLE, naming `method`, when no response arrives.
+ */
+export let post = async (
+  origin: Origin,
+  path: String,
+  headers: Fields,
+  body: ByteArray,
+  method: RpcMethod
+): Future<Exchange> => {
+  // The trailers future is the sender's to settle, and the host does
+  // not consider the request body finished until it is.
+  let trailers = Future.of<Outcome<Option<Fields>, ErrorCode>>(
+      new Ok<Option<Fields>, ErrorCode>(none));
+  let (wire, transmitted) =
+      Request.new_(headers, some(bytesStream(body)), trailers, none);
+  wire.setMethod(new MethodPost());
+  wire.setScheme(some(origin.scheme));
+  wire.setAuthority(some(origin.authority));
+  wire.setPathWithQuery(some(path));
+  let sent = await send(wire);
+  if (sent is Err<WireResponse, ErrorCode>) {
+    throw new RpcError(
+      CODE_UNAVAILABLE,
+      `${method.service}/${method.name}: no response from ${origin.authority}`,
+      ProtoView.empty()
+    );
+  }
+  let response = (sent as Ok<WireResponse, ErrorCode>).value;
+  // Read the status and headers first: `consumeBody` takes the response.
+  let status = response.getStatusCode() as i32;
+  let responseHeaders = response.getHeaders();
+  let received = new Completer<Outcome<void, ErrorCode>>();
+  let (responseBody, responseTrailers) = WireResponse.consumeBody(response, received.future);
+  return new Exchange(status, responseHeaders, responseBody, responseTrailers, received);
+};
+
+/** A stream that delivers `bytes` and ends. */
+export let bytesStream = (bytes: ByteArray): Stream<u8> => {
+  let writer = new StreamWriter<u8>();
+  pump(writer, bytes as FixedArray<u8>);
+  return writer.stream;
+};
+
+let pump = async (writer: StreamWriter<u8>, bytes: FixedArray<u8>): Future<void> => {
+  if (bytes.length > 0) {
+    await writer.writeAll(bytes, bytes.length);
+  }
+  writer.close();
+};

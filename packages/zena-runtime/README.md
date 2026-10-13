@@ -15,7 +15,10 @@ it:
   HTTP/1.1 only. The replacement keeps one pooled client per process:
   `https://` connections offer `h2` and `http/1.1` through ALPN and use
   HTTP/2 when the server picks it, `http://` connections use HTTP/1.1,
-  and idle connections are reused. Trailers pass through both ways, and
+  and idle connections are reused. An `http://` request whose
+  `content-type` is `application/grpc` uses cleartext HTTP/2 with prior
+  knowledge (h2c) instead, which local gRPC servers and the Firestore
+  emulator speak. Trailers pass through both ways, and
   the request options' timeouts mean what they mean in the default
   handler. Connections run on a background runtime of their own
   (thread `zena-http`), so they outlive the per-call runtimes
@@ -110,6 +113,6 @@ cargo test -p zena-runtime
 ```
 
 The `http_client` tests start local servers: a TLS one with a
-self-signed certificate (from `rcgen`) that offers HTTP/2, and a plain
-HTTP/1.1 one. They check the negotiated protocol, connection reuse
+self-signed certificate (from `rcgen`) that offers HTTP/2, a plain
+HTTP/1.1 one, and a plain HTTP/2-only (h2c) one. They check the negotiated protocol, connection reuse
 (by counting accepted connections), trailers, and error mapping.

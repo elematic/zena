@@ -1,0 +1,259 @@
+/**
+ * The gRPC transport's framing and status handling, on responses built in
+ * the test: bodies from a `StreamWriter`, headers and trailers from
+ * `wasi:http` fields. Calls over the network are tested against the
+ * Firestore emulator (packages/google-cloud).
+ */
+
+import { suite, test } from 'zena:test';
+import { equal, isTrue } from 'zena:assert';
+import { AsyncIterable, AsyncIterator, Completer, runFuture } from 'zena:async';
+import { Ok, Option, Outcome } from 'zena:core';
+import { StreamWriter } from 'zena:stream';
+import { ErrorCode, Fields } from 'wasi:http/types';
+import { ProtoView, ProtoWriter, RpcError, RpcMethod } from '../runtime.zena';
+import {
+  codeForGrpcHttpStatus, decodeBase64, frame, readGrpcResponse, singleMessage, statusError
+} from '../grpc.zena';
+import { Node } from '../../test-files/generated/everything.zena';
+
+function unit(): void {}
+
+/** `iterator`, for `for await`. */
+final class ReaderIterable implements AsyncIterable<ProtoView> {
+  #iterator: AsyncIterator<ProtoView>;
+  new(iterator: AsyncIterator<ProtoView>) : #iterator = iterator;
+  [AsyncIterable.asyncIterator](): AsyncIterator<ProtoView> {
+    return this.#iterator;
+  }
+}
+
+let fieldsOf = (pairs: Array<String>): Fields => {
+  let fields = Fields.create();
+  for (var i = 0; i + 1 < pairs.length; i += 2) {
+    fields.append(pairs[i], pairs[i + 1].toBytes());
+  }
+  return fields;
+};
+
+let trailersOf = (pairs: Array<String>): Future<Outcome<Option<Fields>, ErrorCode>> =>
+  Future.of<Outcome<Option<Fields>, ErrorCode>>(new Ok<Option<Fields>, ErrorCode>(some(fieldsOf(pairs))));
+
+let noTrailers = (): Future<Outcome<Option<Fields>, ErrorCode>> =>
+  Future.of<Outcome<Option<Fields>, ErrorCode>>(new Ok<Option<Fields>, ErrorCode>(none));
+
+let GRPC_HEADERS = ['content-type', 'application/grpc'];
+let OK = ['grpc-status', '0'];
+
+/** `views`, framed and concatenated. */
+let framed = (views: GrowableArray<ProtoView>): FixedArray<u8> => {
+  var total = 0;
+  for (let v in views) {
+    total += 5 + v.byteLength;
+  }
+  let out = new FixedArray<u8>(total, 0);
+  var o = 0;
+  for (let v in views) {
+    let f = frame(v);
+    for (var i = 0; i < f.length; i += 1) {
+      out[o] = f[i];
+      o += 1;
+    }
+  }
+  return out;
+};
+
+let nodes = (names: Array<String>): GrowableArray<ProtoView> => {
+  let out = new GrowableArray<ProtoView>();
+  for (let name in names) {
+    out.push(Node.of({name}).protoView);
+  }
+  return out;
+};
+
+/** Writes `bytes` one at a time, then closes. */
+let produce = async (writer: StreamWriter<u8>, bytes: FixedArray<u8>): Future<void> => {
+  for (var i = 0; i < bytes.length; i += 1) {
+    await writer.write(bytes[i]);
+  }
+  writer.close();
+};
+
+/** The names in the responses, then `| ok`, or `| <code>: <message>` for the error that ended them. */
+let readAll = async (reader: AsyncIterator<ProtoView>): Future<String> => {
+  var out = '';
+  try {
+    for await (let view in new ReaderIterable(reader)) {
+      out = `${out}${Node.decode(view.toByteArray()).name},`;
+    }
+  } catch (e) {
+    if (e is RpcError) {
+      let error = e as RpcError;
+      return `${out} | ${error.code}: ${error.message}`;
+    }
+    return `${out} | not an RpcError: ${e.message}`;
+  }
+  return `${out} | ok`;
+};
+
+/** A response with `bytes` for a body, sent one byte at a time. */
+let respond = (status: i32, headers: Array<String>, bytes: FixedArray<u8>, trailers: Future<Outcome<Option<Fields>, ErrorCode>>): AsyncIterator<ProtoView> => {
+  let writer = new StreamWriter<u8>();
+  produce(writer, bytes);
+  return readGrpcResponse(status, fieldsOf(headers), writer.stream, trailers);
+};
+
+/**
+ * Reads a body whose producer holds back everything after the first
+ * message until the reader has seen it, so it passes only if each message
+ * is handed out as soon as its bytes are in.
+ */
+let incrementalRead = async (): Future<String> => {
+  let bytes = framed(nodes(['first', 'second']));
+  let split = 5 + Node.of({name: 'first'}).protoView.byteLength;
+  let writer = new StreamWriter<u8>();
+  let release = new Completer<void>();
+  holdBack(writer, bytes, split, release.future);
+  let reader = readGrpcResponse(200, fieldsOf(GRPC_HEADERS), writer.stream, trailersOf(OK));
+  var names = '';
+  for await (let view in new ReaderIterable(reader)) {
+    names = `${names}${Node.decode(view.toByteArray()).name},`;
+    release.tryComplete(unit());
+  }
+  return names;
+};
+
+let holdBack = async (writer: StreamWriter<u8>, bytes: FixedArray<u8>, split: i32, release: Future<void>): Future<void> => {
+  for (var i = 0; i < split; i += 1) {
+    await writer.write(bytes[i]);
+  }
+  await release;
+  for (var i = split; i < bytes.length; i += 1) {
+    await writer.write(bytes[i]);
+  }
+  writer.close();
+};
+
+let unaryOf = async (reader: AsyncIterator<ProtoView>): Future<String> => {
+  try {
+    let view = await singleMessage(new RpcMethod('zena.test.v1.Things', 'GetNode'), reader);
+    return Node.decode(view.toByteArray()).name;
+  } catch (e) {
+    return `${(e as RpcError).code}: ${e.message}`;
+  }
+};
+
+let errorText = (error: RpcError | null): String =>
+  if (error == null) 'ok' else `${(error as RpcError).code}: ${(error as RpcError).message}`;
+
+export let tests = suite('grpc transport', (): void => {
+  test('frames a message', () => {
+    let f = frame(Node.of({name: 'abc'}).protoView);
+    equal(f.length, 10);
+    equal(f[0] as i32, 0);
+    equal(f[4] as i32, 5);
+    equal(f[5] as i32, 0x0A);
+    equal(f[6] as i32, 3);
+  });
+
+  test('decodes base64', () => {
+    let text = (s: String): String => {
+      let bytes = decodeBase64(s);
+      return if (bytes == null) 'null' else String.fromBytes(bytes as ByteArray);
+    };
+    equal(text('aGVsbG8='), 'hello');
+    equal(text('aGVsbG8'), 'hello');
+    equal(text('aGk='), 'hi');
+    equal(text(''), '');
+    equal(text('a'), 'null');
+    equal(text('a*bc'), 'null');
+    let bytes = decodeBase64('-_8') as ByteArray;
+    equal(bytes.length, 2);
+    equal(bytes[0] as i32, 0xFB);
+    equal(bytes[1] as i32, 0xFF);
+  });
+
+  test('reads a status from fields', () => {
+    equal(errorText(statusError(fieldsOf(OK))), 'ok');
+    equal(errorText(statusError(fieldsOf(['grpc-status', '5', 'grpc-message', 'no%20such%20document']))),
+        '5: no such document');
+    equal(errorText(statusError(fieldsOf([]))), '2: the response has no grpc-status');
+    equal(errorText(statusError(fieldsOf(['grpc-status', 'x']))), '2: the response has a malformed grpc-status: x');
+    // google.rpc.Status {code: 9, message: "m"}, base64 without padding.
+    let w = new ProtoWriter();
+    w.int32(1, 9);
+    w.string(2, 'm');
+    let error = statusError(fieldsOf(['grpc-status', '9', 'grpc-status-details-bin', 'CAkSAW0'])) as RpcError;
+    equal(error.status.int32(1), 9);
+    equal(error.status.string(2), 'm');
+    equal(error.status.byteLength, w.finish().byteLength);
+  });
+
+  test('maps HTTP statuses as gRPC does', () => {
+    equal(codeForGrpcHttpStatus(400), 13);
+    equal(codeForGrpcHttpStatus(401), 16);
+    equal(codeForGrpcHttpStatus(403), 7);
+    equal(codeForGrpcHttpStatus(404), 12);
+    equal(codeForGrpcHttpStatus(503), 14);
+    equal(codeForGrpcHttpStatus(500), 2);
+  });
+
+  test('reads messages and an OK status', () => {
+    equal(runFuture(readAll(respond(200, GRPC_HEADERS, framed(nodes(['a', 'b', 'c'])), trailersOf(OK)))),
+        'a,b,c, | ok');
+    equal(runFuture(readAll(respond(200, GRPC_HEADERS, framed(nodes([])), trailersOf(OK)))), ' | ok');
+  });
+
+  test('hands out each message as soon as its bytes are in', () => {
+    equal(runFuture(incrementalRead()), 'first,second,');
+  });
+
+  test('throws the status in the trailers after the messages', () => {
+    equal(runFuture(readAll(respond(200, GRPC_HEADERS, framed(nodes(['a'])),
+        trailersOf(['grpc-status', '9', 'grpc-message', 'precondition'])))),
+        'a, | 9: precondition');
+  });
+
+  test('throws the status of a trailers-only response', () => {
+    equal(runFuture(readAll(respond(200, ['content-type', 'application/grpc', 'grpc-status', '7', 'grpc-message', 'denied'],
+        framed(nodes([])), noTrailers()))),
+        ' | 7: denied');
+    equal(runFuture(readAll(respond(200, ['content-type', 'application/grpc', 'grpc-status', '0'],
+        framed(nodes([])), noTrailers()))),
+        ' | ok');
+  });
+
+  test('fails a response that is not gRPC', () => {
+    equal(runFuture(readAll(respond(503, ['content-type', 'text/html'], 'busy'.toBytes(), noTrailers()))),
+        ' | 14: the server answered with HTTP 503');
+    equal(runFuture(readAll(respond(200, ['content-type', 'text/html'], '<html>'.toBytes(), noTrailers()))),
+        ' | 2: the server answered with content-type text/html');
+  });
+
+  test('fails a malformed body', () => {
+    let compressed = framed(nodes(['a']));
+    compressed[0] = 1 as u8;
+    equal(runFuture(readAll(respond(200, GRPC_HEADERS, compressed, trailersOf(OK)))),
+        ' | 13: the server sent a compressed message, and no compression was offered');
+    let bytes = framed(nodes(['abc']));
+    let cut = new FixedArray<u8>(bytes.length - 1, 0);
+    for (var i = 0; i < cut.length; i += 1) {
+      cut[i] = bytes[i];
+    }
+    equal(runFuture(readAll(respond(200, GRPC_HEADERS, cut, trailersOf(OK)))),
+        ' | 13: the response ended inside a message');
+    equal(runFuture(readAll(respond(200, GRPC_HEADERS, framed(nodes(['a'])), noTrailers()))),
+        'a, | 13: the response has no trailers');
+  });
+
+  test('a unary call takes exactly one message', () => {
+    equal(runFuture(unaryOf(respond(200, GRPC_HEADERS, framed(nodes(['one'])), trailersOf(OK)))), 'one');
+    equal(runFuture(unaryOf(respond(200, GRPC_HEADERS, framed(nodes([])), trailersOf(OK)))),
+        '13: zena.test.v1.Things/GetNode: no response to a unary call');
+    equal(runFuture(unaryOf(respond(200, GRPC_HEADERS, framed(nodes(['one', 'two'])), trailersOf(OK)))),
+        '13: zena.test.v1.Things/GetNode: more than one response to a unary call');
+    equal(runFuture(unaryOf(respond(200, GRPC_HEADERS, framed(nodes([])),
+        trailersOf(['grpc-status', '5', 'grpc-message', 'missing'])))),
+        '5: missing');
+  });
+});

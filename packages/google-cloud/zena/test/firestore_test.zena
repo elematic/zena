@@ -10,7 +10,7 @@ import { AsyncIterator, AsyncStep, Future, runFuture } from 'zena:async';
 import { HashMap } from 'zena:collections';
 import { Option, newByteArray } from 'zena:core';
 import { ProtoBytes, ProtoTransport, ProtoView, ProtoWriter, RpcMetadata, RpcMethod } from 'protobuf:runtime';
-import { RpcError } from 'protobuf:fallback';
+import { RpcError } from 'protobuf:runtime';
 import {
   BeginTransactionRequest,
   BeginTransactionResponse,
@@ -129,6 +129,8 @@ final class FakeFirestore implements ProtoTransport {
   var deferred: boolean = false;
   /** How many of the next transactional commits to abort. */
   var abortCommits: i32 = 0;
+  /** How many of the next transactional reads to abort, as a lock timeout does. */
+  var abortReads: i32 = 0;
   var #transactions: i32 = 0;
 
   new();
@@ -136,6 +138,11 @@ final class FakeFirestore implements ProtoTransport {
   async unary(method: RpcMethod, request: ProtoView, metadata: RpcMetadata): Future<ProtoView> {
     if (method.name == 'GetDocument') {
       let get = new GetDocumentRequest(request);
+      if (get.hasTransaction && this.abortReads > 0) {
+        this.abortReads -= 1;
+        this.log.push(`GetDocument aborted ${txName(get.transaction)}`);
+        throw rpcError(10, 'Transaction lock timeout.');
+      }
       this.log.push(if (get.hasTransaction) `GetDocument ${shortName(get.name)} in ${txName(get.transaction)}` else `GetDocument ${shortName(get.name)}`);
       if (let (true, document) = this.documents.get(get.name)) {
         return document.protoView;
@@ -519,6 +526,13 @@ export let tests = suite('firestore', (): void => {
   test('rolls back a transaction whose body throws', () => {
     let fake = new FakeFirestore();
     equal(runFuture(failingTransaction(fake, open(fake))), lines(['body failed', 'BeginTransaction', `RunQuery ${ROOT}/posts/ in tx1`, 'Rollback tx1']));
+  });
+
+  test('retries a transaction whose read is aborted', () => {
+    let fake = new FakeFirestore();
+    fake.abortReads = 1;
+    equal(runFuture(increment(open(fake))), 1 as i64);
+    equal(lines(fake.log), lines(['BeginTransaction', 'GetDocument aborted tx1', 'Rollback tx1', 'BeginTransaction retrying tx1', 'GetDocument counters/c in tx2', 'Commit in tx2: set counters/c']));
   });
 
   test('gives up after the last attempt is aborted', () => {
