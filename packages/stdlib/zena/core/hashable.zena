@@ -4,8 +4,9 @@
  *
  * Every class has an equality, so `==` does not need this bound to compile.
  * What it says is that the class wrote one down, rather than relying on
- * reference equality. Primitives, enums, and case classes that derive their
- * equality satisfy it without an `implements` clause.
+ * reference equality. Every hash key is one, since `Hashable` extends it.
+ * Primitives, enums, and case classes that derive their equality satisfy it
+ * without an `implements` clause.
  *
  * The parameter is typed `this`, which makes `==` a binary method: `Equatable`
  * works as a bound on a type parameter (`<T extends Equatable>`), where both
@@ -20,15 +21,22 @@ export interface Equatable {
  * A type that can be used as a key in hash-based collections like HashMap and
  * HashSet.
  *
- * The contract: if two values are equal (per `==`, which is a virtual call to
- * `operator ==` when the class defines one, and reference equality otherwise),
- * they must return the same hashCode. The reverse is not required — unequal
- * values may share a hash code, though fewer collisions means better
- * performance.
+ * A hash key declares its equality, so `Hashable` extends `Equatable`, and the
+ * two must agree: if two values are equal (per `operator ==`), they must
+ * return the same hashCode. The reverse is not required — unequal values may
+ * share a hash code, though fewer collisions means better performance.
  *
- * A class that uses reference equality (no `operator ==`) should return an
- * identity hash: a value that is unique per instance and stable for the
- * lifetime of the instance, e.g. a counter assigned in the constructor.
+ * A class whose equality is identity says so, and returns an identity hash: a
+ * value that is unique per instance and stable for its lifetime, such as a
+ * counter assigned in the constructor.
+ *
+ * ```zena
+ * class Session implements Hashable {
+ *   #id: i32 = nextSessionId();
+ *   operator ==(other: Session): boolean { return this === other; }
+ *   hashCode(): i32 { return this.#id; }
+ * }
+ * ```
  *
  * Case classes automatically satisfy Hashable: the compiler derives a
  * structural `hashCode()` and `operator ==` from their parameters, unless the
@@ -37,7 +45,7 @@ export interface Equatable {
  * also satisfy the Hashable constraint; they hash to their own value. Strings
  * hash with FNV-1a, cached after the first computation.
  */
-export interface Hashable {
+export interface Hashable extends Equatable {
   hashCode(): i32;
 }
 

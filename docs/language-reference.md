@@ -4681,7 +4681,7 @@ Hash-based collections constrain their key types to the `Hashable` interface
 from `zena:core`:
 
 ```zena
-export interface Hashable {
+export interface Hashable extends Equatable {
   hashCode(): i32;
 }
 
@@ -4692,11 +4692,22 @@ class OrderedHashMap<K extends Hashable, V> { ... }
 class OrderedHashSet<T extends Hashable> { ... }
 ```
 
-The contract: if two values are equal (per the `eq` intrinsic's semantics — a
-virtual call to `operator ==` when the class defines one, reference equality
-otherwise), they must return the same `hashCode()`. A class that uses
-reference equality should return an identity hash (e.g. a per-instance
-counter assigned at construction).
+A hash key declares its equality: `Hashable` extends
+[`Equatable`](#the-equatable-interface), so a class that implements it
+declares `operator ==` as well as `hashCode()`. The contract: if two values are
+equal, they must return the same `hashCode()`. Declaring both in one place puts
+that agreement in front of the class author.
+
+A class whose equality is identity says so, and returns an identity hash, such
+as a per-instance counter assigned at construction:
+
+```zena
+class Session implements Hashable {
+  #id: i32 = nextSessionId();
+  operator ==(other: Session): boolean { return this === other; }
+  hashCode(): i32 { return this.#id; }
+}
+```
 
 Classes must declare `implements Hashable` explicitly (interface conformance
 is nominal), with two exceptions:
@@ -4729,9 +4740,10 @@ export interface Equatable {
 
 Every class has an equality, so `==` compiles without this bound. A bound
 `<T extends Equatable>` says that `T` declared an `operator ==` rather than
-relying on reference equality. It is satisfied the same way as `Hashable`: by
-classes that implement it, by case classes that generate their equality, and by
-primitives, enums and distinct types over them.
+relying on reference equality. Every `Hashable` type is `Equatable`, and the
+interface is satisfied the same way: by classes that implement it, by case
+classes that generate their equality, and by primitives, enums and distinct
+types over them.
 
 The parameter's type is `this`, so `==` is a binary method: both operands are
 the same `T`. Two values that are each some `Equatable` may be different

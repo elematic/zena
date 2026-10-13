@@ -1,13 +1,11 @@
 // @mode: run
 // @result: true
-// Regression test: a sealed base can declare a concrete hashCode() while its
-// case-class leaves synthesize their own. The generated module must validate
-// and dispatch through base-typed references without trapping — the leaf's
-// synthesized body must read fields through the downcast 'this' local, since
-// the vtable slot types 'this' as the base class.
+// Regression test: a sealed base declares a concrete hashCode() and
+// operator == above case-class leaves. The generated module must validate and
+// dispatch through base-typed references without trapping.
 //
-// A case class that inherits a declared hashCode() derives neither hashCode()
-// nor operator ==, so the leaves hash by the base's uid
+// A case class that inherits a declared hashCode() or operator == derives
+// neither, so the leaves hash by the base's uid
 // (sealed-base-declares-equality.zena covers the rule).
 
 var nextUid = 1;
@@ -22,6 +20,10 @@ sealed class Ty implements Hashable {
 
   hashCode(): i32 {
     return this.uid;
+  }
+
+  operator ==(other: Ty): boolean {
+    return this === other;
   }
 
   case IntTy
