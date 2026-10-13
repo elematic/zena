@@ -28,20 +28,27 @@ import { getEnv } from 'zena:cli';
 import { Option } from 'zena:core';
 import { Duration, milliseconds, sleep } from 'zena:time';
 import { getRandomU64 } from 'wasi:random/random';
-import { Credentials, ProtoBytes, ProtoTransport, RpcError } from 'protobuf:runtime';
+import { Credentials, ProtoBytes, ProtoTransport, ProtoView, RpcError } from 'protobuf:runtime';
 import { FallbackTransport } from 'protobuf:fallback';
 import { GrpcTransport } from 'protobuf:grpc';
 import { AccessTokenCredentials, defaultCredentials, defaultProjectId } from './auth.zena';
 import {
+  AggregationResult,
   ArrayValue,
+  Cursor,
   Document,
   DocumentMask,
+  DocumentTransformFieldTransform,
+  DocumentTransformFieldTransformServerValue,
   FirestoreClient,
   Int32Value,
   MapValue,
   NullValue,
   Precondition,
   RunQueryResponse,
+  StructuredAggregationQuery,
+  StructuredAggregationQueryAggregation,
+  StructuredAggregationQueryAggregationCount,
   StructuredQuery,
   StructuredQueryCollectionSelector,
   StructuredQueryCompositeFilter,
@@ -52,6 +59,7 @@ import {
   StructuredQueryFieldReference,
   StructuredQueryFilter,
   StructuredQueryOrder,
+  StructuredQueryProjection,
   Timestamp,
   TransactionOptions,
   TransactionOptionsReadWrite,
@@ -62,6 +70,8 @@ import {
 export {
   StructuredQueryFieldFilterOperator as Operator,
   StructuredQueryDirection as Direction,
+  ArrayValue,
+  MapValue,
   Value,
   Timestamp,
   Document
@@ -73,6 +83,12 @@ export let FIRESTORE_ORIGIN = 'https://firestore.googleapis.com';
 
 /** The project id `connect` uses with the emulator when none is set. */
 let EMULATOR_PROJECT = 'demo-zena';
+
+/** The field path that stands for a document's name. */
+let NAME_FIELD = '__name__';
+
+/** The alias `Query.count` gives its aggregation. */
+let COUNT_ALIAS = 'count';
 
 /** `google.rpc.Code` values the client acts on. */
 let CODE_NOT_FOUND = 5;
@@ -108,18 +124,36 @@ export let referenceValue = (document: DocumentReference): Value =>
 export let arrayValue = (values: Array<Value>): Value =>
   Value.of({arrayValue: ArrayValue.of({values})});
 
-/** A map value. */
-export let mapValue = (fields: Fields): Value =>
-  Value.of({mapValue: MapValue.of({fields: fields.toMap()})});
+/**
+ * A map value. Transforms and deletions apply to a document's top-level
+ * fields only, so `fields` must have none.
+ */
+export let mapValue = (fields: Fields): Value => {
+  if (fields.hasOperations) {
+    throw new Error('field transforms and deletions apply to top-level fields only');
+  }
+  return Value.of({mapValue: MapValue.of({fields: fields.toMap()})});
+};
 
 /**
  * A document's fields, built one at a time:
  * `new Fields().string('title', 'Hello').integer('views', 0)`.
+ *
+ * Besides values, a field can be given a transform, which the server
+ * applies to the stored document when the write commits
+ * (`serverTimestamp`, `increment`, `arrayUnion` and the rest), or, in an
+ * `update`, be deleted (`deleteField`). A transform or deletion replaces
+ * an earlier value, transform or deletion of the field. A field given a
+ * value after a transform or deletion has both, which the server
+ * rejects.
  */
 export final class Fields {
   #map: HashMap<String, Value> = new HashMap<String, Value>();
-
-  new();
+  /**
+   * The transformed and deleted fields, made by the first of them, so a
+   * program with none carries no code for them.
+   */
+  var #operations: WriteOperations | null = null;
 
   /** Sets field `name` to `value`, replacing an earlier value. */
   set(name: String, value: Value): Fields {
@@ -159,7 +193,63 @@ export final class Fields {
     return this.set(name, arrayValue(values));
   }
 
-  /** The field names, in no particular order. */
+  /** Sets field `name` to the time the server commits the write. */
+  serverTimestamp(name: String): Fields {
+    return this.#transform(name, DocumentTransformFieldTransform.of({
+      fieldPath: quoteFieldName(name),
+      setToServerValue: DocumentTransformFieldTransformServerValue.RequestTime,
+    }));
+  }
+
+  /** Adds `by` to integer field `name`, which counts as 0 when it is absent. */
+  increment(name: String, by: i64): Fields {
+    return this.#transform(name, DocumentTransformFieldTransform.of({
+      fieldPath: quoteFieldName(name), increment: integerValue(by),
+    }));
+  }
+
+  /** Adds `by` to number field `name`, which counts as 0 when it is absent. */
+  incrementDouble(name: String, by: f64): Fields {
+    return this.#transform(name, DocumentTransformFieldTransform.of({
+      fieldPath: quoteFieldName(name), increment: doubleValue(by),
+    }));
+  }
+
+  /** Sets number field `name` to `value` when that is larger, or when the field is absent. */
+  maximum(name: String, value: Value): Fields {
+    return this.#transform(name, DocumentTransformFieldTransform.of({
+      fieldPath: quoteFieldName(name), maximum: value,
+    }));
+  }
+
+  /** Sets number field `name` to `value` when that is smaller, or when the field is absent. */
+  minimum(name: String, value: Value): Fields {
+    return this.#transform(name, DocumentTransformFieldTransform.of({
+      fieldPath: quoteFieldName(name), minimum: value,
+    }));
+  }
+
+  /** Appends to array field `name` each of `values` it does not hold yet. */
+  arrayUnion(name: String, values: Array<Value>): Fields {
+    return this.#transform(name, DocumentTransformFieldTransform.of({
+      fieldPath: quoteFieldName(name), appendMissingElements: ArrayValue.of({values}),
+    }));
+  }
+
+  /** Removes every occurrence of each of `values` from array field `name`. */
+  arrayRemove(name: String, values: Array<Value>): Fields {
+    return this.#transform(name, DocumentTransformFieldTransform.of({
+      fieldPath: quoteFieldName(name), removeAllFromArray: ArrayValue.of({values}),
+    }));
+  }
+
+  /** Deletes field `name` in an `update`. In `set` and `create`, the field is simply left out. */
+  deleteField(name: String): Fields {
+    this.#operation(name, null);
+    return this;
+  }
+
+  /** The names of the fields given values, in no particular order. */
   names(): GrowableArray<String> {
     let names = new GrowableArray<String>();
     for (let entry in this.#map) {
@@ -168,9 +258,92 @@ export final class Fields {
     return names;
   }
 
+  /**
+   * Adds the quoted paths of the deleted fields to `paths`, and answers the
+   * transforms as the `update_transforms` of an encoded `Write`, to merge
+   * into the write's own encoding; empty when there are none.
+   */
+  operationsPart(paths: GrowableArray<String>): ProtoView {
+    let operations = this.#operations;
+    return if (operations == null) ProtoView.empty() else (operations as WriteOperations).encode(paths);
+  }
+
+  /** Whether any field has a transform or is deleted. */
+  hasOperations: boolean {
+    get { return this.#operations != null; }
+  }
+
   toMap(): HashMap<String, Value> {
     return this.#map;
   }
+
+  #transform(name: String, transform: DocumentTransformFieldTransform): Fields {
+    this.#operation(name, transform.protoView);
+    return this;
+  }
+
+  /** Records field `name`'s transform, or its deletion when `transform` is null. */
+  #operation(name: String, transform: ProtoView | null): void {
+    if (this.#map.has(name)) {
+      this.#map.delete(name);
+    }
+    let earlier = this.#operations;
+    let operations = if (earlier == null) new FieldOperations() else earlier as WriteOperations;
+    operations.add(name, transform);
+    this.#operations = operations;
+  }
+}
+
+/**
+ * The transforms and deletions of a `Fields`. An interface, so that the
+ * code behind it is only in programs that make a `FieldOperations`.
+ */
+interface WriteOperations {
+  /** Records field `name`'s transform, or its deletion when `transform` is null. */
+  add(name: String, transform: ProtoView | null): void;
+
+  /**
+   * Adds the deleted fields' quoted paths to `paths`, and answers the
+   * transforms as the `update_transforms` of an encoded `Write`; empty
+   * when there are none.
+   */
+  encode(paths: GrowableArray<String>): ProtoView;
+}
+
+/** The transformed and deleted fields, in the order given; transforms are kept encoded. */
+final class FieldOperations implements WriteOperations {
+  var #list: GrowableArray<FieldOperation> = new GrowableArray<FieldOperation>();
+
+  add(name: String, transform: ProtoView | null): void {
+    let kept = new GrowableArray<FieldOperation>();
+    for (let operation in this.#list) {
+      if (operation.name != name) {
+        kept.push(operation);
+      }
+    }
+    kept.push(new FieldOperation(name, transform));
+    this.#list = kept;
+  }
+
+  encode(paths: GrowableArray<String>): ProtoView {
+    let transforms = new GrowableArray<DocumentTransformFieldTransform>();
+    for (let operation in this.#list) {
+      let encoded = operation.transform;
+      if (encoded == null) {
+        paths.push(quoteFieldName(operation.name));
+      } else {
+        transforms.push(new DocumentTransformFieldTransform(encoded as ProtoView));
+      }
+    }
+    return if (transforms.length == 0) ProtoView.empty() else Write.of({updateTransforms: transforms}).protoView;
+  }
+}
+
+/** A field's transform, encoded, or its deletion when `transform` is null. */
+final class FieldOperation {
+  name: String;
+  transform: ProtoView | null;
+  new(this.name, this.transform);
 }
 
 /**
@@ -216,6 +389,11 @@ export type FirestoreOptions = {
 export type ConnectOptions = {
   /** `(default)` when absent. */
   databaseId?: String,
+  /**
+   * For `connect`: each call's deadline after it starts
+   * (`GrpcTransport.setTimeout`); none when absent.
+   */
+  timeout?: Duration,
 };
 
 let databaseIdOf = (options: FirestoreOptions): String => {
@@ -288,10 +466,16 @@ export final class Firestore {
         }
       }
       let transport = new GrpcTransport(`http://${emulator as String}`, new AccessTokenCredentials('owner'));
+      if (let {timeout} = options) {
+        transport.setTimeout(timeout);
+      }
       return new Firestore({projectId, databaseId, transport});
     }
     let projectId = await defaultProjectId();
     let transport = new GrpcTransport(FIRESTORE_ORIGIN, defaultCredentials());
+    if (let {timeout} = options) {
+      transport.setTimeout(timeout);
+    }
     return new Firestore({projectId, databaseId, transport});
   }
 
@@ -327,6 +511,15 @@ export final class Firestore {
   /** The document at `path`, such as `posts/hello`. */
   doc(path: String): DocumentReference {
     return new DocumentReference(this, path);
+  }
+
+  /**
+   * Reads `documents` in one call, and answers their snapshots in the same
+   * order. A document that does not exist has a snapshot whose `exists`
+   * is false.
+   */
+  async getAll(documents: Array<DocumentReference>): Future<GrowableArray<DocumentSnapshot>> {
+    return await readAll(this, documents, null);
   }
 
   /** A batch of writes, committed together. */
@@ -516,6 +709,82 @@ export final class CollectionReference {
   async get(): Future<GrowableArray<DocumentSnapshot>> {
     return await this.query().get();
   }
+
+  /** How many documents this collection holds. */
+  async count(): Future<i64> {
+    return await this.query().count();
+  }
+}
+
+/**
+ * Where a query's results start or end: values for its orderings, in
+ * order, or a document, whose values for the orderings are used.
+ */
+export type QueryPosition = Array<Value> | DocumentSnapshot;
+
+/**
+ * One optional part of a query, encoded given the field paths the query
+ * is ordered by. The method that sets a part makes it, and a program
+ * reaches a part's code only through this interface, so the code to
+ * encode a part is only in programs that use it.
+ */
+interface QueryPart {
+  encode(paths: GrowableArray<String>): ProtoView;
+}
+
+/** The query's filters, joined by AND when there are several. */
+final class WherePart implements QueryPart {
+  #filters: GrowableArray<StructuredQueryFilter>;
+
+  new(filters: GrowableArray<StructuredQueryFilter>) : #filters = filters;
+
+  encode(paths: GrowableArray<String>): ProtoView {
+    if (this.#filters.length == 1) {
+      return StructuredQuery.of({where: this.#filters[0]}).protoView;
+    }
+    return StructuredQuery.of({
+      where: StructuredQueryFilter.of({
+        compositeFilter: StructuredQueryCompositeFilter.of({
+          op: StructuredQueryCompositeFilterOperator.And,
+          filters: this.#filters,
+        }),
+      }),
+    }).protoView;
+  }
+}
+
+/** The fields to answer; none answers names only. */
+final class SelectPart implements QueryPart {
+  #fields: Array<String>;
+
+  new(fields: Array<String>) : #fields = fields;
+
+  encode(paths: GrowableArray<String>): ProtoView {
+    let refs = new GrowableArray<StructuredQueryFieldReference>();
+    for (let field in this.#fields) {
+      refs.push(fieldReference(field));
+    }
+    if (refs.length == 0) {
+      refs.push(fieldReference(NAME_FIELD));
+    }
+    return StructuredQuery.of({select: StructuredQueryProjection.of({fields: refs})}).protoView;
+  }
+}
+
+/** A start (`isStart`) or end at `position`, just before it when `before`. */
+final class BoundPart implements QueryPart {
+  #position: QueryPosition;
+  #before: boolean;
+  #isStart: boolean;
+
+  new(position: QueryPosition, before: boolean, isStart: boolean)
+    : #position = position, #before = before, #isStart = isStart;
+
+  encode(paths: GrowableArray<String>): ProtoView {
+    let cursor = cursorOf(this.#position, this.#before, paths);
+    return if (this.#isStart) StructuredQuery.of({startAt: cursor}).protoView
+      else StructuredQuery.of({endAt: cursor}).protoView;
+  }
 }
 
 /**
@@ -528,9 +797,18 @@ export final class Query {
   #parent: String;
   #collectionId: String;
   #filters: GrowableArray<StructuredQueryFilter> = new GrowableArray<StructuredQueryFilter>();
-  #orders: GrowableArray<StructuredQueryOrder> = new GrowableArray<StructuredQueryOrder>();
+  var #where: QueryPart | null = null;
+  /** At most this many results, or -1 for no limit. */
   var #limit: i32 = -1;
+  /** The field paths ordered by, as written, and their directions. */
+  #orderPaths: GrowableArray<String> = new GrowableArray<String>();
+  #directions: GrowableArray<StructuredQueryDirection> = new GrowableArray<StructuredQueryDirection>();
   var #offset: i32 = 0;
+  var #select: QueryPart | null = null;
+  var #start: QueryPart | null = null;
+  var #end: QueryPart | null = null;
+  /** Whether a cursor is a document, which orders the results by name too. */
+  var #documentCursor: boolean = false;
 
   new(db: Firestore, parent: String, collectionId: String)
     : #db = db, #parent = parent, #collectionId = collectionId;
@@ -541,13 +819,15 @@ export final class Query {
     next.#filters.push(StructuredQueryFilter.of({
       fieldFilter: StructuredQueryFieldFilter.of({field: fieldReference(field), op, value}),
     }));
+    next.#where = new WherePart(next.#filters);
     return next;
   }
 
   /** Orders the results by `field`; later calls order ties. */
   orderBy(field: String, direction: StructuredQueryDirection = StructuredQueryDirection.Ascending): Query {
     let next = this.#copy();
-    next.#orders.push(StructuredQueryOrder.of({field: fieldReference(field), direction}));
+    next.#orderPaths.push(field);
+    next.#directions.push(direction);
     return next;
   }
 
@@ -565,43 +845,91 @@ export final class Query {
     return next;
   }
 
+  /** Only `fields` of each result, and its name; `select([])` answers names only. */
+  select(fields: Array<String>): Query {
+    let next = this.#copy();
+    next.#select = new SelectPart(fields);
+    return next;
+  }
+
+  /**
+   * The results from `position` on. With a document, the query must be
+   * ordered (`orderBy`) before the cursor is used, and results tied on
+   * every ordering are ordered by name.
+   */
+  startAt(position: QueryPosition): Query {
+    return this.#bound(position, true, true);
+  }
+
+  /** The results after `position`; see `startAt`. For paging, pass the last snapshot of the page before. */
+  startAfter(position: QueryPosition): Query {
+    return this.#bound(position, false, true);
+  }
+
+  /** The results up to and including `position`; see `startAt`. */
+  endAt(position: QueryPosition): Query {
+    return this.#bound(position, false, false);
+  }
+
+  /** The results before `position`; see `startAt`. */
+  endBefore(position: QueryPosition): Query {
+    return this.#bound(position, true, false);
+  }
+
+  /** This query with a start (`isStart`) or end at `position`, just before it when `before`. */
+  #bound(position: QueryPosition, before: boolean, isStart: boolean): Query {
+    let next = this.#copy();
+    let part = new BoundPart(position, before, isStart);
+    if (isStart) {
+      next.#start = part;
+    } else {
+      next.#end = part;
+    }
+    if (position is DocumentSnapshot) {
+      next.#documentCursor = true;
+    }
+    return next;
+  }
+
   /** The query as the API takes it. */
   structuredQuery(): StructuredQuery {
+    // A document cursor gives a value for each ordering and then the
+    // document's name, so the query also orders by name, as the last
+    // ordering does, unless it already ends with that.
+    let paths = new GrowableArray<String>();
+    let directions = new GrowableArray<StructuredQueryDirection>();
+    for (var i = 0; i < this.#orderPaths.length; i += 1) {
+      paths.push(this.#orderPaths[i]);
+      directions.push(this.#directions[i]);
+    }
+    if (this.#documentCursor && (paths.length == 0 || paths[paths.length - 1] != NAME_FIELD)) {
+      let last = if (directions.length == 0) StructuredQueryDirection.Ascending else directions[directions.length - 1];
+      paths.push(NAME_FIELD);
+      directions.push(last);
+    }
+    let orders = new GrowableArray<StructuredQueryOrder>();
+    for (var i = 0; i < paths.length; i += 1) {
+      orders.push(StructuredQueryOrder.of({field: fieldReference(paths[i]), direction: directions[i]}));
+    }
     let from = [StructuredQueryCollectionSelector.of({collectionId: this.#collectionId})];
-    var where: StructuredQueryFilter | null = null;
-    if (this.#filters.length == 1) {
-      where = this.#filters[0];
-    } else if (this.#filters.length > 1) {
-      where = StructuredQueryFilter.of({
-        compositeFilter: StructuredQueryCompositeFilter.of({
-          op: StructuredQueryCompositeFilterOperator.And,
-          filters: this.#filters,
-        }),
-      });
+    // Each optional part is encoded on its own and the parts merged, so
+    // an absent part is left out rather than set to a default.
+    let parts = new GrowableArray<ProtoView>();
+    parts.push(StructuredQuery.of({from, orderBy: orders, offset: this.#offset}).protoView);
+    if (this.#limit >= 0) {
+      parts.push(StructuredQuery.of({limit: Int32Value.of({value: this.#limit})}).protoView);
     }
-    // Absent parts are left out of the record rather than set to defaults.
-    if (where == null) {
-      if (this.#limit < 0) {
-        return StructuredQuery.of({from, orderBy: this.#orders, offset: this.#offset});
+    for (let part in [this.#where, this.#select, this.#start, this.#end]) {
+      if (part != null) {
+        parts.push((part as QueryPart).encode(paths));
       }
-      return StructuredQuery.of({
-        from, orderBy: this.#orders, offset: this.#offset,
-        limit: Int32Value.of({value: this.#limit}),
-      });
     }
-    if (this.#limit < 0) {
-      return StructuredQuery.of({from, where: where as StructuredQueryFilter, orderBy: this.#orders, offset: this.#offset});
-    }
-    return StructuredQuery.of({
-      from, where: where as StructuredQueryFilter, orderBy: this.#orders, offset: this.#offset,
-      limit: Int32Value.of({value: this.#limit}),
-    });
+    return new StructuredQuery(ProtoView.merge(parts));
   }
 
   /** The matching documents, each as soon as it arrives. */
   stream(transaction: ProtoBytes | null = null): SnapshotStream {
-    let parent = if (this.#parent.length == 0) this.#db.documentsRoot
-      else `${this.#db.documentsRoot}/${this.#parent}`;
+    let parent = this.#parentName();
     let responses = if (transaction == null)
       this.#db.client.runQuery({parent, structuredQuery: this.structuredQuery()})
       else this.#db.client.runQuery({parent, structuredQuery: this.structuredQuery(), transaction: transaction as ProtoBytes});
@@ -613,19 +941,86 @@ export final class Query {
     return await collect(this.stream());
   }
 
+  /** How many documents match, counted by the server without sending them. */
+  async count(): Future<i64> {
+    let aggregation = StructuredAggregationQueryAggregation.of({
+      alias: COUNT_ALIAS,
+      count: StructuredAggregationQueryAggregationCount.of({}),
+    });
+    let responses = this.#db.client.runAggregationQuery({
+      parent: this.#parentName(),
+      structuredAggregationQuery: StructuredAggregationQuery.of({
+        structuredQuery: this.structuredQuery(),
+        aggregations: [aggregation],
+      }),
+    });
+    var count: i64 = 0;
+    for await (let response in responses) {
+      let result = response.result;
+      if (result != null) {
+        let fields = (result as AggregationResult).aggregateFields;
+        if (fields.has(COUNT_ALIAS)) {
+          count = fields.getOr(COUNT_ALIAS, integerValue(0)).integerValue;
+        }
+      }
+    }
+    return count;
+  }
+
+  #parentName(): String {
+    return if (this.#parent.length == 0) this.#db.documentsRoot
+      else `${this.#db.documentsRoot}/${this.#parent}`;
+  }
+
   #copy(): Query {
     let next = new Query(this.#db, this.#parent, this.#collectionId);
     for (let f in this.#filters) {
       next.#filters.push(f);
     }
-    for (let o in this.#orders) {
-      next.#orders.push(o);
+    if (this.#where != null) {
+      next.#where = new WherePart(next.#filters);
+    }
+    for (var i = 0; i < this.#orderPaths.length; i += 1) {
+      next.#orderPaths.push(this.#orderPaths[i]);
+      next.#directions.push(this.#directions[i]);
     }
     next.#limit = this.#limit;
     next.#offset = this.#offset;
+    next.#select = this.#select;
+    next.#start = this.#start;
+    next.#end = this.#end;
+    next.#documentCursor = this.#documentCursor;
     return next;
   }
 }
+
+/**
+ * The API's cursor at `position`, just before it when `before`, in a
+ * query ordered by `paths`. A document's values are its fields at those
+ * paths, and its name for `__name__`.
+ */
+let cursorOf = (position: QueryPosition, before: boolean, paths: GrowableArray<String>): Cursor => {
+  if (position is DocumentSnapshot) {
+    let snapshot = position as DocumentSnapshot;
+    if (!snapshot.exists) {
+      throw new Error(`a query cursor's document does not exist: ${snapshot.ref.path}`);
+    }
+    let values = new GrowableArray<Value>();
+    for (let path in paths) {
+      if (path == NAME_FIELD) {
+        values.push(Value.of({referenceValue: snapshot.ref.name}));
+      } else {
+        let value = snapshot.get(path);
+        if (value == null) {
+          throw new Error(`a query cursor's document has no field ${path}, which the query orders by`);
+        }
+        values.push(value as Value);
+      }
+    }
+    return Cursor.of({values, before});
+  }
+  return Cursor.of({values: position as Array<Value>, before});
+};
 
 /** The documents a query returns, skipping the responses that carry none. */
 export final class SnapshotStream implements AsyncIterator<DocumentSnapshot>, AsyncIterable<DocumentSnapshot> {
@@ -861,6 +1256,11 @@ export final class Transaction {
     }
   }
 
+  /** Reads `documents` in this transaction, in one call; see `Firestore.getAll`. */
+  async getAll(documents: Array<DocumentReference>): Future<GrowableArray<DocumentSnapshot>> {
+    return await readAll(this.#db, documents, this.id);
+  }
+
   /** Runs `query` in this transaction. */
   async query(query: Query): Future<GrowableArray<DocumentSnapshot>> {
     return await collect(query.stream(this.id));
@@ -890,22 +1290,76 @@ export final class Transaction {
 let documentOf = (ref: DocumentReference, fields: Fields): Document =>
   Document.of({name: ref.name, fields: fields.toMap()});
 
+/** `write` with the transforms in `fields` merged in. */
+let withTransforms = (write: Write, fields: Fields): Write => {
+  if (!fields.hasOperations) {
+    return write;
+  }
+  // Deletions do not apply outside an update, so their paths are dropped.
+  let part = fields.operationsPart(new GrowableArray<String>());
+  return new Write(ProtoView.merge([write.protoView, part]));
+};
+
 let setWrite = (ref: DocumentReference, fields: Fields): Write =>
-  Write.of({update: documentOf(ref, fields)});
+  withTransforms(Write.of({update: documentOf(ref, fields)}), fields);
 
-let createWrite = (ref: DocumentReference, fields: Fields): Write =>
-  Write.of({update: documentOf(ref, fields), currentDocument: Precondition.of({exists: false})});
+let createWrite = (ref: DocumentReference, fields: Fields): Write => withTransforms(Write.of({
+  update: documentOf(ref, fields),
+  currentDocument: Precondition.of({exists: false}),
+}), fields);
 
+/**
+ * An update of the fields with values and the deleted fields, which the
+ * mask names, then the transforms, which it does not: the server applies
+ * them after the update.
+ */
 let updateWrite = (ref: DocumentReference, fields: Fields): Write => {
   let paths = new GrowableArray<String>();
   for (let name in fields.names()) {
     paths.push(quoteFieldName(name));
   }
-  return Write.of({
+  let transforms = fields.operationsPart(paths);
+  let write = Write.of({
     update: documentOf(ref, fields),
     updateMask: DocumentMask.of({fieldPaths: paths}),
     currentDocument: Precondition.of({exists: true}),
   });
+  return if (transforms.byteLength == 0) write else new Write(ProtoView.merge([write.protoView, transforms]));
+};
+
+/** Reads `documents` in one call, in `transaction` when it is not null; see `Firestore.getAll`. */
+let readAll = async (
+  db: Firestore,
+  documents: Array<DocumentReference>,
+  transaction: ProtoBytes | null
+): Future<GrowableArray<DocumentSnapshot>> => {
+  let out = new GrowableArray<DocumentSnapshot>();
+  if (documents.length == 0) {
+    return out;
+  }
+  let names = new GrowableArray<String>();
+  for (let document in documents) {
+    names.push(document.name);
+  }
+  let responses = if (transaction == null)
+    db.client.batchGetDocuments({database: db.database, documents: names})
+    else db.client.batchGetDocuments({database: db.database, documents: names, transaction: transaction as ProtoBytes});
+  // The responses come in any order.
+  let found = new HashMap<String, Document>();
+  for await (let response in responses) {
+    let document = response.found;
+    if (document != null) {
+      found[(document as Document).name] = document as Document;
+    }
+  }
+  for (let document in documents) {
+    if (let (true, read) = found.get(document.name)) {
+      out.push(new DocumentSnapshot(document, read));
+    } else {
+      out.push(new DocumentSnapshot(document, null));
+    }
+  }
+  return out;
 };
 
 let deleteWrite = (ref: DocumentReference): Write => Write.of({delete: ref.name});

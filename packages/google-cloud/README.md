@@ -51,19 +51,36 @@ under [Credentials](#credentials), and talks gRPC to the API.
   when it exists, `update` sets the named top-level fields and fails with
   NOT_FOUND when it does not exist, and `delete` removes it. Errors are
   `RpcError`s carrying the `google.rpc.Code`.
+- Transforms, which the server applies when the write commits:
+  `Fields.serverTimestamp`, `increment`, `incrementDouble`, `maximum`,
+  `minimum`, `arrayUnion` and `arrayRemove`. In an `update`,
+  `deleteField` removes a field. They apply to top-level fields, and work
+  in batches and transactions too:
+  `post.update(new Fields().increment('views', 1).serverTimestamp('seen'))`.
+  A transform or deletion replaces an earlier value of the same field; a
+  value set after a transform leaves both, which the server rejects.
 - Reads: `get()` answers a `DocumentSnapshot`, whose `exists` is false
   for a missing document. `getString`, `getInteger`, `getDouble` and
   `getBoolean` take a field path such as `author.name` and answer
   `(true, value)`, or `(false, _)` when the field is absent or of
-  another type. `get(path)` answers the raw `Value`.
-- Queries: `where`, `orderBy`, `limit` and `offset` each return a new
-  query. `get()` collects the results; `stream()` hands out each one as
-  it arrives, for `for await`.
+  another type. `get(path)` answers the raw `Value`. `db.getAll(refs)`
+  reads several documents in one call, in the order given.
+- Queries: `where`, `orderBy`, `limit`, `offset` and `select` each
+  return a new query. `get()` collects the results; `stream()` hands out
+  each one as it arrives, for `for await`; `count()` counts them on the
+  server.
+- Cursors: `startAt`, `startAfter`, `endAt` and `endBefore` take values
+  for the orderings, or a snapshot. To page, order the query and pass
+  the last snapshot of a page to `startAfter`; documents tied on every
+  ordering are ordered by name, so none is skipped or repeated.
 - `db.batch()` collects writes and commits them in one call.
 - `db.runTransaction(body)` runs `body` with a `Transaction`, whose
-  reads happen in the transaction and whose writes commit when `body`
-  returns. A commit aborted by contention is retried, up to five
-  attempts; when `body` throws, the transaction is rolled back.
+  reads (`get`, `getAll`, `query`) happen in the transaction and whose
+  writes commit when `body` returns. A transaction aborted by contention
+  is retried, up to five attempts; when `body` throws, the transaction is
+  rolled back.
+- `Firestore.connect({timeout: milliseconds(10000)})` gives each call a deadline;
+  a call still running then fails with DEADLINE_EXCEEDED.
 
 ```zena
 let total = await db.runTransaction<i64>(async (tx: Transaction): Future<i64> => {

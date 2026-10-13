@@ -12,11 +12,12 @@ import { suite, test } from 'zena:test';
 import { equal, isTrue } from 'zena:assert';
 import { Future, runFuture } from 'zena:async';
 import { getEnv } from 'zena:cli';
+import { milliseconds, monotonic } from 'zena:time';
 import { getRandomU64 } from 'wasi:random/random';
 import { GrpcTransport } from 'protobuf:grpc';
 import { AccessTokenCredentials } from '../auth.zena';
 import {
-  Direction, DocumentSnapshot, Fields, Firestore, Operator, RpcError, Timestamp, Transaction, Value,
+  ArrayValue, Direction, DocumentSnapshot, Fields, Firestore, Operator, RpcError, Timestamp, Transaction, Value,
   arrayValue, booleanValue, doubleValue, integerValue, nullValue, referenceValue, stringValue,
   timestampValue
 } from '../firestore.zena';
@@ -232,6 +233,93 @@ let serverError = async (db: Firestore): Future<String> => {
   return 'no error';
 };
 
+let transformsAndDeletes = async (db: Firestore): Future<String> => {
+  let post = db.doc('posts/t');
+  await post.set(new Fields()
+    .string('title', 'T')
+    .serverTimestamp('created')
+    .increment('views', 5)
+    .array('tags', [stringValue('a'), stringValue('b')])
+    .string('draft', 'yes'));
+  // A transform-only update leaves the other fields alone.
+  await post.update(new Fields().increment('views', 2));
+  await post.update(new Fields()
+    .arrayUnion('tags', [stringValue('b'), stringValue('c')])
+    .maximum('best', integerValue(7))
+    .deleteField('draft'));
+  await post.update(new Fields().arrayRemove('tags', [stringValue('a')]).minimum('best', integerValue(3)));
+  let s = await post.get();
+  let created = s.getTimestamp('created');
+  let tags = ((s.get('tags') as Value).arrayValue as ArrayValue).values.toArray();
+  return `${str(s, 'title')} ${created != null && (created as Timestamp).seconds > 1700000000} ${int(s, 'views')} ` +
+    `${tags.length} ${tags[0].stringValue}${tags[1].stringValue} ${int(s, 'best')} ${s.get('draft') == null}`;
+};
+
+let readMany = async (db: Firestore): Future<String> => {
+  await db.doc('posts/a').set(new Fields().string('title', 'A'));
+  await db.doc('posts/c').set(new Fields().string('title', 'C'));
+  let read = await db.getAll([db.doc('posts/c'), db.doc('posts/b'), db.doc('posts/a')]);
+  var out = '';
+  for (let s in read) {
+    out = `${out}${s.id}:${s.exists},`;
+  }
+  let inTx = await db.runTransaction<String>(async (tx: Transaction): Future<String> => {
+    let both = await tx.getAll([db.doc('posts/a'), db.doc('posts/c')]);
+    tx.set(db.doc('posts/sum'), new Fields().string('titles', `${str(both[0], 'title')}${str(both[1], 'title')}`));
+    return 'ok';
+  });
+  return `${out} ${inTx} ${str(await db.doc('posts/sum').get(), 'titles')}`;
+};
+
+let pagesAndCounts = async (db: Firestore): Future<String> => {
+  let batch = db.batch();
+  for (var i = 0; i < 7; i += 1) {
+    // Ranks 0, 0, 1, 1, 2, 2, 3: ties, so paging by value alone would skip or repeat.
+    batch.set(db.doc(`items/i${i}`), new Fields().integer('rank', (i >> 1) as i64).string('kind', if (i % 2 == 0) 'even' else 'odd'));
+  }
+  await batch.commit();
+  let items = db.collection('items');
+  let ordered = items.orderBy('rank').limit(3);
+  var pages = '';
+  var page = await ordered.get();
+  while (page.length > 0) {
+    pages = `${pages}${ids(page)}|`;
+    page = await ordered.startAfter(page[page.length - 1]).get();
+  }
+  let byValue = await items.orderBy('rank').startAt([integerValue(1)]).endBefore([integerValue(3)]).get();
+  let descending = await items.orderBy('rank', Direction.Descending).startAfter(await db.doc('items/i4').get()).limit(2).get();
+  let selected = await items.query().select(['kind']).limit(1).get();
+  let names = await items.query().select([]).limit(1).get();
+  return `${pages} ${ids(byValue)} ${ids(descending)} ${str(selected[0], 'kind')}${int(selected[0], 'rank')} ` +
+    `${names[0].get('kind') == null} ${await items.count()} ` +
+    `${await items.where('kind', Operator.Equal, stringValue('odd')).count()} ${await db.collection('none').count()}`;
+};
+
+/**
+ * A write that waits on a transaction's lock, on a connection with a
+ * 300 ms deadline: the server ends it with DEADLINE_EXCEEDED, before its
+ * own lock timeout.
+ */
+let deadline = async (): Future<String> => {
+  let projectId = `test-${getRandomU64() % (1000000000 as u64)}`;
+  let origin = `http://${emulatorHost()}`;
+  let db = new Firestore({projectId, transport: new GrpcTransport(origin, new AccessTokenCredentials('owner'))});
+  let hurried = new GrpcTransport(origin, new AccessTokenCredentials('owner'));
+  hurried.setTimeout(milliseconds(300));
+  let short = new Firestore({projectId, transport: hurried});
+  await db.doc('locks/l').set(new Fields().integer('n', 1));
+  return await db.runTransaction<String>(async (tx: Transaction): Future<String> => {
+    await tx.get(db.doc('locks/l'));
+    let started = monotonic();
+    let code = await codeOf(async (): Future<void> => {
+      await short.doc('locks/l').set(new Fields().integer('n', 2));
+    });
+    let waited = (monotonic() - started) as i64;
+    let fiveSeconds: i64 = 5000000000;
+    return `${code} ${waited < fiveSeconds}`;
+  }, 1);
+};
+
 let connectToEmulator = async (): Future<String> => {
   let db = await Firestore.connect();
   let path = `connect/${getRandomU64() % (1000000000 as u64)}`;
@@ -273,6 +361,23 @@ export let tests = suite('firestore on the emulator', (): void => {
 
   test('throws the status the server answers', () => {
     equal(runFuture(serverError(freshDatabase())), '3 true');
+  });
+
+  test('applies transforms and deletes fields', () => {
+    equal(runFuture(transformsAndDeletes(freshDatabase())), 'T true 7 2 bc 3 true');
+  });
+
+  test('reads several documents in one call, in a transaction too', () => {
+    equal(runFuture(readMany(freshDatabase())), 'c:true,b:false,a:true, ok AC');
+  });
+
+  test('pages with document cursors, and counts', () => {
+    equal(runFuture(pagesAndCounts(freshDatabase())),
+      'i0,i1,i2,|i3,i4,i5,|i6,| i2,i3,i4,i5, i3,i2, even- true 7 3 0');
+  });
+
+  test('ends a call at its deadline', () => {
+    equal(runFuture(deadline()), '4 true');
   });
 
   test('connects to the emulator from the environment', () => {
