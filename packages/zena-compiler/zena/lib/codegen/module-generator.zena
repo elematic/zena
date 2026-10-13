@@ -659,7 +659,7 @@ export final class ModuleGenerator {
     }
     if (this.optLevel >= 2) {
       let tLoop = performance.start("codegen-optimize-loop");
-      var devirtCx = new DevirtContext(wasm);
+      let devirtCx = new DevirtContext(wasm);
       let changed = new Array<boolean>();
       for (var i = 0; i < bodies.length; i += 1) {
         changed.push(false);
@@ -700,7 +700,7 @@ export final class ModuleGenerator {
       // the next round's inline sweep consumes. Escape summaries are
       // recomputed per round, since a parameter can stop escaping once
       // the call it was passed to has been inlined and simplified.
-      let runRounds = (maxRounds: i32): void => {
+      let runRounds = (maxRounds: i32, devirt: DevirtContext): void => {
       var round = 0;
       while (round < maxRounds) {
         let escapes = new EscapeSummaries(wasm, bodies, scratch);
@@ -708,7 +708,7 @@ export final class ModuleGenerator {
         cleanupChanged("inlining");
         var devirtualized = 0;
         for (var i = 0; i < bodies.length; i += 1) {
-          let d = runDevirt(devirtCx, bodies[i]);
+          let d = runDevirt(devirt, bodies[i]);
           if (d > 0) {
             changed[i] = true;
             devirtualized += d;
@@ -761,7 +761,7 @@ export final class ModuleGenerator {
         round += 1;
       }
       };
-      runRounds(6);
+      runRounds(6, devirtCx);
       // Loop-invariant code motion, once the rounds have made the
       // loops what they will be; GVN then merges what hoisting made
       // adjacent.
@@ -786,8 +786,7 @@ export final class ModuleGenerator {
         if (harvested.globals == 0) {
           break;
         }
-        devirtCx = new DevirtContext(wasm);
-        runRounds(2);
+        runRounds(2, new DevirtContext(wasm));
         pass += 1;
       }
       performance.end(tLoop);
