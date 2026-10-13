@@ -545,8 +545,15 @@ percent-decoded, and `grpc-status-details-bin` is decoded from base64
 into the `RpcError`'s `status`. A response that is not gRPC maps its
 HTTP status as the gRPC specification does (404 is UNIMPLEMENTED, 503
 is UNAVAILABLE). Requests are not compressed and no compression is
-offered, so a compressed response is an error. Deadlines
-(`grpc-timeout`) are not sent yet.
+offered, so a compressed response is an error.
+
+`setTimeout` gives each call a deadline. The transport sends it as
+`grpc-timeout`, so the server ends a call still running then with
+DEADLINE_EXCEEDED, and also sets the request's first-byte timeout, so a
+call whose response never starts fails the same way on the client. The
+emulator test holds a document's lock in a transaction and writes it
+from a connection with a 300 ms deadline. The fallback transport takes
+no deadline yet.
 
 ### gRPC fallback over HTTP/1.1
 
@@ -879,10 +886,34 @@ either.
   the emulator tests found it.
 - `WriteBatch` commits several writes in one call.
 
-Not built yet: field transforms (server timestamps, increments), cursors,
-`in` and array filters beyond passing a `Value`, `select`, aggregation
-queries, listening, and reading many documents in one call
-(`BatchGetDocuments`).
+- Field transforms and field deletion are `Fields` entries beside
+  values. An `update`'s mask names the fields with values and the
+  deleted ones, not the transformed ones, which the server applies
+  after the update.
+- `getAll` reads documents with `BatchGetDocuments`, whose responses
+  come in any order, and answers them in the order asked.
+- Cursors take values or a snapshot. A snapshot cursor appends an
+  ordering by `__name__` in the direction of the last ordering, as
+  Google's client libraries do, so paging never skips or repeats tied
+  documents.
+- `count()` runs a count aggregation (`RunAggregationQuery`).
+- `StructuredQuery` is built from parts, each encoded only when present,
+  and merged by concatenating the encodings (`ProtoView.merge`), which
+  protobuf defines as a merge. A record literal cannot leave a field out
+  conditionally, so building it whole took a branch per combination.
+- A program pays only for the features it uses. The optional query
+  parts (`where`, `select`, cursors) are classes behind a `QueryPart`
+  interface, made by the method that sets them, and a `Fields`' transforms
+  and deletions live in a class behind an interface, made by the first
+  of them. Reachability keeps an implementation's code only when the
+  class is made. Written as fields read by the shared code, these
+  features added 12,228 bytes at `-O2` to the README example, which uses
+  none of them; written this way they add 4,876. Closures would serve
+  the same purpose, but they hit a compiler error ("closure pair struct
+  not found") in some programs.
+
+Not built yet: `sum` and `avg` aggregations, `in` and array filters
+beyond passing a `Value`, OR filters, listening, and partition queries.
 
 ## Implementation plan
 

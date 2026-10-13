@@ -12,17 +12,27 @@ import { Option, newByteArray } from 'zena:core';
 import { ProtoBytes, ProtoTransport, ProtoView, ProtoWriter, RpcMetadata, RpcMethod } from 'protobuf:runtime';
 import { RpcError } from 'protobuf:runtime';
 import {
+  AggregationResult,
+  Cursor,
+  ArrayValue,
+  BatchGetDocumentsRequest,
+  BatchGetDocumentsResponse,
   BeginTransactionRequest,
   BeginTransactionResponse,
   CommitRequest,
   CommitResponse,
   Document,
+  DocumentMask,
+  DocumentTransformFieldTransform,
   GetDocumentRequest,
   Int32Value,
   Precondition,
   RollbackRequest,
+  RunAggregationQueryRequest,
+  RunAggregationQueryResponse,
   RunQueryRequest,
   RunQueryResponse,
+  StructuredAggregationQuery,
   StructuredQuery,
   StructuredQueryCompositeFilter,
   StructuredQueryFieldFilter,
@@ -30,6 +40,8 @@ import {
   StructuredQueryFieldReference,
   StructuredQueryFilter,
   StructuredQueryOrder,
+  StructuredQueryProjection,
+  Timestamp,
   TransactionOptions,
   TransactionOptionsReadWrite,
   Value,
@@ -42,7 +54,10 @@ import {
   Firestore,
   Operator,
   Transaction,
+  arrayValue,
   integerValue,
+  mapValue,
+  nullValue,
   quoteFieldName,
   stringValue
 } from '../firestore.zena';
@@ -181,10 +196,50 @@ final class FakeFirestore implements ProtoTransport {
   }
 
   serverStream(method: RpcMethod, request: ProtoView, metadata: RpcMetadata): AsyncIterator<ProtoView> {
+    let responses = new GrowableArray<ProtoView>();
+    if (method.name == 'BatchGetDocuments') {
+      let get = new BatchGetDocumentsRequest(request);
+      let names = get.documents.toArray();
+      this.log.push(if (get.hasTransaction) `BatchGetDocuments ${names.length} in ${txName(get.transaction)}` else `BatchGetDocuments ${names.length}`);
+      // Answered last first: the API promises no order.
+      var i = names.length - 1;
+      while (i >= 0) {
+        if (let (true, document) = this.documents.get(names[i])) {
+          responses.push(BatchGetDocumentsResponse.of({found: document}).protoView);
+        } else {
+          responses.push(BatchGetDocumentsResponse.of({missing: names[i]}).protoView);
+        }
+        i -= 1;
+      }
+      return new ViewStream(responses, this.deferred);
+    }
+    if (method.name == 'RunAggregationQuery') {
+      let run = new RunAggregationQueryRequest(request);
+      let aggregation = run.structuredAggregationQuery as StructuredAggregationQuery;
+      let alias = aggregation.aggregations.toArray()[0].alias;
+      let matched = this.#matching(run.parent, aggregation.structuredQuery as StructuredQuery);
+      this.log.push(`RunAggregationQuery ${alias}`);
+      let counts = new HashMap<String, Value>();
+      counts[alias] = Value.of({integerValue: matched.length as i64});
+      responses.push(RunAggregationQueryResponse.of({result: AggregationResult.of({aggregateFields: counts})}).protoView);
+      return new ViewStream(responses, this.deferred);
+    }
     let run = new RunQueryRequest(request);
     this.lastQuery = run;
     let query = run.structuredQuery as StructuredQuery;
+    // The API's first response can carry no document.
+    responses.push(RunQueryResponse.of({skippedResults: 0}).protoView);
+    for (let document in this.#matching(run.parent, query)) {
+      responses.push(RunQueryResponse.of({document}).protoView);
+    }
     let prefix = `${run.parent}/${query.from.toArray()[0].collectionId}/`;
+    this.log.push(if (run.hasTransaction) `RunQuery ${prefix} in ${txName(run.transaction)}` else `RunQuery ${prefix}`);
+    return new ViewStream(responses, this.deferred);
+  }
+
+  /** The documents `query` under `parent` matches, by name, honouring `==` filters and the limit. */
+  #matching(parent: String, query: StructuredQuery): GrowableArray<Document> {
+    let prefix = `${parent}/${query.from.toArray()[0].collectionId}/`;
     let names = new GrowableArray<String>();
     for (let entry in this.documents) {
       let name = entry.key;
@@ -192,22 +247,19 @@ final class FakeFirestore implements ProtoTransport {
         insertSorted(names, name);
       }
     }
-    let responses = new GrowableArray<ProtoView>();
-    // The API's first response can carry no document.
-    responses.push(RunQueryResponse.of({skippedResults: 0}).protoView);
+    let out = new GrowableArray<Document>();
     let limit = query.limit;
     for (let name in names) {
-      if (limit != null && responses.length > (limit as Int32Value).value) {
+      if (limit != null && out.length >= (limit as Int32Value).value) {
         break;
       }
       let document = this.documents.getOr(name, Document.of({}));
       let where = query.where;
       if (where == null || passes(document, where as StructuredQueryFilter)) {
-        responses.push(RunQueryResponse.of({document}).protoView);
+        out.push(document);
       }
     }
-    this.log.push(if (run.hasTransaction) `RunQuery ${prefix} in ${txName(run.transaction)}` else `RunQuery ${prefix}`);
-    return new ViewStream(responses, this.deferred);
+    return out;
   }
 
   /** Applies `write` and describes it. */
@@ -229,18 +281,104 @@ final class FakeFirestore implements ProtoTransport {
     let fields = new HashMap<String, Value>();
     var verb = if (mustExist && !wanted) 'create' else 'set';
     if (mask != null) {
+      // Only the masked fields change; a masked field the update lacks is deleted.
       verb = 'update';
       for (let entry in this.documents.getOr(name, Document.of({})).fields) {
         fields[entry.key] = entry.value;
       }
+      for (let quoted in (mask as DocumentMask).fieldPaths) {
+        let path = unquote(quoted);
+        if (update.fields.has(path)) {
+          fields[path] = update.fields.getOr(path, nullValue());
+        } else {
+          fields.delete(path);
+        }
+      }
+    } else {
+      for (let entry in update.fields) {
+        fields[entry.key] = entry.value;
+      }
     }
-    for (let entry in update.fields) {
-      fields[entry.key] = entry.value;
+    var transforms = 0;
+    for (let transform in write.updateTransforms) {
+      let path = unquote(transform.fieldPath);
+      fields[path] = transformed(transform, fields.getOr(path, nullValue()), fields.has(path));
+      transforms += 1;
     }
     this.documents[name] = Document.of({name, fields});
-    return `${verb} ${shortName(name)}`;
+    return if (transforms > 0) `${verb} ${shortName(name)} +${transforms}` else `${verb} ${shortName(name)}`;
   }
 }
+
+/** The time the fake server commits at. */
+let SERVER_TIME: i64 = 1800000000;
+
+/** `path` without the backquotes a field path segment may have. */
+let unquote = (path: String): String =>
+  if (path.startsWith('`') && path.endsWith('`')) path.sliceBytes(1, path.length - 1) else path;
+
+/** The integer in `value`, or 0. */
+let integerOf = (value: Value): i64 => if (value.hasIntegerValue) value.integerValue else 0 as i64;
+
+/** `transform` applied to `current`, the field's value, which `present` says the document has. */
+let transformed = (transform: DocumentTransformFieldTransform, current: Value, present: boolean): Value => {
+  if (transform.hasSetToServerValue) {
+    return Value.of({timestampValue: Timestamp.of({seconds: SERVER_TIME})});
+  }
+  let increment = transform.increment;
+  if (increment != null) {
+    return integerValue(integerOf(current) + integerOf(increment as Value));
+  }
+  let maximum = transform.maximum;
+  if (maximum != null) {
+    let m = integerOf(maximum as Value);
+    return if (!present || m > integerOf(current)) maximum as Value else current;
+  }
+  let minimum = transform.minimum;
+  if (minimum != null) {
+    let m = integerOf(minimum as Value);
+    return if (!present || m < integerOf(current)) minimum as Value else current;
+  }
+  let existing = new GrowableArray<Value>();
+  let array = current.arrayValue;
+  if (array != null) {
+    for (let v in (array as ArrayValue).values) {
+      existing.push(v);
+    }
+  }
+  let append = transform.appendMissingElements;
+  if (append != null) {
+    for (let v in (append as ArrayValue).values) {
+      var seen = false;
+      for (let e in existing) {
+        if (sameValue(e, v)) {
+          seen = true;
+        }
+      }
+      if (!seen) {
+        existing.push(v);
+      }
+    }
+    return arrayValue(existing);
+  }
+  let remove = transform.removeAllFromArray;
+  if (remove != null) {
+    let kept = new GrowableArray<Value>();
+    for (let e in existing) {
+      var removed = false;
+      for (let v in (remove as ArrayValue).values) {
+        if (sameValue(e, v)) {
+          removed = true;
+        }
+      }
+      if (!removed) {
+        kept.push(e);
+      }
+    }
+    return arrayValue(kept);
+  }
+  throw new Error('the fake does not know this transform');
+};
 
 /** `name` below the database's documents. */
 let shortName = (name: String): String =>
@@ -455,6 +593,111 @@ let exhaustedRetries = async (fake: FakeFirestore, db: Firestore): Future<String
   return `${code}\n${lines(fake.log)}`;
 };
 
+/** The array at `path` in `snapshot`, as `[a,b]`, or `-`. */
+let arr = (snapshot: DocumentSnapshot, path: String): String => {
+  let value = snapshot.get(path);
+  if (value == null || (value as Value).arrayValue == null) {
+    return '-';
+  }
+  var out = '';
+  for (let v in ((value as Value).arrayValue as ArrayValue).values) {
+    let text = if (v.hasStringValue) v.stringValue else `${v.integerValue}`;
+    out = if (out.length == 0) text else `${out},${text}`;
+  }
+  return `[${out}]`;
+};
+
+let transforms = async (fake: FakeFirestore, db: Firestore): Future<String> => {
+  let post = db.doc('posts/t');
+  await post.set(new Fields()
+    .string('title', 'T')
+    .serverTimestamp('created')
+    .increment('views', 5)
+    .array('tags', [stringValue('a'), stringValue('b')])
+    .string('draft', 'yes'));
+  await post.update(new Fields()
+    .increment('views', 2)
+    .arrayUnion('tags', [stringValue('b'), stringValue('c')])
+    .maximum('best', integerValue(7))
+    .deleteField('draft'));
+  await post.update(new Fields().arrayRemove('tags', [stringValue('a')]).minimum('best', integerValue(3)));
+  let s = await post.get();
+  let created = s.getTimestamp('created');
+  return `${str(s, 'title')} ${if (created == null) (-1 as i64) else (created as Timestamp).seconds} ${int(s, 'views')} ` +
+    `${arr(s, 'tags')} ${int(s, 'best')} ${str(s, 'draft')}\n${lines(fake.log)}`;
+};
+
+let getAll = async (fake: FakeFirestore, db: Firestore): Future<String> => {
+  await db.doc('posts/a').set(new Fields().string('title', 'A'));
+  await db.doc('posts/c').set(new Fields().string('title', 'C'));
+  fake.log.clear();
+  let read = await db.getAll([db.doc('posts/c'), db.doc('posts/b'), db.doc('posts/a'), db.doc('posts/c')]);
+  var out = '';
+  for (let s in read) {
+    out = `${out}${s.id}:${str(s, 'title')},`;
+  }
+  let none = await db.getAll([]);
+  let inTx = await db.runTransaction<i32>(async (tx: Transaction): Future<i32> =>
+    (await tx.getAll([db.doc('posts/a'), db.doc('posts/x')])).length);
+  return `${out} ${none.length} ${inTx}\n${lines(fake.log)}`;
+};
+
+let counting = async (db: Firestore): Future<String> => {
+  let posts = db.collection('posts');
+  await posts.doc('a').set(new Fields().string('kind', 'live'));
+  await posts.doc('b').set(new Fields().string('kind', 'draft'));
+  await posts.doc('c').set(new Fields().string('kind', 'live'));
+  return `${await posts.count()} ${await posts.where('kind', Operator.Equal, stringValue('live')).count()} ` +
+    `${await db.collection('empty').count()}`;
+};
+
+/** The field paths a query orders by, with `<` for descending, and its cursors' values. */
+let describeQuery = (query: StructuredQuery): String => {
+  var out = '';
+  for (let order in query.orderBy) {
+    let path = (order.field as StructuredQueryFieldReference).fieldPath;
+    out = `${out}${path}${if (order.direction == Direction.Descending) '<' else ''},`;
+  }
+  let describeCursor = (label: String, cursor: Cursor | null): String => {
+    if (cursor == null) {
+      return '';
+    }
+    var values = '';
+    for (let v in (cursor as Cursor).values) {
+      let text = if (v.hasReferenceValue) v.referenceValue.sliceBytes(ROOT.length + 1, v.referenceValue.length)
+        else if (v.hasStringValue) v.stringValue else `${v.integerValue}`;
+      values = `${values}${text};`;
+    }
+    return ` ${label}${if ((cursor as Cursor).before) '[' else '('}${values}`;
+  };
+  var select = '';
+  let projection = query.select;
+  if (projection != null) {
+    select = ' select:';
+    for (let f in (projection as StructuredQueryProjection).fields) {
+      select = `${select}${f.fieldPath};`;
+    }
+  }
+  return `${out}${describeCursor('start', query.startAt)}${describeCursor('end', query.endAt)}${select}`;
+};
+
+let cursors = async (db: Firestore): Future<String> => {
+  let posts = db.collection('posts');
+  await posts.doc('p1').set(new Fields().integer('rank', 3).string('kind', 'live'));
+  let last = await posts.doc('p1').get();
+  let byValues = posts.orderBy('rank').startAt([integerValue(2)]).endBefore([integerValue(9)]).structuredQuery();
+  let byDocument = posts.orderBy('rank', Direction.Descending).startAfter(last).select(['kind', 'odd name']).structuredQuery();
+  let namesOnly = posts.query().select([]).endAt(last).structuredQuery();
+  let missing = await posts.doc('nope').get();
+  let errors = await messageOf(async (): Future<void> => {
+    posts.orderBy('absent').startAfter(last).structuredQuery();
+  });
+  let notThere = await messageOf(async (): Future<void> => {
+    posts.orderBy('rank').startAfter(missing).structuredQuery();
+  });
+  return `${describeQuery(byValues)} | ${describeQuery(byDocument)} | ${describeQuery(namesOnly)} | ${errors} | ${notThere}`;
+};
+
 export let tests = suite('firestore', (): void => {
   test('names resources', () => {
     let db = open(new FakeFirestore());
@@ -533,6 +776,46 @@ export let tests = suite('firestore', (): void => {
     fake.abortReads = 1;
     equal(runFuture(increment(open(fake))), 1 as i64);
     equal(lines(fake.log), lines(['BeginTransaction', 'GetDocument aborted tx1', 'Rollback tx1', 'BeginTransaction retrying tx1', 'GetDocument counters/c in tx2', 'Commit in tx2: set counters/c']));
+  });
+
+  test('writes transforms and deletes fields', () => {
+    let fake = new FakeFirestore();
+    equal(runFuture(transforms(fake, open(fake))), lines([
+      'T 1800000000 7 [b,c] 3 -',
+      'Commit: set posts/t +2',
+      'Commit: update posts/t +3',
+      'Commit: update posts/t +2',
+      'GetDocument posts/t',
+    ]));
+  });
+
+  test('refuses transforms in a map value', () => {
+    equal(runFuture(messageOf(async (): Future<void> => {
+      mapValue(new Fields().increment('n', 1));
+    })), 'field transforms and deletions apply to top-level fields only');
+  });
+
+  test('reads several documents in one call, in order', () => {
+    let fake = new FakeFirestore();
+    equal(runFuture(getAll(fake, open(fake))), lines([
+      'c:C,b:-,a:A,c:C, 0 2',
+      'BatchGetDocuments 4',
+      'BeginTransaction',
+      'BatchGetDocuments 2 in tx1',
+      'Commit in tx1:',
+    ]));
+  });
+
+  test('counts documents on the server', () => {
+    equal(runFuture(counting(open(new FakeFirestore()))), '3 2 0');
+  });
+
+  test('encodes cursors and projections', () => {
+    equal(runFuture(cursors(open(new FakeFirestore()))),
+      'rank, start[2; end[9; | rank<,__name__<, start(3;posts/p1; select:kind;`odd name`; | ' +
+      '__name__, end(posts/p1; select:__name__; | ' +
+      "a query cursor's document has no field absent, which the query orders by | " +
+      "a query cursor's document does not exist: posts/nope");
   });
 
   test('gives up after the last attempt is aborted', () => {
