@@ -357,7 +357,8 @@ The two facts run the other way from parameters:
   that function's result explodes.
 - **Availability**, from the callee. Some return produces the fields
   without the record: a record literal, an exploded parameter of the
-  same record type, or a call whose result explodes.
+  same record type, a call whose result explodes, or an `if` or `match`
+  with such an arm (through nested ones and value blocks' tails).
 
 A result explodes when it is both. `return g(...)` makes each depend on
 the other function's verdict, so the pass iterates from "no result
@@ -369,10 +370,31 @@ lowering holds as fields (`wasm.fieldsOnlyResultCalls`, by node id).
 `#returnFields`: a record literal lowers straight to fields, a record
 held as fields passes them, and any other record is read field by field.
 Returns inside `finally` regions park the values like inline-tuple
-returns do. At a marked call, `#lowerDirectCallTo` calls the core, takes
-its results, and holds them as the record (`explodedRecords`), so field
-reads, destructuring and further fields-only uses read the values and
-the record built from them dies.
+returns do.
+
+A returned `if` or `match` merges its arms' fields instead of their
+records: `#returnFields` hands the expression the dispatch
+(`LoweringContext.resultFields`), its merge takes one block parameter
+per field (`MergeState.fields`), and each arm passes its record's
+fields. An arm that is a record literal of the exact shape lowers
+straight to its fields, a nested `if` or `match` arm merges fields the
+same way, and any other arm (a heap record, a call, a value block) has
+its fields read. After the merge the record is rebuilt from the
+parameters and held as them, so the return takes the parameters and the
+rebuilt record dies. Without this, each literal arm built its record
+for the merge, and the core read the fields back.
+
+On a loop calling a function that returns an `if` of two literals,
+destructured, two million iterations (wall time, including process
+start):
+
+| build                                                                   | before | after |
+| ----------------------------------------------------------------------- | ------ | ----- |
+| `-O1`                                                                   | 60 ms  | 5 ms  |
+| `-O2`                                                                   | 25 ms  | 5 ms  | At a marked call, `#lowerDirectCallTo` calls the core, takes |
+| its results, and holds them as the record (`explodedRecords`), so field |
+| reads, destructuring and further fields-only uses read the values and   |
+| the record built from them dies.                                        |
 
 Excluded: functions with a `tail return`, whose call the core could not
 turn into fields, and records with no fields.
@@ -431,8 +453,8 @@ Measured on `pos = step(pos)` in a loop, two million iterations:
 Not yet covered:
 
 - A var captured by a closure, which needs a cell holding the record.
-- A return whose value is an `if` or `match` expression with literal
-  arms: only a literal at the top of a return produces fields.
+- A `var` written an `if` or `match` with literal arms: only returns
+  merge an expression's arms as fields.
 - A parameter returned whole (`(v: V): V => v`): returning a parameter
   is not yet a fields-only use of it, though it would be when the
   result explodes.

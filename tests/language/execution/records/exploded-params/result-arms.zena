@@ -1,0 +1,90 @@
+// @mode: run
+// @result: 1
+// A record result returned from the arms of an `if` or `match` is returned
+// as its fields: the arms' fields are merged instead of their records. An
+// arm that is not a literal (a heap record, a value block, a call) gives its
+// fields too, and optional fields keep their presence. Every shape must
+// compute the same thing.
+
+type V = {x: i32, y: i32};
+type Opt = {n: i32, extra?: i32};
+
+var kept: V = {x: 0, y: 0};
+
+let pick = (p: i32): V => if (p > 0) ({x: p, y: 1}) else ({x: 0, y: p});
+
+let classify = (p: i32): V => match (p) {
+  case 0: ({x: 0, y: 0})
+  case 1: kept
+  case _: if (p > 10) ({x: 10, y: p}) else ({x: p, y: p * 2})
+};
+
+let viaBlock = (p: i32): V => if (p > 0) {
+  let d = p * 3;
+  ({x: d, y: d + 1})
+} else {
+  pick(-p)
+};
+
+let optional = (p: i32): Opt => if (p > 2) ({n: p, extra: p * 10}) else ({n: p});
+
+let nestedReturn = (p: i32): V => {
+  if (p < 0) {
+    return ({x: -1, y: -1});
+  }
+  return match (p) {
+    case 5: pick(5)
+    case _: ({x: p, y: 0})
+  };
+};
+
+export let main = (): i32 => {
+  let {x, y} = pick(3);
+  if (x != 3 || y != 1) {
+    return 0;
+  }
+  let {x: x2, y: y2} = pick(-2);
+  if (x2 != 0 || y2 != -2) {
+    return 0;
+  }
+  kept = {x: 7, y: 8};
+  let c1 = classify(1);
+  if (c1.x != 7 || c1.y != 8) {
+    return 0;
+  }
+  let c0 = classify(0);
+  if (c0.x != 0 || c0.y != 0) {
+    return 0;
+  }
+  let c4 = classify(4);
+  if (c4.x != 4 || c4.y != 8) {
+    return 0;
+  }
+  let c20 = classify(20);
+  if (c20.x != 10 || c20.y != 20) {
+    return 0;
+  }
+  let b = viaBlock(2);
+  if (b.x != 6 || b.y != 7) {
+    return 0;
+  }
+  let bn = viaBlock(-4);
+  if (bn.x != 4 || bn.y != 1) {
+    return 0;
+  }
+  let {n, extra = -1} = optional(3);
+  if (n != 3 || extra != 30) {
+    return 0;
+  }
+  let {n: n1, extra: e1 = -1} = optional(1);
+  if (n1 != 1 || e1 != -1) {
+    return 0;
+  }
+  let r5 = nestedReturn(5);
+  let r6 = nestedReturn(6);
+  let rn = nestedReturn(-3);
+  if (r5.x != 5 || r6.x != 6 || r6.y != 0 || rn.y != -1) {
+    return 0;
+  }
+  return 1;
+};

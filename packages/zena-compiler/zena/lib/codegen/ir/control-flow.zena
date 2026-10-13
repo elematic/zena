@@ -37,7 +37,7 @@ import {
 } from '../type-mapping.zena';
 import { IrBody, IrOp, IrRefField, IrRefFunc, IrRefGlobal, IrRefTag } from './ir.zena';
 import { emitGeneratorDispose } from './generators.zena';
-import { coalesceArmAdaptation, inSuspensionBody, lowerExpr, lowerExprRaw, lowerStmt, multiSource, optionalHit, returnSlotVt, suspendOnFuture, throwStmt, varDecl } from './lowering.zena';
+import { coalesceArmAdaptation, exactLiteralFields, inSuspensionBody, lowerExpr, lowerExprRaw, lowerStmt, multiSource, optionalHit, packHeldRecord, returnSlotVt, suspendOnFuture, throwStmt, varDecl } from './lowering.zena';
 import {
   FinallyScope, LetCondBinds, LoopCtx, LoweringContext, MergeState, ZirUnsupported, noValues,
 } from './lowering-context.zena';
@@ -467,6 +467,7 @@ let lowerInlineTupleArm = (cx: LoweringContext, pat: TuplePattern,
 };
 
 export let lowerMatch = (cx: LoweringContext, expr: MatchExpression): i32 => {
+  let armFields = cx.takeResultFields();
   let nodeType = cx.substitutedNodeType(expr);
   if (nodeType == null) {
     bail(cx, 'untyped match');
@@ -500,6 +501,9 @@ export let lowerMatch = (cx: LoweringContext, expr: MatchExpression): i32 => {
   }
 
   let m = new MergeState(mergeSyms, isVoid, resultVt);
+  if (!isVoid) {
+    m.fields = armFields;
+  }
   let saved = cx.copyEnv();
 
   var exhausted = false;
@@ -533,10 +537,19 @@ export let lowerMatch = (cx: LoweringContext, expr: MatchExpression): i32 => {
       let cond = lowerExpr(cx, mc.guard as Expression, null);
       branchUnless(cx, cond, failB);
     }
-    let value = lowerValueNode(cx, mc.body, isVoid, resultVt);
-    if (cx.reachable) {
-      emitMatchArmDrops(cx, expr, i);
-      cx.mergeArm(m, value, 'match arm type');
+    let fieldsMode = m.fields;
+    if (fieldsMode != null) {
+      let values = lowerArmFields(cx, mc.body, fieldsMode, resultVt);
+      if (cx.reachable) {
+        emitMatchArmDrops(cx, expr, i);
+        cx.mergeArmFields(m, values);
+      }
+    } else {
+      let value = lowerValueNode(cx, mc.body, isVoid, resultVt);
+      if (cx.reachable) {
+        emitMatchArmDrops(cx, expr, i);
+        cx.mergeArm(m, value, 'match arm type');
+      }
     }
     if (failB >= 0) {
       cx.b.switchTo(failB);
@@ -549,7 +562,7 @@ export let lowerMatch = (cx: LoweringContext, expr: MatchExpression): i32 => {
     cx.b.unreachable();
   }
 
-  return cx.finishMerge(m, saved);
+  return finishArmsMerge(cx, m, saved);
 };
 
 /**
@@ -710,6 +723,7 @@ export let lowerIf = (cx: LoweringContext, stmt: IfStatement): void => {
  * if-expressions lower like statements and yield no value.
  */
 export let lowerIfExpression = (cx: LoweringContext, expr: IfExpression): i32 => {
+  let armFields = cx.takeResultFields();
   let nodeType = cx.substitutedNodeType(expr);
   if (nodeType == null) {
     bail(cx, 'untyped if expression');
@@ -744,31 +758,85 @@ export let lowerIfExpression = (cx: LoweringContext, expr: IfExpression): i32 =>
   cx.b.brIf(cond, thenB, noValues(), elseB, noValues());
 
   let m = new MergeState(mergeSyms, isVoid, resultVt);
+  if (!isVoid) {
+    m.fields = armFields;
+  }
 
   let saved = cx.copyEnv();
   cx.b.switchTo(thenB);
   if (letBinds != null) {
     applyLetBinds(cx, letBinds, elseB);
   }
-  let thenValue = lowerValueNode(cx, expr.consequent, isVoid, resultVt);
-  if (cx.reachable) {
-    cx.mergeArm(m, thenValue, 'if arm type');
-  }
+  mergeValueArm(cx, m, expr.consequent, isVoid, resultVt, 'if arm type');
 
   cx.env = cx.copyOf(saved);
   cx.reachable = true;
   cx.b.switchTo(elseB);
   if (expr.alternate != null) {
-    let elseValue = lowerValueNode(cx, expr.alternate as Node, isVoid, resultVt);
-    if (cx.reachable) {
-      cx.mergeArm(m, elseValue, 'if arm type');
-    }
+    mergeValueArm(cx, m, expr.alternate as Node, isVoid, resultVt, 'if arm type');
   } else {
     // Void if-expression without else: fall through to the merge.
     cx.mergeArm(m, -1);
   }
 
-  return cx.finishMerge(m, saved);
+  return finishArmsMerge(cx, m, saved);
+};
+
+/** Lowers one arm and branches to the merge with its value or its fields. */
+let mergeValueArm = (cx: LoweringContext, m: MergeState, node: Node,
+    isVoid: boolean, resultVt: ValType | null, armKind: String): void => {
+  let fieldsMode = m.fields;
+  if (fieldsMode != null) {
+    let values = lowerArmFields(cx, node, fieldsMode, resultVt);
+    if (cx.reachable) {
+      cx.mergeArmFields(m, values);
+    }
+    return;
+  }
+  let value = lowerValueNode(cx, node, isVoid, resultVt);
+  if (cx.reachable) {
+    cx.mergeArm(m, value, armKind);
+  }
+};
+
+/**
+ * One arm of an `if` or `match` whose record a core returns as its
+ * fields (MergeState.fields). A record literal of exactly the shape is
+ * lowered straight to its fields, a nested `if` or `match` merges its own
+ * arms' fields, and any other arm's record has its fields read.
+ */
+let lowerArmFields = (cx: LoweringContext, node: Node, d: RecordDispatchInfo,
+    resultVt: ValType | null): GrowableArray<i32> => {
+  if (node is Expression) {
+    let literal = exactLiteralFields(cx, node, d);
+    if (literal != null) {
+      return literal;
+    }
+    if (node is IfExpression || node is MatchExpression) {
+      cx.resultFields = d;
+    }
+  }
+  let record = lowerValueNode(cx, node, false, resultVt);
+  cx.resultFields = null;
+  if (!cx.reachable) {
+    return new Array<i32>();
+  }
+  return cx.recordFieldsOf(d, record);
+};
+
+/**
+ * finishMerge, and in fields mode the record rebuilt from the merged
+ * fields and held as them, so the core returns the fields and the record
+ * dies.
+ */
+let finishArmsMerge = (cx: LoweringContext, m: MergeState,
+    saved: HashMap<SymbolId, i32>): i32 => {
+  let result = cx.finishMerge(m, saved);
+  let fieldsMode = m.fields;
+  if (fieldsMode != null && m.block >= 0) {
+    return packHeldRecord(cx, fieldsMode, m.fieldParams as GrowableArray<i32>);
+  }
+  return result;
 };
 
 /**

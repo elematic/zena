@@ -115,6 +115,13 @@ export final class MergeState {
   var block = -1;
   var params: GrowableArray<i32> | null = null;
   var resultParam = -1;
+  /**
+   * Set when the merged value is a record a core returns as its fields:
+   * the arms pass the fields (mergeArmFields), one parameter each, in
+   * place of the record.
+   */
+  var fields: RecordDispatchInfo | null = null;
+  var fieldParams: GrowableArray<i32> | null = null;
   new(this.syms, this.isVoid, this.resultVt);
 }
 
@@ -1259,6 +1266,59 @@ export final class LoweringContext {
       args.push(v);
     }
     this.b.br(m.block, args);
+  }
+
+  /**
+   * Like mergeArm, for a merge in fields mode (MergeState.fields): the
+   * arm passes its record's fields, not the record.
+   */
+  mergeArmFields(m: MergeState, values: GrowableArray<i32>): void {
+    let d = m.fields as RecordDispatchInfo;
+    if (m.block < 0) {
+      m.block = this.b.newBlock();
+      m.params = this.addParams(m.block, m.syms);
+      let fieldParams = new Array<i32>();
+      for (let field in d.fields) {
+        fieldParams.push(this.b.blockParam(m.block, field.type));
+      }
+      m.fieldParams = fieldParams;
+    }
+    let args = this.envValues(m.syms);
+    for (var i = 0; i < values.length; i += 1) {
+      args.push(this.conformToSlot(values[i], d.fields[i].type, 'record arm field type'));
+    }
+    this.b.br(m.block, args);
+  }
+
+  /**
+   * Set by a core that returns its record as its fields just before it
+   * lowers the `if` or `match` whose value it returns, which takes it
+   * (takeResultFields) and merges its arms' fields instead of their
+   * records.
+   */
+  var resultFields: RecordDispatchInfo | null = null;
+
+  takeResultFields(): RecordDispatchInfo | null {
+    let d = this.resultFields;
+    this.resultFields = null;
+    return d;
+  }
+
+  /**
+   * `record`'s fields through `d`: the values it is held as, or each
+   * field read off it.
+   */
+  recordFieldsOf(d: RecordDispatchInfo, record: i32): GrowableArray<i32> {
+    if (let (true, held) = this.explodedRecords.get(record)) {
+      if (held.dispatch === d) {
+        return held.values;
+      }
+    }
+    let values = new Array<i32>();
+    for (let field in d.fields) {
+      values.push(this.recordDispatchRead(d, field.name as String, record));
+    }
+    return values;
   }
 
   /**
