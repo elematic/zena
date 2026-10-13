@@ -829,6 +829,22 @@ export let tests = suite('zir backend', (): void => {
     assertNoAllocation(result, '$main', 'the fields are never packed');
   });
 
+  test('a parameter returned whole passes its fields straight through', (ctx: TestContext): void => {
+    // `same` returns its parameter, and its only caller passes a literal
+    // and destructures the result, so the parameter and the result both
+    // explode and `same.core` hands back the fields it was given.
+    let result = compileWithZir(
+        'type V = {x: i32, y: i32};\n' +
+        'let same = (v: V): V => v;\n' +
+        'export let main = (): i32 => {\n' +
+        '  let {x, y} = same({x: 3, y: 4});\n' +
+        '  return x * y;\n' +
+        '};');
+    assertNoAllocation(result, '$same.core',
+        'the parameter is returned as the fields it arrived as');
+    assertNoAllocation(result, '$main', 'neither side builds the record');
+  });
+
   test('a var record updated through a call stays as its fields', (ctx: TestContext): void => {
     // `pos` is only read for its fields and only assigned values that
     // are fields already, so it is carried around the loop as its
