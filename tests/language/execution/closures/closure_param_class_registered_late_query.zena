@@ -1,0 +1,41 @@
+// Support module for closure_param_class_registered_late.zena: a class
+// that stores closures whose parameter type, GrowableArray<String>, is a
+// specialization no code in the program registers before the closures'
+// signatures are computed.
+
+type Part = (paths: GrowableArray<String>) => i32;
+
+export final class Query {
+  #filters: GrowableArray<i32> = new GrowableArray<i32>();
+  var #where: Part | null = null;
+  var #limit: Part | null = null;
+
+  where(f: i32): Query {
+    let next = this.#copy();
+    let filters = next.#filters;
+    filters.push(f);
+    next.#where = (paths: GrowableArray<String>): i32 => {
+      return filters.length;
+    };
+    return next;
+  }
+
+  limit(count: i32): Query {
+    let next = this.#copy();
+    next.#limit = (paths: GrowableArray<String>): i32 => {
+      return count;
+    };
+    return next;
+  }
+
+  #copy(): Query {
+    let next = new Query();
+    next.#where = this.#where;
+    next.#limit = this.#limit;
+    for (let f in this.#filters) {
+      next.#filters.push(f);
+    }
+    return next;
+  }
+}
+
