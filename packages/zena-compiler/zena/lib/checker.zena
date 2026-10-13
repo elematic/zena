@@ -6742,15 +6742,16 @@ let applyAndCheckTypeArguments = (
 };
 
 /**
- * Special satisfaction rule for the well-known `Hashable` interface
- * (zena:hashable). Types that cannot nominally implement an interface still
- * hash correctly via the `hash`/`eq` intrinsics, so they satisfy a Hashable
- * constraint:
+ * Special satisfaction rule for the well-known `Hashable` and `Equatable`
+ * interfaces (zena:core). Types that cannot nominally implement an interface
+ * still compare and hash correctly via the `eq`/`hash` intrinsics, so they
+ * satisfy either constraint:
  *
  * - Numeric primitives and boolean, which hash by value (i64/u64 fold to
  *   i32, floats hash their bits with -0.0 normalized to +0.0).
  * - Enums and distinct type aliases, judged by their underlying type.
- * - Case classes, whose hashCode()/operator == are compiler-generated.
+ * - Case classes that derive their hashCode()/operator ==. One that inherits
+ *   them from its base satisfies the constraint only if the base does.
  */
 let satisfiesHashableConstraint = (
   ctx: CheckerContext,
@@ -6761,6 +6762,8 @@ let satisfiesHashableConstraint = (
     return false;
   }
   if (!isWellKnown(WellKnown.HashableInterface, constraint.name,
+      constraint.sourcePath) &&
+      !isWellKnown(WellKnown.EquatableInterface, constraint.name,
       constraint.sourcePath)) {
     return false;
   }
@@ -6802,7 +6805,7 @@ let satisfiesHashableConstraint = (
       }
       return true;
     }
-    case ClassType as ct: { return ct.isCaseClass; }
+    case ClassType as ct: { return ct.derivesEquality; }
     case _: { return false; }
   }
 };
@@ -13635,7 +13638,45 @@ let signaturesMayOverlap = (
  * and sealed variant types. Does NOT check method bodies, field
  * initializers, or accessor bodies — that happens in checkClassBodies.
  */
+let addImplicitInterface = (ctx: CheckerContext, ct: ClassType, which: WellKnown): void => {
+  let iface = ctx.tryResolveWellKnownType(which);
+  if (!(iface is InterfaceType)) {
+    return;
+  }
+  for (let impl in ct.implementsList) {
+    if (impl === iface) { return; }
+  }
+  ct.implementsList.push(iface);
+};
+
+/**
+ * True when an ancestor of `ct` declares `operator ==` or `hashCode`. A case
+ * class below one derives neither: the base's pair is the hierarchy's
+ * equality, and a derived structural `==` beside the base's hash would put
+ * equal objects in different buckets.
+ */
+let inheritsDeclaredEquality = (ct: ClassType): boolean => {
+  var curr = ct.superType;
+  while (curr != null) {
+    let anc = curr as ClassType;
+    if (anc.members.has("==") || anc.members.has("hashCode")) {
+      return true;
+    }
+    curr = anc.superType;
+  }
+  return false;
+};
+
+/**
+ * Derives a case class's structural `==` and `hashCode`, together, unless it
+ * inherits either one (inheritsDeclaredEquality). Runs once the superclass is
+ * known and its members are inherited.
+ */
 let synthesizeCaseClassMembers = (ctx: CheckerContext, ct: ClassType): void => {
+  if (inheritsDeclaredEquality(ct)) {
+    return;
+  }
+  ct.derivesEquality = true;
   let hashType = new FunctionType(new Array<Type>(), new I32Type());
   ct.members["hashCode"] = new MethodInfo(hashType, false, false, false, false);
 
@@ -13644,19 +13685,11 @@ let synthesizeCaseClassMembers = (ctx: CheckerContext, ct: ClassType): void => {
   let eqType = new FunctionType(eqParams, new BooleanType());
   ct.members["=="] = new MethodInfo(eqType, false, false, false, false);
 
-  // Case classes nominally implement Hashable: their synthesized
-  // hashCode()/== make them valid hash keys, so they are assignable to the
-  // well-known Hashable interface without an explicit implements clause.
-  let hashable = ctx.tryResolveWellKnownType(WellKnown.HashableInterface);
-  if (hashable is InterfaceType) {
-    var already = false;
-    for (let impl in ct.implementsList) {
-      if (impl === hashable) { already = true; }
-    }
-    if (!already) {
-      ct.implementsList.push(hashable);
-    }
-  }
+  // Case classes nominally implement Hashable and Equatable: their
+  // synthesized hashCode()/== make them valid hash keys, so they are
+  // assignable to both well-known interfaces without an implements clause.
+  addImplicitInterface(ctx, ct, WellKnown.HashableInterface);
+  addImplicitInterface(ctx, ct, WellKnown.EquatableInterface);
 };
 
 let inheritMembersFrom = (fromClass: ClassType, toClass: ClassType): void => {
@@ -14378,7 +14411,6 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
   if (cd.caseParams != null && !cd.isSealed) {
     classType.isFinal = true;
     classType.isCaseClass = true;
-    synthesizeCaseClassMembers(ctx, classType);
   }
 
   // Sealed classes: register forward variant names.
@@ -14650,6 +14682,9 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
   classType.superType = currentSuper;
   if (classType.superType != null) {
     inheritMembersFrom(classType.superType as ClassType, classType);
+  }
+  if (classType.isCaseClass) {
+    synthesizeCaseClassMembers(ctx, classType);
   }
 
   // Process case class parameters → generate fields and constructor.

@@ -1621,6 +1621,9 @@ class Pair<A, B>(first: A, second: B)        // Generic case classes
 class Event(name: String) with Timestamped implements Hashable
 ```
 
+A case class that inherits `operator ==` or `hashCode()` from its base
+generates neither, so a sealed base can give all its cases one equality.
+
 ### Sealed Classes
 
 Sealed classes restrict which classes can extend them. Only the variants listed
