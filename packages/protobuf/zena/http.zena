@@ -12,8 +12,8 @@ import { Err, Ok, Option, Outcome } from 'zena:core';
 import { Stream, StreamWriter } from 'zena:stream';
 import { URL } from 'zena:url';
 import {
-  ErrorCode, Fields, MethodPost, Request, Response as WireResponse,
-  Scheme, SchemeHTTP, SchemeHTTPS
+  ErrorCode, ErrorCodeConnectionReadTimeout, Fields, MethodPost, Request, RequestOptions,
+  Response as WireResponse, Scheme, SchemeHTTP, SchemeHTTPS
 } from 'wasi:http/types';
 import { send } from 'wasi:http/client';
 import { Credentials, ProtoError, ProtoView, RpcError, RpcMetadata, RpcMethod } from './runtime.zena';
@@ -21,6 +21,8 @@ import { Credentials, ProtoError, ProtoView, RpcError, RpcMetadata, RpcMethod } 
 /** The one spellable value of type void, for a `result<_, e>` ok arm. */
 export function unit(): void {}
 
+/** `google.rpc.Code` DEADLINE_EXCEEDED, for a server that did not answer in time. */
+let CODE_DEADLINE_EXCEEDED = 4;
 /** `google.rpc.Code` UNAVAILABLE, for a server that could not be reached. */
 let CODE_UNAVAILABLE = 14;
 
@@ -109,28 +111,45 @@ export final class Exchange {
 }
 
 /**
- * POSTs `body` with `headers` to `path` at `origin`. Throws an `RpcError`
- * with code UNAVAILABLE, naming `method`, when no response arrives.
+ * POSTs `body` with `headers` to `path` at `origin`. When
+ * `firstByteTimeout` is not negative, the response's headers must arrive
+ * within that many nanoseconds of the request being sent, or the call
+ * fails with DEADLINE_EXCEEDED. Throws an `RpcError` with code
+ * UNAVAILABLE, naming `method`, when no response arrives otherwise.
  */
 export let post = async (
   origin: Origin,
   path: String,
   headers: Fields,
   body: ByteArray,
-  method: RpcMethod
+  method: RpcMethod,
+  firstByteTimeout: i64 = -1
 ): Future<Exchange> => {
   // The trailers future is the sender's to settle, and the host does
   // not consider the request body finished until it is.
   let trailers = Future.of<Outcome<Option<Fields>, ErrorCode>>(
       new Ok<Option<Fields>, ErrorCode>(none));
+  var options: Option<RequestOptions> = none;
+  if (firstByteTimeout >= 0) {
+    let set = RequestOptions.create();
+    set.setFirstByteTimeout(some(firstByteTimeout as u64));
+    options = some(set);
+  }
   let (wire, transmitted) =
-      Request.new_(headers, some(bytesStream(body)), trailers, none);
+      Request.new_(headers, some(bytesStream(body)), trailers, options);
   wire.setMethod(new MethodPost());
   wire.setScheme(some(origin.scheme));
   wire.setAuthority(some(origin.authority));
   wire.setPathWithQuery(some(path));
   let sent = await send(wire);
   if (sent is Err<WireResponse, ErrorCode>) {
+    if ((sent as Err<WireResponse, ErrorCode>).error is ErrorCodeConnectionReadTimeout) {
+      throw new RpcError(
+        CODE_DEADLINE_EXCEEDED,
+        `${method.service}/${method.name}: no response from ${origin.authority} within the deadline`,
+        ProtoView.empty()
+      );
+    }
     throw new RpcError(
       CODE_UNAVAILABLE,
       `${method.service}/${method.name}: no response from ${origin.authority}`,

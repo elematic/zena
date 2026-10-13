@@ -122,6 +122,27 @@ export final class ProtoView {
     return new ProtoView(EMPTY_BYTES, 0, 0);
   }
 
+  /**
+   * `parts`, encodings of one message type, concatenated. Protobuf
+   * defines that as merging them in order: a later singular field
+   * replaces an earlier one, repeated fields append, and message fields
+   * merge. Building a message from parts lets each optional field be
+   * encoded only when it is present.
+   */
+  static merge(parts: Array<ProtoView>): ProtoView {
+    var total = 0;
+    for (let part in parts) {
+      total += part.byteLength;
+    }
+    let out = newByteArray(total);
+    var at = 0;
+    for (let part in parts) {
+      copyBytes(out, at, part.buffer, part.start, part.byteLength);
+      at += part.byteLength;
+    }
+    return new ProtoView(out, 0, total);
+  }
+
   /** The array holding the encoded message. Other data may share it. */
   buffer: ByteArray {
     get { return this.#bytes; }

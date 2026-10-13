@@ -45,6 +45,19 @@ let hex = (view: ProtoView): String => {
 };
 
 export let tests = suite('protobuf runtime', (): void => {
+  test('merges encodings by concatenating them', () => {
+    let first = new ProtoWriter();
+    first.int32(1, 7);
+    first.string(2, 'a');
+    let second = new ProtoWriter();
+    second.int32(1, 9);
+    second.string(2, 'b');
+    let merged = ProtoView.merge([first.finish(), ProtoView.empty(), second.finish()]);
+    equal(merged.int32(1), 9);
+    equal(merged.byteLength, 10);
+    equal(ProtoView.merge([]).byteLength, 0);
+  });
+
   test('reads the encoding guide example: field 1 = 150', () => {
     let view = ProtoView.of(bytesOf([0x08, 0x96, 0x01]));
     equal(view.int32(1), 150);

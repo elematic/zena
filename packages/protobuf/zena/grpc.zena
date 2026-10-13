@@ -25,6 +25,8 @@ import { AsyncIterator, AsyncStep } from 'zena:async';
 import { HashMap } from 'zena:collections';
 import { Err, Ok, Option, Outcome, copyBytes, newByteArray } from 'zena:core';
 import { Stream } from 'zena:stream';
+import { div } from 'zena:math';
+import { Duration } from 'zena:time';
 import { percentDecode } from 'zena:url';
 import { ErrorCode, Fields } from 'wasi:http/types';
 import { Credentials, ProtoError, ProtoTransport, ProtoView, RpcError, RpcMetadata, RpcMethod } from './runtime.zena';
@@ -63,10 +65,25 @@ export final class GrpcTransport implements ProtoTransport {
   #origin: Origin;
   #credentials: Credentials | null;
   #headers: HashMap<String, String> = new HashMap<String, String>();
+  /** Each call's deadline after it starts, in nanoseconds, or -1 for none. */
+  var #timeout: i64 = -1;
 
   new(origin: String, credentials: Credentials | null = null)
     : #origin = Origin.parse(origin), #credentials = credentials {
     this.#headers['te'] = 'trailers';
+  }
+
+  /**
+   * Gives every later call a deadline `timeout` after it starts. The
+   * server ends a call still running then with DEADLINE_EXCEEDED, from
+   * the `grpc-timeout` header; and a call whose response has not started
+   * by then fails with DEADLINE_EXCEEDED here, should the server not
+   * answer at all.
+   */
+  setTimeout(timeout: Duration): void {
+    let nanos = timeout as i64;
+    this.#timeout = if (nanos < 0) 0 as i64 else nanos;
+    this.#headers['grpc-timeout'] = grpcTimeout(this.#timeout);
   }
 
   /**
@@ -87,9 +104,25 @@ export final class GrpcTransport implements ProtoTransport {
 
   async #post(method: RpcMethod, request: ProtoView, metadata: RpcMetadata): Future<Exchange> {
     let headers = await callHeaders('application/grpc', this.#headers, metadata, this.#credentials);
-    return await post(this.#origin, `/${method.service}/${method.name}`, headers, frame(request), method);
+    return await post(this.#origin, `/${method.service}/${method.name}`, headers, frame(request), method, this.#timeout);
   }
 }
+
+/**
+ * `nanos` as a `grpc-timeout` value: at most eight digits and a unit,
+ * the finest unit that fits, rounded up.
+ */
+export let grpcTimeout = (nanos: i64): String => {
+  let units = ['n', 'u', 'm', 'S', 'M', 'H'];
+  let sizes: Array<i64> = [1, 1000, 1000000, 1000000000, 60000000000, 3600000000000];
+  for (var i = 0; i < units.length; i += 1) {
+    let value = div(nanos + sizes[i] - 1, sizes[i]);
+    if (value <= 99999999) {
+      return `${value}${units[i]}`;
+    }
+  }
+  return '99999999H';
+};
 
 /** `message` framed for a gRPC body: uncompressed, with its length. */
 export let frame = (message: ProtoView): ByteArray => {
