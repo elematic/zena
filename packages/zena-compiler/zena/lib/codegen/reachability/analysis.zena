@@ -3865,8 +3865,22 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
       let params = new Array<ValType>();
       params.push(new ValTypeStructRef()); // ctx
       let returns = new Array<ValType>();
-      
+
       if (funcTypeNode is FunctionType) {
+        // Discover the closure's type before mapping it. A class its
+        // signature names that no earlier walk registered would map to
+        // a bare structref here, while the pair struct lowering looks up
+        // by this signature is made from the registered class: the two
+        // keys then differ, and lowering finds no pair struct. A walk of
+        // a template is not a value and discovers nothing (see "An
+        // Erasure Is Not a Specialization" in CONTEXT.md).
+        let walkingTemplate = (enclosingFnParams != null && typeArguments == null) ||
+            (classType != null && classType.typeParameters != null &&
+              (classType.typeParameters as Array<TypeParameterType>).length > 0 &&
+              (classType.typeArguments == null || !isConcrete(classType)));
+        if (!walkingTemplate) {
+          this.typeLowerer.discoverType(funcTypeNode, model);
+        }
         for (let p in funcTypeNode.parameters) {
           mapParamTypeToWasmParams(this.wasm, p, params);
         }
