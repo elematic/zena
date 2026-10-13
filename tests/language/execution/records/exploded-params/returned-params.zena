@@ -1,0 +1,54 @@
+// @mode: run
+// @result: 1
+// A record parameter returned whole is a fields-only use of it when the
+// function's result is returned as fields: the core passes the fields it
+// was given straight back. When the result is needed whole, the parameter
+// is too, and the record is passed. Every shape must compute the same
+// thing.
+
+type V = {x: i32, y: i32};
+
+let same = (v: V): V => v;
+
+let clampY = (v: V): V => if (v.y > 10) ({x: v.x, y: 10}) else v;
+
+let first = (v: V): V => second(v);
+
+let second = (v: V): V => {
+  if (v.x < 0) {
+    return ({x: 0, y: v.y});
+  }
+  return v;
+};
+
+var kept: V = {x: 0, y: 0};
+
+// The result is stored whole, so the parameter is needed whole.
+let keep = (v: V): V => v;
+
+export let main = (): i32 => {
+  let {x, y} = same({x: 3, y: 4});
+  if (x != 3 || y != 4) {
+    return 0;
+  }
+  let a = clampY({x: 1, y: 20});
+  let b = clampY({x: 1, y: 5});
+  if (a.y != 10 || b.y != 5 || b.x != 1) {
+    return 0;
+  }
+  let c = first({x: -2, y: 7});
+  let d = first({x: 2, y: 7});
+  if (c.x != 0 || c.y != 7 || d.x != 2) {
+    return 0;
+  }
+  kept = keep({x: 9, y: 9});
+  if (kept.x != 9) {
+    return 0;
+  }
+  // A heap record passed to a function whose parameter explodes.
+  let e = same(kept);
+  if (e.x != 9 || e.y != 9) {
+    return 0;
+  }
+  return 1;
+};

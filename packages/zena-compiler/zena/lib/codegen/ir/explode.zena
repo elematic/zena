@@ -38,7 +38,7 @@
 import { HashMap, HashSet } from 'zena:collections';
 import {
   AssignmentExpression, BlockStatement, CallExpression, ClassDeclaration, Expression,
-  ExpressionStatement, FunctionExpression, FunctionDeclaration, IfExpression,
+  ExpressionStatement, FunctionExpression, FunctionDeclaration, IfExpression, MatchCase,
   MatchExpression, ReturnStatement,
   VariableDeclaration, IdentifierPattern, Identifier, MemberExpression,
   MethodDefinition, Parameter, RecordLiteral, RecordPattern,
@@ -68,6 +68,16 @@ final class Forward {
   index: i32;
   new(this.callee, this.index);
 }
+
+/**
+ * The `callee` of the forward that stands for a parameter returned whole
+ * by its own function. It keeps the parameter fields-only exactly when
+ * that function's result explodes, which is settled after demand and
+ * availability (explodeRecordParameters re-runs them when it is not).
+ */
+let returnedWhole = '';
+
+let isReturnedWhole = (fw: Forward): boolean => fw.callee == returnedWhole;
 
 /** The candidate key of the top-level function `id`. */
 let functionKey = (id: SymbolId): String => `f${id as i32}`;
@@ -163,49 +173,58 @@ export let explodeRecordParameters = (
     }
   }
 
-  // Demand: a forward keeps a parameter fields-only only while its
-  // target is fields-only too, through the same record type.
-  var changed = true;
-  while (changed) {
-    changed = false;
+  let superLiterals = literalSuperArgs(wasm);
+  // A parameter returned whole is assumed fields-only until its
+  // function's result verdict is in. One that would explode while the
+  // result does not needs the record after all, which can change every
+  // verdict downstream, so the whole analysis runs again without it.
+  // Each round only takes parameters away, so this ends.
+  var held = new Array<HeldVar>();
+  while (true) {
+    settleDemand(candidates, byKey);
+
+    // Availability: literal arguments, then exploded parameters passed on.
     for (let c in candidates) {
-      for (var i = 0; i < c.fieldsOnly.length; i += 1) {
-        if (!c.fieldsOnly[i]) {
-          continue;
-        }
-        for (let fw in c.forwards[i]) {
-          if (!forwardKeepsFields(byKey, c.dispatches[i], fw)) {
-            c.fieldsOnly[i] = false;
-            changed = true;
-            break;
-          }
+      for (var i = 0; i < c.available.length; i += 1) {
+        c.available[i] = c.fieldsOnly[i] &&
+            c.hasLiteralArg(pass, superLiterals, i);
+      }
+    }
+    propagateAvailability(candidates, byKey);
+
+    wasm.fieldsOnlyResultCalls.clear();
+    held = explodeResults(wasm, pass, candidates, byKey);
+    // A held var passed to a fields-only parameter is passed as its
+    // fields, so that parameter is available unpacked.
+    for (let hv in held) {
+      for (let fw in hv.forwards) {
+        if (let (true, target) = byKey.get(fw.callee)) {
+          target.available[fw.index] = true;
         }
       }
     }
-  }
+    propagateAvailability(candidates, byKey);
 
-  // Availability: literal arguments, then exploded parameters passed on.
-  let superLiterals = literalSuperArgs(wasm);
-  for (let c in candidates) {
-    for (var i = 0; i < c.available.length; i += 1) {
-      c.available[i] = c.fieldsOnly[i] &&
-          c.hasLiteralArg(pass, superLiterals, i);
+    var contradicted = false;
+    for (let c in candidates) {
+      if (c.resultExplodes) {
+        continue;
+      }
+      for (var i = 0; i < c.fieldsOnly.length; i += 1) {
+        if (c.fieldsOnly[i] && c.available[i] &&
+            c.forwards[i].some((fw) => isReturnedWhole(fw))) {
+          c.fieldsOnly[i] = false;
+          contradicted = true;
+        }
+      }
+    }
+    if (!contradicted) {
+      break;
     }
   }
-  propagateAvailability(candidates, byKey);
-
-  let held = explodeResults(wasm, pass, candidates, byKey);
-  // A held var passed to a fields-only parameter is passed as its fields,
-  // so that parameter is available unpacked.
   for (let hv in held) {
     wasm.fieldHeldVars[hv.sym.id] = hv.dispatch;
-    for (let fw in hv.forwards) {
-      if (let (true, target) = byKey.get(fw.callee)) {
-        target.available[fw.index] = true;
-      }
-    }
   }
-  propagateAvailability(candidates, byKey);
 
   for (let c in candidates) {
     let params = new Array<RecordDispatchInfo | null>();
@@ -224,6 +243,32 @@ export let explodeRecordParameters = (
       let {ctorKey} = c;
       if (ctorKey != null) {
         addPhaseCores(wasm, pass, c.f, params);
+      }
+    }
+  }
+};
+
+/**
+ * Demand: a forward keeps a parameter fields-only only while its target
+ * is fields-only too, through the same record type.
+ */
+let settleDemand = (candidates: GrowableArray<Candidate>,
+    byKey: HashMap<String, Candidate>): void => {
+  var changed = true;
+  while (changed) {
+    changed = false;
+    for (let c in candidates) {
+      for (var i = 0; i < c.fieldsOnly.length; i += 1) {
+        if (!c.fieldsOnly[i]) {
+          continue;
+        }
+        for (let fw in c.forwards[i]) {
+          if (!forwardKeepsFields(byKey, c.dispatches[i], fw)) {
+            c.fieldsOnly[i] = false;
+            changed = true;
+            break;
+          }
+        }
       }
     }
   }
@@ -909,6 +954,9 @@ let addCore = (wasm: WasmModule, pass: ReachabilityAnalysis, f: WasmFunction,
  */
 let forwardKeepsFields = (byKey: HashMap<String, Candidate>,
     dispatch: RecordDispatchInfo | null, fw: Forward): boolean => {
+  if (isReturnedWhole(fw)) {
+    return true;
+  }
   if (let (true, target) = byKey.get(fw.callee)) {
     if (fw.index >= target.dispatches.length) {
       return false;
@@ -1065,8 +1113,12 @@ let classifyParams = (wasm: WasmModule, f: WasmFunction, owner: Node,
   for (let p in params) {
     let out = new Array<Forward>();
     let d = recordDispatchOfParam(wasm, f, p.name);
+    // Returning the parameter whole only passes its fields on when it has
+    // the result's own shape.
+    let returnable = result != null && d === result;
     let usesFields = d != null &&
-        usesOnlyFields(owner, roots, f.model, p.name, out, superKey);
+        usesOnlyFields(owner, roots, f.model, p.name, out, superKey, false,
+            returnable);
     dispatches.push(if (usesFields) d else null);
     forwards.push(out);
     fieldsOnly.push(usesFields);
@@ -1126,7 +1178,7 @@ let declaredSymbol = (fn: FunctionExpression, model: SemanticModel): Symbol | nu
 let usesOnlyFields = (owner: Node, roots: GrowableArray<Node>,
     model: SemanticModel, name: Node,
     forwards: GrowableArray<Forward>, superKey: String | null,
-    allowAssign: boolean = false): boolean => {
+    allowAssign: boolean = false, allowReturn: boolean = false): boolean => {
   let param = model.resolveDeclaration(name);
   if (param == null) {
     return false;
@@ -1137,7 +1189,8 @@ let usesOnlyFields = (owner: Node, roots: GrowableArray<Node>,
       if (ok && n is Identifier) {
         let sym = model.resolve(n);
         if (sym != null && sym.id == param.id &&
-            !isFieldUse(n, owner, model, forwards, superKey, allowAssign)) {
+            !isFieldUse(n, owner, model, forwards, superKey, allowAssign,
+                allowReturn)) {
           ok = false;
         }
       }
@@ -1154,10 +1207,16 @@ let usesOnlyFields = (owner: Node, roots: GrowableArray<Node>,
  */
 let isFieldUse = (ident: Identifier, owner: Node,
     model: SemanticModel, forwards: GrowableArray<Forward>,
-    superKey: String | null, allowAssign: boolean): boolean => {
+    superKey: String | null, allowAssign: boolean,
+    allowReturn: boolean): boolean => {
   let parent = model.getParent(ident);
   var accepted = false;
   var forward: Forward | null = null;
+  if (allowReturn && owner is FunctionExpression &&
+      isReturnedValue(ident, owner, model)) {
+    forwards.push(new Forward(returnedWhole, -1));
+    return true;
+  }
   if (parent is MemberExpression) {
     accepted = (parent.object as Node) === (ident as Node) &&
         !parent.optional && !parent.isSymbolAccess;
@@ -1197,6 +1256,58 @@ let isFieldUse = (ident: Identifier, owner: Node,
     forwards.push(forward);
   }
   return true;
+};
+
+/**
+ * Whether `node` is the whole value `owner` returns: a `return` operand,
+ * the expression body or a value block's tail, or an arm of an `if` or
+ * `match` (or a value block's tail inside one) in any of those places.
+ */
+let isReturnedValue = (node: Node, owner: FunctionExpression,
+    model: SemanticModel): boolean => {
+  var cur = node;
+  while (true) {
+    if ((owner.body as Node) === cur) {
+      return true;
+    }
+    let p = model.getParent(cur);
+    if (p == null) {
+      return false;
+    }
+    if (p is ReturnStatement) {
+      let arg = p.argument;
+      return arg != null && (arg as Node) === cur && !p.isTail &&
+          enclosingFunction(p, model) === (owner as Node);
+    }
+    if (p is IfExpression) {
+      if (p.test === cur) {
+        return false;
+      }
+    } else if (p is MatchCase) {
+      if ((p.body as Node) !== cur) {
+        return false;
+      }
+    } else if (p is MatchExpression) {
+      if ((p.discriminant as Node) === cur) {
+        return false;
+      }
+    } else if (p is ExpressionStatement) {
+      let block = model.getParent(p);
+      if (!(block is BlockStatement)) {
+        return false;
+      }
+      let stmts = block.body;
+      if (stmts.length == 0 || (stmts[stmts.length - 1] as Node) !== (p as Node)) {
+        return false;
+      }
+      cur = block;
+      continue;
+    } else {
+      return false;
+    }
+    cur = p as Node;
+  }
+  return false;
 };
 
 /** `ident` as an argument of a direct call to a module-level function. */

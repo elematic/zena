@@ -182,10 +182,14 @@ is one of:
 - `p.field` (not `p?.field`), including under `??`;
 - `let {...} = p`, and a destructuring parameter's own pattern;
 - `g(..., p, ...)` for a top-level function `g` whose matching parameter
-  has the same record type and is itself fields-only.
+  has the same record type and is itself fields-only;
+- returning it whole (a `return` operand, the expression body, a value
+  block's tail, or an arm of an `if` or `match` in one of those
+  places), when the parameter has the result's record type and the
+  function's result explodes (see [Results](#results)).
 
-Any other use (stored, returned, spread, compared, matched, captured,
-passed to anything else) means the function needs the record. Demand
+Any other use (stored, spread, compared, matched, captured, passed to
+anything else) means the function needs the record. Demand
 starts optimistic and only turns to "needs the record" on evidence, so a
 function that passes its record to itself, or to a mutually recursive
 partner, is fields-only.
@@ -362,7 +366,18 @@ The two facts run the other way from parameters:
 
 A result explodes when it is both. `return g(...)` makes each depend on
 the other function's verdict, so the pass iterates from "no result
-explodes" until nothing changes. It then marks the calls whose results
+explodes" until nothing changes.
+
+A parameter returned whole ties a parameter's verdict to its own
+function's result: returning it is a fields-only use when the result
+explodes, and an exploded parameter returned is the result's fields on
+hand. Demand assumes such a return keeps the parameter fields-only. When
+the results are settled, a parameter that would explode while its
+function's result does not needs the record after all, so the pass
+marks it and runs demand, availability and results again. Each round
+only takes parameters away, so it ends. `(v: V): V => v` called with a
+literal and destructured then passes the fields through without a
+record on either side. It then marks the calls whose results
 lowering holds as fields (`wasm.fieldsOnlyResultCalls`, by node id).
 
 **Lowering.** In a core with an exploded result, every return site
@@ -455,9 +470,6 @@ Not yet covered:
 - A var captured by a closure, which needs a cell holding the record.
 - A `var` written an `if` or `match` with literal arms: only returns
   merge an expression's arms as fields.
-- A parameter returned whole (`(v: V): V => v`): returning a parameter
-  is not yet a fields-only use of it, though it would be when the
-  result explodes.
 - A `let`-bound result passed to a fields-only parameter whose function
   has no other unpacked caller: the call passes the record, because
   availability does not yet propagate from results.
