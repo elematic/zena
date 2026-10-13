@@ -59,7 +59,7 @@ import {
 import { lowerStringLiteral, lowerTaggedTemplate, lowerTemplateLiteral } from './templates.zena';
 import {
   exactClassTest, lowerCaseClassEq, lowerCaseClassHash, lowerErasedEq,
-  lowerEqIntrinsic, lowerHashIntrinsic,
+  lowerErasedEqDispatch, lowerEqIntrinsic, lowerHashIntrinsic,
 } from './equality.zena';
 import {
   bindRecordProp, branchUnless, collectPatternBindSyms,
@@ -835,6 +835,10 @@ let lowerFunctionOrThrow = (wasm: WasmModule, func: WasmFunction): IrBody => {
   if (func.isCaseClassEq) {
     let lowerer = new FunctionLowerer(wasm, func);
     return lowerer.lowerCaseClassEq();
+  }
+  if (func === wasm.erasedEqFunc) {
+    let lowerer = new FunctionLowerer(wasm, func);
+    return lowerer.lowerErasedEqDispatch();
   }
   if (func.isCaseClassHash) {
     let lowerer = new FunctionLowerer(wasm, func);
@@ -1651,6 +1655,10 @@ export final class FunctionLowerer {
    * accessor rename applied. Both mirrored exactly.
    */
   /** Synthesized case-class operator== (see ir/equality.zena). */
+  lowerErasedEqDispatch(): IrBody {
+    return lowerErasedEqDispatch(this.#cx());
+  }
+
   lowerCaseClassEq(): IrBody {
     return lowerCaseClassEq(this.#cx());
   }

@@ -12,7 +12,7 @@ import {
   instantiateClassType,
 } from '../../types.zena';
 import {
-  ValType, ValTypeAnyRef, ValTypeEqRef, ValTypeF32, ValTypeF64, ValTypeI32, ValTypeI64, ValTypeV128, ValTypeRef, ValTypeRefNull, ValTypeStructRef, isNullableAnyRef, refTargetOf, sameHeapType,
+  ValType, ValTypeAnyRef, ValTypeEqRef, ValTypeF32, ValTypeF64, ValTypeI32, ValTypeI64, ValTypeV128, ValTypeRef, ValTypeRefNull, ValTypeStructRef, isNullableAnyRef, isRefValType, refTargetOf, sameHeapType,
 } from '../wasm.zena';
 import {
   ClassCodegenInfo, WasmField, WasmFunction, WasmSignature, WasmStruct,
@@ -301,6 +301,12 @@ let equalityIntroducers = (cx: LoweringContext, info: ClassCodegenInfo,
   }
 };
 
+/**
+ * How many introducing classes a comparison tests inline before it calls
+ * the shared erased dispatch instead.
+ */
+let inlineIntroducerLimit = 4;
+
 /** `a == b` with both operands non-null references of class `ct` or below. */
 let classEqNonNull = (cx: LoweringContext, a: i32, b2: i32, ct: ClassType): i32 => {
   let i32vt = new ValTypeI32() as ValType;
@@ -331,6 +337,15 @@ let classEqNonNull = (cx: LoweringContext, a: i32, b2: i32, ct: ClassType): i32 
   equalityIntroducers(cx, equalityClassInfo(cx, ct), introducers);
   if (introducers.length == 0) {
     return cx.b.binary(IrOp.ref_eq, i32vt, a, b2);
+  }
+  // A long list is the shared erased dispatch's: `a` is a `ct`, so only
+  // the classes below `ct` can match there too, and one call replaces a
+  // copy of the tests at every comparison. A sealed base whose cases each
+  // derive `==` is the usual way to get here, and its fields compared in
+  // every case's derived operator multiplied the copies.
+  let shared = cx.wasm.erasedEqFunc;
+  if (shared != null && introducers.length > inlineIntroducerLimit) {
+    return cx.b.callFunc(cx.b.addRef(new IrRefFunc(shared)), twoValues(a, b2), i32vt);
   }
   let mergeB = cx.b.newBlock();
   let result = cx.b.blockParam(mergeB, i32vt);
@@ -660,9 +675,10 @@ export let lowerCaseClassHash = (cx: LoweringContext): IrBody => {
 };
 
 /**
- * Erased equality over eqref-typed operands: identity, then null,
- * then String content, then boxed-primitive value tiers, then false
- * — streaming's exact tier order.
+ * Erased equality over eqref-typed operands: identity, then null, then
+ * the runtime class's `operator ==` through the shared dispatch, else
+ * false. Without the dispatch (nothing marked equality as dispatched)
+ * the references are simply different.
  */
 export let lowerErasedEq = (cx: LoweringContext, leftIn: i32, rightIn: i32): i32 => {
   let i32vt = new ValTypeI32() as ValType;
@@ -691,64 +707,127 @@ export let lowerErasedEq = (cx: LoweringContext, leftIn: i32, rightIn: i32): i32
   var contB = cx.b.newBlock();
   cx.b.brIf(anyNull, merge, oneValue(zero), contB, noValues());
 
-  // String content tier.
+  // The runtime class's operator: the shared dispatch tests each class
+  // that introduces one (lowerErasedEqDispatch). Every comparison through
+  // an erased or interface operand goes there, so `==` means the same
+  // through `anyref` as at the value's own class.
   cx.b.switchTo(contB);
-  let stringClassOpt = cx.wasm.stringClass;
-  if (stringClassOpt != null) {
-    let sKey = getClassKey(stringClassOpt);
-    var sStruct: WasmStruct | null = null;
-    if (let (true, info) = cx.wasm.classInfos.get(sKey)) {
-      sStruct = info.structType;
-    }
-    var eqFunc: WasmFunction | null = null;
-    if (let (true, f) = cx.wasm.classMethodMap.get(
-        getClassMethodKey(sKey, '=='))) {
-      eqFunc = f;
-    }
-    if (sStruct != null && eqFunc != null) {
-      let strVt = new ValTypeRef(sStruct) as ValType;
-      let lIsS = cx.b.emit(IrOp.ref_test, i32vt, left,
-          cx.b.internType(strVt));
-      let rIsS = cx.b.emit(IrOp.ref_test, i32vt, right,
-          cx.b.internType(strVt));
-      let bothS = cx.b.binary(IrOp.i32_and, i32vt, lIsS, rIsS);
-      let strB = cx.b.newBlock();
-      let afterStrB = cx.b.newBlock();
-      cx.b.brIf(bothS, strB, noValues(), afterStrB, noValues());
-      cx.b.switchTo(strB);
-      let lS = cx.b.emit(IrOp.ref_cast, strVt, left,
-          cx.b.internType(strVt));
-      let rS = cx.b.emit(IrOp.ref_cast, strVt, right,
-          cx.b.internType(strVt));
-      let content = cx.b.callFunc(
-          cx.b.addRef(new IrRefFunc(eqFunc)),
-          twoValues(lS, rS),
-          if (eqFunc.signature.returns.length == 1) {
-            eqFunc.signature.returns[0]
-          } else {
-            null
-          });
-      cx.b.br(merge, oneValue(content));
-      cx.b.switchTo(afterStrB);
-      contB = afterStrB;
-    }
+  let dispatchOpt = cx.wasm.erasedEqFunc;
+  if (dispatchOpt != null) {
+    let dispatch = dispatchOpt;
+    let answer = cx.b.callFunc(cx.b.addRef(new IrRefFunc(dispatch)),
+        twoValues(left, right), i32vt);
+    cx.b.br(merge, oneValue(answer));
+    cx.b.switchTo(merge);
+    return res;
   }
-
-  // No further tiers. `String` earns one because its `==` IS content
-  // equality at every static type; a class the compiler knows nothing
-  // about compares as its own `==` does, and for a class without one
-  // that is identity, already answered by the `ref_eq` above. This
-  // used to unwrap `Box<prim>` and compare the payloads, which made
-  // `==` mean something different through an erased operand than at
-  // the value's own static type (`Box` declares no `==`, so
-  // `a == b` on two `Box<f64>(1.5)` was false while the same pair
-  // through `anyref` was true) — and `hash` never followed, so the
-  // two together could not satisfy the eq/hash contract.
 
   // Different or non-comparable references: false.
   cx.b.br(merge, oneValue(zero));
   cx.b.switchTo(merge);
   return res;
+};
+
+/**
+ * The introducing classes the erased dispatch tests: each declares or
+ * derives a reached `operator ==` and its superclass has none, so one
+ * instance-of test covers its whole subtree and the operator's own
+ * dispatch picks the override. String first, as the common case; the rest
+ * in type order, so the output does not depend on hash order.
+ */
+let erasedEqualityIntroducers = (cx: LoweringContext): GrowableArray<ClassCodegenInfo> => {
+  let found = new Array<ClassCodegenInfo>();
+  for (let entry in cx.wasm.classInfos) {
+    let info = entry.value;
+    let ct = info.structType.classType;
+    if (ct == null || ct.isExtension || !laidOut(info) || !ct.members.has("==")) {
+      continue;
+    }
+    if (!cx.wasm.classMethodMap.has(getClassMethodKey(getClassKey(ct), "=="))) {
+      continue;
+    }
+    let sup = ct.superType;
+    if (sup != null && (sup as ClassType).members.has("==")) {
+      continue;
+    }
+    found.push(info);
+  }
+  // Insertion sort by type index: small, stable, deterministic.
+  for (var i = 1; i < found.length; i += 1) {
+    let x = found[i];
+    var j = i - 1;
+    while (j >= 0 && found[j].structType.index > x.structType.index) {
+      found[j + 1] = found[j];
+      j -= 1;
+    }
+    found[j + 1] = x;
+  }
+  let ordered = new Array<ClassCodegenInfo>();
+  for (let info in found) {
+    if (isStringStruct(cx, info.structType)) {
+      ordered.push(info);
+    }
+  }
+  for (let info in found) {
+    if (!isStringStruct(cx, info.structType)) {
+      ordered.push(info);
+    }
+  }
+  return ordered;
+};
+
+/**
+ * The body of `$erasedEq(a, b)`: equality of two references whose class
+ * the caller does not know (equality.md, "Equality through interfaces and
+ * anyref"). Identity, then null; then a test of `a` against each class
+ * that introduces an `operator ==`. When one matches, `b` must be of that
+ * class too, and that class's operator answers through its own dispatch
+ * (lowerClassEquality's path). A class that matches none compares
+ * identity, already answered.
+ */
+export let lowerErasedEqDispatch = (cx: LoweringContext): IrBody => {
+  let i32vt = new ValTypeI32() as ValType;
+  let sig = cx.func.signature;
+  let entry = cx.b.newBlock();
+  let a = cx.b.blockParam(entry, sig.params[0]);
+  let b2 = cx.b.blockParam(entry, sig.params[1]);
+  cx.b.switchTo(entry);
+  let same = cx.b.emit(IrOp.ref_eq, i32vt, a, b2);
+  let sameB = cx.b.newBlock();
+  let restB = cx.b.newBlock();
+  cx.b.brIf(same, sameB, noValues(), restB, noValues());
+  cx.b.switchTo(sameB);
+  cx.b.ret(cx.b.constI32(1, i32vt));
+  cx.b.switchTo(restB);
+  let aNull = cx.b.emit(IrOp.ref_is_null, i32vt, a, -1);
+  let bNull = cx.b.emit(IrOp.ref_is_null, i32vt, b2, -1);
+  let anyNull = cx.b.binary(IrOp.i32_or, i32vt, aNull, bNull);
+  let nullB = cx.b.newBlock();
+  let testsB = cx.b.newBlock();
+  cx.b.brIf(anyNull, nullB, noValues(), testsB, noValues());
+  cx.b.switchTo(nullB);
+  cx.b.ret(cx.b.constI32(0, i32vt));
+  cx.b.switchTo(testsB);
+  for (let x in erasedEqualityIntroducers(cx)) {
+    let xct = x.structType.classType as ClassType;
+    let isX = refTestOf(cx, a, x.structType);
+    let thenB = cx.b.newBlock();
+    let nextB = cx.b.newBlock();
+    cx.b.brIf(isX, thenB, noValues(), nextB, noValues());
+    cx.b.switchTo(thenB);
+    let otherIsX = refTestOf(cx, b2, x.structType);
+    let callB = cx.b.newBlock();
+    let falseB = cx.b.newBlock();
+    cx.b.brIf(otherIsX, callB, noValues(), falseB, noValues());
+    cx.b.switchTo(falseB);
+    cx.b.ret(cx.b.constI32(0, i32vt));
+    cx.b.switchTo(callB);
+    cx.b.ret(classEqNonNull(cx, refCastTo(cx, a, x.structType),
+        refCastTo(cx, b2, x.structType), xct));
+    cx.b.switchTo(nextB);
+  }
+  cx.b.ret(cx.b.constI32(0, i32vt));
+  return cx.b.finish();
 };
 
 /**
@@ -798,7 +877,15 @@ export let lowerEqIntrinsic = (cx: LoweringContext, call: CallExpression): i32 =
   let ctA = cx.classTypeOfValue(a);
   let ctB = cx.classTypeOfValue(b2);
   if (ctA == null || ctB == null) {
-    bail(cx, 'eq operand type');
+    // An interface value or an erased reference: the runtime class
+    // answers, through the erased comparison.
+    let ta = cx.substitutedNodeType(call.args[0]);
+    let tb = cx.substitutedNodeType(call.args[1]);
+    if (ta == null || tb == null || !isRefValType(va) || !isRefValType(vb)) {
+      bail(cx, 'eq operand type');
+    }
+    return lowerErasedEq(cx, cx.unwrapFatPointer(ta as Type, a),
+        cx.unwrapFatPointer(tb as Type, b2));
   }
   let strClass = cx.wasm.stringClass;
   if (strClass != null &&

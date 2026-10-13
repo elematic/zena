@@ -289,9 +289,9 @@ side table. Therefore:
 
 ### Equality through interfaces and anyref
 
-`==` on an interface-typed or `anyref` operand must reach the runtime
-class's `operator ==` too, or the static-type problem returns one level
-up. Today neither can reach it:
+`==` on an interface-typed or `anyref` operand reaches the runtime
+class's `operator ==` too, or the static-type problem would return one
+level up. Neither representation names the class:
 
 - An interface value is a pair `{instance: anyref, vtable}`. Its vtable
   holds trampolines that call each target directly, with no link to the
@@ -299,30 +299,108 @@ up. Today neither can reach it:
 - There is no common root struct. Every class struct has its
   `<vtable>` at field 0, but each hierarchy root is its own unrelated
   wasm type, and so is each root's vtable type.
-- The erased comparison (`lowerErasedEq`) tests identity, then null,
-  then `ref.test` against `String` and a direct call to `String.==`.
-  It calls no other class's `==`.
 
-Two ways to close this, not yet chosen (open question 1):
+So the comparison finds the class by testing for it. A shared function,
+`$erasedEq(a, b)`, tests `a` against each class in the program that
+introduces a reached `operator ==` (declares or derives one, while its
+superclass has none), `String` first. When one matches, `b` must be of
+that class too, and that class's operator answers through its own
+dispatch. A class that matches none has identity equality. One test
+covers a whole subtree, because `ref.test` is an instance-of test and
+the operator's virtual call picks the override; a hierarchy with no
+operator anywhere needs no test. Every erased or interface-typed `==`
+calls `$erasedEq` after testing identity and null inline, and an
+interface value is unwrapped to its instance first.
 
-1. **A type-test chain.** Extend the erased comparison with one
-   `ref.test` per hierarchy that has a reached `operator ==`, calling
-   that root's slot. The `String` tier is already this shape. The cost
-   grows with the number of such hierarchies in the program.
-2. **A common root.** Give every class struct a supertype
-   `$Object { <vtable>: ref null $ObjectVTable }`, with `==` at a fixed
-   first slot of `$ObjectVTable`. Dispatch is one cast, one load and one
-   `call_ref`. This changes the type section of every program, and
-   wasmtime's cast performance depends on type finality and placement
-   (struct-finality.md), so it needs measuring.
-
-Either way, extension-class instances are not structs (a `FixedArray`
-is a raw wasm array) and keep identity.
+Extension-class instances are not structs (a `FixedArray` is a raw wasm
+array) and keep identity.
 
 With this in place, code that needs equality across unrelated types,
 such as test assertions over `anyref`, uses `==` directly. The earlier
 plan for an explicit `DynEquatable` interface for that purpose is no
 longer needed.
+
+#### How `==` is lowered
+
+```
+a == b
+├─ primitives, records, tuples: by value, as before
+├─ a literal null operand: ref.is_null
+├─ a class C, or C | null                     (ir/equality.zena, lowerClassEquality)
+│  ├─ either operand nullable: both null → true, one null → false, else on
+│  ├─ C has an operator == (declared, derived or inherited)
+│  │    b outside the class that owns the operator's slot → false
+│  │    otherwise call it: directly when no reached subclass overrides it,
+│  │    through the vtable when one does
+│  └─ C has none
+│       for each class X below C that introduces one:
+│         a is X → (b is X → X's operator, else false)
+│       none matched → ref.eq
+│       (more than four such classes, and $erasedEq exists: call it instead)
+├─ an interface, anyref, eqref or erased type parameter
+│    (lowerErasedEq; the interface pair unwrapped to its instance)
+│  ├─ ref.eq → true; either null → false
+│  └─ $erasedEq(a, b)                          (lowerErasedEqDispatch)
+│       for each class X in the program that introduces a reached operator,
+│       String first, the rest in type order:
+│         a is X → (b is X → X's operator, else false)
+│       none matched → false
+└─ the start of a declared operator == of class D (lowerEqualityPrologue)
+     other of exactly this's class? otherwise false:
+     the same object → yes; D has no subclass with instances → ref.test;
+     else test this against D's subtree, subclasses first
+```
+
+`equals<T>` and a case class's derived `==` on a class-typed field take
+the class branch, and an interface or erased `T` the erased one.
+
+#### Choosing the chain
+
+Two other ways to answer an erased `==` were measured or considered.
+
+**A common root.** Every class struct gets a supertype
+`$Object { <vtable> }`, with `==` at a fixed slot of the vtable type:
+one cast, one load and one `call_ref`, whatever the program's size. Its
+cost is that `<vtable>` becomes read on every class, so dead-field
+elimination can no longer delete it, and every vtable global and the
+accessors it installs survive. Keeping every `<vtable>` live in an
+otherwise unchanged `-O2` build measures that part alone:
+
+| Program          | Introducing classes | Erased `==` sites | Size      | With every `<vtable>` kept |
+| ---------------- | ------------------- | ----------------- | --------- | -------------------------- |
+| hello-world      | 1                   | 0                 | 7,352     | 7,842 (+6.7%)              |
+| other benchmarks | 1                   | 0                 | 7–13 KB   | +5–6%                      |
+| zb               | 5                   | 20                | 181,841   | 211,818 (+16.5%)           |
+| the compiler     | 15                  | 46                | 1,854,767 | 2,179,226 (+17.5%)         |
+| zena-cli module  | 123                 | 50                | 2,474,390 | 2,847,322 (+15.1%)         |
+
+The root's own slot, supertype and identity operators would add to
+that. The chain is one function of one test per introducing class.
+
+**A shared supertype only for hierarchies with an operator.** Roots of
+hierarchies that contain an introducing class hang under one struct type
+whose vtable has `==` at slot 0, and erased `==` is one `ref.test`
+against it. Hierarchies without an operator would be untouched, but the
+large ones with an operator, such as the compiler's `Type`, AST and IR
+hierarchies, are where most of the vtable cost above is.
+
+As built, the chain costs the compiler 36 KB (2,199,792 to 2,235,804
+bytes). Most of it is the operators an erased comparison may now call:
+105 more `==` functions, most of them AST and IR cases' derived ones,
+and `$erasedEq` itself. Inlining the tests below a base without an
+operator at every comparison, as `==` on a class does when the list is
+short, cost 232 KB, because each case's derived `==` repeated them for
+every field typed as the base; past four classes such a comparison
+calls `$erasedEq` instead.
+
+Both are implementation choices with the same semantics, so the chain
+can be replaced if erased comparisons over many classes turn out to be
+hot. Its runtime cost is one test per introducing class tried before the
+match, and the sealed bases whose cases each derive `==` are what make
+the list long. Two narrowings are open: at an interface-typed site only
+the introducing classes that implement the interface can appear, and
+reachability could leave out classes whose instances never reach an
+erased value.
 
 ## Reversed: no fallback from `==` to identity
 
@@ -389,29 +467,23 @@ problem above was asserted by a test.
    once and otherwise tests the receiver against the declaring class's
    subtree; comparing vtables would be shorter, but reading the field
    keeps every class's vtable global alive where nothing else does.
-4. **Equality through interfaces and anyref**, once the representation
-   is chosen.
+4. **Equality through interfaces and anyref.** Done, with a type-test
+   chain (see
+   [Equality through interfaces and anyref](#equality-through-interfaces-and-anyref)).
 5. `contains`/`includes` land with the collections work that needs
    them; nothing blocks on them.
 
 ## Open questions
 
-1. Erased dispatch: a type-test chain or a common root struct (see
-   [Equality through interfaces and anyref](#equality-through-interfaces-and-anyref)).
-2. The exact-class test. `ref.test` against the receiver's struct is
-   exact only when no reached subclass of it exists. Comparing the two
-   objects' `<vtable>` pointers is exact in general, but the field is
-   null for classes reachability gives no vtable global, so those
-   classes would need one.
-3. `operator ==` overloads with other parameter types, such as an
+1. `operator ==` overloads with other parameter types, such as an
    operator that takes an interface and accepts every implementation
    (`tests/language/semantics/classes/operators/operator-eq-operand.zena`).
    Only the overload whose parameter is the declaring class overrides
    the root slot. Whether the others stay as statically dispatched
    overloads or are disallowed is undecided.
-4. Deep equality for collections (`Array<T> == Array<T>`) — wants
+2. Deep equality for collections (`Array<T> == Array<T>`) — wants
    conditional conformance (`Array<T> implements Equatable when
 T extends Equatable`); until then, explicit helpers.
-5. Ordering (`Comparable` with `this`) — same shape as `Equatable`;
+3. Ordering (`Comparable` with `this`) — same shape as `Equatable`;
    design when sorting APIs need it.
-6. Naming: `includes` vs `containsSame`.
+4. Naming: `includes` vs `containsSame`.

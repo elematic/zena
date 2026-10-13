@@ -467,6 +467,24 @@ export final class TypeLowerer implements TypeLowererInterface {
  * ReachabilityVisitor traverses reachable AST node subtrees to extract their dependencies,
  * queueing newly discovered methods, functions, and instantiations.
  */
+/**
+ * An interface-typed `==` operand, possibly nullable: its class is not
+ * known statically, so the comparison goes through the erased dispatch.
+ */
+let isInterfaceOperand = (t: Type): boolean => {
+  if (t is InterfaceType) {
+    return true;
+  }
+  if (t is UnionType) {
+    for (let m in t.types) {
+      if (m is InterfaceType) {
+        return true;
+      }
+    }
+  }
+  return false;
+};
+
 export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
   pass: ReachabilityContext;
   #discoveringOnDemand = new Set<SymbolId>();
@@ -597,7 +615,8 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
     if (lt != null) {
       let lr = resolveType(lt);
       let lv = typeToValType(this.pass.wasm, lr);
-      if (lv is ValTypeAnyRef || lv is ValTypeEqRef || lv is ValTypeStructRef) {
+      if (lv is ValTypeAnyRef || lv is ValTypeEqRef || lv is ValTypeStructRef ||
+          isInterfaceOperand(lr)) {
         erased = true;
       }
       // A CONCRETE class operand lowers to a direct call of the
@@ -609,13 +628,14 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
     if (rt != null) {
       let rr = resolveType(rt);
       let rv = typeToValType(this.pass.wasm, rr);
-      if (rv is ValTypeAnyRef || rv is ValTypeEqRef || rv is ValTypeStructRef) {
+      if (rv is ValTypeAnyRef || rv is ValTypeEqRef || rv is ValTypeStructRef ||
+          isInterfaceOperand(rr)) {
         erased = true;
       }
       this.#rootEqOperator(rr, model);
     }
     if (erased) {
-      this.pass.equalityDispatchUsed = true;
+      this.pass.useEqualityDispatch();
     }
   }
 
@@ -642,7 +662,7 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
     // Seeing case-class equality IS the evidence; set it now, during
     // the walk.
     if (ct.derivesEquality) {
-      this.pass.equalityDispatchUsed = true;
+      this.pass.useEqualityDispatch();
     }
     let ccModel = this.pass.getClassModel(ct);
     for (let md in this.pass.cha.findImplementingMethods(ct, "==")) {
@@ -3092,7 +3112,7 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
             } else if (dfIntrinsicName == "eq") {
               // The eq intrinsic lowers through the equality diamond,
               // whose string tier resolves String.== by name.
-              this.pass.equalityDispatchUsed = true;
+              this.pass.useEqualityDispatch();
               let {stringClass} = this.pass.wasm;
               if (stringClass != null) {
                 let eqSc = stringClass;
@@ -3104,7 +3124,7 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
             } else if (dfIntrinsicName == "hash") {
               // hash<T> dispatches hashCode through class vtables on
               // erased receivers — the other equality-dispatch signal.
-              this.pass.equalityDispatchUsed = true;
+              this.pass.useEqualityDispatch();
               if (this.pass.wasm.stringClass != null) {
                 let hSc = this.pass.wasm.stringClass as ClassType;
                 this.pass.notePendingMemberReach(

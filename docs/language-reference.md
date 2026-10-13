@@ -3660,6 +3660,16 @@ A `null` operand is compared before any operator runs: two nulls are equal,
 and null never equals an object. `===` compares identity whatever the
 class declares.
 
+The answer is the same when the operands are typed as an interface, as
+`anyref`, or as an unconstrained type parameter: the runtime class's operator
+answers, and objects of different classes are not equal.
+
+```zena
+let a: Named = new Point(1, 2);
+let b: Named = new Point(1, 2);
+a == b; // true: Point's operator answers
+```
+
 A hierarchy where no class declares `operator ==` compiles `==` to an
 identity test, so the virtual call costs nothing until some class asks for
 it.

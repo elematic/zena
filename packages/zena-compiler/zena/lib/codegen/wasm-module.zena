@@ -1290,6 +1290,12 @@ export final class WasmModule {
   var hasMemory: boolean = false;
   var stringHashFunc: WasmFunction | null = null;
   /**
+   * `$erasedEq(a, b)`: equality of two references whose class is not known
+   * statically, dispatched to the runtime class's `operator ==`
+   * (ir/equality.zena, lowerErasedEqDispatch).
+   */
+  var erasedEqFunc: WasmFunction | null = null;
+  /**
    * Set by RTA when String is genuinely instantiated. The `$string*`
    * host-interop helpers are synthesized against String's struct
    * layout and exist to hand String values across the host boundary,
@@ -2142,6 +2148,21 @@ export final class WasmModule {
     hashFunc.name = "$stringHash";
     this.addFunction(hashFunc);
     this.stringHashFunc = hashFunc;
+  }
+
+  ensureErasedEqInfra(model: SemanticModel): void {
+    if (this.erasedEqFunc != null) {
+      return;
+    }
+    let params = new Array<ValType>();
+    params.push(new ValTypeEqRef());
+    params.push(new ValTypeEqRef());
+    let returns = new Array<ValType>();
+    returns.push(new ValTypeI32());
+    let func = new WasmFunction(this.getSignature(params, returns), null, model);
+    func.name = "$erasedEq";
+    this.addFunction(func);
+    this.erasedEqFunc = func;
   }
 
   
