@@ -1,0 +1,43 @@
+// @mode: run
+// @result: 0
+// An integer literal beside an i64 takes i64, on either side of any
+// comparison or arithmetic operator (#321). A literal typed i32 instead
+// wrapped 3000000000 to -1294967296, and the comparison answered wrong.
+// Each check returns its own number when it fails.
+
+export let main = (): i32 => {
+  let x: i64 = 7;
+  let big: i64 = 3000000000;
+
+  if (!(x < 3000000000)) return 1;
+  if (!(x <= 3000000000)) return 2;
+  if (x > 3000000000) return 3;
+  if (x >= 3000000000) return 4;
+  if (!(3000000000 > x)) return 5;
+  if (3000000000 < x) return 6;
+  if (x == 3000000000) return 7;
+  if (!(x != 3000000000)) return 8;
+
+  if (!(big == 3000000000)) return 9;
+  if (!(3000000000 == big)) return 10;
+  if (3000000000 != big) return 11;
+
+  // Wider than 32 bits: these failed to compile at all.
+  if (!(x < 5000000000)) return 12;
+  if (!(5000000000 > x)) return 13;
+
+  // A hex literal is a bit pattern, so 0xFFFFFFFF beside an i64 is
+  // 4294967295, not the i32 -1.
+  if (!(x < 0xFFFFFFFF)) return 14;
+
+  // Arithmetic, literal on either side.
+  if (x + 3000000000 != 3000000007) return 15;
+  if (3000000000 + x != 3000000007) return 16;
+  if (3000000000 - x != 2999999993) return 17;
+
+  // Negative literals.
+  if (!(x > -3000000000)) return 18;
+  if (!(-3000000000 < x)) return 19;
+
+  return 0;
+};
