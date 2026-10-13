@@ -86,3 +86,24 @@ Speed benchmarks use `zena-cli bench` (powered by `zena:bench`):
 - **Fresh instantiation**: Each `.wasm` sample is freshly instantiated and timed host-side (`Instant`), excluding compilation and module load time.
 - **Distributions & Welch's t-difference of means**: 95% confidence intervals and hypothesis testing determine whether differences are statistically significant or "unsure".
 - **Result Output**: Outputs detailed comparison and writes `<workload>.results.json`.
+
+---
+
+## HTTP File Serving
+
+`benchmarks/http/file-serving.sh` times serving one file over HTTP from
+`zena-cli` (issue #323). It writes a file of random bytes, serves it with
+`benchmarks/http/file-server.zena`, and fetches it with curl two ways:
+through `serve`, where the file's stream goes to the response unread and
+the host copies it, and through `/copy/`, where the guest reads the file
+and sends the bytes. Python's `http.server` (which uses `sendfile`) on the
+same file is the reference. Each route's bytes are checked against the
+file once.
+
+```sh
+benchmarks/http/file-serving.sh
+SIZE_MB=256 RUNS=25 benchmarks/http/file-serving.sh
+```
+
+A dev build of `zena-cli` compiles against the standard library of the
+checkout it was built from, so run the script from that checkout.

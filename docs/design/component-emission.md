@@ -1545,8 +1545,10 @@ instead of making a pair. A file's `read-via-stream` set as a
 `zena:http` response body therefore goes to `response.new` as is, and
 wasmtime copies the file to the connection host to host; no byte
 enters linear memory or the GC heap. Serving a 64 MB file this way
-took 0.25 s against 1.7 s for reading it into a `FixedArray<u8>` and
-writing it back (`examples/static-passthrough-probe.zena`). The same
+takes about 17 ms under zena-cli, against 1.5 s for reading it into a
+`FixedArray<u8>` and writing it back (`benchmarks/http/file-serving.sh`;
+stock wasmtime-wasi's 8 KiB file reads make it 245 ms, which
+zena-runtime's `fs_read.rs` works around). The same
 applies to a request body forwarded to an outgoing request. A stream
 that has been read, or stopped, is pumped as before; one that has been
 handed on throws on read. Stopping an unread stream drops its end

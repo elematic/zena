@@ -1,0 +1,27 @@
+/**
+ * The server `file-serving.sh` times: the files of the directory
+ * preopened as `/data`, over HTTP on port 8099.
+ *
+ * - `/<name>` is `serve`: the file's `read-via-stream` goes to the
+ *   response as is, and the host copies it to the connection.
+ * - `/copy/<name>` reads the file into the guest first and sends those
+ *   bytes, for comparison with a body the guest produces.
+ *
+ *   ./target/release/zena-cli run --dir <dir>::/data benchmarks/http/file-server.zena
+ */
+
+import { App, mount, send, serve } from 'zena:http';
+import { Stream, readAllBytes } from 'zena:stream';
+
+export function main(): void {
+  let app = new App();
+  app.use(mount('/copy', async (req, res, next) => {
+    await send(req, res, req.path, {root: '/data'});
+    let body = res.body;
+    if (body is Stream<u8>) {
+      res.body = await readAllBytes(body as Stream<u8>);
+    }
+  }));
+  app.use(serve('/data'));
+  app.listen(8099 as u16, (): void => {});
+}
