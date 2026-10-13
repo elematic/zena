@@ -846,7 +846,7 @@ Reading a user type out of it, and writing one into it, needs per-type
 conversion code. Writing that by hand for every type is error-prone, and
 generating it needs either a derive mechanism on user declarations or
 structural reflection. `zena:json` has the same need for typed JSON, so
-the two should share a design. That design is out of scope here.
+the two share one design: [typed-documents.md](typed-documents.md).
 
 ### The hand-written client
 
