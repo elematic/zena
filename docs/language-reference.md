@@ -299,13 +299,28 @@ let b: u8 = 255;        // OK
 let c: u8 = 256;        // Error: Integer literal 256 is out of range for type 'u8'
 ```
 
-For the types whose range the compiler checks — the narrow types (`u8`, `u16`,
-`i8`, `i16`) and the unsigned types (`u32`, `u64`) — a literal that cannot be
-represented is rejected. `i32` and `i64` do not currently range-check their
-literals.
+A literal that cannot be represented in the type it takes is rejected,
+whatever that type is. With no context an integer literal is an `i32`, so
+`let big = 3000000000;` is an error; write `let big: i64 = 3000000000;`. For
+`i32` and `i64`, a decimal literal must fit the signed range, while a hex
+literal may use every bit, as a bit pattern: `0xFFFFFFFF` is the `i32` -1.
 
-A negated literal is measured as a whole, so `let low: i8 = -128;` is accepted
-even though `128` alone would not fit.
+```zena
+let a = 2147483647;      // OK
+let b = 2147483648;      // Error: Integer literal 2147483648 is out of range for type 'i32'
+let c = 0xFFFFFFFF;      // OK: the i32 -1
+let d: i64 = 5000000000; // OK
+```
+
+A negated literal is measured as a whole, so `let low: i8 = -128;` and
+`let min = -2147483648;` are accepted even though `128` and `2147483648` alone
+would not fit.
+
+A literal written directly under a cast to a primitive type is read at the
+cast's width, so it is measured against that width: 64 bits for `i64` and
+`u64`, 32 bits signed or unsigned for the narrower integers, and any value for
+a float. `18446744073709551615 as u64` is accepted, and `-1 as u32` still
+reinterprets the bits of -1.
 
 **Overloaded calls**: contextual typing reaches overload resolution as well. A
 literal argument first types on its own, and only if no signature matches that
@@ -5110,6 +5125,25 @@ let x: i32 = throw new Error("Boom"); // Valid, x is never assigned
 ```
 
 The expression thrown must be an instance of the `Error` class (or a subclass).
+
+### Try Expression
+
+`try` catches what its body throws. Like `if` and `match`, it is an
+expression: its value is the value of the body's last expression, or of the
+handler's when the body threw.
+
+```zena
+let n = try {
+  parse(text)
+} catch (e) {
+  0
+};
+```
+
+The two values join the way `if` and `match` arms do, so they must form a valid
+type: `try { 1 } catch (e) { e.message }` is an error, because a primitive and a
+reference type cannot share a union. A `try` used as a statement discards its
+value, so its arms may end in expressions of any types.
 
 ### The `cancel` Clause
 
