@@ -593,7 +593,7 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
             (func.intrinsic != null &&
              ((func.intrinsic as String) == "eq" ||
               (func.intrinsic as String) == "hash"))) {
-          this.equalityDispatchUsed = true;
+          this.useEqualityDispatch();
           let {stringClass} = this.wasm;
           if (stringClass != null) {
             let sKey = getClassKey(stringClass);
@@ -3345,6 +3345,45 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
     }
   }
 
+  /**
+   * Marks equality as dispatched on values whose class is not known
+   * statically (an erased or interface-typed `==`, or the `eq`/`hash`
+   * intrinsics). The erased comparison calls the `operator ==` of whatever
+   * class it meets (ir/equality.zena, lowerErasedEqDispatch), so every
+   * instantiated class's operator is reached: those already instantiated
+   * now, and later ones as they are (Specializer.instantiateClassType).
+   */
+  useEqualityDispatch(): void {
+    if (this.equalityDispatchUsed) {
+      return;
+    }
+    this.equalityDispatchUsed = true;
+    let instantiated = new Array<ClassType>();
+    for (let entry in this.wasm.classInfos) {
+      let ct = entry.value.structType.classType;
+      if (ct != null && this.instantiatedSpecializedClasses.has(entry.key as String)) {
+        instantiated.push(ct);
+      }
+    }
+    for (let ct in instantiated) {
+      this.reachEqualityOf(ct);
+    }
+  }
+
+  /** Reaches `ct`'s `operator ==`, declared or derived, if it has one. */
+  reachEqualityOf(ct: ClassType): void {
+    if (!ct.members.has("==")) {
+      return;
+    }
+    let eqMethod = this.cha.findImplementingMethod(ct, "==");
+    if (eqMethod != null) {
+      this.queueReferrer(new Referrer(false, noSymbolId, (eqMethod as Node).id as i32,
+          this.getNodeModel(eqMethod as Node, this.getClassModel(ct)), ct,
+          this.currentReachable));
+    }
+    this.notePendingMemberReach(getClassMethodKey(getClassKey(ct), "=="));
+  }
+
   /** Reaches `ct`'s `operator ==` when some class above it is compared. */
   reachEqualityBelowComparedBase(ct: ClassType): void {
     if (!ct.members.has("==")) {
@@ -3424,6 +3463,11 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
     let {stringHashFunc} = this.wasm;
     if (stringHashFunc != null && this.equalityDispatchUsed) {
       this.markFunctionReached(stringHashFunc);
+    }
+    // The erased comparison's shared dispatch (ir/equality.zena).
+    if (this.equalityDispatchUsed) {
+      this.wasm.ensureErasedEqInfra(this.program.units[0].model);
+      this.markFunctionReached(this.wasm.erasedEqFunc as WasmFunction);
     }
   }
 

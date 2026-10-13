@@ -1,0 +1,100 @@
+// @mode: run
+// @result: 1
+// `==` through an interface type or `anyref` answers with the runtime class,
+// as it does at the class's own type: a declared or derived `operator ==`
+// when the class has one, identity when it does not, and false across
+// classes (docs/design/equality.md, "Equality through interfaces and
+// anyref").
+
+interface Named {
+  name(): String;
+}
+
+class Point implements Named {
+  x: i32;
+  new(this.x);
+
+  name(): String {
+    return 'point';
+  }
+
+  operator ==(other: Point): boolean {
+    return this.x == other.x;
+  }
+}
+
+class Tag(label: String) implements Named {
+  name(): String {
+    return this.label;
+  }
+}
+
+class Plain implements Named {
+  name(): String {
+    return 'plain';
+  }
+}
+
+let viaInterface = (a: Named, b: Named): boolean => a == b;
+
+let viaAnyref = (a: anyref, b: anyref): boolean => a == b;
+
+let viaGeneric = <T>(a: T, b: T): boolean => a == b;
+
+let maybe = (a: Named | null, b: Named | null): boolean => a == b;
+
+export let main = (): i32 => {
+  // A declared operator.
+  if (!viaInterface(new Point(1), new Point(1))) {
+    return 0;
+  }
+  if (viaInterface(new Point(1), new Point(2))) {
+    return 0;
+  }
+  // A case class's derived operator.
+  if (!viaInterface(new Tag('a'), new Tag('a'))) {
+    return 0;
+  }
+  // No operator: identity.
+  let p = new Plain();
+  if (viaInterface(new Plain(), new Plain()) || !viaInterface(p, p)) {
+    return 0;
+  }
+  // Different classes are never equal.
+  if (viaInterface(new Point(1), new Tag('a'))) {
+    return 0;
+  }
+  // Through anyref, the same answers, and String content still compares.
+  if (!viaAnyref(new Point(3) as anyref, new Point(3) as anyref)) {
+    return 0;
+  }
+  if (!viaAnyref(new Tag('b') as anyref, new Tag('b') as anyref)) {
+    return 0;
+  }
+  if (!viaAnyref('abc' as anyref, 'ab' + 'c' as anyref)) {
+    return 0;
+  }
+  if (viaAnyref(new Point(3) as anyref, 'abc' as anyref)) {
+    return 0;
+  }
+  // Generic code instantiated at the interface.
+  let a: Named = new Point(4);
+  let b: Named = new Point(4);
+  if (!viaGeneric(a, b)) {
+    return 0;
+  }
+  let names = new GrowableArray<Named>();
+  names.push(new Tag('x'));
+  names.push(new Point(5));
+  if (!names.contains(new Point(5)) || names.contains(new Point(6))) {
+    return 0;
+  }
+  // Nulls compare before any operator runs.
+  if (!maybe(null, null) || maybe(new Point(1), null) || maybe(null, new Point(1))) {
+    return 0;
+  }
+  if (!maybe(new Point(7), new Point(7))) {
+    return 0;
+  }
+  return 1;
+};
