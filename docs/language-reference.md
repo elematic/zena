@@ -1860,8 +1860,10 @@ let result = (1 + 2) * 3;
 
 ### Comparison Operators
 
-- `==` (Equal) - Supports value equality for strings.
-- `!=` (Not Equal) - Supports value equality for strings.
+- `==` (Equal) - Value equality for primitives, strings, records and tuples.
+  On a class, a virtual call to the operands' `operator ==` (see
+  [Equality on classes](#equality-on-classes)).
+- `!=` (Not Equal) - The negation of `==`.
 - `===` (Strict Equal) - Checks for reference equality, bypassing custom
   `operator ==`.
 - `!==` (Strict Not Equal) - Checks for reference inequality, bypassing custom
@@ -3619,6 +3621,52 @@ class Point {
 }
 ```
 
+##### Equality on classes
+
+`==` on a class is a virtual call. Every class hierarchy has an equality,
+identity unless some class in it declares `operator ==`, and the operands'
+runtime class decides which operator answers, not their static type:
+
+```zena
+sealed class Shape {
+  case Circle(radius: i32)
+  case Square(side: i32)
+}
+
+let s1: Shape = new Circle(5);
+let s2: Shape = new Circle(5);
+s1 == s2; // true: Circle's generated operator answers
+```
+
+A subclass declares its equality over its own type, which overrides the
+inherited operator:
+
+```zena
+class Point3 extends Point {
+  z: i32;
+  new(x: i32, y: i32, this.z) : super(x, y);
+
+  operator ==(other: Point3): boolean {
+    return this.x == other.x && this.y == other.y && this.z == other.z;
+  }
+}
+```
+
+Before a declared `operator ==` runs, the compiler tests that `other` is of
+exactly the receiver's runtime class, and the comparison is false otherwise.
+So a `Point3` never equals a plain `Point`, in either order, even when their
+shared fields match; an instance-of test would make `point == point3` true
+while `point3 == point` is false. A program that wants equality across
+classes writes a method for it, with a name.
+
+A `null` operand is compared before any operator runs: two nulls are equal,
+and null never equals an object. `===` compares identity whatever the
+class declares.
+
+A hierarchy where no class declares `operator ==` compiles `==` to an
+identity test, so the virtual call costs nothing until some class asks for
+it.
+
 ##### Unary Operators
 
 Only binary operators dispatch to operator methods. Unary `-` requires a
@@ -4618,11 +4666,10 @@ The behavior depends on the type `T`:
 
 - **Primitives (`i32`, `f32`, `boolean`)**: Performs value equality.
 - **Strings**: Performs value equality (byte-wise comparison).
-- **Reference Types (Classes, Arrays, Records)**:
-  - By default, performs **reference equality** (checks if both operands refer
-    to the same object).
-  - If the type implements `operator ==`, the intrinsic performs a **virtual
-    method call** to that operator.
+- **Classes**: the same virtual call as `==` (see
+  [Equality on classes](#equality-on-classes)): identity unless some class in
+  the hierarchy declares `operator ==`, and then the runtime class's operator.
+- **Arrays**: reference equality.
 
 #### Custom Equality with `operator ==`
 

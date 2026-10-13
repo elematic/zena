@@ -23,12 +23,12 @@ import {
   ValType, ValTypeF32, ValTypeF64, ValTypeI32, ValTypeI64, ValTypeV128, isRefValType, valTypeEquals,
 } from '../wasm.zena';
 import { eraseTypeParameters, getNonNullableType, typeToValTypeWithSub } from '../type-mapping.zena';
-import { parseI64OrU64Literal } from '../codegen-utils.zena';
+import { getClassKey, parseI64OrU64Literal } from '../codegen-utils.zena';
 import { IrOp } from './ir.zena';
 import {
   LoweringContext, ZirUnsupported, noValues, oneValue, twoValues,
 } from './lowering-context.zena';
-import { lowerErasedEq } from './equality.zena';
+import { lowerClassEquality, lowerErasedEq } from './equality.zena';
 import { lowerNullishCoalesce } from './control-flow.zena';
 import { lowerExpr } from './lowering.zena';
 
@@ -215,6 +215,40 @@ let refIdentityEqType = (tIn: Type): boolean => {
   return false;
 };
 
+/**
+ * The class `==` compares through when the operand's type is a class or a
+ * class or null: a struct-backed class, not an extension class (whose values
+ * are another type's) and not a type parameter.
+ */
+let equalityClassOf = (cx: LoweringContext, tIn: Type): ClassType | null => {
+  var t = tIn;
+  if (t is UnionType) {
+    var nonNull: Type | null = null;
+    var count = 0;
+    for (let m in t.types) {
+      if (!(m is NullType)) {
+        nonNull = m;
+        count += 1;
+      }
+    }
+    if (count != 1 || nonNull == null) {
+      return null;
+    }
+    t = baseType(nonNull);
+  }
+  if (!(t is ClassType)) {
+    return null;
+  }
+  let ct = eraseTypeParameters(cx.wasm, t) as ClassType;
+  if (ct.isExtension) {
+    return null;
+  }
+  if (!cx.wasm.classInfos.has(getClassKey(ct))) {
+    return null;
+  }
+  return ct;
+};
+
 /** Short-circuit && and || as a value-producing diamond. */
 let lowerLogical = (cx: LoweringContext, bin: BinaryExpression): i32 => {
   let left = lowerExpr(cx, bin.left, null);
@@ -327,6 +361,24 @@ export let lowerBinary = (cx: LoweringContext, bin: BinaryExpression): i32 => {
   // virtually there). String concat and String equality are the
   // dominant users.
   let leftBase = substitutedBaseType(cx, bin.left);
+  // `==` on a class is a virtual call whose root default is identity
+  // (equality.md, "Virtual equality with an identity default"); null
+  // operands compare first.
+  if ((bin.operator == "==" || bin.operator == "!=") && leftBase != null) {
+    let eqCt = equalityClassOf(cx, leftBase);
+    if (eqCt != null) {
+      let left = lowerExpr(cx, bin.left, null);
+      let right = lowerExpr(cx, bin.right, null);
+      if (isRefValType(cx.valueTypeOf(left)) && isRefValType(cx.valueTypeOf(right))) {
+        let same = lowerClassEquality(cx, left, right, eqCt);
+        if (bin.operator == "!=") {
+          return cx.b.emit(IrOp.i32_eqz, new ValTypeI32(), same, -1);
+        }
+        return same;
+      }
+      bail(cx, 'class eq operands');
+    }
+  }
   if (leftBase != null) {
     if (leftBase is ClassType) {
       let opMember = if (bin.operator == "!=") "==" else bin.operator;

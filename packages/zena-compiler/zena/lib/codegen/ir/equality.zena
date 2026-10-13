@@ -16,8 +16,9 @@ import {
 } from '../wasm.zena';
 import {
   ClassCodegenInfo, WasmField, WasmFunction, WasmSignature, WasmStruct,
+  isValSubtype,
 } from '../wasm-module.zena';
-import { getClassKey, getClassMethodKey } from '../codegen-utils.zena';
+import { getClassKey, getClassMethodKey, getMemberRootClass } from '../codegen-utils.zena';
 import { IrBody, IrOp, IrRefField, IrRefFunc } from './ir.zena';
 import { lowerExpr } from './lowering.zena';
 import {
@@ -160,6 +161,244 @@ let refEqFastPathCall = (cx: LoweringContext, method: WasmFunction, a: i32, b2: 
   return result;
 };
 
+/** The codegen info of a class an equality test names. */
+let equalityClassInfo = (cx: LoweringContext, ct: ClassType): ClassCodegenInfo => {
+  var infoOpt: ClassCodegenInfo | null = null;
+  if (let (true, info) = cx.wasm.classInfos.get(getClassKey(ct))) {
+    infoOpt = info;
+  }
+  if (infoOpt == null) {
+    bail(cx, 'equality class not discovered');
+  }
+  return infoOpt;
+};
+
+let refTestOf = (cx: LoweringContext, v: i32, st: WasmStruct): i32 =>
+    cx.b.emit(IrOp.ref_test, new ValTypeI32(), v,
+        cx.b.internType(new ValTypeRef(st) as ValType));
+
+let refCastTo = (cx: LoweringContext, v: i32, st: WasmStruct): i32 => {
+  let vt = new ValTypeRef(st) as ValType;
+  if (isValSubtype(cx.valueTypeOf(v), vt)) {
+    return v;
+  }
+  return cx.b.emit(IrOp.ref_cast, vt, v, cx.b.internType(vt));
+};
+
+/**
+ * Whether a class can have instances: its struct was laid out. A class no
+ * reached code instantiates is left out of the type section, and so is
+ * every class below it.
+ */
+let laidOut = (info: ClassCodegenInfo): boolean => info.structType.index >= 0;
+
+/** True when `v` is exactly of the class `info` describes, not a subclass. */
+let exactlyOf = (cx: LoweringContext, v: i32, info: ClassCodegenInfo): i32 => {
+  let i32vt = new ValTypeI32() as ValType;
+  var acc = refTestOf(cx, v, info.structType);
+  for (let sub in info.subclasses) {
+    if (!laidOut(sub)) {
+      continue;
+    }
+    let isSub = refTestOf(cx, v, sub.structType);
+    let notSub = cx.b.emit(IrOp.i32_eqz, i32vt, isSub, -1);
+    acc = cx.b.binary(IrOp.i32_and, i32vt, acc, notSub);
+  }
+  return acc;
+};
+
+/** `info`'s subtree, each class after all of its subclasses. */
+let subtreePostOrder = (info: ClassCodegenInfo, out: GrowableArray<ClassCodegenInfo>): void => {
+  for (let sub in info.subclasses) {
+    if (laidOut(sub)) {
+      subtreePostOrder(sub, out);
+    }
+  }
+  out.push(info);
+};
+
+/**
+ * Whether `other` is of exactly `self`'s class, found by testing `self`
+ * against the declaring class's subtree, subclasses first, so the first
+ * match is its own class.
+ */
+let subtreeExactTest = (cx: LoweringContext, self: i32, other: i32,
+    info: ClassCodegenInfo): i32 => {
+  let i32vt = new ValTypeI32() as ValType;
+  let order = new Array<ClassCodegenInfo>();
+  subtreePostOrder(info, order);
+  let mergeB = cx.b.newBlock();
+  let result = cx.b.blockParam(mergeB, i32vt);
+  for (var k = 0; k < order.length - 1; k += 1) {
+    let x = order[k];
+    let isX = refTestOf(cx, self, x.structType);
+    let thenB = cx.b.newBlock();
+    let nextB = cx.b.newBlock();
+    cx.b.brIf(isX, thenB, noValues(), nextB, noValues());
+    cx.b.switchTo(thenB);
+    cx.b.br(mergeB, oneValue(exactlyOf(cx, other, x)));
+    cx.b.switchTo(nextB);
+  }
+  cx.b.br(mergeB, oneValue(exactlyOf(cx, other, info)));
+  cx.b.switchTo(mergeB);
+  return result;
+};
+
+/**
+ * The test at the top of a declared `operator ==`: `other` is of exactly
+ * the receiver's runtime class (equality.md, "Overrides compare the same
+ * class"). An instance-of test would make `point == point3` true while
+ * `point3 == point` is false.
+ *
+ * A declaring class with no subclasses needs only a test of `other`.
+ * Otherwise the same object passes at once, and a different one is tested
+ * against the declaring class's subtree. Comparing the two objects' vtables
+ * would be shorter, but reading the field keeps every class's vtable global
+ * alive in a hierarchy that otherwise dispatches nothing.
+ */
+export let exactClassTest = (cx: LoweringContext, self: i32, other: i32,
+    declaring: ClassType): i32 => {
+  let info = equalityClassInfo(cx, declaring);
+  if (!info.subclasses.some((sub) => laidOut(sub))) {
+    return refTestOf(cx, other, info.structType);
+  }
+  let i32vt = new ValTypeI32() as ValType;
+  let same = cx.b.emit(IrOp.ref_eq, i32vt, self, other);
+  let sameB = cx.b.newBlock();
+  let otherB = cx.b.newBlock();
+  let mergeB = cx.b.newBlock();
+  let result = cx.b.blockParam(mergeB, i32vt);
+  cx.b.brIf(same, sameB, noValues(), otherB, noValues());
+  cx.b.switchTo(sameB);
+  cx.b.br(mergeB, oneValue(cx.b.constI32(1, i32vt)));
+  cx.b.switchTo(otherB);
+  cx.b.br(mergeB, oneValue(subtreeExactTest(cx, self, other, info)));
+  cx.b.switchTo(mergeB);
+  return result;
+};
+
+/**
+ * The classes below `info` that introduce `operator ==`: each declares or
+ * derives one and its superclass has none. A class below one of them is
+ * covered by its dispatch, so the walk stops there. One whose operator was
+ * never reached has no instances (reachability reaches the operator of
+ * every instantiated class below a compared base), so it needs no test.
+ */
+let equalityIntroducers = (cx: LoweringContext, info: ClassCodegenInfo,
+    out: GrowableArray<ClassCodegenInfo>): void => {
+  for (let sub in info.subclasses) {
+    if (!laidOut(sub)) {
+      continue;
+    }
+    let sct = sub.structType.classType;
+    if (sct != null && sct.members.has("==")) {
+      if (cx.wasm.classMethodMap.has(getClassMethodKey(getClassKey(sct), "=="))) {
+        out.push(sub);
+      }
+    } else {
+      equalityIntroducers(cx, sub, out);
+    }
+  }
+};
+
+/** `a == b` with both operands non-null references of class `ct` or below. */
+let classEqNonNull = (cx: LoweringContext, a: i32, b2: i32, ct: ClassType): i32 => {
+  let i32vt = new ValTypeI32() as ValType;
+  if (ct.members.has("==")) {
+    // The operator's parameter is the class that roots its slot; an
+    // operand outside it is a different class, so never equal.
+    let root = getMemberRootClass(ct, "==");
+    let rootSt = equalityClassInfo(cx, root).structType;
+    if (isValSubtype(cx.valueTypeOf(b2), new ValTypeRef(rootSt) as ValType)) {
+      return cx.operatorMemberOn("==", a, b2, ct);
+    }
+    let inRoot = refTestOf(cx, b2, rootSt);
+    let callB = cx.b.newBlock();
+    let falseB = cx.b.newBlock();
+    let mergeB = cx.b.newBlock();
+    let result = cx.b.blockParam(mergeB, i32vt);
+    cx.b.brIf(inRoot, callB, noValues(), falseB, noValues());
+    cx.b.switchTo(falseB);
+    cx.b.br(mergeB, oneValue(cx.b.constI32(0, i32vt)));
+    cx.b.switchTo(callB);
+    cx.b.br(mergeB, oneValue(cx.operatorMemberOn("==", a, refCastTo(cx, b2, rootSt), ct)));
+    cx.b.switchTo(mergeB);
+    return result;
+  }
+  // No operator on `ct`: its root's equality is identity, overridden by
+  // the classes below it that introduce one.
+  let introducers = new Array<ClassCodegenInfo>();
+  equalityIntroducers(cx, equalityClassInfo(cx, ct), introducers);
+  if (introducers.length == 0) {
+    return cx.b.binary(IrOp.ref_eq, i32vt, a, b2);
+  }
+  let mergeB = cx.b.newBlock();
+  let result = cx.b.blockParam(mergeB, i32vt);
+  for (let x in introducers) {
+    let xct = x.structType.classType as ClassType;
+    let isX = refTestOf(cx, a, x.structType);
+    let thenB = cx.b.newBlock();
+    let nextB = cx.b.newBlock();
+    cx.b.brIf(isX, thenB, noValues(), nextB, noValues());
+    cx.b.switchTo(thenB);
+    let otherIsX = refTestOf(cx, b2, x.structType);
+    let callB = cx.b.newBlock();
+    let falseB = cx.b.newBlock();
+    cx.b.brIf(otherIsX, callB, noValues(), falseB, noValues());
+    cx.b.switchTo(falseB);
+    cx.b.br(mergeB, oneValue(cx.b.constI32(0, i32vt)));
+    cx.b.switchTo(callB);
+    let eqX = classEqNonNull(cx, refCastTo(cx, a, x.structType),
+        refCastTo(cx, b2, x.structType), xct);
+    cx.b.br(mergeB, oneValue(eqX));
+    cx.b.switchTo(nextB);
+  }
+  cx.b.br(mergeB, oneValue(cx.b.binary(IrOp.ref_eq, i32vt, a, b2)));
+  cx.b.switchTo(mergeB);
+  return result;
+};
+
+/**
+ * `a == b` on operands of class type `ct`, either of which may be null
+ * (equality.md, "Virtual equality with an identity default"). Two nulls are
+ * equal and a null never equals an object; otherwise the runtime class's
+ * `operator ==` answers, which is identity unless some class declares or
+ * derives one.
+ */
+export let lowerClassEquality = (cx: LoweringContext, a: i32, b2: i32,
+    ct: ClassType): i32 => {
+  let i32vt = new ValTypeI32() as ValType;
+  if (!ct.members.has("==")) {
+    let introducers = new Array<ClassCodegenInfo>();
+    equalityIntroducers(cx, equalityClassInfo(cx, ct), introducers);
+    if (introducers.length == 0) {
+      // Identity throughout, and ref.eq already treats null as itself.
+      return cx.b.binary(IrOp.ref_eq, i32vt, a, b2);
+    }
+  }
+  let aNullable = isNullableRef(cx.valueTypeOf(a));
+  let bNullable = isNullableRef(cx.valueTypeOf(b2));
+  if (!aNullable && !bNullable) {
+    return classEqNonNull(cx, a, b2, ct);
+  }
+  let aNull = if (aNullable) cx.b.emit(IrOp.ref_is_null, i32vt, a, -1) else cx.b.constI32(0, i32vt);
+  let bNull = if (bNullable) cx.b.emit(IrOp.ref_is_null, i32vt, b2, -1) else cx.b.constI32(0, i32vt);
+  let anyNull = cx.b.binary(IrOp.i32_or, i32vt, aNull, bNull);
+  let nullB = cx.b.newBlock();
+  let valueB = cx.b.newBlock();
+  let mergeB = cx.b.newBlock();
+  let result = cx.b.blockParam(mergeB, i32vt);
+  cx.b.brIf(anyNull, nullB, noValues(), valueB, noValues());
+  cx.b.switchTo(nullB);
+  cx.b.br(mergeB, oneValue(cx.b.binary(IrOp.i32_and, i32vt, aNull, bNull)));
+  cx.b.switchTo(valueB);
+  let aV = if (aNullable) cx.coerceTo(a, new ValTypeRef(refTargetOf(cx.valueTypeOf(a)) as WasmStruct) as ValType) else a;
+  let bV = if (bNullable) cx.coerceTo(b2, new ValTypeRef(refTargetOf(cx.valueTypeOf(b2)) as WasmStruct) as ValType) else b2;
+  cx.b.br(mergeB, oneValue(classEqNonNull(cx, aV, bV, ct)));
+  cx.b.switchTo(mergeB);
+  return result;
+};
+
 /** Field-wise equality for the synthesized case-class ==. */
 let synthFieldEq = (cx: LoweringContext, f: WasmField, a: i32, b2: i32): i32 => {
   let i32vt = new ValTypeI32() as ValType;
@@ -184,13 +423,9 @@ let synthFieldEq = (cx: LoweringContext, f: WasmField, a: i32, b2: i32): i32 => 
     }
     if (eqFunc == null && fieldStruct.classType != null) {
       let fct = fieldStruct.classType as ClassType;
-      if (fct.members.has("==")) {
-        // A user operator== on the field's class: only a
-        // devirtualized direct call is expressible.
-        eqFunc = cx.resolveDevirtualizedMethod(fct, "==");
-        if (eqFunc == null) {
-          bail(cx, 'case eq field dispatch');
-        }
+      if (!fct.isExtension) {
+        // The field's runtime class answers, as for `==` anywhere.
+        return lowerClassEquality(cx, a, b2, fct);
       }
     }
     if (eqFunc != null) {
@@ -571,20 +806,13 @@ export let lowerEqIntrinsic = (cx: LoweringContext, call: CallExpression): i32 =
       cx.canonicalKeyOf(ctB) == cx.canonicalKeyOf(strClass)) {
     return callEqMethod(cx, stringEqFunc(cx), a, b2);
   }
+  if (!ctA.isExtension) {
+    return lowerClassEquality(cx, a, b2, ctA);
+  }
   if (isNullableRef(va) || isNullableRef(vb)) {
     bail(cx, 'nullable eq operand');
   }
-  if (!ctA.members.has('==')) {
-    // No content equality declared: eq() compares identity. The
-    // operands are non-null same-class references here, so plain
-    // ref.eq is streaming's diamond minus its dead arms.
-    return cx.b.binary(IrOp.ref_eq, new ValTypeI32(), a, b2);
-  }
-  let eqMethod = cx.resolveDevirtualizedMethod(ctA, "==");
-  if (eqMethod == null) {
-    bail(cx, 'eq dispatch');
-  }
-  return refEqFastPathCall(cx, eqMethod, a, b2, false);
+  return cx.b.binary(IrOp.ref_eq, new ValTypeI32(), a, b2);
 };
 
 /**

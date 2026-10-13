@@ -3319,6 +3319,56 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
     this.#pendingMemberReaches.push(key);
   }
 
+  /**
+   * Classes compared with `==` that have no `operator ==` of their own.
+   * Such a comparison dispatches to the classes below that introduce one
+   * (ir/equality.zena, lowerClassEquality), so their operators are reached
+   * once both the comparison and the class are.
+   */
+  #equalityBases = new Set<String>();
+
+  noteEqualityBase(ct: ClassType): void {
+    let key = getClassKey(ct) as String;
+    if (this.#equalityBases.has(key)) {
+      return;
+    }
+    this.#equalityBases.add(key);
+    let below = new Array<ClassType>();
+    for (let entry in this.wasm.classInfos) {
+      let sub = entry.value.structType.classType;
+      if (sub != null && this.instantiatedSpecializedClasses.has(entry.key as String)) {
+        below.push(sub);
+      }
+    }
+    for (let sub in below) {
+      this.reachEqualityBelowComparedBase(sub);
+    }
+  }
+
+  /** Reaches `ct`'s `operator ==` when some class above it is compared. */
+  reachEqualityBelowComparedBase(ct: ClassType): void {
+    if (!ct.members.has("==")) {
+      return;
+    }
+    var above = false;
+    var curr = ct.superType;
+    while (curr != null && !above) {
+      let anc = curr as ClassType;
+      above = this.#equalityBases.has(getClassKey(anc) as String);
+      curr = anc.superType;
+    }
+    if (!above) {
+      return;
+    }
+    let eqMethod = this.cha.findImplementingMethod(ct, "==");
+    if (eqMethod != null) {
+      this.queueReferrer(new Referrer(false, noSymbolId, (eqMethod as Node).id as i32,
+          this.getNodeModel(eqMethod as Node, this.getClassModel(ct)), ct,
+          this.currentReachable));
+    }
+    this.notePendingMemberReach(getClassMethodKey(getClassKey(ct), "=="));
+  }
+
   noteClosureStruct(cs: WasmStruct): void {
     if (this.inQueueWalk && this.currentReachable) {
       this.reachablyNamedClosures.add(cs);
