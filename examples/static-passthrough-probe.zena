@@ -1,0 +1,55 @@
+/**
+ * Probe: a file's `read-via-stream` handle given to the response as is.
+ *
+ * Serves probe.bin from the working directory (make one with
+ * `head -c 64M /dev/urandom > probe.bin`). `/copy` reads it into the
+ * guest first, for comparison. The body stream is the
+ * one `read-via-stream` returned, never read by the guest, so
+ * `lowerByteStream` hands its readable end to `response.new` and the
+ * host copies the file to the socket.
+ *
+ * Run from the repo root with:
+ *   ./target/release/zena-cli run examples/static-passthrough-probe.zena
+ * and fetch http://127.0.0.1:8099/.
+ */
+
+import { App } from 'zena:http';
+import { getDirectories } from 'wasi:filesystem/preopens';
+import {
+  Descriptor, DescriptorStat, ErrorCode, PathFlags, OpenFlags,
+  descriptorFlagsRead
+} from 'wasi:filesystem/types';
+import { Ok, Err } from 'zena:core';
+import { readAllBytes } from 'zena:stream';
+
+export function main(): void {
+  var root: Descriptor | null = null;
+  for (let (descriptor, path) in getDirectories()) {
+    if (path == '.') {
+      root = descriptor;
+    }
+  }
+  let dir = root as Descriptor;
+  let app = new App();
+  let name = 'probe.bin';
+  app.use(async (req, res, next) => {
+    let opened = await dir.openAt(
+        (0 as u32) as PathFlags, name, (0 as u32) as OpenFlags,
+        descriptorFlagsRead);
+    if (opened is Err<Descriptor, ErrorCode>) {
+      res.statusCode = 404;
+      res.body = 'not found\n';
+      return;
+    }
+    let file = (opened as Ok<Descriptor, ErrorCode>).value;
+    let (stream, done) = file.readViaStream(0 as u64);
+    res.type = 'text/markdown; charset=utf-8';
+    if (req.path == '/copy') {
+      // The comparison: every byte read into the guest and written back.
+      res.body = await readAllBytes(stream);
+    } else {
+      res.body = stream;
+    }
+  });
+  app.listen(8099 as u16);
+}

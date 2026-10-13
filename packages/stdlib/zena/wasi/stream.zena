@@ -24,6 +24,7 @@
  * set, everything else returns packed progress directly.
  */
 
+import { Option } from 'zena:core';
 import { Memory, defaultAllocator } from 'zena:memory';
 import { Stream, StreamWriter } from 'zena:stream';
 // A core module may not import one canonical builtin under the same
@@ -206,26 +207,119 @@ let CHUNK = 4096;
  * returned as the wire handle. The pump ends the canonical stream
  * when the source ends, and stops the source when the host reader
  * drops its end.
+ *
+ * A stream that came from the host and has not been read is not
+ * pumped: its own readable end is returned, so the host moves the
+ * bytes and none of them pass through the guest.
  */
 export function lowerByteStream(source: Stream<u8>): i32 {
+  if (source is HostByteStream) {
+    let end = (source as HostByteStream).takeEnd();
+    if (end != 0) {
+      return end;
+    }
+  }
   let pair = newByteStreamPair();
   pumpOut(source, pair.writable);
   return pair.readable as i32;
 }
 
 /**
- * A canonical `stream<u8>` handle as a guest `Stream<u8>`: a
- * background pump reads the readable end on the event loop and
- * delivers into a `StreamWriter`, whose stream is returned — with the
- * writer's backpressure, so the pump never reads the host faster than
- * the guest consumes. The pump closes the stream when the host drops
- * its writable end, and drops the readable end when the guest reader
- * stops.
+ * A canonical `stream<u8>` handle as a guest `Stream<u8>`. The first
+ * read starts a background pump that reads the readable end on the
+ * event loop and delivers into a `StreamWriter` — with the writer's
+ * backpressure, so the pump never reads the host faster than the
+ * guest consumes. The pump closes the stream when the host drops its
+ * writable end, and drops the readable end when the guest reader
+ * stops. Until that first read, `lowerByteStream` can pass the handle
+ * back to the host unread.
  */
 export function liftByteStream(handle: i32): Stream<u8> {
-  let writer = new StreamWriter<u8>();
-  pumpIn(handle as ReadableByteStream, writer);
-  return writer.stream;
+  return new HostByteStream(handle);
+}
+
+/**
+ * A `stream<u8>` the host handed in, holding its readable end until
+ * the guest reads it or hands it on.
+ *
+ * Reading starts the pump and delegates to the pumped stream. Handing
+ * it on — `lowerByteStream`, when the stream is passed to a WIT
+ * import such as `wasi:http`'s `response.new` — gives the end itself
+ * to the host, so a file's `read-via-stream` sent as a response body
+ * is copied by the host from the file to the socket. A stream handed
+ * on can no longer be read. Stopping one that was never read drops
+ * the end without starting a pump.
+ *
+ * Handle index 0 is never a valid handle, so `#end == 0` means the
+ * end is gone: pumping, stopped, or taken.
+ */
+final class HostByteStream extends Stream<u8> {
+  var #end: i32;
+  var #pumped: Stream<u8> | null = null;
+  var #taken = false;
+
+  new(end: i32) : #end = end, super();
+
+  /**
+   * The readable end, for the caller to pass to the host; 0 when it is
+   * no longer here to give. A stream taken this way reads as an error.
+   */
+  takeEnd(): i32 {
+    let end = this.#end;
+    if (end != 0) {
+      this.#end = 0;
+      this.#taken = true;
+    }
+    return end;
+  }
+
+  /** The stream reads delegate to: the pump, started on first use. */
+  #source(): Stream<u8> | null {
+    let pumped = this.#pumped;
+    if (pumped != null) {
+      return pumped;
+    }
+    if (this.#taken) {
+      throw new Error(
+          'zena:wasi: this stream was handed to the host and cannot be read');
+    }
+    if (this.#end == 0) {
+      // Stopped before any read: the base stream reads as ended.
+      return null;
+    }
+    let writer = new StreamWriter<u8>();
+    pumpIn(this.#end as ReadableByteStream, writer);
+    this.#end = 0;
+    this.#pumped = writer.stream;
+    return writer.stream;
+  }
+
+  read(buf: FixedArray<u8>): Future<i32> {
+    let source = this.#source();
+    if (source != null) {
+      return source.read(buf);
+    }
+    return super.read(buf);
+  }
+
+  readOne(): Future<Option<u8>> {
+    let source = this.#source();
+    if (source != null) {
+      return source.readOne();
+    }
+    return super.readOne();
+  }
+
+  stop(): void {
+    let pumped = this.#pumped;
+    if (pumped != null) {
+      pumped.stop();
+    } else if (this.#end != 0) {
+      streamDropReadable(this.#end as ReadableByteStream);
+      this.#end = 0;
+    }
+    super.stop();
+  }
 }
 
 /** The guest-to-host pump behind `lowerByteStream`. */
