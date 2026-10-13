@@ -2901,6 +2901,30 @@ export let integerLiteralFits = (raw: String, negative: boolean, t: Type): boole
 };
 
 /**
+ * Whether an integer literal fits `i64` (`is64`) or `i32`, the types a
+ * literal takes without a range-checked context. A decimal literal must
+ * fit the signed range, with `negative` reporting a leading unary minus
+ * as in `integerLiteralFits`. A hex literal may use every bit, as a bit
+ * pattern, so `0xFFFFFFFF` is the i32 -1.
+ */
+export let signedLiteralFits = (raw: String, negative: boolean, is64: boolean): boolean => {
+  if (let (true, mag) = integerLiteralMagnitude(raw)) {
+    let isHex = raw.length >= 2 && raw.getByteAt(0) == 48 &&
+        (raw.getByteAt(1) == 120 || raw.getByteAt(1) == 88); // '0' then 'x'/'X'
+    if (is64) {
+      // Any magnitude that parsed at all is a 64-bit pattern.
+      if (isHex) { return true; }
+      return if (negative) mag <= (9223372036854775808 as u64)
+        else mag <= (9223372036854775807 as u64);
+    }
+    if (isHex) { return mag <= (4294967295 as u64); }
+    return if (negative) mag <= (2147483648 as u64) else mag <= (2147483647 as u64);
+  }
+  // Malformed, or wider than 64 bits: fits nothing.
+  return false;
+};
+
+/**
  * Format a type as a human-readable string for diagnostics.
  */
 export let typeToString = (t: Type): String => match (t) {

@@ -108,6 +108,8 @@ import {
   isNumericType, isIntegerType, isFloatType, is64BitType,
   numericTypeName, isBooleanLike, baseType,
   integerLiteralFits,
+  integerLiteralMagnitude,
+  signedLiteralFits,
   promoteNumeric, typeToString, requiredParameterCount, makeTypeIdGenerator, typeContainsTypeParameter,
   isOwnershipWrapper, ownershipHandleName, ownershipHandleInner, soleNonNullMember,
   isScopedType, scopedInner,
@@ -2332,6 +2334,19 @@ final class CheckerContext {
     get { return this.#inFinalizer; }
   }
   setInFinalizer(v: boolean): void { this.#inFinalizer = v; }
+
+  /**
+   * The target of the primitive cast whose operand, a bare or negated
+   * numeric literal, is being checked; null otherwise. Lowering parses
+   * such a literal at the cast's width (`18446744073709551615 as u64`,
+   * `-1 as u32`), so the literal is measured against that width rather
+   * than against i32's range. Set and restored around the operand.
+   */
+  var #castLiteralTarget: Type | null = null;
+  castLiteralTarget: Type | null {
+    get { return this.#castLiteralTarget; }
+  }
+  setCastLiteralTarget(t: Type | null): void { this.#castLiteralTarget = t; }
 
   // --- Class stack ---
 
@@ -11668,20 +11683,20 @@ let checkIntegerLiteral = (
   loc: SourceLocation | null
 ): Type => {
   if (expectedType == null) {
-    return new I32Type();
+    return signedLiteralType(ctx, raw, negative, new I32Type(), loc);
   }
-  // i32/i64/f32/f64 adopt the context without a range check, exactly as
-  // they always have. Tightening them is a separate change with its own
-  // fallout. Note these are deliberately direct `is` tests rather than
+  // Note these are deliberately direct `is` tests rather than
   // `isIntegerType`, which looks through `baseType` and would therefore
   // also capture a `NumLiteralType` expectation and hand it back as the
   // literal's type instead of i32.
-  if (expectedType is I32Type || expectedType is I64Type ||
-      expectedType is F32Type || expectedType is F64Type) {
+  if (expectedType is I32Type || expectedType is I64Type) {
+    return signedLiteralType(ctx, raw, negative, expectedType, loc);
+  }
+  if (expectedType is F32Type || expectedType is F64Type) {
     return expectedType;
   }
   if (!isRangeCheckedIntType(expectedType)) {
-    return new I32Type();
+    return signedLiteralType(ctx, raw, negative, new I32Type(), loc);
   }
   if (integerLiteralFits(raw, negative, expectedType)) {
     return expectedType;
@@ -11699,6 +11714,61 @@ let checkIntegerLiteral = (
 };
 
 /**
+ * `t`, i32 or i64, as an integer literal's type, reporting a literal that
+ * does not fit it (see `signedLiteralFits`). A literal that wrapped
+ * would compare and compute as a different number than the one written.
+ */
+let signedLiteralType = (
+  ctx: CheckerContext,
+  raw: String,
+  negative: boolean,
+  t: Type,
+  loc: SourceLocation | null
+): Type => {
+  let castTarget = ctx.castLiteralTarget;
+  if (castTarget != null) {
+    if (!literalFitsCastWidth(raw, negative, castTarget as Type)) {
+      let sign = if (negative) "-" else "";
+      ctx.error(
+        `Integer literal ${sign}${raw} is out of range for type '${typeToString(castTarget as Type)}'.`,
+        DiagnosticCode.TypeMismatch,
+        loc
+      );
+    }
+    return t;
+  }
+  if (!signedLiteralFits(raw, negative, t is I64Type)) {
+    let sign = if (negative) "-" else "";
+    ctx.error(
+      `Integer literal ${sign}${raw} is out of range for type '${typeToString(t)}'.`,
+      DiagnosticCode.TypeMismatch,
+      loc
+    );
+  }
+  return t;
+};
+
+/**
+ * Whether an integer literal fits the width of a cast to `target`, as
+ * lowering parses it there: any 64-bit value (down to -2^63) for a
+ * 64-bit integer, a 32-bit value signed or unsigned for a narrower
+ * integer, and any value for a float, which converts it.
+ */
+let literalFitsCastWidth = (raw: String, negative: boolean, target: Type): boolean => {
+  let base = baseType(target);
+  if (base is F32Type || base is F64Type) {
+    return true;
+  }
+  if (let (true, mag) = integerLiteralMagnitude(raw)) {
+    if (base is I64Type || base is U64Type) {
+      return !negative || mag <= (9223372036854775808 as u64);
+    }
+    return if (negative) mag <= (2147483648 as u64) else mag <= (4294967295 as u64);
+  }
+  return false;
+};
+
+/**
  * Whether a bare numeric literal written as `raw` can be typed
  * `target`. Mirrors `checkIntegerLiteral`'s acceptance exactly, minus
  * the reporting: overload resolution asks this of candidates it will
@@ -11712,14 +11782,45 @@ let numericLiteralAdaptsTo = (raw: String, negative: boolean, target: Type): boo
     // A float literal takes its type from the float types only.
     return target is F32Type || target is F64Type;
   }
-  if (target is I32Type || target is I64Type ||
-      target is F32Type || target is F64Type) {
+  if (target is I32Type || target is I64Type) {
+    return signedLiteralFits(raw, negative, target is I64Type);
+  }
+  if (target is F32Type || target is F64Type) {
     return true;
   }
   if (!isRangeCheckedIntType(target)) {
     return false;
   }
   return integerLiteralFits(raw, negative, target);
+};
+
+/**
+ * Whether `e` is a numeric literal, or one negated, whose type its
+ * context decides, so that beside another operand it should take that
+ * operand's type.
+ */
+let isContextTypedNumber = (e: Expression): boolean => match (e) {
+  case NumberLiteral {}: true
+  case UnaryExpression {operator, argument}: operator == "-" && argument is NumberLiteral
+  case _: false
+};
+
+/**
+ * The types of a binary operator's operands when one is a numeric
+ * literal and the other is not: `other` is checked first, with
+ * `context`, and the literal then takes its type when that is numeric,
+ * so `x < 3000000000` with `x: i64` compares two i64s. Answers the
+ * literal's type, then the other's.
+ */
+let checkLiteralBeside = (
+  ctx: CheckerContext,
+  literal: Expression,
+  other: Expression,
+  context: Type | null
+): inline (Type, Type) => {
+  let otherType = checkExpression(ctx, other, context);
+  let literalType = checkExpression(ctx, literal, if (isNumericType(otherType)) otherType else context);
+  return (literalType, otherType);
 };
 
 /**
@@ -11982,8 +12083,9 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
     // bound that applies to `-128` is i8's lower bound, which the bare
     // literal `128` would fail. Only the range-checked types need this;
     // every other context keeps its original path exactly.
-    if (operator == "-" && argument is NumberLiteral && expectedType != null &&
-        isRangeCheckedIntType(expectedType)) {
+    if (operator == "-" && argument is NumberLiteral &&
+        (expectedType == null || expectedType is I32Type || expectedType is I64Type ||
+          isRangeCheckedIntType(expectedType))) {
       if (!argument.raw.contains('.')) {
         let litType = checkIntegerLiteral(ctx, argument.raw, true, expectedType, loc);
         ctx.setNodeType(argument, litType);
@@ -12685,7 +12787,17 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
     if (isReferenceType(representationOf(targetType))) {
       castContext = targetType;
     }
-    let sourceType = checkExpression(ctx, expression, castContext);
+    // A literal cast to a primitive is measured against the cast's
+    // width (see `castLiteralTarget`).
+    var sourceType: Type = new ErrorType();
+    if (castContext == null && isContextTypedNumber(expression) && isNumericType(targetType)) {
+      let previous = ctx.castLiteralTarget;
+      ctx.setCastLiteralTarget(targetType);
+      sourceType = checkExpression(ctx, expression, null);
+      ctx.setCastLiteralTarget(previous);
+    } else {
+      sourceType = checkExpression(ctx, expression, castContext);
+    }
     let isNarrowed = ctx.isExpressionNarrowed(expression);
     let isAutoCasted = if (expression is Identifier) {
       targetType is ClassType || targetType is InterfaceType
@@ -20067,10 +20179,19 @@ let checkBinaryExpression = (
       contextualType = expectedType;
     }
 
-    // Check left first with expected context
-    let leftType = checkExpression(ctx, left, contextualType);
-    let rightContext = if (isNumericType(leftType)) { leftType } else { contextualType };
-    let rightType = checkExpression(ctx, right, rightContext);
+    // Check left first with expected context, and give the right the
+    // left's type; but a literal on the left takes the right's.
+    var leftType: Type = new ErrorType();
+    var rightType: Type = new ErrorType();
+    if (isContextTypedNumber(left) && !isContextTypedNumber(right)) {
+      let (literalType, otherType) = checkLiteralBeside(ctx, left, right, contextualType);
+      leftType = literalType;
+      rightType = otherType;
+    } else {
+      leftType = checkExpression(ctx, left, contextualType);
+      let rightContext = if (isNumericType(leftType)) { leftType } else { contextualType };
+      rightType = checkExpression(ctx, right, rightContext);
+    }
 
     // If left is numeric and right was checked without context, re-check
     // right with left's type as context.
@@ -20151,10 +20272,20 @@ let checkBinaryExpression = (
 
   // Comparison operators: <, <=, >, >=
   if (operator == "<" || operator == "<=" || operator == ">" || operator == ">=") {
-    let rightType = checkExpression(ctx, right, null);
-    var contextualType: Type | null = null;
-    if (isNumericType(rightType)) { contextualType = rightType; }
-    let leftType = checkExpression(ctx, left, contextualType);
+    // Check right first and give the left the right's type; but a
+    // literal on the right takes the left's.
+    var leftType: Type = new ErrorType();
+    var rightType: Type = new ErrorType();
+    if (isContextTypedNumber(right) && !isContextTypedNumber(left)) {
+      let (literalType, otherType) = checkLiteralBeside(ctx, right, left, null);
+      rightType = literalType;
+      leftType = otherType;
+    } else {
+      rightType = checkExpression(ctx, right, null);
+      var contextualType: Type | null = null;
+      if (isNumericType(rightType)) { contextualType = rightType; }
+      leftType = checkExpression(ctx, left, contextualType);
+    }
 
     if (!isNumericType(leftType) || !isNumericType(rightType)) {
       if (!(leftType is TypeParameterType && rightType is TypeParameterType && isAssignableTo(ctx, leftType, rightType) && isAssignableTo(ctx, rightType, leftType))) {
@@ -20182,21 +20313,22 @@ let checkBinaryExpression = (
 
   // Equality operators: ==, !=, ===, !==
   if (operator == "==" || operator == "!=" || operator == "===" || operator == "!==") {
-    let leftType = checkExpression(ctx, left, null);
-    
-    // For numeric equality, if left side is a float literal (f32 fallback), 
-    // it will be checked with contextualType if expectedType was passed. But ==
-    // returns bool, and hasn't been passing contextualType here correctly.
-    // Instead we'll pass expectedType=null and do numeric resolution later if they mismatch.
-    
-    // Check left with null.
-    // Check right with leftType as contextual type, but only if it's numeric.
-    var rightContext: Type | null = null;
-    if (isNumericType(leftType)) {
-      rightContext = leftType;
+    // Check left with no context, and give the right the left's type
+    // when it is numeric; but a literal on the left takes the right's.
+    var leftType: Type = new ErrorType();
+    var rightType: Type = new ErrorType();
+    if (isContextTypedNumber(left) && !isContextTypedNumber(right)) {
+      let (literalType, otherType) = checkLiteralBeside(ctx, left, right, null);
+      leftType = literalType;
+      rightType = otherType;
+    } else {
+      leftType = checkExpression(ctx, left, null);
+      var rightContext: Type | null = null;
+      if (isNumericType(leftType)) {
+        rightContext = leftType;
+      }
+      rightType = checkExpression(ctx, right, rightContext);
     }
-    
-    let rightType = checkExpression(ctx, right, rightContext);
     // Identity is not observable on records and tuples: they are
     // values, and the compiler is free to copy or dissolve them (width
     // adaptation, argument explosion). `==` is structural equality and
