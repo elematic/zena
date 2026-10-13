@@ -1,0 +1,870 @@
+/**
+ * A Firestore client.
+ *
+ *     let db = await Firestore.connect();
+ *     let post = db.collection('posts').doc('hello');
+ *     await post.set(new Fields().string('title', 'Hello').integer('views', 0));
+ *     let snapshot = await post.get();
+ *     if (let (true, views) = snapshot.getInteger('views')) { ... }
+ *
+ *     let popular = await db.collection('posts')
+ *         .where('views', Operator.GreaterThan, integerValue(100))
+ *         .orderBy('views', Direction.Descending)
+ *         .limit(10)
+ *         .get();
+ *
+ * Requests go through the generated `FirestoreClient` (`./firestore-v1.zena`)
+ * over a `ProtoTransport`: by default Google's gRPC fallback protocol, which
+ * works on any `wasi:http` host. Values are the generated `Value` views;
+ * `Fields` and the `*Value` functions build them.
+ */
+
+import { AsyncIterable, AsyncIterator, AsyncStep } from 'zena:async';
+import { HashMap } from 'zena:collections';
+import { Option } from 'zena:core';
+import { getRandomU64 } from 'wasi:random/random';
+import { Credentials, ProtoBytes, ProtoTransport } from 'protobuf:runtime';
+import { FallbackTransport, RpcError } from 'protobuf:fallback';
+import { defaultCredentials, defaultProjectId } from './auth.zena';
+import {
+  ArrayValue,
+  Document,
+  DocumentMask,
+  FirestoreClient,
+  Int32Value,
+  MapValue,
+  NullValue,
+  Precondition,
+  RunQueryResponse,
+  StructuredQuery,
+  StructuredQueryCollectionSelector,
+  StructuredQueryCompositeFilter,
+  StructuredQueryCompositeFilterOperator,
+  StructuredQueryDirection,
+  StructuredQueryFieldFilter,
+  StructuredQueryFieldFilterOperator,
+  StructuredQueryFieldReference,
+  StructuredQueryFilter,
+  StructuredQueryOrder,
+  Timestamp,
+  TransactionOptions,
+  TransactionOptionsReadWrite,
+  Value,
+  Write
+} from './firestore-v1.zena';
+
+export {
+  StructuredQueryFieldFilterOperator as Operator,
+  StructuredQueryDirection as Direction,
+  Value,
+  Timestamp,
+  Document
+} from './firestore-v1.zena';
+export { RpcError } from 'protobuf:fallback';
+
+/** The Firestore API's origin. */
+let FIRESTORE_ORIGIN = 'https://firestore.googleapis.com';
+
+/** `google.rpc.Code` values the client acts on. */
+let CODE_NOT_FOUND = 5;
+let CODE_ABORTED = 10;
+
+/** A string value. */
+export let stringValue = (value: String): Value => Value.of({stringValue: value});
+
+/** A 64-bit integer value. */
+export let integerValue = (value: i64): Value => Value.of({integerValue: value});
+
+/** A double value. */
+export let doubleValue = (value: f64): Value => Value.of({doubleValue: value});
+
+/** A boolean value. */
+export let booleanValue = (value: boolean): Value => Value.of({booleanValue: value});
+
+/** The null value. */
+export let nullValue = (): Value => Value.of({nullValue: NullValue.NullValue});
+
+/** A timestamp value: seconds since the Unix epoch, and nanoseconds. */
+export let timestampValue = (seconds: i64, nanos: i32 = 0): Value =>
+  Value.of({timestampValue: Timestamp.of({seconds, nanos})});
+
+/** A bytes value. */
+export let bytesValue = (value: ByteArray): Value => Value.of({bytesValue: value});
+
+/** A reference to another document. */
+export let referenceValue = (document: DocumentReference): Value =>
+  Value.of({referenceValue: document.name});
+
+/** An array value. */
+export let arrayValue = (values: Array<Value>): Value =>
+  Value.of({arrayValue: ArrayValue.of({values})});
+
+/** A map value. */
+export let mapValue = (fields: Fields): Value =>
+  Value.of({mapValue: MapValue.of({fields: fields.toMap()})});
+
+/**
+ * A document's fields, built one at a time:
+ * `new Fields().string('title', 'Hello').integer('views', 0)`.
+ */
+export final class Fields {
+  #map: HashMap<String, Value> = new HashMap<String, Value>();
+
+  new();
+
+  /** Sets field `name` to `value`, replacing an earlier value. */
+  set(name: String, value: Value): Fields {
+    this.#map[name] = value;
+    return this;
+  }
+
+  string(name: String, value: String): Fields {
+    return this.set(name, stringValue(value));
+  }
+
+  integer(name: String, value: i64): Fields {
+    return this.set(name, integerValue(value));
+  }
+
+  double(name: String, value: f64): Fields {
+    return this.set(name, doubleValue(value));
+  }
+
+  boolean(name: String, value: boolean): Fields {
+    return this.set(name, booleanValue(value));
+  }
+
+  null_(name: String): Fields {
+    return this.set(name, nullValue());
+  }
+
+  timestamp(name: String, seconds: i64, nanos: i32 = 0): Fields {
+    return this.set(name, timestampValue(seconds, nanos));
+  }
+
+  map(name: String, fields: Fields): Fields {
+    return this.set(name, mapValue(fields));
+  }
+
+  array(name: String, values: Array<Value>): Fields {
+    return this.set(name, arrayValue(values));
+  }
+
+  /** The field names, in no particular order. */
+  names(): GrowableArray<String> {
+    let names = new GrowableArray<String>();
+    for (let entry in this.#map) {
+      names.push(entry.key);
+    }
+    return names;
+  }
+
+  toMap(): HashMap<String, Value> {
+    return this.#map;
+  }
+}
+
+/**
+ * `name` as a Firestore field path segment: unchanged when it is a plain
+ * identifier, otherwise in backquotes with backquotes and backslashes
+ * escaped.
+ */
+export let quoteFieldName = (name: String): String => {
+  var plain = name.length > 0;
+  for (var i = 0; i < name.length; i += 1) {
+    let b = name.getByteAt(i);
+    let letter = (b >= 0x41 && b <= 0x5A) || (b >= 0x61 && b <= 0x7A) || b == 0x5F;
+    let digit = b >= 0x30 && b <= 0x39;
+    if (!letter && !(digit && i > 0)) {
+      plain = false;
+    }
+  }
+  if (plain) {
+    return name;
+  }
+  var out = '`';
+  for (var i = 0; i < name.length; i += 1) {
+    let c = name.sliceBytes(i, i + 1);
+    out = if (c == '`' || c == '\\') `${out}\\${c}` else `${out}${c}`;
+  }
+  return `${out}\``;
+};
+
+/** Options for `new Firestore`. */
+export type FirestoreOptions = {
+  projectId: String,
+  /** `(default)` when absent. */
+  databaseId?: String,
+  /** A fallback transport to `firestore.googleapis.com` when absent. */
+  transport?: ProtoTransport,
+  /** For the default transport: `defaultCredentials()` when absent. */
+  credentials?: Credentials,
+};
+
+let databaseIdOf = (options: FirestoreOptions): String => {
+  if (let {databaseId} = options) {
+    return databaseId;
+  }
+  return '(default)';
+};
+
+let transportOf = (options: FirestoreOptions): ProtoTransport => {
+  if (let {transport} = options) {
+    return transport;
+  }
+  if (let {credentials} = options) {
+    return new FallbackTransport(FIRESTORE_ORIGIN, credentials);
+  }
+  return new FallbackTransport(FIRESTORE_ORIGIN, defaultCredentials());
+};
+
+/** One Firestore database. */
+export final class Firestore {
+  projectId: String;
+  databaseId: String;
+  /** The generated client every call goes through. */
+  client: FirestoreClient;
+
+  new(options: FirestoreOptions)
+    : projectId = options.projectId,
+      databaseId = databaseIdOf(options),
+      client = new FirestoreClient(transportOf(options));
+
+  /**
+   * The database `databaseId` of the project this program runs in, with
+   * the default credentials (see `defaultProjectId`, `defaultCredentials`).
+   */
+  static async connect(databaseId: String = '(default)'): Future<Firestore> {
+    let projectId = await defaultProjectId();
+    return new Firestore({projectId, databaseId});
+  }
+
+  /** `projects/<project>/databases/<database>`. */
+  database: String {
+    get { return `projects/${this.projectId}/databases/${this.databaseId}`; }
+  }
+
+  /** The prefix of every document name: `<database>/documents`. */
+  documentsRoot: String {
+    get { return `${this.database}/documents`; }
+  }
+
+  /** The collection at `path`, such as `posts` or `posts/hello/comments`. */
+  collection(path: String): CollectionReference {
+    return new CollectionReference(this, path);
+  }
+
+  /** The document at `path`, such as `posts/hello`. */
+  doc(path: String): DocumentReference {
+    return new DocumentReference(this, path);
+  }
+
+  /** A batch of writes, committed together. */
+  batch(): WriteBatch {
+    return new WriteBatch(this);
+  }
+
+  /**
+   * Runs `body` in a read-write transaction and commits its writes. When
+   * the commit is aborted by contention, the transaction is retried, up to
+   * `attempts` times in all. When `body` throws, the transaction is
+   * rolled back and the error rethrown.
+   */
+  async runTransaction<T>(body: (transaction: Transaction) => Future<T>, attempts: i32 = 5): Future<T> {
+    var retry: ProtoBytes | null = null;
+    var attempt = 1;
+    while (true) {
+      let readWrite = if (retry == null) TransactionOptionsReadWrite.of({})
+        else TransactionOptionsReadWrite.of({retryTransaction: retry as ProtoBytes});
+      let begun = await this.client.beginTransaction({
+        database: this.database,
+        options: TransactionOptions.of({readWrite}),
+      });
+      let transaction = new Transaction(this, begun.transaction);
+      var result: Option<T> = none;
+      try {
+        result = some(await body(transaction));
+      } catch (e) {
+        await this.#rollback(transaction.id);
+        throw e;
+      }
+      try {
+        await this.commit(transaction.writes, transaction.id);
+        return (result as Some<T>).value;
+      } catch (e) {
+        if (e is RpcError && (e as RpcError).code == CODE_ABORTED && attempt < attempts) {
+          retry = transaction.id;
+          attempt += 1;
+          continue;
+        }
+        throw e;
+      }
+    }
+    throw new Error('unreachable');
+  }
+
+  /** Commits `writes`, in `transaction` when it is not null. */
+  async commit(writes: Array<Write>, transaction: ProtoBytes | null = null): Future<void> {
+    if (transaction == null) {
+      await this.client.commit({database: this.database, writes});
+    } else {
+      await this.client.commit({database: this.database, writes, transaction: transaction as ProtoBytes});
+    }
+  }
+
+  async #rollback(transaction: ProtoBytes): Future<void> {
+    try {
+      await this.client.rollback({database: this.database, transaction});
+    } catch (e) {
+      // The original error matters more than a failed rollback; the
+      // transaction expires on the server either way.
+    }
+  }
+}
+
+/** A document, which may not exist yet. */
+export final class DocumentReference {
+  #db: Firestore;
+  /** The path below the database's documents: `posts/hello`. */
+  path: String;
+
+  new(db: Firestore, path: String) : #db = db, path = path;
+
+  /** The document's id, the last segment of its path. */
+  id: String {
+    get { return lastSegment(this.path); }
+  }
+
+  /** The full resource name: `projects/p/databases/d/documents/posts/hello`. */
+  name: String {
+    get { return `${this.#db.documentsRoot}/${this.path}`; }
+  }
+
+  /** The collection this document is in. */
+  parent: CollectionReference {
+    get { return new CollectionReference(this.#db, parentPath(this.path)); }
+  }
+
+  /** The subcollection `id` of this document. */
+  collection(id: String): CollectionReference {
+    return new CollectionReference(this.#db, `${this.path}/${id}`);
+  }
+
+  /** Reads the document. A snapshot of a document that does not exist has `exists` false. */
+  async get(): Future<DocumentSnapshot> {
+    try {
+      let document = await this.#db.client.getDocument({name: this.name});
+      return new DocumentSnapshot(this, document);
+    } catch (e) {
+      if (e is RpcError && (e as RpcError).code == CODE_NOT_FOUND) {
+        return new DocumentSnapshot(this, null);
+      }
+      throw e;
+    }
+  }
+
+  /** Replaces the document with `fields`, creating it if it does not exist. */
+  async set(fields: Fields): Future<void> {
+    await this.#db.commit([setWrite(this, fields)]);
+  }
+
+  /** Creates the document; fails with ALREADY_EXISTS if it exists. */
+  async create(fields: Fields): Future<void> {
+    await this.#db.commit([createWrite(this, fields)]);
+  }
+
+  /**
+   * Sets the top-level fields in `fields`, leaving the others; fails with
+   * NOT_FOUND if the document does not exist.
+   */
+  async update(fields: Fields): Future<void> {
+    await this.#db.commit([updateWrite(this, fields)]);
+  }
+
+  /** Deletes the document. Deleting a document that does not exist succeeds. */
+  async delete(): Future<void> {
+    await this.#db.commit([deleteWrite(this)]);
+  }
+}
+
+/** A collection of documents. Its query methods start a `Query` over it. */
+export final class CollectionReference {
+  #db: Firestore;
+  /** The path below the database's documents: `posts`, `posts/hello/comments`. */
+  path: String;
+
+  new(db: Firestore, path: String) : #db = db, path = path;
+
+  /** The collection's id, the last segment of its path. */
+  id: String {
+    get { return lastSegment(this.path); }
+  }
+
+  /** The document `id` in this collection. */
+  doc(id: String): DocumentReference {
+    return new DocumentReference(this.#db, `${this.path}/${id}`);
+  }
+
+  /** Creates a document with a new random id and `fields`, and returns it. */
+  async add(fields: Fields): Future<DocumentReference> {
+    let document = this.doc(randomId());
+    await document.create(fields);
+    return document;
+  }
+
+  /** A query over every document in this collection. */
+  query(): Query {
+    return new Query(this.#db, parentPath(this.path), this.id);
+  }
+
+  where(field: String, op: StructuredQueryFieldFilterOperator, value: Value): Query {
+    return this.query().where(field, op, value);
+  }
+
+  orderBy(field: String, direction: StructuredQueryDirection = StructuredQueryDirection.Ascending): Query {
+    return this.query().orderBy(field, direction);
+  }
+
+  limit(count: i32): Query {
+    return this.query().limit(count);
+  }
+
+  /** Every document in this collection, each as soon as it arrives. */
+  stream(): SnapshotStream {
+    return this.query().stream();
+  }
+
+  /** Every document in this collection. */
+  async get(): Future<GrowableArray<DocumentSnapshot>> {
+    return await this.query().get();
+  }
+}
+
+/**
+ * A query over one collection. Each refining method returns a new query
+ * and leaves this one as it was.
+ */
+export final class Query {
+  #db: Firestore;
+  /** The path of the document the collection is under, or '' for a root collection. */
+  #parent: String;
+  #collectionId: String;
+  #filters: GrowableArray<StructuredQueryFilter> = new GrowableArray<StructuredQueryFilter>();
+  #orders: GrowableArray<StructuredQueryOrder> = new GrowableArray<StructuredQueryOrder>();
+  var #limit: i32 = -1;
+  var #offset: i32 = 0;
+
+  new(db: Firestore, parent: String, collectionId: String)
+    : #db = db, #parent = parent, #collectionId = collectionId;
+
+  /** The documents whose field `field` compares with `value` by `op`. */
+  where(field: String, op: StructuredQueryFieldFilterOperator, value: Value): Query {
+    let next = this.#copy();
+    next.#filters.push(StructuredQueryFilter.of({
+      fieldFilter: StructuredQueryFieldFilter.of({field: fieldReference(field), op, value}),
+    }));
+    return next;
+  }
+
+  /** Orders the results by `field`; later calls order ties. */
+  orderBy(field: String, direction: StructuredQueryDirection = StructuredQueryDirection.Ascending): Query {
+    let next = this.#copy();
+    next.#orders.push(StructuredQueryOrder.of({field: fieldReference(field), direction}));
+    return next;
+  }
+
+  /** At most `count` results. */
+  limit(count: i32): Query {
+    let next = this.#copy();
+    next.#limit = count;
+    return next;
+  }
+
+  /** Skips the first `count` results. */
+  offset(count: i32): Query {
+    let next = this.#copy();
+    next.#offset = count;
+    return next;
+  }
+
+  /** The query as the API takes it. */
+  structuredQuery(): StructuredQuery {
+    let from = [StructuredQueryCollectionSelector.of({collectionId: this.#collectionId})];
+    var where: StructuredQueryFilter | null = null;
+    if (this.#filters.length == 1) {
+      where = this.#filters[0];
+    } else if (this.#filters.length > 1) {
+      where = StructuredQueryFilter.of({
+        compositeFilter: StructuredQueryCompositeFilter.of({
+          op: StructuredQueryCompositeFilterOperator.And,
+          filters: this.#filters,
+        }),
+      });
+    }
+    // Absent parts are left out of the record rather than set to defaults.
+    if (where == null) {
+      if (this.#limit < 0) {
+        return StructuredQuery.of({from, orderBy: this.#orders, offset: this.#offset});
+      }
+      return StructuredQuery.of({
+        from, orderBy: this.#orders, offset: this.#offset,
+        limit: Int32Value.of({value: this.#limit}),
+      });
+    }
+    if (this.#limit < 0) {
+      return StructuredQuery.of({from, where: where as StructuredQueryFilter, orderBy: this.#orders, offset: this.#offset});
+    }
+    return StructuredQuery.of({
+      from, where: where as StructuredQueryFilter, orderBy: this.#orders, offset: this.#offset,
+      limit: Int32Value.of({value: this.#limit}),
+    });
+  }
+
+  /** The matching documents, each as soon as it arrives. */
+  stream(transaction: ProtoBytes | null = null): SnapshotStream {
+    let parent = if (this.#parent.length == 0) this.#db.documentsRoot
+      else `${this.#db.documentsRoot}/${this.#parent}`;
+    let responses = if (transaction == null)
+      this.#db.client.runQuery({parent, structuredQuery: this.structuredQuery()})
+      else this.#db.client.runQuery({parent, structuredQuery: this.structuredQuery(), transaction: transaction as ProtoBytes});
+    return new SnapshotStream(this.#db, responses);
+  }
+
+  /** The matching documents. */
+  async get(): Future<GrowableArray<DocumentSnapshot>> {
+    return await collect(this.stream());
+  }
+
+  #copy(): Query {
+    let next = new Query(this.#db, this.#parent, this.#collectionId);
+    for (let f in this.#filters) {
+      next.#filters.push(f);
+    }
+    for (let o in this.#orders) {
+      next.#orders.push(o);
+    }
+    next.#limit = this.#limit;
+    next.#offset = this.#offset;
+    return next;
+  }
+}
+
+/** The documents a query returns, skipping the responses that carry none. */
+export final class SnapshotStream implements AsyncIterator<DocumentSnapshot>, AsyncIterable<DocumentSnapshot> {
+  #db: Firestore;
+  #responses: AsyncIterator<RunQueryResponse>;
+
+  new(db: Firestore, responses: AsyncIterator<RunQueryResponse>) : #db = db, #responses = responses;
+
+  next(): AsyncStep<DocumentSnapshot> {
+    while (true) {
+      match (this.#responses.next()) {
+        case (1, let response, _): {
+          let document = response.document;
+          if (document != null) {
+            return (1, this.#snapshot(document as Document), _);
+          }
+        }
+        case (2, _, let pending): {
+          return (2, _, this.#later(pending));
+        }
+        case _: {
+          return (0, _, _);
+        }
+      }
+    }
+    return (0, _, _);
+  }
+
+  [AsyncIterable.asyncIterator](): AsyncIterator<DocumentSnapshot> {
+    return this;
+  }
+
+  /** The next document, from `pending` or the responses after it. */
+  async #later(pending: Future<Option<RunQueryResponse>>): Future<Option<DocumentSnapshot>> {
+    var next = await pending;
+    while (true) {
+      if (next is Some<RunQueryResponse>) {
+        let document = (next as Some<RunQueryResponse>).value.document;
+        if (document != null) {
+          return some(this.#snapshot(document as Document));
+        }
+      } else {
+        return none;
+      }
+      next = await nextResponse(this.#responses);
+    }
+    return none;
+  }
+
+  #snapshot(document: Document): DocumentSnapshot {
+    let name = document.name;
+    let root = `${this.#db.documentsRoot}/`;
+    let path = if (name.startsWith(root)) name.sliceBytes(root.length, name.length) else name;
+    return new DocumentSnapshot(new DocumentReference(this.#db, path), document);
+  }
+}
+
+/** The next element of `responses`, waiting for it if it is still coming. */
+let nextResponse = async (responses: AsyncIterator<RunQueryResponse>): Future<Option<RunQueryResponse>> => {
+  match (responses.next()) {
+    case (1, let response, _): {
+      return some(response);
+    }
+    case (2, _, let pending): {
+      return await pending;
+    }
+    case _: {
+      return none;
+    }
+  }
+};
+
+let collect = async (stream: SnapshotStream): Future<GrowableArray<DocumentSnapshot>> => {
+  let out = new GrowableArray<DocumentSnapshot>();
+  for await (let snapshot in stream) {
+    out.push(snapshot);
+  }
+  return out;
+};
+
+/** A document as it was read. */
+export final class DocumentSnapshot {
+  ref: DocumentReference;
+  /** The document as the API returned it, or null when it does not exist. */
+  document: Document | null;
+
+  new(this.ref, this.document);
+
+  exists: boolean {
+    get { return this.document != null; }
+  }
+
+  id: String {
+    get { return this.ref.id; }
+  }
+
+  /** When the document was last written, or null when it does not exist. */
+  updateTime: Timestamp | null {
+    get {
+      let document = this.document;
+      return if (document == null) null else (document as Document).updateTime;
+    }
+  }
+
+  /**
+   * The value at `path`: a field name, or names joined with `.` to reach
+   * into map values. Null when there is no such field.
+   */
+  get(path: String): Value | null {
+    let document = this.document;
+    if (document == null) {
+      return null;
+    }
+    let names = path.split('.');
+    var fields = (document as Document).fields;
+    for (var i = 0; i < names.length; i += 1) {
+      if (!fields.has(names[i])) {
+        return null;
+      }
+      let value = fields.getOr(names[i], nullValue());
+      if (i == names.length - 1) {
+        return value;
+      }
+      let map = value.mapValue;
+      if (map == null) {
+        return null;
+      }
+      fields = (map as MapValue).fields;
+    }
+    return null;
+  }
+
+  /** The string at `path`: `(true, value)`, or `(false, _)` when it is absent or not a string. */
+  getString(path: String): inline (true, String) | inline (false, _) {
+    let value = this.get(path);
+    if (value != null && (value as Value).hasStringValue) {
+      return (true, (value as Value).stringValue);
+    }
+    return (false, _);
+  }
+
+  /** The integer at `path`: `(true, value)`, or `(false, _)` when it is absent or not an integer. */
+  getInteger(path: String): inline (true, i64) | inline (false, _) {
+    let value = this.get(path);
+    if (value != null && (value as Value).hasIntegerValue) {
+      return (true, (value as Value).integerValue);
+    }
+    return (false, _);
+  }
+
+  /** The double at `path`: `(true, value)`, or `(false, _)` when it is absent or not a double. */
+  getDouble(path: String): inline (true, f64) | inline (false, _) {
+    let value = this.get(path);
+    if (value != null && (value as Value).hasDoubleValue) {
+      return (true, (value as Value).doubleValue);
+    }
+    return (false, _);
+  }
+
+  /** The boolean at `path`: `(true, value)`, or `(false, _)` when it is absent or not a boolean. */
+  getBoolean(path: String): inline (true, boolean) | inline (false, _) {
+    let value = this.get(path);
+    if (value != null && (value as Value).hasBooleanValue) {
+      return (true, (value as Value).booleanValue);
+    }
+    return (false, _);
+  }
+
+  /** The timestamp at `path`, or null when it is absent or not a timestamp. */
+  getTimestamp(path: String): Timestamp | null {
+    let value = this.get(path);
+    return if (value == null) null else (value as Value).timestampValue;
+  }
+}
+
+/** Writes collected and committed together. */
+export final class WriteBatch {
+  #db: Firestore;
+  #writes: GrowableArray<Write> = new GrowableArray<Write>();
+
+  new(db: Firestore) : #db = db;
+
+  set(document: DocumentReference, fields: Fields): WriteBatch {
+    this.#writes.push(setWrite(document, fields));
+    return this;
+  }
+
+  create(document: DocumentReference, fields: Fields): WriteBatch {
+    this.#writes.push(createWrite(document, fields));
+    return this;
+  }
+
+  update(document: DocumentReference, fields: Fields): WriteBatch {
+    this.#writes.push(updateWrite(document, fields));
+    return this;
+  }
+
+  delete(document: DocumentReference): WriteBatch {
+    this.#writes.push(deleteWrite(document));
+    return this;
+  }
+
+  /** Commits every write, all or none. */
+  async commit(): Future<void> {
+    await this.#db.commit(this.#writes);
+  }
+}
+
+/**
+ * A read-write transaction, as `Firestore.runTransaction` hands it to its
+ * body. Reads go to the server at once; writes are kept and committed when
+ * the body returns.
+ */
+export final class Transaction {
+  #db: Firestore;
+  /** The transaction's id. */
+  id: ProtoBytes;
+  /** The writes to commit. */
+  writes: GrowableArray<Write> = new GrowableArray<Write>();
+
+  new(db: Firestore, id: ProtoBytes) : #db = db, id = id;
+
+  /** Reads `document` in this transaction. */
+  async get(document: DocumentReference): Future<DocumentSnapshot> {
+    try {
+      let found = await this.#db.client.getDocument({name: document.name, transaction: this.id});
+      return new DocumentSnapshot(document, found);
+    } catch (e) {
+      if (e is RpcError && (e as RpcError).code == CODE_NOT_FOUND) {
+        return new DocumentSnapshot(document, null);
+      }
+      throw e;
+    }
+  }
+
+  /** Runs `query` in this transaction. */
+  async query(query: Query): Future<GrowableArray<DocumentSnapshot>> {
+    return await collect(query.stream(this.id));
+  }
+
+  set(document: DocumentReference, fields: Fields): Transaction {
+    this.writes.push(setWrite(document, fields));
+    return this;
+  }
+
+  create(document: DocumentReference, fields: Fields): Transaction {
+    this.writes.push(createWrite(document, fields));
+    return this;
+  }
+
+  update(document: DocumentReference, fields: Fields): Transaction {
+    this.writes.push(updateWrite(document, fields));
+    return this;
+  }
+
+  delete(document: DocumentReference): Transaction {
+    this.writes.push(deleteWrite(document));
+    return this;
+  }
+}
+
+let documentOf = (ref: DocumentReference, fields: Fields): Document =>
+  Document.of({name: ref.name, fields: fields.toMap()});
+
+let setWrite = (ref: DocumentReference, fields: Fields): Write =>
+  Write.of({update: documentOf(ref, fields)});
+
+let createWrite = (ref: DocumentReference, fields: Fields): Write =>
+  Write.of({update: documentOf(ref, fields), currentDocument: Precondition.of({exists: false})});
+
+let updateWrite = (ref: DocumentReference, fields: Fields): Write => {
+  let paths = new GrowableArray<String>();
+  for (let name in fields.names()) {
+    paths.push(quoteFieldName(name));
+  }
+  return Write.of({
+    update: documentOf(ref, fields),
+    updateMask: DocumentMask.of({fieldPaths: paths}),
+    currentDocument: Precondition.of({exists: true}),
+  });
+};
+
+let deleteWrite = (ref: DocumentReference): Write => Write.of({delete: ref.name});
+
+/** A reference to the field at `path`, names joined with `.`, each quoted as needed. */
+let fieldReference = (path: String): StructuredQueryFieldReference => {
+  var quoted = '';
+  for (let name in path.split('.')) {
+    quoted = if (quoted.length == 0) quoteFieldName(name) else `${quoted}.${quoteFieldName(name)}`;
+  }
+  return StructuredQueryFieldReference.of({fieldPath: quoted});
+};
+
+let lastSegment = (path: String): String => {
+  let segments = path.split('/');
+  return segments[segments.length - 1];
+};
+
+/** `path` without its last segment, or '' when it has one segment. */
+let parentPath = (path: String): String => {
+  var i = path.length - 1;
+  while (i >= 0) {
+    if (path.getByteAt(i) == 0x2F) {
+      return path.sliceBytes(0, i);
+    }
+    i -= 1;
+  }
+  return '';
+};
+
+/** A random 20-character document id, as Firestore's own clients make. */
+let randomId = (): String => {
+  let alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+  var id = '';
+  for (var i = 0; i < 20; i += 1) {
+    let n = (getRandomU64() % (62 as u64)) as i32;
+    id = `${id}${alphabet.sliceBytes(n, n + 1)}`;
+  }
+  return id;
+};

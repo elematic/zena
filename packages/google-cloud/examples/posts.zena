@@ -1,0 +1,61 @@
+/**
+ * The README's example: writes a post, counts a view, queries the popular
+ * posts, and counts a visit in a transaction. Needs a real project, with
+ * credentials as the README describes:
+ *
+ *     GOOGLE_CLOUD_PROJECT=my-project \
+ *     GOOGLE_OAUTH_ACCESS_TOKEN=$(gcloud auth print-access-token) \
+ *       zena-cli run packages/google-cloud/examples/posts.zena
+ */
+
+import { runFuture } from 'zena:async';
+import {
+  Direction, Fields, Firestore, Operator, RpcError, Transaction, integerValue
+} from 'google-cloud:firestore';
+
+let run = async (): Future<void> => {
+  let db = await Firestore.connect();
+
+  let post = db.collection('posts').doc('hello');
+  await post.set(new Fields().string('title', 'Hello').integer('views', 0));
+
+  let snapshot = await post.get();
+  if (let (true, views) = snapshot.getInteger('views')) {
+    await post.update(new Fields().integer('views', views + 1));
+  }
+
+  let popular = await db.collection('posts')
+    .where('views', Operator.GreaterThan, integerValue(100))
+    .orderBy('views', Direction.Descending)
+    .limit(10)
+    .get();
+  for (let p in popular) {
+    console.log(p.id);
+  }
+
+  let total = await db.runTransaction<i64>(async (tx: Transaction): Future<i64> => {
+    let counter = db.doc('counters/visits');
+    let snapshot = await tx.get(counter);
+    var n: i64 = 0;
+    if (let (true, stored) = snapshot.getInteger('n')) {
+      n = stored;
+    }
+    tx.set(counter, new Fields().integer('n', n + 1));
+    return n + 1;
+  });
+  console.log(`visits: ${total}`);
+};
+
+export let main = (): i32 => {
+  try {
+    runFuture(run());
+  } catch (e) {
+    if (e is RpcError) {
+      console.error(`RpcError ${(e as RpcError).code}: ${e.message}`);
+    } else {
+      console.error(`error: ${e.message}`);
+    }
+    return 1;
+  }
+  return 0;
+};

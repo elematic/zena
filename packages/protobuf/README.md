@@ -5,6 +5,9 @@ the generated code calls. The design, and the reasons for the shape of
 the generated code, are in
 [docs/design/protobuf.md](../../docs/design/protobuf.md).
 
+For Firestore, use `packages/google-cloud`, which checks in the generated
+module and adds credentials and a hand-written client.
+
 ## Generating code
 
 From the repository root:
@@ -88,11 +91,12 @@ throws an `RpcError` carrying the `google.rpc.Code`.
 - `zena/generator.zena`: the library's entry point.
 - `bin/generate.zena`: the command-line program.
 - `protos/`: vendored Google `.proto` files.
-- `examples/`: programs over the generated Firestore code, used for the
-  size measurements in the design doc.
+- `examples/`: programs over the generated Firestore code
+  (`google-cloud:firestore-v1`), used for the size measurements in the
+  design doc.
 - `test-files/protos/`: the test schema. `test-files/generated/`: the
-  generator's output for it and for Firestore, checked in and compiled by
-  the tests. `test-files/protoc/`: messages `protoc` encoded.
+  generator's output for it, checked in and compiled by the tests.
+  `test-files/protoc/`: messages `protoc` encoded.
 
 ## Testing
 
