@@ -1,0 +1,29 @@
+/**
+ * `firestore-v1.zena` is the protobuf generator's output for the vendored
+ * Firestore protos; this test fails when it no longer matches. Regenerate
+ * it with `npm run generate -w @zena-lang/google-cloud`.
+ */
+
+import {suite, test} from 'zena:test';
+import {isTrue} from 'zena:assert';
+import {exists, readFile} from 'zena:fs';
+import {generate} from 'protobuf:generator';
+
+/** Relative to the repository root, which is where a test runs. */
+let PROTOS = 'packages/protobuf/protos';
+let GENERATED = 'packages/google-cloud/zena/firestore-v1.zena';
+
+let readProto = (path: String): String | null => {
+  let candidate = `${PROTOS}/${path}`;
+  return if (exists(candidate)) readFile(candidate) else null;
+};
+
+export let tests = suite('google-cloud generated code', (): void => {
+  test('firestore-v1.zena is current', () => {
+    let source = generate({files: ['google/firestore/v1/firestore.proto'], read: readProto});
+    isTrue(
+      readFile(GENERATED) == source,
+      `${GENERATED} does not match the generator's output; run npm run generate -w @zena-lang/google-cloud`
+    );
+  });
+});

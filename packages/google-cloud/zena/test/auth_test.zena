@@ -1,0 +1,122 @@
+/**
+ * Credentials and project discovery against a `zena:http` server in the
+ * same program that answers like the metadata server.
+ */
+
+import { suite, test } from 'zena:test';
+import { equal } from 'zena:assert';
+import { Future, runFuture } from 'zena:async';
+import { App, Request, Response, Server } from 'zena:http';
+import { AccessTokenCredentials, AuthError, MetadataServerCredentials, projectIdFrom } from '../auth.zena';
+
+/** What the fake metadata server hands out, and what it has seen. */
+final class Metadata {
+  /** Each token's lifetime in seconds. */
+  lifetime: i32;
+  /** Whether to answer every request with HTTP 500. */
+  var failing: boolean = false;
+  /** How many tokens have been handed out; each is `token-<n>`. */
+  var tokens: i32 = 0;
+
+  new(this.lifetime);
+}
+
+/**
+ * Answers the token and project-id paths from `state`, only with the
+ * `metadata-flavor: Google` header, as the real server does.
+ */
+let metadataServer = (state: Metadata): Server => {
+  let app = new App();
+  app.use(async (req: Request, res: Response, next: () => Future<void>): Future<void> => {
+    if (req.getHeader('metadata-flavor') != 'Google') {
+      res.statusCode = 403;
+      res.body = 'missing metadata-flavor';
+    } else if (state.failing) {
+      res.statusCode = 500;
+      res.body = 'down';
+    } else if (req.path == '/computeMetadata/v1/instance/service-accounts/default/token') {
+      state.tokens += 1;
+      res.statusCode = 200;
+      res.type = 'application/json';
+      res.body = `{"access_token":"token-${state.tokens}","expires_in":${state.lifetime},"token_type":"Bearer"}`;
+    } else if (req.path == '/computeMetadata/v1/project/project-id') {
+      res.statusCode = 200;
+      res.type = 'text/plain';
+      res.body = 'my-project\n';
+    } else {
+      res.statusCode = 404;
+      res.body = 'not found';
+    }
+  });
+  let server = new Server(app, 0 as u16);
+  server.start();
+  return server;
+};
+
+let originOf = (server: Server): String => `http://127.0.0.1:${server.port as i32}`;
+
+let twoHeaders = async (credentials: MetadataServerCredentials): Future<String> => {
+  let first = await credentials.authorization();
+  let second = await credentials.authorization();
+  return `${first as String} ${second as String}`;
+};
+
+let failure = async (call: () => Future<String>): Future<String> => {
+  try {
+    return await call();
+  } catch (e) {
+    if (e is AuthError) {
+      return `AuthError: ${e.message}`;
+    }
+    return `not an AuthError: ${e.message}`;
+  }
+};
+
+export let tests = suite('google-cloud auth', (): void => {
+  test('sends a fixed access token', () => {
+    let header = runFuture(new AccessTokenCredentials('abc').authorization());
+    equal(header as String, 'Bearer abc');
+  });
+
+  test('fetches a token from the metadata server and keeps it', () => {
+    let state = new Metadata(3600);
+    let server = metadataServer(state);
+    equal(runFuture(twoHeaders(new MetadataServerCredentials(originOf(server)))), 'Bearer token-1 Bearer token-1');
+    equal(state.tokens, 1);
+    server.close();
+  });
+
+  test('fetches a new token when the last is about to expire', () => {
+    // Under a minute left: too close to expiry to use again.
+    let server = metadataServer(new Metadata(30));
+    equal(runFuture(twoHeaders(new MetadataServerCredentials(originOf(server)))), 'Bearer token-1 Bearer token-2');
+    server.close();
+  });
+
+  test('reads the project id', () => {
+    let server = metadataServer(new Metadata(3600));
+    equal(runFuture(projectIdFrom(originOf(server))), 'my-project');
+    server.close();
+  });
+
+  test('fails with an AuthError when the server answers an error', () => {
+    let state = new Metadata(3600);
+    state.failing = true;
+    let server = metadataServer(state);
+    let origin = originOf(server);
+    equal(runFuture(failure(async (): Future<String> => await projectIdFrom(origin))),
+        'AuthError: the metadata server answered /computeMetadata/v1/project/project-id with HTTP 500: down');
+    let credentials = new MetadataServerCredentials(origin);
+    equal(runFuture(failure(async (): Future<String> => (await credentials.authorization()) as String)),
+        'AuthError: the metadata server answered /computeMetadata/v1/instance/service-accounts/default/token with HTTP 500: down');
+    server.close();
+  });
+
+  test('fails with an AuthError when the server cannot be reached', () => {
+    let server = metadataServer(new Metadata(3600));
+    let origin = originOf(server);
+    server.close();
+    equal(runFuture(failure(async (): Future<String> => await projectIdFrom(origin))),
+        `AuthError: the metadata server at ${origin} could not be reached`);
+  });
+});

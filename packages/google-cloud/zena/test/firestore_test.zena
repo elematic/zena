@@ -1,0 +1,528 @@
+/**
+ * The Firestore client against an in-memory Firestore: a `ProtoTransport`
+ * that decodes each request the generated client sends, applies it to a
+ * map of documents, and answers as the API would.
+ */
+
+import { suite, test } from 'zena:test';
+import { equal, isTrue } from 'zena:assert';
+import { AsyncIterator, AsyncStep, Future, runFuture } from 'zena:async';
+import { HashMap } from 'zena:collections';
+import { Option, newByteArray } from 'zena:core';
+import { ProtoBytes, ProtoTransport, ProtoView, ProtoWriter, RpcMetadata, RpcMethod } from 'protobuf:runtime';
+import { RpcError } from 'protobuf:fallback';
+import {
+  BeginTransactionRequest,
+  BeginTransactionResponse,
+  CommitRequest,
+  CommitResponse,
+  Document,
+  GetDocumentRequest,
+  Int32Value,
+  Precondition,
+  RollbackRequest,
+  RunQueryRequest,
+  RunQueryResponse,
+  StructuredQuery,
+  StructuredQueryCompositeFilter,
+  StructuredQueryFieldFilter,
+  StructuredQueryFieldFilterOperator,
+  StructuredQueryFieldReference,
+  StructuredQueryFilter,
+  StructuredQueryOrder,
+  TransactionOptions,
+  TransactionOptionsReadWrite,
+  Value,
+  Write
+} from '../firestore-v1.zena';
+import {
+  Direction,
+  DocumentSnapshot,
+  Fields,
+  Firestore,
+  Operator,
+  Transaction,
+  integerValue,
+  quoteFieldName,
+  stringValue
+} from '../firestore.zena';
+
+let ROOT = 'projects/p/databases/(default)/documents';
+
+let rpcError = (code: i32, message: String): RpcError =>
+  new RpcError(code, message, (new ProtoWriter()).finish());
+
+/**
+ * The views in `views`, one per `next()`: ready, or when `deferred`, each
+ * and the end as a pending future, as a network stream answers.
+ */
+final class ViewStream implements AsyncIterator<ProtoView> {
+  #views: GrowableArray<ProtoView>;
+  #deferred: boolean;
+  var #index: i32 = 0;
+
+  new(views: GrowableArray<ProtoView>, deferred: boolean) : #views = views, #deferred = deferred;
+
+  next(): AsyncStep<ProtoView> {
+    if (this.#index < this.#views.length) {
+      this.#index += 1;
+      let view = this.#views[this.#index - 1];
+      if (this.#deferred) {
+        return (2, _, Future.of<Option<ProtoView>>(some(view)));
+      }
+      return (1, view, _);
+    }
+    if (this.#deferred) {
+      return (2, _, Future.of<Option<ProtoView>>(none));
+    }
+    return (0, _, _);
+  }
+}
+
+/** Whether `value` equals `filter`'s value, for string and integer values. */
+let sameValue = (a: Value, b: Value): boolean => {
+  if (a.hasStringValue && b.hasStringValue) {
+    return a.stringValue == b.stringValue;
+  }
+  if (a.hasIntegerValue && b.hasIntegerValue) {
+    return a.integerValue == b.integerValue;
+  }
+  return false;
+};
+
+/** Whether `document` passes `filter`; supports `==` field filters joined by AND. */
+let passes = (document: Document, filter: StructuredQueryFilter): boolean => {
+  let composite = filter.compositeFilter;
+  if (composite != null) {
+    for (let f in (composite as StructuredQueryCompositeFilter).filters) {
+      if (!passes(document, f)) {
+        return false;
+      }
+    }
+    return true;
+  }
+  let field = filter.fieldFilter;
+  if (field == null) {
+    return true;
+  }
+  let fieldFilter = field as StructuredQueryFieldFilter;
+  let name = (fieldFilter.field as StructuredQueryFieldReference).fieldPath;
+  let fields = document.fields;
+  if (!fields.has(name)) {
+    return false;
+  }
+  if (fieldFilter.op != StructuredQueryFieldFilterOperator.Equal) {
+    throw new Error('the fake supports == only');
+  }
+  return sameValue(fields.getOr(name, stringValue('')), fieldFilter.value as Value);
+};
+
+/** An in-memory Firestore. */
+final class FakeFirestore implements ProtoTransport {
+  /** Encoded documents by full name. */
+  documents: HashMap<String, Document> = new HashMap<String, Document>();
+  /** One line per call: the method, and for some what it carried. */
+  log: GrowableArray<String> = new GrowableArray<String>();
+  /** The last query run. */
+  var lastQuery: RunQueryRequest | null = null;
+  /** Whether query responses arrive as pending futures. */
+  var deferred: boolean = false;
+  /** How many of the next transactional commits to abort. */
+  var abortCommits: i32 = 0;
+  var #transactions: i32 = 0;
+
+  new();
+
+  async unary(method: RpcMethod, request: ProtoView, metadata: RpcMetadata): Future<ProtoView> {
+    if (method.name == 'GetDocument') {
+      let get = new GetDocumentRequest(request);
+      this.log.push(if (get.hasTransaction) `GetDocument ${shortName(get.name)} in ${txName(get.transaction)}` else `GetDocument ${shortName(get.name)}`);
+      if (let (true, document) = this.documents.get(get.name)) {
+        return document.protoView;
+      }
+      throw rpcError(5, `no document ${get.name}`);
+    }
+    if (method.name == 'Commit') {
+      let commit = new CommitRequest(request);
+      let tx = commit.transaction;
+      if (tx.length > 0 && this.abortCommits > 0) {
+        this.abortCommits -= 1;
+        this.log.push(`Commit aborted ${txName(tx)}`);
+        throw rpcError(10, 'contention');
+      }
+      var line = if (tx.length > 0) `Commit in ${txName(tx)}:` else 'Commit:';
+      for (let write in commit.writes) {
+        line = `${line} ${this.#apply(write)}`;
+      }
+      this.log.push(line);
+      return CommitResponse.of({}).protoView;
+    }
+    if (method.name == 'BeginTransaction') {
+      let begin = new BeginTransactionRequest(request);
+      this.#transactions += 1;
+      let retry = ((begin.options as TransactionOptions).readWrite as TransactionOptionsReadWrite).retryTransaction;
+      this.log.push(if (retry.length > 0) `BeginTransaction retrying ${txName(retry)}` else 'BeginTransaction');
+      let id = newByteArray(1);
+      id[0] = this.#transactions as u8;
+      return BeginTransactionResponse.of({transaction: id}).protoView;
+    }
+    if (method.name == 'Rollback') {
+      this.log.push(`Rollback ${txName(new RollbackRequest(request).transaction)}`);
+      return (new ProtoWriter()).finish();
+    }
+    throw rpcError(12, `unimplemented: ${method.name}`);
+  }
+
+  serverStream(method: RpcMethod, request: ProtoView, metadata: RpcMetadata): AsyncIterator<ProtoView> {
+    let run = new RunQueryRequest(request);
+    this.lastQuery = run;
+    let query = run.structuredQuery as StructuredQuery;
+    let prefix = `${run.parent}/${query.from.toArray()[0].collectionId}/`;
+    let names = new GrowableArray<String>();
+    for (let entry in this.documents) {
+      let name = entry.key;
+      if (name.startsWith(prefix) && !name.sliceBytes(prefix.length, name.length).contains('/')) {
+        insertSorted(names, name);
+      }
+    }
+    let responses = new GrowableArray<ProtoView>();
+    // The API's first response can carry no document.
+    responses.push(RunQueryResponse.of({skippedResults: 0}).protoView);
+    let limit = query.limit;
+    for (let name in names) {
+      if (limit != null && responses.length > (limit as Int32Value).value) {
+        break;
+      }
+      let document = this.documents.getOr(name, Document.of({}));
+      let where = query.where;
+      if (where == null || passes(document, where as StructuredQueryFilter)) {
+        responses.push(RunQueryResponse.of({document}).protoView);
+      }
+    }
+    this.log.push(if (run.hasTransaction) `RunQuery ${prefix} in ${txName(run.transaction)}` else `RunQuery ${prefix}`);
+    return new ViewStream(responses, this.deferred);
+  }
+
+  /** Applies `write` and describes it. */
+  #apply(write: Write): String {
+    if (write.hasDelete) {
+      this.documents.delete(write.delete);
+      return `delete ${shortName(write.delete)}`;
+    }
+    let update = write.update as Document;
+    let name = update.name;
+    let exists = this.documents.has(name);
+    let precondition = write.currentDocument;
+    let mustExist = precondition != null && (precondition as Precondition).hasExists;
+    let wanted = mustExist && (precondition as Precondition).exists;
+    if (mustExist && wanted != exists) {
+      throw rpcError(if (exists) 6 else 5, `precondition failed for ${name}`);
+    }
+    let mask = write.updateMask;
+    let fields = new HashMap<String, Value>();
+    var verb = if (mustExist && !wanted) 'create' else 'set';
+    if (mask != null) {
+      verb = 'update';
+      for (let entry in this.documents.getOr(name, Document.of({})).fields) {
+        fields[entry.key] = entry.value;
+      }
+    }
+    for (let entry in update.fields) {
+      fields[entry.key] = entry.value;
+    }
+    this.documents[name] = Document.of({name, fields});
+    return `${verb} ${shortName(name)}`;
+  }
+}
+
+/** `name` below the database's documents. */
+let shortName = (name: String): String =>
+  if (name.startsWith(`${ROOT}/`)) name.sliceBytes(ROOT.length + 1, name.length) else name;
+
+let txName = (id: ProtoBytes): String => `tx${id[0]}`;
+
+let open = (fake: FakeFirestore): Firestore => new Firestore({projectId: 'p', transport: fake});
+
+/** Inserts `name` into `names`, which is sorted. */
+let insertSorted = (names: GrowableArray<String>, name: String): void => {
+  names.push(name);
+  var i = names.length - 1;
+  while (i > 0 && names[i - 1].compareTo(name) > 0) {
+    names[i] = names[i - 1];
+    i -= 1;
+  }
+  names[i] = name;
+};
+
+let lines = (log: Iterable<String>): String => {
+  var out = '';
+  for (let line in log) {
+    out = if (out.length == 0) line else `${out}\n${line}`;
+  }
+  return out;
+};
+
+/** The string at `path` in `snapshot`, or `-`. */
+let str = (snapshot: DocumentSnapshot, path: String): String => {
+  if (let (true, value) = snapshot.getString(path)) {
+    return value;
+  }
+  return '-';
+};
+
+/** The integer at `path` in `snapshot`, or `-`. */
+let int = (snapshot: DocumentSnapshot, path: String): String => {
+  if (let (true, value) = snapshot.getInteger(path)) {
+    return `${value}`;
+  }
+  return '-';
+};
+
+let names = (snapshots: GrowableArray<DocumentSnapshot>): String => {
+  var out = '';
+  for (let s in snapshots) {
+    out = `${out}${s.id},`;
+  }
+  return out;
+};
+
+let writeAndRead = async (db: Firestore): Future<String> => {
+  let post = db.collection('posts').doc('hello');
+  await post.set(new Fields()
+    .string('title', 'Hello')
+    .integer('views', 3)
+    .map('author', new Fields().string('name', 'Ada')));
+  let snapshot = await post.get();
+  var views: i64 = -1;
+  if (let (true, n) = snapshot.getInteger('views')) {
+    views = n;
+  }
+  return `${snapshot.exists} ${str(snapshot, 'title')} ${views} ${str(snapshot, 'author.name')} ` +
+    `${str(snapshot, 'missing')} ${str(snapshot, 'views')} ${int(snapshot, 'title')}`;
+};
+
+let missing = async (db: Firestore): Future<String> => {
+  let snapshot = await db.doc('posts/nope').get();
+  return `${snapshot.exists} ${str(snapshot, 'title')}`;
+};
+
+let updateKeepsOthers = async (db: Firestore): Future<String> => {
+  let post = db.doc('posts/a');
+  await post.set(new Fields().string('title', 'A').integer('views', 1));
+  await post.update(new Fields().integer('views', 2));
+  let snapshot = await post.get();
+  return `${str(snapshot, 'title')} ${int(snapshot, 'views')}`;
+};
+
+/** The message of the error `call` throws, or `no error`. */
+let messageOf = async (call: () => Future<void>): Future<String> => {
+  try {
+    await call();
+  } catch (e) {
+    return e.message;
+  }
+  return 'no error';
+};
+
+/** The `google.rpc.Code` of the error `call` throws, or -1. */
+let codeOf = async (call: () => Future<void>): Future<i32> => {
+  try {
+    await call();
+  } catch (e) {
+    if (e is RpcError) {
+      return (e as RpcError).code;
+    }
+    throw e;
+  }
+  return -1;
+};
+
+let preconditions = async (db: Firestore): Future<String> => {
+  let post = db.doc('posts/b');
+  let updateMissing = await codeOf(async (): Future<void> => {
+    await post.update(new Fields().integer('views', 1));
+  });
+  await post.create(new Fields().string('title', 'B'));
+  let createTwice = await codeOf(async (): Future<void> => {
+    await post.create(new Fields().string('title', 'B'));
+  });
+  await post.delete();
+  let gone = await post.get();
+  return `${updateMissing} ${createTwice} ${gone.exists}`;
+};
+
+let addAndQuery = async (db: Firestore): Future<String> => {
+  let posts = db.collection('posts');
+  let added = await posts.add(new Fields().string('kind', 'draft'));
+  await posts.doc('x').set(new Fields().string('kind', 'live').integer('rank', 1));
+  await posts.doc('y').set(new Fields().string('kind', 'live').integer('rank', 2));
+  await posts.doc('x').collection('comments').doc('c').set(new Fields().string('kind', 'live'));
+  let live = await posts.where('kind', Operator.Equal, stringValue('live')).get();
+  let ranked = await posts
+    .where('kind', Operator.Equal, stringValue('live'))
+    .where('rank', Operator.Equal, integerValue(2))
+    .get();
+  let all = await posts.get();
+  let comments = await db.doc('posts/x').collection('comments').get();
+  return `${added.id.length} ${names(live)} ${names(ranked)} ${all.length} ${names(comments)} ${comments[0].ref.path}`;
+};
+
+let streamQuery = async (db: Firestore): Future<String> => {
+  await db.doc('items/1').set(new Fields().integer('n', 1));
+  await db.doc('items/2').set(new Fields().integer('n', 2));
+  var out = '';
+  for await (let snapshot in db.collection('items').stream()) {
+    out = `${out}${snapshot.id}=${int(snapshot, 'n')},`;
+  }
+  return out;
+};
+
+let queryEncoding = (fake: FakeFirestore, db: Firestore): String => {
+  let query = db.collection('posts')
+    .where('a.b', Operator.GreaterThan, integerValue(5))
+    .orderBy('odd name', Direction.Descending)
+    .orderBy('a.b')
+    .offset(2)
+    .limit(10)
+    .structuredQuery();
+  let filter = (query.where as StructuredQueryFilter).fieldFilter as StructuredQueryFieldFilter;
+  let orders = query.orderBy.toArray();
+  let path = (order: StructuredQueryOrder): String => (order.field as StructuredQueryFieldReference).fieldPath;
+  return `${query.from.toArray()[0].collectionId} ${(filter.field as StructuredQueryFieldReference).fieldPath} ` +
+    `${filter.op == Operator.GreaterThan} ${(filter.value as Value).integerValue} ` +
+    `${path(orders[0])} ${orders[0].direction == Direction.Descending} ` +
+    `${path(orders[1])} ${orders[1].direction == Direction.Ascending} ${query.offset} ${(query.limit as Int32Value).value}`;
+};
+
+let batch = async (fake: FakeFirestore, db: Firestore): Future<String> => {
+  await db.doc('posts/old').set(new Fields().string('title', 'Old'));
+  fake.log.clear();
+  await db.batch()
+    .set(db.doc('posts/n1'), new Fields().string('title', 'N1'))
+    .create(db.doc('posts/n2'), new Fields().string('title', 'N2'))
+    .update(db.doc('posts/old'), new Fields().string('title', 'Updated'))
+    .delete(db.doc('posts/gone'))
+    .commit();
+  return lines(fake.log);
+};
+
+/** Increments `counters/c`.`n` in a transaction. */
+let increment = async (db: Firestore): Future<i64> => await db.runTransaction<i64>(
+  async (tx: Transaction): Future<i64> => {
+    let counter = db.doc('counters/c');
+    let snapshot = await tx.get(counter);
+    var n: i64 = 0;
+    if (let (true, stored) = snapshot.getInteger('n')) {
+      n = stored;
+    }
+    tx.set(counter, new Fields().integer('n', n + 1));
+    return n + 1;
+  }
+);
+
+let transactions = async (fake: FakeFirestore, db: Firestore): Future<String> => {
+  let first = await increment(db);
+  fake.abortCommits = 1;
+  let second = await increment(db);
+  return `${first} ${second}\n${lines(fake.log)}`;
+};
+
+let failingTransaction = async (fake: FakeFirestore, db: Firestore): Future<String> => {
+  let message = await messageOf(async (): Future<void> => {
+    await db.runTransaction<i32>(async (tx: Transaction): Future<i32> => {
+      await tx.query(db.collection('posts').query());
+      throw new Error('body failed');
+    });
+  });
+  return `${message}\n${lines(fake.log)}`;
+};
+
+let exhaustedRetries = async (fake: FakeFirestore, db: Firestore): Future<String> => {
+  fake.abortCommits = 10;
+  let code = await codeOf(async (): Future<void> => {
+    await db.runTransaction<i32>(async (tx: Transaction): Future<i32> => {
+      tx.delete(db.doc('posts/z'));
+      return 0;
+    }, 2);
+  });
+  return `${code}\n${lines(fake.log)}`;
+};
+
+export let tests = suite('firestore', (): void => {
+  test('names resources', () => {
+    let db = open(new FakeFirestore());
+    let comment = db.collection('posts').doc('a').collection('comments').doc('c');
+    equal(db.database, 'projects/p/databases/(default)');
+    equal(comment.name, `${ROOT}/posts/a/comments/c`);
+    equal(comment.id, 'c');
+    equal(comment.parent.path, 'posts/a/comments');
+    equal(comment.parent.id, 'comments');
+    let other = new Firestore({projectId: 'q', databaseId: 'db2', transport: new FakeFirestore()});
+    equal(other.doc('a/b').name, 'projects/q/databases/db2/documents/a/b');
+  });
+
+  test('quotes field names', () => {
+    equal(quoteFieldName('views'), 'views');
+    equal(quoteFieldName('_a1'), '_a1');
+    equal(quoteFieldName('1a'), '`1a`');
+    equal(quoteFieldName('odd name'), '`odd name`');
+    equal(quoteFieldName('a`b\\c'), '`a\\`b\\\\c`');
+    equal(quoteFieldName(''), '``');
+  });
+
+  test('sets and gets a document', () => {
+    equal(runFuture(writeAndRead(open(new FakeFirestore()))), 'true Hello 3 Ada - - -');
+  });
+
+  test('reads a missing document as not existing', () => {
+    equal(runFuture(missing(open(new FakeFirestore()))), 'false -');
+  });
+
+  test('updates some fields and keeps the others', () => {
+    equal(runFuture(updateKeepsOthers(open(new FakeFirestore()))), 'A 2');
+  });
+
+  test('checks update and create preconditions, and deletes', () => {
+    equal(runFuture(preconditions(open(new FakeFirestore()))), '5 6 false');
+  });
+
+  test('adds documents and queries a collection', () => {
+    equal(runFuture(addAndQuery(open(new FakeFirestore()))), '20 x,y, y, 3 c, posts/x/comments/c');
+  });
+
+  test('streams query results', () => {
+    equal(runFuture(streamQuery(open(new FakeFirestore()))), '1=1,2=2,');
+  });
+
+  test('streams query results that arrive later', () => {
+    let fake = new FakeFirestore();
+    fake.deferred = true;
+    equal(runFuture(streamQuery(open(fake))), '1=1,2=2,');
+    equal(runFuture(addAndQuery(open(fake))), '20 x,y, y, 3 c, posts/x/comments/c');
+  });
+
+  test('encodes a structured query', () => {
+    let fake = new FakeFirestore();
+    equal(queryEncoding(fake, open(fake)), 'posts a.b true 5 `odd name` true a.b true 2 10');
+  });
+
+  test('commits a batch in one call', () => {
+    let fake = new FakeFirestore();
+    equal(runFuture(batch(fake, open(fake))), 'Commit: set posts/n1 create posts/n2 update posts/old delete posts/gone');
+  });
+
+  test('runs a transaction and retries an aborted commit', () => {
+    let fake = new FakeFirestore();
+    equal(runFuture(transactions(fake, open(fake))), lines(['1 2', 'BeginTransaction', 'GetDocument counters/c in tx1', 'Commit in tx1: set counters/c', 'BeginTransaction', 'GetDocument counters/c in tx2', 'Commit aborted tx2', 'BeginTransaction retrying tx2', 'GetDocument counters/c in tx3', 'Commit in tx3: set counters/c']));
+  });
+
+  test('rolls back a transaction whose body throws', () => {
+    let fake = new FakeFirestore();
+    equal(runFuture(failingTransaction(fake, open(fake))), lines(['body failed', 'BeginTransaction', `RunQuery ${ROOT}/posts/ in tx1`, 'Rollback tx1']));
+  });
+
+  test('gives up after the last attempt is aborted', () => {
+    let fake = new FakeFirestore();
+    equal(runFuture(exhaustedRetries(fake, open(fake))), lines(['10', 'BeginTransaction', 'Commit aborted tx1', 'BeginTransaction retrying tx1', 'Commit aborted tx2']));
+  });
+});

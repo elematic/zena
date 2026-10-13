@@ -1,9 +1,10 @@
 # Protobuf and gRPC
 
-Status: **Partly implemented.** The generator and the runtime are in
-`packages/protobuf`, and generate a Firestore client that compiles and
-runs against a test transport. Transports, authentication and the
-hand-written Firestore client are not built.
+Status: **Partly implemented.** The generator, the runtime and the
+fallback transport are in `packages/protobuf`. `packages/google-cloud`
+holds the generated Firestore code, metadata-server credentials and a
+hand-written Firestore client. The gRPC transport and typed documents are
+not built.
 
 This document designs protobuf messages and gRPC clients for Zena. The
 first user is a Firestore client for servers running on Google Cloud Run.
@@ -606,6 +607,14 @@ with the header `Metadata-Flavor: Google`. The JSON response holds
 before it expires, and sends it as `authorization: Bearer <token>`. The
 request needs one header, which the `wasi:http` bindings set.
 
+`google-cloud:auth` implements this as `MetadataServerCredentials`, a
+`Credentials` that fetches a token on first use and again a minute before
+it expires. `defaultCredentials()` uses `GOOGLE_OAUTH_ACCESS_TOKEN` when
+it is set, for local runs with a token from
+`gcloud auth print-access-token`, and the metadata server otherwise.
+`defaultProjectId()` reads `GOOGLE_CLOUD_PROJECT` or asks the metadata
+server.
+
 Routing is separate; see [Routing headers](#routing-headers).
 
 ## Where generation runs
@@ -660,10 +669,12 @@ changes ([workflow.md](workflow.md)).
 - Because the output sits in a package, its unused bodies are not
   checked, per [lazy-body-checking.md](lazy-body-checking.md).
 
-The package's own tests keep two generated modules checked in under
-`test-files/generated`: a fixture covering each feature, and Firestore.
-A test fails when the generator's output differs from them, and
-`UPDATE_PROTO_GOLDENS=1` rewrites them.
+The protobuf package's tests keep a fixture covering each feature
+checked in under `test-files/generated`. A test fails when the
+generator's output differs from it, and `UPDATE_PROTO_GOLDENS=1` rewrites
+it. The generated Firestore module is
+`packages/google-cloud/zena/firestore-v1.zena`; that package's test fails
+when it is stale, and its `generate` script rewrites it.
 
 ### Compiler-synthesized imports
 
@@ -743,23 +754,24 @@ baseline that uses the same standard library pieces (a future, a
 | Program                                                                                   | `-O0`   | `-O1`  | `-O2`  |
 | ----------------------------------------------------------------------------------------- | ------- | ------ | ------ |
 | `baseline.zena`                                                                           | 21,461  | 11,380 | 10,159 |
-| `firestore-get.zena`: get a document, read one field                                      | 104,509 | 28,568 | 24,268 |
-| `firestore-query.zena`: build a filtered, ordered query, stream results, read every field | 224,484 | 47,840 | 36,919 |
+| `firestore-get.zena`: get a document, read one field                                      | 107,014 | 30,498 | 25,898 |
+| `firestore-query.zena`: build a filtered, ordered query, stream results, read every field | 225,255 | 49,818 | 38,723 |
 
-Sizes are in bytes, from main at 85805cf1. At `-O2` the get program adds
-14 KB to the baseline and the query program 27 KB. Dead-field
+Sizes are in bytes, measured at e1958efd, which added routing headers
+(about 1.7 KB at `-O2` in each program). At `-O2` the get program adds
+16 KB to the baseline and the query program 29 KB. Dead-field
 elimination (#301) took the get program from 26,903 bytes at `-O2` to
 24,268 and the query program from 41,996 to 36,919, measured against
 the commit before it. In the get program the largest generated
 functions are `Value.of` and `Document.of`, which the program calls to
 build its canned response; a client that only reads would not reach
-them. The generated Firestore module is 9,405 lines, 91 message classes,
+them. The generated Firestore module is 9,490 lines, 91 message classes,
 9 enums and 30 oneof types, and neither program carries most of it.
 
-Compiling the get program takes about 1.1 s against 0.4 s for the
-baseline. The examples import the generated module by relative path, so
-it is part of the local project and every body in it is checked; behind a
-package import, unused bodies would not be.
+Compiling the get program takes about 1.1 s against 0.3 s for the
+baseline. The examples import the generated module from the google-cloud
+package; importing it by relative path, as part of the local project,
+took the same time.
 
 The runtime is checked against `protoc` 36.2: messages `protoc`
 encoded from text format decode correctly, and the generated encoders
@@ -785,15 +797,15 @@ produce the same bytes for the same values
 
 ## Firestore client layering
 
-The Firestore package has four layers:
+The Firestore client has four layers:
 
 1. `protobuf:runtime`: `ProtoView`, `ProtoWriter`, `ProtoList`,
    `ProtoMap`, `ProtoBytes` and the transport interface.
 2. Generated views, records, encoders and the `FirestoreClient` for
    `google.firestore.v1`.
-3. A hand-written client: `db.collection('users').doc(id).get()`,
-   transactions with retry, batched writes, query building, and token
-   handling.
+3. A hand-written client, `google-cloud:firestore`:
+   `db.collection('users').doc(id).get()`, transactions with retry,
+   batched writes and query building.
 4. Typed documents: mapping user classes and records to Firestore's
    `Map<String, Value>`.
 
@@ -809,12 +821,37 @@ generating it needs either a derive mechanism on user declarations or
 structural reflection. `zena:json` has the same need for typed JSON, so
 the two should share a design. That design is out of scope here.
 
-### Interim client
+### The hand-written client
 
-If production Firestore access is needed before the transports are
-built, a hand-written client over the REST API and `zena:json` can
-provide layer 3, calling REST endpoints with JSON in place of layers 1
-and 2. Its public API can stay the same when layer 2 is wired in.
+`Firestore` holds a project and database id and a `FirestoreClient`.
+Every call goes through the generated client, so the transport is a
+constructor option: the fallback transport to `firestore.googleapis.com`
+by default, and a gRPC transport once one exists.
+
+- `DocumentReference` and `CollectionReference` are paths. `get`, `set`,
+  `create`, `update` and `delete` each make one call. `update` sends an
+  update mask of the top-level field names and requires the document to
+  exist; `create` requires it not to. A `get` of a missing document
+  answers a snapshot whose `exists` is false, from the API's NOT_FOUND.
+- `Query` is immutable: `where`, `orderBy`, `limit` and `offset` return
+  a new query. Several `where` filters are joined by AND. `stream()`
+  hands out each document as its response arrives; `get()` collects them.
+- `DocumentSnapshot` reads fields by path (`author.name` reaches into map
+  values), with a getter per type that answers `(true, value)` or
+  `(false, _)`, the standard library's lookup convention.
+- `Fields` builds a document's fields, and `stringValue`, `integerValue`
+  and the other functions build `Value`s for filters and arrays.
+- `runTransaction` begins a read-write transaction, runs the body with a
+  `Transaction` that reads in it and collects writes, and commits them.
+  When the commit is ABORTED it begins again, passing the old id as
+  `retry_transaction`, up to five attempts. When the body throws, it
+  rolls back and rethrows.
+- `WriteBatch` commits several writes in one call.
+
+Not built yet: field transforms (server timestamps, increments), cursors,
+`in` and array filters beyond passing a `Value`, `select`, aggregation
+queries, listening, and reading many documents in one call
+(`BatchGetDocuments`).
 
 ## Implementation plan
 
@@ -828,20 +865,21 @@ Done:
   entry point.
 - Host: a `send_request` hook in `zena-runtime` that pools connections
   and negotiates HTTP/2.
-- Generated Firestore code, checked in as a test fixture, with size
-  measurements.
+- Generated Firestore code, with size measurements.
 - Dead-field elimination in the compiler (#301).
 - The fallback transport, `protobuf:fallback`, with server streaming.
 - Per-call metadata, credentials, and routing headers from
   `google.api.routing` and `google.api.http`.
+- `packages/google-cloud`: the generated Firestore module,
+  metadata-server credentials, and the hand-written client.
 
 Remaining:
 
-1. A Firestore package with its generated code, and metadata-server
-   authentication.
-2. The hand-written client layer.
-3. The gRPC transport over HTTP/2.
-4. Loader plugins, with WIT and protobuf as the first two users.
+1. The gRPC transport over HTTP/2. Production servers will run under
+   `zena-cli`, whose outgoing requests use HTTP/2, so gRPC is the
+   transport to use there; it also reaches the Firestore emulator.
+2. Typed documents.
+3. Loader plugins, with WIT and protobuf as the first two users.
 
 ## Open questions
 
