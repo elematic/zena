@@ -102,6 +102,12 @@ project id is `GOOGLE_CLOUD_PROJECT` or `GCLOUD_PROJECT`, or `demo-zena`.
 The emulator speaks gRPC and REST but not the fallback protocol, so this
 needs `zena-cli` or `zena-run`.
 
+A program can use the emulator in development and the real API in
+production with no change: a development script sets
+`FIRESTORE_EMULATOR_HOST` and depends on the repository's
+`emulators:start` service, as `test:emulator` does, and production
+leaves it unset.
+
 ## Credentials
 
 `defaultCredentials()`:
@@ -139,8 +145,11 @@ npm run test:emulator -w @zena-lang/google-cloud
 ```
 
 runs the client against the Firestore emulator over gRPC
-(`zena/emulator/`). It is not part of `npm test`, since it needs Java
-and the emulator: `scripts/with-firestore-emulator.sh` takes Java from
-`PATH` or nixpkgs, and the emulator's jar from `FIRESTORE_EMULATOR_JAR`
-or firebase-tools' download cache, downloading it when it is missing.
-Each test uses a project of its own, which the emulator keeps apart.
+(`zena/emulator/`). It depends on the repository's `emulators:start`
+script, a wireit service that starts the emulator on `127.0.0.1:8180`
+(`firebase.json`) before the tests and stops it after. The service
+enters the flake's `emulators` shell for firebase-tools and Java, which
+are about 2 GB and so not in the default shell; firebase-tools downloads
+the emulator itself on first use. That is also why this suite is not
+part of `npm test`. Each test uses a project of its own, which the
+emulator keeps apart.
