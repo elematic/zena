@@ -14,15 +14,12 @@
  *         .get();
  *
  * Requests go through the generated `FirestoreClient` (`./firestore-v1.zena`)
- * over a `ProtoTransport`: by default Google's gRPC fallback protocol, which
- * works on any `wasi:http` host, or with `Protocol.Grpc`, gRPC, which needs
- * a host whose outgoing HTTP speaks HTTP/2, such as `zena-cli`. Values are
- * the generated `Value` views; `Fields` and the `*Value` functions build
- * them.
- *
- * When `FIRESTORE_EMULATOR_HOST` is set, `Firestore.connect()` talks gRPC
- * to the emulator at that `host:port` instead, as Google's own client
- * libraries do.
+ * over a `ProtoTransport`. `Firestore.connect()` uses gRPC, which needs a
+ * host whose outgoing HTTP speaks HTTP/2, such as `zena-cli`, and reaches
+ * the emulator when `FIRESTORE_EMULATOR_HOST` is set, as Google's own
+ * client libraries do. `Firestore.connectFallback()` uses Google's gRPC
+ * fallback protocol, which works on any `wasi:http` host. Values are the
+ * generated `Value` views; `Fields` and the `*Value` functions build them.
  */
 
 import { AsyncIterable, AsyncIterator, AsyncStep } from 'zena:async';
@@ -72,7 +69,7 @@ export {
 export { RpcError } from 'protobuf:runtime';
 
 /** The Firestore API's origin. */
-let FIRESTORE_ORIGIN = 'https://firestore.googleapis.com';
+export let FIRESTORE_ORIGIN = 'https://firestore.googleapis.com';
 
 /** The project id `connect` uses with the emulator when none is set. */
 let EMULATOR_PROJECT = 'demo-zena';
@@ -202,33 +199,23 @@ export let quoteFieldName = (name: String): String => {
   return `${out}\``;
 };
 
-/** How a `Firestore` without a `transport` reaches `firestore.googleapis.com`. */
-export enum Protocol {
-  /** Google's gRPC fallback protocol, over HTTP/1.1 or HTTP/2: any `wasi:http` host. */
-  Fallback,
-  /** gRPC, which needs HTTP/2: `zena-cli` and `zena-run`, not stock `wasmtime serve`. */
-  Grpc,
-}
-
 /** Options for `new Firestore`. */
 export type FirestoreOptions = {
   projectId: String,
   /** `(default)` when absent. */
   databaseId?: String,
-  /** A transport to `firestore.googleapis.com`, by `protocol`, when absent. */
-  transport?: ProtoTransport,
-  /** For the default transport: `Protocol.Fallback` when absent. */
-  protocol?: Protocol,
-  /** For the default transport: `defaultCredentials()` when absent. */
-  credentials?: Credentials,
+  /**
+   * How calls reach the API: a `GrpcTransport` or a `FallbackTransport`
+   * to `FIRESTORE_ORIGIN` with credentials, or a test's own. Only the
+   * transport a program names is compiled into it.
+   */
+  transport: ProtoTransport,
 };
 
-/** Options for `Firestore.connect`. */
+/** Options for `Firestore.connect` and `Firestore.connectFallback`. */
 export type ConnectOptions = {
   /** `(default)` when absent. */
   databaseId?: String,
-  /** `Protocol.Fallback` when absent. Ignored for the emulator, which takes gRPC only. */
-  protocol?: Protocol,
 };
 
 let databaseIdOf = (options: FirestoreOptions): String => {
@@ -238,20 +225,11 @@ let databaseIdOf = (options: FirestoreOptions): String => {
   return '(default)';
 };
 
-let transportOf = (options: FirestoreOptions): ProtoTransport => {
-  if (let {transport} = options) {
-    return transport;
+let connectDatabaseId = (options: ConnectOptions): String => {
+  if (let {databaseId} = options) {
+    return databaseId;
   }
-  var credentials = defaultCredentials();
-  if (let {credentials as given} = options) {
-    credentials = given;
-  }
-  if (let {protocol} = options) {
-    if (protocol == Protocol.Grpc) {
-      return new GrpcTransport(FIRESTORE_ORIGIN, credentials);
-    }
-  }
-  return new FallbackTransport(FIRESTORE_ORIGIN, credentials);
+  return '(default)';
 };
 
 /** The value of environment variable `name`, or null when it is unset or empty. */
@@ -283,20 +261,22 @@ export final class Firestore {
   new(options: FirestoreOptions)
     : projectId = options.projectId,
       databaseId = databaseIdOf(options),
-      client = new FirestoreClient(transportOf(options));
+      client = new FirestoreClient(options.transport);
 
   /**
-   * A database of the project this program runs in, with the default
-   * credentials (see `defaultProjectId`, `defaultCredentials`).
+   * A database of the project this program runs in, over gRPC, with the
+   * default credentials (see `defaultProjectId`, `defaultCredentials`).
+   * gRPC needs a host whose outgoing HTTP speaks HTTP/2, such as
+   * `zena-cli` or `zena-run`; on other hosts, use `connectFallback`.
    *
    * When `FIRESTORE_EMULATOR_HOST` is set to the emulator's `host:port`,
-   * the database is the emulator's instead, reached with gRPC over
-   * cleartext HTTP/2 and the token `owner`, which bypasses security
-   * rules. The project id is then `GOOGLE_CLOUD_PROJECT` or
-   * `GCLOUD_PROJECT`, or `demo-zena` when neither is set.
+   * the database is the emulator's instead, reached over cleartext HTTP/2
+   * with the token `owner`, which bypasses security rules. The project id
+   * is then `GOOGLE_CLOUD_PROJECT` or `GCLOUD_PROJECT`, or `demo-zena`
+   * when neither is set.
    */
   static async connect(options: ConnectOptions = {}): Future<Firestore> {
-    let databaseId = if (let {databaseId} = options) databaseId else '(default)';
+    let databaseId = connectDatabaseId(options);
     let emulator = envValue('FIRESTORE_EMULATOR_HOST');
     if (emulator != null) {
       var projectId = EMULATOR_PROJECT;
@@ -311,10 +291,22 @@ export final class Firestore {
       return new Firestore({projectId, databaseId, transport});
     }
     let projectId = await defaultProjectId();
-    if (let {protocol} = options) {
-      return new Firestore({projectId, databaseId, protocol});
+    let transport = new GrpcTransport(FIRESTORE_ORIGIN, defaultCredentials());
+    return new Firestore({projectId, databaseId, transport});
+  }
+
+  /**
+   * As `connect`, over Google's gRPC fallback protocol, which works on any
+   * `wasi:http` host, stock `wasmtime serve` among them. The emulator does
+   * not speak it, so this throws when `FIRESTORE_EMULATOR_HOST` is set.
+   */
+  static async connectFallback(options: ConnectOptions = {}): Future<Firestore> {
+    if (envValue('FIRESTORE_EMULATOR_HOST') != null) {
+      throw new Error('FIRESTORE_EMULATOR_HOST is set, and the emulator does not speak the fallback protocol; use Firestore.connect()');
     }
-    return new Firestore({projectId, databaseId});
+    let projectId = await defaultProjectId();
+    let transport = new FallbackTransport(FIRESTORE_ORIGIN, defaultCredentials());
+    return new Firestore({projectId, databaseId: connectDatabaseId(options), transport});
   }
 
   /** `projects/<project>/databases/<database>`. */

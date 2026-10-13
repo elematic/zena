@@ -240,6 +240,10 @@ let connectToEmulator = async (): Future<String> => {
   return `${db.projectId} ${str(s, 'via')}`;
 };
 
+let fallbackRefused = async (): Future<String> => await messageOf(async (): Future<void> => {
+  await Firestore.connectFallback();
+});
+
 export let tests = suite('firestore on the emulator', (): void => {
   test('writes and reads every kind of value', () => {
     equal(runFuture(writeAndRead(freshDatabase())), 'true Hello 3 2.5 true true 1700000000 false Ada true true');
@@ -273,5 +277,10 @@ export let tests = suite('firestore on the emulator', (): void => {
 
   test('connects to the emulator from the environment', () => {
     equal(runFuture(connectToEmulator()), 'demo-zena connect');
+  });
+
+  test('refuses the fallback protocol, which the emulator does not speak', () => {
+    equal(runFuture(fallbackRefused()),
+        'FIRESTORE_EMULATOR_HOST is set, and the emulator does not speak the fallback protocol; use Firestore.connect()');
   });
 });

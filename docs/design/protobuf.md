@@ -845,11 +845,15 @@ the two should share a design. That design is out of scope here.
 
 `Firestore` holds a project and database id and a `FirestoreClient`.
 Every call goes through the generated client, so the transport is a
-constructor option. Without one, `protocol` picks the transport to
-`firestore.googleapis.com`: the fallback transport by default, since it
-works on every host, or gRPC with `Protocol.Grpc`. `Firestore.connect()`
-reads `FIRESTORE_EMULATOR_HOST` as Google's client libraries do, and
-then talks gRPC to the emulator with the token `owner`.
+constructor option, and the constructor names no transport of its own.
+`Firestore.connect()` uses gRPC, which production servers under
+`zena-cli` speak, and reads `FIRESTORE_EMULATOR_HOST` as Google's client
+libraries do, talking gRPC to the emulator with the token `owner`.
+`Firestore.connectFallback()` uses the fallback transport, for stock
+hosts. Each entry point names only its own transport, so a program
+carries one: the gRPC transport added about 29 KB at `-O2` to a program
+that used only the fallback transport, when the constructor could pick
+either.
 
 - `DocumentReference` and `CollectionReference` are paths. `get`, `set`,
   `create`, `update` and `delete` each make one call. `update` sends an
