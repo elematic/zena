@@ -4,7 +4,9 @@ syntax = "proto3";
 package zena.test.v1;
 
 import "google/protobuf/timestamp.proto";
+import "google/api/annotations.proto";
 import "google/api/field_behavior.proto";
+import "google/api/routing.proto";
 import "zena/test/v1/options.proto";
 
 option java_package = "dev.zena.test";
@@ -71,6 +73,7 @@ message Node {
       BIG = 1;
     }
     Kind kind = 1;
+    string label = 3;
     reserved 2, 5 to 7;
     reserved "old";
   }
@@ -87,14 +90,35 @@ service Things {
 
   // Gets a node.
   rpc GetNode(Node) returns (Node) {
-    option (http) = {
+    option (google.api.http) = {
       get: "/v1/{name=nodes/*}"
       additional_bindings { post: "/v1/nodes:get" body: "*" }
     };
   }
 
   // Lists a node's descendants.
-  rpc ListNodes(Node) returns (stream Node);
+  rpc ListNodes(Node) returns (stream Node) {
+    option (google.api.http) = {
+      post: "/v1/{name=nodes/*}:list"
+      body: "*"
+    };
+  }
+
+  // Routed by explicit parameters rather than its HTTP rule.
+  rpc RouteNode(Node) returns (Node) {
+    option (google.api.http) = {
+      post: "/v1/{name=nodes/*}:route"
+      body: "*"
+    };
+    option (google.api.routing) = {
+      routing_parameters { field: "name" path_template: "projects/{project=*}/**" }
+      routing_parameters {
+        field: "name"
+        path_template: "projects/*/zones/{zone=*}/**"
+      }
+      routing_parameters { field: "inner.label" }
+    };
+  }
 
   rpc Upload(stream Node) returns (Node);
 }

@@ -30,7 +30,7 @@ import {
   Scheme, SchemeHTTP, SchemeHTTPS
 } from 'wasi:http/types';
 import { send } from 'wasi:http/client';
-import { ProtoError, ProtoTransport, ProtoView, RpcMethod } from './runtime.zena';
+import { Credentials, ProtoError, ProtoTransport, ProtoView, RpcMetadata, RpcMethod } from './runtime.zena';
 
 /** The one spellable value of type void, for a `result<_, e>` ok arm. */
 function unit(): void {}
@@ -72,14 +72,18 @@ export let codeForHttpStatus = (status: i32): i32 => {
 
 /**
  * Calls RPCs on one server with the fallback protocol. `origin` is the
- * scheme and host, such as `https://firestore.googleapis.com`.
+ * scheme and host, such as `https://firestore.googleapis.com`. When
+ * `credentials` is given, every call asks it for an `authorization`
+ * header.
  */
 export final class FallbackTransport implements ProtoTransport {
   var #scheme: Scheme;
   var #authority: String;
+  #credentials: Credentials | null;
   #headers: HashMap<String, String> = new HashMap<String, String>();
 
-  new(origin: String) : #scheme = new SchemeHTTPS(), #authority = '' {
+  new(origin: String, credentials: Credentials | null = null)
+    : #scheme = new SchemeHTTPS(), #authority = '', #credentials = credentials {
     let url = URL.parse(origin);
     if (url == null) {
       throw new ProtoError(`not a URL: ${origin}`);
@@ -97,8 +101,8 @@ export final class FallbackTransport implements ProtoTransport {
     this.#headers[name] = value;
   }
 
-  async unary(method: RpcMethod, request: ProtoView): Future<ProtoView> {
-    let exchange = await this.#post(method, request);
+  async unary(method: RpcMethod, request: ProtoView, metadata: RpcMetadata): Future<ProtoView> {
+    let exchange = await this.#post(method, request, metadata);
     let bytes = await readAllBytes(exchange.body);
     exchange.finish();
     let body = ProtoView.of(bytes as ByteArray);
@@ -108,15 +112,25 @@ export final class FallbackTransport implements ProtoTransport {
     throw errorFor(exchange, body);
   }
 
-  serverStream(method: RpcMethod, request: ProtoView): AsyncIterator<ProtoView> {
-    return new StreamBodyReader(this.#post(method, request));
+  serverStream(method: RpcMethod, request: ProtoView, metadata: RpcMetadata): AsyncIterator<ProtoView> {
+    return new StreamBodyReader(this.#post(method, request, metadata));
   }
 
-  async #post(method: RpcMethod, request: ProtoView): Future<Exchange> {
+  async #post(method: RpcMethod, request: ProtoView, metadata: RpcMetadata): Future<Exchange> {
     let headers = Fields.create();
     headers.append('content-type', 'application/x-protobuf'.toBytes());
     for (let entry in this.#headers) {
       headers.append(entry.key, entry.value.toBytes());
+    }
+    for (var i = 0; i < metadata.length; i += 1) {
+      headers.append(metadata.name(i), metadata.value(i).toBytes());
+    }
+    let credentials = this.#credentials;
+    if (credentials != null) {
+      let authorization = await (credentials as Credentials).authorization();
+      if (authorization != null) {
+        headers.append('authorization', (authorization as String).toBytes());
+      }
     }
     // The trailers future is the sender's to settle, and the host does
     // not consider the request body finished until it is.

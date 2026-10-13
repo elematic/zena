@@ -427,8 +427,8 @@ The transport knows nothing of messages:
 
 ```zena
 export interface ProtoTransport {
-  unary(method: RpcMethod, request: ProtoView): Future<ProtoView>;
-  serverStream(method: RpcMethod, request: ProtoView): AsyncIterator<ProtoView>;
+  unary(method: RpcMethod, request: ProtoView, metadata: RpcMetadata): Future<ProtoView>;
+  serverStream(method: RpcMethod, request: ProtoView, metadata: RpcMetadata): AsyncIterator<ProtoView>;
 }
 ```
 
@@ -440,8 +440,42 @@ a `ProtoStream<Response>`, which a `for await` consumes:
 for await (let response in client.runQuery({parent, structuredQuery})) { ... }
 ```
 
-Per-call metadata, such as the `x-goog-request-params` header Firestore
-expects, is not in the interface yet.
+`RpcMetadata` holds headers for one call. A generated client puts the
+call's routing header there (see [Routing headers](#routing-headers)).
+Headers that every call shares belong to the transport:
+
+- `FallbackTransport.setHeader` sets fixed headers.
+- A `Credentials` value supplies the `authorization` header. Its
+  `authorization(): Future<String | null>` is asked before every call, so
+  an implementation can refresh an expiring token.
+
+### Routing headers
+
+Google's front ends route a call by its `x-goog-request-params` header
+(https://google.aip.dev/client-libraries/4222): `key=value` pairs joined
+with `&`, each value percent-encoded. A generated client builds it from
+the request with `RoutingHeader`.
+
+- **Explicit routing.** When the method has a `google.api.routing`
+  annotation, each `routing_parameters` entry reads the request field it
+  names. With a `path_template`, the parameter is the part of the value
+  the template's variable captures, and is sent only if the value matches:
+  `projects/*/databases/{database_id=*}/**` turns
+  `projects/p/databases/(default)/documents` into
+  `database_id=%28default%29`. Without a template, the whole value is
+  sent under the field's name. A later parameter with the same key
+  replaces an earlier one.
+- **Implicit routing.** Otherwise, each variable in the path of the
+  method's `google.api.http` rule is a parameter, keyed by its field path
+  and sent whole. Firestore's `UpdateDocument` rule,
+  `/v1/{document.name=projects/*/databases/*/documents/*/**}`, gives
+  `document.name=projects%2Fp%2F...`.
+- **Empty values.** An empty or absent value sends nothing, and a call
+  with no parameters sends no header.
+
+Of the Firestore RPCs, only `ExecutePipeline` has a routing annotation;
+the rest route implicitly. The real Firestore accepts the header on both
+unary and streaming calls (`examples/firestore-fallback-probe.zena`).
 
 Transports are written against the `wasi:http` 0.3 bindings directly,
 the ones `zena:fetch` and `zena:http` are built on. `Request.new_`
@@ -572,10 +606,7 @@ with the header `Metadata-Flavor: Google`. The JSON response holds
 before it expires, and sends it as `authorization: Bearer <token>`. The
 request needs one header, which the `wasi:http` bindings set.
 
-Firestore also expects an `x-goog-request-params` header naming the
-database, as declared by the `google.api.routing` annotation on each
-RPC. The parser keeps that annotation's value, so the generator can emit
-the header once the transport interface carries metadata.
+Routing is separate; see [Routing headers](#routing-headers).
 
 ## Where generation runs
 
@@ -801,16 +832,16 @@ Done:
   measurements.
 - Dead-field elimination in the compiler (#301).
 - The fallback transport, `protobuf:fallback`, with server streaming.
+- Per-call metadata, credentials, and routing headers from
+  `google.api.routing` and `google.api.http`.
 
 Remaining:
 
-1. Per-call metadata in the transport interface, and the routing header
-   from `google.api.routing`.
-2. A Firestore package with its generated code, and metadata-server
+1. A Firestore package with its generated code, and metadata-server
    authentication.
-3. The hand-written client layer.
-4. The gRPC transport over HTTP/2.
-5. Loader plugins, with WIT and protobuf as the first two users.
+2. The hand-written client layer.
+3. The gRPC transport over HTTP/2.
+4. Loader plugins, with WIT and protobuf as the first two users.
 
 ## Open questions
 

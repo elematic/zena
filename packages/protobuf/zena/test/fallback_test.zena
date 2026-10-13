@@ -10,7 +10,7 @@ import { AsyncIterable, AsyncIterator, Completer, Future, runFuture } from 'zena
 import { StreamWriter } from 'zena:stream';
 import { App, Request, Response, Server } from 'zena:http';
 import { FallbackTransport, RpcError, codeForHttpStatus, readStreamBody } from '../fallback.zena';
-import { ProtoView, ProtoWriter, RpcMethod } from '../runtime.zena';
+import { Credentials, ProtoView, ProtoWriter, RpcMetadata, RpcMethod } from '../runtime.zena';
 import { Node, ThingsClient } from '../../test-files/generated/everything.zena';
 
 /** An encoded `google.rpc.Status`. */
@@ -61,9 +61,11 @@ let rpcServer = (): Server => {
     let request = Node.decode((await req.bytes()) as ByteArray);
     if (method == 'GetNode') {
       let auth = req.getHeader('authorization');
+      let routing = req.getHeader('x-goog-request-params');
       respond(res, 200, Node.of({
         name: `${request.name}!`,
         from: if (auth == null) '' else auth as String,
+        text: if (routing == null) '' else routing as String,
       }).protoView);
     } else if (method == 'ListNodes') {
       let nodes = new GrowableArray<ProtoView>();
@@ -143,6 +145,23 @@ let unaryCall = async (server: Server): Future<String> => {
   return `${node.name} ${node.from}`;
 };
 
+/** Hands out a token that changes on every call, as a refreshing token source might. */
+final class CountingCredentials implements Credentials {
+  var #calls: i32 = 0;
+  new();
+  async authorization(): Future<String | null> {
+    this.#calls += 1;
+    return `Bearer token-${this.#calls}`;
+  }
+}
+
+let credentialedCalls = async (server: Server): Future<String> => {
+  let client = new ThingsClient(new FallbackTransport(originOf(server), new CountingCredentials()));
+  let first = await client.getNode({name: 'nodes/a'});
+  let second = await client.getNode({name: 'nodes/b'});
+  return `${first.from} ${first.text} | ${second.from} ${second.text}`;
+};
+
 let streamingCall = async (server: Server): Future<String> => {
   let client = new ThingsClient(new FallbackTransport(originOf(server)));
   var names = '';
@@ -173,6 +192,13 @@ export let tests = suite('fallback transport', (): void => {
     server.close();
   });
 
+  test('asks the credentials before each call and sends the routing header', () => {
+    let server = rpcServer();
+    equal(runFuture(credentialedCalls(server)),
+        'Bearer token-1 name=nodes%2Fa | Bearer token-2 name=nodes%2Fb');
+    server.close();
+  });
+
   test('reads a server-streaming response as it arrives', () => {
     let server = rpcServer();
     equal(runFuture(streamingCall(server)), 'n0,n1,n2,');
@@ -187,7 +213,7 @@ export let tests = suite('fallback transport', (): void => {
     let server = rpcServer();
     let transport = new FallbackTransport(originOf(server));
     let result = runFuture(failure(async (): Future<String> => {
-      await transport.unary(new RpcMethod('zena.test.v1.Things', 'Fail'), Node.of({name: 'x'}).protoView);
+      await transport.unary(new RpcMethod('zena.test.v1.Things', 'Fail'), Node.of({name: 'x'}).protoView, new RpcMetadata());
       return 'ok';
     }));
     equal(result, '7: permission denied');
@@ -199,7 +225,7 @@ export let tests = suite('fallback transport', (): void => {
     let transport = new FallbackTransport(originOf(server));
     let result = runFuture(failure(async (): Future<String> => {
       var seen = '';
-      let stream = transport.serverStream(new RpcMethod('zena.test.v1.Things', 'FailStream'), Node.of({name: 'x'}).protoView);
+      let stream = transport.serverStream(new RpcMethod('zena.test.v1.Things', 'FailStream'), Node.of({name: 'x'}).protoView, new RpcMetadata());
       let reader = new StreamIterable(stream);
       for await (let view in reader) {
         seen = `${seen}${Node.decode(view.toByteArray()).name}`;
@@ -214,7 +240,7 @@ export let tests = suite('fallback transport', (): void => {
     let server = rpcServer();
     let transport = new FallbackTransport(originOf(server));
     let result = runFuture(failure(async (): Future<String> => {
-      await transport.unary(new RpcMethod('zena.test.v1.Elsewhere', 'Get'), Node.of({name: 'x'}).protoView);
+      await transport.unary(new RpcMethod('zena.test.v1.Elsewhere', 'Get'), Node.of({name: 'x'}).protoView, new RpcMetadata());
       return 'ok';
     }));
     equal(result, '5: the server answered with HTTP 404');

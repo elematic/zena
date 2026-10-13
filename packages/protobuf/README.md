@@ -62,8 +62,7 @@ over `wasi:http`, so it works on hosts whose outgoing HTTP is HTTP/1.1,
 such as `wasmtime serve`, and supports server-streaming methods:
 
 ```zena
-let transport = new FallbackTransport('https://firestore.googleapis.com');
-transport.setHeader('authorization', `Bearer ${token}`);
+let transport = new FallbackTransport('https://firestore.googleapis.com', credentials);
 let firestore = new FirestoreClient(transport);
 let doc = await firestore.getDocument({name: path});
 for await (let response in firestore.runQuery({parent, structuredQuery})) {
@@ -71,7 +70,11 @@ for await (let response in firestore.runQuery({parent, structuredQuery})) {
 }
 ```
 
-A failed call throws an `RpcError` carrying the `google.rpc.Code`.
+`credentials` is any `Credentials`: it supplies the `authorization`
+header before each call. Generated clients also send each call's
+`x-goog-request-params` routing header, built from the request as
+https://google.aip.dev/client-libraries/4222 describes. A failed call
+throws an `RpcError` carrying the `google.rpc.Code`.
 
 ## Layout
 

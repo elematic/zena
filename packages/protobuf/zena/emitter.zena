@@ -21,11 +21,13 @@
 import {HashMap, HashSet} from 'zena:collections';
 import {StringBuilder} from 'zena:core';
 import {joinStrings} from './text.zena';
+import {MethodDecl, OptionAggregate, OptionDecl, OptionString} from './parser.zena';
 import {
   EnumInfo,
   FieldInfo,
   FieldType,
   MessageInfo,
+  MethodInfo,
   Scalar,
   Schema,
   SchemaError,
@@ -367,6 +369,8 @@ final class Emitter {
   #topNames: HashMap<String, String> = new HashMap<String, String>();
   /** The names of the generated messages, enums and `Init` records, which a oneof case must avoid. */
   #typeNames: HashSet<String> = new HashSet<String>();
+  /** Each emitted message's getter names, parallel to its fields, by full name. */
+  #getterNames: HashMap<String, GrowableArray<String>> = new HashMap<String, GrowableArray<String>>();
 
   new(schema: Schema) : #schema = schema {
     for (let m in schema.messageOrder) {
@@ -493,6 +497,7 @@ final class Emitter {
     for (let field in m.fields) {
       getters.push(claim(taken, memberName(camelCase(field.decl.name))));
     }
+    this.#getterNames[m.fullName] = getters;
     let hasGetters = new GrowableArray<String>();
     for (let field in m.fields) {
       hasGetters.push(
@@ -851,6 +856,75 @@ final class Emitter {
     out.close('}');
   }
 
+  /**
+   * Declares `metadata` for a call to `method`, with the routing header
+   * its request's fields give (see `routingParams`).
+   */
+  #emitMetadata(method: MethodInfo): void {
+    let out = this.#out;
+    this.#use('RpcMetadata');
+    out.line('let metadata = new RpcMetadata();');
+    let params = routingParams(method.decl);
+    if (params.length == 0) {
+      return;
+    }
+    this.#use('RoutingHeader');
+    out.line('let routing = new RoutingHeader();');
+    var temp = 0;
+    for (let param in params) {
+      var message = method.input;
+      var value = 'request';
+      var opened = 0;
+      var resolved = true;
+      for (var i = 0; i < param.path.length; i += 1) {
+        let index = fieldIndexNamed(message, param.path[i]);
+        if (index < 0) {
+          resolved = false;
+          break;
+        }
+        let field = message.fields[index];
+        let last = i == param.path.length - 1;
+        if (field.isRepeated || (last && field.type.scalar != (Scalar.String as i32)) ||
+            (!last && field.type.message == null) || (i == 0 && field.outputOnly)) {
+          resolved = false;
+          break;
+        }
+        let getter = this.#getterNames.getOr(message.fullName, new GrowableArray<String>())[index];
+        let local = `r${temp}`;
+        temp += 1;
+        if (i == 0) {
+          if (field.required) {
+            out.line(`let ${local} = request.${getter};`);
+          } else {
+            out.open(`if (let {${getter} as ${local}} = request) {`);
+            opened += 1;
+          }
+        } else if (last) {
+          out.line(`let ${local} = ${value}.${getter};`);
+        } else {
+          out.line(`let ${local} = ${value}.${getter};`);
+          out.open(`if (${local} != null) {`);
+          opened += 1;
+        }
+        value = if (!last && i > 0) `(${local} as ${(field.type.message as MessageInfo).zenaName})` else local;
+        if (!last) {
+          message = field.type.message as MessageInfo;
+        }
+      }
+      if (resolved) {
+        if (param.template == null) {
+          out.line(`routing.add('${param.key}', ${value});`);
+        } else {
+          out.line(`routing.match('${param.key}', '${param.template as String}', ${value});`);
+        }
+      }
+      for (var k = 0; k < opened; k += 1) {
+        out.close('}');
+      }
+    }
+    out.line('routing.addTo(metadata);');
+  }
+
   #emitService(service: ServiceInfo): void {
     let out = this.#out;
     let name = `${service.decl.name}Client`;
@@ -887,14 +961,16 @@ final class Emitter {
       if (method.decl.outputStream) {
         this.#use('ProtoStream');
         out.open(`${methodName}(request: ${input}Init): ProtoStream<${output}> {`);
+        this.#emitMetadata(method);
         out.open(`return new ProtoStream<${output}>(`);
-        out.line(`this.#transport.serverStream(${rpc}, ${input}.of(request).protoView),`);
+        out.line(`this.#transport.serverStream(${rpc}, ${input}.of(request).protoView, metadata),`);
         out.line(`(view) => new ${output}(view)`);
         out.close(');');
         out.close('}');
       } else {
         out.open(`async ${methodName}(request: ${input}Init): Future<${output}> {`);
-        out.line(`let response = await this.#transport.unary(${rpc}, ${input}.of(request).protoView);`);
+        this.#emitMetadata(method);
+        out.line(`let response = await this.#transport.unary(${rpc}, ${input}.of(request).protoView, metadata);`);
         out.line(`return new ${output}(response);`);
         out.close('}');
       }
@@ -902,6 +978,123 @@ final class Emitter {
     out.close('}');
   }
 }
+
+/**
+ * One routing parameter of an RPC (https://google.aip.dev/client-libraries/4222):
+ * the header key, the request field path it reads (proto field names),
+ * and the path template the value is matched against, or null to send the
+ * whole value.
+ */
+final class RoutingParam {
+  key: String;
+  path: FixedArray<String>;
+  template: String | null;
+  new(this.key, this.path, this.template);
+}
+
+/**
+ * The routing parameters of `method`. A `google.api.routing` annotation
+ * lists them explicitly; without one, each variable in the path of the
+ * method's `google.api.http` rule is a parameter, keyed and read by its
+ * field path and sent whole.
+ */
+let routingParams = (method: MethodDecl): GrowableArray<RoutingParam> => {
+  let params = new GrowableArray<RoutingParam>();
+  for (let option in method.options) {
+    if (option.name != '(google.api.routing)' || !(option.value is OptionAggregate)) {
+      continue;
+    }
+    for (let entry in (option.value as OptionAggregate).fields) {
+      if (entry.name != 'routing_parameters' || !(entry.value is OptionAggregate)) {
+        continue;
+      }
+      var field = '';
+      var template: String | null = null;
+      for (let part in (entry.value as OptionAggregate).fields) {
+        if (part.value is OptionString) {
+          let text = (part.value as OptionString).value;
+          if (part.name == 'field') {
+            field = text;
+          } else if (part.name == 'path_template') {
+            template = text;
+          }
+        }
+      }
+      if (field.length == 0) {
+        continue;
+      }
+      let key = if (template == null) field else templateVariable(template as String);
+      if (key.length > 0) {
+        params.push(new RoutingParam(key, field.split('.'), template));
+      }
+    }
+  }
+  if (params.length > 0) {
+    return params;
+  }
+  let path = httpRulePath(method.options);
+  if (path == null) {
+    return params;
+  }
+  for (let variable in pathVariables(path as String)) {
+    params.push(new RoutingParam(variable, variable.split('.'), null));
+  }
+  return params;
+};
+
+/** The path of a `google.api.http` rule's main binding, or null. */
+let httpRulePath = (options: GrowableArray<OptionDecl>): String | null => {
+  for (let option in options) {
+    if (option.name != '(google.api.http)' || !(option.value is OptionAggregate)) {
+      continue;
+    }
+    for (let entry in (option.value as OptionAggregate).fields) {
+      let verb = entry.name;
+      if ((verb == 'get' || verb == 'put' || verb == 'post' || verb == 'delete' || verb == 'patch') &&
+          entry.value is OptionString) {
+        return (entry.value as OptionString).value;
+      }
+    }
+  }
+  return null;
+};
+
+/** The variable names in an HTTP rule path: `parent` and `collection_id` in `/v1/{parent=...}/{collection_id}`. */
+let pathVariables = (path: String): GrowableArray<String> => {
+  let names = new GrowableArray<String>();
+  var i = 0;
+  while (i < path.length) {
+    if (path.getByteAt(i) == 0x7B) {
+      var end = i + 1;
+      while (end < path.length && path.getByteAt(end) != 0x3D && path.getByteAt(end) != 0x7D) {
+        end += 1;
+      }
+      names.push(path.sliceBytes(i + 1, end));
+      while (end < path.length && path.getByteAt(end) != 0x7D) {
+        end += 1;
+      }
+      i = end;
+    }
+    i += 1;
+  }
+  return names;
+};
+
+/** The name of the first variable in a path template: `database_id` in `projects/{project}/databases/{database_id}`. */
+let templateVariable = (template: String): String => {
+  let names = pathVariables(template);
+  return if (names.length == 0) '' else names[0];
+};
+
+/** The index in `message.fields` of the field declared as `name`, or -1. */
+let fieldIndexNamed = (message: MessageInfo, name: String): i32 => {
+  for (var i = 0; i < message.fields.length; i += 1) {
+    if (message.fields[i].decl.name == name) {
+      return i;
+    }
+  }
+  return -1;
+};
 
 /** Whether a field gets a `hasX` getter: a scalar or enum whose absence is observable. */
 let needsHas = (field: FieldInfo): boolean =>

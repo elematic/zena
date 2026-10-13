@@ -11,6 +11,10 @@ import {newByteArray} from 'zena:core';
 import {
   ProtoBytes,
   ProtoError,
+  RoutingHeader,
+  RpcMetadata,
+  matchPathTemplate,
+  percentEncode,
   ProtoView,
   ProtoWriter,
   WIRE_I32,
@@ -269,5 +273,41 @@ export let tests = suite('protobuf runtime', (): void => {
     w.sfixed32(1, -1);
     equal(hex(w.finish()), '0d ff ff ff ff');
     isTrue(WIRE_I32 == 5);
+  });
+
+  test('percent-encodes everything but unreserved characters', () => {
+    equal(percentEncode('projects/p/databases/(default)'), 'projects%2Fp%2Fdatabases%2F%28default%29');
+    equal(percentEncode('a-b_c.d~E9'), 'a-b_c.d~E9');
+    equal(percentEncode('a b&c=d'), 'a%20b%26c%3Dd');
+    equal(percentEncode(''), '');
+  });
+
+  test('matches path templates and returns the captured variable', () => {
+    equal(matchPathTemplate('projects/{project_id=*}/**', 'project_id', 'projects/p1/databases/d/documents/x') as String, 'p1');
+    equal(matchPathTemplate('projects/*/databases/{database_id=*}/**', 'database_id', 'projects/p1/databases/(default)') as String, '(default)');
+    equal(matchPathTemplate('{name=projects/*/databases/*}/documents/**', 'name', 'projects/p/databases/d/documents/a/b') as String, 'projects/p/databases/d');
+    equal(matchPathTemplate('a/{rest=**}', 'rest', 'a/b/c/d') as String, 'b/c/d');
+    equal(matchPathTemplate('a/**/z/{last}', 'last', 'a/b/c/z/q') as String, 'q');
+    isTrue(matchPathTemplate('projects/{project_id=*}/**', 'project_id', 'organizations/o1') == null);
+    isTrue(matchPathTemplate('projects/{project_id=*}', 'project_id', 'projects/p1/extra') == null);
+    isTrue(matchPathTemplate('projects/{project_id=*}', 'other', 'projects/p1') == null);
+    isTrue(matchPathTemplate('projects/{project_id=*}/x', 'project_id', 'projects//x') == null);
+  });
+
+  test('builds the routing header, skipping empty values and keeping the last', () => {
+    let routing = new RoutingHeader();
+    routing.add('parent', 'projects/p/databases/d');
+    routing.add('empty', '');
+    routing.match('project_id', 'projects/{project_id=*}/**', 'projects/first/x');
+    routing.match('project_id', 'projects/{project_id=*}/**', 'projects/second/x');
+    routing.match('missing', 'zones/{missing=*}', 'projects/p');
+    let metadata = new RpcMetadata();
+    routing.addTo(metadata);
+    equal(metadata.length, 1);
+    equal(metadata.name(0), 'x-goog-request-params');
+    equal(metadata.value(0), 'parent=projects%2Fp%2Fdatabases%2Fd&project_id=second');
+    let none = new RpcMetadata();
+    new RoutingHeader().addTo(none);
+    equal(none.length, 0);
   });
 });
