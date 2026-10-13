@@ -1,0 +1,21 @@
+// @mode: run
+// @result: 1
+// @skip: zir emit fails with "ref.cast target kind structref"
+
+// A generic `T extends anyref` parameter inferred from a union that
+// holds an array type and null. Inferring `T` as the union and casting
+// the argument to it fails at emit ("ref.cast target kind structref"):
+// the union's common supertype is not a struct. Met through
+// `isNull(res.body)` in zena:http, where `ResponseBody` is
+// `String | FixedArray<u8> | Stream<u8> | null`.
+
+class Box {
+  new();
+}
+
+let isNullRef = <T extends anyref>(value: T | null): boolean => value == null;
+
+export function main(): i32 {
+  var body: String | FixedArray<u8> | Box | null = null;
+  return if (isNullRef(body)) 1 else 0;
+}
