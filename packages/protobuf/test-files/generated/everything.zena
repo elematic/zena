@@ -8,6 +8,8 @@ import {
   ProtoTransport,
   ProtoView,
   ProtoWriter,
+  RoutingHeader,
+  RpcMetadata,
   RpcMethod,
   WIRE_LEN,
   WIRE_VARINT
@@ -470,6 +472,7 @@ export final class Node {
 /** The fields of a `zena.test.v1.Node.Inner` to encode, for `NodeInner.of`. */
 export type NodeInnerInit = {
   kind?: NodeInnerKind,
+  label?: String,
 };
 
 /**
@@ -494,6 +497,9 @@ export final class NodeInner {
     if (let {kind as f1} = init) {
       w.int32(1, f1 as i32);
     }
+    if (let {label as f3} = init) {
+      w.string(3, f3);
+    }
     return new NodeInner(w.finish());
   }
 
@@ -504,6 +510,10 @@ export final class NodeInner {
 
   kind: NodeInnerKind {
     get { return this.#m.int32(1) as NodeInnerKind; }
+  }
+
+  label: String {
+    get { return this.#m.string(3); }
   }
 }
 
@@ -667,15 +677,42 @@ export final class ThingsClient {
 
   /** Gets a node. */
   async getNode(request: NodeInit): Future<Node> {
-    let response = await this.#transport.unary(new RpcMethod('zena.test.v1.Things', 'GetNode'), Node.of(request).protoView);
+    let metadata = new RpcMetadata();
+    let routing = new RoutingHeader();
+    let r0 = request.name;
+    routing.add('name', r0);
+    routing.addTo(metadata);
+    let response = await this.#transport.unary(new RpcMethod('zena.test.v1.Things', 'GetNode'), Node.of(request).protoView, metadata);
     return new Node(response);
   }
 
   /** Lists a node's descendants. */
   listNodes(request: NodeInit): ProtoStream<Node> {
+    let metadata = new RpcMetadata();
+    let routing = new RoutingHeader();
+    let r0 = request.name;
+    routing.add('name', r0);
+    routing.addTo(metadata);
     return new ProtoStream<Node>(
-      this.#transport.serverStream(new RpcMethod('zena.test.v1.Things', 'ListNodes'), Node.of(request).protoView),
+      this.#transport.serverStream(new RpcMethod('zena.test.v1.Things', 'ListNodes'), Node.of(request).protoView, metadata),
       (view) => new Node(view)
     );
+  }
+
+  /** Routed by explicit parameters rather than its HTTP rule. */
+  async routeNode(request: NodeInit): Future<Node> {
+    let metadata = new RpcMetadata();
+    let routing = new RoutingHeader();
+    let r0 = request.name;
+    routing.match('project', 'projects/{project=*}/**', r0);
+    let r1 = request.name;
+    routing.match('zone', 'projects/*/zones/{zone=*}/**', r1);
+    if (let {inner as r2} = request) {
+      let r3 = r2.label;
+      routing.add('inner.label', r3);
+    }
+    routing.addTo(metadata);
+    let response = await this.#transport.unary(new RpcMethod('zena.test.v1.Things', 'RouteNode'), Node.of(request).protoView, metadata);
+    return new Node(response);
   }
 }

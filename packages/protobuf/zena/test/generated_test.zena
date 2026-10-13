@@ -11,7 +11,7 @@ import {AsyncIterator, AsyncStep} from 'zena:async';
 import {HashMap} from 'zena:collections';
 import {newByteArray} from 'zena:core';
 import {readFileBytes} from 'zena:fs';
-import {ProtoBytes, ProtoTransport, ProtoView, RpcMethod} from '../runtime.zena';
+import {ProtoBytes, ProtoTransport, ProtoView, RpcMetadata, RpcMethod} from '../runtime.zena';
 import {
   Color,
   Node,
@@ -42,19 +42,33 @@ import {
 /** Answers every call by echoing the request, and streams it back three times. */
 final class EchoTransport implements ProtoTransport {
   var calls: GrowableArray<String> = new GrowableArray<String>();
+  /** The routing header of each call, or '' when it had none. */
+  var routing: GrowableArray<String> = new GrowableArray<String>();
 
   new();
 
-  unary(method: RpcMethod, request: ProtoView): Future<ProtoView> {
+  unary(method: RpcMethod, request: ProtoView, metadata: RpcMetadata): Future<ProtoView> {
     this.calls.push(`${method.service}/${method.name}`);
+    this.routing.push(routingOf(metadata));
     return Future.of(request);
   }
 
-  serverStream(method: RpcMethod, request: ProtoView): AsyncIterator<ProtoView> {
+  serverStream(method: RpcMethod, request: ProtoView, metadata: RpcMetadata): AsyncIterator<ProtoView> {
     this.calls.push(`${method.service}/${method.name}`);
+    this.routing.push(routingOf(metadata));
     return new Repeat(request, 3);
   }
 }
+
+/** The value of the `x-goog-request-params` header in `metadata`, or ''. */
+let routingOf = (metadata: RpcMetadata): String => {
+  for (var i = 0; i < metadata.length; i += 1) {
+    if (metadata.name(i) == 'x-goog-request-params') {
+      return metadata.value(i);
+    }
+  }
+  return '';
+};
 
 final class Repeat implements AsyncIterator<ProtoView> {
   #view: ProtoView;
@@ -301,6 +315,25 @@ export let tests = suite('generated protobuf code', (): void => {
     equal(runFuture(collect(client)), 6);
     equal(transport.calls[0], 'zena.test.v1.Things/GetNode');
     equal(transport.calls[1], 'zena.test.v1.Things/ListNodes');
+  });
+
+  test('routes calls by their HTTP rule or their routing annotation', () => {
+    let transport = new EchoTransport();
+    let client = new ThingsClient(transport);
+    runFuture(client.getNode({name: 'nodes/1'}));
+    runFuture(client.routeNode({
+      name: 'projects/p1/zones/z1/nodes/2',
+      inner: NodeInner.of({label: 'L'}),
+    }));
+    runFuture(client.routeNode({name: 'nodes/3'}));
+    equal(transport.routing[0], 'name=nodes%2F1');
+    equal(transport.routing[1], 'project=p1&zone=z1&inner.label=L');
+    equal(transport.routing[2], '');
+    let firestore = new FirestoreClient(transport);
+    runFuture(firestore.updateDocument({
+      document: Document.of({name: 'projects/p/databases/(default)/documents/posts/1'}),
+    }));
+    equal(transport.routing[3], 'document.name=projects%2Fp%2Fdatabases%2F%28default%29%2Fdocuments%2Fposts%2F1');
   });
 
   test('builds and reads a Firestore document', () => {

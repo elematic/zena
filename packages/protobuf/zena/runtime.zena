@@ -986,16 +986,229 @@ export final class RpcMethod {
 }
 
 /**
+ * The headers a call sends besides the ones its transport sets: routing
+ * parameters, an API key, a request id. Names are lowercase, as HTTP/2
+ * requires.
+ */
+export final class RpcMetadata {
+  #names: GrowableArray<String> = new GrowableArray<String>();
+  #values: GrowableArray<String> = new GrowableArray<String>();
+
+  new();
+
+  /** Adds header `name` with `value`. A name may be added more than once. */
+  add(name: String, value: String): void {
+    this.#names.push(name);
+    this.#values.push(value);
+  }
+
+  /** The number of headers added. */
+  length: i32 {
+    get { return this.#names.length; }
+  }
+
+  /** The name of the `index`th header. */
+  name(index: i32): String {
+    return this.#names[index];
+  }
+
+  /** The value of the `index`th header. */
+  value(index: i32): String {
+    return this.#values[index];
+  }
+}
+
+/**
+ * The supplier of a call's `authorization` header. A transport asks before
+ * every call, so an implementation can refresh an expiring token.
+ */
+export interface Credentials {
+  /** The header's value, such as `Bearer <token>`, or null to send none. */
+  authorization(): Future<String | null>;
+}
+
+/**
+ * Builds the `x-goog-request-params` header Google's front ends route a
+ * call by (https://google.aip.dev/client-libraries/4222): `key=value`
+ * pairs joined with `&`, each value percent-encoded. Generated clients
+ * fill one from the request.
+ */
+export final class RoutingHeader {
+  #keys: GrowableArray<String> = new GrowableArray<String>();
+  #values: GrowableArray<String> = new GrowableArray<String>();
+
+  new();
+
+  /** Sets parameter `key` to `value`, replacing an earlier value. An empty value sets nothing. */
+  add(key: String, value: String): void {
+    if (value.length == 0) {
+      return;
+    }
+    for (var i = 0; i < this.#keys.length; i += 1) {
+      if (this.#keys[i] == key) {
+        this.#values[i] = value;
+        return;
+      }
+    }
+    this.#keys.push(key);
+    this.#values.push(value);
+  }
+
+  /**
+   * Sets parameter `key` to the part of `value` that the variable `key`
+   * captures in `template`, when `value` matches the template.
+   */
+  match(key: String, template: String, value: String): void {
+    let captured = matchPathTemplate(template, key, value);
+    if (captured != null) {
+      this.add(key, captured as String);
+    }
+  }
+
+  /** Adds the header to `metadata`, unless no parameter was set. */
+  addTo(metadata: RpcMetadata): void {
+    if (this.#keys.length == 0) {
+      return;
+    }
+    var header = '';
+    for (var i = 0; i < this.#keys.length; i += 1) {
+      let pair = `${this.#keys[i]}=${percentEncode(this.#values[i])}`;
+      header = if (i == 0) pair else `${header}&${pair}`;
+    }
+    metadata.add('x-goog-request-params', header);
+  }
+}
+
+/**
+ * `value` with every byte outside the URL-unreserved set (letters, digits,
+ * `-`, `.`, `_` and `~`) written as `%XX`.
+ */
+export let percentEncode = (value: String): String => {
+  let hex = '0123456789ABCDEF';
+  var out = '';
+  var start = 0;
+  for (var i = 0; i < value.length; i += 1) {
+    let b = value.getByteAt(i);
+    let unreserved = (b >= 0x41 && b <= 0x5A) || (b >= 0x61 && b <= 0x7A) ||
+      (b >= 0x30 && b <= 0x39) || b == 0x2D || b == 0x2E || b == 0x5F || b == 0x7E;
+    if (!unreserved) {
+      out = `${out}${value.sliceBytes(start, i)}%${hex.sliceBytes(b >> 4, (b >> 4) + 1)}${hex.sliceBytes(b & 15, (b & 15) + 1)}`;
+      start = i + 1;
+    }
+  }
+  return if (start == 0) value else `${out}${value.sliceBytes(start, value.length)}`;
+};
+
+/**
+ * The part of `value` that variable `variable` captures in the path
+ * template `template`, or null when `value` does not match it or the
+ * capture is empty. Segments are separated by `/`; `*` matches one
+ * segment, `**` any number, and `{name=pattern}` captures what `pattern`
+ * matches (`{name}` alone is `{name=*}`). For example, variable
+ * `database_id` of `projects/{project}/databases/{database_id}/**` is
+ * `(default)` in `projects/p/databases/(default)/documents/posts`.
+ */
+export let matchPathTemplate = (template: String, variable: String, value: String): String | null => {
+  let patterns = new GrowableArray<String>();
+  var captureStart = -1;
+  var captureEnd = -1;
+  for (let raw in template.split('/')) {
+    var segment = raw;
+    if (segment.startsWith('{')) {
+      let close = segment.endsWith('}');
+      let inner = segment.sliceBytes(1, if (close) segment.length - 1 else segment.length);
+      let parts = inner.split('=');
+      if (parts[0] == variable) {
+        captureStart = patterns.length;
+      }
+      segment = if (parts.length > 1) parts[1] else '*';
+      if (close && parts[0] == variable) {
+        patterns.push(segment);
+        captureEnd = patterns.length;
+        continue;
+      }
+    } else if (segment.endsWith('}')) {
+      segment = segment.sliceBytes(0, segment.length - 1);
+      if (captureStart >= 0 && captureEnd < 0) {
+        patterns.push(segment);
+        captureEnd = patterns.length;
+        continue;
+      }
+    }
+    patterns.push(segment);
+  }
+  if (captureStart < 0 || captureEnd < 0) {
+    return null;
+  }
+  let values = value.split('/');
+  let positions = new FixedArray<i32>(patterns.length + 1, 0);
+  if (!matchSegments(patterns, 0, values, 0, positions)) {
+    return null;
+  }
+  let from = positions[captureStart];
+  let to = positions[captureEnd];
+  if (from >= to) {
+    return null;
+  }
+  var captured = values[from];
+  for (var i = from + 1; i < to; i += 1) {
+    captured = `${captured}/${values[i]}`;
+  }
+  return if (captured.length == 0) null else captured;
+};
+
+/**
+ * Whether `values[vi..]` matches `patterns[pi..]`, recording in
+ * `positions[k]` the value index pattern `k` began matching at.
+ */
+let matchSegments = (
+  patterns: GrowableArray<String>,
+  pi: i32,
+  values: FixedArray<String>,
+  vi: i32,
+  positions: FixedArray<i32>
+): boolean => {
+  positions[pi] = vi;
+  if (pi == patterns.length) {
+    return vi == values.length;
+  }
+  let pattern = patterns[pi];
+  if (pattern == '**') {
+    var k = values.length;
+    while (k >= vi) {
+      if (matchSegments(patterns, pi + 1, values, k, positions)) {
+        positions[pi] = vi;
+        return true;
+      }
+      k -= 1;
+    }
+    return false;
+  }
+  if (vi >= values.length) {
+    return false;
+  }
+  if (pattern == '*') {
+    if (values[vi].length == 0) {
+      return false;
+    }
+  } else if (pattern != values[vi]) {
+    return false;
+  }
+  return matchSegments(patterns, pi + 1, values, vi + 1, positions);
+};
+
+/**
  * Carries encoded requests and responses. A gRPC transport frames them
  * over HTTP/2; Google's fallback protocol posts them over HTTP/1.1.
  * Generated service clients call this and know nothing of HTTP.
+ * `metadata` holds headers to send with the call.
  */
 export interface ProtoTransport {
   /** Sends one request and receives one response. */
-  unary(method: RpcMethod, request: ProtoView): Future<ProtoView>;
+  unary(method: RpcMethod, request: ProtoView, metadata: RpcMetadata): Future<ProtoView>;
 
   /** Sends one request and receives a stream of responses. */
-  serverStream(method: RpcMethod, request: ProtoView): AsyncIterator<ProtoView>;
+  serverStream(method: RpcMethod, request: ProtoView, metadata: RpcMetadata): AsyncIterator<ProtoView>;
 }
 
 /** The responses of a server-streaming call, each wrapped as its generated message type. */
