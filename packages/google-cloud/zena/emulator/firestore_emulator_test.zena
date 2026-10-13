@@ -1,0 +1,277 @@
+/**
+ * The Firestore client against the Firestore emulator, over gRPC: the
+ * generated client, the gRPC transport and the host's cleartext HTTP/2 end
+ * to end. Run with `npm run test:emulator -w @zena-lang/google-cloud`,
+ * which starts the emulator and sets `FIRESTORE_EMULATOR_HOST`.
+ *
+ * Each test works in a project of its own, which the emulator keeps apart,
+ * so tests and runs do not see each other's documents.
+ */
+
+import { suite, test } from 'zena:test';
+import { equal, isTrue } from 'zena:assert';
+import { Future, runFuture } from 'zena:async';
+import { getEnv } from 'zena:cli';
+import { getRandomU64 } from 'wasi:random/random';
+import { GrpcTransport } from 'protobuf:grpc';
+import { AccessTokenCredentials } from '../auth.zena';
+import {
+  Direction, DocumentSnapshot, Fields, Firestore, Operator, RpcError, Timestamp, Transaction, Value,
+  arrayValue, booleanValue, doubleValue, integerValue, nullValue, referenceValue, stringValue,
+  timestampValue
+} from '../firestore.zena';
+
+let emulatorHost = (): String => {
+  let host = getEnv('FIRESTORE_EMULATOR_HOST');
+  if (host == null || (host as String).length == 0) {
+    throw new Error('FIRESTORE_EMULATOR_HOST is not set; run npm run test:emulator -w @zena-lang/google-cloud');
+  }
+  return host as String;
+};
+
+/** A database in a new project on the emulator. */
+let freshDatabase = (): Firestore => new Firestore({
+  projectId: `test-${getRandomU64() % (1000000000 as u64)}`,
+  transport: new GrpcTransport(`http://${emulatorHost()}`, new AccessTokenCredentials('owner')),
+});
+
+/** The string at `path` in `snapshot`, or `-`. */
+let str = (snapshot: DocumentSnapshot, path: String): String => {
+  if (let (true, value) = snapshot.getString(path)) {
+    return value;
+  }
+  return '-';
+};
+
+/** The integer at `path` in `snapshot`, or `-`. */
+let int = (snapshot: DocumentSnapshot, path: String): String => {
+  if (let (true, value) = snapshot.getInteger(path)) {
+    return `${value}`;
+  }
+  return '-';
+};
+
+let ids = (snapshots: GrowableArray<DocumentSnapshot>): String => {
+  var out = '';
+  for (let s in snapshots) {
+    out = `${out}${s.id},`;
+  }
+  return out;
+};
+
+/** The `google.rpc.Code` of the error `call` throws, or -1. */
+let codeOf = async (call: () => Future<void>): Future<i32> => {
+  try {
+    await call();
+  } catch (e) {
+    if (e is RpcError) {
+      return (e as RpcError).code;
+    }
+    throw e;
+  }
+  return -1;
+};
+
+/** The message of the error `call` throws, or `no error`. */
+let messageOf = async (call: () => Future<void>): Future<String> => {
+  try {
+    await call();
+  } catch (e) {
+    return e.message;
+  }
+  return 'no error';
+};
+
+let writeAndRead = async (db: Firestore): Future<String> => {
+  let post = db.doc('posts/hello');
+  let other = db.doc('posts/other');
+  await post.set(new Fields()
+    .string('title', 'Hello')
+    .integer('views', 3)
+    .double('score', 2.5)
+    .boolean('draft', true)
+    .null_('deleted')
+    .timestamp('at', 1700000000, 5)
+    .array('tags', [stringValue('a'), integerValue(2)])
+    .map('author', new Fields().string('name', 'Ada'))
+    .set('link', referenceValue(other)));
+  let s = await post.get();
+  var score = 0.0;
+  if (let (true, value) = s.getDouble('score')) {
+    score = value;
+  }
+  var draft = false;
+  if (let (true, value) = s.getBoolean('draft')) {
+    draft = value;
+  }
+  let at = s.getTimestamp('at');
+  let tags = (s.get('tags') as Value).arrayValue;
+  let link = s.get('link') as Value;
+  let deleted = s.get('deleted') as Value;
+  return `${s.exists} ${str(s, 'title')} ${int(s, 'views')} ${score} ${draft} ${deleted.hasNullValue} ` +
+    `${if (at == null) (-1 as i64) else (at as Timestamp).seconds} ${tags == null} ${str(s, 'author.name')} ` +
+    `${link.referenceValue == other.name} ${s.updateTime != null}`;
+};
+
+let preconditions = async (db: Firestore): Future<String> => {
+  let missing = await db.doc('posts/nope').get();
+  let post = db.doc('posts/b');
+  let updateMissing = await codeOf(async (): Future<void> => {
+    await post.update(new Fields().integer('views', 1));
+  });
+  await post.create(new Fields().string('title', 'B').integer('views', 1));
+  let createTwice = await codeOf(async (): Future<void> => {
+    await post.create(new Fields().string('title', 'B'));
+  });
+  await post.update(new Fields().integer('views', 2));
+  let updated = await post.get();
+  await post.delete();
+  let gone = await post.get();
+  return `${missing.exists} ${updateMissing} ${createTwice} ${str(updated, 'title')} ${int(updated, 'views')} ${gone.exists}`;
+};
+
+let queries = async (db: Firestore): Future<String> => {
+  let posts = db.collection('posts');
+  await db.batch()
+    .set(posts.doc('a'), new Fields().string('kind', 'live').integer('rank', 3))
+    .set(posts.doc('b'), new Fields().string('kind', 'live').integer('rank', 1))
+    .set(posts.doc('c'), new Fields().string('kind', 'draft').integer('rank', 2))
+    .set(posts.doc('d'), new Fields().string('kind', 'live').integer('rank', 2))
+    .set(posts.doc('a').collection('comments').doc('x'), new Fields().string('kind', 'live'))
+    .commit();
+  let added = await posts.add(new Fields().string('kind', 'other'));
+  let live = await posts.where('kind', Operator.Equal, stringValue('live')).get();
+  let ranked = await posts.where('kind', Operator.Equal, stringValue('live'))
+    .where('rank', Operator.Equal, integerValue(2)).get();
+  let top = await posts.orderBy('rank', Direction.Descending).limit(2).get();
+  let above = await posts.where('rank', Operator.GreaterThan, integerValue(1)).orderBy('rank').get();
+  let skipped = await posts.orderBy('rank').offset(1).limit(2).get();
+  let comments = await posts.doc('a').collection('comments').get();
+  var streamed = '';
+  for await (let s in posts.orderBy('rank').stream()) {
+    streamed = `${streamed}${int(s, 'rank')},`;
+  }
+  return `${ids(live)} ${ids(ranked)} ${ids(top)} ${ids(above)} ${ids(skipped)} ${ids(comments)} ` +
+    `${streamed} ${added.id.length} ${(await posts.get()).length}`;
+};
+
+let manyResults = async (db: Firestore): Future<String> => {
+  let batch = db.batch();
+  for (var i = 0; i < 300; i += 1) {
+    batch.set(db.doc(`items/${1000 + i}`), new Fields().integer('n', i as i64).string('pad', 'x'));
+  }
+  await batch.commit();
+  let all = await db.collection('items').orderBy('n').get();
+  var sum: i64 = 0;
+  for (let s in all) {
+    if (let (true, n) = s.getInteger('n')) {
+      sum += n;
+    }
+  }
+  return `${all.length} ${sum}`;
+};
+
+let atomicBatch = async (db: Firestore): Future<String> => {
+  await db.doc('posts/taken').set(new Fields().string('title', 'T'));
+  let code = await codeOf(async (): Future<void> => {
+    await db.batch()
+      .set(db.doc('posts/new'), new Fields().string('title', 'N'))
+      .create(db.doc('posts/taken'), new Fields().string('title', 'again'))
+      .commit();
+  });
+  let created = await db.doc('posts/new').get();
+  return `${code} ${created.exists}`;
+};
+
+/** Increments `counters/c`.`n` in a transaction and answers the new value. */
+let increment = async (db: Firestore): Future<i64> => await db.runTransaction<i64>(
+  async (tx: Transaction): Future<i64> => {
+    let counter = db.doc('counters/c');
+    let snapshot = await tx.get(counter);
+    var n: i64 = 0;
+    if (let (true, stored) = snapshot.getInteger('n')) {
+      n = stored;
+    }
+    tx.set(counter, new Fields().integer('n', n + 1));
+    return n + 1;
+  }
+);
+
+let transactions = async (db: Firestore): Future<String> => {
+  let first = await increment(db);
+  let second = await increment(db);
+  // Two at once: the emulator makes one wait for or abort the other, so
+  // both land.
+  let a = increment(db);
+  let b = increment(db);
+  await a;
+  await b;
+  let counter = await db.doc('counters/c').get();
+  let message = await messageOf(async (): Future<void> => {
+    await db.runTransaction<i32>(async (tx: Transaction): Future<i32> => {
+      await tx.query(db.collection('counters').query());
+      tx.set(db.doc('counters/c'), new Fields().integer('n', 100));
+      throw new Error('body failed');
+    });
+  });
+  let after = await db.doc('counters/c').get();
+  return `${first} ${second} ${int(counter, 'n')} ${message} ${int(after, 'n')}`;
+};
+
+let serverError = async (db: Firestore): Future<String> => {
+  try {
+    // A collection's path where a document's belongs.
+    await db.doc('posts').get();
+  } catch (e) {
+    if (e is RpcError) {
+      let error = e as RpcError;
+      return `${error.code} ${error.message.length > 0}`;
+    }
+    return `not an RpcError: ${e.message}`;
+  }
+  return 'no error';
+};
+
+let connectToEmulator = async (): Future<String> => {
+  let db = await Firestore.connect();
+  let path = `connect/${getRandomU64() % (1000000000 as u64)}`;
+  await db.doc(path).set(new Fields().string('via', 'connect'));
+  let s = await db.doc(path).get();
+  return `${db.projectId} ${str(s, 'via')}`;
+};
+
+export let tests = suite('firestore on the emulator', (): void => {
+  test('writes and reads every kind of value', () => {
+    equal(runFuture(writeAndRead(freshDatabase())), 'true Hello 3 2.5 true true 1700000000 false Ada true true');
+  });
+
+  test('checks preconditions, updates and deletes', () => {
+    equal(runFuture(preconditions(freshDatabase())), 'false 5 6 B 2 false');
+  });
+
+  test('queries with filters, order, limits and offsets, collected and streamed', () => {
+    // Ties are ordered by document name, in the direction of the last
+    // `orderBy`: `d` before `c` when ranking descending.
+    equal(runFuture(queries(freshDatabase())), 'a,b,d, d, a,d, c,d,a, c,d, x, 1,2,2,3, 20 5');
+  });
+
+  test('streams many results', () => {
+    equal(runFuture(manyResults(freshDatabase())), '300 44850');
+  });
+
+  test('commits a batch all or nothing', () => {
+    equal(runFuture(atomicBatch(freshDatabase())), '6 false');
+  });
+
+  test('runs transactions, concurrent ones too, and rolls back a failing one', () => {
+    equal(runFuture(transactions(freshDatabase())), '1 2 4 body failed 4');
+  });
+
+  test('throws the status the server answers', () => {
+    equal(runFuture(serverError(freshDatabase())), '3 true');
+  });
+
+  test('connects to the emulator from the environment', () => {
+    equal(runFuture(connectToEmulator()), 'demo-zena connect');
+  });
+});

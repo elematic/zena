@@ -20,36 +20,18 @@
  * only. Generated code does not import it.
  */
 
-import { AsyncIterator, AsyncStep, Completer } from 'zena:async';
+import { AsyncIterator, AsyncStep } from 'zena:async';
 import { HashMap } from 'zena:collections';
-import { Err, Ok, Option, Outcome, newByteArray, copyBytes, readULEB128_64 } from 'zena:core';
-import { Stream, StreamWriter, readAllBytes } from 'zena:stream';
-import { URL } from 'zena:url';
-import {
-  ErrorCode, Fields, MethodPost, Request, Response as WireResponse,
-  Scheme, SchemeHTTP, SchemeHTTPS
-} from 'wasi:http/types';
-import { send } from 'wasi:http/client';
-import { Credentials, ProtoError, ProtoTransport, ProtoView, RpcMetadata, RpcMethod } from './runtime.zena';
+import { Ok, Option, Outcome, newByteArray, copyBytes, readULEB128_64 } from 'zena:core';
+import { Stream, readAllBytes } from 'zena:stream';
+import { ErrorCode, Fields } from 'wasi:http/types';
+import { Credentials, ProtoError, ProtoTransport, ProtoView, RpcError, RpcMetadata, RpcMethod } from './runtime.zena';
+import { Exchange, Origin, callHeaders, post } from './http.zena';
 
-/** The one spellable value of type void, for a `result<_, e>` ok arm. */
-function unit(): void {}
+export { RpcError } from './runtime.zena';
 
-/** `google.rpc.Code` values this module produces itself. */
+/** `google.rpc.Code` UNKNOWN. */
 let CODE_UNKNOWN = 2;
-let CODE_UNAVAILABLE = 14;
-
-/**
- * A call that failed. `code` is a `google.rpc.Code`, `message` the server's
- * explanation, and `status` the encoded `google.rpc.Status` the server
- * sent, for its details; it is empty when the server sent none.
- */
-export class RpcError extends Error {
-  code: i32;
-  status: ProtoView;
-  new(code: i32, message: String, status: ProtoView)
-    : code = code, status = status, super(message);
-}
 
 /**
  * The `google.rpc.Code` for an HTTP status, as Google APIs map them, for
@@ -77,21 +59,12 @@ export let codeForHttpStatus = (status: i32): i32 => {
  * header.
  */
 export final class FallbackTransport implements ProtoTransport {
-  var #scheme: Scheme;
-  var #authority: String;
+  #origin: Origin;
   #credentials: Credentials | null;
   #headers: HashMap<String, String> = new HashMap<String, String>();
 
   new(origin: String, credentials: Credentials | null = null)
-    : #scheme = new SchemeHTTPS(), #authority = '', #credentials = credentials {
-    let url = URL.parse(origin);
-    if (url == null) {
-      throw new ProtoError(`not a URL: ${origin}`);
-    }
-    let parsed = url as URL;
-    this.#scheme = if (parsed.protocol == 'http:') new SchemeHTTP() else new SchemeHTTPS();
-    this.#authority = parsed.host();
-  }
+    : #origin = Origin.parse(origin), #credentials = credentials;
 
   /**
    * Sends `value` as header `name` on every later call, replacing any
@@ -117,64 +90,8 @@ export final class FallbackTransport implements ProtoTransport {
   }
 
   async #post(method: RpcMethod, request: ProtoView, metadata: RpcMetadata): Future<Exchange> {
-    let headers = Fields.create();
-    headers.append('content-type', 'application/x-protobuf'.toBytes());
-    for (let entry in this.#headers) {
-      headers.append(entry.key, entry.value.toBytes());
-    }
-    for (var i = 0; i < metadata.length; i += 1) {
-      headers.append(metadata.name(i), metadata.value(i).toBytes());
-    }
-    let credentials = this.#credentials;
-    if (credentials != null) {
-      let authorization = await (credentials as Credentials).authorization();
-      if (authorization != null) {
-        headers.append('authorization', (authorization as String).toBytes());
-      }
-    }
-    // The trailers future is the sender's to settle, and the host does
-    // not consider the request body finished until it is.
-    let trailers = Future.of<Outcome<Option<Fields>, ErrorCode>>(
-        new Ok<Option<Fields>, ErrorCode>(none));
-    let (wire, transmitted) =
-        Request.new_(headers, some(bytesStream(request.toByteArray())), trailers, none);
-    wire.setMethod(new MethodPost());
-    wire.setScheme(some(this.#scheme));
-    wire.setAuthority(some(this.#authority));
-    wire.setPathWithQuery(some(`/$rpc/${method.service}/${method.name}`));
-    let sent = await send(wire);
-    if (sent is Err<WireResponse, ErrorCode>) {
-      throw new RpcError(
-        CODE_UNAVAILABLE,
-        `${method.service}/${method.name}: no response from ${this.#authority}`,
-        ProtoView.empty()
-      );
-    }
-    let response = (sent as Ok<WireResponse, ErrorCode>).value;
-    // Read the status and headers first: `consumeBody` takes the response.
-    let status = response.getStatusCode() as i32;
-    let contentType = response.getHeaders().get('content-type');
-    let isProto = contentType.length > 0 &&
-        String.fromBytes(contentType[0]).startsWith('application/x-protobuf');
-    let received = new Completer<Outcome<void, ErrorCode>>();
-    let (body, responseTrailers) = WireResponse.consumeBody(response, received.future);
-    return new Exchange(status, isProto, body, received);
-  }
-}
-
-/** One request's response: its status, whether its body is protobuf, and the body. */
-final class Exchange {
-  status: i32;
-  isProto: boolean;
-  body: Stream<u8>;
-  #received: Completer<Outcome<void, ErrorCode>>;
-
-  new(this.status, this.isProto, this.body, received: Completer<Outcome<void, ErrorCode>>)
-    : #received = received;
-
-  /** Tells the host the body has been read to its end. */
-  finish(): void {
-    this.#received.tryComplete(new Ok<void, ErrorCode>(unit()));
+    let headers = await callHeaders('application/x-protobuf', this.#headers, metadata, this.#credentials);
+    return await post(this.#origin, `/$rpc/${method.service}/${method.name}`, headers, request.toByteArray(), method);
   }
 }
 
@@ -183,7 +100,7 @@ final class Exchange {
  * carries one, otherwise the code for its HTTP status.
  */
 let errorFor = (exchange: Exchange, body: ProtoView): RpcError => {
-  if (exchange.isProto) {
+  if (exchange.contentTypeIs('application/x-protobuf')) {
     let status = try {
       new RpcError(body.int32(1), body.string(2), body)
     } catch (e) {
@@ -200,20 +117,6 @@ let errorFor = (exchange: Exchange, body: ProtoView): RpcError => {
   );
 };
 
-/** A stream that delivers `bytes` and ends. */
-let bytesStream = (bytes: ByteArray): Stream<u8> => {
-  let writer = new StreamWriter<u8>();
-  pump(writer, bytes as FixedArray<u8>);
-  return writer.stream;
-};
-
-let pump = async (writer: StreamWriter<u8>, bytes: FixedArray<u8>): Future<void> => {
-  if (bytes.length > 0) {
-    await writer.writeAll(bytes, bytes.length);
-  }
-  writer.close();
-};
-
 /**
  * The responses in `body`, an encoded `google.rpc.StreamBody` arriving as a
  * stream, each available as soon as its bytes are; the final status throws
@@ -221,7 +124,8 @@ let pump = async (writer: StreamWriter<u8>, bytes: FixedArray<u8>): Future<void>
  * response bodies with it.
  */
 export let readStreamBody = (body: Stream<u8>): AsyncIterator<ProtoView> =>
-  new StreamBodyReader(Future.of(new Exchange(200, true, body, new Completer<Outcome<void, ErrorCode>>())));
+  new StreamBodyReader(Future.of(Exchange.of(200, Fields.create(), body,
+      Future.of<Outcome<Option<Fields>, ErrorCode>>(new Ok<Option<Fields>, ErrorCode>(none)))));
 
 /** The field numbers of `google.rpc.StreamBody`. */
 let STREAM_MESSAGE = 1;

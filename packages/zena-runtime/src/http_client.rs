@@ -10,6 +10,12 @@
 //! same scheme and authority. gRPC needs HTTP/2 and response trailers;
 //! both reach the guest unchanged.
 //!
+//! A `wasi:http` guest cannot ask for a protocol version, and gRPC is
+//! never valid over HTTP/1.1, so an `http://` request whose content type
+//! is `application/grpc` (or `application/grpc+<codec>`) goes over
+//! cleartext HTTP/2 with prior knowledge (h2c), on a pool of its own.
+//! That is how a gRPC client reaches a local server or emulator.
+//!
 //! Connections live on a background runtime of their own (one worker
 //! thread named `zena-http`). A component runs on a current-thread
 //! runtime that [`crate::component::run_main`] builds per call, and
@@ -116,10 +122,13 @@ impl WasiHttpHooks for HttpHooks {
     }
 }
 
-/// A pooled HTTP client. Clones share one pool.
+/// A pooled HTTP client. Clones share its pools.
 #[derive(Clone)]
 pub struct HttpClient {
     client: Client<Connector, RequestBody>,
+    /// HTTP/2 only, for `http://` gRPC requests (h2c with prior
+    /// knowledge); see the module documentation.
+    h2c: Client<Connector, RequestBody>,
 }
 
 impl HttpClient {
@@ -150,8 +159,13 @@ impl HttpClient {
         let client = Client::builder(TokioExecutor::new())
             .timer(TokioTimer::new())
             .pool_timer(TokioTimer::new())
+            .build(connector.clone());
+        let h2c = Client::builder(TokioExecutor::new())
+            .timer(TokioTimer::new())
+            .pool_timer(TokioTimer::new())
+            .http2_only(true)
             .build(connector);
-        HttpClient { client }
+        HttpClient { client, h2c }
     }
 
     /// Sends `request`, resolving to the response once its headers have
@@ -166,7 +180,11 @@ impl HttpClient {
         let connect_timeout = options.connect_timeout.unwrap_or(DEFAULT_TIMEOUT);
         let first_byte_timeout = options.first_byte_timeout.unwrap_or(DEFAULT_TIMEOUT);
         let between_bytes_timeout = options.between_bytes_timeout.unwrap_or(DEFAULT_TIMEOUT);
-        let client = self.client.clone();
+        let client = if is_cleartext_grpc(&request) {
+            self.h2c.clone()
+        } else {
+            self.client.clone()
+        };
         async move {
             if request.uri().authority().is_none() {
                 return Err(Error::HttpRequestUriInvalid);
@@ -188,6 +206,24 @@ impl HttpClient {
             Ok(response.map(|incoming| ResponseBody { incoming, timeout }.boxed_unsync()))
         }
     }
+}
+
+/// Whether `request` is gRPC to an `http://` origin, which goes over
+/// h2c; see the module documentation.
+fn is_cleartext_grpc<B>(request: &Request<B>) -> bool {
+    if request.uri().scheme() != Some(&Scheme::HTTP) {
+        return false;
+    }
+    let Some(content_type) = request.headers().get(http::header::CONTENT_TYPE) else {
+        return false;
+    };
+    let Ok(content_type) = content_type.to_str() else {
+        return false;
+    };
+    let content_type = content_type.to_ascii_lowercase();
+    content_type == "application/grpc"
+        || content_type.starts_with("application/grpc+")
+        || content_type.starts_with("application/grpc;")
 }
 
 /// The runtime every connection lives on; see the module documentation.
@@ -667,6 +703,27 @@ mod tests {
         (TestServer { addr, accepted }, roots)
     }
 
+    /// A plain-TCP server that speaks HTTP/2 only, with prior knowledge
+    /// (h2c), as a local gRPC server or emulator does.
+    async fn h2c_server() -> TestServer {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let accepted = Arc::new(AtomicUsize::new(0));
+        let counter = accepted.clone();
+        tokio::spawn(async move {
+            loop {
+                let (tcp, _) = listener.accept().await.unwrap();
+                counter.fetch_add(1, Ordering::SeqCst);
+                tokio::spawn(async move {
+                    let _ = hyper::server::conn::http2::Builder::new(TokioExecutor::new())
+                        .serve_connection(TokioIo::new(tcp), hyper::service::service_fn(handle))
+                        .await;
+                });
+            }
+        });
+        TestServer { addr, accepted }
+    }
+
     /// A plain-TCP server that speaks HTTP/1.1 only.
     async fn plain_server() -> TestServer {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -771,6 +828,54 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
         assert_eq!(server.accepted(), 1);
+    }
+
+    fn grpc_post(uri: String, content_type: &'static str) -> Request<WasiBody> {
+        let body = Full::new(Bytes::from_static(b"\0\0\0\0\0"))
+            .map_err(|e: Infallible| -> Error { match e {} })
+            .boxed_unsync();
+        Request::builder()
+            .method(Method::POST)
+            .uri(uri)
+            .header("content-type", content_type)
+            .header("te", "trailers")
+            .body(body)
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn http_grpc_uses_h2c_with_trailers_and_reuses_one_connection() {
+        let server = h2c_server().await;
+        let mut hooks = HttpHooks::default();
+        let uri = format!("http://127.0.0.1:{}/pkg.Service/Method", server.addr.port());
+
+        for content_type in ["application/grpc", "application/grpc+proto"] {
+            let response = send(&mut hooks, grpc_post(uri.clone(), content_type), None)
+                .await
+                .unwrap();
+            assert_eq!(response.version(), Version::HTTP_2);
+            let collected = response.into_body().collect().await.unwrap();
+            let trailers = collected.trailers().cloned().expect("response trailers");
+            assert_eq!(trailers["grpc-status"], "0");
+            assert_eq!(collected.to_bytes(), "HTTP/2.0 received 5");
+        }
+        assert_eq!(server.accepted(), 1);
+    }
+
+    #[test]
+    fn only_http_grpc_requests_use_h2c() {
+        let grpc = |uri: &str, content_type: &'static str| {
+            is_cleartext_grpc(&grpc_post(uri.to_string(), content_type))
+        };
+        assert!(grpc("http://localhost:8080/a/B", "application/grpc"));
+        assert!(grpc("http://localhost:8080/a/B", "application/grpc+proto"));
+        assert!(grpc("http://localhost:8080/a/B", "Application/GRPC"));
+        assert!(!grpc("https://localhost:8080/a/B", "application/grpc"));
+        assert!(!grpc("http://localhost:8080/a/B", "application/grpc-web"));
+        assert!(!grpc("http://localhost:8080/a/B", "application/x-protobuf"));
+        assert!(!is_cleartext_grpc(&get(
+            "http://localhost:8080/".to_string()
+        )));
     }
 
     #[tokio::test]

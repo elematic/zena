@@ -1,0 +1,43 @@
+/**
+ * Calls the real Firestore with the gRPC transport and no credentials,
+ * for a project that does not exist, so both calls fail with
+ * PERMISSION_DENIED (code 7), from the `grpc-status` the server sends for
+ * `getDocument` (unary) and `runQuery` (server streaming). The connection
+ * negotiates HTTP/2 through ALPN, so this needs `zena-cli` or `zena-run`
+ * and the network:
+ *
+ *     zena-cli run packages/protobuf/examples/firestore-grpc-probe.zena
+ */
+
+import { Future, runFuture } from 'zena:async';
+import { GrpcTransport, RpcError } from 'protobuf:grpc';
+import { FirestoreClient } from 'google-cloud:firestore-v1';
+
+let describe = async (call: () => Future<String>): Future<String> => {
+  try {
+    return await call();
+  } catch (e) {
+    if (e is RpcError) {
+      let error = e as RpcError;
+      return `RpcError ${error.code}: ${error.message}`;
+    }
+    return `error: ${e.message}`;
+  }
+};
+
+export let main = (): i32 => {
+  let client = new FirestoreClient(new GrpcTransport('https://firestore.googleapis.com'));
+  let database = 'projects/zena-grpc-probe-does-not-exist/databases/(default)';
+  console.log(runFuture(describe(async (): Future<String> => {
+    let doc = await client.getDocument({name: `${database}/documents/posts/1`});
+    return `got ${doc.name}`;
+  })));
+  console.log(runFuture(describe(async (): Future<String> => {
+    var count = 0;
+    for await (let response in client.runQuery({parent: `${database}/documents`})) {
+      count += 1;
+    }
+    return `${count} responses`;
+  })));
+  return 0;
+};

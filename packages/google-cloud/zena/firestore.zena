@@ -15,17 +15,26 @@
  *
  * Requests go through the generated `FirestoreClient` (`./firestore-v1.zena`)
  * over a `ProtoTransport`: by default Google's gRPC fallback protocol, which
- * works on any `wasi:http` host. Values are the generated `Value` views;
- * `Fields` and the `*Value` functions build them.
+ * works on any `wasi:http` host, or with `Protocol.Grpc`, gRPC, which needs
+ * a host whose outgoing HTTP speaks HTTP/2, such as `zena-cli`. Values are
+ * the generated `Value` views; `Fields` and the `*Value` functions build
+ * them.
+ *
+ * When `FIRESTORE_EMULATOR_HOST` is set, `Firestore.connect()` talks gRPC
+ * to the emulator at that `host:port` instead, as Google's own client
+ * libraries do.
  */
 
 import { AsyncIterable, AsyncIterator, AsyncStep } from 'zena:async';
 import { HashMap } from 'zena:collections';
+import { getEnv } from 'zena:cli';
 import { Option } from 'zena:core';
+import { Duration, milliseconds, sleep } from 'zena:time';
 import { getRandomU64 } from 'wasi:random/random';
-import { Credentials, ProtoBytes, ProtoTransport } from 'protobuf:runtime';
-import { FallbackTransport, RpcError } from 'protobuf:fallback';
-import { defaultCredentials, defaultProjectId } from './auth.zena';
+import { Credentials, ProtoBytes, ProtoTransport, RpcError } from 'protobuf:runtime';
+import { FallbackTransport } from 'protobuf:fallback';
+import { GrpcTransport } from 'protobuf:grpc';
+import { AccessTokenCredentials, defaultCredentials, defaultProjectId } from './auth.zena';
 import {
   ArrayValue,
   Document,
@@ -60,10 +69,13 @@ export {
   Timestamp,
   Document
 } from './firestore-v1.zena';
-export { RpcError } from 'protobuf:fallback';
+export { RpcError } from 'protobuf:runtime';
 
 /** The Firestore API's origin. */
 let FIRESTORE_ORIGIN = 'https://firestore.googleapis.com';
+
+/** The project id `connect` uses with the emulator when none is set. */
+let EMULATOR_PROJECT = 'demo-zena';
 
 /** `google.rpc.Code` values the client acts on. */
 let CODE_NOT_FOUND = 5;
@@ -190,15 +202,33 @@ export let quoteFieldName = (name: String): String => {
   return `${out}\``;
 };
 
+/** How a `Firestore` without a `transport` reaches `firestore.googleapis.com`. */
+export enum Protocol {
+  /** Google's gRPC fallback protocol, over HTTP/1.1 or HTTP/2: any `wasi:http` host. */
+  Fallback,
+  /** gRPC, which needs HTTP/2: `zena-cli` and `zena-run`, not stock `wasmtime serve`. */
+  Grpc,
+}
+
 /** Options for `new Firestore`. */
 export type FirestoreOptions = {
   projectId: String,
   /** `(default)` when absent. */
   databaseId?: String,
-  /** A fallback transport to `firestore.googleapis.com` when absent. */
+  /** A transport to `firestore.googleapis.com`, by `protocol`, when absent. */
   transport?: ProtoTransport,
+  /** For the default transport: `Protocol.Fallback` when absent. */
+  protocol?: Protocol,
   /** For the default transport: `defaultCredentials()` when absent. */
   credentials?: Credentials,
+};
+
+/** Options for `Firestore.connect`. */
+export type ConnectOptions = {
+  /** `(default)` when absent. */
+  databaseId?: String,
+  /** `Protocol.Fallback` when absent. Ignored for the emulator, which takes gRPC only. */
+  protocol?: Protocol,
 };
 
 let databaseIdOf = (options: FirestoreOptions): String => {
@@ -212,10 +242,35 @@ let transportOf = (options: FirestoreOptions): ProtoTransport => {
   if (let {transport} = options) {
     return transport;
   }
-  if (let {credentials} = options) {
-    return new FallbackTransport(FIRESTORE_ORIGIN, credentials);
+  var credentials = defaultCredentials();
+  if (let {credentials as given} = options) {
+    credentials = given;
   }
-  return new FallbackTransport(FIRESTORE_ORIGIN, defaultCredentials());
+  if (let {protocol} = options) {
+    if (protocol == Protocol.Grpc) {
+      return new GrpcTransport(FIRESTORE_ORIGIN, credentials);
+    }
+  }
+  return new FallbackTransport(FIRESTORE_ORIGIN, credentials);
+};
+
+/** The value of environment variable `name`, or null when it is unset or empty. */
+let envValue = (name: String): String | null => {
+  let value = getEnv(name);
+  return if (value != null && (value as String).length > 0) value else null;
+};
+
+/** Whether `e` is the server aborting a transaction because of contention. */
+let isAborted = (e: Error): boolean => e is RpcError && (e as RpcError).code == CODE_ABORTED;
+
+/**
+ * How long to wait before attempt `attempt + 1` of a transaction: a random
+ * time up to 50 ms doubled for each attempt so far, so transactions that
+ * contended do not meet again at once.
+ */
+let retryDelay = (attempt: i32): Duration => {
+  let limit = (50 as u64) << ((attempt - 1) as u64);
+  return milliseconds((getRandomU64() % limit) as i64);
 };
 
 /** One Firestore database. */
@@ -231,11 +286,34 @@ export final class Firestore {
       client = new FirestoreClient(transportOf(options));
 
   /**
-   * The database `databaseId` of the project this program runs in, with
-   * the default credentials (see `defaultProjectId`, `defaultCredentials`).
+   * A database of the project this program runs in, with the default
+   * credentials (see `defaultProjectId`, `defaultCredentials`).
+   *
+   * When `FIRESTORE_EMULATOR_HOST` is set to the emulator's `host:port`,
+   * the database is the emulator's instead, reached with gRPC over
+   * cleartext HTTP/2 and the token `owner`, which bypasses security
+   * rules. The project id is then `GOOGLE_CLOUD_PROJECT` or
+   * `GCLOUD_PROJECT`, or `demo-zena` when neither is set.
    */
-  static async connect(databaseId: String = '(default)'): Future<Firestore> {
+  static async connect(options: ConnectOptions = {}): Future<Firestore> {
+    let databaseId = if (let {databaseId} = options) databaseId else '(default)';
+    let emulator = envValue('FIRESTORE_EMULATOR_HOST');
+    if (emulator != null) {
+      var projectId = EMULATOR_PROJECT;
+      for (let name in ['GOOGLE_CLOUD_PROJECT', 'GCLOUD_PROJECT']) {
+        let value = envValue(name);
+        if (value != null) {
+          projectId = value as String;
+          break;
+        }
+      }
+      let transport = new GrpcTransport(`http://${emulator as String}`, new AccessTokenCredentials('owner'));
+      return new Firestore({projectId, databaseId, transport});
+    }
     let projectId = await defaultProjectId();
+    if (let {protocol} = options) {
+      return new Firestore({projectId, databaseId, protocol});
+    }
     return new Firestore({projectId, databaseId});
   }
 
@@ -266,9 +344,11 @@ export final class Firestore {
 
   /**
    * Runs `body` in a read-write transaction and commits its writes. When
-   * the commit is aborted by contention, the transaction is retried, up to
-   * `attempts` times in all. When `body` throws, the transaction is
-   * rolled back and the error rethrown.
+   * the server aborts the transaction because of contention, in a read
+   * in `body` or in the commit, the whole attempt runs again in a new
+   * transaction that names the old one, after a short random wait, up to
+   * `attempts` attempts in all. When `body` throws anything else, the
+   * transaction is rolled back and the error rethrown.
    */
   async runTransaction<T>(body: (transaction: Transaction) => Future<T>, attempts: i32 = 5): Future<T> {
     var retry: ProtoBytes | null = null;
@@ -282,23 +362,29 @@ export final class Firestore {
       });
       let transaction = new Transaction(this, begun.transaction);
       var result: Option<T> = none;
+      var aborted = false;
       try {
         result = some(await body(transaction));
       } catch (e) {
+        aborted = true;
         await this.#rollback(transaction.id);
-        throw e;
-      }
-      try {
-        await this.commit(transaction.writes, transaction.id);
-        return (result as Some<T>).value;
-      } catch (e) {
-        if (e is RpcError && (e as RpcError).code == CODE_ABORTED && attempt < attempts) {
-          retry = transaction.id;
-          attempt += 1;
-          continue;
+        if (!isAborted(e) || attempt >= attempts) {
+          throw e;
         }
-        throw e;
       }
+      if (!aborted) {
+        try {
+          await this.commit(transaction.writes, transaction.id);
+          return (result as Some<T>).value;
+        } catch (e) {
+          if (!isAborted(e) || attempt >= attempts) {
+            throw e;
+          }
+        }
+      }
+      await sleep(retryDelay(attempt));
+      retry = transaction.id;
+      attempt += 1;
     }
     throw new Error('unreachable');
   }

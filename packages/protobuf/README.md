@@ -58,11 +58,18 @@ A message-typed field takes the message's class, so nested messages are
 built inside out with `M.of`, and a message read from one response can
 go into the next request unchanged.
 
-For each service there is a client class over a `ProtoTransport`.
-`protobuf:fallback` provides one: `FallbackTransport` speaks Google's gRPC
-fallback protocol (binary protobuf posted to `/$rpc/<service>/<method>`)
-over `wasi:http`, so it works on hosts whose outgoing HTTP is HTTP/1.1,
-such as `wasmtime serve`, and supports server-streaming methods:
+For each service there is a client class over a `ProtoTransport`. Two
+transports speak to servers over `wasi:http`, both with server-streaming
+methods:
+
+- `protobuf:grpc`: `GrpcTransport` speaks gRPC. It needs HTTP/2, which
+  `zena-cli` and `zena-run` provide: `https://` origins negotiate it, and
+  `http://` gRPC requests use cleartext HTTP/2, as local servers and
+  the Firestore emulator expect.
+- `protobuf:fallback`: `FallbackTransport` speaks Google's gRPC fallback
+  protocol (binary protobuf posted to `/$rpc/<service>/<method>`), which
+  works over HTTP/1.1, so on hosts such as stock `wasmtime serve`. Google
+  APIs serve it; local servers and emulators generally do not.
 
 ```zena
 let transport = new FallbackTransport('https://firestore.googleapis.com', credentials);
@@ -77,7 +84,8 @@ for await (let response in firestore.runQuery({parent, structuredQuery})) {
 header before each call. Generated clients also send each call's
 `x-goog-request-params` routing header, built from the request as
 https://google.aip.dev/client-libraries/4222 describes. A failed call
-throws an `RpcError` carrying the `google.rpc.Code`.
+throws an `RpcError` (`protobuf:runtime`) carrying the
+`google.rpc.Code`, whichever the transport.
 
 ## Layout
 

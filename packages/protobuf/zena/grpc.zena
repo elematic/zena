@@ -1,0 +1,400 @@
+/**
+ * A `ProtoTransport` that speaks gRPC over `wasi:http`
+ * (https://github.com/grpc/grpc/blob/master/doc/PROTOCOL-HTTP2.md).
+ *
+ * A call is a `POST` to `<origin>/<service>/<method>` with
+ * `content-type: application/grpc` and `te: trailers`. Each message, the
+ * request and every response, is framed by a byte that says whether it is
+ * compressed and a 4-byte big-endian length. The call's status arrives in
+ * the `grpc-status`, `grpc-message` and `grpc-status-details-bin`
+ * trailers, or, when a call fails before any response, in the headers of
+ * a response with no body.
+ *
+ * gRPC needs HTTP/2 and trailers. Under `zena-cli` and `zena-run`,
+ * `https://` origins negotiate HTTP/2, and `http://` gRPC requests use
+ * cleartext HTTP/2 (h2c), which is how a local server or the Firestore
+ * emulator is reached. Stock `wasmtime serve` speaks HTTP/1.1 only, so
+ * calls through it fail; `FallbackTransport` is the transport there.
+ *
+ * Requests are sent uncompressed, and no compression is offered for
+ * responses. This module imports `wasi:http`, so it compiles for
+ * component targets only.
+ */
+
+import { AsyncIterator, AsyncStep } from 'zena:async';
+import { HashMap } from 'zena:collections';
+import { Err, Ok, Option, Outcome, copyBytes, newByteArray } from 'zena:core';
+import { Stream } from 'zena:stream';
+import { percentDecode } from 'zena:url';
+import { ErrorCode, Fields } from 'wasi:http/types';
+import { Credentials, ProtoError, ProtoTransport, ProtoView, RpcError, RpcMetadata, RpcMethod } from './runtime.zena';
+import { Exchange, Origin, Trailers, callHeaders, headerValue, post } from './http.zena';
+
+export { RpcError } from './runtime.zena';
+
+/** `google.rpc.Code` values this module produces itself. */
+let CODE_UNKNOWN = 2;
+let CODE_INTERNAL = 13;
+let CODE_UNAVAILABLE = 14;
+
+/** The length of a message's frame header: a compressed flag and a 4-byte length. */
+let FRAME_HEADER = 5;
+
+/**
+ * The `google.rpc.Code` for the HTTP status of a response that is not
+ * gRPC, as the gRPC specification maps them (doc/http-grpc-status-mapping.md).
+ */
+export let codeForGrpcHttpStatus = (status: i32): i32 => {
+  if (status == 400) { return CODE_INTERNAL; }
+  if (status == 401) { return 16; }
+  if (status == 403) { return 7; }
+  if (status == 404) { return 12; }
+  if (status == 429 || status == 502 || status == 503 || status == 504) { return CODE_UNAVAILABLE; }
+  return CODE_UNKNOWN;
+};
+
+/**
+ * Calls RPCs on one server with gRPC. `origin` is the scheme and host,
+ * such as `https://firestore.googleapis.com` or `http://localhost:8080`.
+ * When `credentials` is given, every call asks it for an `authorization`
+ * header.
+ */
+export final class GrpcTransport implements ProtoTransport {
+  #origin: Origin;
+  #credentials: Credentials | null;
+  #headers: HashMap<String, String> = new HashMap<String, String>();
+
+  new(origin: String, credentials: Credentials | null = null)
+    : #origin = Origin.parse(origin), #credentials = credentials {
+    this.#headers['te'] = 'trailers';
+  }
+
+  /**
+   * Sends `value` as header `name` on every later call, replacing any
+   * earlier value: `authorization: Bearer <token>`, for one.
+   */
+  setHeader(name: String, value: String): void {
+    this.#headers[name] = value;
+  }
+
+  async unary(method: RpcMethod, request: ProtoView, metadata: RpcMetadata): Future<ProtoView> {
+    return await singleMessage(method, new GrpcResponseReader(this.#post(method, request, metadata)));
+  }
+
+  serverStream(method: RpcMethod, request: ProtoView, metadata: RpcMetadata): AsyncIterator<ProtoView> {
+    return new GrpcResponseReader(this.#post(method, request, metadata));
+  }
+
+  async #post(method: RpcMethod, request: ProtoView, metadata: RpcMetadata): Future<Exchange> {
+    let headers = await callHeaders('application/grpc', this.#headers, metadata, this.#credentials);
+    return await post(this.#origin, `/${method.service}/${method.name}`, headers, frame(request), method);
+  }
+}
+
+/** `message` framed for a gRPC body: uncompressed, with its length. */
+export let frame = (message: ProtoView): ByteArray => {
+  let bytes = message.toByteArray();
+  let n = bytes.length;
+  let out = newByteArray(FRAME_HEADER + n);
+  out[0] = 0 as u8;
+  out[1] = ((n >>> 24) & 0xFF) as u8;
+  out[2] = ((n >>> 16) & 0xFF) as u8;
+  out[3] = ((n >>> 8) & 0xFF) as u8;
+  out[4] = (n & 0xFF) as u8;
+  copyBytes(out, FRAME_HEADER, bytes, 0, n);
+  return out;
+};
+
+/**
+ * The one message of a unary call's responses, read to the end so the
+ * call's status is checked. No message, or more than one, is INTERNAL.
+ */
+export let singleMessage = async (method: RpcMethod, reader: AsyncIterator<ProtoView>): Future<ProtoView> => {
+  let first = await nextMessage(reader);
+  if (first is Some<ProtoView>) {
+    if (await nextMessage(reader) is Some<ProtoView>) {
+      throw new RpcError(CODE_INTERNAL, `${method.service}/${method.name}: more than one response to a unary call`, ProtoView.empty());
+    }
+    return (first as Some<ProtoView>).value;
+  }
+  throw new RpcError(CODE_INTERNAL, `${method.service}/${method.name}: no response to a unary call`, ProtoView.empty());
+};
+
+/** The next element of `reader`, waiting for it if it is still coming. */
+let nextMessage = async (reader: AsyncIterator<ProtoView>): Future<Option<ProtoView>> => {
+  match (reader.next()) {
+    case (1, let view, _): {
+      return some(view);
+    }
+    case (2, _, let pending): {
+      return await pending;
+    }
+    case _: {
+      return none;
+    }
+  }
+};
+
+/**
+ * The responses of a gRPC call whose response has HTTP status `status`,
+ * `headers`, `body` and `trailers`, each available as soon as its bytes
+ * are; the call's status ends the stream, and throws an `RpcError` unless
+ * it is OK. `GrpcTransport` reads responses with it.
+ */
+export let readGrpcResponse = (status: i32, headers: Fields, body: Stream<u8>, trailers: Trailers): AsyncIterator<ProtoView> =>
+  new GrpcResponseReader(Future.of(Exchange.of(status, headers, body, trailers)));
+
+/**
+ * The error, or null for OK, that the gRPC status in `fields` stands for:
+ * `grpc-status`, `grpc-message` (percent-encoded) and
+ * `grpc-status-details-bin` (a base64 `google.rpc.Status`). A missing or
+ * malformed `grpc-status` is UNKNOWN.
+ */
+export let statusError = (fields: Fields): RpcError | null => {
+  let codeText = headerValue(fields, 'grpc-status');
+  var code = if (codeText == null) -1 else parseCode(codeText as String);
+  if (code == 0) {
+    return null;
+  }
+  let message = headerValue(fields, 'grpc-message');
+  var text = if (message == null) '' else percentDecode(message as String);
+  if (code < 0) {
+    code = CODE_UNKNOWN;
+    if (text.length == 0) {
+      text = if (codeText == null) 'the response has no grpc-status'
+        else `the response has a malformed grpc-status: ${codeText as String}`;
+    }
+  }
+  var details = ProtoView.empty();
+  let encoded = headerValue(fields, 'grpc-status-details-bin');
+  if (encoded != null) {
+    let decoded = decodeBase64(encoded as String);
+    if (decoded != null) {
+      details = ProtoView.of(decoded as ByteArray);
+    }
+  }
+  return new RpcError(code, text, details);
+};
+
+/** A non-negative decimal status code, or -1. */
+let parseCode = (text: String): i32 => {
+  if (text.length == 0 || text.length > 4) {
+    return -1;
+  }
+  var code = 0;
+  for (var i = 0; i < text.length; i += 1) {
+    let b = text.getByteAt(i);
+    if (b < 0x30 || b > 0x39) {
+      return -1;
+    }
+    code = code * 10 + (b - 0x30);
+  }
+  return code;
+};
+
+/** The value of base64 digit `b` in either alphabet, or -1. */
+let base64Digit = (b: i32): i32 => {
+  if (b >= 0x41 && b <= 0x5A) { return b - 0x41; }
+  if (b >= 0x61 && b <= 0x7A) { return b - 0x61 + 26; }
+  if (b >= 0x30 && b <= 0x39) { return b - 0x30 + 52; }
+  if (b == 0x2B || b == 0x2D) { return 62; }
+  if (b == 0x2F || b == 0x5F) { return 63; }
+  return -1;
+};
+
+/**
+ * `text` decoded as base64, padded or not, in the standard or the URL
+ * alphabet; null when it is malformed.
+ */
+export let decodeBase64 = (text: String): ByteArray | null => {
+  var end = text.length;
+  while (end > 0 && text.getByteAt(end - 1) == 0x3D) {
+    end -= 1;
+  }
+  if (end % 4 == 1) {
+    return null;
+  }
+  let out = newByteArray((end * 3) >> 2);
+  var bits = 0;
+  var count = 0;
+  var o = 0;
+  for (var i = 0; i < end; i += 1) {
+    let digit = base64Digit(text.getByteAt(i));
+    if (digit < 0) {
+      return null;
+    }
+    bits = (bits << 6) | digit;
+    count += 6;
+    if (count >= 8) {
+      count -= 8;
+      out[o] = ((bits >>> count) & 0xFF) as u8;
+      o += 1;
+    }
+  }
+  return out;
+};
+
+/**
+ * Reads the messages out of a gRPC response body as its bytes arrive. A
+ * message is handed out once all of its bytes are buffered. When the body
+ * ends, the status in the trailers ends the stream, and throws an
+ * `RpcError` unless it is OK.
+ */
+final class GrpcResponseReader implements AsyncIterator<ProtoView> {
+  #pending: Future<Exchange>;
+  var #exchange: Exchange | null = null;
+  /** Bytes received and not yet consumed: `#buffer[#start..#end]`. */
+  var #buffer: ByteArray = newByteArray(4096);
+  var #start: i32 = 0;
+  var #end: i32 = 0;
+  var #chunk: FixedArray<u8> = new FixedArray<u8>(4096, 0);
+  /** Set once the stream has ended: nothing more is handed out. */
+  var #finished: boolean = false;
+
+  new(pending: Future<Exchange>) : #pending = pending;
+
+  next(): AsyncStep<ProtoView> {
+    if (this.#finished) {
+      return (0, _, _);
+    }
+    if (this.#exchange != null) {
+      let message = this.#take();
+      if (message != null) {
+        return (1, message as ProtoView, _);
+      }
+    }
+    return (2, _, this.#pull());
+  }
+
+  /** The next message, reading more of the body until one is complete. */
+  async #pull(): Future<Option<ProtoView>> {
+    if (this.#exchange == null) {
+      let exchange = await this.#pending;
+      this.#exchange = exchange;
+      await this.#checkHead(exchange);
+      if (this.#finished) {
+        return none;
+      }
+    }
+    let exchange = this.#exchange as Exchange;
+    while (true) {
+      let message = this.#take();
+      if (message != null) {
+        return some(message as ProtoView);
+      }
+      let n = await exchange.body.read(this.#chunk);
+      if (n == 0) {
+        exchange.finish();
+        this.#finished = true;
+        if (this.#start != this.#end) {
+          throw new RpcError(CODE_INTERNAL, 'the response ended inside a message', ProtoView.empty());
+        }
+        let error = await this.#trailerStatus(exchange);
+        if (error != null) {
+          throw error as RpcError;
+        }
+        return none;
+      }
+      this.#append(n);
+    }
+    return none;
+  }
+
+  /**
+   * Checks the response head. A status in the headers is a response with
+   * no messages (trailers-only): it ends the stream, and throws unless
+   * OK. A response that is not gRPC throws.
+   */
+  async #checkHead(exchange: Exchange): Future<void> {
+    if (exchange.headers.has('grpc-status')) {
+      await this.#drain(exchange);
+      let error = statusError(exchange.headers);
+      if (error != null) {
+        throw error as RpcError;
+      }
+      return;
+    }
+    if (exchange.status != 200) {
+      await this.#drain(exchange);
+      throw new RpcError(
+        codeForGrpcHttpStatus(exchange.status),
+        `the server answered with HTTP ${exchange.status}`,
+        ProtoView.empty()
+      );
+    }
+    if (!exchange.contentTypeIs('application/grpc')) {
+      await this.#drain(exchange);
+      let contentType = headerValue(exchange.headers, 'content-type');
+      throw new RpcError(
+        CODE_UNKNOWN,
+        `the server answered with content-type ${if (contentType == null) '(none)' else contentType as String}`,
+        ProtoView.empty()
+      );
+    }
+  }
+
+  /** Reads and drops the rest of the body, and ends the stream. */
+  async #drain(exchange: Exchange): Future<void> {
+    this.#finished = true;
+    while (await exchange.body.read(this.#chunk) > 0) {
+    }
+    exchange.finish();
+  }
+
+  /** The error the trailers' status stands for, or null for OK. */
+  async #trailerStatus(exchange: Exchange): Future<RpcError | null> {
+    let trailers = await exchange.trailers;
+    if (trailers is Err<Option<Fields>, ErrorCode>) {
+      return new RpcError(CODE_UNAVAILABLE, 'the connection failed before the call\'s status arrived', ProtoView.empty());
+    }
+    let fields = (trailers as Ok<Option<Fields>, ErrorCode>).value;
+    if (fields is Some<Fields>) {
+      return statusError((fields as Some<Fields>).value);
+    }
+    return new RpcError(CODE_INTERNAL, 'the response has no trailers', ProtoView.empty());
+  }
+
+  /** The next complete message in the buffer, or null when the buffer holds none. */
+  #take(): ProtoView | null {
+    if (this.#end - this.#start < FRAME_HEADER) {
+      return null;
+    }
+    let b = this.#buffer;
+    let s = this.#start;
+    if (b[s] != (0 as u8)) {
+      throw new RpcError(CODE_INTERNAL, 'the server sent a compressed message, and no compression was offered', ProtoView.empty());
+    }
+    let length = ((b[s + 1] as i32) << 24) | ((b[s + 2] as i32) << 16) |
+        ((b[s + 3] as i32) << 8) | (b[s + 4] as i32);
+    if (length < 0) {
+      throw new RpcError(CODE_INTERNAL, 'the server sent a message over 2 GiB', ProtoView.empty());
+    }
+    if (this.#end - s - FRAME_HEADER < length) {
+      return null;
+    }
+    let value = newByteArray(length);
+    copyBytes(value, 0, b, s + FRAME_HEADER, length);
+    this.#start = s + FRAME_HEADER + length;
+    return ProtoView.of(value);
+  }
+
+  /** Appends the first `n` bytes of `#chunk` to the buffer, compacting or growing it. */
+  #append(n: i32): void {
+    let live = this.#end - this.#start;
+    if (this.#end + n > this.#buffer.length) {
+      var size = this.#buffer.length;
+      while (live + n > size) {
+        size = size * 2;
+      }
+      let next = if (size == this.#buffer.length) this.#buffer else newByteArray(size);
+      copyBytes(next, 0, this.#buffer, this.#start, live);
+      this.#buffer = next;
+      this.#start = 0;
+      this.#end = live;
+    }
+    for (var i = 0; i < n; i += 1) {
+      this.#buffer[this.#end + i] = this.#chunk[i];
+    }
+    this.#end += n;
+  }
+}

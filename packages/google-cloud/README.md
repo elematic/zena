@@ -78,9 +78,21 @@ let total = await db.runTransaction<i64>(async (tx: Transaction): Future<i64> =>
 });
 ```
 
-Requests use Google's gRPC fallback protocol (`protobuf:fallback`) over
-HTTP/1.1 or HTTP/2, so they work on any `wasi:http` host. Under
-`zena-cli` the connections are pooled and use HTTP/2.
+By default, requests use Google's gRPC fallback protocol
+(`protobuf:fallback`), which works on any `wasi:http` host, over HTTP/1.1
+or HTTP/2. Under `zena-cli` the connections are pooled and use HTTP/2,
+and gRPC works too: `Firestore.connect({protocol: Protocol.Grpc})`, or
+`new Firestore({projectId, protocol: Protocol.Grpc})`. `transport`
+takes any other `ProtoTransport`.
+
+### The emulator
+
+When `FIRESTORE_EMULATOR_HOST` is set to the Firestore emulator's
+`host:port`, `Firestore.connect()` talks gRPC to it, as Google's client
+libraries do, with the token `owner`, which bypasses security rules. The
+project id is `GOOGLE_CLOUD_PROJECT` or `GCLOUD_PROJECT`, or `demo-zena`.
+The emulator speaks gRPC and REST but not the fallback protocol, so this
+needs `zena-cli` or `zena-run`.
 
 ## Credentials
 
@@ -113,3 +125,14 @@ npm test -w @zena-lang/google-cloud
 The Firestore tests run the client against an in-memory Firestore
 transport; the credential tests run a local server that answers like
 the metadata server.
+
+```sh
+npm run test:emulator -w @zena-lang/google-cloud
+```
+
+runs the client against the Firestore emulator over gRPC
+(`zena/emulator/`). It is not part of `npm test`, since it needs Java
+and the emulator: `scripts/with-firestore-emulator.sh` takes Java from
+`PATH` or nixpkgs, and the emulator's jar from `FIRESTORE_EMULATOR_JAR`
+or firebase-tools' download cache, downloading it when it is missing.
+Each test uses a project of its own, which the emulator keeps apart.
