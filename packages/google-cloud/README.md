@@ -41,8 +41,8 @@ for (let p in popular) {
 ```
 
 `Firestore.connect()` finds the project and credentials as described
-under [Credentials](#credentials). `new Firestore({projectId,
-databaseId?, transport?, credentials?})` names them instead.
+under [Credentials](#credentials), and talks gRPC to the API.
+`new Firestore({projectId, databaseId?, transport})` names them instead.
 
 - References: `db.collection(path)`, `db.doc(path)`,
   `collection.doc(id)`, `doc.collection(id)`. `collection.add(fields)`
@@ -78,12 +78,20 @@ let total = await db.runTransaction<i64>(async (tx: Transaction): Future<i64> =>
 });
 ```
 
-By default, requests use Google's gRPC fallback protocol
-(`protobuf:fallback`), which works on any `wasi:http` host, over HTTP/1.1
-or HTTP/2. Under `zena-cli` the connections are pooled and use HTTP/2,
-and gRPC works too: `Firestore.connect({protocol: Protocol.Grpc})`, or
-`new Firestore({projectId, protocol: Protocol.Grpc})`. `transport`
-takes any other `ProtoTransport`.
+### Transports
+
+- `Firestore.connect()` uses gRPC (`protobuf:grpc`). gRPC needs HTTP/2,
+  which `zena-cli` and `zena-run` provide, with pooled connections.
+- `Firestore.connectFallback()` uses Google's gRPC fallback protocol
+  (`protobuf:fallback`), which works on any `wasi:http` host, stock
+  `wasmtime serve` among them.
+- `new Firestore({projectId, transport})` takes any `ProtoTransport`:
+  `new GrpcTransport(FIRESTORE_ORIGIN, credentials)`,
+  `new FallbackTransport(FIRESTORE_ORIGIN, credentials)`, or a test's
+  own.
+
+A program carries only the transports it names: about 29 KB at `-O2`
+for gRPC beside the fallback transport.
 
 ### The emulator
 
