@@ -1,0 +1,101 @@
+// @mode: run
+// @result: 1
+// A case class derives `==` and `hashCode` together, and derives neither when
+// its base declares either one: the base's pair is the hierarchy's equality.
+// Otherwise a base with identity equality and a uid hash would see its cases
+// compare structurally while hashing by uid, and equal keys would land in
+// different buckets.
+//
+// Covers inline variants (`case Pair(a, b)`) and variants declared separately
+// as case classes with `extends`.
+import { HashSet } from 'zena:collections';
+
+var nextUid = 1;
+let getUid = (): i32 => {
+  let id = nextUid;
+  nextUid += 1;
+  return id;
+};
+
+sealed class Ty implements Hashable {
+  uid: i32 = getUid();
+
+  operator ==(other: Ty): boolean {
+    return this === other;
+  }
+
+  hashCode(): i32 {
+    return this.uid;
+  }
+
+  case Unit
+  case Pair(a: i32, b: i32)
+}
+
+sealed class Shape implements Hashable {
+  case Circle, Square
+
+  uid: i32 = getUid();
+
+  operator ==(other: Shape): boolean {
+    return this === other;
+  }
+
+  hashCode(): i32 {
+    return this.uid;
+  }
+}
+
+final class Circle(r: i32) extends Shape
+final class Square(s: i32) extends Shape
+
+// No declared pair on the base: the cases derive structural equality.
+sealed class Plain {
+  case Point(x: i32, y: i32)
+}
+
+export let main = (): i32 => {
+  let p1 = new Pair(3, 4);
+  let p2 = new Pair(3, 4);
+  if (p1 == p2) {
+    return 0;
+  }
+  if (!(p1 == p1)) {
+    return 0;
+  }
+  if (p1.hashCode() != p1.uid) {
+    return 0;
+  }
+  if (new Unit() == new Unit()) {
+    return 0;
+  }
+  let t1: Ty = p1;
+  let t2: Ty = p2;
+  if (t1 == t2) {
+    return 0;
+  }
+  let set = new HashSet<Ty>();
+  set.add(p1);
+  set.add(p2);
+  set.add(p1);
+  if (set.size != 2) {
+    return 0;
+  }
+
+  let c1 = new Circle(2);
+  let c2 = new Circle(2);
+  if (c1 == c2) {
+    return 0;
+  }
+  if (c1.hashCode() != c1.uid) {
+    return 0;
+  }
+
+  if (!(new Point(1, 2) == new Point(1, 2))) {
+    return 0;
+  }
+  if (new Point(1, 2).hashCode() != new Point(1, 2).hashCode()) {
+    return 0;
+  }
+  return 1;
+};

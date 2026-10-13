@@ -2804,6 +2804,24 @@ each parameter to the corresponding field.
 classes. This ensures the correctness of auto-generated equality (which uses
 exact type identity) and enables WASM `sub final` optimization.
 
+`operator ==` and `hashCode()` are generated together, and neither is
+generated when the case class inherits either one from its base class. The
+base's pair is then the equality of the whole hierarchy, which keeps `==` and
+`hashCode()` in agreement: a base that hashes by identity and cases that
+compared structurally would put equal objects in different hash buckets.
+
+```zena
+sealed class Ty implements Hashable {
+  uid: i32 = nextUid();
+  operator ==(other: Ty): boolean { return this === other; }
+  hashCode(): i32 { return this.uid; }
+
+  case Pair(a: i32, b: i32)
+}
+
+new Pair(1, 2) == new Pair(1, 2); // false: Ty's identity equality
+```
+
 Case classes can also have a body
 for additional members:
 
@@ -4687,7 +4705,9 @@ is nominal), with two exceptions:
 - **Case classes** implicitly implement `Hashable`: their `hashCode()` and
   `operator ==` are compiler-generated (structural, with reference-typed
   fields hashed and compared by value where the field type supports it), and
-  they are assignable to `Hashable` without an explicit clause.
+  they are assignable to `Hashable` without an explicit clause. A case class
+  that inherits `operator ==` or `hashCode()` from its base generates neither,
+  and is `Hashable` only if its base is (see [Case Classes](#case-classes)).
 
 In addition, the following types satisfy a `Hashable` constraint (though they
 are not assignable to `Hashable` as values, since that would require boxing):
@@ -4695,6 +4715,27 @@ are not assignable to `Hashable` as values, since that would require boxing):
 - **Numeric primitives** (`i32`, `u32`, `i64`, `u64`, `f32`, `f64`) and
   **`boolean`**, which hash by value.
 - **Enums** and **distinct types**, judged by their underlying type.
+
+### The `Equatable` Interface
+
+`Equatable`, also in `zena:core`, is the interface for a type that declares its
+own equality:
+
+```zena
+export interface Equatable {
+  operator ==(other: this): boolean;
+}
+```
+
+Every class has an equality, so `==` compiles without this bound. A bound
+`<T extends Equatable>` says that `T` declared an `operator ==` rather than
+relying on reference equality. It is satisfied the same way as `Hashable`: by
+classes that implement it, by case classes that generate their equality, and by
+primitives, enums and distinct types over them.
+
+The parameter's type is `this`, so `==` is a binary method: both operands are
+the same `T`. Two values that are each some `Equatable` may be different
+classes, and cannot be compared through the interface.
 
 ### Write-only fields and the `@pure` decorator
 

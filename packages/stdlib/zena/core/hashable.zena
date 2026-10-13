@@ -1,4 +1,22 @@
 /**
+ * A type that declares its own equality: an `operator ==` taking another value
+ * of the same type.
+ *
+ * Every class has an equality, so `==` does not need this bound to compile.
+ * What it says is that the class wrote one down, rather than relying on
+ * reference equality. Primitives, enums, and case classes that derive their
+ * equality satisfy it without an `implements` clause.
+ *
+ * The parameter is typed `this`, which makes `==` a binary method: `Equatable`
+ * works as a bound on a type parameter (`<T extends Equatable>`), where both
+ * operands are the same `T`. Two values that are each some `Equatable` may be
+ * different classes, and cannot be compared through it.
+ */
+export interface Equatable {
+  operator ==(other: this): boolean;
+}
+
+/**
  * A type that can be used as a key in hash-based collections like HashMap and
  * HashSet.
  *
@@ -12,11 +30,12 @@
  * identity hash: a value that is unique per instance and stable for the
  * lifetime of the instance, e.g. a counter assigned in the constructor.
  *
- * Case classes automatically satisfy Hashable: the compiler generates a
- * structural `hashCode()` (and `operator ==`) from their parameters.
- * Primitives (i32, boolean, enums, and distinct types over them) also satisfy
- * the Hashable constraint; they hash to their own value. Strings hash with
- * FNV-1a, cached after the first computation.
+ * Case classes automatically satisfy Hashable: the compiler derives a
+ * structural `hashCode()` and `operator ==` from their parameters, unless the
+ * class inherits either one from its base, whose pair is then the hierarchy's
+ * equality. Primitives (i32, boolean, enums, and distinct types over them)
+ * also satisfy the Hashable constraint; they hash to their own value. Strings
+ * hash with FNV-1a, cached after the first computation.
  */
 export interface Hashable {
   hashCode(): i32;

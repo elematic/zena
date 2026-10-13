@@ -642,6 +642,12 @@ export final class ClassType extends Type {
   var fieldSetterNames: HashMap<String, String> | null = null;
   var isFinal = false;
   var isCaseClass = false;
+  /**
+   * The checker synthesized this case class's `==` and `hashCode`. False for
+   * a case class that inherits either one from its base, whose pair is then
+   * the hierarchy's equality (equality.md, "Hash keys declare equality").
+   */
+  var derivesEquality = false;
   var isAbstract = false;
   var isExtension = false;
   var isSealed = false;
@@ -1318,6 +1324,7 @@ let substituteInType = (
         inst.fieldSetterNames = template.fieldSetterNames;
         inst.isFinal = template.isFinal;
         inst.isCaseClass = template.isCaseClass;
+        inst.derivesEquality = template.derivesEquality;
         // Resource-ness is a property of the class, uniform across every
         // mention of it (ownership.md §"Resource-ness and affineness are
         // separate"), so an instantiation of a generic resource class is
@@ -1801,6 +1808,7 @@ export let instantiateClassType = (
   result.fieldSetterNames = source.fieldSetterNames;
   result.isFinal = source.isFinal;
   result.isCaseClass = source.isCaseClass;
+  result.derivesEquality = source.derivesEquality;
   // See the matching copy in instantiateClassType: resource-ness is
   // declared at the class and survives instantiation.
   result.isResource = source.isResource;

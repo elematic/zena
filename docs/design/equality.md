@@ -201,7 +201,7 @@ own", and `Hashable` extends it:
 
 ```zena
 interface Equatable {
-  operator ==(other: This): boolean;
+  operator ==(other: this): boolean;
 }
 
 interface Hashable extends Equatable {
@@ -209,10 +209,10 @@ interface Hashable extends Equatable {
 }
 ```
 
-The `This`-typed parameter ([this-type.md](this-type.md)) makes `==` a
+The `this`-typed parameter ([this-type.md](this-type.md)) makes `==` a
 binary method, so `Equatable` works as a generic bound, not as a value
 type: two values both typed "some `Equatable`" may have different
-`This` types and cannot be compared through it. Records, tuples,
+`this` types and cannot be compared through it. Records, tuples,
 strings and primitives satisfy both interfaces by derivation, as the
 checker already arranges for `Hashable` today.
 
@@ -362,12 +362,21 @@ problem above was asserted by a test.
    no `operator ==` but a reached subclass does. The compiler's `Type`
    and AST `Node` hierarchies are sealed classes with case variants, so
    their `==` sites (45 on `Type` alone) would become structural
-   comparisons. Every such site becomes `===` first; #286's rewrites
-   did this for all class sites and can be reapplied. A temporary
-   checker warning on exactly this condition finds the rest.
-2. **Hash keys declare equality**, with `Type` declaring identity
-   `operator ==` alongside its uid `hashCode`, and the case-class
-   derivation rule for sealed bases.
+   comparisons. Every such site becomes `===` first. Done in #309: a
+   temporary checker warning on exactly this condition, run over every
+   `.zena` file in the repository, found 49 sites, all in the compiler.
+2. **Hash keys declare equality**, in two steps around a re-baseline
+   (bootstrapping.md, "Two-step landing"). The bootstrap derives a
+   structural `==` on every case of `Type`, so once `Type` declares
+   one, `equals<Type>` sees an overridden operator and cannot be
+   lowered. The compiler that builds the compiler must have the
+   derivation rule first.
+   - The case-class derivation rule for sealed bases, and `Equatable`
+     with the same structural satisfaction rule as `Hashable`. Done.
+   - After a re-baseline: `Hashable extends Equatable`, which makes
+     `String` and every other hash key `Equatable`, and `Type`,
+     `WasmType` and `WasmFunction` declare identity `operator ==`
+     alongside their uid `hashCode`.
 3. **The implicit root `operator ==`** and the override rule with its
    exact-class test. `sealed-classes/equality.zena` then expects
    `true`, and case-class fields typed as a sealed base compare by
@@ -395,6 +404,6 @@ problem above was asserted by a test.
 4. Deep equality for collections (`Array<T> == Array<T>`) — wants
    conditional conformance (`Array<T> implements Equatable when
 T extends Equatable`); until then, explicit helpers.
-5. Ordering (`Comparable` with `This`) — same shape as `Equatable`;
+5. Ordering (`Comparable` with `this`) — same shape as `Equatable`;
    design when sorting APIs need it.
 6. Naming: `includes` vs `containsSame`.
