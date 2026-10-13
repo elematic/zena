@@ -12081,11 +12081,11 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
   case UnaryExpression {operator, argument, loc}: {
     // A negated integer literal is typed as a single unit, because the
     // bound that applies to `-128` is i8's lower bound, which the bare
-    // literal `128` would fail. Only the range-checked types need this;
-    // every other context keeps its original path exactly.
+    // literal `128` would fail, and `-2147483648` is i32's. Every integer
+    // literal is range-checked, so this holds in any context but a
+    // float's, which takes the literal through the float path.
     if (operator == "-" && argument is NumberLiteral &&
-        (expectedType == null || expectedType is I32Type || expectedType is I64Type ||
-          isRangeCheckedIntType(expectedType))) {
+        !(expectedType is F32Type || expectedType is F64Type)) {
       if (!argument.raw.contains('.')) {
         let litType = checkIntegerLiteral(ctx, argument.raw, true, expectedType, loc);
         ctx.setNodeType(argument, litType);
