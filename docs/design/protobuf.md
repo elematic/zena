@@ -32,7 +32,8 @@ It covers three decisions, in order of how much they affect the result:
   generated.
 - Generated service clients call a small transport interface. Unary calls
   can use Google's gRPC fallback protocol over HTTP/1.1. Streaming calls
-  need gRPC over HTTP/2, which needs host work first.
+  need gRPC over HTTP/2, which `zena-cli` and `zena-run` support and
+  wasmtime's default outgoing handler does not.
 - The generator is a Zena library that turns `.proto` text into Zena
   source. It runs as a command-line program or a build step, and the
   output is checked in. Once the output shape is settled, the same
@@ -479,9 +480,18 @@ HTTP/2 for trailers
 A new connection and TLS handshake per request costs every outbound
 call from a Cloud Run server, protobuf or not. That makes pooled
 connections and HTTP/2 a host requirement for production servers in
-general. Zena's own runtime (`packages/zena-runtime`) links
-`wasmtime-wasi-http` since the HTTP server landed (b3930dad), with
-the default context, so its outgoing requests use the default handler.
+general.
+
+Zena's own runtime (`packages/zena-runtime`) overrides
+`send_request` (`src/http_client.rs`), so programs run by `zena-cli`
+and `zena-run` get both. One client per process keeps idle
+connections open for reuse. `https://` connections offer `h2` and
+`http/1.1` through ALPN and use HTTP/2 when the server chooses it;
+`http://` connections use HTTP/1.1. Request and response trailers
+pass through on HTTP/2. A component run by stock `wasmtime serve` or
+`wasmtime run -S http` still gets the default handler, so a gRPC
+transport needs Zena's host there; under stock hosts, the fallback
+transport below works over HTTP/1.1.
 
 ### gRPC fallback over HTTP/1.1
 
@@ -541,16 +551,17 @@ names, `int64` as strings, and per-type rules for the well-known types.
 
 ### Host requirements
 
-| Requirement                                | Needed by                             | State                                  |
-| ------------------------------------------ | ------------------------------------- | -------------------------------------- |
-| Method, request headers and body           | every transport, auth                 | in the `wasi:http` bindings            |
-| Response trailers                          | gRPC                                  | in the `wasi:http` bindings            |
-| Pooled connections                         | production servers                    | not in wasmtime's default handler      |
-| HTTP/2 to `*.googleapis.com`               | gRPC                                  | not in wasmtime's default handler      |
-| An outgoing-request hook in `zena-runtime` | running servers under Zena's own host | wasi-http linked, default handler only |
+| Requirement                                | Needed by                             | State                                             |
+| ------------------------------------------ | ------------------------------------- | ------------------------------------------------- |
+| Method, request headers and body           | every transport, auth                 | in the `wasi:http` bindings                       |
+| Response trailers                          | gRPC                                  | in the `wasi:http` bindings                       |
+| Pooled connections                         | production servers                    | `zena-runtime`; not in wasmtime's default handler |
+| HTTP/2 to `*.googleapis.com`               | gRPC                                  | `zena-runtime`; not in wasmtime's default handler |
+| An outgoing-request hook in `zena-runtime` | running servers under Zena's own host | done (`src/http_client.rs`)                       |
 
-The guest side needs nothing new. The host's outgoing handler is the
-gap.
+The guest side needs nothing new. Under `zena-cli` and `zena-run` the
+host side is in place too; under stock `wasmtime`, outgoing requests
+still open a connection each and use HTTP/1.1.
 
 ### Authentication on Cloud Run
 
@@ -784,6 +795,8 @@ Done:
   with (`data-view.zena`).
 - The `.proto` parser, schema loader and emitter, with a command-line
   entry point.
+- Host: a `send_request` hook in `zena-runtime` that pools connections
+  and negotiates HTTP/2.
 - Generated Firestore code, checked in as a test fixture, with size
   measurements.
 - Dead-field elimination in the compiler (#301).
@@ -796,8 +809,7 @@ Remaining:
 2. A Firestore package with its generated code, and metadata-server
    authentication.
 3. The hand-written client layer.
-4. Host: a `send_request` hook in `zena-runtime` that pools connections
-   and negotiates HTTP/2; then the gRPC transport.
+4. The gRPC transport over HTTP/2.
 5. Loader plugins, with WIT and protobuf as the first two users.
 
 ## Open questions

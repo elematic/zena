@@ -9,6 +9,17 @@ it:
 
 - **WASI 0.3**, for stdio, files, clocks, arguments and environment,
   supplied by `wasmtime-wasi`'s `p3` support.
+- **`wasi:http` 0.3**, supplied by `wasmtime-wasi-http`, except that
+  outgoing requests go through `src/http_client.rs` instead of its
+  default handler, which opens a connection per request and speaks
+  HTTP/1.1 only. The replacement keeps one pooled client per process:
+  `https://` connections offer `h2` and `http/1.1` through ALPN and use
+  HTTP/2 when the server picks it, `http://` connections use HTTP/1.1,
+  and idle connections are reused. Trailers pass through both ways, and
+  the request options' timeouts mean what they mean in the default
+  handler. Connections run on a background runtime of their own
+  (thread `zena-http`), so they outlive the per-call runtimes
+  `run_main` builds.
 - **The `zena-cli:host@1.0.0` interfaces**, declared in
   `packages/stdlib/zena/host-wit/host.wit` and implemented in
   `src/component.rs` with `bindgen!`:
@@ -97,3 +108,8 @@ runners.
 ```bash
 cargo test -p zena-runtime
 ```
+
+The `http_client` tests start local servers: a TLS one with a
+self-signed certificate (from `rcgen`) that offers HTTP/2, and a plain
+HTTP/1.1 one. They check the negotiated protocol, connection reuse
+(by counting accepted connections), trailers, and error mapping.
