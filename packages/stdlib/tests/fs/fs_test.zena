@@ -7,9 +7,10 @@
 
 import { suite, test, TestContext } from 'zena:test';
 import {equal, isTrue, isFalse} from 'zena:assert';
+import { newByteArray } from 'zena:core';
 import {
   readFile, writeFile, exists, isFile, isDirectory, unlink, getPreopens,
-  glob, GlobOptions, rename, stat, FileType
+  glob, GlobOptions, rename, stat, FileType, readFileBytes, writeFileBytes
 } from 'zena:fs';
 
 export let tests = suite('Filesystem', (): void => {
@@ -111,6 +112,36 @@ export let tests = suite('Filesystem', (): void => {
     equal(info.size, 1 as i64);
     // Nanoseconds since the Unix epoch: 2020-01-01 is 1.5777e18.
     isTrue(info.modified > (1577836800000000000 as i64));
+    unlink(path);
+  });
+
+  test('readFileBytes reads an empty file', (ctx: TestContext): void => {
+    let path = '/tmp/zena-fs-empty.bin';
+    writeFileBytes(path, newByteArray(0));
+    equal(readFileBytes(path).length, 0);
+    unlink(path);
+  });
+
+  test('readFileBytes reads a file larger than one host read', (ctx: TestContext): void => {
+    // zena-runtime reads 256 KiB per host read (fs_read.rs): this spans
+    // several, with a pattern whose period does not divide the read
+    // size, so a misplaced or repeated chunk shows.
+    let path = '/tmp/zena-fs-large.bin';
+    let size = 700001;
+    let data = newByteArray(size);
+    for (var i = 0; i < size; i += 1) {
+      data[i] = (i % 251) as u8;
+    }
+    writeFileBytes(path, data);
+    let read = readFileBytes(path);
+    equal(read.length, size);
+    var mismatches = 0;
+    for (var i = 0; i < size; i += 1) {
+      if (read[i] != (i % 251) as u8) {
+        mismatches += 1;
+      }
+    }
+    equal(mismatches, 0);
     unlink(path);
   });
 
