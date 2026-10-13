@@ -689,12 +689,10 @@ removes that type in the else branch (for unions):
 
 ```zena
 class Cat {
-  new() {}
   meow(): String { return "meow"; }
 }
 
 class Dog {
-  new() {}
   bark(): String { return "woof"; }
 }
 
@@ -1840,7 +1838,6 @@ Compound assignment works with variables, class fields, and array indices:
 ```zena
 class Counter {
   var count: i32 = 0;
-  new() {}
   increment(n: i32): void { this.count += n; }
 }
 
