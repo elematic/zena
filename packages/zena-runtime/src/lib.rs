@@ -39,6 +39,7 @@ pub mod cache;
 pub mod component;
 pub mod core_module;
 pub mod engine;
+mod fs_read;
 pub mod http_client;
 
 /// Whether this invocation may spawn processes and run components. The

@@ -116,6 +116,7 @@ impl wasmtime_wasi_http::WasiHttpView for ComponentState {
 pub fn linker(engine: &Engine) -> Result<Linker<ComponentState>> {
     let mut linker: Linker<ComponentState> = Linker::new(engine);
     wasmtime_wasi::p3::add_to_linker(&mut linker)?;
+    crate::fs_read::add_to_linker(&mut linker)?;
     wasmtime_wasi_http::p3::add_to_linker(&mut linker)?;
     process::add_to_linker::<_, HasSelf<_>>(&mut linker, |state| state)?;
     wasm::add_to_linker::<_, HasSelf<_>>(&mut linker, |state| state)?;
