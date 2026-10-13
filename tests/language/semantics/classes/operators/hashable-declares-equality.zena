@@ -1,0 +1,61 @@
+// @mode: check
+// A hash key declares its equality. `Hashable` extends `Equatable`, so a class
+// that implements it declares `operator ==` as well as `hashCode`, and the two
+// agree: equal objects hash equally.
+
+// Hashes, but leaves its equality to the identity default.
+class OnlyHash implements Hashable { // @error: Method '==' is missing
+  v: i32;
+  new(this.v);
+  hashCode(): i32 {
+    return this.v;
+  }
+}
+
+class ByValue implements Hashable {
+  v: i32;
+  new(this.v);
+  hashCode(): i32 {
+    return this.v;
+  }
+  operator ==(other: ByValue): boolean {
+    return this.v == other.v;
+  }
+}
+
+// A class whose equality is identity says so.
+var nextId = 0;
+class Session implements Hashable {
+  id: i32;
+  new() : id = nextId {
+    nextId += 1;
+  }
+  hashCode(): i32 {
+    return this.id;
+  }
+  operator ==(other: Session): boolean {
+    return this === other;
+  }
+}
+
+// Declaring `==` is enough for `Equatable`, with no hash.
+class Version implements Equatable {
+  major: i32;
+  new(this.major);
+  operator ==(other: Version): boolean {
+    return this.major == other.major;
+  }
+}
+
+class Plain {
+  v: i32;
+  new(this.v);
+}
+
+let same = <T extends Equatable>(a: T, b: T): boolean => a == b;
+
+let a = same(new Version(1), new Version(1));
+let b = same(1, 2);
+let c = same('x', 'y');
+let d = same(new ByValue(1), new ByValue(1));
+let e = same(new Plain(1), new Plain(1)); // @error: does not satisfy constraint

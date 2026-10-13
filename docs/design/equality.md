@@ -372,11 +372,12 @@ problem above was asserted by a test.
    lowered. The compiler that builds the compiler must have the
    derivation rule first.
    - The case-class derivation rule for sealed bases, and `Equatable`
-     with the same structural satisfaction rule as `Hashable`. Done.
+     with the same structural satisfaction rule as `Hashable`. Done in
+     #311.
    - After a re-baseline: `Hashable extends Equatable`, which makes
      `String` and every other hash key `Equatable`, and `Type`,
      `WasmType` and `WasmFunction` declare identity `operator ==`
-     alongside their uid `hashCode`.
+     alongside their uid `hashCode`. Done.
 3. **The implicit root `operator ==`** and the override rule with its
    exact-class test. `sealed-classes/equality.zena` then expects
    `true`, and case-class fields typed as a sealed base compare by

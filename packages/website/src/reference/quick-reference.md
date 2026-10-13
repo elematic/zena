@@ -2047,9 +2047,10 @@ immutable array (an array literal) is a `FixedArray`.
 ### Map
 
 `Map<K, V>` is a hash map. Keys must satisfy the `Hashable` interface
-(`hashCode(): i32`): numeric primitives, `boolean`, `String`, enums, distinct
-types, and case classes satisfy it automatically; other classes must declare
-`implements Hashable` and define `hashCode()`.
+(`hashCode(): i32` plus `operator ==`, from `Equatable`): numeric primitives,
+`boolean`, `String`, enums, distinct types, and case classes satisfy it
+automatically; other classes must declare `implements Hashable` and define both
+`hashCode()` and `operator ==`, which must agree.
 
 Maps can be created using literal syntax with `=>`:
 
