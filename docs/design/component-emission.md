@@ -1537,6 +1537,21 @@ guest reader drops the readable end. Synthesized WIT modules bind
 driver's rooting gate opens for `awaitWaitable` as well as
 `awaitPacked`, so a stream-only program still gets the async entry.
 
+**A received stream passed back out is not copied.** `liftByteStream`
+starts its pump on the first read, not when the stream arrives: until
+then the `Stream<u8>` it returns (`HostByteStream`) holds the readable
+end, and `lowerByteStream` given that stream returns the same end
+instead of making a pair. A file's `read-via-stream` set as a
+`zena:http` response body therefore goes to `response.new` as is, and
+wasmtime copies the file to the connection host to host; no byte
+enters linear memory or the GC heap. Serving a 64 MB file this way
+took 0.25 s against 1.7 s for reading it into a `FixedArray<u8>` and
+writing it back (`examples/static-passthrough-probe.zena`). The same
+applies to a request body forwarded to an outgoing request. A stream
+that has been read, or stopped, is pumped as before; one that has been
+handed on throws on read. Stopping an unread stream drops its end
+without starting a pump.
+
 **`future<T>` values are built.** A future in any WIT position is one
 end-handle on the wire and a `Future` in the signature, moved by
 per-payload-type helpers the synthesizer generates: five canon

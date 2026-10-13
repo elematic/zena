@@ -1,0 +1,48 @@
+import { suite, test, TestContext } from 'zena:test';
+import { equal, throws } from 'zena:assert';
+import { textStream, readAllText } from 'zena:stream';
+import {
+  newByteStreamPair, liftByteStream, lowerByteStream, blockOn
+} from 'zena:wasi';
+
+export let tests = suite('zena:wasi byte streams', (): void => {
+  test('an unread lifted stream lowers to its own handle', (ctx: TestContext): void => {
+    let pair = newByteStreamPair();
+    let handle = pair.readable as i32;
+    let stream = liftByteStream(handle);
+    equal(lowerByteStream(stream), handle);
+  });
+
+  test('a lifted stream handed on cannot be read', (ctx: TestContext): void => {
+    let pair = newByteStreamPair();
+    let stream = liftByteStream(pair.readable as i32);
+    lowerByteStream(stream);
+    throws((): void => {
+      stream.read(new Array<u8>.fixed(8, 0));
+    });
+  });
+
+  test('a stopped lifted stream lowers as an ended stream', (ctx: TestContext): void => {
+    // Nothing ever writes `pair.writable`, so had `stop` kept the end
+    // and lowering passed it on, this read would never finish. (The
+    // handle index can't tell: stop drops the end, and the new pair
+    // may reuse its index.)
+    let pair = newByteStreamPair();
+    let stream = liftByteStream(pair.readable as i32);
+    stream.stop();
+    let lowered = lowerByteStream(stream);
+    equal(blockOn(readAllText(liftByteStream(lowered))), '');
+  });
+
+  test('a lifted stream reads what the writer sent', (ctx: TestContext): void => {
+    let lowered = lowerByteStream(textStream('hello, stream'));
+    equal(blockOn(readAllText(liftByteStream(lowered))), 'hello, stream');
+  });
+
+  test('a lifted stream lowered again carries its bytes', (ctx: TestContext): void => {
+    let lowered = lowerByteStream(textStream('passed through'));
+    let again = lowerByteStream(liftByteStream(lowered));
+    equal(again, lowered);
+    equal(blockOn(readAllText(liftByteStream(again))), 'passed through');
+  });
+});
