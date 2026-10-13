@@ -242,6 +242,7 @@ export final class Specializer implements SpecializerInterface {
     // without erased equality anywhere, instantiation alone is not a
     // reason to emit them. Direct `a == b` on concrete receivers
     // reaches the operator through its own member records.
+    this.pass.reachEqualityBelowComparedBase(classType);
     if (this.pass.equalityDispatchUsed) {
       let eqMethod = cha.findImplementingMethod(classType, "==");
       if (eqMethod != null) {
@@ -1337,7 +1338,20 @@ export final class Specializer implements SpecializerInterface {
       }
     }
     if (methodTypeNode is FunctionType) {
-      for (let p in methodTypeNode.parameters) {
+      // An `operator ==` below its slot's owner declares its parameter
+      // over its own class, but shares the slot: it takes the owner's
+      // parameter, and its body tests and casts `other` before running
+      // (equality.md, "Overrides compare the same class").
+      var paramTypes = methodTypeNode.parameters;
+      if (methName == "==" && !isStatic && !isCtor && !cType.isExtension &&
+          rootClass !== cType && rootClass.members.has("==")) {
+        let rootMi = rootClass.members["=="];
+        if (rootMi is MethodInfo && rootMi.type is FunctionType &&
+            (rootMi.type as FunctionType).parameters.length == paramTypes.length) {
+          paramTypes = (rootMi.type as FunctionType).parameters;
+        }
+      }
+      for (let p in paramTypes) {
         mapParamTypeToWasmParams(this.pass.wasm, p, params);
       }
       if (!isCtor) {

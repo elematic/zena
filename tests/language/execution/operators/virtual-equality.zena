@@ -1,0 +1,183 @@
+// @mode: run
+// @result: 1
+// `==` on a class is a virtual call: every hierarchy root has an
+// `operator ==`, identity unless the root declares one, and a subclass
+// overrides it. The answer depends on the operands' runtime classes, not on
+// their static types. A declared `operator ==` first tests that `other` is of
+// exactly the receiver's class, so equality stays symmetric across a
+// hierarchy (docs/design/equality.md, "Virtual equality with an identity
+// default").
+import { HashSet } from 'zena:collections';
+
+class Point {
+  x: i32;
+  new(this.x);
+
+  operator ==(other: Point): boolean {
+    return this.x == other.x;
+  }
+}
+
+class Point3 extends Point {
+  z: i32;
+  new(x: i32, this.z) : super(x);
+
+  operator ==(other: Point3): boolean {
+    return this.x == other.x && this.z == other.z;
+  }
+}
+
+// The root declares nothing; a subclass declares equality.
+class Animal {
+  name: String;
+  new(this.name);
+}
+
+class Dog extends Animal {
+  new(name: String) : super(name);
+
+  operator ==(other: Dog): boolean {
+    return this.name == other.name;
+  }
+}
+
+class Cat extends Animal {
+  new(name: String) : super(name);
+}
+
+// No class in this hierarchy declares equality.
+class Node {
+  id: i32;
+  new(this.id);
+}
+
+class Leaf extends Node {
+  new(id: i32) : super(id);
+}
+
+sealed class Shape {
+  case Circle(radius: i32)
+  case Square(side: i32)
+}
+
+class Framed(shape: Shape, width: i32)
+
+class Key implements Hashable {
+  id: i32;
+  new(this.id);
+
+  operator ==(other: Key): boolean {
+    return this.id == other.id;
+  }
+
+  hashCode(): i32 {
+    return this.id;
+  }
+}
+
+class NamedKey extends Key {
+  name: String;
+  new(id: i32, this.name) : super(id);
+
+  operator ==(other: NamedKey): boolean {
+    return this.id == other.id && this.name == other.name;
+  }
+}
+
+let eq = (a: Point, b: Point): boolean => a == b;
+
+let animalsEqual = (a: Animal, b: Animal): boolean => a == b;
+
+let nodesEqual = (a: Node, b: Node): boolean => a == b;
+
+let maybeEqual = (a: Point | null, b: Point | null): boolean => a == b;
+
+export let main = (): i32 => {
+  // Same class, through the base type: the override runs.
+  if (!eq(new Point3(1, 2), new Point3(1, 2))) {
+    return 0;
+  }
+  if (eq(new Point3(1, 2), new Point3(1, 3))) {
+    return 0;
+  }
+  // Different classes are never equal, in either order, even when the
+  // shared fields match.
+  if (eq(new Point(1), new Point3(1, 2))) {
+    return 0;
+  }
+  if (eq(new Point3(1, 2), new Point(1))) {
+    return 0;
+  }
+  if (!eq(new Point(1), new Point(1))) {
+    return 0;
+  }
+  // `!=` is the negation.
+  let p: Point = new Point3(4, 5);
+  let q: Point = new Point3(4, 5);
+  if (p != q) {
+    return 0;
+  }
+
+  // A root with no operator compares identity, except where a subclass
+  // declares equality.
+  if (!animalsEqual(new Dog('rex'), new Dog('rex'))) {
+    return 0;
+  }
+  if (animalsEqual(new Cat('tom'), new Cat('tom'))) {
+    return 0;
+  }
+  let tom: Animal = new Cat('tom');
+  if (!animalsEqual(tom, tom)) {
+    return 0;
+  }
+  if (animalsEqual(new Dog('rex'), new Cat('rex'))) {
+    return 0;
+  }
+  if (animalsEqual(new Cat('rex'), new Dog('rex'))) {
+    return 0;
+  }
+
+  // No operator anywhere: identity.
+  let n: Node = new Leaf(1);
+  if (nodesEqual(new Leaf(1), new Leaf(1)) || !nodesEqual(n, n)) {
+    return 0;
+  }
+
+  // Null operands are compared before any operator runs.
+  if (!maybeEqual(null, null)) {
+    return 0;
+  }
+  if (maybeEqual(new Point(1), null) || maybeEqual(null, new Point(1))) {
+    return 0;
+  }
+  if (!maybeEqual(new Point3(1, 2), new Point3(1, 2))) {
+    return 0;
+  }
+
+  // A sealed base without an operator: its cases' derived `==` answers.
+  let s1: Shape = new Circle(5);
+  let s2: Shape = new Circle(5);
+  let s3: Shape = new Square(5);
+  if (!(s1 == s2) || s1 == s3) {
+    return 0;
+  }
+  // A case-class field typed as the base compares by the cases' `==`.
+  if (!(new Framed(new Circle(5), 1) == new Framed(new Circle(5), 1))) {
+    return 0;
+  }
+  if (new Framed(new Circle(5), 1) == new Framed(new Square(5), 1)) {
+    return 0;
+  }
+
+  // Hash collections compare keys with the runtime class's operator.
+  let keys = new HashSet<Key>();
+  keys.add(new NamedKey(1, 'a'));
+  keys.add(new NamedKey(1, 'a'));
+  keys.add(new NamedKey(1, 'b'));
+  keys.add(new Key(1));
+  keys.add(new Key(1));
+  if (keys.size != 3) {
+    return 0;
+  }
+  return 1;
+};

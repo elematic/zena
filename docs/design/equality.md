@@ -93,12 +93,12 @@ It is an ordinary virtual method, so `==` at any static class type
 dispatches to the runtime class's equality. In the example above,
 `s1 == s2` calls `Circle`'s `==` and returns true.
 
-**Cost.** Reachability already deletes a vtable slot that no reached
-subclass overrides, and lowering calls directly whenever no subclass
-provides the method. A hierarchy where no class declares `operator ==`
-therefore compiles `==` to `ref.eq`, as it does today. Only a
-hierarchy with an override pays for a virtual call, and that call is
-what makes the answer correct.
+**Cost.** A hierarchy where no class declares `operator ==` compiles
+`==` to `ref.eq`, as it did before. Below a class with no operator,
+`==` tests the left operand against each class that introduces one,
+and a class with an operator calls it directly unless a reached
+subclass overrides it. Only a hierarchy with an override pays for the
+dispatch, and that dispatch is what makes the answer correct.
 
 **Overrides compare the same class.** A subclass declares its equality
 with its own type as the parameter:
@@ -379,9 +379,16 @@ problem above was asserted by a test.
      `WasmType` and `WasmFunction` declare identity `operator ==`
      alongside their uid `hashCode`. Done.
 3. **The implicit root `operator ==`** and the override rule with its
-   exact-class test. `sealed-classes/equality.zena` then expects
-   `true`, and case-class fields typed as a sealed base compare by
-   the cases' `==`.
+   exact-class test. Done. `sealed-classes/equality.zena` expects `true`,
+   and case-class fields typed as a sealed base compare by the cases'
+   `==`. As built, the root operator is not a function: `==` on a class
+   that has no operator tests the left operand against the classes below
+   it that introduce one and calls that one, or compares identity, so a
+   hierarchy with no operator anywhere still compiles to `ref.eq` and
+   gains no vtable slot. The exact-class test passes the same object at
+   once and otherwise tests the receiver against the declaring class's
+   subtree; comparing vtables would be shorter, but reading the field
+   keeps every class's vtable global alive where nothing else does.
 4. **Equality through interfaces and anyref**, once the representation
    is chosen.
 5. `contains`/`includes` land with the collections work that needs

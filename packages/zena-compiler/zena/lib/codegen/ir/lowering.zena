@@ -54,11 +54,12 @@ import { lowerComponentAdapter } from './component-adapters.zena';
 import { lowerIntrinsic } from './intrinsics.zena';
 import {
   ExplodedRecord, LetCondBinds, LoweringContext, MergeState, ZirUnsupported,
+  noValues,
 } from './lowering-context.zena';
 import { lowerStringLiteral, lowerTaggedTemplate, lowerTemplateLiteral } from './templates.zena';
 import {
-  lowerCaseClassEq, lowerCaseClassHash, lowerErasedEq, lowerEqIntrinsic,
-  lowerHashIntrinsic,
+  exactClassTest, lowerCaseClassEq, lowerCaseClassHash, lowerErasedEq,
+  lowerEqIntrinsic, lowerHashIntrinsic,
 } from './equality.zena';
 import {
   bindRecordProp, branchUnless, collectPatternBindSyms,
@@ -1410,6 +1411,11 @@ export final class FunctionLowerer {
       this.#cx().thisValue = this.b.emit(IrOp.ref_cast, castVt, this.#cx().thisValue,
           this.b.internType(castVt));
     }
+    if (paramOffset == 1 && ctorDef == null && !this.func.isClosure &&
+        this.func.methodName == "==" && params.length == 1 &&
+        paramSigIndex[0] >= 0 && (exploded == null || exploded[0] == null)) {
+      this.#lowerEqualityPrologue(params[0]);
+    }
     if (this.func.isClosure) {
       this.#lowerClosurePrologue(ctxParam);
     }
@@ -2624,6 +2630,48 @@ export final class FunctionLowerer {
       this.#cx().explodedRecords[args[i]] = new ExplodedRecord(d, reads);
     }
     return out;
+  }
+
+  /**
+   * The start of a declared `operator ==`: it answers only for an operand
+   * of exactly the receiver's runtime class, and is false otherwise
+   * (equality.md, "Overrides compare the same class"). Past the test,
+   * `other` is seen as its declared type, which the slot's parameter may
+   * be wider than.
+   */
+  #lowerEqualityPrologue(param: Parameter): void {
+    let ownCt = this.func.classType;
+    if (ownCt == null || ownCt.isExtension) {
+      return;
+    }
+    let otherSym = this.func.model.resolveDeclaration(param.name);
+    if (otherSym == null) {
+      return;
+    }
+    let declared = this.func.model.getBindingType(otherSym);
+    if (declared == null || !(baseType(declared) is ClassType)) {
+      return;
+    }
+    if (this.#isCelled(otherSym.id)) {
+      this.#bail('celled operator == parameter');
+    }
+    let other = this.#cx().env[otherSym.id];
+    let ok = exactClassTest(this.#cx(), this.#cx().thisValue, other, ownCt);
+    let okB = this.b.newBlock();
+    let failB = this.b.newBlock();
+    this.b.brIf(ok, okB, noValues(), failB, noValues());
+    this.b.switchTo(failB);
+    this.b.ret(this.b.constI32(0, new ValTypeI32()));
+    this.b.switchTo(okB);
+    let declVt = typeToValTypeWithSub(this.wasm, declared, this.func);
+    let target = refTargetOf(declVt);
+    if (target != null) {
+      let castVt = new ValTypeRef(target) as ValType;
+      if (!isValSubtype(this.#cx().valueTypeOf(other), castVt)) {
+        this.#cx().env[otherSym.id] = this.b.emit(IrOp.ref_cast, castVt, other,
+            this.b.internType(castVt));
+      }
+    }
   }
 
   /** The <vtable> operand: the class's vtable global, or null. */

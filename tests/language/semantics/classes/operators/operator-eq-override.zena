@@ -1,0 +1,47 @@
+// @mode: check
+// A subclass declares its equality over its own type, and that overrides the
+// inherited `operator ==`: the compiler tests that `other` is exactly the
+// receiver's class before the body runs, so narrowing the parameter is sound.
+// Narrowing to anything else is still an overlapping overload.
+
+class Point {
+  x: i32;
+  new(this.x);
+
+  operator ==(other: Point): boolean {
+    return this.x == other.x;
+  }
+}
+
+class Point3 extends Point {
+  z: i32;
+  new(x: i32, this.z) : super(x);
+
+  operator ==(other: Point3): boolean {
+    return this.x == other.x && this.z == other.z;
+  }
+}
+
+class Point4 extends Point3 {
+  w: i32;
+  new(x: i32, z: i32, this.w) : super(x, z);
+
+  operator ==(other: Point4): boolean {
+    return this.x == other.x && this.z == other.z && this.w == other.w;
+  }
+}
+
+class Labeled extends Point {
+  new(x: i32) : super(x);
+
+  // Narrows to a class other than its own.
+  operator ==(other: Point3): boolean { // @error: overlaps an inherited signature
+    return this.x == other.x;
+  }
+}
+
+let a: Point = new Point3(1, 2);
+let b: Point = new Point4(1, 2, 3);
+let same: boolean = a == b;
+let p3 = new Point3(1, 2);
+let mixed: boolean = p3 == a;

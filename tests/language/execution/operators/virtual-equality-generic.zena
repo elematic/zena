@@ -1,0 +1,33 @@
+// @mode: run
+// @result: 1
+// Generic code compares through the runtime class too: `T == T` and the
+// collections' `contains`, instantiated at a sealed base whose cases derive
+// `==`, call the cases' operator rather than comparing identity.
+
+sealed class Ref {
+  case Field(name: String)
+  case Slot(index: i32)
+}
+
+let same = <T>(a: T, b: T): boolean => a == b;
+
+export let main = (): i32 => {
+  let a: Ref = new Field('x');
+  let b: Ref = new Field('x');
+  if (!same(a, b)) {
+    return 0;
+  }
+  if (same(a, new Slot(1) as Ref)) {
+    return 0;
+  }
+  let refs = new GrowableArray<Ref>();
+  refs.push(new Slot(3));
+  refs.push(new Field('y'));
+  if (!refs.contains(new Field('y'))) {
+    return 0;
+  }
+  if (refs.contains(new Field('z'))) {
+    return 0;
+  }
+  return 1;
+};

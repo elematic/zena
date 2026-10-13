@@ -504,9 +504,10 @@ There are no `++` or `--` operators — use `+= 1` and `-= 1` instead.
 
 ### Comparison
 
-Equality (`==`) uses value comparison for primitives and strings, and reference
-comparison for objects (unless `operator ==` is defined). Use `===` to always
-compare by reference.
+Equality (`==`) uses value comparison for primitives and strings. On objects it
+calls the runtime class's `operator ==`, which is reference comparison unless
+some class in the hierarchy defines one. Use `===` to always compare by
+reference.
 
 ```zena
 a == b; // Equal (value equality for strings)
@@ -1683,6 +1684,10 @@ let b = new Point(1, 2);
 a == b;  // true (calls operator ==)
 a === b; // false (reference equality)
 ```
+
+The call is virtual: a subclass overrides it with `operator ==(other: Sub)`, and
+the runtime class's operator answers even through a base-typed reference.
+Objects of different classes are never equal, in either order.
 
 #### operator []
 

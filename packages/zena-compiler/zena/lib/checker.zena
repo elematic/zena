@@ -13650,6 +13650,36 @@ let addImplicitInterface = (ctx: CheckerContext, ct: ClassType, which: WellKnown
 };
 
 /**
+ * The inherited `operator ==` that a class's own `operator ==` overrides when
+ * it narrows the parameter to the class itself. A class declares its equality
+ * over its own type (`operator ==(other: Point3)` below
+ * `operator ==(other: Point)`); the compiler tests that `other` is exactly the
+ * receiver's class before the body runs, which is what makes the narrowing
+ * sound (equality.md, "Virtual equality with an identity default").
+ */
+let equalityOverrideTarget = (ctx: CheckerContext, inherited: FunctionType,
+    own: FunctionType, ct: ClassType): FunctionType | null => {
+  if (own.parameters.length != 1 || !typesEqual(own.parameters[0], ct)) {
+    return null;
+  }
+  let candidates = new Array<FunctionType>();
+  candidates.push(inherited);
+  let {overloads} = inherited;
+  if (overloads != null) {
+    for (let ov in overloads) {
+      candidates.push(ov);
+    }
+  }
+  for (let c in candidates) {
+    if (c.parameters.length == 1 && c.parameters[0] is ClassType &&
+        isAssignableTo(ctx, ct, c.parameters[0])) {
+      return c;
+    }
+  }
+  return null;
+};
+
+/**
  * True when an ancestor of `ct` declares `operator ==` or `hashCode`. A case
  * class below one derives neither: the base's pair is the hierarchy's
  * equality, and a derived structural `==` beside the base's hash would put
@@ -15160,7 +15190,12 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
             if (!isPrivate && classType.members.has(methodName) && classType.members[methodName] is MethodInfo) {
               let inheritedMethodInfo = classType.members[methodName] as MethodInfo;
               let superMethod = inheritedMethodInfo.type as FunctionType;
-              let matchingSuper = findMatchingOverload(superMethod, methodType);
+              var matchingSuper = findMatchingOverload(superMethod, methodType);
+              var narrowedEquality: FunctionType | null = null;
+              if (matchingSuper == null && methodName == "==") {
+                narrowedEquality = equalityOverrideTarget(ctx, superMethod, methodType, classType);
+                matchingSuper = narrowedEquality;
+              }
               if (matchingSuper != null) {
                 if (matchingSuper.isFinal) {
                   ctx.error(
@@ -15171,14 +15206,16 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
                 }
 
                 let newOverloads = new Array<FunctionType>();
-                if (!hasSameSignature(superMethod, methodType)) {
+                if (!hasSameSignature(superMethod, methodType) &&
+                    superMethod !== narrowedEquality) {
                   newOverloads.push(superMethod);
                 }
                 let {overloads} = superMethod;
                 if (overloads != null) {
                   let superOvs = overloads;
                   for (let overload in superOvs) {
-                    if (!hasSameSignature(overload, methodType)) {
+                    if (!hasSameSignature(overload, methodType) &&
+                        overload !== narrowedEquality) {
                       newOverloads.push(overload);
                     }
                   }
