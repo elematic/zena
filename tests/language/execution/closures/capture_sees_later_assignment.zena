@@ -1,0 +1,156 @@
+// @mode: run
+// @result: 1
+// A closure captures the variable, not its value at creation: an
+// assignment the enclosing function makes after creating the closure
+// is visible when the closure runs. The header variable of a `for`
+// loop is a fresh variable on each iteration, so closures made in
+// different iterations each see their own.
+
+type V = {x: i32, y: i32};
+
+let afterCreation = (): i32 => {
+  var n = 2;
+  let read = () => n;
+  n = 5;
+  return read();
+};
+
+let compound = (): i32 => {
+  var n = 2;
+  let read = () => n;
+  n += 40;
+  return read();
+};
+
+let record = (): i32 => {
+  var p: V = {x: 1, y: 2};
+  let read = () => p.x + p.y;
+  p = {x: 10, y: 20};
+  return read();
+};
+
+let afterLoop = (): i32 => {
+  var total = 0;
+  let read = () => total;
+  var i = 0;
+  while (i < 4) {
+    total += i;
+    i += 1;
+  }
+  return read();
+};
+
+let returned = (): (() => i32) => {
+  var n = 1;
+  let read = () => n;
+  n = 7;
+  return read;
+};
+
+let nested = (): i32 => {
+  var n = 1;
+  let outer = () => () => n;
+  let inner = outer();
+  n = 9;
+  return inner();
+};
+
+let keep = (kept: GrowableArray<() => i32>, f: () => i32): i32 => {
+  kept.push(f);
+  return 5;
+};
+
+// The assignment's value creates the closure, so the assignment runs
+// after it.
+let insideAssignedValue = (): i32 => {
+  let kept = new GrowableArray<() => i32>();
+  var n = 1;
+  n = keep(kept, () => n);
+  return kept[0]();
+};
+
+// The assignment comes before the closure in the source, but the next
+// iteration's assignment runs after this iteration's closure.
+let loopAssignedBefore = (): i32 => {
+  var n = 0;
+  let reads = new GrowableArray<() => i32>();
+  var i = 0;
+  while (i < 3) {
+    n = i * 10;
+    reads.push(() => n);
+    i += 1;
+  }
+  return reads[0]();
+};
+
+let perIteration = (): i32 => {
+  let reads = new GrowableArray<() => i32>();
+  for (var i = 0; i < 3; i += 1) {
+    reads.push(() => i);
+  }
+  return reads[0]() * 100 + reads[1]() * 10 + reads[2]();
+};
+
+// The body's assignments land in the iteration's own variable, and the
+// next iteration starts from the value it was left with.
+let perIterationAssigned = (): i32 => {
+  let reads = new GrowableArray<() => i32>();
+  for (var i = 0; i < 6; i += 1) {
+    reads.push(() => i);
+    i += 1;
+  }
+  return reads[0]() * 100 + reads[1]() * 10 + reads[2]();
+};
+
+// A closure that assigns the header variable assigns the current
+// iteration's, and the update continues from it.
+let closureAssignsHeader = (): i32 => {
+  var count = 0;
+  for (var i = 0; i < 10; i += 1) {
+    let skip = () => {
+      i += 2;
+    };
+    skip();
+    count += 1;
+  }
+  return count;
+};
+
+export let main = (): i32 => {
+  if (afterCreation() != 5) {
+    return 0;
+  }
+  if (compound() != 42) {
+    return 0;
+  }
+  if (record() != 30) {
+    return 0;
+  }
+  if (afterLoop() != 6) {
+    return 0;
+  }
+  if (returned()() != 7) {
+    return 0;
+  }
+  if (nested() != 9) {
+    return 0;
+  }
+  if (insideAssignedValue() != 5) {
+    return 0;
+  }
+  if (loopAssignedBefore() != 20) {
+    return 0;
+  }
+  if (perIteration() != 12) {
+    return 0;
+  }
+  // i is 1, 3 and 5 when each iteration ends.
+  if (perIterationAssigned() != 135) {
+    return 0;
+  }
+  // i is 0, 3, 6 and 9 when each iteration starts.
+  if (closureAssignsHeader() != 4) {
+    return 0;
+  }
+  return 1;
+};

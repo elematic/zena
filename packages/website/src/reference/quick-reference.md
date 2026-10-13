@@ -367,6 +367,22 @@ let add5 = makeAdder(5);
 add5(10); // 15
 ```
 
+A closure captures the variable itself, so it sees later assignments. A `for`
+header's variable is a fresh variable on each iteration:
+
+```zena
+var n = 2;
+let read = () => n;
+n = 5;
+read(); // 5
+
+let reads = new GrowableArray<() => i32>();
+for (var i = 0; i < 3; i += 1) {
+  reads.push(() => i);
+}
+reads[2](); // 2
+```
+
 ### Tail Calls
 
 `tail return f(x);` compiles the call to WebAssembly's `return_call`: the

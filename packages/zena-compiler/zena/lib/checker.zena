@@ -825,7 +825,7 @@ final class CheckerContext {
     if (this.#dependencyStack.length > 1) {
       let deps = this.#dependencyStack.pop();
       let parentDeps = this.#dependencyStack[this.#dependencyStack.length - 1];
-      let clDep = new ClosureDependency(fe.id as i32, fe as Node, capturesThis, captures, mutableCaptures, deps);
+      let clDep = new ClosureDependency(fe.id as i32, fe as Node, capturesThis, captures, deps);
       parentDeps.closures.push(clDep);
       this.model.setNodeDependencies(fe.id as i32, deps);
     }
@@ -12031,6 +12031,15 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
             );
             return new ErrorType();
           }
+          let target = info.resolveTarget().id;
+          let assignmentId = expr.id as i32;
+          if (let (true, last) = ctx.model.lastAssignment.get(target)) {
+            if (last < assignmentId) {
+              ctx.model.lastAssignment[target] = assignmentId;
+            }
+          } else {
+            ctx.model.lastAssignment[target] = assignmentId;
+          }
         }
       }
       case _: {}
@@ -22256,6 +22265,7 @@ let checkFunctionExpression = (
     let capSyms = new Array<SymbolId>();
     for (let c in captureInfo.captures) {
       capSyms.push(c.id);
+      ctx.model.recordCapture(c, fe);
       // A closure is a heap object: it may be returned, stored in a field
       // or called long after the scope that lent the borrow has ended, so
       // capturing a second-class value is exactly the escape the borrow

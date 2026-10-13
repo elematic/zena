@@ -1,0 +1,29 @@
+// @mode: run
+// @result: 135
+// A `for` header variable that closures capture and the body assigns
+// lives in a cell, and each iteration gets a fresh one. In a generator
+// body the loop carries that cell across each `yield`, so the closures
+// collected from the generator each keep their own iteration's
+// variable.
+import { Iterator } from 'zena:core';
+
+let closures = gen (): Iterator<() => i32> => {
+  for (var i = 0; i < 6; i += 1) {
+    let read = () => i;
+    yield read;
+    i += 1;
+  }
+};
+
+export let main = (): i32 => {
+  let fs = new GrowableArray<() => i32>();
+  for (let f in closures()) {
+    fs.push(f);
+  }
+  var acc = 0;
+  for (let f in fs) {
+    acc = acc * 10 + f();
+  }
+  // i is 1, 3 and 5 when each iteration ends.
+  return acc;
+};

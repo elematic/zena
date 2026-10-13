@@ -2221,13 +2221,28 @@ export let lowerWhile = (cx: LoweringContext, stmt: WhileStatement): void => {
   cx.reachable = true;
 };
 
+/**
+ * The variable a `for` header declares when it lives in a heap cell, or
+ * null. Such a variable is a fresh variable on each iteration (see
+ * lowerFor), so the loop carries its cell rather than its value.
+ */
+let celledHeaderSym = (cx: LoweringContext, init: VariableDeclaration): Symbol | null => {
+  let pat = init.pattern;
+  if (!(pat is IdentifierPattern)) { return null; }
+  let sym = cx.func.model.resolveDeclaration(pat);
+  if (sym == null || !cx.isCelled(sym.id)) { return null; }
+  return sym;
+};
+
 export let lowerFor = (cx: LoweringContext, stmt: ForStatement): void => {
   // C-style for. The init runs in the current block; the update gets its
   // own block so `continue` can route through it.
+  var headerCell: Symbol | null = null;
   if (stmt.init != null) {
     let init = stmt.init as Node;
     if (init is VariableDeclaration) {
       varDecl(cx, init);
+      headerCell = celledHeaderSym(cx, init);
     } else if (init is ExpressionStatement) {
       lowerExpr(cx, init.expression, null);
     } else if (init is Expression) {
@@ -2247,6 +2262,9 @@ export let lowerFor = (cx: LoweringContext, stmt: ForStatement): void => {
     cx.appendAssignedEnvSyms(update, carried);
   }
   cx.appendAssignedEnvSyms(stmt.body, carried);
+  if (headerCell != null) {
+    carried.push(headerCell.id);
+  }
 
   let header = cx.b.newBlock();
   let headerParams = cx.addParams(header, carried);
@@ -2284,6 +2302,15 @@ export let lowerFor = (cx: LoweringContext, stmt: ForStatement): void => {
   cx.b.switchTo(updateB);
   cx.reachable = true;
   cx.applyParams(carried, updateParams);
+  if (headerCell != null) {
+    // A closure made during this iteration keeps this iteration's
+    // variable. The next iteration gets a fresh cell that starts from
+    // the value this one ended with, and the update runs on it — the
+    // per-iteration binding of a JavaScript `for (let …)`.
+    let symId = headerCell.id;
+    let cell = cx.env[symId];
+    cx.env[symId] = cx.cellAlloc(cx.bindingValType(symId), cx.cellRead(cell));
+  }
   if (stmt.update != null) {
     lowerExpr(cx, stmt.update as Expression, null);
   }

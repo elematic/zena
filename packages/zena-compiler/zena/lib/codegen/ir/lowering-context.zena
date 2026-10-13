@@ -1075,12 +1075,14 @@ export final class LoweringContext {
   }
 
   /**
-   * Celled = captured by a closure and mutated on either side of the
-   * boundary. The variable lives in a heap cell shared through closure
-   * contexts; the environment maps the symbol to the cell REFERENCE,
-   * which is an invariant SSA value — so celled bindings never
-   * participate in merge parameters, and reads/writes go through the
-   * cell's `value` field.
+   * Celled = captured by a closure and assigned after some closure
+   * captured it, on either side of the boundary (capturedInCell). The
+   * variable lives in a heap cell shared through closure contexts; the
+   * environment maps the symbol to the cell REFERENCE, so reads and
+   * writes go through the cell's `value` field. The reference is an
+   * invariant SSA value, so a celled binding is no merge parameter,
+   * with one exception: a `for` header's variable gets a fresh cell
+   * each iteration, and the loop carries it (lowerFor).
    */
   isCelled(symId: SymbolId): boolean {
     return this.wasm.mutableCapturedSymbols.has(symId);
@@ -1283,7 +1285,12 @@ export final class LoweringContext {
       // The binding's declared type is the stable merge type: incoming
       // values may be wasm subtypes (non-null refs, subclass structs,
       // typed nulls), which the verifier's subtype check admits.
-      params.push(this.b.blockParam(block, this.bindingValType(symId)));
+      var vt = this.bindingValType(symId);
+      if (this.isCelled(symId)) {
+        // Only a `for` header's variable carries its cell (lowerFor).
+        vt = new ValTypeRef(getCellStruct(this.wasm, vt));
+      }
+      params.push(this.b.blockParam(block, vt));
     }
     return params;
   }
@@ -1310,6 +1317,10 @@ export final class LoweringContext {
   envValues(syms: GrowableArray<SymbolId>): GrowableArray<i32> {
     let values = new Array<i32>();
     for (let symId in syms) {
+      if (this.isCelled(symId)) {
+        values.push(this.env[symId]);
+        continue;
+      }
       // Branch arguments must conform to the params addParams typed
       // from the DECLARED binding: env narrowing (a nullable value
       // proven non-null and re-widened by a merge, or vice versa)
