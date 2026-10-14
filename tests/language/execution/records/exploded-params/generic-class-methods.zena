@@ -1,0 +1,49 @@
+// @mode: run
+// @result: 1
+// Methods of a generic class take and return records as their fields in
+// each instantiation, including a record type that mentions the class's
+// type parameter, and a record passed on to another method of the same
+// instantiation. Every shape must compute the same thing.
+
+type V = {x: i32, y: i32};
+
+class Box<T> {
+  value: T;
+  new(this.value);
+
+  area(r: V): i32 {
+    return r.x * r.y;
+  }
+
+  shift(r: V, by: i32): V {
+    return {x: r.x + by, y: r.y + by};
+  }
+
+  first(r: {a: T, b: T}): T {
+    return r.a;
+  }
+
+  route(r: V): i32 {
+    return this.area(r) + 1;
+  }
+}
+
+export let main = (): i32 => {
+  let ints = new Box<i32>(1);
+  let strings = new Box<String>('s');
+  if (ints.area({x: 3, y: 4}) != 12 || strings.area({x: 2, y: 5}) != 10) {
+    return 0;
+  }
+  let {x, y} = ints.shift({x: 1, y: 2}, 10);
+  let s = strings.shift({x: 0, y: 0}, 3);
+  if (x != 11 || y != 12 || s.x != 3 || s.y != 3) {
+    return 0;
+  }
+  if (ints.first({a: 7, b: 8}) != 7 || strings.first({a: 'p', b: 'q'}) != 'p') {
+    return 0;
+  }
+  if (ints.route({x: 2, y: 3}) != 7 || strings.route({x: 1, y: 1}) != 2) {
+    return 0;
+  }
+  return 1;
+};

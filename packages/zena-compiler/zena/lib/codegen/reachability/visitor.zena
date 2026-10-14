@@ -3,6 +3,7 @@ import { collectValueExports, findDeclaration } from '../lookup.zena';
 import {
   Referrer, ReachabilityContext, TypeLowererInterface, ReachabilityVisitorInterface,
   recordLiteralArgKey, recordLiteralCtorArgKey, recordLiteralMethodArgKey, RecordResultCall,
+  declaringInstantiation, methodTargetKey,
 } from './context.zena';
 import { SemanticModel, memberKeyOf } from '../../semantic-model.zena';
 import {
@@ -1067,26 +1068,35 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
     if (name == "") {
       return;
     }
+    if (!isConcrete(resolved)) {
+      return;
+    }
     let md = this.pass.cha.findImplementingMethod(resolved, name);
     if (md == null) {
       return;
     }
-    let methodNode = (md as Node).id as i32;
-    this.pass.wasm.methodCallTargets[(n as Node).id as i32] = methodNode;
+    let declaring = declaringInstantiation(this.pass.classDecls, resolved,
+        md as Node);
+    if (declaring == null) {
+      return;
+    }
+    let target = methodTargetKey((md as Node).id as i32, declaring);
     for (var i = 0; i < n.args.length; i += 1) {
       if (n.args[i] is RecordLiteral) {
-        this.pass.recordLiteralMethodArgs.add(recordLiteralMethodArgKey(methodNode, i));
+        this.pass.recordLiteralMethodArgs.add(recordLiteralMethodArgKey(target, i));
       }
     }
     let t = model.getNodeType(n);
     if (t == null || !(baseType(t) is RecordType)) {
       return;
     }
-    let id = (n as Node).id as i32;
-    if (!this.pass.recordResultCallIds.has(id)) {
-      this.pass.recordResultCallIds.add(id);
+    // A call in a generic body resolves per instantiation, so it is
+    // recorded once per target.
+    let callKey = `${(n as Node).id as i32}|${target}`;
+    if (!this.pass.recordResultMethodCalls.has(callKey)) {
+      this.pass.recordResultMethodCalls.add(callKey);
       let rc = new RecordResultCall(n, model, noSymbolId);
-      rc.methodNode = methodNode;
+      rc.methodTarget = target;
       this.pass.recordResultCalls.push(rc);
     }
   }
