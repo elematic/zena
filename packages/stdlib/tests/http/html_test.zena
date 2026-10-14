@@ -1,7 +1,7 @@
 import { suite, test, TestContext } from 'zena:test';
 import { equal, isTrue } from 'zena:assert';
 import { runFuture, Completer, Future } from 'zena:async';
-import { Some, Option, none, some, Outcome, Ok, Box, Iterable, Iterator, Step, IterableUtils, ImmutableArray } from 'zena:core';
+import { Some, Option, none, some, Outcome, Ok, Iterable, Iterator, Step, IterableUtils, ImmutableArray } from 'zena:core';
 import { Stream, StreamWriter, readAllText } from 'zena:stream';
 import { blockOn } from 'zena:wasi';
 import {
@@ -9,6 +9,7 @@ import {
   HTMLPartial,
   unsafeHTML,
   escape,
+  TemplateValue,
   RenderValue,
   pipeToStream,
   htmlStream,
@@ -24,25 +25,17 @@ import {
 
 function unit(): void {}
 
-class CustomStringIterable with IterableUtils<String> implements Iterable<String> {
-  #items: Array<String>;
+class CustomTemplateIterable with IterableUtils<TemplateValue> implements Iterable<TemplateValue> {
+  #items: Array<TemplateValue>;
 
-  new(items: Array<String>) : #items = items {}
+  new(items: Array<TemplateValue>) : #items = items {}
 
-  [Iterable.iterator](): Iterator<String> {
+  [Iterable.iterator](): Iterator<TemplateValue> {
     return this.#items.[Iterable.iterator]();
   }
 }
 
-async function resolveString(value: String): Future<String> {
-  return value;
-}
-
-async function resolvePartial(value: HTMLPartial): Future<HTMLPartial> {
-  return value;
-}
-
-async function resolvePartialArray(value: Array<HTMLPartial>): Future<Array<HTMLPartial>> {
+async function resolveValue(value: TemplateValue): Future<TemplateValue> {
   return value;
 }
 
@@ -108,9 +101,8 @@ export let tests = suite('zena:http html', (): void => {
       equal(html`Hello ${'<h1>World'}`.toString(), 'Hello &lt;h1&gt;World');
     });
 
-    test('Null and boxed primitives', (ctx: TestContext): void => {
+    test('Null values', (ctx: TestContext): void => {
       equal(html`a${null}b`.toString(), 'ab');
-      equal(html`count: ${new Box<i32>(42)}, ok: ${new Box<boolean>(true)}`.toString(), 'count: 42, ok: true');
     });
 
     test('Arrays and Iterables', (ctx: TestContext): void => {
@@ -120,24 +112,24 @@ export let tests = suite('zena:http html', (): void => {
       let items = ['foo', 'bar', 'baz'];
       equal(html`
         <ul>
-          ${items.map((item: String, _i: i32, _seq: ImmutableArray<String>): HTMLPartial => html`<li>${item}</li>`)}
+          ${items.map((item: String, _i: i32, _seq: ImmutableArray<String>): TemplateValue => html`<li>${item}</li>`)}
         </ul>`.toString(), '\n<ul>\n  <li>foo</li><li>bar</li><li>baz</li>\n</ul>');
 
-      let withNull: Array<anyref> = ['foo', null, 'bar'];
+      let withNull: Array<TemplateValue> = ['foo', null, 'bar'];
       equal(html`
         <ul>
           ${withNull}
         </ul>`.toString(), '\n<ul>\n  foobar\n</ul>');
 
-      let partials: Array<HTMLPartial> = [html`<p>1</p>`, html`<p>2</p>`];
+      let partials: Array<TemplateValue> = [html`<p>1</p>`, html`<p>2</p>`];
       equal(html`<div>${partials}</div>`.toString(), '<div><p>1</p><p>2</p></div>');
 
-      let growable = new GrowableArray<String>();
+      let growable = new GrowableArray<TemplateValue>();
       growable.push('x');
       growable.push('<y>');
       equal(html`${growable}`.toString(), 'x&lt;y&gt;');
 
-      let custom: Iterable<String> = new CustomStringIterable(['m', 'n']);
+      let custom: Iterable<TemplateValue> = new CustomTemplateIterable(['m', 'n']);
       equal(html`[${custom}]`.toString(), '[mn]');
     });
 
@@ -150,8 +142,11 @@ export let tests = suite('zena:http html', (): void => {
     let joinSync = (partial: HTMLPartial): String => {
       var out = '';
       for (let chunk in partial) {
-        if (chunk is String) {
-          out = out + (chunk as String);
+        match (chunk) {
+          case String as s: {
+            out = out + s;
+          }
+          case Future: {}
         }
       }
       return out;
@@ -221,20 +216,20 @@ export let tests = suite('zena:http html', (): void => {
     test('Async Futures with collectResult', (ctx: TestContext): void => {
       runFuture((async (): Future<void> => {
         equal(
-          await collectResult(html`Hello ${resolveString('World')}`),
+          await collectResult(html`Hello ${resolveValue('World')}`),
           'Hello World'
         );
         equal(
-          await collectResult(html`Hello ${resolveString('<b>World</b>')}`),
+          await collectResult(html`Hello ${resolveValue('<b>World</b>')}`),
           'Hello &lt;b&gt;World&lt;/b&gt;'
         );
         equal(
-          await collectResult(html`Hello ${resolvePartial(html`<h1>World</h1>`)}`),
+          await collectResult(html`Hello ${resolveValue(html`<h1>World</h1>`)}`),
           'Hello <h1>World</h1>'
         );
-        let items: Array<HTMLPartial> = [html`a`, html`b`];
+        let items: Array<TemplateValue> = [html`a`, html`b`];
         equal(
-          await collectResult(html`Hello ${resolvePartialArray(items)}`),
+          await collectResult(html`Hello ${resolveValue(items)}`),
           'Hello ab'
         );
       })());
@@ -244,7 +239,7 @@ export let tests = suite('zena:http html', (): void => {
   suite('Streaming', (): void => {
     test('htmlStream flushes buffered prefix before awaiting an unresolved Future', (ctx: TestContext): void => {
       runFuture((async (): Future<void> => {
-        let gate = new Completer<String>();
+        let gate = new Completer<TemplateValue>();
         let tpl = html`<header>Title</header><main>${gate.future}</main><footer>End</footer>`;
 
         // Create a stream with a large flushSize (1024). Even though <header>Title</header><main>
@@ -280,7 +275,7 @@ export let tests = suite('zena:http html', (): void => {
 
     test('htmlStream terminates cleanly when reader calls stop()', (ctx: TestContext): void => {
       runFuture((async (): Future<void> => {
-        let gate = new Completer<String>();
+        let gate = new Completer<TemplateValue>();
         let tpl = html`<div>Start</div>${gate.future}<div>Never read</div>`;
         let stream = htmlStream(tpl, 1024);
 
@@ -297,7 +292,7 @@ export let tests = suite('zena:http html', (): void => {
     test('Response and toWireResponse set text/html content-type and stream HTMLPartial', (ctx: TestContext): void => {
       let app = new App();
       app.use(async (req: Request, res: Response, next: () => Future<void>): Future<void> => {
-        res.body = html`<h1>Hello ${'Zena'} &amp; ${resolveString('<Friends>')}</h1>`;
+        res.body = html`<h1>Hello ${'Zena'} &amp; ${resolveValue('<Friends>')}</h1>`;
       });
 
       let req = new Request.fromUrl('http://localhost/');

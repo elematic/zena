@@ -16,7 +16,7 @@ import {
   TuplePattern, ArrayPattern, RestPattern,
 } from '../../ast.zena';
 import {
-  ClassType, NullType, RecordType, Type, UnionType, baseType,
+  ClassType, InterfaceType, NullType, RecordType, Type, UnionType, baseType,
 } from '../../types.zena';
 import {
   typeToValTypeWithSub,
@@ -385,7 +385,7 @@ export let patternRefutable = (cx: LoweringContext, pattern: Node): boolean => {
         false
       } else {
         let t = cx.func.model.getNodeType(pattern);
-        t is ClassType
+        t is ClassType || t is InterfaceType
       }
     }
     case AsPattern as ap: patternRefutable(cx, ap.pattern)
@@ -581,13 +581,21 @@ export let lowerPatternTest = (cx: LoweringContext, pattern: Node,
     case IdentifierPattern: {}
     case Identifier as ident: {
       if (ident.name != "_") {
-        // `case Foo:` where Foo names a class is a type test; any
-        // other identifier is an irrefutable binding (mirrors
+        // `case Foo:` where Foo names a class or interface is a type test;
+        // any other identifier is an irrefutable binding (mirrors
         // streaming's check emitter).
         let patType = cx.func.model.getNodeType(pattern);
         if (patType is ClassType) {
           let st = classStructOf(cx, patType);
           emitRefTest(cx, value, st, failB);
+        } else if (patType is InterfaceType) {
+          let targetVt = typeToValTypeWithSub(cx.wasm, patType, cx.func);
+          let stOpt = asWasmStruct(targetVt);
+          if (stOpt == null) {
+            bail(cx, 'pattern interface not discovered');
+          } else {
+            emitRefTest(cx, value, stOpt, failB);
+          }
         }
       }
     }

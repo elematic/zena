@@ -325,6 +325,9 @@ export let getTypeKeyForSpecialization = (t: Type): String => {
   if (cached != null) {
     return cached;
   }
+  if (t is TypeAliasType) {
+    t.specializationKeyCache = t.name;
+  }
   let key = getTypeKeyForSpecializationRaw(t);
   t.specializationKeyCache = key;
   countTypeKey(key);
@@ -537,7 +540,11 @@ export let containsErasedType = (t: Type): boolean => {
           if (containsErasedType(arg)) { return true; }
         }
       }
-      containsErasedType(ta.target)
+      if (ta.resolving) { return false; }
+      ta.resolving = true;
+      let res = containsErasedType(ta.target);
+      ta.resolving = false;
+      res
     }
     case TupleType {elementTypes}: {
       for (let sub in elementTypes) {
@@ -1112,6 +1119,9 @@ export let getTypeUniqueKey = (t: Type): String => {
   let cached = t.uniqueKeyCache;
   if (cached != null) {
     return cached;
+  }
+  if (t is TypeAliasType) {
+    t.uniqueKeyCache = "alias_" + t.name;
   }
   let key = getTypeUniqueKeyRaw(t);
   t.uniqueKeyCache = key;

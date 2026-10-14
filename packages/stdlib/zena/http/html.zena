@@ -6,8 +6,7 @@
 
 import {
   TemplateStringsArray, StringBuilder, Iterable, Iterator, Step, IterableUtils,
-  Box, FixedArray, GrowableArray, ImmutableArray, Array,
-  i32ToString, u32ToString, i64ToString, u64ToString, f32ToString, f64ToString,
+  FixedArray, GrowableArray,
 } from 'zena:core';
 import { Future } from 'zena:async';
 import { Stream, StreamWriter } from 'zena:stream';
@@ -80,10 +79,21 @@ export final class UnsafeHTML {
 export let unsafeHTML = (s: String): UnsafeHTML => new UnsafeHTML(s);
 
 /**
- * One item yielded when iterating an `HTMLPartial`: either an already-rendered
- * `String` chunk or a `Future` resolving to a value that can be rendered.
+ * Values that may be interpolated into an `html` template.
  */
-export type RenderValue = anyref;
+export type TemplateValue =
+  String
+  | HTMLPartial
+  | UnsafeHTML
+  | null
+  | Iterable<TemplateValue>
+  | Future<TemplateValue>;
+
+/**
+ * One item yielded when iterating an `HTMLPartial`: either an already-rendered
+ * `String` chunk or a `Future` resolving to a `TemplateValue`.
+ */
+export type RenderValue = String | Future<TemplateValue>;
 
 let maxIndent = 0x7FFFFFFF;
 
@@ -173,191 +183,23 @@ let fixIndent = (remove: i32, add: i32, s: String): String => {
 };
 
 /**
- * Converts a boxed primitive or fallback value to its unescaped string form.
- */
-let primitiveOrObjectToString = (v: anyref): String => {
-  if (v is Box<i32>) {
-    return i32ToString((v as Box<i32>).value);
-  }
-  if (v is Box<u32>) {
-    return u32ToString((v as Box<u32>).value);
-  }
-  if (v is Box<i64>) {
-    return i64ToString((v as Box<i64>).value);
-  }
-  if (v is Box<u64>) {
-    return u64ToString((v as Box<u64>).value);
-  }
-  if (v is Box<f32>) {
-    return f32ToString((v as Box<f32>).value);
-  }
-  if (v is Box<f64>) {
-    return f64ToString((v as Box<f64>).value);
-  }
-  if (v is Box<boolean>) {
-    return if ((v as Box<boolean>).value) 'true' else 'false';
-  }
-  return '';
-};
-
-/**
  * Converts an interpolated value to a string, escaping it if necessary.
  */
-function valueToString(v: anyref, currentIndent: i32): String {
-  if (v == null) {
-    return '';
-  }
-  if (v is String) {
-    return escape(v as String);
-  }
-  if (v is HTMLPartial) {
-    return (v as HTMLPartial).toString(currentIndent);
-  }
-  if (v is UnsafeHTML) {
-    return (v as UnsafeHTML).value;
-  }
-  if (v is ImmutableArray<anyref>) {
-    let arr = v as ImmutableArray<anyref>;
-    let sb = new StringBuilder();
-    for (var i = 0; i < arr.length; i += 1) {
-      sb.append(valueToString(arr[i], 0));
+function valueToString(v: TemplateValue, currentIndent: i32): String {
+  return match (v) {
+    case null: ''
+    case String as s: escape(s)
+    case HTMLPartial as p: p.toString(currentIndent)
+    case UnsafeHTML as u: u.value
+    case Iterable as items: {
+      let sb = new StringBuilder();
+      for (let item in items) {
+        sb.append(valueToString(item, 0));
+      }
+      sb.toString()
     }
-    return sb.toString();
-  }
-  if (v is ImmutableArray<String>) {
-    let arr = v as ImmutableArray<String>;
-    let sb = new StringBuilder();
-    for (var i = 0; i < arr.length; i += 1) {
-      sb.append(escape(arr[i]));
-    }
-    return sb.toString();
-  }
-  if (v is ImmutableArray<HTMLPartial>) {
-    let arr = v as ImmutableArray<HTMLPartial>;
-    let sb = new StringBuilder();
-    for (var i = 0; i < arr.length; i += 1) {
-      sb.append(arr[i].toString(0));
-    }
-    return sb.toString();
-  }
-  if (v is GrowableArray<anyref>) {
-    let arr = v as GrowableArray<anyref>;
-    let sb = new StringBuilder();
-    for (var i = 0; i < arr.length; i += 1) {
-      sb.append(valueToString(arr[i], 0));
-    }
-    return sb.toString();
-  }
-  if (v is GrowableArray<String>) {
-    let arr = v as GrowableArray<String>;
-    let sb = new StringBuilder();
-    for (var i = 0; i < arr.length; i += 1) {
-      sb.append(escape(arr[i]));
-    }
-    return sb.toString();
-  }
-  if (v is GrowableArray<HTMLPartial>) {
-    let arr = v as GrowableArray<HTMLPartial>;
-    let sb = new StringBuilder();
-    for (var i = 0; i < arr.length; i += 1) {
-      sb.append(arr[i].toString(0));
-    }
-    return sb.toString();
-  }
-  if (v is FixedArray<anyref>) {
-    let arr = v as FixedArray<anyref>;
-    let sb = new StringBuilder();
-    for (var i = 0; i < arr.length; i += 1) {
-      sb.append(valueToString(arr[i], 0));
-    }
-    return sb.toString();
-  }
-  if (v is FixedArray<String>) {
-    let arr = v as FixedArray<String>;
-    let sb = new StringBuilder();
-    for (var i = 0; i < arr.length; i += 1) {
-      sb.append(escape(arr[i]));
-    }
-    return sb.toString();
-  }
-  if (v is FixedArray<HTMLPartial>) {
-    let arr = v as FixedArray<HTMLPartial>;
-    let sb = new StringBuilder();
-    for (var i = 0; i < arr.length; i += 1) {
-      sb.append(arr[i].toString(0));
-    }
-    return sb.toString();
-  }
-  if (v is Array<anyref>) {
-    let arr = v as Array<anyref>;
-    let sb = new StringBuilder();
-    for (var i = 0; i < arr.length; i += 1) {
-      sb.append(valueToString(arr[i], 0));
-    }
-    return sb.toString();
-  }
-  if (v is Array<String>) {
-    let arr = v as Array<String>;
-    let sb = new StringBuilder();
-    for (var i = 0; i < arr.length; i += 1) {
-      sb.append(escape(arr[i]));
-    }
-    return sb.toString();
-  }
-  if (v is Array<HTMLPartial>) {
-    let arr = v as Array<HTMLPartial>;
-    let sb = new StringBuilder();
-    for (var i = 0; i < arr.length; i += 1) {
-      sb.append(arr[i].toString(0));
-    }
-    return sb.toString();
-  }
-  if (v is Iterable<anyref>) {
-    let sb = new StringBuilder();
-    for (let item in (v as Iterable<anyref>)) {
-      sb.append(valueToString(item, 0));
-    }
-    return sb.toString();
-  }
-  if (v is Iterable<String>) {
-    let sb = new StringBuilder();
-    for (let item in (v as Iterable<String>)) {
-      sb.append(escape(item));
-    }
-    return sb.toString();
-  }
-  if (v is Iterable<HTMLPartial>) {
-    let sb = new StringBuilder();
-    for (let item in (v as Iterable<HTMLPartial>)) {
-      sb.append(item.toString(0));
-    }
-    return sb.toString();
-  }
-  if (v is Iterator<anyref>) {
-    let iter = v as Iterator<anyref>;
-    let sb = new StringBuilder();
-    while (let (1, item, _) = iter.next()) {
-      sb.append(valueToString(item, 0));
-    }
-    return sb.toString();
-  }
-  if (v is Iterator<String>) {
-    let iter = v as Iterator<String>;
-    let sb = new StringBuilder();
-    while (let (1, item, _) = iter.next()) {
-      sb.append(escape(item));
-    }
-    return sb.toString();
-  }
-  if (v is Iterator<HTMLPartial>) {
-    let iter = v as Iterator<HTMLPartial>;
-    let sb = new StringBuilder();
-    while (let (1, item, _) = iter.next()) {
-      sb.append(item.toString(0));
-    }
-    return sb.toString();
-  }
-  return escape(primitiveOrObjectToString(v));
+    case Future: ''
+  };
 }
 
 /**
@@ -374,7 +216,7 @@ function valueToString(v: anyref, currentIndent: i32): String {
  */
 export final class HTMLPartial with IterableUtils<RenderValue> implements Iterable<RenderValue> {
   strings: TemplateStringsArray;
-  values: FixedArray<anyref>;
+  values: FixedArray<TemplateValue>;
 
   new(this.strings, this.values);
 
@@ -417,235 +259,16 @@ export final class HTMLPartial with IterableUtils<RenderValue> implements Iterab
  * Interpolated values are escaped by default so that they are not interpreted
  * as HTML. To interpolate a value as raw HTML, use `unsafeHTML`.
  */
-export let html = (strings: TemplateStringsArray, values: FixedArray<anyref>): HTMLPartial =>
+export let html = (strings: TemplateStringsArray, values: FixedArray<TemplateValue>): HTMLPartial =>
   new HTMLPartial(strings, values);
 
 /**
- * Stack frame states for traversing nested templates, arrays, and iterators
+ * Stack frame states for traversing nested templates and iterables
  * without recursion.
  */
 sealed class HTMLIteratorState {
   case HtmlState(var index: i32, container: HTMLPartial)
-  case ArrayAnyState(var index: i32, container: Array<anyref>)
-  case ArrayStringState(var index: i32, container: Array<String>)
-  case ArrayHtmlState(var index: i32, container: Array<HTMLPartial>)
-  case IterAnyState(container: Iterator<anyref>)
-  case IterStringState(container: Iterator<String>)
-  case IterHtmlState(container: Iterator<HTMLPartial>)
-}
-
-/**
- * Pushes `value` onto `stack` if it is a nested `HTMLPartial`, `Array`,
- * `Iterable`, or `Iterator`. Returns `true` if pushed.
- */
-function pushContainerState(stack: GrowableArray<HTMLIteratorState>, value: anyref): boolean {
-  if (value is HTMLPartial) {
-    stack.push(new HtmlState(0, value as HTMLPartial));
-    return true;
-  }
-  if (value is ImmutableArray<anyref>) {
-    stack.push(new IterAnyState((value as ImmutableArray<anyref>).[Iterable.iterator]()));
-    return true;
-  }
-  if (value is ImmutableArray<String>) {
-    stack.push(new IterStringState((value as ImmutableArray<String>).[Iterable.iterator]()));
-    return true;
-  }
-  if (value is ImmutableArray<HTMLPartial>) {
-    stack.push(new IterHtmlState((value as ImmutableArray<HTMLPartial>).[Iterable.iterator]()));
-    return true;
-  }
-  if (value is GrowableArray<anyref>) {
-    stack.push(new ArrayAnyState(0, value as GrowableArray<anyref>));
-    return true;
-  }
-  if (value is GrowableArray<String>) {
-    stack.push(new ArrayStringState(0, value as GrowableArray<String>));
-    return true;
-  }
-  if (value is GrowableArray<HTMLPartial>) {
-    stack.push(new ArrayHtmlState(0, value as GrowableArray<HTMLPartial>));
-    return true;
-  }
-  if (value is FixedArray<anyref>) {
-    stack.push(new IterAnyState((value as FixedArray<anyref>).[Iterable.iterator]()));
-    return true;
-  }
-  if (value is FixedArray<String>) {
-    stack.push(new IterStringState((value as FixedArray<String>).[Iterable.iterator]()));
-    return true;
-  }
-  if (value is FixedArray<HTMLPartial>) {
-    stack.push(new IterHtmlState((value as FixedArray<HTMLPartial>).[Iterable.iterator]()));
-    return true;
-  }
-  if (value is Array<anyref>) {
-    stack.push(new ArrayAnyState(0, value as Array<anyref>));
-    return true;
-  }
-  if (value is Array<String>) {
-    stack.push(new ArrayStringState(0, value as Array<String>));
-    return true;
-  }
-  if (value is Array<HTMLPartial>) {
-    stack.push(new ArrayHtmlState(0, value as Array<HTMLPartial>));
-    return true;
-  }
-  if (value is Iterable<anyref>) {
-    stack.push(new IterAnyState((value as Iterable<anyref>).[Iterable.iterator]()));
-    return true;
-  }
-  if (value is Iterable<String>) {
-    stack.push(new IterStringState((value as Iterable<String>).[Iterable.iterator]()));
-    return true;
-  }
-  if (value is Iterable<HTMLPartial>) {
-    stack.push(new IterHtmlState((value as Iterable<HTMLPartial>).[Iterable.iterator]()));
-    return true;
-  }
-  if (value is Iterator<anyref>) {
-    stack.push(new IterAnyState(value as Iterator<anyref>));
-    return true;
-  }
-  if (value is Iterator<String>) {
-    stack.push(new IterStringState(value as Iterator<String>));
-    return true;
-  }
-  if (value is Iterator<HTMLPartial>) {
-    stack.push(new IterHtmlState(value as Iterator<HTMLPartial>));
-    return true;
-  }
-  return false;
-}
-
-/**
- * Checks if `value` is a supported `Future` specialization and casts it to
- * `RenderValue`, or returns `(false, _)`.
- */
-function asFutureRenderValue(value: anyref): inline (true, RenderValue) | inline (false, _) {
-  if (value is Future<anyref>) {
-    return (true, value as Future<anyref>);
-  }
-  if (value is Future<String>) {
-    return (true, value as Future<String>);
-  }
-  if (value is Future<HTMLPartial>) {
-    return (true, value as Future<HTMLPartial>);
-  }
-  if (value is Future<UnsafeHTML>) {
-    return (true, value as Future<UnsafeHTML>);
-  }
-  if (value is Future<ImmutableArray<anyref>>) {
-    return (true, value as Future<ImmutableArray<anyref>>);
-  }
-  if (value is Future<ImmutableArray<String>>) {
-    return (true, value as Future<ImmutableArray<String>>);
-  }
-  if (value is Future<ImmutableArray<HTMLPartial>>) {
-    return (true, value as Future<ImmutableArray<HTMLPartial>>);
-  }
-  if (value is Future<Array<anyref>>) {
-    return (true, value as Future<Array<anyref>>);
-  }
-  if (value is Future<Array<String>>) {
-    return (true, value as Future<Array<String>>);
-  }
-  if (value is Future<Array<HTMLPartial>>) {
-    return (true, value as Future<Array<HTMLPartial>>);
-  }
-  if (value is Future<GrowableArray<anyref>>) {
-    return (true, value as Future<GrowableArray<anyref>>);
-  }
-  if (value is Future<GrowableArray<String>>) {
-    return (true, value as Future<GrowableArray<String>>);
-  }
-  if (value is Future<GrowableArray<HTMLPartial>>) {
-    return (true, value as Future<GrowableArray<HTMLPartial>>);
-  }
-  if (value is Future<FixedArray<anyref>>) {
-    return (true, value as Future<FixedArray<anyref>>);
-  }
-  if (value is Future<FixedArray<String>>) {
-    return (true, value as Future<FixedArray<String>>);
-  }
-  if (value is Future<FixedArray<HTMLPartial>>) {
-    return (true, value as Future<FixedArray<HTMLPartial>>);
-  }
-  if (value is Future<Iterable<anyref>>) {
-    return (true, value as Future<Iterable<anyref>>);
-  }
-  if (value is Future<Iterable<String>>) {
-    return (true, value as Future<Iterable<String>>);
-  }
-  if (value is Future<Iterable<HTMLPartial>>) {
-    return (true, value as Future<Iterable<HTMLPartial>>);
-  }
-  return (false, _);
-}
-
-/**
- * Awaits a `Future` stored in `value` if `value` is a future, returning
- * `(true, resolvedValue)`. Returns `(false, _)` if `value` is not a future.
- */
-async function awaitIfFuture(value: anyref): Future<(boolean, anyref)> {
-  if (value is Future<anyref>) {
-    return (true, await (value as Future<anyref>));
-  }
-  if (value is Future<String>) {
-    return (true, await (value as Future<String>));
-  }
-  if (value is Future<HTMLPartial>) {
-    return (true, await (value as Future<HTMLPartial>));
-  }
-  if (value is Future<UnsafeHTML>) {
-    return (true, await (value as Future<UnsafeHTML>));
-  }
-  if (value is Future<ImmutableArray<anyref>>) {
-    return (true, await (value as Future<ImmutableArray<anyref>>));
-  }
-  if (value is Future<ImmutableArray<String>>) {
-    return (true, await (value as Future<ImmutableArray<String>>));
-  }
-  if (value is Future<ImmutableArray<HTMLPartial>>) {
-    return (true, await (value as Future<ImmutableArray<HTMLPartial>>));
-  }
-  if (value is Future<Array<anyref>>) {
-    return (true, await (value as Future<Array<anyref>>));
-  }
-  if (value is Future<Array<String>>) {
-    return (true, await (value as Future<Array<String>>));
-  }
-  if (value is Future<Array<HTMLPartial>>) {
-    return (true, await (value as Future<Array<HTMLPartial>>));
-  }
-  if (value is Future<GrowableArray<anyref>>) {
-    return (true, await (value as Future<GrowableArray<anyref>>));
-  }
-  if (value is Future<GrowableArray<String>>) {
-    return (true, await (value as Future<GrowableArray<String>>));
-  }
-  if (value is Future<GrowableArray<HTMLPartial>>) {
-    return (true, await (value as Future<GrowableArray<HTMLPartial>>));
-  }
-  if (value is Future<FixedArray<anyref>>) {
-    return (true, await (value as Future<FixedArray<anyref>>));
-  }
-  if (value is Future<FixedArray<String>>) {
-    return (true, await (value as Future<FixedArray<String>>));
-  }
-  if (value is Future<FixedArray<HTMLPartial>>) {
-    return (true, await (value as Future<FixedArray<HTMLPartial>>));
-  }
-  if (value is Future<Iterable<anyref>>) {
-    return (true, await (value as Future<Iterable<anyref>>));
-  }
-  if (value is Future<Iterable<String>>) {
-    return (true, await (value as Future<Iterable<String>>));
-  }
-  if (value is Future<Iterable<HTMLPartial>>) {
-    return (true, await (value as Future<Iterable<HTMLPartial>>));
-  }
-  return (false, null);
+  case IterState(container: Iterator<TemplateValue>)
 }
 
 /**
@@ -663,7 +286,7 @@ export final class HTMLIterator implements Iterator<RenderValue> {
     while (this.#stack.length > 0) {
       let state = this.#stack[this.#stack.length - 1];
       var done = false;
-      var value: anyref = null;
+      var value: TemplateValue = null;
 
       match (state) {
         case HtmlState { index, container }: {
@@ -680,42 +303,7 @@ export final class HTMLIterator implements Iterator<RenderValue> {
             value = container.values[i];
           }
         }
-        case ArrayAnyState { index, container }: {
-          done = index >= container.length;
-          if (!done) {
-            value = container[index];
-          }
-          state.index = index + 1;
-        }
-        case ArrayStringState { index, container }: {
-          done = index >= container.length;
-          if (!done) {
-            value = container[index];
-          }
-          state.index = index + 1;
-        }
-        case ArrayHtmlState { index, container }: {
-          done = index >= container.length;
-          if (!done) {
-            value = container[index];
-          }
-          state.index = index + 1;
-        }
-        case IterAnyState { container }: {
-          if (let (1, item, _) = container.next()) {
-            value = item;
-          } else {
-            done = true;
-          }
-        }
-        case IterStringState { container }: {
-          if (let (1, item, _) = container.next()) {
-            value = item;
-          } else {
-            done = true;
-          }
-        }
-        case IterHtmlState { container }: {
+        case IterState { container }: {
           if (let (1, item, _) = container.next()) {
             value = item;
           } else {
@@ -729,22 +317,28 @@ export final class HTMLIterator implements Iterator<RenderValue> {
         continue;
       }
 
-      if (value == null) {
-        return (1, '', _);
+      match (value) {
+        case null: {
+          return (1, '', _);
+        }
+        case String as s: {
+          return (1, escape(s), _);
+        }
+        case UnsafeHTML as u: {
+          return (1, u.value, _);
+        }
+        case HTMLPartial as p: {
+          this.#stack.push(new HtmlState(0, p));
+          continue;
+        }
+        case Iterable as items: {
+          this.#stack.push(new IterState(items.[Iterable.iterator]()));
+          continue;
+        }
+        case Future as f: {
+          return (1, f, _);
+        }
       }
-      if (value is String) {
-        return (1, escape(value as String), _);
-      }
-      if (value is UnsafeHTML) {
-        return (1, (value as UnsafeHTML).value, _);
-      }
-      if (pushContainerState(this.#stack, value)) {
-        continue;
-      }
-      if (let (true, futVal) = asFutureRenderValue(value)) {
-        return (1, futVal, _);
-      }
-      return (1, escape(primitiveOrObjectToString(value)), _);
     }
 
     return (0, _, _);
@@ -808,7 +402,7 @@ export async function pipeToStream(
 
     let state = stack[stack.length - 1];
     var done = false;
-    var value: anyref = null;
+    var value: TemplateValue = null;
 
     match (state) {
       case HtmlState { index, container }: {
@@ -836,42 +430,7 @@ export async function pipeToStream(
           value = container.values[i];
         }
       }
-      case ArrayAnyState { index, container }: {
-        done = index >= container.length;
-        if (!done) {
-          value = container[index];
-        }
-        state.index = index + 1;
-      }
-      case ArrayStringState { index, container }: {
-        done = index >= container.length;
-        if (!done) {
-          value = container[index];
-        }
-        state.index = index + 1;
-      }
-      case ArrayHtmlState { index, container }: {
-        done = index >= container.length;
-        if (!done) {
-          value = container[index];
-        }
-        state.index = index + 1;
-      }
-      case IterAnyState { container }: {
-        if (let (1, item, _) = container.next()) {
-          value = item;
-        } else {
-          done = true;
-        }
-      }
-      case IterStringState { container }: {
-        if (let (1, item, _) = container.next()) {
-          value = item;
-        } else {
-          done = true;
-        }
-      }
-      case IterHtmlState { container }: {
+      case IterState { container }: {
         if (let (1, item, _) = container.next()) {
           value = item;
         } else {
@@ -886,62 +445,53 @@ export async function pipeToStream(
     }
 
     while (value != null) {
-      if (value is String) {
-        let escaped = escape(value as String);
-        if (flushSize == 0) {
-          if (escaped.length > 0) {
-            let bytes = escaped.toBytes();
-            if (!(await writer.writeAll(bytes, bytes.length))) {
+      match (value) {
+        case String as s: {
+          let escaped = escape(s);
+          if (flushSize == 0) {
+            if (escaped.length > 0) {
+              let bytes = escaped.toBytes();
+              if (!(await writer.writeAll(bytes, bytes.length))) {
+                return;
+              }
+            }
+          } else {
+            buffer.append(escaped);
+          }
+          break;
+        }
+        case UnsafeHTML as u: {
+          let raw = u.value;
+          if (flushSize == 0) {
+            if (raw.length > 0) {
+              let bytes = raw.toBytes();
+              if (!(await writer.writeAll(bytes, bytes.length))) {
+                return;
+              }
+            }
+          } else {
+            buffer.append(raw);
+          }
+          break;
+        }
+        case HTMLPartial as p: {
+          stack.push(new HtmlState(0, p));
+          break;
+        }
+        case Iterable as items: {
+          stack.push(new IterState(items.[Iterable.iterator]()));
+          break;
+        }
+        case Future as f: {
+          if (buffer.length > 0) {
+            if (!(await flushBuffer(writer, buffer))) {
               return;
             }
           }
-        } else {
-          buffer.append(escaped);
+          value = await f;
+          continue;
         }
-        break;
       }
-      if (value is UnsafeHTML) {
-        let raw = (value as UnsafeHTML).value;
-        if (flushSize == 0) {
-          if (raw.length > 0) {
-            let bytes = raw.toBytes();
-            if (!(await writer.writeAll(bytes, bytes.length))) {
-              return;
-            }
-          }
-        } else {
-          buffer.append(raw);
-        }
-        break;
-      }
-      if (pushContainerState(stack, value)) {
-        break;
-      }
-
-      // Check if value is a Future; flush before awaiting!
-      if (let (true, _) = asFutureRenderValue(value)) {
-        if (buffer.length > 0) {
-          if (!(await flushBuffer(writer, buffer))) {
-            return;
-          }
-        }
-        let (_, resolved) = await awaitIfFuture(value);
-        value = resolved;
-        continue;
-      }
-
-      let escaped = escape(primitiveOrObjectToString(value));
-      if (flushSize == 0) {
-        if (escaped.length > 0) {
-          let bytes = escaped.toBytes();
-          if (!(await writer.writeAll(bytes, bytes.length))) {
-            return;
-          }
-        }
-      } else {
-        buffer.append(escaped);
-      }
-      break;
     }
   }
 
@@ -977,139 +527,44 @@ async function pumpHtml(writer: StreamWriter<u8>, partial: HTMLPartial, flushSiz
 export async function collectResult(result: Iterable<RenderValue>): Future<String> {
   let sb = new StringBuilder();
   for (let chunk in result) {
-    if (chunk is String) {
-      sb.append(chunk as String);
-    } else {
-      let (_, resolved) = await awaitIfFuture(chunk);
-      await appendResolvedValue(sb, resolved);
+    match (chunk) {
+      case String as s: {
+        sb.append(s);
+      }
+      case Future as f: {
+        await appendResolvedValue(sb, await f);
+      }
     }
   }
   return sb.toString();
 }
 
-async function appendResolvedValue(sb: StringBuilder, value: anyref): Future<void> {
+async function appendResolvedValue(sb: StringBuilder, value: TemplateValue): Future<void> {
   var v = value;
   while (v != null) {
-    if (v is String) {
-      sb.append(escape(v as String));
-      return;
-    }
-    if (v is UnsafeHTML) {
-      sb.append((v as UnsafeHTML).value);
-      return;
-    }
-    if (v is HTMLPartial) {
-      sb.append(await collectResult(v as HTMLPartial));
-      return;
-    }
-    if (let (true, _) = asFutureRenderValue(v)) {
-      let (_, resolved) = await awaitIfFuture(v);
-      v = resolved;
-      continue;
-    }
-    if (v is ImmutableArray<anyref>) {
-      let arr = v as ImmutableArray<anyref>;
-      for (var i = 0; i < arr.length; i += 1) {
-        await appendResolvedValue(sb, arr[i]);
+    match (v) {
+      case String as s: {
+        sb.append(escape(s));
+        return;
       }
-      return;
-    }
-    if (v is ImmutableArray<String>) {
-      let arr = v as ImmutableArray<String>;
-      for (var i = 0; i < arr.length; i += 1) {
-        sb.append(escape(arr[i]));
+      case UnsafeHTML as u: {
+        sb.append(u.value);
+        return;
       }
-      return;
-    }
-    if (v is ImmutableArray<HTMLPartial>) {
-      let arr = v as ImmutableArray<HTMLPartial>;
-      for (var i = 0; i < arr.length; i += 1) {
-        sb.append(await collectResult(arr[i]));
+      case HTMLPartial as p: {
+        sb.append(await collectResult(p));
+        return;
       }
-      return;
-    }
-    if (v is GrowableArray<anyref>) {
-      let arr = v as GrowableArray<anyref>;
-      for (var i = 0; i < arr.length; i += 1) {
-        await appendResolvedValue(sb, arr[i]);
+      case Iterable as items: {
+        for (let item in items) {
+          await appendResolvedValue(sb, item);
+        }
+        return;
       }
-      return;
-    }
-    if (v is GrowableArray<String>) {
-      let arr = v as GrowableArray<String>;
-      for (var i = 0; i < arr.length; i += 1) {
-        sb.append(escape(arr[i]));
+      case Future as f: {
+        v = await f;
+        continue;
       }
-      return;
     }
-    if (v is GrowableArray<HTMLPartial>) {
-      let arr = v as GrowableArray<HTMLPartial>;
-      for (var i = 0; i < arr.length; i += 1) {
-        sb.append(await collectResult(arr[i]));
-      }
-      return;
-    }
-    if (v is FixedArray<anyref>) {
-      let arr = v as FixedArray<anyref>;
-      for (var i = 0; i < arr.length; i += 1) {
-        await appendResolvedValue(sb, arr[i]);
-      }
-      return;
-    }
-    if (v is FixedArray<String>) {
-      let arr = v as FixedArray<String>;
-      for (var i = 0; i < arr.length; i += 1) {
-        sb.append(escape(arr[i]));
-      }
-      return;
-    }
-    if (v is FixedArray<HTMLPartial>) {
-      let arr = v as FixedArray<HTMLPartial>;
-      for (var i = 0; i < arr.length; i += 1) {
-        sb.append(await collectResult(arr[i]));
-      }
-      return;
-    }
-    if (v is Array<anyref>) {
-      let arr = v as Array<anyref>;
-      for (var i = 0; i < arr.length; i += 1) {
-        await appendResolvedValue(sb, arr[i]);
-      }
-      return;
-    }
-    if (v is Array<String>) {
-      let arr = v as Array<String>;
-      for (var i = 0; i < arr.length; i += 1) {
-        sb.append(escape(arr[i]));
-      }
-      return;
-    }
-    if (v is Array<HTMLPartial>) {
-      let arr = v as Array<HTMLPartial>;
-      for (var i = 0; i < arr.length; i += 1) {
-        sb.append(await collectResult(arr[i]));
-      }
-      return;
-    }
-    if (v is Iterable<anyref>) {
-      for (let item in (v as Iterable<anyref>)) {
-        await appendResolvedValue(sb, item);
-      }
-      return;
-    }
-    if (v is Iterable<String>) {
-      for (let item in (v as Iterable<String>)) {
-        sb.append(escape(item));
-      }
-      return;
-    }
-    if (v is Iterable<HTMLPartial>) {
-      for (let item in (v as Iterable<HTMLPartial>)) {
-        sb.append(await collectResult(item));
-      }
-      return;
-    }
-    sb.append(escape(primitiveOrObjectToString(v)));
-    return;
   }
 }

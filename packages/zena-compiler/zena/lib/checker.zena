@@ -1994,6 +1994,10 @@ final class CheckerContext {
           let targetType: Type = resolveTypeAnnotation(this, bodyAnn, true);
           checkAliasTargetInlineTuples(this, targetType, bodyAnn.loc);
           aliasType.target = targetType;
+          if (aliasType.specializationKeyCache != null) {
+            targetType.specializationKeyCache = aliasType.specializationKeyCache;
+            targetType.uniqueKeyCache = aliasType.uniqueKeyCache;
+          }
         } else {
           // A `declare type` operator has no body.
           aliasType.target = typeOperatorTarget(this, aliasType, typeParams);
@@ -4660,7 +4664,10 @@ let containsInlineTuple = (t: Type, aliasHops: i32 = 0): boolean => {
       if (alias.resolving || aliasHops >= maxAliasHops) {
         false
       } else {
-        containsInlineTuple(alias.target, aliasHops + 1)
+        alias.resolving = true;
+        let res = containsInlineTuple(alias.target, aliasHops + 1);
+        alias.resolving = false;
+        res
       }
     }
     case UnionT {types}: {
@@ -4867,7 +4874,10 @@ let typeCarriesOwner = (t: Type): boolean => {
   if (t is TypeAliasType) {
     if (isOwnershipWrapper(t)) { return false; }
     if (t.resolving) { return false; }
-    return typeCarriesOwner(t.target);
+    t.resolving = true;
+    let res = typeCarriesOwner(t.target);
+    t.resolving = false;
+    return res;
   }
   return false;
 };
@@ -5736,6 +5746,10 @@ let resolveTypeAnnotationInner = (ctx: CheckerContext, ann: TypeAnnotation, allo
         } else {
           if (hasTypeArgs) {
             ctx.error("Type '" + name + "' is not generic.", DiagnosticCode.TypeMismatch, ann.loc);
+          }
+          if (tat.resolving && !tat.isDistinct) {
+            tat.specializationKeyCache = tat.name;
+            tat.uniqueKeyCache = "alias_" + tat.name;
           }
           return if (tat.isDistinct || tat.resolving) tat else tat.target;
         }
@@ -7082,7 +7096,12 @@ let instantiateGenericClass = (
  * the first answer for a parameter.
  */
 let inferTypeArgsFromContext = (self: Type, expected: Type, inferred: HashMap<String, Type>): void => {
-  match (expected) {
+  match (unwrapAliases(expected)) {
+    case UnionT {types}: {
+      for (let m in types) {
+        inferTypeArgsFromContext(self, m, inferred);
+      }
+    }
     case InterfaceType as ei: {
       let name = (ei.genericSource ?? ei).name;
       var matched: InterfaceType | null = null;
@@ -7620,12 +7639,18 @@ let findForeignOpaque = (t: Type, currentFile: String, depth: i32): TypeAliasTyp
       if (alias.isOpaque && alias.declaringModule != currentFile) {
         return alias;
       }
-      let inArgs = findForeignOpaqueInList(alias.typeArguments, currentFile, next);
-      if (inArgs != null) { return inArgs; }
       // `resolving` means the checker is mid-way through computing this
       // alias's target; reading it now would recurse forever.
       if (alias.resolving) { return null; }
-      findForeignOpaque(alias.target, currentFile, next)
+      alias.resolving = true;
+      let inArgs = findForeignOpaqueInList(alias.typeArguments, currentFile, next);
+      if (inArgs != null) {
+        alias.resolving = false;
+        return inArgs;
+      }
+      let res = findForeignOpaque(alias.target, currentFile, next);
+      alias.resolving = false;
+      res
     }
     case ArrayType {elementType}: findForeignOpaque(elementType, currentFile, next)
     case TupleT {elementTypes}: findForeignOpaqueInList(elementTypes, currentFile, next)
@@ -7937,7 +7962,15 @@ let checkTypeParameterCast = (
 let expectedArrayElementType = (ctx: CheckerContext, expectedType: Type | null): Type | null => {
   if (expectedType == null) { return null; }
   var typeArgs: Array<Type> | null = null;
-  match (baseType(subtractNullFromType(expectedType))) {
+  match (unwrapAliases(baseType(subtractNullFromType(unwrapAliases(expectedType))))) {
+    case UnionT {types}: {
+      for (let member in types) {
+        let elem = expectedArrayElementType(ctx, member);
+        if (elem != null) {
+          return elem;
+        }
+      }
+    }
     case ClassType as ct: {
       if (isWellKnownClassType(ctx, ct, WellKnown.GrowableArrayClass) ||
           isWellKnownClassType(ctx, ct, WellKnown.ArrayInterface) ||
@@ -7972,8 +8005,8 @@ let checkAndRegisterInterfaceAdaptation = (ctx: CheckerContext, node: Node, sour
   let effectiveSource = if (sourceIsNullable) subtractNullFromType(sourceType)
       else sourceType;
 
-  var effectiveTarget = targetType;
-  match (targetType) {
+  var effectiveTarget = unwrapAliases(targetType);
+  match (effectiveTarget) {
     case UnionT {types}: {
       for (let member in types) {
         if (isAssignableTo(ctx, effectiveSource, member)) {
@@ -7999,6 +8032,32 @@ let checkAndRegisterInterfaceAdaptation = (ctx: CheckerContext, node: Node, sour
       let ifaceSymId = (effectiveTarget.genericSource ?? effectiveTarget).symbolId;
       let key = i32ToString(classSymId as i32) + "::" + i32ToString(ifaceSymId as i32);
       deps.usedInterfaceAdaptations.add(key);
+    }
+  } else if (effectiveSource is InterfaceType && effectiveTarget is InterfaceType &&
+      !typesEqual(effectiveSource, effectiveTarget) &&
+      isAssignableTo(ctx, effectiveSource, effectiveTarget)) {
+    ctx.model.setInterfaceAdaptation(node, effectiveSource, effectiveTarget,
+        sourceIsNullable);
+    let deps = ctx.currentDependencies();
+    if (deps != null) {
+      deps.referencedTypes.add(effectiveSource);
+      deps.referencedTypes.add(effectiveTarget);
+      let unspecSourceId = (effectiveSource.genericSource ?? effectiveSource).symbolId;
+      let unspecTargetId = (effectiveTarget.genericSource ?? effectiveTarget).symbolId;
+      for (let mKey in effectiveTarget.members.keys()) {
+        let mem = effectiveTarget.members[mKey];
+        if (mem is FieldInfo) {
+          deps.referencedInterfaceMembers.add(i32ToString(unspecSourceId as i32) + ".get#" + mKey);
+          deps.referencedInterfaceMembers.add(i32ToString(unspecTargetId as i32) + ".get#" + mKey);
+          if (mem.isMutable) {
+            deps.referencedInterfaceMembers.add(i32ToString(unspecSourceId as i32) + ".set#" + mKey);
+            deps.referencedInterfaceMembers.add(i32ToString(unspecTargetId as i32) + ".set#" + mKey);
+          }
+        } else if (mem is MethodInfo) {
+          deps.referencedInterfaceMembers.add(i32ToString(unspecSourceId as i32) + "." + mKey);
+          deps.referencedInterfaceMembers.add(i32ToString(unspecTargetId as i32) + "." + mKey);
+        }
+      }
     }
   } else if (sourceType is FunctionType && effectiveTarget is FunctionType) {
     if (!typesEqual(sourceType, effectiveTarget)) {
@@ -8215,7 +8274,11 @@ let isAnyRefSource = (t: Type): boolean => {
     return true;
   }
   if (t is TypeAliasType) {
-    return isAnyRefSource(t.target);
+    if (t.resolving) { return true; }
+    t.resolving = true;
+    let res = isAnyRefSource(t.target);
+    t.resolving = false;
+    return res;
   }
   if (t is UnionT) {
     for (let member in t.types) {
@@ -8229,6 +8292,11 @@ let isAnyRefSource = (t: Type): boolean => {
 };
 
 let isAssignableTo = (ctx: CheckerContext, source: Type, target: Type): boolean => {
+  // Same type (identity check via match). Check before unwrapping
+  // recursive type aliases so `TemplateValue` vs `TemplateValue`
+  // succeeds in O(1) via TypeAliasType name/arg equality.
+  if (typesEqual(source, target)) { return true; }
+
   // Automatically unwrap non-distinct type aliases. An INTRINSIC
   // alias (a type operator like Awaited<T>, open at a bare type
   // parameter) does not unwrap: its placeholder target IS its
@@ -8236,7 +8304,7 @@ let isAssignableTo = (ctx: CheckerContext, source: Type, target: Type): boolean 
   // interchangeable — and they differ exactly when R instantiates to
   // a future, which is a type error deferred to whichever
   // specialization flattens (issue #522). Operators compare
-  // nominally, in typesEqual below.
+  // nominally, in typesEqual above.
   match (source) {
     case TypeAliasType as ta: {
       if (!ta.isDistinct && ta.intrinsicName == null) {
@@ -8253,8 +8321,6 @@ let isAssignableTo = (ctx: CheckerContext, source: Type, target: Type): boolean 
     }
     case _: {}
   }
-  // Same type (identity check via match).
-  if (typesEqual(source, target)) { return true; }
 
   // Borrowing at a call site is implicit: an `Own<R>` is accepted where a
   // `Borrow<R>` is expected, and borrowing does not consume. The reverse is
@@ -8656,6 +8722,25 @@ let tupleElementsEqual = (ea: Array<Type>, eb: Array<Type>): boolean => {
  * Check if two types are structurally equal.
  */
 let typesEqual = (a: Type, b: Type): boolean => {
+  if (a === b) { return true; }
+  if (a is TypeAliasType && !(b is TypeAliasType)) {
+    let ta = a as TypeAliasType;
+    if (!ta.isDistinct && ta.enumDeclaration == null && ta.intrinsicName == null && !ta.resolving) {
+      ta.resolving = true;
+      let eq = typesEqual(ta.target, b);
+      ta.resolving = false;
+      return eq;
+    }
+  }
+  if (b is TypeAliasType && !(a is TypeAliasType)) {
+    let tb = b as TypeAliasType;
+    if (!tb.isDistinct && tb.enumDeclaration == null && tb.intrinsicName == null && !tb.resolving) {
+      tb.resolving = true;
+      let eq = typesEqual(a, tb.target);
+      tb.resolving = false;
+      return eq;
+    }
+  }
   // For now, use a simple structural comparison based on type kind.
   // Identity-based comparison will come with interning.
   return match (a) {
@@ -8929,7 +9014,7 @@ let branchDefinitelyExits = (stmt: Statement, model: SemanticModel | null = null
  * Returns the narrowed type.
  */
 let subtractNullFromType = (t: Type): Type => {
-  match (t) {
+  match (unwrapAliases(t)) {
     case UnionT as u: {
       let remaining = new Array<Type>();
       let {types} = u;
@@ -8956,7 +9041,7 @@ let subtractNullFromType = (t: Type): Type => {
  * For non-union types, returns never if equal, or the original type unchanged.
  */
 let subtractTypeFromUnion = (original: Type, toRemove: Type): Type => {
-  match (original) {
+  match (unwrapAliases(original)) {
     case UnionT as u: {
       let remaining = new Array<Type>();
       let {types} = u;
@@ -9684,13 +9769,15 @@ let recordLoopAssignments = (ctx: CheckerContext, node: Node): void => {
 
 let unwrapAliases = (t: Type): Type => {
   var curr = t;
-  while (curr is TypeAliasType) {
+  var hops = 0;
+  while (curr is TypeAliasType && hops < 32) {
     let ta = curr;
     // Intrinsic aliases stop like distinct ones: their target is a
     // placeholder, and an instance only survives here while its
     // argument is still open — nothing to unwrap to yet.
-    if (ta.isDistinct || ta.intrinsicName != null) { break; }
+    if (ta.isDistinct || ta.enumDeclaration != null || ta.intrinsicName != null || ta.resolving) { break; }
     curr = ta.target;
+    hops += 1;
   }
   return curr;
 };
@@ -13246,14 +13333,28 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
     new ErrorType()
   }
   case TaggedTemplateExpression {tag, quasi, loc}: {
+    // Check the tag function first to obtain the expected interpolation element type.
+    let tagType = checkExpression(ctx, tag, null);
+    var valueType: Type | null = null;
+    if (tagType is FunctionType) {
+      let ft = tagType as FunctionType;
+      if (ft.parameters.length >= 2) {
+        let elem = expectedArrayElementType(ctx, ft.parameters[1]);
+        if (elem != null && !typeContainsTypeParameter(elem)) {
+          valueType = elem;
+        }
+      }
+    }
     // Check the interpolated expressions.
     var qi = 0;
     while (qi < quasi.expressions.length) {
-      checkExpression(ctx, quasi.expressions[qi], null);
+      let expr = quasi.expressions[qi];
+      let exprType = checkExpression(ctx, expr, valueType);
+      if (valueType != null) {
+        checkAndRegisterInterfaceAdaptation(ctx, expr, exprType, valueType);
+      }
       qi += 1;
     }
-    // Check the tag function and return its return type.
-    let tagType = checkExpression(ctx, tag, null);
     match (tagType) {
       case FunctionType as ft: ft.returnType
       case _: {
@@ -14462,6 +14563,10 @@ let registerTypeAliasDeclaration = (ctx: CheckerContext, ta: TypeAliasDeclaratio
     ctx.setDiagnosticsSuppressed(true);
     alias.target = resolveTypeAnnotation(ctx, bodyAnn, true);
     ctx.setDiagnosticsSuppressed(false);
+    if (alias.specializationKeyCache != null) {
+      alias.target.specializationKeyCache = alias.specializationKeyCache;
+      alias.target.uniqueKeyCache = alias.uniqueKeyCache;
+    }
   } else {
     // A `declare type` operator has no body.
     alias.target = typeOperatorTarget(ctx, alias, typeParams);
@@ -20800,6 +20905,9 @@ let subtractPatternFromType = (ctx: CheckerContext, t: Type, pattern: Node): Typ
           case ClassType as patClass: {
             return subtractClassFromType(ctx, t, patClass);
           }
+          case InterfaceType as patIface: {
+            return subtractInterfaceFromType(ctx, t, patIface);
+          }
           case _: {}
         }
       }
@@ -20818,6 +20926,9 @@ let subtractPatternFromType = (ctx: CheckerContext, t: Type, pattern: Node): Typ
           case ClassType as patClass: {
             return subtractClassFromType(ctx, t, patClass);
           }
+          case InterfaceType as patIface: {
+            return subtractInterfaceFromType(ctx, t, patIface);
+          }
           case _: {}
         }
       }
@@ -20831,6 +20942,9 @@ let subtractPatternFromType = (ctx: CheckerContext, t: Type, pattern: Node): Typ
         match (resolved) {
           case ClassType as patClass: {
             return subtractClassFromType(ctx, t, patClass);
+          }
+          case InterfaceType as patIface: {
+            return subtractInterfaceFromType(ctx, t, patIface);
           }
           case _: {}
         }
@@ -20886,10 +21000,22 @@ let subtractPatternFromType = (ctx: CheckerContext, t: Type, pattern: Node): Typ
  * Handles sealed class variant tracking and transitive hierarchies.
  */
 let subtractClassFromType = (ctx: CheckerContext, t: Type, patClass: ClassType): Type => {
-  match (t) {
+  match (unwrapAliases(t)) {
+    case UnionT {types}: {
+      let remaining = new Array<Type>();
+      for (let member in types) {
+        let sub = subtractClassFromType(ctx, member, patClass);
+        if (!(sub is NeverType)) {
+          remaining.push(sub);
+        }
+      }
+      if (remaining.length == 0) { return new NeverType(); }
+      if (remaining.length == 1) { return remaining[0]; }
+      return new UnionT(remaining);
+    }
     case ClassType as scrutClass: {
       // If the pattern class IS the scrutinee class (or a supertype), covers it.
-      if (scrutClass.id == patClass.id) {
+      if ((scrutClass.genericSource ?? scrutClass).id == (patClass.genericSource ?? patClass).id) {
         return new NeverType();
       }
       // If the scrutinee is a sealed class, subtract the variant from its set.
@@ -20950,6 +21076,30 @@ let subtractClassFromType = (ctx: CheckerContext, t: Type, patClass: ClassType):
   return t;
 };
 
+let subtractInterfaceFromType = (ctx: CheckerContext, t: Type, patIface: InterfaceType): Type => {
+  match (unwrapAliases(t)) {
+    case UnionT {types}: {
+      let remaining = new Array<Type>();
+      for (let member in types) {
+        let sub = subtractInterfaceFromType(ctx, member, patIface);
+        if (!(sub is NeverType)) {
+          remaining.push(sub);
+        }
+      }
+      if (remaining.length == 0) { return new NeverType(); }
+      if (remaining.length == 1) { return remaining[0]; }
+      return new UnionT(remaining);
+    }
+    case InterfaceType as scrutIface: {
+      if ((scrutIface.genericSource ?? scrutIface).id == (patIface.genericSource ?? patIface).id) {
+        return new NeverType();
+      }
+    }
+    case _: {}
+  }
+  return t;
+};
+
 /**
  * Look up a field type on a class or interface type for pattern destructuring.
  * Returns ErrorType if the field is not found.
@@ -21001,21 +21151,21 @@ let getNarrowedTypeFromPattern = (ctx: CheckerContext, pattern: Node): Type | nu
       if (id.name == "_") {
         return null;
       }
-      let resolved = ctx.resolveTypeName(id.name);
-      if (resolved != null) {
-        return resolved;
+      let nodeType = ctx.model.getNodeType(id);
+      if (nodeType != null) {
+        return nodeType;
       }
-      return ctx.model.getNodeType(id);
+      return ctx.resolveTypeName(id.name);
     }
     case Identifier as id: {
       if (id.name == "_") {
         return null;
       }
-      let resolved = ctx.resolveTypeName(id.name);
-      if (resolved != null) {
-        return resolved;
+      let nodeType = ctx.model.getNodeType(id);
+      if (nodeType != null) {
+        return nodeType;
       }
-      return ctx.model.getNodeType(id);
+      return ctx.resolveTypeName(id.name);
     }
     case _: {
       return null;
@@ -21395,6 +21545,64 @@ let unresolvedPatternNameMessage = (
     " Write 'let " + name + "' to bind the matched value to a new variable.";
 };
 
+let specializePatternTypeFromExpected = (resolvedType: Type, expectedType: Type): Type => {
+  let exp = unwrapAliases(expectedType);
+  match (resolvedType) {
+    case ClassType as ct: {
+      let {typeParameters} = ct;
+      if (typeParameters != null && typeParameters.length > 0 && ct.typeArguments == null) {
+        let targetId = (ct.genericSource ?? ct).id;
+        match (exp) {
+          case ClassType as ect: {
+            if ((ect.genericSource ?? ect).id == targetId && ect.typeArguments != null) {
+              return ect;
+            }
+          }
+          case UnionT {types}: {
+            for (let m in types) {
+              let um = unwrapAliases(m);
+              if (um is ClassType) {
+                let mct = um as ClassType;
+                if ((mct.genericSource ?? mct).id == targetId && mct.typeArguments != null) {
+                  return mct;
+                }
+              }
+            }
+          }
+          case _: {}
+        }
+      }
+    }
+    case InterfaceType as it: {
+      let {typeParameters} = it;
+      if (typeParameters != null && typeParameters.length > 0 && it.typeArguments == null) {
+        let targetId = (it.genericSource ?? it).id;
+        match (exp) {
+          case InterfaceType as eit: {
+            if ((eit.genericSource ?? eit).id == targetId && eit.typeArguments != null) {
+              return eit;
+            }
+          }
+          case UnionT {types}: {
+            for (let m in types) {
+              let um = unwrapAliases(m);
+              if (um is InterfaceType) {
+                let mit = um as InterfaceType;
+                if ((mit.genericSource ?? mit).id == targetId && mit.typeArguments != null) {
+                  return mit;
+                }
+              }
+            }
+          }
+          case _: {}
+        }
+      }
+    }
+    case _: {}
+  }
+  return resolvedType;
+};
+
 /**
  * Check a pattern against an expected type and bind pattern variables.
  * Uses bindPattern for identifier bindings through the DeclarationMap → Symbol path.
@@ -21424,8 +21632,8 @@ let checkPattern = (ctx: CheckerContext, pattern: Node, expectedType: Type): voi
     case ClassPattern as cp: {
       // Look up the class type.
       let clsName = cp.name.name;
-      let classType = ctx.resolveTypeName(clsName);
-      if (classType == null) {
+      let rawClassType = ctx.resolveTypeName(clsName);
+      if (rawClassType == null) {
         ctx.error(
           "'" + clsName + "' is not a class.",
           DiagnosticCode.SymbolNotFound,
@@ -21433,6 +21641,7 @@ let checkPattern = (ctx: CheckerContext, pattern: Node, expectedType: Type): voi
         );
         return;
       }
+      let classType = specializePatternTypeFromExpected(rawClassType, expectedType);
       ctx.setNodeType(cp.name, classType);
       ctx.setNodeType(cp, classType);
       // Resolve field types from the class.
@@ -21602,13 +21811,13 @@ let checkPattern = (ctx: CheckerContext, pattern: Node, expectedType: Type): voi
       var narrowedType: Type = expectedType;
       if (ap.pattern is ClassPattern) {
         let cp = ap.pattern as ClassPattern;
-        let cls = ctx.resolveTypeName(cp.name.name);
+        let cls = ctx.model.getNodeType(cp) ?? ctx.resolveTypeName(cp.name.name);
         if (cls != null) {
           narrowedType = cls;
         }
       } else if (ap.pattern is Identifier) {
         let ident = ap.pattern as Identifier;
-        let cls = ctx.resolveTypeName(ident.name);
+        let cls = ctx.model.getNodeType(ident) ?? ctx.resolveTypeName(ident.name);
         if (cls != null) {
           narrowedType = cls;
         }
@@ -21632,7 +21841,12 @@ let checkPattern = (ctx: CheckerContext, pattern: Node, expectedType: Type): voi
       // treating it as a fresh binding turns a mistyped variant name into a
       // catch-all that swallows every remaining case.
       if (ident.name != "_") {
-        let resolvedType = ctx.resolveTypeName(ident.name);
+        let rawResolvedType = ctx.resolveTypeName(ident.name);
+        let resolvedType = if (rawResolvedType != null) {
+          specializePatternTypeFromExpected(rawResolvedType, expectedType)
+        } else {
+          null
+        };
         if (resolvedType != null) {
           ctx.setNodeType(ident, resolvedType);
         }
@@ -21640,6 +21854,7 @@ let checkPattern = (ctx: CheckerContext, pattern: Node, expectedType: Type): voi
         if (resolvedType != null) {
           match (resolvedType) {
             case ClassType: { isVariant = true; }
+            case InterfaceType: { isVariant = true; }
             case _: {}
           }
         }
