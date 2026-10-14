@@ -845,6 +845,41 @@ export let tests = suite('zir backend', (): void => {
     assertNoAllocation(result, '$main', 'neither side builds the record');
   });
 
+  test('a method takes and returns a record as its fields', (ctx: TestContext): void => {
+    // `Grid` has no subclass, so its calls are direct: `area` takes the
+    // literal as its fields and `shift` returns its result as fields, and
+    // `main` builds no record.
+    let result = compileWithZir(
+        'type V = {x: i32, y: i32};\n' +
+        'class Grid {\n' +
+        '  scale: i32;\n' +
+        '  new(this.scale);\n' +
+        '  area(r: V): i32 { return r.x * r.y * this.scale; }\n' +
+        '  shift(r: V, by: i32): V { return {x: r.x + by, y: r.y + by}; }\n' +
+        '}\n' +
+        'export let main = (): i32 => {\n' +
+        '  let g = new Grid(2);\n' +
+        '  let {x, y} = g.shift({x: 1, y: 2}, 10);\n' +
+        '  return g.area({x: 3, y: 4}) + x * y;\n' +
+        '};');
+    let named = (prefix: String, suffix: String): String => {
+      var found = '';
+      for (let chunk in result.split('(func $')) {
+        let name = chunk.split(' ')[0];
+        if (name.startsWith(prefix) && name.endsWith(suffix)) {
+          found = '$' + name;
+        }
+      }
+      isTrue(found.length > 0, `no function ${prefix}…${suffix}`);
+      return found;
+    };
+    assertNoAllocation(result, '$main', 'the literals and the result stay as fields');
+    assertNoAllocation(result, named('Grid_', '.area.core'),
+        'the core reads the fields from its parameters');
+    assertNoAllocation(result, named('Grid_', '.shift.core'),
+        'the core takes and returns the fields');
+  });
+
   test('a var record updated through a call stays as its fields', (ctx: TestContext): void => {
     // `pos` is only read for its fields and only assigned values that
     // are fields already, so it is carried around the loop as its

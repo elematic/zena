@@ -159,11 +159,49 @@ positionally:
 | `-O1` size | 762 B                | 361 B  | 228 B             |
 | `-O2` size | 190 B                | 190 B  | 190 B             |
 
+### Methods
+
+An instance method is eligible on a class that is not generic, an
+extension or a mixin intermediate, when the method is not generic,
+static, abstract, `async`, a generator, decorated, or declared with an
+explicit receiver, and has no parameter defaults. Its parameters and
+its result explode under the same rules as a function's.
+
+The method keeps its signature and its vtable slot, and becomes the
+forwarder, so a call that dispatches through the vtable (some reached
+subclass overrides the method) still passes and receives the record.
+Only a call the lowering makes directly, to the method itself, can call
+the core, which takes the receiver ahead of the fields. The core has no
+method name of its own, so that `layout()` never puts it in the class
+method map; the lowering takes the forwarder's name for its prologue.
+
+Reachability records a method call by the method's declaration node,
+found from the receiver's static class (`recordLiteralMethodArgs`, and
+`RecordResultCall.methodNode`): whether a call is direct is only known
+when it is lowered, so these are the evidence that some call could pass
+or take the fields.
+
+Measured on a loop calling `g.shift({x: i, y: 1}, 2)`, a method of a
+class with no subclass that returns a record, destructured, two million
+iterations (wall time, including process start):
+
+| build | before | after |
+| ----- | ------ | ----- |
+| `-O1` | 119 ms | 7 ms  |
+| `-O2` | 6 ms   | 6 ms  |
+
+At `-O2` the inliner already brought this small method into the loop,
+and scalar replacement removed the record. The compiler's own module
+grows by 2.9 KB (2,240,334 to 2,243,268 bytes).
+
 ### Not yet eligible
 
-- **Methods, generic functions and constructors, async functions and
-  generators**, each for the reasons the rest of this document's later
-  phases list.
+- **Static methods, methods of generic classes, generic functions and
+  constructors, async functions and generators**, each for the reasons
+  the rest of this document's later phases list.
+- **A parameter passed on to a method**: `this.m(p)` is not yet a
+  fields-only use of `p`, and a method's result returned from another
+  function or method does not yet count as fields on hand.
 
 ### Eligible parameters
 
@@ -479,8 +517,9 @@ Not yet covered:
 
 - Named constructors; generic classes' constructors; super arguments
   past the first superclass, returned from `<ctor-init>` as fields.
-- Non-virtual methods; per-specialization explosion of generic
-  functions; async functions and generators.
+- Static methods, methods of generic classes, and forwards to methods;
+  per-specialization explosion of generic functions; async functions
+  and generators.
 - The `inline` parameter guarantee above.
 - Teaching spread and `==` to consume exploded bindings.
 - Weighting call sites, for example by loop depth, for a function with

@@ -2,7 +2,7 @@ import { Set } from 'zena:collections';
 import { collectValueExports, findDeclaration } from '../lookup.zena';
 import {
   Referrer, ReachabilityContext, TypeLowererInterface, ReachabilityVisitorInterface,
-  recordLiteralArgKey, recordLiteralCtorArgKey, RecordResultCall,
+  recordLiteralArgKey, recordLiteralCtorArgKey, recordLiteralMethodArgKey, RecordResultCall,
 } from './context.zena';
 import { SemanticModel, memberKeyOf } from '../../semantic-model.zena';
 import {
@@ -831,6 +831,7 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
       }
       if (n is CallExpression) {
         this.#noteIntrinsicEqTargets(n, model, resolveType);
+        this.#noteMethodCall(n, model, resolveType);
         // Plain identifier calls (module-level `let` functions,
         // including non-exported ones) are also absent from the
         // dependency records when the callee is private to its
@@ -960,6 +961,7 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
       this.registerAsyncNode(n, model, resolveType);
       if (n is CallExpression) {
         this.#noteIntrinsicEqTargets(n, model, resolveType);
+        this.#noteMethodCall(n, model, resolveType);
         // Plain identifier calls: the dependency records omit
         // module-private symbols, so the call edge here is the only
         // discovery for non-exported top-level functions. Symbol
@@ -1037,6 +1039,54 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
     if (!this.pass.recordResultCallIds.has(id)) {
       this.pass.recordResultCallIds.add(id);
       this.pass.recordResultCalls.push(new RecordResultCall(n, model, callee));
+    }
+  }
+
+  /**
+   * Records a call of a method of a class, keyed by the method's
+   * declaration: its record literal arguments, and the call itself when
+   * its result is a record (argument explosion, ir/explode.zena). Only
+   * the lowering knows whether a call is direct; these are the evidence
+   * that some call could pass or take the fields.
+   */
+  #noteMethodCall(n: CallExpression, model: SemanticModel,
+      resolveType: (t: Type) => Type): void {
+    let callee = n.callee;
+    if (!(callee is MemberExpression) || callee.optional || callee.isSymbolAccess) {
+      return;
+    }
+    let objType = model.getNodeType(callee.object);
+    if (objType == null) {
+      return;
+    }
+    let resolved = baseType(resolveType(objType));
+    if (!(resolved is ClassType)) {
+      return;
+    }
+    let name = memberKeyOf(model, callee.property as Node);
+    if (name == "") {
+      return;
+    }
+    let md = this.pass.cha.findImplementingMethod(resolved, name);
+    if (md == null) {
+      return;
+    }
+    let methodNode = (md as Node).id as i32;
+    for (var i = 0; i < n.args.length; i += 1) {
+      if (n.args[i] is RecordLiteral) {
+        this.pass.recordLiteralMethodArgs.add(recordLiteralMethodArgKey(methodNode, i));
+      }
+    }
+    let t = model.getNodeType(n);
+    if (t == null || !(baseType(t) is RecordType)) {
+      return;
+    }
+    let id = (n as Node).id as i32;
+    if (!this.pass.recordResultCallIds.has(id)) {
+      this.pass.recordResultCallIds.add(id);
+      let rc = new RecordResultCall(n, model, noSymbolId);
+      rc.methodNode = methodNode;
+      this.pass.recordResultCalls.push(rc);
     }
   }
 
@@ -2088,6 +2138,7 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
       this.registerAsyncNode(n, model, resolveType);
       if (n is CallExpression) {
         this.#noteIntrinsicEqTargets(n, model, resolveType);
+        this.#noteMethodCall(n, model, resolveType);
         // Plain identifier calls: the dependency records omit
         // module-private symbols, so the call edge here is the only
         // discovery for non-exported top-level functions. Symbol
