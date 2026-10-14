@@ -1,0 +1,323 @@
+import { suite, test, TestContext } from 'zena:test';
+import { equal, isTrue } from 'zena:assert';
+import { runFuture, Completer, Future } from 'zena:async';
+import { Some, Option, none, some, Outcome, Ok, Box, Iterable, Iterator, Step, IterableUtils, ImmutableArray } from 'zena:core';
+import { Stream, StreamWriter, readAllText } from 'zena:stream';
+import { blockOn } from 'zena:wasi';
+import {
+  html,
+  HTMLPartial,
+  unsafeHTML,
+  escape,
+  RenderValue,
+  pipeToStream,
+  htmlStream,
+  collectResult,
+  App,
+  Request,
+  Response,
+  WireResponse,
+  Fields,
+  ErrorCode,
+  toWireResponse
+} from 'zena:http';
+
+function unit(): void {}
+
+class CustomStringIterable with IterableUtils<String> implements Iterable<String> {
+  #items: Array<String>;
+
+  new(items: Array<String>) : #items = items {}
+
+  [Iterable.iterator](): Iterator<String> {
+    return this.#items.[Iterable.iterator]();
+  }
+}
+
+async function resolveString(value: String): Future<String> {
+  return value;
+}
+
+async function resolvePartial(value: HTMLPartial): Future<HTMLPartial> {
+  return value;
+}
+
+async function resolvePartialArray(value: Array<HTMLPartial>): Future<Array<HTMLPartial>> {
+  return value;
+}
+
+async function readNextTextChunk(stream: Stream<u8>, maxLen: i32 = 256): Future<String> {
+  let buf = new FixedArray<u8>(maxLen, 0 as u8);
+  let n = await stream.read(buf);
+  if (n <= 0) {
+    return '';
+  }
+  return String.fromBytes(buf.slice(0, n));
+}
+
+export let tests = suite('zena:http html', (): void => {
+  test('escape replaces HTML special characters', (ctx: TestContext): void => {
+    equal(escape('hello'), 'hello');
+    equal(escape('a & b < c > d "e" \'f\''), 'a &amp; b &lt; c &gt; d &quot;e&quot; &apos;f&apos;');
+  });
+
+  suite('toString', (): void => {
+    test('Plain text', (ctx: TestContext): void => {
+      equal(html`Hello World`.toString(), 'Hello World');
+    });
+
+    test('Simple HTML', (ctx: TestContext): void => {
+      equal(html`<h1>Hello World</h1>`.toString(), '<h1>Hello World</h1>');
+    });
+
+    test('Indented HTML', (ctx: TestContext): void => {
+      equal(html`
+        <h1>Hello World!</h1>
+      `.toString(), '\n<h1>Hello World!</h1>\n');
+
+      equal(html`
+        <div>
+          <p>Hello World!</p>
+        </div>
+      `.toString(), '\n<div>\n  <p>Hello World!</p>\n</div>\n');
+    });
+
+    test('Nested HTML', (ctx: TestContext): void => {
+      equal(html`
+        <h1>Hello World!</h1>
+          ${html`<p>Foo</p>`}
+      `.toString(), '\n<h1>Hello World!</h1>\n  <p>Foo</p>\n');
+
+      let nested = html`
+        <section>
+          <p>Foo</p>
+        </section>
+      `;
+      equal(html`
+        <div>
+          ${nested}
+        </div>
+      `.toString(), '\n<div>\n  \n<section>\n  <p>Foo</p>\n</section>\n\n</div>\n');
+    });
+
+    test('Interpolated String', (ctx: TestContext): void => {
+      equal(html`Hello ${'World'}`.toString(), 'Hello World');
+    });
+
+    test('Escape HTML in strings', (ctx: TestContext): void => {
+      equal(html`Hello ${'<h1>World'}`.toString(), 'Hello &lt;h1&gt;World');
+    });
+
+    test('Null and boxed primitives', (ctx: TestContext): void => {
+      equal(html`a${null}b`.toString(), 'ab');
+      equal(html`count: ${new Box<i32>(42)}, ok: ${new Box<boolean>(true)}`.toString(), 'count: 42, ok: true');
+    });
+
+    test('Arrays and Iterables', (ctx: TestContext): void => {
+      equal(html`${['a', 'b']}`.toString(), 'ab');
+      equal(html`${['<a', '>b']}`.toString(), '&lt;a&gt;b');
+
+      let items = ['foo', 'bar', 'baz'];
+      equal(html`
+        <ul>
+          ${items.map((item: String, _i: i32, _seq: ImmutableArray<String>): HTMLPartial => html`<li>${item}</li>`)}
+        </ul>`.toString(), '\n<ul>\n  <li>foo</li><li>bar</li><li>baz</li>\n</ul>');
+
+      let withNull: Array<anyref> = ['foo', null, 'bar'];
+      equal(html`
+        <ul>
+          ${withNull}
+        </ul>`.toString(), '\n<ul>\n  foobar\n</ul>');
+
+      let partials: Array<HTMLPartial> = [html`<p>1</p>`, html`<p>2</p>`];
+      equal(html`<div>${partials}</div>`.toString(), '<div><p>1</p><p>2</p></div>');
+
+      let growable = new GrowableArray<String>();
+      growable.push('x');
+      growable.push('<y>');
+      equal(html`${growable}`.toString(), 'x&lt;y&gt;');
+
+      let custom: Iterable<String> = new CustomStringIterable(['m', 'n']);
+      equal(html`[${custom}]`.toString(), '[mn]');
+    });
+
+    test('unsafeHTML bypasses escaping', (ctx: TestContext): void => {
+      equal(html`Hello ${unsafeHTML('<h1>World</h1>')}`.toString(), 'Hello <h1>World</h1>');
+    });
+  });
+
+  suite('Iteration', (): void => {
+    let joinSync = (partial: HTMLPartial): String => {
+      var out = '';
+      for (let chunk in partial) {
+        if (chunk is String) {
+          out = out + (chunk as String);
+        }
+      }
+      return out;
+    };
+
+    test('Plain text', (ctx: TestContext): void => {
+      equal(joinSync(html`Hello World`), 'Hello World');
+    });
+
+    test('Simple HTML', (ctx: TestContext): void => {
+      equal(joinSync(html`<h1>Hello World</h1>`), '<h1>Hello World</h1>');
+    });
+
+    test('Indented HTML', (ctx: TestContext): void => {
+      let result = html`
+        <div>
+          <h1>Hello World</h1>
+        </div>
+      `;
+      let expected = `
+        <div>
+          <h1>Hello World</h1>
+        </div>
+      `;
+      equal(joinSync(result), expected);
+    });
+
+    test('Nested HTML', (ctx: TestContext): void => {
+      let nested = html`
+        <h1>
+          Hello World
+        </h1>
+      `;
+      let result = html`
+        <div>
+          ${nested}
+        </div>
+      `;
+      let expected = `
+        <div>
+          
+        <h1>
+          Hello World
+        </h1>
+      
+        </div>
+      `;
+      equal(joinSync(result), expected);
+    });
+
+    test('Interpolated String', (ctx: TestContext): void => {
+      equal(joinSync(html`Hello ${'World'}`), 'Hello World');
+    });
+
+    test('Escape HTML', (ctx: TestContext): void => {
+      equal(joinSync(html`Hello ${'<h1>World'}`), 'Hello &lt;h1&gt;World');
+    });
+
+    test('Iterables', (ctx: TestContext): void => {
+      equal(joinSync(html`${['a', 'b']}`), 'ab');
+    });
+
+    test('unsafeHTML', (ctx: TestContext): void => {
+      equal(joinSync(html`Hello ${unsafeHTML('<h1>World</h1>')}`), 'Hello <h1>World</h1>');
+    });
+
+    test('Async Futures with collectResult', (ctx: TestContext): void => {
+      runFuture((async (): Future<void> => {
+        equal(
+          await collectResult(html`Hello ${resolveString('World')}`),
+          'Hello World'
+        );
+        equal(
+          await collectResult(html`Hello ${resolveString('<b>World</b>')}`),
+          'Hello &lt;b&gt;World&lt;/b&gt;'
+        );
+        equal(
+          await collectResult(html`Hello ${resolvePartial(html`<h1>World</h1>`)}`),
+          'Hello <h1>World</h1>'
+        );
+        let items: Array<HTMLPartial> = [html`a`, html`b`];
+        equal(
+          await collectResult(html`Hello ${resolvePartialArray(items)}`),
+          'Hello ab'
+        );
+      })());
+    });
+  });
+
+  suite('Streaming', (): void => {
+    test('htmlStream flushes buffered prefix before awaiting an unresolved Future', (ctx: TestContext): void => {
+      runFuture((async (): Future<void> => {
+        let gate = new Completer<String>();
+        let tpl = html`<header>Title</header><main>${gate.future}</main><footer>End</footer>`;
+
+        // Create a stream with a large flushSize (1024). Even though <header>Title</header><main>
+        // is much smaller than 1024 bytes, htmlStream must flush it before awaiting gate.future!
+        let stream = htmlStream(tpl, 1024);
+
+        let firstChunk = await readNextTextChunk(stream);
+        equal(firstChunk, '<header>Title</header><main>');
+
+        // Now resolve the future and read the remainder of the stream.
+        gate.complete('Async & Escaped');
+        let rest = await readAllText(stream);
+        equal(rest, 'Async &amp; Escaped</main><footer>End</footer>');
+      })());
+    });
+
+    test('pipeToStream respects flushSize for synchronous chunks', (ctx: TestContext): void => {
+      runFuture((async (): Future<void> => {
+        let writer = new StreamWriter<u8>();
+        let tpl = html`12345${'67890'}abcdef`;
+        // Start piping with flushSize = 8 so it flushes once buffer exceeds 8 bytes,
+        // then close writer when pipeToStream completes.
+        let pipeTask = (async (): Future<void> => {
+          await pipeToStream(tpl, writer, { flushSize: 8 });
+          writer.close();
+        })();
+
+        let text = await readAllText(writer.stream);
+        await pipeTask;
+        equal(text, '1234567890abcdef');
+      })());
+    });
+
+    test('htmlStream terminates cleanly when reader calls stop()', (ctx: TestContext): void => {
+      runFuture((async (): Future<void> => {
+        let gate = new Completer<String>();
+        let tpl = html`<div>Start</div>${gate.future}<div>Never read</div>`;
+        let stream = htmlStream(tpl, 1024);
+
+        let firstChunk = await readNextTextChunk(stream);
+        equal(firstChunk, '<div>Start</div>');
+
+        stream.stop();
+        gate.complete('After stop');
+        let remaining = await readAllText(stream);
+        equal(remaining, '');
+      })());
+    });
+
+    test('Response and toWireResponse set text/html content-type and stream HTMLPartial', (ctx: TestContext): void => {
+      let app = new App();
+      app.use(async (req: Request, res: Response, next: () => Future<void>): Future<void> => {
+        res.body = html`<h1>Hello ${'Zena'} &amp; ${resolveString('<Friends>')}</h1>`;
+      });
+
+      let req = new Request.fromUrl('http://localhost/');
+      let res = new Response();
+      blockOn(app.handleRequest(req, res));
+
+      equal(res.statusCode, 200);
+      let wireResp = toWireResponse(res);
+      equal(wireResp.getStatusCode() as i32, 200);
+
+      let wireHeaders = wireResp.getHeaders();
+      let ctValues = wireHeaders.get('content-type');
+      equal(ctValues.length, 1);
+      equal(String.fromBytes(ctValues[0]), 'text/html; charset=utf-8');
+
+      let received = new Completer<Outcome<void, ErrorCode>>();
+      let (body, _) = WireResponse.consumeBody(wireResp, received.future);
+      let bodyText = blockOn(readAllText(body));
+      received.complete(new Ok<void, ErrorCode>(unit()));
+      equal(bodyText, '<h1>Hello Zena &amp; &lt;Friends&gt;</h1>');
+    });
+  });
+});

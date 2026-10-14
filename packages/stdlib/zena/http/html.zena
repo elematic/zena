@@ -1,0 +1,1115 @@
+/**
+ * Safe HTML template tag with indentation handling and asynchronous streaming.
+ *
+ * Ported from Zipadee (`packages/core/src/lib/html.ts`).
+ */
+
+import {
+  TemplateStringsArray, StringBuilder, Iterable, Iterator, Step, IterableUtils,
+  Box, FixedArray, GrowableArray, ImmutableArray, Array,
+  i32ToString, u32ToString, i64ToString, u64ToString, f32ToString, f64ToString,
+} from 'zena:core';
+import { Future } from 'zena:async';
+import { Stream, StreamWriter } from 'zena:stream';
+
+/**
+ * Replaces characters which have special meaning in HTML (`&<>"'`) with
+ * escaped HTML entities (`&amp;`, `&lt;`, `&gt;`, `&quot;`, `&apos;`).
+ */
+export function escape(str: String): String {
+  let len = str.length;
+  var firstSpecial = -1;
+  for (var i = 0; i < len; i += 1) {
+    let b = str.getByteAt(i);
+    if (b == 0x26 || b == 0x3C || b == 0x3E || b == 0x22 || b == 0x27) {
+      firstSpecial = i;
+      break;
+    }
+  }
+  if (firstSpecial < 0) {
+    return str;
+  }
+
+  let sb = new StringBuilder(len + 16);
+  if (firstSpecial > 0) {
+    sb.append(str.sliceBytes(0, firstSpecial));
+  }
+
+  var last = firstSpecial;
+  for (var i = firstSpecial; i < len; i += 1) {
+    let b = str.getByteAt(i);
+    var entity: String | null = null;
+    if (b == 0x26) {        // &
+      entity = '&amp;';
+    } else if (b == 0x3C) { // <
+      entity = '&lt;';
+    } else if (b == 0x3E) { // >
+      entity = '&gt;';
+    } else if (b == 0x22) { // "
+      entity = '&quot;';
+    } else if (b == 0x27) { // '
+      entity = '&apos;';
+    }
+    if (entity != null) {
+      if (i > last) {
+        sb.append(str.sliceBytes(last, i));
+      }
+      sb.append(entity);
+      last = i + 1;
+    }
+  }
+  if (last < len) {
+    sb.append(str.sliceBytes(last, len));
+  }
+  return sb.toString();
+}
+
+/**
+ * Represents a value that should be rendered as raw HTML without escaping.
+ */
+export final class UnsafeHTML {
+  value: String;
+
+  new(this.value);
+}
+
+/**
+ * Wraps a string in an `UnsafeHTML` object, which indicates that the
+ * string should be rendered as raw HTML without escaping.
+ */
+export let unsafeHTML = (s: String): UnsafeHTML => new UnsafeHTML(s);
+
+/**
+ * One item yielded when iterating an `HTMLPartial`: either an already-rendered
+ * `String` chunk or a `Future` resolving to a value that can be rendered.
+ */
+export type RenderValue = anyref;
+
+let maxIndent = 0x7FFFFFFF;
+
+/** Whether `b` is a space (0x20) or tab (0x09). */
+let isSpaceOrTab = (b: i32): boolean => b == 0x20 || b == 0x09;
+
+/**
+ * Finds the first match of `(?:\n)([ \t]*)(?:\S)` in `s`: the length of the
+ * space/tab run after the first newline that is followed by a non-whitespace
+ * byte. Returns -1 if no such line exists in `s`.
+ *
+ * Matches Zipadee's `indentRegex = /(?:\n)([ \t]*)(?:\S)/g` executed once
+ * per string with `indentRegex.lastIndex = 0`.
+ */
+let firstLineIndent = (s: String): i32 => {
+  let len = s.length;
+  var i = 0;
+  while (i < len) {
+    if (s.getByteAt(i) == 0x0A) { // \n
+      let start = i + 1;
+      var j = start;
+      while (j < len && isSpaceOrTab(s.getByteAt(j))) {
+        j += 1;
+      }
+      if (j < len) {
+        let b = s.getByteAt(j);
+        // \S in JS regex: not whitespace (\r, \n, \t, \f, \v, space)
+        if (b != 0x0A && b != 0x0D && b != 0x09 && b != 0x0B && b != 0x0C && b != 0x20) {
+          return j - start;
+        }
+      }
+      i = j;
+    } else {
+      i += 1;
+    }
+  }
+  return -1;
+};
+
+/**
+ * Replaces up to `remove` leading spaces or tabs at the start of every line
+ * (`^[ \t]{0,remove}` in multiline mode) with `add` spaces.
+ *
+ * When `remove == maxIndent` (no line had a newline followed by `\S`, matching
+ * `minIndent === Infinity` in Zipadee), returns `s` unchanged.
+ */
+let fixIndent = (remove: i32, add: i32, s: String): String => {
+  if (remove == maxIndent) {
+    return s;
+  }
+  let len = s.length;
+  let sb = new StringBuilder(len + add * 4);
+  var i = 0;
+  var atLineStart = true;
+  while (true) {
+    if (atLineStart) {
+      var dropped = 0;
+      while (i < len && dropped < remove && isSpaceOrTab(s.getByteAt(i))) {
+        i += 1;
+        dropped += 1;
+      }
+      for (var sp = 0; sp < add; sp += 1) {
+        sb.appendByte(0x20);
+      }
+      atLineStart = false;
+    }
+    if (i >= len) {
+      break;
+    }
+    // Scan until the next \n
+    var nl = -1;
+    for (var j = i; j < len; j += 1) {
+      if (s.getByteAt(j) == 0x0A) {
+        nl = j;
+        break;
+      }
+    }
+    if (nl < 0) {
+      sb.append(s.sliceBytes(i, len));
+      break;
+    }
+    sb.append(s.sliceBytes(i, nl + 1));
+    i = nl + 1;
+    atLineStart = true;
+  }
+  return sb.toString();
+};
+
+/**
+ * Converts a boxed primitive or fallback value to its unescaped string form.
+ */
+let primitiveOrObjectToString = (v: anyref): String => {
+  if (v is Box<i32>) {
+    return i32ToString((v as Box<i32>).value);
+  }
+  if (v is Box<u32>) {
+    return u32ToString((v as Box<u32>).value);
+  }
+  if (v is Box<i64>) {
+    return i64ToString((v as Box<i64>).value);
+  }
+  if (v is Box<u64>) {
+    return u64ToString((v as Box<u64>).value);
+  }
+  if (v is Box<f32>) {
+    return f32ToString((v as Box<f32>).value);
+  }
+  if (v is Box<f64>) {
+    return f64ToString((v as Box<f64>).value);
+  }
+  if (v is Box<boolean>) {
+    return if ((v as Box<boolean>).value) 'true' else 'false';
+  }
+  return '';
+};
+
+/**
+ * Converts an interpolated value to a string, escaping it if necessary.
+ */
+function valueToString(v: anyref, currentIndent: i32): String {
+  if (v == null) {
+    return '';
+  }
+  if (v is String) {
+    return escape(v as String);
+  }
+  if (v is HTMLPartial) {
+    return (v as HTMLPartial).toString(currentIndent);
+  }
+  if (v is UnsafeHTML) {
+    return (v as UnsafeHTML).value;
+  }
+  if (v is ImmutableArray<anyref>) {
+    let arr = v as ImmutableArray<anyref>;
+    let sb = new StringBuilder();
+    for (var i = 0; i < arr.length; i += 1) {
+      sb.append(valueToString(arr[i], 0));
+    }
+    return sb.toString();
+  }
+  if (v is ImmutableArray<String>) {
+    let arr = v as ImmutableArray<String>;
+    let sb = new StringBuilder();
+    for (var i = 0; i < arr.length; i += 1) {
+      sb.append(escape(arr[i]));
+    }
+    return sb.toString();
+  }
+  if (v is ImmutableArray<HTMLPartial>) {
+    let arr = v as ImmutableArray<HTMLPartial>;
+    let sb = new StringBuilder();
+    for (var i = 0; i < arr.length; i += 1) {
+      sb.append(arr[i].toString(0));
+    }
+    return sb.toString();
+  }
+  if (v is GrowableArray<anyref>) {
+    let arr = v as GrowableArray<anyref>;
+    let sb = new StringBuilder();
+    for (var i = 0; i < arr.length; i += 1) {
+      sb.append(valueToString(arr[i], 0));
+    }
+    return sb.toString();
+  }
+  if (v is GrowableArray<String>) {
+    let arr = v as GrowableArray<String>;
+    let sb = new StringBuilder();
+    for (var i = 0; i < arr.length; i += 1) {
+      sb.append(escape(arr[i]));
+    }
+    return sb.toString();
+  }
+  if (v is GrowableArray<HTMLPartial>) {
+    let arr = v as GrowableArray<HTMLPartial>;
+    let sb = new StringBuilder();
+    for (var i = 0; i < arr.length; i += 1) {
+      sb.append(arr[i].toString(0));
+    }
+    return sb.toString();
+  }
+  if (v is FixedArray<anyref>) {
+    let arr = v as FixedArray<anyref>;
+    let sb = new StringBuilder();
+    for (var i = 0; i < arr.length; i += 1) {
+      sb.append(valueToString(arr[i], 0));
+    }
+    return sb.toString();
+  }
+  if (v is FixedArray<String>) {
+    let arr = v as FixedArray<String>;
+    let sb = new StringBuilder();
+    for (var i = 0; i < arr.length; i += 1) {
+      sb.append(escape(arr[i]));
+    }
+    return sb.toString();
+  }
+  if (v is FixedArray<HTMLPartial>) {
+    let arr = v as FixedArray<HTMLPartial>;
+    let sb = new StringBuilder();
+    for (var i = 0; i < arr.length; i += 1) {
+      sb.append(arr[i].toString(0));
+    }
+    return sb.toString();
+  }
+  if (v is Array<anyref>) {
+    let arr = v as Array<anyref>;
+    let sb = new StringBuilder();
+    for (var i = 0; i < arr.length; i += 1) {
+      sb.append(valueToString(arr[i], 0));
+    }
+    return sb.toString();
+  }
+  if (v is Array<String>) {
+    let arr = v as Array<String>;
+    let sb = new StringBuilder();
+    for (var i = 0; i < arr.length; i += 1) {
+      sb.append(escape(arr[i]));
+    }
+    return sb.toString();
+  }
+  if (v is Array<HTMLPartial>) {
+    let arr = v as Array<HTMLPartial>;
+    let sb = new StringBuilder();
+    for (var i = 0; i < arr.length; i += 1) {
+      sb.append(arr[i].toString(0));
+    }
+    return sb.toString();
+  }
+  if (v is Iterable<anyref>) {
+    let sb = new StringBuilder();
+    for (let item in (v as Iterable<anyref>)) {
+      sb.append(valueToString(item, 0));
+    }
+    return sb.toString();
+  }
+  if (v is Iterable<String>) {
+    let sb = new StringBuilder();
+    for (let item in (v as Iterable<String>)) {
+      sb.append(escape(item));
+    }
+    return sb.toString();
+  }
+  if (v is Iterable<HTMLPartial>) {
+    let sb = new StringBuilder();
+    for (let item in (v as Iterable<HTMLPartial>)) {
+      sb.append(item.toString(0));
+    }
+    return sb.toString();
+  }
+  if (v is Iterator<anyref>) {
+    let iter = v as Iterator<anyref>;
+    let sb = new StringBuilder();
+    while (let (1, item, _) = iter.next()) {
+      sb.append(valueToString(item, 0));
+    }
+    return sb.toString();
+  }
+  if (v is Iterator<String>) {
+    let iter = v as Iterator<String>;
+    let sb = new StringBuilder();
+    while (let (1, item, _) = iter.next()) {
+      sb.append(escape(item));
+    }
+    return sb.toString();
+  }
+  if (v is Iterator<HTMLPartial>) {
+    let iter = v as Iterator<HTMLPartial>;
+    let sb = new StringBuilder();
+    while (let (1, item, _) = iter.next()) {
+      sb.append(item.toString(0));
+    }
+    return sb.toString();
+  }
+  return escape(primitiveOrObjectToString(v));
+}
+
+/**
+ * Represents a partial HTML template result that can be rendered with
+ * interpolated values. It supports indentation, nested templates, iterables of
+ * values, futures, and HTML escaping of values.
+ *
+ * The `toString()` method returns the rendered HTML as a string, propagating
+ * the indentation level.
+ *
+ * To support streaming HTTP, `HTMLPartial` is an `Iterable<RenderValue>` that
+ * yields strings or futures in the order for rendering, and can be streamed
+ * directly to a `Stream<u8>` via `htmlStream` or `pipeToStream`.
+ */
+export final class HTMLPartial with IterableUtils<RenderValue> implements Iterable<RenderValue> {
+  strings: TemplateStringsArray;
+  values: FixedArray<anyref>;
+
+  new(this.strings, this.values);
+
+  toString(indent: i32 = 0): String {
+    let maxIndent = 0x7FFFFFFF;
+    var minIndent = maxIndent;
+    let strCount = this.strings.length;
+    for (var i = 0; i < strCount; i += 1) {
+      let m = firstLineIndent(this.strings[i]);
+      if (m >= 0 && m < minIndent) {
+        minIndent = m;
+      }
+    }
+
+    var currentIndent = indent;
+    let sb = new StringBuilder();
+    sb.append(fixIndent(minIndent, indent, this.strings[0]));
+    let values = this.values;
+
+    for (var i = 0; i < values.length; i += 1) {
+      let m = firstLineIndent(this.strings[i]);
+      if (m >= 0) {
+        currentIndent = m - minIndent + indent;
+      }
+      sb.append(valueToString(values[i], currentIndent));
+      sb.append(fixIndent(minIndent, indent, this.strings[i + 1]));
+    }
+
+    return sb.toString();
+  }
+
+  [Iterable.iterator](): Iterator<RenderValue> {
+    return new HTMLIterator(this);
+  }
+}
+
+/**
+ * A template tag function that accepts an HTML string.
+ *
+ * Interpolated values are escaped by default so that they are not interpreted
+ * as HTML. To interpolate a value as raw HTML, use `unsafeHTML`.
+ */
+export let html = (strings: TemplateStringsArray, values: FixedArray<anyref>): HTMLPartial =>
+  new HTMLPartial(strings, values);
+
+/**
+ * Stack frame states for traversing nested templates, arrays, and iterators
+ * without recursion.
+ */
+sealed class HTMLIteratorState {
+  case HtmlState(var index: i32, container: HTMLPartial)
+  case ArrayAnyState(var index: i32, container: Array<anyref>)
+  case ArrayStringState(var index: i32, container: Array<String>)
+  case ArrayHtmlState(var index: i32, container: Array<HTMLPartial>)
+  case IterAnyState(container: Iterator<anyref>)
+  case IterStringState(container: Iterator<String>)
+  case IterHtmlState(container: Iterator<HTMLPartial>)
+}
+
+/**
+ * Pushes `value` onto `stack` if it is a nested `HTMLPartial`, `Array`,
+ * `Iterable`, or `Iterator`. Returns `true` if pushed.
+ */
+function pushContainerState(stack: GrowableArray<HTMLIteratorState>, value: anyref): boolean {
+  if (value is HTMLPartial) {
+    stack.push(new HtmlState(0, value as HTMLPartial));
+    return true;
+  }
+  if (value is ImmutableArray<anyref>) {
+    stack.push(new IterAnyState((value as ImmutableArray<anyref>).[Iterable.iterator]()));
+    return true;
+  }
+  if (value is ImmutableArray<String>) {
+    stack.push(new IterStringState((value as ImmutableArray<String>).[Iterable.iterator]()));
+    return true;
+  }
+  if (value is ImmutableArray<HTMLPartial>) {
+    stack.push(new IterHtmlState((value as ImmutableArray<HTMLPartial>).[Iterable.iterator]()));
+    return true;
+  }
+  if (value is GrowableArray<anyref>) {
+    stack.push(new ArrayAnyState(0, value as GrowableArray<anyref>));
+    return true;
+  }
+  if (value is GrowableArray<String>) {
+    stack.push(new ArrayStringState(0, value as GrowableArray<String>));
+    return true;
+  }
+  if (value is GrowableArray<HTMLPartial>) {
+    stack.push(new ArrayHtmlState(0, value as GrowableArray<HTMLPartial>));
+    return true;
+  }
+  if (value is FixedArray<anyref>) {
+    stack.push(new IterAnyState((value as FixedArray<anyref>).[Iterable.iterator]()));
+    return true;
+  }
+  if (value is FixedArray<String>) {
+    stack.push(new IterStringState((value as FixedArray<String>).[Iterable.iterator]()));
+    return true;
+  }
+  if (value is FixedArray<HTMLPartial>) {
+    stack.push(new IterHtmlState((value as FixedArray<HTMLPartial>).[Iterable.iterator]()));
+    return true;
+  }
+  if (value is Array<anyref>) {
+    stack.push(new ArrayAnyState(0, value as Array<anyref>));
+    return true;
+  }
+  if (value is Array<String>) {
+    stack.push(new ArrayStringState(0, value as Array<String>));
+    return true;
+  }
+  if (value is Array<HTMLPartial>) {
+    stack.push(new ArrayHtmlState(0, value as Array<HTMLPartial>));
+    return true;
+  }
+  if (value is Iterable<anyref>) {
+    stack.push(new IterAnyState((value as Iterable<anyref>).[Iterable.iterator]()));
+    return true;
+  }
+  if (value is Iterable<String>) {
+    stack.push(new IterStringState((value as Iterable<String>).[Iterable.iterator]()));
+    return true;
+  }
+  if (value is Iterable<HTMLPartial>) {
+    stack.push(new IterHtmlState((value as Iterable<HTMLPartial>).[Iterable.iterator]()));
+    return true;
+  }
+  if (value is Iterator<anyref>) {
+    stack.push(new IterAnyState(value as Iterator<anyref>));
+    return true;
+  }
+  if (value is Iterator<String>) {
+    stack.push(new IterStringState(value as Iterator<String>));
+    return true;
+  }
+  if (value is Iterator<HTMLPartial>) {
+    stack.push(new IterHtmlState(value as Iterator<HTMLPartial>));
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Checks if `value` is a supported `Future` specialization and casts it to
+ * `RenderValue`, or returns `(false, _)`.
+ */
+function asFutureRenderValue(value: anyref): inline (true, RenderValue) | inline (false, _) {
+  if (value is Future<anyref>) {
+    return (true, value as Future<anyref>);
+  }
+  if (value is Future<String>) {
+    return (true, value as Future<String>);
+  }
+  if (value is Future<HTMLPartial>) {
+    return (true, value as Future<HTMLPartial>);
+  }
+  if (value is Future<UnsafeHTML>) {
+    return (true, value as Future<UnsafeHTML>);
+  }
+  if (value is Future<ImmutableArray<anyref>>) {
+    return (true, value as Future<ImmutableArray<anyref>>);
+  }
+  if (value is Future<ImmutableArray<String>>) {
+    return (true, value as Future<ImmutableArray<String>>);
+  }
+  if (value is Future<ImmutableArray<HTMLPartial>>) {
+    return (true, value as Future<ImmutableArray<HTMLPartial>>);
+  }
+  if (value is Future<Array<anyref>>) {
+    return (true, value as Future<Array<anyref>>);
+  }
+  if (value is Future<Array<String>>) {
+    return (true, value as Future<Array<String>>);
+  }
+  if (value is Future<Array<HTMLPartial>>) {
+    return (true, value as Future<Array<HTMLPartial>>);
+  }
+  if (value is Future<GrowableArray<anyref>>) {
+    return (true, value as Future<GrowableArray<anyref>>);
+  }
+  if (value is Future<GrowableArray<String>>) {
+    return (true, value as Future<GrowableArray<String>>);
+  }
+  if (value is Future<GrowableArray<HTMLPartial>>) {
+    return (true, value as Future<GrowableArray<HTMLPartial>>);
+  }
+  if (value is Future<FixedArray<anyref>>) {
+    return (true, value as Future<FixedArray<anyref>>);
+  }
+  if (value is Future<FixedArray<String>>) {
+    return (true, value as Future<FixedArray<String>>);
+  }
+  if (value is Future<FixedArray<HTMLPartial>>) {
+    return (true, value as Future<FixedArray<HTMLPartial>>);
+  }
+  if (value is Future<Iterable<anyref>>) {
+    return (true, value as Future<Iterable<anyref>>);
+  }
+  if (value is Future<Iterable<String>>) {
+    return (true, value as Future<Iterable<String>>);
+  }
+  if (value is Future<Iterable<HTMLPartial>>) {
+    return (true, value as Future<Iterable<HTMLPartial>>);
+  }
+  return (false, _);
+}
+
+/**
+ * Awaits a `Future` stored in `value` if `value` is a future, returning
+ * `(true, resolvedValue)`. Returns `(false, _)` if `value` is not a future.
+ */
+async function awaitIfFuture(value: anyref): Future<(boolean, anyref)> {
+  if (value is Future<anyref>) {
+    return (true, await (value as Future<anyref>));
+  }
+  if (value is Future<String>) {
+    return (true, await (value as Future<String>));
+  }
+  if (value is Future<HTMLPartial>) {
+    return (true, await (value as Future<HTMLPartial>));
+  }
+  if (value is Future<UnsafeHTML>) {
+    return (true, await (value as Future<UnsafeHTML>));
+  }
+  if (value is Future<ImmutableArray<anyref>>) {
+    return (true, await (value as Future<ImmutableArray<anyref>>));
+  }
+  if (value is Future<ImmutableArray<String>>) {
+    return (true, await (value as Future<ImmutableArray<String>>));
+  }
+  if (value is Future<ImmutableArray<HTMLPartial>>) {
+    return (true, await (value as Future<ImmutableArray<HTMLPartial>>));
+  }
+  if (value is Future<Array<anyref>>) {
+    return (true, await (value as Future<Array<anyref>>));
+  }
+  if (value is Future<Array<String>>) {
+    return (true, await (value as Future<Array<String>>));
+  }
+  if (value is Future<Array<HTMLPartial>>) {
+    return (true, await (value as Future<Array<HTMLPartial>>));
+  }
+  if (value is Future<GrowableArray<anyref>>) {
+    return (true, await (value as Future<GrowableArray<anyref>>));
+  }
+  if (value is Future<GrowableArray<String>>) {
+    return (true, await (value as Future<GrowableArray<String>>));
+  }
+  if (value is Future<GrowableArray<HTMLPartial>>) {
+    return (true, await (value as Future<GrowableArray<HTMLPartial>>));
+  }
+  if (value is Future<FixedArray<anyref>>) {
+    return (true, await (value as Future<FixedArray<anyref>>));
+  }
+  if (value is Future<FixedArray<String>>) {
+    return (true, await (value as Future<FixedArray<String>>));
+  }
+  if (value is Future<FixedArray<HTMLPartial>>) {
+    return (true, await (value as Future<FixedArray<HTMLPartial>>));
+  }
+  if (value is Future<Iterable<anyref>>) {
+    return (true, await (value as Future<Iterable<anyref>>));
+  }
+  if (value is Future<Iterable<String>>) {
+    return (true, await (value as Future<Iterable<String>>));
+  }
+  if (value is Future<Iterable<HTMLPartial>>) {
+    return (true, await (value as Future<Iterable<HTMLPartial>>));
+  }
+  return (false, null);
+}
+
+/**
+ * Synchronous iterator over an `HTMLPartial` that yields `RenderValue` chunks
+ * (strings or futures).
+ */
+export final class HTMLIterator implements Iterator<RenderValue> {
+  #stack = new GrowableArray<HTMLIteratorState>(4);
+
+  new(partial: HTMLPartial) {
+    this.#stack.push(new HtmlState(0, partial));
+  }
+
+  next(): Step<RenderValue> {
+    while (this.#stack.length > 0) {
+      let state = this.#stack[this.#stack.length - 1];
+      var done = false;
+      var value: anyref = null;
+
+      match (state) {
+        case HtmlState { index, container }: {
+          let i = index >> 1;
+          let isEven = (index & 1) == 0;
+          state.index = index + 1;
+
+          if (isEven) {
+            return (1, container.strings[i], _);
+          }
+
+          done = i >= container.values.length;
+          if (!done) {
+            value = container.values[i];
+          }
+        }
+        case ArrayAnyState { index, container }: {
+          done = index >= container.length;
+          if (!done) {
+            value = container[index];
+          }
+          state.index = index + 1;
+        }
+        case ArrayStringState { index, container }: {
+          done = index >= container.length;
+          if (!done) {
+            value = container[index];
+          }
+          state.index = index + 1;
+        }
+        case ArrayHtmlState { index, container }: {
+          done = index >= container.length;
+          if (!done) {
+            value = container[index];
+          }
+          state.index = index + 1;
+        }
+        case IterAnyState { container }: {
+          if (let (1, item, _) = container.next()) {
+            value = item;
+          } else {
+            done = true;
+          }
+        }
+        case IterStringState { container }: {
+          if (let (1, item, _) = container.next()) {
+            value = item;
+          } else {
+            done = true;
+          }
+        }
+        case IterHtmlState { container }: {
+          if (let (1, item, _) = container.next()) {
+            value = item;
+          } else {
+            done = true;
+          }
+        }
+      }
+
+      if (done) {
+        this.#stack.pop();
+        continue;
+      }
+
+      if (value == null) {
+        return (1, '', _);
+      }
+      if (value is String) {
+        return (1, escape(value as String), _);
+      }
+      if (value is UnsafeHTML) {
+        return (1, (value as UnsafeHTML).value, _);
+      }
+      if (pushContainerState(this.#stack, value)) {
+        continue;
+      }
+      if (let (true, futVal) = asFutureRenderValue(value)) {
+        return (1, futVal, _);
+      }
+      return (1, escape(primitiveOrObjectToString(value)), _);
+    }
+
+    return (0, _, _);
+  }
+}
+
+/**
+ * Options for `pipeToStream`.
+ */
+export type PipeOptions = {
+  flushSize?: i32,
+};
+
+/**
+ * Flushes buffered text in `buffer` to `writer`. Returns `false` if the
+ * reader has stopped the stream.
+ */
+async function flushBuffer(writer: StreamWriter<u8>, buffer: StringBuilder): Future<boolean> {
+  if (buffer.length == 0) {
+    return true;
+  }
+  let text = buffer.toString();
+  buffer.clear();
+  let bytes = text.toBytes();
+  if (bytes.length == 0) {
+    return true;
+  }
+  return await writer.writeAll(bytes, bytes.length);
+}
+
+/**
+ * Writes an `HTMLPartial` to a `StreamWriter<u8>`.
+ *
+ * If `flushSize` is positive, small string chunks are buffered until at least
+ * `flushSize` bytes have accumulated, at which point they are written to the
+ * stream. Buffered chunks are always flushed before awaiting a `Future`, so
+ * the reader receives the HTML prefix immediately while async work is pending.
+ *
+ * Does not call `writer.close()` when done, matching Zipadee's `pipeToWritable`.
+ */
+export async function pipeToStream(
+  partial: HTMLPartial,
+  writer: StreamWriter<u8>,
+  options: PipeOptions = {}
+): Future<void> {
+  let flushSize = options.flushSize ?? 0;
+  if (flushSize < 0) {
+    throw new Error('flushSize must be non-negative');
+  }
+
+  let buffer = new StringBuilder(if (flushSize > 0) flushSize else 256);
+  let stack = new GrowableArray<HTMLIteratorState>(4);
+  stack.push(new HtmlState(0, partial));
+
+  while (stack.length > 0) {
+    if (buffer.length > flushSize) {
+      if (!(await flushBuffer(writer, buffer))) {
+        return;
+      }
+    }
+
+    let state = stack[stack.length - 1];
+    var done = false;
+    var value: anyref = null;
+
+    match (state) {
+      case HtmlState { index, container }: {
+        let i = index >> 1;
+        let isEven = (index & 1) == 0;
+        state.index = index + 1;
+
+        if (isEven) {
+          let str = container.strings[i];
+          if (flushSize == 0) {
+            if (str.length > 0) {
+              let bytes = str.toBytes();
+              if (!(await writer.writeAll(bytes, bytes.length))) {
+                return;
+              }
+            }
+          } else {
+            buffer.append(str);
+          }
+          continue;
+        }
+
+        done = i >= container.values.length;
+        if (!done) {
+          value = container.values[i];
+        }
+      }
+      case ArrayAnyState { index, container }: {
+        done = index >= container.length;
+        if (!done) {
+          value = container[index];
+        }
+        state.index = index + 1;
+      }
+      case ArrayStringState { index, container }: {
+        done = index >= container.length;
+        if (!done) {
+          value = container[index];
+        }
+        state.index = index + 1;
+      }
+      case ArrayHtmlState { index, container }: {
+        done = index >= container.length;
+        if (!done) {
+          value = container[index];
+        }
+        state.index = index + 1;
+      }
+      case IterAnyState { container }: {
+        if (let (1, item, _) = container.next()) {
+          value = item;
+        } else {
+          done = true;
+        }
+      }
+      case IterStringState { container }: {
+        if (let (1, item, _) = container.next()) {
+          value = item;
+        } else {
+          done = true;
+        }
+      }
+      case IterHtmlState { container }: {
+        if (let (1, item, _) = container.next()) {
+          value = item;
+        } else {
+          done = true;
+        }
+      }
+    }
+
+    if (done) {
+      stack.pop();
+      continue;
+    }
+
+    while (value != null) {
+      if (value is String) {
+        let escaped = escape(value as String);
+        if (flushSize == 0) {
+          if (escaped.length > 0) {
+            let bytes = escaped.toBytes();
+            if (!(await writer.writeAll(bytes, bytes.length))) {
+              return;
+            }
+          }
+        } else {
+          buffer.append(escaped);
+        }
+        break;
+      }
+      if (value is UnsafeHTML) {
+        let raw = (value as UnsafeHTML).value;
+        if (flushSize == 0) {
+          if (raw.length > 0) {
+            let bytes = raw.toBytes();
+            if (!(await writer.writeAll(bytes, bytes.length))) {
+              return;
+            }
+          }
+        } else {
+          buffer.append(raw);
+        }
+        break;
+      }
+      if (pushContainerState(stack, value)) {
+        break;
+      }
+
+      // Check if value is a Future; flush before awaiting!
+      if (let (true, _) = asFutureRenderValue(value)) {
+        if (buffer.length > 0) {
+          if (!(await flushBuffer(writer, buffer))) {
+            return;
+          }
+        }
+        let (_, resolved) = await awaitIfFuture(value);
+        value = resolved;
+        continue;
+      }
+
+      let escaped = escape(primitiveOrObjectToString(value));
+      if (flushSize == 0) {
+        if (escaped.length > 0) {
+          let bytes = escaped.toBytes();
+          if (!(await writer.writeAll(bytes, bytes.length))) {
+            return;
+          }
+        }
+      } else {
+        buffer.append(escaped);
+      }
+      break;
+    }
+  }
+
+  if (buffer.length > 0) {
+    await flushBuffer(writer, buffer);
+  }
+}
+
+/**
+ * Creates a `Stream<u8>` that streams the rendered bytes of `partial`.
+ *
+ * Uses a default `flushSize` of 1024 bytes (slightly below typical Ethernet
+ * MTU) and always flushes before awaiting any embedded `Future`.
+ */
+export function htmlStream(partial: HTMLPartial, flushSize: i32 = 1024): Stream<u8> {
+  let writer = new StreamWriter<u8>();
+  pumpHtml(writer, partial, flushSize);
+  return writer.stream;
+}
+
+async function pumpHtml(writer: StreamWriter<u8>, partial: HTMLPartial, flushSize: i32): Future<void> {
+  try {
+    await pipeToStream(partial, writer, {flushSize});
+  } finally {
+    writer.close();
+  }
+}
+
+/**
+ * Joins an iterable of `RenderValue` chunks into a single `String`, awaiting
+ * any embedded futures.
+ */
+export async function collectResult(result: Iterable<RenderValue>): Future<String> {
+  let sb = new StringBuilder();
+  for (let chunk in result) {
+    if (chunk is String) {
+      sb.append(chunk as String);
+    } else {
+      let (_, resolved) = await awaitIfFuture(chunk);
+      await appendResolvedValue(sb, resolved);
+    }
+  }
+  return sb.toString();
+}
+
+async function appendResolvedValue(sb: StringBuilder, value: anyref): Future<void> {
+  var v = value;
+  while (v != null) {
+    if (v is String) {
+      sb.append(escape(v as String));
+      return;
+    }
+    if (v is UnsafeHTML) {
+      sb.append((v as UnsafeHTML).value);
+      return;
+    }
+    if (v is HTMLPartial) {
+      sb.append(await collectResult(v as HTMLPartial));
+      return;
+    }
+    if (let (true, _) = asFutureRenderValue(v)) {
+      let (_, resolved) = await awaitIfFuture(v);
+      v = resolved;
+      continue;
+    }
+    if (v is ImmutableArray<anyref>) {
+      let arr = v as ImmutableArray<anyref>;
+      for (var i = 0; i < arr.length; i += 1) {
+        await appendResolvedValue(sb, arr[i]);
+      }
+      return;
+    }
+    if (v is ImmutableArray<String>) {
+      let arr = v as ImmutableArray<String>;
+      for (var i = 0; i < arr.length; i += 1) {
+        sb.append(escape(arr[i]));
+      }
+      return;
+    }
+    if (v is ImmutableArray<HTMLPartial>) {
+      let arr = v as ImmutableArray<HTMLPartial>;
+      for (var i = 0; i < arr.length; i += 1) {
+        sb.append(await collectResult(arr[i]));
+      }
+      return;
+    }
+    if (v is GrowableArray<anyref>) {
+      let arr = v as GrowableArray<anyref>;
+      for (var i = 0; i < arr.length; i += 1) {
+        await appendResolvedValue(sb, arr[i]);
+      }
+      return;
+    }
+    if (v is GrowableArray<String>) {
+      let arr = v as GrowableArray<String>;
+      for (var i = 0; i < arr.length; i += 1) {
+        sb.append(escape(arr[i]));
+      }
+      return;
+    }
+    if (v is GrowableArray<HTMLPartial>) {
+      let arr = v as GrowableArray<HTMLPartial>;
+      for (var i = 0; i < arr.length; i += 1) {
+        sb.append(await collectResult(arr[i]));
+      }
+      return;
+    }
+    if (v is FixedArray<anyref>) {
+      let arr = v as FixedArray<anyref>;
+      for (var i = 0; i < arr.length; i += 1) {
+        await appendResolvedValue(sb, arr[i]);
+      }
+      return;
+    }
+    if (v is FixedArray<String>) {
+      let arr = v as FixedArray<String>;
+      for (var i = 0; i < arr.length; i += 1) {
+        sb.append(escape(arr[i]));
+      }
+      return;
+    }
+    if (v is FixedArray<HTMLPartial>) {
+      let arr = v as FixedArray<HTMLPartial>;
+      for (var i = 0; i < arr.length; i += 1) {
+        sb.append(await collectResult(arr[i]));
+      }
+      return;
+    }
+    if (v is Array<anyref>) {
+      let arr = v as Array<anyref>;
+      for (var i = 0; i < arr.length; i += 1) {
+        await appendResolvedValue(sb, arr[i]);
+      }
+      return;
+    }
+    if (v is Array<String>) {
+      let arr = v as Array<String>;
+      for (var i = 0; i < arr.length; i += 1) {
+        sb.append(escape(arr[i]));
+      }
+      return;
+    }
+    if (v is Array<HTMLPartial>) {
+      let arr = v as Array<HTMLPartial>;
+      for (var i = 0; i < arr.length; i += 1) {
+        sb.append(await collectResult(arr[i]));
+      }
+      return;
+    }
+    if (v is Iterable<anyref>) {
+      for (let item in (v as Iterable<anyref>)) {
+        await appendResolvedValue(sb, item);
+      }
+      return;
+    }
+    if (v is Iterable<String>) {
+      for (let item in (v as Iterable<String>)) {
+        sb.append(escape(item));
+      }
+      return;
+    }
+    if (v is Iterable<HTMLPartial>) {
+      for (let item in (v as Iterable<HTMLPartial>)) {
+        sb.append(await collectResult(item));
+      }
+      return;
+    }
+    sb.append(escape(primitiveOrObjectToString(v)));
+    return;
+  }
+}
