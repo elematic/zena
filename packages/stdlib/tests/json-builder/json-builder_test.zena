@@ -154,4 +154,23 @@ export let tests = suite('JsonBuilder', (): void => {
     b.endObject();
     equal(b.toString(), "{\"worlds\":[],\"interfaces\":[],\"types\":[],\"packages\":[{\"name\":\"foo:empty\",\"interfaces\":{},\"worlds\":{}}]}");
   });
+
+  test('i32 and i64 extremes and f64', (ctx: TestContext): void => {
+    let b = new JsonBuilder();
+    b.beginObject()
+      .key("i32Min").i32(-2147483648)
+      .key("i64Min").i64(-9223372036854775808 as i64)
+      .key("pi").f64(3.25)
+      .endObject();
+    equal(b.toString(), "{\"i32Min\":-2147483648,\"i64Min\":-9223372036854775808,\"pi\":3.25}");
+  });
+
+  test('clear resets state and preserves prior string', (ctx: TestContext): void => {
+    let b = new JsonBuilder();
+    let first = b.beginObject().key("a").i32(1).endObject().toString();
+    b.clear();
+    let second = b.beginArray().i32(2).i32(3).endArray().toString();
+    equal(first, "{\"a\":1}");
+    equal(second, "[2,3]");
+  });
 });

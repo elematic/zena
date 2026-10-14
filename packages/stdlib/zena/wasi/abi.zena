@@ -38,6 +38,61 @@ let mem = Memory.default;
 export symbol rawHandle;
 export symbol markMoved;
 
+let copyStringToMemory = (s: String, ptr: i32, len: i32): void => {
+  var i = 0;
+  // Store 4 bytes at a time as a little-endian i32 (`i32.store`).
+  let limit = len - 3;
+  while (i < limit) {
+    mem.setI32(ptr + i, s.getI32At(i));
+    i += 4;
+  }
+  // Store the remaining 0..3 tail bytes individually (`i32.store8` via `mem[...] =`).
+  while (i < len) {
+    mem[ptr + i] = s.getByteAt(i);
+    i += 1;
+  }
+};
+
+let copyBytesToMemory = (bytes: FixedArray<u8>, ptr: i32, len: i32): void => {
+  var i = 0;
+  // Pack 4 bytes into a little-endian i32 and store in one `i32.store`.
+  let limit = len - 3;
+  while (i < limit) {
+    let word = (bytes[i] as i32)
+      | ((bytes[i + 1] as i32) << 8)
+      | ((bytes[i + 2] as i32) << 16)
+      | ((bytes[i + 3] as i32) << 24);
+    mem.setI32(ptr + i, word);
+    i += 4;
+  }
+  // Store the remaining 0..3 tail bytes individually (`i32.store8` via `mem[...] =`).
+  while (i < len) {
+    mem[ptr + i] = bytes[i] as i32;
+    i += 1;
+  }
+};
+
+let copyBytesFromMemory = (ptr: i32, len: i32): FixedArray<u8> => {
+  let bytes = new FixedArray<u8>(len, 0);
+  var i = 0;
+  // Load 4 bytes at a time as a little-endian i32 (`i32.load`) and unpack.
+  let limit = len - 3;
+  while (i < limit) {
+    let word = mem.getI32(ptr + i);
+    bytes[i] = (word & 255) as u8;
+    bytes[i + 1] = ((word >> 8) & 255) as u8;
+    bytes[i + 2] = ((word >> 16) & 255) as u8;
+    bytes[i + 3] = ((word >> 24) & 255) as u8;
+    i += 4;
+  }
+  // Load the remaining 0..3 tail bytes individually (`i32.load8_u` via `mem[...]`).
+  while (i < len) {
+    bytes[i] = mem[ptr + i] as u8;
+    i += 1;
+  }
+  return bytes;
+};
+
 /**
  * The canonical ABI's allocator, as the `realloc` option names it.
  *
@@ -101,8 +156,21 @@ export function realloc(
  */
 export function stringFromMemory(ptr: i32, len: i32): String {
   let bytes = newByteArray(len);
-  for (var i = 0; i < len; i += 1) {
+  var i = 0;
+  // Load 4 bytes at a time as a little-endian i32 (`i32.load`) and unpack.
+  let limit = len - 3;
+  while (i < limit) {
+    let word = mem.getI32(ptr + i);
+    __byte_array_set(bytes, i, word & 255);
+    __byte_array_set(bytes, i + 1, (word >> 8) & 255);
+    __byte_array_set(bytes, i + 2, (word >> 16) & 255);
+    __byte_array_set(bytes, i + 3, (word >> 24) & 255);
+    i += 4;
+  }
+  // Load the remaining 0..3 tail bytes individually (`i32.load8_u` via `mem[...]`).
+  while (i < len) {
     __byte_array_set(bytes, i, mem[ptr + i]);
+    i += 1;
   }
   return String.fromByteArray(bytes, 0, len, Encoding.WTF8);
 }
@@ -141,10 +209,7 @@ export function takeStringArgument(ptr: i32, len: i32): String {
 
 /** A `list<u8>` argument taken whole, with the same ownership story. */
 export function takeBytesArgument(ptr: i32, len: i32): FixedArray<u8> {
-  let bytes = new FixedArray<u8>(len, 0);
-  for (var i = 0; i < len; i += 1) {
-    bytes[i] = mem[ptr + i] as u8;
-  }
+  let bytes = copyBytesFromMemory(ptr, len);
   releaseStringArgument(ptr, len);
   return bytes;
 }
@@ -169,9 +234,7 @@ export function stringResultArea(s: String): i32 {
   let len = s.length;
   let area = realloc(0, 0, 4, 8);
   let ptr = if (len == 0) 0 else realloc(0, 0, 1, len);
-  for (var i = 0; i < len; i += 1) {
-    mem[ptr + i] = s.getByteAt(i);
-  }
+  copyStringToMemory(s, ptr, len);
   mem.setI32(area, ptr);
   mem.setI32(area + 4, len);
   return area;
@@ -248,39 +311,34 @@ let assertWtf8 = (s: String): void => {
   }
 };
 
-/**
- * Allocate and fill a staging buffer: `readAt(i)` supplies byte `i` of
- * `len`. Returns `(ptr, len)`, released by `releaseStringArgument`
- * once the lowered call has consumed it; an empty source is `(0, 0)` —
- * nothing is allocated, and the pointer half is never dereferenced.
- */
-let stageBytes = (len: i32, readAt: (i: i32) => i32): (i32, i32) => {
+/** Stage a String's bytes for a lowered call. */
+export function stringToMemory(s: String): (i32, i32) {
+  assertWtf8(s);
+  let len = s.length;
   if (len == 0) {
     return (0, 0);
   }
   if (let (true, ptr) = defaultAllocator.alloc(len)) {
-    for (var i = 0; i < len; i += 1) {
-      mem[ptr + i] = readAt(i);
-    }
+    copyStringToMemory(s, ptr, len);
     return (ptr, len);
   }
   throw new Error('out of linear memory');
-};
-
-/** Stage a String's bytes for a lowered call. */
-export function stringToMemory(s: String): (i32, i32) {
-  assertWtf8(s);
-  return stageBytes(s.length, (i: i32) => s.getByteAt(i));
 }
 
 /**
  * Stage a byte buffer for a lowered call: `list<u8>` and `string` have
- * the same wire shape. The cast widens: `Memory`'s indexer trades in
- * `i32` — the language has no implicit numeric conversions, widening
- * included — so the `u8` element is spelled up to it.
+ * the same wire shape.
  */
 export function bytesToMemory(bytes: FixedArray<u8>): (i32, i32) {
-  return stageBytes(bytes.length, (i: i32) => bytes[i] as i32);
+  let len = bytes.length;
+  if (len == 0) {
+    return (0, 0);
+  }
+  if (let (true, ptr) = defaultAllocator.alloc(len)) {
+    copyBytesToMemory(bytes, ptr, len);
+    return (ptr, len);
+  }
+  throw new Error('out of linear memory');
 }
 
 /** Allocate the return area a spilled result is written into. */
@@ -314,10 +372,7 @@ export function liftStringAt(ptr: i32): String {
 /** A `list<u8>` lifted in place, with the same ownership story. */
 export function liftBytesAt(ptr: i32): FixedArray<u8> {
   let (buffer, len) = takeBuffer(ptr);
-  let bytes = new Array<u8>.fixed(len, 0);
-  for (var i = 0; i < len; i += 1) {
-    bytes[i] = mem[buffer + i] as u8;
-  }
+  let bytes = copyBytesFromMemory(buffer, len);
   if (len > 0) {
     defaultAllocator.free(buffer);
   }
@@ -438,9 +493,7 @@ export function stageString(s: String): (i32, i32) {
     return (0, 0);
   }
   let ptr = stageBuffer(len);
-  for (var i = 0; i < len; i += 1) {
-    mem[ptr + i] = s.getByteAt(i);
-  }
+  copyStringToMemory(s, ptr, len);
   return (ptr, len);
 }
 
@@ -452,9 +505,7 @@ export function stageByteList(bytes: FixedArray<u8>): (i32, i32) {
     return (0, 0);
   }
   let ptr = stageBuffer(len);
-  for (var i = 0; i < len; i += 1) {
-    mem[ptr + i] = bytes[i] as i32;
-  }
+  copyBytesToMemory(bytes, ptr, len);
   return (ptr, len);
 }
 
