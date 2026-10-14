@@ -102,10 +102,10 @@ Key things that differ from TypeScript:
 The compiler (`packages/zena-compiler`, package name
 `@zena-lang/zena-compiler`) is **self-hosted**: written in Zena, with a
 ZIR (CFG+SSA IR) backend. See `docs/design/self-hosted-compiler.md` for
-the architecture. It is executed by `zena-cli` (`packages/zena-cli`),
-the Rust/wasmtime host. An earlier TypeScript implementation
-(`packages/compiler`, "the bootstrap compiler") has been deleted; older
-docs and comments may still refer to it.
+the architecture. It is linked into the CLI module (`packages/zena-cli/out/zena.wasm`)
+and executed by `zena-cli` (`packages/zena-cli`), the Rust/wasmtime host.
+An earlier TypeScript implementation (`packages/compiler`, "the bootstrap
+compiler") has been deleted; older docs and comments may still refer to it.
 
 The compiler must pass the **portable tests** in `tests/language/`.
 
@@ -113,16 +113,17 @@ The compiler must pass the **portable tests** in `tests/language/`.
 
 The self-hosted compiler builds itself from a prebuilt, checked-in
 compiler: `packages/zena-compiler/bootstrap/cli.wasm` — **the
-bootstrap**. `build:cli` runs it through `zena-cli` (built from source
-by cargo) to produce the working compiler; everything else builds from
-that. Design doc: `docs/design/bootstrapping.md`. Rules:
+bootstrap**. `build:cli` runs it through `zena-run` (built from source
+by cargo) to produce the working Stage A compiler (`zena/out/cli.wasm`),
+which then builds the CLI module and everything else. Design doc:
+`docs/design/bootstrapping.md`. Rules:
 
 - **NEVER edit, delete, or regenerate `bootstrap/cli.wasm` by hand.**
   Re-baselining goes through `npm run reseed -w @zena-lang/zena-compiler`,
   which is gated on the full suite plus the fixpoint check, followed by
   a second `npm test` that rebuilds everything from the new bootstrap.
 - **The invariant**: the bootstrap must build a HEAD that passes the
-  test suite. `test:fixpoint` (stage-1 ≡ stage-2 byte parity) is part
+  test suite. `test:fixpoint` (stage-B ≡ stage-C byte parity) is part
   of `npm test` — a compiler that miscompiles itself fails the gate.
 - A compiler-source change the current bootstrap cannot compile lands
   in two steps (feature first, self-use after a reseed) — see the
@@ -146,77 +147,148 @@ directories to add to. A test that cannot run yet says so in the file:
 // @skip: <why this cannot run yet>
 ```
 
-Skips are printed, with their reasons, in every run's summary.
+Skips are printed, with their reasons, in every run's summary. Run a single
+category (optionally filtered by path substring) with:
+
+```bash
+npm run test:execution -w @zena-lang/zena-compiler -- variables
+```
 
 When fixing bugs or adding features, prefer adding portable tests here.
 
 ## Project Structure
 
-This project is an **npm monorepo** managed with **Wireit**.
+This project is an **npm monorepo** managed with **Wireit** (plus a Cargo
+workspace at the root for the Rust/wasmtime hosts).
 
-- **`packages/zena-compiler`**: The self-hosted compiler (`@zena-lang/zena-compiler`). (See [CONTEXT.md](packages/zena-compiler/CONTEXT.md); the ZIR backend and the reachability pass each have their own CONTEXT.md under `zena/lib/codegen/`. The checked-in bootstrap lives in `bootstrap/`.)
+Directory-level orientation lives in `CONTEXT.md` files. Read the
+`CONTEXT.md` nearest your work before editing:
+
+- [packages/zena-compiler/CONTEXT.md](packages/zena-compiler/CONTEXT.md) — self-hosted compiler and codegen overview
+- [packages/zena-compiler/zena/lib/codegen/ir/CONTEXT.md](packages/zena-compiler/zena/lib/codegen/ir/CONTEXT.md) — ZIR backend (lowering, GVN, emit)
+- [packages/zena-compiler/zena/lib/codegen/reachability/CONTEXT.md](packages/zena-compiler/zena/lib/codegen/reachability/CONTEXT.md) — RTA and specialization
+- [packages/zena-cli/CONTEXT.md](packages/zena-cli/CONTEXT.md) — CLI module and Rust/wasmtime host
+
+### Packages & Directories
+
+- **`packages/zena-compiler`**: The self-hosted compiler (`@zena-lang/zena-compiler`). The checked-in bootstrap lives in `bootstrap/`.
 - **`packages/stdlib`**: Standard library (`@zena-lang/stdlib`).
-- **`packages/zena-cli`**: Native Rust CLI for compiling and executing Zena via Wasmtime: compiler driver, test, bench and doc runners. (See [CONTEXT.md](packages/zena-cli/CONTEXT.md)).
-- **`packages/zena-runtime`**: Rust library shared by `zena-cli`, `zena-run`, and `zenafx`: the wasmtime engine configuration, the `.cwasm` cache, and the host imports a `zena-cli`-target module needs (`env` stack traces, `zena_process`). The Rust counterpart of `packages/runtime`.
-- **`packages/zena-run`**: Minimal Rust binary that runs one compiled Zena module on wasmtime with those imports, without the compiler.
+- **`packages/zena-cli`**: The `zena` command (`@zena-lang/zena-cli`): the Zena CLI module (`zena/main.zena` → `out/zena.wasm`) and the Rust/wasmtime binary that hosts it. Links in the compiler, test and bench runners, `zb`, `zenadoc`, `zena-formatter`, and `language-service`.
+- **`packages/zena-runtime`**: Rust library shared by `zena-cli`, `zena-run`, and `zenafx`: the wasmtime engine configuration, the `.cwasm` cache, WASI 0.3, and the `zena-cli:host` WIT imports (stack traces, process spawning, running Wasm modules). The Rust counterpart of `packages/runtime`.
+- **`packages/zena-run`**: Minimal Rust binary that runs one compiled Zena module on wasmtime with those imports, without the CLI module.
 - **`packages/zenafx`**: Experimental runtime binary (`zfx`) for graphical programs: runs WebAssembly components with GPU hardware acceleration via `wasi:webgpu` and OS window presentation via `wasi-gfx:surface`. (See [graphical-runtime.md](docs/design/graphical-runtime.md)).
 - **`packages/wit-parser`**: WIT (WebAssembly Interface Types) parser, resolver, and component encoder (`@zena-lang/wit-parser`). (See [wit-parser.md](docs/design/wit-parser.md)).
 - **`packages/zena-formatter`**: Code formatter for Zena (`@zena-lang/zena-formatter`).
 - **`packages/zb`**: Zena build orchestrator tool (`@zena-lang/zb`).
 - **`packages/workflow`**: Workflow automation package (`@zena-lang/workflow`).
-- **`packages/runtime`**: JS runtime helpers.
-- **`packages/language-service`**: `lsp.zena` and the `lsp.wasm` it builds, plus the JS API around it (`@zena-lang/language-service`). Published.
-- **`packages/zenadoc`**: API documentation extraction — reads a package's source and emits JSON describing its public API (`@zena-lang/zenadoc`). See [zenadoc.md](docs/design/zenadoc.md).
+- **`packages/protobuf`**: Protocol Buffers support for Zena (`@zena-lang/protobuf`).
+- **`packages/google-cloud`**: Google Cloud client libraries for Zena (`@zena-lang/google-cloud`).
+- **`packages/runtime`**: JS runtime helpers (`@zena-lang/runtime`).
+- **`packages/language-service`**: Language service library, `lsp.zena` / `lsp.wasm`, and the JS API around it (`@zena-lang/language-service`). Published.
+- **`packages/zenadoc`**: API documentation extraction — reads a package's source and emits JSON describing its public API (`@zena-lang/zenadoc`). (See [zenadoc.md](docs/design/zenadoc.md)).
 - **`packages/codemirror`**: Zena support for CodeMirror 6 (`@zena-lang/codemirror`). Published.
-- **`packages/playground`**: the `<zena-playground>` element (`@zena-lang/playground`). Published.
+- **`packages/playground`**: The `<zena-playground>` element (`@zena-lang/playground`). Published.
+- **`packages/website`** & **`packages/website-client`**: Project website and documentation (`@zena-lang/website`).
 - **`packages/vscode-zena`**: VS Code extension providing syntax highlighting and language server client integration.
 - **`tests/language/`**: Portable language tests.
 - **`docs/language-reference.md`**: Official language reference.
 - **`docs/design/`**: Design documents for complex features.
 - **`PLAN.md`**: Completed and planned work.
 
-# Interaction Guidelines
+## Interaction Guidelines
 
 - **Conversational Requirement**: You MUST explain your plan in plain English
   BEFORE generating code or editing files. Do not act silently.
-- **Version Control**: Do not run `git commit` unless asked to. Leave finished
-  work in the working tree so it can be reviewed as a diff; `git add` is fine.
-  When reporting on a failed experiments leave files in place and say what
-  happened. Do not revert or delete your own changes before they have been
-  reviewed.
-- **Tool Usage**:
-  - NEVER create temporary files or shell scripts to edit code.
-  - ALWAYS use the provided VS Code text editing tools to modify files
-    directly.
 - **Clarification Protocol**: If a request is ambiguous or lacks context, you
-  MUST ask a clarifying question. Do not guess.
-- **Task Management**: Use the Todo List tool (`manage_todo_list`) to track
-  complex tasks. If you are unsure of the next step, present a multiple-choice
-  option (`vscode_askQuestions` tool) to the user.
+  MUST ask a clarifying question. Do not guess. If your harness provides a
+  structured multiple-choice question tool (e.g., `ask_question` in Antigravity,
+  `AskUserQuestion` in Claude Code, `vscode_askQuestions` in VS Code), use it
+  when presenting design choices or resolving ambiguity.
+- **Task Management**: For multi-step tasks, use your harness's task tracking
+  tool if available (e.g., `TodoWrite` / task tools in Claude Code,
+  `manage_todo_list` in VS Code, or task artifacts in Antigravity).
 - **Role**: You are a pair programmer, not an automated script runner. Talk to
   me.
 
-### Nix Development Environment
+### Reading and Editing Files (CRITICAL)
 
-The project uses **Nix flakes** for reproducible tooling (Node.js, wasmtime, wasm-tools).
+- **⛔ NEVER use `cat`, `echo`, `tee`, or other terminal commands to read,
+  create, or edit files.** Do not write or run shell/node/python scripts to
+  create or modify source or test files.
+- **ALWAYS use your harness's built-in tools** for reading files, searching file
+  names and contents, creating files, and making targeted edits. When reading
+  large files or test output logs, use your file-reading tool's line-range
+  parameters rather than `head` or `tail`.
+- **DO NOT** create temporary text files with content that you want to put into
+  a source file. Create or edit the source file directly.
+- Reserve command-line tools (`sed`, `awk`, etc.) strictly for large-scale,
+  mechanical multi-file replacements where single-file edit tools are
+  impractical.
+
+## Development Environment & CLI Tools
+
+### Nix & Prerequisites
+
+The project uses **Nix flakes** for reproducible tooling (Node.js, Rust/cargo,
+wasmtime, wasm-tools).
 
 - **With direnv** (recommended): Run `direnv allow` once.
 - **Without direnv**: Prefix commands with `nix develop -c`.
-- **When is Nix needed?**: Only for WASI testing (wasmtime) and WASM debugging
-  (wasm-tools). Regular `npm test` and `npm run build` work without Nix.
+- **Without Nix**: You need **Node.js v25+** (for built-in WASM `exnref`
+  support; check with `node -v`) and a **Rust toolchain (`cargo`)**. `zena-cli`
+  and `zena-run` embed Wasmtime via Cargo, so `npm run build` and `npm test`
+  work without standalone `wasmtime`; the standalone `wasmtime` and
+  `wasm-tools` CLIs are only needed for direct WASM inspection and debugging.
 
-### Running Zena Programs
+### The `zena` CLI (`zena-cli`)
+
+Once built (`npm run build -w @zena-lang/zena-cli`), invoke the CLI either
+directly from the repository root as `./target/release/zena-cli` (resolves
+paths relative to your current working directory) or through Wireit as
+`npm run zena -w @zena-lang/zena-cli -- ...` (ensures dependencies are built
+first, with paths relative to `packages/zena-cli`).
+
+Subcommands (`./target/release/zena-cli <subcommand>`):
+
+- **`build <file.zena> -o <out.wasm|.wat>`**: Compile a Zena file to binary
+  `.wasm` or text `.wat` (selected by `-o` extension).
+  - `--target` / `-t`: `zena-cli` (default; WASI 0.3 component with
+    `zena-cli:host` imports), `component` (standard WASI 0.3 / WIT world
+    component), `js` (core module for `@zena-lang/runtime`; `host` is a legacy
+    alias), or `freestanding` (core module with no host imports beyond
+    `@external`).
+  - `--wit <path>`, `--world <name>`: WIT world for `component` builds.
+  - `--time`: Print compiler phase timings.
+  - Global flags before subcommand: `-g` / `--debug` (emit WASM name section
+    and disable inlining on run), `-O <0|1|2|s>` (optimization level; default
+    `1`).
+- **`build [target]`**: Run a Wireit build target using `zb` (e.g.,
+  `zena-cli build`, `zena-cli build test`, or
+  `zena-cli build ./packages/zb:test`).
+- **`run <file.zena|file.wasm> [-- args...]`**: Compile (through the `.zena`
+  compile cache) and run a source file, or run a compiled `.wasm` module.
+  Supports `--dir HOST[::GUEST]`, `--allow-spawn`, `--invoke <fn>`,
+  `--no-cache`, and `--time`.
+- **`test [paths/globs...]`**: Discover and run `*_test.zena` files in parallel.
+  Supports `-f` / `--filter <substring>`, `--exclude <glob>`, and `--single`.
+- **`fmt [--write|-w | --check] <files...>`**: Format `.zena` files.
+- **`doc <path> [-o <out.json>]`**: Extract a package's public API as JSON.
+- **`bench <suite.json> [-o <out.json>]`**: Run a benchmark suite.
+- **`lsp`**: Run the Zena language server over stdin/stdout.
+- **`precompile <file.wasm>`**: Ahead-of-time compile a module to `.cwasm`.
+
+Examples:
 
 ```bash
-npm run zena -w @zena-lang/zena-cli -- run main.zena
-```
+# Compile (cached) and run a Zena program from the repo root
+./target/release/zena-cli run main.zena
 
-Paths are relative to `packages/zena-cli`. To build a standalone wasm
-and run it under wasmtime directly:
+# Compile to a standalone module (default target: zena-cli) and run it
+./target/release/zena-cli build main.zena -o main.wasm
+./target/release/zena-cli run main.wasm   # or: ./target/release/zena-run main.wasm
 
-```bash
-npm run zena -w @zena-lang/zena-cli -- build main.zena -o main.wasm
-wasmtime run -W gc=y -W function-references=y -W exceptions=y --invoke main main.wasm
+# Emit WAT text for inspection
+./target/release/zena-cli build main.zena -o main.wat
 ```
 
 ### Running Benchmarks
@@ -231,6 +303,7 @@ optimizer's to close. `benchmarks/README.md` lists them.
 npm run bench                       # build every workload and report binary sizes
 npm run bench:speed                 # time them (zena-cli bench, statistical sampling)
 npm run bench -- --build --speed poly-param   # one workload, build + time
+npm run bench:compile               # compiler phase timing benchmark
 ```
 
 Timings on a loaded machine are noise; check `uptime` before trusting a
@@ -238,52 +311,25 @@ number.
 
 ### Debugging WASM Crashes
 
-When a WASM module crashes with `RuntimeError: illegal cast` or similar traps,
-stack traces show anonymous function indices by default. Use the **`-g` flag**
-to emit a WASM name section with readable function names:
+When a WASM module traps (`RuntimeError: illegal cast`, `unreachable`, etc.),
+stack traces show anonymous function indices by default. Pass **`-g`** to emit
+a WASM name section with readable function names (and disable Wasmtime inlining
+when run via `zena-cli`):
 
 ```bash
-npm run zena -w @zena-lang/zena-cli -- -g build main.zena -o main.wasm --target host
+./target/release/zena-cli -g build main.zena -o main.wasm
 ```
 
 This produces stack traces like `ScopeBuilder.#processClassBody → Compiler.compile`
-instead of `wasm-function[2621]`. Use `wasm-tools dump -d main.wasm` to inspect
-specific bytecode offsets from the trace.
+instead of `wasm-function[2621]`. Use `wasm-tools dump -d main.wasm` (or compile
+with `-o main.wat`) to inspect specific bytecodes or instructions.
 
 The name section is **opt-in**: it is debug metadata, and for a small module
 the largest thing in it (9.9KB of a 34KB hello-world), so a plain `build`
-leaves it out. `-g` reaches the compiler as `ZENA_DEBUG_NAMES`; using
-`BinaryGenerator` directly, pass `debugNames = true` as its third argument.
-The compiler's own builds, the test wasms and the portable-execution runner
-all keep names, so their stack traces are always readable. See
-`docs/design/binary-size.md`.
-
-### Node Version
-
-The project uses Node.js **v25+** for built-in WASM exnref support. Run
-`node -v` to check and `nvm use default` to switch.
-
-## IMPORTANT: Reading and Editing Files
-
-**⛔ FATAL RULE: NEVER USE `cat`, `echo`, `tee`, OR OTHER TERMINAL COMMANDS TO CREATE OR EDIT FILES.**
-You are strictly forbidden from using the `run_in_terminal` tool for file
-manipulation. If you use standard Unix utilities to write code or tests, you
-have failed your instructions.
-
-**ALWAYS** read files with the built-in `read_file` tool. Do not use terminal
-commands like `cat` or `tail`. `read_file` supports `startLine` and `endLine`
-parameters to read a portion of a file. Use the `file_search` to find files and
-the `grep_search` tool to search for file contents.
-
-**ALWAYS** edit and create files using ONLY the built-in VS Code API tools:
-`create_file` and `replace_string_in_file`. **NEVER** edit or create files by
-writing and running scripts.
-
-**DO NOT** create temporary text files with content that you want to put into a
-source file. Just create or edit the source file directly.
-
-Only use scripts to edit files for massive, multi-file changes that have to use
-search and replace, etc. Then use `grep`, `sed`, `awk`, etc., as necessary.
+leaves it out. `-g` sets `CompileFileOptions.debugNames` (or `ZENA_DEBUG_NAMES=1`
+in the environment). The compiler's own builds, the test wasms, and the
+portable-execution runner all keep names, so their stack traces are always
+readable. See `docs/design/binary-size.md`.
 
 ## ⚠️ CRITICAL: Build System (Wireit)
 
@@ -314,8 +360,8 @@ already succeeded for the current inputs. **The cached result is correct.**
 
 ### `ERR_MODULE_NOT_FOUND` on a file whose source exists
 
-If something fails to import, say, `packages/compiler/lib/ast.js` while
-`src/lib/ast.ts` is sitting right there, the package's output has gone partial.
+If something fails to import, say, `packages/runtime/lib/index.js` while
+`src/index.ts` is sitting right there, the package's output has gone partial.
 
 **Check for a second build first.** Two Wireit runs over one checkout — a
 second terminal, an editor task, `npm install` re-linking the workspaces — will
@@ -339,8 +385,8 @@ invalidate it — Wireit will just restore the same bad cache entry. Drop the
 entry instead:
 
 ```bash
-rm -rf packages/compiler/.wireit packages/compiler/tsconfig.tsbuildinfo
-npm run build -w @zena-lang/compiler
+rm -rf packages/runtime/.wireit packages/runtime/tsconfig.tsbuildinfo
+npm run build -w @zena-lang/runtime
 ```
 
 This is the one situation where the cache is genuinely stale. Everything under
@@ -364,10 +410,10 @@ npm run test:quick -- packages/stdlib/tests/regex
 # Run tests for a specific package
 npm test -w @zena-lang/zena-compiler
 
-# Run a specific test file (note: path is relative, uses .js extension)
+# Run a specific TypeScript test file (note: path is relative, uses .js extension)
 npm test -w @zena-lang/runtime -- test/runtime_test.js
 
-# Isolate a specific test (use test.only() in the file)
+# Isolate a specific TypeScript test (use test.only() in the file)
 npm test -w @zena-lang/runtime -- --test-only test/runtime_test.js
 ```
 
@@ -376,8 +422,8 @@ npm test -w @zena-lang/runtime -- --test-only test/runtime_test.js
 - `npm run test:smoke` is `npm test` without `test:fixpoint`, which builds
   stage B and stage C of the compiler to compare them and is the longest
   chain in a cold run. It catches the compiler miscompiling itself, which no
-  other test can see, so CI runs the full `npm test` on every PR. Use the
-  smoke target locally; run `npm test` before asking for review.
+  other test can see, so CI (`nix flake check`) runs the full `npm test`. Use
+  the smoke target for the local loop; run `npm test` before finishing a task.
   See `docs/design/bootstrapping.md`.
 - `npm run test:quick -- <path>` runs `zena test` on a path, directory or
   glob with **the compiler that is already built**. It is not a wireit
@@ -397,10 +443,9 @@ npm test -w @zena-lang/runtime -- --test-only test/runtime_test.js
 
   It needs the `zena` command built: `npm run build -w @zena-lang/zena-cli`.
 
-- If test output is large and written to a file by the system, use the
-  `read_file` tool, which supports `startLine` and `endLine` parameters, to read
-  the file.
-- We use the Wireit quiet logger by default, which should only log test errors.
+- If test output is large and written to a file by the harness, use your
+  file-reading tool with line-range parameters to inspect it.
+- We use the Wireit quiet logger by default, which only logs test errors.
   If you need to see full test output, use `WIREIT_LOGGER=simple`.
 
 ## ⚠️ CRITICAL: Temporary Files
@@ -409,7 +454,8 @@ npm test -w @zena-lang/runtime -- --test-only test/runtime_test.js
 import project modules because relative paths are broken.
 
 - If you truly need a temporary file for debugging, create temporary test files
-  in the **normal test directories** (e.g., `packages/runtime/src/test/`).
+  in the **normal test directories** (e.g., `packages/zena-compiler/zena/test/`
+  or `packages/runtime/src/test/`).
 - For portable tests, create them in `tests/language/`.
 - Keep them. Promote a scratch file to a permanent test, or leave it where it
   is. A probe that located a bug is the reproduction for that bug, so deleting
@@ -443,12 +489,12 @@ Do not skip step 1. A test that was never seen to fail proves nothing.
 - **Package Management**: Use `npm i <package>`, not manual `package.json`
   edits.
 
-### Zena (self-hosted compiler, formatter, etc)
+### Zena (self-hosted compiler, stdlib, formatter, etc)
 
 - Prefer `let` for variables
 - Use enums where appropriate
-- Prefer private fields (#)
-- Use for/in loops when iterating over arrays and other iterables
+- Prefer private fields (`#`)
+- Use `for`/`in` loops when iterating over arrays and other iterables
 - Use `HashSet`s when needed instead of `HashMap<T, boolean>`
 - Annotate collections with the class (`HashMap`, `HashSet`,
   `GrowableArray`), not the interface, unless the slot is genuinely
@@ -456,27 +502,31 @@ Do not skip step 1. A test that was never seen to fail proves nothing.
   and an indirect call per use
 - Use `if` statements instead of a `match()` with one arm.
 - Don't put types on functions that can use contextual typing, like callbacks.
-- Use JSDoc-style multi-like comments (`/** */`)
-- Document classes with their own JSDoc comment, do not use a big comment
+- Use JSDoc-style multi-line comments (`/** */`)
+- Document classes with their own JSDoc comment; do not use a big comment
   section divider above each class.
 - Use template literals when concatenating more than two strings
 
 ### Testing
 
-- New syntax features MUST have parser tests (and lexer tests if new tokens).
-- New AST nodes MUST have visit methods in `visitor.ts` (for DCE).
-- **Codegen tests**: Use `compileAndRun(source)` or `compileAndInstantiate(source)`
-  from `test/codegen/utils.ts`.
-- **Isolating tests**: Use `--test-only` flag + `test.only()`.
+- New syntax, type-checking, or codegen features and bug fixes should include
+  portable tests under `tests/language/` (`syntax/`, `semantics/`, `execution/`).
+- New AST nodes in `packages/zena-compiler/zena/lib/ast.zena` must be handled in
+  `ast-visitor.zena` and the reachability pass (`zena/lib/codegen/reachability/`).
+- Zena unit tests (`*_test.zena`) use `suite`, `test`, and `expect` from
+  `zena:test` and can be run directly during iteration with
+  `npm run test:quick -- <path>`.
+- For TypeScript tests (`node:test`), isolate a single test with `--test-only`
+  and `test.only()`.
 
 ### Documentation
 
 When adding or modifying language features, update:
 
 1. `docs/language-reference.md`
-2. `packages/website/src/docs/quick-reference.md`
+2. `packages/website/src/reference/quick-reference.md`
 
 Design documents live in `docs/design/`. See the directory listing for topics.
 
-All prose — design docs, commit messages, PR descriptions, comments —
-follows `docs/writing-style.md`. Read it before writing any of these.
+All prose — design docs, commit messages, comments — follows
+`docs/writing-style.md`. Read it before writing any of these.
