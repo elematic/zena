@@ -144,9 +144,14 @@ parameter.
   `try` is entered unprotected unless the dispatcher branches to a fresh
   `try_br` carrying that region's handler (async.md §6). Resume blocks
   are not the whole set: a suspending loop's header is a dispatch target
-  too. **This fails silently** — the success path is byte-for-byte
-  plausible and only the throwing path skips the handler — so any change
-  here needs a test that throws, on both sides of the suspension.
+  too, and so is any merge block inside a `try` region that is reached
+  from two or more dispatcher arms (`addRegionMergeTargets` in
+  `generators.zena`, e.g., an inner `try`/`finally` or `for await`
+  finalizer dispatch block whose handler gained a second predecessor from
+  `reenterRegions`). **This fails silently** — the success path is
+  byte-for-byte plausible and only the throwing path skips the handler —
+  so any change here needs a test that throws, on both sides of the
+  suspension.
 - **Determinism is a hard gate.** Stage-2 byte parity (below) fails on
   any iteration-order- or identity-dependent output. No wall-clock, no
   randomness, no hash-order-dependent emission.

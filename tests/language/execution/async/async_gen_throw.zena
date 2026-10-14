@@ -1,0 +1,86 @@
+// @mode: run
+// @result: 42
+// Exceptions in `async gen`: a throw before suspending in `next()`
+// unwinds synchronously to the caller; a throw after resuming from an
+// `await` rejects the pending step future. Both paths run enclosing
+// `finally` blocks and mark the generator exhausted (`Done`) afterwards.
+
+import {
+  Future, Completer, AsyncIterator, scheduleMicrotask,
+} from 'zena:async';
+
+var trace = '';
+
+let delay = (v: i32): Future<i32> => {
+  let c = new Completer<i32>();
+  scheduleMicrotask(() => {
+    c.complete(v);
+  });
+  return c.future;
+};
+
+async gen function throwsSync(): AsyncIterator<i32> {
+  try {
+    trace += 's1:';
+    yield 1;
+    trace += 's2:';
+    throw new Error('sync boom');
+  } finally {
+    trace += 'sf:';
+  }
+}
+
+async gen function throwsAsync(): AsyncIterator<i32> {
+  try {
+    trace += 'a1:';
+    let v = await delay(10);
+    trace += 'a2:';
+    yield v;
+    let w = await delay(20);
+    trace += 'a3:';
+    throw new Error('async boom');
+  } finally {
+    trace += 'af:';
+  }
+}
+
+export let main = async (): Future<i32> => {
+  var syncSum = 0;
+  var syncCaught = false;
+  let it1 = throwsSync();
+  try {
+    for await (let x in it1) {
+      syncSum += x;
+    }
+  } catch (e) {
+    syncCaught = true;
+  }
+  if (!syncCaught || syncSum != 1 || trace != 's1:s2:sf:') {
+    return 1;
+  }
+  // Subsequent next() after throw returns Done.
+  if (let (0, _, _) = it1.next()) {
+  } else {
+    return 2;
+  }
+
+  var asyncSum = 0;
+  var asyncCaught = false;
+  let it2 = throwsAsync();
+  try {
+    for await (let x in it2) {
+      asyncSum += x;
+    }
+  } catch (e) {
+    asyncCaught = true;
+  }
+  if (!asyncCaught || asyncSum != 10 || trace != 's1:s2:sf:a1:a2:a3:af:') {
+    return 3;
+  }
+  if (let (0, _, _) = it2.next()) {
+  } else {
+    return 4;
+  }
+
+  return 42;
+};

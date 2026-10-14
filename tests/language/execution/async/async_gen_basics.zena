@@ -1,0 +1,120 @@
+// @mode: run
+// @result: 42
+// `async gen` functions, arrows, and methods lower to `AsyncIterator<T>`
+// state machines (docs/design/async-iteration.md): a step that reaches
+// `yield` without awaiting returns `Ready` `(1, value, _)` synchronously;
+// a step that suspends at `await` allocates one `Future<Option<T>>` (reused
+// across multiple awaits within the same step) and returns `Pending`
+// `(2, _, future)`; and completion resolves that future with `None` (or
+// returns `Done` `(0, _, _)` when reached synchronously).
+
+import {
+  Future, Completer, AsyncIterator, scheduleMicrotask,
+} from 'zena:async';
+
+let delay = <T>(value: T): Future<T> => {
+  let c = new Completer<T>();
+  scheduleMicrotask(() => {
+    c.complete(value);
+  });
+  return c.future;
+};
+
+async gen function mixedSteps(): AsyncIterator<i32> {
+  // Step 1: synchronous Ready(10).
+  yield 10;
+  // Step 2: two awaits before yielding -> one Pending future settling to Some(25).
+  let a = await delay(12);
+  let b = await delay(13);
+  yield a + b;
+  // Step 3: synchronous Ready(5) right after an awaited yield.
+  yield 5;
+  // Step 4: await before falling off the end -> Pending settling to None.
+  let ignored = await delay(0);
+}
+
+async gen function doubled(src: AsyncIterator<i32>): AsyncIterator<i32> {
+  for await (let x in src) {
+    yield x * 2;
+  }
+}
+
+class Greeter {
+  #prefix: String;
+  new(prefix: String) : #prefix = prefix;
+
+  async gen greet(names: FixedArray<String>): AsyncIterator<String> {
+    yield this.#prefix;
+    for (var i = 0; i < names.length; i += 1) {
+      let n = await delay(names[i]);
+      yield this.#prefix + ':' + n;
+    }
+  }
+}
+
+export let main = async (): Future<i32> => {
+  // 1. Direct inspection of Ready / Pending / Done discriminants.
+  let it = mixedSteps();
+  if (let (1, v1, _) = it.next()) {
+    if (v1 != 10) { return 1; }
+  } else {
+    return 2;
+  }
+  if (let (2, _, f2) = it.next()) {
+    let opt2 = await f2;
+    if (opt2 is Some<i32>) {
+      if ((opt2 as Some<i32>).value != 25) { return 3; }
+    } else {
+      return 4;
+    }
+  } else {
+    return 5;
+  }
+  if (let (1, v3, _) = it.next()) {
+    if (v3 != 5) { return 6; }
+  } else {
+    return 7;
+  }
+  if (let (2, _, f4) = it.next()) {
+    let opt4 = await f4;
+    if (opt4 is Some<i32>) { return 8; }
+  } else {
+    return 9;
+  }
+  if (let (0, _, _) = it.next()) {
+    // Exhausted iterator stays Done synchronously.
+  } else {
+    return 10;
+  }
+
+  // 2. Consuming via `for await` and chaining through a second `async gen`.
+  var sum = 0;
+  for await (let x in doubled(mixedSteps())) {
+    sum += x;
+  }
+  // (10 + 25 + 5) * 2 == 80
+  if (sum != 80) { return 11; }
+
+  // 3. `async gen` arrow and reference-typed yields (`String`).
+  let arrowGen = async gen (base: i32) => {
+    yield base;
+    yield await delay(base + 1);
+  };
+  var arrowSum = 0;
+  for await (let x in arrowGen(20)) {
+    arrowSum += x;
+  }
+  if (arrowSum != 41) { return 12; }
+
+  let g = new Greeter('hi');
+  var joined = '';
+  for await (let s in g.greet(['a', 'b'])) {
+    if (joined.length > 0) {
+      joined += ',';
+    }
+    joined += s;
+  }
+  if (joined != 'hi,hi:a,hi:b') { return 13; }
+
+  return 42;
+};

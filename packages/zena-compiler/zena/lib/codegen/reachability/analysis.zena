@@ -309,6 +309,10 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
   var iteratorForInReached: boolean = false;
   /** Whether a reached body creates a generator — the other half. */
   var generatorReached: boolean = false;
+  /** Whether a reached body creates an async generator (`async gen`).
+   * Together with `iteratorForInReached`, this also enables scope
+   * cancellation so `for await` disposal cancels in-flight async work. */
+  var asyncGeneratorReached: boolean = false;
   /** Every async function's frame Future instantiation, recorded so a
    * cause discovered late can still equip every frame. */
   asyncFrameFutures = new Array<Type>();
@@ -322,6 +326,9 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
    * fixpoint still terminates.
    */
   activateCancellationMachinery(): void {
+    if (this.iteratorForInReached && this.asyncGeneratorReached) {
+      this.cancellationPossible = true;
+    }
     if (this.cancellationMachineryActive || !this.cancellationPossible) {
       return;
     }
@@ -1880,11 +1887,18 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
     while (lateVtRound) {
       lateVtRound = this.#buildClassInterfaceVTables();
       this.#settleQueues();
+      let wasCancelActive = this.cancellationMachineryActive;
+      let wasDisposeActive = this.wasm.generatorDisposalActive;
       this.activateCancellationMachinery();
       // Generator disposal activates here too: its exception-infra
       // mint queues reaches, and the loop's next round drains them
       // (the activation is once-only, so the fixpoint terminates).
       this.activateGeneratorDisposal();
+      if (this.cancellationMachineryActive != wasCancelActive ||
+          this.wasm.generatorDisposalActive != wasDisposeActive) {
+        this.#settleQueues();
+        lateVtRound = true;
+      }
     }
 
     // Discovery is settled. Catch layout up with anything the vtable
@@ -3578,6 +3592,9 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
     }
     if (deps.createsGenerator) {
       this.generatorReached = true;
+    }
+    if (deps.createsAsyncGenerator) {
+      this.asyncGeneratorReached = true;
     }
 
     // Enclosing locals assigned inside a `try` body live in heap cells,

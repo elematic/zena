@@ -18,13 +18,14 @@
  * ```
  */
 
-import { Completer } from 'zena:async';
+import { Completer, AsyncStep, AsyncIterator, AsyncIterable } from 'zena:async';
 
 /** The write capability's entry points, unexported so a `Stream`
  * reference cannot reach them (docs/design/classes.md §9.4). */
 symbol write;
 symbol writeAll;
 symbol close;
+symbol nextStep;
 
 /**
  * The readable end.
@@ -35,7 +36,7 @@ symbol close;
  * buffer belongs to the caller: a read overwrites a prefix and
  * reports the count, and only `[0, count)` is meaningful.
  */
-export class Stream<T> {
+export class Stream<T> implements AsyncIterable<T> {
   /** The one pending write: its slice, the cursor into it, and the
    * future its writer awaits. The slice belongs to the stream until
    * the write's future completes; reads drain from `#writeOffset`,
@@ -295,6 +296,47 @@ export class Stream<T> {
       this.#pendingOne = null;
       (pendingOne as Completer<Option<T>>).complete(none);
     }
+  }
+
+  [AsyncIterable.asyncIterator](): AsyncIterator<T> {
+    return new StreamIterator<T>(this);
+  }
+
+  /**
+   * One `AsyncStep<T>` for `AsyncIterator`: drains an in-flight batch
+   * slice synchronously as `Ready` steps (`(1, value, _)`), returns
+   * `Done` (`(0, _, _)`) when closed or stopped, and parks a single
+   * `Pending` future (`(2, _, this.readOne())`) only when awaiting the
+   * next write.
+   */
+  [nextStep](): AsyncStep<T> {
+    if (this.#pendingRead != null || this.#pendingOne != null) {
+      throw new Error('zena:stream: one read may be pending at a time');
+    }
+    if (this.#stopped) {
+      return (0, _, _);
+    }
+    let src = this.#writeBuf;
+    if (src != null) {
+      let from = src as FixedArray<T>;
+      let value = from[this.#writeOffset];
+      this.#writeOffset += 1;
+      this.#completeIfDrained();
+      return (1, value, _);
+    }
+    if (this.#closed) {
+      return (0, _, _);
+    }
+    return (2, _, this.readOne());
+  }
+}
+
+final class StreamIterator<T> implements AsyncIterator<T> {
+  #stream: Stream<T>;
+  new(stream: Stream<T>) : #stream = stream;
+
+  next(): AsyncStep<T> {
+    return this.#stream.[nextStep]();
   }
 }
 

@@ -9,7 +9,8 @@
  * and seams. Bodies are streaming's shapes.
  */
 import {
-  getClassKey, getClassMethodKey, getClassPrivateFieldKey, unwrapAliases, pendingSomeClass,
+  getClassKey, getClassMethodKey, getClassPrivateFieldKey, unwrapAliases,
+  pendingSomeClass, parseI64OrU64Literal,
 } from '../codegen-utils.zena';
 import {
   BindingPattern, BlockStatement, BooleanLiteral, CatchClause, ClassDeclaration, Expression, FieldDefinition, ForStatement, Identifier, IfExpression, IfStatement, LetPatternCondition, LiteralPattern, MatchExpression, Node, Statement, ThrowExpression, TryExpression, TuplePattern, UsingStatement, ShieldedStatement, VariableDeclaration, WhileStatement, ExpressionStatement, NullLiteral, NumberLiteral, StringLiteral, BinaryExpression, CallExpression, ForInStatement, IdentifierPattern, IndexExpression, MemberExpression, RangeExpression,
@@ -94,6 +95,8 @@ export let lowerLetCondition = (cx: LoweringContext, lpc: LetPatternCondition): 
   }
   // A literal `false` first element matches when the flag is 0:
   // invert. Literal `true` and plain bindings take the flag as-is.
+  // Numeric discriminants (`0`, `1`, `2` in `Step` / `AsyncStep`)
+  // compare against the literal value.
   // The `let` is explicit here, so the element is a LiteralPattern; the
   // bare-literal form is still accepted for patterns built elsewhere.
   var first = pat.elements[0];
@@ -103,6 +106,13 @@ export let lowerLetCondition = (cx: LoweringContext, lpc: LetPatternCondition): 
   if (first is BooleanLiteral) {
     if (!first.value) {
       cond = cx.b.emit(IrOp.i32_eqz, new ValTypeI32(), cond, -1);
+    }
+  } else if (first is NumberLiteral) {
+    if (let (true, parsed) = parseI64OrU64Literal(first.raw)) {
+      let lit = cx.b.constI32(parsed as i32, new ValTypeI32());
+      cond = cx.b.binary(IrOp.i32_eq, new ValTypeI32(), cond, lit);
+    } else {
+      bail(cx, 'unparseable pattern literal');
     }
   }
   let syms = new Array<Symbol>();

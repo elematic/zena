@@ -5,7 +5,7 @@
 // generate.
 import {suite, test, TestContext} from 'zena:test';
 import {equal, isTrue, isFalse} from 'zena:assert';
-import {drainMicrotasks, runFuture} from 'zena:async';
+import {drainMicrotasks, runFuture, AsyncIterable} from 'zena:async';
 import {Stream, StreamWriter, readAllText, textStream} from 'zena:stream';
 
 class Item {
@@ -240,5 +240,74 @@ export let tests = suite('Stream', (): void => {
 
     isTrue(runFuture(wa));
     equal(runFuture(total), 660);
+  });
+
+  test('Stream implements AsyncIterable for for-await consumption', (ctx: TestContext): void => {
+    let w = new StreamWriter<String>();
+    let consumeAll = async (s: Stream<String>): Future<String> => {
+      var out = '';
+      for await (let chunk in s) {
+        if (out.length > 0) {
+          out += ',';
+        }
+        out += chunk;
+      }
+      return out;
+    };
+
+    let done = consumeAll(w.stream);
+    drainMicrotasks();
+    isFalse(done.isCompleted);
+
+    let w1 = w.write('first');
+    drainMicrotasks();
+    isTrue(runFuture(w1));
+
+    let batch = new Array<String>.fixed(3, '');
+    batch[0] = 'second';
+    batch[1] = 'third';
+    batch[2] = 'fourth';
+    let w2 = w.writeAll(batch);
+    drainMicrotasks();
+    isTrue(runFuture(w2));
+
+    w.close();
+    equal(runFuture(done), 'first,second,third,fourth');
+  });
+
+  test('Stream AsyncIterator yields Ready steps across a parked batch write', (ctx: TestContext): void => {
+    let w = new StreamWriter<i32>();
+    let batch = new Array<i32>.fixed(3, 0);
+    batch[0] = 10;
+    batch[1] = 20;
+    batch[2] = 30;
+    let wb = w.writeAll(batch);
+    w.close();
+
+    let iter = w.stream.[AsyncIterable.asyncIterator]();
+    // All 3 elements are already in the parked batch slice -> Ready steps.
+    if (let (1, v0, _) = iter.next()) {
+      equal(v0, 10);
+    } else {
+      isTrue(false);
+    }
+    if (let (1, v1, _) = iter.next()) {
+      equal(v1, 20);
+    } else {
+      isTrue(false);
+    }
+    isFalse(wb.isCompleted);
+    if (let (1, v2, _) = iter.next()) {
+      equal(v2, 30);
+    } else {
+      isTrue(false);
+    }
+    isTrue(runFuture(wb));
+    // Stream is closed and drained -> Done step synchronously.
+    if (let (0, _, _) = iter.next()) {
+      isTrue(true);
+    } else {
+      isTrue(false);
+    }
   });
 });

@@ -8,7 +8,7 @@ import {
   TupleType, InlineTupleType, UnionType, TypeParameterType, FunctionType, UnknownType, typeToString,
   MixinType, MixinKey, instantiateClassType, TypeAliasType, ErrorType, HoleType, NeverType, ThisType,
   AnyRefType, EqRefType, StringLiteralType, NumLiteralType, baseType, ErasedType,
-  countTypeKey, countCodegenFunctionType, internFunctionType } from '../types.zena';
+  MethodInfo, countTypeKey, countCodegenFunctionType, internFunctionType } from '../types.zena';
 import { SemanticModel } from '../semantic-model.zena';
 import { Symbol, noSymbolId } from '../scope/symbol.zena';
 import { Program, CompilationUnit } from '../program.zena';
@@ -313,6 +313,21 @@ export let isConcrete = (t: Type): boolean => {
         if (!isConcrete(p)) { concrete = false; }
       }
       if (!isConcrete(ft.returnType)) { concrete = false; }
+      concrete
+    }
+    case TypeAliasType as ta: {
+      var concrete = true;
+      let targs = ta.typeArguments;
+      if (targs != null) {
+        for (let arg in targs) {
+          if (!isConcrete(arg)) { concrete = false; }
+        }
+      }
+      if (concrete && !ta.resolving) {
+        ta.resolving = true;
+        if (!isConcrete(ta.target)) { concrete = false; }
+        ta.resolving = false;
+      }
       concrete
     }
     case _: true
@@ -1547,10 +1562,31 @@ export let pendingSomeClass = (pendingFuture: ClassType): ClassType | null => {
   if (args == null || args.length != 1) {
     return null;
   }
-  let option = args[0];
+  let option = unwrapAliases(args[0]);
   if (option is UnionType) {
     for (let member in option.types) {
       if (member is ClassType && member.name == 'Some') {
+        return member;
+      }
+    }
+  }
+  return null;
+};
+
+/**
+ * `None`, out of the `Future<Option<V>>` a Pending iteration step
+ * carries: the exhausted-step member of `Option<V>`. Null for anything
+ * else.
+ */
+export let pendingNoneClass = (pendingFuture: ClassType): ClassType | null => {
+  let args = pendingFuture.typeArguments;
+  if (args == null || args.length != 1) {
+    return null;
+  }
+  let option = unwrapAliases(args[0]);
+  if (option is UnionType) {
+    for (let member in option.types) {
+      if (member is ClassType && member.name == 'None') {
         return member;
       }
     }

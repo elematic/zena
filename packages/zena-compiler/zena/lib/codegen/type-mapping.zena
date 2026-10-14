@@ -17,6 +17,7 @@ import {
 import { compareStrings, presentWordCount, presentWordName, getSignatureKey } from './codegen-utils.zena';
 import {
   getMemberRootClass, getClassKey, getClassMethodKey, getInterfaceKey, InterfaceKey, CellKey, ClosureKey,
+  unwrapAliases,
 } from './codegen-utils.zena';
 import { HashMap } from 'zena:collections';
 
@@ -2237,4 +2238,41 @@ export let isWasmSubtypeWithStructs = (sub: ValType, superType: ValType): boolea
   case _: valTypeToOpcode(sub) == valTypeToOpcode(superType)
 };
 
-
+/**
+ * `Future<Option<V>>`, out of an `AsyncIterator<V>` instantiation: the
+ * future carried by the Pending arm (`inline (2, _, Future<Option<V>>)`)
+ * of `next(): AsyncStep<V>`, with `V` substituted at `iterType`'s type
+ * arguments. Null for a synchronous `Iterator<V>` or anything else.
+ */
+export let asyncIteratorPendingFuture = (
+  wasm: WasmModule,
+  iterType: InterfaceType
+): ClassType | null => {
+  if (!iterType.members.has('next')) {
+    return null;
+  }
+  let mi = iterType.members['next'];
+  if (!(mi is MethodInfo) || !(mi.type is FunctionType)) {
+    return null;
+  }
+  let itParams = getInterfaceTypeParameters(iterType);
+  let resolvedFt = substituteTypeParamsInCodegen(
+      wasm, itParams, iterType.typeArguments, mi.type) as FunctionType;
+  let stepT = unwrapAliases(resolvedFt.returnType);
+  if (!(stepT is UnionType)) {
+    return null;
+  }
+  for (let arm in (stepT as UnionType).types) {
+    let rawArm = unwrapAliases(arm);
+    if (rawArm is InlineTupleType) {
+      let elems = (rawArm as InlineTupleType).elementTypes;
+      if (elems.length == 3) {
+        let third = unwrapAliases(elems[2]);
+        if (third is ClassType) {
+          return third as ClassType;
+        }
+      }
+    }
+  }
+  return null;
+};
