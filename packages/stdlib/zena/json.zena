@@ -20,7 +20,6 @@
  */
 
 import { StringReader, StringBuilder } from 'zena:core';
-import {div} from 'zena:math';
 
 // === Source Location ===
 
@@ -53,9 +52,6 @@ export class JsonObject {
         else { null } {}
 
   operator [](key: String): JsonValue {
-    if (!this.#fields.has(key)) {
-      return null;
-    }
     return this.#fields.getOr(key, null);
   }
 
@@ -188,7 +184,7 @@ export class JsonObject {
 
   // Serialize to JSON string
   stringify(): String {
-    let sb = new StringBuilder();
+    let sb = new StringBuilder(64);
     stringifyObject(sb, this, null, 0);
     return sb.toString();
   }
@@ -245,7 +241,7 @@ export class JsonArray {
 
   // Serialize to JSON string
   stringify(): String {
-    let sb = new StringBuilder();
+    let sb = new StringBuilder(64);
     stringifyArray(sb, this, null, 0);
     return sb.toString();
   }
@@ -253,48 +249,57 @@ export class JsonArray {
 
 // === JSON Stringify Helpers ===
 
-let escapeJsonString = (sb: StringBuilder, s: String): void => {
-  sb.append("\"");
-  var i = 0;
-  let len = s.length;
-  while (i < len) {
-    let b = s.getByteAt(i);
-    if (b == 34) {
-      // " -> \"
-      sb.append("\\\"");
-    } else if (b == 92) {
-      // \ -> \\
-      sb.append("\\\\");
-    } else if (b == 10) {
-      // newline -> \n
-      sb.append("\\n");
-    } else if (b == 13) {
-      // carriage return -> \r
-      sb.append("\\r");
-    } else if (b == 9) {
-      // tab -> \t
-      sb.append("\\t");
-    } else if (b < 32) {
-      // Other control characters -> \u00XX
-      sb.append("\\u00");
-      let high = div(b, 16);
-      let low = b % 16;
-      sb.appendByte(hexDigit(high));
-      sb.appendByte(hexDigit(low));
-    } else {
-      sb.appendByte(b);
-    }
-    i += 1;
-  }
-  sb.append("\"");
-};
-
 let hexDigit = (n: i32): i32 => {
   if (n < 10) {
     return 48 + n;  // '0' = 48
   } else {
     return 97 + n - 10;  // 'a' = 97
   }
+};
+
+let escapeJsonString = (sb: StringBuilder, s: String): void => {
+  sb.appendByte(34);
+  var i = 0;
+  var spanStart = 0;
+  let len = s.length;
+  while (i < len) {
+    let b = s.getByteAt(i);
+    if (b >= 32 && b != 34 && b != 92) {
+      i += 1;
+      continue;
+    }
+    if (i > spanStart) {
+      sb.appendSlice(s, spanStart, i);
+    }
+    if (b == 34) {
+      // " -> \"
+      sb.appendByte2(92, 34);
+    } else if (b == 92) {
+      // \ -> \\
+      sb.appendByte2(92, 92);
+    } else if (b == 10) {
+      // newline -> \n
+      sb.appendByte2(92, 110);
+    } else if (b == 13) {
+      // carriage return -> \r
+      sb.appendByte2(92, 114);
+    } else if (b == 9) {
+      // tab -> \t
+      sb.appendByte2(92, 116);
+    } else {
+      // Other control characters -> \u00XX
+      sb.append("\\u00");
+      sb.appendByte2(hexDigit(b >> 4), hexDigit(b & 15));
+    }
+    i += 1;
+    spanStart = i;
+  }
+  if (spanStart == 0) {
+    sb.append(s);
+  } else if (i > spanStart) {
+    sb.appendSlice(s, spanStart, i);
+  }
+  sb.appendByte(34);
 };
 
 let stringifyI32 = (sb: StringBuilder, n: i32): void => {
@@ -360,40 +365,38 @@ let stringifyObject = (sb: StringBuilder, obj: JsonObject, indent: String | null
   if (indent != null) {
     // Pretty-print mode
     if (obj.size == 0) {
-      sb.append("{}");
+      sb.appendByte2(123, 125);
       return;
     }
-    sb.append("{");
-    sb.append("\n");
+    sb.appendByte2(123, 10);
     var first = true;
     obj.forEach((key: String, value: JsonValue) => {
       if (!first) {
-        sb.append(",");
-        sb.append("\n");
+        sb.appendByte2(44, 10);
       }
       first = false;
       writeIndent(sb, indent, depth + 1);
       escapeJsonString(sb, key);
-      sb.append(": ");
+      sb.appendByte2(58, 32);
       stringifyValue(sb, value, indent, depth + 1);
     });
-    sb.append("\n");
+    sb.appendByte(10);
     writeIndent(sb, indent, depth);
-    sb.append("}");
+    sb.appendByte(125);
   } else {
     // Compact mode
-    sb.append("{");
+    sb.appendByte(123);
     var first = true;
     obj.forEach((key: String, value: JsonValue) => {
       if (!first) {
-        sb.append(",");
+        sb.appendByte(44);
       }
       first = false;
       escapeJsonString(sb, key);
-      sb.append(":");
+      sb.appendByte(58);
       stringifyValue(sb, value, null, 0);
     });
-    sb.append("}");
+    sb.appendByte(125);
   }
 };
 
@@ -402,36 +405,34 @@ let stringifyArray = (sb: StringBuilder, arr: JsonArray, indent: String | null, 
   if (indent != null) {
     // Pretty-print mode
     if (len == 0) {
-      sb.append("[]");
+      sb.appendByte2(91, 93);
       return;
     }
-    sb.append("[");
-    sb.append("\n");
+    sb.appendByte2(91, 10);
     var i = 0;
     while (i < len) {
       if (i > 0) {
-        sb.append(",");
-        sb.append("\n");
+        sb.appendByte2(44, 10);
       }
       writeIndent(sb, indent, depth + 1);
       stringifyValue(sb, arr[i], indent, depth + 1);
       i += 1;
     }
-    sb.append("\n");
+    sb.appendByte(10);
     writeIndent(sb, indent, depth);
-    sb.append("]");
+    sb.appendByte(93);
   } else {
     // Compact mode
-    sb.append("[");
+    sb.appendByte(91);
     var i = 0;
     while (i < len) {
       if (i > 0) {
-        sb.append(",");
+        sb.appendByte(44);
       }
       stringifyValue(sb, arr[i], null, 0);
       i += 1;
     }
-    sb.append("]");
+    sb.appendByte(93);
   }
 };
 
@@ -441,10 +442,10 @@ let stringifyArray = (sb: StringBuilder, arr: JsonArray, indent: String | null, 
  * @param indent Optional indentation string for pretty-printing (e.g., "  " or "\t")
  */
 export let stringify = (value: JsonValue, indent: String | null = null): String => {
-  let sb = new StringBuilder();
+  let sb = new StringBuilder(64);
   stringifyValue(sb, value, indent, 0);
   if (indent != null) {
-    sb.append("\n");
+    sb.appendByte(10);
   }
   return sb.toString();
 };
@@ -498,7 +499,9 @@ let appendUtf8 = (out: StringBuilder, code: i32): void => {
 };
 
 class JsonParser {
-  #reader: StringReader;
+  #input: String;
+  #len: i32;
+  var #pos: i32 = 0;
   #allowComments: boolean;
   #trackLocations: boolean;
   var #line = 1;
@@ -506,7 +509,8 @@ class JsonParser {
   var #lineStart = 0;  // byte position where current line started
 
   new(input: String, options: JsonOptions | null)
-    : #reader = new StringReader(input),
+    : #input = input,
+      #len = input.length,
       #allowComments = options?.allowComments ?? false,
       #trackLocations = options?.trackLocations ?? false
   {}
@@ -515,14 +519,29 @@ class JsonParser {
     this.#skipWhitespaceAndComments();
     let value = this.#parseValue();
     this.#skipWhitespaceAndComments();
-    if (!this.#reader.isAtEnd) {
+    if (this.#pos < this.#len) {
       this.#error("Unexpected content after JSON value");
     }
     return value;
   }
 
+  #peekByte(): i32 {
+    if (this.#pos >= this.#len) {
+      return -1;
+    }
+    return this.#input.getByteAt(this.#pos);
+  }
+
+  #peekByteAt(offset: i32): i32 {
+    let idx = this.#pos + offset;
+    if (idx < 0 || idx >= this.#len) {
+      return -1;
+    }
+    return this.#input.getByteAt(idx);
+  }
+
   #parseValue(): JsonValue {
-    let b = this.#reader.peekByte();
+    let b = this.#peekByte();
     
     if (b == 123) {  // '{'
       return this.#parseObject();
@@ -561,7 +580,7 @@ class JsonParser {
     this.#expect(123);  // '{'
     this.#skipWhitespaceAndComments();
     
-    if (this.#reader.peekByte() == 125) {  // '}'
+    if (this.#peekByte() == 125) {  // '}'
       this.#advance();
       return obj;
     }
@@ -570,7 +589,7 @@ class JsonParser {
       this.#skipWhitespaceAndComments();
       
       // Parse key
-      if (this.#reader.peekByte() != 34) {  // '"'
+      if (this.#peekByte() != 34) {  // '"'
         this.#error("Expected string key");
       }
       let key = this.#parseString();
@@ -595,7 +614,7 @@ class JsonParser {
       
       this.#skipWhitespaceAndComments();
       
-      let next = this.#reader.peekByte();
+      let next = this.#peekByte();
       if (next == 125) {  // '}'
         this.#advance();
         return obj;
@@ -621,7 +640,7 @@ class JsonParser {
     this.#expect(91);  // '['
     this.#skipWhitespaceAndComments();
     
-    if (this.#reader.peekByte() == 93) {  // ']'
+    if (this.#peekByte() == 93) {  // ']'
       this.#advance();
       return arr;
     }
@@ -645,7 +664,7 @@ class JsonParser {
       
       this.#skipWhitespaceAndComments();
       
-      let next = this.#reader.peekByte();
+      let next = this.#peekByte();
       if (next == 93) {  // ']'
         this.#advance();
         return arr;
@@ -664,50 +683,63 @@ class JsonParser {
   #parseString(): String {
     this.#expect(34);  // '"'
     
-    let start = this.#reader.mark();
+    let input = this.#input;
+    let len = this.#len;
+    let start = this.#pos;
+    var pos = start;
     var hasEscape = false;
     
-    while (true) {
-      let b = this.#reader.peekByte();
-      if (b == 0 - 1) {
-        this.#error("Unterminated string");
+    while (pos < len) {
+      let b = input.getByteAt(pos);
+      if (b >= 32 && b != 34 && b != 92) {
+        pos += 1;
+        continue;
       }
       if (b == 34) {  // '"'
-        break;
+        let raw = input.sliceBytes(start, pos);
+        this.#pos = pos + 1;
+        this.#column += (pos - start) + 1;
+        if (hasEscape) {
+          return this.#unescapeString(raw);
+        }
+        return raw;
       }
       if (b == 92) {  // '\\'
         hasEscape = true;
-        this.#advance();
+        pos += 1;
         // Skip the escaped character
-        if (this.#reader.isAtEnd) {
+        if (pos >= len) {
+          this.#pos = pos;
+          this.#column += pos - start;
           this.#error("Unterminated escape sequence");
         }
-        this.#advance();
-      } else if (b < 32) {
-        this.#error("Control character in string");
+        pos += 1;
       } else {
-        this.#advance();
+        this.#pos = pos;
+        this.#column += pos - start;
+        this.#error("Control character in string");
       }
     }
     
-    let raw = this.#reader.sliceFrom(start);
-    this.#expect(34);  // '"'
-    
-    if (hasEscape) {
-      return this.#unescapeString(raw);
-    }
-    return raw;
+    this.#pos = pos;
+    this.#column += pos - start;
+    this.#error("Unterminated string");
+    return "";
   }
 
   #unescapeString(raw: String): String {
-    let out = new StringBuilder();
+    let rawLen = raw.length;
+    let out = new StringBuilder(rawLen);
     var i = 0;
-    while (i < raw.length) {
+    var spanStart = 0;
+    while (i < rawLen) {
       let b = raw.getByteAt(i);
-      if (b != 92) {  // not '\\': copied as it is
-        out.appendByte(b);
+      if (b != 92) {  // not '\\': scan ahead
         i += 1;
         continue;
+      }
+      if (i > spanStart) {
+        out.appendSlice(raw, spanStart, i);
       }
       let escaped = raw.getByteAt(i + 1);
       i += 2;
@@ -726,7 +758,7 @@ class JsonParser {
         i += 4;
         // A high surrogate followed by an escaped low one is one code
         // point, which is how JSON writes anything past U+FFFF.
-        if (code >= 0xD800 && code <= 0xDBFF && i + 5 < raw.length &&
+        if (code >= 0xD800 && code <= 0xDBFF && i + 5 < rawLen &&
             raw.getByteAt(i) == 92 && raw.getByteAt(i + 1) == 117) {
           let low = this.#hexUnit(raw, i + 2);
           if (low >= 0xDC00 && low <= 0xDFFF) {
@@ -742,6 +774,10 @@ class JsonParser {
       } else {                      // '"', '\\' and '/' stand for themselves
         out.appendByte(escaped);
       }
+      spanStart = i;
+    }
+    if (i > spanStart) {
+      out.appendSlice(raw, spanStart, i);
     }
     return out.toString();
   }
@@ -770,73 +806,114 @@ class JsonParser {
   }
 
   #parseNumber(): Box<f64> {
-    let start = this.#reader.mark();
+    let input = this.#input;
+    let len = this.#len;
+    let start = this.#pos;
+    var pos = start;
+    var negative = false;
     
     // Optional minus
-    if (this.#reader.peekByte() == 45) {  // '-'
-      this.#advance();
+    if (pos < len && input.getByteAt(pos) == 45) {  // '-'
+      negative = true;
+      pos += 1;
     }
     
     // Integer part
-    let first = this.#reader.peekByte();
+    let intStart = pos;
+    var intAcc: i64 = 0 as i64;
+    if (pos >= len) {
+      this.#pos = pos;
+      this.#column += pos - start;
+      this.#error("Invalid number");
+    }
+    let first = input.getByteAt(pos);
     if (first == 48) {  // '0'
-      this.#advance();
+      pos += 1;
     } else if (first >= 49 && first <= 57) {  // '1'-'9'
-      this.#advance();
-      while (true) {
-        let b = this.#reader.peekByte();
+      intAcc = (first - 48) as i64;
+      pos += 1;
+      while (pos < len) {
+        let b = input.getByteAt(pos);
         if (b >= 48 && b <= 57) {
-          this.#advance();
+          intAcc = intAcc * (10 as i64) + ((b - 48) as i64);
+          pos += 1;
         } else {
           break;
         }
       }
     } else {
+      this.#pos = pos;
+      this.#column += pos - start;
       this.#error("Invalid number");
     }
+    let intDigits = pos - intStart;
     
+    var isFloat = false;
     // Fractional part
-    if (this.#reader.peekByte() == 46) {  // '.'
-      this.#advance();
+    if (pos < len && input.getByteAt(pos) == 46) {  // '.'
+      isFloat = true;
+      pos += 1;
       var hasDigit = false;
-      while (true) {
-        let b = this.#reader.peekByte();
+      while (pos < len) {
+        let b = input.getByteAt(pos);
         if (b >= 48 && b <= 57) {
-          this.#advance();
+          pos += 1;
           hasDigit = true;
         } else {
           break;
         }
       }
       if (!hasDigit) {
+        this.#pos = pos;
+        this.#column += pos - start;
         this.#error("Invalid number: expected digit after decimal point");
       }
     }
     
     // Exponent part
-    let e = this.#reader.peekByte();
-    if (e == 101 || e == 69) {  // 'e' or 'E'
-      this.#advance();
-      let sign = this.#reader.peekByte();
-      if (sign == 43 || sign == 45) {  // '+' or '-'
-        this.#advance();
-      }
-      var hasExpDigit = false;
-      while (true) {
-        let b = this.#reader.peekByte();
-        if (b >= 48 && b <= 57) {
-          this.#advance();
-          hasExpDigit = true;
-        } else {
-          break;
+    if (pos < len) {
+      let e = input.getByteAt(pos);
+      if (e == 101 || e == 69) {  // 'e' or 'E'
+        isFloat = true;
+        pos += 1;
+        if (pos < len) {
+          let sign = input.getByteAt(pos);
+          if (sign == 43 || sign == 45) {  // '+' or '-'
+            pos += 1;
+          }
         }
-      }
-      if (!hasExpDigit) {
-        this.#error("Invalid number: expected digit in exponent");
+        var hasExpDigit = false;
+        while (pos < len) {
+          let b = input.getByteAt(pos);
+          if (b >= 48 && b <= 57) {
+            pos += 1;
+            hasExpDigit = true;
+          } else {
+            break;
+          }
+        }
+        if (!hasExpDigit) {
+          this.#pos = pos;
+          this.#column += pos - start;
+          this.#error("Invalid number: expected digit in exponent");
+        }
       }
     }
     
-    let numStr = this.#reader.sliceFrom(start);
+    this.#pos = pos;
+    this.#column += pos - start;
+
+    if (!isFloat && intDigits <= 18) {
+      if (negative) {
+        if (intAcc == (0 as i64)) {
+          return new Box(0.0 - 0.0);
+        }
+        return new Box(0.0 - (intAcc as f64));
+      }
+      return new Box(intAcc as f64);
+    }
+
+    let numStr = input.sliceBytes(start, pos);
     let value = parseF64(numStr);
     return new Box(value);
   }
@@ -857,11 +934,9 @@ class JsonParser {
   }
 
   #expectWord(word: String): void {
-    let reader = new StringReader(word);
-    while (!reader.isAtEnd) {
-      let expected = reader.advanceByte();
-      let actual = this.#reader.peekByte();
-      if (actual != expected) {
+    let wLen = word.length;
+    for (var i = 0; i < wLen; i += 1) {
+      if (this.#peekByte() != word.getByteAt(i)) {
         this.#error("Expected '" + word + "'");
       }
       this.#advance();
@@ -869,24 +944,27 @@ class JsonParser {
   }
 
   #skipWhitespaceAndComments(): void {
-    while (true) {
-      let b = this.#reader.peekByte();
+    let input = this.#input;
+    let len = this.#len;
+    while (this.#pos < len) {
+      let b = input.getByteAt(this.#pos);
       
       // Whitespace
       if (b == 32 || b == 9 || b == 13) {  // space, tab, CR
-        this.#advance();
+        this.#pos += 1;
+        this.#column += 1;
       } else if (b == 10) {  // newline
-        this.#advance();
+        this.#pos += 1;
         this.#line += 1;
-        this.#lineStart = this.#reader.position;
+        this.#lineStart = this.#pos;
         this.#column = 1;
       } else if (this.#allowComments && b == 47) {  // '/'
-        let next = this.#reader.peekByteAt(1);
+        let next = this.#peekByteAt(1);
         if (next == 47) {  // '//' line comment
           this.#advance();
           this.#advance();
-          while (!this.#reader.isAtEnd) {
-            let c = this.#reader.peekByte();
+          while (this.#pos < len) {
+            let c = input.getByteAt(this.#pos);
             if (c == 10) {  // newline
               break;
             }
@@ -895,16 +973,16 @@ class JsonParser {
         } else if (next == 42) {  // '/*' block comment
           this.#advance();
           this.#advance();
-          while (!this.#reader.isAtEnd) {
-            let c = this.#reader.peekByte();
-            if (c == 42 && this.#reader.peekByteAt(1) == 47) {  // '*/'
+          while (this.#pos < len) {
+            let c = input.getByteAt(this.#pos);
+            if (c == 42 && this.#peekByteAt(1) == 47) {  // '*/'
               this.#advance();
               this.#advance();
               break;
             }
             if (c == 10) {  // newline
               this.#line += 1;
-              this.#lineStart = this.#reader.position + 1;
+              this.#lineStart = this.#pos + 1;
               this.#column = 0;
             }
             this.#advance();
@@ -919,7 +997,7 @@ class JsonParser {
   }
 
   #expect(expected: i32): void {
-    let actual = this.#reader.peekByte();
+    let actual = this.#peekByte();
     if (actual != expected) {
       this.#error("Expected character");
     }
@@ -927,7 +1005,7 @@ class JsonParser {
   }
 
   #advance(): void {
-    this.#reader.advanceByte();
+    this.#pos += 1;
     this.#column += 1;
   }
 
@@ -1015,14 +1093,6 @@ export let jsonGet = (value: JsonValue, path: String): JsonValue => {
 // JsonBuilder - Streaming JSON construction
 // ============================================================================
 
-// Stack entry types
-let STACK_OBJECT: i32 = 0;
-let STACK_ARRAY: i32 = 1;
-
-// i64 constants (workaround for parser issues with 'as' in some contexts)
-let ZERO_I64: i64 = 0 as i64;
-let TEN_I64: i64 = 10 as i64;
-
 /**
  * JsonBuilder - Streaming JSON construction
  * 
@@ -1042,27 +1112,29 @@ let TEN_I64: i64 = 10 as i64;
  *   // {"name":"example","count":42,"items":["a","b"]}
  */
 export class JsonBuilder {
-  #sb = new StringBuilder();
-  #stack = new Array<i32>();    // Track nesting: STACK_OBJECT or STACK_ARRAY
-  #counts = new Array<i32>();   // Track item count at each level (for comma handling)
-  var #needsValue = false;  // True after key(), expecting a value next
+  #sb: StringBuilder;
+  var #depth: i32 = 0;        // Current container nesting depth
+  var #hasEntry = false;      // True when the current container has at least one item
+  var #needsValue = false;    // True after key(), expecting a value next
+
+  new(capacity: i32 = 64) : #sb = new StringBuilder(capacity);
 
   // === Object methods ===
 
   beginObject(): JsonBuilder {
     this.#writeCommaIfNeeded();
-    this.#sb.append("{");
-    this.#stack.push(STACK_OBJECT);
-    this.#counts.push(0);
+    this.#sb.appendByte(123);
+    this.#depth += 1;
+    this.#hasEntry = false;
     this.#needsValue = false;
     return this;
   }
 
   endObject(): JsonBuilder {
-    this.#sb.append("}");
-    this.#stack.pop();
-    this.#counts.pop();
-    this.#incrementCount();
+    this.#sb.appendByte(125);
+    this.#depth -= 1;
+    this.#hasEntry = this.#depth > 0;
+    this.#needsValue = false;
     return this;
   }
 
@@ -1070,18 +1142,18 @@ export class JsonBuilder {
 
   beginArray(): JsonBuilder {
     this.#writeCommaIfNeeded();
-    this.#sb.append("[");
-    this.#stack.push(STACK_ARRAY);
-    this.#counts.push(0);
+    this.#sb.appendByte(91);
+    this.#depth += 1;
+    this.#hasEntry = false;
     this.#needsValue = false;
     return this;
   }
 
   endArray(): JsonBuilder {
-    this.#sb.append("]");
-    this.#stack.pop();
-    this.#counts.pop();
-    this.#incrementCount();
+    this.#sb.appendByte(93);
+    this.#depth -= 1;
+    this.#hasEntry = this.#depth > 0;
+    this.#needsValue = false;
     return this;
   }
 
@@ -1089,8 +1161,8 @@ export class JsonBuilder {
 
   key(k: String): JsonBuilder {
     this.#writeCommaIfNeeded();
-    this.#writeEscapedString(k);
-    this.#sb.append(":");
+    escapeJsonString(this.#sb, k);
+    this.#sb.appendByte(58);
     this.#needsValue = true;
     return this;
   }
@@ -1099,28 +1171,28 @@ export class JsonBuilder {
 
   string(v: String): JsonBuilder {
     this.#writeCommaIfNeeded();
-    this.#writeEscapedString(v);
+    escapeJsonString(this.#sb, v);
     this.#incrementCount();
     return this;
   }
 
   i32(v: i32): JsonBuilder {
     this.#writeCommaIfNeeded();
-    this.#writeI32(v);
+    this.#sb.appendI32(v);
     this.#incrementCount();
     return this;
   }
 
   i64(v: i64): JsonBuilder {
     this.#writeCommaIfNeeded();
-    this.#writeI64(v);
+    this.#sb.appendI64(v);
     this.#incrementCount();
     return this;
   }
 
   f64(v: f64): JsonBuilder {
     this.#writeCommaIfNeeded();
-    this.#writeF64(v);
+    stringifyF64(this.#sb, v);
     this.#incrementCount();
     return this;
   }
@@ -1192,10 +1264,17 @@ export class JsonBuilder {
     return this;
   }
 
-  // === Get result ===
+  // === Get result / reset ===
 
   toString(): String {
     return this.#sb.toString();
+  }
+
+  clear(): void {
+    this.#sb.clear();
+    this.#depth = 0;
+    this.#hasEntry = false;
+    this.#needsValue = false;
   }
 
   // === Private helpers ===
@@ -1207,175 +1286,13 @@ export class JsonBuilder {
       return;
     }
     // If we're inside a container and have written items, add comma
-    if (this.#counts.length > 0) {
-      let idx = this.#counts.length - 1;
-      if (this.#counts[idx] > 0) {
-        this.#sb.append(",");
-      }
+    if (this.#hasEntry) {
+      this.#sb.appendByte(44);
     }
   }
 
   #incrementCount(): void {
-    if (this.#counts.length > 0) {
-      let idx = this.#counts.length - 1;
-      this.#counts[idx] = this.#counts[idx] + 1;
-    }
+    this.#hasEntry = this.#depth > 0;
     this.#needsValue = false;
-  }
-
-  #writeEscapedString(s: String): void {
-    this.#sb.append("\"");
-    var i = 0;
-    let len = s.length;
-    while (i < len) {
-      let b = s.getByteAt(i);
-      if (b == 34) {
-        // " -> \"
-        this.#sb.append("\\\"");
-      } else if (b == 92) {
-        // \ -> \\
-        this.#sb.append("\\\\");
-      } else if (b == 10) {
-        // newline -> \n
-        this.#sb.append("\\n");
-      } else if (b == 13) {
-        // carriage return -> \r
-        this.#sb.append("\\r");
-      } else if (b == 9) {
-        // tab -> \t
-        this.#sb.append("\\t");
-      } else if (b < 32) {
-        // Other control characters -> \u00XX
-        this.#sb.append("\\u00");
-        this.#writeHexByte(b);
-      } else {
-        this.#sb.appendByte(b);
-      }
-      i += 1;
-    }
-    this.#sb.append("\"");
-  }
-
-  #writeHexByte(b: i32): void {
-    let high = (b / 16) as i32;
-    let low = b % 16;
-    this.#sb.appendByte(this.#hexDigit(high));
-    this.#sb.appendByte(this.#hexDigit(low));
-  }
-
-  #hexDigit(n: i32): i32 {
-    if (n < 10) {
-      return 48 + n;  // '0' = 48
-    } else {
-      return 97 + n - 10;  // 'a' = 97
-    }
-  }
-
-  #writeI32(n: i32): void {
-    if (n == 0) {
-      this.#sb.append("0");
-      return;
-    }
-    var num = n;
-    var negative = false;
-    if (num < 0) {
-      negative = true;
-      num = 0 - num;
-    }
-    
-    // Build digits in reverse using growable array
-    let digits = new Array<i32>();
-    while (num > 0) {
-      digits.push(48 + (num % 10));  // ASCII '0' = 48
-      num = div(num, 10);
-    }
-    
-    if (negative) {
-      this.#sb.appendByte(45);  // '-'
-    }
-    
-    // Write digits in reverse order
-    var i = digits.length - 1;
-    while (i >= 0) {
-      this.#sb.appendByte(digits[i]);
-      i -= 1;
-    }
-  }
-
-  #writeI64(n: i64): void {
-    if (n == ZERO_I64) {
-      this.#sb.append("0");
-      return;
-    }
-    var num = n;
-    var negative = false;
-    if (num < ZERO_I64) {
-      negative = true;
-      num = ZERO_I64 - num;
-    }
-    
-    // Build digits in reverse using growable array
-    let digits = new Array<i32>();
-    while (num > ZERO_I64) {
-      digits.push(48 + ((num % TEN_I64) as i32));
-      num = div(num, TEN_I64);
-    }
-    
-    if (negative) {
-      this.#sb.appendByte(45);  // '-'
-    }
-    
-    // Write digits in reverse order
-    var i = digits.length - 1;
-    while (i >= 0) {
-      this.#sb.appendByte(digits[i]);
-      i -= 1;
-    }
-  }
-
-  #writeF64(n: f64): void {
-    // For now, just handle integers and simple decimals
-    // A full IEEE 754 double-to-string is complex
-    // TODO: Implement proper floating point formatting
-    
-    // Handle NaN - JSON doesn't support NaN, write null
-    if (n != n) {
-      this.#sb.append("null");
-      return;
-    }
-    
-    // TODO: Handle infinity (would need intrinsic or large constant)
-    
-    var negative = false;
-    var num = n;
-    if (num < 0.0) {
-      negative = true;
-      num = 0.0 - num;
-    }
-    
-    // Get integer part
-    let intPart = num as i64;
-    let fracPart = num - (intPart as f64);
-    
-    if (negative) {
-      this.#sb.appendByte(45);  // '-'
-    }
-    
-    this.#writeI64(intPart);
-    
-    // Write fractional part if non-zero
-    if (fracPart > 0.0000001) {
-      this.#sb.append(".");
-      // Write up to 15 decimal places
-      var frac = fracPart;
-      var digits = 0;
-      while (frac > 0.0000001 && digits < 15) {
-        frac *= 10.0;
-        let digit = (frac as i32) % 10;
-        this.#sb.appendByte(48 + digit);
-        frac -= (digit as f64);
-        digits += 1;
-      }
-    }
   }
 }

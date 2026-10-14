@@ -1,15 +1,17 @@
 import { Encoding } from './string.zena';
 import { writeI32, writeU32, writeI64, writeU64, f32ToString } from './string-convert.zena';
 
+let numScratch = __byte_array_new(21);
+
 /**
  * An append-only sequence of characters for efficient string construction.
  */
 export final class StringBuilder {
   /**
    * Historical fully-written chunks. Once a chunk is pushed here, it is never
-   * modified again.
+   * modified again. Lazily allocated only when `#currentChunk` overflows.
    */
-  var #chunks: GrowableArray<ByteArray> = new Array<ByteArray>();
+  var #chunks: GrowableArray<ByteArray> | null = null;
 
   /**
    * The active buffer currently being written to.
@@ -56,10 +58,13 @@ export final class StringBuilder {
   capacity: i32 {
     get {
       var cap = 0;
-      var i = 0;
-      while (i < this.#chunks.length) {
-        cap = cap + __byte_array_length(this.#chunks[i]);
-        i += 1;
+      let chunks = this.#chunks;
+      if (chunks != null) {
+        var i = 0;
+        while (i < chunks.length) {
+          cap = cap + __byte_array_length(chunks[i]);
+          i += 1;
+        }
       }
       cap = cap + this.#currentChunkLen;
       return cap;
@@ -67,19 +72,27 @@ export final class StringBuilder {
   }
 
   /**
-   * Preparation for writing `needed` bytes.
+   * Preparation for writing `minNeeded` bytes.
    * Ensures current chunk has space, or rotates chunks.
    * Returns the number of bytes that can be written to current chunk.
    */
-  #prepareWrite(): i32 {
+  #prepareWrite(minNeeded: i32 = 1): i32 {
     let chunkLen = this.#currentChunkLen;
     if (this.#currentPos >= chunkLen) {
       // Current chunk is full, push to list and allocate new one
-      this.#chunks.push(this.#currentChunk);
+      var chunks = this.#chunks;
+      if (chunks == null) {
+        chunks = new Array<ByteArray>();
+        this.#chunks = chunks;
+      }
+      chunks.push(this.#currentChunk);
       this.#totalLength = this.#totalLength + chunkLen;
       
-      // Grow strategy: double the size of the previous chunk
-      let newCapacity = chunkLen * 2;
+      // Grow strategy: at least double the size of the previous chunk
+      var newCapacity = chunkLen * 2;
+      if (newCapacity < minNeeded) {
+        newCapacity = minNeeded;
+      }
       this.#currentChunk = __byte_array_new(newCapacity);
       this.#currentChunkLen = newCapacity;
       this.#currentPos = 0;
@@ -109,18 +122,50 @@ export final class StringBuilder {
       return this;
     }
 
-    // Slow path: string spans multiple chunks
-    var offset = 0;
-    while (offset < len) {
-      let avail = this.#prepareWrite();
-      let remaining = len - offset;
-      var toCopy = remaining;
-      if (toCopy > avail) {
-        toCopy = avail;
+    return this.appendSlice(s, 0, len);
+  }
+
+  /**
+   * Appends a byte slice `[start, end)` of `s` directly without allocating an
+   * intermediate String view.
+   */
+  appendSlice(s: String, start: i32, end: i32): StringBuilder {
+    let len = end - start;
+    if (len <= 0) {
+      return this;
+    }
+
+    let pos = this.#currentPos;
+    let chunkLen = this.#currentChunkLen;
+    if (pos + len <= chunkLen) {
+      if (len == 1) {
+        __byte_array_set(this.#currentChunk, pos, s.getByteAt(start));
+      } else {
+        s.copyBytesTo(this.#currentChunk, pos, start, len);
       }
+      this.#currentPos = pos + len;
+      return this;
+    }
 
+    if (pos == 0) {
+      var newCapacity = chunkLen * 2;
+      if (newCapacity < len) {
+        newCapacity = len;
+      }
+      this.#currentChunk = __byte_array_new(newCapacity);
+      this.#currentChunkLen = newCapacity;
+      s.copyBytesTo(this.#currentChunk, 0, start, len);
+      this.#currentPos = len;
+      return this;
+    }
+
+    // Slow path: string spans multiple chunks
+    var offset = start;
+    while (offset < end) {
+      let remaining = end - offset;
+      let avail = this.#prepareWrite(remaining);
+      let toCopy = if (remaining < avail) remaining else avail;
       s.copyBytesTo(this.#currentChunk, this.#currentPos, offset, toCopy);
-
       this.#currentPos = this.#currentPos + toCopy;
       offset = offset + toCopy;
     }
@@ -144,12 +189,26 @@ export final class StringBuilder {
       return this;
     }
 
-    var i = start;
-    while (i < end) {
-      this.#prepareWrite();
-      __byte_array_set(this.#currentChunk, this.#currentPos, __byte_array_get(source, i));
-      this.#currentPos = this.#currentPos + 1;
-      i += 1;
+    if (pos == 0) {
+      var newCapacity = chunkLen * 2;
+      if (newCapacity < len) {
+        newCapacity = len;
+      }
+      this.#currentChunk = __byte_array_new(newCapacity);
+      this.#currentChunkLen = newCapacity;
+      __byte_array_copy(this.#currentChunk, 0, source, start, len);
+      this.#currentPos = len;
+      return this;
+    }
+
+    var offset = start;
+    while (offset < end) {
+      let remaining = end - offset;
+      let avail = this.#prepareWrite(remaining);
+      let toCopy = if (remaining < avail) remaining else avail;
+      __byte_array_copy(this.#currentChunk, this.#currentPos, source, offset, toCopy);
+      this.#currentPos = this.#currentPos + toCopy;
+      offset = offset + toCopy;
     }
     return this;
   }
@@ -166,10 +225,27 @@ export final class StringBuilder {
       return this;
     }
 
-    this.#prepareWrite();
+    this.#prepareWrite(1);
     __byte_array_set(this.#currentChunk, 0, b);
     this.#currentPos = 1;
     return this;
+  }
+
+  /**
+   * Appends two bytes (such as a two-byte escape sequence).
+   */
+  appendByte2(b0: i32, b1: i32): StringBuilder {
+    let pos = this.#currentPos;
+    let chunkLen = this.#currentChunkLen;
+    if (pos + 2 <= chunkLen) {
+      let chunk = this.#currentChunk;
+      __byte_array_set(chunk, pos, b0);
+      __byte_array_set(chunk, pos + 1, b1);
+      this.#currentPos = pos + 2;
+      return this;
+    }
+    this.appendByte(b0);
+    return this.appendByte(b1);
   }
 
   /**
@@ -177,9 +253,11 @@ export final class StringBuilder {
    * Uses shared conversion from zena:string-convert.
    */
   appendI32(n: i32): StringBuilder {
-    let buffer = __byte_array_new(12);
-    let (start, end) = writeI32(n, buffer, 12);
-    return this.#appendBytesFrom(buffer, start, end);
+    if (n >= 0 && n < 10) {
+      return this.appendByte(48 + n);
+    }
+    let (start, end) = writeI32(n, numScratch, 12);
+    return this.#appendBytesFrom(numScratch, start, end);
   }
 
   /**
@@ -187,9 +265,11 @@ export final class StringBuilder {
    * Uses shared conversion from zena:string-convert.
    */
   appendU32(n: u32): StringBuilder {
-    let buffer = __byte_array_new(11);
-    let (start, end) = writeU32(n, buffer, 11);
-    return this.#appendBytesFrom(buffer, start, end);
+    if (n < (10 as u32)) {
+      return this.appendByte(48 + (n as i32));
+    }
+    let (start, end) = writeU32(n, numScratch, 11);
+    return this.#appendBytesFrom(numScratch, start, end);
   }
 
   /**
@@ -197,9 +277,11 @@ export final class StringBuilder {
    * Uses shared conversion from zena:string-convert.
    */
   appendI64(n: i64): StringBuilder {
-    let buffer = __byte_array_new(21);
-    let (start, end) = writeI64(n, buffer, 21);
-    return this.#appendBytesFrom(buffer, start, end);
+    if (n >= (0 as i64) && n < (10 as i64)) {
+      return this.appendByte(48 + (n as i32));
+    }
+    let (start, end) = writeI64(n, numScratch, 21);
+    return this.#appendBytesFrom(numScratch, start, end);
   }
 
   /**
@@ -207,9 +289,11 @@ export final class StringBuilder {
    * Uses shared conversion from zena:string-convert.
    */
   appendU64(n: u64): StringBuilder {
-    let buffer = __byte_array_new(21);
-    let (start, end) = writeU64(n, buffer, 21);
-    return this.#appendBytesFrom(buffer, start, end);
+    if (n < (10 as u64)) {
+      return this.appendByte(48 + (n as i32));
+    }
+    let (start, end) = writeU64(n, numScratch, 21);
+    return this.#appendBytesFrom(numScratch, start, end);
   }
 
   /**
@@ -237,7 +321,8 @@ export final class StringBuilder {
       return "";
     }
     
-    if (this.#chunks.length == 0) {
+    let chunks = this.#chunks;
+    if (chunks == null || chunks.length == 0) {
       return String.fromByteArray(this.#currentChunk, 0, this.#currentPos, this.#encoding);
     }
     
@@ -245,9 +330,10 @@ export final class StringBuilder {
     var offset = 0;
     
     // Copy all full chunks
+    let numChunks = chunks.length;
     var i = 0;
-    while (i < this.#chunks.length) {
-      let chunk = this.#chunks[i];
+    while (i < numChunks) {
+      let chunk = chunks[i];
       let chunkLen = __byte_array_length(chunk);
       __byte_array_copy(resultBuffer, offset, chunk, 0, chunkLen);
       offset = offset + chunkLen;
@@ -266,10 +352,12 @@ export final class StringBuilder {
    * Clears the builder.
    */
   clear(): void {
-    this.#chunks = new Array<ByteArray>();
-    this.#currentChunk = __byte_array_new(16);
-    this.#currentChunkLen = 16;
-    this.#currentPos = 0;
+    this.#chunks = null;
+    if (this.#currentPos > 0) {
+      this.#currentChunk = __byte_array_new(16);
+      this.#currentChunkLen = 16;
+      this.#currentPos = 0;
+    }
     this.#totalLength = 0;
   }
 
