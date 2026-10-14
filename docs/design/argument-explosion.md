@@ -210,8 +210,6 @@ grows by 2.9 KB (2,240,334 to 2,243,268 bytes).
 - **Generic methods, generic functions and constructors, async
   functions and generators**, each for the reasons the rest of this
   document's later phases list.
-- **A method's result returned from another function or method**: it
-  does not yet count as fields on hand.
 
 ### Eligible parameters
 
@@ -404,17 +402,48 @@ The two facts run the other way from parameters:
   only read for its fields when the call is `f().field`, the source of
   `let {...} = f()`, or the initializer of a `let` whose every use reads
   a field, destructures it, or passes it to a fields-only parameter of
-  the same record type. A call returned from another function, as its
-  `return` operand, expression body or value block's tail, counts when
-  that function's result explodes.
+  the same record type. A call returned from another function or
+  method, as its `return` operand, expression body or value block's
+  tail, counts when that function's result is demanded.
 - **Availability**, from the callee. Some return produces the fields
   without the record: a record literal, an exploded parameter of the
-  same record type, a call whose result explodes, or an `if` or `match`
-  with such an arm (through nested ones and value blocks' tails).
+  same record type, a call to a function or a direct call to a method
+  whose result explodes, or an `if` or `match` with such an arm (through
+  nested ones and value blocks' tails).
 
-A result explodes when it is both. `return g(...)` makes each depend on
-the other function's verdict, so the pass iterates from "no result
-explodes" until nothing changes.
+A result explodes when it is both. `return g(...)` in `f` ties the two
+functions together in opposite directions: `g` is demanded when `f` is,
+and `f` produces the fields when `g` does. So the pass settles demand
+first, growing it from "nothing is demanded", and then grows
+availability among the demanded functions until nothing changes. Growing
+both at once, as the pass first did, never starts a chain whose only
+demand is at its head: in `let {x, y} = f()` with `f` returning
+`g(...)`, `f` could not produce until `g` exploded, and `g` was not
+demanded until `f` exploded. The split is consistent: when `g` explodes
+because `f` is demanded, `f` returns `g(...)` and so produces too.
+
+A method's return counts toward its own result by the method's
+candidate key. A method of a generic class is one function per
+instantiation, and a recorded call in its body does not say which, so a
+call returned from one does not count.
+
+A `let`-bound result passed on to a fields-only parameter makes that
+parameter available unpacked when the call's result explodes, as a held
+var does: the lowering holds the result as its fields
+(`explodedRecords`), and the call it is passed to takes them.
+
+Measured on a loop destructuring `wrap(g, i)`, a function returning
+`g.shift({x: n, y: 1}, 2)`, a method of a class with no subclass, two
+million iterations (wall time, including process start):
+
+| build | before | after  |
+| ----- | ------ | ------ |
+| `-O1` | 57 ms  | 2.2 ms |
+| `-O2` | 2.0 ms | 2.0 ms |
+
+Before, neither `wrap` nor `shift` exploded, since each waited on the
+other. At `-O2` the inliner already brought both into the loop. The
+compiler's own module grows by 582 bytes (2,251,667 to 2,252,249).
 
 A parameter returned whole ties a parameter's verdict to its own
 function's result: returning it is a fields-only use when the result
@@ -451,13 +480,15 @@ On a loop calling a function that returns an `if` of two literals,
 destructured, two million iterations (wall time, including process
 start):
 
-| build                                                                   | before | after |
-| ----------------------------------------------------------------------- | ------ | ----- |
-| `-O1`                                                                   | 60 ms  | 5 ms  |
-| `-O2`                                                                   | 25 ms  | 5 ms  | At a marked call, `#lowerDirectCallTo` calls the core, takes |
-| its results, and holds them as the record (`explodedRecords`), so field |
-| reads, destructuring and further fields-only uses read the values and   |
-| the record built from them dies.                                        |
+| build | before | after |
+| ----- | ------ | ----- |
+| `-O1` | 60 ms  | 5 ms  |
+| `-O2` | 25 ms  | 5 ms  |
+
+At a marked call, `#lowerDirectCallTo` calls the core, takes its
+results, and holds them as the record (`explodedRecords`), so field
+reads, destructuring and further fields-only uses read the values and
+the record built from them dies.
 
 Excluded: functions with a `tail return`, whose call the core could not
 turn into fields, and records with no fields.
@@ -480,7 +511,8 @@ A `var` local of a record type is _held as its fields_ when every use
 reads a field, destructures it, is the target of a plain `=`, or passes
 it to a fields-only parameter of the same record type, and every value
 written to it (the initializer and each assignment) is a record literal,
-a call whose result explodes, or another held var:
+a call to a function or a direct call to a method whose result
+explodes, or another held var:
 
 ```zena
 var pos: V = {x: 0, y: 1};
@@ -518,10 +550,8 @@ Not yet covered:
 - A var captured by a closure, which needs a cell holding the record.
 - A `var` written an `if` or `match` with literal arms: only returns
   merge an expression's arms as fields.
-- A `let`-bound result passed to a fields-only parameter whose function
-  has no other unpacked caller: the call passes the record, because
-  availability does not yet propagate from results.
-- Methods and constructors' results.
+- A call's result passed straight to a fields-only parameter
+  (`f(g(x))`): only a bound result is held as its fields.
 
 ## Later phases
 

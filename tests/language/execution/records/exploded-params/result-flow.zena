@@ -1,0 +1,65 @@
+// @mode: run
+// @result: 1
+// A record result stays as its fields as it flows on: a method's result
+// returned from a function or another method, a `var` written from a
+// method call, and a `let`-bound result passed to a function whose only
+// unpacked caller is that one. Every shape must compute the same thing.
+
+type V = {x: i32, y: i32};
+
+class Grid {
+  scale: i32;
+  new(this.scale);
+
+  shift(r: V, by: i32): V {
+    return {x: r.x * this.scale + by, y: r.y + by};
+  }
+
+  shiftTwice(r: V): V {
+    return this.shift(this.shift(r, 1), 1);
+  }
+
+  step(p: V): V {
+    return {x: p.x + p.y, y: p.y + 1};
+  }
+}
+
+let wrap = (g: Grid, n: i32): V => g.shift({x: n, y: n}, 3);
+
+let make = (n: i32): V => ({x: n, y: n * 2});
+
+let use = (r: V): i32 => r.x * 100 + r.y;
+
+let chain = (n: i32): i32 => {
+  let r = make(n);
+  return use(r);
+};
+
+let walk = (g: Grid, n: i32): i32 => {
+  var pos: V = {x: 0, y: 1};
+  for (var i = 0; i < n; i += 1) {
+    pos = g.step(pos);
+  }
+  return pos.x;
+};
+
+export let main = (): i32 => {
+  let g = new Grid(2);
+  let {x, y} = wrap(g, 4);
+  if (x != 11 || y != 7) {
+    return 0;
+  }
+  // (1, 1) -> (3, 2) -> (7, 3)
+  let t = g.shiftTwice({x: 1, y: 1});
+  if (t.x != 7 || t.y != 3) {
+    return 0;
+  }
+  if (chain(5) != 510) {
+    return 0;
+  }
+  // x: 0, 1, 3, 6, 10, 15
+  if (walk(g, 5) != 15) {
+    return 0;
+  }
+  return 1;
+};

@@ -932,6 +932,46 @@ export let tests = suite('zir backend', (): void => {
         'both instantiations take the literals as fields');
   });
 
+  test('a record result stays as its fields as it flows on', (ctx: TestContext): void => {
+    // `wrap` returns a method's result, `chain` passes a bound result to
+    // `use`, whose only caller is that one, and `walk` updates a `var`
+    // through a method: no function builds the record.
+    let result = compileWithZir(
+        'type V = {x: i32, y: i32};\n' +
+        'class Grid {\n' +
+        '  scale: i32;\n' +
+        '  new(this.scale);\n' +
+        '  shift(r: V, by: i32): V { return {x: r.x * this.scale + by, y: r.y + by}; }\n' +
+        '  step(p: V): V { return {x: p.x + p.y, y: p.y + 1}; }\n' +
+        '}\n' +
+        'let wrap = (g: Grid, n: i32): V => g.shift({x: n, y: n}, 3);\n' +
+        'let walk = (g: Grid, n: i32): i32 => {\n' +
+        '  var pos: V = {x: 0, y: 1};\n' +
+        '  for (var i = 0; i < n; i += 1) {\n' +
+        '    pos = g.step(pos);\n' +
+        '  }\n' +
+        '  return pos.x;\n' +
+        '};\n' +
+        'let make = (n: i32): V => ({x: n, y: n * 2});\n' +
+        'let use = (r: V): i32 => r.x * 100 + r.y;\n' +
+        'let chain = (n: i32): i32 => {\n' +
+        '  let r = make(n);\n' +
+        '  return use(r);\n' +
+        '};\n' +
+        'export let main = (): i32 => {\n' +
+        '  let g = new Grid(2);\n' +
+        '  let {x, y} = wrap(g, 4);\n' +
+        '  return x + y + chain(5) + walk(g, 3);\n' +
+        '};');
+    assertNoAllocation(result, '$main', 'the method result is never packed');
+    assertNoAllocation(result, '$walk',
+        'a var written from a method call is held as its fields');
+    assertNoAllocation(result, '$wrap.core',
+        'a method result is returned on as its fields');
+    assertNoAllocation(result, '$chain',
+        'the bound result is passed on as its fields');
+  });
+
   test('a var record updated through a call stays as its fields', (ctx: TestContext): void => {
     // `pos` is only read for its fields and only assigned values that
     // are fields already, so it is carried around the loop as its
