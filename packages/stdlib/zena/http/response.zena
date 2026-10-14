@@ -11,20 +11,51 @@ import { HTMLPartial } from './html.zena';
  */
 export type ResponseBody = String | FixedArray<u8> | Stream<u8> | HTMLPartial | null;
 
+final class BytesStream extends Stream<u8> {
+  #bytes: FixedArray<u8>;
+  var #offset: i32 = 0;
+  var #stopped: boolean = false;
+
+  new(bytes: FixedArray<u8>) : #bytes = bytes, super();
+
+  read(buf: FixedArray<u8>): Future<i32> {
+    if (buf.length == 0) {
+      throw new Error('zena:stream: read buffer is empty');
+    }
+    if (this.#stopped || this.#offset >= this.#bytes.length) {
+      return Future.of(0);
+    }
+    let remaining = this.#bytes.length - this.#offset;
+    let n = if (remaining < buf.length) remaining else buf.length;
+    var i = 0;
+    while (i < n) {
+      buf[i] = this.#bytes[this.#offset + i];
+      i += 1;
+    }
+    this.#offset += n;
+    return Future.of(n);
+  }
+
+  readOne(): Future<Option<u8>> {
+    if (this.#stopped || this.#offset >= this.#bytes.length) {
+      return Future.of<Option<u8>>(none);
+    }
+    let b = this.#bytes[this.#offset];
+    this.#offset += 1;
+    return Future.of<Option<u8>>(some(b));
+  }
+
+  stop(): void {
+    this.#stopped = true;
+    super.stop();
+  }
+}
+
 /**
  * Creates a stream that transmits a FixedArray of bytes.
  */
 export function bytesStream(bytes: FixedArray<u8>): Stream<u8> {
-  let writer = new StreamWriter<u8>();
-  pumpBytes(writer, bytes);
-  return writer.stream;
-}
-
-async function pumpBytes(writer: StreamWriter<u8>, bytes: FixedArray<u8>): Future<void> {
-  if (bytes.length > 0) {
-    await writer.writeAll(bytes, bytes.length);
-  }
-  writer.close();
+  return new BytesStream(bytes);
 }
 
 /**
@@ -149,6 +180,21 @@ export class Response {
       names.push(entry.key);
     }
     return names;
+  }
+
+  /**
+   * Calls `fn(name, value)` for each header entry on this response.
+   */
+  forEachHeader(fn: (name: String, value: String) => void): void {
+    for (let entry in this.#headers) {
+      let name = entry.key;
+      let values = entry.value;
+      var i = 0;
+      while (i < values.length) {
+        fn(name, values[i]);
+        i += 1;
+      }
+    }
   }
 
   /**

@@ -322,13 +322,15 @@ final class HostByteStream extends Stream<u8> {
   }
 }
 
+let pumpBufPool = new Array<FixedArray<u8>>();
+
 /** The guest-to-host pump behind `lowerByteStream`. */
 async function pumpOut(
   source: Stream<u8>,
   end: WritableByteStream
 ): Future<void> {
   if (let (true, chunk) = defaultAllocator.alloc(CHUNK)) {
-    let buf = new Array<u8>.fixed(CHUNK, 0);
+    let buf = if (pumpBufPool.length > 0) pumpBufPool.pop() else new Array<u8>.fixed(CHUNK, 0);
     var open = true;
     while (open) {
       let n = await source.read(buf);
@@ -357,6 +359,7 @@ async function pumpOut(
         at += packed >> 4;
       }
     }
+    pumpBufPool.push(buf);
     defaultAllocator.free(chunk);
     streamDropWritable(end);
     return;

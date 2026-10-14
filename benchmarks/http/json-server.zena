@@ -1,0 +1,34 @@
+/**
+ * Port of Zipadee's Fastify benchmark server (`benchmarks/zipadee.cjs`).
+ *
+ * Responds to every request on `PORT` (default 3000) with `{"hello":"world"}`
+ * and `content-type: application/json; charset=utf-8`.
+ */
+
+import { getEnv } from 'zena:cli';
+import { App } from 'zena:http';
+import { JsonBuilder } from 'zena:json';
+
+let resolvePort = (): u16 => {
+  let envPort = getEnv('PORT');
+  if (envPort != null) {
+    if (let (true, p) = parseI32(envPort as String)) {
+      return p as u16;
+    }
+  }
+  return 3000 as u16;
+};
+
+export function main(): void {
+  let app = new App();
+  let port = resolvePort();
+
+  app.use(async (req, res, next) => {
+    res.type = 'application/json; charset=utf-8';
+    let b = new JsonBuilder();
+    b.beginObject().key('hello').string('world').endObject();
+    res.body = b.toString();
+  });
+
+  app.listen(port, (): void => {});
+}

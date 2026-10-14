@@ -13,10 +13,11 @@ import {
   Scheme, SchemeHTTP, SchemeHTTPS, SchemeOther
 } from 'wasi:http/types';
 import { Completer } from 'zena:async';
-import { Outcome, Ok, Option, Some } from 'zena:core';
+import { HashMap } from 'zena:collections';
+import { Disposable, Outcome, Ok, Option, Some } from 'zena:core';
 import { Stream, textStream, readAllText } from 'zena:stream';
 import { URL } from 'zena:url';
-import { Request } from './request.zena';
+import { Request, placeholderUrl, placeholderHeaders } from './request.zena';
 import { Response, bytesStream } from './response.zena';
 import { App as BaseApp, AppOptions } from './app.zena';
 import { HTMLPartial, htmlStream } from './html.zena';
@@ -47,81 +48,126 @@ let schemeToString = (s: Scheme): String => {
   return 'http';
 };
 
+export async function drainFuture<T>(f: Future<T>): Future<void> {
+  try {
+    await f;
+  } catch (e) {}
+}
+
 /**
  * Creates a Request from a low-level WASI HTTP Request resource.
  */
 export function fromWireRequest(wire: WireRequest): Request {
   let method = methodToString(wire.getMethod());
-  let wireHeaders = wire.getHeaders();
-  let entries = wireHeaders.copyAll();
-  let headers = new Map<String, GrowableArray<String>>();
-  for (let entry in entries) {
-    let (fieldName, fieldValueBytes) = entry;
-    let key = fieldName.asciiLowerCase();
-    let val = String.fromBytes(fieldValueBytes);
-    if (let (true, existing) = headers.get(key)) {
-      existing.push(val);
-    } else {
-      let list = new GrowableArray<String>(1);
-      list.push(val);
-      headers[key] = list;
+  let loadHeaders = (): HashMap<String, GrowableArray<String>> => {
+    let wireHeaders = wire.getHeaders();
+    let entries = wireHeaders.copyAll();
+    wireHeaders.[Disposable.dispose]();
+    let headers = new HashMap<String, GrowableArray<String>>();
+    for (let entry in entries) {
+      let (fieldName, fieldValueBytes) = entry;
+      let key = fieldName.asciiLowerCase();
+      let val = String.fromBytes(fieldValueBytes);
+      if (let (true, existing) = headers.get(key)) {
+        existing.push(val);
+      } else {
+        let list = new GrowableArray<String>(1);
+        list.push(val);
+        headers[key] = list;
+      }
     }
-  }
+    return headers;
+  };
 
-  let schemeOpt = wire.getScheme();
-  let scheme = if (schemeOpt is Some<Scheme>) schemeToString((schemeOpt as Some<Scheme>).value) else 'http';
-  let authOpt = wire.getAuthority();
-  var auth = if (authOpt is Some<String>) (authOpt as Some<String>).value else '';
-  if (auth.length == 0) {
-    if (let (true, hostList) = headers.get('host')) {
-      if (hostList.length > 0) auth = hostList[0];
+  let pathProvider = (): String => {
+    let pathOpt = wire.getPathWithQuery();
+    let pathWithQuery = if (pathOpt is Some<String>) (pathOpt as Some<String>).value else '/';
+    let fullPath = if (pathWithQuery.startsWith('/')) pathWithQuery else '/' + pathWithQuery;
+    var i = 0;
+    while (i < fullPath.length) {
+      if (fullPath.getByteAt(i) == 0x3F) { // '?'
+        return if (i == 0) '/' else fullPath.sliceBytes(0, i);
+      }
+      i += 1;
     }
-  }
-  if (auth.length == 0) auth = 'localhost';
-  let pathOpt = wire.getPathWithQuery();
-  let pathWithQuery = if (pathOpt is Some<String>) (pathOpt as Some<String>).value else '/';
-  let fullPath = if (pathWithQuery.startsWith('/')) pathWithQuery else '/' + pathWithQuery;
-  let href = `${scheme}://${auth}${fullPath}`;
-  let parsedUrl = URL.parse(href, null);
-  let url = if (parsedUrl != null) parsedUrl as URL else (URL.parse('http://localhost/', null) as URL);
+    return if (fullPath.length == 0) '/' else fullPath;
+  };
 
-  let received = new Completer<Outcome<void, ErrorCode>>();
-  let (bodyStream, _trailers) = WireRequest.consumeBody(wire, received.future);
-  received.complete(new Ok<void, ErrorCode>(unit()));
+  let urlProvider = (): URL => {
+    let schemeOpt = wire.getScheme();
+    let scheme = if (schemeOpt is Some<Scheme>) schemeToString((schemeOpt as Some<Scheme>).value) else 'http';
+    let authOpt = wire.getAuthority();
+    var auth = if (authOpt is Some<String>) (authOpt as Some<String>).value else '';
+    if (auth.length == 0) {
+      let wireHeaders = wire.getHeaders();
+      let hostEntries = wireHeaders.get('host');
+      wireHeaders.[Disposable.dispose]();
+      if (hostEntries.length > 0) {
+        auth = String.fromBytes(hostEntries[0]);
+      }
+    }
+    if (auth.length == 0) auth = 'localhost';
+    let pathOpt = wire.getPathWithQuery();
+    let pathWithQuery = if (pathOpt is Some<String>) (pathOpt as Some<String>).value else '/';
+    let fullPath = if (pathWithQuery.startsWith('/')) pathWithQuery else '/' + pathWithQuery;
+    let href = `${scheme}://${auth}${fullPath}`;
+    let parsedUrl = URL.parse(href, null);
+    return if (parsedUrl != null) parsedUrl as URL else (URL.parse('http://localhost/', null) as URL);
+  };
 
-  return new Request(url, method, headers, bodyStream);
+  var consumed = false;
+  let bodyProvider = (): Stream<u8> => {
+    consumed = true;
+    let received = new Completer<Outcome<void, ErrorCode>>();
+    let (bodyStream, trailers) = WireRequest.consumeBody(wire, received.future);
+    received.complete(new Ok<void, ErrorCode>(unit()));
+    drainFuture(trailers);
+    return bodyStream;
+  };
+  let cleanup = (): void => {
+    if (!consumed) {
+      wire.[Disposable.dispose]();
+    }
+  };
+
+  return new Request(placeholderUrl, method, placeholderHeaders, null, bodyProvider, cleanup, urlProvider, loadHeaders, pathProvider);
 }
 
 /**
- * Converts a Response into a low-level WASI WireResponse resource.
+ * Converts a Response into a low-level WASI WireResponse resource along with its transmitted future.
  */
-export function toWireResponse(res: Response): WireResponse {
+export function toWireResponseWithTransmitted(res: Response): (WireResponse, Future<Outcome<void, ErrorCode>>) {
   let fields = Fields.create();
-  for (let name in res.headerNames()) {
-    let values = res.getHeaders(name);
-    for (let val in values) {
-      fields.append(name, val.toBytes());
-    }
-  }
+  res.forEachHeader((name: String, val: String): void => {
+    fields.append(name, val.toBytes());
+  });
 
   let b = res.body;
   var streamOpt: Option<Stream<u8>> = none;
 
   if (b is String) {
+    let s = b as String;
     if (!res.hasHeader('content-type')) {
       fields.append('content-type', 'text/plain; charset=utf-8'.toBytes());
     }
-    streamOpt = some(textStream(b as String));
+    if (!res.hasHeader('content-length')) {
+      fields.append('content-length', i32ToString(s.length).toBytes());
+    }
+    streamOpt = some(textStream(s));
   } else if (b is HTMLPartial) {
     if (!res.hasHeader('content-type')) {
       fields.append('content-type', 'text/html; charset=utf-8'.toBytes());
     }
     streamOpt = some(htmlStream(b as HTMLPartial, 1024));
   } else if (b is FixedArray<u8>) {
+    let bytes = b as FixedArray<u8>;
     if (!res.hasHeader('content-type')) {
       fields.append('content-type', 'application/octet-stream'.toBytes());
     }
-    streamOpt = some(bytesStream(b as FixedArray<u8>));
+    if (!res.hasHeader('content-length')) {
+      fields.append('content-length', i32ToString(bytes.length).toBytes());
+    }
+    streamOpt = some(bytesStream(bytes));
   } else if (b is Stream<u8>) {
     streamOpt = some(b as Stream<u8>);
   }
@@ -130,6 +176,14 @@ export function toWireResponse(res: Response): WireResponse {
   trailers.complete(new Ok<Option<Fields>, ErrorCode>(none));
   let (wireResp, transmitted) = WireResponse.new_(fields, streamOpt, trailers.future);
   wireResp.setStatusCode(res.statusCode as u16);
+  return (wireResp, transmitted);
+}
+
+/**
+ * Converts a Response into a low-level WASI WireResponse resource.
+ */
+export function toWireResponse(res: Response): WireResponse {
+  let (wireResp, _transmitted) = toWireResponseWithTransmitted(res);
   return wireResp;
 }
 
@@ -140,6 +194,7 @@ export async function handleWireRequest(app: BaseApp, wire: WireRequest): Future
   let req = fromWireRequest(wire);
   let res = new Response();
   await app.handleRequest(req, res);
+  req.close();
   return new Ok<WireResponse, ErrorCode>(toWireResponse(res));
 }
 

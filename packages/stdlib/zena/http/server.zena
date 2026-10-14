@@ -8,11 +8,11 @@ import {
   Response as WireResponse,
   ErrorCode
 } from 'wasi:http/types';
-import { fromWireRequest, toWireResponse, textResponse } from './wasi.zena';
+import { fromWireRequest, toWireResponseWithTransmitted, textResponse, drainFuture } from './wasi.zena';
 import { App } from './app.zena';
 import { Request } from './request.zena';
 import { Response } from './response.zena';
-import { Option, Some } from 'zena:core';
+import { Disposable, Option, Some } from 'zena:core';
 import { Completer } from 'zena:async';
 
 function unit(): void {}
@@ -107,11 +107,15 @@ export class Server {
       let req = fromWireRequest(wireReq);
       let res = new Response();
       await this.#app.handleRequest(req, res);
-      let wireRes = toWireResponse(res);
+      req.close();
+      let (wireRes, transmitted) = toWireResponseWithTransmitted(res);
       writer.respond(wireRes);
+      writer.[Disposable.dispose]();
+      drainFuture(transmitted);
     } catch (e) {
       let errRes = textResponse('Internal Server Error\n', 500);
       writer.respond(errRes);
+      writer.[Disposable.dispose]();
     }
     return;
   }
