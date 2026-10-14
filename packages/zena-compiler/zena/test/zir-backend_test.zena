@@ -972,6 +972,32 @@ export let tests = suite('zir backend', (): void => {
         'the bound result is passed on as its fields');
   });
 
+  test('a record result passed straight to a call stays as its fields', (ctx: TestContext): void => {
+    // Every record here is a call's result handed to another call, and
+    // every parameter only reads fields, so nothing is built.
+    let result = compileWithZir(
+        'type V = {x: i32, y: i32};\n' +
+        'let make = (n: i32): V => ({x: n, y: n * 2});\n' +
+        'let bump = (r: V): V => ({x: r.x + 1, y: r.y + 1});\n' +
+        'let use = (r: V): i32 => r.x * 100 + r.y;\n' +
+        'let twice = (r: V): V => bump(bump(r));\n' +
+        'export let main = (): i32 =>\n' +
+        '  use(make(5)) + use(bump(make(1))) + twice({x: 1, y: 2}).x;');
+    // A forwarder builds the record, so no call may go through one.
+    let forwarders = new Array<String>();
+    forwarders.push('call $make\n');
+    forwarders.push('call $bump\n');
+    forwarders.push('call $use\n');
+    assertNoAllocation(result, '$main',
+        'call results are passed on as their fields');
+    assertFunctionOmits(result, '$main', forwarders,
+        'call results are passed on as their fields');
+    assertNoAllocation(result, '$twice.core',
+        'a nested call result is passed on as its fields');
+    assertFunctionOmits(result, '$twice.core', forwarders,
+        'a nested call result is passed on as its fields');
+  });
+
   test('a var record updated through a call stays as its fields', (ctx: TestContext): void => {
     // `pos` is only read for its fields and only assigned values that
     // are fields already, so it is carried around the loop as its
