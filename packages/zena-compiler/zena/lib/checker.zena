@@ -1712,6 +1712,9 @@ final class CheckerContext {
           case SealedVariant: {
             this.#sharedState.declaredNominalTypes[target.id] = materialized;
           }
+          case MixinDeclaration: {
+            this.#sharedState.declaredNominalTypes[target.id] = materialized;
+          }
           case _: {}
         }
         // Mirror into the value namespace only for class-like declarations
@@ -1897,7 +1900,11 @@ final class CheckerContext {
           symbolId = sym.id;
         }
         let mt = new MixinType(md.name.name);
-        mt.sourcePath = this.filePath;
+        // The declaring module's path. An importer across a cycle's back
+        // edge materializes this shell from its own context, and the path
+        // keys the mixin's applications (getOrCreateMixinApplication) and
+        // finds its declaration in codegen (Program.mixinDeclarations).
+        mt.sourcePath = if (info.modulePath != "") info.modulePath else this.filePath;
         mt.symbolId = symbolId;
         mt.typeParameters = this.#declaredTypeParameters(md.typeParameters);
         return mt;
@@ -4071,12 +4078,12 @@ let checkCyclicImportRules = (
       // types cross (docs/design/import-cycles.md). So no error here.
     }
     case MixinDeclaration {}: {
-      if (originRechecked) {
-        ctx.error(
-          "Cyclic import of mixin '" + importedName +
-            "': mixins cannot cross an import cycle (mixin members are copied at application time)",
-          DiagnosticCode.CyclicImport, spec.loc);
-      }
+      // A mixin crosses a back edge as an identity-bearing shell, like a
+      // class: created on first demand, filled in by its own
+      // registration. Its members are copied into a host at application
+      // time, and a host that applied the shell rebuilds the application
+      // when the cycle registers again (getOrCreateMixinApplication). So
+      // no error here.
     }
     case _: {}
   }
@@ -14380,53 +14387,58 @@ let getOrCreateMixinApplication = (
   let mixinKey = mixinSource.sourcePath + "#" + mixinSource.name;
   let appKey = baseKey + "&" + mixinKey;
 
-  var intermediateTemplate: ClassType | null = null;
-  if (let (true, cached) = ctx.mixinApplications().get(appKey)) {
-    intermediateTemplate = cached;
+  // The cache holds the intermediate's IDENTITY: one class per (base,
+  // mixin) pair, however many hosts apply it. Its contents are rebuilt
+  // on every application. Inside an import cycle a host registers
+  // twice, and the first time the mixin may be an empty shell whose
+  // origin registers later in the cycle (docs/design/import-cycles.md);
+  // a copy of its members made then is stale once the shell fills, so
+  // the second registration has to copy again. The members map is
+  // cleared in place because instantiations share it.
+  let template = if (let (true, cached) = ctx.mixinApplications().get(appKey)) {
+    cached
   } else {
     let intermediateName = (if (superClass != null) (superClass.name + "$") else "$") + mixinSource.name;
     let intermediate = new ClassType(ctx.freshTypeId(), mixinSource.symbolId, intermediateName);
     intermediate.isMixinIntermediate = true;
     intermediate.sourcePath = mixinSource.sourcePath;
     intermediate.superType = superClass;
-    intermediate.typeParameters = mixinSource.typeParameters;
     intermediate.typeArguments = null;
     intermediate.genericSource = null;
-    intermediate.privateScopeKey = mixinSource.privateScopeKey;
-    intermediate.onType = mixinSource.onType;
-    intermediate.mixins = mixinSource.mixins;
-
-    // Inherit members from superclass if present
-    if (superClass != null) {
-      inheritMembersFrom(superClass, intermediate);
-    }
-
-    // Copy members from generic mixin source
-    let memberKeys = mixinSource.members.keys();
-    for (let key in memberKeys) {
-      let mtMember = mixinSource.members[key];
-      let isPrivateKey = (key.length > 0 && key.sliceBytes(0, 1) == "#") ||
-          key.startsWith("get##") || key.startsWith("set##");
-      if (mtMember.isAbstract && intermediate.members.has(key) && !intermediate.members[key].isAbstract) {
-        continue;
-      }
-      var storeKey = key;
-      if (isPrivateKey && (mtMember is FieldInfo || mtMember is MethodInfo)) {
-        let scope = mixinSource.privateScopeKey;
-        storeKey = if (scope != null) {
-          scope + "::" + key
-        } else {
-          mixinSource.name + "_This::" + key
-        };
-      }
-      intermediate.members[storeKey] = mtMember;
-    }
-
     ctx.mixinApplications()[appKey] = intermediate;
-    intermediateTemplate = intermediate;
+    intermediate
+  };
+  template.typeParameters = mixinSource.typeParameters;
+  template.privateScopeKey = mixinSource.privateScopeKey;
+  template.onType = mixinSource.onType;
+  template.mixins = mixinSource.mixins;
+  template.members.clear();
+
+  // Inherit members from superclass if present
+  if (superClass != null) {
+    inheritMembersFrom(superClass, template);
   }
 
-  let template = intermediateTemplate as ClassType;
+  // Copy members from generic mixin source
+  let sourceMemberKeys = mixinSource.members.keys();
+  for (let key in sourceMemberKeys) {
+    let mtMember = mixinSource.members[key];
+    let isPrivateKey = (key.length > 0 && key.sliceBytes(0, 1) == "#") ||
+        key.startsWith("get##") || key.startsWith("set##");
+    if (mtMember.isAbstract && template.members.has(key) && !template.members[key].isAbstract) {
+      continue;
+    }
+    var storeKey = key;
+    if (isPrivateKey && (mtMember is FieldInfo || mtMember is MethodInfo)) {
+      let scope = mixinSource.privateScopeKey;
+      storeKey = if (scope != null) {
+        scope + "::" + key
+      } else {
+        mixinSource.name + "_This::" + key
+      };
+    }
+    template.members[storeKey] = mtMember;
+  }
 
   // Validate method override types
   let memberKeys = mt.members.keys();
@@ -17935,6 +17947,16 @@ let checkMixinDeclaration = (ctx: CheckerContext, md: MixinDeclaration): void =>
 
   // Record the declaring file for cross-module lookup and reachability.
   mixinType.sourcePath = ctx.filePath;
+
+  // Registration must be idempotent, as a class's is: a member of an
+  // import cycle registers twice against the one canonical MixinType
+  // (SharedCheckerState.declaredNominalTypes), so each pass resets what
+  // it rebuilds; appending to the previous pass's state would list every
+  // composed mixin twice. The members map is cleared in place because
+  // instantiations share it.
+  mixinType.members.clear();
+  mixinType.mixins = new Array<MixinType>();
+  mixinType.sharedMembers = null;
 
   // Before the body, for the same reason as a class's.
   registerStaticSymbols(

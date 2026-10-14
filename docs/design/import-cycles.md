@@ -69,10 +69,15 @@ implementation in both compilers.
      The member names come from the declaration. `zena:core`'s
      `Encoding` and `zena:async`'s `FutureState` are used by modules on
      the same cycle as their declaring modules.
-   - **Mixins**: rejected across a back edge when the origin is
-     re-checked. Mixin members are _copied_ into hosts at application
-     time, and a copy from a not-yet-filled shell would go stale. This
-     can be lifted later if a real program needs it.
+   - **Mixins**: fine, anywhere. A mixin crosses as an identity-bearing
+     shell like a class's, filled in by its own registration. Its
+     members are _copied_ into a host at application time, so a host
+     that applied the shell holds a stale copy until the cycle registers
+     again; the application's intermediate class is cached for its
+     identity only and its members are rebuilt on every registration
+     (`getOrCreateMixinApplication`), so the second registration copies
+     from the filled mixin. `zena:core`'s `IterableUtils`, applied by
+     `FixedArray` and `Range`, can sit on a stdlib cycle this way.
 
 5. **Initializer hazard, accepted.** A module-level initializer may
    _call_ a legally-imported function that transitively reads globals
@@ -197,8 +202,6 @@ through hops, like the self-hosted `Symbol.resolveTarget()` chain.
 
 - `Cyclic import of value 'x': module-level bindings cannot cross an
 import cycle (the exporting module's initializers have not run)`
-- `Cyclic import of mixin 'M': mixins cannot cross an import cycle
-(mixin members are copied at application time)`
 - `Cyclic import of 'f': a function crossing an import cycle needs an
 explicit signature (annotate every parameter and the return type)`
 - `Cyclic namespace import: 'x' originates in a module that has not
@@ -215,8 +218,10 @@ this reason.
 - `tests/language/execution/imports/`: `cycle_pingpong` (mutual
   recursion across a two-module cycle), `cycle_three` (three-module
   cycle), `cycle_mutual_classes` (classes referencing each other across
-  the cycle in fields and signatures).
-- `tests/language/semantics/modules/`: `@error` fixtures for the value,
-  alias, and unannotated-function rules; `cyclic_functions_ok` and
-  `cyclic_mutual_classes` pin the legal cases; the `reexport_cycle_*`
-  fixtures run un-skipped on both compilers.
+  the cycle in fields and signatures), `cycle_mixin` (a class applying a
+  mixin from later in the cycle).
+- `tests/language/semantics/modules/`: `@error` fixtures for the value
+  and unannotated-function rules; `cyclic_functions_ok`,
+  `cyclic_mutual_classes`, `cyclic_alias` and `cyclic_mixin` pin the
+  legal cases; the `reexport_cycle_*` fixtures run un-skipped on both
+  compilers.
