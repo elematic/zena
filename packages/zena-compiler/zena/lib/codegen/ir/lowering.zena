@@ -4056,14 +4056,21 @@ export final class FunctionLowerer {
         srcType);
     tgtType = substituteTypeParamsInFunctionContext(this.wasm, this.func,
         tgtType);
-    if (!(srcType is ClassType) || !(tgtType is InterfaceType)) {
-      this.#bail('interface adaptation shape');
+    if (srcType is ClassType && tgtType is InterfaceType) {
+      if (ia.sourceNullable) {
+        return this.#packInterfaceNullable(value, srcType, tgtType);
+      }
+      return this.#packInterface(value, srcType,
+          tgtType);
     }
-    if (ia.sourceNullable) {
-      return this.#packInterfaceNullable(value, srcType, tgtType);
+    if (srcType is InterfaceType && tgtType is InterfaceType) {
+      if (ia.sourceNullable) {
+        return this.#repackInterfaceNullable(value, srcType, tgtType);
+      }
+      return this.#cx().repackInterface(value, srcType, tgtType);
     }
-    return this.#packInterface(value, srcType,
-        tgtType);
+    this.#bail('interface adaptation shape');
+    return value;
   }
 
   #packInterface(value: i32, ct: ClassType, it: InterfaceType): i32 {
@@ -4089,6 +4096,35 @@ export final class FunctionLowerer {
 
     this.b.switchTo(packB);
     let packed = this.#packInterface(this.#strippedNonNull(value), ct, it);
+    let packedVt = this.#valueType(packed);
+    if (!(packedVt is ValTypeRef)) {
+      this.#bail('nullable interface adaptation result');
+    }
+    let mergedVt = new ValTypeRefNull(packedVt.target) as ValType;
+    let resultParam = this.b.blockParam(mergeB, mergedVt);
+    this.b.br(mergeB, this.#oneArg(packed));
+
+    this.b.switchTo(nullB);
+    this.b.br(mergeB, this.#oneArg(this.#nullDefault(mergedVt)));
+
+    this.b.switchTo(mergeB);
+    this.#cx().reachable = true;
+    return resultParam;
+  }
+
+  #repackInterfaceNullable(value: i32, srcIt: InterfaceType, tgtIt: InterfaceType): i32 {
+    if (!isRefValType(this.#valueType(value))) {
+      this.#bail('nullable interface adaptation operand');
+    }
+    let isNull = this.b.emit(
+        IrOp.ref_is_null, new ValTypeI32() as ValType, value, -1);
+    let nullB = this.b.newBlock();
+    let packB = this.b.newBlock();
+    let mergeB = this.b.newBlock();
+    this.b.brIf(isNull, nullB, this.#noArgs(), packB, this.#noArgs());
+
+    this.b.switchTo(packB);
+    let packed = this.#cx().repackInterface(this.#strippedNonNull(value), srcIt, tgtIt);
     let packedVt = this.#valueType(packed);
     if (!(packedVt is ValTypeRef)) {
       this.#bail('nullable interface adaptation result');

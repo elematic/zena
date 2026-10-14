@@ -3170,7 +3170,10 @@ export let typeContainsSecondClassAtDepth = (t: Type, depth: i32): boolean => {
     // so the symbolic form is first-class whatever T is.
     if (t.intrinsicName == 'type.awaited') { return false; }
     if (t.resolving) { return false; }
-    return typeContainsSecondClassAtDepth(t.target, depth + 1);
+    t.resolving = true;
+    let res = typeContainsSecondClassAtDepth(t.target, depth + 1);
+    t.resolving = false;
+    return res;
   }
   // A container derives the restriction from its arguments —
   // `Array<Scoped<F>>` and `Array<T>` under a scoped T are
@@ -3213,7 +3216,10 @@ export let typeContainsScoped = (t: Type): boolean => {
   if (t is TypeAliasType) {
     if (isOwnershipWrapper(t)) { return false; }
     if (t.resolving) { return false; }
-    return typeContainsScoped(t.target);
+    t.resolving = true;
+    let res = typeContainsScoped(t.target);
+    t.resolving = false;
+    return res;
   }
   return false;
 };
@@ -3244,7 +3250,10 @@ export let typeContainsConcreteSecondClassAtDepth = (t: Type, depth: i32): boole
     if (isOwnershipWrapper(t) || isScopedType(t)) { return false; }
     if (t.intrinsicName == 'type.awaited') { return false; }
     if (t.resolving) { return false; }
-    return typeContainsConcreteSecondClassAtDepth(t.target, depth + 1);
+    t.resolving = true;
+    let res = typeContainsConcreteSecondClassAtDepth(t.target, depth + 1);
+    t.resolving = false;
+    return res;
   }
   if (t is ClassType) {
     let args = t.typeArguments;

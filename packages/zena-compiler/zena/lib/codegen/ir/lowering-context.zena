@@ -334,6 +334,55 @@ export final class LoweringContext {
         value, globalRef);
   }
 
+  /** Repacks a sub-interface fat pointer value into `tgtIt`'s fat pointer. */
+  repackInterface(value: i32, srcIt: InterfaceType, tgtIt: InterfaceType): i32 {
+    let srcName = getInterfaceKey(srcIt);
+    let tgtName = getInterfaceKey(tgtIt);
+    if (srcName == tgtName) {
+      return value;
+    }
+    let srcFatOpt = if (let (true, st) = this.wasm.interfaceStructs.get(srcName)) st else null;
+    let srcVstOpt = if (let (true, st) = this.wasm.interfaceVTableStructs.get(srcName)) st else null;
+    let tgtFatOpt = if (let (true, st) = this.wasm.interfaceStructs.get(tgtName)) st else null;
+    let tgtVstOpt = if (let (true, st) = this.wasm.interfaceVTableStructs.get(tgtName)) st else null;
+    if (srcFatOpt == null || srcVstOpt == null || tgtFatOpt == null || tgtVstOpt == null) {
+      this.fail('interface struct not found');
+    }
+    let srcFat = srcFatOpt;
+    let srcVst = srcVstOpt;
+    let tgtFat = tgtFatOpt;
+    let tgtVst = tgtVstOpt;
+    let srcFatVt = new ValTypeRef(srcFat) as ValType;
+    var srcVal = value;
+    if (!isValSubtype(this.valueTypeOf(srcVal), srcFatVt)) {
+      srcVal = this.b.emit(IrOp.ref_cast, srcFatVt, srcVal, this.b.internType(srcFatVt));
+    }
+    let inst = this.b.emit(IrOp.iface_instance, srcFat.fields[0].type, srcVal, -1);
+    let srcVt = this.b.emit(IrOp.iface_vtable, srcFat.fields[1].type, srcVal, -1);
+    let vtFields = new Array<i32>();
+    for (let f in tgtVst.fields) {
+      let fName = f.name as String;
+      let idx = srcVst.fieldIndexByName(fName);
+      if (idx < 0) {
+        this.fail('interface upcast slot missing: ' + fName);
+      }
+      let slotVal = this.b.emit(IrOp.struct_get, srcVst.fields[idx].type, srcVt,
+          this.b.addRef(new IrRefField(srcVst, fName)));
+      if (!isValSubtype(this.valueTypeOf(slotVal), f.type)) {
+        this.fail('interface upcast slot signature mismatch: ' + fName);
+      }
+      vtFields.push(slotVal);
+    }
+    let tgtVt = this.b.emit(IrOp.struct_new,
+        new ValTypeRef(tgtVst) as ValType,
+        this.b.pushArgList(vtFields),
+        this.b.addRef(new IrRefType(tgtVst)));
+    return this.b.emit(IrOp.struct_new,
+        new ValTypeRef(tgtFat) as ValType,
+        this.b.pushArgList(twoValues(inst, tgtVt)),
+        this.b.addRef(new IrRefType(tgtFat)));
+  }
+
   /**
    * Maps ThisType (and the checker's `<Name>_This` marker classes) to
    * the enclosing method's concrete class.

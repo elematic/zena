@@ -222,7 +222,10 @@ let substituteTypeParamsInCodegenInner = (
       let newTarget = if (ta.resolving) {
         ta.target
       } else {
-        substituteTypeParamsInCodegenInner(wasm, typeParams, typeArgs, ta.target)
+        ta.resolving = true;
+        let subTarget = substituteTypeParamsInCodegenInner(wasm, typeParams, typeArgs, ta.target);
+        ta.resolving = false;
+        subTarget
       };
       if (newTarget !== ta.target) { changed = true; }
       if (!changed) { return ta; }
@@ -1133,13 +1136,23 @@ export let eraseTypeParameters = (wasm: WasmModule, t: Type): Type => {
       // the arguments alongside (types.zena), so substitute before recursing —
       // otherwise `Own<T> = T` erases to the bare type parameter, and
       // `Ptr<T> = i32` would wrongly erase to `T`.
+      if (!ta.isDistinct && ta.typeParameters == null && ta.intrinsicName == null) {
+        return ta;
+      }
+      if (let (true, done) = wasm.erasures.get(ta.uid)) {
+        return done;
+      }
+      wasm.erasures[ta.uid] = ta;
       let tps = ta.typeParameters;
       let targs = ta.typeArguments;
-      if (tps != null && targs != null) {
-        return eraseTypeParameters(wasm, substituteTypeParamsInCodegen(wasm, 
-            tps, targs, ta.target));
-      }
-      eraseTypeParameters(wasm, ta.target)
+      let erased = if (tps != null && targs != null) {
+        eraseTypeParameters(wasm, substituteTypeParamsInCodegen(wasm, 
+            tps, targs, ta.target))
+      } else {
+        eraseTypeParameters(wasm, ta.target)
+      };
+      wasm.erasures[ta.uid] = erased;
+      erased
     }
     case ArrayType {elementType, elementsMutable}: {
       let sub = eraseTypeParameters(wasm, elementType);

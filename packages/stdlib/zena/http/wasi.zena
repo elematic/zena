@@ -19,6 +19,7 @@ import { URL } from 'zena:url';
 import { Request } from './request.zena';
 import { Response, bytesStream } from './response.zena';
 import { App as BaseApp, AppOptions } from './app.zena';
+import { HTMLPartial, htmlStream } from './html.zena';
 
 export { Request as WireRequest, Response as WireResponse, ErrorCode, Fields } from 'wasi:http/types';
 export { AppOptions } from './app.zena';
@@ -111,6 +112,11 @@ export function toWireResponse(res: Response): WireResponse {
       fields.append('content-type', 'text/plain; charset=utf-8'.toBytes());
     }
     streamOpt = some(textStream(b as String));
+  } else if (b is HTMLPartial) {
+    if (!res.hasHeader('content-type')) {
+      fields.append('content-type', 'text/html; charset=utf-8'.toBytes());
+    }
+    streamOpt = some(htmlStream(b as HTMLPartial, 1024));
   } else if (b is FixedArray<u8>) {
     if (!res.hasHeader('content-type')) {
       fields.append('content-type', 'application/octet-stream'.toBytes());

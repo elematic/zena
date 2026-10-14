@@ -109,12 +109,23 @@ export final class TypeLowerer implements TypeLowererInterface {
         this.#recordTypeEvidence(eraseTypeParameters(this.pass.wasm, pt), model, depth + 1);
       }
       this.#recordTypeEvidence(eraseTypeParameters(this.pass.wasm, t.returnType), model, depth + 1);
+    } else if (t is InterfaceType) {
+      this.pass.noteCompositeType(eraseTypeParameters(this.pass.wasm, t));
+      let typeArguments = t.typeArguments;
+      if (typeArguments != null) {
+        for (let ta in typeArguments) {
+          this.#recordTypeEvidence(eraseTypeParameters(this.pass.wasm, ta), model, depth + 1);
+        }
+      }
     }
   }
 
   discoverType(rawT: Type | null, model: SemanticModel): void {
     if (rawT == null) { return; }
-    let t = eraseTypeParameters(this.pass.wasm, rawT);
+    var t = eraseTypeParameters(this.pass.wasm, rawT);
+    while (t is TypeAliasType) {
+      t = t.target;
+    }
     let typeStr = getTypeUniqueKey(t);
     // Evidence is recorded BEFORE the dedup below: a type first
     // discovered by a plumbing walk (imports, layout, helper ensures)
@@ -765,6 +776,9 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
             let unspecIName = getInterfaceKey(tgtT.genericSource ?? tgtT);
             this.pass.wasm.usedInterfaceAdaptations[
                 getClassInterfaceKey(unspecCName, unspecIName)] = true;
+          } else if (srcT is InterfaceType && tgtT is InterfaceType) {
+            this.pass.typeLowerer.discoverType(srcT, model);
+            this.pass.typeLowerer.discoverType(tgtT, model);
           }
         }
       }
@@ -2152,14 +2166,21 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
 
         let ifaceAdaptation = model.getInterfaceAdaptation(n);
         if (ifaceAdaptation != null) {
-          let cName = getClassKey(resolveType(ifaceAdaptation.source) as ClassType);
-          let iName = getInterfaceKey(resolveType(ifaceAdaptation.target) as InterfaceType);
-          this.pass.wasm.usedInterfaceAdaptations[getClassInterfaceKey(cName, iName)] = true;
-          
-          let unspecCName = getClassKey((resolveType(ifaceAdaptation.source) as ClassType).genericSource ?? (resolveType(ifaceAdaptation.source) as ClassType));
-          let unspecIName = getInterfaceKey((resolveType(ifaceAdaptation.target) as InterfaceType).genericSource ?? (resolveType(ifaceAdaptation.target) as InterfaceType));
-          let unspecKey = getClassInterfaceKey(unspecCName, unspecIName);
-          this.pass.wasm.usedInterfaceAdaptations[unspecKey] = true;
+          let srcT = resolveType(ifaceAdaptation.source);
+          let tgtT = resolveType(ifaceAdaptation.target) as InterfaceType;
+          if (srcT is ClassType) {
+            let cName = getClassKey(srcT);
+            let iName = getInterfaceKey(tgtT);
+            this.pass.wasm.usedInterfaceAdaptations[getClassInterfaceKey(cName, iName)] = true;
+            
+            let unspecCName = getClassKey(srcT.genericSource ?? srcT);
+            let unspecIName = getInterfaceKey(tgtT.genericSource ?? tgtT);
+            let unspecKey = getClassInterfaceKey(unspecCName, unspecIName);
+            this.pass.wasm.usedInterfaceAdaptations[unspecKey] = true;
+          } else if (srcT is InterfaceType) {
+            this.pass.typeLowerer.discoverType(srcT, model);
+            this.pass.typeLowerer.discoverType(tgtT, model);
+          }
         }
       }
       if (n is TemplateElement) {

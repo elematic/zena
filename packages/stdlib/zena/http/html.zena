@@ -1,0 +1,541 @@
+/**
+ * Safe HTML template tag with indentation handling and asynchronous streaming.
+ *
+ * Ported from Zipadee (`packages/core/src/lib/html.ts`).
+ */
+
+import {
+  TemplateStringsArray, StringBuilder, Iterable, Iterator,
+  FixedArray, GrowableArray, AsyncInSyncIteration,
+} from 'zena:core';
+import {
+  Future, AsyncStep, AsyncIterator, AsyncIterable,
+} from 'zena:async';
+import { Stream, StreamWriter } from 'zena:stream';
+
+/**
+ * Appends `str` to `sb` with HTML special characters (`&<>"'`) escaped as
+ * HTML entities (`&amp;`, `&lt;`, `&gt;`, `&quot;`, `&apos;`).
+ */
+function appendEscaped(sb: StringBuilder, str: String): void {
+  let len = str.length;
+  var last = 0;
+  for (var i = 0; i < len; i += 1) {
+    let b = str.getByteAt(i);
+    var entity: String | null = null;
+    if (b == 0x26) {        // &
+      entity = '&amp;';
+    } else if (b == 0x3C) { // <
+      entity = '&lt;';
+    } else if (b == 0x3E) { // >
+      entity = '&gt;';
+    } else if (b == 0x22) { // "
+      entity = '&quot;';
+    } else if (b == 0x27) { // '
+      entity = '&apos;';
+    }
+    if (entity != null) {
+      if (i > last) {
+        sb.append(str.sliceBytes(last, i));
+      }
+      sb.append(entity);
+      last = i + 1;
+    }
+  }
+  if (last == 0) {
+    sb.append(str);
+  } else if (last < len) {
+    sb.append(str.sliceBytes(last, len));
+  }
+}
+
+/**
+ * Replaces characters which have special meaning in HTML (`&<>"'`) with
+ * escaped HTML entities (`&amp;`, `&lt;`, `&gt;`, `&quot;`, `&apos;`).
+ */
+export function escape(str: String): String {
+  let len = str.length;
+  var hasSpecial = false;
+  for (var i = 0; i < len; i += 1) {
+    let b = str.getByteAt(i);
+    if (b == 0x26 || b == 0x3C || b == 0x3E || b == 0x22 || b == 0x27) {
+      hasSpecial = true;
+      break;
+    }
+  }
+  if (!hasSpecial) {
+    return str;
+  }
+  let sb = new StringBuilder(len + 16);
+  appendEscaped(sb, str);
+  return sb.toString();
+}
+
+/**
+ * Represents a value that should be rendered as raw HTML without escaping.
+ */
+export final class UnsafeHTML {
+  value: String;
+
+  new(this.value);
+}
+
+/**
+ * Wraps a string in an `UnsafeHTML` object, which indicates that the
+ * string should be rendered as raw HTML without escaping.
+ */
+export let unsafeHTML = (s: String): UnsafeHTML => new UnsafeHTML(s);
+
+/**
+ * Values that may be interpolated into an `html` template.
+ */
+export type TemplateValue =
+  String
+  | HTMLPartial
+  | UnsafeHTML
+  | null
+  | Iterable<TemplateValue>
+  | Future<TemplateValue>;
+
+let maxIndent = 0x7FFFFFFF;
+
+/** Whether `b` is a space (0x20) or tab (0x09). */
+let isSpaceOrTab = (b: i32): boolean => b == 0x20 || b == 0x09;
+
+/**
+ * Finds the first match of `(?:\n)([ \t]*)(?:\S)` in `s`: the length of the
+ * space/tab run after the first newline that is followed by a non-whitespace
+ * byte. Returns -1 if no such line exists in `s`.
+ *
+ * Matches Zipadee's `indentRegex = /(?:\n)([ \t]*)(?:\S)/g` executed once
+ * per string with `indentRegex.lastIndex = 0`.
+ */
+let firstLineIndent = (s: String): i32 => {
+  let len = s.length;
+  var i = 0;
+  while (i < len) {
+    if (s.getByteAt(i) == 0x0A) { // \n
+      let start = i + 1;
+      var j = start;
+      while (j < len && isSpaceOrTab(s.getByteAt(j))) {
+        j += 1;
+      }
+      if (j < len) {
+        let b = s.getByteAt(j);
+        // \S in JS regex: not whitespace (\r, \n, \t, \f, \v, space)
+        if (b != 0x0A && b != 0x0D && b != 0x09 && b != 0x0B && b != 0x0C && b != 0x20) {
+          return j - start;
+        }
+      }
+      i = j;
+    } else {
+      i += 1;
+    }
+  }
+  return -1;
+};
+
+/**
+ * Appends `s` to `sb`, replacing up to `remove` leading spaces or tabs at the
+ * start of every line (`^[ \t]{0,remove}` in multiline mode) with `add` spaces.
+ *
+ * When `remove == maxIndent` (no line had a newline followed by `\S`, matching
+ * `minIndent === Infinity` in Zipadee), appends `s` unchanged.
+ */
+let appendFixedIndent = (sb: StringBuilder, remove: i32, add: i32, s: String): void => {
+  if (remove == maxIndent) {
+    sb.append(s);
+    return;
+  }
+  let len = s.length;
+  var i = 0;
+  var atLineStart = true;
+  while (true) {
+    if (atLineStart) {
+      var dropped = 0;
+      while (i < len && dropped < remove && isSpaceOrTab(s.getByteAt(i))) {
+        i += 1;
+        dropped += 1;
+      }
+      for (var sp = 0; sp < add; sp += 1) {
+        sb.appendByte(0x20);
+      }
+      atLineStart = false;
+    }
+    if (i >= len) {
+      break;
+    }
+    // Scan until the next \n
+    var nl = -1;
+    for (var j = i; j < len; j += 1) {
+      if (s.getByteAt(j) == 0x0A) {
+        nl = j;
+        break;
+      }
+    }
+    if (nl < 0) {
+      sb.append(s.sliceBytes(i, len));
+      break;
+    }
+    sb.append(s.sliceBytes(i, nl + 1));
+    i = nl + 1;
+    atLineStart = true;
+  }
+};
+
+/**
+ * Appends an interpolated value to `sb`, escaping it if necessary.
+ * Throws `AsyncInSyncIteration` if a `Future` is encountered during
+ * synchronous rendering.
+ */
+function appendValue(sb: StringBuilder, v: TemplateValue, currentIndent: i32): void {
+  match (v) {
+    case null: {}
+    case String as s: {
+      appendEscaped(sb, s);
+    }
+    case HTMLPartial as p: {
+      p.appendTo(sb, currentIndent);
+    }
+    case UnsafeHTML as u: {
+      sb.append(u.value);
+    }
+    case Iterable as items: {
+      for (let item in items) {
+        appendValue(sb, item, 0);
+      }
+    }
+    case Future: {
+      throw new AsyncInSyncIteration();
+    }
+  }
+}
+
+/**
+ * Represents a partial HTML template result that can be rendered with
+ * interpolated values. It supports indentation, nested templates, iterables of
+ * values, futures, and HTML escaping of values.
+ *
+ * The `toString()` method returns the rendered HTML as a string, propagating
+ * the indentation level. If the template contains a `Future`, `toString()`
+ * throws `AsyncInSyncIteration`; consume async templates with `for await`,
+ * `collectResult`, `pipeToStream`, or `htmlStream`.
+ *
+ * To support streaming HTTP and hybrid sync/async iteration, `HTMLPartial` is
+ * an `AsyncIterable<String>` whose iterator yields `Ready` steps synchronously
+ * for string chunks and `Pending` steps only when awaiting a `Future`.
+ */
+export final class HTMLPartial implements AsyncIterable<String> {
+  strings: TemplateStringsArray;
+  values: FixedArray<TemplateValue>;
+
+  new(this.strings, this.values);
+
+  toString(indent: i32 = 0): String {
+    let sb = new StringBuilder();
+    this.appendTo(sb, indent);
+    return sb.toString();
+  }
+
+  appendTo(sb: StringBuilder, indent: i32 = 0): void {
+    var minIndent = maxIndent;
+    let strCount = this.strings.length;
+    for (var i = 0; i < strCount; i += 1) {
+      let m = firstLineIndent(this.strings[i]);
+      if (m >= 0 && m < minIndent) {
+        minIndent = m;
+      }
+    }
+
+    var currentIndent = indent;
+    appendFixedIndent(sb, minIndent, indent, this.strings[0]);
+    let values = this.values;
+
+    for (var i = 0; i < values.length; i += 1) {
+      let m = firstLineIndent(this.strings[i]);
+      if (m >= 0) {
+        currentIndent = m - minIndent + indent;
+      }
+      appendValue(sb, values[i], currentIndent);
+      appendFixedIndent(sb, minIndent, indent, this.strings[i + 1]);
+    }
+  }
+
+  [AsyncIterable.asyncIterator](): AsyncIterator<String> {
+    return new HTMLIterator(this);
+  }
+}
+
+/**
+ * A template tag function that accepts an HTML string.
+ *
+ * Interpolated values are escaped by default so that they are not interpreted
+ * as HTML. To interpolate a value as raw HTML, use `unsafeHTML`.
+ */
+export let html = (strings: TemplateStringsArray, values: FixedArray<TemplateValue>): HTMLPartial =>
+  new HTMLPartial(strings, values);
+
+/**
+ * Stack frame states for traversing nested templates and iterables
+ * without recursion.
+ */
+sealed class HTMLIteratorState {
+  case HtmlState(var index: i32, container: HTMLPartial)
+  case IterState(container: Iterator<TemplateValue>)
+}
+
+/**
+ * Hybrid sync/async iterator over an `HTMLPartial` that yields `AsyncStep<String>`:
+ * `Ready` `(1, chunk, _)` synchronously for strings, `Pending` `(2, _, future)`
+ * when awaiting an interpolated `Future<TemplateValue>`, and `Done` `(0, _, _)`
+ * when exhausted.
+ */
+export final class HTMLIterator implements AsyncIterator<String> {
+  #stack = new GrowableArray<HTMLIteratorState>(4);
+
+  new(partial: HTMLPartial) {
+    this.#stack.push(new HtmlState(0, partial));
+  }
+
+  next(): AsyncStep<String> {
+    while (this.#stack.length > 0) {
+      let state = this.#stack[this.#stack.length - 1];
+      var done = false;
+      var value: TemplateValue = null;
+
+      match (state) {
+        case HtmlState { index, container }: {
+          let i = index >> 1;
+          let isEven = (index & 1) == 0;
+          state.index = index + 1;
+
+          if (isEven) {
+            return (1, container.strings[i], _);
+          }
+
+          done = i >= container.values.length;
+          if (!done) {
+            value = container.values[i];
+          }
+        }
+        case IterState { container }: {
+          if (let (1, item, _) = container.next()) {
+            value = item;
+          } else {
+            done = true;
+          }
+        }
+      }
+
+      if (done) {
+        this.#stack.pop();
+        continue;
+      }
+
+      match (value) {
+        case null: {
+          return (1, '', _);
+        }
+        case String as s: {
+          return (1, escape(s), _);
+        }
+        case UnsafeHTML as u: {
+          return (1, u.value, _);
+        }
+        case HTMLPartial as p: {
+          this.#stack.push(new HtmlState(0, p));
+          continue;
+        }
+        case Iterable as items: {
+          this.#stack.push(new IterState(items.[Iterable.iterator]()));
+          continue;
+        }
+        case Future as f: {
+          return (2, _, this.#resolvePending(f));
+        }
+      }
+    }
+
+    return (0, _, _);
+  }
+
+  async #resolvePending(f: Future<TemplateValue>): Future<Option<String>> {
+    var v: TemplateValue = await f;
+    while (true) {
+      match (v) {
+        case null: {
+          return some('');
+        }
+        case String as s: {
+          return some(escape(s));
+        }
+        case UnsafeHTML as u: {
+          return some(u.value);
+        }
+        case HTMLPartial as p: {
+          this.#stack.push(new HtmlState(0, p));
+          break;
+        }
+        case Iterable as items: {
+          this.#stack.push(new IterState(items.[Iterable.iterator]()));
+          break;
+        }
+        case Future as nextF: {
+          v = await nextF;
+          continue;
+        }
+      }
+    }
+
+    while (true) {
+      var nextPending: Future<Option<String>> | null = null;
+      match (this.next()) {
+        case (0, _, _): {
+          return none;
+        }
+        case (1, let s, _): {
+          return some(s);
+        }
+        case (2, _, let p): {
+          nextPending = p;
+        }
+      }
+      if (nextPending != null) {
+        return await (nextPending as Future<Option<String>>);
+      }
+    }
+  }
+}
+
+/**
+ * Options for `pipeToStream`.
+ */
+export type PipeOptions = {
+  flushSize?: i32,
+};
+
+/**
+ * Flushes buffered text in `buffer` to `writer`. Returns `false` if the
+ * reader has stopped the stream.
+ */
+async function flushBuffer(writer: StreamWriter<u8>, buffer: StringBuilder): Future<boolean> {
+  if (buffer.length == 0) {
+    return true;
+  }
+  let text = buffer.toString();
+  buffer.clear();
+  let bytes = text.toBytes();
+  if (bytes.length == 0) {
+    return true;
+  }
+  return await writer.writeAll(bytes, bytes.length);
+}
+
+/**
+ * Writes an `HTMLPartial` to a `StreamWriter<u8>`.
+ *
+ * If `flushSize` is positive, small string chunks are buffered until at least
+ * `flushSize` bytes have accumulated, at which point they are written to the
+ * stream. Buffered chunks are always flushed before awaiting a `Future`, so
+ * the reader receives the HTML prefix immediately while async work is pending.
+ *
+ * Does not call `writer.close()` when done, matching Zipadee's `pipeToWritable`.
+ */
+export async function pipeToStream(
+  partial: HTMLPartial,
+  writer: StreamWriter<u8>,
+  options: PipeOptions = {}
+): Future<void> {
+  let flushSize = options.flushSize ?? 0;
+  if (flushSize < 0) {
+    throw new Error('flushSize must be non-negative');
+  }
+
+  let buffer = new StringBuilder(if (flushSize > 0) flushSize else 256);
+  let iter = partial.[AsyncIterable.asyncIterator]();
+
+  while (true) {
+    if (buffer.length > flushSize) {
+      if (!(await flushBuffer(writer, buffer))) {
+        return;
+      }
+    }
+
+    var chunk: String | null = null;
+    var pending: Future<Option<String>> | null = null;
+    match (iter.next()) {
+      case (0, _, _): {
+        break;
+      }
+      case (1, let s, _): {
+        chunk = s;
+      }
+      case (2, _, let p): {
+        pending = p;
+      }
+    }
+
+    if (pending != null) {
+      if (buffer.length > 0) {
+        if (!(await flushBuffer(writer, buffer))) {
+          return;
+        }
+      }
+      if (let Some { value } = await (pending as Future<Option<String>>)) {
+        chunk = value;
+      } else {
+        break;
+      }
+    }
+
+    if (chunk != null) {
+      let s = chunk as String;
+      if (flushSize == 0) {
+        if (s.length > 0) {
+          let bytes = s.toBytes();
+          if (!(await writer.writeAll(bytes, bytes.length))) {
+            return;
+          }
+        }
+      } else {
+        buffer.append(s);
+      }
+    }
+  }
+
+  if (buffer.length > 0) {
+    await flushBuffer(writer, buffer);
+  }
+}
+
+/**
+ * Creates a `Stream<u8>` that streams the rendered bytes of `partial`.
+ *
+ * Uses a default `flushSize` of 1024 bytes (slightly below typical Ethernet
+ * MTU) and always flushes before awaiting any embedded `Future`.
+ */
+export function htmlStream(partial: HTMLPartial, flushSize: i32 = 1024): Stream<u8> {
+  let writer = new StreamWriter<u8>();
+  pumpHtml(writer, partial, flushSize);
+  return writer.stream;
+}
+
+async function pumpHtml(writer: StreamWriter<u8>, partial: HTMLPartial, flushSize: i32): Future<void> {
+  try {
+    await pipeToStream(partial, writer, {flushSize});
+  } finally {
+    writer.close();
+  }
+}
+
+/**
+ * Joins an `AsyncIterable<String>` (such as an `HTMLPartial`) into a single
+ * `String`, awaiting any pending chunks.
+ */
+export async function collectResult(result: AsyncIterable<String>): Future<String> {
+  let sb = new StringBuilder();
+  for await (let chunk in result) {
+    sb.append(chunk);
+  }
+  return sb.toString();
+}
