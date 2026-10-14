@@ -1271,14 +1271,14 @@ export final class FunctionLowerer {
     }
     var needsThisDowncast = false;
     if (paramOffset == 1 && ctorDef == null && !this.func.isClosure &&
-        this.func.classType != null && this.func.methodName != null) {
+        this.func.classType != null && this.#methodName() != null) {
       // Override methods receive the ROOT class's receiver type (vtable
       // signature compatibility) and must downcast to their own class.
       // An extension class has no struct to cast to: every class in the
       // chain takes the same erased `on` value as its receiver, which
       // is already the right type.
       let ct = this.func.classType as ClassType;
-      let rootClass = getMemberRootClass(ct, this.func.methodName as String);
+      let rootClass = getMemberRootClass(ct, this.#methodName() as String);
       if (ct != rootClass && !ct.isExtension) {
         needsThisDowncast = true;
       }
@@ -1416,7 +1416,7 @@ export final class FunctionLowerer {
           this.b.internType(castVt));
     }
     if (paramOffset == 1 && ctorDef == null && !this.func.isClosure &&
-        this.func.methodName == "==" && params.length == 1 &&
+        this.#methodName() == "==" && params.length == 1 &&
         paramSigIndex[0] >= 0 && (exploded == null || exploded[0] == null)) {
       this.#lowerEqualityPrologue(params[0]);
     }
@@ -1424,7 +1424,7 @@ export final class FunctionLowerer {
       this.#lowerClosurePrologue(ctxParam);
     }
     if (paramOffset == 1 && ctorDef == null && !this.func.isClosure &&
-        this.func.methodName == ':dispose' &&
+        this.#methodName() == ':dispose' &&
         this.func.classType != null &&
         (this.func.classType as ClassType).isResource) {
       // A resource's consuming dispose ends the object's life: mark the
@@ -1486,8 +1486,8 @@ export final class FunctionLowerer {
     // the class's own affine fields (ownership.md §Affine fields).
     let dropFieldNames = new Array<String>();
     let dropFieldTypes = new Array<Type>();
-    if (this.func.methodName != null &&
-        (this.func.methodName as String) == ':dispose') {
+    if (this.#methodName() != null &&
+        (this.#methodName() as String) == ':dispose') {
       collectAffineDropFields(this.#cx(), dropFieldNames, dropFieldTypes);
     }
     if (body is BlockStatement) {
@@ -2680,6 +2680,28 @@ export final class FunctionLowerer {
             this.b.internType(castVt));
       }
     }
+  }
+
+  /**
+   * The method this function's body is: its own name, or for a method's
+   * core (explode.zena), which has none so that it never enters the class
+   * method map, its forwarder's.
+   */
+  #methodName(): String | null {
+    let own = this.func.methodName;
+    if (own != null) {
+      return own;
+    }
+    let explosion = this.func.explosion;
+    if (explosion != null && explosion.core === this.func &&
+        this.func.classType != null) {
+      // Constructors and their phases keep their own handling.
+      let name = explosion.forwarder.methodName;
+      if (name != null && !(name as String).startsWith('<')) {
+        return name;
+      }
+    }
+    return null;
   }
 
   /** The <vtable> operand: the class's vtable global, or null. */
@@ -6809,6 +6831,38 @@ export final class FunctionLowerer {
       receiver = this.#conformReceiver(receiver, sig.params[0], 'method receiver type');
     }
     let defaults = this.#defaultArgInfo(call);
+    // A direct call to a method whose record parameters or result explode
+    // (explode.zena) calls the core when it has a record unpacked or only
+    // reads the result's fields, as a call to a function does. A virtual
+    // call reaches the method through its vtable slot, which keeps the
+    // record signature.
+    let explosion = method.explosion;
+    if (!isVirtual && defaults == null && explosion != null &&
+        explosion.forwarder === method &&
+        (this.#passesUnpackedArg(call.args, explosion) ||
+         this.#wantsResultFields(call, explosion))) {
+      let core = explosion.core;
+      let coreArgs = new Array<i32>();
+      coreArgs.push(this.#conformToSlot(receiver, core.signature.params[0],
+          'method receiver type'));
+      for (let value in this.#lowerExplodedArgs(call.args, explosion, 1)) {
+        coreArgs.push(value);
+      }
+      let explodedResult = explosion.result;
+      if (explodedResult != null) {
+        return this.#callForFields(core, coreArgs, explodedResult);
+      }
+      let coreReturns = core.signature.returns;
+      if (coreReturns.length > 1) {
+        let outs = multiOut as GrowableArray<i32>;
+        let projs = this.b.callFuncMulti(this.b.addRef(new IrRefFunc(core)),
+            coreArgs, coreReturns);
+        this.#pushMultiResults(call, projs, outs);
+        return projs[0];
+      }
+      return this.b.callFunc(this.b.addRef(new IrRefFunc(core)), coreArgs,
+          if (coreReturns.length == 1) coreReturns[0] else null);
+    }
     let args = new Array<i32>();
     args.push(receiver);
     var sIdx = 1;
@@ -8437,7 +8491,7 @@ export final class FunctionLowerer {
    * through its getters.
    */
   #lowerExplodedArgs(argExprs: GrowableArray<Expression>,
-      spec: ExplosionSpec): GrowableArray<i32> {
+      spec: ExplosionSpec, leading: i32 = 0): GrowableArray<i32> {
     let coreParams = spec.core.signature.params;
     let boxedParams = spec.forwarder.signature.params;
     let args = new Array<i32>();
@@ -8445,7 +8499,7 @@ export final class FunctionLowerer {
       let arg = argExprs[i];
       let d = spec.params[i];
       if (d == null) {
-        let paramVt = coreParams[args.length];
+        let paramVt = coreParams[leading + args.length];
         let value = this.#lowerExpressionCtx(arg, paramVt);
         args.push(this.#conformToSlot(value, paramVt, 'call argument type'));
         continue;
@@ -8464,13 +8518,14 @@ export final class FunctionLowerer {
         }
         continue;
       }
+      let boxedVt = boxedParams[leading + i];
       let record = this.#conformToSlot(
-          this.#lowerExpressionCtx(arg, boxedParams[i]), boxedParams[i],
+          this.#lowerExpressionCtx(arg, boxedVt), boxedVt,
           'call argument type');
       for (let field in d.fields) {
         let value = this.#cx().recordDispatchRead(
             d, field.name as String, record);
-        args.push(this.#conformToSlot(value, coreParams[args.length],
+        args.push(this.#conformToSlot(value, coreParams[leading + args.length],
             'exploded field type'));
       }
     }

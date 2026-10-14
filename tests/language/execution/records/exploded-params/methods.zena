@@ -1,0 +1,91 @@
+// @mode: run
+// @result: 1
+// A method whose record parameter is only read for its fields takes the
+// fields when a direct call passes a literal, and a method whose record
+// result is only read for its fields returns them. A call that dispatches
+// through the vtable still passes and receives the record. Every shape
+// must compute the same thing.
+
+type V = {x: i32, y: i32};
+type Opt = {n: i32, extra?: i32};
+
+class Grid {
+  scale: i32;
+  new(this.scale);
+
+  area(r: V): i32 {
+    return r.x * r.y * this.scale;
+  }
+
+  shift(r: V, by: i32): V {
+    return {x: r.x + by, y: r.y + by};
+  }
+
+  same(r: V): V {
+    return r;
+  }
+
+  total(o: Opt): i32 {
+    let {n, extra = 100} = o;
+    return n + extra + this.#bonus({x: n, y: 1});
+  }
+
+  #bonus(r: V): i32 {
+    return r.x * r.y;
+  }
+}
+
+// Overrides `area`, so a call through a `Shape` dispatches.
+class Shape {
+  area(r: V): i32 {
+    return r.x * r.y;
+  }
+}
+
+class Triangle extends Shape {
+  area(r: V): i32 {
+    return (r.x * r.y) >> 1;
+  }
+}
+
+var kept: V = {x: 0, y: 0};
+
+export let main = (): i32 => {
+  let g = new Grid(2);
+  if (g.area({x: 3, y: 4}) != 24) {
+    return 0;
+  }
+  let {x, y} = g.shift({x: 1, y: 2}, 10);
+  if (x != 11 || y != 12) {
+    return 0;
+  }
+  let s = g.same({x: 5, y: 6});
+  if (s.x != 5 || s.y != 6) {
+    return 0;
+  }
+  // A heap record passed where the parameter explodes.
+  kept = {x: 7, y: 2};
+  if (g.area(kept) != 28) {
+    return 0;
+  }
+  // Optional fields, and a private method called with a literal.
+  if (g.total({n: 1}) != 102 || g.total({n: 1, extra: 3}) != 5) {
+    return 0;
+  }
+  // Virtual dispatch keeps the record.
+  let shapes = new GrowableArray<Shape>();
+  shapes.push(new Shape());
+  shapes.push(new Triangle());
+  var areas = 0;
+  for (let shape in shapes) {
+    areas = areas * 100 + shape.area({x: 4, y: 5});
+  }
+  if (areas != 2010) {
+    return 0;
+  }
+  let t = new Triangle();
+  if (t.area({x: 6, y: 2}) != 6) {
+    return 0;
+  }
+  return 1;
+};
