@@ -1,0 +1,223 @@
+{
+  "benchmark": "benchmarks/http/json-server.zena",
+  "payload": "{\"hello\":\"world\"}",
+  "payloadBytes": 17,
+  "command": "autocannon -c 100 -d 10 -p 10",
+  "environment": {
+    "os": "NixOS MicroVM (Linux 6.18.20 x86_64)",
+    "vcpus": 16,
+    "memoryGb": 32,
+    "nodeVersion": "v26.10.0",
+    "wasmtimeVersion": "48.0.5",
+    "rustcVersion": "1.98.1",
+    "date": "2026-10-14"
+  },
+  "runs": [
+    {
+      "id": "zena-baseline",
+      "name": "Zena (origin/main baseline)",
+      "runtime": "zena-cli (Wasmtime 48.0.5)",
+      "commit": "0d0ebccb",
+      "reqPerSec": {
+        "avg": 1431.46,
+        "stdev": 177.13,
+        "min": 1145,
+        "p1": 1145,
+        "p2_5": 1145,
+        "p50": 1402,
+        "p97_5": 1677
+      },
+      "usPerReq": 698.59,
+      "latencyMs": {
+        "avg": 664.52,
+        "stdev": 292.75,
+        "p2_5": 187,
+        "p50": 658,
+        "p97_5": 1230,
+        "p99": 1329,
+        "max": 1609
+      },
+      "bytesPerSec": {
+        "avg": "228 kB",
+        "p50": "223 kB"
+      },
+      "notes": "O(N^2) linear-memory free-list fragmentation in packages/stdlib/zena/memory.zena + eager URL/Header parsing + coroutine per response stream."
+    },
+    {
+      "id": "zena-bucket-a",
+      "name": "Zena (+ Bucket A: Allocator Coalescing & Lazy Request)",
+      "runtime": "zena-cli (Wasmtime 48.0.5)",
+      "commit": "79a43066",
+      "reqPerSec": {
+        "avg": 24858.91,
+        "stdev": 509.08,
+        "min": 23425,
+        "p1": 23439,
+        "p2_5": 23439,
+        "p50": 25007,
+        "p97_5": 25455
+      },
+      "usPerReq": 40.23,
+      "latencyMs": {
+        "avg": 39.67,
+        "stdev": 19.95,
+        "p2_5": 0,
+        "p50": 41,
+        "p97_5": 91,
+        "p99": 108,
+        "max": 211
+      },
+      "bytesPerSec": {
+        "avg": "3.48 MB",
+        "p50": "3.5 MB"
+      },
+      "notes": "Address-ordered free-list coalescing in memory.zena, lazy Request fields, direct TextStream/BytesStream, pooled 4 KB buffer in pumpOut."
+    },
+    {
+      "id": "zena-bucket-b",
+      "name": "Zena (+ Bucket B: Framework & Wire Adapter Fast Paths)",
+      "runtime": "zena-cli (Wasmtime 48.0.5)",
+      "reqPerSec": {
+        "avg": 29814.55,
+        "stdev": 556.5,
+        "min": 28517,
+        "p1": 28527,
+        "p2_5": 28527,
+        "p50": 29903,
+        "p97_5": 30479
+      },
+      "usPerReq": 33.54,
+      "latencyMs": {
+        "avg": 32.96,
+        "stdev": 20.14,
+        "p2_5": 1,
+        "p50": 37,
+        "p97_5": 84,
+        "p99": 101,
+        "max": 196
+      },
+      "bytesPerSec": {
+        "avg": "4.17 MB",
+        "p50": "4.19 MB"
+      },
+      "notes": "0/1-middleware compose fast path, cached App.#pipeline, single WireRequestSource object, lazy Response.#headers map, pre-encoded header byte arrays and Content-Length lookup table."
+    },
+    {
+      "id": "zena-bucket-c1",
+      "name": "Zena (+ Bucket C.1: WASI Stream Pump, Unread Future Dispose & Request Batching)",
+      "runtime": "zena-cli (Wasmtime 48.0.5)",
+      "reqPerSec": {
+        "avg": 32131.64,
+        "stdev": 680.33,
+        "min": 31240,
+        "p1": 31247,
+        "p2_5": 31247,
+        "p50": 31919,
+        "p97_5": 33503
+      },
+      "usPerReq": 31.12,
+      "latencyMs": {
+        "avg": 30.54,
+        "stdev": 18.23,
+        "p2_5": 0,
+        "p50": 41,
+        "p97_5": 44,
+        "p99": 46,
+        "max": 101
+      },
+      "bytesPerSec": {
+        "avg": "4.5 MB",
+        "p50": "4.47 MB"
+      },
+      "notes": "Synchronous futureDropReadable via Disposable on unawaited DeferredFuture, TextStreamPump single-copy linear-memory write, batched RequestStreamProducer (up to 64 reqs/read), lock-free mpsc::Receiver::poll_recv, TCP_NODELAY + pipeline_flush."
+    },
+    {
+      "id": "zipadee",
+      "name": "Zipadee (benchmarks/zipadee.cjs)",
+      "runtime": "Node.js v26.10.0",
+      "reqPerSec": {
+        "avg": 71607.28,
+        "stdev": 1122.96,
+        "min": 70065,
+        "p1": 70079,
+        "p2_5": 70079,
+        "p50": 71615,
+        "p97_5": 73983
+      },
+      "usPerReq": 13.96,
+      "latencyMs": {
+        "avg": 13.46,
+        "stdev": 4.68,
+        "p2_5": 7,
+        "p50": 15,
+        "p97_5": 20,
+        "p99": 20,
+        "max": 29
+      },
+      "bytesPerSec": {
+        "avg": "13.9 MB",
+        "p50": "13.9 MB"
+      },
+      "notes": "justinfagnani/fastify-benchmarks benchmarks/zipadee.cjs on Node.js v26.10.0."
+    },
+    {
+      "id": "fastify",
+      "name": "Fastify (benchmarks/fastify.js)",
+      "runtime": "Node.js v26.10.0",
+      "reqPerSec": {
+        "avg": 75819.64,
+        "stdev": 1949.23,
+        "min": 71307,
+        "p1": 71359,
+        "p2_5": 71359,
+        "p50": 75647,
+        "p97_5": 78975
+      },
+      "usPerReq": 13.19,
+      "latencyMs": {
+        "avg": 12.67,
+        "stdev": 4.33,
+        "p2_5": 6,
+        "p50": 14,
+        "p97_5": 18,
+        "p99": 19,
+        "max": 27
+      },
+      "bytesPerSec": {
+        "avg": "14.3 MB",
+        "p50": "14.2 MB"
+      },
+      "notes": "justinfagnani/fastify-benchmarks benchmarks/fastify.js on Node.js v26.10.0."
+    },
+    {
+      "id": "zena-bucket-c2",
+      "name": "Zena (+ Bucket C.2: ResponseWriter.completeText Fast Path)",
+      "runtime": "zena-cli (Wasmtime 48.0.5)",
+      "commit": "b65b6300",
+      "reqPerSec": {
+        "avg": 314982.41,
+        "stdev": 7864.21,
+        "min": 293198,
+        "p1": 293375,
+        "p2_5": 293375,
+        "p50": 315135,
+        "p97_5": 322559
+      },
+      "usPerReq": 3.17,
+      "latencyMs": {
+        "avg": 2.69,
+        "stdev": 0.9,
+        "p2_5": 2,
+        "p50": 3,
+        "p97_5": 5,
+        "p99": 6,
+        "max": 26
+      },
+      "bytesPerSec": {
+        "avg": "44.1 MB",
+        "p50": "44.1 MB"
+      },
+      "notes": "Single-call ResponseWriter.completeText host fast path for in-memory String/null responses, bypassing WASI P3 GuestBody mpsc+oneshot channels and concurrent stream/trailer pipe tasks."
+    }
+  ]
+}

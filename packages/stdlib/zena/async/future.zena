@@ -19,7 +19,7 @@
  * and allocates nothing at all when a future settles.
  */
 
-import { Outcome, Ok, Err, ScopedFrom } from 'zena:core';
+import { Outcome, Ok, Err, ScopedFrom, Disposable } from 'zena:core';
 import { Waiter, scheduleTask, drainMicrotasks, parkBlocking } from './executor.zena';
 
 /**
@@ -109,7 +109,7 @@ function alreadyCompleted(): Error {
 // Future / Completer
 // ---------------------------------------------------------------------------
 
-export class Future<T> {
+export class Future<T> implements Disposable {
   /** Read by name by the compiler's shielded-resume guard — see the
    * note on `FutureState.Pending`. */
   var #state = FutureState.Pending;
@@ -152,10 +152,9 @@ export class Future<T> {
   }
 
   /**
-   * Disclaims interest in a deferred future that has not been subscribed to,
-   * releasing any underlying host handle without starting its read.
+   * Releases any underlying host handle held by an unawaited deferred future.
    */
-  discard(): void {}
+  [Disposable.dispose](): void {}
 
   /**
    * The settled result: `(true, value, _)` or `(false, _, error)`.
@@ -642,7 +641,7 @@ export class DeferredFuture<T> extends Future<T> {
     super.[subscribe](t);
   }
 
-  discard(): void {
+  [Disposable.dispose](): void {
     let d = this.#drop;
     this.#produce = null;
     this.#drop = null;
