@@ -1,7 +1,7 @@
 import { suite, test, TestContext } from 'zena:test';
 import { equal, isTrue } from 'zena:assert';
-import { runFuture, Completer, Future } from 'zena:async';
-import { Some, Option, none, some, Outcome, Ok, Iterable, Iterator, Step, IterableUtils, ImmutableArray } from 'zena:core';
+import { runFuture, Completer, Future, requireSync } from 'zena:async';
+import { Some, Option, none, some, Outcome, Ok, Iterable, Iterator, Step, IterableUtils, ImmutableArray, AsyncInSyncIteration, StringBuilder } from 'zena:core';
 import { Stream, StreamWriter, readAllText } from 'zena:stream';
 import { blockOn } from 'zena:wasi';
 import {
@@ -10,7 +10,6 @@ import {
   unsafeHTML,
   escape,
   TemplateValue,
-  RenderValue,
   pipeToStream,
   htmlStream,
   collectResult,
@@ -136,20 +135,27 @@ export let tests = suite('zena:http html', (): void => {
     test('unsafeHTML bypasses escaping', (ctx: TestContext): void => {
       equal(html`Hello ${unsafeHTML('<h1>World</h1>')}`.toString(), 'Hello <h1>World</h1>');
     });
+
+    test('Rejects templates with Futures in synchronous toString()', (ctx: TestContext): void => {
+      var threw = false;
+      try {
+        let _ = html`Hello ${resolveValue('World')}`.toString();
+      } catch (e) {
+        if (e is AsyncInSyncIteration) {
+          threw = true;
+        }
+      }
+      isTrue(threw);
+    });
   });
 
   suite('Iteration', (): void => {
     let joinSync = (partial: HTMLPartial): String => {
-      var out = '';
-      for (let chunk in partial) {
-        match (chunk) {
-          case String as s: {
-            out = out + s;
-          }
-          case Future: {}
-        }
+      let sb = new StringBuilder();
+      for (let chunk in requireSync(partial)) {
+        sb.append(chunk);
       }
-      return out;
+      return sb.toString();
     };
 
     test('Plain text', (ctx: TestContext): void => {
@@ -213,7 +219,19 @@ export let tests = suite('zena:http html', (): void => {
       equal(joinSync(html`Hello ${unsafeHTML('<h1>World</h1>')}`), 'Hello <h1>World</h1>');
     });
 
-    test('Async Futures with collectResult', (ctx: TestContext): void => {
+    test('requireSync throws AsyncInSyncIteration when template has a Future', (ctx: TestContext): void => {
+      var threw = false;
+      try {
+        let _ = joinSync(html`Hello ${resolveValue('World')}`);
+      } catch (e) {
+        if (e is AsyncInSyncIteration) {
+          threw = true;
+        }
+      }
+      isTrue(threw);
+    });
+
+    test('Async Futures with collectResult and for await', (ctx: TestContext): void => {
       runFuture((async (): Future<void> => {
         equal(
           await collectResult(html`Hello ${resolveValue('World')}`),
@@ -232,6 +250,12 @@ export let tests = suite('zena:http html', (): void => {
           await collectResult(html`Hello ${resolveValue(items)}`),
           'Hello ab'
         );
+
+        let sb = new StringBuilder();
+        for await (let chunk in html`<span>${resolveValue('async')}</span>`) {
+          sb.append(chunk);
+        }
+        equal(sb.toString(), '<span>async</span>');
       })());
     });
   });

@@ -5,37 +5,22 @@
  */
 
 import {
-  TemplateStringsArray, StringBuilder, Iterable, Iterator, Step, IterableUtils,
-  FixedArray, GrowableArray,
+  TemplateStringsArray, StringBuilder, Iterable, Iterator,
+  FixedArray, GrowableArray, AsyncInSyncIteration,
 } from 'zena:core';
-import { Future } from 'zena:async';
+import {
+  Future, AsyncStep, AsyncIterator, AsyncIterable,
+} from 'zena:async';
 import { Stream, StreamWriter } from 'zena:stream';
 
 /**
- * Replaces characters which have special meaning in HTML (`&<>"'`) with
- * escaped HTML entities (`&amp;`, `&lt;`, `&gt;`, `&quot;`, `&apos;`).
+ * Appends `str` to `sb` with HTML special characters (`&<>"'`) escaped as
+ * HTML entities (`&amp;`, `&lt;`, `&gt;`, `&quot;`, `&apos;`).
  */
-export function escape(str: String): String {
+function appendEscaped(sb: StringBuilder, str: String): void {
   let len = str.length;
-  var firstSpecial = -1;
+  var last = 0;
   for (var i = 0; i < len; i += 1) {
-    let b = str.getByteAt(i);
-    if (b == 0x26 || b == 0x3C || b == 0x3E || b == 0x22 || b == 0x27) {
-      firstSpecial = i;
-      break;
-    }
-  }
-  if (firstSpecial < 0) {
-    return str;
-  }
-
-  let sb = new StringBuilder(len + 16);
-  if (firstSpecial > 0) {
-    sb.append(str.sliceBytes(0, firstSpecial));
-  }
-
-  var last = firstSpecial;
-  for (var i = firstSpecial; i < len; i += 1) {
     let b = str.getByteAt(i);
     var entity: String | null = null;
     if (b == 0x26) {        // &
@@ -57,9 +42,32 @@ export function escape(str: String): String {
       last = i + 1;
     }
   }
-  if (last < len) {
+  if (last == 0) {
+    sb.append(str);
+  } else if (last < len) {
     sb.append(str.sliceBytes(last, len));
   }
+}
+
+/**
+ * Replaces characters which have special meaning in HTML (`&<>"'`) with
+ * escaped HTML entities (`&amp;`, `&lt;`, `&gt;`, `&quot;`, `&apos;`).
+ */
+export function escape(str: String): String {
+  let len = str.length;
+  var hasSpecial = false;
+  for (var i = 0; i < len; i += 1) {
+    let b = str.getByteAt(i);
+    if (b == 0x26 || b == 0x3C || b == 0x3E || b == 0x22 || b == 0x27) {
+      hasSpecial = true;
+      break;
+    }
+  }
+  if (!hasSpecial) {
+    return str;
+  }
+  let sb = new StringBuilder(len + 16);
+  appendEscaped(sb, str);
   return sb.toString();
 }
 
@@ -88,12 +96,6 @@ export type TemplateValue =
   | null
   | Iterable<TemplateValue>
   | Future<TemplateValue>;
-
-/**
- * One item yielded when iterating an `HTMLPartial`: either an already-rendered
- * `String` chunk or a `Future` resolving to a `TemplateValue`.
- */
-export type RenderValue = String | Future<TemplateValue>;
 
 let maxIndent = 0x7FFFFFFF;
 
@@ -134,18 +136,18 @@ let firstLineIndent = (s: String): i32 => {
 };
 
 /**
- * Replaces up to `remove` leading spaces or tabs at the start of every line
- * (`^[ \t]{0,remove}` in multiline mode) with `add` spaces.
+ * Appends `s` to `sb`, replacing up to `remove` leading spaces or tabs at the
+ * start of every line (`^[ \t]{0,remove}` in multiline mode) with `add` spaces.
  *
  * When `remove == maxIndent` (no line had a newline followed by `\S`, matching
- * `minIndent === Infinity` in Zipadee), returns `s` unchanged.
+ * `minIndent === Infinity` in Zipadee), appends `s` unchanged.
  */
-let fixIndent = (remove: i32, add: i32, s: String): String => {
+let appendFixedIndent = (sb: StringBuilder, remove: i32, add: i32, s: String): void => {
   if (remove == maxIndent) {
-    return s;
+    sb.append(s);
+    return;
   }
   let len = s.length;
-  let sb = new StringBuilder(len + add * 4);
   var i = 0;
   var atLineStart = true;
   while (true) {
@@ -179,27 +181,34 @@ let fixIndent = (remove: i32, add: i32, s: String): String => {
     i = nl + 1;
     atLineStart = true;
   }
-  return sb.toString();
 };
 
 /**
- * Converts an interpolated value to a string, escaping it if necessary.
+ * Appends an interpolated value to `sb`, escaping it if necessary.
+ * Throws `AsyncInSyncIteration` if a `Future` is encountered during
+ * synchronous rendering.
  */
-function valueToString(v: TemplateValue, currentIndent: i32): String {
-  return match (v) {
-    case null: ''
-    case String as s: escape(s)
-    case HTMLPartial as p: p.toString(currentIndent)
-    case UnsafeHTML as u: u.value
-    case Iterable as items: {
-      let sb = new StringBuilder();
-      for (let item in items) {
-        sb.append(valueToString(item, 0));
-      }
-      sb.toString()
+function appendValue(sb: StringBuilder, v: TemplateValue, currentIndent: i32): void {
+  match (v) {
+    case null: {}
+    case String as s: {
+      appendEscaped(sb, s);
     }
-    case Future: ''
-  };
+    case HTMLPartial as p: {
+      p.appendTo(sb, currentIndent);
+    }
+    case UnsafeHTML as u: {
+      sb.append(u.value);
+    }
+    case Iterable as items: {
+      for (let item in items) {
+        appendValue(sb, item, 0);
+      }
+    }
+    case Future: {
+      throw new AsyncInSyncIteration();
+    }
+  }
 }
 
 /**
@@ -208,20 +217,27 @@ function valueToString(v: TemplateValue, currentIndent: i32): String {
  * values, futures, and HTML escaping of values.
  *
  * The `toString()` method returns the rendered HTML as a string, propagating
- * the indentation level.
+ * the indentation level. If the template contains a `Future`, `toString()`
+ * throws `AsyncInSyncIteration`; consume async templates with `for await`,
+ * `collectResult`, `pipeToStream`, or `htmlStream`.
  *
- * To support streaming HTTP, `HTMLPartial` is an `Iterable<RenderValue>` that
- * yields strings or futures in the order for rendering, and can be streamed
- * directly to a `Stream<u8>` via `htmlStream` or `pipeToStream`.
+ * To support streaming HTTP and hybrid sync/async iteration, `HTMLPartial` is
+ * an `AsyncIterable<String>` whose iterator yields `Ready` steps synchronously
+ * for string chunks and `Pending` steps only when awaiting a `Future`.
  */
-export final class HTMLPartial with IterableUtils<RenderValue> implements Iterable<RenderValue> {
+export final class HTMLPartial implements AsyncIterable<String> {
   strings: TemplateStringsArray;
   values: FixedArray<TemplateValue>;
 
   new(this.strings, this.values);
 
   toString(indent: i32 = 0): String {
-    let maxIndent = 0x7FFFFFFF;
+    let sb = new StringBuilder();
+    this.appendTo(sb, indent);
+    return sb.toString();
+  }
+
+  appendTo(sb: StringBuilder, indent: i32 = 0): void {
     var minIndent = maxIndent;
     let strCount = this.strings.length;
     for (var i = 0; i < strCount; i += 1) {
@@ -232,8 +248,7 @@ export final class HTMLPartial with IterableUtils<RenderValue> implements Iterab
     }
 
     var currentIndent = indent;
-    let sb = new StringBuilder();
-    sb.append(fixIndent(minIndent, indent, this.strings[0]));
+    appendFixedIndent(sb, minIndent, indent, this.strings[0]);
     let values = this.values;
 
     for (var i = 0; i < values.length; i += 1) {
@@ -241,14 +256,12 @@ export final class HTMLPartial with IterableUtils<RenderValue> implements Iterab
       if (m >= 0) {
         currentIndent = m - minIndent + indent;
       }
-      sb.append(valueToString(values[i], currentIndent));
-      sb.append(fixIndent(minIndent, indent, this.strings[i + 1]));
+      appendValue(sb, values[i], currentIndent);
+      appendFixedIndent(sb, minIndent, indent, this.strings[i + 1]);
     }
-
-    return sb.toString();
   }
 
-  [Iterable.iterator](): Iterator<RenderValue> {
+  [AsyncIterable.asyncIterator](): AsyncIterator<String> {
     return new HTMLIterator(this);
   }
 }
@@ -272,17 +285,19 @@ sealed class HTMLIteratorState {
 }
 
 /**
- * Synchronous iterator over an `HTMLPartial` that yields `RenderValue` chunks
- * (strings or futures).
+ * Hybrid sync/async iterator over an `HTMLPartial` that yields `AsyncStep<String>`:
+ * `Ready` `(1, chunk, _)` synchronously for strings, `Pending` `(2, _, future)`
+ * when awaiting an interpolated `Future<TemplateValue>`, and `Done` `(0, _, _)`
+ * when exhausted.
  */
-export final class HTMLIterator implements Iterator<RenderValue> {
+export final class HTMLIterator implements AsyncIterator<String> {
   #stack = new GrowableArray<HTMLIteratorState>(4);
 
   new(partial: HTMLPartial) {
     this.#stack.push(new HtmlState(0, partial));
   }
 
-  next(): Step<RenderValue> {
+  next(): AsyncStep<String> {
     while (this.#stack.length > 0) {
       let state = this.#stack[this.#stack.length - 1];
       var done = false;
@@ -336,12 +351,59 @@ export final class HTMLIterator implements Iterator<RenderValue> {
           continue;
         }
         case Future as f: {
-          return (1, f, _);
+          return (2, _, this.#resolvePending(f));
         }
       }
     }
 
     return (0, _, _);
+  }
+
+  async #resolvePending(f: Future<TemplateValue>): Future<Option<String>> {
+    var v: TemplateValue = await f;
+    while (true) {
+      match (v) {
+        case null: {
+          return some('');
+        }
+        case String as s: {
+          return some(escape(s));
+        }
+        case UnsafeHTML as u: {
+          return some(u.value);
+        }
+        case HTMLPartial as p: {
+          this.#stack.push(new HtmlState(0, p));
+          break;
+        }
+        case Iterable as items: {
+          this.#stack.push(new IterState(items.[Iterable.iterator]()));
+          break;
+        }
+        case Future as nextF: {
+          v = await nextF;
+          continue;
+        }
+      }
+    }
+
+    while (true) {
+      var nextPending: Future<Option<String>> | null = null;
+      match (this.next()) {
+        case (0, _, _): {
+          return none;
+        }
+        case (1, let s, _): {
+          return some(s);
+        }
+        case (2, _, let p): {
+          nextPending = p;
+        }
+      }
+      if (nextPending != null) {
+        return await (nextPending as Future<Option<String>>);
+      }
+    }
   }
 }
 
@@ -390,107 +452,53 @@ export async function pipeToStream(
   }
 
   let buffer = new StringBuilder(if (flushSize > 0) flushSize else 256);
-  let stack = new GrowableArray<HTMLIteratorState>(4);
-  stack.push(new HtmlState(0, partial));
+  let iter = partial.[AsyncIterable.asyncIterator]();
 
-  while (stack.length > 0) {
+  while (true) {
     if (buffer.length > flushSize) {
       if (!(await flushBuffer(writer, buffer))) {
         return;
       }
     }
 
-    let state = stack[stack.length - 1];
-    var done = false;
-    var value: TemplateValue = null;
-
-    match (state) {
-      case HtmlState { index, container }: {
-        let i = index >> 1;
-        let isEven = (index & 1) == 0;
-        state.index = index + 1;
-
-        if (isEven) {
-          let str = container.strings[i];
-          if (flushSize == 0) {
-            if (str.length > 0) {
-              let bytes = str.toBytes();
-              if (!(await writer.writeAll(bytes, bytes.length))) {
-                return;
-              }
-            }
-          } else {
-            buffer.append(str);
-          }
-          continue;
-        }
-
-        done = i >= container.values.length;
-        if (!done) {
-          value = container.values[i];
-        }
+    var chunk: String | null = null;
+    var pending: Future<Option<String>> | null = null;
+    match (iter.next()) {
+      case (0, _, _): {
+        break;
       }
-      case IterState { container }: {
-        if (let (1, item, _) = container.next()) {
-          value = item;
-        } else {
-          done = true;
-        }
+      case (1, let s, _): {
+        chunk = s;
+      }
+      case (2, _, let p): {
+        pending = p;
       }
     }
 
-    if (done) {
-      stack.pop();
-      continue;
+    if (pending != null) {
+      if (buffer.length > 0) {
+        if (!(await flushBuffer(writer, buffer))) {
+          return;
+        }
+      }
+      if (let Some { value } = await (pending as Future<Option<String>>)) {
+        chunk = value;
+      } else {
+        break;
+      }
     }
 
-    while (value != null) {
-      match (value) {
-        case String as s: {
-          let escaped = escape(s);
-          if (flushSize == 0) {
-            if (escaped.length > 0) {
-              let bytes = escaped.toBytes();
-              if (!(await writer.writeAll(bytes, bytes.length))) {
-                return;
-              }
-            }
-          } else {
-            buffer.append(escaped);
+    if (chunk != null) {
+      let s = chunk as String;
+      if (flushSize == 0) {
+        if (s.length > 0) {
+          let bytes = s.toBytes();
+          if (!(await writer.writeAll(bytes, bytes.length))) {
+            return;
           }
-          break;
         }
-        case UnsafeHTML as u: {
-          let raw = u.value;
-          if (flushSize == 0) {
-            if (raw.length > 0) {
-              let bytes = raw.toBytes();
-              if (!(await writer.writeAll(bytes, bytes.length))) {
-                return;
-              }
-            }
-          } else {
-            buffer.append(raw);
-          }
-          break;
-        }
-        case HTMLPartial as p: {
-          stack.push(new HtmlState(0, p));
-          break;
-        }
-        case Iterable as items: {
-          stack.push(new IterState(items.[Iterable.iterator]()));
-          break;
-        }
-        case Future as f: {
-          if (buffer.length > 0) {
-            if (!(await flushBuffer(writer, buffer))) {
-              return;
-            }
-          }
-          value = await f;
-          continue;
-        }
+      } else {
+        buffer.append(s);
       }
     }
   }
@@ -521,50 +529,13 @@ async function pumpHtml(writer: StreamWriter<u8>, partial: HTMLPartial, flushSiz
 }
 
 /**
- * Joins an iterable of `RenderValue` chunks into a single `String`, awaiting
- * any embedded futures.
+ * Joins an `AsyncIterable<String>` (such as an `HTMLPartial`) into a single
+ * `String`, awaiting any pending chunks.
  */
-export async function collectResult(result: Iterable<RenderValue>): Future<String> {
+export async function collectResult(result: AsyncIterable<String>): Future<String> {
   let sb = new StringBuilder();
-  for (let chunk in result) {
-    match (chunk) {
-      case String as s: {
-        sb.append(s);
-      }
-      case Future as f: {
-        await appendResolvedValue(sb, await f);
-      }
-    }
+  for await (let chunk in result) {
+    sb.append(chunk);
   }
   return sb.toString();
-}
-
-async function appendResolvedValue(sb: StringBuilder, value: TemplateValue): Future<void> {
-  var v = value;
-  while (v != null) {
-    match (v) {
-      case String as s: {
-        sb.append(escape(s));
-        return;
-      }
-      case UnsafeHTML as u: {
-        sb.append(u.value);
-        return;
-      }
-      case HTMLPartial as p: {
-        sb.append(await collectResult(p));
-        return;
-      }
-      case Iterable as items: {
-        for (let item in items) {
-          await appendResolvedValue(sb, item);
-        }
-        return;
-      }
-      case Future as f: {
-        v = await f;
-        continue;
-      }
-    }
-  }
 }
