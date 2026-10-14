@@ -160,7 +160,7 @@ final class WireRequestSource implements RequestSource {
     this.#consumed = true;
     let received = Future.of<Outcome<void, ErrorCode>>(new Ok<void, ErrorCode>(unit()));
     let (bodyStream, trailers) = WireRequest.consumeBody(this.#wire, received);
-    trailers.discard();
+    trailers.[Disposable.dispose]();
     return bodyStream;
   }
 
@@ -247,7 +247,7 @@ export function toWireResponseWithTransmitted(res: Response): (WireResponse, Fut
  */
 export function toWireResponse(res: Response): WireResponse {
   let (wireResp, transmitted) = toWireResponseWithTransmitted(res);
-  transmitted.discard();
+  transmitted.[Disposable.dispose]();
   return wireResp;
 }
 
@@ -285,7 +285,7 @@ export function textResponse(
   }
   let (response, transmitted) =
       WireResponse.new_(headers, some(textStream(body)), emptyTrailersFuture);
-  transmitted.discard();
+  transmitted.[Disposable.dispose]();
   if (status != 200) {
     response.setStatusCode(status as u16);
   }
@@ -298,6 +298,7 @@ export function textResponse(
 export async function requestText(request: WireRequest): Future<String> {
   let received = new Completer<Outcome<void, ErrorCode>>();
   let (body, trailers) = WireRequest.consumeBody(request, received.future);
+  trailers.[Disposable.dispose]();
   let text = await readAllText(body);
   received.complete(new Ok<void, ErrorCode>(unit()));
   return text;
