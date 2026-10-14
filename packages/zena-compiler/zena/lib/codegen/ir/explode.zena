@@ -152,6 +152,8 @@ final class Candidate {
   result: RecordDispatchInfo | null;
   /** The expressions the function returns, for `result`. */
   returns: GrowableArray<Expression>;
+  /** Whether some call of the function only needs `result`'s fields. */
+  var resultDemanded: boolean = false;
   /** Whether the core returns `result`'s fields. */
   var resultExplodes: boolean = false;
   /**
@@ -371,7 +373,35 @@ final class ResultUse {
   returnedFrom: String | null;
   /** The `var` the result is assigned to or initializes, if any. */
   assignedTo: SymbolId;
-  new(this.rc, this.callee, this.direct, this.returnedFrom, this.assignedTo);
+  /**
+   * The fields-only parameters a `let`-bound result is passed to whole;
+   * they receive its fields when the call returns them.
+   */
+  forwards: GrowableArray<Forward>;
+  new(this.rc, this.callee, this.direct, this.returnedFrom, this.assignedTo,
+      this.forwards);
+
+  /**
+   * Whether the call would only need the result's fields if every
+   * function it is returned from returned them: demand, ahead of
+   * whether the fields are on hand.
+   */
+  demandsFields(byKey: HashMap<String, Candidate>,
+      held: HashMap<SymbolId, HeldVar>): boolean {
+    if (this.direct) {
+      return true;
+    }
+    if (this.assignedTo != noSymbolId) {
+      return held.has(this.assignedTo);
+    }
+    let from = this.returnedFrom;
+    if (from != null) {
+      if (let (true, owner) = byKey.get(from)) {
+        return owner.resultDemanded;
+      }
+    }
+    return false;
+  }
 
   /** Whether the result only needs its fields, given the current verdicts. */
   holdsFields(byKey: HashMap<String, Candidate>,
@@ -401,23 +431,28 @@ final class ResultUse {
 final class HeldVar {
   sym: Symbol;
   dispatch: RecordDispatchInfo;
-  model: SemanticModel;
+  /** The function the `var` is declared in, to resolve method calls written to it. */
+  dc: DemandContext;
   writes: GrowableArray<Expression>;
   forwards: GrowableArray<Forward>;
-  new(this.sym, this.dispatch, this.model, this.writes, this.forwards);
+  new(this.sym, this.dispatch, this.dc, this.writes, this.forwards);
 }
 
 /**
  * Decides which functions return their record result's fields: those
  * some call uses only for its fields (demand) and that have the fields
- * on hand at some return (availability). Both depend on other functions
- * through `return g(...)`, so this iterates from "nothing explodes" up.
- * Marks the calls whose results lowering holds as fields in
- * `wasm.fieldsOnlyResultCalls`.
+ * on hand at some return (production). Both depend on other functions
+ * through `return g(...)`, in opposite directions: `g` is demanded when
+ * `f` is, and `f` produces when `g` does. So demand is settled first,
+ * from "nothing is demanded" up, and production then grows among the
+ * demanded functions; growing both at once could never start a chain
+ * whose only demand is at its head. Marks the calls whose results
+ * lowering holds as fields in `wasm.fieldsOnlyResultCalls`.
  */
 let explodeResults = (wasm: WasmModule, pass: ReachabilityAnalysis,
     candidates: GrowableArray<Candidate>,
     byKey: HashMap<String, Candidate>): GrowableArray<HeldVar> => {
+  let owners = methodOwnerKeys(candidates);
   let uses = new Array<ResultUse>();
   for (let rc in pass.recordResultCalls) {
     let key = resultCalleeKey(rc);
@@ -425,7 +460,7 @@ let explodeResults = (wasm: WasmModule, pass: ReachabilityAnalysis,
       let result = target.result;
       if (result != null) {
         uses.push(classifyResultUse(new DemandContext(wasm, pass, null), rc, key,
-            result, byKey));
+            result, byKey, owners));
       }
     }
   }
@@ -437,14 +472,27 @@ let explodeResults = (wasm: WasmModule, pass: ReachabilityAnalysis,
   var held = heldById(heldList);
   while (true) {
     for (let c in candidates) {
+      c.resultDemanded = false;
       c.resultExplodes = false;
     }
     var changed = true;
     while (changed) {
       changed = false;
+      for (let use in uses) {
+        if (let (true, callee) = byKey.get(use.callee)) {
+          if (!callee.resultDemanded && use.demandsFields(byKey, held)) {
+            callee.resultDemanded = true;
+            changed = true;
+          }
+        }
+      }
+    }
+    changed = true;
+    while (changed) {
+      changed = false;
       for (let c in candidates) {
-        if (c.result != null && !c.resultExplodes &&
-            producesFields(c, byKey) && resultDemanded(c, uses, byKey, held)) {
+        if (c.result != null && c.resultDemanded && !c.resultExplodes &&
+            producesFields(wasm, pass, c, byKey)) {
           c.resultExplodes = true;
           changed = true;
         }
@@ -466,10 +514,33 @@ let explodeResults = (wasm: WasmModule, pass: ReachabilityAnalysis,
     if (let (true, callee) = byKey.get(use.callee)) {
       if (callee.resultExplodes && use.holdsFields(byKey, held)) {
         wasm.fieldsOnlyResultCalls.add((use.rc.call as Node).id as i32);
+        // The bound result is held as its fields, so the parameters it is
+        // passed on to are available unpacked.
+        for (let fw in use.forwards) {
+          if (let (true, target) = byKey.get(fw.callee)) {
+            target.available[fw.index] = true;
+          }
+        }
       }
     }
   }
   return heldList;
+};
+
+/**
+ * Each method candidate's declaration node id to its key. A declaration
+ * compiled once per instantiation of a generic class maps to "", since a
+ * call in its body cannot tell which instantiation it is in.
+ */
+let methodOwnerKeys = (candidates: GrowableArray<Candidate>): HashMap<i32, String> => {
+  let out = new HashMap<i32, String>();
+  for (let c in candidates) {
+    if (c.methodTarget != null) {
+      let id = (c.f.node as Node).id as i32;
+      out[id] = if (out.has(id)) '' else c.key();
+    }
+  }
+  return out;
 };
 
 let heldById = (list: GrowableArray<HeldVar>): HashMap<SymbolId, HeldVar> => {
@@ -478,19 +549,6 @@ let heldById = (list: GrowableArray<HeldVar>): HashMap<SymbolId, HeldVar> => {
     out[hv.sym.id] = hv;
   }
   return out;
-};
-
-/** Whether some call of `c` uses its result only for the fields. */
-let resultDemanded = (c: Candidate, uses: GrowableArray<ResultUse>,
-    byKey: HashMap<String, Candidate>,
-    held: HashMap<SymbolId, HeldVar>): boolean => {
-  let key = c.key();
-  for (let use in uses) {
-    if (use.callee == key && use.holdsFields(byKey, held)) {
-      return true;
-    }
-  }
-  return false;
 };
 
 /**
@@ -514,8 +572,9 @@ let writeHasFields = (w: Expression, hv: HeldVar,
   if (w is RecordLiteral) {
     return true;
   }
+  let model = (hv.dc.f as WasmFunction).model;
   if (w is Identifier) {
-    let sym = hv.model.resolve(w);
+    let sym = model.resolve(w);
     if (sym != null) {
       if (let (true, other) = held.get(sym.id)) {
         return other.dispatch === hv.dispatch;
@@ -524,16 +583,38 @@ let writeHasFields = (w: Expression, hv: HeldVar,
     return false;
   }
   if (w is CallExpression) {
-    let callee = w.callee;
-    if (callee is Identifier) {
-      let calleeSym = hv.model.resolve(callee);
-      if (calleeSym != null) {
-        if (let (true, target) = byKey.get(
-            functionKey(calleeSym.resolveTarget().id))) {
-          return target.resultExplodes && target.result === hv.dispatch;
-        }
-      }
+    return returnsFieldsOf(hv.dc, w, model, byKey, hv.dispatch);
+  }
+  return false;
+};
+
+/**
+ * Whether `call` returns a record of `dispatch`'s type as its fields: it
+ * calls a function, or a method it does not dispatch to, whose result
+ * explodes.
+ */
+let returnsFieldsOf = (dc: DemandContext, call: CallExpression,
+    model: SemanticModel, byKey: HashMap<String, Candidate>,
+    dispatch: RecordDispatchInfo | null): boolean => {
+  let callee = call.callee;
+  var key: String | null = null;
+  if (callee is Identifier) {
+    let calleeSym = model.resolve(callee);
+    if (calleeSym != null) {
+      key = functionKey(calleeSym.resolveTarget().id);
     }
+  } else if (callee is MemberExpression) {
+    let target = methodTargetOf(dc, callee, model);
+    if (target != null) {
+      key = methodKey(target);
+    }
+  }
+  if (key == null) {
+    return false;
+  }
+  if (let (true, target) = byKey.get(key as String)) {
+    return target.resultExplodes && !target.overridden &&
+        target.result === dispatch;
   }
   return false;
 };
@@ -632,7 +713,7 @@ let noteHeldVarCandidate = (dc: DemandContext, f: WasmFunction, owner: Node,
       }
     });
   }
-  out.push(new HeldVar(sym, d, model, writes, forwards));
+  out.push(new HeldVar(sym, d, dc, writes, forwards));
 };
 
 /** The body of a function or method, if it has one. */
@@ -675,9 +756,11 @@ let codeRoots = (owner: Node): GrowableArray<Node> => {
  * literal, an exploded parameter of the same record type, a call whose
  * result is returned as fields, or an `if` or `match` with such an arm.
  */
-let producesFields = (c: Candidate, byKey: HashMap<String, Candidate>): boolean => {
+let producesFields = (wasm: WasmModule, pass: ReachabilityAnalysis,
+    c: Candidate, byKey: HashMap<String, Candidate>): boolean => {
+  let dc = new DemandContext(wasm, pass, c.f);
   for (let e in c.returns) {
-    if (hasFieldsOnHand(c, byKey, e)) {
+    if (hasFieldsOnHand(dc, c, byKey, e)) {
       return true;
     }
   }
@@ -689,16 +772,16 @@ let producesFields = (c: Candidate, byKey: HashMap<String, Candidate>): boolean 
  * of an `if` or `match`, and a value block's tail, count: the core merges
  * the arms' fields (control-flow.zena, lowerArmFields).
  */
-let hasFieldsOnHand = (c: Candidate, byKey: HashMap<String, Candidate>,
-    n: Node): boolean => {
+let hasFieldsOnHand = (dc: DemandContext, c: Candidate,
+    byKey: HashMap<String, Candidate>, n: Node): boolean => {
   if (n is IfExpression) {
     let alternate = n.alternate;
-    return hasFieldsOnHand(c, byKey, n.consequent) ||
-        (alternate != null && hasFieldsOnHand(c, byKey, alternate as Node));
+    return hasFieldsOnHand(dc, c, byKey, n.consequent) ||
+        (alternate != null && hasFieldsOnHand(dc, c, byKey, alternate as Node));
   }
   if (n is MatchExpression) {
     for (let mc in n.cases) {
-      if (hasFieldsOnHand(c, byKey, mc.body)) {
+      if (hasFieldsOnHand(dc, c, byKey, mc.body)) {
         return true;
       }
     }
@@ -711,7 +794,7 @@ let hasFieldsOnHand = (c: Candidate, byKey: HashMap<String, Candidate>,
     }
     let last = stmts[stmts.length - 1];
     return last is ExpressionStatement &&
-        hasFieldsOnHand(c, byKey, last.expression);
+        hasFieldsOnHand(dc, c, byKey, last.expression);
   }
   let params = c.params();
   let model = c.f.model;
@@ -732,16 +815,7 @@ let hasFieldsOnHand = (c: Candidate, byKey: HashMap<String, Candidate>,
     return false;
   }
   if (n is CallExpression) {
-    let callee = n.callee;
-    if (callee is Identifier) {
-      let calleeSym = model.resolve(callee);
-      if (calleeSym != null) {
-        if (let (true, target) = byKey.get(
-            functionKey(calleeSym.resolveTarget().id))) {
-          return target.resultExplodes && target.result === c.result;
-        }
-      }
-    }
+    return returnsFieldsOf(dc, n, model, byKey, c.result);
   }
   return false;
 };
@@ -749,7 +823,8 @@ let hasFieldsOnHand = (c: Candidate, byKey: HashMap<String, Candidate>,
 /** How `rc`'s result is used. */
 let classifyResultUse = (dc: DemandContext, rc: RecordResultCall,
     calleeKey: String,
-    result: RecordDispatchInfo, byKey: HashMap<String, Candidate>): ResultUse => {
+    result: RecordDispatchInfo, byKey: HashMap<String, Candidate>,
+    owners: HashMap<i32, String>): ResultUse => {
   let call = rc.call;
   let model = rc.model;
   let owner = enclosingFunction(call, model);
@@ -757,6 +832,7 @@ let classifyResultUse = (dc: DemandContext, rc: RecordResultCall,
   var direct = false;
   var returnedFrom: String | null = null;
   var assignedTo = noSymbolId;
+  let forwards = new Array<Forward>();
   if (parent is AssignmentExpression) {
     let left = parent.left;
     if ((parent.value as Node) === (call as Node) && parent.operator == null) {
@@ -778,7 +854,7 @@ let classifyResultUse = (dc: DemandContext, rc: RecordResultCall,
       } else if (pattern is IdentifierPattern) {
         if (parent.kind == 'let' && owner != null) {
           direct = boundResultUsesFields(dc, owner as Node, model, pattern,
-              result, byKey);
+              result, byKey, forwards);
         } else if (parent.kind == 'var') {
           let target = model.resolveDeclaration(pattern);
           if (target != null) {
@@ -787,15 +863,20 @@ let classifyResultUse = (dc: DemandContext, rc: RecordResultCall,
         }
       }
     }
-  } else if (owner is FunctionExpression) {
-    if (returnsFrom(call, parent, owner)) {
+  } else if (owner != null && returnsFrom(call, parent, owner as Node)) {
+    if (owner is FunctionExpression) {
       let ownerSym = declaredSymbol(owner, model);
       if (ownerSym != null) {
         returnedFrom = functionKey(ownerSym.id);
       }
+    } else if (let (true, key) = owners.get((owner as Node).id as i32)) {
+      if (key != '') {
+        returnedFrom = key;
+      }
     }
   }
-  return new ResultUse(rc, calleeKey, direct, returnedFrom, assignedTo);
+  return new ResultUse(rc, calleeKey, direct, returnedFrom, assignedTo,
+      forwards);
 };
 
 /**
@@ -803,8 +884,13 @@ let classifyResultUse = (dc: DemandContext, rc: RecordResultCall,
  * a `return` operand, the expression body, or a value block's tail.
  */
 let returnsFrom = (call: CallExpression, parent: Node | null,
-    owner: FunctionExpression): boolean => {
-  if ((owner.body as Node) === (call as Node)) {
+    owner: Node): boolean => {
+  let bodyOpt = ownerBody(owner);
+  if (bodyOpt == null) {
+    return false;
+  }
+  let body = bodyOpt as Node;
+  if (body === (call as Node)) {
     return true;
   }
   if (parent is ReturnStatement) {
@@ -812,7 +898,6 @@ let returnsFrom = (call: CallExpression, parent: Node | null,
     return arg != null && (arg as Node) === (call as Node) && !parent.isTail;
   }
   if (parent is ExpressionStatement) {
-    let body = owner.body;
     if (body is BlockStatement) {
       let stmts = body.body;
       return stmts.length > 0 &&
@@ -825,14 +910,14 @@ let returnsFrom = (call: CallExpression, parent: Node | null,
 /**
  * Whether the record bound by `let pattern = call` in `owner` is only
  * read for its fields, or passed to parameters of the same record type
- * that are.
+ * that are, which are collected in `forwards`.
  */
 let boundResultUsesFields = (dc: DemandContext, owner: Node,
     model: SemanticModel,
     pattern: IdentifierPattern, result: RecordDispatchInfo,
-    byKey: HashMap<String, Candidate>): boolean => {
+    byKey: HashMap<String, Candidate>,
+    forwards: GrowableArray<Forward>): boolean => {
   let roots = codeRoots(owner);
-  let forwards = new Array<Forward>();
   if (!usesOnlyFields(dc, owner, roots, model, pattern, forwards, null)) {
     return false;
   }
