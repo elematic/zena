@@ -364,12 +364,17 @@ export final class ScopeBuilder {
 
         // 2. Check for unnecessary prelude import (only when not renamed).
         // The prelude would import the name anyway, and its implicit
-        // import orders the check just as this one does.
+        // import orders the check just as this one does. Standard-library
+        // modules in the bootstrap closure still import `Step` explicitly
+        // until the checked-in bootstrap compiler is reseeded with `Step`
+        // in its prelude.
         let parentScope = this.#current.parent;
         if (spec.imported.name == spec.local.name &&
             parentScope != null &&
             parentScope.resolve(localName) != null) {
-          unnecessaryImports.push(sym);
+          if (!(this.#modulePath.startsWith("zena:") && localName == "Step")) {
+            unnecessaryImports.push(sym);
+          }
           hasUsedOrSuppressedOrSpecial = true;
           continue;
         }

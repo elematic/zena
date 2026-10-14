@@ -20,10 +20,10 @@ import {
 } from '../wasm.zena';
 import { SymbolId, Symbol, noSymbolId } from '../../scope/symbol.zena';
 import {
-  getClassKey, getClassMethodKey, getInterfaceKey, getClassInterfaceKey, getInterfaceMemberKey, getMixinKeyFromSymbol, getSpecializedFunctionKey, getSpecializedName, getFunctionValueWrapperKey, getSignatureKey, collectMixinMembers, mixinScopeOfNode, MixinKey, isConcrete, ExportKey, ExportGlobalKey, getTypeUniqueKey, templateConvertHelperName, containsErasedType, pendingSomeClass,
+  getClassKey, getClassMethodKey, getInterfaceKey, getClassInterfaceKey, getInterfaceMemberKey, getMixinKeyFromSymbol, getSpecializedFunctionKey, getSpecializedName, getFunctionValueWrapperKey, getSignatureKey, collectMixinMembers, mixinScopeOfNode, MixinKey, isConcrete, ExportKey, ExportGlobalKey, getTypeUniqueKey, templateConvertHelperName, containsErasedType, pendingSomeClass, pendingNoneClass,
 } from '../codegen-utils.zena';
 import {
-  typeToValType, typeToStorageValType, mapReturnTypeToWasmResults, mapParamTypeToWasmParams, substituteTypeParamsInCodegen, getClosureStruct, getClassTypeParameters, getInterfaceTypeParameters, substituteTypeParamsInClassContext, eraseTypeParameters, findImplementedInterfaceTransitive, findExtendedInterfaceTransitive, recordWasmFields, sortedOptionalNames,
+  typeToValType, typeToStorageValType, mapReturnTypeToWasmResults, mapParamTypeToWasmParams, substituteTypeParamsInCodegen, getClosureStruct, getClassTypeParameters, getInterfaceTypeParameters, substituteTypeParamsInClassContext, eraseTypeParameters, findImplementedInterfaceTransitive, findExtendedInterfaceTransitive, recordWasmFields, sortedOptionalNames, asyncIteratorPendingFuture,
 } from '../type-mapping.zena';
 
 import { dirName, normalizePath } from '../../module-resolver.zena';
@@ -1418,6 +1418,8 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
       this.queuePrivateMethod(sct, ':checkpoint');
       this.queuePrivateMethod(sct, ':registerTask');
       this.queuePrivateMethod(sct, ':shieldScope');
+      this.queueExplicitCtor(sct, '<constructor>.:childScope');
+      this.queuePrivateMethod(sct, ':cancelScope');
     }
   }
 
@@ -1485,9 +1487,16 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
       return;
     }
     var isAsyncFn = false;
+    var isGenFn = false;
     match (n) {
-      case FunctionExpression {isAsync}: { isAsyncFn = isAsync; }
-      case MethodDefinition {isAsync}: { isAsyncFn = isAsync; }
+      case FunctionExpression {isAsync, isGenerator}: {
+        isAsyncFn = isAsync;
+        isGenFn = isGenerator;
+      }
+      case MethodDefinition {isAsync, isGenerator}: {
+        isAsyncFn = isAsync;
+        isGenFn = isGenerator;
+      }
       case _: {}
     }
     if (!isAsyncFn) {
@@ -1504,7 +1513,36 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
       retT = scopedInner(retT) ?? retT;
     }
     let ret = resolveType(retT);
-    if (ret is ClassType) {
+    if (isGenFn && ret is InterfaceType) {
+      let iterIface = ret as InterfaceType;
+      if (!containsErasedType(iterIface as Type)) {
+        this.pass.typeLowerer.discoverType(iterIface as Type, model);
+        let iKey = getInterfaceKey(iterIface.genericSource ?? iterIface);
+        this.pass.wasm.usedInterfaceMembers[
+            getInterfaceMemberKey(iKey, 'next')] = true;
+        this.pass.addReferencedInterfaceMember(
+            i32ToString((iterIface.genericSource ?? iterIface).id as i32) + '.next');
+        let stepFuture = asyncIteratorPendingFuture(this.pass.wasm, iterIface);
+        if (stepFuture != null) {
+          let sf = stepFuture as ClassType;
+          this.registerAsyncFuture(sf, model, true);
+          let some = pendingSomeClass(sf);
+          if (some != null) {
+            let someCt = some as ClassType;
+            this.pass.specializer.instantiateClassType(someCt, model);
+            this.pass.typeLowerer.discoverType(someCt as Type, model);
+            this.queueExplicitCtor(someCt);
+          }
+          let none = pendingNoneClass(sf);
+          if (none != null) {
+            let noneCt = none as ClassType;
+            this.pass.specializer.instantiateClassType(noneCt, model);
+            this.pass.typeLowerer.discoverType(noneCt as Type, model);
+            this.queueExplicitCtor(noneCt);
+          }
+        }
+      }
+    } else if (ret is ClassType) {
       this.registerAsyncFuture(ret, model, true);
     }
     // The async ramp and the async-main wrapper reach

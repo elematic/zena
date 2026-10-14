@@ -73,15 +73,15 @@ final class GeneratorArtifacts(rampBody: IrBody, nextBody: IrBody)
 var rampBodies = new Map<i32, GeneratorArtifacts>();
 var nextBodies = new Map<i32, GeneratorArtifacts>();
 
-/** True if this WasmFunction carries a `gen` AST node. */
+/** True if this WasmFunction carries a synchronous `gen` AST node (`!isAsync`). */
 export let isGeneratorFunction = (func: WasmFunction): boolean => {
   let {node} = func;
   if (node == null) {
     return false;
   }
   return match (node) {
-    case FunctionExpression {isGenerator}: isGenerator
-    case MethodDefinition {isGenerator}: isGenerator
+    case FunctionExpression {isGenerator, isAsync}: isGenerator && !isAsync
+    case MethodDefinition {isGenerator, isAsync}: isGenerator && !isAsync
     case _: false
   };
 };
@@ -95,12 +95,12 @@ let funcDisplayName = (func: WasmFunction): String => {
 };
 
 /**
- * The Iterator<T> instantiation a generator returns, from its checked
- * FunctionType with class/function type arguments substituted (the
- * memoized instantiation object, so interface keys match the call
- * sites').
+ * The Iterator<T> (or AsyncIterator<T>) instantiation a generator
+ * returns, from its checked FunctionType with class/function type
+ * arguments substituted (the memoized instantiation object, so
+ * interface keys match the call sites').
  */
-let iteratorInstantiationOf = (wasm: WasmModule, func: WasmFunction): InterfaceType => {
+export let iteratorInstantiationOf = (wasm: WasmModule, func: WasmFunction): InterfaceType => {
   let t = func.model.getNodeType(func.node as Node);
   if (t == null || !(t is FunctionType)) {
     throw new Error('generator has no checked function type: ' +
@@ -262,6 +262,128 @@ export let dispatchRegionsOf = (
     b += 1;
   }
   return out;
+};
+
+/**
+ * Adds to `pcOfBlock` any merge block inside a user `try` region that
+ * would otherwise be reached from multiple dispatcher arms and hoist
+ * outside its enclosing `try_table` during stackification.
+ *
+ * Each dispatch target `d` (and block 0) heads a separate arm of the
+ * dispatcher. When two arms can both reach a block `b` that sits inside
+ * an enclosing `TryRegion` `r` — either along normal edges after a
+ * diamond whose one arm suspended, or through an inner region's handler
+ * (`ehB` -> `dispatchB` in a `try`/`finally` or `for await` loop) that
+ * gained a second predecessor from `reenterRegions` — `b`'s post-split
+ * immediate dominator becomes the dispatcher rather than `r`'s body, so
+ * the emitter places `b` outside `r`'s `try_table` and any throw or
+ * rethrow in `b` misses `r`'s handler. Promoting `b` to a dispatch
+ * target routes its incoming edges through the dispatcher and re-enters
+ * `r` around `b`.
+ */
+export let addRegionMergeTargets = (
+  body: IrBody,
+  cfg: IrCfg,
+  pcOfBlock: HashMap<i32, i32>,
+  nextPcIn: i32
+): i32 => {
+  let regions = collectTryRegions(body);
+  if (regions.length == 0) {
+    return nextPcIn;
+  }
+  let n = body.blocks.length;
+  let tryTargets = new Set<i32>();
+  for (let r in regions) {
+    tryTargets.add(r.bodyTarget);
+    tryTargets.add(r.catchTarget);
+  }
+  let enclosed = new Array<boolean>(n);
+  var bi = 0;
+  while (bi < n) {
+    enclosed.push(cfg.isReachable(bi) &&
+        enclosingRegionsOf(cfg, regions, bi).length > 0);
+    bi += 1;
+  }
+
+  var nextPc = nextPcIn;
+  var changed = true;
+  while (changed) {
+    changed = false;
+    // Per-block arm state: -1 = unreached, >= 0 = reached by that one
+    // arm, -2 = reached by two or more distinct arms.
+    let armOf = new Array<i32>(n);
+    var i = 0;
+    while (i < n) {
+      armOf.push(-1);
+      i += 1;
+    }
+    let mergeArm = (b: i32, arm: i32): void => {
+      if (arm < 0) {
+        return;
+      }
+      let cur = armOf[b];
+      if (cur == -1) {
+        armOf[b] = arm;
+      } else if (cur != arm) {
+        armOf[b] = -2;
+      }
+    };
+
+    armOf[0] = 0;
+    pcOfBlock.forEach((d: i32, _pc: i32): void => {
+      armOf[d] = d;
+      for (let r in enclosingRegionsOf(cfg, regions, d)) {
+        mergeArm(r.catchTarget, d);
+      }
+    });
+
+    var prop = true;
+    while (prop) {
+      prop = false;
+      var u = 0;
+      while (u < n) {
+        let uArm = armOf[u];
+        if (uArm != -1 && body.blocks[u].insts.length > 0) {
+          let term = body.blocks[u].insts[body.blocks[u].insts.length - 1];
+          let op = body.op(term);
+          if (op != IrOp.yield_ && op != IrOp.await_ &&
+              op != IrOp.ret && op != IrOp.ret_multi &&
+              op != IrOp.throw && op != IrOp.unreachable) {
+            let succs = body.successors(term);
+            for (let s in succs) {
+              let v = s.target;
+              if (v != 0 && !pcOfBlock.has(v)) {
+                let prev = armOf[v];
+                if (uArm == -2) {
+                  if (prev != -2) {
+                    armOf[v] = -2;
+                    prop = true;
+                  }
+                } else {
+                  mergeArm(v, uArm);
+                  if (armOf[v] != prev) {
+                    prop = true;
+                  }
+                }
+              }
+            }
+          }
+        }
+        u += 1;
+      }
+    }
+
+    for (let b in cfg.rpo) {
+      if (b != 0 && !pcOfBlock.has(b) && enclosed[b] &&
+          !tryTargets.has(b) && armOf[b] == -2) {
+        pcOfBlock[b] = nextPc;
+        nextPc += 1;
+        changed = true;
+        break;
+      }
+    }
+  }
+  return nextPc;
 };
 
 /**
@@ -440,7 +562,7 @@ let rawConstI32 = (body: IrBody, value: i32): i32 => {
 };
 
 /** A zero/null of the given type, for the exhausted `(false, _)` slot. */
-let rawDefaultOf = (body: IrBody, vt: ValType): i32 => {
+export let rawDefaultOf = (body: IrBody, vt: ValType): i32 => {
   return match (vt) {
     case ValTypeI32: rawConstI32(body, 0)
     case ValTypeI64: {
@@ -739,6 +861,7 @@ let prepareOne = (
     }
     hb += 1;
   }
+  nextPc = addRegionMergeTargets(presplit, cfg, pcOfBlock, nextPc);
 
   // Which user try regions enclose each dispatch target, so the
   // dispatcher can re-enter them (generators.md §6, async.md §6).

@@ -1,0 +1,131 @@
+// @mode: run
+// @result: 42
+// Early exit from `for await` (`break`, `return`, `throw`, or scope
+// cancellation while awaiting a pending `next()` step) disposes and
+// cancels an `async gen` iterator: its `finally` blocks run and any
+// in-flight work spawned in its child `CancelScope` is cancelled.
+
+import {
+  Future, Completer, AsyncIterator, TaskGroup, drainMicrotasks,
+  scheduleMicrotask,
+} from 'zena:async';
+
+var log = '';
+
+let delay = (v: i32): Future<i32> => {
+  let c = new Completer<i32>();
+  scheduleMicrotask(() => {
+    c.complete(v);
+  });
+  return c.future;
+};
+
+let backgroundTask = async (gate: Future<i32>, tag: String): Future<i32> => {
+  try {
+    log += tag + '-start:';
+    let v = await gate;
+    log += tag + '-done:';
+    return v;
+  } cancel {
+    log += tag + '-cancel:';
+  } finally {
+    log += tag + '-fin:';
+  }
+  return -1;
+};
+
+async gen function producer(bgGate: Future<i32>, tag: String): AsyncIterator<i32> {
+  // Spawn an in-flight task bound to this generator's child CancelScope.
+  let bg = backgroundTask(bgGate, tag);
+  try {
+    yield 1;
+    let v = await delay(2);
+    yield v;
+    yield 3;
+  } finally {
+    log += tag + '-gen-fin:';
+  }
+}
+
+async function returnEarly(bgGate: Future<i32>): Future<i32> {
+  for await (let x in producer(bgGate, 'ret')) {
+    if (x == 2) {
+      return x * 10;
+    }
+  }
+  return 0;
+}
+
+async gen function infinitePending(gate: Future<i32>): AsyncIterator<i32> {
+  try {
+    yield 10;
+    let v = await gate;
+    yield v;
+  } finally {
+    log += 'pend-gen-fin:';
+  }
+}
+
+export let main = async (): Future<i32> => {
+  // 1. `break` after a Ready step disposes the generator and cancels its
+  // in-flight child task.
+  let gate1 = new Completer<i32>();
+  var sum1 = 0;
+  for await (let x in producer(gate1.future, 'brk')) {
+    sum1 += x;
+    break;
+  }
+  drainMicrotasks();
+  if (sum1 != 1) { return 1; }
+  if (log != 'brk-start:brk-gen-fin:brk-cancel:brk-fin:') { return 2; }
+
+  // 2. `return` after a Pending step disposes the generator and cancels its
+  // in-flight child task.
+  log = '';
+  let gate2 = new Completer<i32>();
+  let r2 = await returnEarly(gate2.future);
+  drainMicrotasks();
+  if (r2 != 20) { return 3; }
+  if (log != 'ret-start:ret-gen-fin:ret-cancel:ret-fin:') { return 4; }
+
+  // 3. `throw` inside `for await` body disposes the generator and cancels its
+  // in-flight child task.
+  log = '';
+  let gate3 = new Completer<i32>();
+  var caught = false;
+  try {
+    for await (let x in producer(gate3.future, 'thr')) {
+      if (x == 2) {
+        throw new Error('stop');
+      }
+    }
+  } catch (e) {
+    caught = true;
+  }
+  drainMicrotasks();
+  if (!caught) { return 5; }
+  if (log != 'thr-start:thr-gen-fin:thr-cancel:thr-fin:') { return 6; }
+
+  // 4. Cancelling a TaskGroup while `for await` is suspended awaiting a
+  // Pending `next()` step cancels the async generator and runs its finalizer.
+  log = '';
+  let neverGate = new Completer<i32>();
+  let group = new TaskGroup();
+  let consumer = async (): Future<i32> => {
+    var total = 0;
+    try {
+      for await (let x in infinitePending(neverGate.future)) {
+        total += x;
+      }
+    } finally {
+      log += 'consumer-fin:';
+    }
+    return total;
+  };
+  let fut = group.spawn(() => consumer());
+  group.cancel();
+  drainMicrotasks();
+  if (log != 'pend-gen-fin:consumer-fin:') { return 7; }
+
+  return 42;
+};

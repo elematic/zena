@@ -16633,24 +16633,44 @@ let checkMethodSignature = (
     if (sigInner != null) { sigCore = sigInner; }
   }
 
-  // Generator methods: the annotation is the full Iterator<T> return
-  // type. Methods do not infer return types, so it is required.
+  // Generator methods: the annotation is the full Iterator<T> (or
+  // AsyncIterator<T> for `async gen`) return type. Methods do not infer
+  // return types, so it is required.
   if (md.isGenerator) {
-    if (md.returnType == null) {
-      ctx.error(
-        "A generator method requires a return type annotation of 'Iterator<T>'.",
-        DiagnosticCode.TypeMismatch,
-        md.loc
-      );
-      retType = makeIteratorType(ctx, new ErrorType(), md.loc);
-    } else if (extractIteratorYieldType(ctx, sigCore) == null) {
-      ctx.error(
-        "A generator's return type must be 'Iterator<T>', got '" +
-        typeToString(retType) + "'.",
-        DiagnosticCode.TypeMismatch,
-        md.loc
-      );
-      retType = makeIteratorType(ctx, new ErrorType(), md.loc);
+    if (md.isAsync) {
+      if (md.returnType == null) {
+        ctx.error(
+          "An async generator method requires a return type annotation of 'AsyncIterator<T>'.",
+          DiagnosticCode.TypeMismatch,
+          md.loc
+        );
+        retType = makeAsyncIteratorType(ctx, new ErrorType(), md.loc);
+      } else if (extractAsyncIteratorYieldType(ctx, sigCore) == null) {
+        ctx.error(
+          "An async generator's return type must be 'AsyncIterator<T>', got '" +
+          typeToString(retType) + "'.",
+          DiagnosticCode.TypeMismatch,
+          md.loc
+        );
+        retType = makeAsyncIteratorType(ctx, new ErrorType(), md.loc);
+      }
+    } else {
+      if (md.returnType == null) {
+        ctx.error(
+          "A generator method requires a return type annotation of 'Iterator<T>'.",
+          DiagnosticCode.TypeMismatch,
+          md.loc
+        );
+        retType = makeIteratorType(ctx, new ErrorType(), md.loc);
+      } else if (extractIteratorYieldType(ctx, sigCore) == null) {
+        ctx.error(
+          "A generator's return type must be 'Iterator<T>', got '" +
+          typeToString(retType) + "'.",
+          DiagnosticCode.TypeMismatch,
+          md.loc
+        );
+        retType = makeIteratorType(ctx, new ErrorType(), md.loc);
+      }
     }
   }
 
@@ -16985,6 +17005,9 @@ let checkMethodBody = (
     let genDeps = ctx.currentDependencies();
     if (genDeps != null) {
       genDeps.createsGenerator = true;
+      if (md.isAsync) {
+        genDeps.createsAsyncGenerator = true;
+      }
     }
     var yieldT: Type = new ErrorType();
     match (mdEffectiveReturn) {
@@ -21950,6 +21973,55 @@ let makeIteratorType = (
 };
 
 /**
+ * If `t` is the prelude AsyncIterator<T> instantiation, returns T;
+ * otherwise null. An async generator's declared return type must
+ * satisfy this (async-iteration.md).
+ */
+let extractAsyncIteratorYieldType = (ctx: CheckerContext, t: Type): Type | null => {
+  if (!(t is InterfaceType)) {
+    return null;
+  }
+  let prelude = ctx.tryResolveWellKnownType(WellKnown.AsyncIteratorInterface);
+  if (prelude == null || !(prelude is InterfaceType)) {
+    return null;
+  }
+  if (t.id != prelude.id) {
+    return null;
+  }
+  let args = t.typeArguments;
+  if (args == null) {
+    return null;
+  }
+  if (args.length != 1) {
+    return null;
+  }
+  return args[0];
+};
+
+/**
+ * The external type of an `async gen` function with no annotation:
+ * AsyncIterator<inferredYieldType> from 'zena:async'.
+ */
+let makeAsyncIteratorType = (
+  ctx: CheckerContext,
+  yieldType: Type,
+  loc: SourceLocation | null
+): Type => {
+  let prelude = ctx.tryResolveWellKnownType(WellKnown.AsyncIteratorInterface);
+  if (prelude == null || !(prelude is InterfaceType)) {
+    ctx.error(
+      "Async generator functions require the 'AsyncIterator' interface from 'zena:async'.",
+      DiagnosticCode.TypeMismatch,
+      loc
+    );
+    return new ErrorType();
+  }
+  let args = new Array<Type>();
+  args.push(yieldType);
+  return instantiateInterfaceType(prelude, args);
+};
+
+/**
  * If `t` is the prelude Future<T> instantiation, returns T; otherwise
  * null. An async function's declared return type must satisfy this
  * (async.md §1); the annotation is the call expression's type.
@@ -22311,7 +22383,7 @@ let checkFunctionExpression = (
   // (the call expression's type); T is the yield type. With no
   // annotation the yield type is inferred from the yield statements.
   // The body may only `yield` values and `return;` bare.
-  let {isGenerator} = fe;
+  let {isGenerator, isAsync} = fe;
   var declaredYieldType: Type = new VoidType();
   var declaredIteratorType: Type | null = null;
   // A `Scoped` return annotation on an async or gen body lifts the
@@ -22328,6 +22400,9 @@ let checkFunctionExpression = (
     let genDeps = ctx.currentDependencies();
     if (genDeps != null) {
       genDeps.createsGenerator = true;
+      if (isAsync) {
+        genDeps.createsAsyncGenerator = true;
+      }
     }
     if (returnTypeAnn != null) {
       var genRet = retType;
@@ -22338,10 +22413,16 @@ let checkFunctionExpression = (
           scopedReturnRelaxed = true;
         }
       }
-      let extracted = extractIteratorYieldType(ctx, genRet);
+      let extracted = if (isAsync) {
+        extractAsyncIteratorYieldType(ctx, genRet)
+      } else {
+        extractIteratorYieldType(ctx, genRet)
+      };
       if (extracted == null) {
+        let expectedIface = if (isAsync) "AsyncIterator<T>" else "Iterator<T>";
+        let kindLabel = if (isAsync) "An async generator's" else "A generator's";
         ctx.error(
-          "A generator's return type must be 'Iterator<T>', got '" +
+          kindLabel + " return type must be '" + expectedIface + "', got '" +
           typeToString(retType) + "'.",
           DiagnosticCode.TypeMismatch,
           loc
@@ -22365,7 +22446,6 @@ let checkFunctionExpression = (
   // (the call expression's type); the body checks against T, and
   // `return e` may also adopt a Future<T> (async.md §1–§2). With no
   // annotation, T is inferred from the returns and wrapped.
-  let {isAsync} = fe;
   var declaredFutureType: Type | null = null;
   var declaredScopedReturn: Type | null = null;
   if (isAsync) {
@@ -22575,8 +22655,9 @@ let checkFunctionExpression = (
     }
   }
 
-  // Generators: the declared Iterator<T> is the return type; with no
-  // annotation, infer the yield type and wrap it.
+  // Generators: the declared Iterator<T> (or AsyncIterator<T> for
+  // `async gen`) is the return type; with no annotation, infer the
+  // yield type and wrap it.
   var finalRetType = retType;
   if (isGenerator) {
     if (declaredIteratorType != null) {
@@ -22585,8 +22666,9 @@ let checkFunctionExpression = (
       var yieldT: Type = new VoidType();
       let inferredYs = ctx.inferredYieldTypes;
       if (inferredYs.length == 0) {
+        let expectedIface = if (isAsync) "AsyncIterator<T>" else "Iterator<T>";
         ctx.error(
-          "Cannot infer the yield type of a generator that never yields; annotate the return type as 'Iterator<T>'.",
+          "Cannot infer the yield type of a generator that never yields; annotate the return type as '" + expectedIface + "'.",
           DiagnosticCode.TypeMismatch,
           loc
         );
@@ -22594,13 +22676,18 @@ let checkFunctionExpression = (
       } else {
         yieldT = inferredYs[0];
       }
-      finalRetType = makeIteratorType(ctx, yieldT, loc);
+      finalRetType = if (isAsync) {
+        makeAsyncIteratorType(ctx, yieldT, loc)
+      } else {
+        makeIteratorType(ctx, yieldT, loc)
+      };
     }
   }
 
   // Async: the declared Future<T> is the return type; with no
-  // annotation, wrap the inferred value type.
-  if (isAsync) {
+  // annotation, wrap the inferred value type. An `async gen` already
+  // received its `AsyncIterator<T>` return type above.
+  if (isAsync && !isGenerator) {
     if (declaredScopedReturn != null) {
       finalRetType = declaredScopedReturn;
     } else if (declaredFutureType != null) {

@@ -1,27 +1,35 @@
 // @mode: check
 
 // `async gen` may both yield and await (async-iteration.md): the body
-// is a generator (returns Iterator<T>) whose suspensions include real
-// awaits. A plain `gen` may not await.
+// is an async generator (returns AsyncIterator<T>) whose suspensions
+// include real awaits. A plain `gen` may not await.
 
-import { Future } from 'zena:async';
+import { Future, AsyncIterator } from 'zena:async';
 import { Iterator } from 'zena:core';
 
-async gen function counts(gate: Future<i32>): Iterator<i32> {
+async gen function counts(gate: Future<i32>): AsyncIterator<i32> {
   yield 1;
   let v = await gate;
   yield v;
 }
 
-let arrow = async gen (gate: Future<i32>): Iterator<i32> => {
+let arrow = async gen (gate: Future<i32>): AsyncIterator<i32> => {
   let v = await gate;
   yield v;
 };
 
+let inferred = async gen (gate: Future<i32>) => {
+  yield await gate;
+};
+
 class Holder {
-  async gen items(gate: Future<i32>): Iterator<i32> {
+  async gen items(gate: Future<i32>): AsyncIterator<i32> {
     yield await gate;
   }
+}
+
+async gen function wrongReturn(gate: Future<i32>): Iterator<i32> { // @error: An async generator's return type must be 'AsyncIterator<T>'
+  yield await gate;
 }
 
 gen function plain(gate: Future<i32>): Iterator<i32> {
