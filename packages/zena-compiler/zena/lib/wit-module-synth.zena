@@ -2148,9 +2148,9 @@ function emitStreamHelpers(sb: StringBuilder, entry: FutureEntry,
       return writer.stream;
     }
     async function pumpStreamIn${k}(end: i32, writer: StreamWriter<${z}>): Future<void> {
+      let buf = resultArea(${chunkSize} * ${size});
       var open = true;
       while (open) {
-        let buf = resultArea(${chunkSize} * ${size});
         var packed = streamRead${k}_raw(end, buf, ${chunkSize});
         if (packed == -1) {
           packed = await awaitWaitable(end);
@@ -2158,7 +2158,7 @@ function emitStreamHelpers(sb: StringBuilder, entry: FutureEntry,
         let n = packed >> 4;
         let completed = (packed & 15) == 0;
         if (n > 0) {
-          let items = new GrowableArray<${z}>();
+          let items = new GrowableArray<${z}>(n);
           for (var i = 0; i < n; i += 1) {
             items.push(${elemExpr});
           }
@@ -2170,11 +2170,11 @@ function emitStreamHelpers(sb: StringBuilder, entry: FutureEntry,
           freeLifted(buf);
           throw new Error('the stream read made no progress');
         }
-        freeLifted(buf);
         if (!completed) {
           open = false;
         }
       }
+      freeLifted(buf);
       writer.close();
       streamDropReadable${k}_raw(end);
     }
@@ -2320,7 +2320,10 @@ function emitFutureHelpers(sb: StringBuilder, entry: FutureEntry,
 
   emit(sb, "", zena`
     function liftFuture${k}(end: i32): Future<${z}> {
-      return new DeferredFuture<${z}>((): Future<${z}> => readFuture${k}(end));
+      return new DeferredFuture<${z}>(
+        (): Future<${z}> => readFuture${k}(end),
+        (): void => { futureDropReadable${k}_raw(end); }
+      );
     }
     async function readFuture${k}(end: i32): Future<${z}> {
       let ret = resultArea(${payloadSize});

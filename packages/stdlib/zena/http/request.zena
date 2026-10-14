@@ -6,9 +6,20 @@ import { HashMap } from 'zena:collections';
 import { Stream, StreamWriter, readAllBytes, readAllText } from 'zena:stream';
 import { URL } from 'zena:url';
 
-let fallbackUrl = (): URL => URL.parse('http://localhost/', null) as URL;
+export function fallbackUrl(): URL {
+  return URL.parse('http://localhost/', null) as URL;
+}
 export let placeholderUrl: URL = fallbackUrl();
 export let placeholderHeaders: HashMap<String, GrowableArray<String>> = new HashMap<String, GrowableArray<String>>();
+
+export interface RequestSource {
+  loadMethod(): String;
+  loadPath(): String;
+  loadUrl(): URL;
+  loadHeaders(): HashMap<String, GrowableArray<String>>;
+  loadBody(): Stream<u8>;
+  close(): void;
+}
 
 /**
  * Represents an incoming HTTP request.
@@ -17,41 +28,44 @@ export let placeholderHeaders: HashMap<String, GrowableArray<String>> = new Hash
  * as well as a mutable `path` property used by routers and prefix mounting.
  */
 export class Request {
+  var #source: RequestSource | null = null;
   var #url: URL;
-  var #urlProvider: (() => URL) | null = null;
+  var #urlLoaded: boolean = true;
   var #method: String;
+  var #methodLoaded: boolean = true;
   var #headers: HashMap<String, GrowableArray<String>>;
-  var #headersProvider: (() => HashMap<String, GrowableArray<String>>) | null = null;
+  var #headersLoaded: boolean = true;
   var #path: String | null = null;
-  var #pathProvider: (() => String) | null = null;
   var #bodyStream: Stream<u8> | null = null;
-  var #bodyProvider: (() => Stream<u8>) | null = null;
-  var #cleanup: (() => void) | null = null;
   var #bodyText: String | null = null;
   var #bodyBytes: FixedArray<u8> | null = null;
 
   /**
-   * Constructs a Request with explicit or lazy parameters.
+   * Constructs a Request with explicit parameters or a lazy RequestSource.
    */
   new(
     url: URL,
     method: String = 'GET',
     headers: HashMap<String, GrowableArray<String>> = new HashMap<String, GrowableArray<String>>(),
     bodyStream: Stream<u8> | null = null,
-    bodyProvider: (() => Stream<u8>) | null = null,
-    cleanup: (() => void) | null = null,
-    urlProvider: (() => URL) | null = null,
-    headersProvider: (() => HashMap<String, GrowableArray<String>>) | null = null,
-    pathProvider: (() => String) | null = null
-  ) : #url = url,
-      #method = method.asciiUpperCase(),
+    source: RequestSource | null = null
+  ) : #source = source,
+      #url = url,
+      #urlLoaded = source == null,
+      #method = if (source == null) method.asciiUpperCase() else method,
+      #methodLoaded = source == null,
       #headers = headers,
-      #bodyStream = bodyStream,
-      #bodyProvider = bodyProvider,
-      #cleanup = cleanup,
-      #urlProvider = urlProvider,
-      #headersProvider = headersProvider,
-      #pathProvider = pathProvider {}
+      #headersLoaded = source == null,
+      #bodyStream = bodyStream {}
+
+  /**
+   * True if the request body stream has been accessed.
+   */
+  isBodyConsumed: boolean {
+    get {
+      return this.#bodyStream != null;
+    }
+  }
 
   /**
    * Releases any underlying wire request or body stream resources.
@@ -60,10 +74,10 @@ export class Request {
     if (this.#bodyStream != null) {
       (this.#bodyStream as Stream<u8>).stop();
     }
-    if (this.#cleanup != null) {
-      let fn = this.#cleanup as () => void;
-      this.#cleanup = null;
-      fn();
+    if (this.#source != null) {
+      let src = this.#source as RequestSource;
+      this.#source = null;
+      src.close();
     }
   }
 
@@ -91,10 +105,11 @@ export class Request {
   }
 
   #ensureHeaders(): HashMap<String, GrowableArray<String>> {
-    if (this.#headersProvider != null) {
-      let provider = this.#headersProvider as () => HashMap<String, GrowableArray<String>>;
-      this.#headersProvider = null;
-      this.#headers = provider();
+    if (!this.#headersLoaded) {
+      this.#headersLoaded = true;
+      if (this.#source != null) {
+        this.#headers = (this.#source as RequestSource).loadHeaders();
+      }
     }
     return this.#headers;
   }
@@ -104,6 +119,12 @@ export class Request {
    */
   method: String {
     get {
+      if (!this.#methodLoaded) {
+        this.#methodLoaded = true;
+        if (this.#source != null) {
+          this.#method = (this.#source as RequestSource).loadMethod();
+        }
+      }
       return this.#method;
     }
   }
@@ -113,10 +134,11 @@ export class Request {
    */
   url: URL {
     get {
-      if (this.#urlProvider != null) {
-        let provider = this.#urlProvider as () => URL;
-        this.#urlProvider = null;
-        this.#url = provider();
+      if (!this.#urlLoaded) {
+        this.#urlLoaded = true;
+        if (this.#source != null) {
+          this.#url = (this.#source as RequestSource).loadUrl();
+        }
       }
       return this.#url;
     }
@@ -133,10 +155,8 @@ export class Request {
       if (this.#path != null) {
         return this.#path as String;
       }
-      if (this.#pathProvider != null) {
-        let provider = this.#pathProvider as () => String;
-        this.#pathProvider = null;
-        let p = provider();
+      if (this.#source != null && this.#urlLoaded == false) {
+        let p = (this.#source as RequestSource).loadPath();
         this.#path = p;
         return p;
       }
@@ -242,10 +262,8 @@ export class Request {
       if (this.#bodyStream != null) {
         return this.#bodyStream as Stream<u8>;
       }
-      if (this.#bodyProvider != null) {
-        let provider = this.#bodyProvider as () => Stream<u8>;
-        this.#bodyProvider = null;
-        let s = provider();
+      if (this.#source != null) {
+        let s = (this.#source as RequestSource).loadBody();
         this.#bodyStream = s;
         return s;
       }

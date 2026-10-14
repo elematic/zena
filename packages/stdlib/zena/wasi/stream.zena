@@ -24,9 +24,10 @@
  * set, everything else returns packed progress directly.
  */
 
+import { Waiter, scheduleTask } from 'zena:async';
 import { Option } from 'zena:core';
 import { Memory, defaultAllocator } from 'zena:memory';
-import { Stream, StreamWriter } from 'zena:stream';
+import { Stream, StreamWriter, TextStream } from 'zena:stream';
 // A core module may not import one canonical builtin under the same
 // name twice, so the waitable builtins have exactly one declaring
 // module — the driver — and everyone else imports the declarations.
@@ -200,6 +201,109 @@ export function writeStringBlocking(
 /** Bytes a pump moves per canonical copy: one staging chunk. */
 let CHUNK = 4096;
 
+var sharedWriteChunk = 0;
+
+function flushTextStreamTurn(s: String, end: WritableByteStream): void {
+  let len = s.length;
+  if (len == 0) {
+    streamDropWritable(end);
+    return;
+  }
+  if (len <= CHUNK) {
+    if (sharedWriteChunk == 0) {
+      if (let (true, c) = defaultAllocator.alloc(CHUNK)) {
+        sharedWriteChunk = c;
+      }
+    }
+    let chunk = sharedWriteChunk;
+    if (chunk != 0) {
+      for (var i = 0; i < len; i += 1) {
+        mem[chunk + i] = s.getByteAt(i);
+      }
+      let packed = streamWrite(end, chunk, len);
+      if (packed != BLOCKED) {
+        if ((packed & RESULT_MASK) != RESULT_COMPLETED || (packed >> 4) >= len) {
+          streamDropWritable(end);
+          return;
+        }
+        pumpTextRemainder(s, packed >> 4, end);
+        return;
+      }
+      sharedWriteChunk = 0;
+      pumpBlockedTextChunk(s, 0, chunk, end);
+      return;
+    }
+  }
+  pumpTextRemainder(s, 0, end);
+}
+
+async function pumpBlockedTextChunk(
+  s: String,
+  offset: i32,
+  chunk: i32,
+  end: WritableByteStream
+): Future<void> {
+  let packed = await awaitWaitable(end as i32);
+  defaultAllocator.free(chunk);
+  if ((packed & RESULT_MASK) != RESULT_COMPLETED) {
+    streamDropWritable(end);
+    return;
+  }
+  let nextOffset = offset + (packed >> 4);
+  if (nextOffset >= s.length) {
+    streamDropWritable(end);
+    return;
+  }
+  await pumpTextRemainder(s, nextOffset, end);
+}
+
+async function pumpTextRemainder(
+  s: String,
+  startOffset: i32,
+  end: WritableByteStream
+): Future<void> {
+  if (let (true, chunk) = defaultAllocator.alloc(CHUNK)) {
+    var offset = startOffset;
+    let total = s.length;
+    var open = true;
+    while (open && offset < total) {
+      let rem = total - offset;
+      let n = if (rem < CHUNK) rem else CHUNK;
+      for (var i = 0; i < n; i += 1) {
+        mem[chunk + i] = s.getByteAt(offset + i);
+      }
+      var at = 0;
+      while (at < n) {
+        var packed = streamWrite(end, chunk + at, n - at);
+        if (packed == BLOCKED) {
+          packed = await awaitWaitable(end as i32);
+        }
+        if ((packed & RESULT_MASK) != RESULT_COMPLETED) {
+          open = false;
+          break;
+        }
+        at += packed >> 4;
+      }
+      offset += n;
+    }
+    defaultAllocator.free(chunk);
+    streamDropWritable(end);
+    return;
+  }
+  throw new Error('could not allocate a stream pump buffer');
+}
+
+final class TextStreamPump implements Waiter {
+  #text: String;
+  #end: WritableByteStream;
+
+  new(text: String, end: WritableByteStream) : #text = text, #end = end {}
+
+  run(): void {
+    flushTextStreamTurn(this.#text, this.#end);
+  }
+}
+
 /**
  * A guest `Stream<u8>` as a canonical `stream<u8>` value: a fresh
  * pair, a background pump copying the guest stream into the writable
@@ -218,6 +322,12 @@ export function lowerByteStream(source: Stream<u8>): i32 {
     if (end != 0) {
       return end;
     }
+  }
+  if (source is TextStream) {
+    let pair = newByteStreamPair();
+    let s = (source as TextStream).takeRemainingText();
+    scheduleTask(new TextStreamPump(s, pair.writable));
+    return pair.readable as i32;
   }
   let pair = newByteStreamPair();
   pumpOut(source, pair.writable);

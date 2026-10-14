@@ -901,13 +901,11 @@ impl Drop for ResponseWriterState {
 pub struct ServerState {
     port: u16,
     request_rx: Arc<Mutex<tokio::sync::mpsc::UnboundedReceiver<IncomingRequest>>>,
-    request_waker: Arc<Mutex<Option<std::task::Waker>>>,
     shutdown_flag: Arc<std::sync::atomic::AtomicBool>,
 }
 
 struct RequestStreamProducer {
     rx: Arc<Mutex<tokio::sync::mpsc::UnboundedReceiver<IncomingRequest>>>,
-    waker: Arc<Mutex<Option<std::task::Waker>>>,
     shutdown: Arc<std::sync::atomic::AtomicBool>,
 }
 
@@ -916,7 +914,7 @@ impl wasmtime::component::StreamProducer<ComponentState> for RequestStreamProduc
         Resource<wasmtime_wasi_http::p3::Request>,
         Resource<ResponseWriterState>,
     );
-    type Buffer = Option<Self::Item>;
+    type Buffer = wasmtime::component::VecBuffer<Self::Item>;
 
     fn poll_produce<'a>(
         self: std::pin::Pin<&mut Self>,
@@ -925,33 +923,44 @@ impl wasmtime::component::StreamProducer<ComponentState> for RequestStreamProduc
         mut destination: wasmtime::component::Destination<'a, Self::Item, Self::Buffer>,
         _finish: bool,
     ) -> std::task::Poll<Result<wasmtime::component::StreamResult>> {
+        let max_items = destination.remaining(&mut store).unwrap_or(64).max(1);
         let mut rx = self.rx.lock().unwrap();
-        match rx.try_recv() {
-            Ok(IncomingRequest { req, res_tx }) => {
-                let (wasi_req, body_fut) = wasmtime_wasi_http::p3::Request::from_http(
-                    &mut store.data_mut().http_hooks,
-                    req,
-                );
-                tokio::spawn(body_fut);
-                let req_res = store.data_mut().table.push(wasi_req)?;
-                let writer_res = store.data_mut().table.push(ResponseWriterState {
-                    tx: Some(res_tx),
-                })?;
-                destination.set_buffer(Some((req_res, writer_res)));
-                std::task::Poll::Ready(Ok(wasmtime::component::StreamResult::Completed))
+        let first = match rx.poll_recv(cx) {
+            std::task::Poll::Ready(Some(item)) => item,
+            std::task::Poll::Ready(None) => {
+                return std::task::Poll::Ready(Ok(wasmtime::component::StreamResult::Dropped));
             }
-            Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {
+            std::task::Poll::Pending => {
                 if self.shutdown.load(std::sync::atomic::Ordering::Relaxed) {
-                    std::task::Poll::Ready(Ok(wasmtime::component::StreamResult::Dropped))
-                } else {
-                    *self.waker.lock().unwrap() = Some(cx.waker().clone());
-                    std::task::Poll::Pending
+                    return std::task::Poll::Ready(Ok(wasmtime::component::StreamResult::Dropped));
                 }
+                return std::task::Poll::Pending;
             }
-            Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
-                std::task::Poll::Ready(Ok(wasmtime::component::StreamResult::Dropped))
+        };
+        let mut batch = Vec::with_capacity(max_items.min(16));
+        let push_item = |store: &mut StoreContextMut<'_, ComponentState>,
+                         IncomingRequest { req, res_tx }|
+         -> Result<Self::Item> {
+            let (wasi_req, _body_fut) = wasmtime_wasi_http::p3::Request::from_http(
+                &mut store.data_mut().http_hooks,
+                req,
+            );
+            let req_res = store.data_mut().table.push(wasi_req)?;
+            let writer_res = store.data_mut().table.push(ResponseWriterState {
+                tx: Some(res_tx),
+            })?;
+            Ok((req_res, writer_res))
+        };
+        batch.push(push_item(&mut store, first)?);
+        while batch.len() < max_items {
+            match rx.try_recv() {
+                Ok(item) => batch.push(push_item(&mut store, item)?),
+                Err(_) => break,
             }
         }
+        drop(rx);
+        destination.set_buffer(wasmtime::component::VecBuffer::from(batch));
+        std::task::Poll::Ready(Ok(wasmtime::component::StreamResult::Completed))
     }
 }
 
@@ -978,6 +987,77 @@ impl http_server::HostResponseWriterWithStore<ComponentState> for HasSelf<Compon
 }
 
 impl http_server::HostResponseWriter for ComponentState {
+    fn complete_text(
+        &mut self,
+        writer: Resource<ResponseWriterState>,
+        req: Option<Resource<wasmtime_wasi_http::p3::Request>>,
+        status: u16,
+        content_type: String,
+        headers: Vec<(String, String)>,
+        body: String,
+    ) -> Result<()> {
+        if let Some(req_res) = req {
+            let _ = self.table.delete(req_res);
+        }
+        let mut writer_state = self.table.delete(writer)?;
+        if let Some(sender) = writer_state.tx.take() {
+            use http_body_util::BodyExt as _;
+            let status_code =
+                http::StatusCode::from_u16(status).unwrap_or(http::StatusCode::OK);
+            let body_bytes = bytes::Bytes::from(body.into_bytes());
+            let body_len = body_bytes.len();
+            let mut resp = http::Response::new(
+                http_body_util::Full::new(body_bytes)
+                    .map_err(|e: std::convert::Infallible| -> wasmtime_wasi_http::Error {
+                        match e {}
+                    })
+                    .boxed_unsync(),
+            );
+            *resp.status_mut() = status_code;
+            let hmap = resp.headers_mut();
+            if !content_type.is_empty() {
+                let ct_val = match content_type.as_str() {
+                    "application/json; charset=utf-8" => Some(http::HeaderValue::from_static(
+                        "application/json; charset=utf-8",
+                    )),
+                    "application/json" => {
+                        Some(http::HeaderValue::from_static("application/json"))
+                    }
+                    "text/plain; charset=utf-8" => {
+                        Some(http::HeaderValue::from_static("text/plain; charset=utf-8"))
+                    }
+                    "text/html; charset=utf-8" => {
+                        Some(http::HeaderValue::from_static("text/html; charset=utf-8"))
+                    }
+                    _ => http::HeaderValue::try_from(content_type).ok(),
+                };
+                if let Some(val) = ct_val {
+                    hmap.insert(http::header::CONTENT_TYPE, val);
+                }
+            }
+            let mut has_cl = false;
+            for (k, v) in headers {
+                if k.eq_ignore_ascii_case("content-length") {
+                    has_cl = true;
+                }
+                if let (Ok(name), Ok(val)) = (
+                    http::header::HeaderName::try_from(k),
+                    http::HeaderValue::try_from(v),
+                ) {
+                    hmap.append(name, val);
+                }
+            }
+            if !has_cl {
+                hmap.insert(
+                    http::header::CONTENT_LENGTH,
+                    http::HeaderValue::from(body_len),
+                );
+            }
+            let _ = sender.send(resp);
+        }
+        Ok(())
+    }
+
     fn respond_error(
         &mut self,
         self_: Resource<ResponseWriterState>,
@@ -1015,19 +1095,11 @@ impl http_server::HostServerWithStore<ComponentState> for HasSelf<ComponentState
             Resource<ResponseWriterState>,
         )>,
     > {
-        let (rx, waker, shutdown) = {
+        let (rx, shutdown) = {
             let server = host.get().table.get(&self_)?;
-            (
-                server.request_rx.clone(),
-                server.request_waker.clone(),
-                server.shutdown_flag.clone(),
-            )
+            (server.request_rx.clone(), server.shutdown_flag.clone())
         };
-        let producer = RequestStreamProducer {
-            rx,
-            waker,
-            shutdown,
-        };
+        let producer = RequestStreamProducer { rx, shutdown };
         wasmtime::component::StreamReader::new(&mut host, producer)
     }
 }
@@ -1045,10 +1117,7 @@ impl http_server::HostServer for ComponentState {
             .map_err(|e| format_err!("failed to set nonblocking: {e}"))?;
 
         let (request_tx, request_rx) = tokio::sync::mpsc::unbounded_channel();
-        let request_waker: Arc<Mutex<Option<std::task::Waker>>> = Arc::new(Mutex::new(None));
         let shutdown_flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
-
-        let s_waker = request_waker.clone();
         let s_shutdown = shutdown_flag.clone();
 
         std::thread::spawn(move || {
@@ -1072,70 +1141,59 @@ impl http_server::HostServer for ComponentState {
                 };
 
                 loop {
-                    tokio::select! {
-                        accept_res = listener.accept() => {
-                            if s_shutdown.load(std::sync::atomic::Ordering::Relaxed) {
-                                break;
-                            }
-                            let (stream, _) = match accept_res {
-                                Ok(conn) => conn,
-                                Err(_) => continue,
-                            };
-                            let io = wasmtime_wasi_http::io::TokioIo::new(stream);
-                            let req_tx = request_tx.clone();
-                            let s_waker = s_waker.clone();
-
-                            tokio::spawn(async move {
-                                use http_body_util::BodyExt as _;
-                                let service = hyper::service::service_fn(move |req: http::Request<hyper::body::Incoming>| {
-                                    let req_tx = req_tx.clone();
-                                    let s_waker = s_waker.clone();
-                                    async move {
-                                        let (res_tx, res_rx) = tokio::sync::oneshot::channel();
-
-                                        if req_tx.send(IncomingRequest { req, res_tx }).is_err() {
-                                            let err_resp = http::Response::builder()
-                                                .status(http::StatusCode::INTERNAL_SERVER_ERROR)
-                                                .body(
-                                                    http_body_util::Full::new(bytes::Bytes::from_static(b"server closed"))
-                                                        .map_err(|e: std::convert::Infallible| -> wasmtime_wasi_http::Error { match e {} })
-                                                        .boxed_unsync()
-                                                )
-                                                .unwrap();
-                                            return Ok::<_, std::convert::Infallible>(err_resp);
-                                        }
-                                        if let Some(waker) = s_waker.lock().unwrap().take() {
-                                            waker.wake();
-                                        }
-
-                                        match res_rx.await {
-                                            Ok(resp) => Ok(resp),
-                                            Err(_) => {
-                                                let err_resp = http::Response::builder()
-                                                    .status(http::StatusCode::INTERNAL_SERVER_ERROR)
-                                                    .body(
-                                                        http_body_util::Full::new(bytes::Bytes::from_static(b"response cancelled"))
-                                                            .map_err(|e: std::convert::Infallible| -> wasmtime_wasi_http::Error { match e {} })
-                                                            .boxed_unsync()
-                                                    )
-                                                    .unwrap();
-                                                Ok(err_resp)
-                                            }
-                                        }
-                                    }
-                                });
-
-                                let _ = hyper::server::conn::http1::Builder::new()
-                                    .serve_connection(io, service)
-                                    .await;
-                            });
-                        }
-                        _ = tokio::time::sleep(std::time::Duration::from_millis(100)) => {
-                            if s_shutdown.load(std::sync::atomic::Ordering::Relaxed) {
-                                break;
-                            }
-                        }
+                    let accept_res = listener.accept().await;
+                    if s_shutdown.load(std::sync::atomic::Ordering::Relaxed) {
+                        break;
                     }
+                    let (stream, _) = match accept_res {
+                        Ok(conn) => conn,
+                        Err(_) => continue,
+                    };
+                    let _ = stream.set_nodelay(true);
+                    let io = wasmtime_wasi_http::io::TokioIo::new(stream);
+                    let req_tx = request_tx.clone();
+
+                    tokio::spawn(async move {
+                        use http_body_util::BodyExt as _;
+                        let service = hyper::service::service_fn(move |req: http::Request<hyper::body::Incoming>| {
+                            let req_tx = req_tx.clone();
+                            async move {
+                                let (res_tx, res_rx) = tokio::sync::oneshot::channel();
+
+                                if req_tx.send(IncomingRequest { req, res_tx }).is_err() {
+                                    let err_resp = http::Response::builder()
+                                        .status(http::StatusCode::INTERNAL_SERVER_ERROR)
+                                        .body(
+                                            http_body_util::Full::new(bytes::Bytes::from_static(b"server closed"))
+                                                .map_err(|e: std::convert::Infallible| -> wasmtime_wasi_http::Error { match e {} })
+                                                .boxed_unsync()
+                                        )
+                                        .unwrap();
+                                    return Ok::<_, std::convert::Infallible>(err_resp);
+                                }
+
+                                match res_rx.await {
+                                    Ok(resp) => Ok(resp),
+                                    Err(_) => {
+                                        let err_resp = http::Response::builder()
+                                            .status(http::StatusCode::INTERNAL_SERVER_ERROR)
+                                            .body(
+                                                http_body_util::Full::new(bytes::Bytes::from_static(b"response cancelled"))
+                                                    .map_err(|e: std::convert::Infallible| -> wasmtime_wasi_http::Error { match e {} })
+                                                    .boxed_unsync()
+                                            )
+                                            .unwrap();
+                                        Ok(err_resp)
+                                    }
+                                }
+                            }
+                        });
+
+                        let _ = hyper::server::conn::http1::Builder::new()
+                            .pipeline_flush(true)
+                            .serve_connection(io, service)
+                            .await;
+                    });
                 }
             });
         });
@@ -1143,7 +1201,6 @@ impl http_server::HostServer for ComponentState {
         let res = self.table.push(ServerState {
             port: bound_port,
             request_rx: Arc::new(Mutex::new(request_rx)),
-            request_waker,
             shutdown_flag,
         })?;
         Ok(res)
@@ -1159,8 +1216,8 @@ impl http_server::HostServer for ComponentState {
         if !server.shutdown_flag.swap(true, std::sync::atomic::Ordering::Relaxed) {
             let _ = std::net::TcpStream::connect(("127.0.0.1", server.port));
         }
-        if let Some(waker) = server.request_waker.lock().unwrap().take() {
-            waker.wake();
+        if let Ok(mut rx) = server.request_rx.lock() {
+            rx.close();
         }
         Ok(())
     }
@@ -1170,8 +1227,8 @@ impl http_server::HostServer for ComponentState {
         if !server.shutdown_flag.swap(true, std::sync::atomic::Ordering::Relaxed) {
             let _ = std::net::TcpStream::connect(("127.0.0.1", server.port));
         }
-        if let Some(waker) = server.request_waker.lock().unwrap().take() {
-            waker.wake();
+        if let Ok(mut rx) = server.request_rx.lock() {
+            rx.close();
         }
         Ok(())
     }

@@ -15,6 +15,10 @@ export type NextFunction = () => Future<void>;
  */
 export type Middleware = (req: Request, res: Response, next: NextFunction) => Future<void>;
 
+async function rejectMultipleNext(): Future<void> {
+  throw new Error('next() called more than once');
+}
+
 /**
  * Composes an array of middleware functions into a single middleware.
  *
@@ -23,23 +27,40 @@ export type Middleware = (req: Request, res: Response, next: NextFunction) => Fu
  * once within a single middleware invocation throws an error.
  */
 export function compose(middleware: Array<Middleware>): Middleware {
-  return async (req: Request, res: Response, next: NextFunction): Future<void> => {
+  let len = middleware.length;
+  if (len == 0) {
+    return (req: Request, res: Response, next: NextFunction): Future<void> => next();
+  }
+  if (len == 1) {
+    let fn = middleware[0];
+    return (req: Request, res: Response, next: NextFunction): Future<void> => {
+      var called = false;
+      return fn(req, res, (): Future<void> => {
+        if (called) {
+          return rejectMultipleNext();
+        }
+        called = true;
+        return next();
+      });
+    };
+  }
+  return (req: Request, res: Response, next: NextFunction): Future<void> => {
     var currentNext: NextFunction = next;
-    var i = middleware.length - 1;
+    var i = len - 1;
     while (i >= 0) {
       let fn = middleware[i];
       let downstreamNext = currentNext;
       var called = false;
-      currentNext = async (): Future<void> => {
+      currentNext = (): Future<void> => {
         if (called) {
-          throw new Error('next() called more than once');
+          return rejectMultipleNext();
         }
         called = true;
-        await fn(req, res, downstreamNext);
+        return fn(req, res, downstreamNext);
       };
       i -= 1;
     }
-    await currentNext();
+    return currentNext();
   };
 }
 
