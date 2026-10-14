@@ -4,10 +4,12 @@
 
 import { Request } from './request.zena';
 import { Response } from './response.zena';
-import { Middleware, compose } from './middleware.zena';
+import { Middleware, NextFunction, compose } from './middleware.zena';
 import { HttpError } from './error.zena';
 import { Server } from './server.zena';
 import { Stream } from 'zena:stream';
+
+function unit(): void {}
 
 /**
  * Configuration options for the HTTP App.
@@ -42,6 +44,9 @@ export class AppOptions {
  */
 export class App {
   var #middleware = new GrowableArray<Middleware>();
+  var #pipeline: Middleware | null = null;
+  #completedVoid: Future<void> = Future.of(unit());
+  var #noopNext: NextFunction | null = null;
   var #dev: boolean = false;
 
   new(options: AppOptions | null = null) {
@@ -55,6 +60,7 @@ export class App {
    */
   use(middleware: Middleware): void {
     this.#middleware.push(middleware);
+    this.#pipeline = null;
   }
 
   /**
@@ -64,9 +70,21 @@ export class App {
    * and responses. Any uncaught general `Error` results in a 500 Internal Server Error.
    */
   async handleRequest(req: Request, res: Response): Future<void> {
-    let pipeline = compose(this.#middleware);
+    var pipeline = this.#pipeline;
+    if (pipeline == null) {
+      let composed = compose(this.#middleware);
+      this.#pipeline = composed;
+      pipeline = composed;
+    }
+    var noop = this.#noopNext;
+    if (noop == null) {
+      let completed = this.#completedVoid;
+      let fn: NextFunction = (): Future<void> => completed;
+      this.#noopNext = fn;
+      noop = fn;
+    }
     try {
-      await pipeline(req, res, async (): Future<void> => {});
+      await (pipeline as Middleware)(req, res, noop as NextFunction);
     } catch (e) {
       this.#handleError(res, e);
     }

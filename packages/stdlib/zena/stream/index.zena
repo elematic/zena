@@ -370,12 +370,25 @@ export async function readAllText(stream: Stream<u8>): Future<String> {
   return String.fromBytes(await readAllBytes(stream));
 }
 
-final class TextStream extends Stream<u8> {
+export final class TextStream extends Stream<u8> {
   #text: String;
   var #offset: i32 = 0;
   var #stopped: boolean = false;
 
   new(text: String) : #text = text, super();
+
+  takeRemainingText(): String {
+    if (this.#stopped || this.#offset >= this.#text.length) {
+      return '';
+    }
+    if (this.#offset == 0) {
+      this.#offset = this.#text.length;
+      return this.#text;
+    }
+    let rem = this.#text.sliceBytes(this.#offset, this.#text.length);
+    this.#offset = this.#text.length;
+    return rem;
+  }
 
   read(buf: FixedArray<u8>): Future<i32> {
     if (buf.length == 0) {

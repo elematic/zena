@@ -152,6 +152,12 @@ export class Future<T> {
   }
 
   /**
+   * Disclaims interest in a deferred future that has not been subscribed to,
+   * releasing any underlying host handle without starting its read.
+   */
+  discard(): void {}
+
+  /**
    * The settled result: `(true, value, _)` or `(false, _, error)`.
    *
    * Throws if this future is still pending. At an async resume point
@@ -621,16 +627,28 @@ export class Completer<T> extends AnyCompleter {
 export class DeferredFuture<T> extends Future<T> {
   /** The work, until it has run; null after. */
   var #produce: (() => Future<T>) | null;
+  var #drop: (() => void) | null;
 
-  new(produce: () => Future<T>) : #produce = produce, super();
+  new(produce: () => Future<T>, drop: (() => void) | null = null)
+    : #produce = produce, #drop = drop, super();
 
   [subscribe](t: Waiter): void {
     let produce = this.#produce;
     if (produce != null) {
       this.#produce = null;
+      this.#drop = null;
       this.[adoptFrom](produce());
     }
     super.[subscribe](t);
+  }
+
+  discard(): void {
+    let d = this.#drop;
+    this.#produce = null;
+    this.#drop = null;
+    if (d != null) {
+      d();
+    }
   }
 }
 
