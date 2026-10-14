@@ -109,7 +109,7 @@ function alreadyCompleted(): Error {
 // Future / Completer
 // ---------------------------------------------------------------------------
 
-export class Future<T> implements Disposable {
+export class Future<T> {
   /** Read by name by the compiler's shielded-resume guard — see the
    * note on `FutureState.Pending`. */
   var #state = FutureState.Pending;
@@ -150,11 +150,6 @@ export class Future<T> implements Disposable {
       return !(this.#state == FutureState.Pending);
     }
   }
-
-  /**
-   * Releases any underlying host handle held by an unawaited deferred future.
-   */
-  [Disposable.dispose](): void {}
 
   /**
    * The settled result: `(true, value, _)` or `(false, _, error)`.
@@ -623,7 +618,7 @@ export class Completer<T> extends AnyCompleter {
  * Its own class rather than a field on `Future`: a future is
  * allocated per await-able call, and the deferred kind is rare.
  */
-export class DeferredFuture<T> extends Future<T> {
+export class DeferredFuture<T> extends Future<T> implements Disposable {
   /** The work, until it has run; null after. */
   var #produce: (() => Future<T>) | null;
   var #drop: (() => void) | null;
