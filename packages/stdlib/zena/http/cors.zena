@@ -4,7 +4,7 @@
  * Ported from Zipadee's `@zipadee/cors`.
  */
 
-import { StringBuilder } from 'zena:core';
+import { join } from 'zena:core';
 import { div } from 'zena:math';
 import { Duration } from 'zena:time';
 import { Middleware } from './middleware.zena';
@@ -48,13 +48,13 @@ export type CorsOptions = {
    * Defaults to `'GET,HEAD,PUT,POST,DELETE,PATCH'`. Pass `null` to omit
    * the header.
    */
-  allowMethods?: String | Array<String> | null,
+  allowMethods?: String | Iterable<String> | null,
   /**
    * `Access-Control-Allow-Headers` header value for preflight requests.
    * If absent, mirrors the request's `Access-Control-Request-Headers`
    * header when present.
    */
-  allowHeaders?: String | Array<String>,
+  allowHeaders?: String | Iterable<String>,
   /**
    * Set `Cross-Origin-Opener-Policy: same-origin` and
    * `Cross-Origin-Embedder-Policy: require-corp`. Off if absent.
@@ -64,7 +64,7 @@ export type CorsOptions = {
    * `Access-Control-Expose-Headers` header value on non-preflight
    * responses.
    */
-  exposeHeaders?: String | Array<String>,
+  exposeHeaders?: String | Iterable<String>,
   /**
    * `Access-Control-Max-Age` duration for preflight responses, sent in
    * whole seconds.
@@ -82,31 +82,8 @@ export type CorsOptions = {
   credentialsFor?: CredentialsFn,
 };
 
-let joinComma = (items: Array<String>): String => {
-  if (items.length == 0) {
-    return '';
-  }
-  if (items.length == 1) {
-    return items[0];
-  }
-  let sb = new StringBuilder();
-  var i = 0;
-  while (i < items.length) {
-    if (i > 0) {
-      sb.append(',');
-    }
-    sb.append(items[i]);
-    i += 1;
-  }
-  return sb.toString();
-};
-
-let normalizeHeaderList = (value: String | Array<String>): String => {
-  if (value is String) {
-    return value as String;
-  }
-  return joinComma(value as Array<String>);
-};
+let normalizeHeaderList = (value: String | Iterable<String>): String =>
+  if (value is String) value as String else join(value as Iterable<String>, ',');
 
 /**
  * Middleware that sets Cross-Origin Resource Sharing (CORS) headers on
@@ -120,71 +97,57 @@ let normalizeHeaderList = (value: String | Array<String>): String => {
  * ```
  */
 export function cors(options: CorsOptions = {}): Middleware {
-  var originOpt: Origin = '*';
-  if (let {origin} = options) {
-    originOpt = origin;
-  }
+  let originOpt: Origin = if (let {origin} = options) origin else '*';
 
-  var allowMethods: String | null = DEFAULT_ALLOW_METHODS;
-  if (let {allowMethods: givenMethods} = options) {
-    if (givenMethods == null) {
-      allowMethods = null;
-    } else {
-      allowMethods = normalizeHeaderList(givenMethods as (String | Array<String>));
-    }
-  }
+  let allowMethods: String | null = if (let {allowMethods} = options) {
+    if (allowMethods == null) null
+    else normalizeHeaderList(allowMethods as (String | Iterable<String>))
+  } else {
+    DEFAULT_ALLOW_METHODS
+  };
 
-  var exposeHeaders: String | null = null;
-  if (let {exposeHeaders: givenExpose} = options) {
-    exposeHeaders = normalizeHeaderList(givenExpose);
-  }
+  let exposeHeaders: String | null = if (let {exposeHeaders} = options)
+    normalizeHeaderList(exposeHeaders)
+  else
+    null;
 
-  var allowHeaders: String | null = null;
-  if (let {allowHeaders: givenAllow} = options) {
-    allowHeaders = normalizeHeaderList(givenAllow);
-  }
+  let allowHeaders: String | null = if (let {allowHeaders} = options)
+    normalizeHeaderList(allowHeaders)
+  else
+    null;
 
-  var secureContext = false;
-  if (let {secureContext: givenSecure} = options) {
-    secureContext = givenSecure;
-  }
+  let secureContext = if (let {secureContext} = options) secureContext else false;
 
-  var maxAge: String | null = null;
-  if (let {maxAge: givenMaxAge} = options) {
-    let seconds = div(givenMaxAge as i64, NS_PER_SECOND);
-    maxAge = i64ToString(seconds);
-  }
+  let maxAge: String | null = if (let {maxAge} = options)
+    i64ToString(div(maxAge as i64, NS_PER_SECOND))
+  else
+    null;
 
-  var staticCredentials = false;
-  if (let {credentials: givenCredentials} = options) {
-    staticCredentials = givenCredentials;
-  }
+  let staticCredentials = if (let {credentials} = options) credentials else false;
 
-  var credentialsFor: CredentialsFn | null = null;
-  if (let {credentialsFor: givenCredentialsFor} = options) {
-    credentialsFor = givenCredentialsFor;
-  }
+  let credentialsFor: CredentialsFn | null =
+    if (let {credentialsFor} = options) credentialsFor else null;
 
   return async (req, res, next) => {
-    var origin: String | null = null;
-    if (originOpt == null) {
-      origin = null;
+    let origin: String | null = if (originOpt == null) {
+      null
     } else if (originOpt is String) {
-      origin = originOpt as String;
+      originOpt as String
     } else {
       let fn = originOpt as OriginFn;
-      origin = await fn(req);
-    }
+      await fn(req)
+    };
 
-    var credentials = staticCredentials;
-    if (credentialsFor != null) {
+    let credentials = if (credentialsFor != null) {
       let fn = credentialsFor as CredentialsFn;
       if (fn is SyncCredentialsFn) {
-        credentials = (fn as SyncCredentialsFn)(req);
+        (fn as SyncCredentialsFn)(req)
       } else {
-        credentials = await (fn as AsyncCredentialsFn)(req);
+        await (fn as AsyncCredentialsFn)(req)
       }
-    }
+    } else {
+      staticCredentials
+    };
 
     let requestOrigin = req.getHeader('Origin');
 
@@ -244,10 +207,8 @@ export function cors(options: CorsOptions = {}): Middleware {
         res.setHeader('Access-Control-Max-Age', maxAge as String);
       }
 
-      var effectiveAllowHeaders = allowHeaders;
-      if (effectiveAllowHeaders == null) {
-        effectiveAllowHeaders = req.getHeader('Access-Control-Request-Headers');
-      }
+      let effectiveAllowHeaders =
+        allowHeaders ?? req.getHeader('Access-Control-Request-Headers');
       if (effectiveAllowHeaders != null && (effectiveAllowHeaders as String).length > 0) {
         res.setHeader('Access-Control-Allow-Headers', effectiveAllowHeaders as String);
       }
