@@ -880,6 +880,39 @@ export let tests = suite('zir backend', (): void => {
         'the core takes and returns the fields');
   });
 
+  test('a record passed on to a method and a static method stays as its fields', (ctx: TestContext): void => {
+    // `area` passes its record on to `#scaled` and to the static `sum`,
+    // and `main` passes a literal: the literal is never built, and no
+    // core rebuilds it to pass it on.
+    let result = compileWithZir(
+        'type V = {x: i32, y: i32};\n' +
+        'class Grid {\n' +
+        '  scale: i32;\n' +
+        '  new(this.scale);\n' +
+        '  static sum(r: V): i32 { return r.x + r.y; }\n' +
+        '  area(r: V): i32 { return this.#scaled(r) + Grid.sum(r); }\n' +
+        '  #scaled(r: V): i32 { return r.x * r.y * this.scale; }\n' +
+        '}\n' +
+        'export let main = (): i32 => {\n' +
+        '  let g = new Grid(2);\n' +
+        '  return g.area({x: 3, y: 4});\n' +
+        '};');
+    let named = (prefix: String, suffix: String): String => {
+      var found = '';
+      for (let chunk in result.split('(func $')) {
+        let name = chunk.split(' ')[0];
+        if (name.startsWith(prefix) && name.endsWith(suffix)) {
+          found = '$' + name;
+        }
+      }
+      isTrue(found.length > 0, `no function ${prefix}…${suffix}`);
+      return found;
+    };
+    assertNoAllocation(result, '$main', 'the literal is passed as its fields');
+    assertNoAllocation(result, named('Grid_', '.area.core'),
+        'the record is passed on as its fields');
+  });
+
   test('a var record updated through a call stays as its fields', (ctx: TestContext): void => {
     // `pos` is only read for its fields and only assigned values that
     // are fields already, so it is carried around the loop as its

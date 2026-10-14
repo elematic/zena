@@ -3679,6 +3679,22 @@ export final class FunctionLowerer {
     if (sig.params.length != this.#liveArgCount(call.args)) {
       this.#bail('static call arity');
     }
+    // A static method whose record parameters or result explode
+    // (explode.zena): every call to it is direct, so it calls the core
+    // as a call to a function does.
+    let explosion = target.explosion;
+    if (explosion != null && explosion.forwarder === target &&
+        this.#defaultArgInfo(call) == null &&
+        (this.#passesUnpackedArg(call.args, explosion) ||
+         this.#wantsResultFields(call, explosion))) {
+      let core = explosion.core;
+      let coreArgs = this.#lowerExplodedArgs(call.args, explosion);
+      let explodedResult = explosion.result;
+      if (explodedResult != null) {
+        return this.#callForFields(core, coreArgs, explodedResult);
+      }
+      return this.#emitDirectCall(call, core, coreArgs, multiOut);
+    }
     let args = new Array<i32>();
     var sIdx = 0;
     for (var i = 0; i < call.args.length; i += 1) {
