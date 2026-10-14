@@ -518,7 +518,19 @@ export class LibraryLoader {
 
     var hasCycle = false;
 
-    // Visit dependencies first.
+    // Visit dependencies first. Implicit prelude imports precede
+    // written imports, matching `moduleStatements` and `beginModule`.
+    let {scopeResult} = lib;
+    if (scopeResult != null) {
+      for (let decl in scopeResult.implicitImportDeclarations) {
+        let importPath = decl.moduleSpecifier.value;
+        if (this.#cache.has(importPath)) {
+          if (this.#topoVisit(this.#cache[importPath], visited, stack, sorted)) {
+            hasCycle = true;
+          }
+        }
+      }
+    }
     let iter = lib.imports.keys();
     for (let specifier in iter) {
       let importPath = lib.imports[specifier];
