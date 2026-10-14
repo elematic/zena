@@ -1,0 +1,235 @@
+/**
+ * Cross-Origin Resource Sharing (CORS) middleware.
+ *
+ * Ported from Zipadee's `@zipadee/cors`.
+ */
+
+import { join } from 'zena:core';
+import { div } from 'zena:math';
+import { Duration } from 'zena:time';
+import { Middleware } from './middleware.zena';
+import { Request } from './request.zena';
+import { Response } from './response.zena';
+
+let NS_PER_SECOND: i64 = 1000000000;
+let DEFAULT_ALLOW_METHODS = 'GET,HEAD,PUT,POST,DELETE,PATCH';
+
+/**
+ * Callback returning the allowed origin for a request, or `null` to
+ * disable CORS for that request. May return synchronously or as a `Future`.
+ */
+export type OriginFn = (req: Request) => String | null | Future<String | null>;
+
+/**
+ * An origin specification: a static origin string, `null` to disable CORS,
+ * or a per-request callback.
+ */
+export type Origin = String | null | OriginFn;
+
+/** Synchronous callback deciding whether credentials are allowed for a request. */
+export type SyncCredentialsFn = (req: Request) => boolean;
+
+/** Asynchronous callback deciding whether credentials are allowed for a request. */
+export type AsyncCredentialsFn = (req: Request) => Future<boolean>;
+
+/** Callback deciding whether credentials are allowed for a request. */
+export type CredentialsFn = SyncCredentialsFn | AsyncCredentialsFn;
+
+/** Options for `cors`. Every field is optional. */
+export type CorsOptions = {
+  /**
+   * `Access-Control-Allow-Origin` header value, `null` to disable CORS,
+   * or a function returning the origin (or `null` to disable CORS for
+   * that request). Defaults to `'*'`.
+   */
+  origin?: Origin,
+  /**
+   * `Access-Control-Allow-Methods` header value for preflight requests.
+   * Defaults to `'GET,HEAD,PUT,POST,DELETE,PATCH'`. Pass `null` to omit
+   * the header.
+   */
+  allowMethods?: String | Iterable<String> | null,
+  /**
+   * `Access-Control-Allow-Headers` header value for preflight requests.
+   * If absent, mirrors the request's `Access-Control-Request-Headers`
+   * header when present.
+   */
+  allowHeaders?: String | Iterable<String>,
+  /**
+   * Set `Cross-Origin-Opener-Policy: same-origin` and
+   * `Cross-Origin-Embedder-Policy: require-corp`. Off if absent.
+   */
+  secureContext?: boolean,
+  /**
+   * `Access-Control-Expose-Headers` header value on non-preflight
+   * responses.
+   */
+  exposeHeaders?: String | Iterable<String>,
+  /**
+   * `Access-Control-Max-Age` duration for preflight responses, sent in
+   * whole seconds.
+   */
+  maxAge?: Duration,
+  /**
+   * Include `Access-Control-Allow-Credentials: true`. Off if absent.
+   */
+  credentials?: boolean,
+  /**
+   * Per-request callback deciding whether to include
+   * `Access-Control-Allow-Credentials: true`. Takes precedence over
+   * `credentials` when provided.
+   */
+  credentialsFor?: CredentialsFn,
+};
+
+let normalizeHeaderList = (value: String | Iterable<String>): String =>
+  if (value is String) value as String else join(value as Iterable<String>, ',');
+
+/**
+ * Middleware that sets Cross-Origin Resource Sharing (CORS) headers on
+ * responses and answers preflight `OPTIONS` requests.
+ *
+ * ## Examples
+ *
+ * ```zena
+ * let app = new App();
+ * app.use(cors());
+ * ```
+ */
+export function cors(options: CorsOptions = {}): Middleware {
+  let originOpt: Origin = if (let {origin} = options) origin else '*';
+
+  let allowMethods: String | null = if (let {allowMethods} = options) {
+    if (allowMethods == null) null
+    else normalizeHeaderList(allowMethods as (String | Iterable<String>))
+  } else {
+    DEFAULT_ALLOW_METHODS
+  };
+
+  let exposeHeaders: String | null = if (let {exposeHeaders} = options)
+    normalizeHeaderList(exposeHeaders)
+  else
+    null;
+
+  let allowHeaders: String | null = if (let {allowHeaders} = options)
+    normalizeHeaderList(allowHeaders)
+  else
+    null;
+
+  let secureContext = if (let {secureContext} = options) secureContext else false;
+
+  let maxAge: String | null = if (let {maxAge} = options)
+    i64ToString(div(maxAge as i64, NS_PER_SECOND))
+  else
+    null;
+
+  let staticCredentials = if (let {credentials} = options) credentials else false;
+
+  let credentialsFor: CredentialsFn | null =
+    if (let {credentialsFor} = options) credentialsFor else null;
+
+  return async (req, res, next) => {
+    let origin: String | null = if (originOpt == null) {
+      null
+    } else if (originOpt is String) {
+      originOpt as String
+    } else {
+      let fn = originOpt as OriginFn;
+      await fn(req)
+    };
+
+    let credentials = if (credentialsFor != null) {
+      let fn = credentialsFor as CredentialsFn;
+      if (fn is SyncCredentialsFn) {
+        (fn as SyncCredentialsFn)(req)
+      } else {
+        await (fn as AsyncCredentialsFn)(req)
+      }
+    } else {
+      staticCredentials
+    };
+
+    let requestOrigin = req.getHeader('Origin');
+
+    if (requestOrigin == null) {
+      // If the Origin header is not present, we can only respond with
+      // `Access-Control-Allow-Origin: *`, and only if the origin option is '*'
+      // and credentials is false.
+      if (credentials) {
+        await next();
+        return;
+      }
+
+      if (origin != null && (origin as String) == '*') {
+        res.setHeader('Access-Control-Allow-Origin', '*');
+        await next();
+        return;
+      }
+    }
+
+    if (credentials && origin != null && (origin as String) == '*') {
+      // Disallow wildcard origin with credentials.
+      await next();
+      return;
+    }
+
+    if (origin == null || (origin as String).length == 0) {
+      await next();
+      return;
+    }
+
+    let resolvedOrigin = origin as String;
+
+    if (req.method == 'OPTIONS') {
+      // Preflight request: requires Access-Control-Request-Method.
+      if (!req.hasHeader('Access-Control-Request-Method')) {
+        await next();
+        return;
+      }
+
+      res.setHeader('Access-Control-Allow-Origin', resolvedOrigin);
+      res.statusCode = 204;
+
+      if (allowMethods != null && (allowMethods as String).length > 0) {
+        res.setHeader('Access-Control-Allow-Methods', allowMethods as String);
+      }
+
+      if (credentials) {
+        res.setHeader('Access-Control-Allow-Credentials', 'true');
+      }
+
+      if (secureContext) {
+        res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
+        res.setHeader('Cross-Origin-Embedder-Policy', 'require-corp');
+      }
+
+      if (maxAge != null) {
+        res.setHeader('Access-Control-Max-Age', maxAge as String);
+      }
+
+      let effectiveAllowHeaders =
+        allowHeaders ?? req.getHeader('Access-Control-Request-Headers');
+      if (effectiveAllowHeaders != null && (effectiveAllowHeaders as String).length > 0) {
+        res.setHeader('Access-Control-Allow-Headers', effectiveAllowHeaders as String);
+      }
+      return;
+    }
+
+    res.setHeader('Access-Control-Allow-Origin', resolvedOrigin);
+
+    if (exposeHeaders != null && (exposeHeaders as String).length > 0) {
+      res.setHeader('Access-Control-Expose-Headers', exposeHeaders as String);
+    }
+
+    if (credentials) {
+      res.setHeader('Access-Control-Allow-Credentials', 'true');
+    }
+
+    if (secureContext) {
+      res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
+      res.setHeader('Cross-Origin-Embedder-Policy', 'require-corp');
+    }
+
+    await next();
+  };
+}

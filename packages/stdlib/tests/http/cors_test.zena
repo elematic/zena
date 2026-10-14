@@ -1,0 +1,487 @@
+import { suite, test } from 'zena:test';
+import { equal, isTrue } from 'zena:assert';
+import { runFuture } from 'zena:async';
+import { milliseconds } from 'zena:time';
+import { App, Middleware, Request, Response, cors } from 'zena:http';
+
+let makeReq = (
+  path: String,
+  method: String = 'GET',
+  origin: String | null = null,
+  reqMethod: String | null = null,
+  reqHeaders: String | null = null
+): Request => {
+  let headers = new Map<String, String>();
+  if (origin != null) {
+    headers['Origin'] = origin as String;
+  }
+  if (reqMethod != null) {
+    headers['Access-Control-Request-Method'] = reqMethod as String;
+  }
+  if (reqHeaders != null) {
+    headers['Access-Control-Request-Headers'] = reqHeaders as String;
+  }
+  return new Request.fromUrl(`http://localhost${path}`, method, headers);
+};
+
+let helloApp = (middleware: Middleware): App => {
+  let app = new App();
+  app.use(middleware);
+  app.use(async (req, res, next) => {
+    res.body = 'Hello World!';
+  });
+  return app;
+};
+
+export let tests = suite('zena:http cors', () => {
+  suite('default options', () => {
+    test('sets Access-Control-Allow-Origin to * when request Origin header is missing', (ctx) => {
+      runFuture((async () => {
+        let app = helloApp(cors());
+        let req = makeReq('/');
+        let res = new Response();
+        await app.handleRequest(req, res);
+
+        equal(res.statusCode, 200);
+        equal(res.body as String, 'Hello World!');
+        equal(res.getHeader('access-control-allow-origin') as String, '*');
+      })());
+    });
+
+    test('sets Access-Control-Allow-Origin to * when Origin is present', (ctx) => {
+      runFuture((async () => {
+        let app = helloApp(cors());
+        let req = makeReq('/', 'GET', 'http://zipadee.dev');
+        let res = new Response();
+        await app.handleRequest(req, res);
+
+        equal(res.statusCode, 200);
+        equal(res.body as String, 'Hello World!');
+        equal(res.getHeader('access-control-allow-origin') as String, '*');
+      })());
+    });
+
+    test('responds with 204 on preflight request and does not call next', (ctx) => {
+      runFuture((async () => {
+        let app = new App();
+        app.use(cors());
+        var called = false;
+        app.use(async (req, res, next) => {
+          res.body = 'Hello World!';
+          called = true;
+        });
+
+        let req = makeReq('/', 'OPTIONS', 'http://koajs.com', 'PUT');
+        let res = new Response();
+        await app.handleRequest(req, res);
+
+        equal(res.statusCode, 204);
+        equal(res.getHeader('access-control-allow-origin') as String, '*');
+        equal(
+          res.getHeader('access-control-allow-methods') as String,
+          'GET,HEAD,PUT,POST,DELETE,PATCH'
+        );
+        equal(called, false);
+      })());
+    });
+
+    test('does not treat OPTIONS without Access-Control-Request-Method as preflight', (ctx) => {
+      runFuture((async () => {
+        let app = helloApp(cors());
+        let req = makeReq('/', 'OPTIONS', 'http://koajs.com');
+        let res = new Response();
+        await app.handleRequest(req, res);
+
+        equal(res.statusCode, 200);
+        equal(res.body as String, 'Hello World!');
+      })());
+    });
+
+    test('does not set Vary to Origin', (ctx) => {
+      runFuture((async () => {
+        let app = helloApp(cors());
+        let req = makeReq('/', 'GET', 'http://koajs.com');
+        let res = new Response();
+        await app.handleRequest(req, res);
+
+        equal(res.statusCode, 200);
+        equal(res.body as String, 'Hello World!');
+        equal(res.getHeader('access-control-allow-origin') as String, '*');
+        isTrue(res.getHeader('vary') == null);
+      })());
+    });
+  });
+
+  suite('options.origin=*', () => {
+    test('always sets Access-Control-Allow-Origin to *', (ctx) => {
+      runFuture((async () => {
+        let app = helloApp(cors({origin: '*'}));
+
+        let req1 = makeReq('/', 'GET', 'http://koajs.com');
+        let res1 = new Response();
+        await app.handleRequest(req1, res1);
+        equal(res1.statusCode, 200);
+        equal(res1.body as String, 'Hello World!');
+        equal(res1.getHeader('access-control-allow-origin') as String, '*');
+
+        let req2 = makeReq('/');
+        let res2 = new Response();
+        await app.handleRequest(req2, res2);
+        equal(res2.statusCode, 200);
+        equal(res2.body as String, 'Hello World!');
+        equal(res2.getHeader('access-control-allow-origin') as String, '*');
+      })());
+    });
+  });
+
+  suite('options.origin set to request Origin header', () => {
+    test('sets Access-Control-Allow-Origin to request Origin header or fallback *', (ctx) => {
+      runFuture((async () => {
+        let app = helloApp(cors({
+          origin: (req: Request) => req.getHeader('Origin') ?? '*',
+        }));
+
+        let req1 = makeReq('/', 'GET', 'http://koajs.com');
+        let res1 = new Response();
+        await app.handleRequest(req1, res1);
+        equal(res1.statusCode, 200);
+        equal(res1.body as String, 'Hello World!');
+        equal(res1.getHeader('access-control-allow-origin') as String, 'http://koajs.com');
+
+        let req2 = makeReq('/', 'GET', 'http://origin.koajs.com');
+        let res2 = new Response();
+        await app.handleRequest(req2, res2);
+        equal(res2.statusCode, 200);
+        equal(res2.body as String, 'Hello World!');
+        equal(res2.getHeader('access-control-allow-origin') as String, 'http://origin.koajs.com');
+
+        let req3 = makeReq('/');
+        let res3 = new Response();
+        await app.handleRequest(req3, res3);
+        equal(res3.statusCode, 200);
+        equal(res3.body as String, 'Hello World!');
+        equal(res3.getHeader('access-control-allow-origin') as String, '*');
+      })());
+    });
+  });
+
+  suite('options.secureContext', () => {
+    test('sets Cross-Origin-Opener-Policy and Cross-Origin-Embedder-Policy when true', (ctx) => {
+      runFuture((async () => {
+        let app = helloApp(cors({secureContext: true}));
+
+        let req1 = makeReq('/', 'GET', 'http://koajs.com');
+        let res1 = new Response();
+        await app.handleRequest(req1, res1);
+        equal(res1.statusCode, 200);
+        equal(res1.body as String, 'Hello World!');
+        equal(res1.getHeader('cross-origin-opener-policy') as String, 'same-origin');
+        equal(res1.getHeader('cross-origin-embedder-policy') as String, 'require-corp');
+
+        let req2 = makeReq('/', 'OPTIONS', 'http://koajs.com', 'PUT');
+        let res2 = new Response();
+        await app.handleRequest(req2, res2);
+        equal(res2.statusCode, 204);
+        equal(res2.getHeader('cross-origin-opener-policy') as String, 'same-origin');
+        equal(res2.getHeader('cross-origin-embedder-policy') as String, 'require-corp');
+      })());
+    });
+
+    test('does not set Cross-Origin-Opener-Policy and Cross-Origin-Embedder-Policy when false', (ctx) => {
+      runFuture((async () => {
+        let app = helloApp(cors({secureContext: false}));
+
+        let req = makeReq('/', 'GET', 'http://koajs.com');
+        let res = new Response();
+        await app.handleRequest(req, res);
+        equal(res.statusCode, 200);
+        equal(res.body as String, 'Hello World!');
+        isTrue(res.getHeader('cross-origin-opener-policy') == null);
+        isTrue(res.getHeader('cross-origin-embedder-policy') == null);
+      })());
+    });
+  });
+
+  suite('options.origin=function', () => {
+    test('can disable cors by returning null or enable by returning origin', (ctx) => {
+      runFuture((async () => {
+        let app = helloApp(cors({
+          origin: (req: Request) =>
+              if (req.path == '/forbin') null else '*',
+        }));
+
+        let req1 = makeReq('/forbin', 'GET', 'http://koajs.com');
+        let res1 = new Response();
+        await app.handleRequest(req1, res1);
+        equal(res1.statusCode, 200);
+        equal(res1.body as String, 'Hello World!');
+        isTrue(res1.getHeader('access-control-allow-origin') == null);
+
+        let req2 = makeReq('/', 'GET', 'http://koajs.com');
+        let res2 = new Response();
+        await app.handleRequest(req2, res2);
+        equal(res2.statusCode, 200);
+        equal(res2.body as String, 'Hello World!');
+        equal(res2.getHeader('access-control-allow-origin') as String, '*');
+      })());
+    });
+  });
+
+  suite('options.origin=async function', () => {
+    test('resolves async origin function', (ctx) => {
+      runFuture((async () => {
+        let app = helloApp(cors({
+          origin: async (req: Request): Future<String | null> => {
+            if (req.path == '/forbin') {
+              return null;
+            }
+            return '*';
+          },
+        }));
+
+        let req1 = makeReq('/forbin', 'GET', 'http://koajs.com');
+        let res1 = new Response();
+        await app.handleRequest(req1, res1);
+        equal(res1.statusCode, 200);
+        equal(res1.body as String, 'Hello World!');
+        isTrue(res1.getHeader('access-control-allow-origin') == null);
+
+        let req2 = makeReq('/', 'GET', 'http://koajs.com');
+        let res2 = new Response();
+        await app.handleRequest(req2, res2);
+        equal(res2.statusCode, 200);
+        equal(res2.body as String, 'Hello World!');
+        equal(res2.getHeader('access-control-allow-origin') as String, '*');
+      })());
+    });
+  });
+
+  suite('options.exposeHeaders', () => {
+    test('works with string', (ctx) => {
+      runFuture((async () => {
+        let app = helloApp(cors({exposeHeaders: 'content-length'}));
+        let req = makeReq('/', 'GET', 'http://koajs.com');
+        let res = new Response();
+        await app.handleRequest(req, res);
+
+        equal(res.statusCode, 200);
+        equal(res.body as String, 'Hello World!');
+        equal(res.getHeader('access-control-expose-headers') as String, 'content-length');
+      })());
+    });
+
+    test('works with array', (ctx) => {
+      runFuture((async () => {
+        let app = helloApp(cors({exposeHeaders: ['content-length', 'x-header']}));
+        let req = makeReq('/', 'GET', 'http://koajs.com');
+        let res = new Response();
+        await app.handleRequest(req, res);
+
+        equal(res.statusCode, 200);
+        equal(res.body as String, 'Hello World!');
+        equal(
+          res.getHeader('access-control-expose-headers') as String,
+          'content-length,x-header'
+        );
+      })());
+    });
+  });
+
+  suite('options.maxAge', () => {
+    test('sets Access-Control-Max-Age on preflight and omits it on simple requests', (ctx) => {
+      runFuture((async () => {
+        let app = helloApp(cors({maxAge: milliseconds(3600000)}));
+
+        let preflightReq = makeReq('/', 'OPTIONS', 'http://koajs.com', 'PUT');
+        let preflightRes = new Response();
+        await app.handleRequest(preflightReq, preflightRes);
+        equal(preflightRes.statusCode, 204);
+        equal(preflightRes.getHeader('access-control-max-age') as String, '3600');
+
+        let simpleReq = makeReq('/', 'GET', 'http://koajs.com');
+        let simpleRes = new Response();
+        await app.handleRequest(simpleReq, simpleRes);
+        equal(simpleRes.statusCode, 200);
+        equal(simpleRes.body as String, 'Hello World!');
+        isTrue(simpleRes.getHeader('access-control-max-age') == null);
+      })());
+    });
+  });
+
+  suite('options.credentials', () => {
+    test('enables Access-Control-Allow-Credentials on simple and preflight requests', (ctx) => {
+      runFuture((async () => {
+        let app = helloApp(cors({
+          origin: (req: Request) => req.getHeader('Origin'),
+          credentials: true,
+        }));
+
+        let req1 = makeReq('/', 'GET', 'http://koajs.com');
+        let res1 = new Response();
+        await app.handleRequest(req1, res1);
+        equal(res1.statusCode, 200);
+        equal(res1.body as String, 'Hello World!');
+        equal(res1.getHeader('access-control-allow-credentials') as String, 'true');
+
+        let req2 = makeReq('/', 'OPTIONS', 'http://koajs.com', 'DELETE');
+        let res2 = new Response();
+        await app.handleRequest(req2, res2);
+        equal(res2.statusCode, 204);
+        equal(res2.getHeader('access-control-allow-credentials') as String, 'true');
+      })());
+    });
+
+    test('does not set Access-Control-Allow-Credentials with default wildcard origin', (ctx) => {
+      runFuture((async () => {
+        let app = helloApp(cors({credentials: true}));
+        let req = makeReq('/', 'GET', 'http://koajs.com');
+        let res = new Response();
+        await app.handleRequest(req, res);
+
+        equal(res.statusCode, 200);
+        equal(res.body as String, 'Hello World!');
+        isTrue(res.getHeader('access-control-allow-credentials') == null);
+      })());
+    });
+
+    test('disables Access-Control-Allow-Credentials when unset', (ctx) => {
+      runFuture((async () => {
+        let app = helloApp(cors());
+
+        let req1 = makeReq('/', 'GET', 'http://koajs.com');
+        let res1 = new Response();
+        await app.handleRequest(req1, res1);
+        equal(res1.statusCode, 200);
+        equal(res1.body as String, 'Hello World!');
+        isTrue(res1.getHeader('access-control-allow-credentials') == null);
+
+        let req2 = makeReq('/', 'OPTIONS', 'http://koajs.com', 'DELETE');
+        let res2 = new Response();
+        await app.handleRequest(req2, res2);
+        equal(res2.statusCode, 204);
+        isTrue(res2.getHeader('access-control-allow-credentials') == null);
+      })());
+    });
+
+    test('supports synchronous credentialsFor function', (ctx) => {
+      runFuture((async () => {
+        let app = helloApp(cors({
+          origin: (req: Request) => req.getHeader('Origin'),
+          credentialsFor: (req: Request) => req.path != '/forbin',
+        }));
+
+        let req1 = makeReq('/', 'GET', 'http://koajs.com');
+        let res1 = new Response();
+        await app.handleRequest(req1, res1);
+        equal(res1.statusCode, 200);
+        equal(res1.body as String, 'Hello World!');
+        equal(res1.getHeader('access-control-allow-credentials') as String, 'true');
+
+        let req2 = makeReq('/', 'OPTIONS', 'http://koajs.com', 'DELETE');
+        let res2 = new Response();
+        await app.handleRequest(req2, res2);
+        equal(res2.statusCode, 204);
+        equal(res2.getHeader('access-control-allow-credentials') as String, 'true');
+
+        let req3 = makeReq('/forbin', 'GET', 'http://koajs.com');
+        let res3 = new Response();
+        await app.handleRequest(req3, res3);
+        equal(res3.statusCode, 200);
+        equal(res3.body as String, 'Hello World!');
+        isTrue(res3.getHeader('access-control-allow-credentials') == null);
+
+        let req4 = makeReq('/forbin', 'OPTIONS', 'http://koajs.com', 'DELETE');
+        let res4 = new Response();
+        await app.handleRequest(req4, res4);
+        equal(res4.statusCode, 204);
+        isTrue(res4.getHeader('access-control-allow-credentials') == null);
+      })());
+    });
+
+    test('supports asynchronous credentialsFor function', (ctx) => {
+      runFuture((async () => {
+        let app = helloApp(cors({
+          origin: (req: Request) => req.getHeader('Origin'),
+          credentialsFor: async (req: Request): Future<boolean> => true,
+        }));
+
+        let req1 = makeReq('/', 'GET', 'http://koajs.com');
+        let res1 = new Response();
+        await app.handleRequest(req1, res1);
+        equal(res1.statusCode, 200);
+        equal(res1.body as String, 'Hello World!');
+        equal(res1.getHeader('access-control-allow-credentials') as String, 'true');
+
+        let req2 = makeReq('/', 'OPTIONS', 'http://koajs.com', 'DELETE');
+        let res2 = new Response();
+        await app.handleRequest(req2, res2);
+        equal(res2.statusCode, 204);
+        equal(res2.getHeader('access-control-allow-credentials') as String, 'true');
+      })());
+    });
+  });
+
+  suite('options.allowHeaders', () => {
+    test('works when allowHeaders is a string', (ctx) => {
+      runFuture((async () => {
+        let app = helloApp(cors({allowHeaders: 'X-PINGOTHER'}));
+        let req = makeReq('/', 'OPTIONS', 'http://koajs.com', 'PUT');
+        let res = new Response();
+        await app.handleRequest(req, res);
+
+        equal(res.statusCode, 204);
+        equal(res.getHeader('access-control-allow-headers') as String, 'X-PINGOTHER');
+      })());
+    });
+
+    test('works when allowHeaders is an array', (ctx) => {
+      runFuture((async () => {
+        let app = helloApp(cors({allowHeaders: ['X-PINGOTHER']}));
+        let req = makeReq('/', 'OPTIONS', 'http://koajs.com', 'PUT');
+        let res = new Response();
+        await app.handleRequest(req, res);
+
+        equal(res.statusCode, 204);
+        equal(res.getHeader('access-control-allow-headers') as String, 'X-PINGOTHER');
+      })());
+    });
+
+    test('falls back to request Access-Control-Request-Headers header', (ctx) => {
+      runFuture((async () => {
+        let app = helloApp(cors());
+        let req = makeReq('/', 'OPTIONS', 'http://koajs.com', 'PUT', 'X-PINGOTHER');
+        let res = new Response();
+        await app.handleRequest(req, res);
+
+        equal(res.statusCode, 204);
+        equal(res.getHeader('access-control-allow-headers') as String, 'X-PINGOTHER');
+      })());
+    });
+  });
+
+  suite('options.allowMethods', () => {
+    test('works when allowMethods is an array', (ctx) => {
+      runFuture((async () => {
+        let app = helloApp(cors({allowMethods: ['GET', 'POST']}));
+        let req = makeReq('/', 'OPTIONS', 'http://koajs.com', 'PUT');
+        let res = new Response();
+        await app.handleRequest(req, res);
+
+        equal(res.statusCode, 204);
+        equal(res.getHeader('access-control-allow-methods') as String, 'GET,POST');
+      })());
+    });
+
+    test('omits Access-Control-Allow-Methods when allowMethods is null', (ctx) => {
+      runFuture((async () => {
+        let app = helloApp(cors({allowMethods: null}));
+        let req = makeReq('/', 'OPTIONS', 'http://koajs.com', 'PUT');
+        let res = new Response();
+        await app.handleRequest(req, res);
+
+        equal(res.statusCode, 204);
+        isTrue(res.getHeader('access-control-allow-methods') == null);
+      })());
+    });
+  });
+});
