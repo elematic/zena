@@ -44,7 +44,7 @@ import {
   MethodDefinition, Parameter, RecordLiteral, RecordPattern,
   SuperInitializer, Node,
 } from '../../ast.zena';
-import { SemanticModel } from '../../semantic-model.zena';
+import { SemanticModel, memberKeyOf } from '../../semantic-model.zena';
 import { Symbol, SymbolId, noSymbolId } from '../../scope/symbol.zena';
 import { ClassType, FunctionType, RecordType, Type, baseType } from '../../types.zena';
 import { walkEnter } from '../../visitor.zena';
@@ -52,17 +52,35 @@ import { ValType } from '../wasm.zena';
 import {
   ClassCodegenInfo, WasmModule, WasmFunction, RecordDispatchInfo, ExplosionSpec,
 } from '../wasm-module.zena';
-import { recordWasmFields, sortedOptionalNames } from '../type-mapping.zena';
+import {
+  recordWasmFields, sortedOptionalNames, substituteTypeParamsInFunctionContext,
+} from '../type-mapping.zena';
 import { ReachabilityAnalysis } from '../reachability/analysis.zena';
 import {
-  RecordResultCall, recordLiteralArgKey, recordLiteralCtorArgKey, recordLiteralMethodArgKey,
+  RecordResultCall, declaringInstantiation, methodTargetKey, recordLiteralArgKey,
+  recordLiteralCtorArgKey, recordLiteralMethodArgKey,
 } from '../reachability/context.zena';
-import { getClassKey, getClassMethodKey } from '../codegen-utils.zena';
+import {
+  containsErasedType, getClassKey, getClassMethodKey, isConcrete,
+} from '../codegen-utils.zena';
 
 /**
  * A whole-record use of a parameter as argument `index` of a call to the
  * candidate keyed `callee` (`functionKey` or `constructorKey`).
  */
+/**
+ * What demand needs to follow a parameter's uses: the module, the
+ * reachability results, and the function whose body it reads (null when
+ * no single instantiation is known), so a method call can be resolved as
+ * that function sees it.
+ */
+final class DemandContext {
+  wasm: WasmModule;
+  pass: ReachabilityAnalysis;
+  f: WasmFunction | null;
+  new(this.wasm, this.pass, this.f);
+}
+
 final class Forward {
   callee: String;
   index: i32;
@@ -82,12 +100,13 @@ let isReturnedWhole = (fw: Forward): boolean => fw.callee == returnedWhole;
 /** The candidate key of the top-level function `id`. */
 let functionKey = (id: SymbolId): String => `f${id as i32}`;
 
-/** The candidate key of the method declared by the node `id`. */
-let methodKey = (id: i32): String => `m${id}`;
+/** The candidate key of the method `target` (`methodTargetKey`). */
+let methodKey = (target: String): String => `m${target}`;
 
 /** The candidate key of the callee a recorded record-result call names. */
 let resultCalleeKey = (rc: RecordResultCall): String =>
-    if (rc.methodNode >= 0) methodKey(rc.methodNode) else functionKey(rc.callee);
+    if (rc.methodTarget != null) methodKey(rc.methodTarget as String)
+    else functionKey(rc.callee);
 
 /** The candidate key of the unnamed constructor of the class keyed `classKey`. */
 let constructorKey = (classKey: String): String => `c${classKey}`;
@@ -136,10 +155,10 @@ final class Candidate {
   /** Whether the core returns `result`'s fields. */
   var resultExplodes: boolean = false;
   /**
-   * A method's declaration node id (its candidate key); -1 for a
-   * function or a constructor.
+   * A method's `methodTargetKey` (its candidate key); null for a function
+   * or a constructor.
    */
-  var methodNode: i32 = -1;
+  var methodTarget: String | null = null;
   /**
    * A method some reached subclass overrides: a call to it dispatches
    * through the vtable and passes the record, so passing a record on to
@@ -152,8 +171,9 @@ final class Candidate {
   /** This candidate's key in the pass's lookup. */
   key(): String {
     let {self, ctorKey} = this;
-    if (this.methodNode >= 0) {
-      return methodKey(this.methodNode);
+    let methodTarget = this.methodTarget;
+    if (methodTarget != null) {
+      return methodKey(methodTarget);
     }
     return if (self != null) functionKey(self.id) else
         constructorKey(ctorKey as String);
@@ -176,9 +196,10 @@ final class Candidate {
   hasLiteralArg(pass: ReachabilityAnalysis, superLiterals: HashSet<String>,
       i: i32): boolean {
     let {self, ctorKey} = this;
-    if (this.methodNode >= 0) {
+    let methodTarget = this.methodTarget;
+    if (methodTarget != null) {
       return pass.recordLiteralMethodArgs.has(
-          recordLiteralMethodArgKey(this.methodNode, i));
+          recordLiteralMethodArgKey(methodTarget, i));
     }
     if (self != null) {
       return pass.recordLiteralArgs.has(recordLiteralArgKey(self.id, i));
@@ -200,7 +221,7 @@ export let explodeRecordParameters = (
   let candidates = new Array<Candidate>();
   let byKey = new HashMap<String, Candidate>();
   for (let f in wasm.functions) {
-    let c = candidateFor(wasm, f);
+    let c = candidateFor(wasm, pass, f);
     if (c != null) {
       candidates.push(c);
       byKey[c.key()] = c;
@@ -274,7 +295,7 @@ export let explodeRecordParameters = (
     if (any) {
       // A method's receiver passes through ahead of its parameters.
       addCore(wasm, pass, c.f, params,
-          if (c.methodNode >= 0 && !c.f.isStatic) 1 else 0,
+          if (c.methodTarget != null && !c.f.isStatic) 1 else 0,
           if (c.resultExplodes) c.result else null);
       let {ctorKey} = c;
       if (ctorKey != null) {
@@ -403,7 +424,8 @@ let explodeResults = (wasm: WasmModule, pass: ReachabilityAnalysis,
     if (let (true, target) = byKey.get(key)) {
       let result = target.result;
       if (result != null) {
-        uses.push(classifyResultUse(wasm.methodCallTargets, rc, key, result, byKey));
+        uses.push(classifyResultUse(new DemandContext(wasm, pass, null), rc, key,
+            result, byKey));
       }
     }
   }
@@ -411,7 +433,7 @@ let explodeResults = (wasm: WasmModule, pass: ReachabilityAnalysis,
   // depend on the other, so vars start held and drop out while some
   // write lacks its fields; results are recomputed from "nothing
   // explodes" for each candidate set of held vars.
-  var heldList = heldVarCandidates(wasm, byKey);
+  var heldList = heldVarCandidates(wasm, pass, byKey);
   var held = heldById(heldList);
   while (true) {
     for (let c in candidates) {
@@ -523,7 +545,7 @@ let writeHasFields = (w: Expression, hv: HeldVar,
  * record type. Their writes are checked against the result verdicts by
  * the caller.
  */
-let heldVarCandidates = (wasm: WasmModule,
+let heldVarCandidates = (wasm: WasmModule, pass: ReachabilityAnalysis,
     byKey: HashMap<String, Candidate>): GrowableArray<HeldVar> => {
   let out = new Array<HeldVar>();
   let declared = new HashSet<SymbolId>();
@@ -541,7 +563,8 @@ let heldVarCandidates = (wasm: WasmModule,
     for (let root in roots) {
       walkEnter(root, (n: Node): void => {
         if (n is VariableDeclaration) {
-          noteHeldVarCandidate(wasm, f, owner as Node, roots, n, byKey,
+          noteHeldVarCandidate(new DemandContext(wasm, pass, f), f, owner as Node,
+              roots, n, byKey,
               declared, out);
         }
       });
@@ -551,7 +574,7 @@ let heldVarCandidates = (wasm: WasmModule,
 };
 
 /** Adds the `var` declared by `vd` in `owner` to `out` when it qualifies. */
-let noteHeldVarCandidate = (wasm: WasmModule, f: WasmFunction, owner: Node,
+let noteHeldVarCandidate = (dc: DemandContext, f: WasmFunction, owner: Node,
     roots: GrowableArray<Node>, vd: VariableDeclaration,
     byKey: HashMap<String, Candidate>, declared: HashSet<SymbolId>,
     out: GrowableArray<HeldVar>): void => {
@@ -579,13 +602,13 @@ let noteHeldVarCandidate = (wasm: WasmModule, f: WasmFunction, owner: Node,
   if (!(rt is RecordType)) {
     return;
   }
-  let d = wasm.findRecordDispatch(
-      recordWasmFields(wasm, rt, f), sortedOptionalNames(rt));
+  let d = dc.wasm.findRecordDispatch(
+      recordWasmFields(dc.wasm, rt, f), sortedOptionalNames(rt));
   if (d == null || d.fields.length == 0) {
     return;
   }
   let forwards = new Array<Forward>();
-  if (!usesOnlyFields(wasm.methodCallTargets, owner, roots, model, pattern,
+  if (!usesOnlyFields(dc, owner, roots, model, pattern,
       forwards, null, true)) {
     return;
   }
@@ -724,7 +747,7 @@ let hasFieldsOnHand = (c: Candidate, byKey: HashMap<String, Candidate>,
 };
 
 /** How `rc`'s result is used. */
-let classifyResultUse = (targets: HashMap<i32, i32>, rc: RecordResultCall,
+let classifyResultUse = (dc: DemandContext, rc: RecordResultCall,
     calleeKey: String,
     result: RecordDispatchInfo, byKey: HashMap<String, Candidate>): ResultUse => {
   let call = rc.call;
@@ -754,7 +777,7 @@ let classifyResultUse = (targets: HashMap<i32, i32>, rc: RecordResultCall,
         direct = true;
       } else if (pattern is IdentifierPattern) {
         if (parent.kind == 'let' && owner != null) {
-          direct = boundResultUsesFields(targets, owner as Node, model, pattern,
+          direct = boundResultUsesFields(dc, owner as Node, model, pattern,
               result, byKey);
         } else if (parent.kind == 'var') {
           let target = model.resolveDeclaration(pattern);
@@ -804,13 +827,13 @@ let returnsFrom = (call: CallExpression, parent: Node | null,
  * read for its fields, or passed to parameters of the same record type
  * that are.
  */
-let boundResultUsesFields = (targets: HashMap<i32, i32>, owner: Node,
+let boundResultUsesFields = (dc: DemandContext, owner: Node,
     model: SemanticModel,
     pattern: IdentifierPattern, result: RecordDispatchInfo,
     byKey: HashMap<String, Candidate>): boolean => {
   let roots = codeRoots(owner);
   let forwards = new Array<Forward>();
-  if (!usesOnlyFields(targets, owner, roots, model, pattern, forwards, null)) {
+  if (!usesOnlyFields(dc, owner, roots, model, pattern, forwards, null)) {
     return false;
   }
   for (let fw in forwards) {
@@ -1030,13 +1053,14 @@ let forwardKeepsFields = (byKey: HashMap<String, Candidate>,
  * `f` as a candidate, with each record parameter's uses classified, or
  * null when `f` can take no core.
  */
-let candidateFor = (wasm: WasmModule, f: WasmFunction): Candidate | null => {
+let candidateFor = (wasm: WasmModule, pass: ReachabilityAnalysis,
+    f: WasmFunction): Candidate | null => {
   if (f.classType != null) {
     let methodName = f.methodName;
     if (methodName != null && (methodName as String) != '<constructor>') {
-      return methodCandidateFor(wasm, f);
+      return methodCandidateFor(wasm, pass, f);
     }
-    return constructorCandidateFor(wasm, f);
+    return constructorCandidateFor(wasm, pass, f);
   }
   // A plain top-level function: no receiver, context, type parameters
   // or suspension machinery, and nothing synthesized.
@@ -1088,7 +1112,7 @@ let candidateFor = (wasm: WasmModule, f: WasmFunction): Candidate | null => {
   if (result != null && !collectReturns(fn, model, returns)) {
     result = null;
   }
-  return classifyParams(wasm, f, fn, fn.params, roots, self, null, null,
+  return classifyParams(new DemandContext(wasm, pass, f), f, fn, fn.params, roots, self, null, null,
       result, returns);
 };
 
@@ -1103,14 +1127,18 @@ let candidateFor = (wasm: WasmModule, f: WasmFunction): Candidate | null => {
  * becomes the forwarder, so dispatch is unchanged: only a call the
  * lowering makes directly, to this very method, can call the core.
  */
-let methodCandidateFor = (wasm: WasmModule, f: WasmFunction): Candidate | null => {
+let methodCandidateFor = (wasm: WasmModule, pass: ReachabilityAnalysis,
+    f: WasmFunction): Candidate | null => {
   let ct = f.classType as ClassType;
   let typeArgs = ct.typeArguments;
   let typeParams = ct.typeParameters;
   let methodName = f.methodName as String;
-  if (ct.isExtension || ct.isMixinIntermediate ||
-      (typeParams != null && typeParams.length > 0) ||
-      (typeArgs != null && typeArgs.length > 0) ||
+  // A generic class's template is never emitted; each instantiation's
+  // method is a function of its own, keyed by the instantiation.
+  let template = typeParams != null && typeParams.length > 0 &&
+      (typeArgs == null || typeArgs.length == 0);
+  if (ct.isExtension || ct.isMixinIntermediate || template ||
+      !isConcrete(ct as Type) || containsErasedType(ct as Type) ||
       methodName.contains('::') || f.intrinsic != null ||
       f.typeParameters != null || f.typeArguments != null ||
       f.explosion != null || f.isCaseClassEq || f.isCaseClassHash) {
@@ -1153,10 +1181,10 @@ let methodCandidateFor = (wasm: WasmModule, f: WasmFunction): Candidate | null =
     result = null;
   }
   let roots = codeRoots(md);
-  let c = classifyParams(wasm, f, md, md.params, roots, null, null, null,
+  let c = classifyParams(new DemandContext(wasm, pass, f), f, md, md.params, roots, null, null, null,
       result, returns);
   if (c != null) {
-    c.methodNode = (md as Node).id as i32;
+    c.methodTarget = methodTargetKey((md as Node).id as i32, ct);
     c.overridden = !f.isStatic && hasReachedOverride(wasm, ct, methodName);
   }
   return c;
@@ -1179,7 +1207,7 @@ let hasReachedOverride = (wasm: WasmModule, ct: ClassType,
   return false;
 };
 
-let constructorCandidateFor = (wasm: WasmModule,
+let constructorCandidateFor = (wasm: WasmModule, pass: ReachabilityAnalysis,
     f: WasmFunction): Candidate | null => {
   let ct = f.classType as ClassType;
   let typeArgs = ct.typeArguments;
@@ -1235,7 +1263,7 @@ let constructorCandidateFor = (wasm: WasmModule,
   let superCt = superWithConstructor(ct);
   let superKey = if (superCt != null)
       constructorKey(getClassKey(superCt) as String) else null;
-  return classifyParams(wasm, f, md, md.params, roots, null,
+  return classifyParams(new DemandContext(wasm, pass, f), f, md, md.params, roots, null,
       classKey as String, superKey, null, new Array<Expression>());
 };
 
@@ -1244,7 +1272,7 @@ let constructorCandidateFor = (wasm: WasmModule,
  * whose code is `roots`, or null when no parameter is a record it only
  * needs the fields of.
  */
-let classifyParams = (wasm: WasmModule, f: WasmFunction, owner: Node,
+let classifyParams = (dc: DemandContext, f: WasmFunction, owner: Node,
     params: GrowableArray<Parameter>, roots: GrowableArray<Node>,
     self: Symbol | null, ctorKey: String | null,
     superKey: String | null, result: RecordDispatchInfo | null,
@@ -1256,12 +1284,12 @@ let classifyParams = (wasm: WasmModule, f: WasmFunction, owner: Node,
   var anyRecord = false;
   for (let p in params) {
     let out = new Array<Forward>();
-    let d = recordDispatchOfParam(wasm, f, p.name);
+    let d = recordDispatchOfParam(dc.wasm, f, p.name);
     // Returning the parameter whole only passes its fields on when it has
     // the result's own shape.
     let returnable = result != null && d === result;
     let usesFields = d != null &&
-        usesOnlyFields(wasm.methodCallTargets, owner, roots, f.model, p.name,
+        usesOnlyFields(dc, owner, roots, f.model, p.name,
             out, superKey, false,
             returnable);
     dispatches.push(if (usesFields) d else null);
@@ -1320,7 +1348,7 @@ let declaredSymbol = (fn: FunctionExpression, model: SemanticModel): Symbol | nu
  * and the core would rebuild it on entry, which moves the allocation
  * instead of removing it.
  */
-let usesOnlyFields = (targets: HashMap<i32, i32>, owner: Node,
+let usesOnlyFields = (dc: DemandContext, owner: Node,
     roots: GrowableArray<Node>, model: SemanticModel, name: Node,
     forwards: GrowableArray<Forward>, superKey: String | null,
     allowAssign: boolean = false, allowReturn: boolean = false): boolean => {
@@ -1334,7 +1362,7 @@ let usesOnlyFields = (targets: HashMap<i32, i32>, owner: Node,
       if (ok && n is Identifier) {
         let sym = model.resolve(n);
         if (sym != null && sym.id == param.id &&
-            !isFieldUse(targets, n, owner, model, forwards, superKey, allowAssign,
+            !isFieldUse(dc, n, owner, model, forwards, superKey, allowAssign,
                 allowReturn)) {
           ok = false;
         }
@@ -1350,7 +1378,7 @@ let usesOnlyFields = (targets: HashMap<i32, i32>, owner: Node,
  * constructor keyed `superKey`, outside any nested function: a closure
  * would capture the record.
  */
-let isFieldUse = (targets: HashMap<i32, i32>, ident: Identifier, owner: Node,
+let isFieldUse = (dc: DemandContext, ident: Identifier, owner: Node,
     model: SemanticModel, forwards: GrowableArray<Forward>,
     superKey: String | null, allowAssign: boolean,
     allowReturn: boolean): boolean => {
@@ -1369,7 +1397,7 @@ let isFieldUse = (targets: HashMap<i32, i32>, ident: Identifier, owner: Node,
     accepted = (parent.init as Node) === (ident as Node) &&
         pattern is RecordPattern;
   } else if (parent is CallExpression) {
-    forward = forwardOf(targets, parent, ident, model);
+    forward = forwardOf(dc, parent, ident, model);
     accepted = forward != null;
   } else if (parent is AssignmentExpression) {
     // Being assigned to is a write, not a use of the record, for a
@@ -1458,20 +1486,56 @@ let isReturnedValue = (node: Node, owner: Node,
   return false;
 };
 
+/**
+ * The method `member` calls, from the function `dc.f`: its receiver's
+ * static class, instantiated as in `dc.f`, and the method that class
+ * resolves the name to. Null when it cannot be told, such as in a body
+ * no instantiation is known for.
+ */
+let methodTargetOf = (dc: DemandContext, member: MemberExpression,
+    model: SemanticModel): String | null => {
+  if (member.optional || member.isSymbolAccess) {
+    return null;
+  }
+  let objType = model.getNodeType(member.object);
+  if (objType == null) {
+    return null;
+  }
+  let receiver = baseType(substituteTypeParamsInFunctionContext(dc.wasm, dc.f,
+      objType as Type));
+  if (!(receiver is ClassType) || !isConcrete(receiver)) {
+    return null;
+  }
+  let name = memberKeyOf(model, member.property as Node);
+  if (name == "") {
+    return null;
+  }
+  let md = dc.pass.cha.findImplementingMethod(receiver, name);
+  if (md == null) {
+    return null;
+  }
+  let declaring = declaringInstantiation(dc.pass.classDecls, receiver, md as Node);
+  if (declaring == null) {
+    return null;
+  }
+  return methodTargetKey((md as Node).id as i32, declaring);
+};
+
 /** `ident` as an argument of a direct call to a module-level function. */
-let forwardOf = (targets: HashMap<i32, i32>, call: CallExpression,
+let forwardOf = (dc: DemandContext, call: CallExpression,
     ident: Identifier, model: SemanticModel): Forward | null => {
   let callee = call.callee;
   if (callee is MemberExpression) {
-    // A method call, to the method reachability resolved it to.
     if ((callee.object as Node) === (ident as Node)) {
       return null;
     }
-    if (let (true, methodNode) = targets.get((call as Node).id as i32)) {
-      for (var k = 0; k < call.args.length; k += 1) {
-        if ((call.args[k] as Node) === (ident as Node)) {
-          return new Forward(methodKey(methodNode), k);
-        }
+    let target = methodTargetOf(dc, callee, model);
+    if (target == null) {
+      return null;
+    }
+    for (var k = 0; k < call.args.length; k += 1) {
+      if ((call.args[k] as Node) === (ident as Node)) {
+        return new Forward(methodKey(target), k);
       }
     }
     return null;

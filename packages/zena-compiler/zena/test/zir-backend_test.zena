@@ -913,6 +913,25 @@ export let tests = suite('zir backend', (): void => {
         'the record is passed on as its fields');
   });
 
+  test('a method of a generic class takes a record as its fields', (ctx: TestContext): void => {
+    // Each instantiation's `area` has its own core, and `main` passes
+    // both literals as fields.
+    let result = compileWithZir(
+        'type V = {x: i32, y: i32};\n' +
+        'class Box<T> {\n' +
+        '  value: T;\n' +
+        '  new(this.value);\n' +
+        '  area(r: V): i32 { return r.x * r.y; }\n' +
+        '}\n' +
+        'export let main = (): i32 => {\n' +
+        '  let a = new Box<i32>(1);\n' +
+        '  let b = new Box<f64>(2.0);\n' +
+        '  return a.area({x: 3, y: 4}) + b.area({x: 5, y: 6});\n' +
+        '};');
+    assertNoAllocation(result, '$main',
+        'both instantiations take the literals as fields');
+  });
+
   test('a var record updated through a call stays as its fields', (ctx: TestContext): void => {
     // `pos` is only read for its fields and only assigned values that
     // are fields already, so it is carried around the loop as its

@@ -7,7 +7,7 @@ import { Set, HashMap, HashSet } from 'zena:collections';
 
 import { SymbolId } from '../../scope/symbol.zena';
 import { WasmType } from '../wasm.zena';
-import { MixinKey, ClassMethodKey, ClassKey } from '../codegen-utils.zena';
+import { MixinKey, ClassMethodKey, ClassKey, getClassKey } from '../codegen-utils.zena';
 import { ClassHierarchyAnalysis } from './hierarchy.zena';
 
 /**
@@ -159,19 +159,54 @@ export final class RecordResultCall {
   model: SemanticModel;
   callee: SymbolId;
   /**
-   * For a method call, the node id of the method's declaration
-   * (`callee` is then `noSymbolId`); -1 for a function call.
+   * For a method call, the method it resolves to (`methodTargetKey`;
+   * `callee` is then `noSymbolId`); null for a function call.
    */
-  var methodNode: i32 = -1;
+  var methodTarget: String | null = null;
   new(this.call, this.model, this.callee);
 }
 
 /**
- * The `recordLiteralMethodArgs` key for argument `index` of a direct call
- * of the method declared by the node `methodNode`.
+ * A method as compiled: its declaration node in the instantiation of the
+ * class that declares it. One declaration in a generic class is one
+ * function per instantiation, so the node alone does not name it.
  */
-export let recordLiteralMethodArgKey = (methodNode: i32, index: i32): String =>
-    `${methodNode}#${index}`;
+export let methodTargetKey = (methodNode: i32, declaring: ClassType): String =>
+    `${methodNode}@${getClassKey(declaring) as String}`;
+
+/**
+ * The class in `ct`'s superclass chain whose declaration contains the
+ * method `md`, as instantiated along that chain: the class the method's
+ * function is registered under.
+ */
+export let declaringInstantiation = (classDecls: HashMap<SymbolId, Node>,
+    ct: ClassType, md: Node): ClassType | null => {
+  var c: ClassType | null = ct;
+  while (c != null) {
+    let cc = c;
+    if (!cc.isMixinIntermediate) {
+      let lookupId = (cc.genericSource ?? cc).symbolId;
+      if (let (true, decl) = classDecls.get(lookupId)) {
+        if (decl is ClassDeclaration) {
+          for (let member in decl.body) {
+            if ((member as Node) === md) {
+              return cc;
+            }
+          }
+        }
+      }
+    }
+    c = cc.superType;
+  }
+  return null;
+};
+
+/**
+ * The `recordLiteralMethodArgs` key for argument `index` of a direct call
+ * of the method `target` (`methodTargetKey`).
+ */
+export let recordLiteralMethodArgKey = (target: String, index: i32): String =>
+    `${target}#${index}`;
 
 export interface ReachabilityContext {
   isRtaActive: boolean;
@@ -306,6 +341,7 @@ export interface ReachabilityContext {
   recordResultCalls: GrowableArray<RecordResultCall>;
   /** The node ids of `recordResultCalls`, to keep it to one entry per call. */
   recordResultCallIds: HashSet<i32>;
+  recordResultMethodCalls: HashSet<String>;
 
   queueReferrer(ref: Referrer): void;
   noteSpecialization(ct: ClassType, model: SemanticModel): void;

@@ -161,9 +161,9 @@ positionally:
 
 ### Methods
 
-An instance or static method is eligible on a class that is not
-generic, an extension or a mixin intermediate, when the method is not
-generic, abstract, `async`, a generator, decorated, or declared with an
+An instance or static method is eligible on a class that is not an
+extension or a mixin intermediate, including each concrete
+instantiation of a generic class, when the method is not generic, abstract, `async`, a generator, decorated, or declared with an
 explicit receiver, and has no parameter defaults. Its parameters and
 its result explode under the same rules as a function's. A static
 method's calls are all direct, so its core is used like a function's.
@@ -176,13 +176,18 @@ the core, which takes the receiver ahead of the fields. The core has no
 method name of its own, so that `layout()` never puts it in the class
 method map; the lowering takes the forwarder's name for its prologue.
 
-Reachability records a method call by the method's declaration node,
-found from the receiver's static class (`recordLiteralMethodArgs`, and
-`RecordResultCall.methodNode`): whether a call is direct is only known
+A method is named by its declaration node in the instantiation of the
+class that declares it (`methodTargetKey`): one declaration in a
+generic class is one function per instantiation. Reachability records a
+method call by that key, found from the receiver's static class as the
+walk resolved it (`recordLiteralMethodArgs`, and
+`RecordResultCall.methodTarget`): whether a call is direct is only known
 when it is lowered, so these are the evidence that some call could pass
-or take the fields. It also records which method each call resolves to
-(`WasmModule.methodCallTargets`), so passing a parameter on to a method
-(`this.m(p)`, `Grid.m(p)`) is a forward like passing it to a function.
+or take the fields. Passing a parameter on to a method (`this.m(p)`,
+`Grid.m(p)`) is a forward like passing it to a function; demand
+resolves its target from the calling function, with the receiver's type
+instantiated as that function sees it (`methodTargetOf`), so a call in a
+generic class's body names the method of the same instantiation.
 A forward to a method some reached subclass overrides does not keep the
 parameter fields-only: that call dispatches through the vtable, which
 passes the record.
@@ -202,9 +207,9 @@ grows by 2.9 KB (2,240,334 to 2,243,268 bytes).
 
 ### Not yet eligible
 
-- **Methods of generic classes, generic functions and constructors,
-  async functions and generators**, each for the reasons the rest of
-  this document's later phases list.
+- **Generic methods, generic functions and constructors, async
+  functions and generators**, each for the reasons the rest of this
+  document's later phases list.
 - **A method's result returned from another function or method**: it
   does not yet count as fields on hand.
 
@@ -522,8 +527,8 @@ Not yet covered:
 
 - Named constructors; generic classes' constructors; super arguments
   past the first superclass, returned from `<ctor-init>` as fields.
-- Methods of generic classes; per-specialization explosion of generic
-  functions; async functions and generators.
+- Per-specialization explosion of generic functions and methods; async
+  functions and generators.
 - The `inline` parameter guarantee above.
 - Teaching spread and `==` to consume exploded bindings.
 - Weighting call sites, for example by loop depth, for a function with
