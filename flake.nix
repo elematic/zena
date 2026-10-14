@@ -90,7 +90,16 @@
 
           src = ./.;
 
-          npmDepsHash = "sha256-MFx3jAyN7nfdvdpsNpx2mtmHlk8v2CwY2mHn4h2x0ek=";
+          inherit nodejs;
+
+          # Read the per-package URLs and integrity hashes from
+          # package-lock.json rather than maintaining a separate fixed-output
+          # npmDepsHash, which went stale even when a commit only added a
+          # workspace under packages/.
+          npmDeps = pkgs.importNpmLock {
+            npmRoot = ./.;
+          };
+          npmConfigHook = pkgs.importNpmLock.npmConfigHook;
 
           # Don't run dependency install scripts. buildNpmPackage runs `npm
           # rebuild` after the install, which executes any it finds: esbuild's
@@ -117,7 +126,6 @@
           };
 
           nativeBuildInputs = [
-            nodejs
             pkgs.cargo
             pkgs.rustc
             pkgs.rustPlatform.cargoSetupHook
