@@ -239,6 +239,22 @@ export let tests = suite('Memory', (): void => {
     }
   });
 
+  test('FreeListAllocator preserves large blocks across small allocations', (ctx: TestContext): void => {
+    if (let (true, region) = defaultAllocator.alloc(16384)) {
+      let alloc = new FreeListAllocator(region);
+      if (let (true, big1) = alloc.alloc(4096)) {
+        alloc.free(big1);
+        if (let (true, small) = alloc.alloc(8)) {
+          alloc.free(small);
+        }
+        if (let (true, big2) = alloc.alloc(4096)) {
+          equal(big2, big1);
+        }
+      }
+      defaultAllocator.free(region);
+    }
+  });
+
   // =========================================================================
   // Allocator interface polymorphism
   // =========================================================================

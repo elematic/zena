@@ -194,23 +194,12 @@ export final class FreeListAllocator implements Allocator {
       let blockSize = mem.getI32(currPtr);
       let nextFree = mem.getI32(currPtr + 4);
       
-      if (blockSize >= size) {
+      if (blockSize >= size && blockSize <= size * 2 + 8) {
         // Found a suitable block - remove from free list
         if (prevPtr == 0) {
           this.#freeList = nextFree;
         } else {
           mem.setI32(prevPtr + 4, nextFree);
-        }
-        
-        // If block is significantly larger, split it
-        let remaining = blockSize - size - 8;
-        if (remaining >= 16) {
-          // Split: shrink this block, add remainder to free list
-          mem.setI32(currPtr, size);
-          let newBlock = currPtr + 8 + size;
-          mem.setI32(newBlock, remaining);
-          mem.setI32(newBlock + 4, this.#freeList);
-          this.#freeList = newBlock;
         }
         
         // Return pointer after header
