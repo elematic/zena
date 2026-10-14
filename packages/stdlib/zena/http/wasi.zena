@@ -12,7 +12,7 @@ import {
   MethodConnect, MethodOptions, MethodTrace, MethodPatch, MethodOther,
   Scheme, SchemeHTTP, SchemeHTTPS, SchemeOther
 } from 'wasi:http/types';
-import { Completer } from 'zena:async';
+import { Completer, DeferredFuture } from 'zena:async';
 import { HashMap } from 'zena:collections';
 import { Disposable, Outcome, Ok, Option, Some } from 'zena:core';
 import { Stream, textStream, readAllText } from 'zena:stream';
@@ -90,6 +90,12 @@ export async function drainFuture<T>(f: Future<T>): Future<void> {
   } catch (e) {}
 }
 
+function disposeDeferred<T>(f: Future<T>): void {
+  if (f is DeferredFuture<T>) {
+    (f as DeferredFuture<T>).[Disposable.dispose]();
+  }
+}
+
 final class WireRequestSource implements RequestSource {
   #wire: WireRequest;
   var #consumed: boolean = false;
@@ -160,7 +166,7 @@ final class WireRequestSource implements RequestSource {
     this.#consumed = true;
     let received = Future.of<Outcome<void, ErrorCode>>(new Ok<void, ErrorCode>(unit()));
     let (bodyStream, trailers) = WireRequest.consumeBody(this.#wire, received);
-    trailers.[Disposable.dispose]();
+    disposeDeferred(trailers);
     return bodyStream;
   }
 
@@ -247,7 +253,7 @@ export function toWireResponseWithTransmitted(res: Response): (WireResponse, Fut
  */
 export function toWireResponse(res: Response): WireResponse {
   let (wireResp, transmitted) = toWireResponseWithTransmitted(res);
-  transmitted.[Disposable.dispose]();
+  disposeDeferred(transmitted);
   return wireResp;
 }
 
@@ -285,7 +291,7 @@ export function textResponse(
   }
   let (response, transmitted) =
       WireResponse.new_(headers, some(textStream(body)), emptyTrailersFuture);
-  transmitted.[Disposable.dispose]();
+  disposeDeferred(transmitted);
   if (status != 200) {
     response.setStatusCode(status as u16);
   }
@@ -298,7 +304,7 @@ export function textResponse(
 export async function requestText(request: WireRequest): Future<String> {
   let received = new Completer<Outcome<void, ErrorCode>>();
   let (body, trailers) = WireRequest.consumeBody(request, received.future);
-  trailers.[Disposable.dispose]();
+  disposeDeferred(trailers);
   let text = await readAllText(body);
   received.complete(new Ok<void, ErrorCode>(unit()));
   return text;
