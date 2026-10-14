@@ -4,13 +4,27 @@
  * Demonstrates:
  * - App and middleware composition (logging, error handling)
  * - Router with static routes and param matching (:name)
+ * - Safe HTML rendering and streaming with the `html` template tag
  * - Running an HTTP server accessible via browser or curl
  *
  * Run with:
  *   ./target/release/zena-cli run examples/http-server.zena
  */
 
-import { App, Router, Request, Response, HttpError } from 'zena:http';
+import { App, Router, HttpError, html, HTMLPartial, TemplateValue } from 'zena:http';
+
+let page = (title: String, body: HTMLPartial) => html`
+  <!doctype html>
+  <html>
+    <head>
+      <meta charset="utf-8">
+      <title>${title}</title>
+    </head>
+    <body>
+      ${body}
+    </body>
+  </html>
+`;
 
 export function main(): void {
   let app = new App();
@@ -25,14 +39,24 @@ export function main(): void {
 
   // 2. Define routes
   router.get('/', async (req, res, next, params) => {
-    res.type = 'text/plain; charset=utf-8';
-    res.body = 'Welcome to the Zena HTTP server!\n';
+    let links = ['/greet/world', '/greet/Zena', '/secret'];
+    res.body = page('Zena HTTP Server', html`
+      <h1>Welcome to the Zena HTTP server!</h1>
+      <p>Try visiting:</p>
+      <ul>
+        ${links.map<TemplateValue>((href) =>
+          html`<li><a href="${href}">${href}</a></li>`
+        )}
+      </ul>
+    `);
   });
 
   router.get('/greet/:name', async (req, res, next, params) => {
     let name = params.getOr('name', 'friend');
-    res.type = 'text/plain; charset=utf-8';
-    res.body = `Hello, ${name}!\n`;
+    res.body = page(`Hello, ${name}!`, html`
+      <h1>Hello, ${name}!</h1>
+      <p><a href="/">Back to home</a></p>
+    `);
   });
 
   router.get('/secret', async (req, res, next, params) => {
