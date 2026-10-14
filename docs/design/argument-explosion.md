@@ -400,9 +400,9 @@ The two facts run the other way from parameters:
 - **Demand**, from the caller. Reachability records every direct call
   whose result is a record (`recordResultCalls`). A call's result is
   only read for its fields when the call is `f().field`, the source of
-  `let {...} = f()`, or the initializer of a `let` whose every use reads
-  a field, destructures it, or passes it to a fields-only parameter of
-  the same record type. A call returned from another function or
+  `let {...} = f()`, an argument for a fields-only parameter of the same
+  record type (`g(f())`), or the initializer of a `let` whose every use
+  reads a field, destructures it, or passes it to such a parameter. A call returned from another function or
   method, as its `return` operand, expression body or value block's
   tail, counts when that function's result is demanded.
 - **Availability**, from the callee. Some return produces the fields
@@ -427,10 +427,23 @@ candidate key. A method of a generic class is one function per
 instantiation, and a recorded call in its body does not say which, so a
 call returned from one does not count.
 
-A `let`-bound result passed on to a fields-only parameter makes that
-parameter available unpacked when the call's result explodes, as a held
-var does: the lowering holds the result as its fields
-(`explodedRecords`), and the call it is passed to takes them.
+A result passed on to a fields-only parameter, straight or through a
+`let`, makes that parameter available unpacked when the call's result
+explodes, as a held var does: the lowering holds the result as its
+fields (`explodedRecords`), and the call it is passed to takes them. A
+marked call among a call's arguments sends that call to the core
+(`#passesUnpackedArg`), and the argument's lowered value, held, passes
+its fields (`#lowerExplodedArgs`).
+
+Measured on `acc = acc ^ use(bump(make(i)))` in a loop, three
+functions each taking or returning a record, two million iterations:
+
+| build | before         | after          |
+| ----- | -------------- | -------------- |
+| `-O1` | 113 ms, 8.2 KB | 2.3 ms, 8.0 KB |
+| `-O2` | 2.2 ms, 7.1 KB | 2.2 ms, 7.1 KB |
+
+The compiler's own module grows by 318 bytes (2,252,249 to 2,252,567).
 
 Measured on a loop destructuring `wrap(g, i)`, a function returning
 `g.shift({x: n, y: 1}, 2)`, a method of a class with no subclass, two
@@ -550,8 +563,6 @@ Not yet covered:
 - A var captured by a closure, which needs a cell holding the record.
 - A `var` written an `if` or `match` with literal arms: only returns
   merge an expression's arms as fields.
-- A call's result passed straight to a fields-only parameter
-  (`f(g(x))`): only a bound result is held as its fields.
 
 ## Later phases
 

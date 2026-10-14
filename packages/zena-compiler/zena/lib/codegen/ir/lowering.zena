@@ -8450,8 +8450,9 @@ export final class FunctionLowerer {
 
   /**
    * Whether some argument for an exploded parameter is unpacked: a
-   * record literal of exactly that parameter's record type, or an
-   * exploded parameter of this core passed on whole. Such a call goes
+   * record literal of exactly that parameter's record type, an exploded
+   * parameter of this core passed on whole, or a call whose result is
+   * held as its fields (`wasm.fieldsOnlyResultCalls`). Such a call goes
    * to the core, so the unpacked argument is never built. Its other
    * exploded arguments are heap records, read field by field here.
    */
@@ -8462,8 +8463,11 @@ export final class FunctionLowerer {
     }
     for (var i = 0; i < spec.params.length; i += 1) {
       let d = spec.params[i];
-      if (d != null && (this.#isExactRecordLiteral(argExprs[i], d) ||
-          this.#explodedRecordOf(argExprs[i], d) != null)) {
+      let arg = argExprs[i];
+      if (d != null && (this.#isExactRecordLiteral(arg, d) ||
+          this.#explodedRecordOf(arg, d) != null ||
+          (arg is CallExpression &&
+              this.wasm.fieldsOnlyResultCalls.has((arg as Node).id as i32)))) {
         return true;
       }
     }
@@ -8571,9 +8575,17 @@ export final class FunctionLowerer {
         continue;
       }
       let boxedVt = boxedParams[leading + i];
-      let record = this.#conformToSlot(
-          this.#lowerExpressionCtx(arg, boxedVt), boxedVt,
-          'call argument type');
+      let lowered = this.#lowerExpressionCtx(arg, boxedVt);
+      // A call whose result is held as its fields passes them.
+      if (let (true, held) = this.#cx().explodedRecords.get(lowered)) {
+        if (held.dispatch === d) {
+          for (let value in held.values) {
+            args.push(value);
+          }
+          continue;
+        }
+      }
+      let record = this.#conformToSlot(lowered, boxedVt, 'call argument type');
       for (let field in d.fields) {
         let value = this.#cx().recordDispatchRead(
             d, field.name as String, record);

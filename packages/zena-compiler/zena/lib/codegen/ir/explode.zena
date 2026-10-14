@@ -374,8 +374,9 @@ final class ResultUse {
   /** The `var` the result is assigned to or initializes, if any. */
   assignedTo: SymbolId;
   /**
-   * The fields-only parameters a `let`-bound result is passed to whole;
-   * they receive its fields when the call returns them.
+   * The fields-only parameters the result is passed to whole, straight
+   * or through a `let`; they receive its fields when the call returns
+   * them.
    */
   forwards: GrowableArray<Forward>;
   new(this.rc, this.callee, this.direct, this.returnedFrom, this.assignedTo,
@@ -846,6 +847,13 @@ let classifyResultUse = (dc: DemandContext, rc: RecordResultCall,
   } else if (parent is MemberExpression) {
     direct = (parent.object as Node) === (call as Node) &&
         !parent.optional && !parent.isSymbolAccess;
+  } else if (parent is CallExpression) {
+    // Passed straight to a fields-only parameter, like a bound result.
+    let fw = forwardOf(dc, parent, call as Node, model);
+    if (fw != null && forwardKeepsFields(byKey, result, fw)) {
+      direct = true;
+      forwards.push(fw);
+    }
   } else if (parent is VariableDeclaration) {
     let pattern = parent.pattern;
     if ((parent.init as Node) === (call as Node)) {
@@ -1606,12 +1614,15 @@ let methodTargetOf = (dc: DemandContext, member: MemberExpression,
   return methodTargetKey((md as Node).id as i32, declaring);
 };
 
-/** `ident` as an argument of a direct call to a module-level function. */
+/**
+ * `arg` as an argument of a direct call to a module-level function or of
+ * a method call.
+ */
 let forwardOf = (dc: DemandContext, call: CallExpression,
-    ident: Identifier, model: SemanticModel): Forward | null => {
+    arg: Node, model: SemanticModel): Forward | null => {
   let callee = call.callee;
   if (callee is MemberExpression) {
-    if ((callee.object as Node) === (ident as Node)) {
+    if ((callee.object as Node) === arg) {
       return null;
     }
     let target = methodTargetOf(dc, callee, model);
@@ -1619,7 +1630,7 @@ let forwardOf = (dc: DemandContext, call: CallExpression,
       return null;
     }
     for (var k = 0; k < call.args.length; k += 1) {
-      if ((call.args[k] as Node) === (ident as Node)) {
+      if ((call.args[k] as Node) === arg) {
         return new Forward(methodKey(target), k);
       }
     }
@@ -1633,7 +1644,7 @@ let forwardOf = (dc: DemandContext, call: CallExpression,
     return null;
   }
   for (var k = 0; k < call.args.length; k += 1) {
-    if ((call.args[k] as Node) === (ident as Node)) {
+    if ((call.args[k] as Node) === arg) {
       return new Forward(functionKey(calleeSym.resolveTarget().id), k);
     }
   }
