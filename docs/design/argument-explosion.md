@@ -161,11 +161,12 @@ positionally:
 
 ### Methods
 
-An instance method is eligible on a class that is not generic, an
-extension or a mixin intermediate, when the method is not generic,
-static, abstract, `async`, a generator, decorated, or declared with an
+An instance or static method is eligible on a class that is not
+generic, an extension or a mixin intermediate, when the method is not
+generic, abstract, `async`, a generator, decorated, or declared with an
 explicit receiver, and has no parameter defaults. Its parameters and
-its result explode under the same rules as a function's.
+its result explode under the same rules as a function's. A static
+method's calls are all direct, so its core is used like a function's.
 
 The method keeps its signature and its vtable slot, and becomes the
 forwarder, so a call that dispatches through the vtable (some reached
@@ -179,7 +180,12 @@ Reachability records a method call by the method's declaration node,
 found from the receiver's static class (`recordLiteralMethodArgs`, and
 `RecordResultCall.methodNode`): whether a call is direct is only known
 when it is lowered, so these are the evidence that some call could pass
-or take the fields.
+or take the fields. It also records which method each call resolves to
+(`WasmModule.methodCallTargets`), so passing a parameter on to a method
+(`this.m(p)`, `Grid.m(p)`) is a forward like passing it to a function.
+A forward to a method some reached subclass overrides does not keep the
+parameter fields-only: that call dispatches through the vtable, which
+passes the record.
 
 Measured on a loop calling `g.shift({x: i, y: 1}, 2)`, a method of a
 class with no subclass that returns a record, destructured, two million
@@ -196,12 +202,11 @@ grows by 2.9 KB (2,240,334 to 2,243,268 bytes).
 
 ### Not yet eligible
 
-- **Static methods, methods of generic classes, generic functions and
-  constructors, async functions and generators**, each for the reasons
-  the rest of this document's later phases list.
-- **A parameter passed on to a method**: `this.m(p)` is not yet a
-  fields-only use of `p`, and a method's result returned from another
-  function or method does not yet count as fields on hand.
+- **Methods of generic classes, generic functions and constructors,
+  async functions and generators**, each for the reasons the rest of
+  this document's later phases list.
+- **A method's result returned from another function or method**: it
+  does not yet count as fields on hand.
 
 ### Eligible parameters
 
@@ -517,9 +522,8 @@ Not yet covered:
 
 - Named constructors; generic classes' constructors; super arguments
   past the first superclass, returned from `<ctor-init>` as fields.
-- Static methods, methods of generic classes, and forwards to methods;
-  per-specialization explosion of generic functions; async functions
-  and generators.
+- Methods of generic classes; per-specialization explosion of generic
+  functions; async functions and generators.
 - The `inline` parameter guarantee above.
 - Teaching spread and `==` to consume exploded bindings.
 - Weighting call sites, for example by loop depth, for a function with

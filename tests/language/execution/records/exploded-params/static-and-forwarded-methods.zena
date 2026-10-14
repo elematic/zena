@@ -1,0 +1,79 @@
+// @mode: run
+// @result: 1
+// Static methods take and return records as their fields like functions
+// do, and a record parameter passed on to a method (`this.m(p)`,
+// `Grid.m(p)`) stays fields-only when that method's parameter is, unless
+// the call dispatches through the vtable. Every shape must compute the
+// same thing.
+
+type V = {x: i32, y: i32};
+
+class Grid {
+  scale: i32;
+  new(this.scale);
+
+  static make(r: V): V {
+    return {x: r.x * 2, y: r.y * 2};
+  }
+
+  static sum(r: V): i32 {
+    return r.x + r.y;
+  }
+
+  area(r: V): i32 {
+    return this.#scaled(r) + Grid.sum(r);
+  }
+
+  #scaled(r: V): i32 {
+    return r.x * r.y * this.scale;
+  }
+}
+
+// A forward to a method some subclass overrides dispatches, so the
+// record is passed whole.
+class Shape {
+  measure(r: V): i32 {
+    return this.area(r);
+  }
+
+  area(r: V): i32 {
+    return r.x * r.y;
+  }
+}
+
+class Half extends Shape {
+  area(r: V): i32 {
+    return (r.x * r.y) >> 1;
+  }
+}
+
+let total = (r: V): i32 => Grid.sum(r) * 10;
+
+export let main = (): i32 => {
+  let {x, y} = Grid.make({x: 3, y: 4});
+  if (x != 6 || y != 8) {
+    return 0;
+  }
+  if (Grid.sum({x: 5, y: 6}) != 11) {
+    return 0;
+  }
+  let g = new Grid(2);
+  // 3 * 4 * 2 + 3 + 4
+  if (g.area({x: 3, y: 4}) != 31) {
+    return 0;
+  }
+  if (total({x: 1, y: 2}) != 30) {
+    return 0;
+  }
+  let shapes = new GrowableArray<Shape>();
+  shapes.push(new Shape());
+  shapes.push(new Half());
+  var measured = 0;
+  for (let s in shapes) {
+    measured = measured * 100 + s.measure({x: 4, y: 5});
+  }
+  if (measured != 2010) {
+    return 0;
+  }
+  return 1;
+};
