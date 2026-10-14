@@ -76,8 +76,8 @@ let post = await posts.doc('hello').get();
 
 ## Goals
 
-- Encoders and decoders for classes, case classes, sealed classes,
-  enums, lists, maps and nullable types are generated, typed and checked.
+- Encoders and decoders for classes, sealed classes, enums, lists, maps
+  and nullable types are generated, typed and checked.
 - One generated encoder and decoder per type serves every format.
 - A program carries code only for the types it converts, in the
   directions it converts them.
@@ -114,11 +114,13 @@ let post = await posts.doc('hello').get();
 
 What the language offers today decides much of the design.
 
-**Case classes, sealed classes and enums** (implemented). A case class
-`class Point(x: f64, y: f64)` has a constructor whose parameters are its
-fields, so it can be rebuilt from its fields. A sealed class is a closed
-set of cases, each a case class, that a `match` covers exhaustively. An
-enum is an `i32`-backed or string-backed set of named values
+**Classes, sealed classes and enums** (implemented). The concise class
+syntax `class Point(x: f64, y: f64)` declares a class whose constructor
+takes its fields; the compiler also derives `==` and `hashCode` for it. A
+class written out in full can do the same with `this.` constructor
+parameters: `new(this.x, this.y)`. A sealed class is a closed set of cases
+that a `match` covers exhaustively; its cases are classes, usually written
+concisely. An enum is an `i32`-backed or string-backed set of named values
 ([enums.md](enums.md)). These are **nominal** types: each has a
 declaration, and two declarations with the same fields are different
 types.
@@ -176,8 +178,8 @@ Every format reads and writes the same set of values:
 | format data | (none)                     | reference, geo point |
 
 A **record** is a value with a fixed set of named fields, known from the
-type: a case class. A **map** has keys known only at runtime: a
-`Map<String, T>`. JSON and Firestore write both as objects, so their
+type: a class's document fields. A **map** has keys known only at
+runtime: a `Map<String, T>`. JSON and Firestore write both as objects, so their
 encoders treat them alike. Formats that have no maps, such as a binary
 format that writes a record's fields by position, can tell them apart:
 the encoder learns the field count and each field's index when it writes
@@ -263,7 +265,7 @@ JavaScript `1.0` as the integer `1`.
 
 ### Opting in
 
-A class, case class, sealed class or enum opts in with `@codable`:
+A class, sealed class or enum opts in with `@codable`:
 
 ```zena
 @codable
@@ -291,12 +293,27 @@ Opting in is explicit because the encoding becomes a stored format.
 Documents written today must decode next year, so the set of types with a
 stored form, and their keys, should be visible in their declarations.
 
-### Classes
+### Document fields and decoding
 
-A case class is the simplest `@codable` type: its constructor's
-parameters are its fields, so the decoder decodes each field and calls the
-constructor. A class with an ordinary constructor can be `@codable` too,
-as long as the decoder can set every field it encodes:
+The same rules apply to every class, written concisely or in full, and to
+each case of a sealed class.
+
+A class's **document fields** are its public fields, minus any marked
+`@skip`. For `class Post(title: String, views: i64)` they are `title` and
+`views`. The encoder writes the document fields, which it can always do,
+since they are public.
+
+The decoder has to build a value from them, so a `@codable` class follows
+a protocol for that. It names a **decoding entry point**, a function whose
+parameters are matched to document fields by name and which returns the
+class:
+
+- **By default, the constructor**, when each of its parameters names a
+  document field: a `this.x` parameter, or a plain parameter `x` where the
+  class has a public field `x`.
+- **Otherwise, a static method marked `@decoder`.** A class whose
+  constructor takes something other than its fields offers one for
+  decoding:
 
 ```zena
 @codable
@@ -305,7 +322,13 @@ class Account {
   var balance: i64 = 0;
   #auditLog: GrowableArray<String> = new GrowableArray<String>();
 
-  new(this.name);
+  /** Opens an account with a first deposit. */
+  new(name: String, deposit: Deposit) : name = name {
+    this.balance = deposit.amount;
+  }
+
+  @decoder
+  static restore(name: String, balance: i64): Account { ... }
 
   displayName: String {
     get { return this.name.asciiUpperCase(); }
@@ -313,24 +336,29 @@ class Account {
 }
 ```
 
-- The encoder writes the class's public fields: `name` and `balance`.
-  Private fields such as `#auditLog` and getters such as `displayName` are
-  not written. `@skip` leaves out a public field.
-- The decoder calls the constructor, which must take a `this.` parameter
-  for each written field that has no initializer: `new(this.name)` sets
-  `name`. It then assigns each written `var` field the constructor did not
-  take: `balance`.
-- A written field the decoder cannot set is an error on the field: an
-  immutable field the constructor does not take, or one taken by a
-  constructor parameter that is not `this.`. Such a field is computed
-  from other inputs, so either the constructor takes it as a `this.`
-  parameter, or it is marked `@skip` and recomputed on decode.
+The decoder decodes a value for each of the entry point's parameters from
+the key of the document field it names, and calls it. A parameter with a
+default makes its key optional. It then assigns each `var` document field
+the entry point did not take. The checker reports, on the field or the
+parameter:
+
+- a document field the decoder cannot set: immutable, and not taken by
+  the entry point;
+- a parameter that names no document field;
+- a class with neither a constructor that qualifies nor a `@decoder`.
+
+The protocol's contract is that a parameter named like a field receives
+that field's encoded value, and the constructed object holds it in that
+field. For a `this.` parameter the checker can see that it does. For a
+plain parameter or a `@decoder` method it is the class's promise, as
+`hashCode` agreeing with `==` is.
 
 A class that is not sealed decodes as the declared class. A value of a
 subclass is encoded through its own encoder when the subclass is
 `@codable` too, since the encoder is a member, but a decoder for the base
 class has no way to know which subclass a document came from. A hierarchy
-that must round-trip as its subclasses is a sealed class.
+that must round-trip as its subclasses is a sealed class, whose decoder
+reads the discriminator and calls the case's entry point.
 
 ### Generated code
 
@@ -352,7 +380,8 @@ For `Post`, the encoder writes a record:
 }
 ```
 
-and the decoder reads one:
+and the decoder reads one and calls `Post`'s constructor, its entry
+point:
 
 ```zena
 // static [Codable.decode]
@@ -368,7 +397,8 @@ The generated members are keyed by symbols in `zena:codec`
 (`Codable.encode`, `Codable.decode`), as `AsyncIterable.asyncIterator` is,
 so they cannot collide with the class's own members.
 
-Fields map to keys by these rules:
+Fields map to keys by these rules, where a default is a parameter's
+default or a field's initializer:
 
 | Field                                | Encoded as              | When the key is absent |
 | ------------------------------------ | ----------------------- | ---------------------- |
@@ -391,7 +421,7 @@ Values map by these rules:
 | `i32`-backed enum                      | integer; decode rejects an unknown value     |
 | `Array<T>`, `GrowableArray<T>`, etc.   | list                                         |
 | `Map<String, T>`, `HashMap<String, T>` | map                                          |
-| `@codable` class or case class         | record                                       |
+| `@codable` class                       | record                                       |
 | `@codable` sealed class                | record with a discriminator field            |
 
 A sealed class is written as its case's record, with an extra field,
@@ -483,7 +513,8 @@ checked, which costs compile time, and none of its code is emitted.
 | Decorator          | Placed on                           | Effect                                   |
 | ------------------ | ----------------------------------- | ---------------------------------------- |
 | `@codable`         | class, sealed class, enum           | generate the encoder and decoder         |
-| `@key('name')`     | field or case-class parameter       | the field's key                          |
+| `@key('name')`     | field, or concise-class parameter   | the field's key                          |
+| `@decoder`         | static method returning the class   | decode through it                        |
 | `@skip`            | field with a default or initializer | never written; decoded as the default    |
 | `@id`              | `String` or `String \| null` field  | read from the document's name            |
 | `@tag('kind')`     | sealed class                        | the discriminator field (default `type`) |
@@ -511,8 +542,8 @@ These decorators need three extensions to decorators
   parameter. The open question decorators.md raises for arguments, when a
   spliced argument is evaluated, does not arise: the compiler reads a
   data decorator's arguments and splices nothing.
-- **Positions.** Class, sealed class and enum declarations, case-class
-  parameters, and sealed `case` declarations, besides the class fields
+- **Positions.** Class, sealed class and enum declarations, concise-class
+  parameters, sealed `case` declarations, and static methods, besides the class fields
   decorators reach today. On a class field, a data decorator sits beside
   the field decorators `decorators.md` describes and replaces nothing. At module level, a decorator may then precede
   `class`, `sealed class` and `enum` as well as `declare`.
@@ -713,9 +744,9 @@ codecs make the same calls.
    codecs.
 2. Data decorators: bodyless declarations, constant arguments, and the
    new positions.
-3. `@codable`: the field check, the `Codable` interface, generation for
-   case classes and enums, then classes and sealed classes, and the
-   `encode`/`decode` intrinsics. Typed collections switch to `T extends Codable`.
+3. `@codable`: the field check, the decoding protocol, the `Codable`
+   interface, generation for classes and enums, then sealed classes, and
+   the `encode`/`decode` intrinsics. Typed collections switch to `T extends Codable`.
 4. Value constraints and `jsonSchemaOf<T>`.
 5. `package-manifest.zena` and the language service's JSON handling move
    to `parseJsonAs`.
