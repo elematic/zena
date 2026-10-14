@@ -1,0 +1,31 @@
+// @mode: run
+// @result: 42
+
+// A generic mixin with a private field, applied with a type argument
+// from across an import cycle's back edge: the shape of the standard
+// library's `IterableUtils<T>` applied by `FixedArray<T>` and `Range`.
+import { Cell, makeCell } from './cycle_mixin_generic_b.zena';
+
+export interface Holder<T> {
+  value: T;
+}
+
+export mixin Tally<T> on Holder<T> {
+  var #reads: i32 = 0;
+  read(): T {
+    this.#reads += 1;
+    return this.value;
+  }
+  reads(): i32 {
+    return this.#reads;
+  }
+}
+
+export let main = (): i32 => {
+  let c = makeCell(40);
+  if (c.read() != 40) {
+    return 0;
+  }
+  // 40 + 2 reads
+  return c.read() + c.reads();
+};

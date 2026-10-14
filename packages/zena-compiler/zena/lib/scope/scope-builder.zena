@@ -564,8 +564,15 @@ export final class ScopeBuilder {
         this.#current.declare(name.name, false, stmt, this.#modulePath);
         this.#symbols.record(stmt, this.#current.getLocal(name.name) as Symbol);
         if (exported) {
-          let info = new Symbol(name.name, stmt, this.#modulePath, false, this.#symbolIdGenerator.next());
-          this.#exports[name.name] = info;
+          // The declaration's own symbol, as for a class: a mixin
+          // materializes to a nominal type keyed by symbol id, and the
+          // intermediate class of each application carries that id,
+          // which codegen looks the mixin's declaration up by
+          // (SemanticModel.mixinDeclarations). A shell an importer
+          // materialized across an import cycle's back edge from a
+          // separate export symbol would carry an id the declaring
+          // module never registers.
+          this.#exports[name.name] = this.#current.getLocal(name.name) as Symbol;
         }
       }
       case TypeAliasDeclaration {name, exported}: {
