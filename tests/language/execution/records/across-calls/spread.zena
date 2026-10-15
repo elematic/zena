@@ -1,0 +1,78 @@
+// @mode: run
+// @result: 1
+// A record spread into a record literal only reads the source's fields,
+// so the source can arrive as its fields: a parameter, a `let`-bound
+// call result, and a `var` updated through calls. Optional fields keep
+// their presence through the spread, a property written after the
+// spread replaces the spread's value, and an optional field spread after
+// a property replaces it only when present. Every shape must build the
+// same records.
+
+type V = {x: i32, y: i32};
+type W = {x: i32, y: i32, z: i32};
+type O = {x: i32, tag?: i32};
+
+let widen = (r: V, z: i32): W => ({...r, z});
+
+let moveX = (r: V): V => ({...r, x: r.x + 10});
+
+let tagged = (o: O): i32 => {
+  let copy: O = {...o};
+  return copy.tag ?? -1;
+};
+
+let defaulted = (o: O): i32 => {
+  let withTag: O = {tag: 1, ...o};
+  return withTag.tag ?? -1;
+};
+
+let make = (n: i32): V => ({x: n, y: n * 2});
+
+let fromBound = (n: i32): i32 => {
+  let r = make(n);
+  let w: W = {...r, z: 7};
+  return w.x + w.y + w.z;
+};
+
+let step = (p: V): V => ({x: p.x + p.y, y: p.y});
+
+let walk = (n: i32): W => {
+  var pos: V = {x: 0, y: 1};
+  for (var i = 0; i < n; i += 1) {
+    pos = step(pos);
+  }
+  return {...pos, z: n};
+};
+
+let heap: V = {x: 4, y: 5};
+
+export let main = (): i32 => {
+  let {x, y, z} = widen({x: 1, y: 2}, 3);
+  if (x != 1 || y != 2 || z != 3) {
+    return 0;
+  }
+  let fromHeap = widen(heap, 6);
+  if (fromHeap.x != 4 || fromHeap.y != 5 || fromHeap.z != 6) {
+    return 0;
+  }
+  let m = moveX({x: 1, y: 2});
+  if (m.x != 11 || m.y != 2) {
+    return 0;
+  }
+  if (tagged({x: 1, tag: 5}) != 5 || tagged({x: 1}) != -1) {
+    return 0;
+  }
+  if (defaulted({x: 1, tag: 5}) != 5 || defaulted({x: 1}) != 1) {
+    return 0;
+  }
+  // 3 + 6 + 7
+  if (fromBound(3) != 16) {
+    return 0;
+  }
+  // x: 0, 1, 2, 3
+  let w = walk(3);
+  if (w.x != 3 || w.y != 1 || w.z != 3) {
+    return 0;
+  }
+  return 1;
+};

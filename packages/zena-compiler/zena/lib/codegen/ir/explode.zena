@@ -44,7 +44,7 @@ import {
   MatchExpression, ReturnStatement,
   VariableDeclaration, IdentifierPattern, Identifier, MemberExpression,
   MethodDefinition, Parameter, RecordLiteral, RecordPattern,
-  SuperInitializer, Node,
+  SpreadElement, SuperInitializer, Node,
 } from '../../ast.zena';
 import { SemanticModel, memberKeyOf } from '../../semantic-model.zena';
 import { Symbol, SymbolId, noSymbolId } from '../../scope/symbol.zena';
@@ -1696,10 +1696,11 @@ let usesOnlyFields = (dc: DemandContext, owner: Node,
 };
 
 /**
- * `ident.field`, `let {...} = ident`, `g(..., ident, ...)` for a
- * top-level function `g`, or `super(..., ident, ...)` (or
- * `super.name(...)`) to the constructor keyed `superKey`, outside any
- * nested function: a closure would capture the record.
+ * `ident.field`, `let {...} = ident`, `{...ident}` in a record literal,
+ * `g(..., ident, ...)` for a top-level function `g`, or
+ * `super(..., ident, ...)` (or `super.name(...)`) to the constructor
+ * keyed `superKey`, outside any nested function: a closure would capture
+ * the record.
  */
 let isFieldUse = (dc: DemandContext, ident: Identifier, owner: Node,
     model: SemanticModel, forwards: GrowableArray<Forward>,
@@ -1712,7 +1713,12 @@ let isFieldUse = (dc: DemandContext, ident: Identifier, owner: Node,
     forwards.push(new Forward(returnedWhole, -1));
     return true;
   }
-  if (parent is MemberExpression) {
+  if (parent is SpreadElement) {
+    // A record literal's spread reads the source's statically known
+    // fields, each through `recordDispatchRead`, which answers from the
+    // fields of a record held as them.
+    accepted = model.getParent(parent) is RecordLiteral;
+  } else if (parent is MemberExpression) {
     accepted = (parent.object as Node) === (ident as Node) &&
         !parent.optional && !parent.isSymbolAccess;
   } else if (parent is VariableDeclaration) {
