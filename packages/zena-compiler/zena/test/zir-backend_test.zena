@@ -829,6 +829,47 @@ export let tests = suite('zir backend', (): void => {
         'struct.new', 1, 'a record passed on to super.from is never rebuilt');
   });
 
+  test('a record passed to a generic class constructor is passed as its fields', (ctx: TestContext): void => {
+    // Each instantiation's constructor explodes on its own: `new
+    // Box<i32>` and `new Pair<f64>` with literals, whose record type
+    // mentions the type parameter, and a subclass of `Box<i32>` passing
+    // a literal to `super(...)`.
+    let result = compileWithZir(
+        'type Init = {x: i32, y?: i32};\n' +
+        'class Box<T> {\n' +
+        '  value: T;\n' +
+        '  x: i32;\n' +
+        '  new(value: T, init: Init) : value = value, x = init.x;\n' +
+        '}\n' +
+        'final class Pair<T> {\n' +
+        '  a: T;\n' +
+        '  new(r: {a: T, b: T}) : a = r.b;\n' +
+        '}\n' +
+        'final class IntBox extends Box<i32> {\n' +
+        '  new(v: i32) : super(v, {x: v});\n' +
+        '}\n' +
+        'export let main = (): i32 => {\n' +
+        '  let b = new Box<i32>(1, {x: 2});\n' +
+        '  let p = new Pair<f64>({a: 1.5, b: 2.5});\n' +
+        '  let ib = new IntBox(3);\n' +
+        '  return b.x + (p.a as i32) + ib.x;\n' +
+        '};');
+    let named = (prefix: String, suffix: String): String => {
+      var found = '';
+      for (let chunk in result.split('(func $')) {
+        let name = chunk.split(' ')[0];
+        if (name.startsWith(prefix) && name.endsWith(suffix)) {
+          found = '$' + name;
+        }
+      }
+      isTrue(found.length > 0, `no function ${prefix}…${suffix}`);
+      return found;
+    };
+    assertNoAllocation(result, '$main', 'every record arrives as fields');
+    assertFunctionUsesTimes(result, named('IntBox_', '<constructor>'),
+        'struct.new', 1, 'the literal passed to super is never built');
+  });
+
   test('a record result only read for its fields is returned as its fields', (ctx: TestContext): void => {
     // `step` builds its result from a literal and `main` only
     // destructures it, so `step.core` returns the two fields as wasm
