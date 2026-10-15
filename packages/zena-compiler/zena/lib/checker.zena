@@ -13915,26 +13915,11 @@ let applyFieldDecorator = (
   intermediate.mixins = source.mixins;
   intermediate.decoratorSubjectName = subject;
   intermediate.decoratorFieldName = fieldName;
-  for (let key in source.members.keys()) {
-    let member = source.members[key];
-    let isPrivateKey = key.startsWith("#") || key.startsWith("get##") || key.startsWith("set##");
-    var storeKey: String | null = null;
-    if (source.sharedMembers != null && (source.sharedMembers as HashSet<String>).has(key)) {
-      if (!sharedPlaced) {
-        storeKey = declScope + "::" + key;
-      }
-    } else if (isPrivateKey) {
-      storeKey = scope + "::" + key;
-    } else if (key == "get#" + subject) {
-      storeKey = "get#" + fieldName;
-    } else if (key == "set#" + subject) {
-      storeKey = "set#" + fieldName;
-    }
-    // Any other public member was rejected at the declaration.
-    if (storeKey != null) {
-      intermediate.members[storeKey as String] = member;
-    }
-  }
+  // The decorator's members are read through `appliedMixin` by the
+  // intermediate's member table, under the decorator's renaming
+  // (MemberTable).
+  intermediate.appliedMixin = source;
+  intermediate.decoratorSharedPlaced = sharedPlaced;
   let applied = if (typeArgs.length > 0) {
     instantiateClassType(intermediate, typeArgs)
   } else {
@@ -17713,27 +17698,10 @@ let checkMixinDeclaration = (ctx: CheckerContext, md: MixinDeclaration): void =>
       let composedType = resolveTypeAnnotation(ctx, ma);
       match (composedType) {
         case MixinType as composedMixin: {
+          // The composed mixin's members are read through `mixins` by
+          // the mixin's member table, its privates under the composed
+          // mixin's scope key (MemberTable).
           mixinType.mixins.push(composedMixin);
-          // Copy members from composed mixin. Composed private FIELDS
-          // keep the COMPOSED mixin's private scope key: privacy is
-          // lexical to the declaring mixin, so the composing mixin's
-          // body cannot see them and applications name their struct
-          // fields with the inner mixin's scope.
-          for (let key in composedMixin.members.keys()) {
-            if (let (true, mInfo) = composedMixin.members.get(key)) {
-              var composedKey = key;
-              if ((mInfo is FieldInfo || mInfo is MethodInfo) && key.length > 0 &&
-                  key.sliceBytes(0, 1) == "#") {
-                let scope = (composedMixin.genericSource ?? composedMixin).privateScopeKey;
-                composedKey = if (scope != null) {
-                  scope + "::" + key
-                } else {
-                  composedMixin.name + "_This::" + key
-                };
-              }
-              mixinType.members[composedKey] = mInfo;
-            }
-          }
         }
         case _: {
           if (!(composedType is ErrorType)) {
@@ -17769,31 +17737,22 @@ let checkMixinDeclaration = (ctx: CheckerContext, md: MixinDeclaration): void =>
   if (onType != null) {
     match (baseType(onType)) {
       case ClassType as ct: {
-        // The class's members reach `this` through the supertype
-        // (MemberTable); an interface's are copied, since a class
-        // inherits nothing from the interfaces it implements.
+        // The class's members reach `this` through the supertype.
         thisType.superType = onType as ClassType;
       }
       case InterfaceType as it: {
+        // The interface's members reach `this` through `onType`
+        // (MemberTable), which a class inherits nothing from otherwise.
         thisType.implementsList.push(onType as InterfaceType);
-        for (let k in it.members.keys()) {
-          if (!k.startsWith("#") && !thisType.members.has(k)) {
-            if (let (true, mInfo) = it.members.get(k)) {
-              thisType.members[k] = mInfo;
-            }
-          }
-        }
+        thisType.onType = onType;
       }
       case _: {}
     }
   }
 
-  // Populate composed mixin members onto `thisType` as well
-  for (let k in mixinType.members.keys()) {
-    if (let (true, mInfo) = mixinType.members.get(k)) {
-      thisType.members[k] = mInfo;
-    }
-  }
+  // `this` sees the mixin's members, composed ones included, through
+  // the mixin itself (MemberTable).
+  thisType.mixinSelf = mixinType;
 
   // Process body members.
   ctx.enterInterface();
@@ -17828,7 +17787,6 @@ let checkMixinDeclaration = (ctx: CheckerContext, md: MixinDeclaration): void =>
           fd.value != null // hasInitializer
         );
         mixinType.members[fieldName] = fdInfo;
-        thisType.members[fieldName] = fdInfo;
         if (fd.isShared) {
           if (md.decoratorSubject == null) {
             ctx.error("'shared' applies only to a decorator's private members.",
@@ -17890,7 +17848,6 @@ let checkMixinDeclaration = (ctx: CheckerContext, md: MixinDeclaration): void =>
             methDef.isFinal
           );
           mixinType.members[methodName] = mi;
-          thisType.members[methodName] = mi;
           if (methDef.isShared) {
             if (md.decoratorSubject == null) {
               ctx.error("'shared' applies only to a decorator's private members.",
@@ -17917,7 +17874,6 @@ let checkMixinDeclaration = (ctx: CheckerContext, md: MixinDeclaration): void =>
             let getterFt = new FunctionType(new Array<Type>(), accType);
             let gi = new MethodInfo(getterFt, false, acc.isStatic, true, acc.isFinal);
             mixinType.members["get#" + accName] = gi;
-            thisType.members["get#" + accName] = gi;
           }
           if (acc.setter != null) {
             let setterParams = new Array<Type>();
@@ -17925,7 +17881,6 @@ let checkMixinDeclaration = (ctx: CheckerContext, md: MixinDeclaration): void =>
             let setterFt = new FunctionType(setterParams, new VoidType());
             let si = new MethodInfo(setterFt, false, acc.isStatic, true, acc.isFinal);
             mixinType.members["set#" + accName] = si;
-            thisType.members["set#" + accName] = si;
           }
         } else {
           // Public accessors register get#/set# too, like class
@@ -17938,7 +17893,6 @@ let checkMixinDeclaration = (ctx: CheckerContext, md: MixinDeclaration): void =>
             let getterFt = new FunctionType(new Array<Type>(), accType);
             let gi = new MethodInfo(getterFt, false, acc.isStatic, isPrivate, acc.isFinal);
             mixinType.members["get#" + accName] = gi;
-            thisType.members["get#" + accName] = gi;
           }
           if (acc.setter != null) {
             let setterParams = new Array<Type>();
@@ -17946,7 +17900,6 @@ let checkMixinDeclaration = (ctx: CheckerContext, md: MixinDeclaration): void =>
             let setterFt = new FunctionType(setterParams, new VoidType());
             let si = new MethodInfo(setterFt, false, acc.isStatic, isPrivate, acc.isFinal);
             mixinType.members["set#" + accName] = si;
-            thisType.members["set#" + accName] = si;
           }
         }
       }

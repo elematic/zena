@@ -109,14 +109,24 @@ happens, are checked once.
   type copies structure when it is made (a substituted interface copies
   its parents list, a class instantiation its interfaces and
   constructor). Those copies, made from a shell, stay stale after the
-  shell fills. Registering again, once every shell is filled, rebuilds
-  them; registration is signatures only, so it is cheap, and the first
-  registration's context and diagnostics are discarded. Members are not
-  copied: a type's member table (`MemberTable` in `types.zena`) holds
-  the members the type declares and reads the inherited ones from its
-  supertype, applied mixin or parent interfaces at every lookup,
-  substituting a generic parent's type arguments at the read, so a
-  member read through a shell is read filled once the shell fills.
+  shell fills. And a class's registration decides things by reading its
+  parents' members as it registers its own: whether a field implements
+  an abstract one, whether a method overrides a final one, whether to
+  synthesize an accessor an ancestor lacks, how to merge overloads with
+  inherited ones, whether a case class derives its equality, whether a
+  mixin's `on` constraint holds. Against a shell those read nothing, so
+  the decisions come out as for a class with no parent. Registering
+  again, once every shell is filled, rebuilds the instantiations and
+  remakes the decisions; registration is signatures only, so it is
+  cheap, and the first registration's context and diagnostics are
+  discarded. Members themselves are never copied: a type's member table
+  (`MemberTable` in `types.zena`) holds the members the type declares
+  and reads the inherited ones at every lookup — a class from its
+  supertype and the mixin or decorator it applies, a mixin from the
+  mixins it composes, an interface from its parents, a mixin's `This`
+  from the mixin and its `on` interface — substituting a generic
+  parent's type arguments at the read, so a member read through a shell
+  is read filled once the shell fills.
 - **What bodies need** is then available. A function crossing a back
   edge has a full signature (rule 4), which the origin's context
   resolves from the annotations on demand: an importer asks the origin

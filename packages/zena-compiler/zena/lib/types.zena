@@ -389,6 +389,25 @@ let isPrivateMixinKey = (key: String): boolean => {
       key.startsWith("get##") || key.startsWith("set##");
 };
 
+/**
+ * The scope key a mixin's private fields are namespaced under when it is
+ * composed into another mixin or applied to a class: the declaration's
+ * (`privateScopeKey`), reached through an instantiation's source.
+ */
+let composedScopeKey = (mixin: MixinType): String => {
+  return (mixin.genericSource ?? mixin).privateScopeKey ?? (mixin.name + "_This");
+};
+
+/**
+ * Whether a composed mixin's member under `key` is carried by the
+ * composing mixin under the composed mixin's scope key: its private
+ * (`#name`) fields and methods are; everything else keeps its key.
+ */
+let isScopedByComposition = (key: String, member: MemberInfo): boolean => {
+  return (member is FieldInfo || member is MethodInfo) &&
+      key.length > 0 && key.sliceBytes(0, 1) == "#";
+};
+
 let sameType = (a: Type | null, b: Type | null): boolean => {
   if (a == null || b == null) {
     return a == null && b == null;
@@ -629,6 +648,7 @@ export final class MemberTable with IterableUtils<MapEntry<String, MemberInfo>> 
     match (owner) {
       case ClassType as ct: { found = this.#classInherited(ct, key); }
       case InterfaceType as it: { found = this.#interfaceInherited(it, key); }
+      case MixinType as mt: { found = this.#composedMember(mt, key); }
       case _: {}
     }
     if (found != null) {
@@ -638,9 +658,25 @@ export final class MemberTable with IterableUtils<MapEntry<String, MemberInfo>> 
   }
 
   #classInherited(ct: ClassType, key: String): MemberInfo | null {
+    // A mixin's `This` sees the mixin's own members, composed ones
+    // included, and the members of the interface the mixin is `on`.
+    let self = ct.mixinSelf;
+    if (self != null) {
+      let own = self.members.lookup(key);
+      if (own != null) {
+        return own;
+      }
+      let on = ct.onType;
+      if (on is InterfaceType && !(key.length > 0 && key.sliceBytes(0, 1) == "#")) {
+        let onMember = (on as InterfaceType).members.lookup(key);
+        if (onMember != null) {
+          return inheritedMember(onMember as MemberInfo, on.typeParameters, on.typeArguments, false);
+        }
+      }
+    }
     let mixin = ct.appliedMixin;
     if (mixin != null) {
-      let fromMixin = this.#appliedMixinMember(mixin, key);
+      let fromMixin = this.#appliedMixinMember(ct, mixin, key);
       if (fromMixin != null) {
         let member = fromMixin as MemberInfo;
         if (!member.isAbstract) {
@@ -655,6 +691,35 @@ export final class MemberTable with IterableUtils<MapEntry<String, MemberInfo>> 
       }
     }
     return this.#superMember(ct, key);
+  }
+
+  /**
+   * A composing mixin's member from the mixins it composes, the last
+   * composed winning. A composed mixin's private field or method is
+   * carried under the composed mixin's scope key: privacy is lexical to
+   * the declaring mixin, so the composing mixin's body cannot see it
+   * and applications name the struct field with the inner scope.
+   */
+  #composedMember(mt: MixinType, key: String): MemberInfo | null {
+    var i = mt.mixins.length - 1;
+    while (i >= 0) {
+      let composed = mt.mixins[i];
+      let prefix = composedScopeKey(composed) + "::";
+      if (key.startsWith(prefix)) {
+        let inner = key.sliceBytes(prefix.length, key.length);
+        let member = composed.members.lookup(inner);
+        if (member != null && isScopedByComposition(inner, member as MemberInfo)) {
+          return member;
+        }
+      } else {
+        let member = composed.members.lookup(key);
+        if (member != null && !isScopedByComposition(key, member as MemberInfo)) {
+          return member;
+        }
+      }
+      i -= 1;
+    }
+    return null;
   }
 
   #superMember(ct: ClassType, key: String): MemberInfo | null {
@@ -675,9 +740,13 @@ export final class MemberTable with IterableUtils<MapEntry<String, MemberInfo>> 
   /**
    * The applied mixin's member under `key` as the intermediate class
    * carries it: a private field or method only under the mixin's scope
-   * key, everything else under its own.
+   * key, everything else under its own. A decorator's intermediate
+   * carries them under the decorator's renaming instead.
    */
-  #appliedMixinMember(mixin: MixinType, key: String): MemberInfo | null {
+  #appliedMixinMember(ct: ClassType, mixin: MixinType, key: String): MemberInfo | null {
+    if (ct.decoratorSubjectName != null) {
+      return this.#decoratorMember(ct, mixin, key);
+    }
     let scope = mixin.privateScopeKey ?? (mixin.name + "_This");
     let prefix = scope + "::";
     if (key.startsWith(prefix)) {
@@ -697,6 +766,81 @@ export final class MemberTable with IterableUtils<MapEntry<String, MemberInfo>> 
       return null;
     }
     return member;
+  }
+
+  /**
+   * A decorator's member as the intermediate of one application carries
+   * it (docs/design/decorators.md): the subject accessor under the
+   * decorated field's name; a `shared` member under the declaration's
+   * scope key, and only from the first application in the host's chain;
+   * any other private member under this application's scope key, which
+   * is the declaration's plus the field's name. Nothing else: a public
+   * member other than the subject accessor was rejected at the
+   * declaration.
+   */
+  #decoratorMember(ct: ClassType, source: MixinType, key: String): MemberInfo | null {
+    let subject = ct.decoratorSubjectName as String;
+    let fieldName = ct.decoratorFieldName as String;
+    if (key == "get#" + fieldName) {
+      return source.members.lookup("get#" + subject);
+    }
+    if (key == "set#" + fieldName) {
+      return source.members.lookup("set#" + subject);
+    }
+    let shared = source.sharedMembers;
+    let sharedScope = ct.decoratorSharedScopeKey;
+    if (sharedScope != null) {
+      let sharedPrefix = sharedScope + "::";
+      if (key.startsWith(sharedPrefix)) {
+        if (ct.decoratorSharedPlaced || shared == null) {
+          return null;
+        }
+        let inner = key.sliceBytes(sharedPrefix.length, key.length);
+        if (!shared.has(inner)) {
+          return null;
+        }
+        return source.members.lookup(inner);
+      }
+    }
+    let scope = ct.privateScopeKey;
+    if (scope == null) {
+      return null;
+    }
+    let prefix = scope + "::";
+    if (!key.startsWith(prefix)) {
+      return null;
+    }
+    let inner = key.sliceBytes(prefix.length, key.length);
+    if (!isPrivateMixinKey(inner)) {
+      return null;
+    }
+    if (shared != null && shared.has(inner)) {
+      return null;
+    }
+    return source.members.lookup(inner);
+  }
+
+  /** The key the intermediate of a decorator application carries `key` under, or null. */
+  #decoratorStoredKey(ct: ClassType, source: MixinType, key: String): String | null {
+    let subject = ct.decoratorSubjectName as String;
+    let fieldName = ct.decoratorFieldName as String;
+    let shared = source.sharedMembers;
+    if (shared != null && shared.has(key)) {
+      if (ct.decoratorSharedPlaced) {
+        return null;
+      }
+      return (ct.decoratorSharedScopeKey ?? "") + "::" + key;
+    }
+    if (isPrivateMixinKey(key)) {
+      return (ct.privateScopeKey ?? "") + "::" + key;
+    }
+    if (key == "get#" + subject) {
+      return "get#" + fieldName;
+    }
+    if (key == "set#" + subject) {
+      return "set#" + fieldName;
+    }
+    return null;
   }
 
   #interfaceInherited(it: InterfaceType, key: String): MemberInfo | null {
@@ -729,20 +873,40 @@ export final class MemberTable with IterableUtils<MapEntry<String, MemberInfo>> 
             }
           }
         }
+        let self = ct.mixinSelf;
+        if (self != null) {
+          let on = ct.onType;
+          if (on is InterfaceType) {
+            for (let key in (on as InterfaceType).members.keys()) {
+              if (!(key.length > 0 && key.sliceBytes(0, 1) == "#") && !seen.has(key)) {
+                seen.add(key);
+                out.push(key);
+              }
+            }
+          }
+          for (let key in self.members.keys()) {
+            if (!seen.has(key)) {
+              seen.add(key);
+              out.push(key);
+            }
+          }
+        }
         let mixin = ct.appliedMixin;
         if (mixin != null) {
           let scope = mixin.privateScopeKey ?? (mixin.name + "_This");
           for (let key in mixin.members.keys()) {
-            var stored = key;
-            if (isPrivateMixinKey(key)) {
+            var stored: String | null = key;
+            if (ct.decoratorSubjectName != null) {
+              stored = this.#decoratorStoredKey(ct, mixin, key);
+            } else if (isPrivateMixinKey(key)) {
               let member = mixin.members.lookup(key);
               if (member is FieldInfo || member is MethodInfo) {
                 stored = scope + "::" + key;
               }
             }
-            if (!seen.has(stored)) {
-              seen.add(stored);
-              out.push(stored);
+            if (stored != null && !seen.has(stored as String)) {
+              seen.add(stored as String);
+              out.push(stored as String);
             }
           }
         }
@@ -753,6 +917,22 @@ export final class MemberTable with IterableUtils<MapEntry<String, MemberInfo>> 
             if (!seen.has(key)) {
               seen.add(key);
               out.push(key);
+            }
+          }
+        }
+      }
+      case MixinType as mt: {
+        for (let composed in mt.mixins) {
+          let scope = composedScopeKey(composed);
+          for (let key in composed.members.keys()) {
+            let member = composed.members.lookup(key);
+            var stored = key;
+            if (member != null && isScopedByComposition(key, member as MemberInfo)) {
+              stored = scope + "::" + key;
+            }
+            if (!seen.has(stored)) {
+              seen.add(stored);
+              out.push(stored);
             }
           }
         }
@@ -773,11 +953,20 @@ export final class MemberTable with IterableUtils<MapEntry<String, MemberInfo>> 
       case ClassType as ct: {
         parent = ct.superType;
         if (ct.appliedMixin != null) {
-          parentCount = 1;
+          parentCount = parentCount + 1;
+        }
+        if (ct.mixinSelf != null) {
+          parentCount = parentCount + 2;
+        }
+        if (ct.onType is InterfaceType) {
+          parentCount = parentCount + 4;
         }
       }
       case InterfaceType as it: {
         parentCount = it.extendsList.length;
+      }
+      case MixinType as mt: {
+        parentCount = mt.mixins.length;
       }
       case _: {}
     }
@@ -1059,13 +1248,28 @@ export final class ClassType extends Type {
    */
   var members: MemberTable = new MemberTable();
   /**
-   * For the intermediate class a `with M` application inserts into the
-   * host's chain: the mixin whose members it carries, read by reference
-   * through `members` (see MemberTable). Null for every other class,
-   * including a decorator's intermediate, which copies its renamed
-   * members at application.
+   * For the intermediate class a `with M` application or a field
+   * decorator inserts into the host's chain: the mixin (or decorator)
+   * whose members it carries, read by reference through `members` (see
+   * MemberTable). A decorator's intermediate, told apart by
+   * `decoratorSubjectName`, reads them under the decorator's renaming.
+   * Null for every other class.
    */
   var appliedMixin: MixinType | null = null;
+  /**
+   * For a decorator application's intermediate: whether an earlier
+   * application of the same decorator in the host's chain already
+   * carries the decorator's `shared` members, in which case this one
+   * carries none (they are one copy per host class).
+   */
+  var decoratorSharedPlaced = false;
+  /**
+   * For the synthetic `This` class a mixin's body is checked against:
+   * the mixin itself, whose members (composed mixins' included) `this`
+   * sees as its own, read by reference through `members`. Null for
+   * every other class.
+   */
+  var mixinSelf: MixinType | null = null;
   /**
    * Always empty: only an interface declares `static symbol`s, and the
    * checker rejects one written on a class or mixin body. Carried so that

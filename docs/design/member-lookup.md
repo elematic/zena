@@ -94,15 +94,18 @@ and its superclass's set, with these rules:
 
 _Implementation note._ The compiler walks the chain: a type's member
 table (`MemberTable` in `types.zena`) holds the members the type
-declares and reads inherited ones from the supertype, the applied
-mixin or the parent interfaces at every lookup, substituting a
-generic parent's type arguments at the read and caching the
-substituted member per key. Nothing is copied into a subclass, so a
-supertype that is an empty shell when the subclass registers (an
-import cycle's back edge, import-cycles.md) is read filled once its
-own registration runs. The table iterates inherited members first, in
-the parents' order, then own, with an override keeping the inherited
-position, which is the struct layout order codegen reads.
+declares and reads inherited ones at every lookup — a class from its
+supertype and from the mixin or decorator its intermediate applies, a
+mixin from the mixins it composes (their privates under the composed
+mixin's scope key), an interface from its parents, a mixin's `This`
+class from the mixin itself and the interface it is `on` —
+substituting a generic parent's type arguments at the read and
+caching the substituted member per key. Nothing is copied, so a parent
+that is an empty shell when the child registers (an import cycle's
+back edge, import-cycles.md) is read filled once its own registration
+runs. The table iterates inherited members first, in the parents'
+order, then own, with an override keeping the inherited position,
+which is the struct layout order codegen reads.
 
 ## 3. Member access on a receiver
 
