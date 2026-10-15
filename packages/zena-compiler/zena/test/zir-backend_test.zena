@@ -916,6 +916,36 @@ export let tests = suite('zir backend', (): void => {
         'struct.new', 1, 'the literal passed to super is never built');
   });
 
+  test('a generic function takes and returns records as fields per instantiation', (ctx: TestContext): void => {
+    // Each specialization explodes on its own: `area<i32>` and
+    // `first<f64>` take literals, `shift<i32>` returns its result's
+    // fields, and `relay<i32>` passes its exploded record on to
+    // `area<i32>`.
+    let result = compileWithZir(dedentRaw`
+        type V = {x: i32, y: i32};
+        let first = <T>(r: {a: T, b: T}): T => r.a;
+        let shift = <T>(r: V, tag: T): V => ({x: r.x + 1, y: r.y + 1});
+        let area = <T>(r: V, tag: T): i32 => r.x * r.y;
+        let relay = <T>(r: V, tag: T): i32 => area<T>(r, tag) + 1;
+        export let main = (): i32 => {
+          let {x, y} = shift<i32>({x: 1, y: 2}, 0);
+          return x + y + area<i32>({x: 3, y: 4}, 0) +
+              (first<f64>({a: 1.5, b: 2.5}) as i32) +
+              relay<i32>({x: 2, y: 3}, 0);
+        };
+        `);
+    let forwarders = new Array<String>();
+    forwarders.push('call $shift_spec_i32\n');
+    forwarders.push('call $area_spec_i32\n');
+    forwarders.push('call $first_spec_f64\n');
+    forwarders.push('call $relay_spec_i32\n');
+    assertNoAllocation(result, '$main', 'every record arrives as fields');
+    assertFunctionOmits(result, '$main', forwarders,
+        'each specialization is called through its core');
+    assertFunctionOmits(result, '$relay_spec_i32.core', forwarders,
+        'the record is passed on as its fields');
+  });
+
   test('a record passed to super past the first superclass is passed as its fields', (ctx: TestContext): void => {
     // `Middle`'s own `super({...})` runs in `Middle.<ctor-init>`, which
     // returns `Base`'s arguments to `Leaf`'s factory. Its core returns

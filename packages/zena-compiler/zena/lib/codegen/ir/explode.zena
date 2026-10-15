@@ -58,10 +58,11 @@ import {
 import { ReachabilityAnalysis } from '../reachability/analysis.zena';
 import {
   RecordResultCall, declaringInstantiation, methodTargetKey, recordLiteralArgKey,
-  recordLiteralCtorArgKey, recordLiteralMethodArgKey,
+  recordLiteralCtorArgKey, recordLiteralMethodArgKey, recordLiteralSpecArgKey,
 } from '../reachability/context.zena';
 import {
-  containsErasedType, getClassKey, getClassMethodKey, isConcrete,
+  containsErasedType, getClassKey, getClassMethodKey, getSpecializedFunctionKey,
+  isConcrete,
 } from '../codegen-utils.zena';
 
 /**
@@ -103,10 +104,60 @@ let functionKey = (id: SymbolId): String => `f${id as i32}`;
 /** The candidate key of the method `target` (`methodTargetKey`). */
 let methodKey = (target: String): String => `m${target}`;
 
+/**
+ * The candidate key of the specialization of a generic function named
+ * `specName` (its `WasmFunction.name`).
+ */
+let specKey = (specName: String): String => `s${specName}`;
+
 /** The candidate key of the callee a recorded record-result call names. */
 let resultCalleeKey = (rc: RecordResultCall): String =>
     if (rc.methodTarget != null) methodKey(rc.methodTarget as String)
+    else if (rc.specTarget != null) specKey(rc.specTarget as String)
     else functionKey(rc.callee);
+
+/**
+ * The candidate key of the function a call through `callee` names, as
+ * seen from `dc.f`: a generic function's specialization for the call's
+ * type arguments, instantiated as `dc.f` sees them (null when that
+ * leaves a type parameter open, or no such specialization exists), or
+ * the function itself.
+ */
+let functionCallKey = (dc: DemandContext, callee: Identifier,
+    model: SemanticModel): String | null => {
+  let sym = model.resolve(callee);
+  if (sym == null) {
+    return null;
+  }
+  let target = sym.resolveTarget();
+  if (!dc.wasm.genericFunctions.has(target.id)) {
+    return functionKey(target.id);
+  }
+  let ft = model.getNodeType(callee);
+  if (!(ft is FunctionType)) {
+    return null;
+  }
+  let typeArgs = ft.typeArguments;
+  if (typeArgs == null) {
+    return null;
+  }
+  let args = new Array<Type>();
+  for (let t in typeArgs) {
+    let arg = substituteTypeParamsInFunctionContext(dc.wasm, dc.f, t);
+    if (!isConcrete(arg) || containsErasedType(arg)) {
+      return null;
+    }
+    args.push(arg);
+  }
+  if (let (true, spec) = dc.wasm.specializedFunctions.get(
+      getSpecializedFunctionKey(target.name, args))) {
+    let name = spec.name;
+    if (name != null) {
+      return specKey(name as String);
+    }
+  }
+  return null;
+};
 
 /**
  * The candidate key of the constructor `ctorMethod` (`<constructor>`, or
@@ -185,6 +236,11 @@ final class Candidate {
   var overridden: boolean = false;
   /** A constructor's method name: `<constructor>` or `<constructor>.name`. */
   var ctorMethod: String = '<constructor>';
+  /**
+   * A generic function's specialization's name (`specKey`); null
+   * otherwise.
+   */
+  var specName: String | null = null;
   new(this.f, this.self, this.ctorKey, this.dispatches, this.forwards,
       this.fieldsOnly, this.available, this.result, this.returns);
 
@@ -194,6 +250,10 @@ final class Candidate {
     let methodTarget = this.methodTarget;
     if (methodTarget != null) {
       return methodKey(methodTarget);
+    }
+    let specName = this.specName;
+    if (specName != null) {
+      return specKey(specName);
     }
     return if (self != null) functionKey(self.id) else
         constructorKey(ctorKey as String, this.ctorMethod);
@@ -220,6 +280,10 @@ final class Candidate {
     if (methodTarget != null) {
       return pass.recordLiteralMethodArgs.has(
           recordLiteralMethodArgKey(methodTarget, i));
+    }
+    let specName = this.specName;
+    if (specName != null) {
+      return pass.recordLiteralSpecArgs.has(recordLiteralSpecArgKey(specName, i));
     }
     if (self != null) {
       return pass.recordLiteralArgs.has(recordLiteralArgKey(self.id, i));
@@ -493,7 +557,7 @@ final class HeldVar {
 let explodeResults = (wasm: WasmModule, pass: ReachabilityAnalysis,
     candidates: GrowableArray<Candidate>,
     byKey: HashMap<String, Candidate>): GrowableArray<HeldVar> => {
-  let owners = methodOwnerKeys(candidates);
+  let owners = ownerKeys(candidates);
   let uses = new Array<ResultUse>();
   for (let rc in pass.recordResultCalls) {
     let key = resultCalleeKey(rc);
@@ -569,14 +633,15 @@ let explodeResults = (wasm: WasmModule, pass: ReachabilityAnalysis,
 };
 
 /**
- * Each method candidate's declaration node id to its key. A declaration
- * compiled once per instantiation of a generic class maps to "", since a
- * call in its body cannot tell which instantiation it is in.
+ * Each method or generic function specialization candidate's
+ * declaration node id to its key. A declaration compiled once per
+ * instantiation (of a generic class, or of the function itself) maps to
+ * "", since a call in its body cannot tell which instantiation it is in.
  */
-let methodOwnerKeys = (candidates: GrowableArray<Candidate>): HashMap<i32, String> => {
+let ownerKeys = (candidates: GrowableArray<Candidate>): HashMap<i32, String> => {
   let out = new HashMap<i32, String>();
   for (let c in candidates) {
-    if (c.methodTarget != null) {
+    if (c.methodTarget != null || c.specName != null) {
       let id = (c.f.node as Node).id as i32;
       out[id] = if (out.has(id)) '' else c.key();
     }
@@ -640,10 +705,7 @@ let returnsFieldsOf = (dc: DemandContext, call: CallExpression,
   let callee = call.callee;
   var key: String | null = null;
   if (callee is Identifier) {
-    let calleeSym = model.resolve(callee);
-    if (calleeSym != null) {
-      key = functionKey(calleeSym.resolveTarget().id);
-    }
+    key = functionCallKey(dc, callee, model);
   } else if (callee is MemberExpression) {
     let target = methodTargetOf(dc, callee, model);
     if (target != null) {
@@ -912,8 +974,16 @@ let classifyResultUse = (dc: DemandContext, rc: RecordResultCall,
       }
     }
   } else if (owner != null && returnsFrom(call, parent, owner as Node)) {
+    // A plain function by its symbol; a method or a generic function's
+    // specialization by its declaration, when it has one candidate.
+    var plain: FunctionExpression | null = null;
     if (owner is FunctionExpression) {
-      let ownerSym = declaredSymbol(owner, model);
+      if (owner.typeParameters == null) {
+        plain = owner;
+      }
+    }
+    if (plain != null) {
+      let ownerSym = declaredSymbol(plain, model);
       if (ownerSym != null) {
         returnedFrom = functionKey(ownerSym.id);
       }
@@ -1223,6 +1293,10 @@ let addCore = (wasm: WasmModule, pass: ReachabilityAnalysis, f: WasmFunction,
   core.classType = f.classType;
   core.structType = f.structType;
   core.classDecl = f.classDecl;
+  // A specialization's body names its type parameters; the core
+  // substitutes them as the forwarder does.
+  core.typeParameters = f.typeParameters;
+  core.typeArguments = f.typeArguments;
   let spec = new ExplosionSpec(params, f, core, result);
   spec.tail = tail;
   f.explosion = spec;
@@ -1265,13 +1339,16 @@ let candidateFor = (wasm: WasmModule, pass: ReachabilityAnalysis,
     }
     return constructorCandidateFor(wasm, pass, f);
   }
-  // A plain top-level function: no receiver, context, type parameters
-  // or suspension machinery, and nothing synthesized.
+  // A plain top-level function, or one specialization of a generic one:
+  // no receiver, context or suspension machinery, and nothing
+  // synthesized. A generic function's template is never emitted.
   let captures = f.captures;
+  let typeArgs = f.typeArguments;
+  let spec = f.typeParameters != null && typeArgs != null;
   if (f.structType != null || f.isClosure ||
       f.contextStruct != null || (captures != null && captures.length > 0) ||
-      f.capturesThis || f.typeParameters != null ||
-      f.typeArguments != null || f.intrinsic != null || f.isImport ||
+      f.capturesThis || (f.typeParameters != null && !spec) ||
+      (typeArgs != null && !spec) || f.intrinsic != null || f.isImport ||
       f.isFunctionAdaptation || f.isClosureWrapper ||
       f.isClosureTrampoline || f.closureForwarder != null ||
       f.explosion != null) {
@@ -1281,7 +1358,7 @@ let candidateFor = (wasm: WasmModule, pass: ReachabilityAnalysis,
   if (!(fn is FunctionExpression)) {
     return null;
   }
-  if (fn.isAsync || fn.isGenerator || fn.typeParameters != null) {
+  if (fn.isAsync || fn.isGenerator || (fn.typeParameters != null) != spec) {
     return null;
   }
   let sig = f.signature;
@@ -1294,11 +1371,18 @@ let candidateFor = (wasm: WasmModule, pass: ReachabilityAnalysis,
   if (self == null) {
     return null;
   }
-  if (let (true, mapped) = wasm.functionMap.get(self.id)) {
-    if (mapped !== f) {
-      return null;
+  // The function every call resolves to: a specialization is registered
+  // by name and type arguments, as lowering looks it up.
+  var registered: WasmFunction | null = null;
+  if (spec) {
+    if (let (true, sf) = wasm.specializedFunctions.get(
+        getSpecializedFunctionKey(self.name, typeArgs as Array<Type>))) {
+      registered = sf;
     }
-  } else {
+  } else if (let (true, mf) = wasm.functionMap.get(self.id)) {
+    registered = mf;
+  }
+  if (registered !== f) {
     return null;
   }
   // An injected default can name an earlier parameter, which the core
@@ -1315,8 +1399,12 @@ let candidateFor = (wasm: WasmModule, pass: ReachabilityAnalysis,
   if (result != null && !collectReturns(fn, model, returns)) {
     result = null;
   }
-  return classifyParams(new DemandContext(wasm, pass, f), f, fn, fn.params, roots, self, null, null,
-      result, returns);
+  let c = classifyParams(new DemandContext(wasm, pass, f), f, fn, fn.params,
+      roots, self, null, null, result, returns);
+  if (c != null && spec) {
+    c.specName = f.name;
+  }
+  return c;
 };
 
 /**
@@ -1765,13 +1853,13 @@ let forwardOf = (dc: DemandContext, call: CallExpression,
   if (!(callee is Identifier)) {
     return null;
   }
-  let calleeSym = model.resolve(callee);
-  if (calleeSym == null) {
+  let key = functionCallKey(dc, callee, model);
+  if (key == null) {
     return null;
   }
   for (var k = 0; k < call.args.length; k += 1) {
     if ((call.args[k] as Node) === arg) {
-      return new Forward(functionKey(calleeSym.resolveTarget().id), k);
+      return new Forward(key, k);
     }
   }
   return null;

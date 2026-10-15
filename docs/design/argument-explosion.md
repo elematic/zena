@@ -79,11 +79,43 @@ Explosion applies per (function, parameter).
 ### Eligible functions
 
 Top-level `function` declarations and module-level `let` arrows, when
-they have no receiver, context, captures, type parameters, suspension
-(`async`, generators) or zero-width parameters, return at most one
-value, and declare no parameter defaults. A default injected at the
-call site can name an earlier parameter, which the core no longer has
-as one value.
+they have no receiver, context, captures, suspension (`async`,
+generators) or zero-width parameters, return at most one value, and
+declare no parameter defaults. A default injected at the call site can
+name an earlier parameter, which the core no longer has as one value.
+
+A generic function is eligible per specialization: each
+`first_spec_i32` is a function of its own, with its own candidate
+(keyed by its name), its own core and its own verdicts, and the
+template is never emitted. Reachability records a generic call where it
+instantiates the specialization, with the caller's type arguments
+substituted (`#noteSpecializedCall`): its literal arguments under
+`recordLiteralSpecArgs`, and a record result as a `RecordResultCall`
+naming the specialization (`specTarget`), once per call and target. In
+demand, a call to a generic function resolves to a specialization the
+way lowering does (`functionCallKey`, mirroring
+`#solvedCallTypeArguments`): the call's solved type arguments,
+instantiated as the calling function sees them, so a call in a generic
+body names the specialization of the same instantiation. A core keeps
+its forwarder's type arguments, so its body substitutes them the same
+way, and `#lowerSpecializedCall` calls a core under the same conditions
+`#lowerDirectCallTo` does.
+
+A call returned from a generic function's body counts toward that
+function's result only when the function has one specialization among
+the candidates, for the reason a generic class's method's does
+(Results). A held `var` in a generic body is held in every
+specialization once one qualifies; a write whose callee does not
+return fields in another specialization is read field by field there
+(`heldFields`), which is correct but not free.
+
+On a loop destructuring `shift<i32>({x: i, y: 1}, 0)`, two million
+iterations, `-O1` goes from 125 ms to 3.3 ms; at `-O2` the inliner had
+already removed the record. No generic function in the compiler's own
+module gets a core. It grows by 2.9 KB (2,282,367 to 2,285,315): the
+new analysis code, and three `Completer.complete` and `Future.#propagate`
+specializations the inliner no longer inlines at their call sites, a
+budget shift rather than an effect of explosion on them.
 
 Being used as a value, exported, or called from a tagged template does
 not exclude a function, because explosion never changes the original
@@ -250,8 +282,8 @@ grows by 2.9 KB (2,240,334 to 2,243,268 bytes).
 
 ### Not yet eligible
 
-- **Generic methods and functions, async functions and generators**,
-  each for the reasons the rest of this document's later phases list.
+- **Generic methods, async functions and generators**, each for the
+  reasons the rest of this document's later phases list.
 
 ### Eligible parameters
 
@@ -608,7 +640,8 @@ Not yet covered:
 
 ## Later phases
 
-- Per-specialization explosion of generic functions and methods; async
+- Per-specialization explosion of generic methods (a method's own type
+  parameters, `map_spec_i32`), keyed like generic functions; async
   functions and generators.
 - The `inline` parameter guarantee above.
 - Teaching spread and `==` to consume exploded bindings.

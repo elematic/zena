@@ -2,7 +2,8 @@ import { Set } from 'zena:collections';
 import { collectValueExports, findDeclaration } from '../lookup.zena';
 import {
   Referrer, ReachabilityContext, TypeLowererInterface, ReachabilityVisitorInterface,
-  recordLiteralArgKey, recordLiteralCtorArgKey, recordLiteralMethodArgKey, RecordResultCall,
+  recordLiteralArgKey, recordLiteralCtorArgKey, recordLiteralMethodArgKey,
+  recordLiteralSpecArgKey, RecordResultCall,
   declaringInstantiation, methodTargetKey,
 } from './context.zena';
 import { SemanticModel, memberKeyOf } from '../../semantic-model.zena';
@@ -1117,6 +1118,38 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
         this.pass.recordLiteralCtorArgs.add(
             recordLiteralCtorArgKey(classKey, ctorMethodKey, i));
       }
+    }
+  }
+
+  /**
+   * Records a call of the specialization `spec` of a generic function:
+   * its record literal arguments, and the call itself when its result
+   * is a record (argument explosion, ir/explode.zena). A call in a
+   * generic body names a specialization per walk, so each is recorded
+   * once per target.
+   */
+  #noteSpecializedCall(n: CallExpression, model: SemanticModel,
+      spec: WasmFunction): void {
+    let name = spec.name;
+    if (name == null) {
+      return;
+    }
+    let specName = name as String;
+    for (var i = 0; i < n.args.length; i += 1) {
+      if (n.args[i] is RecordLiteral) {
+        this.pass.recordLiteralSpecArgs.add(recordLiteralSpecArgKey(specName, i));
+      }
+    }
+    let t = model.getNodeType(n);
+    if (t == null || !(baseType(t) is RecordType)) {
+      return;
+    }
+    let callKey = `${(n as Node).id as i32}|${specName}`;
+    if (!this.pass.recordResultMethodCalls.has(callKey)) {
+      this.pass.recordResultMethodCalls.add(callKey);
+      let rc = new RecordResultCall(n, model, noSymbolId);
+      rc.specTarget = specName;
+      this.pass.recordResultCalls.push(rc);
     }
   }
 
@@ -2677,7 +2710,8 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
             }
             let isSpecialized = resolvedArgs.length > 0 && noOpenTypeParameters(resolvedArgs);
             if (isSpecialized && targetSymId != noSymbolId && this.pass.wasm.genericFunctions.has(targetSymId)) {
-              this.pass.specializer.instantiateGenericFunction(targetSymId, resolvedArgs);
+              let spec = this.pass.specializer.instantiateGenericFunction(targetSymId, resolvedArgs);
+              this.#noteSpecializedCall(parentNode as CallExpression, model, spec);
             } else if (targetSymId != noSymbolId && this.pass.wasm.functionMap.has(targetSymId)) {
               let targetFunc = this.pass.wasm.functionMap[targetSymId];
               this.pass.markFunctionReached(targetFunc);

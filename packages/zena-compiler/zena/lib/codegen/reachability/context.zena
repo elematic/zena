@@ -163,8 +163,20 @@ export final class RecordResultCall {
    * `callee` is then `noSymbolId`); null for a function call.
    */
   var methodTarget: String | null = null;
+  /**
+   * For a call to a generic function, the name of the specialization it
+   * calls (`WasmFunction.name`); null otherwise.
+   */
+  var specTarget: String | null = null;
   new(this.call, this.model, this.callee);
 }
+
+/**
+ * The key of a record literal passed as argument `index` of a call to
+ * the specialization of a generic function named `specName`.
+ */
+export let recordLiteralSpecArgKey = (specName: String, index: i32): String =>
+    `${specName}|${index}`;
 
 /**
  * A method as compiled: its declaration node in the instantiation of the
@@ -337,6 +349,11 @@ export interface ReachabilityContext {
   /** The same for constructors, keyed by `recordLiteralCtorArgKey`. */
   recordLiteralCtorArgs: HashSet<String>;
   recordLiteralMethodArgs: HashSet<String>;
+  /**
+   * The same for calls to generic functions, per specialization, keyed
+   * by `recordLiteralSpecArgKey`.
+   */
+  recordLiteralSpecArgs: HashSet<String>;
   /** Reached direct calls whose result is a record, once each. */
   recordResultCalls: GrowableArray<RecordResultCall>;
   /** The node ids of `recordResultCalls`, to keep it to one entry per call. */
