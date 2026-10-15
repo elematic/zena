@@ -1,0 +1,95 @@
+// @mode: run
+// @result: 1
+// A record a constructor passes to `super(...)` past the first superclass
+// reaches the top constructor as its fields: the middle class's value
+// phase returns them instead of a record. The middle class passes a
+// literal, its own record passed on, or a record from the heap, through
+// unnamed and named constructors and over three levels. Every shape must
+// build the same object and run each body once with the same values.
+
+type Init = {x: i32, y?: i32};
+
+var bodies = 0;
+
+class Base {
+  x: i32;
+  y: i32;
+
+  new(init: Init) : x = init.x, y = init.y ?? 7 {
+    bodies += init.x;
+  }
+
+  new from(init: Init) : x = init.y ?? 0, y = init.x {
+    bodies += init.x;
+  }
+}
+
+class Literal extends Base {
+  m: i32;
+  new(m: i32) : m = m, super({x: m * 10, y: m});
+}
+
+final class LiteralLeaf extends Literal {
+  new() : super(4);
+}
+
+class Forwarding extends Base {
+  new(init: Init) : super(init);
+}
+
+final class ForwardingLeaf extends Forwarding {
+  new(n: i32) : super({x: n});
+}
+
+class Named extends Base {
+  new(n: i32) : super.from({x: n, y: n + 1});
+}
+
+final class NamedLeaf extends Named {
+  new() : super(5);
+}
+
+class Heap extends Base {
+  new(held: Init) : super(held);
+}
+
+final class HeapLeaf extends Heap {
+  new(held: Init) : super(held);
+}
+
+class Deep extends Literal {
+  new(m: i32) : super(m);
+}
+
+final class DeepLeaf extends Deep {
+  new() : super(2);
+}
+
+export let main = (): i32 => {
+  let a = new LiteralLeaf();
+  if (a.m != 4 || a.x != 40 || a.y != 4) {
+    return 0;
+  }
+  let b = new ForwardingLeaf(6);
+  if (b.x != 6 || b.y != 7) {
+    return 0;
+  }
+  let c = new NamedLeaf();
+  if (c.x != 6 || c.y != 5) {
+    return 0;
+  }
+  let held: Init = {x: 3, y: 1};
+  let d = new HeapLeaf(held);
+  if (d.x != 3 || d.y != 1) {
+    return 0;
+  }
+  let e = new DeepLeaf();
+  if (e.m != 2 || e.x != 20 || e.y != 2) {
+    return 0;
+  }
+  // 40 + 6 + 5 + 3 + 20: each Base body ran once.
+  if (bodies != 74) {
+    return 0;
+  }
+  return 1;
+};

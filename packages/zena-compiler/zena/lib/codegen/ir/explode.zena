@@ -301,6 +301,9 @@ export let explodeRecordParameters = (
     wasm.fieldHeldVars[hv.sym.id] = hv.dispatch;
   }
 
+  // A value phase returns its `super(...)` arguments, which the
+  // subclass's factory passes on to the next level's phases; those for
+  // exploded parameters are returned as their fields (`superArgTail`).
   for (let c in candidates) {
     let params = new Array<RecordDispatchInfo | null>();
     var any = c.resultExplodes;
@@ -319,8 +322,27 @@ export let explodeRecordParameters = (
           if (c.resultExplodes) c.result else null);
       let {ctorKey} = c;
       if (ctorKey != null) {
-        addPhaseCores(wasm, pass, c.f, ctorSuffixOf(c.ctorMethod), params);
+        addPhaseCores(wasm, pass, c.f, ctorSuffixOf(c.ctorMethod), params,
+            byKey);
       }
+    }
+  }
+  // The value phases of constructors whose own parameters stay boxed.
+  let inits = new Array<WasmFunction>();
+  for (let f in wasm.functions) {
+    if (f.explosion == null && isValuePhase(f)) {
+      inits.push(f);
+    }
+  }
+  for (let f in inits) {
+    let tail = superArgTail(f, byKey);
+    if (tail != null) {
+      // Every parameter passes as it is.
+      let params = new Array<RecordDispatchInfo | null>();
+      for (var i = 0; i < f.signature.params.length; i += 1) {
+        params.push(null);
+      }
+      addCore(wasm, pass, f, params, 0, null, tail);
     }
   }
 };
@@ -1046,16 +1068,63 @@ let collectReturns = (fn: Node, model: SemanticModel,
  */
 let addPhaseCores = (wasm: WasmModule, pass: ReachabilityAnalysis,
     factory: WasmFunction, suffix: String,
-    params: GrowableArray<RecordDispatchInfo | null>): void => {
+    params: GrowableArray<RecordDispatchInfo | null>,
+    byKey: HashMap<String, Candidate>): void => {
   let classKey = getClassKey(factory.classType as ClassType);
   if (let (true, init) = wasm.classMethodMap.get(
       getClassMethodKey(classKey, `<ctor-init>${suffix}`))) {
-    addCore(wasm, pass, init, params, 0, null);
+    addCore(wasm, pass, init, params, 0, null,
+        if (isValuePhase(init)) superArgTail(init, byKey) else null);
   }
   if (let (true, body) = wasm.classMethodMap.get(
       getClassMethodKey(classKey, `<ctor-body>${suffix}`))) {
     addCore(wasm, pass, body, params, 1, null);
   }
+};
+
+/** Whether `f` is a constructor's value phase, `<ctor-init>[.name]`. */
+let isValuePhase = (f: WasmFunction): boolean => {
+  let meth = f.methodName;
+  if (meth == null || f.classType == null || !(f.node is MethodDefinition)) {
+    return false;
+  }
+  let m = meth as String;
+  return m == '<ctor-init>' || m.startsWith('<ctor-init>.');
+};
+
+/**
+ * For the value phase `f`, when its `super(...)` calls a constructor
+ * with exploded parameters, the dispatch of each argument it returns as
+ * fields, or null for one returned as it is; else null. The subclass
+ * factory that calls the phase passes them to that constructor's
+ * phases, whose cores take those fields.
+ */
+let superArgTail = (f: WasmFunction, byKey: HashMap<String, Candidate>):
+    GrowableArray<RecordDispatchInfo | null> | null => {
+  let md = f.node as MethodDefinition;
+  let si = md.superInitializer;
+  let superCt = superWithConstructor(f.classType as ClassType);
+  if (!(si is SuperInitializer) || superCt == null) {
+    return null;
+  }
+  let key = constructorKey(getClassKey(superCt) as String,
+      ctorMethodOf(f.model, si.constructorName));
+  if (let (true, target) = byKey.get(key)) {
+    let tail = new Array<RecordDispatchInfo | null>();
+    var any = false;
+    for (var i = 0; i < target.available.length; i += 1) {
+      if (target.available[i]) {
+        tail.push(target.dispatches[i]);
+        any = true;
+      } else {
+        tail.push(null);
+      }
+    }
+    if (any) {
+      return tail;
+    }
+  }
+  return null;
 };
 
 /** Adds the literal arguments of `md`'s `super(...)` to `out`. */
@@ -1096,11 +1165,14 @@ let literalSuperArgs = (wasm: WasmModule): HashSet<String> => {
 /**
  * Adds `f`'s core, taking each exploded parameter's fields. The first
  * `leading` parameters of `f`'s signature (a phase's instance) are not
- * declared parameters and stay as they are.
+ * declared parameters and stay as they are. `result` makes the core
+ * return a record result's fields; `tail`, for a value phase, the
+ * fields of the `super(...)` arguments it returns (`superArgTail`).
  */
 let addCore = (wasm: WasmModule, pass: ReachabilityAnalysis, f: WasmFunction,
     params: GrowableArray<RecordDispatchInfo | null>, leading: i32,
-    result: RecordDispatchInfo | null): void => {
+    result: RecordDispatchInfo | null,
+    tail: GrowableArray<RecordDispatchInfo | null> | null = null): void => {
   let sig = f.signature;
   let coreParams = new Array<ValType>();
   for (var i = 0; i < leading; i += 1) {
@@ -1122,6 +1194,24 @@ let addCore = (wasm: WasmModule, pass: ReachabilityAnalysis, f: WasmFunction,
     for (let field in result.fields) {
       coreReturns.push(field.type);
     }
+  } else if (tail != null) {
+    // A value phase's own fields, then each `super(...)` argument, as
+    // its fields when `tail` explodes it.
+    coreReturns = new Array<ValType>();
+    let own = sig.returns.length - tail.length;
+    for (var i = 0; i < own; i += 1) {
+      coreReturns.push(sig.returns[i]);
+    }
+    for (var j = 0; j < tail.length; j += 1) {
+      let d = tail[j];
+      if (d == null) {
+        coreReturns.push(sig.returns[own + j]);
+      } else {
+        for (let field in d.fields) {
+          coreReturns.push(field.type);
+        }
+      }
+    }
   }
   let coreSig = wasm.getSignature(coreParams, coreReturns);
   pass.markTypeReached(coreSig);
@@ -1134,6 +1224,7 @@ let addCore = (wasm: WasmModule, pass: ReachabilityAnalysis, f: WasmFunction,
   core.structType = f.structType;
   core.classDecl = f.classDecl;
   let spec = new ExplosionSpec(params, f, core, result);
+  spec.tail = tail;
   f.explosion = spec;
   core.explosion = spec;
   wasm.addFunction(core);
