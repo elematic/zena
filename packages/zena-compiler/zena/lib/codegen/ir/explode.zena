@@ -1324,9 +1324,13 @@ let constructorCandidateFor = (wasm: WasmModule, pass: ReachabilityAnalysis,
   let ct = f.classType as ClassType;
   let typeArgs = ct.typeArguments;
   let typeParams = ct.typeParameters;
+  // As for methods, a generic class's template is never emitted; each
+  // instantiation's constructor is a function of its own.
+  let template = typeParams != null && typeParams.length > 0 &&
+      (typeArgs == null || typeArgs.length == 0);
   if (ct.isExtension || ct.isCaseClass || ct.isMixinIntermediate ||
-      ct.isResource || (typeParams != null && typeParams.length > 0) ||
-      (typeArgs != null && typeArgs.length > 0) ||
+      ct.isResource || template || !isConcrete(ct as Type) ||
+      containsErasedType(ct as Type) ||
       f.methodName == null || f.explosion != null ||
       !(f.classDecl is ClassDeclaration)) {
     return null;

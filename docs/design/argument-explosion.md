@@ -92,9 +92,16 @@ function's signature (below).
 ### Constructors
 
 A class's own written constructors, unnamed and named, are eligible on a
-class that is not generic, an extension, a case class, a mixin
-intermediate or a resource, when the constructor is undecorated,
-synchronous, and has no parameter defaults or `this.` parameters. Its escape check walks the
+class that is not an extension, a case class, a mixin intermediate or a
+resource, including each concrete instantiation of a generic class,
+when the constructor is undecorated, synchronous, and has no parameter
+defaults or `this.` parameters. As with methods, a generic class's
+constructor is one function per instantiation, and reachability records
+literal `new` arguments under the instantiation's class key, so each
+instantiation explodes on its own evidence. On a loop calling
+`new Box<i32>(i, {x: i})`, two million iterations, `-O1` goes from 68 ms
+to 12 ms; at `-O2` the factory was already inlined and the record
+removed. The compiler's own module grows by 33 bytes. Its escape check walks the
 initializer list and the `super(...)` arguments as well as the body.
 
 `new C(...)` is one call to C's **factory**, which computes the field
@@ -225,9 +232,8 @@ grows by 2.9 KB (2,240,334 to 2,243,268 bytes).
 
 ### Not yet eligible
 
-- **Generic methods, generic functions and constructors, async
-  functions and generators**, each for the reasons the rest of this
-  document's later phases list.
+- **Generic methods and functions, async functions and generators**,
+  each for the reasons the rest of this document's later phases list.
 
 ### Eligible parameters
 
@@ -584,8 +590,8 @@ Not yet covered:
 
 ## Later phases
 
-- Generic classes' constructors; super arguments past the first
-  superclass, returned from `<ctor-init>` as fields.
+- Super arguments past the first superclass, returned from
+  `<ctor-init>` as fields.
 - Per-specialization explosion of generic functions and methods; async
   functions and generators.
 - The `inline` parameter guarantee above.
