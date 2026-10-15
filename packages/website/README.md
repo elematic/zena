@@ -5,10 +5,9 @@ The Zena documentation site: [Eleventy](https://www.11ty.dev/) for the build,
 [VitePress](https://vitepress.dev/) default theme for the design.
 
 ```bash
-npm run serve -w @zena-lang/website        # dev server with live reload
-npm run serve:zena -w @zena-lang/website   # serve _site/ with zena:http
+npm run serve -w @zena-lang/website        # serve _site/ with zena:http
 npm run build -w @zena-lang/website        # production build into _site/
-npm run start -w @zena-lang/website        # serve _site/ with the production server
+npm run start -w @zena-lang/website        # serve _site/ with the Node fallback server
 ```
 
 ## Running with Docker Locally
@@ -138,7 +137,7 @@ which leverages your local Wireit and Cargo caches so incremental builds take
 only seconds. The output (`_site/`) contains static HTML, CSS, client JavaScript
 bundles, `lsp.wasm`, and pre-compressed `.br` and `.gz` sidecar files.
 
-[`server.zena`](server.zena) is compiled on the host to `server.wasm` (`build:server`),
+[`zena/server.zena`](zena/server.zena) is compiled on the host to `server.wasm` (`build:server`),
 and [`scripts/stage-docker.js`](scripts/stage-docker.js) stages the Linux `x86_64`
 `zena-run` host binary into `packages/website/` (`stage:docker`, failing fast if
 run on macOS without a Linux cross-compiled binary).
@@ -173,13 +172,11 @@ Both `docker:build` and `deploy:image` declare Wireit dependencies on `build`,
 
 Servers in this package:
 
-- [`server.js`](server.js) is the Node/Zipadee dev server (`npm run serve`). It rewrites
-  bare module specifiers via `@zipadee/javascript`.
-- [`server.zena`](server.zena) is the production `zena:http` static server
-  (`npm run serve:zena`), compiled to `server.wasm` and run under `zena-run` in
-  the container.
+- [`zena/server.zena`](zena/server.zena) is the `zena:http` static server
+  (`npm run serve -w @zena-lang/website`), compiled to `server.wasm` and run
+  under `zena-run` locally and in the container.
 - [`serve-static.js`](serve-static.js) is the standalone Node fallback server
-  (`npm run start`).
+  (`npm run start -w @zena-lang/website`).
 
 ## Layout
 
@@ -203,6 +200,8 @@ src/
   css/                     Stylesheet (see below)
   public/                  Copied verbatim to the site root
   guide/  reference/       Content
+zena/
+  server.zena              Static HTTP server for _site/ using zena:http
 ```
 
 ## Content

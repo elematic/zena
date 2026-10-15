@@ -13,7 +13,11 @@ const STANDARD_INTERP = '/lib64/ld-linux-x86-64.so.2';
  */
 export const prepareLinuxRunner = (
   buf,
-  {sourcePath = 'target/release/zena-run', platform = process.platform, arch = process.arch} = {},
+  {
+    sourcePath = 'target/release/zena-run',
+    platform = process.platform,
+    arch = process.arch,
+  } = {},
 ) => {
   if (
     buf.byteLength < 64 ||

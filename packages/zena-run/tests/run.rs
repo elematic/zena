@@ -76,6 +76,7 @@ fn precompile_writes_cwasm_without_running() {
     assert!(out.status.success(), "stderr: {}", stderr(&out));
     assert_eq!(stdout(&out), "");
     assert!(path.with_extension("wat.cwasm").exists());
+    assert!(!path.with_extension("wat.lock").exists());
 }
 
 #[test]

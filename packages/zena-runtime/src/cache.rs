@@ -120,6 +120,7 @@ pub fn load_component_variant(
 pub fn precompile_component(engine: &Engine, wasm_path: &Path, debug: bool) -> Result<PathBuf> {
     let cwasm_path = cwasm_path_for(wasm_path, debug);
     load_or_compile_component(engine, wasm_path, &cwasm_path)?;
+    let _ = std::fs::remove_file(cwasm_path.with_extension("lock"));
     Ok(cwasm_path)
 }
 
@@ -198,6 +199,7 @@ pub fn load_module_variant(
 pub fn precompile_module(engine: &Engine, wasm_path: &Path, debug: bool) -> Result<PathBuf> {
     let cwasm_path = cwasm_path_for(wasm_path, debug);
     load_or_compile_module(engine, wasm_path, &cwasm_path)?;
+    let _ = std::fs::remove_file(cwasm_path.with_extension("lock"));
     Ok(cwasm_path)
 }
 

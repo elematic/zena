@@ -16,7 +16,7 @@ COPY _site ./_site
 
 # Precompile server.wasm -> server.cwasm during the image build so container
 # startup loads native code directly without invoking Cranelift.
-RUN /app/zena-run --precompile /app/server.wasm && rm -f /app/server.lock
+RUN /app/zena-run --precompile /app/server.wasm
 
 ENV HOST=0.0.0.0
 ENV PORT=8080
