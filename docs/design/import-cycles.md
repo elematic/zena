@@ -63,11 +63,8 @@ implementation in both compilers.
        `Iterator<T>.next(): Step<T>` protocol, where `Step` is an inline
        alias whose async arm names `Future` from a module that imports
        the collections back, is the canonical use.
-     - An enum has two faces, `Color` the type and `Color` the value
-       whose fields are its members; the type is the canonical object
-       and carries the value (`TypeAliasType.enumValue`), both built from
-       the declaration's member list, and registration supplies the
-       backing type. `zena:core`'s `Encoding` and `zena:async`'s
+     - An enum (`EnumType`) gets its backing type; its members come
+       from the declaration. `zena:core`'s `Encoding` and `zena:async`'s
        `FutureState` are used by modules on the same cycle as their
        declaring modules.
      - A mixin's members reach a host through the intermediate class a
@@ -184,10 +181,10 @@ compile time. The component computation is what remains of it.
   every kind `isTypeDeclaration` names; `#materializeFromSymbol` is
   the single funnel that consults and populates it, and every lookup
   that wants a type — the import handler, `resolveInProgressType`,
-  `materializeCyclicImport` — asks it first through `canonicalTypeOf`,
-  ahead of any binding, because a binding is the value face (for an
-  enum, the member record). So no pass ever mints a second type object
-  for one declaration. Class and mixin registration reset what they
+  `materializeCyclicImport` — asks it first through `canonicalTypeOf`.
+  A declaration's name is bound to the same object as a value (a class
+  is its constructor value, an enum the namespace its members are read
+  off), so no pass ever mints a second type object for one declaration. Class and mixin registration reset what they
   rebuild (own members, implements, mixins, constructor) instead of
   layering over the previous pass's state.
 - **Codegen**: unchanged. `__start` already emits per-unit initializers

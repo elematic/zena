@@ -99,27 +99,33 @@ let z: i32 = c as i32;
 
 ### Type Checker
 
-- Register the Enum Name as a `DistinctType`.
-- Register the Enum Name as a variable (Record Type).
+- An enum declaration materializes to one `EnumType` (`types.zena`),
+  like a class to a `ClassType`: its name, declaring module, the
+  declaration, the backing type (`i32`, or `String` for a string enum),
+  and a member table holding one static field per member, typed as the
+  enum itself. The enum's name is bound to this object in both the
+  type and the value namespace, so `Color` the type and `Color` the
+  namespace `Color.Red` is read off are one object.
+- `EnumType` is nominal: assignable only to itself and to a union
+  holding it (`isAssignableTo`), equal only to itself (`typesEqual`),
+  and reached from or converted to its backing type by an explicit
+  cast, where `representationOf` reads through to the backing type.
+- A member read with the enum's name as receiver is a static access;
+  a value of the enum has no members.
+- Match exhaustiveness counts the declaration's members (`enumsIn`,
+  `collectCoveredEnumMembers`).
 - Validate that all members have compatible types (all `i32` or all `string`).
 - Auto-assign values for missing initializers in integer enums.
 
 ### Code Generator
 
-- **Type Emission**: `distinct type` is erased, so `Color` becomes `i32` (or
-  `string`) in WASM.
-- **Value Emission**: Emit a global constant Record (struct) for the enum
-  object.
-  - `Color.Red` compiles to a struct field access.
-  - _Optimization_: Future optimization could constant-fold `Color.Red` to `0`
-    directly if the field is known to be constant.
-
-> **Note (Implementation Divergence)**: The self-hosted compiler currently
-> diverges from this design. It only implements the constant-fold optimization
-> and completely skips emitting the `const` Record. As a result, enum namespaces
-> (e.g. `Color`) cannot be passed as runtime values. We must either implement
-> the struct emission to match the design, or formally change the design to
-> totally erase enum namespaces at runtime.
+- **Type Emission**: `EnumType` erases to its backing type
+  (`eraseTypeParameters`, `typeToValType`), so `Color` is `i32` (or the
+  `String` struct) in WASM, and specialization and interning keys name
+  the backing type, which every enum over one backing type shares.
+- **Value Emission**: `Color.Red` constant-folds to the member's value
+  (`#lowerEnumMember`); the namespace itself is never lowered, so an
+  enum's name cannot be passed as a runtime value.
 
 ## Performance Considerations
 

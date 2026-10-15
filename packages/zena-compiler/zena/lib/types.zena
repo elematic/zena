@@ -16,7 +16,7 @@ import { Set, HashMap, HashSet, OrderedHashMap, MapEntry } from 'zena:collection
 
 
 
-import { Expression, Statement, IdGenerator, FieldDefinition } from './ast.zena';
+import { Expression, Statement, IdGenerator, FieldDefinition, EnumDeclaration } from './ast.zena';
 import { SymbolId, noSymbolId } from './scope/symbol.zena';
 import { WellKnown, isWellKnown } from './well-known.zena';
 
@@ -262,7 +262,7 @@ export sealed class Type implements Hashable {
   case InlineTupleType(elementTypes: Array<Type>)
   case UnionType(types: Array<Type>)
   case RecordType, FunctionType, ClassType, InterfaceType
-  case MixinType, TypeParameterType, TypeAliasType
+  case MixinType, TypeParameterType, TypeAliasType, EnumType
   case SymbolType, ThisType
 }
 
@@ -796,13 +796,6 @@ export final class RecordType(
   properties: HashMap<String, Type>,
   optionalProperties: HashSet<String> | null
 ) extends Type {
-  // If this RecordType represents the constant namespace for an enum (e.g.
-  // `Color`), this points back to the original AST node (`EnumDeclaration`).
-  // This allows the code generator to bridge the gap between structural Record
-  // properties and static enum literal generation, bypassing physical struct
-  // allocation at runtime.
-  var enumDeclaration: Statement | null = null;
-
   isOptional(name: String): boolean {
     let optionals = this.optionalProperties;
     return optionals != null && optionals.has(name);
@@ -1607,9 +1600,7 @@ let substituteInType = (
         let sub = substituteInType(rec.properties[key], typeParameters, typeArguments);
         newProps[key] = (sub ?? rec.properties[key]);
       }
-      let newRec = new RecordType(newProps, rec.optionalProperties);
-      newRec.enumDeclaration = rec.enumDeclaration;
-      newRec
+      new RecordType(newProps, rec.optionalProperties)
     }
     case FunctionType as ft: {
       let newParams = new Array<Type>();
@@ -2113,6 +2104,7 @@ let instantiationKeyOf = (t: Type): String => match (t) {
       base
     }
   }
+  case EnumType as et: et.name + "#e" + et.declaringModule
   case TypeAliasType as ta: {
     // Aliases have no generic source to normalise through, so key by
     // the declaring module — two aliases of one name cannot share it.
@@ -2543,23 +2535,6 @@ export final class TypeAliasType(
    */
   var resolving: boolean = false;
   /**
-   * For the alias that stands in for an enum's type (`Color`), the
-   * `EnumDeclaration` it came from. An enum is a distinct alias over its
-   * backing primitive, so the type alone does not say which values exist;
-   * match exhaustiveness reads the member list back off the declaration.
-   * Null for every other alias.
-   */
-  var enumDeclaration: Statement | null = null;
-  /**
-   * For the alias that stands in for an enum's type, the enum's value
-   * face: the record whose fields are its members, bound to the enum's
-   * name in the value namespace (`Color.Red`). The two faces are one
-   * declaration, so the canonical type carries the value and the
-   * checker's registry of canonical types holds both under one symbol.
-   * Null for every other alias.
-   */
-  var enumValue: RecordType | null = null;
-  /**
    * The builtin type-operator rule this alias applies, from an
    * `@intrinsic('type.…')` decorator — 'type.awaited' is the first.
    * An intrinsic alias's TARGET is a placeholder: applying the alias
@@ -2571,6 +2546,43 @@ export final class TypeAliasType(
   var intrinsicName: String | null = null;
 }
 
+
+/**
+ * The type an `enum` declaration declares. A value of it is one of the
+ * declared members, carried at runtime as the backing primitive (`i32`,
+ * or `String` for a string enum); the type is nominal, assignable only
+ * to itself, and reaches the backing type through an explicit cast
+ * (docs/design/enums.md). The declaration's name is bound to this type
+ * in the value namespace too, where its `members` are the enum's
+ * members, each a static field of this type (`Color.Red`). Codegen
+ * erases it to the backing type.
+ */
+export final class EnumType extends Type {
+  symbolId: SymbolId;
+  name: String;
+  /**
+   * The declaration, whose member list says which values exist: match
+   * exhaustiveness counts them, and lowering reads each member's value.
+   */
+  declaration: EnumDeclaration;
+  /**
+   * Canonical path of the declaring module, in the same string space as
+   * `Symbol.modulePath` and `CheckerContext.filePath`.
+   */
+  declaringModule: String;
+  /**
+   * A hole until the enum's own registration fills it in: an importer
+   * across an import cycle's back edge may create the type first.
+   */
+  var backingType: Type = new HoleType();
+  var members: MemberTable = new MemberTable();
+
+  new(symbolId: SymbolId, name: String, declaration: EnumDeclaration, declaringModule: String)
+      : symbolId = symbolId, name = name, declaration = declaration,
+        declaringModule = declaringModule, super() {
+    this.members.owner = this;
+  }
+}
 
 /**
  * The canonical id of the module declaring a nominal type, or null for a
@@ -2586,6 +2598,7 @@ export let declaringModuleOf = (t: Type): String | null => match (t) {
   case InterfaceType as it: it.sourcePath
   case MixinType as mt: mt.sourcePath
   case TypeAliasType as at: at.declaringModule
+  case EnumType as et: et.declaringModule
   case _: null
 };
 
@@ -3531,6 +3544,7 @@ export let typeToString = (t: Type): String => match (t) {
     }
   }
   case TypeParameterType as tp: tp.name
+  case EnumType as et: et.name
   case TypeAliasType as ta: {
     let {typeArguments} = ta;
     if (typeArguments != null) {
