@@ -27,26 +27,21 @@ npm run docker:run -w @zena-lang/website
 
 ### On macOS
 
-Because the container runs a Linux `x86_64` ELF binary, `stage:docker` will fail
-fast if only a native macOS Mach-O `zena-run` binary is present. To build or
-deploy the container from macOS, cross-compile `zena-run` for
-`x86_64-unknown-linux-gnu` first:
+Because the container runs a Linux `x86_64` ELF binary, `stage:docker`
+automatically cross-compiles `zena-run` for `x86_64-unknown-linux-gnu` using
+[`cargo-zigbuild`](https://github.com/rust-cross/cargo-zigbuild) (which pulls in
+`zig` as a C cross-compiler and ELF linker for Wasmtime's C dependencies).
+
+Perform this one-time setup on macOS:
 
 ```bash
-# One-time setup:
 rustup target add x86_64-unknown-linux-gnu
-brew install zig
-cargo install cargo-zigbuild
-
-# Cross-compile the Linux x86_64 runner:
-cargo zigbuild --release --target x86_64-unknown-linux-gnu -p zena-run
+brew install cargo-zigbuild
 ```
 
-`stage:docker` automatically checks
-`target/x86_64-unknown-linux-gnu/release/zena-run` before falling back to
-`target/release/zena-run` (or you can point `ZENA_LINUX_RUNNER=/path/to/zena-run`
-at any prebuilt Linux `x86_64` binary). Once built, the same npm scripts work on
-macOS (using Docker Desktop's `linux/amd64` emulation on Apple Silicon):
+After that, the same npm scripts work on macOS (using Docker Desktop's
+`linux/amd64` emulation on Apple Silicon, or you can point
+`ZENA_LINUX_RUNNER=/path/to/zena-run` at any prebuilt Linux `x86_64` binary):
 
 ```bash
 npm run docker:build -w @zena-lang/website
@@ -174,8 +169,8 @@ bundles, `lsp.wasm`, and pre-compressed `.br` and `.gz` sidecar files.
 
 [`zena/server.zena`](zena/server.zena) is compiled on the host to `server.wasm` (`build:server`),
 and [`scripts/stage-docker.js`](scripts/stage-docker.js) stages the Linux `x86_64`
-`zena-run` host binary into `packages/website/` (`stage:docker`, failing fast if
-run on macOS without a Linux cross-compiled binary).
+`zena-run` host binary into `packages/website/` (`stage:docker`, automatically
+cross-compiling via `cargo-zigbuild` when run on macOS).
 
 The Docker container packages `_site/`, `server.wasm`, and `zena-run` into
 `debian:trixie-slim`, and runs `zena-run --precompile /app/server.wasm` during

@@ -1,9 +1,70 @@
+import {execFileSync} from 'node:child_process';
+import {existsSync} from 'node:fs';
+import {resolve} from 'node:path';
+
 const ELF_MAGIC = Buffer.from([0x7f, 0x45, 0x4c, 0x46]);
 const ELFCLASS64 = 2;
 const ELFDATA2LSB = 1;
 const EM_X86_64 = 0x3e;
 const PT_INTERP = 3;
 const STANDARD_INTERP = '/lib64/ld-linux-x86-64.so.2';
+const LINUX_TARGET = 'x86_64-unknown-linux-gnu';
+
+/**
+ * Resolves the path to a Linux x86_64 `zena-run` binary, cross-compiling via
+ * `cargo zigbuild` automatically when running on non-Linux-x86_64 hosts (such
+ * as macOS).
+ */
+export const resolveLinuxRunner = ({
+  repoRoot,
+  envRunner = process.env.ZENA_LINUX_RUNNER,
+  platform = process.platform,
+  arch = process.arch,
+  runCommand = (cmd, args, opts) => execFileSync(cmd, args, opts),
+  fileExists = existsSync,
+} = {}) => {
+  if (envRunner) {
+    if (!fileExists(envRunner)) {
+      throw new Error(
+        `ZENA_LINUX_RUNNER points to a missing file: ${envRunner}`,
+      );
+    }
+    return envRunner;
+  }
+
+  if (platform === 'linux' && arch === 'x64') {
+    const nativePath = resolve(repoRoot, 'target/release/zena-run');
+    if (!fileExists(nativePath)) {
+      runCommand('cargo', ['build', '--release', '-p', 'zena-run'], {
+        cwd: repoRoot,
+        stdio: 'inherit',
+      });
+    }
+    return nativePath;
+  }
+
+  try {
+    runCommand(
+      'cargo',
+      ['zigbuild', '--release', '--target', LINUX_TARGET, '-p', 'zena-run'],
+      {
+        cwd: repoRoot,
+        stdio: 'inherit',
+      },
+    );
+  } catch (err) {
+    throw new Error(
+      `Failed to cross-compile zena-run for Linux x86_64 on ${platform}/${arch}.\n` +
+        `Make sure the Linux target and cargo-zigbuild are installed:\n` +
+        `  rustup target add ${LINUX_TARGET}\n` +
+        `  brew install cargo-zigbuild\n` +
+        `(Or set ZENA_LINUX_RUNNER=/path/to/linux-x86_64-zena-run)`,
+      {cause: err},
+    );
+  }
+
+  return resolve(repoRoot, `target/${LINUX_TARGET}/release/zena-run`);
+};
 
 /**
  * Validates that `buf` is a 64-bit Linux x86_64 ELF binary, and if its
@@ -29,8 +90,9 @@ export const prepareLinuxRunner = (
     throw new Error(
       `${sourcePath} is not a Linux x86_64 ELF binary (current host: ${platform}/${arch}).\n` +
         `The website container runs on Linux x86_64. Either build/deploy from a Linux x86_64 host,\n` +
-        `or cross-compile zena-run for Linux first:\n` +
-        `  cargo zigbuild --release --target x86_64-unknown-linux-gnu -p zena-run`,
+        `or install cargo-zigbuild so stage:docker can cross-compile zena-run automatically:\n` +
+        `  rustup target add ${LINUX_TARGET}\n` +
+        `  brew install cargo-zigbuild`,
     );
   }
 

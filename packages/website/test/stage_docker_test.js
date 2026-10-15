@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import {describe, it} from 'node:test';
-import {prepareLinuxRunner} from '../lib/stage-docker.js';
+import {prepareLinuxRunner, resolveLinuxRunner} from '../lib/stage-docker.js';
 
 /** Builds a minimal valid 64-bit little-endian x86_64 ELF buffer with a PT_INTERP header. */
 const makeMockElf64 = (interp) => {
@@ -38,6 +38,68 @@ const makeMockElf64 = (interp) => {
   interpBytes.copy(buf, interpOffset);
   return {buf, phoff, interpOffset};
 };
+
+describe('resolveLinuxRunner', () => {
+  it('uses target/release/zena-run directly on linux/x64 when present', () => {
+    const calls = [];
+    const path = resolveLinuxRunner({
+      repoRoot: '/repo',
+      envRunner: undefined,
+      platform: 'linux',
+      arch: 'x64',
+      fileExists: () => true,
+      runCommand: (cmd, args) => calls.push([cmd, args]),
+    });
+    assert.equal(path, '/repo/target/release/zena-run');
+    assert.equal(calls.length, 0);
+  });
+
+  it('automatically runs cargo zigbuild on macOS and returns the cross-compiled path', () => {
+    const calls = [];
+    const path = resolveLinuxRunner({
+      repoRoot: '/repo',
+      envRunner: undefined,
+      platform: 'darwin',
+      arch: 'arm64',
+      fileExists: () => true,
+      runCommand: (cmd, args, opts) => calls.push({cmd, args, cwd: opts.cwd}),
+    });
+    assert.equal(
+      path,
+      '/repo/target/x86_64-unknown-linux-gnu/release/zena-run',
+    );
+    assert.deepEqual(calls, [
+      {
+        cmd: 'cargo',
+        args: [
+          'zigbuild',
+          '--release',
+          '--target',
+          'x86_64-unknown-linux-gnu',
+          '-p',
+          'zena-run',
+        ],
+        cwd: '/repo',
+      },
+    ]);
+  });
+
+  it('throws an actionable setup error if cargo zigbuild fails on macOS', () => {
+    assert.throws(
+      () =>
+        resolveLinuxRunner({
+          repoRoot: '/repo',
+          envRunner: undefined,
+          platform: 'darwin',
+          arch: 'arm64',
+          runCommand: () => {
+            throw new Error('no such subcommand: zigbuild');
+          },
+        }),
+      /brew install cargo-zigbuild/,
+    );
+  });
+});
 
 describe('prepareLinuxRunner', () => {
   it('rejects macOS Mach-O binaries with an actionable error', () => {
