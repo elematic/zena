@@ -40,38 +40,17 @@
 import { Set } from 'zena:collections';
 import { suite, test, TestContext } from 'zena:test';
 import { isTrue, equal } from 'zena:assert';
-import { readFile } from 'zena:fs';
 import { StringBuilder } from 'zena:core';
-import { CompilerHost } from '../lib/library-loader.zena';
 import { PackageConfig } from '../lib/module-resolver.zena';
 import {
   Compiler, ProgramCheckResult, checkCompilation, createCompiler,
   signatureTypeEquals,
 } from '../lib/compiler.zena';
 import { buildStdlibConfig } from '../lib/package-manifest.zena';
-import { ModuleExport, stdlibIdToRelativeFile } from '../lib/module-resolver.zena';
+import { ModuleExport } from '../lib/module-resolver.zena';
 import { DiagnosticSeverity } from '../lib/diagnostics.zena';
 import { FunctionType, Type, declaringModuleOf, typeToString } from '../lib/types.zena';
-import { isWitModulePath, synthesizeWitModule } from '../lib/wit-module-synth.zena';
-import { directoryNames } from '../lib/fs-host.zena';
-
-let stdlibRoot = 'packages/stdlib/zena';
-
-class PlainHost implements CompilerHost {
-  readFile(path: String): String {
-    if (isWitModulePath(path)) {
-      return synthesizeWitModule(this, path);
-    }
-    if (path.startsWith('zena:')) {
-      return readFile(`${stdlibRoot}/${stdlibIdToRelativeFile(path)}`);
-    }
-    return readFile(path);
-  }
-
-  listDir(path: String): Array<String> | null {
-    return directoryNames(path);
-  }
-}
+import { PlainHost, stdlibRoot } from './test-utils.zena';
 
 /** One implementation of a virtual library: the target that picks it. */
 final class Implementation(target: String, path: String)

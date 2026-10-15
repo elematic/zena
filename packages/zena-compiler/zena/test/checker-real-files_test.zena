@@ -8,67 +8,19 @@
 
 import { suite, test, TestContext } from 'zena:test';
 import { equal } from 'zena:assert';
-import { readFile } from 'zena:fs';
-import { CompilerHost } from '../lib/library-loader.zena';
 import {
   createCompiler, checkCompilation,
 } from '../lib/compiler.zena';
 import { loadPackageMap } from '../lib/package-manifest.zena';
-import { stdlibIdToRelativeFile } from '../lib/module-resolver.zena';
-import { isWitModulePath, synthesizeWitModule } from '../lib/wit-module-synth.zena';
-import { directoryNames } from '../lib/fs-host.zena';
-import { Diagnostic, DiagnosticSeverity } from '../lib/diagnostics.zena';
-
-// ============================================================================
-// Filesystem-backed CompilerHost
-// ============================================================================
-
-// Filesystem-backed CompilerHost that maps zena:* paths to stdlib files.
-class FsHost implements CompilerHost {
-  #stdlibRoot: String;
-
-  new(stdlibRoot: String) : #stdlibRoot = stdlibRoot;
-
-  readFile(path: String): String {
-    // A WIT-backed package's module has no file: it is synthesized
-    // from the package's WIT.
-    if (isWitModulePath(path)) {
-      return synthesizeWitModule(this, path);
-    }
-    if (path.startsWith("zena:")) {
-      // Map zena:array → packages/stdlib/zena/core/array.zena and
-      // zena:console/host.zena → packages/stdlib/zena/console/host.zena
-      let fsPath = this.#stdlibRoot + "/" + stdlibIdToRelativeFile(path);
-      return readFile(fsPath);
-    }
-    return readFile(path);
-  }
-
-  listDir(path: String): Array<String> | null {
-    return directoryNames(path);
-  }
-}
+import { Diagnostic } from '../lib/diagnostics.zena';
+import { PlainHost, stdlibRoot, errorDiagnostics } from './test-utils.zena';
 
 // ============================================================================
 // Helpers
 // ============================================================================
 
-let errorDiagnostics = (diags: Array<Diagnostic>): Array<Diagnostic> => {
-  let errors = new Array<Diagnostic>(4);
-  var i = 0;
-  while (i < diags.length) {
-    match (diags[i].severity) {
-      case DiagnosticSeverity.Error: errors.push(diags[i])
-      case _: {}
-    }
-    i += 1;
-  }
-  return errors;
-};
-
 let checkFile = (entryPath: String, target: String = "host"): Array<Diagnostic> => {
-  let stdlibRoot = "packages/stdlib/zena";
-  let host = new FsHost(stdlibRoot);
+  let host = new PlainHost();
   let packages = loadPackageMap(host, "zena-packages.json");
   let compiler = createCompiler(host, {stdlibRoot, packages});
   let result = compiler.compile({entry: entryPath, target});

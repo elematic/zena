@@ -23,34 +23,13 @@
 
 import { suite, test, TestContext } from 'zena:test';
 import { isTrue } from 'zena:assert';
-import { readFile } from 'zena:fs';
-import { CompilerHost } from '../lib/library-loader.zena';
 import { createCompiler, checkCompilation } from '../lib/compiler.zena';
 import { loadPackageMap } from '../lib/package-manifest.zena';
-import { PackageConfig, stdlibIdToRelativeFile } from '../lib/module-resolver.zena';
-import { isWitModulePath, synthesizeWitModule } from '../lib/wit-module-synth.zena';
-import { directoryNames } from '../lib/fs-host.zena';
+import { PackageConfig } from '../lib/module-resolver.zena';
 import { DiagnosticSeverity } from '../lib/diagnostics.zena';
 import { BinaryGenerator } from '../lib/codegen/binary-generator.zena';
 import { Program, CompilationUnit } from '../lib/program.zena';
-
-let stdlibRoot = 'packages/stdlib/zena';
-
-class FsHost implements CompilerHost {
-  readFile(path: String): String {
-    if (isWitModulePath(path)) {
-      return synthesizeWitModule(this, path);
-    }
-    if (path.startsWith('zena:')) {
-      return readFile(`${stdlibRoot}/${stdlibIdToRelativeFile(path)}`);
-    }
-    return readFile(path);
-  }
-
-  listDir(path: String): Array<String> | null {
-    return directoryNames(path);
-  }
-}
+import { PlainHost, stdlibRoot } from './test-utils.zena';
 
 /**
  * Compiles one entry to wasm bytes, throwing on any error. The core
@@ -59,7 +38,7 @@ class FsHost implements CompilerHost {
  * every time.
  */
 let compileToWasm = (
-    host: FsHost,
+    host: PlainHost,
     packages: Map<String, PackageConfig>,
     path: String): ByteArray => {
   let compiler = createCompiler(host, {stdlibRoot, packages});
@@ -105,7 +84,7 @@ let entryPoints = [
 
 export let tests = suite('Multi-entrypoint codegen', (): void => {
   test('six different modules compile in one process', (ctx: TestContext): void => {
-    let host = new FsHost();
+    let host = new PlainHost();
     let packages = loadPackageMap(host, 'zena-packages.json');
     for (let path in entryPoints) {
       let bytes = compileToWasm(host, packages, path);
@@ -119,7 +98,7 @@ export let tests = suite('Multi-entrypoint codegen', (): void => {
     // and which one it picked moved with hash order. Both are fixed. The
     // size is stable, so this still catches a module whose contents
     // drift with position.
-    let host = new FsHost();
+    let host = new PlainHost();
     let packages = loadPackageMap(host, 'zena-packages.json');
     let path = 'tests/language/execution/variables/local_let.zena';
     let first = compileToWasm(host, packages, path).length;

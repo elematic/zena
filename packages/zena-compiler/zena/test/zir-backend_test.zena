@@ -3,7 +3,9 @@ import { equal, isTrue, fail } from 'zena:assert';
 import { WatGenerator } from '../lib/codegen/wat-generator.zena';
 import { Program, CompilationUnit } from '../lib/program.zena';
 import { readFile, writeFile, exists, mkdir } from 'zena:fs';
-import { makeCompiler, MockHost } from './test-utils.zena';
+import {
+  makeCompiler, makeStdlibCompiler, MockHost, PlainHost, errorDiagnostics,
+} from './test-utils.zena';
 import {
   assertFunctionOmits, assertFunctionUses, assertFunctionUsesTimes,
   assertNoAllocation, watFunction,
@@ -60,6 +62,48 @@ let compileWithZirAt = (source: String, optLevel: i32): String => {
 
   let program = new Program(units, entryUnit);
   let generator = new WatGenerator("freestanding", false, optLevel);
+  return generator.generate(program);
+};
+
+/**
+ * Compile `source` against the real standard library on disk and pass
+ * every checked unit to `Program`, for WAT tests that use `String` or
+ * other standard library types.
+ */
+let compileWithZirStdlib = (source: String): String => {
+  return compileWithZirStdlibAt(source, 1);
+};
+
+let compileWithZirStdlibAt = (source: String, optLevel: i32): String => {
+  let host = new PlainHost();
+  host.addFile("test.zena", source);
+
+  let compiler = makeStdlibCompiler(host);
+  let compResult = compiler.compile({entry: "test.zena", target: 'freestanding'});
+  let checkRes = checkCompilation(compResult);
+  let errors = errorDiagnostics(checkRes.diagnostics);
+  if (errors.length > 0) {
+    throw new Error(`the fixture does not compile: ${errors[0].message}`);
+  }
+
+  let entryAst = compResult.entry.ast;
+  let units = new Array<CompilationUnit>();
+  var entryUnit: CompilationUnit | null = null;
+
+  for (let file in compResult.files) {
+    let res = checkRes.results[file.path];
+    if (res != null) {
+      let unit = {ast: file.ast, model: res.model};
+      units.push(unit);
+      if (file.ast.path == entryAst.path) {
+        entryUnit = unit;
+      }
+    }
+  }
+
+  let program = new Program(units, entryUnit);
+  let generator = new WatGenerator("freestanding", false, optLevel);
+  generator.interner = checkRes.sharedState.interner;
   return generator.generate(program);
 };
 
@@ -1907,5 +1951,11 @@ export let tests = suite('zir backend', (): void => {
     present.push('i32.rem_s');
     assertFunctionUses(result, '$main', present,
         'a trapping division survives simplification untouched');
+  });
+
+  test('a string literal compiles', (ctx: TestContext): void => {
+    let result = compileWithZirStdlib(
+        'export let main = (): i32 => \'ab\'.length;');
+    isTrue(result.contains('(func $main'));
   });
 });

@@ -21,43 +21,16 @@
 
 import { suite, test, TestContext } from 'zena:test';
 import { isTrue } from 'zena:assert';
-import { readFile } from 'zena:fs';
-import { CompilerHost } from '../lib/library-loader.zena';
 import {
   Compiler, createCompiler, checkCompilation, CompilationResult
 } from '../lib/compiler.zena';
 import { loadPackageMap } from '../lib/package-manifest.zena';
-import { stdlibIdToRelativeFile } from '../lib/module-resolver.zena';
-import { isWitModulePath, synthesizeWitModule } from '../lib/wit-module-synth.zena';
-import { directoryNames } from '../lib/fs-host.zena';
 import { DiagnosticSeverity } from '../lib/diagnostics.zena';
 import { BinaryGenerator } from '../lib/codegen/binary-generator.zena';
 import { Program, CompilationUnit } from '../lib/program.zena';
 import { NodeId, Node } from '../lib/ast.zena';
 import { walkEnter } from '../lib/visitor.zena';
-
-let stdlibRoot = 'packages/stdlib/zena';
-
-/** A file whose contents the test can change under the compiler. */
-class MutableHost implements CompilerHost {
-  overrides = new Map<String, String>();
-  readFile(path: String): String {
-    if (let (true, source) = this.overrides.get(path)) {
-      return source;
-    }
-    if (isWitModulePath(path)) {
-      return synthesizeWitModule(this, path);
-    }
-    if (path.startsWith('zena:')) {
-      return readFile(`${stdlibRoot}/${stdlibIdToRelativeFile(path)}`);
-    }
-    return readFile(path);
-  }
-
-  listDir(path: String): Array<String> | null {
-    return directoryNames(path);
-  }
-}
+import { PlainHost, stdlibRoot } from './test-utils.zena';
 
 /** Every node id in the compilation, in file order. */
 let idsOf = (result: CompilationResult): Array<NodeId> => {
@@ -84,7 +57,7 @@ let collisionCount = (result: CompilationResult): i32 => {
   return collisions;
 };
 
-let newCompiler = (host: MutableHost): Compiler => {
+let newCompiler = (host: PlainHost): Compiler => {
   let packages = loadPackageMap(host, 'zena-packages.json');
   // The core module with no host beneath it: the bytes compared are
   // the program's own.
@@ -137,7 +110,7 @@ let mutableEntry = 'tests/language/execution/variables/local_let.zena';
 
 export let tests = suite('Compiler.invalidate', (): void => {
   test('leaves node ids unique across files', (ctx: TestContext): void => {
-    let host = new MutableHost();
+    let host = new PlainHost();
     let c = newCompiler(host);
     c.invalidate(heavyEntry);
     let result = c.compile({entry: heavyEntry, target: 'freestanding'});
@@ -152,10 +125,10 @@ export let tests = suite('Compiler.invalidate', (): void => {
     // That is only a relabelling — which the emitted bytes below prove,
     // by being identical — and pinning it would pin load order rather
     // than anything the compiler owes a caller.
-    let plain = newCompiler(new MutableHost());
+    let plain = newCompiler(new PlainHost());
     let expected = idsOf(plain.compile({entry: heavyEntry, target: 'freestanding'}));
 
-    let invalidated = newCompiler(new MutableHost());
+    let invalidated = newCompiler(new PlainHost());
     invalidated.invalidate(heavyEntry);
     let actual = idsOf(invalidated.compile({entry: heavyEntry, target: 'freestanding'}));
 
@@ -168,8 +141,8 @@ export let tests = suite('Compiler.invalidate', (): void => {
     // not change must be invisible, all the way to the bytes. This is
     // what makes the differing ids above a relabelling and not a
     // behaviour change.
-    let plain = compileToWasm(newCompiler(new MutableHost()), heavyEntry);
-    let c = newCompiler(new MutableHost());
+    let plain = compileToWasm(newCompiler(new PlainHost()), heavyEntry);
+    let c = newCompiler(new PlainHost());
     c.invalidate(heavyEntry);
     let after = compileToWasm(c, heavyEntry);
     isTrue(bytesEqual(plain, after),
@@ -179,13 +152,13 @@ export let tests = suite('Compiler.invalidate', (): void => {
   test('picks up a file that changed', (ctx: TestContext): void => {
     // The other half: not corrupting the compile is worthless if the
     // new source is not what gets compiled.
-    let host = new MutableHost();
+    let host = new PlainHost();
     let c = newCompiler(host);
 
-    host.overrides[mutableEntry] = 'export let main = (): i32 => { return 1; };';
+    host.addFile(mutableEntry, 'export let main = (): i32 => { return 1; };');
     let first = compileToWasm(c, mutableEntry);
 
-    host.overrides[mutableEntry] = 'export let main = (): i32 => { return 2; };';
+    host.addFile(mutableEntry, 'export let main = (): i32 => { return 2; };');
     c.invalidate(mutableEntry);
     let second = compileToWasm(c, mutableEntry);
 
@@ -195,10 +168,10 @@ export let tests = suite('Compiler.invalidate', (): void => {
 
   test('a changed file that stops compiling reports its error', (ctx: TestContext): void => {
     // A stale cache would keep reporting the old source as clean.
-    let host = new MutableHost();
+    let host = new PlainHost();
     let c = newCompiler(host);
 
-    host.overrides[mutableEntry] = 'export let main = (): i32 => { return 1; };';
+    host.addFile(mutableEntry, 'export let main = (): i32 => { return 1; };');
     let clean = checkCompilation(c.compile({entry: mutableEntry, target: 'freestanding'}));
     var cleanErrors = 0;
     for (let d in clean.diagnostics) {
@@ -206,7 +179,7 @@ export let tests = suite('Compiler.invalidate', (): void => {
     }
     isTrue(cleanErrors == 0, `expected no errors, got ${cleanErrors}`);
 
-    host.overrides[mutableEntry] = 'export let main = (): i32 => { return "not an i32"; };';
+    host.addFile(mutableEntry, 'export let main = (): i32 => { return "not an i32"; };');
     c.invalidate(mutableEntry);
     let broken = checkCompilation(c.compile({entry: mutableEntry, target: 'freestanding'}));
     var brokenErrors = 0;

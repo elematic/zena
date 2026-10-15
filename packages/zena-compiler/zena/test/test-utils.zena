@@ -2,12 +2,15 @@
  * Shared test utilities for the self-hosted compiler test suite.
  */
 
+import { readFile } from 'zena:fs';
 import { CompilerHost } from '../lib/library-loader.zena';
-import { PackageConfig } from '../lib/module-resolver.zena';
+import { PackageConfig, stdlibIdToRelativeFile } from '../lib/module-resolver.zena';
 import {
   createCompiler, Compiler
 } from '../lib/compiler.zena';
 import { Diagnostic, DiagnosticSeverity } from '../lib/diagnostics.zena';
+import { isWitModulePath, synthesizeWitModule } from '../lib/wit-module-synth.zena';
+import { directoryNames } from '../lib/fs-host.zena';
 
 /**
  * In-memory CompilerHost backed by a HashMap.
@@ -56,6 +59,44 @@ export class MockHost implements CompilerHost {
   }
 }
 
+export let stdlibRoot = 'packages/stdlib/zena';
+
+/**
+ * CompilerHost that reads from disk, mapping `zena:` specifiers into
+ * `stdlibRoot` and synthesizing WIT-backed modules.
+ *
+ * `addFile` registers an in-memory override for a path, so a test can
+ * compile an inline entry string against the real standard library on
+ * disk, or replace a file across incremental compiles.
+ */
+export class PlainHost implements CompilerHost {
+  #files = new Map<String, String>();
+  #stdlibRoot: String;
+
+  new(root: String = 'packages/stdlib/zena') : #stdlibRoot = root;
+
+  addFile(path: String, content: String): void {
+    this.#files[path] = content;
+  }
+
+  readFile(path: String): String {
+    if (let (true, content) = this.#files.get(path)) {
+      return content;
+    }
+    if (isWitModulePath(path)) {
+      return synthesizeWitModule(this, path);
+    }
+    if (path.startsWith('zena:')) {
+      return readFile(`${this.#stdlibRoot}/${stdlibIdToRelativeFile(path)}`);
+    }
+    return readFile(path);
+  }
+
+  listDir(path: String): Array<String> | null {
+    return directoryNames(path);
+  }
+}
+
 /**
  * Create a Compiler with minimal stdlib stubs.
  *
@@ -87,6 +128,16 @@ export let makeCompiler = (
 
   let packages = userPackages ?? new Map<String, PackageConfig>();
   return createCompiler(host, {stdlibRoot: "/stdlib", packages});
+};
+
+/**
+ * Create a Compiler backed by the real standard library on disk.
+ */
+export let makeStdlibCompiler = (
+    host: PlainHost,
+    userPackages: Map<String, PackageConfig> | null = null): Compiler => {
+  let packages = userPackages ?? new Map<String, PackageConfig>();
+  return createCompiler(host, {stdlibRoot, packages});
 };
 
 /**

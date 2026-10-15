@@ -2073,9 +2073,20 @@ export final class WasmModule {
     if (this.stringFromSharedFunc != null && this.getStringLiteralFunc != null) {
       return;
     }
-    let sKey = getClassKey(this.stringClass as ClassType);
-    let info = this.classInfos[sKey];
-    let stringStruct = info.structType;
+    let stringClassOpt = this.stringClass;
+    if (stringClassOpt == null) {
+      throw new Error("ensureStringLiteralHelpers: String class not recognized!");
+    }
+    let stringInfoOpt =
+        if (let (true, info) = this.classInfos.get(getClassKey(stringClassOpt))) {
+          info
+        } else {
+          null
+        };
+    if (stringInfoOpt == null) {
+      throw new Error("ensureStringLiteralHelpers: String class struct not found!");
+    }
+    let stringStruct = stringInfoOpt.structType;
     let stringType = new ValTypeRefNull(stringStruct);
     let stringArrayType = this.getArray(stringType, true);
     this.stringArrayType = stringArrayType;
