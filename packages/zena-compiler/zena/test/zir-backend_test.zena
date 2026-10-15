@@ -116,17 +116,18 @@ export let tests = suite('zir backend', (): void => {
   });
 
   test('if/else with merged assignment', (ctx: TestContext): void => {
-    let result = compileWithZir(
-        'export let main = (): i32 => {\n' +
-        '  var r = 0;\n' +
-        '  let x = 4;\n' +
-        '  if (x % 2 == 0) {\n' +
-        '    r = x * 2;\n' +
-        '  } else {\n' +
-        '    r = x + 1;\n' +
-        '  }\n' +
-        '  return r;\n' +
-        '};');
+    let result = compileWithZir(dedentRaw`
+        export let main = (): i32 => {
+          var r = 0;
+          let x = 4;
+          if (x % 2 == 0) {
+            r = x * 2;
+          } else {
+            r = x + 1;
+          }
+          return r;
+        };
+        `);
     assertSnapshot('zir_if_else_merge', result);
   });
 
@@ -136,16 +137,17 @@ export let tests = suite('zir backend', (): void => {
     // values live at try entry. That storage is a wasm local — a
     // mutable variable, ir.md §5.1.1 — and specifically NOT a heap
     // cell: writing a `try` must not silently start allocating.
-    let result = compileWithZir(
-        'export let main = (): i32 => {\n' +
-        '  var n = 0;\n' +
-        '  try {\n' +
-        '    n = 7;\n' +
-        '  } catch {\n' +
-        '    n = 0 - 1;\n' +
-        '  }\n' +
-        '  return n;\n' +
-        '};');
+    let result = compileWithZir(dedentRaw`
+        export let main = (): i32 => {
+          var n = 0;
+          try {
+            n = 7;
+          } catch {
+            n = 0 - 1;
+          }
+          return n;
+        };
+        `);
     let usesTry = new Array<String>();
     usesTry.push('try_table');
     assertFunctionUses(result, '$main', usesTry,
@@ -164,22 +166,23 @@ export let tests = suite('zir backend', (): void => {
     // would also be wrong, not just fat, because the copy on the
     // normal path would sit INSIDE the protected region and rerun
     // itself if it threw.
-    let result = compileWithZir(
-        'export let main = (): i32 => {\n' +
-        '  var n = 0;\n' +
-        '  var i = 0;\n' +
-        '  while (i < 3) {\n' +
-        '    i += 1;\n' +
-        '    try {\n' +
-        '      if (i == 1) { break; }\n' +
-        '      if (i == 2) { return 5; }\n' +
-        '      n += 1;\n' +
-        '    } finally {\n' +
-        '      n += 987654;\n' +
-        '    }\n' +
-        '  }\n' +
-        '  return n;\n' +
-        '};');
+    let result = compileWithZir(dedentRaw`
+        export let main = (): i32 => {
+          var n = 0;
+          var i = 0;
+          while (i < 3) {
+            i += 1;
+            try {
+              if (i == 1) { break; }
+              if (i == 2) { return 5; }
+              n += 1;
+            } finally {
+              n += 987654;
+            }
+          }
+          return n;
+        };
+        `);
     let usesTry = new Array<String>();
     usesTry.push('try_table');
     assertFunctionUses(result, '$main', usesTry,
@@ -193,29 +196,31 @@ export let tests = suite('zir backend', (): void => {
   });
 
   test('while loop with break and continue', (ctx: TestContext): void => {
-    let result = compileWithZir(
-        'export let main = (): i32 => {\n' +
-        '  var acc = 0;\n' +
-        '  var i = 0;\n' +
-        '  while (i < 10) {\n' +
-        '    i += 1;\n' +
-        '    if (i == 3) {\n' +
-        '      continue;\n' +
-        '    }\n' +
-        '    if (i == 7) {\n' +
-        '      break;\n' +
-        '    }\n' +
-        '    acc += i;\n' +
-        '  }\n' +
-        '  return acc;\n' +
-        '};');
+    let result = compileWithZir(dedentRaw`
+        export let main = (): i32 => {
+          var acc = 0;
+          var i = 0;
+          while (i < 10) {
+            i += 1;
+            if (i == 3) {
+              continue;
+            }
+            if (i == 7) {
+              break;
+            }
+            acc += i;
+          }
+          return acc;
+        };
+        `);
     assertSnapshot('zir_while_break_continue', result);
   });
 
   test('short-circuit logic chains', (ctx: TestContext): void => {
-    let result = compileWithZir(
-        'let f = (x: i32, y: i32): boolean => x > 0 && y > 0 || x == -1;\n' +
-        'export let main = (): i32 => if (f(1, 2)) 1 else 0;');
+    let result = compileWithZir(dedentRaw`
+        let f = (x: i32, y: i32): boolean => x > 0 && y > 0 || x == -1;
+        export let main = (): i32 => if (f(1, 2)) 1 else 0;
+        `);
     assertSnapshot('zir_short_circuit', result);
   });
 
@@ -225,23 +230,24 @@ export let tests = suite('zir backend', (): void => {
     // shifts with process-global symbol/uid counters whenever unrelated
     // compiler code changes — a multi-function snapshot would churn on
     // every compiler edit. (Single-function snapshots above are stable.)
-    let result = compileWithZir(
-        'let add = (a: i32, b: i32): i32 => a + b;\n' +
-        'let fib = (n: i32): i32 => {\n' +
-        '  if (n < 2) {\n' +
-        '    return n;\n' +
-        '  }\n' +
-        '  return fib(n - 1) + fib(n - 2);\n' +
-        '};\n' +
-        'let isEven = (n: i32): boolean => {\n' +
-        '  if (n == 0) { return true; }\n' +
-        '  return isOdd(n - 1);\n' +
-        '};\n' +
-        'let isOdd = (n: i32): boolean => {\n' +
-        '  if (n == 0) { return false; }\n' +
-        '  return isEven(n - 1);\n' +
-        '};\n' +
-        'export let main = (): i32 => add(fib(10), if (isEven(4)) 1 else 0);');
+    let result = compileWithZir(dedentRaw`
+        let add = (a: i32, b: i32): i32 => a + b;
+        let fib = (n: i32): i32 => {
+          if (n < 2) {
+            return n;
+          }
+          return fib(n - 1) + fib(n - 2);
+        };
+        let isEven = (n: i32): boolean => {
+          if (n == 0) { return true; }
+          return isOdd(n - 1);
+        };
+        let isOdd = (n: i32): boolean => {
+          if (n == 0) { return false; }
+          return isEven(n - 1);
+        };
+        export let main = (): i32 => add(fib(10), if (isEven(4)) 1 else 0);
+        `);
     // Self-recursion and mutual recursion emit direct calls.
     isTrue(result.contains('call $fib'));
     isTrue(result.contains('call $isOdd'));
@@ -254,59 +260,63 @@ export let tests = suite('zir backend', (): void => {
   });
 
   test('if expression with value blocks', (ctx: TestContext): void => {
-    let result = compileWithZir(
-        'export let main = (): i32 => {\n' +
-        '  let n = -200;\n' +
-        '  let kind = if (n < 0) {\n' +
-        '    let mag = -n;\n' +
-        '    if (mag > 100) 3 else 1;\n' +
-        '  } else if (n == 0) {\n' +
-        '    0;\n' +
-        '  } else {\n' +
-        '    2;\n' +
-        '  };\n' +
-        '  return kind;\n' +
-        '};');
+    let result = compileWithZir(dedentRaw`
+        export let main = (): i32 => {
+          let n = -200;
+          let kind = if (n < 0) {
+            let mag = -n;
+            if (mag > 100) 3 else 1;
+          } else if (n == 0) {
+            0;
+          } else {
+            2;
+          };
+          return kind;
+        };
+        `);
     assertSnapshot('zir_if_expression', result);
   });
 
   test('c-style for loop with break and continue', (ctx: TestContext): void => {
-    let result = compileWithZir(
-        'export let main = (): i32 => {\n' +
-        '  var acc = 0;\n' +
-        '  for (var i = 0; i < 10; i += 1) {\n' +
-        '    if (i == 2) { continue; }\n' +
-        '    if (i == 7) { break; }\n' +
-        '    acc += i;\n' +
-        '  }\n' +
-        '  return acc;\n' +
-        '};');
+    let result = compileWithZir(dedentRaw`
+        export let main = (): i32 => {
+          var acc = 0;
+          for (var i = 0; i < 10; i += 1) {
+            if (i == 2) { continue; }
+            if (i == 7) { break; }
+            acc += i;
+          }
+          return acc;
+        };
+        `);
     assertSnapshot('zir_for_loop', result);
   });
 
   test('scalar casts', (ctx: TestContext): void => {
-    let result = compileWithZir(
-        'export let main = (): i32 => {\n' +
-        '  let x = 10;\n' +
-        '  let d = x as f64;\n' +
-        '  let half = d / 2.0;\n' +
-        '  let wide = x as i64;\n' +
-        '  return (half as i32) + ((wide * (3 as i64)) as i32);\n' +
-        '};');
+    let result = compileWithZir(dedentRaw`
+        export let main = (): i32 => {
+          let x = 10;
+          let d = x as f64;
+          let half = d / 2.0;
+          let wide = x as i64;
+          return (half as i32) + ((wide * (3 as i64)) as i32);
+        };
+        `);
     assertSnapshot('zir_scalar_casts', result);
   });
 
   test('unsigned operators select _u variants', (ctx: TestContext): void => {
     // Structural (not snapshot): multi-function modules are
     // discovery-order sensitive.
-    let result = compileWithZir(
-        'let umod = (a: u32, b: u32): u32 => a % b;\n' +
-        'let ucompare = (a: u32, b: u32): boolean => a > b;\n' +
-        'export let main = (): i32 => {\n' +
-        '  let big = (-1294967296) as u32;\n' +
-        '  if (ucompare(big, 2000000000 as u32)) { return umod(big, 7 as u32) as i32; }\n' +
-        '  return 0;\n' +
-        '};');
+    let result = compileWithZir(dedentRaw`
+        let umod = (a: u32, b: u32): u32 => a % b;
+        let ucompare = (a: u32, b: u32): boolean => a > b;
+        export let main = (): i32 => {
+          let big = (-1294967296) as u32;
+          if (ucompare(big, 2000000000 as u32)) { return umod(big, 7 as u32) as i32; }
+          return 0;
+        };
+        `);
     isTrue(result.contains('i32.rem_u'));
     isTrue(result.contains('i32.gt_u'));
   });
@@ -316,20 +326,21 @@ export let tests = suite('zir backend', (): void => {
     // A local class supplies the reference type (the MockHost harness has
     // no stdlib, so String is unavailable here); string-literal lowering
     // is covered by the portable execution suite under ZENA_BACKEND=zir.
-    let result = compileWithZir(
-        'class Box { x: i32; new(this.x); }\n' +
-        'let pick = (primary: Box | null, fallback: Box): Box => {\n' +
-        '  if (primary != null) {\n' +
-        '    return primary;\n' +
-        '  }\n' +
-        '  return fallback;\n' +
-        '};\n' +
-        'let same = (a: Box, b: Box): boolean => a === b;\n' +
-        'export let main = (): i32 => {\n' +
-        '  let b = new Box(1);\n' +
-        '  if (same(pick(null, b), b)) { return 1; }\n' +
-        '  return 0;\n' +
-        '};');
+    let result = compileWithZir(dedentRaw`
+        class Box { x: i32; new(this.x); }
+        let pick = (primary: Box | null, fallback: Box): Box => {
+          if (primary != null) {
+            return primary;
+          }
+          return fallback;
+        };
+        let same = (a: Box, b: Box): boolean => a === b;
+        export let main = (): i32 => {
+          let b = new Box(1);
+          if (same(pick(null, b), b)) { return 1; }
+          return 0;
+        };
+        `);
     isTrue(result.contains('ref.is_null'));
     isTrue(result.contains('ref.eq'));
     // The narrowed `return primary` re-asserts non-nullness.
@@ -345,14 +356,15 @@ export let tests = suite('zir backend', (): void => {
     // At -O0, so the constant branch and its join survive to emission:
     // the cleanup passes fold the branch and fuse the blocks, leaving
     // no join and no local at all.
-    let result = compileWithZirAt(
-        'class Box { x: i32; new(this.x); }\n' +
-        'export let main = (): i32 => {\n' +
-        '  let b = new Box(3);\n' +
-        '  var acc = 7;\n' +
-        '  if (acc > 1) { acc = 1; } else { acc = 2; }\n' +
-        '  return acc + b.x;\n' +
-        '};', 0);
+    let result = compileWithZirAt(dedentRaw`
+        class Box { x: i32; new(this.x); }
+        export let main = (): i32 => {
+          let b = new Box(3);
+          var acc = 7;
+          if (acc > 1) { acc = 1; } else { acc = 2; }
+          return acc + b.x;
+        };
+        `, 0);
     let mainWat = watFunction(result, '$main');
     isTrue(mainWat.contains('(local (ref '));
     isTrue(!mainWat.contains('(local (ref null'));
@@ -364,13 +376,14 @@ export let tests = suite('zir backend', (): void => {
     // scopes — the validator forgets both sets at the join (rollback is
     // uniform even when every arm assigns), so the init replay must
     // keep the local nullable and re-assert on the read.
-    let result = compileWithZir(
-        'class Box { x: i32; new(this.x); }\n' +
-        'let pickBox = (c: boolean): i32 => {\n' +
-        '  let b = if (c) new Box(1) else new Box(2);\n' +
-        '  return b.x;\n' +
-        '};\n' +
-        'export let main = (): i32 => pickBox(true);');
+    let result = compileWithZir(dedentRaw`
+        class Box { x: i32; new(this.x); }
+        let pickBox = (c: boolean): i32 => {
+          let b = if (c) new Box(1) else new Box(2);
+          return b.x;
+        };
+        export let main = (): i32 => pickBox(true);
+        `);
     let pickWat = watFunction(result, '$pickBox');
     isTrue(pickWat.contains('(local (ref null'));
     isTrue(pickWat.contains('ref.as_non_null'));
@@ -378,15 +391,16 @@ export let tests = suite('zir backend', (): void => {
 
   test('new, field reads, and devirtualized method calls', (ctx: TestContext): void => {
     // Structural: multi-function modules are discovery-order sensitive.
-    let result = compileWithZir(
-        'final class Point {\n' +
-        '  x: i32;\n' +
-        '  y: i32;\n' +
-        '  new(this.x, this.y);\n' +
-        '  manhattan(): i32 { return this.x + this.y; }\n' +
-        '}\n' +
-        'let measure = (p: Point): i32 => p.manhattan() + p.x;\n' +
-        'export let main = (): i32 => measure(new Point(1, 2));');
+    let result = compileWithZir(dedentRaw`
+        final class Point {
+          x: i32;
+          y: i32;
+          new(this.x, this.y);
+          manhattan(): i32 { return this.x + this.y; }
+        }
+        let measure = (p: Point): i32 => p.manhattan() + p.x;
+        export let main = (): i32 => measure(new Point(1, 2));
+        `);
     // Construction is a single-shot struct.new inside the factory
     // (non-nullable-refs.md) — no struct.new_default shell remains.
     isTrue(result.contains('struct.new'));
@@ -397,18 +411,19 @@ export let tests = suite('zir backend', (): void => {
 
   test('constructor prologue: defaults, this params, super', (ctx: TestContext): void => {
     // Structural: multi-function modules are discovery-order sensitive.
-    let result = compileWithZir(
-        'class Base { tag: i32; new(this.tag); }\n' +
-        'final class Derived extends Base {\n' +
-        '  var extra: i32 = 7;\n' +
-        '  new(t: i32) : super(t) {\n' +
-        '    this.extra += t;\n' +
-        '  }\n' +
-        '}\n' +
-        'export let main = (): i32 => {\n' +
-        '  let d = new Derived(3);\n' +
-        '  return d.tag + d.extra;\n' +
-        '};');
+    let result = compileWithZir(dedentRaw`
+        class Base { tag: i32; new(this.tag); }
+        final class Derived extends Base {
+          var extra: i32 = 7;
+          new(t: i32) : super(t) {
+            this.extra += t;
+          }
+        }
+        export let main = (): i32 => {
+          let d = new Derived(3);
+          return d.tag + d.extra;
+        };
+        `);
     // Derived's factory drives Base through its value phase and
     // allocates with one struct.new; the body's `this.extra += t`
     // is the surviving struct.set.
@@ -424,16 +439,17 @@ export let tests = suite('zir backend', (): void => {
     // non-null class type declares `(field (ref $T))` — immutable, no
     // null — while a `T | null` field stays nullable, and a reader
     // needs no ref.as_non_null after struct.get.
-    let result = compileWithZir(
-        'class Box { x: i32; new(this.x); }\n' +
-        'class Holder {\n' +
-        '  b: Box;\n' +
-        '  var maybe: Box | null = null;\n' +
-        '  new(this.b);\n' +
-        '}\n' +
-        // `maybe` is read too, or dead-field elimination deletes it.
-        'let read = (h: Holder): i32 => h.b.x + (if (h.maybe == null) 0 else 1);\n' +
-        'export let main = (): i32 => read(new Holder(new Box(5)));');
+    let result = compileWithZir(dedentRaw`
+        class Box { x: i32; new(this.x); }
+        class Holder {
+          b: Box;
+          var maybe: Box | null = null;
+          new(this.b);
+        }
+        // maybe is read too, or dead-field elimination deletes it.
+        let read = (h: Holder): i32 => h.b.x + (if (h.maybe == null) 0 else 1);
+        export let main = (): i32 => read(new Holder(new Box(5)));
+        `);
     isTrue(result.contains('(field (ref '));
     isTrue(result.contains('(field (mut (ref null'));
     let readWat = watFunction(result, '$read');
@@ -441,36 +457,38 @@ export let tests = suite('zir backend', (): void => {
   });
 
   test('scalar match with literals, or-patterns, and guards', (ctx: TestContext): void => {
-    let result = compileWithZir(
-        'export let main = (): i32 => {\n' +
-        '  let x = 5;\n' +
-        '  return match (x) {\n' +
-        '    case 0: 10\n' +
-        '    case 1 | 2: 20\n' +
-        '    case let n if (n > 4): 30\n' +
-        '    case _: 40\n' +
-        '  };\n' +
-        '};');
+    let result = compileWithZir(dedentRaw`
+        export let main = (): i32 => {
+          let x = 5;
+          return match (x) {
+            case 0: 10
+            case 1 | 2: 20
+            case let n if (n > 4): 30
+            case _: 40
+          };
+        };
+        `);
     assertSnapshot('zir_match_scalar', result);
   });
 
   test('match with class patterns and as-bindings', (ctx: TestContext): void => {
     // Structural: multi-function modules are discovery-order sensitive.
-    let result = compileWithZir(
-        'class Base { tag: i32; new(this.tag); }\n' +
-        'final class One extends Base {\n' +
-        '  extra: i32;\n' +
-        '  new(t: i32, this.extra) : super(t);\n' +
-        '}\n' +
-        'let pick = (b: Base): i32 => match (b) {\n' +
-        '  case One as o: o.extra\n' +
-        '  case _: b.tag\n' +
-        '};\n' +
-        'export let main = (): i32 => {\n' +
-        '  let one = new One(1, 5);\n' +
-        '  let base = new Base(9);\n' +
-        '  return pick(one) + pick(base);\n' +
-        '};');
+    let result = compileWithZir(dedentRaw`
+        class Base { tag: i32; new(this.tag); }
+        final class One extends Base {
+          extra: i32;
+          new(t: i32, this.extra) : super(t);
+        }
+        let pick = (b: Base): i32 => match (b) {
+          case One as o: o.extra
+          case _: b.tag
+        };
+        export let main = (): i32 => {
+          let one = new One(1, 5);
+          let base = new Base(9);
+          return pick(one) + pick(base);
+        };
+        `);
     // The type test and the guarded downcast for the as-binding.
     isTrue(result.contains('ref.test'));
     isTrue(result.contains('ref.cast'));
@@ -479,33 +497,35 @@ export let tests = suite('zir backend', (): void => {
     // function-tail filler, which outermost-return fall-through
     // removed. The genuinely-impossible no-match path is asserted on
     // an exhaustive sealed match, whose trap sits mid-block:
-    let sealedResult = compileWithZir(
-        'sealed class E {\n' +
-        '  case A(x: i32)\n' +
-        '  case B\n' +
-        '}\n' +
-        'let f = (e: E): i32 => match (e) {\n' +
-        '  case A {x}: x\n' +
-        '  case B: 2\n' +
-        '};\n' +
-        'export let main = (): i32 => f(new A(40)) + f(new B());');
+    let sealedResult = compileWithZir(dedentRaw`
+        sealed class E {
+          case A(x: i32)
+          case B
+        }
+        let f = (e: E): i32 => match (e) {
+          case A {x}: x
+          case B: 2
+        };
+        export let main = (): i32 => f(new A(40)) + f(new B());
+        `);
     isTrue(sealedResult.contains('unreachable'));
   });
 
   test('interface packing and vtable dispatch', (ctx: TestContext): void => {
     // Structural: multi-function modules are discovery-order sensitive.
-    let result = compileWithZir(
-        'interface Greeter { greet(): i32; }\n' +
-        'class Loud implements Greeter {\n' +
-        '  volume: i32;\n' +
-        '  new(this.volume);\n' +
-        '  greet(): i32 { return this.volume * 2; }\n' +
-        '}\n' +
-        'let run = (g: Greeter): i32 => g.greet();\n' +
-        'export let main = (): i32 => {\n' +
-        '  let loud = new Loud(21);\n' +
-        '  return run(loud);\n' +
-        '};');
+    let result = compileWithZir(dedentRaw`
+        interface Greeter { greet(): i32; }
+        class Loud implements Greeter {
+          volume: i32;
+          new(this.volume);
+          greet(): i32 { return this.volume * 2; }
+        }
+        let run = (g: Greeter): i32 => g.greet();
+        export let main = (): i32 => {
+          let loud = new Loud(21);
+          return run(loud);
+        };
+        `);
     // Packing: vtable global + fat-pointer struct.new at the call site.
     isTrue(result.contains('global.get'));
     isTrue(result.contains('struct.new'));
@@ -518,20 +538,21 @@ export let tests = suite('zir backend', (): void => {
     // Regression: a subclass redefining an inherited physical field as
     // an accessor must dispatch through the getter, not struct.get the
     // parent's field (classes/super-fields.zena caught this).
-    let result = compileWithZir(
-        'class Base { x: i32; new(this.x); }\n' +
-        'final class Derived extends Base {\n' +
-        '  new(x: i32) : super(x);\n' +
-        '  x: i32 {\n' +
-        '    get {\n' +
-        '      return 99;\n' +
-        '    }\n' +
-        '  }\n' +
-        '}\n' +
-        'export let main = (): i32 => {\n' +
-        '  let d = new Derived(13);\n' +
-        '  return d.x;\n' +
-        '};');
+    let result = compileWithZir(dedentRaw`
+        class Base { x: i32; new(this.x); }
+        final class Derived extends Base {
+          new(x: i32) : super(x);
+          x: i32 {
+            get {
+              return 99;
+            }
+          }
+        }
+        export let main = (): i32 => {
+          let d = new Derived(13);
+          return d.x;
+        };
+        `);
     // The read must call the accessor.
     isTrue(result.contains('call $Derived.get#x') ||
         result.contains('get#x'));
@@ -539,10 +560,11 @@ export let tests = suite('zir backend', (): void => {
 
   test('calls through closure-typed values', (ctx: TestContext): void => {
     // Structural: multi-function modules are discovery-order sensitive.
-    let result = compileWithZir(
-        'let apply = (f: (x: i32) => i32, v: i32): i32 => f(v);\n' +
-        'let double = (x: i32): i32 => x * 2;\n' +
-        'export let main = (): i32 => apply(double, 21);');
+    let result = compileWithZir(dedentRaw`
+        let apply = (f: (x: i32) => i32, v: i32): i32 => f(v);
+        let double = (x: i32): i32 => x * 2;
+        export let main = (): i32 => apply(double, 21);
+        `);
     // The closure call unpacks ctx + func and call_refs the impl sig.
     isTrue(result.contains('call_ref'));
     isTrue(result.contains('(func $apply'));
@@ -550,15 +572,16 @@ export let tests = suite('zir backend', (): void => {
 
   test('closure creation with by-value captures', (ctx: TestContext): void => {
     // Structural: multi-function modules are discovery-order sensitive.
-    let result = compileWithZir(
-        'let make = (k: i32): ((x: i32) => i32) => {\n' +
-        '  let f = (x: i32): i32 => x + k;\n' +
-        '  return f;\n' +
-        '};\n' +
-        'export let main = (): i32 => {\n' +
-        '  let add5 = make(5);\n' +
-        '  return add5(4);\n' +
-        '};');
+    let result = compileWithZir(dedentRaw`
+        let make = (k: i32): ((x: i32) => i32) => {
+          let f = (x: i32): i32 => x + k;
+          return f;
+        };
+        export let main = (): i32 => {
+          let add5 = make(5);
+          return add5(4);
+        };
+        `);
     // Creation: ref.func + context struct.new + closure pair struct.new.
     isTrue(result.contains('ref.func'));
     isTrue(result.contains('struct.new'));
@@ -576,10 +599,11 @@ export let tests = suite('zir backend', (): void => {
   test('-O2 inlines a trivial call chain to a constant', (ctx: TestContext): void => {
     // main calls f calls inc; the rounds inline the chain and the
     // cleanup passes fold what remains, so main is one constant.
-    let result = compileWithZirAt(
-        'let inc = (x: i32): i32 => x + 1;\n' +
-        'let f = (y: i32): i32 => inc(y);\n' +
-        'export let main = (): i32 => f(20);', 2);
+    let result = compileWithZirAt(dedentRaw`
+        let inc = (x: i32): i32 => x + 1;
+        let f = (y: i32): i32 => inc(y);
+        export let main = (): i32 => f(20);
+        `, 2);
     let present = new Array<String>();
     present.push('i32.const 21');
     assertFunctionUses(result, '$main', present,
@@ -591,14 +615,15 @@ export let tests = suite('zir backend', (): void => {
   });
 
   test('-O2 inlines a private method into its caller', (ctx: TestContext): void => {
-    let result = compileWithZirAt(
-        'class P {\n' +
-        '  #x: i32 = 7;\n' +
-        '  #twice(): i32 { return this.#x + this.#x; }\n' +
-        '  sum(): i32 { return this.#twice() + 1; }\n' +
-        '}\n' +
-        'let f = (p: P): i32 => p.sum();\n' +
-        'export let main = (): i32 => f(new P());', 2);
+    let result = compileWithZirAt(dedentRaw`
+        class P {
+          #x: i32 = 7;
+          #twice(): i32 { return this.#x + this.#x; }
+          sum(): i32 { return this.#twice() + 1; }
+        }
+        let f = (p: P): i32 => p.sum();
+        export let main = (): i32 => f(new P());
+        `, 2);
     // Nothing dispatches on P, so sum and #twice are direct calls that
     // inline all the way into main, and harvest then deletes both.
     let absent = new Array<String>();
@@ -613,15 +638,16 @@ export let tests = suite('zir backend', (): void => {
     // Only Circle is ever packed as Shape, so every Shape vtable global
     // installs Circle.area in the slot: the call_ref becomes a direct
     // call, and the dead slot-load chain folds and dies.
-    let result = compileWithZirAt(
-        'interface Shape { area(): i32; }\n' +
-        'class Circle implements Shape {\n' +
-        '  r: i32;\n' +
-        '  new(this.r);\n' +
-        '  area(): i32 { return this.r * this.r; }\n' +
-        '}\n' +
-        'export let measure = (s: Shape): i32 => s.area();\n' +
-        'export let main = (): i32 => measure(new Circle(3));', 2);
+    let result = compileWithZirAt(dedentRaw`
+        interface Shape { area(): i32; }
+        class Circle implements Shape {
+          r: i32;
+          new(this.r);
+          area(): i32 { return this.r * this.r; }
+        }
+        export let measure = (s: Shape): i32 => s.area();
+        export let main = (): i32 => measure(new Circle(3));
+        `, 2);
     let absent = new Array<String>();
     absent.push('call_ref');
     assertFunctionOmits(result, '$measure', absent,
@@ -629,20 +655,21 @@ export let tests = suite('zir backend', (): void => {
   });
 
   test('-O2 keeps an interface call with two implementers indirect', (ctx: TestContext): void => {
-    let result = compileWithZirAt(
-        'interface Shape { area(): i32; }\n' +
-        'class Circle implements Shape {\n' +
-        '  r: i32;\n' +
-        '  new(this.r);\n' +
-        '  area(): i32 { return this.r * this.r; }\n' +
-        '}\n' +
-        'class Square implements Shape {\n' +
-        '  s: i32;\n' +
-        '  new(this.s);\n' +
-        '  area(): i32 { return this.s * 4; }\n' +
-        '}\n' +
-        'export let measure = (s: Shape): i32 => s.area();\n' +
-        'export let main = (): i32 => measure(new Circle(3)) + measure(new Square(2));', 2);
+    let result = compileWithZirAt(dedentRaw`
+        interface Shape { area(): i32; }
+        class Circle implements Shape {
+          r: i32;
+          new(this.r);
+          area(): i32 { return this.r * this.r; }
+        }
+        class Square implements Shape {
+          s: i32;
+          new(this.s);
+          area(): i32 { return this.s * 4; }
+        }
+        export let measure = (s: Shape): i32 => s.area();
+        export let main = (): i32 => measure(new Circle(3)) + measure(new Square(2));
+        `, 2);
     let present = new Array<String>();
     present.push('call_ref');
     assertFunctionUses(result, '$measure', present,
@@ -653,23 +680,24 @@ export let tests = suite('zir backend', (): void => {
     // Two implementers exist, but each dispatch site packs its own
     // concrete object, so provenance resolves both without the
     // hierarchy rule.
-    let result = compileWithZirAt(
-        'interface Shape { area(): i32; }\n' +
-        'class Circle implements Shape {\n' +
-        '  r: i32;\n' +
-        '  new(this.r);\n' +
-        '  area(): i32 { return this.r * this.r; }\n' +
-        '}\n' +
-        'class Square implements Shape {\n' +
-        '  s: i32;\n' +
-        '  new(this.s);\n' +
-        '  area(): i32 { return this.s * 4; }\n' +
-        '}\n' +
-        'export let main = (): i32 => {\n' +
-        '  let a: Shape = new Circle(3);\n' +
-        '  let b: Shape = new Square(2);\n' +
-        '  return a.area() + b.area();\n' +
-        '};', 2);
+    let result = compileWithZirAt(dedentRaw`
+        interface Shape { area(): i32; }
+        class Circle implements Shape {
+          r: i32;
+          new(this.r);
+          area(): i32 { return this.r * this.r; }
+        }
+        class Square implements Shape {
+          s: i32;
+          new(this.s);
+          area(): i32 { return this.s * 4; }
+        }
+        export let main = (): i32 => {
+          let a: Shape = new Circle(3);
+          let b: Shape = new Square(2);
+          return a.area() + b.area();
+        };
+        `, 2);
     let absent = new Array<String>();
     absent.push('call_ref');
     assertFunctionOmits(result, '$main', absent,
@@ -680,9 +708,10 @@ export let tests = suite('zir backend', (): void => {
     // Both element reads forward to the tuple's operands, so the
     // allocation has no uses left and DCE deletes it. Level 1: this is
     // per-function forwarding, not the module loop.
-    let result = compileWithZir(
-        'let f = (x: i32): i32 => { let t = (x, x + 1); let (a, b) = t; return a * b; };\n' +
-        'export let main = (): i32 => f(21);');
+    let result = compileWithZir(dedentRaw`
+        let f = (x: i32): i32 => { let t = (x, x + 1); let (a, b) = t; return a * b; };
+        export let main = (): i32 => f(21);
+        `);
     assertNoAllocation(result, '$f',
         'reads off a fresh immutable allocation forward to its operands');
   });
@@ -692,10 +721,11 @@ export let tests = suite('zir backend', (): void => {
     // inlines: `f` only reads fields of its record parameter, so `main`
     // calls `f.core` with the literals' field values, omitted optional
     // included, and the core reads them as parameters.
-    let result = compileWithZir(
-        'type Opts = {a: i32, b?: i32};\n' +
-        'let f = (o: Opts): i32 => o.a * (o.b ?? 2);\n' +
-        'export let main = (): i32 => f({a: 3}) + f({b: 4, a: 5});');
+    let result = compileWithZir(dedentRaw`
+        type Opts = {a: i32, b?: i32};
+        let f = (o: Opts): i32 => o.a * (o.b ?? 2);
+        export let main = (): i32 => f({a: 3}) + f({b: 4, a: 5});
+        `);
     assertNoAllocation(result, '$main',
         'a record literal argument is never built');
     let coreCall = new Array<String>();
@@ -714,14 +744,15 @@ export let tests = suite('zir backend', (): void => {
     // `g` is only ever given a record from the heap, so it passes that
     // record to `f` itself, whose body reads the fields and calls the
     // core.
-    let result = compileWithZir(
-        'type Opts = {a: i32, b?: i32};\n' +
-        'let f = (o: Opts): i32 => o.a * (o.b ?? 2);\n' +
-        'let g = (o: Opts): i32 => f(o) + 1;\n' +
-        'export let main = (): i32 => {\n' +
-        '  let held: Opts = {a: 5};\n' +
-        '  return f({a: 3}) + g(held);\n' +
-        '};');
+    let result = compileWithZir(dedentRaw`
+        type Opts = {a: i32, b?: i32};
+        let f = (o: Opts): i32 => o.a * (o.b ?? 2);
+        let g = (o: Opts): i32 => f(o) + 1;
+        export let main = (): i32 => {
+          let held: Opts = {a: 5};
+          return f({a: 3}) + g(held);
+        };
+        `);
     let forwarded = new Array<String>();
     forwarded.push('call $f');
     assertFunctionUses(result, '$g', forwarded,
@@ -739,11 +770,12 @@ export let tests = suite('zir backend', (): void => {
     // `outer` only needs the fields too. The literal is never built:
     // `main` calls `outer.core`, which calls `inner.core` with the
     // fields it was given, and neither core rebuilds the record.
-    let result = compileWithZir(
-        'type Opts = {a: i32, b?: i32};\n' +
-        'let inner = (o: Opts): i32 => o.a * (o.b ?? 2);\n' +
-        'let outer = (o: Opts): i32 => inner(o) + o.a;\n' +
-        'export let main = (): i32 => outer({a: 3});');
+    let result = compileWithZir(dedentRaw`
+        type Opts = {a: i32, b?: i32};
+        let inner = (o: Opts): i32 => o.a * (o.b ?? 2);
+        let outer = (o: Opts): i32 => inner(o) + o.a;
+        export let main = (): i32 => outer({a: 3});
+        `);
     assertNoAllocation(result, '$main',
         'the literal enters the chain as fields');
     let innerCore = new Array<String>();
@@ -762,17 +794,18 @@ export let tests = suite('zir backend', (): void => {
     // The named-arguments idiom for a class: `P`'s constructor only reads
     // fields of its record parameter, so `new P({x: 3})` calls the
     // factory's core with the fields and builds no record.
-    let result = compileWithZir(
-        'type Init = {x: i32, y?: i32};\n' +
-        'final class P {\n' +
-        '  x: i32;\n' +
-        '  y: i32;\n' +
-        '  new(init: Init) : x = init.x, y = init.y ?? 7;\n' +
-        '}\n' +
-        'export let main = (): i32 => {\n' +
-        '  let p = new P({x: 3});\n' +
-        '  return p.x + p.y;\n' +
-        '};');
+    let result = compileWithZir(dedentRaw`
+        type Init = {x: i32, y?: i32};
+        final class P {
+          x: i32;
+          y: i32;
+          new(init: Init) : x = init.x, y = init.y ?? 7;
+        }
+        export let main = (): i32 => {
+          let p = new P({x: 3});
+          return p.x + p.y;
+        };
+        `);
     assertNoAllocation(result, '$main',
         'the record literal is never built; the core allocates P');
     var core = '';
@@ -794,25 +827,26 @@ export let tests = suite('zir backend', (): void => {
     // take the fields too: `Sub`'s literal and `Pass`'s own exploded
     // parameter reach `Base` without a record being built. Each
     // constructor allocates only its instance.
-    let result = compileWithZir(
-        'type Init = {x: i32, y?: i32};\n' +
-        'class Base {\n' +
-        '  x: i32;\n' +
-        '  y: i32;\n' +
-        '  new(init: Init) : x = init.x, y = init.y ?? 7;\n' +
-        '}\n' +
-        'final class Sub extends Base {\n' +
-        '  z: i32;\n' +
-        '  new(z: i32) : z = z, super({x: z});\n' +
-        '}\n' +
-        'final class Pass extends Base {\n' +
-        '  new(init: Init) : super(init);\n' +
-        '}\n' +
-        'export let main = (): i32 => {\n' +
-        '  let s = new Sub(3);\n' +
-        '  let p = new Pass({x: 4});\n' +
-        '  return s.y + p.x;\n' +
-        '};');
+    let result = compileWithZir(dedentRaw`
+        type Init = {x: i32, y?: i32};
+        class Base {
+          x: i32;
+          y: i32;
+          new(init: Init) : x = init.x, y = init.y ?? 7;
+        }
+        final class Sub extends Base {
+          z: i32;
+          new(z: i32) : z = z, super({x: z});
+        }
+        final class Pass extends Base {
+          new(init: Init) : super(init);
+        }
+        export let main = (): i32 => {
+          let s = new Sub(3);
+          let p = new Pass({x: 4});
+          return s.y + p.x;
+        };
+        `);
     let named = (prefix: String, suffix: String): String => {
       var found = '';
       for (let chunk in result.split('(func $')) {
@@ -835,27 +869,28 @@ export let tests = suite('zir backend', (): void => {
     // Named constructors explode like the unnamed one: `new Base.from`
     // with a literal, a subclass's `super.from(...)` with a literal, and
     // a named constructor passing its own record up to `super.from`.
-    let result = compileWithZir(
-        'type Init = {x: i32, y?: i32};\n' +
-        'class Base {\n' +
-        '  x: i32;\n' +
-        '  y: i32;\n' +
-        '  new(this.x, this.y);\n' +
-        '  new from(init: Init) : x = init.x, y = init.y ?? 7;\n' +
-        '}\n' +
-        'final class Sub extends Base {\n' +
-        '  z: i32;\n' +
-        '  new(z: i32) : z = z, super.from({x: z});\n' +
-        '}\n' +
-        'final class Pass extends Base {\n' +
-        '  new relay(init: Init) : super.from(init);\n' +
-        '}\n' +
-        'export let main = (): i32 => {\n' +
-        '  let b = new Base.from({x: 2});\n' +
-        '  let s = new Sub(3);\n' +
-        '  let p = new Pass.relay({x: 4});\n' +
-        '  return b.y + s.y + p.x;\n' +
-        '};');
+    let result = compileWithZir(dedentRaw`
+        type Init = {x: i32, y?: i32};
+        class Base {
+          x: i32;
+          y: i32;
+          new(this.x, this.y);
+          new from(init: Init) : x = init.x, y = init.y ?? 7;
+        }
+        final class Sub extends Base {
+          z: i32;
+          new(z: i32) : z = z, super.from({x: z});
+        }
+        final class Pass extends Base {
+          new relay(init: Init) : super.from(init);
+        }
+        export let main = (): i32 => {
+          let b = new Base.from({x: 2});
+          let s = new Sub(3);
+          let p = new Pass.relay({x: 4});
+          return b.y + s.y + p.x;
+        };
+        `);
     let named = (prefix: String, suffix: String): String => {
       var found = '';
       for (let chunk in result.split('(func $')) {
@@ -1035,13 +1070,14 @@ export let tests = suite('zir backend', (): void => {
     // `step` builds its result from a literal and `main` only
     // destructures it, so `step.core` returns the two fields as wasm
     // results and neither side builds the record.
-    let result = compileWithZir(
-        'type V = {x: i32, y: i32};\n' +
-        'let step = (p: i32): V => ({x: p, y: p + 1});\n' +
-        'export let main = (): i32 => {\n' +
-        '  let {x, y} = step(3);\n' +
-        '  return x * y;\n' +
-        '};');
+    let result = compileWithZir(dedentRaw`
+        type V = {x: i32, y: i32};
+        let step = (p: i32): V => ({x: p, y: p + 1});
+        export let main = (): i32 => {
+          let {x, y} = step(3);
+          return x * y;
+        };
+        `);
     assertNoAllocation(result, '$step.core',
         'the result literal is returned as its fields');
     assertNoAllocation(result, '$main', 'the fields are never packed');
@@ -1055,18 +1091,19 @@ export let tests = suite('zir backend', (): void => {
     // Each arm of the returned `if` and `match` is a literal, so the
     // cores merge the arms' fields rather than their records, and
     // neither the cores nor `main` build one.
-    let result = compileWithZir(
-        'type V = {x: i32, y: i32};\n' +
-        'let pick = (p: i32): V => if (p > 0) ({x: p, y: 1}) else ({x: 0, y: p});\n' +
-        'let classify = (p: i32): V => match (p) {\n' +
-        '  case 0: ({x: 0, y: 0})\n' +
-        '  case _: if (p > 10) ({x: 10, y: p}) else ({x: p, y: p * 2})\n' +
-        '};\n' +
-        'export let main = (): i32 => {\n' +
-        '  let {x, y} = pick(3);\n' +
-        '  let r = classify(4);\n' +
-        '  return x * y + r.x + r.y;\n' +
-        '};');
+    let result = compileWithZir(dedentRaw`
+        type V = {x: i32, y: i32};
+        let pick = (p: i32): V => if (p > 0) ({x: p, y: 1}) else ({x: 0, y: p});
+        let classify = (p: i32): V => match (p) {
+          case 0: ({x: 0, y: 0})
+          case _: if (p > 10) ({x: 10, y: p}) else ({x: p, y: p * 2})
+        };
+        export let main = (): i32 => {
+          let {x, y} = pick(3);
+          let r = classify(4);
+          return x * y + r.x + r.y;
+        };
+        `);
     assertNoAllocation(result, '$pick.core',
         'the if arms are merged as their fields');
     assertNoAllocation(result, '$classify.core',
@@ -1078,13 +1115,14 @@ export let tests = suite('zir backend', (): void => {
     // `same` returns its parameter, and its only caller passes a literal
     // and destructures the result, so the parameter and the result both
     // explode and `same.core` hands back the fields it was given.
-    let result = compileWithZir(
-        'type V = {x: i32, y: i32};\n' +
-        'let same = (v: V): V => v;\n' +
-        'export let main = (): i32 => {\n' +
-        '  let {x, y} = same({x: 3, y: 4});\n' +
-        '  return x * y;\n' +
-        '};');
+    let result = compileWithZir(dedentRaw`
+        type V = {x: i32, y: i32};
+        let same = (v: V): V => v;
+        export let main = (): i32 => {
+          let {x, y} = same({x: 3, y: 4});
+          return x * y;
+        };
+        `);
     assertNoAllocation(result, '$same.core',
         'the parameter is returned as the fields it arrived as');
     assertNoAllocation(result, '$main', 'neither side builds the record');
@@ -1094,19 +1132,20 @@ export let tests = suite('zir backend', (): void => {
     // `Grid` has no subclass, so its calls are direct: `area` takes the
     // literal as its fields and `shift` returns its result as fields, and
     // `main` builds no record.
-    let result = compileWithZir(
-        'type V = {x: i32, y: i32};\n' +
-        'class Grid {\n' +
-        '  scale: i32;\n' +
-        '  new(this.scale);\n' +
-        '  area(r: V): i32 { return r.x * r.y * this.scale; }\n' +
-        '  shift(r: V, by: i32): V { return {x: r.x + by, y: r.y + by}; }\n' +
-        '}\n' +
-        'export let main = (): i32 => {\n' +
-        '  let g = new Grid(2);\n' +
-        '  let {x, y} = g.shift({x: 1, y: 2}, 10);\n' +
-        '  return g.area({x: 3, y: 4}) + x * y;\n' +
-        '};');
+    let result = compileWithZir(dedentRaw`
+        type V = {x: i32, y: i32};
+        class Grid {
+          scale: i32;
+          new(this.scale);
+          area(r: V): i32 { return r.x * r.y * this.scale; }
+          shift(r: V, by: i32): V { return {x: r.x + by, y: r.y + by}; }
+        }
+        export let main = (): i32 => {
+          let g = new Grid(2);
+          let {x, y} = g.shift({x: 1, y: 2}, 10);
+          return g.area({x: 3, y: 4}) + x * y;
+        };
+        `);
     let named = (prefix: String, suffix: String): String => {
       var found = '';
       for (let chunk in result.split('(func $')) {
@@ -1129,19 +1168,20 @@ export let tests = suite('zir backend', (): void => {
     // `area` passes its record on to `#scaled` and to the static `sum`,
     // and `main` passes a literal: the literal is never built, and no
     // core rebuilds it to pass it on.
-    let result = compileWithZir(
-        'type V = {x: i32, y: i32};\n' +
-        'class Grid {\n' +
-        '  scale: i32;\n' +
-        '  new(this.scale);\n' +
-        '  static sum(r: V): i32 { return r.x + r.y; }\n' +
-        '  area(r: V): i32 { return this.#scaled(r) + Grid.sum(r); }\n' +
-        '  #scaled(r: V): i32 { return r.x * r.y * this.scale; }\n' +
-        '}\n' +
-        'export let main = (): i32 => {\n' +
-        '  let g = new Grid(2);\n' +
-        '  return g.area({x: 3, y: 4});\n' +
-        '};');
+    let result = compileWithZir(dedentRaw`
+        type V = {x: i32, y: i32};
+        class Grid {
+          scale: i32;
+          new(this.scale);
+          static sum(r: V): i32 { return r.x + r.y; }
+          area(r: V): i32 { return this.#scaled(r) + Grid.sum(r); }
+          #scaled(r: V): i32 { return r.x * r.y * this.scale; }
+        }
+        export let main = (): i32 => {
+          let g = new Grid(2);
+          return g.area({x: 3, y: 4});
+        };
+        `);
     let named = (prefix: String, suffix: String): String => {
       var found = '';
       for (let chunk in result.split('(func $')) {
@@ -1161,18 +1201,19 @@ export let tests = suite('zir backend', (): void => {
   test('a method of a generic class takes a record as its fields', (ctx: TestContext): void => {
     // Each instantiation's `area` has its own core, and `main` passes
     // both literals as fields.
-    let result = compileWithZir(
-        'type V = {x: i32, y: i32};\n' +
-        'class Box<T> {\n' +
-        '  value: T;\n' +
-        '  new(this.value);\n' +
-        '  area(r: V): i32 { return r.x * r.y; }\n' +
-        '}\n' +
-        'export let main = (): i32 => {\n' +
-        '  let a = new Box<i32>(1);\n' +
-        '  let b = new Box<f64>(2.0);\n' +
-        '  return a.area({x: 3, y: 4}) + b.area({x: 5, y: 6});\n' +
-        '};');
+    let result = compileWithZir(dedentRaw`
+        type V = {x: i32, y: i32};
+        class Box<T> {
+          value: T;
+          new(this.value);
+          area(r: V): i32 { return r.x * r.y; }
+        }
+        export let main = (): i32 => {
+          let a = new Box<i32>(1);
+          let b = new Box<f64>(2.0);
+          return a.area({x: 3, y: 4}) + b.area({x: 5, y: 6});
+        };
+        `);
     assertNoAllocation(result, '$main',
         'both instantiations take the literals as fields');
   });
@@ -1181,33 +1222,34 @@ export let tests = suite('zir backend', (): void => {
     // `wrap` returns a method's result, `chain` passes a bound result to
     // `use`, whose only caller is that one, and `walk` updates a `var`
     // through a method: no function builds the record.
-    let result = compileWithZir(
-        'type V = {x: i32, y: i32};\n' +
-        'class Grid {\n' +
-        '  scale: i32;\n' +
-        '  new(this.scale);\n' +
-        '  shift(r: V, by: i32): V { return {x: r.x * this.scale + by, y: r.y + by}; }\n' +
-        '  step(p: V): V { return {x: p.x + p.y, y: p.y + 1}; }\n' +
-        '}\n' +
-        'let wrap = (g: Grid, n: i32): V => g.shift({x: n, y: n}, 3);\n' +
-        'let walk = (g: Grid, n: i32): i32 => {\n' +
-        '  var pos: V = {x: 0, y: 1};\n' +
-        '  for (var i = 0; i < n; i += 1) {\n' +
-        '    pos = g.step(pos);\n' +
-        '  }\n' +
-        '  return pos.x;\n' +
-        '};\n' +
-        'let make = (n: i32): V => ({x: n, y: n * 2});\n' +
-        'let use = (r: V): i32 => r.x * 100 + r.y;\n' +
-        'let chain = (n: i32): i32 => {\n' +
-        '  let r = make(n);\n' +
-        '  return use(r);\n' +
-        '};\n' +
-        'export let main = (): i32 => {\n' +
-        '  let g = new Grid(2);\n' +
-        '  let {x, y} = wrap(g, 4);\n' +
-        '  return x + y + chain(5) + walk(g, 3);\n' +
-        '};');
+    let result = compileWithZir(dedentRaw`
+        type V = {x: i32, y: i32};
+        class Grid {
+          scale: i32;
+          new(this.scale);
+          shift(r: V, by: i32): V { return {x: r.x * this.scale + by, y: r.y + by}; }
+          step(p: V): V { return {x: p.x + p.y, y: p.y + 1}; }
+        }
+        let wrap = (g: Grid, n: i32): V => g.shift({x: n, y: n}, 3);
+        let walk = (g: Grid, n: i32): i32 => {
+          var pos: V = {x: 0, y: 1};
+          for (var i = 0; i < n; i += 1) {
+            pos = g.step(pos);
+          }
+          return pos.x;
+        };
+        let make = (n: i32): V => ({x: n, y: n * 2});
+        let use = (r: V): i32 => r.x * 100 + r.y;
+        let chain = (n: i32): i32 => {
+          let r = make(n);
+          return use(r);
+        };
+        export let main = (): i32 => {
+          let g = new Grid(2);
+          let {x, y} = wrap(g, 4);
+          return x + y + chain(5) + walk(g, 3);
+        };
+        `);
     assertNoAllocation(result, '$main', 'the method result is never packed');
     assertNoAllocation(result, '$walk',
         'a var written from a method call is held as its fields');
@@ -1220,14 +1262,15 @@ export let tests = suite('zir backend', (): void => {
   test('a record result passed straight to a call stays as its fields', (ctx: TestContext): void => {
     // Every record here is a call's result handed to another call, and
     // every parameter only reads fields, so nothing is built.
-    let result = compileWithZir(
-        'type V = {x: i32, y: i32};\n' +
-        'let make = (n: i32): V => ({x: n, y: n * 2});\n' +
-        'let bump = (r: V): V => ({x: r.x + 1, y: r.y + 1});\n' +
-        'let use = (r: V): i32 => r.x * 100 + r.y;\n' +
-        'let twice = (r: V): V => bump(bump(r));\n' +
-        'export let main = (): i32 =>\n' +
-        '  use(make(5)) + use(bump(make(1))) + twice({x: 1, y: 2}).x;');
+    let result = compileWithZir(dedentRaw`
+        type V = {x: i32, y: i32};
+        let make = (n: i32): V => ({x: n, y: n * 2});
+        let bump = (r: V): V => ({x: r.x + 1, y: r.y + 1});
+        let use = (r: V): i32 => r.x * 100 + r.y;
+        let twice = (r: V): V => bump(bump(r));
+        export let main = (): i32 =>
+          use(make(5)) + use(bump(make(1))) + twice({x: 1, y: 2}).x;
+        `);
     // A forwarder builds the record, so no call may go through one.
     let forwarders = new Array<String>();
     forwarders.push('call $make\n');
@@ -1248,16 +1291,17 @@ export let tests = suite('zir backend', (): void => {
     // are fields already, so it is carried around the loop as its
     // fields: `step.core` takes and returns them, and no iteration
     // builds a record.
-    let result = compileWithZir(
-        'type V = {x: i32, y: i32};\n' +
-        'let step = (p: V): V => ({x: p.x + p.y, y: p.y + 1});\n' +
-        'export let main = (): i32 => {\n' +
-        '  var pos: V = {x: 0, y: 1};\n' +
-        '  for (var i = 0; i < 10; i += 1) {\n' +
-        '    pos = step(pos);\n' +
-        '  }\n' +
-        '  return pos.x;\n' +
-        '};');
+    let result = compileWithZir(dedentRaw`
+        type V = {x: i32, y: i32};
+        let step = (p: V): V => ({x: p.x + p.y, y: p.y + 1});
+        export let main = (): i32 => {
+          var pos: V = {x: 0, y: 1};
+          for (var i = 0; i < 10; i += 1) {
+            pos = step(pos);
+          }
+          return pos.x;
+        };
+        `);
     assertNoAllocation(result, '$main', 'the var is carried as its fields');
     assertNoAllocation(result, '$step.core',
         'the result is returned as its fields');
@@ -1268,20 +1312,21 @@ export let tests = suite('zir backend', (): void => {
     // the call direct, inlining brings the trampoline's receiver cast
     // in, forwarding turns the unpack into the packed object, the cast
     // folds, and the pack dies unused.
-    let result = compileWithZirAt(
-        'interface Shape { area(): i32; }\n' +
-        'class Circle implements Shape {\n' +
-        '  r: i32;\n' +
-        '  new(this.r);\n' +
-        '  area(): i32 { return this.r * this.r; }\n' +
-        '}\n' +
-        'class Square implements Shape {\n' +
-        '  s: i32;\n' +
-        '  new(this.s);\n' +
-        '  area(): i32 { return this.s * 4; }\n' +
-        '}\n' +
-        'export let measure = (c: Circle): i32 => { let s: Shape = c; return s.area(); };\n' +
-        'export let main = (): i32 => measure(new Circle(3)) + (new Square(2)).area();', 2);
+    let result = compileWithZirAt(dedentRaw`
+        interface Shape { area(): i32; }
+        class Circle implements Shape {
+          r: i32;
+          new(this.r);
+          area(): i32 { return this.r * this.r; }
+        }
+        class Square implements Shape {
+          s: i32;
+          new(this.s);
+          area(): i32 { return this.s * 4; }
+        }
+        export let measure = (c: Circle): i32 => { let s: Shape = c; return s.area(); };
+        export let main = (): i32 => measure(new Circle(3)) + (new Square(2)).area();
+        `, 2);
     assertNoAllocation(result, '$measure',
         'the fat pointer never escapes, so it is never allocated');
     let absent = new Array<String>();
@@ -1299,15 +1344,16 @@ export let tests = suite('zir backend', (): void => {
     // A multi-block callee: its blocks become the caller's, its return
     // a branch to a continuation. The loop shape survives in the
     // caller and the call does not.
-    let result = compileWithZirAt(
-        'let sum = (n: i32): i32 => {\n' +
-        '  var s = 0;\n' +
-        '  var i = 0;\n' +
-        '  while (i < n) { s += i; i += 1; }\n' +
-        '  return s;\n' +
-        '};\n' +
-        'export let f = (k: i32): i32 => sum(k) + 1;\n' +
-        'export let main = (): i32 => f(10);', 2);
+    let result = compileWithZirAt(dedentRaw`
+        let sum = (n: i32): i32 => {
+          var s = 0;
+          var i = 0;
+          while (i < n) { s += i; i += 1; }
+          return s;
+        };
+        export let f = (k: i32): i32 => sum(k) + 1;
+        export let main = (): i32 => f(10);
+        `, 2);
     let present = new Array<String>();
     present.push('loop');
     assertFunctionUses(result, '$f', present,
@@ -1322,9 +1368,10 @@ export let tests = suite('zir backend', (): void => {
     // Two returns become two branches to one continuation; with a
     // constant argument the branch folds and the whole thing is a
     // constant.
-    let result = compileWithZirAt(
-        'let abs = (x: i32): i32 => { if (x < 0) { return 0 - x; } return x; };\n' +
-        'export let main = (): i32 => abs(0 - 7);', 2);
+    let result = compileWithZirAt(dedentRaw`
+        let abs = (x: i32): i32 => { if (x < 0) { return 0 - x; } return x; };
+        export let main = (): i32 => abs(0 - 7);
+        `, 2);
     let present = new Array<String>();
     present.push('i32.const 7');
     assertFunctionUses(result, '$main', present,
@@ -1341,16 +1388,17 @@ export let tests = suite('zir backend', (): void => {
     // only calls its parameter, so the argument rule inlines it. Then
     // the closure call becomes a direct call to the lambda, the lambda
     // inlines, and the closure object is never allocated.
-    let result = compileWithZirAt(
-        'let each = (f: (x: i32) => i32, n: i32): i32 => {\n' +
-        '  var s = 0;\n' +
-        '  var i = 0;\n' +
-        '  while (i < n) { s += f(i); i += 1; }\n' +
-        '  return s;\n' +
-        '};\n' +
-        'export let a = (n: i32): i32 => each((x: i32): i32 => x * 2, n);\n' +
-        'let b = (n: i32): i32 => each((x: i32): i32 => x + 1, n);\n' +
-        'export let main = (): i32 => a(10) + b(10);', 2);
+    let result = compileWithZirAt(dedentRaw`
+        let each = (f: (x: i32) => i32, n: i32): i32 => {
+          var s = 0;
+          var i = 0;
+          while (i < n) { s += f(i); i += 1; }
+          return s;
+        };
+        export let a = (n: i32): i32 => each((x: i32): i32 => x * 2, n);
+        let b = (n: i32): i32 => each((x: i32): i32 => x + 1, n);
+        export let main = (): i32 => a(10) + b(10);
+        `, 2);
     let present = new Array<String>();
     present.push('loop');
     assertFunctionUses(result, '$a', present,
@@ -1368,14 +1416,15 @@ export let tests = suite('zir backend', (): void => {
     // two, so the closure wraps an adapter that tail-calls the lambda.
     // Inlining converts the adapter's tail call into a call, and the
     // rounds carry on: the loop ends up calling nothing at all.
-    let result = compileWithZirAt(
-        'let apply = (f: (a: i32, b: i32) => i32, n: i32): i32 => {\n' +
-        '  var s = 0;\n' +
-        '  var i = 0;\n' +
-        '  while (i < n) { s += f(i, 1); i += 1; }\n' +
-        '  return s;\n' +
-        '};\n' +
-        'export let main = (): i32 => apply((x: i32): i32 => x * 2, 10);', 2);
+    let result = compileWithZirAt(dedentRaw`
+        let apply = (f: (a: i32, b: i32) => i32, n: i32): i32 => {
+          var s = 0;
+          var i = 0;
+          while (i < n) { s += f(i, 1); i += 1; }
+          return s;
+        };
+        export let main = (): i32 => apply((x: i32): i32 => x * 2, 10);
+        `, 2);
     assertNoAllocation(result, '$main',
         'neither the closure nor its adapter is allocated');
     let absent = new Array<String>();
@@ -1388,19 +1437,20 @@ export let tests = suite('zir backend', (): void => {
     // `let g = ...; each(g, n)` binds the closure value to a name; the
     // call passes that same value, so the argument rule sees exactly
     // what it sees for a literal.
-    let result = compileWithZirAt(
-        'let each = (f: (x: i32) => i32, n: i32): i32 => {\n' +
-        '  var s = 0;\n' +
-        '  var i = 0;\n' +
-        '  while (i < n) { s += f(i); i += 1; }\n' +
-        '  return s;\n' +
-        '};\n' +
-        'export let a = (n: i32): i32 => {\n' +
-        '  let g = (x: i32): i32 => x * 2;\n' +
-        '  return each(g, n);\n' +
-        '};\n' +
-        'let b = (n: i32): i32 => each((x: i32): i32 => x + 1, n);\n' +
-        'export let main = (): i32 => a(10) + b(10);', 2);
+    let result = compileWithZirAt(dedentRaw`
+        let each = (f: (x: i32) => i32, n: i32): i32 => {
+          var s = 0;
+          var i = 0;
+          while (i < n) { s += f(i); i += 1; }
+          return s;
+        };
+        export let a = (n: i32): i32 => {
+          let g = (x: i32): i32 => x * 2;
+          return each(g, n);
+        };
+        let b = (n: i32): i32 => each((x: i32): i32 => x + 1, n);
+        export let main = (): i32 => a(10) + b(10);
+        `, 2);
     assertNoAllocation(result, '$a',
         'the named closure is never allocated');
     let absent = new Array<String>();
@@ -1410,27 +1460,28 @@ export let tests = suite('zir backend', (): void => {
   });
 
   test('-O2 inlines a loop over an interface argument and removes the pack', (ctx: TestContext): void => {
-    let result = compileWithZirAt(
-        'interface Shape { area(): i32; }\n' +
-        'class Circle implements Shape {\n' +
-        '  r: i32;\n' +
-        '  new(this.r);\n' +
-        '  area(): i32 { return this.r * this.r; }\n' +
-        '}\n' +
-        'class Square implements Shape {\n' +
-        '  s: i32;\n' +
-        '  new(this.s);\n' +
-        '  area(): i32 { return this.s * 4; }\n' +
-        '}\n' +
-        'let total = (s: Shape, n: i32): i32 => {\n' +
-        '  var t = 0;\n' +
-        '  var i = 0;\n' +
-        '  while (i < n) { t += s.area(); i += 1; }\n' +
-        '  return t;\n' +
-        '};\n' +
-        'export let c = (n: i32): i32 => total(new Circle(3), n);\n' +
-        'let q = (n: i32): i32 => total(new Square(2), n);\n' +
-        'export let main = (): i32 => c(10) + q(10);', 2);
+    let result = compileWithZirAt(dedentRaw`
+        interface Shape { area(): i32; }
+        class Circle implements Shape {
+          r: i32;
+          new(this.r);
+          area(): i32 { return this.r * this.r; }
+        }
+        class Square implements Shape {
+          s: i32;
+          new(this.s);
+          area(): i32 { return this.s * 4; }
+        }
+        let total = (s: Shape, n: i32): i32 => {
+          var t = 0;
+          var i = 0;
+          while (i < n) { t += s.area(); i += 1; }
+          return t;
+        };
+        export let c = (n: i32): i32 => total(new Circle(3), n);
+        let q = (n: i32): i32 => total(new Square(2), n);
+        export let main = (): i32 => c(10) + q(10);
+        `, 2);
     let absent = new Array<String>();
     absent.push('call_ref');
     assertFunctionOmits(result, '$c', absent,
@@ -1438,10 +1489,11 @@ export let tests = suite('zir backend', (): void => {
   });
 
   test('-O2 does not inline a callee containing try', (ctx: TestContext): void => {
-    let result = compileWithZirAt(
-        'let guarded = (x: i32): i32 => { try { return x + 1; } catch { return 0; } };\n' +
-        'export let f = (k: i32): i32 => guarded(k);\n' +
-        'export let main = (): i32 => f(10);', 2);
+    let result = compileWithZirAt(dedentRaw`
+        let guarded = (x: i32): i32 => { try { return x + 1; } catch { return 0; } };
+        export let f = (k: i32): i32 => guarded(k);
+        export let main = (): i32 => f(10);
+        `, 2);
     let present = new Array<String>();
     present.push('call $guarded');
     assertFunctionUses(result, '$f', present,
@@ -1449,9 +1501,10 @@ export let tests = suite('zir backend', (): void => {
   });
 
   test('-O2 deletes a function once every call to it is inlined', (ctx: TestContext): void => {
-    let result = compileWithZirAt(
-        'let inc = (x: i32): i32 => x + 1;\n' +
-        'export let main = (): i32 => inc(41);', 2);
+    let result = compileWithZirAt(dedentRaw`
+        let inc = (x: i32): i32 => x + 1;
+        export let main = (): i32 => inc(41);
+        `, 2);
     isTrue(!result.contains('(func $inc'),
         'inc has no callers left and is not exported, so harvest removes it');
     let present = new Array<String>();
@@ -1461,9 +1514,10 @@ export let tests = suite('zir backend', (): void => {
   });
 
   test('-O1 keeps a function that is still called', (ctx: TestContext): void => {
-    let result = compileWithZir(
-        'let inc = (x: i32): i32 => x + 1;\n' +
-        'export let main = (): i32 => inc(41);');
+    let result = compileWithZir(dedentRaw`
+        let inc = (x: i32): i32 => x + 1;
+        export let main = (): i32 => inc(41);
+        `);
     isTrue(result.contains('(func $inc'),
         'without inlining, inc is called and stays');
   });
@@ -1473,24 +1527,25 @@ export let tests = suite('zir backend', (): void => {
     // one return passes the packed Circle as the continuation's
     // parameter. Deleting that parameter lets the dispatch resolve
     // and the pack die: main allocates the Circle and nothing else.
-    let result = compileWithZirAt(
-        'interface Shape { area(): i32; }\n' +
-        'class Circle implements Shape {\n' +
-        '  r: i32;\n' +
-        '  new(this.r);\n' +
-        '  area(): i32 { return this.r * this.r; }\n' +
-        '}\n' +
-        'class Square implements Shape {\n' +
-        '  s: i32;\n' +
-        '  new(this.s);\n' +
-        '  area(): i32 { return this.s * 4; }\n' +
-        '}\n' +
-        'let make = (n: i32): Shape => {\n' +
-        '  var i = 0;\n' +
-        '  while (i < n) { i += 1; }\n' +
-        '  return new Circle(i);\n' +
-        '};\n' +
-        'export let main = (): i32 => make(3).area() + (new Square(2)).area();', 2);
+    let result = compileWithZirAt(dedentRaw`
+        interface Shape { area(): i32; }
+        class Circle implements Shape {
+          r: i32;
+          new(this.r);
+          area(): i32 { return this.r * this.r; }
+        }
+        class Square implements Shape {
+          s: i32;
+          new(this.s);
+          area(): i32 { return this.s * 4; }
+        }
+        let make = (n: i32): Shape => {
+          var i = 0;
+          while (i < n) { i += 1; }
+          return new Circle(i);
+        };
+        export let main = (): i32 => make(3).area() + (new Square(2)).area();
+        `, 2);
     let absent = new Array<String>();
     absent.push('call_ref');
     assertFunctionOmits(result, '$main', absent,
@@ -1504,19 +1559,20 @@ export let tests = suite('zir backend', (): void => {
   test('folds a type test the static type decides', (ctx: TestContext): void => {
     // The scrutinee is a Lit, so the Lit arm's test is true and the
     // Neg arm's is false: main keeps one arm and no test.
-    let result = compileWithZir(
-        'sealed class Expr {\n' +
-        '  case Lit(value: i32)\n' +
-        '  case Neg(inner: Expr)\n' +
-        '}\n' +
-        'export let neg = (e: Expr): i32 => 7;\n' +
-        'export let main = (): i32 => {\n' +
-        '  let e: Expr = new Lit(3);\n' +
-        '  return match (e) {\n' +
-        '    case Lit {value}: value\n' +
-        '    case Neg {inner}: neg(inner)\n' +
-        '  };\n' +
-        '};');
+    let result = compileWithZir(dedentRaw`
+        sealed class Expr {
+          case Lit(value: i32)
+          case Neg(inner: Expr)
+        }
+        export let neg = (e: Expr): i32 => 7;
+        export let main = (): i32 => {
+          let e: Expr = new Lit(3);
+          return match (e) {
+            case Lit {value}: value
+            case Neg {inner}: neg(inner)
+          };
+        };
+        `);
     let absent = new Array<String>();
     absent.push('ref.test');
     absent.push('call $neg');
@@ -1525,17 +1581,18 @@ export let tests = suite('zir backend', (): void => {
   });
 
   test('-O2 folds a match over the case an inlined callee constructs', (ctx: TestContext): void => {
-    let result = compileWithZirAt(
-        'sealed class Expr {\n' +
-        '  case Lit(value: i32)\n' +
-        '  case Neg(inner: Expr)\n' +
-        '}\n' +
-        'export let neg = (e: Expr): i32 => 7;\n' +
-        'let make = (n: i32): Expr => new Lit(n);\n' +
-        'export let main = (): i32 => match (make(3)) {\n' +
-        '  case Lit {value}: value\n' +
-        '  case Neg {inner}: neg(inner)\n' +
-        '};', 2);
+    let result = compileWithZirAt(dedentRaw`
+        sealed class Expr {
+          case Lit(value: i32)
+          case Neg(inner: Expr)
+        }
+        export let neg = (e: Expr): i32 => 7;
+        let make = (n: i32): Expr => new Lit(n);
+        export let main = (): i32 => match (make(3)) {
+          case Lit {value}: value
+          case Neg {inner}: neg(inner)
+        };
+        `, 2);
     let absent = new Array<String>();
     absent.push('ref.test');
     absent.push('call $neg');
@@ -1549,17 +1606,18 @@ export let tests = suite('zir backend', (): void => {
     // loop-carried parameter meets 1 and the join's parameter, and
     // the join's parameter meets x and 2. SCCP never executes the
     // assignment's edge, so both parameters are 1.
-    let result = compileWithZirAt(
-        'export let f = (n: i32): i32 => {\n' +
-        '  var x = 1;\n' +
-        '  var i = 0;\n' +
-        '  while (i < n) {\n' +
-        '    if (x != 1) { x = 2; }\n' +
-        '    i += 1;\n' +
-        '  }\n' +
-        '  return x;\n' +
-        '};\n' +
-        'export let main = (): i32 => f(5);', 2);
+    let result = compileWithZirAt(dedentRaw`
+        export let f = (n: i32): i32 => {
+          var x = 1;
+          var i = 0;
+          while (i < n) {
+            if (x != 1) { x = 2; }
+            i += 1;
+          }
+          return x;
+        };
+        export let main = (): i32 => f(5);
+        `, 2);
     let absent = new Array<String>();
     absent.push('i32.ne');
     absent.push('i32.const 2');
@@ -1573,27 +1631,28 @@ export let tests = suite('zir backend', (): void => {
     // trampoline it names is a multi-value tail call, and the method
     // behind it has control flow: all three shapes inline, so the loop
     // keeps no call of any kind.
-    let result = compileWithZirAt(
-        'interface Iter { next(): inline (true, i32) | inline (false, _); }\n' +
-        'class Counter implements Iter {\n' +
-        '  n: i32;\n' +
-        '  var #i: i32 = 0;\n' +
-        '  new(this.n);\n' +
-        '  next(): inline (true, i32) | inline (false, _) {\n' +
-        '    if (this.#i < this.n) {\n' +
-        '      let v = this.#i;\n' +
-        '      this.#i += 1;\n' +
-        '      return (true, v);\n' +
-        '    }\n' +
-        '    return (false, _);\n' +
-        '  }\n' +
-        '}\n' +
-        'export let main = (): i32 => {\n' +
-        '  let it: Iter = new Counter(10);\n' +
-        '  var sum = 0;\n' +
-        '  while (let (true, v) = it.next()) { sum += v; }\n' +
-        '  return sum;\n' +
-        '};', 2);
+    let result = compileWithZirAt(dedentRaw`
+        interface Iter { next(): inline (true, i32) | inline (false, _); }
+        class Counter implements Iter {
+          n: i32;
+          var #i: i32 = 0;
+          new(this.n);
+          next(): inline (true, i32) | inline (false, _) {
+            if (this.#i < this.n) {
+              let v = this.#i;
+              this.#i += 1;
+              return (true, v);
+            }
+            return (false, _);
+          }
+        }
+        export let main = (): i32 => {
+          let it: Iter = new Counter(10);
+          var sum = 0;
+          while (let (true, v) = it.next()) { sum += v; }
+          return sum;
+        };
+        `, 2);
     let absent = new Array<String>();
     absent.push('call_ref');
     absent.push('call $');
@@ -1614,20 +1673,21 @@ export let tests = suite('zir backend', (): void => {
     // The object never leaves f: every use is a read or a write of
     // its field. The field written in the loop becomes a parameter of
     // the loop header; the object is never allocated.
-    let result = compileWithZirAt(
-        'class Acc {\n' +
-        '  var total: i32 = 0;\n' +
-        '}\n' +
-        'export let f = (n: i32): i32 => {\n' +
-        '  let a = new Acc();\n' +
-        '  var i = 0;\n' +
-        '  while (i < n) {\n' +
-        '    a.total += i;\n' +
-        '    i += 1;\n' +
-        '  }\n' +
-        '  return a.total;\n' +
-        '};\n' +
-        'export let main = (): i32 => f(5);', 2);
+    let result = compileWithZirAt(dedentRaw`
+        class Acc {
+          var total: i32 = 0;
+        }
+        export let f = (n: i32): i32 => {
+          let a = new Acc();
+          var i = 0;
+          while (i < n) {
+            a.total += i;
+            i += 1;
+          }
+          return a.total;
+        };
+        export let main = (): i32 => f(5);
+        `, 2);
     let absent = new Array<String>();
     absent.push('struct.get');
     absent.push('struct.set');
@@ -1640,37 +1700,38 @@ export let tests = suite('zir backend', (): void => {
     // The sync-or-async Step shape (async/step.zena): three lanes,
     // the third a reference the Ready and Done arms leave as a hole.
     // Nothing in the splice is written for two results; this pins it.
-    let result = compileWithZirAt(
-        'class Pend {}\n' +
-        'interface Iter {\n' +
-        '  next(): inline (0, _, _) | inline (1, i32, _) | inline (2, _, Pend);\n' +
-        '}\n' +
-        'class Counter implements Iter {\n' +
-        '  n: i32;\n' +
-        '  var #i: i32 = 0;\n' +
-        '  new(this.n);\n' +
-        '  next(): inline (0, _, _) | inline (1, i32, _) | inline (2, _, Pend) {\n' +
-        '    if (this.#i < this.n) {\n' +
-        '      let v = this.#i;\n' +
-        '      this.#i += 1;\n' +
-        '      return (1, v, _);\n' +
-        '    }\n' +
-        '    return (0, _, _);\n' +
-        '  }\n' +
-        '}\n' +
-        'export let main = (): i32 => {\n' +
-        '  let it: Iter = new Counter(10);\n' +
-        '  var sum = 0;\n' +
-        '  var going = true;\n' +
-        '  while (going) {\n' +
-        '    match (it.next()) {\n' +
-        '      case (0, _, _): { going = false; }\n' +
-        '      case (1, let v, _): { sum += v; }\n' +
-        '      case (2, _, let p): { going = false; }\n' +
-        '    }\n' +
-        '  }\n' +
-        '  return sum;\n' +
-        '};', 2);
+    let result = compileWithZirAt(dedentRaw`
+        class Pend {}
+        interface Iter {
+          next(): inline (0, _, _) | inline (1, i32, _) | inline (2, _, Pend);
+        }
+        class Counter implements Iter {
+          n: i32;
+          var #i: i32 = 0;
+          new(this.n);
+          next(): inline (0, _, _) | inline (1, i32, _) | inline (2, _, Pend) {
+            if (this.#i < this.n) {
+              let v = this.#i;
+              this.#i += 1;
+              return (1, v, _);
+            }
+            return (0, _, _);
+          }
+        }
+        export let main = (): i32 => {
+          let it: Iter = new Counter(10);
+          var sum = 0;
+          var going = true;
+          while (going) {
+            match (it.next()) {
+              case (0, _, _): { going = false; }
+              case (1, let v, _): { sum += v; }
+              case (2, _, let p): { going = false; }
+            }
+          }
+          return sum;
+        };
+        `, 2);
     let absent = new Array<String>();
     absent.push('call_ref');
     absent.push('call $');
@@ -1682,12 +1743,13 @@ export let tests = suite('zir backend', (): void => {
     // Each inlined accessor brings its own cast of the operand, at its
     // own type-table index; the value numbering keys the target type
     // by identity, so the second cast is the first.
-    let result = compileWithZirAt(
-        'class Box { x: i32; new(this.x); }\n' +
-        'let get = (a: anyref): i32 => (a as Box).x;\n' +
-        'let get2 = (a: anyref): i32 => (a as Box).x * 2;\n' +
-        'export let both = (v: anyref): i32 => get(v) + get2(v);\n' +
-        'export let main = (): i32 => both(new Box(3));', 2);
+    let result = compileWithZirAt(dedentRaw`
+        class Box { x: i32; new(this.x); }
+        let get = (a: anyref): i32 => (a as Box).x;
+        let get2 = (a: anyref): i32 => (a as Box).x * 2;
+        export let both = (v: anyref): i32 => get(v) + get2(v);
+        export let main = (): i32 => both(new Box(3));
+        `, 2);
     assertFunctionUsesTimes(result, '$both', 'ref.cast', 1,
         'one cast serves both inlined reads');
   });
@@ -1696,15 +1758,16 @@ export let tests = suite('zir backend', (): void => {
     // The cast sits in the header (the loop condition reads through
     // it), so it runs on every entry to the loop; moving it before the
     // loop changes nothing about when it can trap.
-    let result = compileWithZirAt(
-        'class Arr { len: i32; new(this.len); }\n' +
-        'export let count = (a: anyref): i32 => {\n' +
-        '  var s = 0;\n' +
-        '  var i = 0;\n' +
-        '  while (i < (a as Arr).len) { s += i; i += 1; }\n' +
-        '  return s;\n' +
-        '};\n' +
-        'export let main = (): i32 => count(new Arr(4));', 2);
+    let result = compileWithZirAt(dedentRaw`
+        class Arr { len: i32; new(this.len); }
+        export let count = (a: anyref): i32 => {
+          var s = 0;
+          var i = 0;
+          while (i < (a as Arr).len) { s += i; i += 1; }
+          return s;
+        };
+        export let main = (): i32 => count(new Arr(4));
+        `, 2);
     let body = watFunction(result, '$count');
     isTrue(body.length > 0, 'no function $count in the emitted module');
     let parts = body.split('loop');
@@ -1719,10 +1782,11 @@ export let tests = suite('zir backend', (): void => {
     // Dead any more: neither its struct nor its vtable struct is in
     // the type section. At -O1 the constructor is still a call that
     // allocates, so the types stay.
-    let source =
-        'class Dead { x: i32; new(this.x); }\n' +
-        'let f = (n: i32): i32 => new Dead(n).x;\n' +
-        'export let main = (): i32 => f(3);';
+    let source = dedentRaw`
+        class Dead { x: i32; new(this.x); }
+        let f = (n: i32): i32 => new Dead(n).x;
+        export let main = (): i32 => f(3);
+        `;
     isTrue(!compileWithZirAt(source, 2).contains('$Dead'),
         'at -O2 no type named after Dead survives');
     isTrue(compileWithZirAt(source, 1).contains('$Dead'),
@@ -1734,25 +1798,26 @@ export let tests = suite('zir backend', (): void => {
     // stays a function; every caller packs a Circle. The clone takes
     // the Circle: no fat pointer, no cast, and area inlines to the
     // field read. Nothing else references total, so it is gone.
-    let result = compileWithZirAt(
-        'interface Shape { area(): i32; }\n' +
-        'class Circle implements Shape {\n' +
-        '  r: i32;\n' +
-        '  new(this.r);\n' +
-        '  area(): i32 { return this.r * this.r; }\n' +
-        '}\n' +
-        'let total = (s: Shape, n: i32): i32 => {\n' +
-        '  var t = 0;\n' +
-        '  var i = 0;\n' +
-        '  while (i < n) { t += s.area(); i += 1; }\n' +
-        '  var j = 0;\n' +
-        '  while (j < n) { t += s.area() * 2; j += 1; }\n' +
-        '  return t;\n' +
-        '};\n' +
-        'export let main = (): i32 => {\n' +
-        '  let c = new Circle(3);\n' +
-        '  return total(c, 10) + total(c, 5);\n' +
-        '};', 2);
+    let result = compileWithZirAt(dedentRaw`
+        interface Shape { area(): i32; }
+        class Circle implements Shape {
+          r: i32;
+          new(this.r);
+          area(): i32 { return this.r * this.r; }
+        }
+        let total = (s: Shape, n: i32): i32 => {
+          var t = 0;
+          var i = 0;
+          while (i < n) { t += s.area(); i += 1; }
+          var j = 0;
+          while (j < n) { t += s.area() * 2; j += 1; }
+          return t;
+        };
+        export let main = (): i32 => {
+          let c = new Circle(3);
+          return total(c, 10) + total(c, 5);
+        };
+        `, 2);
     let clone = watFunction(result, '$total$spec');
     isTrue(clone.length > 0, 'no function $total$spec in the emitted module');
     isTrue(watFunction(result, '$total').length == 0,
@@ -1771,18 +1836,19 @@ export let tests = suite('zir backend', (): void => {
   });
 
   test('-O2 hoists an immutable field load out of a loop', (ctx: TestContext): void => {
-    let result = compileWithZirAt(
-        'class P {\n' +
-        '  k: i32;\n' +
-        '  new(this.k);\n' +
-        '}\n' +
-        'export let sum = (p: P, n: i32): i32 => {\n' +
-        '  var s = 0;\n' +
-        '  var i = 0;\n' +
-        '  while (i < n) { s += p.k; i += 1; }\n' +
-        '  return s;\n' +
-        '};\n' +
-        'export let main = (): i32 => sum(new P(3), 10);', 2);
+    let result = compileWithZirAt(dedentRaw`
+        class P {
+          k: i32;
+          new(this.k);
+        }
+        export let sum = (p: P, n: i32): i32 => {
+          var s = 0;
+          var i = 0;
+          while (i < n) { s += p.k; i += 1; }
+          return s;
+        };
+        export let main = (): i32 => sum(new P(3), 10);
+        `, 2);
     let sumBody = watFunction(result, '$sum');
     isTrue(sumBody.length > 0, 'no function $sum in the emitted module');
     let parts = sumBody.split('loop');
@@ -1797,25 +1863,26 @@ export let tests = suite('zir backend', (): void => {
     // Two implementers keep the call indirect, so the win is the
     // unpack and the vtable-slot load moving out of the loop: inside,
     // only the call remains.
-    let result = compileWithZirAt(
-        'interface Shape { area(): i32; }\n' +
-        'class Circle implements Shape {\n' +
-        '  r: i32;\n' +
-        '  new(this.r);\n' +
-        '  area(): i32 { return this.r * this.r; }\n' +
-        '}\n' +
-        'class Square implements Shape {\n' +
-        '  s: i32;\n' +
-        '  new(this.s);\n' +
-        '  area(): i32 { return this.s * 4; }\n' +
-        '}\n' +
-        'export let total = (s: Shape, n: i32): i32 => {\n' +
-        '  var t = 0;\n' +
-        '  var i = 0;\n' +
-        '  while (i < n) { t += s.area(); i += 1; }\n' +
-        '  return t;\n' +
-        '};\n' +
-        'export let main = (): i32 => total(new Circle(3), 10) + total(new Square(2), 10);', 2);
+    let result = compileWithZirAt(dedentRaw`
+        interface Shape { area(): i32; }
+        class Circle implements Shape {
+          r: i32;
+          new(this.r);
+          area(): i32 { return this.r * this.r; }
+        }
+        class Square implements Shape {
+          s: i32;
+          new(this.s);
+          area(): i32 { return this.s * 4; }
+        }
+        export let total = (s: Shape, n: i32): i32 => {
+          var t = 0;
+          var i = 0;
+          while (i < n) { t += s.area(); i += 1; }
+          return t;
+        };
+        export let main = (): i32 => total(new Circle(3), 10) + total(new Square(2), 10);
+        `, 2);
     let totalBody = watFunction(result, '$total');
     isTrue(totalBody.length > 0, 'no function $total in the emitted module');
     let parts = totalBody.split('loop');
@@ -1827,10 +1894,11 @@ export let tests = suite('zir backend', (): void => {
   });
 
   test('-O1 does not inline', (ctx: TestContext): void => {
-    let result = compileWithZir(
-        'let inc = (x: i32): i32 => x + 1;\n' +
-        'let f = (y: i32): i32 => inc(y);\n' +
-        'export let main = (): i32 => f(20);');
+    let result = compileWithZir(dedentRaw`
+        let inc = (x: i32): i32 => x + 1;
+        let f = (y: i32): i32 => inc(y);
+        export let main = (): i32 => f(20);
+        `);
     let present = new Array<String>();
     present.push('call $inc');
     assertFunctionUses(result, '$f', present,
@@ -1867,12 +1935,13 @@ export let tests = suite('zir backend', (): void => {
     // i64 multiply of constants folds, and the wrap of the folded
     // constant folds after it — one forward pass cascades because
     // operand ids precede use ids.
-    let result = compileWithZir(
-        'export let main = (): i32 => {\n' +
-        '  let a = 6 as i64;\n' +
-        '  let b = 7 as i64;\n' +
-        '  return (a * b) as i32;\n' +
-        '};');
+    let result = compileWithZir(dedentRaw`
+        export let main = (): i32 => {
+          let a = 6 as i64;
+          let b = 7 as i64;
+          return (a * b) as i32;
+        };
+        `);
     let present = new Array<String>();
     present.push('i32.const 42');
     assertFunctionUses(result, '$main', present,
@@ -1885,9 +1954,10 @@ export let tests = suite('zir backend', (): void => {
   });
 
   test('simplify removes additive identity', (ctx: TestContext): void => {
-    let result = compileWithZir(
-        'let f = (x: i32): i32 => x + 0;\n' +
-        'export let main = (): i32 => f(21);');
+    let result = compileWithZir(dedentRaw`
+        let f = (x: i32): i32 => x + 0;
+        export let main = (): i32 => f(21);
+        `);
     let absent = new Array<String>();
     absent.push('i32.add');
     assertFunctionOmits(result, '$f', absent,
@@ -1895,9 +1965,10 @@ export let tests = suite('zir backend', (): void => {
   });
 
   test('simplify strength-reduces multiply by a power of two', (ctx: TestContext): void => {
-    let result = compileWithZir(
-        'let f = (x: i32): i32 => x * 8;\n' +
-        'export let main = (): i32 => f(5);');
+    let result = compileWithZir(dedentRaw`
+        let f = (x: i32): i32 => x * 8;
+        export let main = (): i32 => f(5);
+        `);
     let present = new Array<String>();
     present.push('i32.shl');
     assertFunctionUses(result, '$f', present,
@@ -1909,9 +1980,10 @@ export let tests = suite('zir backend', (): void => {
   });
 
   test('simplify folds self-cancelling xor', (ctx: TestContext): void => {
-    let result = compileWithZir(
-        'let f = (x: i32): i32 => x ^ x;\n' +
-        'export let main = (): i32 => f(21);');
+    let result = compileWithZir(dedentRaw`
+        let f = (x: i32): i32 => x ^ x;
+        export let main = (): i32 => f(21);
+        `);
     let absent = new Array<String>();
     absent.push('i32.xor');
     assertFunctionOmits(result, '$f', absent,
@@ -1936,9 +2008,10 @@ export let tests = suite('zir backend', (): void => {
   });
 
   test('dce removes an unused pure computation', (ctx: TestContext): void => {
-    let result = compileWithZir(
-        'let f = (x: i32): i32 => { var a = x * 3; a = x; return a; };\n' +
-        'export let main = (): i32 => f(21);');
+    let result = compileWithZir(dedentRaw`
+        let f = (x: i32): i32 => { var a = x * 3; a = x; return a; };
+        export let main = (): i32 => f(21);
+        `);
     let absent = new Array<String>();
     absent.push('i32.mul');
     assertFunctionOmits(result, '$f', absent,
@@ -1946,17 +2019,19 @@ export let tests = suite('zir backend', (): void => {
   });
 
   test('dce removes an unused tuple allocation', (ctx: TestContext): void => {
-    let result = compileWithZir(
-        'let f = (x: i32): i32 => { let t = (x, x + 1); return x; };\n' +
-        'export let main = (): i32 => f(21);');
+    let result = compileWithZir(dedentRaw`
+        let f = (x: i32): i32 => { let t = (x, x + 1); return x; };
+        export let main = (): i32 => f(21);
+        `);
     assertNoAllocation(result, '$f',
         'an unused, non-escaping tuple never allocates');
   });
 
   test('dce keeps an unused division that could trap', (ctx: TestContext): void => {
-    let result = compileWithZir(
-        'let f = (x: i32, y: i32): i32 => { var a = x % y; a = x; return a; };\n' +
-        'export let main = (): i32 => f(21, 2);');
+    let result = compileWithZir(dedentRaw`
+        let f = (x: i32, y: i32): i32 => { var a = x % y; a = x; return a; };
+        export let main = (): i32 => f(21, 2);
+        `);
     let present = new Array<String>();
     present.push('i32.rem_s');
     assertFunctionUses(result, '$f', present,
@@ -1964,13 +2039,14 @@ export let tests = suite('zir backend', (): void => {
   });
 
   test('gvn commons repeated immutable field loads', (ctx: TestContext): void => {
-    let result = compileWithZir(
-        'class P {\n' +
-        '  #x: i32 = 7;\n' +
-        '  sum(): i32 { return this.#x + this.#x; }\n' +
-        '}\n' +
-        'let f = (p: P): i32 => p.sum();\n' +
-        'export let main = (): i32 => f(new P());');
+    let result = compileWithZir(dedentRaw`
+        class P {
+          #x: i32 = 7;
+          sum(): i32 { return this.#x + this.#x; }
+        }
+        let f = (p: P): i32 => p.sum();
+        export let main = (): i32 => f(new P());
+        `);
     // Method function names carry a symbol uid ($P_s1234.sum), so find
     // the emitted name rather than hardcoding it.
     var sumName = '';
@@ -1991,28 +2067,29 @@ export let tests = suite('zir backend', (): void => {
     // call site's cast only needs base and override to share one
     // signature, which rooting the receiver at the declaring class
     // gives either way.
-    let result = compileWithZir(
-        'class Base {\n' +
-        '  tag: i32;\n' +
-        '  new(this.tag);\n' +
-        '  describe(): i32 { return this.tag; }\n' +
-        '}\n' +
-        'final class Derived extends Base {\n' +
-        '  extra: i32;\n' +
-        '  new(t: i32, this.extra) : super(t);\n' +
-        '  describe(): i32 { return this.tag + this.extra; }\n' +
-        '  later(): () => i32 { return () => this.extra; }\n' +
-        '}\n' +
-        'let viaBase = (b: Base): i32 => b.describe();\n' +
-        'let maybe = (b: Base | null): i32 => {\n' +
-        '  if (b != null) { return b.describe(); }\n' +
-        '  return 0;\n' +
-        '};\n' +
-        'export let main = (): i32 => {\n' +
-        '  let d = new Derived(1, 2);\n' +
-        '  return viaBase(new Base(5)) + viaBase(d) + maybe(d) + maybe(null) +\n' +
-        '      d.later()();\n' +
-        '};');
+    let result = compileWithZir(dedentRaw`
+        class Base {
+          tag: i32;
+          new(this.tag);
+          describe(): i32 { return this.tag; }
+        }
+        final class Derived extends Base {
+          extra: i32;
+          new(t: i32, this.extra) : super(t);
+          describe(): i32 { return this.tag + this.extra; }
+          later(): () => i32 { return () => this.extra; }
+        }
+        let viaBase = (b: Base): i32 => b.describe();
+        let maybe = (b: Base | null): i32 => {
+          if (b != null) { return b.describe(); }
+          return 0;
+        };
+        export let main = (): i32 => {
+          let d = new Derived(1, 2);
+          return viaBase(new Base(5)) + viaBase(d) + maybe(d) + maybe(null) +
+              d.later()();
+        };
+        `);
     // Specialized names carry an id: `$Base_s12.describe`.
     let methodNamed = (className: String, method: String): String => {
       for (let chunk in result.split('(func ')) {
@@ -2049,21 +2126,22 @@ export let tests = suite('zir backend', (): void => {
     // (ref $T), found local.get of type (ref null $T)". This checks
     // the shape; tests/language/execution runs the same program under
     // wasmtime, which validates it.
-    let result = compileWithZir(
-        'class Loc { start: i32; new(this.start); }\n' +
-        'sealed class Node {\n' +
-        '  abstract loc: Loc | null;\n' +
-        '  case Leaf(loc: Loc | null)\n' +
-        '  case Pair(loc: Loc | null, other: i32)\n' +
-        '}\n' +
-        'let startOf = (n: Node | null): i32 => {\n' +
-        '  if (n != null && n.loc != null) {\n' +
-        '    let l = n.loc as Loc;\n' +
-        '    return l.start;\n' +
-        '  }\n' +
-        '  return -1;\n' +
-        '};\n' +
-        'export let main = (): i32 => startOf(new Leaf(new Loc(5))) + startOf(null);');
+    let result = compileWithZir(dedentRaw`
+        class Loc { start: i32; new(this.start); }
+        sealed class Node {
+          abstract loc: Loc | null;
+          case Leaf(loc: Loc | null)
+          case Pair(loc: Loc | null, other: i32)
+        }
+        let startOf = (n: Node | null): i32 => {
+          if (n != null && n.loc != null) {
+            let l = n.loc as Loc;
+            return l.start;
+          }
+          return -1;
+        };
+        export let main = (): i32 => startOf(new Leaf(new Loc(5))) + startOf(null);
+        `);
     let used = new Array<String>();
     used.push('call_ref');
     used.push('ref.as_non_null');
@@ -2077,19 +2155,20 @@ export let tests = suite('zir backend', (): void => {
     // emitted before the field load, so the load's result stays on
     // the stack — no local for it, no set/get pair. The same for a
     // store: `p.y = i * 2` pushes `p` before the multiply.
-    let result = compileWithZir(
-        'class Point {\n' +
-        '  x: i32;\n' +
-        '  var y: i32;\n' +
-        '  new(this.x, this.y);\n' +
-        '}\n' +
-        'let sub = (p: Point, i: i32): i32 => i - p.x;\n' +
-        'let store = (p: Point, i: i32): void => { p.y = i * 2; };\n' +
-        'export let main = (): i32 => {\n' +
-        '  let p = new Point(3, 0);\n' +
-        '  store(p, 5);\n' +
-        '  return sub(p, 10) + p.y;\n' +
-        '};');
+    let result = compileWithZir(dedentRaw`
+        class Point {
+          x: i32;
+          var y: i32;
+          new(this.x, this.y);
+        }
+        let sub = (p: Point, i: i32): i32 => i - p.x;
+        let store = (p: Point, i: i32): void => { p.y = i * 2; };
+        export let main = (): i32 => {
+          let p = new Point(3, 0);
+          store(p, 5);
+          return sub(p, 10) + p.y;
+        };
+        `);
     let locals = new Array<String>();
     locals.push('local.set');
     locals.push('local.tee');

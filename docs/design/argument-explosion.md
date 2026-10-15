@@ -431,14 +431,23 @@ dispatch's getters and vtable with it if nothing else uses them.
   - "a record passed on whole stays as its fields": a literal passed to
     `outer`, which passes it to `inner`, is never built, and
     `outer.core` calls `inner.core` with its fields.
-- `tests/language/execution/records/exploded-params/`: literal, value,
-  wider-record and function-value calls of one function agreeing;
-  records forwarded through chains, recursion, mutual recursion, and
-  into a function that keeps them; mixed literal and heap arguments;
-  presence through exploded fields (explicit zero, omitted, defaults,
-  `??`, a reference-typed optional field); evaluation order across
-  arguments and inside literals with spreads; escaping parameters that
-  must stay boxed; two record parameters with a plain one between.
+- `tests/language/execution/records/across-calls/`: plain execution
+  tests that pass with or without explosion, each aimed at a seam the
+  pass creates, so a wrong core or forwarder shows up as a wrong
+  result. Literal, value, wider-record and function-value calls of one
+  function agreeing; records forwarded through chains, recursion,
+  mutual recursion, and into a function that keeps them; mixed literal
+  and heap arguments; presence through exploded fields (explicit zero,
+  omitted, defaults, `??`, a reference-typed optional field);
+  evaluation order across arguments and inside literals with spreads;
+  escaping parameters that must stay boxed; two record parameters with
+  a plain one between; results returned, merged from arms, held in
+  `var`s, bound, and passed straight on; methods, statics and
+  overridden methods; unnamed, named and generic constructors, and
+  `super(...)` records at every level of a chain; generic functions and
+  methods per instantiation. `npm run test:execution -w
+@zena-lang/zena-compiler -- across-calls` runs exactly this set. The
+  WAT tests above are what show the optimization happens.
 - Stage-2 byte parity, as always.
 
 ## Alternatives considered
