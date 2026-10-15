@@ -238,8 +238,10 @@ positionally:
 
 An instance or static method is eligible on a class that is not an
 extension or a mixin intermediate, including each concrete
-instantiation of a generic class, when the method is not generic, abstract, `async`, a generator, decorated, or declared with an
-explicit receiver, and has no parameter defaults. Its parameters and
+instantiation of a generic class, when the method is not abstract,
+`async`, a generator, decorated, or declared with an explicit
+receiver, and has no parameter defaults. A generic method is eligible
+per specialization of its own type parameters (below). Its parameters and
 its result explode under the same rules as a function's. A static
 method's calls are all direct, so its core is used like a function's.
 
@@ -280,10 +282,35 @@ At `-O2` the inliner already brought this small method into the loop,
 and scalar replacement removed the record. The compiler's own module
 grows by 2.9 KB (2,240,334 to 2,243,268 bytes).
 
+**Generic methods.** A method's own type parameters are a second axis:
+a generic method exists only as its specializations (`map_spec_i32`,
+reachability's CONTEXT.md), each a function under its specialized slot
+name. Such a method is named by its `methodTargetKey` together with
+that slot name (`specMethodTargetKey`), which reachability computes
+from the call's solved type arguments as the walk sees them, and
+demand's `methodTargetOf` from the same arguments instantiated as the
+calling function sees them, as lowering's slot lookup does. The
+candidate reads the member's type under its declared name, since the
+slot name is the specialization's. Lowering needed no change: its
+direct path resolves the specialized slot before it checks for a core.
+
+A generic method a subclass overrides is not dispatched through a
+class-typed receiver yet (#364): the call binds to the receiver's
+static class. Explosion follows the method lowering calls, so it adds
+no error of its own; when #364 adds per-specialization class vtable
+slots, `Candidate.overridden` must see the subclass's specialization
+for a dispatched call to keep passing the record.
+
+On a loop destructuring `g.shift<i32>({x: i, y: 1}, 0)`, two million
+iterations, `-O1` goes from 113 ms to 2.4 ms; at `-O2` the inliner had
+already removed the record. No generic method in the compiler's own
+module gets a core; it grows by 1.0 KB (2,285,315 to 2,286,343), the
+code that does this.
+
 ### Not yet eligible
 
-- **Generic methods, async functions and generators**, each for the
-  reasons the rest of this document's later phases list.
+- **Async functions and generators**, for the reasons the rest of this
+  document's later phases list.
 
 ### Eligible parameters
 
@@ -640,9 +667,7 @@ Not yet covered:
 
 ## Later phases
 
-- Per-specialization explosion of generic methods (a method's own type
-  parameters, `map_spec_i32`), keyed like generic functions; async
-  functions and generators.
+- Async functions and generators.
 - The `inline` parameter guarantee above.
 - Teaching spread and `==` to consume exploded bindings.
 - Weighting call sites, for example by loop depth, for a function with
