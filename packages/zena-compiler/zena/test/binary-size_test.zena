@@ -23,15 +23,11 @@
 import { suite, test, TestContext } from 'zena:test';
 import { isTrue, isFalse, equal } from 'zena:assert';
 import { readFile, writeFile, exists, mkdir } from 'zena:fs';
-import { CompilerHost } from '../lib/library-loader.zena';
 import {
   Compiler, createCompiler, checkCompilation,
 } from '../lib/compiler.zena';
 import { loadPackageMap } from '../lib/package-manifest.zena';
-import { stdlibIdToRelativeFile } from '../lib/module-resolver.zena';
-import { isWitModulePath, synthesizeWitModule } from '../lib/wit-module-synth.zena';
 import { readWitSource } from '../lib/wit-source.zena';
-import { directoryNames } from '../lib/fs-host.zena';
 import { DiagnosticSeverity } from '../lib/diagnostics.zena';
 import { BinaryGenerator } from '../lib/codegen/binary-generator.zena';
 import { WatGenerator } from '../lib/codegen/wat-generator.zena';
@@ -39,6 +35,7 @@ import { compileComponentRuntimeModule } from '../lib/codegen/component-runtime.
 import { makeImportEncoder } from '../lib/codegen/wit-imports.zena';
 import { Program, CompilationUnit } from '../lib/program.zena';
 import { getEnv } from 'zena:cli';
+import { PlainHost, stdlibRoot } from './test-utils.zena';
 
 /** Mirrors codegen-wat_test's helper; UPDATE_SNAPSHOTS=1 regenerates. */
 let assertSnapshot = (name: String, content: String): void => {
@@ -58,28 +55,6 @@ let assertSnapshot = (name: String, content: String): void => {
     equal(content, content);
   }
 };
-
-let stdlibRoot = 'packages/stdlib/zena';
-
-class PlainHost implements CompilerHost {
-
-  readFile(path: String): String {
-    // A WIT-backed package's module has no file: the `zena-cli` target's
-    // stack traces import `zena-cli:host/stack-trace`, synthesized from
-    // the host WIT the stdlib carries.
-    if (isWitModulePath(path)) {
-      return synthesizeWitModule(this, path);
-    }
-    if (path.startsWith('zena:')) {
-      return readFile(`${stdlibRoot}/${stdlibIdToRelativeFile(path)}`);
-    }
-    return readFile(path);
-  }
-
-  listDir(path: String): Array<String> | null {
-    return directoryNames(path);
-  }
-}
 
 /**
  * Compiles to wasm the way `zena-cli build` does — names off. The

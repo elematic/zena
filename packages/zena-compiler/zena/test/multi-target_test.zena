@@ -19,39 +19,17 @@
 
 import { suite, test, TestContext } from 'zena:test';
 import { isTrue, isFalse, equal } from 'zena:assert';
-import { readFile } from 'zena:fs';
-import { CompilerHost, SourceFile } from '../lib/library-loader.zena';
+import { SourceFile } from '../lib/library-loader.zena';
 import {
   Compiler, ProgramCheckResult, checkCompilation, createCompiler,
 } from '../lib/compiler.zena';
 import { loadPackageMap } from '../lib/package-manifest.zena';
-import { stdlibIdToRelativeFile } from '../lib/module-resolver.zena';
 import { DiagnosticSeverity } from '../lib/diagnostics.zena';
 import { BinaryGenerator } from '../lib/codegen/binary-generator.zena';
 import { Program, CompilationUnit } from '../lib/program.zena';
-import { isWitModulePath, synthesizeWitModule } from '../lib/wit-module-synth.zena';
-import { directoryNames } from '../lib/fs-host.zena';
+import { PlainHost, stdlibRoot } from './test-utils.zena';
 
-let stdlibRoot = 'packages/stdlib/zena';
 let fixtures = 'packages/zena-compiler/test-files/multi-target';
-
-class PlainHost implements CompilerHost {
-  readFile(path: String): String {
-    // The `zena-cli` target's stack traces import a WIT-backed library,
-    // which has no file: its declarations come from the host WIT.
-    if (isWitModulePath(path)) {
-      return synthesizeWitModule(this, path);
-    }
-    if (path.startsWith('zena:')) {
-      return readFile(`${stdlibRoot}/${stdlibIdToRelativeFile(path)}`);
-    }
-    return readFile(path);
-  }
-
-  listDir(path: String): Array<String> | null {
-    return directoryNames(path);
-  }
-}
 
 let newCompiler = (): Compiler => {
   let host = new PlainHost();

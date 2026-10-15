@@ -9,28 +9,10 @@
 // compilation must come out clean.
 import { suite, test, TestContext } from 'zena:test';
 import { equal } from 'zena:assert';
-import { readFile } from 'zena:fs';
-import { CompilerHost } from '../lib/library-loader.zena';
 import { createCompiler, checkCompilation, ProgramCheckResult } from '../lib/compiler.zena';
 import { loadPackageMap } from '../lib/package-manifest.zena';
-import { stdlibIdToRelativeFile } from '../lib/module-resolver.zena';
-import { directoryNames } from '../lib/fs-host.zena';
 import { Diagnostic, DiagnosticSeverity } from '../lib/diagnostics.zena';
-
-class FsHost implements CompilerHost {
-  #stdlibRoot: String;
-  new(stdlibRoot: String) : #stdlibRoot = stdlibRoot;
-  readFile(path: String): String {
-    if (path.startsWith("zena:")) {
-      return readFile(this.#stdlibRoot + "/" + stdlibIdToRelativeFile(path));
-    }
-    return readFile(path);
-  }
-
-  listDir(path: String): Array<String> | null {
-    return directoryNames(path);
-  }
-}
+import { PlainHost, stdlibRoot } from './test-utils.zena';
 
 let errorsOf = (result: ProgramCheckResult): GrowableArray<String> => {
   let out = new Array<String>();
@@ -48,8 +30,7 @@ let errorsOf = (result: ProgramCheckResult): GrowableArray<String> => {
 
 export let tests = suite('cycle members across incremental compiles', (): void => {
   test('the second entry of a cycle checks clean after the first', (ctx: TestContext): void => {
-    let stdlibRoot = "packages/stdlib/zena";
-    let host = new FsHost(stdlibRoot);
+    let host = new PlainHost();
     let packages = loadPackageMap(host, "zena-packages.json");
     let compiler = createCompiler(host, {stdlibRoot, packages});
     let a = "tests/language/semantics/modules/cyclic_functions_ok.zena";

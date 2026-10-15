@@ -19,7 +19,6 @@ import {
   Compiler, createCompiler, CompileOptions, checkCompilation, withBuiltinPackages
 } from '../lib/compiler.zena';
 import { loadPackageMap } from '../lib/package-manifest.zena';
-import { stdlibIdToRelativeFile } from '../lib/module-resolver.zena';
 import { DiagnosticSeverity } from '../lib/diagnostics.zena';
 import { BinaryGenerator } from '../lib/codegen/binary-generator.zena';
 import { compileComponentRuntimeModule } from '../lib/codegen/component-runtime.zena';
@@ -33,37 +32,19 @@ import {
   deriveImportsWit, encodeImportTypes, makeImportEncoder
 } from '../lib/codegen/wit-imports.zena';
 import {
-  isWitModulePath, synthesizeWitModule, synthesizeExportWrapper
+  synthesizeWitModule, synthesizeExportWrapper
 } from '../lib/wit-module-synth.zena';
 import { WitFile, joinWitFiles } from 'wit-parser:document';
 import { ComponentEntryWrapper } from '../lib/component-entry.zena';
 import { Module } from '../lib/ast.zena';
 import { parse } from '../lib/parser.zena';
 import { readWitSource } from '../lib/wit-source.zena';
-import { DiskHost, directoryNames } from '../lib/fs-host.zena';
+import { DiskHost } from '../lib/fs-host.zena';
 import { PackageConfig } from '../lib/module-resolver.zena';
 import { assertFunctionUsesTimes } from './wat-invariants.zena';
-import { MockHost } from './test-utils.zena';
+import { MockHost, PlainHost, stdlibRoot } from './test-utils.zena';
 
-let stdlibRoot = 'packages/stdlib/zena';
 let fixtures = 'packages/zena-compiler/test-files/component';
-
-class PlainHost implements CompilerHost {
-
-  readFile(path: String): String {
-    if (isWitModulePath(path)) {
-      return synthesizeWitModule(this, path);
-    }
-    if (path.startsWith('zena:')) {
-      return readFile(`${stdlibRoot}/${stdlibIdToRelativeFile(path)}`);
-    }
-    return readFile(path);
-  }
-
-  listDir(path: String): Array<String> | null {
-    return directoryNames(path);
-  }
-}
 
 /** Reads WIT roots from disk for the tests that synthesize directly. */
 let disk = new DiskHost();
