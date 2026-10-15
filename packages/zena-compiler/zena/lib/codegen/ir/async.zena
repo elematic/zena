@@ -74,6 +74,7 @@ import {
   rawParam, rawDefaultOf, computeLiveIn, weakenToNullable, loopContainsSuspend,
   rerouteEdges, TryRegion, dispatchRegionsOf, addRegionMergeTargets,
   spillCatchLiveIns, varFieldsOf, rewriteVarsToFrame, iteratorInstantiationOf,
+  isExplosionForwarder,
 } from './generators.zena';
 import { ReachabilityAnalysis } from '../reachability/analysis.zena';
 import {
@@ -135,7 +136,7 @@ var mainWrapperBodies = new Map<i32, IrBody>();
 /** True if this WasmFunction carries a non-generator `async` AST node. */
 export let isAsyncFunction = (func: WasmFunction): boolean => {
   let {node} = func;
-  if (node == null) {
+  if (node == null || isExplosionForwarder(func)) {
     return false;
   }
   return match (node) {
@@ -148,7 +149,7 @@ export let isAsyncFunction = (func: WasmFunction): boolean => {
 /** True if this WasmFunction carries an `async gen` AST node. */
 export let isAsyncGeneratorFunction = (func: WasmFunction): boolean => {
   let {node} = func;
-  if (node == null) {
+  if (node == null || isExplosionForwarder(func)) {
     return false;
   }
   return match (node) {

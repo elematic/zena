@@ -546,6 +546,18 @@ export final class ModuleGenerator {
       }
     }
 
+    // Argument explosion (ir/explode.zena): a core beside each function
+    // whose record parameter some call passes unpacked, or whose record
+    // result some call only reads the fields of. Before the splits,
+    // which lower every generator and async body: those bodies' calls
+    // then see the cores, and a suspending function's core is split
+    // like any other (its frame holds the fields) while its forwarder
+    // stays a plain function. Before layout() locks types, because it
+    // interns signatures. It reads only reachability's results, so the
+    // callers the passes below synthesize, which call forwarders by
+    // their unchanged signatures, need not exist yet.
+    explodeRecordParameters(wasm, pass);
+
     // Generator split pass (ir/generators.zena): presplit-lowers every
     // generator body (which needs the string-literal registry above)
     // and synthesizes everything a generator needs — frame structs,
@@ -573,11 +585,6 @@ export final class ModuleGenerator {
       prepareResourceDestructors(wasm, pass);
       prepareComponentExports(wasm, pass);
     }
-
-    // Argument explosion (ir/explode.zena): a core beside each function
-    // whose record parameter some direct call passes as a literal. After
-    // every pass above that adds callers, before layout() locks types.
-    explodeRecordParameters(wasm, pass);
 
     wasm.layout();
     performance.end(tLayout);

@@ -79,10 +79,38 @@ Explosion applies per (function, parameter).
 ### Eligible functions
 
 Top-level `function` declarations and module-level `let` arrows, when
-they have no receiver, context, captures, suspension (`async`,
-generators) or zero-width parameters, return at most one value, and
-declare no parameter defaults. A default injected at the call site can
-name an earlier parameter, which the core no longer has as one value.
+they have no receiver, context, captures or zero-width parameters,
+return at most one value, and declare no parameter defaults. A default
+injected at the call site can name an earlier parameter, which the core
+no longer has as one value.
+
+Generators and `async` functions are eligible too, for their
+parameters; their result is the iterator or future, so it never
+explodes. Their core is the suspending function: the generator and
+async splits rewrite it into a ramp and a state machine like any other
+(`ir/generators.zena`, `ir/async.zena`), and since its parameters are
+the record's fields, the values live across a `yield` or `await`, and
+so stored in its frame, are the fields; the record rebuilt at entry is
+dead. The forwarder shares the core's node but is not a suspending
+body: it reads the fields and calls the core, which returns the
+iterator or future. So the splits skip it (`isExplosionForwarder`), and
+`lowerFunction` lowers it like any forwarder rather than asking for a
+prepared ramp. Async methods are eligible the same way.
+
+On a loop draining `span({x: i, y: 1})`, a generator yielding its
+record's two fields, a million iterations (wall time, including
+process start):
+
+| build | before | after |
+| ----- | ------ | ----- |
+| `-O1` | 88 ms  | 56 ms |
+| `-O2` | 23 ms  | 12 ms |
+
+Unlike the other shapes here, `-O2` gains too: the inliner never
+inlines a generator's ramp, so the record was always built and stored
+in the frame. The compiler's own module grows by 283 bytes (2,285,109
+to 2,285,392); none of its suspending functions takes a record, and its
+async bodies already called no exploded function.
 
 A generic function is eligible per specialization: each
 `first_spec_i32` is a function of its own, with its own candidate
@@ -239,9 +267,10 @@ positionally:
 An instance or static method is eligible on a class that is not an
 extension or a mixin intermediate, including each concrete
 instantiation of a generic class, when the method is not abstract,
-`async`, a generator, decorated, or declared with an explicit
-receiver, and has no parameter defaults. A generic method is eligible
-per specialization of its own type parameters (below). Its parameters and
+decorated, or declared with an explicit receiver, and has no parameter
+defaults. A generic method is eligible per specialization of its own
+type parameters (below), and an `async` or generator method as a
+function is (Eligible functions), with a result that never explodes. Its parameters and
 its result explode under the same rules as a function's. A static
 method's calls are all direct, so its core is used like a function's.
 
@@ -307,11 +336,6 @@ already removed the record. No generic method in the compiler's own
 module gets a core; it grows by 1.0 KB (2,285,315 to 2,286,343), the
 code that does this.
 
-### Not yet eligible
-
-- **Async functions and generators**, for the reasons the rest of this
-  document's later phases list.
-
 ### Eligible parameters
 
 Two facts are kept per (function, parameter). They are function
@@ -361,9 +385,15 @@ that needs the record is never exploded.
 ## The explosion pass
 
 `explodeRecordParameters` runs in `module-generator.zena` after
-reachability, the generator and async splits and the component
-adapters, and before `wasm.layout()`: after, because those passes add
-callers and value uses; before, because it interns signatures.
+reachability and before the generator and async splits, the component
+adapters and `wasm.layout()`. It reads only reachability's results
+(its evidence, and the bodies it walks for demand), so it does not need
+the callers the later passes synthesize: they call forwarders, whose
+signatures do not change. It must come before the splits because they
+lower every generator and async body while preparing it. Run after
+them, as it first was, it left those bodies calling forwarders, and a
+suspending function could not have a core at all. It comes before
+`layout()` because it interns signatures.
 
 For each eligible function `f` it adds a **core**: a new `WasmFunction`
 named `f.core` with the same node and model, whose signature has each
@@ -676,7 +706,6 @@ Not yet covered:
 
 ## Later phases
 
-- Async functions and generators.
 - The `inline` parameter guarantee above.
 - Teaching spread and `==` to consume exploded bindings.
 - Weighting call sites, for example by loop depth, for a function with
