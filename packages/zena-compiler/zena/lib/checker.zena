@@ -169,21 +169,26 @@ let lookupBindingTypeInDeps = (ctx: CheckerContext, sym: Symbol): Type | null =>
  * registerTypeParameter() as soon as each TypeParameterType is created.
  */
 /**
- * Whether `decl` declares a type that has one canonical object per
- * declaration (docs/design/import-cycles.md): a class, interface, mixin,
- * sealed variant, type alias or enum. Whichever module asks first creates
- * the object, in `SharedCheckerState.declaredNominalTypes`, and the
- * declaring module's own registration fills it in.
+ * Whether `decl` declares a type: a class, interface, mixin, sealed
+ * variant, type alias or enum. Each has one canonical type object per
+ * declaration (docs/design/import-cycles.md), created by whichever module
+ * asks first, in `SharedCheckerState.declaredNominalTypes`, and filled in
+ * by the declaring module's own registration. A type parameter is
+ * declared by the type or function it belongs to and is keyed by its
+ * source location (`typeParameterTypes`), and a `symbol` declaration is a
+ * value (`declaredSymbolTypes`); neither is one of these.
  */
-let isIdentityDeclaration = (decl: Node): boolean => match (decl) {
-  case ClassDeclaration: true
-  case InterfaceDeclaration: true
-  case MixinDeclaration: true
-  case SealedVariant: true
-  case TypeAliasDeclaration: true
-  case EnumDeclaration: true
-  case _: false
-};
+function isTypeDeclaration(decl: Node): boolean {
+  return match (decl) {
+    case ClassDeclaration: true
+    case InterfaceDeclaration: true
+    case MixinDeclaration: true
+    case SealedVariant: true
+    case TypeAliasDeclaration: true
+    case EnumDeclaration: true
+    case _: false
+  };
+}
 
 /**
  * The type a declaration's name has in the value namespace, given its
@@ -191,7 +196,7 @@ let isIdentityDeclaration = (decl: Node): boolean => match (decl) {
  * (`TypeAliasType.enumValue`), for everything else the type itself (a
  * class's constructor value is the class).
  */
-let bindingFaceOf = (t: Type): Type => {
+function bindingFaceOf(t: Type): Type {
   if (t is TypeAliasType) {
     let enumValue = (t as TypeAliasType).enumValue;
     if (enumValue != null) {
@@ -199,7 +204,25 @@ let bindingFaceOf = (t: Type): Type => {
     }
   }
   return t;
-};
+}
+
+/**
+ * An enum's canonical type, `Color` the type, carrying `Color` the value
+ * whose fields are its members (`enumValue`), from the declaration alone.
+ * The backing type is a hole until the enum's registration fills it in.
+ */
+function newEnumType(ed: EnumDeclaration): TypeAliasType {
+  let enumType = new TypeAliasType(ed.name.name, null, new HoleType(), true, null, false, "");
+  enumType.enumDeclaration = ed;
+  let fields = new Map<String, Type>();
+  for (let member in ed.members) {
+    fields[member.name.name] = enumType;
+  }
+  let enumValue = new RecordT(fields, null);
+  enumValue.enumDeclaration = ed;
+  enumType.enumValue = enumValue;
+  return enumType;
+}
 
 export final class SharedCheckerState {
   var typeIdGenerator = makeTypeIdGenerator();
@@ -224,7 +247,7 @@ export final class SharedCheckerState {
   wellKnownTypes = new Map<i32, Type>();
 
   /**
-   * The canonical type of each type declaration (`isIdentityDeclaration`:
+   * The canonical type of each type declaration (`isTypeDeclaration`:
    * class, interface, mixin, sealed variant, type alias, enum), keyed by
    * its declaring symbol. Shared across every checking pass of a
    * compilation so a declaration has exactly ONE type object no matter
@@ -1417,37 +1440,6 @@ final class CheckerContext {
   }
 
   /**
-   * The canonical type of the enum `declaring` declares: `Color` as a
-   * type, carrying `Color` the value whose fields are its members
-   * (`enumValue`). Created by whichever module asks first and filled in
-   * (the backing type) by the enum's own registration, like every other
-   * entry of `declaredNominalTypes`. A null `declaring` symbol builds the
-   * pair without registering it.
-   */
-  canonicalEnum(declaring: Symbol | null, ed: EnumDeclaration): TypeAliasType {
-    if (declaring != null) {
-      if (let (true, existing) = this.#sharedState.declaredNominalTypes.get(declaring.id)) {
-        if (existing is TypeAliasType) {
-          return existing as TypeAliasType;
-        }
-      }
-    }
-    let enumType = new TypeAliasType(ed.name.name, null, new HoleType(), true, null, false, "");
-    enumType.enumDeclaration = ed;
-    let fields = new Map<String, Type>();
-    for (let member in ed.members) {
-      fields[member.name.name] = enumType;
-    }
-    let enumValue = new RecordT(fields, null);
-    enumValue.enumDeclaration = ed;
-    enumType.enumValue = enumValue;
-    if (declaring != null) {
-      this.#sharedState.declaredNominalTypes[declaring.id] = enumType;
-    }
-    return enumType;
-  }
-
-  /**
    * The canonical type of the declaration `target` names, if any module
    * has materialized it: the type face, whichever side created it and
    * whether or not the declaring module has registered yet. Null for a
@@ -1456,13 +1448,30 @@ final class CheckerContext {
    */
   canonicalTypeOf(target: Symbol): Type | null {
     let d = target.declaration;
-    if (d == null || !isIdentityDeclaration(d)) {
+    if (d == null || !isTypeDeclaration(d)) {
       return null;
     }
     if (let (true, t) = this.#sharedState.declaredNominalTypes.get(target.id)) {
       return t;
     }
     return null;
+  }
+
+  /**
+   * The canonical type of the declaration `sym` names, materialized from
+   * its AST if no module has asked for it yet. The type face;
+   * `bindingFaceOf` gives the value's. Null for anything that is not a
+   * type declaration.
+   */
+  declaredType(sym: Symbol): Type | null {
+    let existing = this.canonicalTypeOf(sym);
+    if (existing != null) {
+      return existing;
+    }
+    if (this.#materializeFromSymbol(sym, sym.name) == null) {
+      return null;
+    }
+    return this.canonicalTypeOf(sym);
   }
 
   /**
@@ -1531,36 +1540,37 @@ final class CheckerContext {
    */
   materializeCyclicImport(info: Symbol, name: String, valueNamespace: boolean = false): Type | null {
     let target = info.resolveTarget();
-    var t = this.canonicalTypeOf(target);
-    if (t == null) {
-      // Only a genuine back edge of the current compilation may create a
-      // shell: the origin evaluates later, so it has no model YET and its
-      // own registration is guaranteed to fill this object. Any other
-      // model miss is stale state — e.g. an incremental host re-loaded
-      // the origin after its model was computed, so lookups against the
-      // old model miss on the new Symbols. Minting a shell there would
-      // give the declaration a second nominal identity.
-      let later = this.cyclicLaterPaths;
-      if (later == null) {
-        return null;
-      }
-      if (!later.has(target.modulePath)) {
-        return null;
-      }
-      let d = target.declaration;
-      if (d == null || !isIdentityDeclaration(d)) {
-        return null;
-      }
-      if (this.#materializeFromSymbol(info, name, target) == null) {
-        return null;
-      }
-      t = this.canonicalTypeOf(target);
-      if (t == null) {
-        return null;
-      }
+    let canonical = this.canonicalTypeOf(target) ?? this.#materializeShell(info, name, target);
+    if (canonical == null) {
+      return null;
     }
-    let canonical = t as Type;
     return if (valueNamespace) bindingFaceOf(canonical) else canonical;
+  }
+
+  /**
+   * A shell for the type declaration `target`, which `info` imports, built
+   * from the origin's AST and filled in later by the origin's own
+   * registration. Null unless `target` lies across a back edge of the
+   * current compilation: only then does the origin have no model YET
+   * with its registration guaranteed to follow. Any other model miss is
+   * stale state — e.g. an incremental host re-loaded the origin after its
+   * model was computed, so lookups against the old model miss on the new
+   * Symbols — and minting a shell there would give the declaration a
+   * second nominal identity.
+   */
+  #materializeShell(info: Symbol, name: String, target: Symbol): Type | null {
+    let later = this.cyclicLaterPaths;
+    if (later == null || !later.has(target.modulePath)) {
+      return null;
+    }
+    let d = target.declaration;
+    if (d == null || !isTypeDeclaration(d)) {
+      return null;
+    }
+    if (this.#materializeFromSymbol(info, name, target) == null) {
+      return null;
+    }
+    return this.canonicalTypeOf(target);
   }
 
   #materializeFromScope(name: String): Type | null {
@@ -1653,7 +1663,7 @@ final class CheckerContext {
           let declLoc = loc;
           this.#materializedDeclTypes[declLoc.start] = materialized;
         }
-        if (isIdentityDeclaration(declNode)) {
+        if (isTypeDeclaration(declNode)) {
           this.#sharedState.declaredNominalTypes[target.id] = materialized;
         }
         // The name's value binding: the type itself for a class-like
@@ -1825,30 +1835,16 @@ final class CheckerContext {
       case EnumDeclaration as ed: {
         let isStringEnum = ed.members.length > 0 && ed.members[0].initializer is StringLiteral;
         let backingType = if (isStringEnum) { this.tryResolveWellKnownType(WellKnown.StringClass) as Type } else { new I32Type() as Type };
-        let enumType = this.canonicalEnum(info, ed);
-        if (enumType.target is HoleType) {
-          enumType.target = backingType;
-        }
+        let enumType = newEnumType(ed);
+        enumType.target = backingType;
         return enumType;
       }
       case TypeAliasDeclaration as ta: {
-        // The alias is identity-stable across import-cycle re-checks,
-        // exactly like a nominal type: reuse the canonical shell (which
-        // an importer across a back edge may have created) and refill it
-        // in place, rather than minting a second identity.
-        var aliasType = new TypeAliasType(
+        let aliasType = new TypeAliasType(
           ta.name.name, null, new HoleType(), ta.isDistinct, null,
           ta.isOpaque, info.modulePath);
-        if (let (true, shell) = this.#sharedState.declaredNominalTypes.get(info.id)) {
-          match (shell) {
-            case TypeAliasType as existing: {
-              existing.target = new HoleType();
-              existing.intrinsicName = null;
-              aliasType = existing;
-            }
-            case _: {}
-          }
-        }
+        // Registered before the body resolves, so a body that names the
+        // alias itself finds this object.
         this.#sharedState.declaredNominalTypes[info.id] = aliasType;
         this.#materializedTypes[info.id] = aliasType;
         if (info.modulePath != this.filePath) {
@@ -17807,11 +17803,15 @@ let checkEnumDeclaration = (ctx: CheckerContext, ed: EnumDeclaration): void => {
 
   let strType = if (stringType != null) { stringType } else { new ErrorType() as Type };
   let backingType = if (isStringEnum) { strType } else { i32Type as Type };
-  // The enum's canonical objects, which an importer across an import
-  // cycle may already hold: fill in the backing type rather than mint a
-  // second identity.
+  // The enum's canonical type, which an importer across an import cycle
+  // may already hold: fill in the backing type.
   let info = ctx.model.resolveDeclaration(ed);
-  let enumType = ctx.canonicalEnum(info, ed);
+  let declared = if (info != null) { ctx.declaredType(info) } else { null };
+  let enumType = if (declared is TypeAliasType) {
+    declared as TypeAliasType
+  } else {
+    newEnumType(ed)
+  };
   enumType.target = backingType;
 
   // Register the enum in the type namespace.

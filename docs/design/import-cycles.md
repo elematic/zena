@@ -177,7 +177,7 @@ compile time. The component computation is what remains of it.
   so an importer's `resolveTarget()` reaches the declaring symbol and
   both sides key the same entry. Type identity lives in
   `SharedCheckerState.declaredNominalTypes`, keyed by that symbol, for
-  every kind `isIdentityDeclaration` names; `#materializeFromSymbol` is
+  every kind `isTypeDeclaration` names; `#materializeFromSymbol` is
   the single funnel that consults and populates it, and every lookup
   that wants a type — the import handler, `resolveInProgressType`,
   `materializeCyclicImport` — asks it first through `canonicalTypeOf`,
