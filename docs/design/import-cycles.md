@@ -44,40 +44,40 @@ implementation in both compilers.
      order-independent. An _unannotated_ function is rejected when its
      origin is re-checked: its inferred type differs between checking
      passes.
-   - **Classes, interfaces, and sealed variants**: fine, anywhere.
-     Nominal types are identity-stable across checking passes: each
+   - **Type declarations** — classes, interfaces, mixins, sealed
+     variants, type aliases (transparent, distinct and opaque) and
+     enums: fine, anywhere. Every kind crosses the same way. Each
      declaration has exactly one canonical type object, created on
-     first demand (possibly as an empty shell by an importer across a
-     back edge) and filled in by the declaring module's own
-     registration. Mutually recursive classes across two modules are
-     the canonical use.
-   - **Transparent type aliases**: fine, anywhere. A transparent alias
-     gets the same identity-bearing canonical object a nominal type
-     does — a shell created on first demand by an importer across a back
-     edge, filled in by the origin's own registration
-     (`registerTypeAliasDeclaration`) each pass. An importer holds the
-     shell without expanding it (its body may name types only the
-     origin's scope can resolve); the origin resolves the body. The
-     `Iterator<T>.next(): Step<T>` protocol, where `Step` is an inline
-     alias whose async arm names `Future` from a module that imports
-     the collections back, is the canonical use.
-   - **Enums** cross the same way. An enum has two faces, `Color` the
-     type and `Color` the value whose fields are its members, and each
-     declaration has one canonical object for each, created by whichever
-     side asks first (keyed by the declaration's location) and filled in
-     by the enum's own registration, which supplies the backing type.
-     The member names come from the declaration. `zena:core`'s
-     `Encoding` and `zena:async`'s `FutureState` are used by modules on
-     the same cycle as their declaring modules.
-   - **Mixins**: fine, anywhere. A mixin crosses as an identity-bearing
-     shell like a class's, filled in by its own registration. Its
-     members are _copied_ into a host at application time, so a host
-     that applied the shell holds a stale copy until the cycle registers
-     again; the application's intermediate class is cached for its
-     identity only and its members are rebuilt on every registration
-     (`getOrCreateMixinApplication`), so the second registration copies
-     from the filled mixin. `zena:core`'s `IterableUtils`, applied by
-     `FixedArray` and `Range`, can sit on a stdlib cycle this way.
+     first demand (as an empty shell when an importer across a back edge
+     asks first) and filled in by the declaring module's own
+     registration; identity is pinned per declaration, so a shell and
+     its filled form are one object. What a shell holds is the
+     declaration's name and type parameters, which the AST alone
+     determines. What the kinds differ in is what registration fills:
+     - A class, interface or mixin gets its members, supertypes and
+       constructor. Mutually recursive classes across two modules are
+       the canonical use.
+     - A type alias gets its body (`registerTypeAliasDeclaration`). An
+       importer holds the shell without expanding it, since the body
+       may name types only the origin's scope can resolve. The
+       `Iterator<T>.next(): Step<T>` protocol, where `Step` is an inline
+       alias whose async arm names `Future` from a module that imports
+       the collections back, is the canonical use.
+     - An enum has two faces, `Color` the type and `Color` the value
+       whose fields are its members; the type is the canonical object
+       and carries the value (`TypeAliasType.enumValue`), both built from
+       the declaration's member list, and registration supplies the
+       backing type. `zena:core`'s `Encoding` and `zena:async`'s
+       `FutureState` are used by modules on the same cycle as their
+       declaring modules.
+     - A mixin's members are _copied_ into a host at application time,
+       so a host that applied the shell holds a stale copy until the
+       cycle registers again; the application's intermediate class is
+       cached for its identity only and its members are rebuilt on
+       every registration (`getOrCreateMixinApplication`), so the second
+       registration copies from the filled mixin. `zena:core`'s
+       `IterableUtils`, applied by `FixedArray` and `Range`, can sit on
+       a stdlib cycle this way.
 
 5. **Initializer hazard, accepted.** A module-level initializer may
    _call_ a legally-imported function that transitively reads globals
@@ -121,9 +121,9 @@ happens, are checked once.
   resolves from the annotations on demand: an importer asks the origin
   through `SharedCheckerState.inProgressModules` — at import time when
   the origin has registered, otherwise at the function's first use
-  (`CheckerContext.resolveInProgressFunction`). A type declaration that
-  registration binds nothing for, a distinct type alias, is resolved
-  the same way by the origin's context (`resolveInProgressType`). A
+  (`CheckerContext.resolveInProgressFunction`). A type is answered
+  from its canonical object (`CheckerContext.canonicalTypeOf`) as soon
+  as any module has materialized it. A
   field declared without a type gets it from its initializer, normally
   when the declaring class's bodies are checked; a member checking its
   bodies earlier reads the field through `FieldInfo.pendingInit`, which
@@ -173,11 +173,18 @@ compile time. The component computation is what remains of it.
   with their shape (`Symbol.isFunctionBinding` / `hasFullSignature`) so
   the checker's import handler can classify by the origin symbol
   (`resolveTarget().modulePath`) without touching the origin's AST.
-  Nominal identity lives in `SharedCheckerState.declaredNominalTypes`,
-  keyed by declaring symbol; `#materializeFromSymbol` is the single
-  funnel that consults and populates it, so no pass ever mints a second
-  type object for one declaration. Class registration resets what it
-  rebuilds (members, implements, mixins, constructor) instead of
+  Every declaration exports its own symbol (`ScopeBuilder.#predeclare`),
+  so an importer's `resolveTarget()` reaches the declaring symbol and
+  both sides key the same entry. Type identity lives in
+  `SharedCheckerState.declaredNominalTypes`, keyed by that symbol, for
+  every kind `isIdentityDeclaration` names; `#materializeFromSymbol` is
+  the single funnel that consults and populates it, and every lookup
+  that wants a type — the import handler, `resolveInProgressType`,
+  `materializeCyclicImport` — asks it first through `canonicalTypeOf`,
+  ahead of any binding, because a binding is the value face (for an
+  enum, the member record). So no pass ever mints a second type object
+  for one declaration. Class and mixin registration reset what they
+  rebuild (members, implements, mixins, constructor) instead of
   layering over the previous pass's state.
 - **Codegen**: unchanged. `__start` already emits per-unit initializers
   in `Program.units` order (= evaluation order); cross-module calls
