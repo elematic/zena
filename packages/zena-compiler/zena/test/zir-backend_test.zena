@@ -1026,6 +1026,57 @@ export let tests = suite('zir backend', (): void => {
         'the record is passed on as its fields');
   });
 
+  test('generators and async functions take records as fields', (ctx: TestContext): void => {
+    // `span` and `total` take a literal as its fields, and the call in
+    // `walk`'s body passes its literal to `area.core`: no record is
+    // built, before or after a suspension.
+    let result = compileWithZirStdlib(dedentRaw`
+        import { Future } from 'zena:async';
+        type V = {x: i32, y: i32};
+        let area = (r: V): i32 => r.x * r.y;
+        let span = gen (r: V): Iterator<i32> => {
+          yield r.x;
+          yield r.y;
+        };
+        let walk = gen (n: i32): Iterator<i32> => {
+          for (var i = 0; i < n; i += 1) {
+            yield area({x: i, y: 2});
+          }
+        };
+        let total = async (r: V): Future<i32> => r.x + r.y;
+        export let main = (): i32 => {
+          var s = 0;
+          for (let v in span({x: 3, y: 4})) {
+            s += v;
+          }
+          for (let v in walk(3)) {
+            s += v;
+          }
+          total({x: 1, y: 2});
+          return s;
+        };
+        `);
+    var walkNext = '';
+    for (let chunk in result.split('(func $')) {
+      let name = chunk.split(' ')[0];
+      if (name.startsWith('walk$') && name.endsWith('$Frame.next')) {
+        walkNext = '$' + name;
+      }
+    }
+    isTrue(walkNext.length > 0, 'walk has a next function');
+    let forwarders = new Array<String>();
+    forwarders.push('call $span\n');
+    forwarders.push('call $total\n');
+    forwarders.push('call $area\n');
+    assertNoAllocation(result, '$main', 'the literals are never built');
+    assertFunctionOmits(result, '$main', forwarders,
+        'a generator and an async function are called through their cores');
+    assertNoAllocation(result, walkNext,
+        'the literal in the generator body is passed as its fields');
+    assertFunctionOmits(result, walkNext, forwarders,
+        'the call in the generator body goes to the core');
+  });
+
   test('a record passed to super past the first superclass is passed as its fields', (ctx: TestContext): void => {
     // `Middle`'s own `super({...})` runs in `Middle.<ctor-init>`, which
     // returns `Base`'s arguments to `Leaf`'s factory. Its core returns

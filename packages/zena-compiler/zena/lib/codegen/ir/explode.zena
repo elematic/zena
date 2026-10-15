@@ -32,8 +32,10 @@
  * as a heap value is unpacked once, by the first forwarder; no core
  * rebuilds a record it was given as fields.
  *
- * Runs after reachability and every pass that synthesizes callers,
- * before `wasm.layout()`, because it interns signatures.
+ * Runs after reachability and before the generator and async splits,
+ * which lower every suspending body as they prepare it: those bodies'
+ * calls then see the cores, and a suspending function's core is split
+ * like any other. Before `wasm.layout()`, because it interns signatures.
  */
 import { HashMap, HashSet } from 'zena:collections';
 import {
@@ -1359,7 +1361,7 @@ let candidateFor = (wasm: WasmModule, pass: ReachabilityAnalysis,
   if (!(fn is FunctionExpression)) {
     return null;
   }
-  if (fn.isAsync || fn.isGenerator || (fn.typeParameters != null) != spec) {
+  if ((fn.typeParameters != null) != spec) {
     return null;
   }
   let sig = f.signature;
@@ -1395,7 +1397,10 @@ let candidateFor = (wasm: WasmModule, pass: ReachabilityAnalysis,
   }
   let roots = new Array<Node>();
   roots.push(fn.body as Node);
-  var result = resultDispatchOf(wasm, f, self);
+  // A generator or async function returns its iterator or future: its
+  // `return` operands are not its result.
+  var result = if (fn.isAsync || fn.isGenerator) null
+      else resultDispatchOf(wasm, f, self);
   let returns = new Array<Expression>();
   if (result != null && !collectReturns(fn, model, returns)) {
     result = null;
@@ -1443,8 +1448,8 @@ let methodCandidateFor = (wasm: WasmModule, pass: ReachabilityAnalysis,
   if (!(md is MethodDefinition)) {
     return null;
   }
-  if (md.isConstructor || md.isStatic != f.isStatic || md.isAbstract || md.isAsync ||
-      md.isGenerator || md.decorators.length > 0 || md.receiver != null ||
+  if (md.isConstructor || md.isStatic != f.isStatic || md.isAbstract ||
+      md.decorators.length > 0 || md.receiver != null ||
       (md.typeParameters != null) != spec || md.body == null) {
     return null;
   }
@@ -1473,7 +1478,10 @@ let methodCandidateFor = (wasm: WasmModule, pass: ReachabilityAnalysis,
   if (let (true, info) = ct.members.get(declaredName)) {
     ft = info.type;
   }
-  var result = resultDispatchOfType(wasm, f, ft);
+  // As for functions, a generator or async method's result is its
+  // iterator or future.
+  var result = if (md.isAsync || md.isGenerator) null
+      else resultDispatchOfType(wasm, f, ft);
   let returns = new Array<Expression>();
   if (result != null && !collectReturns(md, f.model, returns)) {
     result = null;

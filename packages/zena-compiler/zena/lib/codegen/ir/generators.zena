@@ -73,10 +73,21 @@ final class GeneratorArtifacts(rampBody: IrBody, nextBody: IrBody)
 var rampBodies = new Map<i32, GeneratorArtifacts>();
 var nextBodies = new Map<i32, GeneratorArtifacts>();
 
+/**
+ * Whether `func` is the forwarder of an exploded function
+ * (ir/explode.zena). It shares its core's node, but the core is the
+ * suspending body: the forwarder only reads the record's fields and
+ * calls it, so neither split rewrites it.
+ */
+export let isExplosionForwarder = (func: WasmFunction): boolean => {
+  let explosion = func.explosion;
+  return explosion != null && explosion.forwarder === func;
+};
+
 /** True if this WasmFunction carries a synchronous `gen` AST node (`!isAsync`). */
 export let isGeneratorFunction = (func: WasmFunction): boolean => {
   let {node} = func;
-  if (node == null) {
+  if (node == null || isExplosionForwarder(func)) {
     return false;
   }
   return match (node) {

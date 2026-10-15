@@ -1,0 +1,83 @@
+// @mode: run
+// @result: 1
+// Generators and async functions take records like any function: a
+// record parameter read before and after a suspension, a record literal
+// passed to a call inside the body, a record from the heap, and an
+// async method. Every shape must compute the same thing.
+import { Future, Completer } from 'zena:async';
+
+type V = {x: i32, y: i32};
+
+let area = (r: V): i32 => r.x * r.y;
+
+let span = gen (r: V): Iterator<i32> => {
+  yield r.x;
+  yield r.y;
+  yield area(r);
+};
+
+let walk = gen (n: i32): Iterator<i32> => {
+  for (var i = 0; i < n; i += 1) {
+    yield area({x: i, y: 2});
+  }
+};
+
+let total = async (r: V, c: Completer<i32>): Future<i32> => {
+  let before = r.x;
+  let v = await c.future;
+  return before + r.y + v + area(r);
+};
+
+let viaAwait = async (c: Completer<i32>): Future<i32> => {
+  let v = await c.future;
+  return area({x: v, y: 3});
+};
+
+class Grid {
+  async scaled(r: V, c: Completer<i32>): Future<i32> {
+    let v = await c.future;
+    return r.x * v + r.y;
+  }
+}
+
+let heap: V = {x: 2, y: 5};
+
+let sum = (it: Iterator<i32>): i32 => {
+  var s = 0;
+  for (let v in it) {
+    s = s * 100 + v;
+  }
+  return s;
+};
+
+export let main = async (): Future<i32> => {
+  // 3, 4, 12
+  if (sum(span({x: 3, y: 4})) != 30412 || sum(span(heap)) != 20510) {
+    return 0;
+  }
+  // 0, 2, 4
+  if (sum(walk(3)) != 204) {
+    return 0;
+  }
+  let c1 = new Completer<i32>();
+  let f1 = total({x: 1, y: 2}, c1);
+  c1.complete(10);
+  // 1 + 2 + 10 + 2
+  if (await f1 != 15) {
+    return 0;
+  }
+  let c2 = new Completer<i32>();
+  let f2 = viaAwait(c2);
+  c2.complete(4);
+  if (await f2 != 12) {
+    return 0;
+  }
+  let c3 = new Completer<i32>();
+  let g = new Grid();
+  let f3 = g.scaled({x: 2, y: 3}, c3);
+  c3.complete(5);
+  if (await f3 != 13) {
+    return 0;
+  }
+  return 1;
+};
