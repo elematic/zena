@@ -1841,6 +1841,16 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
     // own solved arguments. Minting at the erasure instead fails
     // loudly at lowering ("method not found @..._spec_erased").
     if (!noOpenTypeParameters(typeArgs)) { return; }
+    let isPrivate = propName.length > 0 && propName.sliceBytes(0, 1) == "#";
+    if (!mi.isStatic && !targetClass.isExtension && !isPrivate &&
+        !containsErasedType(targetClass) &&
+        !typeArgs.some((typeArg) => containsErasedType(typeArg))) {
+      this.pass.demandGenericClassMethod(targetClass, propName, typeArgs, model);
+      if (this.pass.currentReachable) {
+        this.pass.notePendingStaticTargets(
+            targetClass, getSpecializedName(propName, typeArgs));
+      }
+    }
     let unspecId = (targetClass.genericSource ?? targetClass).symbolId;
     let cd = if (let (true, decl) = this.pass.classDecls.get(unspecId)) decl else null;
     let targetModel = this.pass.getClassModel(targetClass);
@@ -2554,6 +2564,7 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
             }
 
             var isMethod = false;
+            var isStaticMethod = false;
             var isGenericMethod = false;
             var methodTypeArgs: Array<Type> | null = null;
             var currClassWalk: ClassType | null = resolvedObj;
@@ -2563,6 +2574,7 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
                 let mi = cc.members[propName];
                 if (mi is MethodInfo) {
                   isMethod = true;
+                  isStaticMethod = mi.isStatic;
                   if (mi.type is FunctionType) {
                     let ft = mi.type as FunctionType;
                     let {typeParameters} = ft;
@@ -2597,6 +2609,19 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
             let cha = this.pass.cha;
             let specializer = this.pass.specializer;
             let resolvedName = if (isMethod) propName else "get#" + propName;
+            if (isGenericMethod && methodTypeArgs != null &&
+                noOpenTypeParameters(methodTypeArgs)) {
+              let isPrivate = propName.length > 0 && propName.sliceBytes(0, 1) == "#";
+              if (!isStaticMethod && !resolvedObj.isExtension && !isPrivate &&
+                  !containsErasedType(resolvedObj) &&
+                  !methodTypeArgs.some((typeArg) => containsErasedType(typeArg))) {
+                this.pass.demandGenericClassMethod(resolvedObj, propName, methodTypeArgs, model);
+                if (this.pass.currentReachable) {
+                  this.pass.notePendingStaticTargets(
+                      resolvedObj, getSpecializedName(propName, methodTypeArgs));
+                }
+              }
+            }
             let mds = cha.findImplementingMethods(resolvedObj, resolvedName);
             for (let md in mds) {
               if (isGenericMethod && methodTypeArgs != null) {

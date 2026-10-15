@@ -1,0 +1,99 @@
+// @mode: run
+// @result: 11111111
+// An overridden generic method called through a superclass-typed
+// receiver dispatches virtually per demanded `(methName, typeArgs)`
+// specialization, downcasting `this` in the overriding body and
+// supporting `super.method<T>(...)` calls and abstract generic bases.
+
+class Shape {
+  measure<T>(tag: T): i32 {
+    return 1;
+  }
+
+  combine<A, B>(a: A, b: B): i32 {
+    return 10;
+  }
+}
+
+class Wide extends Shape {
+  bonus: i32;
+
+  new(this.bonus = 2) : super();
+
+  measure<T>(tag: T): i32 {
+    return this.bonus;
+  }
+
+  combine<A, B>(a: A, b: B): i32 {
+    return super.combine<A, B>(a, b) + this.bonus;
+  }
+}
+
+class ExtraWide extends Wide {
+  factor: i32;
+
+  new(bonus: i32, this.factor: i32) : super(bonus);
+
+  measure<T>(tag: T): i32 {
+    return super.measure<T>(tag) * this.factor;
+  }
+}
+
+abstract class AbstractTransformer {
+  abstract transform<T>(val: T): i32;
+}
+
+class ConcreteTransformer extends AbstractTransformer {
+  offset: i32;
+
+  new(this.offset: i32) : super();
+
+  transform<T>(val: T): i32 {
+    return this.offset + 100;
+  }
+}
+
+class GenericSub<U> extends Shape {
+  item: U;
+  weight: i32;
+
+  new(this.item: U, this.weight: i32) : super();
+
+  measure<T>(tag: T): i32 {
+    return this.weight;
+  }
+}
+
+export let main = (): i32 => {
+  var acc = 0;
+
+  let s: Shape = new Wide();
+  if (s.measure<i32>(0) == 2) { acc += 1; }
+  if (s.measure<String>('hello') == 2) { acc += 10; }
+
+  let base: Shape = new Shape();
+  if (base.measure<i32>(0) == 1) { acc += 100; }
+
+  let s1: Shape = new Wide(5);
+  if (s1.measure<i32>(42) == 5 && s1.combine<i32, String>(1, 'a') == 15) {
+    acc += 1000;
+  }
+
+  let s2: Shape = new ExtraWide(4, 3);
+  if (s2.measure<i32>(99) == 12 && s2.combine<i32, String>(1, 'a') == 14) {
+    acc += 10000;
+  }
+
+  let t: AbstractTransformer = new ConcreteTransformer(7);
+  if (t.transform<i32>(123) == 107 && t.transform<boolean>(true) == 107) {
+    acc += 100000;
+  }
+
+  let g: Shape = new GenericSub<String>('item', 77);
+  if (g.measure<i32>(0) == 77) { acc += 1000000; }
+
+  // Inferred type argument on overridden generic method through base reference.
+  if (s.measure(0) == 2) { acc += 10000000; }
+
+  return acc;
+};

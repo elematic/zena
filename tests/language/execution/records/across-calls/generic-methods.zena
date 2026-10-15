@@ -3,9 +3,9 @@
 // A generic method takes and returns records as their fields in each
 // instantiation of its own type parameters: on a plain class, on a
 // generic class, as a static, with a record type that mentions its type
-// parameter, and passing a record on to another generic method. Every
-// shape must compute the same thing. (Overriding a generic method is
-// left out: a call through the superclass does not dispatch yet, #364.)
+// parameter, passing a record on to another generic method, and when
+// overridden in a subclass and called through the superclass. Every
+// shape must compute the same thing.
 
 type V = {x: i32, y: i32};
 
@@ -31,6 +31,18 @@ class Grid {
 
   static make<T>(r: V, tag: T): V {
     return {x: r.x * 2, y: r.y * 2};
+  }
+}
+
+class Shape {
+  area<T>(r: V, tag: T): i32 {
+    return r.x * r.y;
+  }
+}
+
+class Triangle extends Shape {
+  area<T>(r: V, tag: T): i32 {
+    return (r.x * r.y) >> 1;
   }
 }
 
@@ -67,6 +79,11 @@ export let main = (): i32 => {
   }
   let box = new Box<String>('e');
   if (box.pick<i32>({a: 1, b: 'b'}) != 'b') {
+    return 0;
+  }
+  let shapes: FixedArray<Shape> = [new Shape(), new Triangle()];
+  if (shapes[0].area<i32>({x: 4, y: 5}, 0) != 20 ||
+      shapes[1].area<i32>({x: 4, y: 5}, 0) != 10) {
     return 0;
   }
   return 1;

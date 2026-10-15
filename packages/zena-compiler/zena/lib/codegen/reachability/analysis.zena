@@ -14,7 +14,7 @@ import { Set, HashMap, HashSet } from 'zena:collections';
 
 import { StringBuilder } from 'zena:core';
 import {
-  getClassKey, getInterfaceKey, getClassMethodKey, getInterfaceMemberKey, getClassInterfaceKey, getClassInterfaceVTableName, getClassVTableName, getClassSingletonName, getInterfaceTrampolineName, getSignatureKey, collectMixinMembers, mixinScopeOfMember, mixinModelOfMember, getClassPrivateFieldKey, MixinKey, getFunctionAdaptationKey, ClassKey, ClassMethodKey, getTypeUniqueKey, getClosureSpecializationKey, isConcrete, getSpecializedName, containsErasedType, InterfaceKey,
+  getClassKey, getInterfaceKey, getClassMethodKey, getInterfaceMemberKey, getClassInterfaceKey, getClassInterfaceVTableName, getClassVTableName, getClassSingletonName, getInterfaceTrampolineName, getSignatureKey, collectMixinMembers, mixinScopeOfMember, mixinModelOfMember, getClassPrivateFieldKey, MixinKey, getFunctionAdaptationKey, ClassKey, ClassMethodKey, getTypeUniqueKey, getClosureSpecializationKey, isConcrete, getSpecializedName, containsErasedType, InterfaceKey, getMemberRootClass,
 } from '../codegen-utils.zena';
 import {
   typeToValType, getClosureStruct, getInterfaceMemberSignature, interfaceMethodOverloads, pushInterfaceMethodSlots, interfaceSlotOverload, interfaceOverloadSignature, InterfaceSlotOverload, mapReturnTypeToWasmResults, mapParamTypeToWasmParams, substituteTypeParamsInCodegen, getClassTypeParameters, getInterfaceTypeParameters, getCellStruct, substituteTypeParamsInClassContext, getGenericInterfaceMemberSignature, getGenericInterfaceMethodType, substituteThisTypeInCodegen,
@@ -23,7 +23,7 @@ import { SymbolId, Symbol, noSymbolId } from '../../scope/symbol.zena';
 import {
   ValType, ValTypeI32, ValTypeRefNull, ValTypeAnyRef, ValTypeRef, ValTypeStructRef, WasmType, ValTypeFuncRef, valTypeToOpcode, refTargetOf,
 } from '../wasm.zena';
-import { Referrer, RecordResultCall, ReachabilityContext, SpecializerInterface, TypeLowererInterface, ReachabilityVisitorInterface, ClassInterfacePair, GenericInterfaceMethodDemand } from './context.zena';
+import { Referrer, RecordResultCall, ReachabilityContext, SpecializerInterface, TypeLowererInterface, ReachabilityVisitorInterface, ClassInterfacePair, GenericInterfaceMethodDemand, GenericClassMethodDemand } from './context.zena';
 import { ClassHierarchyAnalysis } from './hierarchy.zena';
 import { Specializer, applyMixinPrivateScope } from './specialization.zena';
 import { ReachabilityVisitor, TypeLowerer } from './visitor.zena';
@@ -241,6 +241,9 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
   genericInterfaceMethodDemands = new Array<GenericInterfaceMethodDemand>();
   /** Demands keyed "<interfaceKey>.<slotName>" for dedup and slot lookup. */
   #genericInterfaceDemandsByKey = new Map<String, GenericInterfaceMethodDemand>();
+  genericClassMethodDemands = new Array<GenericClassMethodDemand>();
+  /** Demands keyed "<rootClassKey>.<slotName>" for dedup. */
+  #genericClassDemandsByKey = new Map<String, GenericClassMethodDemand>();
   specializedClassTypes = new Map<SymbolId, GrowableArray<ClassType>>();
   reachedClassMembers = new Map<SymbolId, HashMap<i32, boolean>>();
   reachedReachableClassMembers = new Map<SymbolId, HashMap<i32, boolean>>();
@@ -959,7 +962,16 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
       if (let (true, info) = this.wasm.classInfos.get(cKey)) {
         if (let (true, superInfo) = this.wasm.classInfos.get(superKey)) {
           info.structType.superStruct = superInfo.structType;
-          superInfo.subclasses.push(info);
+          var hasSub = false;
+          for (let existingSub in superInfo.subclasses) {
+            if (existingSub === info) {
+              hasSub = true;
+              break;
+            }
+          }
+          if (!hasSub) {
+            superInfo.subclasses.push(info);
+          }
           let {vtableStructType} = info;
           if (vtableStructType != null && superInfo.vtableStructType != null) {
             let vst = vtableStructType;
@@ -2214,7 +2226,7 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
    */
   #settleQueues(): void {
     this.processQueues();
-    while (this.#fillReachedSlots()) {
+    while (this.#syncGenericClassSlots() || this.#fillReachedSlots()) {
       this.processQueues();
     }
   }
@@ -2387,7 +2399,7 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
   #pruneUndispatchedSlots(): void {
     // Anything the post-close drain reaches must not need a slot this
     // drops; #checkNoPrunedSlotDispatched says so loudly if it does.
-    while (this.#fillReachedSlots()) {
+    while (this.#syncGenericClassSlots() || this.#fillReachedSlots()) {
       this.processQueues();
     }
     let dispatched = this.#reachedSlotKeys(true);
@@ -2692,6 +2704,281 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
       changed = true;
     }
     return changed;
+  }
+
+  /**
+   * Records a virtual use of a generic class method: one demand per
+   * (hierarchy root class, method name, solved type-argument list).
+   * `#syncGenericClassSlots` appends the specialized slot name across
+   * the root class's hierarchy and specializes overrides on concrete
+   * subclasses.
+   */
+  demandGenericClassMethod(
+      classType: ClassType,
+      methodName: String,
+      typeArgs: Array<Type>,
+      model: SemanticModel): void {
+    let rootClass = getMemberRootClass(classType, methodName);
+    let rootKey = getClassKey(rootClass);
+    let slotName = getSpecializedName(methodName, typeArgs);
+    let dedupKey = (rootKey as String) + "." + slotName;
+    if (this.#genericClassDemandsByKey.has(dedupKey)) {
+      return;
+    }
+    this.typeLowerer.discoverType(rootClass, model);
+    for (let typeArg in typeArgs) {
+      this.typeLowerer.discoverType(typeArg, model);
+    }
+    let demand = new GenericClassMethodDemand(
+        rootClass, methodName, slotName, typeArgs, model);
+    this.#genericClassDemandsByKey[dedupKey] = demand;
+    this.genericClassMethodDemands.push(demand);
+  }
+
+  /**
+   * Syncs every recorded `GenericClassMethodDemand` across all known
+   * classes in the demand's `rootClass` hierarchy, top-down from
+   * superclass to subclass.
+   */
+  #syncGenericClassSlots(): boolean {
+    if (this.genericClassMethodDemands.length == 0) {
+      return false;
+    }
+    let updatedClasses = new Array<ClassType>();
+    let updatedSet = new Set<String>();
+    let classes = new Array<ClassType>();
+    for (let entry in this.wasm.classInfos) {
+      let classType = entry.value.structType.classType;
+      if (classType != null) {
+        classes.push(classType);
+      }
+    }
+    var demandIndex = 0;
+    while (demandIndex < this.genericClassMethodDemands.length) {
+      let demand = this.genericClassMethodDemands[demandIndex];
+      demandIndex += 1;
+      let rootKey = getClassKey(demand.rootClass);
+      for (let classType in classes) {
+        var inHierarchy = false;
+        var ancestor: ClassType | null = classType;
+        while (ancestor != null) {
+          if (getClassKey(ancestor) == rootKey) {
+            inHierarchy = true;
+            break;
+          }
+          ancestor = ancestor.superType;
+        }
+        if (inHierarchy) {
+          this.#syncClassForDemand(
+              demand, classType, rootKey, updatedClasses, updatedSet);
+        }
+      }
+    }
+    if (updatedClasses.length == 0) {
+      return false;
+    }
+    this.#slotOwnerCache.clear();
+    for (let classType in updatedClasses) {
+      this.#rebuildClassVTableOrder(classType);
+    }
+    return true;
+  }
+
+  #syncClassForDemand(
+      demand: GenericClassMethodDemand,
+      classType: ClassType,
+      rootKey: ClassKey,
+      updatedClasses: GrowableArray<ClassType>,
+      updatedSet: HashSet<String>): void {
+    let classKey = getClassKey(classType);
+    let classKeyStr = classKey as String;
+    if (demand.syncedClasses.has(classKeyStr)) {
+      return;
+    }
+    let superType = classType.superType;
+    if (classKey != rootKey && superType != null) {
+      this.#syncClassForDemand(
+          demand, superType, rootKey, updatedClasses, updatedSet);
+    }
+    demand.syncedClasses.add(classKeyStr);
+
+    let {typeParameters} = classType;
+    let isGenericTemplate = typeParameters != null &&
+        typeParameters.length > 0 &&
+        (classType.typeArguments == null || !isConcrete(classType));
+    if (classType.isExtension || classType.isMixinIntermediate ||
+        isGenericTemplate || !isConcrete(classType) ||
+        containsErasedType(classType)) {
+      return;
+    }
+
+    let vtableSlots = this.wasm.classVtable(classKey);
+    var hasSlot = false;
+    for (let existing in vtableSlots) {
+      if (existing == demand.slotName) {
+        hasSlot = true;
+        break;
+      }
+    }
+    if (!hasSlot) {
+      vtableSlots.push(demand.slotName);
+    }
+
+    let hasEvidence = this.#classHasEmissionEvidence(classType);
+    let savedReachable = this.currentReachable;
+    let savedLayingOut = this.layingOutUnemittedClass;
+    if (!hasEvidence) {
+      this.currentReachable = false;
+      this.layingOutUnemittedClass = true;
+    }
+
+    let unspecializedId = (classType.genericSource ?? classType).symbolId;
+    let classDecl = if (let (true, decl) = this.classDecls.get(unspecializedId)) decl else null;
+    let targetModel = this.getClassModel(classType);
+    let methodDecls = this.cha.findImplementingMethods(classType, demand.methodName);
+    for (let methodDecl in methodDecls) {
+      let mixScope = if (this.classModels.has(unspecializedId)) {
+        mixinScopeOfMember(this.program, this.classModels[unspecializedId], classDecl, methodDecl)
+      } else {
+        null
+      };
+      let nodeModel = (if (this.classModels.has(unspecializedId)) {
+        mixinModelOfMember(this.program, this.classModels[unspecializedId], classDecl, methodDecl)
+      } else {
+        null
+      }) ?? this.getNodeModel(methodDecl, targetModel);
+      let specializedFunc = this.specializer.instantiateGenericMethod(
+          classType, classDecl, demand.methodName, methodDecl, demand.typeArgs, nodeModel);
+      if (specializedFunc.classType == classType) {
+        specializedFunc.declaringType =
+            findDeclaringMixinIntermediate(classType, this.classDecls, methodDecl);
+        applyMixinPrivateScope(specializedFunc, methodDecl, mixScope);
+      }
+    }
+
+    var hasImplementation = false;
+    var ancestor: ClassType | null = classType;
+    while (ancestor != null) {
+      let methodKey = getClassMethodKey(getClassKey(ancestor), demand.slotName);
+      if (this.wasm.classMethodMap.has(methodKey)) {
+        hasImplementation = true;
+        break;
+      }
+      ancestor = ancestor.superType;
+    }
+    if (!hasImplementation) {
+      let stub = this.specializer.registerClassMethod(
+          classType, classDecl, demand.slotName, null, false, false, null, targetModel, demand.typeArgs);
+      stub.isVtableSlotStub = true;
+    }
+
+    this.currentReachable = savedReachable;
+    this.layingOutUnemittedClass = savedLayingOut;
+
+    if (!updatedSet.has(classKeyStr)) {
+      updatedSet.add(classKeyStr);
+      updatedClasses.push(classType);
+    }
+  }
+
+  /**
+   * Re-orders a laid-out class's `vtableStructType.fields` (and
+   * `vtableGlobal.initVTable.funcs` when already built) root-first
+   * after `#syncGenericClassSlots` adds a generic method slot.
+   */
+  #rebuildClassVTableOrder(classType: ClassType): void {
+    let classKey = getClassKey(classType);
+    if (let (true, info) = this.wasm.classInfos.get(classKey)) {
+      if (info.structType.fields.length == 0) {
+        return;
+      }
+      let {vtableStructType} = info;
+      if (vtableStructType == null) {
+        return;
+      }
+      let chain = new Array<ClassType>();
+      var ancestor: ClassType | null = classType;
+      while (ancestor != null) {
+        chain.push(ancestor);
+        ancestor = ancestor.superType;
+      }
+      let orderedNames = new Array<String>();
+      let seenNames = new Set<String>();
+      var chainIndex = chain.length - 1;
+      while (chainIndex >= 0) {
+        for (let slotName in this.wasm.classVtable(getClassKey(chain[chainIndex]))) {
+          if (!seenNames.has(slotName)) {
+            seenNames.add(slotName);
+            orderedNames.push(slotName);
+          }
+        }
+        chainIndex -= 1;
+      }
+      let fieldByName = new Map<String, WasmField>();
+      for (let field in vtableStructType.fields) {
+        let fieldName = field.name;
+        if (fieldName != null) {
+          fieldByName[fieldName] = field;
+        }
+      }
+      let orderedFields = new Array<WasmField>();
+      for (let slotName in orderedNames) {
+        if (let (true, existingField) = fieldByName.get(slotName)) {
+          orderedFields.push(existingField);
+          fieldByName.delete(slotName);
+        } else {
+          orderedFields.push(new WasmField(slotName, new ValTypeFuncRef(), false));
+        }
+      }
+      for (let field in vtableStructType.fields) {
+        let fieldName = field.name;
+        if (fieldName != null && fieldByName.has(fieldName)) {
+          orderedFields.push(field);
+        }
+      }
+
+      let methods = new Array<WasmFunction>();
+      let newFields = new Array<WasmField>();
+      for (let field in orderedFields) {
+        let fieldName = field.name;
+        if (fieldName == null) {
+          continue;
+        }
+        var foundFunc: WasmFunction | null = null;
+        var currClass: ClassType | null = classType;
+        while (currClass != null && foundFunc == null) {
+          let key = getClassMethodKey(getClassKey(currClass), fieldName);
+          if (this.wasm.classMethodMap.has(key)) {
+            foundFunc = this.wasm.classMethodMap[key];
+            break;
+          }
+          currClass = currClass.superType;
+        }
+        if (foundFunc != null) {
+          newFields.push(field);
+          methods.push(foundFunc);
+        }
+      }
+      while (vtableStructType.fields.length > 0) {
+        vtableStructType.fields.pop();
+      }
+      for (let field in newFields) {
+        vtableStructType.fields.push(field);
+      }
+      let {vtableGlobal} = info;
+      if (vtableGlobal != null) {
+        let init = vtableGlobal.initVTable;
+        if (init != null) {
+          let funcs = init.funcs as GrowableArray<WasmFunction>;
+          while (funcs.length > 0) {
+            funcs.pop();
+          }
+          for (let method in methods) {
+            funcs.push(method);
+          }
+        }
+      }
+    }
   }
 
   /**
@@ -3218,6 +3505,9 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
       }
       for (let ct in pending) {
         this.#populateClassStruct(ct, populated);
+        round = true;
+      }
+      if (this.#syncGenericClassSlots()) {
         round = true;
       }
     }
