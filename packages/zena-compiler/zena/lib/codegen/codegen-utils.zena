@@ -65,9 +65,25 @@ export let compareStrings = (a: String, b: String): i32 => {
   return 0;
 };
 
-export let getMemberRootClass = (ct: ClassType, memberName: String): ClassType => {
-  var rootClass = ct;
-  var currClass = ct.superType;
+/**
+ * Returns the highest non-mixin-intermediate ancestor of `classType` (or
+ * `classType` itself) that declares `memberName`. Strips specialization
+ * (`_spec_...`) and overload (`$...`) suffixes so specialized or
+ * overloaded slot names match the member table's declared key.
+ */
+export let getMemberRootClass = (classType: ClassType, memberName: String): ClassType => {
+  var baseName = memberName;
+  if (memberName.contains("_spec_")) {
+    baseName = memberName.split("_spec_")[0];
+  } else if (!memberName.startsWith("get#") && !memberName.startsWith("set#") &&
+      memberName.contains("$")) {
+    let prefix = memberName.split("$")[0];
+    if (prefix.length > 0) {
+      baseName = prefix;
+    }
+  }
+  var rootClass = classType;
+  var currClass = classType.superType;
   while (currClass != null) {
     let superCt = currClass;
     if (superCt.isMixinIntermediate) {
@@ -75,6 +91,9 @@ export let getMemberRootClass = (ct: ClassType, memberName: String): ClassType =
       continue;
     }
     var hasMember = superCt.members.has(memberName);
+    if (!hasMember && baseName != memberName) {
+      hasMember = superCt.members.has(baseName);
+    }
     if (!hasMember && memberName.startsWith("get#")) {
       let propName = memberName.sliceBytes(4, memberName.length);
       hasMember = superCt.members.has(propName);

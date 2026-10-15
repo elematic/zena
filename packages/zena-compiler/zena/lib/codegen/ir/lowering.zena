@@ -3671,30 +3671,7 @@ export final class FunctionLowerer {
     }
     let ct = eraseTypeParameters(this.wasm, resolved) as ClassType;
     let propName = accessKeyOf(this.func.model, member);
-    var name = propName;
-    // Overload choice belongs to the checker; the recorded selection
-    // reproduces the registered slot name. No record = no overloads.
-    let chosenFt = this.func.model.getResolvedOverload(call);
-    if (chosenFt != null) {
-      name = name + getSignatureKey(chosenFt);
-    }
-    // A generic static registers one monomorphized copy per solved
-    // type-argument list, under a specialized slot name — exactly as a
-    // generic instance method does. Without this the walk finds the
-    // unspecialized registration and bails on its type parameters.
-    if (let (true, declInfo) = ct.members.get(propName)) {
-      if (declInfo.type is FunctionType) {
-        let declFt = declInfo.type as FunctionType;
-        let {typeParameters} = declFt;
-        if (typeParameters != null && typeParameters.length > 0) {
-          let targs = this.#solvedCallTypeArguments(call);
-          if (targs == null) {
-            this.#bail('generic static call');
-          }
-          name = getSpecializedName(propName, targs);
-        }
-      }
-    }
+    let name = this.#resolveClassMethodSlotName(ct, propName, call);
     var target: WasmFunction | null = null;
     var curr: ClassType | null = ct;
     while (curr != null && target == null) {
@@ -6235,6 +6212,38 @@ export final class FunctionLowerer {
   }
 
   /**
+   * Resolves the `classMethodMap` and vtable slot name for `call` on
+   * `classType`: appends the signature key when the checker selected an
+   * overload, or the specialization suffix when `propName` is a generic
+   * method in `classType.members` (which looks up both own and inherited
+   * members via `MemberTable`).
+   */
+  #resolveClassMethodSlotName(
+      classType: ClassType, propName: String, call: CallExpression): String {
+    let chosenOverload = this.func.model.getResolvedOverload(call);
+    var slotName = if (chosenOverload != null) {
+      propName + getSignatureKey(chosenOverload)
+    } else {
+      propName
+    };
+    if (let (true, memberInfo) = classType.members.get(propName)) {
+      let memberType = memberInfo.type;
+      if (memberType is FunctionType) {
+        let {typeParameters} = memberType;
+        if (typeParameters != null && typeParameters.length > 0) {
+          let typeArguments = this.#solvedCallTypeArguments(call);
+          if (typeArguments == null) {
+            throw new Error(
+                `Internal error: missing solved type arguments for generic method call ${classType.name}.${propName}`);
+          }
+          slotName = getSpecializedName(propName, typeArguments);
+        }
+      }
+    }
+    return slotName;
+  }
+
+  /**
    * `super.m(...)`: resolve the method on the superclass chain
    * (overload slots via the checker's recorded selection, shared
    * generic templates via the genericSource walk) and call it
@@ -6248,12 +6257,7 @@ export final class FunctionLowerer {
     if (propName.length > 0 && propName.sliceBytes(0, 1) == '#') {
       this.#bail('super private call');
     }
-    let chosenFt = this.func.model.getResolvedOverload(call);
-    let slotName = if (chosenFt != null) {
-      propName + getSignatureKey(chosenFt)
-    } else {
-      propName
-    };
+    let slotName = this.#resolveClassMethodSlotName(superCt, propName, call);
     var method: WasmFunction | null = null;
     var currClass: ClassType | null = superCt;
     while (currClass != null && method == null) {
@@ -6802,36 +6806,11 @@ export final class FunctionLowerer {
         return this.#lowerClosureCallOn(call, calleeValue);
       }
     }
-    // Overloaded methods register under per-signature slot names; the
-    // checker records its (static, subtype-sensitive) selection per
-    // call node, and we reproduce the exact slot name from it. When a
-    // record exists, ONLY that slot is acceptable — a plain-name
-    // fallback could bind a different overload.
-    let chosenFt = this.func.model.getResolvedOverload(call);
-    var slotName = if (chosenFt != null) {
-      propName + getSignatureKey(chosenFt)
-    } else {
-      propName
-    };
-    // Generic methods register one monomorphized copy per solved
-    // type-argument list, under a specialized slot name — when the
-    // class declares the member generic, the call resolves that copy.
-    if (let (true, declInfo) = ct.members.get(propName)) {
-      if (declInfo.type is FunctionType) {
-        let declFt = declInfo.type as FunctionType;
-        let {typeParameters} = declFt;
-        if (typeParameters != null && typeParameters.length > 0) {
-          let targs = this.#solvedCallTypeArguments(call);
-          if (targs == null) {
-            this.#bail('generic method call');
-          }
-          slotName = getSpecializedName(propName, targs);
-        }
-      }
-    }
+    let isPrivate = propName.length > 0 && propName.sliceBytes(0, 1) == "#";
+    let slotClass = if (isPrivate) this.#lexicalClassOf(member, ct) else ct;
+    let slotName = this.#resolveClassMethodSlotName(slotClass, propName, call);
 
     var method: WasmFunction | null = null;
-    let isPrivate = propName.length > 0 && propName.sliceBytes(0, 1) == "#";
     if (isPrivate) {
       // Mixin-declared bodies resolve their privates under the
       // mixin's scope key ("<scope>::#name", registered per host

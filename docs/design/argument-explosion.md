@@ -323,12 +323,11 @@ candidate reads the member's type under its declared name, since the
 slot name is the specialization's. Lowering needed no change: its
 direct path resolves the specialized slot before it checks for a core.
 
-A generic method a subclass overrides is not dispatched through a
-class-typed receiver yet (#364): the call binds to the receiver's
-static class. Explosion follows the method lowering calls, so it adds
-no error of its own; when #364 adds per-specialization class vtable
-slots, `Candidate.overridden` must see the subclass's specialization
-for a dispatched call to keep passing the record.
+When a subclass overrides a generic method, reachability registers each
+demanded specialization under its specialized slot name on the subclass
+as well, so `Candidate.overridden` (`hasReachedOverride`) sees the
+subclass's specialization and a dispatched call keeps passing the
+record.
 
 On a loop destructuring `g.shift<i32>({x: i, y: 1}, 0)`, two million
 iterations, `-O1` goes from 113 ms to 2.4 ms; at `-O2` the inliner had
