@@ -1,0 +1,43 @@
+// @mode: run
+// @result: 1
+// A generic function takes and returns records as their fields in each
+// instantiation, including a record type that mentions its type
+// parameter, a record passed on to another generic function in the same
+// instantiation, and a result returned through a generic function.
+// Every shape must compute the same thing.
+
+type V = {x: i32, y: i32};
+
+let first = <T>(r: {a: T, b: T}): T => r.a;
+
+let shift = <T>(r: V, tag: T): V => ({x: r.x + 1, y: r.y + 1});
+
+let area = <T>(r: V, tag: T): i32 => r.x * r.y;
+
+let relay = <T>(r: V, tag: T): i32 => area<T>(r, tag) + 1;
+
+let shiftTwice = <T>(r: V, tag: T): V => shift<T>(r, tag);
+
+let heap: V = {x: 4, y: 5};
+
+export let main = (): i32 => {
+  if (first<i32>({a: 7, b: 8}) != 7 || first<String>({a: 'p', b: 'q'}) != 'p') {
+    return 0;
+  }
+  let {x, y} = shift<i32>({x: 1, y: 2}, 0);
+  let s = shift<String>({x: 10, y: 20}, 's');
+  if (x != 2 || y != 3 || s.x != 11 || s.y != 21) {
+    return 0;
+  }
+  if (area<i32>({x: 3, y: 4}, 0) != 12 || area<String>(heap, 'h') != 20) {
+    return 0;
+  }
+  if (relay<i32>({x: 2, y: 3}, 0) != 7 || relay<boolean>({x: 1, y: 1}, true) != 2) {
+    return 0;
+  }
+  let t = shiftTwice<i32>({x: 5, y: 6}, 0);
+  if (t.x != 6 || t.y != 7) {
+    return 0;
+  }
+  return 1;
+};

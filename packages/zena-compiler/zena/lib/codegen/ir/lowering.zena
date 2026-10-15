@@ -3864,6 +3864,20 @@ export final class FunctionLowerer {
       this.#bail('specialized call arity');
     }
     let defaults = this.#defaultArgInfo(call);
+    // A specialization whose record parameter or result explodes: as
+    // for a plain function (#lowerDirectCallTo).
+    let explosion = target.explosion;
+    if (defaults == null && explosion != null &&
+        explosion.forwarder === target &&
+        (this.#passesUnpackedArg(call.args, explosion) ||
+         this.#wantsResultFields(call, explosion))) {
+      let coreArgs = this.#lowerExplodedArgs(call.args, explosion);
+      let result = explosion.result;
+      if (result == null) {
+        return this.#emitDirectCall(call, explosion.core, coreArgs, multiOut);
+      }
+      return this.#callForFields(explosion.core, coreArgs, result);
+    }
     let args = new Array<i32>();
     var sIdx = 0;
     for (var i = 0; i < call.args.length; i += 1) {
