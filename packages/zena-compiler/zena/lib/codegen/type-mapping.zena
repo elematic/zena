@@ -1,6 +1,6 @@
 import { 
   Type, FunctionType, I32Type, F32Type, F64Type, VoidType, BooleanType, ClassType, 
-  InterfaceType, TypeAliasType, applyTypeIntrinsic, U32Type, I64Type, U64Type, ArrayType, NullType,
+  InterfaceType, TypeAliasType, EnumType, applyTypeIntrinsic, U32Type, I64Type, U64Type, ArrayType, NullType,
   U8Type, U16Type, I8Type, I16Type, V128Type,
   UnknownType, ErrorType, AnyRefType, EqRefType, NeverType, HoleType,
   FieldInfo, MethodInfo, typeToString, TypeParameterType, ThisType,
@@ -154,7 +154,6 @@ let substituteTypeParamsInCodegenInner = (
         return rec;
       }
       let newRec = new RecordType(newProps, rec.optionalProperties);
-      newRec.enumDeclaration = rec.enumDeclaration;
       newRec
     }
     case FunctionType as ft: {
@@ -1124,6 +1123,9 @@ export let getGenericInterfaceMemberSignature = (wasm: WasmModule, it: Interface
 export let eraseTypeParameters = (wasm: WasmModule, t: Type): Type => {
   return match (t) {
     case TypeParameterType: new ErasedType()
+    // An enum is nominally distinct only to the checker; it is carried
+    // as its backing type.
+    case EnumType as et: eraseTypeParameters(wasm, et.backingType)
     case TypeAliasType as ta: {
       // Codegen wants representations, and a `distinct type` is nominally
       // distinct only to the checker — it shares its target's representation.
@@ -1360,7 +1362,6 @@ export let eraseTypeParameters = (wasm: WasmModule, t: Type): Type => {
       }
       if (!changed) { return t; }
       let newRec = new RecordType(newProps, rec.optionalProperties);
-      newRec.enumDeclaration = rec.enumDeclaration;
       newRec
     }
     case _: t
@@ -1589,6 +1590,7 @@ export let typeToValType = (wasm: WasmModule, t: Type): ValType => {
   let erasedT = eraseTypeParameters(wasm, t);
   return match (erasedT) {
     case TypeAliasType as a: typeToValType(wasm, a.target)
+    case EnumType as e: typeToValType(wasm, e.backingType)
   case BoolLiteralType: new ValTypeI32()
   case NumLiteralType as num: typeToValType(wasm, baseType(num))
   case StringLiteralType: {

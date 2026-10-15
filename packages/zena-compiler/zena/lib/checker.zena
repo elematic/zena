@@ -99,7 +99,7 @@ import {
   BoolLiteralType, StringLiteralType, NumLiteralType,
   ArrayType, TupleType as TupleT, InlineTupleType as InlineTupleT,
   UnionType as UnionT, TypeInterner, RecordType as RecordT,
-  FunctionType, ClassType, InterfaceType, MixinType, MemberInfo, FieldInfo, MethodInfo,
+  FunctionType, ClassType, InterfaceType, MixinType, EnumType, MemberInfo, FieldInfo, MethodInfo,
   MemberTable, setMemberTypeSubstitution,
   DecoratedField, ReceiverKind,
   TypeParameterType, TypeAliasType, SymbolType, ThisType,
@@ -192,36 +192,15 @@ function isTypeDeclaration(decl: Node): boolean {
 }
 
 /**
- * The type a declaration's name has in the value namespace, given its
- * canonical type: for an enum the record of its members
- * (`TypeAliasType.enumValue`), for everything else the type itself (a
- * class's constructor value is the class).
+ * An enum's type from its declaration alone: its members, each a static
+ * field of the type itself, with the backing type a hole until the enum's
+ * registration fills it in.
  */
-function bindingFaceOf(t: Type): Type {
-  if (t is TypeAliasType) {
-    let enumValue = (t as TypeAliasType).enumValue;
-    if (enumValue != null) {
-      return enumValue;
-    }
-  }
-  return t;
-}
-
-/**
- * An enum's canonical type, `Color` the type, carrying `Color` the value
- * whose fields are its members (`enumValue`), from the declaration alone.
- * The backing type is a hole until the enum's registration fills it in.
- */
-function newEnumType(ed: EnumDeclaration): TypeAliasType {
-  let enumType = new TypeAliasType(ed.name.name, null, new HoleType(), true, null, false, "");
-  enumType.enumDeclaration = ed;
-  let fields = new Map<String, Type>();
+function newEnumType(symbolId: SymbolId, declaringModule: String, ed: EnumDeclaration): EnumType {
+  let enumType = new EnumType(symbolId, ed.name.name, ed, declaringModule);
   for (let member in ed.members) {
-    fields[member.name.name] = enumType;
+    enumType.members[member.name.name] = new FieldInfo(enumType, false, false, true, false, false);
   }
-  let enumValue = new RecordT(fields, null);
-  enumValue.enumDeclaration = ed;
-  enumType.enumValue = enumValue;
   return enumType;
 }
 
@@ -255,9 +234,7 @@ export final class SharedCheckerState {
    * how many times its module is checked or which module materializes
    * it first: an importer across a cycle's back edge creates a shell
    * here from the origin's AST, and the origin's own registration later
-   * fills the same object (docs/design/import-cycles.md). An enum's
-   * entry is its type face; the value face hangs off it
-   * (`TypeAliasType.enumValue`).
+   * fills the same object (docs/design/import-cycles.md).
    */
   declaredNominalTypes = new Map<SymbolId, Type>();
 
@@ -1460,9 +1437,8 @@ final class CheckerContext {
 
   /**
    * The canonical type of the declaration `sym` names, materialized from
-   * its AST if no module has asked for it yet. The type face;
-   * `bindingFaceOf` gives the value's. Null for anything that is not a
-   * type declaration.
+   * its AST if no module has asked for it yet. Null for anything that is
+   * not a type declaration.
    */
   declaredType(sym: Symbol): Type | null {
     let existing = this.canonicalTypeOf(sym);
@@ -1536,16 +1512,12 @@ final class CheckerContext {
    * not finished checking: the declaration's entry in
    * `declaredNominalTypes` if any module has materialized it, else a
    * shell built here from the origin's AST, which the origin's own
-   * registration later fills. `valueNamespace` asks for the face bound to
-   * the name as a value (`bindingFaceOf`).
+   * registration later fills. The same object answers in both
+   * namespaces: a declaration's name is bound to its type as a value.
    */
-  materializeCyclicImport(info: Symbol, name: String, valueNamespace: boolean = false): Type | null {
+  materializeCyclicImport(info: Symbol, name: String): Type | null {
     let target = info.resolveTarget();
-    let canonical = this.canonicalTypeOf(target) ?? this.#materializeShell(info, name, target);
-    if (canonical == null) {
-      return null;
-    }
-    return if (valueNamespace) bindingFaceOf(canonical) else canonical;
+    return this.canonicalTypeOf(target) ?? this.#materializeShell(info, name, target);
   }
 
   /**
@@ -1629,16 +1601,13 @@ final class CheckerContext {
 
     // Canonical types are shared across checking passes: if any pass (of
     // any module) already materialized this declaration, reuse that
-    // object — never mint a second identity for one declaration. The
-    // binding is the value face: a class is its own constructor value,
-    // an enum's name is bound to the record of its members.
+    // object — never mint a second identity for one declaration.
     let canonical = this.canonicalTypeOf(target);
     if (canonical != null) {
-      let face = bindingFaceOf(canonical);
-      this.#materializedTypes[info.id] = face;
-      this.#materializedTypes[target.id] = face;
-      this.model.setBindingType(info, face);
-      return face;
+      this.#materializedTypes[info.id] = canonical;
+      this.#materializedTypes[target.id] = canonical;
+      this.model.setBindingType(info, canonical);
+      return canonical;
     }
 
     // Cycle detection — keyed by Symbol.id, not name.
@@ -1667,27 +1636,13 @@ final class CheckerContext {
         if (isTypeDeclaration(declNode)) {
           this.#sharedState.declaredNominalTypes[target.id] = materialized;
         }
-        // The name's value binding: the type itself for a class-like
-        // declaration, whose type and value are one constructor value;
-        // for an enum the record of its members. An enum's BINDING is
-        // its member record, not the alias type #materializeType
-        // produced — the alias would make `Enum.Member` resolve against
-        // the backing type — so the import-alias symbols and caches set
-        // above are rebound to it.
-        let face = bindingFaceOf(materialized);
+        // A declaration's name is bound to its type in the value
+        // namespace too: a class is its own constructor value, an enum
+        // the namespace its members are read off, an interface or mixin
+        // the owner its static symbols are read off.
         let valueInfo = this.model.resolveDeclaration(declNode);
         if (valueInfo != null) {
-          this.declareBinding(valueInfo, face);
-        }
-        if (!(face === materialized)) {
-          this.#materializedTypes[info.id] = face;
-          this.#materializedTypes[target.id] = face;
-          this.model.setBindingType(info, face);
-          if (declNode.loc != null) {
-            let declLoc = declNode.loc as SourceLocation;
-            this.#materializedDeclTypes[declLoc.start] = face;
-          }
-          t = face;
+          this.declareBinding(valueInfo, materialized);
         }
       }
     }
@@ -1836,8 +1791,8 @@ final class CheckerContext {
       case EnumDeclaration as ed: {
         let isStringEnum = ed.members.length > 0 && ed.members[0].initializer is StringLiteral;
         let backingType = if (isStringEnum) { this.tryResolveWellKnownType(WellKnown.StringClass) as Type } else { new I32Type() as Type };
-        let enumType = newEnumType(ed);
-        enumType.target = backingType;
+        let enumType = newEnumType(info.id, info.modulePath, ed);
+        enumType.backingType = backingType;
         return enumType;
       }
       case TypeAliasDeclaration as ta: {
@@ -6705,10 +6660,14 @@ let satisfiesHashableConstraint = (
     return false;
   }
 
-  // Unwrap type aliases (including distinct types and enums).
+  // Unwrap type aliases (distinct ones included) and enums to what they
+  // are carried as.
   var t = arg;
   while (t is TypeAliasType) {
     t = t.target;
+  }
+  if (t is EnumType) {
+    t = (t as EnumType).backingType;
   }
 
   // A distinct type over a nominally-Hashable type (e.g. distinct T = String)
@@ -7381,6 +7340,9 @@ let representationOf = (t: Type): Type => {
   var depth = 0;
   while (depth < 8) {
     let step = current;
+    if (step is EnumType) {
+      return (step as EnumType).backingType;
+    }
     if (!(step is TypeAliasType) || step.resolving) {
       return step;
     }
@@ -7679,6 +7641,7 @@ let eraseDistinctAliases = (t: Type, depth: i32): Type => {
     case TypeAliasType as ta: {
       if (ta.resolving) { t } else { eraseDistinctAliases(ta.target, depth - 1) }
     }
+    case EnumType as et: et.backingType
     case _: t
   };
 };
@@ -8181,6 +8144,9 @@ let isAnyRefSource = (t: Type): boolean => {
       t is StringLiteralType) {
     return true;
   }
+  if (t is EnumType) {
+    return isAnyRefSource((t as EnumType).backingType);
+  }
   if (t is TypeAliasType) {
     if (t.resolving) { return true; }
     t.resolving = true;
@@ -8265,6 +8231,23 @@ let isAssignableTo = (ctx: CheckerContext, source: Type, target: Type): boolean 
       null
     );
     return true;
+  }
+
+  // An enum is assignable to itself (caught by `typesEqual` above) and
+  // to a union holding it; its backing type is reached only by a cast.
+  if (source is EnumType) {
+    match (target) {
+      case UnionT {types}: {
+        for (let t in types) {
+          if (isAssignableTo(ctx, source, t)) { return true; }
+        }
+        return false;
+      }
+      case _: { return false; }
+    }
+  }
+  if (target is EnumType) {
+    return false;
   }
 
   // Handle distinct types explicitly
@@ -8633,7 +8616,7 @@ let typesEqual = (a: Type, b: Type): boolean => {
   if (a === b) { return true; }
   if (a is TypeAliasType && !(b is TypeAliasType)) {
     let ta = a as TypeAliasType;
-    if (!ta.isDistinct && ta.enumDeclaration == null && ta.intrinsicName == null && !ta.resolving) {
+    if (!ta.isDistinct && ta.intrinsicName == null && !ta.resolving) {
       ta.resolving = true;
       let eq = typesEqual(ta.target, b);
       ta.resolving = false;
@@ -8642,7 +8625,7 @@ let typesEqual = (a: Type, b: Type): boolean => {
   }
   if (b is TypeAliasType && !(a is TypeAliasType)) {
     let tb = b as TypeAliasType;
-    if (!tb.isDistinct && tb.enumDeclaration == null && tb.intrinsicName == null && !tb.resolving) {
+    if (!tb.isDistinct && tb.intrinsicName == null && !tb.resolving) {
       tb.resolving = true;
       let eq = typesEqual(a, tb.target);
       tb.resolving = false;
@@ -8839,6 +8822,14 @@ let typesEqual = (a: Type, b: Type): boolean => {
           }
           true
         }
+        case _: false
+      }
+    }
+    case EnumType as ea: {
+      // One canonical object per declaration, so identity (above) is
+      // the usual answer; the name is what survives a re-parse.
+      match (b) {
+        case EnumType as eb: ea.name == eb.name && ea.declaringModule == eb.declaringModule
         case _: false
       }
     }
@@ -9656,7 +9647,7 @@ let unwrapAliases = (t: Type): Type => {
     // Intrinsic aliases stop like distinct ones: their target is a
     // placeholder, and an instance only survives here while its
     // argument is still open — nothing to unwrap to yet.
-    if (ta.isDistinct || ta.enumDeclaration != null || ta.intrinsicName != null || ta.resolving) { break; }
+    if (ta.isDistinct || ta.intrinsicName != null || ta.resolving) { break; }
     curr = ta.target;
     hops += 1;
   }
@@ -10328,7 +10319,7 @@ case _: {
                       // Cycle back edge, first pass: nominal declarations
                       // (class constructor values) resolve via their
                       // canonical shell.
-                      resolvedValType = ctx.materializeCyclicImport(valueExport, importedName, true);
+                      resolvedValType = ctx.materializeCyclicImport(valueExport, importedName);
                     }
                     if (resolvedValType == null) {
                       // A function from a member of the same import cycle
@@ -11890,7 +11881,7 @@ let isStaticReceiver = (ctx: CheckerContext, object: Expression): boolean => {
   if (object is Identifier) {
     let sym = ctx.model.resolve(object);
     if (sym != null) {
-      if (sym.declaration is ClassDeclaration) {
+      if (sym.declaration is ClassDeclaration || sym.declaration is EnumDeclaration) {
         return true;
       } else if (sym.declaration is ImportSpecifier) {
         let spec = sym.declaration as ImportSpecifier;
@@ -17711,22 +17702,18 @@ let checkEnumDeclaration = (ctx: CheckerContext, ed: EnumDeclaration): void => {
   // may already hold: fill in the backing type.
   let info = ctx.model.resolveDeclaration(ed);
   let declared = if (info != null) { ctx.declaredType(info) } else { null };
-  let enumType = if (declared is TypeAliasType) {
-    declared as TypeAliasType
+  let enumType = if (declared is EnumType) {
+    declared as EnumType
   } else {
-    newEnumType(ed)
+    newEnumType(noSymbolId, ctx.filePath, ed)
   };
-  enumType.target = backingType;
+  enumType.backingType = backingType;
 
-  // Register the enum in the type namespace.
+  // The enum's name is the type, and the value its members are read off.
   ctx.declareTypeName(name, enumType);
   if (info != null) {
     ctx.registerType(info, enumType as Type);
-  }
-
-  // Register the enum value in the value namespace (e.g., Color.Red).
-  if (info != null) {
-    ctx.declareBinding(info, enumType.enumValue as RecordT);
+    ctx.declareBinding(info, enumType as Type);
     ctx.model.addDeclaredEnum(info.id, ed);
   }
 };
@@ -19705,6 +19692,27 @@ let resolveMemberType = (
     case TypeAliasType as tat: {
       return resolveMemberType(ctx, tat.target, propName, loc, ownerRead, isStaticAccess);
     }
+    case EnumType as et: {
+      // `Color.Red`: a member read off the enum's name. A value of the
+      // enum has no members of its own.
+      if (isStaticAccess) {
+        if (let (true, member) = et.members.get(propName)) {
+          return member.type;
+        }
+        ctx.error(
+          "Enum '" + et.name + "' has no member '" + displayMemberName(propName) + "'.",
+          DiagnosticCode.PropertyNotFound,
+          loc
+        );
+        return new ErrorType();
+      }
+      ctx.error(
+        "Property '" + displayMemberName(propName) + "' does not exist on type '" + et.name + "'.",
+        DiagnosticCode.PropertyNotFound,
+        loc
+      );
+      return new ErrorType();
+    }
     case ErrorType: { return new ErrorType(); }
     case _: {
       ctx.error(
@@ -20585,7 +20593,7 @@ let isFiniteType = (t: Type): boolean => {
     case StringLiteralType: true
     case NullType: true
     case ClassType as ct: ct.isSealed
-    case TypeAliasType as alias: alias.enumDeclaration != null
+    case EnumType: true
     case UnionT {types}: {
       var allFinite = true;
       var i = 0;
@@ -20620,20 +20628,14 @@ final class EnumCoverage {
 let enumsIn = (t: Type): GrowableArray<EnumCoverage> => {
   let found = new Array<EnumCoverage>();
   match (t) {
-    case TypeAliasType as alias: {
-      let {enumDeclaration} = alias;
-      if (enumDeclaration != null) {
-        found.push(new EnumCoverage(enumDeclaration as EnumDeclaration));
-      }
+    case EnumType as et: {
+      found.push(new EnumCoverage(et.declaration));
     }
     case UnionT {types}: {
       for (let member in types) {
         match (member) {
-          case TypeAliasType as alias: {
-            let {enumDeclaration} = alias;
-            if (enumDeclaration != null) {
-              found.push(new EnumCoverage(enumDeclaration as EnumDeclaration));
-            }
+          case EnumType as et: {
+            found.push(new EnumCoverage(et.declaration));
           }
           case _: {}
         }
@@ -20651,10 +20653,8 @@ let enumsIn = (t: Type): GrowableArray<EnumCoverage> => {
  */
 let subtractEnumFromType = (t: Type, ed: EnumDeclaration): Type => {
   match (t) {
-    case TypeAliasType as alias: {
-      let {enumDeclaration} = alias;
-      if (enumDeclaration != null &&
-          (enumDeclaration as EnumDeclaration).id == ed.id) {
+    case EnumType as et: {
+      if (et.declaration.id == ed.id) {
         return new NeverType();
       }
       return t;
@@ -20695,18 +20695,16 @@ let collectCoveredEnumMembers = (
       if (me.isSymbolAccess) {
         return;
       }
-      // The member's own type is the enum alias; what says WHICH enum is the
-      // namespace it was read off — `Color` is a record type carrying the
-      // declaration. An enum imported under another name still points here.
+      // Which enum the member belongs to is the namespace it was read
+      // off: `Color`, the enum type itself. An enum imported under
+      // another name still points here.
       let objectType = ctx.model.getNodeType(me.object);
       if (objectType == null) {
         return;
       }
       match (objectType as Type) {
-        case RecordT as rec: {
-          let {enumDeclaration} = rec;
-          if (enumDeclaration != null &&
-              (enumDeclaration as EnumDeclaration).id == ed.id) {
+        case EnumType as et: {
+          if (et.declaration.id == ed.id) {
             covered.add(me.property.name);
           }
         }

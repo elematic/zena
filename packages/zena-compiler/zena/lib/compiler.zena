@@ -42,7 +42,7 @@ import { Diagnostic, SourceSpan, spanOf } from './diagnostics.zena';
 import { SemanticModel } from './semantic-model.zena';
 import { nowMs, performance } from './time.zena';
 import {
-  Type, ClassType, FunctionType, InterfaceType, MixinType, MemberInfo, MemberTable, FieldInfo, MethodInfo, RecordType, TypeParameterType, TypeAliasType, SymbolType, ArrayType, TupleType, InlineTupleType, UnionType, BoolLiteralType, StringLiteralType, NumLiteralType, I32Type, U32Type, I64Type, U64Type, F32Type, F64Type, U8Type, U16Type, I8Type, I16Type, V128Type, BooleanType, VoidType, NullType, NeverType, HoleType, ErrorType, UnknownType, AnyRefType, EqRefType, ThisType, ErasedType, declaringModuleOf,
+  Type, ClassType, FunctionType, InterfaceType, MixinType, EnumType, MemberInfo, MemberTable, FieldInfo, MethodInfo, RecordType, TypeParameterType, TypeAliasType, SymbolType, ArrayType, TupleType, InlineTupleType, UnionType, BoolLiteralType, StringLiteralType, NumLiteralType, I32Type, U32Type, I64Type, U64Type, F32Type, F64Type, U8Type, U16Type, I8Type, I16Type, V128Type, BooleanType, VoidType, NullType, NeverType, HoleType, ErrorType, UnknownType, AnyRefType, EqRefType, ThisType, ErasedType, declaringModuleOf,
 } from './types.zena';
 
 /** Re-export types used by consumers. */
@@ -533,6 +533,26 @@ let signatureTypeEqualsRec = (a: Type, b: Type, visited: HashSet<String>): boole
           if (tpa.constraint == null && tpb.constraint == null) { return true; }
           if (tpa.constraint == null || tpb.constraint == null) { return false; }
           signatureTypeEqualsRec(tpa.constraint as Type, tpb.constraint as Type, visited)
+        }
+        case _: false
+      }
+    }
+
+    case EnumType as ea: {
+      match (b) {
+        case EnumType as eb: {
+          if (ea.name != eb.name || ea.declaringModule != eb.declaringModule ||
+              ea.declaration.members.length != eb.declaration.members.length) {
+            return false;
+          }
+          var i = 0;
+          while (i < ea.declaration.members.length) {
+            if (ea.declaration.members[i].name.name != eb.declaration.members[i].name.name) {
+              return false;
+            }
+            i += 1;
+          }
+          signatureTypeEqualsRec(ea.backingType, eb.backingType, visited)
         }
         case _: false
       }

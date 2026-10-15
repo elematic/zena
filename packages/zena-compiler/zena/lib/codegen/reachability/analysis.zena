@@ -4,7 +4,7 @@ import {
 } from '../wasm-module.zena';
 import { SemanticModel, SymbolDependencies, memberKeyOf } from '../../semantic-model.zena';
 import {
-  Type, ClassType, InterfaceType, FunctionType, TypeId, makeTypeIdGenerator, TypeParameterType, MethodInfo, FieldInfo, isVoidOrNeverType, UnionType, TupleType, InlineTupleType, ArrayType, RecordType, TypeAliasType, TypeListTable,
+  Type, ClassType, InterfaceType, FunctionType, TypeId, makeTypeIdGenerator, TypeParameterType, MethodInfo, FieldInfo, isVoidOrNeverType, UnionType, TupleType, InlineTupleType, ArrayType, RecordType, TypeAliasType, EnumType, TypeListTable,
 } from '../../types.zena';
 import {
   Node, ClassDeclaration, InterfaceDeclaration, MixinDeclaration, MethodDefinition, AccessorDeclaration, FieldDefinition, VariableDeclaration, FunctionDeclaration, DeclareFunction, ImportDeclaration, IdentifierPattern, FunctionExpression, SealedVariant, SourceLocation, Module, Identifier, SymbolPropertyName, MemberExpression, CallExpression, ExportAllDeclaration, ExportFromDeclaration, IdGenerator, ShieldedStatement, TryExpression,
@@ -3310,6 +3310,7 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
         found
       }
       case TypeAliasType as alias: this.#typeMentionsString(alias.target, depth + 1)
+      case EnumType as et: this.#typeMentionsString(et.backingType, depth + 1)
       case _: false
     };
   }
@@ -4860,6 +4861,9 @@ let collectNamedClasses = (t: Type, out: GrowableArray<ClassType>,
       for (let m in types) {
         collectNamedClasses(m, out, depth + 1);
       }
+    }
+    case EnumType as et: {
+      collectNamedClasses(et.backingType, out, depth + 1);
     }
     case TypeAliasType as ta: {
       collectNamedClasses(ta.target, out, depth + 1);

@@ -7,7 +7,7 @@ import {
 } from './context.zena';
 import { SemanticModel, memberKeyOf } from '../../semantic-model.zena';
 import {
-  Type, ClassType, InterfaceType, FunctionType, TypeParameterType, RecordType, TupleType, InlineTupleType, UnionType, TypeAliasType, ArrayType, MethodInfo, FieldInfo, instantiateClassType, instantiateInterfaceType, ThisType, baseType, ErasedType,
+  Type, ClassType, InterfaceType, FunctionType, TypeParameterType, RecordType, TupleType, InlineTupleType, UnionType, TypeAliasType, EnumType, ArrayType, MethodInfo, FieldInfo, instantiateClassType, instantiateInterfaceType, ThisType, baseType, ErasedType,
   isScopedType, scopedInner, internFunctionType } from '../../types.zena';
 import {
   Node, decoratorStringArg, AsExpression, IsExpression, RecordLiteral, ClassPattern, MatchCase, LetPatternCondition, AsPattern, BindingPattern, LogicalPattern, TuplePattern, ArrayPattern, RestPattern, RecordPattern, AccessorDeclaration, BinaryExpression, LiteralPattern, NewExpression, MethodDefinition, SymbolPropertyName, RangeExpression, ArrayLiteral, MapLiteral, TupleLiteral, Expression, TemplateElement, TaggedTemplateExpression, ForInStatement, MemberExpression, AwaitExpression, IndexExpression, AssignmentExpression, Identifier, CallExpression, VariableDeclaration, FunctionDeclaration, Pattern, ImportDeclaration, DeclareFunction, ImportSpecifier, IdentifierPattern, FunctionExpression, MixinDeclaration, ClassDeclaration, Module, ThrowExpression, TryExpression, ShieldedStatement, StringLiteral, TemplateLiteral,
@@ -93,6 +93,8 @@ export final class TypeLowerer implements TypeLowererInterface {
       }
     } else if (t is TypeAliasType) {
       this.#recordTypeEvidence(eraseTypeParameters(this.pass.wasm, t.target), model, depth + 1);
+    } else if (t is EnumType) {
+      this.#recordTypeEvidence(eraseTypeParameters(this.pass.wasm, t.backingType), model, depth + 1);
     } else if (t is ArrayType) {
       this.#recordTypeEvidence(eraseTypeParameters(this.pass.wasm, t.elementType), model, depth + 1);
       // The array TYPE itself is evidence, not only its element: a
@@ -126,6 +128,9 @@ export final class TypeLowerer implements TypeLowererInterface {
     var t = eraseTypeParameters(this.pass.wasm, rawT);
     while (t is TypeAliasType) {
       t = t.target;
+    }
+    if (t is EnumType) {
+      t = (t as EnumType).backingType;
     }
     let typeStr = getTypeUniqueKey(t);
     // Evidence is recorded BEFORE the dedup below: a type first
@@ -183,6 +188,8 @@ export final class TypeLowerer implements TypeLowererInterface {
       }
     } else if (t is TypeAliasType) {
       this.discoverType(t.target, model);
+    } else if (t is EnumType) {
+      this.discoverType(t.backingType, model);
     } else if (t is FunctionType) {
       for (let paramType in t.parameters) {
         this.discoverType(paramType, model);

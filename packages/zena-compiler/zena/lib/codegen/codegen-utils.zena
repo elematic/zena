@@ -6,7 +6,7 @@ import {
   U8Type, U16Type, I8Type, I16Type, V128Type, BooleanType, BoolLiteralType,
   NullType, VoidType, ClassType, InterfaceType, ArrayType, RecordType,
   TupleType, InlineTupleType, UnionType, TypeParameterType, FunctionType, UnknownType, typeToString,
-  MixinType, MixinKey, instantiateClassType, TypeAliasType, ErrorType, HoleType, NeverType, ThisType,
+  MixinType, MixinKey, instantiateClassType, TypeAliasType, EnumType, ErrorType, HoleType, NeverType, ThisType,
   AnyRefType, EqRefType, StringLiteralType, NumLiteralType, baseType, ErasedType,
   MethodInfo, countTypeKey, countCodegenFunctionType, internFunctionType } from '../types.zena';
 import { SemanticModel } from '../semantic-model.zena';
@@ -315,6 +315,7 @@ export let isConcrete = (t: Type): boolean => {
       if (!isConcrete(ft.returnType)) { concrete = false; }
       concrete
     }
+    case EnumType: true
     case TypeAliasType as ta: {
       var concrete = true;
       let targs = ta.typeArguments;
@@ -487,6 +488,7 @@ let getTypeKeyForSpecializationRaw = (type: Type): String => {
       String.fromParts(parts)
     }
     case TypeAliasType as ta: getTypeKeyForSpecialization(ta.target)
+    case EnumType as et: getTypeKeyForSpecialization(et.backingType)
     case NeverType: "never"
     case HoleType: "hole"
     case ErrorType: "error"
@@ -545,6 +547,7 @@ export let containsErasedType = (t: Type): boolean => {
       }
       false
     }
+    case EnumType: false
     case TypeAliasType as ta: {
       // A symbolic alias instance (a distinct alias, or an intrinsic
       // operator like Awaited<T> that substitution has not closed):
@@ -1127,6 +1130,9 @@ export let unwrapAliases = (t: Type): Type => {
   while (curr is TypeAliasType) {
     curr = curr.target;
   }
+  if (curr is EnumType) {
+    return baseType((curr as EnumType).backingType);
+  }
   return baseType(curr);
 };
 
@@ -1327,6 +1333,9 @@ let getTypeUniqueKeyRaw = (t: Type): String => match (t) {
     String.fromParts(parts)
   }
   case TypeAliasType as a: `alias_${getTypeUniqueKey(a.target)}`
+  // Keyed as a distinct alias over the backing type is: the key names a
+  // representation, which every enum over one backing type shares.
+  case EnumType as e: `alias_${getTypeUniqueKey(e.backingType)}`
   case _: typeToString(t)
 };
 
