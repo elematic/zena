@@ -207,6 +207,70 @@
           # one derivation covers packaging too and `checks` needs only this
           # one. See the comment on `checks`.
         });
+        # On Darwin, `stage:docker` cross-compiles `zena-run` to
+        # `x86_64-unknown-linux-gnu` via `cargo zigbuild`. Nixpkgs' default
+        # `pkgs.rustc` only carries the native Darwin sysroot, so we pair the
+        # prebuilt official rustc with the official `x86_64-unknown-linux-gnu`
+        # `rust-std` tarball and `zig 0.14` (zig 0.16 has an ELF section-symbol
+        # regression on zstd-sys).
+        darwinLinuxStd = pkgs.fetchzip {
+          url = "https://static.rust-lang.org/dist/rust-std-${pkgs.rustc.version}-x86_64-unknown-linux-gnu.tar.xz";
+          hash = "sha256-vOns6L8nwZKocWFJaE1yb3nc6ugDwJJNRacdmAxdl2A=";
+        };
+
+        darwinPrebuiltRustc = pkgs.rust.packages.prebuilt.rustc-unwrapped;
+
+        darwinCrossSysroot = pkgs.runCommand "rustc-sysroot-${pkgs.rustc.version}" { } ''
+          mkdir -p $out/lib/rustlib
+          ln -s ${darwinPrebuiltRustc}/bin $out/bin
+          for item in ${darwinPrebuiltRustc}/lib/*; do
+            if [ "$(basename "$item")" != "rustlib" ]; then
+              ln -s "$item" $out/lib/
+            fi
+          done
+          for item in ${darwinPrebuiltRustc}/lib/rustlib/*; do
+            if [ "$(basename "$item")" != "x86_64-unknown-linux-gnu" ]; then
+              ln -s "$item" $out/lib/rustlib/
+            fi
+          done
+          ln -s ${darwinLinuxStd}/rust-std-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu \
+            $out/lib/rustlib/x86_64-unknown-linux-gnu
+        '';
+
+        darwinCrossRustc = pkgs.writeShellScriptBin "rustc" ''
+          has_sysroot=0
+          is_linux_target=0
+          prev_target=0
+          for arg in "$@"; do
+            if [ "$prev_target" = 1 ]; then
+              case "$arg" in
+                *linux*) is_linux_target=1 ;;
+              esac
+              prev_target=0
+            fi
+            case "$arg" in
+              --sysroot|--sysroot=*) has_sysroot=1 ;;
+              --target) prev_target=1 ;;
+              --target=*linux*) is_linux_target=1 ;;
+              --) break ;;
+            esac
+          done
+          extra=()
+          if [ "$has_sysroot" = 0 ]; then
+            extra+=(--sysroot "${darwinCrossSysroot}")
+          fi
+          if [ "$is_linux_target" = 0 ]; then
+            extra+=(-L "${pkgs.libiconv}/lib")
+          fi
+          exec "${darwinPrebuiltRustc}/bin/rustc" "''${extra[@]}" "$@"
+        '';
+
+        darwinCargoZigbuild = pkgs.writeShellScriptBin "cargo-zigbuild" ''
+          export PATH="${pkgs.zig_0_14}/bin:$PATH"
+          export RUSTC="${darwinCrossRustc}/bin/rustc"
+          unset RUSTFLAGS
+          exec "${pkgs.cargo-zigbuild}/bin/.cargo-zigbuild-wrapped" "$@"
+        '';
       in
       {
         packages = {
@@ -250,7 +314,11 @@
             pkgs.rustc
             pkgs.rustfmt
             pkgs.rust-analyzer
-          ] ++ pkgs.lib.optionals pkgs.stdenv.isDarwin [ pkgs.libiconv ]
+          ] ++ pkgs.lib.optionals pkgs.stdenv.isDarwin [
+            pkgs.libiconv
+            pkgs.zig_0_14
+            darwinCargoZigbuild
+          ]
             # zenafx's text stack links the system fontconfig on Linux.
             ++ pkgs.lib.optionals pkgs.stdenv.isLinux [ pkgs.fontconfig ];
 

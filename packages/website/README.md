@@ -29,19 +29,15 @@ npm run docker:run -w @zena-lang/website
 
 Because the container runs a Linux `x86_64` ELF binary, `stage:docker`
 automatically cross-compiles `zena-run` for `x86_64-unknown-linux-gnu` using
-[`cargo-zigbuild`](https://github.com/rust-cross/cargo-zigbuild) (which pulls in
-`zig` as a C cross-compiler and ELF linker for Wasmtime's C dependencies).
+`cargo-zigbuild` and `zig`.
 
-Perform this one-time setup on macOS:
-
-```bash
-rustup target add x86_64-unknown-linux-gnu
-brew install cargo-zigbuild
-```
-
-After that, the same npm scripts work on macOS (using Docker Desktop's
-`linux/amd64` emulation on Apple Silicon, or you can point
-`ZENA_LINUX_RUNNER=/path/to/zena-run` at any prebuilt Linux `x86_64` binary):
+In the Nix dev shell (`direnv allow` or `nix develop`), `flake.nix` provides
+`cargo-zigbuild`, `zig`, and a `rustc` sysroot containing the
+`x86_64-unknown-linux-gnu` standard library out of the box — no `rustup` or
+`brew` packages need to be installed manually. The same npm scripts work
+directly (using Docker Desktop's `linux/amd64` emulation on Apple Silicon, or
+you can point `ZENA_LINUX_RUNNER=/path/to/zena-run` at any prebuilt Linux
+`x86_64` binary):
 
 ```bash
 npm run docker:build -w @zena-lang/website

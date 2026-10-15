@@ -20,7 +20,6 @@ export const resolveLinuxRunner = ({
   envRunner = process.env.ZENA_LINUX_RUNNER,
   platform = process.platform,
   arch = process.arch,
-  env = process.env,
   runCommand = (cmd, args, opts) => execFileSync(cmd, args, opts),
   fileExists = existsSync,
 } = {}) => {
@@ -44,49 +43,20 @@ export const resolveLinuxRunner = ({
     return nativePath;
   }
 
-  // On macOS, Nix direnv (`/nix/store/.../bin/rustc`) or Homebrew `rust`
-  // (`/opt/homebrew/bin/rustc`, pulled in by `brew install cargo-zigbuild`)
-  // frequently shadows rustup's `rustc` on PATH and lacks the
-  // `x86_64-unknown-linux-gnu` sysroot (`can't find crate for core`).
-  // Also strip Darwin-specific Nix `-L...-libiconv/lib` from RUSTFLAGS.
-  const crossEnv = {...env};
-  if (crossEnv.RUSTFLAGS?.includes('libiconv')) {
-    delete crossEnv.RUSTFLAGS;
-  }
-
-  try {
-    runCommand('rustup', ['target', 'add', LINUX_TARGET], {
-      cwd: repoRoot,
-      stdio: 'inherit',
-    });
-    const rustupRustc = runCommand('rustup', ['which', 'rustc'], {
-      cwd: repoRoot,
-      encoding: 'utf8',
-    });
-    if (typeof rustupRustc === 'string' && rustupRustc.trim()) {
-      crossEnv.RUSTC = rustupRustc.trim();
-    }
-  } catch {
-    // If rustup isn't installed, fall through and let cargo zigbuild try with PATH.
-  }
-
   try {
     runCommand(
       'cargo',
       ['zigbuild', '--release', '--target', LINUX_TARGET, '-p', 'zena-run'],
       {
         cwd: repoRoot,
-        env: crossEnv,
         stdio: 'inherit',
       },
     );
   } catch (err) {
     throw new Error(
       `Failed to cross-compile zena-run for Linux x86_64 on ${platform}/${arch}.\n` +
-        `Make sure rustup (with ${LINUX_TARGET}) and cargo-zigbuild are installed:\n` +
-        `  rustup target add ${LINUX_TARGET}\n` +
-        `  brew install cargo-zigbuild\n` +
-        `(Or set ZENA_LINUX_RUNNER=/path/to/linux-x86_64-zena-run)`,
+        `Enter the Nix dev shell (\`direnv allow\` or \`nix develop\`), or set:\n` +
+        `  ZENA_LINUX_RUNNER=/path/to/linux-x86_64-zena-run`,
       {cause: err},
     );
   }
