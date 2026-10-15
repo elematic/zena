@@ -1,3 +1,4 @@
+import { dedentRaw } from 'zena:core';
 import { suite, test, TestContext } from 'zena:test';
 import { equal, isTrue, fail } from 'zena:assert';
 import { WatGenerator } from '../lib/codegen/wat-generator.zena';
@@ -834,26 +835,27 @@ export let tests = suite('zir backend', (): void => {
     // Box<i32>` and `new Pair<f64>` with literals, whose record type
     // mentions the type parameter, and a subclass of `Box<i32>` passing
     // a literal to `super(...)`.
-    let result = compileWithZir(
-        'type Init = {x: i32, y?: i32};\n' +
-        'class Box<T> {\n' +
-        '  value: T;\n' +
-        '  x: i32;\n' +
-        '  new(value: T, init: Init) : value = value, x = init.x;\n' +
-        '}\n' +
-        'final class Pair<T> {\n' +
-        '  a: T;\n' +
-        '  new(r: {a: T, b: T}) : a = r.b;\n' +
-        '}\n' +
-        'final class IntBox extends Box<i32> {\n' +
-        '  new(v: i32) : super(v, {x: v});\n' +
-        '}\n' +
-        'export let main = (): i32 => {\n' +
-        '  let b = new Box<i32>(1, {x: 2});\n' +
-        '  let p = new Pair<f64>({a: 1.5, b: 2.5});\n' +
-        '  let ib = new IntBox(3);\n' +
-        '  return b.x + (p.a as i32) + ib.x;\n' +
-        '};');
+    let result = compileWithZir(dedentRaw`
+        type Init = {x: i32, y?: i32};
+        class Box<T> {
+          value: T;
+          x: i32;
+          new(value: T, init: Init) : value = value, x = init.x;
+        }
+        final class Pair<T> {
+          a: T;
+          new(r: {a: T, b: T}) : a = r.b;
+        }
+        final class IntBox extends Box<i32> {
+          new(v: i32) : super(v, {x: v});
+        }
+        export let main = (): i32 => {
+          let b = new Box<i32>(1, {x: 2});
+          let p = new Pair<f64>({a: 1.5, b: 2.5});
+          let ib = new IntBox(3);
+          return b.x + (p.a as i32) + ib.x;
+        };
+        `);
     let named = (prefix: String, suffix: String): String => {
       var found = '';
       for (let chunk in result.split('(func $')) {
