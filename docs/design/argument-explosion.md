@@ -91,10 +91,10 @@ function's signature (below).
 
 ### Constructors
 
-A class's own unnamed, written constructor is eligible on a class that
-is not generic, an extension, a case class, a mixin intermediate or a
-resource, when the constructor is undecorated, synchronous, and has no
-parameter defaults or `this.` parameters. Its escape check walks the
+A class's own written constructors, unnamed and named, are eligible on a
+class that is not generic, an extension, a case class, a mixin
+intermediate or a resource, when the constructor is undecorated,
+synchronous, and has no parameter defaults or `this.` parameters. Its escape check walks the
 initializer list and the `super(...)` arguments as well as the body.
 
 `new C(...)` is one call to C's **factory**, which computes the field
@@ -107,8 +107,27 @@ method names and the core must not replace the factory there.
 
 Reachability records literal `new` arguments in
 `recordLiteralCtorArgs`, keyed by class and constructor. Candidates are
-keyed `f<symbol>` for functions and `c<class>` for constructors, so a
-forward can target either.
+keyed `f<symbol>` for functions and `c<class>|<constructor>` for
+constructors, where the constructor is `<constructor>` or, for a named
+one, `<constructor>.name`, so a forward can target any of them. A named
+constructor's factory, `new C.name(...)`, and its phase functions
+(`<ctor-init>.name`, `<ctor-body>.name`) get cores the same way, and a
+subclass's `super.name(...)` forwards to it or passes it literals.
+
+Measured on a loop calling `new P.from({x: i})`, a named constructor
+reading an optional field, two million iterations (wall time, including
+process start):
+
+| build | before | after  |
+| ----- | ------ | ------ |
+| `-O1` | 69 ms  | 12 ms  |
+| `-O2` | 2.4 ms | 2.9 ms |
+
+At `-O2` the two builds' `main` is the same loop, with the factory
+inlined and nothing allocated; the difference is process start. The new
+module is smaller, but every type after the ones it drops moves to a
+new index, and wasmtime's start-up cost is sensitive to that. The
+compiler's own module grows by 333 bytes (2,282,886 to 2,283,219).
 
 **Phase functions.** A subclass never calls its superclass's factory.
 Its own factory evaluates the `super(...)` arguments, then calls the
@@ -141,7 +160,6 @@ extends Base`, `Middle`'s own `super({...})` is evaluated inside
   `Middle.<ctor-init>` and returned to `Leaf`'s factory as a record, so
   `Base`'s phase cores read it field by field. Passing fields would need
   `<ctor-init>` to return them.
-- **Named constructors** (`new C.origin(...)`, `super.origin(...)`).
 
 A core called with a constant presence mask, which is what a record
 literal becomes, gets the inliner's argument budget (`inline.zena`).
@@ -566,8 +584,8 @@ Not yet covered:
 
 ## Later phases
 
-- Named constructors; generic classes' constructors; super arguments
-  past the first superclass, returned from `<ctor-init>` as fields.
+- Generic classes' constructors; super arguments past the first
+  superclass, returned from `<ctor-init>` as fields.
 - Per-specialization explosion of generic functions and methods; async
   functions and generators.
 - The `inline` parameter guarantee above.

@@ -860,9 +860,10 @@ let lowerFunctionOrThrow = (wasm: WasmModule, func: WasmFunction): IrBody => {
     let forwarderMeth = explosion.forwarder.methodName;
     if (forwarderMeth != null) {
       let fm = forwarderMeth as String;
-      if (fm == '<ctor-init>' || fm == '<ctor-body>') {
+      let init = fm == '<ctor-init>' || fm.startsWith('<ctor-init>.');
+      if (init || fm == '<ctor-body>' || fm.startsWith('<ctor-body>.')) {
         let lowerer = new FunctionLowerer(wasm, func);
-        lowerer.ctorPhase = if (fm == '<ctor-init>') 1 else 2;
+        lowerer.ctorPhase = if (init) 1 else 2;
         return lowerer.lower();
       }
     }
