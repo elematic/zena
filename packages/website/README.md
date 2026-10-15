@@ -12,22 +12,57 @@ npm run start -w @zena-lang/website        # serve _site/ with the Node fallback
 
 ## Running with Docker Locally
 
-To build and run the production container locally:
+The production container runs `server.wasm` under a Linux `x86_64` `zena-run`
+binary inside `debian:trixie-slim` (`linux/amd64`).
+
+### On Linux (`x86_64`)
 
 ```bash
-# 1. Build the Docker image (Wireit runs `build` first to ensure _site/ is fresh)
+# 1. Build the Docker image (Wireit runs `build`, `build:server`, and `stage:docker` first)
 npm run docker:build -w @zena-lang/website
 
 # 2. Run the container locally at http://localhost:8080
 npm run docker:run -w @zena-lang/website
 ```
 
-Or with direct Docker commands:
+### On macOS
+
+Because the container runs a Linux `x86_64` ELF binary, `stage:docker` will fail
+fast if only a native macOS Mach-O `zena-run` binary is present. To build or
+deploy the container from macOS, cross-compile `zena-run` for
+`x86_64-unknown-linux-gnu` first:
+
+```bash
+# One-time setup:
+rustup target add x86_64-unknown-linux-gnu
+brew install zig
+cargo install cargo-zigbuild
+
+# Cross-compile the Linux x86_64 runner:
+cargo zigbuild --release --target x86_64-unknown-linux-gnu -p zena-run
+```
+
+`stage:docker` automatically checks
+`target/x86_64-unknown-linux-gnu/release/zena-run` before falling back to
+`target/release/zena-run` (or you can point `ZENA_LINUX_RUNNER=/path/to/zena-run`
+at any prebuilt Linux `x86_64` binary). Once built, the same npm scripts work on
+macOS (using Docker Desktop's `linux/amd64` emulation on Apple Silicon):
+
+```bash
+npm run docker:build -w @zena-lang/website
+npm run docker:run -w @zena-lang/website
+```
+
+### Direct Docker Commands
+
+If you prefer invoking `docker` directly after staging the build artifacts:
 
 ```bash
 npm run build -w @zena-lang/website
-docker build -t zena-website packages/website
-docker run --rm --init -p 8080:8080 zena-website
+npm run build:server -w @zena-lang/website
+npm run stage:docker -w @zena-lang/website
+docker build --platform linux/amd64 -t zena-website packages/website
+docker run --platform linux/amd64 --rm --init -p 8080:8080 zena-website
 ```
 
 Press `Ctrl-C` to stop (or run `docker stop zena-website`).
