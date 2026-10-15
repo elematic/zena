@@ -100,6 +100,7 @@ import {
   ArrayType, TupleType as TupleT, InlineTupleType as InlineTupleT,
   UnionType as UnionT, TypeInterner, RecordType as RecordT,
   FunctionType, ClassType, InterfaceType, MixinType, MemberInfo, FieldInfo, MethodInfo,
+  MemberTable, setMemberTypeSubstitution,
   DecoratedField, ReceiverKind,
   TypeParameterType, TypeAliasType, SymbolType, ThisType,
   instantiateClassType, instantiateInterfaceType, instantiateMixinType,
@@ -4270,6 +4271,9 @@ export let beginModule = (
   deferBodies: boolean = false
 ): ModuleCheck => {
   let state = if (sharedState != null) sharedState else new SharedCheckerState();
+  // A member table substitutes a parent's type arguments into the members
+  // it reads through that parent with the checker's own substitution.
+  setMemberTypeSubstitution(substituteTypeParams);
   let ctx = new CheckerContext(state, ast.path, scopeResult, depExports, depModels, emitLocations, warnUnnecessaryCasts);
   ctx.cyclicLaterPaths = cyclicLaterPaths;
   ctx.cyclicRecheckPaths = cyclicRecheckPaths;
@@ -9043,33 +9047,6 @@ let getMemberPathKey = (ctx: CheckerContext, expr: Expression): String | null =>
  * symbol's identity one level below the type that declared it — which is
  * where most calls to an inherited protocol method are.
  */
-let inheritedMember = (parentMember: MemberInfo, subType: Type): MemberInfo => {
-  let copy = match (parentMember) {
-    case FieldInfo as fi: {
-      new FieldInfo(
-        subType,
-        fi.isMutable,
-        fi.isAbstract,
-        fi.isStatic,
-        fi.isPrivate,
-        fi.hasInitializer
-      ) as MemberInfo
-    }
-    case MethodInfo as mi: {
-      new MethodInfo(
-        subType,
-        mi.isAbstract,
-        mi.isStatic,
-        mi.isPrivate,
-        mi.isFinal
-      ) as MemberInfo
-    }
-    case _: parentMember
-  };
-  copy.symbolTypeId = parentMember.symbolTypeId;
-  return copy;
-};
-
 /**
  * The member key a symbol makes: its name, then its identity.
  *
@@ -13857,31 +13834,6 @@ let synthesizeCaseClassMembers = (ctx: CheckerContext, ct: ClassType): void => {
   addImplicitInterface(ctx, ct, WellKnown.EquatableInterface);
 };
 
-let inheritMembersFrom = (fromClass: ClassType, toClass: ClassType): void => {
-  let memberKeys = fromClass.members.keys();
-  for (let key in memberKeys) {
-    // Privates are never inherited: skip "#..." members, the get##/set##
-    // entries of private accessors, and mixin-scoped private members.
-    let isPrivate = (key.length > 0 && key.sliceBytes(0, 1) == "#") ||
-        key.startsWith("get##") || key.startsWith("set##") ||
-        key.contains("::#") || key.contains("::get##") || key.contains("::set##");
-    if (!isPrivate) {
-      let parentMember = fromClass.members[key];
-      let fromParams = fromClass.typeParameters;
-      var noSubstitution = true;
-      if (fromParams != null) {
-        noSubstitution = fromParams.length == 0;
-      }
-      if (noSubstitution) {
-        toClass.members[key] = parentMember;
-        continue;
-      }
-      let subType = substituteTypeParams(fromClass.typeParameters, fromClass.typeArguments, parentMember.type);
-      toClass.members[key] = inheritedMember(parentMember, subType);
-    }
-  }
-};
-
 /**
  * Applies the decorators written on a field of `classType`. Returns true
  * when one of them is a field decorator: the field is then not registered
@@ -14070,9 +14022,6 @@ let applyFieldDecorator = (
   intermediate.mixins = source.mixins;
   intermediate.decoratorSubjectName = subject;
   intermediate.decoratorFieldName = fieldName;
-  if (classType.superType != null) {
-    inheritMembersFrom(classType.superType as ClassType, intermediate);
-  }
   for (let key in source.members.keys()) {
     let member = source.members[key];
     let isPrivateKey = key.startsWith("#") || key.startsWith("get##") || key.startsWith("set##");
@@ -14099,7 +14048,6 @@ let applyFieldDecorator = (
     intermediate
   };
   classType.superType = applied;
-  inheritMembersFrom(applied, classType);
 
   var decorated = classType.decoratedFields;
   if (decorated == null) {
@@ -14293,13 +14241,12 @@ let getOrCreateMixinApplication = (
   let appKey = baseKey + "&" + mixinKey;
 
   // The cache holds the intermediate's IDENTITY: one class per (base,
-  // mixin) pair, however many hosts apply it. Its contents are rebuilt
-  // on every application. Inside an import cycle a host registers
-  // twice, and the first time the mixin may be an empty shell whose
-  // origin registers later in the cycle (docs/design/import-cycles.md);
-  // a copy of its members made then is stale once the shell fills, so
-  // the second registration has to copy again. The members map is
-  // cleared in place because instantiations share it.
+  // mixin) pair, however many hosts apply it. It holds no members of
+  // its own: its table reads the mixin's through `appliedMixin` and the
+  // base's through `superType` at every lookup (MemberTable), so a
+  // mixin that is an empty shell when a host first registers inside an
+  // import cycle (docs/design/import-cycles.md) is read filled once its
+  // own registration has run, with nothing to rebuild.
   let template = if (let (true, cached) = ctx.mixinApplications().get(appKey)) {
     cached
   } else {
@@ -14317,33 +14264,7 @@ let getOrCreateMixinApplication = (
   template.privateScopeKey = mixinSource.privateScopeKey;
   template.onType = mixinSource.onType;
   template.mixins = mixinSource.mixins;
-  template.members.clear();
-
-  // Inherit members from superclass if present
-  if (superClass != null) {
-    inheritMembersFrom(superClass, template);
-  }
-
-  // Copy members from generic mixin source
-  let sourceMemberKeys = mixinSource.members.keys();
-  for (let key in sourceMemberKeys) {
-    let mtMember = mixinSource.members[key];
-    let isPrivateKey = (key.length > 0 && key.sliceBytes(0, 1) == "#") ||
-        key.startsWith("get##") || key.startsWith("set##");
-    if (mtMember.isAbstract && template.members.has(key) && !template.members[key].isAbstract) {
-      continue;
-    }
-    var storeKey = key;
-    if (isPrivateKey && (mtMember is FieldInfo || mtMember is MethodInfo)) {
-      let scope = mixinSource.privateScopeKey;
-      storeKey = if (scope != null) {
-        scope + "::" + key
-      } else {
-        mixinSource.name + "_This::" + key
-      };
-    }
-    template.members[storeKey] = mtMember;
-  }
+  template.appliedMixin = mixinSource;
 
   // Validate method override types
   let memberKeys = mt.members.keys();
@@ -14848,9 +14769,6 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
   }
 
   classType.superType = currentSuper;
-  if (classType.superType != null) {
-    inheritMembersFrom(classType.superType as ClassType, classType);
-  }
   if (classType.isCaseClass) {
     synthesizeCaseClassMembers(ctx, classType);
   }
@@ -15811,9 +15729,8 @@ let checkFieldInitializer = (
 
   ctx.enterNodeReferrer(fd.id as i32);
 
-  // Temporarily hide fields declared after this one or inherited from superclasses,
-  // so that they cannot be accessed within the field's default initializer.
-  let hiddenFields = new Map<String, MemberInfo>();
+  // Hide the fields declared after this one and the ones inherited from a
+  // superclass while the initializer is checked, so it cannot read them.
   let keysToHide = new Array<String>();
 
   let allFieldKeys = classType.members.keys();
@@ -15842,22 +15759,14 @@ let checkFieldInitializer = (
     }
   }
 
-  var kh = 0;
-  while (kh < keysToHide.length) {
-    let k = keysToHide[kh];
-    hiddenFields[k] = classType.members[k];
-    classType.members.delete(k);
-    kh = kh + 1;
+  for (let k in keysToHide) {
+    classType.members.hide(k);
   }
 
   let fieldType = fieldInfo.type;
   let initType = checkExpression(ctx, value, fieldType);
 
-  // Restore hidden fields.
-  let restoreKeys = hiddenFields.keys();
-  for (let key in restoreKeys) {
-    classType.members[key] = hiddenFields[key];
-  }
+  classType.members.unhideAll();
 
   // Infer field type from initializer when no explicit annotation.
   if (fieldType is ErrorType && !(initType is ErrorType)) {
@@ -17227,13 +17136,8 @@ let checkInterfaceDeclaration = (ctx: CheckerContext, id: InterfaceDeclaration):
           if (!alreadyListed) {
             ifaceType.extendsList.push(pt);
           }
-          // Inherit members.
-          for (let key in pt.members.keys()) {
-            if (let (true, parentMember) = pt.members.get(key)) {
-              let subType = substituteTypeParams(pt.typeParameters, pt.typeArguments, parentMember.type);
-              ifaceType.members[key] = inheritedMember(parentMember, subType);
-            }
-          }
+          // The parent's members are read through `extendsList` by the
+          // interface's member table, substituted at the read.
         }
         case _: {}
       }
@@ -17993,14 +17897,10 @@ let checkMixinDeclaration = (ctx: CheckerContext, md: MixinDeclaration): void =>
   if (onType != null) {
     match (baseType(onType)) {
       case ClassType as ct: {
+        // The class's members reach `this` through the supertype
+        // (MemberTable); an interface's are copied, since a class
+        // inherits nothing from the interfaces it implements.
         thisType.superType = onType as ClassType;
-        for (let k in ct.members.keys()) {
-          if (!k.startsWith("#") && !thisType.members.has(k)) {
-            if (let (true, mInfo) = ct.members.get(k)) {
-              thisType.members[k] = mInfo;
-            }
-          }
-        }
       }
       case InterfaceType as it: {
         thisType.implementsList.push(onType as InterfaceType);
@@ -18850,7 +18750,7 @@ let declaresStaticMember = (t: Type, name: String): boolean => {
   if (symbols != null && (symbols as OrderedHashMap<String, Type>).has(name)) {
     return true;
   }
-  let members: OrderedHashMap<String, MemberInfo> | null = match (t) {
+  let members: MemberTable | null = match (t) {
     case ClassType as ct: ct.members
     case InterfaceType as it: it.members
     case MixinType as mt: mt.members
@@ -18860,7 +18760,7 @@ let declaresStaticMember = (t: Type, name: String): boolean => {
     return false;
   }
   for (let key in [name, "get#" + name]) {
-    if (let (true, info) = (members as OrderedHashMap<String, MemberInfo>).get(key)) {
+    if (let (true, info) = (members as MemberTable).get(key)) {
       if (info.isStatic) { return true; }
     }
   }
@@ -19078,7 +18978,7 @@ let registerStaticSymbols = (
 let recordSymbolKeyedMemberIdentities = (
     ctx: CheckerContext,
     owner: Type,
-    members: OrderedHashMap<String, MemberInfo>,
+    members: MemberTable,
     body: GrowableArray<Node>): void => {
   for (let member in body) {
     let nameNode = memberNameNodeOf(member);
