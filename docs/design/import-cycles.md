@@ -180,8 +180,8 @@ compile time. The component computation is what remains of it.
   `SharedCheckerState.declaredNominalTypes`, keyed by that symbol, for
   every kind `isTypeDeclaration` names; `#materializeFromSymbol` is
   the single funnel that consults and populates it, and every lookup
-  that wants a type — the import handler, `resolveInProgressType`,
-  `materializeCyclicImport` — asks it first through `canonicalTypeOf`.
+  that wants a type — the import handler, `materializeCyclicImport` —
+  asks it first through `canonicalTypeOf`.
   A declaration's name is bound to the same object as a value (a class
   is its constructor value, an enum the namespace its members are read
   off), so no pass ever mints a second type object for one declaration. Class and mixin registration reset what they

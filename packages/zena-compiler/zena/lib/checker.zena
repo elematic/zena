@@ -2033,37 +2033,6 @@ final class CheckerContext {
     return null;
   }
 
-  /**
-   * The type a type declaration `origin` names, when its module is a
-   * member of the same import cycle that has registered but not
-   * finished: what that module's own registration bound for it, or —
-   * for a declaration registration does not bind, such as a distinct
-   * type alias — what its context resolves the name to. Null when
-   * there is no such module.
-   */
-  resolveInProgressType(origin: Symbol): Type | null {
-    if (origin.modulePath == this.#filePath) {
-      return null;
-    }
-    // A type declaration's canonical object, once any module has
-    // materialized it, is the answer in every namespace it is asked for
-    // as a type. The origin's binding is asked only for what has no
-    // canonical type: it is the value face, which for an enum is the
-    // member record rather than the type.
-    let canonical = this.canonicalTypeOf(origin);
-    if (canonical != null) {
-      return canonical;
-    }
-    if (let (true, other) = this.#sharedState.inProgressModules.get(origin.modulePath)) {
-      let bound = other.model.getBindingType(origin);
-      if (bound != null) {
-        return bound;
-      }
-      return other.resolveTypeName(origin.name);
-    }
-    return null;
-  }
-
   // --- Return type ---
 
   returnType: Type | null {
@@ -10208,10 +10177,10 @@ case _: {
                   if (resolvedType == null) {
                     // A type declaration's canonical object, whichever
                     // module materialized it and whether or not its own
-                    // module has finished. Consulted before any BINDING,
-                    // because a binding is the value face, which for an
-                    // enum is the member record rather than the type.
-                    resolvedType = ctx.canonicalTypeOf(typeExport.resolveTarget());
+                    // module has finished; a shell when the origin lies
+                    // across a cycle's back edge and has no model yet
+                    // (docs/design/import-cycles.md).
+                    resolvedType = ctx.materializeCyclicImport(typeExport, importedName);
                   }
                   if (resolvedType == null && depModel != null) {
                     resolvedType = depModel.getBindingType(typeExport);
@@ -10219,89 +10188,22 @@ case _: {
                   if (resolvedType == null) {
                     resolvedType = lookupBindingTypeInDeps(ctx, typeExport);
                   }
-                  if (resolvedType == null) {
-                    // The origin is a member of the same import cycle
-                    // that has registered its declarations but not yet
-                    // finished (so its export types are not filled in):
-                    // ask its context.
-                    resolvedType = ctx.resolveInProgressType(typeExport.resolveTarget());
-                  }
-                  if (resolvedType == null) {
-                    // Cycle back edge on the first pass: the origin has
-                    // no model yet. Materialize (or reuse) the canonical
-                    // shell for nominal declarations; the origin's own
-                    // registration fills the same object.
-                    resolvedType = ctx.materializeCyclicImport(typeExport, importedName);
-                  }
 
+                  let localTypeInfo = ctx.scopeResult.symbols.getByNode(spec);
                   if (resolvedType != null) {
-                    // Use the actual resolved type from the dependency.
                     ctx.declareTypeName(localName, resolvedType);
-                    
-                    // Bind directly to the local TYPE symbol for this import.
-                    let localTypeInfo = ctx.scopeResult.symbols.getByNode(spec);
                     if (localTypeInfo != null) {
                       ctx.registerType(localTypeInfo, resolvedType);
                     }
                   } else {
-                    // Fallback: create stub types from the declaration AST node.
-                    // For stdlib types, prefer the prelude type which has full
-                    // member definitions (fields, methods, constructors).
-                    let decl = typeExport.declaration;
-                    if (decl != null) {
-                      let localTypeInfo = ctx.scopeResult.symbols.getByNode(spec);
-                      match (decl) {
-                        case ClassDeclaration {name}: {
-                          let preludeType = ctx.resolveTypeName(name.name);
-                          if (preludeType != null) {
-                            ctx.declareTypeName(localName, preludeType);
-                            if (localTypeInfo != null) {
-                              ctx.declareBinding(localTypeInfo, preludeType);
-                            }
-                          } else {
-                            let ct = new ClassType(ctx.freshTypeId(), noSymbolId, name.name);
-                            ctx.declareTypeName(localName, ct);
-                            if (localTypeInfo != null) {
-                              ctx.declareBinding(localTypeInfo, ct);
-                            }
-                          }
-                        }
-                        case InterfaceDeclaration {name}: {
-                          let it = new InterfaceType(ctx.freshTypeId(), noSymbolId, name.name);
-                          ctx.declareTypeName(localName, it);
-                          if (localTypeInfo != null) {
-                            ctx.declareBinding(localTypeInfo, it);
-                          }
-                        }
-                        case MixinDeclaration {name}: {
-                          let preludeType = ctx.resolveTypeName(name.name);
-                          if (preludeType != null) {
-                            ctx.declareTypeName(localName, preludeType);
-                            if (localTypeInfo != null) {
-                              ctx.declareBinding(localTypeInfo, preludeType);
-                            }
-                          } else {
-                            let mt = new MixinType(name.name);
-                            ctx.declareTypeName(localName, mt);
-                            if (localTypeInfo != null) {
-                              ctx.declareBinding(localTypeInfo, mt);
-                            }
-                          }
-                        }
-                        case SealedVariant {name}: {
-                          let ct = new ClassType(ctx.freshTypeId(), noSymbolId, name.name);
-                          ct.isCaseClass = true;
-                          ctx.declareTypeName(localName, ct);
-                          if (localTypeInfo != null) {
-                            ctx.declareBinding(localTypeInfo, ct);
-                          }
-                        }
-                        case _: {
-                          ctx.declareTypeName(localName, new ErrorType());
-                        }
-                      }
-                    } else {
-                      ctx.declareTypeName(localName, new ErrorType());
+                    // Nothing answers for the name: no model, no
+                    // canonical type, no back edge to build a shell
+                    // from. That is stale incremental state, and a stub
+                    // minted here would be a second identity for the
+                    // declaration, which nothing would ever fill.
+                    ctx.declareTypeName(localName, new ErrorType());
+                    if (localTypeInfo != null) {
+                      ctx.declareBinding(localTypeInfo, new ErrorType());
                     }
                   }
                 }
@@ -15528,12 +15430,6 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
         variantType.isCaseClass = true;
         variantType.isFinal = true;
 
-        // Inherit members from parent.
-        let parentMemberKeys = classType.members.keys();
-        for (let key in parentMemberKeys) {
-          variantType.members[key] = classType.members[key];
-        }
-
         // Process variant parameters as fields + constructor.
         let vParams = params;
         let vCtorParams = new Array<Type>();
@@ -15596,11 +15492,6 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
               if (!isForwardVariant2) {
                 ct.isCaseClass = true;
                 ct.isFinal = true;
-                // Inherit members from parent.
-                let pmKeys = classType.members.keys();
-                for (let pmk in pmKeys) {
-                  ct.members[pmk] = classType.members[pmk];
-                }
                 if (ct.constructorType == null) {
                   ct.constructorType = new FunctionType(new Array<Type>(), ct, new FunctionDeclInfo(new Array<String>()));
                 }
@@ -15615,12 +15506,6 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
             unitType.superType = classType;
             unitType.isCaseClass = true;
             unitType.isFinal = true;
-
-            // Inherit members from parent.
-            let parentMemberKeys2 = classType.members.keys();
-            for (let key2 in parentMemberKeys2) {
-              unitType.members[key2] = classType.members[key2];
-            }
             // Unit variant: zero-arg constructor.
             unitType.constructorType = new FunctionType(new Array<Type>(), unitType, new FunctionDeclInfo(new Array<String>()));
             unitType.constructors["<constructor>"] = unitType.constructorType as FunctionType;
