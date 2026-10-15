@@ -240,6 +240,22 @@ export let tests = suite('zena:http static files', (): void => {
     equal(bodyText(res), '<h1>docs</h1>\n');
   });
 
+  test('send preserves an explicitly set status code on GET and HEAD', (ctx: TestContext): void => {
+    let getReq = new Request.fromUrl('http://localhost/missing');
+    let getRes = new Response();
+    getRes.statusCode = 404;
+    blockOn(send(getReq, getRes, 'about.html', {root: fixtures()}));
+    equal(getRes.statusCode, 404);
+    equal(bodyText(getRes), '<h1>about</h1>\n');
+
+    let headReq = new Request.fromUrl('http://localhost/missing', 'HEAD');
+    let headRes = new Response();
+    headRes.statusCode = 404;
+    blockOn(send(headReq, headRes, 'about.html', {root: fixtures()}));
+    equal(headRes.statusCode, 404);
+    isTrue(headRes.body == null);
+  });
+
   test('a served file reaches the wire response', (ctx: TestContext): void => {
     // The file's stream goes into `response.new` as it is; reading the
     // wire response's body back brings the file's bytes.

@@ -70,6 +70,15 @@ fn no_cache_leaves_no_cwasm_behind() {
 }
 
 #[test]
+fn precompile_writes_cwasm_without_running() {
+    let path = component_file("precompile", RETURNS);
+    let out = zena_run(&["--precompile", path.to_str().unwrap()]);
+    assert!(out.status.success(), "stderr: {}", stderr(&out));
+    assert_eq!(stdout(&out), "");
+    assert!(path.with_extension("wat.cwasm").exists());
+}
+
+#[test]
 fn guest_exit_code_becomes_the_process_status() {
     // `exit-with-code` from wasi:cli 0.3, lowered into the core module.
     let path = component_file(

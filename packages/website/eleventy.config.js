@@ -5,6 +5,7 @@ import MarkdownIt from 'markdown-it';
 import {createZenaHighlighter, renderCodeBlock} from './lib/highlight.js';
 import {configureMarkdown} from './lib/markdown.js';
 import {writeSearchIndex} from './lib/search-index.js';
+import {compressSite} from './lib/compress.js';
 import {extractOutline} from './lib/toc.js';
 import {
   escapeXml,
@@ -121,11 +122,15 @@ export default async function (eleventyConfig) {
     '../language-service/lsp.wasm': 'js/lsp.wasm',
   });
 
-  /* Search index --------------------------------------------------------- */
+  /* Search index & precompression ---------------------------------------- */
 
   eleventyConfig.on('eleventy.after', async ({dir, results}) => {
     const count = await writeSearchIndex(dir.output, results);
     console.log(`[zena] search index: ${count} sections`);
+    if (process.env.ELEVENTY_RUN_MODE === 'build') {
+      const compressed = await compressSite(dir.output);
+      console.log(`[zena] precompressed: ${compressed} files (.br, .gz)`);
+    }
   });
 
   /* Filters -------------------------------------------------------------- */

@@ -7,6 +7,7 @@ zena-run prog.wasm arg1 arg2
 zena-run --dir . --dir /tmp prog.wasm
 zena-run --allow-spawn tool.wasm       # lets it use zena:process and zena:wasm
 zena-run -g prog.wasm                  # no inlining: backtraces name functions
+zena-run --precompile prog.wasm        # write prog.cwasm ahead of time and exit
 zena-run --no-cache prog.wasm          # compile in memory, write nothing
 ```
 

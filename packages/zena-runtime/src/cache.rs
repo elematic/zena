@@ -144,9 +144,15 @@ pub fn load_or_compile_component(
     cwasm_path: &Path,
 ) -> Result<Component> {
     if cwasm_is_stale(wasm_path, cwasm_path) {
-        write_cwasm(engine, wasm_path, cwasm_path, Kind::Component, || {
+        if let Err(e) = write_cwasm(engine, wasm_path, cwasm_path, Kind::Component, || {
             cwasm_is_stale(wasm_path, cwasm_path)
-        })?;
+        }) {
+            eprintln!(
+                "WARNING: could not write {}: {e:#}; compiling in memory",
+                cwasm_path.display()
+            );
+            return compile_component_uncached(engine, wasm_path);
+        }
     }
     match unsafe { Component::deserialize_file(engine, cwasm_path) } {
         Ok(c) => Ok(c),
@@ -156,7 +162,13 @@ pub fn load_or_compile_component(
                 cwasm_path.display(),
                 first_err
             );
-            write_cwasm(engine, wasm_path, cwasm_path, Kind::Component, || true)?;
+            if let Err(e) = write_cwasm(engine, wasm_path, cwasm_path, Kind::Component, || true) {
+                eprintln!(
+                    "WARNING: could not rewrite {}: {e:#}; compiling in memory",
+                    cwasm_path.display()
+                );
+                return compile_component_uncached(engine, wasm_path);
+            }
             match unsafe { Component::deserialize_file(engine, cwasm_path) } {
                 Ok(c) => Ok(c),
                 Err(e) => {
@@ -205,9 +217,15 @@ pub fn load_or_compile_module(
     cwasm_path: &Path,
 ) -> Result<Module> {
     if cwasm_is_stale(wasm_path, cwasm_path) {
-        write_cwasm(engine, wasm_path, cwasm_path, Kind::CoreModule, || {
+        if let Err(e) = write_cwasm(engine, wasm_path, cwasm_path, Kind::CoreModule, || {
             cwasm_is_stale(wasm_path, cwasm_path)
-        })?;
+        }) {
+            eprintln!(
+                "WARNING: could not write {}: {e:#}; compiling in memory",
+                cwasm_path.display()
+            );
+            return compile_module_uncached(engine, wasm_path);
+        }
     }
     match unsafe { Module::deserialize_file(engine, cwasm_path) } {
         Ok(m) => Ok(m),
@@ -217,7 +235,13 @@ pub fn load_or_compile_module(
                 cwasm_path.display(),
                 first_err
             );
-            write_cwasm(engine, wasm_path, cwasm_path, Kind::CoreModule, || true)?;
+            if let Err(e) = write_cwasm(engine, wasm_path, cwasm_path, Kind::CoreModule, || true) {
+                eprintln!(
+                    "WARNING: could not rewrite {}: {e:#}; compiling in memory",
+                    cwasm_path.display()
+                );
+                return compile_module_uncached(engine, wasm_path);
+            }
             match unsafe { Module::deserialize_file(engine, cwasm_path) } {
                 Ok(m) => Ok(m),
                 Err(e) => {

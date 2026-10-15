@@ -1106,8 +1106,12 @@ impl http_server::HostServerWithStore<ComponentState> for HasSelf<ComponentState
 
 impl http_server::HostServer for ComponentState {
     fn create(&mut self, port: u16) -> Result<Resource<ServerState>> {
-        let std_listener = std::net::TcpListener::bind(("127.0.0.1", port))
-            .map_err(|e| format_err!("failed to bind port {port}: {e}"))?;
+        let host = std::env::var("HOST")
+            .ok()
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| "127.0.0.1".to_string());
+        let std_listener = std::net::TcpListener::bind((host.as_str(), port))
+            .map_err(|e| format_err!("failed to bind {host}:{port}: {e}"))?;
         let bound_port = std_listener
             .local_addr()
             .map_err(|e| format_err!("failed to get local address: {e}"))?
@@ -1132,6 +1136,30 @@ impl http_server::HostServer for ComponentState {
                 }
             };
             rt.block_on(async move {
+                // When zena-run is PID 1 in a container, Linux suppresses
+                // SIGTERM and SIGINT unless a signal handler is installed.
+                #[cfg(unix)]
+                tokio::spawn(async move {
+                    use tokio::signal::unix::{SignalKind, signal};
+                    let mut sigterm = signal(SignalKind::terminate()).ok();
+                    let mut sigint = signal(SignalKind::interrupt()).ok();
+                    tokio::select! {
+                        Some(_) = async {
+                            match &mut sigterm {
+                                Some(s) => s.recv().await,
+                                None => std::future::pending().await,
+                            }
+                        } => {}
+                        Some(_) = async {
+                            match &mut sigint {
+                                Some(s) => s.recv().await,
+                                None => std::future::pending().await,
+                            }
+                        } => {}
+                    }
+                    std::process::exit(0);
+                });
+
                 let listener = match tokio::net::TcpListener::from_std(std_listener) {
                     Ok(l) => l,
                     Err(e) => {
