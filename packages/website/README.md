@@ -5,9 +5,10 @@ The Zena documentation site: [Eleventy](https://www.11ty.dev/) for the build,
 [VitePress](https://vitepress.dev/) default theme for the design.
 
 ```bash
-npm run serve -w @zena-lang/website   # dev server with live reload
-npm run build -w @zena-lang/website   # production build into _site/
-npm run start -w @zena-lang/website   # serve _site/ with the production server
+npm run serve -w @zena-lang/website        # dev server with live reload
+npm run serve:zena -w @zena-lang/website   # serve _site/ with zena:http
+npm run build -w @zena-lang/website        # production build into _site/
+npm run start -w @zena-lang/website        # serve _site/ with the production server
 ```
 
 ## Running with Docker Locally
@@ -168,10 +169,12 @@ except `_site/` and `serve-static.js`. This keeps the upload size to ~4MB compre
 Both `docker:build` and `deploy:image` declare Wireit dependencies on `build`,
 so running either one automatically ensures `_site/` is fresh before packaging.
 
-Two servers, deliberately:
+Three servers, deliberately:
 
-- [`server.js`](server.js) is the dev server (`npm run serve`). It rewrites
+- [`server.js`](server.js) is the Node/Zipadee dev server (`npm run serve`). It rewrites
   bare module specifiers via `@zipadee/javascript`.
+- [`server.zena`](server.zena) serves `_site/` with `zena:http`'s static file
+  middleware (`npm run serve:zena`).
 - [`serve-static.js`](serve-static.js) is what runs in the container
   (`npm run start`). The built site has no bare specifiers — esbuild bundles
   the client into `/js/zena.js` — so it needs no rewriting, and no
