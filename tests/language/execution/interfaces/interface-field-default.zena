@@ -1,10 +1,9 @@
 // @mode: run
 // @invoke: main
-// @result: 3
-// @skip: lowering bails with "zir unsupported: constructor field type" —
-//   a field declared at an interface type whose default initializer is a
-//   class value is never adapted to the interface's fat pointer.
-//   https://code.rictic.com/justin/zena/issues/475
+// @result: 42
+
+import {GrowableArray} from 'zena:core';
+import {Map} from 'zena:collections';
 
 interface Counter {
   length: i32 { get; }
@@ -15,12 +14,81 @@ class Counted implements Counter {
   new(this.length);
 }
 
-class Holder {
-  var items: Counter = new Counted(3);
-
+mixin WithCounter {
+  var mixItems: Counter = new Counted(4);
 }
 
-export let main = (): i32 => {
-  let h = new Holder();
-  return h.items.length;
+class Holder with WithCounter {
+  var items: Counter = new Counted(3);
+  var #map: Map<String, String> = new Map<String, String>();
+  var arr: Array<i32> = new GrowableArray<i32>();
+  var(#scoped) scoped: Counter = new Counted(1);
+
+  new() {
+    this.#map['a'] = 'b';
+  }
+
+  new fromInit(n: i32)
+    : items = new Counted(n),
+      #map = new Map<String, String>(),
+      arr = [10, 20],
+      #scoped = new Counted(2) {
+    this.#map['x'] = 'y';
+    this.#map['z'] = 'w';
+  }
+
+  mapSize(): i32 {
+    return this.#map.size;
+  }
+
+  methodDefault(m: Map<String, String> = new Map<String, String>(), c: Counter = new Counted(5)): i32 {
+    m['k'] = 'v';
+    return m.size + c.length;
+  }
+}
+
+class WithCtorDefault {
+  items: Counter;
+  m: Map<String, String>;
+  new(this.items = new Counted(6), this.m = new Map<String, String>());
+}
+
+let fnDefault = (m: Map<String, String> = new Map<String, String>(), arr: Array<i32> = new GrowableArray<i32>()): i32 => {
+  m['hello'] = 'world';
+  return m.size + arr.length;
 };
+
+export let main = (): i32 => {
+  let h1 = new Holder();
+  // h1.items.length (3) + h1.mapSize() (1) + h1.arr.length (0) + h1.scoped.length (1) + h1.mixItems.length (4) = 9
+  let part1 = h1.items.length + h1.mapSize() + h1.arr.length + h1.scoped.length + h1.mixItems.length;
+
+  let h2 = new Holder.fromInit(7);
+  // h2.items.length (7) + h2.mapSize() (2) + h2.arr.length (2) + h2.scoped.length (2) = 13
+  let part2 = h2.items.length + h2.mapSize() + h2.arr.length + h2.scoped.length;
+
+  // h1.methodDefault() -> 1 + 5 = 6
+  let part3 = h1.methodDefault();
+
+  let cd = new WithCtorDefault();
+  // cd.items.length (6) + cd.m.size (0) = 6
+  let part4 = cd.items.length + cd.m.size;
+
+  // fnDefault() -> 1 + 0 = 1
+  let part5 = fnDefault();
+
+  let base = 2;
+  let closureDefault = (c: Counter = new Counted(5)): i32 => base + c.length;
+  // closureDefault() -> 2 + 5 = 7
+  let part6 = closureDefault();
+
+  var maybe: Counter | null = null;
+  maybe ??= new Counted(8);
+  let {c = new Counted(2)}: {c?: Counter} = {};
+  // (8 + 2) - 10 = 0
+  let part7 = maybe.length + c.length - 10;
+
+  // 9 + 13 + 6 + 6 + 1 + 7 + 0 = 42
+  return part1 + part2 + part3 + part4 + part5 + part6 + part7;
+};
+

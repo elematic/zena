@@ -790,7 +790,8 @@ final class CheckerContext {
   enterNodeReferrer(nodeId: i32): void {
     this.#referrerStack.push("node");
     this.#referrerNodeStack.push(nodeId);
-    this.#dependencyStack.push(new SymbolDependencies());
+    let existing = if (let (true, d) = this.model.nodeDependencies.get(nodeId)) d else new SymbolDependencies();
+    this.#dependencyStack.push(existing);
   }
 
   exitNodeReferrer(nodeId: i32): void {
@@ -7859,7 +7860,7 @@ let checkAndRegisterInterfaceAdaptation = (ctx: CheckerContext, node: Node, sour
   }
 
   if (effectiveSource is ClassType && effectiveTarget is InterfaceType) {
-    if (ctx.warnUnnecessaryCasts) {
+    if (ctx.warnUnnecessaryCasts && ctx.model.getInterfaceAdaptationDirect(node) == null) {
       ctx.warning("'" + typeToString(effectiveSource) + "' is boxed to pass as '" +
           typeToString(effectiveTarget) + "': an allocation here and an indirect call at each use.",
           DiagnosticCode.Adaptation, node.loc);
@@ -7901,7 +7902,7 @@ let checkAndRegisterInterfaceAdaptation = (ctx: CheckerContext, node: Node, sour
     }
   } else if (sourceType is FunctionType && effectiveTarget is FunctionType) {
     if (!typesEqual(sourceType, effectiveTarget)) {
-      if (ctx.warnUnnecessaryCasts) {
+      if (ctx.warnUnnecessaryCasts && ctx.model.getFunctionAdaptationDirect(node) == null) {
         ctx.warning("Function value is re-wrapped to match '" + typeToString(effectiveTarget) +
             "': an allocation here and a second call at each use.",
             DiagnosticCode.Adaptation, node.loc);
@@ -7939,7 +7940,7 @@ let checkAndRegisterInterfaceAdaptation = (ctx: CheckerContext, node: Node, sour
       }
     }
     if (needsAdaptation) {
-      if (ctx.warnUnnecessaryCasts) {
+      if (ctx.warnUnnecessaryCasts && ctx.model.getRecordAdaptationDirect(node) == null) {
         ctx.warning("Record is copied to the shape '" + typeToString(nonNullTgt) +
             "': an allocation here.",
             DiagnosticCode.Adaptation, node.loc);
@@ -10689,6 +10690,12 @@ let checkUsingStatement = (
         DiagnosticCode.TypeMismatch,
         loc
       );
+    } else {
+      let instantiated = tryInstantiateGenericFunction(ctx, initType, expectedType);
+      if (instantiated !== initType) {
+        ctx.setNodeType(init, instantiated);
+      }
+      checkAndRegisterInterfaceAdaptation(ctx, init, instantiated, expectedType);
     }
     declType = expectedType;
   }
@@ -11408,6 +11415,12 @@ let bindPattern = (ctx: CheckerContext, pattern: Pattern, t: Type): void => {
           DiagnosticCode.TypeMismatch,
           pattern.loc
         );
+      } else {
+        let instantiated = tryInstantiateGenericFunction(ctx, defaultType, t);
+        if (instantiated !== defaultType) {
+          ctx.setNodeType(right, instantiated);
+        }
+        checkAndRegisterInterfaceAdaptation(ctx, right, instantiated, t);
       }
       bindPattern(ctx, left as Pattern, t);
     }
@@ -12274,6 +12287,12 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
           DiagnosticCode.TypeMismatch,
           loc
         );
+      } else {
+        let instantiated = tryInstantiateGenericFunction(ctx, rightType, nonNullType);
+        if (instantiated !== rightType) {
+          ctx.setNodeType(value, instantiated);
+        }
+        checkAndRegisterInterfaceAdaptation(ctx, value, instantiated, nonNullType);
       }
       // The assignment's stored type is the narrowing: a later read
       // walks back to this flow node and sees the non-null type.
@@ -13972,6 +13991,12 @@ let checkDecoratedFieldInitializer = (
       DiagnosticCode.TypeMismatch,
       fd.loc
     );
+  } else {
+    let instantiatedVal = tryInstantiateGenericFunction(ctx, initType, df.fieldType);
+    if (instantiatedVal !== initType) {
+      ctx.setNodeType(value, instantiatedVal);
+    }
+    checkAndRegisterInterfaceAdaptation(ctx, value, instantiatedVal, df.fieldType);
   }
   ctx.exitNodeReferrer(fd.id as i32);
 };
@@ -15649,6 +15674,7 @@ let checkFieldInitializer = (
     if (instantiatedVal !== initType) {
       ctx.setNodeType(value, instantiatedVal);
     }
+    checkAndRegisterInterfaceAdaptation(ctx, value, instantiatedVal, fieldType);
   }
   ctx.exitNodeReferrer(fd.id as i32);
 };
@@ -16252,6 +16278,10 @@ let checkMethodSignature = (
     if (defaultValue != null) { 
       hasInitializers = true; 
       let initExp = defaultValue;
+      let pushedReferrer = ctx.currentDependencies() == null;
+      if (pushedReferrer) {
+        ctx.enterNodeReferrer(md.id as i32);
+      }
       let initType = checkExpression(ctx, initExp, paramType);
       if (!isAssignableTo(ctx, initType, paramType)) {
         ctx.error(
@@ -16265,6 +16295,10 @@ let checkMethodSignature = (
         if (instantiatedVal !== initType) {
           ctx.setNodeType(initExp, instantiatedVal);
         }
+        checkAndRegisterInterfaceAdaptation(ctx, initExp, instantiatedVal, paramType);
+      }
+      if (pushedReferrer) {
+        ctx.exitNodeReferrer(md.id as i32);
       }
     }
     initializers.push(param.defaultValue);
@@ -16633,7 +16667,7 @@ let checkMethodBody = (
 
   // Declare parameters.
   var i = 0;
-  while (i < md.params.length) {
+  while (i < md.params.length && i < methodType.parameters.length) {
     let param = md.params[i];
     let paramType = substituteThisType(selfType, methodType.parameters[i]);
     let paramInfo = ctx.model.resolveDeclaration(param);
@@ -16746,17 +16780,29 @@ let checkMethodBody = (
     if (initializerList != null) {
       for (let item in initializerList) {
         if (item is FieldInitializer) {
-          fieldsInInitializerList.add(item.field.name);
           let fieldName = item.field.name;
+          let actualFieldName = if (classType.fieldSetterNames != null && (classType.fieldSetterNames as HashMap<String, String>).has(fieldName)) {
+            (classType.fieldSetterNames as HashMap<String, String>)[fieldName]
+          } else {
+            fieldName
+          };
+          fieldsInInitializerList.add(actualFieldName);
           let decoratedInit = decoratedFieldOf(classType, fieldName);
           let fieldType: Type | null = if (decoratedInit != null) {
             decoratedInit.fieldType
-          } else if (classType.members.has(fieldName)) {
-            classType.members[fieldName].type
+          } else if (classType.members.has(actualFieldName)) {
+            classType.members[actualFieldName].type
           } else {
             null
           };
-          checkExpression(ctx, item.value, fieldType);
+          let initType = checkExpression(ctx, item.value, fieldType);
+          if (fieldType != null && isAssignableTo(ctx, initType, fieldType)) {
+            let instantiatedVal = tryInstantiateGenericFunction(ctx, initType, fieldType);
+            if (instantiatedVal !== initType) {
+              ctx.setNodeType(item.value, instantiatedVal);
+            }
+            checkAndRegisterInterfaceAdaptation(ctx, item.value, instantiatedVal, fieldType);
+          }
         }
       }
     }
@@ -17801,6 +17847,7 @@ let checkMixinDeclaration = (ctx: CheckerContext, md: MixinDeclaration): void =>
         // Check initializer if present.
         let {value} = fd;
         if (value != null) {
+          ctx.enterNodeReferrer(fd.id as i32);
           let initType = checkExpression(ctx, value, fieldType);
           if (!isAssignableTo(ctx, initType, fieldType)) {
             ctx.error(
@@ -17810,7 +17857,14 @@ let checkMixinDeclaration = (ctx: CheckerContext, md: MixinDeclaration): void =>
               DiagnosticCode.TypeMismatch,
               fd.loc
             );
+          } else {
+            let instantiatedVal = tryInstantiateGenericFunction(ctx, initType, fieldType);
+            if (instantiatedVal !== initType) {
+              ctx.setNodeType(value, instantiatedVal);
+            }
+            checkAndRegisterInterfaceAdaptation(ctx, value, instantiatedVal, fieldType);
           }
+          ctx.exitNodeReferrer(fd.id as i32);
         }
       }
       case MethodDefinition as methDef: {
@@ -21482,6 +21536,12 @@ let checkPattern = (ctx: CheckerContext, pattern: Node, expectedType: Type): voi
           DiagnosticCode.TypeMismatch,
           right.loc
         );
+      } else {
+        let instantiated = tryInstantiateGenericFunction(ctx, defaultType, expectedType);
+        if (instantiated !== defaultType) {
+          ctx.setNodeType(right, instantiated);
+        }
+        checkAndRegisterInterfaceAdaptation(ctx, right, instantiated, expectedType);
       }
       checkPattern(ctx, left, expectedType);
     }
@@ -21994,6 +22054,12 @@ let checkFunctionExpression = (
           DiagnosticCode.TypeMismatch,
           initExp.loc
         );
+      } else {
+        let instantiatedVal = tryInstantiateGenericFunction(ctx, initType, paramType);
+        if (instantiatedVal !== initType) {
+          ctx.setNodeType(initExp, instantiatedVal);
+        }
+        checkAndRegisterInterfaceAdaptation(ctx, initExp, instantiatedVal, paramType);
       }
     }
     initializers.push(param.defaultValue);

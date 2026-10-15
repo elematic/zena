@@ -309,6 +309,31 @@ export final class Specializer implements SpecializerInterface {
       if (!classType.isExtension && !classType.isMixinIntermediate && !containsErasedType(classType as Type)) {
         this.registerClassMethod(classType, null, "<constructor>", null, false, false, null, model);
       }
+      if (classDecl is MixinDeclaration) {
+        for (let composed in classType.mixins) {
+          let compLookupId = (composed.genericSource ?? composed).symbolId;
+          if (this.pass.classDecls.has(compLookupId)) {
+            let cDecl = this.pass.classDecls[compLookupId];
+            if (cDecl is MixinDeclaration) {
+              let compModel = if (this.pass.classModels.has(compLookupId)) this.pass.classModels[compLookupId] else model;
+              for (let member in cDecl.body) {
+                if (member is FieldDefinition) {
+                  if (member.value != null) {
+                    this.pass.queueReferrer(new Referrer(false, noSymbolId, (member as Node).id as i32, compModel, classType, this.pass.currentReachable));
+                  }
+                }
+              }
+            }
+          }
+        }
+        for (let member in classDecl.body) {
+          if (member is FieldDefinition) {
+            if (member.value != null) {
+              this.pass.queueReferrer(new Referrer(false, noSymbolId, (member as Node).id as i32, model, classType, this.pass.currentReachable));
+            }
+          }
+        }
+      }
     }
     
     // Implements list logic
