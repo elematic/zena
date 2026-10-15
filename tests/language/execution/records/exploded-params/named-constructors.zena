@@ -1,0 +1,80 @@
+// @mode: run
+// @result: 1
+// A named constructor that only reads fields of its record takes the
+// fields like the unnamed one: from `new C.name(...)`, and from a
+// subclass's `super.name(...)` with a literal, its own record passed on,
+// or a record from the heap. A class may have several such
+// constructors. Every shape must build the same object and run each
+// body once with the same values.
+
+type Init = {x: i32, y?: i32};
+
+var bodies = 0;
+
+class Base {
+  x: i32;
+  y: i32;
+
+  new(this.x, this.y);
+
+  new from(init: Init) : x = init.x, y = init.y ?? 7 {
+    bodies += init.x;
+  }
+
+  new swapped(init: Init) : x = init.y ?? 0, y = init.x;
+}
+
+class Literal extends Base {
+  z: i32;
+  new(z: i32) : z = z, super.from({x: z, y: z + 1});
+}
+
+class Forwarding extends Base {
+  new relay(init: Init) : super.from(init);
+}
+
+class FromHeap extends Base {
+  new(held: Init) : super.from(held);
+}
+
+class Middle extends Base {
+  m: i32;
+  new(m: i32) : m = m, super.from({x: m * 10});
+}
+
+final class Leaf extends Middle {
+  new() : super(4);
+}
+
+export let main = (): i32 => {
+  let direct = new Base.from({x: 1, y: 2});
+  if (direct.x != 1 || direct.y != 2) {
+    return 0;
+  }
+  let swapped = new Base.swapped({x: 8, y: 9});
+  if (swapped.x != 9 || swapped.y != 8) {
+    return 0;
+  }
+  let literal = new Literal(3);
+  if (literal.z != 3 || literal.x != 3 || literal.y != 4) {
+    return 0;
+  }
+  let forwarding = new Forwarding.relay({x: 5});
+  if (forwarding.x != 5 || forwarding.y != 7) {
+    return 0;
+  }
+  let held: Init = {x: 6, y: 1};
+  let fromHeap = new FromHeap(held);
+  if (fromHeap.x != 6 || fromHeap.y != 1) {
+    return 0;
+  }
+  let leaf = new Leaf();
+  if (leaf.m != 4 || leaf.x != 40 || leaf.y != 7) {
+    return 0;
+  }
+  // 1 + 3 + 5 + 6 + 40: each `from` body ran once.
+  if (bodies != 55) {
+    return 0;
+  }
+  return 1;
+};

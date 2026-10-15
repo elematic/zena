@@ -786,6 +786,49 @@ export let tests = suite('zir backend', (): void => {
         'struct.new', 1, 'a record passed on to super is never rebuilt');
   });
 
+  test('a record passed to a named constructor is passed as its fields', (ctx: TestContext): void => {
+    // Named constructors explode like the unnamed one: `new Base.from`
+    // with a literal, a subclass's `super.from(...)` with a literal, and
+    // a named constructor passing its own record up to `super.from`.
+    let result = compileWithZir(
+        'type Init = {x: i32, y?: i32};\n' +
+        'class Base {\n' +
+        '  x: i32;\n' +
+        '  y: i32;\n' +
+        '  new(this.x, this.y);\n' +
+        '  new from(init: Init) : x = init.x, y = init.y ?? 7;\n' +
+        '}\n' +
+        'final class Sub extends Base {\n' +
+        '  z: i32;\n' +
+        '  new(z: i32) : z = z, super.from({x: z});\n' +
+        '}\n' +
+        'final class Pass extends Base {\n' +
+        '  new relay(init: Init) : super.from(init);\n' +
+        '}\n' +
+        'export let main = (): i32 => {\n' +
+        '  let b = new Base.from({x: 2});\n' +
+        '  let s = new Sub(3);\n' +
+        '  let p = new Pass.relay({x: 4});\n' +
+        '  return b.y + s.y + p.x;\n' +
+        '};');
+    let named = (prefix: String, suffix: String): String => {
+      var found = '';
+      for (let chunk in result.split('(func $')) {
+        let name = chunk.split(' ')[0];
+        if (name.startsWith(prefix) && name.endsWith(suffix)) {
+          found = '$' + name;
+        }
+      }
+      isTrue(found.length > 0, `no function ${prefix}…${suffix}`);
+      return found;
+    };
+    assertNoAllocation(result, '$main', 'every record arrives as fields');
+    assertFunctionUsesTimes(result, named('Sub_', '<constructor>'),
+        'struct.new', 1, 'the literal passed to super.from is never built');
+    assertFunctionUsesTimes(result, named('Pass_', '<constructor>.relay.core'),
+        'struct.new', 1, 'a record passed on to super.from is never rebuilt');
+  });
+
   test('a record result only read for its fields is returned as its fields', (ctx: TestContext): void => {
     // `step` builds its result from a literal and `main` only
     // destructures it, so `step.core` returns the two fields as wasm
