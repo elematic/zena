@@ -916,6 +916,46 @@ export let tests = suite('zir backend', (): void => {
         'struct.new', 1, 'the literal passed to super is never built');
   });
 
+  test('a record passed to super past the first superclass is passed as its fields', (ctx: TestContext): void => {
+    // `Middle`'s own `super({...})` runs in `Middle.<ctor-init>`, which
+    // returns `Base`'s arguments to `Leaf`'s factory. Its core returns
+    // the record's fields, so neither it nor `Leaf` builds the record.
+    let result = compileWithZir(dedentRaw`
+        type Init = {x: i32, y?: i32};
+        class Base {
+          x: i32;
+          y: i32;
+          new(init: Init) : x = init.x, y = init.y ?? 7;
+        }
+        class Middle extends Base {
+          m: i32;
+          new(m: i32) : m = m, super({x: m * 10});
+        }
+        final class Leaf extends Middle {
+          new() : super(4);
+        }
+        export let main = (): i32 => {
+          let leaf = new Leaf();
+          return leaf.x + leaf.y + leaf.m;
+        };
+        `);
+    let named = (prefix: String, suffix: String): String => {
+      var found = '';
+      for (let chunk in result.split('(func $')) {
+        let name = chunk.split(' ')[0];
+        if (name.startsWith(prefix) && name.endsWith(suffix)) {
+          found = '$' + name;
+        }
+      }
+      isTrue(found.length > 0, `no function ${prefix}…${suffix}`);
+      return found;
+    };
+    assertNoAllocation(result, named('Middle_', '<ctor-init>.core'),
+        'the value phase returns the super record as its fields');
+    assertFunctionUsesTimes(result, named('Leaf_', '<constructor>'),
+        'struct.new', 1, 'the record passed past Middle is never built');
+  });
+
   test('a record result only read for its fields is returned as its fields', (ctx: TestContext): void => {
     // `step` builds its result from a literal and `main` only
     // destructures it, so `step.core` returns the two fields as wasm

@@ -160,13 +160,31 @@ its instance parameter. A core of a phase has no method name, so
 `#allocateInstance` makes these phase calls through
 `#explodedCallArgs`, so a phase with a core is always called through it.
 
-What stays boxed:
+**Arguments past the first superclass.** In `Leaf extends Middle extends
+Base`, `Middle`'s own `super({...})` is evaluated inside
+`Middle.<ctor-init>`, whose results are `Middle`'s own fields followed
+by `Base`'s arguments, and `Leaf`'s factory passes those on to `Base`'s
+phases. When `Base`'s constructor explodes a parameter,
+`Middle.<ctor-init>` gets a core that returns that argument as its
+fields (`ExplosionSpec.tail`, computed by `superArgTail`), whether or
+not `Middle`'s own parameters explode:
 
-- **Arguments past the first superclass.** In `Leaf extends Middle
-extends Base`, `Middle`'s own `super({...})` is evaluated inside
-  `Middle.<ctor-init>` and returned to `Leaf`'s factory as a record, so
-  `Base`'s phase cores read it field by field. Passing fields would need
-  `<ctor-init>` to return them.
+- The core's return (`#emitCtorInitReturn`) passes the fields of a
+  record it holds as fields, a literal or its own exploded parameter,
+  and reads any other record's fields.
+- `#allocateInstance` calls that core, and holds each returned argument
+  as a record rebuilt from its fields (`#callValuePhaseCore`), so
+  `Base`'s phase cores take the same values and the record dies. The
+  next level up does the same, so a chain of any length passes fields.
+- The forwarder keeps its signature, building the records from the
+  core's fields.
+
+On a loop calling `new Leaf(i)` for `Leaf extends Middle extends Base`,
+`Middle` passing `Base` a literal, two million iterations, `-O1` goes
+from 104 ms to 17 ms; at `-O2` the phases were already inlined and the
+record removed. The compiler's own module grows by 2.3 KB (2,280,264 to
+2,282,547), all of it the code that does this: no constructor chain in
+the compiler uses it.
 
 A core called with a constant presence mask, which is what a record
 literal becomes, gets the inliner's argument budget (`inline.zena`).
@@ -590,8 +608,6 @@ Not yet covered:
 
 ## Later phases
 
-- Super arguments past the first superclass, returned from
-  `<ctor-init>` as fields.
 - Per-specialization explosion of generic functions and methods; async
   functions and generators.
 - The `inline` parameter guarantee above.

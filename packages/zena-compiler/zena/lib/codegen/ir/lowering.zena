@@ -2410,8 +2410,32 @@ export final class FunctionLowerer {
   #emitCtorInitReturn(level: CtorLevel): void {
     let list = this.#ctorOwnFieldValues(
         this.func.structType as WasmStruct, level.values);
-    for (let a in level.superArgs) {
-      list.push(a);
+    // A core with a tail returns those `super(...)` arguments as their
+    // fields: held ones as they are, any other read here.
+    let explosion = this.func.explosion;
+    let tail = if (explosion != null && explosion.core === this.func)
+        explosion.tail else null;
+    let returns = this.func.signature.returns;
+    for (var j = 0; j < level.superArgs.length; j += 1) {
+      let a = level.superArgs[j];
+      let d = if (tail != null && j < tail.length) tail[j] else null;
+      if (d == null) {
+        list.push(a);
+        continue;
+      }
+      if (let (true, held) = this.#cx().explodedRecords.get(a)) {
+        if (held.dispatch === d) {
+          for (let v in held.values) {
+            list.push(v);
+          }
+          continue;
+        }
+      }
+      for (let field in d.fields) {
+        let read = this.#cx().recordDispatchRead(d, field.name as String, a);
+        list.push(this.#conformToSlot(read, returns[list.length],
+            'exploded field type'));
+      }
     }
     this.b.retMulti(list);
   }
@@ -2527,10 +2551,18 @@ export final class FunctionLowerer {
       let ownCount = ancStruct.fields.length - ancOwnStart;
       let rets = initFn.signature.returns;
       let initCoreArgs = this.#explodedCallArgs(initFn, new Array<i32>(), args);
-      let initTarget = if (initCoreArgs != null)
-          (initFn.explosion as ExplosionSpec).core else initFn;
-      let projs = this.b.callFuncMulti(
-          this.b.addRef(new IrRefFunc(initTarget)), initCoreArgs ?? args, rets);
+      var projs: GrowableArray<i32> = new Array<i32>();
+      if (initCoreArgs != null) {
+        let spec = initFn.explosion as ExplosionSpec;
+        let tail = spec.tail;
+        projs = if (tail != null)
+            this.#callValuePhaseCore(spec, initCoreArgs, tail)
+            else this.b.callFuncMulti(this.b.addRef(new IrRefFunc(spec.core)),
+                initCoreArgs, rets);
+      } else {
+        projs = this.b.callFuncMulti(
+            this.b.addRef(new IrRefFunc(initFn)), args, rets);
+      }
       let vals = new Array<i32>(ownCount);
       var k = 0;
       while (k < ownCount) {
@@ -4554,9 +4586,14 @@ export final class FunctionLowerer {
     }
     let funcRef = this.b.addRef(new IrRefFunc(spec.core));
     let result = spec.result;
+    let tail = spec.tail;
     if (result != null) {
       // The core returns the record's fields; this builds the record.
       this.b.ret(this.#callForFields(spec.core, args, result));
+    } else if (tail != null) {
+      // A value phase: the core returns some `super(...)` arguments as
+      // their fields; this builds their records.
+      this.b.retMulti(this.#callValuePhaseCore(spec, args, tail));
     } else if (sig.returns.length > 1) {
       this.b.retMulti(this.b.callFuncMulti(funcRef, args, sig.returns));
     } else if (sig.returns.length == 1) {
@@ -4566,6 +4603,46 @@ export final class FunctionLowerer {
       this.b.retVoid();
     }
     return this.b.finish();
+  }
+
+  /**
+   * Calls the core of the value phase `spec.forwarder`, which returns
+   * the `super(...)` arguments `tail` explodes as their fields, and
+   * returns the forwarder's results: the own field values, then each
+   * argument, an exploded one as a record built from its fields and held
+   * as them (`explodedRecords`), so a caller that passes it on to the
+   * next phase's core passes the fields and the record dies.
+   */
+  #callValuePhaseCore(spec: ExplosionSpec, args: GrowableArray<i32>,
+      tail: GrowableArray<RecordDispatchInfo | null>): GrowableArray<i32> {
+    let projs = this.b.callFuncMulti(this.b.addRef(new IrRefFunc(spec.core)),
+        args, spec.core.signature.returns);
+    let boxed = spec.forwarder.signature.returns;
+    let own = boxed.length - tail.length;
+    let out = new Array<i32>();
+    var k = 0;
+    while (k < own) {
+      out.push(projs[k]);
+      k += 1;
+    }
+    for (var j = 0; j < tail.length; j += 1) {
+      let d = tail[j];
+      if (d == null) {
+        out.push(projs[k]);
+        k += 1;
+        continue;
+      }
+      let fields = new Array<i32>();
+      for (let field in d.fields) {
+        fields.push(projs[k]);
+        k += 1;
+      }
+      let record = this.#conformToSlot(this.#packRecord(d, fields),
+          boxed[own + j], 'super argument type');
+      this.#cx().explodedRecords[record] = new ExplodedRecord(d, fields);
+      out.push(record);
+    }
+    return out;
   }
 
   /**
