@@ -351,6 +351,10 @@ is one of:
 
 - `p.field` (not `p?.field`), including under `??`;
 - `let {...} = p`, and a destructuring parameter's own pattern;
+- `{...p, ...}` in a record literal. A spread copies the fields of the
+  source's static type, each read through `recordDispatchRead`, which
+  answers from the fields of a record held as them, presence words
+  included;
 - `g(..., p, ...)` for a top-level function `g` whose matching parameter
   has the same record type and is itself fields-only;
 - returning it whole (a `return` operand, the expression body, a value
@@ -358,8 +362,8 @@ is one of:
   places), when the parameter has the result's record type and the
   function's result explodes (see [Results](#results)).
 
-Any other use (stored, spread, compared, matched, captured, passed to
-anything else) means the function needs the record. Demand
+Any other use (stored, compared, matched, captured, passed to anything
+else) means the function needs the record. Demand
 starts optimistic and only turns to "needs the record" on evidence, so a
 function that passes its record to itself, or to a mutually recursive
 partner, is fields-only.
@@ -706,7 +710,8 @@ Not yet covered:
 ## Later phases
 
 - The `inline` parameter guarantee above.
-- Teaching spread and `==` to consume exploded bindings.
+- Teaching `==` to compare exploded records from their fields, once
+  `==` compares records by value at all (#372).
 - Weighting call sites, for example by loop depth, for a function with
   few unpacked and many heap callers, whose heap callers each pay the
   forwarder's up-front field reads.

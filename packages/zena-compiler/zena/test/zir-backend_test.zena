@@ -1077,6 +1077,40 @@ export let tests = suite('zir backend', (): void => {
         'the call in the generator body goes to the core');
   });
 
+  test('a record spread into a literal stays as its fields', (ctx: TestContext): void => {
+    // `widen` spreads its parameter into its result, and `fromBound`
+    // spreads a bound call result into its result: neither the sources
+    // nor the results are built.
+    let result = compileWithZir(dedentRaw`
+        type V = {x: i32, y: i32};
+        type W = {x: i32, y: i32, z: i32};
+        let widen = (r: V, z: i32): W => ({...r, z});
+        let make = (n: i32): V => ({x: n, y: n * 2});
+        let fromBound = (n: i32): W => {
+          let r = make(n);
+          return {...r, z: 7};
+        };
+        export let main = (): i32 => {
+          let {x, y, z} = widen({x: 1, y: 2}, 3);
+          let w = fromBound(3);
+          return x + y + z + w.x + w.y + w.z;
+        };
+        `);
+    let forwarders = new Array<String>();
+    forwarders.push('call $widen\n');
+    forwarders.push('call $make\n');
+    forwarders.push('call $fromBound\n');
+    assertNoAllocation(result, '$main', 'the spread source arrives as fields');
+    assertFunctionOmits(result, '$main', forwarders,
+        'the spreading functions are called through their cores');
+    assertNoAllocation(result, '$widen.core',
+        'the spread reads the exploded parameter');
+    assertNoAllocation(result, '$fromBound.core',
+        'the bound result is spread from its fields');
+    assertFunctionOmits(result, '$fromBound.core', forwarders,
+        'the bound result comes back as fields');
+  });
+
   test('a record passed to super past the first superclass is passed as its fields', (ctx: TestContext): void => {
     // `Middle`'s own `super({...})` runs in `Middle.<ctor-init>`, which
     // returns `Base`'s arguments to `Leaf`'s factory. Its core returns
