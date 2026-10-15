@@ -54,34 +54,48 @@ describe('resolveLinuxRunner', () => {
     assert.equal(calls.length, 0);
   });
 
-  it('automatically runs cargo zigbuild on macOS and returns the cross-compiled path', () => {
+  it('automatically runs rustup target add and cargo zigbuild with rustup RUSTC on macOS', () => {
     const calls = [];
     const path = resolveLinuxRunner({
       repoRoot: '/repo',
       envRunner: undefined,
       platform: 'darwin',
       arch: 'arm64',
+      env: {RUSTFLAGS: '-L/nix/store/abc-libiconv/lib', PATH: '/usr/bin'},
       fileExists: () => true,
-      runCommand: (cmd, args, opts) => calls.push({cmd, args, cwd: opts.cwd}),
+      runCommand: (cmd, args, opts) => {
+        calls.push({cmd, args, cwd: opts.cwd, env: opts.env});
+        if (cmd === 'rustup' && args[0] === 'which') {
+          return '/Users/dev/.rustup/toolchains/stable/bin/rustc\n';
+        }
+        return '';
+      },
     });
     assert.equal(
       path,
       '/repo/target/x86_64-unknown-linux-gnu/release/zena-run',
     );
-    assert.deepEqual(calls, [
-      {
-        cmd: 'cargo',
-        args: [
-          'zigbuild',
-          '--release',
-          '--target',
-          'x86_64-unknown-linux-gnu',
-          '-p',
-          'zena-run',
-        ],
-        cwd: '/repo',
-      },
+    assert.equal(calls.length, 3);
+    assert.deepEqual(calls[0].args, [
+      'target',
+      'add',
+      'x86_64-unknown-linux-gnu',
     ]);
+    assert.deepEqual(calls[1].args, ['which', 'rustc']);
+    assert.equal(calls[2].cmd, 'cargo');
+    assert.deepEqual(calls[2].args, [
+      'zigbuild',
+      '--release',
+      '--target',
+      'x86_64-unknown-linux-gnu',
+      '-p',
+      'zena-run',
+    ]);
+    assert.equal(
+      calls[2].env.RUSTC,
+      '/Users/dev/.rustup/toolchains/stable/bin/rustc',
+    );
+    assert.equal(calls[2].env.RUSTFLAGS, undefined);
   });
 
   it('throws an actionable setup error if cargo zigbuild fails on macOS', () => {
@@ -92,8 +106,11 @@ describe('resolveLinuxRunner', () => {
           envRunner: undefined,
           platform: 'darwin',
           arch: 'arm64',
-          runCommand: () => {
-            throw new Error('no such subcommand: zigbuild');
+          runCommand: (cmd) => {
+            if (cmd === 'cargo') {
+              throw new Error('no such subcommand: zigbuild');
+            }
+            return '';
           },
         }),
       /brew install cargo-zigbuild/,
