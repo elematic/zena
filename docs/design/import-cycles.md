@@ -27,7 +27,7 @@ implementation in both compilers.
      initializers have not run when the importer initializes;
    - the origin is **re-checked** (it sits inside a cycle, see
      Implementation) → anything derived from checking it — inferred
-     signatures, transparent alias targets, mixin member copies — is
+     signatures, transparent alias targets, generic instantiations — is
      computed twice and can differ between passes. Nominal type
      _identity_ is exempt: it is pinned per declaration, not per pass.
 
@@ -70,14 +70,14 @@ implementation in both compilers.
        backing type. `zena:core`'s `Encoding` and `zena:async`'s
        `FutureState` are used by modules on the same cycle as their
        declaring modules.
-     - A mixin's members are _copied_ into a host at application time,
-       so a host that applied the shell holds a stale copy until the
-       cycle registers again; the application's intermediate class is
-       cached for its identity only and its members are rebuilt on
-       every registration (`getOrCreateMixinApplication`), so the second
-       registration copies from the filled mixin. `zena:core`'s
-       `IterableUtils`, applied by `FixedArray` and `Range`, can sit on
-       a stdlib cycle this way.
+     - A mixin's members reach a host through the intermediate class a
+       `with` application inserts into the host's chain
+       (`getOrCreateMixinApplication`), one per (base, mixin) pair. The
+       intermediate holds no members of its own: its member table reads
+       the mixin's through `ClassType.appliedMixin` at every lookup, so a
+       host that applied a shell reads the filled mixin once its
+       registration has run. `zena:core`'s `IterableUtils`, applied by
+       `FixedArray` and `Range`, can sit on a stdlib cycle this way.
 
 5. **Initializer hazard, accepted.** A module-level initializer may
    _call_ a legally-imported function that transitively reads globals
@@ -110,12 +110,16 @@ happens, are checked once.
   (never replaced) by the origin's own registration. Identity is enough
   for a signature to name a type, but an instantiation of a generic
   type copies structure when it is made (a substituted interface copies
-  its parents list, a class instantiation its interfaces), and a
-  member registration copies a superclass's or a parent interface's
-  members. Those copies, made from a shell, stay stale after the shell
-  fills. Registering again, once every shell is filled, rebuilds them;
-  registration is signatures only, so it is cheap, and the first
-  registration's context and diagnostics are discarded.
+  its parents list, a class instantiation its interfaces and
+  constructor). Those copies, made from a shell, stay stale after the
+  shell fills. Registering again, once every shell is filled, rebuilds
+  them; registration is signatures only, so it is cheap, and the first
+  registration's context and diagnostics are discarded. Members are not
+  copied: a type's member table (`MemberTable` in `types.zena`) holds
+  the members the type declares and reads the inherited ones from its
+  supertype, applied mixin or parent interfaces at every lookup,
+  substituting a generic parent's type arguments at the read, so a
+  member read through a shell is read filled once the shell fills.
 - **What bodies need** is then available. A function crossing a back
   edge has a full signature (rule 4), which the origin's context
   resolves from the annotations on demand: an importer asks the origin
@@ -184,7 +188,7 @@ compile time. The component computation is what remains of it.
   ahead of any binding, because a binding is the value face (for an
   enum, the member record). So no pass ever mints a second type object
   for one declaration. Class and mixin registration reset what they
-  rebuild (members, implements, mixins, constructor) instead of
+  rebuild (own members, implements, mixins, constructor) instead of
   layering over the previous pass's state.
 - **Codegen**: unchanged. `__start` already emits per-unit initializers
   in `Program.units` order (= evaluation order); cross-module calls

@@ -92,14 +92,17 @@ and its superclass's set, with these rules:
 - Inherited generic members are seen through the subclass's type
   arguments (substitution).
 
-_Implementation note._ Whether the compiler materializes the
-inherited set eagerly (today: members are copied down into each
-subclass's map at class-build time, giving flat single-probe lookup)
-or walks the superclass chain with memoization is not observable in
-the language. A lazy memoized walk may be worthwhile — programs look
-up a small subset of members — but note the checker also enumerates
-full member sets per class (conformance checking, vtable building,
-case-class synthesis), which bounds the potential savings.
+_Implementation note._ The compiler walks the chain: a type's member
+table (`MemberTable` in `types.zena`) holds the members the type
+declares and reads inherited ones from the supertype, the applied
+mixin or the parent interfaces at every lookup, substituting a
+generic parent's type arguments at the read and caching the
+substituted member per key. Nothing is copied into a subclass, so a
+supertype that is an empty shell when the subclass registers (an
+import cycle's back edge, import-cycles.md) is read filled once its
+own registration runs. The table iterates inherited members first, in
+the parents' order, then own, with an override keeping the inherited
+position, which is the struct layout order codegen reads.
 
 ## 3. Member access on a receiver
 

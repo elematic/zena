@@ -11,8 +11,8 @@
  * - Type identity is used for equality (interned generic instantiations).
  * - The AST is never mutated — types live in the SemanticModel side table.
  */
-import { StringBuilder } from 'zena:core';
-import { Set, HashMap, HashSet, OrderedHashMap } from 'zena:collections';
+import { StringBuilder, IterableUtils } from 'zena:core';
+import { Set, HashMap, HashSet, OrderedHashMap, MapEntry } from 'zena:collections';
 
 
 
@@ -366,6 +366,432 @@ export final class MethodInfo extends MemberInfo {
   ) : super(type, isAbstract, isStatic, isPrivate);
 }
 
+/**
+ * Whether a member under `key` stays with the class that declares it: a
+ * private field or method (`#name`), a private accessor's `get##`/`set##`
+ * entries, and a mixin's privates under their scope key (`<scope>::#name`).
+ * A subclass never inherits these.
+ */
+let isPrivateMemberKey = (key: String): boolean => {
+  return (key.length > 0 && key.sliceBytes(0, 1) == "#") ||
+      key.startsWith("get##") || key.startsWith("set##") ||
+      key.contains("::#") || key.contains("::get##") || key.contains("::set##");
+};
+
+/**
+ * Whether a mixin member under `key` is private to the mixin: a `#name`
+ * field or method, or a private accessor's entries. An application reads
+ * these under the mixin's scope key (`<scope>::<key>`), so a host's own
+ * same-named private never aliases them (member-lookup.md §6).
+ */
+let isPrivateMixinKey = (key: String): boolean => {
+  return (key.length > 0 && key.sliceBytes(0, 1) == "#") ||
+      key.startsWith("get##") || key.startsWith("set##");
+};
+
+let sameType = (a: Type | null, b: Type | null): boolean => {
+  if (a == null || b == null) {
+    return a == null && b == null;
+  }
+  return a === b;
+};
+
+/**
+ * The substitution a member table applies to a member it reads through a
+ * generic parent. The checker installs its own (`setMemberTypeSubstitution`)
+ * when it starts, so an inherited member's type is substituted exactly as
+ * the checker substitutes a type anywhere else. Null until then; nothing
+ * reads a table through a parent before the checker runs.
+ */
+var memberTypeSubstitution: ((typeParams: Array<TypeParameterType> | null, typeArgs: Array<Type> | null, t: Type) => Type) | null = null;
+
+export let setMemberTypeSubstitution = (
+  substitute: (typeParams: Array<TypeParameterType> | null, typeArgs: Array<Type> | null, t: Type) => Type
+): void => {
+  memberTypeSubstitution = substitute;
+};
+
+/**
+ * A parent's member as a child sees it: the same object when the parent
+ * takes no type arguments and `copyAlways` is false, otherwise a copy
+ * whose type has the parent's type arguments substituted for its
+ * parameters. The copy keeps a symbol-keyed member's symbol identity.
+ */
+export let inheritedMember = (
+  parent: MemberInfo,
+  typeParams: Array<TypeParameterType> | null,
+  typeArgs: Array<Type> | null,
+  copyAlways: boolean
+): MemberInfo => {
+  var substitutes = false;
+  if (typeParams != null) {
+    substitutes = typeParams.length > 0;
+  }
+  if (!substitutes && !copyAlways) {
+    return parent;
+  }
+  var subType = parent.type;
+  let substitute = memberTypeSubstitution;
+  if (substitute != null) {
+    subType = substitute(typeParams, typeArgs, parent.type);
+  }
+  let copy = match (parent) {
+    case FieldInfo as fi: {
+      new FieldInfo(
+        subType,
+        fi.isMutable,
+        fi.isAbstract,
+        fi.isStatic,
+        fi.isPrivate,
+        fi.hasInitializer
+      ) as MemberInfo
+    }
+    case MethodInfo as mi: {
+      new MethodInfo(
+        subType,
+        mi.isAbstract,
+        mi.isStatic,
+        mi.isPrivate,
+        mi.isFinal
+      ) as MemberInfo
+    }
+    case _: parent
+  };
+  copy.symbolTypeId = parent.symbolTypeId;
+  return copy;
+};
+
+/**
+ * Bumped by every write to any member table. A table caches what it
+ * reads through its parents (substituted copies, and its key order)
+ * tagged with the epoch, so a write anywhere invalidates every cache.
+ * Tables are written during registration and only read while bodies are
+ * checked, so the caches thrash while a module registers and hold
+ * afterwards.
+ */
+var memberTableEpoch: i32 = 0;
+
+/**
+ * The members of a class, interface or mixin: the ones it declares,
+ * written by the checker at registration, and the ones it inherits, read
+ * by reference at every lookup from the parents its owner names — a
+ * class's `superType` and `appliedMixin`, an interface's `extendsList`.
+ * Nothing inherited is ever copied into a type, so a parent that was an
+ * empty shell when the child registered (an import cycle's back edge,
+ * docs/design/import-cycles.md) is read filled once its own registration
+ * runs. A read through a generic parent substitutes its type arguments
+ * (`inheritedMember`) and is cached per key, so two reads of one member
+ * return one object.
+ *
+ * The surface is `OrderedHashMap`'s: `[]`, `[]=`, `has`, `get`, `keys`,
+ * `size`, `delete`, `clear`, and iteration over entries. Writes go to the
+ * owner's own members. Keys iterate inherited first, in the parents'
+ * order, then own, and an own member that overrides an inherited one
+ * keeps the inherited position — the memory layout order codegen reads
+ * for a class's struct.
+ */
+export final class MemberTable with IterableUtils<MapEntry<String, MemberInfo>> implements Iterable<MapEntry<String, MemberInfo>> {
+  [Iterable.iterator](): Iterator<MapEntry<String, MemberInfo>> {
+    let entries = new Array<MapEntry<String, MemberInfo>>();
+    for (let key in this.keys()) {
+      let member = this.lookup(key);
+      if (member != null) {
+        entries.push(new MapEntry<String, MemberInfo>(key, member as MemberInfo, null));
+      }
+    }
+    return entries.[Iterable.iterator]();
+  }
+
+  /** The type whose members these are. Set by its constructor. */
+  var owner: Type | null = null;
+  #own = new OrderedHashMap<String, MemberInfo>();
+  /** Keys every read reports absent until `unhideAll`; null when none. */
+  var #hidden: HashSet<String> | null = null;
+  var #inheritedCache: HashMap<String, MemberInfo> | null = null;
+  var #keysCache: GrowableArray<String> | null = null;
+  var #cacheEpoch: i32 = -1;
+  var #cacheParent: Type | null = null;
+  var #cacheParentCount: i32 = -1;
+
+  /** The owner's own members, without its parents'. */
+  own: OrderedHashMap<String, MemberInfo> {
+    get { return this.#own; }
+  }
+
+  operator [](key: String): MemberInfo {
+    let member = this.lookup(key);
+    if (member == null) {
+      throw new Error("Member not found: " + key);
+    }
+    return member as MemberInfo;
+  }
+
+  operator []=(key: String, value: MemberInfo): void {
+    this.#own[key] = value;
+    memberTableEpoch += 1;
+  }
+
+  has(key: String): boolean {
+    return this.lookup(key) != null;
+  }
+
+  get(key: String): inline (true, MemberInfo) | inline (false, _) {
+    let member = this.lookup(key);
+    if (member != null) {
+      return (true, member as MemberInfo);
+    }
+    return (false, _);
+  }
+
+  delete(key: String): boolean {
+    memberTableEpoch += 1;
+    return this.#own.delete(key);
+  }
+
+  clear(): void {
+    this.#own.clear();
+    memberTableEpoch += 1;
+  }
+
+  size: i32 {
+    get { return this.keys().length; }
+  }
+
+  /**
+   * Hides `key`, own or inherited, from every read until `unhideAll`. The
+   * checker hides the fields a field initializer may not read — those
+   * declared after it and those of a superclass — while it checks the
+   * initializer. Hiding does not disturb the table's order.
+   */
+  hide(key: String): void {
+    let hidden = this.#hidden ?? new Set<String>();
+    this.#hidden = hidden;
+    hidden.add(key);
+  }
+
+  unhideAll(): void {
+    this.#hidden = null;
+  }
+
+  /** Every key, inherited first; the array is the table's, so do not write to it. */
+  keys(): GrowableArray<String> {
+    this.#validateCache();
+    var all = this.#keysCache;
+    if (all == null) {
+      let out = new Array<String>();
+      let seen = new Set<String>();
+      this.#collectInheritedKeys(out, seen);
+      for (let key in this.#own.keys()) {
+        if (!seen.has(key)) {
+          seen.add(key);
+          out.push(key);
+        }
+      }
+      this.#keysCache = out;
+      all = out;
+    }
+    let hidden = this.#hidden;
+    if (hidden == null) {
+      return all as GrowableArray<String>;
+    }
+    let visible = new Array<String>();
+    for (let key in all as GrowableArray<String>) {
+      if (!hidden.has(key)) {
+        visible.push(key);
+      }
+    }
+    return visible;
+  }
+
+  /** The member under `key`, own or inherited, or null. */
+  lookup(key: String): MemberInfo | null {
+    let hidden = this.#hidden;
+    if (hidden != null && hidden.has(key)) {
+      return null;
+    }
+    if (let (true, member) = this.#own.get(key)) {
+      return member;
+    }
+    return this.#inherited(key);
+  }
+
+  #inherited(key: String): MemberInfo | null {
+    let owner = this.owner;
+    if (owner == null) {
+      return null;
+    }
+    this.#validateCache();
+    let cache = this.#inheritedCache as HashMap<String, MemberInfo>;
+    if (let (true, cached) = cache.get(key)) {
+      return cached;
+    }
+    var found: MemberInfo | null = null;
+    match (owner) {
+      case ClassType as ct: { found = this.#classInherited(ct, key); }
+      case InterfaceType as it: { found = this.#interfaceInherited(it, key); }
+      case _: {}
+    }
+    if (found != null) {
+      cache[key] = found as MemberInfo;
+    }
+    return found;
+  }
+
+  #classInherited(ct: ClassType, key: String): MemberInfo | null {
+    let mixin = ct.appliedMixin;
+    if (mixin != null) {
+      let fromMixin = this.#appliedMixinMember(mixin, key);
+      if (fromMixin != null) {
+        let member = fromMixin as MemberInfo;
+        if (!member.isAbstract) {
+          return member;
+        }
+        // An abstract mixin member yields to a concrete one the base has.
+        let below = this.#superMember(ct, key);
+        if (below != null && !(below as MemberInfo).isAbstract) {
+          return below;
+        }
+        return member;
+      }
+    }
+    return this.#superMember(ct, key);
+  }
+
+  #superMember(ct: ClassType, key: String): MemberInfo | null {
+    if (isPrivateMemberKey(key)) {
+      return null;
+    }
+    let parent = ct.superType;
+    if (parent == null) {
+      return null;
+    }
+    let member = parent.members.lookup(key);
+    if (member == null) {
+      return null;
+    }
+    return inheritedMember(member as MemberInfo, parent.typeParameters, parent.typeArguments, false);
+  }
+
+  /**
+   * The applied mixin's member under `key` as the intermediate class
+   * carries it: a private field or method only under the mixin's scope
+   * key, everything else under its own.
+   */
+  #appliedMixinMember(mixin: MixinType, key: String): MemberInfo | null {
+    let scope = mixin.privateScopeKey ?? (mixin.name + "_This");
+    let prefix = scope + "::";
+    if (key.startsWith(prefix)) {
+      let inner = key.sliceBytes(prefix.length, key.length);
+      let member = mixin.members.lookup(inner);
+      if (member != null && isPrivateMixinKey(inner) &&
+          (member is FieldInfo || member is MethodInfo)) {
+        return member;
+      }
+      return null;
+    }
+    let member = mixin.members.lookup(key);
+    if (member == null) {
+      return null;
+    }
+    if (isPrivateMixinKey(key) && (member is FieldInfo || member is MethodInfo)) {
+      return null;
+    }
+    return member;
+  }
+
+  #interfaceInherited(it: InterfaceType, key: String): MemberInfo | null {
+    // A later parent's member wins over an earlier one's.
+    var i = it.extendsList.length - 1;
+    while (i >= 0) {
+      let parent = it.extendsList[i];
+      let member = parent.members.lookup(key);
+      if (member != null) {
+        return inheritedMember(member as MemberInfo, parent.typeParameters, parent.typeArguments, true);
+      }
+      i -= 1;
+    }
+    return null;
+  }
+
+  #collectInheritedKeys(out: GrowableArray<String>, seen: HashSet<String>): void {
+    let owner = this.owner;
+    if (owner == null) {
+      return;
+    }
+    match (owner) {
+      case ClassType as ct: {
+        let parent = ct.superType;
+        if (parent != null) {
+          for (let key in parent.members.keys()) {
+            if (!isPrivateMemberKey(key) && !seen.has(key)) {
+              seen.add(key);
+              out.push(key);
+            }
+          }
+        }
+        let mixin = ct.appliedMixin;
+        if (mixin != null) {
+          let scope = mixin.privateScopeKey ?? (mixin.name + "_This");
+          for (let key in mixin.members.keys()) {
+            var stored = key;
+            if (isPrivateMixinKey(key)) {
+              let member = mixin.members.lookup(key);
+              if (member is FieldInfo || member is MethodInfo) {
+                stored = scope + "::" + key;
+              }
+            }
+            if (!seen.has(stored)) {
+              seen.add(stored);
+              out.push(stored);
+            }
+          }
+        }
+      }
+      case InterfaceType as it: {
+        for (let parent in it.extendsList) {
+          for (let key in parent.members.keys()) {
+            if (!seen.has(key)) {
+              seen.add(key);
+              out.push(key);
+            }
+          }
+        }
+      }
+      case _: {}
+    }
+  }
+
+  /**
+   * Drops the caches when anything they were built from may have changed:
+   * a write to any table, or the owner's parents (its supertype, whether
+   * it applies a mixin, how many interfaces it extends).
+   */
+  #validateCache(): void {
+    var parent: Type | null = null;
+    var parentCount = 0;
+    match (this.owner) {
+      case ClassType as ct: {
+        parent = ct.superType;
+        if (ct.appliedMixin != null) {
+          parentCount = 1;
+        }
+      }
+      case InterfaceType as it: {
+        parentCount = it.extendsList.length;
+      }
+      case _: {}
+    }
+    if (this.#inheritedCache == null || this.#cacheEpoch != memberTableEpoch ||
+        this.#cacheParentCount != parentCount || !sameType(this.#cacheParent, parent)) {
+      this.#inheritedCache = new Map<String, MemberInfo>();
+      this.#keysCache = null;
+      this.#cacheEpoch = memberTableEpoch;
+      this.#cacheParent = parent;
+      this.#cacheParentCount = parentCount;
+    }
+  }
+}
+
 export final class RecordType(
   properties: HashMap<String, Type>,
   optionalProperties: HashSet<String> | null
@@ -630,15 +1056,23 @@ export final class ClassType extends Type {
    */
   var hasSyntheticDispose: boolean = false;
   /**
-   * The members of the class (fields, methods, and accessors).
-   * Fields are preserved in their concrete memory layout order.
-   * Superclass fields always appear first, followed by subclass fields.
-   * If a subclass implements an abstract field or overrides a field type,
-   * the field preserves its original position from the superclass.
-   * This map is mutated incrementally by the checker during class resolution,
-   * but is treated as immutable during codegen to emit `WasmStruct`s.
+   * The members of the class (fields, methods, and accessors): its own,
+   * written by the checker during registration, and the ones it inherits,
+   * read by reference through `superType` and `appliedMixin` at every
+   * lookup (MemberTable). Keys iterate in memory layout order: the
+   * superclass's first, then the class's own, and a member the class
+   * overrides or implements keeps the superclass's position. Codegen
+   * reads the table as immutable to emit `WasmStruct`s.
    */
-  var members: OrderedHashMap<String, MemberInfo> = new OrderedHashMap<String, MemberInfo>();
+  var members: MemberTable = new MemberTable();
+  /**
+   * For the intermediate class a `with M` application inserts into the
+   * host's chain: the mixin whose members it carries, read by reference
+   * through `members` (see MemberTable). Null for every other class,
+   * including a decorator's intermediate, which copies its renamed
+   * members at application.
+   */
+  var appliedMixin: MixinType | null = null;
   /**
    * Always empty: only an interface declares `static symbol`s, and the
    * checker rejects one written on a class or mixin body. Carried so that
@@ -701,6 +1135,7 @@ export final class ClassType extends Type {
   // `instantiateClassType`.
   new(id: TypeId, symbolId: SymbolId, name: String) : id = id, symbolId = symbolId, name = name, super() {
     _classTypes += 1;
+    this.members.owner = this;
   }
 
   /**
@@ -1866,7 +2301,8 @@ export final class InterfaceType extends Type {
   var typeParameters: Array<TypeParameterType> | null = null;
   var typeArguments: Array<Type> | null = null;
   var extendsList: GrowableArray<InterfaceType> = new Array<InterfaceType>();
-  var members: OrderedHashMap<String, MemberInfo> = new OrderedHashMap<String, MemberInfo>();
+  /** Own members, and every parent's through `extendsList` (MemberTable). */
+  var members: MemberTable = new MemberTable();
   /**
    * The `static symbol` declarations this type makes, keyed by their
    * declared name. A static symbol is reached only through the type that
@@ -1895,6 +2331,7 @@ export final class InterfaceType extends Type {
 
   new(id: TypeId, symbolId: SymbolId, name: String) : id = id, symbolId = symbolId, name = name, super() {
     _interfaceTypes += 1;
+    this.members.owner = this;
   }
 }
 
@@ -1963,7 +2400,13 @@ export final class MixinType extends Type {
   var typeParameters: Array<TypeParameterType> | null = null;
   var typeArguments: Array<Type> | null = null;
   var onType: Type | null = null;
-  var members: OrderedHashMap<String, MemberInfo> = new OrderedHashMap<String, MemberInfo>();
+  /**
+   * The mixin's own members, composed mixins' included (copied in at
+   * registration). A mixin has no parents of its own; its members reach
+   * a host through the intermediate class an application inserts, whose
+   * table reads them from here (MemberTable).
+   */
+  var members: MemberTable = new MemberTable();
   /**
    * Always empty: only an interface declares `static symbol`s, and the
    * checker rejects one written on a class or mixin body. Carried so that
@@ -2012,6 +2455,7 @@ export final class MixinType extends Type {
 
   new(name: String) : name = name, super() {
     _mixinTypes += 1;
+    this.members.owner = this;
   }
 }
 
