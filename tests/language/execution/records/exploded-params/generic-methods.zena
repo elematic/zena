@@ -1,0 +1,73 @@
+// @mode: run
+// @result: 1
+// A generic method takes and returns records as their fields in each
+// instantiation of its own type parameters: on a plain class, on a
+// generic class, as a static, with a record type that mentions its type
+// parameter, and passing a record on to another generic method. Every
+// shape must compute the same thing. (Overriding a generic method is
+// left out: a call through the superclass does not dispatch yet, #364.)
+
+type V = {x: i32, y: i32};
+
+class Grid {
+  scale: i32;
+  new(this.scale);
+
+  area<T>(r: V, tag: T): i32 {
+    return r.x * r.y * this.scale;
+  }
+
+  shift<T>(r: V, tag: T): V {
+    return {x: r.x + 1, y: r.y + 1};
+  }
+
+  first<T>(r: {a: T, b: T}): T {
+    return r.a;
+  }
+
+  relay<T>(r: V, tag: T): i32 {
+    return this.area<T>(r, tag) + 1;
+  }
+
+  static make<T>(r: V, tag: T): V {
+    return {x: r.x * 2, y: r.y * 2};
+  }
+}
+
+class Box<E> {
+  value: E;
+  new(this.value);
+
+  pick<T>(r: {a: T, b: E}): E {
+    return r.b;
+  }
+}
+
+let heap: V = {x: 4, y: 5};
+
+export let main = (): i32 => {
+  let g = new Grid(2);
+  if (g.area<i32>({x: 3, y: 4}, 0) != 24 || g.area<String>(heap, 'h') != 40) {
+    return 0;
+  }
+  let {x, y} = g.shift<i32>({x: 1, y: 2}, 0);
+  let s = g.shift<boolean>({x: 10, y: 20}, true);
+  if (x != 2 || y != 3 || s.x != 11 || s.y != 21) {
+    return 0;
+  }
+  if (g.first<i32>({a: 7, b: 8}) != 7 || g.first<String>({a: 'p', b: 'q'}) != 'p') {
+    return 0;
+  }
+  if (g.relay<i32>({x: 2, y: 3}, 0) != 13) {
+    return 0;
+  }
+  let m = Grid.make<i32>({x: 3, y: 4}, 0);
+  if (m.x != 6 || m.y != 8) {
+    return 0;
+  }
+  let box = new Box<String>('e');
+  if (box.pick<i32>({a: 1, b: 'b'}) != 'b') {
+    return 0;
+  }
+  return 1;
+};

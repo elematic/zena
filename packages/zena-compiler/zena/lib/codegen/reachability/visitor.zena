@@ -4,7 +4,7 @@ import {
   Referrer, ReachabilityContext, TypeLowererInterface, ReachabilityVisitorInterface,
   recordLiteralArgKey, recordLiteralCtorArgKey, recordLiteralMethodArgKey,
   recordLiteralSpecArgKey, RecordResultCall,
-  declaringInstantiation, methodTargetKey,
+  declaringInstantiation, methodTargetKey, specMethodTargetKey,
 } from './context.zena';
 import { SemanticModel, memberKeyOf } from '../../semantic-model.zena';
 import {
@@ -1088,7 +1088,27 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
     if (declaring == null) {
       return;
     }
-    let target = methodTargetKey((md as Node).id as i32, declaring);
+    var target = methodTargetKey((md as Node).id as i32, declaring);
+    // A generic method's call names the specialization for its solved
+    // type arguments, as this walk sees them.
+    if (md.typeParameters != null) {
+      let ft = model.getNodeType(callee);
+      if (!(ft is FunctionType)) {
+        return;
+      }
+      let typeArgs = ft.typeArguments;
+      if (typeArgs == null) {
+        return;
+      }
+      let args = new Array<Type>();
+      for (let a in typeArgs) {
+        args.push(resolveType(a));
+      }
+      if (!noOpenTypeParameters(args)) {
+        return;
+      }
+      target = specMethodTargetKey(target, getSpecializedName(name, args));
+    }
     for (var i = 0; i < n.args.length; i += 1) {
       if (n.args[i] is RecordLiteral) {
         this.pass.recordLiteralMethodArgs.add(recordLiteralMethodArgKey(target, i));

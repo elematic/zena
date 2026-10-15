@@ -946,6 +946,51 @@ export let tests = suite('zir backend', (): void => {
         'the record is passed on as its fields');
   });
 
+  test('a generic method takes and returns records as fields per instantiation', (ctx: TestContext): void => {
+    // Each specialization of a method's own type parameters explodes on
+    // its own: `area<i32>` and `first<f64>` take literals, `shift<i32>`
+    // returns its result's fields, and `relay<i32>` passes its exploded
+    // record on to `area<i32>`.
+    let result = compileWithZir(dedentRaw`
+        type V = {x: i32, y: i32};
+        final class Grid {
+          scale: i32;
+          new(this.scale);
+          area<T>(r: V, tag: T): i32 { return r.x * r.y * this.scale; }
+          shift<T>(r: V, tag: T): V { return {x: r.x + 1, y: r.y + 1}; }
+          first<T>(r: {a: T, b: T}): T { return r.a; }
+          relay<T>(r: V, tag: T): i32 { return this.area<T>(r, tag) + 1; }
+        }
+        export let main = (): i32 => {
+          let g = new Grid(2);
+          let {x, y} = g.shift<i32>({x: 1, y: 2}, 0);
+          return x + y + g.area<i32>({x: 3, y: 4}, 0) +
+              (g.first<f64>({a: 1.5, b: 2.5}) as i32) +
+              g.relay<i32>({x: 2, y: 3}, 0);
+        };
+        `);
+    var relayCore = '';
+    for (let chunk in result.split('(func $')) {
+      let name = chunk.split(' ')[0];
+      if (name.startsWith('Grid_') && name.endsWith('.relay_spec_i32.core')) {
+        relayCore = '$' + name;
+      }
+    }
+    isTrue(relayCore.length > 0, 'relay<i32> has a core');
+    // A call to a forwarder ends its line with the specialization's
+    // name; a call to a core, with `.core`.
+    let forwarders = new Array<String>();
+    forwarders.push('.shift_spec_i32\n');
+    forwarders.push('.area_spec_i32\n');
+    forwarders.push('.first_spec_f64\n');
+    forwarders.push('.relay_spec_i32\n');
+    assertNoAllocation(result, '$main', 'every record arrives as fields');
+    assertFunctionOmits(result, '$main', forwarders,
+        'each specialization is called through its core');
+    assertFunctionOmits(result, relayCore, forwarders,
+        'the record is passed on as its fields');
+  });
+
   test('a record passed to super past the first superclass is passed as its fields', (ctx: TestContext): void => {
     // `Middle`'s own `super({...})` runs in `Middle.<ctor-init>`, which
     // returns `Base`'s arguments to `Leaf`'s factory. Its core returns

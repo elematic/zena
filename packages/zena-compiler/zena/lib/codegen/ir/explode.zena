@@ -59,10 +59,11 @@ import { ReachabilityAnalysis } from '../reachability/analysis.zena';
 import {
   RecordResultCall, declaringInstantiation, methodTargetKey, recordLiteralArgKey,
   recordLiteralCtorArgKey, recordLiteralMethodArgKey, recordLiteralSpecArgKey,
+  specMethodTargetKey,
 } from '../reachability/context.zena';
 import {
   containsErasedType, getClassKey, getClassMethodKey, getSpecializedFunctionKey,
-  isConcrete,
+  getSpecializedName, isConcrete,
 } from '../codegen-utils.zena';
 
 /**
@@ -1428,10 +1429,13 @@ let methodCandidateFor = (wasm: WasmModule, pass: ReachabilityAnalysis,
   // method is a function of its own, keyed by the instantiation.
   let template = typeParams != null && typeParams.length > 0 &&
       (typeArgs == null || typeArgs.length == 0);
+  // A generic method exists only per specialization (`map_spec_i32`),
+  // which carries the method's own type arguments.
+  let spec = f.typeParameters != null && f.typeArguments != null;
   if (ct.isExtension || ct.isMixinIntermediate || template ||
       !isConcrete(ct as Type) || containsErasedType(ct as Type) ||
       methodName.contains('::') || f.intrinsic != null ||
-      f.typeParameters != null || f.typeArguments != null ||
+      (!spec && (f.typeParameters != null || f.typeArguments != null)) ||
       f.explosion != null || f.isCaseClassEq || f.isCaseClassHash) {
     return null;
   }
@@ -1441,7 +1445,7 @@ let methodCandidateFor = (wasm: WasmModule, pass: ReachabilityAnalysis,
   }
   if (md.isConstructor || md.isStatic != f.isStatic || md.isAbstract || md.isAsync ||
       md.isGenerator || md.decorators.length > 0 || md.receiver != null ||
-      md.typeParameters != null || md.body == null) {
+      (md.typeParameters != null) != spec || md.body == null) {
     return null;
   }
   let sig = f.signature;
@@ -1462,8 +1466,11 @@ let methodCandidateFor = (wasm: WasmModule, pass: ReachabilityAnalysis,
       return null;
     }
   }
+  // The member is declared under its own name; a specialization's slot
+  // is named for its type arguments.
+  let declaredName = if (spec) memberKeyOf(f.model, md.name as Node) else methodName;
   var ft: Type | null = null;
-  if (let (true, info) = ct.members.get(methodName)) {
+  if (let (true, info) = ct.members.get(declaredName)) {
     ft = info.type;
   }
   var result = resultDispatchOfType(wasm, f, ft);
@@ -1475,7 +1482,8 @@ let methodCandidateFor = (wasm: WasmModule, pass: ReachabilityAnalysis,
   let c = classifyParams(new DemandContext(wasm, pass, f), f, md, md.params, roots, null, null, null,
       result, returns);
   if (c != null) {
-    c.methodTarget = methodTargetKey((md as Node).id as i32, ct);
+    let target = methodTargetKey((md as Node).id as i32, ct);
+    c.methodTarget = if (spec) specMethodTargetKey(target, methodName) else target;
     c.overridden = !f.isStatic && hasReachedOverride(wasm, ct, methodName);
   }
   return c;
@@ -1825,7 +1833,29 @@ let methodTargetOf = (dc: DemandContext, member: MemberExpression,
   if (declaring == null) {
     return null;
   }
-  return methodTargetKey((md as Node).id as i32, declaring);
+  let target = methodTargetKey((md as Node).id as i32, declaring);
+  if (md.typeParameters == null) {
+    return target;
+  }
+  // A generic method: the specialization for the call's solved type
+  // arguments, instantiated as `dc.f` sees them (lowering's slot name).
+  let ft = model.getNodeType(member);
+  if (!(ft is FunctionType)) {
+    return null;
+  }
+  let typeArgs = ft.typeArguments;
+  if (typeArgs == null) {
+    return null;
+  }
+  let args = new Array<Type>();
+  for (let t in typeArgs) {
+    let arg = substituteTypeParamsInFunctionContext(dc.wasm, dc.f, t);
+    if (!isConcrete(arg) || containsErasedType(arg)) {
+      return null;
+    }
+    args.push(arg);
+  }
+  return specMethodTargetKey(target, getSpecializedName(name, args));
 };
 
 /**
