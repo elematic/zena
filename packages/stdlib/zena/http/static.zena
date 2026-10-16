@@ -9,6 +9,7 @@
  * host copies the file to the connection.
  */
 
+import { Own, Unmanaged } from 'zena:core';
 import {
   Descriptor, DescriptorFlags, FileStat, FileType, FsError, FsErrorCode,
   resolvePreopen
@@ -172,7 +173,7 @@ final class StaticFiles {
   var #setHeaders: ((res: Response, path: String, stat: FileStat) => void) | null = null;
   /** The preopen `#root` is under, and `#root` relative to it: looked
    * up on first use, since module initializers cannot reach the host. */
-  var #base: Descriptor | null = null;
+  var #base: Unmanaged<Descriptor> | null = null;
   var #baseRelative = '.';
 
   new(root: String, options: SendOptions, defaultIndex: String | null)
@@ -313,7 +314,7 @@ final class StaticFiles {
   }
 
   async #tryPrecompressed(
-    base: Descriptor,
+    base: Unmanaged<Descriptor>,
     path: String,
     accepted: String,
     res: Response
@@ -334,7 +335,7 @@ final class StaticFiles {
   }
 
   /** The preopen the root is under, looked up once. */
-  #descriptor(): Descriptor {
+  #descriptor(): Unmanaged<Descriptor> {
     let found = this.#base;
     if (found != null) {
       return found;
@@ -401,7 +402,7 @@ let hasHiddenSegment = (path: String): boolean => {
 };
 
 /** The stat of a path under `base`, or the HttpError its failure maps to. */
-async function statOf(base: Descriptor, path: String): Future<FileStat> {
+async function statOf(base: Unmanaged<Descriptor>, path: String): Future<FileStat> {
   try {
     return await base.statAt(path);
   } catch (e) {
@@ -411,7 +412,7 @@ async function statOf(base: Descriptor, path: String): Future<FileStat> {
 
 /** The file at `path` under `base`, open for reading, or the HttpError
  * its failure maps to. */
-async function openFile(base: Descriptor, path: String): Future<Descriptor> {
+async function openFile(base: Unmanaged<Descriptor>, path: String): Future<Own<Descriptor>> {
   try {
     return await base.openAt(path, DescriptorFlags.Read);
   } catch (e) {

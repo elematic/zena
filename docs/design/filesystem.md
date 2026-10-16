@@ -19,7 +19,11 @@ reaches this wait ("When `main` is lifted async" in
 before any task exists, so a `Sync` call at module level traps; the
 asynchronous forms are the ones for a synchronous WIT export, and reads
 belong inside `main` and test bodies. The design of the split is in
-[async-fs-cli.md](./async-fs-cli.md). The first implementation, over WASI
+[async-fs-cli.md](./async-fs-cli.md). `Descriptor` is a `resource class`
+over the synthesized `wasi:filesystem` descriptor, itself a resource class
+(component-model.md, "Resource classes in synthesized modules"): an open
+file is an `Own<Descriptor>` released when its owner leaves scope, and the
+preopens are `Unmanaged<Descriptor>`. The first implementation, over WASI
 preview 1 with linear-memory buffers, was deleted with the rest of preview
 1; the sections below that describe pointers and `path_open` are its
 record, and their function names are the ones the `Sync` forms carry today.

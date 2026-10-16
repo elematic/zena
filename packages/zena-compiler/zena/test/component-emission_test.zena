@@ -768,35 +768,58 @@ export function reset(): boolean { return true; }
 
   test('an own inside an aggregate lifts as an unmanaged handle',
       (ctx: TestContext): void => {
-    // `http-server`'s `listen` returns `stream<tuple<request,
-    // response-writer>>`, and the wasm interface's results carry no
-    // handles; the aggregate rule is visible on the filesystem's
-    // `get-directories: list<tuple<descriptor, string>>` once that
-    // interface joins the list. Until then the rule is pinned on the
-    // spelling it would produce: a `resource class` handle inside a
-    // tuple is `Unmanaged<T>`, and nothing else mentions `Unmanaged`.
-    let source = synthesizeWitModule(disk,
+    // The wasm interface's results carry no handles in aggregates, so
+    // nothing there mentions `Unmanaged`; the filesystem's preopens
+    // return `list<tuple<descriptor, string>>`, where a `resource
+    // class` handle inside a tuple is `Unmanaged<T>`, disowned as it
+    // is lifted, for the program to adopt what it keeps.
+    let wasm = synthesizeWitModule(disk,
         `wit:${stdlibRoot}/host-wit#zena-cli:host/wasm`,
         readWitSource(disk, `${stdlibRoot}/host-wit`));
-    isTrue(source.contains('export resource class Run {'),
-      `run is not a resource class:\n${source}`);
-    isTrue(source.contains('): Own<Run> {'),
-      `the constructor does not hand back an owner:\n${source}`);
-    isTrue(!source.contains('Unmanaged'),
-      `an unmanaged handle appears where no aggregate holds one:\n${source}`);
+    isTrue(wasm.contains('export resource class Run {'),
+      `run is not a resource class:\n${wasm}`);
+    isTrue(wasm.contains('): Own<Run> {'),
+      `the constructor does not hand back an owner:\n${wasm}`);
+    isTrue(!wasm.contains('Unmanaged'),
+      `an unmanaged handle appears where no aggregate holds one:\n${wasm}`);
+    let preopens = synthesizeWitModule(disk,
+        `wit:${stdlibRoot}/wit#wasi:filesystem/preopens`,
+        readWitSource(disk, `${stdlibRoot}/wit`));
+    isTrue(preopens.contains('Array<(Unmanaged<Descriptor>, String)>'),
+      `a handle in a tuple is not unmanaged:\n${preopens}`);
+    isTrue(preopens.contains('disown(new Descriptor('),
+      `a handle lifted into a tuple is not disowned:\n${preopens}`);
   });
 
   test('a resource of an interface outside the owned list keeps the Disposable class',
       (ctx: TestContext): void => {
+    // `wasi:http/types` is not in the list yet: its `fields` renders
+    // as before, flag and all.
     let source = synthesizeWitModule(disk,
-        `wit:${stdlibRoot}/wit#wasi:filesystem/types`,
+        `wit:${stdlibRoot}/wit#wasi:http/types`,
         readWitSource(disk, `${stdlibRoot}/wit`));
-    isTrue(source.contains('export final class Descriptor implements Disposable {'),
-      `descriptor is not the Disposable class:\n${source}`);
+    isTrue(source.contains('export final class Fields implements Disposable {'),
+      `fields is not the Disposable class:\n${source}`);
     isTrue(source.contains('[markMoved](): void {'),
       `the moved flag is gone from the Disposable class:\n${source}`);
     isTrue(!source.contains('Own<'),
       `a handle spelling leaked into a Disposable-class interface:\n${source}`);
+  });
+
+  test('the filesystem descriptor renders as a resource class',
+      (ctx: TestContext): void => {
+    // `wasi:filesystem/types` joined the list with `zena:fs`'s
+    // migration: an `open-at` result carries an `Own<Descriptor>`, and a
+    // method's `self` and the `rename-at` target are borrows.
+    let source = synthesizeWitModule(disk,
+        `wit:${stdlibRoot}/wit#wasi:filesystem/types`,
+        readWitSource(disk, `${stdlibRoot}/wit`));
+    isTrue(source.contains('export resource class Descriptor {'),
+      `descriptor is not a resource class:\n${source}`);
+    isTrue(source.contains('Outcome<Own<Descriptor>, ErrorCode>'),
+      `open-at's result does not carry an owner:\n${source}`);
+    isTrue(source.contains('newDescriptor: Borrow<Descriptor>'),
+      `rename-at's target is not a borrow:\n${source}`);
   });
 
   test('parameters past the core-value limit spill into one staged buffer',
