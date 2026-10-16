@@ -20,7 +20,7 @@ let VIRTUAL_PATH = 'packages/zena-lint/zena/test/fixtures/virtual.zena';
  */
 var sharedProject: Project | null = null;
 
-let projectFor = (): Project => {
+function projectFor() {
   let existing = sharedProject;
   if (existing != null) {
     return existing;
@@ -28,10 +28,10 @@ let projectFor = (): Project => {
   let made = new Project();
   sharedProject = made;
   return made;
-};
+}
 
 /** Runs the named rules (all when empty) over `source`. */
-let lint = (source: String, only: String = ''): FileReport => {
+function lint(source: String, only: String = '') {
   let project = projectFor();
   let rules = allRules();
   let chosen = if (only == '') {
@@ -48,10 +48,10 @@ let lint = (source: String, only: String = ''): FileReport => {
   let options = new LintOptions(chosen);
   options.write = false;
   return lintSource(project, VIRTUAL_PATH, source, options);
-};
+}
 
 /** Checks that `source` becomes `expected`, with no rejected edits. */
-let check = (t: TestContext, source: String, expected: String, only: String = ''): void => {
+function check(t: TestContext, source: String, expected: String, only: String = '') {
   let report = lint(source, only);
   let failure = report.failure;
   if (failure != null) {
@@ -69,10 +69,10 @@ let check = (t: TestContext, source: String, expected: String, only: String = ''
     console.log(`--- actual ---\n${actual}--- expected ---\n${expected}---`);
   }
   equal(actual, expected);
-};
+}
 
 let tests = suite('lint', () => {
-  test('top-level arrows become function declarations', (t: TestContext) => {
+  test('top-level arrows become function declarations', (t) => {
     check(t, dedentRaw`
       let add = (a: i32, b: i32): i32 => a + b;
       export let run = (): i32 => {
@@ -88,7 +88,7 @@ let tests = suite('lint', () => {
     `);
   });
 
-  test('async and generic arrows keep their modifiers', (t: TestContext) => {
+  test('async and generic arrows keep their modifiers', (t) => {
     check(t, dedentRaw`
       let same = <T>(x: T): T => x;
       export let run = (): i32 => same(3);
@@ -102,7 +102,7 @@ let tests = suite('lint', () => {
     `, 'function-declaration');
   });
 
-  test('a parenthesized body keeps its parentheses', (t: TestContext) => {
+  test('a parenthesized body keeps its parentheses', (t) => {
     check(t, dedentRaw`
       let both = (a: boolean, b: boolean, c: boolean): boolean =>
           (a || b) && c;
@@ -125,7 +125,7 @@ let tests = suite('lint', () => {
     `);
   });
 
-  test('a top-level let with a function type annotation is left alone', (t: TestContext) => {
+  test('a top-level let with a function type annotation is left alone', (t) => {
     let source = dedentRaw`
       let f: (x: i32) => i32 = (x) => x + 1;
       export function run(): i32 {
@@ -135,7 +135,7 @@ let tests = suite('lint', () => {
     check(t, source, source, 'function-declaration');
   });
 
-  test('unnecessary casts go, and their grouping parentheses', (t: TestContext) => {
+  test('unnecessary casts go, and their grouping parentheses', (t) => {
     check(t, dedentRaw`
       class Named {
         name: String;
@@ -159,7 +159,7 @@ let tests = suite('lint', () => {
     `, 'unnecessary-cast');
   });
 
-  test('a cast that types a literal stays', (t: TestContext) => {
+  test('a cast that types a literal stays', (t) => {
     let source = dedentRaw`
       export function run(): i32 {
         let xs = [] as Array<i32>;
@@ -169,7 +169,7 @@ let tests = suite('lint', () => {
     check(t, source, source, 'unnecessary-cast');
   });
 
-  test('redundant local annotations go', (t: TestContext) => {
+  test('redundant local annotations go', (t) => {
     check(t, dedentRaw`
       function name(): String {
         return 'x';
@@ -197,7 +197,7 @@ let tests = suite('lint', () => {
     `, 'unnecessary-annotation');
   });
 
-  test('return types the body implies go, except on exported or forward-referenced functions', (t: TestContext) => {
+  test('return types the body implies go, except on exported or forward-referenced functions', (t) => {
     check(t, dedentRaw`
       function plain(a: i32): i32 {
         return a + 1;
@@ -235,7 +235,7 @@ let tests = suite('lint', () => {
     `, 'unnecessary-annotation');
   });
 
-  test('callback parameters typed by the callee lose their annotations', (t: TestContext) => {
+  test('callback parameters typed by the callee lose their annotations', (t) => {
     check(t, dedentRaw`
       export function run(): i32 {
         let xs = new Array<String>(1);
@@ -261,7 +261,7 @@ let tests = suite('lint', () => {
     `, 'unnecessary-annotation');
   });
 
-  test('a built-up array becomes a growable literal', (t: TestContext) => {
+  test('a built-up array becomes a growable literal', (t) => {
     check(t, dedentRaw`
       export function run(): i32 {
         let xs = new Array<String>(4);
@@ -282,7 +282,7 @@ let tests = suite('lint', () => {
     `, 'collection-literal');
   });
 
-  test('a built-up map becomes a map literal', (t: TestContext) => {
+  test('a built-up map becomes a map literal', (t) => {
     check(t, dedentRaw`
       export function run(): i32 {
         let m = new Map<String, i32>();
@@ -298,7 +298,7 @@ let tests = suite('lint', () => {
     `, 'collection-literal');
   });
 
-  test('a long run of elements is laid out one per line', (t: TestContext) => {
+  test('a long run of elements is laid out one per line', (t) => {
     check(t, dedentRaw`
       export function run(): i32 {
         let xs = new Array<String>();
@@ -321,7 +321,7 @@ let tests = suite('lint', () => {
     `, 'collection-literal');
   });
 
-  test('a var assigned by an if becomes a let with an if expression', (t: TestContext) => {
+  test('a var assigned by an if becomes a let with an if expression', (t) => {
     check(t, dedentRaw`
       export function run(): i32 {
         let n = 3;
@@ -349,7 +349,7 @@ let tests = suite('lint', () => {
     `, 'if-initializer');
   });
 
-  test('an impure initializer stays a var', (t: TestContext) => {
+  test('an impure initializer stays a var', (t) => {
     let source = dedentRaw`
       var calls = 0;
       function next(): i32 {
@@ -367,7 +367,7 @@ let tests = suite('lint', () => {
     check(t, source, source, 'if-initializer');
   });
 
-  test('null tests become ?? and ?.', (t: TestContext) => {
+  test('null tests become ?? and ?.', (t) => {
     check(t, dedentRaw`
       class Named {
         name: String;
@@ -424,7 +424,9 @@ let tests = suite('lint', () => {
         return s ?? 'none';
       }
       function poke(n: Named | null): void {
-        n?.describe();
+        if (n != null) {
+          n.describe();
+        }
       }
       export function run(): i32 {
         poke(null);
@@ -434,7 +436,7 @@ let tests = suite('lint', () => {
     `, 'nullish');
   });
 
-  test('a default is not folded onto a nullable chain', (t: TestContext) => {
+  test('a default is not folded onto a nullable chain', (t) => {
     let source = dedentRaw`
       class Named {
         var tag: String | null = null;
@@ -450,7 +452,7 @@ let tests = suite('lint', () => {
     check(t, source, source, 'nullish');
   });
 
-  test('small matches become ifs', (t: TestContext) => {
+  test('small matches become ifs', (t) => {
     check(t, dedentRaw`
       sealed class Shape {
         case Circle(r: i32)
@@ -505,7 +507,7 @@ let tests = suite('lint', () => {
     `, 'match-to-if');
   });
 
-  test('a statement match with an empty wildcard arm becomes a bare if', (t: TestContext) => {
+  test('a statement match with an empty wildcard arm becomes a bare if', (t) => {
     check(t, dedentRaw`
       sealed class Shape {
         case Circle(r: i32)
@@ -550,7 +552,7 @@ let tests = suite('lint', () => {
     `, 'match-to-if');
   });
 
-  test('an else holding only an if becomes else if', (t: TestContext) => {
+  test('an else holding only an if becomes else if', (t) => {
     check(t, dedentRaw`
       function sign(n: i32): i32 {
         if (n > 0) {
@@ -580,7 +582,7 @@ let tests = suite('lint', () => {
     `, 'else-if');
   });
 
-  test('a match with a guard or three arms stays', (t: TestContext) => {
+  test('a match with a guard or three arms stays', (t) => {
     let source = dedentRaw`
       function sign(n: i32): i32 {
         return match (n) {
@@ -596,7 +598,7 @@ let tests = suite('lint', () => {
     check(t, source, source, 'match-to-if');
   });
 
-  test('index loops become for-in loops', (t: TestContext) => {
+  test('index loops become for-in loops', (t) => {
     check(t, dedentRaw`
       function total(xs: GrowableArray<i32>): i32 {
         var sum = 0;
@@ -632,7 +634,7 @@ let tests = suite('lint', () => {
     `, 'for-in');
   });
 
-  test('an index used for more than the element keeps its loop', (t: TestContext) => {
+  test('an index used for more than the element keeps its loop', (t) => {
     let source = dedentRaw`
       function total(xs: GrowableArray<i32>): i32 {
         var sum = 0;
@@ -651,7 +653,7 @@ let tests = suite('lint', () => {
     check(t, source, source, 'for-in');
   });
 
-  test('boolean returns collapse onto the condition', (t: TestContext) => {
+  test('boolean returns collapse onto the condition', (t) => {
     check(t, dedentRaw`
       function big(n: i32): boolean {
         if (n > 100) {
@@ -690,7 +692,7 @@ let tests = suite('lint', () => {
     `, 'boolean-return');
   });
 
-  test('a match in the arm of a statement match is a statement too', (t: TestContext) => {
+  test('a match in the arm of a statement match is a statement too', (t) => {
     check(t, dedentRaw`
       sealed class Shape {
         case Circle(r: i32)
@@ -735,7 +737,7 @@ let tests = suite('lint', () => {
     `, 'match-to-if');
   });
 
-  test('string concatenation becomes a template literal', (t: TestContext) => {
+  test('string concatenation becomes a template literal', (t) => {
     check(t, dedentRaw`
       function greet(name: String, n: i32): String {
         return 'Hello, ' + name + ' #' + i32ToString(n) + '!';
@@ -759,7 +761,7 @@ let tests = suite('lint', () => {
     `, 'template-literal');
   });
 
-  test('an arrow returning one expression loses its block', (t: TestContext) => {
+  test('an arrow returning one expression loses its block', (t) => {
     check(t, dedentRaw`
       export function run(): i32 {
         let double = (x: i32) => {
@@ -779,7 +781,7 @@ let tests = suite('lint', () => {
     `, 'arrow-body');
   });
 
-  test('a var never reassigned becomes a let', (t: TestContext) => {
+  test('a var never reassigned becomes a let', (t) => {
     check(t, dedentRaw`
       export function run(): i32 {
         var a = 1;
@@ -807,7 +809,7 @@ let tests = suite('lint', () => {
     `, 'prefer-let');
   });
 
-  test('a var field nothing assigns loses its var', (t: TestContext) => {
+  test('a var field nothing assigns loses its var', (t) => {
     check(t, dedentRaw`
       class Named {
         var name: String;
@@ -859,7 +861,7 @@ let tests = suite('lint', () => {
     `, 'immutable-field');
   });
 
-  test('an empty default constructor goes unless a named one needs it', (t: TestContext) => {
+  test('an empty default constructor goes unless a named one needs it', (t) => {
     check(t, dedentRaw`
       class Counter {
         var n = 0;
@@ -903,7 +905,7 @@ let tests = suite('lint', () => {
     `, 'empty-constructor');
   });
 
-  test('rules compose across passes', (t: TestContext) => {
+  test('rules compose across passes', (t) => {
     check(t, dedentRaw`
       let pick = (s: String | null, d: String): String => {
         var out: String = d;
@@ -926,7 +928,7 @@ let tests = suite('lint', () => {
     `);
   });
 
-  test('a file that does not check is left alone', (t: TestContext) => {
+  test('a file that does not check is left alone', (t) => {
     let report = lint('export let run = (): i32 => { return "x"; };\n');
     isTrue(report.errorsBefore.length > 0);
     isTrue(!report.changed);

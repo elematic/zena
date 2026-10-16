@@ -31,7 +31,7 @@ A path is a `.zena` file or a directory, searched for them. Options:
 | `unnecessary-annotation` | `let x: T = e` with `e: T`; return types the body implies; callback parameter types         |
 | `collection-literal`     | `new Array<T>()` + `push` runs → `growable<T>([…])`; `new Map<K, V>()` + `[]=` → `{k => v}` |
 | `if-initializer`         | `var x = d; if (c) { x = a; }` → `let x = if (c) a else d`                                  |
-| `nullish`                | `if (x != null) x else d` → `x ?? d`; `if (x != null) x.f() else null` → `x?.f()`           |
+| `nullish`                | `if (x != null) x else d` → `x ?? d`; `if (x != null) x.f else null` → `x?.f`               |
 | `match-to-if`            | one- and two-arm `match` → `if`, `if (x is T)`, `if (let P = x)`                            |
 | `else-if`                | `else { if (…) { … } }` → `else if (…) { … }`                                               |
 | `for-in`                 | index loops that read only `xs[i]` → `for (let x in xs)`                                    |

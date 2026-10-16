@@ -34,7 +34,7 @@ import { lineStart, lineEnd } from '../source.zena';
 export function forInLoops(ctx: RuleContext): void {
   walkEnter(ctx.ast, (n) => {
     match (n) {
-      case ForStatement {}: { forLoop(ctx, n as ForStatement); }
+      case ForStatement {}: { forLoop(ctx, n); }
       case Module {body}: { whileLoops(ctx, body); }
       case BlockStatement {body}: { whileLoops(ctx, body); }
       case _: {}
@@ -145,7 +145,7 @@ function elementBinding(ctx: RuleContext, body: Node, collection: Expression, in
   if (!(body is BlockStatement)) {
     return null;
   }
-  let statements = (body as BlockStatement).body;
+  let statements = body.body;
   if (statements.length == 0) {
     return null;
   }
@@ -167,7 +167,7 @@ function elementBinding(ctx: RuleContext, body: Node, collection: Expression, in
 }
 
 /** How many identifiers under `root` resolve to `sym`. */
-function countMentions(ctx: RuleContext, root: Node, sym: Symbol): i32 {
+function countMentions(ctx: RuleContext, root: Node, sym: Symbol) {
   var count = 0;
   walkEnter(root, (n) => {
     if (isReference(ctx, n, sym)) {
@@ -178,7 +178,7 @@ function countMentions(ctx: RuleContext, root: Node, sym: Symbol): i32 {
 }
 
 /** Whether the collection's text appears in `root` other than in `except`. */
-function collectionTouched(ctx: RuleContext, root: Node, collection: Expression, except: Node): boolean {
+function collectionTouched(ctx: RuleContext, root: Node, collection: Expression, except: Node) {
   let text = ctx.text(collection);
   var touched = false;
   walk(root, (n) => {
@@ -194,7 +194,7 @@ function collectionTouched(ctx: RuleContext, root: Node, collection: Expression,
 }
 
 /** The two edits that turn the loop header into `for (let x in xs) {`. */
-function emit(ctx: RuleContext, headerStart: i32, body: BlockStatement, binding: VariableDeclaration, collection: Expression): void {
+function emit(ctx: RuleContext, headerStart: i32, body: BlockStatement, binding: VariableDeclaration, collection: Expression) {
   let open = ctx.start(body);
   let header = `for (let ${ctx.text(binding.pattern)} in ${ctx.text(collection)}) {`;
   ctx.replaceRange(headerStart, open + 1, header);
@@ -264,7 +264,7 @@ function whileLoop(ctx: RuleContext, statements: GrowableArray<Statement>, at: i
     }
     return;
   }
-  let loop = second as WhileStatement;
+  let loop = second;
   let collection = boundCollection(ctx, loop.test, index);
   if (collection == null) {
     if (ctx.debug) {

@@ -91,6 +91,8 @@ export final class Project {
   var #compiler: Compiler | null = null;
   var #previous: ProgramCheckResult | null = null;
   var #entriesOnCompiler = 0;
+  /** Whether the current file is in an import cycle; see `override`. */
+  var #cyclic = false;
 
   new(stdlibRoot: String = 'packages/stdlib/zena', target: String = 'zena-cli')
     : stdlibRoot = stdlibRoot,
@@ -121,7 +123,18 @@ export final class Project {
     } else {
       this.#host.overrides[path] = text;
     }
+    if (this.#cyclic) {
+      // A file in an import cycle cannot be re-read on its own: the
+      // other members keep the types of its old parse, and the new
+      // parse's types do not match them ("'App' is not assignable to
+      // 'App'"). Start over with a compiler that has seen none of them.
+      this.#compiler = null;
+      this.#previous = null;
+      return;
+    }
     let compiler = this.#compiler;
+    // Not `compiler?.invalidate(path)`: an optional method call does not
+    // lower yet (see the nullish rule).
     if (compiler != null) {
       compiler.invalidate(path);
     }
@@ -131,10 +144,11 @@ export final class Project {
   reset(): void {
     this.#host.overrides.clear();
     this.#entriesOnCompiler += 1;
-    if (this.#entriesOnCompiler >= ENTRIES_PER_COMPILER) {
+    if (this.#entriesOnCompiler >= ENTRIES_PER_COMPILER || this.#cyclic) {
       this.#compiler = null;
       this.#previous = null;
     }
+    this.#cyclic = false;
   }
 
   /**
@@ -147,6 +161,9 @@ export final class Project {
     // dependencies are trusted until `reset`.
     compiler.invalidate(path);
     let result = compiler.compile({entry: path, target: this.target});
+    if (result.hasCycle) {
+      this.#cyclic = true;
+    }
     let checked = checkCompilation(result, this.#previous);
     this.#previous = checked;
     let entryPath = result.entry.path;
