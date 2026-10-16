@@ -32,6 +32,83 @@ export let tests = suite('Memory', (): void => {
     equal(mem.getI32(1008), -9999);
   });
 
+  test('narrow integer accessors', (ctx: TestContext): void => {
+    let mem = Memory.default;
+
+    mem.setU8(1012, 200);
+    equal(mem.getU8(1012), 200);
+    equal(mem.getS8(1012), -56);
+
+    mem.setU16(1014, 0xBEEF);
+    equal(mem.getU16(1014), 0xBEEF);
+    equal(mem.getS16(1014), 0xBEEF - 65536);
+    equal(mem.getU8(1014), 0xEF);
+    equal(mem.getU8(1015), 0xBE);
+
+    mem.setU16(1016, 1234);
+    equal(mem.getS16(1016), 1234);
+  });
+
+  test('copies between arrays and memory, in whole words and tails', (ctx: TestContext): void => {
+    let mem = Memory.default;
+    // Lengths on both sides of a word boundary, so the word loop and
+    // the byte tail are both exercised, and a nonzero start index.
+    for (let len in [0, 1, 3, 4, 5, 8, 11]) {
+      let src = new FixedArray<u8>(len + 2, 0 as u8);
+      for (var i = 0; i < len; i += 1) {
+        src[i + 2] = ((i * 37 + 11) & 255) as u8;
+      }
+      // Poison the destination so a missing byte is visible.
+      for (var i = 0; i < 16; i += 1) {
+        mem[2000 + i] = 0xAA;
+      }
+      mem.copyFromBytes(2000, src, 2, len);
+      for (var i = 0; i < len; i += 1) {
+        equal(mem[2000 + i], ((i * 37 + 11) & 255));
+      }
+      equal(mem[2000 + len], 0xAA);
+
+      let back = new FixedArray<u8>(len + 1, 7 as u8);
+      mem.copyToBytes(2000, back, 1, len);
+      equal(back[0] as i32, 7);
+      for (var i = 0; i < len; i += 1) {
+        equal(back[i + 1] as i32, ((i * 37 + 11) & 255));
+      }
+
+      let fresh = mem.bytesAt(2000, len);
+      equal(fresh.length, len);
+      for (var i = 0; i < len; i += 1) {
+        equal(fresh[i] as i32, ((i * 37 + 11) & 255));
+      }
+    }
+  });
+
+  test('copies a string\'s bytes and reads them back', (ctx: TestContext): void => {
+    let mem = Memory.default;
+    let s = 'hello, linear memory';
+    mem.copyFromString(2100, s, 7, 13);
+    equal(String.fromBytes(mem.bytesAt(2100, 13)), 'linear memory');
+  });
+
+  test('copies within memory, including a destination below an overlapping source', (ctx: TestContext): void => {
+    let mem = Memory.default;
+    for (var i = 0; i < 16; i += 1) {
+      mem[2200 + i] = i;
+    }
+    // Disjoint ranges.
+    mem.copy(2300, 2200, 16);
+    for (var i = 0; i < 16; i += 1) {
+      equal(mem[2300 + i], i);
+    }
+    // Overlapping, destination below source: the forward copy reads
+    // each byte before overwriting it.
+    mem.copy(2200, 2203, 11);
+    for (var i = 0; i < 11; i += 1) {
+      equal(mem[2200 + i], i + 3);
+    }
+    equal(mem[2211], 11);
+  });
+
   test('size and grow', (ctx: TestContext): void => {
     let mem = Memory.default;
     

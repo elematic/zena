@@ -1,0 +1,132 @@
+/**
+ * Loop shapes for copying bytes between GC arrays and linear memory
+ * (elematic/zena#248, item 2): one byte per memory access against four
+ * bytes packed into an `i32` per access. The array side is one packed
+ * `array.get` per byte either way, so the word loop saves only memory
+ * stores and loads; this measures whether that shows.
+ *
+ * Run: ./target/release/zena-cli run packages/stdlib/benchmarks/memory_copy_bench.zena
+ */
+
+import { runTest } from 'zena:bench';
+import { getArguments } from 'zena:cli';
+import { StringBuilder } from 'zena:core';
+import { Memory, defaultAllocator } from 'zena:memory';
+
+let mem = Memory.default;
+let SIZE = 4096;
+let ROUNDS = 2000;
+
+let byteFromString = (ptr: i32, s: String, len: i32): void => {
+  for (var i = 0; i < len; i += 1) {
+    mem.setU8(ptr + i, s.getByteAt(i));
+  }
+};
+
+let wordFromString = (ptr: i32, s: String, len: i32): void => {
+  var i = 0;
+  let limit = len - 3;
+  while (i < limit) {
+    mem.setI32(ptr + i, s.getI32At(i));
+    i += 4;
+  }
+  while (i < len) {
+    mem.setU8(ptr + i, s.getByteAt(i));
+    i += 1;
+  }
+};
+
+let byteFromBytes = (ptr: i32, bytes: FixedArray<u8>, len: i32): void => {
+  for (var i = 0; i < len; i += 1) {
+    mem.setU8(ptr + i, bytes[i] as i32);
+  }
+};
+
+let wordFromBytes = (ptr: i32, bytes: FixedArray<u8>, len: i32): void => {
+  var i = 0;
+  let limit = len - 3;
+  while (i < limit) {
+    let word = (bytes[i] as i32)
+      | ((bytes[i + 1] as i32) << 8)
+      | ((bytes[i + 2] as i32) << 16)
+      | ((bytes[i + 3] as i32) << 24);
+    mem.setI32(ptr + i, word);
+    i += 4;
+  }
+  while (i < len) {
+    mem.setU8(ptr + i, bytes[i] as i32);
+    i += 1;
+  }
+};
+
+let byteToBytes = (ptr: i32, bytes: FixedArray<u8>, len: i32): void => {
+  for (var i = 0; i < len; i += 1) {
+    bytes[i] = mem.getU8(ptr + i) as u8;
+  }
+};
+
+let wordToBytes = (ptr: i32, bytes: FixedArray<u8>, len: i32): void => {
+  var i = 0;
+  let limit = len - 3;
+  while (i < limit) {
+    let word = mem.getI32(ptr + i);
+    bytes[i] = (word & 255) as u8;
+    bytes[i + 1] = ((word >> 8) & 255) as u8;
+    bytes[i + 2] = ((word >> 16) & 255) as u8;
+    bytes[i + 3] = ((word >> 24) & 255) as u8;
+    i += 4;
+  }
+  while (i < len) {
+    bytes[i] = mem.getU8(ptr + i) as u8;
+    i += 1;
+  }
+};
+
+export let main = (): i32 => {
+  let args = getArguments();
+  var filter = '';
+  if (args.length > 1) {
+    filter = args[1];
+  }
+  let sb = new StringBuilder();
+  for (var i = 0; i < SIZE; i += 16) {
+    sb.append('abcdefghijklmnop');
+  }
+  let text = sb.toString();
+  let bytes = text.toBytes();
+  let into = new FixedArray<u8>(SIZE, 0 as u8);
+  if (let (true, ptr) = defaultAllocator.alloc(SIZE)) {
+    runTest(`String to memory, bytes (${SIZE} x ${ROUNDS})`, () => {
+      for (var r = 0; r < ROUNDS; r += 1) {
+        byteFromString(ptr, text, SIZE);
+      }
+    }, filter);
+    runTest(`String to memory, words (${SIZE} x ${ROUNDS})`, () => {
+      for (var r = 0; r < ROUNDS; r += 1) {
+        wordFromString(ptr, text, SIZE);
+      }
+    }, filter);
+    runTest(`FixedArray to memory, bytes (${SIZE} x ${ROUNDS})`, () => {
+      for (var r = 0; r < ROUNDS; r += 1) {
+        byteFromBytes(ptr, bytes, SIZE);
+      }
+    }, filter);
+    runTest(`FixedArray to memory, words (${SIZE} x ${ROUNDS})`, () => {
+      for (var r = 0; r < ROUNDS; r += 1) {
+        wordFromBytes(ptr, bytes, SIZE);
+      }
+    }, filter);
+    runTest(`memory to FixedArray, bytes (${SIZE} x ${ROUNDS})`, () => {
+      for (var r = 0; r < ROUNDS; r += 1) {
+        byteToBytes(ptr, into, SIZE);
+      }
+    }, filter);
+    runTest(`memory to FixedArray, words (${SIZE} x ${ROUNDS})`, () => {
+      for (var r = 0; r < ROUNDS; r += 1) {
+        wordToBytes(ptr, into, SIZE);
+      }
+    }, filter);
+    defaultAllocator.free(ptr);
+  }
+  return 0;
+};

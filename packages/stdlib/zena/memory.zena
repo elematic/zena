@@ -118,6 +118,131 @@ export final class Memory {
   /** Write a byte at the given index. */
   @intrinsic('i32.store8')
   declare operator []=(index: i32, value: i32): void;
+
+  // ---------------------------------------------------------------------------
+  // Narrow integer access
+  // ---------------------------------------------------------------------------
+  //
+  // The compiler lowers load and store intrinsics for unsigned bytes
+  // and for the word sizes; the 16-bit forms are composed from bytes
+  // here, and the signed ones extend the sign by hand. These are what
+  // the canonical ABI's `s8`, `u16` and `s16` fields are read and
+  // written through.
+
+  /** Load a signed byte, sign-extended to i32. */
+  getS8(ptr: i32): i32 {
+    let v = this.getU8(ptr);
+    return if (v >= 128) v - 256 else v;
+  }
+
+  /** Load an unsigned little-endian 16-bit integer. */
+  getU16(ptr: i32): i32 {
+    return this.getU8(ptr) | (this.getU8(ptr + 1) << 8);
+  }
+
+  /** Load a signed little-endian 16-bit integer, sign-extended to i32. */
+  getS16(ptr: i32): i32 {
+    let v = this.getU16(ptr);
+    return if (v >= 32768) v - 65536 else v;
+  }
+
+  /** Store the low 16 bits of `value`, little-endian. */
+  setU16(ptr: i32, value: i32): void {
+    this.setU8(ptr, value & 255);
+    this.setU8(ptr + 1, (value >> 8) & 255);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Bulk copies between GC arrays and linear memory
+  // ---------------------------------------------------------------------------
+  //
+  // WebAssembly GC has no instruction that moves bytes between a GC
+  // array and linear memory (`array.init_data` reads passive data
+  // segments only, `memory.copy` is memory to memory), so every copy
+  // is a loop. The loops live here, once, so that the canonical ABI
+  // marshaling, the console and the stream pumps share one place to
+  // optimize. When an engine ships bulk array-to-memory operations
+  // these become single instructions and nothing above them changes.
+  //
+  // Loop shape, measured by packages/stdlib/benchmarks/memory_copy_bench.zena
+  // (4 KB, 2000 rounds, wasmtime): packing four bytes into one
+  // `i32.store` copies an array into memory 1.6x faster than a byte
+  // loop (3.9 ms against 6.4 ms), and a string 1.5x faster (4.6 against
+  // 6.9); unpacking an `i32.load` into four array stores is no faster
+  // than a byte loop (5.8 either way). So `copyFromBytes` packs words
+  // and the copies out of memory stay byte loops. `copyFromString` is a
+  // byte loop as well, for size: it is on every console write, and the
+  // word loop with `String.getI32At` costs the printing fixture in
+  // zena/test/binary-size_test.zena 187 bytes against a 71-byte margin.
+  // Once that budget has room, the word loop is a one-line change here.
+
+  /** Copy `len` bytes of `bytes`, from index `start`, to `ptr`. */
+  copyFromBytes(ptr: i32, bytes: FixedArray<u8>, start: i32, len: i32): void {
+    var i = 0;
+    let limit = len - 3;
+    while (i < limit) {
+      let at = start + i;
+      let word = (bytes[at] as i32)
+        | ((bytes[at + 1] as i32) << 8)
+        | ((bytes[at + 2] as i32) << 16)
+        | ((bytes[at + 3] as i32) << 24);
+      this.setI32(ptr + i, word);
+      i += 4;
+    }
+    while (i < len) {
+      this.setU8(ptr + i, bytes[start + i] as i32);
+      i += 1;
+    }
+  }
+
+  /** Copy `len` bytes at `ptr` into `bytes`, from index `start`. */
+  copyToBytes(ptr: i32, bytes: FixedArray<u8>, start: i32, len: i32): void {
+    for (var i = 0; i < len; i += 1) {
+      bytes[start + i] = this.getU8(ptr + i) as u8;
+    }
+  }
+
+  /** The `len` bytes at `ptr`, as a fresh array. */
+  bytesAt(ptr: i32, len: i32): FixedArray<u8> {
+    let bytes = new FixedArray<u8>(len, 0);
+    this.copyToBytes(ptr, bytes, 0, len);
+    return bytes;
+  }
+
+  /**
+   * Copy `len` bytes at `ptr` into a `ByteArray`, from index `start`.
+   * For building a String's backing store from memory without an
+   * intermediate array: a String is a view over a `ByteArray`.
+   */
+  copyToByteArray(ptr: i32, bytes: ByteArray, start: i32, len: i32): void {
+    for (var i = 0; i < len; i += 1) {
+      __byte_array_set(bytes, start + i, this.getU8(ptr + i));
+    }
+  }
+
+  /**
+   * Copy `len` bytes of `s`, from byte index `start`, to `ptr`. The
+   * bytes are copied as the string stores them, with no re-encoding;
+   * a caller that needs UTF-8 checks the encoding first.
+   */
+  copyFromString(ptr: i32, s: String, start: i32, len: i32): void {
+    for (var i = 0; i < len; i += 1) {
+      this.setU8(ptr + i, s.getByteAt(start + i));
+    }
+  }
+
+  /**
+   * Copy `len` bytes from `src` to `dst`, both in linear memory. The
+   * ranges must not overlap unless `dst` is below `src`: the copy runs
+   * forward, so a destination above an overlapping source would read
+   * bytes it had already overwritten. Every caller so far moves a
+   * block into a fresh allocation.
+   */
+  copy(dst: i32, src: i32, len: i32): void {
+    for (var i = 0; i < len; i += 1) {
+      this.setU8(dst + i, this.getU8(src + i));
+    }
+  }
 }
 
 // =============================================================================

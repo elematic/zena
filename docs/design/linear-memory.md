@@ -102,6 +102,20 @@ export final class Memory {
 
   @intrinsic('i32.store8')
   declare operator []=(index: i32, value: i32): void;
+
+  // Narrow integers, composed from the byte intrinsics
+  getS8(ptr: i32): i32;
+  getU16(ptr: i32): i32;
+  getS16(ptr: i32): i32;
+  setU16(ptr: i32, value: i32): void;
+
+  // Bulk copies (see "GC ↔ Linear Memory Transfer")
+  copyFromBytes(ptr: i32, bytes: FixedArray<u8>, start: i32, len: i32): void;
+  copyToBytes(ptr: i32, bytes: FixedArray<u8>, start: i32, len: i32): void;
+  bytesAt(ptr: i32, len: i32): FixedArray<u8>;
+  copyToByteArray(ptr: i32, bytes: ByteArray, start: i32, len: i32): void;
+  copyFromString(ptr: i32, s: String, start: i32, len: i32): void;
+  copy(dst: i32, src: i32, len: i32): void;
 }
 ```
 
@@ -379,30 +393,41 @@ func process(): void {
 
 ## GC ↔ Linear Memory Transfer
 
-A key limitation: **GC arrays are opaque to WASM bulk memory operations**.
-You cannot use `memory.copy` to transfer between GC arrays and linear memory.
+GC arrays are opaque to the bulk memory instructions: `memory.copy` moves
+bytes between two linear-memory ranges, `array.copy` between two arrays,
+and `array.init_data` reads passive data segments only. No instruction
+moves bytes between a GC array and linear memory, so every such copy is a
+loop over the elements, with a bounds check on each side.
 
-Transfer must be done element-by-element:
+`Memory` carries those loops, so that the canonical ABI marshaling, the
+console writer and the stream pumps share one implementation:
 
 ```zena
-/** Copy from GC array to linear memory. */
-const copyToLinear = (src: FixedArray<i32>, srcOffset: i32,
-                       dst: i32, len: i32): void => {
-  let mem = Memory.default;
-  for (var i = 0; i < len; i = i + 1) {
-    mem.setU8(dst + i, src[srcOffset + i]);
-  }
-};
-
-/** Copy from linear memory to GC array. */
-const copyFromLinear = (src: i32, dst: FixedArray<i32>,
-                         dstOffset: i32, len: i32): void => {
-  let mem = Memory.default;
-  for (var i = 0; i < len; i = i + 1) {
-    dst[dstOffset + i] = mem.getU8(src + i);
-  }
-};
+let mem = Memory.default;
+mem.copyFromBytes(ptr, bytes, start, len);    // FixedArray<u8> → memory
+mem.copyToBytes(ptr, bytes, start, len);      // memory → FixedArray<u8>
+let fresh = mem.bytesAt(ptr, len);            // memory → a new FixedArray<u8>
+mem.copyToByteArray(ptr, data, start, len);   // memory → ByteArray (a String's store)
+mem.copyFromString(ptr, s, start, len);       // a String's bytes → memory
+mem.copy(dst, src, len);                      // memory → memory, overlap allowed
 ```
+
+The loop shape was measured rather than assumed
+(`packages/stdlib/benchmarks/memory_copy_bench.zena`, 4 KB copied 2000
+times under wasmtime): packing four array bytes into one `i32.store` copies
+an array into memory in 3.9 ms against 6.4 ms for a byte loop, and a string
+in 4.6 ms against 6.9 ms, while unpacking an `i32.load` into four array
+stores takes the same 5.8 ms a byte loop does. So `copyFromBytes` packs
+words and the copies out of memory are byte loops. `copyFromString` is a
+byte loop too, for size rather than speed: it is on every console write,
+and the word loop with `String.getI32At` costs the printing fixture in
+`binary-size_test.zena` 187 bytes against a 71-byte margin under its
+budget, which only moves down. Should an engine ship the post-MVP
+array-to-memory bulk operations, these methods become single instructions
+and nothing above them changes. The 16-bit and signed-byte accessors
+(`getS8`, `getU16`, `getS16`, `setU16`) are composed from the byte
+intrinsics, since the compiler lowers only the unsigned byte and the
+word-sized loads and stores.
 
 For performance-critical code, consider keeping data in linear memory
 throughout the hot path, only converting at boundaries.
@@ -869,6 +894,9 @@ Until then, explicit lifetime management via manual `free()` calls is required.
 - **Memory intrinsics**: All load/store intrinsics (i32, i64, f32, f64, u8)
 - **memory.size, memory.grow**: Memory management intrinsics
 - **Memory class**: Type-safe access with `@intrinsic` decorators
+- **Bulk copies**: `copyFromBytes`, `copyToBytes`, `bytesAt`,
+  `copyToByteArray`, `copyFromString` and `copy`, the one home of the
+  GC-to-linear-memory byte loops (2026-10-16)
 - **Allocator interface**: With multi-return for safe error handling
 - **FreeListAllocator**: Default allocator with alloc/free support
 - **BumpAllocator**: Arena-style allocator with reset()
