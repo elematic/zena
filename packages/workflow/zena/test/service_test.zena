@@ -25,12 +25,13 @@ import {
   TaskStep,
 } from '../step.zena';
 
-let digest = (data: String): Fingerprint =>
-  new Fingerprint('d#' + i32ToString(data.hashCode()));
+function digest(data: String) {
+  return new Fingerprint('d#' + i32ToString(data.hashCode()));
+}
 
 let noStrings: Array<String> = new GrowableArray<String>();
 
-let mkInputs = (deps: Array<String>, leafNames: Array<String>): Array<InputRef> => {
+function mkInputs(deps: Array<String>, leafNames: Array<String>): Array<InputRef> {
   let inputs = new GrowableArray<InputRef>();
   for (let leaf in leafNames) {
     inputs.push(new LeafInput(leaf));
@@ -39,7 +40,7 @@ let mkInputs = (deps: Array<String>, leafNames: Array<String>): Array<InputRef> 
     inputs.push(new StepOutputs(new StepKey(dep)));
   }
   return inputs;
-};
+}
 
 class TestHandle implements ServiceHandle {
   log: GrowableArray<String>;
@@ -52,12 +53,12 @@ class TestHandle implements ServiceHandle {
   }
 }
 
-let mkService = (
+function mkService(
   log: GrowableArray<String>,
   key: String,
   deps: Array<String>,
   leafNames: Array<String>,
-): Step => {
+): Step {
   return new ServiceStep(
     new StepKey(key),
     new Fingerprint('svc:' + key),
@@ -67,14 +68,14 @@ let mkService = (
       return new TestHandle(log, key);
     },
   );
-};
+}
 
-let mkTask = (
+function mkTask(
   log: GrowableArray<String>,
   key: String,
   deps: Array<String>,
   leafNames: Array<String>,
-): Step => {
+): Step {
   return new TaskStep(
     new StepKey(key),
     new Fingerprint('cfg:' + key),
@@ -86,18 +87,18 @@ let mkTask = (
       ]));
     },
   );
-};
+}
 
-let indexOf = (log: GrowableArray<String>, entry: String): i32 => {
+function indexOf(log: GrowableArray<String>, entry: String): i32 {
   for (var i = 0; i < log.length; i += 1) {
     if (log[i] == entry) {
       return i;
     }
   }
   return -1;
-};
+}
 
-let count = (log: GrowableArray<String>, entry: String): i32 => {
+function count(log: GrowableArray<String>, entry: String) {
   var n = 0;
   for (let item in log) {
     if (item == entry) {
@@ -105,28 +106,31 @@ let count = (log: GrowableArray<String>, entry: String): i32 => {
     }
   }
   return n;
-};
+}
 
-let asStep = (step: Step): Step => step;
+function asStep(step: Step) {
+  return step;
+}
 
-let sourceOf = (result: RunResult, key: String): StepSource => {
+function sourceOf(result: RunResult, key: String): StepSource {
   let outcome = result.outcomeOf(new StepKey(key));
   if (outcome is Succeeded) {
     return outcome.source;
   }
   fail('step did not succeed: ' + key);
-};
+}
 
-export let tests = suite('services', (): void => {
+export let tests = suite('services', () => {
   test('a service starts before its dependent runs and stops after', () => {
     let log = new GrowableArray<String>();
     let graph = new Graph([
       mkService(log, 'db', noStrings, ['db-cfg']),
       mkTask(log, 'app', ['db'], ['src']),
     ]);
-    let leaves = new HashMap<String, Fingerprint>();
-    leaves['db-cfg'] = new Fingerprint('v1');
-    leaves['src'] = new Fingerprint('v1');
+    let leaves: HashMap<String, Fingerprint> = {
+      'db-cfg' => new Fingerprint('v1'),
+      'src' => new Fingerprint('v1'),
+    };
     let engine = new Engine(digest, new NullCache());
     let result = runFuture(engine.run(graph, leaves, EngineState.empty()));
     isTrue(result.allSucceeded);
@@ -137,13 +141,14 @@ export let tests = suite('services', (): void => {
 
   test('fresh dependents never demand the service', () => {
     let log = new GrowableArray<String>();
-    let mkGraph = (): Graph => new Graph([
+    let mkGraph = () => new Graph([
       mkService(log, 'db', noStrings, ['db-cfg']),
       mkTask(log, 'app', ['db'], ['src']),
     ]);
-    let leaves = new HashMap<String, Fingerprint>();
-    leaves['db-cfg'] = new Fingerprint('v1');
-    leaves['src'] = new Fingerprint('v1');
+    let leaves: HashMap<String, Fingerprint> = {
+      'db-cfg' => new Fingerprint('v1'),
+      'src' => new Fingerprint('v1'),
+    };
     let engine = new Engine(digest, new NullCache());
     let first = runFuture(engine.run(mkGraph(), leaves, EngineState.empty()));
     let second = runFuture(engine.run(mkGraph(), leaves, first.state));
@@ -232,7 +237,7 @@ export let tests = suite('services', (): void => {
 
   test('a service config change invalidates dependents', () => {
     let log = new GrowableArray<String>();
-    let mkGraph = (svcConfig: String): Graph => new Graph([
+    let mkGraph = (svcConfig: String) => new Graph([
       asStep(new ServiceStep(
         new StepKey('db'),
         new Fingerprint(svcConfig),
@@ -254,12 +259,13 @@ export let tests = suite('services', (): void => {
 
   test('a service leaf change invalidates dependents', () => {
     let log = new GrowableArray<String>();
-    let mkGraph = (): Graph => new Graph([
+    let mkGraph = () => new Graph([
       mkService(log, 'db', noStrings, ['db-cfg']),
       mkTask(log, 'app', ['db'], noStrings),
     ]);
-    let leaves = new HashMap<String, Fingerprint>();
-    leaves['db-cfg'] = new Fingerprint('v1');
+    let leaves: HashMap<String, Fingerprint> = {
+      'db-cfg' => new Fingerprint('v1'),
+    };
     let engine = new Engine(digest, new NullCache());
     let first = runFuture(engine.run(mkGraph(), leaves, EngineState.empty()));
     leaves['db-cfg'] = new Fingerprint('v2');
