@@ -740,6 +740,65 @@ export function reset(): boolean { return true; }
       `an async resource function is still refused:\n${source}`);
   });
 
+  test('a resource of an interface in the owned list renders as a resource class',
+      (ctx: TestContext): void => {
+    // `zena-cli:host/process` is in `ownedResourceSpecifiers`: its
+    // `command` and `process` resources are resource classes whose
+    // dispose consumes the receiver, the constructor and `spawn` hand
+    // back owners, and nothing carries a moved flag — lowering an own
+    // disowns the wrapper instead.
+    let source = synthesizeWitModule(disk,
+        `wit:${stdlibRoot}/host-wit#zena-cli:host/process`,
+        readWitSource(disk, `${stdlibRoot}/host-wit`));
+    isTrue(source.contains('export resource class Command {'),
+      `command is not a resource class:\n${source}`);
+    isTrue(source.contains('export resource class Process {'),
+      `process is not a resource class:\n${source}`);
+    isTrue(source.contains('[Disposable.dispose](this: Own<this>): void {'),
+      `dispose does not consume the receiver:\n${source}`);
+    isTrue(source.contains('): Own<Command> {'),
+      `the constructor does not hand back an owner:\n${source}`);
+    isTrue(source.contains('Own<Process>'),
+      `spawn's result does not carry an owner:\n${source}`);
+    isTrue(!source.contains('markMoved') && !source.contains('#dropped'),
+      `a moved flag survives in a resource class:\n${source}`);
+    isTrue(source.contains("import { Own") || source.contains(", Own"),
+      `the handle names are not imported:\n${source}`);
+  });
+
+  test('an own inside an aggregate lifts as an unmanaged handle',
+      (ctx: TestContext): void => {
+    // `http-server`'s `listen` returns `stream<tuple<request,
+    // response-writer>>`, and the wasm interface's results carry no
+    // handles; the aggregate rule is visible on the filesystem's
+    // `get-directories: list<tuple<descriptor, string>>` once that
+    // interface joins the list. Until then the rule is pinned on the
+    // spelling it would produce: a `resource class` handle inside a
+    // tuple is `Unmanaged<T>`, and nothing else mentions `Unmanaged`.
+    let source = synthesizeWitModule(disk,
+        `wit:${stdlibRoot}/host-wit#zena-cli:host/wasm`,
+        readWitSource(disk, `${stdlibRoot}/host-wit`));
+    isTrue(source.contains('export resource class Run {'),
+      `run is not a resource class:\n${source}`);
+    isTrue(source.contains('): Own<Run> {'),
+      `the constructor does not hand back an owner:\n${source}`);
+    isTrue(!source.contains('Unmanaged'),
+      `an unmanaged handle appears where no aggregate holds one:\n${source}`);
+  });
+
+  test('a resource of an interface outside the owned list keeps the Disposable class',
+      (ctx: TestContext): void => {
+    let source = synthesizeWitModule(disk,
+        `wit:${stdlibRoot}/wit#wasi:filesystem/types`,
+        readWitSource(disk, `${stdlibRoot}/wit`));
+    isTrue(source.contains('export final class Descriptor implements Disposable {'),
+      `descriptor is not the Disposable class:\n${source}`);
+    isTrue(source.contains('[markMoved](): void {'),
+      `the moved flag is gone from the Disposable class:\n${source}`);
+    isTrue(!source.contains('Own<'),
+      `a handle spelling leaked into a Disposable-class interface:\n${source}`);
+  });
+
   test('parameters past the core-value limit spill into one staged buffer',
       (ctx: TestContext): void => {
     // The spill fixture: `sum`'s seventeen core values and the `gpu`

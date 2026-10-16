@@ -1,0 +1,26 @@
+// @mode: check
+// An `Unmanaged<R>` does not pass where a `Borrow<R>` is expected. The
+// handles are distinct types, and only `Own<R>` coerces to `Borrow<R>`
+// at a call site (ownership.md §Handles). A function that must accept
+// both an owned and an unmanaged handle takes `Unmanaged<R>` and lets
+// the owner `disown` for the call — what `zena:fs`'s `renameAt` does
+// for its target directory, which is a preopen.
+import { Own, Borrow, Unmanaged, Disposable, disown } from 'zena:core';
+
+resource class Res {
+  n: i32;
+  new(this.n);
+  [Disposable.dispose](this: Own<this>): void {}
+}
+
+let read = (r: Borrow<Res>): i32 => r.n;
+let readUnmanaged = (r: Unmanaged<Res>): i32 => r.n;
+
+export function main(): i32 {
+  let raw = disown(new Res(1));
+  let fromOwn = read(new Res(2));
+  let fromUnmanaged = readUnmanaged(raw);
+  // @error: not assignable
+  let rejected = read(raw);
+  return fromOwn + fromUnmanaged + rejected;
+}

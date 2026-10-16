@@ -1,0 +1,36 @@
+// @mode: run
+// @result: 7
+// An owner inside an `Ok` arm, the shape a WIT `result<own<r>, e>`
+// lifts to: reading `.value` once moves the owner out, and the
+// resource is released exactly once at the local's scope exit.
+import { Own, Disposable, Ok, Err, Outcome } from 'zena:core';
+
+var released = 0;
+
+resource class Res {
+  id: i32;
+  new(this.id);
+  [Disposable.dispose](this: Own<this>): void {
+    released += this.id;
+  }
+}
+
+let open = (ok: boolean): Outcome<Own<Res>, String> => {
+  if (ok) {
+    return new Ok<Own<Res>, String>(new Res(7));
+  }
+  return new Err<Own<Res>, String>('nope');
+};
+
+export let main = (): i32 => {
+  var seen = 0;
+  if (true) {
+    let outcome = open(true);
+    if (outcome is Ok<Own<Res>, String>) {
+      let r = (outcome as Ok<Own<Res>, String>).value;
+      seen = r.id;
+    }
+  }
+  // 7 if the value came out and the resource was released once.
+  return if (released == 7) seen else released * 100 + seen;
+};

@@ -1,0 +1,76 @@
+// @mode: run
+// @result: 3
+// @skip: elematic/zena#378 — a consuming method that neither moves nor disposes its receiver leaks it; outer reads 1 after readStream
+// A resource class wrapping an owned field, with borrowing methods
+// that reach the inner resource and a consuming method that gives the
+// inner one to a background task — `zena:fs`'s `Descriptor` over a WIT
+// descriptor. The consumed wrapper is released at the method's exit.
+import { Own, Borrow, Disposable } from 'zena:core';
+import { Completer, runFuture } from 'zena:async';
+
+var innerDropped = 0;
+var outerDropped = 0;
+
+resource class Inner {
+  n: i32;
+  new(this.n);
+  [Disposable.dispose](this: Own<this>): void {
+    innerDropped += 1;
+  }
+}
+
+async function closeLater(inner: Own<Inner>, done: Future<void>): Future<void> {
+  await done;
+}
+
+resource class Outer {
+  #inner: Own<Inner>;
+  new(inner: Own<Inner>) : #inner = inner;
+
+  value(): i32 {
+    return this.#inner.n;
+  }
+
+  /** Hands the inner resource to a task that releases it when `done`
+   * settles; this wrapper is consumed. */
+  readStream(this: Own<this>, done: Future<void>): i32 {
+    let n = this.#inner.n;
+    closeLater(this.#inner, done);
+    return n;
+  }
+
+  [Disposable.dispose](this: Own<this>): void {
+    outerDropped += 1;
+  }
+}
+
+export let main = (): i32 => {
+  var total = 0;
+  if (true) {
+    let a = new Outer(new Inner(1));
+    total += a.value();
+  }
+  // a released: inner glue ran once.
+  if (innerDropped != 1 || outerDropped != 1) {
+    return 0 - 1;
+  }
+  let c = new Completer<void>();
+  if (true) {
+    let b = new Outer(new Inner(2));
+    let n = b.readStream(c.future);
+    total += n;
+  }
+  // b consumed by readStream: outer disposed, inner handed on and NOT
+  // released yet.
+  if (innerDropped != 1 || outerDropped != 2) {
+    console.log(`after readStream: inner ${innerDropped} outer ${outerDropped}`);
+    return 0 - 2;
+  }
+  c.complete();
+  runFuture(c.future);
+  // Now the task's parameter release ran.
+  if (innerDropped != 2) {
+    return 0 - 3;
+  }
+  return total;
+};

@@ -1,0 +1,41 @@
+// @mode: run
+// @result: 11
+// @skip: elematic/zena#378 — the dispose glue releases a field the consuming method moved out; reads 12
+// A consuming method that moves a field out and then releases the
+// wrapper itself with an explicit dispose: the dispose glue must skip
+// the moved-out field, so the inner resource is released once.
+import { Own, Disposable } from 'zena:core';
+
+var innerDropped = 0;
+var outerDropped = 0;
+
+resource class Inner {
+  new();
+  [Disposable.dispose](this: Own<this>): void {
+    innerDropped += 1;
+  }
+}
+
+let sink = (inner: Own<Inner>): void => {};
+
+resource class Outer {
+  #inner: Own<Inner>;
+  new(inner: Own<Inner>) : #inner = inner;
+
+  giveAway(this: Own<this>): void {
+    sink(this.#inner);
+    this.[Disposable.dispose]();
+  }
+
+  [Disposable.dispose](this: Own<this>): void {
+    outerDropped += 10;
+  }
+}
+
+export let main = (): i32 => {
+  let o = new Outer(new Inner());
+  o.giveAway();
+  // 11: the inner released once (by sink's parameter drop), the outer
+  // once. 12 would mean the dispose glue released the inner again.
+  return innerDropped + outerDropped;
+};

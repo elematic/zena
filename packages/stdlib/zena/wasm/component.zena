@@ -22,6 +22,7 @@
  * ```
  */
 
+import { Own } from 'zena:core';
 import { Duration } from 'zena:time';
 import {
   DirMapping as HostDirMapping, Outcome, Run as HostRun,
@@ -191,12 +192,15 @@ let configure = (options: RunOptions): HostRunOptions => {
       inheritStdio, grant, debug, timeoutNanos);
 };
 
-/** A run in progress. */
-export final class Run {
-  #run: HostRun;
+/**
+ * A run in progress: a resource over the host's handle, held as
+ * `Own<Run>` and released when the owner leaves scope.
+ */
+export resource class Run {
+  #run: Own<HostRun>;
   var #result: RunResult | null = null;
 
-  new(run: HostRun) : #run = run;
+  new(run: Own<HostRun>) : #run = run;
 
   /** Block until the run ends. Waiting again returns the same result. */
   wait(): RunResult {
@@ -211,7 +215,7 @@ export final class Run {
 }
 
 /** Start a component and return at once. */
-export let startModule = (path: String, options: RunOptions = {}): Run =>
+export let startModule = (path: String, options: RunOptions = {}): Own<Run> =>
   new Run(HostRun.create(path, configure(options)));
 
 /** Run a component to its end. */

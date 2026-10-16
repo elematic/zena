@@ -47,7 +47,7 @@
  */
 
 import { Set } from 'zena:collections';
-import { ByteBuffer, StringBuilder } from 'zena:core';
+import { ByteBuffer, StringBuilder, Unmanaged, disown } from 'zena:core';
 import { Process, ProcessResult, spawn } from 'zena:process';
 import { readFileSync, readFileBytesSync, writeFileSync, writeFileBytesSync, mkdirSync, existsSync, unlinkSync } from 'zena:fs';
 import {
@@ -186,7 +186,9 @@ let normalizeResult = (actual: String, expected: String): String => {
 class RunningTest {
   file: TestFile;
   expectation: Expectation;
-  process: Process | null;
+  /** Unmanaged: a plain class cannot hold an owner, and the runner
+   * waits on every process it starts. */
+  process: Unmanaged<Process> | null;
   compileError: String | null;
 
   new(this.file, this.expectation, this.process, this.compileError);
@@ -264,10 +266,13 @@ let failureOf = (e: Expectation, res: ProcessResult): String | null => {
 /** Waits on a started test and prints its outcome. Returns whether it passed. */
 let report = (running: RunningTest): boolean => {
   let {compileError} = running;
+  let process = running.process;
   let failure = if (compileError != null) {
     `did not compile:\n${compileError}`
+  } else if (process != null) {
+    failureOf(running.expectation, process.waitFor(testTimeoutMs))
   } else {
-    failureOf(running.expectation, (running.process as Process).waitFor(testTimeoutMs))
+    'neither a process nor a compile error was recorded'
   };
   if (failure == null) {
     return true;
@@ -562,7 +567,7 @@ let runCompilePhase = (
   if (!existsSync(outRoot)) {
     mkdirSync(outRoot);
   }
-  let running = new Array<Process>(workers);
+  let running = new Array<Unmanaged<Process>>(workers);
   var i = 0;
   while (i < workers) {
     let argv = new Array<String>(9);
@@ -579,7 +584,7 @@ let runCompilePhase = (
     argv.push(i32ToString(i));
     argv.push(i32ToString(workers));
     argv.push(filter);
-    running.push(spawn(argv));
+    running.push(disown(spawn(argv)));
     i += 1;
   }
 
@@ -714,7 +719,7 @@ export let runPortableExecution = (args: Array<String>): i32 => {
     argv.push('--invoke');
     argv.push(toKebabName(expectation.invoke));
     argv.push(wasmPath);
-    running.push(new RunningTest(file, expectation, spawn(argv), null));
+    running.push(new RunningTest(file, expectation, disown(spawn(argv)), null));
   }
 
   // Worded exactly as `zena:test`'s runAndReport does, so this suite

@@ -12,7 +12,7 @@
 
 import { ParsedArgs } from 'zena:args';
 import { HashSet } from 'zena:collections';
-import { StringBuilder } from 'zena:core';
+import { Own, StringBuilder, Unmanaged, disown } from 'zena:core';
 import { GlobOptions, existsSync, globSync, isDirectorySync } from 'zena:fs';
 import { hasMagic } from 'zena:glob';
 import { AbsolutePath, RelativePath, extname } from 'zena:path';
@@ -96,7 +96,9 @@ let findTests = (args: ParsedArgs): Array<String> | null => {
 /** A test file whose copy of this module has been started. */
 class RunningTest {
   path: String;
-  run: Run;
+  /** Unmanaged: a plain class cannot hold an owner, and every run is
+   * waited on before the runner exits. */
+  run: Unmanaged<Run>;
   new(this.path, this.run);
 }
 
@@ -129,7 +131,7 @@ let report = (running: RunningTest): boolean => {
 };
 
 /** Starts a copy of this module on one test file. */
-let startWorker = (file: String, options: Options): Run => {
+let startWorker = (file: String, options: Options): Own<Run> => {
   let args = new GrowableArray<String>();
   args.push('zena');
   if (options.debug) {
@@ -194,7 +196,7 @@ export let testCommand = (args: ParsedArgs, options: Options): i32 => {
     }
     let file = files[next];
     next += 1;
-    running.push(new RunningTest(file, startWorker(file, options)));
+    running.push(new RunningTest(file, disown(startWorker(file, options))));
   }
 
   console.log('');

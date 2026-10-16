@@ -394,30 +394,30 @@ are for sizing, not accounting. (State column refreshed 2026-08-17:
 the narrow integers, `FixedArray<u8>` and `Result` rows landed since
 the measurement.)
 
-| WIT                        | Zena                                      | p2 uses           | State                       |
-| -------------------------- | ----------------------------------------- | ----------------- | --------------------------- |
-| `s32`, `s64`, `f32`, `f64` | `i32`, `i64`, `f32`, `f64`                | 2                 | ✅ exists                   |
-| `u32`, `u64`               | `u32`, `u64`                              | 53                | ✅ exists                   |
-| `u8`, `u16`, `s8`, `s16`   | `u8`, `u16`, `i8`, `i16`                  | 34                | ✅ exists                   |
-| `bool`                     | `boolean`                                 |                   | ✅ exists                   |
-| `char`                     | —                                         | **0**             | deferred: p2 never uses it  |
-| `string`                   | `String`                                  |                   | ✅ exists                   |
-| `list<u8>`                 | `FixedArray<u8>`                          | 11                | ✅ exists                   |
-| `list<T>` (other)          | `Array<T>` / `FixedArray<T>`              | 11                | ✅ exists                   |
-| `tuple<A, B>`              | inline tuple                              | 11                | ✅ exists                   |
-| `option<T>`                | `Option<T>`                               | 50                | ✅ exists                   |
-| `result<T, E>`             | `Result<T, E>`                            | **101 + 10 bare** | ✅ exists                   |
-| `record`                   | case class                                | 10                | ✅ synthesized              |
-| `variant`                  | sealed case-class hierarchy               | 8                 | ✅ synthesized              |
-| `enum`                     | enum                                      | 6                 | ✅ synthesized              |
-| `flags`                    | `distinct type … = u32` + constants       | 3                 | ✅ synthesized              |
-| `resource`                 | `final class` + `Disposable`              | **25**            | ✅ synthesized              |
-| `own<T>` / `borrow<T>`     | same class, differing lifetime rules      | 0 / 13 explicit   | see Part 6                  |
-| `stream<u8>`               | `zena:stream`'s `Stream<u8>`              | **0**             | ✅ synthesized              |
-| `future<T>`                | `Future` (result payloads ride `Outcome`) | **0**             | ✅ synthesized              |
-| `result<_, E>` (bare arm)  | a `void` lane, `witUnit()`-filled         | **0**             | ✅ synthesized              |
-| `stream<T>` (other)        | `Stream<T>`, generated per-element pumps  | **0**             | landed (typed streams)      |
-| bare `future`              | —                                         | **0**             | waits on the interop stages |
+| WIT                        | Zena                                                                                      | p2 uses           | State                       |
+| -------------------------- | ----------------------------------------------------------------------------------------- | ----------------- | --------------------------- |
+| `s32`, `s64`, `f32`, `f64` | `i32`, `i64`, `f32`, `f64`                                                                | 2                 | ✅ exists                   |
+| `u32`, `u64`               | `u32`, `u64`                                                                              | 53                | ✅ exists                   |
+| `u8`, `u16`, `s8`, `s16`   | `u8`, `u16`, `i8`, `i16`                                                                  | 34                | ✅ exists                   |
+| `bool`                     | `boolean`                                                                                 |                   | ✅ exists                   |
+| `char`                     | —                                                                                         | **0**             | deferred: p2 never uses it  |
+| `string`                   | `String`                                                                                  |                   | ✅ exists                   |
+| `list<u8>`                 | `FixedArray<u8>`                                                                          | 11                | ✅ exists                   |
+| `list<T>` (other)          | `Array<T>` / `FixedArray<T>`                                                              | 11                | ✅ exists                   |
+| `tuple<A, B>`              | inline tuple                                                                              | 11                | ✅ exists                   |
+| `option<T>`                | `Option<T>`                                                                               | 50                | ✅ exists                   |
+| `result<T, E>`             | `Result<T, E>`                                                                            | **101 + 10 bare** | ✅ exists                   |
+| `record`                   | case class                                                                                | 10                | ✅ synthesized              |
+| `variant`                  | sealed case-class hierarchy                                                               | 8                 | ✅ synthesized              |
+| `enum`                     | enum                                                                                      | 6                 | ✅ synthesized              |
+| `flags`                    | `distinct type … = u32` + constants                                                       | 3                 | ✅ synthesized              |
+| `resource`                 | `resource class` (interfaces in the list under Part 6); else `final class` + `Disposable` | **25**            | ✅ synthesized              |
+| `own<T>` / `borrow<T>`     | `Own<T>` / `Borrow<T>`; `Unmanaged<T>` for an own inside an aggregate                     | 0 / 13 explicit   | see Part 6                  |
+| `stream<u8>`               | `zena:stream`'s `Stream<u8>`                                                              | **0**             | ✅ synthesized              |
+| `future<T>`                | `Future` (result payloads ride `Outcome`)                                                 | **0**             | ✅ synthesized              |
+| `result<_, E>` (bare arm)  | a `void` lane, `witUnit()`-filled                                                         | **0**             | ✅ synthesized              |
+| `stream<T>` (other)        | `Stream<T>`, generated per-element pumps                                                  | **0**             | landed (typed streams)      |
+| bare `future`              | —                                                                                         | **0**             | waits on the interop stages |
 
 **Name mapping.** WIT names are kebab-case and Zena identifiers cannot
 contain `-`, so synthesized modules convert: functions and parameters
@@ -515,6 +515,73 @@ error rather than a recycled-index trap. A disowned handle is also the escape
 valve for the two hazards nothing static will catch: **child-before-parent
 ordering** (a disowned `request-options` can outlive its parent `request`) and
 resources whose release point is not lexical.
+
+### Resource classes in synthesized modules (2026-10-16)
+
+The bindgen decisions above are implemented for the interfaces named in
+`ownedResourceSpecifiers` in `wit-module-synth.zena`, starting with
+`zena-cli:host/process` and `zena-cli:host/wasm`. For those, a WIT
+`resource` renders as a `resource class` whose
+`[Disposable.dispose](this: Own<this>)` calls the canonical
+`resource.drop`, and every position that names it spells a handle:
+
+| WIT position                                           | Zena spelling  | what the wrapper does                                                 |
+| ------------------------------------------------------ | -------------- | --------------------------------------------------------------------- |
+| `own<r>` result, `result<own<r>, e>`, `option<own<r>>` | `Own<R>`       | `new R(handle)`; released at scope exit unless moved                  |
+| `own<r>` parameter                                     | `Own<R>`       | `disown(value).[rawHandle]()`: the move ends the caller's binding     |
+| `borrow<r>` parameter, a method's `self`               | `Borrow<R>`    | `value.[rawHandle]()`                                                 |
+| `own<r>` inside a list, tuple, record or variant       | `Unmanaged<R>` | lifted as `disown(new R(handle))`; the program `adopt`s what it keeps |
+
+The aggregate row is forced: a tuple or record member may not carry an
+affine type, and `Array<Own<R>>` waits on `scoped T`
+(ownership.md §"Affine fields", §"Affine type arguments"). `Unmanaged`
+is the regime ownership.md names for both, and for a value the program
+never releases: the filesystem's `get-directories` hands back preopens
+that live as long as the program does, and the test runners keep the
+processes and runs they start in arrays, waited on before they exit.
+`result` and `option` payloads stay `Own`: `Ok<T, E>` and `Some<T>` are
+classes, and reading the owner out of one moves it (#379 records the
+gap this leaves open: a second read mints a second owner).
+
+Lowering an own parameter is `disown`, which the handle table needs
+anyway (§"`disown`/`adopt` are the handle-table transitions"): the
+wrapper's binding is dead after the call, a disowned wrapper is never
+implicitly released, and nothing is left for a moved flag to guard. The
+`Disposable` form keeps its `#dropped` flag and `[markMoved]` for the
+interfaces not yet in the list.
+
+The list exists because the switch changes every signature a consumer
+sees, and because of the bootstrap: the checked-in compiler synthesizes
+with its own, older rendering, so an interface whose consumer sits in
+the compiler's closure can only switch after a reseed carries the new
+one (bootstrapping.md, "Two-step landing"). `zena:process` and
+`zena:wasm` migrated first because nothing the bootstrap compiles
+imports them: `Process` and `Run` are resource classes wrapping the
+host's `Own<...>` handle, so a `runWith` or `runModule` temporary now
+releases the host's record of the process or run, where before nothing
+did. `wasi:filesystem/types` is next, prepared on the branch
+`wasi-resources-fs`: `zena:fs`'s `Descriptor` becomes a `resource class`
+over `Own<WitDescriptor>`, `getPreopens` and `resolvePreopen` hand out
+`Unmanaged<Descriptor>`, and `zena:http`'s static file server reads
+through them; it lands once a reseed has made the bootstrap render the
+filesystem's resources this way. After that: `wasi:http` (`zena:http`'s
+wire adapters and server, `zena:fetch`, protobuf's transports,
+google-cloud's auth) and `zena-cli:host/http-server`, whose consumers
+hold their handles in plain classes today.
+
+Three checker gaps found while probing the shapes those migrations
+need, each with a repro under `tests/language/execution/ownership/`
+marked `@skip` until fixed: a consuming method that neither moves nor
+disposes its receiver leaks it (#378), reading an owner out of a
+generic class's field twice mints two owners (#379), and a compound
+assignment whose right side consumes a receiver is reported as a use
+after move (#380). An `Unmanaged<R>` does not coerce to `Borrow<R>`
+(`semantics/ownership/unmanaged-is-not-a-borrow.zena`), so a function
+that must take both an owner and a preopen takes `Unmanaged<R>`. A
+lifted `future<T>` stays a `DeferredFuture` (`Disposable`, dropped by
+hand where unobserved): as a resource class it could not extend
+`Future`, so `await` on it would go, and the futures `wasi:http`
+returns sit inside tuples, where an owner cannot live.
 
 ### Sequencing — revised 2026-08-06
 

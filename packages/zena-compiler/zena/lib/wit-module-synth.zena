@@ -134,6 +134,49 @@ var currentPackage: PackageName | null = null;
 var selfSpecifier = "";
 var currentSpecifier = "";
 
+/**
+ * The interfaces whose resources render as `resource class` — an
+ * `own` is `Own<T>`, released at scope exit unless moved, a `borrow`
+ * is `Borrow<T>`, and a use after a move is a compile error — rather
+ * than as a `Disposable` class with a runtime moved flag that the
+ * program must `using` or dispose by hand. Every interface should be
+ * here; the list exists because the switch changes every signature a
+ * consumer sees, so it moves one interface at a time, as its
+ * consumers in the standard library and the packages migrate
+ * (docs/design/component-model.md, Part 6). An interface whose
+ * consumer the checked-in bootstrap compiles (`wasi:filesystem`, through
+ * `zena:fs` in the compiler's own closure) can only join after a
+ * reseed carries this rendering. Keyed by the specifier without its
+ * version, the form `currentSpecifier` carries.
+ */
+let ownedResourceSpecifiers = ['zena-cli:host/process', 'zena-cli:host/wasm'];
+
+function rendersAsResourceClass(specifier: String): boolean {
+  for (let s in ownedResourceSpecifiers) {
+    if (s == specifier) { return true; }
+  }
+  return false;
+}
+
+/** The `zena:core` import line for the handle spellings a module used,
+ * or "" when it used none. */
+function handleImports(uses: SynthUses): String {
+  let names = new Array<String>();
+  if (uses.ownHandle) { names.push("Own"); }
+  if (uses.borrowHandle) { names.push("Borrow"); }
+  if (uses.unmanagedHandle) { names.push("Unmanaged"); }
+  if (uses.disown) { names.push("disown"); }
+  if (names.length == 0) {
+    return "";
+  }
+  var line = "import { ";
+  for (var i = 0; i < names.length; i += 1) {
+    if (i > 0) { line = line + ", "; }
+    line = line + names[i];
+  }
+  return line + " } from 'zena:core';\n";
+}
+
 /** One imported type name owed to a sibling synthesized module. */
 final class UsedTypeImport {
   specifier: String;
@@ -291,6 +334,16 @@ final class Ty {
   /** ResourceH only: the resource's WIT name, which the wrapper's
    * table helpers are named after. */
   var resourceName = "";
+  /** ResourceH only: whether the handle class is a `resource class`,
+   * so that this position spells a handle — `Own<T>` for an own in a
+   * bare position, `Borrow<T>` for a borrow, `Unmanaged<T>` for an own
+   * inside a list, tuple, record or variant payload, which cannot
+   * hold an owner. See `rendersAsResourceClass`. */
+  var ownedClass = false;
+  /** Whether this type sits inside a list, tuple, record or variant
+   * payload: an aggregate's member cannot carry an affine type, so an
+   * own handle there is `Unmanaged<T>`, for the program to `adopt`. */
+  var inAggregate = false;
   /** FutureH only: the payload's WIT source text, whitespace
    * collapsed — the canon type spelling the generated builtins name. */
   var witText = "";
@@ -452,6 +505,7 @@ function classifyType(t: Type, ifaceItems: GrowableArray<InterfaceItem>): Ty {
       return pairTy(TyKind.BytesList);
     }
     let ty = pairTy(TyKind.ListT);
+    element.inAggregate = true;
     ty.children.push(element);
     return ty;
   }
@@ -487,6 +541,7 @@ function classifyType(t: Type, ifaceItems: GrowableArray<InterfaceItem>): Ty {
       if (child.kind == TyKind.Unsupported) {
         return child;
       }
+      child.inAggregate = true;
       ty.children.push(child);
     }
     layoutRecord(ty);
@@ -587,6 +642,7 @@ function classifyNamed(name: String, ifaceItems: GrowableArray<InterfaceItem>): 
           noteProgramResource(ty.typeName, name, qualified);
           return ty;
         }
+        ty.ownedClass = rendersAsResourceClass(currentSpecifier);
         noteNamedType(ty);
         return ty;
       }
@@ -618,6 +674,7 @@ function classifyNamed(name: String, ifaceItems: GrowableArray<InterfaceItem>): 
           if (child.kind == TyKind.Unsupported) {
             return child;
           }
+          child.inAggregate = true;
           ty.children.push(child);
           ty.childNames.push(camelName(f.name.name));
         }
@@ -635,6 +692,7 @@ function classifyNamed(name: String, ifaceItems: GrowableArray<InterfaceItem>): 
           if (child.kind == TyKind.Unsupported) {
             return child;
           }
+          child.inAggregate = true;
           ty.children.push(child);
           // Prefixed with the variant's name: two variants in one
           // interface may declare same-named cases, and sealed cases
@@ -798,6 +856,14 @@ final class SynthUses {
   /** Whether any resource class rendered — pulls in Disposable and
    * the module's handle symbol. */
   var anyResource = false;
+  /** The handle spellings a `resource class` position used, each
+   * pulling in its `zena:core` name; `disown` is what hands an owned
+   * handle to the host, or marks a lifted one that sits in an
+   * aggregate as unmanaged. */
+  var ownHandle = false;
+  var borrowHandle = false;
+  var unmanagedHandle = false;
+  var disown = false;
   /** Whether an async result rendered — pulls in Outcome/Ok/Err. */
   var outcome = false;
   /** Whether generated code parks on `awaitWaitable`. */
@@ -956,6 +1022,18 @@ function zenaTypeOf(ty: Ty, uses: SynthUses): String {
   if (ty.kind == TyKind.FutureH) {
     return "Future<" + futurePayloadZenaType(ty.children[0], uses) + ">";
   }
+  if (ty.kind == TyKind.ResourceH && ty.ownedClass) {
+    if (ty.isBorrow) {
+      uses.borrowHandle = true;
+      return "Borrow<" + ty.typeName + ">";
+    }
+    if (ty.inAggregate) {
+      uses.unmanagedHandle = true;
+      return "Unmanaged<" + ty.typeName + ">";
+    }
+    uses.ownHandle = true;
+    return "Own<" + ty.typeName + ">";
+  }
   // Enumeration, Flags, RecordT, VariantT — all named. ResultT never
   // reaches here: top-level results are handled in renderFunc, and
   // nested ones are refused before rendering.
@@ -1102,7 +1180,7 @@ function liftExprOf(ty: Ty, ptrExpr: String, uses: SynthUses): String {
       let helper = if (ty.isBorrow) "At" else "Take";
       return `${camelName(ty.resourceName)}${helper}(loadI32(${ptrExpr}))`;
     }
-    return `new ${ty.typeName}(loadI32(${ptrExpr}))`;
+    return liftedHandle(ty, `loadI32(${ptrExpr})`, uses);
   }
   if (ty.kind == TyKind.StreamH) {
     uses.useAbi("loadI32");
@@ -1237,6 +1315,38 @@ let reinterpretImport =
     "f32_reinterpret_i32, f64_reinterpret_i64 } from 'zena:math';\n";
 
 /** Whether `ty` (or anything inside it) cannot be lowered yet. */
+/**
+ * A lifted handle as the program holds it: the handle class around the
+ * wire index. For a `resource class` that is an `Own<T>` fresh from its
+ * constructor, except inside an aggregate, where it is disowned: a list
+ * element or tuple member cannot carry an owner, and the program adopts
+ * the ones it keeps.
+ */
+function liftedHandle(ty: Ty, handleExpr: String, uses: SynthUses): String {
+  let fresh = `new ${ty.typeName}(${handleExpr})`;
+  if (ty.ownedClass && ty.inAggregate) {
+    uses.disown = true;
+    return `disown(${fresh})`;
+  }
+  return fresh;
+}
+
+/**
+ * The wire index of a handle being lowered. For a `resource class`, an
+ * own in a bare position is disowned first: the index transfers to the
+ * callee, the move ends the caller's binding, and a disowned wrapper is
+ * never implicitly released. A borrow, or an unmanaged handle out of an
+ * aggregate, is read as it is.
+ */
+function loweredHandle(ty: Ty, value: String, uses: SynthUses): String {
+  uses.useAbi("rawHandle");
+  if (ty.ownedClass && !ty.isBorrow && !ty.inAggregate) {
+    uses.disown = true;
+    return `disown(${value}).[rawHandle]()`;
+  }
+  return `${value}.[rawHandle]()`;
+}
+
 function lowerBlocker(ty: Ty): String {
   if (ty.kind == TyKind.Unsupported) {
     return ty.reason;
@@ -1345,6 +1455,12 @@ function lowerMemStmts(ty: Ty, value: String, ptrExpr: String,
   }
   if (ty.kind == TyKind.ResourceH) {
     uses.useAbi("storeI32");
+    if (ty.ownedClass) {
+      let handle = loweredHandle(ty, value, uses);
+      return zena`
+        storeI32(${ptrExpr}, ${handle});
+      `;
+    }
     uses.useAbi("rawHandle");
     if (!ty.isBorrow) {
       uses.useAbi("markMoved");
@@ -1625,6 +1741,11 @@ function lowerFlatStmts(sb: StringBuilder, ty: Ty, value: String,
     return 1;
   }
   if (ty.kind == TyKind.ResourceH) {
+    if (ty.ownedClass) {
+      writeSlot(sb, indent, slots[base], base,
+          loweredHandle(ty, value, uses), "i32");
+      return 1;
+    }
     uses.useAbi("rawHandle");
     writeSlot(sb, indent, slots[base], base, `${value}.[rawHandle]()`,
         "i32");
@@ -1911,7 +2032,7 @@ function liftFlatExpr(ty: Ty, slotTypes: GrowableArray<String>,
     }
     // An owned handle: the wrapper's class around it, which the
     // program then owns and disposes. A borrow is refused before this.
-    return `new ${ty.typeName}(${slot(base, "i32")})`;
+    return liftedHandle(ty, slot(base, "i32"), uses);
   }
   if (ty.kind == TyKind.StreamH) {
     return streamLiftCall(ty, slot(base, "i32"), uses);
@@ -2405,13 +2526,16 @@ function renderFlags(sb: StringBuilder, td: TypeDef): void {
 }
 
 /**
- * A WIT `resource`, as a Disposable handle-wrapping class: the class
- * owns the imported handle, methods and statics ride the same
- * marshaling machinery as free functions (a method's raw call leads
- * with the handle), a WIT constructor becomes `static create`, and
- * disposal is the canonical `resource.drop` — idempotent behind a
- * flag, because nothing prevents a double call until affine checking
- * covers these wrappers. Members that cannot render yet are skipped
+ * A WIT `resource`, as a handle-wrapping class: the class owns the
+ * imported handle, methods and statics ride the same marshaling
+ * machinery as free functions (a method's raw call leads with the
+ * handle), a WIT constructor becomes `static create`, and disposal is
+ * the canonical `resource.drop`. For an interface in
+ * `ownedResourceSpecifiers` the class is a `resource class`, released
+ * by implicit drop and checked for use after a move; for the rest it
+ * is a `Disposable` whose dispose is idempotent behind a flag, because
+ * nothing prevents a double call there. Members that cannot render yet
+ * are skipped
  * per member; the class itself always renders, so a handle received
  * from elsewhere is at least holdable and droppable.
  */
@@ -2426,9 +2550,13 @@ function renderResource(
   uses.anyResource = true;
   // The symbol-keyed members: shared identities from the abi module,
   // so another synthesized module's marshaling reaches the same
-  // members (a per-module symbol would not).
+  // members (a per-module symbol would not). A resource class has no
+  // moved flag, so only the Disposable form declares `[markMoved]`.
   uses.useAbi("rawHandle");
-  uses.useAbi("markMoved");
+  let ownedClass = rendersAsResourceClass(selfSpecifier);
+  if (!ownedClass) {
+    uses.useAbi("markMoved");
+  }
   let resourceName = td.name.name;
   let typeName = pascalName(resourceName);
   let rawPrefix = camelName(resourceName);
@@ -2466,6 +2594,34 @@ function renderResource(
   }
   body.append("/** WIT `resource ").append(resourceName)
       .append("`. */\n");
+  if (ownedClass) {
+    // A `resource class`: the program holds it as `Own<T>`, implicit
+    // drop releases it at scope exit, a move ends the binding, and the
+    // checker reports a use after the move. Dispose consumes the
+    // receiver and drops the handle; there is no moved flag, because
+    // lowering an own disowns the wrapper instead.
+    uses.ownHandle = true;
+    body.append("export resource class ").append(typeName).append(" {\n");
+    body.append("  #handle: i32;\n");
+    body.append("  new(handle: i32) : #handle = handle;\n\n");
+    body.append("  /** The wire handle, module-internal. */\n");
+    body.append("  [rawHandle](): i32 {\n    return this.#handle;\n");
+    body.append("  }\n\n");
+    body.append("  [Disposable.dispose](this: Own<this>): void {\n");
+    body.append("    ").append(rawPrefix).append("Drop_raw(this.#handle);\n");
+    body.append("  }\n\n");
+    body.append(members.toString());
+    body.append("}\n");
+    body.append("@external(\"canon\", \"resource.drop#")
+        .append(interfaceName).append("#").append(resourceName)
+        .append("\", \"resource:")
+        .append(interfaceName).append("#").append(resourceName)
+        .append("\")\n");
+    body.append("declare function ").append(rawPrefix)
+        .append("Drop_raw(handle: i32): void;\n");
+    body.append(raws.toString());
+    return;
+  }
   body.append("export final class ").append(typeName)
       .append(" implements Disposable {\n");
   body.append("  #handle: i32;\n");
@@ -2773,6 +2929,7 @@ export function synthesizeWitModule(host: CompilerHost, canonicalPath: String,
   if (uses.anyResource) {
     sb.append("import { Disposable } from 'zena:core';\n");
   }
+  sb.append(handleImports(uses));
   if (uses.error) {
     sb.append("import { Error } from 'zena:core';\n");
   }
@@ -3366,8 +3523,16 @@ function renderFuncIn(
       continue;
     }
     if (params[i].kind == TyKind.ResourceH) {
-      uses.useAbi("rawHandle");
       let h = "h" + i32ToString(i);
+      if (params[i].ownedClass) {
+        sb.append("  let ").append(h).append(" = ")
+            .append(loweredHandle(params[i], paramNames[i], uses))
+            .append(";\n");
+        callArgs.append(h);
+        argIndex += 1;
+        continue;
+      }
+      uses.useAbi("rawHandle");
       sb.append("  let ").append(h).append(" = ").append(paramNames[i])
           .append(".[rawHandle]();\n");
       if (!params[i].isBorrow) {
@@ -3527,8 +3692,8 @@ function renderFuncIn(
     sb.append("  return got as ").append(resultTy.typeName)
         .append(";\n");
   } else if (resultTy.kind == TyKind.ResourceH) {
-    sb.append("  return new ").append(resultTy.typeName)
-        .append("(got);\n");
+    sb.append("  return ").append(liftedHandle(resultTy, "got", uses))
+        .append(";\n");
   } else if (resultTy.kind == TyKind.StreamH) {
     sb.append("  return ").append(streamLiftCall(resultTy, "got", uses))
         .append(";\n");
@@ -3836,6 +4001,7 @@ export function synthesizeExportWrapper(
   if (programResources.length > 0) {
     sb.append("import { Disposable } from 'zena:core';\n");
   }
+  sb.append(handleImports(uses));
   if (uses.result) {
     sb.append("import { Result } from 'zena:core';\n");
   }
