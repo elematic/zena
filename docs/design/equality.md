@@ -23,9 +23,10 @@ The rules, in one sentence each:
 
 - `==` compares primitives, strings, records and tuples by value
   ([Structural equality for records and tuples](#structural-equality-for-records-and-tuples)).
+  Both satisfy `Hashable` and `Equatable`, so they can key a `HashMap`.
   Where a record or tuple reaches the erased comparison (an `anyref`
   or interface operand, or a union of several record or tuple types)
-  it still compares identity, and neither satisfies `Hashable` (#372).
+  it still compares identity (#372).
 - On a class, `==` resolves on the **static** type of the left operand:
   - If that type declares or inherits `operator ==`, the call is
     virtual. A subclass override is found at runtime
@@ -134,14 +135,26 @@ Not yet covered (#372):
 - **The erased comparison** (`lowerErasedEq`, `$erasedEq`) still
   compares records and tuples by identity. That covers `anyref` and
   interface operands, and unions of several record or tuple types.
-- **Hashing:** records and tuples do not satisfy `Hashable` yet, and
-  the `eq`/`hash` intrinsics `HashMap` uses do not handle them.
 - **Case-class fields:** a case class's derived `==` compares a record
-  or tuple field by identity (`synthFieldEq`).
+  or tuple field by identity (`synthFieldEq`), and its `hashCode`
+  hashes one to 0.
+- **`hashCode()` as a method:** a record has no methods, so generic code
+  bounded by `Hashable` that calls `x.hashCode()` cannot be
+  instantiated with a record. `HashMap` and `HashSet` use the `hash`
+  intrinsic instead, which works.
 
-Records and tuples will satisfy `Hashable` and `Equatable` without
-declaring anything: the compiler will derive a `hashCode` per shape,
-consistent with `==`, as it does for case classes.
+**Hashing.** Records and tuples satisfy `Hashable` and `Equatable`
+without declaring anything (the checker's
+`satisfiesHashableConstraint`). The `equals<T>` intrinsic calls the
+pair's `$valueEq` function, and `hash<T>` calls a `$valueHash` function
+per type, which reachability registers at the intrinsic's call
+(`#noteIntrinsicEqTargets`). The hash folds the fields as a case
+class's does, `h * 31 + field`, each field hashed consistently with its
+`==`: nested records and tuples through their functions, numbers by
+value, `String` by content, a class through its `hashCode`. A field
+whose `==` is identity or erased (a class without `hashCode`, an array,
+a closure) contributes 0. An optional field contributes only when
+present, and a null field contributes 0.
 
 For argument explosion, `==` and `hashCode` on a closed or row-generic
 record read only its fields, so a record parameter compared with `==`

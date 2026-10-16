@@ -1,6 +1,8 @@
 import { Set } from 'zena:collections';
 import { collectValueExports, findDeclaration } from '../lookup.zena';
-import { valueEqFields, valueEqKey, valueEqOperand } from '../value-equality.zena';
+import {
+  valueEqFields, valueEqKey, valueEqOperand, valueHashKey,
+} from '../value-equality.zena';
 import {
   Referrer, ReachabilityContext, TypeLowererInterface, ReachabilityVisitorInterface,
   recordLiteralArgKey, recordLiteralCtorArgKey, recordLiteralMethodArgKey,
@@ -712,6 +714,49 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
     }
   }
 
+  /**
+   * `hash<T>` on a record or tuple type hashes its fields, through one
+   * synthesized function per type (ir/equality.zena,
+   * `lowerValueHashFunction`). Registers that function and discovers the
+   * type, then what hashing each field needs: a nested record's or
+   * tuple's function, or a class's `hashCode`.
+   */
+  noteValueHash(t: Type, model: SemanticModel): void {
+    let v = valueEqOperand(t);
+    if (v == null || !this.pass.currentReachable) {
+      return;
+    }
+    let type = v as Type;
+    let wasm = this.pass.wasm;
+    let key = valueHashKey(type);
+    if (let (true, existing) = wasm.valueHashFuncs.get(key)) {
+      this.pass.markFunctionReached(existing);
+      return;
+    }
+    this.pass.typeLowerer.discoverType(type, model);
+    let params = new Array<ValType>();
+    params.push(typeToValType(wasm, type));
+    let returns = new Array<ValType>();
+    returns.push(new ValTypeI32());
+    let fn = new WasmFunction(wasm.getSignature(params, returns), null, model);
+    fn.name = '$valueHash';
+    fn.valueHashType = type;
+    wasm.valueHashFuncs[key] = fn;
+    wasm.addFunction(fn);
+    this.pass.markFunctionReached(fn);
+    let fields = valueEqFields(type, type);
+    if (fields == null) {
+      return;
+    }
+    for (let f in fields) {
+      if (valueEqOperand(f.left) != null) {
+        this.noteValueHash(f.left, model);
+      } else {
+        this.#noteEqualityOperand(f.left, model);
+      }
+    }
+  }
+
   /** Roots `==` (and hashCode, its pair) on a concrete class operand. */
   #rootEqOperator(rawT: Type, model: SemanticModel): void {
     // Literal types (`"a" == x`) carry their base class.
@@ -1268,11 +1313,21 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
     if (opName == "") {
       return;
     }
+    let argTypes = new Array<Type>();
     for (let arg in n.args) {
       let argType = model.getNodeType(arg);
       if (argType != null) {
-        this.pass.notePendingStaticTargets(resolveType(argType), opName);
+        let resolved = resolveType(argType);
+        argTypes.push(resolved);
+        this.pass.notePendingStaticTargets(resolved, opName);
       }
+    }
+    // A record or tuple compares and hashes through a function per type
+    // (ir/equality.zena), which the intrinsic lowers to a call of.
+    if (opName == "==" && argTypes.length == 2) {
+      this.noteValueEquality(argTypes[0], argTypes[1], model);
+    } else if (opName == "hashCode" && argTypes.length == 1) {
+      this.noteValueHash(argTypes[0], model);
     }
   }
 
