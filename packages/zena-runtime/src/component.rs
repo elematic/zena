@@ -902,6 +902,22 @@ pub struct ServerState {
     port: u16,
     request_rx: Arc<Mutex<tokio::sync::mpsc::UnboundedReceiver<IncomingRequest>>>,
     shutdown_flag: Arc<std::sync::atomic::AtomicBool>,
+    shutdown_tx: Option<tokio::sync::oneshot::Sender<()>>,
+    accept_thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl ServerState {
+    fn shutdown(&mut self) {
+        self.shutdown_flag
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        let _ = self.shutdown_tx.take();
+        if let Ok(mut rx) = self.request_rx.lock() {
+            rx.close();
+        }
+        if let Some(handle) = self.accept_thread.take() {
+            let _ = handle.join();
+        }
+    }
 }
 
 struct RequestStreamProducer {
@@ -1105,36 +1121,43 @@ impl http_server::HostServerWithStore<ComponentState> for HasSelf<ComponentState
 }
 
 impl http_server::HostServer for ComponentState {
-    fn create(&mut self, port: u16) -> Result<Resource<ServerState>> {
+    fn create(
+        &mut self,
+        port: u16,
+    ) -> Result<std::result::Result<Resource<ServerState>, String>> {
         let host = std::env::var("HOST")
             .ok()
             .filter(|s| !s.is_empty())
             .unwrap_or_else(|| "127.0.0.1".to_string());
-        let std_listener = std::net::TcpListener::bind((host.as_str(), port))
-            .map_err(|e| format_err!("failed to bind {host}:{port}: {e}"))?;
-        let bound_port = std_listener
-            .local_addr()
-            .map_err(|e| format_err!("failed to get local address: {e}"))?
-            .port();
-        std_listener
-            .set_nonblocking(true)
-            .map_err(|e| format_err!("failed to set nonblocking: {e}"))?;
+        let std_listener = match std::net::TcpListener::bind((host.as_str(), port)) {
+            Ok(l) => l,
+            Err(e) => return Ok(Err(format!("failed to bind {host}:{port}: {e}"))),
+        };
+        let bound_port = match std_listener.local_addr() {
+            Ok(addr) => addr.port(),
+            Err(e) => return Ok(Err(format!("failed to get local address: {e}"))),
+        };
+        if let Err(e) = std_listener.set_nonblocking(true) {
+            return Ok(Err(format!("failed to set nonblocking: {e}")));
+        }
+        let rt = match tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+        {
+            Ok(r) => r,
+            Err(e) => {
+                return Ok(Err(format!(
+                    "failed to create tokio runtime for http-server: {e}"
+                )));
+            }
+        };
 
         let (request_tx, request_rx) = tokio::sync::mpsc::unbounded_channel();
         let shutdown_flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let s_shutdown = shutdown_flag.clone();
+        let (shutdown_tx, mut shutdown_rx) = tokio::sync::oneshot::channel::<()>();
 
-        std::thread::spawn(move || {
-            let rt = match tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-            {
-                Ok(r) => r,
-                Err(e) => {
-                    eprintln!("failed to create tokio runtime for http-server: {e}");
-                    return;
-                }
-            };
+        let accept_thread = std::thread::spawn(move || {
             rt.block_on(async move {
                 // When zena-run is PID 1 in a container, Linux suppresses
                 // SIGTERM and SIGINT unless a signal handler is installed.
@@ -1169,7 +1192,13 @@ impl http_server::HostServer for ComponentState {
                 };
 
                 loop {
-                    let accept_res = listener.accept().await;
+                    if s_shutdown.load(std::sync::atomic::Ordering::Relaxed) {
+                        break;
+                    }
+                    let accept_res = tokio::select! {
+                        res = listener.accept() => res,
+                        _ = &mut shutdown_rx => break,
+                    };
                     if s_shutdown.load(std::sync::atomic::Ordering::Relaxed) {
                         break;
                     }
@@ -1230,8 +1259,10 @@ impl http_server::HostServer for ComponentState {
             port: bound_port,
             request_rx: Arc::new(Mutex::new(request_rx)),
             shutdown_flag,
+            shutdown_tx: Some(shutdown_tx),
+            accept_thread: Some(accept_thread),
         })?;
-        Ok(res)
+        Ok(Ok(res))
     }
 
     fn port(&mut self, self_: Resource<ServerState>) -> Result<u16> {
@@ -1240,24 +1271,14 @@ impl http_server::HostServer for ComponentState {
     }
 
     fn close(&mut self, self_: Resource<ServerState>) -> Result<()> {
-        let server = self.table.get(&self_)?;
-        if !server.shutdown_flag.swap(true, std::sync::atomic::Ordering::Relaxed) {
-            let _ = std::net::TcpStream::connect(("127.0.0.1", server.port));
-        }
-        if let Ok(mut rx) = server.request_rx.lock() {
-            rx.close();
-        }
+        let server = self.table.get_mut(&self_)?;
+        server.shutdown();
         Ok(())
     }
 
     fn drop(&mut self, rep: Resource<ServerState>) -> Result<()> {
-        let server = self.table.delete(rep)?;
-        if !server.shutdown_flag.swap(true, std::sync::atomic::Ordering::Relaxed) {
-            let _ = std::net::TcpStream::connect(("127.0.0.1", server.port));
-        }
-        if let Ok(mut rx) = server.request_rx.lock() {
-            rx.close();
-        }
+        let mut server = self.table.delete(rep)?;
+        server.shutdown();
         Ok(())
     }
 }

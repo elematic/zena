@@ -7,6 +7,7 @@ import { Response } from './response.zena';
 import { Middleware, NextFunction, compose } from './middleware.zena';
 import { HttpError } from './error.zena';
 import { Server } from './server.zena';
+import { checkCancellation } from 'zena:async';
 import { Stream } from 'zena:stream';
 
 function unit(): void {}
@@ -28,17 +29,16 @@ export class AppOptions {
  *
  * ```zena
  * import { App } from 'zena:http';
- * import { Request as WireRequest, Response as WireResponse, ErrorCode } from 'wasi:http/types';
- * import { Outcome } from 'zena:core';
  *
- * let app = new App();
+ * export async function main(): Future<void> {
+ *   let app = new App();
  *
- * app.use(async (req, res, next) => {
- *   res.body = 'Hello, world!';
- * });
+ *   app.use(async (req, res, next) => {
+ *     res.body = 'Hello, world!';
+ *   });
  *
- * export async function handle(request: WireRequest): Future<Outcome<WireResponse, ErrorCode>> {
- *   return app.handle(request);
+ *   let server = await app.listen(8080);
+ *   console.log(`Listening on http://127.0.0.1:${server.port}`);
  * }
  * ```
  */
@@ -91,20 +91,23 @@ export class App {
   }
 
   /**
-   * Starts an HTTP server on the specified port.
+   * Binds an HTTP server on `127.0.0.1:{port}` (or an ephemeral port when
+   * `port` is 0) and starts the accept loop in the background.
    *
-   * By default, prints `Server listening on http://127.0.0.1:{port}` and runs
-   * the accept loop in the background. If `onListening` is provided, it is invoked before returning.
+   * Returns a `Future<Server>` that resolves once the listener is bound, or
+   * rejects if binding fails (such as when `port` is already in use).
+   * Cancelling the enclosing `CancelScope` closes the server and releases
+   * its socket.
    *
-   * Returns the running Server instance immediately.
+   * Unlike Zipadee's `App.listen()`, which returns `Promise<void>` because
+   * Zipadee's `App` owns a single internal `http.Server` (`app.server`),
+   * `zena:http` returns the `Server` instance so callers can inspect the
+   * bound `server.port`, close it directly, or run multiple servers from one
+   * `App`.
    */
-  listen(port: u16 = 8080 as u16, onListening: (() => void) | null = null): Server {
+  async listen(port: u16 = 8080 as u16): Future<Server> {
+    checkCancellation();
     let server = new Server(this, port);
-    if (onListening != null) {
-      onListening();
-    } else {
-      console.log(`Server listening on http://127.0.0.1:${server.port}`);
-    }
     server.start();
     return server;
   }
