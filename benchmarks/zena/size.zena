@@ -6,7 +6,7 @@
  */
 
 import { getArguments, exit } from 'zena:cli';
-import { exists, readFileBytes, writeFile } from 'zena:fs';
+import { existsSync, readFileBytesSync, writeFileSync } from 'zena:fs';
 import { run } from 'zena:process';
 import { StringBuilder } from 'zena:core';
 
@@ -71,7 +71,7 @@ let sectionIdToName = (id: i32): String => {
   };
 };
 
-export let parseWasmSections = (bytes: ByteArray): WasmModuleInfo => {
+let parseWasmSections = (bytes: ByteArray): WasmModuleInfo => {
   let sections = new GrowableArray<WasmSectionInfo>();
   var codeBytes = 0;
   var typeBytes = 0;
@@ -263,9 +263,9 @@ export let main = (): i32 => {
   for (let workload in workloads) {
     for (let variant in variantNames) {
       let path = `benchmarks/out/${workload}/${variant}.wasm`;
-      if (exists(path)) {
-        let bytes = readFileBytes(path);
-        let info = parseWasmSections(bytes);
+      if (existsSync(path)) {
+        let bytes = readFileBytesSync(path);
+        let info = parseWasmSections(bytes as ByteArray);
         let gzip = getGzipSize(path);
         measurements.push(new VariantMeasurement(workload, variant, path, bytes.length, gzip, info));
       }
@@ -330,7 +330,7 @@ export let main = (): i32 => {
   }
 
   let reportPath = 'benchmarks/out/size-report.md';
-  writeFile(reportPath, md.toString());
+  writeFileSync(reportPath, md.toString());
   console.log(`Markdown report written to ${reportPath}`);
 
   return 0;
