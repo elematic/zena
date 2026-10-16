@@ -10,23 +10,25 @@ import {
 import { printDocToString, PrintOptions } from '../lib/doc-printer.zena';
 
 // Helper: print a doc with a given width
-let print = (doc: Doc, width: i32): String => {
+function print(doc: Doc, width: i32) {
   let opts = new PrintOptions(width);
   return printDocToString(doc, opts);
-};
+}
 
 // Helper: print a doc with default 80-col width
-let print80 = (doc: Doc): String => print(doc, 80);
+function print80(doc: Doc) {
+  return print(doc, 80);
+}
 
 // Debug helper: check and log
-let check = (name: String, actual: String, expected: String): void => {
+function check(name: String, actual: String, expected: String) {
   if (actual != expected) {
     console.log('FAIL: ' + name);
-    console.log('  actual:   [' + actual + ']');
-    console.log('  expected: [' + expected + ']');
+    console.log(`  actual:   [${actual}]`);
+    console.log(`  expected: [${expected}]`);
   }
   equal(actual, expected, name);
-};
+}
 
 let tests = suite('doc-printer', () => {
 
@@ -35,11 +37,11 @@ let tests = suite('doc-printer', () => {
   // ========================================================================
 
   suite('text', () => {
-    test('prints plain text', (t: TestContext) => {
+    test('prints plain text', (t) => {
       check('prints plain text', print80(text('hello')), 'hello');
     });
 
-    test('concatenates text docs', (t: TestContext) => {
+    test('concatenates text docs', (t) => {
       let doc = concat([text('hello'), text(' '), text('world')]);
       check('concatenates text docs', print80(doc), 'hello world');
     });
@@ -50,22 +52,22 @@ let tests = suite('doc-printer', () => {
   // ========================================================================
 
   suite('group', () => {
-    test('group fits on one line', (t: TestContext) => {
+    test('group fits on one line', (t) => {
       let doc = group(concat([text('a'), text(', '), text('b'), text(', '), text('c')]));
       check('group fits on one line', print80(doc), 'a, b, c');
     });
 
-    test('group with line stays flat when it fits', (t: TestContext) => {
+    test('group with line stays flat when it fits', (t) => {
       let doc = group(concat([text('a'), text(','), line, text('b'), text(','), line, text('c')]));
       check('group line stays flat', print80(doc), 'a, b, c');
     });
 
-    test('group with line breaks when too wide', (t: TestContext) => {
+    test('group with line breaks when too wide', (t) => {
       let doc = group(concat([text('a'), text(','), line, text('b'), text(','), line, text('c')]));
       check('group line breaks too wide', print(doc, 5), 'a,\nb,\nc');
     });
 
-    test('shouldBreak forces group to break', (t: TestContext) => {
+    test('shouldBreak forces group to break', (t) => {
       let doc = groupBreak(concat([text('a'), text(','), line, text('b')]));
       check('shouldBreak forces break', print80(doc), 'a,\nb');
     });
@@ -76,12 +78,12 @@ let tests = suite('doc-printer', () => {
   // ========================================================================
 
   suite('softline', () => {
-    test('softline is empty when flat', (t: TestContext) => {
+    test('softline is empty when flat', (t) => {
       let doc = group(concat([text('a'), softline, text('b')]));
       check('softline flat', print80(doc), 'ab');
     });
 
-    test('softline is newline when broken', (t: TestContext) => {
+    test('softline is newline when broken', (t) => {
       let doc = group(concat([text('a'), softline, text('b')]));
       check('softline newline', print(doc, 1), 'a\nb');
     });
@@ -92,7 +94,7 @@ let tests = suite('doc-printer', () => {
   // ========================================================================
 
   suite('hardline', () => {
-    test('hardline always breaks', (t: TestContext) => {
+    test('hardline always breaks', (t) => {
       let doc = concat([text('a'), hardline, text('b')]);
       check('hardline always breaks', print80(doc), 'a\nb');
     });
@@ -103,17 +105,17 @@ let tests = suite('doc-printer', () => {
   // ========================================================================
 
   suite('indent', () => {
-    test('indent adds spaces after line break', (t: TestContext) => {
+    test('indent adds spaces after line break', (t) => {
       let doc = indent(concat([text('a'), hardline, text('b')]));
       check('indent adds spaces', print80(doc), 'a\n  b');
     });
 
-    test('nested indent adds more spaces', (t: TestContext) => {
+    test('nested indent adds more spaces', (t) => {
       let doc = indent(indent(concat([text('a'), hardline, text('b')])));
       check('nested indent', print80(doc), 'a\n    b');
     });
 
-    test('indent inside group adds spaces when broken', (t: TestContext) => {
+    test('indent inside group adds spaces when broken', (t) => {
       let doc = group(concat([
         text('{'),
         indent(concat([line, text('a'), line, text('b')])),
@@ -129,12 +131,12 @@ let tests = suite('doc-printer', () => {
   // ========================================================================
 
   suite('ifBreak', () => {
-    test('ifBreak uses flat contents when group fits', (t: TestContext) => {
+    test('ifBreak uses flat contents when group fits', (t) => {
       let doc = group(concat([text('('), ifBreak(text('BREAK'), text('flat')), text(')')]));
       check('ifBreak flat', print80(doc), '(flat)');
     });
 
-    test('ifBreak uses break contents when group breaks', (t: TestContext) => {
+    test('ifBreak uses break contents when group breaks', (t) => {
       let doc = group(concat([
         text('('),
         ifBreak(text('BREAK'), text('flat')),
@@ -151,17 +153,17 @@ let tests = suite('doc-printer', () => {
   // ========================================================================
 
   suite('join', () => {
-    test('join with separator', (t: TestContext) => {
+    test('join with separator', (t) => {
       let doc = join(text(', '), [text('a'), text('b'), text('c')]);
       check('join separator', print80(doc), 'a, b, c');
     });
 
-    test('join single item', (t: TestContext) => {
+    test('join single item', (t) => {
       let doc = join(text(', '), [text('a')]);
       check('join single', print80(doc), 'a');
     });
 
-    test('join empty', (t: TestContext) => {
+    test('join empty', (t) => {
       let items: Array<Doc> = [];
       let doc = join(text(', '), items);
       check('join empty', print80(doc), '');
@@ -173,42 +175,42 @@ let tests = suite('doc-printer', () => {
   // ========================================================================
 
   suite('fill', () => {
-    test('fill prints all parts when fits', (t: TestContext) => {
+    test('fill prints all parts when fits', (t) => {
       let doc = fill([text('word1'), text(' '), text('word2'), text(' '), text('word3')]);
       check('fill parts', print80(doc), 'word1 word2 word3');
     });
 
-    test('fill keeps everything flat when it fits', (t: TestContext) => {
+    test('fill keeps everything flat when it fits', (t) => {
       let doc = fill([text('a'), line, text('b'), line, text('c')]);
       check('fill flat', print80(doc), 'a b c');
     });
 
-    test('fill wraps greedily at line width', (t: TestContext) => {
+    test('fill wraps greedily at line width', (t) => {
       let doc = fill([text('aaa'), line, text('bbb'), line, text('ccc'), line, text('ddd')]);
       // Width 10: "aaa bbb" fits (7), "aaa bbb ccc" doesn't (11)
       // → break after bbb, then "ccc ddd" fits (7)
       check('fill wraps', print(doc, 10), 'aaa bbb\nccc ddd');
     });
 
-    test('fill breaks every line when very narrow', (t: TestContext) => {
+    test('fill breaks every line when very narrow', (t) => {
       let doc = fill([text('aaa'), line, text('bbb'), line, text('ccc')]);
       // Width 5: "aaa bbb" doesn't fit → break after each
       check('fill narrow', print(doc, 5), 'aaa\nbbb\nccc');
     });
 
-    test('fill with indent', (t: TestContext) => {
+    test('fill with indent', (t) => {
       let doc = indent(fill([text('aaa'), line, text('bbb'), line, text('ccc'), line, text('ddd')]));
       // Width 10: "aaa bbb" fits (7), "aaa bbb ccc" doesn't (11)
       // After break, pos=2 (indent): "ccc ddd" fits (7+2=9 < 10)
       check('fill indent', print(doc, 10), 'aaa bbb\n  ccc ddd');
     });
 
-    test('fill single item', (t: TestContext) => {
+    test('fill single item', (t) => {
       let doc = fill([text('hello')]);
       check('fill single', print80(doc), 'hello');
     });
 
-    test('fill empty', (t: TestContext) => {
+    test('fill empty', (t) => {
       let doc = fill([]);
       check('fill empty', print80(doc), '');
     });
@@ -219,7 +221,7 @@ let tests = suite('doc-printer', () => {
   // ========================================================================
 
   suite('lineSuffix', () => {
-    test('lineSuffix flushes before newline', (t: TestContext) => {
+    test('lineSuffix flushes before newline', (t) => {
       let doc = concat([text('code'), lineSuffix(text(' // comment')), hardline]);
       check('lineSuffix flushes', print80(doc), 'code // comment\n');
     });
@@ -230,7 +232,7 @@ let tests = suite('doc-printer', () => {
   // ========================================================================
 
   suite('patterns', () => {
-    test('argument list stays flat when short', (t: TestContext) => {
+    test('argument list stays flat when short', (t) => {
       let argList = join(concat([text(','), line]), [text('a'), text('b')]);
       let doc = group(concat([
         text('fn('),
@@ -242,7 +244,7 @@ let tests = suite('doc-printer', () => {
       check('arg list flat', print80(doc), 'fn(a, b);');
     });
 
-    test('argument list breaks when long', (t: TestContext) => {
+    test('argument list breaks when long', (t) => {
       let argList = join(concat([text(','), line]), [text('longArgName1'), text('longArgName2'), text('longArgName3')]);
       let doc = group(concat([
         text('fn('),
@@ -254,7 +256,7 @@ let tests = suite('doc-printer', () => {
       check('arg list breaks', print(doc, 25), 'fn(\n  longArgName1,\n  longArgName2,\n  longArgName3\n);');
     });
 
-    test('block statement formatting', (t: TestContext) => {
+    test('block statement formatting', (t) => {
       let stmts = concat([text('a;'), hardline, text('b;')]);
       let doc = concat([
         text('{'),
@@ -277,27 +279,27 @@ let tests = suite('doc-printer', () => {
   // ========================================================================
 
   suite('propagateBreaks', () => {
-    test('breakParent forces enclosing group to break', (t: TestContext) => {
+    test('breakParent forces enclosing group to break', (t) => {
       let doc = group(concat([text('a'), text(','), line, text('b'), breakParent]));
       // Without propagateBreaks this fits on one line: "a, b"
       // With propagateBreaks the group is forced to break
       check('breakParent breaks group', print80(doc), 'a,\nb');
     });
 
-    test('hardline forces enclosing group to break', (t: TestContext) => {
+    test('hardline forces enclosing group to break', (t) => {
       let doc = group(concat([text('a'), line, text('b'), hardline, text('c')]));
       // hardline forces the group to break, so line becomes newline too
       check('hardline breaks group', print80(doc), 'a\nb\nc');
     });
 
-    test('breakParent propagates through nested groups', (t: TestContext) => {
+    test('breakParent propagates through nested groups', (t) => {
       let inner = group(concat([breakParent, text('x')]));
       let outer = group(concat([text('a'), line, inner]));
       // breakParent breaks inner, which propagates to outer
       check('breakParent propagates', print80(outer), 'a\nx');
     });
 
-    test('hardline in nested group breaks all ancestors', (t: TestContext) => {
+    test('hardline in nested group breaks all ancestors', (t) => {
       let inner = group(concat([text('x'), hardline, text('y')]));
       let outer = group(concat([
         text('{'),
@@ -309,7 +311,7 @@ let tests = suite('doc-printer', () => {
       check('hardline propagates', print80(outer), '{\n  x\n  y\n}');
     });
 
-    test('groups without breakParent remain unaffected', (t: TestContext) => {
+    test('groups without breakParent remain unaffected', (t) => {
       let doc = group(concat([text('a'), text(','), line, text('b')]));
       check('no breakParent stays flat', print80(doc), 'a, b');
     });
@@ -320,7 +322,7 @@ let tests = suite('doc-printer', () => {
   // ========================================================================
 
   suite('restCmds', () => {
-    test('group considers rest of line in fits check', (t: TestContext) => {
+    test('group considers rest of line in fits check', (t) => {
       // Group alone = "a b" = 3 chars, fits at width 10.
       // But rest of line has "XXXXXXXXXXX" (11 chars), total 14 > 10.
       // With restCmds scan, group correctly breaks.
@@ -329,7 +331,7 @@ let tests = suite('doc-printer', () => {
       check('restCmds basic', print(doc, 10), 'a\nbXXXXXXXXXXX');
     });
 
-    test('nested group considers rest of line', (t: TestContext) => {
+    test('nested group considers rest of line', (t) => {
       // Inner group "aaa bbb" = 7 chars. Outer has inner + " cccccccccc" (11).
       // Width 15: outer breaks (18 > 15). Inner with restCmds also breaks (18 > 15).
       let inner = group(concat([text('aaa'), line, text('bbb')]));
@@ -337,7 +339,7 @@ let tests = suite('doc-printer', () => {
       check('restCmds nested', print(outer, 15), 'aaa\nbbb cccccccccc');
     });
 
-    test('group fits when rest of line is short', (t: TestContext) => {
+    test('group fits when rest of line is short', (t) => {
       // Group "a b" = 3 chars + rest "XX" = 2 chars, total 5 < 10. Stays flat.
       let inner = group(concat([text('a'), line, text('b')]));
       let doc = concat([inner, text('XX')]);
@@ -347,7 +349,7 @@ let tests = suite('doc-printer', () => {
 });
 
 // Entry point
-export let main = (): i32 => {
+export function main(): i32 {
   let result = tests.run();
   return result.failed;
-};
+}
