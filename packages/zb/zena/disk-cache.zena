@@ -10,38 +10,38 @@ import {manifestFromJson, manifestToJson} from './state-json.zena';
  * The package directory of a step key ('pkg/dir:script' — package
  * directories never contain ':', script names may).
  */
-export let packageDirOf = (stepKey: String): String => {
+export function packageDirOf(stepKey: String): String {
   for (var i = 0; i < stepKey.length; i += 1) {
     if (stepKey.getByteAt(i) == 58) {
       return stepKey.sliceBytes(0, i);
     }
   }
   throw new Error('malformed step key: ' + stepKey);
-};
+}
 
 /** A package's build-state directory, '<pkg>/.zb'. */
-export let stateDirOf = (stepKey: String): String => {
+export function stateDirOf(stepKey: String): String {
   let pkg = packageDirOf(stepKey);
   return if (pkg == '') '.zb' else pkg + '/.zb';
-};
+}
 
 /**
  * Entries with content fingerprints are files in the workspace;
  * anything else (e.g. the '$volatile' marker of an untracked script)
  * is virtual and has no bytes to store or restore.
  */
-let isFileEntry = (fp: Fingerprint): boolean => {
+function isFileEntry(fp: Fingerprint) {
   return fp.value.startsWith('sha256:');
-};
+}
 
-let blobName = (fp: Fingerprint): String => {
+function blobName(fp: Fingerprint) {
   // 'sha256:<hex>' -> 'sha256-<hex>', a safe file name.
   let colonSplit = fp.value.split(':');
   if (colonSplit.length != 2) {
     throw new Error('unexpected fingerprint format: ' + fp.value);
   }
-  return colonSplit[0] + '-' + colonSplit[1];
-};
+  return `${colonSplit[0]}-${colonSplit[1]}`;
+}
 
 /**
  * The local cache, sharded per package like wireit's .wireit/: each
@@ -58,11 +58,11 @@ export class DiskCache implements StepCache {
   new(root: String) : #root = root;
 
   #manifestPath(step: StepKey, key: CacheKey): String {
-    return withRoot(this.#root, stateDirOf(step.value) + '/cache/' + key.value + '.json');
+    return withRoot(this.#root, `${stateDirOf(step.value)}/cache/${key.value}.json`);
   }
 
   #blobPath(step: StepKey, fp: Fingerprint): String {
-    return withRoot(this.#root, stateDirOf(step.value) + '/blobs/' + blobName(fp));
+    return withRoot(this.#root, `${stateDirOf(step.value)}/blobs/${blobName(fp)}`);
   }
 
   async get(step: StepKey, key: CacheKey): Future<OutputManifest?> {

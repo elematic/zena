@@ -17,9 +17,9 @@ export class ConfigError extends Error {
 export class ScriptRef(packageDir: String, script: String)
 
 /** The key steps derived from this script use, 'dir:script'. */
-export let refKey = (ref: ScriptRef): String => {
-  return ref.packageDir + ':' + ref.script;
-};
+export function refKey(ref: ScriptRef): String {
+  return `${ref.packageDir}:${ref.script}`;
+}
 
 /**
  * One script's configuration. For a wireit script the fields come from
@@ -78,14 +78,14 @@ export class ScriptConfig {
   );
 }
 
-let isRecognizedKey = (key: String): boolean => {
+function isRecognizedKey(key: String) {
   // Keys starting with '#' are comments by convention, like '//'.
   return key == 'command' || key == 'files' || key == 'output' ||
     key == 'dependencies' || key == 'clean' || key == 'service' ||
     key == 'packageLocks' || key == '//' || key.startsWith('#');
-};
+}
 
-let stringList = (value: JsonValue, what: String): Array<String> => {
+function stringList(value: JsonValue, what: String): Array<String> {
   if (value == null) {
     return new GrowableArray<String>();
   }
@@ -102,7 +102,7 @@ let stringList = (value: JsonValue, what: String): Array<String> => {
     return out;
   }
   throw new ConfigError(what + ' must be an array');
-};
+}
 
 /**
  * Resolves a wireit dependency string. A dependency starting with '.'
@@ -110,7 +110,7 @@ let stringList = (value: JsonValue, what: String): Array<String> => {
  * package; anything else is a script in the same package (script
  * names themselves may contain ':').
  */
-export let resolveDependency = (from: String, dep: String): ScriptRef => {
+export function resolveDependency(from: String, dep: String): ScriptRef {
   if (dep.startsWith('.')) {
     var colon = -1;
     for (var i = 0; i < dep.length; i += 1) {
@@ -133,7 +133,7 @@ export let resolveDependency = (from: String, dep: String): ScriptRef => {
     return new ScriptRef(target, dep.sliceBytes(colon + 1, dep.length));
   }
   return new ScriptRef(from, dep);
-};
+}
 
 /**
  * Reads wireit build configuration from package.json files, resolving

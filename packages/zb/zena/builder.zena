@@ -25,17 +25,17 @@ export class Plan {
   new(this.graph, this.leaves);
 }
 
-let appendSegment = (sb: StringBuilder, s: String): void => {
+function appendSegment(sb: StringBuilder, s: String) {
   sb.appendI32(s.length);
   sb.append(':');
   sb.append(s);
-};
+}
 
-let configFingerprint = (config: ScriptConfig, salt: String): Fingerprint => {
+function configFingerprint(config: ScriptConfig, salt: String) {
   let sb = new StringBuilder();
   appendSegment(sb, 'zb-config-v1');
   let command = config.command;
-  appendSegment(sb, if (command == null) '' else command);
+  appendSegment(sb, command ?? '');
   appendSegment(sb, config.clean);
   appendSegment(sb, if (config.isWireit) 'wireit' else 'bare');
   for (let glob in config.files) {
@@ -51,9 +51,9 @@ let configFingerprint = (config: ScriptConfig, salt: String): Fingerprint => {
     appendSegment(sb, 'salt:' + salt);
   }
   return new Fingerprint('sha256:' + sha256HexOfString(sb.toString()));
-};
+}
 
-let cleanOutputs = (root: String, config: ScriptConfig, ctx: RunContext): void => {
+function cleanOutputs(root: String, config: ScriptConfig, ctx: RunContext) {
   if (config.clean == 'false') {
     return;
   }
@@ -73,14 +73,14 @@ let cleanOutputs = (root: String, config: ScriptConfig, ctx: RunContext): void =
       deleteIfExists(withRoot(root, path));
     }
   }
-};
+}
 
 /**
  * The PATH prefix npm would give the script: the package's own
  * node_modules/.bin and the workspace root's, relative to the package
  * directory the command runs in.
  */
-let binPathPrefix = (packageDir: String): String => {
+function binPathPrefix(packageDir: String) {
   if (packageDir == '') {
     return 'node_modules/.bin';
   }
@@ -90,8 +90,8 @@ let binPathPrefix = (packageDir: String): String => {
       up.append('../');
     }
   }
-  return 'node_modules/.bin:' + up.toString() + 'node_modules/.bin';
-};
+  return `node_modules/.bin:${up.toString()}node_modules/.bin`;
+}
 
 /**
  * Runs one script's command and collects its outputs. The child runs
@@ -99,19 +99,18 @@ let binPathPrefix = (packageDir: String): String => {
  * PATH, like wireit through npm. Waiting is synchronous, so scripts
  * execute one at a time for now.
  */
-export let runScript = async (
+export async function runScript(
   root: String,
   config: ScriptConfig,
   ctx: RunContext,
   volatileMark: String?,
-): Future<OutputManifest> => {
+): Future<OutputManifest> {
   cleanOutputs(root, config, ctx);
   let command = config.command;
   if (command != null) {
     let cwd = withRoot(root, config.ref.packageDir);
     let wrapped =
-      'export PATH="' + binPathPrefix(config.ref.packageDir) + ':$PATH"; ' +
-      command;
+      `export PATH="${binPathPrefix(config.ref.packageDir)}:$PATH"; ${command}`;
     let result = runIn(['sh', '-c', wrapped], cwd);
     if (!result.succeeded()) {
       throw new Error(
@@ -137,7 +136,7 @@ export let runScript = async (
     ));
   }
   return new OutputManifest(outputs);
-};
+}
 
 /**
  * Turns collected script configs into a step graph and hashes every
@@ -145,11 +144,11 @@ export let runScript = async (
  * unique string; it only reaches bare (non-wireit) scripts, which
  * must never be treated as fresh.
  */
-export let planScripts = (
+export function planScripts(
   root: String,
   configs: Array<ScriptConfig>,
   salt: String,
-): Plan => {
+): Plan {
   let leaves = new HashMap<String, Fingerprint>();
   let steps = new GrowableArray<Step>();
   for (let config in configs) {
@@ -180,4 +179,4 @@ export let planScripts = (
     ));
   }
   return new Plan(new Graph(steps), leaves);
-};
+}

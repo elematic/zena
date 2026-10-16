@@ -24,11 +24,11 @@ import {ScriptRef, WireitWorkspace, refKey} from './wireit-config.zena';
 // .wireit/, so its location does not depend on the invocation
 // directory.
 
-let packageStatePath = (root: String, stateDir: String): String => {
+function packageStatePath(root: String, stateDir: String) {
   return withRoot(root, stateDir + '/state.json');
-};
+}
 
-let loadState = (root: String, stateDirs: Array<String>): EngineState => {
+function loadState(root: String, stateDirs: Array<String>) {
   let state = new EngineState();
   for (let stateDir in stateDirs) {
     let path = packageStatePath(root, stateDir);
@@ -40,14 +40,14 @@ let loadState = (root: String, stateDirs: Array<String>): EngineState => {
     });
   }
   return state;
-};
+}
 
 /**
  * Writes each package's records back, merged over what its state file
  * already holds — a run of one target must not drop a package's
  * records for scripts outside the run's closure.
  */
-let saveState = (root: String, result: RunResult): void => {
+function saveState(root: String, result: RunResult) {
   let byDir = new HashMap<String, EngineState>();
   let dirs = new GrowableArray<String>();
   result.state.forEach((key, record) => {
@@ -71,10 +71,10 @@ let saveState = (root: String, result: RunResult): void => {
       writeFileSync(path, stateToJson(packageState));
     }
   }
-};
+}
 
 /** How one step of a finished build went, as `reportBuild` prints it. */
-let describeStep = (result: RunResult, key: String): String => {
+function describeStep(result: RunResult, key: String) {
   let outcome = result.outcomeOf(new StepKey(key));
   if (outcome is Succeeded) {
     if (outcome.source == StepSource.Fresh) {
@@ -89,20 +89,20 @@ let describeStep = (result: RunResult, key: String): String => {
     return 'FAILED: ' + outcome.error.message;
   }
   if (outcome is Skipped) {
-    return 'skipped (' + outcome.reason + ')';
+    return `skipped (${outcome.reason})`;
   }
   return 'unknown';
-};
+}
 
 /**
  * Prints each step of a finished build and whether the build succeeded,
  * and returns the exit status: 0 when every step succeeded, 1 otherwise.
  * `zb` and `zena build <target>` both report this way.
  */
-export let reportBuild = (outcome: BuildOutcome): i32 => {
+export function reportBuild(outcome: BuildOutcome): i32 {
   let result = outcome.result;
   for (let key in outcome.stepKeys) {
-    console.log(key + ': ' + describeStep(result, key));
+    console.log(`${key}: ${describeStep(result, key)}`);
   }
   if (!result.allSucceeded) {
     console.log('build failed');
@@ -110,7 +110,7 @@ export let reportBuild = (outcome: BuildOutcome): i32 => {
   }
   console.log('build succeeded');
   return 0;
-};
+}
 
 /** A finished build: the engine result plus the step keys it ran. */
 export class BuildOutcome {
@@ -125,9 +125,9 @@ export class BuildOutcome {
  * config and prior state, snapshot inputs, run the engine with the
  * local disk cache, persist the new state.
  */
-export let buildTarget = (root: String, entry: ScriptRef): BuildOutcome => {
+export function buildTarget(root: String, entry: ScriptRef): BuildOutcome {
   let workspace = new WireitWorkspace(
-    (path: String): String? => readFileOrNull(withRoot(root, path)),
+    (path: String) => readFileOrNull(withRoot(root, path)),
   );
   let configs = workspace.collect([entry]);
   let plan = planScripts(root, configs, i64ToString(monotonic() as i64));
@@ -150,4 +150,4 @@ export let buildTarget = (root: String, entry: ScriptRef): BuildOutcome => {
     stepKeys.push(refKey(config.ref));
   }
   return new BuildOutcome(result, stepKeys);
-};
+}
