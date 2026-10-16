@@ -4,7 +4,7 @@
 // Converts a Doc IR into a formatted string, handling line breaking,
 // indentation, and group flattening.
 
-import { StringBuilder } from 'zena:core';
+import { StringBuilder, growable } from 'zena:core';
 import {
   Doc,
   DocKind,
@@ -112,7 +112,7 @@ class PropagateEntry {
   new(doc: Doc, isExit: boolean) : doc = doc, isExit = isExit;
 }
 
-let propagateBreaks = (doc: Doc): void => {
+function propagateBreaks(doc: Doc) {
   let stack = new Array<PropagateEntry>();
   let groupStack = new Array<GroupDoc>();
 
@@ -182,7 +182,7 @@ let propagateBreaks = (doc: Doc): void => {
       // Leaf nodes (Text, Line, Softline, etc.): no children
     }
   }
-};
+}
 
 // ============================================================================
 // fits — check if doc fits within remaining width without breaking
@@ -195,13 +195,13 @@ let propagateBreaks = (doc: Doc): void => {
 // a lineSuffixBoundary, the line doesn't fit (suffix content may overflow).
 // ============================================================================
 
-let fits = (
+function fits(
   cmds: GrowableArray<PrintCommand>,
   restCmds: GrowableArray<PrintCommand>,
   groupBreaks: GroupBreakMap,
   hasLineSuffix: boolean,
   width: i32
-): boolean => {
+): boolean {
   var remaining = width;
   var restIdx = restCmds.length;
   var hasSuffix = hasLineSuffix;
@@ -292,7 +292,7 @@ let fits = (
   }
 
   return false;
-};
+}
 
 // ============================================================================
 // printDocToString — the main algorithm
@@ -310,16 +310,16 @@ let fits = (
  * bytes a `text` contributed, so trailing spaces written inside a template
  * literal survive.
  */
-let flushIndent = (out: StringBuilder, pending: i32): i32 => {
+function flushIndent(out: StringBuilder, pending: i32): i32 {
   var remaining = pending;
   while (remaining > 0) {
     out.append(' ');
     remaining -= 1;
   }
   return 0;
-};
+}
 
-export let printDocToString = (doc: Doc, options: PrintOptions): String => {
+export function printDocToString(doc: Doc, options: PrintOptions): String {
   propagateBreaks(doc);
   let out = new StringBuilder();
   let cmds = new Array<PrintCommand>();
@@ -328,9 +328,9 @@ export let printDocToString = (doc: Doc, options: PrintOptions): String => {
 
   cmds.push(new PrintCommand(0, Mode.Break, doc));
 
-  var pos: i32 = 0; // current column position
+  var pos = 0; // current column position
   // Indentation owed to the current line, written once it has content.
-  var pendingIndent: i32 = 0;
+  var pendingIndent = 0;
 
   while (cmds.length > 0) {
     let cmd = cmds.pop();
@@ -362,8 +362,9 @@ export let printDocToString = (doc: Doc, options: PrintOptions): String => {
         cmds.push(new PrintCommand(indentLevel, Mode.Break, gd.contents));
       } else {
         // Try flat: build a temporary stack and check fits
-        let fitsCmds = new Array<PrintCommand>();
-        fitsCmds.push(new PrintCommand(indentLevel, Mode.Flat, gd.contents));
+        let fitsCmds = growable<PrintCommand>([
+          new PrintCommand(indentLevel, Mode.Flat, gd.contents),
+        ]);
         let hasSuffix = lineSuffixes.length > 0;
 
         if (fits(fitsCmds, cmds, groupBreaks, hasSuffix, options.printWidth - pos)) {
@@ -394,12 +395,11 @@ export let printDocToString = (doc: Doc, options: PrintOptions): String => {
 
     } else if (d.kind == DocKind.IfBreak) {
       let ib = d as IfBreakDoc;
-      var broken: boolean = false;
-      if (ib.groupId > 0) {
-        broken = groupBreaks.get(ib.groupId);
+      let broken = if (ib.groupId > 0) {
+        groupBreaks.get(ib.groupId)
       } else {
-        broken = mode == Mode.Break;
-      }
+        mode == Mode.Break
+      };
       if (broken) {
         cmds.push(new PrintCommand(indentLevel, mode, ib.breakContents));
       } else {
@@ -433,8 +433,9 @@ export let printDocToString = (doc: Doc, options: PrintOptions): String => {
           cmds.push(new PrintCommand(indentLevel, Mode.Flat, content));
         } else {
           // Greedy: check if content fits flat
-          let contentFitsCmds = new Array<PrintCommand>();
-          contentFitsCmds.push(new PrintCommand(indentLevel, Mode.Flat, content));
+          let contentFitsCmds = growable<PrintCommand>([
+            new PrintCommand(indentLevel, Mode.Flat, content),
+          ]);
           let emptyRest = new Array<PrintCommand>();
           let contentFits = fits(contentFitsCmds, emptyRest, groupBreaks, false, options.printWidth - pos);
 
@@ -579,17 +580,14 @@ export let printDocToString = (doc: Doc, options: PrintOptions): String => {
   }
 
   // Flush remaining line suffixes
-  var i = 0;
-  while (i < lineSuffixes.length) {
-    let cmd = lineSuffixes[i];
+  for (let cmd in lineSuffixes) {
     let d = cmd.doc;
     if (d.kind == DocKind.Text) {
       let td = d as TextDoc;
       pendingIndent = flushIndent(out, pendingIndent);
       out.append(td.value);
     }
-    i += 1;
   }
 
   return out.toString();
-};
+}
