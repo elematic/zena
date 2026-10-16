@@ -14,18 +14,18 @@ import { ProcessResult, runWith } from 'zena:process';
 import { MessageReader, frame } from '../lib/framing.zena';
 
 /** Runs `zena-cli lsp` on a whole session's input. */
-let session = (messages: Array<String>): ProcessResult => {
+function session(messages: Array<String>) {
   var input = '';
   for (let message in messages) {
     input = input + frame(message);
   }
   return runWith(['./target/release/zena-cli', 'lsp'], {cwd: '.', input: input});
-};
+}
 
 /** The messages in a process's output, which must hold nothing else. */
-let messagesIn = (output: String): Array<JsonObject> => {
+function messagesIn(output: String): Array<JsonObject> {
   var consumed = false;
-  let reader = new MessageReader((): String => {
+  let reader = new MessageReader(() => {
     if (consumed) {
       return '';
     }
@@ -41,10 +41,10 @@ let messagesIn = (output: String): Array<JsonObject> => {
     messages.push(parseJson(body) as JsonObject);
   }
   return messages;
-};
+}
 
 /** The reply to request `id`, or an empty object if there is none. */
-let replyTo = (messages: Array<JsonObject>, id: i32): JsonObject => {
+function replyTo(messages: Array<JsonObject>, id: i32) {
   for (let message in messages) {
     if (let (true, found) = message.intAt('id')) {
       if (found == id) {
@@ -53,7 +53,7 @@ let replyTo = (messages: Array<JsonObject>, id: i32): JsonObject => {
     }
   }
   return new JsonObject();
-};
+}
 
 let uri = 'file:///nowhere/main.zena';
 
@@ -72,15 +72,15 @@ let text = [
 ];
 
 /** Lines joined as the inside of a JSON string, each ending in an escaped newline. */
-let joined = (lines: Array<String>): String => {
+function joined(lines: Array<String>) {
   var out = '';
   for (let line in lines) {
     out = `${out}${line}\\n`;
   }
   return out;
-};
+}
 
-export let tests = suite('zena lsp', (): void => {
+export let tests = suite('zena lsp', () => {
   test('answers a session and exits with status 0', () => {
     // The start of `addOne` in `addOne(41)`: UTF-16 character 27, byte
     // 28, since 'é' is one unit and two bytes. Read as a byte offset,
