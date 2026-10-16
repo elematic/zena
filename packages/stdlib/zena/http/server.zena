@@ -14,6 +14,7 @@ import { Request } from './request.zena';
 import { Response } from './response.zena';
 import { Disposable, Option, Some } from 'zena:core';
 import { Completer } from 'zena:async';
+import { Stream } from 'zena:stream';
 
 function unit(): void {}
 
@@ -56,10 +57,17 @@ function completeTextResponse(
 
 type RequestTuple = (WireRequest, ResponseWriter);
 
+function createHostServer(port: u16): HostServer {
+  match (HostServer.create(port)) {
+    case (true, let srv, _): { return srv; }
+    case (false, _, let why): { throw new Error(why); }
+  }
+}
+
 /**
  * A running HTTP server instance.
  */
-export class Server {
+export class Server implements Disposable {
   #hostServer: HostServer;
   #app: App;
   var #closed: boolean = false;
@@ -68,7 +76,7 @@ export class Server {
   var #doneCompleter: Completer<void> = new Completer<void>();
 
   new(app: App, port: u16)
-    : #hostServer = HostServer.create(port),
+    : #hostServer = createHostServer(port),
       #app = app;
 
   /**
@@ -119,36 +127,40 @@ export class Server {
     }
   }
 
+  [Disposable.dispose](): void {
+    this.close();
+  }
+
   /**
    * Runs the server accept loop.
    */
   async start(): Future<void> {
     if (this.#running) return;
     this.#running = true;
-    let stream = this.#hostServer.listen();
-    if (!this.#closed) {
-      let firstOpt = await stream.readOne();
-      if (firstOpt is Some<RequestTuple>) {
-        let first = (firstOpt as Some<RequestTuple>).value;
-        let (firstReq, firstWriter) = first;
-        this.#dispatch(firstReq, firstWriter);
-        let batch = new Array<RequestTuple>.fixed(64, first);
-        while (!this.#closed) {
-          let n = await stream.read(batch);
-          if (n == 0) {
-            break;
-          }
-          var i = 0;
-          while (i < n) {
-            let (wireReq, writer) = batch[i];
-            this.#dispatch(wireReq, writer);
-            i += 1;
-          }
+    // `listen()` spawns a background WASI stream pump coroutine (`pumpStreamIn`).
+    // Running `listen()` inside `shielded` binds that pump to the uncancellable
+    // root scope so cancelling the server's scope doesn't abort the pump while
+    // a host `stream.read` is still in flight; instead, `finally` below stops
+    // the stream and closes the host server so the pump exits and drops its
+    // WASI stream handle cleanly.
+    var stream: Stream<RequestTuple> | null = null;
+    shielded {
+      stream = this.#hostServer.listen();
+    }
+    try {
+      while (!this.#closed) {
+        let opt = await stream.readOne();
+        if (opt is Some<RequestTuple>) {
+          let (wireReq, writer) = opt.value;
+          this.#dispatch(wireReq, writer);
+        } else {
+          break;
         }
       }
+    } finally {
+      stream.stop();
+      this.close();
     }
-    this.#isDone = true;
-    this.#doneCompleter.tryComplete(unit());
   }
 
   async #dispatch(wireReq: WireRequest, writer: ResponseWriter): Future<void> {

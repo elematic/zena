@@ -1,6 +1,6 @@
 import { suite, test, TestContext } from 'zena:test';
 import { equal, isTrue } from 'zena:assert';
-import { runFuture, Completer } from 'zena:async';
+import { runFuture, Completer, TaskGroup, drainMicrotasks } from 'zena:async';
 import { Some, None, Option, none, Outcome, Ok } from 'zena:core';
 import {
   App, AppOptions, Request, Response, Router, Server,
@@ -235,18 +235,79 @@ export let tests = suite('zena:http', (): void => {
     isTrue(server.isDone, 'server should be done after close()');
   });
 
-  test('App.listen starts server and returns immediately', (ctx: TestContext): void => {
-    let app = new App();
-    var listeningCalled = false;
-    let server = app.listen(0 as u16, (): void => {
-      listeningCalled = true;
-    });
-    isTrue(listeningCalled, 'onListening callback should be invoked');
-    isTrue(server.isOpen, 'server should be open immediately');
-    isTrue(server.port > 0 as u16, 'server should bind to an ephemeral port > 0');
-    server.close();
-    isTrue(!server.isOpen, 'server should be closed');
-    isTrue(server.isDone, 'server should be done after close()');
+  test('App.listen starts server and resolves to Server', (ctx: TestContext): void => {
+    runFuture((async (): Future<void> => {
+      let app = new App();
+      let server = await app.listen(0 as u16);
+      isTrue(server.isOpen, 'server should be open');
+      isTrue(server.port > 0 as u16, 'server should bind to an ephemeral port > 0');
+      server.close();
+      isTrue(!server.isOpen, 'server should be closed');
+      isTrue(server.isDone, 'server should be done after close()');
+    })());
+  });
+
+  test('App.listen rejects when port is already in use', (ctx: TestContext): void => {
+    runFuture((async (): Future<void> => {
+      let app1 = new App();
+      let server1 = await app1.listen(0 as u16);
+      let port = server1.port;
+
+      let app2 = new App();
+      var rejected = false;
+      var errMsg = '';
+      try {
+        let server2 = await app2.listen(port);
+        server2.close();
+      } catch (e) {
+        rejected = true;
+        errMsg = e.message;
+      }
+      server1.close();
+      isTrue(rejected, 'second listen on the same port should reject');
+      isTrue(errMsg.contains('failed to bind'), `expected bind failure message, got: ${errMsg}`);
+    })());
+  });
+
+  test('App.listen closes server when enclosing TaskGroup is cancelled', (ctx: TestContext): void => {
+    runFuture((async (): Future<void> => {
+      let app = new App();
+      let group = new TaskGroup();
+      var started: Server | null = null;
+      group.spawn(async (): Future<void> => {
+        let s = await app.listen(0 as u16);
+        started = s;
+        await s.done;
+      });
+      drainMicrotasks();
+      isTrue(started != null, 'server should have started before cancel');
+      let server = started as Server;
+      isTrue(server.isOpen, 'server should be open while group is active');
+
+      let boundPort = server.port;
+
+      group.cancel();
+      await group.join();
+      isTrue(!server.isOpen, 'server should be closed after group.cancel()');
+      isTrue(server.isDone, 'server should be done after group.cancel()');
+
+      // Verify the port was released by binding a new server to the same port
+      let rebound = await app.listen(boundPort);
+      equal(rebound.port, boundPort);
+      rebound.close();
+
+      // Calling listen() in an already-cancelled TaskGroup should not bind
+      let preCancelled = new TaskGroup();
+      preCancelled.cancel();
+      var ranAfterListen = false;
+      preCancelled.spawn(async (): Future<void> => {
+        let s = await app.listen(0 as u16);
+        ranAfterListen = true;
+        s.close();
+      });
+      await preCancelled.join();
+      isTrue(!ranAfterListen, 'listen in an already-cancelled scope should unwind at checkpoint');
+    })());
   });
 
   test('fromWireRequest correctly parses method and consumes body without error', (ctx: TestContext): void => {
