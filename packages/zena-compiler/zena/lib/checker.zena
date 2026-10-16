@@ -116,7 +116,7 @@ import {
   isScopedType, scopedInner,
   isSecondClass, typeContainsSecondClass, typeContainsScoped,
   typeContainsConcreteSecondClass, borrowInnerRestricts
-, ErasedType, FunctionDeclInfo, internFunctionType } from './types.zena';
+, ErasedType, FunctionDeclInfo, internFunctionType, mergeRow } from './types.zena';
 import { SemanticModel, ModelIndex, InterfaceAdaptation, SymbolDependencies, ClosureDependency, FunctionAdaptationDependency, EdgeDrop, DeferredBodies } from './semantic-model.zena';
 import {
   Diagnostic, DiagnosticBag, DiagnosticCode, DiagnosticSeverity
@@ -252,6 +252,14 @@ export final class SharedCheckerState {
    * declaredNominalTypes.
    */
   typeParameterTypes = new Map<String, Type>();
+
+  /**
+   * The declaration of each row parameter (`R extends record`), by the
+   * canonical TypeParameterType's uid. Whether a record type spreading R
+   * is in its declaration's signature or in a body is a question about
+   * where it sits relative to this node (`isInRowSignature`).
+   */
+  rowParameterDeclarations = new Map<i32, TypeParameter>();
 
   /**
    * The canonical `SymbolType` per `symbol` declaration, keyed by
@@ -1223,7 +1231,7 @@ final class CheckerContext {
           // A bound names a class, not a value, so a resource class is
           // spellable here for the same reason it is in an extends clause.
           this.resourceMentionOk = true;
-          constraint = resolveTypeAnnotation(this, tp.constraint as TypeAnnotation, false);
+          constraint = resolveBound(this, tp.constraint as TypeAnnotation);
           this.resourceMentionOk = false;
         }
         let tpType = this.getOrCreateTypeParameter(tp, constraint, null);
@@ -1334,6 +1342,14 @@ final class CheckerContext {
     }
   }
 
+  /** The declaration of the row parameter `tp`, or null if it is not one. */
+  rowParameterDeclaration(tp: TypeParameterType): TypeParameter | null {
+    if (let (true, decl) = this.#sharedState.rowParameterDeclarations.get(tp.uid)) {
+      return decl;
+    }
+    return null;
+  }
+
   /**
    * The ONE TypeParameterType for a declared type parameter.
    * Substitution matches parameters by object identity, so every
@@ -1373,6 +1389,10 @@ final class CheckerContext {
       // The canonical object may have been created from a mention that
       // did not carry the modifier; the declaration's spelling wins.
       result.isScoped = true;
+    }
+    if (isRecordRowBound(tp.constraint)) {
+      result.isRecordRow = true;
+      this.#sharedState.rowParameterDeclarations[result.uid] = tp;
     }
     // A resolution can reach the parameter before the declaring pass has
     // resolved its constraint/default annotations (creating the canonical
@@ -1834,8 +1854,7 @@ final class CheckerContext {
             if (constraint != null) {
               // See the matching flag in the type-parameter loop above.
               this.resourceMentionOk = true;
-              tempTypeParams[i].constraint =
-                resolveTypeAnnotation(this, constraint, false);
+              tempTypeParams[i].constraint = resolveBound(this, constraint);
               this.resourceMentionOk = false;
             }
             let {defaultType} = param;
@@ -5431,6 +5450,118 @@ let memberConsumesReceiver = (objectType: Type, propName: String): boolean => {
   return member.consumesReceiver();
 };
 
+/**
+ * Whether a type parameter's bound is `record`, a contextual keyword in
+ * bound position (docs/design/row-types.md, Decisions: Syntax).
+ */
+let isRecordRowBound = (ann: TypeAnnotation | null): boolean => {
+  if (ann is NamedTypeAnnotation) {
+    return ann.name == "record" && ann.typeArguments == null;
+  }
+  return false;
+};
+
+/**
+ * A type parameter's bound as a constraint type, or null for `record`,
+ * which is no type: the parameter is a row (`isRecordRow`) instead.
+ */
+let resolveBound = (ctx: CheckerContext, ann: TypeAnnotation): Type | null => {
+  if (isRecordRowBound(ann)) {
+    return null;
+  }
+  return resolveTypeAnnotation(ctx, ann, false);
+};
+
+let reportRepeatedRecordField = (ctx: CheckerContext, name: String, loc: SourceLocation | null): void => {
+  ctx.error(`Record type declares field '${name}' more than once.`, DiagnosticCode.DuplicateField, loc);
+};
+
+let reportTwoRows = (ctx: CheckerContext, loc: SourceLocation | null): void => {
+  ctx.error("A record type can spread at most one row type parameter.",
+      DiagnosticCode.TypeMismatch, loc);
+};
+
+let reportNotSpreadable = (ctx: CheckerContext, t: Type, loc: SourceLocation | null): void => {
+  ctx.error(`Cannot spread '${typeToString(t)}' into a record type: only a record type or a type parameter declared 'extends record' can be spread.`,
+      DiagnosticCode.TypeMismatch, loc);
+};
+
+/**
+ * Records the fields a record type names beside `...row`. In the
+ * signature of the declaration that introduces the row parameter they
+ * are fields the row must lack, which instantiation checks
+ * (`checkRecordRowArgument`). Anywhere else, in a body, the caller has
+ * already chosen the row, so only fields it is known to lack can be
+ * named.
+ */
+let noteFieldsBesideRow = (
+  ctx: CheckerContext,
+  row: TypeParameterType,
+  fields: HashMap<String, Type>,
+  ann: Node
+): void => {
+  let decl = ctx.rowParameterDeclaration(row);
+  if (decl == null || isInRowSignature(ctx, ann, decl)) {
+    var lacks = row.rowLacks;
+    if (lacks == null) {
+      let created = new Set<String>();
+      row.rowLacks = created;
+      lacks = created;
+    }
+    for (let key in fields.keys()) {
+      lacks.add(key);
+    }
+    return;
+  }
+  let lacks = row.rowLacks;
+  for (let key in fields.keys()) {
+    if (lacks == null || !lacks.has(key)) {
+      ctx.error(`'${row.name}' may have a field '${key}'. Only the fields declared beside '...${row.name}' in its declaration's signature are known to be missing from it.`,
+          DiagnosticCode.TypeMismatch, ann.loc);
+      return;
+    }
+  }
+};
+
+/**
+ * Whether `node` is in the signature of the declaration that owns the
+ * type parameter `decl`, rather than in a body inside it: walking up from
+ * `node` reaches the owner without leaving a function body or a field
+ * initializer.
+ */
+let isInRowSignature = (ctx: CheckerContext, node: Node, decl: TypeParameter): boolean => {
+  let owner = ctx.model.getParent(decl);
+  if (owner == null) {
+    return true;
+  }
+  var child: Node = node;
+  var parent = ctx.model.getParent(node);
+  while (parent != null) {
+    let p = parent as Node;
+    if (isBodyOf(p, child)) {
+      return false;
+    }
+    if (p === owner) {
+      return true;
+    }
+    child = p;
+    parent = ctx.model.getParent(p);
+  }
+  return true;
+};
+
+/** Whether `child` is the body of `parent`: code rather than a signature. */
+let isBodyOf = (parent: Node, child: Node): boolean => {
+  return match (parent) {
+    case FunctionExpression {body}: body === child
+    case MethodDefinition {body}: body != null && body === child
+    case FieldDefinition {value}: value != null && value === child
+    case AccessorDeclaration {getter, setter}:
+        (getter != null && getter === child) || (setter != null && setter === child)
+    case _: false
+  };
+};
+
 let resolveTypeAnnotation = (ctx: CheckerContext, ann: TypeAnnotation, allowInlineTuple: boolean = false): Type => {
   let t = resolveTypeAnnotationInner(ctx, ann, allowInlineTuple);
   if (!allowInlineTuple) {
@@ -5534,14 +5665,14 @@ let resolveTypeAnnotationInner = (ctx: CheckerContext, ann: TypeAnnotation, allo
       case ClassType as ct: {
         let {typeParameters} = ct;
         if (typeParameters != null) {
-          applyAndCheckTypeArguments(ctx, typeParameters, resolvedArgs, ann.loc);
+          applyAndCheckTypeArguments(ctx, typeParameters, resolvedArgs, ann.loc, ann);
           return instantiateClassType(ct, resolvedArgs);
         }
       }
       case MixinType as mt: {
         let {typeParameters} = mt;
         if (typeParameters != null) {
-          applyAndCheckTypeArguments(ctx, typeParameters, resolvedArgs, ann.loc);
+          applyAndCheckTypeArguments(ctx, typeParameters, resolvedArgs, ann.loc, ann);
           let inst = instantiateMixinType(mt, resolvedArgs);
           let {onType} = mt;
           if (onType != null) {
@@ -5553,14 +5684,14 @@ let resolveTypeAnnotationInner = (ctx: CheckerContext, ann: TypeAnnotation, allo
       case InterfaceType as it: {
         let {typeParameters} = it;
         if (typeParameters != null) {
-          applyAndCheckTypeArguments(ctx, typeParameters, resolvedArgs, ann.loc);
+          applyAndCheckTypeArguments(ctx, typeParameters, resolvedArgs, ann.loc, ann);
           return instantiateInterfaceType(it, resolvedArgs);
         }
       }
       case TypeAliasType as tat: {
         let {typeParameters} = tat;
         if (typeParameters != null) {
-          applyAndCheckTypeArguments(ctx, typeParameters, resolvedArgs, ann.loc);
+          applyAndCheckTypeArguments(ctx, typeParameters, resolvedArgs, ann.loc, ann);
           if (tat.intrinsicName != null) {
             // A builtin type operator: closed arguments normalize to
             // the rule's result here and now; open ones stay a
@@ -5722,20 +5853,68 @@ let resolveTypeAnnotationInner = (ctx: CheckerContext, ann: TypeAnnotation, allo
       case _: new ErrorType()
     }
   }
-  case RecordTypeAnnotation {properties}: {
+  case RecordTypeAnnotation {properties, spreads}: {
     let props = new Map<String, Type>();
     var optionals: HashSet<String> | null = null;
     for (let prop in properties) {
       let resolved = resolveTypeAnnotation(ctx, prop.typeAnnotation, allowInlineTuple);
       rejectSecondClassStorage(ctx, resolved, "a record field", prop.typeAnnotation.loc);
       rejectAffineStructuralMember(ctx, resolved, "a record member", prop.typeAnnotation.loc);
-            props[prop.name.name] = resolved;
+      if (props.has(prop.name.name)) {
+        reportRepeatedRecordField(ctx, prop.name.name, prop.loc);
+      }
+      props[prop.name.name] = resolved;
       if (prop.optional) {
         optionals ??= new Set<String>();
         optionals.add(prop.name.name);
       }
     }
-    new RecordT(props, optionals)
+    var row: TypeParameterType | null = null;
+    if (spreads != null) {
+      for (let spread in spreads) {
+        let spreadType = resolveTypeAnnotation(ctx, spread, allowInlineTuple);
+        match (baseType(spreadType)) {
+          case RecordT as rec: {
+            // A record type's fields merge in, and its row with them.
+            for (let key in rec.properties.keys()) {
+              if (props.has(key)) {
+                reportRepeatedRecordField(ctx, key, spread.loc);
+              }
+              props[key] = rec.properties[key];
+              if (rec.isOptional(key)) {
+                optionals ??= new Set<String>();
+                optionals.add(key);
+              }
+            }
+            let recRow = rec.row;
+            if (recRow != null) {
+              if (row != null) {
+                reportTwoRows(ctx, spread.loc);
+              }
+              row = recRow;
+            }
+          }
+          case TypeParameterType as tp: {
+            if (!tp.isRecordRow) {
+              reportNotSpreadable(ctx, spreadType, spread.loc);
+            } else {
+              if (row != null) {
+                reportTwoRows(ctx, spread.loc);
+              }
+              row = tp;
+            }
+          }
+          case ErrorType: {}
+          case _: {
+            reportNotSpreadable(ctx, spreadType, spread.loc);
+          }
+        }
+      }
+    }
+    if (row != null) {
+      noteFieldsBesideRow(ctx, row, props, ann);
+    }
+    new RecordT(props, optionals, row)
   }
   case TupleTypeAnnotation {elementTypes}: {
     let elTypes = new Array<Type>();
@@ -6302,12 +6481,16 @@ let substituteTypeParams = (
       }
       return new InlineTupleT(subElems);
     }
-    case RecordT {properties, optionalProperties}: {
+    case RecordT {properties, optionalProperties, row}: {
       let subProps = new Map<String, Type>();
       for (let {key} in properties) {
         subProps[key] = substituteTypeParams(typeParams, typeArgs, properties[key]);
       }
-      return new RecordT(subProps, optionalProperties);
+      if (row != null) {
+        return mergeRow(subProps, optionalProperties,
+            substituteTypeParams(typeParams, typeArgs, row));
+      }
+      return new RecordT(subProps, optionalProperties, null);
     }
     case FunctionType as ft: {
       let subParams = new Array<Type>();
@@ -6526,9 +6709,89 @@ let substituteThisType = (receiverType: Type, t: Type): Type => {
  */
 let anyTypeParamConstrained = (typeParams: Array<TypeParameterType>): boolean => {
   for (let p in typeParams) {
-    if (p.constraint != null) { return true; }
+    if (p.constraint != null || p.isRecordRow) { return true; }
   }
   return false;
+};
+
+/**
+ * Checks the argument of a row parameter `R extends record`: a record
+ * type, or another row parameter, with none of the fields written beside
+ * `...R` (`rowLacks`). For a row parameter argument that means it lacks
+ * them too.
+ */
+let checkRecordRowArgument = (
+  ctx: CheckerContext,
+  param: TypeParameterType,
+  arg: Type,
+  loc: SourceLocation | null,
+  site: Node | null
+): void => {
+  if (arg is ErrorType) {
+    return;
+  }
+  var named: HashMap<String, Type> | null = null;
+  var argRow: TypeParameterType | null = null;
+  match (arg) {
+    case RecordT as rec: {
+      named = rec.properties;
+      argRow = rec.row;
+    }
+    case TypeParameterType as tp: {
+      if (!tp.isRecordRow) {
+        reportRowConstraint(ctx, param, arg, loc);
+        return;
+      }
+      argRow = tp;
+    }
+    case _: {
+      reportRowConstraint(ctx, param, arg, loc);
+      return;
+    }
+  }
+  let lacks = param.rowLacks;
+  if (lacks == null) {
+    return;
+  }
+  for (let field in lacks) {
+    if (named != null && named.has(field)) {
+      ctx.error(`'${param.name}' cannot be '${typeToString(arg)}': it has field '${field}', which is declared beside '...${param.name}'.`,
+          DiagnosticCode.TypeMismatch, loc);
+      return;
+    }
+    // The argument's own row could still have the field, unless it is
+    // known to lack it. In that row's own signature (`{label: String,
+    // ...R}` written as `Labeled<R>`), the instantiation says it does.
+    if (argRow != null) {
+      let argLacks = argRow.rowLacks;
+      if (argLacks == null || !argLacks.has(field)) {
+        let decl = ctx.rowParameterDeclaration(argRow);
+        if (site != null && (decl == null || isInRowSignature(ctx, site, decl))) {
+          var lacksOfArg = argRow.rowLacks;
+          if (lacksOfArg == null) {
+            let created = new Set<String>();
+            argRow.rowLacks = created;
+            lacksOfArg = created;
+          }
+          lacksOfArg.add(field);
+        } else {
+          ctx.error(`'${param.name}' cannot be '${typeToString(arg)}': it may have field '${field}', which is declared beside '...${param.name}'.`,
+              DiagnosticCode.TypeMismatch, loc);
+          return;
+        }
+      }
+    }
+  }
+};
+
+let reportRowConstraint = (
+  ctx: CheckerContext,
+  param: TypeParameterType,
+  arg: Type,
+  loc: SourceLocation | null
+): void => {
+  ctx.error("Type '" + typeToString(arg) + "' does not satisfy constraint 'record' for type parameter '" +
+      param.name + "'.", DiagnosticCode.TypeMismatch, loc);
 };
 
 /**
@@ -6539,7 +6802,9 @@ let applyAndCheckTypeArguments = (
   ctx: CheckerContext,
   typeParams: Array<TypeParameterType>,
   typeArgs: GrowableArray<Type>,
-  loc: SourceLocation | null
+  loc: SourceLocation | null,
+  /** The type annotation that instantiates, or null for a call. */
+  site: Node | null = null
 ): void => {
   // Apply defaults if type arguments are missing
   for (var i = typeArgs.length; i < typeParams.length; i += 1) {
@@ -6575,6 +6840,9 @@ let applyAndCheckTypeArguments = (
   // Check constraints
   for (var j = 0; j < typeParams.length && j < typeArgs.length; j += 1) {
     let param = typeParams[j];
+    if (param.isRecordRow) {
+      checkRecordRowArgument(ctx, param, typeArgs[j], loc, site);
+    }
     if (param.constraint != null) {
       let expectedConstraint = substituteTypeParams(typeParams, typeArgs, param.constraint as Type);
 
@@ -6765,7 +7033,8 @@ let mentionsTypeParams = (t: Type, params: Array<TypeParameterType>): boolean =>
     case ArrayType {elementType}: mentionsTypeParams(elementType, params)
     case TupleT {elementTypes}: anyOf(elementTypes)
     case InlineTupleT {elementTypes}: anyOf(elementTypes)
-    case RecordT {properties}: {
+    case RecordT {properties, row}: {
+      if (row != null && mentionsTypeParams(row, params)) { return true; }
       for (let {key} in properties) {
         if (mentionsTypeParams(properties[key], params)) { return true; }
       }
@@ -7078,6 +7347,50 @@ let inferTypeArg = (paramType: Type, argType: Type, inferred: HashMap<String, Ty
               inferTypeArg(ptArgs[i], atArgs[i], inferred);
               i += 1;
             }
+          }
+        }
+        case _: {}
+      }
+    }
+    case RecordT as pt: {
+      // {x: T, ...R} against {x: i32, y: f64} → infer T = i32 and
+      // R = {y: f64}: the row is the argument's other fields, and its own
+      // row if it has one. A named field the argument lacks binds
+      // nothing; the argument check reports it.
+      match (argType) {
+        case RecordT as at: {
+          for (let key in pt.properties.keys()) {
+            if (let (true, argField) = at.properties.get(key)) {
+              inferTypeArg(pt.properties[key], argField, inferred);
+            }
+          }
+          let row = pt.row;
+          if (row != null && !inferred.has(row.name)) {
+            let rest = new Map<String, Type>();
+            var restOptionals: HashSet<String> | null = null;
+            for (let key in at.properties.keys()) {
+              if (!pt.properties.has(key)) {
+                rest[key] = at.properties[key];
+                if (at.isOptional(key)) {
+                  restOptionals ??= new Set<String>();
+                  restOptionals.add(key);
+                }
+              }
+            }
+            let atRow = at.row;
+            inferred[row.name] = if (rest.size == 0 && atRow != null) {
+              atRow
+            } else {
+              new RecordT(rest, restOptionals, atRow)
+            };
+          }
+        }
+        case TypeParameterType as at: {
+          // {...R} against a row parameter S → R = S.
+          let row = pt.row;
+          if (row != null && pt.properties.size == 0 && at.isRecordRow &&
+              !inferred.has(row.name)) {
+            inferred[row.name] = at;
           }
         }
         case _: {}
@@ -7924,7 +8237,10 @@ let checkAndRegisterInterfaceAdaptation = (ctx: CheckerContext, node: Node, sour
   let nonNullSrc = subtractNullFromType(sourceType);
   let nonNullTgt = subtractNullFromType(effectiveTarget);
   if (nonNullSrc is RecordT && nonNullTgt is RecordT) {
-    var needsAdaptation = nonNullSrc.properties.size != nonNullTgt.properties.size;
+    // A row stands for fields each specialization fills in differently,
+    // so `{x: i32, ...R}` to `{x: i32}` adapts though both name only `x`.
+    var needsAdaptation = nonNullSrc.properties.size != nonNullTgt.properties.size ||
+        nonNullSrc.row !== nonNullTgt.row;
     if (!needsAdaptation) {
       let keys = nonNullSrc.properties.keys();
       for (let key in keys) {
@@ -8459,6 +8775,12 @@ let isAssignableTo = (ctx: CheckerContext, source: Type, target: Type): boolean 
     case RecordT as srcRec: {
       match (target) {
         case RecordT as tgtRec: {
+          // The fields a target's row stands for are known only to be
+          // R's, so only a source spreading the same R has them. A
+          // source's row is extra width, which a closed target drops.
+          if (tgtRec.row != null && srcRec.row !== tgtRec.row) {
+            return false;
+          }
           let srcProps = srcRec.properties;
           let tgtProps = tgtRec.properties;
           for (let key in tgtProps.keys()) {
@@ -8477,7 +8799,18 @@ let isAssignableTo = (ctx: CheckerContext, source: Type, target: Type): boolean 
           }
           return true;
         }
+        // `{...R}` is R.
+        case TypeParameterType as tgtParam: {
+          if (srcRec.row === tgtParam && srcRec.properties.size == 0) {
+            return true;
+          }
+        }
         case _: {}
+      }
+    }
+    case TypeParameterType as srcParam: {
+      if (srcParam.isRecordRow && target is RecordT) {
+        return target.row === srcParam && target.properties.size == 0;
       }
     }
     case _: {}
@@ -8749,7 +9082,7 @@ export let typesEqual = (a: Type, b: Type): boolean => {
         case RecordT as rb: {
           let pa = ra.properties;
           let pb = rb.properties;
-          if (pa.size != pb.size) { return false; }
+          if (pa.size != pb.size || ra.row !== rb.row) { return false; }
           let keys = pa.keys();
           for (let key in keys) {
             if (!pb.has(key)) { return false; }
@@ -10146,7 +10479,7 @@ case _: {
                   }
                 }
               }
-              let recordType = new RecordT(properties, null);
+              let recordType = new RecordT(properties, null, null);
               
               // Register it as a value import in the local scope.
               let localValInfo = ctx.scopeResult.symbols.getByNode(spec);
@@ -12951,7 +13284,7 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
     if (literalOptionals != null && literalOptionals.size == 0) {
       literalOptionals = null;
     }
-    let recT = new RecordT(propTypes, literalOptionals);
+    let recT = new RecordT(propTypes, literalOptionals, null);
     if (expectedType != null) {
       let baseExpected = baseType(expectedType);
       if (baseExpected is RecordT && isAssignableTo(ctx, recT, baseExpected)) {
@@ -14308,7 +14641,7 @@ let registerTypeAliasDeclaration = (ctx: CheckerContext, ta: TypeAliasDeclaratio
       let c = param.constraint;
       if (c != null) {
         ctx.resourceMentionOk = true;
-        tps[i].constraint = resolveTypeAnnotation(ctx, c, false);
+        tps[i].constraint = resolveBound(ctx, c);
         ctx.resourceMentionOk = false;
       }
       let dt = param.defaultType;
@@ -14416,7 +14749,7 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
         // A bound names a class, not a value, so a resource class is
         // spellable here — same reason as an extends clause.
         ctx.resourceMentionOk = true;
-        constraint = resolveTypeAnnotation(ctx, tp.constraint as TypeAnnotation);
+        constraint = resolveBound(ctx, tp.constraint as TypeAnnotation);
         ctx.resourceMentionOk = false;
       }
       var defaultT: Type | null = null;
@@ -16255,7 +16588,7 @@ let checkMethodSignature = (
         // A bound names a class, not a value, so a resource class is
         // spellable here — same reason as an extends clause.
         ctx.resourceMentionOk = true;
-        constraint = resolveTypeAnnotation(ctx, astParam.constraint as TypeAnnotation);
+        constraint = resolveBound(ctx, astParam.constraint as TypeAnnotation);
         ctx.resourceMentionOk = false;
       }
       var defaultT: Type | null = null;
@@ -17057,7 +17390,7 @@ let checkInterfaceDeclaration = (ctx: CheckerContext, id: InterfaceDeclaration):
         // A bound names a class, not a value, so a resource class is
         // spellable here — same reason as an extends clause.
         ctx.resourceMentionOk = true;
-        constraint = resolveTypeAnnotation(ctx, tp.constraint as TypeAnnotation);
+        constraint = resolveBound(ctx, tp.constraint as TypeAnnotation);
         ctx.resourceMentionOk = false;
       }
       let tpType = ctx.getOrCreateTypeParameter(tp, constraint, null);
@@ -17117,7 +17450,7 @@ let checkInterfaceDeclaration = (ctx: CheckerContext, id: InterfaceDeclaration):
               // A bound names a class, not a value, so a resource class is
               // spellable here — same reason as an extends clause.
               ctx.resourceMentionOk = true;
-              constraint = resolveTypeAnnotation(ctx, tp.constraint as TypeAnnotation);
+              constraint = resolveBound(ctx, tp.constraint as TypeAnnotation);
               ctx.resourceMentionOk = false;
             }
             let tpType = ctx.getOrCreateTypeParameter(tp, constraint, null);
@@ -17723,7 +18056,7 @@ let checkMixinDeclaration = (ctx: CheckerContext, md: MixinDeclaration): void =>
         // A bound names a class, not a value, so a resource class is
         // spellable here — same reason as an extends clause.
         ctx.resourceMentionOk = true;
-        constraint = resolveTypeAnnotation(ctx, tp.constraint as TypeAnnotation);
+        constraint = resolveBound(ctx, tp.constraint as TypeAnnotation);
         ctx.resourceMentionOk = false;
       }
       let tpType = ctx.getOrCreateTypeParameter(tp, constraint, null);
@@ -18165,7 +18498,7 @@ let checkDeclareFunction = (ctx: CheckerContext, df: DeclareFunction): void => {
         // A bound names a class, not a value, so a resource class is
         // spellable here — same reason as an extends clause.
         ctx.resourceMentionOk = true;
-        constraint = resolveTypeAnnotation(ctx, tp.constraint as TypeAnnotation);
+        constraint = resolveBound(ctx, tp.constraint as TypeAnnotation);
         ctx.resourceMentionOk = false;
       }
       let tpType = ctx.getOrCreateTypeParameter(tp, constraint, null);
@@ -19240,7 +19573,7 @@ let recordUnionPatternShape = (
   if (props.size == 0) { return null; }
   let optionalNames: HashSet<String> | null =
       if (optionals.size > 0) { optionals } else { null };
-  return new RecordT(props, optionalNames);
+  return new RecordT(props, optionalNames, null);
 };
 
 /**
@@ -22019,7 +22352,7 @@ let checkFunctionExpression = (
           // A bound names a class, not a value, so a resource class is
         // spellable here — same reason as an extends clause.
         ctx.resourceMentionOk = true;
-        constraint = resolveTypeAnnotation(ctx, tp.constraint as TypeAnnotation);
+        constraint = resolveBound(ctx, tp.constraint as TypeAnnotation);
         ctx.resourceMentionOk = false;
         }
         let tpType = ctx.getOrCreateTypeParameter(tp, constraint, null);

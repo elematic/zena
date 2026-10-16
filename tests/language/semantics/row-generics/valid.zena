@@ -1,0 +1,39 @@
+// @mode: check
+// Row generics (docs/design/row-types.md §3.1): spreading a concrete record
+// type, a generic alias over a row, and functions whose `{x: i32, ...R}`
+// parameter keeps the caller's other fields in the result type.
+
+type Timestamps = {createdAt: i32, updatedAt: i32};
+type PostRow = {title: String, ...Timestamps};
+let post: PostRow = {title: 'a', createdAt: 1, updatedAt: 2};
+let created: i32 = post.createdAt;
+
+type WithId<R extends record> = {id: i32, ...R};
+let named: WithId<{name: String}> = {id: 1, name: 'n'};
+let name: String = named.name;
+let namedId: i32 = named.id;
+
+let keep = <R extends record>(p: {x: i32, ...R}): {x: i32, ...R} => p;
+let kept = keep({x: 1, y: 2, label: 'a'});
+let y: i32 = kept.y;
+let label: String = kept.label;
+
+// The fields beside the row are read directly.
+let getX = <R extends record>(p: {x: i32, ...R}): i32 => p.x;
+let x: i32 = getX({x: 1, z: true});
+
+// A row passes through another row-generic function.
+let twice = <S extends record>(q: {x: i32, ...S}): {x: i32, ...S} => keep(keep(q));
+let t = twice({x: 0, flag: true});
+let flag: boolean = t.flag;
+
+// A row variable on its own.
+let same = <R extends record>(r: R): R => r;
+let a: {a: i32} = same({a: 1});
+
+// An explicit row that lacks `x`.
+let explicit = keep<{w: f64}>({x: 1, w: 2.0});
+let w: f64 = explicit.w;
+
+// A wider value still converts to a narrower record.
+let narrow: {x: i32} = kept;

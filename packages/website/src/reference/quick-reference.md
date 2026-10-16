@@ -1166,6 +1166,18 @@ if (let {rank} = o) { … } // ✅ matches only the member that has one
 Annotating the binding (`let o: Named = if ...`) builds both arms in that
 shape instead, which is cheaper — no member to pick at run time.
 
+A record type can spread another record type, or a row type parameter
+(`R extends record`). A row-generic function keeps the caller's other fields
+in its result type and is compiled once per row, with direct field access:
+
+```zena
+type PostRow = {title: String, ...Timestamps};
+
+let moveRight = <R extends record>(p: {x: i32, ...R}): {x: i32, ...R} => p;
+moveRight({x: 1, label: 'a'}).label; // ✅ R = {label: String}
+moveRight<{x: f64}>({x: 1});         // ❌ R must lack 'x'
+```
+
 ### Tuples
 
 Tuples are fixed-length sequences where each position can have a different type.

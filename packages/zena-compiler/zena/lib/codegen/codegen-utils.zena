@@ -8,7 +8,7 @@ import {
   TupleType, InlineTupleType, UnionType, TypeParameterType, FunctionType, UnknownType, typeToString,
   MixinType, MixinKey, instantiateClassType, TypeAliasType, EnumType, ErrorType, HoleType, NeverType, ThisType,
   AnyRefType, EqRefType, StringLiteralType, NumLiteralType, baseType, ErasedType,
-  MethodInfo, countTypeKey, countCodegenFunctionType, internFunctionType } from '../types.zena';
+  MethodInfo, countTypeKey, countCodegenFunctionType, internFunctionType, mergeRow } from '../types.zena';
 import { SemanticModel } from '../semantic-model.zena';
 import { Symbol, noSymbolId } from '../scope/symbol.zena';
 import { Program, CompilationUnit } from '../program.zena';
@@ -1112,7 +1112,12 @@ export let substituteTypeParams = (
       for (let pair in rec.properties) {
         subProps[pair.key] = substituteTypeParams(typeParams, typeArgs, pair.value);
       }
-      let res = new RecordType(subProps, rec.optionalProperties);
+      let row = rec.row;
+      if (row != null) {
+        return mergeRow(subProps, rec.optionalProperties,
+            substituteTypeParams(typeParams, typeArgs, row));
+      }
+      let res = new RecordType(subProps, rec.optionalProperties, null);
       res
     }
     case FunctionType as ft: {

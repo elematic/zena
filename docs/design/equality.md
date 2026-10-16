@@ -137,7 +137,7 @@ work, because a nested pair calls its pair's function.
 **The erased comparison** (`lowerErasedEq`, `$erasedEq`) still compares
 records and tuples by identity: `anyref` and interface operands, and
 unions of several record or tuple types. It waits for the switch to
-closed record types (row-types.md, Decisions, Sequencing), because the
+closed record types (row-types.md, Decisions, Sequencing; #399), because the
 current representation cannot tell two record shapes apart at runtime:
 
 - `$erasedEq` sees two references, so it would have to test which record

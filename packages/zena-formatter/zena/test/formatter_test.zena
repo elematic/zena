@@ -1063,6 +1063,18 @@ let tests = suite('formatter', () => {
     checkStable('optional record property', 'let x: {a?: String, b: i32} = y;');
   });
 
+  // The AST keeps a record type's spreads apart from its properties, so
+  // the printer puts them back where they were written.
+  test('keeps record type spreads in place', (t) => {
+    checkStable('record type spreads', 'type P = {title: String, ...Timestamps, id: i32, ...R};');
+    checkStable('leading record type spread', 'type Q = {...Timestamps, id: i32};');
+  });
+
+  test('keeps a row bound and a record type argument', (t) => {
+    checkStable('row bound', 'let f = <R extends record>(p: {x: i32, ...R}): {x: i32, ...R} => p;');
+    checkStable('record type argument', 'let a = f<{w: f64}>({ x: 1, w: 2.0 });');
+  });
+
   // An interface's `static symbol` had no printer arm at all, so it came
   // out as `/* unknown interface member */` — formatting a file deleted
   // the declaration.

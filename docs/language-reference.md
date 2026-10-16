@@ -4324,6 +4324,69 @@ at run time.
 let o: Named = if (flag) { {name: 'abc', rank: 1} } else { {name: 'ab'} };
 ```
 
+#### Spreading Record Types
+
+A record type can spread another record type into itself, which builds a
+type from parts without repeating their fields:
+
+```zena
+type Timestamps = {createdAt: i64, updatedAt: i64};
+type PostRow = {title: String, ...Timestamps};
+// {title: String, createdAt: i64, updatedAt: i64}
+```
+
+Each field is declared once. A field that a spread also supplies is an
+error, and so is spreading anything but a record type or a row type
+parameter:
+
+```zena
+type Twice = {createdAt: i64, ...Timestamps}; // Error: declares 'createdAt' more than once
+type Bad = {x: i32, ...i32};                  // Error: cannot spread 'i32'
+```
+
+#### Row-Generic Functions
+
+A type parameter declared `R extends record` stands for a set of record
+fields, a _row_. Spreading it into a record type gives a function that
+accepts any record with some fields and keeps the rest in its result type:
+
+```zena
+let moveRight = <R extends record>(p: {x: i32, ...R}): {x: i32, ...R} => p;
+
+let moved = moveRight({x: 1, y: 2, label: 'a'});
+moved.label; // String: R was inferred as {y: i32, label: String}
+```
+
+`R` is inferred from the argument's fields that the parameter type does not
+name. Inside the function only the named fields can be read, since the
+caller chooses the rest. The compiler emits one copy of the function per
+row it is called with, and each copy reads its fields directly, as for
+any other record type.
+
+The fields written beside `...R` in the function's signature are fields
+`R` must not have, so instantiating `R` with a row that has one of them is
+an error:
+
+```zena
+let getX = <R extends record>(p: {x: i32, ...R}): i32 => p.x;
+getX<{x: f64}>({x: 1}); // Error: 'R' cannot be '{ x: f64 }': it has field 'x'
+```
+
+A record type in the function's body may name beside `...R` only fields
+the signature already does. Other rules:
+
+- A record type spreads at most one row type parameter.
+- `{...R}` and `R` are the same type.
+- A record whose type spreads `R` converts to a record type that names
+  only some of its fields, as any wider record does. It converts to a type
+  spreading `R` only when it spreads `R` itself.
+- Generic aliases, classes and methods take row parameters too:
+  `type WithId<R extends record> = {id: i32, ...R};`.
+
+Spread and `...rest` patterns on values of row types, and rows over
+tuples (`R extends tuple`), are planned (see
+[row-types.md](design/row-types.md)).
+
 ### Tuples
 
 Tuples are immutable, structural types that hold a fixed sequence of typed

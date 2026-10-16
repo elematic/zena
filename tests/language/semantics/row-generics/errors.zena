@@ -1,0 +1,23 @@
+// @mode: check
+// What row generics reject (docs/design/row-types.md §3.1).
+
+type A = {x: i32};
+type Twice = {x: i32, ...A}; // @error: Record type declares field 'x' more than once.
+type NotRecord = {y: i32, ...i32}; // @error: Cannot spread 'i32' into a record type
+type TwoRows<R extends record, S extends record> = {...R, ...S}; // @error: A record type can spread at most one row type parameter.
+let unbounded = <T>(p: {x: i32, ...T}): i32 => p.x; // @error: Cannot spread 'T' into a record type
+
+let getX = <R extends record>(p: {x: i32, ...R}): i32 => p.x;
+let missing = getX({y: 1}); // @error: is not assignable to parameter
+let notInRow = <R extends record>(p: {x: i32, ...R}): i32 => p.y; // @error: Property 'y' does not exist
+
+// `x` is declared beside `...R`, so R must lack it.
+let collides = getX<{x: f64}>({x: 1}); // @error: 'R' cannot be '{ x: f64 }': it has field 'x', which is declared beside '...R'.
+let notARow = getX<i32>({x: 1}); // @error: Type 'i32' does not satisfy constraint 'record' for type parameter 'R'.
+
+// A record type in a body may name beside `...R` only the fields the
+// declaration's signature already does, since the caller chose R.
+let inBody = <R extends record>(p: {x: i32, ...R}): i32 => {
+  let read = (q: {z: i32, ...R}): i32 => q.z; // @error: 'R' may have a field 'z'
+  return p.x;
+};
