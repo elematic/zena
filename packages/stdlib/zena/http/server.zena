@@ -137,11 +137,16 @@ export class Server implements Disposable {
   async start(): Future<void> {
     if (this.#running) return;
     this.#running = true;
-    var s: Stream<RequestTuple> | null = null;
+    // `listen()` spawns a background WASI stream pump coroutine (`pumpStreamIn`).
+    // Running `listen()` inside `shielded` binds that pump to the uncancellable
+    // root scope so cancelling the server's scope doesn't abort the pump while
+    // a host `stream.read` is still in flight; instead, `finally` below stops
+    // the stream and closes the host server so the pump exits and drops its
+    // WASI stream handle cleanly.
+    var stream: Stream<RequestTuple> | null = null;
     shielded {
-      s = this.#hostServer.listen();
+      stream = this.#hostServer.listen();
     }
-    let stream = s as Stream<RequestTuple>;
     try {
       while (!this.#closed) {
         let opt = await stream.readOne();
