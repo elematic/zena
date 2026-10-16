@@ -169,12 +169,11 @@ function handleImports(uses: SynthUses): String {
   if (names.length == 0) {
     return "";
   }
-  var line = "import { ";
-  for (var i = 0; i < names.length; i += 1) {
-    if (i > 0) { line = line + ", "; }
-    line = line + names[i];
+  var list = names[0];
+  for (var i = 1; i < names.length; i += 1) {
+    list = `${list}, ${names[i]}`;
   }
-  return line + " } from 'zena:core';\n";
+  return `import { ${list} } from 'zena:core';\n`;
 }
 
 /** One imported type name owed to a sibling synthesized module. */
@@ -1025,14 +1024,14 @@ function zenaTypeOf(ty: Ty, uses: SynthUses): String {
   if (ty.kind == TyKind.ResourceH && ty.ownedClass) {
     if (ty.isBorrow) {
       uses.borrowHandle = true;
-      return "Borrow<" + ty.typeName + ">";
+      return `Borrow<${ty.typeName}>`;
     }
     if (ty.inAggregate) {
       uses.unmanagedHandle = true;
-      return "Unmanaged<" + ty.typeName + ">";
+      return `Unmanaged<${ty.typeName}>`;
     }
     uses.ownHandle = true;
-    return "Own<" + ty.typeName + ">";
+    return `Own<${ty.typeName}>`;
   }
   // Enumeration, Flags, RecordT, VariantT — all named. ResultT never
   // reaches here: top-level results are handled in renderFunc, and
@@ -2592,36 +2591,41 @@ function renderResource(
       }
     }
   }
-  body.append("/** WIT `resource ").append(resourceName)
-      .append("`. */\n");
+  let comment = `/** WIT \`resource ${resourceName}\`. */`;
   if (ownedClass) {
     // A `resource class`: the program holds it as `Own<T>`, implicit
     // drop releases it at scope exit, a move ends the binding, and the
     // checker reports a use after the move. Dispose consumes the
     // receiver and drops the handle; there is no moved flag, because
-    // lowering an own disowns the wrapper instead.
+    // lowering an own disowns the wrapper instead. Each declaration of
+    // the drop is its own core import, named apart by the suffix, as
+    // the stream and future families are.
     uses.ownHandle = true;
-    body.append("export resource class ").append(typeName).append(" {\n");
-    body.append("  #handle: i32;\n");
-    body.append("  new(handle: i32) : #handle = handle;\n\n");
-    body.append("  /** The wire handle, module-internal. */\n");
-    body.append("  [rawHandle](): i32 {\n    return this.#handle;\n");
-    body.append("  }\n\n");
-    body.append("  [Disposable.dispose](this: Own<this>): void {\n");
-    body.append("    ").append(rawPrefix).append("Drop_raw(this.#handle);\n");
-    body.append("  }\n\n");
-    body.append(members.toString());
-    body.append("}\n");
-    body.append("@external(\"canon\", \"resource.drop#")
-        .append(interfaceName).append("#").append(resourceName)
-        .append("\", \"resource:")
-        .append(interfaceName).append("#").append(resourceName)
-        .append("\")\n");
-    body.append("declare function ").append(rawPrefix)
-        .append("Drop_raw(handle: i32): void;\n");
-    body.append(raws.toString());
+    let canonType = `resource:${interfaceName}#${resourceName}`;
+    emit(body, "", zena`
+      ${comment}
+      export resource class ${typeName} {
+        #handle: i32;
+        new(handle: i32) : #handle = handle;
+
+        /** The wire handle, module-internal. */
+        [rawHandle](): i32 {
+          return this.#handle;
+        }
+
+        [Disposable.dispose](this: Own<this>): void {
+          ${rawPrefix}Drop_raw(this.#handle);
+        }
+
+      ${members.toString()}
+      }
+      @external("canon", "resource.drop#${interfaceName}#${resourceName}", "${canonType}")
+      declare function ${rawPrefix}Drop_raw(handle: i32): void;
+      ${raws.toString()}
+    `);
     return;
   }
+  body.append(comment).append("\n");
   body.append("export final class ").append(typeName)
       .append(" implements Disposable {\n");
   body.append("  #handle: i32;\n");
