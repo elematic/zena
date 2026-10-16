@@ -1,0 +1,37 @@
+// @mode: run
+// @result: 21
+// @skip: elematic/zena#270 — a class pattern over a generic case class tests the erased template type and matches neither arm; reads -200
+// A class pattern over a generic case class: `if (let Ok {value} =
+// outcome)` on an `Outcome<Own<Res>, String>` must match the
+// `Ok<Own<Res>, String>` it holds, the way `outcome is Ok<Own<Res>,
+// String>` does. Today the pattern tests against the erased template
+// type and matches neither arm; the bound field also types as `T`
+// rather than `Own<Res>`, so the arms here only count.
+import { Own, Disposable, Ok, Err, Outcome } from 'zena:core';
+
+resource class Res {
+  new();
+  [Disposable.dispose](this: Own<this>): void {}
+}
+
+let open = (ok: boolean): Outcome<Own<Res>, String> => {
+  if (ok) {
+    return new Ok<Own<Res>, String>(new Res());
+  }
+  return new Err<Own<Res>, String>('nope');
+};
+
+let armOf = (outcome: Outcome<Own<Res>, String>): i32 => {
+  if (let Ok {value} = outcome) {
+    return 1;
+  }
+  if (let Err {error} = outcome) {
+    return 20;
+  }
+  return 0 - 100;
+};
+
+export let main = (): i32 => {
+  // 1 for the ok arm plus 20 for the err arm; -200 when neither matches.
+  return armOf(open(true)) + armOf(open(false));
+};

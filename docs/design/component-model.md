@@ -559,12 +559,13 @@ one (bootstrapping.md, "Two-step landing"). `zena:process` and
 imports them: `Process` and `Run` are resource classes wrapping the
 host's `Own<...>` handle, so a `runWith` or `runModule` temporary now
 releases the host's record of the process or run, where before nothing
-did. `wasi:filesystem/types` is next, prepared on the branch
-`wasi-resources-fs`: `zena:fs`'s `Descriptor` becomes a `resource class`
-over `Own<WitDescriptor>`, `getPreopens` and `resolvePreopen` hand out
+did. `wasi:filesystem/types` followed, after a reseed made the bootstrap
+render the filesystem's resources this way: `zena:fs`'s `Descriptor` is
+a `resource class` over `Own<WitDescriptor>`, released when its owner
+leaves scope (the convenience functions need no `using`), `readStream`
+consumes it, `getPreopens` and `resolvePreopen` hand out
 `Unmanaged<Descriptor>`, and `zena:http`'s static file server reads
-through them; it lands once a reseed has made the bootstrap render the
-filesystem's resources this way. After that: `wasi:http` (`zena:http`'s
+through them. Still to switch: `wasi:http` (`zena:http`'s
 wire adapters and server, `zena:fetch`, protobuf's transports,
 google-cloud's auth) and `zena-cli:host/http-server`, whose consumers
 hold their handles in plain classes today.

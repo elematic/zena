@@ -32,7 +32,9 @@
  * ```
  */
 
-import { Disposable, Ok, Err, Outcome, Some } from 'zena:core';
+import {
+  Disposable, Ok, Err, Outcome, Some, Own, Unmanaged, adopt, disown
+} from 'zena:core';
 import { Stream, readAllBytes, bytesStream, textStream } from 'zena:stream';
 import { blockOn } from 'zena:wasi';
 import { GlobPattern, hasMagic } from 'zena:glob';
@@ -259,42 +261,63 @@ async function collectEntries(stream: Stream<DirectoryEntry>): Future<Array<DirE
 }
 
 /**
+ * The descriptor an `open-at` returned, or the failure thrown as an
+ * `FsError` naming `what`. A pattern rather than a cast: a cast to a
+ * type that names `Own` is rejected outside `zena:ownership`, and the
+ * pattern moves the owner out of the `Ok` arm.
+ */
+let opened = (
+  outcome: Outcome<Own<WitDescriptor>, ErrorCode>,
+  what: String
+): Own<WitDescriptor> => {
+  // An `is` test with the type arguments spelled out: a class pattern
+  // (`if (let Ok {value} = outcome)`) tests the erased template type and
+  // matches nothing (#270), and a cast to a type that names `Own` is
+  // refused.
+  if (outcome is Ok<Own<WitDescriptor>, ErrorCode>) {
+    return outcome.value;
+  }
+  if (outcome is Err<Own<WitDescriptor>, ErrorCode>) {
+    fail(outcome.error, what);
+  }
+  throw new Error(`${what}: open-at returned neither ok nor err`);
+};
+
+/**
  * Release a descriptor once the host has finished reading its contents
- * into a stream handed on elsewhere. A failure there arrives after the
- * stream has started, so there is nothing left to report it to.
+ * into a stream handed on elsewhere: the owned parameter is released at
+ * this function's exit. A failure there arrives after the stream has
+ * started, so there is nothing left to report it to.
  */
 async function closeWhenRead(
-  file: Descriptor,
+  file: Own<WitDescriptor>,
   done: Future<Outcome<void, ErrorCode>>
 ): Future<void> {
   try {
     await done;
   } catch (e) {}
-  file.close();
 }
 
 /**
- * An open file or directory: a handle the host owns, released by
- * `close` or by `using`. Paths given to the `*At` methods are relative
- * to a directory descriptor. Every operation is asynchronous; a
- * synchronous caller waits with `blockOn`.
+ * An open file or directory: a resource over the host's handle, held
+ * as `Own<Descriptor>` and released when that owner leaves scope. A
+ * use after the release is a compile error.
+ * Paths given to the `*At` methods are relative to a directory
+ * descriptor. Every operation is asynchronous; a synchronous caller
+ * waits with `blockOn`.
+ *
+ * The preopened directories are `Unmanaged<Descriptor>`: they live as
+ * long as the program and are never released, and an unmanaged handle
+ * reaches every method here the way an owned one does.
  */
-export class Descriptor implements Disposable {
-  #inner: WitDescriptor;
-  var #closed = false;
+export resource class Descriptor {
+  #inner: Own<WitDescriptor>;
 
-  new(inner: WitDescriptor) : #inner = inner;
-
-  #open(): WitDescriptor {
-    if (this.#closed) {
-      throw new FsError(8, 'Descriptor is closed');
-    }
-    return this.#inner;
-  }
+  new(inner: Own<WitDescriptor>) : #inner = inner;
 
   /** The entire contents, as bytes. */
   async readAllBytes(): Future<FixedArray<u8>> {
-    let (stream, done) = this.#open().readViaStream(0 as u64);
+    let (stream, done) = this.#inner.readViaStream(0 as u64);
     let bytes = await readAllBytes(stream);
     check(await done, 'read');
     return bytes;
@@ -308,63 +331,54 @@ export class Descriptor implements Disposable {
   /**
    * The contents, as a stream the host fills: for handing on to
    * another host interface — a response body, say — so that the bytes
-   * never pass through the program. The descriptor is released once
-   * the host has read it to the end, and must not be used afterwards.
+   * never pass through the program. Consumes this descriptor: the
+   * host's handle goes to a task that releases it once the stream has
+   * been read to the end.
    */
-  readStream(): Stream<u8> {
-    let (stream, done) = this.#open().readViaStream(0 as u64);
-    this.#closed = true;
-    closeWhenRead(new Descriptor(this.#inner), done);
+  readStream(this: Own<this>): Stream<u8> {
+    let (stream, done) = this.#inner.readViaStream(0 as u64);
+    closeWhenRead(this.#inner, done);
     return stream;
   }
 
   /** Write `data` from the start of the file. */
   async writeBytes(data: FixedArray<u8>): Future<void> {
-    check(await this.#open().writeViaStream(bytesStream(data), 0 as u64), 'write');
+    check(await this.#inner.writeViaStream(bytesStream(data), 0 as u64), 'write');
   }
 
   /** Write `data` from the start of the file. */
   async writeString(data: String): Future<void> {
-    check(await this.#open().writeViaStream(textStream(data), 0 as u64), 'write');
+    check(await this.#inner.writeViaStream(textStream(data), 0 as u64), 'write');
   }
 
   /** Open a path under this directory, following symlinks. */
-  async openAt(path: String, flags: DescriptorFlags): Future<Descriptor> {
-    let outcome = await this.#open().openAt(
+  async openAt(path: String, flags: DescriptorFlags): Future<Own<Descriptor>> {
+    let outcome = await this.#inner.openAt(
         pathFlagsSymlinkFollow, path, noOpenFlags, witDescriptorFlags(flags));
-    if (outcome is Err<WitDescriptor, ErrorCode>) {
-      fail((outcome as Err<WitDescriptor, ErrorCode>).error, `open '${path}'`);
-    }
-    return new Descriptor((outcome as Ok<WitDescriptor, ErrorCode>).value);
+    return new Descriptor(opened(outcome, `open '${path}'`));
   }
 
   /** Create a file under this directory, or truncate the one there,
    * open for writing. */
-  async createAt(path: String): Future<Descriptor> {
+  async createAt(path: String): Future<Own<Descriptor>> {
     let openFlags =
         ((openFlagsCreate as u32) | (openFlagsTruncate as u32)) as WitOpenFlags;
-    let outcome = await this.#open().openAt(
+    let outcome = await this.#inner.openAt(
         pathFlagsSymlinkFollow, path, openFlags, descriptorFlagsWrite);
-    if (outcome is Err<WitDescriptor, ErrorCode>) {
-      fail((outcome as Err<WitDescriptor, ErrorCode>).error, `create '${path}'`);
-    }
-    return new Descriptor((outcome as Ok<WitDescriptor, ErrorCode>).value);
+    return new Descriptor(opened(outcome, `create '${path}'`));
   }
 
   /** Open a directory under this one. */
-  async openDirAt(path: String): Future<Descriptor> {
-    let outcome = await this.#open().openAt(
+  async openDirAt(path: String): Future<Own<Descriptor>> {
+    let outcome = await this.#inner.openAt(
         pathFlagsSymlinkFollow, path, openFlagsDirectory,
         witDescriptorFlags(DescriptorFlags.MutateDirectory));
-    if (outcome is Err<WitDescriptor, ErrorCode>) {
-      fail((outcome as Err<WitDescriptor, ErrorCode>).error, `opendir '${path}'`);
-    }
-    return new Descriptor((outcome as Ok<WitDescriptor, ErrorCode>).value);
+    return new Descriptor(opened(outcome, `opendir '${path}'`));
   }
 
   /** This descriptor's metadata. */
   async stat(): Future<FileStat> {
-    let outcome = await this.#open().stat();
+    let outcome = await this.#inner.stat();
     if (outcome is Err<DescriptorStat, ErrorCode>) {
       fail((outcome as Err<DescriptorStat, ErrorCode>).error, 'stat');
     }
@@ -373,7 +387,7 @@ export class Descriptor implements Disposable {
 
   /** The metadata of a path under this directory, following symlinks. */
   async statAt(path: String): Future<FileStat> {
-    let outcome = await this.#open().statAt(pathFlagsSymlinkFollow, path);
+    let outcome = await this.#inner.statAt(pathFlagsSymlinkFollow, path);
     if (outcome is Err<DescriptorStat, ErrorCode>) {
       fail((outcome as Err<DescriptorStat, ErrorCode>).error, `stat '${path}'`);
     }
@@ -382,13 +396,13 @@ export class Descriptor implements Disposable {
 
   /** Whether anything is at a path under this directory. */
   async existsAt(path: String): Future<boolean> {
-    let outcome = await this.#open().statAt(pathFlagsSymlinkFollow, path);
+    let outcome = await this.#inner.statAt(pathFlagsSymlinkFollow, path);
     return outcome is Ok<DescriptorStat, ErrorCode>;
   }
 
   /** The entries of this directory. `.` and `..` are not among them. */
   async readDir(): Future<Array<DirEntry>> {
-    let (stream, done) = this.#open().readDirectory();
+    let (stream, done) = this.#inner.readDirectory();
     let entries = await collectEntries(stream);
     check(await done, 'readdir');
     return entries;
@@ -396,63 +410,66 @@ export class Descriptor implements Disposable {
 
   /** Create a directory under this one. */
   async mkdirAt(path: String): Future<void> {
-    check(await this.#open().createDirectoryAt(path), `mkdir '${path}'`);
+    check(await this.#inner.createDirectoryAt(path), `mkdir '${path}'`);
   }
 
   /** Remove a file under this directory. */
   async unlinkAt(path: String): Future<void> {
-    check(await this.#open().unlinkFileAt(path), `unlink '${path}'`);
+    check(await this.#inner.unlinkFileAt(path), `unlink '${path}'`);
   }
 
   /** Remove an empty directory under this one. */
   async rmdirAt(path: String): Future<void> {
-    check(await this.#open().removeDirectoryAt(path), `rmdir '${path}'`);
+    check(await this.#inner.removeDirectoryAt(path), `rmdir '${path}'`);
   }
 
-  /** Rename a path under this directory to a path under `to`. */
-  async renameAt(from: String, to: Descriptor, toPath: String): Future<void> {
-    check(await this.#open().renameAt(from, to.#open(), toPath),
+  /**
+   * Rename a path under this directory to a path under `to`, a
+   * directory the program does not own, which is what a preopen is.
+   * (An unmanaged handle does not pass where a borrow is expected, so
+   * a caller holding an owned target disowns it for the call.)
+   */
+  async renameAt(from: String, to: Unmanaged<Descriptor>, toPath: String): Future<void> {
+    check(await this.#inner.renameAt(from, to.#inner, toPath),
         `rename '${from}' to '${toPath}'`);
   }
 
-  /** Release the handle. Closing twice is harmless. */
-  close(): void {
-    if (!this.#closed) {
-      this.#closed = true;
-      this.#inner.[Disposable.dispose]();
-    }
-  }
-
-  [Disposable.dispose](): void {
-    this.close();
-  }
+  // No written dispose: the release is the field's, and the compiler
+  // synthesizes the dispose that drops the host's handle. (A written
+  // dispose beside an owned field of a synthesized class does not
+  // lower yet, #388, which is why there is no `close`; a descriptor is
+  // released when its owner's scope ends.)
 }
 
 // ============================================================================
 // Preopened Directories
 // ============================================================================
 
-var preopensCache: Array<(Descriptor, String)> | null = null;
+var preopensCache: Array<(Unmanaged<Descriptor>, String)> | null = null;
 
 /**
  * The directories the host preopened, each with the path it is known
  * by. Synchronous: `get-directories` is a synchronous WIT function.
+ * The descriptors are unmanaged: they are the program's for its whole
+ * run, and nothing releases them.
  */
-export let getPreopens = (): Array<(Descriptor, String)> => {
+export let getPreopens = (): Array<(Unmanaged<Descriptor>, String)> => {
   let cached = preopensCache;
   if (cached != null) {
     return cached;
   }
-  let result = new Array<(Descriptor, String)>();
+  let result = new Array<(Unmanaged<Descriptor>, String)>();
   for (let (descriptor, path) in getDirectories()) {
-    result.push((new Descriptor(descriptor), path));
+    // The host's handle arrives unmanaged, since a tuple cannot carry
+    // an owner; adopted into the wrapper and disowned again as a whole.
+    result.push((disown(new Descriptor(adopt(descriptor))), path));
   }
   preopensCache = result;
   return result;
 };
 
 /** The first preopened directory. */
-export let getRootDir = (): Descriptor => {
+export let getRootDir = (): Unmanaged<Descriptor> => {
   let preopens = getPreopens();
   if (preopens.length == 0) {
     throw new FsError(44, 'No preopened directories available');
@@ -490,7 +507,7 @@ let normalizeRelative = (path: String): String => {
  * absolute path is under the preopen whose name is its longest prefix
  * at a segment boundary, so `/tmpfiles` is not under `/tmp`.
  */
-export let resolvePreopen = (path: String): (Descriptor, String) => {
+export let resolvePreopen = (path: String): (Unmanaged<Descriptor>, String) => {
   let preopens = getPreopens();
   if (preopens.length == 0) {
     throw new FsError(44, 'No preopened directories available');
@@ -528,35 +545,35 @@ export let resolvePreopen = (path: String): (Descriptor, String) => {
 /** The contents of a file, as text. */
 export async function readFile(path: String): Future<String> {
   let (dir, rel) = resolvePreopen(path);
-  using file = await dir.openAt(rel, DescriptorFlags.Read);
+  let file = await dir.openAt(rel, DescriptorFlags.Read);
   return await file.readString();
 }
 
 /** The contents of a file, as bytes. */
 export async function readFileBytes(path: String): Future<FixedArray<u8>> {
   let (dir, rel) = resolvePreopen(path);
-  using file = await dir.openAt(rel, DescriptorFlags.Read);
+  let file = await dir.openAt(rel, DescriptorFlags.Read);
   return await file.readAllBytes();
 }
 
 /** Write text to a file, creating or truncating it. */
 export async function writeFile(path: String, content: String): Future<void> {
   let (dir, rel) = resolvePreopen(path);
-  using file = await dir.createAt(rel);
+  let file = await dir.createAt(rel);
   await file.writeString(content);
 }
 
 /** Write bytes to a file, creating or truncating it. */
 export async function writeFileBytes(path: String, content: FixedArray<u8>): Future<void> {
   let (dir, rel) = resolvePreopen(path);
-  using file = await dir.createAt(rel);
+  let file = await dir.createAt(rel);
   await file.writeBytes(content);
 }
 
 /** The entries of a directory. */
 export async function listDir(path: String): Future<Array<DirEntry>> {
   let (dir, rel) = resolvePreopen(path);
-  using opened = await dir.openDirAt(rel);
+  let opened = await dir.openDirAt(rel);
   return await opened.readDir();
 }
 
