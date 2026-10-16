@@ -25,14 +25,14 @@ import {
 import { hostDir } from './run.zena';
 
 /** ANSI SGR sequence (string literals have no escape for ESC). */
-let sgr = (code: String): String => {
+function sgr(code: String) {
   let b = new StringBuilder();
   b.appendByte(27);
   b.append('[');
   b.append(code);
   b.append('m');
   return b.toString();
-};
+}
 
 let green = sgr('32');
 let red = sgr('31');
@@ -43,7 +43,7 @@ let reset = sgr('0');
  * repository root, or null when it names nothing. A directory means
  * every `_test.zena` file beneath it.
  */
-let testPattern = (argument: String): String | null => {
+function testPattern(argument: String): String | null {
   let resolved = resolveUserPath(argument);
   let fromRoot = repoRelative(resolved);
   if (hasMagic(argument)) {
@@ -56,10 +56,10 @@ let testPattern = (argument: String): String | null => {
     return fromRoot + '/**/*_test.zena';
   }
   return fromRoot;
-};
+}
 
 /** The test files the arguments name, repo-relative and in order. */
-let findTests = (args: ParsedArgs): Array<String> | null => {
+function findTests(args: ParsedArgs): Array<String> | null {
   let excludes = args.getMultiOption('exclude');
   var filter = '';
   if (let (true, value) = args.getOption('filter')) {
@@ -91,7 +91,7 @@ let findTests = (args: ParsedArgs): Array<String> | null => {
     }
   }
   return found;
-};
+}
 
 /** A test file whose copy of this module has been started. */
 class RunningTest {
@@ -102,7 +102,7 @@ class RunningTest {
   new(this.path, this.run);
 }
 
-let printIndented = (label: String, text: String): void => {
+function printIndented(label: String, text: String) {
   if (text.length == 0) {
     return;
   }
@@ -110,10 +110,10 @@ let printIndented = (label: String, text: String): void => {
   for (let line in text.split('\n')) {
     console.log(`      ${line}`);
   }
-};
+}
 
 /** Waits for a test and prints its result line. Returns whether it passed. */
-let report = (running: RunningTest): boolean => {
+function report(running: RunningTest): boolean {
   let result = running.run.wait();
   let ms = (result.callTime as i64 as f64) / 1000000.0;
   let tenths = ((ms * 10.0) as i64 as f64) / 10.0;
@@ -128,10 +128,10 @@ let report = (running: RunningTest): boolean => {
     printIndented('Error', result.message);
   }
   return false;
-};
+}
 
 /** Starts a copy of this module on one test file. */
-let startWorker = (file: String, options: Options): Own<Run> => {
+function startWorker(file: String, options: Options) {
   let args = new GrowableArray<String>();
   args.push('zena');
   if (options.debug) {
@@ -156,9 +156,9 @@ let startWorker = (file: String, options: Options): Own<Run> => {
     ],
     grant: true,
   });
-};
+}
 
-export let testCommand = (args: ParsedArgs, options: Options): i32 => {
+export function testCommand(args: ParsedArgs, options: Options): i32 {
   if (args.getFlag('single')) {
     return runSingle(args, options);
   }
@@ -202,10 +202,10 @@ export let testCommand = (args: ParsedArgs, options: Options): i32 => {
   console.log('');
   console.log(`Test Summary: ${passed} passed, ${failed} failed`);
   return if (failed > 0) { 1 } else { 0 };
-};
+}
 
 /** Writes captured output through without adding a newline of its own. */
-let echo = (text: String, toError: boolean): void => {
+function echo(text: String, toError: boolean) {
   if (text == '') {
     return;
   }
@@ -215,7 +215,7 @@ let echo = (text: String, toError: boolean): void => {
   } else {
     console.log(trimmed);
   }
-};
+}
 
 /**
  * `zena test --single <file>`: compile one test file and run it,
@@ -226,7 +226,7 @@ let echo = (text: String, toError: boolean): void => {
  * `/stdlib` and a temporary directory as `/tmp`, and may spawn
  * processes: repository tests are trusted code.
  */
-let runSingle = (args: ParsedArgs, options: Options): i32 => {
+function runSingle(args: ParsedArgs, options: Options): i32 {
   if (args.rest.length != 1) {
     console.error('Error: test --single takes exactly one file');
     return 2;
@@ -269,4 +269,4 @@ let runSingle = (args: ParsedArgs, options: Options): i32 => {
     console.error('Suite reported failure in output');
   }
   return 1;
-};
+}

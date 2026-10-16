@@ -22,13 +22,13 @@ import { LspServer, MessageReader, frame } from 'language-service:server';
 import { Options, repoRoot, stdlibDir } from './env.zena';
 
 /** A file's text, or null when it cannot be read. */
-let readOrNull = (path: String): String | null => {
+function readOrNull(path: String): String | null {
   try {
     return readFileSync(path);
   } catch (e) {
     return null;
   }
-};
+}
 
 /** Reads the package manifest for `loadPackageMap`. */
 class ManifestHost implements CompilerHost {
@@ -46,15 +46,15 @@ class ManifestHost implements CompilerHost {
  * The repository's package map, with absolute roots so that they match
  * the absolute paths an editor sends.
  */
-let packageMap = (): Map<String, PackageConfig> | null => {
+function packageMap(): Map<String, PackageConfig> | null {
   let manifest = `${repoRoot().value}/zena-packages.json`;
   if (!isFileSync(manifest)) {
     return null;
   }
   return loadPackageMap(new ManifestHost(), manifest);
-};
+}
 
-export let lspCommand = (args: ParsedArgs, options: Options): i32 => {
+export function lspCommand(args: ParsedArgs, options: Options): i32 {
   let service = createLanguageService(
     stdlibDir().value,
     readOrNull,
@@ -63,10 +63,10 @@ export let lspCommand = (args: ParsedArgs, options: Options): i32 => {
   );
   // Only the protocol's messages may reach stdout: anything else the
   // server has to say goes to stderr.
-  let server = new LspServer(service, readOrNull, (json: String): void => {
+  let server = new LspServer(service, readOrNull, (json: String) => {
     logString(frame(json));
   });
-  let messages = new MessageReader((): String => readStdinSync(65536));
+  let messages = new MessageReader(() => readStdinSync(65536));
   while (!server.exited) {
     let body = messages.next();
     if (body == null) {
@@ -75,4 +75,4 @@ export let lspCommand = (args: ParsedArgs, options: Options): i32 => {
     server.handle(body);
   }
   return 0;
-};
+}

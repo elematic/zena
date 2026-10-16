@@ -58,16 +58,13 @@ export final class CompileFailure extends Error {
  * The optimization level, from `-O` or else ZENA_OPT_LEVEL, as the text
  * the user gave; '' for the default.
  */
-let optLevelText = (options: Options): String => {
+function optLevelText(options: Options) {
   let flag = options.optLevel;
-  if (flag != null) {
-    return flag;
-  }
-  return getEnv('ZENA_OPT_LEVEL') ?? '';
-};
+  return flag ?? getEnv('ZENA_OPT_LEVEL') ?? '';
+}
 
 /** The compiler module ZENA_COMPILER_WASM names, or null for this one. */
-let externalCompiler = (): AbsolutePath | null => {
+function externalCompiler(): AbsolutePath | null {
   let named = getEnv('ZENA_COMPILER_WASM');
   if (named == null) {
     return null;
@@ -79,21 +76,21 @@ let externalCompiler = (): AbsolutePath | null => {
     );
   }
   return path;
-};
+}
 
 /**
  * Compiles `request` to `out`. With `quiet`, what the compiler prints
  * is held back and shown only if the compile fails, so that `zena run`'s
  * output is the program's alone.
  */
-export let compileTo = (
+export function compileTo(
   request: CompileRequest,
   options: Options,
   out: AbsolutePath,
   quiet: boolean = false,
-): void => {
-  compileRecording(request, options, out, quiet, (path: String): void => {});
-};
+): void {
+  compileRecording(request, options, out, quiet, (path) => {});
+}
 
 var runtimeMemoryModuleThisProcess: AbsolutePath | null = null;
 
@@ -116,7 +113,7 @@ var runtimeMemoryModuleThisProcess: AbsolutePath | null = null;
  * target is `freestanding`, which is not a component target, so this
  * does not recurse.
  */
-let cachedRuntimeMemoryModule = (options: Options): AbsolutePath => {
+function cachedRuntimeMemoryModule(options: Options) {
   let already = runtimeMemoryModuleThisProcess;
   if (already != null) {
     return already;
@@ -130,7 +127,7 @@ let cachedRuntimeMemoryModule = (options: Options): AbsolutePath => {
   // before a program's own freshness check, once while compiling.
   runtimeMemoryModuleThisProcess = path;
   return path;
-};
+}
 
 /**
  * The files a cached entry recorded reading, from its `.deps`.
@@ -139,7 +136,7 @@ let cachedRuntimeMemoryModule = (options: Options): AbsolutePath => {
  * compile that was not cached leaves — the caller then records nothing
  * and its own entry is rebuilt next time, which is safe.
  */
-let recordedDeps = (modulePath: AbsolutePath): GrowableArray<String> => {
+function recordedDeps(modulePath: AbsolutePath) {
   let paths = new GrowableArray<String>();
   let depsPath = `${modulePath.value.sliceBytes(0, modulePath.value.length - 5)}.deps`;
   if (!isFileSync(depsPath)) {
@@ -157,15 +154,15 @@ let recordedDeps = (modulePath: AbsolutePath): GrowableArray<String> => {
     paths.push(line.sliceBytes(second + 1, line.length));
   }
   return paths;
-};
+}
 
-let compileRecording = (
+function compileRecording(
   request: CompileRequest,
   options: Options,
   out: AbsolutePath,
   quiet: boolean,
   onRead: (path: String) => void,
-): void => {
+): void {
   ensureDir(dirname(out.value));
   let compiler = externalCompiler();
   if (compiler != null) {
@@ -226,25 +223,25 @@ let compileRecording = (
     // compileFile printed the error and its stack on the way out; the
     // message rides along for the cases where it did not get to.
     throw new CompileFailure(
-        `the compiler failed on ${request.source.value}: ${(e as Error).message}`);
+        `the compiler failed on ${request.source.value}: ${e.message}`);
   }
   if (status != 0) {
     throw new CompileFailure(`${request.source.value} did not compile`);
   }
-};
+}
 
 /**
  * Runs another compiler module, as `zc`, with the preopens it expects:
  * the repository root as `.`, the standard library as `/stdlib`, and
  * the output's directory under its own name.
  */
-let compileWith = (
+function compileWith(
   compiler: AbsolutePath,
   request: CompileRequest,
   options: Options,
   out: AbsolutePath,
   quiet: boolean,
-): void => {
+): void {
   let args = new GrowableArray<String>();
   args.push('zc');
   args.push(repoRelative(request.source));
@@ -303,9 +300,9 @@ let compileWith = (
     console.error(result.message);
   }
   throw new CompileFailure(`${request.source.value} did not compile`);
-};
+}
 
-let printCaptured = (text: String): void => {
+function printCaptured(text: String): void {
   if (text == '') {
     return;
   }
@@ -314,10 +311,10 @@ let printCaptured = (text: String): void => {
   } else {
     console.error(text);
   }
-};
+}
 
 /** Creates a directory and any parents it needs. */
-export let ensureDir = (path: String): void => {
+export function ensureDir(path: String): void {
   if (path == '' || path == '/' || path == '.' || existsSync(path)) {
     return;
   }
@@ -331,14 +328,14 @@ export let ensureDir = (path: String): void => {
       throw e;
     }
   }
-};
+}
 
 /**
  * Where compiled modules are cached: `.zena/cache` in the repository
  * when ZENA_PROJECT_CACHE or ZENA_LOCAL_CACHE is set, and otherwise
  * `zena/wasm_objects` under the user's cache directory.
  */
-export let cacheDir = (): String => {
+export function cacheDir(): String {
   if (envSet('ZENA_PROJECT_CACHE') || envSet('ZENA_LOCAL_CACHE')) {
     return repoRoot().value + '/.zena/cache';
   }
@@ -355,27 +352,27 @@ export let cacheDir = (): String => {
     return repoRoot().value + '/.zena/cache';
   }
   return home + '/.cache/zena/wasm_objects';
-};
+}
 
 /** A file's identity for the cache: its modification time and size. */
-let identity = (path: String): String => {
+function identity(path: String) {
   let info = statSync(path);
   return `${info.modified} ${info.size}`;
-};
+}
 
 /** What decides the module a compile produces, apart from its sources. */
-let cacheKey = (request: CompileRequest, options: Options): String => {
+function cacheKey(request: CompileRequest, options: Options) {
   let compiler = getEnv('ZENA_COMPILER_WASM') ?? cliModule().value;
-  var key = 'zena-cache-1\n' + request.source.value + '\n';
+  var key = `zena-cache-1\n${request.source.value}\n`;
   key = key + `test=${request.testMode} debug=${options.debug}\n`;
   key = key + `target=${request.target ?? ''} opt=${optLevelText(options)}\n`;
   key = key + `wide=${envSet('ZENA_WIDE_ARITHMETIC')}\n`;
-  key = key + compiler + ' ' + identity(resolveUserPath(compiler).value) + '\n';
+  key = `${key}${compiler} ${identity(resolveUserPath(compiler).value)}\n`;
   return sha256HexOfString(key).sliceBytes(0, 16);
-};
+}
 
 /** The index of the first space at or after `from`, or -1. */
-let spaceAfter = (text: String, from: i32): i32 => {
+function spaceAfter(text: String, from: i32): i32 {
   if (from < 0) {
     return -1;
   }
@@ -385,21 +382,21 @@ let spaceAfter = (text: String, from: i32): i32 => {
     }
   }
   return -1;
-};
+}
 
-let joinLines = (lines: Array<String>): String => {
+function joinLines(lines: Array<String>) {
   var text = '';
   for (let line in lines) {
-    text = text + line + '\n';
+    text = `${text}${line}\n`;
   }
   return text;
-};
+}
 
 /**
  * Whether every file a cache entry lists still has the modification
  * time and size it had when the entry was written.
  */
-let entryIsFresh = (depsPath: String, modulePath: String): boolean => {
+function entryIsFresh(depsPath: String, modulePath: String): boolean {
   if (!isFileSync(depsPath) || !isFileSync(modulePath)) {
     return false;
   }
@@ -424,18 +421,18 @@ let entryIsFresh = (depsPath: String, modulePath: String): boolean => {
     checked += 1;
   }
   return checked > 0;
-};
+}
 
 /**
  * Compiles through the cache and returns the cached module's path.
  * A module that is already there and fresh is not compiled again.
  */
-export let compileCached = (
+export function compileCached(
   request: CompileRequest,
   options: Options,
   noCache: boolean = false,
   quiet: boolean = true,
-): AbsolutePath => {
+): AbsolutePath {
   let dir = cacheDir();
   ensureDir(dir);
   let stem = basename(request.source.value, extname(request.source.value));
@@ -459,7 +456,7 @@ export let compileCached = (
     options,
     new AbsolutePath(tempModule),
     quiet,
-    (path: String): void => {
+    (path) => {
       if (seen.add(path)) {
         // Taken before the compiler reads the file, so an edit made
         // during the compile leaves the entry stale, not wrongly fresh.
@@ -476,4 +473,4 @@ export let compileCached = (
   writeFileSync(tempDeps, joinLines(deps));
   renameSync(tempDeps, depsPath);
   return new AbsolutePath(modulePath);
-};
+}

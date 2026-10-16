@@ -18,7 +18,7 @@ import { Options, envSet, repoRoot, resolveUserPath } from './env.zena';
  * side is the name the program sees, and is the host side as typed when
  * there is no `::`.
  */
-let dirMapping = (spec: String): DirMapping => {
+function dirMapping(spec: String): DirMapping {
   var host = spec;
   var guest = spec;
   for (var i = 0; i + 1 < spec.length; i += 1) {
@@ -29,19 +29,19 @@ let dirMapping = (spec: String): DirMapping => {
     }
   }
   return {from: hostDir(host).value, to: guest};
-};
+}
 
 /**
  * A host directory to hand a program. Under ZENA_PROJECT_CACHE or
  * ZENA_LOCAL_CACHE, a directory under `/tmp` moves to `.zena/tmp` in the
  * repository, for sandboxes where `/tmp` is not writable.
  */
-export let hostDir = (path: String): AbsolutePath => {
+export function hostDir(path: String): AbsolutePath {
   let resolved = resolveUserPath(path);
   if ((envSet('ZENA_PROJECT_CACHE') || envSet('ZENA_LOCAL_CACHE')) &&
       (resolved.value == '/tmp' || resolved.value.startsWith('/tmp/'))) {
     let rest = resolved.value.sliceBytes(4, resolved.value.length);
-    let moved = new AbsolutePath(repoRoot().value + '/.zena/tmp' + rest);
+    let moved = new AbsolutePath(`${repoRoot().value}/.zena/tmp${rest}`);
     ensureDir(moved.value);
     return moved;
   }
@@ -49,17 +49,17 @@ export let hostDir = (path: String): AbsolutePath => {
     throw new Error(`--dir ${path}: no such directory`);
   }
   return resolved;
-};
+}
 
 /** Whether the user granted spawning, by flag or ZENA_ALLOW_SPAWN=1. */
-let spawnAllowed = (flag: boolean): boolean => {
+function spawnAllowed(flag: boolean): boolean {
   if (flag) {
     return true;
   }
   return getEnv('ZENA_ALLOW_SPAWN') == '1';
-};
+}
 
-export let runCommand = (args: ParsedArgs, options: Options): i32 => {
+export function runCommand(args: ParsedArgs, options: Options): i32 {
   if (args.rest.length == 0) {
     console.error('Error: run needs a .zena or .wasm file');
     return 2;
@@ -116,4 +116,4 @@ export let runCommand = (args: ParsedArgs, options: Options): i32 => {
   }
   console.error(result.message);
   return 1;
-};
+}
