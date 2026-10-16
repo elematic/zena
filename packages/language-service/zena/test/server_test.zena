@@ -8,20 +8,22 @@ import { JsonObject, parseJson } from 'zena:json';
 import { createLanguageService } from '../lib/service.zena';
 import { LspServer, offsetOf, positionOf } from '../lib/server.zena';
 
-let readOrNull = (path: String): String | null => {
+function readOrNull(path: String): String | null {
   try {
     return readFileSync(path);
   } catch (e) {
     return null;
   }
-};
+}
 
 
 /** A message the server sent, which is always a JSON object. */
-let parsed = (json: String): JsonObject => parseJson(json) as JsonObject;
+function parsed(json: String) {
+  return parseJson(json) as JsonObject;
+}
 
 /** The line the first diagnostic in a publishDiagnostics message starts on. */
-let firstDiagnosticLine = (published: JsonObject): i32 => {
+function firstDiagnosticLine(published: JsonObject): i32 {
   if (let (true, diagnostics) = published.arrayAt('params.diagnostics')) {
     let first = if (diagnostics.length > 0) { diagnostics[0] } else { null };
     if (first is JsonObject) {
@@ -29,19 +31,19 @@ let firstDiagnosticLine = (published: JsonObject): i32 => {
     }
   }
   return -1;
-};
+}
 
 /** A server, and the messages it has sent. */
-let serverSession = (): {server: LspServer, sent: Array<String>} => {
+function serverSession(): {server: LspServer, sent: Array<String>} {
   let sent = new Array<String>();
   let service = createLanguageService('packages/stdlib/zena', readOrNull, 'zena-cli');
-  let server = new LspServer(service, readOrNull, (json: String): void => {
+  let server = new LspServer(service, readOrNull, (json: String) => {
     sent.push(json);
   });
   return {server: server, sent: sent};
-};
+}
 
-export let tests = suite('language server', (): void => {
+export let tests = suite('language server', () => {
   test('positions count UTF-16 units, offsets count bytes', () => {
     // 'é' is two bytes and one UTF-16 unit; '😀' four bytes and two.
     let source = 'ab\né😀x\n';
