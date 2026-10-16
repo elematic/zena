@@ -15,38 +15,39 @@ import { packageToJson } from '../lib/json.zena';
 
 let FIXTURES = 'packages/zenadoc/zena/test/fixtures';
 
-let documented = (): DocumentResult =>
-    documentPackage(loadPackage(join2(FIXTURES, 'lib')), new DocumentOptions());
+function documented() {
+  return documentPackage(loadPackage(join2(FIXTURES, 'lib')), new DocumentOptions());
+}
 
-let moduleNamed = (result: DocumentResult, name: String): DocModule => {
+function moduleNamed(result: DocumentResult, name: String): DocModule {
   for (let module in result.docs.modules) {
     if (module.name == name) {
       return module;
     }
   }
   throw new Error('no module named ' + name);
-};
+}
 
-let declaration = (module: DocModule, name: String): DocDeclaration => {
+function declaration(module: DocModule, name: String): DocDeclaration {
   for (let decl in module.declarations) {
     if (decl.name == name) {
       return decl;
     }
   }
   throw new Error('no declaration named ' + name);
-};
+}
 
-let member = (decl: DocDeclaration, name: String): DocMember => {
+function member(decl: DocDeclaration, name: String): DocMember {
   for (let entry in decl.members) {
     if (entry.name == name) {
       return entry;
     }
   }
   throw new Error('no member named ' + name);
-};
+}
 
 let tests = suite('links', () => {
-  test('links a supertype to the declaration it names', (t: TestContext) => {
+  test('links a supertype to the declaration it names', (t) => {
     let circle = declaration(moduleNamed(documented(), 'shapes'), 'Circle');
     equal(circle.interfaces.length, 1);
     let ref = circle.interfaces[0];
@@ -58,13 +59,13 @@ let tests = suite('links', () => {
     equal(ref.links[0].end, 5);
   });
 
-  test('links a type used in a member signature', (t: TestContext) => {
+  test('links a type used in a member signature', (t) => {
     let facade = moduleNamed(documented(), 'facade');
     let gadget = declaration(facade, 'Gadget');
     equal(gadget.name, 'Gadget');
   });
 
-  test('does not link a type parameter', (t: TestContext) => {
+  test('does not link a type parameter', (t) => {
     // `Pair<A, B>`'s fields are its own type parameters, which name no
     // declaration a reader can open.
     let module = moduleNamed(documented(), 'shapes');
@@ -78,29 +79,31 @@ let tests = suite('links', () => {
     }
   });
 
-  test('inherits members from an implemented interface', (t: TestContext) => {
+  test('inherits members from an implemented interface', (t) => {
     let boxed = declaration(moduleNamed(documented(), 'shapes'), 'Boxed');
     equal(member(boxed, 'boxed').inheritedFrom == null, true);
     equal(member(boxed, 'size').inheritedFrom, 'fixture:shapes#Sized');
   });
 
-  test('a declared member wins over an inherited one', (t: TestContext) => {
+  test('a declared member wins over an inherited one', (t) => {
     // Circle declares `size` itself, so it is not marked inherited.
     let circle = declaration(moduleNamed(documented(), 'shapes'), 'Circle');
     equal(member(circle, 'size').inheritedFrom == null, true);
   });
 
-  test('serializes links and inheritance', (t: TestContext) => {
+  test('serializes links and inheritance', (t) => {
     let json = packageToJson(documented().docs);
     equal(json.contains('"id": "fixture:shapes#Sized"'), true);
     equal(json.contains('"inheritedFrom": "fixture:shapes#Sized"'), true);
   });
 
-  test('produces the same bytes every run', (t: TestContext) => {
+  test('produces the same bytes every run', (t) => {
     equal(packageToJson(documented().docs), packageToJson(documented().docs));
   });
 });
 
-export let main = (): i32 => runAndReport(tests, (s: String): void => {
+export function main(): i32 {
+  return runAndReport(tests, (s) => {
   console.log(s);
 });
+}
