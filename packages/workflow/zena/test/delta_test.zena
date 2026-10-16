@@ -19,31 +19,36 @@ import {
   TaskStep,
 } from '../step.zena';
 
-let digest = (data: String): Fingerprint =>
-  new Fingerprint('d#' + i32ToString(data.hashCode()));
+function digest(data: String) {
+  return new Fingerprint('d#' + i32ToString(data.hashCode()));
+}
 
-let fp = (value: String): Fingerprint => new Fingerprint(value);
+function fp(value: String) {
+  return new Fingerprint(value);
+}
 
-let resolvedOf = (names: Array<String>, fps: Array<String>): Array<ResolvedInput> => {
+function resolvedOf(names: Array<String>, fps: Array<String>): Array<ResolvedInput> {
   let result = new GrowableArray<ResolvedInput>();
   for (var i = 0; i < names.length; i += 1) {
     result.push(new ResolvedInput(names[i], fp(fps[i])));
   }
   return result;
-};
+}
 
-let contains = (items: Array<String>, value: String): boolean => {
+function contains(items: Array<String>, value: String): boolean {
   for (let item in items) {
     if (item == value) {
       return true;
     }
   }
   return false;
-};
+}
 
-let asStep = (step: Step): Step => step;
+function asStep(step: Step) {
+  return step;
+}
 
-let mkInputs = (deps: Array<String>, leafNames: Array<String>): Array<InputRef> => {
+function mkInputs(deps: Array<String>, leafNames: Array<String>): Array<InputRef> {
   let inputs = new GrowableArray<InputRef>();
   for (let leaf in leafNames) {
     inputs.push(new LeafInput(leaf));
@@ -52,11 +57,11 @@ let mkInputs = (deps: Array<String>, leafNames: Array<String>): Array<InputRef> 
     inputs.push(new StepOutputs(new StepKey(dep)));
   }
   return inputs;
-};
+}
 
 let noStrings: Array<String> = new GrowableArray<String>();
 
-export let tests = suite('delta', (): void => {
+export let tests = suite('delta', () => {
   test('computeDelta reports changed, added, and removed inputs', () => {
     let previous = resolvedOf(['a', 'b', 'c'], ['1', '1', '1']);
     let current = resolvedOf(['a', 'b', 'd'], ['1', '2', '1']);
@@ -104,7 +109,7 @@ export let tests = suite('delta', (): void => {
   test('the first run sees no delta; the second sees the change', () => {
     var seenDelta: InputDelta? = null;
     var deltaRuns = 0;
-    let mkGraph = (): Graph => new Graph([
+    let mkGraph = () => new Graph([
       asStep(new TaskStep(
         new StepKey('gen'),
         new Fingerprint('cfg'),
@@ -118,9 +123,10 @@ export let tests = suite('delta', (): void => {
         },
       )),
     ]);
-    let leaves = new HashMap<String, Fingerprint>();
-    leaves['a'] = fp('v1');
-    leaves['b'] = fp('v1');
+    let leaves: HashMap<String, Fingerprint> = {
+      'a' => fp('v1'),
+      'b' => fp('v1'),
+    };
     let engine = new Engine(digest, new NullCache());
     let first = runFuture(engine.run(mkGraph(), leaves, EngineState.empty()));
     isNull(seenDelta);
@@ -141,8 +147,8 @@ export let tests = suite('delta', (): void => {
   });
 
   test('a config change withholds the delta', () => {
-    var deltas = new GrowableArray<String>();
-    let mkGraph = (config: String): Graph => new Graph([
+    let deltas = new GrowableArray<String>();
+    let mkGraph = (config: String) => new Graph([
       asStep(new TaskStep(
         new StepKey('gen'),
         new Fingerprint(config),
@@ -155,8 +161,7 @@ export let tests = suite('delta', (): void => {
         },
       )),
     ]);
-    let leaves = new HashMap<String, Fingerprint>();
-    leaves['a'] = fp('v1');
+    let leaves: HashMap<String, Fingerprint> = {'a' => fp('v1')};
     let engine = new Engine(digest, new NullCache());
     let first = runFuture(engine.run(mkGraph('c1'), leaves, EngineState.empty()));
     let second = runFuture(engine.run(mkGraph('c2'), leaves, first.state));
@@ -167,7 +172,7 @@ export let tests = suite('delta', (): void => {
 
   test('an honest incremental step regenerates only stale outputs', () => {
     var lastStale: Array<String>? = null;
-    let mkGraph = (): Graph => new Graph([
+    let mkGraph = () => new Graph([
       asStep(new TaskStep(
         new StepKey('site'),
         new Fingerprint('cfg'),
@@ -193,9 +198,10 @@ export let tests = suite('delta', (): void => {
         },
       )),
     ]);
-    let leaves = new HashMap<String, Fingerprint>();
-    leaves['a'] = fp('v1');
-    leaves['b'] = fp('v1');
+    let leaves: HashMap<String, Fingerprint> = {
+      'a' => fp('v1'),
+      'b' => fp('v1'),
+    };
     let engine = new Engine(digest, new NullCache());
     let first = runFuture(engine.run(mkGraph(), leaves, EngineState.empty()));
     isTrue(first.allSucceeded);
@@ -219,7 +225,7 @@ export let tests = suite('delta', (): void => {
   });
 
   test('a step contradicting its records fails before caching', () => {
-    let mkGraph = (secondFp: String): Graph => new Graph([
+    let mkGraph = (secondFp: String) => new Graph([
       asStep(new TaskStep(
         new StepKey('site'),
         new Fingerprint('cfg'),
@@ -234,9 +240,10 @@ export let tests = suite('delta', (): void => {
         },
       )),
     ]);
-    let leaves = new HashMap<String, Fingerprint>();
-    leaves['a'] = fp('v1');
-    leaves['b'] = fp('v1');
+    let leaves: HashMap<String, Fingerprint> = {
+      'a' => fp('v1'),
+      'b' => fp('v1'),
+    };
     let engine = new Engine(digest, new NullCache());
     let first = runFuture(engine.run(mkGraph('b1'), leaves, EngineState.empty()));
     isTrue(first.allSucceeded);
@@ -253,7 +260,7 @@ export let tests = suite('delta', (): void => {
 
   test('dependency manifests appear in the delta as step inputs', () => {
     var seenDelta: InputDelta? = null;
-    let mkGraph = (upstreamFp: String): Graph => new Graph([
+    let mkGraph = (upstreamFp: String) => new Graph([
       asStep(new TaskStep(
         new StepKey('up'),
         new Fingerprint('cfg:up'),
@@ -274,8 +281,7 @@ export let tests = suite('delta', (): void => {
         },
       ),
     ]);
-    let leaves = new HashMap<String, Fingerprint>();
-    leaves['src'] = fp('v1');
+    let leaves: HashMap<String, Fingerprint> = {'src' => fp('v1')};
     let engine = new Engine(digest, new NullCache());
     let first = runFuture(engine.run(mkGraph('lib1'), leaves, EngineState.empty()));
 

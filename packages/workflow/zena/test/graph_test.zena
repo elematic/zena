@@ -13,20 +13,21 @@ import {
   TaskStep,
 } from '../step.zena';
 
-let noRun = (ctx: RunContext): Future<OutputManifest> =>
-  Future.of(OutputManifest.empty());
+function noRun(ctx: RunContext): Future<OutputManifest> {
+  return Future.of(OutputManifest.empty());
+}
 
-let step = (key: String, deps: Array<String>): Step => {
+function step(key: String, deps: Array<String>): Step {
   let inputs = new GrowableArray<InputRef>();
   for (let dep in deps) {
     inputs.push(new StepOutputs(new StepKey(dep)));
   }
   return new TaskStep(new StepKey(key), new Fingerprint('cfg'), inputs, noRun);
-};
+}
 
 let none: Array<String> = new GrowableArray<String>();
 
-let positionOf = (g: Graph, key: String): i32 => {
+function positionOf(g: Graph, key: String): i32 {
   let steps = g.steps;
   for (var i = 0; i < steps.length; i += 1) {
     if (steps[i].key.value == key) {
@@ -34,9 +35,9 @@ let positionOf = (g: Graph, key: String): i32 => {
     }
   }
   return -1;
-};
+}
 
-export let tests = suite('graph', (): void => {
+export let tests = suite('graph', () => {
   test('orders dependencies before dependents', () => {
     let g = new Graph([
       step('d', ['b', 'c']),
@@ -61,7 +62,7 @@ export let tests = suite('graph', (): void => {
   });
 
   test('duplicate step keys are rejected', () => {
-    throws((): void => {
+    throws(() => {
       new Graph([step('a', none), step('a', none)]);
     });
   });
@@ -100,7 +101,7 @@ export let tests = suite('graph', (): void => {
   });
 
   test('a repeated dependency is rejected', () => {
-    throws((): void => {
+    throws(() => {
       new Graph([step('a', none), step('b', ['a', 'a'])]);
     });
   });
@@ -110,7 +111,7 @@ export let tests = suite('graph', (): void => {
     inputs.push(new LeafInput('x'));
     inputs.push(new LeafInput('x'));
     let s: Step = new TaskStep(new StepKey('build'), new Fingerprint('cfg'), inputs, noRun);
-    throws((): void => {
+    throws(() => {
       new Graph([s]);
     });
   });

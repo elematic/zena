@@ -25,8 +25,9 @@ import {
   TaskStep,
 } from '../step.zena';
 
-let digest = (data: String): Fingerprint =>
-  new Fingerprint('d#' + i32ToString(data.hashCode()));
+function digest(data: String) {
+  return new Fingerprint('d#' + i32ToString(data.hashCode()));
+}
 
 /** A StepCache over a HashMap that counts lookups and stores. */
 class InMemoryCache implements StepCache {
@@ -69,7 +70,7 @@ class Runs {
 
 let noStrings: Array<String> = new GrowableArray<String>();
 
-let mkInputs = (deps: Array<String>, leafNames: Array<String>): Array<InputRef> => {
+function mkInputs(deps: Array<String>, leafNames: Array<String>): Array<InputRef> {
   let inputs = new GrowableArray<InputRef>();
   for (let leaf in leafNames) {
     inputs.push(new LeafInput(leaf));
@@ -78,16 +79,16 @@ let mkInputs = (deps: Array<String>, leafNames: Array<String>): Array<InputRef> 
     inputs.push(new StepOutputs(new StepKey(dep)));
   }
   return inputs;
-};
+}
 
 /** A step producing one output named after the step with fingerprint outFp. */
-let mkStep = (
+function mkStep(
   runs: Runs,
   key: String,
   deps: Array<String>,
   leafNames: Array<String>,
   outFp: String,
-): Step => {
+): Step {
   return new TaskStep(
     new StepKey(key),
     new Fingerprint('cfg:' + key),
@@ -99,27 +100,28 @@ let mkStep = (
       ]));
     },
   );
-};
+}
 
-let asStep = (step: Step): Step => step;
+function asStep(step: Step) {
+  return step;
+}
 
-let sourceOf = (result: RunResult, key: String): StepSource => {
+function sourceOf(result: RunResult, key: String): StepSource {
   let outcome = result.outcomeOf(new StepKey(key));
   if (outcome is Succeeded) {
     return outcome.source;
   }
   fail('step did not succeed: ' + key);
-};
+}
 
-export let tests = suite('engine', (): void => {
+export let tests = suite('engine', () => {
   test('runs steps in dependency order', () => {
     let runs = new Runs();
     let graph = new Graph([
       mkStep(runs, 'b', ['a'], noStrings, 'out-b'),
       mkStep(runs, 'a', noStrings, ['src'], 'out-a'),
     ]);
-    let leaves = new HashMap<String, Fingerprint>();
-    leaves['src'] = new Fingerprint('v1');
+    let leaves: HashMap<String, Fingerprint> = {'src' => new Fingerprint('v1')};
     let engine = new Engine(digest, new NullCache());
     let result = runFuture(engine.run(graph, leaves, EngineState.empty()));
     isTrue(result.allSucceeded);
@@ -137,8 +139,7 @@ export let tests = suite('engine', (): void => {
       mkStep(runs, 'a', noStrings, ['src'], 'out-a'),
       mkStep(runs, 'b', ['a'], noStrings, 'out-b'),
     ]);
-    let leaves = new HashMap<String, Fingerprint>();
-    leaves['src'] = new Fingerprint('v1');
+    let leaves: HashMap<String, Fingerprint> = {'src' => new Fingerprint('v1')};
     let cache = new InMemoryCache();
     let engine = new Engine(digest, cache);
     let first = runFuture(engine.run(graph, leaves, EngineState.empty()));
@@ -155,14 +156,15 @@ export let tests = suite('engine', (): void => {
 
   test('a leaf change reruns the reader; unchanged output cuts off there', () => {
     let runs = new Runs();
-    let mkGraph = (): Graph => new Graph([
+    let mkGraph = () => new Graph([
       mkStep(runs, 'a', noStrings, ['src-a'], 'out-a'),
       mkStep(runs, 'b', noStrings, ['src-b'], 'out-b'),
       mkStep(runs, 'c', ['a', 'b'], noStrings, 'out-c'),
     ]);
-    let leaves = new HashMap<String, Fingerprint>();
-    leaves['src-a'] = new Fingerprint('v1');
-    leaves['src-b'] = new Fingerprint('v1');
+    let leaves: HashMap<String, Fingerprint> = {
+      'src-a' => new Fingerprint('v1'),
+      'src-b' => new Fingerprint('v1'),
+    };
     let engine = new Engine(digest, new NullCache());
     let first = runFuture(engine.run(mkGraph(), leaves, EngineState.empty()));
     isTrue(first.allSucceeded);
@@ -179,8 +181,7 @@ export let tests = suite('engine', (): void => {
 
   test('a changed dependency output reruns the dependent', () => {
     let runs = new Runs();
-    let leaves = new HashMap<String, Fingerprint>();
-    leaves['src'] = new Fingerprint('v1');
+    let leaves: HashMap<String, Fingerprint> = {'src' => new Fingerprint('v1')};
     let engine = new Engine(digest, new NullCache());
     let g1 = new Graph([
       mkStep(runs, 'a', noStrings, ['src'], 'out-a-v1'),
@@ -201,11 +202,10 @@ export let tests = suite('engine', (): void => {
 
   test('the cache restores results when state is lost', () => {
     let runs = new Runs();
-    let mkGraph = (): Graph => new Graph([
+    let mkGraph = () => new Graph([
       mkStep(runs, 'a', noStrings, ['src'], 'out-a'),
     ]);
-    let leaves = new HashMap<String, Fingerprint>();
-    leaves['src'] = new Fingerprint('v1');
+    let leaves: HashMap<String, Fingerprint> = {'src' => new Fingerprint('v1')};
     let cache = new InMemoryCache();
     let engine = new Engine(digest, cache);
     runFuture(engine.run(mkGraph(), leaves, EngineState.empty()));
@@ -264,10 +264,9 @@ export let tests = suite('engine', (): void => {
 
   test('a config change alone reruns the step', () => {
     let runs = new Runs();
-    let leaves = new HashMap<String, Fingerprint>();
-    leaves['src'] = new Fingerprint('v1');
+    let leaves: HashMap<String, Fingerprint> = {'src' => new Fingerprint('v1')};
     let engine = new Engine(digest, new NullCache());
-    let mkWithConfig = (config: String): Graph => new Graph([
+    let mkWithConfig = (config: String) => new Graph([
       asStep(new TaskStep(
         new StepKey('a'),
         new Fingerprint(config),
