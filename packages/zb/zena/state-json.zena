@@ -19,7 +19,7 @@ import {StepKey} from 'workflow:step';
  * manifest per cache entry).
  */
 
-let appendManifest = (b: JsonBuilder, manifest: OutputManifest): void => {
+function appendManifest(b: JsonBuilder, manifest: OutputManifest) {
   b.beginArray();
   for (let entry in manifest.outputs) {
     b.beginObject();
@@ -39,15 +39,15 @@ let appendManifest = (b: JsonBuilder, manifest: OutputManifest): void => {
     b.endObject();
   }
   b.endArray();
-};
+}
 
-export let manifestToJson = (manifest: OutputManifest): String => {
+export function manifestToJson(manifest: OutputManifest): String {
   let b = new JsonBuilder();
   appendManifest(b, manifest);
   return b.toString();
-};
+}
 
-export let stateToJson = (state: EngineState): String => {
+export function stateToJson(state: EngineState): String {
   let b = new JsonBuilder();
   b.beginObject();
   b.key('version');
@@ -77,30 +77,30 @@ export let stateToJson = (state: EngineState): String => {
   b.endObject();
   b.endObject();
   return b.toString();
-};
+}
 
-let asString = (value: JsonValue, what: String): String => {
+function asString(value: JsonValue, what: String): String {
   if (value is String) {
     return value;
   }
   throw new Error('state json: expected a string for ' + what);
-};
+}
 
-let asArray = (value: JsonValue, what: String): JsonArray => {
+function asArray(value: JsonValue, what: String): JsonArray {
   if (value is JsonArray) {
     return value;
   }
   throw new Error('state json: expected an array for ' + what);
-};
+}
 
-let asObject = (value: JsonValue, what: String): JsonObject => {
+function asObject(value: JsonValue, what: String): JsonObject {
   if (value is JsonObject) {
     return value;
   }
   throw new Error('state json: expected an object for ' + what);
-};
+}
 
-export let manifestFromJsonValue = (value: JsonValue): OutputManifest => {
+export function manifestFromJsonValue(value: JsonValue): OutputManifest {
   let entries = asArray(value, 'outputs');
   let outputs = new GrowableArray<OutputEntry>();
   for (var i = 0; i < entries.length; i += 1) {
@@ -122,13 +122,13 @@ export let manifestFromJsonValue = (value: JsonValue): OutputManifest => {
     ));
   }
   return new OutputManifest(outputs);
-};
+}
 
-export let manifestFromJson = (text: String): OutputManifest => {
+export function manifestFromJson(text: String): OutputManifest {
   return manifestFromJsonValue(parseJson(text));
-};
+}
 
-export let stateFromJson = (text: String): EngineState => {
+export function stateFromJson(text: String): EngineState {
   let root = asObject(parseJson(text), 'state root');
   let version = root['version'];
   if (!(version is Box<f64>)) {
@@ -161,4 +161,4 @@ export let stateFromJson = (text: String): EngineState => {
     );
   });
   return state;
-};
+}

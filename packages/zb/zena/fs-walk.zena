@@ -17,7 +17,7 @@ import {ConfigError} from './wireit-config.zena';
  */
 export class GlobBase(base: String, rest: String)
 
-export let splitBase = (pattern: String): GlobBase => {
+export function splitBase(pattern: String): GlobBase {
   let segments = pattern.split('/');
   var literal = 0;
   while (literal < segments.length && !hasMagic(segments[literal])) {
@@ -42,21 +42,21 @@ export let splitBase = (pattern: String): GlobBase => {
     rest.append(segments[i]);
   }
   return new GlobBase(base.toString(), rest.toString());
-};
+}
 
 /** Directories never worth walking for build inputs or outputs. */
-let skipDir = (name: String): boolean => {
+function skipDir(name: String) {
   return name == 'node_modules' || name == '.git' || name == '.wireit' ||
     name == '.zb' || name == 'target';
-};
+}
 
-let collectFiles = (
+function collectFiles(
   root: String,
   dir: String,
   set: GlobSet,
   out: GrowableArray<String>,
   seen: HashSet<String>,
-): void => {
+): void {
   let full = withRoot(root, dir);
   if (!existsSync(full)) {
     return;
@@ -82,7 +82,7 @@ let collectFiles = (
       }
     }
   }
-};
+}
 
 /**
  * Expands a package's glob list to sorted workspace-relative file
@@ -91,11 +91,11 @@ let collectFiles = (
  * out of it or by naming an absolute path, is an error. Negations apply
  * across the whole list in order.
  */
-export let expandGlobs = (
+export function expandGlobs(
   root: String,
   packageDir: String,
   globs: Array<String>,
-): Array<String> => {
+): Array<String> {
   let rewritten = new GrowableArray<String>();
   let bases = new GrowableArray<String>();
   let seenBases = new HashSet<String>();
@@ -126,24 +126,24 @@ export let expandGlobs = (
   for (let base in bases) {
     collectFiles(root, base, set, out, seen);
   }
-  sortBy(out, (a: String, b: String) => compareStrings(a, b));
+  sortBy(out, (a, b) => compareStrings(a, b));
   return out;
-};
+}
 
 /** The content fingerprint zb uses everywhere: 'sha256:<hex>'. */
-export let hashFile = (root: String, path: String): Fingerprint => {
+export function hashFile(root: String, path: String): Fingerprint {
   return new Fingerprint('sha256:' + sha256Hex(readFileBytesSync(withRoot(root, path)) as ByteArray));
-};
+}
 
 /** Hashes files into the snapshot map, skipping already-hashed paths. */
-export let hashFilesInto = (
+export function hashFilesInto(
   root: String,
   files: Array<String>,
   into: HashMap<String, Fingerprint>,
-): void => {
+): void {
   for (let path in files) {
     if (!into.has(path)) {
       into[path] = hashFile(root, path);
     }
   }
-};
+}

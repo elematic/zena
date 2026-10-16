@@ -12,9 +12,11 @@ import {
   stateToJson,
 } from '../state-json.zena';
 
-let fp = (value: String): Fingerprint => new Fingerprint(value);
+function fp(value: String) {
+  return new Fingerprint(value);
+}
 
-let sampleState = (): EngineState => {
+function sampleState() {
   let state = new EngineState();
   let inputs = new GrowableArray<ResolvedInput>();
   inputs.push(new ResolvedInput('leaf:src/a.ts', fp('f1')));
@@ -27,9 +29,9 @@ let sampleState = (): EngineState => {
     new StepRecord(fp('cfg'), new CacheKey('key1'), new OutputManifest(outputs), inputs),
   );
   return state;
-};
+}
 
-export let tests = suite('state-json', (): void => {
+export let tests = suite('state-json', () => {
   test('state round-trips', () => {
     let text = stateToJson(sampleState());
     let state = stateFromJson(text);
@@ -49,13 +51,13 @@ export let tests = suite('state-json', (): void => {
         equal(deps.length, 1);
         equal(deps[0], 'leaf:src/a.ts');
       } else {
-        throws((): void => {
+        throws(() => {
           throw new Error('expected dependsOn to survive');
         });
       }
       isNull(record.manifest.outputs[1].dependsOn);
     } else {
-      throws((): void => {
+      throws(() => {
         throw new Error('expected the record to survive');
       });
     }
@@ -75,13 +77,13 @@ export let tests = suite('state-json', (): void => {
   });
 
   test('malformed input is rejected', () => {
-    throws((): void => {
+    throws(() => {
       stateFromJson('{}');
     });
-    throws((): void => {
+    throws(() => {
       stateFromJson('{"version": 2, "steps": {}}');
     });
-    throws((): void => {
+    throws(() => {
       stateFromJson('{"version": 1, "steps": {"x": {"config": 5}}}');
     });
   });

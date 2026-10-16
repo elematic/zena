@@ -23,7 +23,7 @@ import {ScriptRef} from '../wireit-config.zena';
  * place.
  */
 
-let copyDir = (from: String, to: String): void => {
+function copyDir(from: String, to: String): void {
   ensureDir(to);
   for (let entry in listDirSync(from)) {
     // Skip dot entries and any build state from manual runs of the
@@ -32,25 +32,25 @@ let copyDir = (from: String, to: String): void => {
         entry.name == 'out') {
       continue;
     }
-    let src = from + '/' + entry.name;
-    let dst = to + '/' + entry.name;
+    let src = `${from}/${entry.name}`;
+    let dst = `${to}/${entry.name}`;
     if (entry.fileType == FileType.Directory) {
       copyDir(src, dst);
     } else {
       writeFileBytesSync(dst, readFileBytesSync(src));
     }
   }
-};
+}
 
-let sourceOf = (result: RunResult, key: String): StepSource => {
+function sourceOf(result: RunResult, key: String): StepSource {
   let outcome = result.outcomeOf(new StepKey(key));
   if (outcome is Succeeded) {
     return outcome.source;
   }
   fail('step did not succeed: ' + key);
-};
+}
 
-export let tests = suite('zb example workspace', (): void => {
+export let tests = suite('zb example workspace', () => {
   test('the site builds, stays fresh, and rebuilds incrementally', () => {
     let root = '/tmp/zb-example-' + i64ToString(monotonic() as i64);
     copyDir('packages/zb/example', root);
