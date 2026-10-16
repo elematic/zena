@@ -12,7 +12,7 @@
  */
 
 import { parseJson, JsonValue, JsonObject } from 'zena:json';
-import { exists, isDirectory, listDir, readFile, FileType } from 'zena:fs';
+import { existsSync, isDirectorySync, listDirSync, readFileSync, FileType } from 'zena:fs';
 import { basename, dirname, join2 } from 'zena:path';
 
 let PACKAGE_MANIFEST = 'zena-package.json';
@@ -48,10 +48,10 @@ export let loadPackage = (
   name: String | null = null,
   target: String = 'zena-cli'
 ): Package => {
-  if (!exists(path)) {
+  if (!existsSync(path)) {
     throw new Error('no such path: ' + path);
   }
-  if (!isDirectory(path)) {
+  if (!isDirectorySync(path)) {
     return singleFilePackage(path, name);
   }
   let manifestPath = manifestIn(path);
@@ -64,11 +64,11 @@ export let loadPackage = (
 /** The manifest in a directory, whichever of the two names it uses. */
 let manifestIn = (root: String): String | null => {
   let preferred = join2(root, PACKAGE_MANIFEST);
-  if (exists(preferred)) {
+  if (existsSync(preferred)) {
     return preferred;
   }
   let stdlib = join2(root, STDLIB_MANIFEST);
-  if (exists(stdlib)) {
+  if (existsSync(stdlib)) {
     return stdlib;
   }
   return null;
@@ -80,7 +80,7 @@ let manifestPackage = (
   override: String | null,
   target: String
 ): Package => {
-  let json = parseJson(readFile(manifestPath));
+  let json = parseJson(readFileSync(manifestPath));
   let manifest = json as JsonObject;
   var exports = manifest['exports'];
   if (exports == null) {
@@ -192,7 +192,7 @@ let collectZenaFiles = (
   out: GrowableArray<PackageModule>
 ): void => {
   let dir = if (prefix.length == 0) { root } else { join2(root, prefix) };
-  for (let entry in listDir(dir)) {
+  for (let entry in listDirSync(dir)) {
     if (entry.name == '.' || entry.name == '..') {
       continue;
     }

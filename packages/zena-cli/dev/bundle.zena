@@ -1,6 +1,6 @@
 import { ArgParser } from 'zena:args';
 import { getArguments, exit } from 'zena:cli';
-import { exists, isDirectory, isFile, listDir, FileType, mkdir, readFileBytes, writeFile } from 'zena:fs';
+import { existsSync, isDirectorySync, isFileSync, listDirSync, FileType, mkdirSync, readFileBytesSync, writeFileSync } from 'zena:fs';
 import { dirname, join2, relative } from 'zena:path';
 import { StringBuilder, GrowableArray } from 'zena:core';
 import { sha256Hex, sha256HexOfString } from 'zena:crypto';
@@ -13,10 +13,10 @@ let collectFiles = (
   base: String,
   out: GrowableArray<BundleFile>,
 ): void => {
-  if (!isDirectory(dir)) {
+  if (!isDirectorySync(dir)) {
     return;
   }
-  for (let entry in listDir(dir)) {
+  for (let entry in listDirSync(dir)) {
     let name = entry.name;
     // Skip hidden files or OS artifacts like .DS_Store
     if (name.startsWith('.')) {
@@ -64,7 +64,7 @@ export let main = (): i32 => {
   for (let f in files) {
     hashSummary.append(f.relPath);
     hashSummary.append(':');
-    let contentHash = sha256Hex(readFileBytes(f.absPath));
+    let contentHash = sha256Hex(readFileBytesSync(f.absPath) as ByteArray);
     hashSummary.append(contentHash);
     hashSummary.append('\n');
   }
@@ -85,8 +85,8 @@ export let main = (): i32 => {
   }
   sb.append('];\n\n');
 
-  if (isFile(modulePath)) {
-    let wasmHash = sha256Hex(readFileBytes(modulePath));
+  if (isFileSync(modulePath)) {
+    let wasmHash = sha256Hex(readFileBytesSync(modulePath) as ByteArray);
     sb.append('pub static BUNDLED_CLI_HASH: Option<&str> = Some("');
     sb.append(wasmHash);
     sb.append('");\n');
@@ -97,11 +97,11 @@ export let main = (): i32 => {
   }
 
   let outDir = dirname(outPath);
-  if (outDir.length > 0 && !exists(outDir)) {
-    mkdir(outDir);
+  if (outDir.length > 0 && !existsSync(outDir)) {
+    mkdirSync(outDir);
   }
 
-  writeFile(outPath, sb.toString());
+  writeFileSync(outPath, sb.toString());
   console.log(`Bundled ${files.length} stdlib files into ${outPath}`);
   return 0;
 };

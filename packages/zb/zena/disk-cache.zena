@@ -1,4 +1,4 @@
-import {exists, isFile, readFile, readFileBytes, writeFile, writeFileBytes} from 'zena:fs';
+import {existsSync, isFileSync, readFileSync, readFileBytesSync, writeFileSync, writeFileBytesSync} from 'zena:fs';
 import {StepCache} from 'workflow:cache';
 import {CacheKey, Fingerprint} from 'workflow:fingerprint';
 import {OutputManifest} from 'workflow:manifest';
@@ -67,12 +67,12 @@ export class DiskCache implements StepCache {
 
   async get(step: StepKey, key: CacheKey): Future<OutputManifest?> {
     let manifestPath = this.#manifestPath(step, key);
-    if (!isFile(manifestPath)) {
+    if (!isFileSync(manifestPath)) {
       return null;
     }
-    let manifest = manifestFromJson(readFile(manifestPath));
+    let manifest = manifestFromJson(readFileSync(manifestPath));
     for (let entry in manifest.outputs) {
-      if (isFileEntry(entry.fingerprint) && !isFile(this.#blobPath(step, entry.fingerprint))) {
+      if (isFileEntry(entry.fingerprint) && !isFileSync(this.#blobPath(step, entry.fingerprint))) {
         return null;
       }
     }
@@ -82,7 +82,7 @@ export class DiskCache implements StepCache {
       }
       let target = withRoot(this.#root, entry.name);
       ensureParentDir(target);
-      writeFileBytes(target, readFileBytes(this.#blobPath(step, entry.fingerprint)));
+      writeFileBytesSync(target, readFileBytesSync(this.#blobPath(step, entry.fingerprint)));
     }
     return manifest;
   }
@@ -96,10 +96,10 @@ export class DiskCache implements StepCache {
         continue;
       }
       let blob = this.#blobPath(step, entry.fingerprint);
-      if (!exists(blob)) {
-        writeFileBytes(blob, readFileBytes(withRoot(this.#root, entry.name)));
+      if (!existsSync(blob)) {
+        writeFileBytesSync(blob, readFileBytesSync(withRoot(this.#root, entry.name)));
       }
     }
-    writeFile(this.#manifestPath(step, key), manifestToJson(manifest));
+    writeFileSync(this.#manifestPath(step, key), manifestToJson(manifest));
   }
 }

@@ -1,6 +1,6 @@
 import {runFuture} from 'zena:async';
 import { HashSet } from 'zena:collections';
-import {isFile, readFile, writeFile} from 'zena:fs';
+import {isFileSync, readFileSync, writeFileSync} from 'zena:fs';
 import {monotonic} from 'zena:time';
 import {
   Engine,
@@ -32,10 +32,10 @@ let loadState = (root: String, stateDirs: Array<String>): EngineState => {
   let state = new EngineState();
   for (let stateDir in stateDirs) {
     let path = packageStatePath(root, stateDir);
-    if (!isFile(path)) {
+    if (!isFileSync(path)) {
       continue;
     }
-    stateFromJson(readFile(path)).forEach((key, record) => {
+    stateFromJson(readFileSync(path)).forEach((key, record) => {
       state.setRecord(new StepKey(key), record);
     });
   }
@@ -54,8 +54,8 @@ let saveState = (root: String, result: RunResult): void => {
     let stateDir = stateDirOf(key);
     if (!byDir.has(stateDir)) {
       let path = packageStatePath(root, stateDir);
-      byDir[stateDir] = if (isFile(path))
-        stateFromJson(readFile(path))
+      byDir[stateDir] = if (isFileSync(path))
+        stateFromJson(readFileSync(path))
       else
         EngineState.empty();
       dirs.push(stateDir);
@@ -68,7 +68,7 @@ let saveState = (root: String, result: RunResult): void => {
     if (let (true, packageState) = byDir.get(stateDir)) {
       let path = packageStatePath(root, stateDir);
       ensureParentDir(path);
-      writeFile(path, stateToJson(packageState));
+      writeFileSync(path, stateToJson(packageState));
     }
   }
 };

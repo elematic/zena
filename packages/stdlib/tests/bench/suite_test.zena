@@ -3,7 +3,7 @@
 // spawning commands need.
 import { suite, test } from 'zena:test';
 import { equal, isTrue } from 'zena:assert';
-import { exists, readFile, unlink } from 'zena:fs';
+import { existsSync, readFileSync, unlinkSync } from 'zena:fs';
 import { runSuite } from 'zena:bench';
 
 let fixtures = 'packages/stdlib/tests/bench/fixtures';
@@ -12,14 +12,14 @@ export let tests = suite('bench suites', (): void => {
   test('a module and a command are sampled and reported', () => {
     let out = '/tmp/zena-suite-test.results.json';
     equal(runSuite(`${fixtures}/suite.json`, {out: out}), 0);
-    isTrue(exists(out));
-    let json = readFile(out);
+    isTrue(existsSync(out));
+    let json = readFileSync(out);
     isTrue(json.contains('"module"'));
     isTrue(json.contains('"command"'));
     // The command reports 0.25 ms on its last line, so every one of its
     // samples is exactly that.
     isTrue(json.contains('0.25'));
-    unlink(out);
+    unlinkSync(out);
   });
 
   test('a path that climbs out of the config\'s directory is resolved', () => {
@@ -27,7 +27,7 @@ export let tests = suite('bench suites', (): void => {
     // a `..` segment, so the suite has to resolve it first.
     let out = '/tmp/zena-suite-nested.results.json';
     equal(runSuite(`${fixtures}/nested/suite.json`, {out: out}), 0);
-    unlink(out);
+    unlinkSync(out);
   });
 
   test('a zena variant without a compiler is an error', () => {
@@ -48,6 +48,6 @@ export let tests = suite('bench suites', (): void => {
     });
     equal(status, 0);
     equal(compiled, 1);
-    unlink(out);
+    unlinkSync(out);
   });
 });

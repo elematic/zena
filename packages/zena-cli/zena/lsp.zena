@@ -11,9 +11,9 @@
  */
 
 import { ParsedArgs } from 'zena:args';
-import { readStdin } from 'zena:cli';
+import { readStdinSync } from 'zena:cli';
 import { logString } from 'zena:console';
-import { isFile, readFile } from 'zena:fs';
+import { isFileSync, readFileSync } from 'zena:fs';
 import { CompilerHost } from 'zena-compiler:library-loader';
 import { PackageConfig } from 'zena-compiler:module-resolver';
 import { loadPackageMap } from 'zena-compiler:package-manifest';
@@ -24,7 +24,7 @@ import { Options, repoRoot, stdlibDir } from './env.zena';
 /** A file's text, or null when it cannot be read. */
 let readOrNull = (path: String): String | null => {
   try {
-    return readFile(path);
+    return readFileSync(path);
   } catch (e) {
     return null;
   }
@@ -33,7 +33,7 @@ let readOrNull = (path: String): String | null => {
 /** Reads the package manifest for `loadPackageMap`. */
 class ManifestHost implements CompilerHost {
   readFile(path: String): String {
-    return readFile(path);
+    return readFileSync(path);
   }
 
   /** Null: this host reads only the manifest. */
@@ -48,7 +48,7 @@ class ManifestHost implements CompilerHost {
  */
 let packageMap = (): Map<String, PackageConfig> | null => {
   let manifest = `${repoRoot().value}/zena-packages.json`;
-  if (!isFile(manifest)) {
+  if (!isFileSync(manifest)) {
     return null;
   }
   return loadPackageMap(new ManifestHost(), manifest);
@@ -66,7 +66,7 @@ export let lspCommand = (args: ParsedArgs, options: Options): i32 => {
   let server = new LspServer(service, readOrNull, (json: String): void => {
     logString(frame(json));
   });
-  let messages = new MessageReader((): String => readStdin(65536));
+  let messages = new MessageReader((): String => readStdinSync(65536));
   while (!server.exited) {
     let body = messages.next();
     if (body == null) {

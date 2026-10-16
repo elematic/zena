@@ -9,7 +9,7 @@
 import { Completer } from 'zena:async';
 import { HashMap } from 'zena:collections';
 import { Err, Ok, Option, Outcome } from 'zena:core';
-import { Stream, StreamWriter } from 'zena:stream';
+import { Stream, bytesStream } from 'zena:stream';
 import { URL } from 'zena:url';
 import {
   ErrorCode, ErrorCodeConnectionReadTimeout, Fields, MethodPost, Request, RequestOptions,
@@ -136,7 +136,7 @@ export let post = async (
     options = some(set);
   }
   let (wire, transmitted) =
-      Request.new_(headers, some(bytesStream(body)), trailers, options);
+      Request.new_(headers, some(bytesStream(body as FixedArray<u8>)), trailers, options);
   wire.setMethod(new MethodPost());
   wire.setScheme(some(origin.scheme));
   wire.setAuthority(some(origin.authority));
@@ -165,16 +165,3 @@ export let post = async (
   return new Exchange(status, responseHeaders, responseBody, responseTrailers, received);
 };
 
-/** A stream that delivers `bytes` and ends. */
-export let bytesStream = (bytes: ByteArray): Stream<u8> => {
-  let writer = new StreamWriter<u8>();
-  pump(writer, bytes as FixedArray<u8>);
-  return writer.stream;
-};
-
-let pump = async (writer: StreamWriter<u8>, bytes: FixedArray<u8>): Future<void> => {
-  if (bytes.length > 0) {
-    await writer.writeAll(bytes, bytes.length);
-  }
-  writer.close();
-};

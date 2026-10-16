@@ -110,7 +110,7 @@ import is followed to its declaration with `Symbol.resolveTarget()`.
 `zena lsp` analyses for the `zena-cli` target and loads the repository's
 `zena-packages.json`, so a file that uses `zena:fs` or imports
 `zena-compiler:parser` checks the way it builds. It reads stdin with
-`zena:cli`'s `readStdin`. Diagnostics are published for the document
+`zena:cli`'s `readStdinSync`. Diagnostics are published for the document
 that was checked; problems it finds in the files that document imports
 wait until those files are opened.
 

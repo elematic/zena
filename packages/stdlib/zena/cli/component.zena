@@ -18,7 +18,7 @@
  * ```
  */
 
-import { Some, StringBuilder } from 'zena:core';
+import { Some } from 'zena:core';
 import { Stream } from 'zena:stream';
 import { blockOn } from 'zena:wasi';
 import {
@@ -54,22 +54,25 @@ export let stdin = (): Stream<u8> => {
  * bytes of it as a string of those bytes; '' at the end of the input.
  *
  * ```zena
- * var chunk = readStdin();
+ * var chunk = await readStdin();
  * while (chunk != '') {
  *   handle(chunk);
- *   chunk = readStdin();
+ *   chunk = await readStdin();
  * }
  * ```
  */
-export let readStdin = (max: i32 = 4096): String => {
+export async function readStdin(max: i32 = 4096): Future<String> {
   let buffer = new FixedArray<u8>(max, 0 as u8);
-  let count = blockOn(stdin().read(buffer));
-  let text = new StringBuilder();
-  for (var i = 0; i < count; i += 1) {
-    text.appendByte(buffer[i] as i32);
-  }
-  return text.toString();
-};
+  let count = await stdin().read(buffer);
+  return String.fromBytes(buffer.slice(0, count));
+}
+
+/**
+ * `readStdin`, waited for in `blockOn`: for a synchronous caller inside
+ * `main`, where the host allows a blocking wait. See
+ * docs/design/async-fs-cli.md for where it does not.
+ */
+export let readStdinSync = (max: i32 = 4096): String => blockOn(readStdin(max));
 
 // ============================================================================
 // Exit Codes

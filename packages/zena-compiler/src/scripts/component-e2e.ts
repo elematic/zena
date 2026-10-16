@@ -553,11 +553,11 @@ const FIXTURES: Fixture[] = [
     name: 'fs-roundtrip',
     wasi: ['p3=y'],
     preopen: true,
-    // `zena:fs` over wasi:filesystem 0.3.0 from a synchronous `main`:
-    // every call waits in `blockOn` until its asynchronous import
-    // settles, which wasmtime allows because `main` is exported async. A
-    // directory made, a file written and read back as text and as
-    // bytes, listed, stat'd, renamed, removed.
+    // `zena:fs` over wasi:filesystem 0.3.0 from an `async` main: every
+    // call is awaited, so the task parks on the import's subtask and
+    // the host re-enters through the callback. A directory made, a file
+    // written and read back as text and as bytes, listed, stat'd,
+    // renamed, removed. (fs-sizes covers the `Sync` forms.)
     invocations: [
       {
         invoke: 'main()',

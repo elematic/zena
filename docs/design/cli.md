@@ -6,6 +6,10 @@ Implemented over `wasi:cli@0.3.0`, in `packages/stdlib/zena/cli/component.zena`,
 since 2026-09-28: `getArguments`, `getEnvironment` and `initialCwd` call the
 modules the compiler synthesizes from the vendored WIT
 (`wasi:cli/environment`), and `exit` calls `wasi:cli/exit`'s `exit-with-code`.
+Standard input is `stdin()`, a `Stream<u8>` over `wasi:cli/stdin`'s
+`read-via-stream`, and `readStdin(max): Future<String>` reads one chunk of
+it; `readStdinSync` is the same read waited for in `blockOn`, for a
+synchronous `main` ([async-fs-cli.md](./async-fs-cli.md)).
 The module resolves on the `zena-cli` and `component` targets, which are
 both components. The WASI preview 1 implementation this document describes
 below, with its linear-memory buffers and C strings, was deleted with the
