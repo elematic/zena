@@ -134,15 +134,31 @@ optional fields is equal when both are absent, or both present with
 equal values; a value is read only when present. Recursive record types
 work, because a nested pair calls its pair's function.
 
-Not yet covered (#372):
+**The erased comparison** (`lowerErasedEq`, `$erasedEq`) still compares
+records and tuples by identity: `anyref` and interface operands, and
+unions of several record or tuple types. It waits for the switch to
+closed record types (row-types.md, Decisions, Sequencing), because the
+current representation cannot tell two record shapes apart at runtime:
 
-- **The erased comparison** (`lowerErasedEq`, `$erasedEq`) still
-  compares records and tuples by identity. That covers `anyref` and
-  interface operands, and unions of several record or tuple types.
-- **`hashCode()` as a method:** a record has no methods, so generic code
-  bounded by `Hashable` that calls `x.hashCode()` cannot be
-  instantiated with a record. `HashMap` and `HashSet` use the `hash`
-  intrinsic instead, which works.
+- `$erasedEq` sees two references, so it would have to test which record
+  shape each one is. Wasm GC types are structural, and the fat pointer
+  and dispatch table of `{a: i32}` have the same wasm types as those of
+  `{b: i32}`. A type test cannot separate them, and comparing the two
+  through the getters would call `{a: 1}` and `{b: 1}` equal.
+- Comparing dispatch tables does not work either. Two values of the
+  same closed type can carry different tables: the type's own, and one
+  adapted from a wider record that was converted to it.
+
+Closed records give each shape a struct of its own, and existentials a
+dispatch slot naming their shape (row-types.md, Decisions), which is
+what the erased comparison needs.
+
+**`hashCode()` on a record or tuple.** Records have no methods, but they
+satisfy `Hashable`, so generic code bounded by it can call `x.hashCode()`
+on one. The call lowers to the type's `$valueHash` function, the hash
+`hash<T>` gives (`isValueHashCodeCall` in value-equality.zena, checked
+by `#lowerMethodCall` and by reachability's `#noteMethodCall`). A record
+with a field named `hashCode` calls that field instead.
 
 **Hashing.** Records and tuples satisfy `Hashable` and `Equatable`
 without declaring anything (the checker's

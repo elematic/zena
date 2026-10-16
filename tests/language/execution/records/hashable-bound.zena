@@ -1,0 +1,27 @@
+// @mode: run
+// @result: 1
+// Records and tuples satisfy `Hashable`, so generic code bounded by it
+// can call `hashCode()` on one. The call hashes the value's fields, the
+// same hash the `hash` intrinsic gives, so equal values hash alike.
+import { hash } from 'zena:core';
+
+let hashOf = <T extends Hashable>(v: T): i32 => v.hashCode();
+
+let bothEqual = <T extends Hashable>(a: T, b: T): boolean =>
+    a == b && a.hashCode() == b.hashCode();
+
+export let main = (): i32 => {
+  if (hashOf({x: 1, y: 2}) != hashOf({x: 1, y: 2})) {
+    return 10;
+  }
+  if (hashOf((1, 'a')) != hashOf((1, 'a'))) {
+    return 11;
+  }
+  if (hashOf({x: 1, y: 2}) != hash({x: 1, y: 2})) {
+    return 12;
+  }
+  if (!bothEqual({x: 3, y: 4}, {x: 3, y: 4}) || bothEqual((1, 2), (1, 3))) {
+    return 13;
+  }
+  return 1;
+};
