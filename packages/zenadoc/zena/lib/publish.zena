@@ -32,7 +32,7 @@ export final class PublishedIndex {
           this.#aliases[original] = declaration.id;
         }
         if (canonical != null && canonical != module.id) {
-          let byPath = canonical + '#' + declaration.name;
+          let byPath = `${canonical}#${declaration.name}`;
           if (!this.#aliases.has(byPath)) {
             this.#aliases[byPath] = declaration.id;
           }
@@ -66,7 +66,7 @@ export final class PublishedIndex {
  * reading it — the inheritance pass, the serializer, a future consumer
  * — sees one set of ids.
  */
-export let resolveLinks = (pkg: DocPackage): void => {
+export function resolveLinks(pkg: DocPackage): void {
   let index = new PublishedIndex(pkg);
   for (let module in pkg.modules) {
     for (let declaration in module.declarations) {
@@ -87,31 +87,31 @@ export let resolveLinks = (pkg: DocPackage): void => {
       }
     }
   }
-};
+}
 
-let resolveMember = (index: PublishedIndex, member: DocMember): void => {
+function resolveMember(index: PublishedIndex, member: DocMember): void {
   resolveOne(index, member.type);
   resolveParams(index, member.typeParameters);
   for (let param in member.parameters) {
     resolveOne(index, param.type);
   }
-};
+}
 
-let resolveParams = (
+function resolveParams(
   index: PublishedIndex,
   params: GrowableArray<DocTypeParam>
-): void => {
+): void {
   for (let param in params) {
     resolveOne(index, param.bound);
     resolveOne(index, param.defaultType);
   }
-};
+}
 
-let resolveOne = (index: PublishedIndex, type: TypeRef | null): void => {
+function resolveOne(index: PublishedIndex, type: TypeRef | null): void {
   if (type == null) {
     return;
   }
   for (let link in type.links) {
     link.id = index.idFor(link.id);
   }
-};
+}

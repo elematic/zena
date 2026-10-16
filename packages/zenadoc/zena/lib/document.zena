@@ -107,10 +107,10 @@ final class FsHost implements CompilerHost {
 }
 
 /** Documents every module a package exports. */
-export let documentPackage = (
+export function documentPackage(
   pkg: Package,
   options: DocumentOptions
-): DocumentResult => {
+): DocumentResult {
   let docs = new DocPackage(pkg.name, pkg.root);
   docs.version = pkg.version;
   let out = new DocumentResult(docs);
@@ -137,10 +137,10 @@ export let documentPackage = (
   resolveLinks(docs);
   inheritMembers(docs);
   return out;
-};
+}
 
 /** One batch of modules, through one compiler. */
-let documentBatch = (
+function documentBatch(
   pkg: Package,
   options: DocumentOptions,
   extractOptions: ExtractOptions,
@@ -148,7 +148,7 @@ let documentBatch = (
   to: i32,
   out: DocumentResult,
   cache: WalkCache
-): void => {
+): void {
   let host = new FsHost(options.stdlibRoot);
   let packages = new Map<String, PackageConfig>();
   if (pkg.name != STDLIB_PACKAGE) {
@@ -185,7 +185,7 @@ let documentBatch = (
       let checked = checkResults.results[result.entry.path];
       let model = if (checked == null) { null } else { checked.model };
       let naming = new Naming(pkg.name, pkg.root);
-      let documented = extractModule(pkg.name + ':' + module.name, module.name,
+      let documented = extractModule(`${pkg.name}:${module.name}`, module.name,
           module.file, result.entry.ast, model, extractOptions,
           new ModelLinker(model, naming));
       // Through the same naming as a link, or the two spell the same
@@ -199,9 +199,9 @@ let documentBatch = (
       out.docs.modules.push(documented);
     } catch (e) {
       let reason = if (e is Error) { e.message } else { 'unknown failure' };
-      out.failures.push(module.name + ': ' + reason);
+      out.failures.push(`${module.name}: ${reason}`);
     }
     i += 1;
   }
-};
+}
 
