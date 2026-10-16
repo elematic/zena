@@ -27,30 +27,34 @@ export class HoverResult {
 }
 
 /** A doc comment's text, or empty when there is none. */
-let docText = (doc: DocComment | null): String => if (doc == null) { '' } else { doc.raw };
+function docText(doc: DocComment | null) {
+  return doc?.raw ?? '';
+}
 
 /** The name a node spells, for an identifier or a binding pattern. */
-let nodeName = (node: Node): String | null => match (node) {
+function nodeName(node: Node): String | null {
+  return match (node) {
   case Identifier {name}: name
   case IdentifierPattern {name}: name
   case _: null
 };
+}
 
 /** The class declaration around `offset`, if any. */
-let enclosingClass = (ast: Module, offset: i32): ClassDeclaration | null => {
+function enclosingClass(ast: Module, offset: i32): ClassDeclaration | null {
   for (let stmt in ast.body) {
     if (stmt is ClassDeclaration && spans(stmt, offset)) {
       return stmt;
     }
   }
   return null;
-};
+}
 
 /**
  * A class's type. The checker records it on the declaration; the
  * binding is where to look when it did not.
  */
-let classTypeOf = (decl: ClassDeclaration, model: SemanticModel): Type | null => {
+function classTypeOf(decl: ClassDeclaration, model: SemanticModel): Type | null {
   let nodeType = model.getNodeType(decl);
   if (nodeType != null) {
     return nodeType;
@@ -60,10 +64,10 @@ let classTypeOf = (decl: ClassDeclaration, model: SemanticModel): Type | null =>
     return null;
   }
   return model.getBindingType(sym);
-};
+}
 
 /** A label that reads like the declaration of `node`, of type `typeStr`. */
-let hoverLabel = (node: Node, typeStr: String, scopes: ScopeResult | null): String => {
+function hoverLabel(node: Node, typeStr: String, scopes: ScopeResult | null) {
   let name = nodeName(node);
   if (name == null) {
     return typeStr;
@@ -84,13 +88,13 @@ let hoverLabel = (node: Node, typeStr: String, scopes: ScopeResult | null): Stri
   }
   let keyword = if (sym.isValue() && sym.isMutable) { 'var' } else { 'let' };
   return `${keyword} ${name}: ${typeStr}`;
-};
+}
 
 /**
  * The type of an imported symbol, from the model of the module that
  * declares it.
  */
-let importedType = (sym: Symbol, program: ProgramCheckResult): Type | null => {
+function importedType(sym: Symbol, program: ProgramCheckResult): Type | null {
   let target = sym.resolveTarget();
   if (let (true, result) = program.results.get(target.modulePath)) {
     let bound = result.model.getBindingType(target);
@@ -103,7 +107,7 @@ let importedType = (sym: Symbol, program: ProgramCheckResult): Type | null => {
     }
   }
   return null;
-};
+}
 
 /**
  * A symbol's type, when the node under the cursor has none.
@@ -114,7 +118,7 @@ let importedType = (sym: Symbol, program: ProgramCheckResult): Type | null => {
  * declaration's type is the fallback, read in the declaring module's
  * model when the symbol is imported.
  */
-let symbolType = (sym: Symbol, model: SemanticModel, program: ProgramCheckResult): Type | null => {
+function symbolType(sym: Symbol, model: SemanticModel, program: ProgramCheckResult): Type | null {
   let bound = model.getBindingType(sym);
   if (bound != null) {
     return bound;
@@ -127,13 +131,13 @@ let symbolType = (sym: Symbol, model: SemanticModel, program: ProgramCheckResult
     return importedType(sym, program);
   }
   return model.getNodeType(decl);
-};
+}
 
 /**
  * The doc comment on a symbol's declaration, following an import to the
  * module that declares it.
  */
-let symbolDoc = (sym: Symbol, file: FileAnalysis, target: CompilerTarget): DocComment | null => {
+function symbolDoc(sym: Symbol, file: FileAnalysis, target: CompilerTarget): DocComment | null {
   let declaredBy = sym.resolveTarget();
   let decl = declaredBy.declaration;
   // An import that did not resolve has only its import specifier.
@@ -148,9 +152,9 @@ let symbolDoc = (sym: Symbol, file: FileAnalysis, target: CompilerTarget): DocCo
     return null;
   }
   return declarationDoc(decl, source.ast, attachComments(source.ast));
-};
+}
 
-let fieldHover = (name: String, classType: ClassType): HoverResult | null => {
+function fieldHover(name: String, classType: ClassType): HoverResult | null {
   if (let (true, info) = classType.members.get(name)) {
     if (info is FieldInfo) {
       let typeStr = typeToString(info.type);
@@ -159,9 +163,9 @@ let fieldHover = (name: String, classType: ClassType): HoverResult | null => {
     }
   }
   return null;
-};
+}
 
-let methodHover = (name: String, classType: ClassType): HoverResult | null => {
+function methodHover(name: String, classType: ClassType): HoverResult | null {
   if (name == 'new') {
     let ctor = classType.constructorType;
     if (ctor == null) {
@@ -177,10 +181,11 @@ let methodHover = (name: String, classType: ClassType): HoverResult | null => {
     }
   }
   return null;
-};
+}
 
 /** Hover for a member whose name is at `offset`, without its doc comment. */
-let memberNameHover = (member: Node, classType: ClassType, offset: i32): HoverResult | null => match (member) {
+function memberNameHover(member: Node, classType: ClassType, offset: i32): HoverResult | null {
+  return match (member) {
   case FieldDefinition {name} if spans(name, offset): {
     if (let Identifier {name as id} = name) { fieldHover(id, classType) } else { null }
   }
@@ -189,13 +194,14 @@ let memberNameHover = (member: Node, classType: ClassType, offset: i32): HoverRe
   }
   case _: null
 };
+}
 
 /**
  * Hover for a class member's name where it is declared. The name is in
  * no scope's maps, and the checker keeps member types on the class type
  * rather than on the member's nodes, so both come from the class.
  */
-let memberHover = (file: FileAnalysis, offset: i32): HoverResult | null => {
+function memberHover(file: FileAnalysis, offset: i32): HoverResult | null {
   let decl = enclosingClass(file.ast, offset);
   if (decl == null) {
     return null;
@@ -211,15 +217,15 @@ let memberHover = (file: FileAnalysis, offset: i32): HoverResult | null => {
     }
   }
   return null;
-};
+}
 
 /** Hover for the cursor at `offset` in a checked file, or null for none. */
-export let hoverAt = (
+export function hoverAt(
   file: FileAnalysis,
   offset: i32,
   program: ProgramCheckResult,
   target: CompilerTarget,
-): HoverResult | null => {
+): HoverResult | null {
   let node = findNodeAtOffset(file.ast, offset);
   if (node == null) {
     return null;
@@ -262,4 +268,4 @@ export let hoverAt = (
   let typeStr = typeToString(nodeType);
   let doc = if (sym == null) { null } else { symbolDoc(sym, file, target) };
   return new HoverResult(typeStr, hoverLabel(node, typeStr, file.scopes), docText(doc));
-};
+}

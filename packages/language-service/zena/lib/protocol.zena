@@ -28,39 +28,41 @@ export class RequestError extends Error {
 }
 
 /** The protocol's DiagnosticSeverity number for a severity. */
-let severityNumber = (severity: DiagnosticSeverity): i32 => match (severity) {
+function severityNumber(severity: DiagnosticSeverity): i32 {
+  return match (severity) {
   case DiagnosticSeverity.Error: 1
   case DiagnosticSeverity.Warning: 2
   case DiagnosticSeverity.Information: 3
 };
+}
 
-export let writePosition = (b: JsonBuilder, position: Position): void => {
+export function writePosition(b: JsonBuilder, position: Position): void {
   b.beginObject()
     .key('line').i32(position.line)
     .key('character').i32(position.character)
     .endObject();
-};
+}
 
-export let writeRange = (b: JsonBuilder, start: Position, end: Position): void => {
+export function writeRange(b: JsonBuilder, start: Position, end: Position): void {
   b.beginObject().key('start');
   writePosition(b, start);
   b.key('end');
   writePosition(b, end);
   b.endObject();
-};
+}
 
 /** The range of the bytes `start` to `end` of `source`. */
-export let writeSpan = (b: JsonBuilder, source: String, start: i32, end: i32): void => {
+export function writeSpan(b: JsonBuilder, source: String, start: i32, end: i32): void {
   writeRange(b, positionOf(source, start), positionOf(source, end));
-};
+}
 
 /** Markdown content: `{kind: 'markdown', value}`. */
-let writeMarkdown = (b: JsonBuilder, value: String): void => {
+function writeMarkdown(b: JsonBuilder, value: String) {
   b.beginObject().key('kind').string('markdown').key('value').string(value).endObject();
-};
+}
 
 /** A diagnostic in `source`, the text of the document it belongs to. */
-export let writeDiagnostic = (b: JsonBuilder, source: String, diagnostic: Diagnostic): void => {
+export function writeDiagnostic(b: JsonBuilder, source: String, diagnostic: Diagnostic): void {
   b.beginObject().key('range');
   let location = diagnostic.location;
   if (location == null) {
@@ -72,18 +74,18 @@ export let writeDiagnostic = (b: JsonBuilder, source: String, diagnostic: Diagno
     .key('source').string('zena')
     .key('message').string(diagnostic.message)
     .endObject();
-};
+}
 
 /** A hover: the label as Zena code, then the doc comment if there is one. */
-export let writeHover = (b: JsonBuilder, hover: HoverResult): void => {
+export function writeHover(b: JsonBuilder, hover: HoverResult): void {
   let label = `\`\`\`zena\n${hover.label}\n\`\`\``;
   let value = if (hover.docComment == '') { label } else { `${label}\n\n---\n\n${hover.docComment}` };
   b.beginObject().key('contents');
   writeMarkdown(b, value);
   b.endObject();
-};
+}
 
-export let writeSymbol = (b: JsonBuilder, source: String, entry: DocumentSymbol): void => {
+export function writeSymbol(b: JsonBuilder, source: String, entry: DocumentSymbol): void {
   b.beginObject()
     .key('name').string(entry.name)
     .key('kind').i32(entry.kind as i32)
@@ -99,9 +101,9 @@ export let writeSymbol = (b: JsonBuilder, source: String, entry: DocumentSymbol)
     b.endArray();
   }
   b.endObject();
-};
+}
 
-export let writeCompletion = (b: JsonBuilder, item: CompletionItem): void => {
+export function writeCompletion(b: JsonBuilder, item: CompletionItem): void {
   b.beginObject()
     .key('label').string(item.label)
     .key('kind').i32(item.kind as i32);
@@ -113,10 +115,10 @@ export let writeCompletion = (b: JsonBuilder, item: CompletionItem): void => {
     writeMarkdown(b, item.docComment);
   }
   b.endObject();
-};
+}
 
 /** What the server can do, as `initialize` reports it. */
-export let initializeResult = (): String => {
+export function initializeResult(): String {
   let b = new JsonBuilder();
   b.beginObject().key('capabilities').beginObject()
     // Full text on open and on every change (TextDocumentSyncKind.Full).
@@ -132,4 +134,4 @@ export let initializeResult = (): String => {
     .key('serverInfo').beginObject().key('name').string('zena').endObject()
     .endObject();
   return b.toString();
-};
+}
