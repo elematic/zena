@@ -872,8 +872,71 @@ type ResponseBody =
 
 type PendingResponseSender = tokio::sync::oneshot::Sender<http::Response<ResponseBody>>;
 
+/// Wraps an incoming request body so that if the guest drops the request
+/// without consuming its body (e.g., returning an early 404 or 401 response),
+/// the remaining body is drained in the background rather than dropping
+/// `hyper::body::Incoming` mid-stream, which would cause Hyper's HTTP/1.1
+/// server to close the TCP socket with unread client bytes and trigger a TCP RST.
+struct DrainOnDropBody {
+    inner: Option<hyper::body::Incoming>,
+    rt: tokio::runtime::Handle,
+}
+
+impl http_body::Body for DrainOnDropBody {
+    type Data = bytes::Bytes;
+    type Error = hyper::Error;
+
+    fn poll_frame(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<std::result::Result<http_body::Frame<Self::Data>, Self::Error>>>
+    {
+        match self.inner.as_mut() {
+            Some(inner) => std::pin::Pin::new(inner).poll_frame(cx),
+            None => std::task::Poll::Ready(None),
+        }
+    }
+
+    fn is_end_stream(&self) -> bool {
+        self.inner
+            .as_ref()
+            .map_or(true, |b| http_body::Body::is_end_stream(b))
+    }
+
+    fn size_hint(&self) -> http_body::SizeHint {
+        match self.inner.as_ref() {
+            Some(inner) => http_body::Body::size_hint(inner),
+            None => http_body::SizeHint::with_exact(0),
+        }
+    }
+}
+
+impl Drop for DrainOnDropBody {
+    fn drop(&mut self) {
+        if let Some(mut body) = self.inner.take() {
+            if !http_body::Body::is_end_stream(&body) {
+                self.rt.spawn(async move {
+                    use http_body_util::BodyExt as _;
+                    let mut remaining = 64 * 1024usize;
+                    let _ = tokio::time::timeout(Duration::from_secs(1), async move {
+                        while let Some(Ok(frame)) = body.frame().await {
+                            if let Some(data) = frame.data_ref() {
+                                if data.len() >= remaining {
+                                    break;
+                                }
+                                remaining -= data.len();
+                            }
+                        }
+                    })
+                    .await;
+                });
+            }
+        }
+    }
+}
+
 struct IncomingRequest {
-    req: http::Request<hyper::body::Incoming>,
+    req: http::Request<DrainOnDropBody>,
     res_tx: PendingResponseSender,
 }
 
@@ -1023,9 +1086,6 @@ impl http_server::HostResponseWriter for ComponentState {
         headers: Vec<(String, String)>,
         body: String,
     ) -> Result<()> {
-        if let Some(req_res) = req {
-            let _ = self.table.delete(req_res);
-        }
         let mut writer_state = self.table.delete(writer)?;
         if let Some(sender) = writer_state.tx.take() {
             use http_body_util::BodyExt as _;
@@ -1081,6 +1141,9 @@ impl http_server::HostResponseWriter for ComponentState {
                 );
             }
             let _ = sender.send(resp);
+        }
+        if let Some(req_res) = req {
+            let _ = self.table.delete(req_res);
         }
         Ok(())
     }
@@ -1225,6 +1288,11 @@ impl http_server::HostServer for ComponentState {
                         use http_body_util::BodyExt as _;
                         let service = hyper::service::service_fn(move |req: http::Request<hyper::body::Incoming>| {
                             let req_tx = req_tx.clone();
+                            let rt = tokio::runtime::Handle::current();
+                            let req = req.map(move |body| DrainOnDropBody {
+                                inner: Some(body),
+                                rt,
+                            });
                             async move {
                                 let (res_tx, res_rx) = tokio::sync::oneshot::channel();
 
