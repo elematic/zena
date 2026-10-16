@@ -25,9 +25,9 @@ final class Metadata {
  * Answers the token and project-id paths from `state`, only with the
  * `metadata-flavor: Google` header, as the real server does.
  */
-let metadataServer = (state: Metadata): Server => {
+function metadataServer(state: Metadata) {
   let app = new App();
-  app.use(async (req: Request, res: Response, next: () => Future<void>): Future<void> => {
+  app.use(async (req, res, next): Future<void> => {
     if (req.getHeader('metadata-flavor') != 'Google') {
       res.statusCode = 403;
       res.body = 'missing metadata-flavor';
@@ -51,17 +51,19 @@ let metadataServer = (state: Metadata): Server => {
   let server = new Server(app, 0 as u16);
   server.start();
   return server;
-};
+}
 
-let originOf = (server: Server): String => `http://127.0.0.1:${server.port as i32}`;
+function originOf(server: Server) {
+  return `http://127.0.0.1:${server.port as i32}`;
+}
 
-let twoHeaders = async (credentials: MetadataServerCredentials): Future<String> => {
+async function twoHeaders(credentials: MetadataServerCredentials): Future<String> {
   let first = await credentials.authorization();
   let second = await credentials.authorization();
   return `${first as String} ${second as String}`;
-};
+}
 
-let failure = async (call: () => Future<String>): Future<String> => {
+async function failure(call: () => Future<String>): Future<String> {
   try {
     return await call();
   } catch (e) {
@@ -70,9 +72,9 @@ let failure = async (call: () => Future<String>): Future<String> => {
     }
     return `not an AuthError: ${e.message}`;
   }
-};
+}
 
-export let tests = suite('google-cloud auth', (): void => {
+export let tests = suite('google-cloud auth', () => {
   test('sends a fixed access token', () => {
     let header = runFuture(new AccessTokenCredentials('abc').authorization());
     equal(header as String, 'Bearer abc');

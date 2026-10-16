@@ -68,7 +68,7 @@ export final class MetadataServerCredentials implements Credentials {
     if (!(json is JsonObject)) {
       throw new AuthError('the metadata server answered with no token');
     }
-    let token = json as JsonObject;
+    let token = json;
     var accessToken = '';
     if (let (true, value) = token.stringAt('access_token')) {
       accessToken = value;
@@ -92,47 +92,48 @@ export final class MetadataServerCredentials implements Credentials {
  * `GOOGLE_OAUTH_ACCESS_TOKEN` when it is set, otherwise the metadata
  * server, at `GCE_METADATA_HOST` when that is set.
  */
-export let defaultCredentials = (): Credentials => {
+export function defaultCredentials(): Credentials {
   let token = getEnv('GOOGLE_OAUTH_ACCESS_TOKEN');
-  if (token != null && (token as String).length > 0) {
-    return new AccessTokenCredentials(token as String);
+  if (token != null && token.length > 0) {
+    return new AccessTokenCredentials(token);
   }
   return new MetadataServerCredentials(metadataOrigin());
-};
+}
 
 /**
  * The project the program runs in: `GOOGLE_CLOUD_PROJECT` or
  * `GCLOUD_PROJECT` when set, otherwise the metadata server's answer.
  */
-export let defaultProjectId = async (): Future<String> => {
+export async function defaultProjectId(): Future<String> {
   for (let name in ['GOOGLE_CLOUD_PROJECT', 'GCLOUD_PROJECT']) {
     let value = getEnv(name);
-    if (value != null && (value as String).length > 0) {
-      return value as String;
+    if (value != null && value.length > 0) {
+      return value;
     }
   }
   return await projectIdFrom(metadataOrigin());
-};
+}
 
 /** The project id the metadata server at `origin` reports. */
-export let projectIdFrom = async (origin: String): Future<String> =>
-  (await metadataGet(origin, '/computeMetadata/v1/project/project-id')).trim();
+export async function projectIdFrom(origin: String): Future<String> {
+  return (await metadataGet(origin, '/computeMetadata/v1/project/project-id')).trim();
+}
 
-let metadataOrigin = (): String => {
+function metadataOrigin(): String {
   let host = getEnv('GCE_METADATA_HOST');
-  return if (host != null && (host as String).length > 0) `http://${host as String}` else METADATA_ORIGIN;
-};
+  return if (host != null && host.length > 0) `http://${host}` else METADATA_ORIGIN;
+}
 
 /** The one spellable value of type void, for a `result<_, e>` ok arm. */
-function unit(): void {}
+function unit() {}
 
 /** GETs `path` from the metadata server at `origin` and returns the body; throws unless it answers 200. */
-let metadataGet = async (origin: String, path: String): Future<String> => {
+async function metadataGet(origin: String, path: String): Future<String> {
   let url = URL.parse(origin);
   if (url == null) {
     throw new AuthError(`not a URL: ${origin}`);
   }
-  let parsed = url as URL;
+  let parsed = url;
   let headers = Fields.create();
   headers.append('metadata-flavor', 'Google'.toBytes());
   let trailers = Future.of<Outcome<Option<Fields>, ErrorCode>>(new Ok<Option<Fields>, ErrorCode>(none));
@@ -156,4 +157,4 @@ let metadataGet = async (origin: String, path: String): Future<String> => {
     throw new AuthError(`the metadata server answered ${path} with HTTP ${status}: ${text}`);
   }
   return text;
-};
+}

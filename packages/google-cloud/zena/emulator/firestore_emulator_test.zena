@@ -22,68 +22,70 @@ import {
   timestampValue
 } from '../firestore.zena';
 
-let emulatorHost = (): String => {
+function emulatorHost() {
   let host = getEnv('FIRESTORE_EMULATOR_HOST');
-  if (host == null || (host as String).length == 0) {
+  if (host == null || host.length == 0) {
     throw new Error('FIRESTORE_EMULATOR_HOST is not set; run npm run test:emulator -w @zena-lang/google-cloud');
   }
-  return host as String;
-};
+  return host;
+}
 
 /** A database in a new project on the emulator. */
-let freshDatabase = (): Firestore => new Firestore({
+function freshDatabase() {
+  return new Firestore({
   projectId: `test-${getRandomU64() % (1000000000 as u64)}`,
   transport: new GrpcTransport(`http://${emulatorHost()}`, new AccessTokenCredentials('owner')),
 });
+}
 
 /** The string at `path` in `snapshot`, or `-`. */
-let str = (snapshot: DocumentSnapshot, path: String): String => {
+function str(snapshot: DocumentSnapshot, path: String) {
   if (let (true, value) = snapshot.getString(path)) {
     return value;
   }
   return '-';
-};
+}
 
 /** The integer at `path` in `snapshot`, or `-`. */
-let int = (snapshot: DocumentSnapshot, path: String): String => {
+function int(snapshot: DocumentSnapshot, path: String) {
   if (let (true, value) = snapshot.getInteger(path)) {
     return `${value}`;
   }
   return '-';
-};
+}
 
-let ids = (snapshots: GrowableArray<DocumentSnapshot>): String => {
+function ids(snapshots: GrowableArray<DocumentSnapshot>) {
   var out = '';
   for (let s in snapshots) {
     out = `${out}${s.id},`;
   }
   return out;
-};
+}
 
 /** The `google.rpc.Code` of the error `call` throws, or -1. */
-let codeOf = async (call: () => Future<void>): Future<i32> => {
+async function codeOf(call: () => Future<void>): Future<i32> {
   try {
     await call();
   } catch (e) {
     if (e is RpcError) {
-      return (e as RpcError).code;
+      return e.code;
     }
     throw e;
   }
   return -1;
-};
+}
 
 /** The message of the error `call` throws, or `no error`. */
-let messageOf = async (call: () => Future<void>): Future<String> => {
+async function messageOf(call: () => Future<void>): Future<String> {
   try {
     await call();
   } catch (e) {
     return e.message;
   }
   return 'no error';
-};
+}
 
-let writeAndRead = async (db: Firestore): Future<String> => {
+async function writeAndRead(db: Firestore): Future<String> {
   let post = db.doc('posts/hello');
   let other = db.doc('posts/other');
   await post.set(new Fields()
@@ -110,11 +112,11 @@ let writeAndRead = async (db: Firestore): Future<String> => {
   let link = s.get('link') as Value;
   let deleted = s.get('deleted') as Value;
   return `${s.exists} ${str(s, 'title')} ${int(s, 'views')} ${score} ${draft} ${deleted.hasNullValue} ` +
-    `${if (at == null) (-1 as i64) else (at as Timestamp).seconds} ${tags == null} ${str(s, 'author.name')} ` +
+    `${at?.seconds ?? -1 as i64} ${tags == null} ${str(s, 'author.name')} ` +
     `${link.referenceValue == other.name} ${s.updateTime != null}`;
-};
+}
 
-let preconditions = async (db: Firestore): Future<String> => {
+async function preconditions(db: Firestore): Future<String> {
   let missing = await db.doc('posts/nope').get();
   let post = db.doc('posts/b');
   let updateMissing = await codeOf(async (): Future<void> => {
@@ -129,9 +131,9 @@ let preconditions = async (db: Firestore): Future<String> => {
   await post.delete();
   let gone = await post.get();
   return `${missing.exists} ${updateMissing} ${createTwice} ${str(updated, 'title')} ${int(updated, 'views')} ${gone.exists}`;
-};
+}
 
-let queries = async (db: Firestore): Future<String> => {
+async function queries(db: Firestore): Future<String> {
   let posts = db.collection('posts');
   await db.batch()
     .set(posts.doc('a'), new Fields().string('kind', 'live').integer('rank', 3))
@@ -154,9 +156,9 @@ let queries = async (db: Firestore): Future<String> => {
   }
   return `${ids(live)} ${ids(ranked)} ${ids(top)} ${ids(above)} ${ids(skipped)} ${ids(comments)} ` +
     `${streamed} ${added.id.length} ${(await posts.get()).length}`;
-};
+}
 
-let manyResults = async (db: Firestore): Future<String> => {
+async function manyResults(db: Firestore): Future<String> {
   let batch = db.batch();
   for (var i = 0; i < 300; i += 1) {
     batch.set(db.doc(`items/${1000 + i}`), new Fields().integer('n', i as i64).string('pad', 'x'));
@@ -170,9 +172,9 @@ let manyResults = async (db: Firestore): Future<String> => {
     }
   }
   return `${all.length} ${sum}`;
-};
+}
 
-let atomicBatch = async (db: Firestore): Future<String> => {
+async function atomicBatch(db: Firestore): Future<String> {
   await db.doc('posts/taken').set(new Fields().string('title', 'T'));
   let code = await codeOf(async (): Future<void> => {
     await db.batch()
@@ -182,11 +184,12 @@ let atomicBatch = async (db: Firestore): Future<String> => {
   });
   let created = await db.doc('posts/new').get();
   return `${code} ${created.exists}`;
-};
+}
 
 /** Increments `counters/c`.`n` in a transaction and answers the new value. */
-let increment = async (db: Firestore): Future<i64> => await db.runTransaction<i64>(
-  async (tx: Transaction): Future<i64> => {
+async function increment(db: Firestore): Future<i64> {
+  return await db.runTransaction<i64>(
+  async (tx): Future<i64> => {
     let counter = db.doc('counters/c');
     let snapshot = await tx.get(counter);
     var n: i64 = 0;
@@ -197,8 +200,9 @@ let increment = async (db: Firestore): Future<i64> => await db.runTransaction<i6
     return n + 1;
   }
 );
+}
 
-let transactions = async (db: Firestore): Future<String> => {
+async function transactions(db: Firestore): Future<String> {
   let first = await increment(db);
   let second = await increment(db);
   // Two at once: the emulator makes one wait for or abort the other, so
@@ -209,7 +213,7 @@ let transactions = async (db: Firestore): Future<String> => {
   await b;
   let counter = await db.doc('counters/c').get();
   let message = await messageOf(async (): Future<void> => {
-    await db.runTransaction<i32>(async (tx: Transaction): Future<i32> => {
+    await db.runTransaction<i32>(async (tx): Future<i32> => {
       await tx.query(db.collection('counters').query());
       tx.set(db.doc('counters/c'), new Fields().integer('n', 100));
       throw new Error('body failed');
@@ -217,23 +221,23 @@ let transactions = async (db: Firestore): Future<String> => {
   });
   let after = await db.doc('counters/c').get();
   return `${first} ${second} ${int(counter, 'n')} ${message} ${int(after, 'n')}`;
-};
+}
 
-let serverError = async (db: Firestore): Future<String> => {
+async function serverError(db: Firestore): Future<String> {
   try {
     // A collection's path where a document's belongs.
     await db.doc('posts').get();
   } catch (e) {
     if (e is RpcError) {
-      let error = e as RpcError;
+      let error = e;
       return `${error.code} ${error.message.length > 0}`;
     }
     return `not an RpcError: ${e.message}`;
   }
   return 'no error';
-};
+}
 
-let transformsAndDeletes = async (db: Firestore): Future<String> => {
+async function transformsAndDeletes(db: Firestore): Future<String> {
   let post = db.doc('posts/t');
   await post.set(new Fields()
     .string('title', 'T')
@@ -251,11 +255,11 @@ let transformsAndDeletes = async (db: Firestore): Future<String> => {
   let s = await post.get();
   let created = s.getTimestamp('created');
   let tags = ((s.get('tags') as Value).arrayValue as ArrayValue).values.toArray();
-  return `${str(s, 'title')} ${created != null && (created as Timestamp).seconds > 1700000000} ${int(s, 'views')} ` +
+  return `${str(s, 'title')} ${created != null && created.seconds > 1700000000} ${int(s, 'views')} ` +
     `${tags.length} ${tags[0].stringValue}${tags[1].stringValue} ${int(s, 'best')} ${s.get('draft') == null}`;
-};
+}
 
-let readMany = async (db: Firestore): Future<String> => {
+async function readMany(db: Firestore): Future<String> {
   await db.doc('posts/a').set(new Fields().string('title', 'A'));
   await db.doc('posts/c').set(new Fields().string('title', 'C'));
   let read = await db.getAll([db.doc('posts/c'), db.doc('posts/b'), db.doc('posts/a')]);
@@ -263,15 +267,15 @@ let readMany = async (db: Firestore): Future<String> => {
   for (let s in read) {
     out = `${out}${s.id}:${s.exists},`;
   }
-  let inTx = await db.runTransaction<String>(async (tx: Transaction): Future<String> => {
+  let inTx = await db.runTransaction<String>(async (tx): Future<String> => {
     let both = await tx.getAll([db.doc('posts/a'), db.doc('posts/c')]);
     tx.set(db.doc('posts/sum'), new Fields().string('titles', `${str(both[0], 'title')}${str(both[1], 'title')}`));
     return 'ok';
   });
   return `${out} ${inTx} ${str(await db.doc('posts/sum').get(), 'titles')}`;
-};
+}
 
-let pagesAndCounts = async (db: Firestore): Future<String> => {
+async function pagesAndCounts(db: Firestore): Future<String> {
   let batch = db.batch();
   for (var i = 0; i < 7; i += 1) {
     // Ranks 0, 0, 1, 1, 2, 2, 3: ties, so paging by value alone would skip or repeat.
@@ -293,14 +297,14 @@ let pagesAndCounts = async (db: Firestore): Future<String> => {
   return `${pages} ${ids(byValue)} ${ids(descending)} ${str(selected[0], 'kind')}${int(selected[0], 'rank')} ` +
     `${names[0].get('kind') == null} ${await items.count()} ` +
     `${await items.where('kind', Operator.Equal, stringValue('odd')).count()} ${await db.collection('none').count()}`;
-};
+}
 
 /**
  * A write that waits on a transaction's lock, on a connection with a
  * 300 ms deadline: the server ends it with DEADLINE_EXCEEDED, before its
  * own lock timeout.
  */
-let deadline = async (): Future<String> => {
+async function deadline(): Future<String> {
   let projectId = `test-${getRandomU64() % (1000000000 as u64)}`;
   let origin = `http://${emulatorHost()}`;
   let db = new Firestore({projectId, transport: new GrpcTransport(origin, new AccessTokenCredentials('owner'))});
@@ -308,7 +312,7 @@ let deadline = async (): Future<String> => {
   hurried.setTimeout(milliseconds(300));
   let short = new Firestore({projectId, transport: hurried});
   await db.doc('locks/l').set(new Fields().integer('n', 1));
-  return await db.runTransaction<String>(async (tx: Transaction): Future<String> => {
+  return await db.runTransaction<String>(async (tx): Future<String> => {
     await tx.get(db.doc('locks/l'));
     let started = monotonic();
     let code = await codeOf(async (): Future<void> => {
@@ -318,21 +322,23 @@ let deadline = async (): Future<String> => {
     let fiveSeconds: i64 = 5000000000;
     return `${code} ${waited < fiveSeconds}`;
   }, 1);
-};
+}
 
-let connectToEmulator = async (): Future<String> => {
+async function connectToEmulator(): Future<String> {
   let db = await Firestore.connect();
   let path = `connect/${getRandomU64() % (1000000000 as u64)}`;
   await db.doc(path).set(new Fields().string('via', 'connect'));
   let s = await db.doc(path).get();
   return `${db.projectId} ${str(s, 'via')}`;
-};
+}
 
-let fallbackRefused = async (): Future<String> => await messageOf(async (): Future<void> => {
+async function fallbackRefused(): Future<String> {
+  return await messageOf(async (): Future<void> => {
   await Firestore.connectFallback();
 });
+}
 
-export let tests = suite('firestore on the emulator', (): void => {
+export let tests = suite('firestore on the emulator', () => {
   test('writes and reads every kind of value', () => {
     equal(runFuture(writeAndRead(freshDatabase())), 'true Hello 3 2.5 true true 1700000000 false Ada true true');
   });
