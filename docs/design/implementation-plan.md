@@ -127,8 +127,9 @@ Per row-types.md §9, refined:
   `ZENA_ZIR_STATS` counters. Coordinate with **M5** (template ZIR) for
   instantiation cost — don't block on it, but gate stdlib-hot-path
   adoption on it.
-- **A2 — value-level ops**: disjoint extension spread, `with` update,
-  rest patterns and typed `...rest` (record + tuple).
+- **A2 — value-level ops**: spread over row types (TypeScript's rule,
+  row-types.md Decisions), rest patterns and typed `...rest` (record +
+  tuple).
 - **A3 — presence-optional record fields** (design:
   [record-presence.md](record-presence.md); the earlier type-level
   defaults design, config-records.md, is superseded): bitmask
@@ -198,12 +199,19 @@ Error>` becomes writable.
 - **O4 — `isolated<T>`/`frozen<T>`/regions**, reusing O2. Reconcile
   concurrency.md's vocabulary first.
 
-## R3 — the flip (one migration event, at bootstrap retirement)
+## R3 — the flip (one migration event)
 
 Closed-by-default record types; literal exactness; `...` existential
 syntax; width-by-projection replacing adaptation between static shapes;
-`?` re-scoped to existential/parameter positions (A3 covers configs);
-exhaustive destructuring.
+`?` re-scoped to existential/parameter positions (A3 covers configs).
+Destructuring stays partial (row-types.md, Decisions, adopted
+2026-10-16).
+
+The flip was scheduled for the retirement of the TypeScript bootstrap
+compiler, because the two compilers shared the portable test suite.
+That compiler has been deleted, so the flip now waits only on structural
+equality for closed records and tuples (#372) and on Track A's row
+generics. row-types.md's Decisions section gives the order.
 Because V0 and Track A shipped earlier, flip day is
 assignability-and-representation only, and signatures can migrate to
 `...R` forms ahead of time.
@@ -220,25 +228,25 @@ shared lowering (row-types.md §7.4) wired to `-Osize`; SoA/`MultiList`;
 
 ## Dependency summary
 
-| Work                    | Needs                             | Independent of       |
-| ----------------------- | --------------------------------- | -------------------- |
-| G0/G1 (generators core) | M2-era ZIR                        | records/equality arc |
-| Async v1                | G1 + Future + one host driver     | G2 fusion, rows      |
-| G2 fusion               | splice machinery (becomes M3's)   | async                |
-| V0 `===` ban            | nothing                           | everything           |
-| V1 virtual `==`         | `Type`/`Node` sites made `===`    | G-track, rows        |
-| V2 IdentityMap/WeakMap  | RTA injection + V1 `Hashable`     | records flip         |
-| A0/A1/A2 rows           | bounds infra; M5 for scale        | G-track              |
-| A3 config records       | nothing (better after M4)         | A0/A1                |
-| R3 flip                 | bootstrap retirement, V0, Track A | —                    |
-| Track B harvest         | R3                                | —                    |
-| O0 type lattice         | nothing                           | everything           |
-| O0.5 `using`            | O0                                | everything           |
-| O1 flow graph           | nothing                           | everything           |
-| O2 move checking        | O0 + O1                           | G, V, A              |
-| O3 implicit drop        | O2 + G1 (cancellation table)      | V, A                 |
-| O3.5 `affine T`         | O2 + **A0 `where` bounds**        | G, V                 |
-| Track W bindgen stage 3 | **O0** (not O2)                   | O1–O3, G-track       |
+| Work                    | Needs                           | Independent of       |
+| ----------------------- | ------------------------------- | -------------------- |
+| G0/G1 (generators core) | M2-era ZIR                      | records/equality arc |
+| Async v1                | G1 + Future + one host driver   | G2 fusion, rows      |
+| G2 fusion               | splice machinery (becomes M3's) | async                |
+| V0 `===` ban            | nothing                         | everything           |
+| V1 virtual `==`         | `Type`/`Node` sites made `===`  | G-track, rows        |
+| V2 IdentityMap/WeakMap  | RTA injection + V1 `Hashable`   | records flip         |
+| A0/A1/A2 rows           | bounds infra; M5 for scale      | G-track              |
+| A3 config records       | nothing (better after M4)       | A0/A1                |
+| R3 flip                 | V0, #372, Track A               | —                    |
+| Track B harvest         | R3                              | —                    |
+| O0 type lattice         | nothing                         | everything           |
+| O0.5 `using`            | O0                              | everything           |
+| O1 flow graph           | nothing                         | everything           |
+| O2 move checking        | O0 + O1                         | G, V, A              |
+| O3 implicit drop        | O2 + G1 (cancellation table)    | V, A                 |
+| O3.5 `affine T`         | O2 + **A0 `where` bounds**      | G, V                 |
+| Track W bindgen stage 3 | **O0** (not O2)                 | O1–O3, G-track       |
 
 Both tracks' breaking pieces gate on bootstrap retirement; neither
 blocks the other's path there. Retirement itself (PLAN.md Phase 1)

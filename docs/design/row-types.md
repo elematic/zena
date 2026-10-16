@@ -1,6 +1,9 @@
 # Row Types for Records and Tuples
 
-Status: **Proposed**
+Status: **Accepted** (2026-10-16), with the revisions in
+[Decisions](#decisions). Where a section below disagrees with that
+section, the Decisions section governs; the affected sections are
+annotated.
 
 This document designs **row polymorphism** for Zena's structural types —
 records and tuples — as an incremental, TypeScript-flavored extension:
@@ -24,7 +27,120 @@ The headline claims, defended below:
    explicit existential form (the one place dispatch remains).
 3. Disjoint-by-default spread and exhaustive destructuring fall out of the
    same "rows are sets of labels" discipline, and both are
-   loud-by-construction in the way this project prefers.
+   loud-by-construction in the way this project prefers. (Not adopted:
+   see [Decisions](#decisions).)
+
+## Decisions
+
+Adopted 2026-10-16. They settle the open questions in §11 and revise
+§4 and §5.
+
+### Three forms of record type
+
+A record type is one of three forms. Every field of a value matters in
+all three. The forms differ in whether the type records every field.
+
+| Form        | Spelling                                | The value                                                                                    | Representation                            |
+| ----------- | --------------------------------------- | -------------------------------------------------------------------------------------------- | ----------------------------------------- |
+| Closed      | `{x: i32}`                              | exactly the fields of the type; a wider value converted to it is projected onto them         | a struct, direct field access             |
+| Row-generic | `<R extends record>(p: {x: i32, ...R})` | the caller's whole record; its other fields are tracked by `R`                               | one specialization per row, direct access |
+| Existential | `{x: i32, ...}`                         | at least `x`; the value keeps every field it was built with, and the type does not name them | a fat pointer with a dispatch table       |
+
+A closed type is the default. Converting a wider value to a narrower
+closed type (passing `{x: 1, y: 2}` where `{x: i32}` is expected)
+produces the value `{x: 1}`. Today's fat pointer with an adapted
+dispatch table is one way to represent that projection without
+copying. Nothing can observe `y` afterwards, so it does not matter that
+the representation keeps it.
+
+Fields the type does not name exist only in an existential, and only
+there do operations need the runtime shape. A function that accepts any
+record with a `port` and passes the rest on uses the row-generic form,
+for example a config whose extra fields are for other consumers:
+`<R extends record>(opts: {port: i32, ...R}): {port: i32, ...R}`. Where
+records of different shapes must be stored together, in an array or a
+field, the existential form is the one to use.
+
+Today's compiler already behaves this way for everything a program can
+observe. A record upcast to a narrower type is invisible to `is` and
+`as` (they test the static view: `n is XY` is false for a value created
+as an `XY` and passed as an `X`, and `n as XY` traps). Spread copies
+only the source type's fields (`#lowerRecordLiteralFields`). So making
+closed types the default changes the representation and adds
+exactness checks on literals; the meaning of existing code is the same.
+
+### Operations per form
+
+| Operation                       | Closed and row-generic                                                                                                                                 | Existential                                                                                                            |
+| ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------- |
+| `==`, `!=`                      | field by field, each field with its own type's `==`; every field of the value is in its type                                                           | equal when both values have the same underlying shape and equal fields, through a dispatch slot                        |
+| `hashCode`                      | derived per shape, consistent with `==`                                                                                                                | the underlying shape's, through the same slot                                                                          |
+| `is T`, `as T` to a record type | decided statically; the checker reports an `is` that is always true or always false, and an `as` that cannot succeed. `as` to a narrower type projects | tested against the underlying shape: true when it has `T`'s fields at `T`'s types. `as` to a closed type then projects |
+| spread `{...r}`                 | copies the type's fields, which are all the value's fields                                                                                             | an error: the result type would not be known                                                                           |
+| `...rest` in destructuring      | binds the remaining fields                                                                                                                             | not available                                                                                                          |
+
+`==` does not convert its operands. Two values of different closed
+record types are never equal, and the checker reports such a comparison
+as always false. Tuples have no width subtyping, so they are always
+closed: `==` compares element by element.
+
+An existential's dispatch table therefore needs the identity of the
+underlying shape and its equality and hash functions, in addition to
+today's getters. Only existential values pay for that.
+
+### `inline`, explosion and the forms
+
+`inline` (#371) applies to closed records and tuples, unions of them,
+and row-generic types (per specialization). It is an error on an
+existential, because an existential exists to carry a runtime shape.
+`inline` never changes what an operation means.
+
+For argument explosion (argument-explosion.md), `==`, hashing and
+spread on a closed or row-generic value read only its fields, so a
+parameter used that way can be passed as its fields. An existential
+parameter used with `==`, `is` or `as` needs the whole record.
+
+### Syntax
+
+- **Spread:** TypeScript's rule. `{...p, x: p.x + 1}` replaces `x` when
+  `p` has it, and adds it otherwise. A later spread or property
+  replaces an earlier one. A property or spread whose every field a
+  later one always replaces is an error, as it is today
+  (`Property 'x' is always overwritten by the spread that follows`).
+  There is no separate update form, so `with` keeps its one meaning.
+  With closed types, a misspelled field (`{...p, z: 1}` where `z` was
+  meant to be `x`) is caught wherever the literal has a target type,
+  by the exactness check on literals (§3.2). This replaces §4's
+  disjoint extension and `with` update.
+- **Destructuring:** partial, as in TypeScript and today. `let {id, name}
+= user` is valid when `user` has other fields. `...rest` binds the
+  remaining fields when written. This replaces §5's exhaustive rule.
+- **Tuple types** keep parentheses: `(T, ...R)`. Tuple literals and
+  patterns already use them, and `[ ]` means arrays. The bracketed
+  examples below read as their parenthesized forms.
+- **Row bounds** are `R extends record` and `R extends tuple`, with
+  `record` and `tuple` as contextual keywords in bound position.
+  `R extends {}` would read as the closed empty record.
+- **Existential records** are spelled with a bare trailing `...`:
+  `{x: i32, ...}`.
+
+### Sequencing
+
+§9 schedules the switch to closed types for the retirement of the
+TypeScript bootstrap compiler, because both compilers shared the
+portable test suite. That compiler has been deleted, so the switch now
+waits only on its own prerequisites. The order:
+
+1. Structural `==` and hashing for closed records and tuples (#372).
+   This is correct under closed semantics before the representation
+   changes.
+2. Row generics, value-level spread on row types, and `...rest`
+   (implementation-plan.md, Track A).
+3. Closed types by default: exactness checks on literals, projection
+   for width conversions between closed types, and `...` existentials
+   as the only fat-pointer form, with equality and `is`/`as` by
+   underlying shape.
+4. `inline` on value types (#371).
 
 ## 1. Motivation
 
@@ -295,6 +411,12 @@ of the explored design space.
 
 ## 4. Value-level spread: extension and update
 
+> **Not adopted.** Spread follows TypeScript's rule instead (see
+> [Decisions](#decisions), Syntax): a later field replaces an earlier
+> one, and there is no `with` update form. The rejection of spread on
+> an existential, at the end of this section, stands. The rest of the
+> section is kept as the record of the alternative.
+
 Two operations, both loud, mapping to the two row primitives:
 
 **Extension** — `{ ...base, x: 42 }` — requires `base` **lacks** `x`.
@@ -353,6 +475,11 @@ copies fields the type doesn't admit. Destructure the fields you need,
 or keep the value packed.
 
 ## 5. Destructuring: exhaustive by default, rest for the rest
+
+> **Partly adopted.** Destructuring stays partial, so naming only some
+> fields is valid (see [Decisions](#decisions), Syntax). The `...rest`
+> forms and their typing below are adopted; the exhaustiveness rule
+> is not.
 
 For **closed** records, destructuring patterns must account for every
 field:
@@ -600,6 +727,11 @@ outcome pays.
 
 ## 9. Sequencing and migration
 
+> **Revised.** The TypeScript bootstrap compiler this section plans
+> around has been deleted, so the switch to closed types no longer waits
+> for its retirement. The current order is in
+> [Decisions](#decisions), Sequencing.
+
 > The cross-track plan of record — generators/async first, the
 > equality/identity contractions (V0/V1/V2), this document's additive
 > track, and the flip — is
@@ -661,28 +793,28 @@ before the effects decision.
 
 ## 11. Open questions
 
-1. **Update-form spelling**: `{ ...base with x: 42 }` reuses an existing
-   keyword and reads well, but `with` is mixin-application syntax on
-   classes — same keyword, two meanings. Alternatives: `{ base | x: 42 }`
-   (Elm), a distinct spread token.
-2. **Existential spelling**: bare `...` (`{x: i32, ...}`) vs `...?` vs
-   `...unknown`. Bare `...` is proposed; confirm it doesn't collide with
-   future rest-pattern-in-type-position ambiguities in the parser.
-3. **Bound syntax**: `R extends record` / `R extends tuple` use soft
-   contextual keywords (`record` is not currently reserved). Reserve, or
-   spell as `R extends {}` / `R extends []`?
-4. **Tuple type syntax consistency**: records-and-tuples.md uses both
-   `(i32, string)` (§2.2) and `[f32, f32, f32]` (§5.2); destructuring.md's
-   grammar uses `[...]` for tuple patterns while its examples use
-   `( , )`. Row syntax (`[T, ...R]`) reads best with brackets; this
-   should force the standardization decision.
-5. **Structural equality across forms**: is a packed existential `==`
-   comparable to a closed record of the same underlying shape? (Proposed:
-   yes — equality is defined on the underlying shape; the existential's
-   vtable carries an equality slot, mirroring interface dispatch.)
+Resolved 2026-10-16 (see [Decisions](#decisions)):
+
+1. **Update-form spelling**: no update form. Spread follows TypeScript's
+   rule, so `with` keeps its one meaning.
+2. **Existential spelling**: a bare trailing `...`, as in `{x: i32, ...}`.
+   The parser change still needs checking against rest patterns in type
+   position.
+3. **Bound syntax**: `R extends record` and `R extends tuple`, with
+   `record` and `tuple` as contextual keywords in bound position.
+4. **Tuple type syntax**: parentheses, `(T, ...R)`. The bracketed
+   examples in this document and in records-and-tuples.md §5.2 read as
+   their parenthesized forms.
+5. **Structural equality across forms**: yes. An existential is equal to
+   a closed record when its underlying shape is that record's type and
+   the fields are equal. The existential's dispatch table carries the
+   shape's identity and its equality and hash functions.
+6. **Exhaustive `match` record patterns**: not applicable, since
+   destructuring stays partial; record patterns in `match` stay partial
+   too.
+
+Still open:
+
 6. **Instantiation blowup telemetry**: emit per-function
    row-instantiation counts under `ZENA_ZIR_STATS` from day one, so the
    §7.3 risk is a number we watch, not a surprise.
-7. **Should closed-record exhaustive destructuring extend to `match`
-   record patterns** in the same release, for consistency with
-   pattern-exhaustiveness-composite.md?
