@@ -143,25 +143,13 @@ export class Server implements Disposable {
     }
     let stream = s as Stream<RequestTuple>;
     try {
-      if (!this.#closed) {
-        let firstOpt = await stream.readOne();
-        if (firstOpt is Some<RequestTuple>) {
-          let first = (firstOpt as Some<RequestTuple>).value;
-          let (firstReq, firstWriter) = first;
-          this.#dispatch(firstReq, firstWriter);
-          let batch = new Array<RequestTuple>.fixed(64, first);
-          while (!this.#closed) {
-            let n = await stream.read(batch);
-            if (n == 0) {
-              break;
-            }
-            var i = 0;
-            while (i < n) {
-              let (wireReq, writer) = batch[i];
-              this.#dispatch(wireReq, writer);
-              i += 1;
-            }
-          }
+      while (!this.#closed) {
+        let opt = await stream.readOne();
+        if (opt is Some<RequestTuple>) {
+          let (wireReq, writer) = opt.value;
+          this.#dispatch(wireReq, writer);
+        } else {
+          break;
         }
       }
     } finally {

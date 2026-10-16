@@ -898,22 +898,33 @@ impl Drop for ResponseWriterState {
     }
 }
 
+/// Host-side state for a bound `zena:http-server/server` resource.
 pub struct ServerState {
     port: u16,
     request_rx: Arc<Mutex<tokio::sync::mpsc::UnboundedReceiver<IncomingRequest>>>,
     shutdown_flag: Arc<std::sync::atomic::AtomicBool>,
+    /// Oneshot sender paired with the accept loop's `tokio::select!`.
+    /// Dropping it wakes the accept loop so it drops the `TcpListener` and exits.
     shutdown_tx: Option<tokio::sync::oneshot::Sender<()>>,
+    /// Handle to the background thread running the Tokio accept loop.
     accept_thread: Option<std::thread::JoinHandle<()>>,
 }
 
 impl ServerState {
+    /// Stops the accept loop, closes the request channel, and waits for the
+    /// background accept thread to exit so the OS listener socket is released
+    /// before `server.close()` or `drop` returns.
     fn shutdown(&mut self) {
         self.shutdown_flag
             .store(true, std::sync::atomic::Ordering::Relaxed);
+        // Dropping `shutdown_tx` resolves `shutdown_rx` in the accept loop's
+        // `tokio::select!`, causing it to break and drop the `TcpListener`.
         let _ = self.shutdown_tx.take();
         if let Ok(mut rx) = self.request_rx.lock() {
             rx.close();
         }
+        // Join the accept thread so the port is guaranteed to be unbound in
+        // the OS by the time `shutdown()` returns.
         if let Some(handle) = self.accept_thread.take() {
             let _ = handle.join();
         }
