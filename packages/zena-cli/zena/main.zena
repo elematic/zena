@@ -28,7 +28,7 @@ import { lspCommand } from './lsp.zena';
 import { testCommand } from './test-run.zena';
 
 /** The whole command line, described once. */
-let describe = (): ArgParser => {
+function describe() {
   let help = {type: OptionType.Flag, abbr: 'h', help: 'Print help'};
   let noCache = {
     type: OptionType.Flag,
@@ -155,9 +155,9 @@ let describe = (): ArgParser => {
       },
     },
   });
-};
+}
 
-export let main = (): i32 => {
+export function main(): i32 {
   let parser = describe();
   var parsed: ParsedArgs | null = null;
   try {
@@ -183,9 +183,9 @@ export let main = (): i32 => {
     console.error('Error: ' + e.message);
     return 1;
   }
-};
+}
 
-let dispatch = (parser: ArgParser, args: ParsedArgs): i32 => {
+function dispatch(parser: ArgParser, args: ParsedArgs): i32 {
   if (args.getFlag('version')) {
     console.log('zena ' + (getEnv('ZENA_VERSION') ?? 'dev'));
     return 0;
@@ -237,13 +237,13 @@ let dispatch = (parser: ArgParser, args: ParsedArgs): i32 => {
   }
   console.error('Error: no such subcommand: ' + name);
   return 2;
-};
+}
 
 /**
  * `zena build`: an argument naming a `.zena` file compiles that file;
  * anything else is a build target, run with zb.
  */
-let build = (args: ParsedArgs, options: Options): i32 => {
+function build(args: ParsedArgs, options: Options): i32 {
   if (args.rest.length > 1) {
     console.error('Error: build takes one file or target');
     return 2;
@@ -254,18 +254,18 @@ let build = (args: ParsedArgs, options: Options): i32 => {
     return buildFile(args, options, argument, path);
   }
   return buildScript(argument);
-};
+}
 
 /**
  * Compiles one file, always: invoking `build` on a file is the request
  * to compile it, and the scripts that do so track their own inputs.
  */
-let buildFile = (
+function buildFile(
   args: ParsedArgs,
   options: Options,
   argument: String,
   path: AbsolutePath,
-): i32 => {
+): i32 {
   if (!isFileSync(path.value)) {
     console.error(`Error: no such file: ${argument}`);
     return 2;
@@ -291,7 +291,7 @@ let buildFile = (
   }
   compileTo(request, options, resolveUserPath(output));
   return 0;
-};
+}
 
 /**
  * Runs a build target with zb: `test` is a script of the package the
@@ -300,7 +300,7 @@ let buildFile = (
  * directory, from where the user is, whose package.json declares
  * `workspaces`.
  */
-let buildScript = (argument: String): i32 => {
+function buildScript(argument: String): i32 {
   var packagePath = '.';
   var script = argument;
   if (argument.startsWith('.')) {
@@ -328,10 +328,10 @@ let buildScript = (argument: String): i32 => {
   let packageRef = if (relative == null) '' else relative.value;
   let outcome = buildTarget(root.value, new ScriptRef(packageRef, script));
   return reportBuild(outcome);
-};
+}
 
 /** The nearest directory at or above `from` whose package.json has workspaces. */
-let workspaceRoot = (from: AbsolutePath): AbsolutePath => {
+function workspaceRoot(from: AbsolutePath): AbsolutePath {
   var dir = from;
   while (true) {
     let manifest = dir.value + '/package.json';
@@ -344,14 +344,14 @@ let workspaceRoot = (from: AbsolutePath): AbsolutePath => {
     dir = dir.parent();
   }
   return from;
-};
+}
 
 /**
  * `zena doc`: a package's API as JSON. An input inside the repository
  * is read repo-relative, which is what makes the `root` and `file` paths
  * in the JSON repo-relative, and so checkable in.
  */
-let doc = (args: ParsedArgs): i32 => {
+function doc(args: ParsedArgs): i32 {
   if (args.rest.length != 1) {
     console.error('Error: doc needs a path');
     return 2;
@@ -389,21 +389,21 @@ let doc = (args: ParsedArgs): i32 => {
   // The JSON is written either way: a package that does not check is
   // exactly when someone wants to read its docs.
   return if (result.hasErrors()) 1 else 0;
-};
+}
 
-let where = (location: SourceSpan | null): String => {
+function where(location: SourceSpan | null): String {
   if (location == null) {
     return '';
   }
   return location.file + ':' + i32ToString(location.line) + ':' +
       i32ToString(location.column) + ' - ';
-};
+}
 
 /**
  * `zena fmt`: prints one file formatted, or with `--write` rewrites each
  * file, or with `--check` lists the files that are not formatted.
  */
-let fmt = (args: ParsedArgs): i32 => {
+function fmt(args: ParsedArgs): i32 {
   if (args.rest.length == 0) {
     console.error('Error: fmt needs a file');
     return 2;
@@ -433,10 +433,10 @@ let fmt = (args: ParsedArgs): i32 => {
     }
   }
   return if (unformatted > 0) 1 else 0;
-};
+}
 
 /** `zena precompile`: machine code for a module, cached beside it. */
-let precompile = (args: ParsedArgs, options: Options): i32 => {
+function precompile(args: ParsedArgs, options: Options): i32 {
   if (args.rest.length != 1) {
     console.error('Error: precompile needs a .wasm file');
     return 2;
@@ -449,4 +449,4 @@ let precompile = (args: ParsedArgs, options: Options): i32 => {
   }
   console.log('Precompiled ' + path.value);
   return 0;
-};
+}
