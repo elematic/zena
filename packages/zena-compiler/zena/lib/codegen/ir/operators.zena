@@ -14,7 +14,7 @@ import {
 } from '../../ast.zena';
 import {
   AnyRefType, BooleanType, ClassType, EqRefType, F32Type, F64Type,
-  I32Type, I64Type, InterfaceType, NullType, Type, TypeParameterType,
+  I32Type, I64Type, InterfaceType, NullType, RecordType, Type, TypeParameterType,
   U32Type, U64Type, UnionType, baseType,
   typeToString, isNarrowIntType, isUnsignedIntType, narrowIntBits,
   isVoidOrNeverType,
@@ -31,7 +31,7 @@ import {
 import { lowerClassEquality, lowerErasedEq, lowerValueEq } from './equality.zena';
 import { valueEqOperand } from '../value-equality.zena';
 import { lowerNullishCoalesce } from './control-flow.zena';
-import { lowerExpr } from './lowering.zena';
+import { exactLiteralFields, lowerExpr } from './lowering.zena';
 
 
 /** Bail with the lowering-side message shape (reason @function). */
@@ -249,6 +249,24 @@ let equalityClassOf = (cx: LoweringContext, tIn: Type): ClassType | null => {
   return ct;
 };
 
+/**
+ * A record or tuple operand of `==`: a record literal of exactly the
+ * operand's record type lowers straight to its fields, held as the
+ * record (`explodedRecords`), so the comparison reads the fields and the
+ * record is never built. Anything else lowers as usual.
+ */
+let lowerValueEqOperand = (cx: LoweringContext, e: Expression, t: Type): i32 => {
+  let bt = baseType(t);
+  if (bt is RecordType) {
+    let d = cx.recordDispatchOf(bt);
+    let fields = exactLiteralFields(cx, e, d);
+    if (fields != null) {
+      return cx.heldRecord(d, fields);
+    }
+  }
+  return lowerExpr(cx, e, null);
+};
+
 /** Short-circuit && and || as a value-producing diamond. */
 let lowerLogical = (cx: LoweringContext, bin: BinaryExpression): i32 => {
   let left = lowerExpr(cx, bin.left, null);
@@ -385,8 +403,8 @@ export let lowerBinary = (cx: LoweringContext, bin: BinaryExpression): i32 => {
     let rightBase = substitutedBaseType(cx, bin.right);
     if (rightBase != null && valueEqOperand(leftBase) != null &&
         valueEqOperand(rightBase as Type) != null) {
-      let left = lowerExpr(cx, bin.left, null);
-      let right = lowerExpr(cx, bin.right, null);
+      let left = lowerValueEqOperand(cx, bin.left, leftBase);
+      let right = lowerValueEqOperand(cx, bin.right, rightBase as Type);
       let same = lowerValueEq(cx, leftBase, left, rightBase as Type, right);
       if (bin.operator == "!=") {
         return cx.b.emit(IrOp.i32_eqz, new ValTypeI32(), same, -1);

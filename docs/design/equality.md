@@ -122,7 +122,11 @@ every nested pair of fields and whatever each field's own `==` needs.
 `codegen/value-equality.zena` holds what reachability and lowering
 must agree on: which operands compare, how fields pair up, and the
 function's key. At the `==`, `lowerValueEq` (ir/equality.zena) tests
-nullable operands for null first and then calls the function. The
+nullable operands for null first and then calls the function. When an
+operand is a record held as its fields (an exploded parameter, a held
+`var` or result, or a record literal operand, which lowers straight to
+its fields), it compares at the site instead, reading the held fields,
+so the record is never built (argument-explosion.md). The
 function's body (`lowerValueEqFunction`) compares field by field,
 records through each operand's own dispatch and tuples by struct
 field, and returns false at the first pair that differs. A pair of
