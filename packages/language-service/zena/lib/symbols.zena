@@ -39,32 +39,36 @@ export class DocumentSymbol {
   new(this.name, this.kind, this.start, this.end, this.selStart, this.selEnd);
 }
 
-let startOf = (loc: SourceLocation | null): i32 => if (loc == null) { 0 } else { loc.start };
+function startOf(loc: SourceLocation | null): i32 {
+  return loc?.start ?? 0;
+}
 
-let endOf = (loc: SourceLocation | null): i32 => if (loc == null) { 0 } else { loc.end };
+function endOf(loc: SourceLocation | null): i32 {
+  return loc?.end ?? 0;
+}
 
 /**
  * A symbol spanning `loc`, whose name is at `nameLoc`, or anywhere in
  * `loc` when the name has no location of its own.
  */
-let symbolAt = (
+function symbolAt(
   name: String,
   kind: SymbolKind,
   loc: SourceLocation | null,
   nameLoc: SourceLocation | null,
-): DocumentSymbol => {
+) {
   let selection = nameLoc ?? loc;
   return new DocumentSymbol(name, kind, startOf(loc), endOf(loc), startOf(selection), endOf(selection));
-};
+}
 
 /** A symbol for a declaration whose name is an identifier node. */
-let namedSymbol = (name: Node, kind: SymbolKind, loc: SourceLocation | null): DocumentSymbol => {
+function namedSymbol(name: Node, kind: SymbolKind, loc: SourceLocation | null) {
   let text = if (let Identifier {name as id} = name) { id } else { '<unknown>' };
   return symbolAt(text, kind, loc, name.loc);
-};
+}
 
 /** Adds a class or interface body's members to `parent`. */
-let addMembers = (body: Array<Node>, parent: DocumentSymbol): void => {
+function addMembers(body: Array<Node>, parent: DocumentSymbol) {
   for (let member in body) {
     let child = match (member) {
       case MethodDefinition {name, loc}: {
@@ -86,10 +90,10 @@ let addMembers = (body: Array<Node>, parent: DocumentSymbol): void => {
       parent.children.push(child);
     }
   }
-};
+}
 
 /** Whether the module imports `zena:test`, which makes it a test file. */
-let isTestFile = (ast: Module): boolean => {
+function isTestFile(ast: Module): boolean {
   for (let stmt in ast.body) {
     if (let ImportDeclaration {moduleSpecifier} = stmt) {
       if (moduleSpecifier.value == 'zena:test') {
@@ -98,26 +102,28 @@ let isTestFile = (ast: Module): boolean => {
     }
   }
   return false;
-};
+}
 
 /**
  * The callback of a call to the test framework's `suite` or `test`,
  * like the function in `suite('parser', () => { ... })`, when `expr` is
  * a call to `fn`.
  */
-let testCallback = (expr: Expression, fn: String): FunctionExpression | null => match (expr) {
+function testCallback(expr: Expression, fn: String): FunctionExpression | null {
+  return match (expr) {
   case CallExpression {callee: Identifier {name}, args} if name == fn && args.length >= 2: {
     let callback = args[1];
     if (callback is FunctionExpression) { callback } else { null }
   }
   case _: null
 };
+}
 
 /**
  * Adds the suites and tests a function body declares to `parent`,
  * nesting each suite's own.
  */
-let addTests = (body: Node, parent: DocumentSymbol): void => {
+function addTests(body: Node, parent: DocumentSymbol) {
   if (let BlockStatement {body as statements} = body) {
     for (let stmt in statements) {
       if (let ExpressionStatement {expression} = stmt) {
@@ -125,10 +131,10 @@ let addTests = (body: Node, parent: DocumentSymbol): void => {
       }
     }
   }
-};
+}
 
 /** Adds a `suite(...)` or `test(...)` call with a literal name to `parent`. */
-let addTest = (expr: Expression, parent: DocumentSymbol): void => {
+function addTest(expr: Expression, parent: DocumentSymbol): void {
   if (let CallExpression {callee: Identifier {name as fn}, args, loc} = expr) {
     if (fn != 'suite' && fn != 'test') {
       return;
@@ -146,18 +152,18 @@ let addTest = (expr: Expression, parent: DocumentSymbol): void => {
       parent.children.push(entry);
     }
   }
-};
+}
 
 /**
  * The symbol for a top-level `let` or `var` that binds a name. A function
  * value is a function, and so is a test file's suite.
  */
-let variableSymbol = (
+function variableSymbol(
   pattern: Node,
   init: Expression,
   loc: SourceLocation | null,
   inTestFile: boolean,
-): DocumentSymbol | null => {
+): DocumentSymbol | null {
   if (let IdentifierPattern {name} = pattern) {
     let suite = if (inTestFile) { testCallback(init, 'suite') } else { null };
     let isFunction = init is FunctionExpression;
@@ -171,10 +177,11 @@ let variableSymbol = (
     return entry;
   }
   return null;
-};
+}
 
 /** The symbol for a top-level statement, or null for one that declares nothing. */
-let statementSymbol = (stmt: Node, inTestFile: boolean): DocumentSymbol | null => match (stmt) {
+function statementSymbol(stmt: Node, inTestFile: boolean): DocumentSymbol | null {
+  return match (stmt) {
   case ClassDeclaration {name, body, sealedVariants, loc}: {
     let entry = namedSymbol(name, SymbolKind.Class, loc);
     addMembers(body, entry);
@@ -211,9 +218,10 @@ let statementSymbol = (stmt: Node, inTestFile: boolean): DocumentSymbol | null =
   case VariableDeclaration {pattern, init, loc}: variableSymbol(pattern, init, loc, inTestFile)
   case _: null
 };
+}
 
 /** The outline of a module: its top-level declarations, with their members. */
-export let documentSymbols = (ast: Module): Array<DocumentSymbol> => {
+export function documentSymbols(ast: Module): Array<DocumentSymbol> {
   let symbols = new Array<DocumentSymbol>();
   let inTestFile = isTestFile(ast);
   for (let stmt in ast.body) {
@@ -223,4 +231,4 @@ export let documentSymbols = (ast: Module): Array<DocumentSymbol> => {
     }
   }
   return symbols;
-};
+}

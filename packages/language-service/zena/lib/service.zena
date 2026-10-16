@@ -32,6 +32,7 @@ import { FileAnalysis, symbolUnder } from './analysis.zena';
 import { HoverResult, hoverAt } from './hover.zena';
 import { CompletionItem, memberCompletions, scopeCompletions } from './completion.zena';
 import { DocumentSymbol, documentSymbols } from './symbols.zena';
+import { growable } from 'zena:core';
 
 export { FileReader } from './host.zena';
 export { HoverResult } from './hover.zena';
@@ -43,7 +44,7 @@ export { DocumentSymbol, SymbolKind } from './symbols.zena';
  * end of the source for a column past the last line's end, and 0 for a
  * line past the end.
  */
-let offsetOf = (source: String, line: i32, column: i32): i32 => {
+function offsetOf(source: String, line: i32, column: i32): i32 {
   var currentLine = 1;
   var currentColumn = 1;
   var i = 0;
@@ -60,14 +61,14 @@ let offsetOf = (source: String, line: i32, column: i32): i32 => {
     i += 1;
   }
   return if (currentLine == line) { i } else { 0 };
-};
+}
 
 /**
  * A diagnostic for a compile that threw instead of reporting. The
  * message's first line may start with `file:line:column:`, which becomes
  * the diagnostic's location.
  */
-let diagnosticFromError = (message: String, source: String): Diagnostic => {
+function diagnosticFromError(message: String, source: String) {
   let firstLine = message.split('\n')[0];
   let parts = firstLine.split(':');
   if (parts.length >= 4) {
@@ -86,7 +87,7 @@ let diagnosticFromError = (message: String, source: String): Diagnostic => {
     }
   }
   return new Diagnostic(DiagnosticCode.UnexpectedToken, message, DiagnosticSeverity.Error, null);
-};
+}
 
 /**
  * Stateful language service backed by a persistent Compiler.
@@ -194,8 +195,9 @@ export class LanguageService {
       }
       diagnostics
     } catch (e) {
-      let diagnostics = new Array<Diagnostic>(1);
-      diagnostics.push(diagnosticFromError(e.message, source));
+      let diagnostics = growable<Diagnostic>([
+        diagnosticFromError(e.message, source),
+      ]);
       diagnostics
     };
     return diagnostics;
@@ -374,12 +376,12 @@ export class LanguageService {
  * the analysis sees; and `packages` is the package map imports like
  * `zena-compiler:parser` resolve through, none if null.
  */
-export let createLanguageService = (
+export function createLanguageService(
   stdlibRoot: String,
   readFile: FileReader,
   target: String = 'js',
   packageMap: Map<String, PackageConfig> | null = null,
-): LanguageService => {
+): LanguageService {
   let host = new DocumentHost(stdlibRoot, readFile);
   let packages = packageMap ?? new Map<String, PackageConfig>();
   // Source in an editor is source mid-edit: recover from what can be
@@ -394,4 +396,4 @@ export let createLanguageService = (
   let ls = new LanguageService(host, compiler, target);
   ls.preloadStdlib();
   return ls;
-};
+}
