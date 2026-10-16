@@ -1,0 +1,100 @@
+// @mode: run
+// @result: 1
+// `==` compares records and tuples by value: field by field, each field
+// with its own type's `==`, through nesting, optional fields and
+// nullable operands. A value of a closed record type is exactly the
+// fields of its type, so a wider record passed as a narrower one
+// compares by the narrower type's fields.
+
+class Point {
+  x: i32;
+  y: i32;
+  new(this.x, this.y);
+  operator ==(other: Point): boolean {
+    return this.x == other.x && this.y == other.y;
+  }
+}
+
+class Tag {
+  name: String;
+  new(this.name);
+}
+
+type V = {x: i32, y: i32};
+type Named = {name: String, at: V};
+type Opt = {x: i32, tag?: i32};
+type X = {x: i32};
+
+let pair = (a: i32, b: String): (i32, String) => (a, b);
+let rec = (a: i32): V => ({x: a, y: a + 1});
+let asX = (r: X): X => r;
+let same = (a: X, b: X): boolean => a == b;
+
+export let main = (): i32 => {
+  // Tuples, element by element, strings by content.
+  if (pair(1, 'a') != pair(1, 'a') || pair(1, 'a') == pair(1, 'b')) {
+    return 10;
+  }
+  // Records, including call results compared directly.
+  if (rec(3) != rec(3) || rec(3) == rec(4)) {
+    return 11;
+  }
+  let a: V = {x: 1, y: 2};
+  let b: V = {x: 1, y: 2};
+  let c: V = {x: 1, y: 3};
+  if (a != b || a == c) {
+    return 12;
+  }
+  // Nested records and strings.
+  let n1: Named = {name: 'p', at: {x: 1, y: 2}};
+  let n2: Named = {name: 'p', at: {x: 1, y: 2}};
+  let n3: Named = {name: 'p', at: {x: 9, y: 2}};
+  if (n1 != n2 || n1 == n3) {
+    return 13;
+  }
+  // Class fields use the class's `==`: Point declares one, Tag compares
+  // identity.
+  let p1: {p: Point} = {p: new Point(1, 2)};
+  let p2: {p: Point} = {p: new Point(1, 2)};
+  if (p1 != p2) {
+    return 14;
+  }
+  let t = new Tag('t');
+  let t1: {t: Tag} = {t: t};
+  let t2: {t: Tag} = {t: t};
+  let t3: {t: Tag} = {t: new Tag('t')};
+  if (t1 != t2 || t1 == t3) {
+    return 15;
+  }
+  // Optional fields: equal when both are absent, or both present and
+  // equal.
+  let o1: Opt = {x: 1};
+  let o2: Opt = {x: 1};
+  let o3: Opt = {x: 1, tag: 0};
+  let o4: Opt = {x: 1, tag: 0};
+  if (o1 != o2 || o1 == o3 || o3 != o4) {
+    return 16;
+  }
+  // A wider record converted to a narrower type is that type's fields.
+  let w1 = {x: 5, y: 1};
+  let w2 = {x: 5, y: 2};
+  if (!same(w1, w2) || asX(w1) != asX(w2)) {
+    return 17;
+  }
+  // Nullable operands.
+  let m1: V | null = {x: 1, y: 2};
+  let m2: V | null = null;
+  let m3: V | null = null;
+  if (m1 == m2 || m2 != m3 || m1 != a) {
+    return 18;
+  }
+  // Tuples nested in records and records in tuples.
+  let nt1: {t: (i32, i32)} = {t: (1, 2)};
+  let nt2: {t: (i32, i32)} = {t: (1, 2)};
+  let tr1: (V, i32) = ({x: 1, y: 1}, 3);
+  let tr2: (V, i32) = ({x: 1, y: 1}, 3);
+  if (nt1 != nt2 || tr1 != tr2) {
+    return 19;
+  }
+  return 1;
+};

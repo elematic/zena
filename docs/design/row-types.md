@@ -79,10 +79,13 @@ exactness checks on literals; the meaning of existing code is the same.
 | spread `{...r}`                 | copies the type's fields, which are all the value's fields                                                                                             | an error: the result type would not be known                                                                           |
 | `...rest` in destructuring      | binds the remaining fields                                                                                                                             | not available                                                                                                          |
 
-`==` does not convert its operands. Two values of different closed
-record types are never equal, and the checker reports such a comparison
-as always false. Tuples have no width subtyping, so they are always
-closed: `==` compares element by element.
+`==` does not convert its operands. Two closed records with different
+field names are never equal, and the checker should report such a
+comparison as always false. Types that differ only by depth subtyping
+(`{a: Dog}` and `{a: Animal}`, or `(true, i32)` and `(boolean, i32)`)
+can hold equal values, so they compare at the wider type. Tuples have
+no width subtyping, so they are always closed: `==` compares element
+by element.
 
 An existential's dispatch table therefore needs the identity of the
 underlying shape and its equality and hash functions, in addition to

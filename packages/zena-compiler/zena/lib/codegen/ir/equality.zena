@@ -8,17 +8,23 @@
  */
 import { CallExpression } from '../../ast.zena';
 import {
-  BooleanType, ClassType, F32Type, F64Type, I32Type, I64Type, Type,
-  instantiateClassType,
+  BooleanType, ClassType, F32Type, F64Type, I32Type, I64Type, NullType,
+  RecordType, TupleType, Type, UnionType, baseType, instantiateClassType,
 } from '../../types.zena';
 import {
   ValType, ValTypeAnyRef, ValTypeEqRef, ValTypeF32, ValTypeF64, ValTypeI32, ValTypeI64, ValTypeV128, ValTypeRef, ValTypeRefNull, ValTypeStructRef, isNullableAnyRef, isRefValType, refTargetOf, sameHeapType,
 } from '../wasm.zena';
 import {
-  ClassCodegenInfo, WasmField, WasmFunction, WasmSignature, WasmStruct,
-  isValSubtype,
+  ClassCodegenInfo, RecordDispatchInfo, WasmField, WasmFunction, WasmSignature,
+  WasmStruct, isValSubtype,
 } from '../wasm-module.zena';
-import { getClassKey, getClassMethodKey, getMemberRootClass } from '../codegen-utils.zena';
+import {
+  getClassKey, getClassMethodKey, getMemberRootClass, presentWordName,
+} from '../codegen-utils.zena';
+import { eraseTypeParameters } from '../type-mapping.zena';
+import {
+  ValueEqField, valueEqFields, valueEqKey, valueEqOperand,
+} from '../value-equality.zena';
 import { IrBody, IrOp, IrRefField, IrRefFunc } from './ir.zena';
 import { lowerExpr } from './lowering.zena';
 import {
@@ -672,6 +678,240 @@ export let lowerCaseClassHash = (cx: LoweringContext): IrBody => {
   }
   cx.b.ret(h);
   return cx.b.finish();
+};
+
+/**
+ * `a == b` for record or tuple operands of types `lType` and `rType`,
+ * with or without `| null` (docs/design/equality.md, "Structural
+ * equality for records and tuples"): both null is true, one null is
+ * false, and otherwise the pair's comparison function answers. Operands
+ * whose fields do not pair up are never equal.
+ */
+export let lowerValueEq = (cx: LoweringContext, lType: Type, a: i32,
+    rType: Type, b2: i32): i32 => {
+  let i32vt = new ValTypeI32() as ValType;
+  let l = valueEqOperand(lType);
+  let r = valueEqOperand(rType);
+  if (l == null || r == null) {
+    bail(cx, 'structural equality operand');
+  }
+  if (valueEqFields(l as Type, r as Type) == null) {
+    return cx.b.constI32(0, i32vt);
+  }
+  var found: WasmFunction | null = null;
+  if (let (true, f) = cx.wasm.valueEqFuncs.get(valueEqKey(l as Type, r as Type))) {
+    found = f;
+  }
+  if (found == null) {
+    bail(cx, 'structural equality not reached');
+  }
+  let method = found as WasmFunction;
+  let aNullable = isNullableRef(cx.valueTypeOf(a));
+  let bNullable = isNullableRef(cx.valueTypeOf(b2));
+  if (!aNullable && !bNullable) {
+    return callEqMethod(cx, method, a, b2);
+  }
+  let aNull = if (aNullable) cx.b.emit(IrOp.ref_is_null, i32vt, a, -1) else cx.b.constI32(0, i32vt);
+  let bNull = if (bNullable) cx.b.emit(IrOp.ref_is_null, i32vt, b2, -1) else cx.b.constI32(0, i32vt);
+  let anyNull = cx.b.binary(IrOp.i32_or, i32vt, aNull, bNull);
+  let nullB = cx.b.newBlock();
+  let valueB = cx.b.newBlock();
+  let mergeB = cx.b.newBlock();
+  let result = cx.b.blockParam(mergeB, i32vt);
+  cx.b.brIf(anyNull, nullB, noValues(), valueB, noValues());
+  cx.b.switchTo(nullB);
+  cx.b.br(mergeB, oneValue(cx.b.binary(IrOp.i32_and, i32vt, aNull, bNull)));
+  cx.b.switchTo(valueB);
+  cx.b.br(mergeB, oneValue(callEqMethod(cx, method, a, b2)));
+  cx.b.switchTo(mergeB);
+  return result;
+};
+
+/**
+ * The class a field of type `t` holds (without `| null`), when it is a
+ * laid-out class that is not an extension.
+ */
+let fieldClassOf = (cx: LoweringContext, t: Type): ClassType | null => {
+  var b = baseType(t);
+  if (b is UnionType) {
+    var only: Type | null = null;
+    var count = 0;
+    for (let m in b.types) {
+      if (!(m is NullType)) {
+        only = m;
+        count += 1;
+      }
+    }
+    if (count != 1 || only == null) {
+      return null;
+    }
+    b = baseType(only as Type);
+  }
+  if (!(b is ClassType)) {
+    return null;
+  }
+  let ct = eraseTypeParameters(cx.wasm, b) as ClassType;
+  if (ct.isExtension || !cx.wasm.classInfos.has(getClassKey(ct))) {
+    return null;
+  }
+  return ct;
+};
+
+/**
+ * The class two fields compare at: the wider of the two when one class
+ * extends the other (`{a: Dog}` against `{a: Animal}` compares at
+ * `Animal`), else the left one's.
+ */
+let comparedClassOf = (cx: LoweringContext, tl: Type, tr: Type): ClassType | null => {
+  let l = fieldClassOf(cx, tl);
+  let r = fieldClassOf(cx, tr);
+  if (l == null || r == null) {
+    return l;
+  }
+  let rKey = getClassKey(r as ClassType);
+  var s: ClassType | null = l;
+  while (s != null) {
+    if (getClassKey(s as ClassType) == rKey) {
+      return r;
+    }
+    s = (s as ClassType).superType;
+  }
+  return l;
+};
+
+/**
+ * One pair of fields of a structural comparison, typed `tl` and `tr`,
+ * each compared with its own type's `==`: nested records and tuples
+ * through their pair's function, numbers by value, `String` by content,
+ * a class through its `operator ==`, and any other reference through
+ * the erased comparison.
+ */
+let valueFieldEq = (cx: LoweringContext, tl: Type, a: i32, tr: Type, b2: i32): i32 => {
+  let i32vt = new ValTypeI32() as ValType;
+  if (valueEqOperand(tl) != null && valueEqOperand(tr) != null) {
+    return lowerValueEq(cx, tl, a, tr, b2);
+  }
+  let vt = cx.valueTypeOf(a);
+  if (vt is ValTypeI32) {
+    return cx.b.binary(IrOp.i32_eq, i32vt, a, b2);
+  }
+  if (vt is ValTypeI64) {
+    return cx.b.binary(IrOp.i64_eq, i32vt, a, b2);
+  }
+  if (vt is ValTypeF32) {
+    return cx.b.binary(IrOp.f32_eq, i32vt, a, b2);
+  }
+  if (vt is ValTypeF64) {
+    return cx.b.binary(IrOp.f64_eq, i32vt, a, b2);
+  }
+  let ct = comparedClassOf(cx, tl, tr);
+  if (ct != null) {
+    let st = refTargetOf(vt);
+    if (st is WasmStruct && isStringStruct(cx, st)) {
+      return refEqFastPathCall(cx, stringEqFunc(cx), a, b2, true);
+    }
+    return lowerClassEquality(cx, a, b2, ct as ClassType);
+  }
+  if (!isRefValType(vt) || !isRefValType(cx.valueTypeOf(b2))) {
+    bail(cx, 'structural equality field type');
+  }
+  return lowerErasedEq(cx, a, b2);
+};
+
+/**
+ * Whether the optional field `name` is present in `rec`, an i32 0 or 1,
+ * read from the record's `$present` word through dispatch `d`; 1 for a
+ * required field.
+ */
+let presenceOf = (cx: LoweringContext, d: RecordDispatchInfo, name: String,
+    optional: boolean, rec: i32): i32 => {
+  let i32vt = new ValTypeI32() as ValType;
+  if (!optional) {
+    return cx.b.constI32(1, i32vt);
+  }
+  let i64vt = new ValTypeI64() as ValType;
+  let bit = d.optionalBitOf(name);
+  let word = cx.recordDispatchRead(d, presentWordName(bit >> 6), rec);
+  let shifted = cx.b.binary(IrOp.i64_shr_u, i64vt, word,
+      cx.b.constI64((bit & 63) as i64, i64vt));
+  let masked = cx.b.binary(IrOp.i64_and, i64vt, shifted, cx.b.constI64(1, i64vt));
+  return cx.b.emit(IrOp.i32_wrap_i64, i32vt, masked, -1);
+};
+
+/**
+ * The body of a structural comparison function (`valueEqLeft` and
+ * `valueEqRight` set): each pair of fields in turn, returning false at
+ * the first that differs. A pair of optional fields is equal when both
+ * are absent, or both present with equal values; their values are read
+ * only when present.
+ */
+export let lowerValueEqFunction = (cx: LoweringContext): IrBody => {
+  let func = cx.func;
+  let l = func.valueEqLeft as Type;
+  let r = func.valueEqRight as Type;
+  let fieldsOpt = valueEqFields(l, r);
+  let sig = func.signature;
+  if (fieldsOpt == null || sig.params.length != 2 || sig.returns.length != 1) {
+    bail(cx, 'structural equality function shape');
+  }
+  let fields = fieldsOpt as GrowableArray<ValueEqField>;
+  let i32vt = new ValTypeI32() as ValType;
+  let entry = cx.b.newBlock();
+  let a = cx.b.blockParam(entry, sig.params[0]);
+  let b2 = cx.b.blockParam(entry, sig.params[1]);
+  cx.b.switchTo(entry);
+  if (fields.length == 0) {
+    cx.b.ret(cx.b.constI32(1, i32vt));
+    return cx.b.finish();
+  }
+  let falseB = cx.b.newBlock();
+  for (let f in fields) {
+    let nextB = cx.b.newBlock();
+    var va = -1;
+    var vb = -1;
+    if (l is RecordType && r is RecordType) {
+      let dl = cx.recordDispatchOf(l);
+      let dr = cx.recordDispatchOf(r);
+      if (f.leftOptional || f.rightOptional) {
+        let pl = presenceOf(cx, dl, f.name, f.leftOptional, a);
+        let pr = presenceOf(cx, dr, f.name, f.rightOptional, b2);
+        let samePresenceB = cx.b.newBlock();
+        cx.b.brIf(cx.b.binary(IrOp.i32_eq, i32vt, pl, pr),
+            samePresenceB, noValues(), falseB, noValues());
+        cx.b.switchTo(samePresenceB);
+        let presentB = cx.b.newBlock();
+        cx.b.brIf(pl, presentB, noValues(), nextB, noValues());
+        cx.b.switchTo(presentB);
+      }
+      va = cx.recordDispatchRead(dl, f.name, a);
+      vb = cx.recordDispatchRead(dr, f.name, b2);
+    } else {
+      va = tupleElement(cx, a, f.name);
+      vb = tupleElement(cx, b2, f.name);
+    }
+    cx.b.brIf(valueFieldEq(cx, f.left, va, f.right, vb),
+        nextB, noValues(), falseB, noValues());
+    cx.b.switchTo(nextB);
+  }
+  cx.b.ret(cx.b.constI32(1, i32vt));
+  cx.b.switchTo(falseB);
+  cx.b.ret(cx.b.constI32(0, i32vt));
+  return cx.b.finish();
+};
+
+/** Element `name` (its index as a string) of the tuple `t`. */
+let tupleElement = (cx: LoweringContext, t: i32, name: String): i32 => {
+  let st = refTargetOf(cx.valueTypeOf(t));
+  if (!(st is WasmStruct)) {
+    bail(cx, 'tuple equality operand');
+  }
+  let tupleStruct = st as WasmStruct;
+  let index = tupleStruct.fieldIndexByName(name);
+  if (index < 0) {
+    bail(cx, 'tuple equality element');
+  }
+  return cx.b.emit(IrOp.struct_get, tupleStruct.fields[index].type, t,
+      cx.b.addRef(new IrRefField(tupleStruct, name)));
 };
 
 /**
