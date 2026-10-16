@@ -6,7 +6,7 @@
  * converts to a string.
  */
 
-import { StringBuilder } from 'zena:core';
+import { StringBuilder, growable } from 'zena:core';
 import { parseAllowingStatements } from 'zena-compiler:parser';
 import {
   Comment, Node, Module, // Expressions
@@ -28,20 +28,15 @@ var currentCommentMap = new CommentMap();
 // Array helpers
 // ============================================================================
 
-let docs2 = (a: Doc, b: Doc): Array<Doc> => {
-  let arr = new Array<Doc>();
-  arr.push(a);
-  arr.push(b);
+function docs2(a: Doc, b: Doc): Array<Doc> {
+  let arr = growable<Doc>([a, b]);
   return arr;
-};
+}
 
-let docs3 = (a: Doc, b: Doc, c: Doc): Array<Doc> => {
-  let arr = new Array<Doc>();
-  arr.push(a);
-  arr.push(b);
-  arr.push(c);
+function docs3(a: Doc, b: Doc, c: Doc): Array<Doc> {
+  let arr = growable<Doc>([a, b, c]);
   return arr;
-};
+}
 
 // ============================================================================
 // Operator precedence
@@ -77,7 +72,7 @@ let PREC_PRIMARY: i32 = 17;     // a call, a member, a literal — never wrapped
  * Exported for `precedence-agreement_test.zena`, which reads the order back out
  * of real parses and checks that the two still agree.
  */
-export let binaryOperatorRank = (op: String): i32 => {
+export function binaryOperatorRank(op: String): i32 {
   if (op == '||' || op == '??') { return PREC_OR; }
   if (op == '&&') { return PREC_AND; }
   if (op == '|') { return PREC_BIT_OR; }
@@ -92,7 +87,7 @@ export let binaryOperatorRank = (op: String): i32 => {
   // Unreachable for a parsed tree. Reporting the loosest rank means an
   // operand of an unknown operator keeps its parentheses.
   return PREC_LOOSEST;
-};
+}
 
 /**
  * How tightly an expression's own top-level operator binds.
@@ -101,7 +96,8 @@ export let binaryOperatorRank = (op: String): i32 => {
  * `PREC_PRIMARY`, so it is never parenthesized. `await` sits at unary
  * precedence because `#parseUnary` is where the parser reads it.
  */
-let expressionRank = (expr: Expression): i32 => match (expr) {
+function expressionRank(expr: Expression) {
+  return match (expr) {
   case BinaryExpression {operator}: binaryOperatorRank(operator)
   case UnaryExpression {prefix}: if (prefix) PREC_UNARY else PREC_PRIMARY
   case AwaitExpression {}: PREC_UNARY
@@ -117,6 +113,7 @@ let expressionRank = (expr: Expression): i32 => match (expr) {
   case TryExpression {}: PREC_LOOSEST
   case _: PREC_PRIMARY
 };
+}
 
 /**
  * An operand, parenthesized when it binds looser than its position allows.
@@ -125,12 +122,12 @@ let expressionRank = (expr: Expression): i32 => match (expr) {
  * position: the operand of a `*` is read by `#parseExponentiation`, so it
  * must bind at least that tightly to survive a round trip.
  */
-let printOperand = (expr: Expression, minRank: i32): Doc => {
+function printOperand(expr: Expression, minRank: i32) {
   if (expressionRank(expr) < minRank) {
     return concat(docs3(text('('), printExpression(expr), text(')')));
   }
   return printExpression(expr);
-};
+}
 
 // ============================================================================
 // Comment Printing Helpers
@@ -139,19 +136,19 @@ let printOperand = (expr: Expression, minRank: i32): Doc => {
 /**
  * Print a single comment as a Doc.
  */ 
-let printComment = (c: Comment): Doc => {
+function printComment(c: Comment) {
   if (c.isBlock) {
-    return text('/*' + c.value + '*/');
+    return text(`/*${c.value}*/`);
   }
   return text('//' + c.value);
-};
+}
 
 /**
  * Wrap a node's doc with its leading and trailing comments.
  * Leading comments appear before the doc (each on its own line).
  * Trailing comments appear after the doc on the same line (via lineSuffix).
  */
-let withComments = (node: Node, doc: Doc): Doc => {
+function withComments(node: Node, doc: Doc) {
   let leading = currentCommentMap.getLeading(node);
   let trailing = currentCommentMap.getTrailing(node);
 
@@ -163,7 +160,7 @@ let withComments = (node: Node, doc: Doc): Doc => {
 
   // Leading comments
   if (leading != null) {
-    var i: i32 = 0;
+    var i = 0;
     while (i < leading.length) {
       parts.push(printComment(leading[i]));
       parts.push(hardline);
@@ -175,7 +172,7 @@ let withComments = (node: Node, doc: Doc): Doc => {
 
   // Trailing comments (use lineSuffix so they stick to end of line)
   if (trailing != null) {
-    var j: i32 = 0;
+    var j = 0;
     while (j < trailing.length) {
       parts.push(lineSuffix(concat(docs2(text(' '), printComment(trailing[j])))));
       j += 1;
@@ -183,21 +180,21 @@ let withComments = (node: Node, doc: Doc): Doc => {
   }
 
   return concat(parts);
-};
+}
 
 /**
  * Print braces with inner comments for an empty body.
  * Returns `{ <comment> }` if the node has inner comments, otherwise `{}`.
  * The `spaceBeforeOpen` flag prepends a space (for `class Foo {}` vs `{}`).
  */
-let printEmptyBody = (node: Node, spaceBeforeOpen: boolean): Doc => {
+function printEmptyBody(node: Node, spaceBeforeOpen: boolean) {
   let inner = currentCommentMap.getInner(node);
   if (inner == null) {
     if (spaceBeforeOpen) { return text(' {}'); }
     return text('{}');
   }
   let commentDocs = new Array<Doc>();
-  var i: i32 = 0;
+  var i = 0;
   while (i < inner.length) {
     commentDocs.push(printComment(inner[i]));
     if (i < inner.length - 1) { commentDocs.push(hardline); }
@@ -210,13 +207,13 @@ let printEmptyBody = (node: Node, spaceBeforeOpen: boolean): Doc => {
   parts.push(hardline);
   parts.push(text('}'));
   return concat(parts);
-};
+}
 
 // ============================================================================
 // Main entry point
 // ============================================================================
 
-export let format = (source: String): String => {
+export function format(source: String): String {
   // The module-body rule is off. Where a statement may run is not a
   // question the formatter has to answer to lay it out, and a file the
   // compiler rejects is one a user may still want formatted.
@@ -225,19 +222,19 @@ export let format = (source: String): String => {
   let doc = printModule(module);
   let options = new PrintOptions(80);
   return printDocToString(doc, options);
-};
+}
 
 // ============================================================================
 // Module
 // ============================================================================
 
-let printModule = (module: Module): Doc => {
+function printModule(module: Module): Doc {
   let parts = new Array<Doc>();
 
   // File-level leading comments (attached to Module by blank-line heuristic)
   let fileComments = currentCommentMap.getLeading(module);
   if (fileComments != null) {
-    var fi: i32 = 0;
+    var fi = 0;
     while (fi < fileComments.length) {
       parts.push(printComment(fileComments[fi]));
       parts.push(hardline);
@@ -252,7 +249,7 @@ let printModule = (module: Module): Doc => {
   if (module.body.length == 0) {
     let inner = currentCommentMap.getInner(module);
     if (inner != null) {
-      var di: i32 = 0;
+      var di = 0;
       while (di < inner.length) {
         parts.push(printComment(inner[di]));
         parts.push(hardline);
@@ -278,19 +275,16 @@ let printModule = (module: Module): Doc => {
     parts.push(hardline);
   }
   return concat(parts);
-};
+}
 
-let needsBlankLineBetween = (a: Statement, b: Statement): boolean => {
+function needsBlankLineBetween(a: Statement, b: Statement): boolean {
   match (a) {
     case ClassDeclaration {}: { return true; }
     case InterfaceDeclaration {}: { return true; }
     case EnumDeclaration {}: { return true; }
     case MixinDeclaration {}: { return true; }
     case VariableDeclaration {init}: {
-      match (init) {
-        case FunctionExpression {}: { return true; }
-        case _: {}
-      }
+      if (init is FunctionExpression) { return true; }
     }
     case FunctionDeclaration {}: { return true; }
     case _: {}
@@ -301,27 +295,25 @@ let needsBlankLineBetween = (a: Statement, b: Statement): boolean => {
     case EnumDeclaration {}: { return true; }
     case MixinDeclaration {}: { return true; }
     case VariableDeclaration {init}: {
-      match (init) {
-        case FunctionExpression {}: { return true; }
-        case _: {}
-      }
+      if (init is FunctionExpression) { return true; }
     }
     case FunctionDeclaration {}: { return true; }
     case _: {}
   }
   return false;
-};
+}
 
 // ============================================================================
 // Statements
 // ============================================================================
 
-let printStatement = (stmt: Statement): Doc => {
+function printStatement(stmt: Statement): Doc {
   let doc = printStatementInner(stmt);
   return withComments(stmt, doc);
-};
+}
 
-let printStatementInner = (stmt: Statement): Doc => match (stmt) {
+function printStatementInner(stmt: Statement): Doc {
+  return match (stmt) {
   case VariableDeclaration {}: printVariableDeclaration(stmt)
   case UsingStatement {}: printUsingStatement(stmt)
   case ShieldedStatement {body}: concat(docs2(text('shielded '), printBlockStatement(body)))
@@ -356,6 +348,7 @@ let printStatementInner = (stmt: Statement): Doc => match (stmt) {
     concat(parts)
   }
 };
+}
 
 // ============================================================================
 // Variable Declaration
@@ -365,7 +358,7 @@ let printStatementInner = (stmt: Statement): Doc => match (stmt) {
  * `let name: T = init`, without a terminating `;`. A C-style `for` header
  * supplies its own separators, so it prints the declaration this way.
  */
-let printVariableDeclarator = (decl: VariableDeclaration): Doc => {
+function printVariableDeclarator(decl: VariableDeclaration) {
   let parts = new Array<Doc>();
   if (decl.exported) { parts.push(text('export ')); }
   parts.push(text(decl.kind));
@@ -378,15 +371,15 @@ let printVariableDeclarator = (decl: VariableDeclaration): Doc => {
   parts.push(text(' = '));
   parts.push(printExpression(decl.init));
   return concat(parts);
-};
+}
 
-let printVariableDeclaration = (decl: VariableDeclaration): Doc =>
-  group(concat(docs2(printVariableDeclarator(decl), text(';'))));
+function printVariableDeclaration(decl: VariableDeclaration): Doc {
+  return group(concat(docs2(printVariableDeclarator(decl), text(';'))));
+}
 
 /** `using name: T = init;`, or the unbound `using init;`. */
-let printUsingStatement = (stmt: UsingStatement): Doc => {
-  let parts = new Array<Doc>();
-  parts.push(text('using '));
+function printUsingStatement(stmt: UsingStatement): Doc {
+  let parts = growable<Doc>([text('using ')]);
   if (stmt.pattern != null) {
     parts.push(printPattern(stmt.pattern as Pattern));
     if (stmt.typeAnnotation != null) {
@@ -398,13 +391,13 @@ let printUsingStatement = (stmt: UsingStatement): Doc => {
   parts.push(printExpression(stmt.init));
   parts.push(text(';'));
   return group(concat(parts));
-};
+}
 
 // ============================================================================
 // Function Declaration
 // ============================================================================
 
-let printFunctionDeclaration = (decl: FunctionDeclaration): Doc => {
+function printFunctionDeclaration(decl: FunctionDeclaration): Doc {
   let fn = decl.func;
   let parts = new Array<Doc>();
   if (decl.exported) { parts.push(text('export ')); }
@@ -426,26 +419,27 @@ let printFunctionDeclaration = (decl: FunctionDeclaration): Doc => {
   // The parser guarantees a block body.
   parts.push(printBlockStatement(fn.body as BlockStatement));
   return group(concat(parts));
-};
+}
 
 // ============================================================================
 // Return Statement
 // ============================================================================
 
-let printReturnStatement = (stmt: ReturnStatement): Doc => {
+function printReturnStatement(stmt: ReturnStatement): Doc {
   if (stmt.argument == null) { return text('return;'); }
-  let parts = new Array<Doc>();
-  parts.push(text(if (stmt.isTail) 'tail return ' else 'return '));
-  parts.push(printExpression(stmt.argument as Expression));
-  parts.push(text(';'));
+  let parts = growable<Doc>([
+    text(if (stmt.isTail) 'tail return ' else 'return '),
+    printExpression(stmt.argument as Expression),
+    text(';'),
+  ]);
   return concat(parts);
-};
+}
 
 // ============================================================================
 // Block Statement
 // ============================================================================
 
-let printBlockStatement = (block: BlockStatement): Doc => {
+function printBlockStatement(block: BlockStatement): Doc {
   if (block.body.length == 0) { return printEmptyBody(block, false); }
   let stmts = new Array<Doc>();
   var i = 0;
@@ -454,62 +448,66 @@ let printBlockStatement = (block: BlockStatement): Doc => {
     if (i < block.body.length - 1) { stmts.push(hardline); }
     i += 1;
   }
-  let parts = new Array<Doc>();
-  parts.push(text('{'));
-  parts.push(indent(concat(docs2(hardline, concat(stmts)))));
-  parts.push(hardline);
-  parts.push(text('}'));
+  let parts = growable<Doc>([
+    text('{'),
+    indent(concat(docs2(hardline, concat(stmts)))),
+    hardline,
+    text('}'),
+  ]);
   return concat(parts);
-};
+}
 
 // ============================================================================
 // If Statement
 // ============================================================================
 
-let printIfStatement = (stmt: IfStatement): Doc => {
-  let parts = new Array<Doc>();
-  parts.push(text('if ('));
-  parts.push(printCondition(stmt.test));
-  parts.push(text(') '));
-  parts.push(printStatement(stmt.consequent));
+function printIfStatement(stmt: IfStatement): Doc {
+  let parts = growable<Doc>([
+    text('if ('),
+    printCondition(stmt.test),
+    text(') '),
+    printStatement(stmt.consequent),
+  ]);
   if (stmt.alternate != null) {
     let alt = stmt.alternate as Statement;
     parts.push(text(' else '));
-    match (alt) {
-      case IfStatement {}: { parts.push(printIfStatement(alt)); }
-      case _: { parts.push(printStatement(alt)); }
+    if (alt is IfStatement) {
+      parts.push(printIfStatement(alt));
+    } else {
+      parts.push(printStatement(alt));
     }
   }
   return concat(parts);
-};
+}
 
 // ============================================================================
 // While Statement
 // ============================================================================
 
-let printWhileStatement = (stmt: WhileStatement): Doc => {
-  let parts = new Array<Doc>();
-  parts.push(text('while ('));
-  parts.push(printCondition(stmt.test));
-  parts.push(text(') '));
-  parts.push(printStatement(stmt.body));
+function printWhileStatement(stmt: WhileStatement): Doc {
+  let parts = growable<Doc>([
+    text('while ('),
+    printCondition(stmt.test),
+    text(') '),
+    printStatement(stmt.body),
+  ]);
   return concat(parts);
-};
+}
 
 // ============================================================================
 // For Statement
 // ============================================================================
 
-let printForStatement = (stmt: ForStatement): Doc => {
-  let parts = new Array<Doc>();
-  parts.push(text('for ('));
+function printForStatement(stmt: ForStatement): Doc {
+  let parts = growable<Doc>([text('for (')]);
   // The header owns its `;` separators, and a space belongs after one only
   // when a clause follows it — `for (;;)` has three empty clauses.
   if (stmt.init != null) {
     let init = stmt.init as Node;
-    parts.push(match (init) {
-      case VariableDeclaration {}: printVariableDeclarator(init as VariableDeclaration)
-      case _: printExpression(init as Expression)
+    parts.push(if (init is VariableDeclaration) {
+      printVariableDeclarator(init)
+    } else {
+      printExpression(init as Expression)
     });
   }
   parts.push(text(';'));
@@ -525,28 +523,29 @@ let printForStatement = (stmt: ForStatement): Doc => {
   parts.push(text(') '));
   parts.push(printStatement(stmt.body));
   return concat(parts);
-};
+}
 
 // ============================================================================
 // For-In Statement
 // ============================================================================
 
-let printForInStatement = (stmt: ForInStatement): Doc => {
-  let parts = new Array<Doc>();
-  parts.push(text('for (let '));
-  parts.push(printPattern(stmt.pattern));
-  parts.push(text(' in '));
-  parts.push(printExpression(stmt.iterable));
-  parts.push(text(') '));
-  parts.push(printStatement(stmt.body));
+function printForInStatement(stmt: ForInStatement): Doc {
+  let parts = growable<Doc>([
+    text('for (let '),
+    printPattern(stmt.pattern),
+    text(' in '),
+    printExpression(stmt.iterable),
+    text(') '),
+    printStatement(stmt.body),
+  ]);
   return concat(parts);
-};
+}
 
 // ============================================================================
 // Class Declaration
 // ============================================================================
 
-let printClassDeclaration = (decl: ClassDeclaration): Doc => {
+function printClassDeclaration(decl: ClassDeclaration): Doc {
   let parts = new Array<Doc>();
   if (decl.exported) { parts.push(text('export ')); }
   if (decl.isResource) { parts.push(text('resource ')); }
@@ -580,11 +579,8 @@ let printClassDeclaration = (decl: ClassDeclaration): Doc => {
   // which is an error rather than a different spelling of the same thing.
   var superClass = decl.superClass;
   if (decl.isResource && superClass != null) {
-    match (superClass) {
-      case NamedTypeAnnotation {name}: {
-        if (name == 'Resource') { superClass = null; }
-      }
-      case _: {}
+    if (let NamedTypeAnnotation {name} = superClass) {
+      if (name == 'Resource') { superClass = null; }
     }
   }
 
@@ -649,15 +645,9 @@ let printClassDeclaration = (decl: ClassDeclaration): Doc => {
         members.push(hardline);
         let cur = decl.body[i];
         let next = decl.body[i + 1];
-        match (cur) {
-          case MethodDefinition {}: { members.push(hardline); }
-          case _: {
-            match (next) {
-              case MethodDefinition {}: { members.push(hardline); }
-              case _: {}
-            }
-          }
-        }
+        if (cur is MethodDefinition) {
+          members.push(hardline);
+        } else if (next is MethodDefinition) { members.push(hardline); }
       }
       i += 1;
     }
@@ -668,12 +658,10 @@ let printClassDeclaration = (decl: ClassDeclaration): Doc => {
   }
 
   return concat(parts);
-};
+}
 
-let printSealedVariant = (v: SealedVariant): Doc => {
-  let parts = new Array<Doc>();
-  parts.push(text('case '));
-  parts.push(text(v.name.name));
+function printSealedVariant(v: SealedVariant): Doc {
+  let parts = growable<Doc>([text('case '), text(v.name.name)]);
   if (v.params != null) {
     let ps = v.params as GrowableArray<CaseClassParam>;
     parts.push(text('('));
@@ -687,9 +675,9 @@ let printSealedVariant = (v: SealedVariant): Doc => {
     parts.push(text(')'));
   }
   return concat(parts);
-};
+}
 
-let printCaseClassParam = (param: CaseClassParam): Doc => {
+function printCaseClassParam(param: CaseClassParam): Doc {
   let parts = new Array<Doc>();
   if (param.mutability != null) {
     parts.push(text(param.mutability as String));
@@ -700,9 +688,9 @@ let printCaseClassParam = (param: CaseClassParam): Doc => {
   parts.push(text(': '));
   parts.push(printTypeAnnotation(param.typeAnnotation));
   return concat(parts);
-};
+}
 
-let printClassMember = (member: Node): Doc => {
+function printClassMember(member: Node): Doc {
   let doc = match (member) {
     case FieldDefinition {}: printFieldDefinition(member)
     case MethodDefinition {}: printMethodDefinition(member)
@@ -710,9 +698,9 @@ let printClassMember = (member: Node): Doc => {
     case _: text('/* unknown member */')
   };
   return withComments(member, doc);
-};
+}
 
-let printFieldDefinition = (field: FieldDefinition): Doc => {
+function printFieldDefinition(field: FieldDefinition): Doc {
   // `static symbol sym;` — a declaration, not a field with a type.
   // Printing it as one spells `static sym: symbol;`, which does not
   // parse back.
@@ -741,7 +729,7 @@ let printFieldDefinition = (field: FieldDefinition): Doc => {
   }
   parts.push(text(';'));
   return concat(parts);
-};
+}
 
 /**
  * How many leading initializer entries the parser synthesized for `this.`
@@ -756,9 +744,9 @@ let printFieldDefinition = (field: FieldDefinition): Doc => {
  * from an identifier of its own name, for a parameter marked `isThisParam` —
  * is counted, so an entry the source wrote is never dropped.
  */
-let synthesizedInitializerCount = (
+function synthesizedInitializerCount(
     params: Array<Parameter>,
-    inits: GrowableArray<Node>): i32 => {
+    inits: GrowableArray<Node>) {
   var thisParams = 0;
   for (let p in params) {
     if (p.isThisParam) { thisParams += 1; }
@@ -766,20 +754,18 @@ let synthesizedInitializerCount = (
 
   var counted = 0;
   while (counted < thisParams && counted < inits.length) {
-    let looksSynthesized = match (inits[counted]) {
-      case FieldInitializer {field, value}: match (value) {
-        case Identifier {name}: name == field.name
-        case _: false
-      }
-      case _: false
+    let looksSynthesized = if (let FieldInitializer {field, value} = inits[counted]) {
+      if (let Identifier {name} = value) name == field.name else false
+    } else {
+      false
     };
     if (!looksSynthesized) { break; }
     counted += 1;
   }
   return counted;
-};
+}
 
-let printMethodDefinition = (method: MethodDefinition): Doc => {
+function printMethodDefinition(method: MethodDefinition): Doc {
   let parts = new Array<Doc>();
   printMemberDecorators(method.decorators, parts);
   if (method.isShared) { parts.push(text('shared ')); }
@@ -792,9 +778,10 @@ let printMethodDefinition = (method: MethodDefinition): Doc => {
   if (method.isConstructor) {
     // `new(...)`, or a named constructor `new name(...)`.
     parts.push(text('new'));
-    let isDefault = match (method.name) {
-      case Identifier {name}: name == '<constructor>'
-      case _: false
+    let isDefault = if (let Identifier {name} = method.name) {
+      name == '<constructor>'
+    } else {
+      false
     };
     if (!isDefault) {
       parts.push(text(' '));
@@ -844,54 +831,49 @@ let printMethodDefinition = (method: MethodDefinition): Doc => {
 
   // Super initializer
   if (method.superInitializer != null) {
-    match (method.superInitializer as Node) {
-      case SuperInitializer {args}: {
-        if (printedInitializer) {
-          parts.push(text(', '));
-        } else {
-          parts.push(text(' : '));
-        }
-        parts.push(text('super('));
-        let argDocs = new Array<Doc>();
-        var i = 0;
-        while (i < args.length) {
-          argDocs.push(printExpression(args[i]));
-          i += 1;
-        }
-        parts.push(join(text(', '), argDocs));
-        parts.push(text(')'));
+    if (let SuperInitializer {args} = method.superInitializer as Node) {
+      if (printedInitializer) {
+        parts.push(text(', '));
+      } else {
+        parts.push(text(' : '));
       }
-      case _: {}
+      parts.push(text('super('));
+      let argDocs = new Array<Doc>();
+      var i = 0;
+      while (i < args.length) {
+        argDocs.push(printExpression(args[i]));
+        i += 1;
+      }
+      parts.push(join(text(', '), argDocs));
+      parts.push(text(')'));
     }
   }
 
   if (method.body != null) {
     let body = method.body as Node;
-    match (body) {
-      case BlockStatement {}: {
-        parts.push(text(' '));
-        parts.push(printBlockStatement(body));
-      }
-      case _: {
-        parts.push(text(' '));
-        parts.push(printNode(body));
-      }
+    if (body is BlockStatement) {
+      parts.push(text(' '));
+      parts.push(printBlockStatement(body));
+    } else {
+      parts.push(text(' '));
+      parts.push(printNode(body));
     }
   } else {
     parts.push(text(';'));
   }
 
   return concat(parts);
-};
+}
 
-let printInitializerEntry = (entry: Node): Doc => match (entry) {
-  case FieldInitializer {field, value}: {
+function printInitializerEntry(entry: Node): Doc {
+  return if (let FieldInitializer {field, value} = entry) {
     concat(docs3(text(field.name), text(' = '), printExpression(value)))
-  }
-  case _: text('/* unknown initializer */')
-};
+  } else {
+    text('/* unknown initializer */')
+  };
+}
 
-let printAccessorDeclaration = (acc: AccessorDeclaration): Doc => {
+function printAccessorDeclaration(acc: AccessorDeclaration): Doc {
   let parts = new Array<Doc>();
   printMemberDecorators(acc.decorators, parts);
   if (acc.isStatic) { parts.push(text('static ')); }
@@ -908,25 +890,22 @@ let printAccessorDeclaration = (acc: AccessorDeclaration): Doc => {
         text('get '), printBlockStatement(acc.getter as BlockStatement))));
   }
   if (acc.setter != null) {
-    match (acc.setter as Node) {
-      case SetterInfo {param, body}: {
-        accessors.push(concat(docs2(
-            text('set(' + param.name + ') '), printBlockStatement(body))));
-      }
-      case _: {}
+    if (let SetterInfo {param, body} = acc.setter as Node) {
+      accessors.push(concat(docs2(
+          text(`set(${param.name}) `), printBlockStatement(body))));
     }
   }
   parts.push(indent(concat(docs2(hardline, join(hardline, accessors)))));
   parts.push(hardline);
   parts.push(text('}'));
   return concat(parts);
-};
+}
 
 // ============================================================================
 // Interface Declaration
 // ============================================================================
 
-let printInterfaceDeclaration = (decl: InterfaceDeclaration): Doc => {
+function printInterfaceDeclaration(decl: InterfaceDeclaration): Doc {
   let parts = new Array<Doc>();
   if (decl.exported) { parts.push(text('export ')); }
   parts.push(text('interface '));
@@ -956,9 +935,9 @@ let printInterfaceDeclaration = (decl: InterfaceDeclaration): Doc => {
     parts.push(text('}'));
   }
   return concat(parts);
-};
+}
 
-let printInterfaceMember = (member: Node): Doc => {
+function printInterfaceMember(member: Node): Doc {
   let doc = match (member) {
     // An interface constructor: the same node a class constructor is.
     case MethodDefinition {}: printMethodDefinition(member)
@@ -981,19 +960,21 @@ let printInterfaceMember = (member: Node): Doc => {
       concat(parts)
     }
     case AccessorSignature {name, typeAnnotation}: {
-      let parts = new Array<Doc>();
-      parts.push(text(name.name));
-      parts.push(text(': '));
-      parts.push(printTypeAnnotation(typeAnnotation));
-      parts.push(text(';'));
+      let parts = growable<Doc>([
+        text(name.name),
+        text(': '),
+        printTypeAnnotation(typeAnnotation),
+        text(';'),
+      ]);
       concat(parts)
     }
     case PropertySignature {name, typeAnnotation}: {
-      let parts = new Array<Doc>();
-      parts.push(text(name.name));
-      parts.push(text(': '));
-      parts.push(printTypeAnnotation(typeAnnotation));
-      parts.push(text(';'));
+      let parts = growable<Doc>([
+        text(name.name),
+        text(': '),
+        printTypeAnnotation(typeAnnotation),
+        text(';'),
+      ]);
       concat(parts)
     }
     // `static symbol sym;`. The statement printer spells a top-level
@@ -1006,13 +987,13 @@ let printInterfaceMember = (member: Node): Doc => {
     case _: text('/* unknown interface member */')
   };
   return withComments(member, doc);
-};
+}
 
 // ============================================================================
 // Enum Declaration
 // ============================================================================
 
-let printEnumDeclaration = (decl: EnumDeclaration): Doc => {
+function printEnumDeclaration(decl: EnumDeclaration): Doc {
   let parts = new Array<Doc>();
   if (decl.exported) { parts.push(text('export ')); }
   parts.push(text('enum '));
@@ -1023,28 +1004,25 @@ let printEnumDeclaration = (decl: EnumDeclaration): Doc => {
   }
   parts.push(text(' {'));
   let memberDocs = new Array<Doc>();
-  var i = 0;
-  while (i < decl.members.length) {
-    let m = decl.members[i];
+  for (let m in decl.members) {
     let memberDoc = if (m.initializer != null) {
       concat(docs3(text(m.name.name), text(' = '), printExpression(m.initializer as Expression)));
     } else {
       text(m.name.name);
     };
     memberDocs.push(withComments(m, memberDoc));
-    i += 1;
   }
   parts.push(indent(concat(docs2(hardline, join(concat(docs2(text(','), hardline)), memberDocs)))));
   parts.push(hardline);
   parts.push(text('}'));
   return concat(parts);
-};
+}
 
 // ============================================================================
 // Mixin Declaration
 // ============================================================================
 
-let printMixinDeclaration = (decl: MixinDeclaration): Doc => {
+function printMixinDeclaration(decl: MixinDeclaration): Doc {
   let parts = new Array<Doc>();
   if (decl.exported) { parts.push(text('export ')); }
   let subject = decl.decoratorSubject;
@@ -1083,13 +1061,13 @@ let printMixinDeclaration = (decl: MixinDeclaration): Doc => {
     parts.push(text('}'));
   }
   return concat(parts);
-};
+}
 
 // ============================================================================
 // Type Alias Declaration
 // ============================================================================
 
-let printTypeAliasDeclaration = (decl: TypeAliasDeclaration): Doc => {
+function printTypeAliasDeclaration(decl: TypeAliasDeclaration): Doc {
   let parts = new Array<Doc>();
   printDecorators(decl.decorators, parts);
   if (decl.exported) { parts.push(text('export ')); }
@@ -1115,71 +1093,63 @@ let printTypeAliasDeclaration = (decl: TypeAliasDeclaration): Doc => {
   }
   parts.push(text(';'));
   return concat(parts);
-};
+}
 
 // ============================================================================
 // Import Declaration
 // ============================================================================
 
-let printImportDeclaration = (decl: ImportDeclaration): Doc => {
-  let parts = new Array<Doc>();
-  parts.push(text('import {'));
+function printImportDeclaration(decl: ImportDeclaration): Doc {
+  let parts = growable<Doc>([text('import {')]);
   let specDocs = new Array<Doc>();
-  var i = 0;
-  while (i < decl.imports.length) {
-    let spec = decl.imports[i];
+  for (let spec in decl.imports) {
     if (spec.imported.name == spec.local.name) {
       specDocs.push(text(spec.imported.name));
     } else {
       specDocs.push(concat(docs3(text(spec.imported.name), text(' as '), text(spec.local.name))));
     }
-    i += 1;
   }
   parts.push(join(text(', '), specDocs));
   parts.push(text('} from '));
   parts.push(printExpression(decl.moduleSpecifier));
   parts.push(text(';'));
   return group(concat(parts));
-};
+}
 
 // ============================================================================
 // Export From Declaration
 // ============================================================================
 
-let printExportFromDeclaration = (decl: ExportFromDeclaration): Doc => {
-  let parts = new Array<Doc>();
-  parts.push(text('export {'));
+function printExportFromDeclaration(decl: ExportFromDeclaration): Doc {
+  let parts = growable<Doc>([text('export {')]);
   let specDocs = new Array<Doc>();
-  var i = 0;
-  while (i < decl.specifiers.length) {
-    let spec = decl.specifiers[i];
+  for (let spec in decl.specifiers) {
     if (spec.imported.name == spec.local.name) {
       specDocs.push(text(spec.imported.name));
     } else {
       specDocs.push(concat(docs3(text(spec.imported.name), text(' as '), text(spec.local.name))));
     }
-    i += 1;
   }
   parts.push(join(text(', '), specDocs));
   parts.push(text('} from '));
   parts.push(printExpression(decl.moduleSpecifier));
   parts.push(text(';'));
   return group(concat(parts));
-};
+}
 
 // ============================================================================
 // Declare Function
 // ============================================================================
 
-let printDecorators = (decorators: GrowableArray<Decorator>, parts: GrowableArray<Doc>): void => {
+function printDecorators(decorators: GrowableArray<Decorator>, parts: GrowableArray<Doc>): void {
   for (let dec in decorators) {
     printDecorator(dec, parts);
     parts.push(hardline);
   }
-};
+}
 
 /** `@name` or `@a.b(args)`, with no trailing break. */
-let printDecorator = (dec: Decorator, parts: GrowableArray<Doc>): void => {
+function printDecorator(dec: Decorator, parts: GrowableArray<Doc>): void {
   parts.push(text('@'));
   parts.push(text(dec.name));
   if (dec.args.length > 0) {
@@ -1192,20 +1162,20 @@ let printDecorator = (dec: Decorator, parts: GrowableArray<Doc>): void => {
     }
     parts.push(text(')'));
   }
-};
+}
 
 /**
  * A class member's decorators, each followed by a space so they lead the
  * member on its own line: `@signal var count: i32 = 0;`.
  */
-let printMemberDecorators = (decorators: GrowableArray<Decorator>, parts: GrowableArray<Doc>): void => {
+function printMemberDecorators(decorators: GrowableArray<Decorator>, parts: GrowableArray<Doc>): void {
   for (let dec in decorators) {
     printDecorator(dec, parts);
     parts.push(text(' '));
   }
-};
+}
 
-let printDeclareFunction = (decl: DeclareFunction): Doc => {
+function printDeclareFunction(decl: DeclareFunction): Doc {
   let parts = new Array<Doc>();
   printDecorators(decl.decorators, parts);
   if (decl.exported) { parts.push(text('export ')); }
@@ -1220,18 +1190,19 @@ let printDeclareFunction = (decl: DeclareFunction): Doc => {
   parts.push(printTypeAnnotation(decl.returnType));
   parts.push(text(';'));
   return concat(parts);
-};
+}
 
 // ============================================================================
 // Expressions
 // ============================================================================
 
-let printExpression = (expr: Expression): Doc => {
+function printExpression(expr: Expression): Doc {
   let doc = printExpressionInner(expr);
   return withComments(expr, doc);
-};
+}
 
-let printExpressionInner = (expr: Expression): Doc => match (expr) {
+function printExpressionInner(expr: Expression): Doc {
+  return match (expr) {
   case Identifier {name}: text(name)
   case NumberLiteral {raw}: text(raw)
   case StringLiteral {}: printStringLiteral(expr)
@@ -1270,6 +1241,7 @@ let printExpressionInner = (expr: Expression): Doc => match (expr) {
   case AwaitExpression {argument}: concat(docs2(text('await '), printExpression(argument)))
   case TryExpression {}: printTryExpression(expr)
 };
+}
 
 // ============================================================================
 // String Literals — normalize to single quotes with proper escaping
@@ -1278,7 +1250,7 @@ let printExpressionInner = (expr: Expression): Doc => match (expr) {
 // Re-escape a decoded string value for single-quoted output.
 // The value has already been unescaped by the lexer, so literal characters
 // like ' and \ and control characters need to be escaped back.
-let escapeForSingleQuote = (value: String): String => {
+function escapeForSingleQuote(value: String) {
   let len = value.length;
   // Fast path: if no characters need escaping, return as-is
   var needsEscape = false;
@@ -1330,15 +1302,16 @@ let escapeForSingleQuote = (value: String): String => {
     i += 1;
   }
   return sb.toString();
-};
+}
 
-let printStringLiteral = (lit: StringLiteral): Doc => {
-  let parts = new Array<Doc>();
-  parts.push(text("'"));
-  parts.push(text(escapeForSingleQuote(lit.value)));
-  parts.push(text("'"));
+function printStringLiteral(lit: StringLiteral): Doc {
+  let parts = growable<Doc>([
+    text("'"),
+    text(escapeForSingleQuote(lit.value)),
+    text("'"),
+  ]);
   return concat(parts);
-};
+}
 
 // ============================================================================
 // Binary Expression
@@ -1347,16 +1320,15 @@ let printStringLiteral = (lit: StringLiteral): Doc => {
 /**
  * Check if two binary expressions have the same operator (for chain flattening).
  */
-let isSameOpChain = (expr: Expression, op: String): boolean => match (expr) {
-  case BinaryExpression {operator}: operator == op
-  case _: false
-};
+function isSameOpChain(expr: Expression, op: String): boolean {
+  return if (let BinaryExpression {operator} = expr) operator == op else false;
+}
 
 /**
  * Flatten a left-associative chain of same-operator binary expressions.
  * ((a + b) + c) + d → [a, b, c, d] with operator "+"
  */
-let flattenBinaryChain = (expr: BinaryExpression): Array<Expression> => {
+function flattenBinaryChain(expr: BinaryExpression): Array<Expression> {
   let parts = new Array<Expression>();
   let op = expr.operator;
 
@@ -1378,7 +1350,7 @@ let flattenBinaryChain = (expr: BinaryExpression): Array<Expression> => {
     i -= 1;
   }
   return result;
-};
+}
 
 /**
  * `a + b + c`, breaking before each operator when the whole chain does not fit:
@@ -1392,7 +1364,7 @@ let flattenBinaryChain = (expr: BinaryExpression): Array<Expression> => {
  * to break at, and a long condition broke in whatever group was nested inside
  * it — the argument list of a call, say — leaving the operator on one line.
  */
-let printBinaryExpression = (expr: BinaryExpression): Doc => {
+function printBinaryExpression(expr: BinaryExpression): Doc {
   let op = expr.operator;
   let rank = binaryOperatorRank(op);
   // `**` is the one right-associative binary operator. Flattening its left
@@ -1403,9 +1375,7 @@ let printBinaryExpression = (expr: BinaryExpression): Doc => {
   if (rightAssociative) {
     // The walk above collects the left spine, which is the reassociation.
     // Take the two operands as written instead.
-    let pair = new Array<Expression>(2);
-    pair.push(expr.left);
-    pair.push(expr.right);
+    let pair = growable<Expression>([expr.left, expr.right]);
     operands = pair;
   }
 
@@ -1415,11 +1385,10 @@ let printBinaryExpression = (expr: BinaryExpression): Doc => {
   let leftMin = if (rightAssociative) rank + 1 else rank;
   let rightMin = if (rightAssociative) rank else rank + 1;
 
-  let parts = new Array<Doc>();
-  parts.push(printOperand(operands[0], leftMin));
+  let parts = growable<Doc>([printOperand(operands[0], leftMin)]);
 
   let rest = new Array<Doc>(operands.length * 3);
-  var j: i32 = 1;
+  var j = 1;
   while (j < operands.length) {
     rest.push(line);
     rest.push(text(op));
@@ -1429,34 +1398,33 @@ let printBinaryExpression = (expr: BinaryExpression): Doc => {
   }
   parts.push(indent(concat(rest)));
   return group(concat(parts));
-};
+}
 
 // ============================================================================
 // Unary Expression
 // ============================================================================
 
-let printUnaryExpression = (expr: UnaryExpression): Doc => {
+function printUnaryExpression(expr: UnaryExpression): Doc {
   if (expr.prefix) {
     // `#parseUnary` reads the operand, so anything looser needs parentheses:
     // without them `-(a + b)` prints as `-a + b`, which negates `a` alone.
     return concat(docs2(text(expr.operator), printOperand(expr.argument, PREC_UNARY)));
   }
   return concat(docs2(printOperand(expr.argument, PREC_UNARY), text(expr.operator)));
-};
+}
 
 // ============================================================================
 // Assignment Expression
 // ============================================================================
 
-let printAssignmentExpression = (expr: AssignmentExpression): Doc => {
-  let parts = new Array<Doc>();
-  parts.push(printExpression(expr.left));
+function printAssignmentExpression(expr: AssignmentExpression): Doc {
+  let parts = growable<Doc>([printExpression(expr.left)]);
   // `operator` holds `+` for `+=`, and is absent for a plain assignment.
   let operator = expr.operator ?? '';
   parts.push(text(` ${operator}= `));
   parts.push(printExpression(expr.value));
   return group(concat(parts));
-};
+}
 
 // ============================================================================
 // Member / Index Expression
@@ -1466,32 +1434,32 @@ let printAssignmentExpression = (expr: AssignmentExpression): Doc => {
  * Check if an expression is the head of a method chain (2+ method calls).
  * e.g., foo.bar().baz() is a chain of length 2.
  */
-let isMethodChain = (expr: Expression): boolean => match (expr) {
-  case CallExpression {callee}: match (callee) {
-    case MemberExpression {object}: isChainLink(object)
-    case _: false
-  }
-  case _: false
-};
+function isMethodChain(expr: Expression): boolean {
+  return if (let CallExpression {callee} = expr) {
+    if (let MemberExpression {object} = callee) isChainLink(object) else false
+  } else {
+    false
+  };
+}
 
 /**
  * Check if an expression is a call with a member callee (one link in a chain).
  */
-let isChainLink = (expr: Expression): boolean => match (expr) {
-  case CallExpression {callee}: match (callee) {
-    case MemberExpression {}: true
-    case _: false
-  }
-  case _: false
-};
+function isChainLink(expr: Expression): boolean {
+  return if (let CallExpression {callee} = expr) {
+    callee is MemberExpression
+  } else {
+    false
+  };
+}
 
 /**
  * Represents one segment of a method chain: .method(args)
  */
 class ChainSegment {
-  var dot: Doc;
-  var property: Doc;
-  var args: Doc;
+  dot: Doc;
+  property: Doc;
+  args: Doc;
   new(this.dot, this.property, this.args);
 }
 
@@ -1508,7 +1476,7 @@ class ChainSegment {
  *     .baz(b)
  *     .qux(c)
  */
-let printMethodChain = (expr: CallExpression): Doc => {
+function printMethodChain(expr: CallExpression) {
   // Collect chain segments in reverse order (innermost first)
   let segments = new Array<ChainSegment>();
   var current: Expression = expr;
@@ -1555,7 +1523,7 @@ let printMethodChain = (expr: CallExpression): Doc => {
 
   // Build: group(head, indent(softline, .a(), softline, .b(), ...))
   let chainParts = new Array<Doc>(ordered.length * 2);
-  var j: i32 = 0;
+  var j = 0;
   while (j < ordered.length) {
     chainParts.push(softline);
     chainParts.push(ordered[j]);
@@ -1563,7 +1531,7 @@ let printMethodChain = (expr: CallExpression): Doc => {
   }
 
   return group(concat(docs2(head, indent(concat(chainParts)))));
-};
+}
 
 /**
  * The object of a `.` or `[]` access, or the callee of a call, parenthesized
@@ -1574,51 +1542,45 @@ let printMethodChain = (expr: CallExpression): Doc => {
  * where `.x` binds to the type instead of the cast, and the result does not
  * parse.
  */
-let printPostfixOperand = (expr: Expression, beforeDot: boolean): Doc => {
+function printPostfixOperand(expr: Expression, beforeDot: boolean): Doc {
   // `1.toString()` lexes `1.` as the start of a float, so a numeric literal
   // needs parentheses before a `.` despite binding as tightly as anything.
   // Before a `[` or a `(` it does not.
-  let numberBeforeDot = beforeDot && match (expr) {
-    case NumberLiteral {}: true
-    case _: false
-  };
+  let numberBeforeDot = beforeDot && expr is NumberLiteral;
   if (numberBeforeDot) {
     return concat(docs3(text('('), printExpression(expr), text(')')));
   }
   // A postfix operator reads a primary, so every operand with an operator of
   // its own needs parentheses here.
   return printOperand(expr, PREC_PRIMARY);
-};
+}
 
-let printMemberExpression = (expr: MemberExpression): Doc => {
-  let parts = new Array<Doc>();
-  parts.push(printPostfixOperand(expr.object, true));
+function printMemberExpression(expr: MemberExpression): Doc {
+  let parts = growable<Doc>([printPostfixOperand(expr.object, true)]);
   if (expr.optional) { parts.push(text('?.')); } else { parts.push(text('.')); }
   parts.push(text(expr.property.name));
   return concat(parts);
-};
+}
 
-let printIndexExpression = (expr: IndexExpression): Doc => {
-  let parts = new Array<Doc>();
-  parts.push(printPostfixOperand(expr.object, false));
+function printIndexExpression(expr: IndexExpression): Doc {
+  let parts = growable<Doc>([printPostfixOperand(expr.object, false)]);
   if (expr.optional) { parts.push(text('?.[')); } else { parts.push(text('[')); }
   parts.push(printExpression(expr.index));
   parts.push(text(']'));
   return concat(parts);
-};
+}
 
 // ============================================================================
 // Call Expression
 // ============================================================================
 
-let printCallExpression = (expr: CallExpression): Doc => {
+function printCallExpression(expr: CallExpression): Doc {
   // Check for method chain (2+ chained method calls)
   if (isMethodChain(expr)) {
     return printMethodChain(expr);
   }
 
-  let parts = new Array<Doc>();
-  parts.push(printPostfixOperand(expr.callee, false));
+  let parts = growable<Doc>([printPostfixOperand(expr.callee, false)]);
   if (expr.typeArguments != null) {
     let tas = expr.typeArguments as GrowableArray<TypeAnnotation>;
     if (tas.length > 0) {
@@ -1629,16 +1591,14 @@ let printCallExpression = (expr: CallExpression): Doc => {
   }
   parts.push(group(concat(printArgList(expr.args))));
   return concat(parts);
-};
+}
 
 // ============================================================================
 // New Expression
 // ============================================================================
 
-let printNewExpression = (expr: NewExpression): Doc => {
-  let parts = new Array<Doc>();
-  parts.push(text('new '));
-  parts.push(text(expr.callee.name));
+function printNewExpression(expr: NewExpression): Doc {
+  let parts = growable<Doc>([text('new '), text(expr.callee.name)]);
   if (expr.typeArguments != null) {
     let tas = expr.typeArguments as GrowableArray<TypeAnnotation>;
     if (tas.length > 0) {
@@ -1649,9 +1609,9 @@ let printNewExpression = (expr: NewExpression): Doc => {
   }
   parts.push(group(concat(printArgList(expr.args))));
   return concat(parts);
-};
+}
 
-let printArgList = (args: Array<Expression>): Array<Doc> => {
+function printArgList(args: Array<Expression>): Array<Doc> {
   let parts = new Array<Doc>();
   if (args.length == 0) {
     parts.push(text('('));
@@ -1669,13 +1629,13 @@ let printArgList = (args: Array<Expression>): Array<Doc> => {
   parts.push(softline);
   parts.push(text(')'));
   return parts;
-};
+}
 
 // ============================================================================
 // Function Expression
 // ============================================================================
 
-let printFunctionExpression = (fn: FunctionExpression): Doc => {
+function printFunctionExpression(fn: FunctionExpression): Doc {
   let parts = new Array<Doc>();
 
   if (fn.isGenerator) { parts.push(text('gen ')); }
@@ -1696,15 +1656,16 @@ let printFunctionExpression = (fn: FunctionExpression): Doc => {
 
   parts.push(text(' => '));
 
-  match (fn.body) {
-    case BlockStatement {}: { parts.push(printBlockStatement(fn.body as BlockStatement)); }
-    case _: { parts.push(printExpression(fn.body as Expression)); }
+  if (fn.body is BlockStatement) {
+    parts.push(printBlockStatement(fn.body as BlockStatement));
+  } else {
+    parts.push(printExpression(fn.body as Expression));
   }
 
   return concat(parts);
-};
+}
 
-let printParams = (params: Array<Parameter>): Doc => {
+function printParams(params: Array<Parameter>): Doc {
   if (params.length == 0) { return text(''); }
   let paramDocs = new Array<Doc>();
   var i = 0;
@@ -1713,9 +1674,9 @@ let printParams = (params: Array<Parameter>): Doc => {
     i += 1;
   }
   return join(text(', '), paramDocs);
-};
+}
 
-let printParam = (param: Parameter): Doc => {
+function printParam(param: Parameter): Doc {
   let parts = new Array<Doc>();
   // A `this.x` parameter takes its type from the field, so it is written
   // without one. The parser records it as a plain parameter plus a synthesized
@@ -1732,13 +1693,13 @@ let printParam = (param: Parameter): Doc => {
     parts.push(printExpression(param.defaultValue as Expression));
   }
   return concat(parts);
-};
+}
 
 // ============================================================================
 // Literals (Array, Record, Tuple, Map)
 // ============================================================================
 
-let printArrayLiteral = (expr: ArrayLiteral): Doc => {
+function printArrayLiteral(expr: ArrayLiteral): Doc {
   if (expr.elements.length == 0) { return text('[]'); }
   let elemDocs = new Array<Doc>();
   var i = 0;
@@ -1746,20 +1707,19 @@ let printArrayLiteral = (expr: ArrayLiteral): Doc => {
     elemDocs.push(printExpression(expr.elements[i]));
     i += 1;
   }
-  let inner = new Array<Doc>();
-  inner.push(text('['));
-  inner.push(indent(concat(docs2(softline, join(concat(docs2(text(','), line)), elemDocs)))));
-  inner.push(softline);
-  inner.push(text(']'));
+  let inner = growable<Doc>([
+    text('['),
+    indent(concat(docs2(softline, join(concat(docs2(text(','), line)), elemDocs)))),
+    softline,
+    text(']'),
+  ]);
   return group(concat(inner));
-};
+}
 
-let printRecordLiteral = (expr: RecordLiteral): Doc => {
+function printRecordLiteral(expr: RecordLiteral): Doc {
   if (expr.properties.length == 0) { return text('{}'); }
   let propDocs = new Array<Doc>();
-  var i = 0;
-  while (i < expr.properties.length) {
-    let prop = expr.properties[i];
+  for (let prop in expr.properties) {
     match (prop) {
       case PropertyAssignment {name, value}: {
         propDocs.push(concat(docs3(text(name.name), text(': '), printExpression(value))));
@@ -1769,17 +1729,17 @@ let printRecordLiteral = (expr: RecordLiteral): Doc => {
       }
       case _: {}
     }
-    i += 1;
   }
-  let inner = new Array<Doc>();
-  inner.push(text('{'));
-  inner.push(indent(concat(docs2(line, join(concat(docs2(text(','), line)), propDocs)))));
-  inner.push(line);
-  inner.push(text('}'));
+  let inner = growable<Doc>([
+    text('{'),
+    indent(concat(docs2(line, join(concat(docs2(text(','), line)), propDocs)))),
+    line,
+    text('}'),
+  ]);
   return group(concat(inner));
-};
+}
 
-let printTupleLiteral = (expr: TupleLiteral): Doc => {
+function printTupleLiteral(expr: TupleLiteral): Doc {
   let elemDocs = new Array<Doc>();
   var i = 0;
   while (i < expr.elements.length) {
@@ -1787,7 +1747,7 @@ let printTupleLiteral = (expr: TupleLiteral): Doc => {
     i += 1;
   }
   return concat(docs3(text('('), join(text(', '), elemDocs), text(')')));
-};
+}
 
 /**
  * `{key => value, ...}`. The `#{key: value}` spelling this used to print was
@@ -1796,28 +1756,26 @@ let printTupleLiteral = (expr: TupleLiteral): Doc => {
  * A map literal with no entries cannot be written — `{}` is an empty record —
  * so the empty case is only a fallback.
  */
-let printMapLiteral = (expr: MapLiteral): Doc => {
+function printMapLiteral(expr: MapLiteral): Doc {
   if (expr.entries.length == 0) { return text('{}'); }
   let entryDocs = new Array<Doc>();
-  var i = 0;
-  while (i < expr.entries.length) {
-    let entry = expr.entries[i];
+  for (let entry in expr.entries) {
     entryDocs.push(concat(docs3(printExpression(entry.key), text(' => '), printExpression(entry.value))));
-    i += 1;
   }
-  let inner = new Array<Doc>();
-  inner.push(text('{'));
-  inner.push(indent(concat(docs2(softline, join(concat(docs2(text(','), line)), entryDocs)))));
-  inner.push(softline);
-  inner.push(text('}'));
+  let inner = growable<Doc>([
+    text('{'),
+    indent(concat(docs2(softline, join(concat(docs2(text(','), line)), entryDocs)))),
+    softline,
+    text('}'),
+  ]);
   return group(concat(inner));
-};
+}
 
 // ============================================================================
 // Range / Pipeline
 // ============================================================================
 
-let printRangeExpression = (expr: RangeExpression): Doc => {
+function printRangeExpression(expr: RangeExpression): Doc {
   let parts = new Array<Doc>();
   // Both ends are read by `#parseAs`, so `a + b..c` is already `(a + b)..(c)`
   // and only an operand looser than that needs parentheses.
@@ -1825,24 +1783,23 @@ let printRangeExpression = (expr: RangeExpression): Doc => {
   parts.push(text('..'));
   if (expr.end != null) { parts.push(printOperand(expr.end as Expression, PREC_AS)); }
   return concat(parts);
-};
+}
 
-let printPipelineExpression = (expr: PipelineExpression): Doc => {
+function printPipelineExpression(expr: PipelineExpression): Doc {
   let parts = new Array<Doc>();
   // `|>` is left-associative, so the left side may be another pipeline while
   // the right side is read by `#parseLogicalOr`.
   parts.push(printOperand(expr.left, PREC_PIPELINE));
   parts.push(indent(concat(docs3(line, text('|> '), printOperand(expr.right, PREC_PIPELINE + 1)))));
   return group(concat(parts));
-};
+}
 
 // ============================================================================
 // Template Literals
 // ============================================================================
 
-let printTemplateLiteral = (expr: TemplateLiteral): Doc => {
-  let parts = new Array<Doc>();
-  parts.push(text('`'));
+function printTemplateLiteral(expr: TemplateLiteral): Doc {
+  let parts = growable<Doc>([text('`')]);
   var i = 0;
   while (i < expr.quasis.length) {
     parts.push(text(expr.quasis[i].raw));
@@ -1855,23 +1812,20 @@ let printTemplateLiteral = (expr: TemplateLiteral): Doc => {
   }
   parts.push(text('`'));
   return concat(parts);
-};
+}
 
 // ============================================================================
 // Match Expression
 // ============================================================================
 
-let printMatchExpression = (expr: MatchExpression): Doc => {
-  let parts = new Array<Doc>();
-  parts.push(text('match ('));
-  parts.push(printExpression(expr.discriminant));
-  parts.push(text(') {'));
-  var i = 0;
-  while (i < expr.cases.length) {
-    let c = expr.cases[i];
-    let caseParts = new Array<Doc>();
-    caseParts.push(text('case '));
-    caseParts.push(printNode(c.pattern));
+function printMatchExpression(expr: MatchExpression): Doc {
+  let parts = growable<Doc>([
+    text('match ('),
+    printExpression(expr.discriminant),
+    text(') {'),
+  ]);
+  for (let c in expr.cases) {
+    let caseParts = growable<Doc>([text('case '), printNode(c.pattern)]);
     if (c.guard != null) {
       caseParts.push(text(' if '));
       caseParts.push(printExpression(c.guard as Expression));
@@ -1879,38 +1833,36 @@ let printMatchExpression = (expr: MatchExpression): Doc => {
     caseParts.push(text(': '));
     caseParts.push(printNode(c.body));
     parts.push(indent(concat(docs2(hardline, concat(caseParts)))));
-    i += 1;
   }
   parts.push(hardline);
   parts.push(text('}'));
   return concat(parts);
-};
+}
 
 // ============================================================================
 // If Expression
 // ============================================================================
 
-let printIfExpression = (expr: IfExpression): Doc => {
-  let parts = new Array<Doc>();
-  parts.push(text('if ('));
-  parts.push(printCondition(expr.test));
-  parts.push(text(') '));
-  parts.push(printNode(expr.consequent));
+function printIfExpression(expr: IfExpression): Doc {
+  let parts = growable<Doc>([
+    text('if ('),
+    printCondition(expr.test),
+    text(') '),
+    printNode(expr.consequent),
+  ]);
   if (expr.alternate != null) {
     parts.push(text(' else '));
     parts.push(printNode(expr.alternate));
   }
   return concat(parts);
-};
+}
 
 // ============================================================================
 // Try Expression
 // ============================================================================
 
-let printTryExpression = (expr: TryExpression): Doc => {
-  let parts = new Array<Doc>();
-  parts.push(text('try '));
-  parts.push(printBlockStatement(expr.body));
+function printTryExpression(expr: TryExpression): Doc {
+  let parts = growable<Doc>([text('try '), printBlockStatement(expr.body)]);
   if (expr.cancelBlock != null) {
     parts.push(text(' cancel '));
     parts.push(printBlockStatement(expr.cancelBlock as BlockStatement));
@@ -1931,13 +1883,14 @@ let printTryExpression = (expr: TryExpression): Doc => {
     parts.push(printBlockStatement(expr.finalizer as BlockStatement));
   }
   return concat(parts);
-};
+}
 
 // ============================================================================
 // Patterns
 // ============================================================================
 
-let printPattern = (pat: Pattern): Doc => match (pat) {
+function printPattern(pat: Pattern): Doc {
+  return match (pat) {
   case BindingPattern {kind, pattern}: concat(docs3(text(kind), text(' '), printPattern(pattern)))
   case IdentifierPattern {name}: text(name)
   case RecordPattern {}: printRecordPattern(pat)
@@ -1948,8 +1901,7 @@ let printPattern = (pat: Pattern): Doc => match (pat) {
     concat(docs3(printNode(pattern), text(' as '), text(name.name)))
   }
   case ClassPattern {name, properties}: {
-    let parts = new Array<Doc>();
-    parts.push(text(name.name));
+    let parts = growable<Doc>([text(name.name)]);
     if (properties.length > 0) {
       parts.push(text(' {'));
       let propDocs = new Array<Doc>();
@@ -1974,8 +1926,9 @@ let printPattern = (pat: Pattern): Doc => match (pat) {
   // `!name` form; standalone the node is just its marker.
   case AbsencePattern {}: text('!')
 };
+}
 
-let printRecordPattern = (pattern: RecordPattern): Doc => {
+function printRecordPattern(pattern: RecordPattern): Doc {
   if (pattern.properties.length == 0) { return text('{}'); }
   let propDocs = new Array<Doc>();
   var i = 0;
@@ -1984,9 +1937,9 @@ let printRecordPattern = (pattern: RecordPattern): Doc => {
     i += 1;
   }
   return concat(docs3(text('{'), join(text(', '), propDocs), text('}')));
-};
+}
 
-let printBindingProperty = (bp: BindingProperty): Doc => {
+function printBindingProperty(bp: BindingProperty): Doc {
   match (bp.value) {
     case IdentifierPattern {name}: {
       if (name == bp.name.name) { return text(bp.name.name); }
@@ -1997,46 +1950,40 @@ let printBindingProperty = (bp: BindingProperty): Doc => {
     case _: {}
   }
   return concat(docs3(text(bp.name.name), text(': '), printNode(bp.value)));
-};
+}
 
-let printTuplePattern = (pattern: TuplePattern): Doc => {
+function printTuplePattern(pattern: TuplePattern): Doc {
   let elemDocs = new Array<Doc>();
-  var i = 0;
-  while (i < pattern.elements.length) {
-    let elem = pattern.elements[i];
+  for (let elem in pattern.elements) {
     if (elem != null) {
       elemDocs.push(printNode(elem));
     } else {
       elemDocs.push(text('_'));
     }
-    i += 1;
   }
   return concat(docs3(text('('), join(text(', '), elemDocs), text(')')));
-};
+}
 
-let printArrayPattern = (pattern: ArrayPattern): Doc => {
+function printArrayPattern(pattern: ArrayPattern): Doc {
   let elemDocs = new Array<Doc>();
-  var i = 0;
-  while (i < pattern.elements.length) {
-    let elem = pattern.elements[i];
+  for (let elem in pattern.elements) {
     if (elem != null) {
       elemDocs.push(printNode(elem));
     } else {
       elemDocs.push(text(''));
     }
-    i += 1;
   }
   return concat(docs3(text('['), join(text(', '), elemDocs), text(']')));
-};
+}
 
 // ============================================================================
 // Type Annotations
 // ============================================================================
 
-let printTypeAnnotation = (ann: TypeAnnotation): Doc => match (ann) {
+function printTypeAnnotation(ann: TypeAnnotation): Doc {
+  return match (ann) {
   case NamedTypeAnnotation {name, typeArguments, elementsMutable}: {
-    let parts = new Array<Doc>();
-    parts.push(text(name));
+    let parts = growable<Doc>([text(name)]);
     if (typeArguments != null) {
       if (typeArguments.length > 0) {
         parts.push(text('<'));
@@ -2069,8 +2016,7 @@ let printTypeAnnotation = (ann: TypeAnnotation): Doc => match (ann) {
     }
   }
   case FunctionTypeAnnotation {params, returnType}: {
-    let parts = new Array<Doc>();
-    parts.push(text('('));
+    let parts = growable<Doc>([text('(')]);
     let pDocs = new Array<Doc>();
     var i = 0;
     while (i < params.length) {
@@ -2085,12 +2031,9 @@ let printTypeAnnotation = (ann: TypeAnnotation): Doc => match (ann) {
   case LiteralTypeAnnotation {value}: printNode(value)
   case RecordTypeAnnotation {properties}: {
     let propDocs = new Array<Doc>();
-    var i = 0;
-    while (i < properties.length) {
-      let p = properties[i];
+    for (let p in properties) {
       let nameDoc = if (p.optional) { concat(docs2(text(p.name.name), text('?'))) } else { text(p.name.name) };
       propDocs.push(concat(docs3(nameDoc, text(': '), printTypeAnnotation(p.typeAnnotation))));
-      i += 1;
     }
     concat(docs3(text('{'), join(text(', '), propDocs), text('}')))
   }
@@ -2114,19 +2057,17 @@ let printTypeAnnotation = (ann: TypeAnnotation): Doc => match (ann) {
   }
   case ThisTypeAnnotation {}: text('this')
 };
+}
 
 // ============================================================================
 // Helpers
 // ============================================================================
 
-let printTypeParams = (tps: Array<TypeParameter>): Doc => {
+function printTypeParams(tps: Array<TypeParameter>): Doc {
   if (tps.length == 0) { return text(''); }
-  let parts = new Array<Doc>();
-  parts.push(text('<'));
+  let parts = growable<Doc>([text('<')]);
   let tpDocs = new Array<Doc>();
-  var i = 0;
-  while (i < tps.length) {
-    let tp = tps[i];
+  for (let tp in tps) {
     let tpParts = new Array<Doc>();
     if (tp.isScoped) {
       tpParts.push(text('scoped '));
@@ -2141,14 +2082,13 @@ let printTypeParams = (tps: Array<TypeParameter>): Doc => {
       tpParts.push(printTypeAnnotation(tp.defaultType as TypeAnnotation));
     }
     tpDocs.push(concat(tpParts));
-    i += 1;
   }
   parts.push(join(text(', '), tpDocs));
   parts.push(text('>'));
   return concat(parts);
-};
+}
 
-let mapTypeAnnotations = (anns: Array<TypeAnnotation>): Array<Doc> => {
+function mapTypeAnnotations(anns: Array<TypeAnnotation>): Array<Doc> {
   let docs = new Array<Doc>();
   var i = 0;
   while (i < anns.length) {
@@ -2156,28 +2096,32 @@ let mapTypeAnnotations = (anns: Array<TypeAnnotation>): Array<Doc> => {
     i += 1;
   }
   return docs;
-};
+}
 
 /// Print a FieldDefinition or MethodDefinition name, which may be an
 /// Identifier or SymbolPropertyName.
-let printNodeName = (name: Node): Doc => match (name) {
+function printNodeName(name: Node): Doc {
+  return match (name) {
   case Identifier {name}: text(name)
   case SymbolPropertyName {symbolRef}: {
     concat(docs3(text('['), printExpression(symbolRef), text(']')))
   }
   case _: text('/* unknown name */')
 };
+}
 
 /// Print a condition — may be an Expression or LetPatternCondition.
-let printCondition = (node: Node): Doc => match (node) {
-  case LetPatternCondition {pattern, init}: {
+function printCondition(node: Node): Doc {
+  return if (let LetPatternCondition {pattern, init} = node) {
     concat(docs3(text('let '), printPattern(pattern), concat(docs2(text(' = '), printExpression(init)))))
-  }
-  case _: printExpression(node as Expression)
-};
+  } else {
+    printExpression(node as Expression)
+  };
+}
 
 /// Generic Node printer — dispatches to the right sub-printer.
-let printNode = (node: Node): Doc => match (node) {
+function printNode(node: Node): Doc {
+  return match (node) {
   case Module {}: printModule(node)
   // Expressions
   case Identifier {}: printExpression(node as Expression)
@@ -2261,3 +2205,4 @@ let printNode = (node: Node): Doc => match (node) {
   }
   case _: text('/* unknown node */')
 };
+}
