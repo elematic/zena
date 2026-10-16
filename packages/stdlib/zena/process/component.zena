@@ -16,6 +16,7 @@
  * ```
  */
 
+import { Own } from 'zena:core';
 import { Command, Process as HostProcess, Finished } from 'zena-cli:host/process';
 
 /** How a process ended, and what it wrote. */
@@ -46,12 +47,16 @@ let resultOf = (finished: Finished): ProcessResult => new ProcessResult(
     finished.wallNanos,
     finished.timedOut);
 
-/** A running process. */
-export final class Process {
-  #proc: HostProcess;
+/**
+ * A running process: a resource over the host's handle, held as
+ * `Own<Process>` and released when the owner leaves scope. Releasing
+ * it does not end the process; it lets go of the host's record of it.
+ */
+export resource class Process {
+  #proc: Own<HostProcess>;
   var #result: ProcessResult | null = null;
 
-  new(proc: HostProcess) : #proc = proc;
+  new(proc: Own<HostProcess>) : #proc = proc;
 
   wait(): ProcessResult {
     return this.waitFor(0 as i64);
@@ -102,7 +107,7 @@ export type SpawnOptions = {
  * let sorted = runWith(['sort'], {input: 'b\na\n'});
  * ```
  */
-export let spawnWith = (argv: Array<String>, options: SpawnOptions): Process => {
+export let spawnWith = (argv: Array<String>, options: SpawnOptions): Own<Process> => {
   let cmd = Command.create(argv);
   if (let {cwd} = options) {
     cmd.cwd(cwd);
@@ -136,14 +141,14 @@ export let spawnIn = (
   argv: Array<String>,
   cwd: String | null,
   inheritStdio: boolean = false,
-): Process => {
+): Own<Process> => {
   if (cwd != null) {
     return spawnWith(argv, {cwd: cwd, inheritStdio: inheritStdio});
   }
   return spawnWith(argv, {inheritStdio: inheritStdio});
 };
 
-export let spawn = (argv: Array<String>): Process => spawnIn(argv, null);
+export let spawn = (argv: Array<String>): Own<Process> => spawnIn(argv, null);
 
 export let runIn = (argv: Array<String>, cwd: String | null): ProcessResult =>
   spawnIn(argv, cwd).wait();

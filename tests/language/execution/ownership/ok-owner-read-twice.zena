@@ -1,0 +1,26 @@
+// @mode: run
+// @result: 1
+// @skip: elematic/zena#379 — reading an owner out of a generic class's field twice mints two owners; released reads 2
+// Reading an owner out of an `Ok` twice. The first read moves the
+// owner out; a second read must not mint a second owner, so the
+// resource is released exactly once (or the second read is rejected).
+import { Own, Disposable, Ok, Outcome } from 'zena:core';
+
+var released = 0;
+
+resource class Res {
+  id: i32;
+  new(this.id);
+  [Disposable.dispose](this: Own<this>): void {
+    released += 1;
+  }
+}
+
+export let main = (): i32 => {
+  if (true) {
+    let ok = new Ok<Own<Res>, String>(new Res(1));
+    let a = ok.value;
+    let b = ok.value;
+  }
+  return released;
+};

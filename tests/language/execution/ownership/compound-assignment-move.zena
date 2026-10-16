@@ -1,0 +1,25 @@
+// @mode: run
+// @result: 5
+// @skip: elematic/zena#380 — the checker reports "'o' may have been moved" at a consuming call on a compound assignment's right side
+// A consuming method call on the right-hand side of a compound
+// assignment. The receiver is moved exactly once, by the call, so the
+// program is well formed and totals 5.
+import { Own, Disposable } from 'zena:core';
+
+resource class Res {
+  n: i32;
+  new(this.n);
+  take(this: Own<this>): i32 {
+    let n = this.n;
+    this.[Disposable.dispose]();
+    return n;
+  }
+  [Disposable.dispose](this: Own<this>): void {}
+}
+
+export let main = (): i32 => {
+  var total = 0;
+  let o = new Res(5);
+  total += o.take();
+  return total;
+};

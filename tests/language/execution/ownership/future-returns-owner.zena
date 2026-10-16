@@ -1,0 +1,34 @@
+// @mode: run
+// @result: 21
+// An owner returned through a future: `open` hands a fresh resource
+// back as `Future<Own<Res>>`, the caller awaits it into a local, and
+// implicit drop releases the local at scope exit. The shape every
+// `zena:fs` open takes.
+import { Own, Disposable } from 'zena:core';
+import { runFuture } from 'zena:async';
+
+var released = 0;
+
+resource class Res {
+  id: i32;
+  new(this.id);
+  [Disposable.dispose](this: Own<this>): void {
+    released += this.id;
+  }
+}
+
+async function open(id: i32): Future<Own<Res>> {
+  return new Res(id);
+}
+
+async function useIt(): Future<i32> {
+  let r = await open(1);
+  let s = await open(20);
+  return r.id + s.id;
+}
+
+export let main = (): i32 => {
+  let sum = runFuture(useIt());
+  // 1 + 20 from the ids, and both released: 21 == released.
+  return if (sum == 21 && released == 21) 21 else released;
+};
