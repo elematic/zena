@@ -21,7 +21,11 @@ The rules, in one sentence each:
 
 ## Current state
 
-- `==` compares primitives, strings, records and tuples by value.
+- `==` compares primitives and strings by value. On records and tuples
+  it compares identity (#372): they reach `lowerErasedEq`, whose only
+  test that applies to them is `ref.eq`. Neither satisfies `Hashable`.
+  [Structural equality for records and tuples](#structural-equality-for-records-and-tuples)
+  below is the design.
 - On a class, `==` resolves on the **static** type of the left operand:
   - If that type declares or inherits `operator ==`, the call is
     virtual. A subclass override is found at runtime
@@ -77,6 +81,40 @@ The rules, in one sentence each:
 compiler copies or dissolves them freely, so identity is not
 observable. On classes, `===` is reference equality and always
 available.
+
+### Structural equality for records and tuples
+
+Not implemented yet (#372). Record types come in three forms
+([row-types.md](row-types.md#decisions)), and `==` follows them:
+
+- **Closed records and tuples:** equal when every field (every
+  element) is equal, each compared with its own type's `==`: a class's
+  virtual `operator ==`, `String` content, primitives by value, the
+  erased comparison for a type parameter, and this rule again for a
+  nested record or tuple. A value of a closed type has exactly the
+  fields of its type, because converting a wider record to it projects
+  the wider one onto those fields. So comparing the type's fields
+  compares the whole value.
+- **Row-generic records** (`{x: i32, ...R}`): the same, per
+  specialization, where `R` is a concrete row.
+- **Existential records** (`{x: i32, ...}`): equal when both have the
+  same underlying shape and equal fields. The dispatch table carries
+  the shape's identity and its equality function. An existential and a
+  closed record are equal when the existential's underlying shape is
+  the closed type and the fields are equal.
+
+`==` does not convert its operands. Two values of different closed
+record types are never equal, and the checker reports that comparison
+as always false.
+
+Records and tuples satisfy `Hashable` and `Equatable` without
+declaring anything: the compiler derives a `hashCode` per shape,
+consistent with `==`, as it does for case classes.
+
+For argument explosion, `==` and `hashCode` on a closed or row-generic
+record read only its fields, so a record parameter compared with `==`
+can still be passed as its fields. An existential needs the whole
+record.
 
 ### Virtual equality with an identity default
 
@@ -324,7 +362,8 @@ longer needed.
 
 ```
 a == b
-├─ primitives, records, tuples: by value, as before
+├─ primitives: by value
+├─ records, tuples: identity today, through the erased comparison (#372)
 ├─ a literal null operand: ref.is_null
 ├─ a class C, or C | null                     (ir/equality.zena, lowerClassEquality)
 │  ├─ either operand nullable: both null → true, one null → false, else on

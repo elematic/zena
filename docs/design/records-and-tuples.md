@@ -7,14 +7,17 @@
 > to make identity permanently unobservable. **V0 has landed**: `===`/
 > `!==` on record/tuple operands is a compile error
 > (`tests/language/semantics/records/no-identity.zena`).
-> **(2) Row polymorphism** — [row-types.md](row-types.md) revises the
-> width-subtyping default (§5.1 — closed types by default, width by
-> projection, explicit `...` existentials for dispatch-based width),
-> **subsumes exact record types** (§5.3 / Phase 6 — never built as a
-> separate feature), defines spread semantics (open question 3 — disjoint
-> extension plus a `with` update form), and re-scopes the fat pointer of
-> Phase 4 to explicit existentials only. Sections below are annotated
-> where affected.
+> **(2) Row polymorphism** — [row-types.md](row-types.md), accepted
+> 2026-10-16, revises the width-subtyping default (§5.1 — closed types
+> by default, width by projection, explicit `...` existentials for
+> dispatch-based width), **subsumes exact record types** (§5.3 / Phase 6
+> — never built as a separate feature), keeps TypeScript's spread rule
+> (open question 3 — a later field replaces an earlier one), and
+> re-scopes the fat pointer of Phase 4 to explicit existentials only.
+> Its [Decisions](row-types.md#decisions) section defines `==`, `is`,
+> `as`, spread and destructuring for each form. Tuple types keep
+> parentheses, so the bracketed tuple types in §5.2 read as
+> `(f32, f32, f32)`. Sections below are annotated where affected.
 
 This document outlines the design for immutable Records and Tuples in Zena.
 
@@ -519,9 +522,9 @@ This ensures that the internal optimization does not break external compatibilit
 
 1.  **Recursive Types**: Can records be recursive? `{ next: Self }`? (Probably yes, via `type` alias).
 2.  **Methods**: Do records have methods? (No, they are data. Use functions).
-3.  **Spread**: `let p2 = { ...p1, z: 3 };` (Essential for immutable updates). _Resolved in [row-types.md](row-types.md) §4: extension spread requires disjoint fields; overriding an existing field uses the `with` update form; spreading existential records is rejected._
+3.  **Spread**: `let p2 = { ...p1, z: 3 };` (Essential for immutable updates). _Resolved in [row-types.md](row-types.md#decisions): TypeScript's rule, where a later field replaces an earlier one and a field that a later one always replaces is an error; spreading existential records is rejected._
 4.  ~~**Optional Fields**~~: Resolved. See Section 5.2. Optional fields use `?` syntax and require narrowing before access.
-5.  **Exact Type Syntax**: What syntax for exact record types? Options: `exact {...}`, `{...}!`, `#[exact]`.
+5.  ~~**Exact Type Syntax**~~: Resolved by [row-types.md](row-types.md#decisions): closed record types are exact by default, and no `exact` syntax is needed.
 6.  **`in` Operator**: Implement `"field" in record` for narrowing optional fields.
 7.  **Pattern Matching Integration**: How do optional fields work with pattern matching?
 
