@@ -50,7 +50,7 @@ gcloud run deploy "$SERVICE" \
   --memory 512Mi \
   --image "$IMAGE" \
   "$AUTH_FLAG" \
-  "${EXTRA[@]}" \
+  ${EXTRA[@]+"${EXTRA[@]}"} \
   --quiet
 
 echo
