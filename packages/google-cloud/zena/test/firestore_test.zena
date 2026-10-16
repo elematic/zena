@@ -64,8 +64,9 @@ import {
 
 let ROOT = 'projects/p/databases/(default)/documents';
 
-let rpcError = (code: i32, message: String): RpcError =>
-  new RpcError(code, message, (new ProtoWriter()).finish());
+function rpcError(code: i32, message: String) {
+  return new RpcError(code, message, (new ProtoWriter()).finish());
+}
 
 /**
  * The views in `views`, one per `next()`: ready, or when `deferred`, each
@@ -95,7 +96,7 @@ final class ViewStream implements AsyncIterator<ProtoView> {
 }
 
 /** Whether `value` equals `filter`'s value, for string and integer values. */
-let sameValue = (a: Value, b: Value): boolean => {
+function sameValue(a: Value, b: Value): boolean {
   if (a.hasStringValue && b.hasStringValue) {
     return a.stringValue == b.stringValue;
   }
@@ -103,13 +104,13 @@ let sameValue = (a: Value, b: Value): boolean => {
     return a.integerValue == b.integerValue;
   }
   return false;
-};
+}
 
 /** Whether `document` passes `filter`; supports `==` field filters joined by AND. */
-let passes = (document: Document, filter: StructuredQueryFilter): boolean => {
+function passes(document: Document, filter: StructuredQueryFilter): boolean {
   let composite = filter.compositeFilter;
   if (composite != null) {
-    for (let f in (composite as StructuredQueryCompositeFilter).filters) {
+    for (let f in composite.filters) {
       if (!passes(document, f)) {
         return false;
       }
@@ -120,7 +121,7 @@ let passes = (document: Document, filter: StructuredQueryFilter): boolean => {
   if (field == null) {
     return true;
   }
-  let fieldFilter = field as StructuredQueryFieldFilter;
+  let fieldFilter = field;
   let name = (fieldFilter.field as StructuredQueryFieldReference).fieldPath;
   let fields = document.fields;
   if (!fields.has(name)) {
@@ -130,7 +131,7 @@ let passes = (document: Document, filter: StructuredQueryFilter): boolean => {
     throw new Error('the fake supports == only');
   }
   return sameValue(fields.getOr(name, stringValue('')), fieldFilter.value as Value);
-};
+}
 
 /** An in-memory Firestore. */
 final class FakeFirestore implements ProtoTransport {
@@ -148,7 +149,6 @@ final class FakeFirestore implements ProtoTransport {
   var abortReads: i32 = 0;
   var #transactions: i32 = 0;
 
-  new();
 
   async unary(method: RpcMethod, request: ProtoView, metadata: RpcMetadata): Future<ProtoView> {
     if (method.name == 'GetDocument') {
@@ -219,8 +219,9 @@ final class FakeFirestore implements ProtoTransport {
       let alias = aggregation.aggregations.toArray()[0].alias;
       let matched = this.#matching(run.parent, aggregation.structuredQuery as StructuredQuery);
       this.log.push(`RunAggregationQuery ${alias}`);
-      let counts = new HashMap<String, Value>();
-      counts[alias] = Value.of({integerValue: matched.length as i64});
+      let counts: HashMap<String, Value> = {
+        alias => Value.of({integerValue: matched.length as i64}),
+      };
       responses.push(RunAggregationQueryResponse.of({result: AggregationResult.of({aggregateFields: counts})}).protoView);
       return new ViewStream(responses, this.deferred);
     }
@@ -250,12 +251,12 @@ final class FakeFirestore implements ProtoTransport {
     let out = new GrowableArray<Document>();
     let limit = query.limit;
     for (let name in names) {
-      if (limit != null && out.length >= (limit as Int32Value).value) {
+      if (limit != null && out.length >= limit.value) {
         break;
       }
       let document = this.documents.getOr(name, Document.of({}));
       let where = query.where;
-      if (where == null || passes(document, where as StructuredQueryFilter)) {
+      if (where == null || passes(document, where)) {
         out.push(document);
       }
     }
@@ -272,7 +273,7 @@ final class FakeFirestore implements ProtoTransport {
     let name = update.name;
     let exists = this.documents.has(name);
     let precondition = write.currentDocument;
-    let mustExist = precondition != null && (precondition as Precondition).hasExists;
+    let mustExist = precondition != null && precondition.hasExists;
     let wanted = mustExist && (precondition as Precondition).exists;
     if (mustExist && wanted != exists) {
       throw rpcError(if (exists) 6 else 5, `precondition failed for ${name}`);
@@ -286,7 +287,7 @@ final class FakeFirestore implements ProtoTransport {
       for (let entry in this.documents.getOr(name, Document.of({})).fields) {
         fields[entry.key] = entry.value;
       }
-      for (let quoted in (mask as DocumentMask).fieldPaths) {
+      for (let quoted in mask.fieldPaths) {
         let path = unquote(quoted);
         if (update.fields.has(path)) {
           fields[path] = update.fields.getOr(path, nullValue());
@@ -314,41 +315,44 @@ final class FakeFirestore implements ProtoTransport {
 let SERVER_TIME: i64 = 1800000000;
 
 /** `path` without the backquotes a field path segment may have. */
-let unquote = (path: String): String =>
-  if (path.startsWith('`') && path.endsWith('`')) path.sliceBytes(1, path.length - 1) else path;
+function unquote(path: String): String {
+  return if (path.startsWith('`') && path.endsWith('`')) path.sliceBytes(1, path.length - 1) else path;
+}
 
 /** The integer in `value`, or 0. */
-let integerOf = (value: Value): i64 => if (value.hasIntegerValue) value.integerValue else 0 as i64;
+function integerOf(value: Value) {
+  return if (value.hasIntegerValue) value.integerValue else 0 as i64;
+}
 
 /** `transform` applied to `current`, the field's value, which `present` says the document has. */
-let transformed = (transform: DocumentTransformFieldTransform, current: Value, present: boolean): Value => {
+function transformed(transform: DocumentTransformFieldTransform, current: Value, present: boolean): Value {
   if (transform.hasSetToServerValue) {
     return Value.of({timestampValue: Timestamp.of({seconds: SERVER_TIME})});
   }
   let increment = transform.increment;
   if (increment != null) {
-    return integerValue(integerOf(current) + integerOf(increment as Value));
+    return integerValue(integerOf(current) + integerOf(increment));
   }
   let maximum = transform.maximum;
   if (maximum != null) {
-    let m = integerOf(maximum as Value);
-    return if (!present || m > integerOf(current)) maximum as Value else current;
+    let m = integerOf(maximum);
+    return if (!present || m > integerOf(current)) maximum else current;
   }
   let minimum = transform.minimum;
   if (minimum != null) {
-    let m = integerOf(minimum as Value);
-    return if (!present || m < integerOf(current)) minimum as Value else current;
+    let m = integerOf(minimum);
+    return if (!present || m < integerOf(current)) minimum else current;
   }
   let existing = new GrowableArray<Value>();
   let array = current.arrayValue;
   if (array != null) {
-    for (let v in (array as ArrayValue).values) {
+    for (let v in array.values) {
       existing.push(v);
     }
   }
   let append = transform.appendMissingElements;
   if (append != null) {
-    for (let v in (append as ArrayValue).values) {
+    for (let v in append.values) {
       var seen = false;
       for (let e in existing) {
         if (sameValue(e, v)) {
@@ -366,7 +370,7 @@ let transformed = (transform: DocumentTransformFieldTransform, current: Value, p
     let kept = new GrowableArray<Value>();
     for (let e in existing) {
       var removed = false;
-      for (let v in (remove as ArrayValue).values) {
+      for (let v in remove.values) {
         if (sameValue(e, v)) {
           removed = true;
         }
@@ -378,18 +382,23 @@ let transformed = (transform: DocumentTransformFieldTransform, current: Value, p
     return arrayValue(kept);
   }
   throw new Error('the fake does not know this transform');
-};
+}
 
 /** `name` below the database's documents. */
-let shortName = (name: String): String =>
-  if (name.startsWith(`${ROOT}/`)) name.sliceBytes(ROOT.length + 1, name.length) else name;
+function shortName(name: String): String {
+  return if (name.startsWith(`${ROOT}/`)) name.sliceBytes(ROOT.length + 1, name.length) else name;
+}
 
-let txName = (id: ProtoBytes): String => `tx${id[0]}`;
+function txName(id: ProtoBytes): String {
+  return `tx${id[0]}`;
+}
 
-let open = (fake: FakeFirestore): Firestore => new Firestore({projectId: 'p', transport: fake});
+function open(fake: FakeFirestore) {
+  return new Firestore({projectId: 'p', transport: fake});
+}
 
 /** Inserts `name` into `names`, which is sorted. */
-let insertSorted = (names: GrowableArray<String>, name: String): void => {
+function insertSorted(names: GrowableArray<String>, name: String): void {
   names.push(name);
   var i = names.length - 1;
   while (i > 0 && names[i - 1].compareTo(name) > 0) {
@@ -397,41 +406,41 @@ let insertSorted = (names: GrowableArray<String>, name: String): void => {
     i -= 1;
   }
   names[i] = name;
-};
+}
 
-let lines = (log: Iterable<String>): String => {
+function lines(log: Iterable<String>) {
   var out = '';
   for (let line in log) {
     out = if (out.length == 0) line else `${out}\n${line}`;
   }
   return out;
-};
+}
 
 /** The string at `path` in `snapshot`, or `-`. */
-let str = (snapshot: DocumentSnapshot, path: String): String => {
+function str(snapshot: DocumentSnapshot, path: String) {
   if (let (true, value) = snapshot.getString(path)) {
     return value;
   }
   return '-';
-};
+}
 
 /** The integer at `path` in `snapshot`, or `-`. */
-let int = (snapshot: DocumentSnapshot, path: String): String => {
+function int(snapshot: DocumentSnapshot, path: String) {
   if (let (true, value) = snapshot.getInteger(path)) {
     return `${value}`;
   }
   return '-';
-};
+}
 
-let names = (snapshots: GrowableArray<DocumentSnapshot>): String => {
+function names(snapshots: GrowableArray<DocumentSnapshot>) {
   var out = '';
   for (let s in snapshots) {
     out = `${out}${s.id},`;
   }
   return out;
-};
+}
 
-let writeAndRead = async (db: Firestore): Future<String> => {
+async function writeAndRead(db: Firestore): Future<String> {
   let post = db.collection('posts').doc('hello');
   await post.set(new Fields()
     .string('title', 'Hello')
@@ -444,45 +453,45 @@ let writeAndRead = async (db: Firestore): Future<String> => {
   }
   return `${snapshot.exists} ${str(snapshot, 'title')} ${views} ${str(snapshot, 'author.name')} ` +
     `${str(snapshot, 'missing')} ${str(snapshot, 'views')} ${int(snapshot, 'title')}`;
-};
+}
 
-let missing = async (db: Firestore): Future<String> => {
+async function missing(db: Firestore): Future<String> {
   let snapshot = await db.doc('posts/nope').get();
   return `${snapshot.exists} ${str(snapshot, 'title')}`;
-};
+}
 
-let updateKeepsOthers = async (db: Firestore): Future<String> => {
+async function updateKeepsOthers(db: Firestore): Future<String> {
   let post = db.doc('posts/a');
   await post.set(new Fields().string('title', 'A').integer('views', 1));
   await post.update(new Fields().integer('views', 2));
   let snapshot = await post.get();
   return `${str(snapshot, 'title')} ${int(snapshot, 'views')}`;
-};
+}
 
 /** The message of the error `call` throws, or `no error`. */
-let messageOf = async (call: () => Future<void>): Future<String> => {
+async function messageOf(call: () => Future<void>): Future<String> {
   try {
     await call();
   } catch (e) {
     return e.message;
   }
   return 'no error';
-};
+}
 
 /** The `google.rpc.Code` of the error `call` throws, or -1. */
-let codeOf = async (call: () => Future<void>): Future<i32> => {
+async function codeOf(call: () => Future<void>): Future<i32> {
   try {
     await call();
   } catch (e) {
     if (e is RpcError) {
-      return (e as RpcError).code;
+      return e.code;
     }
     throw e;
   }
   return -1;
-};
+}
 
-let preconditions = async (db: Firestore): Future<String> => {
+async function preconditions(db: Firestore): Future<String> {
   let post = db.doc('posts/b');
   let updateMissing = await codeOf(async (): Future<void> => {
     await post.update(new Fields().integer('views', 1));
@@ -494,9 +503,9 @@ let preconditions = async (db: Firestore): Future<String> => {
   await post.delete();
   let gone = await post.get();
   return `${updateMissing} ${createTwice} ${gone.exists}`;
-};
+}
 
-let addAndQuery = async (db: Firestore): Future<String> => {
+async function addAndQuery(db: Firestore): Future<String> {
   let posts = db.collection('posts');
   let added = await posts.add(new Fields().string('kind', 'draft'));
   await posts.doc('x').set(new Fields().string('kind', 'live').integer('rank', 1));
@@ -510,9 +519,9 @@ let addAndQuery = async (db: Firestore): Future<String> => {
   let all = await posts.get();
   let comments = await db.doc('posts/x').collection('comments').get();
   return `${added.id.length} ${names(live)} ${names(ranked)} ${all.length} ${names(comments)} ${comments[0].ref.path}`;
-};
+}
 
-let streamQuery = async (db: Firestore): Future<String> => {
+async function streamQuery(db: Firestore): Future<String> {
   await db.doc('items/1').set(new Fields().integer('n', 1));
   await db.doc('items/2').set(new Fields().integer('n', 2));
   var out = '';
@@ -520,9 +529,9 @@ let streamQuery = async (db: Firestore): Future<String> => {
     out = `${out}${snapshot.id}=${int(snapshot, 'n')},`;
   }
   return out;
-};
+}
 
-let queryEncoding = (fake: FakeFirestore, db: Firestore): String => {
+function queryEncoding(fake: FakeFirestore, db: Firestore) {
   let query = db.collection('posts')
     .where('a.b', Operator.GreaterThan, integerValue(5))
     .orderBy('odd name', Direction.Descending)
@@ -532,14 +541,14 @@ let queryEncoding = (fake: FakeFirestore, db: Firestore): String => {
     .structuredQuery();
   let filter = (query.where as StructuredQueryFilter).fieldFilter as StructuredQueryFieldFilter;
   let orders = query.orderBy.toArray();
-  let path = (order: StructuredQueryOrder): String => (order.field as StructuredQueryFieldReference).fieldPath;
+  let path = (order: StructuredQueryOrder) => (order.field as StructuredQueryFieldReference).fieldPath;
   return `${query.from.toArray()[0].collectionId} ${(filter.field as StructuredQueryFieldReference).fieldPath} ` +
     `${filter.op == Operator.GreaterThan} ${(filter.value as Value).integerValue} ` +
     `${path(orders[0])} ${orders[0].direction == Direction.Descending} ` +
     `${path(orders[1])} ${orders[1].direction == Direction.Ascending} ${query.offset} ${(query.limit as Int32Value).value}`;
-};
+}
 
-let batch = async (fake: FakeFirestore, db: Firestore): Future<String> => {
+async function batch(fake: FakeFirestore, db: Firestore): Future<String> {
   await db.doc('posts/old').set(new Fields().string('title', 'Old'));
   fake.log.clear();
   await db.batch()
@@ -549,11 +558,12 @@ let batch = async (fake: FakeFirestore, db: Firestore): Future<String> => {
     .delete(db.doc('posts/gone'))
     .commit();
   return lines(fake.log);
-};
+}
 
 /** Increments `counters/c`.`n` in a transaction. */
-let increment = async (db: Firestore): Future<i64> => await db.runTransaction<i64>(
-  async (tx: Transaction): Future<i64> => {
+async function increment(db: Firestore): Future<i64> {
+  return await db.runTransaction<i64>(
+  async (tx): Future<i64> => {
     let counter = db.doc('counters/c');
     let snapshot = await tx.get(counter);
     var n: i64 = 0;
@@ -564,50 +574,51 @@ let increment = async (db: Firestore): Future<i64> => await db.runTransaction<i6
     return n + 1;
   }
 );
+}
 
-let transactions = async (fake: FakeFirestore, db: Firestore): Future<String> => {
+async function transactions(fake: FakeFirestore, db: Firestore): Future<String> {
   let first = await increment(db);
   fake.abortCommits = 1;
   let second = await increment(db);
   return `${first} ${second}\n${lines(fake.log)}`;
-};
+}
 
-let failingTransaction = async (fake: FakeFirestore, db: Firestore): Future<String> => {
+async function failingTransaction(fake: FakeFirestore, db: Firestore): Future<String> {
   let message = await messageOf(async (): Future<void> => {
-    await db.runTransaction<i32>(async (tx: Transaction): Future<i32> => {
+    await db.runTransaction<i32>(async (tx): Future<i32> => {
       await tx.query(db.collection('posts').query());
       throw new Error('body failed');
     });
   });
   return `${message}\n${lines(fake.log)}`;
-};
+}
 
-let exhaustedRetries = async (fake: FakeFirestore, db: Firestore): Future<String> => {
+async function exhaustedRetries(fake: FakeFirestore, db: Firestore): Future<String> {
   fake.abortCommits = 10;
   let code = await codeOf(async (): Future<void> => {
-    await db.runTransaction<i32>(async (tx: Transaction): Future<i32> => {
+    await db.runTransaction<i32>(async (tx): Future<i32> => {
       tx.delete(db.doc('posts/z'));
       return 0;
     }, 2);
   });
   return `${code}\n${lines(fake.log)}`;
-};
+}
 
 /** The array at `path` in `snapshot`, as `[a,b]`, or `-`. */
-let arr = (snapshot: DocumentSnapshot, path: String): String => {
+function arr(snapshot: DocumentSnapshot, path: String) {
   let value = snapshot.get(path);
-  if (value == null || (value as Value).arrayValue == null) {
+  if (value == null || value.arrayValue == null) {
     return '-';
   }
   var out = '';
-  for (let v in ((value as Value).arrayValue as ArrayValue).values) {
+  for (let v in (value.arrayValue as ArrayValue).values) {
     let text = if (v.hasStringValue) v.stringValue else `${v.integerValue}`;
     out = if (out.length == 0) text else `${out},${text}`;
   }
   return `[${out}]`;
-};
+}
 
-let transforms = async (fake: FakeFirestore, db: Firestore): Future<String> => {
+async function transforms(fake: FakeFirestore, db: Firestore): Future<String> {
   let post = db.doc('posts/t');
   await post.set(new Fields()
     .string('title', 'T')
@@ -623,11 +634,11 @@ let transforms = async (fake: FakeFirestore, db: Firestore): Future<String> => {
   await post.update(new Fields().arrayRemove('tags', [stringValue('a')]).minimum('best', integerValue(3)));
   let s = await post.get();
   let created = s.getTimestamp('created');
-  return `${str(s, 'title')} ${if (created == null) (-1 as i64) else (created as Timestamp).seconds} ${int(s, 'views')} ` +
+  return `${str(s, 'title')} ${created?.seconds ?? -1 as i64} ${int(s, 'views')} ` +
     `${arr(s, 'tags')} ${int(s, 'best')} ${str(s, 'draft')}\n${lines(fake.log)}`;
-};
+}
 
-let getAll = async (fake: FakeFirestore, db: Firestore): Future<String> => {
+async function getAll(fake: FakeFirestore, db: Firestore): Future<String> {
   await db.doc('posts/a').set(new Fields().string('title', 'A'));
   await db.doc('posts/c').set(new Fields().string('title', 'C'));
   fake.log.clear();
@@ -637,51 +648,51 @@ let getAll = async (fake: FakeFirestore, db: Firestore): Future<String> => {
     out = `${out}${s.id}:${str(s, 'title')},`;
   }
   let none = await db.getAll([]);
-  let inTx = await db.runTransaction<i32>(async (tx: Transaction): Future<i32> =>
+  let inTx = await db.runTransaction<i32>(async (tx): Future<i32> =>
     (await tx.getAll([db.doc('posts/a'), db.doc('posts/x')])).length);
   return `${out} ${none.length} ${inTx}\n${lines(fake.log)}`;
-};
+}
 
-let counting = async (db: Firestore): Future<String> => {
+async function counting(db: Firestore): Future<String> {
   let posts = db.collection('posts');
   await posts.doc('a').set(new Fields().string('kind', 'live'));
   await posts.doc('b').set(new Fields().string('kind', 'draft'));
   await posts.doc('c').set(new Fields().string('kind', 'live'));
   return `${await posts.count()} ${await posts.where('kind', Operator.Equal, stringValue('live')).count()} ` +
     `${await db.collection('empty').count()}`;
-};
+}
 
 /** The field paths a query orders by, with `<` for descending, and its cursors' values. */
-let describeQuery = (query: StructuredQuery): String => {
+function describeQuery(query: StructuredQuery) {
   var out = '';
   for (let order in query.orderBy) {
     let path = (order.field as StructuredQueryFieldReference).fieldPath;
     out = `${out}${path}${if (order.direction == Direction.Descending) '<' else ''},`;
   }
-  let describeCursor = (label: String, cursor: Cursor | null): String => {
+  let describeCursor = (label: String, cursor: Cursor | null) => {
     if (cursor == null) {
       return '';
     }
     var values = '';
-    for (let v in (cursor as Cursor).values) {
+    for (let v in cursor.values) {
       let text = if (v.hasReferenceValue) v.referenceValue.sliceBytes(ROOT.length + 1, v.referenceValue.length)
         else if (v.hasStringValue) v.stringValue else `${v.integerValue}`;
       values = `${values}${text};`;
     }
-    return ` ${label}${if ((cursor as Cursor).before) '[' else '('}${values}`;
+    return ` ${label}${if (cursor.before) '[' else '('}${values}`;
   };
   var select = '';
   let projection = query.select;
   if (projection != null) {
     select = ' select:';
-    for (let f in (projection as StructuredQueryProjection).fields) {
+    for (let f in projection.fields) {
       select = `${select}${f.fieldPath};`;
     }
   }
   return `${out}${describeCursor('start', query.startAt)}${describeCursor('end', query.endAt)}${select}`;
-};
+}
 
-let cursors = async (db: Firestore): Future<String> => {
+async function cursors(db: Firestore): Future<String> {
   let posts = db.collection('posts');
   await posts.doc('p1').set(new Fields().integer('rank', 3).string('kind', 'live'));
   let last = await posts.doc('p1').get();
@@ -696,9 +707,9 @@ let cursors = async (db: Firestore): Future<String> => {
     posts.orderBy('rank').startAfter(missing).structuredQuery();
   });
   return `${describeQuery(byValues)} | ${describeQuery(byDocument)} | ${describeQuery(namesOnly)} | ${errors} | ${notThere}`;
-};
+}
 
-export let tests = suite('firestore', (): void => {
+export let tests = suite('firestore', () => {
   test('names resources', () => {
     let db = open(new FakeFirestore());
     let comment = db.collection('posts').doc('a').collection('comments').doc('c');

@@ -95,45 +95,60 @@ let CODE_NOT_FOUND = 5;
 let CODE_ABORTED = 10;
 
 /** A string value. */
-export let stringValue = (value: String): Value => Value.of({stringValue: value});
+export function stringValue(value: String): Value {
+  return Value.of({stringValue: value});
+}
 
 /** A 64-bit integer value. */
-export let integerValue = (value: i64): Value => Value.of({integerValue: value});
+export function integerValue(value: i64): Value {
+  return Value.of({integerValue: value});
+}
 
 /** A double value. */
-export let doubleValue = (value: f64): Value => Value.of({doubleValue: value});
+export function doubleValue(value: f64): Value {
+  return Value.of({doubleValue: value});
+}
 
 /** A boolean value. */
-export let booleanValue = (value: boolean): Value => Value.of({booleanValue: value});
+export function booleanValue(value: boolean): Value {
+  return Value.of({booleanValue: value});
+}
 
 /** The null value. */
-export let nullValue = (): Value => Value.of({nullValue: NullValue.NullValue});
+export function nullValue(): Value {
+  return Value.of({nullValue: NullValue.NullValue});
+}
 
 /** A timestamp value: seconds since the Unix epoch, and nanoseconds. */
-export let timestampValue = (seconds: i64, nanos: i32 = 0): Value =>
-  Value.of({timestampValue: Timestamp.of({seconds, nanos})});
+export function timestampValue(seconds: i64, nanos: i32 = 0): Value {
+  return Value.of({timestampValue: Timestamp.of({seconds, nanos})});
+}
 
 /** A bytes value. */
-export let bytesValue = (value: ByteArray): Value => Value.of({bytesValue: value});
+export function bytesValue(value: ByteArray): Value {
+  return Value.of({bytesValue: value});
+}
 
 /** A reference to another document. */
-export let referenceValue = (document: DocumentReference): Value =>
-  Value.of({referenceValue: document.name});
+export function referenceValue(document: DocumentReference): Value {
+  return Value.of({referenceValue: document.name});
+}
 
 /** An array value. */
-export let arrayValue = (values: Array<Value>): Value =>
-  Value.of({arrayValue: ArrayValue.of({values})});
+export function arrayValue(values: Array<Value>): Value {
+  return Value.of({arrayValue: ArrayValue.of({values})});
+}
 
 /**
  * A map value. Transforms and deletions apply to a document's top-level
  * fields only, so `fields` must have none.
  */
-export let mapValue = (fields: Fields): Value => {
+export function mapValue(fields: Fields): Value {
   if (fields.hasOperations) {
     throw new Error('field transforms and deletions apply to top-level fields only');
   }
   return Value.of({mapValue: MapValue.of({fields: fields.toMap()})});
-};
+}
 
 /**
  * A document's fields, built one at a time:
@@ -265,7 +280,7 @@ export final class Fields {
    */
   operationsPart(paths: GrowableArray<String>): ProtoView {
     let operations = this.#operations;
-    return if (operations == null) ProtoView.empty() else (operations as WriteOperations).encode(paths);
+    return if (operations == null) ProtoView.empty() else operations.encode(paths);
   }
 
   /** Whether any field has a transform or is deleted. */
@@ -288,7 +303,7 @@ export final class Fields {
       this.#map.delete(name);
     }
     let earlier = this.#operations;
-    let operations = if (earlier == null) new FieldOperations() else earlier as WriteOperations;
+    let operations = earlier ?? new FieldOperations();
     operations.add(name, transform);
     this.#operations = operations;
   }
@@ -332,7 +347,7 @@ final class FieldOperations implements WriteOperations {
       if (encoded == null) {
         paths.push(quoteFieldName(operation.name));
       } else {
-        transforms.push(new DocumentTransformFieldTransform(encoded as ProtoView));
+        transforms.push(new DocumentTransformFieldTransform(encoded));
       }
     }
     return if (transforms.length == 0) ProtoView.empty() else Write.of({updateTransforms: transforms}).protoView;
@@ -351,7 +366,7 @@ final class FieldOperation {
  * identifier, otherwise in backquotes with backquotes and backslashes
  * escaped.
  */
-export let quoteFieldName = (name: String): String => {
+export function quoteFieldName(name: String): String {
   var plain = name.length > 0;
   for (var i = 0; i < name.length; i += 1) {
     let b = name.getByteAt(i);
@@ -370,7 +385,7 @@ export let quoteFieldName = (name: String): String => {
     out = if (c == '`' || c == '\\') `${out}\\${c}` else `${out}${c}`;
   }
   return `${out}\``;
-};
+}
 
 /** Options for `new Firestore`. */
 export type FirestoreOptions = {
@@ -396,38 +411,40 @@ export type ConnectOptions = {
   timeout?: Duration,
 };
 
-let databaseIdOf = (options: FirestoreOptions): String => {
+function databaseIdOf(options: FirestoreOptions) {
   if (let {databaseId} = options) {
     return databaseId;
   }
   return '(default)';
-};
+}
 
-let connectDatabaseId = (options: ConnectOptions): String => {
+function connectDatabaseId(options: ConnectOptions) {
   if (let {databaseId} = options) {
     return databaseId;
   }
   return '(default)';
-};
+}
 
 /** The value of environment variable `name`, or null when it is unset or empty. */
-let envValue = (name: String): String | null => {
+function envValue(name: String): String | null {
   let value = getEnv(name);
-  return if (value != null && (value as String).length > 0) value else null;
-};
+  return if (value != null && value.length > 0) value else null;
+}
 
 /** Whether `e` is the server aborting a transaction because of contention. */
-let isAborted = (e: Error): boolean => e is RpcError && (e as RpcError).code == CODE_ABORTED;
+function isAborted(e: Error) {
+  return e is RpcError && e.code == CODE_ABORTED;
+}
 
 /**
  * How long to wait before attempt `attempt + 1` of a transaction: a random
  * time up to 50 ms doubled for each attempt so far, so transactions that
  * contended do not meet again at once.
  */
-let retryDelay = (attempt: i32): Duration => {
+function retryDelay(attempt: i32) {
   let limit = (50 as u64) << ((attempt - 1) as u64);
   return milliseconds((getRandomU64() % limit) as i64);
-};
+}
 
 /** One Firestore database. */
 export final class Firestore {
@@ -461,11 +478,11 @@ export final class Firestore {
       for (let name in ['GOOGLE_CLOUD_PROJECT', 'GCLOUD_PROJECT']) {
         let value = envValue(name);
         if (value != null) {
-          projectId = value as String;
+          projectId = value;
           break;
         }
       }
-      let transport = new GrpcTransport(`http://${emulator as String}`, new AccessTokenCredentials('owner'));
+      let transport = new GrpcTransport(`http://${emulator}`, new AccessTokenCredentials('owner'));
       if (let {timeout} = options) {
         transport.setTimeout(timeout);
       }
@@ -540,7 +557,7 @@ export final class Firestore {
     var attempt = 1;
     while (true) {
       let readWrite = if (retry == null) TransactionOptionsReadWrite.of({})
-        else TransactionOptionsReadWrite.of({retryTransaction: retry as ProtoBytes});
+        else TransactionOptionsReadWrite.of({retryTransaction: retry});
       let begun = await this.client.beginTransaction({
         database: this.database,
         options: TransactionOptions.of({readWrite}),
@@ -579,7 +596,7 @@ export final class Firestore {
     if (transaction == null) {
       await this.client.commit({database: this.database, writes});
     } else {
-      await this.client.commit({database: this.database, writes, transaction: transaction as ProtoBytes});
+      await this.client.commit({database: this.database, writes, transaction: transaction});
     }
   }
 
@@ -627,7 +644,7 @@ export final class DocumentReference {
       let document = await this.#db.client.getDocument({name: this.name});
       return new DocumentSnapshot(this, document);
     } catch (e) {
-      if (e is RpcError && (e as RpcError).code == CODE_NOT_FOUND) {
+      if (e is RpcError && e.code == CODE_NOT_FOUND) {
         return new DocumentSnapshot(this, null);
       }
       throw e;
@@ -921,7 +938,7 @@ export final class Query {
     }
     for (let part in [this.#where, this.#select, this.#start, this.#end]) {
       if (part != null) {
-        parts.push((part as QueryPart).encode(paths));
+        parts.push(part.encode(paths));
       }
     }
     return new StructuredQuery(ProtoView.merge(parts));
@@ -932,7 +949,7 @@ export final class Query {
     let parent = this.#parentName();
     let responses = if (transaction == null)
       this.#db.client.runQuery({parent, structuredQuery: this.structuredQuery()})
-      else this.#db.client.runQuery({parent, structuredQuery: this.structuredQuery(), transaction: transaction as ProtoBytes});
+      else this.#db.client.runQuery({parent, structuredQuery: this.structuredQuery(), transaction: transaction});
     return new SnapshotStream(this.#db, responses);
   }
 
@@ -958,7 +975,7 @@ export final class Query {
     for await (let response in responses) {
       let result = response.result;
       if (result != null) {
-        let fields = (result as AggregationResult).aggregateFields;
+        let fields = result.aggregateFields;
         if (fields.has(COUNT_ALIAS)) {
           count = fields.getOr(COUNT_ALIAS, integerValue(0)).integerValue;
         }
@@ -999,9 +1016,9 @@ export final class Query {
  * query ordered by `paths`. A document's values are its fields at those
  * paths, and its name for `__name__`.
  */
-let cursorOf = (position: QueryPosition, before: boolean, paths: GrowableArray<String>): Cursor => {
+function cursorOf(position: QueryPosition, before: boolean, paths: GrowableArray<String>): Cursor {
   if (position is DocumentSnapshot) {
-    let snapshot = position as DocumentSnapshot;
+    let snapshot = position;
     if (!snapshot.exists) {
       throw new Error(`a query cursor's document does not exist: ${snapshot.ref.path}`);
     }
@@ -1014,13 +1031,13 @@ let cursorOf = (position: QueryPosition, before: boolean, paths: GrowableArray<S
         if (value == null) {
           throw new Error(`a query cursor's document has no field ${path}, which the query orders by`);
         }
-        values.push(value as Value);
+        values.push(value);
       }
     }
     return Cursor.of({values, before});
   }
-  return Cursor.of({values: position as Array<Value>, before});
-};
+  return Cursor.of({values: position, before});
+}
 
 /** The documents a query returns, skipping the responses that carry none. */
 export final class SnapshotStream implements AsyncIterator<DocumentSnapshot>, AsyncIterable<DocumentSnapshot> {
@@ -1035,7 +1052,7 @@ export final class SnapshotStream implements AsyncIterator<DocumentSnapshot>, As
         case (1, let response, _): {
           let document = response.document;
           if (document != null) {
-            return (1, this.#snapshot(document as Document), _);
+            return (1, this.#snapshot(document), _);
           }
         }
         case (2, _, let pending): {
@@ -1058,9 +1075,9 @@ export final class SnapshotStream implements AsyncIterator<DocumentSnapshot>, As
     var next = await pending;
     while (true) {
       if (next is Some<RunQueryResponse>) {
-        let document = (next as Some<RunQueryResponse>).value.document;
+        let document = next.value.document;
         if (document != null) {
-          return some(this.#snapshot(document as Document));
+          return some(this.#snapshot(document));
         }
       } else {
         return none;
@@ -1079,7 +1096,7 @@ export final class SnapshotStream implements AsyncIterator<DocumentSnapshot>, As
 }
 
 /** The next element of `responses`, waiting for it if it is still coming. */
-let nextResponse = async (responses: AsyncIterator<RunQueryResponse>): Future<Option<RunQueryResponse>> => {
+async function nextResponse(responses: AsyncIterator<RunQueryResponse>): Future<Option<RunQueryResponse>> {
   match (responses.next()) {
     case (1, let response, _): {
       return some(response);
@@ -1091,15 +1108,15 @@ let nextResponse = async (responses: AsyncIterator<RunQueryResponse>): Future<Op
       return none;
     }
   }
-};
+}
 
-let collect = async (stream: SnapshotStream): Future<GrowableArray<DocumentSnapshot>> => {
+async function collect(stream: SnapshotStream): Future<GrowableArray<DocumentSnapshot>> {
   let out = new GrowableArray<DocumentSnapshot>();
   for await (let snapshot in stream) {
     out.push(snapshot);
   }
   return out;
-};
+}
 
 /** A document as it was read. */
 export final class DocumentSnapshot {
@@ -1121,7 +1138,7 @@ export final class DocumentSnapshot {
   updateTime: Timestamp | null {
     get {
       let document = this.document;
-      return if (document == null) null else (document as Document).updateTime;
+      return document?.updateTime;
     }
   }
 
@@ -1135,7 +1152,7 @@ export final class DocumentSnapshot {
       return null;
     }
     let names = path.split('.');
-    var fields = (document as Document).fields;
+    var fields = document.fields;
     for (var i = 0; i < names.length; i += 1) {
       if (!fields.has(names[i])) {
         return null;
@@ -1148,7 +1165,7 @@ export final class DocumentSnapshot {
       if (map == null) {
         return null;
       }
-      fields = (map as MapValue).fields;
+      fields = map.fields;
     }
     return null;
   }
@@ -1156,8 +1173,8 @@ export final class DocumentSnapshot {
   /** The string at `path`: `(true, value)`, or `(false, _)` when it is absent or not a string. */
   getString(path: String): inline (true, String) | inline (false, _) {
     let value = this.get(path);
-    if (value != null && (value as Value).hasStringValue) {
-      return (true, (value as Value).stringValue);
+    if (value != null && value.hasStringValue) {
+      return (true, value.stringValue);
     }
     return (false, _);
   }
@@ -1165,8 +1182,8 @@ export final class DocumentSnapshot {
   /** The integer at `path`: `(true, value)`, or `(false, _)` when it is absent or not an integer. */
   getInteger(path: String): inline (true, i64) | inline (false, _) {
     let value = this.get(path);
-    if (value != null && (value as Value).hasIntegerValue) {
-      return (true, (value as Value).integerValue);
+    if (value != null && value.hasIntegerValue) {
+      return (true, value.integerValue);
     }
     return (false, _);
   }
@@ -1174,8 +1191,8 @@ export final class DocumentSnapshot {
   /** The double at `path`: `(true, value)`, or `(false, _)` when it is absent or not a double. */
   getDouble(path: String): inline (true, f64) | inline (false, _) {
     let value = this.get(path);
-    if (value != null && (value as Value).hasDoubleValue) {
-      return (true, (value as Value).doubleValue);
+    if (value != null && value.hasDoubleValue) {
+      return (true, value.doubleValue);
     }
     return (false, _);
   }
@@ -1183,8 +1200,8 @@ export final class DocumentSnapshot {
   /** The boolean at `path`: `(true, value)`, or `(false, _)` when it is absent or not a boolean. */
   getBoolean(path: String): inline (true, boolean) | inline (false, _) {
     let value = this.get(path);
-    if (value != null && (value as Value).hasBooleanValue) {
-      return (true, (value as Value).booleanValue);
+    if (value != null && value.hasBooleanValue) {
+      return (true, value.booleanValue);
     }
     return (false, _);
   }
@@ -1192,7 +1209,7 @@ export final class DocumentSnapshot {
   /** The timestamp at `path`, or null when it is absent or not a timestamp. */
   getTimestamp(path: String): Timestamp | null {
     let value = this.get(path);
-    return if (value == null) null else (value as Value).timestampValue;
+    return value?.timestampValue;
   }
 }
 
@@ -1249,7 +1266,7 @@ export final class Transaction {
       let found = await this.#db.client.getDocument({name: document.name, transaction: this.id});
       return new DocumentSnapshot(document, found);
     } catch (e) {
-      if (e is RpcError && (e as RpcError).code == CODE_NOT_FOUND) {
+      if (e is RpcError && e.code == CODE_NOT_FOUND) {
         return new DocumentSnapshot(document, null);
       }
       throw e;
@@ -1287,33 +1304,37 @@ export final class Transaction {
   }
 }
 
-let documentOf = (ref: DocumentReference, fields: Fields): Document =>
-  Document.of({name: ref.name, fields: fields.toMap()});
+function documentOf(ref: DocumentReference, fields: Fields) {
+  return Document.of({name: ref.name, fields: fields.toMap()});
+}
 
 /** `write` with the transforms in `fields` merged in. */
-let withTransforms = (write: Write, fields: Fields): Write => {
+function withTransforms(write: Write, fields: Fields) {
   if (!fields.hasOperations) {
     return write;
   }
   // Deletions do not apply outside an update, so their paths are dropped.
   let part = fields.operationsPart(new GrowableArray<String>());
   return new Write(ProtoView.merge([write.protoView, part]));
-};
+}
 
-let setWrite = (ref: DocumentReference, fields: Fields): Write =>
-  withTransforms(Write.of({update: documentOf(ref, fields)}), fields);
+function setWrite(ref: DocumentReference, fields: Fields): Write {
+  return withTransforms(Write.of({update: documentOf(ref, fields)}), fields);
+}
 
-let createWrite = (ref: DocumentReference, fields: Fields): Write => withTransforms(Write.of({
+function createWrite(ref: DocumentReference, fields: Fields): Write {
+  return withTransforms(Write.of({
   update: documentOf(ref, fields),
   currentDocument: Precondition.of({exists: false}),
 }), fields);
+}
 
 /**
  * An update of the fields with values and the deleted fields, which the
  * mask names, then the transforms, which it does not: the server applies
  * them after the update.
  */
-let updateWrite = (ref: DocumentReference, fields: Fields): Write => {
+function updateWrite(ref: DocumentReference, fields: Fields): Write {
   let paths = new GrowableArray<String>();
   for (let name in fields.names()) {
     paths.push(quoteFieldName(name));
@@ -1325,14 +1346,14 @@ let updateWrite = (ref: DocumentReference, fields: Fields): Write => {
     currentDocument: Precondition.of({exists: true}),
   });
   return if (transforms.byteLength == 0) write else new Write(ProtoView.merge([write.protoView, transforms]));
-};
+}
 
 /** Reads `documents` in one call, in `transaction` when it is not null; see `Firestore.getAll`. */
-let readAll = async (
+async function readAll(
   db: Firestore,
   documents: Array<DocumentReference>,
   transaction: ProtoBytes | null
-): Future<GrowableArray<DocumentSnapshot>> => {
+): Future<GrowableArray<DocumentSnapshot>> {
   let out = new GrowableArray<DocumentSnapshot>();
   if (documents.length == 0) {
     return out;
@@ -1343,13 +1364,13 @@ let readAll = async (
   }
   let responses = if (transaction == null)
     db.client.batchGetDocuments({database: db.database, documents: names})
-    else db.client.batchGetDocuments({database: db.database, documents: names, transaction: transaction as ProtoBytes});
+    else db.client.batchGetDocuments({database: db.database, documents: names, transaction: transaction});
   // The responses come in any order.
   let found = new HashMap<String, Document>();
   for await (let response in responses) {
     let document = response.found;
     if (document != null) {
-      found[(document as Document).name] = document as Document;
+      found[document.name] = document;
     }
   }
   for (let document in documents) {
@@ -1360,26 +1381,28 @@ let readAll = async (
     }
   }
   return out;
-};
+}
 
-let deleteWrite = (ref: DocumentReference): Write => Write.of({delete: ref.name});
+function deleteWrite(ref: DocumentReference): Write {
+  return Write.of({delete: ref.name});
+}
 
 /** A reference to the field at `path`, names joined with `.`, each quoted as needed. */
-let fieldReference = (path: String): StructuredQueryFieldReference => {
+function fieldReference(path: String): StructuredQueryFieldReference {
   var quoted = '';
   for (let name in path.split('.')) {
     quoted = if (quoted.length == 0) quoteFieldName(name) else `${quoted}.${quoteFieldName(name)}`;
   }
   return StructuredQueryFieldReference.of({fieldPath: quoted});
-};
+}
 
-let lastSegment = (path: String): String => {
+function lastSegment(path: String): String {
   let segments = path.split('/');
   return segments[segments.length - 1];
-};
+}
 
 /** `path` without its last segment, or '' when it has one segment. */
-let parentPath = (path: String): String => {
+function parentPath(path: String): String {
   var i = path.length - 1;
   while (i >= 0) {
     if (path.getByteAt(i) == 0x2F) {
@@ -1388,10 +1411,10 @@ let parentPath = (path: String): String => {
     i -= 1;
   }
   return '';
-};
+}
 
 /** A random 20-character document id, as Firestore's own clients make. */
-let randomId = (): String => {
+function randomId(): String {
   let alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
   var id = '';
   for (var i = 0; i < 20; i += 1) {
@@ -1399,4 +1422,4 @@ let randomId = (): String => {
     id = `${id}${alphabet.sliceBytes(n, n + 1)}`;
   }
   return id;
-};
+}
