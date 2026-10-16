@@ -68,7 +68,7 @@ export let WIRE_I32 = 5;
  */
 let DENSE_LIMIT = 1024;
 
-let EMPTY_BYTES: ByteArray = newByteArray(0);
+let EMPTY_BYTES = newByteArray(0);
 
 /**
  * The low 32 bits of an i64. Typed so the literal is 2^32 - 1: untyped,
@@ -79,9 +79,13 @@ let EMPTY_BYTES: ByteArray = newByteArray(0);
 let MASK32: i64 = 0xFFFFFFFF;
 
 /** `n` zigzag-decoded: 0, -1, 1, -2, ... from 0, 1, 2, 3, ... */
-let unzigzag32 = (n: i32): i32 => (n >>> 1) ^ (0 - (n & 1));
+function unzigzag32(n: i32) {
+  return (n >>> 1) ^ (0 - (n & 1));
+}
 
-let unzigzag64 = (n: i64): i64 => (n >>> 1) ^ (0 - (n & 1));
+function unzigzag64(n: i64) {
+  return (n >>> 1) ^ (0 - (n & 1));
+}
 
 /**
  * One encoded message, read on demand.
@@ -340,7 +344,7 @@ export final class ProtoView {
   /** A message field, or a message with no fields set when it is absent. */
   messageOrEmpty(field: i32): ProtoView {
     let m = this.message(field);
-    return if (m == null) ProtoView.empty() else m as ProtoView;
+    return m ?? ProtoView.empty();
   }
 
   /**
@@ -545,7 +549,7 @@ export final class ProtoView {
     if (sparse == null) {
       return 0;
     }
-    if (let (true, slot) = (sparse as HashMap<i32, FixedArray<i32>>).get(field)) {
+    if (let (true, slot) = sparse.get(field)) {
       return slot[k];
     }
     return 0;
@@ -787,7 +791,7 @@ export final class ProtoMap<K, V> with IterableUtils<ProtoMapEntry<K, V>> implem
         found = entry;
       }
     }
-    return if (found == null) fallback else this.#value(found as ProtoView);
+    return if (found == null) fallback else this.#value(found);
   }
 
   [Iterable.iterator](): Iterator<ProtoMapEntry<K, V>> {
@@ -974,7 +978,7 @@ export final class ProtoWriter {
   bytes(field: i32, value: ByteArray | ProtoBytes): void {
     this.tag(field, WIRE_LEN);
     if (value is ProtoBytes) {
-      let b = value as ProtoBytes;
+      let b = value;
       this.#buffer.writeULEB128(b.length);
       b.writeTo(this.#buffer);
     } else {
@@ -1028,7 +1032,6 @@ export final class RpcMetadata {
   #names: GrowableArray<String> = new GrowableArray<String>();
   #values: GrowableArray<String> = new GrowableArray<String>();
 
-  new();
 
   /** Adds header `name` with `value`. A name may be added more than once. */
   add(name: String, value: String): void {
@@ -1071,7 +1074,6 @@ export final class RoutingHeader {
   #keys: GrowableArray<String> = new GrowableArray<String>();
   #values: GrowableArray<String> = new GrowableArray<String>();
 
-  new();
 
   /** Sets parameter `key` to `value`, replacing an earlier value. An empty value sets nothing. */
   add(key: String, value: String): void {
@@ -1095,7 +1097,7 @@ export final class RoutingHeader {
   match(key: String, template: String, value: String): void {
     let captured = matchPathTemplate(template, key, value);
     if (captured != null) {
-      this.add(key, captured as String);
+      this.add(key, captured);
     }
   }
 
@@ -1117,7 +1119,7 @@ export final class RoutingHeader {
  * `value` with every byte outside the URL-unreserved set (letters, digits,
  * `-`, `.`, `_` and `~`) written as `%XX`.
  */
-export let percentEncode = (value: String): String => {
+export function percentEncode(value: String): String {
   let hex = '0123456789ABCDEF';
   var out = '';
   var start = 0;
@@ -1131,7 +1133,7 @@ export let percentEncode = (value: String): String => {
     }
   }
   return if (start == 0) value else `${out}${value.sliceBytes(start, value.length)}`;
-};
+}
 
 /**
  * The part of `value` that variable `variable` captures in the path
@@ -1142,7 +1144,7 @@ export let percentEncode = (value: String): String => {
  * `database_id` of `projects/{project}/databases/{database_id}/**` is
  * `(default)` in `projects/p/databases/(default)/documents/posts`.
  */
-export let matchPathTemplate = (template: String, variable: String, value: String): String | null => {
+export function matchPathTemplate(template: String, variable: String, value: String): String | null {
   let patterns = new GrowableArray<String>();
   var captureStart = -1;
   var captureEnd = -1;
@@ -1189,19 +1191,19 @@ export let matchPathTemplate = (template: String, variable: String, value: Strin
     captured = `${captured}/${values[i]}`;
   }
   return if (captured.length == 0) null else captured;
-};
+}
 
 /**
  * Whether `values[vi..]` matches `patterns[pi..]`, recording in
  * `positions[k]` the value index pattern `k` began matching at.
  */
-let matchSegments = (
+function matchSegments(
   patterns: GrowableArray<String>,
   pi: i32,
   values: FixedArray<String>,
   vi: i32,
   positions: FixedArray<i32>
-): boolean => {
+): boolean {
   positions[pi] = vi;
   if (pi == patterns.length) {
     return vi == values.length;
@@ -1229,7 +1231,7 @@ let matchSegments = (
     return false;
   }
   return matchSegments(patterns, pi + 1, values, vi + 1, positions);
-};
+}
 
 /**
  * Carries encoded requests and responses. A gRPC transport frames them
@@ -1273,7 +1275,7 @@ export final class ProtoStream<T> implements AsyncIterator<T>, AsyncIterable<T> 
   async #later(pending: Future<Option<ProtoView>>): Future<Option<T>> {
     let next = await pending;
     if (next is Some<ProtoView>) {
-      return some(this.#wrap((next as Some<ProtoView>).value));
+      return some(this.#wrap(next.value));
     }
     return none;
   }

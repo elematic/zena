@@ -17,7 +17,7 @@ import {
 } from '../grpc.zena';
 import { Node } from '../../test-files/generated/everything.zena';
 
-function unit(): void {}
+function unit() {}
 
 /** `iterator`, for `for await`. */
 final class ReaderIterable implements AsyncIterable<ProtoView> {
@@ -28,25 +28,27 @@ final class ReaderIterable implements AsyncIterable<ProtoView> {
   }
 }
 
-let fieldsOf = (pairs: Array<String>): Fields => {
+function fieldsOf(pairs: Array<String>) {
   let fields = Fields.create();
   for (var i = 0; i + 1 < pairs.length; i += 2) {
     fields.append(pairs[i], pairs[i + 1].toBytes());
   }
   return fields;
-};
+}
 
-let trailersOf = (pairs: Array<String>): Future<Outcome<Option<Fields>, ErrorCode>> =>
-  Future.of<Outcome<Option<Fields>, ErrorCode>>(new Ok<Option<Fields>, ErrorCode>(some(fieldsOf(pairs))));
+function trailersOf(pairs: Array<String>) {
+  return Future.of<Outcome<Option<Fields>, ErrorCode>>(new Ok<Option<Fields>, ErrorCode>(some(fieldsOf(pairs))));
+}
 
-let noTrailers = (): Future<Outcome<Option<Fields>, ErrorCode>> =>
-  Future.of<Outcome<Option<Fields>, ErrorCode>>(new Ok<Option<Fields>, ErrorCode>(none));
+function noTrailers() {
+  return Future.of<Outcome<Option<Fields>, ErrorCode>>(new Ok<Option<Fields>, ErrorCode>(none));
+}
 
 let GRPC_HEADERS = ['content-type', 'application/grpc'];
 let OK = ['grpc-status', '0'];
 
 /** `views`, framed and concatenated. */
-let framed = (views: GrowableArray<ProtoView>): FixedArray<u8> => {
+function framed(views: GrowableArray<ProtoView>) {
   var total = 0;
   for (let v in views) {
     total += 5 + v.byteLength;
@@ -61,26 +63,26 @@ let framed = (views: GrowableArray<ProtoView>): FixedArray<u8> => {
     }
   }
   return out;
-};
+}
 
-let nodes = (names: Array<String>): GrowableArray<ProtoView> => {
+function nodes(names: Array<String>) {
   let out = new GrowableArray<ProtoView>();
   for (let name in names) {
     out.push(Node.of({name}).protoView);
   }
   return out;
-};
+}
 
 /** Writes `bytes` one at a time, then closes. */
-let produce = async (writer: StreamWriter<u8>, bytes: FixedArray<u8>): Future<void> => {
+async function produce(writer: StreamWriter<u8>, bytes: FixedArray<u8>): Future<void> {
   for (var i = 0; i < bytes.length; i += 1) {
     await writer.write(bytes[i]);
   }
   writer.close();
-};
+}
 
 /** The names in the responses, then `| ok`, or `| <code>: <message>` for the error that ended them. */
-let readAll = async (reader: AsyncIterator<ProtoView>): Future<String> => {
+async function readAll(reader: AsyncIterator<ProtoView>): Future<String> {
   var out = '';
   try {
     for await (let view in new ReaderIterable(reader)) {
@@ -88,27 +90,27 @@ let readAll = async (reader: AsyncIterator<ProtoView>): Future<String> => {
     }
   } catch (e) {
     if (e is RpcError) {
-      let error = e as RpcError;
+      let error = e;
       return `${out} | ${error.code}: ${error.message}`;
     }
     return `${out} | not an RpcError: ${e.message}`;
   }
   return `${out} | ok`;
-};
+}
 
 /** A response with `bytes` for a body, sent one byte at a time. */
-let respond = (status: i32, headers: Array<String>, bytes: FixedArray<u8>, trailers: Future<Outcome<Option<Fields>, ErrorCode>>): AsyncIterator<ProtoView> => {
+function respond(status: i32, headers: Array<String>, bytes: FixedArray<u8>, trailers: Future<Outcome<Option<Fields>, ErrorCode>>) {
   let writer = new StreamWriter<u8>();
   produce(writer, bytes);
   return readGrpcResponse(status, fieldsOf(headers), writer.stream, trailers);
-};
+}
 
 /**
  * Reads a body whose producer holds back everything after the first
  * message until the reader has seen it, so it passes only if each message
  * is handed out as soon as its bytes are in.
  */
-let incrementalRead = async (): Future<String> => {
+async function incrementalRead(): Future<String> {
   let bytes = framed(nodes(['first', 'second']));
   let split = 5 + Node.of({name: 'first'}).protoView.byteLength;
   let writer = new StreamWriter<u8>();
@@ -121,9 +123,9 @@ let incrementalRead = async (): Future<String> => {
     release.tryComplete(unit());
   }
   return names;
-};
+}
 
-let holdBack = async (writer: StreamWriter<u8>, bytes: FixedArray<u8>, split: i32, release: Future<void>): Future<void> => {
+async function holdBack(writer: StreamWriter<u8>, bytes: FixedArray<u8>, split: i32, release: Future<void>): Future<void> {
   for (var i = 0; i < split; i += 1) {
     await writer.write(bytes[i]);
   }
@@ -132,21 +134,22 @@ let holdBack = async (writer: StreamWriter<u8>, bytes: FixedArray<u8>, split: i3
     await writer.write(bytes[i]);
   }
   writer.close();
-};
+}
 
-let unaryOf = async (reader: AsyncIterator<ProtoView>): Future<String> => {
+async function unaryOf(reader: AsyncIterator<ProtoView>): Future<String> {
   try {
     let view = await singleMessage(new RpcMethod('zena.test.v1.Things', 'GetNode'), reader);
     return Node.decode(view.toByteArray()).name;
   } catch (e) {
     return `${(e as RpcError).code}: ${e.message}`;
   }
-};
+}
 
-let errorText = (error: RpcError | null): String =>
-  if (error == null) 'ok' else `${(error as RpcError).code}: ${(error as RpcError).message}`;
+function errorText(error: RpcError | null) {
+  return if (error == null) 'ok' else `${error.code}: ${error.message}`;
+}
 
-export let tests = suite('grpc transport', (): void => {
+export let tests = suite('grpc transport', () => {
   test('frames a message', () => {
     let f = frame(Node.of({name: 'abc'}).protoView);
     equal(f.length, 10);
@@ -166,7 +169,7 @@ export let tests = suite('grpc transport', (): void => {
   });
 
   test('decodes base64', () => {
-    let text = (s: String): String => {
+    let text = (s: String) => {
       let bytes = decodeBase64(s);
       return if (bytes == null) 'null' else String.fromBytes(bytes as ByteArray);
     };

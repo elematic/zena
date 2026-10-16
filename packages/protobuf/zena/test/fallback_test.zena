@@ -14,17 +14,17 @@ import { Credentials, ProtoView, ProtoWriter, RpcMetadata, RpcMethod } from '../
 import { Node, ThingsClient } from '../../test-files/generated/everything.zena';
 
 /** An encoded `google.rpc.Status`. */
-let statusOf = (code: i32, message: String): ProtoView => {
+function statusOf(code: i32, message: String) {
   let w = new ProtoWriter();
   if (code != 0) {
     w.int32(1, code);
   }
   w.string(2, message);
   return w.finish();
-};
+}
 
 /** A `google.rpc.StreamBody` holding `messages` and then `status`. */
-let streamBodyOf = (messages: Array<ProtoView>, status: ProtoView): ProtoView => {
+function streamBodyOf(messages: Array<ProtoView>, status: ProtoView) {
   let w = new ProtoWriter();
   w.bytes(15, (new ProtoWriter()).finish().toByteArray());
   for (let m in messages) {
@@ -32,13 +32,13 @@ let streamBodyOf = (messages: Array<ProtoView>, status: ProtoView): ProtoView =>
   }
   w.message(2, status);
   return w.finish();
-};
+}
 
-let respond = (res: Response, status: i32, body: ProtoView): void => {
+function respond(res: Response, status: i32, body: ProtoView) {
   res.statusCode = status;
   res.type = 'application/x-protobuf';
   res.body = body.toByteArray() as FixedArray<u8>;
-};
+}
 
 /**
  * Answers `/$rpc/zena.test.v1.Things/<method>` like the fallback protocol:
@@ -46,9 +46,9 @@ let respond = (res: Response, status: i32, body: ProtoView): void => {
  * in `from`; ListNodes streams three nodes; Fail answers a
  * `google.rpc.Status`; FailStream streams one node and then an error.
  */
-let rpcServer = (): Server => {
+function rpcServer() {
   let app = new App();
-  app.use(async (req: Request, res: Response, next: () => Future<void>): Future<void> => {
+  app.use(async (req, res, next): Future<void> => {
     let prefix = '/$rpc/zena.test.v1.Things/';
     if (req.method != 'POST' || !req.path.startsWith(prefix) ||
         req.getHeader('content-type') != 'application/x-protobuf') {
@@ -64,8 +64,8 @@ let rpcServer = (): Server => {
       let routing = req.getHeader('x-goog-request-params');
       respond(res, 200, Node.of({
         name: `${request.name}!`,
-        from: if (auth == null) '' else auth as String,
-        text: if (routing == null) '' else routing as String,
+        from: auth ?? '',
+        text: routing ?? '',
       }).protoView);
     } else if (method == 'ListNodes') {
       let nodes = new GrowableArray<ProtoView>();
@@ -87,18 +87,18 @@ let rpcServer = (): Server => {
   let server = new Server(app, 0 as u16);
   server.start();
   return server;
-};
+}
 
 /**
  * Writes the first `split` bytes of `bytes`, waits for `release`, then
  * writes the rest one byte at a time and closes.
  */
-let produce = async (
+async function produce(
   writer: StreamWriter<u8>,
   bytes: FixedArray<u8>,
   split: i32,
   release: Future<void>
-): Future<void> => {
+): Future<void> {
   for (var i = 0; i < split; i += 1) {
     await writer.write(bytes[i]);
   }
@@ -107,14 +107,14 @@ let produce = async (
     await writer.write(bytes[i]);
   }
   writer.close();
-};
+}
 
 /**
  * Reads a StreamBody whose producer holds back everything after the first
  * response until the reader has seen it, so it passes only if each response
  * is handed out as soon as its bytes are in.
  */
-let incrementalRead = async (): Future<String> => {
+async function incrementalRead(): Future<String> {
   let first = Node.of({name: 'first'}).protoView;
   let nodes = new GrowableArray<ProtoView>();
   nodes.push(first);
@@ -131,61 +131,62 @@ let incrementalRead = async (): Future<String> => {
     release.tryComplete(unit());
   }
   return names;
-};
+}
 
 function unit(): void {}
 
-let originOf = (server: Server): String => `http://127.0.0.1:${server.port as i32}`;
+function originOf(server: Server) {
+  return `http://127.0.0.1:${server.port as i32}`;
+}
 
-let unaryCall = async (server: Server): Future<String> => {
+async function unaryCall(server: Server): Future<String> {
   let transport = new FallbackTransport(originOf(server));
   transport.setHeader('authorization', 'Bearer t0k3n');
   let client = new ThingsClient(transport);
   let node = await client.getNode({name: 'ping'});
   return `${node.name} ${node.from}`;
-};
+}
 
 /** Hands out a token that changes on every call, as a refreshing token source might. */
 final class CountingCredentials implements Credentials {
   var #calls: i32 = 0;
-  new();
   async authorization(): Future<String | null> {
     this.#calls += 1;
     return `Bearer token-${this.#calls}`;
   }
 }
 
-let credentialedCalls = async (server: Server): Future<String> => {
+async function credentialedCalls(server: Server): Future<String> {
   let client = new ThingsClient(new FallbackTransport(originOf(server), new CountingCredentials()));
   let first = await client.getNode({name: 'nodes/a'});
   let second = await client.getNode({name: 'nodes/b'});
   return `${first.from} ${first.text} | ${second.from} ${second.text}`;
-};
+}
 
-let streamingCall = async (server: Server): Future<String> => {
+async function streamingCall(server: Server): Future<String> {
   let client = new ThingsClient(new FallbackTransport(originOf(server)));
   var names = '';
   for await (let node in client.listNodes({name: 'n'})) {
     names = `${names}${node.name},`;
   }
   return names;
-};
+}
 
 /** The code and message a failing call throws, as `code: message`. */
-let failure = async (call: () => Future<String>): Future<String> => {
+async function failure(call: () => Future<String>): Future<String> {
   try {
     await call();
   } catch (e) {
     if (e is RpcError) {
-      let error = e as RpcError;
+      let error = e;
       return `${error.code}: ${error.message}`;
     }
     return `not an RpcError: ${e.message}`;
   }
   return 'no error';
-};
+}
 
-export let tests = suite('fallback transport', (): void => {
+export let tests = suite('fallback transport', () => {
   test('calls a unary method, sending the headers set', () => {
     let server = rpcServer();
     equal(runFuture(unaryCall(server)), 'ping! Bearer t0k3n');

@@ -42,7 +42,7 @@ export final class Origin {
     if (url == null) {
       throw new ProtoError(`not a URL: ${origin}`);
     }
-    let parsed = url as URL;
+    let parsed = url;
     let scheme: Scheme = if (parsed.protocol == 'http:') new SchemeHTTP() else new SchemeHTTPS();
     return new Origin(scheme, parsed.host());
   }
@@ -53,12 +53,12 @@ export final class Origin {
  * `fixed` headers, the call's `metadata`, and the `authorization`
  * `credentials` give, when there are any.
  */
-export let callHeaders = async (
+export async function callHeaders(
   contentType: String,
   fixed: HashMap<String, String>,
   metadata: RpcMetadata,
   credentials: Credentials | null
-): Future<Fields> => {
+): Future<Fields> {
   let headers = Fields.create();
   headers.append('content-type', contentType.toBytes());
   for (let entry in fixed) {
@@ -68,19 +68,19 @@ export let callHeaders = async (
     headers.append(metadata.name(i), metadata.value(i).toBytes());
   }
   if (credentials != null) {
-    let authorization = await (credentials as Credentials).authorization();
+    let authorization = await credentials.authorization();
     if (authorization != null) {
-      headers.append('authorization', (authorization as String).toBytes());
+      headers.append('authorization', authorization.toBytes());
     }
   }
   return headers;
-};
+}
 
 /** The first value of header `name` in `fields`, or null. */
-export let headerValue = (fields: Fields, name: String): String | null => {
+export function headerValue(fields: Fields, name: String): String | null {
   let values = fields.get(name);
   return if (values.length > 0) String.fromBytes(values[0]) else null;
-};
+}
 
 /** One response: its status, headers, body, and the trailers after the body. */
 export final class Exchange {
@@ -101,7 +101,7 @@ export final class Exchange {
   /** Whether the `content-type` header starts with `prefix`. */
   contentTypeIs(prefix: String): boolean {
     let contentType = headerValue(this.headers, 'content-type');
-    return contentType != null && (contentType as String).startsWith(prefix);
+    return contentType != null && contentType.startsWith(prefix);
   }
 
   /** Tells the host the body has been read to its end. */
@@ -117,14 +117,14 @@ export final class Exchange {
  * fails with DEADLINE_EXCEEDED. Throws an `RpcError` with code
  * UNAVAILABLE, naming `method`, when no response arrives otherwise.
  */
-export let post = async (
+export async function post(
   origin: Origin,
   path: String,
   headers: Fields,
   body: ByteArray,
   method: RpcMethod,
   firstByteTimeout: i64 = -1
-): Future<Exchange> => {
+): Future<Exchange> {
   // The trailers future is the sender's to settle, and the host does
   // not consider the request body finished until it is.
   let trailers = Future.of<Outcome<Option<Fields>, ErrorCode>>(
@@ -143,7 +143,7 @@ export let post = async (
   wire.setPathWithQuery(some(path));
   let sent = await send(wire);
   if (sent is Err<WireResponse, ErrorCode>) {
-    if ((sent as Err<WireResponse, ErrorCode>).error is ErrorCodeConnectionReadTimeout) {
+    if (sent.error is ErrorCodeConnectionReadTimeout) {
       throw new RpcError(
         CODE_DEADLINE_EXCEEDED,
         `${method.service}/${method.name}: no response from ${origin.authority} within the deadline`,
@@ -163,5 +163,5 @@ export let post = async (
   let received = new Completer<Outcome<void, ErrorCode>>();
   let (responseBody, responseTrailers) = WireResponse.consumeBody(response, received.future);
   return new Exchange(status, responseHeaders, responseBody, responseTrailers, received);
-};
+}
 

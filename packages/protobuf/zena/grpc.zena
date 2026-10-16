@@ -46,14 +46,14 @@ let FRAME_HEADER = 5;
  * The `google.rpc.Code` for the HTTP status of a response that is not
  * gRPC, as the gRPC specification maps them (doc/http-grpc-status-mapping.md).
  */
-export let codeForGrpcHttpStatus = (status: i32): i32 => {
+export function codeForGrpcHttpStatus(status: i32): i32 {
   if (status == 400) { return CODE_INTERNAL; }
   if (status == 401) { return 16; }
   if (status == 403) { return 7; }
   if (status == 404) { return 12; }
   if (status == 429 || status == 502 || status == 503 || status == 504) { return CODE_UNAVAILABLE; }
   return CODE_UNKNOWN;
-};
+}
 
 /**
  * Calls RPCs on one server with gRPC. `origin` is the scheme and host,
@@ -112,7 +112,7 @@ export final class GrpcTransport implements ProtoTransport {
  * `nanos` as a `grpc-timeout` value: at most eight digits and a unit,
  * the finest unit that fits, rounded up.
  */
-export let grpcTimeout = (nanos: i64): String => {
+export function grpcTimeout(nanos: i64): String {
   let units = ['n', 'u', 'm', 'S', 'M', 'H'];
   let sizes: Array<i64> = [1, 1000, 1000000, 1000000000, 60000000000, 3600000000000];
   for (var i = 0; i < units.length; i += 1) {
@@ -122,10 +122,10 @@ export let grpcTimeout = (nanos: i64): String => {
     }
   }
   return '99999999H';
-};
+}
 
 /** `message` framed for a gRPC body: uncompressed, with its length. */
-export let frame = (message: ProtoView): ByteArray => {
+export function frame(message: ProtoView): ByteArray {
   let bytes = message.toByteArray();
   let n = bytes.length;
   let out = newByteArray(FRAME_HEADER + n);
@@ -136,25 +136,25 @@ export let frame = (message: ProtoView): ByteArray => {
   out[4] = (n & 0xFF) as u8;
   copyBytes(out, FRAME_HEADER, bytes, 0, n);
   return out;
-};
+}
 
 /**
  * The one message of a unary call's responses, read to the end so the
  * call's status is checked. No message, or more than one, is INTERNAL.
  */
-export let singleMessage = async (method: RpcMethod, reader: AsyncIterator<ProtoView>): Future<ProtoView> => {
+export async function singleMessage(method: RpcMethod, reader: AsyncIterator<ProtoView>): Future<ProtoView> {
   let first = await nextMessage(reader);
   if (first is Some<ProtoView>) {
     if (await nextMessage(reader) is Some<ProtoView>) {
       throw new RpcError(CODE_INTERNAL, `${method.service}/${method.name}: more than one response to a unary call`, ProtoView.empty());
     }
-    return (first as Some<ProtoView>).value;
+    return first.value;
   }
   throw new RpcError(CODE_INTERNAL, `${method.service}/${method.name}: no response to a unary call`, ProtoView.empty());
-};
+}
 
 /** The next element of `reader`, waiting for it if it is still coming. */
-let nextMessage = async (reader: AsyncIterator<ProtoView>): Future<Option<ProtoView>> => {
+async function nextMessage(reader: AsyncIterator<ProtoView>): Future<Option<ProtoView>> {
   match (reader.next()) {
     case (1, let view, _): {
       return some(view);
@@ -166,7 +166,7 @@ let nextMessage = async (reader: AsyncIterator<ProtoView>): Future<Option<ProtoV
       return none;
     }
   }
-};
+}
 
 /**
  * The responses of a gRPC call whose response has HTTP status `status`,
@@ -174,8 +174,9 @@ let nextMessage = async (reader: AsyncIterator<ProtoView>): Future<Option<ProtoV
  * are; the call's status ends the stream, and throws an `RpcError` unless
  * it is OK. `GrpcTransport` reads responses with it.
  */
-export let readGrpcResponse = (status: i32, headers: Fields, body: Stream<u8>, trailers: Trailers): AsyncIterator<ProtoView> =>
-  new GrpcResponseReader(Future.of(Exchange.of(status, headers, body, trailers)));
+export function readGrpcResponse(status: i32, headers: Fields, body: Stream<u8>, trailers: Trailers): AsyncIterator<ProtoView> {
+  return new GrpcResponseReader(Future.of(Exchange.of(status, headers, body, trailers)));
+}
 
 /**
  * The error, or null for OK, that the gRPC status in `fields` stands for:
@@ -183,34 +184,34 @@ export let readGrpcResponse = (status: i32, headers: Fields, body: Stream<u8>, t
  * `grpc-status-details-bin` (a base64 `google.rpc.Status`). A missing or
  * malformed `grpc-status` is UNKNOWN.
  */
-export let statusError = (fields: Fields): RpcError | null => {
+export function statusError(fields: Fields): RpcError | null {
   let codeText = headerValue(fields, 'grpc-status');
-  var code = if (codeText == null) -1 else parseCode(codeText as String);
+  var code = if (codeText == null) -1 else parseCode(codeText);
   if (code == 0) {
     return null;
   }
   let message = headerValue(fields, 'grpc-message');
-  var text = if (message == null) '' else percentDecode(message as String);
+  var text = if (message == null) '' else percentDecode(message);
   if (code < 0) {
     code = CODE_UNKNOWN;
     if (text.length == 0) {
       text = if (codeText == null) 'the response has no grpc-status'
-        else `the response has a malformed grpc-status: ${codeText as String}`;
+        else `the response has a malformed grpc-status: ${codeText}`;
     }
   }
   var details = ProtoView.empty();
   let encoded = headerValue(fields, 'grpc-status-details-bin');
   if (encoded != null) {
-    let decoded = decodeBase64(encoded as String);
+    let decoded = decodeBase64(encoded);
     if (decoded != null) {
       details = ProtoView.of(decoded as ByteArray);
     }
   }
   return new RpcError(code, text, details);
-};
+}
 
 /** A non-negative decimal status code, or -1. */
-let parseCode = (text: String): i32 => {
+function parseCode(text: String): i32 {
   if (text.length == 0 || text.length > 4) {
     return -1;
   }
@@ -223,23 +224,23 @@ let parseCode = (text: String): i32 => {
     code = code * 10 + (b - 0x30);
   }
   return code;
-};
+}
 
 /** The value of base64 digit `b` in either alphabet, or -1. */
-let base64Digit = (b: i32): i32 => {
+function base64Digit(b: i32): i32 {
   if (b >= 0x41 && b <= 0x5A) { return b - 0x41; }
   if (b >= 0x61 && b <= 0x7A) { return b - 0x61 + 26; }
   if (b >= 0x30 && b <= 0x39) { return b - 0x30 + 52; }
   if (b == 0x2B || b == 0x2D) { return 62; }
   if (b == 0x2F || b == 0x5F) { return 63; }
   return -1;
-};
+}
 
 /**
  * `text` decoded as base64, padded or not, in the standard or the URL
  * alphabet; null when it is malformed.
  */
-export let decodeBase64 = (text: String): ByteArray | null => {
+export function decodeBase64(text: String): ByteArray | null {
   var end = text.length;
   while (end > 0 && text.getByteAt(end - 1) == 0x3D) {
     end -= 1;
@@ -265,7 +266,7 @@ export let decodeBase64 = (text: String): ByteArray | null => {
     }
   }
   return out;
-};
+}
 
 /**
  * Reads the messages out of a gRPC response body as its bytes arrive. A
@@ -280,7 +281,7 @@ final class GrpcResponseReader implements AsyncIterator<ProtoView> {
   var #buffer: ByteArray = newByteArray(4096);
   var #start: i32 = 0;
   var #end: i32 = 0;
-  var #chunk: FixedArray<u8> = new FixedArray<u8>(4096, 0);
+  #chunk: FixedArray<u8> = new FixedArray<u8>(4096, 0);
   /** Set once the stream has ended: nothing more is handed out. */
   var #finished: boolean = false;
 
@@ -293,7 +294,7 @@ final class GrpcResponseReader implements AsyncIterator<ProtoView> {
     if (this.#exchange != null) {
       let message = this.#take();
       if (message != null) {
-        return (1, message as ProtoView, _);
+        return (1, message, _);
       }
     }
     return (2, _, this.#pull());
@@ -313,7 +314,7 @@ final class GrpcResponseReader implements AsyncIterator<ProtoView> {
     while (true) {
       let message = this.#take();
       if (message != null) {
-        return some(message as ProtoView);
+        return some(message);
       }
       let n = await exchange.body.read(this.#chunk);
       if (n == 0) {
@@ -324,7 +325,7 @@ final class GrpcResponseReader implements AsyncIterator<ProtoView> {
         }
         let error = await this.#trailerStatus(exchange);
         if (error != null) {
-          throw error as RpcError;
+          throw error;
         }
         return none;
       }
@@ -343,7 +344,7 @@ final class GrpcResponseReader implements AsyncIterator<ProtoView> {
       await this.#drain(exchange);
       let error = statusError(exchange.headers);
       if (error != null) {
-        throw error as RpcError;
+        throw error;
       }
       return;
     }
@@ -360,7 +361,7 @@ final class GrpcResponseReader implements AsyncIterator<ProtoView> {
       let contentType = headerValue(exchange.headers, 'content-type');
       throw new RpcError(
         CODE_UNKNOWN,
-        `the server answered with content-type ${if (contentType == null) '(none)' else contentType as String}`,
+        `the server answered with content-type ${contentType ?? '(none)'}`,
         ProtoView.empty()
       );
     }
@@ -382,7 +383,7 @@ final class GrpcResponseReader implements AsyncIterator<ProtoView> {
     }
     let fields = (trailers as Ok<Option<Fields>, ErrorCode>).value;
     if (fields is Some<Fields>) {
-      return statusError((fields as Some<Fields>).value);
+      return statusError(fields.value);
     }
     return new RpcError(CODE_INTERNAL, 'the response has no trailers', ProtoView.empty());
   }

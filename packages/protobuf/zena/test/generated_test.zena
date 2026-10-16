@@ -41,11 +41,10 @@ import {
 
 /** Answers every call by echoing the request, and streams it back three times. */
 final class EchoTransport implements ProtoTransport {
-  var calls: GrowableArray<String> = new GrowableArray<String>();
+  calls: GrowableArray<String> = new GrowableArray<String>();
   /** The routing header of each call, or '' when it had none. */
-  var routing: GrowableArray<String> = new GrowableArray<String>();
+  routing: GrowableArray<String> = new GrowableArray<String>();
 
-  new();
 
   unary(method: RpcMethod, request: ProtoView, metadata: RpcMetadata): Future<ProtoView> {
     this.calls.push(`${method.service}/${method.name}`);
@@ -61,14 +60,14 @@ final class EchoTransport implements ProtoTransport {
 }
 
 /** The value of the `x-goog-request-params` header in `metadata`, or ''. */
-let routingOf = (metadata: RpcMetadata): String => {
+function routingOf(metadata: RpcMetadata): String {
   for (var i = 0; i < metadata.length; i += 1) {
     if (metadata.name(i) == 'x-goog-request-params') {
       return metadata.value(i);
     }
   }
   return '';
-};
+}
 
 final class Repeat implements AsyncIterator<ProtoView> {
   #view: ProtoView;
@@ -87,7 +86,7 @@ final class Repeat implements AsyncIterator<ProtoView> {
 let PROTOC = 'packages/protobuf/test-files/protoc';
 
 /** Whether `a` and `b` hold the same bytes. */
-let sameBytes = (a: ByteArray, b: ByteArray): boolean => {
+function sameBytes(a: ByteArray, b: ByteArray): boolean {
   if (a.length != b.length) {
     return false;
   }
@@ -97,14 +96,12 @@ let sameBytes = (a: ByteArray, b: ByteArray): boolean => {
     }
   }
   return true;
-};
+}
 
 /** The values of `test-files/protoc/node.txtpb`, encoded by the generated code. */
-let protocNode = (): Node => {
-  let byName = new HashMap<String, Node>();
-  byName['x'] = Node.of({name: 'x'});
-  let labels = new HashMap<i32, String>();
-  labels[2] = 'two';
+function protocNode() {
+  let byName: HashMap<String, Node> = {'x' => Node.of({name: 'x'})};
+  let labels: HashMap<i32, String> = {2 => 'two'};
   let blob = newByteArray(3);
   blob[0] = 1;
   blob[1] = 2;
@@ -125,17 +122,17 @@ let protocNode = (): Node => {
     from: 'here',
     blobs: [blob],
   });
-};
+}
 
-let collect = async (client: ThingsClient): Future<i32> => {
+async function collect(client: ThingsClient): Future<i32> {
   var total = 0;
   for await (let node in client.listNodes({name: 'n', count: 2})) {
     total += node.count as i32;
   }
   return total;
-};
+}
 
-export let tests = suite('generated protobuf code', (): void => {
+export let tests = suite('generated protobuf code', () => {
   test('round-trips every scalar type', () => {
     let bytes = newByteArray(2);
     bytes[0] = 7;
@@ -235,11 +232,8 @@ export let tests = suite('generated protobuf code', (): void => {
   });
 
   test('round-trips repeated fields, maps, enums and nested messages', () => {
-    let labels = new HashMap<i32, String>();
-    labels[1] = 'one';
-    labels[2] = 'two';
-    let byName = new HashMap<String, Node>();
-    byName['x'] = Node.of({name: 'x'});
+    let labels: HashMap<i32, String> = {1 => 'one', 2 => 'two'};
+    let byName: HashMap<String, Node> = {'x' => Node.of({name: 'x'})};
     let node = Node.of({
       name: 'root',
       children: [Node.of({name: 'a'}), Node.of({name: 'b'})],
@@ -337,14 +331,16 @@ export let tests = suite('generated protobuf code', (): void => {
   });
 
   test('builds and reads a Firestore document', () => {
-    let fields = new HashMap<String, Value>();
-    fields['title'] = Value.of({stringValue: 'Hello'});
-    fields['views'] = Value.of({integerValue: 42 as i64});
-    fields['tags'] = Value.of({
-      arrayValue: ArrayValue.of({values: [Value.of({stringValue: 'a'})]}),
-    });
-    let nested = new HashMap<String, Value>();
-    nested['deep'] = Value.of({booleanValue: true});
+    let fields: HashMap<String, Value> = {
+      'title' => Value.of({stringValue: 'Hello'}),
+      'views' => Value.of({integerValue: 42 as i64}),
+      'tags' => Value.of({
+        arrayValue: ArrayValue.of({values: [Value.of({stringValue: 'a'})]}),
+      }),
+    };
+    let nested: HashMap<String, Value> = {
+      'deep' => Value.of({booleanValue: true}),
+    };
     fields['meta'] = Value.of({mapValue: MapValue.of({fields: nested})});
     let doc = Document.of({name: 'projects/p/databases/(default)/documents/posts/1', fields});
     let decoded = Document.decode(doc.protoView.toByteArray());

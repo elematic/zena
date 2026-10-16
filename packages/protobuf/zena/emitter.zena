@@ -35,12 +35,12 @@ import {
 } from './schema.zena';
 
 /** Words a generated member or record field cannot be named; the generator appends `_`. */
-let KEYWORDS: HashSet<String> = new HashSet<String>();
+let KEYWORDS = new HashSet<String>();
 
 /** Names the generated module imports or relies on, which a generated type must not take. */
-let RESERVED_TYPES: HashSet<String> = new HashSet<String>();
+let RESERVED_TYPES = new HashSet<String>();
 
-let initNames = (): void => {
+function initNames() {
   if (KEYWORDS.size > 0) {
     return;
   }
@@ -62,10 +62,10 @@ let initNames = (): void => {
   ]) {
     RESERVED_TYPES.add(name);
   }
-};
+}
 
 /** `field_name` as `FieldName`. */
-export let pascalCase = (name: String): String => {
+export function pascalCase(name: String): String {
   let out = new StringBuilder();
   var upper = true;
   for (var i = 0; i < name.length; i += 1) {
@@ -82,10 +82,10 @@ export let pascalCase = (name: String): String => {
     upper = b >= 0x30 && b <= 0x39;
   }
   return out.toString();
-};
+}
 
 /** `field_name` as `fieldName`, as protoc derives JSON names. */
-export let camelCase = (name: String): String => {
+export function camelCase(name: String): String {
   let pascal = pascalCase(name);
   if (pascal.length == 0) {
     return pascal;
@@ -98,10 +98,10 @@ export let camelCase = (name: String): String => {
     return out.toString();
   }
   return pascal;
-};
+}
 
 /** `GetDocument` as `getDocument`. */
-let lowerFirst = (name: String): String => {
+function lowerFirst(name: String) {
   if (name.length == 0) {
     return name;
   }
@@ -113,10 +113,10 @@ let lowerFirst = (name: String): String => {
   out.appendByte(first + 0x20);
   out.append(name.sliceBytes(1, name.length));
   return out.toString();
-};
+}
 
 /** `NullValue` as `NULL_VALUE`, for matching enum value prefixes. */
-let screamingCase = (name: String): String => {
+function screamingCase(name: String) {
   let out = new StringBuilder();
   for (var i = 0; i < name.length; i += 1) {
     let b = name.getByteAt(i);
@@ -130,27 +130,27 @@ let screamingCase = (name: String): String => {
     out.appendByte(if (b >= 0x61 && b <= 0x7A) b - 0x20 else b);
   }
   return out.toString();
-};
+}
 
 /** `LESS_THAN` as `LessThan`. */
-let enumMemberName = (value: String): String => {
+function enumMemberName(value: String) {
   let lower = new StringBuilder();
   for (var i = 0; i < value.length; i += 1) {
     let b = value.getByteAt(i);
     lower.appendByte(if (b >= 0x41 && b <= 0x5A) b + 0x20 else b);
   }
   return pascalCase(lower.toString());
-};
+}
 
-let memberName = (name: String): String =>
-  if (KEYWORDS.has(name)) `${name}_` else name;
+function memberName(name: String) {
+  return if (KEYWORDS.has(name)) `${name}_` else name;
+}
 
 /** Accumulates lines of output at the current indentation. */
 final class CodeWriter {
   #out: StringBuilder = new StringBuilder();
   var #indent: i32 = 0;
 
-  new();
 
   line(text: String): void {
     if (text.length > 0) {
@@ -176,7 +176,7 @@ final class CodeWriter {
   doc(comment: String | null, extra: String | null): void {
     let lines = new GrowableArray<String>();
     if (comment != null) {
-      for (let line in (comment as String).split('\n')) {
+      for (let line in comment.split('\n')) {
         lines.push(escapeComment(trimEnd(line)));
       }
       while (lines.length > 0 && lines[lines.length - 1].length == 0) {
@@ -187,7 +187,7 @@ final class CodeWriter {
       if (lines.length > 0) {
         lines.push('');
       }
-      lines.push(extra as String);
+      lines.push(extra);
     }
     if (lines.length == 0) {
       return;
@@ -209,7 +209,7 @@ final class CodeWriter {
 }
 
 /** `text` without trailing whitespace. */
-let trimEnd = (text: String): String => {
+function trimEnd(text: String): String {
   var end = text.length;
   while (end > 0) {
     let b = text.getByteAt(end - 1);
@@ -219,10 +219,10 @@ let trimEnd = (text: String): String => {
     end -= 1;
   }
   return text.sliceBytes(0, end);
-};
+}
 
 /** `text` with `*\/` broken up, so it cannot end the doc comment it is placed in. */
-let escapeComment = (text: String): String => {
+function escapeComment(text: String): String {
   let parts = text.split('*/');
   if (parts.length == 1) {
     return text;
@@ -232,7 +232,7 @@ let escapeComment = (text: String): String => {
     out = `${out}*\\/${parts[i]}`;
   }
   return out;
-};
+}
 
 /** A generated top-level type, for name assignment. */
 final class Named {
@@ -265,7 +265,7 @@ final class Named {
  * or another type has it; then the types outside `primaryPackage` take a
  * prefix from their package until the names are distinct.
  */
-let assignNames = (schema: Schema, primaryPackage: String): void => {
+function assignNames(schema: Schema, primaryPackage: String) {
   let all = new GrowableArray<Named>();
   for (let m in schema.messageOrder) {
     if (m.reached) {
@@ -305,10 +305,10 @@ let assignNames = (schema: Schema, primaryPackage: String): void => {
       (n.enumInfo as EnumInfo).zenaName = name;
     }
   }
-};
+}
 
 /** The Zena type a scalar reads as. */
-let scalarReadType = (scalar: i32): String => {
+function scalarReadType(scalar: i32) {
   if (scalar == (Scalar.Double as i32)) { return 'f64'; }
   if (scalar == (Scalar.Float as i32)) { return 'f32'; }
   if (scalar == (Scalar.Int32 as i32) || scalar == (Scalar.Sint32 as i32) ||
@@ -320,10 +320,10 @@ let scalarReadType = (scalar: i32): String => {
   if (scalar == (Scalar.Bool as i32)) { return 'boolean'; }
   if (scalar == (Scalar.String as i32)) { return 'String'; }
   return 'ProtoBytes';
-};
+}
 
 /** The runtime method, writer or reader suffix for a scalar: `int32`, `sfixed64`, `string`. */
-let scalarMethod = (scalar: i32): String => {
+function scalarMethod(scalar: i32) {
   if (scalar == (Scalar.Double as i32)) { return 'double'; }
   if (scalar == (Scalar.Float as i32)) { return 'float'; }
   if (scalar == (Scalar.Int32 as i32)) { return 'int32'; }
@@ -339,25 +339,25 @@ let scalarMethod = (scalar: i32): String => {
   if (scalar == (Scalar.Bool as i32)) { return 'bool'; }
   if (scalar == (Scalar.String as i32)) { return 'string'; }
   return 'bytes';
-};
+}
 
-let scalarWire = (scalar: i32): String => {
+function scalarWire(scalar: i32) {
   if (scalar == (Scalar.Double as i32) || scalar == (Scalar.Fixed64 as i32) ||
       scalar == (Scalar.Sfixed64 as i32)) { return 'WIRE_I64'; }
   if (scalar == (Scalar.Float as i32) || scalar == (Scalar.Fixed32 as i32) ||
       scalar == (Scalar.Sfixed32 as i32)) { return 'WIRE_I32'; }
   if (scalar == (Scalar.String as i32) || scalar == (Scalar.Bytes as i32)) { return 'WIRE_LEN'; }
   return 'WIRE_VARINT';
-};
+}
 
-let scalarDefault = (scalar: i32): String => {
+function scalarDefault(scalar: i32) {
   if (scalar == (Scalar.Double as i32)) { return '0.0'; }
   if (scalar == (Scalar.Float as i32)) { return '0.0 as f32'; }
   if (scalar == (Scalar.Bool as i32)) { return 'false'; }
   if (scalar == (Scalar.String as i32)) { return "''"; }
   if (scalar == (Scalar.Bytes as i32)) { return 'ProtoBytes.empty()'; }
   return '0';
-};
+}
 
 /** Emits one generated module. */
 final class Emitter {
@@ -536,7 +536,7 @@ final class Emitter {
     out.open(`export final class ${name} {`);
     out.line('#m: ProtoView;');
     out.line('');
-    out.doc('A message over `m`, which must hold an encoded `' + m.fullName + '`.', null);
+    out.doc(`A message over \`m\`, which must hold an encoded \`${m.fullName}\`.`, null);
     out.line(`new(m: ProtoView) : #m = m;`);
     out.line('');
     out.doc('Decodes `bytes`. Fields are decoded as they are read.', null);
@@ -998,7 +998,7 @@ final class RoutingParam {
  * method's `google.api.http` rule is a parameter, keyed and read by its
  * field path and sent whole.
  */
-let routingParams = (method: MethodDecl): GrowableArray<RoutingParam> => {
+function routingParams(method: MethodDecl): GrowableArray<RoutingParam> {
   let params = new GrowableArray<RoutingParam>();
   for (let option in method.options) {
     if (option.name != '(google.api.routing)' || !(option.value is OptionAggregate)) {
@@ -1023,7 +1023,7 @@ let routingParams = (method: MethodDecl): GrowableArray<RoutingParam> => {
       if (field.length == 0) {
         continue;
       }
-      let key = if (template == null) field else templateVariable(template as String);
+      let key = if (template == null) field else templateVariable(template);
       if (key.length > 0) {
         params.push(new RoutingParam(key, field.split('.'), template));
       }
@@ -1036,14 +1036,14 @@ let routingParams = (method: MethodDecl): GrowableArray<RoutingParam> => {
   if (path == null) {
     return params;
   }
-  for (let variable in pathVariables(path as String)) {
+  for (let variable in pathVariables(path)) {
     params.push(new RoutingParam(variable, variable.split('.'), null));
   }
   return params;
-};
+}
 
 /** The path of a `google.api.http` rule's main binding, or null. */
-let httpRulePath = (options: GrowableArray<OptionDecl>): String | null => {
+function httpRulePath(options: GrowableArray<OptionDecl>): String | null {
   for (let option in options) {
     if (option.name != '(google.api.http)' || !(option.value is OptionAggregate)) {
       continue;
@@ -1057,10 +1057,10 @@ let httpRulePath = (options: GrowableArray<OptionDecl>): String | null => {
     }
   }
   return null;
-};
+}
 
 /** The variable names in an HTTP rule path: `parent` and `collection_id` in `/v1/{parent=...}/{collection_id}`. */
-let pathVariables = (path: String): GrowableArray<String> => {
+function pathVariables(path: String): GrowableArray<String> {
   let names = new GrowableArray<String>();
   var i = 0;
   while (i < path.length) {
@@ -1078,40 +1078,41 @@ let pathVariables = (path: String): GrowableArray<String> => {
     i += 1;
   }
   return names;
-};
+}
 
 /** The name of the first variable in a path template: `database_id` in `projects/{project}/databases/{database_id}`. */
-let templateVariable = (template: String): String => {
+function templateVariable(template: String): String {
   let names = pathVariables(template);
   return if (names.length == 0) '' else names[0];
-};
+}
 
 /** The index in `message.fields` of the field declared as `name`, or -1. */
-let fieldIndexNamed = (message: MessageInfo, name: String): i32 => {
+function fieldIndexNamed(message: MessageInfo, name: String): i32 {
   for (var i = 0; i < message.fields.length; i += 1) {
     if (message.fields[i].decl.name == name) {
       return i;
     }
   }
   return -1;
-};
+}
 
 /** Whether a field gets a `hasX` getter: a scalar or enum whose absence is observable. */
-let needsHas = (field: FieldInfo): boolean =>
-  field.explicitPresence && !field.isRepeated && field.type.message == null;
+function needsHas(field: FieldInfo): boolean {
+  return field.explicitPresence && !field.isRepeated && field.type.message == null;
+}
 
 /** `name`, or `name_`, `name__` ... if taken; the result is added to `taken`. */
-let claim = (taken: HashSet<String>, name: String): String => {
+function claim(taken: HashSet<String>, name: String): String {
   var candidate = name;
   while (taken.has(candidate)) {
     candidate = `${candidate}_`;
   }
   taken.add(candidate);
   return candidate;
-};
+}
 
 /** Sorts `names` in place by byte order. */
-let sortStrings = (names: GrowableArray<String>): void => {
+function sortStrings(names: GrowableArray<String>): void {
   for (var i = 1; i < names.length; i += 1) {
     let item = names[i];
     var j = i - 1;
@@ -1121,21 +1122,21 @@ let sortStrings = (names: GrowableArray<String>): void => {
     }
     names[j + 1] = item;
   }
-};
+}
 
 /**
  * Emits the module for the reached part of `schema`. `primaryPackage`
  * keeps its types' short names when another package's type has the same
  * one. `sources` names the input files in the generated header.
  */
-export let emitModule = (
+export function emitModule(
   schema: Schema,
   services: GrowableArray<ServiceInfo>,
   primaryPackage: String,
   runtimeImport: String,
   sources: String
-): String => {
+): String {
   initNames();
   assignNames(schema, primaryPackage);
   return new Emitter(schema).emit(services, runtimeImport, sources);
-};
+}
