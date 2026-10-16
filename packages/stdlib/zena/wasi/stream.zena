@@ -166,21 +166,6 @@ let flushBlocking = (end: WritableByteStream, ptr: i32, len: i32): void => {
   }
 };
 
-let copyStringSliceToMemory = (s: String, offset: i32, ptr: i32, len: i32): void => {
-  var i = 0;
-  // Store 4 bytes at a time as a little-endian i32 (`i32.store`).
-  let limit = len - 3;
-  while (i < limit) {
-    mem.setI32(ptr + i, s.getI32At(offset + i));
-    i += 4;
-  }
-  // Store the remaining 0..3 tail bytes individually (`i32.store8` via `mem[...] =`).
-  while (i < len) {
-    mem[ptr + i] = s.getByteAt(offset + i);
-    i += 1;
-  }
-};
-
 /**
  * Write a String's bytes to a writable end, appending a newline when
  * asked, blocking until every byte is consumed. The String staging is
@@ -199,9 +184,7 @@ export function writeStringBlocking(
     return;
   }
   if (let (true, buffer) = defaultAllocator.alloc(len)) {
-    for (var i = 0; i < sLen; i += 1) {
-      mem[buffer + i] = s.getByteAt(i);
-    }
+    mem.copyFromString(buffer, s, 0, sLen);
     if (newline) {
       mem[buffer + sLen] = 10;
     }
@@ -233,7 +216,7 @@ function flushTextStreamTurn(s: String, end: WritableByteStream): void {
     }
     let chunk = sharedWriteChunk;
     if (chunk != 0) {
-      copyStringSliceToMemory(s, 0, chunk, len);
+      mem.copyFromString(chunk, s, 0, len);
       let packed = streamWrite(end, chunk, len);
       if (packed != BLOCKED) {
         if ((packed & RESULT_MASK) != RESULT_COMPLETED || (packed >> 4) >= len) {
@@ -283,7 +266,7 @@ async function pumpTextRemainder(
     while (open && offset < total) {
       let rem = total - offset;
       let n = if (rem < CHUNK) rem else CHUNK;
-      copyStringSliceToMemory(s, offset, chunk, n);
+      mem.copyFromString(chunk, s, offset, n);
       var at = 0;
       while (at < n) {
         var packed = streamWrite(end, chunk + at, n - at);
@@ -461,22 +444,7 @@ async function pumpOut(
         // canonical end-of-stream.
         break;
       }
-      var i = 0;
-      // Pack 4 bytes into a little-endian i32 and store in one `i32.store`.
-      let limit = n - 3;
-      while (i < limit) {
-        let word = (buf[i] as i32)
-          | ((buf[i + 1] as i32) << 8)
-          | ((buf[i + 2] as i32) << 16)
-          | ((buf[i + 3] as i32) << 24);
-        mem.setI32(chunk + i, word);
-        i += 4;
-      }
-      // Store the remaining 0..3 tail bytes individually (`i32.store8` via `mem[...] =`).
-      while (i < n) {
-        mem[chunk + i] = buf[i] as i32;
-        i += 1;
-      }
+      mem.copyFromBytes(chunk, buf, 0, n);
       var at = 0;
       while (at < n) {
         var packed = streamWrite(end, chunk + at, n - at);
@@ -517,23 +485,7 @@ async function pumpIn(
       let n = packed >> 4;
       let completed = (packed & RESULT_MASK) == RESULT_COMPLETED;
       if (n > 0) {
-        let buf = new Array<u8>.fixed(n, 0);
-        var i = 0;
-        // Load 4 bytes at a time as a little-endian i32 (`i32.load`) and unpack.
-        let limit = n - 3;
-        while (i < limit) {
-          let word = mem.getI32(chunk + i);
-          buf[i] = (word & 255) as u8;
-          buf[i + 1] = ((word >> 8) & 255) as u8;
-          buf[i + 2] = ((word >> 16) & 255) as u8;
-          buf[i + 3] = ((word >> 24) & 255) as u8;
-          i += 4;
-        }
-        // Load the remaining 0..3 tail bytes individually (`i32.load8_u` via `mem[...]`).
-        while (i < n) {
-          buf[i] = mem[chunk + i] as u8;
-          i += 1;
-        }
+        let buf = mem.bytesAt(chunk, n);
         let delivered = await writer.writeAll(buf, n);
         if (!delivered) {
           // The guest reader stopped: dropping the readable end below
