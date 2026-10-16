@@ -6,29 +6,34 @@
  * `wasi:filesystem@0.3.0` as the compiler synthesizes it from the
  * vendored WIT.
  *
- * The API is synchronous. The 0.3 filesystem is asynchronous
- * throughout — every descriptor method is an `async func`, and file
- * contents travel as a `stream<u8>` — so each operation here starts
- * the synthesized call and waits in `blockOn` until it settles. The
- * compiler exports `main` async for a program that uses this module,
- * because wasmtime allows such a wait only inside a call to an async
- * export; a synchronous WIT export cannot use this module.
+ * The API is asynchronous, as the 0.3 filesystem is: every descriptor
+ * method is an `async func` on the wire, and a file's contents travel
+ * as a `stream<u8>`. Each convenience function here (`readFile`,
+ * `writeFile`, `listDir`, ...) also has a synchronous twin under a
+ * `Sync` suffix, which waits for the same call in `blockOn`. Only a
+ * task the host lifted async may wait that way, and the compiler
+ * exports `main` async for a program that reaches `blockOn`, so the
+ * `Sync` forms work inside `main` and inside test bodies; in a
+ * synchronous WIT export, a module initializer or test registration
+ * they trap, and the asynchronous forms are the ones to use. See
+ * docs/design/async-fs-cli.md.
  *
  * ## Examples
  *
  * ```zena
- * import { readFile, writeFile, listDir } from 'zena:fs';
+ * import { readFile, writeFile, listDir, readFileSync } from 'zena:fs';
  *
- * let content = readFile('config.json');
- * writeFile('output.txt', 'Hello, World!');
- * for (let entry in listDir('.')) {
+ * let content = await readFile('config.json');
+ * await writeFile('output.txt', 'Hello, World!');
+ * for (let entry in await listDir('.')) {
  *   console.log(entry.name);
  * }
+ * let synchronous = readFileSync('config.json');
  * ```
  */
 
-import { newByteArray, Disposable, Ok, Err, Some } from 'zena:core';
-import { Stream, StreamWriter, readAllBytes } from 'zena:stream';
+import { Disposable, Ok, Err, Outcome, Some } from 'zena:core';
+import { Stream, readAllBytes, bytesStream, textStream } from 'zena:stream';
 import { blockOn } from 'zena:wasi';
 import { GlobPattern, hasMagic } from 'zena:glob';
 import { getDirectories } from 'wasi:filesystem/preopens';
@@ -151,6 +156,13 @@ let fail = (code: ErrorCode, what: String): never => {
   throw new FsError(errnoOf(code), `${what}: ${describe(code)}`);
 };
 
+/** Throw for a failed `result<_, error-code>`. */
+let check = (outcome: Outcome<void, ErrorCode>, what: String): void => {
+  if (outcome is Err<void, ErrorCode>) {
+    fail((outcome as Err<void, ErrorCode>).error, what);
+  }
+};
+
 // ============================================================================
 // File Types
 // ============================================================================
@@ -217,7 +229,6 @@ let statOf = (s: DescriptorStat): FileStat => {
 // ============================================================================
 
 let noOpenFlags = (0 as u32) as WitOpenFlags;
-let noPathFlags = (0 as u32) as PathFlags;
 
 let witDescriptorFlags = (flags: DescriptorFlags): WitDescriptorFlags => {
   return match (flags) {
@@ -231,37 +242,6 @@ let witDescriptorFlags = (flags: DescriptorFlags): WitDescriptorFlags => {
     }
   };
 };
-
-/** Every byte of a stream, collected as a `ByteArray`. */
-let collectBytes = (stream: Stream<u8>): ByteArray => {
-  let bytes = blockOn(readAllBytes(stream));
-  let out = newByteArray(bytes.length);
-  for (var i = 0; i < bytes.length; i += 1) {
-    out[i] = bytes[i];
-  }
-  return out;
-};
-
-/** A stream carrying `data`, then end-of-stream, fed by a background
- * task as the host takes the bytes. */
-let bytesStream = (data: ByteArray): Stream<u8> => {
-  let writer = new StreamWriter<u8>();
-  pumpBytes(writer, data);
-  return writer.stream;
-};
-
-async function pumpBytes(writer: StreamWriter<u8>, data: ByteArray): Future<void> {
-  let count = __byte_array_length(data);
-  // A write of nothing is refused; an empty file is end-of-stream.
-  if (count > 0) {
-    let bytes = new Array<u8>.fixed(count, 0);
-    for (var i = 0; i < count; i += 1) {
-      bytes[i] = __byte_array_get(data, i) as u8;
-    }
-    await writer.writeAll(bytes, count);
-  }
-  writer.close();
-}
 
 /** Every entry of a directory stream. */
 async function collectEntries(stream: Stream<DirectoryEntry>): Future<Array<DirEntry>> {
@@ -279,11 +259,27 @@ async function collectEntries(stream: Stream<DirectoryEntry>): Future<Array<DirE
 }
 
 /**
- * An open file or directory: a handle the host owns, released by
- * `close`. Paths given to the `*At` methods are relative to a
- * directory descriptor.
+ * Release a descriptor once the host has finished reading its contents
+ * into a stream handed on elsewhere. A failure there arrives after the
+ * stream has started, so there is nothing left to report it to.
  */
-export class Descriptor {
+async function closeWhenRead(
+  file: Descriptor,
+  done: Future<Outcome<void, ErrorCode>>
+): Future<void> {
+  try {
+    await done;
+  } catch (e) {}
+  file.close();
+}
+
+/**
+ * An open file or directory: a handle the host owns, released by
+ * `close` or by `using`. Paths given to the `*At` methods are relative
+ * to a directory descriptor. Every operation is asynchronous; a
+ * synchronous caller waits with `blockOn`.
+ */
+export class Descriptor implements Disposable {
   #inner: WitDescriptor;
   var #closed = false;
 
@@ -297,50 +293,45 @@ export class Descriptor {
   }
 
   /** The entire contents, as bytes. */
-  readAllBytes(): ByteArray {
+  async readAllBytes(): Future<FixedArray<u8>> {
     let (stream, done) = this.#open().readViaStream(0 as u64);
-    let bytes = collectBytes(stream);
-    let outcome = blockOn(done);
-    if (outcome is Err<void, ErrorCode>) {
-      fail((outcome as Err<void, ErrorCode>).error, 'read');
-    }
+    let bytes = await readAllBytes(stream);
+    check(await done, 'read');
     return bytes;
   }
 
   /** The entire contents, as text. */
-  readString(): String {
+  async readString(): Future<String> {
+    return String.fromBytes(await this.readAllBytes());
+  }
+
+  /**
+   * The contents, as a stream the host fills: for handing on to
+   * another host interface — a response body, say — so that the bytes
+   * never pass through the program. The descriptor is released once
+   * the host has read it to the end, and must not be used afterwards.
+   */
+  readStream(): Stream<u8> {
     let (stream, done) = this.#open().readViaStream(0 as u64);
-    let bytes = blockOn(readAllBytes(stream));
-    let outcome = blockOn(done);
-    if (outcome is Err<void, ErrorCode>) {
-      fail((outcome as Err<void, ErrorCode>).error, 'read');
-    }
-    return String.fromBytes(bytes);
+    this.#closed = true;
+    closeWhenRead(new Descriptor(this.#inner), done);
+    return stream;
   }
 
   /** Write `data` from the start of the file. */
-  writeBytes(data: ByteArray): void {
-    let done = this.#open().writeViaStream(bytesStream(data), 0 as u64);
-    let outcome = blockOn(done);
-    if (outcome is Err<void, ErrorCode>) {
-      fail((outcome as Err<void, ErrorCode>).error, 'write');
-    }
+  async writeBytes(data: FixedArray<u8>): Future<void> {
+    check(await this.#open().writeViaStream(bytesStream(data), 0 as u64), 'write');
   }
 
   /** Write `data` from the start of the file. */
-  writeString(data: String): void {
-    let bytes = data.toBytes();
-    let out = newByteArray(bytes.length);
-    for (var i = 0; i < bytes.length; i += 1) {
-      out[i] = bytes[i];
-    }
-    this.writeBytes(out);
+  async writeString(data: String): Future<void> {
+    check(await this.#open().writeViaStream(textStream(data), 0 as u64), 'write');
   }
 
   /** Open a path under this directory, following symlinks. */
-  openAt(path: String, flags: DescriptorFlags): Descriptor {
-    let outcome = blockOn(this.#open().openAt(
-        pathFlagsSymlinkFollow, path, noOpenFlags, witDescriptorFlags(flags)));
+  async openAt(path: String, flags: DescriptorFlags): Future<Descriptor> {
+    let outcome = await this.#open().openAt(
+        pathFlagsSymlinkFollow, path, noOpenFlags, witDescriptorFlags(flags));
     if (outcome is Err<WitDescriptor, ErrorCode>) {
       fail((outcome as Err<WitDescriptor, ErrorCode>).error, `open '${path}'`);
     }
@@ -349,11 +340,11 @@ export class Descriptor {
 
   /** Create a file under this directory, or truncate the one there,
    * open for writing. */
-  createAt(path: String): Descriptor {
+  async createAt(path: String): Future<Descriptor> {
     let openFlags =
         ((openFlagsCreate as u32) | (openFlagsTruncate as u32)) as WitOpenFlags;
-    let outcome = blockOn(this.#open().openAt(
-        pathFlagsSymlinkFollow, path, openFlags, descriptorFlagsWrite));
+    let outcome = await this.#open().openAt(
+        pathFlagsSymlinkFollow, path, openFlags, descriptorFlagsWrite);
     if (outcome is Err<WitDescriptor, ErrorCode>) {
       fail((outcome as Err<WitDescriptor, ErrorCode>).error, `create '${path}'`);
     }
@@ -361,10 +352,10 @@ export class Descriptor {
   }
 
   /** Open a directory under this one. */
-  openDirAt(path: String): Descriptor {
-    let outcome = blockOn(this.#open().openAt(
+  async openDirAt(path: String): Future<Descriptor> {
+    let outcome = await this.#open().openAt(
         pathFlagsSymlinkFollow, path, openFlagsDirectory,
-        witDescriptorFlags(DescriptorFlags.MutateDirectory)));
+        witDescriptorFlags(DescriptorFlags.MutateDirectory));
     if (outcome is Err<WitDescriptor, ErrorCode>) {
       fail((outcome as Err<WitDescriptor, ErrorCode>).error, `opendir '${path}'`);
     }
@@ -372,8 +363,8 @@ export class Descriptor {
   }
 
   /** This descriptor's metadata. */
-  stat(): FileStat {
-    let outcome = blockOn(this.#open().stat());
+  async stat(): Future<FileStat> {
+    let outcome = await this.#open().stat();
     if (outcome is Err<DescriptorStat, ErrorCode>) {
       fail((outcome as Err<DescriptorStat, ErrorCode>).error, 'stat');
     }
@@ -381,55 +372,47 @@ export class Descriptor {
   }
 
   /** The metadata of a path under this directory, following symlinks. */
-  statAt(path: String): FileStat {
-    let outcome = blockOn(this.#open().statAt(pathFlagsSymlinkFollow, path));
+  async statAt(path: String): Future<FileStat> {
+    let outcome = await this.#open().statAt(pathFlagsSymlinkFollow, path);
     if (outcome is Err<DescriptorStat, ErrorCode>) {
       fail((outcome as Err<DescriptorStat, ErrorCode>).error, `stat '${path}'`);
     }
     return statOf((outcome as Ok<DescriptorStat, ErrorCode>).value);
   }
 
+  /** Whether anything is at a path under this directory. */
+  async existsAt(path: String): Future<boolean> {
+    let outcome = await this.#open().statAt(pathFlagsSymlinkFollow, path);
+    return outcome is Ok<DescriptorStat, ErrorCode>;
+  }
+
   /** The entries of this directory. `.` and `..` are not among them. */
-  readDir(): Array<DirEntry> {
+  async readDir(): Future<Array<DirEntry>> {
     let (stream, done) = this.#open().readDirectory();
-    let entries = blockOn(collectEntries(stream));
-    let outcome = blockOn(done);
-    if (outcome is Err<void, ErrorCode>) {
-      fail((outcome as Err<void, ErrorCode>).error, 'readdir');
-    }
+    let entries = await collectEntries(stream);
+    check(await done, 'readdir');
     return entries;
   }
 
   /** Create a directory under this one. */
-  mkdirAt(path: String): void {
-    let outcome = blockOn(this.#open().createDirectoryAt(path));
-    if (outcome is Err<void, ErrorCode>) {
-      fail((outcome as Err<void, ErrorCode>).error, `mkdir '${path}'`);
-    }
+  async mkdirAt(path: String): Future<void> {
+    check(await this.#open().createDirectoryAt(path), `mkdir '${path}'`);
   }
 
   /** Remove a file under this directory. */
-  unlinkAt(path: String): void {
-    let outcome = blockOn(this.#open().unlinkFileAt(path));
-    if (outcome is Err<void, ErrorCode>) {
-      fail((outcome as Err<void, ErrorCode>).error, `unlink '${path}'`);
-    }
+  async unlinkAt(path: String): Future<void> {
+    check(await this.#open().unlinkFileAt(path), `unlink '${path}'`);
   }
 
   /** Remove an empty directory under this one. */
-  rmdirAt(path: String): void {
-    let outcome = blockOn(this.#open().removeDirectoryAt(path));
-    if (outcome is Err<void, ErrorCode>) {
-      fail((outcome as Err<void, ErrorCode>).error, `rmdir '${path}'`);
-    }
+  async rmdirAt(path: String): Future<void> {
+    check(await this.#open().removeDirectoryAt(path), `rmdir '${path}'`);
   }
 
   /** Rename a path under this directory to a path under `to`. */
-  renameAt(from: String, to: Descriptor, toPath: String): void {
-    let outcome = blockOn(this.#open().renameAt(from, to.#open(), toPath));
-    if (outcome is Err<void, ErrorCode>) {
-      fail((outcome as Err<void, ErrorCode>).error, `rename '${from}' to '${toPath}'`);
-    }
+  async renameAt(from: String, to: Descriptor, toPath: String): Future<void> {
+    check(await this.#open().renameAt(from, to.#open(), toPath),
+        `rename '${from}' to '${toPath}'`);
   }
 
   /** Release the handle. Closing twice is harmless. */
@@ -438,6 +421,10 @@ export class Descriptor {
       this.#closed = true;
       this.#inner.[Disposable.dispose]();
     }
+  }
+
+  [Disposable.dispose](): void {
+    this.close();
   }
 }
 
@@ -449,7 +436,7 @@ var preopensCache: Array<(Descriptor, String)> | null = null;
 
 /**
  * The directories the host preopened, each with the path it is known
- * by. Every relative path in this module resolves against the first.
+ * by. Synchronous: `get-directories` is a synchronous WIT function.
  */
 export let getPreopens = (): Array<(Descriptor, String)> => {
   let cached = preopensCache;
@@ -473,41 +460,65 @@ export let getRootDir = (): Descriptor => {
   return preopens[0][0];
 };
 
+let SLASH = 0x2F;
+
 /**
- * The preopen a path falls under, and the path relative to it: the
- * longest preopen prefix of an absolute path, else the first preopen.
+ * `path` with empty and `.` segments dropped, or `.` when nothing is
+ * left: a path operation rejects an empty path, so a path that names a
+ * preopen exactly names the preopen's own directory.
  */
-let resolvePreopen = (path: String): (Descriptor, String) => {
+let normalizeRelative = (path: String): String => {
+  let kept = new GrowableArray<String>(4);
+  for (let segment in path.split('/')) {
+    if (segment != '' && segment != '.') {
+      kept.push(segment);
+    }
+  }
+  if (kept.length == 0) {
+    return '.';
+  }
+  var joined = kept[0];
+  for (var i = 1; i < kept.length; i += 1) {
+    joined = `${joined}/${kept[i]}`;
+  }
+  return joined;
+};
+
+/**
+ * The preopen a path falls under, and the path relative to it. A
+ * relative path is under the preopen named `.` (else the first); an
+ * absolute path is under the preopen whose name is its longest prefix
+ * at a segment boundary, so `/tmpfiles` is not under `/tmp`.
+ */
+export let resolvePreopen = (path: String): (Descriptor, String) => {
   let preopens = getPreopens();
   if (preopens.length == 0) {
     throw new FsError(44, 'No preopened directories available');
   }
-  var bestMatch: Descriptor | null = null;
-  var longestPrefix = -1;
-  var relativePath = path;
-  for (let (poDescriptor, poPath) in preopens) {
-    if (bestMatch == null) {
-      bestMatch = poDescriptor;
-    }
-    if (poPath != '.' && path.startsWith(poPath)) {
-      if (poPath.length > longestPrefix) {
-        longestPrefix = poPath.length;
-        bestMatch = poDescriptor;
-        var sliceStart = poPath.length;
-        if (path.length > sliceStart &&
-            path.sliceBytes(sliceStart, sliceStart + 1) == '/') {
-          sliceStart += 1;
-        }
-        relativePath = path.sliceBytes(sliceStart, path.length);
+  var best = preopens[0][0];
+  var bestLength = -1;
+  var relative = path;
+  let absolute = path.startsWith('/');
+  for (let (descriptor, name) in preopens) {
+    if (!absolute) {
+      if (name == '.' && bestLength < 0) {
+        best = descriptor;
+        bestLength = 0;
+      }
+    } else if (name.startsWith('/')) {
+      let matches = name == '/' || path == name ||
+          (path.startsWith(name) && path.getByteAt(name.length) == SLASH);
+      if (matches && name.length > bestLength) {
+        best = descriptor;
+        bestLength = name.length;
+        relative = path.sliceBytes(name.length, path.length);
       }
     }
   }
-  // A path naming a preopen exactly strips to ''; a path operation
-  // rejects an empty path, so name the preopen's own directory.
-  if (relativePath == '') {
-    relativePath = '.';
+  if (absolute && bestLength < 0) {
+    throw new FsError(44, `no preopened directory holds '${path}'`);
   }
-  return (bestMatch as Descriptor, relativePath);
+  return (best, normalizeRelative(relative));
 };
 
 // ============================================================================
@@ -515,109 +526,98 @@ let resolvePreopen = (path: String): (Descriptor, String) => {
 // ============================================================================
 
 /** The contents of a file, as text. */
-export let readFile = (path: String): String => {
+export async function readFile(path: String): Future<String> {
   let (dir, rel) = resolvePreopen(path);
-  let file = dir.openAt(rel, DescriptorFlags.Read);
-  let content = file.readString();
-  file.close();
-  return content;
-};
+  using file = await dir.openAt(rel, DescriptorFlags.Read);
+  return await file.readString();
+}
 
 /** The contents of a file, as bytes. */
-export let readFileBytes = (path: String): ByteArray => {
+export async function readFileBytes(path: String): Future<FixedArray<u8>> {
   let (dir, rel) = resolvePreopen(path);
-  let file = dir.openAt(rel, DescriptorFlags.Read);
-  let content = file.readAllBytes();
-  file.close();
-  return content;
-};
+  using file = await dir.openAt(rel, DescriptorFlags.Read);
+  return await file.readAllBytes();
+}
 
 /** Write text to a file, creating or truncating it. */
-export let writeFile = (path: String, content: String): void => {
+export async function writeFile(path: String, content: String): Future<void> {
   let (dir, rel) = resolvePreopen(path);
-  let file = dir.createAt(rel);
-  file.writeString(content);
-  file.close();
-};
+  using file = await dir.createAt(rel);
+  await file.writeString(content);
+}
 
 /** Write bytes to a file, creating or truncating it. */
-export let writeFileBytes = (path: String, content: ByteArray): void => {
+export async function writeFileBytes(path: String, content: FixedArray<u8>): Future<void> {
   let (dir, rel) = resolvePreopen(path);
-  let file = dir.createAt(rel);
-  file.writeBytes(content);
-  file.close();
-};
+  using file = await dir.createAt(rel);
+  await file.writeBytes(content);
+}
 
 /** The entries of a directory. */
-export let listDir = (path: String): Array<DirEntry> => {
+export async function listDir(path: String): Future<Array<DirEntry>> {
   let (dir, rel) = resolvePreopen(path);
-  let opened = dir.openDirAt(rel);
-  let entries = opened.readDir();
-  opened.close();
-  return entries;
-};
+  using opened = await dir.openDirAt(rel);
+  return await opened.readDir();
+}
 
 /** Whether anything exists at a path. */
-export let exists = (path: String): boolean => {
+export async function exists(path: String): Future<boolean> {
   let (dir, rel) = resolvePreopen(path);
-  return try {
-    dir.statAt(rel);
-    true
+  return await dir.existsAt(rel);
+}
+
+/** The metadata of a path, or null when nothing is there. */
+async function statOrNull(path: String): Future<FileStat | null> {
+  let (dir, rel) = resolvePreopen(path);
+  try {
+    return await dir.statAt(rel);
   } catch (e) {
-    false
-  };
-};
+    return null;
+  }
+}
 
 /** Whether a regular file exists at a path. */
-export let isFile = (path: String): boolean => {
-  let (dir, rel) = resolvePreopen(path);
-  return try {
-    dir.statAt(rel).fileType == FileType.RegularFile
-  } catch (e) {
-    false
-  };
-};
+export async function isFile(path: String): Future<boolean> {
+  let info = await statOrNull(path);
+  return info != null && (info as FileStat).fileType == FileType.RegularFile;
+}
 
 /** Whether a directory exists at a path. */
-export let isDirectory = (path: String): boolean => {
-  let (dir, rel) = resolvePreopen(path);
-  return try {
-    dir.statAt(rel).fileType == FileType.Directory
-  } catch (e) {
-    false
-  };
-};
+export async function isDirectory(path: String): Future<boolean> {
+  let info = await statOrNull(path);
+  return info != null && (info as FileStat).fileType == FileType.Directory;
+}
 
 /** Create a directory. */
-export let mkdir = (path: String): void => {
+export async function mkdir(path: String): Future<void> {
   let (dir, rel) = resolvePreopen(path);
-  dir.mkdirAt(rel);
-};
+  await dir.mkdirAt(rel);
+}
 
 /** Remove a file. */
-export let unlink = (path: String): void => {
+export async function unlink(path: String): Future<void> {
   let (dir, rel) = resolvePreopen(path);
-  dir.unlinkAt(rel);
-};
+  await dir.unlinkAt(rel);
+}
 
 /** Move a file or directory. */
-export let rename = (from: String, to: String): void => {
+export async function rename(from: String, to: String): Future<void> {
   let (fromDir, fromRel) = resolvePreopen(from);
   let (toDir, toRel) = resolvePreopen(to);
-  fromDir.renameAt(fromRel, toDir, toRel);
-};
+  await fromDir.renameAt(fromRel, toDir, toRel);
+}
 
 /** The metadata of a path. */
-export let stat = (path: String): FileStat => {
+export async function stat(path: String): Future<FileStat> {
   let (dir, rel) = resolvePreopen(path);
-  return dir.statAt(rel);
-};
+  return await dir.statAt(rel);
+}
 
 /** Remove an empty directory. */
-export let rmdir = (path: String): void => {
+export async function rmdir(path: String): Future<void> {
   let (dir, rel) = resolvePreopen(path);
-  dir.rmdirAt(rel);
-};
+  await dir.rmdirAt(rel);
+}
 
 // ============================================================================
 // Glob
@@ -663,20 +663,28 @@ let baseDirOf = (pattern: String): String => {
   return pattern.sliceBytes(0, lastSlash);
 };
 
-let scanDir = (
+/** The entries of a directory, or null when it cannot be listed. */
+async function entriesOrNull(path: String): Future<Array<DirEntry> | null> {
+  try {
+    return await listDir(path);
+  } catch (e) {
+    return null;
+  }
+}
+
+async function scanDir(
   currentDir: String,
   relPrefix: String,
   globPattern: GlobPattern,
   excludePatterns: GrowableArray<GlobPattern>,
   onlyFiles: boolean,
   results: GrowableArray<String>
-): void => {
-  let entries = try {
-    listDir(currentDir)
-  } catch (e) {
+): Future<void> {
+  let entries = await entriesOrNull(currentDir);
+  if (entries == null) {
     return;
-  };
-  for (let entry in entries) {
+  }
+  for (let entry in entries as Array<DirEntry>) {
     if (entry.name == '.' || entry.name == '..') {
       continue;
     }
@@ -707,19 +715,19 @@ let scanDir = (
       }
     }
     if (isDir) {
-      scanDir(fullPath, relPath, globPattern, excludePatterns, onlyFiles, results);
+      await scanDir(fullPath, relPath, globPattern, excludePatterns, onlyFiles, results);
     }
   }
-};
+}
 
 /**
  * The paths under `options.cwd` matching a glob pattern, sorted. A
  * pattern with no wildcard names one path, reported if it exists.
  */
-export let glob = (
+export async function glob(
   pattern: String,
   options: GlobOptions | null = null
-): Array<String> => {
+): Future<Array<String>> {
   let opts = if (options != null) {
     options as GlobOptions
   } else {
@@ -736,7 +744,7 @@ export let glob = (
     } else {
       opts.cwd + '/' + pattern
     };
-    if (exists(target)) {
+    if (await exists(target)) {
       var excluded = false;
       for (var ex = 0; ex < excludePatterns.length; ex += 1) {
         if (excludePatterns[ex].matches(pattern)) {
@@ -760,7 +768,42 @@ export let glob = (
   };
   let relPrefix = if (baseDir == '.') '' else baseDir;
   let globPattern = new GlobPattern(pattern);
-  scanDir(scanRoot, relPrefix, globPattern, excludePatterns, opts.onlyFiles, results);
+  await scanDir(scanRoot, relPrefix, globPattern, excludePatterns, opts.onlyFiles, results);
   sortStrings(results);
   return results;
+}
+
+// ============================================================================
+// Synchronous forms
+// ============================================================================
+//
+// Each waits for the asynchronous function above it in `blockOn`. See
+// the library header for where that is allowed.
+
+export let readFileSync = (path: String): String => blockOn(readFile(path));
+export let readFileBytesSync = (path: String): FixedArray<u8> => blockOn(readFileBytes(path));
+export let writeFileSync = (path: String, content: String): void => {
+  blockOn(writeFile(path, content));
 };
+export let writeFileBytesSync = (path: String, content: FixedArray<u8>): void => {
+  blockOn(writeFileBytes(path, content));
+};
+export let listDirSync = (path: String): Array<DirEntry> => blockOn(listDir(path));
+export let existsSync = (path: String): boolean => blockOn(exists(path));
+export let isFileSync = (path: String): boolean => blockOn(isFile(path));
+export let isDirectorySync = (path: String): boolean => blockOn(isDirectory(path));
+export let mkdirSync = (path: String): void => {
+  blockOn(mkdir(path));
+};
+export let unlinkSync = (path: String): void => {
+  blockOn(unlink(path));
+};
+export let renameSync = (from: String, to: String): void => {
+  blockOn(rename(from, to));
+};
+export let statSync = (path: String): FileStat => blockOn(stat(path));
+export let rmdirSync = (path: String): void => {
+  blockOn(rmdir(path));
+};
+export let globSync = (pattern: String, options: GlobOptions | null = null): Array<String> =>
+    blockOn(glob(pattern, options));

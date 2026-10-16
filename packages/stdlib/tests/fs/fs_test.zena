@@ -1,87 +1,118 @@
-// Filesystem tests - WASI 0.2
+// Filesystem tests, over wasi:filesystem 0.3.
 //
-// @requires: wasmtime
-//
-// Tests for zena:fs functionality using wasmtime with --dir flag.
-// Run with: wasmtime run -W gc=y -W exceptions=y --dir /tmp::/tmp fs_test.wasm
+// The test runner preopens the repository as `.` and a scratch
+// directory as `/tmp`. The asynchronous API is driven with `blockOn`,
+// since a test body is synchronous; the `Sync` forms are the same calls
+// waited for inside the library.
 
 import { suite, test, TestContext } from 'zena:test';
-import {equal, isTrue, isFalse} from 'zena:assert';
-import { newByteArray } from 'zena:core';
+import { equal, isTrue, isFalse, throws } from 'zena:assert';
+import { blockOn } from 'zena:wasi';
 import {
-  readFile, writeFile, exists, isFile, isDirectory, unlink, getPreopens,
-  glob, GlobOptions, rename, stat, FileType, readFileBytes, writeFileBytes
+  readFile, writeFile, exists, isFile, isDirectory, unlink, listDir, mkdir,
+  rmdir, stat, readFileBytes, writeFileBytes, glob, resolvePreopen,
+  DescriptorFlags, FsError,
+  readFileSync, writeFileSync, existsSync, isFileSync, isDirectorySync,
+  unlinkSync, getPreopens, globSync, GlobOptions, renameSync, statSync,
+  FileType, readFileBytesSync, writeFileBytesSync,
 } from 'zena:fs';
 
 export let tests = suite('Filesystem', (): void => {
-  // Test getPreopens returns at least one directory
   test('getPreopens returns preopened directories', (ctx: TestContext): void => {
     let preopens = getPreopens();
     isTrue(preopens.length > 0);
   });
 
-  // Test writing and reading a file
   test('writeFile and readFile roundtrip', (ctx: TestContext): void => {
     let testPath = 'fs-test-roundtrip.txt';
     let content = 'Hello from Zena fs test!';
-    
-    // Write file
-    writeFile(testPath, content);
-    
-    // Verify it exists
-    isTrue(exists(testPath));
-    isTrue(isFile(testPath));
-    isFalse(isDirectory(testPath));
-    
-    // Read back
-    let read = readFile(testPath);
+
+    writeFileSync(testPath, content);
+
+    isTrue(existsSync(testPath));
+    isTrue(isFileSync(testPath));
+    isFalse(isDirectorySync(testPath));
+
+    let read = readFileSync(testPath);
     equal(read, content);
-    
-    // Cleanup
-    unlink(testPath);
-    isFalse(exists(testPath));
+
+    unlinkSync(testPath);
+    isFalse(existsSync(testPath));
   });
 
-  // Test exists returns false for non-existent file
+  test('the asynchronous forms do the same through an await', (ctx: TestContext): void => {
+    let path = '/tmp/zena-fs-async-roundtrip.txt';
+    blockOn(roundTrip(path, 'written asynchronously'));
+    isFalse(existsSync(path));
+  });
+
   test('exists returns false for missing file', (ctx: TestContext): void => {
-    isFalse(exists('non-existent-file-12345.txt'));
+    isFalse(existsSync('non-existent-file-12345.txt'));
+    isFalse(blockOn(exists('non-existent-file-12345.txt')));
   });
 
-  // Test multi-preopen file access capability
+  test('a missing file fails with an FsError naming the path', (ctx: TestContext): void => {
+    throws((): void => {
+      readFileSync('non-existent-file-12345.txt');
+    });
+    let failure = blockOn(readFailure('non-existent-file-12345.txt'));
+    isTrue(failure is FsError);
+    isTrue((failure as FsError).message.contains('non-existent-file-12345.txt'));
+  });
+
   test('readFile across different preopened directories', (ctx: TestContext): void => {
     let preopens = getPreopens();
-    // The test runner generally maps repo-root to / and /tmp to /tmp
-    // We'll write to a unique file in /tmp using explicit relative resolution
+    // The test runner maps the repository to `.` and a scratch directory
+    // to `/tmp`; an absolute path resolves against its preopen.
     if (preopens.length > 1) {
        let tmpTestPath = '/tmp/zena-multi-preopen-test.txt';
-       writeFile(tmpTestPath, 'testing multi-preopen');
-       isTrue(exists(tmpTestPath));
-       equal(readFile(tmpTestPath), 'testing multi-preopen');
-       unlink(tmpTestPath);
+       writeFileSync(tmpTestPath, 'testing multi-preopen');
+       isTrue(existsSync(tmpTestPath));
+       equal(readFileSync(tmpTestPath), 'testing multi-preopen');
+       unlinkSync(tmpTestPath);
     }
   });
 
-  // Test multi-line content
+  test('resolvePreopen matches a preopen at a segment boundary', (ctx: TestContext): void => {
+    let (tmp, rel) = resolvePreopen('/tmp/zena-resolve-test.txt');
+    equal(rel, 'zena-resolve-test.txt');
+    // `/tmpfiles` is not under `/tmp`; with no preopen holding it, the
+    // lookup fails rather than guessing.
+    throws((): void => {
+      resolvePreopen('/tmpfiles/x');
+    });
+    // Naming the preopen itself resolves to its own directory.
+    let (same, dot) = resolvePreopen('/tmp');
+    equal(dot, '.');
+    let (root, slashed) = resolvePreopen('/tmp//./a/./b');
+    equal(slashed, 'a/b');
+  });
+
   test('writeFile preserves newlines', (ctx: TestContext): void => {
     let testPath = 'fs-test-newlines.txt';
     let content = 'line1\nline2\nline3';
-    
-    writeFile(testPath, content);
-    let read = readFile(testPath);
+
+    writeFileSync(testPath, content);
+    let read = readFileSync(testPath);
     equal(read, content);
-    
-    unlink(testPath);
+
+    unlinkSync(testPath);
   });
 
   test('glob filesystem search', (ctx: TestContext): void => {
-    let found = glob('packages/stdlib/tests/path/*_test.zena');
+    let found = globSync('packages/stdlib/tests/path/*_test.zena');
     isTrue(found.length > 0);
     equal(found[0], 'packages/stdlib/tests/path/path_test.zena');
+
+    // The asynchronous form, through an await.
+    let foundAsync = blockOn(glob('packages/stdlib/tests/path/*_test.zena'));
+    equal(foundAsync.length, found.length);
+    equal(foundAsync[0], found[0]);
 
     // Test with cwd option
     let cwdOpts = new GlobOptions();
     cwdOpts.cwd = 'packages/stdlib';
-    let foundCwd = glob('tests/path/*_test.zena', cwdOpts);
+    let foundCwd = globSync('tests/path/*_test.zena', cwdOpts);
     isTrue(foundCwd.length > 0);
     equal(foundCwd[0], 'tests/path/path_test.zena');
 
@@ -91,14 +122,14 @@ export let tests = suite('Filesystem', (): void => {
     let excludes = new GrowableArray<String>();
     excludes.push('**/path_test.zena');
     opts.exclude = excludes;
-    let excluded = glob('tests/path/*_test.zena', opts);
+    let excluded = globSync('tests/path/*_test.zena', opts);
     equal(excluded.length, 0);
   });
 
   test('glob with braces in a directory segment', (ctx: TestContext): void => {
     // The walk has to start above the braces: there is no directory
     // named `{path,glob}` to start from.
-    let found = glob('packages/stdlib/tests/{path,glob}/*_test.zena');
+    let found = globSync('packages/stdlib/tests/{path,glob}/*_test.zena');
     equal(found.length, 2);
     equal(found[0], 'packages/stdlib/tests/glob/glob_test.zena');
     equal(found[1], 'packages/stdlib/tests/path/path_test.zena');
@@ -106,20 +137,20 @@ export let tests = suite('Filesystem', (): void => {
 
   test('stat reports a modification time', (ctx: TestContext): void => {
     let path = '/tmp/zena-fs-stat-test.txt';
-    writeFile(path, 'x');
-    let info = stat(path);
+    writeFileSync(path, 'x');
+    let info = statSync(path);
     equal(info.fileType, FileType.RegularFile);
     equal(info.size, 1 as i64);
     // Nanoseconds since the Unix epoch: 2020-01-01 is 1.5777e18.
     isTrue(info.modified > (1577836800000000000 as i64));
-    unlink(path);
+    unlinkSync(path);
   });
 
   test('readFileBytes reads an empty file', (ctx: TestContext): void => {
     let path = '/tmp/zena-fs-empty.bin';
-    writeFileBytes(path, newByteArray(0));
-    equal(readFileBytes(path).length, 0);
-    unlink(path);
+    writeFileBytesSync(path, new FixedArray<u8>(0, 0 as u8));
+    equal(readFileBytesSync(path).length, 0);
+    unlinkSync(path);
   });
 
   test('readFileBytes reads a file larger than one host read', (ctx: TestContext): void => {
@@ -128,12 +159,12 @@ export let tests = suite('Filesystem', (): void => {
     // size, so a misplaced or repeated chunk shows.
     let path = '/tmp/zena-fs-large.bin';
     let size = 700001;
-    let data = newByteArray(size);
+    let data = new FixedArray<u8>(size, 0 as u8);
     for (var i = 0; i < size; i += 1) {
       data[i] = (i % 251) as u8;
     }
-    writeFileBytes(path, data);
-    let read = readFileBytes(path);
+    writeFileBytesSync(path, data);
+    let read = readFileBytesSync(path);
     equal(read.length, size);
     var mismatches = 0;
     for (var i = 0; i < size; i += 1) {
@@ -142,17 +173,101 @@ export let tests = suite('Filesystem', (): void => {
       }
     }
     equal(mismatches, 0);
-    unlink(path);
+    unlinkSync(path);
   });
 
   test('rename moves a file and replaces an existing one', (ctx: TestContext): void => {
     let from = '/tmp/zena-fs-rename-from.txt';
     let to = '/tmp/zena-fs-rename-to.txt';
-    writeFile(to, 'old');
-    writeFile(from, 'new');
-    rename(from, to);
-    isFalse(exists(from));
-    equal(readFile(to), 'new');
-    unlink(to);
+    writeFileSync(to, 'old');
+    writeFileSync(from, 'new');
+    renameSync(from, to);
+    isFalse(existsSync(from));
+    equal(readFileSync(to), 'new');
+    unlinkSync(to);
+  });
+
+  test('a directory is made, listed and removed asynchronously', (ctx: TestContext): void => {
+    let names = blockOn(directoryRoundTrip('/tmp/zena-fs-dir-test'));
+    equal(names.length, 2);
+    isTrue(names[0] == 'a.txt' || names[1] == 'a.txt');
+    isTrue(names[0] == 'b.txt' || names[1] == 'b.txt');
+    isFalse(existsSync('/tmp/zena-fs-dir-test'));
+  });
+
+  test('a descriptor opened through resolvePreopen reads and streams a file', (ctx: TestContext): void => {
+    let path = '/tmp/zena-fs-descriptor-test.txt';
+    writeFileSync(path, 'through a descriptor');
+    equal(blockOn(viaDescriptor(path)), 'through a descriptor');
+    unlinkSync(path);
   });
 });
+
+/** Writes, checks, reads back and removes `path`, all awaited. */
+async function roundTrip(path: String, content: String): Future<void> {
+  await writeFile(path, content);
+  isTrue(await exists(path));
+  isTrue(await isFile(path));
+  isFalse(await isDirectory(path));
+  equal(await readFile(path), content);
+  let bytes = await readFileBytes(path);
+  equal(bytes.length, content.length);
+  await writeFileBytes(path, 'bytes'.toBytes());
+  equal(await readFile(path), 'bytes');
+  equal((await stat(path)).size, 5 as i64);
+  await unlink(path);
+}
+
+/** The error `readFile(path)` fails with. */
+async function readFailure(path: String): Future<Error> {
+  try {
+    await readFile(path);
+  } catch (e) {
+    return e as Error;
+  }
+  throw new Error('readFile did not fail');
+}
+
+/** Makes a directory with two files, lists it, and removes it all. */
+async function directoryRoundTrip(dir: String): Future<Array<String>> {
+  if (await exists(dir)) {
+    for (let entry in await listDir(dir)) {
+      await unlink(`${dir}/${entry.name}`);
+    }
+    await rmdir(dir);
+  }
+  await mkdir(dir);
+  isTrue(await isDirectory(dir));
+  await writeFile(`${dir}/a.txt`, 'a');
+  await writeFile(`${dir}/b.txt`, 'b');
+  let names = new Array<String>();
+  for (let entry in await listDir(dir)) {
+    equal(entry.fileType, FileType.RegularFile);
+    names.push(entry.name);
+  }
+  await unlink(`${dir}/a.txt`);
+  await unlink(`${dir}/b.txt`);
+  await rmdir(dir);
+  return names;
+}
+
+/** Reads `path` through a `Descriptor` opened under its preopen: once
+ * whole, once as a stream the descriptor releases itself after. */
+async function viaDescriptor(path: String): Future<String> {
+  let (dir, rel) = resolvePreopen(path);
+  using whole = await dir.openAt(rel, DescriptorFlags.Read);
+  let text = await whole.readString();
+  let streamed = await dir.openAt(rel, DescriptorFlags.Read);
+  let stream = streamed.readStream();
+  let buf = new FixedArray<u8>(64, 0 as u8);
+  var collected = '';
+  while (true) {
+    let n = await stream.read(buf);
+    if (n == 0) {
+      break;
+    }
+    collected = collected + String.fromBytes(buf.slice(0, n));
+  }
+  equal(collected, text);
+  return text;
+}

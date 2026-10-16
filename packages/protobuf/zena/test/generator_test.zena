@@ -11,7 +11,7 @@
 import {suite, test} from 'zena:test';
 import {equal, isTrue} from 'zena:assert';
 import {getEnv} from 'zena:cli';
-import {exists, readFile, writeFile} from 'zena:fs';
+import {existsSync, readFileSync, writeFileSync} from 'zena:fs';
 import {HashMap} from 'zena:collections';
 import {generate} from '../generator.zena';
 import {camelCase, pascalCase} from '../emitter.zena';
@@ -23,8 +23,8 @@ let GENERATED = 'packages/protobuf/test-files/generated';
 let readFromIncludes = (path: String): String | null => {
   for (let dir in INCLUDES) {
     let candidate = `${dir}/${path}`;
-    if (exists(candidate)) {
-      return readFile(candidate);
+    if (existsSync(candidate)) {
+      return readFileSync(candidate);
     }
   }
   return null;
@@ -35,12 +35,12 @@ let checkGolden = (file: String, golden: String): void => {
   let source = generate({files: [file], read: readFromIncludes});
   let path = `${GENERATED}/${golden}`;
   if (getEnv('UPDATE_PROTO_GOLDENS') != null) {
-    writeFile(path, source);
+    writeFileSync(path, source);
     return;
   }
-  isTrue(exists(path), `no golden at ${path}; run with UPDATE_PROTO_GOLDENS=1`);
+  isTrue(existsSync(path), `no golden at ${path}; run with UPDATE_PROTO_GOLDENS=1`);
   isTrue(
-    readFile(path) == source,
+    readFileSync(path) == source,
     `${path} does not match the generator's output; run with UPDATE_PROTO_GOLDENS=1 and review the diff`
   );
 };

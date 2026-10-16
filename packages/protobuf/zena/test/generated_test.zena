@@ -10,7 +10,7 @@ import {Future, runFuture} from 'zena:async';
 import {AsyncIterator, AsyncStep} from 'zena:async';
 import {HashMap} from 'zena:collections';
 import {newByteArray} from 'zena:core';
-import {readFileBytes} from 'zena:fs';
+import {readFileBytesSync} from 'zena:fs';
 import {ProtoBytes, ProtoTransport, ProtoView, RpcMetadata, RpcMethod} from '../runtime.zena';
 import {
   Color,
@@ -176,7 +176,7 @@ export let tests = suite('generated protobuf code', (): void => {
   });
 
   test('decodes messages protoc encoded', () => {
-    let node = Node.decode(readFileBytes(`${PROTOC}/node.binpb`));
+    let node = Node.decode(readFileBytesSync(`${PROTOC}/node.binpb`) as ByteArray);
     equal(node.name, 'root');
     equal(node.children.toArray()[1].name, 'b');
     equal(node.byName.getOr('x', Node.of({name: '?'})).name, 'x');
@@ -192,7 +192,7 @@ export let tests = suite('generated protobuf code', (): void => {
     equal(node.type_, 16);
     equal(node.from, 'here');
     equal(node.blobs.toArray()[0][2], 3);
-    let s = Scalars.decode(readFileBytes(`${PROTOC}/scalars.binpb`));
+    let s = Scalars.decode(readFileBytesSync(`${PROTOC}/scalars.binpb`) as ByteArray);
     equal(s.fInt64, -4000000000 as i64);
     equal(s.fUint64, 18000000000000000000 as u64);
     equal(s.fSint32, -5);
@@ -223,8 +223,8 @@ export let tests = suite('generated protobuf code', (): void => {
       fBytes: bytes,
       maybe: 0,
     });
-    isTrue(sameBytes(scalars.protoView.toByteArray(), readFileBytes(`${PROTOC}/scalars.binpb`)));
-    isTrue(sameBytes(protocNode().protoView.toByteArray(), readFileBytes(`${PROTOC}/node.binpb`)));
+    isTrue(sameBytes(scalars.protoView.toByteArray(), readFileBytesSync(`${PROTOC}/scalars.binpb`) as ByteArray));
+    isTrue(sameBytes(protocNode().protoView.toByteArray(), readFileBytesSync(`${PROTOC}/node.binpb`) as ByteArray));
   });
 
   test('tells an absent optional scalar from a zero one', () => {

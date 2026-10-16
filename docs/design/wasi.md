@@ -17,8 +17,10 @@ This is the original plan, kept as history. What was built:
   modules.
 - Async imports are futures: calling an `async` WIT function starts the
   call on the host and returns a handle, which the event loop in
-  `zena:wasi` (`wasi/async.zena`) turns into a `Future`. A synchronous
-  API over one waits for it in `blockOn`.
+  `zena:wasi` (`wasi/async.zena`) turns into a `Future`. `zena:fs` and
+  `zena:cli` expose those futures directly, and their `Sync`-suffixed
+  forms wait for them in `blockOn`
+  ([async-fs-cli.md](./async-fs-cli.md)).
 
 ## Overview
 

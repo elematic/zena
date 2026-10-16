@@ -12,7 +12,7 @@
 import { getEnv } from 'zena:cli';
 import { ByteBuffer, StringBuilder } from 'zena:core';
 import { JsonBuilder } from 'zena:json';
-import { readFile, readFileBytes, writeFileBytes, writeFile, exists } from 'zena:fs';
+import { readFileSync, readFileBytesSync, writeFileBytesSync, writeFileSync, existsSync } from 'zena:fs';
 import { CompilerHost } from './library-loader.zena';
 import { PackageConfig, stdlibIdToRelativeFile } from './module-resolver.zena';
 import { loadPackageMap } from './package-manifest.zena';
@@ -138,7 +138,7 @@ class FileHost implements CompilerHost {
     }
     let onRead = this.onRead;
     onRead(actualPath);
-    let content = readFile(actualPath);
+    let content = readFileSync(actualPath);
     if (this.testMode && path == this.entryPath) {
       // A file that declares its own entry point is left alone. This runs
       // before the source is parsed, so the test is textual; what matters is
@@ -171,7 +171,7 @@ class FileHost implements CompilerHost {
 // in the working directory. A missing manifest is fine — standalone files need
 // only stdlib and relative imports — but a malformed one throws loudly.
 let loadPackages = (host: CompilerHost): HashMap<String, PackageConfig> => {
-  if (!exists("zena-packages.json")) {
+  if (!existsSync("zena-packages.json")) {
     return new Map<String, PackageConfig>();
   }
   return loadPackageMap(host, "zena-packages.json");
@@ -405,7 +405,7 @@ export let compileFile = (options: CompileFileOptions): i32 => {
   // joined document.
   var witDoc: WitDocument | null = null;
   if (witPath != "") {
-    if (!exists(witPath)) {
+    if (!existsSync(witPath)) {
       console.error("Error: --wit path does not exist: " + witPath);
       return 1;
     }
@@ -569,7 +569,7 @@ export let compileFile = (options: CompileFileOptions): i32 => {
       let watOnly = new WatGenerator(target, zirStats, optLevel);
       watOnly.wideArithmetic = wideArithmetic;
       watOnly.interner = checkResults.sharedState.interner;
-      writeFile(outPath, watOnly.generate(program));
+      writeFileSync(outPath, watOnly.generate(program));
       performance.end(tCodegen);
       if (progress) {
         console.log("Success: wrote " + outPath);
@@ -602,7 +602,7 @@ export let compileFile = (options: CompileFileOptions): i32 => {
         compileComponentRuntimeModule(compiler, stdlibRoot)
       } else {
         // Already built, by a driver that keeps them between builds.
-        new ByteBuffer().writeBytes(readFileBytes(runtimeMemoryPath))
+        new ByteBuffer().writeBytes(readFileBytesSync(runtimeMemoryPath) as ByteArray)
       };
       performance.resume();
       performance.add("codegen-runtime-module", nowMs() - tRuntimeModule);
@@ -618,7 +618,7 @@ export let compileFile = (options: CompileFileOptions): i32 => {
     }
     let wasmBytes = generator.generate(program).toByteArray();
     markTypes("emit");
-    writeFileBytes(outPath, wasmBytes);
+    writeFileBytesSync(outPath, wasmBytes as FixedArray<u8>);
 
     // The WAT dump runs a SECOND full generator pass and its text
     // dwarfs the binary (~30x — the tests module's dump is ~135 MB),
@@ -626,7 +626,7 @@ export let compileFile = (options: CompileFileOptions): i32 => {
     if (getEnv("ZENA_EMIT_WAT") != null) {
       let watGenerator = new WatGenerator(target, false, optLevel);
       let watString = watGenerator.generate(program);
-      writeFile(outPath + ".wat", watString);
+      writeFileSync(outPath + ".wat", watString);
     }
     performance.end(tCodegen);
 

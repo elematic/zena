@@ -2,11 +2,11 @@ import {suite, test} from 'zena:test';
 import {equal, equalText, fail, isTrue} from 'zena:assert';
 import {
   FileType,
-  listDir,
-  readFile,
-  readFileBytes,
-  writeFile,
-  writeFileBytes,
+  listDirSync,
+  readFileSync,
+  readFileBytesSync,
+  writeFileSync,
+  writeFileBytesSync,
 } from 'zena:fs';
 import {monotonic} from 'zena:time';
 import {RunResult, StepSource, Succeeded} from 'workflow:engine';
@@ -25,7 +25,7 @@ import {ScriptRef} from '../wireit-config.zena';
 
 let copyDir = (from: String, to: String): void => {
   ensureDir(to);
-  for (let entry in listDir(from)) {
+  for (let entry in listDirSync(from)) {
     // Skip dot entries and any build state from manual runs of the
     // example in the checkout.
     if (entry.name == '.' || entry.name == '..' || entry.name == '.zb' ||
@@ -37,7 +37,7 @@ let copyDir = (from: String, to: String): void => {
     if (entry.fileType == FileType.Directory) {
       copyDir(src, dst);
     } else {
-      writeFileBytes(dst, readFileBytes(src));
+      writeFileBytesSync(dst, readFileBytesSync(src));
     }
   }
 };
@@ -62,21 +62,21 @@ export let tests = suite('zb example workspace', (): void => {
     isTrue(sourceOf(first.result, 'site:build') == StepSource.Ran, 'first: site ran');
     // Expected content comes from the fixture files as checked out, so
     // formatters or line-ending normalization cannot break the test.
-    let expected = readFile(withRoot(root, 'site/header.txt')) +
-      readFile(withRoot(root, 'greeting/src/hello.txt')) +
-      readFile(withRoot(root, 'site/footer.txt'));
-    equalText(readFile(withRoot(root, 'site/out/index.html')), expected);
-    isTrue(readFile(withRoot(root, 'site/out/index.html')).contains('Hello from zb!'), 'greeting text present');
+    let expected = readFileSync(withRoot(root, 'site/header.txt')) +
+      readFileSync(withRoot(root, 'greeting/src/hello.txt')) +
+      readFileSync(withRoot(root, 'site/footer.txt'));
+    equalText(readFileSync(withRoot(root, 'site/out/index.html')), expected);
+    isTrue(readFileSync(withRoot(root, 'site/out/index.html')).contains('Hello from zb!'), 'greeting text present');
 
     let second = buildTarget(root, entry);
     isTrue(sourceOf(second.result, 'greeting:build') == StepSource.Fresh, 'second: greeting fresh');
     isTrue(sourceOf(second.result, 'site:build') == StepSource.Fresh, 'second: site fresh');
 
-    writeFile(withRoot(root, 'greeting/src/more.txt'), 'A second line.\n');
+    writeFileSync(withRoot(root, 'greeting/src/more.txt'), 'A second line.\n');
     let third = buildTarget(root, entry);
     isTrue(third.result.allSucceeded, 'third build succeeds');
     isTrue(sourceOf(third.result, 'greeting:build') == StepSource.Ran, 'third: greeting ran');
     isTrue(sourceOf(third.result, 'site:build') == StepSource.Ran, 'third: site ran');
-    isTrue(readFile(withRoot(root, 'site/out/index.html')).contains('A second line.'), 'edit visible in output');
+    isTrue(readFileSync(withRoot(root, 'site/out/index.html')).contains('A second line.'), 'edit visible in output');
   });
 });

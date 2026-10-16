@@ -18,8 +18,8 @@
 import { getEnv } from 'zena:cli';
 import { HashSet } from 'zena:collections';
 import {
-  exists, isDirectory, isFile, mkdir, readFile, readFileBytes, rename, stat, unlink,
-  writeFile, writeFileBytes
+  existsSync, isDirectorySync, isFileSync, mkdirSync, readFileSync, readFileBytesSync, renameSync, statSync, unlinkSync,
+  writeFileSync, writeFileBytesSync
 } from 'zena:fs';
 import { AbsolutePath, basename, dirname, extname } from 'zena:path';
 import { monotonic } from 'zena:time';
@@ -73,7 +73,7 @@ let externalCompiler = (): AbsolutePath | null => {
     return null;
   }
   let path = resolveUserPath(named);
-  if (!isFile(path.value)) {
+  if (!isFileSync(path.value)) {
     throw new CompileFailure(
       `Compiler WASM not found at ${path.value}. Please build it first.`,
     );
@@ -142,10 +142,10 @@ let cachedRuntimeMemoryModule = (options: Options): AbsolutePath => {
 let recordedDeps = (modulePath: AbsolutePath): GrowableArray<String> => {
   let paths = new GrowableArray<String>();
   let depsPath = `${modulePath.value.sliceBytes(0, modulePath.value.length - 5)}.deps`;
-  if (!isFile(depsPath)) {
+  if (!isFileSync(depsPath)) {
     return paths;
   }
-  for (let line in readFile(depsPath).split('\n')) {
+  for (let line in readFileSync(depsPath).split('\n')) {
     if (line == '') {
       continue;
     }
@@ -294,7 +294,7 @@ let compileWith = (
     ],
     inheritStdio: !quiet,
   });
-  if (result.succeeded() && isFile(out.value)) {
+  if (result.succeeded() && isFileSync(out.value)) {
     return;
   }
   printCaptured(result.stdout);
@@ -318,16 +318,16 @@ let printCaptured = (text: String): void => {
 
 /** Creates a directory and any parents it needs. */
 export let ensureDir = (path: String): void => {
-  if (path == '' || path == '/' || path == '.' || exists(path)) {
+  if (path == '' || path == '/' || path == '.' || existsSync(path)) {
     return;
   }
   ensureDir(dirname(path));
   try {
-    mkdir(path);
+    mkdirSync(path);
   } catch (e) {
     // Another process may have made it since `exists` said no: `zena
     // test` compiles its files in parallel, into one cache directory.
-    if (!isDirectory(path)) {
+    if (!isDirectorySync(path)) {
       throw e;
     }
   }
@@ -359,7 +359,7 @@ export let cacheDir = (): String => {
 
 /** A file's identity for the cache: its modification time and size. */
 let identity = (path: String): String => {
-  let info = stat(path);
+  let info = statSync(path);
   return `${info.modified} ${info.size}`;
 };
 
@@ -400,10 +400,10 @@ let joinLines = (lines: Array<String>): String => {
  * time and size it had when the entry was written.
  */
 let entryIsFresh = (depsPath: String, modulePath: String): boolean => {
-  if (!isFile(depsPath) || !isFile(modulePath)) {
+  if (!isFileSync(depsPath) || !isFileSync(modulePath)) {
     return false;
   }
-  let lines = readFile(depsPath).split('\n');
+  let lines = readFileSync(depsPath).split('\n');
   var checked = 0;
   for (let line in lines) {
     if (line == '') {
@@ -471,9 +471,9 @@ export let compileCached = (
       }
     },
   );
-  rename(tempModule, modulePath);
+  renameSync(tempModule, modulePath);
   let tempDeps = `${dir}/${name}.tmp-${unique}.deps`;
-  writeFile(tempDeps, joinLines(deps));
-  rename(tempDeps, depsPath);
+  writeFileSync(tempDeps, joinLines(deps));
+  renameSync(tempDeps, depsPath);
   return new AbsolutePath(modulePath);
 };

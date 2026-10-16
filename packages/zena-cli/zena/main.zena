@@ -10,7 +10,7 @@
 
 import { ArgParser, OptionType, ParsedArgs } from 'zena:args';
 import { getArguments, getEnv } from 'zena:cli';
-import { exists, isFile, readFile, writeFile } from 'zena:fs';
+import { existsSync, isFileSync, readFileSync, writeFileSync } from 'zena:fs';
 import { AbsolutePath, extname } from 'zena:path';
 import { precompileModule } from 'zena:wasm';
 import { DiagnosticSeverity, SourceSpan } from 'zena-compiler:diagnostics';
@@ -250,7 +250,7 @@ let build = (args: ParsedArgs, options: Options): i32 => {
   }
   let argument = if (args.rest.length == 0) 'build' else args.rest[0];
   let path = resolveUserPath(argument);
-  if (extname(argument) == '.zena' || isFile(path.value)) {
+  if (extname(argument) == '.zena' || isFileSync(path.value)) {
     return buildFile(args, options, argument, path);
   }
   return buildScript(argument);
@@ -266,7 +266,7 @@ let buildFile = (
   argument: String,
   path: AbsolutePath,
 ): i32 => {
-  if (!isFile(path.value)) {
+  if (!isFileSync(path.value)) {
     console.error(`Error: no such file: ${argument}`);
     return 2;
   }
@@ -319,7 +319,7 @@ let buildScript = (argument: String): i32 => {
     script = argument.sliceBytes(colon + 1, argument.length);
   }
   let packageDir = resolveUserPath(packagePath);
-  if (!isFile(packageDir.value + '/package.json')) {
+  if (!isFileSync(packageDir.value + '/package.json')) {
     console.error(`Error: no package.json in ${packageDir.value}`);
     return 2;
   }
@@ -335,7 +335,7 @@ let workspaceRoot = (from: AbsolutePath): AbsolutePath => {
   var dir = from;
   while (true) {
     let manifest = dir.value + '/package.json';
-    if (isFile(manifest) && readFile(manifest).contains('"workspaces"')) {
+    if (isFileSync(manifest) && readFileSync(manifest).contains('"workspaces"')) {
       return dir;
     }
     if (dir.value == '/') {
@@ -357,7 +357,7 @@ let doc = (args: ParsedArgs): i32 => {
     return 2;
   }
   let path = resolveUserPath(args.rest[0]);
-  if (!exists(path.value)) {
+  if (!existsSync(path.value)) {
     console.error('Error: no such path: ' + path.value);
     return 2;
   }
@@ -382,7 +382,7 @@ let doc = (args: ParsedArgs): i32 => {
   }
   let json = packageToJson(result.docs);
   if (let (true, output) = args.getOption('output')) {
-    writeFile(resolveUserPath(output).value, json);
+    writeFileSync(resolveUserPath(output).value, json);
   } else {
     console.log(json);
   }
@@ -417,7 +417,7 @@ let fmt = (args: ParsedArgs): i32 => {
   var unformatted = 0;
   for (let file in args.rest) {
     let path = resolveUserPath(file).value;
-    let source = readFile(path);
+    let source = readFileSync(path);
     let formatted = format(source);
     if (check) {
       if (formatted != source) {
@@ -426,7 +426,7 @@ let fmt = (args: ParsedArgs): i32 => {
       }
     } else if (write) {
       if (formatted != source) {
-        writeFile(path, formatted);
+        writeFileSync(path, formatted);
       }
     } else {
       console.log(formatted);

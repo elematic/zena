@@ -23,7 +23,7 @@
 
 import { getArguments, getEnv } from 'zena:cli';
 import { StringBuilder } from 'zena:core';
-import { isDirectory, listDir, readFile, readFileBytes } from 'zena:fs';
+import { isDirectorySync, listDirSync, readFileSync, readFileBytesSync } from 'zena:fs';
 import { JsonArray, JsonObject, JsonValue, parseJson } from 'zena:json';
 import { regex } from 'zena:regex';
 import { sha256Hex, sha256HexOfString } from 'zena:crypto';
@@ -109,7 +109,7 @@ let sortStrings = (values: GrowableArray<String>): void => {
 /** The names in a directory, sorted. */
 let entryNames = (dir: String): GrowableArray<String> => {
   let names = new GrowableArray<String>();
-  for (let entry in listDir(dir)) {
+  for (let entry in listDirSync(dir)) {
     if (entry.name != '.' && entry.name != '..') {
       names.push(entry.name);
     }
@@ -122,7 +122,7 @@ let entryNames = (dir: String): GrowableArray<String> => {
 let witFilesUnder = (dir: String, prefix: String, found: GrowableArray<String>): void => {
   for (let name in entryNames(dir)) {
     let relative = if (prefix == '') { name } else { `${prefix}/${name}` };
-    if (isDirectory(`${dir}/${name}`)) {
+    if (isDirectorySync(`${dir}/${name}`)) {
       witFilesUnder(`${dir}/${name}`, relative, found);
     } else if (name.endsWith('.wit')) {
       found.push(relative);
@@ -144,7 +144,7 @@ let contentDigest = (dir: String): String => {
   witFilesUnder(dir, '', files);
   sortStrings(files);
   for (let relative in files) {
-    summary.append(`${relative} ${sha256Hex(readFileBytes(`${dir}/${relative}`))}\n`);
+    summary.append(`${relative} ${sha256Hex(readFileBytesSync(`${dir}/${relative}`) as ByteArray)}\n`);
   }
   return `sha256:${sha256HexOfString(summary.toString())}`;
 };
@@ -152,10 +152,10 @@ let contentDigest = (dir: String): String => {
 /** Where the corpus root is, or null. */
 let findCorpus = (): Corpus | null => {
   let fromNix = getEnv('ZENA_WASI_WIT');
-  if (fromNix != null && fromNix != '' && isDirectory(fromNix as String)) {
+  if (fromNix != null && fromNix != '' && isDirectorySync(fromNix as String)) {
     return new Corpus(fromNix as String, 'ZENA_WASI_WIT (nix)');
   }
-  if (isDirectory(LOCAL_CORPUS)) {
+  if (isDirectorySync(LOCAL_CORPUS)) {
     return new Corpus(LOCAL_CORPUS, '.wit-corpus');
   }
   return null;
@@ -163,7 +163,7 @@ let findCorpus = (): Corpus | null => {
 
 /** The `sources` object of the pin manifest. */
 let manifestSources = (): JsonObject => {
-  let manifest = parseJson(readFile(MANIFEST));
+  let manifest = parseJson(readFileSync(MANIFEST));
   if (!(manifest is JsonObject)) {
     throw new Error(`${MANIFEST} is not an object`);
   }
@@ -182,7 +182,7 @@ let verifyCorpus = (root: String, sources: JsonObject): GrowableArray<String> =>
   let problems = new GrowableArray<String>();
   sources.forEach((name: String, source: JsonValue): void => {
     let dir = `${root}/${name}`;
-    if (!isDirectory(dir)) {
+    if (!isDirectorySync(dir)) {
       problems.push(`source \`${name}\` is missing from the corpus`);
       return;
     }
@@ -238,7 +238,7 @@ let collectUnits = (root: String, isDep: boolean, units: GrowableArray<Unit>): v
   let names = entryNames(root);
   var unit: Unit | null = null;
   for (let name in names) {
-    if (!name.endsWith('.wit') || isDirectory(`${root}/${name}`)) {
+    if (!name.endsWith('.wit') || isDirectorySync(`${root}/${name}`)) {
       continue;
     }
     if (unit == null) {
@@ -248,7 +248,7 @@ let collectUnits = (root: String, isDep: boolean, units: GrowableArray<Unit>): v
     (unit as Unit).files.push(`${root}/${name}`);
   }
   for (let name in names) {
-    if (isDirectory(`${root}/${name}`)) {
+    if (isDirectorySync(`${root}/${name}`)) {
       collectUnits(`${root}/${name}`, isDep || name == 'deps', units);
     }
   }
@@ -269,7 +269,7 @@ let readUnit = (unit: Unit): void => {
   let sources = new GrowableArray<String>();
   for (let path in unit.files) {
     paths.push(path);
-    sources.push(readFile(path));
+    sources.push(readFileSync(path));
   }
   let ordered = new GrowableArray<String>();
   let orderedSources = new GrowableArray<String>();

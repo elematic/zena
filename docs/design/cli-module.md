@@ -245,7 +245,7 @@ and stdout), for editors that start a server process: Neovim, Helix, Zed
 and others. It uses the same analysis code as `lsp.wasm`: the language
 service is a library in `packages/language-service/zena/lib/`, which
 both entry points import. `lsp.zena` keeps the exports VS Code calls.
-The CLI module's `lsp.zena` reads stdin with `zena:cli`'s `readStdin`,
+The CLI module's `lsp.zena` reads stdin with `zena:cli`'s `readStdinSync`,
 hands each message to the library's `LspServer`, and writes the replies
 to stdout. [lsp.md](./lsp.md) describes the server.
 

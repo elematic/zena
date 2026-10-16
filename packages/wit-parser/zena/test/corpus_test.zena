@@ -22,7 +22,7 @@ import { suite, test } from 'zena:test';
 import { fail, isTrue, jsonEqual } from 'zena:assert';
 import { HashSet } from 'zena:collections';
 import { StringBuilder } from 'zena:core';
-import { exists, isDirectory, listDir, readFile } from 'zena:fs';
+import { existsSync, isDirectorySync, listDirSync, readFileSync } from 'zena:fs';
 import { JsonArray, JsonObject, JsonValue, parseJson } from 'zena:json';
 import { runIn } from 'zena:process';
 import { regex } from 'zena:regex';
@@ -62,7 +62,7 @@ let sortStrings = (values: GrowableArray<String>): void => {
 /** The names in a directory, sorted. */
 let entryNames = (dir: String): GrowableArray<String> => {
   let names = new GrowableArray<String>();
-  for (let entry in listDir(dir)) {
+  for (let entry in listDirSync(dir)) {
     if (entry.name != '.' && entry.name != '..') {
       names.push(entry.name);
     }
@@ -87,12 +87,12 @@ let discover = (dir: String, prefix: String, out: GrowableArray<Case>): void => 
   for (let name in entryNames(dir)) {
     let path = `${dir}/${name}`;
     let relative = if (prefix == '') { name } else { `${prefix}/${name}` };
-    if (isDirectory(path)) {
+    if (isDirectorySync(path)) {
       // A directory is a case when its expectation sits beside it rather
       // than inside it; otherwise it just holds more cases.
-      if (exists(`${path}.wit.json`)) {
+      if (existsSync(`${path}.wit.json`)) {
         out.push(new Case(relative, path, `${path}.wit.json`, true, true));
-      } else if (exists(`${path}.wit.result`)) {
+      } else if (existsSync(`${path}.wit.result`)) {
         out.push(new Case(relative, path, `${path}.wit.result`, false, true));
       } else {
         discover(path, relative, out);
@@ -114,9 +114,9 @@ let discover = (dir: String, prefix: String, out: GrowableArray<Case>): void => 
     if (base == '') {
       continue;
     }
-    if (exists(`${base}.wit.json`)) {
+    if (existsSync(`${base}.wit.json`)) {
       out.push(new Case(relative, path, `${base}.wit.json`, true, false));
-    } else if (exists(`${base}.wit.result`)) {
+    } else if (existsSync(`${base}.wit.result`)) {
       out.push(new Case(relative, path, `${base}.wit.result`, false, false));
     }
   }
@@ -131,7 +131,7 @@ let collectFiles = (
 ): void => {
   for (let name in entryNames(dir)) {
     let path = `${dir}/${name}`;
-    if (isDirectory(path)) {
+    if (isDirectorySync(path)) {
       collectFiles(path, isDep || name == 'deps', main, deps);
     } else if (name.endsWith('.wit') || name.endsWith('.wat') || name.endsWith('.wasm')) {
       if (isDep) {
@@ -193,7 +193,7 @@ let fileLevelFault = (dir: String): String => {
   }
   let sources = new GrowableArray<String>();
   for (let path in paths) {
-    sources.push(readFile(path));
+    sources.push(readFileSync(path));
   }
 
   // Every file of one package declares the same package, or none.
@@ -290,7 +290,7 @@ let inputOf = (c: Case): String => {
     if (isBinary(c.path)) {
       return decodeBinary(c.path);
     }
-    return readFile(c.path);
+    return readFileSync(c.path);
   }
   let main = new GrowableArray<String>();
   let deps = new GrowableArray<String>();
@@ -312,7 +312,7 @@ let inputOf = (c: Case): String => {
     if (isBinary(path)) {
       contents.push(decodeBinary(path));
     } else {
-      contents.push(readFile(path));
+      contents.push(readFileSync(path));
     }
   }
   return join(contents, '\n');
@@ -367,7 +367,7 @@ let harnessFault = (c: Case): String => {
   if (c.isDirectory) {
     return fileLevelFault(c.path);
   }
-  if (!isBinary(c.path) && declaresPackageTwice(readFile(c.path))) {
+  if (!isBinary(c.path) && declaresPackageTwice(readFileSync(c.path))) {
     return "expected '{', found ';'";
   }
   return '';
@@ -384,7 +384,7 @@ let runCase = (c: Case): void => {
     isTrue(failureOf(input) != '', `${c.name} parsed, but must fail`);
     return;
   }
-  let expected = parseJson(readFile(c.expected), {
+  let expected = parseJson(readFileSync(c.expected), {
     allowComments: false,
     trackLocations: true,
   });
@@ -430,7 +430,7 @@ final class Corpus {
  * there traps with "cannot block a synchronous task before returning".
  */
 let readCorpus = (): Corpus => {
-  let config = parseJson(readFile(`${TESTS}/test-config.json`), {
+  let config = parseJson(readFileSync(`${TESTS}/test-config.json`), {
     allowComments: true,
     trackLocations: false,
   });

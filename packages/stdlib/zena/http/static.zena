@@ -9,19 +9,14 @@
  * host copies the file to the connection.
  */
 
-import { Disposable, Ok, Err, Outcome, Some } from 'zena:core';
-import { FileStat, FileType } from 'zena:fs';
+import {
+  Descriptor, DescriptorFlags, FileStat, FileType, FsError, FsErrorCode,
+  resolvePreopen
+} from 'zena:fs';
 import { div } from 'zena:math';
 import { basename } from 'zena:path';
 import { Duration } from 'zena:time';
 import { percentDecode } from 'zena:url';
-import { getDirectories } from 'wasi:filesystem/preopens';
-import {
-  Descriptor, DescriptorStat, DescriptorTypeDirectory, ErrorCode,
-  ErrorCodeNameTooLong, ErrorCodeNoEntry, ErrorCodeNotDirectory, OpenFlags,
-  descriptorFlagsRead, pathFlagsSymlinkFollow
-} from 'wasi:filesystem/types';
-import { Instant } from 'wasi:clocks/system-clock';
 import { HttpError } from './error.zena';
 import { Middleware } from './middleware.zena';
 import { mimeType } from './mime.zena';
@@ -162,7 +157,6 @@ let SLASH = 0x2F;
 let DOT = 0x2E;
 let NS_PER_SECOND: i64 = 1000000000;
 let NS_PER_MILLI: i64 = 1000000;
-let NO_OPEN_FLAGS = (0 as u32) as OpenFlags;
 
 /** One root directory and the options for serving it. */
 final class StaticFiles {
@@ -243,7 +237,7 @@ final class StaticFiles {
     if (extensions != null && !basename(path).contains('.')) {
       for (let given in extensions) {
         let ext = if (given.startsWith('.')) given else '.' + given;
-        if (await exists(base, path + ext)) {
+        if (await base.existsAt(path + ext)) {
           path = path + ext;
           resolved = true;
           break;
@@ -251,8 +245,8 @@ final class StaticFiles {
       }
     }
 
-    var stat = await statOf(base, path);
-    if (stat.type is DescriptorTypeDirectory) {
+    var info = await statOf(base, path);
+    if (info.fileType == FileType.Directory) {
       let dirIndex = this.#index;
       if (!this.#format || dirIndex == null) {
         return null;
@@ -267,9 +261,8 @@ final class StaticFiles {
           path = path + encodingExt;
         }
       }
-      stat = await statOf(base, path);
+      info = await statOf(base, path);
     }
-    let info = fileStatOf(stat);
 
     let setHeaders = this.#setHeaders;
     if (setHeaders != null) {
@@ -311,15 +304,11 @@ final class StaticFiles {
       return path;
     }
 
-    let opened = await base.openAt(
-        pathFlagsSymlinkFollow, path, NO_OPEN_FLAGS, descriptorFlagsRead);
-    if (opened is Err<Descriptor, ErrorCode>) {
-      throw httpErrorOf((opened as Err<Descriptor, ErrorCode>).error);
-    }
-    let file = (opened as Ok<Descriptor, ErrorCode>).value;
-    let (contents, done) = file.readViaStream(0 as u64);
-    closeWhenRead(file, done);
-    res.body = contents;
+    // The file's contents as the stream the host fills: the guest never
+    // reads it, `zena:wasi` hands the stream on to `wasi:http` as it
+    // is, and the host copies the file to the connection.
+    let file = await openFile(base, path);
+    res.body = file.readStream();
     return path;
   }
 
@@ -330,13 +319,13 @@ final class StaticFiles {
     res: Response
   ): Future<String> {
     if (this.#brotli && acceptsEncoding(accepted, 'br') &&
-        await exists(base, path + '.br')) {
+        await base.existsAt(path + '.br')) {
       res.setHeader('content-encoding', 'br');
       res.appendHeader('vary', 'Accept-Encoding');
       return '.br';
     }
     if (this.#gzip && acceptsEncoding(accepted, 'gzip') &&
-        await exists(base, path + '.gz')) {
+        await base.existsAt(path + '.gz')) {
       res.setHeader('content-encoding', 'gzip');
       res.appendHeader('vary', 'Accept-Encoding');
       return '.gz';
@@ -350,7 +339,7 @@ final class StaticFiles {
     if (found != null) {
       return found;
     }
-    let (base, relative) = preopenFor(this.#root);
+    let (base, relative) = resolvePreopen(this.#root);
     this.#base = base;
     this.#baseRelative = relative;
     return base;
@@ -411,120 +400,38 @@ let hasHiddenSegment = (path: String): boolean => {
   return false;
 };
 
-var preopens: Array<(Descriptor, String)> | null = null;
-
-/**
- * The preopen a root directory is under, and the root relative to it.
- * A relative root is under the `.` preopen (else the first); an
- * absolute one under its longest matching preopen.
- */
-let preopenFor = (root: String): (Descriptor, String) => {
-  var cached = preopens;
-  if (cached == null) {
-    let all = new Array<(Descriptor, String)>();
-    for (let (descriptor, name) in getDirectories()) {
-      all.push((descriptor, name));
-    }
-    preopens = all;
-    cached = all;
+/** The stat of a path under `base`, or the HttpError its failure maps to. */
+async function statOf(base: Descriptor, path: String): Future<FileStat> {
+  try {
+    return await base.statAt(path);
+  } catch (e) {
+    throw httpErrorOf(e as Error);
   }
-  let list = cached as Array<(Descriptor, String)>;
-  if (list.length == 0) {
-    throw new Error('zena:http: no preopened directories to serve files from');
-  }
-  var best = list[0][0];
-  var bestLength = -1;
-  var relative = root;
-  let absolute = root.startsWith('/');
-  for (let (descriptor, name) in list) {
-    if (!absolute) {
-      if (name == '.' && bestLength < 0) {
-        best = descriptor;
-        bestLength = 0;
-      }
-    } else if (name.startsWith('/')) {
-      let matches = name == '/' || root == name ||
-          (root.startsWith(name) && root.getByteAt(name.length) == SLASH);
-      if (matches && name.length > bestLength) {
-        best = descriptor;
-        bestLength = name.length;
-        relative = root.sliceBytes(name.length, root.length);
-      }
-    }
-  }
-  if (absolute && bestLength < 0) {
-    throw new Error(`zena:http: no preopened directory holds ${root}`);
-  }
-  return (best, confineRoot(relative));
-};
-
-/** A root's path under its preopen, with `.` for the preopen itself. */
-let confineRoot = (path: String): String => {
-  let kept = new GrowableArray<String>(4);
-  for (let segment in path.split('/')) {
-    if (segment != '' && segment != '.') {
-      kept.push(segment);
-    }
-  }
-  if (kept.length == 0) {
-    return '.';
-  }
-  var joined = kept[0];
-  for (var i = 1; i < kept.length; i += 1) {
-    joined = `${joined}/${kept[i]}`;
-  }
-  return joined;
-};
-
-/** The stat of a path, or the HttpError its failure maps to. */
-async function statOf(base: Descriptor, path: String): Future<DescriptorStat> {
-  let outcome = await base.statAt(pathFlagsSymlinkFollow, path);
-  if (outcome is Err<DescriptorStat, ErrorCode>) {
-    throw httpErrorOf((outcome as Err<DescriptorStat, ErrorCode>).error);
-  }
-  return (outcome as Ok<DescriptorStat, ErrorCode>).value;
 }
 
-/** Whether anything is at a path. */
-async function exists(base: Descriptor, path: String): Future<boolean> {
-  let outcome = await base.statAt(pathFlagsSymlinkFollow, path);
-  return outcome is Ok<DescriptorStat, ErrorCode>;
+/** The file at `path` under `base`, open for reading, or the HttpError
+ * its failure maps to. */
+async function openFile(base: Descriptor, path: String): Future<Descriptor> {
+  try {
+    return await base.openAt(path, DescriptorFlags.Read);
+  } catch (e) {
+    throw httpErrorOf(e as Error);
+  }
 }
 
-/** 404 for a path that does not name a file, 500 for anything else. */
-let httpErrorOf = (code: ErrorCode): HttpError => {
-  if (code is ErrorCodeNoEntry || code is ErrorCodeNameTooLong ||
-      code is ErrorCodeNotDirectory) {
+/** 404 for a path that does not name a file, 500 for anything else;
+ * an error that is not the file system's passes through. */
+let httpErrorOf = (e: Error): Error => {
+  if (!(e is FsError)) {
+    return e;
+  }
+  let code = (e as FsError).code;
+  if (code == FsErrorCode.NotFound || code == FsErrorCode.NameTooLong ||
+      code == FsErrorCode.NotDirectory) {
     return new HttpError(404);
   }
   return new HttpError(500);
 };
-
-let fileStatOf = (stat: DescriptorStat): FileStat => {
-  var modified = 0 as i64;
-  let stamp = stat.dataModificationTimestamp;
-  if (stamp is Some<Instant>) {
-    let at = (stamp as Some<Instant>).value;
-    modified = at.seconds * NS_PER_SECOND + (at.nanoseconds as i64);
-  }
-  let fileType = if (stat.type is DescriptorTypeDirectory) FileType.Directory
-      else FileType.RegularFile;
-  return {fileType: fileType, size: stat.size as i64, modified: modified};
-};
-
-/**
- * Closes a file once its contents stream is done: the host signals
- * that on `done`, after the last byte or when the reader drops the
- * stream. A failure there arrives after the response has started, so
- * there is nothing left to report it to.
- */
-async function closeWhenRead(
-  file: Descriptor,
-  done: Future<Outcome<void, ErrorCode>>
-): Future<void> {
-  await done;
-  file.[Disposable.dispose]();
-}
 
 /** Every `Accept-Encoding` value of a request, as one list. */
 let acceptEncodingOf = (req: Request): String => {

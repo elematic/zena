@@ -1,6 +1,6 @@
 /**
  * Filesystem Demo - Read and print a file
- * 
+ *
  * Build:
  *   npm run zena -w @zena-lang/zena-cli -- build examples/fs-demo.zena --target component -o fs-demo.wasm
  *
@@ -10,22 +10,25 @@
  *
  * Or in one step, on the zena host:
  *   npm run zena -w @zena-lang/zena-cli -- run examples/fs-demo.zena
- * 
+ *
  * The --dir flag grants filesystem access. Syntax: --dir HOST_PATH[::GUEST_PATH]
  *   --dir .           Maps current dir to "." in guest
  *   --dir /tmp::/data Maps host /tmp to guest /data
- * 
+ *
  * See: https://docs.wasmtime.dev/cli-options.html#--dir
+ *
+ * `zena:fs` is asynchronous: each call starts the host's file operation
+ * and `await` resumes once it is done. The same functions exist with a
+ * `Sync` suffix (`readFileSync`) for a synchronous `main`.
  */
 
 import { readFile, exists } from 'zena:fs';
 
-export let main = (): i32 => {
-  // Try to read hello.txt
+export async function main(): Future<i32> {
   let filename = "hello.txt";
-  
-  if (exists(filename)) {
-    let content = readFile(filename);
+
+  if (await exists(filename)) {
+    let content = await readFile(filename);
     console.log("Contents of " + filename + ":");
     console.log(content);
   } else {
@@ -36,4 +39,4 @@ export let main = (): i32 => {
   }
 
   return 0;
-};
+}

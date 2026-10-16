@@ -985,7 +985,7 @@ callback: it settles the Zena future tied to the handle that finished
 and runs whatever was waiting for it.
 
 A synchronous Zena program sometimes has to wait too. `zena:fs`'s
-`readFile` is synchronous, and the 0.3 filesystem is asynchronous
+`readFileSync` is synchronous, and the 0.3 filesystem is asynchronous
 throughout, so the read has to wait for the host to finish without
 returning to it. It does that in `blockOn`
 (`packages/stdlib/zena/wasi/block.zena`): one `waitable-set.wait` at a
@@ -1352,6 +1352,9 @@ What was built (2026-09-28):
   Part 5. Module initializers run in the core module's start function,
   outside any task, so a file read at module level or while a test
   suite registers traps; reads belong inside `main` and test bodies.
+  Since 2026-10-16 the asynchronous forms are the API and the
+  synchronous ones carry a `Sync` suffix
+  ([async-fs-cli.md](./async-fs-cli.md)).
 - The zena command's host is a component host. Its own interfaces are
   declared in `packages/stdlib/zena/host-wit/host.wit` (package
   `zena-cli:host@1.0.0`): `stack-trace` with `capture`, `process` with

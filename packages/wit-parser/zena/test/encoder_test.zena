@@ -14,7 +14,7 @@
 import { suite, test } from 'zena:test';
 import { isTrue } from 'zena:assert';
 import { getEnv } from 'zena:cli';
-import { GlobOptions, exists, glob, mkdir, readFile, writeFile, writeFileBytes } from 'zena:fs';
+import { GlobOptions, existsSync, globSync, mkdirSync, readFileSync, writeFileSync, writeFileBytesSync } from 'zena:fs';
 import { runIn } from 'zena:process';
 import { encodeTypesOnlyComponent } from '../component-encoder.zena';
 import { parse } from '../wit.zena';
@@ -39,7 +39,7 @@ let fixtureNames = (): Array<String> => {
   let options = new GlobOptions();
   options.cwd = FIXTURES;
   let names = new GrowableArray<String>();
-  for (let name in glob('*.wit', options)) {
+  for (let name in globSync('*.wit', options)) {
     if (!name.endsWith('.golden.wit')) {
       names.push(name);
     }
@@ -67,8 +67,8 @@ let wasmTools = (args: Array<String>): (boolean, String, String) => {
 
 export let tests = suite('WIT component encoder', (): void => {
   test('each fixture encodes, validates and round-trips', () => {
-    if (!exists(OUT)) {
-      mkdir(OUT);
+    if (!existsSync(OUT)) {
+      mkdirSync(OUT);
     }
     let updating = getEnv('UPDATE_WIT_GOLDENS') != null;
     let names = fixtureNames();
@@ -86,8 +86,8 @@ export let tests = suite('WIT component encoder', (): void => {
       let golden = `${FIXTURES}/${base}.golden.wit`;
 
       let encoded = try {
-        let component = encodeTypesOnlyComponent(parse(readFile(`${FIXTURES}/${name}`)), world);
-        writeFileBytes(out, component.bytes.toByteArray());
+        let component = encodeTypesOnlyComponent(parse(readFileSync(`${FIXTURES}/${name}`)), world);
+        writeFileBytesSync(out, component.bytes.toByteArray() as FixedArray<u8>);
         true
       } catch (e) {
         failures.push(`${name}: ${e.message}`);
@@ -110,15 +110,15 @@ export let tests = suite('WIT component encoder', (): void => {
       }
 
       if (updating) {
-        writeFile(golden, text);
+        writeFileSync(golden, text);
         console.log(`${name}: golden updated`);
         continue;
       }
-      if (!exists(golden)) {
+      if (!existsSync(golden)) {
         failures.push(`${name}: no golden at ${golden}; run with UPDATE_WIT_GOLDENS=1`);
         continue;
       }
-      let want = readFile(golden);
+      let want = readFileSync(golden);
       if (text != want) {
         failures.push(
           `${name}: round-tripped WIT differs from the golden\n--- golden\n${want}\n--- got\n${text}`,

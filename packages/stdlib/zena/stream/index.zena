@@ -472,3 +472,56 @@ export final class TextStream extends Stream<u8> {
 export function textStream(text: String): Stream<u8> {
   return new TextStream(text);
 }
+
+/**
+ * A stream over an array of bytes: reads copy out of the array from a
+ * cursor, with no writer and no pump coroutine, so a body or a file's
+ * contents built from bytes in hand costs one object.
+ */
+final class BytesStream extends Stream<u8> {
+  #bytes: FixedArray<u8>;
+  var #offset: i32 = 0;
+  var #stopped: boolean = false;
+
+  new(bytes: FixedArray<u8>) : #bytes = bytes, super();
+
+  read(buf: FixedArray<u8>): Future<i32> {
+    if (buf.length == 0) {
+      throw new Error('zena:stream: read buffer is empty');
+    }
+    if (this.#stopped || this.#offset >= this.#bytes.length) {
+      return Future.of(0);
+    }
+    let remaining = this.#bytes.length - this.#offset;
+    let n = if (remaining < buf.length) remaining else buf.length;
+    var i = 0;
+    while (i < n) {
+      buf[i] = this.#bytes[this.#offset + i];
+      i += 1;
+    }
+    this.#offset += n;
+    return Future.of(n);
+  }
+
+  readOne(): Future<Option<u8>> {
+    if (this.#stopped || this.#offset >= this.#bytes.length) {
+      return Future.of<Option<u8>>(none);
+    }
+    let b = this.#bytes[this.#offset];
+    this.#offset += 1;
+    return Future.of<Option<u8>>(some(b));
+  }
+
+  stop(): void {
+    this.#stopped = true;
+    super.stop();
+  }
+}
+
+/**
+ * A byte stream carrying `bytes`, then end-of-stream: a response or
+ * request body, or a file's new contents, built from bytes in hand.
+ */
+export function bytesStream(bytes: FixedArray<u8>): Stream<u8> {
+  return new BytesStream(bytes);
+}

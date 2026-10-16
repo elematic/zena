@@ -3,22 +3,26 @@
 ## Status
 
 Implemented over `wasi:filesystem@0.3.0`, in
-`packages/stdlib/zena/fs/component.zena`, since 2026-09-28, with the
-synchronous API described below (`readFile`, `writeFile`, `listDir`,
-`Descriptor`, the `Result`-returning variants). The 0.3 filesystem is
-asynchronous throughout: every descriptor method returns a future, and a
-file's contents arrive as a `stream<u8>`. A synchronous call waits for the
-future in `blockOn` (`packages/stdlib/zena/wasi/block.zena`), which blocks
-in `waitable-set.wait` on the running task's set and dispatches each event
-the way the component's callback would, so timers and other tasks make
-progress while a read is in flight. Only a task the host lifted async may
-block, and the compiler lifts `main` async for any program that reaches
-this wait ("When `main` is lifted async" in
+`packages/stdlib/zena/fs/component.zena`, since 2026-09-28. The 0.3
+filesystem is asynchronous throughout: every descriptor method returns a
+future, and a file's contents arrive as a `stream<u8>`. Since 2026-10-16
+the API is asynchronous too (`readFile(path): Future<String>`,
+`Descriptor` with asynchronous methods, bytes as `FixedArray<u8>`), and the
+synchronous forms carry a `Sync` suffix (`readFileSync`), each waiting for
+its asynchronous twin in `blockOn` (`packages/stdlib/zena/wasi/block.zena`),
+which blocks in `waitable-set.wait` on the running task's set and dispatches
+each event the way the component's callback would, so timers and other
+tasks make progress while a read is in flight. Only a task the host lifted
+async may block, and the compiler lifts `main` async for any program that
+reaches this wait ("When `main` is lifted async" in
 [component-emission.md](./component-emission.md)). Module initializers run
-before any task exists, so a file read at module level traps; reads belong
-inside `main`. The first implementation, over WASI preview 1 with
-linear-memory buffers, was deleted with the rest of preview 1; the
-sections below that describe pointers and `path_open` are its record.
+before any task exists, so a `Sync` call at module level traps; the
+asynchronous forms are the ones for a synchronous WIT export, and reads
+belong inside `main` and test bodies. The design of the split is in
+[async-fs-cli.md](./async-fs-cli.md). The first implementation, over WASI
+preview 1 with linear-memory buffers, was deleted with the rest of preview
+1; the sections below that describe pointers and `path_open` are its
+record, and their function names are the ones the `Sync` forms carry today.
 
 ## Overview
 
@@ -857,11 +861,8 @@ class Path {
 
 ### Async I/O (WASI 0.3)
 
-The implementation is already over the asynchronous 0.3 interfaces; what
-`zena:fs` exports is the synchronous API on top of them. An asynchronous
-API, `readFile` returning a `Future<String>` that a program awaits instead
-of blocking on, is a thin layer over the same synthesized modules and
-could be added beside the synchronous one.
+Done: the exported API is the asynchronous one, and the synchronous forms
+are its `Sync`-suffixed twins. See [async-fs-cli.md](./async-fs-cli.md).
 
 ---
 

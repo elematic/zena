@@ -49,7 +49,7 @@
 import { Set } from 'zena:collections';
 import { ByteBuffer, StringBuilder } from 'zena:core';
 import { Process, ProcessResult, spawn } from 'zena:process';
-import { readFile, readFileBytes, writeFile, writeFileBytes, mkdir, exists, unlink } from 'zena:fs';
+import { readFileSync, readFileBytesSync, writeFileSync, writeFileBytesSync, mkdirSync, existsSync, unlinkSync } from 'zena:fs';
 import {
   Discovery,
   TestFile,
@@ -317,9 +317,9 @@ class FsHost implements CompilerHost {
       return synthesizeWitModule(this, path);
     }
     if (path.startsWith('zena:')) {
-      return readFile(`${stdlibRoot}/${stdlibIdToRelativeFile(path)}`);
+      return readFileSync(`${stdlibRoot}/${stdlibIdToRelativeFile(path)}`);
     }
-    return readFile(path);
+    return readFileSync(path);
   }
 
   listDir(path: String): Array<String> | null {
@@ -384,10 +384,10 @@ let bytesEqual = (a: ByteArray, b: ByteArray): boolean => {
  */
 let emit = (relPath: String, bytes: ByteArray): void => {
   let path = wasmPathOf(relPath);
-  if (exists(path) && bytesEqual(readFileBytes(path), bytes)) {
+  if (existsSync(path) && bytesEqual(readFileBytesSync(path) as ByteArray, bytes)) {
     return;
   }
-  writeFileBytes(path, bytes);
+  writeFileBytesSync(path, bytes as FixedArray<u8>);
 };
 
 /** The tests this run covers, in discovery order — the order slices index into. */
@@ -449,7 +449,7 @@ let compileOne = (
       }
     }
     if (hasError) {
-      writeFile(statusPathOf(f.relPath), errors.toString());
+      writeFileSync(statusPathOf(f.relPath), errors.toString());
       // Still threaded: the check ran, and its per-file results are
       // valid for every file that did check.
       checked
@@ -480,13 +480,13 @@ let compileOne = (
         .generate(new Program(units, entryUnit))
         .toByteArray();
       emit(f.relPath, bytes);
-      writeFile(statusPathOf(f.relPath), 'ok');
+      writeFileSync(statusPathOf(f.relPath), 'ok');
       checked
     }
   } catch (e) {
     // A throw out of the compiler is a compiler bug, not a test
     // failure, but it still belongs to one test — name it and carry on.
-    writeFile(statusPathOf(f.relPath), `the compiler threw: ${e.message}`);
+    writeFileSync(statusPathOf(f.relPath), `the compiler threw: ${e.message}`);
     null
   };
 };
@@ -539,7 +539,7 @@ let compileSlice = (args: Array<String>): i32 => {
       // reported as a pass. Only a status written by *this* run makes
       // the module beside it usable.
       let statusPath = statusPathOf(f.relPath);
-      if (exists(statusPath)) { unlink(statusPath); }
+      if (existsSync(statusPath)) { unlinkSync(statusPath); }
       previous = compileOne(compiler, f, previous, settings);
     }
     pos += 1;
@@ -559,8 +559,8 @@ let runCompilePhase = (
   workers: i32,
   filter: String
 ): boolean => {
-  if (!exists(outRoot)) {
-    mkdir(outRoot);
+  if (!existsSync(outRoot)) {
+    mkdirSync(outRoot);
   }
   let running = new Array<Process>(workers);
   var i = 0;
@@ -693,8 +693,8 @@ export let runPortableExecution = (args: Array<String>): i32 => {
     let expectation = expectationOf(file);
     let wasmPath = wasmPathOf(file.relPath);
     let statusPath = statusPathOf(file.relPath);
-    let status = if (exists(statusPath)) { readFile(statusPath) } else { null };
-    if (status == null || status != 'ok' || !exists(wasmPath)) {
+    let status = if (existsSync(statusPath)) { readFileSync(statusPath) } else { null };
+    if (status == null || status != 'ok' || !existsSync(wasmPath)) {
       // Anything other than an `ok` written by this run's compile phase
       // means this test has no module to run: it failed to compile, or
       // its worker died before reaching it. Either way it failed, and
