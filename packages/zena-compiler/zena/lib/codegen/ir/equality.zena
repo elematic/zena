@@ -23,7 +23,7 @@ import {
 } from '../codegen-utils.zena';
 import { eraseTypeParameters } from '../type-mapping.zena';
 import {
-  ValueEqField, valueEqFields, valueEqKey, valueEqOperand,
+  ValueEqField, valueEqFields, valueEqKey, valueEqOperand, valueHashKey,
 } from '../value-equality.zena';
 import { IrBody, IrOp, IrRefField, IrRefFunc } from './ir.zena';
 import { lowerExpr } from './lowering.zena';
@@ -899,6 +899,134 @@ export let lowerValueEqFunction = (cx: LoweringContext): IrBody => {
   return cx.b.finish();
 };
 
+/**
+ * `hashOf(v)` when `v`, a reference, is not null, and 0 when it is.
+ * Non-null values pass straight through.
+ */
+let nullSafeHash = (cx: LoweringContext, v: i32,
+    hashOf: (nonNull: i32) => i32): i32 => {
+  let i32vt = new ValTypeI32() as ValType;
+  let vt = cx.valueTypeOf(v);
+  if (!isNullableRef(vt)) {
+    return hashOf(v);
+  }
+  let nullB = cx.b.newBlock();
+  let valueB = cx.b.newBlock();
+  let mergeB = cx.b.newBlock();
+  let result = cx.b.blockParam(mergeB, i32vt);
+  cx.b.brIf(cx.b.emit(IrOp.ref_is_null, i32vt, v, -1),
+      nullB, noValues(), valueB, noValues());
+  cx.b.switchTo(nullB);
+  cx.b.br(mergeB, oneValue(cx.b.constI32(0, i32vt)));
+  cx.b.switchTo(valueB);
+  let nonNull = cx.coerceTo(v,
+      new ValTypeRef(refTargetOf(vt) as WasmStruct) as ValType);
+  cx.b.br(mergeB, oneValue(hashOf(nonNull)));
+  cx.b.switchTo(mergeB);
+  return result;
+};
+
+/**
+ * The hash of `v`, a record or tuple of type `t` (with or without
+ * `| null`), through the type's hash function. Null hashes to 0.
+ */
+export let lowerValueHash = (cx: LoweringContext, t: Type, v: i32): i32 => {
+  let type = valueEqOperand(t);
+  if (type == null) {
+    bail(cx, 'structural hash operand');
+  }
+  var found: WasmFunction | null = null;
+  if (let (true, f) = cx.wasm.valueHashFuncs.get(valueHashKey(type as Type))) {
+    found = f;
+  }
+  if (found == null) {
+    bail(cx, 'structural hash not reached');
+  }
+  let fn = found as WasmFunction;
+  return nullSafeHash(cx, v, (nonNull) => callUnary(cx, fn, nonNull));
+};
+
+/**
+ * The hash of one field of type `t`, consistent with comparing it by its
+ * type's `==` (`valueFieldEq`): nested records and tuples through their
+ * functions, numbers by value, `String` by content, a class through its
+ * `hashCode`. A field whose `==` is identity or erased, such as a class
+ * without `hashCode`, an array or a closure, contributes 0, which no
+ * `==` can disagree with.
+ */
+let fieldHash = (cx: LoweringContext, t: Type, v: i32): i32 => {
+  let i32vt = new ValTypeI32() as ValType;
+  if (valueEqOperand(t) != null) {
+    return lowerValueHash(cx, t, v);
+  }
+  let numeric = hashNumeric(cx, v);
+  if (numeric >= 0) {
+    return numeric;
+  }
+  let ct = fieldClassOf(cx, t);
+  if (ct == null) {
+    return cx.b.constI32(0, i32vt);
+  }
+  let fieldClass = ct as ClassType;
+  let strClass = cx.wasm.stringClass;
+  let isString = strClass != null &&
+      cx.canonicalKeyOf(fieldClass) == cx.canonicalKeyOf(strClass);
+  if (!isString && !fieldClass.members.has('hashCode')) {
+    return cx.b.constI32(0, i32vt);
+  }
+  return nullSafeHash(cx, v, (nonNull) => hashClassValue(cx, fieldClass, nonNull));
+};
+
+/**
+ * The body of a record or tuple type's hash function (`valueHashType`
+ * set): `h * 31 + field` over the fields in `valueEqFields` order, as the
+ * case-class `hashCode` folds. An optional field contributes its value's
+ * hash only when present, so two equal records hash alike.
+ */
+export let lowerValueHashFunction = (cx: LoweringContext): IrBody => {
+  let t = cx.func.valueHashType as Type;
+  let fieldsOpt = valueEqFields(t, t);
+  let sig = cx.func.signature;
+  if (fieldsOpt == null || sig.params.length != 1 || sig.returns.length != 1) {
+    bail(cx, 'structural hash function shape');
+  }
+  let fields = fieldsOpt as GrowableArray<ValueEqField>;
+  let i32vt = new ValTypeI32() as ValType;
+  let entry = cx.b.newBlock();
+  let v = cx.b.blockParam(entry, sig.params[0]);
+  cx.b.switchTo(entry);
+  var h = cx.b.constI32(0, i32vt);
+  for (let f in fields) {
+    var fh = -1;
+    if (t is RecordType) {
+      let d = cx.recordDispatchOf(t);
+      if (f.leftOptional) {
+        let presentB = cx.b.newBlock();
+        let absentB = cx.b.newBlock();
+        let mergeB = cx.b.newBlock();
+        let merged = cx.b.blockParam(mergeB, i32vt);
+        cx.b.brIf(presenceOf(cx, d, f.name, true, v),
+            presentB, noValues(), absentB, noValues());
+        cx.b.switchTo(presentB);
+        cx.b.br(mergeB, oneValue(
+            fieldHash(cx, f.left, cx.recordDispatchRead(d, f.name, v))));
+        cx.b.switchTo(absentB);
+        cx.b.br(mergeB, oneValue(cx.b.constI32(0, i32vt)));
+        cx.b.switchTo(mergeB);
+        fh = merged;
+      } else {
+        fh = fieldHash(cx, f.left, cx.recordDispatchRead(d, f.name, v));
+      }
+    } else {
+      fh = fieldHash(cx, f.left, tupleElement(cx, v, f.name));
+    }
+    let scaled = cx.b.binary(IrOp.i32_mul, i32vt, h, cx.b.constI32(31, i32vt));
+    h = cx.b.binary(IrOp.i32_add, i32vt, scaled, fh);
+  }
+  cx.b.ret(h);
+  return cx.b.finish();
+};
+
 /** Element `name` (its index as a string) of the tuple `t`. */
 let tupleElement = (cx: LoweringContext, t: i32, name: String): i32 => {
   let st = refTargetOf(cx.valueTypeOf(t));
@@ -1112,6 +1240,13 @@ export let lowerEqIntrinsic = (cx: LoweringContext, call: CallExpression): i32 =
     let eqVec = cx.b.emit(IrOp.simd_binary, new ValTypeV128(), cx.b.pushExtra(twoValues(a, b2)), 0x23);
     return cx.b.emit(IrOp.simd_unary, i32vt, eqVec, 0x63);
   }
+  // Records and tuples compare field by field (lowerValueEq).
+  let ta0 = cx.substitutedNodeType(call.args[0]);
+  let tb0 = cx.substitutedNodeType(call.args[1]);
+  if (ta0 != null && tb0 != null && valueEqOperand(ta0 as Type) != null &&
+      valueEqOperand(tb0 as Type) != null) {
+    return lowerValueEq(cx, ta0 as Type, a, tb0 as Type, b2);
+  }
   // Reference operands: String content equality, or a class
   // operator== behind the reference fast path.
   let ctA = cx.classTypeOfValue(a);
@@ -1153,11 +1288,32 @@ export let lowerEqIntrinsic = (cx: LoweringContext, call: CallExpression): i32 =
  *   overridden hashCode -> vtable dispatch.
  */
 export let lowerHashIntrinsic = (cx: LoweringContext, call: CallExpression): i32 => {
-  new ValTypeI32() as ValType;
   if (call.args.length != 1) {
     bail(cx, 'hash arity');
   }
   let v = lowerExpr(cx, call.args[0], null);
+  // A record or tuple hashes its fields, through its type's function.
+  let t = cx.substitutedNodeType(call.args[0]);
+  if (t != null && valueEqOperand(t as Type) != null) {
+    return lowerValueHash(cx, t as Type, v);
+  }
+  let numeric = hashNumeric(cx, v);
+  if (numeric >= 0) {
+    return numeric;
+  }
+  let ctV = cx.classTypeOfValue(v);
+  if (ctV == null) {
+    bail(cx, 'hash operand type');
+  }
+  return hashClassValue(cx, ctV as ClassType, v);
+};
+
+/**
+ * The hash of a numeric or vector value, by its wasm type: an i32 is
+ * itself, an i64 folds, floats hash their bits after normalizing -0.0.
+ * -1 when `v` is a reference.
+ */
+let hashNumeric = (cx: LoweringContext, v: i32): i32 => {
   let vv = cx.valueTypeOf(v);
   if (vv is ValTypeI32) {
     return v;
@@ -1189,10 +1345,16 @@ export let lowerHashIntrinsic = (cx: LoweringContext, call: CallExpression): i32
     let x23 = cx.b.binary(IrOp.i32_xor, i32vt, e2, e3);
     return cx.b.binary(IrOp.i32_xor, i32vt, x01, x23);
   }
-  let ctV = cx.classTypeOfValue(v);
-  if (ctV == null) {
-    bail(cx, 'hash operand type');
-  }
+  return -1;
+};
+
+/**
+ * The hash of `v`, a value of class `ctV`: `String` through the runtime
+ * helper, any other class through its `hashCode`, called directly when
+ * no reached subclass overrides it and through the vtable when one does.
+ */
+let hashClassValue = (cx: LoweringContext, ctV: ClassType, v: i32): i32 => {
+  let vv = cx.valueTypeOf(v);
   let strClass = cx.wasm.stringClass;
   if (strClass != null &&
       cx.canonicalKeyOf(ctV) == cx.canonicalKeyOf(strClass)) {

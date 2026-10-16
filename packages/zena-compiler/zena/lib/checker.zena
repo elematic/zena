@@ -6614,6 +6614,7 @@ let applyAndCheckTypeArguments = (
  * - Enums and distinct type aliases, judged by their underlying type.
  * - Case classes that derive their hashCode()/operator ==. One that inherits
  *   them from its base satisfies the constraint only if the base does.
+ * - Records and tuples, which compare and hash field by field.
  */
 let satisfiesHashableConstraint = (
   ctx: CheckerContext,
@@ -6672,6 +6673,11 @@ let satisfiesHashableConstraint = (
       return true;
     }
     case ClassType as ct: { return ct.derivesEquality; }
+    // Records and tuples are values: `==` compares their fields, and the
+    // compiler derives a hash per shape from them (equality.md,
+    // "Structural equality for records and tuples").
+    case RecordT: { return true; }
+    case TupleT: { return true; }
     case _: { return false; }
   }
 };

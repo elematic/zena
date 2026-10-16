@@ -1,0 +1,68 @@
+// @mode: run
+// @result: 1
+// Records and tuples are hashable, so they can key a map or fill a set:
+// a key built separately but equal field by field finds the entry. That
+// holds for nested records, `String` and float fields, optional fields
+// and nullable fields.
+import { HashMap, HashSet } from 'zena:collections';
+
+type Pos = {x: i32, y: i32};
+type Keyed = {name: String, at: Pos, weight: f64};
+type Opt = {id: i32, tag?: String};
+
+let pos = (x: i32, y: i32): Pos => ({x, y});
+let pair = (a: i32, b: String): (i32, String) => (a, b);
+
+export let main = (): i32 => {
+  let byPair = new HashMap<(i32, String), i32>();
+  byPair[pair(1, 'a')] = 10;
+  byPair[pair(2, 'b')] = 20;
+  if (let (true, v) = byPair.get(pair(1, 'a'))) {
+    if (v != 10) {
+      return 10;
+    }
+  } else {
+    return 11;
+  }
+  if (byPair.has(pair(1, 'b'))) {
+    return 12;
+  }
+
+  let byPos = new HashMap<Pos, String>();
+  for (var i = 0; i < 20; i += 1) {
+    byPos[pos(i, i * 2)] = `p${i}`;
+  }
+  if (byPos.size != 20) {
+    return 13;
+  }
+  byPos[pos(3, 6)] = 'again';
+  if (byPos.size != 20 || byPos[pos(3, 6)] != 'again') {
+    return 14;
+  }
+
+  let nested = new HashSet<Keyed>();
+  nested.add({name: 'n', at: pos(1, 2), weight: 0.5});
+  nested.add({name: 'n', at: pos(1, 2), weight: 0.5});
+  nested.add({name: 'n', at: pos(1, 3), weight: 0.5});
+  if (nested.size != 2 || !nested.has({name: 'n', at: pos(1, 2), weight: 0.5})) {
+    return 15;
+  }
+
+  let opts = new HashSet<Opt>();
+  opts.add({id: 1});
+  opts.add({id: 1, tag: 't'});
+  opts.add({id: 1});
+  opts.add({id: 1, tag: 't'});
+  if (opts.size != 2 || !opts.has({id: 1}) || opts.has({id: 1, tag: 'u'})) {
+    return 16;
+  }
+
+  let nullable = new HashSet<{label: String | null}>();
+  nullable.add({label: null});
+  nullable.add({label: null});
+  nullable.add({label: 'x'});
+  if (nullable.size != 2) {
+    return 17;
+  }
+  return 1;
+};
