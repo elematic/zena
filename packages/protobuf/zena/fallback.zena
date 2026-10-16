@@ -37,7 +37,7 @@ let CODE_UNKNOWN = 2;
  * The `google.rpc.Code` for an HTTP status, as Google APIs map them, for
  * an error response without a `google.rpc.Status` body.
  */
-export let codeForHttpStatus = (status: i32): i32 => {
+export function codeForHttpStatus(status: i32): i32 {
   if (status == 400) { return 3; }
   if (status == 401) { return 16; }
   if (status == 403) { return 7; }
@@ -50,7 +50,7 @@ export let codeForHttpStatus = (status: i32): i32 => {
   if (status == 504) { return 4; }
   if (status >= 500) { return 13; }
   return CODE_UNKNOWN;
-};
+}
 
 /**
  * Calls RPCs on one server with the fallback protocol. `origin` is the
@@ -99,15 +99,15 @@ export final class FallbackTransport implements ProtoTransport {
  * The error a non-200 response stands for: its `google.rpc.Status` when it
  * carries one, otherwise the code for its HTTP status.
  */
-let errorFor = (exchange: Exchange, body: ProtoView): RpcError => {
+function errorFor(exchange: Exchange, body: ProtoView): RpcError {
   if (exchange.contentTypeIs('application/x-protobuf')) {
     let status = try {
       new RpcError(body.int32(1), body.string(2), body)
     } catch (e) {
       null
     };
-    if (status != null && (status as RpcError).code != 0) {
-      return status as RpcError;
+    if (status != null && status.code != 0) {
+      return status;
     }
   }
   return new RpcError(
@@ -115,7 +115,7 @@ let errorFor = (exchange: Exchange, body: ProtoView): RpcError => {
     `the server answered with HTTP ${exchange.status}`,
     ProtoView.empty()
   );
-};
+}
 
 /**
  * The responses in `body`, an encoded `google.rpc.StreamBody` arriving as a
@@ -123,9 +123,10 @@ let errorFor = (exchange: Exchange, body: ProtoView): RpcError => {
  * an `RpcError` unless it is OK. `FallbackTransport.serverStream` reads
  * response bodies with it.
  */
-export let readStreamBody = (body: Stream<u8>): AsyncIterator<ProtoView> =>
-  new StreamBodyReader(Future.of(Exchange.of(200, Fields.create(), body,
+export function readStreamBody(body: Stream<u8>): AsyncIterator<ProtoView> {
+  return new StreamBodyReader(Future.of(Exchange.of(200, Fields.create(), body,
       Future.of<Outcome<Option<Fields>, ErrorCode>>(new Ok<Option<Fields>, ErrorCode>(none)))));
+}
 
 /** The field numbers of `google.rpc.StreamBody`. */
 let STREAM_MESSAGE = 1;
@@ -143,7 +144,7 @@ final class StreamBodyReader implements AsyncIterator<ProtoView> {
   var #buffer: ByteArray = newByteArray(4096);
   var #start: i32 = 0;
   var #end: i32 = 0;
-  var #chunk: FixedArray<u8> = new FixedArray<u8>(4096, 0);
+  #chunk: FixedArray<u8> = new FixedArray<u8>(4096, 0);
   /** Set once the status arrived and was OK: nothing more is handed out. */
   var #finished: boolean = false;
 
@@ -156,7 +157,7 @@ final class StreamBodyReader implements AsyncIterator<ProtoView> {
     if (this.#exchange != null) {
       let message = this.#take();
       if (message != null) {
-        return (1, message as ProtoView, _);
+        return (1, message, _);
       }
       if (this.#finished) {
         return (0, _, _);
@@ -174,7 +175,7 @@ final class StreamBodyReader implements AsyncIterator<ProtoView> {
     while (true) {
       let message = this.#take();
       if (message != null) {
-        return some(message as ProtoView);
+        return some(message);
       }
       if (this.#finished) {
         return none;

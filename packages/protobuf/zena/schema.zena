@@ -51,7 +51,7 @@ export enum Scalar {
 }
 
 /** The scalar a `.proto` type name denotes, or -1 when it names a message or enum. */
-export let scalarNamed = (name: String): i32 => {
+export function scalarNamed(name: String): i32 {
   if (name == 'double') { return Scalar.Double as i32; }
   if (name == 'float') { return Scalar.Float as i32; }
   if (name == 'int32') { return Scalar.Int32 as i32; }
@@ -68,7 +68,7 @@ export let scalarNamed = (name: String): i32 => {
   if (name == 'string') { return Scalar.String as i32; }
   if (name == 'bytes') { return Scalar.Bytes as i32; }
   return -1;
-};
+}
 
 /** A message declaration with its place in the schema. */
 export final class MessageInfo {
@@ -176,7 +176,7 @@ export final class Schema {
  * Loads `paths` and everything they import, and resolves every type
  * reference in them. `read` returns a file's source, or null.
  */
-export let loadSchema = (paths: Array<String>, read: (path: String) => String | null): Schema => {
+export function loadSchema(paths: Array<String>, read: (path: String) => String | null): Schema {
   let schema = new Schema();
   let loaded = new HashSet<String>();
   /** For each queued import, the file that imported it first; roots have none. */
@@ -202,7 +202,7 @@ export let loadSchema = (paths: Array<String>, read: (path: String) => String | 
       schema.missing.push(`${importers.getOr(path, '?')}: ${path}`);
       continue;
     }
-    let file = parseProto(path, source as String);
+    let file = parseProto(path, source);
     schema.files.push(file);
     if (isRoot) {
       schema.rootFiles.push(file);
@@ -239,12 +239,13 @@ export let loadSchema = (paths: Array<String>, read: (path: String) => String | 
     }
   }
   return schema;
-};
+}
 
-let qualify = (scope: String, name: String): String =>
-  if (scope.length == 0) name else `${scope}.${name}`;
+function qualify(scope: String, name: String): String {
+  return if (scope.length == 0) name else `${scope}.${name}`;
+}
 
-let indexMessage = (schema: Schema, file: ProtoFile, message: MessageDecl, scope: String): void => {
+function indexMessage(schema: Schema, file: ProtoFile, message: MessageDecl, scope: String): void {
   let fullName = qualify(scope, message.name);
   let info = new MessageInfo(message, fullName, file);
   schema.messages[fullName] = info;
@@ -255,17 +256,17 @@ let indexMessage = (schema: Schema, file: ProtoFile, message: MessageDecl, scope
   for (let e in message.enums) {
     indexEnum(schema, file, e, fullName);
   }
-};
+}
 
-let indexEnum = (schema: Schema, file: ProtoFile, e: EnumDecl, scope: String): void => {
+function indexEnum(schema: Schema, file: ProtoFile, e: EnumDecl, scope: String): void {
   let fullName = qualify(scope, e.name);
   let info = new EnumInfo(e, fullName, file);
   schema.enums[fullName] = info;
   schema.enumOrder.push(info);
-};
+}
 
 /** Whether an option list sets `(google.api.field_behavior)` to `behavior`. */
-let hasFieldBehavior = (options: GrowableArray<OptionDecl>, behavior: String): boolean => {
+function hasFieldBehavior(options: GrowableArray<OptionDecl>, behavior: String): boolean {
   for (let option in options) {
     if (option.name != '(google.api.field_behavior)') {
       continue;
@@ -275,37 +276,38 @@ let hasFieldBehavior = (options: GrowableArray<OptionDecl>, behavior: String): b
     }
   }
   return false;
-};
+}
 
 /** Whether `value` is the identifier `name`, or a list containing it. */
-let optionNames = (value: OptionValue, name: String): boolean => {
+function optionNames(value: OptionValue, name: String): boolean {
   if (value is OptionIdent) {
-    return (value as OptionIdent).name == name;
+    return value.name == name;
   }
   if (value is OptionList) {
-    for (let item in (value as OptionList).values) {
+    for (let item in value.values) {
       if (optionNames(item, name)) {
         return true;
       }
     }
   }
   return false;
-};
+}
 
 /** The identifier an option is set to, or null when the option is absent or not an identifier. */
-let optionIdent = (options: GrowableArray<OptionDecl>, name: String): String | null => {
+function optionIdent(options: GrowableArray<OptionDecl>, name: String): String | null {
   for (let option in options) {
     if (option.name == name && option.value is OptionIdent) {
       return (option.value as OptionIdent).name;
     }
   }
   return null;
-};
+}
 
-let isPackable = (scalar: i32): boolean =>
-  scalar >= 0 && scalar != (Scalar.String as i32) && scalar != (Scalar.Bytes as i32);
+function isPackable(scalar: i32) {
+  return scalar >= 0 && scalar != (Scalar.String as i32) && scalar != (Scalar.Bytes as i32);
+}
 
-let resolveFields = (schema: Schema, message: MessageInfo): void => {
+function resolveFields(schema: Schema, message: MessageInfo): void {
   let file = message.file;
   for (let field in message.decl.fields) {
     let where = `${message.fullName}.${field.name}`;
@@ -336,15 +338,15 @@ let resolveFields = (schema: Schema, message: MessageInfo): void => {
       packed
     ));
   }
-};
+}
 
-let resolveFieldType = (
+function resolveFieldType(
   schema: Schema,
   name: String,
   scope: String,
   file: ProtoFile,
   where: String
-): FieldType => {
+): FieldType {
   let scalar = scalarNamed(name);
   if (scalar >= 0) {
     return new FieldType(scalar, null, null);
@@ -353,7 +355,7 @@ let resolveFieldType = (
   if (fullName == null) {
     throw unknownType(schema, name, file, where);
   }
-  let found = fullName as String;
+  let found = fullName;
   if (let (true, message) = schema.messages.get(found)) {
     return new FieldType(-1, message, null);
   }
@@ -361,31 +363,31 @@ let resolveFieldType = (
     return new FieldType(-1, null, e);
   }
   throw unknownType(schema, name, file, where);
-};
+}
 
-let resolveMessage = (
+function resolveMessage(
   schema: Schema,
   name: String,
   scope: String,
   file: ProtoFile,
   where: String
-): MessageInfo => {
+): MessageInfo {
   let fullName = lookup(schema, name, scope);
   if (fullName != null) {
-    if (let (true, message) = schema.messages.get(fullName as String)) {
+    if (let (true, message) = schema.messages.get(fullName)) {
       return message;
     }
   }
   throw unknownType(schema, name, file, where);
-};
+}
 
-let unknownType = (schema: Schema, name: String, file: ProtoFile, where: String): SchemaError => {
+function unknownType(schema: Schema, name: String, file: ProtoFile, where: String): SchemaError {
   var message = `${file.path}: ${where} refers to unknown type ${name}`;
   if (schema.missing.length > 0) {
     message = `${message} (imports not found: ${joinStrings(schema.missing, ', ')})`;
   }
   return new SchemaError(message);
-};
+}
 
 /**
  * The full name `name` refers to from inside `scope`, or null. A leading
@@ -393,7 +395,7 @@ let unknownType = (schema: Schema, name: String, file: ProtoFile, where: String)
  * that declares it wins, as in C++ name lookup: from scope `a.b.C`, the
  * name `D.E` is tried as `a.b.C.D.E`, `a.b.D.E`, `a.D.E` and `D.E`.
  */
-let lookup = (schema: Schema, name: String, scope: String): String | null => {
+function lookup(schema: Schema, name: String, scope: String): String | null {
   if (name.startsWith('.')) {
     let absolute = name.sliceBytes(1, name.length);
     return if (declares(schema, absolute)) absolute else null;
@@ -410,13 +412,14 @@ let lookup = (schema: Schema, name: String, scope: String): String | null => {
     current = parentScope(current);
   }
   return null;
-};
+}
 
-let declares = (schema: Schema, fullName: String): boolean =>
-  schema.messages.has(fullName) || schema.enums.has(fullName);
+function declares(schema: Schema, fullName: String): boolean {
+  return schema.messages.has(fullName) || schema.enums.has(fullName);
+}
 
 /** `a.b.c` without its last component; '' for a single component. */
-let parentScope = (scope: String): String => {
+function parentScope(scope: String): String {
   var i = scope.length - 1;
   while (i >= 0) {
     if (scope.getByteAt(i) == 0x2E) {
@@ -425,7 +428,7 @@ let parentScope = (scope: String): String => {
     i -= 1;
   }
   return '';
-};
+}
 
 /**
  * Marks what the generator emits. With no `roots`, that is every service,
@@ -434,7 +437,7 @@ let parentScope = (scope: String): String => {
  * Either way, every message and enum a marked declaration refers to is
  * marked too.
  */
-export let markReached = (schema: Schema, roots: Array<String>): GrowableArray<ServiceInfo> => {
+export function markReached(schema: Schema, roots: Array<String>): GrowableArray<ServiceInfo> {
   let services = new GrowableArray<ServiceInfo>();
   let work = new GrowableArray<MessageInfo>();
   if (roots.length == 0) {
@@ -501,4 +504,4 @@ export let markReached = (schema: Schema, roots: Array<String>): GrowableArray<S
     }
   }
   return services;
-};
+}
