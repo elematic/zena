@@ -1,0 +1,86 @@
+// @mode: run
+// @result: 1
+// The hand-written `operator ==` and `hashCode()` that the language
+// reference gives as a case class's derived pair answer exactly what the
+// derived pair does, field kind by field kind. If this fails, the
+// reference is wrong.
+
+import { hash } from 'zena:core';
+
+class Pos(line: i32, col: i32)
+
+class Derived(a: i32, b: i64, c: f64, d: boolean, s: String, p: Pos,
+    t: (i32, String), r: {x: i32, y: f64}, n?: Pos)
+
+class Written(a: i32, b: i64, c: f64, d: boolean, s: String, p: Pos,
+    t: (i32, String), r: {x: i32, y: f64}, n?: Pos) {
+  operator ==(other: Written): boolean {
+    return this.a == other.a && this.b == other.b && this.c == other.c &&
+        this.d == other.d && this.s == other.s && this.p == other.p &&
+        this.t == other.t && this.r == other.r && this.n == other.n;
+  }
+
+  hashCode(): i32 {
+    var h = hash(this.a);
+    h = h * 31 + hash(this.b);
+    h = h * 31 + hash(this.c);
+    h = h * 31 + hash(this.d);
+    h = h * 31 + hash(this.s);
+    h = h * 31 + hash(this.p);
+    h = h * 31 + hash(this.t);
+    h = h * 31 + hash(this.r);
+    let n = this.n;
+    h = h * 31 + (if (n == null) 0 else hash(n));
+    return h;
+  }
+}
+
+class DerivedOne(v: i32)
+
+class WrittenOne(v: i32) {
+  operator ==(other: WrittenOne): boolean {
+    return this.v == other.v;
+  }
+
+  hashCode(): i32 {
+    return hash(this.v);
+  }
+}
+
+let derived = (i: i32, n: Pos | null): Derived =>
+    new Derived(i, (i as i64) * 5000000000, (i as f64) * 0.5, i % 2 == 0,
+        `s${i}`, new Pos(i, i + 1), (i, `t${i}`), {x: i, y: (i as f64) * 0.25}, n);
+
+let written = (i: i32, n: Pos | null): Written =>
+    new Written(i, (i as i64) * 5000000000, (i as f64) * 0.5, i % 2 == 0,
+        `s${i}`, new Pos(i, i + 1), (i, `t${i}`), {x: i, y: (i as f64) * 0.25}, n);
+
+export let main = (): i32 => {
+  for (var i = -3; i < 4; i += 1) {
+    let n = if (i % 2 == 0) new Pos(i, -i) else null;
+    if (derived(i, n).hashCode() != written(i, n).hashCode()) {
+      return 10 + i;
+    }
+    if ((derived(i, n) == derived(i, n)) != (written(i, n) == written(i, n))) {
+      return 20 + i;
+    }
+    if ((derived(i, n) == derived(i + 1, n)) != (written(i, n) == written(i + 1, n))) {
+      return 30 + i;
+    }
+    if ((derived(i, n) == derived(i, null)) != (written(i, n) == written(i, null))) {
+      return 40 + i;
+    }
+    if (new DerivedOne(i).hashCode() != new WrittenOne(i).hashCode()) {
+      return 50 + i;
+    }
+    if ((new DerivedOne(i) == new DerivedOne(i + 1)) !=
+        (new WrittenOne(i) == new WrittenOne(i + 1))) {
+      return 60 + i;
+    }
+  }
+  // -0.0 and 0.0 are equal, so they hash alike in both.
+  if (derived(0, null).hashCode() != written(0, null).hashCode()) {
+    return 70;
+  }
+  return 1;
+};

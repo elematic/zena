@@ -2845,6 +2845,48 @@ class Point(x: f64, y: f64) {
 }
 ```
 
+#### Writing your own `==` and `hashCode()`
+
+A case class body can declare `operator ==` and `hashCode()` itself, and then
+neither is generated. It declares both or neither: a body that declares only
+one is a compile error, since the generated other half would disagree with it
+and put values the written `==` calls equal in different hash buckets. A case
+class that declares both is still `Hashable` and `Equatable` without an
+`implements` clause.
+
+The generated pair is equivalent to this hand-written one, which is the place
+to start from when changing it:
+
+```zena
+import { hash } from 'zena:core';
+
+class Line(from: Pos, label: (i32, String), note?: String) {
+  operator ==(other: Line): boolean {
+    return this.from == other.from && this.label == other.label &&
+        this.note == other.note;
+  }
+
+  hashCode(): i32 {
+    var h = hash(this.from);
+    h = h * 31 + hash(this.label);
+    let note = this.note;
+    h = h * 31 + (if (note == null) 0 else hash(note));
+    return h;
+  }
+}
+```
+
+- `==` compares each field with `==`: numbers by value, Strings by content,
+  records and tuples by their fields, and classes through their own
+  `operator ==`, which is identity for a class that declares none.
+- `hashCode()` starts from the first field's `hash()` and folds in the rest in
+  declaration order, as `h * 31 + hash(field)`. A case class with no fields
+  hashes to 0.
+- `hash()` takes no nullable value, so an optional field hashes null as 0
+  explicitly.
+- A field whose type has no hash, such as a class without `hashCode()`, an
+  array or a function, adds 0.
+
 #### Mutable fields
 
 By default, case class parameters become immutable fields. Use `var` for
@@ -4786,8 +4828,9 @@ is nominal), with two exceptions:
   `operator ==` are compiler-generated (structural, with reference-typed
   fields hashed and compared by value where the field type supports it), and
   they are assignable to `Hashable` without an explicit clause. A case class
-  that inherits `operator ==` or `hashCode()` from its base generates neither,
-  and is `Hashable` only if its base is (see [Case Classes](#case-classes)).
+  that declares both itself is `Hashable` through its own pair. One that
+  inherits `operator ==` or `hashCode()` from its base generates neither, and
+  is `Hashable` only if its base is (see [Case Classes](#case-classes)).
 
 In addition, the following types satisfy a `Hashable` constraint (though they
 are not assignable to `Hashable` as values, since that would require boxing):
