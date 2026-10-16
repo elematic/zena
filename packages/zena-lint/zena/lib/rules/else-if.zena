@@ -1,0 +1,46 @@
+/**
+ * `else { if (…) { … } }` is `else if (…) { … }`.
+ *
+ * A block holding nothing but an `if` is what converting a nested match
+ * leaves behind (one pass converts the outer match, the next the inner
+ * one). The inner statement's lines move one level out.
+ */
+
+import { Node, IfStatement, BlockStatement, StringLiteral, TemplateLiteral } from 'zena-compiler:ast';
+import { walkEnter } from 'zena-compiler:visitor';
+import { RuleContext } from '../context.zena';
+import { dedentContinuation, indentationAt } from '../source.zena';
+
+export function elseIfs(ctx: RuleContext): void {
+  walkEnter(ctx.ast, (n) => {
+    if (let IfStatement {alternate} = n) {
+      if (alternate == null || !(alternate is BlockStatement)) {
+        return;
+      }
+      let block = alternate as BlockStatement;
+      if (block.body.length != 1 || !(block.body[0] is IfStatement)) {
+        return;
+      }
+      let inner = block.body[0];
+      // A comment in the block, outside the inner `if`, would be lost.
+      if (ctx.hasCommentIn(ctx.start(block), ctx.start(inner)) ||
+          ctx.hasCommentIn(ctx.statementEnd(inner), ctx.end(block))) {
+        return;
+      }
+      let outerIndent = indentationAt(ctx.source, ctx.start(n));
+      let innerIndent = indentationAt(ctx.source, ctx.start(inner));
+      let dedent = if (hasMultiLineLiteral(ctx, inner)) 0 else innerIndent.length - outerIndent.length;
+      ctx.replace(block, dedentContinuation(ctx.text(inner), dedent));
+    }
+  });
+}
+
+function hasMultiLineLiteral(ctx: RuleContext, node: Node): boolean {
+  var found = false;
+  walkEnter(node, (n) => {
+    if ((n is StringLiteral || n is TemplateLiteral) && !ctx.isSingleLine(n)) {
+      found = true;
+    }
+  });
+  return found;
+}

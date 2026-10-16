@@ -1,0 +1,80 @@
+/**
+ * A constructor that takes nothing and does nothing is the default one.
+ *
+ *     class Counter {          class Counter {
+ *       var n = 0;               var n = 0;
+ *       new() {}         →     }
+ *     }
+ *
+ * The compiler synthesizes the default constructor for a class that
+ * declares no constructor at all. A class with a named constructor does
+ * not get one (language-reference.md §"Namespace and Default Constructor
+ * Rules"), so there the empty `new()` stays.
+ */
+
+import {
+  Node, ClassDeclaration, MethodDefinition, BlockStatement, Identifier,
+} from 'zena-compiler:ast';
+import { walkEnter } from 'zena-compiler:visitor';
+import { RuleContext } from '../context.zena';
+
+export function emptyConstructors(ctx: RuleContext): void {
+  walkEnter(ctx.ast, (n) => {
+    if (n is ClassDeclaration) {
+      rewrite(ctx, n as ClassDeclaration);
+    }
+  });
+}
+
+function rewrite(ctx: RuleContext, decl: ClassDeclaration): void {
+  if (decl.isExtension) {
+    return;
+  }
+  var constructors = 0;
+  var empty: MethodDefinition | null = null;
+  for (let member in decl.body) {
+    if (let MethodDefinition {isConstructor} = member) {
+      if (!isConstructor) {
+        continue;
+      }
+      constructors += 1;
+      let method = member as MethodDefinition;
+      if (isEmptyDefault(method)) {
+        empty = method;
+      }
+    }
+  }
+  if (empty == null || constructors != 1 || ctx.hasComment(empty)) {
+    return;
+  }
+  ctx.removeLines(empty);
+}
+
+/** `new() {}` or `new();`: no parameters, no initializers, no statements. */
+function isEmptyDefault(method: MethodDefinition): boolean {
+  if (method.params.length != 0 || method.typeParameters != null ||
+      method.receiver != null || method.superInitializer != null ||
+      method.decorators.length != 0 || method.isDeclare || method.isAbstract ||
+      method.isShared) {
+    return false;
+  }
+  let initializers = method.initializerList;
+  if (initializers != null && initializers.length != 0) {
+    return false;
+  }
+  if (let Identifier {name} = method.name) {
+    if (name != '<constructor>') {
+      return false;
+    }
+  } else {
+    return false;
+  }
+  let body = method.body;
+  if (body == null) {
+    return true;
+  }
+  if (let BlockStatement {body as statements} = body) {
+    return statements.length == 0;
+  }
+  return false;
+}

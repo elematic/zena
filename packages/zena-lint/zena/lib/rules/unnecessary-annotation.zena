@@ -1,0 +1,316 @@
+/**
+ * Type annotations that say what the checker already knows.
+ *
+ * Three places:
+ *
+ * - `let x: T = e` where `e` has type `T` on its own: `let x = e`.
+ * - `(a: i32): i32 => body` where every value the body returns has type
+ *   `i32`: the return type goes. Not on exported top-level functions,
+ *   whose signature is documentation, not on a function referenced
+ *   before its declaration or by itself (the checker needs the
+ *   signature then), and not on `async` or `gen` functions.
+ * - A callback argument whose parameters repeat the types the callee
+ *   expects: `xs.forEach((x: String): void => …)` becomes
+ *   `xs.forEach((x) => …)`.
+ *
+ * An initializer whose type comes from the annotation — a literal, a
+ * `new` with inferred type arguments, an arrow — keeps it.
+ */
+
+import {
+  Node, Expression, VariableDeclaration, IdentifierPattern, FunctionExpression,
+  FunctionDeclaration, BlockStatement, ReturnStatement, ExpressionStatement,
+  CallExpression, Identifier, Parameter, NumberLiteral, BooleanLiteral,
+  UnaryExpression,
+} from 'zena-compiler:ast';
+import { walkEnter, walk } from 'zena-compiler:visitor';
+import { Symbol } from 'zena-compiler:compiler';
+import { Type, FunctionType, UnionType, NullType, typeContainsTypeParameter, typeToString } from 'zena-compiler:types';
+import { RuleContext } from '../context.zena';
+import { skipWhitespaceBack } from '../source.zena';
+
+let COLON = 58;
+let RIGHT_PAREN = 41;
+
+export function unnecessaryAnnotations(ctx: RuleContext): void {
+  walkEnter(ctx.ast, (n) => {
+    match (n) {
+      case VariableDeclaration {}: { localAnnotation(ctx, n as VariableDeclaration); }
+      case FunctionExpression {}: { returnAnnotation(ctx, n as FunctionExpression); }
+      case CallExpression {}: { callbackAnnotations(ctx, n as CallExpression); }
+      case _: {}
+    }
+  });
+}
+
+/** `let x: T = e` → `let x = e`. */
+function localAnnotation(ctx: RuleContext, decl: VariableDeclaration): void {
+  let annotation = decl.typeAnnotation;
+  if (annotation == null || !(decl.pattern is IdentifierPattern)) {
+    return;
+  }
+  let declared = ctx.bindingTypeOf(decl.pattern);
+  if (declared == null) {
+    return;
+  }
+  if (ctx.isContextuallyTyped(decl.init)) {
+    // A literal takes the annotation's type, but when that is the type
+    // it would have had anyway (`var n: i32 = 0`) the annotation says
+    // nothing. Only for `var`: a `let` keeps a literal's literal type.
+    if (decl.kind != 'var' || !isDefaultLiteralType(ctx, decl.init, declared)) {
+      return;
+    }
+  } else if (!ctx.sameType(declared, ctx.typeOf(decl.init))) {
+    return;
+  }
+  ctx.removeRange(ctx.end(decl.pattern), ctx.end(annotation));
+}
+
+/** Whether `declared` is what the literal `init` would be typed without context. */
+function isDefaultLiteralType(ctx: RuleContext, init: Node, declared: Type): boolean {
+  let name = typeToString(ctx.unwrap(declared));
+  return match (init) {
+    case NumberLiteral {raw}: if (raw.contains('.')) name == 'f64' else name == 'i32'
+    case BooleanLiteral {}: name == 'boolean'
+    case UnaryExpression {operator, argument}: {
+      operator == '-' && argument is NumberLiteral && isDefaultLiteralType(ctx, argument, declared)
+    }
+    case _: false
+  };
+}
+
+/** `(…): T => body` → `(…) => body` when the body says `T` already. */
+function returnAnnotation(ctx: RuleContext, fe: FunctionExpression): void {
+  let annotation = fe.returnType;
+  if (annotation == null || fe.isAsync || fe.isGenerator) {
+    return;
+  }
+  let parent = ctx.parent(fe);
+  if (parent == null) {
+    return;
+  }
+  // A top-level function keeps its signature when it is exported, used
+  // before it is declared, or recursive.
+  var declaredName: Node | null = null;
+  match (parent) {
+    case FunctionDeclaration {name, exported}: {
+      if (exported) {
+        return;
+      }
+      declaredName = name;
+    }
+    case VariableDeclaration {pattern, exported}: {
+      if (exported && ctx.isTopLevel(parent)) {
+        return;
+      }
+      if (pattern is IdentifierPattern) {
+        declaredName = pattern;
+      }
+    }
+    case _: {}
+  }
+  if (declaredName != null) {
+    let sym = ctx.declaredSymbol(declaredName);
+    if (sym != null && needsSignature(ctx, sym, fe)) {
+      return;
+    }
+  }
+  let ownType = ctx.typeOf(fe);
+  if (ownType == null || !(ownType is FunctionType)) {
+    return;
+  }
+  let declared = (ownType as FunctionType).returnType;
+  if (!bodyInfers(ctx, fe, declared)) {
+    return;
+  }
+  removeReturnType(ctx, fe);
+}
+
+/** Whether a function's body alone gives it the return type `declared`. */
+function bodyInfers(ctx: RuleContext, fe: FunctionExpression, declared: Type): boolean {
+  let body = fe.body;
+  if (body is Expression) {
+    if (ctx.isContextuallyTyped(body)) {
+      return false;
+    }
+    return ctx.sameType(ctx.typeOf(body), declared);
+  }
+  let block = body as BlockStatement;
+  // Without an annotation a trailing expression is a statement, not the
+  // value, so a value block needs its annotation to stay a value.
+  if (block.body.length > 0 && !ctx.isVoid(declared) &&
+      block.body[block.body.length - 1] is ExpressionStatement) {
+    return false;
+  }
+  let returns = ownReturns(fe);
+  if (returns.length == 0) {
+    return ctx.isVoid(declared);
+  }
+  for (let ret in returns) {
+    let argument = ret.argument;
+    if (argument == null) {
+      if (!ctx.isVoid(declared)) {
+        return false;
+      }
+      continue;
+    }
+    if (ctx.isContextuallyTyped(argument)) {
+      return false;
+    }
+    if (!ctx.sameType(ctx.typeOf(argument), declared)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/** The return statements of `fe`'s body, not counting nested functions'. */
+function ownReturns(fe: FunctionExpression): GrowableArray<ReturnStatement> {
+  let out = new Array<ReturnStatement>();
+  walk(fe.body, (n) => {
+    if (n is FunctionExpression) {
+      return false;
+    }
+    if (n is ReturnStatement) {
+      out.push(n);
+    }
+    return true;
+  }, (n) => {});
+  return out;
+}
+
+/**
+ * Whether `sym`, bound to `fe`, is referenced before `fe` in the file
+ * or from inside `fe`: either way the checker reads the signature before
+ * it has checked the body.
+ */
+function needsSignature(ctx: RuleContext, sym: Symbol, fe: FunctionExpression): boolean {
+  let start = ctx.start(fe);
+  let end = ctx.end(fe);
+  var needed = false;
+  let model = ctx.model;
+  walkEnter(ctx.ast, (n) => {
+    if (needed || !(n is Identifier)) {
+      return;
+    }
+    let s = model.resolve(n);
+    if (s == null || (s.id as i32) != (sym.id as i32)) {
+      return;
+    }
+    let at = ctx.start(n);
+    if (at < start || (at >= start && at < end)) {
+      needed = true;
+    }
+  });
+  return needed;
+}
+
+/** Deletes `: T` between the parameter list and the arrow or body. */
+function removeReturnType(ctx: RuleContext, fe: FunctionExpression): void {
+  let annotation = fe.returnType;
+  if (annotation == null) {
+    return;
+  }
+  let colon = skipWhitespaceBack(ctx.source, ctx.start(annotation));
+  if (colon < 0 || ctx.source.getByteAt(colon) != COLON) {
+    return;
+  }
+  let paren = skipWhitespaceBack(ctx.source, colon);
+  if (paren < 0 || ctx.source.getByteAt(paren) != RIGHT_PAREN) {
+    return;
+  }
+  ctx.removeRange(paren + 1, ctx.end(annotation));
+}
+
+function describeType(t: Type | null): String {
+  return if (t != null) typeToString(t) else '<none>';
+}
+
+/** Parameter annotations on a callback that repeat the callee's expectation. */
+function callbackAnnotations(ctx: RuleContext, call: CallExpression): void {
+  var calleeType = ctx.model.getResolvedOverload(call);
+  if (calleeType == null) {
+    let t = ctx.typeOf(call.callee);
+    if (t == null) {
+      return;
+    }
+    let u = ctx.unwrap(t);
+    if (!(u is FunctionType)) {
+      return;
+    }
+    calleeType = u as FunctionType;
+  }
+  let ft = calleeType as FunctionType;
+  var i = 0;
+  while (i < call.args.length && i < ft.parameters.length) {
+    let arg = call.args[i];
+    let expected = functionTypeOf(ctx, ft.parameters[i]);
+    if (arg is FunctionExpression && expected != null) {
+      stripCallbackParams(ctx, arg as FunctionExpression, expected as FunctionType);
+    }
+    i += 1;
+  }
+}
+
+/** `t` as a function type, looking through aliases and `| null`. */
+function functionTypeOf(ctx: RuleContext, t: Type): FunctionType | null {
+  let u = ctx.unwrap(t);
+  if (u is FunctionType) {
+    return u as FunctionType;
+  }
+  if (u is UnionType) {
+    var found: FunctionType | null = null;
+    var others = 0;
+    for (let member in (u as UnionType).types) {
+      let m = ctx.unwrap(member);
+      if (m is FunctionType) {
+        found = m as FunctionType;
+      } else if (!(m is NullType)) {
+        others += 1;
+      }
+    }
+    if (others == 0) {
+      return found;
+    }
+  }
+  return null;
+}
+
+function stripCallbackParams(ctx: RuleContext, fe: FunctionExpression, expected: FunctionType): void {
+  if (fe.typeParameters != null) {
+    return;
+  }
+  // A type parameter still open in the expectation would be inferred
+  // from the annotation this would remove.
+  if (typeContainsTypeParameter(expected)) {
+    return;
+  }
+  var i = 0;
+  while (i < fe.params.length && i < expected.parameters.length) {
+    let param = fe.params[i];
+    let annotation = param.typeAnnotation;
+    if (annotation != null && param.pattern == null && !param.optional &&
+        param.defaultValue == null && !param.isThisParam) {
+      let declared = ctx.bindingTypeOf(param);
+      if (ctx.sameType(declared, expected.parameters[i])) {
+        ctx.removeRange(ctx.end(param.name), ctx.end(annotation));
+      } else if (ctx.debug) {
+        console.log(`callback param ${param.name.name}: declared ${describeType(declared)} expected ${describeType(expected.parameters[i])}`);
+      }
+    }
+    i += 1;
+  }
+  // The return type too, when the callee's expectation matches: the
+  // body rule only sees what the body returns, and a `: void` on a
+  // callback returning nothing is the usual leftover.
+  let returnType = fe.returnType;
+  if (returnType != null && !fe.isAsync && !fe.isGenerator) {
+    let ownType = ctx.typeOf(fe);
+    if (ownType != null && ownType is FunctionType) {
+      let declared = (ownType as FunctionType).returnType;
+      if (ctx.sameType(declared, expected.returnType) || bodyInfers(ctx, fe, declared)) {
+        removeReturnType(ctx, fe);
+      }
+    }
+  }
+}

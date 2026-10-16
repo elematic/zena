@@ -1,0 +1,327 @@
+/**
+ * An index loop that only reads `xs[i]` once, into a name, is a `for…in`.
+ *
+ *     for (var i = 0; i < xs.length; i += 1) {     for (let x in xs) {
+ *       let x = xs[i];                        →      …
+ *       …                                          }
+ *     }
+ *
+ *     var i = 0;                                   for (let x in xs) {
+ *     while (i < xs.length) {                        …
+ *       let x = xs[i];                        →    }
+ *       …
+ *       i += 1;
+ *     }
+ *
+ * The index may appear nowhere else — not in the body, and for the
+ * `while` form not after the loop — and the collection may not be
+ * touched in the body, since growing it while iterating means something
+ * different to the two forms.
+ */
+
+import {
+  Node, Statement, Module, BlockStatement, ForStatement, WhileStatement,
+  VariableDeclaration, IdentifierPattern, NumberLiteral, BinaryExpression,
+  Identifier, MemberExpression, AssignmentExpression, IndexExpression,
+  ExpressionStatement, ContinueStatement, Expression,
+} from 'zena-compiler:ast';
+import { walkEnter, walk } from 'zena-compiler:visitor';
+import { Symbol } from 'zena-compiler:compiler';
+import { typeToString } from 'zena-compiler:types';
+import { RuleContext } from '../context.zena';
+import { lineStart, lineEnd } from '../source.zena';
+
+export function forInLoops(ctx: RuleContext): void {
+  walkEnter(ctx.ast, (n) => {
+    match (n) {
+      case ForStatement {}: { forLoop(ctx, n as ForStatement); }
+      case Module {body}: { whileLoops(ctx, body); }
+      case BlockStatement {body}: { whileLoops(ctx, body); }
+      case _: {}
+    }
+  });
+}
+
+/** The index variable's declaration `var i = 0`, resolved. */
+function indexDeclaration(ctx: RuleContext, node: Node | null): Symbol | null {
+  if (node == null) {
+    return null;
+  }
+  if (let VariableDeclaration {pattern, init, typeAnnotation} = node) {
+    if (!(pattern is IdentifierPattern) || typeAnnotation != null) {
+      return null;
+    }
+    if (let NumberLiteral {raw} = init) {
+      if (raw != '0') {
+        return null;
+      }
+      return ctx.declaredSymbol(pattern);
+    }
+  }
+  return null;
+}
+
+/** `i < xs.length` for the index `i`: the collection `xs`. */
+function boundCollection(ctx: RuleContext, test: Node | null, index: Symbol): Expression | null {
+  if (test == null) {
+    return null;
+  }
+  if (let BinaryExpression {operator, left, right} = test) {
+    if (operator != '<' || !isReference(ctx, left, index)) {
+      return null;
+    }
+    if (let MemberExpression {object, property, optional} = right) {
+      if (optional || property.name != 'length' || !ctx.isSimpleReference(object)) {
+        return null;
+      }
+      if (ctx.mentions(object, index) || !isIterableArray(ctx, object)) {
+        return null;
+      }
+      return object;
+    }
+  }
+  return null;
+}
+
+/**
+ * Whether the collection is one of the array types, which `for…in`
+ * iterates in index order. Anything else with a `length` and an index —
+ * a `JsonArray`, a `String` — may not be iterable at all.
+ */
+function isIterableArray(ctx: RuleContext, collection: Node): boolean {
+  let t = ctx.typeOf(collection);
+  if (t == null) {
+    return false;
+  }
+  let name = typeToString(ctx.unwrap(t));
+  return name.startsWith('GrowableArray<') || name.startsWith('FixedArray<') ||
+      name.startsWith('Array<') || name.startsWith('array<') ||
+      name.startsWith('ImmutableArray<') || name.startsWith('MutableArray<');
+}
+
+/** Whether `node` is `i += 1` or `i = i + 1`. */
+function isIncrement(ctx: RuleContext, node: Node | null, index: Symbol): boolean {
+  if (node == null) {
+    return false;
+  }
+  let expression = ctx.singleExpression(node);
+  if (expression == null) {
+    return false;
+  }
+  if (let AssignmentExpression {left, value, operator} = expression) {
+    if (!isReference(ctx, left, index)) {
+      return false;
+    }
+    // A compound assignment records its operator without the `=`.
+    if (operator == '+') {
+      return isOne(value);
+    }
+    if (operator == null) {
+      if (let BinaryExpression {operator as op, left as l, right as r} = value) {
+        return op == '+' && isReference(ctx, l, index) && isOne(r);
+      }
+    }
+  }
+  return false;
+}
+
+function isOne(node: Node): boolean {
+  if (let NumberLiteral {raw} = node) {
+    return raw == '1';
+  }
+  return false;
+}
+
+function isReference(ctx: RuleContext, node: Node, sym: Symbol): boolean {
+  if (!(node is Identifier)) {
+    return false;
+  }
+  let s = ctx.symbolOf(node);
+  return s != null && (s.id as i32) == (sym.id as i32);
+}
+
+/** `let x = xs[i];` as the first statement of `body`, for this `xs` and `i`. */
+function elementBinding(ctx: RuleContext, body: Node, collection: Expression, index: Symbol): VariableDeclaration | null {
+  if (!(body is BlockStatement)) {
+    return null;
+  }
+  let statements = (body as BlockStatement).body;
+  if (statements.length == 0) {
+    return null;
+  }
+  if (let VariableDeclaration {kind, init, typeAnnotation} = statements[0]) {
+    if (kind != 'let' || typeAnnotation != null) {
+      return null;
+    }
+    if (let IndexExpression {object, index as subscript, optional} = init) {
+      if (optional || !isReference(ctx, subscript, index)) {
+        return null;
+      }
+      if (ctx.text(object) != ctx.text(collection)) {
+        return null;
+      }
+      return statements[0] as VariableDeclaration;
+    }
+  }
+  return null;
+}
+
+/** How many identifiers under `root` resolve to `sym`. */
+function countMentions(ctx: RuleContext, root: Node, sym: Symbol): i32 {
+  var count = 0;
+  walkEnter(root, (n) => {
+    if (isReference(ctx, n, sym)) {
+      count += 1;
+    }
+  });
+  return count;
+}
+
+/** Whether the collection's text appears in `root` other than in `except`. */
+function collectionTouched(ctx: RuleContext, root: Node, collection: Expression, except: Node): boolean {
+  let text = ctx.text(collection);
+  var touched = false;
+  walk(root, (n) => {
+    if (n === except) {
+      return false;
+    }
+    if (ctx.isSimpleReference(n) && ctx.text(n) == text) {
+      touched = true;
+    }
+    return true;
+  }, (n) => {});
+  return touched;
+}
+
+/** The two edits that turn the loop header into `for (let x in xs) {`. */
+function emit(ctx: RuleContext, headerStart: i32, body: BlockStatement, binding: VariableDeclaration, collection: Expression): void {
+  let open = ctx.start(body);
+  let header = `for (let ${ctx.text(binding.pattern)} in ${ctx.text(collection)}) {`;
+  ctx.replaceRange(headerStart, open + 1, header);
+  removeLine(ctx, binding);
+}
+
+/** Removes a statement's whole line when it has the line to itself. */
+function removeLine(ctx: RuleContext, statement: Node): void {
+  let start = lineStart(ctx.source, ctx.start(statement));
+  let end = lineEnd(ctx.source, ctx.statementEnd(statement));
+  let before = ctx.slice(start, ctx.start(statement)).trim();
+  let after = ctx.slice(ctx.statementEnd(statement), end).trim();
+  if (before.length > 0 || after.length > 0) {
+    ctx.removeRange(ctx.start(statement), ctx.statementEnd(statement));
+    return;
+  }
+  let withNewline = if (end < ctx.source.length) end + 1 else end;
+  ctx.removeRange(start, withNewline);
+}
+
+function forLoop(ctx: RuleContext, loop: ForStatement): void {
+  let index = indexDeclaration(ctx, loop.init);
+  if (index == null) {
+    return;
+  }
+  let collection = boundCollection(ctx, loop.test, index);
+  if (collection == null || !isIncrement(ctx, loop.update, index)) {
+    return;
+  }
+  let binding = elementBinding(ctx, loop.body, collection, index);
+  if (binding == null) {
+    return;
+  }
+  let body = loop.body as BlockStatement;
+  if (countMentions(ctx, body, index) != 1) {
+    return;
+  }
+  if (collectionTouched(ctx, body, collection, binding)) {
+    return;
+  }
+  if (ctx.hasCommentIn(ctx.start(loop), ctx.statementEnd(binding))) {
+    return;
+  }
+  ctx.beginGroup();
+  emit(ctx, ctx.start(loop), body, binding, collection);
+  ctx.endGroup();
+}
+
+function whileLoops(ctx: RuleContext, statements: GrowableArray<Statement>): void {
+  var i = 0;
+  while (i + 1 < statements.length) {
+    whileLoop(ctx, statements, i);
+    i += 1;
+  }
+}
+
+function whileLoop(ctx: RuleContext, statements: GrowableArray<Statement>, at: i32): void {
+  let declaration = statements[at];
+  let second = statements[at + 1];
+  if (!(declaration is VariableDeclaration) || !(second is WhileStatement)) {
+    return;
+  }
+  let index = indexDeclaration(ctx, declaration);
+  if (index == null) {
+    if (ctx.debug) {
+      console.log(`for-in: ${ctx.text(declaration)} is not an index declaration`);
+    }
+    return;
+  }
+  let loop = second as WhileStatement;
+  let collection = boundCollection(ctx, loop.test, index);
+  if (collection == null) {
+    if (ctx.debug) {
+      console.log(`for-in: ${ctx.text(loop.test)} is not a length bound`);
+    }
+    return;
+  }
+  let binding = elementBinding(ctx, loop.body, collection, index);
+  if (binding == null) {
+    if (ctx.debug) {
+      console.log(`for-in: no element binding at the top of the loop over ${ctx.text(collection)}`);
+    }
+    return;
+  }
+  let body = loop.body as BlockStatement;
+  if (body.body.length < 2) {
+    return;
+  }
+  let increment = body.body[body.body.length - 1];
+  if (!isIncrement(ctx, increment, index)) {
+    return;
+  }
+  // The index: once in `xs[i]`, once in `i += 1`, and nowhere after.
+  if (countMentions(ctx, body, index) != 2) {
+    return;
+  }
+  var j = at + 2;
+  while (j < statements.length) {
+    if (countMentions(ctx, statements[j], index) > 0) {
+      return;
+    }
+    j += 1;
+  }
+  if (hasOwnContinue(body) || collectionTouched(ctx, body, collection, binding)) {
+    return;
+  }
+  if (ctx.hasCommentIn(ctx.start(declaration), ctx.statementEnd(binding)) ||
+      ctx.hasCommentIn(ctx.start(increment), ctx.statementEnd(increment))) {
+    return;
+  }
+  ctx.beginGroup();
+  emit(ctx, ctx.start(declaration), body, binding, collection);
+  removeLine(ctx, increment);
+  ctx.endGroup();
+}
+
+/** Whether the body has a `continue` that belongs to this loop. */
+function hasOwnContinue(body: Node): boolean {
+  var found = false;
+  walk(body, (n) => {
+    match (n) {
+      case ContinueStatement {}: { found = true; }
+      case WhileStatement {}: { return false; }
+      case ForStatement {}: { return false; }
+      case _: {}
+    }
+    return true;
+  }, (n) => {});
+  return found;
+}

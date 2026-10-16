@@ -1,0 +1,80 @@
+/**
+ * A `var` field that nothing assigns loses its `var`.
+ *
+ *     class Named {                 class Named {
+ *       var name: String;     →       name: String;
+ *       new(this.name);               new(this.name);
+ *     }                             }
+ *
+ * A field is initialized by its initializer, a `this.` parameter or the
+ * initializer list, never by an assignment — an assignment to an
+ * immutable field is an error even in the constructor body — so any
+ * assignment to a member of the field's name, anywhere in the file and on
+ * any object, keeps the field `var`. A same-named field on another class
+ * keeps it too, which errs on the side of leaving code alone.
+ *
+ * A public field of an exported class can be assigned from a file this
+ * check never sees, so only `#private` fields and the fields of classes
+ * that are not exported are considered. A field with a separate setter
+ * name (`var(#count) count`), a static, shared, abstract or decorated
+ * field, and a symbol-keyed field are left alone.
+ */
+
+import {
+  ClassDeclaration, FieldDefinition, AssignmentExpression, MemberExpression,
+  Identifier,
+} from 'zena-compiler:ast';
+import { walkEnter } from 'zena-compiler:visitor';
+import { Set } from 'zena:collections';
+import { RuleContext } from '../context.zena';
+import { skipWhitespace } from '../source.zena';
+
+export function immutableFields(ctx: RuleContext): void {
+  // Every member name some assignment in the file writes.
+  let written = new Set<String>();
+  walkEnter(ctx.ast, (n) => {
+    if (let AssignmentExpression {left} = n) {
+      walkEnter(left, (l) => {
+        if (let MemberExpression {property} = l) {
+          written.add(property.name);
+        }
+      });
+    }
+  });
+  walkEnter(ctx.ast, (n) => {
+    if (n is ClassDeclaration) {
+      rewrite(ctx, n as ClassDeclaration, written);
+    }
+  });
+}
+
+function rewrite(ctx: RuleContext, decl: ClassDeclaration, written: Set<String>): void {
+  if (decl.isExtension) {
+    return;
+  }
+  for (let member in decl.body) {
+    if (!(member is FieldDefinition)) {
+      continue;
+    }
+    let field = member as FieldDefinition;
+    if (field.mutability != 'var' || field.setterName != null || field.isStatic ||
+        field.isShared || field.isAbstract || field.isDeclare || field.decorators.length != 0) {
+      continue;
+    }
+    if (!(field.name is Identifier)) {
+      continue;
+    }
+    let name = (field.name as Identifier).name;
+    if (decl.exported && !name.startsWith('#')) {
+      continue;
+    }
+    if (written.has(name)) {
+      continue;
+    }
+    let start = ctx.start(field);
+    if (ctx.slice(start, start + 3) != 'var') {
+      continue;
+    }
+    ctx.removeRange(start, skipWhitespace(ctx.source, start + 3));
+  }
+}

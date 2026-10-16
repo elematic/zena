@@ -1,0 +1,22 @@
+// @mode: run
+// @result: 3
+// @skip: `x?.member` on a nullable extension class instance type-checks but fails to lower with "zir unsupported: member not found: value on String": the instance is erased to the wrapped String at run time and the getter is looked up there (#395). Found by zena-lint rewriting `if (p == null) '' else p.value` in zena-cli/main.zena.
+
+// An extension class over String, as `RelativePath` in zena:path is.
+extension class Wrapped on String {
+  value: String {
+    get { return this as String; }
+  }
+}
+
+let maybe = (flag: boolean): Wrapped | null => {
+  return if (flag) 'abc' as Wrapped else null;
+};
+
+export let main = (): i32 => {
+  let present = maybe(true);
+  let absent = maybe(false);
+  let a = present?.value ?? '';
+  let b = absent?.value ?? '';
+  return a.length + b.length;
+};

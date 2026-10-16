@@ -1,0 +1,934 @@
+/**
+ * Each rule on a small source, in memory: the text goes in through the
+ * project's overlay as if it were a file under `test/fixtures`, so the
+ * standard library resolves and nothing is written.
+ */
+
+import { suite, test, TestContext } from 'zena:test';
+import { equal, isTrue } from 'zena:assert';
+import { dedentRaw } from 'zena:core';
+import { Project } from '../lib/checking.zena';
+import { lintSource, LintOptions, FileReport, NamedRule } from '../lib/lint.zena';
+import { allRules } from '../lib/rules.zena';
+
+let VIRTUAL_PATH = 'packages/zena-lint/zena/test/fixtures/virtual.zena';
+
+/**
+ * Shared across tests, so the standard library is checked once. Made on
+ * first use: reading the package map is a blocking call, and module
+ * initialization may not block.
+ */
+var sharedProject: Project | null = null;
+
+let projectFor = (): Project => {
+  let existing = sharedProject;
+  if (existing != null) {
+    return existing;
+  }
+  let made = new Project();
+  sharedProject = made;
+  return made;
+};
+
+/** Runs the named rules (all when empty) over `source`. */
+let lint = (source: String, only: String = ''): FileReport => {
+  let project = projectFor();
+  let rules = allRules();
+  let chosen = if (only == '') {
+    rules
+  } else {
+    let picked = new Array<NamedRule>();
+    for (let rule in rules) {
+      if (rule.name == only) {
+        picked.push(rule);
+      }
+    }
+    picked
+  };
+  let options = new LintOptions(chosen);
+  options.write = false;
+  return lintSource(project, VIRTUAL_PATH, source, options);
+};
+
+/** Checks that `source` becomes `expected`, with no rejected edits. */
+let check = (t: TestContext, source: String, expected: String, only: String = ''): void => {
+  let report = lint(source, only);
+  let failure = report.failure;
+  if (failure != null) {
+    throw new Error(`could not compile: ${failure}`);
+  }
+  if (report.errorsBefore.length > 0) {
+    throw new Error(`does not check: ${report.errorsBefore[0]}`);
+  }
+  for (let rejected in report.rejected) {
+    console.log(`rejected ${rejected.edit.rule}: ${rejected.error}`);
+  }
+  equal(report.rejected.length, 0, 'no rejected edits');
+  let actual = report.result ?? '';
+  if (actual != expected) {
+    console.log(`--- actual ---\n${actual}--- expected ---\n${expected}---`);
+  }
+  equal(actual, expected);
+};
+
+let tests = suite('lint', () => {
+  test('top-level arrows become function declarations', (t: TestContext) => {
+    check(t, dedentRaw`
+      let add = (a: i32, b: i32): i32 => a + b;
+      export let run = (): i32 => {
+        return add(1, 2);
+      };
+    `, dedentRaw`
+      function add(a: i32, b: i32) {
+        return a + b;
+      }
+      export function run(): i32 {
+        return add(1, 2);
+      }
+    `);
+  });
+
+  test('async and generic arrows keep their modifiers', (t: TestContext) => {
+    check(t, dedentRaw`
+      let same = <T>(x: T): T => x;
+      export let run = (): i32 => same(3);
+    `, dedentRaw`
+      function same<T>(x: T): T {
+        return x;
+      }
+      export function run(): i32 {
+        return same(3);
+      }
+    `, 'function-declaration');
+  });
+
+  test('a parenthesized body keeps its parentheses', (t: TestContext) => {
+    check(t, dedentRaw`
+      let both = (a: boolean, b: boolean, c: boolean): boolean =>
+          (a || b) && c;
+      let scaled = (a: i32, b: i32): i32 => {
+        return (a + b) * 2;
+      };
+      export function run(): i32 {
+        return if (both(true, false, true)) scaled(1, 2) else 0;
+      }
+    `, dedentRaw`
+      function both(a: boolean, b: boolean, c: boolean) {
+        return (a || b) && c;
+      }
+      function scaled(a: i32, b: i32) {
+        return (a + b) * 2;
+      }
+      export function run(): i32 {
+        return if (both(true, false, true)) scaled(1, 2) else 0;
+      }
+    `);
+  });
+
+  test('a top-level let with a function type annotation is left alone', (t: TestContext) => {
+    let source = dedentRaw`
+      let f: (x: i32) => i32 = (x) => x + 1;
+      export function run(): i32 {
+        return f(1);
+      }
+    `;
+    check(t, source, source, 'function-declaration');
+  });
+
+  test('unnecessary casts go, and their grouping parentheses', (t: TestContext) => {
+    check(t, dedentRaw`
+      class Named {
+        name: String;
+        new(this.name);
+      }
+      export function run(): i32 {
+        let n = new Named('x');
+        let m = n as Named;
+        return (m as Named).name.length;
+      }
+    `, dedentRaw`
+      class Named {
+        name: String;
+        new(this.name);
+      }
+      export function run(): i32 {
+        let n = new Named('x');
+        let m = n;
+        return m.name.length;
+      }
+    `, 'unnecessary-cast');
+  });
+
+  test('a cast that types a literal stays', (t: TestContext) => {
+    let source = dedentRaw`
+      export function run(): i32 {
+        let xs = [] as Array<i32>;
+        return xs.length;
+      }
+    `;
+    check(t, source, source, 'unnecessary-cast');
+  });
+
+  test('redundant local annotations go', (t: TestContext) => {
+    check(t, dedentRaw`
+      function name(): String {
+        return 'x';
+      }
+      export function run(): i32 {
+        let s: String = name();
+        var n: i32 = 0;
+        let xs: GrowableArray<String> = new Array<String>(1);
+        let empty: FixedArray<String> = [];
+        let ok: boolean = true;
+        return s.length + n + xs.length + empty.length;
+      }
+    `, dedentRaw`
+      function name() {
+        return 'x';
+      }
+      export function run(): i32 {
+        let s = name();
+        var n = 0;
+        let xs = new Array<String>(1);
+        let empty: FixedArray<String> = [];
+        let ok: boolean = true;
+        return s.length + n + xs.length + empty.length;
+      }
+    `, 'unnecessary-annotation');
+  });
+
+  test('return types the body implies go, except on exported or forward-referenced functions', (t: TestContext) => {
+    check(t, dedentRaw`
+      function plain(a: i32): i32 {
+        return a + 1;
+      }
+      export function exported(a: i32): i32 {
+        return a + 1;
+      }
+      function usedBelow(): i32 {
+        return later();
+      }
+      function later(): i32 {
+        return 1;
+      }
+      export function run(): i32 {
+        let f = (x: i32): i32 => x * 2;
+        return plain(1) + exported(1) + usedBelow() + f(1);
+      }
+    `, dedentRaw`
+      function plain(a: i32) {
+        return a + 1;
+      }
+      export function exported(a: i32): i32 {
+        return a + 1;
+      }
+      function usedBelow() {
+        return later();
+      }
+      function later(): i32 {
+        return 1;
+      }
+      export function run(): i32 {
+        let f = (x: i32) => x * 2;
+        return plain(1) + exported(1) + usedBelow() + f(1);
+      }
+    `, 'unnecessary-annotation');
+  });
+
+  test('callback parameters typed by the callee lose their annotations', (t: TestContext) => {
+    check(t, dedentRaw`
+      export function run(): i32 {
+        let xs = new Array<String>(1);
+        xs.push('a');
+        var n = 0;
+        xs.map((x: String, index: i32, seq: GrowableArray<String>): i32 => {
+          n += 1;
+          return x.length;
+        });
+        return n;
+      }
+    `, dedentRaw`
+      export function run(): i32 {
+        let xs = new Array<String>(1);
+        xs.push('a');
+        var n = 0;
+        xs.map((x, index, seq) => {
+          n += 1;
+          return x.length;
+        });
+        return n;
+      }
+    `, 'unnecessary-annotation');
+  });
+
+  test('a built-up array becomes a growable literal', (t: TestContext) => {
+    check(t, dedentRaw`
+      export function run(): i32 {
+        let xs = new Array<String>(4);
+        xs.push('one');
+        xs.push('two');
+        let ys: GrowableArray<i32> = new Array<i32>();
+        ys.push(1);
+        return xs.length + ys.length;
+      }
+    `, dedentRaw`
+      import { growable } from 'zena:core';
+
+      export function run(): i32 {
+        let xs = growable<String>(['one', 'two']);
+        let ys: GrowableArray<i32> = growable<i32>([1]);
+        return xs.length + ys.length;
+      }
+    `, 'collection-literal');
+  });
+
+  test('a built-up map becomes a map literal', (t: TestContext) => {
+    check(t, dedentRaw`
+      export function run(): i32 {
+        let m = new Map<String, i32>();
+        m['a'] = 1;
+        m['b'] = 2;
+        return m['a'];
+      }
+    `, dedentRaw`
+      export function run(): i32 {
+        let m: HashMap<String, i32> = {'a' => 1, 'b' => 2};
+        return m['a'];
+      }
+    `, 'collection-literal');
+  });
+
+  test('a long run of elements is laid out one per line', (t: TestContext) => {
+    check(t, dedentRaw`
+      export function run(): i32 {
+        let xs = new Array<String>();
+        xs.push('a fairly long string element');
+        xs.push('another fairly long string element');
+        xs.push('a third fairly long string element');
+        return xs.length;
+      }
+    `, dedentRaw`
+      import { growable } from 'zena:core';
+
+      export function run(): i32 {
+        let xs = growable<String>([
+          'a fairly long string element',
+          'another fairly long string element',
+          'a third fairly long string element',
+        ]);
+        return xs.length;
+      }
+    `, 'collection-literal');
+  });
+
+  test('a var assigned by an if becomes a let with an if expression', (t: TestContext) => {
+    check(t, dedentRaw`
+      export function run(): i32 {
+        let n = 3;
+        var sign = 0;
+        if (n > 0) {
+          sign = 1;
+        } else if (n < 0) {
+          sign = -1;
+        }
+        var label = 'none';
+        if (n > 0) {
+          label = 'positive';
+        }
+        label = label + '!';
+        return sign + label.length;
+      }
+    `, dedentRaw`
+      export function run(): i32 {
+        let n = 3;
+        let sign = if (n > 0) 1 else if (n < 0) -1 else 0;
+        var label = if (n > 0) 'positive' else 'none';
+        label = label + '!';
+        return sign + label.length;
+      }
+    `, 'if-initializer');
+  });
+
+  test('an impure initializer stays a var', (t: TestContext) => {
+    let source = dedentRaw`
+      var calls = 0;
+      function next(): i32 {
+        calls += 1;
+        return calls;
+      }
+      export function run(): i32 {
+        var x = next();
+        if (x > 5) {
+          x = 0;
+        }
+        return x;
+      }
+    `;
+    check(t, source, source, 'if-initializer');
+  });
+
+  test('null tests become ?? and ?.', (t: TestContext) => {
+    check(t, dedentRaw`
+      class Named {
+        name: String;
+        var tag: String | null = null;
+        new(this.name);
+        describe(): String {
+          return this.name;
+        }
+      }
+      function nameOf(n: Named | null): String {
+        return if (n != null) { n.name } else { 'anonymous' };
+      }
+      function tagOf(n: Named | null): String | null {
+        return if (n != null) n.tag else null;
+      }
+      function orDefault(s: String | null, d: String): String {
+        return if (s == null) d else s;
+      }
+      function first(s: String | null): String {
+        if (s != null) {
+          return s;
+        }
+        return 'none';
+      }
+      function poke(n: Named | null): void {
+        if (n != null) {
+          n.describe();
+        }
+      }
+      export function run(): i32 {
+        poke(null);
+        return nameOf(null).length + (tagOf(null) ?? '').length +
+            orDefault(null, 'd').length + first(null).length;
+      }
+    `, dedentRaw`
+      class Named {
+        name: String;
+        var tag: String | null = null;
+        new(this.name);
+        describe(): String {
+          return this.name;
+        }
+      }
+      function nameOf(n: Named | null): String {
+        return n?.name ?? 'anonymous';
+      }
+      function tagOf(n: Named | null): String | null {
+        return n?.tag;
+      }
+      function orDefault(s: String | null, d: String): String {
+        return s ?? d;
+      }
+      function first(s: String | null): String {
+        return s ?? 'none';
+      }
+      function poke(n: Named | null): void {
+        n?.describe();
+      }
+      export function run(): i32 {
+        poke(null);
+        return nameOf(null).length + (tagOf(null) ?? '').length +
+            orDefault(null, 'd').length + first(null).length;
+      }
+    `, 'nullish');
+  });
+
+  test('a default is not folded onto a nullable chain', (t: TestContext) => {
+    let source = dedentRaw`
+      class Named {
+        var tag: String | null = null;
+        new();
+      }
+      function tagOf(n: Named | null): String | null {
+        return if (n != null) { n.tag } else { 'none' };
+      }
+      export function run(): i32 {
+        return (tagOf(null) ?? '').length;
+      }
+    `;
+    check(t, source, source, 'nullish');
+  });
+
+  test('small matches become ifs', (t: TestContext) => {
+    check(t, dedentRaw`
+      sealed class Shape {
+        case Circle(r: i32)
+        case Square(side: i32)
+      }
+      function area(s: Shape): i32 {
+        return match (s) {
+          case Circle {r}: r * 3
+          case _: 0
+        };
+      }
+      function describe(n: String | null): String {
+        return match (n) {
+          case null: 'none'
+          case _: 'some'
+        };
+      }
+      function report(s: Shape): void {
+        match (s) {
+          case Square {side}: console.log(i32ToString(side))
+          case _: {
+            console.log('not a square');
+          }
+        }
+      }
+      export function run(): i32 {
+        report(new Circle(1));
+        return area(new Circle(1)) + describe(null).length;
+      }
+    `, dedentRaw`
+      sealed class Shape {
+        case Circle(r: i32)
+        case Square(side: i32)
+      }
+      function area(s: Shape): i32 {
+        return if (let Circle {r} = s) r * 3 else 0;
+      }
+      function describe(n: String | null): String {
+        return if (n == null) 'none' else 'some';
+      }
+      function report(s: Shape): void {
+        if (let Square {side} = s) {
+          console.log(i32ToString(side));
+        } else {
+          console.log('not a square');
+        }
+      }
+      export function run(): i32 {
+        report(new Circle(1));
+        return area(new Circle(1)) + describe(null).length;
+      }
+    `, 'match-to-if');
+  });
+
+  test('a statement match with an empty wildcard arm becomes a bare if', (t: TestContext) => {
+    check(t, dedentRaw`
+      sealed class Shape {
+        case Circle(r: i32)
+        case Square(side: i32)
+      }
+      function report(s: Shape, other: Shape): void {
+        match (s) {
+          case Circle {}: { console.log('circle'); }
+          case _: {}
+        }
+        match (s) {
+          case Square {}: {
+            match (other) {
+              case Square {}: { console.log('two squares, which is a lot of squares'); }
+              case _: {}
+            }
+          }
+          case _: {}
+        }
+      }
+      export function run(): i32 {
+        report(new Circle(1), new Square(2));
+        return 0;
+      }
+    `, dedentRaw`
+      sealed class Shape {
+        case Circle(r: i32)
+        case Square(side: i32)
+      }
+      function report(s: Shape, other: Shape): void {
+        if (s is Circle) { console.log('circle'); }
+        if (s is Square) {
+          if (other is Square) {
+            console.log('two squares, which is a lot of squares');
+          }
+        }
+      }
+      export function run(): i32 {
+        report(new Circle(1), new Square(2));
+        return 0;
+      }
+    `, 'match-to-if');
+  });
+
+  test('an else holding only an if becomes else if', (t: TestContext) => {
+    check(t, dedentRaw`
+      function sign(n: i32): i32 {
+        if (n > 0) {
+          return 1;
+        } else {
+          if (n < 0) {
+            return -1;
+          }
+        }
+        return 0;
+      }
+      export function run(): i32 {
+        return sign(3);
+      }
+    `, dedentRaw`
+      function sign(n: i32): i32 {
+        if (n > 0) {
+          return 1;
+        } else if (n < 0) {
+          return -1;
+        }
+        return 0;
+      }
+      export function run(): i32 {
+        return sign(3);
+      }
+    `, 'else-if');
+  });
+
+  test('a match with a guard or three arms stays', (t: TestContext) => {
+    let source = dedentRaw`
+      function sign(n: i32): i32 {
+        return match (n) {
+          case 0: 0
+          case let m if m > 0: 1
+          case _: -1
+        };
+      }
+      export function run(): i32 {
+        return sign(3);
+      }
+    `;
+    check(t, source, source, 'match-to-if');
+  });
+
+  test('index loops become for-in loops', (t: TestContext) => {
+    check(t, dedentRaw`
+      function total(xs: GrowableArray<i32>): i32 {
+        var sum = 0;
+        var i = 0;
+        while (i < xs.length) {
+          let x = xs[i];
+          sum += x;
+          i += 1;
+        }
+        for (var j = 0; j < xs.length; j += 1) {
+          let y = xs[j];
+          sum += y;
+        }
+        return sum;
+      }
+      export function run(): i32 {
+        return total(new Array<i32>());
+      }
+    `, dedentRaw`
+      function total(xs: GrowableArray<i32>): i32 {
+        var sum = 0;
+        for (let x in xs) {
+          sum += x;
+        }
+        for (let y in xs) {
+          sum += y;
+        }
+        return sum;
+      }
+      export function run(): i32 {
+        return total(new Array<i32>());
+      }
+    `, 'for-in');
+  });
+
+  test('an index used for more than the element keeps its loop', (t: TestContext) => {
+    let source = dedentRaw`
+      function total(xs: GrowableArray<i32>): i32 {
+        var sum = 0;
+        var i = 0;
+        while (i < xs.length) {
+          let x = xs[i];
+          sum += x * i;
+          i += 1;
+        }
+        return sum;
+      }
+      export function run(): i32 {
+        return total(new Array<i32>());
+      }
+    `;
+    check(t, source, source, 'for-in');
+  });
+
+  test('boolean returns collapse onto the condition', (t: TestContext) => {
+    check(t, dedentRaw`
+      function big(n: i32): boolean {
+        if (n > 100) {
+          return true;
+        }
+        return false;
+      }
+      function small(n: i32): boolean {
+        if (n >= 100) {
+          return false;
+        } else {
+          return true;
+        }
+      }
+      function odd(n: i32): boolean {
+        let even = if (n % 2 == 0) true else false;
+        return if (even) false else true;
+      }
+      export function run(): i32 {
+        return if (big(1) || small(1) || odd(1)) 1 else 0;
+      }
+    `, dedentRaw`
+      function big(n: i32): boolean {
+        return n > 100;
+      }
+      function small(n: i32): boolean {
+        return n < 100;
+      }
+      function odd(n: i32): boolean {
+        let even = n % 2 == 0;
+        return !even;
+      }
+      export function run(): i32 {
+        return if (big(1) || small(1) || odd(1)) 1 else 0;
+      }
+    `, 'boolean-return');
+  });
+
+  test('a match in the arm of a statement match is a statement too', (t: TestContext) => {
+    check(t, dedentRaw`
+      sealed class Shape {
+        case Circle(r: i32)
+        case Square(side: i32)
+      }
+      function report(s: Shape, t: Shape): void {
+        match (s) {
+          case Circle {}: {
+            match (t) {
+              case Circle {}: { console.log('two circles'); }
+              case _: {}
+            }
+          }
+          case Square {side}: {
+            console.log(i32ToString(side));
+          }
+        }
+      }
+      export function run(): i32 {
+        report(new Circle(1), new Square(2));
+        return 0;
+      }
+    `, dedentRaw`
+      sealed class Shape {
+        case Circle(r: i32)
+        case Square(side: i32)
+      }
+      function report(s: Shape, t: Shape): void {
+        match (s) {
+          case Circle {}: {
+            if (t is Circle) { console.log('two circles'); }
+          }
+          case Square {side}: {
+            console.log(i32ToString(side));
+          }
+        }
+      }
+      export function run(): i32 {
+        report(new Circle(1), new Square(2));
+        return 0;
+      }
+    `, 'match-to-if');
+  });
+
+  test('string concatenation becomes a template literal', (t: TestContext) => {
+    check(t, dedentRaw`
+      function greet(name: String, n: i32): String {
+        return 'Hello, ' + name + ' #' + i32ToString(n) + '!';
+      }
+      function two(name: String): String {
+        return 'Hi ' + name;
+      }
+      export function run(): i32 {
+        return greet('x', 1).length + two('y').length;
+      }
+    `, dedentRaw`
+      function greet(name: String, n: i32): String {
+        return ${'`'}Hello, ${'${'}name} #${'${'}i32ToString(n)}!${'`'};
+      }
+      function two(name: String): String {
+        return 'Hi ' + name;
+      }
+      export function run(): i32 {
+        return greet('x', 1).length + two('y').length;
+      }
+    `, 'template-literal');
+  });
+
+  test('an arrow returning one expression loses its block', (t: TestContext) => {
+    check(t, dedentRaw`
+      export function run(): i32 {
+        let double = (x: i32) => {
+          return x * 2;
+        };
+        let point = (x: i32) => {
+          return {x: x, y: x};
+        };
+        return double(2) + point(1).y;
+      }
+    `, dedentRaw`
+      export function run(): i32 {
+        let double = (x: i32) => x * 2;
+        let point = (x: i32) => ({x: x, y: x});
+        return double(2) + point(1).y;
+      }
+    `, 'arrow-body');
+  });
+
+  test('a var never reassigned becomes a let', (t: TestContext) => {
+    check(t, dedentRaw`
+      export function run(): i32 {
+        var a = 1;
+        var b = 2;
+        b += a;
+        var c = 0;
+        let bump = () => {
+          c = 5;
+        };
+        bump();
+        return a + b + c;
+      }
+    `, dedentRaw`
+      export function run(): i32 {
+        let a = 1;
+        var b = 2;
+        b += a;
+        var c = 0;
+        let bump = () => {
+          c = 5;
+        };
+        bump();
+        return a + b + c;
+      }
+    `, 'prefer-let');
+  });
+
+  test('a var field nothing assigns loses its var', (t: TestContext) => {
+    check(t, dedentRaw`
+      class Named {
+        var name: String;
+        var #hits: i32 = 0;
+        var label: String | null = null;
+        new(this.name);
+        hit(): void {
+          this.#hits += 1;
+        }
+        relabel(label: String): void {
+          this.label = label;
+        }
+      }
+      export class Shared {
+        var count: i32 = 0;
+        var #secret: i32 = 0;
+        new();
+      }
+      export function run(): i32 {
+        let n = new Named('x');
+        n.hit();
+        n.relabel('y');
+        return n.name.length + new Shared().count;
+      }
+    `, dedentRaw`
+      class Named {
+        name: String;
+        var #hits: i32 = 0;
+        var label: String | null = null;
+        new(this.name);
+        hit(): void {
+          this.#hits += 1;
+        }
+        relabel(label: String): void {
+          this.label = label;
+        }
+      }
+      export class Shared {
+        var count: i32 = 0;
+        #secret: i32 = 0;
+        new();
+      }
+      export function run(): i32 {
+        let n = new Named('x');
+        n.hit();
+        n.relabel('y');
+        return n.name.length + new Shared().count;
+      }
+    `, 'immutable-field');
+  });
+
+  test('an empty default constructor goes unless a named one needs it', (t: TestContext) => {
+    check(t, dedentRaw`
+      class Counter {
+        var n = 0;
+        new() {}
+        bump(): void {
+          this.n += 1;
+        }
+      }
+      class Plain {
+        new();
+      }
+      class WithNamed {
+        x: i32 = 0;
+        new() {}
+        new fromInt(this.x);
+      }
+      export function run(): i32 {
+        let c = new Counter();
+        c.bump();
+        return c.n + new WithNamed().x + new WithNamed.fromInt(2).x;
+      }
+    `, dedentRaw`
+      class Counter {
+        var n = 0;
+        bump(): void {
+          this.n += 1;
+        }
+      }
+      class Plain {
+      }
+      class WithNamed {
+        x: i32 = 0;
+        new() {}
+        new fromInt(this.x);
+      }
+      export function run(): i32 {
+        let c = new Counter();
+        c.bump();
+        return c.n + new WithNamed().x + new WithNamed.fromInt(2).x;
+      }
+    `, 'empty-constructor');
+  });
+
+  test('rules compose across passes', (t: TestContext) => {
+    check(t, dedentRaw`
+      let pick = (s: String | null, d: String): String => {
+        var out: String = d;
+        if (s != null) {
+          out = s;
+        }
+        return out;
+      };
+      export let run = (): i32 => {
+        return pick(null, 'x').length;
+      };
+    `, dedentRaw`
+      function pick(s: String | null, d: String) {
+        let out = s ?? d;
+        return out;
+      }
+      export function run(): i32 {
+        return pick(null, 'x').length;
+      }
+    `);
+  });
+
+  test('a file that does not check is left alone', (t: TestContext) => {
+    let report = lint('export let run = (): i32 => { return "x"; };\n');
+    isTrue(report.errorsBefore.length > 0);
+    isTrue(!report.changed);
+  });
+});

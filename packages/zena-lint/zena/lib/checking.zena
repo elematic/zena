@@ -1,0 +1,171 @@
+/**
+ * Compiling and checking files, with text that is not on disk yet.
+ *
+ * The tool checks a file, rewrites it, and checks the rewrite before
+ * writing it. The rewrite exists only in memory, so the compiler reads
+ * through an overlay host: a path with an override reads the override,
+ * everything else reads the disk. One `Compiler` is kept warm across
+ * files so the standard library is checked once; it is replaced every
+ * `ENTRIES_PER_COMPILER` files because a compiler's per-entry state is
+ * never collected (see packages/zena-compiler/CONTEXT.md).
+ */
+
+import { existsSync, readFileSync } from 'zena:fs';
+import { join2 } from 'zena:path';
+import {
+  createCompiler, checkCompilation, CompilerHost, Compiler, PackageConfig,
+  ProgramCheckResult, Diagnostic, DiagnosticSeverity, SemanticModel,
+  loadPackageMap,
+} from 'zena-compiler:compiler';
+import { Module } from 'zena-compiler:ast';
+import { stdlibIdToRelativeFile } from 'zena-compiler:module-resolver';
+import { isWitModulePath, synthesizeWitModule } from 'zena-compiler:wit-module-synth';
+import { directoryNames } from 'zena-compiler:fs-host';
+
+/** How many entry points share one compiler before it is replaced. */
+let ENTRIES_PER_COMPILER = 16;
+
+/** Reads the stdlib from its root, overrides from memory, the rest from disk. */
+final class OverlayHost implements CompilerHost {
+  #stdlibRoot: String;
+  overrides = new Map<String, String>();
+
+  new(stdlibRoot: String) : #stdlibRoot = stdlibRoot;
+
+  readFile(path: String): String {
+    if (let (true, text) = this.overrides.get(path)) {
+      return text;
+    }
+    if (isWitModulePath(path)) {
+      return synthesizeWitModule(this, path);
+    }
+    if (path.startsWith('zena:')) {
+      return readFileSync(join2(this.#stdlibRoot, stdlibIdToRelativeFile(path)));
+    }
+    return readFileSync(path);
+  }
+
+  listDir(path: String): Array<String> | null {
+    return directoryNames(path);
+  }
+}
+
+/** One file, checked: its syntax tree, its types, and what the checker said. */
+export final class CheckedFile {
+  path: String;
+  source: String;
+  ast: Module;
+  model: SemanticModel;
+  /** The diagnostics reported against this file, not its dependencies. */
+  diagnostics: GrowableArray<Diagnostic>;
+
+  new(this.path, this.source, this.ast, this.model, this.diagnostics);
+
+  /** The errors, as `line: message` strings. */
+  errors(): GrowableArray<String> {
+    let out = new Array<String>();
+    for (let diagnostic in this.diagnostics) {
+      if (diagnostic.severity == DiagnosticSeverity.Error) {
+        let location = diagnostic.location;
+        let line = if (location != null) i32ToString(location.line) else '?';
+        out.push(`${line}: ${diagnostic.message}`);
+      }
+    }
+    return out;
+  }
+
+  hasErrors(): boolean {
+    return this.errors().length > 0;
+  }
+}
+
+/**
+ * The project the files belong to: where the standard library is and
+ * which packages `zena-packages.json` declares, plus the warm compiler.
+ */
+export final class Project {
+  stdlibRoot: String;
+  target: String;
+  #host: OverlayHost;
+  #packages: Map<String, PackageConfig>;
+  var #compiler: Compiler | null = null;
+  var #previous: ProgramCheckResult | null = null;
+  var #entriesOnCompiler = 0;
+
+  new(stdlibRoot: String = 'packages/stdlib/zena', target: String = 'zena-cli')
+    : stdlibRoot = stdlibRoot,
+      target = target,
+      #host = new OverlayHost(stdlibRoot),
+      #packages = loadPackages(new OverlayHost(stdlibRoot));
+
+  /** A fresh compiler, dropping whatever the old one accumulated. */
+  #freshCompiler(): Compiler {
+    let compiler = createCompiler(this.#host, {
+      stdlibRoot: this.stdlibRoot,
+      packages: this.#packages,
+      warnUnnecessaryCasts: true,
+    });
+    this.#compiler = compiler;
+    this.#previous = null;
+    this.#entriesOnCompiler = 0;
+    return compiler;
+  }
+
+  /**
+   * Text the compiler should read for `path` instead of the disk's, or
+   * null to read the disk again. Call before `check` for the same path.
+   */
+  override(path: String, text: String | null): void {
+    if (text == null) {
+      this.#host.overrides.delete(path);
+    } else {
+      this.#host.overrides[path] = text;
+    }
+    let compiler = this.#compiler;
+    if (compiler != null) {
+      compiler.invalidate(path);
+    }
+  }
+
+  /** Forget every override and every cached file. Call between files. */
+  reset(): void {
+    this.#host.overrides.clear();
+    this.#entriesOnCompiler += 1;
+    if (this.#entriesOnCompiler >= ENTRIES_PER_COMPILER) {
+      this.#compiler = null;
+      this.#previous = null;
+    }
+  }
+
+  /**
+   * Compiles and checks the file at `path` (reading an override if one is
+   * set), or throws when it does not parse or a dependency is missing.
+   */
+  check(path: String): CheckedFile {
+    let compiler = this.#compiler ?? this.#freshCompiler();
+    // The file itself may have changed since the last check; the
+    // dependencies are trusted until `reset`.
+    compiler.invalidate(path);
+    let result = compiler.compile({entry: path, target: this.target});
+    let checked = checkCompilation(result, this.#previous);
+    this.#previous = checked;
+    let entryPath = result.entry.path;
+    let own = new Array<Diagnostic>();
+    for (let diagnostic in checked.entry.diagnostics) {
+      let location = diagnostic.location;
+      if (location == null || location.file == entryPath || location.file == path) {
+        own.push(diagnostic);
+      }
+    }
+    return new CheckedFile(path, result.entry.source, result.entry.ast,
+        checked.entry.model, own);
+  }
+}
+
+/** The package map in the working directory, or none. */
+function loadPackages(host: CompilerHost): Map<String, PackageConfig> {
+  if (!existsSync('zena-packages.json')) {
+    return new Map<String, PackageConfig>();
+  }
+  return loadPackageMap(host, 'zena-packages.json');
+}
