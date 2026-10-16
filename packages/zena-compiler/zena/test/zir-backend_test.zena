@@ -1111,6 +1111,31 @@ export let tests = suite('zir backend', (): void => {
         'the bound result comes back as fields');
   });
 
+  test('== on a record held as its fields compares the fields', (ctx: TestContext): void => {
+    // `same` compares two exploded parameters and `isOrigin` one against
+    // a literal: neither the callers nor the cores build a record.
+    let result = compileWithZir(dedentRaw`
+        type V = {x: i32, y: i32};
+        let same = (a: V, b: V): boolean => a == b;
+        let isOrigin = (p: V): boolean => p == {x: 0, y: 0};
+        export let main = (): i32 => {
+          let s = same({x: 1, y: 2}, {x: 1, y: 2});
+          let o = isOrigin({x: 0, y: 0});
+          return if (s && o) 1 else 0;
+        };
+        `);
+    let forwarders = new Array<String>();
+    forwarders.push('call $same\n');
+    forwarders.push('call $isOrigin\n');
+    assertNoAllocation(result, '$main', 'the compared records arrive as fields');
+    assertFunctionOmits(result, '$main', forwarders,
+        'the comparing functions are called through their cores');
+    assertNoAllocation(result, '$same.core',
+        'two exploded parameters compare from their fields');
+    assertNoAllocation(result, '$isOrigin.core',
+        'an exploded parameter compares with a literal from its fields');
+  });
+
   test('a record passed to super past the first superclass is passed as its fields', (ctx: TestContext): void => {
     // `Middle`'s own `super({...})` runs in `Middle.<ctor-init>`, which
     // returns `Base`'s arguments to `Leaf`'s factory. Its core returns

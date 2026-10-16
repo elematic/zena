@@ -695,21 +695,29 @@ export let lowerValueEq = (cx: LoweringContext, lType: Type, a: i32,
   if (l == null || r == null) {
     bail(cx, 'structural equality operand');
   }
-  if (valueEqFields(l as Type, r as Type) == null) {
+  let fieldsOpt = valueEqFields(l as Type, r as Type);
+  if (fieldsOpt == null) {
     return cx.b.constI32(0, i32vt);
   }
+  let fields = fieldsOpt as GrowableArray<ValueEqField>;
+  // An operand held as its fields (an exploded parameter, a held `var`
+  // or result, a literal operand) compares here, from the fields, so its
+  // record is never built.
+  let fromFields = cx.explodedRecords.has(a) || cx.explodedRecords.has(b2);
   var found: WasmFunction | null = null;
   if (let (true, f) = cx.wasm.valueEqFuncs.get(valueEqKey(l as Type, r as Type))) {
     found = f;
   }
-  if (found == null) {
+  if (found == null && !fromFields) {
     bail(cx, 'structural equality not reached');
   }
-  let method = found as WasmFunction;
+  let compare = (x: i32, y: i32): i32 =>
+      if (fromFields) inlineValueEq(cx, l as Type, x, r as Type, y, fields)
+      else callEqMethod(cx, found as WasmFunction, x, y);
   let aNullable = isNullableRef(cx.valueTypeOf(a));
   let bNullable = isNullableRef(cx.valueTypeOf(b2));
   if (!aNullable && !bNullable) {
-    return callEqMethod(cx, method, a, b2);
+    return compare(a, b2);
   }
   let aNull = if (aNullable) cx.b.emit(IrOp.ref_is_null, i32vt, a, -1) else cx.b.constI32(0, i32vt);
   let bNull = if (bNullable) cx.b.emit(IrOp.ref_is_null, i32vt, b2, -1) else cx.b.constI32(0, i32vt);
@@ -722,7 +730,7 @@ export let lowerValueEq = (cx: LoweringContext, lType: Type, a: i32,
   cx.b.switchTo(nullB);
   cx.b.br(mergeB, oneValue(cx.b.binary(IrOp.i32_and, i32vt, aNull, bNull)));
   cx.b.switchTo(valueB);
-  cx.b.br(mergeB, oneValue(callEqMethod(cx, method, a, b2)));
+  cx.b.br(mergeB, oneValue(compare(a, b2)));
   cx.b.switchTo(mergeB);
   return result;
 };
@@ -865,6 +873,24 @@ export let lowerValueEqFunction = (cx: LoweringContext): IrBody => {
     return cx.b.finish();
   }
   let falseB = cx.b.newBlock();
+  emitFieldComparisons(cx, l, a, r, b2, fields, falseB);
+  cx.b.ret(cx.b.constI32(1, i32vt));
+  cx.b.switchTo(falseB);
+  cx.b.ret(cx.b.constI32(0, i32vt));
+  return cx.b.finish();
+};
+
+/**
+ * Compares `a` and `b2`, records or tuples of types `l` and `r`, pair of
+ * fields by pair, branching to `falseB` at the first pair that differs.
+ * Leaves the builder in the block reached when every pair is equal. A
+ * pair of optional fields is equal when both are absent, or both present
+ * with equal values; their values are read only when present. A record
+ * held as its fields (`explodedRecords`) answers its reads from them.
+ */
+let emitFieldComparisons = (cx: LoweringContext, l: Type, a: i32, r: Type,
+    b2: i32, fields: GrowableArray<ValueEqField>, falseB: i32): void => {
+  let i32vt = new ValTypeI32() as ValType;
   for (let f in fields) {
     let nextB = cx.b.newBlock();
     var va = -1;
@@ -893,10 +919,29 @@ export let lowerValueEqFunction = (cx: LoweringContext): IrBody => {
         nextB, noValues(), falseB, noValues());
     cx.b.switchTo(nextB);
   }
-  cx.b.ret(cx.b.constI32(1, i32vt));
+};
+
+/**
+ * `a == b2` compared at the site, pair of fields by pair: what
+ * `lowerValueEq` does when an operand is a record held as its fields, so
+ * the comparison reads the fields instead of passing a record to the
+ * pair's function.
+ */
+let inlineValueEq = (cx: LoweringContext, l: Type, a: i32, r: Type, b2: i32,
+    fields: GrowableArray<ValueEqField>): i32 => {
+  let i32vt = new ValTypeI32() as ValType;
+  if (fields.length == 0) {
+    return cx.b.constI32(1, i32vt);
+  }
+  let falseB = cx.b.newBlock();
+  let mergeB = cx.b.newBlock();
+  let result = cx.b.blockParam(mergeB, i32vt);
+  emitFieldComparisons(cx, l, a, r, b2, fields, falseB);
+  cx.b.br(mergeB, oneValue(cx.b.constI32(1, i32vt)));
   cx.b.switchTo(falseB);
-  cx.b.ret(cx.b.constI32(0, i32vt));
-  return cx.b.finish();
+  cx.b.br(mergeB, oneValue(cx.b.constI32(0, i32vt)));
+  cx.b.switchTo(mergeB);
+  return result;
 };
 
 /**

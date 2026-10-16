@@ -39,7 +39,8 @@
  */
 import { HashMap, HashSet } from 'zena:collections';
 import {
-  AssignmentExpression, BlockStatement, CallExpression, ClassDeclaration, Expression,
+  AssignmentExpression, BinaryExpression, BlockStatement, CallExpression,
+  ClassDeclaration, Expression,
   ExpressionStatement, FunctionExpression, FunctionDeclaration, IfExpression, MatchCase,
   MatchExpression, ReturnStatement,
   VariableDeclaration, IdentifierPattern, Identifier, MemberExpression,
@@ -51,6 +52,7 @@ import { Symbol, SymbolId, noSymbolId } from '../../scope/symbol.zena';
 import { ClassType, FunctionType, RecordType, Type, baseType } from '../../types.zena';
 import { walkEnter } from '../../visitor.zena';
 import { ValType } from '../wasm.zena';
+import { valueEqOperand } from '../value-equality.zena';
 import {
   ClassCodegenInfo, WasmModule, WasmFunction, RecordDispatchInfo, ExplosionSpec,
 } from '../wasm-module.zena';
@@ -1718,6 +1720,11 @@ let isFieldUse = (dc: DemandContext, ident: Identifier, owner: Node,
     // fields, each through `recordDispatchRead`, which answers from the
     // fields of a record held as them.
     accepted = model.getParent(parent) is RecordLiteral;
+  } else if (parent is BinaryExpression) {
+    // `==` on records compares their fields (equality.md, "Structural
+    // equality for records and tuples"), from the fields of an operand
+    // held as them (ir/equality.zena, lowerValueEq).
+    accepted = isValueComparison(parent, model);
   } else if (parent is MemberExpression) {
     accepted = (parent.object as Node) === (ident as Node) &&
         !parent.optional && !parent.isSymbolAccess;
@@ -1757,6 +1764,17 @@ let isFieldUse = (dc: DemandContext, ident: Identifier, owner: Node,
     forwards.push(forward);
   }
   return true;
+};
+
+/** Whether `bin` is `==` or `!=` between two record or tuple operands. */
+let isValueComparison = (bin: BinaryExpression, model: SemanticModel): boolean => {
+  if (bin.operator != "==" && bin.operator != "!=") {
+    return false;
+  }
+  let lt = model.getNodeType(bin.left);
+  let rt = model.getNodeType(bin.right);
+  return lt != null && rt != null && valueEqOperand(lt as Type) != null &&
+      valueEqOperand(rt as Type) != null;
 };
 
 /**

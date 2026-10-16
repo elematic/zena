@@ -1,0 +1,71 @@
+// @mode: run
+// @result: 1
+// `==` on a record held as its fields compares the fields it holds: a
+// parameter compared with another parameter, with a literal or with a
+// record from the heap, a `let`-bound call result, and a `var` updated
+// through calls. Optional fields and nested records compare by value
+// as anywhere else. Every shape must give the same answers.
+
+type V = {x: i32, y: i32};
+type O = {x: i32, tag?: i32};
+type N = {name: String, at: V};
+
+let same = (a: V, b: V): boolean => a == b;
+
+let differs = (a: V, b: V): boolean => a != b;
+
+let isOrigin = (p: V): boolean => p == {x: 0, y: 0};
+
+let sameTag = (a: O, b: O): boolean => a == b;
+
+let sameNamed = (a: N, b: N): boolean => a == b;
+
+let make = (n: i32): V => ({x: n, y: n * 2});
+
+let boundEqual = (n: i32, m: i32): boolean => {
+  let a = make(n);
+  let b = make(m);
+  return a == b;
+};
+
+let step = (p: V): V => ({x: p.x + 1, y: p.y + 2});
+
+let reaches = (n: i32, target: V): boolean => {
+  var pos: V = {x: 0, y: 0};
+  for (var i = 0; i < n; i += 1) {
+    pos = step(pos);
+  }
+  return pos == target;
+};
+
+let heap: V = {x: 1, y: 2};
+
+export let main = (): i32 => {
+  if (!same({x: 1, y: 2}, {x: 1, y: 2}) || same({x: 1, y: 2}, {x: 1, y: 3})) {
+    return 10;
+  }
+  if (!same(heap, {x: 1, y: 2}) || !same({x: 1, y: 2}, heap)) {
+    return 11;
+  }
+  if (differs({x: 1, y: 2}, {x: 1, y: 2}) || !differs(heap, {x: 2, y: 2})) {
+    return 12;
+  }
+  if (!isOrigin({x: 0, y: 0}) || isOrigin({x: 0, y: 1})) {
+    return 13;
+  }
+  if (!sameTag({x: 1}, {x: 1}) || sameTag({x: 1}, {x: 1, tag: 0}) ||
+      !sameTag({x: 1, tag: 3}, {x: 1, tag: 3})) {
+    return 14;
+  }
+  if (!sameNamed({name: 'a', at: {x: 1, y: 1}}, {name: 'a', at: {x: 1, y: 1}}) ||
+      sameNamed({name: 'a', at: {x: 1, y: 1}}, {name: 'b', at: {x: 1, y: 1}})) {
+    return 15;
+  }
+  if (!boundEqual(3, 3) || boundEqual(3, 4)) {
+    return 16;
+  }
+  if (!reaches(3, {x: 3, y: 6}) || reaches(3, {x: 3, y: 5})) {
+    return 17;
+  }
+  return 1;
+};
