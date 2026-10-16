@@ -60,8 +60,9 @@ import { lowerStringLiteral, lowerTaggedTemplate, lowerTemplateLiteral } from '.
 import {
   exactClassTest, lowerCaseClassEq, lowerCaseClassHash, lowerErasedEq,
   lowerErasedEqDispatch, lowerEqIntrinsic, lowerHashIntrinsic,
-  lowerValueEqFunction, lowerValueHashFunction,
+  lowerValueEqFunction, lowerValueHash, lowerValueHashFunction,
 } from './equality.zena';
+import { isValueHashCodeCall } from '../value-equality.zena';
 import {
   bindRecordProp, branchUnless, collectPatternBindSyms,
   lowerPatternBindings, lowerPatternTest, patternBinds,
@@ -6707,6 +6708,13 @@ export final class FunctionLowerer {
     let objectType = this.#substitutedNodeType(member.object);
     if (objectType == null) {
       this.#bail('untyped method receiver');
+    }
+    // `hashCode()` on a record or tuple, through a `Hashable` bound: the
+    // value's structural hash (ir/equality.zena), the one `hash<T>`
+    // gives. A record field of that name is an ordinary member instead.
+    if (isValueHashCodeCall(call, member, objectType as Type, this.func.model)) {
+      let recv = this.#lowerExpression(member.object);
+      return lowerValueHash(this.#cx(), objectType as Type, recv);
     }
     // Record-typed receivers (including namespace imports, which are
     // record globals of the module's exports): the member is a field

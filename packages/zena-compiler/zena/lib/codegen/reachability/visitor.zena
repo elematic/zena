@@ -1,7 +1,7 @@
 import { Set } from 'zena:collections';
 import { collectValueExports, findDeclaration } from '../lookup.zena';
 import {
-  valueEqFields, valueEqKey, valueEqOperand, valueHashKey,
+  isValueHashCodeCall, valueEqFields, valueEqKey, valueEqOperand, valueHashKey,
 } from '../value-equality.zena';
 import {
   Referrer, ReachabilityContext, TypeLowererInterface, ReachabilityVisitorInterface,
@@ -1164,6 +1164,12 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
     }
     let objType = model.getNodeType(callee.object);
     if (objType == null) {
+      return;
+    }
+    // `hashCode()` on a record or tuple hashes it through its type's
+    // function (ir/equality.zena).
+    if (isValueHashCodeCall(n, callee, resolveType(objType), model)) {
+      this.noteValueHash(resolveType(objType), model);
       return;
     }
     let resolved = baseType(resolveType(objType));

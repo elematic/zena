@@ -6,6 +6,8 @@
  * registers and lowering calls. This module is what the two agree on:
  * which operands compare, which fields pair up, and the function's key.
  */
+import { CallExpression, MemberExpression, Node } from '../ast.zena';
+import { SemanticModel, memberKeyOf } from '../semantic-model.zena';
 import { NullType, RecordType, TupleType, Type, UnionType, baseType } from '../types.zena';
 import { compareStrings, getTypeUniqueKey } from './codegen-utils.zena';
 
@@ -104,3 +106,23 @@ export let valueEqKey = (l: Type, r: Type): String =>
 
 /** The key of the hash function for the record or tuple type `t`. */
 export let valueHashKey = (t: Type): String => getTypeUniqueKey(t);
+
+/**
+ * Whether `call`, with callee `member` on a receiver of type `receiver`,
+ * is `hashCode()` on a record or tuple: records and tuples satisfy
+ * `Hashable`, so generic code bounded by it calls `hashCode()` on them,
+ * and that call hashes the value. A record with its own `hashCode` field
+ * calls that instead.
+ */
+export let isValueHashCodeCall = (call: CallExpression, member: MemberExpression,
+    receiver: Type, model: SemanticModel): boolean => {
+  if (call.args.length != 0 || member.optional || member.isSymbolAccess) {
+    return false;
+  }
+  let v = valueEqOperand(receiver);
+  if (v == null || memberKeyOf(model, member.property as Node) != 'hashCode') {
+    return false;
+  }
+  let t = v as Type;
+  return !(t is RecordType && t.properties.has('hashCode'));
+};
