@@ -1,0 +1,386 @@
+/**
+ * Text edits over one source file.
+ *
+ * A rule never rebuilds source from the AST; it replaces byte ranges of
+ * the original text, so everything it does not mention — comments,
+ * blank lines, the author's line breaks — survives. Edits are applied
+ * from the back of the file forward, and two edits that touch the same
+ * bytes are not applied together: the earlier one wins and the later one
+ * waits for the next pass, which re-parses and re-checks what the first
+ * produced.
+ */
+
+import { StringBuilder } from 'zena:core';
+import { Set } from 'zena:collections';
+import { Comment } from 'zena-compiler:ast';
+
+/** Byte values the text helpers compare against. */
+let NEWLINE = 10;
+let SPACE = 32;
+let TAB = 9;
+let CARRIAGE_RETURN = 13;
+let SEMICOLON = 59;
+
+/** One replacement: the bytes `[start, end)` become `replacement`. */
+export final class Edit {
+  start: i32;
+  end: i32;
+  replacement: String;
+  /** The rule that proposed it, for the report. */
+  rule: String;
+  /** 1-based line the edit starts on, for the report. */
+  line: i32;
+  /**
+   * Edits that are one rewrite share a group, and are applied or
+   * rejected together: a loop header and the line it makes redundant,
+   * say. Each group is one or more edits; an edit on its own is a group
+   * of one.
+   */
+  group: i32;
+
+  new(this.start, this.end, this.replacement, this.rule, this.line, this.group);
+
+  /** Whether this edit and `other` touch any of the same bytes. */
+  overlaps(other: Edit): boolean {
+    if (this.start == other.start) {
+      return true;
+    }
+    return this.start < other.end && other.start < this.end;
+  }
+}
+
+/** Edits in start order; a stable insertion sort, since there are few. */
+export function sortEdits(edits: GrowableArray<Edit>): GrowableArray<Edit> {
+  let out = new Array<Edit>(edits.length);
+  for (let edit in edits) {
+    out.push(edit);
+  }
+  var i = 1;
+  while (i < out.length) {
+    let current = out[i];
+    var j = i - 1;
+    while (j >= 0 && out[j].start > current.start) {
+      out[j + 1] = out[j];
+      j -= 1;
+    }
+    out[j + 1] = current;
+    i += 1;
+  }
+  return out;
+}
+
+/**
+ * The edits that can be applied together: `edits` in start order with
+ * every edit that overlaps an earlier-starting one left out — and with
+ * it the rest of its group, since half a rewrite is worse than none.
+ */
+export function disjointEdits(edits: GrowableArray<Edit>): GrowableArray<Edit> {
+  let sorted = sortEdits(edits);
+  let dropped = new Set<i32>();
+  var changed = true;
+  // A dropped group may have been what another edit collided with, so
+  // the scan repeats until nothing more is dropped.
+  while (changed) {
+    changed = false;
+    var lastEnd = -1;
+    var lastStart = -1;
+    for (let edit in sorted) {
+      if (dropped.has(edit.group)) {
+        continue;
+      }
+      if (edit.start < lastEnd || edit.start == lastStart) {
+        dropped.add(edit.group);
+        changed = true;
+        break;
+      }
+      lastStart = edit.start;
+      lastEnd = if (edit.end > edit.start) edit.end else edit.start + 1;
+    }
+  }
+  let out = new Array<Edit>(sorted.length);
+  for (let edit in sorted) {
+    if (!dropped.has(edit.group)) {
+      out.push(edit);
+    }
+  }
+  return out;
+}
+
+/** `edits` partitioned by group, groups in order of first appearance. */
+export function groupEdits(edits: GrowableArray<Edit>): GrowableArray<GrowableArray<Edit>> {
+  let groups = new Array<GrowableArray<Edit>>();
+  let byGroup = new Map<i32, GrowableArray<Edit>>();
+  for (let edit in edits) {
+    if (let (true, members) = byGroup.get(edit.group)) {
+      members.push(edit);
+    } else {
+      let members = new Array<Edit>(2);
+      members.push(edit);
+      byGroup[edit.group] = members;
+      groups.push(members);
+    }
+  }
+  return groups;
+}
+
+/** The edits of `groups`, flattened, in start order. */
+export function flattenGroups(groups: GrowableArray<GrowableArray<Edit>>): GrowableArray<Edit> {
+  let out = new Array<Edit>();
+  for (let group in groups) {
+    for (let edit in group) {
+      out.push(edit);
+    }
+  }
+  return sortEdits(out);
+}
+
+/** `source` with `edits` (which must be disjoint and sorted) applied. */
+export function applyEdits(source: String, edits: GrowableArray<Edit>): String {
+  let out = new StringBuilder(source.length + 256);
+  var cursor = 0;
+  for (let edit in edits) {
+    if (edit.start > cursor) {
+      out.appendSlice(source, cursor, edit.start);
+    }
+    out.append(edit.replacement);
+    cursor = edit.end;
+  }
+  if (cursor < source.length) {
+    out.appendSlice(source, cursor, source.length);
+  }
+  return out.toString();
+}
+
+/** Whether byte `b` is a space, tab or carriage return. */
+export function isBlank(b: i32): boolean {
+  return b == SPACE || b == TAB || b == CARRIAGE_RETURN;
+}
+
+/** Whether byte `b` is a space, tab, newline or carriage return. */
+export function isWhitespace(b: i32): boolean {
+  return isBlank(b) || b == NEWLINE;
+}
+
+/** The offset of the first byte of the line holding `offset`. */
+export function lineStart(source: String, offset: i32): i32 {
+  var i = offset;
+  while (i > 0 && source.getByteAt(i - 1) != NEWLINE) {
+    i -= 1;
+  }
+  return i;
+}
+
+/** The offset just past the last byte of the line holding `offset`. */
+export function lineEnd(source: String, offset: i32): i32 {
+  var i = offset;
+  while (i < source.length && source.getByteAt(i) != NEWLINE) {
+    i += 1;
+  }
+  return i;
+}
+
+/** 1-based line number of `offset`. */
+export function lineOf(source: String, offset: i32): i32 {
+  var line = 1;
+  var i = 0;
+  let limit = if (offset < source.length) offset else source.length;
+  while (i < limit) {
+    if (source.getByteAt(i) == NEWLINE) {
+      line += 1;
+    }
+    i += 1;
+  }
+  return line;
+}
+
+/** The leading whitespace of the line holding `offset`. */
+export function indentationAt(source: String, offset: i32): String {
+  let start = lineStart(source, offset);
+  var i = start;
+  while (i < source.length && isBlank(source.getByteAt(i))) {
+    i += 1;
+  }
+  return source.sliceBytes(start, i);
+}
+
+/** The column (0-based, in bytes) of `offset` on its line. */
+export function columnOf(source: String, offset: i32): i32 {
+  return offset - lineStart(source, offset);
+}
+
+/** The first non-blank offset at or after `offset` on any line. */
+export function skipWhitespace(source: String, offset: i32): i32 {
+  var i = offset;
+  while (i < source.length && isWhitespace(source.getByteAt(i))) {
+    i += 1;
+  }
+  return i;
+}
+
+/** The last non-blank offset before `offset`, or -1. */
+export function skipWhitespaceBack(source: String, offset: i32): i32 {
+  var i = offset - 1;
+  while (i >= 0 && isWhitespace(source.getByteAt(i))) {
+    i -= 1;
+  }
+  return i;
+}
+
+/**
+ * `end`, extended past a `;` that directly follows (with only blanks in
+ * between), so that deleting a statement takes its terminator along.
+ */
+export function pastSemicolon(source: String, end: i32): i32 {
+  var i = end;
+  while (i < source.length && isBlank(source.getByteAt(i))) {
+    i += 1;
+  }
+  if (i < source.length && source.getByteAt(i) == SEMICOLON) {
+    return i + 1;
+  }
+  return end;
+}
+
+/**
+ * Whether the text in `[start, end)` contains a newline, i.e. spans
+ * more than one line.
+ */
+export function isMultiLine(text: String): boolean {
+  var i = 0;
+  while (i < text.length) {
+    if (text.getByteAt(i) == NEWLINE) {
+      return true;
+    }
+    i += 1;
+  }
+  return false;
+}
+
+/** The width of the longest line of `text`, in bytes. */
+export function widestLine(text: String): i32 {
+  var widest = 0;
+  var current = 0;
+  var i = 0;
+  while (i < text.length) {
+    if (text.getByteAt(i) == NEWLINE) {
+      if (current > widest) {
+        widest = current;
+      }
+      current = 0;
+    } else {
+      current += 1;
+    }
+    i += 1;
+  }
+  return if (current > widest) current else widest;
+}
+
+/** The width of the first line of `text`. */
+export function firstLineWidth(text: String): i32 {
+  var i = 0;
+  while (i < text.length && text.getByteAt(i) != NEWLINE) {
+    i += 1;
+  }
+  return i;
+}
+
+/** The width of the last line of `text`. */
+export function lastLineWidth(text: String): i32 {
+  var i = text.length;
+  while (i > 0 && text.getByteAt(i - 1) != NEWLINE) {
+    i -= 1;
+  }
+  return text.length - i;
+}
+
+/**
+ * `text` with `count` leading spaces removed from every line after the
+ * first, where every such line that is not blank has at least that many.
+ * Otherwise `text` unchanged: a block that is dedented unevenly is left
+ * as it was rather than made worse.
+ */
+export function dedentContinuation(text: String, count: i32): String {
+  if (count <= 0 || !isMultiLine(text)) {
+    return text;
+  }
+  // First, make sure every continuation line can give up `count` spaces.
+  var i = 0;
+  while (i < text.length) {
+    if (text.getByteAt(i) == NEWLINE) {
+      var j = i + 1;
+      var spaces = 0;
+      while (j < text.length && text.getByteAt(j) == SPACE && spaces < count) {
+        j += 1;
+        spaces += 1;
+      }
+      let lineIsBlank = j >= text.length || text.getByteAt(j) == NEWLINE ||
+          text.getByteAt(j) == CARRIAGE_RETURN;
+      if (spaces < count && !lineIsBlank) {
+        return text;
+      }
+    }
+    i += 1;
+  }
+  let out = new StringBuilder(text.length);
+  i = 0;
+  while (i < text.length) {
+    let b = text.getByteAt(i);
+    out.appendByte(b);
+    if (b == NEWLINE) {
+      var removed = 0;
+      while (removed < count && i + 1 < text.length && text.getByteAt(i + 1) == SPACE) {
+        i += 1;
+        removed += 1;
+      }
+    }
+    i += 1;
+  }
+  return out.toString();
+}
+
+/**
+ * `text` with `prefix` added to every line after the first. The inverse
+ * of `dedentContinuation`, for moving a block into deeper nesting.
+ */
+export function indentContinuation(text: String, prefix: String): String {
+  if (prefix.length == 0 || !isMultiLine(text)) {
+    return text;
+  }
+  let out = new StringBuilder(text.length + 64);
+  var i = 0;
+  while (i < text.length) {
+    let b = text.getByteAt(i);
+    out.appendByte(b);
+    if (b == NEWLINE && i + 1 < text.length && text.getByteAt(i + 1) != NEWLINE) {
+      out.append(prefix);
+    }
+    i += 1;
+  }
+  return out.toString();
+}
+
+/** Whether any comment lies (even partly) inside `[start, end)`. */
+export function hasCommentIn(comments: GrowableArray<Comment>, start: i32, end: i32): boolean {
+  for (let comment in comments) {
+    if (comment.start < end && comment.end > start) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/** `text` without leading and trailing whitespace. */
+export function trimText(text: String): String {
+  return text.trim();
+}
+
+/** `n` spaces. */
+export function spaces(n: i32): String {
+  let out = new StringBuilder(n);
+  var i = 0;
+  while (i < n) {
+    out.appendByte(SPACE);
+    i += 1;
+  }
+  return out.toString();
+}

@@ -1,0 +1,192 @@
+/**
+ * A mutable variable whose only writes are an `if` right after its
+ * declaration becomes an immutable one initialized by an `if` expression.
+ *
+ *     var x = fallback;                let x = if (c) a else fallback;
+ *     if (c) {                   →
+ *       x = a;
+ *     }
+ *
+ * Every branch of the chain must do nothing but assign the variable, and
+ * neither the tests nor the values may read it. The initializer must be
+ * pure, because it moves into the `else` (or is dropped when every path
+ * assigns), where it runs after the tests or not at all. `var` stays when
+ * the variable is assigned again further on.
+ */
+
+import {
+  Node, Module, Statement, BlockStatement, VariableDeclaration, IdentifierPattern,
+  IfStatement, ExpressionStatement, AssignmentExpression, Identifier, Expression,
+  LetPatternCondition,
+} from 'zena-compiler:ast';
+import { walkEnter } from 'zena-compiler:visitor';
+import { Symbol } from 'zena-compiler:compiler';
+import { RuleContext, LINE_WIDTH } from '../context.zena';
+
+export function ifInitializers(ctx: RuleContext): void {
+  walkEnter(ctx.ast, (n) => {
+    let statements = match (n) {
+      case Module {body}: body
+      case BlockStatement {body}: body
+      case _: null
+    };
+    if (statements == null) {
+      return;
+    }
+    var i = 0;
+    while (i + 1 < statements.length) {
+      foldAt(ctx, statements[i], statements[i + 1]);
+      i += 1;
+    }
+  });
+}
+
+/** One `(test, value)` arm of the chain. */
+final class Arm(test: Expression, value: Expression)
+
+function foldAt(ctx: RuleContext, first: Statement, second: Statement): void {
+  if (!(first is VariableDeclaration) || !(second is IfStatement)) {
+    return;
+  }
+  let decl = first as VariableDeclaration;
+  if (decl.kind != 'var' || !(decl.pattern is IdentifierPattern)) {
+    return;
+  }
+  if (!ctx.isPure(decl.init)) {
+    return;
+  }
+  let sym = ctx.declaredSymbol(decl.pattern);
+  if (sym == null) {
+    return;
+  }
+
+  // Walk the else-if chain.
+  let arms = new Array<Arm>();
+  var elseValue: Expression | null = null;
+  var current: Statement | null = second;
+  while (current != null) {
+    if (let IfStatement {test, consequent, alternate} = current) {
+      if (test is LetPatternCondition || !(test is Expression)) {
+        return;
+      }
+      let value = assignedValue(ctx, consequent, sym);
+      if (value == null) {
+        return;
+      }
+      arms.push(new Arm(test as Expression, value));
+      if (alternate == null) {
+        current = null;
+      } else if (alternate is IfStatement) {
+        current = alternate;
+      } else {
+        elseValue = assignedValue(ctx, alternate, sym);
+        if (elseValue == null) {
+          return;
+        }
+        current = null;
+      }
+    } else {
+      return;
+    }
+  }
+  for (let arm in arms) {
+    if (ctx.mentions(arm.test, sym) || ctx.mentions(arm.value, sym)) {
+      return;
+    }
+  }
+  if (elseValue != null && ctx.mentions(elseValue, sym)) {
+    return;
+  }
+  let start = ctx.start(decl);
+  let end = ctx.statementEnd(second);
+  if (ctx.hasCommentIn(start, end)) {
+    return;
+  }
+
+  // `let` unless something outside the chain assigns it too.
+  let kind = if (assignedOutside(ctx, sym, second)) 'var' else 'let';
+  let name = (decl.pattern as IdentifierPattern).name;
+  let annotation = decl.typeAnnotation;
+  let annotationText = if (annotation != null) `: ${ctx.text(annotation)}` else '';
+  let head = `${kind} ${name}${annotationText} = `;
+  let indent = ctx.indentOf(decl);
+  let fallback = if (elseValue != null) ctx.text(elseValue) else ctx.text(decl.init);
+
+  var oneLine = head;
+  var allSingle = ctx.isSingleLine(decl.init) &&
+      (elseValue == null || ctx.isSingleLine(elseValue));
+  var k = 0;
+  while (k < arms.length) {
+    let arm = arms[k];
+    if (!ctx.isSingleLine(arm.test) || !ctx.isSingleLine(arm.value)) {
+      allSingle = false;
+    }
+    let keyword = if (k == 0) 'if' else 'else if';
+    oneLine = `${oneLine}${keyword} (${ctx.text(arm.test)}) ${ctx.text(arm.value)} `;
+    k += 1;
+  }
+  oneLine = `${oneLine}else ${fallback};`;
+  if (allSingle && indent.length + oneLine.length <= LINE_WIDTH) {
+    ctx.replaceRange(start, end, oneLine);
+    return;
+  }
+
+  var text = head;
+  k = 0;
+  while (k < arms.length) {
+    let arm = arms[k];
+    let keyword = if (k == 0) 'if' else '} else if';
+    text = `${text}${keyword} (${ctx.text(arm.test)}) {\n${indent}  ${ctx.text(arm.value)}\n${indent}`;
+    k += 1;
+  }
+  text = `${text}} else {\n${indent}  ${fallback}\n${indent}};`;
+  ctx.replaceRange(start, end, text);
+}
+
+/** `x = e;` as the branch's only statement: `e`. */
+function assignedValue(ctx: RuleContext, branch: Node, sym: Symbol): Expression | null {
+  let expression = ctx.singleExpression(branch);
+  if (expression == null) {
+    return null;
+  }
+  if (let AssignmentExpression {left, value, operator} = expression) {
+    // A compound assignment (`+=`) records its operator; a plain one none.
+    if (operator != null) {
+      return null;
+    }
+    if (!(left is Identifier)) {
+      return null;
+    }
+    let s = ctx.symbolOf(left);
+    if (s == null || (s.id as i32) != (sym.id as i32)) {
+      return null;
+    }
+    return value;
+  }
+  return null;
+}
+
+/** Whether an assignment to `sym` exists outside `chain` in its function. */
+function assignedOutside(ctx: RuleContext, sym: Symbol, chain: Node): boolean {
+  var found = false;
+  let model = ctx.model;
+  walkEnter(ctx.enclosingBody(chain), (n) => {
+    if (found) {
+      return;
+    }
+    if (let AssignmentExpression {left} = n) {
+      if (ctx.isWithin(n, chain)) {
+        return;
+      }
+      walkEnter(left, (l) => {
+        if (l is Identifier) {
+          let s = model.resolve(l);
+          if (s != null && (s.id as i32) == (sym.id as i32)) {
+            found = true;
+          }
+        }
+      });
+    }
+  });
+  return found;
+}

@@ -1,0 +1,255 @@
+/**
+ * The driver: checks a file, runs the rules, applies what they propose,
+ * and checks the result before keeping it.
+ *
+ * A rule is written to preserve meaning, and the check after the rewrite
+ * is the net under it: a rewrite the checker rejects is never written.
+ * When a pass's edits fail together, the driver bisects them — each half
+ * alone, then smaller — until the edits that cause the errors are found
+ * and set aside, and reports them with the checker's message so the
+ * rule can be fixed. Passes repeat until no rule has anything to say,
+ * since one rewrite often enables another (`var` + `if` becomes
+ * `let x = if …`, which becomes `x ?? y`).
+ */
+
+import { writeFileSync } from 'zena:fs';
+import { Set } from 'zena:collections';
+import { Project, CheckedFile } from './checking.zena';
+import { RuleContext, Rule } from './context.zena';
+import { Edit, disjointEdits, applyEdits, groupEdits, flattenGroups } from './source.zena';
+
+/** A rule by name, so the command line can pick them. */
+export final class NamedRule(name: String, run: Rule)
+
+export final class LintOptions {
+  /** Write the result back; otherwise only report. */
+  var write = true;
+  /** Print every edit, not just the summary. */
+  var verbose = false;
+  /** Passes before giving up on a file that keeps changing. */
+  var maxPasses = 8;
+  rules: GrowableArray<NamedRule>;
+
+  new(this.rules);
+}
+
+/** A rewrite (one group of edits) the checker rejected, with the first error it caused. */
+export final class RejectedEdit(edits: GrowableArray<Edit>, error: String) {
+  /** The edit to report the rejection at. */
+  edit: Edit {
+    get { return this.edits[0]; }
+  }
+}
+
+export final class FileReport {
+  path: String;
+  /** Edits applied, across every pass. */
+  applied = new Array<Edit>();
+  rejected = new Array<RejectedEdit>();
+  /** The file did not check before anything was done; nothing was. */
+  errorsBefore = new Array<String>();
+  /** The file could not be compiled at all. */
+  var failure: String | null = null;
+  var passes = 0;
+  var changed = false;
+  /** The file's text after every pass; the original when nothing changed. */
+  var result: String | null = null;
+
+  new(this.path);
+}
+
+/** Cleans one file in place. */
+export function lintFile(project: Project, path: String, options: LintOptions): FileReport {
+  let report = new FileReport(path);
+  let checked = initialCheck(project, path, report);
+  if (checked == null) {
+    project.reset();
+    return report;
+  }
+  let before = checked.errors();
+  if (before.length > 0) {
+    for (let error in before) {
+      report.errorsBefore.push(error);
+    }
+    project.reset();
+    return report;
+  }
+
+  var source = checked.source;
+  var current = checked;
+  // What the checker has already rejected, so a rule proposing it again
+  // on the next pass does not cost another check or shadow its neighbours.
+  let rejected = new Set<String>();
+  while (report.passes < options.maxPasses) {
+    report.passes += 1;
+    let proposed = new Array<Edit>();
+    for (let edit in runRules(current, options.rules)) {
+      if (!rejected.has(editKey(edit, source))) {
+        proposed.push(edit);
+      }
+    }
+    if (proposed.length == 0) {
+      break;
+    }
+    // An edit the checker rejects may have been shadowing others that
+    // overlap it; once it is out of the way they get their turn.
+    var accepted = new Array<Edit>(0);
+    var remaining = proposed;
+    while (remaining.length > 0) {
+      let candidates = groupEdits(disjointEdits(remaining));
+      let before = report.rejected.length;
+      accepted = flattenGroups(settle(project, path, source, candidates, report));
+      if (report.rejected.length == before) {
+        break;
+      }
+      var k = before;
+      while (k < report.rejected.length) {
+        for (let edit in report.rejected[k].edits) {
+          rejected.add(editKey(edit, source));
+        }
+        k += 1;
+      }
+      let next = new Array<Edit>(remaining.length);
+      for (let edit in remaining) {
+        if (!rejected.has(editKey(edit, source))) {
+          next.push(edit);
+        }
+      }
+      remaining = next;
+    }
+    if (accepted.length == 0) {
+      break;
+    }
+    source = applyEdits(source, accepted);
+    for (let edit in accepted) {
+      report.applied.push(edit);
+    }
+    report.changed = true;
+    project.override(path, source);
+    current = project.check(path);
+    if (current.hasErrors()) {
+      // `settle` checked this exact text; a difference here is a bug.
+      throw new Error(`${path}: the accepted rewrite does not check: ${current.errors()[0]}`);
+    }
+  }
+
+  report.result = source;
+  if (report.changed && options.write) {
+    writeFileSync(path, source);
+  }
+  project.reset();
+  return report;
+}
+
+/**
+ * Cleans source text that is not (or not yet) on disk, as if it were the
+ * file at `path`: relative imports resolve from there. Nothing is
+ * written; the result is on the report.
+ */
+export function lintSource(project: Project, path: String, source: String, options: LintOptions): FileReport {
+  project.override(path, source);
+  let write = options.write;
+  options.write = false;
+  let report = lintFile(project, path, options);
+  options.write = write;
+  return report;
+}
+
+/**
+ * An edit's identity across passes: the rule, the text it replaces and
+ * what it writes. Offsets would not do — every accepted edit above a
+ * site moves it.
+ */
+function editKey(edit: Edit, source: String): String {
+  return `${edit.rule}:${source.sliceBytes(edit.start, edit.end)}->${edit.replacement}`;
+}
+
+/** The file as it is on disk, checked; null (recorded on the report) when it cannot be. */
+function initialCheck(project: Project, path: String, report: FileReport): CheckedFile | null {
+  try {
+    return project.check(path);
+  } catch (e) {
+    report.failure = (e as Error).message;
+    return null;
+  }
+}
+
+/** Every rule's proposals for one checked file. */
+function runRules(checked: CheckedFile, rules: GrowableArray<NamedRule>): GrowableArray<Edit> {
+  let ctx = new RuleContext(checked);
+  for (let rule in rules) {
+    ctx.rule = rule.name;
+    rule.run(ctx);
+  }
+  return ctx.edits;
+}
+
+/**
+ * The subset of `groups` (of disjoint edits) that checks when applied
+ * together. The whole set first — the common case — then halves,
+ * recursively, and finally one by one onto what has been accepted so
+ * far, so that a pair of rewrites that each check alone but not together
+ * is caught too.
+ */
+function settle(
+  project: Project,
+  path: String,
+  source: String,
+  groups: GrowableArray<GrowableArray<Edit>>,
+  report: FileReport
+): GrowableArray<GrowableArray<Edit>> {
+  let failure = tryGroups(project, path, source, groups);
+  if (failure == null) {
+    return groups;
+  }
+  if (groups.length == 1) {
+    report.rejected.push(new RejectedEdit(groups[0], failure));
+    return new Array<GrowableArray<Edit>>(0);
+  }
+  let mid = groups.length - (groups.length >> 1);
+  let left = settle(project, path, source, groups.slice(0, mid), report);
+  let right = settle(project, path, source, groups.slice(mid, groups.length), report);
+  let combined = new Array<GrowableArray<Edit>>(left.length + right.length);
+  for (let g in left) {
+    combined.push(g);
+  }
+  for (let g in right) {
+    combined.push(g);
+  }
+  if (combined.length == 0 || tryGroups(project, path, source, combined) == null) {
+    return combined;
+  }
+  // Each half checks alone and not together: add one at a time.
+  let accepted = new Array<GrowableArray<Edit>>(combined.length);
+  for (let g in combined) {
+    let attempt = new Array<GrowableArray<Edit>>(accepted.length + 1);
+    for (let a in accepted) {
+      attempt.push(a);
+    }
+    attempt.push(g);
+    let error = tryGroups(project, path, source, attempt);
+    if (error == null) {
+      accepted.push(g);
+    } else {
+      report.rejected.push(new RejectedEdit(g, error));
+    }
+  }
+  return accepted;
+}
+
+/** Null when `source` with the groups' edits applied checks, else the first error. */
+function tryGroups(project: Project, path: String, source: String, groups: GrowableArray<GrowableArray<Edit>>): String | null {
+  let text = applyEdits(source, flattenGroups(groups));
+  try {
+    // Setting the override re-reads the file, so a parse error lands here.
+    project.override(path, text);
+    let checked = project.check(path);
+    let errors = checked.errors();
+    if (errors.length == 0) {
+      return null;
+    }
+    return errors[0];
+  } catch (e) {
+    return (e as Error).message;
+  }
+}

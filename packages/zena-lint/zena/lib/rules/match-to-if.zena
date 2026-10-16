@@ -1,0 +1,268 @@
+/**
+ * A `match` with one or two arms is an `if`.
+ *
+ *     match (x) { case null: a  case _: b }        →  if (x == null) a else b
+ *     match (p) { case Point {x, y}: a  case _: b } →  if (let Point {x, y} = p) a else b
+ *     match (s) { case Circle: a  case _: b }       →  if (s is Circle) a else b
+ *     match (b) { case true: a  case false: b }     →  if (b) a else b
+ *     match (e) { case Add {l, r}: use(l, r) }      →  if (let Add {l, r} = e) { use(l, r); }
+ *
+ * The second arm must bind nothing — a wildcard, a literal, a bare type
+ * name — since `else` has nothing to bind. Guards are left alone. A
+ * nullable discriminant keeps its `match` when the first arm is a
+ * destructuring pattern: `if (let …)` against `null` traps (#663).
+ */
+
+import {
+  Node, Expression, Statement, MatchExpression, MatchCase, ExpressionStatement,
+  BlockStatement, Identifier, MemberExpression, NumberLiteral, StringLiteral,
+  BooleanLiteral, NullLiteral, BindingPattern, IdentifierPattern, ClassPattern,
+  RecordPattern, TuplePattern, ArrayPattern, StringLiteral as StringLit,
+  TemplateLiteral, FunctionExpression, IfExpression,
+} from 'zena-compiler:ast';
+import { walkEnter } from 'zena-compiler:visitor';
+import { FunctionType } from 'zena-compiler:types';
+import { RuleContext, LINE_WIDTH } from '../context.zena';
+import { dedentContinuation, indentationAt, lineStart } from '../source.zena';
+
+export function matchToIf(ctx: RuleContext): void {
+  walkEnter(ctx.ast, (n) => {
+    if (n is MatchExpression) {
+      rewrite(ctx, n as MatchExpression);
+    }
+  });
+}
+
+function rewrite(ctx: RuleContext, node: MatchExpression): void {
+  let cases = node.cases;
+  if (cases.length == 0 || cases.length > 2) {
+    return;
+  }
+  for (let c in cases) {
+    if (c.guard != null) {
+      return;
+    }
+  }
+  let parent = ctx.parent(node);
+  if (parent == null) {
+    return;
+  }
+  let asStatement = parent is ExpressionStatement && !isValueTail(ctx, parent);
+  if (cases.length == 1 && !asStatement) {
+    return;
+  }
+  if (cases.length == 1 && isEmptyBlock(cases[0].body)) {
+    return;
+  }
+  let discriminant = node.discriminant;
+  let condition = conditionFor(ctx, cases[0].pattern, discriminant);
+  if (condition == null) {
+    return;
+  }
+  if (cases.length == 2 && !bindsNothing(cases[1].pattern)) {
+    return;
+  }
+  if (ctx.hasComment(node)) {
+    return;
+  }
+
+  // Arm bodies move from under `case` to under `if`: one level up.
+  let target = if (asStatement) parent else node;
+  let indent = indentationAt(ctx.source, ctx.start(target));
+  let caseIndent = indentationAt(ctx.source, ctx.start(cases[0]));
+  let dedent = if (hasMultiLineLiteral(ctx, node)) 0 else caseIndent.length - indent.length;
+  let column = ctx.columnOf(target);
+
+  // A `case _: {}` in statement position is no `else` at all.
+  let hasElse = cases.length == 2 && !(asStatement && isEmptyBlock(cases[1].body));
+
+  var text = '';
+  if (!asStatement) {
+    // In value position an arm is an expression or a value block, and a
+    // short pair reads best on one line.
+    let first = armText(ctx, cases[0].body, dedent);
+    let second = armText(ctx, cases[1].body, dedent);
+    let oneLine = `if (${condition}) ${first} else ${second}`;
+    if (cases[0].body is Expression && cases[1].body is Expression &&
+        ctx.isSingleLine(cases[0].body) && ctx.isSingleLine(cases[1].body) &&
+        column + oneLine.length <= LINE_WIDTH) {
+      text = oneLine;
+    } else {
+      text = `if (${condition}) ${blockOf(first, cases[0].body, indent)} else ${blockOf(second, cases[1].body, indent)}`;
+    }
+    ctx.replace(node, text);
+    return;
+  }
+
+  // In statement position every arm is a block. A one-line block stays
+  // on the line when the whole `if` fits, and is opened up otherwise.
+  let first = statementArm(ctx, cases[0].body, dedent);
+  var oneLine = `if (${condition}) { ${first} }`;
+  var second = '';
+  if (hasElse) {
+    second = statementArm(ctx, cases[1].body, dedent);
+    oneLine = `${oneLine} else { ${second} }`;
+  }
+  let allOneLine = ctx.isSingleLine(cases[0].body) &&
+      (!hasElse || ctx.isSingleLine(cases[1].body));
+  if (allOneLine && column + oneLine.length <= LINE_WIDTH) {
+    text = oneLine;
+  } else {
+    text = `if (${condition}) {\n${indent}  ${first}\n${indent}}`;
+    if (hasElse) {
+      text = `${text} else {\n${indent}  ${second}\n${indent}}`;
+    }
+  }
+  ctx.replaceRange(ctx.start(parent), ctx.statementEnd(parent), text);
+}
+
+/**
+ * An arm's statements as they will sit inside the `if` block: the
+ * block's own statements, dedented one level, or the expression with a
+ * `;` after it.
+ */
+function statementArm(ctx: RuleContext, body: Node, dedent: i32): String {
+  if (body is BlockStatement) {
+    let block = body as BlockStatement;
+    if (block.body.length == 0) {
+      return '';
+    }
+    let inner = ctx.slice(ctx.start(block.body[0]), ctx.statementEnd(block.body[block.body.length - 1]));
+    return dedentContinuation(inner, dedent);
+  }
+  return `${dedentContinuation(ctx.text(body), dedent)};`;
+}
+
+function isEmptyBlock(body: Node): boolean {
+  if (let BlockStatement {body as statements} = body) {
+    return statements.length == 0;
+  }
+  return false;
+}
+
+/**
+ * Whether the expression statement is the last statement of a block
+ * whose value it is — a value-block arm, `if` branch, or function body
+ * with a non-void result — so that the match is really an expression.
+ */
+function isValueTail(ctx: RuleContext, statement: Node): boolean {
+  let block = ctx.parent(statement);
+  if (block == null || !(block is BlockStatement)) {
+    return false;
+  }
+  let body = (block as BlockStatement).body;
+  if (body.length == 0 || body[body.length - 1] !== statement) {
+    return false;
+  }
+  let owner = ctx.parent(block);
+  if (owner == null) {
+    return false;
+  }
+  return match (owner) {
+    case MatchCase {}: {
+      // The arm of a match that is itself a statement is a statement block.
+      let outer = ctx.parent(owner);
+      if (outer == null) {
+        false
+      } else {
+        let outerParent = ctx.parent(outer);
+        !(outerParent != null && outerParent is ExpressionStatement &&
+            !isValueTail(ctx, outerParent))
+      }
+    }
+    case IfExpression {}: true
+    case FunctionExpression {}: {
+      let t = ctx.typeOf(owner);
+      if (t != null && t is FunctionType) {
+        !ctx.isVoid((t as FunctionType).returnType)
+      } else {
+        false
+      }
+    }
+    case _: false
+  };
+}
+
+/** The `if` condition that selects `pattern`, or null for a pattern `if` cannot express. */
+function conditionFor(ctx: RuleContext, pattern: Node, discriminant: Expression): String | null {
+  let subject = ctx.text(discriminant);
+  let nullable = ctx.isNullable(ctx.typeOf(discriminant));
+  return match (pattern) {
+    case Identifier {name}: {
+      // A bare name is a type test; `_` alone selects everything.
+      if (name == '_') null else `${subject} is ${name}`
+    }
+    case MemberExpression {}: `${subject} == ${ctx.text(pattern)}`
+    case NullLiteral {}: `${subject} == null`
+    case NumberLiteral {}: `${subject} == ${ctx.text(pattern)}`
+    case StringLiteral {}: `${subject} == ${ctx.text(pattern)}`
+    case BooleanLiteral {value}: {
+      if (value) {
+        subject
+      } else if (ctx.isSimpleReference(discriminant)) {
+        `!${subject}`
+      } else {
+        `!(${subject})`
+      }
+    }
+    case BindingPattern {pattern as inner}: {
+      if (nullable || inner is IdentifierPattern) {
+        null
+      } else {
+        `let ${ctx.text(inner)} = ${subject}`
+      }
+    }
+    case ClassPattern {properties}: {
+      if (nullable) {
+        null
+      } else if (properties.length == 0) {
+        // `case Foo {}:` binds nothing but narrows the discriminant, which
+        // is what `is` does and `if (let Foo {} = x)` does not.
+        `${subject} is ${ctx.text((pattern as ClassPattern).name)}`
+      } else {
+        `let ${ctx.text(pattern)} = ${subject}`
+      }
+    }
+    case RecordPattern {}: if (nullable) null else `let ${ctx.text(pattern)} = ${subject}`
+    case TuplePattern {}: if (nullable) null else `let ${ctx.text(pattern)} = ${subject}`
+    case _: null
+  };
+}
+
+/** Whether the pattern introduces no names, so it can be an `else`. */
+function bindsNothing(pattern: Node): boolean {
+  return match (pattern) {
+    case Identifier {}: true
+    case MemberExpression {}: true
+    case NullLiteral {}: true
+    case NumberLiteral {}: true
+    case StringLiteral {}: true
+    case BooleanLiteral {}: true
+    case ClassPattern {properties}: properties.length == 0
+    case _: false
+  };
+}
+
+/** An arm's body as it will read under the `if`, in value position. */
+function armText(ctx: RuleContext, body: Node, dedent: i32): String {
+  return dedentContinuation(ctx.text(body), dedent);
+}
+
+/** `text` as a block, unless the arm already was one. */
+function blockOf(text: String, body: Node, indent: String): String {
+  if (body is BlockStatement) {
+    return text;
+  }
+  return `{\n${indent}  ${text}\n${indent}}`;
+}
+
+/** Whether a string or template literal in the match spans lines (dedenting would change it). */
+function hasMultiLineLiteral(ctx: RuleContext, node: Node): boolean {
+  var found = false;
+  walkEnter(node, (n) => {
+    if ((n is StringLit || n is TemplateLiteral) && !ctx.isSingleLine(n)) {
+      found = true;
+    }
+  });
+  return found;
+}

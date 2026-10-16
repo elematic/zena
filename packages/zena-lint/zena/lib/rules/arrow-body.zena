@@ -1,0 +1,68 @@
+/**
+ * `(x) => { return e; }` is `(x) => e`.
+ *
+ * Only for arrows — a `function` declaration needs its block — and only
+ * when the block holds nothing but the return. A record literal result
+ * is parenthesized so it is not read as a block. A one-line result that
+ * would overflow the line is left in its block.
+ */
+
+import {
+  Node, FunctionExpression, FunctionDeclaration, BlockStatement, ReturnStatement,
+  RecordLiteral, StringLiteral, TemplateLiteral,
+} from 'zena-compiler:ast';
+import { walkEnter } from 'zena-compiler:visitor';
+import { RuleContext, LINE_WIDTH } from '../context.zena';
+import { dedentContinuation } from '../source.zena';
+
+export function arrowBodies(ctx: RuleContext): void {
+  walkEnter(ctx.ast, (n) => {
+    if (n is FunctionExpression) {
+      rewrite(ctx, n as FunctionExpression);
+    }
+  });
+}
+
+function rewrite(ctx: RuleContext, fe: FunctionExpression): void {
+  if (fe.isGenerator || !(fe.body is BlockStatement)) {
+    return;
+  }
+  let parent = ctx.parent(fe);
+  if (parent != null && parent is FunctionDeclaration) {
+    return;
+  }
+  let block = fe.body as BlockStatement;
+  if (block.body.length != 1 || ctx.hasComment(block)) {
+    return;
+  }
+  let only = block.body[0];
+  if (!(only is ReturnStatement)) {
+    return;
+  }
+  let returned = (only as ReturnStatement).argument;
+  if (returned == null || (only as ReturnStatement).isTail) {
+    return;
+  }
+  var text = ctx.text(returned);
+  if (ctx.isSingleLine(returned)) {
+    if (ctx.columnOf(block) + text.length + 1 > LINE_WIDTH) {
+      return;
+    }
+  } else if (!hasMultiLineLiteral(ctx, returned)) {
+    text = dedentContinuation(text, 2);
+  }
+  if (returned is RecordLiteral) {
+    text = `(${text})`;
+  }
+  ctx.replace(block, text);
+}
+
+function hasMultiLineLiteral(ctx: RuleContext, node: Node): boolean {
+  var found = false;
+  walkEnter(node, (n) => {
+    if ((n is StringLiteral || n is TemplateLiteral) && !ctx.isSingleLine(n)) {
+      found = true;
+    }
+  });
+  return found;
+}

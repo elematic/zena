@@ -1,0 +1,327 @@
+/**
+ * Null tests that spell out what `??` and `?.` mean.
+ *
+ *     if (x != null) x else d              →  x ?? d
+ *     if (x != null) x.a.b() else null     →  x?.a.b()
+ *     if (x != null) x.name else d         →  x?.name ?? d   (x.name not nullable)
+ *     if (x != null) { x.close(); }        →  x?.close();
+ *     if (x != null) { return x; }         →  return x ?? d;
+ *     return d;
+ *
+ * `x` is a name or a field path (`this.#cache`), so that reading it twice
+ * reads the same thing. A chain's root may be mentioned only once in it:
+ * `x?.f(x)` would pass a nullable `x` where the original passed a narrowed
+ * one. A default is only folded onto a chain whose own type is not
+ * nullable, since `??` would also replace a legitimate `null` result.
+ */
+
+import {
+  Node, Module, Statement, BlockStatement, Expression, IfExpression, IfStatement,
+  BinaryExpression, NullLiteral, Identifier, MemberExpression, IndexExpression,
+  CallExpression, ExpressionStatement, ReturnStatement, LetPatternCondition,
+  ThisExpression,
+} from 'zena-compiler:ast';
+import { walkEnter } from 'zena-compiler:visitor';
+import { RuleContext } from '../context.zena';
+import { typeToString, ClassType, UnionType } from 'zena-compiler:types';
+
+export function nullishOperators(ctx: RuleContext): void {
+  walkEnter(ctx.ast, (n) => {
+    match (n) {
+      case IfExpression {}: { ifExpression(ctx, n as IfExpression); }
+      case IfStatement {}: { ifStatement(ctx, n as IfStatement); }
+      case Module {body}: { returnPairs(ctx, body); }
+      case BlockStatement {body}: { returnPairs(ctx, body); }
+      case _: {}
+    }
+  });
+}
+
+/** The reference a null test compares, and which way the test goes. */
+final class NullTest(reference: Expression, positive: boolean)
+
+/** `x != null`, `null == x`, … where `x` is a simple reference of nullable type. */
+function nullTestOf(ctx: RuleContext, test: Node): NullTest | null {
+  if (let BinaryExpression {operator, left, right} = test) {
+    let positive = operator == '!=' || operator == '!==';
+    let negative = operator == '==' || operator == '===';
+    if (!positive && !negative) {
+      return null;
+    }
+    var reference: Expression | null = null;
+    if (right is NullLiteral) {
+      reference = left;
+    } else if (left is NullLiteral) {
+      reference = right;
+    }
+    if (reference == null || !ctx.isSimpleReference(reference)) {
+      if (ctx.debug) {
+        console.log(`nullish: ${ctx.text(test)} is not a simple reference`);
+      }
+      return null;
+    }
+    if (!ctx.isNullable(ctx.typeOf(reference))) {
+      if (ctx.debug) {
+        let t = ctx.typeOf(reference);
+        console.log(`nullish: ${ctx.text(reference)} has type ${if (t != null) typeToString(t) else '<none>'}, not nullable`);
+      }
+      return null;
+    }
+    if (isExtensionInstance(ctx, reference)) {
+      // `x?.member` on an extension class type-checks but does not lower:
+      // the instance is erased to the wrapped value at run time, and the
+      // member is looked up on that (#395). See
+      // tests/language/execution/optional-chaining/extension_class_member.zena.
+      if (ctx.debug) {
+        console.log(`nullish: ${ctx.text(reference)} is an extension class instance`);
+      }
+      return null;
+    }
+    return new NullTest(reference, positive);
+  }
+  return null;
+}
+
+/** Whether the reference's type, less `null`, is an extension class. */
+function isExtensionInstance(ctx: RuleContext, reference: Expression): boolean {
+  let t = ctx.typeOf(reference);
+  if (t == null) {
+    return false;
+  }
+  let u = ctx.unwrap(t);
+  if (u is UnionType) {
+    for (let member in (u as UnionType).types) {
+      let m = ctx.unwrap(member);
+      if (m is ClassType && (m as ClassType).isExtension) {
+        return true;
+      }
+    }
+    return false;
+  }
+  return u is ClassType && (u as ClassType).isExtension;
+}
+
+/**
+ * `chain` with its root — the occurrence of `reference` it starts from —
+ * made optional: `x.a` → `x?.a`. Null when `chain` is not one access on
+ * `reference` — a field, an index, a call, or a method call — or mentions
+ * it again. One access only: `x?.a.b` does not short-circuit `.b` in
+ * Zena (#396), so a longer chain would need `?.` at every step and a
+ * different meaning.
+ */
+function optionalChain(ctx: RuleContext, chain: Expression, reference: Expression): String | null {
+  let referenceText = ctx.text(reference);
+  var root: Node = chain;
+  var steps = 0;
+  // A method call is a call on a member: two nodes, one access.
+  if (let CallExpression {callee} = chain) {
+    if (callee is MemberExpression) {
+      root = callee;
+    }
+  }
+  while (true) {
+    let next = match (root) {
+      case MemberExpression {object}: object
+      case IndexExpression {object}: object
+      case CallExpression {callee}: callee
+      case _: null
+    };
+    if (next == null) {
+      break;
+    }
+    root = next;
+    steps += 1;
+  }
+  if (steps != 1 || ctx.text(root) != referenceText || ctx.start(root) != ctx.start(chain)) {
+    if (ctx.debug) {
+      console.log(`nullish: chain root ${ctx.text(root)} after ${i32ToString(steps)} steps, starts ${i32ToString(ctx.start(root))} vs ${i32ToString(ctx.start(chain))}`);
+    }
+    return null;
+  }
+  // The root is the only mention: a second one would not be narrowed.
+  if (countReferences(ctx, chain, reference) != 1) {
+    if (ctx.debug) {
+      console.log(`nullish: ${referenceText} is mentioned again in ${ctx.text(chain)}`);
+    }
+    return null;
+  }
+  let rootEnd = ctx.end(root);
+  return `${referenceText}?${ctx.slice(rootEnd, ctx.end(chain))}`;
+}
+
+/**
+ * How many times `chain` reads `reference`: by binding for a name, by
+ * spelling for a field path such as `this.#cache`.
+ */
+function countReferences(ctx: RuleContext, chain: Node, reference: Expression): i32 {
+  var count = 0;
+  if (reference is Identifier) {
+    let sym = ctx.symbolOf(reference);
+    if (sym == null) {
+      return 0;
+    }
+    walkEnter(chain, (n) => {
+      if (n is Identifier) {
+        let s = ctx.symbolOf(n);
+        if (s != null && (s.id as i32) == (sym.id as i32)) {
+          count += 1;
+        }
+      }
+    });
+    return count;
+  }
+  let text = ctx.text(reference);
+  walkEnter(chain, (n) => {
+    if (n is MemberExpression && ctx.isSimpleReference(n) && ctx.text(n) == text) {
+      count += 1;
+    }
+  });
+  return count;
+}
+
+function ifExpression(ctx: RuleContext, node: IfExpression): void {
+  let alternate = node.alternate;
+  if (ctx.debug) {
+    console.log(`nullish: if-expression at line ${i32ToString(ctx.lineOf(node))}, test ${ctx.text(node.test)}, alternate ${if (alternate == null) 'none' else 'present'}`);
+  }
+  if (alternate == null) {
+    return;
+  }
+  let test = nullTestOf(ctx, node.test);
+  if (test == null) {
+    if (ctx.debug) {
+      console.log(`nullish: not a null test`);
+    }
+    return;
+  }
+  let whenNonNull = ctx.singleExpression(if (test.positive) node.consequent else alternate);
+  let whenNull = ctx.singleExpression(if (test.positive) alternate else node.consequent);
+  if (whenNonNull == null || whenNull == null) {
+    if (ctx.debug) {
+      console.log(`nullish: a branch is not a single expression`);
+    }
+    return;
+  }
+  if (ctx.hasComment(node)) {
+    if (ctx.debug) {
+      console.log(`nullish: has a comment`);
+    }
+    return;
+  }
+  let referenceText = ctx.text(test.reference);
+  if (ctx.text(whenNonNull) == referenceText) {
+    ctx.replace(node, `${referenceText} ?? ${ctx.text(whenNull)}`);
+    return;
+  }
+  let chain = optionalChain(ctx, whenNonNull, test.reference);
+  if (chain == null) {
+    if (ctx.debug) {
+      console.log(`nullish: ${ctx.text(whenNonNull)} is not a chain on ${referenceText}`);
+    }
+    return;
+  }
+  if (whenNull is NullLiteral) {
+    // A primitive behind `?.` has to be coalesced at once; the original
+    // could not have had this shape then either.
+    if (ctx.isPrimitive(ctx.typeOf(whenNonNull))) {
+      return;
+    }
+    ctx.replace(node, chain);
+    return;
+  }
+  if (ctx.isNullable(ctx.typeOf(whenNonNull))) {
+    if (ctx.debug) {
+      let t = ctx.typeOf(whenNonNull);
+      console.log(`nullish: ${ctx.text(whenNonNull)} is nullable (${if (t != null) typeToString(t) else '<none>'}), so a default cannot fold onto it`);
+    }
+    return;
+  }
+  ctx.replace(node, `${chain} ?? ${ctx.text(whenNull)}`);
+}
+
+/** `if (x != null) { x.f(); }` → `x?.f();` */
+function ifStatement(ctx: RuleContext, node: IfStatement): void {
+  if (node.alternate != null) {
+    return;
+  }
+  let test = nullTestOf(ctx, node.test);
+  if (test == null || !test.positive) {
+    return;
+  }
+  let body = ctx.singleExpression(node.consequent);
+  if (body == null || !(body is CallExpression)) {
+    return;
+  }
+  if (ctx.hasComment(node)) {
+    return;
+  }
+  let resultType = ctx.typeOf(body);
+  if (ctx.isPrimitive(resultType) && !ctx.isVoid(resultType)) {
+    return;
+  }
+  let chain = optionalChain(ctx, body, test.reference);
+  if (chain == null) {
+    return;
+  }
+  ctx.replaceRange(ctx.start(node), ctx.statementEnd(node), `${chain};`);
+}
+
+/** `if (x != null) { return x; } return d;` → `return x ?? d;` */
+function returnPairs(ctx: RuleContext, statements: GrowableArray<Statement>): void {
+  var i = 0;
+  while (i + 1 < statements.length) {
+    let first = statements[i];
+    let second = statements[i + 1];
+    i += 1;
+    if (!(first is IfStatement) || !(second is ReturnStatement)) {
+      continue;
+    }
+    let guard = first as IfStatement;
+    if (guard.alternate != null) {
+      continue;
+    }
+    let test = nullTestOf(ctx, guard.test);
+    if (test == null) {
+      continue;
+    }
+    let returned = singleReturn(guard.consequent);
+    let after = (second as ReturnStatement).argument;
+    if (returned == null || after == null) {
+      continue;
+    }
+    let start = ctx.start(first);
+    let end = ctx.statementEnd(second);
+    if (ctx.hasCommentIn(start, end)) {
+      continue;
+    }
+    let referenceText = ctx.text(test.reference);
+    if (test.positive) {
+      if (ctx.text(returned) == referenceText) {
+        ctx.replaceRange(start, end, `return ${referenceText} ?? ${ctx.text(after)};`);
+      } else {
+        let chain = optionalChain(ctx, returned, test.reference);
+        if (chain != null && !ctx.isNullable(ctx.typeOf(returned))) {
+          ctx.replaceRange(start, end, `return ${chain} ?? ${ctx.text(after)};`);
+        }
+      }
+    } else if (ctx.text(after) == referenceText) {
+      ctx.replaceRange(start, end, `return ${referenceText} ?? ${ctx.text(returned)};`);
+    }
+  }
+}
+
+/** The argument of the single `return` a branch consists of, else null. */
+function singleReturn(branch: Node): Expression | null {
+  let statement = match (branch) {
+    case BlockStatement {body}: if (body.length == 1) body[0] else null
+    case Statement as s: s
+    case _: null
+  };
+  if (statement == null) {
+    return null;
+  }
+  if (let ReturnStatement {argument} = statement) {
+    return argument;
+  }
+  return null;
+}

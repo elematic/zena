@@ -1,0 +1,148 @@
+/**
+ * `if (c) { return true; } return false;` is `return c;`, and the
+ * expression `if (c) true else false` is `c`.
+ *
+ * With the literals the other way round the condition is negated: a
+ * comparison flips its operator, `!x` loses its `!`, a name or call gets
+ * one, anything else is wrapped in `!(…)`.
+ */
+
+import {
+  Node, Expression, Statement, Module, BlockStatement, IfStatement, ReturnStatement,
+  BooleanLiteral, BinaryExpression, UnaryExpression, CallExpression, Identifier,
+  MemberExpression, LetPatternCondition, IfExpression,
+} from 'zena-compiler:ast';
+import { walkEnter } from 'zena-compiler:visitor';
+import { RuleContext } from '../context.zena';
+
+export function booleanReturns(ctx: RuleContext): void {
+  walkEnter(ctx.ast, (n) => {
+    if (n is IfExpression) {
+      booleanIf(ctx, n as IfExpression);
+      return;
+    }
+    let statements = match (n) {
+      case Module {body}: body
+      case BlockStatement {body}: body
+      case _: null
+    };
+    if (statements == null) {
+      return;
+    }
+    var i = 0;
+    while (i < statements.length) {
+      let next = if (i + 1 < statements.length) statements[i + 1] else null;
+      foldAt(ctx, statements[i], next);
+      i += 1;
+    }
+  });
+}
+
+/** `if (c) true else false` is `c`; the other way round, `!c`. */
+function booleanIf(ctx: RuleContext, node: IfExpression): void {
+  let alternate = node.alternate;
+  if (alternate == null || node.test is LetPatternCondition || !(node.test is Expression)) {
+    return;
+  }
+  let whenTrue = ctx.singleExpression(node.consequent);
+  let whenFalse = ctx.singleExpression(alternate);
+  if (whenTrue == null || whenFalse == null) {
+    return;
+  }
+  if (!(whenTrue is BooleanLiteral) || !(whenFalse is BooleanLiteral)) {
+    return;
+  }
+  let a = (whenTrue as BooleanLiteral).value;
+  let b = (whenFalse as BooleanLiteral).value;
+  if (a == b || ctx.hasComment(node)) {
+    return;
+  }
+  let test = node.test as Expression;
+  ctx.replace(node, if (a) ctx.text(test) else negated(ctx, test));
+}
+
+function foldAt(ctx: RuleContext, first: Statement, next: Statement | null): void {
+  if (!(first is IfStatement)) {
+    return;
+  }
+  let guard = first as IfStatement;
+  if (guard.test is LetPatternCondition || !(guard.test is Expression)) {
+    return;
+  }
+  let whenTrue = returnedBoolean(guard.consequent);
+  if (whenTrue == null) {
+    return;
+  }
+  var last: Statement = first;
+  var whenFalse: BooleanLiteral | null = null;
+  let alternate = guard.alternate;
+  if (alternate != null) {
+    whenFalse = returnedBoolean(alternate);
+  } else if (next != null) {
+    whenFalse = returnedBoolean(next);
+    last = next;
+  }
+  if (whenFalse == null || whenTrue.value == whenFalse.value) {
+    return;
+  }
+  let start = ctx.start(first);
+  let end = ctx.statementEnd(last);
+  if (ctx.hasCommentIn(start, end)) {
+    return;
+  }
+  let test = guard.test as Expression;
+  let condition = if (whenTrue.value) ctx.text(test) else negated(ctx, test);
+  ctx.replaceRange(start, end, `return ${condition};`);
+}
+
+/** The literal of a `return true;` or `return false;` branch. */
+function returnedBoolean(branch: Node): BooleanLiteral | null {
+  let statement = match (branch) {
+    case BlockStatement {body}: if (body.length == 1) body[0] else null
+    case Statement as s: s
+    case _: null
+  };
+  if (statement == null) {
+    return null;
+  }
+  if (let ReturnStatement {argument} = statement) {
+    if (argument != null && argument is BooleanLiteral) {
+      return argument as BooleanLiteral;
+    }
+  }
+  return null;
+}
+
+/** `!test`, written as directly as the shape allows. */
+function negated(ctx: RuleContext, test: Expression): String {
+  match (test) {
+    case BinaryExpression {operator, left, right}: {
+      let flipped = flip(operator);
+      if (flipped != null) {
+        return `${ctx.text(left)} ${flipped} ${ctx.text(right)}`;
+      }
+    }
+    case UnaryExpression {operator, argument}: {
+      if (operator == '!') {
+        return ctx.text(argument);
+      }
+    }
+    case Identifier {}: { return `!${ctx.text(test)}`; }
+    case MemberExpression {}: { return `!${ctx.text(test)}`; }
+    case CallExpression {}: { return `!${ctx.text(test)}`; }
+    case _: {}
+  }
+  return `!(${ctx.text(test)})`;
+}
+
+function flip(operator: String): String | null {
+  if (operator == '==') { return '!='; }
+  if (operator == '!=') { return '=='; }
+  if (operator == '===') { return '!=='; }
+  if (operator == '!==') { return '==='; }
+  if (operator == '<') { return '>='; }
+  if (operator == '>=') { return '<'; }
+  if (operator == '>') { return '<='; }
+  if (operator == '<=') { return '>'; }
+  return null;
+}

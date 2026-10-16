@@ -1,0 +1,66 @@
+/**
+ * `x as T` where `x` already has type `T` becomes `x`.
+ *
+ * The checker finds these (`warnUnnecessaryCasts`); this rule removes
+ * the ones that are safe to remove. The checker measures the operand
+ * with the cast's target as its context, so `[] as Array<i32>` is
+ * reported too — there the cast is doing the typing, and the operand is
+ * left alone (`isContextuallyTyped`). Grouping parentheses that existed
+ * only for the cast, `(x as T).f`, go with it.
+ */
+
+import { Node, AsExpression, MemberExpression, IndexExpression, CallExpression } from 'zena-compiler:ast';
+import { walkEnter } from 'zena-compiler:visitor';
+import { DiagnosticCode } from 'zena-compiler:compiler';
+import { RuleContext } from '../context.zena';
+import { skipWhitespace, skipWhitespaceBack } from '../source.zena';
+
+let LEFT_PAREN = 40;
+let RIGHT_PAREN = 41;
+
+export function unnecessaryCasts(ctx: RuleContext): void {
+  let warnings = ctx.diagnosticsOf(DiagnosticCode.UnnecessaryCast);
+  if (warnings.length == 0) {
+    return;
+  }
+  let castsByStart = new Map<i32, AsExpression>();
+  walkEnter(ctx.ast, (n) => {
+    if (n is AsExpression) {
+      castsByStart[ctx.recordedStart(n)] = n;
+    }
+  });
+  for (let warning in warnings) {
+    let location = warning.location;
+    if (location == null) {
+      continue;
+    }
+    if (let (true, cast) = castsByStart.get(location.start)) {
+      if (ctx.isContextuallyTyped(cast.expression)) {
+        continue;
+      }
+      var start = ctx.start(cast);
+      var end = ctx.end(cast);
+      let parent = ctx.parent(cast);
+      if (parent != null && isAccessOf(parent, cast)) {
+        let open = skipWhitespaceBack(ctx.source, start);
+        let close = skipWhitespace(ctx.source, end);
+        if (open >= 0 && ctx.source.getByteAt(open) == LEFT_PAREN &&
+            close < ctx.source.length && ctx.source.getByteAt(close) == RIGHT_PAREN) {
+          start = open;
+          end = close + 1;
+        }
+      }
+      ctx.replaceRange(start, end, ctx.text(cast.expression));
+    }
+  }
+}
+
+/** Whether `parent` is `(cast).x`, `(cast)[i]` or `(cast)(…)`. */
+function isAccessOf(parent: Node, cast: AsExpression): boolean {
+  return match (parent) {
+    case MemberExpression {object}: object === cast
+    case IndexExpression {object}: object === cast
+    case CallExpression {callee}: callee === cast
+    case _: false
+  };
+}

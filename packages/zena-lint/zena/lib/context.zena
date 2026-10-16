@@ -1,0 +1,856 @@
+/**
+ * What a rule sees: one checked file, and the questions every rule asks
+ * of it — the text of a node, its parent, its type, whether an
+ * expression mentions a binding, whether it is safe to evaluate twice.
+ *
+ * A rule is a function from a `RuleContext` to nothing; it calls
+ * `replace` or `remove` for each change it wants, and the driver
+ * decides which of those changes survive (see lint.zena).
+ */
+
+import { Set } from 'zena:collections';
+import { getEnv } from 'zena:cli';
+import {
+  Node, Module, Expression, Identifier, NumberLiteral, StringLiteral,
+  BooleanLiteral, NullLiteral, TemplateLiteral, BinaryExpression,
+  UnaryExpression, AssignmentExpression, AsExpression, IsExpression,
+  FunctionExpression, CallExpression, MemberExpression, IndexExpression,
+  ThisExpression, NewExpression, ArrayLiteral, RecordLiteral, MapLiteral,
+  TupleLiteral, MatchExpression, IfExpression, Statement, BlockStatement,
+  ExpressionStatement, VariableDeclaration, IdentifierPattern, Pattern,
+  Parameter, SourceLocation, PropertyAssignment, SpreadElement,
+  ClassDeclaration, MixinDeclaration, MethodDefinition, AccessorDeclaration,
+  FieldDefinition, ImportDeclaration, SuperInitializer,
+} from 'zena-compiler:ast';
+import { walk, walkEnter } from 'zena-compiler:visitor';
+import { SemanticModel, Symbol, DiagnosticCode, Diagnostic } from 'zena-compiler:compiler';
+import { SymbolId } from 'zena-compiler:scope';
+import { DenseNodeMap } from 'zena-compiler:node-map';
+import {
+  Type, ClassType, UnionType, NullType, FunctionType, TypeAliasType,
+  TypeParameterType, typeToString, typeContainsTypeParameter,
+} from 'zena-compiler:types';
+import { typesEqual, isNullableType, unwrapAliases } from 'zena-compiler:checker';
+import { CheckedFile } from './checking.zena';
+import {
+  Edit, lineOf, indentationAt, columnOf, hasCommentIn, pastSemicolon,
+  skipWhitespace, skipWhitespaceBack, lineStart, lineEnd,
+} from './source.zena';
+
+/** A rule: looks at a file, proposes edits. */
+export type Rule = (ctx: RuleContext) => void;
+
+/** How wide a line the rewrites try to stay within. */
+export let LINE_WIDTH = 80;
+
+let LEFT_PAREN = 40;
+let RIGHT_PAREN = 41;
+
+/** A byte range `[start, end)` of the source. */
+export final class Span(start: i32, end: i32)
+
+export final class RuleContext {
+  file: CheckedFile;
+  source: String;
+  ast: Module;
+  model: SemanticModel;
+  edits: GrowableArray<Edit>;
+  /** The rule currently running, stamped on each edit. */
+  var rule: String = '';
+  /** Print why a rule declined, where a rule bothers to say (`ZENA_LINT_DEBUG`). */
+  debug: boolean = getEnv('ZENA_LINT_DEBUG') != null;
+  #parents: DenseNodeMap<Node>;
+  /** Every binding some assignment writes to, by sym id. */
+  var #assigned: Set<SymbolId> | null = null;
+  /** Imports already asked for this pass, as `module:name`. */
+  #pendingImports = new Set<String>();
+  var #nextGroup = 0;
+  var #openGroup = 0;
+  /** Extents already computed, by node id. */
+  #extents = new Map<i32, Span>();
+
+  new(file: CheckedFile)
+    : file = file,
+      source = file.source,
+      ast = file.ast,
+      model = file.model,
+      edits = new Array<Edit>(),
+      #parents = buildParents(file.ast);
+
+  // --------------------------------------------------------------------
+  // Proposing edits
+  // --------------------------------------------------------------------
+
+  /** Replaces the bytes `[start, end)` with `text`. */
+  replaceRange(start: i32, end: i32, text: String): void {
+    this.#nextGroup += 1;
+    let group = if (this.#openGroup != 0) this.#openGroup else this.#nextGroup;
+    this.edits.push(new Edit(start, end, text, this.rule, lineOf(this.source, start), group));
+  }
+
+  /**
+   * Starts a rewrite of several edits that stand or fall together. Every
+   * edit until `endGroup` joins it.
+   */
+  beginGroup(): void {
+    this.#nextGroup += 1;
+    this.#openGroup = this.#nextGroup;
+  }
+
+  endGroup(): void {
+    this.#openGroup = 0;
+  }
+
+  /** Replaces a node's text. */
+  replace(node: Node, text: String): void {
+    let start = this.start(node);
+    let end = this.end(node);
+    if (start < 0 || end < start) {
+      return;
+    }
+    this.replaceRange(start, end, text);
+  }
+
+  /** Deletes the bytes `[start, end)`. */
+  removeRange(start: i32, end: i32): void {
+    this.replaceRange(start, end, '');
+  }
+
+  /**
+   * Deletes a statement or member together with the lines it occupies,
+   * when nothing else shares them; otherwise just its own text.
+   */
+  removeLines(node: Node): void {
+    let start = this.start(node);
+    let end = this.statementEnd(node);
+    let from = lineStart(this.source, start);
+    let to = lineEnd(this.source, end);
+    let before = this.slice(from, start).trim();
+    let after = this.slice(end, to).trim();
+    if (before.length > 0 || after.length > 0) {
+      this.removeRange(start, end);
+      return;
+    }
+    this.removeRange(from, if (to < this.source.length) to + 1 else to);
+  }
+
+  /**
+   * Makes sure `name` is imported from `module`, adding it to an existing
+   * import of that module or adding a new import after the last one.
+   */
+  ensureImport(name: String, module: String): void {
+    let key = `${module}:${name}`;
+    if (this.#pendingImports.has(key)) {
+      return;
+    }
+    this.#pendingImports.add(key);
+    var lastImport: Node | null = null;
+    for (let stmt in this.ast.body) {
+      if (let ImportDeclaration {moduleSpecifier, imports} = stmt) {
+        lastImport = stmt;
+        if (moduleSpecifier.value != module) {
+          continue;
+        }
+        for (let spec in imports) {
+          if (spec.local.name == name) {
+            return;
+          }
+        }
+        if (imports.length > 0) {
+          let at = this.end(imports[imports.length - 1]);
+          this.replaceRange(at, at, `, ${name}`);
+          return;
+        }
+      }
+    }
+    let line = `import { ${name} } from '${module}';`;
+    if (lastImport != null) {
+      let at = this.statementEnd(lastImport);
+      this.replaceRange(at, at, `\n${line}`);
+    } else if (this.ast.body.length > 0) {
+      let at = this.start(this.ast.body[0]);
+      this.replaceRange(at, at, `${line}\n\n`);
+    }
+  }
+
+  // --------------------------------------------------------------------
+  // Reading the file
+  // --------------------------------------------------------------------
+
+  /** The node's source text, or '' for a node without a location. */
+  text(node: Node): String {
+    let start = this.start(node);
+    let end = this.end(node);
+    if (start < 0 || end < start) {
+      return '';
+    }
+    return this.source.sliceBytes(start, end);
+  }
+
+  /** The source text in `[start, end)`. */
+  slice(start: i32, end: i32): String {
+    return this.source.sliceBytes(start, end);
+  }
+
+  /**
+   * The first byte of the node's text. The parser dates some nodes from
+   * their operator — a `BinaryExpression` from `+`, an `AsExpression`
+   * from `as` — so the extent is taken over the node and its descendants,
+   * and then widened over the parentheses that group them (see `extent`).
+   */
+  start(node: Node): i32 {
+    return this.extent(node).start;
+  }
+
+  /** The byte after the node's text; see `start`. */
+  end(node: Node): i32 {
+    return this.extent(node).end;
+  }
+
+  /**
+   * The byte range of a node's text.
+   *
+   * Parentheses are not nodes, so the range the descendants span can
+   * start inside a group — `(a || b) && c` spans from `a` — or end
+   * inside one. The text is scanned for parentheses it does not balance,
+   * skipping string literals and comments, and the range is widened by a
+   * `(` or `)` for each, as long as that is what lies beyond it.
+   */
+  extent(node: Node): Span {
+    if (let (true, known) = this.#extents.get(node.id as i32)) {
+      return known;
+    }
+    var least = -1;
+    var most = -1;
+    let skipped = new Array<Span>();
+    let spliced = this.#splicedArguments(node);
+    walkEnter(node, (n) => {
+      let loc = n.loc;
+      if (loc == null || !this.isParsed(n) || spliced.has(n.id as i32)) {
+        return;
+      }
+      if (least < 0 || loc.start < least) {
+        least = loc.start;
+      }
+      if (loc.end > most) {
+        most = loc.end;
+      }
+      if (n is StringLiteral || n is TemplateLiteral) {
+        skipped.push(new Span(loc.start, loc.end));
+      }
+    });
+    if (least < 0) {
+      let none = new Span(-1, -1);
+      this.#extents[node.id as i32] = none;
+      return none;
+    }
+    for (let comment in this.ast.comments) {
+      if (comment.start < most && comment.end > least) {
+        skipped.push(new Span(comment.start, comment.end));
+      }
+    }
+    let source = this.source;
+    var depth = 0;
+    var missingOpen = 0;
+    var i = least;
+    while (i < most) {
+      var inSkipped = false;
+      for (let span in skipped) {
+        if (i >= span.start && i < span.end) {
+          i = span.end;
+          inSkipped = true;
+          break;
+        }
+      }
+      if (inSkipped) {
+        continue;
+      }
+      let b = source.getByteAt(i);
+      if (b == LEFT_PAREN) {
+        depth += 1;
+      } else if (b == RIGHT_PAREN) {
+        if (depth == 0) {
+          missingOpen += 1;
+        } else {
+          depth -= 1;
+        }
+      }
+      i += 1;
+    }
+    var start = least;
+    while (missingOpen > 0) {
+      let before = skipWhitespaceBack(source, start);
+      if (before < 0 || source.getByteAt(before) != LEFT_PAREN) {
+        break;
+      }
+      start = before;
+      missingOpen -= 1;
+    }
+    var end = most;
+    while (depth > 0) {
+      let after = skipWhitespace(source, end);
+      if (after >= source.length || source.getByteAt(after) != RIGHT_PAREN) {
+        break;
+      }
+      end = after + 1;
+      depth -= 1;
+    }
+    let span = new Span(start, end);
+    this.#extents[node.id as i32] = span;
+    return span;
+  }
+
+  /**
+   * The ids of every node under `root` that the checker spliced into a
+   * call's arguments from the callee's parameter defaults. They are
+   * parsed nodes of this file, but of the callee's declaration, so their
+   * text lies anywhere; `SemanticModel.getOriginalArgCount` says where
+   * the caller's own arguments end.
+   */
+  #splicedArguments(root: Node): Set<i32> {
+    let spliced = new Set<i32>();
+    let model = this.model;
+    walkEnter(root, (n) => {
+      let args = match (n) {
+        case CallExpression {args}: args
+        case NewExpression {args}: args
+        case SuperInitializer {args}: args
+        case _: null
+      };
+      if (args == null) {
+        return;
+      }
+      let written = model.getOriginalArgCount(n);
+      if (written < 0 || written >= args.length) {
+        return;
+      }
+      var i = written;
+      while (i < args.length) {
+        walkEnter(args[i], (d) => {
+          spliced.add(d.id as i32);
+        });
+        i += 1;
+      }
+    });
+    return spliced;
+  }
+
+  /**
+   * Whether the parser made this node. The scope builder and checker
+   * synthesize nodes into the tree (an operator method's name, say) and
+   * give them whatever location was to hand, so only a parsed node's
+   * location says where text is. A parsed node's id is in the module's
+   * range (see `Module.lastNodeId`).
+   */
+  isParsed(node: Node): boolean {
+    let id = node.id as i32;
+    return id >= (this.ast.id as i32) && id <= (this.ast.lastNodeId as i32);
+  }
+
+  /** The start the parser recorded, which is what a diagnostic points at. */
+  recordedStart(node: Node): i32 {
+    let loc = node.loc;
+    return if (loc != null) loc.start else -1;
+  }
+
+  /** A statement's end, taking a directly following `;` along. */
+  statementEnd(node: Node): i32 {
+    return pastSemicolon(this.source, this.end(node));
+  }
+
+  /** The indentation of the line a node starts on. */
+  indentOf(node: Node): String {
+    return indentationAt(this.source, this.start(node));
+  }
+
+  /** The 0-based column a node starts at. */
+  columnOf(node: Node): i32 {
+    return columnOf(this.source, this.start(node));
+  }
+
+  /** 1-based line of a node's first byte. */
+  lineOf(node: Node): i32 {
+    return lineOf(this.source, this.start(node));
+  }
+
+  /** Whether `node`'s text is on one line. */
+  isSingleLine(node: Node): boolean {
+    let start = this.start(node);
+    if (start < 0) {
+      return false;
+    }
+    return lineOf(this.source, start) == lineOf(this.source, this.end(node));
+  }
+
+  /** Whether a comment lies inside the node's range. */
+  hasComment(node: Node): boolean {
+    let start = this.start(node);
+    if (start < 0) {
+      return true;
+    }
+    return hasCommentIn(this.ast.comments, start, this.end(node));
+  }
+
+  /** Whether a comment lies inside `[start, end)`. */
+  hasCommentIn(start: i32, end: i32): boolean {
+    return hasCommentIn(this.ast.comments, start, end);
+  }
+
+  // --------------------------------------------------------------------
+  // The tree
+  // --------------------------------------------------------------------
+
+  parent(node: Node): Node | null {
+    if (let (true, p) = this.#parents.get(node)) {
+      return p;
+    }
+    return null;
+  }
+
+  /** Whether `ancestor` is on the path from `node` to the module. */
+  isWithin(node: Node, ancestor: Node): boolean {
+    var current = this.parent(node);
+    while (current != null) {
+      if (current === ancestor) {
+        return true;
+      }
+      current = this.parent(current);
+    }
+    return false;
+  }
+
+  /** Whether `node` sits directly in the module body. */
+  isTopLevel(node: Node): boolean {
+    let p = this.parent(node);
+    return p != null && p is Module;
+  }
+
+  // --------------------------------------------------------------------
+  // Types and symbols
+  // --------------------------------------------------------------------
+
+  typeOf(node: Node): Type | null {
+    return this.model.getNodeType(node);
+  }
+
+  /** The type the checker gave a binding, by its declaring pattern or parameter. */
+  bindingTypeOf(declaration: Node): Type | null {
+    let sym = this.model.resolveDeclaration(declaration);
+    if (sym == null) {
+      return null;
+    }
+    return this.model.getBindingType(sym);
+  }
+
+  /** The binding an identifier refers to. */
+  symbolOf(identifier: Node): Symbol | null {
+    return this.model.resolve(identifier);
+  }
+
+  /** The sym a pattern or parameter declares. */
+  declaredSymbol(declaration: Node): Symbol | null {
+    return this.model.resolveDeclaration(declaration);
+  }
+
+  /** Whether two types are the same type, through transparent aliases. */
+  sameType(a: Type | null, b: Type | null): boolean {
+    if (a == null || b == null) {
+      return false;
+    }
+    return typesEqual(a, b);
+  }
+
+  isNullable(t: Type | null): boolean {
+    if (t == null) {
+      return false;
+    }
+    return isNullableType(unwrapAliases(t));
+  }
+
+  /** `t` without transparent aliases. */
+  unwrap(t: Type): Type {
+    return unwrapAliases(t);
+  }
+
+  /** Whether the type is one of the wasm value types rather than a reference. */
+  isPrimitive(t: Type | null): boolean {
+    if (t == null) {
+      return false;
+    }
+    let name = typeToString(unwrapAliases(t));
+    return name == 'i32' || name == 'i64' || name == 'f32' || name == 'f64' ||
+        name == 'u32' || name == 'u64' || name == 'u8' || name == 'u16' ||
+        name == 'i8' || name == 'i16' || name == 'boolean' || name == 'v128' ||
+        name == 'void';
+  }
+
+  isString(t: Type | null): boolean {
+    if (t == null) {
+      return false;
+    }
+    return typeToString(unwrapAliases(t)) == 'String';
+  }
+
+  isVoid(t: Type | null): boolean {
+    if (t == null) {
+      return false;
+    }
+    return typeToString(unwrapAliases(t)) == 'void';
+  }
+
+  /** The diagnostics of one code, in this file. */
+  diagnosticsOf(code: DiagnosticCode): GrowableArray<Diagnostic> {
+    let out = new Array<Diagnostic>();
+    for (let diagnostic in this.file.diagnostics) {
+      if (diagnostic.code == code) {
+        out.push(diagnostic);
+      }
+    }
+    return out;
+  }
+
+  // --------------------------------------------------------------------
+  // Questions about expressions
+  // --------------------------------------------------------------------
+
+  /**
+   * Whether an expression's type comes from where it is used rather
+   * than from what it is: a literal that takes the expected type, an
+   * arrow whose parameters are typed by the call, a `new` whose type
+   * arguments are inferred. Removing the context (an annotation, a
+   * cast) around such an expression changes it, even when the checker
+   * says the two types agree.
+   */
+  isContextuallyTyped(expr: Node): boolean {
+    return match (expr) {
+      case NumberLiteral {}: true
+      case BooleanLiteral {}: true
+      case NullLiteral {}: true
+      case ArrayLiteral {}: true
+      case RecordLiteral {}: true
+      case MapLiteral {}: true
+      case TupleLiteral {}: true
+      case FunctionExpression {}: true
+      case UnaryExpression {argument}: this.isContextuallyTyped(argument)
+      case NewExpression {typeArguments}: {
+        if (typeArguments != null) {
+          false
+        } else {
+          // `new Map()` takes its type arguments from the annotation.
+          let t = this.typeOf(expr);
+          t != null && t is ClassType && (t as ClassType).typeArguments != null
+        }
+      }
+      case IfExpression {consequent, alternate}: {
+        this.isContextuallyTyped(consequent) ||
+            (alternate != null && this.isContextuallyTyped(alternate))
+      }
+      case MatchExpression {cases}: {
+        var any = false;
+        for (let c in cases) {
+          if (this.isContextuallyTyped(c.body)) {
+            any = true;
+          }
+        }
+        any
+      }
+      case BlockStatement {body}: {
+        // A value block's last expression is its value.
+        if (body.length == 0) {
+          false
+        } else {
+          let tail = this.singleExpression(body[body.length - 1]);
+          tail != null && this.isContextuallyTyped(tail)
+        }
+      }
+      case CallExpression {callee, typeArguments}: {
+        // A generic function called without type arguments may take them
+        // from the context: `empty()` as `Array<i32>`.
+        if (typeArguments != null) {
+          false
+        } else {
+          let t = this.typeOf(callee);
+          if (t != null && t is FunctionType) {
+            let ft = t as FunctionType;
+            let generic = ft.genericSource ?? ft;
+            let tps = generic.typeParameters;
+            tps != null && tps.length > 0 &&
+                typeContainsTypeParameter(generic.returnType)
+          } else {
+            false
+          }
+        }
+      }
+      case AsExpression {}: false
+      case BinaryExpression {operator, left, right}: {
+        // `??` and arithmetic on literals pass the context through.
+        operator == '??' && this.isContextuallyTyped(right) ||
+            (this.isContextuallyTyped(left) && this.isContextuallyTyped(right))
+      }
+      case _: false
+    };
+  }
+
+  /**
+   * Whether evaluating `expr` has no effect and reads nothing that
+   * could change between two evaluations in the same statement: a
+   * literal, a name, a field path, arithmetic on those. Used before an
+   * expression is moved to a position where it runs a different number
+   * of times.
+   */
+  isPure(expr: Node): boolean {
+    return match (expr) {
+      case Identifier {}: true
+      case NumberLiteral {}: true
+      case StringLiteral {}: true
+      case BooleanLiteral {}: true
+      case NullLiteral {}: true
+      case ThisExpression {}: true
+      case MemberExpression {object, optional}: !optional && this.isPure(object)
+      case IndexExpression {object, index}: this.isPure(object) && this.isPure(index)
+      case UnaryExpression {argument}: this.isPure(argument)
+      case BinaryExpression {left, right}: this.isPure(left) && this.isPure(right)
+      case AsExpression {expression}: this.isPure(expression)
+      case IsExpression {expression}: this.isPure(expression)
+      case TemplateLiteral {expressions}: {
+        var all = true;
+        for (let e in expressions) {
+          if (!this.isPure(e)) {
+            all = false;
+          }
+        }
+        all
+      }
+      case ArrayLiteral {elements}: {
+        var all = true;
+        for (let e in elements) {
+          if (!this.isPure(e)) {
+            all = false;
+          }
+        }
+        all
+      }
+      case TupleLiteral {elements}: {
+        var all = true;
+        for (let e in elements) {
+          if (!this.isPure(e)) {
+            all = false;
+          }
+        }
+        all
+      }
+      case RecordLiteral {properties}: {
+        var all = true;
+        for (let p in properties) {
+          match (p) {
+            case PropertyAssignment {value}: {
+              if (!this.isPure(value)) {
+                all = false;
+              }
+            }
+            case _: { all = false; }
+          }
+        }
+        all
+      }
+      case NewExpression {args}: {
+        // An allocation with no effects: `new Array<T>(0)`. The
+        // constructor could do anything, so only the collection classes
+        // the rules care about count.
+        let callee = (expr as NewExpression).callee.name;
+        if (callee == 'Array' || callee == 'GrowableArray' || callee == 'Map' ||
+            callee == 'HashMap' || callee == 'Set' || callee == 'HashSet') {
+          var all = true;
+          for (let a in args) {
+            if (!this.isPure(a)) {
+              all = false;
+            }
+          }
+          all
+        } else {
+          false
+        }
+      }
+      case _: false
+    };
+  }
+
+  /**
+   * Whether `expr`'s subtree contains an identifier resolving to the
+   * binding `sym`.
+   */
+  mentions(expr: Node, sym: Symbol): boolean {
+    var found = false;
+    let model = this.model;
+    walkEnter(expr, (n) => {
+      if (found) {
+        return;
+      }
+      if (n is Identifier) {
+        let s = model.resolve(n);
+        if (s != null && (s.id as i32) == (sym.id as i32)) {
+          found = true;
+        }
+      }
+    });
+    return found;
+  }
+
+  /** Whether any identifier in `expr` resolves to a binding in `symbols`. */
+  mentionsAny(expr: Node, symbols: GrowableArray<Symbol>): boolean {
+    for (let s in symbols) {
+      if (this.mentions(expr, s)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Whether `root`'s subtree contains a statement or expression that
+   * assigns to `sym`, including compound assignment.
+   */
+  assignsTo(root: Node, sym: Symbol): boolean {
+    var found = false;
+    let model = this.model;
+    walkEnter(root, (n) => {
+      if (found) {
+        return;
+      }
+      if (let AssignmentExpression {left} = n) {
+        walkEnter(left, (l) => {
+          if (l is Identifier) {
+            let s = model.resolve(l);
+            if (s != null && (s.id as i32) == (sym.id as i32)) {
+              found = true;
+            }
+          }
+        });
+      }
+    });
+    return found;
+  }
+
+  /** Whether some assignment anywhere in the file writes `sym`. */
+  isEverAssigned(sym: Symbol): boolean {
+    let assigned = this.#assigned ?? this.#collectAssigned();
+    return assigned.has(sym.id);
+  }
+
+  #collectAssigned(): Set<SymbolId> {
+    let assigned = new Set<SymbolId>();
+    let model = this.model;
+    walkEnter(this.ast, (n) => {
+      if (let AssignmentExpression {left} = n) {
+        walkEnter(left, (l) => {
+          if (l is Identifier) {
+            let s = model.resolve(l);
+            if (s != null) {
+              assigned.add(s.id);
+            }
+          }
+        });
+      }
+    });
+    this.#assigned = assigned;
+    return assigned;
+  }
+
+  /** The symbols the pattern declares. */
+  patternSymbols(pattern: Node): GrowableArray<Symbol> {
+    let out = new Array<Symbol>();
+    let model = this.model;
+    walkEnter(pattern, (n) => {
+      if (n is IdentifierPattern) {
+        let s = model.resolveDeclaration(n);
+        if (s != null) {
+          out.push(s);
+        }
+      }
+    });
+    return out;
+  }
+
+  /**
+   * The body of the innermost function, method or accessor enclosing
+   * `node`, or the module when it is at the top level: the region in
+   * which a local's assignments can appear.
+   */
+  enclosingBody(node: Node): Node {
+    var current = this.parent(node);
+    while (current != null) {
+      match (current) {
+        case FunctionExpression {}: { return current; }
+        case MethodDefinition {}: { return current; }
+        case AccessorDeclaration {}: { return current; }
+        case Module {}: { return current; }
+        case _: {}
+      }
+      current = this.parent(current);
+    }
+    return this.ast;
+  }
+
+  /**
+   * Whether `expr` is a plain name or `this`-rooted field path that
+   * reads the same thing each time (no calls, no indexing).
+   */
+  isSimpleReference(expr: Node): boolean {
+    return match (expr) {
+      case Identifier {}: true
+      case ThisExpression {}: true
+      case MemberExpression {object, optional, isSymbolAccess}: {
+        !optional && !isSymbolAccess && this.isSimpleReference(object)
+      }
+      case _: false
+    };
+  }
+
+  /** The expression inside a block holding exactly one expression statement, else null. */
+  singleExpression(node: Node): Expression | null {
+    match (node) {
+      case BlockStatement {body}: {
+        if (body.length != 1) {
+          return null;
+        }
+        if (let ExpressionStatement {expression} = body[0]) {
+          return expression;
+        }
+        return null;
+      }
+      case ExpressionStatement {expression}: { return expression; }
+      case Expression as e: { return e; }
+      case _: { return null; }
+    }
+    return null;
+  }
+
+  /** The statements of a block, or the one statement, as a list. */
+  statementsOf(node: Node): GrowableArray<Statement> {
+    return match (node) {
+      case BlockStatement {body}: body
+      case Statement as s: {
+        let one = new Array<Statement>(1);
+        one.push(s);
+        one
+      }
+      case _: new Array<Statement>(0)
+    };
+  }
+}
+
+/** A parent table for every node under `root`. */
+function buildParents(root: Module): DenseNodeMap<Node> {
+  let parents = new DenseNodeMap<Node>(root.id, root.lastNodeId);
+  let stack = new Array<Node>();
+  walk(root, (n) => {
+    if (stack.length > 0) {
+      parents[n] = stack[stack.length - 1];
+    }
+    stack.push(n);
+    return true;
+  }, (n) => {
+    stack.pop();
+  });
+  return parents;
+}

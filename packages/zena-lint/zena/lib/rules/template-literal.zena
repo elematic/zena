@@ -1,0 +1,136 @@
+/**
+ * Three or more strings joined with `+` become one template literal.
+ *
+ *     a + ' - ' + b + '!'   →   `${a} - ${b}!`
+ *
+ * Every operand must be a `String`, and at least one a literal, or there
+ * is nothing to interpolate into. A chain already broken across lines is
+ * folded only when the result fits on the line it starts on.
+ */
+
+import {
+  Node, Expression, BinaryExpression, StringLiteral, TemplateLiteral,
+  TaggedTemplateExpression,
+} from 'zena-compiler:ast';
+import { walkEnter } from 'zena-compiler:visitor';
+import { StringBuilder } from 'zena:core';
+import { RuleContext, LINE_WIDTH } from '../context.zena';
+
+let BACKTICK = 96;
+let DOLLAR = 36;
+let LEFT_BRACE = 123;
+let BACKSLASH = 92;
+let SINGLE_QUOTE = 39;
+let DOUBLE_QUOTE = 34;
+
+export function templateLiterals(ctx: RuleContext): void {
+  walkEnter(ctx.ast, (n) => {
+    if (!isConcatenation(n)) {
+      return;
+    }
+    let parent = ctx.parent(n);
+    if (parent != null && isConcatenation(parent)) {
+      return;
+    }
+    rewrite(ctx, n as BinaryExpression);
+  });
+}
+
+function isConcatenation(node: Node): boolean {
+  if (let BinaryExpression {operator} = node) {
+    return operator == '+';
+  }
+  return false;
+}
+
+function rewrite(ctx: RuleContext, root: BinaryExpression): void {
+  if (!ctx.isString(ctx.typeOf(root))) {
+    return;
+  }
+  let operands = new Array<Expression>();
+  flatten(root, operands);
+  if (operands.length < 3) {
+    return;
+  }
+  var literals = 0;
+  for (let operand in operands) {
+    if (!ctx.isString(ctx.typeOf(operand))) {
+      return;
+    }
+    if (operand is StringLiteral || operand is TemplateLiteral) {
+      literals += 1;
+    }
+    if (operand is TaggedTemplateExpression) {
+      return;
+    }
+  }
+  if (literals == 0 || ctx.hasComment(root)) {
+    return;
+  }
+  let out = new StringBuilder();
+  out.appendByte(BACKTICK);
+  for (let operand in operands) {
+    let text = ctx.text(operand);
+    if (operand is StringLiteral) {
+      appendStringBody(out, text);
+    } else if (operand is TemplateLiteral) {
+      out.appendSlice(text, 1, text.length - 1);
+    } else {
+      out.append('${');
+      out.append(text);
+      out.append('}');
+    }
+  }
+  out.appendByte(BACKTICK);
+  let result = out.toString();
+  if (!ctx.isSingleLine(root) && ctx.columnOf(root) + result.length > LINE_WIDTH) {
+    return;
+  }
+  ctx.replace(root, result);
+}
+
+/** The leaves of a left-leaning `+` tree, in order. */
+function flatten(node: Expression, out: GrowableArray<Expression>): void {
+  if (let BinaryExpression {operator, left, right} = node) {
+    if (operator == '+') {
+      flatten(left, out);
+      flatten(right, out);
+      return;
+    }
+  }
+  out.push(node);
+}
+
+/**
+ * The content of a quoted string literal, re-escaped for a template:
+ * the quote no longer needs escaping, backticks and `${` now do.
+ */
+function appendStringBody(out: StringBuilder, literal: String): void {
+  let quote = literal.getByteAt(0);
+  var i = 1;
+  let end = literal.length - 1;
+  while (i < end) {
+    let b = literal.getByteAt(i);
+    if (b == BACKSLASH && i + 1 < end) {
+      let next = literal.getByteAt(i + 1);
+      if (next == quote) {
+        out.appendByte(quote);
+      } else {
+        out.appendByte(b);
+        out.appendByte(next);
+      }
+      i += 2;
+      continue;
+    }
+    if (b == BACKTICK) {
+      out.appendByte(BACKSLASH);
+      out.appendByte(BACKTICK);
+    } else if (b == DOLLAR && i + 1 < end && literal.getByteAt(i + 1) == LEFT_BRACE) {
+      out.appendByte(BACKSLASH);
+      out.appendByte(DOLLAR);
+    } else {
+      out.appendByte(b);
+    }
+    i += 1;
+  }
+}

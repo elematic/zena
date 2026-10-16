@@ -179,6 +179,7 @@ Directory-level orientation lives in `CONTEXT.md` files. Read the
 - **`packages/zenafx`**: Experimental runtime binary (`zfx`) for graphical programs: runs WebAssembly components with GPU hardware acceleration via `wasi:webgpu` and OS window presentation via `wasi-gfx:surface`. (See [graphical-runtime.md](docs/design/graphical-runtime.md)).
 - **`packages/wit-parser`**: WIT (WebAssembly Interface Types) parser, resolver, and component encoder (`@zena-lang/wit-parser`). (See [wit-parser.md](docs/design/wit-parser.md)).
 - **`packages/zena-formatter`**: Code formatter for Zena (`@zena-lang/zena-formatter`).
+- **`packages/zena-lint`**: Lint rules for Zena source, each with a fix the tool applies: `function` declarations for top-level arrows, `??`/`?.`, collection literals, immutable fields and variables, no redundant casts or annotations (`@zena-lang/zena-lint`). Every fix is type-checked before it is kept. Run `npm run lint -w @zena-lang/zena-lint -- --dry-run <paths>` to see what a package would get. See its README.
 - **`packages/zb`**: Zena build orchestrator tool (`@zena-lang/zb`).
 - **`packages/workflow`**: Workflow automation package (`@zena-lang/workflow`).
 - **`packages/protobuf`**: Protocol Buffers support for Zena (`@zena-lang/protobuf`).

@@ -1,0 +1,251 @@
+/**
+ * A collection built by construction and a run of insertions becomes a
+ * literal.
+ *
+ *     let xs = new Array<String>(4);        let xs = growable<String>(['one', 'two']);
+ *     xs.push('one');                 →
+ *     xs.push('two');
+ *
+ *     let m = new Map<String, i32>();       let m: HashMap<String, i32> = {
+ *     m['a'] = 1;                     →       'a' => 1,
+ *     m['b'] = 2;                             'b' => 2,
+ *                                           };
+ *
+ * The run is the insertions that directly follow the declaration and do
+ * not mention the collection themselves. The element type is kept
+ * explicit — as the type argument of `growable`, or as the declaration's
+ * annotation — since a literal of mixed elements would otherwise infer a
+ * union. A declaration with neither an annotation nor type arguments is
+ * left alone.
+ */
+
+import {
+  Node, Module, Statement, BlockStatement, VariableDeclaration, IdentifierPattern,
+  NewExpression, ExpressionStatement, CallExpression, MemberExpression,
+  Identifier, AssignmentExpression, IndexExpression, Expression,
+  NamedTypeAnnotation,
+} from 'zena-compiler:ast';
+import { walkEnter } from 'zena-compiler:visitor';
+import { Symbol } from 'zena-compiler:compiler';
+import { RuleContext, LINE_WIDTH } from '../context.zena';
+import { isMultiLine, indentContinuation } from '../source.zena';
+
+export function collectionLiterals(ctx: RuleContext): void {
+  walkEnter(ctx.ast, (n) => {
+    let statements = match (n) {
+      case Module {body}: body
+      case BlockStatement {body}: body
+      case _: null
+    };
+    if (statements == null) {
+      return;
+    }
+    var i = 0;
+    while (i < statements.length) {
+      let consumed = foldAt(ctx, statements, i);
+      i += if (consumed > 0) consumed else 1;
+    }
+  });
+}
+
+/** One `k => v` or element of the literal. */
+final class Entry(text: String, multiLine: boolean)
+
+/**
+ * Folds the declaration at `statements[i]` with the insertions after it,
+ * returning how many statements were consumed, or 0.
+ */
+function foldAt(ctx: RuleContext, statements: GrowableArray<Statement>, i: i32): i32 {
+  let first = statements[i];
+  if (!(first is VariableDeclaration)) {
+    return 0;
+  }
+  let decl = first as VariableDeclaration;
+  if (!(decl.pattern is IdentifierPattern) || !(decl.init is NewExpression)) {
+    return 0;
+  }
+  let init = decl.init as NewExpression;
+  let callee = init.callee.name;
+  let isArray = callee == 'Array' || callee == 'GrowableArray';
+  let isMap = callee == 'Map' || callee == 'HashMap';
+  if (!isArray && !isMap) {
+    return 0;
+  }
+  if (init.args.length > 1 || init.constructorName != null) {
+    return 0;
+  }
+  for (let arg in init.args) {
+    if (!ctx.isPure(arg)) {
+      return 0;
+    }
+  }
+  let sym = ctx.declaredSymbol(decl.pattern);
+  if (sym == null) {
+    return 0;
+  }
+
+  let entries = new Array<Entry>();
+  var j = i + 1;
+  while (j < statements.length) {
+    let entry = if (isArray) {
+      pushedElement(ctx, statements[j], sym)
+    } else {
+      mapEntry(ctx, statements[j], sym)
+    };
+    if (entry == null) {
+      break;
+    }
+    entries.push(entry);
+    j += 1;
+  }
+  if (entries.length == 0) {
+    return 0;
+  }
+  let last = statements[j - 1];
+  let start = ctx.start(decl);
+  let end = ctx.statementEnd(last);
+  if (ctx.hasCommentIn(start, end)) {
+    return 0;
+  }
+
+  let name = (decl.pattern as IdentifierPattern).name;
+  let annotation = decl.typeAnnotation;
+  let typeArguments = init.typeArguments;
+  var head = `${decl.kind} ${name}`;
+  var open = '';
+  var close = '';
+  if (isArray) {
+    // An array literal is a FixedArray whatever the annotation says, so
+    // the growable one goes through `growable`. Its element type is the
+    // constructor's, or else the annotation's.
+    var elementType: String | null = null;
+    if (typeArguments != null && typeArguments.length == 1) {
+      elementType = ctx.text(typeArguments[0]);
+    } else if (annotation != null) {
+      if (let NamedTypeAnnotation {typeArguments as annotationArguments} = annotation) {
+        if (annotationArguments != null && annotationArguments.length == 1) {
+          elementType = ctx.text(annotationArguments[0]);
+        }
+      }
+    }
+    if (elementType == null) {
+      return 0;
+    }
+    ctx.ensureImport('growable', 'zena:core');
+    if (annotation != null) {
+      head = `${head}: ${ctx.text(annotation)}`;
+    }
+    head = `${head} = growable<${elementType}>(`;
+    open = '[';
+    close = '])';
+  } else {
+    if (annotation != null) {
+      head = `${head}: ${ctx.text(annotation)} = `;
+    } else if (typeArguments != null && typeArguments.length == 2) {
+      head = `${head}: HashMap<${ctx.text(typeArguments[0])}, ${ctx.text(typeArguments[1])}> = `;
+    } else {
+      return 0;
+    }
+    open = '{';
+    close = '}';
+  }
+
+  let indent = ctx.indentOf(decl);
+  var anyMultiLine = false;
+  var joined = '';
+  var k = 0;
+  while (k < entries.length) {
+    if (entries[k].multiLine) {
+      anyMultiLine = true;
+    }
+    if (k > 0) {
+      joined = joined + ', ';
+    }
+    joined = joined + entries[k].text;
+    k += 1;
+  }
+  let oneLine = `${head}${open}${joined}${close};`;
+  if (!anyMultiLine && indent.length + oneLine.length <= LINE_WIDTH) {
+    ctx.replaceRange(start, end, oneLine);
+    return j - i;
+  }
+  var text = `${head}${open}\n`;
+  for (let entry in entries) {
+    text = `${text}${indent}  ${indentContinuation(entry.text, '  ')},\n`;
+  }
+  text = `${text}${indent}${close};`;
+  ctx.replaceRange(start, end, text);
+  return j - i;
+}
+
+/** `xs.push(e);` on the collection `sym`: the text of `e`. */
+function pushedElement(ctx: RuleContext, stmt: Statement, sym: Symbol): Entry | null {
+  if (let ExpressionStatement {expression} = stmt) {
+    if (let CallExpression {callee, args, optional} = expression) {
+      if (optional || args.length != 1) {
+        return null;
+      }
+      if (!isMemberOf(ctx, callee, sym, 'push')) {
+        return null;
+      }
+      let element = args[0];
+      if (ctx.mentions(element, sym)) {
+        return null;
+      }
+      return new Entry(ctx.text(element), !ctx.isSingleLine(element));
+    }
+  }
+  return null;
+}
+
+/** `m[k] = v;` or `m.set(k, v);` on the map `sym`: `k => v`. */
+function mapEntry(ctx: RuleContext, stmt: Statement, sym: Symbol): Entry | null {
+  if (let ExpressionStatement {expression} = stmt) {
+    match (expression) {
+      case AssignmentExpression {left, value, operator}: {
+        // A compound assignment records its operator; a plain one none.
+        if (operator != null) {
+          return null;
+        }
+        if (let IndexExpression {object, index, optional} = left) {
+          if (optional || !isReferenceTo(ctx, object, sym)) {
+            return null;
+          }
+          if (ctx.mentions(index, sym) || ctx.mentions(value, sym)) {
+            return null;
+          }
+          return new Entry(`${ctx.text(index)} => ${ctx.text(value)}`,
+              !ctx.isSingleLine(index) || !ctx.isSingleLine(value));
+        }
+        return null;
+      }
+      case CallExpression {callee, args, optional}: {
+        if (optional || args.length != 2 || !isMemberOf(ctx, callee, sym, 'set')) {
+          return null;
+        }
+        if (ctx.mentions(args[0], sym) || ctx.mentions(args[1], sym)) {
+          return null;
+        }
+        return new Entry(`${ctx.text(args[0])} => ${ctx.text(args[1])}`,
+            !ctx.isSingleLine(args[0]) || !ctx.isSingleLine(args[1]));
+      }
+      case _: { return null; }
+    }
+  }
+  return null;
+}
+
+function isReferenceTo(ctx: RuleContext, expr: Node, sym: Symbol): boolean {
+  if (!(expr is Identifier)) {
+    return false;
+  }
+  let s = ctx.symbolOf(expr);
+  return s != null && (s.id as i32) == (sym.id as i32);
+}
+
+function isMemberOf(ctx: RuleContext, callee: Node, sym: Symbol, method: String): boolean {
+  if (let MemberExpression {object, property, optional} = callee) {
+    return !optional && property.name == method && isReferenceTo(ctx, object, sym);
+  }
+  return false;
+}

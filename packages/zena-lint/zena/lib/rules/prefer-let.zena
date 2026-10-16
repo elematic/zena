@@ -1,0 +1,40 @@
+/**
+ * `var x = …` that is never assigned again becomes `let x = …`.
+ *
+ * Every assignment in the file is collected once (`isEverAssigned`),
+ * including compound assignments and assignments from closures, so a
+ * `var` is only renamed when nothing anywhere writes it.
+ */
+
+import { VariableDeclaration } from 'zena-compiler:ast';
+import { walkEnter } from 'zena-compiler:visitor';
+import { RuleContext } from '../context.zena';
+import { skipWhitespace } from '../source.zena';
+
+export function preferLet(ctx: RuleContext): void {
+  walkEnter(ctx.ast, (n) => {
+    if (let VariableDeclaration {kind, pattern, exported} = n) {
+      if (kind != 'var') {
+        return;
+      }
+      let symbols = ctx.patternSymbols(pattern);
+      if (symbols.length == 0) {
+        return;
+      }
+      for (let sym in symbols) {
+        if (ctx.isEverAssigned(sym)) {
+          return;
+        }
+      }
+      var at = ctx.start(n);
+      if (exported) {
+        // Past `export` and the whitespace after it.
+        at = skipWhitespace(ctx.source, at + 6);
+      }
+      if (ctx.slice(at, at + 3) != 'var') {
+        return;
+      }
+      ctx.replaceRange(at, at + 3, 'let');
+    }
+  });
+}

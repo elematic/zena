@@ -1,0 +1,93 @@
+/**
+ * `let f = (a: i32): i32 => …` at the top level becomes
+ * `function f(a: i32): i32 { … }`.
+ *
+ * A top-level arrow has nothing to capture, so the two mean the same
+ * thing; the declaration says so, hoists, and can never become a closure
+ * by a later edit (language-reference.md §4). An expression body becomes
+ * a block that returns it. A `let` with a type annotation is left alone:
+ * the annotation is what gives its parameters their types.
+ */
+
+import {
+  VariableDeclaration, IdentifierPattern, FunctionExpression, BlockStatement,
+} from 'zena-compiler:ast';
+import { RuleContext } from '../context.zena';
+import { skipWhitespace, skipWhitespaceBack, isMultiLine } from '../source.zena';
+
+let EQUALS = 61;
+let GREATER = 62;
+
+export function functionDeclarations(ctx: RuleContext): void {
+  for (let stmt in ctx.ast.body) {
+    if (let VariableDeclaration {kind, pattern, typeAnnotation, init, exported} = stmt) {
+      if (kind != 'let' || typeAnnotation != null) {
+        continue;
+      }
+      if (!(pattern is IdentifierPattern) || !(init is FunctionExpression)) {
+        continue;
+      }
+      let fe = init as FunctionExpression;
+      let name = (pattern as IdentifierPattern).name;
+      let source = ctx.source;
+
+      // The signature is everything between the `=` after the name and
+      // the `=>` before the body, which includes any `async`/`gen`
+      // modifier and type parameters wherever the parser put the arrow's
+      // own location.
+      var afterName = ctx.end(pattern);
+      while (afterName < source.length && source.getByteAt(afterName) != EQUALS) {
+        afterName += 1;
+      }
+      let arrow = arrowBefore(source, ctx.start(fe.body));
+      if (arrow < 0 || afterName >= arrow) {
+        continue;
+      }
+      var header = source.sliceBytes(afterName + 1, arrow).trim();
+      var modifiers = '';
+      if (fe.isAsync && header.startsWith('async')) {
+        header = header.sliceBytes(5, header.length).trim();
+        modifiers = 'async ';
+      }
+      if (fe.isGenerator && header.startsWith('gen')) {
+        header = header.sliceBytes(3, header.length).trim();
+        modifiers = modifiers + 'gen ';
+      }
+      if (!(header.startsWith('(') || header.startsWith('<'))) {
+        continue;
+      }
+
+      let indent = ctx.indentOf(stmt);
+      let body = fe.body;
+      let bodyText = if (body is BlockStatement) {
+        ctx.text(body)
+      } else {
+        let expression = ctx.text(body);
+        `{\n${indent}  return ${expression};\n${indent}}`
+      };
+      let exportPrefix = if (exported) 'export ' else '';
+      let text = `${exportPrefix}${modifiers}function ${name}${header} ${bodyText}`;
+      if (ctx.debug) {
+        // A statement's recorded location is reliable; a difference means
+        // some descendant's is not, and the rewrite will probably fail.
+        let loc = stmt.loc;
+        if (loc != null && (loc.start != ctx.start(stmt) || loc.end != ctx.end(stmt))) {
+          console.log(`function-declaration ${name}: recorded ${i32ToString(loc.start)}..${i32ToString(loc.end)}, extent ${i32ToString(ctx.start(stmt))}..${i32ToString(ctx.end(stmt))}`);
+        }
+      }
+      ctx.replaceRange(ctx.start(stmt), ctx.statementEnd(stmt), text);
+    }
+  }
+}
+
+/** The offset of the `=>` whose right side starts at `bodyStart`, or -1. */
+function arrowBefore(source: String, bodyStart: i32): i32 {
+  let last = skipWhitespaceBack(source, bodyStart);
+  if (last < 1) {
+    return -1;
+  }
+  if (source.getByteAt(last) != GREATER || source.getByteAt(last - 1) != EQUALS) {
+    return -1;
+  }
+  return last - 1;
+}
