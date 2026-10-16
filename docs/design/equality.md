@@ -139,9 +139,6 @@ Not yet covered (#372):
 - **The erased comparison** (`lowerErasedEq`, `$erasedEq`) still
   compares records and tuples by identity. That covers `anyref` and
   interface operands, and unions of several record or tuple types.
-- **Case-class fields:** a case class's derived `==` compares a record
-  or tuple field by identity (`synthFieldEq`), and its `hashCode`
-  hashes one to 0.
 - **`hashCode()` as a method:** a record has no methods, so generic code
   bounded by `Hashable` that calls `x.hashCode()` cannot be
   instantiated with a record. `HashMap` and `HashSet` use the `hash`
@@ -159,6 +156,11 @@ value, `String` by content, a class through its `hashCode`. A field
 whose `==` is identity or erased (a class without `hashCode`, an array,
 a closure) contributes 0. An optional field contributes only when
 present, and a null field contributes 0.
+
+A case class's derived `==` and `hashCode` treat a record or tuple field
+the same way, through its type's functions (`caseValueFieldType` in
+ir/equality.zena). Reachability registers those functions where it
+reaches the derived functions (`#noteFieldStaticTargets`).
 
 For argument explosion, `==` and `hashCode` on a closed or row-generic
 record read only its fields, so a record parameter compared with `==`

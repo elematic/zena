@@ -2207,7 +2207,11 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
     }
   }
 
-  /** notePendingStaticTargets for each instance field of `owner`. */
+  /**
+   * notePendingStaticTargets for each instance field of `owner`. For a
+   * case class's derived `==` or `hashCode`, a record or tuple field
+   * also needs its type's comparison or hash function (ir/equality.zena).
+   */
   #noteFieldStaticTargets(owner: ClassType, memberName: String): void {
     for (let mPair in owner.members) {
       let member = mPair.value;
@@ -2217,6 +2221,11 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
       let fieldType = substituteTypeParamsInCodegen(this.wasm,
           getClassTypeParameters(owner), owner.typeArguments, member.type);
       this.notePendingStaticTargets(fieldType, memberName);
+      if (memberName == "==") {
+        this.visitor.noteValueEquality(fieldType, fieldType, this.getClassModel(owner));
+      } else if (memberName == "hashCode") {
+        this.visitor.noteValueHash(fieldType, this.getClassModel(owner));
+      }
     }
   }
 

@@ -8,7 +8,7 @@
  */
 import { CallExpression } from '../../ast.zena';
 import {
-  BooleanType, ClassType, F32Type, F64Type, I32Type, I64Type, NullType,
+  BooleanType, ClassType, F32Type, F64Type, FieldInfo, I32Type, I64Type, NullType,
   RecordType, TupleType, Type, UnionType, baseType, instantiateClassType,
 } from '../../types.zena';
 import {
@@ -21,7 +21,9 @@ import {
 import {
   getClassKey, getClassMethodKey, getMemberRootClass, presentWordName,
 } from '../codegen-utils.zena';
-import { eraseTypeParameters } from '../type-mapping.zena';
+import {
+  eraseTypeParameters, getClassTypeParameters, substituteTypeParamsInCodegen,
+} from '../type-mapping.zena';
 import {
   ValueEqField, valueEqFields, valueEqKey, valueEqOperand, valueHashKey,
 } from '../value-equality.zena';
@@ -420,6 +422,30 @@ export let lowerClassEquality = (cx: LoweringContext, a: i32, b2: i32,
   return result;
 };
 
+/**
+ * The type of the synthesized function's class's field `name`, as the
+ * instantiation sees it, when it is a record or tuple; else null. The
+ * derived `==` and `hashCode` treat such a field by value, like any `==`
+ * on it, which its wasm type alone (a reference) cannot tell.
+ */
+let caseValueFieldType = (cx: LoweringContext, name: String): Type | null => {
+  let owner = cx.func.classType;
+  if (owner == null) {
+    return null;
+  }
+  let ct = owner as ClassType;
+  if (let (true, member) = ct.members.get(name)) {
+    if (member is FieldInfo && !member.isStatic) {
+      let t = substituteTypeParamsInCodegen(cx.wasm, getClassTypeParameters(ct),
+          ct.typeArguments, member.type);
+      if (valueEqOperand(t) != null) {
+        return t;
+      }
+    }
+  }
+  return null;
+};
+
 /** Field-wise equality for the synthesized case-class ==. */
 let synthFieldEq = (cx: LoweringContext, f: WasmField, a: i32, b2: i32): i32 => {
   let i32vt = new ValTypeI32() as ValType;
@@ -464,6 +490,13 @@ let synthFieldHash = (cx: LoweringContext, st: WasmStruct, f: WasmField,
     selfC: i32): i32 => {
   let i32vt = new ValTypeI32() as ValType;
   let ft = f.type;
+  // A record or tuple field hashes its fields, consistent with `==`.
+  let valueType = caseValueFieldType(cx, f.name as String);
+  if (valueType != null) {
+    let fieldRef = cx.b.addRef(new IrRefField(st, f.name as String));
+    return lowerValueHash(cx, valueType as Type,
+        cx.b.emit(IrOp.struct_get, ft, selfC, fieldRef));
+  }
   if (ft is ValTypeF32) {
     let fieldRef = cx.b.addRef(new IrRefField(st, f.name as String));
     let v = cx.b.emit(IrOp.struct_get, ft, selfC, fieldRef);
@@ -616,7 +649,10 @@ export let lowerCaseClassEq = (cx: LoweringContext): IrBody => {
     let fieldRef = cx.b.addRef(new IrRefField(st, f.name as String));
     let a = cx.b.emit(IrOp.struct_get, f.type, selfC, fieldRef);
     let b2 = cx.b.emit(IrOp.struct_get, f.type, otherC, fieldRef);
-    let fe = synthFieldEq(cx, f, a, b2);
+    let valueType = caseValueFieldType(cx, f.name as String);
+    let fe = if (valueType != null)
+        lowerValueEq(cx, valueType as Type, a, valueType as Type, b2)
+        else synthFieldEq(cx, f, a, b2);
     acc = if (acc == -1) fe else cx.b.binary(IrOp.i32_and, i32vt, acc, fe);
   }
   if (acc == -1) {
