@@ -92,13 +92,13 @@ export class SymbolEntry {
 // ============================================================================
 
 /** Convert a PackageName to a lookup key (namespace:name@version if version present). */
-let packageNameToKey = (name: PackageName): String => {
-  var key = name.namespace.name + ":" + name.name.name;
+function packageNameToKey(name: PackageName) {
+  var key = `${name.namespace.name}:${name.name.name}`;
   if (name.version != null) {
-    key = key + "@" + (name.version as String);
+    key = `${key}@${name.version as String}`;
   }
   return key;
-};
+}
 
 /**
  * Contents of a package - its interfaces and worlds.
@@ -134,8 +134,7 @@ class PackageRegistry {
     }
 
     // Register nested packages
-    for (var i = 0; i < ast.nestedPackages.length; i += 1) {
-      let pkg = ast.nestedPackages[i];
+    for (let pkg in ast.nestedPackages) {
       registry.#registerPackage(pkg.name, pkg.items);
     }
 
@@ -154,8 +153,7 @@ class PackageRegistry {
     let content = new PackageContent(name);
 
     // Collect interfaces and worlds
-    for (var i = 0; i < items.length; i += 1) {
-      let item = items[i];
+    for (let item in items) {
       if (item.tag == AstItemTag.Interface) {
         let iface = item.interfaceDef as InterfaceDef;
         content.interfaces[iface.name.name] = iface;
@@ -180,7 +178,7 @@ class PackageRegistry {
 
   /** Look up a package by namespace:name (legacy, without version). */
   getPackage(namespace: String, name: String): PackageContent | null {
-    let key = namespace + ":" + name;
+    let key = `${namespace}:${name}`;
     if (let (true, content) = this.#packages.get(key)) {
       return content;
     }
@@ -193,7 +191,7 @@ class PackageRegistry {
     if (pkg == null) {
       return null;
     }
-    let p = pkg as PackageContent;
+    let p = pkg;
     if (let (true, iface) = p.interfaces.get(ifaceName)) {
       return iface;
     }
@@ -206,7 +204,7 @@ class PackageRegistry {
     if (pkg == null) {
       return null;
     }
-    let p = pkg as PackageContent;
+    let p = pkg;
     if (let (true, iface) = p.interfaces.get(ifaceName)) {
       return iface;
     }
@@ -219,7 +217,7 @@ class PackageRegistry {
     if (pkg == null) {
       return null;
     }
-    let p = pkg as PackageContent;
+    let p = pkg;
     if (let (true, world) = p.worlds.get(worldName)) {
       return world;
     }
@@ -232,7 +230,7 @@ class PackageRegistry {
     if (pkg == null) {
       return null;
     }
-    let p = pkg as PackageContent;
+    let p = pkg;
     if (let (true, world) = p.worlds.get(worldName)) {
       return world;
     }
@@ -247,7 +245,7 @@ class PackageRegistry {
 
   /** Check if a package exists (legacy, without version). */
   hasPackage(namespace: String, name: String): boolean {
-    let key = namespace + ":" + name;
+    let key = `${namespace}:${name}`;
     return this.#packages.has(key);
   }
 
@@ -262,7 +260,7 @@ class PackageRegistry {
 // ============================================================================
 
 /** Convert a string to lowercase (simple ASCII version). */
-let toLower = (s: String): String => {
+function toLower(s: String) {
   let sb = new StringBuilder(s.length);
   for (var i = 0; i < s.length; i += 1) {
     let b = s.getByteAt(i);
@@ -274,32 +272,31 @@ let toLower = (s: String): String => {
     }
   }
   return sb.toString();
-};
+}
 
 /** Find a symbol in a list by name (case-insensitive). */
-let findSymbolInList = (symbols: Array<SymbolEntry>, name: String): SymbolEntry | null => {
+function findSymbolInList(symbols: Array<SymbolEntry>, name: String): SymbolEntry | null {
   let lower = toLower(name);
-  for (var i = 0; i < symbols.length; i += 1) {
-    let sym = symbols[i];
+  for (let sym in symbols) {
     if (toLower(sym.name) == lower) {
       return sym;
     }
   }
   return null;
-};
+}
 
 /** Check if a type is a valid map key type. */
-let isValidMapKeyType = (t: Type): boolean => {
+function isValidMapKeyType(t: Type) {
   return t.tag == TypeTag.Bool ||
          t.tag == TypeTag.U8 || t.tag == TypeTag.U16 ||
          t.tag == TypeTag.U32 || t.tag == TypeTag.U64 ||
          t.tag == TypeTag.S8 || t.tag == TypeTag.S16 ||
          t.tag == TypeTag.S32 || t.tag == TypeTag.S64 ||
          t.tag == TypeTag.Char || t.tag == TypeTag.String;
-};
+}
 
 /** Check if a Docs has an @unstable attribute (feature gated). */
-let isGated = (docs: Docs): boolean => {
+function isGated(docs: Docs): boolean {
   if (docs.attributes == null) {
     return false;
   }
@@ -310,18 +307,18 @@ let isGated = (docs: Docs): boolean => {
     }
   }
   return false;
-};
+}
 
 /** Get the full path string from a UsePath. */
-let getFullPath = (path: UsePath): String => {
+function getFullPath(path: UsePath) {
   if (path.tag == UsePathTag.Id) {
     return (path.id as Id).name;
   }
   // Package style: namespace:name/interface
   let pkg = path.packageId as PackageName;
   let name = (path.name as Id).name;
-  return pkg.namespace.name + ":" + pkg.name.name + "/" + name;
-};
+  return `${pkg.namespace.name}:${pkg.name.name}/${name}`;
+}
 
 // ============================================================================
 // Scope
@@ -342,8 +339,7 @@ class Scope {
   /** Find a symbol by name (case-insensitive for kebab-case). */
   find(name: String): SymbolEntry | null {
     let lower = toLower(name);
-    for (var i = 0; i < this.symbols.length; i += 1) {
-      let sym = this.symbols[i];
+    for (let sym in this.symbols) {
       if (toLower(sym.name) == lower) {
         return sym;
       }
@@ -355,15 +351,15 @@ class Scope {
   add(name: String, kind: SymbolKind, span: Span, gated: boolean): ResolveError | null {
     let existing = this.find(name);
     if (existing != null) {
-      let e = existing as SymbolEntry;
+      let e = existing;
       // Case-insensitive check for kebab-case identifiers
       if (toLower(name) == toLower(e.name) && !(name == e.name)) {
         return new ResolveError(
-          "name `" + name + "` conflicts with `" + e.name + "` (kebab-case identifiers are case-insensitive)",
+          `name \`${name}\` conflicts with \`${e.name}\` (kebab-case identifiers are case-insensitive)`,
           span
         );
       }
-      return new ResolveError("name `" + name + "` is defined more than once", span);
+      return new ResolveError(`name \`${name}\` is defined more than once`, span);
     }
     let sym = if (gated) SymbolEntry.gated(name, kind, span) else new SymbolEntry(name, kind, span);
     this.symbols.push(sym);
@@ -372,8 +368,7 @@ class Scope {
 
   /** Find a type by name. */
   findType(name: String): TypeDef | null {
-    for (var i = 0; i < this.types.length; i += 1) {
-      let td = this.types[i];
+    for (let td in this.types) {
       if (td.name.name == name) {
         return td;
       }
@@ -383,8 +378,7 @@ class Scope {
 
   /** Find a world by name. */
   findWorld(name: String): WorldDef | null {
-    for (var i = 0; i < this.worlds.length; i += 1) {
-      let wd = this.worlds[i];
+    for (let wd in this.worlds) {
       if (wd.name.name == name) {
         return wd;
       }
@@ -394,8 +388,7 @@ class Scope {
 
   /** Find an interface by name. */
   findInterface(name: String): InterfaceDef | null {
-    for (var i = 0; i < this.interfaces.length; i += 1) {
-      let iface = this.interfaces[i];
+    for (let iface in this.interfaces) {
       if (iface.name.name == name) {
         return iface;
       }
@@ -484,7 +477,7 @@ export class Resolver {
   #defineWithGating(name: String, kind: SymbolKind, span: Span, gated: boolean): void {
     let err = this.#currentScope().add(name, kind, span, gated);
     if (err != null) {
-      throw err as ResolveError;
+      throw err;
     }
   }
 
@@ -492,7 +485,7 @@ export class Resolver {
   #checkGatedReference(sym: SymbolEntry, refSpan: Span, itemKind: String): void {
     if (sym.isGated && !this.#inGatedContext) {
       throw new ResolveError(
-        "found a reference to a " + itemKind + " which is excluded due to its feature not being activated",
+        `found a reference to a ${itemKind} which is excluded due to its feature not being activated`,
         refSpan
       );
     }
@@ -519,8 +512,7 @@ export class Resolver {
     this.#pushScope();
 
     // First pass: collect interfaces and worlds (they take priority over use aliases)
-    for (var i = 0; i < ast.items.length; i += 1) {
-      let item = ast.items[i];
+    for (let item in ast.items) {
       if (item.tag == AstItemTag.Interface) {
         let iface = item.interfaceDef as InterfaceDef;
         let gated = isGated(iface.docs);
@@ -540,8 +532,7 @@ export class Resolver {
     // Check for conflicts where a use alias appears BEFORE an interface/world in source order
     // but only if they're in the same "file" (no package declaration between them)
     let packageDeclPos = if (ast.packageName != null) (ast.packageName as PackageName).span.start else 0;
-    for (var i = 0; i < ast.items.length; i += 1) {
-      let item = ast.items[i];
+    for (let item in ast.items) {
       if (item.tag == AstItemTag.Use) {
         let use = item.use as ToplevelUse;
         let name = if (use.asName != null) (use.asName as Id).name else use.item.getName().name;
@@ -549,7 +540,7 @@ export class Resolver {
         let existing = this.#findSymbol(name);
         if (existing != null) {
           // Name already defined. Check if this use alias came BEFORE the definition.
-          let e = existing as SymbolEntry;
+          let e = existing;
           if (span.start < e.span.start) {
             // Use alias defined first, interface/world defined after.
             // But if the package declaration is BETWEEN them, they're in different files.
@@ -560,7 +551,7 @@ export class Resolver {
             } else {
               // Same file - error
               throw new ResolveError(
-                "duplicate name `" + name + "` in this file",
+                `duplicate name \`${name}\` in this file`,
                 e.span
               );
             }
@@ -573,8 +564,7 @@ export class Resolver {
     }
 
     // Second pass: resolve each item
-    for (var i = 0; i < ast.items.length; i += 1) {
-      let item = ast.items[i];
+    for (let item in ast.items) {
       this.#resolveAstItem(item);
     }
 
@@ -582,8 +572,7 @@ export class Resolver {
     this.#checkDuplicateNestedPackages(ast.nestedPackages);
 
     // Resolve nested packages - each gets its own scope
-    for (var i = 0; i < ast.nestedPackages.length; i += 1) {
-      let pkg = ast.nestedPackages[i];
+    for (let pkg in ast.nestedPackages) {
       this.#resolveNestedPackage(pkg);
     }
 
@@ -600,7 +589,7 @@ export class Resolver {
         let name2 = this.#packageNameToString(pkg2.name);
         if (name1 == name2) {
           throw new ResolveError(
-            "package " + name1 + " is defined in two different locations",
+            `package ${name1} is defined in two different locations`,
             pkg2.name.span
           );
         }
@@ -610,9 +599,9 @@ export class Resolver {
 
   /** Convert a PackageName to a string for comparison. */
   #packageNameToString(pkg: PackageName): String {
-    let base = pkg.namespace.name + ":" + pkg.name.name;
+    let base = `${pkg.namespace.name}:${pkg.name.name}`;
     if (pkg.version != null) {
-      return base + "@" + (pkg.version as String);
+      return `${base}@${pkg.version as String}`;
     }
     return base;
   }
@@ -621,14 +610,14 @@ export class Resolver {
   #getQualifiedInterfaceName(ifaceName: String): String {
     if (this.#currentResolvePackage != null) {
       let pkg = this.#currentResolvePackage as PackageName;
-      return this.#packageNameToString(pkg) + "/" + ifaceName;
+      return `${this.#packageNameToString(pkg)}/${ifaceName}`;
     }
     return ifaceName;
   }
 
   /** Build qualified interface name from package and interface name. */
   #buildQualifiedName(pkg: PackageName, ifaceName: String): String {
-    return this.#packageNameToString(pkg) + "/" + ifaceName;
+    return `${this.#packageNameToString(pkg)}/${ifaceName}`;
   }
 
   #resolveAstItem(item: AstItem): void {
@@ -654,8 +643,7 @@ export class Resolver {
     this.#pushScope();
 
     // First pass: collect all names in this package (interfaces, worlds, and top-level use aliases)
-    for (var i = 0; i < pkg.items.length; i += 1) {
-      let item = pkg.items[i];
+    for (let item in pkg.items) {
       if (item.tag == AstItemTag.Interface) {
         let iface = item.interfaceDef as InterfaceDef;
         this.#define(iface.name.name, SymbolKind.Interface, iface.name.span);
@@ -711,8 +699,7 @@ export class Resolver {
     this.#pushScope();
 
     // First pass: collect all type names and functions with gating info
-    for (var i = 0; i < iface.items.length; i += 1) {
-      let item = iface.items[i];
+    for (let item in iface.items) {
       if (item.tag == InterfaceItemTag.TypeDef) {
         let td = item.typeDef as TypeDef;
         let itemGated = isGated(td.docs);
@@ -737,8 +724,7 @@ export class Resolver {
     }
 
     // Second pass: resolve types and validate
-    for (var i = 0; i < iface.items.length; i += 1) {
-      let item = iface.items[i];
+    for (let item in iface.items) {
       this.#resolveInterfaceItem(item);
     }
 
@@ -793,8 +779,7 @@ export class Resolver {
     let exports = new GrowableArray<SymbolEntry>();
 
     // First pass: collect names from type definitions
-    for (var i = 0; i < world.items.length; i += 1) {
-      let item = world.items[i];
+    for (let item in world.items) {
       if (item.tag == WorldItemTag.TypeDef) {
         let td = item.typeDef as TypeDef;
         this.#define(td.name.name, SymbolKind.Type, td.name.span);
@@ -803,8 +788,7 @@ export class Resolver {
     }
 
     // Second pass: resolve items and check import/export conflicts
-    for (var i = 0; i < world.items.length; i += 1) {
-      let item = world.items[i];
+    for (let item in world.items) {
       this.#resolveWorldItem(item, imports, exports, world.name.name);
     }
 
@@ -875,7 +859,7 @@ export class Resolver {
     if (worldDef == null) {
       return;
     }
-    let w = worldDef as WorldDef;
+    let w = worldDef;
     let worldName = id.name;
 
     // Check each item in the included world
@@ -891,13 +875,13 @@ export class Resolver {
         let impName = this.#getExternKindName(imp.kind);
         let isPath = imp.kind.tag == ExternKindTag.Path;
         if (impName != null) {
-          let name = impName as String;
+          let name = impName;
           // Apply rename if exists
           let finalName = this.#applyIncludeRename(name, include.names);
           // Check if this would shadow an existing NON-GATED import
           let existing = findSymbolInList(imports, finalName);
           if (existing != null) {
-            let e = existing as SymbolEntry;
+            let e = existing;
             // Only error if the existing item is NOT gated AND from a different source
             // Duplicate includes of the same world are allowed (deduped)
             if (!e.isGated) {
@@ -913,7 +897,7 @@ export class Resolver {
                 continue;
               }
               throw new ResolveError(
-                "import of `" + finalName + "` shadows previously imported items",
+                `import of \`${finalName}\` shadows previously imported items`,
                 id.span
               );
             }
@@ -935,11 +919,11 @@ export class Resolver {
         let expName = this.#getExternKindName(exp.kind);
         let isPath = exp.kind.tag == ExternKindTag.Path;
         if (expName != null) {
-          let name = expName as String;
+          let name = expName;
           let finalName = this.#applyIncludeRename(name, include.names);
           let existing = findSymbolInList(exports, finalName);
           if (existing != null) {
-            let e = existing as SymbolEntry;
+            let e = existing;
             if (!e.isGated) {
               if (e.source != null && (e.source as String) == worldName) {
                 // Same source - duplicate include, skip without error
@@ -953,7 +937,7 @@ export class Resolver {
                 continue;
               }
               throw new ResolveError(
-                "export of `" + finalName + "` shadows previously exported items",
+                `export of \`${finalName}\` shadows previously exported items`,
                 id.span
               );
             }
@@ -984,8 +968,7 @@ export class Resolver {
 
   /** Apply a rename from include names if the name matches. */
   #applyIncludeRename(name: String, names: Array<IncludeName>): String {
-    for (var i = 0; i < names.length; i += 1) {
-      let n = names[i];
+    for (let n in names) {
       if (n.name.name == name) {
         return n.asName.name;
       }
@@ -999,12 +982,12 @@ export class Resolver {
       // Check for duplicates in this category (imports or exports)
       let existing = findSymbolInList(symbols, funcName.name);
       if (existing != null) {
-        let e = existing as SymbolEntry;
+        let e = existing;
         // Skip conflict check if both are gated
         if (!(e.isGated && this.#inGatedContext)) {
           let direction = if (isImport) "import" else "export";
           throw new ResolveError(
-            direction + " `" + funcName.name + "` conflicts with prior func of same name",
+            `${direction} \`${funcName.name}\` conflicts with prior func of same name`,
             funcName.span
           );
         }
@@ -1012,11 +995,11 @@ export class Resolver {
       // Check for conflicts with type definitions in the world
       let typeSym = this.#findSymbol(funcName.name);
       if (typeSym != null) {
-        let ts = typeSym as SymbolEntry;
+        let ts = typeSym;
         if (ts.kind == SymbolKind.Type) {
           let direction = if (isImport) "import" else "export";
           throw new ResolveError(
-            direction + " `" + funcName.name + "` conflicts with prior type of same name",
+            `${direction} \`${funcName.name}\` conflicts with prior type of same name`,
             funcName.span
           );
         }
@@ -1034,12 +1017,12 @@ export class Resolver {
       // Check for duplicates
       let existing = findSymbolInList(symbols, ifaceName.name);
       if (existing != null) {
-        let e = existing as SymbolEntry;
+        let e = existing;
         // Skip conflict check if both are gated
         if (!(e.isGated && this.#inGatedContext)) {
           let direction = if (isImport) "import" else "export";
           throw new ResolveError(
-            direction + " `" + ifaceName.name + "` conflicts with prior interface of same name",
+            `${direction} \`${ifaceName.name}\` conflicts with prior interface of same name`,
             ifaceName.span
           );
         }
@@ -1065,12 +1048,12 @@ export class Resolver {
       // Check for duplicates using the full path
       let existing = findSymbolInList(symbols, fullPath);
       if (existing != null) {
-        let e = existing as SymbolEntry;
+        let e = existing;
         // Skip conflict check if both are gated
         if (!(e.isGated && this.#inGatedContext)) {
           let direction = if (isImport) "import" else "export";
           throw new ResolveError(
-            direction + " `" + fullPath + "` conflicts with prior " + direction + " of same name",
+            `${direction} \`${fullPath}\` conflicts with prior ${direction} of same name`,
             pathName.span
           );
         }
@@ -1095,11 +1078,11 @@ export class Resolver {
       let id = path.id as Id;
       let sym = this.#findSymbol(id.name);
       if (sym != null) {
-        let s = sym as SymbolEntry;
+        let s = sym;
         if (s.kind == SymbolKind.World) {
           let direction = if (isImport) "import" else "export";
           throw new ResolveError(
-            "cannot " + direction + " world `" + id.name + "` into a world",
+            `cannot ${direction} world \`${id.name}\` into a world`,
             id.span
           );
         }
@@ -1132,8 +1115,7 @@ export class Resolver {
       // Check for duplicate case names
       this.#checkDuplicateVariantCases(cases);
       // Resolve case types
-      for (var i = 0; i < cases.length; i += 1) {
-        let c = cases[i];
+      for (let c in cases) {
         if (c.type != null) {
           this.#resolveType(c.type as Type, false);
         }
@@ -1168,8 +1150,7 @@ export class Resolver {
       // because they implicitly reference the gated resource type (bad-gate4, bad-gate5)
       let resourceGated = isGated(td.docs);
 
-      for (var i = 0; i < funcs.length; i += 1) {
-        let rf = funcs[i];
+      for (let rf in funcs) {
         let funcGated = isGated(rf.func.docs);
 
         // If resource is gated and method is not, it's an error
@@ -1245,10 +1226,9 @@ export class Resolver {
   #checkDuplicateResourceFuncs(funcs: Array<ResourceFunc>): void {
     var constructorCount = 0;
     var constructorSpan: Span | null = null;
-    var methodNames = new GrowableArray<SymbolEntry>();
+    let methodNames = new GrowableArray<SymbolEntry>();
 
-    for (var i = 0; i < funcs.length; i += 1) {
-      let rf = funcs[i];
+    for (let rf in funcs) {
       if (rf.tag == ResourceFuncTag.Constructor) {
         constructorCount += 1;
         if (constructorCount == 1) {
@@ -1261,7 +1241,7 @@ export class Resolver {
         let name = rf.func.name.name;
         let existing = findSymbolInList(methodNames, name);
         if (existing != null) {
-          throw new ResolveError("duplicate function name `" + name + "`", rf.func.name.span);
+          throw new ResolveError(`duplicate function name \`${name}\``, rf.func.name.span);
         }
         methodNames.push(new SymbolEntry(name, SymbolKind.Func, rf.func.name.span));
       }
@@ -1273,7 +1253,7 @@ export class Resolver {
       for (var j = i + 1; j < cases.length; j += 1) {
         if (cases[i].name.name == cases[j].name.name) {
           throw new ResolveError(
-            "duplicate enum case `" + cases[j].name.name + "`",
+            `duplicate enum case \`${cases[j].name.name}\``,
             cases[j].name.span
           );
         }
@@ -1286,7 +1266,7 @@ export class Resolver {
       for (var j = i + 1; j < cases.length; j += 1) {
         if (cases[i].name.name == cases[j].name.name) {
           throw new ResolveError(
-            "duplicate variant case `" + cases[j].name.name + "`",
+            `duplicate variant case \`${cases[j].name.name}\``,
             cases[j].name.span
           );
         }
@@ -1299,7 +1279,7 @@ export class Resolver {
       for (var j = i + 1; j < fields.length; j += 1) {
         if (fields[i].name.name == fields[j].name.name) {
           throw new ResolveError(
-            "duplicate field `" + fields[j].name.name + "`",
+            `duplicate field \`${fields[j].name.name}\``,
             fields[j].name.span
           );
         }
@@ -1312,7 +1292,7 @@ export class Resolver {
       for (var j = i + 1; j < flags.length; j += 1) {
         if (flags[i].name.name == flags[j].name.name) {
           throw new ResolveError(
-            "duplicate flag `" + flags[j].name.name + "`",
+            `duplicate flag \`${flags[j].name.name}\``,
             flags[j].name.span
           );
         }
@@ -1342,10 +1322,10 @@ export class Resolver {
         let name = rawName;
         let sym = this.#findSymbol(name);
         if (sym == null) {
-          throw new ResolveError("type `" + rawName + "` does not exist", inner.span);
+          throw new ResolveError(`type \`${rawName}\` does not exist`, inner.span);
         }
         // Check if the type is a resource
-        let s = sym as SymbolEntry;
+        let s = sym;
         if (s.kind == SymbolKind.Resource) {
           // Good - it's a resource
           return;
@@ -1354,18 +1334,18 @@ export class Resolver {
           // Check if there's a TypeDef that's a resource
           let td = this.#findTypeDef(name);
           if (td != null) {
-            if (!this.#isResourceType(td as TypeDef)) {
-              throw new ResolveError("type `" + rawName + "` used in a handle must be a resource", inner.span);
+            if (!this.#isResourceType(td)) {
+              throw new ResolveError(`type \`${rawName}\` used in a handle must be a resource`, inner.span);
             }
             // TypeDef is a resource (or alias to one)
             return;
           }
           // No type definition found - imported from another interface via `use`
           // Since it's registered as Type (not Resource), it's not a valid handle target
-          throw new ResolveError("type `" + rawName + "` used in a handle must be a resource", inner.span);
+          throw new ResolveError(`type \`${rawName}\` used in a handle must be a resource`, inner.span);
         }
         // Symbol is not a Type or Resource (e.g., it's an Interface, World, or Func)
-        throw new ResolveError("type `" + rawName + "` does not exist", inner.span);
+        throw new ResolveError(`type \`${rawName}\` does not exist`, inner.span);
       }
       return;
     }
@@ -1377,24 +1357,24 @@ export class Resolver {
       // Check for cycle
       if (this.#isResolving(name)) {
         throw new ResolveError(
-          "type `" + rawName + "` depends on itself",
+          `type \`${rawName}\` depends on itself`,
           t.span
         );
       }
       // Check if type exists
       let sym = this.#findSymbol(name);
       if (sym == null) {
-        throw new ResolveError("type `" + rawName + "` does not exist", t.span);
+        throw new ResolveError(`type \`${rawName}\` does not exist`, t.span);
       }
 
       // Check feature gate (bad-gate1): can't reference gated type from non-gated context
-      let s = sym as SymbolEntry;
+      let s = sym;
       this.#checkGatedReference(s, t.span, "type");
 
       // Check that the symbol is a type, not a function (invalid-type-reference2)
       if (s.kind == SymbolKind.Func) {
         throw new ResolveError(
-          "cannot use function `" + rawName + "` as a type",
+          `cannot use function \`${rawName}\` as a type`,
           t.span
         );
       }
@@ -1402,7 +1382,7 @@ export class Resolver {
       // Follow type aliases to detect transitive cycles
       let td = this.#findTypeDef(name);
       if (td != null) {
-        let typeDef = td as TypeDef;
+        let typeDef = td;
         if (typeDef.tag == TypeDefTag.Alias) {
           // Add this type to the resolving stack and resolve its alias
           this.#resolving.push(name);
@@ -1520,7 +1500,7 @@ export class Resolver {
       let name = (aliasType.name as Id).name;
       let sym = this.#findSymbol(name);
       if (sym != null) {
-        let s = sym as SymbolEntry;
+        let s = sym;
         if (s.kind == SymbolKind.Resource) {
           return true;
         }
@@ -1528,7 +1508,7 @@ export class Resolver {
         if (s.kind == SymbolKind.Type) {
           let innerTd = this.#findTypeDef(name);
           if (innerTd != null) {
-            return this.#isResourceType(innerTd as TypeDef);
+            return this.#isResourceType(innerTd);
           }
           // No TypeDef found - imported type, and it's not marked as Resource
           // so it's not a resource
@@ -1546,16 +1526,14 @@ export class Resolver {
     if (iface == null) {
       return false;
     }
-    let ifaceDef = iface as InterfaceDef;
+    let ifaceDef = iface;
     
     // Search for a use statement that imports this type
-    for (var i = 0; i < ifaceDef.items.length; i += 1) {
-      let item = ifaceDef.items[i];
+    for (let item in ifaceDef.items) {
       if (item.tag == InterfaceItemTag.Use) {
         let u = item.use as Use;
         // Check if this use imports our type
-        for (var j = 0; j < u.names.length; j += 1) {
-          let useName = u.names[j];
+        for (let useName in u.names) {
           let importedAs = if (useName.asName != null) (useName.asName as Id).name else useName.name.name;
           if (importedAs == typeName) {
             // Found it - look up the type in the source interface
@@ -1574,11 +1552,10 @@ export class Resolver {
     if (sourceIface == null) {
       return false;
     }
-    let ifaceDef = sourceIface as InterfaceDef;
+    let ifaceDef = sourceIface;
     
     // Find the TypeDef in the source interface
-    for (var i = 0; i < ifaceDef.items.length; i += 1) {
-      let item = ifaceDef.items[i];
+    for (let item in ifaceDef.items) {
       if (item.tag == InterfaceItemTag.TypeDef) {
         let td = item.typeDef as TypeDef;
         if (td.name.name == typeName) {
@@ -1644,8 +1621,7 @@ export class Resolver {
       // Check if this named type is a record/variant that contains borrows
       let name = (t.name as Id).name;
       // Look up in the source interface
-      for (var i = 0; i < sourceIface.items.length; i += 1) {
-        let item = sourceIface.items[i];
+      for (let item in sourceIface.items) {
         if (item.tag == InterfaceItemTag.TypeDef) {
           let innerTd = item.typeDef as TypeDef;
           if (innerTd.name.name == name) {
@@ -1699,7 +1675,7 @@ export class Resolver {
       for (var j = i + 1; j < params.length; j += 1) {
         if (params[i].name.name == params[j].name.name) {
           throw new ResolveError(
-            "duplicate parameter `" + params[j].name.name + "`",
+            `duplicate parameter \`${params[j].name.name}\``,
             params[j].name.span
           );
         }
@@ -1730,10 +1706,10 @@ export class Resolver {
       let id = use.from.id as Id;
       let sym = this.#findSymbol(id.name);
       if (sym != null) {
-        let s = sym as SymbolEntry;
+        let s = sym;
         if (s.kind == SymbolKind.World) {
           throw new ResolveError(
-            "name `" + id.name + "` is defined as a world, not an interface",
+            `name \`${id.name}\` is defined as a world, not an interface`,
             id.span
           );
         }
@@ -1743,7 +1719,7 @@ export class Resolver {
       let qualifiedName = this.#getQualifiedInterfaceName(id.name);
       if (this.#isResolvingInterface(qualifiedName)) {
         throw new ResolveError(
-          "interface or world `" + id.name + "` depends on itself",
+          `interface or world \`${id.name}\` depends on itself`,
           id.span
         );
       }
@@ -1751,7 +1727,7 @@ export class Resolver {
       // Recursively resolve the target interface to detect transitive cycles
       let iface = this.#findInterfaceInCurrentPackage(id.name);
       if (iface != null) {
-        let ifaceDef = iface as InterfaceDef;
+        let ifaceDef = iface;
         // Only resolve if not already resolved (to avoid infinite recursion
         // in valid cases where an interface is used multiple times)
         let targetQualified = this.#getQualifiedInterfaceName(ifaceDef.name.name);
@@ -1768,7 +1744,7 @@ export class Resolver {
       // Check if this interface is currently being resolved (cycle)
       if (this.#isResolvingInterface(qualifiedName)) {
         throw new ResolveError(
-          "interface `" + qualifiedName + "` depends on itself",
+          `interface \`${qualifiedName}\` depends on itself`,
           itemName.span
         );
       }
@@ -1777,7 +1753,7 @@ export class Resolver {
       let registry = this.#registry as PackageRegistry;
       let iface = registry.getInterfaceByPkg(pkgId, itemName.name);
       if (iface != null) {
-        let ifaceDef = iface as InterfaceDef;
+        let ifaceDef = iface;
         // Temporarily switch to the target package context for resolution
         let prevPackage = this.#currentResolvePackage;
         this.#currentResolvePackage = pkgId;
@@ -1796,8 +1772,7 @@ export class Resolver {
 
     // Add imported names to current scope with their correct kinds
     // (Resource vs Type) to support proper handle validation
-    for (var i = 0; i < use.names.length; i += 1) {
-      let useName = use.names[i];
+    for (let useName in use.names) {
       let name = if (useName.asName != null) (useName.asName as Id).name else useName.name.name;
       let kind = this.#getUseNameKind(use, useName.name.name, this.#currentResolvePackage);
       this.#define(name, kind, useName.name.span);
@@ -1818,9 +1793,9 @@ export class Resolver {
       let iface = this.#findInterfaceInPackage(ownerPkg, id.name);
       if (iface != null) {
         // An unqualified path stays inside the owning package.
-        let entry = this.#findItemInInterface(iface as InterfaceDef, lookupName, ownerPkg);
+        let entry = this.#findItemInInterface(iface, lookupName, ownerPkg);
         if (entry != null) {
-          return (entry as SymbolEntry).kind;
+          return entry.kind;
         }
       }
     } else if (use.from.tag == UsePathTag.Package) {
@@ -1829,9 +1804,9 @@ export class Resolver {
       let registry = this.#registry as PackageRegistry;
       let iface = registry.getInterfaceByPkg(pkgId, itemName.name);
       if (iface != null) {
-        let entry = this.#findItemInInterface(iface as InterfaceDef, lookupName, pkgId);
+        let entry = this.#findItemInInterface(iface, lookupName, pkgId);
         if (entry != null) {
-          return (entry as SymbolEntry).kind;
+          return entry.kind;
         }
       }
     }
@@ -1848,7 +1823,7 @@ export class Resolver {
         // Interface not found - already reported by #resolveUsePath
         return;
       }
-      let ifaceDef = iface as InterfaceDef;
+      let ifaceDef = iface;
       this.#validateUseNamesInInterface(use, ifaceDef, this.#currentResolvePackage);
     } else if (use.from.tag == UsePathTag.Package) {
       // Cross-package reference
@@ -1860,28 +1835,27 @@ export class Resolver {
         // Interface not found - already reported by #resolveUsePath
         return;
       }
-      this.#validateUseNamesInInterface(use, iface as InterfaceDef, pkgId);
+      this.#validateUseNamesInInterface(use, iface, pkgId);
     }
   }
 
   /** Helper to validate use names against an interface definition. */
   #validateUseNamesInInterface(use: Use, ifaceDef: InterfaceDef, ownerPkg: PackageName | null): void {
     // Check each imported name
-    for (var i = 0; i < use.names.length; i += 1) {
-      let useName = use.names[i];
+    for (let useName in use.names) {
       let lookupName = useName.name.name;
       let found = this.#findItemInInterface(ifaceDef, lookupName, ownerPkg);
       if (found == null) {
         throw new ResolveError(
-          "name `" + lookupName + "` is not defined",
+          `name \`${lookupName}\` is not defined`,
           useName.name.span
         );
       }
       // Check it's a type, not a function
-      let foundEntry = found as SymbolEntry;
+      let foundEntry = found;
       if (foundEntry.kind == SymbolKind.Func) {
         throw new ResolveError(
-          "cannot import function `" + lookupName + "`",
+          `cannot import function \`${lookupName}\``,
           useName.name.span
         );
       }
@@ -1893,8 +1867,7 @@ export class Resolver {
    * belongs to, so that a `use` inside it resolves unqualified names there.
    */
   #findItemInInterface(iface: InterfaceDef, name: String, ownerPkg: PackageName | null): SymbolEntry | null {
-    for (var i = 0; i < iface.items.length; i += 1) {
-      let item = iface.items[i];
+    for (let item in iface.items) {
       if (item.tag == InterfaceItemTag.TypeDef) {
         let td = item.typeDef as TypeDef;
         if (td.name.name == name) {
@@ -1909,8 +1882,7 @@ export class Resolver {
       } else if (item.tag == InterfaceItemTag.Use) {
         // Check names brought in by use statements
         let u = item.use as Use;
-        for (var j = 0; j < u.names.length; j += 1) {
-          let useName = u.names[j];
+        for (let useName in u.names) {
           let importedName = if (useName.asName != null) (useName.asName as Id).name else useName.name.name;
           if (importedName == name) {
             // Recursively look up the original type to get its kind
@@ -1935,7 +1907,7 @@ export class Resolver {
   #findInterfaceInPackage(pkg: PackageName | null, name: String): InterfaceDef | null {
     if (pkg != null && this.#registry != null) {
       let registry = this.#registry as PackageRegistry;
-      let owned = registry.getInterfaceByPkg(pkg as PackageName, name);
+      let owned = registry.getInterfaceByPkg(pkg, name);
       if (owned != null) {
         return owned;
       }
@@ -1970,7 +1942,7 @@ export class Resolver {
         let worldDef = this.#findWorldDef(id.name);
         if (worldDef == null) {
           throw new ResolveError(
-            "world `" + id.name + "` not found in package",
+            `world \`${id.name}\` not found in package`,
             id.span
           );
         }
@@ -1990,14 +1962,14 @@ export class Resolver {
           let sym = this.#findSymbol(id.name);
           if (sym == null) {
             throw new ResolveError(
-              "interface `" + id.name + "` not found in package",
+              `interface \`${id.name}\` not found in package`,
               id.span
             );
           }
-          let s = sym as SymbolEntry;
+          let s = sym;
           if (s.kind != SymbolKind.Interface) {
             throw new ResolveError(
-              "`" + id.name + "` is not an interface",
+              `\`${id.name}\` is not an interface`,
               id.span
             );
           }
@@ -2013,12 +1985,12 @@ export class Resolver {
       if (!registry.hasPackageByName(pkgId)) {
         let knownPkgs = registry.getKnownPackages();
         let knownStr = this.#formatKnownPackages(knownPkgs);
-        var pkgStr = pkgId.namespace.name + ":" + pkgId.name.name;
+        var pkgStr = `${pkgId.namespace.name}:${pkgId.name.name}`;
         if (pkgId.version != null) {
-          pkgStr = pkgStr + "@" + (pkgId.version as String);
+          pkgStr = `${pkgStr}@${pkgId.version as String}`;
         }
         throw new ResolveError(
-          "package '" + pkgStr + "' not found. known packages:\n" + knownStr,
+          `package '${pkgStr}' not found. known packages:\n${knownStr}`,
           pkgId.span
         );
       }
@@ -2031,16 +2003,16 @@ export class Resolver {
           let iface = registry.getInterfaceByPkg(pkgId, itemName.name);
           if (iface != null) {
             throw new ResolveError(
-              "`" + itemName.name + "` is an interface, not a world",
+              `\`${itemName.name}\` is an interface, not a world`,
               itemName.span
             );
           }
-          var pkgStr2 = pkgId.namespace.name + ":" + pkgId.name.name;
+          var pkgStr2 = `${pkgId.namespace.name}:${pkgId.name.name}`;
           if (pkgId.version != null) {
-            pkgStr2 = pkgStr2 + "@" + (pkgId.version as String);
+            pkgStr2 = `${pkgStr2}@${pkgId.version as String}`;
           }
           throw new ResolveError(
-            "world `" + itemName.name + "` not found in package `" + pkgStr2 + "`",
+            `world \`${itemName.name}\` not found in package \`${pkgStr2}\``,
             itemName.span
           );
         }
@@ -2051,16 +2023,16 @@ export class Resolver {
           let world = registry.getWorldByPkg(pkgId, itemName.name);
           if (world != null) {
             throw new ResolveError(
-              "`" + itemName.name + "` is a world, not an interface",
+              `\`${itemName.name}\` is a world, not an interface`,
               itemName.span
             );
           }
-          var pkgStr3 = pkgId.namespace.name + ":" + pkgId.name.name;
+          var pkgStr3 = `${pkgId.namespace.name}:${pkgId.name.name}`;
           if (pkgId.version != null) {
-            pkgStr3 = pkgStr3 + "@" + (pkgId.version as String);
+            pkgStr3 = `${pkgStr3}@${pkgId.version as String}`;
           }
           throw new ResolveError(
-            "interface `" + itemName.name + "` not found in package `" + pkgStr3 + "`",
+            `interface \`${itemName.name}\` not found in package \`${pkgStr3}\``,
             itemName.span
           );
         }
@@ -2106,7 +2078,7 @@ export class Resolver {
       let worldId = include.from.id as Id;
       let worldDef = this.#findWorldDef(worldId.name);
       if (worldDef != null) {
-        let w = worldDef as WorldDef;
+        let w = worldDef;
         this.#validateIncludeNames(include, w);
       }
     }
@@ -2116,14 +2088,14 @@ export class Resolver {
       let id = include.from.id as Id;
       let sym = this.#findSymbol(id.name);
       if (sym != null) {
-        let s = sym as SymbolEntry;
+        let s = sym;
         // Check feature gate (bad-gate2): can't include gated world from non-gated context
         this.#checkGatedReference(s, id.span, "world");
 
         // Check for include cycle - if we're already resolving this world, it's a cycle
         if (this.#isIncludingWorld(id.name)) {
           throw new ResolveError(
-            "interface or world `" + id.name + "` depends on itself",
+            `interface or world \`${id.name}\` depends on itself`,
             id.span
           );
         }
@@ -2131,7 +2103,7 @@ export class Resolver {
         // Recursively resolve the included world to detect transitive cycles
         let worldDef2 = this.#findWorldDef(id.name);
         if (worldDef2 != null) {
-          this.#resolveWorldIncludes(worldDef2 as WorldDef);
+          this.#resolveWorldIncludes(worldDef2);
         }
       }
     }
@@ -2139,8 +2111,7 @@ export class Resolver {
 
   /** Validate include rename names - kebab-names (functions) and resources can be renamed, not IDs (interfaces). */
   #validateIncludeNames(include: Include, world: WorldDef): void {
-    for (var i = 0; i < include.names.length; i += 1) {
-      let incName = include.names[i];
+    for (let incName in include.names) {
       let name = incName.name.name;
 
       // Check if this name exists as a function (kebab-name) or resource in the world
@@ -2149,7 +2120,7 @@ export class Resolver {
       if (!isRenameableItem) {
         // Name either doesn't exist or is an interface (ID), not a function/resource
         throw new ResolveError(
-          "no import or export kebab-name `" + name + "`. Note that an ID does not support renaming",
+          `no import or export kebab-name \`${name}\`. Note that an ID does not support renaming`,
           include.from.getName().span
         );
       }
@@ -2158,8 +2129,7 @@ export class Resolver {
 
   /** Check if a name in the world is renameable (function or resource). */
   #isRenameableItemInWorld(world: WorldDef, name: String): boolean {
-    for (var i = 0; i < world.items.length; i += 1) {
-      let item = world.items[i];
+    for (let item in world.items) {
       if (item.tag == WorldItemTag.Import) {
         let imp = item.importItem as Import;
         // Functions are "kebab-names" - interfaces paths don't support renaming
@@ -2194,8 +2164,7 @@ export class Resolver {
     this.#includingWorlds.push(world.name.name);
 
     // Only process includes - we don't need to fully resolve the world again
-    for (var i = 0; i < world.items.length; i += 1) {
-      let item = world.items[i];
+    for (let item in world.items) {
       if (item.tag == WorldItemTag.Include) {
         let inc = item.include as Include;
         // Set gated context based on the include's docs
@@ -2251,8 +2220,7 @@ export class Resolver {
     // Collect inline interface exports (export name: interface {...})
     let inlineExports = new GrowableArray<String>();
 
-    for (var i = 0; i < world.items.length; i += 1) {
-      let item = world.items[i];
+    for (let item in world.items) {
       if (item.tag == WorldItemTag.Import) {
         let imp = item.importItem as Import;
         if (imp.kind.tag == ExternKindTag.Interface) {
@@ -2290,16 +2258,14 @@ export class Resolver {
     }
 
     // Check 1: Path exports with dependencies on inline imports
-    for (var i = 0; i < pathExports.length; i += 1) {
-      let exportName = pathExports[i];
+    for (let exportName in pathExports) {
       let iface = this.#findInterface(exportName);
       if (iface != null) {
-        let ifaceDef = iface as InterfaceDef;
+        let ifaceDef = iface;
         let deps = this.#collectTransitiveDependencies(ifaceDef);
         
         // Check if any dependency is also an inline import
-        for (var j = 0; j < deps.length; j += 1) {
-          let dep = deps[j];
+        for (let dep in deps) {
           if (this.#containsString(inlineImports, dep)) {
             // Found a conflict!
             let pkgName = this.#getPackageNameStr();
@@ -2315,16 +2281,14 @@ export class Resolver {
 
     // Check 2: Path imports with dependencies on path exports (or vice versa)
     // This catches cases like: import i3 (depends on i1), export i1, export i3
-    for (var i = 0; i < pathImports.length; i += 1) {
-      let importName = pathImports[i];
+    for (let importName in pathImports) {
       let iface = this.#findInterface(importName);
       if (iface != null) {
-        let ifaceDef = iface as InterfaceDef;
+        let ifaceDef = iface;
         let deps = this.#collectTransitiveDependencies(ifaceDef);
         
         // Check if any dependency is also a path export
-        for (var j = 0; j < deps.length; j += 1) {
-          let dep = deps[j];
+        for (let dep in deps) {
           if (this.#containsString(pathExports, dep)) {
             // Found a conflict! An imported interface depends on an exported interface.
             let pkgName = this.#getPackageNameStr();
@@ -2344,12 +2308,10 @@ export class Resolver {
     }
 
     // Check 3: Inline exports with dependencies on inline imports or dependencies that conflict with exports
-    for (var i = 0; i < inlineExports.length; i += 1) {
-      let exportName = inlineExports[i];
+    for (let exportName in inlineExports) {
       
       // Check the inline export's use statements for transitive dependencies
-      for (var j = 0; j < world.items.length; j += 1) {
-        let item = world.items[j];
+      for (let item in world.items) {
         if (item.tag == WorldItemTag.Export) {
           let exp = item.exportItem as Export;
           if (exp.kind.tag == ExternKindTag.Interface) {
@@ -2362,8 +2324,7 @@ export class Resolver {
               // Check if any dependency is also an inline import
               // Use nonEmptyInlineImports because empty inline imports don't cause conflicts
               // with inline exports (uses resolve to package-level interface)
-              for (var k = 0; k < deps.length; k += 1) {
-                let dep = deps[k];
+              for (let dep in deps) {
                 if (this.#containsString(nonEmptyInlineImports, dep)) {
                   throw new ResolveError(
                     "failed to elaborate world imports/exports of `" + world.name.name + "`\n" +
@@ -2374,7 +2335,7 @@ export class Resolver {
                 // Check if this dependency (whether imported or not) has transitive deps on path exports
                 let depIface = this.#findInterface(dep);
                 if (depIface != null) {
-                  let depDeps = this.#collectTransitiveDependencies(depIface as InterfaceDef);
+                  let depDeps = this.#collectTransitiveDependencies(depIface);
                   for (var m = 0; m < depDeps.length; m += 1) {
                     if (this.#containsString(pathExports, depDeps[m])) {
                       throw new ResolveError(
@@ -2410,8 +2371,7 @@ export class Resolver {
     visited.push(name);
 
     // Check all items for use statements
-    for (var i = 0; i < iface.items.length; i += 1) {
-      let item = iface.items[i];
+    for (let item in iface.items) {
       if (item.tag == InterfaceItemTag.Use) {
         let use = item.use as Use;
         if (use.from.tag == UsePathTag.Id) {
@@ -2423,7 +2383,7 @@ export class Resolver {
           // Recursively collect dependencies from the referenced interface
           let refIface = this.#findInterface(refName);
           if (refIface != null) {
-            this.#collectDepsRecursive(refIface as InterfaceDef, visited, result);
+            this.#collectDepsRecursive(refIface, visited, result);
           }
         }
       }
@@ -2435,8 +2395,7 @@ export class Resolver {
     let result = new GrowableArray<String>();
     let visited = new GrowableArray<String>();
     
-    for (var i = 0; i < items.length; i += 1) {
-      let item = items[i];
+    for (let item in items) {
       if (item.tag == InterfaceItemTag.Use) {
         let use = item.use as Use;
         if (use.from.tag == UsePathTag.Id) {
@@ -2447,7 +2406,7 @@ export class Resolver {
           // Recursively collect from the referenced interface
           let refIface = this.#findInterface(refName);
           if (refIface != null) {
-            this.#collectDepsRecursive(refIface as InterfaceDef, visited, result);
+            this.#collectDepsRecursive(refIface, visited, result);
           }
         }
       }
@@ -2471,6 +2430,6 @@ export class Resolver {
       return "unknown";
     }
     let pkg = this.#packageName as PackageName;
-    return pkg.namespace.name + ":" + pkg.name.name;
+    return `${pkg.namespace.name}:${pkg.name.name}`;
   }
 }

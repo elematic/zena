@@ -25,10 +25,7 @@ export sealed class TypeRef {
   }
 
   isIndex(): boolean {
-    return match (this) {
-      case PrimitiveRef: false
-      case IndexRef: true
-    };
+    return !(this is PrimitiveRef);
   }
 
   indexValue(): i32 {
@@ -39,10 +36,7 @@ export sealed class TypeRef {
   }
 
   strValue(): String {
-    return match (this) {
-      case let PrimitiveRef {name}: name
-      case IndexRef: ""
-    };
+    return if (let PrimitiveRef {name} = this) name else "";
   }
 }
 
@@ -70,10 +64,7 @@ export sealed class TypeOwner {
   }
 
   isWorld(): boolean {
-    return match (this) {
-      case InterfaceOwner: false
-      case WorldOwner: true
-    };
+    return !(this is InterfaceOwner);
   }
 
 }
@@ -93,17 +84,11 @@ export sealed class ScopeTypeElement {
   }
 
   isTypeDef(): boolean {
-    return match (this) {
-      case TypeDefElement: true
-      case UseElement: false
-    };
+    return this is TypeDefElement;
   }
 
   typeDef(): TypeDef | null {
-    return match (this) {
-      case let TypeDefElement {def}: def
-      case UseElement: null
-    };
+    return if (let TypeDefElement {def} = this) def else null;
   }
 
   usePath(): UsePath | null {
@@ -247,9 +232,9 @@ export sealed class TypeKind {
         b.beginObject();
         b.key("result").beginObject();
         b.key("ok");
-        if (ok != null) { (ok as TypeRef).serialize(b); } else { b.nullValue(); }
+        if (ok != null) { ok.serialize(b); } else { b.nullValue(); }
         b.key("err");
-        if (err != null) { (err as TypeRef).serialize(b); } else { b.nullValue(); }
+        if (err != null) { err.serialize(b); } else { b.nullValue(); }
         b.endObject();
         b.endObject();
       }
@@ -332,13 +317,13 @@ export sealed class TypeKind {
       case let FutureKind {inner}: {
         b.beginObject();
         b.key("future");
-        if (inner != null) { (inner as TypeRef).serialize(b); } else { b.nullValue(); }
+        if (inner != null) { inner.serialize(b); } else { b.nullValue(); }
         b.endObject();
       }
       case let StreamKind {inner}: {
         b.beginObject();
         b.key("stream");
-        if (inner != null) { (inner as TypeRef).serialize(b); } else { b.nullValue(); }
+        if (inner != null) { inner.serialize(b); } else { b.nullValue(); }
         b.endObject();
       }
       case UnknownKind: {
@@ -367,7 +352,7 @@ export final class StreamKind(inner: TypeRef | null) extends TypeKind
 export final class UnknownKind extends TypeKind {}
 export final class ResourceKind extends TypeKind {}
 
-export let serializeStability = (b: JsonBuilder, docs: Docs | null): void => {
+export function serializeStability(b: JsonBuilder, docs: Docs | null): void {
   if (docs == null || docs.attributes == null) {
     return;
   }
@@ -410,7 +395,7 @@ export let serializeStability = (b: JsonBuilder, docs: Docs | null): void => {
     b.endObject();
     b.endObject();
   }
-};
+}
 
 export class TypeEntry {
   var name: String | null;
@@ -468,13 +453,13 @@ export class PackageEntry {
     b.key("name").string(this.name);
     
     b.key("interfaces").beginObject();
-    this.interfaces.forEach((name: String, idx: i32) => {
+    this.interfaces.forEach((name, idx) => {
       b.key(name).i32(idx);
     });
     b.endObject();
     
     b.key("worlds").beginObject();
-    this.worlds.forEach((name: String, idx: i32) => {
+    this.worlds.forEach((name, idx) => {
       b.key(name).i32(idx);
     });
     b.endObject();

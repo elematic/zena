@@ -82,7 +82,7 @@ final class Expectation {
  * The trees the check asserts, with exact counts so a regression cannot hide.
  * The pins are fixed commits, so the counts do not drift.
  */
-let expectations = (): GrowableArray<Expectation> => {
+function expectations() {
   let wanted = new GrowableArray<Expectation>();
   wanted.push(new Expectation('wasi 0.2 (wasi:http@0.2.8)', 'wasi-http/wit', 7, 31, 9));
   wanted.push(
@@ -92,10 +92,10 @@ let expectations = (): GrowableArray<Expectation> => {
   // deps, so this leans on the topological package ordering.
   wanted.push(new Expectation('wasi 0.3.0 (released)', 'wasi/proposals', 6, 25, 8));
   return wanted;
-};
+}
 
 /** Insertion sort, in place. */
-let sortStrings = (values: GrowableArray<String>): void => {
+function sortStrings(values: GrowableArray<String>) {
   for (var i = 1; i < values.length; i += 1) {
     let current = values[i];
     var j = i - 1;
@@ -104,10 +104,10 @@ let sortStrings = (values: GrowableArray<String>): void => {
     }
     values[j + 1] = current;
   }
-};
+}
 
 /** The names in a directory, sorted. */
-let entryNames = (dir: String): GrowableArray<String> => {
+function entryNames(dir: String) {
   let names = new GrowableArray<String>();
   for (let entry in listDirSync(dir)) {
     if (entry.name != '.' && entry.name != '..') {
@@ -116,10 +116,10 @@ let entryNames = (dir: String): GrowableArray<String> => {
   }
   sortStrings(names);
   return names;
-};
+}
 
 /** Every `.wit` file under `dir`, as paths relative to it, sorted. */
-let witFilesUnder = (dir: String, prefix: String, found: GrowableArray<String>): void => {
+function witFilesUnder(dir: String, prefix: String, found: GrowableArray<String>): void {
   for (let name in entryNames(dir)) {
     let relative = if (prefix == '') { name } else { `${prefix}/${name}` };
     if (isDirectorySync(`${dir}/${name}`)) {
@@ -128,7 +128,7 @@ let witFilesUnder = (dir: String, prefix: String, found: GrowableArray<String>):
       found.push(relative);
     }
   }
-};
+}
 
 /**
  * A digest of a source's content, independent of how it was packaged.
@@ -138,7 +138,7 @@ let witFilesUnder = (dir: String, prefix: String, found: GrowableArray<String>):
  * check for a corpus that is in fact correct. `dev/wit-corpus.js` computes the
  * same digest, which is what `dev/fetch-wit-corpus.js` verifies on download.
  */
-let contentDigest = (dir: String): String => {
+function contentDigest(dir: String) {
   let summary = new StringBuilder();
   let files = new GrowableArray<String>();
   witFilesUnder(dir, '', files);
@@ -147,22 +147,22 @@ let contentDigest = (dir: String): String => {
     summary.append(`${relative} ${sha256Hex(readFileBytesSync(`${dir}/${relative}`) as ByteArray)}\n`);
   }
   return `sha256:${sha256HexOfString(summary.toString())}`;
-};
+}
 
 /** Where the corpus root is, or null. */
-let findCorpus = (): Corpus | null => {
+function findCorpus(): Corpus | null {
   let fromNix = getEnv('ZENA_WASI_WIT');
-  if (fromNix != null && fromNix != '' && isDirectorySync(fromNix as String)) {
-    return new Corpus(fromNix as String, 'ZENA_WASI_WIT (nix)');
+  if (fromNix != null && fromNix != '' && isDirectorySync(fromNix)) {
+    return new Corpus(fromNix, 'ZENA_WASI_WIT (nix)');
   }
   if (isDirectorySync(LOCAL_CORPUS)) {
     return new Corpus(LOCAL_CORPUS, '.wit-corpus');
   }
   return null;
-};
+}
 
 /** The `sources` object of the pin manifest. */
-let manifestSources = (): JsonObject => {
+function manifestSources() {
   let manifest = parseJson(readFileSync(MANIFEST));
   if (!(manifest is JsonObject)) {
     throw new Error(`${MANIFEST} is not an object`);
@@ -172,15 +172,15 @@ let manifestSources = (): JsonObject => {
     throw new Error(`${MANIFEST} has no "sources" object`);
   }
   return sources;
-};
+}
 
 /**
  * Every pinned source present under `root` and matching its digest, as a list
  * of problems; empty means good.
  */
-let verifyCorpus = (root: String, sources: JsonObject): GrowableArray<String> => {
+function verifyCorpus(root: String, sources: JsonObject) {
   let problems = new GrowableArray<String>();
-  sources.forEach((name: String, source: JsonValue): void => {
+  sources.forEach((name, source) => {
     let dir = `${root}/${name}`;
     if (!isDirectorySync(dir)) {
       problems.push(`source \`${name}\` is missing from the corpus`);
@@ -201,16 +201,16 @@ let verifyCorpus = (root: String, sources: JsonObject): GrowableArray<String> =>
       return;
     }
     let digest = contentDigest(dir);
-    if (digest != (pinned as String)) {
+    if (digest != (pinned)) {
       problems.push(
         `source \`${name}\` does not match its pin\n` +
-          `    expected ${pinned as String}\n` +
+          `    expected ${pinned}\n` +
           `    actual   ${digest}`,
       );
     }
   });
   return problems;
-};
+}
 
 /** One directory's worth of WIT: its files, the package it declares, its refs. */
 final class Unit {
@@ -234,7 +234,7 @@ final class Unit {
  * units in sorted order by path: every descendant of a directory starts with
  * that directory's name and a separator.
  */
-let collectUnits = (root: String, isDep: boolean, units: GrowableArray<Unit>): void => {
+function collectUnits(root: String, isDep: boolean, units: GrowableArray<Unit>): void {
   let names = entryNames(root);
   var unit: Unit | null = null;
   for (let name in names) {
@@ -243,16 +243,16 @@ let collectUnits = (root: String, isDep: boolean, units: GrowableArray<Unit>): v
     }
     if (unit == null) {
       unit = new Unit(root, isDep);
-      units.push(unit as Unit);
+      units.push(unit);
     }
-    (unit as Unit).files.push(`${root}/${name}`);
+    unit.files.push(`${root}/${name}`);
   }
   for (let name in names) {
     if (isDirectorySync(`${root}/${name}`)) {
       collectUnits(`${root}/${name}`, isDep || name == 'deps', units);
     }
   }
-};
+}
 
 /**
  * Reads a unit's files, putting the one that carries the `package ...;` header
@@ -264,7 +264,7 @@ let collectUnits = (root: String, isDep: boolean, units: GrowableArray<Unit>): v
  * `wasi:sockets` declares its header only in `world.wit`, which sorts last, so
  * plain alphabetical order puts seven interfaces ahead of their own package.
  */
-let readUnit = (unit: Unit): void => {
+function readUnit(unit: Unit) {
   let paths = new GrowableArray<String>();
   let sources = new GrowableArray<String>();
   for (let path in unit.files) {
@@ -301,18 +301,18 @@ let readUnit = (unit: Unit): void => {
       }
     }
   }
-};
+}
 
-let contains = (values: GrowableArray<String>, value: String): boolean => {
+function contains(values: GrowableArray<String>, value: String): boolean {
   for (let candidate in values) {
     if (candidate == value) {
       return true;
     }
   }
   return false;
-};
+}
 
-let join = (values: GrowableArray<String>, separator: String): String => {
+function join(values: GrowableArray<String>, separator: String): String {
   let out = new StringBuilder();
   for (var i = 0; i < values.length; i += 1) {
     if (i > 0) {
@@ -321,38 +321,38 @@ let join = (values: GrowableArray<String>, separator: String): String => {
     out.append(values[i]);
   }
   return out.toString();
-};
+}
 
 /** The unit declaring `name`, or null when nothing under the root does. */
-let providerOf = (units: GrowableArray<Unit>, name: String): Unit | null => {
+function providerOf(units: GrowableArray<Unit>, name: String): Unit | null {
   for (let unit in units) {
     if (unit.own != '' && unit.own == name) {
       return unit;
     }
   }
   return null;
-};
+}
 
 /**
  * Emits a unit after everything it references. A cycle among packages is left
  * in discovery order rather than being an error — this is a diagnostic tool,
  * and the parser should be the one to complain.
  */
-let visit = (unit: Unit, units: GrowableArray<Unit>, ordered: GrowableArray<Unit>): void => {
+function visit(unit: Unit, units: GrowableArray<Unit>, ordered: GrowableArray<Unit>): void {
   if (unit.done || unit.onStack) {
     return;
   }
   unit.onStack = true;
   for (let reference in unit.refs) {
     let provider = providerOf(units, reference);
-    if (provider != null && (provider as Unit).dir != unit.dir) {
-      visit(provider as Unit, units, ordered);
+    if (provider != null && provider.dir != unit.dir) {
+      visit(provider, units, ordered);
     }
   }
   unit.onStack = false;
   unit.done = true;
   ordered.push(unit);
-};
+}
 
 /**
  * A tree's `.wit` files in an order the parser can consume: a package is
@@ -361,7 +361,7 @@ let visit = (unit: Unit, units: GrowableArray<Unit>, ordered: GrowableArray<Unit
  * Directory order is topological, not alphabetical — `deps/cli` sorts first
  * but depends on `io`, `clocks`, `filesystem`, `sockets` and `random`.
  */
-let orderedUnits = (dir: String): GrowableArray<Unit> => {
+function orderedUnits(dir: String) {
   let units = new GrowableArray<Unit>();
   collectUnits(dir, false, units);
   for (let unit in units) {
@@ -377,7 +377,7 @@ let orderedUnits = (dir: String): GrowableArray<Unit> => {
     visit(unit, units, ordered);
   }
   return ordered;
-};
+}
 
 /** A tree as one document, and how many files went into it. */
 final class Document {
@@ -387,7 +387,7 @@ final class Document {
   new(this.text, this.files);
 }
 
-let documentOf = (dir: String): Document => {
+function documentOf(dir: String) {
   let sources = new GrowableArray<String>();
   var files = 0;
   for (let unit in orderedUnits(dir)) {
@@ -397,7 +397,7 @@ let documentOf = (dir: String): Document => {
     }
   }
   return new Document(join(sources, '\n'), files);
-};
+}
 
 /** What a tree resolved to. */
 final class Counts {
@@ -412,7 +412,7 @@ final class Counts {
   }
 }
 
-let lengthOf = (document: JsonValue, key: String): i32 => {
+function lengthOf(document: JsonValue, key: String): i32 {
   if (!(document is JsonObject)) {
     return 0;
   }
@@ -421,26 +421,26 @@ let lengthOf = (document: JsonValue, key: String): i32 => {
     return 0;
   }
   return value.length;
-};
+}
 
 /** Parses and resolves a document, and counts what came out. */
-let resolveCounts = (text: String): Counts => {
+function resolveCounts(text: String) {
   let document = parseJson(toJson(parse(text)));
   return new Counts(
     lengthOf(document, 'packages'),
     lengthOf(document, 'interfaces'),
     lengthOf(document, 'worlds'),
   );
-};
+}
 
 /** `--check`: assert every pinned tree still resolves. */
-let check = (): i32 => {
+function check(): i32 {
   let found = findCorpus();
   if (found == null) {
     console.error(MISSING_CORPUS);
     return 1;
   }
-  let corpus = found as Corpus;
+  let corpus = found;
   let sources = manifestSources();
   let problems = verifyCorpus(corpus.dir, sources);
   if (problems.length > 0) {
@@ -452,7 +452,7 @@ let check = (): i32 => {
     return 1;
   }
   let pins = new GrowableArray<String>();
-  sources.forEach((name: String, source: JsonValue): void => {
+  sources.forEach((name, source) => {
     var reference = '';
     if (source is JsonObject) {
       let value = source['ref'];
@@ -497,10 +497,10 @@ let check = (): i32 => {
     return 1;
   }
   return 0;
-};
+}
 
 /** Resolves one whole tree, reporting what it holds. */
-let parseDir = (dir: String): boolean => {
+function parseDir(dir: String): boolean {
   let document = documentOf(dir);
   console.log(`\n=== ${dir} === (${document.files} files, ${document.text.length} bytes)`);
   return try {
@@ -510,10 +510,10 @@ let parseDir = (dir: String): boolean => {
     console.log(`  ❌ ${e.message}`);
     false
   };
-};
+}
 
 /** Parses each file alone. Cross-file `use` fails; syntax faults still show. */
-let parseFiles = (dir: String): void => {
+function parseFiles(dir: String) {
   for (let unit in orderedUnits(dir)) {
     for (var i = 0; i < unit.files.length; i += 1) {
       let outcome = try {
@@ -529,9 +529,9 @@ let parseFiles = (dir: String): void => {
       }
     }
   }
-};
+}
 
-export let main = (): i32 => {
+export function main(): i32 {
   let args = getArguments();
   if (args.length < 2) {
     console.error('usage: parse-real-wit.zena [--check|--files] <wit-dir>...');
@@ -551,4 +551,4 @@ export let main = (): i32 => {
     ok = parseDir(args[i]) && ok;
   }
   return if (ok) { 0 } else { 1 };
-};
+}

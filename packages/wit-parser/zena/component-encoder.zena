@@ -67,8 +67,7 @@ export class EncodeError extends Error {
  */
 function parseTypeText(text: String): Type {
   let ast = Parser.parse(
-      "package canon:payload;\ninterface t {\n  type p = " + text +
-      ";\n}\n");
+      `package canon:payload;\ninterface t {\n  type p = ${text};\n}\n`);
   for (let item in ast.items) {
     if (item.tag != AstItemTag.Interface) { continue; }
     for (let ii in (item.interfaceDef as InterfaceDef).items) {
@@ -79,8 +78,7 @@ function parseTypeText(text: String): Type {
       }
     }
   }
-  throw new EncodeError("cannot parse the canon type payload '" +
-      text + "'");
+  throw new EncodeError(`cannot parse the canon type payload '${text}'`);
 }
 
 // Component binary section ids. They are not core wasm's — a component
@@ -93,14 +91,14 @@ export let sectionExport = 11;
 
 /** The name a nested component imports the export `name` under: the
  * resource and the kind spelled out, as wit-component names them. */
-let nestedFuncImportName = (name: String): String => {
+function nestedFuncImportName(name: String) {
   if (name.startsWith("[constructor]")) {
     return "import-constructor-" + name.sliceBytes(13, name.length);
   }
   if (name.startsWith("[method]") || name.startsWith("[static]")) {
     let kind = name.sliceBytes(1, 7);
     let rest = name.sliceBytes(9, name.length);
-    var out = "import-" + kind + "-";
+    var out = `import-${kind}-`;
     for (var i = 0; i < rest.length; i += 1) {
       let c = rest.getByteAt(i);
       out = out + (if (c == 46) "-" else rest.sliceBytes(i, i + 1)); // '.'
@@ -108,7 +106,7 @@ let nestedFuncImportName = (name: String): String => {
     return out;
   }
   return "import-func-" + name;
-};
+}
 
 /**
  * One section of the component head, in emission order. The ids repeat —
@@ -128,9 +126,11 @@ export final class SectionPiece {
  * field or parameter holds either, and the sign is what keeps an index
  * of 0x73 distinct from `string`.
  */
-let primCode = (opcode: i32): i32 => 0 - opcode;
+function primCode(opcode: i32) {
+  return 0 - opcode;
+}
 
-let writeValType = (buf: ByteBuffer, code: i32): void => {
+function writeValType(buf: ByteBuffer, code: i32) {
   if (code < 0) {
     buf.writeByte(0 - code);
   } else {
@@ -139,22 +139,22 @@ let writeValType = (buf: ByteBuffer, code: i32): void => {
     // SLEB128 space. An unsigned encoding of 64..127 would collide.
     buf.writeSLEB128(code);
   }
-};
+}
 
-let writeName = (buf: ByteBuffer, name: String): void => {
+function writeName(buf: ByteBuffer, name: String) {
   buf.writeULEB128(name.length);
   for (var i = 0; i < name.length; i += 1) {
     buf.writeByte(name.getByteAt(i));
   }
-};
+}
 
 /** An import or export name: the plain-name discriminant, then the name. */
-let writeExternName = (buf: ByteBuffer, name: String): void => {
+function writeExternName(buf: ByteBuffer, name: String) {
   buf.writeByte(0x00);
   writeName(buf, name);
-};
+}
 
-let primOpcodeOf = (tag: TypeTag): i32 => {
+function primOpcodeOf(tag: TypeTag): i32 {
   if (tag == TypeTag.Bool) { return 0x7f; }
   if (tag == TypeTag.S8) { return 0x7e; }
   if (tag == TypeTag.U8) { return 0x7d; }
@@ -169,7 +169,7 @@ let primOpcodeOf = (tag: TypeTag): i32 => {
   if (tag == TypeTag.Char) { return 0x74; }
   if (tag == TypeTag.String) { return 0x73; }
   return -1;
-};
+}
 
 /**
  * Where a `use`d name comes from: the qualified name of the interface
@@ -466,8 +466,7 @@ export final class ComponentTypeEncoder {
       // A bare name resolves within the package the `use` sits in;
       // only a top-level world's imports resolve against the main one.
       qualifiedInterfaceName(
-          if (contextPackage == null) this.#ast.packageName
-          else contextPackage,
+          contextPackage ?? this.#ast.packageName,
           (path.id as Id).name)
     } else {
       qualifiedInterfaceName(path.packageId, (path.name as Id).name)
@@ -565,7 +564,7 @@ export final class ComponentTypeEncoder {
       scope.typeCount += 1;
 
       let asName = n.asName;
-      let localName = if (asName == null) n.name.name else (asName as Id).name;
+      let localName = asName?.name ?? n.name.name;
       let exported = this.#exportType(scope, localName, inner);
       scope.named[localName] = exported;
       if (this.#isResource(source, n.name.name)) {
@@ -590,7 +589,7 @@ export final class ComponentTypeEncoder {
       for (let n in use.names) {
         let asName = n.asName;
         let localName =
-            if (asName == null) n.name.name else (asName as Id).name;
+            asName?.name ?? n.name.name;
         if (localName == name) {
           let source = this.#resolveInterface(use.from, reg.packageName);
           return new UseHop(source.qualifiedName, n.name.name);
@@ -621,7 +620,7 @@ export final class ComponentTypeEncoder {
         for (let n in use.names) {
           let asName = n.asName;
           let localName =
-              if (asName == null) n.name.name else (asName as Id).name;
+              asName?.name ?? n.name.name;
           if (localName == name) {
             return this.#isResource(
                 this.#resolveInterface(use.from, reg.packageName),
@@ -643,7 +642,7 @@ export final class ComponentTypeEncoder {
   aliasResourceType(qualifiedInterface: String, typeName: String): i32 {
     let reg = this.#findRegistered(qualifiedInterface);
     if (reg == null || !this.#isResource(
-        reg as RegisteredInterface, typeName)) {
+        reg, typeName)) {
       throw new EncodeError("'" + typeName + "' is not a resource of '" +
           qualifiedInterface + "'");
     }
@@ -651,7 +650,7 @@ export final class ComponentTypeEncoder {
       // No instance to alias from: the interface is exported, and the
       // resource is the program's own — `resource.new` and
       // `resource.rep` name its component-level type.
-      return this.#encodeExportedOwnType(reg as RegisteredInterface,
+      return this.#encodeExportedOwnType(reg,
           typeName);
     }
     return this.#aliasTypeExport(qualifiedInterface, typeName);
@@ -689,7 +688,7 @@ export final class ComponentTypeEncoder {
    * memoized per interface and payload spelling. */
   #aliasEndType(opcode: i32, head: String, qualifiedInterface: String,
       payloadText: String): i32 {
-    let key = qualifiedInterface + "#" + head + "<" + payloadText + ">";
+    let key = `${qualifiedInterface}#${head}<${payloadText}>`;
     if (let (true, existing) = this.#aliasedTypes.get(key)) {
       return existing;
     }
@@ -699,15 +698,15 @@ export final class ComponentTypeEncoder {
     if (qualifiedInterface != "") {
       let reg = this.#findRegistered(qualifiedInterface);
       if (reg == null) {
-        throw new EncodeError("'" + qualifiedInterface +
-            "' is not a known interface");
+        throw new EncodeError(`'${qualifiedInterface}' is not a known interface`);
       }
       scope.aliasSource = reg;
     }
-    var inner = -1;
-    if (payloadText != "") {
-      inner = this.#encodeType(scope, parseTypeText(payloadText));
-    }
+    let inner = if (payloadText != "") {
+      this.#encodeType(scope, parseTypeText(payloadText))
+    } else {
+      -1
+    };
     let body = new ByteBuffer();
     body.writeByte(opcode);
     if (payloadText != "") {
@@ -732,7 +731,7 @@ export final class ComponentTypeEncoder {
    * returns for.
    */
   encodeTypeText(qualifiedInterface: String, typeText: String): i32 {
-    let key = qualifiedInterface + "#type:" + typeText;
+    let key = `${qualifiedInterface}#type:${typeText}`;
     if (let (true, existing) = this.#aliasedTypes.get(key)) {
       return existing;
     }
@@ -745,8 +744,7 @@ export final class ComponentTypeEncoder {
       // the imported source.
       let reg = this.#findRegistered(qualifiedInterface);
       if (reg == null) {
-        throw new EncodeError("'" + qualifiedInterface +
-            "' is not a known interface");
+        throw new EncodeError(`'${qualifiedInterface}' is not a known interface`);
       }
       scope.aliasSource = reg;
     }
@@ -768,10 +766,9 @@ export final class ComponentTypeEncoder {
   ): i32 {
     let reg = this.#findRegistered(qualifiedInterface);
     if (reg == null) {
-      throw new EncodeError("'" + qualifiedInterface +
-          "' is not a known interface");
+      throw new EncodeError(`'${qualifiedInterface}' is not a known interface`);
     }
-    for (let item in (reg as RegisteredInterface).items) {
+    for (let item in reg.items) {
       if (item.tag != InterfaceItemTag.Func) { continue; }
       let nf = item.func as NamedFunc;
       if (nf.name.name != funcName) { continue; }
@@ -784,15 +781,15 @@ export final class ComponentTypeEncoder {
     // A resource's function, exported under its mangled name: the
     // program's resource type is encoded (or found) at component
     // level, and a method's `self` is a borrow of it.
-    let found = resourceFuncNamed((reg as RegisteredInterface).items, funcName);
+    let found = resourceFuncNamed(reg.items, funcName);
     if (found != null) {
-      let rf = (found as NamedResourceFunc).rf;
+      let rf = found.rf;
       let scope = new Scope();
       scope.atComponentLevel = true;
       scope.typeCount = this.#result.typeCount;
       scope.aliasSource = reg;
       let resourceIndex = this.#namedIndex(scope,
-          (found as NamedResourceFunc).resourceName);
+          found.resourceName);
       if (rf.tag == ResourceFuncTag.Constructor) {
         return this.#constructorFuncType(scope, rf.func.func, resourceIndex);
       }
@@ -814,7 +811,7 @@ export final class ComponentTypeEncoder {
     if (reg == null) {
       return false;
     }
-    for (let item in (reg as RegisteredInterface).items) {
+    for (let item in reg.items) {
       if (item.tag == InterfaceItemTag.TypeDef &&
           (item.typeDef as TypeDef).tag == TypeDefTag.Resource) {
         return true;
@@ -833,10 +830,9 @@ export final class ComponentTypeEncoder {
       exportNames: Array<String>): NestedExport {
     let regOpt = this.#findRegistered(qualifiedInterface);
     if (regOpt == null) {
-      throw new EncodeError("'" + qualifiedInterface +
-          "' is not a known interface");
+      throw new EncodeError(`'${qualifiedInterface}' is not a known interface`);
     }
-    let reg = regOpt as RegisteredInterface;
+    let reg = regOpt;
     let out = new NestedExport();
     let nested = new NestedComponent(out);
     out.bytes.writeU32(0x6D736100); // \0asm
@@ -844,13 +840,13 @@ export final class ComponentTypeEncoder {
     let scope = new Scope();
     scope.nested = nested;
     scope.aliasSource = reg;
-    scope.nestedDeclare = (body: ByteBuffer): void => {
+    scope.nestedDeclare = (body: ByteBuffer) => {
       let section = new ByteBuffer();
       section.writeULEB128(1);
       section.writeBuffer(body);
       nested.section(sectionType, section);
     };
-    scope.nestedNamed = (name: String): i32 =>
+    scope.nestedNamed = (name: String) =>
         this.#nestedNamedIndex(scope, name);
 
     // 1. Every resource the interface declares or `use`s, imported as
@@ -867,7 +863,7 @@ export final class ComponentTypeEncoder {
         for (let n in (item.use as Use).names) {
           let asName = n.asName;
           let localName =
-              if (asName == null) n.name.name else (asName as Id).name;
+              asName?.name ?? n.name.name;
           if (this.#isResource(reg, localName)) {
             resources.push(localName);
           }
@@ -879,7 +875,7 @@ export final class ComponentTypeEncoder {
       let outerIndex = if (hop == null) {
         this.#encodeExportedOwnType(reg, r)
       } else {
-        this.#aliasTypeExport((hop as UseHop).source, (hop as UseHop).typeName)
+        this.#aliasTypeExport(hop.source, hop.typeName)
       };
       let imp = new ByteBuffer();
       imp.writeULEB128(1);
@@ -986,12 +982,12 @@ export final class ComponentTypeEncoder {
       }
       outerIndex = this.#encodeExportedOwnType(reg, name);
     } else {
-      let h = hop as UseHop;
+      let h = hop;
       let source = this.#findRegistered(h.source);
       if (source == null) {
-        throw new EncodeError("'" + h.source + "' is not a known interface");
+        throw new EncodeError(`'${h.source}' is not a known interface`);
       }
-      owner = source as RegisteredInterface;
+      owner = source;
       tdName = h.typeName;
       outerIndex = this.#aliasTypeExport(h.source, h.typeName);
     }
@@ -1005,7 +1001,7 @@ export final class ComponentTypeEncoder {
       throw new EncodeError("'" + owner.qualifiedName +
           "' declares no type '" + tdName + "'");
     }
-    let td = found as TypeDef;
+    let td = found;
     let savedSource = scope.aliasSource;
     scope.aliasSource = owner;
     var local = -1;
@@ -1070,8 +1066,8 @@ export final class ComponentTypeEncoder {
       throw new EncodeError("'" + reg.qualifiedName +
           "' declares no function '" + name + "'");
     }
-    let rf = (found as NamedResourceFunc).rf;
-    let resourceIndex = scope.named[(found as NamedResourceFunc).resourceName];
+    let rf = found.rf;
+    let resourceIndex = scope.named[found.resourceName];
     if (rf.tag == ResourceFuncTag.Constructor) {
       return this.#constructorFuncType(scope, rf.func.func, resourceIndex);
     }
@@ -1136,7 +1132,7 @@ export final class ComponentTypeEncoder {
       }
     }
     throw new EncodeError(
-        "no world named '" + worldName + "' in this document");
+        `no world named '${worldName}' in this document`);
   }
 
   /** The registered interface named `qualified`, or null. */
@@ -1150,7 +1146,7 @@ export final class ComponentTypeEncoder {
   }
 
   #aliasTypeExport(qualifiedInterface: String, typeName: String): i32 {
-    let key = qualifiedInterface + "#" + typeName;
+    let key = `${qualifiedInterface}#${typeName}`;
     if (let (true, existing) = this.#aliasedTypes.get(key)) {
       return existing;
     }
@@ -1285,7 +1281,7 @@ export final class ComponentTypeEncoder {
       for (let c in cases) {
         let payload = c.type;
         caseCodes.push(
-            if (payload == null) 0 else this.#encodeType(scope, payload as Type));
+            if (payload == null) 0 else this.#encodeType(scope, payload));
       }
       let body = new ByteBuffer();
       body.writeByte(0x71);
@@ -1353,7 +1349,7 @@ export final class ComponentTypeEncoder {
       var inner = -1;
       var key = i32ToString(opcode) + "(";
       if (innerType != null) {
-        inner = this.#encodeType(scope, innerType as Type);
+        inner = this.#encodeType(scope, innerType);
         key = key + i32ToString(inner);
       }
       key = key + ")";
@@ -1385,7 +1381,7 @@ export final class ComponentTypeEncoder {
     if (t.tag == TypeTag.List || t.tag == TypeTag.Option) {
       let inner = this.#encodeType(scope, t.inner as Type);
       let opcode = if (t.tag == TypeTag.List) 0x70 else 0x6b;
-      let key = i32ToString(opcode) + "(" + i32ToString(inner) + ")";
+      let key = `${i32ToString(opcode)}(${i32ToString(inner)})`;
       if (let (true, existing) = scope.anon.get(key)) {
         return existing;
       }
@@ -1412,7 +1408,7 @@ export final class ComponentTypeEncoder {
       for (let m in members) {
         let c = this.#encodeType(scope, m);
         codes.push(c);
-        key = key + i32ToString(c) + ",";
+        key = `${key}${i32ToString(c)},`;
       }
       key = key + ")";
       if (let (true, existing) = scope.anon.get(key)) {
@@ -1431,8 +1427,8 @@ export final class ComponentTypeEncoder {
     if (t.tag == TypeTag.Result) {
       let ok = t.okType;
       let err = t.errType;
-      let okCode = if (ok == null) 0 else this.#encodeType(scope, ok as Type);
-      let errCode = if (err == null) 0 else this.#encodeType(scope, err as Type);
+      let okCode = if (ok == null) 0 else this.#encodeType(scope, ok);
+      let errCode = if (err == null) 0 else this.#encodeType(scope, err);
       let key = "result(" + (if (ok == null) "" else i32ToString(okCode)) +
           "," + (if (err == null) "" else i32ToString(errCode)) + ")";
       if (let (true, existing) = scope.anon.get(key)) {
@@ -1475,7 +1471,7 @@ export final class ComponentTypeEncoder {
     }
     let result = func.result;
     let resultCode =
-        if (result == null) 0 else this.#encodeType(scope, result as Type);
+        if (result == null) 0 else this.#encodeType(scope, result);
 
     let body = new ByteBuffer();
     body.writeByte(if (isAsync) 0x43 else 0x40);
@@ -1547,10 +1543,10 @@ export final class ComponentTypeEncoder {
     } else if (rf.tag == ResourceFuncTag.Method) {
       let borrowIndex = this.#handleType(scope, 0x68, resourceIndex);
       this.#encodeInterfaceFunc(scope, rf.func,
-          "[method]" + resourceName + ".", borrowIndex);
+          `[method]${resourceName}.`, borrowIndex);
     } else {
       this.#encodeInterfaceFunc(scope, rf.func,
-          "[static]" + resourceName + ".", -1);
+          `[static]${resourceName}.`, -1);
     }
   }
 
@@ -1571,7 +1567,7 @@ export final class ComponentTypeEncoder {
     }
     let source = scope.aliasSource;
     if (source != null) {
-      let reg = source as RegisteredInterface;
+      let reg = source;
       if (!this.#declaresType(reg, name)) {
         throw new EncodeError("'" + reg.qualifiedName +
             "' declares no type '" + name + "'");
@@ -1590,7 +1586,7 @@ export final class ComponentTypeEncoder {
           // component level, and exported from its instance.
           index = this.#encodeExportedOwnType(reg, name);
         } else {
-          let h = hop as UseHop;
+          let h = hop;
           index = this.#aliasTypeExport(h.source, h.typeName);
         }
       }
@@ -1607,8 +1603,7 @@ export final class ComponentTypeEncoder {
       throw new EncodeError("a world-level function names type '" +
           name + "', which needs world-level `use` encoding");
     }
-    throw new EncodeError("type '" + name +
-        "' is not declared in this interface");
+    throw new EncodeError(`type '${name}' is not declared in this interface`);
   }
 
   /**
@@ -1626,7 +1621,7 @@ export final class ComponentTypeEncoder {
    * does, since the core module imports `resource.new` for it.
    */
   #encodeExportedOwnType(reg: RegisteredInterface, name: String): i32 {
-    let key = reg.qualifiedName + "#own:" + name;
+    let key = `${reg.qualifiedName}#own:${name}`;
     if (let (true, existing) = this.#aliasedTypes.get(key)) {
       return existing;
     }
@@ -1637,10 +1632,9 @@ export final class ComponentTypeEncoder {
       if (td.name.name == name) { found = td; }
     }
     if (found == null) {
-      throw new EncodeError("'" + reg.qualifiedName +
-          "' declares no type '" + name + "'");
+      throw new EncodeError(`'${reg.qualifiedName}' declares no type '${name}'`);
     }
-    let td = found as TypeDef;
+    let td = found;
     let scope = new Scope();
     scope.atComponentLevel = true;
     scope.typeCount = this.#result.typeCount;
@@ -1696,7 +1690,7 @@ export final class ComponentTypeEncoder {
         for (let n in (item.use as Use).names) {
           let asName = n.asName;
           let localName =
-              if (asName == null) n.name.name else (asName as Id).name;
+              asName?.name ?? n.name.name;
           if (localName == name) {
             return true;
           }
@@ -1708,7 +1702,7 @@ export final class ComponentTypeEncoder {
 
   /** An `own`/`borrow` of `resourceIndex`, deduplicated like any anon. */
   #handleType(scope: Scope, opcode: i32, resourceIndex: i32): i32 {
-    let key = i32ToString(opcode) + "(" + i32ToString(resourceIndex) + ")";
+    let key = `${i32ToString(opcode)}(${i32ToString(resourceIndex)})`;
     if (let (true, existing) = scope.anon.get(key)) {
       return existing;
     }
@@ -1722,28 +1716,28 @@ export final class ComponentTypeEncoder {
 }
 
 /** `ns:pkg/name@version`, or the bare name when there is no package. */
-export let qualifiedInterfaceName = (
+export function qualifiedInterfaceName(
   pkg: PackageName | null,
   interfaceName: String
-): String => {
+): String {
   if (pkg == null) {
     return interfaceName;
   }
-  let p = pkg as PackageName;
-  var name = p.namespace.name + ":" + p.name.name + "/" + interfaceName;
+  let p = pkg;
+  var name = `${p.namespace.name}:${p.name.name}/${interfaceName}`;
   let version = p.version;
   if (version != null) {
-    name = name + "@" + (version as String);
+    name = `${name}@${version}`;
   }
   return name;
-};
+}
 
-let externName = (kind: ExternKind): String => {
+function externName(kind: ExternKind): String {
   if (kind.tag == ExternKindTag.Path) {
     return (kind.path as UsePath).getName().name;
   }
   return (kind.name as Id).name;
-};
+}
 
 // ============================================================================
 // Canonical flattening metadata
@@ -1827,13 +1821,13 @@ function flatMetaOfType(
     var mem = false;
     let ok = t.okType;
     if (ok != null) {
-      let m = flatMetaOfType(interfaces, owner, ok as Type);
+      let m = flatMetaOfType(interfaces, owner, ok);
       payload = m.flatCount;
       if (m.needsMemory) { mem = true; }
     }
     let err = t.errType;
     if (err != null) {
-      let m = flatMetaOfType(interfaces, owner, err as Type);
+      let m = flatMetaOfType(interfaces, owner, err);
       if (m.flatCount > payload) { payload = m.flatCount; }
       if (m.needsMemory) { mem = true; }
     }
@@ -1880,7 +1874,7 @@ function flatMetaOfName(
         for (let c in td.cases as GrowableArray<Case>) {
           let payloadType = c.type;
           if (payloadType != null) {
-            let m = flatMetaOfType(interfaces, owner, payloadType as Type);
+            let m = flatMetaOfType(interfaces, owner, payloadType);
             if (m.flatCount > payload) { payload = m.flatCount; }
             if (m.needsMemory) { mem = true; }
           }
@@ -1893,7 +1887,7 @@ function flatMetaOfName(
       for (let n in use.names) {
         let asName = n.asName;
         let localName =
-            if (asName == null) n.name.name else (asName as Id).name;
+            asName?.name ?? n.name.name;
         if (localName != name) { continue; }
         // The wanted interface, package-qualified. A bare `use foo`
         // means the OWNER's package's `foo` — matching by trailing
@@ -1905,7 +1899,7 @@ function flatMetaOfName(
         var wantPackage = "";
         if (from is PackageUsePath) {
           let p = from.packageId as PackageName;
-          wantPackage = p.namespace.name + ":" + p.name.name;
+          wantPackage = `${p.namespace.name}:${p.name.name}`;
         } else {
           var slashAt = -1;
           for (var i = 0; i < owner.name.length; i += 1) {
@@ -1915,7 +1909,7 @@ function flatMetaOfName(
             wantPackage = owner.name.sliceBytes(0, slashAt);
           }
         }
-        let want = wantPackage + "/" + sourceName;
+        let want = `${wantPackage}/${sourceName}`;
         for (let iface in interfaces) {
           if (iface.name == want || iface.name.startsWith(want + "@")) {
             return flatMetaOfName(interfaces, iface, n.name.name);
@@ -1926,7 +1920,7 @@ function flatMetaOfName(
   }
   var known = "";
   for (let iface in interfaces) {
-    known = known + " " + iface.name;
+    known = `${known} ${iface.name}`;
   }
   throw new EncodeError("flattening cannot resolve type '" + name +
       "' (interfaces:" + known + ")");
@@ -1937,7 +1931,7 @@ function funcMetaOf(
   owner: FlatIface,
   func: Func,
   selfParams: i32
-): WitFuncMeta {
+) {
   let meta = new WitFuncMeta();
   meta.isAsync = func.isAsync;
   meta.paramFlatCount = selfParams;
@@ -1948,7 +1942,7 @@ function funcMetaOf(
   }
   let result = func.result;
   if (result != null) {
-    let m = flatMetaOfType(interfaces, owner, result as Type);
+    let m = flatMetaOfType(interfaces, owner, result);
     meta.resultFlatCount = m.flatCount;
     if (m.needsMemory) { meta.needsMemory = true; }
   }
@@ -1974,9 +1968,9 @@ function funcMetaOf(
  * which callers treat as its own loud error.
  */
 /** Every interface of the document, main package and nested. */
-function registeredFlatIfaces(ast: Ast): GrowableArray<FlatIface> {
+function registeredFlatIfaces(ast: Ast) {
   let interfaces = new GrowableArray<FlatIface>();
-  let register = (pkg: PackageName | null, items: Array<AstItem>): void => {
+  let register = (pkg: PackageName | null, items: Array<AstItem>) => {
     for (let item in items) {
       if (item.tag == AstItemTag.Interface) {
         let def = item.interfaceDef as InterfaceDef;
@@ -2004,7 +1998,7 @@ function exportMetaOf(
   owner: FlatIface,
   func: Func,
   selfParams: i32 = 0
-): WitFuncMeta {
+) {
   let meta = new WitFuncMeta();
   meta.isAsync = func.isAsync;
   meta.paramFlatCount = selfParams;
@@ -2015,7 +2009,7 @@ function exportMetaOf(
   }
   let result = func.result;
   if (result != null) {
-    let m = flatMetaOfType(interfaces, owner, result as Type);
+    let m = flatMetaOfType(interfaces, owner, result);
     meta.resultFlatCount = m.flatCount;
     if (m.needsMemory) { meta.needsMemory = true; }
   }
@@ -2037,11 +2031,11 @@ function exportMetaOf(
  * result spills through a return area; an async export's goes through
  * `task.return`, whose flat parameters carry it.
  */
-export let worldFuncFlatMeta = (
+export function worldFuncFlatMeta(
   ast: Ast,
   worldName: String,
   exportName: String
-): WitFuncMeta | null => {
+): WitFuncMeta | null {
   let interfaces = new GrowableArray<FlatIface>();
   for (let item in ast.items) {
     if (item.tag == AstItemTag.Interface) {
@@ -2065,18 +2059,18 @@ export let worldFuncFlatMeta = (
     }
   }
   return null;
-};
+}
 
 /**
  * The flattening of `funcName` in the exported interface
  * `interfaceName`, or null when no such function exists. The memory
  * need is an export's, as `worldFuncFlatMeta` computes it.
  */
-export let interfaceExportFlatMeta = (
+export function interfaceExportFlatMeta(
   ast: Ast,
   interfaceName: String,
   funcName: String
-): WitFuncMeta | null => {
+): WitFuncMeta | null {
   let interfaces = registeredFlatIfaces(ast);
   for (let iface in interfaces) {
     if (iface.name != interfaceName) { continue; }
@@ -2091,7 +2085,7 @@ export let interfaceExportFlatMeta = (
     // `self` is one core value, and a constructor returns the handle.
     let found = resourceFuncNamed(iface.items, funcName);
     if (found != null) {
-      let rf = (found as NamedResourceFunc).rf;
+      let rf = found.rf;
       let selfParams = if (rf.tag == ResourceFuncTag.Method) 1 else 0;
       let meta = exportMetaOf(interfaces, iface, rf.func.func, selfParams);
       if (rf.tag == ResourceFuncTag.Constructor) {
@@ -2101,7 +2095,7 @@ export let interfaceExportFlatMeta = (
     }
   }
   return null;
-};
+}
 
 /** A resource's function found by its mangled export name. */
 final class NamedResourceFunc {
@@ -2114,38 +2108,37 @@ final class NamedResourceFunc {
  * The resource function `items` exports as `fieldName` — a
  * `[constructor]r`, `[method]r.f` or `[static]r.f` — or null.
  */
-let resourceFuncNamed = (items: Array<InterfaceItem>,
-    fieldName: String): NamedResourceFunc | null => {
+function resourceFuncNamed(items: Array<InterfaceItem>,
+    fieldName: String): NamedResourceFunc | null {
   for (let item in items) {
     if (item.tag != InterfaceItemTag.TypeDef) { continue; }
     let td = item.typeDef as TypeDef;
     if (td.tag != TypeDefTag.Resource) { continue; }
     let resourceName = td.name.name;
     for (let rf in td.resourceFuncs as GrowableArray<ResourceFunc>) {
-      var exported = "";
-      if (rf.tag == ResourceFuncTag.Constructor) {
-        exported = "[constructor]" + resourceName;
+      let exported = if (rf.tag == ResourceFuncTag.Constructor) {
+        "[constructor]" + resourceName
       } else if (rf.tag == ResourceFuncTag.Method) {
-        exported = "[method]" + resourceName + "." + rf.func.name.name;
+        `[method]${resourceName}.${rf.func.name.name}`
       } else {
-        exported = "[static]" + resourceName + "." + rf.func.name.name;
-      }
+        `[static]${resourceName}.${rf.func.name.name}`
+      };
       if (exported == fieldName) {
         return new NamedResourceFunc(resourceName, rf);
       }
     }
   }
   return null;
-};
+}
 
 
-export let funcFlatMeta = (
+export function funcFlatMeta(
   ast: Ast,
   interfaceName: String,
   fieldName: String
-): WitFuncMeta | null => {
+): WitFuncMeta | null {
   let interfaces = new GrowableArray<FlatIface>();
-  let register = (pkg: PackageName | null, items: Array<AstItem>): void => {
+  let register = (pkg: PackageName | null, items: Array<AstItem>) => {
     for (let item in items) {
       if (item.tag == AstItemTag.Interface) {
         let def = item.interfaceDef as InterfaceDef;
@@ -2177,10 +2170,10 @@ export let funcFlatMeta = (
           if (rf.tag == ResourceFuncTag.Constructor) {
             exported = "[constructor]" + resourceName;
           } else if (rf.tag == ResourceFuncTag.Method) {
-            exported = "[method]" + resourceName + "." + rf.func.name.name;
+            exported = `[method]${resourceName}.${rf.func.name.name}`;
             selfParams = 1;
           } else {
-            exported = "[static]" + resourceName + "." + rf.func.name.name;
+            exported = `[static]${resourceName}.${rf.func.name.name}`;
           }
           if (exported != fieldName) { continue; }
           let meta =
@@ -2195,10 +2188,10 @@ export let funcFlatMeta = (
     return null;
   }
   return null;
-};
+}
 
 /** The names of the worlds the document's main package defines. */
-export let worldNames = (ast: Ast): Array<String> => {
+export function worldNames(ast: Ast): Array<String> {
   let names = new GrowableArray<String>();
   for (let item in ast.items) {
     if (item.tag == AstItemTag.World) {
@@ -2206,7 +2199,7 @@ export let worldNames = (ast: Ast): Array<String> => {
     }
   }
   return names;
-};
+}
 
 /** A world's encoding, plus the bytes as a complete component. */
 export final class TypesOnlyComponent {
@@ -2220,10 +2213,10 @@ export final class TypesOnlyComponent {
  * with nothing behind them. Valid on its own — which is the point, as
  * `wasm-tools component wit` will read the world back out of it.
  */
-export let encodeTypesOnlyComponent = (
+export function encodeTypesOnlyComponent(
   ast: Ast,
   worldName: String
-): TypesOnlyComponent => {
+): TypesOnlyComponent {
   let encoder = new ComponentTypeEncoder(ast);
   let encoded = encoder.encodeWorld(worldName);
   let out = new ByteBuffer();
@@ -2235,4 +2228,4 @@ export let encodeTypesOnlyComponent = (
     out.writeBuffer(piece.payload);
   }
   return new TypesOnlyComponent(out, encoded);
-};
+}

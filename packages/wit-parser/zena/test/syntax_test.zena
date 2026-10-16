@@ -25,7 +25,7 @@ let CORPUS = 'packages/wit-parser/tests/**/*.wit';
 let PROBE = 'package test:probe;\n';
 
 /** The number of tokens in `source`, end of input aside. */
-let tokenCount = (source: String): i32 => {
+function tokenCount(source: String) {
   let lexer = new Lexer(source);
   var count = 0;
   var token = lexer.next();
@@ -34,60 +34,64 @@ let tokenCount = (source: String): i32 => {
     token = lexer.next();
   }
   return count;
-};
+}
 
 /** The type of the first token; trivia is skipped. */
-let firstTokenType = (source: String): TokenType => new Lexer(source).next().type;
+function firstTokenType(source: String) {
+  return new Lexer(source).next().type;
+}
 
 /** The source text of the first token. */
-let firstTokenText = (source: String): String => {
+function firstTokenText(source: String) {
   let lexer = new Lexer(source);
   return lexer.getSpanText(lexer.next().span);
-};
+}
 
 /** The interface `name`, or null if the document declares no such thing. */
-let interfaceNamed = (ast: Ast, name: String): InterfaceDef | null => {
+function interfaceNamed(ast: Ast, name: String): InterfaceDef | null {
   for (let item in ast.items) {
     let def = item.interfaceDef;
-    if (def != null && (def as InterfaceDef).name.name == name) {
+    if (def != null && def.name.name == name) {
       return def;
     }
   }
   return null;
-};
+}
 
 /** The world `name`, or null if the document declares no such thing. */
-let worldNamed = (ast: Ast, name: String): WorldDef | null => {
+function worldNamed(ast: Ast, name: String): WorldDef | null {
   for (let item in ast.items) {
     let def = item.worldDef;
-    if (def != null && (def as WorldDef).name.name == name) {
+    if (def != null && def.name.name == name) {
       return def;
     }
   }
   return null;
-};
+}
 
 /** The package a document declares, as `ns:name` or `ns:name@version`. */
-let packageOf = (ast: Ast): String => {
+function packageOf(ast: Ast) {
   let pkg = ast.packageName;
   if (pkg == null) {
     return '';
   }
-  let name = pkg as PackageName;
+  let name = pkg;
   let base = `${name.namespace.name}:${name.name.name}`;
   let version = name.version;
   if (version == null) {
     return base;
   }
-  return `${base}@${version as String}`;
-};
+  return `${base}@${version}`;
+}
 
 /** The number of top-level items, or -1 when the source does not parse. */
-let itemCount = (source: String): i32 => try {
+function itemCount(source: String) {
+  return try {
   parseSyntax(source).items.length
 } catch (e) {
   0 - 1
 };
+}
 
 /**
  * The message `parse` fails with, or '' when the document parses and
@@ -95,15 +99,17 @@ let itemCount = (source: String): i32 => try {
  * (`ResolveError`) arrive as a throw; a test that cares which asserts on
  * the message.
  */
-let parseFailure = (source: String): String => try {
+function parseFailure(source: String) {
+  return try {
   parse(source);
   ''
 } catch (e) {
   e.message
 };
+}
 
 /** Asserts that a construct parses, naming it when it does not. */
-let parses = (label: String, source: String): void => {
+function parses(label: String, source: String) {
   let message = try {
     parseSyntax(source);
     ''
@@ -111,9 +117,9 @@ let parses = (label: String, source: String): void => {
     e.message
   };
   isTrue(message == '', `${label}: ${message}`);
-};
+}
 
-export let tests = suite('WIT syntax', (): void => {
+export let tests = suite('WIT syntax', () => {
   test('tokenizes empty input', () => {
     equal(tokenCount(''), 0);
   });
