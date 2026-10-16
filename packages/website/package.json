@@ -5,6 +5,8 @@
   "type": "module",
   "scripts": {
     "build": "wireit",
+    "build:server": "wireit",
+    "stage:docker": "wireit",
     "serve": "wireit",
     "start": "node serve-static.js",
     "docker:build": "wireit",
@@ -48,6 +50,45 @@
         "_site/**/*"
       ]
     },
+    "build:server": {
+      "command": "../../target/release/zena-cli build zena/server.zena -o server.wasm",
+      "dependencies": [
+        "../zena-cli:build",
+        "../zena-compiler:precompile:cli"
+      ],
+      "files": [
+        "zena/server.zena",
+        "../stdlib/zena/**/*.zena",
+        "../stdlib/zena/wit/*.wit",
+        "../stdlib/zena/host-wit/*.wit"
+      ],
+      "output": [
+        "server.wasm"
+      ],
+      "//": "Compiles zena/server.zena into a self-contained WebAssembly component for zena-run."
+    },
+    "stage:docker": {
+      "command": "node scripts/stage-docker.js",
+      "dependencies": [
+        "../zena-run:build"
+      ],
+      "files": [
+        "scripts/stage-docker.js",
+        "lib/stage-docker.js",
+        "../../target/release/zena-run",
+        "../zena-run/Cargo.toml",
+        "../zena-run/src/**/*.rs",
+        "../zena-runtime/Cargo.toml",
+        "../zena-runtime/src/**/*.rs",
+        "../stdlib/zena/host-wit/*.wit",
+        "../../Cargo.toml",
+        "../../Cargo.lock"
+      ],
+      "output": [
+        "zena-run"
+      ],
+      "//": "Stages the Linux x86_64 zena-run binary into packages/website for the Docker build context, automatically cross-compiling via cargo-zigbuild on macOS."
+    },
     "api": {
       "command": "node scripts/generate-api.js",
       "dependencies": [
@@ -67,25 +108,26 @@
       "//": "Extracts the standard library API the reference pages render, so they cannot go stale relative to the source they describe. See docs/design/zenadoc.md."
     },
     "docker:build": {
-      "command": "docker build --file Dockerfile --tag zena-website .",
+      "command": "docker build --platform linux/amd64 --file Dockerfile --tag zena-website .",
       "dependencies": [
-        "build"
+        "build",
+        "build:server",
+        "stage:docker"
       ],
       "//": [
-        "Packages the pre-built _site/ and serve-static.js into a minimal image.",
-        "Wireit runs `build` first so the image always gets a fresh site build."
+        "Packages the pre-built _site/, server.wasm, and zena-run into a minimal image",
+        "and ahead-of-time compiles server.cwasm inside the image."
       ]
     },
     "docker:run": {
-      "command": "docker run --rm --init --name zena-website -p 8080:8080 zena-website",
+      "command": "docker run --platform linux/amd64 --rm --init --name zena-website -p 8080:8080 zena-website",
       "dependencies": [
         "docker:build"
       ],
       "//": [
-        "--init runs tini as PID 1, which forwards signals to node and reaps it.",
-        "serve-static.js also handles SIGTERM/SIGINT itself, which is what makes",
-        "Cloud Run shut down cleanly; --init just means Ctrl-C still works here if",
-        "that ever regresses.",
+        "--init runs tini as PID 1, which forwards signals and reaps zombies.",
+        "zena-runtime's HTTP server also handles SIGTERM/SIGINT itself so Cloud Run",
+        "shuts down cleanly when zena-run is PID 1.",
         "",
         "--name makes the escape hatch memorable: `docker stop zena-website`."
       ]
@@ -97,9 +139,11 @@
     "deploy:image": {
       "command": "gcloud builds submit --project ${ZENA_GCP_PROJECT:?set ZENA_GCP_PROJECT to the Cloud Run project id} --config cloudbuild.yaml --substitutions _IMAGE=${ZENA_GCP_REGION:-us-central1}-docker.pkg.dev/${ZENA_GCP_PROJECT}/${ZENA_GCP_REPO:-cloud-run-images}/zena-website .",
       "dependencies": [
-        "build"
+        "build",
+        "build:server",
+        "stage:docker"
       ],
-      "//": "Builds and pushes the runtime container. Only _site and serve-static.js are uploaded."
+      "//": "Builds and pushes the runtime container. Only _site/, server.wasm, and zena-run are uploaded."
     },
     "deploy": {
       "command": "bash scripts/gcp-deploy.sh",
@@ -119,12 +163,14 @@
       "command": "gcloud run services update-traffic zena-website --project ${ZENA_GCP_PROJECT:?set ZENA_GCP_PROJECT to the Cloud Run project id} --region ${ZENA_GCP_REGION:-us-central1} --to-latest --quiet"
     },
     "serve": {
-      "command": "node server.js",
+      "command": "../../target/release/zena-run --dir _site::. server.wasm",
       "dependencies": [
-        "build"
+        "build",
+        "build:server",
+        "../zena-run:build"
       ],
       "files": [
-        "server.js"
+        "server.wasm"
       ],
       "service": {
         "readyWhen": {
@@ -140,13 +186,11 @@
   },
   "devDependencies": {
     "@11ty/eleventy": "^3.1.2",
-    "@zipadee/javascript": "^0.0.24",
     "esbuild": "^0.28.2",
     "markdown-it": "^14.1.0",
     "markdown-it-anchor": "^10.0.0",
     "markdown-it-attrs": "^5.0.1",
     "markdown-it-container": "^4.0.0",
-    "shiki": "^4.5.0",
-    "zipadee": "^0.0.22"
+    "shiki": "^4.5.0"
   }
 }

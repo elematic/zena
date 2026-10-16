@@ -232,29 +232,20 @@ final class StaticFiles {
     var path = this.#under(relative);
 
     // A precompressed variant, when the client takes it.
-    var encodingExt = '';
     let accepted = acceptEncodingOf(req);
-    if (this.#brotli && acceptsEncoding(accepted, 'br') &&
-        await exists(base, path + '.br')) {
-      path = path + '.br';
-      encodingExt = '.br';
-      res.setHeader('content-encoding', 'br');
-    } else if (this.#gzip && acceptsEncoding(accepted, 'gzip') &&
-        await exists(base, path + '.gz')) {
-      path = path + '.gz';
-      encodingExt = '.gz';
-      res.setHeader('content-encoding', 'gzip');
-    }
+    var encodingExt = await this.#tryPrecompressed(base, path, accepted, res);
     if (encodingExt.length > 0) {
-      res.appendHeader('vary', 'Accept-Encoding');
+      path = path + encodingExt;
     }
 
     let extensions = this.#extensions;
+    var resolved = false;
     if (extensions != null && !basename(path).contains('.')) {
       for (let given in extensions) {
         let ext = if (given.startsWith('.')) given else '.' + given;
         if (await exists(base, path + ext)) {
           path = path + ext;
+          resolved = true;
           break;
         }
       }
@@ -267,6 +258,15 @@ final class StaticFiles {
         return null;
       }
       path = `${path}/${dirIndex as String}`;
+      resolved = true;
+    }
+    if (resolved) {
+      if (encodingExt.length == 0) {
+        encodingExt = await this.#tryPrecompressed(base, path, accepted, res);
+        if (encodingExt.length > 0) {
+          path = path + encodingExt;
+        }
+      }
       stat = await statOf(base, path);
     }
     let info = fileStatOf(stat);
@@ -294,7 +294,8 @@ final class StaticFiles {
       res.type = if (type != null) type else 'application/octet-stream';
     }
 
-    let readOnly = req.method == 'GET' || req.method == 'HEAD';
+    let readOnly = (req.method == 'GET' || req.method == 'HEAD') &&
+        (!res.statusCodeSet || res.statusCode == 200);
     if (readOnly &&
         matchesEtag(req.getHeader('if-none-match'), res.getHeader('etag') as String)) {
       res.statusCode = 304;
@@ -304,7 +305,9 @@ final class StaticFiles {
       return path;
     }
     if (req.method == 'HEAD') {
-      res.statusCode = 200;
+      if (!res.statusCodeSet) {
+        res.statusCode = 200;
+      }
       return path;
     }
 
@@ -318,6 +321,27 @@ final class StaticFiles {
     closeWhenRead(file, done);
     res.body = contents;
     return path;
+  }
+
+  async #tryPrecompressed(
+    base: Descriptor,
+    path: String,
+    accepted: String,
+    res: Response
+  ): Future<String> {
+    if (this.#brotli && acceptsEncoding(accepted, 'br') &&
+        await exists(base, path + '.br')) {
+      res.setHeader('content-encoding', 'br');
+      res.appendHeader('vary', 'Accept-Encoding');
+      return '.br';
+    }
+    if (this.#gzip && acceptsEncoding(accepted, 'gzip') &&
+        await exists(base, path + '.gz')) {
+      res.setHeader('content-encoding', 'gzip');
+      res.appendHeader('vary', 'Accept-Encoding');
+      return '.gz';
+    }
+    return '';
   }
 
   /** The preopen the root is under, looked up once. */

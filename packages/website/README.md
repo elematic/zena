@@ -5,29 +5,55 @@ The Zena documentation site: [Eleventy](https://www.11ty.dev/) for the build,
 [VitePress](https://vitepress.dev/) default theme for the design.
 
 ```bash
-npm run serve -w @zena-lang/website   # dev server with live reload
-npm run build -w @zena-lang/website   # production build into _site/
-npm run start -w @zena-lang/website   # serve _site/ with the production server
+npm run serve -w @zena-lang/website        # serve _site/ with zena:http
+npm run build -w @zena-lang/website        # production build into _site/
+npm run start -w @zena-lang/website        # serve _site/ with the Node fallback server
 ```
 
 ## Running with Docker Locally
 
-To build and run the production container locally:
+The production container runs `server.wasm` under a Linux `x86_64` `zena-run`
+binary inside `debian:trixie-slim` (`linux/amd64`).
+
+### On Linux (`x86_64`)
 
 ```bash
-# 1. Build the Docker image (Wireit runs `build` first to ensure _site/ is fresh)
+# 1. Build the Docker image (Wireit runs `build`, `build:server`, and `stage:docker` first)
 npm run docker:build -w @zena-lang/website
 
 # 2. Run the container locally at http://localhost:8080
 npm run docker:run -w @zena-lang/website
 ```
 
-Or with direct Docker commands:
+### On macOS
+
+Because the container runs a Linux `x86_64` ELF binary, `stage:docker`
+automatically cross-compiles `zena-run` for `x86_64-unknown-linux-gnu` using
+`cargo-zigbuild` and `zig`.
+
+In the Nix dev shell (`direnv allow` or `nix develop`), `flake.nix` provides
+`cargo-zigbuild`, `zig`, and a `rustc` sysroot containing the
+`x86_64-unknown-linux-gnu` standard library out of the box — no `rustup` or
+`brew` packages need to be installed manually. The same npm scripts work
+directly (using Docker Desktop's `linux/amd64` emulation on Apple Silicon, or
+you can point `ZENA_LINUX_RUNNER=/path/to/zena-run` at any prebuilt Linux
+`x86_64` binary):
+
+```bash
+npm run docker:build -w @zena-lang/website
+npm run docker:run -w @zena-lang/website
+```
+
+### Direct Docker Commands
+
+If you prefer invoking `docker` directly after staging the build artifacts:
 
 ```bash
 npm run build -w @zena-lang/website
-docker build -t zena-website packages/website
-docker run --rm --init -p 8080:8080 zena-website
+npm run build:server -w @zena-lang/website
+npm run stage:docker -w @zena-lang/website
+docker build --platform linux/amd64 -t zena-website packages/website
+docker run --platform linux/amd64 --rm --init -p 8080:8080 zena-website
 ```
 
 Press `Ctrl-C` to stop (or run `docker stop zena-website`).
@@ -135,62 +161,64 @@ grants whichever of the two exist rather than guessing.
 The site is built on the host first via Wireit (`npm run build -w @zena-lang/website`),
 which leverages your local Wireit and Cargo caches so incremental builds take
 only seconds. The output (`_site/`) contains static HTML, CSS, client JavaScript
-bundles, and `lsp.wasm`. Because WebAssembly bytecode and web assets are
-architecture-neutral, `_site/` is completely portable.
+bundles, `lsp.wasm`, and pre-compressed `.br` and `.gz` sidecar files.
 
-The Docker container packages only `_site/` and [`serve-static.js`](serve-static.js)
-into `node:26-slim`. Because there are no `RUN` commands in [`Dockerfile`](Dockerfile),
-Docker only creates filesystem layers without executing any code. Packaging and
-pushing the ~4MB context takes ~15–20s in Cloud Build (or 1–2s locally).
+[`zena/server.zena`](zena/server.zena) is compiled on the host to `server.wasm` (`build:server`),
+and [`scripts/stage-docker.js`](scripts/stage-docker.js) stages the Linux `x86_64`
+`zena-run` host binary into `packages/website/` (`stage:docker`, automatically
+cross-compiling via `cargo-zigbuild` when run on macOS).
+
+The Docker container packages `_site/`, `server.wasm`, and `zena-run` into
+`debian:trixie-slim`, and runs `zena-run --precompile /app/server.wasm` during
+`docker build` so `server.cwasm` is ahead-of-time compiled inside the image and
+container startup needs no JIT compilation.
 
 [`cloudbuild.yaml`](cloudbuild.yaml) only packages and pushes the image; the Cloud Run
 deploy is a separate step under your own credentials. That way the Cloud Build
 service account needs no `run.admin` or `iam.serviceAccountUser`.
 
-`docker:build` also packages `_site/` directly and runs fast locally for testing.
+`docker:build` also packages `_site/`, `server.wasm`, and `zena-run` locally for testing.
 
 ### Notes
 
 Ctrl-C stops `docker:run`. If a container is ever orphaned, the escape hatch is
 `docker stop zena-website` — that's what `--name` is for.
 
-[`serve-static.js`](serve-static.js) handles SIGTERM and SIGINT explicitly. It
-has to: it is PID 1 in the container, and Linux delivers a signal to PID 1 only
-when a handler is installed, so relying on Node's default disposition means both
-are ignored. Without it, Ctrl-C does nothing and Cloud Run SIGKILLs the instance
-after its grace period rather than shutting it down. `docker:run` also passes
-`--init` so tini handles signals even if that regresses.
+`zena-runtime`'s HTTP server handles `SIGTERM` and `SIGINT` explicitly so PID 1
+in the container shuts down cleanly on Cloud Run or Ctrl-C. `docker:run` also
+passes `--init` so tini reaps zombies.
 
 The build context for `Dockerfile` and `cloudbuild.yaml` is this package directory
 (`packages/website`), with `.dockerignore` and `.gcloudignore` excluding everything
-except `_site/` and `serve-static.js`. This keeps the upload size to ~4MB compressed.
+except `_site/`, `server.wasm`, and `zena-run`.
 
 Both `docker:build` and `deploy:image` declare Wireit dependencies on `build`,
-so running either one automatically ensures `_site/` is fresh before packaging.
+`build:server`, and `stage:docker`, so running either one automatically ensures
+`_site/`, `server.wasm`, and `zena-run` are fresh before packaging.
 
-Two servers, deliberately:
+Servers in this package:
 
-- [`server.js`](server.js) is the dev server (`npm run serve`). It rewrites
-  bare module specifiers via `@zipadee/javascript`.
-- [`serve-static.js`](serve-static.js) is what runs in the container
-  (`npm run start`). The built site has no bare specifiers — esbuild bundles
-  the client into `/js/zena.js` — so it needs no rewriting, and no
-  dependencies at all. That keeps the runtime image to Node plus the site.
-
-Run `npm run start` to exercise the production server without Docker.
+- [`zena/server.zena`](zena/server.zena) is the `zena:http` static server
+  (`npm run serve -w @zena-lang/website`), compiled to `server.wasm` and run
+  under `zena-run` locally and in the container.
+- [`serve-static.js`](serve-static.js) is the standalone Node fallback server
+  (`npm run start -w @zena-lang/website`).
 
 ## Layout
 
 ```
 lib/                     Build-time modules used by eleventy.config.js
+  compress.js              Generates .br and .gz sidecars in _site/ during build
   highlight.js             Shiki, incl. Zena's TextMate grammar
   markdown.js              markdown-it: anchors, custom containers, code groups
   search-index.js          Builds _site/search-index.json from rendered pages
   sidebar.js               Sidebar lookup, flattening, prev/next
+  stage-docker.js          Validates/prepares Linux x86_64 zena-run for Docker
   toc.js                   Outline extraction from rendered HTML
 scripts/
   scaffold-docs.js         Creates placeholder pages from the sidebar plan
   print-outline.js         Regenerates CONTENT.md from the sidebar plan
+  stage-docker.js          Stages zena-run into packages/website for Docker
 src/
   _data/                   site, nav, sidebar, eleventyComputed
   _includes/               nav bar, sidebar, outline, doc footer
@@ -198,6 +226,8 @@ src/
   css/                     Stylesheet (see below)
   public/                  Copied verbatim to the site root
   guide/  reference/       Content
+zena/
+  server.zena              Static HTTP server for _site/ using zena:http
 ```
 
 ## Content

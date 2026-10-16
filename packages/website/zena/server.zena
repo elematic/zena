@@ -1,0 +1,56 @@
+/**
+ * Serves the built documentation site (`_site/`) using `zena:http`.
+ */
+
+import { getEnv } from 'zena:cli';
+import { App, send, serve } from 'zena:http';
+
+function resolvePort(): u16 {
+  let envPort = getEnv('PORT');
+  if (envPort != null) {
+    if (let (true, p) = parseI32(envPort)) {
+      return p as u16;
+    }
+  }
+  return 8080 as u16;
+}
+
+function resolveSiteDir() {
+  return getEnv('SITE_DIR') ?? '.';
+}
+
+export function main() {
+  let app = new App();
+  let port = resolvePort();
+  let siteDir = resolveSiteDir();
+
+  app.use(serve(siteDir, {
+    setHeaders: (res, path, stat) => {
+      // Assets are not content-hashed, so revalidate via ETag/Last-Modified.
+      res.setHeader('cache-control', 'no-cache');
+      res.setHeader('x-content-type-options', 'nosniff');
+    },
+  }));
+
+  app.use(async (req, res, next) => {
+    if (req.method != 'GET' && req.method != 'HEAD') {
+      res.statusCode = 405;
+      res.setHeader('allow', 'GET, HEAD');
+      res.body = 'Method Not Allowed';
+      return;
+    }
+    res.statusCode = 404;
+    await send(req, res, '404.html', {
+      root: siteDir,
+      setHeaders: (r, path, stat) => {
+        r.setHeader('cache-control', 'no-cache');
+        r.setHeader('x-content-type-options', 'nosniff');
+      },
+    });
+  });
+
+  app.listen(port, () => {
+    console.log(`🚀 Zena HTTP server running at http://localhost:${port}`);
+    console.log(`Serving static site from: ${siteDir}`);
+  });
+}

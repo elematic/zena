@@ -1,28 +1,27 @@
 # Container image for the Zena documentation site.
 #
-# Packages the pre-built site (_site/) and static server into a minimal runtime image.
-# Build on the host first: npm run build -w @zena-lang/website
+# Packages the pre-built site (_site/), the compiled Zena HTTP server component
+# (server.wasm), and the zena-run host binary into a minimal runtime image.
 #
-#   Build locally:          npm run docker:build
-#   Run locally:            npm run docker:run
-#   Deploy to Cloud Run:    npm run deploy
+#   Build locally:          npm run docker:build -w @zena-lang/website
+#   Run locally:            npm run docker:run -w @zena-lang/website
+#   Deploy to Cloud Run:    npm run deploy -w @zena-lang/website
 
-FROM node:26-slim
+FROM debian:trixie-slim
 
 WORKDIR /app
 
-# Only the generated site and the static server. No node_modules: the server
-# has no dependencies.
+COPY zena-run server.wasm ./
 COPY _site ./_site
-COPY serve-static.js ./serve-static.js
 
-ENV NODE_ENV=production
+# Precompile server.wasm -> server.cwasm during the image build so container
+# startup loads native code directly without invoking Cranelift.
+RUN /app/zena-run --precompile /app/server.wasm
+
+ENV HOST=0.0.0.0
 ENV PORT=8080
 EXPOSE 8080
 
-USER node
+USER www-data
 
-# Serving static files needs very little heap. The flag keeps V8 from sizing
-# its heap against the host's total RAM, which Node cannot see is capped by the
-# container. Keep it at ~75% of the Cloud Run memory setting (512Mi).
-CMD ["node", "--max-old-space-size=384", "serve-static.js"]
+CMD ["/app/zena-run", "--dir", "/app/_site::.", "/app/server.wasm"]

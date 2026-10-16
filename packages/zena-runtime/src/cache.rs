@@ -120,6 +120,7 @@ pub fn load_component_variant(
 pub fn precompile_component(engine: &Engine, wasm_path: &Path, debug: bool) -> Result<PathBuf> {
     let cwasm_path = cwasm_path_for(wasm_path, debug);
     load_or_compile_component(engine, wasm_path, &cwasm_path)?;
+    let _ = std::fs::remove_file(cwasm_path.with_extension("lock"));
     Ok(cwasm_path)
 }
 
@@ -144,9 +145,15 @@ pub fn load_or_compile_component(
     cwasm_path: &Path,
 ) -> Result<Component> {
     if cwasm_is_stale(wasm_path, cwasm_path) {
-        write_cwasm(engine, wasm_path, cwasm_path, Kind::Component, || {
+        if let Err(e) = write_cwasm(engine, wasm_path, cwasm_path, Kind::Component, || {
             cwasm_is_stale(wasm_path, cwasm_path)
-        })?;
+        }) {
+            eprintln!(
+                "WARNING: could not write {}: {e:#}; compiling in memory",
+                cwasm_path.display()
+            );
+            return compile_component_uncached(engine, wasm_path);
+        }
     }
     match unsafe { Component::deserialize_file(engine, cwasm_path) } {
         Ok(c) => Ok(c),
@@ -156,7 +163,13 @@ pub fn load_or_compile_component(
                 cwasm_path.display(),
                 first_err
             );
-            write_cwasm(engine, wasm_path, cwasm_path, Kind::Component, || true)?;
+            if let Err(e) = write_cwasm(engine, wasm_path, cwasm_path, Kind::Component, || true) {
+                eprintln!(
+                    "WARNING: could not rewrite {}: {e:#}; compiling in memory",
+                    cwasm_path.display()
+                );
+                return compile_component_uncached(engine, wasm_path);
+            }
             match unsafe { Component::deserialize_file(engine, cwasm_path) } {
                 Ok(c) => Ok(c),
                 Err(e) => {
@@ -186,6 +199,7 @@ pub fn load_module_variant(
 pub fn precompile_module(engine: &Engine, wasm_path: &Path, debug: bool) -> Result<PathBuf> {
     let cwasm_path = cwasm_path_for(wasm_path, debug);
     load_or_compile_module(engine, wasm_path, &cwasm_path)?;
+    let _ = std::fs::remove_file(cwasm_path.with_extension("lock"));
     Ok(cwasm_path)
 }
 
@@ -205,9 +219,15 @@ pub fn load_or_compile_module(
     cwasm_path: &Path,
 ) -> Result<Module> {
     if cwasm_is_stale(wasm_path, cwasm_path) {
-        write_cwasm(engine, wasm_path, cwasm_path, Kind::CoreModule, || {
+        if let Err(e) = write_cwasm(engine, wasm_path, cwasm_path, Kind::CoreModule, || {
             cwasm_is_stale(wasm_path, cwasm_path)
-        })?;
+        }) {
+            eprintln!(
+                "WARNING: could not write {}: {e:#}; compiling in memory",
+                cwasm_path.display()
+            );
+            return compile_module_uncached(engine, wasm_path);
+        }
     }
     match unsafe { Module::deserialize_file(engine, cwasm_path) } {
         Ok(m) => Ok(m),
@@ -217,7 +237,13 @@ pub fn load_or_compile_module(
                 cwasm_path.display(),
                 first_err
             );
-            write_cwasm(engine, wasm_path, cwasm_path, Kind::CoreModule, || true)?;
+            if let Err(e) = write_cwasm(engine, wasm_path, cwasm_path, Kind::CoreModule, || true) {
+                eprintln!(
+                    "WARNING: could not rewrite {}: {e:#}; compiling in memory",
+                    cwasm_path.display()
+                );
+                return compile_module_uncached(engine, wasm_path);
+            }
             match unsafe { Module::deserialize_file(engine, cwasm_path) } {
                 Ok(m) => Ok(m),
                 Err(e) => {

@@ -46,6 +46,11 @@ struct Cli {
     #[arg(long = "no-cache")]
     no_cache: bool,
 
+    /// Ahead-of-time compile the component or core module to its `.cwasm`
+    /// cache file and exit without running it
+    #[arg(long = "precompile")]
+    precompile: bool,
+
     /// The .wasm (or .wat) component or core module to run
     file: String,
 
@@ -77,6 +82,12 @@ fn main() -> Result<()> {
         return run_core_module(&cli, path);
     }
 
+    let engine = zena_runtime::engine::shared_component_engine(cli.debug)?;
+    if cli.precompile {
+        zena_runtime::cache::precompile_component(&engine, path, cli.debug)?;
+        return Ok(());
+    }
+
     let mut wasi_builder = WasiCtxBuilder::new();
     wasi_builder.inherit_stdio().inherit_env();
     // argv[0] is the program, by the usual convention.
@@ -102,7 +113,6 @@ fn main() -> Result<()> {
         None
     };
 
-    let engine = zena_runtime::engine::shared_component_engine(cli.debug)?;
     let component = if cli.no_cache {
         zena_runtime::cache::compile_component_uncached(&engine, path)?
     } else {
@@ -136,6 +146,10 @@ fn main() -> Result<()> {
 /// a component's is.
 fn run_core_module(cli: &Cli, path: &Path) -> Result<()> {
     let engine = zena_runtime::engine::shared_component_engine(cli.debug)?;
+    if cli.precompile {
+        zena_runtime::cache::precompile_module(&engine, path, cli.debug)?;
+        return Ok(());
+    }
     let module = if cli.no_cache {
         zena_runtime::cache::compile_module_uncached(&engine, path)?
     } else {
