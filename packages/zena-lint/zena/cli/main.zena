@@ -16,7 +16,7 @@
  */
 
 import { getArguments, exit } from 'zena:cli';
-import { isDirectorySync, listDirSync, existsSync, FileType } from 'zena:fs';
+import { isDirectorySync, listDirSync, existsSync, readFileSync, FileType } from 'zena:fs';
 import { join2 } from 'zena:path';
 import { Project } from '../lib/checking.zena';
 import { lintFile, LintOptions, NamedRule, FileReport } from '../lib/lint.zena';
@@ -101,7 +101,7 @@ export function main(): i32 {
     try {
       report = lintFile(project, file, options);
     } catch (e) {
-      console.error(`${file}: the tool failed: ${(e as Error).message}`);
+      console.error(`${file}: the tool failed: ${e.message}`);
       return 1;
     }
     if (report == null) {
@@ -175,10 +175,14 @@ function ruleExists(rules: GrowableArray<NamedRule>, name: String): boolean {
   return false;
 }
 
-/** `.zena` files at or under `path`, skipping build output and the bootstrap. */
+/**
+ * `.zena` files at or under `path`, skipping build output, the bootstrap,
+ * and generated files — a generator's output says "Do not edit" in its
+ * first lines, and a test checks it against the generator.
+ */
 function collectFiles(path: String, out: GrowableArray<String>): void {
   if (!isDirectorySync(path)) {
-    if (path.endsWith('.zena')) {
+    if (path.endsWith('.zena') && !isGenerated(path)) {
       out.push(path);
     }
     return;
@@ -192,10 +196,19 @@ function collectFiles(path: String, out: GrowableArray<String>): void {
     let child = join2(path, name);
     if (entry.fileType == FileType.Directory) {
       collectFiles(child, out);
-    } else if (entry.fileType == FileType.RegularFile && name.endsWith('.zena')) {
+    } else if (entry.fileType == FileType.RegularFile && name.endsWith('.zena') &&
+        !isGenerated(child)) {
       out.push(child);
     }
   }
+}
+
+/** Whether the file's opening comment marks it as a generator's output. */
+function isGenerated(path: String): boolean {
+  let source = readFileSync(path);
+  let head = source.sliceBytes(0, if (source.length < 400) source.length else 400);
+  return head.contains('Do not edit') || head.contains('do not edit') ||
+      head.contains('DO NOT EDIT');
 }
 
 function print(report: FileReport, options: LintOptions): void {

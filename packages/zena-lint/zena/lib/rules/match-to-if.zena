@@ -28,7 +28,7 @@ import { dedentContinuation, indentationAt, lineStart } from '../source.zena';
 export function matchToIf(ctx: RuleContext): void {
   walkEnter(ctx.ast, (n) => {
     if (n is MatchExpression) {
-      rewrite(ctx, n as MatchExpression);
+      rewrite(ctx, n);
     }
   });
 }
@@ -55,6 +55,11 @@ function rewrite(ctx: RuleContext, node: MatchExpression): void {
     return;
   }
   let discriminant = node.discriminant;
+  // `case (let k, let v):` binds inside the pattern; `if (let …)` has one
+  // `let` for the whole pattern and no place for those.
+  if (hasNestedBinding(cases[0].pattern)) {
+    return;
+  }
   let condition = conditionFor(ctx, cases[0].pattern, discriminant);
   if (condition == null) {
     return;
@@ -123,7 +128,7 @@ function rewrite(ctx: RuleContext, node: MatchExpression): void {
  */
 function statementArm(ctx: RuleContext, body: Node, dedent: i32): String {
   if (body is BlockStatement) {
-    let block = body as BlockStatement;
+    let block = body;
     if (block.body.length == 0) {
       return '';
     }
@@ -150,7 +155,7 @@ function isValueTail(ctx: RuleContext, statement: Node): boolean {
   if (block == null || !(block is BlockStatement)) {
     return false;
   }
-  let body = (block as BlockStatement).body;
+  let body = block.body;
   if (body.length == 0 || body[body.length - 1] !== statement) {
     return false;
   }
@@ -174,7 +179,7 @@ function isValueTail(ctx: RuleContext, statement: Node): boolean {
     case FunctionExpression {}: {
       let t = ctx.typeOf(owner);
       if (t != null && t is FunctionType) {
-        !ctx.isVoid((t as FunctionType).returnType)
+        !ctx.isVoid(t.returnType)
       } else {
         false
       }
@@ -218,7 +223,7 @@ function conditionFor(ctx: RuleContext, pattern: Node, discriminant: Expression)
       } else if (properties.length == 0) {
         // `case Foo {}:` binds nothing but narrows the discriminant, which
         // is what `is` does and `if (let Foo {} = x)` does not.
-        `${subject} is ${ctx.text((pattern as ClassPattern).name)}`
+        `${subject} is ${ctx.text(pattern.name)}`
       } else {
         `let ${ctx.text(pattern)} = ${subject}`
       }
@@ -227,6 +232,17 @@ function conditionFor(ctx: RuleContext, pattern: Node, discriminant: Expression)
     case TuplePattern {}: if (nullable) null else `let ${ctx.text(pattern)} = ${subject}`
     case _: null
   };
+}
+
+/** Whether a `let`/`var` binding sits inside the pattern rather than at its top. */
+function hasNestedBinding(pattern: Node): boolean {
+  var found = false;
+  walkEnter(pattern, (n) => {
+    if (n !== pattern && n is BindingPattern) {
+      found = true;
+    }
+  });
+  return found;
 }
 
 /** Whether the pattern introduces no names, so it can be an `else`. */

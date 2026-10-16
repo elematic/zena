@@ -2,17 +2,17 @@
  * Null tests that spell out what `??` and `?.` mean.
  *
  *     if (x != null) x else d              →  x ?? d
- *     if (x != null) x.a.b() else null     →  x?.a.b()
+ *     if (x != null) x.a else null         →  x?.a
  *     if (x != null) x.name else d         →  x?.name ?? d   (x.name not nullable)
- *     if (x != null) { x.close(); }        →  x?.close();
  *     if (x != null) { return x; }         →  return x ?? d;
  *     return d;
  *
  * `x` is a name or a field path (`this.#cache`), so that reading it twice
- * reads the same thing. A chain's root may be mentioned only once in it:
- * `x?.f(x)` would pass a nullable `x` where the original passed a narrowed
- * one. A default is only folded onto a chain whose own type is not
- * nullable, since `??` would also replace a legitimate `null` result.
+ * reads the same thing. Only one field or index access is made optional:
+ * `x?.a.b` does not short-circuit `.b` (#396), and a call behind `?.`
+ * does not lower (#398). A default is only folded onto an access whose
+ * own type is not nullable, since `??` would also replace a legitimate
+ * `null` result.
  */
 
 import {
@@ -28,8 +28,7 @@ import { typeToString, ClassType, UnionType } from 'zena-compiler:types';
 export function nullishOperators(ctx: RuleContext): void {
   walkEnter(ctx.ast, (n) => {
     match (n) {
-      case IfExpression {}: { ifExpression(ctx, n as IfExpression); }
-      case IfStatement {}: { ifStatement(ctx, n as IfStatement); }
+      case IfExpression {}: { ifExpression(ctx, n); }
       case Module {body}: { returnPairs(ctx, body); }
       case BlockStatement {body}: { returnPairs(ctx, body); }
       case _: {}
@@ -48,12 +47,13 @@ function nullTestOf(ctx: RuleContext, test: Node): NullTest | null {
     if (!positive && !negative) {
       return null;
     }
-    var reference: Expression | null = null;
-    if (right is NullLiteral) {
-      reference = left;
+    let reference: Expression | null = if (right is NullLiteral) {
+      left
     } else if (left is NullLiteral) {
-      reference = right;
-    }
+      right
+    } else {
+      null
+    };
     if (reference == null || !ctx.isSimpleReference(reference)) {
       if (ctx.debug) {
         console.log(`nullish: ${ctx.text(test)} is not a simple reference`);
@@ -90,15 +90,15 @@ function isExtensionInstance(ctx: RuleContext, reference: Expression): boolean {
   }
   let u = ctx.unwrap(t);
   if (u is UnionType) {
-    for (let member in (u as UnionType).types) {
+    for (let member in u.types) {
       let m = ctx.unwrap(member);
-      if (m is ClassType && (m as ClassType).isExtension) {
+      if (m is ClassType && m.isExtension) {
         return true;
       }
     }
     return false;
   }
-  return u is ClassType && (u as ClassType).isExtension;
+  return u is ClassType && u.isExtension;
 }
 
 /**
@@ -111,14 +111,17 @@ function isExtensionInstance(ctx: RuleContext, reference: Expression): boolean {
  */
 function optionalChain(ctx: RuleContext, chain: Expression, reference: Expression): String | null {
   let referenceText = ctx.text(reference);
+  // A call behind `?.` — a method call or a call of a function-typed
+  // field — type-checks but does not lower yet (#398), so only a field
+  // or an index is made optional.
+  if (chain is CallExpression) {
+    if (ctx.debug) {
+      console.log(`nullish: ${ctx.text(chain)} is a call, which does not lower behind ?.`);
+    }
+    return null;
+  }
   var root: Node = chain;
   var steps = 0;
-  // A method call is a call on a member: two nodes, one access.
-  if (let CallExpression {callee} = chain) {
-    if (callee is MemberExpression) {
-      root = callee;
-    }
-  }
   while (true) {
     let next = match (root) {
       case MemberExpression {object}: object
@@ -239,33 +242,6 @@ function ifExpression(ctx: RuleContext, node: IfExpression): void {
   ctx.replace(node, `${chain} ?? ${ctx.text(whenNull)}`);
 }
 
-/** `if (x != null) { x.f(); }` → `x?.f();` */
-function ifStatement(ctx: RuleContext, node: IfStatement): void {
-  if (node.alternate != null) {
-    return;
-  }
-  let test = nullTestOf(ctx, node.test);
-  if (test == null || !test.positive) {
-    return;
-  }
-  let body = ctx.singleExpression(node.consequent);
-  if (body == null || !(body is CallExpression)) {
-    return;
-  }
-  if (ctx.hasComment(node)) {
-    return;
-  }
-  let resultType = ctx.typeOf(body);
-  if (ctx.isPrimitive(resultType) && !ctx.isVoid(resultType)) {
-    return;
-  }
-  let chain = optionalChain(ctx, body, test.reference);
-  if (chain == null) {
-    return;
-  }
-  ctx.replaceRange(ctx.start(node), ctx.statementEnd(node), `${chain};`);
-}
-
 /** `if (x != null) { return x; } return d;` → `return x ?? d;` */
 function returnPairs(ctx: RuleContext, statements: GrowableArray<Statement>): void {
   var i = 0;
@@ -276,7 +252,7 @@ function returnPairs(ctx: RuleContext, statements: GrowableArray<Statement>): vo
     if (!(first is IfStatement) || !(second is ReturnStatement)) {
       continue;
     }
-    let guard = first as IfStatement;
+    let guard = first;
     if (guard.alternate != null) {
       continue;
     }
@@ -285,7 +261,7 @@ function returnPairs(ctx: RuleContext, statements: GrowableArray<Statement>): vo
       continue;
     }
     let returned = singleReturn(guard.consequent);
-    let after = (second as ReturnStatement).argument;
+    let after = second.argument;
     if (returned == null || after == null) {
       continue;
     }

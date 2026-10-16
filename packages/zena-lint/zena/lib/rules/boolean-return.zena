@@ -18,7 +18,7 @@ import { RuleContext } from '../context.zena';
 export function booleanReturns(ctx: RuleContext): void {
   walkEnter(ctx.ast, (n) => {
     if (n is IfExpression) {
-      booleanIf(ctx, n as IfExpression);
+      booleanIf(ctx, n);
       return;
     }
     let statements = match (n) {
@@ -52,8 +52,8 @@ function booleanIf(ctx: RuleContext, node: IfExpression): void {
   if (!(whenTrue is BooleanLiteral) || !(whenFalse is BooleanLiteral)) {
     return;
   }
-  let a = (whenTrue as BooleanLiteral).value;
-  let b = (whenFalse as BooleanLiteral).value;
+  let a = whenTrue.value;
+  let b = whenFalse.value;
   if (a == b || ctx.hasComment(node)) {
     return;
   }
@@ -65,7 +65,7 @@ function foldAt(ctx: RuleContext, first: Statement, next: Statement | null): voi
   if (!(first is IfStatement)) {
     return;
   }
-  let guard = first as IfStatement;
+  let guard = first;
   if (guard.test is LetPatternCondition || !(guard.test is Expression)) {
     return;
   }
@@ -107,7 +107,7 @@ function returnedBoolean(branch: Node): BooleanLiteral | null {
   }
   if (let ReturnStatement {argument} = statement) {
     if (argument != null && argument is BooleanLiteral) {
-      return argument as BooleanLiteral;
+      return argument;
     }
   }
   return null;

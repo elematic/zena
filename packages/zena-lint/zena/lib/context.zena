@@ -36,6 +36,7 @@ import {
   Edit, lineOf, indentationAt, columnOf, hasCommentIn, pastSemicolon,
   skipWhitespace, skipWhitespaceBack, lineStart, lineEnd,
 } from './source.zena';
+import { growable } from 'zena:core';
 
 /** A rule: looks at a file, proposes edits. */
 export type Rule = (ctx: RuleContext) => void;
@@ -350,7 +351,7 @@ export final class RuleContext {
   /** The start the parser recorded, which is what a diagnostic points at. */
   recordedStart(node: Node): i32 {
     let loc = node.loc;
-    return if (loc != null) loc.start else -1;
+    return loc?.start ?? -1;
   }
 
   /** A statement's end, taking a directly following `;` along. */
@@ -538,7 +539,7 @@ export final class RuleContext {
         } else {
           // `new Map()` takes its type arguments from the annotation.
           let t = this.typeOf(expr);
-          t != null && t is ClassType && (t as ClassType).typeArguments != null
+          t != null && t is ClassType && t.typeArguments != null
         }
       }
       case IfExpression {consequent, alternate}: {
@@ -571,7 +572,7 @@ export final class RuleContext {
         } else {
           let t = this.typeOf(callee);
           if (t != null && t is FunctionType) {
-            let ft = t as FunctionType;
+            let ft = t;
             let generic = ft.genericSource ?? ft;
             let tps = generic.typeParameters;
             tps != null && tps.length > 0 &&
@@ -642,13 +643,12 @@ export final class RuleContext {
       case RecordLiteral {properties}: {
         var all = true;
         for (let p in properties) {
-          match (p) {
-            case PropertyAssignment {value}: {
-              if (!this.isPure(value)) {
-                all = false;
-              }
+          if (let PropertyAssignment {value} = p) {
+            if (!this.isPure(value)) {
+              all = false;
             }
-            case _: { all = false; }
+          } else {
+            all = false;
           }
         }
         all
@@ -657,7 +657,7 @@ export final class RuleContext {
         // An allocation with no effects: `new Array<T>(0)`. The
         // constructor could do anything, so only the collection classes
         // the rules care about count.
-        let callee = (expr as NewExpression).callee.name;
+        let callee = expr.callee.name;
         if (callee == 'Array' || callee == 'GrowableArray' || callee == 'Map' ||
             callee == 'HashMap' || callee == 'Set' || callee == 'HashSet') {
           var all = true;
@@ -830,8 +830,7 @@ export final class RuleContext {
     return match (node) {
       case BlockStatement {body}: body
       case Statement as s: {
-        let one = new Array<Statement>(1);
-        one.push(s);
+        let one = growable<Statement>([s]);
         one
       }
       case _: new Array<Statement>(0)

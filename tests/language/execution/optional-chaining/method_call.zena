@@ -1,0 +1,27 @@
+// @mode: run
+// @result: 3
+// @skip: a method call behind `?.` type-checks but fails to lower with "zir unsupported: optional method call", in value position (`h?.describe() ?? 'y'`) and as a statement (`h?.poke();`) alike (#398). Found by zena-lint rewriting `if (c != null) { c.invalidate(p); }` in its own source.
+
+class Holder {
+  var hits = 0;
+  describe(): String {
+    return 'xy';
+  }
+  poke(): void {
+    this.hits += 1;
+  }
+}
+
+let maybe = (flag: boolean): Holder | null => {
+  return if (flag) new Holder() else null;
+};
+
+export let main = (): i32 => {
+  let present = maybe(true);
+  let absent = maybe(false);
+  present?.poke();
+  absent?.poke();
+  let a = present?.describe() ?? 'z';
+  let b = absent?.describe() ?? 'z';
+  return a.length + b.length;
+};
