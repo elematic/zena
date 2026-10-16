@@ -13729,11 +13729,48 @@ let inheritsDeclaredEquality = (ct: ClassType): boolean => {
 
 /**
  * Derives a case class's structural `==` and `hashCode`, together, unless it
- * inherits either one (inheritsDeclaredEquality). Runs once the superclass is
- * known and its members are inherited.
+ * inherits either one (inheritsDeclaredEquality) or its `body` declares
+ * either one. A body that declares one must declare both, for the same
+ * reason a subclass of a declaring base derives neither. Runs once the
+ * superclass is known and its members are inherited; a sealed variant has
+ * no body.
  */
-let synthesizeCaseClassMembers = (ctx: CheckerContext, ct: ClassType): void => {
+let synthesizeCaseClassMembers = (
+  ctx: CheckerContext,
+  ct: ClassType,
+  body: GrowableArray<Node> | null
+): void => {
   if (inheritsDeclaredEquality(ct)) {
+    return;
+  }
+  var ownEq: MethodDefinition | null = null;
+  var ownHash: MethodDefinition | null = null;
+  if (body != null) {
+    for (let member in body as GrowableArray<Node>) {
+      if (member is MethodDefinition && !member.isStatic) {
+        let name = syntacticMemberName(member.name);
+        if (name == "==") {
+          ownEq = member;
+        } else if (name == "hashCode") {
+          ownHash = member;
+        }
+      }
+    }
+  }
+  if (ownEq != null || ownHash != null) {
+    if (ownHash == null) {
+      ctx.error("Case class '" + ct.name +
+          "' declares 'operator ==' without 'hashCode()'; declare both, or neither.",
+          DiagnosticCode.AbstractMethodNotImplemented, (ownEq as MethodDefinition).loc);
+    } else if (ownEq == null) {
+      ctx.error("Case class '" + ct.name +
+          "' declares 'hashCode()' without 'operator =='; declare both, or neither.",
+          DiagnosticCode.AbstractMethodNotImplemented, (ownHash as MethodDefinition).loc);
+    } else {
+      // Still a hash key without an implements clause, through its own pair.
+      addImplicitInterface(ctx, ct, WellKnown.HashableInterface);
+      addImplicitInterface(ctx, ct, WellKnown.EquatableInterface);
+    }
     return;
   }
   ct.derivesEquality = true;
@@ -14679,7 +14716,7 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
 
   classType.superType = currentSuper;
   if (classType.isCaseClass) {
-    synthesizeCaseClassMembers(ctx, classType);
+    synthesizeCaseClassMembers(ctx, classType, cd.body);
   }
 
   // Process case class parameters → generate fields and constructor.
@@ -15473,7 +15510,7 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
         let vCtorType = new FunctionType(vCtorParams, variantType, new FunctionDeclInfo(vCtorNames, null, null, vCtorOptionalParams));
         variantType.constructorType = vCtorType;
         variantType.constructors["<constructor>"] = vCtorType;
-        synthesizeCaseClassMembers(ctx, variantType);
+        synthesizeCaseClassMembers(ctx, variantType, null);
 
         (classType.sealedVariants as GrowableArray<ClassType>).push(variantType);
 
@@ -15511,7 +15548,7 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
                 if (ct.constructorType == null) {
                   ct.constructorType = new FunctionType(new Array<Type>(), ct, new FunctionDeclInfo(new Array<String>()));
                 }
-                synthesizeCaseClassMembers(ctx, ct);
+                synthesizeCaseClassMembers(ctx, ct, null);
               }
             }
             let sealedVars = classType.sealedVariants as GrowableArray<ClassType>;
@@ -15525,7 +15562,7 @@ let registerClassDeclaration = (ctx: CheckerContext, cd: ClassDeclaration): void
             // Unit variant: zero-arg constructor.
             unitType.constructorType = new FunctionType(new Array<Type>(), unitType, new FunctionDeclInfo(new Array<String>()));
             unitType.constructors["<constructor>"] = unitType.constructorType as FunctionType;
-            synthesizeCaseClassMembers(ctx, unitType);
+            synthesizeCaseClassMembers(ctx, unitType, null);
 
             (classType.sealedVariants as GrowableArray<ClassType>).push(unitType);
             ctx.declareModuleTypeName(variantName, unitType);

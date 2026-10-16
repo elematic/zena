@@ -1623,7 +1623,10 @@ class Event(name: String) with Timestamped implements Hashable
 ```
 
 A case class that inherits `operator ==` or `hashCode()` from its base
-generates neither, so a sealed base can give all its cases one equality.
+generates neither, so a sealed base can give all its cases one equality. A case
+class can also declare both in its body, and then neither is generated;
+declaring only one is an error. The language reference gives the hand-written
+pair equivalent to the generated one.
 
 ### Sealed Classes
 

@@ -297,7 +297,9 @@ field (weak-references.md).
 is the hierarchy's equality. Without this rule a base declaring
 identity equality, as the compiler's `Type` will have to, would see
 its cases override `==` with a structural one while keeping the base's
-uid hash.
+uid hash. The same goes for a case class's own body: one that declares
+either derives neither, and must declare both, or a written `==` would
+sit beside a derived hash that disagrees with it.
 
 **`Equatable`.** With virtual `==`, every class has an equality, so a
 bound is not needed for `==` to compile in generic code. `Equatable`

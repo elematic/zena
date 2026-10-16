@@ -1,0 +1,38 @@
+// @mode: run
+// @result: 1
+// A case class whose body declares `operator ==` and `hashCode()` uses
+// those instead of the derived pair. Here both look only at `x`, so two
+// instances that differ in `y` are equal and hash alike. It stays a hash
+// key without an implements clause.
+
+import { HashSet } from 'zena:collections';
+
+class P(x: i32, y: i32) {
+  operator ==(other: P): boolean {
+    return this.x == other.x;
+  }
+
+  hashCode(): i32 {
+    return this.x;
+  }
+}
+
+export let main = (): i32 => {
+  let a = new P(1, 2);
+  let b = new P(1, 3);
+  if (a != b) {
+    return 10;
+  }
+  if (a.hashCode() != 1) {
+    return 11;
+  }
+  let set = new HashSet<P>();
+  set.add(a);
+  if (!set.has(b)) {
+    return 12;
+  }
+  if (set.has(new P(2, 2))) {
+    return 13;
+  }
+  return 1;
+};
