@@ -65,7 +65,7 @@ export final class WalkCache {
  * `result` and `checked` come from compiling that module, so every file
  * it re-exports from is already loaded and checked.
  */
-export let resolveReexports = (
+export function resolveReexports(
   module: DocModule,
   packageName: String,
   packageRoot: String,
@@ -74,7 +74,7 @@ export let resolveReexports = (
   checked: ProgramCheckResult,
   options: ExtractOptions,
   cache: WalkCache
-): void => {
+): void {
   if (module.reexports.length == 0) {
     return;
   }
@@ -87,10 +87,10 @@ export let resolveReexports = (
     copyFrom(module, reexport, result.entry.path, names, target, result,
         checked, options, cache, 0);
   }
-};
+}
 
 /** Follows one re-export and copies what it carries. */
-let copyFrom = (
+function copyFrom(
   into: DocModule,
   reexport: DocReexport,
   referrer: String,
@@ -101,7 +101,7 @@ let copyFrom = (
   options: ExtractOptions,
   cache: WalkCache,
   depth: i32
-): void => {
+): void {
   if (depth > MAX_DEPTH) {
     return;
   }
@@ -138,7 +138,7 @@ let copyFrom = (
           options, cache, depth + 1);
     }
   }
-};
+}
 
 /**
  * The names of `nested` that `outer` still needs, or null if none.
@@ -146,11 +146,11 @@ let copyFrom = (
  * `export {HashMap} from 'zena:collections'` where `zena:collections`
  * itself re-exports `HashMap` and much else: only `HashMap` crosses.
  */
-let narrow = (
+function narrow(
   nested: DocReexport,
   outer: DocReexport,
   source: DocModule
-): DocReexport | null => {
+): DocReexport | null {
   let wanted = new Array<DocReexportName>(2);
   for (let name in outer.names) {
     if (source.declares(name.source)) {
@@ -170,10 +170,10 @@ let narrow = (
     return null;
   }
   return new DocReexport(nested.from, wanted, false);
-};
+}
 
 /** The module a specifier names, walked and cached. */
-let sourceModule = (
+function sourceModule(
   specifier: String,
   referrer: String,
   names: Naming,
@@ -182,7 +182,7 @@ let sourceModule = (
   checked: ProgramCheckResult,
   options: ExtractOptions,
   cache: WalkCache
-): DocModule | null => {
+): DocModule | null {
   let resolved = target.resolve(specifier, referrer);
   let canonical = resolved.path;
   if (cache.has(canonical)) {
@@ -202,16 +202,16 @@ let sourceModule = (
     }
   }
   return null;
-};
+}
 
-let find = (module: DocModule, name: String): DocDeclaration | null => {
+function find(module: DocModule, name: String): DocDeclaration | null {
   for (let declaration in module.declarations) {
     if (declaration.name == name) {
       return declaration;
     }
   }
   return null;
-};
+}
 
 /**
  * Copies a declaration into a module under the name it exports it as.
@@ -219,17 +219,17 @@ let find = (module: DocModule, name: String): DocDeclaration | null => {
  * A name the module already documents wins, so a module that both
  * declares `Map` and re-exports another one documents its own.
  */
-let adopt = (
+function adopt(
   into: DocModule,
   declaration: DocDeclaration,
   name: String,
   from: String
-): void => {
+): void {
   if (into.declares(name)) {
     return;
   }
-  let copy = declaration.renamed(name, into.id + '#' + name,
+  let copy = declaration.renamed(name, `${into.id}#${name}`,
       into.anchors.take(name));
   copy.reexportedFrom = from;
   into.declarations.push(copy);
-};
+}
