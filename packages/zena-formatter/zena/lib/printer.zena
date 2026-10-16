@@ -1980,6 +1980,13 @@ function printArrayPattern(pattern: ArrayPattern): Doc {
 // Type Annotations
 // ============================================================================
 
+/** Whether `a` starts before `b` in the source; false when either has no location. */
+function startsBefore(a: Node, b: Node) {
+  let la = a.loc;
+  let lb = b.loc;
+  return la != null && lb != null && la.start < lb.start;
+}
+
 function printTypeAnnotation(ann: TypeAnnotation): Doc {
   return match (ann) {
   case NamedTypeAnnotation {name, typeArguments, elementsMutable}: {
@@ -2029,11 +2036,26 @@ function printTypeAnnotation(ann: TypeAnnotation): Doc {
     concat(parts)
   }
   case LiteralTypeAnnotation {value}: printNode(value)
-  case RecordTypeAnnotation {properties}: {
+  case RecordTypeAnnotation {properties, spreads}: {
     let propDocs = new Array<Doc>();
+    // Spreads print where they were written: merge the two lists by
+    // source position.
+    var si = 0;
     for (let p in properties) {
+      if (spreads != null) {
+        while (si < spreads.length && startsBefore(spreads[si], p)) {
+          propDocs.push(concat(docs2(text('...'), printTypeAnnotation(spreads[si]))));
+          si += 1;
+        }
+      }
       let nameDoc = if (p.optional) { concat(docs2(text(p.name.name), text('?'))) } else { text(p.name.name) };
       propDocs.push(concat(docs3(nameDoc, text(': '), printTypeAnnotation(p.typeAnnotation))));
+    }
+    if (spreads != null) {
+      while (si < spreads.length) {
+        propDocs.push(concat(docs2(text('...'), printTypeAnnotation(spreads[si]))));
+        si += 1;
+      }
     }
     concat(docs3(text('{'), join(text(', '), propDocs), text('}')))
   }

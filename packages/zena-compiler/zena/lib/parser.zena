@@ -1649,7 +1649,7 @@ export final class Parser {
     this.#consume(TokenType.RBrace, "Expected '}' after record parameter pattern");
     
     if (hasTypeAnnotations) {
-      this.#combinedTypeAnnotation = new RecordTypeAnnotation(typeSigs, this.#makeLocation(startToken));
+      this.#combinedTypeAnnotation = new RecordTypeAnnotation(typeSigs, null, this.#makeLocation(startToken));
     } else {
       this.#combinedTypeAnnotation = null;
     }
@@ -2504,8 +2504,10 @@ export final class Parser {
     while (depth > 0) {
       let token = this.#tokens[this.#current + i];
       if (token.kind == TokenType.EOF) { return -1; }
+      // A `{` may open a record type argument (`f<{x: i32}>(...)`); the
+      // statement tokens below still end the scan at a block's contents.
       if (token.kind == TokenType.Semi || token.kind == TokenType.Equals ||
-          token.kind == TokenType.LBrace || token.kind == TokenType.Plus ||
+          token.kind == TokenType.Plus ||
           token.kind == TokenType.Minus || token.kind == TokenType.Star ||
           token.kind == TokenType.Slash || token.kind == TokenType.Let ||
           token.kind == TokenType.Var || token.kind == TokenType.If ||
@@ -3038,8 +3040,19 @@ export final class Parser {
   #parseRecordType(startToken: Token): TypeAnnotation {
     this.#advance(); // consume '{'
     let properties = new Array<PropertySignature>(4);
-    
+    var spreads: GrowableArray<TypeAnnotation> | null = null;
+
     while (!this.#check(TokenType.RBrace) && !this.#isAtEnd()) {
+      // Spread: ...T
+      if (this.#match(TokenType.DotDotDot)) {
+        let spreadType = this.#parseTypeAnnotation();
+        spreads ??= new Array<TypeAnnotation>();
+        spreads.push(spreadType);
+        if (!this.#check(TokenType.RBrace)) {
+          this.#consume(TokenType.Comma, "Expected ',' between record type properties");
+        }
+        continue;
+      }
       let propStartToken = this.#peek();
       let propName = this.#parseIdentifier();
       
@@ -3060,7 +3073,7 @@ export final class Parser {
     }
     
     this.#consume(TokenType.RBrace, "Expected '}' after record type");
-    return new RecordTypeAnnotation(properties, this.#makeLocation(startToken));
+    return new RecordTypeAnnotation(properties, spreads, this.#makeLocation(startToken));
   }
   
   /**

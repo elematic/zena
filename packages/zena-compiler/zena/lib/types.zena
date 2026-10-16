@@ -983,7 +983,16 @@ export final class MemberTable with IterableUtils<MapEntry<String, MemberInfo>> 
 
 export final class RecordType(
   properties: HashMap<String, Type>,
-  optionalProperties: HashSet<String> | null
+  optionalProperties: HashSet<String> | null,
+  /**
+   * The row variable of `{x: i32, ...R}`: a type parameter bounded by
+   * `record` that stands for the fields beside `properties`, none of
+   * which `properties` names (docs/design/row-types.md §3.1).
+   * Substituting a record for it merges that record's fields in. Null
+   * for a record type that names all its fields, which is every record
+   * type codegen sees.
+   */
+  row: TypeParameterType | null
 ) extends Type {
   isOptional(name: String): boolean {
     let optionals = this.optionalProperties;
@@ -1742,6 +1751,49 @@ let reentrantSubstitution = (source: Type, key: TypeListEntry): Type | null => {
   return null;
 };
 
+/**
+ * `{...fields, ...R}` once R is `row`: a record type merges its fields in
+ * and passes on its own row variable, and another row parameter replaces
+ * R. Anything else (an error) leaves the named fields alone. The checker
+ * rejects a row that names one of `fields` (`rowLacks`), so on a
+ * collision the field written beside the spread is kept.
+ */
+export let mergeRow = (
+  fields: HashMap<String, Type>,
+  optionals: HashSet<String> | null,
+  row: Type
+): RecordType => {
+  match (row) {
+    case RecordType as r: {
+      let props = new Map<String, Type>();
+      var opts: HashSet<String> | null = null;
+      for (let key in r.properties.keys()) {
+        props[key] = r.properties[key];
+        if (r.isOptional(key)) {
+          opts ??= new Set<String>();
+          opts.add(key);
+        }
+      }
+      for (let key in fields.keys()) {
+        props[key] = fields[key];
+        if (optionals != null && optionals.has(key)) {
+          opts ??= new Set<String>();
+          opts.add(key);
+        } else if (opts != null) {
+          opts.delete(key);
+        }
+      }
+      return new RecordType(props, opts, r.row);
+    }
+    case TypeParameterType as tp: {
+      return new RecordType(fields, optionals, tp);
+    }
+    case _: {
+      return new RecordType(fields, optionals, null);
+    }
+  }
+};
+
 let substituteInType = (
   t: Type | null,
   typeParameters: Array<TypeParameterType> | null,
@@ -1804,7 +1856,13 @@ let substituteInType = (
         let sub = substituteInType(rec.properties[key], typeParameters, typeArguments);
         newProps[key] = (sub ?? rec.properties[key]);
       }
-      new RecordType(newProps, rec.optionalProperties)
+      let row = rec.row;
+      if (row != null) {
+        mergeRow(newProps, rec.optionalProperties,
+            substituteInType(row, typeParameters, typeArguments) ?? row)
+      } else {
+        new RecordType(newProps, rec.optionalProperties, null)
+      }
     }
     case FunctionType as ft: {
       let newParams = new Array<Type>();
@@ -2259,13 +2317,18 @@ let instantiationKeyOf = (t: Type): String => match (t) {
     }
     s
   }
-  case RecordType {properties}: {
+  case RecordType as rec: {
     var s = "{";
     var first = true;
-    for (let key in properties.keys()) {
+    for (let key in rec.properties.keys()) {
       if (!first) { s = s + ","; }
       first = false;
-      s = s + key + ":" + instantiationKeyOf(properties[key]);
+      s = s + key + ":" + instantiationKeyOf(rec.properties[key]);
+    }
+    let row = rec.row;
+    if (row != null) {
+      if (!first) { s = s + ","; }
+      s = s + "..." + instantiationKeyOf(row);
     }
     s + "}"
   }
@@ -2703,6 +2766,17 @@ export final class TypeParameterType extends Type {
    * exactly once (ownership.md §"Scoped type arguments").
    */
   var isScoped: boolean = false;
+  /**
+   * Declared `R extends record`: the parameter ranges over record rows
+   * and can be spread into a record type (docs/design/row-types.md
+   * §3.1). `constraint` is null for one.
+   */
+  var isRecordRow: boolean = false;
+  /**
+   * For a row parameter, the fields its declaration's signature names
+   * beside `...R`. A row bound to it must have none of them.
+   */
+  var rowLacks: HashSet<String> | null = null;
 
   new(this.name, this.constraint, this.defaultType) : super() {
     _typeParameterTypes += 1;
@@ -2928,8 +3002,9 @@ export let typeContainsTypeParameter = (t: Type): boolean => {
       }
       false
     }
-    case RecordType {properties}: {
-      for (let pair in properties) {
+    case RecordType as rec: {
+      if (rec.row != null) { return true; }
+      for (let pair in rec.properties) {
         if (typeContainsTypeParameter(pair.value)) { return true; }
       }
       false
@@ -3671,14 +3746,19 @@ export let typeToString = (t: Type): String => match (t) {
       s
     }
   }
-  case RecordType {properties}: {
+  case RecordType as rec: {
     var s = "{ ";
-    let keys = properties.keys();
+    let keys = rec.properties.keys();
     var first = true;
     for (let key in keys) {
       if (!first) { s = s + ", "; }
-      s = s + key + ": " + typeToString(properties[key]);
+      s = s + key + ": " + typeToString(rec.properties[key]);
       first = false;
+    }
+    let row = rec.row;
+    if (row != null) {
+      if (!first) { s = s + ", "; }
+      s = s + "..." + row.name;
     }
     s + " }"
   }

@@ -159,21 +159,52 @@ function renderFunction(out: Render, fn: FunctionTypeAnnotation): void {
 
 function renderRecord(out: Render, record: RecordTypeAnnotation): void {
   out.write('{');
-  var i = 0;
-  while (i < record.properties.length) {
-    if (i > 0) {
+  let spreads = record.spreads;
+  var written = 0;
+  var si = 0;
+  for (let prop in record.properties) {
+    // Spreads render where they were written, by source position.
+    if (spreads != null) {
+      while (si < spreads.length && startsBefore(spreads[si], prop)) {
+        if (written > 0) {
+          out.write(', ');
+        }
+        out.write('...');
+        renderAnnotation(out, spreads[si]);
+        written += 1;
+        si += 1;
+      }
+    }
+    if (written > 0) {
       out.write(', ');
     }
-    let prop = record.properties[i];
     out.write(prop.name.name);
     if (prop.optional) {
       out.write('?');
     }
     out.write(': ');
     renderAnnotation(out, prop.typeAnnotation);
-    i += 1;
+    written += 1;
+  }
+  if (spreads != null) {
+    while (si < spreads.length) {
+      if (written > 0) {
+        out.write(', ');
+      }
+      out.write('...');
+      renderAnnotation(out, spreads[si]);
+      written += 1;
+      si += 1;
+    }
   }
   out.write('}');
+}
+
+/** Whether `a` starts before `b` in the source; false when either has no location. */
+function startsBefore(a: Node, b: Node): boolean {
+  let la = a.loc;
+  let lb = b.loc;
+  return la != null && lb != null && la.start < lb.start;
 }
 
 function renderJoined(

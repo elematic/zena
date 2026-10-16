@@ -136,9 +136,13 @@ waits only on its own prerequisites. The order:
 
 1. Structural `==` and hashing for closed records and tuples (#372).
    This is correct under closed semantics before the representation
-   changes.
+   changes. Done, except for the erased comparison, which waits for
+   step 3 (#399).
 2. Row generics, value-level spread on row types, and `...rest`
-   (implementation-plan.md, Track A).
+   (implementation-plan.md, Track A). Record rows are in:
+   `R extends record`, type-level spread of record types and row
+   parameters, inference, lacks, and one specialization per row. Tuple
+   rows, spread on row-typed values and `...rest` are next.
 3. Closed types by default: exactness checks on literals, projection
    for width conversions between closed types, and `...` existentials
    as the only fat-pointer form, with equality and `is`/`as` by
@@ -258,6 +262,19 @@ constrains `R` to lack `id` (and `name` too, in `ExtendedUser`). The
 constraint is checked at instantiation; `ExtendedUser<{name: string}>` is
 an error at the use site, naming the colliding label. There is no
 TS-style silent overwrite or intersection-to-`never` collapse.
+
+As implemented, the labels `R` lacks are the ones written beside `...R`
+in the signature of the declaration that introduces `R`: its parameters
+and result for a function or method, its target for an
+alias, its members' signatures for a class. A record type in a body may
+name beside `...R` only labels already in that set, because a caller
+chose `R` against the signature alone, and with lazy body checking a
+call can be checked before the body it calls. Instantiating with another
+row parameter `S` requires `S` to lack the labels too, which `S`'s own
+signature can supply by instantiating there (`Labeled<S>`).
+`checkRecordRowArgument` and `noteFieldsBesideRow` in checker.zena carry
+these rules, and `isInRowSignature` tells a signature from a body by
+walking up from the record type to the declaration.
 
 Spreading **concrete** types is also allowed, giving composition without
 intersection types:

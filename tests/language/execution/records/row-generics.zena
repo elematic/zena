@@ -1,0 +1,65 @@
+// @mode: run
+// @result: 1
+// Row-generic functions run once per row, reading their fields directly
+// (docs/design/row-types.md §3.1, §7.2).
+
+import { hash } from 'zena:core';
+
+let getX = <R extends record>(p: {x: i32, ...R}): i32 => p.x;
+
+let keep = <R extends record>(p: {x: i32, ...R}): {x: i32, ...R} => p;
+
+let twice = <S extends record>(q: {x: i32, ...S}): {x: i32, ...S} => keep(keep(q));
+
+type Labeled<R extends record> = {label: String, ...R};
+
+let labelOf = <R extends record>(v: Labeled<R>): String => v.label;
+
+type Timestamps = {createdAt: i32, updatedAt: i32};
+type PostRow = {title: String, ...Timestamps};
+
+// `==` and the hash cover the row's fields too.
+let same = <R extends record>(p: {x: i32, ...R}, q: {x: i32, ...R}): boolean => p == q;
+
+let hashOf = <R extends record>(p: {x: i32, ...R}): i32 => hash(p);
+
+export let main = (): i32 => {
+  let a = keep({x: 1, y: 2});
+  if (a.x != 1 || a.y != 2) {
+    return 10;
+  }
+  let b = twice({x: 3, name: 'n', flag: true});
+  if (b.x != 3 || b.name != 'n' || !b.flag) {
+    return 11;
+  }
+  if (getX({x: 4}) + getX({x: 5, z: 1.5}) != 9) {
+    return 12;
+  }
+  if (labelOf({label: 'l', n: 1}) != 'l') {
+    return 13;
+  }
+  if (keep({x: 1, y: 2}) != {x: 1, y: 2}) {
+    return 14;
+  }
+  let post: PostRow = {title: 't', createdAt: 5, updatedAt: 6};
+  if (post.createdAt + post.updatedAt != 11) {
+    return 15;
+  }
+  // A record held in a variable reaches the function whole.
+  let held: {x: i32, w: f64} = {x: 7, w: 0.5};
+  let h = keep(held);
+  if (h.w != 0.5 || getX(held) != 7) {
+    return 16;
+  }
+  if (!same({x: 1, y: 2}, {x: 1, y: 2}) || same({x: 1, y: 2}, {x: 1, y: 3})) {
+    return 17;
+  }
+  if (!same(held, {x: 7, w: 0.5}) || same(held, {x: 7, w: 1.5})) {
+    return 18;
+  }
+  if (hashOf({x: 1, y: 2}) != hash({x: 1, y: 2}) ||
+      hashOf({x: 1, y: 2}) == hashOf({x: 1, y: 3})) {
+    return 19;
+  }
+  return 1;
+};

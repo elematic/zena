@@ -1,0 +1,39 @@
+// @mode: run
+// @result: 1
+// Row parameters on a generic method and on a generic class
+// (docs/design/row-types.md §3.1).
+
+class Mover {
+  dx: i32;
+  new(this.dx);
+
+  move<R extends record>(p: {x: i32, ...R}): {x: i32, ...R} {
+    return p;
+  }
+
+  xOf<R extends record>(p: {x: i32, ...R}): i32 {
+    return p.x + this.dx;
+  }
+}
+
+class Tagged<R extends record>(tag: String, value: {id: i32, ...R}) {
+  idPlus(n: i32): i32 {
+    return this.value.id + n;
+  }
+}
+
+export let main = (): i32 => {
+  let m = new Mover(10);
+  let moved = m.move({x: 1, label: 'a'});
+  if (moved.label != 'a' || m.xOf({x: 2, z: true}) != 12) {
+    return 10;
+  }
+  let t = new Tagged('t', {id: 4, name: 'n'});
+  if (t.value.name != 'n' || t.idPlus(1) != 5) {
+    return 11;
+  }
+  if (t != new Tagged('t', {id: 4, name: 'n'}) || t == new Tagged('t', {id: 4, name: 'm'})) {
+    return 12;
+  }
+  return 1;
+};

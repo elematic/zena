@@ -6,7 +6,7 @@ import {
   FieldInfo, MethodInfo, typeToString, TypeParameterType, ThisType,
   UnionType, InlineTupleType, baseType, BoolLiteralType, NumLiteralType, StringLiteralType,
   RecordType, TupleType, MixinType, ErasedType, countCodegenFunctionType,
-  countCodegenSubstitution, classShapeStamp, interfaceShapeStamp, internFunctionType } from '../types.zena';
+  countCodegenSubstitution, classShapeStamp, interfaceShapeStamp, internFunctionType, mergeRow } from '../types.zena';
 import { 
   WasmModule, WasmStruct, WasmField, WasmSignature, WasmFunction, RecordDispatchInfo,
   sortWasmFields, WasmArray
@@ -150,10 +150,15 @@ let substituteTypeParamsInCodegenInner = (
           propsChanged = true;
         }
       }
+      let row = rec.row;
+      if (row != null) {
+        return mergeRow(newProps, rec.optionalProperties,
+            substituteTypeParamsInCodegenInner(wasm, typeParams, typeArgs, row));
+      }
       if (!propsChanged) {
         return rec;
       }
-      let newRec = new RecordType(newProps, rec.optionalProperties);
+      let newRec = new RecordType(newProps, rec.optionalProperties, null);
       newRec
     }
     case FunctionType as ft: {
@@ -1360,8 +1365,10 @@ export let eraseTypeParameters = (wasm: WasmModule, t: Type): Type => {
         if (sub !== propType) { changed = true; }
         newProps[key] = sub;
       }
-      if (!changed) { return t; }
-      let newRec = new RecordType(newProps, rec.optionalProperties);
+      // An erased row is no fields at all: nothing is emitted at an
+      // erasure (reachability/CONTEXT.md), so this only names a struct.
+      if (!changed && rec.row == null) { return t; }
+      let newRec = new RecordType(newProps, rec.optionalProperties, null);
       newRec
     }
     case _: t
@@ -1989,8 +1996,16 @@ let optionalSlotValType = (vt: ValType): ValType => {
  * property (optional properties' reference slots nullable-ized), plus
  * the `$present` mask when the type has optional fields, sorted.
  */
-export let recordWasmFields = (wasm: WasmModule, rec: RecordType,
+export let recordWasmFields = (wasm: WasmModule, recIn: RecordType,
     subFunc: WasmFunction | null): GrowableArray<WasmField> => {
+  // A row is fields only the whole substitution supplies.
+  var rec = recIn;
+  if (recIn.row != null && subFunc != null) {
+    let whole = substituteTypeParamsInFunctionContext(wasm, subFunc, recIn);
+    if (whole is RecordType) {
+      rec = whole;
+    }
+  }
   let fields = new Array<WasmField>();
   for (let pair in rec.properties) {
     var vt = typeToValTypeWithSub(wasm, pair.value, subFunc);
