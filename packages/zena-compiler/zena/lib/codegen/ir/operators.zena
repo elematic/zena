@@ -28,7 +28,8 @@ import { IrOp } from './ir.zena';
 import {
   LoweringContext, ZirUnsupported, noValues, oneValue, twoValues,
 } from './lowering-context.zena';
-import { lowerClassEquality, lowerErasedEq } from './equality.zena';
+import { lowerClassEquality, lowerErasedEq, lowerValueEq } from './equality.zena';
+import { valueEqOperand } from '../value-equality.zena';
 import { lowerNullishCoalesce } from './control-flow.zena';
 import { lowerExpr } from './lowering.zena';
 
@@ -376,6 +377,21 @@ export let lowerBinary = (cx: LoweringContext, bin: BinaryExpression): i32 => {
         return same;
       }
       bail(cx, 'class eq operands');
+    }
+  }
+  // `==` on records and tuples compares them by value, field by field
+  // (equality.md, "Structural equality for records and tuples").
+  if ((bin.operator == "==" || bin.operator == "!=") && leftBase != null) {
+    let rightBase = substitutedBaseType(cx, bin.right);
+    if (rightBase != null && valueEqOperand(leftBase) != null &&
+        valueEqOperand(rightBase as Type) != null) {
+      let left = lowerExpr(cx, bin.left, null);
+      let right = lowerExpr(cx, bin.right, null);
+      let same = lowerValueEq(cx, leftBase, left, rightBase as Type, right);
+      if (bin.operator == "!=") {
+        return cx.b.emit(IrOp.i32_eqz, new ValTypeI32(), same, -1);
+      }
+      return same;
     }
   }
   if (leftBase != null) {

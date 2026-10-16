@@ -1,0 +1,48 @@
+// @mode: run
+// @result: 1
+// `==` on records and tuples whose types differ by depth subtyping
+// compares the values at the wider type: a `true` element against a
+// `boolean` one, a `Dog` field against an `Animal` one. Records with
+// different field names are never equal: `==` does not convert its
+// operands. Inside a generic function, `==` on a type parameter
+// instantiated with a record compares by value too.
+
+class Animal {
+  name: String;
+  new(this.name);
+}
+
+class Dog extends Animal {
+  new(name: String) : super(name);
+}
+
+let generic = <T>(a: T, b: T): boolean => a == b;
+
+let check = (b: boolean): i32 => {
+  let t: (true, i32) = (true, 1);
+  let u: (boolean, i32) = (b, 1);
+  return if (t == u) 1 else 0;
+};
+
+export let main = (): i32 => {
+  if (check(true) != 1 || check(false) != 0) {
+    return 10;
+  }
+  let d = new Dog('rex');
+  let a: {a: Dog} = {a: d};
+  let same: {a: Animal} = {a: d};
+  let other: {a: Animal} = {a: new Dog('rex')};
+  // Animal declares no `==`, so the field compares identity.
+  if (a != same || a == other) {
+    return 11;
+  }
+  let narrow: {x: i32} = {x: 1};
+  let wide: {x: i32, y: i32} = {x: 1, y: 2};
+  if (narrow == wide || !(narrow != wide)) {
+    return 12;
+  }
+  if (!generic({x: 1, y: 2}, {x: 1, y: 2}) || generic((1, 'a'), (1, 'b'))) {
+    return 13;
+  }
+  return 1;
+};

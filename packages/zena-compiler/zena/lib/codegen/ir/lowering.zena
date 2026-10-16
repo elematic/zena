@@ -60,6 +60,7 @@ import { lowerStringLiteral, lowerTaggedTemplate, lowerTemplateLiteral } from '.
 import {
   exactClassTest, lowerCaseClassEq, lowerCaseClassHash, lowerErasedEq,
   lowerErasedEqDispatch, lowerEqIntrinsic, lowerHashIntrinsic,
+  lowerValueEqFunction,
 } from './equality.zena';
 import {
   bindRecordProp, branchUnless, collectPatternBindSyms,
@@ -281,7 +282,7 @@ let usesSynthesizedMachinery = (func: WasmFunction): boolean => {
       func.closureForwarder != null ||
       func.isClosureWrapper || func.isClosureTrampoline ||
       func.getterStruct != null || func.setterStruct != null ||
-      func.isCaseClassEq || func.isCaseClassHash ||
+      func.isCaseClassEq || func.isCaseClassHash || func.valueEqLeft != null ||
       func.typeParameters != null || func.typeArguments != null ||
       func.intrinsic != null;
 };
@@ -835,6 +836,11 @@ let lowerFunctionOrThrow = (wasm: WasmModule, func: WasmFunction): IrBody => {
   if (func.isCaseClassEq) {
     let lowerer = new FunctionLowerer(wasm, func);
     return lowerer.lowerCaseClassEq();
+  }
+  // Structural `==` on a pair of record or tuple types.
+  if (func.valueEqLeft != null) {
+    let lowerer = new FunctionLowerer(wasm, func);
+    return lowerer.lowerValueEqFunction();
   }
   if (func === wasm.erasedEqFunc) {
     let lowerer = new FunctionLowerer(wasm, func);
@@ -1669,6 +1675,11 @@ export final class FunctionLowerer {
 
   lowerCaseClassEq(): IrBody {
     return lowerCaseClassEq(this.#cx());
+  }
+
+  /** Synthesized structural `==` on records or tuples (see ir/equality.zena). */
+  lowerValueEqFunction(): IrBody {
+    return lowerValueEqFunction(this.#cx());
   }
 
   /** Synthesized resource `:dispose` (see ir/control-flow.zena). */

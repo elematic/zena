@@ -21,11 +21,11 @@ The rules, in one sentence each:
 
 ## Current state
 
-- `==` compares primitives and strings by value. On records and tuples
-  it compares identity (#372): they reach `lowerErasedEq`, whose only
-  test that applies to them is `ref.eq`. Neither satisfies `Hashable`.
-  [Structural equality for records and tuples](#structural-equality-for-records-and-tuples)
-  below is the design.
+- `==` compares primitives, strings, records and tuples by value
+  ([Structural equality for records and tuples](#structural-equality-for-records-and-tuples)).
+  Where a record or tuple reaches the erased comparison (an `anyref`
+  or interface operand, or a union of several record or tuple types)
+  it still compares identity, and neither satisfies `Hashable` (#372).
 - On a class, `==` resolves on the **static** type of the left operand:
   - If that type declares or inherits `operator ==`, the call is
     virtual. A subclass override is found at runtime
@@ -84,8 +84,10 @@ available.
 
 ### Structural equality for records and tuples
 
-Not implemented yet (#372). Record types come in three forms
-([row-types.md](row-types.md#decisions)), and `==` follows them:
+Record types come in three forms
+([row-types.md](row-types.md#decisions)), and `==` follows them. Closed
+records and tuples are implemented; row-generic and existential records
+do not exist yet.
 
 - **Closed records and tuples:** equal when every field (every
   element) is equal, each compared with its own type's `==`: a class's
@@ -103,12 +105,42 @@ Not implemented yet (#372). Record types come in three forms
   closed record are equal when the existential's underlying shape is
   the closed type and the fields are equal.
 
-`==` does not convert its operands. Two values of different closed
-record types are never equal, and the checker reports that comparison
-as always false.
+`==` does not convert its operands. Two records with different field
+names are never equal: comparing `{x: i32}` with `{x: i32, y: i32}`
+answers false (a checker diagnostic for this is still to come). Types
+that differ only by depth subtyping compare at the wider type:
+`(true, i32)` against `(boolean, i32)` compares the first elements as
+booleans, and `{a: Dog}` against `{a: Animal}` compares the fields with
+`Animal`'s `==`.
 
-Records and tuples satisfy `Hashable` and `Equatable` without
-declaring anything: the compiler derives a `hashCode` per shape,
+**Lowering.** Each pair of operand types gets one synthesized function,
+`$valueEq` (`WasmFunction.valueEqLeft`/`valueEqRight`). Reachability
+registers it where it sees `==` on a record or tuple pair
+(`ReachabilityVisitor.noteValueEquality`), along with a function for
+every nested pair of fields and whatever each field's own `==` needs.
+`codegen/value-equality.zena` holds what reachability and lowering
+must agree on: which operands compare, how fields pair up, and the
+function's key. At the `==`, `lowerValueEq` (ir/equality.zena) tests
+nullable operands for null first and then calls the function. The
+function's body (`lowerValueEqFunction`) compares field by field,
+records through each operand's own dispatch and tuples by struct
+field, and returns false at the first pair that differs. A pair of
+optional fields is equal when both are absent, or both present with
+equal values; a value is read only when present. Recursive record types
+work, because a nested pair calls its pair's function.
+
+Not yet covered (#372):
+
+- **The erased comparison** (`lowerErasedEq`, `$erasedEq`) still
+  compares records and tuples by identity. That covers `anyref` and
+  interface operands, and unions of several record or tuple types.
+- **Hashing:** records and tuples do not satisfy `Hashable` yet, and
+  the `eq`/`hash` intrinsics `HashMap` uses do not handle them.
+- **Case-class fields:** a case class's derived `==` compares a record
+  or tuple field by identity (`synthFieldEq`).
+
+Records and tuples will satisfy `Hashable` and `Equatable` without
+declaring anything: the compiler will derive a `hashCode` per shape,
 consistent with `==`, as it does for case classes.
 
 For argument explosion, `==` and `hashCode` on a closed or row-generic
@@ -363,7 +395,8 @@ longer needed.
 ```
 a == b
 ├─ primitives: by value
-├─ records, tuples: identity today, through the erased comparison (#372)
+├─ records, tuples: field by field through the pair's $valueEq function
+│    (ir/equality.zena, lowerValueEq); a pair with different field names: false
 ├─ a literal null operand: ref.is_null
 ├─ a class C, or C | null                     (ir/equality.zena, lowerClassEquality)
 │  ├─ either operand nullable: both null → true, one null → false, else on

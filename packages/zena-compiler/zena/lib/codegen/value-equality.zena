@@ -1,0 +1,103 @@
+/**
+ * Structural `==` on records and tuples (docs/design/equality.md,
+ * "Structural equality for records and tuples"). Two operands compare
+ * through one synthesized function per pair of operand types
+ * (ir/equality.zena, `lowerValueEqFunction`), which reachability
+ * registers and lowering calls. This module is what the two agree on:
+ * which operands compare, which fields pair up, and the function's key.
+ */
+import { NullType, RecordType, TupleType, Type, UnionType, baseType } from '../types.zena';
+import { compareStrings, getTypeUniqueKey } from './codegen-utils.zena';
+
+/**
+ * A record or tuple operand's type without `| null` and without an alias,
+ * or null for any other type.
+ */
+export let valueEqOperand = (t: Type): Type | null => {
+  var base = baseType(t);
+  if (base is UnionType) {
+    var only: Type | null = null;
+    var count = 0;
+    for (let m in base.types) {
+      if (!(m is NullType)) {
+        only = m;
+        count += 1;
+      }
+    }
+    if (count != 1 || only == null) {
+      return null;
+    }
+    base = baseType(only as Type);
+  }
+  if (base is RecordType || base is TupleType) {
+    return base;
+  }
+  return null;
+};
+
+/**
+ * One pair of fields two operands compare: a record field by name, or a
+ * tuple element by its index written as a string (its struct field's
+ * name).
+ */
+export final class ValueEqField {
+  name: String;
+  left: Type;
+  right: Type;
+  leftOptional: boolean;
+  rightOptional: boolean;
+  new(this.name, this.left, this.right, this.leftOptional, this.rightOptional);
+}
+
+/**
+ * The fields `l` and `r` compare pairwise, records in field-name order,
+ * or null when the two never hold equal values: records with different
+ * field names, tuples of different lengths, or a record and a tuple.
+ * `==` does not convert its operands, so a record is never equal to one
+ * with other fields (row-types.md, Decisions).
+ */
+export let valueEqFields = (l: Type, r: Type): GrowableArray<ValueEqField> | null => {
+  let out = new Array<ValueEqField>();
+  if (l is TupleType && r is TupleType) {
+    let ls = l.elementTypes;
+    let rs = r.elementTypes;
+    if (ls.length != rs.length) {
+      return null;
+    }
+    for (var i = 0; i < ls.length; i += 1) {
+      out.push(new ValueEqField(`${i}`, ls[i], rs[i], false, false));
+    }
+    return out;
+  }
+  if (l is RecordType && r is RecordType) {
+    if (l.properties.size != r.properties.size) {
+      return null;
+    }
+    let names = new Array<String>();
+    for (let name in l.properties.keys()) {
+      if (!r.properties.has(name)) {
+        return null;
+      }
+      names.push(name);
+    }
+    for (var i = 1; i < names.length; i += 1) {
+      let key = names[i];
+      var j = i - 1;
+      while (j >= 0 && compareStrings(names[j], key) > 0) {
+        names[j + 1] = names[j];
+        j -= 1;
+      }
+      names[j + 1] = key;
+    }
+    for (let name in names) {
+      out.push(new ValueEqField(name, l.properties[name], r.properties[name],
+          l.isOptional(name), r.isOptional(name)));
+    }
+    return out;
+  }
+  return null;
+};
+
+/** The key of the comparison function for operand types `l` and `r`. */
+export let valueEqKey = (l: Type, r: Type): String =>
+    `${getTypeUniqueKey(l)}|${getTypeUniqueKey(r)}`;

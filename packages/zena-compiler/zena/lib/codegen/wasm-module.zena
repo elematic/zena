@@ -541,6 +541,13 @@ export final class WasmFunction implements Hashable {
    */
   var importCanonType: String = "";
   var isCaseClassEq: boolean = false;
+  /**
+   * For a synthesized structural `==` over two record or tuple types
+   * (ir/equality.zena, `lowerValueEqFunction`): the operands' types,
+   * without `| null`. Null for every other function.
+   */
+  var valueEqLeft: Type | null = null;
+  var valueEqRight: Type | null = null;
 
   /** A synthesized resource `:dispose`: no AST body, the class's owner
    * fields release as its whole behavior. */
@@ -1302,6 +1309,12 @@ export final class WasmModule {
    * (ir/equality.zena, lowerErasedEqDispatch).
    */
   var erasedEqFunc: WasmFunction | null = null;
+  /**
+   * The structural `==` functions over pairs of record or tuple types,
+   * by `valueEqKey` (value-equality.zena). Reachability adds one per
+   * pair a reached `==` compares, and per pair of nested fields.
+   */
+  valueEqFuncs = new Map<String, WasmFunction>();
   /**
    * Set by RTA when String is genuinely instantiated. The `$string*`
    * host-interop helpers are synthesized against String's struct

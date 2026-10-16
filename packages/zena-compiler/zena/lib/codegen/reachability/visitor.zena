@@ -1,5 +1,6 @@
 import { Set } from 'zena:collections';
 import { collectValueExports, findDeclaration } from '../lookup.zena';
+import { valueEqFields, valueEqKey, valueEqOperand } from '../value-equality.zena';
 import {
   Referrer, ReachabilityContext, TypeLowererInterface, ReachabilityVisitorInterface,
   recordLiteralArgKey, recordLiteralCtorArgKey, recordLiteralMethodArgKey,
@@ -631,31 +632,83 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
     if (bin.operator != "==" && bin.operator != "!=") { return; }
     let lt = model.getNodeType(bin.left);
     let rt = model.getNodeType(bin.right);
-    var erased = false;
     if (lt != null) {
-      let lr = resolveType(lt);
-      let lv = typeToValType(this.pass.wasm, lr);
-      if (lv is ValTypeAnyRef || lv is ValTypeEqRef || lv is ValTypeStructRef ||
-          isInterfaceOperand(lr)) {
-        erased = true;
-      }
-      // A CONCRETE class operand lowers to a direct call of the
-      // class's `==` operator, resolved by name in ir/operators.zena —
-      // no call node, no dependency record (the template body says
-      // `T == T`). Root it from the use.
-      this.#rootEqOperator(lr, model);
+      this.#noteEqualityOperand(resolveType(lt), model);
     }
     if (rt != null) {
-      let rr = resolveType(rt);
-      let rv = typeToValType(this.pass.wasm, rr);
-      if (rv is ValTypeAnyRef || rv is ValTypeEqRef || rv is ValTypeStructRef ||
-          isInterfaceOperand(rr)) {
-        erased = true;
-      }
-      this.#rootEqOperator(rr, model);
+      this.#noteEqualityOperand(resolveType(rt), model);
     }
-    if (erased) {
+    if (lt != null && rt != null) {
+      this.noteValueEquality(resolveType(lt), resolveType(rt), model);
+    }
+  }
+
+  /**
+   * What comparing one operand of type `t` needs: the erased comparison's
+   * dispatch for an erased or interface operand, and a concrete class's
+   * `==` operator, which ir/operators.zena calls by name with no call
+   * node or dependency record (the template body says `T == T`), so it is
+   * rooted from the use.
+   */
+  #noteEqualityOperand(t: Type, model: SemanticModel): void {
+    // An operand's type may appear nowhere else, such as a call's record
+    // result compared directly (`f() == g()`), and mapping it needs it
+    // discovered.
+    this.pass.typeLowerer.discoverType(t, model);
+    let vt = typeToValType(this.pass.wasm, t);
+    if (vt is ValTypeAnyRef || vt is ValTypeEqRef || vt is ValTypeStructRef ||
+        isInterfaceOperand(t)) {
       this.pass.useEqualityDispatch();
+    }
+    this.#rootEqOperator(t, model);
+  }
+
+  /**
+   * `==` on two record or tuple operands compares them field by field,
+   * through one synthesized function per pair of operand types
+   * (value-equality.zena). Registers that function and discovers both
+   * types, then whatever comparing each pair of fields needs: a nested
+   * pair's function, or what a scalar operand needs.
+   */
+  noteValueEquality(lt: Type, rt: Type, model: SemanticModel): void {
+    let l = valueEqOperand(lt);
+    let r = valueEqOperand(rt);
+    if (l == null || r == null || !this.pass.currentReachable) {
+      return;
+    }
+    let left = l as Type;
+    let right = r as Type;
+    let fields = valueEqFields(left, right);
+    if (fields == null) {
+      return;
+    }
+    let wasm = this.pass.wasm;
+    let key = valueEqKey(left, right);
+    if (let (true, existing) = wasm.valueEqFuncs.get(key)) {
+      this.pass.markFunctionReached(existing);
+      return;
+    }
+    this.pass.typeLowerer.discoverType(left, model);
+    this.pass.typeLowerer.discoverType(right, model);
+    let params = new Array<ValType>();
+    params.push(typeToValType(wasm, left));
+    params.push(typeToValType(wasm, right));
+    let returns = new Array<ValType>();
+    returns.push(new ValTypeI32());
+    let fn = new WasmFunction(wasm.getSignature(params, returns), null, model);
+    fn.name = '$valueEq';
+    fn.valueEqLeft = left;
+    fn.valueEqRight = right;
+    wasm.valueEqFuncs[key] = fn;
+    wasm.addFunction(fn);
+    this.pass.markFunctionReached(fn);
+    for (let f in fields) {
+      if (valueEqOperand(f.left) != null && valueEqOperand(f.right) != null) {
+        this.noteValueEquality(f.left, f.right, model);
+      } else {
+        this.#noteEqualityOperand(f.left, model);
+        this.#noteEqualityOperand(f.right, model);
+      }
     }
   }
 
