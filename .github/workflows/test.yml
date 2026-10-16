@@ -3,8 +3,15 @@ name: CI
 on:
   push:
     branches: [main]
+  # Every pull request, whatever its base. A stacked one, based on another
+  # pull request's branch, is tested on each push too, and its checks stay on
+  # its head commit when the base is changed to main. With a `branches: [main]`
+  # filter it had none, and retargeting does not start a run: that is an
+  # `edited` event, not `synchronize`. Listening for `edited` is not the fix.
+  # It fires on title and body edits too, and a job skipped by an `if` reports
+  # success, so an edit would cover a failing required check with a passing
+  # one.
   pull_request:
-    branches: [main]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
