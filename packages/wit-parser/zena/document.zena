@@ -22,7 +22,7 @@ import {
 import { ResolveError } from './resolver.zena';
 
 /** Byte-wise string order, for a listing that reads the same everywhere. */
-let byteCompare = (a: String, b: String): i32 => {
+function byteCompare(a: String, b: String) {
   var minLen = a.length;
   if (b.length < minLen) {
     minLen = b.length;
@@ -34,7 +34,7 @@ let byteCompare = (a: String, b: String): i32 => {
     }
   }
   return a.length - b.length;
-};
+}
 
 /** One file of a WIT package directory: its name and its text. */
 export final class WitFile {
@@ -148,7 +148,7 @@ export function joinWitDocument(files: Array<WitFile>): WitDocument {
   var source = "";
   for (let file in wit) {
     starts.push(new WitFileStart(file.name, source.length));
-    source = source + file.source + "\n";
+    source = `${source}${file.source}\n`;
   }
   return new WitDocument(source, starts);
 }
@@ -169,13 +169,13 @@ export function joinWitFiles(files: Array<WitFile>): String {
  */
 export function witErrorSpan(e: Error): Span | null {
   if (e is LexError) {
-    return (e as LexError).span;
+    return e.span;
   }
   if (e is ParseError) {
-    return (e as ParseError).span;
+    return e.span;
   }
   if (e is ResolveError) {
-    return (e as ResolveError).span;
+    return e.span;
   }
   return null;
 }
@@ -196,7 +196,7 @@ export function witDiagnostic(doc: WitDocument, e: Error): String | null {
   if (span == null) {
     return null;
   }
-  let at = span as Span;
+  let at = span;
   if (at.start > doc.source.length) {
     return null;
   }
@@ -242,7 +242,7 @@ export function findInterface(
     throw new Error("WIT interface '" + namespace + ":" + interfacePath +
         "' is not declared by the package's WIT.");
   }
-  return found as FoundInterface;
+  return found;
 }
 
 /** `findInterface`, but an absent interface is null rather than a
@@ -255,17 +255,17 @@ export function findInterfaceOrNull(
 ): FoundInterface | null {
   var found: FoundInterface | null = null;
   var matches = 0;
-  let consider = (pkg: PackageName | null, items: Array<AstItem>): void => {
+  let consider = (pkg: PackageName | null, items: Array<AstItem>) => {
     if (pkg == null) {
       return;
     }
-    let p = pkg as PackageName;
+    let p = pkg;
     for (let item in items) {
       if (item.tag != AstItemTag.Interface) {
         continue;
       }
       let def = item.interfaceDef as InterfaceDef;
-      let path = p.name.name + "/" + def.name.name;
+      let path = `${p.name.name}/${def.name.name}`;
       if (p.namespace.name == namespace && path == interfacePath) {
         found = new FoundInterface(def, p);
         matches += 1;

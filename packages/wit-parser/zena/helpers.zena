@@ -2,15 +2,15 @@ import {PackageName, Id} from './parser.zena';
 import {StringReader} from 'zena:core';
 
 /** Normalize an identifier - strip '%' prefix if present (explicit escaping). */
-export let normalizeId = (name: String): String => {
+export function normalizeId(name: String): String {
   if (name.length > 0 && name.getByteAt(0) == 37) { // '%'
     return name.sliceBytes(1, name.length);
   } else {
     return name;
   }
-};
+}
 
-export let compareStrings = (s1: String, s2: String): i32 => {
+export function compareStrings(s1: String, s2: String): i32 {
   let len1 = s1.length;
   let len2 = s2.length;
   let minLen = if (len1 < len2) len1 else len2;
@@ -33,9 +33,9 @@ export let compareStrings = (s1: String, s2: String): i32 => {
     return 1;
   }
   return 0;
-};
+}
 
-export let isPurelyNumeric = (s: String): boolean => {
+export function isPurelyNumeric(s: String): boolean {
   if (s.length == 0) return false;
   for (var i = 0; i < s.length; i += 1) {
     let b = s.getByteAt(i);
@@ -44,18 +44,18 @@ export let isPurelyNumeric = (s: String): boolean => {
     }
   }
   return true;
-};
+}
 
-export let stringToInt = (s: String): i32 => {
+export function stringToInt(s: String): i32 {
   var val = 0;
   for (var i = 0; i < s.length; i += 1) {
     let b = s.getByteAt(i);
     val = val * 10 + (b - 48);
   }
   return val;
-};
+}
 
-let readInt = (r: StringReader): i32 => {
+function readInt(r: StringReader) {
   var val = 0;
   while (!r.isAtEnd) {
     let b = r.peekByte();
@@ -67,9 +67,9 @@ let readInt = (r: StringReader): i32 => {
     }
   }
   return val;
-};
+}
 
-export let getPreIdentifiers = (s: String, start: i32, end: i32): Array<String> => {
+export function getPreIdentifiers(s: String, start: i32, end: i32): Array<String> {
   let arr = new GrowableArray<String>();
   if (start < 0 || start >= end) return arr;
   
@@ -84,9 +84,9 @@ export let getPreIdentifiers = (s: String, start: i32, end: i32): Array<String> 
     arr.push(s.sliceBytes(curStart, end));
   }
   return arr;
-};
+}
 
-export let compareVersions = (v1: String, v2: String): i32 => {
+export function compareVersions(v1: String, v2: String): i32 {
   let r1 = new StringReader(v1);
   let r2 = new StringReader(v2);
   
@@ -181,25 +181,25 @@ export let compareVersions = (v1: String, v2: String): i32 => {
   if (len1 < len2) return -1;
   if (len1 > len2) return 1;
   return compareStrings(v1, v2);
-};
+}
 
-export let formatPackageName = (name: PackageName | null): String => {
+export function formatPackageName(name: PackageName | null): String {
   if (name == null) { return ""; }
-  let n = name as PackageName;
-  var result = normalizeId(n.namespace.name) + ":" + normalizeId(n.name.name);
+  let n = name;
+  var result = `${normalizeId(n.namespace.name)}:${normalizeId(n.name.name)}`;
   if (n.version != null) {
-    result = result + "@" + (n.version as String);
+    result = `${result}@${n.version as String}`;
   }
   return result;
-};
+}
 
-export let comparePackageNames = (pn1: PackageName | null, pn2: PackageName | null): i32 => {
+export function comparePackageNames(pn1: PackageName | null, pn2: PackageName | null): i32 {
   if (pn1 == null && pn2 == null) return 0;
   if (pn1 == null) return -1;
   if (pn2 == null) return 1;
   
-  let p1 = pn1 as PackageName;
-  let p2 = pn2 as PackageName;
+  let p1 = pn1;
+  let p2 = pn2;
   
   let ns1 = normalizeId(p1.namespace.name);
   let ns2 = normalizeId(p2.namespace.name);
@@ -216,9 +216,9 @@ export let comparePackageNames = (pn1: PackageName | null, pn2: PackageName | nu
   if (p2.version == null) return 1;
   
   return compareVersions(p1.version as String, p2.version as String);
-};
+}
 
-export let comparePackageNameStrings = (pkgOrder: Array<String>, k1: String, k2: String): i32 => {
+export function comparePackageNameStrings(pkgOrder: Array<String>, k1: String, k2: String): i32 {
   if (k1 == k2) return 0;
 
   // Sort according to pkgOrder if both are present in the list
@@ -250,7 +250,7 @@ export let comparePackageNameStrings = (pkgOrder: Array<String>, k1: String, k2:
   if (hasVer1 && !hasVer2) return 1;
   
   return compareVersions(p1.version as String, p2.version as String);
-};
+}
 
 class PackageParts {
   namespace: String;
@@ -259,7 +259,7 @@ class PackageParts {
   new(this.namespace, this.name, this.version);
 }
 
-let parsePackageParts = (name: String): PackageParts => {
+function parsePackageParts(name: String): PackageParts {
   let colonParts = name.split(":");
   var namespace = "";
   var rest = name;
@@ -273,7 +273,7 @@ let parsePackageParts = (name: String): PackageParts => {
     return new PackageParts(namespace, atParts[0], atParts[1]);
   }
   return new PackageParts(namespace, rest, null);
-};
+}
 
 export class PackageNameRef {
   packageName: String;
@@ -281,13 +281,13 @@ export class PackageNameRef {
   new(this.packageName, this.version);
 }
 
-export let parsePackageName = (name: String): PackageNameRef => {
+export function parsePackageName(name: String): PackageNameRef {
   let atParts = name.split("@");
   if (atParts.length == 2) {
     return new PackageNameRef(atParts[0], atParts[1]);
   }
   return new PackageNameRef(name, null);
-};
+}
 
 export class InterfaceNameRef {
   packageName: String;
@@ -296,11 +296,11 @@ export class InterfaceNameRef {
   new(this.packageName, this.version, this.interfaceName);
 }
 
-export let parseInterfaceName = (name: String): InterfaceNameRef | null => {
+export function parseInterfaceName(name: String): InterfaceNameRef | null {
   let slashParts = name.split("/");
   if (slashParts.length != 2) {
     return null;
   }
   let pkgRef = parsePackageName(slashParts[0]);
   return new InterfaceNameRef(pkgRef.packageName, pkgRef.version, slashParts[1]);
-};
+}

@@ -30,7 +30,7 @@ export class ParseError extends Error {
 // Unresolved AST Types (Parse Tree)
 // ============================================================================
 
-let normalizeDocs = (contents: String): String => {
+function normalizeDocs(contents: String) {
   if (contents.length == 0) {
     return "";
   }
@@ -41,7 +41,7 @@ let normalizeDocs = (contents: String): String => {
   for (var i = 0; i <= contents.length; i += 1) {
     if (i == contents.length || contents.getByteAt(i) == 10) { // 10 is '\n'
       // Extract line
-      var line = contents.sliceBytes(lineStart, i);
+      let line = contents.sliceBytes(lineStart, i);
       // Trim training whitespace (space 32, tab 9, CR 13)
       var end = line.length;
       while (end > 0) {
@@ -99,7 +99,7 @@ let normalizeDocs = (contents: String): String => {
   }
   
   return sb.toString();
-};
+}
 
 /**
  * Documentation comments collected from /// comments.
@@ -1269,11 +1269,11 @@ export class Parser {
   #expectKeyword(keyword: String): void {
     let token = this.#peek();
     if (token.type != TokenType.Id) {
-      throw new ParseError("expected `" + keyword + "`", token.span);
+      throw new ParseError(`expected \`${keyword}\``, token.span);
     }
     let text = this.#text(token.span);
     if (!(text == keyword)) {
-      throw new ParseError("expected `" + keyword + "`", token.span);
+      throw new ParseError(`expected \`${keyword}\``, token.span);
     }
     this.#advance();
   }
@@ -1553,7 +1553,7 @@ export class Parser {
       this.#expect(TokenType.LessThan);
       let innerToken = this.#peek();
       if (innerToken.type != TokenType.Id && innerToken.type != TokenType.ExplicitId) {
-        throw new ParseError("expected an identifier or string, found keyword `" + this.#text(innerToken.span) + "`", innerToken.span);
+        throw new ParseError(`expected an identifier or string, found keyword \`${this.#text(innerToken.span)}\``, innerToken.span);
       }
       let id = this.#parseId();
       let inner = Type.named(id, id.span);
@@ -1568,7 +1568,7 @@ export class Parser {
       this.#expect(TokenType.LessThan);
       let innerToken = this.#peek();
       if (innerToken.type != TokenType.Id && innerToken.type != TokenType.ExplicitId) {
-        throw new ParseError("expected an identifier or string, found keyword `" + this.#text(innerToken.span) + "`", innerToken.span);
+        throw new ParseError(`expected an identifier or string, found keyword \`${this.#text(innerToken.span)}\``, innerToken.span);
       }
       let id = this.#parseId();
       let inner = Type.named(id, id.span);
@@ -1997,7 +1997,7 @@ export class Parser {
     this.#expect(TokenType.Include);
     let from = this.#parseUsePath();
     
-    var names: GrowableArray<IncludeName> = new GrowableArray<IncludeName>();
+    var names = new GrowableArray<IncludeName>();
     if (this.#eat(TokenType.With)) {
       names = this.#parseList<IncludeName>(
         TokenType.LeftBrace,
@@ -2091,7 +2091,7 @@ export class Parser {
               // Different package
               let existingNested = this.#findNestedPackage(ast.nestedPackages, newKey);
               if (existingNested != null) {
-                currentTopPackage = existingNested as NestedPackage;
+                currentTopPackage = existingNested;
               } else {
                 let pkg = new NestedPackage(docs, name);
                 ast.nestedPackages.push(pkg);
@@ -2105,7 +2105,7 @@ export class Parser {
       }
       
       if (currentTopPackage != null) {
-        let pkg = currentTopPackage as NestedPackage;
+        let pkg = currentTopPackage;
         pkg.items.push(this.#parseAstItem(docs));
       } else {
         ast.items.push(this.#parseAstItem(docs));
@@ -2118,9 +2118,9 @@ export class Parser {
 
   /** Build a package lookup key including version if present. */
   #packageKey(name: PackageName): String {
-    var key = name.namespace.name + ":" + name.name.name;
+    var key = `${name.namespace.name}:${name.name.name}`;
     if (name.version != null) {
-      key = key + "@" + (name.version as String);
+      key = `${key}@${name.version as String}`;
     }
     return key;
   }

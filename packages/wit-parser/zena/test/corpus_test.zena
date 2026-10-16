@@ -48,7 +48,7 @@ final class Case {
 }
 
 /** Insertion sort, in place: directory listings are nearly sorted. */
-let sortStrings = (values: GrowableArray<String>): void => {
+function sortStrings(values: GrowableArray<String>) {
   for (var i = 1; i < values.length; i += 1) {
     let current = values[i];
     var j = i - 1;
@@ -57,10 +57,10 @@ let sortStrings = (values: GrowableArray<String>): void => {
     }
     values[j + 1] = current;
   }
-};
+}
 
 /** The names in a directory, sorted. */
-let entryNames = (dir: String): GrowableArray<String> => {
+function entryNames(dir: String) {
   let names = new GrowableArray<String>();
   for (let entry in listDirSync(dir)) {
     if (entry.name != '.' && entry.name != '..') {
@@ -69,9 +69,9 @@ let entryNames = (dir: String): GrowableArray<String> => {
   }
   sortStrings(names);
   return names;
-};
+}
 
-let join = (values: GrowableArray<String>, separator: String): String => {
+function join(values: GrowableArray<String>, separator: String) {
   let out = new StringBuilder();
   for (var i = 0; i < values.length; i += 1) {
     if (i > 0) {
@@ -80,10 +80,10 @@ let join = (values: GrowableArray<String>, separator: String): String => {
     out.append(values[i]);
   }
   return out.toString();
-};
+}
 
 /** Collects the cases under `dir`, with `prefix` their path under `tests/`. */
-let discover = (dir: String, prefix: String, out: GrowableArray<Case>): void => {
+function discover(dir: String, prefix: String, out: GrowableArray<Case>): void {
   for (let name in entryNames(dir)) {
     let path = `${dir}/${name}`;
     let relative = if (prefix == '') { name } else { `${prefix}/${name}` };
@@ -120,15 +120,15 @@ let discover = (dir: String, prefix: String, out: GrowableArray<Case>): void => 
       out.push(new Case(relative, path, `${base}.wit.result`, false, false));
     }
   }
-};
+}
 
 /** Collects a directory case's files, splitting out the vendored deps. */
-let collectFiles = (
+function collectFiles(
   dir: String,
   isDep: boolean,
   main: GrowableArray<String>,
   deps: GrowableArray<String>,
-): void => {
+): void {
   for (let name in entryNames(dir)) {
     let path = `${dir}/${name}`;
     if (isDirectorySync(path)) {
@@ -141,7 +141,7 @@ let collectFiles = (
       }
     }
   }
-};
+}
 
 /** `package ns:name;` at the start of a line: a file-level declaration. */
 let PACKAGE_DECL = regex`(?m)^\s*package\s+([\w-]+):([\w-]+)(@[\w.+-]+)?\s*;`;
@@ -159,22 +159,22 @@ let DEFINITION = regex`(?m)^\s*(?:interface|world)\s+([\w-]+)\s*\{`;
 let ITEM_KEYWORD = regex`\b(interface|world|use)\b`;
 
 /** The `ns:name` a file declares, or '' when it declares no package. */
-let declaredPackage = (source: String): String => {
+function declaredPackage(source: String) {
   let found = PACKAGE_DECL.exec(source);
   if (found == null) {
     return '';
   }
   return `${found.groups[0]}:${found.groups[1]}`;
-};
+}
 
 /** A directory case's main files, sorted: everything not under `deps/`. */
-let mainFiles = (dir: String): GrowableArray<String> => {
+function mainFiles(dir: String) {
   let main = new GrowableArray<String>();
   let deps = new GrowableArray<String>();
   collectFiles(dir, false, main, deps);
   sortStrings(main);
   return main;
-};
+}
 
 /**
  * The fault a directory case's files have between them, or '' when they
@@ -186,7 +186,7 @@ let mainFiles = (dir: String): GrowableArray<String> => {
  * boundaries are gone. Upstream parses each file on its own and merges by
  * package name, so it sees both.
  */
-let fileLevelFault = (dir: String): String => {
+function fileLevelFault(dir: String) {
   let paths = mainFiles(dir);
   if (paths.length < 2) {
     return '';
@@ -238,7 +238,7 @@ let fileLevelFault = (dir: String): String => {
     }
   }
   return '';
-};
+}
 
 /**
  * Whether a file declares a package twice at file level with an item in
@@ -246,7 +246,7 @@ let fileLevelFault = (dir: String): String => {
  * and the parser accepts the concatenated form because that is how a
  * directory case's files reach it.
  */
-let declaresPackageTwice = (source: String): boolean => {
+function declaresPackageTwice(source: String): boolean {
   let declarations = PACKAGE_DECL.matchAll(source);
   if (declarations.length < 2) {
     return false;
@@ -257,14 +257,15 @@ let declaresPackageTwice = (source: String): boolean => {
     declarations[1].index,
   );
   return ITEM_KEYWORD.test(between);
-};
+}
 
 /** Whether a path holds a component rather than WIT text. */
-let isBinary = (path: String): boolean =>
-  path.endsWith('.wat') || path.endsWith('.wasm');
+function isBinary(path: String) {
+  return path.endsWith('.wat') || path.endsWith('.wasm');
+}
 
 /** The WIT a component decodes to, through the wasm-tools CLI. */
-let decodeBinary = (path: String): String => {
+function decodeBinary(path: String) {
   // The child runs on the host; '.' as its directory is the repository root,
   // which is what the paths here are relative to. The host resolves the
   // program name — a test cannot search PATH itself, because the preopens it
@@ -282,10 +283,10 @@ let decodeBinary = (path: String): String => {
     );
   }
   return result.stdout;
-};
+}
 
 /** The single document a case parses: its files, in order, concatenated. */
-let inputOf = (c: Case): String => {
+function inputOf(c: Case) {
   if (!c.isDirectory) {
     if (isBinary(c.path)) {
       return decodeBinary(c.path);
@@ -316,14 +317,14 @@ let inputOf = (c: Case): String => {
     }
   }
   return join(contents, '\n');
-};
+}
 
 /**
  * The order the golden lists packages in, as `a,b,c`, or null when it lists
  * none. A concatenated multi-package document has no inherent order, so the
  * serializer is told which one to emit.
  */
-let packageOrder = (expected: JsonValue): String | null => {
+function packageOrder(expected: JsonValue): String | null {
   if (!(expected is JsonObject)) {
     return null;
   }
@@ -345,25 +346,29 @@ let packageOrder = (expected: JsonValue): String | null => {
     return null;
   }
   return join(names, ',');
-};
+}
 
 /** Parses a case's document, or fails the test naming what went wrong. */
-let parseOrFail = (c: Case, input: String): Ast => try {
+function parseOrFail(c: Case, input: String) {
+  return try {
   parse(input)
 } catch (e) {
   fail(`${c.name} no longer parses: ${e.message}`)
 };
+}
 
 /** The message a case fails with, or '' when it parses and resolves. */
-let failureOf = (input: String): String => try {
+function failureOf(input: String) {
+  return try {
   parse(input);
   ''
 } catch (e) {
   e.message
 };
+}
 
 /** The fault the harness itself finds, or '' when it finds none. */
-let harnessFault = (c: Case): String => {
+function harnessFault(c: Case) {
   if (c.isDirectory) {
     return fileLevelFault(c.path);
   }
@@ -371,9 +376,9 @@ let harnessFault = (c: Case): String => {
     return "expected '{', found ';'";
   }
   return '';
-};
+}
 
-let runCase = (c: Case): void => {
+function runCase(c: Case) {
   let fault = harnessFault(c);
   if (fault != '') {
     isTrue(!c.mustParse, `${c.name}: ${fault}`);
@@ -390,10 +395,10 @@ let runCase = (c: Case): void => {
   });
   let actual = parseJson(toJson(parseOrFail(c, input), packageOrder(expected)));
   jsonEqual(actual, expected, `${c.name} serialized differently`);
-};
+}
 
 /** The names `test-config.json` lists under `key`. */
-let namesFrom = (config: JsonValue, key: String): HashSet<String> => {
+function namesFrom(config: JsonValue, key: String) {
   let names = new HashSet<String>();
   if (!(config is JsonObject)) {
     return names;
@@ -413,7 +418,7 @@ let namesFrom = (config: JsonValue, key: String): HashSet<String> => {
     }
   }
   return names;
-};
+}
 
 /** The corpus, and what `test-config.json` holds out of it. */
 final class Corpus {
@@ -429,7 +434,7 @@ final class Corpus {
  * the body runs while the module is still starting, and a blocking host call
  * there traps with "cannot block a synchronous task before returning".
  */
-let readCorpus = (): Corpus => {
+function readCorpus() {
   let config = parseJson(readFileSync(`${TESTS}/test-config.json`), {
     allowComments: true,
     trackLocations: false,
@@ -441,13 +446,13 @@ let readCorpus = (): Corpus => {
     namesFrom(config, 'skip'),
     namesFrom(config, 'expectedFailures'),
   );
-};
+}
 
 /**
  * Runs every case whose expectation is a `.wit.json` when `mustParse`, and
  * every `.wit.result` case otherwise, printing a line per failure.
  */
-let runGroup = (mustParse: boolean, label: String): void => {
+function runGroup(mustParse: boolean, label: String) {
   let corpus = readCorpus();
   var ran = 0;
   var skipped = 0;
@@ -484,9 +489,9 @@ let runGroup = (mustParse: boolean, label: String): void => {
     console.log(`  ${line}`);
   }
   isTrue(failures.length == 0, `${failures.length} of ${ran} ${label} failed`);
-};
+}
 
-export let tests = suite('WIT corpus', (): void => {
+export let tests = suite('WIT corpus', () => {
   test('documents that must parse', () => {
     runGroup(true, 'success cases');
   });
