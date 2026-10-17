@@ -3,7 +3,7 @@
  */
 
 import { getEnv } from 'zena:cli';
-import { App, send, serve } from 'zena:http';
+import { App, serve } from 'zena:http';
 
 function resolvePort() {
   let envPort = getEnv('PORT');
@@ -24,30 +24,7 @@ export async function main() {
   let port = resolvePort();
   let siteDir = resolveSiteDir();
 
-  app.use(serve(siteDir, {
-    setHeaders: (res, path, stat) => {
-      // Assets are not content-hashed, so revalidate via ETag/Last-Modified.
-      res.setHeader('cache-control', 'no-cache');
-      res.setHeader('x-content-type-options', 'nosniff');
-    },
-  }));
-
-  app.use(async (req, res, next) => {
-    if (req.method != 'GET' && req.method != 'HEAD') {
-      res.statusCode = 405;
-      res.setHeader('allow', 'GET, HEAD');
-      res.body = 'Method Not Allowed';
-      return;
-    }
-    res.statusCode = 404;
-    await send(req, res, '404.html', {
-      root: siteDir,
-      setHeaders: (r, path, stat) => {
-        r.setHeader('cache-control', 'no-cache');
-        r.setHeader('x-content-type-options', 'nosniff');
-      },
-    });
-  });
+  app.use(serve(siteDir, {notFound: '404.html'}));
 
   let server = await app.listen(port);
   console.log(`🚀 Zena HTTP server running at http://localhost:${server.port}`);

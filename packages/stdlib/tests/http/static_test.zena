@@ -59,6 +59,7 @@ export let tests = suite('zena:http static files', (): void => {
     equal(res.getHeader('content-type') as String, 'text/plain; charset=utf-8');
     equal(res.getHeader('content-length') as String, '6');
     equal(res.getHeader('cache-control') as String, 'max-age=0');
+    equal(res.getHeader('x-content-type-options') as String, 'nosniff');
     isTrue((res.getHeader('last-modified') as String).endsWith(' GMT'));
     isTrue((res.getHeader('etag') as String).startsWith('W/"6-'));
   });
@@ -82,6 +83,33 @@ export let tests = suite('zena:http static files', (): void => {
     isTrue(served.passed);
     equal(served.res.statusCode, 404);
     isTrue(served.res.body == null);
+  });
+
+  test('serves the notFound file with status 404 when next leaves the response unhandled', (ctx: TestContext): void => {
+    let served = serveOne(
+        new Request.fromUrl('http://localhost/missing'), {notFound: 'about.html'});
+    isTrue(served.passed);
+    equal(served.res.statusCode, 404);
+    equal(bodyText(served.res), '<h1>about</h1>\n');
+    equal(served.res.getHeader('content-type') as String, 'text/html; charset=utf-8');
+    equal(served.res.getHeader('x-content-type-options') as String, 'nosniff');
+
+    let headServed = serveOne(
+        new Request.fromUrl('http://localhost/missing', 'HEAD'), {notFound: 'about.html'});
+    isTrue(headServed.passed);
+    equal(headServed.res.statusCode, 404);
+    isTrue(headServed.res.body == null);
+
+    // When `next` handles the request, `notFound` does not overwrite it.
+    let app = new App();
+    app.use(serve(fixtures(), {notFound: 'about.html'}));
+    app.use(async (req, res, next) => {
+      res.body = 'downstream';
+    });
+    let handledRes = new Response();
+    blockOn(app.handleRequest(new Request.fromUrl('http://localhost/missing'), handledRes));
+    equal(handledRes.statusCode, 200);
+    equal(handledRes.body as String, 'downstream');
   });
 
   test('passes hidden paths on to next', (ctx: TestContext): void => {
