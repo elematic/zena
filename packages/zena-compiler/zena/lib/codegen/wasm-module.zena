@@ -7,7 +7,7 @@ import { SymbolId, noSymbolId } from '../scope/symbol.zena';
 import { ByteBuffer, growable } from 'zena:core';
 import {
   ValType, ValTypeVoid, ValTypeStructRef, ValTypeRefNull, ValTypeRef, ValTypeEqRef,
-  ValTypeAnyRef, ValTypeI8, WasmType, valTypeEquals, ValTypeExternRef, ValTypeI32,
+  ValTypeAnyRef, ValTypeI8, WasmType, valTypeEquals, ValTypeExternRef, ValTypeRefExtern, ValTypeI32,
   ValTypeNullRef, isNullableAnyRef,
   valTypeToOpcode, nextWasmTypeUid, refTargetOf, sameHeapType
 } from './wasm.zena';
@@ -431,6 +431,8 @@ export function valTypeIdentical(a: ValType, b: ValType): boolean {
       case ValTypeRefNull as tb: sameHeapType(ta.target, tb.target)
       case _: false
     }
+    case ValTypeRefExtern: b is ValTypeRefExtern
+    case ValTypeExternRef: b is ValTypeExternRef
     case _: valTypeEquals(a, b)
   };
 }
@@ -443,6 +445,9 @@ export function isValSubtype(a: ValType, b: ValType): boolean {
   // those sites are audited; a caller that must not fold a null check
   // (simplify's castIsIdentity) checks nullability itself.
   if (valTypeEquals(a, b)) {
+    return true;
+  }
+  if (a is ValTypeRefExtern && b is ValTypeExternRef) {
     return true;
   }
   if (a is ValTypeStructRef) {
@@ -845,7 +850,11 @@ export final class WasmGlobal {
     this.initVTable,
     this.model
   ) : type = if (isMutable || (initExpr == null && initVTable == null)) {
-        if (let ValTypeRef {target} = type) new ValTypeRefNull(target) else type
+        match (type) {
+          case ValTypeRef {target}: new ValTypeRefNull(target)
+          case ValTypeRefExtern: new ValTypeExternRef()
+          case _: type
+        }
       } else {
         type
       } {}

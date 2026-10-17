@@ -19,7 +19,7 @@
  *    residual moves are ordered so no source is clobbered before it is
  *    read, with a per-param temp breaking genuine cycles (param swaps).
  */
-import { ValType, ValTypeVoid, ValTypeRef, ValTypeRefNull, ValTypeAnyRef, ValTypeEqRef, ValTypeStructRef, ValTypeNullRef, WasmType, heapTypeToSigned, HeapType, valTypeEquals } from '../wasm.zena';
+import { ValType, ValTypeVoid, ValTypeRef, ValTypeRefNull, ValTypeRefExtern, ValTypeExternRef, ValTypeAnyRef, ValTypeEqRef, ValTypeStructRef, ValTypeNullRef, WasmType, heapTypeToSigned, HeapType, valTypeEquals } from '../wasm.zena';
 import { WasmModule, WasmFunction, WasmSignature, WasmArray } from '../wasm-module.zena';
 import { WasmEmitter } from '../wasm-emitter.zena';
 import {
@@ -692,6 +692,7 @@ export final class ZirFunctionEmitter {
       let vt = body.resultType(v) as ValType;
       return match (vt) {
         case ValTypeRef as r: new ValTypeRefNull(r.target)
+        case ValTypeRefExtern: new ValTypeExternRef()
         case _: vt
       };
     };
@@ -1272,13 +1273,15 @@ export final class ZirFunctionEmitter {
   #localTypeFor(vt: ValType): ValType {
     return match (vt) {
       case ValTypeRef as r: new ValTypeRefNull(r.target)
+      case ValTypeRefExtern: new ValTypeExternRef()
       case _: vt
     };
   }
 
   /** True if the value's IR type is non-null but its local is nullable. */
   #storedNullable(inst: i32): boolean {
-    if (!(this.body.resultType(inst) is ValTypeRef)) {
+    let rt = this.body.resultType(inst);
+    if (!(rt is ValTypeRef) && !(rt is ValTypeRefExtern)) {
       return false;
     }
     let l = this.localOf[inst];
@@ -1288,8 +1291,8 @@ export final class ZirFunctionEmitter {
     if (l < this.func.signature.params.length) {
       return false;
     }
-    return this.localTypes[l - this.func.signature.params.length]
-        is ValTypeRefNull;
+    let lt = this.localTypes[l - this.func.signature.params.length];
+    return lt is ValTypeRefNull || lt is ValTypeExternRef;
   }
 
   /** Loads a value at its declared IR type. */

@@ -18,6 +18,7 @@ import {
 import {
   ValType, ValTypeAnyRef, ValTypeEqRef, ValTypeF32, ValTypeF64,
   ValTypeI32, ValTypeI64, ValTypeV128, ValTypeRef, ValTypeRefNull,
+  ValTypeRefExtern, ValTypeExternRef,
   ValTypeStructRef, ValTypeNullRef, ValTypeVoid, isRefValType,
 } from '../wasm.zena';
 import {
@@ -206,6 +207,9 @@ export final class LoweringContext {
     if (have is ValTypeRefNull && want is ValTypeRef) {
       return false;
     }
+    if (have is ValTypeExternRef && want is ValTypeRefExtern) {
+      return false;
+    }
     return isValSubtype(have, want);
   }
 
@@ -236,6 +240,9 @@ export final class LoweringContext {
         want.target == have.target) {
       return this.b.emit(IrOp.ref_as_non_null, want, value, -1);
     }
+    if (want is ValTypeRefExtern && have is ValTypeExternRef) {
+      return this.b.emit(IrOp.ref_as_non_null, want, value, -1);
+    }
     return value;
   }
 
@@ -245,6 +252,9 @@ export final class LoweringContext {
     return if (vt is ValTypeRefNull) {
       this.reassertNonNull(
           value, new ValTypeRef(vt.target) as ValType)
+    } else if (vt is ValTypeExternRef) {
+      this.reassertNonNull(
+          value, new ValTypeRefExtern() as ValType)
     } else {
       value
     };
@@ -264,6 +274,7 @@ export final class LoweringContext {
     let ok = vt is ValTypeI32 || vt is ValTypeI64 || vt is ValTypeF32 ||
         vt is ValTypeF64 || vt is ValTypeV128 || vt is ValTypeRef ||
         vt is ValTypeRefNull || vt is ValTypeNullRef ||
+        vt is ValTypeRefExtern || vt is ValTypeExternRef ||
         vt is ValTypeAnyRef || vt is ValTypeEqRef || vt is ValTypeStructRef;
     if (!ok) {
       this.fail(what);
@@ -1015,6 +1026,7 @@ export final class LoweringContext {
   nonNullOf(vt: ValType): ValType {
     return match (vt) {
       case ValTypeRefNull as rn: new ValTypeRef(rn.target) as ValType
+      case ValTypeExternRef: new ValTypeRefExtern() as ValType
       case _: vt
     };
   }
@@ -1038,6 +1050,10 @@ export final class LoweringContext {
       if (isValSubtype(nn, want)) {
         return this.b.emit(IrOp.ref_as_non_null, nn, value, -1);
       }
+    }
+    if (have is ValTypeExternRef && want is ValTypeRefExtern) {
+      let nn = new ValTypeRefExtern() as ValType;
+      return this.b.emit(IrOp.ref_as_non_null, nn, value, -1);
     }
     if (!isRefValType(have) || !isValSubtype(want, have)) {
       this.failConformance(value, want, reason);
@@ -1082,6 +1098,10 @@ export final class LoweringContext {
       if (isValSubtype(nn, bindingVt)) {
         return this.reassertNonNull(value, nn);
       }
+    }
+    if (have is ValTypeExternRef && bindingVt is ValTypeRefExtern) {
+      let nn = new ValTypeRefExtern() as ValType;
+      return this.reassertNonNull(value, nn);
     }
     if (isRefValType(have) && isValSubtype(bindingVt, have)) {
       return this.b.emit(IrOp.ref_cast, bindingVt, value,
