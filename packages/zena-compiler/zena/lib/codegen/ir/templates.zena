@@ -25,6 +25,7 @@ import {
 } from './lowering-context.zena';
 import { WellKnown, isWellKnown } from '../../well-known.zena';
 import { growable } from 'zena:core';
+import { targetUsesJsStrings } from '../../targets.zena';
 
 /**
  * A string literal: id lookup in the shared registry, then the
@@ -34,6 +35,15 @@ import { growable } from 'zena:core';
  * rather than falling back to a second storage story.
  */
 export function lowerStringLiteral(cx: LoweringContext, lit: StringLiteral): i32 {
+  if (targetUsesJsStrings(cx.wasm.target)) {
+    let gw = cx.wasm.getImportedStringWrapperGlobal(lit.value, cx.func.model);
+    let ref = cx.b.addRef(new IrRefGlobal(gw));
+    let get = cx.b.emit(IrOp.global_get, gw.type, -1, ref);
+    let sKey = getClassKey(cx.wasm.stringClass as ClassType);
+    let info = cx.wasm.classInfos[sKey];
+    let nonNullVt = new ValTypeRef(info.structType) as ValType;
+    return cx.b.emit(IrOp.ref_as_non_null, nonNullVt, get, -1);
+  }
   let litId = if (let (true, id) = cx.wasm.stringLiteralIds.get(lit.value)) id else -1;
   if (litId < 0) {
     throw new Error("String literal missing from the shared registry: '" +
@@ -85,11 +95,14 @@ export function lowerTemplateLiteral(cx: LoweringContext, tpl: TemplateLiteral):
 
   if (parts.length >= 2 && parts.length <= 5) {
     let concat = cx.wasm.getStdlibFunc(
-        'string', '__concat' + i32ToString(parts.length));
+        'core', '__concat' + i32ToString(parts.length));
     if (concat != null) {
       let sig = concat.signature;
       if (sig.returns.length != 1 || sig.params.length != parts.length) {
         cx.fail('concat helper shape');
+      }
+      for (var i = 0; i < parts.length; i += 1) {
+        parts[i] = cx.coerceTo(parts[i], sig.params[i]);
       }
       let call = cx.b.callFunc(
           cx.b.addRef(new IrRefFunc(concat)), parts, sig.returns[0]);

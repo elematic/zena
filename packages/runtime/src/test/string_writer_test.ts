@@ -5,6 +5,7 @@ import {
   createConsoleImports,
   createStringReader,
   createStringWriter,
+  instantiate,
 } from '../index.js';
 
 /**
@@ -18,19 +19,9 @@ async function instantiateWithStringExports() {
   `;
 
   const wasm = compile(source);
-  let instanceExports: WebAssembly.Exports | undefined;
-  const consoleImports = createConsoleImports(() => instanceExports);
-  const result = await WebAssembly.instantiate(wasm, {
-    console: consoleImports,
-    env: {
-      getStackTrace: () => null,
-      captureStackTrace: () => null,
-      formatStackTrace: () => null,
-    },
-  });
-  const instance = (result as any).instance || result;
-  instanceExports = instance.exports;
-  return instanceExports!;
+  const result = await instantiate(wasm);
+  const instance = 'instance' in result ? result.instance : result;
+  return instance.exports;
 }
 
 suite('createStringWriter / createStringReader round-trip', () => {
@@ -86,7 +77,8 @@ suite('createStringWriter / createStringReader round-trip', () => {
     const input = 'round trip through wasm';
     const strRef = writeString(input);
     const returned = identity(strRef);
-    const len = getLength(returned);
+    const len =
+      typeof returned === 'string' ? returned.length : getLength(returned);
     const output = readString(returned, len);
 
     assert.strictEqual(output, input);

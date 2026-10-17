@@ -136,9 +136,21 @@ export let tests = suite("Package Manifest", () => {
       let exports = config.exports as Map<String, ModuleExport>;
       let consoleExport = exports["console"];
       let virtual = consoleExport.virtual as Map<String, String>;
-      equal(virtual["js"], "console/host.zena");
+      equal(virtual["js"], "console/js.zena");
       equal(virtual["zena-cli"], "console/component.zena");
       isFalse(virtual.has("host"));
+    });
+
+    test("includes core/string.zena as internal virtual module", () => {
+      let config = buildStdlibConfig("/stdlib");
+      let exports = config.exports as Map<String, ModuleExport>;
+      let stringExport = exports["core/string.zena"];
+      isTrue(stringExport.internal);
+      let virtual = stringExport.virtual as Map<String, String>;
+      equal(virtual["js"], "core/string-js.zena");
+      equal(virtual["zena-cli"], "core/string.zena");
+      equal(virtual["component"], "core/string.zena");
+      equal(virtual["freestanding"], "core/string.zena");
     });
 
     test("does not export console implementation files by name", () => {
@@ -198,11 +210,13 @@ export let tests = suite("Package Manifest", () => {
 
     test("an entry file wins over the directory it sits in", () => {
       // core/error/ holds error-stack's two entry files. They are named by
-      // the manifest, so they belong to error-stack rather than falling
-      // through the directory rule to core.
+      // the manifest, so they belong to their respective libraries rather
+      // than falling through the directory rule to core.
       equal(stdlibLibraryOf("zena:core/error/stack-host.zena"), "error-stack");
       equal(stdlibLibraryOf("zena:core/error/stack-none.zena"), "error-stack");
-      // Everything else under core/ falls through to the directory.
+      // Everything under core/ (including the virtual string files) belongs to core.
+      equal(stdlibLibraryOf("zena:core/string.zena"), "core");
+      equal(stdlibLibraryOf("zena:core/string-js.zena"), "core");
       equal(stdlibLibraryOf("zena:core/error.zena"), "core");
     });
 
@@ -223,7 +237,7 @@ export let tests = suite("Package Manifest", () => {
       // Core's members have no module name of their own, so the directory
       // rule is what attributes them: every file under core/ belongs to
       // core, whether or not the manifest has heard of it.
-      equal(stdlibLibraryOf("zena:core/string.zena"), "core");
+      equal(stdlibLibraryOf("zena:core/array.zena"), "core");
       equal(stdlibLibraryOf("zena:core/index.zena"), "core");
       equal(stdlibLibraryOf("zena:core/not-a-module.zena"), "core");
     });
@@ -242,7 +256,6 @@ export let tests = suite("Package Manifest", () => {
       isFalse(stdlibLibraryAnswers("core", "json"));
       isFalse(stdlibLibraryAnswers("core", "regex"));
       isFalse(stdlibLibraryAnswers("string-convert", "core"));
-      isFalse(stdlibLibraryAnswers("string", "string-convert"));
     });
 
     test("a name is not matched by prefix", () => {

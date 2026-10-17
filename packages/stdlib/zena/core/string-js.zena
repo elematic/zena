@@ -1,0 +1,441 @@
+/**
+ * The Zena String class for the JavaScript target (--target js).
+ *
+ * Uses the WebAssembly JS String Builtins proposal (wasm:js-string)
+ * for native WTF-16 JavaScript strings wrapped in a Wasm GC String class
+ * backed by #handle: externref.
+ */
+import { Encoding } from './encoding.zena';
+export { Encoding } from './encoding.zena';
+
+
+export let asciiLowerByte = (b: i32): i32 =>
+  if (b >= 0x41 && b <= 0x5A) b + 0x20 else b;
+
+export let asciiUpperByte = (b: i32): i32 =>
+  if (b >= 0x61 && b <= 0x7A) b - 0x20 else b;
+
+// Builtin functions from wasm:js-string
+@external("wasm:js-string", "length")
+declare function __js_string_length(s: externref): i32;
+
+@external("wasm:js-string", "concat")
+declare function __js_string_concat(a: externref, b: externref): externref;
+
+@external("wasm:js-string", "equals")
+declare function __js_string_equals(a: externref, b: externref): boolean;
+
+@external("wasm:js-string", "compare")
+declare function __js_string_compare(a: externref, b: externref): i32;
+
+@external("wasm:js-string", "substring")
+declare function __js_string_substring(s: externref, start: i32, end: i32): externref;
+
+@external("wasm:js-string", "charCodeAt")
+declare function __js_string_char_code_at(s: externref, index: i32): i32;
+
+@external("wasm:js-string", "codePointAt")
+declare function __js_string_code_point_at(s: externref, index: i32): i32;
+
+@external("wasm:js-string", "fromCharCode")
+declare function __js_string_from_char_code(code: i32): externref;
+
+@external("wasm:js-string", "fromCodePoint")
+declare function __js_string_from_code_point(code: i32): externref;
+
+// Host delegate functions for Unicode case mapping
+@external("zena:host:string", "toLowerCase")
+declare function __js_string_to_lower(s: externref): externref;
+
+@external("zena:host:string", "toUpperCase")
+declare function __js_string_to_upper(s: externref): externref;
+
+// Template string join helpers
+export let __concat2 = (a: String, b: String): String => a + b;
+export let __concat3 = (a: String, b: String, c: String): String => a + b + c;
+export let __concat4 = (a: String, b: String, c: String, d: String): String => a + b + c + d;
+export let __concat5 = (a: String, b: String, c: String, d: String, e: String): String => a + b + c + d + e;
+
+export final class String implements Hashable {
+  #handle: externref;
+
+  new #fromHandle(handle: externref)
+    : #handle = handle;
+
+  handle: externref {
+    get {
+      return this.#handle;
+    }
+  }
+
+  static fromHandle(handle: externref): String {
+    return new String.#fromHandle(handle);
+  }
+
+  encoding: Encoding {
+    get {
+      return Encoding.WTF16;
+    }
+  }
+
+  length: i32 {
+    get {
+      return __js_string_length(this.#handle);
+    }
+  }
+
+  charCodeAt(index: i32): i32 {
+    return __js_string_char_code_at(this.#handle, index);
+  }
+
+  codePointAt(index: i32): i32 {
+    return __js_string_code_point_at(this.#handle, index);
+  }
+
+  getByteAt(index: i32): i32 {
+    return __js_string_char_code_at(this.#handle, index) & 0xFF;
+  }
+
+  substring(start: i32, end: i32): String {
+    let len = __js_string_length(this.#handle);
+    var s = start;
+    var e = end;
+    // Match Zena String (core/string.zena) clamping behavior:
+    // 1. wasm:js-string treats i32 as unsigned (s >>> 0), so negative start
+    //    would become > len rather than 0 without this check.
+    // 2. JS String.prototype.substring swaps start and end if start > end;
+    //    Zena strings do not swap, clamping start to end to return "".
+    if (s < 0) { s = 0; }
+    if (e > len) { e = len; }
+    if (s > e) { s = e; }
+    return new String.#fromHandle(__js_string_substring(this.#handle, s, e));
+  }
+
+  sliceBytes(start: i32, end: i32): String {
+    return this.substring(start, end);
+  }
+
+  toBytes(): FixedArray<u8> {
+    let len = this.length;
+    let out = new FixedArray<u8>(len, 0);
+    for (var i = 0; i < len; i += 1) {
+      out[i] = this.getByteAt(i) as u8;
+    }
+    return out;
+  }
+
+  copy(): String {
+    return this;
+  }
+
+  regionEqualsBytes(other: String, start: i32, end: i32): boolean {
+    let length = __js_string_length(this.#handle);
+    if (end - start != length) {
+      return false;
+    }
+    let otherLen = __js_string_length(other.#handle);
+    if (start < 0 || end > otherLen) {
+      return false;
+    }
+    let sub = __js_string_substring(other.#handle, start, end);
+    return __js_string_equals(this.#handle, sub);
+  }
+
+  startsWith(prefix: String): boolean {
+    let pLen = __js_string_length(prefix.#handle);
+    let thisLen = __js_string_length(this.#handle);
+    if (pLen > thisLen) {
+      return false;
+    }
+    return __js_string_equals(__js_string_substring(this.#handle, 0, pLen), prefix.#handle);
+  }
+
+  endsWith(suffix: String): boolean {
+    let sLen = __js_string_length(suffix.#handle);
+    let thisLen = __js_string_length(this.#handle);
+    if (sLen > thisLen) {
+      return false;
+    }
+    return __js_string_equals(__js_string_substring(this.#handle, thisLen - sLen, thisLen), suffix.#handle);
+  }
+
+  indexOf(needle: String, fromIndex: i32 = 0): i32 {
+    let nLen = __js_string_length(needle.#handle);
+    let thisLen = __js_string_length(this.#handle);
+    if (nLen == 0) {
+      return if (fromIndex > thisLen) thisLen else if (fromIndex < 0) 0 else fromIndex;
+    }
+    if (fromIndex >= thisLen || nLen > thisLen) {
+      return -1;
+    }
+    let start = if (fromIndex < 0) 0 else fromIndex;
+    let first = __js_string_char_code_at(needle.#handle, 0);
+    let limit = thisLen - nLen;
+    var i = start;
+    while (i <= limit) {
+      if (__js_string_char_code_at(this.#handle, i) == first) {
+        if (nLen == 1 || __js_string_equals(__js_string_substring(this.#handle, i, i + nLen), needle.#handle)) {
+          return i;
+        }
+      }
+      i += 1;
+    }
+    return -1;
+  }
+
+  contains(needle: String): boolean {
+    return this.indexOf(needle) >= 0;
+  }
+
+  split(separator: String): FixedArray<String> {
+    let sepLen = __js_string_length(separator.#handle);
+    let thisLen = __js_string_length(this.#handle);
+    if (sepLen == 0) {
+      let res = new FixedArray<String>(thisLen, String.empty());
+      var k = 0;
+      while (k < thisLen) {
+        res[k] = new String.#fromHandle(__js_string_substring(this.#handle, k, k + 1));
+        k += 1;
+      }
+      return res;
+    }
+    if (sepLen > thisLen) {
+      let res = new FixedArray<String>(1, this);
+      return res;
+    }
+    // Pass 1: count parts
+    var count = 1;
+    var pos = 0;
+    while (pos <= thisLen - sepLen) {
+      let nextIdx = this.indexOf(separator, pos);
+      if (nextIdx < 0) {
+        break;
+      }
+      count += 1;
+      pos = nextIdx + sepLen;
+    }
+    // Pass 2: fill parts
+    let result = new FixedArray<String>(count, String.empty());
+    var partIdx = 0;
+    var lastStart = 0;
+    pos = 0;
+    while (pos <= thisLen - sepLen) {
+      let nextIdx = this.indexOf(separator, pos);
+      if (nextIdx < 0) {
+        break;
+      }
+      result[partIdx] = new String.#fromHandle(__js_string_substring(this.#handle, lastStart, nextIdx));
+      partIdx += 1;
+      lastStart = nextIdx + sepLen;
+      pos = lastStart;
+    }
+    result[partIdx] = new String.#fromHandle(__js_string_substring(this.#handle, lastStart, thisLen));
+    return result;
+  }
+
+  replace(needle: String, replacement: String): String {
+    let idx = this.indexOf(needle);
+    if (idx < 0) {
+      return this;
+    }
+    let nLen = __js_string_length(needle.#handle);
+    let before = __js_string_substring(this.#handle, 0, idx);
+    let after = __js_string_substring(this.#handle, idx + nLen, __js_string_length(this.#handle));
+    return new String.#fromHandle(__js_string_concat(__js_string_concat(before, replacement.#handle), after));
+  }
+
+  replaceAll(needle: String, replacement: String): String {
+    let idx = this.indexOf(needle);
+    if (idx < 0) {
+      return this;
+    }
+    let parts = this.split(needle);
+    var res = parts[0];
+    var i = 1;
+    while (i < parts.length) {
+      res = new String.#fromHandle(__js_string_concat(__js_string_concat(res.#handle, replacement.#handle), parts[i].#handle));
+      i += 1;
+    }
+    return res;
+  }
+
+  trim(): String {
+    let len = __js_string_length(this.#handle);
+    var start = 0;
+    while (start < len && __js_string_char_code_at(this.#handle, start) <= 32) {
+      start += 1;
+    }
+    var end = len;
+    while (end > start && __js_string_char_code_at(this.#handle, end - 1) <= 32) {
+      end -= 1;
+    }
+    if (start == 0 && end == len) {
+      return this;
+    }
+    return new String.#fromHandle(__js_string_substring(this.#handle, start, end));
+  }
+
+  asciiLowerCase(): String {
+    let len = __js_string_length(this.#handle);
+    var needsChange = false;
+    var i = 0;
+    while (i < len) {
+      let c = __js_string_char_code_at(this.#handle, i);
+      if (c >= 0x41 && c <= 0x5A) {
+        needsChange = true;
+        break;
+      }
+      i += 1;
+    }
+    if (!needsChange) {
+      return this;
+    }
+    return new String.#fromHandle(__js_string_to_lower(this.#handle));
+  }
+
+  asciiUpperCase(): String {
+    let len = __js_string_length(this.#handle);
+    var needsChange = false;
+    var i = 0;
+    while (i < len) {
+      let c = __js_string_char_code_at(this.#handle, i);
+      if (c >= 0x61 && c <= 0x7A) {
+        needsChange = true;
+        break;
+      }
+      i += 1;
+    }
+    if (!needsChange) {
+      return this;
+    }
+    return new String.#fromHandle(__js_string_to_upper(this.#handle));
+  }
+
+  toLowerCase(): String {
+    return new String.#fromHandle(__js_string_to_lower(this.#handle));
+  }
+
+  toUpperCase(): String {
+    return new String.#fromHandle(__js_string_to_upper(this.#handle));
+  }
+
+  operator +(other: String): String {
+    return new String.#fromHandle(__js_string_concat(this.#handle, other.#handle));
+  }
+
+  operator ==(other: String): boolean {
+    return __js_string_equals(this.#handle, other.#handle);
+  }
+
+  compareTo(other: String): i32 {
+    if (this === other) {
+      return 0;
+    }
+    return __js_string_compare(this.#handle, other.#handle);
+  }
+
+  hashCode(): i32 {
+    let len = __js_string_length(this.#handle);
+    var h: i32 = 0x811c9dc5;
+    var i = 0;
+    while (i < len) {
+      let c = __js_string_char_code_at(this.#handle, i);
+      h = (h ^ (c & 0xFF)) * 0x01000193;
+      h = (h ^ ((c >> 8) & 0xFF)) * 0x01000193;
+      i += 1;
+    }
+    if (h == 0) {
+      return 1;
+    }
+    return h;
+  }
+
+  static empty(): String {
+    return new String.#fromHandle(__js_string_substring(__js_string_from_char_code(32), 0, 0));
+  }
+
+  getBackingArrayIfFull(): ByteArray | null {
+    return null;
+  }
+
+  copyBytesTo(target: ByteArray, targetOffset: i32, start: i32 = 0, length: i32 = -1): void {
+    var len = length;
+    if (len < 0) {
+      len = __js_string_length(this.#handle) - start;
+    }
+    var i = 0;
+    while (i < len) {
+      __byte_array_set(target, targetOffset + i, __js_string_char_code_at(this.#handle, start + i));
+      i += 1;
+    }
+  }
+
+  static fromParts<A extends Array<String>>(parts: A): String {
+    let len = parts.length;
+    if (len == 0) {
+      return String.empty();
+    }
+    if (len == 1) {
+      return parts[0];
+    }
+    var res = parts[0].#handle;
+    var i = 1;
+    while (i < len) {
+      res = __js_string_concat(res, parts[i].#handle);
+      i += 1;
+    }
+    return new String.#fromHandle(res);
+  }
+
+  static fromRawParts(parts: array<var String>): String {
+    return String.fromParts(parts as FixedArray<String>);
+  }
+
+  static fromCharCode(code: i32): String {
+    return new String.#fromHandle(__js_string_from_char_code(code));
+  }
+
+  static fromCodePoint(code: i32): String {
+    return new String.#fromHandle(__js_string_from_code_point(code));
+  }
+
+  static fromByteArray(data: ByteArray, start: i32, end: i32, _encoding: Encoding): String {
+    let len = end - start;
+    if (len <= 0) {
+      return String.empty();
+    }
+    var res = __js_string_substring(__js_string_from_char_code(32), 0, 0);
+    var i = start;
+    while (i < end) {
+      res = __js_string_concat(res, __js_string_from_char_code(__byte_array_get(data, i)));
+      i += 1;
+    }
+    return new String.#fromHandle(res);
+  }
+
+  static fromBytes(bytes: FixedArray<u8>): String {
+    let len = bytes.length;
+    if (len <= 0) {
+      return String.empty();
+    }
+    var res = __js_string_substring(__js_string_from_char_code(32), 0, 0);
+    var i = 0;
+    while (i < len) {
+      res = __js_string_concat(res, __js_string_from_char_code(bytes[i] as i32));
+      i += 1;
+    }
+    return new String.#fromHandle(res);
+  }
+}
+
+export function $stringGetHandle(s: String): externref {
+  return s.handle;
+}
+
+export function $stringCreate(handle: externref): String {
+  return String.fromHandle(handle);
+}
+
+export function $stringGetLength(s: String): i32 {
+  return s.length;
+}

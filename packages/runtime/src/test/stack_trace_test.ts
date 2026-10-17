@@ -30,12 +30,18 @@ suite('JS Runtime Lazy Stack Trace', () => {
     const exports = await compileAndInstantiate(source);
     const testCaptureAndFormat = exports.testCaptureAndFormat as () => unknown;
     const readString = createStringReader(exports);
-    const getLength = exports.$stringGetLength as (s: unknown) => number;
+    const getLength = exports.$stringGetLength as
+      ((s: unknown) => number) | undefined;
 
     const strRef = testCaptureAndFormat();
     assert.ok(strRef, 'Expected a non-null string reference');
 
-    const len = getLength(strRef);
+    const len =
+      typeof strRef === 'string'
+        ? strRef.length
+        : getLength
+          ? getLength(strRef)
+          : 0;
     const stackTrace = readString(strRef, len);
 
     // Node.js V8 backtrace format will contain the test file name/path

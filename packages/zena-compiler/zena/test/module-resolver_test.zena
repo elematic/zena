@@ -20,6 +20,12 @@ function makeStdlibConfig() {
   // A module with an explicit entry file (a directory-based library).
   exports["url"] = new ModuleExport(null, "url/index.zena");
 
+  let stringVirtual: HashMap<String, String> = {
+    "js" => "core/string-js.zena",
+    "zena-cli" => "core/string.zena",
+  };
+  exports["core/string.zena"] = new ModuleExport(stringVirtual, null, true);
+
   // An internal module: the manifest entry is what picks its file, and
   // only the package's own modules may name it.
   let stackVirtual: HashMap<String, String> = {
@@ -32,6 +38,12 @@ function makeStdlibConfig() {
     "zena-cli" => "console/component.zena",
   };
   exports["console"] = new ModuleExport(consoleVirtual);
+
+  let fallbackVirtual: HashMap<String, String> = {
+    "js" => "fallback/js.zena",
+    "default" => "fallback/default.zena",
+  };
+  exports["fallback"] = new ModuleExport(fallbackVirtual);
 
   return new PackageConfig("/stdlib", exports);
 }
@@ -163,6 +175,13 @@ export let tests = suite("Module Resolver", () => {
     equal(result.packageName, "zena");
   });
 
+  test("resolves stdlib virtual module with default fallback", (t) => {
+    let resolver = makeResolver("wasi");
+    let result = resolver.resolve("zena:fallback", "/my/file.zena");
+    equal(result.path, "zena:fallback/default.zena");
+    equal(result.packageName, "zena");
+  });
+
   test("resolves stdlib module with explicit entry path", (t) => {
     let resolver = makeResolver("js");
     let result = resolver.resolve("zena:url", "/my/file.zena");
@@ -233,6 +252,16 @@ export let tests = suite("Module Resolver", () => {
     throws(() => {
       resolver.resolve("zena:error-stack", "/project/src/main.zena");
     });
+  });
+
+  test("relative import to an internal virtual module selects target file", (t) => {
+    let jsResolver = makeResolver("js");
+    let jsResult = jsResolver.resolve("./string.zena", "zena:core/index.zena");
+    equal(jsResult.path, "zena:core/string-js.zena");
+
+    let cliResolver = makeResolver("zena-cli");
+    let cliResult = cliResolver.resolve("./string.zena", "zena:core/index.zena");
+    equal(cliResult.path, "zena:core/string.zena");
   });
 
   test("relative import escaping the stdlib throws", (t) => {

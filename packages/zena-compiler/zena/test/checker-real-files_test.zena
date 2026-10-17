@@ -12,7 +12,7 @@ import {
   createCompiler, checkCompilation,
 } from '../lib/compiler.zena';
 import { loadPackageMap } from '../lib/package-manifest.zena';
-import { Diagnostic } from '../lib/diagnostics.zena';
+import { Diagnostic, DiagnosticSeverity } from '../lib/diagnostics.zena';
 import { PlainHost, stdlibRoot, errorDiagnostics } from './test-utils.zena';
 
 // ============================================================================
@@ -28,6 +28,10 @@ function checkFile(entryPath: String, target: String = "js") {
   let checkResult = checkCompilation(result);
   // Only return errors from the entry file, not dependencies.
   return errorDiagnostics(checkResult.diagnostics);
+}
+
+function checkFileJs(entryPath: String) {
+  return checkFile(entryPath, "js");
 }
 
 function printDiagnostics(errors: Array<Diagnostic>, label: String) {
@@ -277,6 +281,18 @@ export let tests = suite('Checker: Real Files', () => {
     // imports the modules only that host provides.
     let errors = checkFile("packages/zena-compiler/zena/cli/main.zena", "zena-cli");
     printDiagnostics(errors, "main.zena");
+    equal(errors.length, 0);
+  });
+
+  test('checks string-js.zena', (ctx) => {
+    let errors = checkFileJs("packages/stdlib/zena/core/string-js.zena");
+    printDiagnostics(errors, "string-js.zena");
+    equal(errors.length, 0);
+  });
+
+  test('checks console/js.zena', (ctx) => {
+    let errors = checkFileJs("packages/stdlib/zena/console/js.zena");
+    printDiagnostics(errors, "console/js.zena");
     equal(errors.length, 0);
   });
 });

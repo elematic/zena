@@ -32,7 +32,7 @@ import { performance } from '../../time.zena';
 import {
   componentAbiUnitId, componentDriverUnitId
 } from '../component-emitter.zena';
-import { targetEmitsComponent } from '../../targets.zena';
+import { targetEmitsComponent, targetUsesJsStrings } from '../../targets.zena';
 import {
   isComponentEntryPath, componentSyncExportSuffix, componentEntryRunName,
   hasAsyncMain
@@ -388,6 +388,7 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
   var typeIdGenerator = makeTypeIdGenerator(1);
 
   new(this.program, this.wasm, this.target = "freestanding") {
+    this.wasm.target = this.target;
     var idGen: IdGenerator<TypeId> | null = null;
     let {entryPoint} = program;
     if (entryPoint != null) {
@@ -1293,7 +1294,7 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
     // they cannot exist for a module with no String at all. They are
     // created from ensureAllHelperFunctionsReached instead, once RTA
     // knows whether String was instantiated.
-    if (this.wasm.stringClass != null && this.wasm.stringLiterals.size > 0) {
+    if (this.wasm.stringClass != null && this.wasm.stringLiterals.size > 0 && !targetUsesJsStrings(this.target)) {
       this.wasm.ensureStringHelpers(this.program.units[0].model);
       this.wasm.ensureStringLiteralHelpers(this.program.units[0].model);
       this.markFunctionReached(this.wasm.stringFromSharedFunc as WasmFunction);
@@ -2043,7 +2044,7 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
 
     this.currentReachable = true;
 
-    if (this.wasm.stringClass != null && this.wasm.stringLiterals.size > 0) {
+    if (this.wasm.stringClass != null && this.wasm.stringLiterals.size > 0 && !targetUsesJsStrings(this.target)) {
       this.wasm.ensureStringLiteralHelpers(this.program.units[0].model);
       this.markFunctionReached(this.wasm.stringFromSharedFunc as WasmFunction);
       this.markFunctionReached(this.wasm.getStringLiteralFunc as WasmFunction);
@@ -3747,15 +3748,21 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
     this.wasm.ensureExceptionInfra(model);
     let {stringClass} = this.wasm;
     if (stringClass != null) {
-      let sClass = stringClass;
-      this.specializer.instantiateClassType(sClass, this.getClassModel(sClass));
-      let {stringCreateFunc} = this.wasm;
-      if (stringCreateFunc != null) {
-        this.markFunctionReached(stringCreateFunc);
-      }
-      let {stringSetByteFunc} = this.wasm;
-      if (stringSetByteFunc != null) {
-        this.markFunctionReached(stringSetByteFunc);
+      if (targetUsesJsStrings(this.target)) {
+        this.visitor.queueStdlibFunction('core', '$stringCreate');
+        this.visitor.queueStdlibFunction('core', '$stringGetHandle');
+        this.visitor.queueStdlibFunction('core', '$stringGetLength');
+      } else {
+        let sClass = stringClass;
+        this.specializer.instantiateClassType(sClass, this.getClassModel(sClass));
+        let {stringCreateFunc} = this.wasm;
+        if (stringCreateFunc != null) {
+          this.markFunctionReached(stringCreateFunc);
+        }
+        let {stringSetByteFunc} = this.wasm;
+        if (stringSetByteFunc != null) {
+          this.markFunctionReached(stringSetByteFunc);
+        }
       }
     }
   }
@@ -3778,12 +3785,18 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
     if (this.wasm.stringClass != null &&
         this.instantiatedSpecializedClasses.has(
             getClassKey(this.wasm.stringClass as ClassType) as String)) {
-      this.wasm.stringClassIsInstantiated = true;
-      this.wasm.ensureStringHelpers(this.program.units[0].model);
-      if (this.wasm.stringCreateFunc != null) { this.markFunctionReached(this.wasm.stringCreateFunc as WasmFunction); }
-      if (this.wasm.stringSetByteFunc != null) { this.markFunctionReached(this.wasm.stringSetByteFunc as WasmFunction); }
-      if (this.wasm.stringGetByteFunc != null) { this.markFunctionReached(this.wasm.stringGetByteFunc as WasmFunction); }
-      if (this.wasm.stringGetLengthFunc != null) { this.markFunctionReached(this.wasm.stringGetLengthFunc as WasmFunction); }
+      if (targetUsesJsStrings(this.target)) {
+        this.visitor.queueStdlibFunction('core', '$stringCreate');
+        this.visitor.queueStdlibFunction('core', '$stringGetHandle');
+        this.visitor.queueStdlibFunction('core', '$stringGetLength');
+      } else {
+        this.wasm.stringClassIsInstantiated = true;
+        this.wasm.ensureStringHelpers(this.program.units[0].model);
+        if (this.wasm.stringCreateFunc != null) { this.markFunctionReached(this.wasm.stringCreateFunc as WasmFunction); }
+        if (this.wasm.stringSetByteFunc != null) { this.markFunctionReached(this.wasm.stringSetByteFunc as WasmFunction); }
+        if (this.wasm.stringGetByteFunc != null) { this.markFunctionReached(this.wasm.stringGetByteFunc as WasmFunction); }
+        if (this.wasm.stringGetLengthFunc != null) { this.markFunctionReached(this.wasm.stringGetLengthFunc as WasmFunction); }
+      }
     }
     // The string hash helper follows the equality evidence, like the
     // ==/hashCode slots it serves. If literal interning ever calls it

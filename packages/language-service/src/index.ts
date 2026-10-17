@@ -210,11 +210,11 @@ export interface LspExports extends WebAssembly.Exports {
   getSymbolSelStart(sym: unknown): number;
   getSymbolSelEnd(sym: unknown): number;
   getSymbolChildCount(sym: unknown): number;
-  getSymbolChild(sym: unknown, index: number): unknown;
-  $stringGetByte(str: unknown, index: number): number;
-  $stringGetLength(str: unknown): number;
-  $stringCreate(len: number): unknown;
-  $stringSetByte(str: unknown, index: number, value: number): void;
+  $stringGetByte?(str: unknown, index: number): number;
+  $stringGetLength?(str: unknown): number;
+  $stringCreate?(lenOrHandle: number | string): unknown;
+  $stringSetByte?(str: unknown, index: number, value: number): void;
+  $stringGetHandle?(str: unknown): string;
   [key: string]: any;
 }
 
@@ -254,7 +254,7 @@ export async function createLanguageService(
   // Bound after instantiation; the imports close over these lazily because
   // the module can call back into the host during its own start function.
   let exports: LspExports | undefined;
-  let readString: ((ref: unknown, len: number) => string) | undefined;
+  let readString: ((ref: unknown, len?: number) => string) | undefined;
   let writeString: ((s: string) => unknown) | undefined;
 
   const openDocuments = new Map<string, string>();
@@ -301,6 +301,10 @@ export async function createLanguageService(
       captureStackTrace: () => null,
       formatStackTrace: () => null,
     },
+    'zena:host:string': {
+      toLowerCase: (s: string) => s.toLowerCase(),
+      toUpperCase: (s: string) => s.toUpperCase(),
+    },
   };
 
   const instance = await instantiate(wasm, imports);
@@ -324,6 +328,10 @@ async function instantiate(
   wasm: WasmSource,
   imports: WebAssembly.Imports,
 ): Promise<WebAssembly.Instance> {
+  const compileOptions = {
+    builtins: ['js-string'],
+    importedStringConstants: '_',
+  };
   if (wasm instanceof WebAssembly.Module) {
     return WebAssembly.instantiate(wasm, imports);
   }
@@ -342,7 +350,11 @@ async function instantiate(
     return instantiateResponse(await wasm, imports);
   }
 
-  const {instance} = await WebAssembly.instantiate(wasm, imports);
+  const {instance} = await (WebAssembly.instantiate as any)(
+    wasm,
+    imports,
+    compileOptions,
+  );
   return instance;
 }
 
@@ -350,18 +362,24 @@ async function instantiateResponse(
   response: Response,
   imports: WebAssembly.Imports,
 ): Promise<WebAssembly.Instance> {
+  const compileOptions = {
+    builtins: ['js-string'],
+    importedStringConstants: '_',
+  };
   // Streaming needs an `application/wasm` content type, which not every static
   // server sends. Buffering always works, so fall back to it rather than fail.
   if (response.headers.get('content-type')?.startsWith('application/wasm')) {
-    const {instance} = await WebAssembly.instantiateStreaming(
+    const {instance} = await (WebAssembly.instantiateStreaming as any)(
       response,
       imports,
+      compileOptions,
     );
     return instance;
   }
-  const {instance} = await WebAssembly.instantiate(
+  const {instance} = await (WebAssembly.instantiate as any)(
     await response.arrayBuffer(),
     imports,
+    compileOptions,
   );
   return instance;
 }
@@ -385,7 +403,7 @@ const isThenable = (value: unknown): value is Promise<Response> =>
  */
 export class ZenaLanguageService {
   readonly #exports: LspExports;
-  readonly #readString: (ref: unknown, len: number) => string;
+  readonly #readString: (ref: unknown, len?: number) => string;
   readonly #writeString: (s: string) => unknown;
   readonly #openDocuments: Map<string, string>;
   readonly #readFile: FileReader | undefined;
@@ -393,7 +411,7 @@ export class ZenaLanguageService {
   /** @internal Use {@link createLanguageService}. */
   constructor(init: {
     exports: LspExports;
-    readString: (ref: unknown, len: number) => string;
+    readString: (ref: unknown, len?: number) => string;
     writeString: (s: string) => unknown;
     openDocuments: Map<string, string>;
     readFile?: FileReader;
@@ -668,7 +686,7 @@ export class ZenaLanguageService {
   /** Reads a Zena `String` handle, whose length only Wasm knows. */
   #readRef(ref: unknown): string {
     return ref
-      ? this.#readString(ref, this.#exports.$stringGetLength(ref))
+      ? this.#readString(ref, this.#exports.$stringGetLength?.(ref))
       : '';
   }
 

@@ -3,6 +3,7 @@ import assert from 'node:assert';
 
 // Import compiler to compile Zena source
 import {compile} from './compile-zena.js';
+import {instantiate, createStringReader} from '../index.js';
 
 /**
  * Create test console imports that capture output instead of logging.
@@ -13,35 +14,30 @@ function createCapturingConsole(
 ) {
   const output: {method: string; value: string | number}[] = [];
 
-  const readString = (strRef: unknown, len: number): string => {
+  const readString = (strRef: unknown, len?: number): string => {
+    if (typeof strRef === 'string') {
+      return strRef;
+    }
     const exports = getExports();
-    if (!exports || !exports.$stringGetByte) {
-      throw new Error('$stringGetByte export not found');
+    if (exports) {
+      return createStringReader(exports)(strRef, len);
     }
-    const getByte = exports.$stringGetByte as (
-      str: unknown,
-      index: number,
-    ) => number;
-    const bytes = new Uint8Array(len);
-    for (let i = 0; i < len; i++) {
-      bytes[i] = getByte(strRef, i) & 0xff;
-    }
-    return new TextDecoder().decode(bytes);
+    return String(strRef);
   };
 
   return {
     imports: {
       log_i32: (val: number) => output.push({method: 'log', value: val}),
       log_f32: (val: number) => output.push({method: 'log', value: val}),
-      log_string: (strRef: unknown, len: number) =>
+      log_string: (strRef: unknown, len?: number) =>
         output.push({method: 'log', value: readString(strRef, len)}),
-      error_string: (strRef: unknown, len: number) =>
+      error_string: (strRef: unknown, len?: number) =>
         output.push({method: 'error', value: readString(strRef, len)}),
-      warn_string: (strRef: unknown, len: number) =>
+      warn_string: (strRef: unknown, len?: number) =>
         output.push({method: 'warn', value: readString(strRef, len)}),
-      info_string: (strRef: unknown, len: number) =>
+      info_string: (strRef: unknown, len?: number) =>
         output.push({method: 'info', value: readString(strRef, len)}),
-      debug_string: (strRef: unknown, len: number) =>
+      debug_string: (strRef: unknown, len?: number) =>
         output.push({method: 'debug', value: readString(strRef, len)}),
     },
     getOutput: () => output,
@@ -60,21 +56,15 @@ async function compileAndRun(source: string) {
   let instanceExports: WebAssembly.Exports | undefined;
   const testConsole = createCapturingConsole(() => instanceExports);
 
-  const result = await WebAssembly.instantiate(wasm, {
+  const result = await instantiate(wasm, {
     console: testConsole.imports,
-    env: {
-      getStackTrace: () => null,
-      captureStackTrace: () => null,
-      formatStackTrace: () => null,
-    },
   });
 
-  // WebAssembly.instantiate returns WebAssemblyInstantiatedSource when given a buffer
   const instance = (result as any).instance || result;
   instanceExports = instance.exports;
 
   return {
-    exports: instance.exports as {main?: () => void; [key: string]: unknown},
+    exports: instanceExports as {main?: () => void; [key: string]: unknown},
     getOutput: testConsole.getOutput,
   };
 }

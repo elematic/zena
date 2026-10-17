@@ -14,6 +14,7 @@ import {
 import {
   ValType, ValTypeAnyRef, ValTypeEqRef, ValTypeF32, ValTypeF64, ValTypeI32, ValTypeI64, ValTypeV128, ValTypeRef, ValTypeRefNull, ValTypeStructRef, isNullableAnyRef, isRefValType, refTargetOf, sameHeapType,
 } from '../wasm.zena';
+import { targetUsesJsStrings } from '../../targets.zena';
 import {
   ClassCodegenInfo, RecordDispatchInfo, WasmField, WasmFunction, WasmSignature,
   WasmStruct, isValSubtype,
@@ -1440,7 +1441,7 @@ function hashNumeric(cx: LoweringContext, v: i32): i32 {
 function hashClassValue(cx: LoweringContext, ctV: ClassType, v: i32): i32 {
   let vv = cx.valueTypeOf(v);
   let strClass = cx.wasm.stringClass;
-  if (strClass != null &&
+  if (strClass != null && !targetUsesJsStrings(cx.wasm.target) &&
       cx.canonicalKeyOf(ctV) == cx.canonicalKeyOf(strClass)) {
     return callStringHash(cx, v);
   }

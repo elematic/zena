@@ -18,6 +18,7 @@ import {
 } from '../types.zena';
 import { Program, CompilationUnit } from '../program.zena';
 import { stdlibLibraryOf, stdlibLibraryAnswers } from '../stdlib-manifest.zena';
+import { targetUsesJsStrings } from '../targets.zena';
 
 import {
   compareStrings, ClassKey, InterfaceKey, ClassInterfaceKey, InterfaceMemberKey, CellKey, ClosureKey, ExportKey, ExportGlobalKey, getClassKey, getClassPrivateFieldKey, isPresentWordName, presentWordCount, presentWordName, FunctionAdaptationKey, getFunctionAdaptationKey, ClassMethodKey, getClassMethodKey, SpecializedFunctionKey, ClosureSpecializationKey, FunctionValueWrapperKey,
@@ -835,6 +836,9 @@ export final class WasmGlobal {
    */
   var type: ValType;
   isMutable: boolean;
+  var isImport: boolean = false;
+  var importModule: String | null = null;
+  var importName: String | null = null;
   var initExpr: Expression | null = null;
   var initVTable: VTableInit | null = null;
   var initSingletonStruct: ClassType | null = null;
@@ -1122,6 +1126,39 @@ export final class WasmModule {
   var functions = new Array<WasmFunction>();
   
   globals = new Array<WasmGlobal>();
+  globalImports = new Array<WasmGlobal>();
+  importedStringGlobals = new HashMap<String, WasmGlobal>();
+  importedStringWrappers = new HashMap<String, WasmGlobal>();
+
+  getImportedStringGlobal(value: String, model: SemanticModel): WasmGlobal {
+    if (let (true, g) = this.importedStringGlobals.get(value)) {
+      return g;
+    }
+    let name = "_str_" + i32ToString(this.globalImports.length);
+    let g = new WasmGlobal(name, name, new ValTypeRefExtern(), false, null, null, model);
+    g.isImport = true;
+    g.type = new ValTypeRefExtern();
+    g.importModule = "_";
+    g.importName = value;
+    this.globalImports.push(g);
+    this.importedStringGlobals[value] = g;
+    return g;
+  }
+
+  getImportedStringWrapperGlobal(value: String, model: SemanticModel): WasmGlobal {
+    if (let (true, gw) = this.importedStringWrappers.get(value)) {
+      return gw;
+    }
+    this.getImportedStringGlobal(value, model);
+    let sKey = getClassKey(this.stringClass as ClassType);
+    let info = this.classInfos[sKey];
+    let stringStruct = info.structType;
+    let name = "_str_wrap_" + i32ToString(this.importedStringWrappers.size);
+    let gw = new WasmGlobal(name, name, new ValTypeRefNull(stringStruct), true, null, null, model);
+    this.globals.push(gw);
+    this.importedStringWrappers[value] = gw;
+    return gw;
+  }
 
 
 
@@ -1151,6 +1188,7 @@ export final class WasmModule {
   globalMap = new Map<SymbolId, WasmGlobal>();
 
   var program: Program | null = null;
+  var target: String = "";
   var stringClass: ClassType | null = null;
   var templateStringsArrayClass: ClassType | null = null;
   var errorClass: ClassType | null = null;
@@ -2004,9 +2042,11 @@ export final class WasmModule {
     this.globals.push(payloadGlobal);
     this.exceptionPayload = payloadGlobal;
 
-    this.hostWritesStrings = true;
-    this.ensureStringCreate(model);
-    this.ensureStringSetByte(model);
+    if (!targetUsesJsStrings(this.target)) {
+      this.hostWritesStrings = true;
+      this.ensureStringCreate(model);
+      this.ensureStringSetByte(model);
+    }
   }
 
   /**
@@ -2091,6 +2131,9 @@ export final class WasmModule {
   }
 
   ensureStringHelpers(model: SemanticModel): void {
+    if (targetUsesJsStrings(this.target)) {
+      return;
+    }
     if (this.hostWritesStrings) {
       this.ensureStringCreate(model);
       this.ensureStringSetByte(model);
@@ -2255,9 +2298,14 @@ export final class WasmModule {
       f.index = functionIndex;
       functionIndex += 1;
     }
-    for (var i = 0; i < this.globals.length; i += 1) {
-      let g = this.globals[i];
-      g.index = i;
+    var globalIndex = 0;
+    for (let g in this.globalImports) {
+      g.index = globalIndex;
+      globalIndex += 1;
+    }
+    for (let g in this.globals) {
+      g.index = globalIndex;
+      globalIndex += 1;
     }
   }
 
@@ -2652,5 +2700,6 @@ export final class WasmModule {
     for (var i = 0; i < this.types.length; i += 1) {
       this.types[i].index = i;
     }
+
   }
 }
