@@ -3020,21 +3020,29 @@ export final class Parser {
       return new FunctionTypeAnnotation(paramNames, params, returnType, this.#makeLocation(startToken));
     }
     
-    // Tuple type: (Type1, Type2)
+    // Tuple type: (Type1, Type2), with `...T` spreads among the elements
     // Or parenthesized type: (Type)
     let elementTypes = new Array<TypeAnnotation>(4);
-    elementTypes.push(this.#parseTypeAnnotation());
-    while (this.#match(TokenType.Comma) && !this.#check(TokenType.RParen)) {
+    var spreadIndices: GrowableArray<i32> | null = null;
+    while (true) {
+      if (this.#match(TokenType.DotDotDot)) {
+        spreadIndices ??= new Array<i32>();
+        spreadIndices.push(elementTypes.length);
+      }
       elementTypes.push(this.#parseTypeAnnotation());
+      if (!this.#match(TokenType.Comma) || this.#check(TokenType.RParen)) {
+        break;
+      }
     }
     this.#consume(TokenType.RParen, "Expected ')' after tuple type elements");
-    
-    // Single element is just a parenthesized type, not a tuple
-    if (elementTypes.length == 1) {
+
+    // Single element is just a parenthesized type, not a tuple — unless
+    // it is a spread: `(...R)` is the tuple R stands for.
+    if (elementTypes.length == 1 && spreadIndices == null) {
       return elementTypes[0];
     }
-    
-    return new TupleTypeAnnotation(elementTypes, this.#makeLocation(startToken));
+
+    return new TupleTypeAnnotation(elementTypes, spreadIndices, this.#makeLocation(startToken));
   }
   
   #parseRecordType(startToken: Token): TypeAnnotation {

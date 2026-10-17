@@ -8,7 +8,7 @@ import {
   TupleType, InlineTupleType, UnionType, TypeParameterType, FunctionType, UnknownType, typeToString,
   MixinType, MixinKey, instantiateClassType, TypeAliasType, EnumType, ErrorType, HoleType, NeverType, ThisType,
   AnyRefType, EqRefType, StringLiteralType, NumLiteralType, baseType, ErasedType,
-  MethodInfo, countTypeKey, countCodegenFunctionType, internFunctionType, mergeRow } from '../types.zena';
+  MethodInfo, countTypeKey, countCodegenFunctionType, internFunctionType, mergeRow, mergeTupleRow } from '../types.zena';
 import { SemanticModel } from '../semantic-model.zena';
 import { Symbol, noSymbolId } from '../scope/symbol.zena';
 import { Program, CompilationUnit } from '../program.zena';
@@ -1093,12 +1093,16 @@ export let substituteTypeParams = (
       let subElem = substituteTypeParams(typeParams, typeArgs, elementType);
       new ArrayType(subElem, elementsMutable)
     }
-    case TupleType {elementTypes}: {
+    case TupleType {elementTypes, row, rowIndex}: {
       let subElems = new Array<Type>();
       for (let elem in elementTypes) {
         subElems.push(substituteTypeParams(typeParams, typeArgs, elem));
       }
-      new TupleType(subElems)
+      if (row != null) {
+        return mergeTupleRow(subElems, rowIndex,
+            substituteTypeParams(typeParams, typeArgs, row));
+      }
+      new TupleType(subElems, null, 0)
     }
     case InlineTupleType {elementTypes}: {
       let subElems = new Array<Type>();

@@ -116,7 +116,7 @@ import {
   isScopedType, scopedInner,
   isSecondClass, typeContainsSecondClass, typeContainsScoped,
   typeContainsConcreteSecondClass, borrowInnerRestricts
-, ErasedType, FunctionDeclInfo, internFunctionType, mergeRow } from './types.zena';
+, ErasedType, FunctionDeclInfo, internFunctionType, mergeRow, mergeTupleRow } from './types.zena';
 import { SemanticModel, ModelIndex, InterfaceAdaptation, SymbolDependencies, ClosureDependency, FunctionAdaptationDependency, EdgeDrop, DeferredBodies } from './semantic-model.zena';
 import {
   Diagnostic, DiagnosticBag, DiagnosticCode, DiagnosticSeverity
@@ -1393,6 +1393,8 @@ final class CheckerContext {
     if (isRecordRowBound(tp.constraint)) {
       result.isRecordRow = true;
       this.#sharedState.rowParameterDeclarations[result.uid] = tp;
+    } else if (isTupleRowBound(tp.constraint)) {
+      result.isTupleRow = true;
     }
     // A resolution can reach the parameter before the declaring pass has
     // resolved its constraint/default annotations (creating the canonical
@@ -5461,12 +5463,21 @@ let isRecordRowBound = (ann: TypeAnnotation | null): boolean => {
   return false;
 };
 
+/** As `isRecordRowBound`, for `tuple`. */
+let isTupleRowBound = (ann: TypeAnnotation | null): boolean => {
+  if (ann is NamedTypeAnnotation) {
+    return ann.name == "tuple" && ann.typeArguments == null;
+  }
+  return false;
+};
+
 /**
- * A type parameter's bound as a constraint type, or null for `record`,
- * which is no type: the parameter is a row (`isRecordRow`) instead.
+ * A type parameter's bound as a constraint type, or null for `record` or
+ * `tuple`, which are no types: the parameter is a row (`isRecordRow`,
+ * `isTupleRow`) instead.
  */
 let resolveBound = (ctx: CheckerContext, ann: TypeAnnotation): Type | null => {
-  if (isRecordRowBound(ann)) {
+  if (isRecordRowBound(ann) || isTupleRowBound(ann)) {
     return null;
   }
   return resolveTypeAnnotation(ctx, ann, false);
@@ -5478,6 +5489,16 @@ let reportRepeatedRecordField = (ctx: CheckerContext, name: String, loc: SourceL
 
 let reportTwoRows = (ctx: CheckerContext, loc: SourceLocation | null): void => {
   ctx.error("A record type can spread at most one row type parameter.",
+      DiagnosticCode.TypeMismatch, loc);
+};
+
+let reportTwoTupleRows = (ctx: CheckerContext, loc: SourceLocation | null): void => {
+  ctx.error("A tuple type can spread at most one row type parameter.",
+      DiagnosticCode.TypeMismatch, loc);
+};
+
+let reportNotTupleSpreadable = (ctx: CheckerContext, t: Type, loc: SourceLocation | null): void => {
+  ctx.error(`Cannot spread '${typeToString(t)}' into a tuple type: only a tuple type or a type parameter declared 'extends tuple' can be spread.`,
       DiagnosticCode.TypeMismatch, loc);
 };
 
@@ -5916,17 +5937,54 @@ let resolveTypeAnnotationInner = (ctx: CheckerContext, ann: TypeAnnotation, allo
     }
     new RecordT(props, optionals, row)
   }
-  case TupleTypeAnnotation {elementTypes}: {
+  case TupleTypeAnnotation {elementTypes, spreadIndices}: {
     let elTypes = new Array<Type>();
+    var row: TypeParameterType | null = null;
+    var rowIndex = 0;
     var i = 0;
     while (i < elementTypes.length) {
       let resolved = resolveTypeAnnotation(ctx, elementTypes[i], allowInlineTuple);
-      rejectSecondClassStorage(ctx, resolved, "a tuple", elementTypes[i].loc);
-      rejectAffineStructuralMember(ctx, resolved, "a tuple element", elementTypes[i].loc);
-            elTypes.push(resolved);
+      if (spreadIndices != null && spreadIndices.contains(i)) {
+        // `...T`: a tuple type's elements splice in, and its row with
+        // them; a row parameter becomes this type's row.
+        match (baseType(resolved)) {
+          case TupleT as tuple: {
+            let tupleRow = tuple.row;
+            if (tupleRow != null) {
+              if (row != null) {
+                reportTwoTupleRows(ctx, elementTypes[i].loc);
+              }
+              row = tupleRow;
+              rowIndex = elTypes.length + tuple.rowIndex;
+            }
+            for (let element in tuple.elementTypes) {
+              elTypes.push(element);
+            }
+          }
+          case TypeParameterType as tp: {
+            if (!tp.isTupleRow) {
+              reportNotTupleSpreadable(ctx, resolved, elementTypes[i].loc);
+            } else {
+              if (row != null) {
+                reportTwoTupleRows(ctx, elementTypes[i].loc);
+              }
+              row = tp;
+              rowIndex = elTypes.length;
+            }
+          }
+          case ErrorType: {}
+          case _: {
+            reportNotTupleSpreadable(ctx, resolved, elementTypes[i].loc);
+          }
+        }
+      } else {
+        rejectSecondClassStorage(ctx, resolved, "a tuple", elementTypes[i].loc);
+        rejectAffineStructuralMember(ctx, resolved, "a tuple element", elementTypes[i].loc);
+        elTypes.push(resolved);
+      }
       i += 1;
     }
-    new TupleT(elTypes)
+    new TupleT(elTypes, row, rowIndex)
   }
   case InlineTupleTypeAnnotation {elementTypes}: {
     let elTypes = new Array<Type>();
@@ -6467,12 +6525,16 @@ let substituteTypeParams = (
       let subElem = substituteTypeParams(typeParams, typeArgs, elementType);
       return new ArrayType(subElem, elementsMutable);
     }
-    case TupleT {elementTypes}: {
+    case TupleT {elementTypes, row, rowIndex}: {
       let subElems = new Array<Type>();
       for (let elem in elementTypes) {
         subElems.push(substituteTypeParams(typeParams, typeArgs, elem));
       }
-      return new TupleT(subElems);
+      if (row != null) {
+        return mergeTupleRow(subElems, rowIndex,
+            substituteTypeParams(typeParams, typeArgs, row));
+      }
+      return new TupleT(subElems, null, 0);
     }
     case InlineTupleT {elementTypes}: {
       let subElems = new Array<Type>();
@@ -6709,7 +6771,7 @@ let substituteThisType = (receiverType: Type, t: Type): Type => {
  */
 let anyTypeParamConstrained = (typeParams: Array<TypeParameterType>): boolean => {
   for (let p in typeParams) {
-    if (p.constraint != null || p.isRecordRow) { return true; }
+    if (p.constraint != null || p.isRecordRow || p.isTupleRow) { return true; }
   }
   return false;
 };
@@ -6790,8 +6852,48 @@ let reportRowConstraint = (
   arg: Type,
   loc: SourceLocation | null
 ): void => {
-  ctx.error("Type '" + typeToString(arg) + "' does not satisfy constraint 'record' for type parameter '" +
-      param.name + "'.", DiagnosticCode.TypeMismatch, loc);
+  let bound = if (param.isTupleRow) "tuple" else "record";
+  ctx.error("Type '" + typeToString(arg) + "' does not satisfy constraint '" + bound +
+      "' for type parameter '" + param.name + "'.", DiagnosticCode.TypeMismatch, loc);
+};
+
+/** Whether `arg` has the shape a row parameter's argument must: true for any other parameter. */
+let rowArgumentFits = (param: TypeParameterType, arg: Type): boolean => {
+  if (arg is ErrorType) {
+    return true;
+  }
+  if (param.isRecordRow) {
+    return arg is RecordT || (arg is TypeParameterType && arg.isRecordRow);
+  }
+  if (param.isTupleRow) {
+    return arg is TupleT || (arg is TypeParameterType && arg.isTupleRow);
+  }
+  return true;
+};
+
+/**
+ * Checks the argument of a row parameter `R extends tuple`: a tuple
+ * type, or another tuple row parameter. Tuples have no lacks: a row's
+ * elements sit at their own positions.
+ */
+let checkTupleRowArgument = (
+  ctx: CheckerContext,
+  param: TypeParameterType,
+  arg: Type,
+  loc: SourceLocation | null
+): void => {
+  match (arg) {
+    case ErrorType: {}
+    case TupleT: {}
+    case TypeParameterType as tp: {
+      if (!tp.isTupleRow) {
+        reportRowConstraint(ctx, param, arg, loc);
+      }
+    }
+    case _: {
+      reportRowConstraint(ctx, param, arg, loc);
+    }
+  }
 };
 
 /**
@@ -6842,6 +6944,14 @@ let applyAndCheckTypeArguments = (
     let param = typeParams[j];
     if (param.isRecordRow) {
       checkRecordRowArgument(ctx, param, typeArgs[j], loc, site);
+    } else if (param.isTupleRow) {
+      checkTupleRowArgument(ctx, param, typeArgs[j], loc);
+    }
+    if (!rowArgumentFits(param, typeArgs[j])) {
+      // Reported above. As an error type, the argument makes every type
+      // spreading the row an error too (`mergeRow`), rather than a
+      // narrower type that the call's arguments then fail to match.
+      typeArgs[j] = new ErrorType();
     }
     if (param.constraint != null) {
       let expectedConstraint = substituteTypeParams(typeParams, typeArgs, param.constraint as Type);
@@ -7031,7 +7141,7 @@ let mentionsTypeParams = (t: Type, params: Array<TypeParameterType>): boolean =>
     }
     case UnionT {types}: anyOf(types)
     case ArrayType {elementType}: mentionsTypeParams(elementType, params)
-    case TupleT {elementTypes}: anyOf(elementTypes)
+    case TupleT {elementTypes, row}: (row != null && mentionsTypeParams(row, params)) || anyOf(elementTypes)
     case InlineTupleT {elementTypes}: anyOf(elementTypes)
     case RecordT {properties, row}: {
       if (row != null && mentionsTypeParams(row, params)) { return true; }
@@ -7389,6 +7499,57 @@ let inferTypeArg = (paramType: Type, argType: Type, inferred: HashMap<String, Ty
           // {...R} against a row parameter S → R = S.
           let row = pt.row;
           if (row != null && pt.properties.size == 0 && at.isRecordRow &&
+              !inferred.has(row.name)) {
+            inferred[row.name] = at;
+          }
+        }
+        case _: {}
+      }
+    }
+    case TupleT as pt: {
+      // (T, ...R, U) against (i32, f64, bool, String) → infer T = i32,
+      // U = String and R = (f64, bool): the elements before the row match
+      // a prefix, the ones after it a suffix, and the row is the rest,
+      // with the argument's own row if that falls there.
+      match (argType) {
+        case TupleT as at: {
+          let row = pt.row;
+          let before = if (row != null) pt.rowIndex else pt.elementTypes.length;
+          let after = pt.elementTypes.length - before;
+          let argLength = at.elementTypes.length;
+          if (argLength < before + after) {
+            return;
+          }
+          for (var i = 0; i < before; i += 1) {
+            inferTypeArg(pt.elementTypes[i], at.elementTypes[i], inferred);
+          }
+          for (var i = 0; i < after; i += 1) {
+            inferTypeArg(pt.elementTypes[before + i],
+                at.elementTypes[argLength - after + i], inferred);
+          }
+          if (row != null && !inferred.has(row.name)) {
+            let argRow = at.row;
+            if (argRow != null &&
+                (at.rowIndex < before || at.rowIndex > argLength - after)) {
+              return;
+            }
+            let middle = new Array<Type>();
+            for (var i = before; i < argLength - after; i += 1) {
+              middle.push(at.elementTypes[i]);
+            }
+            inferred[row.name] = if (middle.length == 0 && argRow != null) {
+              argRow
+            } else if (argRow != null) {
+              new TupleT(middle, argRow, at.rowIndex - before)
+            } else {
+              new TupleT(middle, null, 0)
+            };
+          }
+        }
+        case TypeParameterType as at: {
+          // (...R) against a row parameter S → R = S.
+          let row = pt.row;
+          if (row != null && pt.elementTypes.length == 0 && at.isTupleRow &&
               !inferred.has(row.name)) {
             inferred[row.name] = at;
           }
@@ -8812,6 +8973,9 @@ let isAssignableTo = (ctx: CheckerContext, source: Type, target: Type): boolean 
       if (srcParam.isRecordRow && target is RecordT) {
         return target.row === srcParam && target.properties.size == 0;
       }
+      if (srcParam.isTupleRow && target is TupleT) {
+        return target.row === srcParam && target.elementTypes.length == 0;
+      }
     }
     case _: {}
   }
@@ -8872,14 +9036,24 @@ let isAssignableTo = (ctx: CheckerContext, source: Type, target: Type): boolean 
         case _: {}
       }
     }
-    case TupleT {elementTypes as srcElems}: {
+    case TupleT {elementTypes as srcElems, row as srcRow, rowIndex as srcRowIndex}: {
       match (target) {
-        case TupleT {elementTypes as tgtElems}: {
+        case TupleT {elementTypes as tgtElems, row as tgtRow, rowIndex as tgtRowIndex}: {
+          // Tuples have no width: a row lines up only with the same row
+          // at the same position.
+          if (srcRow !== tgtRow) { return false; }
+          if (srcRow != null && srcRowIndex != tgtRowIndex) { return false; }
           if (srcElems.length != tgtElems.length) { return false; }
           for (var i = 0; i < srcElems.length; i += 1) {
             if (!isAssignableTo(ctx, srcElems[i], tgtElems[i])) { return false; }
           }
           return true;
+        }
+        // `(...R)` is R.
+        case TypeParameterType as tgtParam: {
+          if (srcRow === tgtParam && srcElems.length == 0) {
+            return true;
+          }
         }
         case _: {}
       }
@@ -9040,9 +9214,11 @@ export let typesEqual = (a: Type, b: Type): boolean => {
         case _: false
       }
     }
-    case TupleT {elementTypes as ea}: {
+    case TupleT {elementTypes as ea, row as rowA, rowIndex as indexA}: {
       match (b) {
-        case TupleT {elementTypes as eb}: tupleElementsEqual(ea, eb)
+        case TupleT {elementTypes as eb, row as rowB, rowIndex as indexB}:
+            rowA === rowB && (rowA == null || indexA == indexB) &&
+            tupleElementsEqual(ea, eb)
         case _: false
       }
     }
@@ -11315,8 +11491,10 @@ let getArrayPatternRestType = (ctx: CheckerContext, t: Type, elemType: Type): Ty
  */
 let getTuplePatternElementTypes = (t: Type): Array<Type> | null => {
   match (t) {
-    case TupleT {elementTypes}: {
-      return elementTypes;
+    // A row's elements are not known here; `...rest` patterns will bind
+    // them (row-types.md, Sequencing).
+    case TupleT {elementTypes, row}: {
+      return if (row != null) null else elementTypes;
     }
     case InlineTupleT {elementTypes}: {
       return elementTypes;
@@ -11329,7 +11507,10 @@ let getTuplePatternElementTypes = (t: Type): Array<Type> | null => {
       let tupleMembers = new Array<Array<Type>>();
       for (let member in types) {
         match (member) {
-          case TupleT {elementTypes}: {
+          case TupleT {elementTypes, row}: {
+            if (row != null) {
+              return null;
+            }
             tupleMembers.push(elementTypes);
           }
           case InlineTupleT {elementTypes}: {
@@ -13342,7 +13523,7 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
       }
       return inlineT;
     }
-    let tupleT = new TupleT(elementTypes);
+    let tupleT = new TupleT(elementTypes, null, 0);
     if (expectedType != null) {
       let baseExpected = baseType(expectedType);
       if (baseExpected is TupleT && isAssignableTo(ctx, tupleT, baseExpected)) {
@@ -20102,6 +20283,12 @@ let resolveArrayBackingClass = (
 /**
  * Resolve the result type of an index operation.
  */
+/** An index expression as a message shows it: a literal's digits. */
+let indexText = (index: Expression): String => match (index) {
+  case NumberLiteral {raw}: raw
+  case _: "expression"
+};
+
 let resolveIndexType = (
   ctx: CheckerContext,
   objectType: Type,
@@ -20170,7 +20357,28 @@ let resolveIndexType = (
       }
       return elementType;
     }
-    case TupleT {elementTypes}: {
+    case TupleT {elementTypes, row, rowIndex}: {
+      // A row's elements are the caller's, so only the positions before
+      // it are known.
+      if (row != null) {
+        match (index) {
+          case NumberLiteral {raw}: {
+            while (let (true, idx) = parseI32(raw)) {
+              if (idx >= 0 && idx < rowIndex) {
+                return elementTypes[idx];
+              }
+              break;
+            }
+          }
+          case _: {}
+        }
+        ctx.error(
+          `Index ${indexText(index)} is at or past the row '${row.name}' of type '${typeToString(objectType)}': the elements from there on are the caller's.`,
+          DiagnosticCode.IndexOutOfBounds,
+          loc
+        );
+        return new ErrorType();
+      }
       // Tuple indexing — return specific element type for literal index.
       match (index) {
         case NumberLiteral {raw}: {

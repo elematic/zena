@@ -1212,6 +1212,18 @@ let process = (t: (Container?, i32)): i32 => {
 };
 ```
 
+A tuple type can spread another tuple type, or a row type parameter
+(`R extends tuple`) anywhere among its elements. Indexes before the row are
+known in the body; one at or past it is an error:
+
+```zena
+type Triple = (...Pair, String);
+
+let keep = <R extends tuple>(t: (i32, ...R)): (i32, ...R) => t;
+keep((1, 'a', true))[2]; // ✅ R = (String, boolean)
+let bad = <R extends tuple>(t: (i32, ...R)) => t[1]; // ❌ past the row
+```
+
 ### Destructuring
 
 Destructuring extracts values from records, tuples, and class instances into

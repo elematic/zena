@@ -139,10 +139,11 @@ waits only on its own prerequisites. The order:
    changes. Done, except for the erased comparison, which waits for
    step 3 (#399).
 2. Row generics, value-level spread on row types, and `...rest`
-   (implementation-plan.md, Track A). Record rows are in:
-   `R extends record`, type-level spread of record types and row
-   parameters, inference, lacks, and one specialization per row. Tuple
-   rows, spread on row-typed values and `...rest` are next.
+   (implementation-plan.md, Track A). Rows are in for records and
+   tuples: `R extends record` and `R extends tuple`, type-level spread
+   of concrete types and row parameters, inference, lacks for records,
+   and one specialization per row. Spread on row-typed values and
+   `...rest` are next.
 3. Closed types by default: exactness checks on literals, projection
    for width conversions between closed types, and `...` existentials
    as the only fat-pointer form, with equality and `is`/`as` by
@@ -360,6 +361,16 @@ type CoreRoutes<R extends tuple> = ["Home", "About", ...R];
 Value-level tuple spread and rest destructuring
 (`let (head, ...tail) = t;`) are the term-level mirror — already listed
 as "Future" in destructuring.md; rows give them their types.
+
+As implemented, `TupleType` carries its row and the row's position
+(`row`, `rowIndex`), and substitution splices the row's elements in
+there (`mergeTupleRow`). Inference matches the elements before the row
+against a prefix of the argument and the ones after it against a
+suffix, and binds the row to the rest. In a body, an index before the
+row reads its element and one at or past it is an error, since the
+caller chose the row's length. Tuple patterns do not destructure a
+tuple type with a row yet; that waits for `...rest`. `(...R)` is a
+tuple type of one entry, where a plain `(T)` is a parenthesized type.
 
 A note for later: Zena's `inline` tuples (multi-value returns, the
 `Iterator.next()` protocol shape) are tuples too. Row-generic code over

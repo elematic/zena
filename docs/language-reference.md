@@ -4383,8 +4383,9 @@ the signature already does. Other rules:
 - Generic aliases, classes and methods take row parameters too:
   `type WithId<R extends record> = {id: i32, ...R};`.
 
-Spread and `...rest` patterns on values of row types, and rows over
-tuples (`R extends tuple`), are planned (see
+Tuples have rows too, declared `R extends tuple` (see
+[Tuple Spreads and Tuple Rows](#tuple-spreads-and-tuple-rows)). Spread and
+`...rest` patterns on values of row types are planned (see
 [row-types.md](design/row-types.md)).
 
 ### Tuples
@@ -4455,6 +4456,39 @@ let process2 = (t: (Container?, i32)): i32 => {
   return 0;
 };
 ```
+
+#### Tuple Spreads and Tuple Rows
+
+A tuple type can spread another tuple type, which splices in its
+elements:
+
+```zena
+type Pair = (i32, i32);
+type Triple = (...Pair, String); // (i32, i32, String)
+```
+
+A type parameter declared `R extends tuple` stands for a sequence of
+elements, a _row_, and a tuple type can spread it anywhere among its
+elements. As with
+[row-generic record functions](#row-generic-functions), the result type
+keeps the caller's elements, and the function is compiled once per row:
+
+```zena
+let keep = <R extends tuple>(t: (i32, ...R)): (i32, ...R) => t;
+let kept = keep((1, 'a', true));
+kept[2]; // boolean: R was inferred as (String, boolean)
+
+let lastFixed = <R extends tuple>(t: (...R, String)): (...R, String) => t;
+```
+
+`R` is inferred from the argument's elements between the ones the
+parameter lists before and after it. Inside the function, an index before
+`R` reads that element, and an index at or past `R` is an error, since the
+caller chooses how many elements `R` has. `(...R)` and `R` are the same
+type, and `(...R)` is a tuple type even though it has one entry: a plain
+`(T)` is a parenthesized type. A tuple type spreads at most one row type
+parameter, and tuples have no width conversions, so a type spreading `R`
+accepts only a tuple spreading `R` at the same position.
 
 ### Inline Tuples (Multi-Value Returns)
 

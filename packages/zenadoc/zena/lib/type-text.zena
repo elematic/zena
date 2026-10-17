@@ -92,9 +92,19 @@ function renderAnnotation(out: Render, annotation: TypeAnnotation): void {
     case FunctionTypeAnnotation as fn: renderFunction(out, fn)
     case LiteralTypeAnnotation {value}: out.write(literalText(value))
     case RecordTypeAnnotation as record: renderRecord(out, record)
-    case TupleTypeAnnotation {elementTypes}: {
+    case TupleTypeAnnotation {elementTypes, spreadIndices}: {
       out.write('(');
-      renderJoined(out, elementTypes, ', ');
+      var i = 0;
+      for (let element in elementTypes) {
+        if (i > 0) {
+          out.write(', ');
+        }
+        if (spreadIndices != null && spreadIndices.contains(i)) {
+          out.write('...');
+        }
+        renderAnnotation(out, element);
+        i += 1;
+      }
       out.write(')');
     }
     case InlineTupleTypeAnnotation {elementTypes}: {
