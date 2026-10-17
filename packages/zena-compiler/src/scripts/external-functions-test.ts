@@ -81,15 +81,54 @@ test('console.log and return string in Node.js (target host)', async () => {
     const main = wasmInstance.exports.main as Function;
     const retRef = main();
 
-    // Read string return value using the runtime's createStringReader and $stringGetLength export
-    const getLength = wasmInstance.exports.$stringGetLength as (
-      str: unknown,
-    ) => number;
-    const readString = createStringReader(wasmInstance.exports);
-    const retVal = readString(retRef, getLength(retRef));
-
+    // With target host (alias for js), strings are native JS strings - no reader needed!
+    assert.equal(typeof retRef, 'string');
+    assert.equal(retRef, 'success');
     assert.equal(loggedMsg, 'hello from integration test');
+  } finally {
+    console.log = originalLog;
+  }
+});
+
+test('console.log and return string in Node.js (target js)', async () => {
+  const zenaFile = join(pkgDir, 'test-files', 'console-log-and-return.zena');
+  const wasmJsFile = join(pkgDir, 'test', 'console-log-and-return-js.wasm');
+  const zenaCli = join(repoRoot, 'target', 'release', 'zena-cli');
+  const compilerWasm = join(pkgDir, 'zena', 'out', 'cli.wasm');
+
+  const zenaFileRel = relative(repoRoot, zenaFile);
+  const wasmJsFileRel = relative(repoRoot, wasmJsFile);
+
+  execSync(`mkdir -p "${dirname(wasmJsFile)}"`);
+
+  // Compile for target "js" using zena-cli run on cli.wasm
+  execSync(
+    `"${zenaCli}" run --dir "." --dir "packages/stdlib/zena::/stdlib" "${compilerWasm}" -- build "${zenaFileRel}" -o "${wasmJsFileRel}" -t js`,
+    {stdio: 'pipe', cwd: repoRoot},
+  );
+
+  const jsBits = readFileSync(wasmJsFile);
+
+  // Intercept console.log to capture logged messages from @zena-lang/runtime
+  const originalLog = console.log;
+  let loggedMsg = '';
+  console.log = (msg: any) => {
+    loggedMsg = String(msg);
+  };
+
+  try {
+    const wasmModule = await instantiate(jsBits);
+    const wasmInstance =
+      wasmModule instanceof WebAssembly.Instance
+        ? wasmModule
+        : wasmModule.instance;
+    const main = wasmInstance.exports.main as Function;
+    const retVal = main();
+
+    // With target js, strings are native JS strings - no reader needed!
+    assert.equal(typeof retVal, 'string');
     assert.equal(retVal, 'success');
+    assert.equal(loggedMsg, 'hello from integration test');
   } finally {
     console.log = originalLog;
   }

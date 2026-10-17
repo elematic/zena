@@ -51,6 +51,7 @@ export function pruneUnreached(wasm: WasmModule,
   // the position in wasm.globals and which this pass rebinds the same
   // way, so it stays the position across harvests.
   let gcount = wasm.globals.length;
+  let importGCount = wasm.globalImports.length;
   let liveF = new Array<boolean>(fcount);
   for (var i = 0; i < fcount; i += 1) {
     liveF.push(false);
@@ -71,7 +72,10 @@ export function pruneUnreached(wasm: WasmModule,
     }
   };
   let markGlobal = (g: WasmGlobal) => {
-    let idx = g.index;
+    if (g.isImport) {
+      return;
+    }
+    let idx = g.index - importGCount;
     if (idx < 0 || idx >= gcount) {
       throw new Error('harvest: a global outside the module');
     }
@@ -184,8 +188,14 @@ export function pruneUnreached(wasm: WasmModule,
     f.index = functionIndex;
     functionIndex += 1;
   }
-  for (var i = 0; i < wasm.globals.length; i += 1) {
-    wasm.globals[i].index = i;
+  var globalIndex = 0;
+  for (let g in wasm.globalImports) {
+    g.index = globalIndex;
+    globalIndex += 1;
+  }
+  for (let g in wasm.globals) {
+    g.index = globalIndex;
+    globalIndex += 1;
   }
 
   // The element segment lists the functions ref_func names, plus the

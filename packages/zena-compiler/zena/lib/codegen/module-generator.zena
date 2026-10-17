@@ -60,7 +60,7 @@ import {
   componentRuntimeNamespace
 } from './component-emitter.zena';
 import { buildComponentShape } from './component-shape.zena';
-import { targetEmitsComponent } from '../targets.zena';
+import { targetEmitsComponent, targetUsesJsStrings } from '../targets.zena';
 
 export final class ModuleGenerator {
   program: Program;
@@ -172,21 +172,36 @@ export final class ModuleGenerator {
     }
 
     // Export synthesized runtime string helpers if present
-    let {stringCreateFunc} = wasm;
-    if (stringCreateFunc != null) {
-      exports.push(new WasmExport("$stringCreate", stringCreateFunc));
-    }
-    let {stringSetByteFunc} = wasm;
-    if (stringSetByteFunc != null) {
-      exports.push(new WasmExport("$stringSetByte", stringSetByteFunc));
-    }
-    let {stringGetByteFunc} = wasm;
-    if (stringGetByteFunc != null) {
-      exports.push(new WasmExport("$stringGetByte", stringGetByteFunc));
-    }
-    let {stringGetLengthFunc} = wasm;
-    if (stringGetLengthFunc != null) {
-      exports.push(new WasmExport("$stringGetLength", stringGetLengthFunc));
+    if (targetUsesJsStrings(this.target)) {
+      let strCreate = wasm.getStdlibFunc('core', '$stringCreate');
+      if (strCreate != null) {
+        exports.push(new WasmExport("$stringCreate", strCreate));
+      }
+      let strGetHandle = wasm.getStdlibFunc('core', '$stringGetHandle');
+      if (strGetHandle != null) {
+        exports.push(new WasmExport("$stringGetHandle", strGetHandle));
+      }
+      let strGetLength = wasm.getStdlibFunc('core', '$stringGetLength');
+      if (strGetLength != null) {
+        exports.push(new WasmExport("$stringGetLength", strGetLength));
+      }
+    } else {
+      let {stringCreateFunc} = wasm;
+      if (stringCreateFunc != null) {
+        exports.push(new WasmExport("$stringCreate", stringCreateFunc));
+      }
+      let {stringSetByteFunc} = wasm;
+      if (stringSetByteFunc != null) {
+        exports.push(new WasmExport("$stringSetByte", stringSetByteFunc));
+      }
+      let {stringGetByteFunc} = wasm;
+      if (stringGetByteFunc != null) {
+        exports.push(new WasmExport("$stringGetByte", stringGetByteFunc));
+      }
+      let {stringGetLengthFunc} = wasm;
+      if (stringGetLengthFunc != null) {
+        exports.push(new WasmExport("$stringGetLength", stringGetLengthFunc));
+      }
     }
 
     // __zena_drain — the re-entry point for a host that cannot wait
@@ -296,6 +311,7 @@ export final class ModuleGenerator {
     resetWasmTypeUids();
 
     let wasm = new WasmModule();
+    wasm.target = this.target;
     wasm.program = this.program;
     wasm.wideArithmetic = this.wideArithmetic;
     let interner = this.interner;
@@ -321,14 +337,16 @@ export final class ModuleGenerator {
 
 
     // Pre-discover all string literals inside reached function bodies so that they are registered in wasm.datas BEFORE layouts and sections are emitted
-    for (let u in this.program.units) {
-      let moduleNode = u.ast;
-      for (let stmt in moduleNode.body) {
-        if (stmt is EnumDeclaration) {
-          for (let member in stmt.members) {
-            let initializer = member.initializer;
-            if (initializer is StringLiteral) {
-              wasm.registerStringLiteral(initializer.value);
+    if (!targetUsesJsStrings(this.target)) {
+      for (let u in this.program.units) {
+        let moduleNode = u.ast;
+        for (let stmt in moduleNode.body) {
+          if (stmt is EnumDeclaration) {
+            for (let member in stmt.members) {
+              let initializer = member.initializer;
+              if (initializer is StringLiteral) {
+                wasm.registerStringLiteral(initializer.value);
+              }
             }
           }
         }
@@ -339,7 +357,7 @@ export final class ModuleGenerator {
     markTypes("discovery");
     let tLayout = performance.start("codegen-layout");
     let {stringClass} = wasm;
-    if (stringClass != null) {
+    if (stringClass != null && !targetUsesJsStrings(this.target)) {
       if (wasm.stringLiterals.size > 0) {
         wasm.registerStringLiteral(""); // Ensure empty string is in stringLiterals
         let stringKey = getClassKey(stringClass);
@@ -460,7 +478,8 @@ export final class ModuleGenerator {
       }
     }
     
-    var needsStartFunction = stringClass != null && wasm.stringLiterals.size > 0;
+    var needsStartFunction = (stringClass != null && wasm.stringLiterals.size > 0 && !targetUsesJsStrings(this.target)) ||
+        (targetUsesJsStrings(this.target) && wasm.importedStringGlobals.size > 0);
     for (let g in wasm.globals) {
       // A namespace-import object is built in __start (one closure
       // pair per exported function, exported globals by value), but it
@@ -494,11 +513,18 @@ export final class ModuleGenerator {
       wasm.startFunction = startFunc;
     }
 
+    if (targetUsesJsStrings(this.target)) {
+      let firstModel = this.program.units[0].model;
+      for (let strVal in wasm.importedStringGlobals.keys()) {
+        wasm.getImportedStringWrapperGlobal(strVal, firstModel);
+      }
+    }
+
     // Follows RTA's instantiation verdict, NOT declaration: the
     // helpers' bodies are synthesized against String's struct, and
     // "the struct has fields" is no signal either — layout populates
     // every declared class's struct whether or not a value can exist.
-    if (wasm.stringClassIsInstantiated) {
+    if (wasm.stringClassIsInstantiated && !targetUsesJsStrings(this.target)) {
       wasm.ensureStringHelpers(this.program.units[0].model);
     }
     // Pre-discover functions whose references are taken by namespace imports
@@ -957,7 +983,7 @@ export final class ModuleGenerator {
         targetEmitsComponent(this.target) && wasm.hasMemory;
 
     this.emitter.emitImportSectionStart(
-        wasm.functionImports.length + (if (memoryImported) 1 else 0));
+        wasm.functionImports.length + wasm.globalImports.length + (if (memoryImported) 1 else 0));
     for (let f in wasm.functionImports) {
       let {importModule} = f;
       if (importModule != null && f.importName != null) {
@@ -966,6 +992,10 @@ export final class ModuleGenerator {
         }
         this.emitter.emitFunctionImport(importModule, f.importName as String, f.signature.index);
       }
+    }
+    for (let g in wasm.globalImports) {
+      this.emitter.emitGlobalImport(
+          g.importModule as String, g.importName as String, g.type, g.isMutable);
     }
     if (memoryImported) {
       this.emitter.emitMemoryImport(

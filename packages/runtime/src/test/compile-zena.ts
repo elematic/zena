@@ -47,13 +47,14 @@ interface LspExports extends WebAssembly.Exports {
   getDiagnosticSeverity: (diagnostics: unknown, index: number) => number;
   getDiagnosticMessage: (diagnostics: unknown, index: number) => unknown;
   getDiagnosticFile: (diagnostics: unknown, index: number) => unknown;
-  $stringGetLength: (str: unknown) => number;
+  $stringGetLength?: (str: unknown) => number;
+  [key: string]: any;
 }
 
 interface Service {
   exports: LspExports;
   writeString: (s: string) => unknown;
-  readString: (ref: unknown, len: number) => string;
+  readString: (ref: unknown, len?: number) => string;
 }
 
 let service: Service | undefined;
@@ -69,43 +70,52 @@ const languageService = (): Service => {
   }
   let exports: LspExports | undefined;
   let writeString: ((s: string) => unknown) | undefined;
-  let readString: ((ref: unknown, len: number) => string) | undefined;
+  let readString: ((ref: unknown, len?: number) => string) | undefined;
 
-  const instance = new WebAssembly.Instance(
-    new WebAssembly.Module(readFileSync(lspWasmPath)),
-    {
-      // The compiler times its own phases through `zena:time`, which on
-      // the host target is this clock. It never sleeps.
-      time: {
-        now_ms: () => performance.now(),
-        sleep_ms: () => {},
-      },
-      env: {
-        getStackTrace: () => null,
-        captureStackTrace: () => null,
-        formatStackTrace: () => null,
-      },
-      console: createConsoleImports(() => exports),
-      compiler: {
-        read_file: (pathRef: unknown, pathLen: number): unknown => {
-          const path = readString!(pathRef, pathLen);
-          try {
-            return writeString!(readFileSync(path, 'utf8'));
-          } catch {
-            // Null, not an empty string: the service reports a file it
-            // cannot read, where an empty one would compile as a module
-            // exporting nothing.
-            return null;
-          }
-        },
+  const module = new (WebAssembly.Module as any)(readFileSync(lspWasmPath), {
+    builtins: ['js-string'],
+    importedStringConstants: '_',
+  });
+  const instance = new WebAssembly.Instance(module, {
+    // The compiler times its own phases through `zena:time`, which on
+    // the host target is this clock. It never sleeps.
+    time: {
+      now_ms: () => performance.now(),
+      sleep_ms: () => {},
+    },
+    env: {
+      getStackTrace: () => null,
+      captureStackTrace: () => null,
+      formatStackTrace: () => null,
+    },
+    console: createConsoleImports(() => exports),
+    compiler: {
+      read_file: (pathRef: unknown, pathLen: number): unknown => {
+        const path = readString!(pathRef, pathLen);
+        try {
+          return writeString!(readFileSync(path, 'utf8'));
+        } catch {
+          // Null, not an empty string: the service reports a file it
+          // cannot read, where an empty one would compile as a module
+          // exporting nothing.
+          return null;
+        }
       },
     },
-  );
+    'zena:host:string': {
+      toLowerCase: (s: string) => s.toLowerCase(),
+      toUpperCase: (s: string) => s.toUpperCase(),
+    },
+  });
   exports = instance.exports as LspExports;
   writeString = createStringWriter(exports);
   readString = createStringReader(exports);
   exports.init(writeString(stdlibRoot));
-  service = {exports, writeString, readString};
+  service = {
+    exports: exports!,
+    writeString: writeString!,
+    readString: readString!,
+  };
   return service;
 };
 
@@ -123,7 +133,7 @@ const errorsOf = (
       continue;
     }
     const read = (ref: unknown) =>
-      readString(ref, exports.$stringGetLength(ref));
+      readString(ref, exports.$stringGetLength?.(ref));
     const file = read(exports.getDiagnosticFile(diagnostics, i));
     const line = exports.getDiagnosticLine(diagnostics, i);
     const column = exports.getDiagnosticColumn(diagnostics, i);
@@ -142,7 +152,7 @@ const errorsOf = (
 
 let counter = 0;
 
-export const compile = (source: string): Uint8Array => {
+export const compile = (source: string, _target?: string): Uint8Array => {
   const zena = languageService();
   const {exports, writeString} = zena;
   // A path of its own per call: the service keys documents by path, and two

@@ -15,6 +15,7 @@ import {
   createStringReader,
   createStringWriter,
   createConsoleImports,
+  instantiate,
 } from '@zena-lang/runtime';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -106,20 +107,31 @@ async function loadLsp(): Promise<LspHandle> {
   // lsp.wasm is built for the host target: its imports are the console,
   // the file reader, the clock and the stack-trace hooks below, and
   // no WASI.
-  const result = await WebAssembly.instantiate(wasmBuffer, {
-    env: {
-      getStackTrace: () => null,
-      captureStackTrace: () => null,
-      formatStackTrace: () => null,
+  const result = await (WebAssembly.instantiate as any)(
+    wasmBuffer,
+    {
+      env: {
+        getStackTrace: () => null,
+        captureStackTrace: () => null,
+        formatStackTrace: () => null,
+      },
+      // The compiler times its phases through `zena:time`'s host clock.
+      time: {
+        now_ms: () => performance.now(),
+        sleep_ms: () => {},
+      },
+      console: consoleImports,
+      compiler: compilerImports,
+      'zena:host:string': {
+        toLowerCase: (s: string) => s.toLowerCase(),
+        toUpperCase: (s: string) => s.toUpperCase(),
+      },
     },
-    // The compiler times its phases through `zena:time`'s host clock.
-    time: {
-      now_ms: () => performance.now(),
-      sleep_ms: () => {},
+    {
+      builtins: ['js-string'],
+      importedStringConstants: '_',
     },
-    console: consoleImports,
-    compiler: compilerImports,
-  });
+  );
 
   const instance =
     (result as unknown as {instance: WebAssembly.Instance}).instance ?? result;
@@ -1119,20 +1131,17 @@ let x: i32 = 0;`;
 
     let programExports: WebAssembly.Exports | undefined;
     let loggedMessage = '';
-    const {instance} = await WebAssembly.instantiate(uint8.buffer, {
+    const result = await instantiate(uint8, {
       console: {
-        ...createConsoleImports(() => programExports),
-        log_string: (strRef: unknown, strLen: number) => {
-          const reader = createStringReader(programExports!);
-          loggedMessage = reader(strRef, strLen);
+        log_string: (strRef: unknown, strLen?: number) => {
+          loggedMessage =
+            typeof strRef === 'string'
+              ? strRef
+              : createStringReader(programExports!)(strRef, strLen);
         },
       },
-      env: {
-        getStackTrace: () => null,
-        captureStackTrace: () => null,
-        formatStackTrace: () => null,
-      },
     });
+    const instance = 'instance' in result ? result.instance : result;
     programExports = instance.exports;
 
     const exportKeys = Object.keys(programExports);

@@ -146,7 +146,7 @@ export function toError(
             const getLen = exports['$stringGetLength'] as
               ((s: unknown) => number) | undefined;
             const len = getLen ? getLen(msgRef) : undefined;
-            if (len != null) {
+            if (len != null || exports['$stringGetHandle']) {
               message = createStringReader(exports)(msgRef, len);
             }
           }
@@ -162,7 +162,7 @@ export function toError(
             const getLen = exports['$stringGetLength'] as
               ((s: unknown) => number) | undefined;
             const len = getLen ? getLen(stackRef) : undefined;
-            if (len != null) {
+            if (len != null || exports['$stringGetHandle']) {
               stack = createStringReader(exports)(stackRef, len);
             }
           }
@@ -295,19 +295,28 @@ export function isZenaString(value: unknown): value is ZenaString {
  * @returns A function that reads a string from externref + length
  */
 export function createStringReader(exports: WebAssembly.Exports) {
+  const getHandle = exports.$stringGetHandle as
+    ((str: unknown) => string) | undefined;
   const getByte = exports.$stringGetByte as
     ((str: unknown, index: number) => number) | undefined;
 
-  return (strRef: unknown, length: number): string => {
+  return (strRef: unknown, length?: number): string => {
+    if (typeof strRef === 'string') {
+      return strRef;
+    }
+    if (getHandle) {
+      return getHandle(strRef);
+    }
     if (!getByte) {
       throw new Error(
-        '$stringGetByte export not found. ' +
+        '$stringGetByte or $stringGetHandle export not found. ' +
           'Make sure the WASM module exports the string getter function.',
       );
     }
 
-    const bytes = new Uint8Array(length);
-    for (let i = 0; i < length; i++) {
+    const len = length ?? 0;
+    const bytes = new Uint8Array(len);
+    for (let i = 0; i < len; i++) {
       // Handle signed i8 -> unsigned u8 conversion
       bytes[i] = getByte(strRef, i) & 0xff;
     }
@@ -328,19 +337,21 @@ export function createStringReader(exports: WebAssembly.Exports) {
  * @returns A function that converts a JS string to a Zena String externref
  */
 export function createStringWriter(exports: WebAssembly.Exports) {
-  const create = exports.$stringCreate as
-    ((len: number) => unknown) | undefined;
+  const create = exports.$stringCreate as ((arg: any) => unknown) | undefined;
   const setByte = exports.$stringSetByte as
     ((str: unknown, index: number, value: number) => void) | undefined;
 
   const encoder = new TextEncoder();
 
   return (jsString: string): unknown => {
-    if (!create || !setByte) {
+    if (!create) {
       throw new Error(
-        '$stringCreate or $stringSetByte export not found. ' +
+        '$stringCreate export not found. ' +
           'Make sure the WASM module exports the string creation functions.',
       );
+    }
+    if (!setByte) {
+      return create(jsString);
     }
 
     const bytes = encoder.encode(jsString);
@@ -384,10 +395,14 @@ export function createConsoleImports(
 
   const logString =
     (method: 'log' | 'error' | 'warn' | 'info' | 'debug') =>
-    (strRef: unknown, len: number) => {
+    (strRef: unknown, len?: number) => {
+      if (typeof strRef === 'string') {
+        console[method](strRef);
+        return;
+      }
       const reader = getReader();
       if (reader) {
-        console[method](reader(strRef, len));
+        console[method](reader(strRef, len!));
       } else {
         // Fallback if exports not available yet
         console[method](`[String: length=${len}]`);
@@ -1111,6 +1126,11 @@ export async function instantiate(
     console: createConsoleImports(() => instanceExports),
     time: timeHost.imports,
     js: promiseHost.imports,
+    web: webHost.imports,
+    'zena:host:string': {
+      toLowerCase: (s: string) => s.toLowerCase(),
+      toUpperCase: (s: string) => s.toUpperCase(),
+    },
   };
   if (userImports.web !== false) {
     defaultImports.web = webHost.imports;
@@ -1129,9 +1149,21 @@ export async function instantiate(
     console: {...defaultImports.console, ...userImports.console},
     time: {...defaultImports.time, ...userImports.time},
     js: {...defaultImports.js, ...userImports.js},
+    web: {
+      ...defaultImports.web,
+      ...(typeof userImports.web === 'object' && userImports.web !== null
+        ? userImports.web
+        : {}),
+    },
+    'zena:host:string': {
+      ...defaultImports['zena:host:string'],
+      ...userImports['zena:host:string'],
+    },
   };
   if (userImports.web !== false) {
     imports.web = {...defaultImports.web, ...webOverrides};
+  } else {
+    delete imports.web;
   }
 
   // Promise-returning imports become handle-taking void imports, sharing
@@ -1152,11 +1184,41 @@ export async function instantiate(
     rawExports: WebAssembly.Exports,
   ): WebAssembly.Exports => {
     const wrapped: Record<string, unknown> = {};
+    let writer: ((s: string) => unknown) | null = null;
+    const getWriter = () => {
+      if (!writer && (rawExports.$stringCreate || rawExports.$stringSetByte)) {
+        try {
+          writer = createStringWriter(rawExports);
+        } catch {}
+      }
+      return writer;
+    };
+
     for (const [key, value] of Object.entries(rawExports)) {
       if (typeof value === 'function') {
+        if (key.startsWith('$string')) {
+          wrapped[key] = value;
+          continue;
+        }
         wrapped[key] = (...args: unknown[]) => {
           try {
-            return (value as Function)(...args);
+            const w = getWriter();
+            const convertedArgs = w
+              ? args.map((arg) => (typeof arg === 'string' ? w(arg) : arg))
+              : args;
+            const result = (value as Function)(...convertedArgs);
+            if (
+              result != null &&
+              typeof result === 'object' &&
+              rawExports.$stringGetHandle
+            ) {
+              try {
+                return (rawExports.$stringGetHandle as Function)(result);
+              } catch {
+                return result;
+              }
+            }
+            return result;
           } catch (err) {
             throw toError(err, rawExports, lastCapturedError);
           }
@@ -1181,14 +1243,22 @@ export async function instantiate(
     return instance;
   }
 
-  const result = await WebAssembly.instantiate(wasm, importObject);
-  const exports = wrapExports(result.instance.exports);
+  const compileOptions = {
+    builtins: ['js-string'],
+    importedStringConstants: '_',
+  };
+  const module: WebAssembly.Module = await (WebAssembly.compile as any)(
+    wasm,
+    compileOptions,
+  );
+  const instance = await WebAssembly.instantiate(module, importObject);
+  const exports = wrapExports(instance.exports);
   instanceExports = exports;
-  Object.defineProperty(result.instance, 'exports', {
+  Object.defineProperty(instance, 'exports', {
     value: exports,
     writable: true,
     configurable: true,
   });
   idleWaiters.set(instanceExports, pending.idle);
-  return result;
+  return {module, instance};
 }

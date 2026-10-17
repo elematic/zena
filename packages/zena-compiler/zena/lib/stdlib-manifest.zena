@@ -63,7 +63,7 @@ export function buildStdlibConfig(stdlibRoot: String): PackageConfig {
   exports["memory"] = new ModuleExport(memoryVirtual);
 
   let consoleVirtual = new Map<String, String>();
-  consoleVirtual["js"] = "console/host.zena";
+  consoleVirtual["js"] = "console/js.zena";
   consoleVirtual["zena-cli"] = "console/component.zena";
   // The component console prints over p3 stdio. `freestanding` shares
   // it: a freestanding build is a component's core module without the
@@ -195,10 +195,17 @@ export function buildStdlibConfig(stdlibRoot: String): PackageConfig {
   exports["stream"] = new ModuleExport(null, "stream/index.zena");
   // Its twenty-three members have no module name of their own: they are
   // private files of this library, reached through this entry point or by
-  // relative import from inside it. `error-stack` is the exception, and it
-  // is virtual — the manifest is what picks a file per target, so a
-  // relative import would nail one of them.
+  // relative import from inside it. `error-stack` and `string` are the
+  // exceptions, and they are virtual — the manifest is what picks a file
+  // per target, so a relative import would nail one of them.
   exports["core"] = new ModuleExport(null, "core/index.zena");
+  let stringVirtual: HashMap<String, String> = {
+    "js" => "core/string-js.zena",
+    "zena-cli" => "core/string.zena",
+    "component" => "core/string.zena",
+    "freestanding" => "core/string.zena",
+  };
+  exports["core/string.zena"] = new ModuleExport(stringVirtual, null, true);
   exports["url"] = new ModuleExport(null, "url/index.zena");
   exports["bench"] = new ModuleExport(null, "bench/index.zena");
   exports["collections"] = new ModuleExport(null, "collections/index.zena");
@@ -217,31 +224,42 @@ export function buildStdlibConfig(stdlibRoot: String): PackageConfig {
 // read from the program being compiled, so the index is the same for every
 // compilation and a long-lived compiler can keep it.
 var libraryIndex: HashMap<String, String> | null = null;
+var moduleNameIndex: HashMap<String, String> | null = null;
 
 // Every id the manifest names outright: each library's own name, and each
 // entry file a `path` or `virtual` mapping points at. A library's private
 // files are not in here — `stdlibLibraryOf` attributes those by directory.
 function buildLibraryIndex() {
   let index = new Map<String, String>();
+  let moduleNames = new Map<String, String>();
   // The root is only used to resolve entry files on disk, which nothing
   // reading this index does.
   let config = buildStdlibConfig("");
   let exports = config.exports as HashMap<String, ModuleExport>;
   exports.forEach((name, entry) => {
-    index[name] = name;
+    let owningLibrary = if (name.startsWith("core/")) {
+      "core"
+    } else {
+      name
+    };
+    index[name] = owningLibrary;
+    moduleNames[name] = name;
     let path = entry.path;
     if (path != null) {
-      index[path as String] = name;
+      index[path as String] = owningLibrary;
+      moduleNames[path as String] = name;
     }
     let virtual = entry.virtual;
     if (virtual != null) {
       (virtual as HashMap<String, String>).forEach(
         (target, entryPath) => {
-          index[entryPath] = name;
+          index[entryPath] = owningLibrary;
+          moduleNames[entryPath] = name;
         });
     }
   });
   libraryIndex = index;
+  moduleNameIndex = moduleNames;
   return index;
 }
 
@@ -288,12 +306,19 @@ function firstSegment(id: String) {
  * implementation files have no module name, and this reports that rather
  * than inventing one from the file name.
  */
+function getModuleNameIndex() {
+  if (moduleNameIndex == null) {
+    buildLibraryIndex();
+  }
+  let m = moduleNameIndex;
+  if (m != null) {
+    return m as HashMap<String, String>;
+  }
+  return new Map<String, String>();
+}
+
 export function stdlibModuleNameForEntryPath(entryPath: String): String | null {
-  let index = if (libraryIndex != null) {
-    libraryIndex as HashMap<String, String>
-  } else {
-    buildLibraryIndex()
-  };
+  let index = getModuleNameIndex();
   if (let (true, name) = index.get(entryPath)) {
     return name;
   }

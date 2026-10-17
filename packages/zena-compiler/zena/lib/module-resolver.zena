@@ -153,6 +153,31 @@ export final class ModuleResolver {
         `Cannot resolve '${specifier}' from ${referrer} (escapes the stdlib)`
       );
     }
+    if (let (true, config) = this.#packages.get("zena")) {
+      if (config.exports != null) {
+        let exports = config.exports as HashMap<String, ModuleExport>;
+        var exportEntry: ModuleExport | null = null;
+        if (let (true, entry) = exports.get(resolved)) {
+          exportEntry = entry;
+        } else if (!resolved.endsWith(".zena")) {
+          if (let (true, entry) = exports.get(resolved + ".zena")) {
+            exportEntry = entry;
+          }
+        }
+        if (exportEntry != null) {
+          let virtual = (exportEntry as ModuleExport).virtual;
+          if (virtual != null) {
+            let virtualMap = virtual as HashMap<String, String>;
+            if (let (true, entryPath) = virtualMap.get(this.#target)) {
+              return makeCanonicalFilePath("zena", entryPath, config);
+            }
+            if (let (true, defaultPath) = virtualMap.get("default")) {
+              return makeCanonicalFilePath("zena", defaultPath, config);
+            }
+          }
+        }
+      }
+    }
     return new ResolvedModule("zena:" + this.#stdlibIdForPath(resolved), "zena");
   }
 
@@ -239,6 +264,9 @@ export final class ModuleResolver {
           let virtual = moduleExport.virtual as HashMap<String, String>;
           if (let (true, entryPath) = virtual.get(this.#target)) {
             return makeCanonicalFilePath(packageName, entryPath, config);
+          }
+          if (let (true, defaultPath) = virtual.get("default")) {
+            return makeCanonicalFilePath(packageName, defaultPath, config);
           }
           throw new Error(
             "Library '" + packageName + ":" + moduleName +

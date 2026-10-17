@@ -20,7 +20,7 @@ import {
   WasmStruct, WasmField, WasmGlobal, WasmFunction,
 } from '../wasm-module.zena';
 import {
-  ValType, ValTypeRefNull, ValTypeAnyRef, ValTypeEqRef, ValTypeStructRef, ValTypeRef, ValTypeI32, ValTypeI64, ValTypeF32, ValTypeF64, ValTypeExternRef, isRefValType,
+  ValType, ValTypeRefNull, ValTypeAnyRef, ValTypeEqRef, ValTypeStructRef, ValTypeRef, ValTypeI32, ValTypeI64, ValTypeF32, ValTypeF64, ValTypeExternRef, ValTypeRefExtern, isRefValType,
 } from '../wasm.zena';
 import { SymbolId, Symbol, noSymbolId } from '../../scope/symbol.zena';
 import {
@@ -37,6 +37,7 @@ import { resolveImportedSymbolId } from './import-resolver.zena';
 import { WellKnown, isWellKnown } from '../../well-known.zena';
 import { stdlibLibraryOf, stdlibLibraryAnswers } from '../../stdlib-manifest.zena';
 import { growable } from 'zena:core';
+import { targetUsesJsStrings } from '../../targets.zena';
 
 /**
  * TypeLowerer translates Zena semantic types into their target WebAssembly representation,
@@ -831,6 +832,16 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
    * `instantiateClassType` early-returns once it has happened.
    */
   noteStringLiteral(value: String): void {
+    if (targetUsesJsStrings(this.pass.wasm.target)) {
+      this.pass.wasm.getImportedStringGlobal(value, this.pass.program.units[0].model);
+      let sc = this.pass.wasm.stringClass;
+      if (sc != null) {
+        this.pass.specializer.instantiateClassType(
+            sc, this.pass.getClassModel(sc));
+        this.queueExplicitCtor(sc, "<constructor>.#fromHandle");
+      }
+      return;
+    }
     this.pass.wasm.registerStringLiteral(value);
     let sc = this.pass.wasm.stringClass;
     if (sc != null) {
@@ -3465,9 +3476,11 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
                 this.pass.notePendingMemberReach(
                     getClassMethodKey(getClassKey(hSc), "hashCode"));
               }
-              this.registerStringHashHelper(moduleModel);
-              this.pass.wasm.ensureHashInfra(moduleModel);
-              this.pass.markFunctionReached(this.pass.wasm.stringHashFunc as WasmFunction);
+              if (!targetUsesJsStrings(this.pass.wasm.target)) {
+                this.registerStringHashHelper(moduleModel);
+                this.pass.wasm.ensureHashInfra(moduleModel);
+                this.pass.markFunctionReached(this.pass.wasm.stringHashFunc as WasmFunction);
+              }
             }
           }
         }
@@ -3484,6 +3497,14 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
       }
       let returns = new Array<ValType>();
       mapReturnTypeToWasmResults(this.pass.wasm, funcType.returnType, returns);
+
+      if (externalModule == "wasm:js-string") {
+        for (var i = 0; i < returns.length; i += 1) {
+          if (returns[i] is ValTypeExternRef) {
+            returns[i] = new ValTypeRefExtern();
+          }
+        }
+      }
 
       var isGcRef = false;
       if (returns.length == 1) {
@@ -3536,7 +3557,7 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
   }
 
   registerStringHashHelper(model: SemanticModel): void {
-    if (this.pass.wasm.stringHashHelper != null) {
+    if (this.pass.wasm.stringHashHelper != null || targetUsesJsStrings(this.pass.wasm.target)) {
       return;
     }
 

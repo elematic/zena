@@ -32,6 +32,7 @@ import { dirName, normalizePath } from '../../module-resolver.zena';
 
 
 import { ValType, ValTypeVoid, ValTypeI32, ValTypeI64, ValTypeF32, ValTypeF64, ValTypeV128, ValTypeRef, ValTypeRefNull, ValTypeRefExtern, ValTypeAnyRef, ValTypeEqRef, ValTypeStructRef, ValTypeExternRef, ValTypeNullRef, ValTypeI8, ValTypeI16, valTypeEquals, isWasmSubtype, isRefValType, isNullableAnyRef, WasmType, refTargetOf } from '../wasm.zena';
+import { targetUsesJsStrings } from '../../targets.zena';
 import {
   WasmModule, WasmFunction, WasmStruct, WasmField, WasmGlobal, WasmSignature, ClassCodegenInfo, isValSubtype, sortWasmFields, RecordDispatchInfo, asWasmStruct, asWasmSignature, asWasmArray, valTypeIdentical, ClosureForwarderSpec, ExplosionSpec,
   noCaptures,
@@ -54,7 +55,7 @@ import { lowerComponentAdapter } from './component-adapters.zena';
 import { lowerIntrinsic } from './intrinsics.zena';
 import {
   ExplodedRecord, LetCondBinds, LoweringContext, MergeState, ZirUnsupported,
-  noValues,
+  noValues, oneValue,
 } from './lowering-context.zena';
 import { lowerStringLiteral, lowerTaggedTemplate, lowerTemplateLiteral } from './templates.zena';
 import {
@@ -1838,6 +1839,24 @@ export final class FunctionLowerer {
       let g = sharedStringsGlobal;
       this.b.emitVoid(IrOp.global_set, bytes,
           this.b.addRef(new IrRefGlobal(g)));
+    }
+    if (targetUsesJsStrings(this.wasm.target)) {
+      let sc = this.wasm.stringClass;
+      if (sc != null) {
+        let sKey = getClassKey(sc as ClassType);
+        let ctorKey = getClassMethodKey(sKey, "<constructor>.#fromHandle");
+        let ctor = if (let (true, c) = this.wasm.classMethodMap.get(ctorKey)) c else null;
+        if (ctor != null) {
+          let funcRef = this.b.addRef(new IrRefFunc(ctor));
+          for (let strVal in this.wasm.importedStringGlobals.keys()) {
+            let g = this.wasm.importedStringGlobals[strVal];
+            let gw = this.wasm.getImportedStringWrapperGlobal(strVal, g.model);
+            let rawExt = this.b.emit(IrOp.global_get, g.type, -1, this.b.addRef(new IrRefGlobal(g)));
+            let strInst = this.b.callFunc(funcRef, oneValue(rawExt), ctor.signature.returns[0]);
+            this.b.emitVoid(IrOp.global_set, strInst, this.b.addRef(new IrRefGlobal(gw)));
+          }
+        }
+      }
     }
     for (let g in this.wasm.globals) {
       if (g.namespaceImport != null) {
