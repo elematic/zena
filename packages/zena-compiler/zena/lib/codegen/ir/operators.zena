@@ -885,6 +885,13 @@ export function lowerAs(cx: LoweringContext, expr: AsExpression): i32 {
     // value table with the sentinel.
     bail(cx, 'as operand produced no value');
   }
+  if (cx.func.model.getRecordAdaptation(expr) != null) {
+    // `as` to a narrower closed record type projects: the conversion
+    // the checker recorded on this node builds the narrower view once
+    // the cast's value is back. A cast to the target's fat pointer
+    // first would trap, since the value is the wider shape.
+    return value;
+  }
   let srcVt = cx.valueTypeOf(value);
   if (valTypeEquals(srcVt, dstVt)) {
     // Same wasm type, but possibly a different narrow width: `x as u8`

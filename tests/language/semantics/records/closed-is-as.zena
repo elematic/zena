@@ -1,0 +1,29 @@
+// @mode: check
+// `is` and `as` on a closed record or tuple type are decided by the
+// types (docs/design/row-types.md, Decisions: Operations per form): a
+// value of a closed type has exactly its type's fields.
+
+let xy = {x: 1, y: 2};
+
+// Never true: a value with fields x and y is never one with only x.
+let narrower = xy is {x: i32}; // @error: 'xy' is never a '{ x: i32 }'
+let unrelated = xy is {a: i32}; // @error: 'xy' is never a '{ a: i32 }'
+
+// `as` to a narrower type projects; to a wider or unrelated one it
+// cannot succeed.
+let projected = xy as {x: i32};
+let x1 = {x: 1};
+let wider = x1 as {x: i32, y: i32}; // @error: Cannot cast '{ x: i32 }' to
+let mismatched = x1 as {x: String}; // @error: Cannot cast '{ x: i32 }' to '{ x: String }': a closed record never has fields its type does not name.
+
+let pair = (1, 'a');
+let otherTuple = pair is (i32, i32); // @error: 'pair' is never a '[i32, i32]'
+let longerTuple = pair as (i32, String, boolean); // @error: Cannot cast '[i32, String]' to '[i32, String, boolean]'
+
+// A union member test is still made at run time.
+let either: {x: i32} | {y: i32} = {x: 1};
+let isX = either is {x: i32};
+
+// So is a test on a nullable record: it is a null test.
+let maybe: {x: i32}? = null;
+let present = maybe is {x: i32};

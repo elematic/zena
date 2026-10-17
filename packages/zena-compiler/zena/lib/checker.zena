@@ -623,6 +623,9 @@ final class CheckerContext {
    */
   #moveErrorNodes = new Set<i32>();
 
+  /** Nodes that already reported an `errorOnce`, for the same reason. */
+  #onceErrorNodes = new Set<i32>();
+
   /**
    * Second-class borrow reads of the current suspending body, decided
    * at exitBodyFlow; error dedup by expression node id, because
@@ -3675,6 +3678,17 @@ final class CheckerContext {
   error(message: String, code: DiagnosticCode, loc: SourceLocation | null): void {
     if (this.#diagnosticsSuppressed) { return; }
     this.diagnostics.reportError(message, code, loc);
+  }
+
+  /**
+   * An error about `node` reported at most once: call paths that check
+   * an argument twice (an overload pre-pass, then the chosen signature)
+   * would otherwise report it twice.
+   */
+  errorOnce(node: Node, message: String, code: DiagnosticCode): void {
+    if (this.#diagnosticsSuppressed || this.#onceErrorNodes.has(node.id as i32)) { return; }
+    this.#onceErrorNodes.add(node.id as i32);
+    this.diagnostics.reportError(message, code, node.loc);
   }
 
   warning(message: String, code: DiagnosticCode, loc: SourceLocation | null): void {
@@ -7790,6 +7804,89 @@ function isV128View(t: Type): boolean {
     }
   }
   return false;
+}
+
+/**
+ * How a value of a closed record or tuple type relates to another such
+ * type, for `is` and `as` (docs/design/row-types.md, Decisions:
+ * Operations per form). A value of a closed type has exactly its type's
+ * fields, so most answers are the types'.
+ */
+enum ClosedRelation {
+  /** Not decided by the types: not both closed, a row, or a narrower field type. */
+  Runtime,
+  /** No value of the source type is a value of the target type. */
+  Never,
+  /** Every value of the source type is one of the target type. */
+  Same,
+  /** The target names a subset of the source's fields: `as` projects. */
+  Projection,
+}
+
+function closedRelation(ctx: CheckerContext, source: Type, target: Type) {
+  let sourceBase = baseType(source);
+  let targetBase = baseType(target);
+  if (sourceBase is RecordT && targetBase is RecordT) {
+    return closedRecordRelation(ctx, sourceBase, targetBase);
+  }
+  if (sourceBase is TupleT && targetBase is TupleT) {
+    return closedTupleRelation(ctx, sourceBase, targetBase);
+  }
+  return ClosedRelation.Runtime;
+}
+
+function closedRecordRelation(ctx: CheckerContext, s: RecordT, t: RecordT): ClosedRelation {
+  if (s.row != null || t.row != null) {
+    return ClosedRelation.Runtime;
+  }
+  var narrowing = false;
+  for (let key in t.properties.keys()) {
+    if (let (true, sourceField) = s.properties.get(key)) {
+      let targetField = t.properties[key];
+      if (s.isOptional(key) && !t.isOptional(key)) {
+        narrowing = true;
+      } else if (!isAssignableTo(ctx, sourceField, targetField)) {
+        if (!isAssignableTo(ctx, targetField, sourceField)) {
+          return ClosedRelation.Never;
+        }
+        narrowing = true;
+      }
+    } else {
+      return ClosedRelation.Never;
+    }
+  }
+  if (narrowing) {
+    return ClosedRelation.Runtime;
+  }
+  return if (s.properties.size == t.properties.size) ClosedRelation.Same
+      else ClosedRelation.Projection;
+}
+
+function closedTupleRelation(ctx: CheckerContext, s: TupleT, t: TupleT): ClosedRelation {
+  if (s.row != null || t.row != null) {
+    return ClosedRelation.Runtime;
+  }
+  if (s.elementTypes.length != t.elementTypes.length) {
+    return ClosedRelation.Never;
+  }
+  var narrowing = false;
+  for (var i = 0; i < s.elementTypes.length; i += 1) {
+    if (!isAssignableTo(ctx, s.elementTypes[i], t.elementTypes[i])) {
+      if (!isAssignableTo(ctx, t.elementTypes[i], s.elementTypes[i])) {
+        return ClosedRelation.Never;
+      }
+      narrowing = true;
+    }
+  }
+  return if (narrowing) ClosedRelation.Runtime else ClosedRelation.Same;
+}
+
+/** How a diagnostic names the operand of `is`: its name, or "the value". */
+function operandText(expr: Expression) {
+  if (expr is Identifier) {
+    return `'${expr.name}'`;
+  }
+  return "The value";
 }
 
 function isValidCast(sourceType: Type, targetType: Type): boolean {
@@ -13233,6 +13330,16 @@ function checkExpressionInner(ctx: CheckerContext, expr: Expression, expectedTyp
         loc
       );
     }
+    // A closed record or tuple never has fields or elements its type
+    // does not name, so a cast to a type naming more cannot succeed. One
+    // to a type naming fewer projects (the conversion recorded below).
+    if (validCast &&
+        closedRelation(ctx, subtractNullFromType(sourceType), targetType) == ClosedRelation.Never) {
+      let why = if (baseType(targetType) is TupleT) "a tuple has exactly its type's elements"
+          else "a closed record never has fields its type does not name";
+      ctx.error(`Cannot cast '${typeToString(sourceType)}' to '${typeToString(targetType)}': ${why}.`,
+          DiagnosticCode.TypeMismatch, loc);
+    }
     // Only when the cast is otherwise well-formed: a cast already rejected as
     // impossible does not also need to be reported as a forge.
     if (validCast) {
@@ -13243,8 +13350,25 @@ function checkExpressionInner(ctx: CheckerContext, expr: Expression, expectedTyp
     targetType
   }
   case IsExpression {expression, typeAnnotation, loc}: {
-    checkExpression(ctx, expression, null);
+    let operandType = checkExpression(ctx, expression, null);
     let targetType = resolveTypeAnnotation(ctx, typeAnnotation);
+    // On closed record and tuple types the answer is the types'. A
+    // nullable operand is still a null test.
+    if (!isNullableType(operandType)) {
+      match (closedRelation(ctx, operandType, targetType)) {
+        case ClosedRelation.Same: {
+          if (ctx.warnUnnecessaryCasts) {
+            ctx.warning(`${operandText(expression)} is always a '${typeToString(targetType)}': the test can go.`,
+                DiagnosticCode.UnnecessaryCast, loc);
+          }
+        }
+        case ClosedRelation.Never | ClosedRelation.Projection: {
+          ctx.error(`${operandText(expression)} is never a '${typeToString(targetType)}': a value of type '${typeToString(operandType)}' has exactly its type's fields.`,
+              DiagnosticCode.TypeMismatch, loc);
+        }
+        case _: {}
+      }
+    }
     ctx.setNodeType(typeAnnotation, targetType);
     new BooleanType()
   }
@@ -13471,6 +13595,26 @@ function checkExpressionInner(ctx: CheckerContext, expr: Expression, expectedTyp
       noteFieldsBesideRow(ctx, literalRow, propTypes, expr);
     }
     let recT = new RecordT(propTypes, literalOptionals, literalRow);
+    if (expectedType != null) {
+      // A closed record type names all its fields, so a literal checked
+      // against one may write no others (row-types.md §3.2): a typo is
+      // an error rather than a field dropped. Fields a spread brings are
+      // a projection, as they are from a variable; a type with a row
+      // takes the extra fields as the row.
+      let exactExpected = baseType(expectedType);
+      if (exactExpected is RecordT) {
+        let closedExpected = exactExpected;
+        if (closedExpected.row == null) {
+          for (let key in explicitKeys.keys()) {
+            if (!closedExpected.properties.has(key)) {
+              ctx.errorOnce(explicitKeys[key],
+                  `Field '${key}' is not in '${typeToString(expectedType)}': a literal of a closed record type names exactly its fields.`,
+                  DiagnosticCode.PropertyNotFound);
+            }
+          }
+        }
+      }
+    }
     if (expectedType != null) {
       let baseExpected = baseType(expectedType);
       if (baseExpected is RecordT && isAssignableTo(ctx, recT, baseExpected)) {

@@ -1143,6 +1143,19 @@ let p = {x, y}; // { x: 1, y: 2 }
 let p2 = {...p, z: 3}; // { x: 1, y: 2, z: 3 }
 ```
 
+A record type names all its values' fields, so a literal of a record type
+writes exactly its fields, while an existing record converts to a type
+naming fewer by projection. `is` and `as` between record types are decided
+by the types:
+
+```zena
+let getX = (p: {x: i32}): i32 => p.x;
+getX({x: 1, y: 2}); // ❌ Field 'y' is not in '{ x: i32 }'
+getX(p);            // ✅ p projects to {x: i32}
+p as {x: i32};      // ✅ projects
+p is {x: i32};      // ❌ never true: p has a field y
+```
+
 An `if` or `match` whose arms are records of different shapes has the union
 of their types. It goes anywhere a record type every member satisfies is
 expected, a field every member holds (present, required, one type) can be

@@ -4162,6 +4162,42 @@ let p = { x: 1, y: 2 };
 let x = p.x;
 ```
 
+#### Closed Record Types
+
+A record type names all the fields of its values: a value of type
+`{x: i32}` has exactly the field `x`. So a literal checked against a
+record type may write only that type's fields, and a misspelled or extra
+field is an error rather than a field that disappears:
+
+```zena
+let getX = (p: {x: i32}): i32 => p.x;
+getX({x: 1, y: 2}); // Error: Field 'y' is not in '{ x: i32 }'
+```
+
+A record that already exists still converts to a type naming fewer of
+its fields. The conversion projects: the result is a value of the
+narrower type, with only its fields.
+
+```zena
+let point = {x: 1, y: 2};
+getX(point);                  // OK: `point` projects to {x: i32}
+let p2: {x: i32} = {...point}; // OK: a spread is a projection too
+```
+
+Because a value has exactly its type's fields, `is` and `as` between
+record or tuple types are answered by the types:
+
+- `p is T` is an error when it can never be true, for instance when `T`
+  names fields `p`'s type lacks or omits fields it has, and is reported
+  as unnecessary when it is always true. A union of record types and a
+  nullable record still test at run time.
+- `p as T` projects when `T` names a subset of `p`'s fields, and is an
+  error when it cannot succeed because `T` names a field `p`'s type
+  lacks.
+
+A function that accepts records with more fields than it reads, and
+keeps them, takes a [row type parameter](#row-generic-functions).
+
 #### Optional Fields
 
 A record field marked `?` may be **absent** — this is presence, not
