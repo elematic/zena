@@ -131,7 +131,9 @@ Per row-types.md §9, refined:
   specialization). The `ZENA_ZIR_STATS` instantiation counters remain.
 - **A2 — value-level ops**: spread over row types (TypeScript's rule,
   row-types.md Decisions), rest patterns and typed `...rest` (record +
-  tuple).
+  tuple). **Status:** the record half is implemented: spread of a
+  row-typed record keeps the row, and `{x, ...rest}` binds a view of the
+  remaining fields. Tuple rest patterns and tuple-literal spread remain.
 - **A3 — presence-optional record fields** (design:
   [record-presence.md](record-presence.md); the earlier type-level
   defaults design, config-records.md, is superseded): bitmask

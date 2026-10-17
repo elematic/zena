@@ -2453,20 +2453,22 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
               outFields, sortedOptionalNames(tgtRec));
         }
       }
+      // A record conversion is recorded on an expression, and on a
+      // record pattern's `...rest`, whose value is the matched record
+      // converted to the rest's type.
+      let adaptation = model.getRecordAdaptation(n);
+      if (adaptation != null) {
+        let srcRec = resolveType(adaptation.source) as RecordType;
+        let tgtRec = resolveType(adaptation.target) as RecordType;
+        typeLowerer.discoverType(tgtRec, model);
+        typeLowerer.discoverType(srcRec, model);
+        let inFields = recordWasmFields(this.pass.wasm, srcRec, null);
+        let outFields = recordWasmFields(this.pass.wasm, tgtRec, null);
+        this.pass.wasm.getAdaptedRecordDispatch(model,
+            inFields, sortedOptionalNames(srcRec),
+            outFields, sortedOptionalNames(tgtRec));
+      }
       if (n is Expression) {
-        let adaptation = model.getRecordAdaptation(n);
-        if (adaptation != null) {
-          let srcRec = resolveType(adaptation.source) as RecordType;
-          let tgtRec = resolveType(adaptation.target) as RecordType;
-          typeLowerer.discoverType(tgtRec, model);
-          typeLowerer.discoverType(srcRec, model);
-          let inFields = recordWasmFields(this.pass.wasm, srcRec, null);
-          let outFields = recordWasmFields(this.pass.wasm, tgtRec, null);
-          this.pass.wasm.getAdaptedRecordDispatch(model,
-              inFields, sortedOptionalNames(srcRec),
-              outFields, sortedOptionalNames(tgtRec));
-        }
-
         let ifaceAdaptation = model.getInterfaceAdaptation(n);
         if (ifaceAdaptation != null) {
           let srcT = resolveType(ifaceAdaptation.source);

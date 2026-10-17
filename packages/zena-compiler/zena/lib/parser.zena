@@ -1556,9 +1556,20 @@ export final class Parser {
   
   #parseRecordPattern(startToken: Token, isUnderLet: boolean, matchContext: boolean): RecordPattern {
     let properties = new Array<BindingProperty>(4);
+    var rest: Node | null = null;
 
     while (!this.#check(TokenType.RBrace) && !this.#isAtEnd()) {
       let propStart = this.#peek();
+      // Rest: { x, ...rest } binds the fields the pattern does not name.
+      if (this.#match(TokenType.DotDotDot)) {
+        let restName = this.#parseIdentifier();
+        rest = new IdentifierPattern(restName.name, restName.loc);
+        this.#match(TokenType.Comma);
+        if (!this.#check(TokenType.RBrace)) {
+          throw this.#error("A rest element must be the last element in a record pattern");
+        }
+        continue;
+      }
       // Absence pattern: { !x } asserts the optional field is absent.
       if (this.#match(TokenType.Bang)) {
         let absentName = this.#parseIdentifier();
@@ -1602,7 +1613,7 @@ export final class Parser {
     }
     
     this.#consume(TokenType.RBrace, "Expected '}' after record pattern");
-    return new RecordPattern(properties, this.#makeLocation(startToken));
+    return new RecordPattern(properties, rest, this.#makeLocation(startToken));
   }
   
   // Parse combined record parameter pattern: {name: Type, name as alias: Type = default, ...}
@@ -1612,9 +1623,20 @@ export final class Parser {
     let bindingProps = new Array<BindingProperty>(4);
     let typeSigs = new Array<PropertySignature>(4);
     var hasTypeAnnotations = false;
-    
+    var rest: Node | null = null;
+
     while (!this.#check(TokenType.RBrace) && !this.#isAtEnd()) {
       let propStart = this.#peek();
+      // Rest: { x, ...rest } binds the fields the pattern does not name.
+      if (this.#match(TokenType.DotDotDot)) {
+        let restName = this.#parseIdentifier();
+        rest = new IdentifierPattern(restName.name, restName.loc);
+        this.#match(TokenType.Comma);
+        if (!this.#check(TokenType.RBrace)) {
+          throw this.#error("A rest element must be the last element in a record pattern");
+        }
+        continue;
+      }
       let name = this.#parseIdentifier();
       
       var value: Node = new IdentifierPattern(name.name, name.loc);
@@ -1647,14 +1669,20 @@ export final class Parser {
     }
     
     this.#consume(TokenType.RBrace, "Expected '}' after record parameter pattern");
-    
+
+    // Types written on the fields make the parameter's type exactly those
+    // fields, which would leave nothing for the rest.
+    if (hasTypeAnnotations && rest != null) {
+      throw this.#error("A destructured parameter with '...rest' takes its type after the pattern, not on its fields");
+    }
+
     if (hasTypeAnnotations) {
       this.#combinedTypeAnnotation = new RecordTypeAnnotation(typeSigs, null, this.#makeLocation(startToken));
     } else {
       this.#combinedTypeAnnotation = null;
     }
     
-    return new RecordPattern(bindingProps, this.#makeLocation(startToken));
+    return new RecordPattern(bindingProps, rest, this.#makeLocation(startToken));
   }
   
   #parseArrayPattern(startToken: Token, isUnderLet: boolean): ArrayPattern {

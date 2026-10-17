@@ -142,8 +142,8 @@ waits only on its own prerequisites. The order:
    (implementation-plan.md, Track A). Rows are in for records and
    tuples: `R extends record` and `R extends tuple`, type-level spread
    of concrete types and row parameters, inference, lacks for records,
-   and one specialization per row. Spread on row-typed values and
-   `...rest` are next.
+   and one specialization per row. For records, spread on row-typed
+   values and `...rest` patterns are in too; the tuple forms are next.
 3. Closed types by default: exactness checks on literals, projection
    for width conversions between closed types, and `...` existentials
    as the only fat-pointer form, with equality and `is`/`as` by
@@ -511,6 +511,13 @@ or keep the value packed.
 > fields is valid (see [Decisions](#decisions), Syntax). The `...rest`
 > forms and their typing below are adopted; the exhaustiveness rule
 > is not.
+>
+> **Implemented for records.** The checker types a rest as the matched
+> record's unnamed fields plus its row (`recordRestType`) and records
+> the conversion to that type on the rest pattern, so codegen binds the
+> same adapted view a width conversion makes, with no copy. A literal
+> spreading a row-typed record keeps the row, and every other field it
+> names must be one the row lacks.
 
 For **closed** records, destructuring patterns must account for every
 field:

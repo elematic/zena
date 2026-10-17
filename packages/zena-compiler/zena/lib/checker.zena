@@ -3821,9 +3821,12 @@ let collectPatternSymbols = (ctx: CheckerContext, pattern: Pattern, symbols: Gro
         symbols.push(sym);
       }
     }
-    case RecordPattern {properties}: {
+    case RecordPattern {properties, rest}: {
       for (let prop in properties) {
         collectPatternSymbols(ctx, prop.value as Pattern, symbols);
+      }
+      if (rest != null) {
+        collectPatternSymbols(ctx, rest as Pattern, symbols);
       }
     }
     case TuplePattern {elements}: {
@@ -11772,6 +11775,10 @@ let bindPattern = (ctx: CheckerContext, pattern: Pattern, t: Type): void => {
       let {properties} = recordPat;
       // For record destructuring: { x, y } = record.
       let matched = recordPatternMatchedType(ctx, t, recordPat);
+      let rest = recordPat.rest;
+      if (rest != null) {
+        bindPattern(ctx, rest as Pattern, recordRestType(ctx, recordPat, matched));
+      }
       match (matched) {
         case RecordT {properties as recordProps, optionalProperties}: {
           // Codegen reads the matched record type off the pattern node
@@ -13392,6 +13399,9 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
     // Each explicit key, by the property that wrote it, so a repeat and
     // a key a later spread always overwrites can be reported.
     let explicitKeys = new HashMap<String, Identifier>();
+    // The row of a spread row-typed record (`{...p, x: 1}` with `p:
+    // {x: i32, ...R}`): the literal's type spreads it too.
+    var literalRow: TypeParameterType | null = null;
     var i = 0;
     while (i < properties.length) {
       match (properties[i]) {
@@ -13420,6 +13430,13 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
           let nonNullSpread = subtractNullFromType(spreadType);
           match (nonNullSpread) {
             case RecordT as spreadRec: {
+              let spreadRow = spreadRec.row;
+              if (spreadRow != null) {
+                if (literalRow != null && literalRow !== spreadRow) {
+                  reportTwoRows(ctx, argument.loc);
+                }
+                literalRow = spreadRow;
+              }
               let spreadProps = spreadRec.properties;
               let keys = spreadProps.keys();
               for (let key in keys) {
@@ -13465,7 +13482,14 @@ let checkExpressionInner = (ctx: CheckerContext, expr: Expression, expectedType:
     if (literalOptionals != null && literalOptionals.size == 0) {
       literalOptionals = null;
     }
-    let recT = new RecordT(propTypes, literalOptionals, null);
+    if (literalRow != null) {
+      // A field the row could also have would make the result's type
+      // depend on the row: a later one replaces it (TypeScript's rule),
+      // an earlier one is replaced. So every field here is one the row
+      // lacks, which only its declaration's signature says.
+      noteFieldsBesideRow(ctx, literalRow, propTypes, expr);
+    }
+    let recT = new RecordT(propTypes, literalOptionals, literalRow);
     if (expectedType != null) {
       let baseExpected = baseType(expectedType);
       if (baseExpected is RecordT && isAssignableTo(ctx, recT, baseExpected)) {
@@ -19758,6 +19782,43 @@ let recordUnionPatternShape = (
 };
 
 /**
+ * The type of a record pattern's `...rest`: the matched record's fields
+ * the pattern does not name, optional where they were, and its row. The
+ * rest is the matched value converted to that narrower type, so the
+ * conversion is recorded on the rest pattern for codegen. Anything but
+ * a record is an error.
+ */
+let recordRestType = (ctx: CheckerContext, recordPat: RecordPattern, matched: Type): Type => {
+  let rest = recordPat.rest as Node;
+  let base = baseType(matched);
+  if (!(base is RecordT)) {
+    if (!(base is ErrorType) && !(base is UnknownType)) {
+      ctx.error(`A '...rest' pattern needs a record, not '${typeToString(matched)}'.`,
+          DiagnosticCode.TypeMismatch, rest.loc);
+    }
+    return new ErrorType();
+  }
+  let named = new HashSet<String>();
+  for (let prop in recordPat.properties) {
+    named.add(prop.name.name);
+  }
+  let props = new Map<String, Type>();
+  var optionals: HashSet<String> | null = null;
+  for (let key in base.properties.keys()) {
+    if (!named.has(key)) {
+      props[key] = base.properties[key];
+      if (base.isOptional(key)) {
+        optionals ??= new Set<String>();
+        optionals.add(key);
+      }
+    }
+  }
+  let restType = new RecordT(props, optionals, base.row);
+  ctx.model.setRecordAdaptation(rest, base, restType);
+  return restType;
+};
+
+/**
  * The matched type for a record pattern whose value is a union of
  * record types, and the adaptation that gets a value there: the shape
  * above, recorded on the pattern node so codegen repacks the member
@@ -21994,6 +22055,10 @@ let checkPattern = (ctx: CheckerContext, pattern: Node, expectedType: Type): voi
         // default is a refutable presence pattern here (a match arm or
         // if-let), unlike in irrefutable destructuring.
         ctx.setNodeType(recordPat, matched);
+      }
+      let rest = recordPat.rest;
+      if (rest != null) {
+        checkPattern(ctx, rest, recordRestType(ctx, recordPat, matched));
       }
       if (expectedType is ClassType) {
         // Structural patterns match structural types. Classes are

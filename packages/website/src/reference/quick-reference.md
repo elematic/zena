@@ -1173,7 +1173,8 @@ in its result type and is compiled once per row, with direct field access:
 ```zena
 type PostRow = {title: String, ...Timestamps};
 
-let moveRight = <R extends record>(p: {x: i32, ...R}): {x: i32, ...R} => p;
+let moveRight = <R extends record>(p: {x: i32, ...R}): {x: i32, ...R} =>
+    {...p, x: p.x + 1}; // spread keeps the row
 moveRight({x: 1, label: 'a'}).label; // ✅ R = {label: String}
 moveRight<{x: f64}>({x: 1});         // ❌ R must lack 'x'
 ```
@@ -1233,6 +1234,7 @@ separate variables.
 // Record
 let { x, y } = point;
 let { x as a, y as b } = point;  // Rename
+let { x, ...others } = point;    // others: the fields not named
 
 // Tuple
 let (first, second) = tuple;

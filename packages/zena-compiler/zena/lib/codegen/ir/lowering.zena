@@ -3622,6 +3622,10 @@ export final class FunctionLowerer {
         }
         bindRecordProp(this.#cx(), dispatch, recordType, prop, recv);
       }
+      let rest = recordPat.rest;
+      if (rest != null) {
+        this.#lowerPatternBindings(rest, this.#recordRestValue(rest, recv));
+      }
       return;
     }
     for (let prop in properties) {
@@ -3957,6 +3961,22 @@ export final class FunctionLowerer {
    * were generated for the target shape (registered during discovery
    * — a missing registration bails).
    */
+  /**
+   * The value a record pattern's `...rest` binds: the matched record
+   * converted to the rest's type, which the checker recorded on it.
+   */
+  #recordRestValue(rest: Node, value: i32): i32 {
+    let raOpt = this.func.model.getRecordAdaptation(rest);
+    if (raOpt == null) {
+      this.#bail('record rest without its conversion');
+    }
+    return this.#applyRecordAdaptation(raOpt, value);
+  }
+
+  hostRecordRestValue(rest: Node, value: i32): i32 {
+    return this.#recordRestValue(rest, value);
+  }
+
   #applyRecordAdaptation(ra: RecordAdaptation, value: i32): i32 {
     if (value < 0 || this.b.body.typeId[value] < 0) {
       this.#bail('record adaptation without value');
@@ -9519,6 +9539,10 @@ export let optionalHit = (cx: LoweringContext, expr: Expression, recv: i32): i32
 export let repackRecordUnion = (cx: LoweringContext,
     ra: RecordUnionAdaptation, value: i32): i32 =>
     hostOf(cx).hostRepackRecordUnion(ra, value);
+
+/** The value a record pattern's `...rest` binds (patterns). */
+export let recordRestValue = (cx: LoweringContext, rest: Node, value: i32): i32 =>
+    hostOf(cx).hostRecordRestValue(rest, value);
 
 /**
  * Suspends on `future`, typed `ct`, and resumes with its settled value:
