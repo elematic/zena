@@ -14,22 +14,21 @@ import { loadPackageMap } from '../lib/package-manifest.zena';
 import { Diagnostic, DiagnosticSeverity } from '../lib/diagnostics.zena';
 import { PlainHost, stdlibRoot } from './test-utils.zena';
 
-let errorsOf = (result: ProgramCheckResult): GrowableArray<String> => {
+function errorsOf(result: ProgramCheckResult) {
   let out = new Array<String>();
   for (let path in result.results.keys()) {
     if (path.startsWith("zena:")) { continue; }
     for (let d in result.results[path].diagnostics) {
-      match (d.severity) {
-        case DiagnosticSeverity.Error: { out.push(path + ": " + d.message); }
-        case _: {}
+      if (d.severity == DiagnosticSeverity.Error) {
+        out.push(`${path}: ${d.message}`);
       }
     }
   }
   return out;
-};
+}
 
-export let tests = suite('cycle members across incremental compiles', (): void => {
-  test('the second entry of a cycle checks clean after the first', (ctx: TestContext): void => {
+export let tests = suite('cycle members across incremental compiles', () => {
+  test('the second entry of a cycle checks clean after the first', (ctx) => {
     let host = new PlainHost();
     let packages = loadPackageMap(host, "zena-packages.json");
     let compiler = createCompiler(host, {stdlibRoot, packages});

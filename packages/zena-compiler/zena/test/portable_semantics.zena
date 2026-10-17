@@ -100,7 +100,7 @@ let plain = new SharedCompiler(false);
 let warningCasts = new SharedCompiler(true);
 
 /** Renders diagnostics one per line for a failure message. */
-let formatAll = (diagnostics: Array<Diagnostic>, source: String): String => {
+function formatAll(diagnostics: Array<Diagnostic>, source: String) {
   if (diagnostics.length == 0) {
     return '(none)';
   }
@@ -112,18 +112,19 @@ let formatAll = (diagnostics: Array<Diagnostic>, source: String): String => {
     out = out + formatDiagnostic(diagnostics[i], source);
   }
   return out;
-};
+}
 
-let severityMatches = (d: Diagnostic, wanted: DiagnosticSeverity): boolean =>
-  match (d.severity) {
+function severityMatches(d: Diagnostic, wanted: DiagnosticSeverity): boolean {
+  return match (d.severity) {
     case DiagnosticSeverity.Error: wanted == DiagnosticSeverity.Error
     case DiagnosticSeverity.Warning: wanted == DiagnosticSeverity.Warning
     case _: false
   };
+}
 
-let filterBySeverity = (
+function filterBySeverity(
     diagnostics: Array<Diagnostic>,
-    wanted: DiagnosticSeverity): Array<Diagnostic> => {
+    wanted: DiagnosticSeverity): Array<Diagnostic> {
   let matches = new Array<Diagnostic>(4);
   for (let d in diagnostics) {
     if (severityMatches(d, wanted)) {
@@ -131,9 +132,9 @@ let filterBySeverity = (
     }
   }
   return matches;
-};
+}
 
-let isBlankOrComment = (line: String): boolean => {
+function isBlankOrComment(line: String): boolean {
   var i = 0;
   while (i < line.length) {
     let b = line.getByteAt(i);
@@ -142,7 +143,7 @@ let isBlankOrComment = (line: String): boolean => {
   }
   if (i >= line.length) { return true; }
   return i + 1 < line.length && line.getByteAt(i) == 47 && line.getByteAt(i + 1) == 47;
-};
+}
 
 /**
  * The line a directive written on `line` is talking about: its own line
@@ -157,7 +158,7 @@ let isBlankOrComment = (line: String): boolean => {
  * — and a directive separated from its subject by a blank line or an
  * explanatory comment still means the statement it sits above.
  */
-let annotatedLine = (lines: FixedArray<String>, line: i32): i32 => {
+function annotatedLine(lines: FixedArray<String>, line: i32) {
   if (line - 1 >= 0 && line - 1 < lines.length && !isBlankOrComment(lines[line - 1])) {
     return line;
   }
@@ -167,10 +168,10 @@ let annotatedLine = (lines: FixedArray<String>, line: i32): i32 => {
     i += 1;
   }
   return line;
-};
+}
 
 /** Parse → scope → check the file, then match diagnostics against directives. */
-let runSemanticTest = (f: TestFile): void => {
+function runSemanticTest(f: TestFile) {
   let expectedErrors = f.all('error');
   let expectedWarnings = f.all('warning');
   let warnUnnecessaryCasts = f.directive('warnUnnecessaryCasts') == 'true';
@@ -305,20 +306,20 @@ let runSemanticTest = (f: TestFile): void => {
         `Unexpected warnings:\n${formatAll(unclaimed, f.source)}\nFile: ${f.path}`);
     }
   }
-};
+}
 
-export let runPortableSemantics = (): i32 => {
+export function runPortableSemantics(): i32 {
   let discovery = new Discovery();
-  let root = suite('Portable Semantics Tests', (): void => {
+  let root = suite('Portable Semantics Tests', () => {
     // Every `.zena` file under semantics/ is checked on its own, the
     // modules that exist to be imported by another test included: a
     // module that fails to check in isolation is itself a bug.
     registerSuites(
-      testsRoot, '', discovery, (f: TestFile): boolean => true, runSemanticTest);
+      testsRoot, '', discovery, (f): boolean => true, runSemanticTest);
   });
   // Registration is complete once `suite` returns, so what was found can
   // be reported before anything runs.
-  let write = (s: String): void => { console.log(s); };
+  let write = (s: String) => { console.log(s); };
   discovery.report('Semantics', write);
   return runAndReport(root, write);
-};
+}

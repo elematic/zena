@@ -33,20 +33,20 @@ import { walkEnter } from '../lib/visitor.zena';
 import { PlainHost, stdlibRoot } from './test-utils.zena';
 
 /** Every node id in the compilation, in file order. */
-let idsOf = (result: CompilationResult): Array<NodeId> => {
+function idsOf(result: CompilationResult): Array<NodeId> {
   let ids = new Array<NodeId>();
   for (let file in result.files) {
-    walkEnter(file.ast, (n: Node): void => { ids.push(n.id); });
+    walkEnter(file.ast, (n) => { ids.push(n.id); });
   }
   return ids;
-};
+}
 
 /** How many node ids are claimed by more than one file. */
-let collisionCount = (result: CompilationResult): i32 => {
+function collisionCount(result: CompilationResult) {
   let owner = new Map<NodeId, String>();
   var collisions = 0;
   for (let file in result.files) {
-    walkEnter(file.ast, (n: Node): void => {
+    walkEnter(file.ast, (n) => {
       if (let (true, first) = owner.get(n.id)) {
         if (first != file.path) { collisions += 1; }
       } else {
@@ -55,17 +55,17 @@ let collisionCount = (result: CompilationResult): i32 => {
     });
   }
   return collisions;
-};
+}
 
-let newCompiler = (host: PlainHost): Compiler => {
+function newCompiler(host: PlainHost) {
   let packages = loadPackageMap(host, 'zena-packages.json');
   // The core module with no host beneath it: the bytes compared are
   // the program's own.
   return createCompiler(host, {stdlibRoot, packages});
-};
+}
 
 /** Compiles to wasm, throwing on any check error. */
-let compileToWasm = (c: Compiler, path: String): ByteArray => {
+function compileToWasm(c: Compiler, path: String) {
   let result = c.compile({entry: path, target: 'freestanding'});
   let checked = checkCompilation(result);
   for (let diag in checked.diagnostics) {
@@ -87,9 +87,9 @@ let compileToWasm = (c: Compiler, path: String): ByteArray => {
   return new BinaryGenerator('freestanding', false)
     .generate(new Program(units, entryUnit))
     .toByteArray();
-};
+}
 
-let bytesEqual = (a: ByteArray, b: ByteArray): boolean => {
+function bytesEqual(a: ByteArray, b: ByteArray): boolean {
   if (a.length != b.length) { return false; }
   var i = 0;
   while (i < a.length) {
@@ -97,7 +97,7 @@ let bytesEqual = (a: ByteArray, b: ByteArray): boolean => {
     i += 1;
   }
   return true;
-};
+}
 
 /**
  * Reaches interface dispatch through a generic stdlib instantiation,
@@ -108,8 +108,8 @@ let heavyEntry = 'tests/language/execution/arrays/extension_class.zena';
 /** The file whose source the change tests rewrite under the compiler. */
 let mutableEntry = 'tests/language/execution/variables/local_let.zena';
 
-export let tests = suite('Compiler.invalidate', (): void => {
-  test('leaves node ids unique across files', (ctx: TestContext): void => {
+export let tests = suite('Compiler.invalidate', () => {
+  test('leaves node ids unique across files', (ctx) => {
     let host = new PlainHost();
     let c = newCompiler(host);
     c.invalidate(heavyEntry);
@@ -118,7 +118,7 @@ export let tests = suite('Compiler.invalidate', (): void => {
       `${collisionCount(result)} node ids are claimed by more than one file`);
   });
 
-  test('parses the same nodes either way', (ctx: TestContext): void => {
+  test('parses the same nodes either way', (ctx) => {
     // Not asserted: that a node keeps the same id. `invalidate` loads
     // the file before `compile` loads the prelude, so the ids are
     // handed out in a different order and every one of them differs.
@@ -136,7 +136,7 @@ export let tests = suite('Compiler.invalidate', (): void => {
       `${actual.length} nodes after invalidate, ${expected.length} without`);
   });
 
-  test('emits the same module for an unchanged file', (ctx: TestContext): void => {
+  test('emits the same module for an unchanged file', (ctx) => {
     // The end-to-end statement of the bug: invalidating a file that did
     // not change must be invisible, all the way to the bytes. This is
     // what makes the differing ids above a relabelling and not a
@@ -149,7 +149,7 @@ export let tests = suite('Compiler.invalidate', (): void => {
       `invalidate changed the emitted module (${plain.length} bytes vs ${after.length})`);
   });
 
-  test('picks up a file that changed', (ctx: TestContext): void => {
+  test('picks up a file that changed', (ctx) => {
     // The other half: not corrupting the compile is worthless if the
     // new source is not what gets compiled.
     let host = new PlainHost();
@@ -166,7 +166,7 @@ export let tests = suite('Compiler.invalidate', (): void => {
       'the compiler emitted the same module after the source changed');
   });
 
-  test('a changed file that stops compiling reports its error', (ctx: TestContext): void => {
+  test('a changed file that stops compiling reports its error', (ctx) => {
     // A stale cache would keep reporting the old source as clean.
     let host = new PlainHost();
     let c = newCompiler(host);

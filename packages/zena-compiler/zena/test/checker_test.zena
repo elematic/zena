@@ -25,6 +25,7 @@ import {
 } from '../lib/types.zena';
 import { WellKnown } from '../lib/well-known.zena';
 import { VariableDeclaration, Identifier, Node } from '../lib/ast.zena';
+import { growable } from 'zena:core';
 
 // ============================================================================
 // Helpers
@@ -33,7 +34,7 @@ import { VariableDeclaration, Identifier, Node } from '../lib/ast.zena';
 // TODO: In the future, instead of manually mocking types here, we should
 // parse and check exactly the stdlib modules needed once, and share those
 // AST/Types across test runs.
-let createTestSharedState = (): SharedCheckerState => {
+function createTestSharedState() {
   let sharedState = new SharedCheckerState();
   let stringClass = new ClassType(9000 as TypeId, noSymbolId, "String");
   stringClass.members["length"] = new FieldInfo(new I32Type() as Type, false, false, false, false, false);
@@ -41,12 +42,10 @@ let createTestSharedState = (): SharedCheckerState => {
   
   let fixedArrayClass = new ClassType(9001 as TypeId, noSymbolId, "FixedArray");
   let faT = new TypeParameterType("T", null, null);
-  let faTArr = new Array<TypeParameterType>();
-  faTArr.push(faT);
+  let faTArr = growable<TypeParameterType>([faT]);
   fixedArrayClass.typeParameters = faTArr;
   fixedArrayClass.members["length"] = new FieldInfo(new I32Type() as Type, false, false, false, false, false);
-  let faPushParams = new Array<Type>();
-  faPushParams.push(faT as Type);
+  let faPushParams = growable<Type>([faT as Type]);
   fixedArrayClass.members["push"] = new MethodInfo(new FunctionType(faPushParams, new VoidType() as Type), false, false, false, false);
   sharedState.preludeTypes["FixedArray"] = fixedArrayClass as Type;
 
@@ -54,20 +53,17 @@ let createTestSharedState = (): SharedCheckerState => {
   // mutable elements, so member lookup on a literal resolves here.
   let immutableArrayClass = new ClassType(9002 as TypeId, noSymbolId, "ImmutableArray");
   let iaT = new TypeParameterType("T", null, null);
-  let iaTArr = new Array<TypeParameterType>();
-  iaTArr.push(iaT);
+  let iaTArr = growable<TypeParameterType>([iaT]);
   immutableArrayClass.typeParameters = iaTArr;
   immutableArrayClass.members["length"] = new FieldInfo(new I32Type() as Type, false, false, false, false, false);
   sharedState.preludeTypes["ImmutableArray"] = immutableArrayClass as Type;
 
   let growableArrayClass = new ClassType(9003 as TypeId, noSymbolId, "GrowableArray");
   let arrT = new TypeParameterType("T", null, null);
-  let arrTArr = new Array<TypeParameterType>();
-  arrTArr.push(arrT);
+  let arrTArr = growable<TypeParameterType>([arrT]);
   growableArrayClass.typeParameters = arrTArr;
   growableArrayClass.members["length"] = new FieldInfo(new I32Type() as Type, false, false, false, false, false);
-  let arrPushParams = new Array<Type>();
-  arrPushParams.push(arrT as Type);
+  let arrPushParams = growable<Type>([arrT as Type]);
   growableArrayClass.members["push"] = new MethodInfo(new FunctionType(arrPushParams, new VoidType() as Type), false, false, false, false);
   sharedState.preludeTypes["GrowableArray"] = growableArrayClass as Type;
   sharedState.preludeTypes["Array"] = growableArrayClass as Type;
@@ -75,45 +71,39 @@ let createTestSharedState = (): SharedCheckerState => {
   let mapClass = new ClassType(9005 as TypeId, noSymbolId, "HashMap");
   let mapK = new TypeParameterType("K", null, null);
   let mapV = new TypeParameterType("V", null, null);
-  let mapTArr = new Array<TypeParameterType>();
-  mapTArr.push(mapK);
-  mapTArr.push(mapV);
+  let mapTArr = growable<TypeParameterType>([mapK, mapV]);
   mapClass.typeParameters = mapTArr;
-  let getParams = new Array<Type>();
-  getParams.push(mapK as Type);
+  let getParams = growable<Type>([mapK as Type]);
   // Mirror the stdlib signature: inline (true, V) | inline (false, _).
-  let hitElems = new Array<Type>();
-  hitElems.push(new BoolLiteralType(true) as Type);
-  hitElems.push(mapV as Type);
-  let missElems = new Array<Type>();
-  missElems.push(new BoolLiteralType(false) as Type);
-  missElems.push(new HoleType() as Type);
-  let getReturnArms = new Array<Type>();
-  getReturnArms.push(new InlineTupleType(hitElems) as Type);
-  getReturnArms.push(new InlineTupleType(missElems) as Type);
+  let hitElems = growable<Type>([
+    new BoolLiteralType(true) as Type,
+    mapV as Type,
+  ]);
+  let missElems = growable<Type>([
+    new BoolLiteralType(false) as Type,
+    new HoleType() as Type,
+  ]);
+  let getReturnArms = growable<Type>([
+    new InlineTupleType(hitElems) as Type,
+    new InlineTupleType(missElems) as Type,
+  ]);
   mapClass.members["get"] = new MethodInfo(new FunctionType(getParams, new UnionType(getReturnArms) as Type), false, false, false, false);
-  let hasParams = new Array<Type>();
-  hasParams.push(mapK as Type);
+  let hasParams = growable<Type>([mapK as Type]);
   mapClass.members["has"] = new MethodInfo(new FunctionType(hasParams, new BooleanType() as Type), false, false, false, false);
-  let setParams = new Array<Type>();
-  setParams.push(mapK as Type);
-  setParams.push(mapV as Type);
+  let setParams = growable<Type>([mapK as Type, mapV as Type]);
   mapClass.members["[]="] = new MethodInfo(new FunctionType(setParams, new VoidType() as Type), false, false, false, false);
-  let idxParams = new Array<Type>();
-  idxParams.push(mapK as Type);
+  let idxParams = growable<Type>([mapK as Type]);
   mapClass.members["[]"] = new MethodInfo(new FunctionType(idxParams, mapV as Type), false, false, false, false);
   sharedState.preludeTypes["HashMap"] = mapClass as Type;
 
   let futureClass = new ClassType(9007 as TypeId, noSymbolId, "Future");
   let futureT = new TypeParameterType("T", null, null);
-  let futureTArr = new Array<TypeParameterType>();
-  futureTArr.push(futureT);
+  let futureTArr = growable<TypeParameterType>([futureT]);
   futureClass.typeParameters = futureTArr;
   sharedState.preludeTypes["Future"] = futureClass as Type;
 
   let iterT = new TypeParameterType("T", null, null);
-  let iterTArr = new Array<TypeParameterType>();
-  iterTArr.push(iterT);
+  let iterTArr = growable<TypeParameterType>([iterT]);
 
   let iteratorIface = new InterfaceType(9008 as TypeId, noSymbolId, "Iterator");
   iteratorIface.typeParameters = iterTArr;
@@ -137,7 +127,7 @@ let createTestSharedState = (): SharedCheckerState => {
   // name, so a mock standard library has to say which slot each stand-in
   // fills. In a real compilation this comes from the library a declaration
   // is declared in; these types are built here and belong to no module.
-  let known = (w: WellKnown, t: Type): void => {
+  let known = (w: WellKnown, t: Type) => {
     sharedState.wellKnownTypes[w as i32] = t;
   };
   known(WellKnown.StringClass, stringClass as Type);
@@ -152,40 +142,40 @@ let createTestSharedState = (): SharedCheckerState => {
   known(WellKnown.HashableInterface, hashableIface as Type);
 
   return sharedState;
-};
+}
 
 /**
  * Parse, scope-analyse, and type-check a source string.
  */
-let check = (source: String): CheckResult => {
+function check(source: String) {
   let ast = parse(source, "<test>");
   let scopeBuilder = new ScopeBuilder("<test>");
   let scopeResult = scopeBuilder.build(ast);
   return checkModule(ast, scopeResult, null, null, false, createTestSharedState());
-};
+}
 
 /**
  * Assert that checking produces no errors.
  */
-let checkOk = (source: String): CheckResult => {
+function checkOk(source: String) {
   let result = check(source);
   let errors = errorDiagnostics(result.diagnostics);
   if (errors.length > 0) {
     var msg = "Expected no errors, got:\n";
     var i = 0;
     while (i < errors.length) {
-      msg = msg + "  - " + errors[i].message + "\n";
+      msg = `${msg}  - ${errors[i].message}\n`;
       i += 1;
     }
     throw new Error(msg);
   }
   return result;
-};
+}
 
 /**
  * Assert that checking produces at least one error matching the pattern.
  */
-let checkError = (source: String, pattern: String): void => {
+function checkError(source: String, pattern: String) {
   let result = check(source);
   let errors = errorDiagnostics(result.diagnostics);
   var found = false;
@@ -198,40 +188,39 @@ let checkError = (source: String, pattern: String): void => {
     i += 1;
   }
   if (!found) {
-    var msg = "Expected error containing '" + pattern + "', got:\n";
+    var msg = `Expected error containing '${pattern}', got:\n`;
     if (errors.length == 0) {
       msg = msg + "  (none)\n";
     } else {
       var j = 0;
       while (j < errors.length) {
-        msg = msg + "  - " + errors[j].message + "\n";
+        msg = `${msg}  - ${errors[j].message}\n`;
         j += 1;
       }
     }
     throw new Error(msg);
   }
-};
+}
 
 /**
  * Filter diagnostics to only error severity.
  */
-let errorDiagnostics = (diags: Array<Diagnostic>): Array<Diagnostic> => {
+function errorDiagnostics(diags: Array<Diagnostic>): Array<Diagnostic> {
   let errors = new Array<Diagnostic>(4);
   var i = 0;
   while (i < diags.length) {
-    match (diags[i].severity) {
-      case DiagnosticSeverity.Error: errors.push(diags[i])
-      case _: {}
+    if (diags[i].severity == DiagnosticSeverity.Error) {
+      errors.push(diags[i]);
     }
     i += 1;
   }
   return errors;
-};
+}
 
 /**
  * Substring check (no builtins yet).
  */
-let contains = (s: String, sub: String): boolean => {
+function contains(s: String, sub: String): boolean {
   if (sub.length > s.length) { return false; }
   var i = 0;
   while (i <= s.length - sub.length) {
@@ -241,33 +230,33 @@ let contains = (s: String, sub: String): boolean => {
     i += 1;
   }
   return false;
-};
+}
 
 // ============================================================================
 // Tests
 // ============================================================================
 
-export let tests = suite('Checker API', (): void => {
+export let tests = suite('Checker API', () => {
 
   // ==========================================================================
   // Basic API surface
   // ==========================================================================
 
-  suite('checkModule returns a CheckResult', (): void => {
+  suite('checkModule returns a CheckResult', () => {
 
-    test('valid source produces CheckResult with no errors', (ctx: TestContext): void => {
+    test('valid source produces CheckResult with no errors', (ctx) => {
       let result = checkOk("let _x = 42;");
       // CheckResult has a model and diagnostics
       isTrue(errorDiagnostics(result.diagnostics).length == 0);
     });
 
-    test('invalid source produces diagnostics', (ctx: TestContext): void => {
+    test('invalid source produces diagnostics', (ctx) => {
       let result = check("let x: i32 = true;");
       let errors = errorDiagnostics(result.diagnostics);
       isTrue(errors.length > 0);
     });
 
-    test('multiple statements checked', (ctx: TestContext): void => {
+    test('multiple statements checked', (ctx) => {
       let result = checkOk(
         "let x = 1;\nlet y = 2;\nlet z = x;"
       );
@@ -279,9 +268,9 @@ export let tests = suite('Checker API', (): void => {
   // SemanticModel: node types
   // ==========================================================================
 
-  suite('SemanticModel records node types', (): void => {
+  suite('SemanticModel records node types', () => {
 
-    test('integer literal has i32 type', (ctx: TestContext): void => {
+    test('integer literal has i32 type', (ctx) => {
       let source = "let _x = 42;";
       let ast = parse(source, "<test>");
       let scopeBuilder = new ScopeBuilder("<test>");
@@ -295,7 +284,7 @@ export let tests = suite('Checker API', (): void => {
       equal(typeToString(initType as Type), "i32");
     });
 
-    test('string literal has String type', (ctx: TestContext): void => {
+    test('string literal has String type', (ctx) => {
       let source = "let _x = 'hello';";
       let ast = parse(source, "<test>");
       let scopeBuilder = new ScopeBuilder("<test>");
@@ -308,7 +297,7 @@ export let tests = suite('Checker API', (): void => {
       equal(typeToString(initType as Type), "String");
     });
 
-    test('boolean literal has literal type', (ctx: TestContext): void => {
+    test('boolean literal has literal type', (ctx) => {
       let source = "let _x = true;";
       let ast = parse(source, "<test>");
       let scopeBuilder = new ScopeBuilder("<test>");
@@ -321,7 +310,7 @@ export let tests = suite('Checker API', (): void => {
       equal(typeToString(initType as Type), "true");
     });
 
-    test('binary expression has inferred type', (ctx: TestContext): void => {
+    test('binary expression has inferred type', (ctx) => {
       let source = "let _x = 1 + 2;";
       let ast = parse(source, "<test>");
       let scopeBuilder = new ScopeBuilder("<test>");
@@ -334,7 +323,7 @@ export let tests = suite('Checker API', (): void => {
       equal(typeToString(initType as Type), "i32");
     });
 
-    test('function expression has function type', (ctx: TestContext): void => {
+    test('function expression has function type', (ctx) => {
       let source = "let f = (x: i32): i32 => x;";
       let ast = parse(source, "<test>");
       let scopeBuilder = new ScopeBuilder("<test>");
@@ -354,9 +343,9 @@ export let tests = suite('Checker API', (): void => {
   // SemanticModel: binding types
   // ==========================================================================
 
-  suite('SemanticModel records binding types', (): void => {
+  suite('SemanticModel records binding types', () => {
 
-    test('let binding has correct type via scope lookup', (ctx: TestContext): void => {
+    test('let binding has correct type via scope lookup', (ctx) => {
       let source = "let _x = 42;";
       let ast = parse(source, "<test>");
       let scopeBuilder = new ScopeBuilder("<test>");
@@ -371,7 +360,7 @@ export let tests = suite('Checker API', (): void => {
       equal(typeToString(bindingType as Type), "i32");
     });
 
-    test('annotated binding has annotation type', (ctx: TestContext): void => {
+    test('annotated binding has annotation type', (ctx) => {
       let source = "let _x: i32 = 42;";
       let ast = parse(source, "<test>");
       let scopeBuilder = new ScopeBuilder("<test>");
@@ -385,7 +374,7 @@ export let tests = suite('Checker API', (): void => {
       equal(typeToString(bindingType as Type), "i32");
     });
 
-    test('var binding widens literal type', (ctx: TestContext): void => {
+    test('var binding widens literal type', (ctx) => {
       let source = "var _x = true;";
       let ast = parse(source, "<test>");
       let scopeBuilder = new ScopeBuilder("<test>");
@@ -405,30 +394,30 @@ export let tests = suite('Checker API', (): void => {
   // Diagnostics
   // ==========================================================================
 
-  suite('diagnostics', (): void => {
+  suite('diagnostics', () => {
 
-    test('type mismatch produces error', (ctx: TestContext): void => {
+    test('type mismatch produces error', (ctx) => {
       checkError("let x: i32 = true;", "Type mismatch");
     });
 
-    test('undeclared variable produces error', (ctx: TestContext): void => {
+    test('undeclared variable produces error', (ctx) => {
       checkError("let x = y;", "not found");
     });
 
-    test('error has location info', (ctx: TestContext): void => {
+    test('error has location info', (ctx) => {
       let result = check("let x: i32 = true;");
       let errors = errorDiagnostics(result.diagnostics);
       isTrue(errors.length > 0);
       isTrue(errors[0].location != null);
     });
 
-    test('multiple errors collected', (ctx: TestContext): void => {
+    test('multiple errors collected', (ctx) => {
       let result = check("let x: i32 = true;\nlet y: String = 42;");
       let errors = errorDiagnostics(result.diagnostics);
       isTrue(errors.length >= 2);
     });
 
-    test('valid code produces zero errors', (ctx: TestContext): void => {
+    test('valid code produces zero errors', (ctx) => {
       let result = check("let x = 1;\nlet y = x + 2;");
       let errors = errorDiagnostics(result.diagnostics);
       equal(errors.length, 0);
@@ -439,9 +428,9 @@ export let tests = suite('Checker API', (): void => {
   // Class declarations
   // ==========================================================================
 
-  suite('class type creation', (): void => {
+  suite('class type creation', () => {
 
-    test('class creates a ClassType', (ctx: TestContext): void => {
+    test('class creates a ClassType', (ctx) => {
       let source = "class Point {\n  x: i32;\n  y: i32;\n  new(this.x, this.y);\n}";
       let ast = parse(source, "<test>");
       let scopeBuilder = new ScopeBuilder("<test>");
@@ -456,21 +445,21 @@ export let tests = suite('Checker API', (): void => {
       isTrue(info != null);
     });
 
-    test('class instantiation works', (ctx: TestContext): void => {
+    test('class instantiation works', (ctx) => {
       let result = checkOk(
         "class Point {\n  x: i32;\n  y: i32;\n  new(this.x, this.y);\n}\nlet p = new Point(1, 2);"
       );
       isTrue(errorDiagnostics(result.diagnostics).length == 0);
     });
 
-    test('sealed class with variants', (ctx: TestContext): void => {
+    test('sealed class with variants', (ctx) => {
       let result = checkOk(
         "sealed class Shape {\n  case Circle(radius: f64)\n  case Rect(width: f64, height: f64)\n}"
       );
       isTrue(errorDiagnostics(result.diagnostics).length == 0);
     });
 
-    test('case class creates type', (ctx: TestContext): void => {
+    test('case class creates type', (ctx) => {
       let result = checkOk(
         "class Pair(first: i32, second: String)"
       );
@@ -482,28 +471,28 @@ export let tests = suite('Checker API', (): void => {
   // Integration: scope + checker pipeline
   // ==========================================================================
 
-  suite('scope integration', (): void => {
+  suite('scope integration', () => {
 
-    test('identifier resolves through scope', (ctx: TestContext): void => {
+    test('identifier resolves through scope', (ctx) => {
       let result = checkOk("let x = 1;\nlet y = x;");
       isTrue(errorDiagnostics(result.diagnostics).length == 0);
     });
 
-    test('function parameter types resolve', (ctx: TestContext): void => {
+    test('function parameter types resolve', (ctx) => {
       let result = checkOk(
         "let add = (a: i32, b: i32): i32 => a + b;\nlet r = add(1, 2);"
       );
       isTrue(errorDiagnostics(result.diagnostics).length == 0);
     });
 
-    test('class members resolve from scope', (ctx: TestContext): void => {
+    test('class members resolve from scope', (ctx) => {
       let result = checkOk(
         "class Foo {\n  value: i32;\n  new(this.value);\n  getValue(): i32 { return this.value; }\n}\nlet f = new Foo(42);\nlet v = f.getValue();"
       );
       isTrue(errorDiagnostics(result.diagnostics).length == 0);
     });
 
-    test('block scope isolates variables', (ctx: TestContext): void => {
+    test('block scope isolates variables', (ctx) => {
       // The inner x should not conflict with the outer x
       let result = checkOk(
         "let f = (): void => {\n  let x = 1;\n  {\n    let x = 2;\n  }\n};"
@@ -511,7 +500,7 @@ export let tests = suite('Checker API', (): void => {
       isTrue(errorDiagnostics(result.diagnostics).length == 0);
     });
 
-    test('block type alias shadows outer materialized type', (ctx: TestContext): void => {
+    test('block type alias shadows outer materialized type', (ctx) => {
       // Ensure outer Point gets materialized first, then shadow it with a
       // block-local type alias and use that alias in an annotation.
       let result = checkOk(
@@ -525,16 +514,16 @@ export let tests = suite('Checker API', (): void => {
   // Type checking: patterns and match
   // ==========================================================================
 
-  suite('pattern matching', (): void => {
+  suite('pattern matching', () => {
 
-    test('exhaustive match on sealed class passes', (ctx: TestContext): void => {
+    test('exhaustive match on sealed class passes', (ctx) => {
       let result = checkOk(
         "sealed class Shape {\n  case Circle(radius: f64)\n  case Rect(w: f64, h: f64)\n}\nlet describe = (s: Shape): String => match (s) {\n  case Circle {}: 'circle'\n  case Rect {}: 'rect'\n};"
       );
       isTrue(errorDiagnostics(result.diagnostics).length == 0);
     });
 
-    test('non-exhaustive match produces error', (ctx: TestContext): void => {
+    test('non-exhaustive match produces error', (ctx) => {
       checkError(
         "sealed class Shape {\n  case Circle(radius: f64)\n  case Rect(w: f64, h: f64)\n}\nlet describe = (s: Shape): String => match (s) {\n  case Circle {}: 'circle'\n};",
         "Non-exhaustive"
@@ -546,55 +535,55 @@ export let tests = suite('Checker API', (): void => {
   // Private fields
   // ==========================================================================
 
-  suite('private fields', (): void => {
+  suite('private fields', () => {
 
-    test('private field read in own class', (ctx: TestContext): void => {
+    test('private field read in own class', (ctx) => {
       checkOk(
         "class Counter {\n  #count: i32 = 0;\n  getCount(): i32 { return this.#count; }\n}"
       );
     });
 
-    test('private field write in own class', (ctx: TestContext): void => {
+    test('private field write in own class', (ctx) => {
       checkOk(
         "class Counter {\n  var #count: i32 = 0;\n  increment(): void { this.#count += 1; }\n}"
       );
     });
 
-    test('private field outside class is error', (ctx: TestContext): void => {
+    test('private field outside class is error', (ctx) => {
       checkError(
         "class Foo {\n  #secret: i32 = 0;\n}\nlet f = new Foo();\nlet x = f.#secret;",
         "Private field"
       );
     });
 
-    test('private method in own class', (ctx: TestContext): void => {
+    test('private method in own class', (ctx) => {
       checkOk(
         "class Builder {\n  #helper(): i32 { return 42; }\n  build(): i32 { return this.#helper(); }\n}"
       );
     });
 
-    test('private field with initializer expression', (ctx: TestContext): void => {
+    test('private field with initializer expression', (ctx) => {
       // Scope.zena pattern: #values = new Map<String, Symbol>()
       checkOk(
         "class Container {\n  #items: FixedArray<i32> = [1, 2, 3];\n  count(): i32 { return this.#items.length; }\n}"
       );
     });
 
-    test('private field member access chain', (ctx: TestContext): void => {
+    test('private field member access chain', (ctx) => {
       // Pattern: this.#values.has(name)
       checkOk(
         "class Wrapper {\n  #text: String = 'hello';\n  len(): i32 { return this.#text.length; }\n}"
       );
     });
 
-    test('forward reference to private method', (ctx: TestContext): void => {
+    test('forward reference to private method', (ctx) => {
       // build() calls #helper() which is defined later in the class body
       checkOk(
         "class Builder {\n  build(): i32 { return this.#process(); }\n  #process(): i32 { return 42; }\n}"
       );
     });
 
-    test('cross-class forward reference', (ctx: TestContext): void => {
+    test('cross-class forward reference', (ctx) => {
       // Class A's method calls class B's method — B is declared AFTER A.
       // The two-phase checker registers all member signatures before checking bodies.
       checkOk(
@@ -607,15 +596,15 @@ export let tests = suite('Checker API', (): void => {
   // Generic type members
   // ==========================================================================
 
-  suite('generic type members', (): void => {
+  suite('generic type members', () => {
 
-    test('array literal length', (ctx: TestContext): void => {
+    test('array literal length', (ctx) => {
       checkOk(
         "let arr = [1, 2, 3];\nlet n: i32 = arr.length;"
       );
     });
 
-    test('array push method', (ctx: TestContext): void => {
+    test('array push method', (ctx) => {
       checkOk(
         "let arr = new GrowableArray<i32>();\nlet f = (): void => {\n  arr.push(42);\n};"
       );
@@ -626,27 +615,27 @@ export let tests = suite('Checker API', (): void => {
   // Null comparison operators
   // ==========================================================================
 
-  suite('null comparison', (): void => {
+  suite('null comparison', () => {
 
-    test('nullable field compared to null with !=', (ctx: TestContext): void => {
+    test('nullable field compared to null with !=', (ctx) => {
       checkOk(
         "class Foo {\n  x: String | null;\n  new(this.x);\n}\nlet f = new Foo(null);\nlet b = f.x != null;"
       );
     });
 
-    test('nullable field compared to null with ==', (ctx: TestContext): void => {
+    test('nullable field compared to null with ==', (ctx) => {
       checkOk(
         "class Foo {\n  x: String | null;\n  new(this.x);\n}\nlet f = new Foo(null);\nlet b = f.x == null;"
       );
     });
 
-    test('nullable class type compared to null', (ctx: TestContext): void => {
+    test('nullable class type compared to null', (ctx) => {
       checkOk(
         "class Point { x: f64; new(this.x); }\nlet p: Point | null = null;\nlet b = p != null;"
       );
     });
 
-    test('class field compared to null', (ctx: TestContext): void => {
+    test('class field compared to null', (ctx) => {
       checkOk(
         "class Loc { line: i32; new(this.line); }\nclass Foo {\n  loc: Loc | null;\n  new(this.loc);\n}\nlet f = new Foo(null);\nlet b = f.loc != null;"
       );
@@ -657,34 +646,34 @@ export let tests = suite('Checker API', (): void => {
   // HashMap member access
   // ==========================================================================
 
-  suite('HashMap members', (): void => {
+  suite('HashMap members', () => {
 
-    test('HashMap index access', (ctx: TestContext): void => {
+    test('HashMap index access', (ctx) => {
       checkOk(
         "import { HashMap } from 'zena:collections';\nlet m = new HashMap<String, i32>();\nlet f = (): void => {\n  m[\"x\"] = 42;\n};"
       );
     });
 
-    test('HashMap get method', (ctx: TestContext): void => {
+    test('HashMap get method', (ctx) => {
       checkOk(
         "import { HashMap } from 'zena:collections';\nlet m = new HashMap<String, i32>();\nlet f = (): void => {\n  if (let (true, v) = m.get(\"x\")) { let _ = v; }\n};"
       );
     });
 
-    test('HashMap has method', (ctx: TestContext): void => {
+    test('HashMap has method', (ctx) => {
       checkOk(
         "import { HashMap } from 'zena:collections';\nlet m = new HashMap<String, i32>();\nlet b = m.has(\"x\");"
       );
     });
 
-    test('HashMap field with get and return', (ctx: TestContext): void => {
+    test('HashMap field with get and return', (ctx) => {
       // Class with HashMap field — get method return type must substitute V
       checkOk(
         "import { HashMap } from 'zena:collections';\nclass Store {\n  #data = new HashMap<String, i32>();\n  lookup(key: String): i32 {\n    if (let (true, val) = this.#data.get(key)) { return val; }\n    return 0;\n  }\n}"
       );
     });
 
-    test('HashMap index access substitutes V', (ctx: TestContext): void => {
+    test('HashMap index access substitutes V', (ctx) => {
       // Index access on HashMap field must substitute type args
       checkOk(
         "import { HashMap } from 'zena:collections';\nclass Cache {\n  #map = new HashMap<String, i32>();\n  getValue(key: String): i32 {\n    return this.#map[key];\n  }\n}"
@@ -696,22 +685,22 @@ export let tests = suite('Checker API', (): void => {
   // Match pattern narrowing
   // ==========================================================================
 
-  suite('match pattern narrowing', (): void => {
+  suite('match pattern narrowing', () => {
 
-    test('as pattern narrows to class type', (ctx: TestContext): void => {
+    test('as pattern narrows to class type', (ctx) => {
       checkOk(
         "sealed class Shape {\n  case Circle(radius: f64)\n  case Rect(w: f64, h: f64)\n}\nlet c = new Circle(3.14);\nlet r: f64 = c.radius;"
       );
     });
 
-    test('as pattern with identifier narrows to class type', (ctx: TestContext): void => {
+    test('as pattern with identifier narrows to class type', (ctx) => {
       // `case Circle as c:` where Circle is an Identifier (no {})
       checkOk(
         "sealed class Shape {\n  case Circle(radius: f64)\n  case Rect(w: f64, h: f64)\n}\nlet area = (s: Shape): f64 => match (s) {\n  case Circle as c: c.radius\n  case Rect as r: r.w * r.h\n};"
       );
     });
 
-    test('as pattern with distributed variant narrows', (ctx: TestContext): void => {
+    test('as pattern with distributed variant narrows', (ctx) => {
       // Distributed variant (standalone class extends sealed)
       checkOk(
         "sealed class Node {\n  case Leaf, Branch\n}\nclass Leaf(value: i32) extends Node\nclass Branch(left: Node, right: Node) extends Node\nlet eval = (n: Node): i32 => match (n) {\n  case Leaf as l: l.value\n  case Branch as b: eval(b.left) + eval(b.right)\n};"
@@ -719,48 +708,48 @@ export let tests = suite('Checker API', (): void => {
     });
   });
 
-  suite('null check narrowing', (): void => {
+  suite('null check narrowing', () => {
 
-    test('if != null narrows in then branch', (ctx: TestContext): void => {
+    test('if != null narrows in then branch', (ctx) => {
       checkOk(
         "class Foo {\n  x: i32;\n  new(this.x);\n}\nlet f = (): void => {\n  let foo: Foo | null = null;\n  if (foo != null) {\n    let y: Foo = foo;\n  }\n};"
       );
     });
 
-    test('if == null narrows in else branch', (ctx: TestContext): void => {
+    test('if == null narrows in else branch', (ctx) => {
       checkOk(
         "class Foo {\n  x: i32;\n  new(this.x);\n}\nlet f = (): void => {\n  let foo: Foo | null = null;\n  if (foo == null) {\n    let y: i32 = 0;\n  } else {\n    let y: Foo = foo;\n  }\n};"
       );
     });
 
-    test('if == null early return narrows after', (ctx: TestContext): void => {
+    test('if == null early return narrows after', (ctx) => {
       checkOk(
         "class Foo {\n  x: i32;\n  new(this.x);\n}\nlet f = (foo: Foo | null): i32 => {\n  if (foo == null) { return 0; }\n  let y: Foo = foo;\n  return y.x;\n};"
       );
     });
 
-    test('null narrowing with method call argument', (ctx: TestContext): void => {
+    test('null narrowing with method call argument', (ctx) => {
       // Pattern from scope.zena: if (info == null) { ... } else { record(expr, info); }
       checkOk(
         "class Info {\n  x: i32;\n  new(this.x);\n}\nlet record = (info: Info): void => {};\nlet lookup = (): Info | null => null;\nlet test = (): void => {\n  let info = lookup();\n  if (info == null) {\n    let x = 0;\n  } else {\n    record(info);\n  }\n};"
       );
     });
 
-    test('null narrowing with != null and method call', (ctx: TestContext): void => {
+    test('null narrowing with != null and method call', (ctx) => {
       // Pattern from scope.zena: if (info != null) { record(ann, info); }
       checkOk(
         "class Info {\n  x: i32;\n  new(this.x);\n}\nlet record = (info: Info): void => {};\nlet lookup = (): Info | null => null;\nlet test = (): void => {\n  let info = lookup();\n  if (info != null) {\n    record(info);\n  }\n};"
       );
     });
 
-    test('null narrowing inside match case with method call', (ctx: TestContext): void => {
+    test('null narrowing inside match case with method call', (ctx) => {
       // Exact pattern from scope.zena: inside match arm, if == null, else calls method
       checkOk(
         "class Info {\n  x: i32;\n  new(this.x);\n}\nclass Ref {\n  record(a: i32, info: Info): void {}\n}\nclass Foo {\n  #ref: Ref;\n  new() : #ref = new Ref();\n  test(input: String | null): void {\n    let info: Info | null = null;\n    if (info == null) {\n      let x = 0;\n    } else {\n      this.#ref.record(42, info);\n    }\n  }\n}"
       );
     });
 
-    test('null narrowing inside match case body', (ctx: TestContext): void => {
+    test('null narrowing inside match case body', (ctx) => {
       // info inferred from function returning T | null, inside match arm
       // FIRST: without match - should pass
       checkOk(
@@ -768,28 +757,28 @@ export let tests = suite('Checker API', (): void => {
       );
     });
 
-    test('null narrowing inside match case body with match', (ctx: TestContext): void => {
+    test('null narrowing inside match case body with match', (ctx) => {
       // SAME but inside match - should also pass
       checkOk(
         "class Info {\n  x: i32;\n  new(this.x);\n}\nlet record = (info: Info): void => {};\nlet lookup = (s: String): Info | null => null;\nsealed class Tag {\n  case A(name: String)\n  case B\n}\nlet process = (expr: Tag): void => {\n  match (expr) {\n    case A {name}: {\n      let info = lookup(name);\n      if (info == null) {\n        let x = 0;\n      } else {\n        record(info);\n      }\n    }\n    case _: {}\n  }\n};"
       );
     });
 
-    test('null narrowing inside match - no destructuring', (ctx: TestContext): void => {
+    test('null narrowing inside match - no destructuring', (ctx) => {
       // Same but without destructuring in match pattern
       checkOk(
         "sealed class Tag {\n  case A\n  case B\n}\nlet f = (): String | null => null;\nlet process = (expr: Tag): void => {\n  match (expr) {\n    case A: {\n      let info = f();\n      if (info == null) {\n        let x = 0;\n      } else {\n        let y: String = info;\n      }\n    }\n    case B: {}\n  }\n};"
       );
     });
 
-    test('rejects nullable to non-nullable assignment', (ctx: TestContext): void => {
+    test('rejects nullable to non-nullable assignment', (ctx) => {
       checkError(
         "class Foo {\n  x: i32;\n  new(this.x);\n}\nlet foo: Foo | null = null;\nlet y: Foo = foo;",
         "not assignable"
       );
     });
 
-    test('narrowing allows non-null assignment in if body', (ctx: TestContext): void => {
+    test('narrowing allows non-null assignment in if body', (ctx) => {
       // With narrowing, foo should be Foo (not Foo | null) inside the if body
       checkOk(
         "class Foo {\n  x: i32;\n  new(this.x);\n}\nlet f = (): void => {\n  let foo: Foo | null = null;\n  if (foo != null) {\n    let y: Foo = foo;\n  }\n};"

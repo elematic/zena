@@ -27,33 +27,35 @@ import {
   instantiateClassType, instantiateInterfaceType
 } from '../lib/types.zena';
 import { SymbolId } from '../lib/scope/symbol.zena';
+import { growable } from 'zena:core';
 
 /** A generic `interface Box<T>`, standing in for `Iterable<T>`. */
-let genericInterface = (id: i32, symId: i32, name: String): InterfaceType => {
+function genericInterface(id: i32, symId: i32, name: String) {
   let it = new InterfaceType(id as TypeId, symId as SymbolId, name);
-  let params = new Array<TypeParameterType>();
-  params.push(new TypeParameterType('T', null, null));
+  let params = growable<TypeParameterType>([
+    new TypeParameterType('T', null, null),
+  ]);
   it.typeParameters = params;
   return it;
-};
+}
 
 /** A generic `class Holder<T>`. */
-let genericClass = (id: i32, symId: i32, name: String): ClassType => {
+function genericClass(id: i32, symId: i32, name: String) {
   let ct = new ClassType(id as TypeId, symId as SymbolId, name);
-  let params = new Array<TypeParameterType>();
-  params.push(new TypeParameterType('T', null, null));
+  let params = growable<TypeParameterType>([
+    new TypeParameterType('T', null, null),
+  ]);
   ct.typeParameters = params;
   return ct;
-};
+}
 
-let args = (t: Type): Array<Type> => {
-  let a = new Array<Type>();
-  a.push(t);
+function args(t: Type): Array<Type> {
+  let a = growable<Type>([t]);
   return a;
-};
+}
 
-export let tests = suite('Generic instantiation caching', (): void => {
-  test('two same-named classes do not share an interface instantiation', (ctx: TestContext): void => {
+export let tests = suite('Generic instantiation caching', () => {
+  test('two same-named classes do not share an interface instantiation', (ctx) => {
     // The two `class Item` declarations of two different entry points:
     // same name, different declaring Symbol.
     let itemA = new ClassType(101 as TypeId, 867 as SymbolId, 'Item');
@@ -68,7 +70,7 @@ export let tests = suite('Generic instantiation caching', (): void => {
     isTrue((b.typeArguments as GrowableArray<Type>)[0] === itemB, 'Iterable<ItemB> lost its type argument');
   });
 
-  test('two same-named classes do not share a class instantiation', (ctx: TestContext): void => {
+  test('two same-named classes do not share a class instantiation', (ctx) => {
     let itemA = new ClassType(101 as TypeId, 867 as SymbolId, 'Item');
     let itemB = new ClassType(202 as TypeId, 902 as SymbolId, 'Item');
     let holder = genericClass(2, 33, 'Holder');
@@ -80,7 +82,7 @@ export let tests = suite('Generic instantiation caching', (): void => {
     isTrue((a.typeArguments as GrowableArray<Type>)[0] === itemA, 'Holder<ItemA> lost its type argument');
   });
 
-  test('the same class still hits the cache', (ctx: TestContext): void => {
+  test('the same class still hits the cache', (ctx) => {
     // Interning is the point of the cache; identity keying must not
     // cost it. Instantiations of one class must still be one object,
     // whether reached directly or through a previous instantiation.
@@ -92,7 +94,7 @@ export let tests = suite('Generic instantiation caching', (): void => {
     isTrue(first === second, 'Iterable<Item> must intern');
   });
 
-  test('an instantiation used as a type argument keys by its generic source', (ctx: TestContext): void => {
+  test('an instantiation used as a type argument keys by its generic source', (ctx) => {
     // `Holder<Iterable<Item>>` must intern even though the inner
     // `Iterable<Item>` is a fresh object each time it is built — the
     // key normalises through `genericSource`, not `Type.uid`.
@@ -108,7 +110,7 @@ export let tests = suite('Generic instantiation caching', (): void => {
     isTrue(outer1 === outer2, 'Holder<Iterable<Item>> must intern');
   });
 
-  test('same-named classes from different declarations differ even without Symbols', (ctx: TestContext): void => {
+  test('same-named classes from different declarations differ even without Symbols', (ctx) => {
     // Synthesized types carry `noSymbolId`; the TypeId is then the
     // only identity left, and it has to be enough.
     let anonA = new ClassType(101 as TypeId, -1 as SymbolId, 'Item');

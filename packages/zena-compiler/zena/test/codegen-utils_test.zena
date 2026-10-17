@@ -5,66 +5,69 @@ import { noSymbolId } from '../lib/scope/symbol.zena';
 import {
   Type, I32Type, ClassType, InterfaceType, TypeAliasType, MixinType, TypeParameterType, TypeId
 } from '../lib/types.zena';
+import { growable } from 'zena:core';
 
-export let tests = suite('codegen-utils: typeContainsTypeParameter', (): void => {
-  test('primitive types do not contain type parameters', (ctx: TestContext): void => {
+export let tests = suite('codegen-utils: typeContainsTypeParameter', () => {
+  test('primitive types do not contain type parameters', (ctx) => {
     isFalse(typeContainsTypeParameter(new I32Type() as Type));
   });
 
-  test('direct TypeParameterType contains type parameter', (ctx: TestContext): void => {
+  test('direct TypeParameterType contains type parameter', (ctx) => {
     let tParam = new TypeParameterType("T", null, null);
     isTrue(typeContainsTypeParameter(tParam as Type));
   });
 
-  test('ClassType details', (ctx: TestContext): void => {
+  test('ClassType details', (ctx) => {
     let classType = new ClassType(1 as TypeId, noSymbolId, "MyClass");
     isFalse(typeContainsTypeParameter(classType as Type));
 
     // With concrete type arguments
-    let args1 = new Array<Type>();
-    args1.push(new I32Type() as Type);
+    let args1 = growable<Type>([new I32Type() as Type]);
     classType.typeArguments = args1;
     isFalse(typeContainsTypeParameter(classType as Type));
 
     // With type parameter arguments
-    let args2 = new Array<Type>();
-    args2.push(new TypeParameterType("T", null, null) as Type);
+    let args2 = growable<Type>([
+      new TypeParameterType("T", null, null) as Type,
+    ]);
     classType.typeArguments = args2;
     isTrue(typeContainsTypeParameter(classType as Type));
 
     // Open generic class (uninstantiated)
     classType.typeArguments = null;
-    let tps = new Array<TypeParameterType>();
-    tps.push(new TypeParameterType("T", null, null));
+    let tps = growable<TypeParameterType>([
+      new TypeParameterType("T", null, null),
+    ]);
     classType.typeParameters = tps;
     isTrue(typeContainsTypeParameter(classType as Type));
   });
 
-  test('InterfaceType details', (ctx: TestContext): void => {
+  test('InterfaceType details', (ctx) => {
     let interfaceType = new InterfaceType(2 as TypeId, noSymbolId, "MyInterface");
     isFalse(typeContainsTypeParameter(interfaceType as Type));
 
     // With concrete type arguments
-    let args1 = new Array<Type>();
-    args1.push(new I32Type() as Type);
+    let args1 = growable<Type>([new I32Type() as Type]);
     interfaceType.typeArguments = args1;
     isFalse(typeContainsTypeParameter(interfaceType as Type));
 
     // With type parameter arguments
-    let args2 = new Array<Type>();
-    args2.push(new TypeParameterType("T", null, null) as Type);
+    let args2 = growable<Type>([
+      new TypeParameterType("T", null, null) as Type,
+    ]);
     interfaceType.typeArguments = args2;
     isTrue(typeContainsTypeParameter(interfaceType as Type));
 
     // Open generic interface (uninstantiated)
     interfaceType.typeArguments = null;
-    let tps = new Array<TypeParameterType>();
-    tps.push(new TypeParameterType("T", null, null));
+    let tps = growable<TypeParameterType>([
+      new TypeParameterType("T", null, null),
+    ]);
     interfaceType.typeParameters = tps;
     isTrue(typeContainsTypeParameter(interfaceType as Type));
   });
 
-  test('TypeAliasType details', (ctx: TestContext): void => {
+  test('TypeAliasType details', (ctx) => {
     let aliasType = new TypeAliasType(
       "MyAlias",
       null,
@@ -77,38 +80,39 @@ export let tests = suite('codegen-utils: typeContainsTypeParameter', (): void =>
     isFalse(typeContainsTypeParameter(aliasType as Type));
 
     // With concrete type arguments
-    let args1 = new Array<Type>();
-    args1.push(new I32Type() as Type);
+    let args1 = growable<Type>([new I32Type() as Type]);
     aliasType.typeArguments = args1;
     isFalse(typeContainsTypeParameter(aliasType as Type));
 
     // With type parameter arguments
-    let args2 = new Array<Type>();
-    args2.push(new TypeParameterType("T", null, null) as Type);
+    let args2 = growable<Type>([
+      new TypeParameterType("T", null, null) as Type,
+    ]);
     aliasType.typeArguments = args2;
     isTrue(typeContainsTypeParameter(aliasType as Type));
 
     // Open generic type alias (uninstantiated)
     aliasType.typeArguments = null;
-    let tps = new Array<TypeParameterType>();
-    tps.push(new TypeParameterType("T", null, null));
+    let tps = growable<TypeParameterType>([
+      new TypeParameterType("T", null, null),
+    ]);
     aliasType.typeParameters = tps;
     isTrue(typeContainsTypeParameter(aliasType as Type));
   });
 
-  test('MixinType details', (ctx: TestContext): void => {
+  test('MixinType details', (ctx) => {
     let mixinType = new MixinType("MyMixin");
     isFalse(typeContainsTypeParameter(mixinType as Type));
 
     // With concrete type arguments
-    let args1 = new Array<Type>();
-    args1.push(new I32Type() as Type);
+    let args1 = growable<Type>([new I32Type() as Type]);
     mixinType.typeArguments = args1;
     isFalse(typeContainsTypeParameter(mixinType as Type));
 
     // With type parameter arguments
-    let args2 = new Array<Type>();
-    args2.push(new TypeParameterType("T", null, null) as Type);
+    let args2 = growable<Type>([
+      new TypeParameterType("T", null, null) as Type,
+    ]);
     mixinType.typeArguments = args2;
     isTrue(typeContainsTypeParameter(mixinType as Type));
 
@@ -123,18 +127,15 @@ export let tests = suite('codegen-utils: typeContainsTypeParameter', (): void =>
 
     // Open generic mixin (uninstantiated)
     mixinType.onType = null;
-    let tps = new Array<TypeParameterType>();
-    tps.push(new TypeParameterType("T", null, null));
+    let tps = growable<TypeParameterType>([
+      new TypeParameterType("T", null, null),
+    ]);
     mixinType.typeParameters = tps;
     isTrue(typeContainsTypeParameter(mixinType as Type));
   });
 
-  test('sortStringsByLengthDescending basic functionality', (ctx: TestContext): void => {
-    let arr = new Array<String>();
-    arr.push("a");
-    arr.push("abc");
-    arr.push("ab");
-    arr.push("");
+  test('sortStringsByLengthDescending basic functionality', (ctx) => {
+    let arr = growable<String>(["a", "abc", "ab", ""]);
     
     sortStringsByLengthDescending(arr);
     
@@ -145,25 +146,19 @@ export let tests = suite('codegen-utils: typeContainsTypeParameter', (): void =>
     equal(arr[3], "");
   });
 
-  test('sortStringsByLengthDescending empty and single element', (ctx: TestContext): void => {
+  test('sortStringsByLengthDescending empty and single element', (ctx) => {
     let arrEmpty = new Array<String>();
     sortStringsByLengthDescending(arrEmpty);
     equal(arrEmpty.length, 0);
 
-    let arrSingle = new Array<String>();
-    arrSingle.push("hello");
+    let arrSingle = growable<String>(["hello"]);
     sortStringsByLengthDescending(arrSingle);
     equal(arrSingle.length, 1);
     equal(arrSingle[0], "hello");
   });
 
-  test('sortStringsByLengthDescending duplicate lengths', (ctx: TestContext): void => {
-    let arr = new Array<String>();
-    arr.push("abc");
-    arr.push("xy");
-    arr.push("z");
-    arr.push("def");
-    arr.push("ab");
+  test('sortStringsByLengthDescending duplicate lengths', (ctx) => {
+    let arr = growable<String>(["abc", "xy", "z", "def", "ab"]);
     
     sortStringsByLengthDescending(arr);
     

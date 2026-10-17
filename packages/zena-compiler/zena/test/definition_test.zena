@@ -17,36 +17,36 @@ import { ScopeBuilder, ScopeResult } from '../lib/scope/scope-builder.zena';
 // The sources below are minimal on purpose, and several are one
 // statement with no declaration around it. Where a statement may run is
 // not what reference recording is about, so the module-body rule is off.
-let buildScope = (source: String): ScopeResult => {
+function buildScope(source: String) {
   let mod = parseAllowingStatements(source, 'test.zena');
   let builder = new ScopeBuilder("test.zena");
   return builder.build(mod);
-};
+}
 
 // ============================================================================
 // Helper: check that referenceMap has an entry at a given offset
 // ============================================================================
 
-let hasRef = (result: ScopeResult, offset: i32): boolean => {
+function hasRef(result: ScopeResult, offset: i32) {
   return result.symbols.getByOffset(offset) != null;
-};
+}
 
-let hasDecl = (result: ScopeResult, offset: i32): boolean => {
+function hasDecl(result: ScopeResult, offset: i32) {
   return result.symbols.getByOffset(offset) != null;
-};
+}
 
 // ============================================================================
 // Tests
 // ============================================================================
 
-export let tests = suite('Goto Definition', (): void => {
+export let tests = suite('Goto Definition', () => {
 
   // ==========================================================================
   // Value References (ReferenceMap)
   // ==========================================================================
 
-  suite('value references', (): void => {
-    test('variable reference', (ctx: TestContext): void => {
+  suite('value references', () => {
+    test('variable reference', (ctx) => {
       //       0123456789012345678
       let s = "let x = 1; let y = x;";
       let result = buildScope(s);
@@ -54,7 +54,7 @@ export let tests = suite('Goto Definition', (): void => {
       isTrue(hasRef(result, 19));
     });
 
-    test('new expression callee', (ctx: TestContext): void => {
+    test('new expression callee', (ctx) => {
       //       0         1         2         3
       //       0123456789012345678901234567890123456
       let s = "class Foo {} let x = new Foo();";
@@ -63,7 +63,7 @@ export let tests = suite('Goto Definition', (): void => {
       isTrue(hasRef(result, 25));
     });
 
-    test('function call callee', (ctx: TestContext): void => {
+    test('function call callee', (ctx) => {
       //       0         1         2
       //       0123456789012345678901234
       let s = "let f = (): i32 => 1; f();";
@@ -72,7 +72,7 @@ export let tests = suite('Goto Definition', (): void => {
       isTrue(hasRef(result, 22));
     });
 
-    test('binary expression operand', (ctx: TestContext): void => {
+    test('binary expression operand', (ctx) => {
       //       0         1         2
       //       01234567890123456789012345
       let s = "let x = 1; let y = x + 1;";
@@ -81,7 +81,7 @@ export let tests = suite('Goto Definition', (): void => {
       isTrue(hasRef(result, 19));
     });
 
-    test('unresolved reference not tracked', (ctx: TestContext): void => {
+    test('unresolved reference not tracked', (ctx) => {
       let s = "let x = y;";
       let result = buildScope(s);
       // 'y' at offset 8 should NOT be in references
@@ -93,8 +93,8 @@ export let tests = suite('Goto Definition', (): void => {
   // Type Annotation References (ReferenceMap)
   // ==========================================================================
 
-  suite('type annotation references', (): void => {
-    test('variable type annotation', (ctx: TestContext): void => {
+  suite('type annotation references', () => {
+    test('variable type annotation', (ctx) => {
       //       0         1         2         3
       //       0123456789012345678901234567890123456
       let s = "class Foo {} let x: Foo = new Foo();";
@@ -103,7 +103,7 @@ export let tests = suite('Goto Definition', (): void => {
       isTrue(hasRef(result, 20));
     });
 
-    test('function parameter type', (ctx: TestContext): void => {
+    test('function parameter type', (ctx) => {
       //       0         1         2         3
       //       0123456789012345678901234567890123456789
       let s = "class Foo {} let f = (x: Foo): void => {};";
@@ -112,7 +112,7 @@ export let tests = suite('Goto Definition', (): void => {
       isTrue(hasRef(result, 25));
     });
 
-    test('function return type', (ctx: TestContext): void => {
+    test('function return type', (ctx) => {
       //       0         1         2         3
       //       012345678901234567890123456789012345678901234
       let s = "class Foo {} let f = (x: i32): Foo => new Foo();";
@@ -121,7 +121,7 @@ export let tests = suite('Goto Definition', (): void => {
       isTrue(hasRef(result, 31));
     });
 
-    test('class field type', (ctx: TestContext): void => {
+    test('class field type', (ctx) => {
       //       0         1         2         3         4
       //       01234567890123456789012345678901234567890
       let s = "class Bar {} class Foo { x: Bar; }";
@@ -130,28 +130,28 @@ export let tests = suite('Goto Definition', (): void => {
       isTrue(hasRef(result, 28));
     });
 
-    test('class superclass type', (ctx: TestContext): void => {
+    test('class superclass type', (ctx) => {
       let s = "class Base {} class Sub extends Base {}";
       let result = buildScope(s);
       // 'Base' in `extends Base` at offset 32
       isTrue(hasRef(result, 32));
     });
 
-    test('class implements type', (ctx: TestContext): void => {
+    test('class implements type', (ctx) => {
       let s = "interface Iter {} class Foo implements Iter {}";
       let result = buildScope(s);
       // 'Iter' in `implements Iter` at offset 39
       isTrue(hasRef(result, 39));
     });
 
-    test('interface extends type', (ctx: TestContext): void => {
+    test('interface extends type', (ctx) => {
       let s = "interface Base {} interface Sub extends Base {}";
       let result = buildScope(s);
       // 'Base' in `extends Base` at offset 40
       isTrue(hasRef(result, 40));
     });
 
-    test('as expression type', (ctx: TestContext): void => {
+    test('as expression type', (ctx) => {
       //       0         1         2         3
       //       0123456789012345678901234567890123456
       let s = "class Foo {} let x = 1 as Foo;";
@@ -160,7 +160,7 @@ export let tests = suite('Goto Definition', (): void => {
       isTrue(hasRef(result, 26));
     });
 
-    test('is expression type', (ctx: TestContext): void => {
+    test('is expression type', (ctx) => {
       //       0         1         2         3
       //       0123456789012345678901234567890123456
       let s = "class Foo {} let x = 1 is Foo;";
@@ -169,7 +169,7 @@ export let tests = suite('Goto Definition', (): void => {
       isTrue(hasRef(result, 26));
     });
 
-    test('case class param type', (ctx: TestContext): void => {
+    test('case class param type', (ctx) => {
       //       0         1         2         3
       //       012345678901234567890123456789012345
       let s = "class Bar {} class Foo(x: Bar)";
@@ -178,7 +178,7 @@ export let tests = suite('Goto Definition', (): void => {
       isTrue(hasRef(result, 26));
     });
 
-    test('method parameter type', (ctx: TestContext): void => {
+    test('method parameter type', (ctx) => {
       //       0         1         2         3         4
       //       0123456789012345678901234567890123456789012345
       let s = "class Bar {} class Foo { m(x: Bar): void {} }";
@@ -187,14 +187,14 @@ export let tests = suite('Goto Definition', (): void => {
       isTrue(hasRef(result, 30));
     });
 
-    test('method return type', (ctx: TestContext): void => {
+    test('method return type', (ctx) => {
       let s = "class Bar {} class Foo { m(): Bar {} }";
       let result = buildScope(s);
       // 'Bar' in `): Bar` at offset 30
       isTrue(hasRef(result, 30));
     });
 
-    test('union type members', (ctx: TestContext): void => {
+    test('union type members', (ctx) => {
       let s = "class Foo {} class Bar {} let x: Foo | Bar = new Foo();";
       let result = buildScope(s);
       // 'Foo' at offset 33
@@ -203,7 +203,7 @@ export let tests = suite('Goto Definition', (): void => {
       isTrue(hasRef(result, 39));
     });
 
-    test('generic type argument', (ctx: TestContext): void => {
+    test('generic type argument', (ctx) => {
       //       0         1         2         3         4
       //       012345678901234567890123456789012345678901234567890
       let s = "class Box<T> {} class Foo {} let x: Box<Foo> = new Box<Foo>();";
@@ -214,14 +214,14 @@ export let tests = suite('Goto Definition', (): void => {
       isTrue(hasRef(result, 40));
     });
 
-    test('call expression type argument', (ctx: TestContext): void => {
+    test('call expression type argument', (ctx) => {
       let s = "class Foo {} let f = <T>(x: T): T => x; f<Foo>(new Foo());";
       let result = buildScope(s);
       // 'Foo' in `f<Foo>` at offset 42
       isTrue(hasRef(result, 42));
     });
 
-    test('new expression type argument', (ctx: TestContext): void => {
+    test('new expression type argument', (ctx) => {
       //       0         1         2         3         4
       //       0123456789012345678901234567890123456789012345678901
       let s = "class Foo {} class Box<T> {} let x = new Box<Foo>();";
@@ -230,14 +230,14 @@ export let tests = suite('Goto Definition', (): void => {
       isTrue(hasRef(result, 45));
     });
 
-    test('accessor type annotation', (ctx: TestContext): void => {
+    test('accessor type annotation', (ctx) => {
       let s = "class Bar {} class Foo { x: Bar { get { return new Bar(); } } }";
       let result = buildScope(s);
       // 'Bar' in `x: Bar` at offset 28
       isTrue(hasRef(result, 28));
     });
 
-    test('sealed variant param type', (ctx: TestContext): void => {
+    test('sealed variant param type', (ctx) => {
       //       0         1         2         3         4
       //       012345678901234567890123456789012345678901234567
       let s = "class Bar {} sealed class Expr { case Lit(v: Bar) }";
@@ -246,7 +246,7 @@ export let tests = suite('Goto Definition', (): void => {
       isTrue(hasRef(result, 45));
     });
 
-    test('interface method param type', (ctx: TestContext): void => {
+    test('interface method param type', (ctx) => {
       //       0         1         2         3         4         5
       //       012345678901234567890123456789012345678901234567890123
       let s = "class Bar {} interface Foo { m(x: Bar): void; }";
@@ -255,21 +255,21 @@ export let tests = suite('Goto Definition', (): void => {
       isTrue(hasRef(result, 34));
     });
 
-    test('interface method return type', (ctx: TestContext): void => {
+    test('interface method return type', (ctx) => {
       let s = "class Bar {} interface Foo { m(): Bar; }";
       let result = buildScope(s);
       // 'Bar' in `): Bar` at offset 34
       isTrue(hasRef(result, 34));
     });
 
-    test('interface property type', (ctx: TestContext): void => {
+    test('interface property type', (ctx) => {
       let s = "class Bar {} interface Foo { x: Bar; }";
       let result = buildScope(s);
       // 'Bar' in `x: Bar` at offset 32
       isTrue(hasRef(result, 32));
     });
 
-    test('primitive type annotation not tracked', (ctx: TestContext): void => {
+    test('primitive type annotation not tracked', (ctx) => {
       let s = "let x: i32 = 1;";
       let result = buildScope(s);
       // 'i32' at offset 7 — built-in types WITH NO declaration should resolve
@@ -277,14 +277,14 @@ export let tests = suite('Goto Definition', (): void => {
       isTrue(hasRef(result, 7));
     });
 
-    test('initializer list type argument', (ctx: TestContext): void => {
+    test('initializer list type argument', (ctx) => {
       let s = "class Bar {} class Foo { #x: Bar; new() : #x = new Bar(); }";
       let result = buildScope(s);
       // 'Bar' in `new Bar()` inside initializer list at offset 51
       isTrue(hasRef(result, 51));
     });
 
-    test('initializer list generic type argument', (ctx: TestContext): void => {
+    test('initializer list generic type argument', (ctx) => {
       let s = "class Bar {} class Box<T> {} class Foo { #x: Box<Bar>; new() : #x = new Box<Bar>(); }";
       let result = buildScope(s);
       // 'Bar' in `new Box<Bar>()` type arg inside initializer list
@@ -297,8 +297,8 @@ export let tests = suite('Goto Definition', (): void => {
   // Declaration Bindings (DeclarationMap)
   // ==========================================================================
 
-  suite('declaration bindings', (): void => {
-    test('let variable pattern', (ctx: TestContext): void => {
+  suite('declaration bindings', () => {
+    test('let variable pattern', (ctx) => {
       //       0123456789
       let s = "let x = 1;";
       let result = buildScope(s);
@@ -306,13 +306,13 @@ export let tests = suite('Goto Definition', (): void => {
       isTrue(hasDecl(result, 4));
     });
 
-    test('var variable pattern', (ctx: TestContext): void => {
+    test('var variable pattern', (ctx) => {
       let s = "var x = 1;";
       let result = buildScope(s);
       isTrue(hasDecl(result, 4));
     });
 
-    test('function parameter', (ctx: TestContext): void => {
+    test('function parameter', (ctx) => {
       //       0         1         2         3
       //       0123456789012345678901234567890
       let s = "let f = (x: i32): i32 => x;";
@@ -322,7 +322,7 @@ export let tests = suite('Goto Definition', (): void => {
       isTrue(hasDecl(result, 9));
     });
 
-    test('class declaration', (ctx: TestContext): void => {
+    test('class declaration', (ctx) => {
       //       0         1
       //       012345678901234
       let s = "class Foo {}";
@@ -331,19 +331,19 @@ export let tests = suite('Goto Definition', (): void => {
       isTrue(hasDecl(result, 0));
     });
 
-    test('interface declaration', (ctx: TestContext): void => {
+    test('interface declaration', (ctx) => {
       let s = "interface Foo {}";
       let result = buildScope(s);
       isTrue(hasDecl(result, 0));
     });
 
-    test('enum declaration', (ctx: TestContext): void => {
+    test('enum declaration', (ctx) => {
       let s = "enum Color { Red, Green, Blue }";
       let result = buildScope(s);
       isTrue(hasDecl(result, 0));
     });
 
-    test('import specifier', (ctx: TestContext): void => {
+    test('import specifier', (ctx) => {
       //       0         1         2         3
       //       0123456789012345678901234567890123456
       let s = "import { HashMap } from 'zena:map';";
@@ -352,7 +352,7 @@ export let tests = suite('Goto Definition', (): void => {
       isTrue(hasDecl(result, 9));
     });
 
-    test('annotated function binding', (ctx: TestContext): void => {
+    test('annotated function binding', (ctx) => {
       //       0         1
       //       01234567890123456
       let s = "let f = (x: i32): i32 => x;";
@@ -361,7 +361,7 @@ export let tests = suite('Goto Definition', (): void => {
       isTrue(hasDecl(result, 4));
     });
 
-    test('declaration Symbol has correct kind', (ctx: TestContext): void => {
+    test('declaration Symbol has correct kind', (ctx) => {
       let s = "let x = 1;";
       let result = buildScope(s);
       let info = result.symbols.getByOffset(4);
@@ -369,7 +369,7 @@ export let tests = suite('Goto Definition', (): void => {
       isFalse((info as Symbol).isMutable);
     });
 
-    test('var declaration Symbol has var kind', (ctx: TestContext): void => {
+    test('var declaration Symbol has var kind', (ctx) => {
       let s = "var x = 1;";
       let result = buildScope(s);
       let info = result.symbols.getByOffset(4);
@@ -382,8 +382,8 @@ export let tests = suite('Goto Definition', (): void => {
   // Reference points to correct declaration
   // ==========================================================================
 
-  suite('reference targets', (): void => {
-    test('variable reference points to let declaration', (ctx: TestContext): void => {
+  suite('reference targets', () => {
+    test('variable reference points to let declaration', (ctx) => {
       let s = "let x = 1; let y = x;";
       let result = buildScope(s);
       let ref = result.symbols.getByOffset(19);
@@ -394,7 +394,7 @@ export let tests = suite('Goto Definition', (): void => {
       isTrue(sym.declaration is IdentifierPattern);
     });
 
-    test('new expression reference points to class', (ctx: TestContext): void => {
+    test('new expression reference points to class', (ctx) => {
       let s = "class Foo {} let x = new Foo();";
       let result = buildScope(s);
       let ref = result.symbols.getByOffset(25);
@@ -405,7 +405,7 @@ export let tests = suite('Goto Definition', (): void => {
       isTrue(sym.declaration is ClassDeclaration);
     });
 
-    test('type annotation reference points to class', (ctx: TestContext): void => {
+    test('type annotation reference points to class', (ctx) => {
       //       0         1         2         3
       //       0123456789012345678901234567890123456
       let s = "class Foo {} let x: Foo = new Foo();";
@@ -417,7 +417,7 @@ export let tests = suite('Goto Definition', (): void => {
       isTrue(sym.declaration is ClassDeclaration);
     });
 
-    test('import reference points to import specifier', (ctx: TestContext): void => {
+    test('import reference points to import specifier', (ctx) => {
       let s = "import { HashMap } from 'zena:map'; let m = HashMap;";
       let result = buildScope(s);
       let ref = result.symbols.getByOffset(44);
@@ -430,8 +430,8 @@ export let tests = suite('Goto Definition', (): void => {
   // Edge cases
   // ==========================================================================
 
-  suite('edge cases', (): void => {
-    test('forward reference to class works', (ctx: TestContext): void => {
+  suite('edge cases', () => {
+    test('forward reference to class works', (ctx) => {
       //       0         1         2         3         4
       //       012345678901234567890123456789012345678901234567
       let s = "let f = (): Foo => new Foo(); class Foo {}";
@@ -442,7 +442,7 @@ export let tests = suite('Goto Definition', (): void => {
       isTrue(hasRef(result, 23));
     });
 
-    test('type alias used as type annotation', (ctx: TestContext): void => {
+    test('type alias used as type annotation', (ctx) => {
       //       0         1         2         3
       //       01234567890123456789012345678901234
       let s = "type ID = i32; let x: ID = 1;";
@@ -451,7 +451,7 @@ export let tests = suite('Goto Definition', (): void => {
       isTrue(hasRef(result, 22));
     });
 
-    test('multiple parameters all get declarations', (ctx: TestContext): void => {
+    test('multiple parameters all get declarations', (ctx) => {
       //       0         1         2
       //       012345678901234567890123456789
       let s = "let f = (a: i32, b: i32): i32 => a + b;";
@@ -462,7 +462,7 @@ export let tests = suite('Goto Definition', (): void => {
       isTrue(hasDecl(result, 17));
     });
 
-    test('nested function parameters', (ctx: TestContext): void => {
+    test('nested function parameters', (ctx) => {
       let s = "let f = (x: i32): i32 => { let g = (y: i32): i32 => y; return g(x); };";
       let result = buildScope(s);
       // Outer param 'x' at offset 9
@@ -471,7 +471,7 @@ export let tests = suite('Goto Definition', (): void => {
       isTrue(hasDecl(result, 36));
     });
 
-    test('shadowed variable both get declarations', (ctx: TestContext): void => {
+    test('shadowed variable both get declarations', (ctx) => {
       let s = "let x = 1; { let x = 2; }";
       let result = buildScope(s);
       // Both 'x' patterns get declarations
