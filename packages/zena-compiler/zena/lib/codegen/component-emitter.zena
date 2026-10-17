@@ -189,8 +189,9 @@ export enum ComponentValType {
 }
 
 /** Whether `t` needs the canonical ABI's memory options to cross. */
-export let componentTypeNeedsMemory = (t: i32): boolean =>
-    t == (ComponentValType.String as i32);
+export function componentTypeNeedsMemory(t: i32): boolean {
+  return t == (ComponentValType.String as i32);
+}
 
 /** `NO_RESULT` in a signature's `result` field: the function returns nothing. */
 export let noComponentResult = -1;
@@ -367,9 +368,9 @@ export final class ComponentCanonBuiltin {
  * call and results are read out of it after, and both are the guest
  * allocator's business.
  */
-export let componentSignatureNeedsMemory = (
+export function componentSignatureNeedsMemory(
   signature: ComponentFuncType
-): boolean => {
+): boolean {
   if (componentTypeNeedsMemory(signature.result)) {
     return true;
   }
@@ -379,7 +380,7 @@ export let componentSignatureNeedsMemory = (
     }
   }
   return false;
-};
+}
 
 /** One core-module export lifted to a component export. */
 export final class ComponentExportFunc {
@@ -435,7 +436,7 @@ export final class ComponentExportFunc {
 
   /** The key `EncodedImports.exportTypeIndices` files this export under. */
   typeKey(): String {
-    return this.instanceName + "#" + this.exportName;
+    return `${this.instanceName}#${this.exportName}`;
   }
 
   /** Whether lifting this export needs a memory and a `realloc`. */
@@ -493,7 +494,7 @@ export final class ComponentShape {
  * parameter names, are all checked by the format itself, so producing an
  * invalid one is a hard error rather than a cosmetic slip.
  */
-export let isKebabName = (name: String): boolean => {
+export function isKebabName(name: String): boolean {
   if (name.length == 0) {
     return false;
   }
@@ -517,7 +518,7 @@ export let isKebabName = (name: String): boolean => {
     }
   }
   return !wordStart; // a trailing '-' leaves an empty word
-};
+}
 
 /**
  * A Zena identifier as a Component Model name: `camelCase` becomes
@@ -528,7 +529,7 @@ export let isKebabName = (name: String): boolean => {
  * (it starts with `_` or a digit, say). Callers decide what to do about
  * that; nothing here invents a name.
  */
-export let toKebabName = (identifier: String): String => {
+export function toKebabName(identifier: String): String {
   let lowered = identifier.asciiLowerCase();
   var out = "";
   for (var i = 0; i < identifier.length; i += 1) {
@@ -542,32 +543,32 @@ export let toKebabName = (identifier: String): String => {
     return "";
   }
   return out;
-};
+}
 
 // ============================================================================
 // Encoding
 // ============================================================================
 
-let writeName = (buffer: ByteBuffer, name: String): void => {
+function writeName(buffer: ByteBuffer, name: String) {
   buffer.writeULEB128(name.length);
   for (var i = 0; i < name.length; i += 1) {
     buffer.writeByte(name.getByteAt(i));
   }
-};
+}
 
 /**
  * An import or export name: a `0x00` discriminant (the name carries no
  * `implements` clause) followed by the name itself.
  */
-let writeExternName = (buffer: ByteBuffer, name: String): void => {
+function writeExternName(buffer: ByteBuffer, name: String) {
   buffer.writeByte(0x00);
   writeName(buffer, name);
-};
+}
 
 /**
  * `resultlist`: one unnamed result, or the empty vector of named ones.
  */
-let writeResultList = (buffer: ByteBuffer, result: i32): void => {
+function writeResultList(buffer: ByteBuffer, result: i32) {
   if (result == noComponentResult) {
     // The other arm of `resultlist`: a vector of NAMED results, which
     // the format still carries and which is empty here. The count byte
@@ -579,7 +580,7 @@ let writeResultList = (buffer: ByteBuffer, result: i32): void => {
     buffer.writeByte(0x00); // one result, unnamed
     buffer.writeByte(result);
   }
-};
+}
 
 /**
  * A valtype as the encoder reports one: a primitive's code, stored
@@ -588,19 +589,19 @@ let writeResultList = (buffer: ByteBuffer, result: i32): void => {
  * is `typeidx | primvaltype`, and the primitives are the negative
  * SLEB128 space, so an unsigned index of 64..127 would collide.
  */
-let writeEncodedValType = (buffer: ByteBuffer, code: i32): void => {
+function writeEncodedValType(buffer: ByteBuffer, code: i32) {
   if (code < 0) {
     buffer.writeByte(0 - code);
   } else {
     buffer.writeSLEB128(code);
   }
-};
+}
 
 /**
  * `functype ::= 0x40 ps:vec(<labelvaltype>) rs:<resultlist>`, and `0x43`
  * for the async form — a distinct type, not a flag on the same one.
  */
-let writeFuncType = (buffer: ByteBuffer, signature: ComponentFuncType): void => {
+function writeFuncType(buffer: ByteBuffer, signature: ComponentFuncType) {
   buffer.writeByte(if (signature.isAsync) 0x43 else 0x40);
   buffer.writeULEB128(signature.paramTypes.length);
   for (var i = 0; i < signature.paramTypes.length; i += 1) {
@@ -608,7 +609,7 @@ let writeFuncType = (buffer: ByteBuffer, signature: ComponentFuncType): void => 
     buffer.writeByte(signature.paramTypes[i]);
   }
   writeResultList(buffer, signature.result);
-};
+}
 
 /**
  * A builtin field name without its `#<n>` disambiguator. A per-type
@@ -616,21 +617,21 @@ let writeFuncType = (buffer: ByteBuffer, signature: ComponentFuncType): void => 
  * `future.read#1` — and each declaration is its own core import and
  * canon entry, but the opcode is the base name's.
  */
-export let canonBuiltinBaseName = (name: String): String => {
+export function canonBuiltinBaseName(name: String): String {
   for (var i = 0; i < name.length; i += 1) {
     if (name.getByteAt(i) == 35) { // '#'
       return name.sliceBytes(0, i);
     }
   }
   return name;
-};
+}
 
 /**
  * The canonical-builtin opcodes this emitter knows: the waitable-set
  * family the async event loop needs, and the stream/future families
  * (C6). Resources' builtins wait on the interop stages.
  */
-let canonBuiltinOpcode = (fieldName: String): i32 => {
+function canonBuiltinOpcode(fieldName: String): i32 {
   let name = canonBuiltinBaseName(fieldName);
   if (name == "waitable-set.new") { return 0x1f; }
   if (name == "waitable-set.wait") { return 0x20; }
@@ -652,27 +653,29 @@ let canonBuiltinOpcode = (fieldName: String): i32 => {
   if (name == "resource.new") { return 0x02; }
   if (name == "resource.rep") { return 0x04; }
   return -1;
-};
+}
 
 /** Whether `name` is a canonical builtin this emitter can encode. */
-export let isKnownCanonBuiltin = (name: String): boolean =>
-    canonBuiltinOpcode(name) >= 0;
+export function isKnownCanonBuiltin(name: String): boolean {
+  return canonBuiltinOpcode(name) >= 0;
+}
 
 /**
  * Whether `name` is a builtin whose canon entry carries a component
  * type index — the stream and future families are per-type, so the
  * type is part of which builtin the declaration names.
  */
-export let isTypedCanonBuiltin = (name: String): boolean =>
-    name.startsWith("stream.") || name.startsWith("future.") ||
+export function isTypedCanonBuiltin(name: String): boolean {
+  return name.startsWith("stream.") || name.startsWith("future.") ||
     name.startsWith("resource.");
+}
 
 /** Whether this typed builtin's canon entry also carries canonopts. */
-let typedBuiltinTakesOpts = (fieldName: String): boolean => {
+function typedBuiltinTakesOpts(fieldName: String) {
   let name = canonBuiltinBaseName(fieldName);
   return name == "stream.read" || name == "stream.write" ||
       name == "future.read" || name == "future.write";
-};
+}
 
 /**
  * Whether a typed builtin's payload moves through linear memory —
@@ -680,7 +683,7 @@ let typedBuiltinTakesOpts = (fieldName: String): boolean => {
  * `stream<u8>` spelling carries an element; a `future:<iface>#<p>`
  * spelling carries one exactly when the payload text is non-empty.
  */
-let canonTypeUsesMemory = (canonType: String): boolean => {
+function canonTypeUsesMemory(canonType: String) {
   if (canonType.startsWith("future:") || canonType.startsWith("stream:")) {
     var hashAt = -1;
     for (var i = 0; i < canonType.length; i += 1) {
@@ -689,10 +692,10 @@ let canonTypeUsesMemory = (canonType: String): boolean => {
     return hashAt >= 0 && hashAt < canonType.length - 1;
   }
   return canonType.contains("<");
-};
+}
 
 /** The WIT spelling of a primitive, as a component primvaltype, or 0. */
-let witPrimByte = (name: String): i32 => {
+function witPrimByte(name: String): i32 {
   if (name == "bool") { return 0x7f; }
   if (name == "s8") { return 0x7e; }
   if (name == "u8") { return 0x7d; }
@@ -705,7 +708,7 @@ let witPrimByte = (name: String): i32 => {
   if (name == "f32") { return 0x76; }
   if (name == "f64") { return 0x75; }
   return 0;
-};
+}
 
 /**
  * The component type a typed builtin's `canonType` spells, as the type
@@ -714,7 +717,7 @@ let witPrimByte = (name: String): i32 => {
  * a richer element stages through linear memory, and describing it is
  * the interop stages' business, not a builtin option string's.
  */
-let canonTypeBody = (canonType: String): ByteBuffer => {
+function canonTypeBody(canonType: String) {
   var head = canonType;
   var element = "";
   var open = -1;
@@ -726,7 +729,7 @@ let canonTypeBody = (canonType: String): ByteBuffer => {
   }
   if (open >= 0) {
     if (!canonType.endsWith(">")) {
-      throw new Error("Malformed canon type '" + canonType + "'");
+      throw new Error(`Malformed canon type '${canonType}'`);
     }
     head = canonType.sliceBytes(0, open);
     element = canonType.sliceBytes(open + 1, canonType.length - 1);
@@ -738,7 +741,7 @@ let canonTypeBody = (canonType: String): ByteBuffer => {
     body.writeByte(0x65);
   } else {
     throw new Error(
-      "A canon type names a stream or future, not '" + canonType + "'");
+      `A canon type names a stream or future, not '${canonType}'`);
   }
   if (element == "") {
     body.writeByte(0x00);
@@ -753,7 +756,7 @@ let canonTypeBody = (canonType: String): ByteBuffer => {
   body.writeByte(0x01);
   body.writeByte(prim);
   return body;
-};
+}
 
 /** One imported WIT interface and the functions the program calls on it. */
 final class ImportedInterface {
@@ -768,9 +771,9 @@ final class ImportedInterface {
  * iteration — a module's bytes are a function of its source, not of the
  * uid counter (see `resetWasmTypeUids`).
  */
-let groupByInterface = (
+function groupByInterface(
   imports: GrowableArray<ComponentImportFunc>
-): GrowableArray<ImportedInterface> => {
+) {
   let groups = new Array<ImportedInterface>();
   for (let imp in imports) {
     var found: ImportedInterface | null = null;
@@ -788,16 +791,16 @@ let groupByInterface = (
     }
   }
   return groups;
-};
+}
 
-let writeSection = (out: ByteBuffer, id: i32, payload: ByteBuffer): void => {
+function writeSection(out: ByteBuffer, id: i32, payload: ByteBuffer) {
   if (payload.length == 0) {
     return;
   }
   out.writeByte(id);
   out.writeULEB128(payload.length);
   out.writeBuffer(payload);
-};
+}
 
 /** The shim table's export name, and the fixup's import of it. */
 let dtorTableExport = "$dtors";
@@ -809,7 +812,7 @@ let dtorTableExport = "$dtors";
  * name the trampolines; the fixup module below fills the table once
  * the program's destructors exist. The shape wit-component emits.
  */
-let dtorShimModule = (n: i32): ByteBuffer => {
+function dtorShimModule(n: i32) {
   let m = new ByteBuffer();
   m.writeU32(0x6D736100);
   m.writeU32(1);
@@ -862,14 +865,14 @@ let dtorShimModule = (n: i32): ByteBuffer => {
   }
   writeSection(m, 10, code);
   return m;
-};
+}
 
 /**
  * The destructor fixup: a core module importing the shim's table and
  * the program's `n` destructors, whose one element segment writes the
  * destructors into the table at instantiation.
  */
-let dtorFixupModule = (n: i32): ByteBuffer => {
+function dtorFixupModule(n: i32) {
   let m = new ByteBuffer();
   m.writeU32(0x6D736100);
   m.writeU32(1);
@@ -908,7 +911,7 @@ let dtorFixupModule = (n: i32): ByteBuffer => {
   }
   writeSection(m, 9, elems);
   return m;
-};
+}
 
 /**
  * Emit a component wrapping `coreModule`.
@@ -940,11 +943,11 @@ let dtorFixupModule = (n: i32): ByteBuffer => {
  * module's own on this target, so that a lowered import's canonical
  * options can name it (docs/design/component-emission.md, 1.3).
  */
-export let emitComponent = (
+export function emitComponent(
   coreModule: ByteBuffer,
   shape: ComponentShape,
   runtimeModule: ByteBuffer | null = null
-): ByteBuffer => {
+): ByteBuffer {
   let out = new ByteBuffer();
   // Magic, then version 0x000d and layer 0x0001 — the layer is what
   // distinguishes a component from a core module.
@@ -1045,7 +1048,7 @@ export let emitComponent = (
   }
   var runtimeInstance = -1;
   var earlyReallocCoreFunc = -1;
-  let writeRuntimeModuleAndInstance = (): void => {
+  let writeRuntimeModuleAndInstance = () => {
     if (runtimeModule == null) {
       throw new Error(
         "This program uses linear memory, so its component needs the " +
@@ -1089,8 +1092,7 @@ export let emitComponent = (
     if (let (true, index) = encoded.instanceIndices.get(name)) {
       return index;
     }
-    throw new Error("the WIT encoder imported no instance named '" +
-        name + "'");
+    throw new Error(`the WIT encoder imported no instance named '${name}'`);
   };
 
   if (groups.length > 0) {
@@ -1186,22 +1188,21 @@ export let emitComponent = (
         if (let (true, index) = encoded.canonTypeIndices.get(canonType)) {
           return index;
         }
-        throw new Error("the encoder aliased no type for '" +
-            canonType + "'");
+        throw new Error(`the encoder aliased no type for '${canonType}'`);
       }
       for (var i = 0; i < canonTypes.length; i += 1) {
         if (canonTypes[i] == canonType) {
           return encoded.typeCount + i;
         }
       }
-      throw new Error("canon type '" + canonType + "' was not declared");
+      throw new Error(`canon type '${canonType}' was not declared`);
     };
     let builtins = new ByteBuffer();
     builtins.writeULEB128(shape.builtins.length);
     for (let b in shape.builtins) {
       let opcode = canonBuiltinOpcode(b.name);
       if (opcode < 0) {
-        throw new Error("Unknown canonical builtin '" + b.name + "'");
+        throw new Error(`Unknown canonical builtin '${b.name}'`);
       }
       builtins.writeByte(opcode);
       if (canonBuiltinBaseName(b.name) == "task.return") {
@@ -1387,7 +1388,7 @@ export let emitComponent = (
         return firstExportCoreFunc + shape.exports.length + i;
       }
     }
-    throw new Error("No alias emitted for callback '" + name + "'");
+    throw new Error(`No alias emitted for callback '${name}'`);
   };
 
   // A `string` anywhere in a signature means the canonical options: the
@@ -1674,7 +1675,7 @@ export let emitComponent = (
       instances.writeByte(0x01); // an instance from inline exports
       // The interface's own types first, so the instance reads back
       // with them, then its functions.
-      var ownTypes: GrowableArray<ExportedInstanceType> =
+      var ownTypes =
           new GrowableArray<ExportedInstanceType>();
       if (let (true, ts) = encoded.exportedTypes.get(name)) {
         ownTypes = ts;
@@ -1722,4 +1723,4 @@ export let emitComponent = (
   writeSection(out, ComponentSectionId.Export as i32, exports);
 
   return out;
-};
+}

@@ -56,6 +56,7 @@ import {
 } from '../codegen-utils.zena';
 import { Type, InterfaceType, FunctionType, isScopedType, scopedInner } from '../../types.zena';
 import { FunctionExpression, MethodDefinition, Node } from '../../ast.zena';
+import { growable } from 'zena:core';
 
 let STATE_RUNNING = 1;
 let STATE_DONE = 2;
@@ -79,13 +80,13 @@ var nextBodies = new Map<i32, GeneratorArtifacts>();
  * suspending body: the forwarder only reads the record's fields and
  * calls it, so neither split rewrites it.
  */
-export let isExplosionForwarder = (func: WasmFunction): boolean => {
+export function isExplosionForwarder(func: WasmFunction): boolean {
   let explosion = func.explosion;
   return explosion != null && explosion.forwarder === func;
-};
+}
 
 /** True if this WasmFunction carries a synchronous `gen` AST node (`!isAsync`). */
-export let isGeneratorFunction = (func: WasmFunction): boolean => {
+export function isGeneratorFunction(func: WasmFunction): boolean {
   let {node} = func;
   if (node == null || isExplosionForwarder(func)) {
     return false;
@@ -95,15 +96,15 @@ export let isGeneratorFunction = (func: WasmFunction): boolean => {
     case MethodDefinition {isGenerator, isAsync}: isGenerator && !isAsync
     case _: false
   };
-};
+}
 
-let funcDisplayName = (func: WasmFunction): String => {
+function funcDisplayName(func: WasmFunction) {
   let {name} = func;
   if (name != null) {
     return name;
   }
   return 'generator';
-};
+}
 
 /**
  * The Iterator<T> (or AsyncIterator<T>) instantiation a generator
@@ -111,13 +112,13 @@ let funcDisplayName = (func: WasmFunction): String => {
  * arguments substituted (the memoized instantiation object, so
  * interface keys match the call sites').
  */
-export let iteratorInstantiationOf = (wasm: WasmModule, func: WasmFunction): InterfaceType => {
+export function iteratorInstantiationOf(wasm: WasmModule, func: WasmFunction): InterfaceType {
   let t = func.model.getNodeType(func.node as Node);
   if (t == null || !(t is FunctionType)) {
     throw new Error('generator has no checked function type: ' +
         funcDisplayName(func));
   }
-  var ret: Type = t.returnType;
+  var ret = t.returnType;
   // A borrow-taking generator returns Scoped<Iterator<T>>; the frame
   // it lowers to is the Iterator behind the wrapper.
   if (isScopedType(ret)) {
@@ -141,7 +142,7 @@ export let iteratorInstantiationOf = (wasm: WasmModule, func: WasmFunction): Int
         funcDisplayName(func));
   }
   return ret;
-};
+}
 
 // ---------------------------------------------------------------------------
 // Raw IrBody append helpers. The transform mutates the presplit body in
@@ -155,11 +156,11 @@ export let iteratorInstantiationOf = (wasm: WasmModule, func: WasmFunction): Int
 // suspension-kind neutral.
 // ---------------------------------------------------------------------------
 
-export let truncate = (a: GrowableArray<i32>): void => {
+export function truncate(a: GrowableArray<i32>): void {
   while (a.length > 0) {
     a.pop();
   }
-};
+}
 
 /**
  * One user-level `try` region of a presplit body: the try_br's body and
@@ -186,7 +187,7 @@ export final class TryRegion(
  * re-entry try_brs below — are built later and are not in here; this
  * sees only regions the user wrote.
  */
-export let collectTryRegions = (body: IrBody): GrowableArray<TryRegion> => {
+export function collectTryRegions(body: IrBody): GrowableArray<TryRegion> {
   let regions = new Array<TryRegion>();
   var bi = 0;
   while (bi < body.blocks.length) {
@@ -203,7 +204,7 @@ export let collectTryRegions = (body: IrBody): GrowableArray<TryRegion> => {
     bi += 1;
   }
   return regions;
-};
+}
 
 /**
  * The regions enclosing `block`, outermost first.
@@ -212,11 +213,11 @@ export let collectTryRegions = (body: IrBody): GrowableArray<TryRegion> => {
  * region's body dominates an inner one's, so re-entering them in this
  * order rebuilds the same nesting the source had.
  */
-export let enclosingRegionsOf = (
+export function enclosingRegionsOf(
   cfg: IrCfg,
   regions: GrowableArray<TryRegion>,
   block: i32
-): GrowableArray<TryRegion> => {
+): GrowableArray<TryRegion> {
   let hits = new Array<TryRegion>();
   for (let r in regions) {
     if (!cfg.dominates(r.bodyTarget, block)) {
@@ -243,7 +244,7 @@ export let enclosingRegionsOf = (
     i += 1;
   }
   return hits;
-};
+}
 
 /**
  * Which user `try` regions enclose each dispatch target, keyed by block.
@@ -258,11 +259,11 @@ export let enclosingRegionsOf = (
  *
  * Computed on the pristine CFG, before the transform rewires edges.
  */
-export let dispatchRegionsOf = (
+export function dispatchRegionsOf(
   body: IrBody,
   cfg: IrCfg,
   pcOfBlock: HashMap<i32, i32>
-): HashMap<i32, GrowableArray<TryRegion>> => {
+): HashMap<i32, GrowableArray<TryRegion>> {
   let regions = collectTryRegions(body);
   let out = new Map<i32, GrowableArray<TryRegion>>();
   var b = 0;
@@ -273,7 +274,7 @@ export let dispatchRegionsOf = (
     b += 1;
   }
   return out;
-};
+}
 
 /**
  * Adds to `pcOfBlock` any merge block inside a user `try` region that
@@ -292,12 +293,12 @@ export let dispatchRegionsOf = (
  * target routes its incoming edges through the dispatcher and re-enters
  * `r` around `b`.
  */
-export let addRegionMergeTargets = (
+export function addRegionMergeTargets(
   body: IrBody,
   cfg: IrCfg,
   pcOfBlock: HashMap<i32, i32>,
   nextPcIn: i32
-): i32 => {
+): i32 {
   let regions = collectTryRegions(body);
   if (regions.length == 0) {
     return nextPcIn;
@@ -328,7 +329,7 @@ export let addRegionMergeTargets = (
       armOf.push(-1);
       i += 1;
     }
-    let mergeArm = (b: i32, arm: i32): void => {
+    let mergeArm = (b: i32, arm: i32) => {
       if (arm < 0) {
         return;
       }
@@ -341,7 +342,7 @@ export let addRegionMergeTargets = (
     };
 
     armOf[0] = 0;
-    pcOfBlock.forEach((d: i32, _pc: i32): void => {
+    pcOfBlock.forEach((d, _pc) => {
       armOf[d] = d;
       for (let r in enclosingRegionsOf(cfg, regions, d)) {
         mergeArm(r.catchTarget, d);
@@ -395,7 +396,7 @@ export let addRegionMergeTargets = (
     }
   }
   return nextPc;
-};
+}
 
 /**
  * Adds to the spill set every value live into the catch target of a
@@ -410,19 +411,19 @@ export let addRegionMergeTargets = (
  * body's values never reached the catch as direct SSA uses in the
  * first place (they ride cells, ir.md §5.1).
  */
-export let spillCatchLiveIns = (
+export function spillCatchLiveIns(
   liveIn: GrowableArray<HashSet<i32>>,
   dispatchRegions: HashMap<i32, GrowableArray<TryRegion>>,
   spilled: HashSet<i32>
-): void => {
-  dispatchRegions.forEach((target: i32, regions: GrowableArray<TryRegion>): void => {
+): void {
+  dispatchRegions.forEach((target, regions) => {
     for (let r in regions) {
       for (let v in liveIn[r.catchTarget]) {
         spilled.add(v);
       }
     }
   });
-};
+}
 
 /**
  * Frame fields for the body's mutable variables, appended to `fields`.
@@ -435,14 +436,14 @@ export let spillCatchLiveIns = (
  * instead: one nullable-weakened field per var index, with the ops
  * rewritten by rewriteVarsToFrame.
  */
-export let varFieldsOf = (body: IrBody, fields: GrowableArray<WasmField>): void => {
+export function varFieldsOf(body: IrBody, fields: GrowableArray<WasmField>): void {
   var i = 0;
   while (i < body.varTypes.length) {
     fields.push(new WasmField('$var' + i32ToString(i),
         weakenToNullable(body.varTypes[i]), true));
     i += 1;
   }
-};
+}
 
 /**
  * Rewrites var_get/var_set into frame-field reads and writes, then
@@ -458,12 +459,12 @@ export let varFieldsOf = (body: IrBody, fields: GrowableArray<WasmField>): void 
  * had, and every dispatch path writes its variable before the replay
  * reads it.
  */
-export let rewriteVarsToFrame = (
+export function rewriteVarsToFrame(
   body: IrBody,
   bodyBlocks: GrowableArray<i32>,
   frame: WasmStruct,
   frameParam: i32
-): void => {
+): void {
   if (body.varTypes.length == 0) {
     return;
   }
@@ -517,18 +518,18 @@ export let rewriteVarsToFrame = (
   while (body.varTypes.length > 0) {
     body.varTypes.pop();
   }
-};
+}
 
 /** Replaces dst's contents with src's, in place (IrBlock fields are
  * immutable bindings; the arrays themselves are mutable). */
-export let replaceContents = (dst: GrowableArray<i32>, src: GrowableArray<i32>): void => {
+export function replaceContents(dst: GrowableArray<i32>, src: GrowableArray<i32>): void {
   truncate(dst);
   for (let v in src) {
     dst.push(v);
   }
-};
+}
 
-export let internVt = (body: IrBody, vt: ValType): i32 => {
+export function internVt(body: IrBody, vt: ValType): i32 {
   let table = body.typeTable;
   var i = 0;
   while (i < table.length) {
@@ -539,41 +540,41 @@ export let internVt = (body: IrBody, vt: ValType): i32 => {
   }
   table.push(vt);
   return table.length - 1;
-};
+}
 
-export let addRawRef = (body: IrBody, ref: IrRef): i32 => {
+export function addRawRef(body: IrBody, ref: IrRef): i32 {
   body.refTable.push(ref);
   return body.refTable.length - 1;
-};
+}
 
 /** Appends an instruction to the flat arrays, unplaced (instBlock -1). */
-export let rawInst = (body: IrBody, op: IrOp, typeIdx: i32, a: i32, b: i32): i32 => {
+export function rawInst(body: IrBody, op: IrOp, typeIdx: i32, a: i32, b: i32): i32 {
   body.opcode.push(op as i32);
   body.typeId.push(typeIdx);
   body.a.push(a);
   body.b.push(b);
   body.instBlock.push(-1);
   return body.opcode.length - 1;
-};
+}
 
-export let placeInst = (body: IrBody, blockId: i32, inst: i32): void => {
+export function placeInst(body: IrBody, blockId: i32, inst: i32): void {
   body.blocks[blockId].insts.push(inst);
   body.instBlock[inst] = blockId;
-};
+}
 
-export let rawParam = (body: IrBody, blockId: i32, vt: ValType): i32 => {
+export function rawParam(body: IrBody, blockId: i32, vt: ValType): i32 {
   let inst = rawInst(body, IrOp.param, internVt(body, vt), -1, -1);
   body.blocks[blockId].params.push(inst);
   body.instBlock[inst] = blockId;
   return inst;
-};
+}
 
-let rawConstI32 = (body: IrBody, value: i32): i32 => {
+function rawConstI32(body: IrBody, value: i32) {
   return rawInst(body, IrOp.const_i32, internVt(body, new ValTypeI32()), value, -1);
-};
+}
 
 /** A zero/null of the given type, for the exhausted `(false, _)` slot. */
-export let rawDefaultOf = (body: IrBody, vt: ValType): i32 => {
+export function rawDefaultOf(body: IrBody, vt: ValType): i32 {
   return match (vt) {
     case ValTypeI32: rawConstI32(body, 0)
     case ValTypeI64: {
@@ -593,14 +594,14 @@ export let rawDefaultOf = (body: IrBody, vt: ValType): i32 => {
     }
     case _: rawInst(body, IrOp.ref_null, internVt(body, vt), -1, -1)
   };
-};
+}
 
 // ---------------------------------------------------------------------------
 // Liveness on the presplit CFG (standard backward per-block dataflow).
 // ---------------------------------------------------------------------------
 
 /** live-in set per block: values live on entry (block params excluded). */
-export let computeLiveIn = (body: IrBody, cfg: IrCfg): GrowableArray<HashSet<i32>> => {
+export function computeLiveIn(body: IrBody, cfg: IrCfg): GrowableArray<HashSet<i32>> {
   let n = body.blocks.length;
   let uses = new Array<HashSet<i32>>(n);
   let defs = new Array<HashSet<i32>>(n);
@@ -659,7 +660,7 @@ export let computeLiveIn = (body: IrBody, cfg: IrCfg): GrowableArray<HashSet<i32
     }
   }
   return liveIn;
-};
+}
 
 // ---------------------------------------------------------------------------
 // The pass driver.
@@ -670,19 +671,20 @@ export let computeLiveIn = (body: IrBody, cfg: IrCfg): GrowableArray<HashSet<i32
  * a generator needs (frame struct, next() function, trampoline,
  * Iterator<T> vtable global) must exist before indices lock.
  */
-export let prepareGenerators = (
+export function prepareGenerators(
   wasm: WasmModule,
   pass: ReachabilityAnalysis
-): void => {
+): void {
   rampBodies = new Map<i32, GeneratorArtifacts>();
   nextBodies = new Map<i32, GeneratorArtifacts>();
   // With disposal active, every frame struct subtypes one shared
   // shape holding the two disposal-relevant fields, so a for-in's
   // finalizer can test and drive any generator without knowing which.
   if (wasm.generatorDisposalActive && wasm.generatorFrameSuper == null) {
-    let superFields = new Array<WasmField>();
-    superFields.push(new WasmField('$state', new ValTypeI32(), true));
-    superFields.push(new WasmField('$disposing', new ValTypeI32(), true));
+    let superFields = growable<WasmField>([
+      new WasmField('$state', new ValTypeI32(), true),
+      new WasmField('$disposing', new ValTypeI32(), true),
+    ]);
     let sup = new WasmStruct('$GenFrame', superFields);
     wasm.types.push(sup);
     pass.markTypeReached(sup);
@@ -702,7 +704,7 @@ export let prepareGenerators = (
     }
     prepareOne(wasm, pass, func, i - 1);
   }
-};
+}
 
 /**
  * The consumer half of generator disposal, emitted into a for-in's
@@ -722,7 +724,7 @@ export let prepareGenerators = (
  * it is disposing; that is the reentrancy poison next() traps on, and
  * this traps the same way.
  */
-export let emitGeneratorDispose = (cx: LoweringContext, iter: i32): void => {
+export function emitGeneratorDispose(cx: LoweringContext, iter: i32): void {
   let supOpt = cx.wasm.generatorFrameSuper;
   if (supOpt == null) {
     return;
@@ -750,9 +752,7 @@ export let emitGeneratorDispose = (cx: LoweringContext, iter: i32): void => {
 
   cx.b.switchTo(suspB);
   let disposingRef = cx.b.addRef(new IrRefField(sup, '$disposing'));
-  let setDisposing = new Array<i32>();
-  setDisposing.push(g);
-  setDisposing.push(cx.b.constI32(1, i32vt));
+  let setDisposing = growable<i32>([g, cx.b.constI32(1, i32vt)]);
   cx.b.emitVoid(IrOp.struct_set, cx.b.pushExtra(setDisposing), disposingRef);
   cx.slotCallMulti(iter, 'next');
   cx.b.br(contB, none);
@@ -766,36 +766,34 @@ export let emitGeneratorDispose = (cx: LoweringContext, iter: i32): void => {
   cx.b.switchTo(trapB);
   cx.b.unreachable();
   cx.b.switchTo(markB);
-  let setDone = new Array<i32>();
-  setDone.push(g);
-  setDone.push(cx.b.constI32(STATE_DONE, i32vt));
+  let setDone = growable<i32>([g, cx.b.constI32(STATE_DONE, i32vt)]);
   cx.b.emitVoid(IrOp.struct_set, cx.b.pushExtra(setDone), stateRef);
   cx.b.br(contB, none);
 
   cx.b.switchTo(contB);
-};
+}
 
-export let lowerGeneratorRamp = (wasm: WasmModule, func: WasmFunction): IrBody => {
+export function lowerGeneratorRamp(wasm: WasmModule, func: WasmFunction): IrBody {
   if (let (true, art) = rampBodies.get(func.uid)) {
     return art.rampBody;
   }
   throw new Error('generator was not prepared (split pass did not run): ' +
       funcDisplayName(func));
-};
+}
 
-export let lowerGeneratorNext = (wasm: WasmModule, func: WasmFunction): IrBody => {
+export function lowerGeneratorNext(wasm: WasmModule, func: WasmFunction): IrBody {
   if (let (true, art) = nextBodies.get(func.uid)) {
     return art.nextBody;
   }
   throw new Error('generator next() was not prepared: ' + funcDisplayName(func));
-};
+}
 
-let prepareOne = (
+function prepareOne(
   wasm: WasmModule,
   pass: ReachabilityAnalysis,
   func: WasmFunction,
   funcIndex: i32
-): void => {
+): void {
   // Generator closures need no special handling: the context struct
   // ref arrives as param 0 of the implementation function (the ramp),
   // gets spilled to a frame field like every other param, and capture
@@ -889,8 +887,7 @@ let prepareOne = (
     entryParamIds.push(p);
     spilled.add(p);
   }
-  let dTargets = new Array<i32>();
-  dTargets.push(0);
+  let dTargets = growable<i32>([0]);
   var db = 0;
   while (db < presplit.blocks.length) {
     if (pcOfBlock.has(db)) {
@@ -915,8 +912,9 @@ let prepareOne = (
   // $disposing sits right after $state, matching the supertype's
   // field prefix.
   let disposal = wasm.generatorDisposalActive;
-  let fields = new Array<WasmField>();
-  fields.push(new WasmField('$state', new ValTypeI32(), true));
+  let fields = growable<WasmField>([
+    new WasmField('$state', new ValTypeI32(), true),
+  ]);
   if (disposal) {
     fields.push(new WasmField('$disposing', new ValTypeI32(), true));
   }
@@ -933,7 +931,7 @@ let prepareOne = (
     vid += 1;
   }
   varFieldsOf(presplit, fields);
-  let frameName = funcDisplayName(func) + '$' + i32ToString(funcIndex) + '$Frame';
+  let frameName = `${funcDisplayName(func)}$${i32ToString(funcIndex)}$Frame`;
   let frame = new WasmStruct(frameName, fields);
   if (disposal) {
     frame.superStruct = wasm.generatorFrameSuper;
@@ -942,8 +940,7 @@ let prepareOne = (
   pass.markTypeReached(frame);
 
   // next(): (ref null $Frame) -> Iterator.next's scalarized results.
-  let nextParams = new Array<ValType>();
-  nextParams.push(new ValTypeRefNull(frame));
+  let nextParams = growable<ValType>([new ValTypeRefNull(frame)]);
   let nextSig = wasm.getSignature(nextParams, slotSig.returns);
   let nextFunc = new WasmFunction(nextSig, null, func.model);
   nextFunc.name = frameName + '.next';
@@ -993,19 +990,19 @@ let prepareOne = (
   func.isGeneratorRamp = true;
   rampBodies[func.uid] = artifacts;
   nextBodies[nextFunc.uid] = artifacts;
-};
+}
 
 /**
  * Does the natural loop of header h (any backedge into h) contain a
  * suspension? Shared by both split passes — `suspendBlocks` holds the
  * yield_ blocks for generators and the await_ blocks for async.
  */
-export let loopContainsSuspend = (
+export function loopContainsSuspend(
   body: IrBody,
   cfg: IrCfg,
   h: i32,
   suspendBlocks: GrowableArray<i32>
-): boolean => {
+): boolean {
   if (suspendBlocks.length == 0) {
     return false;
   }
@@ -1042,23 +1039,20 @@ export let loopContainsSuspend = (
     }
   }
   return false;
-};
+}
 
-export let weakenToNullable = (vt: ValType): ValType => {
-  return match (vt) {
-    case ValTypeRef {target}: new ValTypeRefNull(target)
-    case _: vt
-  };
-};
+export function weakenToNullable(vt: ValType): ValType {
+  return if (let ValTypeRef {target} = vt) new ValTypeRefNull(target) else vt;
+}
 
 /** ramp: allocate the frame, spill the arguments, pack, return. */
-let buildRamp = (
+function buildRamp(
   func: WasmFunction,
   frame: WasmStruct,
   fatPtr: WasmStruct,
   vtableGlobal: WasmGlobal,
   entryParamIds: GrowableArray<i32>
-): IrBody => {
+): IrBody {
   let b = new IrBuilder();
   let entry = b.newBlock();
   let params = new Array<i32>();
@@ -1073,9 +1067,7 @@ let buildRamp = (
   while (i < params.length) {
     let fieldRef = b.addRef(new IrRefField(frame,
         '$v' + i32ToString(entryParamIds[i])));
-    let pair = new Array<i32>();
-    pair.push(inst);
-    pair.push(params[i]);
+    let pair = growable<i32>([inst, params[i]]);
     b.emitVoid(IrOp.struct_set, b.pushExtra(pair), fieldRef);
     i += 1;
   }
@@ -1083,14 +1075,14 @@ let buildRamp = (
       b.addRef(new IrRefGlobal(vtableGlobal)));
   b.ret(packed);
   return b.finish();
-};
+}
 
 // ---------------------------------------------------------------------------
 // The state-machine transform: mutates the presplit body in place into
 // the next() body.
 // ---------------------------------------------------------------------------
 
-let buildNextBody = (
+function buildNextBody(
   body: IrBody,
   cfg: IrCfg,
   frame: WasmStruct,
@@ -1101,7 +1093,7 @@ let buildNextBody = (
   resumeOf: GrowableArray<i32>,
   dispatchRegions: HashMap<i32, GrowableArray<TryRegion>>,
   cancelTag: WasmTag | null
-): IrBody => {
+): IrBody {
   let origCount = body.blocks.length;
   let stateRef = addRawRef(body, new IrRefField(frame, '$state'));
   let i32Vt: ValType = new ValTypeI32();
@@ -1134,8 +1126,7 @@ let buildNextBody = (
   body.blocks[0] = new IrBlock();
 
   // Dispatch-target bookkeeping with entry remapped to its new id.
-  let pcOfBlock = new Map<i32, i32>();
-  pcOfBlock[entryCopyId] = 0;
+  let pcOfBlock: HashMap<i32, i32> = {entryCopyId => 0};
   for (let d in dTargetsIn) {
     if (d == 0) {
       continue;
@@ -1151,7 +1142,7 @@ let buildNextBody = (
   // 2. Prologue: state checks, RUNNING store, dispatcher loop.
   let frameParam = rawParam(body, 0, new ValTypeRefNull(frame));
 
-  let newBlockId = (): i32 => {
+  let newBlockId = () => {
     body.blocks.push(new IrBlock());
     return body.blocks.length - 1;
   };
@@ -1161,12 +1152,12 @@ let buildNextBody = (
   let enterBlock = newBlockId();
   let dispatcher = newBlockId();
 
-  let emitIn = (blockId: i32, op: IrOp, typeIdx: i32, a: i32, b: i32): i32 => {
+  let emitIn = (blockId: i32, op: IrOp, typeIdx: i32, a: i32, b: i32) => {
     let inst = rawInst(body, op, typeIdx, a, b);
     placeInst(body, blockId, inst);
     return inst;
   };
-  let brTo = (fromBlock: i32, target: i32, args: GrowableArray<i32>): void => {
+  let brTo = (fromBlock: i32, target: i32, args: GrowableArray<i32>) => {
     let idx = body.extra.length;
     body.extra.push(target);
     body.extra.push(args.length);
@@ -1176,7 +1167,7 @@ let buildNextBody = (
     let inst = rawInst(body, IrOp.br, -1, idx, -1);
     placeInst(body, fromBlock, inst);
   };
-  let brIfTo = (fromBlock: i32, cond: i32, thenTarget: i32, elseTarget: i32): void => {
+  let brIfTo = (fromBlock: i32, cond: i32, thenTarget: i32, elseTarget: i32) => {
     let idx = body.extra.length;
     body.extra.push(thenTarget);
     body.extra.push(0);
@@ -1185,7 +1176,7 @@ let buildNextBody = (
     let inst = rawInst(body, IrOp.br_if, -1, cond, idx);
     placeInst(body, fromBlock, inst);
   };
-  let storeState = (blockId: i32, valueInst: i32): void => {
+  let storeState = (blockId: i32, valueInst: i32) => {
     let idx = body.extra.length;
     body.extra.push(frameParam);
     body.extra.push(valueInst);
@@ -1296,8 +1287,7 @@ let buildNextBody = (
   // enter: $state = RUNNING; dispatch on the saved state.
   let runningConst = emitIn(enterBlock, IrOp.const_i32, i32Idx, STATE_RUNNING, -1);
   storeState(enterBlock, runningConst);
-  let dispatchArgs = new Array<i32>();
-  dispatchArgs.push(stateVal);
+  let dispatchArgs = growable<i32>([stateVal]);
   brTo(enterBlock, dispatcher, dispatchArgs);
 
   /**
@@ -1312,7 +1302,7 @@ let buildNextBody = (
    * enclosing region is instead re-entered through a fresh `try_br`
    * whose catch is that region's own handler, innermost last.
    */
-  let reenterRegions = (dispatchTarget: i32, entry: i32): i32 => {
+  let reenterRegions = (dispatchTarget: i32, entry: i32) => {
     // Regions are keyed by the ORIGINAL dispatch target; `entry` is
     // what the chain actually branches to — the target itself, or the
     // disposal check block prefixed in front of it, which must sit
@@ -1409,8 +1399,7 @@ let buildNextBody = (
   }
 
   // The body blocks the remaining passes operate on.
-  let bodyBlocks = new Array<i32>();
-  bodyBlocks.push(entryCopyId);
+  let bodyBlocks = growable<i32>([entryCopyId]);
   var obi = 1;
   while (obi < origCount) {
     bodyBlocks.push(obi);
@@ -1498,7 +1487,7 @@ let buildNextBody = (
         }
       }
       if (loadOf.size > 0) {
-        body.rewriteValueOperands(inst, (v: i32) => {
+        body.rewriteValueOperands(inst, (v) => {
           if (let (true, l) = loadOf.get(v)) {
             return l;
           }
@@ -1612,14 +1601,14 @@ let buildNextBody = (
   rewriteVarsToFrame(body, bodyBlocks, frame, frameParam);
 
   return body;
-};
+}
 
 /**
  * Rewrites the terminator of `blockId` so every successor that is a
  * dispatch target branches to the dispatcher with that target's pc,
  * spilling the edge's branch args into the target's param fields.
  */
-export let rerouteEdges = (
+export function rerouteEdges(
   body: IrBody,
   blockId: i32,
   pcOfBlock: HashMap<i32, i32>,
@@ -1629,7 +1618,7 @@ export let rerouteEdges = (
   frame: WasmStruct,
   i32Idx: i32,
   entryCopyId: i32
-): void => {
+): void {
   let block = body.blocks[blockId];
   if (block.insts.length == 0) {
     return;
@@ -1700,8 +1689,7 @@ export let rerouteEdges = (
       inserted.push(pcConst);
       body.instBlock[pcConst] = blockId;
       targets[si] = dispatcher;
-      let newArgs = new Array<i32>();
-      newArgs.push(pcConst);
+      let newArgs = growable<i32>([pcConst]);
       argLists[si] = newArgs;
     }
     si += 1;
@@ -1760,4 +1748,4 @@ export let rerouteEdges = (
     rebuilt.push(term);
     replaceContents(block.insts, rebuilt);
   }
-};
+}

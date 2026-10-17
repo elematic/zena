@@ -15,7 +15,7 @@ import { compareStrings, getTypeUniqueKey } from './codegen-utils.zena';
  * A record or tuple operand's type without `| null` and without an alias,
  * or null for any other type.
  */
-export let valueEqOperand = (t: Type): Type | null => {
+export function valueEqOperand(t: Type): Type | null {
   var base = baseType(t);
   if (base is UnionType) {
     var only: Type | null = null;
@@ -35,7 +35,7 @@ export let valueEqOperand = (t: Type): Type | null => {
     return base;
   }
   return null;
-};
+}
 
 /**
  * One pair of fields two operands compare: a record field by name, or a
@@ -58,7 +58,7 @@ export final class ValueEqField {
  * `==` does not convert its operands, so a record is never equal to one
  * with other fields (row-types.md, Decisions).
  */
-export let valueEqFields = (l: Type, r: Type): GrowableArray<ValueEqField> | null => {
+export function valueEqFields(l: Type, r: Type): GrowableArray<ValueEqField> | null {
   let out = new Array<ValueEqField>();
   if (l is TupleType && r is TupleType) {
     let ls = l.elementTypes;
@@ -98,14 +98,17 @@ export let valueEqFields = (l: Type, r: Type): GrowableArray<ValueEqField> | nul
     return out;
   }
   return null;
-};
+}
 
 /** The key of the comparison function for operand types `l` and `r`. */
-export let valueEqKey = (l: Type, r: Type): String =>
-    `${getTypeUniqueKey(l)}|${getTypeUniqueKey(r)}`;
+export function valueEqKey(l: Type, r: Type): String {
+  return `${getTypeUniqueKey(l)}|${getTypeUniqueKey(r)}`;
+}
 
 /** The key of the hash function for the record or tuple type `t`. */
-export let valueHashKey = (t: Type): String => getTypeUniqueKey(t);
+export function valueHashKey(t: Type): String {
+  return getTypeUniqueKey(t);
+}
 
 /**
  * Whether `call`, with callee `member` on a receiver of type `receiver`,
@@ -114,8 +117,8 @@ export let valueHashKey = (t: Type): String => getTypeUniqueKey(t);
  * and that call hashes the value. A record with its own `hashCode` field
  * calls that instead.
  */
-export let isValueHashCodeCall = (call: CallExpression, member: MemberExpression,
-    receiver: Type, model: SemanticModel): boolean => {
+export function isValueHashCodeCall(call: CallExpression, member: MemberExpression,
+    receiver: Type, model: SemanticModel): boolean {
   if (call.args.length != 0 || member.optional || member.isSymbolAccess) {
     return false;
   }
@@ -125,4 +128,4 @@ export let isValueHashCodeCall = (call: CallExpression, member: MemberExpression
   }
   let t = v as Type;
   return !(t is RecordType && t.properties.has('hashCode'));
-};
+}

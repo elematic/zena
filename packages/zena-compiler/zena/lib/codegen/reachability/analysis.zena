@@ -12,7 +12,7 @@ import {
 import { capturedInCell } from '../../analysis/capture.zena';
 import { Set, HashMap, HashSet } from 'zena:collections';
 
-import { StringBuilder } from 'zena:core';
+import { StringBuilder, growable } from 'zena:core';
 import {
   getClassKey, getInterfaceKey, getClassMethodKey, getInterfaceMemberKey, getClassInterfaceKey, getClassInterfaceVTableName, getClassVTableName, getClassSingletonName, getInterfaceTrampolineName, getSignatureKey, collectMixinMembers, mixinScopeOfMember, mixinModelOfMember, getClassPrivateFieldKey, MixinKey, getFunctionAdaptationKey, ClassKey, ClassMethodKey, getTypeUniqueKey, getClosureSpecializationKey, isConcrete, getSpecializedName, containsErasedType, InterfaceKey, getMemberRootClass,
 } from '../codegen-utils.zena';
@@ -64,9 +64,9 @@ final class ParsedAdaptationRef {
  * a node alone names all of them (docs/design/decorators.md). Empty when
  * `node` is not a decorator's member.
  */
-let findDecoratorIntermediates = (ct: ClassType, classDecls: HashMap<SymbolId, Node>, node: Node): GrowableArray<ClassType> => {
+function findDecoratorIntermediates(ct: ClassType, classDecls: HashMap<SymbolId, Node>, node: Node) {
   let found = new Array<ClassType>();
-  var scWalk: ClassType | null = ct.superType;
+  var scWalk = ct.superType;
   while (scWalk != null && scWalk.isMixinIntermediate) {
     let sc = scWalk;
     if (sc.decoratorSubjectName != null) {
@@ -88,10 +88,10 @@ let findDecoratorIntermediates = (ct: ClassType, classDecls: HashMap<SymbolId, N
     scWalk = sc.superType;
   }
   return found;
-};
+}
 
-let findDeclaringMixinIntermediate = (ct: ClassType, classDecls: HashMap<SymbolId, Node>, node: Node): ClassType | null => {
-  var scWalk: ClassType | null = ct.superType;
+function findDeclaringMixinIntermediate(ct: ClassType, classDecls: HashMap<SymbolId, Node>, node: Node): ClassType | null {
+  var scWalk = ct.superType;
   while (scWalk != null && scWalk.isMixinIntermediate) {
     let sc = scWalk;
     let scId = (sc.genericSource ?? sc).symbolId;
@@ -112,7 +112,7 @@ let findDeclaringMixinIntermediate = (ct: ClassType, classDecls: HashMap<SymbolI
     scWalk = sc.superType;
   }
   return null;
-};
+}
 
 /**
  * ReachabilityAnalysis manages the whole-program reachability tracking,
@@ -124,11 +124,11 @@ let findDeclaringMixinIntermediate = (ct: ClassType, classDecls: HashMap<SymbolI
  * offset into the non-negative range, each in its own bits. Referrers
  * carrying type arguments are keyed by string instead.
  */
-let referrerKey = (isSymbol: boolean, id: i32, ct: ClassType | null): i64 => {
+function referrerKey(isSymbol: boolean, id: i32, ct: ClassType | null) {
   let ctUid = if (ct != null) (ct as ClassType).uid else 0;
   let sym: i64 = if (isSymbol) 1 else 0;
   return ((ctUid as i64) * 2 + sym) * 4294967296 + ((id as i64) + 2147483648);
-};
+}
 
 export final class ReachabilityAnalysis implements ReachabilityContext {
   program: Program;
@@ -767,14 +767,15 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
     let gKeys = model.globalDeclarations.keys();
     for (let id in gKeys) {
       let decl = model.globalDeclarations[id];
-      var isExported = false;
-      if (decl is VariableDeclaration) {
-        isExported = decl.exported;
+      let isExported = if (decl is VariableDeclaration) {
+        decl.exported
       } else if (decl is FunctionDeclaration) {
-        isExported = decl.exported;
+        decl.exported
       } else if (decl is DeclareFunction) {
-        isExported = decl.exported;
-      }
+        decl.exported
+      } else {
+        false
+      };
       if (isExported) {
         this.queueReferrer(new Referrer(true, id, -1, model, null, true));
       }
@@ -931,14 +932,15 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
     let gKeys = model.globalDeclarations.keys();
     for (let id in gKeys) {
       let decl = model.globalDeclarations[id];
-      var isExported = false;
-      if (decl is VariableDeclaration) {
-        isExported = decl.exported;
+      let isExported = if (decl is VariableDeclaration) {
+        decl.exported
       } else if (decl is FunctionDeclaration) {
-        isExported = decl.exported;
+        decl.exported
       } else if (decl is DeclareFunction) {
-        isExported = decl.exported;
-      }
+        decl.exported
+      } else {
+        false
+      };
       if (isExported) {
         this.queueReferrer(new Referrer(true, id, -1, model, null, true));
       }
@@ -1225,9 +1227,10 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
           this.wasm.types.push(emptyVTableStruct);
           this.wasm.interfaceVTableStructs[iKey] = emptyVTableStruct;
 
-          let fatPtrFields = new Array<WasmField>();
-          fatPtrFields.push(new WasmField("instance", new ValTypeAnyRef(), false));
-          fatPtrFields.push(new WasmField("vtable", new ValTypeRef(emptyVTableStruct), false));
+          let fatPtrFields = growable<WasmField>([
+            new WasmField("instance", new ValTypeAnyRef(), false),
+            new WasmField("vtable", new ValTypeRef(emptyVTableStruct), false),
+          ]);
           let emptyStruct = new WasmStruct(ifaceType.name + "_FatPtr", fatPtrFields);
           this.wasm.types.push(emptyStruct);
           this.wasm.interfaceStructs[iKey] = emptyStruct;
@@ -1260,12 +1263,13 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
         let decl = model.globalDeclarations[id];
         // Both `let f = <T>() => ...` and `function f<T>() { ... }` bind a
         // FunctionExpression; either can be generic.
-        var initNode: Node | null = null;
-        if (decl is VariableDeclaration) {
-          initNode = decl.init;
+        let initNode: Node | null = if (decl is VariableDeclaration) {
+          decl.init
         } else if (decl is FunctionDeclaration) {
-          initNode = decl.func;
-        }
+          decl.func
+        } else {
+          null
+        };
         if (initNode is FunctionExpression) {
           // Read off the declaration rather than its checked type: a
           // module whose bodies are deferred has not checked this
@@ -2279,7 +2283,7 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
       return null;
     }
     let o = owner as ClassType;
-    let key = (getClassKey(o.genericSource ?? o) as String) + "|" + slotName;
+    let key = `${getClassKey(o.genericSource ?? o) as String}|${slotName}`;
     perClass[cacheKey] = key;
     return key;
   }
@@ -2595,8 +2599,7 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
 
         let methods = new Array<WasmFunction>();
         let newFields = new Array<WasmField>();
-        for (var i = 0; i < orderedFields.length; i += 1) {
-          let field = orderedFields[i];
+        for (let field in orderedFields) {
           var foundFunc: WasmFunction | null = null;
           var currClass: ClassType | null = cType;
           while (currClass != null && foundFunc == null) {
@@ -2611,7 +2614,7 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
             newFields.push(field);
             methods.push(foundFunc);
           } else {
-            throw new Error("Internal error: class " + (cName as String) + " does not implement vtable method: " + (field.name as String));
+            throw new Error(`Internal error: class ${cName as String} does not implement vtable method: ${field.name as String}`);
           }
         }
         while (vstVal.fields.length > 0) {
@@ -2658,7 +2661,7 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
   demandGenericInterfaceMethod(it: InterfaceType, methName: String, typeArgs: Array<Type>, model: SemanticModel): void {
     let iKey = getInterfaceKey(it);
     let slotName = getSpecializedName(methName, typeArgs);
-    let dedupKey = (iKey as String) + "." + slotName;
+    let dedupKey = `${iKey as String}.${slotName}`;
     if (this.#genericInterfaceDemandsByKey.has(dedupKey)) {
       return;
     }
@@ -2676,7 +2679,7 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
   }
 
   findGenericInterfaceDemand(iKey: String, slotName: String): GenericInterfaceMethodDemand | null {
-    let dedupKey = iKey + "." + slotName;
+    let dedupKey = `${iKey}.${slotName}`;
     if (let (true, d) = this.#genericInterfaceDemandsByKey.get(dedupKey)) {
       return d;
     }
@@ -2730,7 +2733,7 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
     let rootClass = getMemberRootClass(classType, methodName);
     let rootKey = getClassKey(rootClass);
     let slotName = getSpecializedName(methodName, typeArgs);
-    let dedupKey = (rootKey as String) + "." + slotName;
+    let dedupKey = `${rootKey as String}.${slotName}`;
     if (this.#genericClassDemandsByKey.has(dedupKey)) {
       return;
     }
@@ -3085,11 +3088,11 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
     let ifaceFt = getGenericInterfaceMethodType(this.wasm, iface, d.methName, d.typeArgs);
     let implFtOpt = this.#implGenericMethodType(cType, d.methName, d.typeArgs);
     if (implFtOpt == null) {
-      throw new Error("Internal error: no declared type for generic interface method " + cType.name + "." + d.methName);
+      throw new Error(`Internal error: no declared type for generic interface method ${cType.name}.${d.methName}`);
     }
     let implFt = implFtOpt;
     if (ifaceFt.parameters.length != implFt.parameters.length) {
-      throw new Error("Internal error: generic interface method arity mismatch for " + cType.name + "." + d.methName);
+      throw new Error(`Internal error: generic interface method arity mismatch for ${cType.name}.${d.methName}`);
     }
     for (var j = 0; j < ifaceFt.parameters.length; j += 1) {
       let ip = ifaceFt.parameters[j];
@@ -3106,10 +3109,10 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
           continue;
         }
         if (ipf.parameters.length != cpf.parameters.length) {
-          throw new Error("generic interface dispatch: callback arity differs for " + cType.name + "." + d.methName);
+          throw new Error(`generic interface dispatch: callback arity differs for ${cType.name}.${d.methName}`);
         }
         if (!this.#sameLoweredType(ipf.returnType, cpf.returnType)) {
-          throw new Error("generic interface dispatch: callback result adaptation is not supported (" + cType.name + "." + d.methName + ")");
+          throw new Error(`generic interface dispatch: callback result adaptation is not supported (${cType.name}.${d.methName})`);
         }
         let packs = new Array<ForwarderParamPack>();
         for (var k = 0; k < ipf.parameters.length; k += 1) {
@@ -3128,14 +3131,14 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
                 getInterfaceKey(packIface)));
             continue;
           }
-          throw new Error("generic interface dispatch: callback parameter adaptation is not supported (" + cType.name + "." + d.methName + ")");
+          throw new Error(`generic interface dispatch: callback parameter adaptation is not supported (${cType.name}.${d.methName})`);
         }
         let fwdSigOpt = asWasmSignature(sImpl.fields[0].type);
         if (fwdSigOpt == null) {
           throw new Error("Internal error: closure struct without impl signature");
         }
         let fwd = new WasmFunction(fwdSigOpt, null, this.program.units[0].model);
-        fwd.name = (trampFunc.name ?? "tramp") + "$arg" + i32ToString(j);
+        fwd.name = `${trampFunc.name ?? "tramp"}$arg${i32ToString(j)}`;
         fwd.closureForwarder = new ClosureForwarderSpec(sIface, packs);
         // The trampoline takes this function's ref.func, which needs a
         // declared function reference.
@@ -3156,7 +3159,7 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
         wraps.push(new TrampolineParamWrap(j + 1, sImpl, fwd));
         continue;
       }
-      throw new Error("generic interface dispatch: parameter adaptation is not supported (" + cType.name + "." + d.methName + ")");
+      throw new Error(`generic interface dispatch: parameter adaptation is not supported (${cType.name}.${d.methName})`);
     }
     if (!this.#sameLoweredType(ifaceFt.returnType, implFt.returnType)) {
       let ir = ifaceFt.returnType;
@@ -3168,7 +3171,7 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
         trampFunc.trampolineResultPackPair = getClassInterfaceKey(getClassKey(retClass), getInterfaceKey(retIface));
         trampFunc.trampolineResultPackIface = getInterfaceKey(retIface);
       } else {
-        throw new Error("generic interface dispatch: result adaptation is not supported (" + cType.name + "." + d.methName + ")");
+        throw new Error(`generic interface dispatch: result adaptation is not supported (${cType.name}.${d.methName})`);
       }
     }
   }
@@ -3335,10 +3338,10 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
         let targsLen = if (ccw.typeArguments != null) i32ToString((ccw.typeArguments as Array<Type>).length) else "null";
         let tparamsLen = if (ccw.typeParameters != null) i32ToString((ccw.typeParameters as Array<TypeParameterType>).length) else "null";
         let conc = if (isConcrete(ccw)) "true" else "false";
-        chain = chain + ccw.name + "[args:" + targsLen + ",params:" + tparamsLen + ",conc:" + conc + ",key:" + (getClassKey(ccw) as String) + "] -> ";
+        chain = `${chain}${ccw.name}[args:${targsLen},params:${tparamsLen},conc:${conc},key:${getClassKey(ccw) as String}] -> `;
         cw = ccw.superType;
       }
-      throw new Error("Internal error: class " + (cName as String) + " does not implement interface method: " + fName + "; chain: " + chain);
+      throw new Error(`Internal error: class ${cName as String} does not implement interface method: ${fName}; chain: ${chain}`);
     }
     let trampSig = if (demand != null) {
       getGenericInterfaceMemberSignature(this.wasm, iface, demand.methName, demand.typeArgs)
@@ -3372,10 +3375,7 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
    * The pair set is finite and only ever grows, so this terminates.
    */
   #buildClassInterfaceVTables(): boolean {
-    var created = false;
-    if (this.#syncGenericInterfaceSlots()) {
-      created = true;
-    }
+    var created = this.#syncGenericInterfaceSlots();
     // Pass 2: Generate class-interface trampoline vtables
     let classes = new Array<ClassType>();
     let seenClassKeys = new Map<ClassKey, boolean>();
@@ -3822,7 +3822,7 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
       enclosingOwnTypeParameters(model, node as Node)
     };
 
-    let resolveType = (t: Type): Type => {
+    let resolveType = (t: Type) => {
       var res = substituteTypeParamsInClassContext(this.wasm, classType, t);
       if (ownTypeParams != null) {
         res = substituteTypeParamsInCodegen(
@@ -3963,10 +3963,11 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
 
     // 2. Queue referenced symbols
     for (let symId in deps.referencedSymbols) {
-      var targetSymId = symId;
-      if (this.symbolIdToTargetId.has(symId)) {
-        targetSymId = this.symbolIdToTargetId[symId];
-      }
+      let targetSymId = if (this.symbolIdToTargetId.has(symId)) {
+        this.symbolIdToTargetId[symId]
+      } else {
+        symId
+      };
       if (let (true, targetModel) = this.symbolIdToModel.get(targetSymId)) {
         this.queueReferrer(new Referrer(true, targetSymId, -1, targetModel, null, this.currentReachable));
       }
@@ -4144,7 +4145,7 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
             let unspecIName = getInterfaceKey(targetIfaceType.genericSource ?? targetIfaceType);
             this.wasm.usedInterfaceMembers[getInterfaceMemberKey(unspecIName, mName)] = true;
             
-            let resolvedIfaceStr = i32ToString((targetIfaceType.genericSource ?? targetIfaceType).symbolId as i32) + "." + mName;
+            let resolvedIfaceStr = `${i32ToString((targetIfaceType.genericSource ?? targetIfaceType).symbolId as i32)}.${mName}`;
             this.addReferencedInterfaceMember(resolvedIfaceStr);
           }
         }
@@ -4194,8 +4195,7 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
             typeArguments as Array<Type>, funcTypeNode as Type);
       }
       
-      let params = new Array<ValType>();
-      params.push(new ValTypeStructRef()); // ctx
+      let params = growable<ValType>([new ValTypeStructRef()]); // ctx
       let returns = new Array<ValType>();
 
       if (funcTypeNode is FunctionType) {
@@ -4247,7 +4247,7 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
         i32ToString(funcExpr.id as i32)
       };
 
-      wasmFunc.name = "closure_impl_" + fileBase + suffix + "_" + locStr;
+      wasmFunc.name = `closure_impl_${fileBase}${suffix}_${locStr}`;
       
       wasmFunc.capturesThis = closureDep.capturesThis;
       // A closure that only reads a celled variable still holds its
@@ -4312,7 +4312,7 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
               typeArguments as Array<Type>, symType as Type);
         }
         let valType = typeToValType(this.wasm, symType as Type);
-        var fieldType: ValType = valType;
+        var fieldType = valType;
         if (celled.has(symId)) {
           let cellStruct = getCellStruct(this.wasm, valType);
           fieldType = new ValTypeRefNull(cellStruct);
@@ -4331,7 +4331,7 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
       // impls are minted above, one per instantiation, when the
       // specialized bodies are walked with their argument vectors.
       let isFuncTemplate = enclosingFnParams != null && typeArguments == null;
-      let contextStructName = "ClosureCtx_" + fileBase + suffix + "_" + locStr;
+      let contextStructName = `ClosureCtx_${fileBase}${suffix}_${locStr}`;
       let contextStruct = new WasmStruct(contextStructName, fields);
       wasmFunc.contextStruct = contextStruct;
       if (!isGenericTemplate && !isFuncTemplate) {
@@ -4386,8 +4386,7 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
                 resolvedTargetStruct = paramCs;
                 this.reachablyNamedClosures.add(paramCs);
                 
-                let paramValTypes = new Array<ValType>();
-                paramValTypes.push(new ValTypeStructRef()); // context
+                let paramValTypes = growable<ValType>([new ValTypeStructRef()]); // context
                 for (let p in paramType.parameters) {
                   mapParamTypeToWasmParams(this.wasm, p, paramValTypes);
                 }
@@ -4405,8 +4404,7 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
       let wrapperSig = if (expectedWasmSig != null) {
         expectedWasmSig
       } else {
-        let pValTypes = new Array<ValType>();
-        pValTypes.push(new ValTypeStructRef()); // ctx
+        let pValTypes = growable<ValType>([new ValTypeStructRef()]); // ctx
         for (let p in tgt.parameters) {
           mapParamTypeToWasmParams(this.wasm, p, pValTypes);
         }
@@ -4444,7 +4442,7 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
         } else {
           i32ToString(expr.id as i32)
         };
-        wrapperFunc.name = "function_adapt_" + fileBase + "_" + locStr;
+        wrapperFunc.name = `function_adapt_${fileBase}_${locStr}`;
         wrapperFunc.isFunctionAdaptation = true;
         wrapperFunc.isReferenceTaken = true;
         wrapperFunc.functionAdaptationSource = src;
@@ -4698,7 +4696,7 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
             var funcExpr: Node | null = null;
             if (let (true, decl) = model.globalDeclarations.get(symId)) {
               let {visitor} = this;
-              let resolver = (t: Type): Type => t;
+              let resolver = (t: Type) => t;
               visitor.discoverNodeTypes(decl, model, resolver);
               if (decl is FunctionDeclaration) {
                 visitor.discoverFunctionDeclaration(symId, decl, model);
@@ -4725,7 +4723,7 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
             var memberSuffix = if (refItem.classType != null) "@" + (getClassKey(refItem.classType as ClassType) as String) else "";
             let {typeArguments} = refItem;
             if (typeArguments != null) {
-              memberSuffix += "<" + getSpecializedName("", typeArguments) + ">";
+              memberSuffix += `<${getSpecializedName("", typeArguments)}>`;
             }
             let memberKey = i32ToString(nodeId) + memberSuffix;
             // A checkable visit records only `reachedMembers`, so a
@@ -4762,7 +4760,7 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
               let {classType} = refItem;
               let {visitor} = this;
               let {specializer} = this;
-              let resolver = (t: Type): Type => {
+              let resolver = (t: Type) => {
                 var res = substituteTypeParamsInClassContext(this.wasm, classType, t);
                 // The parameters these arguments bind, when this
                 // referrer is one monomorphization of the walked node:
@@ -4798,10 +4796,11 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
               // name, scope key and type arguments — as the member
               // collection loops do. One node cannot say which
               // application a referrer meant, so every one is registered.
-              var decoratorInts: GrowableArray<ClassType> = new Array<ClassType>();
-              if (refItem.classType != null && !refClassIsErasure) {
-                decoratorInts = findDecoratorIntermediates(refItem.classType as ClassType, this.classDecls, node);
-              }
+              let decoratorInts = if (refItem.classType != null && !refClassIsErasure) {
+                findDecoratorIntermediates(refItem.classType as ClassType, this.classDecls, node)
+              } else {
+                new Array<ClassType>()
+              };
               if (decoratorInts.length > 0) {
                 let ct = refItem.classType as ClassType;
                 getClassKey(ct);
@@ -4831,7 +4830,7 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
                     }
                     var methName = getMethodName(nodeModel, node);
                     if (scope != null && methName.startsWith("#")) {
-                      methName = (scope as String) + "::" + methName;
+                      methName = `${scope as String}::${methName}`;
                     }
                     let regF = specializer.registerClassMethod(ct, cd, methName, node, false, false, null, nodeModel, null);
                     regF.declaringType = decInt;
@@ -4848,14 +4847,14 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
                       ""
                     };
                     if (node.getter != null) {
-                      let regG = specializer.registerClassMethod(ct, cd, accPrefix + "get#" + accName, node, false, false, null, nodeModel, null);
+                      let regG = specializer.registerClassMethod(ct, cd, `${accPrefix}get#${accName}`, node, false, false, null, nodeModel, null);
                       regG.declaringType = decInt;
                       applyMixinPrivateScope(regG, node, scope);
                       regs.push(regG);
                     }
                     let {setter} = node;
                     if (setter != null) {
-                      let regS = specializer.registerClassMethod(ct, cd, accPrefix + "set#" + accName, setter, false, false, null, nodeModel, null);
+                      let regS = specializer.registerClassMethod(ct, cd, `${accPrefix}set#${accName}`, setter, false, false, null, nodeModel, null);
                       regS.declaringType = decInt;
                       applyMixinPrivateScope(regS, setter, scope);
                       regs.push(regS);
@@ -4884,7 +4883,7 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
                   methName = if (methName == "<constructor>") "<constructor>" else "<constructor>." + methName;
                 } else if (mixScope != null && methName.length > 0 &&
                     methName.sliceBytes(0, 1) == "#") {
-                  methName = mixScope + "::" + methName;
+                  methName = `${mixScope}::${methName}`;
                 }
                 let regF = specializer.registerClassMethod(ct, cd, methName, node, false, false, null, nodeModel, null);
                 regF.declaringType = findDeclaringMixinIntermediate(ct, this.classDecls, node);
@@ -4947,7 +4946,7 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
               } else if (node is AccessorDeclaration && refItem.classType != null && !refClassIsErasure) {
                 let ct = refItem.classType as ClassType;
                 getClassKey(ct);
-                var accName = memberKeyOf(model, node.name as Node);
+                let accName = memberKeyOf(model, node.name as Node);
                 if (accName != "") {
                   let lookupId = (ct.genericSource ?? ct).symbolId;
                   let cd = if (let (true, decl) = this.classDecls.get(lookupId)) decl else null;
@@ -4971,7 +4970,7 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
                     ""
                   };
                   if (node.getter != null) {
-                    let regG = specializer.registerClassMethod(ct, cd, accPrefix + "get#" + accName, node, false, false, null, nodeModel, null);
+                    let regG = specializer.registerClassMethod(ct, cd, `${accPrefix}get#${accName}`, node, false, false, null, nodeModel, null);
                     regG.declaringType = findDeclaringMixinIntermediate(ct, this.classDecls, node);
                     applyMixinPrivateScope(regG, node, mixScope);
                     if (refItem.isReachable && isConcrete(ct)) {
@@ -4981,7 +4980,7 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
                   }
                   let {setter} = node;
                   if (setter != null) {
-                    let regS = specializer.registerClassMethod(ct, cd, accPrefix + "set#" + accName, setter, false, false, null, nodeModel, null);
+                    let regS = specializer.registerClassMethod(ct, cd, `${accPrefix}set#${accName}`, setter, false, false, null, nodeModel, null);
                     regS.declaringType = findDeclaringMixinIntermediate(ct, this.classDecls, setter as Node);
                     applyMixinPrivateScope(regS, setter, mixScope);
                     if (refItem.isReachable && isConcrete(ct)) {
@@ -5067,7 +5066,7 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
  * parameters are a separate axis, substituted from the walk's
  * classType.
  */
-let enclosingOwnTypeParameters = (model: SemanticModel, node: Node): Array<TypeParameterType> | null => {
+function enclosingOwnTypeParameters(model: SemanticModel, node: Node): Array<TypeParameterType> | null {
   var curr: Node | null = node;
   while (curr != null) {
     let c = curr as Node;
@@ -5086,14 +5085,14 @@ let enclosingOwnTypeParameters = (model: SemanticModel, node: Node): Array<TypeP
     curr = model.getParent(c);
   }
   return null;
-};
+}
 
-let getMethodName = (model: SemanticModel, md: MethodDefinition): String => {
+function getMethodName(model: SemanticModel, md: MethodDefinition): String {
   return memberKeyOf(model, md.name as Node);
-};
+}
 
 
-let getNodeFilePath = (model: SemanticModel, node: Node): String => {
+function getNodeFilePath(model: SemanticModel, node: Node): String {
   var curr: Node | null = node;
   while (curr != null) {
     if (curr is Module) {
@@ -5102,9 +5101,9 @@ let getNodeFilePath = (model: SemanticModel, node: Node): String => {
     curr = model.getParent(curr);
   }
   return "";
-};
+}
 
-let getFileNameBase = (path: String): String => {
+function getFileNameBase(path: String): String {
   var lastSlash = -1;
   var i = 0;
   let len = path.length;
@@ -5118,9 +5117,9 @@ let getFileNameBase = (path: String): String => {
     return path.sliceBytes(lastSlash + 1, len);
   }
   return path;
-};
+}
 
-let sanitizeName = (s: String): String => {
+function sanitizeName(s: String): String {
   let sb = new StringBuilder();
   var i = 0;
   let len = s.length;
@@ -5134,7 +5133,7 @@ let sanitizeName = (s: String): String => {
     i += 1;
   }
   return sb.toString();
-};
+}
 
 /**
  * A member a reached access resolves on a class, waiting to be found
@@ -5151,8 +5150,8 @@ final class PendingStaticTarget {
  * The classes a type names directly: itself, the members of a union, the
  * target and arguments of an alias. Bounded, since aliases can nest.
  */
-let collectNamedClasses = (t: Type, out: GrowableArray<ClassType>,
-    depth: i32): void => {
+function collectNamedClasses(t: Type, out: GrowableArray<ClassType>,
+    depth: i32): void {
   if (depth > 8) {
     return;
   }
@@ -5179,4 +5178,4 @@ let collectNamedClasses = (t: Type, out: GrowableArray<ClassType>,
     }
     case _: {}
   }
-};
+}

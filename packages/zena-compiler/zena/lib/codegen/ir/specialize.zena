@@ -50,8 +50,8 @@ final class Site {
  * Runs one sweep; returns the number of clones made. `changed` is set
  * for every caller rewritten and every clone, and grows with `bodies`.
  */
-export let runSpecialize = (wasm: WasmModule, bodies: GrowableArray<IrBody>,
-    changed: GrowableArray<boolean>): i32 => {
+export function runSpecialize(wasm: WasmModule, bodies: GrowableArray<IrBody>,
+    changed: GrowableArray<boolean>): i32 {
   let bodyIndex = new Map<WasmFunction, i32>();
   let originalCount = wasm.functions.length;
   for (var i = 0; i < originalCount; i += 1) {
@@ -206,7 +206,7 @@ export let runSpecialize = (wasm: WasmModule, bodies: GrowableArray<IrBody>,
       if (i >= count || clone.op(i) == IrOp.nop) {
         continue;
       }
-      clone.rewriteValueOperands(i, (v: i32): i32 => {
+      clone.rewriteValueOperands(i, (v) => {
         if (v >= 0 && v < count && repl[v] != v) {
           return repl[v];
         }
@@ -243,10 +243,10 @@ export let runSpecialize = (wasm: WasmModule, bodies: GrowableArray<IrBody>,
     }
   }
   return clones;
-};
+}
 
 /** The fat-pointer struct a reference type names, or null. */
-let pairStructOf = (vt: ValType | null): WasmStruct | null => {
+function pairStructOf(vt: ValType | null): WasmStruct | null {
   if (vt == null) {
     return null;
   }
@@ -255,10 +255,10 @@ let pairStructOf = (vt: ValType | null): WasmStruct | null => {
     return t;
   }
   return null;
-};
+}
 
 /** The pair vtable global an iface_pack names, or null. */
-let packGlobal = (body: IrBody, pack: i32): WasmGlobal | null => {
+function packGlobal(body: IrBody, pack: i32): WasmGlobal | null {
   let r = body.refTable[body.b[pack]];
   if (r is IrRefGlobal) {
     if (r.target.initVTable != null) {
@@ -266,9 +266,9 @@ let packGlobal = (body: IrBody, pack: i32): WasmGlobal | null => {
     }
   }
   return null;
-};
+}
 
-let sameRefType = (a: ValType | null, b: ValType | null): boolean => {
+function sameRefType(a: ValType | null, b: ValType | null): boolean {
   if (a == null || b == null) {
     return false;
   }
@@ -278,10 +278,10 @@ let sameRefType = (a: ValType | null, b: ValType | null): boolean => {
     }
   }
   return false;
-};
+}
 
 /** A deep copy of a body: same ids, same blocks, own arrays. */
-let cloneBody = (src: IrBody): IrBody => {
+function cloneBody(src: IrBody): IrBody {
   let dst = new IrBody();
   let n = src.instCount();
   for (var i = 0; i < n; i += 1) {
@@ -326,9 +326,9 @@ let cloneBody = (src: IrBody): IrBody => {
     dst.adoptReturns.add(k);
   }
   return dst;
-};
+}
 
-let prependInsts = (blk: IrBlock, ids: GrowableArray<i32>): void => {
+function prependInsts(blk: IrBlock, ids: GrowableArray<i32>): void {
   let old = new Array<i32>();
   for (let i in blk.insts) {
     old.push(i);
@@ -342,4 +342,4 @@ let prependInsts = (blk: IrBlock, ids: GrowableArray<i32>): void => {
   for (let i in old) {
     blk.insts.push(i);
   }
-};
+}

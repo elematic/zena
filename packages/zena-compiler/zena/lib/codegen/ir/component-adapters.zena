@@ -71,6 +71,7 @@ import {
   isComponentEntryPath, componentEntryRunName, componentExportSuffix,
   componentSyncExportSuffix, componentExportNameOf
 } from '../../component-entry.zena';
+import { growable } from 'zena:core';
 
 /** Bodies for the synthesized entry, by function uid. */
 var entryBodies = new Map<i32, IrBody>();
@@ -93,10 +94,10 @@ let driverModule = 'wasi';
  * zena command's host. A program that does none of that gets the
  * synchronous lift and none of this.
  */
-export let prepareComponentEntry = (
+export function prepareComponentEntry(
   wasm: WasmModule,
   pass: ReachabilityAnalysis
-): void => {
+): void {
   entryBodies = new Map<i32, IrBody>();
 
   let poll = wasm.getStdlibFunc(driverModule, 'componentPoll');
@@ -244,8 +245,7 @@ export let prepareComponentEntry = (
     // does not return again at exit.
     let value = b.callFunc(b.addRef(new IrRefFunc(callee)),
         new Array<i32>(0), callee.signature.returns[0]);
-    let args = new Array<i32>(1);
-    args.push(value);
+    let args = growable<i32>([value]);
     b.callFunc(b.addRef(new IrRefFunc(syncReturn as WasmFunction)), args,
         null);
     b.callFunc(b.addRef(new IrRefFunc(markReturned)), new Array<i32>(0),
@@ -260,7 +260,7 @@ export let prepareComponentEntry = (
   entryBodies[entry.uid] = b.finish();
 
   wasm.componentEntryFunc = entry;
-};
+}
 
 /**
  * The `task.return#main` import a synchronous main's entry returns
@@ -269,9 +269,8 @@ export let prepareComponentEntry = (
  * component-level type is `componentEntryResult`, which the shape
  * reads for an import with no declaration.
  */
-let mainTaskReturn = (wasm: WasmModule, main: WasmFunction): WasmFunction => {
-  let params = new Array<ValType>(1);
-  params.push(main.signature.returns[0]);
+function mainTaskReturn(wasm: WasmModule, main: WasmFunction): WasmFunction {
+  let params = growable<ValType>([main.signature.returns[0]]);
   let sig = wasm.getSignature(params, new Array<ValType>(0));
   let f = new WasmFunction(sig, null, main.model);
   f.name = 'task.return#main';
@@ -280,7 +279,7 @@ let mainTaskReturn = (wasm: WasmModule, main: WasmFunction): WasmFunction => {
   f.importName = 'task.return#main';
   wasm.functionImports.push(f);
   return f;
-};
+}
 
 /**
  * `zena:host-setup`'s `installHost`, when the target loads that module
@@ -289,22 +288,22 @@ let mainTaskReturn = (wasm: WasmModule, main: WasmFunction): WasmFunction => {
  * wait may block. Null on a portable component, which has no host to
  * ask and links the blocking wait only where it blocks.
  */
-let hostSetupInstall = (
+function hostSetupInstall(
   wasm: WasmModule,
   pass: ReachabilityAnalysis
-): WasmFunction | null => {
+): WasmFunction | null {
   let install = wasm.getStdlibFunc('host-setup', 'installHost');
   if (install != null) {
     pass.markFunctionReached(install as WasmFunction);
   }
   return install;
-};
+}
 
 /**
  * The `run` of the entry wrapper the compiler loaded beside the entry,
  * or null when the program has no wrapper.
  */
-let entryWrapperRun = (wasm: WasmModule): WasmFunction | null => {
+function entryWrapperRun(wasm: WasmModule): WasmFunction | null {
   let prog = wasm.program;
   if (prog == null) {
     return null;
@@ -315,7 +314,7 @@ let entryWrapperRun = (wasm: WasmModule): WasmFunction | null => {
     }
   }
   return null;
-};
+}
 
 /**
  * One adapter per async export the entry wrapper implements. The
@@ -326,13 +325,13 @@ let entryWrapperRun = (wasm: WasmModule): WasmFunction | null => {
  * call the wrapper, then ask the driver what to do next, exactly as
  * the entry does for main.
  */
-let prepareAsyncExports = (
+function prepareAsyncExports(
   wasm: WasmModule,
   pass: ReachabilityAnalysis,
   begin: WasmFunction,
   install: WasmFunction | null,
   poll: WasmFunction
-): void => {
+): void {
   let prog = wasm.program;
   if (prog == null) {
     return;
@@ -382,7 +381,7 @@ let prepareAsyncExports = (
       }
     }
   }
-};
+}
 
 /**
  * Register the entry wrapper's resource destructors: a
@@ -391,10 +390,10 @@ let prepareAsyncExports = (
  * instance is dropped, from whichever component held it. A core
  * export, never lifted.
  */
-export let prepareResourceDestructors = (
+export function prepareResourceDestructors(
   wasm: WasmModule,
   pass: ReachabilityAnalysis
-): void => {
+): void {
   let prog = wasm.program;
   if (prog == null) {
     return;
@@ -420,7 +419,7 @@ export let prepareResourceDestructors = (
       }
     }
   }
-};
+}
 
 /**
  * Register the entry wrapper's synchronous export wrappers — a
@@ -431,10 +430,10 @@ export let prepareResourceDestructors = (
  * links the async driver: a provider of plain functions has no entry
  * and never awaits.
  */
-export let prepareSyncExports = (
+export function prepareSyncExports(
   wasm: WasmModule,
   pass: ReachabilityAnalysis
-): void => {
+): void {
   let prog = wasm.program;
   if (prog == null) {
     return;
@@ -476,13 +475,12 @@ export let prepareSyncExports = (
   pass.markFunctionReached(postReturn as WasmFunction);
   wasm.componentReallocFunc = realloc as WasmFunction;
   wasm.componentPostReturnFunc = postReturn as WasmFunction;
-};
+}
 
-let i32Results = (): GrowableArray<ValType> => {
-  let results = new Array<ValType>();
-  results.push(new ValTypeI32());
+function i32Results(): GrowableArray<ValType> {
+  let results = growable<ValType>([new ValTypeI32()]);
   return results;
-};
+}
 
 /**
  * Wrap every export whose signature carries a `string`, and pick up the
@@ -493,10 +491,10 @@ let i32Results = (): GrowableArray<ValType> => {
  * wrapper and is lifted directly, so a component that moves no strings
  * is emitted exactly as it was before this existed.
  */
-export let prepareComponentExports = (
+export function prepareComponentExports(
   wasm: WasmModule,
   pass: ReachabilityAnalysis
-): void => {
+): void {
   let fromMemory = wasm.getStdlibFunc(componentAbiModule, 'stringFromMemory');
   let release = wasm.getStdlibFunc(componentAbiModule, 'releaseStringArgument');
   let resultArea = wasm.getStdlibFunc(componentAbiModule, 'stringResultArea');
@@ -609,14 +607,10 @@ export let prepareComponentExports = (
     var at = 0;
     for (var i = 0; i < stringAt.length; i += 1) {
       if (stringAt[i]) {
-        let pair = new Array<i32>();
-        pair.push(core[at]);
-        pair.push(core[at + 1]);
+        let pair = growable<i32>([core[at], core[at + 1]]);
         args.push(b.callFunc(b.addRef(new IrRefFunc(fromMemory)),
             pair, f.signature.params[i]));
-        let toRelease = new Array<i32>();
-        toRelease.push(core[at]);
-        toRelease.push(core[at + 1]);
+        let toRelease = growable<i32>([core[at], core[at + 1]]);
         b.callFunc(b.addRef(new IrRefFunc(release)),
             toRelease, null);
         at += 2;
@@ -633,8 +627,7 @@ export let prepareComponentExports = (
     };
     let called = b.callFunc(b.addRef(new IrRefFunc(f)), args, callResult);
     if (resultIsString) {
-      let one = new Array<i32>();
-      one.push(called);
+      let one = growable<i32>([called]);
       b.ret(b.callFunc(b.addRef(new IrRefFunc(resultArea)),
           one, new ValTypeI32()));
     } else if (callResult == null) {
@@ -653,14 +646,14 @@ export let prepareComponentExports = (
     wasm.componentReallocFunc = realloc as WasmFunction;
     wasm.componentPostReturnFunc = postReturn as WasmFunction;
   }
-};
+}
 
-export let lowerComponentAdapter = (
+export function lowerComponentAdapter(
   wasm: WasmModule,
   func: WasmFunction
-): IrBody => {
+): IrBody {
   if (let (true, body) = entryBodies.get(func.uid)) {
     return body;
   }
   throw new Error('the component entry was not prepared');
-};
+}

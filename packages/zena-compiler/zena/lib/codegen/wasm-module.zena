@@ -4,7 +4,7 @@ import {
 } from '../ast.zena';
 import { SemanticModel } from '../semantic-model.zena';
 import { SymbolId, noSymbolId } from '../scope/symbol.zena';
-import { ByteBuffer } from 'zena:core';
+import { ByteBuffer, growable } from 'zena:core';
 import {
   ValType, ValTypeVoid, ValTypeStructRef, ValTypeRefNull, ValTypeRef, ValTypeEqRef,
   ValTypeAnyRef, ValTypeI8, WasmType, valTypeEquals, ValTypeExternRef, ValTypeI32,
@@ -27,7 +27,7 @@ import {
 declare function hash<T>(value: T): i32;
 
 
-export let sortWasmFields = (fields: GrowableArray<WasmField>): void => {
+export function sortWasmFields(fields: GrowableArray<WasmField>): void {
   let len = fields.length;
   for (var i = 1; i < len; i += 1) {
     let key = fields[i];
@@ -48,7 +48,7 @@ export let sortWasmFields = (fields: GrowableArray<WasmField>): void => {
     }
     fields[j + 1] = key;
   }
-};
+}
 
 export final class WasmExport {
   name: String;
@@ -98,13 +98,13 @@ export final class WasmField {
  * (there is no pre-existing object to cache them on, unlike e.g. ClassKey
  * which is memoized on the ClassType).
  */
-let valTypeHashCode = (vt: ValType): i32 => {
+function valTypeHashCode(vt: ValType) {
   return match (vt) {
     case ValTypeRef {target}: target.uid * 2
     case ValTypeRefNull {target}: target.uid * 2 + 1
     case _: valTypeToOpcode(vt)
   };
-};
+}
 
 /**
  * Identity-based ValType equality for the type-pool cache keys below.
@@ -118,22 +118,24 @@ let valTypeHashCode = (vt: ValType): i32 => {
  * layout, matches valTypeHashCode (uid-based) so hashCode/equals agree,
  * and is equivalent to index equality for laid-out types.
  */
-let valTypeKeyEquals = (a: ValType, b: ValType): boolean => {
+function valTypeKeyEquals(a: ValType, b: ValType): boolean {
   if (valTypeToOpcode(a) != valTypeToOpcode(b)) {
     return false;
   }
   return match (a) {
-    case ValTypeRef {target as ta}: match (b) {
-      case ValTypeRef {target as tb}: ta == tb
-      case _: false
+    case ValTypeRef {target as ta}: if (let ValTypeRef {target as tb} = b) {
+      ta == tb
+    } else {
+      false
     }
-    case ValTypeRefNull {target as ta}: match (b) {
-      case ValTypeRefNull {target as tb}: ta == tb
-      case _: false
+    case ValTypeRefNull {target as ta}: if (let ValTypeRefNull {target as tb} = b) {
+      ta == tb
+    } else {
+      false
     }
     case _: true
   };
-};
+}
 
 export final class SignatureKey implements Hashable {
   params: GrowableArray<ValType>;
@@ -166,7 +168,7 @@ export final class SignatureKey implements Hashable {
   }
 }
 
-let stringEquals = (s1: String | null, s2: String | null): boolean => {
+function stringEquals(s1: String | null, s2: String | null): boolean {
   if (s1 == null) {
     return s2 == null;
   }
@@ -174,7 +176,7 @@ let stringEquals = (s1: String | null, s2: String | null): boolean => {
     return false;
   }
   return s1 == s2;
-};
+}
 
 export final class StructKey implements Hashable {
   name: String | null;
@@ -228,17 +230,17 @@ export final class ArrayKey implements Hashable {
   }
 }
 
-let getSignatureKey = (params: GrowableArray<ValType>, returns: GrowableArray<ValType>): SignatureKey => {
+function getSignatureKey(params: GrowableArray<ValType>, returns: GrowableArray<ValType>) {
   return new SignatureKey(params, returns);
-};
+}
 
-let getStructKey = (name: String | null, fields: GrowableArray<WasmField>): StructKey => {
+function getStructKey(name: String | null, fields: GrowableArray<WasmField>) {
   return new StructKey(name, fields);
-};
+}
 
-let getArrayKey = (elementType: ValType, isMutable: boolean): ArrayKey => {
+function getArrayKey(elementType: ValType, isMutable: boolean) {
   return new ArrayKey(elementType, isMutable);
-};
+}
 
 export final class WasmStruct extends WasmType {
   var superStruct: WasmStruct | null = null;
@@ -348,13 +350,13 @@ export final class WasmStruct extends WasmType {
 
 /** The generic-source root's key: specializations compare equal to
  * their template through this. */
-export let canonicalClassKey = (ct: ClassType): ClassKey => {
+export function canonicalClassKey(ct: ClassType): ClassKey {
   var c = ct;
   while (c.genericSource != null) {
     c = c.genericSource as ClassType;
   }
   return getClassKey(c);
-};
+}
 
 export final class WasmArray extends WasmType {
   elementType: ValType;
@@ -382,31 +384,31 @@ export final class WasmSignature extends WasmType {
 }
 
 /** The WasmStruct behind a reference ValType, or null. */
-export let asWasmStruct = (vt: ValType): WasmStruct | null => {
+export function asWasmStruct(vt: ValType): WasmStruct | null {
   let t = refTargetOf(vt);
   if (t is WasmStruct) {
     return t;
   }
   return null;
-};
+}
 
 /** The WasmSignature behind a reference ValType, or null. */
-export let asWasmSignature = (vt: ValType): WasmSignature | null => {
+export function asWasmSignature(vt: ValType): WasmSignature | null {
   let t = refTargetOf(vt);
   if (t is WasmSignature) {
     return t;
   }
   return null;
-};
+}
 
 /** The WasmArray behind a reference ValType, or null. */
-export let asWasmArray = (vt: ValType): WasmArray | null => {
+export function asWasmArray(vt: ValType): WasmArray | null {
   let t = refTargetOf(vt);
   if (t is WasmArray) {
     return t;
   }
   return null;
-};
+}
 
 /**
  * Wasm-level assignability between value types: may a value of type `a`
@@ -419,7 +421,7 @@ export let asWasmArray = (vt: ValType): WasmArray | null => {
  * (ref T) and (ref null T) as equal (ref locals are declared nullable
  * and re-cast at uses), but subtyping must not: a nullable value
  * never conforms to a non-null slot. */
-export let valTypeIdentical = (a: ValType, b: ValType): boolean => {
+export function valTypeIdentical(a: ValType, b: ValType): boolean {
   return match (a) {
     case ValTypeRef as ta: match (b) {
       case ValTypeRef as tb: sameHeapType(ta.target, tb.target)
@@ -431,9 +433,9 @@ export let valTypeIdentical = (a: ValType, b: ValType): boolean => {
     }
     case _: valTypeEquals(a, b)
   };
-};
+}
 
-export let isValSubtype = (a: ValType, b: ValType): boolean => {
+export function isValSubtype(a: ValType, b: ValType): boolean {
   // valTypeEquals ignores nullability (ref X equals refnull X), so
   // this shortcut answers true for refnull X <: ref X — which is not
   // a subtype. Lowering leans on that laxity in many places (it bails
@@ -471,15 +473,15 @@ export let isValSubtype = (a: ValType, b: ValType): boolean => {
     return false;
   }
   return heapSubtype(aTarget, bTarget);
-};
+}
 
 /** Declared-subtype check between heap types (struct super chains). */
-let heapSubtype = (a: WasmType, b: WasmType): boolean => {
+function heapSubtype(a: WasmType, b: WasmType): boolean {
   if (a == b) {
     return true;
   }
   if (a is WasmStruct) {
-    var current: WasmStruct | null = a.superStruct;
+    var current = a.superStruct;
     while (current != null) {
       if (current == b) {
         return true;
@@ -488,7 +490,7 @@ let heapSubtype = (a: WasmType, b: WasmType): boolean => {
     }
   }
   if (a is WasmArray) {
-    var currentArray: WasmArray | null = a.superArray;
+    var currentArray = a.superArray;
     while (currentArray != null) {
       if (currentArray == b) {
         return true;
@@ -497,7 +499,7 @@ let heapSubtype = (a: WasmType, b: WasmType): boolean => {
     }
   }
   return false;
-};
+}
 
 /**
  * Represents a single compiled WebAssembly function.
@@ -505,7 +507,7 @@ let heapSubtype = (a: WasmType, b: WasmType): boolean => {
  */
 /** The shared empty capture lists a function without captures reads. */
 export let noCaptures = new Array<SymbolId>();
-export let noMutableCaptures: HashSet<SymbolId> = new Set<SymbolId>();
+export let noMutableCaptures = new Set<SymbolId>();
 
 export final class WasmFunction implements Hashable {
   /** The semantic model of the module that declares this function. */
@@ -843,10 +845,7 @@ export final class WasmGlobal {
     this.initVTable,
     this.model
   ) : type = if (isMutable || (initExpr == null && initVTable == null)) {
-        match (type) {
-          case ValTypeRef {target}: new ValTypeRefNull(target)
-          case _: type
-        }
+        if (let ValTypeRef {target} = type) new ValTypeRefNull(target) else type
       } else {
         type
       } {}
@@ -880,13 +879,13 @@ export final class RecordDispatchInfo {
   }
 }
 
-let stringArraysEqual = (a: GrowableArray<String>, b: GrowableArray<String>): boolean => {
+function stringArraysEqual(a: GrowableArray<String>, b: GrowableArray<String>): boolean {
   if (a.length != b.length) { return false; }
   for (var i = 0; i < a.length; i += 1) {
     if (a[i] != b[i]) { return false; }
   }
   return true;
-};
+}
 
 export final class ClassCodegenInfo {
   structType: WasmStruct;
@@ -1211,7 +1210,7 @@ export final class WasmModule {
    * agree, because one roots what the other emits a call to.
    */
   getStdlibFunc(library: String, exportName: String): WasmFunction | null {
-    let key = library + "::" + exportName;
+    let key = `${library}::${exportName}`;
     if (this.#stdlibFuncCache.has(key)) {
       return this.#stdlibFuncCache[key];
     }
@@ -1237,7 +1236,7 @@ export final class WasmModule {
    * lookup above reaches them.
    */
   getUnitFunc(path: String, name: String): WasmFunction | null {
-    let key = path + "::" + name;
+    let key = `${path}::${name}`;
     if (this.#stdlibFuncCache.has(key)) {
       return this.#stdlibFuncCache[key];
     }
@@ -1430,8 +1429,7 @@ export final class WasmModule {
   symbolNames = new Map<SymbolId, String>();
   
   findRecordDispatch(fields: GrowableArray<WasmField>, optionalNames: GrowableArray<String>): RecordDispatchInfo | null {
-    for (var k = 0; k < this.recordDispatchInfos.length; k += 1) {
-      let info = this.recordDispatchInfos[k];
+    for (let info in this.recordDispatchInfos) {
       if (info.fields.length == fields.length &&
           stringArraysEqual(info.optionalNames, optionalNames)) {
         var match = true;
@@ -1448,8 +1446,7 @@ export final class WasmModule {
   }
   
   findAdaptedDispatch(inFields: GrowableArray<WasmField>, inOptionalNames: GrowableArray<String>, outFields: GrowableArray<WasmField>, outOptionalNames: GrowableArray<String>): RecordDispatchInfo | null {
-    for (var k = 0; k < this.adaptedDispatchInfos.length; k += 1) {
-      let info = this.adaptedDispatchInfos[k];
+    for (let info in this.adaptedDispatchInfos) {
       if (!stringArraysEqual(info.optionalNames, outOptionalNames) ||
           !stringArraysEqual(info.inOptionalNames, inOptionalNames)) {
         continue;
@@ -1500,17 +1497,17 @@ export final class WasmModule {
           case ValTypeRef as r: {
             if (r.target is WasmStruct) {
               let s = r.target as WasmStruct;
-              "ref_" + (if (s.name == null) "anon" else s.name as String) + "(uid=" + i32ToString(s.uid) + ",idx=" + i32ToString(s.index) + ")"
+              `ref_${if (s.name == null) "anon" else s.name as String}(uid=${i32ToString(s.uid)},idx=${i32ToString(s.index)})`
             } else {
-              "ref_non_struct(uid=" + i32ToString(r.target.uid) + ",idx=" + i32ToString(r.target.index) + ")"
+              `ref_non_struct(uid=${i32ToString(r.target.uid)},idx=${i32ToString(r.target.index)})`
             }
           }
           case ValTypeRefNull as rn: {
             if (rn.target is WasmStruct) {
               let s = rn.target as WasmStruct;
-              "refnull_" + (if (s.name == null) "anon" else s.name as String) + "(uid=" + i32ToString(s.uid) + ",idx=" + i32ToString(s.index) + ")"
+              `refnull_${if (s.name == null) "anon" else s.name as String}(uid=${i32ToString(s.uid)},idx=${i32ToString(s.index)})`
             } else {
-              "refnull_non_struct(uid=" + i32ToString(rn.target.uid) + ",idx=" + i32ToString(rn.target.index) + ")"
+              `refnull_non_struct(uid=${i32ToString(rn.target.uid)},idx=${i32ToString(rn.target.index)})`
             }
           }
           case _: i32ToString(valTypeToOpcode(p))
@@ -1522,23 +1519,23 @@ export final class WasmModule {
           case ValTypeRef as r: {
             if (r.target is WasmStruct) {
               let s = r.target as WasmStruct;
-              "ref_" + (if (s.name == null) "anon" else s.name as String) + "(uid=" + i32ToString(s.uid) + ",idx=" + i32ToString(s.index) + ")"
+              `ref_${if (s.name == null) "anon" else s.name as String}(uid=${i32ToString(s.uid)},idx=${i32ToString(s.index)})`
             } else {
-              "ref_non_struct(uid=" + i32ToString(r.target.uid) + ",idx=" + i32ToString(r.target.index) + ")"
+              `ref_non_struct(uid=${i32ToString(r.target.uid)},idx=${i32ToString(r.target.index)})`
             }
           }
           case ValTypeRefNull as rn: {
             if (rn.target is WasmStruct) {
               let s = rn.target as WasmStruct;
-              "refnull_" + (if (s.name == null) "anon" else s.name as String) + "(uid=" + i32ToString(s.uid) + ",idx=" + i32ToString(s.index) + ")"
+              `refnull_${if (s.name == null) "anon" else s.name as String}(uid=${i32ToString(s.uid)},idx=${i32ToString(s.index)})`
             } else {
-              "refnull_non_struct(uid=" + i32ToString(rn.target.uid) + ",idx=" + i32ToString(rn.target.index) + ")"
+              `refnull_non_struct(uid=${i32ToString(rn.target.uid)},idx=${i32ToString(rn.target.index)})`
             }
           }
           case _: i32ToString(valTypeToOpcode(r))
         } + ",";
       }
-      throw new Error("Signature allocated after layout! Params: " + pStr + " Returns: " + rStr);
+      throw new Error(`Signature allocated after layout! Params: ${pStr} Returns: ${rStr}`);
     }
     let sig = new WasmSignature(params, returns);
     this.types.push(sig);
@@ -1576,7 +1573,7 @@ export final class WasmModule {
       var fieldNames = "";
       for (let f in fields) {
         if (f.name != null) {
-          fieldNames = fieldNames + " " + (f.name as String);
+          fieldNames = `${fieldNames} ${f.name as String}`;
         }
       }
       throw new Error("Struct allocated after layout:" + fieldNames);
@@ -1591,16 +1588,16 @@ export final class WasmModule {
   }
 
   getClosureStruct(params: GrowableArray<ValType>, returns: GrowableArray<ValType>): WasmStruct {
-    let implParams = new Array<ValType>();
-    implParams.push(new ValTypeStructRef());
+    let implParams = growable<ValType>([new ValTypeStructRef()]);
     for (let p in params) {
       implParams.push(p);
     }
     let implSig = this.getSignature(implParams, returns);
     
-    let fields = new Array<WasmField>();
-    fields.push(new WasmField("func", new ValTypeRef(implSig), false));
-    fields.push(new WasmField("ctx", new ValTypeStructRef(), false));
+    let fields = growable<WasmField>([
+      new WasmField("func", new ValTypeRef(implSig), false),
+      new WasmField("ctx", new ValTypeStructRef(), false),
+    ]);
     
     return this.getStruct(null, fields);
   }
@@ -1624,8 +1621,7 @@ export final class WasmModule {
     for (var i = 0; i < fields.length; i += 1) {
       let getterValType = fields[i].type;
       
-      let params = new Array<ValType>();
-      params.push(new ValTypeStructRef());
+      let params = growable<ValType>([new ValTypeStructRef()]);
       
       let returns = new Array<ValType>();
       if (!(getterValType is ValTypeVoid)) {
@@ -1650,9 +1646,10 @@ export final class WasmModule {
     
     let vtableType = this.getStruct(null, vtableFields);
     
-    let fatPtrFields = new Array<WasmField>();
-    fatPtrFields.push(new WasmField(null, new ValTypeStructRef(), false));
-    fatPtrFields.push(new WasmField(null, new ValTypeRef(vtableType), false));
+    let fatPtrFields = growable<WasmField>([
+      new WasmField(null, new ValTypeStructRef(), false),
+      new WasmField(null, new ValTypeRef(vtableType), false),
+    ]);
     
     let fatPtrType = this.getStruct(null, fatPtrFields);
     
@@ -1686,8 +1683,7 @@ export final class WasmModule {
     for (var i = 0; i < outFields.length; i += 1) {
       let fieldValType = outFields[i].type;
       
-      let params = new Array<ValType>();
-      params.push(new ValTypeStructRef());
+      let params = growable<ValType>([new ValTypeStructRef()]);
       
       let returns = new Array<ValType>();
       if (!(fieldValType is ValTypeVoid)) {
@@ -1771,9 +1767,10 @@ export final class WasmModule {
     
     let vtableType = this.getStruct(null, vtableFields);
     
-    let fatPtrFields = new Array<WasmField>();
-    fatPtrFields.push(new WasmField(null, new ValTypeStructRef(), false));
-    fatPtrFields.push(new WasmField(null, new ValTypeRef(vtableType), false));
+    let fatPtrFields = growable<WasmField>([
+      new WasmField(null, new ValTypeStructRef(), false),
+      new WasmField(null, new ValTypeRef(vtableType), false),
+    ]);
     
     let fatPtrType = this.getStruct(null, fatPtrFields);
     
@@ -1855,9 +1852,10 @@ export final class WasmModule {
   }
 
   getArray(elementType: ValType, isMutable: boolean): WasmArray {
-    let finalElemType = match (elementType) {
-      case ValTypeRef {target}: new ValTypeRefNull(target)
-      case _: elementType
+    let finalElemType = if (let ValTypeRef {target} = elementType) {
+      new ValTypeRefNull(target)
+    } else {
+      elementType
     };
     let key = getArrayKey(finalElemType, isMutable);
     if (let (true, cached) = this.#arrayCache.get(key)) {
@@ -1888,16 +1886,13 @@ export final class WasmModule {
     this.#arraySupertypesLinked = true;
     // The chain interns supertype arrays as it goes, growing `types`;
     // an index loop visits those too.
-    var i = 0;
-    while (i < this.types.length) {
-      let t = this.types[i];
+    for (let t in this.types) {
       if (t is WasmArray) {
         let arr = t as WasmArray;
         if (!arr.isMutable && arr.superArray == null) {
           arr.superArray = this.#immutableArraySuper(arr.elementType);
         }
       }
-      i += 1;
     }
   }
 
@@ -1910,21 +1905,20 @@ export final class WasmModule {
    * have no subtypes, so those arrays declare none.
    */
   #immutableArraySuper(elementType: ValType): WasmArray | null {
-    match (elementType) {
-      case ValTypeRefNull {target}: {
-        if (target is WasmStruct) {
-          let sup = (target as WasmStruct).superStruct;
-          if (sup != null) {
-            return this.getArray(new ValTypeRefNull(sup), false);
-          }
-          return this.getArray(new ValTypeAnyRef(), false);
+    if (let ValTypeRefNull {target} = elementType) {
+      if (target is WasmStruct) {
+        let sup = (target as WasmStruct).superStruct;
+        if (sup != null) {
+          return this.getArray(new ValTypeRefNull(sup), false);
         }
-        if (target is WasmArray) {
-          return this.getArray(new ValTypeAnyRef(), false);
-        }
-        return null;
+        return this.getArray(new ValTypeAnyRef(), false);
       }
-      case _: { return null; }
+      if (target is WasmArray) {
+        return this.getArray(new ValTypeAnyRef(), false);
+      }
+      return null;
+    } else {
+      return null;
     }
   }
 
@@ -2038,10 +2032,8 @@ export final class WasmModule {
   // See docs/design/host-interop.md, "Strings".
   ensureStringCreate(model: SemanticModel): void {
     if (this.stringCreateFunc != null) return;
-    let createParams = new Array<ValType>();
-    createParams.push(new ValTypeI32());
-    let createReturns = new Array<ValType>();
-    createReturns.push(new ValTypeExternRef());
+    let createParams = growable<ValType>([new ValTypeI32()]);
+    let createReturns = growable<ValType>([new ValTypeExternRef()]);
     let createSig = this.getSignature(createParams, createReturns);
     let createFunc = new WasmFunction(createSig, null, model);
     createFunc.name = "$stringCreate";
@@ -2051,10 +2043,11 @@ export final class WasmModule {
 
   ensureStringSetByte(model: SemanticModel): void {
     if (this.stringSetByteFunc != null) return;
-    let setByteParams = new Array<ValType>();
-    setByteParams.push(new ValTypeExternRef());
-    setByteParams.push(new ValTypeI32());
-    setByteParams.push(new ValTypeI32());
+    let setByteParams = growable<ValType>([
+      new ValTypeExternRef(),
+      new ValTypeI32(),
+      new ValTypeI32(),
+    ]);
     let setByteReturns = new Array<ValType>();
     let setByteSig = this.getSignature(setByteParams, setByteReturns);
     let setByteFunc = new WasmFunction(setByteSig, null, model);
@@ -2065,11 +2058,11 @@ export final class WasmModule {
 
   ensureStringGetByte(model: SemanticModel): void {
     if (this.stringGetByteFunc != null) return;
-    let getByteParams = new Array<ValType>();
-    getByteParams.push(new ValTypeExternRef());
-    getByteParams.push(new ValTypeI32());
-    let getByteReturns = new Array<ValType>();
-    getByteReturns.push(new ValTypeI32());
+    let getByteParams = growable<ValType>([
+      new ValTypeExternRef(),
+      new ValTypeI32(),
+    ]);
+    let getByteReturns = growable<ValType>([new ValTypeI32()]);
     let getByteSig = this.getSignature(getByteParams, getByteReturns);
     let getByteFunc = new WasmFunction(getByteSig, null, model);
     getByteFunc.name = "$stringGetByte";
@@ -2079,10 +2072,8 @@ export final class WasmModule {
 
   ensureStringGetLength(model: SemanticModel): void {
     if (this.stringGetLengthFunc != null) return;
-    let getLengthParams = new Array<ValType>();
-    getLengthParams.push(new ValTypeExternRef());
-    let getLengthReturns = new Array<ValType>();
-    getLengthReturns.push(new ValTypeI32());
+    let getLengthParams = growable<ValType>([new ValTypeExternRef()]);
+    let getLengthReturns = growable<ValType>([new ValTypeI32()]);
     let getLengthSig = this.getSignature(getLengthParams, getLengthReturns);
     let getLengthFunc = new WasmFunction(getLengthSig, null, model);
     getLengthFunc.name = "$stringGetLength";
@@ -2140,8 +2131,7 @@ export final class WasmModule {
     let sigParams = new Array<ValType>();
     sigParams.push(new ValTypeI32()); // offset
     sigParams.push(new ValTypeI32()); // length
-    let sigReturns = new Array<ValType>();
-    sigReturns.push(stringType);
+    let sigReturns = growable<ValType>([stringType]);
 
     let sig = this.getSignature(sigParams, sigReturns);
     let helperFunc = new WasmFunction(sig, null, model);
@@ -2149,8 +2139,7 @@ export final class WasmModule {
     this.addFunction(helperFunc);
     this.stringFromSharedFunc = helperFunc;
 
-    let getSigParams = new Array<ValType>();
-    getSigParams.push(new ValTypeI32()); // id
+    let getSigParams = growable<ValType>([new ValTypeI32()]); // id
     let getSigReturns = new Array<ValType>();
     let nonNullableStringType = new ValTypeRef(stringStruct);
     getSigReturns.push(nonNullableStringType);
@@ -2182,10 +2171,8 @@ export final class WasmModule {
       throw new Error("$stringHash discovery: String class struct not found!");
     }
     let stringStruct = stringInfoOpt.structType;
-    let params = new Array<ValType>();
-    params.push(new ValTypeRefNull(stringStruct));
-    let returns = new Array<ValType>();
-    returns.push(new ValTypeI32());
+    let params = growable<ValType>([new ValTypeRefNull(stringStruct)]);
+    let returns = growable<ValType>([new ValTypeI32()]);
     let sig = this.getSignature(params, returns);
     let hashFunc = new WasmFunction(sig, null, model);
     hashFunc.name = "$stringHash";
@@ -2197,11 +2184,8 @@ export final class WasmModule {
     if (this.erasedEqFunc != null) {
       return;
     }
-    let params = new Array<ValType>();
-    params.push(new ValTypeEqRef());
-    params.push(new ValTypeEqRef());
-    let returns = new Array<ValType>();
-    returns.push(new ValTypeI32());
+    let params = growable<ValType>([new ValTypeEqRef(), new ValTypeEqRef()]);
+    let returns = growable<ValType>([new ValTypeI32()]);
     let func = new WasmFunction(this.getSignature(params, returns), null, model);
     func.name = "$erasedEq";
     this.addFunction(func);
@@ -2254,13 +2238,11 @@ export final class WasmModule {
       t.index = i;
     }
     var functionIndex = 0;
-    for (var i = 0; i < this.functionImports.length; i += 1) {
-      let f = this.functionImports[i];
+    for (let f in this.functionImports) {
       f.index = functionIndex;
       functionIndex += 1;
     }
-    for (var i = 0; i < this.functions.length; i += 1) {
-      let f = this.functions[i];
+    for (let f in this.functions) {
       f.index = functionIndex;
       functionIndex += 1;
     }
@@ -2308,7 +2290,7 @@ export final class WasmModule {
       posOf[uniqueTypes[i]] = i;
     }
     let adjacency = new Array<GrowableArray<i32>>();
-    let pushRef = (list: GrowableArray<i32>, vt: ValType): void => {
+    let pushRef = (list: GrowableArray<i32>, vt: ValType) => {
       match (vt) {
         case ValTypeRef {target}: {
           if (let (true, p) = posOf.get(target)) { list.push(p); }
@@ -2561,7 +2543,7 @@ export final class WasmModule {
         intraIndex[members[i]] = i;
       }
       let parts = new Array<String>();
-      let encodeTarget = (target: WasmType): void => {
+      let encodeTarget = (target: WasmType) => {
         if (let (true, tp) = posOf.get(target)) {
           if (let (true, ii) = intraIndex.get(tp)) {
             parts.push("#");
@@ -2578,7 +2560,7 @@ export final class WasmModule {
         // broken module; keep the key honest anyway.
         parts.push("?");
       };
-      let encodeVal = (vt: ValType): void => {
+      let encodeVal = (vt: ValType) => {
         match (vt) {
           case ValTypeRef {target}: {
             parts.push("r");

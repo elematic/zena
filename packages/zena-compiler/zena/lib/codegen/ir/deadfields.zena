@@ -43,11 +43,11 @@ import { ValTypeRef, ValTypeRefNull } from '../wasm.zena';
  * the number of fields deleted, counting an inherited field once per
  * struct it is deleted from.
  */
-export let eliminateDeadFields = (
+export function eliminateDeadFields(
   wasm: WasmModule,
   bodies: GrowableArray<IrBody>,
   changed: GrowableArray<boolean>
-): i32 => {
+): i32 {
   let classStructs = new HashSet<WasmStruct>();
   for (let entry in wasm.classInfos) {
     classStructs.add(entry.value.structType);
@@ -140,13 +140,13 @@ export let eliminateDeadFields = (
     }
   }
   return removed;
-};
+}
 
 /**
  * The struct that declares field `index` of `s`: `s`, or the furthest
  * ancestor whose list holds the same field at that index.
  */
-let declaringStruct = (s: WasmStruct, index: i32): WasmStruct => {
+function declaringStruct(s: WasmStruct, index: i32): WasmStruct {
   var d = s;
   let field = s.fields[index];
   while (d.superStruct != null) {
@@ -157,19 +157,21 @@ let declaringStruct = (s: WasmStruct, index: i32): WasmStruct => {
     d = parent;
   }
   return d;
-};
+}
 
 /**
  * Whether `a` and `b` are the same field object: inherited fields are
  * shared, not copied. `WasmField` defines no `==`, so this is identity.
  */
-let sameField = (a: WasmField, b: WasmField): boolean => a == b;
+function sameField(a: WasmField, b: WasmField): boolean {
+  return a == b;
+}
 
 /** The read flags for the fields `s` declares, made on first use. */
-let readsOf = (
+function readsOf(
   read: HashMap<WasmStruct, GrowableArray<boolean>>,
   s: WasmStruct
-): GrowableArray<boolean> => {
+): GrowableArray<boolean> {
   if (let (true, bits) = read.get(s)) {
     return bits;
   }
@@ -179,18 +181,18 @@ let readsOf = (
   }
   read[s] = bits;
   return bits;
-};
+}
 
 /**
  * Deletes `inst`, a `struct_set`, if it writes a removed field. A null
  * receiver must still trap, so a nullable one keeps a non-null cast in
  * the write's place; the cast's value goes unused.
  */
-let deleteDeadWrite = (
+function deleteDeadWrite(
   body: IrBody,
   inst: i32,
   keep: HashMap<WasmStruct, GrowableArray<boolean>>
-): boolean => {
+): boolean {
   let ref = body.refTable[body.b[inst]];
   if (!(ref is IrRefField)) {
     return false;
@@ -219,14 +221,14 @@ let deleteDeadWrite = (
   body.a[inst] = -1;
   body.b[inst] = -1;
   return true;
-};
+}
 
 /** Drops the operands of `inst`, a `struct_new`, for removed fields. */
-let dropDeadOperands = (
+function dropDeadOperands(
   body: IrBody,
   inst: i32,
   keep: HashMap<WasmStruct, GrowableArray<boolean>>
-): boolean => {
+): boolean {
   let ref = body.refTable[body.b[inst]];
   if (!(ref is IrRefType)) {
     return false;
@@ -257,17 +259,17 @@ let dropDeadOperands = (
   body.extra[newIdx] = newArgc;
   body.a[inst] = newIdx;
   return true;
-};
+}
 
-let keepFlags = (
+function keepFlags(
   keep: HashMap<WasmStruct, GrowableArray<boolean>>,
   s: WasmStruct
-): GrowableArray<boolean> | null => {
+): GrowableArray<boolean> | null {
   if (let (true, flags) = keep.get(s)) {
     return flags;
   }
   return null;
-};
+}
 
 /**
  * Deletes direct calls to functions that do nothing: one block of no-ops
@@ -279,11 +281,11 @@ let keepFlags = (
  * same at `-O2`, and this covers `-O1`. `bodies` is parallel to
  * `wasm.functions`. Returns the number of calls deleted.
  */
-export let removeEmptyCalls = (
+export function removeEmptyCalls(
   wasm: WasmModule,
   bodies: GrowableArray<IrBody>,
   changed: GrowableArray<boolean>
-): i32 => {
+): i32 {
   let indexOf = new HashMap<WasmFunction, i32>();
   for (var i = 0; i < wasm.functions.length; i += 1) {
     indexOf[wasm.functions[i]] = i;
@@ -324,10 +326,10 @@ export let removeEmptyCalls = (
     }
   }
   return removed;
-};
+}
 
 /** Whether `body` is one block holding only no-ops and a `ret` of no value. */
-let doesNothing = (body: IrBody): boolean => {
+function doesNothing(body: IrBody): boolean {
   if (body.blocks.length != 1) {
     return false;
   }
@@ -342,4 +344,4 @@ let doesNothing = (body: IrBody): boolean => {
   }
   let last = insts[insts.length - 1];
   return body.op(last) == IrOp.ret && body.a[last] < 0;
-};
+}

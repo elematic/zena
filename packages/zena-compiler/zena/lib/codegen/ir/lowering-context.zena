@@ -43,6 +43,7 @@ import { walkEnter } from '../../visitor.zena';
 // Imported back across the module cycle: lowering.zena imports this
 // module (docs/design/import-cycles.md).
 import { FunctionLowerer, lowerExpr } from './lowering.zena';
+import { growable } from 'zena:core';
 
 /**
  * Thrown when lowering meets a construct it does not model; the
@@ -215,7 +216,7 @@ export final class LoweringContext {
    * way an inline `throw` would.
    */
   fail(reason: String): never {
-    throw new ZirUnsupported(reason + ' @' + (this.func.name ?? '?'));
+    throw new ZirUnsupported(`${reason} @${this.func.name ?? '?'}`);
   }
 
   /** The storage ValType of an already-lowered value. */
@@ -924,9 +925,7 @@ export final class LoweringContext {
       let recv = this.coerceTo(left, sig.params[0]);
       let arg = this.coerceTo(right, sig.params[1]);
       let funcRef = this.b.addRef(new IrRefFunc(method));
-      let args = new Array<i32>();
-      args.push(recv);
-      args.push(arg);
+      let args = growable<i32>([recv, arg]);
       return this.b.callFunc(funcRef, args, sig.returns[0]);
     }
     // Overridden operators dispatch through the class vtable like any
@@ -964,9 +963,7 @@ export final class LoweringContext {
     }
     let vrecv = this.coerceTo(left, vsig.params[0]);
     let varg = this.coerceTo(right, vsig.params[1]);
-    let vargs = new Array<i32>();
-    vargs.push(vrecv);
-    vargs.push(varg);
+    let vargs = growable<i32>([vrecv, varg]);
     return this.lowerVtableCall(vrecv, classInfo, opMember, vsig,
         vargs, vsig.returns[0]);
   }
@@ -983,7 +980,7 @@ export final class LoweringContext {
     for (let existing in out) {
       seen.add(existing);
     }
-    walkEnter(node, (n: Node): void => {
+    walkEnter(node, (n) => {
       if (n is AssignmentExpression) {
         if (n.left is Identifier) {
           let sym = this.func.model.resolve(n.left);
@@ -1521,19 +1518,18 @@ export final class LoweringContext {
 }
 
 /** An empty argument list (branch with no args, nullary call). */
-export let noValues = (): GrowableArray<i32> => new Array<i32>();
+export function noValues(): GrowableArray<i32> {
+  return new Array<i32>();
+}
 
 /** A one-element argument list (single branch arg or call operand). */
-export let oneValue = (a: i32): GrowableArray<i32> => {
-  let list = new Array<i32>();
-  list.push(a);
+export function oneValue(a: i32): GrowableArray<i32> {
+  let list = growable<i32>([a]);
   return list;
-};
+}
 
 /** A two-element argument list, in push order. */
-export let twoValues = (a: i32, b: i32): GrowableArray<i32> => {
-  let list = new Array<i32>();
-  list.push(a);
-  list.push(b);
+export function twoValues(a: i32, b: i32): GrowableArray<i32> {
+  let list = growable<i32>([a, b]);
   return list;
-};
+}

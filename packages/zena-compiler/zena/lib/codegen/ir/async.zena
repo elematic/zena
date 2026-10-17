@@ -91,6 +91,7 @@ import {
   isScopedType, scopedInner,
 } from '../../types.zena';
 import { FunctionExpression, MethodDefinition, Node } from '../../ast.zena';
+import { growable } from 'zena:core';
 
 let STATE_RUNNING = 1;
 let STATE_DONE = 2;
@@ -134,7 +135,7 @@ var stepOuterBodies = new Map<i32, IrBody>();
 var mainWrapperBodies = new Map<i32, IrBody>();
 
 /** True if this WasmFunction carries a non-generator `async` AST node. */
-export let isAsyncFunction = (func: WasmFunction): boolean => {
+export function isAsyncFunction(func: WasmFunction): boolean {
   let {node} = func;
   if (node == null || isExplosionForwarder(func)) {
     return false;
@@ -144,10 +145,10 @@ export let isAsyncFunction = (func: WasmFunction): boolean => {
     case MethodDefinition {isAsync, isGenerator}: isAsync && !isGenerator
     case _: false
   };
-};
+}
 
 /** True if this WasmFunction carries an `async gen` AST node. */
-export let isAsyncGeneratorFunction = (func: WasmFunction): boolean => {
+export function isAsyncGeneratorFunction(func: WasmFunction): boolean {
   let {node} = func;
   if (node == null || isExplosionForwarder(func)) {
     return false;
@@ -157,14 +158,14 @@ export let isAsyncGeneratorFunction = (func: WasmFunction): boolean => {
     case MethodDefinition {isAsync, isGenerator}: isAsync && isGenerator
     case _: false
   };
-};
+}
 
-let funcDisplayName = (func: WasmFunction): String => {
+function funcDisplayName(func: WasmFunction) {
   if (func.name != null) {
     return func.name as String;
   }
   return 'async function';
-};
+}
 
 /**
  * The `Future<T>` instantiation an async function returns, from its
@@ -172,13 +173,13 @@ let funcDisplayName = (func: WasmFunction): String => {
  * (the memoized instantiation object, so class keys match the ones
  * RTA specialized).
  */
-let futureInstantiationOf = (wasm: WasmModule, func: WasmFunction): ClassType => {
+function futureInstantiationOf(wasm: WasmModule, func: WasmFunction) {
   let t = func.model.getNodeType(func.node as Node);
   if (t == null || !(t is FunctionType)) {
     throw new Error('async function has no checked function type: ' +
         funcDisplayName(func));
   }
-  var ret: Type = t.returnType;
+  var ret = t.returnType;
   // A borrow-holding async function returns Scoped<Future<T>>; the
   // frame it lowers to settles the Future behind the wrapper.
   if (isScopedType(ret)) {
@@ -202,7 +203,7 @@ let futureInstantiationOf = (wasm: WasmModule, func: WasmFunction): ClassType =>
         funcDisplayName(func));
   }
   return ret;
-};
+}
 
 /**
  * The `Task` interface, read off `Future<T>.subscribe`'s
@@ -210,7 +211,7 @@ let futureInstantiationOf = (wasm: WasmModule, func: WasmFunction): ClassType =>
  * name keeps the pass free of a well-known-type registry: every async
  * function already resolves its own `Future<T>`.
  */
-let resumableInterfaceOf = (futureType: ClassType): InterfaceType => {
+function resumableInterfaceOf(futureType: ClassType) {
   if (!futureType.members.has(':subscribe')) {
     throw new Error('zena:async Future has no subscribe member');
   }
@@ -227,52 +228,50 @@ let resumableInterfaceOf = (futureType: ClassType): InterfaceType => {
     throw new Error('subscribe does not take a Task');
   }
   return params[0] as InterfaceType;
-};
+}
 
 /** A method of the given specialized class, or a loud failure. */
-let methodOf = (
+function methodOf(
   wasm: WasmModule,
   cKey: ClassKey,
   name: String,
   who: String
-): WasmFunction => {
+): WasmFunction {
   let key = getClassMethodKey(cKey, name);
   if (let (true, f) = wasm.classMethodMap.get(key)) {
     return f;
   }
   throw new Error('async lowering: ' + (cKey as String) + '.' + name +
       ' was not reached (needed by ' + who + ')');
-};
+}
 
 /** The class key of the scope struct behind `currentScope`'s return
  * type, for looking up CancelScope's symbol-keyed methods. */
-let scopeClassKeyOf = (scopeVt: ValType, who: String): ClassKey => {
+function scopeClassKeyOf(scopeVt: ValType, who: String) {
   let target = refTargetOf(scopeVt);
   if (target == null || !(target is WasmStruct)) {
-    throw new Error('async lowering: scope type is not a class (' +
-        who + ')');
+    throw new Error(`async lowering: scope type is not a class (${who})`);
   }
   let ct = (target as WasmStruct).classType;
   if (ct == null) {
-    throw new Error('async lowering: scope struct has no class type (' +
-        who + ')');
+    throw new Error(`async lowering: scope struct has no class type (${who})`);
   }
   return getClassKey(ct as ClassType);
-};
+}
 
 /** A `zena:async` module function RTA queued, or a loud miss. */
-let stdlibFn = (
+function stdlibFn(
   wasm: WasmModule,
   name: String,
   who: String
-): WasmFunction => {
+) {
   let f = wasm.getStdlibFunc('async', name);
   if (f == null) {
     throw new Error('async lowering: zena:async ' + name +
         ' was not reached (needed by ' + who + ')');
   }
   return f as WasmFunction;
-};
+}
 
 // ---------------------------------------------------------------------------
 // The pass driver.
@@ -283,10 +282,10 @@ let stdlibFn = (
  * an async function needs (frame struct, step() function, Task
  * trampoline and vtable global) must exist before indices lock.
  */
-export let prepareAsyncFunctions = (
+export function prepareAsyncFunctions(
   wasm: WasmModule,
   pass: ReachabilityAnalysis
-): void => {
+): void {
   rampBodies = new Map<i32, AsyncArtifacts>();
   stepBodies = new Map<i32, AsyncArtifacts>();
   stepOuterBodies = new Map<i32, IrBody>();
@@ -310,7 +309,7 @@ export let prepareAsyncFunctions = (
     prepareOne(wasm, pass, func, i - 1);
   }
   prepareAsyncMain(wasm, pass);
-};
+}
 
 /**
  * Level 0 (async.md §4): an async `main` is exported through a wrapper
@@ -323,7 +322,7 @@ export let prepareAsyncFunctions = (
  * ever complete it. `valueOrThrow()` throws there, naming the
  * deadlock.
  */
-let prepareAsyncMain = (wasm: WasmModule, pass: ReachabilityAnalysis): void => {
+function prepareAsyncMain(wasm: WasmModule, pass: ReachabilityAnalysis): void {
   let key = 'main' as ExportKey;
   if (!wasm.exportMap.has(key)) {
     return;
@@ -363,8 +362,7 @@ let prepareAsyncMain = (wasm: WasmModule, pass: ReachabilityAnalysis): void => {
   };
   let fut = b.callFunc(b.addRef(new IrRefFunc(ramp)), params, futVt);
   b.callFunc(b.addRef(new IrRefFunc(drainFn)), new Array<i32>(0), null);
-  let unwrapArgs = new Array<i32>();
-  unwrapArgs.push(fut);
+  let unwrapArgs = growable<i32>([fut]);
   if (valueOrThrowFn.signature.returns.length == 0) {
     b.callFunc(b.addRef(new IrRefFunc(valueOrThrowFn)), unwrapArgs, null);
     b.retVoid();
@@ -380,15 +378,15 @@ let prepareAsyncMain = (wasm: WasmModule, pass: ReachabilityAnalysis): void => {
   wasm.exportMap[key] = wrapper;
 
   buildHostEntry(wasm, pass, ramp, valueOrThrowFn, drainFn, futVtOf(ramp));
-};
+}
 
 /** The future type the ramp returns. */
-let futVtOf = (ramp: WasmFunction): ValType => {
+function futVtOf(ramp: WasmFunction): ValType {
   if (ramp.signature.returns.length != 1) {
     throw new Error('async main: ramp does not return its future');
   }
   return ramp.signature.returns[0];
-};
+}
 
 /**
  * The split entry a host that cannot wait needs (async.md §4).
@@ -409,14 +407,14 @@ let futVtOf = (ramp: WasmFunction): ValType => {
  * `main` is left exactly as it was, so WASI and zena-cli are unaffected
  * and a standalone `wasmtime --invoke main` still runs to completion.
  */
-let buildHostEntry = (
+function buildHostEntry(
   wasm: WasmModule,
   pass: ReachabilityAnalysis,
   ramp: WasmFunction,
   valueOrThrowFn: WasmFunction,
   drainFn: WasmFunction,
   futVt: ValType
-): void => {
+): void {
   // The in-flight future, so the two halves can find each other.
   let slot = new WasmGlobal('$asyncMainFuture', '$asyncMainFuture',
       futVt, true, null, null, ramp.model);
@@ -463,8 +461,7 @@ let buildHostEntry = (
   let weak = rb.emit(IrOp.global_get, weakenToNullable(futVt), -1,
       rb.addRef(slotRef));
   let stored = rb.emit(IrOp.ref_as_non_null, futVt, weak, -1);
-  let rArgs = new Array<i32>();
-  rArgs.push(stored);
+  let rArgs = growable<i32>([stored]);
   if (valueOrThrowFn.signature.returns.length == 0) {
     rb.callFunc(rb.addRef(new IrRefFunc(valueOrThrowFn)), rArgs, null);
     rb.retVoid();
@@ -475,27 +472,27 @@ let buildHostEntry = (
   }
   mainWrapperBodies[resultFn.uid] = rb.finish();
   wasm.asyncMainResultFunc = resultFn;
-};
+}
 
-export let lowerAsyncMainWrapper = (
+export function lowerAsyncMainWrapper(
   wasm: WasmModule,
   func: WasmFunction
-): IrBody => {
+): IrBody {
   if (let (true, body) = mainWrapperBodies.get(func.uid)) {
     return body;
   }
   throw new Error('async main wrapper was not prepared');
-};
+}
 
-export let lowerAsyncRamp = (wasm: WasmModule, func: WasmFunction): IrBody => {
+export function lowerAsyncRamp(wasm: WasmModule, func: WasmFunction): IrBody {
   if (let (true, art) = rampBodies.get(func.uid)) {
     return art.rampBody;
   }
   throw new Error('async function was not prepared (split pass did not run): ' +
       funcDisplayName(func));
-};
+}
 
-export let lowerAsyncStep = (wasm: WasmModule, func: WasmFunction): IrBody => {
+export function lowerAsyncStep(wasm: WasmModule, func: WasmFunction): IrBody {
   if (let (true, art) = stepBodies.get(func.uid)) {
     return art.stepBody;
   }
@@ -503,14 +500,14 @@ export let lowerAsyncStep = (wasm: WasmModule, func: WasmFunction): IrBody => {
     return outer;
   }
   throw new Error('async step() was not prepared: ' + funcDisplayName(func));
-};
+}
 
-let prepareOne = (
+function prepareOne(
   wasm: WasmModule,
   pass: ReachabilityAnalysis,
   func: WasmFunction,
   funcIndex: i32
-): void => {
+): void {
   // Async closures need no special handling, for the same reason
   // generator closures do not: the context struct arrives as param 0
   // of the ramp and is spilled to a frame field like any other param.
@@ -673,8 +670,7 @@ let prepareOne = (
     entryParamIds.push(p);
     spilled.add(p);
   }
-  let dTargets = new Array<i32>();
-  dTargets.push(0);
+  let dTargets = growable<i32>([0]);
   var db = 0;
   while (db < presplit.blocks.length) {
     if (pcOfBlock.has(db)) {
@@ -695,10 +691,11 @@ let prepareOne = (
 
   // The frame struct: $state, the frame's own future, then one
   // nullable-weakened field per spilled value, ascending value id.
-  let fields = new Array<WasmField>();
-  fields.push(new WasmField('$state', new ValTypeI32(), true));
-  fields.push(new WasmField('$future',
-      new ValTypeRefNull(futureStruct), true));
+  let fields = growable<WasmField>([
+    new WasmField('$state', new ValTypeI32(), true),
+    new WasmField('$future',
+        new ValTypeRefNull(futureStruct), true),
+  ]);
   if (sm != null) {
     // The scope the frame bound to at creation; checkpoints test it.
     fields.push(new WasmField('$scope',
@@ -717,14 +714,13 @@ let prepareOne = (
     vid += 1;
   }
   varFieldsOf(presplit, fields);
-  let frameName = name + '$' + i32ToString(funcIndex) + '$AsyncFrame';
+  let frameName = `${name}$${i32ToString(funcIndex)}$AsyncFrame`;
   let frame = new WasmStruct(frameName, fields);
   wasm.types.push(frame);
   pass.markTypeReached(frame);
 
   // step(): (ref null $Frame) -> ().
-  let stepParams = new Array<ValType>();
-  stepParams.push(new ValTypeRefNull(frame));
+  let stepParams = growable<ValType>([new ValTypeRefNull(frame)]);
   let stepSig = wasm.getSignature(stepParams, new Array<ValType>(0));
   let stepFunc = new WasmFunction(stepSig, null, func.model);
   stepFunc.name = frameName + '.step';
@@ -756,15 +752,12 @@ let prepareOne = (
     let scopeWeak = ob.emit(IrOp.struct_get, weakenToNullable(m.scopeVt),
         oFrame, ob.addRef(new IrRefField(frame, '$scope')));
     let scope = ob.emit(IrOp.ref_as_non_null, m.scopeVt, scopeWeak, -1);
-    let swapArgs = new Array<i32>();
-    swapArgs.push(scope);
+    let swapArgs = growable<i32>([scope]);
     let prev = ob.callFunc(ob.addRef(new IrRefFunc(m.installFn)), swapArgs,
         m.scopeVt);
-    let stepArgs = new Array<i32>();
-    stepArgs.push(oFrame);
+    let stepArgs = growable<i32>([oFrame]);
     ob.callFunc(ob.addRef(new IrRefFunc(stepFunc)), stepArgs, null);
-    let restoreArgs = new Array<i32>();
-    restoreArgs.push(prev);
+    let restoreArgs = growable<i32>([prev]);
     let ignored = ob.callFunc(ob.addRef(new IrRefFunc(m.installFn)),
         restoreArgs, m.scopeVt);
     ob.retVoid();
@@ -832,14 +825,14 @@ let prepareOne = (
   func.isAsyncRamp = true;
   rampBodies[func.uid] = artifacts;
   stepBodies[stepFunc.uid] = artifacts;
-};
+}
 
 /**
  * ramp: allocate the frame, spill the arguments, allocate the frame's
  * future, then run the first segment eagerly (§1.1) and hand back the
  * future.
  */
-let buildRamp = (
+function buildRamp(
   func: WasmFunction,
   frame: WasmStruct,
   futureInfo: ClassCodegenInfo,
@@ -849,7 +842,7 @@ let buildRamp = (
   sm: ScopeMachinery | null,
   fatPtr: WasmStruct,
   vtableGlobal: WasmGlobal
-): IrBody => {
+): IrBody {
   let b = new IrBuilder();
   let entry = b.newBlock();
   let params = new Array<i32>();
@@ -864,9 +857,7 @@ let buildRamp = (
   while (i < params.length) {
     let fieldRef = b.addRef(new IrRefField(frame,
         '$v' + i32ToString(entryParamIds[i])));
-    let pair = new Array<i32>();
-    pair.push(inst);
-    pair.push(params[i]);
+    let pair = growable<i32>([inst, params[i]]);
     b.emitVoid(IrOp.struct_set, b.pushExtra(pair), fieldRef);
     i += 1;
   }
@@ -879,9 +870,7 @@ let buildRamp = (
       new Array<i32>(), futVt);
 
   let futField = b.addRef(new IrRefField(frame, '$future'));
-  let futPair = new Array<i32>();
-  futPair.push(inst);
-  futPair.push(fut);
+  let futPair = growable<i32>([inst, fut]);
   b.emitVoid(IrOp.struct_set, b.pushExtra(futPair), futField);
 
   if (sm != null) {
@@ -896,33 +885,28 @@ let buildRamp = (
     let scope = b.callFunc(b.addRef(new IrRefFunc(m.currentScopeFn)),
         new Array<i32>(), m.scopeVt);
     let scopeField = b.addRef(new IrRefField(frame, '$scope'));
-    let scopePair = new Array<i32>();
-    scopePair.push(inst);
-    scopePair.push(scope);
+    let scopePair = growable<i32>([inst, scope]);
     b.emitVoid(IrOp.struct_set, b.pushExtra(scopePair), scopeField);
     let packed = b.emit(IrOp.iface_pack, new ValTypeRef(fatPtr), inst,
         b.addRef(new IrRefGlobal(vtableGlobal)));
-    let bindArgs = new Array<i32>();
-    bindArgs.push(scope);
-    bindArgs.push(packed);
+    let bindArgs = growable<i32>([scope, packed]);
     b.callFunc(b.addRef(new IrRefFunc(m.registerFn)), bindArgs, null);
   }
 
   // Eager start: the body runs synchronously up to the first await.
-  let stepArgs = new Array<i32>();
-  stepArgs.push(inst);
+  let stepArgs = growable<i32>([inst]);
   b.callFunc(b.addRef(new IrRefFunc(stepFunc)), stepArgs, null);
 
   b.ret(fut);
   return b.finish();
-};
+}
 
 // ---------------------------------------------------------------------------
 // The state-machine transform: mutates the presplit body in place into
 // the step() body.
 // ---------------------------------------------------------------------------
 
-let buildStepBody = (
+function buildStepBody(
   body: IrBody,
   cfg: IrCfg,
   frame: WasmStruct,
@@ -949,7 +933,7 @@ let buildStepBody = (
   exceptionTag: WasmTag,
   exceptionPayload: WasmGlobal,
   dispatchRegions: HashMap<i32, GrowableArray<TryRegion>>
-): IrBody => {
+): IrBody {
   let origCount = body.blocks.length;
   let stateRef = addRawRef(body, new IrRefField(frame, '$state'));
   let futureRef = addRawRef(body, new IrRefField(frame, '$future'));
@@ -988,8 +972,7 @@ let buildStepBody = (
   body.blocks[0] = new IrBlock();
 
   // Dispatch-target bookkeeping with entry remapped to its new id.
-  let pcOfBlock = new Map<i32, i32>();
-  pcOfBlock[entryCopyId] = 0;
+  let pcOfBlock: HashMap<i32, i32> = {entryCopyId => 0};
   for (let d in dTargetsIn) {
     if (d == 0) {
       continue;
@@ -1006,7 +989,7 @@ let buildStepBody = (
   // dispatcher loop.
   let frameParam = rawParam(body, 0, new ValTypeRefNull(frame));
 
-  let newBlockId = (): i32 => {
+  let newBlockId = () => {
     body.blocks.push(new IrBlock());
     return body.blocks.length - 1;
   };
@@ -1023,12 +1006,12 @@ let buildStepBody = (
     cancelCatch = newBlockId();
   }
 
-  let emitIn = (blockId: i32, op: IrOp, typeIdx: i32, a: i32, b: i32): i32 => {
+  let emitIn = (blockId: i32, op: IrOp, typeIdx: i32, a: i32, b: i32) => {
     let inst = rawInst(body, op, typeIdx, a, b);
     placeInst(body, blockId, inst);
     return inst;
   };
-  let brTo = (fromBlock: i32, target: i32, args: GrowableArray<i32>): void => {
+  let brTo = (fromBlock: i32, target: i32, args: GrowableArray<i32>) => {
     let idx = body.extra.length;
     body.extra.push(target);
     body.extra.push(args.length);
@@ -1038,7 +1021,7 @@ let buildStepBody = (
     let inst = rawInst(body, IrOp.br, -1, idx, -1);
     placeInst(body, fromBlock, inst);
   };
-  let brIfTo = (fromBlock: i32, cond: i32, thenTarget: i32, elseTarget: i32): void => {
+  let brIfTo = (fromBlock: i32, cond: i32, thenTarget: i32, elseTarget: i32) => {
     let idx = body.extra.length;
     body.extra.push(thenTarget);
     body.extra.push(0);
@@ -1047,25 +1030,25 @@ let buildStepBody = (
     let inst = rawInst(body, IrOp.br_if, -1, cond, idx);
     placeInst(body, fromBlock, inst);
   };
-  let storeState = (blockId: i32, valueInst: i32): void => {
+  let storeState = (blockId: i32, valueInst: i32) => {
     let idx = body.extra.length;
     body.extra.push(frameParam);
     body.extra.push(valueInst);
     let inst = rawInst(body, IrOp.struct_set, -1, idx, stateRef);
     placeInst(body, blockId, inst);
   };
-  let retVoidIn = (blockId: i32): void => {
+  let retVoidIn = (blockId: i32) => {
     let inst = rawInst(body, IrOp.ret, -1, -1, -1);
     placeInst(body, blockId, inst);
   };
   /** frame.$future, re-asserted non-null for the call boundary. */
-  let loadFuture = (blockId: i32): i32 => {
+  let loadFuture = (blockId: i32) => {
     let weak = emitIn(blockId, IrOp.struct_get,
         internVt(body, new ValTypeRefNull(futureStruct)), frameParam, futureRef);
     return emitIn(blockId, IrOp.ref_as_non_null,
         internVt(body, new ValTypeRef(futureStruct)), weak, -1);
   };
-  let callIn = (blockId: i32, target: WasmFunction, args: GrowableArray<i32>): void => {
+  let callIn = (blockId: i32, target: WasmFunction, args: GrowableArray<i32>) => {
     let idx = body.extra.length;
     body.extra.push(args.length);
     for (let v in args) {
@@ -1118,8 +1101,7 @@ let buildStepBody = (
   // through the chain into the trap instead of resuming twice.
   let runningConst = emitIn(enterBlock, IrOp.const_i32, i32Idx, STATE_RUNNING, -1);
   storeState(enterBlock, runningConst);
-  let dispatchArgs = new Array<i32>();
-  dispatchArgs.push(stateVal);
+  let dispatchArgs = growable<i32>([stateVal]);
   brTo(enterBlock, dispatcher, dispatchArgs);
 
   // trap: an impossible state.
@@ -1139,9 +1121,7 @@ let buildStepBody = (
   let doneC = emitIn(catchBlock, IrOp.const_i32, i32Idx, STATE_DONE, -1);
   storeState(catchBlock, doneC);
   let failFut = loadFuture(catchBlock);
-  let failArgs = new Array<i32>();
-  failArgs.push(failFut);
-  failArgs.push(payload);
+  let failArgs = growable<i32>([failFut, payload]);
   callIn(catchBlock, failFn, failArgs);
   retVoidIn(catchBlock);
 
@@ -1154,8 +1134,7 @@ let buildStepBody = (
     let cDoneC = emitIn(cancelCatch, IrOp.const_i32, i32Idx, STATE_DONE, -1);
     storeState(cancelCatch, cDoneC);
     let cancelFut = loadFuture(cancelCatch);
-    let cancelArgs = new Array<i32>();
-    cancelArgs.push(cancelFut);
+    let cancelArgs = growable<i32>([cancelFut]);
     callIn(cancelCatch, (sm as ScopeMachinery).cancelFn, cancelArgs);
     retVoidIn(cancelCatch);
   }
@@ -1169,7 +1148,7 @@ let buildStepBody = (
    * segment gets none: a task in a just-cancelled scope still runs its
    * ramp, because code between suspensions is never interrupted.
    */
-  let checkpointInto = (blockId: i32, out: GrowableArray<i32>): void => {
+  let checkpointInto = (blockId: i32, out: GrowableArray<i32>) => {
     if (sm == null) {
       // Nothing in the program can cancel: suspension points carry no
       // checkpoint at all.
@@ -1223,7 +1202,7 @@ let buildStepBody = (
    * dominator subtree of its body target and a dispatch target inside a
    * try body dominates precisely the part of that body it heads.
    */
-  let reenterRegions = (dispatchTarget: i32): i32 => {
+  let reenterRegions = (dispatchTarget: i32) => {
     let regions =
         if (let (true, rs) = dispatchRegions.get(dispatchTarget)) rs
         else new Array<TryRegion>(0);
@@ -1290,8 +1269,7 @@ let buildStepBody = (
   }
 
   // The body blocks the remaining passes operate on.
-  let bodyBlocks = new Array<i32>();
-  bodyBlocks.push(entryCopyId);
+  let bodyBlocks = growable<i32>([entryCopyId]);
   var obi = 1;
   while (obi < origCount) {
     bodyBlocks.push(obi);
@@ -1375,7 +1353,7 @@ let buildStepBody = (
         }
       }
       if (loadOf.size > 0) {
-        body.rewriteValueOperands(inst, (v: i32) => {
+        body.rewriteValueOperands(inst, (v) => {
           if (let (true, l) = loadOf.get(v)) {
             return l;
           }
@@ -1670,18 +1648,18 @@ let buildStepBody = (
   rewriteVarsToFrame(body, bodyBlocks, frame, frameParam);
 
   return body;
-};
+}
 
 // ---------------------------------------------------------------------------
 // Async generators (`async gen` -> `AsyncIterator<T>`).
 // ---------------------------------------------------------------------------
 
-let prepareOneAsyncGen = (
+function prepareOneAsyncGen(
   wasm: WasmModule,
   pass: ReachabilityAnalysis,
   func: WasmFunction,
   funcIndex: i32
-): void => {
+): void {
   let name = funcDisplayName(func);
   let iterIface = iteratorInstantiationOf(wasm, func);
   pass.typeLowerer.discoverType(iterIface as Type, func.model);
@@ -1851,8 +1829,7 @@ let prepareOneAsyncGen = (
     entryParamIds.push(p);
     spilled.add(p);
   }
-  let dTargets = new Array<i32>();
-  dTargets.push(0);
+  let dTargets = growable<i32>([0]);
   var db = 0;
   while (db < presplit.blocks.length) {
     if (pcOfBlock.has(db)) {
@@ -1872,8 +1849,9 @@ let prepareOneAsyncGen = (
   spillCatchLiveIns(liveIn, dispatchRegions, spilled);
 
   let disposal = wasm.generatorDisposalActive;
-  let fields = new Array<WasmField>();
-  fields.push(new WasmField('$state', new ValTypeI32(), true));
+  let fields = growable<WasmField>([
+    new WasmField('$state', new ValTypeI32(), true),
+  ]);
   if (disposal) {
     fields.push(new WasmField('$disposing', new ValTypeI32(), true));
   }
@@ -1896,7 +1874,7 @@ let prepareOneAsyncGen = (
     vid += 1;
   }
   varFieldsOf(presplit, fields);
-  let frameName = name + '$' + i32ToString(funcIndex) + '$AsyncGenFrame';
+  let frameName = `${name}$${i32ToString(funcIndex)}$AsyncGenFrame`;
   let frame = new WasmStruct(frameName, fields);
   if (disposal) {
     frame.superStruct = wasm.generatorFrameSuper;
@@ -1905,8 +1883,7 @@ let prepareOneAsyncGen = (
   pass.markTypeReached(frame);
 
   // next(): (ref null $Frame) -> AsyncIterator.next's scalarized results.
-  let nextParams = new Array<ValType>();
-  nextParams.push(new ValTypeRefNull(frame));
+  let nextParams = growable<ValType>([new ValTypeRefNull(frame)]);
   let nextSig = wasm.getSignature(nextParams, slotSig.returns);
   let nextFunc = new WasmFunction(nextSig, null, func.model);
   nextFunc.name = frameName + '.next';
@@ -1949,8 +1926,7 @@ let prepareOneAsyncGen = (
   // step(): (ref null $Frame) -> (). The Waiter entry called when an
   // awaited future inside the async generator settles (or its scope is
   // cancelled). Delegates to nextFunc and drops the returned Step.
-  let stepParams = new Array<ValType>();
-  stepParams.push(new ValTypeRefNull(frame));
+  let stepParams = growable<ValType>([new ValTypeRefNull(frame)]);
   let stepSig = wasm.getSignature(stepParams, new Array<ValType>(0));
   let stepFunc = new WasmFunction(stepSig, null, func.model);
   stepFunc.name = frameName + '.step';
@@ -1961,8 +1937,7 @@ let prepareOneAsyncGen = (
   let sEntry = sb.newBlock();
   let sFrame = sb.blockParam(sEntry, new ValTypeRefNull(frame));
   sb.switchTo(sEntry);
-  let sArgs = new Array<i32>();
-  sArgs.push(sFrame);
+  let sArgs = growable<i32>([sFrame]);
   sb.callFuncMulti(sb.addRef(new IrRefFunc(nextFunc)), sArgs, slotSig.returns);
   sb.retVoid();
   stepOuterBodies[stepFunc.uid] = sb.finish();
@@ -2024,9 +1999,9 @@ let prepareOneAsyncGen = (
   func.isAsyncRamp = true;
   rampBodies[func.uid] = artifacts;
   stepBodies[nextFunc.uid] = artifacts;
-};
+}
 
-let buildAsyncGenRamp = (
+function buildAsyncGenRamp(
   func: WasmFunction,
   frame: WasmStruct,
   entryParamIds: GrowableArray<i32>,
@@ -2036,7 +2011,7 @@ let buildAsyncGenRamp = (
   iterVtableGlobal: WasmGlobal,
   taskFatPtr: WasmStruct,
   taskVtableGlobal: WasmGlobal
-): IrBody => {
+): IrBody {
   let b = new IrBuilder();
   let entry = b.newBlock();
   let params = new Array<i32>();
@@ -2050,9 +2025,7 @@ let buildAsyncGenRamp = (
   while (i < params.length) {
     let fieldRef = b.addRef(new IrRefField(frame,
         '$v' + i32ToString(entryParamIds[i])));
-    let pair = new Array<i32>();
-    pair.push(inst);
-    pair.push(params[i]);
+    let pair = growable<i32>([inst, params[i]]);
     b.emitVoid(IrOp.struct_set, b.pushExtra(pair), fieldRef);
     i += 1;
   }
@@ -2062,24 +2035,20 @@ let buildAsyncGenRamp = (
     let scope = b.callFunc(b.addRef(new IrRefFunc(ctor)),
         new Array<i32>(), m.scopeVt);
     let scopeField = b.addRef(new IrRefField(frame, '$scope'));
-    let scopePair = new Array<i32>();
-    scopePair.push(inst);
-    scopePair.push(scope);
+    let scopePair = growable<i32>([inst, scope]);
     b.emitVoid(IrOp.struct_set, b.pushExtra(scopePair), scopeField);
     let packedTask = b.emit(IrOp.iface_pack, new ValTypeRef(taskFatPtr), inst,
         b.addRef(new IrRefGlobal(taskVtableGlobal)));
-    let bindArgs = new Array<i32>();
-    bindArgs.push(scope);
-    bindArgs.push(packedTask);
+    let bindArgs = growable<i32>([scope, packedTask]);
     b.callFunc(b.addRef(new IrRefFunc(m.registerFn)), bindArgs, null);
   }
   let packedIter = b.emit(IrOp.iface_pack, new ValTypeRef(iterFatPtr), inst,
       b.addRef(new IrRefGlobal(iterVtableGlobal)));
   b.ret(packedIter);
   return b.finish();
-};
+}
 
-let buildAsyncGenNextBody = (
+function buildAsyncGenNextBody(
   body: IrBody,
   cfg: IrCfg,
   frame: WasmStruct,
@@ -2111,7 +2080,7 @@ let buildAsyncGenNextBody = (
   exceptionTag: WasmTag,
   exceptionPayload: WasmGlobal,
   dispatchRegions: HashMap<i32, GrowableArray<TryRegion>>
-): IrBody => {
+): IrBody {
   let origCount = body.blocks.length;
   let stateRef = addRawRef(body, new IrRefField(frame, '$state'));
   let futureRef = addRawRef(body, new IrRefField(frame, '$future'));
@@ -2125,7 +2094,7 @@ let buildAsyncGenNextBody = (
   } else {
     -1
   };
-  let cancelTagOpt: WasmTag | null = if (sm != null) {
+  let cancelTagOpt = if (sm != null) {
     (sm as ScopeMachinery).tag
   } else {
     disposalTag
@@ -2163,8 +2132,7 @@ let buildAsyncGenNextBody = (
   }
   body.blocks[0] = new IrBlock();
 
-  let pcOfBlock = new Map<i32, i32>();
-  pcOfBlock[entryCopyId] = 0;
+  let pcOfBlock: HashMap<i32, i32> = {entryCopyId => 0};
   for (let d in dTargetsIn) {
     if (d == 0) {
       continue;
@@ -2180,7 +2148,7 @@ let buildAsyncGenNextBody = (
   // 2. Prologue: install scope, enter capture regions, check state, dispatch.
   let frameParam = rawParam(body, 0, new ValTypeRefNull(frame));
 
-  let newBlockId = (): i32 => {
+  let newBlockId = () => {
     body.blocks.push(new IrBlock());
     return body.blocks.length - 1;
   };
@@ -2198,12 +2166,12 @@ let buildAsyncGenNextBody = (
     cancelCatch = newBlockId();
   }
 
-  let emitIn = (blockId: i32, op: IrOp, typeIdx: i32, a: i32, b: i32): i32 => {
+  let emitIn = (blockId: i32, op: IrOp, typeIdx: i32, a: i32, b: i32) => {
     let inst = rawInst(body, op, typeIdx, a, b);
     placeInst(body, blockId, inst);
     return inst;
   };
-  let brTo = (fromBlock: i32, target: i32, args: GrowableArray<i32>): void => {
+  let brTo = (fromBlock: i32, target: i32, args: GrowableArray<i32>) => {
     let idx = body.extra.length;
     body.extra.push(target);
     body.extra.push(args.length);
@@ -2213,7 +2181,7 @@ let buildAsyncGenNextBody = (
     let inst = rawInst(body, IrOp.br, -1, idx, -1);
     placeInst(body, fromBlock, inst);
   };
-  let brIfTo = (fromBlock: i32, cond: i32, thenTarget: i32, elseTarget: i32): void => {
+  let brIfTo = (fromBlock: i32, cond: i32, thenTarget: i32, elseTarget: i32) => {
     let idx = body.extra.length;
     body.extra.push(thenTarget);
     body.extra.push(0);
@@ -2222,14 +2190,14 @@ let buildAsyncGenNextBody = (
     let inst = rawInst(body, IrOp.br_if, -1, cond, idx);
     placeInst(body, fromBlock, inst);
   };
-  let storeState = (blockId: i32, valueInst: i32): void => {
+  let storeState = (blockId: i32, valueInst: i32) => {
     let idx = body.extra.length;
     body.extra.push(frameParam);
     body.extra.push(valueInst);
     let inst = rawInst(body, IrOp.struct_set, -1, idx, stateRef);
     placeInst(body, blockId, inst);
   };
-  let clearFutureIn = (blockId: i32): void => {
+  let clearFutureIn = (blockId: i32) => {
     let nullFut = emitIn(blockId, IrOp.ref_null,
         internVt(body, new ValTypeRefNull(futureStruct)), -1, -1);
     let idx = body.extra.length;
@@ -2238,13 +2206,13 @@ let buildAsyncGenNextBody = (
     let inst = rawInst(body, IrOp.struct_set, -1, idx, futureRef);
     placeInst(body, blockId, inst);
   };
-  let loadFuture = (blockId: i32): i32 => {
+  let loadFuture = (blockId: i32) => {
     let weak = emitIn(blockId, IrOp.struct_get,
         internVt(body, new ValTypeRefNull(futureStruct)), frameParam, futureRef);
     return emitIn(blockId, IrOp.ref_as_non_null,
         internVt(body, new ValTypeRef(futureStruct)), weak, -1);
   };
-  let callIn = (blockId: i32, target: WasmFunction, args: GrowableArray<i32>): void => {
+  let callIn = (blockId: i32, target: WasmFunction, args: GrowableArray<i32>) => {
     let idx = body.extra.length;
     body.extra.push(args.length);
     for (let v in args) {
@@ -2259,7 +2227,7 @@ let buildAsyncGenNextBody = (
     target: WasmFunction,
     args: GrowableArray<i32>,
     retVt: ValType
-  ): i32 => {
+  ) => {
     let idx = body.extra.length;
     body.extra.push(args.length);
     for (let v in args) {
@@ -2281,18 +2249,16 @@ let buildAsyncGenNextBody = (
         internVt(body, weakenToNullable(m.scopeVt)), frameParam, scopeFieldRef);
     entryScope = emitIn(0, IrOp.ref_as_non_null,
         internVt(body, m.scopeVt), scopeWeak, -1);
-    let swapArgs = new Array<i32>();
-    swapArgs.push(entryScope);
+    let swapArgs = growable<i32>([entryScope]);
     prevScope = callValIn(0, m.installFn, swapArgs, m.scopeVt);
   }
 
-  let restoreScopeIn = (blockId: i32): void => {
+  let restoreScopeIn = (blockId: i32) => {
     if (sm == null) {
       return;
     }
     let m = sm as ScopeMachinery;
-    let restoreArgs = new Array<i32>();
-    restoreArgs.push(prevScope);
+    let restoreArgs = growable<i32>([prevScope]);
     let ignored = callValIn(blockId, m.installFn, restoreArgs, m.scopeVt);
   };
 
@@ -2301,7 +2267,7 @@ let buildAsyncGenNextBody = (
     discVal: i32,
     valInst: i32,
     futInst: i32
-  ): void => {
+  ) => {
     restoreScopeIn(blockId);
     let extraIdx = body.extra.length;
     if (slotSig.returns.length == 3) {
@@ -2318,7 +2284,7 @@ let buildAsyncGenNextBody = (
     placeInst(body, blockId, inst);
   };
 
-  let retDoneIn = (blockId: i32): void => {
+  let retDoneIn = (blockId: i32) => {
     let disc = emitIn(blockId, IrOp.const_i32, i32Idx, 0, -1);
     var dfltVal = -1;
     if (slotSig.returns.length == 3) {
@@ -2375,15 +2341,13 @@ let buildAsyncGenNextBody = (
     let dv = emitIn(enterBlock, IrOp.struct_get, i32Idx, frameParam,
         disposingRef);
     brIfTo(enterBlock, dv, disposeCancelB, doEnterB);
-    let cancelScopeArgs = new Array<i32>();
-    cancelScopeArgs.push(entryScope);
+    let cancelScopeArgs = growable<i32>([entryScope]);
     callIn(disposeCancelB, cancelScopeFn as WasmFunction, cancelScopeArgs);
     brTo(disposeCancelB, doEnterB, new Array<i32>(0));
   }
   let runningConst = emitIn(doEnterB, IrOp.const_i32, i32Idx, STATE_RUNNING, -1);
   storeState(doEnterB, runningConst);
-  let dispatchArgs = new Array<i32>();
-  dispatchArgs.push(stateVal);
+  let dispatchArgs = growable<i32>([stateVal]);
   brTo(doEnterB, dispatcher, dispatchArgs);
 
   // catch: the body threw. If $future is null, rethrow synchronously;
@@ -2415,9 +2379,7 @@ let buildAsyncGenNextBody = (
   let failFut = emitIn(asyncErrB, IrOp.ref_as_non_null,
       internVt(body, new ValTypeRef(futureStruct)), weakErrFut, -1);
   clearFutureIn(asyncErrB);
-  let failArgs = new Array<i32>();
-  failArgs.push(failFut);
-  failArgs.push(payload);
+  let failArgs = growable<i32>([failFut, payload]);
   callIn(asyncErrB, failFn, failArgs);
   retDoneIn(asyncErrB);
 
@@ -2436,8 +2398,7 @@ let buildAsyncGenNextBody = (
         internVt(body, new ValTypeRef(futureStruct)), weakCFut, -1);
     clearFutureIn(asyncCancelB);
     if (sm != null) {
-      let cancelArgs = new Array<i32>();
-      cancelArgs.push(cancelFut);
+      let cancelArgs = growable<i32>([cancelFut]);
       callIn(asyncCancelB, (sm as ScopeMachinery).cancelFn, cancelArgs);
     }
     retDoneIn(asyncCancelB);
@@ -2463,7 +2424,7 @@ let buildAsyncGenNextBody = (
     }
   }
 
-  let checkpointInto = (blockId: i32, out: GrowableArray<i32>): void => {
+  let checkpointInto = (blockId: i32, out: GrowableArray<i32>) => {
     if (sm == null) {
       return;
     }
@@ -2486,7 +2447,7 @@ let buildAsyncGenNextBody = (
     out.push(call);
   };
 
-  let reenterRegions = (dispatchTarget: i32): i32 => {
+  let reenterRegions = (dispatchTarget: i32) => {
     let regions =
         if (let (true, rs) = dispatchRegions.get(dispatchTarget)) rs
         else new Array<TryRegion>(0);
@@ -2546,8 +2507,7 @@ let buildAsyncGenNextBody = (
     ci += 1;
   }
 
-  let bodyBlocks = new Array<i32>();
-  bodyBlocks.push(entryCopyId);
+  let bodyBlocks = growable<i32>([entryCopyId]);
   var obi = 1;
   while (obi < origCount) {
     bodyBlocks.push(obi);
@@ -2629,7 +2589,7 @@ let buildAsyncGenNextBody = (
         }
       }
       if (loadOf.size > 0) {
-        body.rewriteValueOperands(inst, (v: i32) => {
+        body.rewriteValueOperands(inst, (v) => {
           if (let (true, l) = loadOf.get(v)) {
             return l;
           }
@@ -2703,9 +2663,7 @@ let buildAsyncGenNextBody = (
       }
       let someVal = callValIn(asyncYieldB, someCtor, someArgs,
           someCtor.signature.returns[0]);
-      let compArgs = new Array<i32>();
-      compArgs.push(fut);
-      compArgs.push(someVal);
+      let compArgs = growable<i32>([fut, someVal]);
       callIn(asyncYieldB, completeFn, compArgs);
       retDoneIn(asyncYieldB);
     } else if (op == IrOp.await_) {
@@ -2836,9 +2794,7 @@ let buildAsyncGenNextBody = (
       clearFutureIn(asyncRetB);
       let noneVal = callValIn(asyncRetB, noneCtor, new Array<i32>(0),
           noneCtor.signature.returns[0]);
-      let compArgs = new Array<i32>();
-      compArgs.push(fut);
-      compArgs.push(noneVal);
+      let compArgs = growable<i32>([fut, noneVal]);
       callIn(asyncRetB, completeFn, compArgs);
       retDoneIn(asyncRetB);
     }
@@ -2966,5 +2922,5 @@ let buildAsyncGenNextBody = (
   rewriteVarsToFrame(body, bodyBlocks, frame, frameParam);
 
   return body;
-};
+}
 

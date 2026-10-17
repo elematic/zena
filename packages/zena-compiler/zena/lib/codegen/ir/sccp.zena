@@ -53,14 +53,14 @@ let CONST = 1;
 let BOTTOM = 2;
 
 /** Runs the pass; returns the number of rewrites made. */
-export let runSccp = (body: IrBody, scratch: IrScratch): i32 => {
+export function runSccp(body: IrBody, scratch: IrScratch): i32 {
   scratch.enter();
   let result = runSccpOn(body, scratch);
   scratch.exit();
   return result;
-};
+}
 
-let runSccpOn = (body: IrBody, scratch: IrScratch): i32 => {
+function runSccpOn(body: IrBody, scratch: IrScratch): i32 {
   let nb = body.blocks.length;
   let count = body.instCount();
   if (nb == 0) {
@@ -121,7 +121,7 @@ let runSccpOn = (body: IrBody, scratch: IrScratch): i32 => {
 
   // Moves an instruction's lattice value down to (s, v). Values only
   // descend: a constant that meets a different constant varies.
-  let lower = (inst: i32, s: i32, v: IrConst | null): void => {
+  let lower = (inst: i32, s: i32, v: IrConst | null) => {
     let old = state[inst];
     if (old == BOTTOM || s == TOP) {
       return;
@@ -149,7 +149,7 @@ let runSccpOn = (body: IrBody, scratch: IrScratch): i32 => {
     }
   };
 
-  let markEdge = (e: i32): void => {
+  let markEdge = (e: i32) => {
     if (!edgeExec[e]) {
       edgeExec[e] = true;
       flowWork.push(e);
@@ -158,7 +158,7 @@ let runSccpOn = (body: IrBody, scratch: IrScratch): i32 => {
 
   // A block parameter meets the arguments arriving on executed edges;
   // arguments not yet seen are ignored, which is the optimism.
-  let visitParam = (p: i32, b: i32, j: i32): void => {
+  let visitParam = (p: i32, b: i32, j: i32) => {
     var s = TOP;
     var v: IrConst | null = null;
     for (let e in incoming[b]) {
@@ -196,14 +196,14 @@ let runSccpOn = (body: IrBody, scratch: IrScratch): i32 => {
     lower(p, s, v);
   };
 
-  let visitBlockParams = (b: i32): void => {
+  let visitBlockParams = (b: i32) => {
     let params = body.blocks[b].params;
     for (var j = 0; j < params.length; j += 1) {
       visitParam(params[j], b, j);
     }
   };
 
-  let visitTerminator = (inst: i32, b: i32): void => {
+  let visitTerminator = (inst: i32, b: i32) => {
     let first = termFirstEdge[b];
     let n = termEdgeCount[b];
     if (n == 0) {
@@ -248,7 +248,7 @@ let runSccpOn = (body: IrBody, scratch: IrScratch): i32 => {
     }
   };
 
-  let visitInst = (inst: i32): void => {
+  let visitInst = (inst: i32) => {
     let op = body.op(inst);
     if (op == IrOp.nop) {
       return;
@@ -340,7 +340,7 @@ let runSccpOn = (body: IrBody, scratch: IrScratch): i32 => {
     lower(inst, BOTTOM, null);
   };
 
-  let visitBlock = (b: i32): void => {
+  let visitBlock = (b: i32) => {
     visitBlockParams(b);
     for (let inst in body.blocks[b].insts) {
       visitInst(inst);
@@ -465,7 +465,7 @@ let runSccpOn = (body: IrBody, scratch: IrScratch): i32 => {
   }
 
   if (paramsRemoved > 0) {
-    let canon = (v: i32): i32 => {
+    let canon = (v: i32) => {
       var c = v;
       while (c >= 0 && c < count && repl[c] != c) {
         c = repl[c];
@@ -480,10 +480,10 @@ let runSccpOn = (body: IrBody, scratch: IrScratch): i32 => {
     }
   }
   return rewrites;
-};
+}
 
 /** A fresh constant instruction of the given type, owned by `block`. */
-let newConst = (body: IrBody, block: i32, typeId: i32, c: IrConst): i32 => {
+function newConst(body: IrBody, block: i32, typeId: i32, c: IrConst): i32 {
   let id = body.opcode.length;
   body.opcode.push(IrOp.nop as i32);
   body.typeId.push(typeId);
@@ -492,10 +492,10 @@ let newConst = (body: IrBody, block: i32, typeId: i32, c: IrConst): i32 => {
   body.instBlock.push(block);
   foldInstTo(body, id, c);
   return id;
-};
+}
 
 /** Puts `ids` ahead of the block's existing instructions. */
-let prependInsts = (blk: IrBlock, ids: GrowableArray<i32>): void => {
+function prependInsts(blk: IrBlock, ids: GrowableArray<i32>): void {
   let old = new Array<i32>();
   for (let i in blk.insts) {
     old.push(i);
@@ -509,15 +509,15 @@ let prependInsts = (blk: IrBlock, ids: GrowableArray<i32>): void => {
   for (let i in old) {
     blk.insts.push(i);
   }
-};
+}
 
 /**
  * The distinct terminators behind a block's incoming edges, in edge
  * order: a branch both of whose edges reach the block has its
  * argument dropped once.
  */
-let uniqueTerms = (body: IrBody, edges: GrowableArray<i32>,
-    edgeTerm: GrowableArray<i32>): GrowableArray<i32> => {
+function uniqueTerms(body: IrBody, edges: GrowableArray<i32>,
+    edgeTerm: GrowableArray<i32>): GrowableArray<i32> {
   let terms = new Array<i32>();
   for (let e in edges) {
     let t = edgeTerm[e];
@@ -526,12 +526,12 @@ let uniqueTerms = (body: IrBody, edges: GrowableArray<i32>,
     }
   }
   return terms;
-};
+}
 
-let nopOut = (body: IrBody, inst: i32): void => {
+function nopOut(body: IrBody, inst: i32): void {
   body.opcode[inst] = IrOp.nop as i32;
   body.typeId[inst] = -1;
   body.a[inst] = -1;
   body.b[inst] = -1;
   body.instBlock[inst] = -1;
-};
+}

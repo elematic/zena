@@ -14,12 +14,12 @@ export enum SectionId {
   Tag = 13
 }
 
-var _nextWasmTypeUid: i32 = 1;
-export let nextWasmTypeUid = (): i32 => {
+var _nextWasmTypeUid = 1;
+export function nextWasmTypeUid(): i32 {
   let id = _nextWasmTypeUid;
   _nextWasmTypeUid += 1;
   return id;
-};
+}
 
 /**
  * Restarts the uid sequence. `ModuleGenerator.compile` calls this so a
@@ -33,9 +33,9 @@ export let nextWasmTypeUid = (): i32 => {
  * pass (the WasmModule model and its types and functions), so nothing
  * from an earlier pass is alive to collide with the restarted sequence.
  */
-export let resetWasmTypeUids = (): void => {
+export function resetWasmTypeUids(): void {
   _nextWasmTypeUid = 1;
-};
+}
 
 export class WasmType implements Hashable {
   var index: i32 = -1;
@@ -84,7 +84,8 @@ export sealed class ValType {
   case ValTypeI16
 }
 
-export let valTypeToOpcode = (type: ValType): i32 => match (type) {
+export function valTypeToOpcode(type: ValType): i32 {
+  return match (type) {
   case ValTypeVoid: 0x40
   case ValTypeFunc: 0x60
   case ValTypeI32: 0x7F
@@ -104,6 +105,7 @@ export let valTypeToOpcode = (type: ValType): i32 => match (type) {
   case ValTypeI8: 0x78
   case ValTypeI16: 0x77
 };
+}
 
 /**
  * Whether two ref valtypes name the same heap type.
@@ -119,11 +121,11 @@ export let valTypeToOpcode = (type: ValType): i32 => match (type) {
  * "member not found". The index half stays for laid-out types, where
  * it is the emitted meaning of "same type".
  */
-export let sameHeapType = (a: WasmType, b: WasmType): boolean => {
+export function sameHeapType(a: WasmType, b: WasmType): boolean {
   return a == b || (a.index != -1 && a.index == b.index);
-};
+}
 
-export let valTypeEquals = (a: ValType, b: ValType): boolean => {
+export function valTypeEquals(a: ValType, b: ValType): boolean {
   return match (a) {
     case ValTypeRef as ta: match (b) {
       case ValTypeRef as tb: sameHeapType(ta.target, tb.target)
@@ -137,9 +139,10 @@ export let valTypeEquals = (a: ValType, b: ValType): boolean => {
     }
     case _: valTypeToOpcode(a) == valTypeToOpcode(b)
   };
-};
+}
 
-export let isWasmSubtype = (sub: ValType, superType: ValType): boolean => match (sub) {
+export function isWasmSubtype(sub: ValType, superType: ValType): boolean {
+  return match (sub) {
   case ValTypeRef as ta: match (superType) {
     case ValTypeRef as tb: sameHeapType(ta.target, tb.target)
     case ValTypeRefNull as tb: sameHeapType(ta.target, tb.target)
@@ -158,9 +161,10 @@ export let isWasmSubtype = (sub: ValType, superType: ValType): boolean => match 
   case ValTypeNullRef: isNullableAnyRef(superType)
   case _: valTypeToOpcode(sub) == valTypeToOpcode(superType)
 };
+}
 
 /** A reference type in the `any` hierarchy that admits null. */
-export let isNullableAnyRef = (vt: ValType): boolean => {
+export function isNullableAnyRef(vt: ValType): boolean {
   return match (vt) {
     case ValTypeRefNull: true
     case ValTypeAnyRef: true
@@ -169,22 +173,22 @@ export let isNullableAnyRef = (vt: ValType): boolean => {
     case ValTypeNullRef: true
     case _: false
   };
-};
+}
 
 /**
  * The WasmType behind a concrete reference ValType — nullable or
  * not — or null for scalars and abstract heap types.
  */
-export let refTargetOf = (vt: ValType): WasmType | null => {
+export function refTargetOf(vt: ValType): WasmType | null {
   return match (vt) {
     case ValTypeRef as r: r.target
     case ValTypeRefNull as rn: rn.target
     case _: null
   };
-};
+}
 
 /** Any reference-typed ValType, concrete or abstract heap type. */
-export let isRefValType = (vt: ValType): boolean => {
+export function isRefValType(vt: ValType): boolean {
   return match (vt) {
     case ValTypeRef: true
     case ValTypeRefNull: true
@@ -196,7 +200,7 @@ export let isRefValType = (vt: ValType): boolean => {
     case ValTypeNullRef: true
     case _: false
   };
-};
+}
 
 export enum HeapType {
   func = 0x70,
@@ -211,9 +215,9 @@ export enum HeapType {
   nofunc = 0x73,
 }
 
-export let heapTypeToSigned = (type: HeapType): i32 => {
+export function heapTypeToSigned(type: HeapType): i32 {
   return (type as i32) - 128;
-};
+}
 
 export enum GcOpcode {
   struct_new = 0x00,
@@ -425,13 +429,13 @@ export enum WideArithOpcode {
 }
 
 /** The text-format mnemonic for a wide-arithmetic opcode. */
-export let wideArithName = (opcode: i32): String => {
+export function wideArithName(opcode: i32): String {
   if (opcode == WideArithOpcode.i64_add128 as i32) { return 'i64.add128'; }
   if (opcode == WideArithOpcode.i64_sub128 as i32) { return 'i64.sub128'; }
   if (opcode == WideArithOpcode.i64_mul_wide_s as i32) { return 'i64.mul_wide_s'; }
   if (opcode == WideArithOpcode.i64_mul_wide_u as i32) { return 'i64.mul_wide_u'; }
   throw new Error('not a wide-arithmetic opcode: ' + i32ToString(opcode));
-};
+}
 
 // TODO: Return typed references instead of anyref for references. To do this
 // we need to change ValType from a simple enum to a sealed class with

@@ -83,6 +83,7 @@ import {
   lowerShieldedRegion, lowerUsingRegion, lowerValueNode, lowerWhile,
 } from './control-flow.zena';
 import { WellKnown, isWellKnown } from '../../well-known.zena';
+import { growable } from 'zena:core';
 
 // ZirUnsupported now lives in lowering-context.zena (imported above):
 // split modules throw it too, and importing it from lowering would
@@ -118,7 +119,7 @@ type CtorLevel = {values: HashMap<String, i32>, superArgs: GrowableArray<i32>};
  * error, and `o?.f` reaches the read only on the non-null side of the
  * chain's guard.
  */
-let recordUnionMembers = (ut: UnionType): GrowableArray<RecordType> | null => {
+function recordUnionMembers(ut: UnionType): GrowableArray<RecordType> | null {
   let members = new Array<RecordType>();
   for (let memberType in ut.types) {
     if (memberType is NullType) { continue; }
@@ -128,12 +129,12 @@ let recordUnionMembers = (ut: UnionType): GrowableArray<RecordType> | null => {
   }
   if (members.length < 2) { return null; }
   return members;
-};
+}
 
 /** Bail-reason tag for expression kinds without a dispatch arm. */
 
 
-let kindTagOf = (e: Expression): String => {
+function kindTagOf(e: Expression) {
   return match (e) {
     case IsExpression: ' is'
     case RangeExpression: ' range'
@@ -147,7 +148,7 @@ let kindTagOf = (e: Expression): String => {
     case TryExpression: ' try'
     case _: ' other'
   };
-};
+}
 
 
 /**
@@ -163,7 +164,7 @@ let kindTagOf = (e: Expression): String => {
  * inlined at call sites) so the declared function keeps one uniform
  * callable identity — vtable slots and function values reference it.
  */
-let lowerImportWrapper = (func: WasmFunction): IrBody => {
+function lowerImportWrapper(func: WasmFunction) {
   let target = func.importWrapperTarget as WasmFunction;
   let b = new IrBuilder();
   let entry = b.newBlock();
@@ -196,7 +197,7 @@ let lowerImportWrapper = (func: WasmFunction): IrBody => {
   }
   b.ret(result);
   return b.finish();
-};
+}
 
 /**
  * A function-adaptation wrapper's body: its context (param 0) is the
@@ -205,7 +206,7 @@ let lowerImportWrapper = (func: WasmFunction): IrBody => {
  * type), and tail-call through the source pair's func field —
  * streaming's generateFunctionAdaptationBody.
  */
-let lowerFunctionAdaptation = (wasm: WasmModule, func: WasmFunction): IrBody => {
+function lowerFunctionAdaptation(wasm: WasmModule, func: WasmFunction) {
   let actualFt = func.functionAdaptationSource as FunctionType;
   let actualStruct = func.functionAdaptationResolvedSourceStruct ??
       getClosureStruct(wasm, actualFt);
@@ -239,8 +240,7 @@ let lowerFunctionAdaptation = (wasm: WasmModule, func: WasmFunction): IrBody => 
   let pair = b.emit(IrOp.ref_cast, pairVt, params[0], b.internType(pairVt));
   let ctxVal = b.emit(IrOp.struct_get, actualStruct.fields[1].type, pair,
       b.addRef(new IrRefField(actualStruct, 'ctx')));
-  let args = new Array<i32>();
-  args.push(ctxVal);
+  let args = growable<i32>([ctxVal]);
   // The wrapper's own params cover the target arity; the source
   // consumes a prefix of them.
   if (actualSig.params.length > func.signature.params.length) {
@@ -268,7 +268,7 @@ let lowerFunctionAdaptation = (wasm: WasmModule, func: WasmFunction): IrBody => 
       'function-adaptation wrapper');
   b.retCallRef(funcVal, args);
   return b.finish();
-};
+}
 
 /**
  * Synthesized or adapted machinery lowering does not model: wrappers,
@@ -277,7 +277,7 @@ let lowerFunctionAdaptation = (wasm: WasmModule, func: WasmFunction): IrBody => 
  * several of these tests but intentionally differs — imports and class
  * methods are callable, just not lowerable.
  */
-let usesSynthesizedMachinery = (func: WasmFunction): boolean => {
+function usesSynthesizedMachinery(func: WasmFunction) {
   return func.importWrapperTarget != null ||
       func.interfaceTrampolineTarget != null || func.isFunctionAdaptation ||
       func.closureForwarder != null ||
@@ -287,7 +287,7 @@ let usesSynthesizedMachinery = (func: WasmFunction): boolean => {
       func.valueHashType != null ||
       func.typeParameters != null || func.typeArguments != null ||
       func.intrinsic != null;
-};
+}
 
 /** Injected-default bookkeeping for one call site (see
  * #defaultArgInfo): where the defaults start, the callee's parameter
@@ -320,11 +320,11 @@ final class MemberTarget {
  * at the construct that failed to lower; any other exception
  * propagates untouched.
  */
-export let lowerFunction = (wasm: WasmModule, func: WasmFunction): IrBody => {
+export function lowerFunction(wasm: WasmModule, func: WasmFunction): IrBody {
   // (The catch arm yields null rather than rethrowing directly — a
   // catch whose every arm throws miscompiles under the bootstrap.)
   var failMsg: String | null = null;
-  let result: IrBody | null = try {
+  let result = try {
     lowerFunctionOrThrow(wasm, func)
   } catch (e) {
     if (e is ZirUnsupported) {
@@ -342,10 +342,10 @@ export let lowerFunction = (wasm: WasmModule, func: WasmFunction): IrBody => {
     throw new ZirUnsupported(failMsg);
   }
   return result as IrBody;
-};
+}
 
 /** Entry block with one param per signature slot; leaves it current. */
-let synthEntryParams = (b: IrBuilder, func: WasmFunction): GrowableArray<i32> => {
+function synthEntryParams(b: IrBuilder, func: WasmFunction) {
   let entry = b.newBlock();
   let params = new Array<i32>();
   for (let vt in func.signature.params) {
@@ -353,21 +353,21 @@ let synthEntryParams = (b: IrBuilder, func: WasmFunction): GrowableArray<i32> =>
   }
   b.switchTo(entry);
   return params;
-};
+}
 
 /**
  * Casts a value to a concrete-ref parameter type. Mirrors streaming's
  * trampoline casts, which are NON-null (emitRefCast) even when the
  * target slot is declared nullable. Non-concrete targets pass through.
  */
-let castToConcreteRef = (b: IrBuilder, value: i32, targetVt: ValType): i32 => {
+function castToConcreteRef(b: IrBuilder, value: i32, targetVt: ValType) {
   let target = refTargetOf(targetVt);
   if (target == null) {
     return value;
   }
   let vt = new ValTypeRef(target) as ValType;
   return b.emit(IrOp.ref_cast, vt, value, b.internType(vt));
-};
+}
 
 /**
  * Interface trampoline: cast the erased receiver to the target's
@@ -376,7 +376,7 @@ let castToConcreteRef = (b: IrBuilder, value: i32, targetVt: ValType): i32 => {
  * The tail call is what keeps the adapter out of the stack; see
  * requireForwardableResults.
  */
-let synthesizeInterfaceTrampoline = (wasm: WasmModule, func: WasmFunction): IrBody => {
+function synthesizeInterfaceTrampoline(wasm: WasmModule, func: WasmFunction) {
   let target = func.interfaceTrampolineTarget as WasmFunction;
   let b = new IrBuilder();
   let params = synthEntryParams(b, func);
@@ -413,10 +413,7 @@ let synthesizeInterfaceTrampoline = (wasm: WasmModule, func: WasmFunction): IrBo
         if (!isWasmSubtype(func.signature.params[2], arrType.elementType)) {
           elem = castToConcreteRef(b, elem, arrType.elementType);
         }
-        let triple = new Array<i32>();
-        triple.push(recv);
-        triple.push(params[1]);
-        triple.push(elem);
+        let triple = growable<i32>([recv, params[1], elem]);
         b.emitVoid(IrOp.array_set, b.pushExtra(triple), -1);
         b.retVoid();
         return b.finish();
@@ -434,8 +431,9 @@ let synthesizeInterfaceTrampoline = (wasm: WasmModule, func: WasmFunction): IrBo
     throw new ZirUnsupported('trampoline shape');
   }
   let wraps = func.trampolineParamWraps;
-  let args = new Array<i32>();
-  args.push(castToConcreteRef(b, params[0], target.signature.params[0]));
+  let args = growable<i32>([
+    castToConcreteRef(b, params[0], target.signature.params[0]),
+  ]);
   for (var i = 1; i < params.length; i += 1) {
     var v = params[i];
     var wrapped = false;
@@ -450,9 +448,7 @@ let synthesizeInterfaceTrampoline = (wasm: WasmModule, func: WasmFunction): IrBo
           let implStruct = w.implClosureStruct;
           let funcVal = b.emit(IrOp.ref_func, implStruct.fields[0].type,
               -1, b.addRef(new IrRefFunc(w.forwarder)));
-          let pairArgs = new Array<i32>();
-          pairArgs.push(funcVal);
-          pairArgs.push(v);
+          let pairArgs = growable<i32>([funcVal, v]);
           v = b.emit(IrOp.struct_new,
               new ValTypeRef(implStruct) as ValType,
               b.pushArgList(pairArgs),
@@ -495,7 +491,7 @@ let synthesizeInterfaceTrampoline = (wasm: WasmModule, func: WasmFunction): IrBo
       b.addRef(new IrRefGlobal(packGlobal)));
   b.ret(packed);
   return b.finish();
-};
+}
 
 /**
  * A closure forwarder's body (generic interface dispatch): the ctx
@@ -505,7 +501,7 @@ let synthesizeInterfaceTrampoline = (wasm: WasmModule, func: WasmFunction): IrBo
  * pair's func field. The structural twin of lowerFunctionAdaptation,
  * plus the packs.
  */
-let lowerClosureForwarder = (wasm: WasmModule, func: WasmFunction): IrBody => {
+function lowerClosureForwarder(wasm: WasmModule, func: WasmFunction) {
   let spec = func.closureForwarder as ClosureForwarderSpec;
   let src = spec.sourceStruct;
   var inTypes = false;
@@ -536,8 +532,7 @@ let lowerClosureForwarder = (wasm: WasmModule, func: WasmFunction): IrBody => {
   let pair = b.emit(IrOp.ref_cast, pairVt, params[0], b.internType(pairVt));
   let ctxVal = b.emit(IrOp.struct_get, src.fields[1].type, pair,
       b.addRef(new IrRefField(src, 'ctx')));
-  let args = new Array<i32>();
-  args.push(ctxVal);
+  let args = growable<i32>([ctxVal]);
   for (var i = 1; i < srcSig.params.length; i += 1) {
     var v = params[i];
     var packedArg = false;
@@ -580,7 +575,7 @@ let lowerClosureForwarder = (wasm: WasmModule, func: WasmFunction): IrBody => {
   let result = b.callRef(funcVal, args, srcSig.returns[0]);
   b.ret(result);
   return b.finish();
-};
+}
 
 /**
  * Synthesized default accessors: cast the erased receiver to the
@@ -590,7 +585,7 @@ let lowerClosureForwarder = (wasm: WasmModule, func: WasmFunction): IrBody => {
  * for a member no reachable class stores physically — it traps.
  */
 /** The zero value of a wasm value type (absent optional-field slots). */
-let zeroValueOf = (b: IrBuilder, vt: ValType): i32 => {
+function zeroValueOf(b: IrBuilder, vt: ValType) {
   return match (vt) {
     case ValTypeI32: b.constI32(0, vt)
     case ValTypeI64: b.constI64(0, vt)
@@ -598,9 +593,9 @@ let zeroValueOf = (b: IrBuilder, vt: ValType): i32 => {
     case ValTypeF64: b.constF64(0.0, vt)
     case _: b.emit(IrOp.ref_null, vt, -1, -1)
   };
-};
+}
 
-let synthesizeAccessor = (func: WasmFunction, isGetter: boolean): IrBody => {
+function synthesizeAccessor(func: WasmFunction, isGetter: boolean) {
   let st = if (isGetter) func.getterStruct as WasmStruct
       else func.setterStruct as WasmStruct;
   let idx = if (isGetter) func.getterFieldIndex else func.setterFieldIndex;
@@ -693,7 +688,7 @@ let synthesizeAccessor = (func: WasmFunction, isGetter: boolean): IrBody => {
   }
   b.ret(read);
   return b.finish();
-};
+}
 
 /**
  * A forwarding adapter hands its target's results straight back, so it
@@ -719,16 +714,16 @@ let synthesizeAccessor = (func: WasmFunction, isGetter: boolean): IrBody => {
  * the vtable slot's result and cast at the call site, and this message
  * is what asks for it.
  */
-let requireForwardableResults = (func: WasmFunction, target: WasmFunction,
-    what: String): void => {
+function requireForwardableResults(func: WasmFunction, target: WasmFunction,
+    what: String): void {
   requireForwardableResultTypes(func.signature.returns,
       target.signature.returns, what);
-};
+}
 
 /** requireForwardableResults over the result lists themselves, for an
  * adapter whose target is a signature rather than a function. */
-let requireForwardableResultTypes = (mine: GrowableArray<ValType>,
-    theirs: GrowableArray<ValType>, what: String): void => {
+function requireForwardableResultTypes(mine: GrowableArray<ValType>,
+    theirs: GrowableArray<ValType>, what: String): void {
   if (mine.length != theirs.length) {
     throw new ZirUnsupported(what + ' result shape');
   }
@@ -740,7 +735,7 @@ let requireForwardableResultTypes = (mine: GrowableArray<ValType>,
           'through it would grow the stack');
     }
   }
-};
+}
 
 /** Closure wrapper: forward params[1..] (dropping the ctx) to the target. */
 /**
@@ -748,7 +743,7 @@ let requireForwardableResultTypes = (mine: GrowableArray<ValType>,
  * drops the (unused) context param and forwards the rest to the
  * target, streaming's generateClosureTrampolineBody.
  */
-let synthesizeClosureTrampoline = (func: WasmFunction): IrBody => {
+function synthesizeClosureTrampoline(func: WasmFunction) {
   let target = func.closureTrampolineTarget;
   if (target == null) {
     throw new ZirUnsupported('closure trampoline without target');
@@ -769,9 +764,9 @@ let synthesizeClosureTrampoline = (func: WasmFunction): IrBody => {
   requireForwardableResults(func, target, 'closure trampoline');
   b.retCall(funcRef, args);
   return b.finish();
-};
+}
 
-let synthesizeClosureWrapper = (func: WasmFunction): IrBody => {
+function synthesizeClosureWrapper(func: WasmFunction) {
   let target = func.closureWrapperTarget;
   if (target == null) {
     throw new ZirUnsupported('closure wrapper without target');
@@ -789,10 +784,10 @@ let synthesizeClosureWrapper = (func: WasmFunction): IrBody => {
   requireForwardableResults(func, target, 'closure wrapper');
   b.retCall(funcRef, args);
   return b.finish();
-};
+}
 
 /** The one intrinsic with a body streaming synthesizes: array.len. */
-let synthesizeIntrinsic = (func: WasmFunction): IrBody => {
+function synthesizeIntrinsic(func: WasmFunction) {
   if ((func.intrinsic as String) == 'array.len' &&
       func.signature.params.length == 1 && func.signature.returns.length == 1) {
     let b = new IrBuilder();
@@ -808,16 +803,14 @@ let synthesizeIntrinsic = (func: WasmFunction): IrBody => {
   synthEntryParams(b, func);
   b.unreachable();
   return b.finish();
-};
+}
 
-let twoValuesOf = (a: i32, bVal: i32): GrowableArray<i32> => {
-  let result = new Array<i32>();
-  result.push(a);
-  result.push(bVal);
+function twoValuesOf(a: i32, bVal: i32): GrowableArray<i32> {
+  let result = growable<i32>([a, bVal]);
   return result;
-};
+}
 
-let lowerFunctionOrThrow = (wasm: WasmModule, func: WasmFunction): IrBody => {
+function lowerFunctionOrThrow(wasm: WasmModule, func: WasmFunction): IrBody {
   // Metadata-only functions first: no AST, but their bodies are tiny
   // fixed shapes ZIR synthesizes directly (they are half of all
   // fallbacks on the compiler itself). The node==null gate matters:
@@ -990,17 +983,14 @@ let lowerFunctionOrThrow = (wasm: WasmModule, func: WasmFunction): IrBody => {
     isAsyncFn = false;
   }
   if (isGenFn) {
-    var genName = 'anonymous';
-    if (func.name != null) { genName = func.name as String; }
+    let genName = if (func.name != null) func.name as String else 'anonymous';
     throw new Error(
-      "generator was not prepared by the split pass [in " + genName + "]");
+      `generator was not prepared by the split pass [in ${genName}]`);
   }
   if (isAsyncFn) {
-    var asyncName = 'anonymous';
-    if (func.name != null) { asyncName = func.name as String; }
+    let asyncName = if (func.name != null) func.name as String else 'anonymous';
     throw new Error(
-      "async function was not prepared by the split pass [in " +
-      asyncName + "]");
+      `async function was not prepared by the split pass [in ${asyncName}]`);
   }
   // No adaptations, trampolines, synthesized accessors, imports, or
   // generics. Plain top-level functions, written-out method bodies,
@@ -1047,10 +1037,11 @@ let lowerFunctionOrThrow = (wasm: WasmModule, func: WasmFunction): IrBody => {
   }
   if (func.node is MethodDefinition) {
     let md = func.node as MethodDefinition;
-    var methName = "";
-    if (md.name is Identifier) {
-      methName = (md.name as Identifier).name;
-    }
+    let methName = if (md.name is Identifier) {
+      (md.name as Identifier).name
+    } else {
+      ""
+    };
     let isCtor = md.isConstructor || methName == "<constructor>";
     // Declares/abstracts have no body; non-constructor methods with
     // initializer machinery would be malformed; decorated constructors
@@ -1077,7 +1068,7 @@ let lowerFunctionOrThrow = (wasm: WasmModule, func: WasmFunction): IrBody => {
   }
   let lowerer = new FunctionLowerer(wasm, func);
   return lowerer.lower();
-};
+}
 
 export final class FunctionLowerer {
   wasm: WasmModule;
@@ -1205,10 +1196,11 @@ export final class FunctionLowerer {
       if (!node.isStatic) {
         paramOffset = 1;
       }
-      var methName = "";
-      if (node.name is Identifier) {
-        methName = (node.name as Identifier).name;
-      }
+      let methName = if (node.name is Identifier) {
+        (node.name as Identifier).name
+      } else {
+        ""
+      };
       if (node.isConstructor || methName == "<constructor>") {
         if (this.func.classType == null) {
           // An interface constructor: a factory with no receiver and no
@@ -1565,16 +1557,14 @@ export final class FunctionLowerer {
           this.#lowerStatementList(withReturn, 0);
         }
         tailExpr = null;
+      } else if (dropFieldNames.length > 0) {
+        lowerFieldDropRegions(this.#cx(), dropFieldNames, dropFieldTypes,
+            0, dropParamSyms, stmts, 0, bodyCount);
+      } else if (dropParamSyms.length > 0) {
+        lowerParamDropRegions(this.#cx(), dropParamSyms, 0,
+            stmts, 0, bodyCount);
       } else {
-        if (dropFieldNames.length > 0) {
-          lowerFieldDropRegions(this.#cx(), dropFieldNames, dropFieldTypes,
-              0, dropParamSyms, stmts, 0, bodyCount);
-        } else if (dropParamSyms.length > 0) {
-          lowerParamDropRegions(this.#cx(), dropParamSyms, 0,
-              stmts, 0, bodyCount);
-        } else {
-          this.#lowerStatementList(stmts, 0, bodyCount);
-        }
+        this.#lowerStatementList(stmts, 0, bodyCount);
       }
       if (tailExpr != null && this.#cx().reachable &&
           this.#explodedResult() != null) {
@@ -1768,7 +1758,7 @@ export final class FunctionLowerer {
       let referrer = moduleModel.getParent(parentNode);
       if (referrer is Module) {
         canonicalPath = normalizePath(
-            dirName(referrer.path) + '/' + canonicalPath);
+            `${dirName(referrer.path)}/${canonicalPath}`);
       }
     }
     let prog = this.wasm.program;
@@ -1893,7 +1883,7 @@ export final class FunctionLowerer {
             if (member.isStatic && member.value != null &&
                 !this.#isLiteralInit(member.value as Expression)) {
               if (member.name is Identifier) {
-                let expected = stmt.name.name + '_' + (member.name as Identifier).name;
+                let expected = `${stmt.name.name}_${(member.name as Identifier).name}`;
                 for (let g in this.wasm.globals) {
                   if (g.name == expected) {
                     this.#lowerGlobalInit(g);
@@ -2007,7 +1997,7 @@ export final class FunctionLowerer {
       this.#mixinFieldValues(values, ct, structType, cd, false);
     }
     let superArgs = new Array<i32>();
-    var superWithCtor: ClassType | null = ct.superType;
+    var superWithCtor = ct.superType;
     while (superWithCtor != null && superWithCtor.isMixinIntermediate) {
       superWithCtor = superWithCtor.superType;
     }
@@ -2099,7 +2089,7 @@ export final class FunctionLowerer {
         if (name == storageName && member.value != null) { continue; }
         if (fd.isShared) {
           // One copy per class: the first application initializes it.
-          if (values.has(sharedScope + '::' + name)) { continue; }
+          if (values.has(`${sharedScope}::${name}`)) { continue; }
           this.#computeCtorField(values, ct, structType, name,
               fd.value as Expression, mapSetterNames, sharedScope);
           continue;
@@ -2112,7 +2102,7 @@ export final class FunctionLowerer {
 
   #synthCaseLevel(ct: ClassType, structType: WasmStruct,
       cd: ClassDeclaration | null, params: GrowableArray<i32>): CtorLevel {
-    var superWithCtor: ClassType | null = ct.superType;
+    var superWithCtor = ct.superType;
     while (superWithCtor != null && superWithCtor.isMixinIntermediate) {
       superWithCtor = superWithCtor.superType;
     }
@@ -2152,10 +2142,11 @@ export final class FunctionLowerer {
             this.#bail('case constructor arity');
           }
           let pName = parameterNames[pi];
-          var lookupName = pName;
-          if (pName.length > 0 && pName.sliceBytes(0, 1) == "#") {
-            lookupName = getClassPrivateFieldKey(getClassKey(ct), pName);
-          }
+          var lookupName = if (pName.length > 0 && pName.sliceBytes(0, 1) == "#") {
+            getClassPrivateFieldKey(getClassKey(ct), pName)
+          } else {
+            pName
+          };
           let fieldIdx = structType.fieldIndexByName(lookupName);
           if (fieldIdx >= 0) {
             let fieldVt = structType.fields[fieldIdx].type;
@@ -2277,17 +2268,18 @@ export final class FunctionLowerer {
     let {superInitializer} = md;
     if (superInitializer != null) {
       let si = superInitializer as SuperInitializer;
-      var superWithCtor: ClassType | null = ct.superType;
+      var superWithCtor = ct.superType;
       while (superWithCtor != null && superWithCtor.isMixinIntermediate) {
         superWithCtor = superWithCtor.superType;
       }
       if (superWithCtor == null) {
         this.#bail('super without superclass');
       }
-      var superCtorMeth = '<constructor>';
-      if (si.constructorName != null) {
-        superCtorMeth = '<constructor>.' + getNodeMemberName(this.func.model, si.constructorName as Node);
-      }
+      let superCtorMeth = if (si.constructorName != null) {
+        '<constructor>.' + getNodeMemberName(this.func.model, si.constructorName as Node)
+      } else {
+        '<constructor>'
+      };
       let superKey = getClassMethodKey(
           getClassKey(superWithCtor), superCtorMeth);
       let superCtor = if (let (true, sc) = this.wasm.classMethodMap.get(superKey)) sc else null;
@@ -2364,7 +2356,7 @@ export final class FunctionLowerer {
       // Mixin privates are lexical to the MIXIN: their struct fields
       // carry the mixin's scope key, never the host class's.
       lookupName = if (mixinScope != '') {
-        mixinScope + '::' + actualName
+        `${mixinScope}::${actualName}`
       } else {
         getClassPrivateFieldKey(getClassKey(ct), actualName)
       };
@@ -2414,14 +2406,15 @@ export final class FunctionLowerer {
         actualName = mapped;
       }
     }
-    var lookupName = actualName;
-    if (actualName.length > 0 && actualName.sliceBytes(0, 1) == "#") {
-      lookupName = if (this.#ctorLevelScope != '') {
-        this.#ctorLevelScope + '::' + actualName
+    let lookupName = if (actualName.length > 0 && actualName.sliceBytes(0, 1) == "#") {
+      if (this.#ctorLevelScope != '') {
+        `${this.#ctorLevelScope}::${actualName}`
       } else {
         getClassPrivateFieldKey(getClassKey(ct), actualName)
-      };
-    }
+      }
+    } else {
+      actualName
+    };
     if (let (true, v) = values.get(lookupName)) {
       return v;
     }
@@ -2478,7 +2471,7 @@ export final class FunctionLowerer {
   #ctorOwnFieldValues(structType: WasmStruct,
       values: HashMap<String, i32>): GrowableArray<i32> {
     var ownStart = 1;
-    var s: WasmStruct | null = structType.superStruct;
+    var s = structType.superStruct;
     while (s != null) {
       let curr = s;
       if (curr.classType != null && (curr.classType as ClassType).isMixinIntermediate) {
@@ -2540,7 +2533,7 @@ export final class FunctionLowerer {
     let bodyArgs = new Array<GrowableArray<i32>>();
     var args = level.superArgs;
     var anc = ct.superType;
-    var currentCtorNode: Node | null = this.func.node;
+    var currentCtorNode = this.func.node;
     while (anc != null) {
       let ancCt = anc;
       if (ancCt.isMixinIntermediate) {
@@ -2568,7 +2561,7 @@ export final class FunctionLowerer {
       }
       let ancStruct = initFn.structType as WasmStruct;
       var ancOwnStart = 1;
-      var s: WasmStruct | null = ancStruct.superStruct;
+      var s = ancStruct.superStruct;
       while (s != null) {
         let curr = s;
         if (curr.classType != null && (curr.classType as ClassType).isMixinIntermediate) {
@@ -2581,7 +2574,7 @@ export final class FunctionLowerer {
       let ownCount = ancStruct.fields.length - ancOwnStart;
       let rets = initFn.signature.returns;
       let initCoreArgs = this.#explodedCallArgs(initFn, new Array<i32>(), args);
-      var projs: GrowableArray<i32> = new Array<i32>();
+      var projs = new Array<i32>();
       if (initCoreArgs != null) {
         let spec = initFn.explosion as ExplosionSpec;
         let tail = spec.tail;
@@ -2613,8 +2606,7 @@ export final class FunctionLowerer {
       currentCtorNode = if (initFn != null) initFn.node else null;
       anc = ancCt.superType;
     }
-    let structArgs = new Array<i32>();
-    structArgs.push(this.#ctorVtableValue(structType));
+    let structArgs = growable<i32>([this.#ctorVtableValue(structType)]);
     var li = levelValues.length - 1;
     while (li >= 0) {
       for (let v in levelValues[li]) {
@@ -2635,15 +2627,13 @@ export final class FunctionLowerer {
     while (bi >= 0) {
       let bf = bodyFns[bi];
       if (bf != null) {
-        let receiver = new Array<i32>();
-        receiver.push(inst);
+        let receiver = growable<i32>([inst]);
         let coreArgs = this.#explodedCallArgs(bf, receiver, bodyArgs[bi]);
         if (coreArgs != null) {
           this.b.callFunc(this.b.addRef(new IrRefFunc(
               (bf.explosion as ExplosionSpec).core)), coreArgs, null);
         } else {
-          let callArgs = new Array<i32>();
-          callArgs.push(inst);
+          let callArgs = growable<i32>([inst]);
           for (let a in bodyArgs[bi]) {
             callArgs.push(a);
           }
@@ -2880,12 +2870,11 @@ export final class FunctionLowerer {
         }
         let expected = sig.returns[w];
         w += 1;
-        var v = -1;
-        if (el is Identifier && el.name == '_') {
-          v = this.#defaultValueOf(expected);
+        let v = if (el is Identifier && el.name == '_') {
+          this.#defaultValueOf(expected)
         } else {
-          v = this.#lowerExpressionCtx(el, expected);
-        }
+          this.#lowerExpressionCtx(el, expected)
+        };
         if (!isValSubtype(this.#valueType(v), expected)) {
           this.#failConformance(v, expected, 'multi-value return type');
         }
@@ -2902,12 +2891,11 @@ export final class FunctionLowerer {
     for (var i = 0; i < arg.elements.length; i += 1) {
       let el = arg.elements[i];
       let expected = sig.returns[i];
-      var v = -1;
-      if (el is Identifier && el.name == '_') {
-        v = this.#defaultValueOf(expected);
+      let v = if (el is Identifier && el.name == '_') {
+        this.#defaultValueOf(expected)
       } else {
-        v = this.#lowerExpressionCtx(el, expected);
-      }
+        this.#lowerExpressionCtx(el, expected)
+      };
       if (!isValSubtype(this.#valueType(v), expected)) {
         this.#failConformance(v, expected, 'multi-value return type');
       }
@@ -4416,8 +4404,7 @@ export final class FunctionLowerer {
     }
     this.b.switchTo(resume);
 
-    let args = new Array<i32>();
-    args.push(future);
+    let args = growable<i32>([future]);
     let g = getter as WasmFunction;
     let sig = g.signature;
     let resultVt = if (sig.returns.length == 1) sig.returns[0] else null;
@@ -4529,8 +4516,7 @@ export final class FunctionLowerer {
           this.b.internType(castVt));
       let v = this.#suspendOnFuture(ct, cast);
       let conformed = this.#conformUnionArm(v, resultVt);
-      let joinArgs = new Array<i32>();
-      joinArgs.push(conformed);
+      let joinArgs = growable<i32>([conformed]);
       this.b.br(join, joinArgs);
       if (armEntry >= 0) {
         this.b.switchTo(armEntry);
@@ -4550,8 +4536,7 @@ export final class FunctionLowerer {
       }
       this.b.switchTo(resume);
       let conformed = this.#conformUnionArm(opVal, resultVt);
-      let joinArgs = new Array<i32>();
-      joinArgs.push(conformed);
+      let joinArgs = growable<i32>([conformed]);
       this.b.br(join, joinArgs);
     }
 
@@ -4748,8 +4733,7 @@ export final class FunctionLowerer {
     }
     let maskDynWords = new Array<i32>();
     let maskDynVals = new Array<i32>();
-    for (var fi = 0; fi < dispatch.fields.length; fi += 1) {
-      let f = dispatch.fields[fi];
+    for (let f in dispatch.fields) {
       let key = if (f.name != null) f.name as String else '';
       if (isPresentWordName(key)) {
         // Filled after the loop, once the contributions are known.
@@ -5033,10 +5017,11 @@ export final class FunctionLowerer {
     // already do. Only when the target is a class: interface-to-
     // interface is a question about vtables, not representation, and
     // `ref.test` cannot answer it either way.
-    var tested = value;
-    if (baseType(targetType) is ClassType) {
-      tested = this.#cx().unwrapFatPointer(baseType(sourceType), value);
-    }
+    let tested = if (baseType(targetType) is ClassType) {
+      this.#cx().unwrapFatPointer(baseType(sourceType), value)
+    } else {
+      value
+    };
     // Streaming emits a plain (non-null) ref.test either way.
     return this.b.emit(IrOp.ref_test, new ValTypeI32(), tested,
         this.b.internType(new ValTypeRef(target) as ValType));
@@ -5438,10 +5423,11 @@ export final class FunctionLowerer {
     if (!(classType is ClassType)) {
       this.#bail('new erased kind');
     }
-    var ctorMethName = '<constructor>';
-    if (expr.constructorName != null) {
-      ctorMethName = '<constructor>.' + getNodeMemberName(this.func.model, expr.constructorName as Node);
-    }
+    let ctorMethName = if (expr.constructorName != null) {
+      '<constructor>.' + getNodeMemberName(this.func.model, expr.constructorName as Node)
+    } else {
+      '<constructor>'
+    };
     if (classType.isExtension) {
       // Extension `new` is a plain call: the constructor takes the
       // declared arguments (no receiver) and RETURNS the underlying
@@ -5500,12 +5486,13 @@ export final class FunctionLowerer {
    * return already packed the instance into an interface value.
    */
   #lowerInterfaceNew(expr: NewExpression, it: InterfaceType): i32 {
-    var ctorName = '<constructor>';
-    if (expr.constructorName != null) {
-      ctorName = getNodeMemberName(this.func.model, expr.constructorName as Node);
-    }
+    let ctorName = if (expr.constructorName != null) {
+      getNodeMemberName(this.func.model, expr.constructorName as Node)
+    } else {
+      '<constructor>'
+    };
     let targsOpt = it.typeArguments;
-    let typeArgs: Array<Type> = if (targsOpt != null) targsOpt else new Array<Type>();
+    let typeArgs = if (targsOpt != null) targsOpt else new Array<Type>();
     let baseName = getInterfaceConstructorBaseName(it, ctorName);
     let specKey = getSpecializedFunctionKey(baseName, typeArgs);
     let target = if (let (true, f) = this.wasm.specializedFunctions.get(specKey)) f else null;
@@ -5545,7 +5532,7 @@ export final class FunctionLowerer {
     let ctorKey = getClassMethodKey(cKey, ctorMethName);
     let ctor = if (let (true, c) = this.wasm.classMethodMap.get(ctorKey)) c else null;
     if (ctor == null) {
-      this.#bail('constructor missing for ' + (cKey as String) + ' ' + ctorMethName);
+      this.#bail(`constructor missing for ${cKey as String} ${ctorMethName}`);
     }
     let sig = ctor.signature;
     if (sig.params.length != this.#liveArgCount(argExprs) ||
@@ -5631,10 +5618,7 @@ export final class FunctionLowerer {
       key = this.#conformToSlot(key, setSig.params[1], 'map key type');
       var value = this.#lowerExpressionCtx(entry.value, setSig.params[2]);
       value = this.#conformToSlot(value, setSig.params[2], 'map value type');
-      let args = new Array<i32>();
-      args.push(inst);
-      args.push(key);
-      args.push(value);
+      let args = growable<i32>([inst, key, value]);
       this.b.callFunc(this.b.addRef(new IrRefFunc(setFn)), args, null);
     }
     return inst;
@@ -5729,8 +5713,7 @@ export final class FunctionLowerer {
       }
       let it = this.#resolveSelfType(objT) as InterfaceType;
       let propName2 = accessKeyOf(this.func.model, member);
-      let setterArgs = new Array<Expression>();
-      setterArgs.push(assign.value);
+      let setterArgs = growable<Expression>([assign.value]);
       // Setter dispatch returns no value; assignment-as-expression on
       // an interface member would need the value replayed — the
       // verifier's produces-no-value check trips loudly if used.
@@ -5899,9 +5882,7 @@ export final class FunctionLowerer {
     if (!isValSubtype(this.#valueType(value), valueVt)) {
       this.#failConformance(value, valueVt, 'setter value type');
     }
-    let args = new Array<i32>();
-    args.push(recv);
-    args.push(value);
+    let args = growable<i32>([recv, value]);
     if (setterVirtual) {
       this.#lowerVtableCall(recv, vtInfoOpt as ClassCodegenInfo,
           'set#' + propName, sig, args, null);
@@ -5989,9 +5970,7 @@ export final class FunctionLowerer {
       this.#failConformance(value, valueVt, 'setter value type');
     }
     let recv = this.#conformReceiver(receiver, sig.params[0], 'setter receiver type');
-    let args = new Array<i32>();
-    args.push(recv);
-    args.push(value);
+    let args = growable<i32>([recv, value]);
     this.#lowerVtableCall(recv, info, 'set#' + propName, sig, args, null);
     return value;
   }
@@ -6332,8 +6311,9 @@ export final class FunctionLowerer {
     if (sig.params.length != this.#liveArgCount(call.args) + 1) {
       this.#bail('super method arity');
     }
-    let args = new Array<i32>();
-    args.push(this.#conformReceiver(receiver, sig.params[0], 'super receiver type'));
+    let args = growable<i32>([
+      this.#conformReceiver(receiver, sig.params[0], 'super receiver type'),
+    ]);
     var sIdx = 1;
     for (var i = 0; i < call.args.length; i += 1) {
       if (this.#dropZeroWidthArg(call.args[i])) {
@@ -6481,7 +6461,7 @@ export final class FunctionLowerer {
   #staticFieldGlobal(ct: ClassType, propName: String): WasmGlobal | null {
     var currClass: ClassType | null = ct;
     while (currClass != null) {
-      let wanted = currClass.name + '_' + propName;
+      let wanted = `${currClass.name}_${propName}`;
       for (let g in this.wasm.globals) {
         if (g.name == wanted) {
           return g;
@@ -6840,7 +6820,7 @@ export final class FunctionLowerer {
         // settled semantics (streaming resolves the call to the base
         // method; the checker accepts the declaration silently — see
         // elematic/zena#107). Refuse to pick a side.
-        var superWalk: ClassType | null = ct.superType;
+        var superWalk = ct.superType;
         while (superWalk != null) {
           if (let (true, superInfo) = superWalk.members.get(propName)) {
             if (superInfo is MethodInfo) {
@@ -6870,12 +6850,12 @@ export final class FunctionLowerer {
       // mixin may have been applied at an ancestor.
       let mixScope = this.#mixinScope();
       if (mixScope != null) {
-        method = this.#scopedClassMethod(ct, mixScope + "::" + slotName);
+        method = this.#scopedClassMethod(ct, `${mixScope}::${slotName}`);
         if (method == null) {
           // A decorator body calling one of its `shared` methods.
           let sharedScope = this.#decoratorSharedScope();
           if (sharedScope != null) {
-            method = this.#scopedClassMethod(ct, sharedScope + "::" + slotName);
+            method = this.#scopedClassMethod(ct, `${sharedScope}::${slotName}`);
           }
         }
         if (method == null) {
@@ -7024,9 +7004,10 @@ export final class FunctionLowerer {
         (this.#passesUnpackedArg(call.args, explosion) ||
          this.#wantsResultFields(call, explosion))) {
       let core = explosion.core;
-      let coreArgs = new Array<i32>();
-      coreArgs.push(this.#conformToSlot(receiver, core.signature.params[0],
-          'method receiver type'));
+      let coreArgs = growable<i32>([
+        this.#conformToSlot(receiver, core.signature.params[0],
+            'method receiver type'),
+      ]);
       for (let value in this.#lowerExplodedArgs(call.args, explosion, 1)) {
         coreArgs.push(value);
       }
@@ -7045,8 +7026,7 @@ export final class FunctionLowerer {
       return this.b.callFunc(this.b.addRef(new IrRefFunc(core)), coreArgs,
           if (coreReturns.length == 1) coreReturns[0] else null);
     }
-    let args = new Array<i32>();
-    args.push(receiver);
+    let args = growable<i32>([receiver]);
     var sIdx = 1;
     for (var i = 0; i < call.args.length; i += 1) {
       if (this.#dropZeroWidthArg(call.args[i])) {
@@ -7112,8 +7092,7 @@ export final class FunctionLowerer {
     let selfResolved = this.#resolveSelfType(objectType);
 
     if (selfResolved is InterfaceType) {
-      let args = new Array<Expression>();
-      args.push(idx.index);
+      let args = growable<Expression>([idx.index]);
       let slotName = interfaceCallSlotName(this.wasm, selfResolved, '[]',
           this.func.model.getResolvedOverload(idx));
       let result = this.#lowerInterfaceDispatch(
@@ -7332,8 +7311,7 @@ export final class FunctionLowerer {
     if (!isValSubtype(this.#valueType(inst), sig.params[0])) {
       this.#failConformance(inst, sig.params[0], 'interface receiver adaptation');
     }
-    let args = new Array<i32>();
-    args.push(inst);
+    let args = growable<i32>([inst]);
     if (argExprs != null) {
       var sIdx = 1;
       for (var i = 0; i < argExprs.length; i += 1) {
@@ -7470,7 +7448,7 @@ export final class FunctionLowerer {
     // never registered, and the caller bails.
     let mixScope = this.#mixinScope();
     if (mixScope != null) {
-      let scopedName = mixScope + "::" + propName;
+      let scopedName = `${mixScope}::${propName}`;
       if (st.fieldIndexByName(scopedName) >= 0) {
         return scopedName;
       }
@@ -7478,7 +7456,7 @@ export final class FunctionLowerer {
       // key rather than the application's.
       let sharedScope = this.#decoratorSharedScope();
       if (sharedScope != null) {
-        let sharedName = sharedScope + "::" + propName;
+        let sharedName = `${sharedScope}::${propName}`;
         if (st.fieldIndexByName(sharedName) >= 0) {
           return sharedName;
         }
@@ -7501,13 +7479,13 @@ export final class FunctionLowerer {
   #resolvePrivateAccessor(ct: ClassType, lexicalCt: ClassType, accName: String): WasmFunction | null {
     let mixScope = this.#mixinScope();
     if (mixScope != null) {
-      let scoped = this.#scopedClassMethod(ct, mixScope + "::" + accName);
+      let scoped = this.#scopedClassMethod(ct, `${mixScope}::${accName}`);
       if (scoped != null) {
         return scoped;
       }
       let sharedScope = this.#decoratorSharedScope();
       if (sharedScope != null) {
-        return this.#scopedClassMethod(ct, sharedScope + "::" + accName);
+        return this.#scopedClassMethod(ct, `${sharedScope}::${accName}`);
       }
       // The scoped registration is the only one a mixin body may
       // name; the lexical walk below would find the HOST's accessor.
@@ -7640,7 +7618,7 @@ export final class FunctionLowerer {
       currClass = currClass.superType;
     }
     if (getter == null) {
-      this.#bail('member not found: ' + propName + ' on ' + ct.name);
+      this.#bail(`member not found: ${propName} on ${ct.name}`);
     }
     if (getter.isStatic) {
       this.#bail('static member');
@@ -7743,9 +7721,7 @@ export final class FunctionLowerer {
       if (assign.operator != null) {
         return this.#lowerInterfaceCompoundIndexWrite(assign, idx, selfResolved);
       }
-      let dispatchArgs = new Array<Expression>();
-      dispatchArgs.push(idx.index);
-      dispatchArgs.push(assign.value);
+      let dispatchArgs = growable<Expression>([idx.index, assign.value]);
       // Setter dispatch returns no value; assignment-as-expression on
       // an interface index would need the value replayed — the
       // verifier's produces-no-value check trips loudly if used.
@@ -7830,9 +7806,7 @@ export final class FunctionLowerer {
       if ((method.intrinsic as String) == 'i32.store8') {
         let addr = this.#lowerExpression(idx.index);
         let sv = this.#lowerExpressionCtx(assign.value, new ValTypeI32());
-        let pair = new Array<i32>();
-        pair.push(addr);
-        pair.push(sv);
+        let pair = growable<i32>([addr, sv]);
         this.b.emitVoid(IrOp.i32_store8, this.b.pushExtra(pair), 0);
         return sv;
       }
@@ -7888,10 +7862,7 @@ export final class FunctionLowerer {
     }
     value = this.#conformToSlot(value, sig.params[2], 'index write type');
     let funcRef = this.b.addRef(new IrRefFunc(method));
-    let args = new Array<i32>();
-    args.push(recv);
-    args.push(index);
-    args.push(value);
+    let args = growable<i32>([recv, index, value]);
     this.b.callFunc(funcRef, args, null);
     return value;
   }
@@ -8192,8 +8163,7 @@ export final class FunctionLowerer {
     }
     var receiver = this.#lowerExpressionCtx(member.object, sig.params[0]);
     receiver = this.#conformToSlot(receiver, sig.params[0], 'array extension receiver');
-    let args = new Array<i32>();
-    args.push(receiver);
+    let args = growable<i32>([receiver]);
     var sIdx = 1;
     for (var i = 0; i < call.args.length; i += 1) {
       if (this.#dropZeroWidthArg(call.args[i])) {
@@ -8211,17 +8181,12 @@ export final class FunctionLowerer {
   }
 
   #threeValues(a: i32, b: i32, c: i32): GrowableArray<i32> {
-    let out = new Array<i32>();
-    out.push(a);
-    out.push(b);
-    out.push(c);
+    let out = growable<i32>([a, b, c]);
     return out;
   }
 
   #twoValues(a: i32, b: i32): GrowableArray<i32> {
-    let result = new Array<i32>();
-    result.push(a);
-    result.push(b);
+    let result = growable<i32>([a, b]);
     return result;
   }
 
@@ -8887,10 +8852,11 @@ export final class FunctionLowerer {
       resultVt = vt;
     }
     let merge = this.b.newBlock();
-    var resultParam = -1;
-    if (resultVt != null) {
-      resultParam = this.b.blockParam(merge, resultVt);
-    }
+    let resultParam = if (resultVt != null) {
+      this.b.blockParam(merge, resultVt)
+    } else {
+      -1
+    };
     for (let member in ut.types) {
       if (!(member is FunctionType)) {
         continue;
@@ -8918,8 +8884,7 @@ export final class FunctionLowerer {
       }
       let ctxVal = this.b.emit(IrOp.struct_get, cs.fields[1].type, cv,
           this.b.addRef(new IrRefField(cs, 'ctx')));
-      let callArgs = new Array<i32>();
-      callArgs.push(ctxVal);
+      let callArgs = growable<i32>([ctxVal]);
       for (var i = 0; i < arity; i += 1) {
         if (!isValSubtype(this.#valueType(args[i]), sig.params[i + 1])) {
           this.#failConformance(args[i], sig.params[i + 1],
@@ -8987,8 +8952,7 @@ export final class FunctionLowerer {
     let ctxRef = this.b.addRef(new IrRefField(closureStruct, 'ctx'));
     let ctxVal = this.b.emit(IrOp.struct_get,
         closureStruct.fields[1].type, callee, ctxRef);
-    let args = new Array<i32>();
-    args.push(ctxVal);
+    let args = growable<i32>([ctxVal]);
     var sIdx = 1;
     for (var i = 0; i < call.args.length; i += 1) {
       if (this.#dropZeroWidthArg(call.args[i])) {
@@ -9428,8 +9392,7 @@ export final class FunctionLowerer {
   }
 
   #oneArg(value: i32): GrowableArray<i32> {
-    let result = new Array<i32>();
-    result.push(value);
+    let result = growable<i32>([value]);
     return result;
   }
 
@@ -9446,7 +9409,7 @@ export final class FunctionLowerer {
   }
 
   #bail(reason: String): never {
-    throw new ZirUnsupported(reason + ' @' + (this.func.name ?? '?'));
+    throw new ZirUnsupported(`${reason} @${this.func.name ?? '?'}`);
   }
 
   /**
@@ -9472,73 +9435,83 @@ export final class FunctionLowerer {
  * FunctionLowerer — the shared core names this class across the
  * cycle's back edge.
  */
-let hostOf = (cx: LoweringContext): FunctionLowerer =>
-    cx.host as FunctionLowerer;
+function hostOf(cx: LoweringContext) {
+  return cx.host as FunctionLowerer;
+}
 
 /** Lower `e` as a value; a non-null `want` supplies the context type. */
-export let lowerExpr = (cx: LoweringContext, e: Expression, want: ValType | null): i32 =>
-    hostOf(cx).hostLowerExpr(e, want);
+export function lowerExpr(cx: LoweringContext, e: Expression, want: ValType | null): i32 {
+  return hostOf(cx).hostLowerExpr(e, want);
+}
 
 /** True while lowering a presplit `gen`/`async` body. */
-export let inSuspensionBody = (cx: LoweringContext): boolean =>
-    hostOf(cx).inSuspensionBody();
+export function inSuspensionBody(cx: LoweringContext): boolean {
+  return hostOf(cx).inSuspensionBody();
+}
 
 /** The slot a `return` value conforms to, or null in a void (or
  * multi-value) function. */
-export let returnSlotVt = (cx: LoweringContext): ValType | null =>
-    hostOf(cx).returnSlotVt();
+export function returnSlotVt(cx: LoweringContext): ValType | null {
+  return hostOf(cx).returnSlotVt();
+}
 
 /** Adaptation-free expression lowering (see #lowerExpressionDispatch). */
-export let lowerExprRaw = (cx: LoweringContext, e: Expression): i32 =>
-    hostOf(cx).hostLowerExprRaw(e);
+export function lowerExprRaw(cx: LoweringContext, e: Expression): i32 {
+  return hostOf(cx).hostLowerExprRaw(e);
+}
 
 /** Lower one statement. */
-export let lowerStmt = (cx: LoweringContext, st: Statement): void => {
+export function lowerStmt(cx: LoweringContext, st: Statement): void {
   hostOf(cx).hostLowerStmt(st);
-};
+}
 
 /** Lower a variable declaration (patterns, celling, env binding). */
-export let varDecl = (cx: LoweringContext, vd: VariableDeclaration): void => {
+export function varDecl(cx: LoweringContext, vd: VariableDeclaration): void {
   hostOf(cx).hostVarDecl(vd);
-};
+}
 
 /**
  * `e`'s fields through `d` when `e` is a record literal of exactly that
  * shape, lowered without building the record; null otherwise.
  */
-export let exactLiteralFields = (cx: LoweringContext, e: Expression,
-    d: RecordDispatchInfo): GrowableArray<i32> | null =>
-    hostOf(cx).hostExactLiteralFields(e, d);
+export function exactLiteralFields(cx: LoweringContext, e: Expression,
+    d: RecordDispatchInfo): GrowableArray<i32> | null {
+  return hostOf(cx).hostExactLiteralFields(e, d);
+}
 
 /**
  * A record of shape `d` packed from `values` and held as them
  * (`explodedRecords`), so reads of it answer from the values and an
  * otherwise unused record dies.
  */
-export let packHeldRecord = (cx: LoweringContext, d: RecordDispatchInfo,
-    values: GrowableArray<i32>): i32 =>
-    hostOf(cx).hostPackHeldRecord(d, values);
+export function packHeldRecord(cx: LoweringContext, d: RecordDispatchInfo,
+    values: GrowableArray<i32>): i32 {
+  return hostOf(cx).hostPackHeldRecord(d, values);
+}
 
 /** Lower a throw in statement position. */
-export let throwStmt = (cx: LoweringContext, thr: ThrowExpression): void => {
+export function throwStmt(cx: LoweringContext, thr: ThrowExpression): void {
   hostOf(cx).hostThrowStmt(thr);
-};
+}
 
 /** Lower a let-condition multi-value source. */
-export let multiSource = (cx: LoweringContext, init: Expression): GrowableArray<i32> =>
-    hostOf(cx).hostMultiSource(init);
+export function multiSource(cx: LoweringContext, init: Expression): GrowableArray<i32> {
+  return hostOf(cx).hostMultiSource(init);
+}
 
 /** Optional-chain hit arm (member machinery). */
-export let optionalHit = (cx: LoweringContext, expr: Expression, recv: i32): i32 =>
-    hostOf(cx).hostOptionalHit(expr, recv);
+export function optionalHit(cx: LoweringContext, expr: Expression, recv: i32): i32 {
+  return hostOf(cx).hostOptionalHit(expr, recv);
+}
 
 /**
  * Repacks a record-union value to one record shape, picking the member
  * at run time (patterns, which destructure the repacked value).
  */
-export let repackRecordUnion = (cx: LoweringContext,
-    ra: RecordUnionAdaptation, value: i32): i32 =>
-    hostOf(cx).hostRepackRecordUnion(ra, value);
+export function repackRecordUnion(cx: LoweringContext,
+    ra: RecordUnionAdaptation, value: i32): i32 {
+  return hostOf(cx).hostRepackRecordUnion(ra, value);
+}
 
 /** The value a record pattern's `...rest` binds (patterns). */
 export let recordRestValue = (cx: LoweringContext, rest: Node, value: i32): i32 =>
@@ -9549,15 +9522,17 @@ export let recordRestValue = (cx: LoweringContext, rest: Node, value: i32): i32 
  * an `await` with no expression behind it, as a `for await` makes on a
  * Pending step (control-flow).
  */
-export let suspendOnFuture = (cx: LoweringContext, ct: ClassType,
-    future: i32): i32 =>
-    hostOf(cx).hostSuspendOnFuture(ct, future);
+export function suspendOnFuture(cx: LoweringContext, ct: ClassType,
+    future: i32): i32 {
+  return hostOf(cx).hostSuspendOnFuture(ct, future);
+}
 
 /** Pack the value arm of a `??` over a maybe-form (control-flow). */
-export let coalesceArmAdaptation = (cx: LoweringContext,
-    bin: BinaryExpression, value: i32): i32 =>
-    hostOf(cx).hostCoalesceArmAdaptation(bin, value);
+export function coalesceArmAdaptation(cx: LoweringContext,
+    bin: BinaryExpression, value: i32): i32 {
+  return hostOf(cx).hostCoalesceArmAdaptation(bin, value);
+}
 
-let getNodeMemberName = (model: SemanticModel, node: Node): String => {
+function getNodeMemberName(model: SemanticModel, node: Node): String {
   return memberKeyOf(model, node);
-};
+}

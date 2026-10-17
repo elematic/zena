@@ -33,14 +33,14 @@ import { isValSubtype } from '../wasm-module.zena';
  * number of block parameters deleted plus the number of edges
  * forwarded and blocks fused.
  */
-export let runBlockCleanup = (body: IrBody, scratch: IrScratch): i32 => {
+export function runBlockCleanup(body: IrBody, scratch: IrScratch): i32 {
   scratch.enter();
   let result = runBlockCleanupOn(body, scratch);
   scratch.exit();
   return result;
-};
+}
 
-let runBlockCleanupOn = (body: IrBody, scratch: IrScratch): i32 => {
+function runBlockCleanupOn(body: IrBody, scratch: IrScratch): i32 {
   var n = removeUnreachable(body, scratch) + removeTrivialParams(body, scratch);
   let forwarded = forwardEmptyBlocks(body, scratch);
   let fused = fuseStraightLine(body, scratch);
@@ -48,25 +48,25 @@ let runBlockCleanupOn = (body: IrBody, scratch: IrScratch): i32 => {
     n += forwarded + fused + removeUnreachable(body, scratch) + removeTrivialParams(body, scratch);
   }
   return n;
-};
+}
 
 /** The join blocks of the function's user tries, which stay as they are. */
-let tryJoins = (body: IrBody, scratch: IrScratch): GrowableArray<i32> => {
+function tryJoins(body: IrBody, scratch: IrScratch) {
   let joins = scratch.i32();
   for (let k in body.tryJoin.keys()) {
     joins.push(body.tryJoin[k]);
   }
   return joins;
-};
+}
 
-let isIn = (list: GrowableArray<i32>, b: i32): boolean => {
+function isIn(list: GrowableArray<i32>, b: i32): boolean {
   for (let x in list) {
     if (x == b) {
       return true;
     }
   }
   return false;
-};
+}
 
 /**
  * Sends every edge into a block whose only instruction is a `br`
@@ -75,7 +75,7 @@ let isIn = (list: GrowableArray<i32>, b: i32): boolean => {
  * moved (a try_br's targets keep their shape for the emitter); a
  * block some other edge still reaches keeps working as it was.
  */
-let forwardEmptyBlocks = (body: IrBody, scratch: IrScratch): i32 => {
+function forwardEmptyBlocks(body: IrBody, scratch: IrScratch): i32 {
   let nb = body.blocks.length;
   let joins = tryJoins(body, scratch);
   // Users of every value: a parameter of a forwarded block must feed
@@ -168,8 +168,7 @@ let forwardEmptyBlocks = (body: IrBody, scratch: IrScratch): i32 => {
       continue;
     }
     let ps = preds[e];
-    for (var pi = 0; pi < ps.length; pi += 1) {
-      let b = ps[pi];
+    for (let b in ps) {
       if (b == e) {
         continue;
       }
@@ -208,7 +207,7 @@ let forwardEmptyBlocks = (body: IrBody, scratch: IrScratch): i32 => {
     }
   }
   return forwarded;
-};
+}
 
 /**
  * Appends a block to its sole predecessor when that predecessor ends
@@ -216,7 +215,7 @@ let forwardEmptyBlocks = (body: IrBody, scratch: IrScratch): i32 => {
  * (a single edge's parameters are trivial and already gone). Chains
  * fuse in one call: the predecessor's new terminator is checked again.
  */
-let fuseStraightLine = (body: IrBody, scratch: IrScratch): i32 => {
+function fuseStraightLine(body: IrBody, scratch: IrScratch): i32 {
   let nb = body.blocks.length;
   let joins = tryJoins(body, scratch);
   var fused = 0;
@@ -276,7 +275,7 @@ let fuseStraightLine = (body: IrBody, scratch: IrScratch): i32 => {
     }
   }
   return fused;
-};
+}
 
 /**
  * Rebuilds a terminator's successor records with successor `k`
@@ -284,14 +283,15 @@ let fuseStraightLine = (body: IrBody, scratch: IrScratch): i32 => {
  * rebuilt record is appended and the terminator repointed; every
  * branch shape is [prefix] ([target, argc, args…])*.
  */
-export let retarget = (body: IrBody, term: i32, k: i32, target: i32,
-    args: GrowableArray<i32>): void => {
+export function retarget(body: IrBody, term: i32, k: i32, target: i32,
+    args: GrowableArray<i32>): void {
   let op = body.op(term);
-  var prefixLen = 0;
-  if (op == IrOp.br_on_cast || op == IrOp.br_on_cast_fail ||
+  let prefixLen = if (op == IrOp.br_on_cast || op == IrOp.br_on_cast_fail ||
       op == IrOp.br_table) {
-    prefixLen = 1;
-  }
+    1
+  } else {
+    0
+  };
   let recordStart = if (op == IrOp.br) body.a[term] else body.b[term];
   let count = body.successorCount(term);
   let idx = body.extra.length;
@@ -327,9 +327,9 @@ export let retarget = (body: IrBody, term: i32, k: i32, target: i32,
   } else {
     body.b[term] = idx;
   }
-};
+}
 
-let removeUnreachable = (body: IrBody, scratch: IrScratch): i32 => {
+function removeUnreachable(body: IrBody, scratch: IrScratch): i32 {
   let nb = body.blocks.length;
   if (nb == 0) {
     return 0;
@@ -474,7 +474,7 @@ let removeUnreachable = (body: IrBody, scratch: IrScratch): i32 => {
     body.blocks.push(blk);
   }
   return removedCount;
-};
+}
 
 /**
  * Deletes every block parameter that every incoming edge passes the
@@ -492,7 +492,7 @@ let removeUnreachable = (body: IrBody, scratch: IrScratch): i32 => {
  * coalesces a parameter with its incoming copies, and a redirected
  * use defeats that — so the parameter and the arguments go too.)
  */
-let removeTrivialParams = (body: IrBody, scratch: IrScratch): i32 => {
+function removeTrivialParams(body: IrBody, scratch: IrScratch): i32 {
   let nb = body.blocks.length;
   let incoming = new Array<GrowableArray<i32>>(nb);
   for (var i = 0; i < nb; i += 1) {
@@ -518,7 +518,7 @@ let removeTrivialParams = (body: IrBody, scratch: IrScratch): i32 => {
   for (var i = 0; i < count; i += 1) {
     repl.push(i);
   }
-  let canon = (v: i32): i32 => {
+  let canon = (v: i32) => {
     var c = v;
     while (c >= 0 && c < count && repl[c] != c) {
       c = repl[c];
@@ -582,9 +582,9 @@ let removeTrivialParams = (body: IrBody, scratch: IrScratch): i32 => {
     }
   }
   return removed;
-};
+}
 
-export let dropParamAt = (blk: IrBlock, j: i32): void => {
+export function dropParamAt(blk: IrBlock, j: i32): void {
   let kept = new Array<i32>();
   for (var k = 0; k < blk.params.length; k += 1) {
     if (k != j) {
@@ -597,7 +597,7 @@ export let dropParamAt = (blk: IrBlock, j: i32): void => {
   for (let p in kept) {
     blk.params.push(p);
   }
-};
+}
 
 /**
  * Rebuilds a terminator's successor records without argument `j` of
@@ -607,13 +607,14 @@ export let dropParamAt = (blk: IrBlock, j: i32): void => {
  * for br/br_if/try_br, the target type for br_on_cast, the count for
  * br_table (see the encoding table in ir.zena).
  */
-export let dropBranchArg = (body: IrBody, term: i32, target: i32, j: i32): void => {
+export function dropBranchArg(body: IrBody, term: i32, target: i32, j: i32): void {
   let op = body.op(term);
-  var prefixLen = 0;
-  if (op == IrOp.br_on_cast || op == IrOp.br_on_cast_fail ||
+  let prefixLen = if (op == IrOp.br_on_cast || op == IrOp.br_on_cast_fail ||
       op == IrOp.br_table) {
-    prefixLen = 1;
-  }
+    1
+  } else {
+    0
+  };
   let recordStart = if (op == IrOp.br) body.a[term] else body.b[term];
   let sN = body.successorCount(term);
   let idx = body.extra.length;
@@ -640,12 +641,12 @@ export let dropBranchArg = (body: IrBody, term: i32, target: i32, j: i32): void 
   } else {
     body.b[term] = idx;
   }
-};
+}
 
-let nopOut = (body: IrBody, inst: i32): void => {
+function nopOut(body: IrBody, inst: i32): void {
   body.opcode[inst] = IrOp.nop as i32;
   body.typeId[inst] = -1;
   body.a[inst] = -1;
   body.b[inst] = -1;
   body.instBlock[inst] = -1;
-};
+}
