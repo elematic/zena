@@ -4,7 +4,7 @@
 import { suite, test } from 'zena:test';
 import { equal, isTrue, isFalse } from 'zena:assert';
 import { readFileSync } from 'zena:fs';
-import { JsonObject, parseJson } from 'zena:json';
+import { JsonArray, JsonObject, parseJson } from 'zena:json';
 import { createLanguageService } from '../lib/service.zena';
 import { LspServer, offsetOf, positionOf } from '../lib/server.zena';
 
@@ -20,6 +20,14 @@ function readOrNull(path: String): String | null {
 /** A message the server sent, which is always a JSON object. */
 function parsed(json: String) {
   return parseJson(json) as JsonObject;
+}
+
+/** The array at `path` in a message, or a failure when there is none. */
+function arrayIn(message: JsonObject, path: String): JsonArray {
+  if (let (true, list) = message.arrayAt(path)) {
+    return list;
+  }
+  throw new Error(`no array at ${path}`);
 }
 
 /** The line the first diagnostic in a publishDiagnostics message starts on. */
@@ -60,6 +68,46 @@ export let tests = suite('language server', () => {
     let start = positionOf(source, 3);
     equal(start.line, 1);
     equal(start.character, 0);
+  });
+
+  test('lint findings are published as warnings, with quick fixes', () => {
+    let {server, sent} = serverSession();
+    let uri = 'file:///nowhere/lint.zena';
+    // A top-level arrow and a `var` never reassigned: two findings.
+    server.handle(`{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"${uri}","text":"let add = (a: i32, b: i32): i32 => a + b;\\nexport function run(): i32 {\\n  var n = add(1, 2);\\n  return n;\\n}\\n"}}}`);
+    let published = parsed(sent[0]);
+    equal(published.stringAt('method') ?? '', 'textDocument/publishDiagnostics');
+    // The checker's own warnings are published too; count the lint ones.
+    let diagnostics = arrayIn(published, 'params.diagnostics');
+    let lint = new Array<JsonObject>();
+    var i = 0;
+    while (i < diagnostics.length) {
+      let candidate = diagnostics[i] as JsonObject;
+      if ((candidate.stringAt('source') ?? '') == 'zena-lint') {
+        lint.push(candidate);
+      }
+      i += 1;
+    }
+    equal(lint.length, 2);
+    let first = lint[0];
+    equal(first.stringAt('code') ?? '', 'function-declaration');
+    equal(first.intAt('severity') ?? 0, 2);
+    equal(first.intAt('range.start.line') ?? -1, 0);
+    equal(lint[1].stringAt('code') ?? '', 'prefer-let');
+
+    // Code actions on the `var`: its quick fix, and the fix-all action.
+    server.handle(`{"jsonrpc":"2.0","id":1,"method":"textDocument/codeAction","params":{"textDocument":{"uri":"${uri}"},"range":{"start":{"line":2,"character":2},"end":{"line":2,"character":5}},"context":{"diagnostics":[]}}}`);
+    let actions = arrayIn(parsed(sent[1]), 'result');
+    equal(actions.length, 2);
+    let fix = actions[0] as JsonObject;
+    equal(fix.stringAt('kind') ?? '', 'quickfix');
+    isTrue((fix.stringAt('title') ?? '').contains('`let`'));
+    let all = actions[1] as JsonObject;
+    equal(all.stringAt('kind') ?? '', 'source.fixAll.zena');
+    // The URI has dots in it, so it is read as one key, not a path.
+    let changes = if (let (true, byUri) = all.objectAt('edit.changes')) byUri[uri] else null;
+    isTrue(changes is JsonArray);
+    equal((changes as JsonArray).length, 2);
   });
 
   test('a document without a file URI is published under its own URI', () => {

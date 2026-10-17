@@ -25,7 +25,7 @@ import { loadPackageMap } from 'zena-compiler:package-manifest';
 import { DocumentHost } from './lib/host.zena';
 import { format as formatSource } from 'zena-formatter:printer';
 import {
-  CompletionItem, DocumentSymbol, HoverResult, LanguageService,
+  CompletionItem, DocumentSymbol, Edit, HoverResult, LanguageService,
   createLanguageService,
 } from './lib/service.zena';
 import { compileToWasm as compileDocument } from './lib/compile.zena';
@@ -351,6 +351,47 @@ export let getSymbolChildCount = (sym: DocumentSymbol): i32 => {
  */
 export let getSymbolChild = (sym: DocumentSymbol, index: i32): DocumentSymbol => {
   return sym.children[index];
+};
+
+// ============================================================================
+// Lint Exports
+// ============================================================================
+
+/**
+ * What the lint rules find in a document `check` has seen: each finding
+ * is a byte range and the text that fixes it. See LanguageService.lint().
+ */
+export let lint = (path: String): Array<Edit> => {
+  return (__ls as LanguageService).lint(path);
+};
+
+export let getLintCount = (findings: Array<Edit>): i32 => {
+  return findings.length;
+};
+
+/** The 0-based start byte offset of the i-th finding. */
+export let getLintStart = (findings: Array<Edit>, index: i32): i32 => {
+  return findings[index].start;
+};
+
+/** The byte offset just past the i-th finding. */
+export let getLintEnd = (findings: Array<Edit>, index: i32): i32 => {
+  return findings[index].end;
+};
+
+/** The name of the rule behind the i-th finding. */
+export let getLintRule = (findings: Array<Edit>, index: i32): String => {
+  return findings[index].rule;
+};
+
+/** The one-line message of the i-th finding. */
+export let getLintMessage = (findings: Array<Edit>, index: i32): String => {
+  return (__ls as LanguageService).lintMessage(findings[index]);
+};
+
+/** The text that replaces the i-th finding's range to fix it. */
+export let getLintReplacement = (findings: Array<Edit>, index: i32): String => {
+  return findings[index].replacement;
 };
 
 /**
