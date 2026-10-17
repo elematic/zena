@@ -1,0 +1,24 @@
+// @mode: check
+// A record type without `...` is closed: a literal checked against one
+// names exactly its fields (docs/design/row-types.md §3.2), so a
+// misspelled or extra field is an error rather than dropped.
+
+let getX = (p: {x: i32}): i32 => p.x;
+let extra = getX({x: 1, y: 2}); // @error: Field 'y' is not in '{ x: i32 }'
+let annotated: {x: i32} = {x: 1, z: 3}; // @error: Field 'z' is not in '{ x: i32 }'
+let nested: {p: {x: i32}} = {p: {x: 1, w: 2}}; // @error: Field 'w' is not in '{ x: i32 }'
+
+// A literal may leave out an optional field.
+let optional: {x: i32, y?: i32} = {x: 1};
+
+// A record held in a variable converts to a narrower type by projection.
+let held = {x: 1, y: 2};
+let projected = getX(held);
+let narrowed: {x: i32} = held;
+
+// A spread's fields are a projection too, not fields written here.
+let spread: {x: i32} = {...held};
+
+// A row's fields are the literal's other fields.
+let keep = <R extends record>(p: {x: i32, ...R}): {x: i32, ...R} => p;
+let kept = keep({x: 1, y: 2});

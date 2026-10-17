@@ -143,12 +143,22 @@ waits only on its own prerequisites. The order:
    tuples: `R extends record` and `R extends tuple`, type-level spread
    of concrete types and row parameters, inference, lacks for records,
    and one specialization per row. Spread on row-typed values and
-   `...rest` patterns are in too, for records and tuples. Step 2 is done
-   apart from the `ZENA_ZIR_STATS` instantiation counters.
+   `...rest` patterns are in too, for records and tuples, and
+   `ZENA_ZIR_STATS=1` reports instantiation counts. Done.
 3. Closed types by default: exactness checks on literals, projection
    for width conversions between closed types, and `...` existentials
    as the only fat-pointer form, with equality and `is`/`as` by
-   underlying shape.
+   underlying shape. In progress. Literals of a closed record type are
+   exact, and `is`/`as` between closed record and tuple types are
+   decided by the types (an always-false `is` and an `as` that cannot
+   succeed are errors; `as` to a narrower type projects). Records stay
+   fat pointers until the representation harvest (implementation-plan.md,
+   Track B). Existentials, and equality by underlying shape (#399), are
+   next. Two parts of the original plan turned out not to apply: a
+   class was already not assignable to a record type, and A3's presence
+   bitmask (record-presence.md) keeps `?` fields valid on closed types,
+   so §3.4's restriction of `?` to existential and parameter positions
+   is dropped.
 4. `inline` on value types (#371).
 
 ## 1. Motivation
