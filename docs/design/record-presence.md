@@ -361,7 +361,7 @@ Ordered, each stage green under the full suite and fixpoint:
 
 No stage needs presence polymorphism in the type system (row
 variables over optionality stay future work, row-types.md §10), and
-none needs the M5 template work — the mask is per-type data, not
+none needs template ZIR (M5, #410) — the mask is per-type data, not
 per-shape code.
 
 ## 10. Open questions

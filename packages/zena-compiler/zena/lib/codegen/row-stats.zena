@@ -1,0 +1,109 @@
+/**
+ * Row-instantiation counts for `ZENA_ZIR_STATS=1` (docs/design/row-types.md
+ * §7.3 and open question 6). A row-generic function is lowered once per
+ * row it is called with, so rows multiply the function bodies a compile
+ * produces. These counts are how that cost is watched.
+ *
+ * A function counts when the substitution it is lowered under binds a
+ * row parameter (`R extends record` or `R extends tuple`): a generic
+ * function or method, a method of a generic class, or a closure inside
+ * one. Counting runs right after reachability, before argument explosion
+ * splits functions into forwarders and cores, so each instantiation
+ * counts once.
+ */
+import { WasmFunction, WasmModule } from './wasm-module.zena';
+import { compareStrings } from './codegen-utils.zena';
+import { growable } from 'zena:core';
+
+/** How many bodies one generic was lowered to, one per row. */
+export final class RowInstantiationCount {
+  name: String;
+  count: i32;
+  new(this.name, this.count);
+}
+
+/**
+ * The row-generic functions in `wasm`, each with its number of
+ * instantiations: most first, then by name, so the report is the same
+ * on every run.
+ */
+export function rowInstantiationCounts(wasm: WasmModule): GrowableArray<RowInstantiationCount> {
+  let counts = new HashMap<String, i32>();
+  let names = new Array<String>();
+  for (let f in wasm.functions) {
+    if (!bindsRow(f)) {
+      continue;
+    }
+    let name = genericName(f);
+    if (let (true, n) = counts.get(name)) {
+      counts[name] = n + 1;
+    } else {
+      counts[name] = 1;
+      names.push(name);
+    }
+  }
+  let out = new Array<RowInstantiationCount>();
+  for (let name in names) {
+    out.push(new RowInstantiationCount(name, counts[name]));
+  }
+  for (var i = 1; i < out.length; i += 1) {
+    let entry = out[i];
+    var j = i - 1;
+    while (j >= 0 && comesAfter(out[j], entry)) {
+      out[j + 1] = out[j];
+      j -= 1;
+    }
+    out[j + 1] = entry;
+  }
+  return out;
+}
+
+/**
+ * The lines `ZENA_ZIR_STATS` prints: a total, then one line per
+ * row-generic function.
+ */
+export function rowInstantiationReport(counts: GrowableArray<RowInstantiationCount>): GrowableArray<String> {
+  var total = 0;
+  for (let entry in counts) {
+    total += entry.count;
+  }
+  let lines = growable<String>([
+    `zir rows: ${i32ToString(counts.length)} row-generic functions, ${i32ToString(total)} instantiations`,
+  ]);
+  for (let entry in counts) {
+    lines.push(`  ${entry.name}: ${i32ToString(entry.count)}`);
+  }
+  return lines;
+}
+
+function bindsRow(f: WasmFunction): boolean {
+  let params = f.typeParameters;
+  if (params == null || f.typeArguments == null) {
+    return false;
+  }
+  for (let p in params) {
+    if (p.isRecordRow || p.isTupleRow) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/** A specialization's name without its `_spec...` type-argument suffix. */
+function genericName(f: WasmFunction): String {
+  let name = f.name ?? "<unnamed>";
+  let marker = "_spec";
+  for (var i = 1; i + marker.length <= name.length; i += 1) {
+    if (name.sliceBytes(i, i + marker.length) == marker) {
+      return name.sliceBytes(0, i);
+    }
+  }
+  return name;
+}
+
+function comesAfter(a: RowInstantiationCount, b: RowInstantiationCount): boolean {
+  if (a.count != b.count) {
+    return a.count < b.count;
+  }
+  return compareStrings(a.name, b.name) > 0;
+}

@@ -730,7 +730,7 @@ progress; M3 loop not started).
    `is`-tests on iterator values)? Proposed: no — the frame class is
    invisible, `Iterator<T>` is the only type. Runtime-type-tag rules
    (runtime-type-tags.md) should be checked against this.
-7. **Interaction with template ZIR (M5)**: generic generators
+7. **Interaction with template ZIR (M5, #410)**: generic generators
    (`gen <T>(xs: Array<T>): T`) want the presplit body to be the template
    and splitting to happen per-instantiation. Nothing here seems to
    conflict — the split pass runs downstream of specialization — but M5's

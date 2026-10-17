@@ -1209,6 +1209,7 @@ until M4.
   table-substitution specialization. Success metric: cold-compile of
   `assert_test.zena` and `zena:test`-heavy files (the 47s case) drops by
   an order of magnitude class, not percent.
+  _Status: not started; tracked in #410._
 - **M6 — `.zir` on disk.** Serialization, cache directory, phase-1/phase-2
   CLI split per §13.
 
