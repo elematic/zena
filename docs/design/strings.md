@@ -306,11 +306,12 @@ When running in a JS host:
 Using `--default-encoding=wtf16` is recommended for JS-heavy applications to
 minimize transcoding overhead.
 
-### Future: Host Strings
+### Host strings
 
-A future `HostString` implementation could wrap a JS string reference directly,
-avoiding any copying for strings that originate from JS and are only passed
-back to JS.
+Zena distinguishes between two strategies for host string interop (detailed in [host-interop.md](host-interop.md)):
+
+1. **Universal modules**: A `HostString` subclass of `String` wraps an `externref` to avoid transcoding when JavaScript strings are passed through WebAssembly to other JavaScript APIs. If character access is needed and `wasm:js-string` is unavailable, it delegates to a host helper or lazily transcodes to a `ByteArray`.
+2. **JavaScript-targeted modules (`--target js`)**: The module assumes a JavaScript host. `String` remains a normal WebAssembly GC class backed directly by an `externref` handle, using the `wasm:js-string` proposal builtins and imported string constants for zero-copy operations and minimal binary size.
 
 ## Unified String Architecture
 
