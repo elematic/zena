@@ -9,7 +9,6 @@
  */
 
 import { Set } from 'zena:collections';
-import { getEnv } from 'zena:cli';
 import {
   Node, Module, Expression, Identifier, NumberLiteral, StringLiteral,
   BooleanLiteral, NullLiteral, TemplateLiteral, BinaryExpression,
@@ -31,7 +30,7 @@ import {
   TypeParameterType, typeToString, typeContainsTypeParameter,
 } from 'zena-compiler:types';
 import { typesEqual, isNullableType, unwrapAliases } from 'zena-compiler:checker';
-import { CheckedFile } from './checking.zena';
+import { CheckedFile } from './checked.zena';
 import {
   Edit, lineOf, indentationAt, columnOf, hasCommentIn, pastSemicolon,
   skipWhitespace, skipWhitespaceBack, lineStart, lineEnd,
@@ -50,6 +49,16 @@ let RIGHT_PAREN = 41;
 /** A byte range `[start, end)` of the source. */
 export final class Span(start: i32, end: i32)
 
+var debugEnabled = false;
+
+/**
+ * Makes rules print why they declined a site, where a rule bothers to
+ * say. `zena lint` turns it on for `ZENA_LINT_DEBUG`.
+ */
+export function setDebug(on: boolean): void {
+  debugEnabled = on;
+}
+
 export final class RuleContext {
   file: CheckedFile;
   source: String;
@@ -58,8 +67,8 @@ export final class RuleContext {
   edits: GrowableArray<Edit>;
   /** The rule currently running, stamped on each edit. */
   var rule: String = '';
-  /** Print why a rule declined, where a rule bothers to say (`ZENA_LINT_DEBUG`). */
-  debug: boolean = getEnv('ZENA_LINT_DEBUG') != null;
+  /** Print why a rule declined, where a rule bothers to say; see `setDebug`. */
+  debug: boolean = debugEnabled;
   #parents: DenseNodeMap<Node>;
   /** Every binding some assignment writes to, by sym id. */
   var #assigned: Set<SymbolId> | null = null;

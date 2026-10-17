@@ -8,7 +8,7 @@ import { suite, test, TestContext } from 'zena:test';
 import { equal, isTrue } from 'zena:assert';
 import { dedentRaw } from 'zena:core';
 import { Project } from '../lib/checking.zena';
-import { lintSource, LintOptions, FileReport, NamedRule } from '../lib/lint.zena';
+import { lintSource, LintOptions, FileReport, NamedRule, messageOf } from '../lib/lint.zena';
 import { allRules } from '../lib/rules.zena';
 
 let VIRTUAL_PATH = 'packages/zena-lint/zena/test/fixtures/virtual.zena';
@@ -46,7 +46,7 @@ function lint(source: String, only: String = '') {
     picked
   };
   let options = new LintOptions(chosen);
-  options.write = false;
+  options.fix = true;
   return lintSource(project, VIRTUAL_PATH, source, options);
 }
 
@@ -926,6 +926,29 @@ let tests = suite('lint', () => {
         return pick(null, 'x').length;
       }
     `);
+  });
+
+  test('without fix the findings are reported and nothing changes', (t) => {
+    let source = dedentRaw`
+      let add = (a: i32, b: i32): i32 => a + b;
+      export function run(): i32 {
+        var n = add(1, 2);
+        return n;
+      }
+    `;
+    let options = new LintOptions(allRules());
+    let report = lintSource(projectFor(), VIRTUAL_PATH, source, options);
+    equal(report.rejected.length, 0);
+    equal(report.applied.length, 0);
+    isTrue(!report.changed);
+    equal(report.result ?? '', source);
+    equal(report.findings.length, 2);
+    equal(report.findings[0].rule, 'function-declaration');
+    equal(report.findings[0].line, 1);
+    equal(report.findings[1].rule, 'prefer-let');
+    equal(report.findings[1].line, 3);
+    equal(messageOf(report.findings[1], allRules()),
+        'A `var` never assigned again; declare it with `let`.');
   });
 
   test('a file that does not check is left alone', (t) => {

@@ -1,0 +1,191 @@
+/**
+ * `zena lint`: reports what the lint rules find in `.zena` files, and
+ * with `--fix` rewrites the files.
+ *
+ * The rules and the driver are zena-lint's (`zena-lint:lint`,
+ * `zena-lint:rules`); this names the files, chooses the rules, and
+ * prints. A finding prints as `path:line:column: message [rule]`, the
+ * way the compiler prints a diagnostic, and the command exits 1 when
+ * there is one. With `--fix` every fix is type-checked before it is kept,
+ * and a fix the checker rejects is printed with the error.
+ */
+
+import { ParsedArgs } from 'zena:args';
+import { existsSync } from 'zena:fs';
+import { FileReport, LintOptions, NamedRule, lintFile, messageOf } from 'zena-lint:lint';
+import { Project } from 'zena-lint:checking';
+import { allRules, ruleNamed } from 'zena-lint:rules';
+import { collectZenaFiles } from 'zena-lint:files';
+import { columnOf } from 'zena-lint:source';
+import { setDebug } from 'zena-lint:context';
+import { getEnv } from 'zena:cli';
+import { Options, repoRelative, resolveUserPath, stdlibDir } from './env.zena';
+
+export function lintCommand(args: ParsedArgs, options: Options): i32 {
+  if (args.getFlag('list-rules')) {
+    for (let rule in allRules()) {
+      console.log(`${rule.name}: ${rule.message}`);
+    }
+    return 0;
+  }
+  if (args.rest.length == 0) {
+    console.error('Error: lint needs a file or directory');
+    return 2;
+  }
+  let rules = selectRules(args);
+  if (rules == null) {
+    return 2;
+  }
+  setDebug(getEnv('ZENA_LINT_DEBUG') != null);
+  let lintOptions = new LintOptions(rules);
+  lintOptions.fix = args.getFlag('fix');
+  lintOptions.verbose = options.verbose;
+
+  let files = new Array<String>();
+  for (let argument in args.rest) {
+    let path = resolveUserPath(argument);
+    if (!existsSync(path.value)) {
+      console.error(`Error: no such path: ${argument}`);
+      return 2;
+    }
+    collectZenaFiles(repoRelative(path), files);
+  }
+
+  let project = new Project(repoRelative(stdlibDir()));
+  var findings = 0;
+  var changed = 0;
+  var rejected = 0;
+  var skipped = 0;
+  for (let file in files) {
+    let report = lintFile(project, file, lintOptions);
+    print(report, lintOptions);
+    findings += report.findings.length;
+    if (report.changed) {
+      changed += 1;
+    }
+    rejected += report.rejected.length;
+    if (report.errorsBefore.length > 0 || report.failure != null) {
+      skipped += 1;
+    }
+  }
+  let plural = if (files.length == 1) 'file' else 'files';
+  if (lintOptions.fix) {
+    console.log(`${i32ToString(files.length)} ${plural}, changed ${i32ToString(changed)}, ` +
+        `${i32ToString(rejected)} fixes rejected by the checker, ${i32ToString(skipped)} skipped`);
+    return 0;
+  }
+  console.log(`${i32ToString(findings)} findings in ${i32ToString(files.length)} ${plural}` +
+      (if (skipped > 0) `, ${i32ToString(skipped)} skipped` else ''));
+  return if (findings > 0) 1 else 0;
+}
+
+/** The rules `--only` names, less those `--skip` names; null after reporting an unknown one. */
+function selectRules(args: ParsedArgs): GrowableArray<NamedRule> | null {
+  let only = namesIn(args, 'only');
+  let skip = namesIn(args, 'skip');
+  if (only == null || skip == null) {
+    return null;
+  }
+  let chosen = new Array<NamedRule>();
+  for (let rule in allRules()) {
+    if (only.length > 0 && !only.contains(rule.name)) {
+      continue;
+    }
+    if (skip.contains(rule.name)) {
+      continue;
+    }
+    chosen.push(rule);
+  }
+  return chosen;
+}
+
+/** The rule names an option lists, checked; null after reporting an unknown one. */
+function namesIn(args: ParsedArgs, option: String): GrowableArray<String> | null {
+  let names = new Array<String>();
+  if (let (true, list) = args.getOption(option)) {
+    for (let item in list.split(',')) {
+      let name = item.trim();
+      if (name.length == 0) {
+        continue;
+      }
+      if (ruleNamed(name) == null) {
+        console.error(`Error: no such rule: ${name} (see --list-rules)`);
+        return null;
+      }
+      names.push(name);
+    }
+  }
+  return names;
+}
+
+function print(report: FileReport, options: LintOptions): void {
+  let failure = report.failure;
+  if (failure != null) {
+    console.error(`${report.path}: could not compile: ${failure}`);
+    return;
+  }
+  if (report.errorsBefore.length > 0) {
+    console.error(`${report.path}: does not check (${report.errorsBefore[0]}); skipped`);
+    return;
+  }
+  let source = report.result ?? '';
+  for (let finding in report.findings) {
+    let column = columnOf(source, finding.start) + 1;
+    console.log(`${report.path}:${i32ToString(finding.line)}:${i32ToString(column)}: ` +
+        `${messageOf(finding, options.rules)} [${finding.rule}]`);
+  }
+  if (!options.fix) {
+    return;
+  }
+  if (report.applied.length > 0 || report.rejected.length > 0) {
+    console.log(`${report.path}: ${i32ToString(report.applied.length)} fixes` +
+        ` in ${i32ToString(report.passes)} passes${summarize(report)}`);
+  } else if (options.verbose) {
+    console.log(`${report.path}: nothing to fix`);
+  }
+  if (options.verbose) {
+    for (let edit in report.applied) {
+      console.log(`  line ${i32ToString(edit.line)}: ${edit.rule}`);
+    }
+  }
+  for (let rejection in report.rejected) {
+    console.log(`  rejected ${rejection.edit.rule} at line ${i32ToString(rejection.edit.line)}: ${rejection.error}`);
+    if (options.verbose) {
+      console.log(`    proposed: ${rejection.edit.replacement}`);
+    }
+  }
+}
+
+/** ` (rule 3, rule 1)` — how many fixes each rule made. */
+function summarize(report: FileReport): String {
+  let names = new Array<String>();
+  let counts = new Array<i32>();
+  for (let edit in report.applied) {
+    var found = false;
+    var i = 0;
+    while (i < names.length) {
+      if (names[i] == edit.rule) {
+        counts[i] = counts[i] + 1;
+        found = true;
+      }
+      i += 1;
+    }
+    if (!found) {
+      names.push(edit.rule);
+      counts.push(1);
+    }
+  }
+  if (names.length == 0) {
+    return '';
+  }
+  var text = ' (';
+  var i = 0;
+  while (i < names.length) {
+    if (i > 0) {
+      text = `${text}, `;
+    }
+    text = `${text}${names[i]} ${i32ToString(counts[i])}`;
+    i += 1;
+  }
+  return `${text})`;
+}

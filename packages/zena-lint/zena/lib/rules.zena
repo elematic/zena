@@ -1,10 +1,11 @@
 /**
- * Every rule, by name. The order is the order they run in within a
- * pass; it only matters when two rules want the same bytes, and then the
- * one listed first wins the pass and the other gets the next.
+ * Every rule, by name, with the finding it reports. The order is the
+ * order they run in within a pass; it only matters when two rules want
+ * the same bytes, and then the one listed first wins the pass and the
+ * other gets the next.
  */
 
-import { NamedRule } from './lint.zena';
+import { NamedRule } from './rule.zena';
 import { functionDeclarations } from './rules/function-declaration.zena';
 import { unnecessaryCasts } from './rules/unnecessary-cast.zena';
 import { unnecessaryAnnotations } from './rules/unnecessary-annotation.zena';
@@ -23,22 +24,46 @@ import { arrowBodies } from './rules/arrow-body.zena';
 import { growable } from 'zena:core';
 
 export function allRules(): GrowableArray<NamedRule> {
-  let rules = growable<NamedRule>([
-    new NamedRule('function-declaration', functionDeclarations),
-    new NamedRule('unnecessary-cast', unnecessaryCasts),
-    new NamedRule('unnecessary-annotation', unnecessaryAnnotations),
-    new NamedRule('collection-literal', collectionLiterals),
-    new NamedRule('if-initializer', ifInitializers),
-    new NamedRule('nullish', nullishOperators),
-    new NamedRule('match-to-if', matchToIf),
-    new NamedRule('else-if', elseIfs),
-    new NamedRule('for-in', forInLoops),
-    new NamedRule('boolean-return', booleanReturns),
-    new NamedRule('template-literal', templateLiterals),
-    new NamedRule('arrow-body', arrowBodies),
-    new NamedRule('prefer-let', preferLet),
-    new NamedRule('immutable-field', immutableFields),
-    new NamedRule('empty-constructor', emptyConstructors),
+  return growable<NamedRule>([
+    new NamedRule('function-declaration', functionDeclarations,
+        'A top-level arrow function; write a `function` declaration.'),
+    new NamedRule('unnecessary-cast', unnecessaryCasts,
+        'The expression already has this type; the cast can go.'),
+    new NamedRule('unnecessary-annotation', unnecessaryAnnotations,
+        'The checker infers this type; the annotation can go.'),
+    new NamedRule('collection-literal', collectionLiterals,
+        'A collection built by insertions; write a literal.'),
+    new NamedRule('if-initializer', ifInitializers,
+        'A variable assigned by an `if`; initialize it with an `if` expression.'),
+    new NamedRule('nullish', nullishOperators,
+        'A null test spelling out `??` or `?.`; use the operator.'),
+    new NamedRule('match-to-if', matchToIf,
+        'A `match` with one or two arms; write an `if`.'),
+    new NamedRule('else-if', elseIfs,
+        'An `else` holding only an `if`; write `else if`.'),
+    new NamedRule('for-in', forInLoops,
+        'An index loop that only reads the element; write `for…in`.'),
+    new NamedRule('boolean-return', booleanReturns,
+        'Boolean literals chosen by a condition; use the condition.'),
+    new NamedRule('template-literal', templateLiterals,
+        'Three or more strings joined with `+`; write a template literal.'),
+    new NamedRule('arrow-body', arrowBodies,
+        'An arrow whose block only returns; make the expression the body.'),
+    new NamedRule('prefer-let', preferLet,
+        'A `var` never assigned again; declare it with `let`.'),
+    new NamedRule('immutable-field', immutableFields,
+        'A `var` field nothing assigns; drop the `var`.'),
+    new NamedRule('empty-constructor', emptyConstructors,
+        'An empty default constructor; the compiler synthesizes one.'),
   ]);
-  return rules;
+}
+
+/** The rule named `name`, or null. */
+export function ruleNamed(name: String): NamedRule | null {
+  for (let rule in allRules()) {
+    if (rule.name == name) {
+      return rule;
+    }
+  }
+  return null;
 }

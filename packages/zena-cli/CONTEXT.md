@@ -13,8 +13,10 @@ the `zena` command. The design is in
      `compile.zena` (compiling, and the compile cache), `run.zena`,
      `test-run.zena`, `bench-run.zena`, which hands a suite to
      `zena:bench`'s `runSuite` with a function that compiles its `zena`
-     variants, and `lsp.zena`, which connects the language server
-     (`language-service:server`) to stdin and stdout.
+     variants, `lsp.zena`, which connects the language server
+     (`language-service:server`) to stdin and stdout, and `lint.zena`,
+     which runs zena-lint's rules (`zena-lint:lint`) over files and
+     prints the findings or, with `--fix`, applies them.
    - It is built to `out/zena.wasm` by `build:module`, with the compiler
      (`zena-compiler:compile-file`), zb, zenadoc, the language service and
      the formatter linked

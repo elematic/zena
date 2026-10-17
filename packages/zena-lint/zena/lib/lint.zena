@@ -1,29 +1,31 @@
 /**
- * The driver: checks a file, runs the rules, applies what they propose,
- * and checks the result before keeping it.
+ * The driver: checks a file, runs the rules, and either reports what
+ * they found or applies it.
  *
- * A rule is written to preserve meaning, and the check after the rewrite
- * is the net under it: a rewrite the checker rejects is never written.
- * When a pass's edits fail together, the driver bisects them — each half
- * alone, then smaller — until the edits that cause the errors are found
- * and set aside, and reports them with the checker's message so the
- * rule can be fixed. Passes repeat until no rule has anything to say,
- * since one rewrite often enables another (`var` + `if` becomes
- * `let x = if …`, which becomes `x ?? y`).
+ * Reporting is one pass: every rule's proposals on the file as it is,
+ * less the ones that overlap an earlier one. Fixing applies them and
+ * checks the result before keeping it. A rule is written to preserve
+ * meaning, and the check after the rewrite is the net under it: a rewrite
+ * the checker rejects is never written. When a pass's edits fail
+ * together, the driver bisects them — each half alone, then smaller —
+ * until the edits that cause the errors are found and set aside, and
+ * reports them with the checker's message so the rule can be fixed.
+ * Passes repeat until no rule has anything to say, since one rewrite
+ * often enables another (`var` + `if` becomes `let x = if …`, which
+ * becomes `x ?? y`).
  */
 
 import { writeFileSync } from 'zena:fs';
 import { Set } from 'zena:collections';
 import { Project, CheckedFile } from './checking.zena';
-import { RuleContext, Rule } from './context.zena';
+import { NamedRule, proposeEdits, runRules } from './rule.zena';
 import { Edit, disjointEdits, applyEdits, groupEdits, flattenGroups } from './source.zena';
 
-/** A rule by name, so the command line can pick them. */
-export final class NamedRule(name: String, run: Rule)
+export { NamedRule, proposeEdits, runRules, messageOf } from './rule.zena';
 
 export final class LintOptions {
-  /** Write the result back; otherwise only report. */
-  var write = true;
+  /** Apply the fixes and write the file; otherwise report the findings. */
+  var fix = false;
   /** Print every edit, not just the summary. */
   var verbose = false;
   /** Passes before giving up on a file that keeps changing. */
@@ -43,7 +45,9 @@ export final class RejectedEdit(edits: GrowableArray<Edit>, error: String) {
 
 export final class FileReport {
   path: String;
-  /** Edits applied, across every pass. */
+  /** What the rules found on the file as it is, when reporting. */
+  findings = new Array<Edit>();
+  /** Edits applied, across every pass, when fixing. */
   applied = new Array<Edit>();
   rejected = new Array<RejectedEdit>();
   /** The file did not check before anything was done; nothing was. */
@@ -58,8 +62,11 @@ export final class FileReport {
   new(this.path);
 }
 
-/** Cleans one file in place. */
-export function lintFile(project: Project, path: String, options: LintOptions): FileReport {
+/**
+ * Lints one file: reports its findings, or with `options.fix` rewrites it
+ * in place.
+ */
+export function lintFile(project: Project, path: String, options: LintOptions, write: boolean = true): FileReport {
   let report = new FileReport(path);
   let checked = initialCheck(project, path, report);
   if (checked == null) {
@@ -71,6 +78,15 @@ export function lintFile(project: Project, path: String, options: LintOptions): 
     for (let error in before) {
       report.errorsBefore.push(error);
     }
+    project.reset();
+    return report;
+  }
+  if (!options.fix) {
+    report.passes = 1;
+    for (let edit in proposeEdits(checked, options.rules)) {
+      report.findings.push(edit);
+    }
+    report.result = checked.source;
     project.reset();
     return report;
   }
@@ -134,7 +150,7 @@ export function lintFile(project: Project, path: String, options: LintOptions): 
   }
 
   report.result = source;
-  if (report.changed && options.write) {
+  if (report.changed && write) {
     writeFileSync(path, source);
   }
   project.reset();
@@ -142,17 +158,13 @@ export function lintFile(project: Project, path: String, options: LintOptions): 
 }
 
 /**
- * Cleans source text that is not (or not yet) on disk, as if it were the
+ * Lints source text that is not (or not yet) on disk, as if it were the
  * file at `path`: relative imports resolve from there. Nothing is
- * written; the result is on the report.
+ * written; with `options.fix` the result is on the report.
  */
 export function lintSource(project: Project, path: String, source: String, options: LintOptions): FileReport {
   project.override(path, source);
-  let write = options.write;
-  options.write = false;
-  let report = lintFile(project, path, options);
-  options.write = write;
-  return report;
+  return lintFile(project, path, options, false);
 }
 
 /**
@@ -172,16 +184,6 @@ function initialCheck(project: Project, path: String, report: FileReport): Check
     report.failure = e.message;
     return null;
   }
-}
-
-/** Every rule's proposals for one checked file. */
-function runRules(checked: CheckedFile, rules: GrowableArray<NamedRule>): GrowableArray<Edit> {
-  let ctx = new RuleContext(checked);
-  for (let rule in rules) {
-    ctx.rule = rule.name;
-    rule.run(ctx);
-  }
-  return ctx.edits;
 }
 
 /**
