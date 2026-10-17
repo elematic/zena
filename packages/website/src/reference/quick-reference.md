@@ -1239,6 +1239,8 @@ let { x, ...others } = point;    // others: the fields not named
 // Tuple
 let (first, second) = tuple;
 let (a, , c) = (1, 2, 3);  // Skip elements
+let (head, ...tail) = (1, 'a', true);  // tail: (String, boolean)
+let longer = (0, ...tuple);            // spread splices elements in
 ```
 
 ## Classes

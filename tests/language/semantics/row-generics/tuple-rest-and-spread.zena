@@ -1,0 +1,46 @@
+// @mode: check
+// `...rest` in tuple patterns, and spread in tuple literals
+// (docs/design/row-types.md §3.3).
+
+let t = (1, 'a', true);
+
+// A rest takes the elements the pattern does not, in order.
+let (head, ...tail) = t;
+let tailFlag: boolean = tail[1];
+let (first, ...middle, last) = (1, 2.5, 'x', true);
+let middleString: String = middle[1];
+let lastFlag: boolean = last;
+
+// Spread splices a tuple's elements in.
+let spread = (0, ...t);
+let spreadString: String = spread[2];
+let twice = (...t, ...t);
+let sixth: boolean = twice[5];
+
+// On a row type, the rest and the spread keep the row.
+let dropHead = <R extends tuple>(t: (i32, ...R)): (...R) => {
+  let (h, ...rest) = t;
+  return rest;
+};
+let dropped = dropHead((1, 'a', true));
+let droppedString: String = dropped[0];
+
+let prepend = <R extends tuple>(t: (...R)): (String, ...R) => ('p', ...t);
+let prepended = prepend((1, 2));
+let prependedString: String = prepended[0];
+let prependedInt: i32 = prepended[2];
+
+let tooFew = (1, 2);
+let (a1, b1, ...r1, c1) = tooFew; // @error: A tuple pattern of 3 elements and a rest cannot match a tuple of 2.
+
+let pastRow = <R extends tuple>(t: (i32, ...R)): i32 => {
+  let (h, ...m, end) = t; // @error: A tuple pattern cannot name an element at or after the row 'R'
+  return h;
+};
+
+let notTuple = (1, ...5); // @error: Cannot spread 'i32' into a tuple
+
+let twoRows = <A extends tuple, B extends tuple>(a: (...A), b: (...B)): i32 => {
+  let both = (...a, ...b); // @error: A tuple can spread at most one row type parameter.
+  return 0;
+};

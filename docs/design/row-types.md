@@ -142,8 +142,9 @@ waits only on its own prerequisites. The order:
    (implementation-plan.md, Track A). Rows are in for records and
    tuples: `R extends record` and `R extends tuple`, type-level spread
    of concrete types and row parameters, inference, lacks for records,
-   and one specialization per row. For records, spread on row-typed
-   values and `...rest` patterns are in too; the tuple forms are next.
+   and one specialization per row. Spread on row-typed values and
+   `...rest` patterns are in too, for records and tuples. Step 2 is done
+   apart from the `ZENA_ZIR_STATS` instantiation counters.
 3. Closed types by default: exactness checks on literals, projection
    for width conversions between closed types, and `...` existentials
    as the only fat-pointer form, with equality and `is`/`as` by
@@ -368,9 +369,13 @@ there (`mergeTupleRow`). Inference matches the elements before the row
 against a prefix of the argument and the ones after it against a
 suffix, and binds the row to the rest. In a body, an index before the
 row reads its element and one at or past it is an error, since the
-caller chose the row's length. Tuple patterns do not destructure a
-tuple type with a row yet; that waits for `...rest`. `(...R)` is a
-tuple type of one entry, where a plain `(T)` is a parenthesized type.
+caller chose the row's length. A tuple pattern on a type with a row
+needs a `...rest` that covers the row: the elements around it take the
+known prefix and suffix (`tupleRestBinding`). `(...R)` is a tuple type
+of one entry, where a plain `(T)` is a parenthesized type, and `(...t)`
+likewise a tuple literal. A literal spreading a value with a row keeps
+the row; codegen reads each spread tuple's fields and builds the result
+with one `struct.new`, and a rest builds its tuple the same way.
 
 A note for later: Zena's `inline` tuples (multi-value returns, the
 `Iterator.next()` protocol shape) are tuples too. Row-generic code over

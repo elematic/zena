@@ -11382,6 +11382,88 @@ function getArrayPatternRestType(ctx: CheckerContext, t: Type, elemType: Type): 
   return new ArrayType(elemType, true);
 }
 
+/** The position of a tuple pattern's `...rest` element, or -1. */
+function tupleRestIndex(elements: GrowableArray<Node | null>): i32 {
+  for (var i = 0; i < elements.length; i += 1) {
+    if (elements[i] is RestPattern) {
+      return i;
+    }
+  }
+  return -1;
+}
+
+/**
+ * What a tuple pattern with a `...rest` binds: the type of each element,
+ * the rest's included, by position in the pattern.
+ */
+final class TupleRestBinding {
+  types: GrowableArray<Type>;
+  new(this.types);
+}
+
+/**
+ * Types a tuple pattern with a `...rest` against `t`: the elements
+ * before the rest take a prefix of the tuple, the ones after it a
+ * suffix, and the rest the tuple of what is between, with `t`'s row if
+ * that falls there. A row's length is the caller's, so a named element
+ * may not land at or past it. The rest's type is also recorded on the
+ * rest pattern for codegen, which builds that tuple. Null after an
+ * error.
+ */
+function tupleRestBinding(
+  ctx: CheckerContext,
+  elements: GrowableArray<Node | null>,
+  t: Type,
+  loc: SourceLocation | null
+): TupleRestBinding | null {
+  let base = baseType(t);
+  if (!(base is TupleT)) {
+    if (!(base is ErrorType) && !(base is UnknownType)) {
+      ctx.error(`A tuple pattern cannot match a value of type '${typeToString(t)}'.`,
+          DiagnosticCode.TypeMismatch, loc);
+    }
+    return null;
+  }
+  let restIndex = tupleRestIndex(elements);
+  let before = restIndex;
+  let after = elements.length - restIndex - 1;
+  let tupleElements = base.elementTypes;
+  let length = tupleElements.length;
+  let row = base.row;
+  if (row != null) {
+    if (before > base.rowIndex || after > length - base.rowIndex) {
+      ctx.error(`A tuple pattern cannot name an element at or after the row '${row.name}' of type '${typeToString(t)}': the row's elements are the caller's.`,
+          DiagnosticCode.TypeMismatch, loc);
+      return null;
+    }
+  } else if (before + after > length) {
+    ctx.error(`A tuple pattern of ${before + after} elements and a rest cannot match a tuple of ${length}.`,
+        DiagnosticCode.TypeMismatch, loc);
+    return null;
+  }
+  let middle = new Array<Type>();
+  for (var i = before; i < length - after; i += 1) {
+    middle.push(tupleElements[i]);
+  }
+  let restType = if (row != null) {
+    new TupleT(middle, row, base.rowIndex - before)
+  } else {
+    new TupleT(middle, null, 0)
+  };
+  let types = new Array<Type>();
+  for (var i = 0; i < elements.length; i += 1) {
+    if (i < before) {
+      types.push(tupleElements[i]);
+    } else if (i == restIndex) {
+      types.push(restType);
+      ctx.setNodeType(elements[i] as Node, restType);
+    } else {
+      types.push(tupleElements[length - after + (i - restIndex - 1)]);
+    }
+  }
+  return new TupleRestBinding(types);
+}
+
 /**
  * Extract element types for tuple-pattern binding/checking.
  * Supports TupleType, InlineTupleType, and unions of tuple-like members.
@@ -11520,6 +11602,22 @@ function patternCanMatchType(ctx: CheckerContext, pattern: Node, t: Type): boole
     case TuplePattern {elements}: {
       match (t) {
         case TupleT {elementTypes}: {
+          let restIndex = tupleRestIndex(elements);
+          if (restIndex >= 0) {
+            // The rest is irrefutable; the elements around it match a
+            // prefix and a suffix.
+            let after = elements.length - restIndex - 1;
+            if (restIndex + after > elementTypes.length) { return false; }
+            for (var i = 0; i < elements.length; i += 1) {
+              let elem = elements[i];
+              if (i == restIndex || elem == null) { continue; }
+              let at = if (i < restIndex) i else elementTypes.length - after + (i - restIndex - 1);
+              if (!patternCanMatchType(ctx, elem as Node, elementTypes[at])) {
+                return false;
+              }
+            }
+            return true;
+          }
           if (elements.length > elementTypes.length) { return false; }
           for (var i = 0; i < elements.length; i += 1) {
             let elem = elements[i];
@@ -11725,6 +11823,17 @@ function bindPattern(ctx: CheckerContext, pattern: Pattern, t: Type): void {
       }
     }
     case TuplePattern {elements, loc}: {
+      if (tupleRestIndex(elements) >= 0) {
+        let restBinding = tupleRestBinding(ctx, elements, t, loc);
+        for (var ri = 0; ri < elements.length; ri += 1) {
+          let element = elements[ri];
+          if (element != null) {
+            let elementType = if (restBinding != null) restBinding.types[ri] else new ErrorType();
+            bindPattern(ctx, element as Pattern, elementType);
+          }
+        }
+        return;
+      }
       let elementTypes = getTuplePatternElementTypes(t);
       if (elementTypes == null) {
         if (!(t is ErrorType) && !(t is UnknownType)) {
@@ -13370,7 +13479,10 @@ function checkExpressionInner(ctx: CheckerContext, expr: Expression, expectedTyp
     }
     recT
   }
-  case TupleLiteral {elements, loc}: {
+  case TupleLiteral {elements, spreadIndices, loc}: {
+    if (spreadIndices != null) {
+      return checkTupleLiteralWithSpreads(ctx, elements, spreadIndices, expectedType);
+    }
     // Inline tuple literals are parsed as TupleLiteral nodes.
     // If the expected type is an inline tuple (or union of inline tuples),
     // check against those element expectations and produce an InlineTupleType.
@@ -19597,7 +19709,7 @@ function recordUnionPatternShape(
  * conversion is recorded on the rest pattern for codegen. Anything but
  * a record is an error.
  */
-let recordRestType = (ctx: CheckerContext, recordPat: RecordPattern, matched: Type): Type => {
+function recordRestType(ctx: CheckerContext, recordPat: RecordPattern, matched: Type): Type {
   let rest = recordPat.rest as Node;
   let base = baseType(matched);
   if (!(base is RecordT)) {
@@ -19625,7 +19737,7 @@ let recordRestType = (ctx: CheckerContext, recordPat: RecordPattern, matched: Ty
   let restType = new RecordT(props, optionals, base.row);
   ctx.model.setRecordAdaptation(rest, base, restType);
   return restType;
-};
+}
 
 /**
  * The matched type for a record pattern whose value is a union of
@@ -20150,6 +20262,81 @@ function resolveArrayBackingClass(
 /**
  * Resolve the result type of an index operation.
  */
+/**
+ * A tuple literal with `...t` elements: each spread tuple's elements
+ * splice in where it is written, and a spread whose type has a row
+ * (`(...R)`, or a value typed R) gives the literal's type that row at
+ * that position. One row at most: two would leave the elements between
+ * them at no known position.
+ */
+function checkTupleLiteralWithSpreads(
+  ctx: CheckerContext,
+  elements: GrowableArray<Expression>,
+  spreadIndices: GrowableArray<i32>,
+  expectedType: Type | null
+): Type {
+  let spliced = new Array<Type>();
+  var row: TypeParameterType | null = null;
+  var rowIndex = 0;
+  var i = 0;
+  for (let element in elements) {
+    let elementType = checkExpression(ctx, element, null);
+    if (spreadIndices.contains(i)) {
+      match (baseType(elementType)) {
+        case TupleT as tuple: {
+          let tupleRow = tuple.row;
+          if (tupleRow != null) {
+            if (row != null) {
+              reportTwoTupleLiteralRows(ctx, element.loc);
+            }
+            row = tupleRow;
+            rowIndex = spliced.length + tuple.rowIndex;
+          }
+          for (let spreadElement in tuple.elementTypes) {
+            spliced.push(spreadElement);
+          }
+        }
+        case TypeParameterType as tp: {
+          if (!tp.isTupleRow) {
+            reportNotTupleLiteralSpreadable(ctx, elementType, element.loc);
+          } else {
+            if (row != null) {
+              reportTwoTupleLiteralRows(ctx, element.loc);
+            }
+            row = tp;
+            rowIndex = spliced.length;
+          }
+        }
+        case ErrorType: {}
+        case _: {
+          reportNotTupleLiteralSpreadable(ctx, elementType, element.loc);
+        }
+      }
+    } else {
+      spliced.push(elementType);
+    }
+    i += 1;
+  }
+  let tupleT = new TupleT(spliced, row, rowIndex);
+  if (expectedType != null) {
+    let baseExpected = baseType(expectedType);
+    if (baseExpected is TupleT && isAssignableTo(ctx, tupleT, baseExpected)) {
+      return baseExpected;
+    }
+  }
+  return tupleT;
+}
+
+function reportTwoTupleLiteralRows(ctx: CheckerContext, loc: SourceLocation | null): void {
+  ctx.error("A tuple can spread at most one row type parameter.",
+      DiagnosticCode.TypeMismatch, loc);
+}
+
+function reportNotTupleLiteralSpreadable(ctx: CheckerContext, t: Type, loc: SourceLocation | null): void {
+  ctx.error(`Cannot spread '${typeToString(t)}' into a tuple: only a tuple can be spread.`,
+      DiagnosticCode.TypeMismatch, loc);
+}
+
 /** An index expression as a message shows it: a literal's digits. */
 function indexText(index: Expression) {
   return if (let NumberLiteral {raw} = index) raw else "expression";
@@ -21898,6 +22085,21 @@ function checkPattern(ctx: CheckerContext, pattern: Node, expectedType: Type): v
     }
     case TuplePattern as tuplePat: {
       let {elements} = tuplePat;
+      if (tupleRestIndex(elements) >= 0) {
+        let restBinding = tupleRestBinding(ctx, elements, expectedType, tuplePat.loc);
+        for (var ri = 0; ri < elements.length; ri += 1) {
+          let element = elements[ri];
+          if (element != null) {
+            let elementType = if (restBinding != null) restBinding.types[ri] else new ErrorType();
+            if (element is RestPattern) {
+              checkPattern(ctx, element.pattern, elementType);
+            } else {
+              checkPattern(ctx, element, elementType);
+            }
+          }
+        }
+        return;
+      }
       let narrowed = narrowTupleUnionByPattern(ctx, expectedType, tuplePat);
       let elementTypes = getTuplePatternElementTypes(narrowed);
       if (elementTypes == null) {
