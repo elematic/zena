@@ -11,7 +11,7 @@ import {
 } from './context.zena';
 import { SemanticModel, memberKeyOf } from '../../semantic-model.zena';
 import {
-  Type, ClassType, InterfaceType, FunctionType, TypeParameterType, RecordType, TupleType, InlineTupleType, UnionType, TypeAliasType, EnumType, ArrayType, MethodInfo, FieldInfo, instantiateClassType, instantiateInterfaceType, ThisType, baseType, ErasedType,
+  Type, ClassType, InterfaceType, FunctionType, TypeParameterType, RecordType, TupleType, InlineTupleType, UnionType, TypeAliasType, EnumType, ArrayType, NullType, MethodInfo, FieldInfo, instantiateClassType, instantiateInterfaceType, ThisType, baseType, ErasedType,
   isScopedType, scopedInner, internFunctionType } from '../../types.zena';
 import {
   Node, decoratorStringArg, AsExpression, IsExpression, RecordLiteral, ClassPattern, MatchCase, LetPatternCondition, AsPattern, BindingPattern, LogicalPattern, TuplePattern, ArrayPattern, RestPattern, RecordPattern, AccessorDeclaration, BinaryExpression, LiteralPattern, NewExpression, MethodDefinition, SymbolPropertyName, RangeExpression, ArrayLiteral, MapLiteral, TupleLiteral, Expression, TemplateElement, TaggedTemplateExpression, ForInStatement, MemberExpression, AwaitExpression, IndexExpression, AssignmentExpression, Identifier, CallExpression, VariableDeclaration, FunctionDeclaration, Pattern, ImportDeclaration, DeclareFunction, ImportSpecifier, IdentifierPattern, FunctionExpression, MixinDeclaration, ClassDeclaration, Module, ThrowExpression, TryExpression, ShieldedStatement, StringLiteral, TemplateLiteral,
@@ -27,7 +27,7 @@ import {
   getClassKey, getClassMethodKey, getInterfaceKey, getClassInterfaceKey, getInterfaceMemberKey, getMixinKeyFromSymbol, getSpecializedFunctionKey, getSpecializedName, getFunctionValueWrapperKey, getSignatureKey, collectMixinMembers, mixinScopeOfNode, MixinKey, isConcrete, ExportKey, ExportGlobalKey, getTypeUniqueKey, templateConvertHelperName, containsErasedType, pendingSomeClass, pendingNoneClass,
 } from '../codegen-utils.zena';
 import {
-  typeToValType, typeToStorageValType, mapReturnTypeToWasmResults, mapParamTypeToWasmParams, substituteTypeParamsInCodegen, getClosureStruct, getClassTypeParameters, getInterfaceTypeParameters, substituteTypeParamsInClassContext, eraseTypeParameters, findImplementedInterfaceTransitive, findExtendedInterfaceTransitive, recordWasmFields, sortedOptionalNames, asyncIteratorPendingFuture,
+  typeToValType, typeToStorageValType, mapReturnTypeToWasmResults, mapParamTypeToWasmParams, substituteTypeParamsInCodegen, getClosureStruct, getClassTypeParameters, getInterfaceTypeParameters, substituteTypeParamsInClassContext, eraseTypeParameters, findImplementedInterfaceTransitive, findExtendedInterfaceTransitive, recordWasmFields, sortedOptionalNames, asyncIteratorPendingFuture, getNonNullableType,
 } from '../type-mapping.zena';
 
 import { dirName, normalizePath } from '../../module-resolver.zena';
@@ -976,6 +976,26 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
           let calleeSym = model.resolve(calleeExpr);
           if (calleeSym != null) {
             let calleeTarget = calleeSym.resolveTarget();
+            let calleeDecl = calleeTarget.declaration;
+            var isToString = false;
+            if (calleeDecl != null) {
+              if (this.pass.wasm.intrinsics.has(calleeDecl.id)) {
+                if (this.pass.wasm.intrinsics[calleeDecl.id] == "to_string") {
+                  isToString = true;
+                }
+              }
+              if (!isToString && calleeDecl is DeclareFunction) {
+                for (let dec in calleeDecl.decorators) {
+                  if (dec.name == "intrinsic" && dec.args.length == 1 && (decoratorStringArg(dec, 0) ?? "") == "to_string") {
+                    isToString = true;
+                    break;
+                  }
+                }
+              }
+            }
+            if (isToString && n.args.length == 1) {
+              this.registerToStringOperand(n.args[0], model, resolveType);
+            }
             if (model.globalDeclarations.has(calleeTarget.id)) {
               this.pass.queueReferrer(new Referrer(true,
                   calleeTarget.id, -1, model, null, true));
@@ -2006,6 +2026,9 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
       // what makes the registration survive. (This was invisible while
       // instantiation reached every method a class had.)
       this.pass.markFunctionReached(fn);
+      this.pass.queueReferrer(new Referrer(false, noSymbolId, (md as Node).id as i32,
+          this.pass.getNodeModel(md as Node, targetModel), targetClass,
+          this.pass.currentReachable, typeArgs));
     }
   }
 
@@ -2063,6 +2086,79 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
    * A disagreement surfaces as `Invalid function call: function index
    * < 0`, not as bad code.
    */
+  registerToStringOperand(expr: Expression, model: SemanticModel,
+      resolveType: (t: Type) => Type): void {
+    let t = model.getNodeType(expr);
+    if (t == null) { return; }
+    let resolvedT = resolveType(t);
+    if (containsErasedType(resolvedT)) {
+      return;
+    }
+    if (resolvedT is NullType) {
+      this.noteStringLiteral("null");
+      return;
+    }
+    if (resolvedT is UnionType) {
+      for (let m in resolvedT.types) {
+        if (m is NullType) {
+          this.noteStringLiteral("null");
+          break;
+        }
+      }
+    }
+    let nonNullT = getNonNullableType(resolvedT);
+    let name = templateConvertHelperName(nonNullT);
+    if (name != "") {
+      this.queueStdlibFunction('core', name);
+      return;
+    }
+    let bt = baseType(nonNullT);
+    if (bt is ClassType) {
+      if (isWellKnown(WellKnown.StringClass, bt.name, bt.sourcePath)) {
+        return;
+      }
+      let stringableIface = findImplementedInterfaceTransitive(this.pass.wasm, bt, "Stringable");
+      if (stringableIface != null &&
+          isWellKnown(WellKnown.StringableInterface, stringableIface.name, stringableIface.sourcePath)) {
+        let ccModel = this.pass.getClassModel(bt);
+        let mds = this.pass.cha.findImplementingMethods(bt, ":toString");
+        for (let md in mds) {
+          this.pass.queueReferrer(new Referrer(false, noSymbolId,
+              (md as Node).id as i32,
+              this.pass.getNodeModel(md as Node, ccModel), bt,
+              this.pass.currentReachable));
+        }
+        this.pass.notePendingMemberReach(getClassMethodKey(getClassKey(bt), ":toString"));
+        if (this.pass.currentReachable) {
+          this.pass.notePendingStaticTargets(bt, ":toString");
+        }
+      } else {
+        this.noteStringLiteral(`<${bt.name}>`);
+      }
+    } else if (bt is InterfaceType) {
+      let stringableIface = findExtendedInterfaceTransitive(this.pass.wasm, bt, "Stringable");
+      if (stringableIface != null &&
+          isWellKnown(WellKnown.StringableInterface, stringableIface.name, stringableIface.sourcePath)) {
+        let iName = getInterfaceKey(bt.genericSource ?? bt);
+        this.pass.wasm.usedInterfaceMembers[getInterfaceMemberKey(iName, ":toString")] = true;
+        let resolvedIfaceStr = `${i32ToString((bt.genericSource ?? bt).id as i32)}.:toString`;
+        this.pass.addReferencedInterfaceMember(resolvedIfaceStr);
+        let extName = getInterfaceKey(stringableIface.genericSource ?? stringableIface);
+        this.pass.wasm.usedInterfaceMembers[getInterfaceMemberKey(extName, ":toString")] = true;
+        let extIfaceStr = `${i32ToString((stringableIface.genericSource ?? stringableIface).id as i32)}.:toString`;
+        this.pass.addReferencedInterfaceMember(extIfaceStr);
+      } else {
+        this.noteStringLiteral(`<${bt.name}>`);
+      }
+    } else if (bt is RecordType) {
+      this.noteStringLiteral("<record>");
+    } else if (bt is TupleType || bt is InlineTupleType) {
+      this.noteStringLiteral("<tuple>");
+    } else {
+      this.noteStringLiteral("<object>");
+    }
+  }
+
   registerTemplateLiteral(tpl: TemplateLiteral, model: SemanticModel,
       resolveType: (t: Type) => Type): void {
     if (tpl.expressions.length == 0) {
@@ -2070,14 +2166,7 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
       return;
     }
     for (let e in tpl.expressions) {
-      let t = model.getNodeType(e);
-      if (t == null) { continue; }
-      let name = templateConvertHelperName(resolveType(t));
-      if (name == "") { continue; }
-      // By symbol, not by `getStdlibFunc`: the WasmFunction may not
-      // exist yet when this walk runs, and a null lookup here would
-      // silently leave the call unrooted.
-      this.queueStdlibFunction('core', name);
+      this.registerToStringOperand(e, model, resolveType);
     }
     let partCount = tpl.expressions.length * 2 + 1;
     // `__concatN` is an optimization the standard library does not
@@ -2141,6 +2230,8 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
                   this.pass.specializer.instantiateGenericMethod(cc,
                       cdNode, methName, member as Node,
                       typeArguments, cdModel);
+                  this.pass.queueReferrer(new Referrer(false, noSymbolId,
+                      (member as Node).id as i32, cdModel, cc, true, typeArguments));
                 } else {
                   this.pass.queueReferrer(new Referrer(false, noSymbolId,
                       (member as Node).id as i32, cdModel, cc, true));
@@ -2408,6 +2499,26 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
           let calleeSym = model.resolve(calleeExpr);
           if (calleeSym != null) {
             let calleeTarget = calleeSym.resolveTarget();
+            let calleeDecl = calleeTarget.declaration;
+            var isToString = false;
+            if (calleeDecl != null) {
+              if (this.pass.wasm.intrinsics.has(calleeDecl.id)) {
+                if (this.pass.wasm.intrinsics[calleeDecl.id] == "to_string") {
+                  isToString = true;
+                }
+              }
+              if (!isToString && calleeDecl is DeclareFunction) {
+                for (let dec in calleeDecl.decorators) {
+                  if (dec.name == "intrinsic" && dec.args.length == 1 && (decoratorStringArg(dec, 0) ?? "") == "to_string") {
+                    isToString = true;
+                    break;
+                  }
+                }
+              }
+            }
+            if (isToString && n.args.length == 1) {
+              this.registerToStringOperand(n.args[0], model, resolveType);
+            }
             // Module-level declarations only: queueing LOCAL closure
             // variables preempts their proper function-expression
             // discovery (the reached-key blocks the real referrer).
@@ -2782,6 +2893,9 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
                 // registerGenericMethodUse.
                 this.pass.markFunctionReached(
                   specializer.instantiateGenericMethod(resolvedObj, cd, propName, md as Node, methodTypeArgs, this.pass.getNodeModel(md as Node, targetModel)));
+                this.pass.queueReferrer(new Referrer(false, noSymbolId, (md as Node).id as i32,
+                    this.pass.getNodeModel(md as Node, targetModel), resolvedObj,
+                    this.pass.currentReachable, methodTypeArgs));
               } else {
                 this.pass.queueReferrer(new Referrer(false, noSymbolId, (md as Node).id as i32, this.pass.getNodeModel(md as Node, targetModel), resolvedObj, this.pass.currentReachable));
               }

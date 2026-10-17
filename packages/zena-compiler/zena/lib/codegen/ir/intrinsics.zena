@@ -26,6 +26,7 @@ import { IrRefFunc } from './ir.zena';
 import { IrOp, IrRefTag, IrRefType, isWideMulOp } from './ir.zena';
 import { LoweringContext } from './lowering-context.zena';
 import { lowerEqIntrinsic, lowerHashIntrinsic } from './equality.zena';
+import { convertValueToString } from './templates.zena';
 import { lowerExpr } from './lowering.zena';
 import { growable } from 'zena:core';
 
@@ -693,6 +694,20 @@ function lowerSimd(
  * both length builtins are the width-agnostic array.len, and
  * __array_new_empty / __byte_array_new are both array.new_default.
  */
+function lowerToStringIntrinsic(cx: LoweringContext, call: CallExpression) {
+  if (call.args.length != 1) {
+    cx.fail('to_string arity');
+  }
+  let arg = call.args[0];
+  let tOpt = cx.substitutedNodeType(arg);
+  if (tOpt == null) {
+    cx.fail('untyped to_string operand');
+  }
+  let value = lowerExpr(cx, arg, null);
+  let res = convertValueToString(cx, value, tOpt, arg.loc);
+  return cx.reassertNonNull(res, cx.exprVt(call));
+}
+
 export function lowerIntrinsic(cx: LoweringContext, name: String, call: CallExpression, multiOut: GrowableArray<i32> | null): i32 {
   if (isWideArithIntrinsic(name)) {
     if (multiOut == null) {
@@ -775,6 +790,9 @@ export function lowerIntrinsic(cx: LoweringContext, name: String, call: CallExpr
     }
     case 'hash': {
       lowerHashIntrinsic(cx, call)
+    }
+    case 'to_string': {
+      lowerToStringIntrinsic(cx, call)
     }
     case _: {
       // SIMD instructions are not listed above: one table row in
