@@ -36,7 +36,7 @@ import {
   LoweringContext, ZirUnsupported, noValues, oneValue, twoValues,
 } from './lowering-context.zena';
 import { lowerStringLiteral } from './templates.zena';
-import { lowerExpr, recordRestValue, repackRecordUnion } from './lowering.zena';
+import { bindTupleWithRest, lowerExpr, recordRestValue, repackRecordUnion, tupleRestIndexOf } from './lowering.zena';
 
 
 /** Bail with the lowering-side message shape (reason @function). */
@@ -756,10 +756,15 @@ export let lowerPatternTest = (cx: LoweringContext, pattern: Node,
       branchUnless(cx, cond, failB);
     }
     case TuplePattern as tp: {
-      for (var i = 0; i < tp.elements.length; i += 1) {
+      // Elements after a `...rest` count from the tuple's end.
+      let restIndex = tupleRestIndexOf(tp);
+      let count = tp.elements.length;
+      let length = if (restIndex >= 0) structOfValue(cx, value).fields.length else count;
+      for (var i = 0; i < count; i += 1) {
         let el = tp.elements[i];
-        if (el != null && patternRefutable(cx, el)) {
-          let fieldVal = tupleFieldRead(cx, value, i);
+        if (el != null && i != restIndex && patternRefutable(cx, el)) {
+          let at = if (restIndex < 0 || i < restIndex) i else length - (count - i);
+          let fieldVal = tupleFieldRead(cx, value, at);
           lowerPatternTest(cx, el, fieldVal, failB);
         }
       }
@@ -903,6 +908,10 @@ export let lowerPatternBindings = (cx: LoweringContext, pattern: Node,
       // Or-pattern bindings were merged during the test phase.
     }
     case TuplePattern as tp: {
+      if (tupleRestIndexOf(tp) >= 0) {
+        bindTupleWithRest(cx, tp, value);
+        return;
+      }
       for (var i = 0; i < tp.elements.length; i += 1) {
         let el = tp.elements[i];
         if (el != null && patternBinds(cx, el)) {

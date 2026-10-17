@@ -1741,9 +1741,15 @@ function printRecordLiteral(expr: RecordLiteral): Doc {
 
 function printTupleLiteral(expr: TupleLiteral): Doc {
   let elemDocs = new Array<Doc>();
+  let spreadIndices = expr.spreadIndices;
   var i = 0;
-  while (i < expr.elements.length) {
-    elemDocs.push(printExpression(expr.elements[i]));
+  for (let element in expr.elements) {
+    let elementDoc = printExpression(element);
+    if (spreadIndices != null && spreadIndices.contains(i)) {
+      elemDocs.push(concat(docs2(text('...'), elementDoc)));
+    } else {
+      elemDocs.push(elementDoc);
+    }
     i += 1;
   }
   return concat(docs3(text('('), join(text(', '), elemDocs), text(')')));

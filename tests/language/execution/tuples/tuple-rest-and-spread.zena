@@ -1,0 +1,55 @@
+// @mode: run
+// @result: 1
+// `...rest` in tuple patterns, and spread in tuple literals
+// (docs/design/row-types.md §3.3).
+
+let dropHead = <R extends tuple>(t: (i32, ...R)): (...R) => {
+  let (h, ...rest) = t;
+  return rest;
+};
+
+let prepend = <R extends tuple>(t: (...R)): (String, ...R) => ('p', ...t);
+
+let middleOf = (t: (i32, f64, String, boolean)): (f64, String) => {
+  let (first, ...middle, last) = t;
+  return middle;
+};
+
+export let main = (): i32 => {
+  let t = (1, 'a', true);
+  let (head, ...tail) = t;
+  if (head != 1 || tail[0] != 'a' || !tail[1]) {
+    return 10;
+  }
+  if (tail != ('a', true)) {
+    return 11;
+  }
+  let spread = (0, ...t, 9);
+  if (spread[0] != 0 || spread[1] != 1 || spread[2] != 'a' || !spread[3] || spread[4] != 9) {
+    return 12;
+  }
+  let middle = middleOf((1, 2.5, 'x', true));
+  if (middle[0] != 2.5 || middle[1] != 'x') {
+    return 13;
+  }
+  let dropped = dropHead((1, 'a', true));
+  if (dropped[0] != 'a' || !dropped[1]) {
+    return 14;
+  }
+  let prepended = prepend((1, 2));
+  if (prepended[0] != 'p' || prepended[1] != 1 || prepended[2] != 2) {
+    return 15;
+  }
+  let held: (i32, String) = (7, 'h');
+  if (dropHead(held)[0] != 'h' || prepend(held)[2] != 'h') {
+    return 16;
+  }
+  // In a match arm too.
+  let sum = match ((1, 2, 3)) {
+    case (let a, ...bc): a + bc[0] + bc[1]
+  };
+  if (sum != 6) {
+    return 17;
+  }
+  return 1;
+};

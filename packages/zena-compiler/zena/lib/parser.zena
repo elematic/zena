@@ -1292,16 +1292,31 @@ export final class Parser {
   
   #parseMatchTuplePattern(startToken: Token): Node {
     let elements = new Array<Node | null>(4);
-    
+    var hasRest = false;
+
     if (!this.#check(TokenType.RParen)) {
-      elements.push(this.#parseMatchPattern());
-      while (this.#match(TokenType.Comma) && !this.#check(TokenType.RParen)) {
-        elements.push(this.#parseMatchPattern());
+      while (true) {
+        // Rest: (first, ...rest) binds the elements the others do not.
+        if (this.#match(TokenType.DotDotDot)) {
+          let restToken = this.#previous();
+          if (hasRest) {
+            throw this.#error("A tuple pattern may only contain one rest element");
+          }
+          hasRest = true;
+          let restName = this.#parseIdentifier();
+          let restPat = new IdentifierPattern(restName.name, restName.loc);
+          elements.push(new RestPattern(restPat, this.#makeLocation(restToken)));
+        } else {
+          elements.push(this.#parseMatchPattern());
+        }
+        if (!this.#match(TokenType.Comma) || this.#check(TokenType.RParen)) {
+          break;
+        }
       }
     }
     
     this.#consume(TokenType.RParen, "Expected ')' after tuple pattern");
-    if (elements.length == 1) {
+    if (elements.length == 1 && !(elements[0] is RestPattern)) {
       return elements[0] as Node;
     }
     return new TuplePattern(elements, this.#makeLocation(startToken));
@@ -1737,11 +1752,28 @@ export final class Parser {
   
   #parseParenTuplePattern(startToken: Token, isUnderLet: boolean, matchContext: boolean): Pattern {
     let elements = new Array<Node | null>(4);
+    var hasRest = false;
 
     while (!this.#check(TokenType.RParen) && !this.#isAtEnd()) {
       // Support holes: (a, , c)
       if (this.#match(TokenType.Comma)) {
         elements.push(null);
+        continue;
+      }
+
+      // Rest: (first, ...middle, last) binds the elements between.
+      if (this.#match(TokenType.DotDotDot)) {
+        let restToken = this.#previous();
+        if (hasRest) {
+          throw this.#error("A tuple pattern may only contain one rest element");
+        }
+        hasRest = true;
+        let restName = this.#parseIdentifier();
+        let restPat = new IdentifierPattern(restName.name, restName.loc);
+        elements.push(new RestPattern(restPat, this.#makeLocation(restToken)));
+        if (!this.#check(TokenType.RParen)) {
+          this.#consume(TokenType.Comma, "Expected ',' in tuple pattern");
+        }
         continue;
       }
 
@@ -1772,7 +1804,7 @@ export final class Parser {
     }
     
     this.#consume(TokenType.RParen, "Expected ')' after tuple pattern");
-    if (elements.length == 1) {
+    if (elements.length == 1 && !(elements[0] is RestPattern)) {
       return elements[0] as Pattern;
     }
     return new TuplePattern(elements, this.#makeLocation(startToken));
@@ -2300,20 +2332,30 @@ export final class Parser {
         return this.#parseArrowFunction(startToken, null, false, false);
       }
       
-      // Parse first expression
+      // Parse first expression; `...t` makes this a tuple, even alone.
+      let firstSpread = this.#match(TokenType.DotDotDot);
       let first = this.#parseExpression();
-      
+
       // If comma follows, it's a tuple literal
-      if (this.#match(TokenType.Comma)) {
+      if (firstSpread || this.#match(TokenType.Comma)) {
         let elements = growable<Expression>([first]);
-        if (!this.#check(TokenType.RParen)) {
+        var spreadIndices: GrowableArray<i32> | null = null;
+        if (firstSpread) {
+          spreadIndices = growable<i32>([0]);
+          this.#match(TokenType.Comma);
+        }
+        while (!this.#check(TokenType.RParen) && !this.#isAtEnd()) {
+          if (this.#match(TokenType.DotDotDot)) {
+            spreadIndices ??= new Array<i32>();
+            spreadIndices.push(elements.length);
+          }
           elements.push(this.#parseExpression());
-          while (this.#match(TokenType.Comma) && !this.#check(TokenType.RParen)) {
-            elements.push(this.#parseExpression());
+          if (!this.#match(TokenType.Comma)) {
+            break;
           }
         }
         this.#consume(TokenType.RParen, "Expected ')' after tuple");
-        return new TupleLiteral(elements, this.#makeLocation(startToken));
+        return new TupleLiteral(elements, spreadIndices, this.#makeLocation(startToken));
       }
       
       // Single expression: grouping

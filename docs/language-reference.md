@@ -4398,10 +4398,9 @@ so a field `R` might also have would make the result's type depend on
 `R`. A `...rest` pattern on such a value keeps the row too (see
 [Record Destructuring](#record-destructuring)).
 
-Tuples have rows too, declared `R extends tuple` (see
-[Tuple Spreads and Tuple Rows](#tuple-spreads-and-tuple-rows)). Spread
-and `...rest` patterns on tuple values are planned (see
-[row-types.md](design/row-types.md)).
+Tuples have rows too, declared `R extends tuple`, with the same spread
+and `...rest` forms (see
+[Tuple Spreads and Tuple Rows](#tuple-spreads-and-tuple-rows)).
 
 ### Tuples
 
@@ -4504,6 +4503,20 @@ type, and `(...R)` is a tuple type even though it has one entry: a plain
 `(T)` is a parenthesized type. A tuple type spreads at most one row type
 parameter, and tuples have no width conversions, so a type spreading `R`
 accepts only a tuple spreading `R` at the same position.
+
+A tuple literal can spread tuple values, which splices in their elements.
+Spreading a value whose type has a row keeps the row:
+
+```zena
+let t = (1, 'a');
+let longer = (0, ...t, true); // (i32, i32, String, boolean)
+
+let prepend = <R extends tuple>(t: (...R)): (String, ...R) => ('p', ...t);
+```
+
+`(...t)` is a tuple literal, as `(...R)` is a tuple type. A literal spreads
+at most one value with a row. A `...rest` pattern takes elements apart
+again (see [Tuple Destructuring](#tuple-destructuring)).
 
 ### Inline Tuples (Multi-Value Returns)
 
@@ -5833,6 +5846,20 @@ let t = (10, 20);
 let (a, b) = t;
 let (first, , third) = (1, 2, 3); // Skipping elements
 ```
+
+One `...rest` element, anywhere in the pattern, binds a tuple of the
+elements the others do not take. The elements before it match the start
+of the tuple and the ones after it the end:
+
+```zena
+let (head, ...tail) = (1, 'a', true);          // tail: (String, boolean)
+let (first, ...middle, last) = (1, 2.5, 'x', true); // middle: (f64, String)
+```
+
+The rest is a name, in `match` arms too (`case (let a, ...rest)`). A
+pattern naming more elements than the tuple has is an error. On a
+[tuple row](#tuple-spreads-and-tuple-rows), the rest keeps the row, and
+the pattern may not name an element at or after it.
 
 #### Array Destructuring
 

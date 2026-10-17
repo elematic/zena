@@ -3445,11 +3445,16 @@ export final class FunctionLowerer {
    */
   #lowerMultiSource(init: Expression): GrowableArray<i32> {
     let out = new Array<i32>();
+    // A literal with spreads is not one value per element; it lowers as
+    // one tuple, which the destructuring site splits.
     if (init is TupleLiteral) {
-      for (let el in init.elements) {
-        out.push(this.#lowerExpression(el));
+      let literal = init;
+      if (literal.spreadIndices == null) {
+        for (let el in literal.elements) {
+          out.push(this.#lowerExpression(el));
+        }
+        return out;
       }
-      return out;
     }
     if (!(init is CallExpression)) {
       // Any other expression: a single value (a boxed tuple splits at
@@ -3493,6 +3498,24 @@ export final class FunctionLowerer {
    * downcast when the source slot is erased/nullable.
    */
   #lowerTupleDeclaration(vd: VariableDeclaration, tp: TuplePattern): void {
+    if (tupleRestIndexOf(tp) >= 0) {
+      let init = vd.init;
+      if (init == null) {
+        this.#bail('destructuring without initializer');
+      }
+      let tOpt = this.#substitutedNodeType(init);
+      if (tOpt == null) {
+        this.#bail('untyped destructuring source');
+      }
+      let bt = baseType(tOpt);
+      if (!(bt is TupleType)) {
+        this.#bail('tuple rest of a non-tuple');
+      }
+      let st = this.#tupleStruct(bt);
+      let value = this.#lowerExpressionCtx(init, new ValTypeRef(st) as ValType);
+      this.#bindTupleWithRest(tp, st, value);
+      return;
+    }
     var values = this.#lowerMultiSource(vd.init);
     if (values.length == 1 && tp.elements.length != 1) {
       // A single value can still be a BOXED tuple (fields "0"..):
@@ -4560,18 +4583,133 @@ export final class FunctionLowerer {
           false));
     }
     let st = this.wasm.getStruct(null, fields);
-    if (tl.elements.length != fields.length) {
+    let spreadIndices = tl.spreadIndices;
+    if (spreadIndices == null && tl.elements.length != fields.length) {
       this.#bail('tuple literal arity');
     }
     let args = new Array<i32>();
     for (var i = 0; i < tl.elements.length; i += 1) {
-      let fieldVt = fields[i].type;
+      if (spreadIndices != null && spreadIndices.contains(i)) {
+        // `...t`: t's elements, read off its struct in order.
+        for (let v in this.#tupleElementValues(tl.elements[i])) {
+          if (args.length >= fields.length) {
+            this.#bail('tuple literal arity');
+          }
+          let fieldVt = fields[args.length].type;
+          args.push(this.#conformToSlot(v, fieldVt, 'tuple literal element type'));
+        }
+        continue;
+      }
+      if (args.length >= fields.length) {
+        this.#bail('tuple literal arity');
+      }
+      let fieldVt = fields[args.length].type;
       var v = this.#lowerExpressionCtx(tl.elements[i], fieldVt);
       v = this.#conformToSlot(v, fieldVt, 'tuple literal element type');
       args.push(v);
     }
+    if (args.length != fields.length) {
+      this.#bail('tuple literal arity');
+    }
     return this.b.emit(IrOp.struct_new, new ValTypeRef(st) as ValType,
         this.b.pushArgList(args), this.b.addRef(new IrRefType(st)));
+  }
+
+  /**
+   * Binds a tuple pattern with a `...rest` against `value`, a tuple of
+   * struct `st`: the elements before the rest bind a prefix, the ones
+   * after it a suffix, and the rest a new tuple of what is between, of
+   * the type the checker recorded on the rest pattern.
+   */
+  #bindTupleWithRest(tp: TuplePattern, st: WasmStruct, value: i32): void {
+    let restIndex = tupleRestIndexOf(tp);
+    let all = this.#tupleFieldsOf(st, value);
+    let after = tp.elements.length - restIndex - 1;
+    let length = all.length;
+    if (restIndex + after > length) {
+      this.#bail('tuple rest arity');
+    }
+    for (var i = 0; i < tp.elements.length; i += 1) {
+      let el = tp.elements[i];
+      if (el == null || !this.#patternBinds(el)) {
+        continue;
+      }
+      if (i == restIndex) {
+        let restPat = (el as RestPattern).pattern;
+        let restTypeOpt = this.func.model.getNodeType(el);
+        if (restTypeOpt == null) {
+          this.#bail('untyped tuple rest');
+        }
+        let restBase = baseType(substituteTypeParamsInFunctionContext(
+            this.wasm, this.func, restTypeOpt));
+        if (!(restBase is TupleType)) {
+          this.#bail('tuple rest type');
+        }
+        let restSt = this.#tupleStruct(restBase);
+        let args = new Array<i32>();
+        for (var j = restIndex; j < length - after; j += 1) {
+          args.push(this.#conformToSlot(all[j], restSt.fields[j - restIndex].type,
+              'tuple rest element type'));
+        }
+        let rest = this.b.emit(IrOp.struct_new, new ValTypeRef(restSt) as ValType,
+            this.b.pushArgList(args), this.b.addRef(new IrRefType(restSt)));
+        this.#lowerPatternBindings(restPat, rest);
+      } else if (i < restIndex) {
+        this.#lowerPatternBindings(el, all[i]);
+      } else {
+        this.#lowerPatternBindings(el, all[length - after + (i - restIndex - 1)]);
+      }
+    }
+  }
+
+  hostBindTupleWithRest(tp: TuplePattern, value: i32): void {
+    let st = asWasmStruct(this.#valueType(value));
+    if (st == null) {
+      this.#bail('tuple rest operand');
+    }
+    this.#bindTupleWithRest(tp, st as WasmStruct, value);
+  }
+
+  /** The struct a (boxed) tuple type lowers to. */
+  #tupleStruct(tt: TupleType): WasmStruct {
+    let fields = new Array<WasmField>(tt.elementTypes.length);
+    for (var i = 0; i < tt.elementTypes.length; i += 1) {
+      fields.push(new WasmField(i32ToString(i),
+          typeToValTypeWithSub(this.wasm, tt.elementTypes[i], this.func),
+          false));
+    }
+    return this.wasm.getStruct(null, fields);
+  }
+
+  /** Each element of the tuple `expr` evaluates to, in order. */
+  #tupleElementValues(expr: Expression): GrowableArray<i32> {
+    let tOpt = this.#substitutedNodeType(expr);
+    if (tOpt == null) {
+      this.#bail('untyped tuple spread');
+    }
+    let bt = baseType(tOpt);
+    if (!(bt is TupleType)) {
+      this.#bail('tuple spread of a non-tuple');
+    }
+    let st = this.#tupleStruct(bt);
+    return this.#tupleFieldsOf(st, this.#lowerExpressionCtx(expr, new ValTypeRef(st) as ValType));
+  }
+
+  /** Reads fields `from` up to `to` (exclusive) of the tuple struct `st` off `value`. */
+  #tupleFieldsOf(st: WasmStruct, value: i32, from: i32 = 0, to: i32 = -1): GrowableArray<i32> {
+    let end = if (to < 0) st.fields.length else to;
+    let stVt = new ValTypeRef(st) as ValType;
+    var recv = value;
+    if (!isValSubtype(this.#valueType(recv), stVt)) {
+      recv = this.b.emit(IrOp.ref_cast, stVt, recv, this.b.internType(stVt));
+    }
+    let values = new Array<i32>();
+    for (var j = from; j < end; j += 1) {
+      let field = st.fields[j];
+      values.push(this.b.emit(IrOp.struct_get, field.type, recv,
+          this.b.addRef(new IrRefField(st, field.name as String))));
+    }
+    return values;
   }
 
   /**
@@ -9513,9 +9651,25 @@ export function repackRecordUnion(cx: LoweringContext,
   return hostOf(cx).hostRepackRecordUnion(ra, value);
 }
 
+/** The position of a tuple pattern's `...rest` element, or -1. */
+export function tupleRestIndexOf(tp: TuplePattern): i32 {
+  for (var i = 0; i < tp.elements.length; i += 1) {
+    if (tp.elements[i] is RestPattern) {
+      return i;
+    }
+  }
+  return -1;
+}
+
+/** Binds a tuple pattern with a `...rest` against a boxed tuple (patterns). */
+export function bindTupleWithRest(cx: LoweringContext, tp: TuplePattern, value: i32): void {
+  hostOf(cx).hostBindTupleWithRest(tp, value);
+}
+
 /** The value a record pattern's `...rest` binds (patterns). */
-export let recordRestValue = (cx: LoweringContext, rest: Node, value: i32): i32 =>
-    hostOf(cx).hostRecordRestValue(rest, value);
+export function recordRestValue(cx: LoweringContext, rest: Node, value: i32): i32 {
+  return hostOf(cx).hostRecordRestValue(rest, value);
+}
 
 /**
  * Suspends on `future`, typed `ct`, and resumes with its settled value:
