@@ -1,0 +1,226 @@
+/**
+ * Existential record types, `{x: i32, ...}` (docs/design/row-types.md,
+ * Decisions): a record whose type names some of its fields. A value is
+ * a fat pointer whose instance is the record it holds, itself a fat
+ * pointer of that record's closed type, and whose table forwards to it:
+ * a getter per known field, then `<underlying>` (the record held),
+ * `<shapeOf>` (its shape id) and `<hash>` (its hash). `is`, `as`, `==`
+ * and `hash` work from those, and only the run time knows the record's
+ * shape.
+ *
+ * The tables are made during reachability (`WasmModule.getExistentialPack`
+ * and `getForwardDispatch`); this module lowers their slots and the
+ * operations on existential values.
+ */
+import { ValType, ValTypeI32, ValTypeRef, ValTypeStructRef, refTargetOf } from '../wasm.zena';
+import {
+  ExistentialForward, ForwardKind, RecordDispatchInfo, RecordForwardTable, WasmFunction,
+  WasmGlobal, WasmSignature, WasmStruct, existentialCastCandidates, existentialHashName,
+  existentialShapeName, existentialUnderlyingName, isValSubtype, recordShapeFieldName,
+} from '../wasm-module.zena';
+import { IrBuilder } from './builder.zena';
+import { IrBody, IrOp, IrRefField, IrRefFunc, IrRefGlobal } from './ir.zena';
+import { LoweringContext, ZirUnsupported, noValues, oneValue } from './lowering-context.zena';
+
+function bail(cx: LoweringContext, reason: String): never {
+  throw new ZirUnsupported(`${reason} @${cx.func.name ?? '?'}`);
+}
+
+/** The signature a table slot holds a reference to. */
+function slotSignature(table: WasmStruct, name: String) {
+  let index = table.fieldIndexByName(name);
+  if (index < 0) {
+    throw new ZirUnsupported(`record table slot ${name} missing`);
+  }
+  let target = refTargetOf(table.fields[index].type);
+  if (!(target is WasmSignature)) {
+    throw new ZirUnsupported(`record table slot ${name} is not a function`);
+  }
+  return target;
+}
+
+/**
+ * Calls slot `name` of the fat pointer `fat` (of dispatch `d`) on its
+ * instance, as a record getter is called.
+ */
+function callSlot(b: IrBuilder, d: RecordDispatchInfo, fat: i32, name: String) {
+  let sig = slotSignature(d.vtableType, name);
+  let vt = b.emit(IrOp.iface_vtable, new ValTypeRef(d.vtableType) as ValType, fat, -1);
+  let slot = b.emit(IrOp.struct_get, new ValTypeRef(sig) as ValType, vt,
+      b.addRef(new IrRefField(d.vtableType, name)));
+  let held = b.emit(IrOp.iface_instance, new ValTypeStructRef() as ValType, fat, -1);
+  return b.callRef(slot, oneValue(held), sig.returns[0]);
+}
+
+/** `value` cast to the fat pointer type of `d`, unless it is already one. */
+function asFat(b: IrBuilder, valueVt: ValType, value: i32, d: RecordDispatchInfo) {
+  let fatVt = new ValTypeRef(d.fatPtrType) as ValType;
+  if (isValSubtype(valueVt, fatVt)) {
+    return value;
+  }
+  return b.emit(IrOp.ref_cast, fatVt, value, b.internType(fatVt));
+}
+
+/**
+ * The body of a forwarding slot: its parameter is a fat pointer of the
+ * forward's source, and the slot reads a field through it, returns the
+ * closed record it is (or holds), that record's shape id, or its hash.
+ */
+export function lowerExistentialForward(func: WasmFunction): IrBody {
+  let forward = func.existentialForward as ExistentialForward;
+  let source = forward.source;
+  let b = new IrBuilder();
+  let entry = b.newBlock();
+  let param = b.blockParam(entry, func.signature.params[0]);
+  b.switchTo(entry);
+  match (forward.kind) {
+    case ForwardKind.Field: {
+      let fat = asFat(b, func.signature.params[0], param, source);
+      b.ret(callSlot(b, source, fat, forward.field as String));
+    }
+    case ForwardKind.Underlying: {
+      if (source.isExistential) {
+        b.ret(callSlot(b, source, asFat(b, func.signature.params[0], param, source),
+            existentialUnderlyingName));
+      } else {
+        // The instance is the closed record itself.
+        b.ret(param);
+      }
+    }
+    case ForwardKind.Shape: {
+      let fat = asFat(b, func.signature.params[0], param, source);
+      if (source.isExistential) {
+        b.ret(callSlot(b, source, fat, existentialShapeName));
+      } else {
+        // Read off the record's own table, so a narrowed view answers
+        // with the shape it was narrowed to.
+        let vt = b.emit(IrOp.iface_vtable, new ValTypeRef(source.vtableType) as ValType, fat, -1);
+        b.ret(b.emit(IrOp.struct_get, new ValTypeI32() as ValType, vt,
+            b.addRef(new IrRefField(source.vtableType, recordShapeFieldName))));
+      }
+    }
+    case ForwardKind.Hash: {
+      let fat = asFat(b, func.signature.params[0], param, source);
+      if (source.isExistential) {
+        b.ret(callSlot(b, source, fat, existentialHashName));
+      } else {
+        let hashFunc = forward.hashFunc;
+        if (hashFunc == null) {
+          throw new ZirUnsupported('existential pack without the record hash');
+        }
+        b.ret(b.callFunc(b.addRef(new IrRefFunc(hashFunc as WasmFunction)), oneValue(fat),
+            new ValTypeI32() as ValType));
+      }
+    }
+  }
+  return b.finish();
+}
+
+/** A fat pointer of `table`'s target type over `instance`. */
+function packWith(cx: LoweringContext, target: RecordDispatchInfo, instance: i32,
+    tableGlobal: WasmGlobal) {
+  return cx.b.emit(IrOp.iface_pack, new ValTypeRef(target.fatPtrType) as ValType, instance,
+      cx.b.addRef(new IrRefGlobal(tableGlobal)));
+}
+
+/**
+ * `value` (a record of `source`'s dispatch, closed or existential)
+ * packed into the existential `target`.
+ */
+export function packExistential(cx: LoweringContext, value: i32, source: RecordDispatchInfo,
+    target: RecordDispatchInfo): i32 {
+  var table: RecordForwardTable | null = null;
+  for (let pack in cx.wasm.existentialPacks) {
+    if (pack.source === source && pack.target === target) {
+      table = pack;
+    }
+  }
+  if (table == null) {
+    bail(cx, 'existential pack not registered');
+  }
+  return packWith(cx, target, value, (table as RecordForwardTable).vtableGlobal);
+}
+
+/**
+ * `value`, an existential of `source`, as the closed record type
+ * `target`, whose fields `source` names: a projection read through it.
+ */
+export function projectExistential(cx: LoweringContext, value: i32, source: RecordDispatchInfo,
+    target: RecordDispatchInfo): i32 {
+  let table = findForward(cx, source, target);
+  if (table == null) {
+    bail(cx, 'existential projection not registered');
+  }
+  return packWith(cx, target, value, (table as RecordForwardTable).vtableGlobal);
+}
+
+function findForward(cx: LoweringContext, source: RecordDispatchInfo,
+    target: RecordDispatchInfo): RecordForwardTable | null {
+  for (let table in cx.wasm.forwardTables) {
+    if (table.source === source && table.target === target) {
+      return table;
+    }
+  }
+  return null;
+}
+
+/** The closed record an existential of `d` holds, as a `structref`. */
+export function existentialUnderlying(cx: LoweringContext, value: i32, d: RecordDispatchInfo): i32 {
+  return callSlot(cx.b, d, asFat(cx.b, cx.valueTypeOf(value), value, d), existentialUnderlyingName);
+}
+
+/** The hash of the record an existential of `d` holds. */
+export function existentialHash(cx: LoweringContext, value: i32, d: RecordDispatchInfo): i32 {
+  return callSlot(cx.b, d, asFat(cx.b, cx.valueTypeOf(value), value, d), existentialHashName);
+}
+
+/**
+ * `value is target` for an existential of `source` and a closed record
+ * type `target`: the record held is exactly a `target`, so has its
+ * shape id.
+ */
+export function existentialIs(cx: LoweringContext, value: i32, source: RecordDispatchInfo,
+    target: RecordDispatchInfo): i32 {
+  let i32vt = new ValTypeI32() as ValType;
+  let shape = callSlot(cx.b, source, asFat(cx.b, cx.valueTypeOf(value), value, source),
+      existentialShapeName);
+  return cx.b.binary(IrOp.i32_eq, i32vt, shape, cx.b.constI32(target.shapeId, i32vt));
+}
+
+/**
+ * `value as target` for an existential of `source` and a closed record
+ * type `target` naming fields `source` does not: the record held must
+ * have `target`'s fields, so the run time picks its shape from those
+ * packed and projects it, and traps for any other.
+ */
+export function existentialAs(cx: LoweringContext, value: i32, source: RecordDispatchInfo,
+    target: RecordDispatchInfo): i32 {
+  let i32vt = new ValTypeI32() as ValType;
+  let fat = asFat(cx.b, cx.valueTypeOf(value), value, source);
+  let shape = callSlot(cx.b, source, fat, existentialShapeName);
+  let held = callSlot(cx.b, source, fat, existentialUnderlyingName);
+  let fatVt = new ValTypeRef(target.fatPtrType) as ValType;
+  let merge = cx.b.newBlock();
+  let result = cx.b.blockParam(merge, fatVt);
+  for (let s in existentialCastCandidates(cx.wasm.existentialPacks, target)) {
+    let isS = cx.b.binary(IrOp.i32_eq, i32vt, shape, cx.b.constI32(s.shapeId, i32vt));
+    let thenB = cx.b.newBlock();
+    let nextB = cx.b.newBlock();
+    cx.b.brIf(isS, thenB, noValues(), nextB, noValues());
+    cx.b.switchTo(thenB);
+    let heldFat = cx.b.emit(IrOp.ref_cast, new ValTypeRef(s.fatPtrType) as ValType, held,
+        cx.b.internType(new ValTypeRef(s.fatPtrType) as ValType));
+    let converted = if (s === target) heldFat else {
+      let table = findForward(cx, s, target);
+      if (table == null) {
+        bail(cx, 'existential cast projection not registered');
+      }
+      packWith(cx, target, heldFat, (table as RecordForwardTable).vtableGlobal)
+    };
+    cx.b.br(merge, oneValue(converted));
+    cx.b.switchTo(nextB);
+  }
+  cx.b.unreachable();
+  cx.b.switchTo(merge);
+  return result;
+}

@@ -655,6 +655,12 @@ export final class WasmFunction implements Hashable {
    * absence; there is nothing to read).
    */
   var getterReturnsZero: boolean = false;
+  /**
+   * A slot of an existential record's table, or of a table reading a
+   * record through another record's fat pointer: what the synthesized
+   * body forwards to (ir/existential.zena).
+   */
+  var existentialForward: ExistentialForward | null = null;
   /** The concrete target function for an interface trampoline method/property call. */
   var interfaceTrampolineTarget: WasmFunction | null = null;
   /** The target imported function for an external reference wrapper. */
@@ -896,6 +902,14 @@ export final class RecordDispatchInfo {
    * projection to its target shape, so it carries the target's id.
    */
   var shapeId: i32 = -1;
+  /**
+   * An existential record type's dispatch (`getExistentialDispatch`):
+   * `fields` are the known ones, its table adds the `<underlying>`,
+   * `<shapeOf>` and `<hash>` slots, and it has no table of its own (every
+   * value comes from a pack), so `vtableGlobal` is a placeholder that is
+   * never emitted.
+   */
+  var isExistential: boolean = false;
 
   new(this.fatPtrType, this.vtableType, this.concreteType, this.vtableGlobal, this.fields, this.getterTypes, this.optionalNames, this.inOptionalNames);
 
@@ -909,6 +923,120 @@ export final class RecordDispatchInfo {
 
 /** The name of a record table's trailing shape-id field. */
 export let recordShapeFieldName = "<shape>";
+
+/** An existential table's slot returning the closed record it holds. */
+export let existentialUnderlyingName = "<underlying>";
+/** An existential table's slot returning that record's shape id. */
+export let existentialShapeName = "<shapeOf>";
+/** An existential table's slot returning that record's hash. */
+export let existentialHashName = "<hash>";
+
+/** What a forwarding slot computes (`ExistentialForward`). */
+export enum ForwardKind {
+  /** Read the named field through the source fat pointer. */
+  Field,
+  /** The closed record held: the source itself, or its own `<underlying>`. */
+  Underlying,
+  /** That record's shape id. */
+  Shape,
+  /** That record's hash. */
+  Hash,
+}
+
+/**
+ * A slot body that forwards to the record behind its `structref`
+ * parameter, which is a fat pointer of `source`: a closed record's, or
+ * an existential's. For a closed `source`, `Hash` calls `hashFunc`, the
+ * record type's `$valueHash`.
+ */
+export final class ExistentialForward {
+  source: RecordDispatchInfo;
+  kind: ForwardKind;
+  field: String | null;
+  hashFunc: WasmFunction | null;
+  new(this.source, this.kind, this.field, this.hashFunc);
+}
+
+/**
+ * The table that packs records of `source`'s shape into the existential
+ * `target`, or (when `target` is closed) reads a closed record through
+ * `source`'s fat pointer.
+ */
+export final class RecordForwardTable {
+  source: RecordDispatchInfo;
+  target: RecordDispatchInfo;
+  vtableGlobal: WasmGlobal;
+  new(this.source, this.target, this.vtableGlobal);
+}
+
+/**
+ * The closed record shapes packed into some existential that have every
+ * field of `target`: the records a run-time `as target` can find in an
+ * existential (ir/existential.zena). One dispatch per shape, in the
+ * order the packs were made.
+ */
+export function existentialCastCandidates(packs: GrowableArray<RecordForwardTable>,
+    target: RecordDispatchInfo): GrowableArray<RecordDispatchInfo> {
+  let out = new Array<RecordDispatchInfo>();
+  for (let pack in packs) {
+    let s = pack.source;
+    if (s.isExistential) {
+      continue;
+    }
+    var seen = false;
+    for (let o in out) {
+      if (o.shapeId == s.shapeId) {
+        seen = true;
+      }
+    }
+    if (!seen && hasFieldsOf(s, target)) {
+      out.push(s);
+    }
+  }
+  return out;
+}
+
+/** Whether `s` has every field of `t`, at the same wasm type. */
+function hasFieldsOf(s: RecordDispatchInfo, t: RecordDispatchInfo): boolean {
+  for (let tf in t.fields) {
+    var found = false;
+    for (let sf in s.fields) {
+      if (sf.name == tf.name && valTypeEquals(sf.type, tf.type)) {
+        found = true;
+      }
+    }
+    if (!found) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/** The three slots after an existential table's getters, in order. */
+function existentialSlots(wasm: WasmModule): GrowableArray<WasmField> {
+  let structRef = new ValTypeStructRef() as ValType;
+  let underlyingSig = wasm.getSignature(growable<ValType>([structRef]), growable<ValType>([structRef]));
+  let i32Sig = wasm.getSignature(growable<ValType>([structRef]), growable<ValType>([new ValTypeI32()]));
+  return growable<WasmField>([
+    new WasmField(existentialUnderlyingName, new ValTypeRef(underlyingSig), false),
+    new WasmField(existentialShapeName, new ValTypeRef(i32Sig), false),
+    new WasmField(existentialHashName, new ValTypeRef(i32Sig), false),
+  ]);
+}
+
+/** Whether `info` has exactly these fields and optional names. */
+function sameRecordFields(info: RecordDispatchInfo, fields: GrowableArray<WasmField>,
+    optionalNames: GrowableArray<String>): boolean {
+  if (info.fields.length != fields.length || !stringArraysEqual(info.optionalNames, optionalNames)) {
+    return false;
+  }
+  for (var i = 0; i < fields.length; i += 1) {
+    if (info.fields[i].name != fields[i].name || !valTypeEquals(info.fields[i].type, fields[i].type)) {
+      return false;
+    }
+  }
+  return true;
+}
 
 function copyFields(fields: GrowableArray<WasmField>) {
   let out = new Array<WasmField>();
@@ -1493,6 +1621,12 @@ export final class WasmModule {
   
   recordDispatchInfos = new Array<RecordDispatchInfo>();
   adaptedDispatchInfos = new Array<RecordDispatchInfo>();
+  /** Existential record types' dispatches (`getExistentialDispatch`). */
+  existentialDispatchInfos = new Array<RecordDispatchInfo>();
+  /** Tables that pack a record into an existential (`getExistentialPack`). */
+  existentialPacks = new Array<RecordForwardTable>();
+  /** Tables reading a closed record through another fat pointer (`getForwardDispatch`). */
+  forwardTables = new Array<RecordForwardTable>();
   /** The next record shape id (`RecordDispatchInfo.shapeId`). */
   var recordShapeCount = 0;
   
@@ -1751,6 +1885,132 @@ export final class WasmModule {
     return info;
   }
   
+  /** The registered dispatch of the existential type with these known fields. */
+  findExistentialDispatch(fields: GrowableArray<WasmField>, optionalNames: GrowableArray<String>): RecordDispatchInfo | null {
+    for (let info in this.existentialDispatchInfos) {
+      if (sameRecordFields(info, fields, optionalNames)) {
+        return info;
+      }
+    }
+    return null;
+  }
+
+  /**
+   * The dispatch of the existential record type `{...fields, ...}`: a fat
+   * pointer whose table reads the known fields and also returns the
+   * closed record held (`<underlying>`), its shape id (`<shapeOf>`) and
+   * its hash (`<hash>`) — what `is`, `as`, `==` and `hash` need of a
+   * record whose shape only the run time knows. The slots make the table
+   * type, and so the fat pointer type, differ from every closed record's.
+   */
+  getExistentialDispatch(model: SemanticModel, fields: GrowableArray<WasmField>, optionalNames: GrowableArray<String>): RecordDispatchInfo {
+    sortWasmFields(fields);
+    let existing = this.findExistentialDispatch(fields, optionalNames);
+    if (existing != null) {
+      return existing;
+    }
+    if (this.isLayoutLocked) {
+      throw new Error("Struct allocated after layout");
+    }
+    let getterTypes = new Array<WasmSignature>();
+    let vtableFields = new Array<WasmField>();
+    for (let field in fields) {
+      let returns = new Array<ValType>();
+      if (!(field.type is ValTypeVoid)) {
+        returns.push(field.type);
+      }
+      let getterType = this.getSignature(growable<ValType>([new ValTypeStructRef()]), returns);
+      getterTypes.push(getterType);
+      vtableFields.push(new WasmField(field.name, new ValTypeRef(getterType), false));
+    }
+    for (let slot in existentialSlots(this)) {
+      vtableFields.push(slot);
+    }
+    let vtableType = this.getStruct(null, vtableFields);
+    let fatPtrType = this.getStruct(null, growable<WasmField>([
+      new WasmField(null, new ValTypeStructRef(), false),
+      new WasmField(null, new ValTypeRef(vtableType), false),
+    ]));
+    let placeholder = new WasmGlobal("vtable_existential", "vtable_existential",
+        new ValTypeRef(vtableType), false, null, null, model);
+    let info = new RecordDispatchInfo(fatPtrType, vtableType, fatPtrType, placeholder, fields,
+        getterTypes, optionalNames, optionalNames);
+    info.isExistential = true;
+    this.existentialDispatchInfos.push(info);
+    return info;
+  }
+
+  /**
+   * The table packing records of `source` (a closed record's dispatch, or
+   * an existential's) into the existential `target`. A packed value's
+   * instance is the source value itself, and each slot forwards to it.
+   */
+  getExistentialPack(model: SemanticModel, source: RecordDispatchInfo, target: RecordDispatchInfo,
+      hashFunc: WasmFunction | null): RecordForwardTable {
+    for (let pack in this.existentialPacks) {
+      if (pack.source === source && pack.target === target) {
+        return pack;
+      }
+    }
+    if (this.isLayoutLocked) {
+      throw new Error("Struct allocated after layout");
+    }
+    let funcs = new Array<WasmFunction>();
+    for (var i = 0; i < target.fields.length; i += 1) {
+      funcs.push(this.#forwarder(model, target.getterTypes[i],
+          new ExistentialForward(source, ForwardKind.Field, target.fields[i].name, null)));
+    }
+    let structRef = new ValTypeStructRef() as ValType;
+    funcs.push(this.#forwarder(model, this.getSignature(growable<ValType>([structRef]), growable<ValType>([structRef])),
+        new ExistentialForward(source, ForwardKind.Underlying, null, null)));
+    let i32Sig = this.getSignature(growable<ValType>([structRef]), growable<ValType>([new ValTypeI32()]));
+    funcs.push(this.#forwarder(model, i32Sig, new ExistentialForward(source, ForwardKind.Shape, null, null)));
+    funcs.push(this.#forwarder(model, i32Sig, new ExistentialForward(source, ForwardKind.Hash, null, hashFunc)));
+    let vtableGlobal = new WasmGlobal("vtable_pack", "vtable_pack", new ValTypeRef(target.vtableType),
+        false, null, new VTableInit(target.vtableType, funcs), model);
+    this.globals.push(vtableGlobal);
+    let pack = new RecordForwardTable(source, target, vtableGlobal);
+    this.existentialPacks.push(pack);
+    return pack;
+  }
+
+  /**
+   * The table reading values of the closed record type `target` through
+   * `source`'s fat pointer: a projection of an existential (or, for a
+   * run-time `as`, of the closed record it holds) to `target`. Its shape
+   * id is `target`'s, since the projection is a value of `target`.
+   */
+  getForwardDispatch(model: SemanticModel, source: RecordDispatchInfo, target: RecordDispatchInfo): RecordForwardTable {
+    for (let table in this.forwardTables) {
+      if (table.source === source && table.target === target) {
+        return table;
+      }
+    }
+    if (this.isLayoutLocked) {
+      throw new Error("Struct allocated after layout");
+    }
+    let funcs = new Array<WasmFunction>();
+    for (var i = 0; i < target.fields.length; i += 1) {
+      funcs.push(this.#forwarder(model, target.getterTypes[i],
+          new ExistentialForward(source, ForwardKind.Field, target.fields[i].name, null)));
+    }
+    let init = new VTableInit(target.vtableType, funcs);
+    init.shapeTag = target.shapeId;
+    let vtableGlobal = new WasmGlobal("vtable_forward", "vtable_forward", new ValTypeRef(target.vtableType),
+        false, null, init, model);
+    this.globals.push(vtableGlobal);
+    let table = new RecordForwardTable(source, target, vtableGlobal);
+    this.forwardTables.push(table);
+    return table;
+  }
+
+  #forwarder(model: SemanticModel, sig: WasmSignature, forward: ExistentialForward): WasmFunction {
+    let func = new WasmFunction(sig, null, model);
+    func.existentialForward = forward;
+    this.addFunction(func);
+    return func;
+  }
+
   getAdaptedRecordDispatch(model: SemanticModel, inFields: GrowableArray<WasmField>, inOptionalNames: GrowableArray<String>, outFields: GrowableArray<WasmField>, outOptionalNames: GrowableArray<String>): RecordDispatchInfo {
     sortWasmFields(inFields);
     sortWasmFields(outFields);

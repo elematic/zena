@@ -155,12 +155,29 @@ waits only on its own prerequisites. The order:
    fat pointers until the representation harvest (implementation-plan.md,
    Track B). Erased `==` compares records by shape: every record
    dispatch table carries its shape's id (equality.md, "The erased
-   comparison"; #399). Existentials are next, and reuse the shape ids.
-   Two parts of the original plan turned out not to apply: a
+   comparison"; #399). Existentials are in (below). Two parts of the
+   original plan turned out not to apply: a
    class was already not assignable to a record type, and A3's presence
    bitmask (record-presence.md) keeps `?` fields valid on closed types,
    so §3.4's restriction of `?` to existential and parameter positions
    is dropped.
+
+   Existentials as implemented: a value is a fat pointer whose instance
+   is the closed record it holds, and whose table forwards each known
+   field to it, then returns that record (`<underlying>`), its shape id
+   (`<shapeOf>`) and its hash (`<hash>`); see ir/existential.zena. A
+   projection to a closed type reads through the existential; an `as`
+   to one naming fields it does not know switches on the shape id over
+   the shapes the program packs into existentials. `==` goes through the
+   erased comparison, which unwraps existentials. Two departures from
+   the table under Operations per form: `is T` on an existential is true
+   when the record held is exactly a `T`, as for a closed record, rather
+   than when it has `T`'s fields, so narrowing after `is` stays sound
+   (`as T` still projects a record with more fields); and an existential
+   type cannot have `?` fields yet, since the presence mask's bits are
+   laid out per type and the packs do not translate them. A class does
+   not pack into an existential yet.
+
 4. `inline` on value types (#371).
 
 ## 1. Motivation
