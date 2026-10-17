@@ -35,21 +35,21 @@ import {parse} from '../lib/parser.zena';
 /** One scanned word, as a range into the file that produced it. */
 final class Word(source: String, start: i32, length: i32)
 
-let loadCorpus = (dir: String): Array<String> => {
+function loadCorpus(dir: String): Array<String> {
   let sources = new Array<String>();
   for (let entry in listDirSync(dir)) {
     if (entry.name.endsWith('.zena')) {
-      sources.push(readFileSync(dir + '/' + entry.name));
+      sources.push(readFileSync(`${dir}/${entry.name}`));
     }
   }
   return sources;
-};
+}
 
 /**
  * Every identifier-shaped run of bytes in the corpus, which is exactly
  * the set of words the tokenizer has to classify.
  */
-let collectWords = (sources: Array<String>): Array<Word> => {
+function collectWords(sources: Array<String>): Array<Word> {
   let words = new Array<Word>();
   for (let source in sources) {
     let n = source.length;
@@ -67,7 +67,7 @@ let collectWords = (sources: Array<String>): Array<Word> => {
     }
   }
   return words;
-};
+}
 
 /**
  * The path this change replaced: slice the word into a `String`, then
@@ -103,7 +103,7 @@ let KEYWORDS_BY_TEXT: Map<String, TokenType> = {
 };
 
 /** Slice first, then look the slice up. Returns a checksum so nothing folds away. */
-let classifyBySlice = (words: Array<Word>): i32 => {
+function classifyBySlice(words: Array<Word>) {
   var sink = 0;
   for (let w in words) {
     let text = w.source.sliceBytes(w.start, w.start + w.length);
@@ -114,10 +114,10 @@ let classifyBySlice = (words: Array<Word>): i32 => {
     }
   }
   return sink;
-};
+}
 
 /** Compare bytes in place; allocate only for the identifiers. */
-let classifyByBytes = (words: Array<Word>): i32 => {
+function classifyByBytes(words: Array<Word>) {
   var sink = 0;
   for (let w in words) {
     let keyword = matchKeyword(w.source, w.start, w.length);
@@ -129,9 +129,9 @@ let classifyByBytes = (words: Array<Word>): i32 => {
     }
   }
   return sink;
-};
+}
 
-export let main = (): i32 => {
+export function main(): i32 {
   let args = getArguments();
   let dir = if (args.length > 1) args[1] else 'packages/zena-compiler/zena/lib';
   let sources = loadCorpus(dir);
@@ -156,23 +156,23 @@ export let main = (): i32 => {
 
   // The two classifiers see identical input, so the only difference is
   // the slice-and-hash the old path does per word.
-  let classifyRunner = new BenchRunner('keyword classification (' + dir + ')');
+  let classifyRunner = new BenchRunner(`keyword classification (${dir})`);
   classifyRunner.options.minSamples = 40;
   classifyRunner.options.timeBudgetMs = 60000.0;
   classifyRunner.options.horizons = ['1%'];
-  classifyRunner.bench('slice-then-map', (_ctx: BenchContext) => {
+  classifyRunner.bench('slice-then-map', (_ctx) => {
     classifyBySlice(words);
   });
-  classifyRunner.bench('bytes-in-place', (_ctx: BenchContext) => {
+  classifyRunner.bench('bytes-in-place', (_ctx) => {
     classifyByBytes(words);
   });
   console.log(reportToString(classifyRunner.run()));
 
-  let tokenizeRunner = new BenchRunner('tokenize (' + dir + ')');
+  let tokenizeRunner = new BenchRunner(`tokenize (${dir})`);
   tokenizeRunner.options.minSamples = 30;
   tokenizeRunner.options.timeBudgetMs = 60000.0;
   tokenizeRunner.options.horizons = ['1%'];
-  tokenizeRunner.bench('tokenize', (_ctx: BenchContext) => {
+  tokenizeRunner.bench('tokenize', (_ctx) => {
     for (let s in sources) {
       tokenize(s);
     }
@@ -181,15 +181,15 @@ export let main = (): i32 => {
 
   // A parse is the tokenize plus an AST an order of magnitude larger,
   // so this says how much of a front end the lexer actually is.
-  let parseRunner = new BenchRunner('parse (' + dir + ')');
+  let parseRunner = new BenchRunner(`parse (${dir})`);
   parseRunner.options.minSamples = 20;
   parseRunner.options.timeBudgetMs = 60000.0;
   parseRunner.options.horizons = ['1%'];
-  parseRunner.bench('parse', (_ctx: BenchContext) => {
+  parseRunner.bench('parse', (_ctx) => {
     for (let s in sources) {
       parse(s, 'bench.zena');
     }
   });
   console.log(reportToString(parseRunner.run()));
   return 0;
-};
+}
