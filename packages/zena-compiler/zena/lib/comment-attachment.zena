@@ -19,6 +19,7 @@ import { NodeMap } from './node-map.zena';
 import {
   Comment, Node, Module, Statement, Expression, BlockStatement, ClassDeclaration, InterfaceDeclaration, MixinDeclaration, EnumDeclaration, EnumMember, VariableDeclaration, FunctionDeclaration, FunctionExpression, BinaryExpression, UnaryExpression, AssignmentExpression, CallExpression, MemberExpression, IndexExpression, NewExpression, ArrayLiteral, IfExpression, MatchExpression, MatchCase, AsExpression, IsExpression, SpreadElement, IfStatement, WhileStatement, ForStatement, ForInStatement, ReturnStatement, YieldStatement, ExpressionStatement, UsingStatement, ShieldedStatement, MethodDefinition, AccessorDeclaration, SetterInfo, FieldDefinition,
 } from './ast.zena';
+import { growable } from 'zena:core';
 
 /**
  * A collection of comments that maps AST nodes to their attached comments
@@ -74,28 +75,28 @@ export final class CommentMap {
   }
 }
 
-let getNodeStart = (node: Node): i32 => {
+function getNodeStart(node: Node): i32 {
   let loc = node.loc;
   if (loc != null) {
     return loc.start;
   }
   return 0 - 1;
-};
+}
 
-let getNodeEnd = (node: Node): i32 => {
+function getNodeEnd(node: Node): i32 {
   let loc = node.loc;
   if (loc != null) {
     return loc.end;
   }
   return 0 - 1;
-};
+}
 
-let getNodeEndLine = (source: String, node: Node): i32 => {
+function getNodeEndLine(source: String, node: Node): i32 {
   let loc = node.loc;
   if (loc == null) { return 0 - 1; }
   let {end} = loc;
-  var line: i32 = 1;
-  var i: i32 = 0;
+  var line = 1;
+  var i = 0;
   while (i < end && i < source.length) {
     if (source.getByteAt(i) == 10) {
       line += 1;
@@ -103,14 +104,14 @@ let getNodeEndLine = (source: String, node: Node): i32 => {
     i += 1;
   }
   return line;
-};
+}
 
 /**
  * Check if there is a blank line (two newlines with only whitespace between)
  * in the source text between positions `from` (exclusive) and `to` (exclusive).
  */
-let hasBlankLineBetween = (source: String, from: i32, to: i32): boolean => {
-  var newlineCount: i32 = 0;
+function hasBlankLineBetween(source: String, from: i32, to: i32): boolean {
+  var newlineCount = 0;
   var i = from;
   while (i < to && i < source.length) {
     let ch = source.getByteAt(i);
@@ -124,58 +125,55 @@ let hasBlankLineBetween = (source: String, from: i32, to: i32): boolean => {
     i += 1;
   }
   return false;
-};
+}
 
 /** Convert Array<Statement> to Array<Node> (WASM-GC arrays are invariant). */
-let statementsToNodes = (stmts: GrowableArray<Statement>): GrowableArray<Node> => {
+function statementsToNodes(stmts: GrowableArray<Statement>) {
   let result = new Array<Node>(stmts.length);
-  var i: i32 = 0;
+  var i = 0;
   while (i < stmts.length) {
     result.push(stmts[i]);
     i += 1;
   }
   return result;
-};
+}
 
 
 /** Convert Array<EnumMember> to Array<Node> (WASM-GC arrays are invariant). */
-let enumMembersToNodes = (members: GrowableArray<EnumMember>): GrowableArray<Node> => {
+function enumMembersToNodes(members: GrowableArray<EnumMember>) {
   let result = new Array<Node>(members.length);
-  var i: i32 = 0;
+  var i = 0;
   while (i < members.length) {
     result.push(members[i]);
     i += 1;
   }
   return result;
-};
+}
 
 /**
  * Wrap a single node as a one-element Array<Node>.
  */
-let singleNode = (node: Node): GrowableArray<Node> => {
-  let arr = new Array<Node>();
-  arr.push(node);
+function singleNode(node: Node) {
+  let arr = growable<Node>([node]);
   return arr;
-};
+}
 
 /** Convert Array<Expression> to Array<Node>. */
-let expressionsToNodes = (exprs: GrowableArray<Expression>): GrowableArray<Node> => {
+function expressionsToNodes(exprs: GrowableArray<Expression>) {
   let result = new Array<Node>(exprs.length);
-  var i: i32 = 0;
+  var i = 0;
   while (i < exprs.length) {
     result.push(exprs[i]);
     i += 1;
   }
   return result;
-};
+}
 
 /** Build a two-element Array<Node>. */
-let twoNodes = (a: Node, b: Node): GrowableArray<Node> => {
-  let arr = new Array<Node>(2);
-  arr.push(a);
-  arr.push(b);
+function twoNodes(a: Node, b: Node) {
+  let arr = growable<Node>([a, b]);
   return arr;
-};
+}
 
 /**
  * Extract the child body (Array<Node>) from nodes that contain bodies.
@@ -183,7 +181,8 @@ let twoNodes = (a: Node, b: Node): GrowableArray<Node> => {
  * comments inside nested blocks (e.g. `let f = () => { ... };`)
  * are correctly attached.
  */
-let getChildBody = (node: Node): GrowableArray<Node> | null => match (node) {
+function getChildBody(node: Node): GrowableArray<Node> | null {
+  return match (node) {
   case BlockStatement {body}: statementsToNodes(body)
   case ClassDeclaration {body}: body
   case InterfaceDeclaration {body}: body
@@ -192,9 +191,7 @@ let getChildBody = (node: Node): GrowableArray<Node> | null => match (node) {
   // Statements that hold a body. Without these a comment written inside the
   // body is not descended into, and ends up attached outside the statement.
   case IfStatement {test, consequent, alternate}: {
-    let result = new Array<Node>(3);
-    result.push(test);
-    result.push(consequent);
+    let result = growable<Node>([test, consequent]);
     if (alternate != null) { result.push(alternate as Node); }
     result
   }
@@ -238,9 +235,8 @@ let getChildBody = (node: Node): GrowableArray<Node> | null => match (node) {
   case AssignmentExpression {left, value}: twoNodes(left, value)
   case UnaryExpression {argument}: singleNode(argument)
   case CallExpression {callee, args}: {
-    let result = new Array<Node>(args.length + 1);
-    result.push(callee);
-    var i: i32 = 0;
+    let result = growable<Node>([callee]);
+    var i = 0;
     while (i < args.length) {
       result.push(args[i]);
       i += 1;
@@ -248,9 +244,8 @@ let getChildBody = (node: Node): GrowableArray<Node> | null => match (node) {
     result
   }
   case NewExpression {callee, args}: {
-    let result = new Array<Node>(args.length + 1);
-    result.push(callee);
-    var i: i32 = 0;
+    let result = growable<Node>([callee]);
+    var i = 0;
     while (i < args.length) {
       result.push(args[i]);
       i += 1;
@@ -261,15 +256,12 @@ let getChildBody = (node: Node): GrowableArray<Node> | null => match (node) {
   case IndexExpression {object, index}: twoNodes(object, index)
   case ArrayLiteral {elements}: expressionsToNodes(elements)
   case IfExpression {test, consequent, alternate}: {
-    let result = new Array<Node>(3);
-    result.push(test);
-    result.push(consequent);
+    let result = growable<Node>([test, consequent]);
     if (alternate != null) { result.push(alternate); }
     result
   }
   case MatchExpression {discriminant, cases}: {
-    let result = new Array<Node>(cases.length + 1);
-    result.push(discriminant);
+    let result = growable<Node>([discriminant]);
     for (let c in cases) { result.push(c); }
     result
   }
@@ -278,35 +270,31 @@ let getChildBody = (node: Node): GrowableArray<Node> | null => match (node) {
   case SpreadElement {argument}: singleNode(argument)
   case _: null
 };
+}
 
 /**
  * Attach comments to nodes in a list. Recurses into sub-bodies.
  */
-let attachToNodeList = (
+function attachToNodeList(
   comments: GrowableArray<Comment>,
   nodes: GrowableArray<Node>,
   source: String,
   map: CommentMap
-): void => {
+): void {
   if (comments.length == 0) { return; }
 
   // For each comment, find where it belongs
-  var ci: i32 = 0;
-  while (ci < comments.length) {
-    let comment = comments[ci];
+  for (let comment in comments) {
     var attached = false;
 
     // Check if comment belongs inside a child node's body — if so, recurse
-    var ni: i32 = 0;
-    while (ni < nodes.length) {
-      let node = nodes[ni];
+    for (let node in nodes) {
       let childBody = getChildBody(node);
       if (childBody != null) {
         let nStart = getNodeStart(node);
         let nEnd = getNodeEnd(node);
         if (nStart >= 0 && nEnd >= 0 && comment.start > nStart && comment.end < nEnd) {
-          let singleComment = new Array<Comment>(1);
-          singleComment.push(comment);
+          let singleComment = growable<Comment>([comment]);
           attachToNodeList(singleComment, childBody, source, map);
           // If the body was empty, the comment dangles — attach as inner
           if (childBody.length == 0) {
@@ -316,7 +304,6 @@ let attachToNodeList = (
           break;
         }
       }
-      ni += 1;
     }
 
     if (!attached) {
@@ -324,9 +311,7 @@ let attachToNodeList = (
       var preceding: Node | null = null;
       var following: Node | null = null;
 
-      var ni2: i32 = 0;
-      while (ni2 < nodes.length) {
-        let node = nodes[ni2];
+      for (let node in nodes) {
         let nEnd = getNodeEnd(node);
         let nStart = getNodeStart(node);
         if (nEnd >= 0 && nEnd <= comment.start) {
@@ -335,7 +320,6 @@ let attachToNodeList = (
         if (nStart >= 0 && nStart >= comment.end && following == null) {
           following = node;
         }
-        ni2 += 1;
       }
 
       if (preceding != null && comment.line == getNodeEndLine(source, preceding)) {
@@ -348,15 +332,14 @@ let attachToNodeList = (
       // Note: inner comments on empty containers are handled above in the recurse branch
     }
 
-    ci += 1;
   }
-};
+}
 
 /**
  * Attach all comments from the module to their nearest AST nodes.
  * Returns a CommentMap keyed by Node reference.
  */
-export let attachComments = (module: Module): CommentMap => {
+export function attachComments(module: Module): CommentMap {
   let map = new CommentMap();
   let {comments} = module;
   if (comments.length == 0) {
@@ -367,7 +350,7 @@ export let attachComments = (module: Module): CommentMap => {
 
   // Empty module: all comments are file-level (leading on Module)
   if (nodes.length == 0) {
-    var ei: i32 = 0;
+    var ei = 0;
     while (ei < comments.length) {
       map.addLeading(module, comments[ei]);
       ei += 1;
@@ -380,15 +363,15 @@ export let attachComments = (module: Module): CommentMap => {
   let firstNodeStart = getNodeStart(nodes[0]);
 
   // Collect comments that appear before the first statement
-  var prefixEnd: i32 = 0;
+  var prefixEnd = 0;
   while (prefixEnd < comments.length && comments[prefixEnd].start < firstNodeStart) {
     prefixEnd += 1;
   }
 
   // Find the split point: the last comment before a blank line gap
-  var fileLevelEnd: i32 = 0;
+  var fileLevelEnd = 0;
   if (prefixEnd > 0) {
-    var ci: i32 = 0;
+    var ci = 0;
     while (ci < prefixEnd) {
       let commentEnd = comments[ci].end;
       // What comes after this comment?
@@ -405,7 +388,7 @@ export let attachComments = (module: Module): CommentMap => {
   }
 
   // Attach file-level comments as leading on the Module node
-  var fi: i32 = 0;
+  var fi = 0;
   while (fi < fileLevelEnd) {
     map.addLeading(module, comments[fi]);
     fi += 1;
@@ -413,7 +396,7 @@ export let attachComments = (module: Module): CommentMap => {
 
   // Build the remaining comments array (skip file-level ones)
   let remaining = new Array<Comment>(comments.length - fileLevelEnd);
-  var ri: i32 = fileLevelEnd;
+  var ri = fileLevelEnd;
   while (ri < comments.length) {
     remaining.push(comments[ri]);
     ri += 1;
@@ -423,4 +406,4 @@ export let attachComments = (module: Module): CommentMap => {
   attachToNodeList(remaining, nodes, source, map);
 
   return map;
-};
+}

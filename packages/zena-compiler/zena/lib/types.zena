@@ -11,7 +11,7 @@
  * - Type identity is used for equality (interned generic instantiations).
  * - The AST is never mutated — types live in the SemanticModel side table.
  */
-import { StringBuilder, IterableUtils } from 'zena:core';
+import { StringBuilder, IterableUtils, growable } from 'zena:core';
 import { Set, HashMap, HashSet, OrderedHashMap, MapEntry } from 'zena:collections';
 
 
@@ -29,22 +29,23 @@ export distinct type TypeId = i32;
  * The only way to get TypeIds. See `makeNodeIdGenerator` in ast.zena for why
  * the conversion lives here rather than being exported on its own.
  */
-export let makeTypeIdGenerator = (nextId: i32 = 1): IdGenerator<TypeId> =>
-  new IdGenerator<TypeId>((id: i32): TypeId => id as TypeId, nextId);
+export function makeTypeIdGenerator(nextId: i32 = 1): IdGenerator<TypeId> {
+  return new IdGenerator<TypeId>((id: i32) => id as TypeId, nextId);
+}
 
-var _nextTypeUid: i32 = 1;
-let nextTypeUid = (): i32 => {
+var _nextTypeUid = 1;
+function nextTypeUid() {
   let id = _nextTypeUid;
   _nextTypeUid += 1;
   return id;
-};
+}
 
 // Counts for the memory census (census.zena). Every Type takes a uid,
 // so the total is free; the kinds with a constructor of their own
 // count themselves there. Key strings are counted where they are
 // cached (codegen-utils.zena), which is the only place they are made.
 var _classTypes = 0;
-var _functionTypes = 0;
+let _functionTypes = 0;
 var _interfaceTypes = 0;
 var _mixinTypes = 0;
 var _typeParameterTypes = 0;
@@ -59,13 +60,19 @@ var _instantiationMisses = 0;
 var _substitutedNominals = 0;
 var _substitutionCacheHits = 0;
 var _functionTypeHits = 0;
-export let functionTypeHits = (): i32 => _functionTypeHits;
+export function functionTypeHits(): i32 {
+  return _functionTypeHits;
+}
 // Substitutions whose arguments mention a type parameter, built fresh
 // because they cannot be cached (see substituteInType's class case).
-var _parametricSubstitutions = 0;
+let _parametricSubstitutions = 0;
 
-export let substitutionCacheHits = (): i32 => _substitutionCacheHits;
-export let parametricSubstitutions = (): i32 => _parametricSubstitutions;
+export function substitutionCacheHits(): i32 {
+  return _substitutionCacheHits;
+}
+export function parametricSubstitutions(): i32 {
+  return _parametricSubstitutions;
+}
 
 /** The type counters as they stood when a phase boundary was passed. */
 export final class TypeMark {
@@ -77,15 +84,17 @@ export final class TypeMark {
   new(this.label, this.total, this.classes, this.functions, this.interfaces);
 }
 
-var _typeMarks = new GrowableArray<TypeMark>();
+let _typeMarks = new GrowableArray<TypeMark>();
 
 /** Records the counters under `label`, for the census to difference. */
-export let markTypes = (label: String): void => {
+export function markTypes(label: String): void {
   _typeMarks.push(new TypeMark(label, _nextTypeUid - 1, _classTypes,
       _functionTypes, _interfaceTypes));
-};
+}
 
-export let typeMarks = (): GrowableArray<TypeMark> => _typeMarks;
+export function typeMarks(): GrowableArray<TypeMark> {
+  return _typeMarks;
+}
 
 /**
  * How many FunctionTypes each of codegen's substitution sites built
@@ -93,11 +102,13 @@ export let typeMarks = (): GrowableArray<TypeMark> => _typeMarks;
  */
 var _codegenFunctionSites = new FixedArray<i32>(16, 0);
 
-export let countCodegenFunctionType = (site: i32): void => {
+export function countCodegenFunctionType(site: i32): void {
   _codegenFunctionSites[site] = _codegenFunctionSites[site] + 1;
-};
+}
 
-export let codegenFunctionTypeSite = (site: i32): i32 => _codegenFunctionSites[site];
+export function codegenFunctionTypeSite(site: i32): i32 {
+  return _codegenFunctionSites[site];
+}
 
 // How much of codegen's substitution is repeated work: every call,
 // the calls that hand back their input unchanged, and the distinct
@@ -106,37 +117,65 @@ export let codegenFunctionTypeSite = (site: i32): i32 => _codegenFunctionSites[s
 var _censusEnabled = false;
 var _codegenSubstCalls = 0;
 var _codegenSubstUnchanged = 0;
-var _codegenSubstDistinct = new Set<String>();
+let _codegenSubstDistinct = new Set<String>();
 
-export let setCensusEnabled = (on: boolean): void => { _censusEnabled = on; };
-export let codegenSubstCalls = (): i32 => _codegenSubstCalls;
-export let codegenSubstUnchanged = (): i32 => _codegenSubstUnchanged;
-export let codegenSubstDistinct = (): i32 => _codegenSubstDistinct.size;
+export function setCensusEnabled(on: boolean): void { _censusEnabled = on; }
+export function codegenSubstCalls(): i32 {
+  return _codegenSubstCalls;
+}
+export function codegenSubstUnchanged(): i32 {
+  return _codegenSubstUnchanged;
+}
+export function codegenSubstDistinct(): i32 {
+  return _codegenSubstDistinct.size;
+}
 
 /** Records one top-level codegen substitution of `t` under `args`. */
-export let countCodegenSubstitution = (
-    t: Type, args: Array<Type>, result: Type): void => {
+export function countCodegenSubstitution(
+    t: Type, args: Array<Type>, result: Type): void {
   _codegenSubstCalls += 1;
   if (result === t) { _codegenSubstUnchanged += 1; }
   if (!_censusEnabled) { return; }
   var key = i32ToString(t.uid) + "|";
-  for (let a in args) { key = key + i32ToString(a.uid) + ","; }
+  for (let a in args) { key = `${key}${i32ToString(a.uid)},`; }
   _codegenSubstDistinct.add(key);
-};
-export let instantiationHits = (): i32 => _instantiationHits;
-export let instantiationMisses = (): i32 => _instantiationMisses;
-export let substitutedNominals = (): i32 => _substitutedNominals;
+}
+export function instantiationHits(): i32 {
+  return _instantiationHits;
+}
+export function instantiationMisses(): i32 {
+  return _instantiationMisses;
+}
+export function substitutedNominals(): i32 {
+  return _substitutedNominals;
+}
 
-export let typesCreated = (): i32 => _nextTypeUid - 1;
-export let classTypesCreated = (): i32 => _classTypes;
-export let functionTypesCreated = (): i32 => _functionTypes;
-export let interfaceTypesCreated = (): i32 => _interfaceTypes;
-export let mixinTypesCreated = (): i32 => _mixinTypes;
-export let typeParameterTypesCreated = (): i32 => _typeParameterTypes;
-export let typeKeysCached = (): i32 => _typeKeysCached;
-export let typeKeyBytes = (): i32 => _typeKeyBytes;
+export function typesCreated(): i32 {
+  return _nextTypeUid - 1;
+}
+export function classTypesCreated(): i32 {
+  return _classTypes;
+}
+export function functionTypesCreated(): i32 {
+  return _functionTypes;
+}
+export function interfaceTypesCreated(): i32 {
+  return _interfaceTypes;
+}
+export function mixinTypesCreated(): i32 {
+  return _mixinTypes;
+}
+export function typeParameterTypesCreated(): i32 {
+  return _typeParameterTypes;
+}
+export function typeKeysCached(): i32 {
+  return _typeKeysCached;
+}
+export function typeKeyBytes(): i32 {
+  return _typeKeyBytes;
+}
 
-var _distinctTypeKeys = new Set<String>();
+let _distinctTypeKeys = new Set<String>();
 
 /**
  * Records one cached type key string. Under the census the distinct
@@ -144,13 +183,15 @@ var _distinctTypeKeys = new Set<String>();
  * type built more than once, so distinct keys against keys cached is
  * what hash-consing would leave.
  */
-export let countTypeKey = (key: String): void => {
+export function countTypeKey(key: String): void {
   _typeKeysCached += 1;
   _typeKeyBytes = _typeKeyBytes + key.length;
   if (_censusEnabled) { _distinctTypeKeys.add(key); }
-};
+}
 
-export let distinctTypeKeys = (): i32 => _distinctTypeKeys.size;
+export function distinctTypeKeys(): i32 {
+  return _distinctTypeKeys.size;
+}
 
 export sealed class Type implements Hashable {
   var uniqueKeyCache: String | null = null;
@@ -378,11 +419,11 @@ export final class MethodInfo extends MemberInfo {
  * entries, and a mixin's privates under their scope key (`<scope>::#name`).
  * A subclass never inherits these.
  */
-let isPrivateMemberKey = (key: String): boolean => {
+function isPrivateMemberKey(key: String) {
   return (key.length > 0 && key.sliceBytes(0, 1) == "#") ||
       key.startsWith("get##") || key.startsWith("set##") ||
       key.contains("::#") || key.contains("::get##") || key.contains("::set##");
-};
+}
 
 /**
  * Whether a mixin member under `key` is private to the mixin: a `#name`
@@ -390,36 +431,36 @@ let isPrivateMemberKey = (key: String): boolean => {
  * these under the mixin's scope key (`<scope>::<key>`), so a host's own
  * same-named private never aliases them (member-lookup.md §6).
  */
-let isPrivateMixinKey = (key: String): boolean => {
+function isPrivateMixinKey(key: String) {
   return (key.length > 0 && key.sliceBytes(0, 1) == "#") ||
       key.startsWith("get##") || key.startsWith("set##");
-};
+}
 
 /**
  * The scope key a mixin's private fields are namespaced under when it is
  * composed into another mixin or applied to a class: the declaration's
  * (`privateScopeKey`), reached through an instantiation's source.
  */
-let composedScopeKey = (mixin: MixinType): String => {
+function composedScopeKey(mixin: MixinType) {
   return (mixin.genericSource ?? mixin).privateScopeKey ?? (mixin.name + "_This");
-};
+}
 
 /**
  * Whether a composed mixin's member under `key` is carried by the
  * composing mixin under the composed mixin's scope key: its private
  * (`#name`) fields and methods are; everything else keeps its key.
  */
-let isScopedByComposition = (key: String, member: MemberInfo): boolean => {
+function isScopedByComposition(key: String, member: MemberInfo) {
   return (member is FieldInfo || member is MethodInfo) &&
       key.length > 0 && key.sliceBytes(0, 1) == "#";
-};
+}
 
-let sameType = (a: Type | null, b: Type | null): boolean => {
+function sameType(a: Type | null, b: Type | null) {
   if (a == null || b == null) {
     return a == null && b == null;
   }
   return a === b;
-};
+}
 
 /**
  * The substitution a member table applies to a member it reads through a
@@ -430,11 +471,11 @@ let sameType = (a: Type | null, b: Type | null): boolean => {
  */
 var memberTypeSubstitution: ((typeParams: Array<TypeParameterType> | null, typeArgs: Array<Type> | null, t: Type) => Type) | null = null;
 
-export let setMemberTypeSubstitution = (
+export function setMemberTypeSubstitution(
   substitute: (typeParams: Array<TypeParameterType> | null, typeArgs: Array<Type> | null, t: Type) => Type
-): void => {
+): void {
   memberTypeSubstitution = substitute;
-};
+}
 
 /**
  * A parent's member as a child sees it: the same object when the parent
@@ -442,16 +483,13 @@ export let setMemberTypeSubstitution = (
  * whose type has the parent's type arguments substituted for its
  * parameters. The copy keeps a symbol-keyed member's symbol identity.
  */
-export let inheritedMember = (
+export function inheritedMember(
   parent: MemberInfo,
   typeParams: Array<TypeParameterType> | null,
   typeArgs: Array<Type> | null,
   copyAlways: boolean
-): MemberInfo => {
-  var substitutes = false;
-  if (typeParams != null) {
-    substitutes = typeParams.length > 0;
-  }
+): MemberInfo {
+  let substitutes = if (typeParams != null) typeParams.length > 0 else false;
   if (!substitutes && !copyAlways) {
     return parent;
   }
@@ -484,7 +522,7 @@ export let inheritedMember = (
   };
   copy.symbolTypeId = parent.symbolTypeId;
   return copy;
-};
+}
 
 /**
  * Bumped by every write to any member table. A table caches what it
@@ -494,7 +532,7 @@ export let inheritedMember = (
  * checked, so the caches thrash while a module registers and hold
  * afterwards.
  */
-var memberTableEpoch: i32 = 0;
+var memberTableEpoch = 0;
 
 /**
  * The members of a class, interface or mixin: the ones it declares,
@@ -835,10 +873,10 @@ export final class MemberTable with IterableUtils<MapEntry<String, MemberInfo>> 
       if (ct.decoratorSharedPlaced) {
         return null;
       }
-      return (ct.decoratorSharedScopeKey ?? "") + "::" + key;
+      return `${ct.decoratorSharedScopeKey ?? ""}::${key}`;
     }
     if (isPrivateMixinKey(key)) {
-      return (ct.privateScopeKey ?? "") + "::" + key;
+      return `${ct.privateScopeKey ?? ""}::${key}`;
     }
     if (key == "get#" + subject) {
       return "get#" + fieldName;
@@ -907,7 +945,7 @@ export final class MemberTable with IterableUtils<MapEntry<String, MemberInfo>> 
             } else if (isPrivateMixinKey(key)) {
               let member = mixin.members.lookup(key);
               if (member is FieldInfo || member is MethodInfo) {
-                stored = scope + "::" + key;
+                stored = `${scope}::${key}`;
               }
             }
             if (stored != null && !seen.has(stored as String)) {
@@ -932,10 +970,11 @@ export final class MemberTable with IterableUtils<MapEntry<String, MemberInfo>> 
           let scope = composedScopeKey(composed);
           for (let key in composed.members.keys()) {
             let member = composed.members.lookup(key);
-            var stored = key;
-            if (member != null && isScopedByComposition(key, member as MemberInfo)) {
-              stored = scope + "::" + key;
-            }
+            let stored = if (member != null && isScopedByComposition(key, member as MemberInfo)) {
+              `${scope}::${key}`
+            } else {
+              key
+            };
             if (!seen.has(stored)) {
               seen.add(stored);
               out.push(stored);
@@ -1055,7 +1094,7 @@ export final class FunctionDeclInfo {
  * Only arguments that have identity of their own share: a record or
  * tuple argument is a fresh uid each time, as before.
  */
-export let internFunctionType = (
+export function internFunctionType(
   parameters: Array<Type>,
   returnType: Type,
   info: FunctionDeclInfo | null,
@@ -1063,7 +1102,7 @@ export let internFunctionType = (
   typeArguments: Array<Type> | null = null,
   genericSource: FunctionType | null = null,
   overloads: GrowableArray<FunctionType> | null = null,
-): FunctionType => {
+): FunctionType {
   if (info == null) {
     return new FunctionType(parameters, returnType, null, typeParameters,
         typeArguments, genericSource, overloads);
@@ -1093,7 +1132,7 @@ export let internFunctionType = (
       typeArguments, genericSource, overloads);
   node.value = created;
   return created;
-};
+}
 
 /**
  * A function's signature. The parameters, return type and type
@@ -1394,7 +1433,7 @@ export final class DecoratedField(
  */
 final class SubstitutionFrame(source: Type, key: TypeListEntry, result: Type)
 
-var substitutionFrames = new Array<SubstitutionFrame>();
+let substitutionFrames = new Array<SubstitutionFrame>();
 
 /**
  * One list's slot in a TypeListTable: the uids it was filed under,
@@ -1537,7 +1576,7 @@ export final class TypeListTable {
   }
 }
 
-let keyEquals = (key: FixedArray<i32>, probe: GrowableArray<i32>): boolean => {
+function keyEquals(key: FixedArray<i32>, probe: GrowableArray<i32>): boolean {
   if (key.length != probe.length) {
     return false;
   }
@@ -1549,15 +1588,15 @@ let keyEquals = (key: FixedArray<i32>, probe: GrowableArray<i32>): boolean => {
     i += 1;
   }
   return true;
-};
+}
 
-let tablePow2 = (n: i32): i32 => {
+function tablePow2(n: i32): i32 {
   var size = 8;
   while (size < n) {
     size = size * 2;
   }
   return size;
-};
+}
 
 // The one object per field-less primitive kind that an interned
 // union's members are replaced with. Every site that writes `T | null`
@@ -1583,7 +1622,8 @@ let anyRefSingleton = new AnyRefType();
 let eqRefSingleton = new EqRefType();
 
 /** The singleton for a field-less primitive, or null for any other type. */
-let primitiveSingleton = (t: Type): Type | null => match (t) {
+function primitiveSingleton(t: Type): Type | null {
+  return match (t) {
   case NullType: nullSingleton
   case I32Type: i32Singleton
   case U32Type: u32Singleton
@@ -1603,6 +1643,7 @@ let primitiveSingleton = (t: Type): Type | null => match (t) {
   case EqRefType: eqRefSingleton
   case _: null
 };
+}
 
 /**
  * Whether `t`'s identity is stable enough to key an interned union on:
@@ -1614,7 +1655,8 @@ let primitiveSingleton = (t: Type): Type | null => match (t) {
  * it would pin the copy, and everything the copy references, for the
  * compile without ever matching another copy's union.
  */
-let internableMember = (t: Type): boolean => match (t) {
+function internableMember(t: Type): boolean {
+  return match (t) {
   case TypeParameterType: true
   case ClassType as ct:
     (ct.typeArguments == null && ct.genericSource == null) || ct.shapeStamp != 0
@@ -1629,6 +1671,7 @@ let internableMember = (t: Type): boolean => match (t) {
   }
   case _: primitiveSingleton(t) != null
 };
+}
 
 // Census counters for union interning, over the process.
 var _unionHits = 0;
@@ -1638,10 +1681,18 @@ var _unionFresh = 0;
 // member (class instance, interface instance, function, array, tuple,
 // record, alias, union, other).
 var _unionFreshByKind = new FixedArray<i32>(9, 0);
-export let unionInternHits = (): i32 => _unionHits;
-export let unionInternMisses = (): i32 => _unionMisses;
-export let unionInternFresh = (): i32 => _unionFresh;
-export let unionFreshByKind = (kind: i32): i32 => _unionFreshByKind[kind];
+export function unionInternHits(): i32 {
+  return _unionHits;
+}
+export function unionInternMisses(): i32 {
+  return _unionMisses;
+}
+export function unionInternFresh(): i32 {
+  return _unionFresh;
+}
+export function unionFreshByKind(kind: i32): i32 {
+  return _unionFreshByKind[kind];
+}
 
 /**
  * The interned types of one compiler.
@@ -1696,7 +1747,7 @@ export final class TypeInterner {
       }
       i += 1;
     }
-    let keyed: Array<Type> = canonical ?? members;
+    let keyed = canonical ?? members;
     let node = this.#unions.at(keyed);
     let existing = node.value;
     if (existing != null) {
@@ -1718,7 +1769,7 @@ export final class TypeInterner {
  * mixins and interfaces, the constructors, the `on` type, and the
  * flags it copies. Members are shared by reference and need no stamp.
  */
-export let classShapeStamp = (ct: ClassType): i32 => {
+export function classShapeStamp(ct: ClassType): i32 {
   var stamp = ct.implementsList.length * 7 + ct.mixins.length * 13
       + ct.constructors.size * 17;
   let sup = ct.superType;
@@ -1739,23 +1790,23 @@ export let classShapeStamp = (ct: ClassType): i32 => {
   if (ct.isSealed) { flags = flags | 64; }
   if (ct.isMixinIntermediate) { flags = flags | 128; }
   return stamp * 256 + flags + 1;
-};
+}
 
 /** As `classShapeStamp`, for an interface: its extends list. */
-export let interfaceShapeStamp = (it: InterfaceType): i32 => {
+export function interfaceShapeStamp(it: InterfaceType): i32 {
   var stamp = it.extendsList.length;
   for (let ext in it.extendsList) { stamp = stamp * 31 + ext.uid; }
   return stamp + 1;
-};
+}
 
-let reentrantSubstitution = (source: Type, key: TypeListEntry): Type | null => {
+function reentrantSubstitution(source: Type, key: TypeListEntry): Type | null {
   for (let frame in substitutionFrames) {
     if (frame.source === source && frame.key === key) {
       return frame.result;
     }
   }
   return null;
-};
+}
 
 /**
  * `{...fields, ...R}` once R is `row`: a record type merges its fields in
@@ -1766,11 +1817,11 @@ let reentrantSubstitution = (source: Type, key: TypeListEntry): Type | null => {
  * `fields` (`rowLacks`), so on a collision the field written beside the
  * spread is kept.
  */
-export let mergeRow = (
+export function mergeRow(
   fields: HashMap<String, Type>,
   optionals: HashSet<String> | null,
   row: Type
-): Type => {
+): Type {
   match (row) {
     case RecordType as r: {
       let props = new Map<String, Type>();
@@ -1803,7 +1854,7 @@ export let mergeRow = (
       return new RecordType(fields, optionals, null);
     }
   }
-};
+}
 
 /**
  * `(...before, ...R, ...after)` once R is `row`, where `elements` holds
@@ -1812,11 +1863,11 @@ export let mergeRow = (
  * parameter replaces R, an error row makes the whole type an error (as
  * in `mergeRow`), and anything else leaves the listed elements alone.
  */
-export let mergeTupleRow = (
+export function mergeTupleRow(
   elements: Array<Type>,
   rowIndex: i32,
   row: Type
-): Type => {
+): Type {
   match (row) {
     case TupleType as r: {
       let out = new Array<Type>();
@@ -1845,13 +1896,13 @@ export let mergeTupleRow = (
       return new TupleType(elements, null, 0);
     }
   }
-};
+}
 
-let substituteInType = (
+function substituteInType(
   t: Type | null,
   typeParameters: Array<TypeParameterType> | null,
   typeArguments: Array<Type>
-): Type | null => {
+): Type | null {
   if (t == null) return null;
   return match (t) {
     case TypeParameterType as tp: {
@@ -2303,7 +2354,7 @@ let substituteInType = (
     }
     case _: t
   };
-};
+}
 
 /**
  * Identity suffix for a nominal type, so that two same-named
@@ -2313,12 +2364,13 @@ let substituteInType = (
  * substitution copy, so `Foo<i32>` keys the same however it was
  * reached — unlike `Type.uid`, which is fresh per object.
  */
-let nominalIdentity = (name: String, symbolId: SymbolId, typeId: TypeId): String =>
-  if (symbolId != noSymbolId) {
-    name + "#s" + i32ToString(symbolId as i32)
+function nominalIdentity(name: String, symbolId: SymbolId, typeId: TypeId) {
+  return if (symbolId != noSymbolId) {
+    `${name}#s${i32ToString(symbolId as i32)}`
   } else {
-    name + "#t" + i32ToString(typeId as i32)
+    `${name}#t${i32ToString(typeId as i32)}`
   };
+}
 
 /**
  * Cache key for one type argument. A type parameter keys by identity
@@ -2341,10 +2393,11 @@ let nominalIdentity = (name: String, symbolId: SymbolId, typeId: TypeId): String
  * Composite arms mirror typeToString and recurse; anything that cannot
  * embed a type parameter falls through to typeToString.
  */
-let instantiationKeyOf = (t: Type): String => match (t) {
-  case TypeParameterType as tp: tp.name + "#" + i32ToString(tp.uid)
+function instantiationKeyOf(t: Type): String {
+  return match (t) {
+  case TypeParameterType as tp: `${tp.name}#${i32ToString(tp.uid)}`
   case ArrayType {elementType, elementsMutable}:
-    (if (elementsMutable) "Array<" else "Array<imm ") + instantiationKeyOf(elementType) + ">"
+    `${if (elementsMutable) "Array<" else "Array<imm "}${instantiationKeyOf(elementType)}>`
   case TupleType {elementTypes, row, rowIndex}: {
     var s = "[";
     var first = true;
@@ -2353,7 +2406,7 @@ let instantiationKeyOf = (t: Type): String => match (t) {
       if (row != null && i == rowIndex) {
         if (!first) { s = s + ","; }
         first = false;
-        s = s + "..." + instantiationKeyOf(row);
+        s = `${s}...${instantiationKeyOf(row)}`;
       }
       if (!first) { s = s + ","; }
       first = false;
@@ -2362,7 +2415,7 @@ let instantiationKeyOf = (t: Type): String => match (t) {
     }
     if (row != null && rowIndex == elementTypes.length) {
       if (!first) { s = s + ","; }
-      s = s + "..." + instantiationKeyOf(row);
+      s = `${s}...${instantiationKeyOf(row)}`;
     }
     s + "]"
   }
@@ -2392,12 +2445,12 @@ let instantiationKeyOf = (t: Type): String => match (t) {
     for (let key in rec.properties.keys()) {
       if (!first) { s = s + ","; }
       first = false;
-      s = s + key + ":" + instantiationKeyOf(rec.properties[key]);
+      s = `${s}${key}:${instantiationKeyOf(rec.properties[key])}`;
     }
     let row = rec.row;
     if (row != null) {
       if (!first) { s = s + ","; }
-      s = s + "..." + instantiationKeyOf(row);
+      s = `${s}...${instantiationKeyOf(row)}`;
     }
     s + "}"
   }
@@ -2409,7 +2462,7 @@ let instantiationKeyOf = (t: Type): String => match (t) {
       first = false;
       s = s + instantiationKeyOf(param);
     }
-    s + ")=>" + instantiationKeyOf(ft.returnType)
+    `${s})=>${instantiationKeyOf(ft.returnType)}`
   }
   case ClassType as ct: {
     let src = ct.genericSource ?? ct;
@@ -2433,18 +2486,18 @@ let instantiationKeyOf = (t: Type): String => match (t) {
     // MixinType carries no Symbol or TypeId; `sourcePath` plus the name
     // is what `getMixinKey` already treats as a mixin's identity.
     let src = mt.genericSource ?? mt;
-    let base = mt.name + "#m" + src.sourcePath;
+    let base = `${mt.name}#m${src.sourcePath}`;
     if (mt.typeArguments != null) {
       namedKey(base, mt.typeArguments as Array<Type>)
     } else {
       base
     }
   }
-  case EnumType as et: et.name + "#e" + et.declaringModule
+  case EnumType as et: `${et.name}#e${et.declaringModule}`
   case TypeAliasType as ta: {
     // Aliases have no generic source to normalise through, so key by
     // the declaring module — two aliases of one name cannot share it.
-    let base = ta.name + "#a" + ta.declaringModule;
+    let base = `${ta.name}#a${ta.declaringModule}`;
     if (ta.typeArguments != null) {
       namedKey(base, ta.typeArguments as Array<Type>)
     } else {
@@ -2453,9 +2506,10 @@ let instantiationKeyOf = (t: Type): String => match (t) {
   }
   case _: typeToString(t)
 };
+}
 
 /** `Name<key,key,...>` for a generic nominal type's cache key. */
-let namedKey = (name: String, args: Array<Type>): String => {
+function namedKey(name: String, args: Array<Type>): String {
   var s = name + "<";
   var i = 0;
   let len = args.length;
@@ -2465,9 +2519,9 @@ let namedKey = (name: String, args: Array<Type>): String => {
     i += 1;
   }
   return s + ">";
-};
+}
 
-let toGrowable = (arr: Array<Type>): Array<Type> => {
+function toGrowable(arr: Array<Type>): Array<Type> {
   if (arr is GrowableArray<Type>) {
     return arr as GrowableArray<Type>;
   }
@@ -2479,9 +2533,9 @@ let toGrowable = (arr: Array<Type>): Array<Type> => {
     i += 1;
   }
   return g;
-};
+}
 
-let getInstantiationKey = (typeArguments: Array<Type>): String => {
+function getInstantiationKey(typeArguments: Array<Type>) {
   var sb = "";
   var i = 0;
   let len = typeArguments.length;
@@ -2493,17 +2547,17 @@ let getInstantiationKey = (typeArguments: Array<Type>): String => {
     i += 1;
   }
   return sb;
-};
+}
 
 /**
  * Create an instantiated copy of a generic ClassType with concrete type arguments.
  * This is a factory function that properly initializes all fields from the source.
  */
 
-export let instantiateClassType = (
+export function instantiateClassType(
   source: ClassType,
   typeArguments: Array<Type>,
-): ClassType => {
+): ClassType {
   let key = getInstantiationKey(typeArguments);
   let instantiations = source.instantiations ?? new Map<String, ClassType>();
   source.instantiations = instantiations;
@@ -2603,12 +2657,12 @@ export let instantiateClassType = (
   result.forwardVariantNames = source.forwardVariantNames;
   
   return result;
-};
+}
 
-export let instantiateFunctionType = (
+export function instantiateFunctionType(
   source: FunctionType,
   typeArguments: Array<Type>,
-): FunctionType => {
+): FunctionType {
   let newParams = new Array<Type>();
   for (let p in source.parameters) {
     let sub = substituteInType(p, source.typeParameters, typeArguments);
@@ -2620,7 +2674,7 @@ export let instantiateFunctionType = (
   newFt.functionSymbolName = source.functionSymbolName;
   countCodegenFunctionType(6);
   return newFt;
-};
+}
 
 export final class InterfaceType extends Type {
   id: TypeId;
@@ -2666,10 +2720,10 @@ export final class InterfaceType extends Type {
 /**
  * Create an instantiated copy of a generic InterfaceType with concrete type arguments.
  */
-export let instantiateInterfaceType = (
+export function instantiateInterfaceType(
   source: InterfaceType,
   typeArguments: Array<Type>,
-): InterfaceType => {
+): InterfaceType {
   let key = getInstantiationKey(typeArguments);
   let instantiations = source.instantiations ?? new Map<String, InterfaceType>();
   source.instantiations = instantiations;
@@ -2699,7 +2753,7 @@ export let instantiateInterfaceType = (
   result.constructors = source.constructors;
   result.sourcePath = source.sourcePath;
   return result;
-};
+}
 
 /**
  * MixinKey serves as a mixin declaration key (uniquely identified by sourcePath
@@ -2787,10 +2841,10 @@ export final class MixinType extends Type {
   }
 }
 
-export let instantiateMixinType = (
+export function instantiateMixinType(
   source: MixinType,
   typeArguments: Array<Type>,
-): MixinType => {
+): MixinType {
   let key = getInstantiationKey(typeArguments);
   let instantiations = source.instantiations ?? new Map<String, MixinType>();
   source.instantiations = instantiations;
@@ -2823,7 +2877,7 @@ export let instantiateMixinType = (
     result.mixins.push((subM ?? m) as MixinType);
   }
   return result;
-};
+}
 
 export final class TypeParameterType extends Type {
   name: String;
@@ -2946,7 +3000,8 @@ export final class EnumType extends Type {
  * those differ: a standard library file can be loaded under a filesystem
  * path, and only the canonical `zena:` id names a library.
  */
-export let declaringModuleOf = (t: Type): String | null => match (t) {
+export function declaringModuleOf(t: Type): String | null {
+  return match (t) {
   case ClassType as ct: ct.sourcePath
   case InterfaceType as it: it.sourcePath
   case MixinType as mt: mt.sourcePath
@@ -2954,6 +3009,7 @@ export let declaringModuleOf = (t: Type): String | null => match (t) {
   case EnumType as et: et.declaringModule
   case _: null
 };
+}
 
 /**
  * Whether `t` is one of the three ownership handles from `zena:ownership`.
@@ -2961,13 +3017,13 @@ export let declaringModuleOf = (t: Type): String | null => match (t) {
  * see docs/design/ownership.md §"Resource-ness and affineness are different
  * properties".
  */
-export let isOwnershipWrapper = (t: Type): boolean => {
+export function isOwnershipWrapper(t: Type): boolean {
   if (!(t is TypeAliasType)) { return false; }
   if (!t.isDistinct) { return false; }
   return isWellKnown(WellKnown.OwnAlias, t.name, t.declaringModule) ||
       isWellKnown(WellKnown.BorrowAlias, t.name, t.declaringModule) ||
       isWellKnown(WellKnown.UnmanagedAlias, t.name, t.declaringModule);
-};
+}
 
 /**
  * The sole non-null member of a `T | null` union, or null when `t` is
@@ -2976,7 +3032,7 @@ export let isOwnershipWrapper = (t: Type): boolean => {
  * checker and lowering peel exactly this union form; wider unions have
  * no single release path and stay rejected.
  */
-export let soleNonNullMember = (t: Type): Type | null => {
+export function soleNonNullMember(t: Type): Type | null {
   if (!(t is UnionType)) { return null; }
   var nonNull: Type | null = null;
   var sawNull = false;
@@ -2990,7 +3046,7 @@ export let soleNonNullMember = (t: Type): Type | null => {
   }
   if (!sawNull) { return null; }
   return nonNull;
-};
+}
 
 /**
  * Whether `t` is `Scoped<T>` (ownership.md §"Scoped<T>: the fourth
@@ -2998,7 +3054,7 @@ export let soleNonNullMember = (t: Type): Type | null => {
  * recognized separately and gets none of the handle behaviors — no
  * member forwarding, no receiver rules, no bare-mention checks.
  */
-export let isScopedType = (t: Type): boolean => {
+export function isScopedType(t: Type): boolean {
   if (!(t is TypeAliasType)) { return false; }
   // The conditional operator is scoped exactly when its condition
   // argument carries a second-class type; while that argument is an
@@ -3011,7 +3067,7 @@ export let isScopedType = (t: Type): boolean => {
   }
   if (!t.isDistinct) { return false; }
   return isWellKnown(WellKnown.ScopedAlias, t.name, t.declaringModule);
-};
+}
 
 /**
  * The type behind `Scoped<T>`, or null if `t` is not one. Reads
@@ -3019,7 +3075,7 @@ export let isScopedType = (t: Type): boolean => {
  * ownershipHandleInner does: `Scoped<T> = T` has the bare type
  * parameter as its target.
  */
-export let scopedInner = (t: Type): Type | null => {
+export function scopedInner(t: Type): Type | null {
   if (!isScopedType(t)) { return null; }
   let alias = t as TypeAliasType;
   let args = alias.typeArguments;
@@ -3030,13 +3086,13 @@ export let scopedInner = (t: Type): Type | null => {
   }
   if (args.length != 1) { return null; }
   return args[0];
-};
+}
 
 /** The name of the handle `t` is, or "" if it is not one. */
-export let ownershipHandleName = (t: Type): String => {
+export function ownershipHandleName(t: Type): String {
   if (!isOwnershipWrapper(t)) { return ""; }
   return (t as TypeAliasType).name;
-};
+}
 
 /**
  * The resource type behind a handle, or null if `t` is not a handle.
@@ -3047,15 +3103,15 @@ export let ownershipHandleName = (t: Type): String => {
  * — which is what `unwrapAliases` does — lands on `T` rather than on the
  * resource, so a caller that wants the class must come through here.
  */
-export let ownershipHandleInner = (t: Type): Type | null => {
+export function ownershipHandleInner(t: Type): Type | null {
   if (!isOwnershipWrapper(t)) { return null; }
   let args = (t as TypeAliasType).typeArguments;
   if (args == null) { return null; }
   if (args.length != 1) { return null; }
   return args[0];
-};
+}
 
-export let typeContainsTypeParameter = (t: Type): boolean => {
+export function typeContainsTypeParameter(t: Type): boolean {
   return match (t) {
     case TypeParameterType: true
     case UnionType {types}: {
@@ -3161,7 +3217,7 @@ export let typeContainsTypeParameter = (t: Type): boolean => {
     }
     case _: false
   };
-};
+}
 
 /**
  * Whether `t` is the stdlib `Future` class (any instantiation). By
@@ -3172,12 +3228,12 @@ export let typeContainsTypeParameter = (t: Type): boolean => {
  * library is what the registry matches on, so the file it sits in can
  * change without changing this.
  */
-export let isFutureClassType = (t: Type): boolean => {
+export function isFutureClassType(t: Type): boolean {
   if (!(t is ClassType)) {
     return false;
   }
   return isWellKnown(WellKnown.FutureClass, t.name, t.sourcePath);
-};
+}
 
 /**
  * The `type.awaited` rule: the type `await x` has when `x: T`, as a
@@ -3187,8 +3243,8 @@ export let isFutureClassType = (t: Type): boolean => {
  * ONE level deliberately: Zena's runtime does not recursively flatten
  * nested futures, and one level is what monadic bind means.
  */
-export let awaitedTypeOf = (t: Type): Type => {
-  let unwrapArm = (arm: Type): Type => {
+export function awaitedTypeOf(t: Type): Type {
+  let unwrapArm = (arm: Type) => {
     // Awaiting is a scoped future's consumption, so the wrapper
     // unwraps with the future it carries: Awaited<Scoped<Future<U>>>
     // is U.
@@ -3226,7 +3282,7 @@ export let awaitedTypeOf = (t: Type): Type => {
     return new UnionType(mapped);
   }
   return unwrapArm(t);
-};
+}
 
 /**
  * Applies an intrinsic alias's rule once its argument is closed, and
@@ -3244,7 +3300,7 @@ export let awaitedTypeOf = (t: Type): Type => {
  * where the operator is declared, so the collapse can instantiate the
  * real alias without a checker context.
  */
-export let scopedFromTypeOf = (alias: TypeAliasType): Type => {
+export function scopedFromTypeOf(alias: TypeAliasType): Type {
   let args = alias.typeArguments;
   if (args == null || args.length != 2) {
     return alias;
@@ -3258,15 +3314,14 @@ export let scopedFromTypeOf = (alias: TypeAliasType): Type => {
   let scopedDecl = alias.target;
   if (scopedDecl is TypeAliasType) {
     if (scopedDecl.typeParameters != null) {
-      let one = new Array<Type>();
-      one.push(args[1]);
+      let one = growable<Type>([args[1]]);
       return instantiateTypeAliasType(scopedDecl, one);
     }
   }
   return alias;
-};
+}
 
-export let applyTypeIntrinsic = (alias: TypeAliasType): Type => {
+export function applyTypeIntrinsic(alias: TypeAliasType): Type {
   if (alias.intrinsicName == 'type.scopedFrom') {
     return scopedFromTypeOf(alias);
   }
@@ -3281,12 +3336,12 @@ export let applyTypeIntrinsic = (alias: TypeAliasType): Type => {
     return alias;
   }
   return awaitedTypeOf(args[0]);
-};
+}
 
-export let instantiateTypeAliasType = (
+export function instantiateTypeAliasType(
   source: TypeAliasType,
   typeArguments: Array<Type>
-): TypeAliasType => {
+): TypeAliasType {
   let inst = new TypeAliasType(
     source.name,
     source.typeParameters,
@@ -3298,7 +3353,7 @@ export let instantiateTypeAliasType = (
   );
   inst.intrinsicName = source.intrinsicName;
   return inst;
-};
+}
 
 export type GenericNamedType = ClassType | InterfaceType | MixinType | TypeAliasType;
 
@@ -3332,7 +3387,8 @@ export final class ThisType extends Type {}
 /**
  * Check if a type is a numeric primitive.
  */
-export let isNumericType = (t: Type): boolean => match (baseType(t)) {
+export function isNumericType(t: Type): boolean {
+  return match (baseType(t)) {
   case I32Type: true
   case U32Type: true
   case I64Type: true
@@ -3345,11 +3401,13 @@ export let isNumericType = (t: Type): boolean => match (baseType(t)) {
   case I16Type: true
   case _: false
 };
+}
 
 /**
  * Check if a type is an integer type.
  */
-export let isIntegerType = (t: Type): boolean => match (baseType(t)) {
+export function isIntegerType(t: Type): boolean {
+  return match (baseType(t)) {
   case I32Type: true
   case U32Type: true
   case I64Type: true
@@ -3360,90 +3418,103 @@ export let isIntegerType = (t: Type): boolean => match (baseType(t)) {
   case I16Type: true
   case _: false
 };
+}
 
 /**
  * Check if a type is one of the narrow integer types — the ones stored in
  * fewer than 32 bits and promoted before use.
  */
-export let isNarrowIntType = (t: Type): boolean => match (baseType(t)) {
+export function isNarrowIntType(t: Type): boolean {
+  return match (baseType(t)) {
   case U8Type: true
   case U16Type: true
   case I8Type: true
   case I16Type: true
   case _: false
 };
+}
 
 /**
  * Check if an integer type is unsigned. Signedness drives operator
  * selection (`_u` vs `_s` variants) and cast normalization.
  */
-export let isUnsignedIntType = (t: Type): boolean => match (baseType(t)) {
+export function isUnsignedIntType(t: Type): boolean {
+  return match (baseType(t)) {
   case U32Type: true
   case U64Type: true
   case U8Type: true
   case U16Type: true
   case _: false
 };
+}
 
 /**
  * Storage width in bits of a narrow integer type, or 32 for everything
  * else. Used to build the normalizing mask/sign-extend on a cast.
  */
-export let narrowIntBits = (t: Type): i32 => match (baseType(t)) {
+export function narrowIntBits(t: Type): i32 {
+  return match (baseType(t)) {
   case U8Type: 8
   case I8Type: 8
   case U16Type: 16
   case I16Type: 16
   case _: 32
 };
+}
 
 /**
  * The 32-bit type a narrow integer promotes to. Non-narrow types are
  * returned unchanged, so this is safe to apply to any operand.
  */
-export let promoteNarrowInt = (t: Type): Type => match (baseType(t)) {
+export function promoteNarrowInt(t: Type): Type {
+  return match (baseType(t)) {
   case U8Type: new U32Type()
   case U16Type: new U32Type()
   case I8Type: new I32Type()
   case I16Type: new I32Type()
   case _: t
 };
+}
 
 /**
  * Check if a type is a floating point type.
  */
-export let isFloatType = (t: Type): boolean => match (baseType(t)) {
+export function isFloatType(t: Type): boolean {
+  return match (baseType(t)) {
   case F32Type: true
   case F64Type: true
   case _: false
 };
+}
 
 /**
  * Check if a type is a 64-bit type.
  */
-export let is64BitType = (t: Type): boolean => match (baseType(t)) {
+export function is64BitType(t: Type): boolean {
+  return match (baseType(t)) {
   case I64Type: true
   case U64Type: true
   case F64Type: true
   case _: false
 };
+}
 
 /**
  * Check if a type is a Wasm GC reference type.
  */
-export let isRefType = (t: Type): boolean => {
+export function isRefType(t: Type): boolean {
   let b = baseType(t);
   return b is RecordType || b is ClassType || b is ArrayType || 
          b is InterfaceType || b is TypeParameterType || b is ThisType || 
          b is AnyRefType || b is EqRefType || b is FunctionType || 
          b is TupleType || b is NullType || b is UnionType || b is StringLiteralType ||
          b is StringLiteralType;
-};
+}
 
-export let isVoidOrNeverType = (t: Type): boolean => {
+export function isVoidOrNeverType(t: Type): boolean {
   let b = baseType(t);
   return b is VoidType || b is NeverType || b is HoleType;
-};
+}
 
 /**
  * How many arguments a call must actually supply.
@@ -3464,8 +3535,8 @@ export let isVoidOrNeverType = (t: Type): boolean => {
  * accepts nothing but void: an argument that slides into a void
  * parameter's position fails its own assignability check.
  */
-export let requiredParameterCount = (
-    parameters: Array<Type>, optionals: GrowableArray<boolean> | null): i32 => {
+export function requiredParameterCount(
+    parameters: Array<Type>, optionals: GrowableArray<boolean> | null): i32 {
   var required = 0;
   for (var i = 0; i < parameters.length; i += 1) {
     let isOptional = if (optionals != null) {
@@ -3478,12 +3549,13 @@ export let requiredParameterCount = (
     }
   }
   return required;
-};
+}
 
 /**
  * Get the name of a numeric type.
  */
-export let numericTypeName = (t: Type): String => match (t) {
+export function numericTypeName(t: Type): String {
+  return match (t) {
   case I32Type: "i32"
   case U32Type: "u32"
   case I64Type: "i64"
@@ -3496,11 +3568,13 @@ export let numericTypeName = (t: Type): String => match (t) {
   case I16Type: "i16"
   case _: "unknown"
 };
+}
 
 /**
  * Check if a type is a boolean or boolean literal.
  */
-export let isBooleanLike = (t: Type): boolean => match (t) {
+export function isBooleanLike(t: Type): boolean {
+  return match (t) {
   case BooleanType: true
   case BoolLiteralType {}: true
   case UnionType {types}: {
@@ -3514,11 +3588,13 @@ export let isBooleanLike = (t: Type): boolean => match (t) {
   }
   case _: false
 };
+}
 
 /**
  * Get the base type of a literal type, or the type itself if not literal.
  */
-export let baseType = (t: Type): Type => match (t) {
+export function baseType(t: Type): Type {
+  return match (t) {
   case BoolLiteralType {}: new BooleanType()
   case NumLiteralType {raw}: {
     var isFloat = false;
@@ -3534,14 +3610,19 @@ export let baseType = (t: Type): Type => match (t) {
   }
   case _: t
 };
+}
 
 /**
  * Compute the promoted numeric type for a binary operation.
  * Returns null if the types are incompatible.
  */
-export let promoteNumeric = (leftOrig: Type, rightOrig: Type): Type | null => {
-  let leftLit = match (leftOrig) { case NumLiteralType: baseType(leftOrig) case _: leftOrig };
-  let rightLit = match (rightOrig) { case NumLiteralType: baseType(rightOrig) case _: rightOrig };
+export function promoteNumeric(leftOrig: Type, rightOrig: Type): Type | null {
+  let leftLit = if (leftOrig is NumLiteralType) baseType(leftOrig) else leftOrig;
+  let rightLit = if (rightOrig is NumLiteralType) {
+    baseType(rightOrig)
+  } else {
+    rightOrig
+  };
   // Narrow integers are storage widths, not arithmetic widths: each side
   // promotes to its 32-bit counterpart before anything else is decided.
   // Mixed sizes within one signedness therefore just work (u8 + u16 is
@@ -3588,7 +3669,7 @@ export let promoteNumeric = (leftOrig: Type, rightOrig: Type): Type | null => {
     return null;
   }
   return null;
-};
+}
 
 /**
  * Parse the magnitude of an integer literal, reporting overflow rather
@@ -3597,7 +3678,7 @@ export let promoteNumeric = (leftOrig: Type, rightOrig: Type): Type | null => {
  * `(false, _)` for a malformed literal or one that does not fit in 64
  * bits, which is the widest magnitude any Zena integer type can hold.
  */
-export let integerLiteralMagnitude = (raw: String): inline (boolean, u64) => {
+export function integerLiteralMagnitude(raw: String): inline (boolean, u64) {
   var start = 0;
   var isHex = false;
   if (start + 2 <= raw.length) {
@@ -3650,7 +3731,7 @@ export let integerLiteralMagnitude = (raw: String): inline (boolean, u64) => {
     return (false, 0 as u64);
   }
   return (true, res);
-};
+}
 
 /**
  * The element type of an array-shaped type: the intrinsic `array<T>`,
@@ -3662,7 +3743,8 @@ export let integerLiteralMagnitude = (raw: String): inline (boolean, u64) => {
  * should be read sign-extended, since `u8` and `i8` share one wasm
  * array type.
  */
-export let arrayElementType = (t: Type): Type | null => match (baseType(t)) {
+export function arrayElementType(t: Type): Type | null {
+  return match (baseType(t)) {
   case ArrayType {elementType}: elementType
   case ClassType as ct: {
     let {typeArguments} = ct;
@@ -3674,6 +3756,7 @@ export let arrayElementType = (t: Type): Type | null => match (baseType(t)) {
   }
   case _: null
 };
+}
 
 /**
  * Whether a narrow integer type is one of the signed ones, i.e. whether
@@ -3681,11 +3764,13 @@ export let arrayElementType = (t: Type): Type | null => match (baseType(t)) {
  * a narrow type, so a caller that has already established packing can
  * read this as "use array.get_s".
  */
-export let isSignedNarrowIntType = (t: Type): boolean => match (baseType(t)) {
+export function isSignedNarrowIntType(t: Type): boolean {
+  return match (baseType(t)) {
   case I8Type: true
   case I16Type: true
   case _: false
 };
+}
 
 /**
  * Whether an integer literal fits a type with a checked range. `raw` is
@@ -3693,7 +3778,7 @@ export let isSignedNarrowIntType = (t: Type): boolean => match (baseType(t)) {
  * kept separate so that `-128` fits `i8` even though `128` alone does
  * not. Callers must have established `integerTypeHasCheckedRange(t)`.
  */
-export let integerLiteralFits = (raw: String, negative: boolean, t: Type): boolean => {
+export function integerLiteralFits(raw: String, negative: boolean, t: Type): boolean {
   if (let (true, mag) = integerLiteralMagnitude(raw)) {
     let zero = 0 as u64;
     if (negative) {
@@ -3719,7 +3804,7 @@ export let integerLiteralFits = (raw: String, negative: boolean, t: Type): boole
   }
   // Malformed, or wider than 64 bits: fits nothing.
   return false;
-};
+}
 
 /**
  * Whether an integer literal fits `i64` (`is64`) or `i32`, the types a
@@ -3728,7 +3813,7 @@ export let integerLiteralFits = (raw: String, negative: boolean, t: Type): boole
  * as in `integerLiteralFits`. A hex literal may use every bit, as a bit
  * pattern, so `0xFFFFFFFF` is the i32 -1.
  */
-export let signedLiteralFits = (raw: String, negative: boolean, is64: boolean): boolean => {
+export function signedLiteralFits(raw: String, negative: boolean, is64: boolean): boolean {
   if (let (true, mag) = integerLiteralMagnitude(raw)) {
     let isHex = raw.length >= 2 && raw.getByteAt(0) == 48 &&
         (raw.getByteAt(1) == 120 || raw.getByteAt(1) == 88); // '0' then 'x'/'X'
@@ -3743,12 +3828,13 @@ export let signedLiteralFits = (raw: String, negative: boolean, is64: boolean): 
   }
   // Malformed, or wider than 64 bits: fits nothing.
   return false;
-};
+}
 
 /**
  * Format a type as a human-readable string for diagnostics.
  */
-export let typeToString = (t: Type): String => match (t) {
+export function typeToString(t: Type): String {
+  return match (t) {
   case I32Type: "i32"
   case U32Type: "u32"
   case I64Type: "i64"
@@ -3771,12 +3857,12 @@ export let typeToString = (t: Type): String => match (t) {
   case ErasedType: "erased"
   case EqRefType: "eqref"
   case BoolLiteralType {value}: if (value) "true" else "false"
-  case StringLiteralType {value}: "'" + value + "'"
+  case StringLiteralType {value}: `'${value}'`
   case NumLiteralType {raw}: raw
   // Mutable elements keep today's spelling; immutable elements print as
   // `array<T>`, the surface spelling they will own once the default flips.
   case ArrayType {elementType, elementsMutable}:
-    (if (elementsMutable) "Array<" else "array<") + typeToString(elementType) + ">"
+    `${if (elementsMutable) "Array<" else "array<"}${typeToString(elementType)}>`
   case TupleType {elementTypes, row, rowIndex}: {
     var s = "[";
     var i = 0;
@@ -3784,7 +3870,7 @@ export let typeToString = (t: Type): String => match (t) {
     while (i <= elementTypes.length) {
       if (row != null && i == rowIndex) {
         if (written > 0) { s = s + ", "; }
-        s = s + "..." + row.name;
+        s = `${s}...${row.name}`;
         written += 1;
       }
       if (i < elementTypes.length) {
@@ -3816,7 +3902,7 @@ export let typeToString = (t: Type): String => match (t) {
     if (nullableInner != null) {
       let inner = nullableInner;
       if (inner is FunctionType) {
-        "(" + typeToString(inner) + ")?"
+        `(${typeToString(inner)})?`
       } else {
         typeToString(inner) + "?"
       }
@@ -3837,13 +3923,13 @@ export let typeToString = (t: Type): String => match (t) {
     var first = true;
     for (let key in keys) {
       if (!first) { s = s + ", "; }
-      s = s + key + ": " + typeToString(rec.properties[key]);
+      s = `${s}${key}: ${typeToString(rec.properties[key])}`;
       first = false;
     }
     let row = rec.row;
     if (row != null) {
       if (!first) { s = s + ", "; }
-      s = s + "..." + row.name;
+      s = `${s}...${row.name}`;
     }
     s + " }"
   }
@@ -3856,13 +3942,13 @@ export let typeToString = (t: Type): String => match (t) {
       if (parameterNames != null) {
         let names = parameterNames;
         if (i < names.length) {
-          s = s + names[i] + ": ";
+          s = `${s}${names[i]}: `;
         }
       }
       s = s + typeToString(ft.parameters[i]);
       i += 1;
     }
-    s + ") => " + typeToString(ft.returnType)
+    `${s}) => ${typeToString(ft.returnType)}`
   }
   case ClassType as ct: {
     let {typeArguments} = ct;
@@ -3936,13 +4022,14 @@ export let typeToString = (t: Type): String => match (t) {
   case SymbolType as sym: {
     let {debugName} = sym;
     if (debugName != null) {
-      "symbol(" + debugName + ")"
+      `symbol(${debugName})`
     } else {
       "symbol"
     }
   }
   case ThisType: "this"
 };
+}
 
 // ---------------------------------------------------------------------------
 // Second-class containment (ownership.md §"The two axes")
@@ -3965,7 +4052,7 @@ export let typeToString = (t: Type): String => match (t) {
  * call site `T` is substituted, so `read<i32>` is checked with the
  * unrestricted `Borrow<i32>` and nothing applies.
  */
-export let isSecondClass = (t: Type): boolean => {
+export function isSecondClass(t: Type): boolean {
   // A scoped value is second-class whatever it wraps: it owns a frame
   // that holds a borrow, so the extent restriction is unconditional
   // (ownership.md §"Scoped<T>: the fourth corner").
@@ -3977,7 +4064,7 @@ export let isSecondClass = (t: Type): boolean => {
   let inner = ownershipHandleInner(t);
   if (inner == null) { return false; }
   return borrowInnerRestricts(inner);
-};
+}
 
 /**
  * Whether a value of `t` can carry a second-class value — the
@@ -3986,11 +4073,11 @@ export let isSecondClass = (t: Type): boolean => {
  * aliased spelling (`Scoped<F> | null`, `type Sneak = Borrow<R>`) is
  * not a storage loophole.
  */
-export let typeContainsSecondClass = (t: Type): boolean => {
+export function typeContainsSecondClass(t: Type): boolean {
   return typeContainsSecondClassAtDepth(t, 0);
-};
+}
 
-export let typeContainsSecondClassAtDepth = (t: Type, depth: i32): boolean => {
+export function typeContainsSecondClassAtDepth(t: Type, depth: i32): boolean {
   if (depth > 32) { return false; }
   if (isSecondClass(t)) { return true; }
   if (t is UnionType) {
@@ -4038,10 +4125,10 @@ export let typeContainsSecondClassAtDepth = (t: Type, depth: i32): boolean => {
     return typeContainsSecondClassAtDepth(t.elementType, depth + 1);
   }
   return false;
-};
+}
 
 /** The scoped half of typeContainsSecondClass, for diagnostic wording. */
-export let typeContainsScoped = (t: Type): boolean => {
+export function typeContainsScoped(t: Type): boolean {
   if (isScopedType(t)) { return true; }
   if (t is UnionType) {
     for (let m in t.types) {
@@ -4058,7 +4145,7 @@ export let typeContainsScoped = (t: Type): boolean => {
     return res;
   }
   return false;
-};
+}
 
 /**
  * typeContainsSecondClass, excluding `scoped` type parameters. The
@@ -4068,11 +4155,11 @@ export let typeContainsScoped = (t: Type): boolean => {
  * (`Array<Scoped<F>>`) stays a storage error wherever it is written
  * (ownership.md §"Scoped containers and extent nesting").
  */
-export let typeContainsConcreteSecondClass = (t: Type): boolean => {
+export function typeContainsConcreteSecondClass(t: Type): boolean {
   return typeContainsConcreteSecondClassAtDepth(t, 0);
-};
+}
 
-export let typeContainsConcreteSecondClassAtDepth = (t: Type, depth: i32): boolean => {
+export function typeContainsConcreteSecondClassAtDepth(t: Type, depth: i32): boolean {
   if (depth > 32) { return false; }
   if (t is TypeParameterType) { return false; }
   if (isSecondClass(t)) { return true; }
@@ -4113,7 +4200,7 @@ export let typeContainsConcreteSecondClassAtDepth = (t: Type, depth: i32): boole
     return typeContainsConcreteSecondClassAtDepth(t.elementType, depth + 1);
   }
   return false;
-};
+}
 
 /**
  * Whether borrowing `inner` is restricted. A union inner — a merged
@@ -4121,7 +4208,7 @@ export let typeContainsConcreteSecondClassAtDepth = (t: Type, depth: i32): boole
  * the union may dynamically be the restricted member, and dropping the
  * restriction there would let that arm escape its owner's extent.
  */
-export let borrowInnerRestricts = (inner: Type): boolean => {
+export function borrowInnerRestricts(inner: Type): boolean {
   if (inner is TypeParameterType) { return true; }
   if (inner is ClassType) { return inner.isResource; }
   if (inner is UnionType) {
@@ -4130,4 +4217,4 @@ export let borrowInnerRestricts = (inner: Type): boolean => {
     }
   }
   return false;
-};
+}

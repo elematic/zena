@@ -18,7 +18,7 @@ import { HashMap } from 'zena:collections';
 // language-level concept, not a user dependency. The compiler always
 // includes it. Eventually, the stdlib source could be embedded in the
 // compiler binary, eliminating the need for a path.
-export let buildStdlibConfig = (stdlibRoot: String): PackageConfig => {
+export function buildStdlibConfig(stdlibRoot: String): PackageConfig {
   let exports = new Map<String, ModuleExport>();
 
   // Public modules (no virtual mapping).
@@ -54,11 +54,12 @@ export let buildStdlibConfig = (stdlibRoot: String): PackageConfig => {
   // delegates to its `realloc` — two allocators handing out blocks from
   // the same pages would corrupt each other, so the component entry
   // keeps no allocation state at all.
-  let memoryVirtual = new Map<String, String>();
-  memoryVirtual["js"] = "memory.zena";
-  memoryVirtual["zena-cli"] = "memory/component.zena";
-  memoryVirtual["freestanding"] = "memory.zena";
-  memoryVirtual["component"] = "memory/component.zena";
+  let memoryVirtual: HashMap<String, String> = {
+    "js" => "memory.zena",
+    "zena-cli" => "memory/component.zena",
+    "freestanding" => "memory.zena",
+    "component" => "memory/component.zena",
+  };
   exports["memory"] = new ModuleExport(memoryVirtual);
 
   let consoleVirtual = new Map<String, String>();
@@ -109,39 +110,44 @@ export let buildStdlibConfig = (stdlibRoot: String): PackageConfig => {
   // `Error`'s stack traces, and the blocking wait. A runtime module of
   // the zena-cli target (prelude.zena's getTargetRuntimeModules), whose
   // `installHost` the component entry calls before `main`.
-  let hostSetupVirtual = new Map<String, String>();
-  hostSetupVirtual["zena-cli"] = "host-setup.zena";
+  let hostSetupVirtual: HashMap<String, String> = {
+    "zena-cli" => "host-setup.zena",
+  };
   exports["host-setup"] = new ModuleExport(hostSetupVirtual);
 
   // Virtual module: fs → the file system, over wasi:filesystem 0.3 on
   // both component targets. The 0.3 filesystem is asynchronous
   // throughout, and so is the API; the `Sync` forms wait for the host
   // in `blockOn`.
-  let fsVirtual = new Map<String, String>();
-  fsVirtual["zena-cli"] = "fs/component.zena";
-  fsVirtual["component"] = "fs/component.zena";
+  let fsVirtual: HashMap<String, String> = {
+    "zena-cli" => "fs/component.zena",
+    "component" => "fs/component.zena",
+  };
   exports["fs"] = new ModuleExport(fsVirtual);
 
   // Virtual module: cli → arguments, environment and exit, over
   // wasi:cli 0.3.
-  let cliVirtual = new Map<String, String>();
-  cliVirtual["zena-cli"] = "cli/component.zena";
-  cliVirtual["component"] = "cli/component.zena";
+  let cliVirtual: HashMap<String, String> = {
+    "zena-cli" => "cli/component.zena",
+    "component" => "cli/component.zena",
+  };
   exports["cli"] = new ModuleExport(cliVirtual);
 
   // Virtual module: process → host process spawning, on the zena
   // command's host only, which links it for trusted invocations; see
   // the library header.
-  let processVirtual = new Map<String, String>();
-  processVirtual["zena-cli"] = "process/component.zena";
+  let processVirtual: HashMap<String, String> = {
+    "zena-cli" => "process/component.zena",
+  };
   exports["process"] = new ModuleExport(processVirtual);
 
   // Virtual module: wasm → running other Wasm modules, on zena-cli only:
   // it needs the zena_wasm host imports. Granted with
   // process spawning and linked by the same hosts; see the library
   // header.
-  let wasmVirtual = new Map<String, String>();
-  wasmVirtual["zena-cli"] = "wasm/component.zena";
+  let wasmVirtual: HashMap<String, String> = {
+    "zena-cli" => "wasm/component.zena",
+  };
   exports["wasm"] = new ModuleExport(wasmVirtual);
 
   // Virtual module: js → JavaScript-host interop, currently the
@@ -149,8 +155,7 @@ export let buildStdlibConfig = (stdlibRoot: String): PackageConfig => {
   // embedder that pushes completions back in through the module's
   // exports: WASI p1 blocks in a parker and the component target's
   // futures ride the canonical ABI's waitables, so neither resolves it.
-  let jsVirtual = new Map<String, String>();
-  jsVirtual["js"] = "js/index.zena";
+  let jsVirtual: HashMap<String, String> = {"js" => "js/index.zena"};
   exports["js"] = new ModuleExport(jsVirtual);
 
   // Virtual module: fetch → HTTP requests. The JS-hosted targets go
@@ -158,9 +163,10 @@ export let buildStdlibConfig = (stdlibRoot: String): PackageConfig => {
   // wasi:http through the bindings synthesized from the stdlib's WIT.
   // A WASI p1 build fails at import resolution rather than linking an
   // import no host provides.
-  let fetchVirtual = new Map<String, String>();
-  fetchVirtual["js"] = "fetch/host.zena";
-  fetchVirtual["component"] = "fetch/component.zena";
+  let fetchVirtual: HashMap<String, String> = {
+    "js" => "fetch/host.zena",
+    "component" => "fetch/component.zena",
+  };
   exports["fetch"] = new ModuleExport(fetchVirtual);
 
   // Module: http → HTTP server and client support, Express-like App and WASI
@@ -199,7 +205,7 @@ export let buildStdlibConfig = (stdlibRoot: String): PackageConfig => {
   exports["simd"] = new ModuleExport(null, "simd/index.zena");
 
   return new PackageConfig(stdlibRoot, exports);
-};
+}
 
 // ============================================================================
 // Module id → owning library
@@ -215,13 +221,13 @@ var libraryIndex: HashMap<String, String> | null = null;
 // Every id the manifest names outright: each library's own name, and each
 // entry file a `path` or `virtual` mapping points at. A library's private
 // files are not in here — `stdlibLibraryOf` attributes those by directory.
-let buildLibraryIndex = (): HashMap<String, String> => {
+function buildLibraryIndex() {
   let index = new Map<String, String>();
   // The root is only used to resolve entry files on disk, which nothing
   // reading this index does.
   let config = buildStdlibConfig("");
   let exports = config.exports as HashMap<String, ModuleExport>;
-  exports.forEach((name: String, entry: ModuleExport): void => {
+  exports.forEach((name, entry) => {
     index[name] = name;
     let path = entry.path;
     if (path != null) {
@@ -230,17 +236,17 @@ let buildLibraryIndex = (): HashMap<String, String> => {
     let virtual = entry.virtual;
     if (virtual != null) {
       (virtual as HashMap<String, String>).forEach(
-        (target: String, entryPath: String): void => {
+        (target, entryPath) => {
           index[entryPath] = name;
         });
     }
   });
   libraryIndex = index;
   return index;
-};
+}
 
 // The first path segment of `id`, or the whole id if it has no "/".
-let firstSegment = (id: String): String => {
+function firstSegment(id: String) {
   var i = 0;
   while (i < id.length) {
     if (id.getByteAt(i) == 47) { // 47 = '/'
@@ -249,7 +255,7 @@ let firstSegment = (id: String): String => {
     i += 1;
   }
   return id;
-};
+}
 
 /**
  * The stdlib library that owns `moduleId`, or null if no library does.
@@ -282,7 +288,7 @@ let firstSegment = (id: String): String => {
  * implementation files have no module name, and this reports that rather
  * than inventing one from the file name.
  */
-export let stdlibModuleNameForEntryPath = (entryPath: String): String | null => {
+export function stdlibModuleNameForEntryPath(entryPath: String): String | null {
   let index = if (libraryIndex != null) {
     libraryIndex as HashMap<String, String>
   } else {
@@ -292,9 +298,9 @@ export let stdlibModuleNameForEntryPath = (entryPath: String): String | null => 
     return name;
   }
   return null;
-};
+}
 
-export let stdlibLibraryOf = (moduleId: String): String | null => {
+export function stdlibLibraryOf(moduleId: String): String | null {
   if (!moduleId.startsWith("zena:")) {
     return null;
   }
@@ -321,7 +327,7 @@ export let stdlibLibraryOf = (moduleId: String): String | null => {
     }
   }
   return null;
-};
+}
 
 /**
  * The library a library's files are moving into, for the length of the move.
@@ -341,7 +347,7 @@ export let stdlibLibraryOf = (moduleId: String): String | null => {
  */
 var libraryMoves: HashMap<String, String> | null = null;
 
-let buildLibraryMoves = (): HashMap<String, String> => {
+function buildLibraryMoves() {
   // Empty between migrations, which is the resting state: every library is
   // where the manifest says it is, so a lookup naming one has exactly one
   // answer. An entry is added for the length of a move and deleted by the
@@ -349,13 +355,13 @@ let buildLibraryMoves = (): HashMap<String, String> => {
   let t = new Map<String, String>();
   libraryMoves = t;
   return t;
-};
+}
 
 /**
  * Whether a module owned by `owner` answers a lookup for `library` — the
  * same library, or the one it is moving into while it moves.
  */
-export let stdlibLibraryAnswers = (owner: String, library: String): boolean => {
+export function stdlibLibraryAnswers(owner: String, library: String): boolean {
   if (owner == library) {
     return true;
   }
@@ -368,4 +374,4 @@ export let stdlibLibraryAnswers = (owner: String, library: String): boolean => {
     return owner == destination;
   }
   return false;
-};
+}

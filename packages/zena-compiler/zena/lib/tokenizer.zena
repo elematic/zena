@@ -220,34 +220,34 @@ let KEYWORDS: HashMap<String, TokenType> = {
 // Character helpers
 // ============================================================================
 
-let isWhitespace = (c: i32): boolean => {
+function isWhitespace(c: i32) {
   // space=32, tab=9, newline=10, carriage return=13
   return c == 32 || c == 9 || c == 10 || c == 13;
-};
+}
 
-let isDigit = (c: i32): boolean => {
+function isDigit(c: i32) {
   // '0'=48, '9'=57
   return c >= 48 && c <= 57;
-};
+}
 
-let isHexDigit = (c: i32): boolean => {
+function isHexDigit(c: i32) {
   // '0'-'9'=48-57, 'a'-'f'=97-102, 'A'-'F'=65-70
   return (c >= 48 && c <= 57) || (c >= 97 && c <= 102) || (c >= 65 && c <= 70);
-};
+}
 
-let isAlpha = (c: i32): boolean => {
+function isAlpha(c: i32) {
   // 'a'-'z'=97-122, 'A'-'Z'=65-90
   return (c >= 97 && c <= 122) || (c >= 65 && c <= 90);
-};
+}
 
-let isIdentifierStart = (c: i32): boolean => {
+function isIdentifierStart(c: i32) {
   // letters, underscore=95, $=36
   return isAlpha(c) || c == 95 || c == 36;
-};
+}
 
-export let isIdentifierPart = (c: i32): boolean => {
+export function isIdentifierPart(c: i32): boolean {
   return isAlpha(c) || isDigit(c) || c == 95 || c == 36;
-};
+}
 
 // ============================================================================
 // Keyword recognition
@@ -263,7 +263,7 @@ export final class Keyword(text: String, type: TokenType)
  */
 var keywordBuckets: GrowableArray<GrowableArray<Keyword>> | null = null;
 
-let buildKeywordBuckets = (): GrowableArray<GrowableArray<Keyword>> => {
+function buildKeywordBuckets() {
   let texts = new Array<String>();
   var longest = 0;
   for (let text in KEYWORDS.keys()) {
@@ -287,7 +287,7 @@ let buildKeywordBuckets = (): GrowableArray<GrowableArray<Keyword>> => {
     }
   }
   return buckets;
-};
+}
 
 /**
  * The keyword a byte range spells, or null if it spells an identifier.
@@ -301,7 +301,7 @@ let buildKeywordBuckets = (): GrowableArray<GrowableArray<Keyword>> => {
  * every byte to look the word up — which is what a map keyed by String
  * does — costs more than the compare that has to follow it anyway.
  */
-export let matchKeyword = (source: String, start: i32, length: i32): Keyword | null => {
+export function matchKeyword(source: String, start: i32, length: i32): Keyword | null {
   var buckets = keywordBuckets;
   if (buckets == null) {
     buckets = buildKeywordBuckets();
@@ -330,7 +330,7 @@ export let matchKeyword = (source: String, start: i32, length: i32): Keyword | n
     }
   }
   return null;
-};
+}
 
 // ============================================================================
 // Tokenizer
@@ -589,10 +589,11 @@ export final class Tokenizer {
       if (c == 96) {
         // backtick=96
         this.#advance();
-        var tokenType = TokenType.NoSubstitutionTemplate;
-        if (isMiddleOrTail) {
-          tokenType = TokenType.TemplateTail;
-        }
+        let tokenType = if (isMiddleOrTail) {
+          TokenType.TemplateTail
+        } else {
+          TokenType.NoSubstitutionTemplate
+        };
         this.#addTemplateToken(tokenType, cooked.toString(), raw.toString(), startPos, startCol);
         return;
       }
@@ -603,10 +604,11 @@ export final class Tokenizer {
         this.#advance(); // $
         this.#advance(); // {
         this.#templateStack.push(1); // start tracking braces
-        var tokenType = TokenType.TemplateHead;
-        if (isMiddleOrTail) {
-          tokenType = TokenType.TemplateMiddle;
-        }
+        let tokenType = if (isMiddleOrTail) {
+          TokenType.TemplateMiddle
+        } else {
+          TokenType.TemplateHead
+        };
         this.#addTemplateToken(tokenType, cooked.toString(), raw.toString(), startPos, startCol);
         return;
       }
@@ -624,10 +626,11 @@ export final class Tokenizer {
     }
 
     // Reached end without closing
-    var tokenType = TokenType.NoSubstitutionTemplate;
-    if (isMiddleOrTail) {
-      tokenType = TokenType.TemplateTail;
-    }
+    let tokenType = if (isMiddleOrTail) {
+      TokenType.TemplateTail
+    } else {
+      TokenType.NoSubstitutionTemplate
+    };
     this.#addTemplateToken(tokenType, cooked.toString(), raw.toString(), startPos, startCol);
   }
 
@@ -1009,10 +1012,10 @@ export final class Tokenizer {
 // Convenience function
 // ============================================================================
 
-export let tokenize = (source: String, table: StringTable | null = null): GrowableArray<Token> => {
+export function tokenize(source: String, table: StringTable | null = null): GrowableArray<Token> {
   let tokenizer = new Tokenizer(source, table);
   return tokenizer.tokenize();
-};
+}
 
 /**
  * Primes `table` with Zena's keywords, so a keyword lexed out of source
@@ -1023,8 +1026,8 @@ export let tokenize = (source: String, table: StringTable | null = null): Growab
  * Call this once per table, not once per tokenizer: re-priming is harmless
  * but it is a lookup per keyword per file.
  */
-export let primeKeywords = (table: StringTable): void => {
+export function primeKeywords(table: StringTable): void {
   for (let keyword in KEYWORDS.keys()) {
     table.prime(keyword);
   }
-};
+}

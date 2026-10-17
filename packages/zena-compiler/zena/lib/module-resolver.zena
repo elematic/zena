@@ -123,7 +123,7 @@ export final class ModuleResolver {
     let colonPos = indexOfByte(specifier, 58); // 58 = ':'
     if (colonPos < 0) {
       throw new Error(
-        "Invalid specifier: '" + specifier + "' (expected package:path format)"
+        `Invalid specifier: '${specifier}' (expected package:path format)`
       );
     }
 
@@ -140,18 +140,17 @@ export final class ModuleResolver {
       return this.#resolveStdlibRelative(specifier, referrer);
     }
     let dir = dirName(referrer);
-    let resolved = normalizePath(dir + "/" + specifier);
+    let resolved = normalizePath(`${dir}/${specifier}`);
     let packageName = this.findPackageForPath(resolved);
     return new ResolvedModule(resolved, packageName);
   }
 
   #resolveStdlibRelative(specifier: String, referrer: String): ResolvedModule {
     let refPath = this.#stdlibFilePath(referrer.sliceBytes(5, referrer.length));
-    let resolved = normalizePath(dirName(refPath) + "/" + specifier);
+    let resolved = normalizePath(`${dirName(refPath)}/${specifier}`);
     if (resolved == ".." || resolved.startsWith("../")) {
       throw new Error(
-        "Cannot resolve '" + specifier + "' from " + referrer +
-          " (escapes the stdlib)"
+        `Cannot resolve '${specifier}' from ${referrer} (escapes the stdlib)`
       );
     }
     return new ResolvedModule("zena:" + this.#stdlibIdForPath(resolved), "zena");
@@ -204,8 +203,7 @@ export final class ModuleResolver {
       let witRoot = config.witRoot;
       if (witRoot != null) {
         return new ResolvedModule(
-            "wit:" + (witRoot as String) + "#" + packageName + ":" +
-                moduleName,
+            `wit:${witRoot as String}#${packageName}:${moduleName}`,
             packageName);
       }
 
@@ -214,7 +212,7 @@ export final class ModuleResolver {
         let exports = config.exports as HashMap<String, ModuleExport>;
         if (!exports.has(moduleName)) {
           throw new Error(
-            "Library '" + moduleName + "' not found in package '" + packageName + "'"
+            `Library '${moduleName}' not found in package '${packageName}'`
           );
         }
 
@@ -261,7 +259,7 @@ export final class ModuleResolver {
       return makeCanonicalPath(packageName, moduleName, config);
     }
 
-    throw new Error("Unknown package: '" + packageName + "'");
+    throw new Error(`Unknown package: '${packageName}'`);
   }
 
   // Find which package (if any) contains the given path.
@@ -287,49 +285,46 @@ export final class ModuleResolver {
 // Map a stdlib canonical id (with or without the "zena:" prefix) to its file
 // path relative to the stdlib source root. Name ids ("zena:string") map to
 // "<name>.zena"; path ids ("zena:console/host.zena") contain the file path.
-export let stdlibIdToRelativeFile = (id: String): String => {
-  var sub = id;
-  if (id.startsWith("zena:")) {
-    sub = id.sliceBytes(5, id.length);
-  }
+export function stdlibIdToRelativeFile(id: String): String {
+  let sub = if (id.startsWith("zena:")) id.sliceBytes(5, id.length) else id;
   if (sub.endsWith(".zena")) {
     return sub;
   }
   return sub + ".zena";
-};
+}
 
 // Create a canonical path for a module resolving to its default
 // "<name>.zena" entry file.
 // Stdlib modules use the "zena:" prefix; other packages resolve to file paths.
-let makeCanonicalPath = (
+function makeCanonicalPath(
   packageName: String,
   moduleName: String,
   config: PackageConfig
-): ResolvedModule => {
+): ResolvedModule {
   if (packageName == "zena") {
     return new ResolvedModule("zena:" + moduleName, "zena");
   }
-  let filePath = config.root + "/" + moduleName + ".zena";
+  let filePath = `${config.root}/${moduleName}.zena`;
   return new ResolvedModule(filePath, packageName);
-};
+}
 
 // Create a canonical path for a module with an explicit entry file
 // (from `path` or a `virtual` mapping), given relative to the package root.
 // Stdlib entries become path ids ("zena:console/host.zena").
-let makeCanonicalFilePath = (
+function makeCanonicalFilePath(
   packageName: String,
   entryPath: String,
   config: PackageConfig
-): ResolvedModule => {
+): ResolvedModule {
   if (packageName == "zena") {
     return new ResolvedModule("zena:" + entryPath, "zena");
   }
-  return new ResolvedModule(config.root + "/" + entryPath, packageName);
-};
+  return new ResolvedModule(`${config.root}/${entryPath}`, packageName);
+}
 
 // Find the byte position of the first occurrence of a byte in a string.
 // Returns -1 if not found.
-export let indexOfByte = (s: String, byte: i32): i32 => {
+export function indexOfByte(s: String, byte: i32): i32 {
   var i = 0;
   while (i < s.length) {
     if (s.getByteAt(i) == byte) {
@@ -338,14 +333,14 @@ export let indexOfByte = (s: String, byte: i32): i32 => {
     i += 1;
   }
   return 0 - 1;
-};
+}
 
 // Get the directory portion of a path.
 // e.g., "/foo/bar/baz.zena" → "/foo/bar"
 // Returns "." if the path has no directory separator.
 // Note: "zena:" canonical ids must not be passed here — the resolver maps
 // them to stdlib-root-relative file paths first (see #resolveStdlibRelative).
-export let dirName = (path: String): String => {
+export function dirName(path: String): String {
   var lastSlash = 0 - 1;
   var i = 0;
   while (i < path.length) {
@@ -358,18 +353,16 @@ export let dirName = (path: String): String => {
     return ".";
   }
   return path.sliceBytes(0, lastSlash);
-};
+}
 
 // Normalize a path by resolving "." and ".." segments.
 // Preserves leading "/" for absolute paths.
-export let normalizePath = (path: String): String => {
+export function normalizePath(path: String): String {
   let segments = splitByByte(path, 47); // 47 = '/'
   let result = new Array<String>();
   let isAbsolute = path.length > 0 && path.getByteAt(0) == 47;
 
-  var i = 0;
-  while (i < segments.length) {
-    let seg = segments[i];
+  for (let seg in segments) {
     if (seg == "." || seg == "") {
       // Skip "." and empty segments (from "//")
     } else if (seg == "..") {
@@ -384,7 +377,6 @@ export let normalizePath = (path: String): String => {
     } else {
       result.push(seg);
     }
-    i += 1;
   }
 
   if (isAbsolute) {
@@ -394,10 +386,10 @@ export let normalizePath = (path: String): String => {
     return ".";
   }
   return joinBySlash(result);
-};
+}
 
 // Split a string by a byte delimiter.
-export let splitByByte = (s: String, delim: i32): GrowableArray<String> => {
+export function splitByByte(s: String, delim: i32): GrowableArray<String> {
   let parts = new Array<String>();
   var start = 0;
   var i = 0;
@@ -410,18 +402,18 @@ export let splitByByte = (s: String, delim: i32): GrowableArray<String> => {
   }
   parts.push(s.sliceBytes(start, s.length));
   return parts;
-};
+}
 
 // Join an array of path segments with "/".
-let joinBySlash = (segments: GrowableArray<String>): String => {
+function joinBySlash(segments: GrowableArray<String>): String {
   if (segments.length == 0) {
     return "";
   }
   var result = segments[0];
   var i = 1;
   while (i < segments.length) {
-    result = result + "/" + segments[i];
+    result = `${result}/${segments[i]}`;
     i += 1;
   }
   return result;
-};
+}
