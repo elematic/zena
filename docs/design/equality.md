@@ -134,24 +134,42 @@ optional fields is equal when both are absent, or both present with
 equal values; a value is read only when present. Recursive record types
 work, because a nested pair calls its pair's function.
 
-**The erased comparison** (`lowerErasedEq`, `$erasedEq`) still compares
-records and tuples by identity: `anyref` and interface operands, and
-unions of several record or tuple types. It waits for the switch to
-closed record types (row-types.md, Decisions, Sequencing; #399), because the
-current representation cannot tell two record shapes apart at runtime:
+**The erased comparison** (`lowerErasedEq`, `$erasedEq`) compares
+records by shape and fields (#399): `anyref` and interface operands, and
+unions of several record types. Two things stood in the way, and closed
+record types settle both:
 
-- `$erasedEq` sees two references, so it would have to test which record
-  shape each one is. Wasm GC types are structural, and the fat pointer
-  and dispatch table of `{a: i32}` have the same wasm types as those of
-  `{b: i32}`. A type test cannot separate them, and comparing the two
-  through the getters would call `{a: 1}` and `{b: 1}` equal.
-- Comparing dispatch tables does not work either. Two values of the
-  same closed type can carry different tables: the type's own, and one
-  adapted from a wider record that was converted to it.
+- `$erasedEq` sees two references, so it has to test which record shape
+  each one is. Wasm GC types are structural, and the fat pointer and
+  dispatch table of `{a: i32}` have the same wasm types as those of
+  `{b: i32}`, so a type test cannot separate them. Every record
+  dispatch table therefore ends in an `i32` `<shape>` field, the id of
+  the shape its values have (`RecordDispatchInfo.shapeId`).
+- Two values of one type can carry different tables: the type's own,
+  and one adapted from a wider record converted to it. With closed
+  types the converted value _is_ a value of the narrower type, so an
+  adapted table carries its target's shape id, and `{x: 1}` equals
+  `{x: 1, y: 2}` converted to `{x: i32}`.
 
-Closed records give each shape a struct of its own, and existentials a
-dispatch slot naming their shape (row-types.md, Decisions), which is
-what the erased comparison needs.
+So `$erasedEq` tests `a` against each record fat pointer type, then
+requires `b` to have the same one and the same shape id, then compares
+each field read through each value's own table: numbers by value, and
+references through `$erasedEq` again, which gives Strings their content
+equality and nested records theirs. One comparison per fat pointer type
+covers every shape sharing it, since the type fixes the fields' wasm
+types.
+
+Only record types the program converts to a slot that does not know
+their shape can reach it, so the checker notes those
+(`noteRecordErasure`, at every value-to-slot conversion, with the record
+types in their fields) and `$erasedEq` covers only their fat pointer
+types. The compiler converts no record that way, so its own build pays
+nothing beyond the `<shape>` field in each record table.
+
+Tuples still compare by identity in erased positions. A tuple is a plain
+struct of its element types, and the dead-field pass can leave a class
+struct with the same layout, so a type test cannot tell a tuple from
+such a class instance.
 
 **`hashCode()` on a record or tuple.** Records have no methods, but they
 satisfy `Hashable`, so generic code bounded by it can call `x.hashCode()`

@@ -8368,7 +8368,56 @@ function expectedArrayElementType(ctx: CheckerContext, expectedType: Type | null
   return null;
 }
 
+/**
+ * Notes the record types `source` brings into a slot of type `target`
+ * when that slot does not know their shape: anything but a single record
+ * type, so `anyref`, `eqref`, or a union with other kinds of value. A
+ * record in such a slot can reach the erased `==`, which compares it by
+ * shape only if it was noted here (#399). A type parameter is no such
+ * slot: its code is specialized per argument.
+ */
+function noteRecordErasure(ctx: CheckerContext, source: Type, target: Type) {
+  let targetBase = baseType(subtractNullFromType(target));
+  if (targetBase is RecordT || targetBase is TypeParameterType || targetBase is ErrorType) {
+    return;
+  }
+  match (baseType(subtractNullFromType(source))) {
+    case RecordT as rec: {
+      noteErasedRecord(ctx, rec);
+    }
+    case UnionT {types}: {
+      for (let member in types) {
+        let memberBase = baseType(member);
+        if (memberBase is RecordT) {
+          noteErasedRecord(ctx, memberBase);
+        }
+      }
+    }
+    case _: {}
+  }
+}
+
+/** Notes `rec`, and the record types in its fields, which compare through the same erased `==`. */
+function noteErasedRecord(ctx: CheckerContext, rec: RecordT): void {
+  if (rec.row != null) {
+    return;
+  }
+  for (let noted in ctx.model.erasedRecordTypes) {
+    if (noted === rec) {
+      return;
+    }
+  }
+  ctx.model.erasedRecordTypes.push(rec);
+  for (let key in rec.properties.keys()) {
+    let fieldBase = baseType(subtractNullFromType(rec.properties[key]));
+    if (fieldBase is RecordT) {
+      noteErasedRecord(ctx, fieldBase);
+    }
+  }
+}
+
 function checkAndRegisterInterfaceAdaptation(ctx: CheckerContext, node: Node, sourceType: Type, targetType: Type): void {
+  noteRecordErasure(ctx, sourceType, targetType);
   // `C | null` is assignable to no single member of `I | null`, so the
   // payloads are what the adaptation is about: peel null off the source
   // and match that against the target's members. The peeled fact is

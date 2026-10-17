@@ -222,9 +222,9 @@ Because V0 and Track A shipped earlier, flip day is
 assignability-and-representation only, and signatures can migrate to
 `...R` forms ahead of time.
 
-**Status (2026-10-17):** in progress. Literal exactness and static
-`is`/`as` on closed types are in; existentials and equality by
-underlying shape (#399) are next. A survey of every `.zena` file in the
+**Status (2026-10-17):** in progress. Literal exactness, static
+`is`/`as` on closed types, and erased `==` on records by shape (#399)
+are in; existentials are next. A survey of every `.zena` file in the
 repository found nothing that relied on the old behavior. The `?`
 re-scoping is dropped: A3's presence bitmask keeps optional fields
 valid on closed types (row-types.md, Decisions, Sequencing).

@@ -17,13 +17,14 @@ import {
 import { targetUsesJsStrings } from '../../targets.zena';
 import {
   ClassCodegenInfo, RecordDispatchInfo, WasmField, WasmFunction, WasmSignature,
-  WasmStruct, isValSubtype,
+  WasmStruct, isValSubtype, recordShapeFieldName,
 } from '../wasm-module.zena';
 import {
   getClassKey, getClassMethodKey, getMemberRootClass, presentWordName,
 } from '../codegen-utils.zena';
 import {
-  eraseTypeParameters, getClassTypeParameters, substituteTypeParamsInCodegen,
+  eraseTypeParameters, getClassTypeParameters, recordWasmFields, sortedOptionalNames,
+  substituteTypeParamsInCodegen,
 } from '../type-mapping.zena';
 import {
   ValueEqField, valueEqFields, valueEqKey, valueEqOperand, valueHashKey,
@@ -1230,6 +1231,125 @@ function erasedEqualityIntroducers(cx: LoweringContext) {
 }
 
 /**
+ * One dispatch per distinct fat pointer type among the record types the
+ * program converts to a slot that does not know their shape (the
+ * checker's `erasedRecordTypes`): only those reach this comparison.
+ * Record types whose getters have the same signatures share a fat
+ * pointer type; any one of their dispatches describes the fields' wasm
+ * types, which is all the comparison reads. In program order, so the
+ * output does not depend on hash order.
+ */
+function erasedRecordFatPointers(cx: LoweringContext) {
+  let out = new Array<RecordDispatchInfo>();
+  let program = cx.wasm.program;
+  if (program == null) {
+    return out;
+  }
+  for (let unit in program.units) {
+    for (let rt in unit.model.erasedRecordTypes) {
+      let dOpt = cx.wasm.findRecordDispatch(
+          recordWasmFields(cx.wasm, rt, null), sortedOptionalNames(rt));
+      if (dOpt == null) {
+        continue;
+      }
+      let d = dOpt;
+      var seen = false;
+      for (let e in out) {
+        if (e.fatPtrType === d.fatPtrType) {
+          seen = true;
+        }
+      }
+      if (!seen) {
+        out.push(d);
+      }
+    }
+  }
+  return out;
+}
+
+/**
+ * `a == b` for a record `a` of fat pointer type `d.fatPtrType` and a
+ * reference `b` whose type is not known (#399): `b` must be a record of
+ * the same shape, which the dispatch table's `<shape>` id tells, since
+ * shapes can share a fat pointer type. Then each field compares, read
+ * through each value's own table: numbers by value, references through
+ * `$erasedEq` again, which is where String's content equality and a
+ * nested record's come from.
+ */
+function erasedRecordEq(cx: LoweringContext, d: RecordDispatchInfo, a: i32, b2: i32) {
+  let i32vt = new ValTypeI32() as ValType;
+  let fat = d.fatPtrType;
+  let otherIsRecord = refTestOf(cx, b2, fat);
+  let bothB = cx.b.newBlock();
+  let differentB = cx.b.newBlock();
+  cx.b.brIf(otherIsRecord, bothB, noValues(), differentB, noValues());
+  cx.b.switchTo(differentB);
+  cx.b.ret(cx.b.constI32(0, i32vt));
+
+  cx.b.switchTo(bothB);
+  let af = refCastTo(cx, a, fat);
+  let bf = refCastTo(cx, b2, fat);
+  let vtVt = new ValTypeRef(d.vtableType) as ValType;
+  let aVt = cx.b.emit(IrOp.iface_vtable, vtVt, af, -1);
+  let bVt = cx.b.emit(IrOp.iface_vtable, vtVt, bf, -1);
+  let shapeRef = cx.b.addRef(new IrRefField(d.vtableType, recordShapeFieldName));
+  let aShape = cx.b.emit(IrOp.struct_get, i32vt, aVt, shapeRef);
+  let bShape = cx.b.emit(IrOp.struct_get, i32vt, bVt, shapeRef);
+  let sameShape = cx.b.binary(IrOp.i32_eq, i32vt, aShape, bShape);
+  let fieldsB = cx.b.newBlock();
+  let otherShapeB = cx.b.newBlock();
+  cx.b.brIf(sameShape, fieldsB, noValues(), otherShapeB, noValues());
+  cx.b.switchTo(otherShapeB);
+  cx.b.ret(cx.b.constI32(0, i32vt));
+
+  cx.b.switchTo(fieldsB);
+  let structVt = new ValTypeStructRef() as ValType;
+  let aInst = cx.b.emit(IrOp.iface_instance, structVt, af, -1);
+  let bInst = cx.b.emit(IrOp.iface_instance, structVt, bf, -1);
+  var acc = cx.b.constI32(1, i32vt);
+  for (var i = 0; i < d.fields.length; i += 1) {
+    let sig = d.getterTypes[i];
+    let name = d.fields[i].name;
+    if (sig.returns.length != 1 || name == null) {
+      continue;
+    }
+    let fieldRef = cx.b.addRef(new IrRefField(d.vtableType, name as String));
+    let getterVt = new ValTypeRef(sig) as ValType;
+    let ga = cx.b.emit(IrOp.struct_get, getterVt, aVt, fieldRef);
+    let gb = cx.b.emit(IrOp.struct_get, getterVt, bVt, fieldRef);
+    let fieldVt = sig.returns[0];
+    let va = cx.b.callRef(ga, oneValue(aInst), fieldVt);
+    let vb = cx.b.callRef(gb, oneValue(bInst), fieldVt);
+    acc = cx.b.binary(IrOp.i32_and, i32vt, acc, erasedFieldEq(cx, fieldVt, va, vb));
+  }
+  return acc;
+}
+
+/** Two field values of wasm type `vt`, compared as the erased `==` does. */
+function erasedFieldEq(cx: LoweringContext, vt: ValType, a: i32, b2: i32): i32 {
+  let i32vt = new ValTypeI32() as ValType;
+  if (vt is ValTypeI32) {
+    return cx.b.binary(IrOp.i32_eq, i32vt, a, b2);
+  }
+  if (vt is ValTypeI64) {
+    return cx.b.binary(IrOp.i64_eq, i32vt, a, b2);
+  }
+  if (vt is ValTypeF32) {
+    return cx.b.binary(IrOp.f32_eq, i32vt, a, b2);
+  }
+  if (vt is ValTypeF64) {
+    return cx.b.binary(IrOp.f64_eq, i32vt, a, b2);
+  }
+  if (!isRefValType(vt)) {
+    bail(cx, 'erased record field type');
+  }
+  let sig = cx.func.signature;
+  let left = cx.coerceTo(a, sig.params[0]);
+  let right = cx.coerceTo(b2, sig.params[1]);
+  return cx.b.callFunc(cx.b.addRef(new IrRefFunc(cx.func)), twoValues(left, right), i32vt);
+}
+
+/**
  * The body of `$erasedEq(a, b)`: equality of two references whose class
  * the caller does not know (equality.md, "Equality through interfaces and
  * anyref"). Identity, then null; then a test of `a` against each class
@@ -1261,6 +1381,15 @@ export function lowerErasedEqDispatch(cx: LoweringContext): IrBody {
   cx.b.switchTo(nullB);
   cx.b.ret(cx.b.constI32(0, i32vt));
   cx.b.switchTo(testsB);
+  for (let d in erasedRecordFatPointers(cx)) {
+    let isRecord = refTestOf(cx, a, d.fatPtrType);
+    let recordB = cx.b.newBlock();
+    let nextB = cx.b.newBlock();
+    cx.b.brIf(isRecord, recordB, noValues(), nextB, noValues());
+    cx.b.switchTo(recordB);
+    cx.b.ret(erasedRecordEq(cx, d, a, b2));
+    cx.b.switchTo(nextB);
+  }
   for (let x in erasedEqualityIntroducers(cx)) {
     let xct = x.structType.classType as ClassType;
     let isX = refTestOf(cx, a, x.structType);
