@@ -134,7 +134,7 @@ export let tests = suite("Module Resolver", () => {
   // --- Stdlib resolution ---
 
   test("resolves stdlib module", (t) => {
-    let resolver = makeResolver("host");
+    let resolver = makeResolver("js");
     let result = resolver.resolve("zena:string", "/my/file.zena");
     equal(result.path, "zena:string");
     equal(result.packageName, "zena");
@@ -164,21 +164,21 @@ export let tests = suite("Module Resolver", () => {
   });
 
   test("resolves stdlib module with explicit entry path", (t) => {
-    let resolver = makeResolver("host");
+    let resolver = makeResolver("js");
     let result = resolver.resolve("zena:url", "/my/file.zena");
     equal(result.path, "zena:url/index.zena");
     equal(result.packageName, "zena");
   });
 
   test("blocks import of unlisted stdlib file by name", (t) => {
-    let resolver = makeResolver("host");
+    let resolver = makeResolver("js");
     throws(() => {
       resolver.resolve("zena:console-host", "/my/file.zena");
     });
   });
 
   test("rejects unknown stdlib module", (t) => {
-    let resolver = makeResolver("host");
+    let resolver = makeResolver("js");
     throws(() => {
       resolver.resolve("zena:nonexistent", "/my/file.zena");
     });
@@ -187,27 +187,27 @@ export let tests = suite("Module Resolver", () => {
   // --- Relative imports between stdlib files ---
 
   test("resolves relative import from a stdlib path id", (t) => {
-    let resolver = makeResolver("host");
+    let resolver = makeResolver("js");
     let result = resolver.resolve("./interface.zena", "zena:console/host.zena");
     equal(result.path, "zena:console/interface.zena");
     equal(result.packageName, "zena");
   });
 
   test("relative import to a manifest module canonicalizes to its name id", (t) => {
-    let resolver = makeResolver("host");
+    let resolver = makeResolver("js");
     let result = resolver.resolve("./array.zena", "zena:string");
     equal(result.path, "zena:array");
     equal(result.packageName, "zena");
   });
 
   test("relative import from a subdirectory up to a manifest module", (t) => {
-    let resolver = makeResolver("host");
+    let resolver = makeResolver("js");
     let result = resolver.resolve("../string.zena", "zena:console/host.zena");
     equal(result.path, "zena:string");
   });
 
   test("relative import to an unlisted stdlib file gets a path id", (t) => {
-    let resolver = makeResolver("host");
+    let resolver = makeResolver("js");
     let result = resolver.resolve("./helper.zena", "zena:string");
     equal(result.path, "zena:helper.zena");
   });
@@ -215,13 +215,13 @@ export let tests = suite("Module Resolver", () => {
   test("relative import to an explicit-path module keeps the path id", (t) => {
     // url has path "url/index.zena", so its canonical id is the path id,
     // and relative imports to the same file must agree.
-    let resolver = makeResolver("host");
+    let resolver = makeResolver("js");
     let result = resolver.resolve("./url/index.zena", "zena:string");
     equal(result.path, "zena:url/index.zena");
   });
 
   test("an internal module resolves for its own package", (t) => {
-    let resolver = makeResolver("host");
+    let resolver = makeResolver("js");
     let result = resolver.resolve("zena:error-stack", "zena:core/error.zena");
     equal(result.path, "zena:core/error/stack-host.zena");
   });
@@ -229,14 +229,14 @@ export let tests = suite("Module Resolver", () => {
   test("an internal module is refused from outside its package", (t) => {
     // The name exists and picks a file per target. That is machinery for
     // the library that owns it, and not an API a program may import.
-    let resolver = makeResolver("host");
+    let resolver = makeResolver("js");
     throws(() => {
       resolver.resolve("zena:error-stack", "/project/src/main.zena");
     });
   });
 
   test("relative import escaping the stdlib throws", (t) => {
-    let resolver = makeResolver("host");
+    let resolver = makeResolver("js");
     throws(() => {
       resolver.resolve("../outside.zena", "zena:string");
     });
@@ -245,14 +245,14 @@ export let tests = suite("Module Resolver", () => {
   // --- User package resolution ---
 
   test("resolves user package module", (t) => {
-    let resolver = makeResolver("host");
+    let resolver = makeResolver("js");
     let result = resolver.resolve("mylib:utils", "/my/file.zena");
     equal(result.path, "/project/packages/mylib/zena/lib/utils.zena");
     equal(result.packageName, "mylib");
   });
 
   test("rejects unknown package", (t) => {
-    let resolver = makeResolver("host");
+    let resolver = makeResolver("js");
     throws(() => {
       resolver.resolve("unknown:module", "/my/file.zena");
     });
@@ -261,13 +261,13 @@ export let tests = suite("Module Resolver", () => {
   // --- Relative resolution ---
 
   test("resolves relative import", (t) => {
-    let resolver = makeResolver("host");
+    let resolver = makeResolver("js");
     let result = resolver.resolve("./utils.zena", "/project/src/main.zena");
     equal(result.path, "/project/src/utils.zena");
   });
 
   test("resolves parent relative import", (t) => {
-    let resolver = makeResolver("host");
+    let resolver = makeResolver("js");
     let result = resolver.resolve("../lib/utils.zena", "/project/src/main.zena");
     equal(result.path, "/project/lib/utils.zena");
   });
@@ -275,7 +275,7 @@ export let tests = suite("Module Resolver", () => {
   // --- Specifier validation ---
 
   test("rejects bare specifier without colon", (t) => {
-    let resolver = makeResolver("host");
+    let resolver = makeResolver("js");
     throws(() => {
       resolver.resolve("bare-specifier", "/my/file.zena");
     });
@@ -284,17 +284,17 @@ export let tests = suite("Module Resolver", () => {
   // --- Package membership ---
 
   test("findPackageForPath identifies stdlib", (t) => {
-    let resolver = makeResolver("host");
+    let resolver = makeResolver("js");
     equal(resolver.findPackageForPath("zena:string"), "zena");
   });
 
   test("findPackageForPath identifies user package", (t) => {
-    let resolver = makeResolver("host");
+    let resolver = makeResolver("js");
     equal(resolver.findPackageForPath("/project/packages/mylib/zena/lib/foo.zena"), "mylib");
   });
 
   test("findPackageForPath returns empty for unknown", (t) => {
-    let resolver = makeResolver("host");
+    let resolver = makeResolver("js");
     equal(resolver.findPackageForPath("/unknown/file.zena"), "");
   });
 
