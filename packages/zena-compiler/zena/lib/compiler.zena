@@ -44,6 +44,7 @@ import { nowMs, performance } from './time.zena';
 import {
   Type, ClassType, FunctionType, InterfaceType, MixinType, EnumType, MemberInfo, MemberTable, FieldInfo, MethodInfo, RecordType, TypeParameterType, TypeAliasType, SymbolType, ArrayType, TupleType, InlineTupleType, UnionType, BoolLiteralType, StringLiteralType, NumLiteralType, I32Type, U32Type, I64Type, U64Type, F32Type, F64Type, U8Type, U16Type, I8Type, I16Type, V128Type, BooleanType, VoidType, NullType, NeverType, HoleType, ErrorType, UnknownType, AnyRefType, EqRefType, ThisType, ErasedType, declaringModuleOf,
 } from './types.zena';
+import { growable } from 'zena:core';
 
 /** Re-export types used by consumers. */
 export { CompilerHost } from './library-loader.zena';
@@ -79,9 +80,9 @@ export { typeToString } from './types.zena';
 var checkAllBodies = false;
 
 /** See `checkAllBodies`. */
-export let setCheckAllBodies = (value: boolean): void => {
+export function setCheckAllBodies(value: boolean): void {
   checkAllBodies = value;
-};
+}
 
 /**
  * The result of type-checking an entire program.
@@ -290,10 +291,12 @@ export final class Compiler {
  * Create a Compiler. Prefer this over `new Compiler(...)`: the
  * constructor's shape is the compiler's business, this is the API.
  */
-export let createCompiler = (
+export function createCompiler(
   host: CompilerHost,
   options: CompilerOptions
-): Compiler => new Compiler(host, options);
+): Compiler {
+  return new Compiler(host, options);
+}
 
 // ============================================================================
 // Single-File API (for LSP and quick checks)
@@ -310,12 +313,12 @@ export let createCompiler = (
  * Returns a CheckResult containing the SemanticModel (node types,
  * binding types, name resolution) and diagnostics.
  */
-export let checkSource = (source: String, path: String): CheckResult => {
+export function checkSource(source: String, path: String): CheckResult {
   let ast = parse(source, path);
   let builder = new ScopeBuilder(path, null);
   let scopeResult = builder.build(ast);
   return checkModule(ast, scopeResult, null, null, false);
-};
+}
 
 // ============================================================================
 // Compilation-Level Checking
@@ -332,11 +335,11 @@ export let checkSource = (source: String, path: String): CheckResult => {
  * Used for incremental invalidation: if a file is re-checked and its
  * export signature is unchanged, its dependents don't need re-checking.
  */
-let computeExportSignature = (
+function computeExportSignature(
   exports: ScopeModuleExports,
   rootScope: Scope,
   model: SemanticModel
-): HashMap<String, Type> => {
+) {
   let sig = new Map<String, Type>();
 
   let iter = exports.keys();
@@ -378,7 +381,7 @@ let computeExportSignature = (
   }
 
   return sig;
-};
+}
 
 /**
  * Deep structural comparison of two types for export signature purposes.
@@ -397,12 +400,12 @@ let computeExportSignature = (
  * breaks cycles in recursive types like `class Node { next: Node | null }`.
  * Optimistic assumption: if already visiting a pair, return true.
  */
-export let signatureTypeEquals = (a: Type, b: Type): boolean => {
+export function signatureTypeEquals(a: Type, b: Type): boolean {
   let visited = new Set<String>();
   return signatureTypeEqualsRec(a, b, visited);
-};
+}
 
-let signatureTypeEqualsRec = (a: Type, b: Type, visited: HashSet<String>): boolean => {
+function signatureTypeEqualsRec(a: Type, b: Type, visited: HashSet<String>): boolean {
   // Fast path: referential identity (singletons, carried-forward objects).
   if (a === b) { return true; }
 
@@ -433,46 +436,41 @@ let signatureTypeEqualsRec = (a: Type, b: Type, visited: HashSet<String>): boole
     case ThisType: b is ThisType
 
     case BoolLiteralType {value as va}: {
-      match (b) {
-        case BoolLiteralType {value as vb}: va == vb
-        case _: false
-      }
+      if (let BoolLiteralType {value as vb} = b) va == vb else false
     }
     case StringLiteralType {value as va}: {
-      match (b) {
-        case StringLiteralType {value as vb}: va == vb
-        case _: false
-      }
+      if (let StringLiteralType {value as vb} = b) va == vb else false
     }
     case NumLiteralType {raw as va}: {
-      match (b) {
-        case NumLiteralType {raw as vb}: va == vb
-        case _: false
-      }
+      if (let NumLiteralType {raw as vb} = b) va == vb else false
     }
 
     case ArrayType {elementType as ea}: {
-      match (b) {
-        case ArrayType {elementType as eb}: signatureTypeEqualsRec(ea, eb, visited)
-        case _: false
+      if (let ArrayType {elementType as eb} = b) {
+        signatureTypeEqualsRec(ea, eb, visited)
+      } else {
+        false
       }
     }
     case TupleType {elementTypes as ta}: {
-      match (b) {
-        case TupleType {elementTypes as tb}: arrayTypesEqual(ta, tb, visited)
-        case _: false
+      if (let TupleType {elementTypes as tb} = b) {
+        arrayTypesEqual(ta, tb, visited)
+      } else {
+        false
       }
     }
     case InlineTupleType {elementTypes as ta}: {
-      match (b) {
-        case InlineTupleType {elementTypes as tb}: arrayTypesEqual(ta, tb, visited)
-        case _: false
+      if (let InlineTupleType {elementTypes as tb} = b) {
+        arrayTypesEqual(ta, tb, visited)
+      } else {
+        false
       }
     }
     case UnionType {types as ua}: {
-      match (b) {
-        case UnionType {types as ub}: arrayTypesEqual(ua, ub, visited)
-        case _: false
+      if (let UnionType {types as ub} = b) {
+        arrayTypesEqual(ua, ub, visited)
+      } else {
+        false
       }
     }
 
@@ -578,14 +576,14 @@ let signatureTypeEqualsRec = (a: Type, b: Type, visited: HashSet<String>): boole
       }
     }
   };
-};
+}
 
 /**
  * Compare two arrays of types elementwise.
  */
-let arrayTypesEqual = (
+function arrayTypesEqual(
   a: Array<Type>, b: Array<Type>, visited: HashSet<String>
-): boolean => {
+): boolean {
   if (a.length != b.length) {
     return false;
   }
@@ -595,16 +593,16 @@ let arrayTypesEqual = (
     }
   }
   return true;
-};
+}
 
 /**
  * Compare optional type-parameter arrays.
  */
-let typeParamsEqual = (
+function typeParamsEqual(
   a: Array<TypeParameterType> | null,
   b: Array<TypeParameterType> | null,
   visited: HashSet<String>
-): boolean => {
+): boolean {
   if (a == null && b == null) {
     return true;
   }
@@ -620,16 +618,16 @@ let typeParamsEqual = (
     }
   }
   return true;
-};
+}
 
 /** 
  * Compare optional type-argument arrays.
  */
-let typeArgsEqual = (
+function typeArgsEqual(
   a: Array<Type> | null,
   b: Array<Type> | null,
   visited: HashSet<String>
-): boolean => {
+): boolean {
   if (a == null && b == null) {
     return true;
   }
@@ -637,14 +635,14 @@ let typeArgsEqual = (
     return false;
   }
   return arrayTypesEqual(a, b, visited);
-};
+}
 
 /**
  * Compare two HashMaps of name → Type.
  */
-let typeMapEquals = (
+function typeMapEquals(
   a: HashMap<String, Type>, b: HashMap<String, Type>, visited: HashSet<String>
-): boolean => {
+): boolean {
   if (a.size != b.size) {
     return false;
   }
@@ -657,14 +655,14 @@ let typeMapEquals = (
     }
   }
   return true;
-};
+}
 
 /**
  * Compare two Maps of name → MemberInfo.
  */
-let membersMapEquals = (
+function membersMapEquals(
   a: MemberTable, b: MemberTable, visited: HashSet<String>
-): boolean => {
+): boolean {
   if (a.size != b.size) {
     return false;
   }
@@ -714,14 +712,14 @@ let membersMapEquals = (
     }
   }
   return true;
-};
+}
 
 /** 
  * Compare two HashMaps of name → boolean.
  */
-let boolMapEquals = (
+function boolMapEquals(
   a: HashMap<String, boolean>, b: HashMap<String, boolean>
-): boolean => {
+): boolean {
   if (a.size != b.size) {
     return false;
   }
@@ -731,12 +729,12 @@ let boolMapEquals = (
     }
   }
   return true;
-};
+}
 
 /**
  * Compare two HashSets of String.
  */
-let stringSetEquals = (a: HashSet<String>, b: HashSet<String>): boolean => {
+function stringSetEquals(a: HashSet<String>, b: HashSet<String>): boolean {
   if (a.size != b.size) {
     return false;
   }
@@ -746,14 +744,14 @@ let stringSetEquals = (a: HashSet<String>, b: HashSet<String>): boolean => {
     }
   }
   return true;
-};
+}
 
 /**
  * Compare nullable Set<String>.
  */
-let nullableStringSetEquals = (
+function nullableStringSetEquals(
   a: HashSet<String> | null, b: HashSet<String> | null
-): boolean => {
+): boolean {
   if (a == null && b == null) {
     return true;
   }
@@ -761,12 +759,12 @@ let nullableStringSetEquals = (
     return false;
   }
   return stringSetEquals(a, b);
-};
+}
 
 /** Deep comparison of FunctionType for signature purposes. */
-let functionTypeEquals = (
+function functionTypeEquals(
   fa: FunctionType, fb: FunctionType, visited: HashSet<String>
-): boolean => {
+): boolean {
   if (fa === fb) { return true; }
   if (fa.parameters.length != fb.parameters.length) { return false; }
   if (!signatureTypeEqualsRec(fa.returnType, fb.returnType, visited)) { return false; }
@@ -780,7 +778,7 @@ let functionTypeEquals = (
   if (!typeParamsEqual(fa.typeParameters, fb.typeParameters, visited)) { return false; }
   if (!typeArgsEqual(fa.typeArguments, fb.typeArguments, visited)) { return false; }
   return optionalFlagsEqual(fa.optionalParameters, fb.optionalParameters);
-};
+}
 
 /**
  * Whether two signatures mark the same parameters optional.
@@ -792,10 +790,10 @@ let functionTypeEquals = (
  * unequal as soon as anything compared a `declare function` against a
  * defined one. A missing flag is a flag that is false.
  */
-let optionalFlagsEqual = (
+function optionalFlagsEqual(
   a: GrowableArray<boolean> | null,
   b: GrowableArray<boolean> | null
-): boolean => {
+): boolean {
   let aLen = if (a == null) { 0 } else { a.length };
   let bLen = if (b == null) { 0 } else { b.length };
   let len = if (aLen > bLen) { aLen } else { bLen };
@@ -805,18 +803,18 @@ let optionalFlagsEqual = (
     if (aFlag != bFlag) { return false; }
   }
   return true;
-};
+}
 
 /** Deep comparison of ClassType for signature purposes. */
-let classTypeEquals = (
+function classTypeEquals(
   ca: ClassType, cb: ClassType, visited: HashSet<String>
-): boolean => {
+): boolean {
   if (ca === cb) { return true; }
   if (ca.name != cb.name) { return false; }
   if (ca.sourcePath != cb.sourcePath) { return false; }
 
   // Cycle guard: if we're already comparing this class pair, assume equal.
-  let visitKey = "c:" + ca.name + ":" + ca.sourcePath;
+  let visitKey = `c:${ca.name}:${ca.sourcePath}`;
   if (visited.has(visitKey)) { return true; }
   visited.add(visitKey);
 
@@ -871,15 +869,13 @@ let classTypeEquals = (
 
   // Optional boolean maps.
   if (!nullableStringSetEquals(ca.declaredFields, cb.declaredFields)) { return false; }
-  if (!nullableStringSetEquals(ca.forwardVariantNames, cb.forwardVariantNames)) { return false; }
-
-  return true;
-};
+  return nullableStringSetEquals(ca.forwardVariantNames, cb.forwardVariantNames);
+}
 
 /** Deep comparison of InterfaceType for signature purposes. */
-let interfaceTypeEquals = (
+function interfaceTypeEquals(
   ia: InterfaceType, ib: InterfaceType, visited: HashSet<String>
-): boolean => {
+): boolean {
   if (ia === ib) { return true; }
   if (ia.name != ib.name) { return false; }
 
@@ -900,12 +896,12 @@ let interfaceTypeEquals = (
   }
 
   return true;
-};
+}
 
 /** Deep comparison of MixinType for signature purposes. */
-let mixinTypeEquals = (
+function mixinTypeEquals(
   ma: MixinType, mb: MixinType, visited: HashSet<String>
-): boolean => {
+): boolean {
   if (ma === mb) { return true; }
   if (ma.name != mb.name) { return false; }
 
@@ -928,7 +924,7 @@ let mixinTypeEquals = (
   }
 
   return true;
-};
+}
 
 /**
  * Build a reverse dependency map with imported-name tracking.
@@ -940,9 +936,9 @@ let mixinTypeEquals = (
  * where the GrowableArray<String> contains the imported names (prefixed "v:" or
  * "t:" to match signature keys).
  */
-let buildReverseDeps = (
+function buildReverseDeps(
   files: GrowableArray<SourceFile>
-): HashMap<String, HashMap<String, GrowableArray<String>>> => {
+) {
   let reverseDeps = new Map<String, HashMap<String, GrowableArray<String>>>();
 
   for (let file in files) {
@@ -1015,7 +1011,7 @@ let buildReverseDeps = (
     }
   }
   return reverseDeps;
-};
+}
 
 /**
  * Check a single file: build its depExports/depModels and run checkModule.
@@ -1035,13 +1031,13 @@ final class FileCheckInputs {
   new(this.depExports, this.depModels, this.laterPaths);
 }
 
-let fileCheckInputs = (
+function fileCheckInputs(
   file: SourceFile,
   allResults: HashMap<String, CheckResult>,
   inProgress: HashMap<String, ModuleCheck> | null,
   allFiles: GrowableArray<SourceFile>,
   recheckPaths: HashSet<String> | null
-): FileCheckInputs => {
+) {
   let depExports = new Map<String, ScopeModuleExports>();
   let depModels = new Map<String, SemanticModel>();
   let specIter = file.imports.keys();
@@ -1096,14 +1092,14 @@ let fileCheckInputs = (
     laterPaths = later;
   }
   return new FileCheckInputs(depExports, depModels, laterPaths);
-};
+}
 
 /**
  * The first half of checking a member of an import cycle: register its
  * declarations. Its bodies are checked by finishModule once every
  * member of the cycle has registered.
  */
-let beginFile = (
+function beginFile(
   file: SourceFile,
   allResults: HashMap<String, CheckResult>,
   inProgress: HashMap<String, ModuleCheck>,
@@ -1113,7 +1109,7 @@ let beginFile = (
   warnUnnecessaryCasts: boolean,
   recheckPaths: HashSet<String> | null,
   deferBodies: boolean
-): ModuleCheck => {
+) {
   let inputs = fileCheckInputs(file, allResults, inProgress, allFiles, recheckPaths);
   return beginModule(
     file.ast,
@@ -1127,18 +1123,18 @@ let beginFile = (
     recheckPaths,
     null,
     deferBodies);
-};
+}
 
 /**
  * Make every model checked or registered since a cycle member began
  * visible to it, before its bodies are checked.
  */
-let refreshDepModels = (
+function refreshDepModels(
   mc: ModuleCheck,
   file: SourceFile,
   allResults: HashMap<String, CheckResult>,
   inProgress: HashMap<String, ModuleCheck>
-): void => {
+) {
   let specIter = file.imports.keys();
   for (let specifier in specIter) {
     let depPath = file.imports[specifier];
@@ -1158,9 +1154,9 @@ let refreshDepModels = (
       mc.ctx.addDepModel(path, inProgress[path].ctx.model);
     }
   }
-};
+}
 
-let checkFile = (
+function checkFile(
   file: SourceFile,
   allResults: HashMap<String, CheckResult>,
   allFiles: GrowableArray<SourceFile>,
@@ -1169,7 +1165,7 @@ let checkFile = (
   warnUnnecessaryCasts: boolean,
   recheckPaths: HashSet<String> | null,
   deferBodies: boolean
-): CheckResult => {
+) {
   let inputs = fileCheckInputs(file, allResults, null, allFiles, recheckPaths);
   let depExports = inputs.depExports;
   let depModels = inputs.depModels;
@@ -1194,7 +1190,7 @@ let checkFile = (
     recheckPaths,
     priorModel,
     deferBodies);
-};
+}
 
 /**
  * The strongly connected components of a compilation's import graph
@@ -1296,10 +1292,10 @@ final class ImportComponents {
  * 5. Files whose imports are all stable carry forward their previous
  *    CheckResult.
  */
-export let checkCompilation = (
+export function checkCompilation(
   result: CompilationResult,
   carried: ProgramCheckResult | null = null
-): ProgramCheckResult => {
+): ProgramCheckResult {
   let settings = {
     target: canonicalTarget(result.options.target),
     emitLocations: result.compilerOptions.emitLocations ?? false,
@@ -1381,8 +1377,7 @@ export let checkCompilation = (
   for (let f in result.files) {
     byPath[f.path] = f;
   }
-  let localQueue = new Array<String>(result.files.length);
-  localQueue.push(result.entry.path);
+  let localQueue = growable<String>([result.entry.path]);
   localPaths.add(result.entry.path);
   var lq = 0;
   while (lq < localQueue.length) {
@@ -1401,7 +1396,7 @@ export let checkCompilation = (
       }
     }
   }
-  let defersBodies = (path: String): boolean =>
+  let defersBodies = (path: String) =>
       !checkAllBodies && !localPaths.has(path);
 
   let tCheck = performance.start("check");
@@ -1469,16 +1464,14 @@ export let checkCompilation = (
   // The prelude and well-known records come first, as a helper of their
   // own: a member of an import cycle records them once the whole cycle
   // has registered, before any member's bodies are checked.
-  let recordPreludeNames = (file: SourceFile, model: SemanticModel): void => {
+  let recordPreludeNames = (file: SourceFile, model: SemanticModel) => {
     if (file.isStdlib && file.scopeResult != null) {
       let exports = (file.scopeResult as ScopeResult).exports;
       let stdlibPrelude = getStandardPrelude("host");
       let specIter = stdlibPrelude.keys();
       for (let specifier in specIter) {
         let names = stdlibPrelude[specifier];
-        var ni = 0;
-        while (ni < names.length) {
-          let name = names[ni];
+        for (let name in names) {
           if (exports.has(name)) {
             let exp = exports[name] as Symbol;
             if (exp.isType()) {
@@ -1495,7 +1488,6 @@ export let checkCompilation = (
               }
             }
           }
-          ni += 1;
         }
       }
 
@@ -1521,7 +1513,7 @@ export let checkCompilation = (
     }
   };
 
-  let recordChecked = (file: SourceFile, checkResult: CheckResult): void => {
+  let recordChecked = (file: SourceFile, checkResult: CheckResult) => {
     allResults[file.path] = checkResult;
     allSources[file.path] = file.source;
     allAsts[file.path] = file.ast;
@@ -1550,9 +1542,7 @@ export let checkCompilation = (
           let importedNames = importerMap[importerPath];
           // Check if any of the names this importer uses actually changed.
           var affected = false;
-          var ni = 0;
-          while (ni < importedNames.length) {
-            let sigKey = importedNames[ni];
+          for (let sigKey in importedNames) {
             let hasOld = oldSig.has(sigKey);
             let hasNew = newSig.has(sigKey);
             if (hasOld != hasNew) {
@@ -1563,7 +1553,6 @@ export let checkCompilation = (
                 affected = true;
               }
             }
-            ni += 1;
           }
           if (affected) {
             mustCheck.add(importerPath);
@@ -1681,7 +1670,7 @@ export let checkCompilation = (
       allAsts, allSignatures, entryResult, sharedState);
   checked.scopes = allScopes;
   return checked;
-};
+}
 
 // ============================================================================
 // AST Query Utilities
@@ -1697,9 +1686,9 @@ export let checkCompilation = (
  * Useful for LSP features that map a cursor position to an AST node
  * (hover, go-to-definition, etc.).
  */
-export let findNodeAtOffset = (root: Node, offset: i32): Node | null => {
+export function findNodeAtOffset(root: Node, offset: i32): Node | null {
   var found: Node | null = null;
-  walk(root, (node: Node): boolean => {
+  walk(root, (node): boolean => {
     if (node.loc != null) {
       let loc = node.loc as SourceLocation;
       if (offset >= loc.start && offset < loc.end) {
@@ -1709,16 +1698,16 @@ export let findNodeAtOffset = (root: Node, offset: i32): Node | null => {
       return false;  // outside this node's span, skip subtree
     }
     return true;  // no loc info, descend anyway
-  }, (node: Node): void => {});
+  }, (node) => {});
   return found;
-};
+}
 
 /**
  * Find the innermost MemberExpression containing the given byte offset.
  */
-export let findMemberExpressionAtOffset = (root: Node, offset: i32): MemberExpression | null => {
+export function findMemberExpressionAtOffset(root: Node, offset: i32): MemberExpression | null {
   var found: MemberExpression | null = null;
-  walk(root, (node: Node): boolean => {
+  walk(root, (node): boolean => {
     if (node is MemberExpression) {
       if (node.loc != null) {
         let loc = node.loc as SourceLocation;
@@ -1729,9 +1718,9 @@ export let findMemberExpressionAtOffset = (root: Node, offset: i32): MemberExpre
       }
     }
     return true;
-  }, (node: Node): void => {});
+  }, (node) => {});
   return found;
-};
+}
 
 /**
  * On-demand member definition resolution for goto-definition.
@@ -1744,13 +1733,13 @@ export let findMemberExpressionAtOffset = (root: Node, offset: i32): MemberExpre
  * Returns a SourceSpan pointing to the FieldDefinition, MethodDefinition,
  * or CaseClassParam, or null if the offset is not on a member access.
  */
-export let resolveMemberDefinition = (
+export function resolveMemberDefinition(
   ast: Module,
   offset: i32,
   model: SemanticModel,
   scopeResult: ScopeResult,
   target: CompilerTarget
-): SourceSpan | null => {
+): SourceSpan | null {
   // Find the deepest node at the offset.
   let node = findNodeAtOffset(ast, offset);
   if (node == null) { return null; }
@@ -1784,7 +1773,7 @@ export let resolveMemberDefinition = (
     }
     case _: { return null; }
   }
-};
+}
 
 /**
  * Resolve the type of a member expression's object node.
@@ -1794,14 +1783,14 @@ export let resolveMemberDefinition = (
  * For compound expressions, falls back to getNodeType if they have a
  * different start offset than their parent MemberExpression.
  */
-export let resolveObjectType = (
+export function resolveObjectType(
   object: Expression,
   model: SemanticModel,
   scopeResult: ScopeResult,
   parentLoc: SourceLocation | null,
   ast: Module,
   sharedState: SharedCheckerState | null = null
-): Type | null => {
+): Type | null {
   // For identifiers, resolve via the model's own reference map.
   // This ensures the Symbol matches the model's binding types,
   // even when the AST is from a newer compilation than the model
@@ -1851,7 +1840,7 @@ export let resolveObjectType = (
       return null;
     }
   }
-};
+}
 
 /**
  * Find the ClassType for the enclosing class of a `this` expression.
@@ -1860,7 +1849,7 @@ export let resolveObjectType = (
  * whose span contains the ThisExpression, then looks up the class name's
  * type from the SemanticModel.
  */
-let findEnclosingClassType = (ast: Module, thisExpr: Expression, model: SemanticModel): Type | null => {
+function findEnclosingClassType(ast: Module, thisExpr: Expression, model: SemanticModel): Type | null {
   if (thisExpr.loc == null) { return null; }
   let thisLoc = thisExpr.loc as SourceLocation;
   let thisOffset = thisLoc.start;
@@ -1883,7 +1872,7 @@ let findEnclosingClassType = (ast: Module, thisExpr: Expression, model: Semantic
     i += 1;
   }
   return null;
-};
+}
 
 
 /**
@@ -1892,11 +1881,11 @@ let findEnclosingClassType = (ast: Module, thisExpr: Expression, model: Semantic
  * Uses ClassType.sourcePath to locate the source file, then walks
  * the ClassDeclaration body to find the matching member.
  */
-let findMemberInClass = (
+function findMemberInClass(
   ct: ClassType,
   memberName: String,
   target: CompilerTarget
-): SourceSpan | null => {
+): SourceSpan | null {
   // For instantiated generics, look at the original source class.
   var sourceClass = ct;
   let {genericSource} = ct;
@@ -1948,19 +1937,13 @@ let findMemberInClass = (
   while (bi < classDecl.body.length) {
     match (classDecl.body[bi]) {
       case FieldDefinition as fd: {
-        let fieldName = match (fd.name) {
-          case Identifier {name}: name
-          case _: ""
-        };
+        let fieldName = if (let Identifier {name} = fd.name) name else "";
         if (fieldName == memberName && fd.loc != null) {
           return spanOf(fd.loc as SourceLocation, filePath);
         }
       }
       case MethodDefinition as md: {
-        let methodName = match (md.name) {
-          case Identifier {name}: name
-          case _: ""
-        };
+        let methodName = if (let Identifier {name} = md.name) name else "";
         if (methodName == memberName && md.loc != null) {
           return spanOf(md.loc as SourceLocation, filePath);
         }
@@ -1977,4 +1960,4 @@ let findMemberInClass = (
   }
 
   return null;
-};
+}

@@ -132,7 +132,7 @@ export class SourceFile {
  * A module's top-level statements, preceded by the import declarations
  * its implicit prelude imports stand for — every import it makes.
  */
-export let moduleStatements = (lib: SourceFile): GrowableArray<Statement> => {
+export function moduleStatements(lib: SourceFile): GrowableArray<Statement> {
   let statements = new Array<Statement>(lib.ast.body.length);
   let {scopeResult} = lib;
   if (scopeResult != null) {
@@ -144,7 +144,7 @@ export let moduleStatements = (lib: SourceFile): GrowableArray<Statement> => {
     statements.push(stmt);
   }
   return statements;
-};
+}
 
 // ============================================================================
 // Library Graph
@@ -178,11 +178,11 @@ export class SourceFileGraph(
  *   let graph = loader.computeGraph([entry]);
  */
 /** A fresh identifier table with the keywords already in it. */
-let primedTable = (): StringTable => {
+function primedTable() {
   let table = new StringTable(4096);
   primeKeywords(table);
   return table;
-};
+}
 
 export class LibraryLoader {
   #host: CompilerHost;
@@ -294,7 +294,7 @@ export class LibraryLoader {
     let packageName = this.#resolver.findPackageForPath(path);
 
     let tParse = performance.start("parse");
-    var parseErrors: GrowableArray<Diagnostic> = new Array<Diagnostic>(0);
+    var parseErrors = new Array<Diagnostic>(0);
     var completeness = ParseCompleteness.Complete;
     let ast = if (this.#recover) {
       let result = parseRecovering(source, path, this.#nodeIdGenerator, this.#table);
@@ -317,7 +317,7 @@ export class LibraryLoader {
     // Resolve and recursively load imports. A failure to resolve or
     // load a dependency is left for type checking to report as
     // ModuleNotFound.
-    let follow = (specifier: String): void => {
+    let follow = (specifier: String) => {
       // An empty specifier is the parser's stand-in for one that has not
       // been typed yet (see #missingModuleSpecifier). There is nothing to
       // resolve, so the declaration contributes no dependency.
@@ -363,9 +363,7 @@ export class LibraryLoader {
       // there, and saying nothing about the error or its line.
       this.#register(target, source as String, null, null);
     };
-    var i = 0;
-    while (i < ast.body.length) {
-      let stmt = ast.body[i];
+    for (let stmt in ast.body) {
       match (stmt) {
         case ImportDeclaration {moduleSpecifier}: {
           follow(moduleSpecifier.value);
@@ -378,7 +376,6 @@ export class LibraryLoader {
         }
         case _: {}
       }
-      i += 1;
     }
 
     return record;

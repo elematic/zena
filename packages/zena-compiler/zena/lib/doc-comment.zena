@@ -107,14 +107,17 @@ export final class DocComment(
 }
 
 /** Whether a comment is a doc comment. */
-export let isDocComment = (comment: Comment): boolean =>
-  comment.isBlock && comment.value.length > 0 &&
+export function isDocComment(comment: Comment): boolean {
+  return comment.isBlock && comment.value.length > 0 &&
       comment.value.getByteAt(0) == STAR;
+}
 
-let isSpace = (b: i32): boolean => b == SPACE || b == TAB;
+function isSpace(b: i32) {
+  return b == SPACE || b == TAB;
+}
 
 /** Leading and trailing spaces and tabs removed. */
-export let trim = (s: String): String => {
+export function trim(s: String): String {
   var start = 0;
   var end = s.length;
   while (start < end && isSpace(s.getByteAt(start))) {
@@ -124,10 +127,10 @@ export let trim = (s: String): String => {
     end -= 1;
   }
   return s.sliceBytes(start, end);
-};
+}
 
 /** Trailing whitespace, including newlines, removed. */
-let trimTrailingBlank = (s: String): String => {
+function trimTrailingBlank(s: String) {
   var end = s.length;
   while (end > 0) {
     let b = s.getByteAt(end - 1);
@@ -138,7 +141,7 @@ let trimTrailingBlank = (s: String): String => {
     }
   }
   return s.sliceBytes(0, end);
-};
+}
 
 /**
  * One line of a comment body with its star prefix removed.
@@ -146,7 +149,7 @@ let trimTrailingBlank = (s: String): String => {
  * Indentation after the prefix is kept: it carries meaning in markdown
  * (nested lists, indented code), so only the decoration comes off.
  */
-let stripPrefix = (line: String): String => {
+function stripPrefix(line: String) {
   var end = line.length;
   if (end > 0 && line.getByteAt(end - 1) == CR) {
     end -= 1;
@@ -170,10 +173,10 @@ let stripPrefix = (line: String): String => {
     end -= 1;
   }
   return line.sliceBytes(start, end);
-};
+}
 
 /** Splits on newlines, keeping empty lines. */
-let splitLines = (s: String): GrowableArray<String> => {
+function splitLines(s: String) {
   let lines = new Array<String>(8);
   var start = 0;
   var i = 0;
@@ -186,10 +189,10 @@ let splitLines = (s: String): GrowableArray<String> => {
   }
   lines.push(s.sliceBytes(start, s.length));
   return lines;
-};
+}
 
 /** Strips the star prefix from every line, then drops blank edges. */
-let bodyLines = (body: String): GrowableArray<String> => {
+function bodyLines(body: String) {
   let stripped = new Array<String>(8);
   for (let line in splitLines(body)) {
     stripped.push(stripPrefix(line));
@@ -209,10 +212,10 @@ let bodyLines = (body: String): GrowableArray<String> => {
     i += 1;
   }
   return out;
-};
+}
 
 /** Joins `lines[from..to)` with newlines, dropping trailing blanks. */
-let joinLines = (lines: GrowableArray<String>, from: i32, to: i32): String => {
+function joinLines(lines: GrowableArray<String>, from: i32, to: i32) {
   let sb = new StringBuilder(64);
   var i = from;
   while (i < to) {
@@ -223,14 +226,14 @@ let joinLines = (lines: GrowableArray<String>, from: i32, to: i32): String => {
     i += 1;
   }
   return trimTrailingBlank(sb.toString());
-};
+}
 
 /** Whether a line opens or closes a fenced code block. */
-let isFence = (line: String): boolean => {
+function isFence(line: String) {
   let t = trim(line);
   return t.length >= 3 && t.getByteAt(0) == BACKTICK &&
       t.getByteAt(1) == BACKTICK && t.getByteAt(2) == BACKTICK;
-};
+}
 
 /**
  * The tag name a line opens, or null if it opens none.
@@ -239,7 +242,7 @@ let isFence = (line: String): boolean => {
  * an address in prose (`user@example.com`) never opens a tag: the line
  * would have to begin with it.
  */
-let tagNameAt = (line: String): String | null => {
+function tagNameAt(line: String): String | null {
   let t = trim(line);
   if (t.length < 2 || t.getByteAt(0) != AT) {
     return null;
@@ -259,14 +262,15 @@ let tagNameAt = (line: String): String | null => {
     return null;
   }
   return t.sliceBytes(1, i);
-};
+}
 
 /** Tags whose first word after the tag names a subject. */
-let takesSubject = (name: String): boolean =>
-    name == 'param' || name == 'throws' || name == 'typeParam';
+function takesSubject(name: String) {
+  return name == 'param' || name == 'throws' || name == 'typeParam';
+}
 
 /** Index of the first space or tab, or the string's length. */
-let firstSpace = (s: String): i32 => {
+function firstSpace(s: String) {
   var i = 0;
   while (i < s.length) {
     if (isSpace(s.getByteAt(i))) {
@@ -275,7 +279,7 @@ let firstSpace = (s: String): i32 => {
     i += 1;
   }
   return i;
-};
+}
 
 /**
  * The first paragraph of a description, on one line.
@@ -284,7 +288,7 @@ let firstSpace = (s: String): i32 => {
  * no summary: joining those onto one line produces nonsense, and a
  * consumer showing summaries is better off showing nothing.
  */
-let summaryOf = (description: String): String => {
+function summaryOf(description: String) {
   if (description.length == 0) {
     return '';
   }
@@ -311,10 +315,10 @@ let summaryOf = (description: String): String => {
     i += 1;
   }
   return sb.toString();
-};
+}
 
 /** Index of the first line that opens a block tag, else `lines.length`. */
-let firstTagLine = (lines: GrowableArray<String>): i32 => {
+function firstTagLine(lines: GrowableArray<String>) {
   var inFence = false;
   var i = 0;
   while (i < lines.length) {
@@ -326,7 +330,7 @@ let firstTagLine = (lines: GrowableArray<String>): i32 => {
     i += 1;
   }
   return lines.length;
-};
+}
 
 /**
  * Collects block tags from `start` to the end of the comment.
@@ -334,7 +338,7 @@ let firstTagLine = (lines: GrowableArray<String>): i32 => {
  * A tag runs until the next tag line, so its text can span lines and
  * contain fenced code — which `@example` needs.
  */
-let parseTags = (lines: GrowableArray<String>, start: i32): GrowableArray<DocTag> => {
+function parseTags(lines: GrowableArray<String>, start: i32) {
   // Every line that opens a tag. A tag's text is the lines from its
   // opener up to the next one, so fenced code inside a tag is carried
   // along rather than ending it.
@@ -392,20 +396,20 @@ let parseTags = (lines: GrowableArray<String>, start: i32): GrowableArray<DocTag
     t += 1;
   }
   return tags;
-};
+}
 
 /**
  * Parses a comment body — the text between the delimiters, which is
  * what `Comment.value` holds.
  */
-export let parseDocCommentBody = (body: String): DocComment => {
+export function parseDocCommentBody(body: String): DocComment {
   let lines = bodyLines(body);
   let tagStart = firstTagLine(lines);
   let description = joinLines(lines, 0, tagStart);
   let tags = parseTags(lines, tagStart);
   let raw = joinLines(lines, 0, lines.length);
   return new DocComment(summaryOf(description), description, tags, raw);
-};
+}
 
 /**
  * The doc comment for a node, given its leading comments, or null when
@@ -415,7 +419,7 @@ export let parseDocCommentBody = (body: String): DocComment => {
  * block of prose, so the closest one to the declaration is not
  * privileged.
  */
-export let parseLeadingDoc = (comments: GrowableArray<Comment> | null): DocComment | null => {
+export function parseLeadingDoc(comments: GrowableArray<Comment> | null): DocComment | null {
   if (comments == null) {
     return null;
   }
@@ -435,23 +439,23 @@ export let parseLeadingDoc = (comments: GrowableArray<Comment> | null): DocComme
     return null;
   }
   return parseDocCommentBody(sb.toString());
-};
+}
 
 /** Whether `offset` is inside `node`'s source span. */
-let spans = (node: Node, offset: i32): boolean => {
+function spans(node: Node, offset: i32) {
   let loc = node.loc;
   return loc != null && offset >= loc.start && offset < loc.end;
-};
+}
 
 /** The member of a class or interface body around `offset`, or null. */
-let memberAt = (body: GrowableArray<Node>, offset: i32): Node | null => {
+function memberAt(body: GrowableArray<Node>, offset: i32): Node | null {
   for (let member in body) {
     if (spans(member, offset)) {
       return member;
     }
   }
   return null;
-};
+}
 
 /**
  * The doc comment on the declaration around `offset`, or null when that
@@ -461,7 +465,7 @@ let memberAt = (body: GrowableArray<Node>, offset: i32): Node | null => {
  * when there is one, else the top-level statement around it. An
  * undocumented member has no doc comment even when its class has one.
  */
-export let docCommentAt = (ast: Module, offset: i32, comments: CommentMap): DocComment | null => {
+export function docCommentAt(ast: Module, offset: i32, comments: CommentMap): DocComment | null {
   for (let stmt in ast.body) {
     if (!spans(stmt, offset)) {
       continue;
@@ -474,7 +478,7 @@ export let docCommentAt = (ast: Module, offset: i32, comments: CommentMap): DocC
     return parseLeadingDoc(comments.getLeading(member ?? stmt));
   }
   return null;
-};
+}
 
 /**
  * The doc comment on a declaration, or null when it has none. `ast` is
@@ -485,7 +489,7 @@ export let docCommentAt = (ast: Module, offset: i32, comments: CommentMap): DocC
  * comments of its own. Its doc comment is the statement's, found by
  * position.
  */
-export let declarationDoc = (decl: Node, ast: Module, comments: CommentMap): DocComment | null => {
+export function declarationDoc(decl: Node, ast: Module, comments: CommentMap): DocComment | null {
   let own = comments.getLeading(decl);
   if (own != null) {
     return parseLeadingDoc(own);
@@ -495,4 +499,4 @@ export let declarationDoc = (decl: Node, ast: Module, comments: CommentMap): Doc
     return null;
   }
   return docCommentAt(ast, loc.start, comments);
-};
+}

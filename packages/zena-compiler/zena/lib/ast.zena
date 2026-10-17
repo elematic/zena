@@ -46,8 +46,9 @@ export final class IdGenerator<T> {
  * what matters about these is that they are unique within a compilation, and
  * a public conversion hands that away to every caller.
  */
-export let makeNodeIdGenerator = (nextId: i32 = 1): IdGenerator<NodeId> =>
-  new IdGenerator<NodeId>((id: i32): NodeId => id as NodeId, nextId);
+export function makeNodeIdGenerator(nextId: i32 = 1): IdGenerator<NodeId> {
+  return new IdGenerator<NodeId>((id: i32) => id as NodeId, nextId);
+}
 
 /**
  * Where a node came from: a byte range in a file. There is one per
@@ -791,22 +792,20 @@ export final class Decorator(
  * any scope, so the scope builder does not try to resolve them, and a
  * `decorator` declaration cannot take one of them over.
  */
-export let isBuiltinDecoratorName = (name: String): boolean =>
-    name == 'intrinsic' || name == 'external' || name == 'pure';
+export function isBuiltinDecoratorName(name: String): boolean {
+  return name == 'intrinsic' || name == 'external' || name == 'pure';
+}
 
 /**
  * The string value of a decorator's `i`th argument, or null when there is
  * no such argument or it is not a string literal.
  */
-export let decoratorStringArg = (dec: Decorator, i: i32): String | null => {
+export function decoratorStringArg(dec: Decorator, i: i32): String | null {
   if (i >= dec.args.length) {
     return null;
   }
-  return match (dec.args[i]) {
-    case StringLiteral {value}: value
-    case _: null
-  };
-};
+  return if (let StringLiteral {value} = dec.args[i]) value else null;
+}
 
 // ============================================================================
 // Symbol Property Names
@@ -816,9 +815,9 @@ export final class SymbolPropertyName(
   symbolRef: Expression,
   loc?: SourceLocation) extends Node
 
-export let getMemberPropertyName = (isSymbolAccess: boolean, name: String): String => {
+export function getMemberPropertyName(isSymbolAccess: boolean, name: String): String {
   return if (isSymbolAccess) ":" + name else name;
-};
+}
 
 /**
  * The key a member's name node spells, before any symbol is resolved.
@@ -829,7 +828,7 @@ export let getMemberPropertyName = (isSymbolAccess: boolean, name: String): Stri
  * real key for a symbol-keyed member carries the symbol's identity and
  * comes from `SemanticModel.memberKey`.
  */
-export let syntacticMemberName = (node: Node): String => {
+export function syntacticMemberName(node: Node): String {
   return match (node) {
     case Identifier {name}: name
     case SymbolPropertyName {symbolRef}: ":" + match (symbolRef) {
@@ -839,7 +838,7 @@ export let syntacticMemberName = (node: Node): String => {
     }
     case _: "<unknown>"
   };
-};
+}
 
 /**
  * Whether a static field is really a `static symbol` declaration.
@@ -853,7 +852,7 @@ export let syntacticMemberName = (node: Node): String => {
  * and needs no cell: the checker registers it on the type's static
  * symbols, and everything that walks a body's fields skips it.
  */
-export let isSymbolFieldDeclaration = (field: FieldDefinition): boolean => {
+export function isSymbolFieldDeclaration(field: FieldDefinition): boolean {
   if (!field.isStatic) { return false; }
   let ann = field.typeAnnotation;
   // `if (let ...)` against a null value traps rather than not matching
@@ -863,4 +862,4 @@ export let isSymbolFieldDeclaration = (field: FieldDefinition): boolean => {
     return name == "symbol" && typeArguments == null;
   }
   return false;
-};
+}

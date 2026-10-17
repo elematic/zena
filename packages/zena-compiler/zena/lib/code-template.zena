@@ -17,28 +17,30 @@ export final class ZenaTemplate {
 /**
  * Tagged template function for Zena code generation.
  */
-export let zena = (strings: TemplateStringsArray, values: FixedArray<anyref>): ZenaTemplate => {
+export function zena(strings: TemplateStringsArray, values: FixedArray<anyref>): ZenaTemplate {
   return new ZenaTemplate(strings, values);
-};
+}
 
 /** Whether `b` can be part of a line's indentation: space (0x20) or tab (0x09). */
-let isIndentByte = (b: i32): boolean => b == 0x20 || b == 0x09;
+function isIndentByte(b: i32) {
+  return b == 0x20 || b == 0x09;
+}
 
 /** The index of the next `\n` in `[from, end)`, or -1 if none. */
-let nextNewline = (seg: String, from: i32, end: i32): i32 => {
+function nextNewline(seg: String, from: i32, end: i32): i32 {
   for (var i = from; i < end; i += 1) {
     if (seg.getByteAt(i) == 0x0A) {
       return i;
     }
   }
   return -1;
-};
+}
 
 /**
  * Where content starts in the first literal: past the opening line when
  * that line is blank, and at 0 otherwise.
  */
-let contentStart = (first: String): i32 => {
+function contentStart(first: String): i32 {
   let len = first.length;
   for (var i = 0; i < len; i += 1) {
     let b = first.getByteAt(i);
@@ -50,14 +52,14 @@ let contentStart = (first: String): i32 => {
     }
   }
   return 0;
-};
+}
 
 /**
  * Where content ends in the last literal: before the closing line when
  * that line is blank — dropping its line break with it — and at the end
  * otherwise.
  */
-let contentEnd = (last: String): i32 => {
+function contentEnd(last: String) {
   let len = last.length;
   var i = len - 1;
   while (i >= 0) {
@@ -74,16 +76,16 @@ let contentEnd = (last: String): i32 => {
     i -= 1;
   }
   return len;
-};
+}
 
 /**
  * Calculates the common indentation prefix length across all content lines
  * in the template.
  */
-let computeCommonIndentLen = (
+function computeCommonIndentLen(
     strings: TemplateStringsArray,
     start0: i32,
-    endN: i32): i32 => {
+    endN: i32): i32 {
   let segCount = strings.length;
   var commonIndent: String | null = null;
 
@@ -146,12 +148,12 @@ let computeCommonIndentLen = (
   }
 
   return if (commonIndent != null) (commonIndent as String).length else 0;
-};
+}
 
 /**
  * Emits a string value into `sb`, indenting any newlines with `lineIndent`.
  */
-function emitString(sb: StringBuilder, lineIndent: String, str: String): void {
+function emitString(sb: StringBuilder, lineIndent: String, str: String) {
   var pos = 0;
   let len = str.length;
   while (pos < len) {

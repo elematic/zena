@@ -95,16 +95,16 @@ final class Location {
 var locations: HashMap<i32, Location> | null = null;
 var ordered: GrowableArray<WellKnown> | null = null;
 
-let buildLocations = (): HashMap<i32, Location> => {
+function buildLocations() {
   let t = new Map<i32, Location>();
   let order = new Array<WellKnown>();
-  let add = (w: WellKnown, library: String, name: String): void => {
+  let add = (w: WellKnown, library: String, name: String) => {
     t[w as i32] = new Location(library, name);
     order.push(w);
   };
   /** Registers a declaration that is mid-move to another library. */
   let moving = (w: WellKnown, library: String, name: String,
-      movingTo: String): void => {
+      movingTo: String) => {
     t[w as i32] = new Location(library, name, movingTo);
     order.push(w);
   };
@@ -139,21 +139,21 @@ let buildLocations = (): HashMap<i32, Location> => {
   locations = t;
   ordered = order;
   return t;
-};
+}
 
 /**
  * Every well-known declaration, in registration order. A caller that has to
  * visit them all — filling the checker's table as each library is checked —
  * iterates this instead of repeating the list.
  */
-export let allWellKnown = (): GrowableArray<WellKnown> => {
+export function allWellKnown(): GrowableArray<WellKnown> {
   if (ordered == null) {
     buildLocations();
   }
   return ordered as GrowableArray<WellKnown>;
-};
+}
 
-let locationOf = (w: WellKnown): Location => {
+function locationOf(w: WellKnown): Location {
   let t = if (locations != null) {
     locations as HashMap<i32, Location>
   } else {
@@ -165,17 +165,17 @@ let locationOf = (w: WellKnown): Location => {
   // Unreachable unless a variant was added without a row.
   throw new Error('No location registered for well-known declaration ' +
       i32ToString(w as i32));
-};
+}
 
 /** The library `w` is declared in. */
-export let wellKnownLibrary = (w: WellKnown): String => {
+export function wellKnownLibrary(w: WellKnown): String {
   return locationOf(w).library;
-};
+}
 
 /** The name `w` is declared under, inside its library. */
-export let wellKnownName = (w: WellKnown): String => {
+export function wellKnownName(w: WellKnown): String {
   return locationOf(w).name;
-};
+}
 
 /**
  * The standard library symbols the compiler names itself, and the fixed
@@ -202,9 +202,9 @@ final class ProtocolSymbol {
 
 var protocolSymbols: GrowableArray<ProtocolSymbol> | null = null;
 
-let buildProtocolSymbols = (): GrowableArray<ProtocolSymbol> => {
+function buildProtocolSymbols() {
   let t = new Array<ProtocolSymbol>();
-  let add = (library: String, owner: String, name: String): void => {
+  let add = (library: String, owner: String, name: String) => {
     t.push(new ProtocolSymbol(library, owner, name));
   };
   // Dropping a resource runs its release action.
@@ -228,15 +228,15 @@ let buildProtocolSymbols = (): GrowableArray<ProtocolSymbol> => {
   add('async', '', 'cancelComplete');
   protocolSymbols = t;
   return t;
-};
+}
 
 /**
  * The fixed member key of the symbol `name` declared in `modulePath` —
  * on the type `owner`, or at the top level when `owner` is empty — when
  * it is one the compiler names itself; null for every other symbol.
  */
-export let protocolSymbolKey = (
-    owner: String, name: String, modulePath: String): String | null => {
+export function protocolSymbolKey(
+    owner: String, name: String, modulePath: String): String | null {
   let library = stdlibLibraryOf(modulePath);
   if (library == null) {
     return null;
@@ -253,7 +253,7 @@ export let protocolSymbolKey = (
     }
   }
   return null;
-};
+}
 
 /**
  * Whether a declaration named `name` in the module `modulePath` is the
@@ -267,8 +267,8 @@ export let protocolSymbolKey = (
  * The name is tested first because it rules out almost every call without
  * touching the manifest.
  */
-export let isWellKnown = (w: WellKnown, name: String,
-    modulePath: String): boolean => {
+export function isWellKnown(w: WellKnown, name: String,
+    modulePath: String): boolean {
   let loc = locationOf(w);
   if (name != loc.name) {
     return false;
@@ -283,4 +283,4 @@ export let isWellKnown = (w: WellKnown, name: String,
   }
   let movingTo = loc.movingTo;
   return movingTo != null && owner == (movingTo as String);
-};
+}

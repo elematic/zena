@@ -15,11 +15,11 @@ import { lineAt, columnAt } from './line-index.zena';
  * the one being checked), else `file`; line and column derived from
  * the start offset.
  */
-export let spanOf = (loc: SourceLocation, file: String): SourceSpan => {
+export function spanOf(loc: SourceLocation, file: String): SourceSpan {
   let path = loc.path ?? file;
   return new SourceSpan(path, loc.start, loc.end - loc.start,
       lineAt(path, loc.start), columnAt(path, loc.start));
-};
+}
 
 export enum DiagnosticSeverity {
   Error,
@@ -163,9 +163,8 @@ export final class DiagnosticBag {
   hasErrors(): boolean {
     var i = 0;
     while (i < this.#diagnostics.length) {
-      match (this.#diagnostics[i].severity) {
-        case DiagnosticSeverity.Error: { return true; }
-        case _: {}
+      if (this.#diagnostics[i].severity == DiagnosticSeverity.Error) {
+        return true;
       }
       i += 1;
     }
@@ -224,7 +223,7 @@ export class SyntaxError extends Error {
 /**
  * Format a diagnostic as a human-readable string.
  */
-export let formatDiagnostic = (d: Diagnostic, source: String): String => {
+export function formatDiagnostic(d: Diagnostic, source: String): String {
   var result = "";
   match (d.severity) {
     case DiagnosticSeverity.Error: { result = "error"; }
@@ -240,6 +239,6 @@ export let formatDiagnostic = (d: Diagnostic, source: String): String => {
       result = `${result} [${loc.file}:${loc.line}:${loc.column}]`;
     }
   }
-  result = result + ": " + d.message;
+  result = `${result}: ${d.message}`;
   return result;
-};
+}

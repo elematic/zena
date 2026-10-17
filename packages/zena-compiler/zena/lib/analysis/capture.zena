@@ -14,7 +14,7 @@ export class CaptureInfo {
 
 }
 
-let isLocalSymbol = (sym: Symbol, model: SemanticModel): boolean => {
+function isLocalSymbol(sym: Symbol, model: SemanticModel): boolean {
   if (sym.declaration == null) { return false; }
   let decl = sym.declaration as Node;
   if (decl is Parameter) { return true; }
@@ -49,9 +49,9 @@ let isLocalSymbol = (sym: Symbol, model: SemanticModel): boolean => {
     }
   }
   return false;
-};
+}
 
-let isDeclaredInClosure = (sym: Symbol, funcExpr: FunctionExpression, model: SemanticModel): boolean => {
+function isDeclaredInClosure(sym: Symbol, funcExpr: FunctionExpression, model: SemanticModel): boolean {
   if (sym.declaration == null) { return false; }
   let decl = sym.declaration as Node;
   if (decl is Parameter) {
@@ -71,7 +71,7 @@ let isDeclaredInClosure = (sym: Symbol, funcExpr: FunctionExpression, model: Sem
     curr = parent;
   }
   return false;
-};
+}
 
 /**
  * True when the symbol is captured before its binding initializes: its
@@ -81,7 +81,7 @@ let isDeclaredInClosure = (sym: Symbol, funcExpr: FunctionExpression, model: Sem
  * Such captures must be celled: the cell exists (empty) before the
  * closure is created, and the declaration later writes through it.
  */
-let isCapturedBeforeInit = (s: Symbol, func: FunctionExpression, model: SemanticModel): boolean => {
+function isCapturedBeforeInit(s: Symbol, func: FunctionExpression, model: SemanticModel): boolean {
   if (s.declaration == null) { return false; }
   let decl = s.declaration as Node;
   if (decl is Parameter) { return false; }
@@ -94,25 +94,22 @@ let isCapturedBeforeInit = (s: Symbol, func: FunctionExpression, model: Semantic
   while (true) {
     let parent = model.getParent(curr);
     if (parent == null) { return false; }
-    match (parent) {
-      case VariableDeclaration {pattern}: {
-        match (pattern) {
-          case IdentifierPattern as pat: {
-            let ps = model.resolveDeclaration(pat);
-            if (ps != null && ps.id == s.id) { return true; }
-          }
-          case _: {}
+    if (let VariableDeclaration {pattern} = parent) {
+      match (pattern) {
+        case IdentifierPattern as pat: {
+          let ps = model.resolveDeclaration(pat);
+          if (ps != null && ps.id == s.id) { return true; }
         }
+        case _: {}
       }
-      case _: {}
     }
     curr = parent;
   }
   return false;
-};
+}
 
 /** True when `sym`'s declaration sits anywhere inside `root`'s subtree. */
-let isDeclaredWithin = (sym: Symbol, root: Node, model: SemanticModel): boolean => {
+function isDeclaredWithin(sym: Symbol, root: Node, model: SemanticModel): boolean {
   if (sym.declaration == null) { return false; }
   var curr = sym.declaration as Node;
   while (true) {
@@ -122,7 +119,7 @@ let isDeclaredWithin = (sym: Symbol, root: Node, model: SemanticModel): boolean 
     curr = parent;
   }
   return false;
-};
+}
 
 /**
  * True when an assignment to `sym` can run after `closure` is created,
@@ -134,7 +131,7 @@ let isDeclaredWithin = (sym: Symbol, root: Node, model: SemanticModel): boolean 
  * `for` header's variable is fresh on each iteration (lowerFor), so the
  * loop that declares it does not count.
  */
-let assignedAfter = (sym: Symbol, closure: Node, last: i32, model: SemanticModel): boolean => {
+function assignedAfter(sym: Symbol, closure: Node, last: i32, model: SemanticModel): boolean {
   if (last > (closure.id as i32)) { return true; }
   var curr = closure;
   while (true) {
@@ -161,7 +158,7 @@ let assignedAfter = (sym: Symbol, closure: Node, last: i32, model: SemanticModel
     curr = parent;
   }
   return false;
-};
+}
 
 /**
  * True when the closures that capture this local share it with its
@@ -178,7 +175,7 @@ let assignedAfter = (sym: Symbol, closure: Node, last: i32, model: SemanticModel
  * captures a celled variable must hold the same cell. Asked by code
  * generation, after the declaring body has been checked in full.
  */
-export let capturedInCell = (symId: SymbolId, model: SemanticModel): boolean => {
+export function capturedInCell(symId: SymbolId, model: SemanticModel): boolean {
   if (model.mutablyCapturedSymbols.has(symId)) { return true; }
   if (let (true, last) = model.lastAssignment.get(symId)) {
     if (let (true, local) = model.capturedLocals.get(symId)) {
@@ -188,7 +185,7 @@ export let capturedInCell = (symId: SymbolId, model: SemanticModel): boolean => 
     }
   }
   return false;
-};
+}
 
 /**
  * Locals assigned inside a `try` body that are declared OUTSIDE it.
@@ -205,10 +202,10 @@ export let capturedInCell = (symId: SymbolId, model: SemanticModel): boolean => 
  * symbol as celled); lowering then routes reads and writes through the
  * cell with no further knowledge of `try`.
  */
-export let analyzeTryBodyAssignments = (tryBody: Node, model: SemanticModel): GrowableArray<SymbolId> => {
+export function analyzeTryBodyAssignments(tryBody: Node, model: SemanticModel): GrowableArray<SymbolId> {
   let out = new Array<SymbolId>();
   let seen = new Set<SymbolId>();
-  walkEnter(tryBody, (n: Node): void => {
+  walkEnter(tryBody, (n) => {
     if (!(n is AssignmentExpression)) { return; }
     if (!(n.left is Identifier)) { return; }
     let symOpt = model.resolve(n.left as Identifier);
@@ -223,14 +220,14 @@ export let analyzeTryBodyAssignments = (tryBody: Node, model: SemanticModel): Gr
     out.push(sym.id);
   });
   return out;
-};
+}
 
-export let analyzeCaptures = (func: FunctionExpression, model: SemanticModel): CaptureInfo => {
+export function analyzeCaptures(func: FunctionExpression, model: SemanticModel): CaptureInfo {
   let info = new CaptureInfo();
   let seen = new Set<SymbolId>();
 
   // Traverse the body and collect referenced variables that are declared outside
-  walkEnter(func.body, (n: Node): void => {
+  walkEnter(func.body, (n) => {
     match (n) {
       case Identifier as ident: {
         let sym = model.resolve(ident);
@@ -269,4 +266,4 @@ export let analyzeCaptures = (func: FunctionExpression, model: SemanticModel): C
   });
 
   return info;
-};
+}

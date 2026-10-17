@@ -45,13 +45,13 @@ import { HashMap } from 'zena:collections';
  * "-O" levels: 0, 1, 2, and s (size — the loop with budgets down,
  * currently equal to 2). Returns -1 on anything else.
  */
-export let parseOptLevel = (text: String): i32 => {
+export function parseOptLevel(text: String): i32 {
   if (text == "0") { return 0; }
   if (text == "1") { return 1; }
   if (text == "2") { return 2; }
   if (text == "s") { return 2; }
   return -1;
-};
+}
 
 /** What `target` means when a request leaves it out. */
 export let defaultTarget = "zena-cli";
@@ -110,7 +110,7 @@ export type CompileFileOptions = {
 };
 
 /** The default `onRead`: a compile nothing is caching ignores it. */
-function ignoreRead(path: String): void {}
+function ignoreRead(path: String) {}
 
 /**
  * The host the compiler reads source through: files from the working
@@ -132,10 +132,11 @@ class FileHost implements CompilerHost {
     if (isWitModulePath(path)) {
       return synthesizeWitModule(this, path, this.packagesWit);
     }
-    var actualPath = path;
-    if (path.startsWith("zena:")) {
-      actualPath = this.stdlibRoot + "/" + stdlibIdToRelativeFile(path);
-    }
+    let actualPath = if (path.startsWith("zena:")) {
+      `${this.stdlibRoot}/${stdlibIdToRelativeFile(path)}`
+    } else {
+      path
+    };
     let onRead = this.onRead;
     onRead(actualPath);
     let content = readFileSync(actualPath);
@@ -170,16 +171,16 @@ class FileHost implements CompilerHost {
 // Load package configs ("zena-compiler:parser" → file path) from the manifest
 // in the working directory. A missing manifest is fine — standalone files need
 // only stdlib and relative imports — but a malformed one throws loudly.
-let loadPackages = (host: CompilerHost): HashMap<String, PackageConfig> => {
+function loadPackages(host: CompilerHost) {
   if (!existsSync("zena-packages.json")) {
     return new Map<String, PackageConfig>();
   }
   return loadPackageMap(host, "zena-packages.json");
-};
+}
 
-let reportDiagnosticLine = (kind: String, file: String, line: i32, column: i32, message: String): void => {
-  console.error(file + ":" + i32ToString(line) + ":" + i32ToString(column) + " - " + kind + ": " + message);
-};
+function reportDiagnosticLine(kind: String, file: String, line: i32, column: i32, message: String) {
+  console.error(`${file}:${i32ToString(line)}:${i32ToString(column)} - ${kind}: ${message}`);
+}
 
 /**
  * Reports a fault in the `--wit` document with its file, line, column
@@ -194,7 +195,7 @@ let reportDiagnosticLine = (kind: String, file: String, line: i32, column: i32, 
  * compiler running as a component printed nothing at all. See
  * https://github.com/elematic/zena/issues/158.
  */
-let reportWitFailure = (doc: WitDocument | null, e: Error): boolean => {
+function reportWitFailure(doc: WitDocument | null, e: Error): boolean {
   if (doc == null) {
     return false;
   }
@@ -204,10 +205,10 @@ let reportWitFailure = (doc: WitDocument | null, e: Error): boolean => {
   }
   console.error(text as String);
   return true;
-};
+}
 
 /** `text` followed by spaces, up to `width` bytes. */
-let padRight = (text: String, width: i32): String => {
+function padRight(text: String, width: i32) {
   let b = new StringBuilder();
   b.append(text);
   var i = text.length;
@@ -216,10 +217,10 @@ let padRight = (text: String, width: i32): String => {
     i += 1;
   }
   return b.toString();
-};
+}
 
 /** Spaces followed by `text`, up to `width` bytes. */
-let padLeft = (text: String, width: i32): String => {
+function padLeft(text: String, width: i32) {
   let b = new StringBuilder();
   var i = text.length;
   while (i < width) {
@@ -228,12 +229,12 @@ let padLeft = (text: String, width: i32): String => {
   }
   b.append(text);
   return b.toString();
-};
+}
 
 /** Milliseconds to one decimal place. */
-let ms1 = (value: f64): String => {
+function ms1(value: f64) {
   return f64ToString(((value * 10.0) as i64 as f64) / 10.0);
-};
+}
 
 /**
  * The longest phase name that is a proper prefix of `name` followed by
@@ -241,7 +242,7 @@ let ms1 = (value: f64): String => {
  * `codegen-discovery` rather than under `codegen`, so the longest
  * match wins.
  */
-let parentPhaseOf = (name: String, names: GrowableArray<String>): String | null => {
+function parentPhaseOf(name: String, names: GrowableArray<String>) {
   var best: String | null = null;
   for (let candidate in names) {
     if (candidate.length >= name.length) {
@@ -256,7 +257,7 @@ let parentPhaseOf = (name: String, names: GrowableArray<String>): String | null 
     }
   }
   return best;
-};
+}
 
 /**
  * The phase list as JSON, for a caller that is going to do arithmetic
@@ -269,7 +270,7 @@ let parentPhaseOf = (name: String, names: GrowableArray<String>): String | null 
  * and the phase that contains it. Parsing the table instead would mean
  * a benchmark breaking whenever a column moved.
  */
-let printTimingJson = (): void => {
+function printTimingJson() {
   let phases = performance.phases();
   let names = new Array<String>(phases.length);
   for (let phase in phases) {
@@ -292,7 +293,7 @@ let printTimingJson = (): void => {
   b.endArray();
   b.endObject();
   console.log(b.toString());
-};
+}
 
 /**
  * Prints every phase `performance` measured, in the order the compiler
@@ -304,7 +305,7 @@ let printTimingJson = (): void => {
  * a `performance.start` added anywhere in the compiler appears here
  * without this function changing.
  */
-let printTimingReport = (): void => {
+function printTimingReport() {
   let phases = performance.phases();
   if (phases.length == 0) {
     return;
@@ -340,7 +341,7 @@ let printTimingReport = (): void => {
   console.log("------------------------------");
   console.log(`${padRight("Total:", 28)}${padLeft(ms1(total), 9)} ms`);
   console.log("==============================");
-};
+}
 
 /**
  * Compiles `options.entry` and writes the module to `options.outPath`.
@@ -348,7 +349,7 @@ let printTimingReport = (): void => {
  * program it prints the diagnostics to stderr and returns 1; it never
  * ends the process, so a caller can compile again.
  */
-export let compileFile = (options: CompileFileOptions): i32 => {
+export function compileFile(options: CompileFileOptions): i32 {
   // ZENA_CHECK_ALL_BODIES=1 checks every loaded module's bodies when
   // its module is checked, instead of leaving a dependency's for
   // reachability to ask for. See docs/design/lazy-body-checking.md.
@@ -460,7 +461,7 @@ export let compileFile = (options: CompileFileOptions): i32 => {
         witPackages.push(packageName);
       }
     }
-    let byteLess = (x: String, y: String): boolean => {
+    let byteLess = (x: String, y: String) => {
       var minLen = x.length;
       if (y.length < minLen) { minLen = y.length; }
       for (var i = 0; i < minLen; i += 1) {
@@ -497,14 +498,14 @@ export let compileFile = (options: CompileFileOptions): i32 => {
       entry: filename,
       target,
       componentWrapperSynth:
-          (entryPath: String, ast: Module): ComponentEntryWrapper | null =>
+          (entryPath: String, ast: Module) =>
               synthesizeExportWrapper(declaredWit, declaredWorld, entryPath,
                   ast, declaredPackages),
     }
   };
 
   if (progress) {
-    console.log("Compiling " + filename + "...");
+    console.log(`Compiling ${filename}...`);
   }
   try {
     let compResult = compiler.compile(compileOptions);
@@ -675,4 +676,4 @@ export let compileFile = (options: CompileFileOptions): i32 => {
   }
 
   return 0;
-};
+}
