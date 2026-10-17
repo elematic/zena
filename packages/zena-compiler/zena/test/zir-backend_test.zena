@@ -1,4 +1,4 @@
-import { dedentRaw } from 'zena:core';
+import { dedentRaw, growable } from 'zena:core';
 import { suite, test, TestContext } from 'zena:test';
 import { equal, isTrue, fail } from 'zena:assert';
 import { WatGenerator } from '../lib/codegen/wat-generator.zena';
@@ -14,12 +14,12 @@ import {
 import { checkCompilation } from '../lib/compiler.zena';
 import { getEnv } from 'zena:cli';
 
-let assertSnapshot = (name: String, content: String): void => {
+function assertSnapshot(name: String, content: String) {
   let snapDir = 'packages/zena-compiler/test-files/snapshots';
   if (!existsSync(snapDir)) {
     mkdirSync(snapDir);
   }
-  let snapFile = snapDir + '/' + name + '.snap';
+  let snapFile = `${snapDir}/${name}.snap`;
   if (getEnv("UPDATE_SNAPSHOTS") != null) {
     writeFileSync(snapFile, content);
     equal(content, content);
@@ -30,13 +30,13 @@ let assertSnapshot = (name: String, content: String): void => {
     writeFileSync(snapFile, content);
     equal(content, content);
   }
-};
+}
 
-let compileWithZir = (source: String): String => {
+function compileWithZir(source: String) {
   return compileWithZirAt(source, 1);
-};
+}
 
-let compileWithZirAt = (source: String, optLevel: i32): String => {
+function compileWithZirAt(source: String, optLevel: i32): String {
   let host = new MockHost();
   host.addFile("test.zena", source);
 
@@ -64,18 +64,18 @@ let compileWithZirAt = (source: String, optLevel: i32): String => {
   let program = new Program(units, entryUnit);
   let generator = new WatGenerator("freestanding", false, optLevel);
   return generator.generate(program);
-};
+}
 
 /**
  * Compile `source` against the real standard library on disk and pass
  * every checked unit to `Program`, for WAT tests that use `String` or
  * other standard library types.
  */
-let compileWithZirStdlib = (source: String): String => {
+function compileWithZirStdlib(source: String) {
   return compileWithZirStdlibAt(source, 1);
-};
+}
 
-let compileWithZirStdlibAt = (source: String, optLevel: i32): String => {
+function compileWithZirStdlibAt(source: String, optLevel: i32): String {
   let host = new PlainHost();
   host.addFile("test.zena", source);
 
@@ -106,16 +106,16 @@ let compileWithZirStdlibAt = (source: String, optLevel: i32): String => {
   let generator = new WatGenerator("freestanding", false, optLevel);
   generator.interner = checkRes.sharedState.interner;
   return generator.generate(program);
-};
+}
 
-export let tests = suite('zir backend', (): void => {
-  test('straight-line arithmetic function', (ctx: TestContext): void => {
+export let tests = suite('zir backend', () => {
+  test('straight-line arithmetic function', (ctx) => {
     let result = compileWithZir(
         'export let main = (): i32 => { let a = 6; let b = 7; return a * b; };');
     assertSnapshot('zir_straight_line', result);
   });
 
-  test('if/else with merged assignment', (ctx: TestContext): void => {
+  test('if/else with merged assignment', (ctx) => {
     let result = compileWithZir(dedentRaw`
         export let main = (): i32 => {
           var r = 0;
@@ -131,7 +131,7 @@ export let tests = suite('zir backend', (): void => {
     assertSnapshot('zir_if_else_merge', result);
   });
 
-  test('try/catch keeps an assigned local off the heap', (ctx: TestContext): void => {
+  test('try/catch keeps an assigned local off the heap', (ctx) => {
     // A try body that assigns an enclosing local needs storage the
     // handler can read, because the protected edge carries only the
     // values live at try entry. That storage is a wasm local — a
@@ -148,8 +148,7 @@ export let tests = suite('zir backend', (): void => {
           return n;
         };
         `);
-    let usesTry = new Array<String>();
-    usesTry.push('try_table');
+    let usesTry = growable<String>(['try_table']);
     assertFunctionUses(result, '$main', usesTry,
         'the fixture is supposed to compile a protected region');
     assertNoAllocation(result, '$main',
@@ -157,7 +156,7 @@ export let tests = suite('zir backend', (): void => {
     assertSnapshot('zir_try_local_mirror', result);
   });
 
-  test('a finalizer is emitted once for every way out of the try', (ctx: TestContext): void => {
+  test('a finalizer is emitted once for every way out of the try', (ctx) => {
     // Four exits leave this region — the body's normal completion, the
     // `return`, the `break`, and the exception the handler edge
     // catches — and each of them owes the finalizer. They are routed
@@ -183,8 +182,7 @@ export let tests = suite('zir backend', (): void => {
           return n;
         };
         `);
-    let usesTry = new Array<String>();
-    usesTry.push('try_table');
+    let usesTry = growable<String>(['try_table']);
     assertFunctionUses(result, '$main', usesTry,
         'the fixture is supposed to compile a protected region');
     assertFunctionUsesTimes(result, '$main', 'i32.const 987654', 1,
@@ -195,7 +193,7 @@ export let tests = suite('zir backend', (): void => {
     assertSnapshot('zir_try_finally', result);
   });
 
-  test('while loop with break and continue', (ctx: TestContext): void => {
+  test('while loop with break and continue', (ctx) => {
     let result = compileWithZir(dedentRaw`
         export let main = (): i32 => {
           var acc = 0;
@@ -216,7 +214,7 @@ export let tests = suite('zir backend', (): void => {
     assertSnapshot('zir_while_break_continue', result);
   });
 
-  test('short-circuit logic chains', (ctx: TestContext): void => {
+  test('short-circuit logic chains', (ctx) => {
     let result = compileWithZir(dedentRaw`
         let f = (x: i32, y: i32): boolean => x > 0 && y > 0 || x == -1;
         export let main = (): i32 => if (f(1, 2)) 1 else 0;
@@ -224,7 +222,7 @@ export let tests = suite('zir backend', (): void => {
     assertSnapshot('zir_short_circuit', result);
   });
 
-  test('direct calls, recursion, and mutual recursion', (ctx: TestContext): void => {
+  test('direct calls, recursion, and mutual recursion', (ctx) => {
     // Structural assertions rather than a full-module snapshot: function
     // ORDER in the module depends on discovery worklist order, which
     // shifts with process-global symbol/uid counters whenever unrelated
@@ -259,7 +257,7 @@ export let tests = suite('zir backend', (): void => {
     isTrue(result.contains('(func $fib'));
   });
 
-  test('if expression with value blocks', (ctx: TestContext): void => {
+  test('if expression with value blocks', (ctx) => {
     let result = compileWithZir(dedentRaw`
         export let main = (): i32 => {
           let n = -200;
@@ -277,7 +275,7 @@ export let tests = suite('zir backend', (): void => {
     assertSnapshot('zir_if_expression', result);
   });
 
-  test('c-style for loop with break and continue', (ctx: TestContext): void => {
+  test('c-style for loop with break and continue', (ctx) => {
     let result = compileWithZir(dedentRaw`
         export let main = (): i32 => {
           var acc = 0;
@@ -292,7 +290,7 @@ export let tests = suite('zir backend', (): void => {
     assertSnapshot('zir_for_loop', result);
   });
 
-  test('scalar casts', (ctx: TestContext): void => {
+  test('scalar casts', (ctx) => {
     let result = compileWithZir(dedentRaw`
         export let main = (): i32 => {
           let x = 10;
@@ -305,7 +303,7 @@ export let tests = suite('zir backend', (): void => {
     assertSnapshot('zir_scalar_casts', result);
   });
 
-  test('unsigned operators select _u variants', (ctx: TestContext): void => {
+  test('unsigned operators select _u variants', (ctx) => {
     // Structural (not snapshot): multi-function modules are
     // discovery-order sensitive.
     let result = compileWithZir(dedentRaw`
@@ -321,7 +319,7 @@ export let tests = suite('zir backend', (): void => {
     isTrue(result.contains('i32.gt_u'));
   });
 
-  test('reference plumbing: null tests, narrowing, identity', (ctx: TestContext): void => {
+  test('reference plumbing: null tests, narrowing, identity', (ctx) => {
     // Structural: multi-function modules are discovery-order sensitive.
     // A local class supplies the reference type (the MockHost harness has
     // no stdlib, so String is unavailable here); string-literal lowering
@@ -347,7 +345,7 @@ export let tests = suite('zir backend', (): void => {
     isTrue(result.contains('ref.as_non_null'));
   });
 
-  test('entry-defined ref local graduates non-null past a join', (ctx: TestContext): void => {
+  test('entry-defined ref local graduates non-null past a join', (ctx) => {
     // The entry block's own code emits BEFORE the join's wrapper block
     // opens, so its set persists through the whole function and the
     // local can be declared at its precise non-null type — reads after
@@ -371,7 +369,7 @@ export let tests = suite('zir backend', (): void => {
     isTrue(!mainWat.contains('ref.as_non_null'));
   });
 
-  test('conditional-join value keeps its nullable local', (ctx: TestContext): void => {
+  test('conditional-join value keeps its nullable local', (ctx) => {
     // A join param is written on the arms' edges, INSIDE the if/else
     // scopes — the validator forgets both sets at the join (rollback is
     // uniform even when every arm assigns), so the init replay must
@@ -389,7 +387,7 @@ export let tests = suite('zir backend', (): void => {
     isTrue(pickWat.contains('ref.as_non_null'));
   });
 
-  test('new, field reads, and devirtualized method calls', (ctx: TestContext): void => {
+  test('new, field reads, and devirtualized method calls', (ctx) => {
     // Structural: multi-function modules are discovery-order sensitive.
     let result = compileWithZir(dedentRaw`
         final class Point {
@@ -409,7 +407,7 @@ export let tests = suite('zir backend', (): void => {
     isTrue(result.contains('call $Point'));
   });
 
-  test('constructor prologue: defaults, this params, super', (ctx: TestContext): void => {
+  test('constructor prologue: defaults, this params, super', (ctx) => {
     // Structural: multi-function modules are discovery-order sensitive.
     let result = compileWithZir(dedentRaw`
         class Base { tag: i32; new(this.tag); }
@@ -434,7 +432,7 @@ export let tests = suite('zir backend', (): void => {
     isTrue(result.contains('struct.set'));
   });
 
-  test('non-null let fields are immutable and read without re-asserts', (ctx: TestContext): void => {
+  test('non-null let fields are immutable and read without re-asserts', (ctx) => {
     // Field types are precise (non-nullable-refs.md): a `let` field of
     // non-null class type declares `(field (ref $T))` — immutable, no
     // null — while a `T | null` field stays nullable, and a reader
@@ -456,7 +454,7 @@ export let tests = suite('zir backend', (): void => {
     isTrue(!readWat.contains('ref.as_non_null'));
   });
 
-  test('scalar match with literals, or-patterns, and guards', (ctx: TestContext): void => {
+  test('scalar match with literals, or-patterns, and guards', (ctx) => {
     let result = compileWithZir(dedentRaw`
         export let main = (): i32 => {
           let x = 5;
@@ -471,7 +469,7 @@ export let tests = suite('zir backend', (): void => {
     assertSnapshot('zir_match_scalar', result);
   });
 
-  test('match with class patterns and as-bindings', (ctx: TestContext): void => {
+  test('match with class patterns and as-bindings', (ctx) => {
     // Structural: multi-function modules are discovery-order sensitive.
     let result = compileWithZir(dedentRaw`
         class Base { tag: i32; new(this.tag); }
@@ -511,7 +509,7 @@ export let tests = suite('zir backend', (): void => {
     isTrue(sealedResult.contains('unreachable'));
   });
 
-  test('interface packing and vtable dispatch', (ctx: TestContext): void => {
+  test('interface packing and vtable dispatch', (ctx) => {
     // Structural: multi-function modules are discovery-order sensitive.
     let result = compileWithZir(dedentRaw`
         interface Greeter { greet(): i32; }
@@ -534,7 +532,7 @@ export let tests = suite('zir backend', (): void => {
     isTrue(result.contains('call_ref'));
   });
 
-  test('field shadowed by subclass accessor uses the getter', (ctx: TestContext): void => {
+  test('field shadowed by subclass accessor uses the getter', (ctx) => {
     // Regression: a subclass redefining an inherited physical field as
     // an accessor must dispatch through the getter, not struct.get the
     // parent's field (classes/super-fields.zena caught this).
@@ -558,7 +556,7 @@ export let tests = suite('zir backend', (): void => {
         result.contains('get#x'));
   });
 
-  test('calls through closure-typed values', (ctx: TestContext): void => {
+  test('calls through closure-typed values', (ctx) => {
     // Structural: multi-function modules are discovery-order sensitive.
     let result = compileWithZir(dedentRaw`
         let apply = (f: (x: i32) => i32, v: i32): i32 => f(v);
@@ -570,7 +568,7 @@ export let tests = suite('zir backend', (): void => {
     isTrue(result.contains('(func $apply'));
   });
 
-  test('closure creation with by-value captures', (ctx: TestContext): void => {
+  test('closure creation with by-value captures', (ctx) => {
     // Structural: multi-function modules are discovery-order sensitive.
     let result = compileWithZir(dedentRaw`
         let make = (k: i32): ((x: i32) => i32) => {
@@ -589,14 +587,14 @@ export let tests = suite('zir backend', (): void => {
     isTrue(result.contains('call_ref'));
   });
 
-  test('zir output contains the lowered function', (ctx: TestContext): void => {
+  test('zir output contains the lowered function', (ctx) => {
     // Cheap structural sanity independent of snapshots: the ZIR-lowered
     // function is emitted (every value a local, so at least one local).
     let result = compileWithZir('export let main = (): i32 => 1 + 2;');
     isTrue(result.contains('(func $main'));
   });
 
-  test('-O2 inlines a trivial call chain to a constant', (ctx: TestContext): void => {
+  test('-O2 inlines a trivial call chain to a constant', (ctx) => {
     // main calls f calls inc; the rounds inline the chain and the
     // cleanup passes fold what remains, so main is one constant.
     let result = compileWithZirAt(dedentRaw`
@@ -604,17 +602,15 @@ export let tests = suite('zir backend', (): void => {
         let f = (y: i32): i32 => inc(y);
         export let main = (): i32 => f(20);
         `, 2);
-    let present = new Array<String>();
-    present.push('i32.const 21');
+    let present = growable<String>(['i32.const 21']);
     assertFunctionUses(result, '$main', present,
         'the inlined chain folds to its value');
-    let absent = new Array<String>();
-    absent.push('call ');
+    let absent = growable<String>(['call ']);
     assertFunctionOmits(result, '$main', absent,
         'no call survives inlining the chain');
   });
 
-  test('-O2 inlines a private method into its caller', (ctx: TestContext): void => {
+  test('-O2 inlines a private method into its caller', (ctx) => {
     let result = compileWithZirAt(dedentRaw`
         class P {
           #x: i32 = 7;
@@ -626,15 +622,14 @@ export let tests = suite('zir backend', (): void => {
         `, 2);
     // Nothing dispatches on P, so sum and #twice are direct calls that
     // inline all the way into main, and harvest then deletes both.
-    let absent = new Array<String>();
-    absent.push('call ');
+    let absent = growable<String>(['call ']);
     assertFunctionOmits(result, '$main', absent,
         'the method and its private helper are inlined into main');
     isTrue(!result.contains('.sum'),
         'the fully inlined method is deleted from the module');
   });
 
-  test('-O2 devirtualizes an interface call with one implementer', (ctx: TestContext): void => {
+  test('-O2 devirtualizes an interface call with one implementer', (ctx) => {
     // Only Circle is ever packed as Shape, so every Shape vtable global
     // installs Circle.area in the slot: the call_ref becomes a direct
     // call, and the dead slot-load chain folds and dies.
@@ -648,13 +643,12 @@ export let tests = suite('zir backend', (): void => {
         export let measure = (s: Shape): i32 => s.area();
         export let main = (): i32 => measure(new Circle(3));
         `, 2);
-    let absent = new Array<String>();
-    absent.push('call_ref');
+    let absent = growable<String>(['call_ref']);
     assertFunctionOmits(result, '$measure', absent,
         'a single-implementer interface slot dispatches directly');
   });
 
-  test('-O2 keeps an interface call with two implementers indirect', (ctx: TestContext): void => {
+  test('-O2 keeps an interface call with two implementers indirect', (ctx) => {
     let result = compileWithZirAt(dedentRaw`
         interface Shape { area(): i32; }
         class Circle implements Shape {
@@ -670,13 +664,12 @@ export let tests = suite('zir backend', (): void => {
         export let measure = (s: Shape): i32 => s.area();
         export let main = (): i32 => measure(new Circle(3)) + measure(new Square(2));
         `, 2);
-    let present = new Array<String>();
-    present.push('call_ref');
+    let present = growable<String>(['call_ref']);
     assertFunctionUses(result, '$measure', present,
         'two live implementers keep the slot dynamic');
   });
 
-  test('-O2 devirtualizes through a visible fat-pointer pack', (ctx: TestContext): void => {
+  test('-O2 devirtualizes through a visible fat-pointer pack', (ctx) => {
     // Two implementers exist, but each dispatch site packs its own
     // concrete object, so provenance resolves both without the
     // hierarchy rule.
@@ -698,13 +691,12 @@ export let tests = suite('zir backend', (): void => {
           return a.area() + b.area();
         };
         `, 2);
-    let absent = new Array<String>();
-    absent.push('call_ref');
+    let absent = growable<String>(['call_ref']);
     assertFunctionOmits(result, '$main', absent,
         'a pack visible at the dispatch site names the implementation');
   });
 
-  test('an unescaping tuple is scalar-replaced', (ctx: TestContext): void => {
+  test('an unescaping tuple is scalar-replaced', (ctx) => {
     // Both element reads forward to the tuple's operands, so the
     // allocation has no uses left and DCE deletes it. Level 1: this is
     // per-function forwarding, not the module loop.
@@ -716,7 +708,7 @@ export let tests = suite('zir backend', (): void => {
         'reads off a fresh immutable allocation forward to its operands');
   });
 
-  test('a record literal argument is passed as its fields', (ctx: TestContext): void => {
+  test('a record literal argument is passed as its fields', (ctx) => {
     // Argument explosion (ir/explode.zena) at level 1, where nothing
     // inlines: `f` only reads fields of its record parameter, so `main`
     // calls `f.core` with the literals' field values, omitted optional
@@ -728,19 +720,17 @@ export let tests = suite('zir backend', (): void => {
         `);
     assertNoAllocation(result, '$main',
         'a record literal argument is never built');
-    let coreCall = new Array<String>();
-    coreCall.push('call $f.core');
+    let coreCall = growable<String>(['call $f.core']);
     assertFunctionUses(result, '$main', coreCall,
         'a call passing a literal goes to the core');
-    let absent = new Array<String>();
-    absent.push('call_ref');
+    let absent = growable<String>(['call_ref']);
     assertFunctionOmits(result, '$f.core', absent,
         'the core reads fields from its parameters, not through getters');
     assertNoAllocation(result, '$f.core',
         'the record the core rebuilds for its parameter has no uses');
   });
 
-  test('a record value argument goes through the forwarder', (ctx: TestContext): void => {
+  test('a record value argument goes through the forwarder', (ctx) => {
     // `g` is only ever given a record from the heap, so it passes that
     // record to `f` itself, whose body reads the fields and calls the
     // core.
@@ -753,19 +743,17 @@ export let tests = suite('zir backend', (): void => {
           return f({a: 3}) + g(held);
         };
         `);
-    let forwarded = new Array<String>();
-    forwarded.push('call $f');
+    let forwarded = growable<String>(['call $f']);
     assertFunctionUses(result, '$g', forwarded,
         'a record value is passed to the forwarder');
-    let coreCall = new Array<String>();
-    coreCall.push('call $f.core');
+    let coreCall = growable<String>(['call $f.core']);
     assertFunctionOmits(result, '$g', coreCall,
         'only a literal argument can be passed as fields');
     assertFunctionUses(result, '$f', coreCall,
         'the forwarder calls the core');
   });
 
-  test('a record passed on whole stays as its fields', (ctx: TestContext): void => {
+  test('a record passed on whole stays as its fields', (ctx) => {
     // `outer` passes its record to `inner`, which only reads fields, so
     // `outer` only needs the fields too. The literal is never built:
     // `main` calls `outer.core`, which calls `inner.core` with the
@@ -778,19 +766,17 @@ export let tests = suite('zir backend', (): void => {
         `);
     assertNoAllocation(result, '$main',
         'the literal enters the chain as fields');
-    let innerCore = new Array<String>();
-    innerCore.push('call $inner.core');
+    let innerCore = growable<String>(['call $inner.core']);
     assertFunctionUses(result, '$outer.core', innerCore,
         'a forwarded field-only record is passed as its fields');
     assertNoAllocation(result, '$outer.core',
         'the forwarded record is never rebuilt');
-    let absent = new Array<String>();
-    absent.push('call_ref');
+    let absent = growable<String>(['call_ref']);
     assertFunctionOmits(result, '$outer.core', absent,
         'no getter dispatch on the forwarded record');
   });
 
-  test('a record literal passed to a constructor is passed as its fields', (ctx: TestContext): void => {
+  test('a record literal passed to a constructor is passed as its fields', (ctx) => {
     // The named-arguments idiom for a class: `P`'s constructor only reads
     // fields of its record parameter, so `new P({x: 3})` calls the
     // factory's core with the fields and builds no record.
@@ -816,13 +802,12 @@ export let tests = suite('zir backend', (): void => {
       }
     }
     isTrue(core.length > 0, 'the constructor has a core');
-    let absent = new Array<String>();
-    absent.push('call_ref');
+    let absent = growable<String>(['call_ref']);
     assertFunctionOmits(result, core, absent,
         'the core reads the fields from its parameters');
   });
 
-  test('a record passed to super(...) is passed as its fields', (ctx: TestContext): void => {
+  test('a record passed to super(...) is passed as its fields', (ctx) => {
     // `Base` only reads fields of its record, so its phase functions
     // take the fields too: `Sub`'s literal and `Pass`'s own exploded
     // parameter reach `Base` without a record being built. Each
@@ -847,7 +832,7 @@ export let tests = suite('zir backend', (): void => {
           return s.y + p.x;
         };
         `);
-    let named = (prefix: String, suffix: String): String => {
+    let named = (prefix: String, suffix: String) => {
       var found = '';
       for (let chunk in result.split('(func $')) {
         let name = chunk.split(' ')[0];
@@ -865,7 +850,7 @@ export let tests = suite('zir backend', (): void => {
         'struct.new', 1, 'a record passed on to super is never rebuilt');
   });
 
-  test('a record passed to a named constructor is passed as its fields', (ctx: TestContext): void => {
+  test('a record passed to a named constructor is passed as its fields', (ctx) => {
     // Named constructors explode like the unnamed one: `new Base.from`
     // with a literal, a subclass's `super.from(...)` with a literal, and
     // a named constructor passing its own record up to `super.from`.
@@ -891,7 +876,7 @@ export let tests = suite('zir backend', (): void => {
           return b.y + s.y + p.x;
         };
         `);
-    let named = (prefix: String, suffix: String): String => {
+    let named = (prefix: String, suffix: String) => {
       var found = '';
       for (let chunk in result.split('(func $')) {
         let name = chunk.split(' ')[0];
@@ -909,7 +894,7 @@ export let tests = suite('zir backend', (): void => {
         'struct.new', 1, 'a record passed on to super.from is never rebuilt');
   });
 
-  test('a record passed to a generic class constructor is passed as its fields', (ctx: TestContext): void => {
+  test('a record passed to a generic class constructor is passed as its fields', (ctx) => {
     // Each instantiation's constructor explodes on its own: `new
     // Box<i32>` and `new Pair<f64>` with literals, whose record type
     // mentions the type parameter, and a subclass of `Box<i32>` passing
@@ -935,7 +920,7 @@ export let tests = suite('zir backend', (): void => {
           return b.x + (p.a as i32) + ib.x;
         };
         `);
-    let named = (prefix: String, suffix: String): String => {
+    let named = (prefix: String, suffix: String) => {
       var found = '';
       for (let chunk in result.split('(func $')) {
         let name = chunk.split(' ')[0];
@@ -951,7 +936,7 @@ export let tests = suite('zir backend', (): void => {
         'struct.new', 1, 'the literal passed to super is never built');
   });
 
-  test('a generic function takes and returns records as fields per instantiation', (ctx: TestContext): void => {
+  test('a generic function takes and returns records as fields per instantiation', (ctx) => {
     // Each specialization explodes on its own: `area<i32>` and
     // `first<f64>` take literals, `shift<i32>` returns its result's
     // fields, and `relay<i32>` passes its exploded record on to
@@ -969,11 +954,12 @@ export let tests = suite('zir backend', (): void => {
               relay<i32>({x: 2, y: 3}, 0);
         };
         `);
-    let forwarders = new Array<String>();
-    forwarders.push('call $shift_spec_i32\n');
-    forwarders.push('call $area_spec_i32\n');
-    forwarders.push('call $first_spec_f64\n');
-    forwarders.push('call $relay_spec_i32\n');
+    let forwarders = growable<String>([
+      'call $shift_spec_i32\n',
+      'call $area_spec_i32\n',
+      'call $first_spec_f64\n',
+      'call $relay_spec_i32\n',
+    ]);
     assertNoAllocation(result, '$main', 'every record arrives as fields');
     assertFunctionOmits(result, '$main', forwarders,
         'each specialization is called through its core');
@@ -981,7 +967,7 @@ export let tests = suite('zir backend', (): void => {
         'the record is passed on as its fields');
   });
 
-  test('a generic method takes and returns records as fields per instantiation', (ctx: TestContext): void => {
+  test('a generic method takes and returns records as fields per instantiation', (ctx) => {
     // Each specialization of a method's own type parameters explodes on
     // its own: `area<i32>` and `first<f64>` take literals, `shift<i32>`
     // returns its result's fields, and `relay<i32>` passes its exploded
@@ -1014,11 +1000,12 @@ export let tests = suite('zir backend', (): void => {
     isTrue(relayCore.length > 0, 'relay<i32> has a core');
     // A call to a forwarder ends its line with the specialization's
     // name; a call to a core, with `.core`.
-    let forwarders = new Array<String>();
-    forwarders.push('.shift_spec_i32\n');
-    forwarders.push('.area_spec_i32\n');
-    forwarders.push('.first_spec_f64\n');
-    forwarders.push('.relay_spec_i32\n');
+    let forwarders = growable<String>([
+      '.shift_spec_i32\n',
+      '.area_spec_i32\n',
+      '.first_spec_f64\n',
+      '.relay_spec_i32\n',
+    ]);
     assertNoAllocation(result, '$main', 'every record arrives as fields');
     assertFunctionOmits(result, '$main', forwarders,
         'each specialization is called through its core');
@@ -1026,7 +1013,7 @@ export let tests = suite('zir backend', (): void => {
         'the record is passed on as its fields');
   });
 
-  test('generators and async functions take records as fields', (ctx: TestContext): void => {
+  test('generators and async functions take records as fields', (ctx) => {
     // `span` and `total` take a literal as its fields, and the call in
     // `walk`'s body passes its literal to `area.core`: no record is
     // built, before or after a suspension.
@@ -1064,10 +1051,11 @@ export let tests = suite('zir backend', (): void => {
       }
     }
     isTrue(walkNext.length > 0, 'walk has a next function');
-    let forwarders = new Array<String>();
-    forwarders.push('call $span\n');
-    forwarders.push('call $total\n');
-    forwarders.push('call $area\n');
+    let forwarders = growable<String>([
+      'call $span\n',
+      'call $total\n',
+      'call $area\n',
+    ]);
     assertNoAllocation(result, '$main', 'the literals are never built');
     assertFunctionOmits(result, '$main', forwarders,
         'a generator and an async function are called through their cores');
@@ -1077,7 +1065,7 @@ export let tests = suite('zir backend', (): void => {
         'the call in the generator body goes to the core');
   });
 
-  test('a record spread into a literal stays as its fields', (ctx: TestContext): void => {
+  test('a record spread into a literal stays as its fields', (ctx) => {
     // `widen` spreads its parameter into its result, and `fromBound`
     // spreads a bound call result into its result: neither the sources
     // nor the results are built.
@@ -1096,10 +1084,11 @@ export let tests = suite('zir backend', (): void => {
           return x + y + z + w.x + w.y + w.z;
         };
         `);
-    let forwarders = new Array<String>();
-    forwarders.push('call $widen\n');
-    forwarders.push('call $make\n');
-    forwarders.push('call $fromBound\n');
+    let forwarders = growable<String>([
+      'call $widen\n',
+      'call $make\n',
+      'call $fromBound\n',
+    ]);
     assertNoAllocation(result, '$main', 'the spread source arrives as fields');
     assertFunctionOmits(result, '$main', forwarders,
         'the spreading functions are called through their cores');
@@ -1111,7 +1100,7 @@ export let tests = suite('zir backend', (): void => {
         'the bound result comes back as fields');
   });
 
-  test('== on a record held as its fields compares the fields', (ctx: TestContext): void => {
+  test('== on a record held as its fields compares the fields', (ctx) => {
     // `same` compares two exploded parameters and `isOrigin` one against
     // a literal: neither the callers nor the cores build a record.
     let result = compileWithZir(dedentRaw`
@@ -1124,9 +1113,7 @@ export let tests = suite('zir backend', (): void => {
           return if (s && o) 1 else 0;
         };
         `);
-    let forwarders = new Array<String>();
-    forwarders.push('call $same\n');
-    forwarders.push('call $isOrigin\n');
+    let forwarders = growable<String>(['call $same\n', 'call $isOrigin\n']);
     assertNoAllocation(result, '$main', 'the compared records arrive as fields');
     assertFunctionOmits(result, '$main', forwarders,
         'the comparing functions are called through their cores');
@@ -1136,7 +1123,7 @@ export let tests = suite('zir backend', (): void => {
         'an exploded parameter compares with a literal from its fields');
   });
 
-  test('a record passed to super past the first superclass is passed as its fields', (ctx: TestContext): void => {
+  test('a record passed to super past the first superclass is passed as its fields', (ctx) => {
     // `Middle`'s own `super({...})` runs in `Middle.<ctor-init>`, which
     // returns `Base`'s arguments to `Leaf`'s factory. Its core returns
     // the record's fields, so neither it nor `Leaf` builds the record.
@@ -1159,7 +1146,7 @@ export let tests = suite('zir backend', (): void => {
           return leaf.x + leaf.y + leaf.m;
         };
         `);
-    let named = (prefix: String, suffix: String): String => {
+    let named = (prefix: String, suffix: String) => {
       var found = '';
       for (let chunk in result.split('(func $')) {
         let name = chunk.split(' ')[0];
@@ -1176,7 +1163,7 @@ export let tests = suite('zir backend', (): void => {
         'struct.new', 1, 'the record passed past Middle is never built');
   });
 
-  test('a record result only read for its fields is returned as its fields', (ctx: TestContext): void => {
+  test('a record result only read for its fields is returned as its fields', (ctx) => {
     // `step` builds its result from a literal and `main` only
     // destructures it, so `step.core` returns the two fields as wasm
     // results and neither side builds the record.
@@ -1191,13 +1178,12 @@ export let tests = suite('zir backend', (): void => {
     assertNoAllocation(result, '$step.core',
         'the result literal is returned as its fields');
     assertNoAllocation(result, '$main', 'the fields are never packed');
-    let coreCall = new Array<String>();
-    coreCall.push('call $step.core');
+    let coreCall = growable<String>(['call $step.core']);
     assertFunctionUses(result, '$main', coreCall,
         'a fields-only result calls the core');
   });
 
-  test('a result returned from if and match arms is returned as its fields', (ctx: TestContext): void => {
+  test('a result returned from if and match arms is returned as its fields', (ctx) => {
     // Each arm of the returned `if` and `match` is a literal, so the
     // cores merge the arms' fields rather than their records, and
     // neither the cores nor `main` build one.
@@ -1221,7 +1207,7 @@ export let tests = suite('zir backend', (): void => {
     assertNoAllocation(result, '$main', 'the fields are never packed');
   });
 
-  test('a parameter returned whole passes its fields straight through', (ctx: TestContext): void => {
+  test('a parameter returned whole passes its fields straight through', (ctx) => {
     // `same` returns its parameter, and its only caller passes a literal
     // and destructures the result, so the parameter and the result both
     // explode and `same.core` hands back the fields it was given.
@@ -1238,7 +1224,7 @@ export let tests = suite('zir backend', (): void => {
     assertNoAllocation(result, '$main', 'neither side builds the record');
   });
 
-  test('a method takes and returns a record as its fields', (ctx: TestContext): void => {
+  test('a method takes and returns a record as its fields', (ctx) => {
     // `Grid` has no subclass, so its calls are direct: `area` takes the
     // literal as its fields and `shift` returns its result as fields, and
     // `main` builds no record.
@@ -1256,7 +1242,7 @@ export let tests = suite('zir backend', (): void => {
           return g.area({x: 3, y: 4}) + x * y;
         };
         `);
-    let named = (prefix: String, suffix: String): String => {
+    let named = (prefix: String, suffix: String) => {
       var found = '';
       for (let chunk in result.split('(func $')) {
         let name = chunk.split(' ')[0];
@@ -1274,7 +1260,7 @@ export let tests = suite('zir backend', (): void => {
         'the core takes and returns the fields');
   });
 
-  test('a record passed on to a method and a static method stays as its fields', (ctx: TestContext): void => {
+  test('a record passed on to a method and a static method stays as its fields', (ctx) => {
     // `area` passes its record on to `#scaled` and to the static `sum`,
     // and `main` passes a literal: the literal is never built, and no
     // core rebuilds it to pass it on.
@@ -1292,7 +1278,7 @@ export let tests = suite('zir backend', (): void => {
           return g.area({x: 3, y: 4});
         };
         `);
-    let named = (prefix: String, suffix: String): String => {
+    let named = (prefix: String, suffix: String) => {
       var found = '';
       for (let chunk in result.split('(func $')) {
         let name = chunk.split(' ')[0];
@@ -1308,7 +1294,7 @@ export let tests = suite('zir backend', (): void => {
         'the record is passed on as its fields');
   });
 
-  test('a method of a generic class takes a record as its fields', (ctx: TestContext): void => {
+  test('a method of a generic class takes a record as its fields', (ctx) => {
     // Each instantiation's `area` has its own core, and `main` passes
     // both literals as fields.
     let result = compileWithZir(dedentRaw`
@@ -1328,7 +1314,7 @@ export let tests = suite('zir backend', (): void => {
         'both instantiations take the literals as fields');
   });
 
-  test('a record result stays as its fields as it flows on', (ctx: TestContext): void => {
+  test('a record result stays as its fields as it flows on', (ctx) => {
     // `wrap` returns a method's result, `chain` passes a bound result to
     // `use`, whose only caller is that one, and `walk` updates a `var`
     // through a method: no function builds the record.
@@ -1369,7 +1355,7 @@ export let tests = suite('zir backend', (): void => {
         'the bound result is passed on as its fields');
   });
 
-  test('a record result passed straight to a call stays as its fields', (ctx: TestContext): void => {
+  test('a record result passed straight to a call stays as its fields', (ctx) => {
     // Every record here is a call's result handed to another call, and
     // every parameter only reads fields, so nothing is built.
     let result = compileWithZir(dedentRaw`
@@ -1382,10 +1368,11 @@ export let tests = suite('zir backend', (): void => {
           use(make(5)) + use(bump(make(1))) + twice({x: 1, y: 2}).x;
         `);
     // A forwarder builds the record, so no call may go through one.
-    let forwarders = new Array<String>();
-    forwarders.push('call $make\n');
-    forwarders.push('call $bump\n');
-    forwarders.push('call $use\n');
+    let forwarders = growable<String>([
+      'call $make\n',
+      'call $bump\n',
+      'call $use\n',
+    ]);
     assertNoAllocation(result, '$main',
         'call results are passed on as their fields');
     assertFunctionOmits(result, '$main', forwarders,
@@ -1396,7 +1383,7 @@ export let tests = suite('zir backend', (): void => {
         'a nested call result is passed on as its fields');
   });
 
-  test('a var record updated through a call stays as its fields', (ctx: TestContext): void => {
+  test('a var record updated through a call stays as its fields', (ctx) => {
     // `pos` is only read for its fields and only assigned values that
     // are fields already, so it is carried around the loop as its
     // fields: `step.core` takes and returns them, and no iteration
@@ -1417,7 +1404,7 @@ export let tests = suite('zir backend', (): void => {
         'the result is returned as its fields');
   });
 
-  test('-O2 removes a local fat pointer entirely', (ctx: TestContext): void => {
+  test('-O2 removes a local fat pointer entirely', (ctx) => {
     // Pack, dispatch, unpack, all in one body: devirtualization makes
     // the call direct, inlining brings the trampoline's receiver cast
     // in, forwarding turns the unpack into the packed object, the cast
@@ -1439,8 +1426,7 @@ export let tests = suite('zir backend', (): void => {
         `, 2);
     assertNoAllocation(result, '$measure',
         'the fat pointer never escapes, so it is never allocated');
-    let absent = new Array<String>();
-    absent.push('call_ref');
+    let absent = growable<String>(['call_ref']);
     assertFunctionOmits(result, '$measure', absent,
         'the dispatch through the pack is direct');
     // With no pack of Circle as Shape left anywhere, the pair's vtable
@@ -1450,7 +1436,7 @@ export let tests = suite('zir backend', (): void => {
         'no interface trampoline survives once every pack is forwarded');
   });
 
-  test('-O2 inlines a callee with a loop', (ctx: TestContext): void => {
+  test('-O2 inlines a callee with a loop', (ctx) => {
     // A multi-block callee: its blocks become the caller's, its return
     // a branch to a continuation. The loop shape survives in the
     // caller and the call does not.
@@ -1464,17 +1450,15 @@ export let tests = suite('zir backend', (): void => {
         export let f = (k: i32): i32 => sum(k) + 1;
         export let main = (): i32 => f(10);
         `, 2);
-    let present = new Array<String>();
-    present.push('loop');
+    let present = growable<String>(['loop']);
     assertFunctionUses(result, '$f', present,
         'the callee loop is now the caller loop');
-    let absent = new Array<String>();
-    absent.push('call $sum');
+    let absent = growable<String>(['call $sum']);
     assertFunctionOmits(result, '$f', absent,
         'the multi-block callee is inlined');
   });
 
-  test('-O2 inlines a callee with an early return', (ctx: TestContext): void => {
+  test('-O2 inlines a callee with an early return', (ctx) => {
     // Two returns become two branches to one continuation; with a
     // constant argument the branch folds and the whole thing is a
     // constant.
@@ -1482,17 +1466,15 @@ export let tests = suite('zir backend', (): void => {
         let abs = (x: i32): i32 => { if (x < 0) { return 0 - x; } return x; };
         export let main = (): i32 => abs(0 - 7);
         `, 2);
-    let present = new Array<String>();
-    present.push('i32.const 7');
+    let present = growable<String>(['i32.const 7']);
     assertFunctionUses(result, '$main', present,
         'the inlined early return folds to its value');
-    let absent = new Array<String>();
-    absent.push('call ');
+    let absent = growable<String>(['call ']);
     assertFunctionOmits(result, '$main', absent,
         'no call survives');
   });
 
-  test('-O2 inlines a loop over a closure argument and removes the closure', (ctx: TestContext): void => {
+  test('-O2 inlines a loop over a closure argument and removes the closure', (ctx) => {
     // `each` is called from two places, so the plain policy leaves it
     // alone; both calls pass a closure written at the call, `each`
     // only calls its parameter, so the argument rule inlines it. Then
@@ -1509,19 +1491,17 @@ export let tests = suite('zir backend', (): void => {
         let b = (n: i32): i32 => each((x: i32): i32 => x + 1, n);
         export let main = (): i32 => a(10) + b(10);
         `, 2);
-    let present = new Array<String>();
-    present.push('loop');
+    let present = growable<String>(['loop']);
     assertFunctionUses(result, '$a', present,
         'the loop from each is now in a');
     assertNoAllocation(result, '$a',
         'the closure passed to each is never allocated');
-    let absent = new Array<String>();
-    absent.push('call');
+    let absent = growable<String>(['call']);
     assertFunctionOmits(result, '$a', absent,
         'the closure body is inlined into the loop');
   });
 
-  test('-O2 inlines through an argument-adapted closure', (ctx: TestContext): void => {
+  test('-O2 inlines through an argument-adapted closure', (ctx) => {
     // The lambda takes one parameter where the callback type takes
     // two, so the closure wraps an adapter that tail-calls the lambda.
     // Inlining converts the adapter's tail call into a call, and the
@@ -1537,13 +1517,12 @@ export let tests = suite('zir backend', (): void => {
         `, 2);
     assertNoAllocation(result, '$main',
         'neither the closure nor its adapter is allocated');
-    let absent = new Array<String>();
-    absent.push('call');
+    let absent = growable<String>(['call']);
     assertFunctionOmits(result, '$main', absent,
         'the adapter and the lambda are both inlined into the loop');
   });
 
-  test('-O2 treats a named closure like a closure literal', (ctx: TestContext): void => {
+  test('-O2 treats a named closure like a closure literal', (ctx) => {
     // `let g = ...; each(g, n)` binds the closure value to a name; the
     // call passes that same value, so the argument rule sees exactly
     // what it sees for a literal.
@@ -1563,13 +1542,12 @@ export let tests = suite('zir backend', (): void => {
         `, 2);
     assertNoAllocation(result, '$a',
         'the named closure is never allocated');
-    let absent = new Array<String>();
-    absent.push('call');
+    let absent = growable<String>(['call']);
     assertFunctionOmits(result, '$a', absent,
         'the named closure body is inlined into the loop');
   });
 
-  test('-O2 inlines a loop over an interface argument and removes the pack', (ctx: TestContext): void => {
+  test('-O2 inlines a loop over an interface argument and removes the pack', (ctx) => {
     let result = compileWithZirAt(dedentRaw`
         interface Shape { area(): i32; }
         class Circle implements Shape {
@@ -1592,38 +1570,35 @@ export let tests = suite('zir backend', (): void => {
         let q = (n: i32): i32 => total(new Square(2), n);
         export let main = (): i32 => c(10) + q(10);
         `, 2);
-    let absent = new Array<String>();
-    absent.push('call_ref');
+    let absent = growable<String>(['call_ref']);
     assertFunctionOmits(result, '$c', absent,
         'the interface call inside the inlined loop is direct');
   });
 
-  test('-O2 does not inline a callee containing try', (ctx: TestContext): void => {
+  test('-O2 does not inline a callee containing try', (ctx) => {
     let result = compileWithZirAt(dedentRaw`
         let guarded = (x: i32): i32 => { try { return x + 1; } catch { return 0; } };
         export let f = (k: i32): i32 => guarded(k);
         export let main = (): i32 => f(10);
         `, 2);
-    let present = new Array<String>();
-    present.push('call $guarded');
+    let present = growable<String>(['call $guarded']);
     assertFunctionUses(result, '$f', present,
         'a protected region is not spliced into another body');
   });
 
-  test('-O2 deletes a function once every call to it is inlined', (ctx: TestContext): void => {
+  test('-O2 deletes a function once every call to it is inlined', (ctx) => {
     let result = compileWithZirAt(dedentRaw`
         let inc = (x: i32): i32 => x + 1;
         export let main = (): i32 => inc(41);
         `, 2);
     isTrue(!result.contains('(func $inc'),
         'inc has no callers left and is not exported, so harvest removes it');
-    let present = new Array<String>();
-    present.push('i32.const 42');
+    let present = growable<String>(['i32.const 42']);
     assertFunctionUses(result, '$main', present,
         'the inlined call folded');
   });
 
-  test('-O1 keeps a function that is still called', (ctx: TestContext): void => {
+  test('-O1 keeps a function that is still called', (ctx) => {
     let result = compileWithZir(dedentRaw`
         let inc = (x: i32): i32 => x + 1;
         export let main = (): i32 => inc(41);
@@ -1632,7 +1607,7 @@ export let tests = suite('zir backend', (): void => {
         'without inlining, inc is called and stays');
   });
 
-  test('-O2 sees through an allocation returned by an inlined callee', (ctx: TestContext): void => {
+  test('-O2 sees through an allocation returned by an inlined callee', (ctx) => {
     // make has a loop, so it inlines through a continuation block; its
     // one return passes the packed Circle as the continuation's
     // parameter. Deleting that parameter lets the dispatch resolve
@@ -1656,8 +1631,7 @@ export let tests = suite('zir backend', (): void => {
         };
         export let main = (): i32 => make(3).area() + (new Square(2)).area();
         `, 2);
-    let absent = new Array<String>();
-    absent.push('call_ref');
+    let absent = growable<String>(['call_ref']);
     assertFunctionOmits(result, '$main', absent,
         'the dispatch on the returned value resolves through the deleted parameter');
     // Even the Circle and the Square go: their fields forward into the
@@ -1666,7 +1640,7 @@ export let tests = suite('zir backend', (): void => {
         'neither the objects nor their fat pointers are allocated');
   });
 
-  test('folds a type test the static type decides', (ctx: TestContext): void => {
+  test('folds a type test the static type decides', (ctx) => {
     // The scrutinee is a Lit, so the Lit arm's test is true and the
     // Neg arm's is false: main keeps one arm and no test.
     let result = compileWithZir(dedentRaw`
@@ -1683,14 +1657,12 @@ export let tests = suite('zir backend', (): void => {
           };
         };
         `);
-    let absent = new Array<String>();
-    absent.push('ref.test');
-    absent.push('call $neg');
+    let absent = growable<String>(['ref.test', 'call $neg']);
     assertFunctionOmits(result, '$main', absent,
         'the tests fold on the static type and the Neg arm is unreachable');
   });
 
-  test('-O2 folds a match over the case an inlined callee constructs', (ctx: TestContext): void => {
+  test('-O2 folds a match over the case an inlined callee constructs', (ctx) => {
     let result = compileWithZirAt(dedentRaw`
         sealed class Expr {
           case Lit(value: i32)
@@ -1703,14 +1675,12 @@ export let tests = suite('zir backend', (): void => {
           case Neg {inner}: neg(inner)
         };
         `, 2);
-    let absent = new Array<String>();
-    absent.push('ref.test');
-    absent.push('call $neg');
+    let absent = growable<String>(['ref.test', 'call $neg']);
     assertFunctionOmits(result, '$main', absent,
         'once make is inlined the scrutinee is a Lit allocation');
   });
 
-  test('-O2 propagates a constant through a loop that only changes it on a dead path', (ctx: TestContext): void => {
+  test('-O2 propagates a constant through a loop that only changes it on a dead path', (ctx) => {
     // x is 1 at entry, and the only assignment sits under a test x
     // itself makes false. The peephole pass cannot see that: the
     // loop-carried parameter meets 1 and the join's parameter, and
@@ -1728,14 +1698,12 @@ export let tests = suite('zir backend', (): void => {
         };
         export let main = (): i32 => f(5);
         `, 2);
-    let absent = new Array<String>();
-    absent.push('i32.ne');
-    absent.push('i32.const 2');
+    let absent = growable<String>(['i32.ne', 'i32.const 2']);
     assertFunctionOmits(result, '$f', absent,
         'the test on x and the assignment under it fold away');
   });
 
-  test('-O2 makes a multi-value interface call direct and inlines it', (ctx: TestContext): void => {
+  test('-O2 makes a multi-value interface call direct and inlines it', (ctx) => {
     // next() returns two values through an interface slot. The slot
     // resolves by provenance (the pack of a fresh Counter), the
     // trampoline it names is a multi-value tail call, and the method
@@ -1763,11 +1731,12 @@ export let tests = suite('zir backend', (): void => {
           return sum;
         };
         `, 2);
-    let absent = new Array<String>();
-    absent.push('call_ref');
-    absent.push('call $');
-    absent.push('struct.get');
-    absent.push('struct.set');
+    let absent = growable<String>([
+      'call_ref',
+      'call $',
+      'struct.get',
+      'struct.set',
+    ]);
     assertFunctionOmits(result, '$main', absent,
         'the multi-value dispatch resolves, both the trampoline and next inline, and the counter dissolves');
     assertNoAllocation(result, '$main',
@@ -1779,7 +1748,7 @@ export let tests = suite('zir backend', (): void => {
         'the loop tests once per element; the done flag is threaded away');
   });
 
-  test('-O2 replaces a local object with a written field by a loop-carried value', (ctx: TestContext): void => {
+  test('-O2 replaces a local object with a written field by a loop-carried value', (ctx) => {
     // The object never leaves f: every use is a read or a write of
     // its field. The field written in the loop becomes a parameter of
     // the loop header; the object is never allocated.
@@ -1798,15 +1767,13 @@ export let tests = suite('zir backend', (): void => {
         };
         export let main = (): i32 => f(5);
         `, 2);
-    let absent = new Array<String>();
-    absent.push('struct.get');
-    absent.push('struct.set');
+    let absent = growable<String>(['struct.get', 'struct.set']);
     assertFunctionOmits(result, '$f', absent,
         'the field reads and writes become the value itself');
     assertNoAllocation(result, '$f', 'the object is replaced by its one field');
   });
 
-  test('-O2 inlines a three-lane multi-value call through an interface', (ctx: TestContext): void => {
+  test('-O2 inlines a three-lane multi-value call through an interface', (ctx) => {
     // The sync-or-async Step shape (async/step.zena): three lanes,
     // the third a reference the Ready and Done arms leave as a hole.
     // Nothing in the splice is written for two results; this pins it.
@@ -1842,14 +1809,12 @@ export let tests = suite('zir backend', (): void => {
           return sum;
         };
         `, 2);
-    let absent = new Array<String>();
-    absent.push('call_ref');
-    absent.push('call $');
+    let absent = growable<String>(['call_ref', 'call $']);
     assertFunctionOmits(result, '$main', absent,
         'a three-result slot devirtualizes and its trampoline and body inline');
   });
 
-  test('-O2 numbers the same cast from two inlined bodies as one', (ctx: TestContext): void => {
+  test('-O2 numbers the same cast from two inlined bodies as one', (ctx) => {
     // Each inlined accessor brings its own cast of the operand, at its
     // own type-table index; the value numbering keys the target type
     // by identity, so the second cast is the first.
@@ -1864,7 +1829,7 @@ export let tests = suite('zir backend', (): void => {
         'one cast serves both inlined reads');
   });
 
-  test('-O2 hoists a cast out of a loop header', (ctx: TestContext): void => {
+  test('-O2 hoists a cast out of a loop header', (ctx) => {
     // The cast sits in the header (the loop condition reads through
     // it), so it runs on every entry to the loop; moving it before the
     // loop changes nothing about when it can trap.
@@ -1886,7 +1851,7 @@ export let tests = suite('zir backend', (): void => {
     isTrue(!parts[1].contains('ref.cast'), 'and no longer inside it');
   });
 
-  test('a class whose every allocation is forwarded away leaves no type behind', (ctx: TestContext): void => {
+  test('a class whose every allocation is forwarded away leaves no type behind', (ctx) => {
     // At -O2 the constructor inlines, the field read forwards to the
     // argument, DCE deletes the allocation, and nothing emitted names
     // Dead any more: neither its struct nor its vtable struct is in
@@ -1903,7 +1868,7 @@ export let tests = suite('zir backend', (): void => {
         'at -O1 the constructor allocates and its types stay');
   });
 
-  test('-O2 specializes a function on the class its callers pack', (ctx: TestContext): void => {
+  test('-O2 specializes a function on the class its callers pack', (ctx) => {
     // total takes Shape and has two call sites with two loops, so it
     // stays a function; every caller packs a Circle. The clone takes
     // the Circle: no fat pointer, no cast, and area inlines to the
@@ -1934,10 +1899,7 @@ export let tests = suite('zir backend', (): void => {
         'the original total has no callers left and is deleted');
     isTrue(clone.contains('struct.get'),
         'the clone reads the Circle field straight off its parameter');
-    let absent = new Array<String>();
-    absent.push('call');
-    absent.push('ref.cast');
-    absent.push('struct.new');
+    let absent = growable<String>(['call', 'ref.cast', 'struct.new']);
     assertFunctionOmits(result, '$total$spec', absent,
         'area inlines against the exact receiver, and the entry pack dies');
     absent.push('call_ref');
@@ -1945,7 +1907,7 @@ export let tests = suite('zir backend', (): void => {
         'main allocates the Circle and no fat pointer');
   });
 
-  test('-O2 hoists an immutable field load out of a loop', (ctx: TestContext): void => {
+  test('-O2 hoists an immutable field load out of a loop', (ctx) => {
     let result = compileWithZirAt(dedentRaw`
         class P {
           k: i32;
@@ -1969,7 +1931,7 @@ export let tests = suite('zir backend', (): void => {
         'and no longer inside it');
   });
 
-  test('-O2 hoists an interface dispatch chain out of a loop', (ctx: TestContext): void => {
+  test('-O2 hoists an interface dispatch chain out of a loop', (ctx) => {
     // Two implementers keep the call indirect, so the win is the
     // unpack and the vtable-slot load moving out of the loop: inside,
     // only the call remains.
@@ -2003,45 +1965,40 @@ export let tests = suite('zir backend', (): void => {
         'the unpack and the slot load are outside the loop');
   });
 
-  test('-O1 does not inline', (ctx: TestContext): void => {
+  test('-O1 does not inline', (ctx) => {
     let result = compileWithZir(dedentRaw`
         let inc = (x: i32): i32 => x + 1;
         let f = (y: i32): i32 => inc(y);
         export let main = (): i32 => f(20);
         `);
-    let present = new Array<String>();
-    present.push('call $inc');
+    let present = growable<String>(['call $inc']);
     assertFunctionUses(result, '$f', present,
         'inlining is the module loop, which is -O2');
   });
 
-  test('-O0 turns the cleanup passes off', (ctx: TestContext): void => {
+  test('-O0 turns the cleanup passes off', (ctx) => {
     // Same program as the folding test below, compiled at level 0:
     // the arithmetic must survive. GVN still runs at every level.
     let result = compileWithZirAt(
         'export let main = (): i32 => { let a = 6; let b = 7; return a * b + 3; };',
         0);
-    let present = new Array<String>();
-    present.push('i32.mul');
+    let present = growable<String>(['i32.mul']);
     assertFunctionUses(result, '$main', present,
         'level 0 does not fold');
   });
 
-  test('simplify folds constant arithmetic', (ctx: TestContext): void => {
+  test('simplify folds constant arithmetic', (ctx) => {
     let result = compileWithZir(
         'export let main = (): i32 => { let a = 6; let b = 7; return a * b + 3; };');
-    let present = new Array<String>();
-    present.push('i32.const 45');
+    let present = growable<String>(['i32.const 45']);
     assertFunctionUses(result, '$main', present,
         'constant multiply-add folds to one constant');
-    let absent = new Array<String>();
-    absent.push('i32.mul');
-    absent.push('i32.add');
+    let absent = growable<String>(['i32.mul', 'i32.add']);
     assertFunctionOmits(result, '$main', absent,
         'folded arithmetic leaves no arithmetic behind');
   });
 
-  test('simplify folds a constant chain across widths', (ctx: TestContext): void => {
+  test('simplify folds a constant chain across widths', (ctx) => {
     // i64 multiply of constants folds, and the wrap of the folded
     // constant folds after it — one forward pass cascades because
     // operand ids precede use ids.
@@ -2052,83 +2009,72 @@ export let tests = suite('zir backend', (): void => {
           return (a * b) as i32;
         };
         `);
-    let present = new Array<String>();
-    present.push('i32.const 42');
+    let present = growable<String>(['i32.const 42']);
     assertFunctionUses(result, '$main', present,
         'the i64 product wraps to a folded i32 constant');
-    let absent = new Array<String>();
-    absent.push('i64.mul');
-    absent.push('i32.wrap_i64');
+    let absent = growable<String>(['i64.mul', 'i32.wrap_i64']);
     assertFunctionOmits(result, '$main', absent,
         'both the multiply and the wrap fold away');
   });
 
-  test('simplify removes additive identity', (ctx: TestContext): void => {
+  test('simplify removes additive identity', (ctx) => {
     let result = compileWithZir(dedentRaw`
         let f = (x: i32): i32 => x + 0;
         export let main = (): i32 => f(21);
         `);
-    let absent = new Array<String>();
-    absent.push('i32.add');
+    let absent = growable<String>(['i32.add']);
     assertFunctionOmits(result, '$f', absent,
         'x + 0 is x; no add survives');
   });
 
-  test('simplify strength-reduces multiply by a power of two', (ctx: TestContext): void => {
+  test('simplify strength-reduces multiply by a power of two', (ctx) => {
     let result = compileWithZir(dedentRaw`
         let f = (x: i32): i32 => x * 8;
         export let main = (): i32 => f(5);
         `);
-    let present = new Array<String>();
-    present.push('i32.shl');
+    let present = growable<String>(['i32.shl']);
     assertFunctionUses(result, '$f', present,
         'x * 8 becomes x << 3');
-    let absent = new Array<String>();
-    absent.push('i32.mul');
+    let absent = growable<String>(['i32.mul']);
     assertFunctionOmits(result, '$f', absent,
         'the multiply is replaced, not kept alongside');
   });
 
-  test('simplify folds self-cancelling xor', (ctx: TestContext): void => {
+  test('simplify folds self-cancelling xor', (ctx) => {
     let result = compileWithZir(dedentRaw`
         let f = (x: i32): i32 => x ^ x;
         export let main = (): i32 => f(21);
         `);
-    let absent = new Array<String>();
-    absent.push('i32.xor');
+    let absent = growable<String>(['i32.xor']);
     assertFunctionOmits(result, '$f', absent,
         'x ^ x is 0 regardless of x');
   });
 
-  test('branch folding removes the untaken side entirely', (ctx: TestContext): void => {
+  test('branch folding removes the untaken side entirely', (ctx) => {
     // The condition folds to a constant, the br_if folds to a br, and
     // block cleanup deletes the stranded alternative — its constant
     // must not survive anywhere in the function.
     let result = compileWithZir(
         'export let main = (): i32 => { if (1 < 2) { return 10; } return 20; };');
-    let present = new Array<String>();
-    present.push('i32.const 10');
+    let present = growable<String>(['i32.const 10']);
     assertFunctionUses(result, '$main', present,
         'the taken side is still there');
-    let absent = new Array<String>();
-    absent.push('i32.const 20');
-    absent.push('br_if');
+    let absent = growable<String>(['i32.const 20', 'br_if']);
     assertFunctionOmits(result, '$main', absent,
         'a constant-true condition leaves neither a branch nor the untaken side');
   });
 
-  test('dce removes an unused pure computation', (ctx: TestContext): void => {
+  test('dce removes an unused pure computation', (ctx) => {
     let result = compileWithZir(dedentRaw`
         let f = (x: i32): i32 => { var a = x * 3; a = x; return a; };
         export let main = (): i32 => f(21);
         `);
-    let absent = new Array<String>();
-    absent.push('i32.mul');
+    let absent = growable<String>(['i32.mul']);
     assertFunctionOmits(result, '$f', absent,
         'the overwritten x * 3 is dead and pure, so it goes');
   });
 
-  test('dce removes an unused tuple allocation', (ctx: TestContext): void => {
+  test('dce removes an unused tuple allocation', (ctx) => {
     let result = compileWithZir(dedentRaw`
         let f = (x: i32): i32 => { let t = (x, x + 1); return x; };
         export let main = (): i32 => f(21);
@@ -2137,18 +2083,17 @@ export let tests = suite('zir backend', (): void => {
         'an unused, non-escaping tuple never allocates');
   });
 
-  test('dce keeps an unused division that could trap', (ctx: TestContext): void => {
+  test('dce keeps an unused division that could trap', (ctx) => {
     let result = compileWithZir(dedentRaw`
         let f = (x: i32, y: i32): i32 => { var a = x % y; a = x; return a; };
         export let main = (): i32 => f(21, 2);
         `);
-    let present = new Array<String>();
-    present.push('i32.rem_s');
+    let present = growable<String>(['i32.rem_s']);
     assertFunctionUses(result, '$f', present,
         'x % y traps when y is zero; dead or not, it must run');
   });
 
-  test('gvn commons repeated immutable field loads', (ctx: TestContext): void => {
+  test('gvn commons repeated immutable field loads', (ctx) => {
     let result = compileWithZir(dedentRaw`
         class P {
           #x: i32 = 7;
@@ -2170,7 +2115,7 @@ export let tests = suite('zir backend', (): void => {
         'two reads of an immutable field are one load');
   });
 
-  test('a method receives this as a non-null reference', (ctx: TestContext): void => {
+  test('a method receives this as a non-null reference', (ctx) => {
     // The receiver parameter is typed (ref $T), so reading a field off
     // `this` needs no re-assert. The nullable form has nothing to do
     // with dispatch: a method-table slot is an untyped funcref, and the
@@ -2201,18 +2146,17 @@ export let tests = suite('zir backend', (): void => {
         };
         `);
     // Specialized names carry an id: `$Base_s12.describe`.
-    let methodNamed = (className: String, method: String): String => {
+    let methodNamed = (className: String, method: String) => {
       for (let chunk in result.split('(func ')) {
         let name = chunk.split(' ')[0];
-        if (name.startsWith('$' + className + '_') && name.endsWith('.' + method)) {
+        if (name.startsWith(`$${className}_`) && name.endsWith('.' + method)) {
           return name;
         }
       }
       fail(`no ${className}.${method} function in the emitted module`);
       return '';
     };
-    let omitted = new Array<String>();
-    omitted.push('ref.as_non_null');
+    let omitted = growable<String>(['ref.as_non_null']);
     assertFunctionOmits(result, methodNamed('Base', 'describe'), omitted,
         'this arrives non-null, so its fields are read without a re-assert');
     // The override is reached through Base's slot and so takes Base's
@@ -2221,13 +2165,12 @@ export let tests = suite('zir backend', (): void => {
         'the downcast receiver is non-null too');
     // A nullable receiver narrowed by a null check is re-asserted at
     // the call site, where the value is nullable.
-    let asserted = new Array<String>();
-    asserted.push('ref.as_non_null');
+    let asserted = growable<String>(['ref.as_non_null']);
     assertFunctionUses(result, '$maybe', asserted,
         'the narrowed receiver is asserted where it is still nullable');
   });
 
-  test('a dispatched accessor on a narrowed receiver re-asserts it', (ctx: TestContext): void => {
+  test('a dispatched accessor on a narrowed receiver re-asserts it', (ctx) => {
     // `n.loc` reads an abstract field through Node's method table.
     // The receiver was narrowed by `n != null` inside the `&&`, so it
     // is still in a nullable local and has to be re-asserted before it
@@ -2252,14 +2195,12 @@ export let tests = suite('zir backend', (): void => {
         };
         export let main = (): i32 => startOf(new Leaf(new Loc(5))) + startOf(null);
         `);
-    let used = new Array<String>();
-    used.push('call_ref');
-    used.push('ref.as_non_null');
+    let used = growable<String>(['call_ref', 'ref.as_non_null']);
     assertFunctionUses(result, '$startOf', used,
         'the getter dispatches through the method table on a re-asserted receiver');
   });
 
-  test('a fresh trailing operand streams past a parameter read', (ctx: TestContext): void => {
+  test('a fresh trailing operand streams past a parameter read', (ctx) => {
     // `i - p.x`: the first operand is a parameter and the second is
     // produced right before the subtraction. The parameter read is
     // emitted before the field load, so the load's result stays on
@@ -2279,28 +2220,25 @@ export let tests = suite('zir backend', (): void => {
           return sub(p, 10) + p.y;
         };
         `);
-    let locals = new Array<String>();
-    locals.push('local.set');
-    locals.push('local.tee');
+    let locals = growable<String>(['local.set', 'local.tee']);
     assertFunctionOmits(result, '$sub', locals,
         'the field load streams into the subtraction');
     assertFunctionOmits(result, '$store', locals,
         'the product streams into the store');
   });
 
-  test('simplify leaves division by a constant zero to trap', (ctx: TestContext): void => {
+  test('simplify leaves division by a constant zero to trap', (ctx) => {
     // % lowers to i32.rem_s, which traps on a zero divisor. The
     // simplifier must not fold or delete it — the trap is the
     // program's runtime behavior, in its original position.
     let result = compileWithZir(
         'export let main = (): i32 => { let a = 7; let b = 0; return a % b; };');
-    let present = new Array<String>();
-    present.push('i32.rem_s');
+    let present = growable<String>(['i32.rem_s']);
     assertFunctionUses(result, '$main', present,
         'a trapping division survives simplification untouched');
   });
 
-  test('a string literal compiles', (ctx: TestContext): void => {
+  test('a string literal compiles', (ctx) => {
     let result = compileWithZirStdlib(
         'export let main = (): i32 => \'ab\'.length;');
     isTrue(result.contains('(func $main'));

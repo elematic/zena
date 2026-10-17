@@ -14,27 +14,27 @@ import {
  * A minimal SemanticModel: WasmGlobal requires one, but these tests never
  * consult it.
  */
-let makeModel = (): SemanticModel => {
+function makeModel() {
   let ast = parse("let _x = 1;", "<test>");
   let scopeBuilder = new ScopeBuilder("<test>");
   let scopeResult = scopeBuilder.build(ast);
   return checkModule(ast, scopeResult, null, null, false, new SharedCheckerState()).model;
-};
+}
 
-let makeGlobal = (name: String, model: SemanticModel): WasmGlobal => {
+function makeGlobal(name: String, model: SemanticModel) {
   return new WasmGlobal(name, name, new ValTypeI32(), false, null, null, model);
-};
+}
 
-export let tests = suite('WasmModule class-interface vtable keys', (): void => {
+export let tests = suite('WasmModule class-interface vtable keys', () => {
   // These functions predate compound keys and used to cast the
   // ClassInterfaceKey class to String, trapping the moment they ran.
 
-  test('classInterfaceKeyToString joins class and interface keys', (ctx: TestContext): void => {
+  test('classInterfaceKeyToString joins class and interface keys', (ctx) => {
     let key = getClassInterfaceKey("Foo_i32" as ClassKey, "Iter_i32" as InterfaceKey);
     equal(classInterfaceKeyToString(key), "Foo_i32::Iter_i32");
   });
 
-  test('getClassInterfaceVTable returns an exact match', (ctx: TestContext): void => {
+  test('getClassInterfaceVTable returns an exact match', (ctx) => {
     let model = makeModel();
     let wasm = new WasmModule();
     let key = getClassInterfaceKey("Foo_i32" as ClassKey, "Iter_i32" as InterfaceKey);
@@ -45,7 +45,7 @@ export let tests = suite('WasmModule class-interface vtable keys', (): void => {
     isTrue(found == g);
   });
 
-  test('lookup miss returns null, with no fuzzy matching', (ctx: TestContext): void => {
+  test('lookup miss returns null, with no fuzzy matching', (ctx) => {
     let model = makeModel();
     let wasm = new WasmModule();
     wasm.classInterfaceVTables[getClassInterfaceKey("Foo_i32" as ClassKey, "Iter_i32" as InterfaceKey)] = makeGlobal("foo_iter_vt", model);

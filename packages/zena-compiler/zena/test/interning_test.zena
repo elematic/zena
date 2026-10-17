@@ -19,19 +19,19 @@ import { CompilationResult } from '../lib/compiler.zena';
  * A two-file program: both files name something `value`, and one
  * imports the other, so a single compilation parses both.
  */
-let program = (host: MockHost): void => {
+function program(host: MockHost) {
   host.addFile('/a.zena', 'export let value = 1;\nexport let twice = value + value;\n');
   host.addFile('/b.zena', "import { value } from './a.zena';\nexport let main = (): i32 => value + value;\n");
-};
+}
 
 /** Every `value` identifier in the two files, in load order. */
-let valueNames = (result: CompilationResult): Array<String> => {
+function valueNames(result: CompilationResult): Array<String> {
   let found = new Array<String>();
   for (let file in result.files) {
     if (!(file.path.endsWith('a.zena') || file.path.endsWith('b.zena'))) {
       continue;
     }
-    walkEnter(file.ast, (n: Node): void => {
+    walkEnter(file.ast, (n) => {
       if (n is Identifier) {
         let name = (n as Identifier).name;
         if (name == 'value') { found.push(name); }
@@ -42,10 +42,10 @@ let valueNames = (result: CompilationResult): Array<String> => {
     });
   }
   return found;
-};
+}
 
 /** How many of `names` are distinct objects, by identity. */
-let identityCount = (names: Array<String>): i32 => {
+function identityCount(names: Array<String>) {
   let representatives = new Array<String>();
   for (let name in names) {
     var seen = false;
@@ -55,28 +55,28 @@ let identityCount = (names: Array<String>): i32 => {
     if (!seen) { representatives.push(name); }
   }
   return representatives.length;
-};
+}
 
-let compileProgram = (): CompilationResult => {
+function compileProgram() {
   let host = new MockHost();
   program(host);
   return makeCompiler(host).compile({entry: '/b.zena', target: 'freestanding'});
-};
+}
 
-export let tests = suite('identifier interning', (): void => {
-  test('the program repeats the name across both files', (ctx: TestContext): void => {
+export let tests = suite('identifier interning', () => {
+  test('the program repeats the name across both files', (ctx) => {
     let names = valueNames(compileProgram());
     isTrue(names.length >= 5,
       `expected at least 5 occurrences of \`value\`, found ${i32ToString(names.length)}`);
   });
 
-  test('one table spans every file in the compilation', (ctx: TestContext): void => {
+  test('one table spans every file in the compilation', (ctx) => {
     let names = valueNames(compileProgram());
     equal(identityCount(names), 1,
       'every occurrence of `value`, in both files, should be the same String');
   });
 
-  test('two compilers do not share a table', (ctx: TestContext): void => {
+  test('two compilers do not share a table', (ctx) => {
     let first = valueNames(compileProgram());
     let second = valueNames(compileProgram());
     isTrue(!(first[0] === second[0]),

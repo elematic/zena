@@ -11,7 +11,7 @@ import {
   TestFile, parseDirectives, siblingImports, unescapeNewlines, unquote,
 } from './portable-harness.zena';
 
-let fileWith = (path: String, source: String): TestFile => {
+function fileWith(path: String, source: String) {
   var name = path;
   var i = path.length - 1;
   while (i >= 0) {
@@ -22,11 +22,11 @@ let fileWith = (path: String, source: String): TestFile => {
     i -= 1;
   }
   return new TestFile(path, name, name, source, parseDirectives(source));
-};
+}
 
-export let tests = suite('Portable harness', (): void => {
-  suite('parseDirectives', (): void => {
-    test('reads name, value and 1-based line', (ctx: TestContext): void => {
+export let tests = suite('Portable harness', () => {
+  suite('parseDirectives', () => {
+    test('reads name, value and 1-based line', (ctx) => {
       let ds = parseDirectives('// @mode: run\n// @result: 42\n');
       equal(ds.length, 2);
       equal(ds[0].name, 'mode');
@@ -37,40 +37,40 @@ export let tests = suite('Portable harness', (): void => {
       equal(ds[1].line, 2);
     });
 
-    test('trims around the value but keeps inner spaces', (ctx: TestContext): void => {
+    test('trims around the value but keeps inner spaces', (ctx) => {
       let ds = parseDirectives('// @result:   Hello World   \n');
       equal(ds.length, 1);
       equal(ds[0].value, 'Hello World');
     });
 
-    test('the marker is exactly "// @", so looser spellings are not directives', (ctx: TestContext): void => {
+    test('the marker is exactly "// @", so looser spellings are not directives', (ctx) => {
       // Deliberately strict: a near-miss is easier to spot as a test
       // that does nothing than as a directive that quietly went unread.
       equal(parseDirectives('//   @result: 1\n').length, 0);
       equal(parseDirectives('//@result: 1\n').length, 0);
     });
 
-    test('finds a trailing directive on a code line', (ctx: TestContext): void => {
+    test('finds a trailing directive on a code line', (ctx) => {
       let ds = parseDirectives('  new() {} // @error: must be initialized\n');
       equal(ds.length, 1);
       equal(ds[0].name, 'error');
       equal(ds[0].value, 'must be initialized');
     });
 
-    test('a value may be empty', (ctx: TestContext): void => {
+    test('a value may be empty', (ctx) => {
       let ds = parseDirectives('// @skip:\n');
       equal(ds.length, 1);
       equal(ds[0].name, 'skip');
       equal(ds[0].value, '');
     });
 
-    test('a source with no directives yields none', (ctx: TestContext): void => {
+    test('a source with no directives yields none', (ctx) => {
       equal(parseDirectives('export let main = (): i32 => 1;\n').length, 0);
     });
   });
 
-  suite('TestFile', (): void => {
-    test('directive returns the first match, or null', (ctx: TestContext): void => {
+  suite('TestFile', () => {
+    test('directive returns the first match, or null', (ctx) => {
       let f = fileWith('a/b.zena', '// @mode: run\n// @result: 7\n');
       equal(f.directive('result'), '7');
       isTrue(f.directive('stdout') == null);
@@ -78,7 +78,7 @@ export let tests = suite('Portable harness', (): void => {
       isFalse(f.has('invoke'));
     });
 
-    test('all returns every match in file order', (ctx: TestContext): void => {
+    test('all returns every match in file order', (ctx) => {
       let f = fileWith('a/b.zena', '// @error: one\n// @error: two\n');
       let errors = f.all('error');
       equal(errors.length, 2);
@@ -86,21 +86,21 @@ export let tests = suite('Portable harness', (): void => {
       equal(errors[1].value, 'two');
     });
 
-    test('no @skip directive means the test runs', (ctx: TestContext): void => {
+    test('no @skip directive means the test runs', (ctx) => {
       isTrue(fileWith('a/b.zena', '// @mode: run\n').skipReason() == null);
     });
 
-    test('@skip reports its reason', (ctx: TestContext): void => {
+    test('@skip reports its reason', (ctx) => {
       equal(fileWith('a/b.zena', '// @skip: not implemented\n').skipReason(), 'not implemented');
     });
 
-    test('a reasonless @skip still skips, and says so', (ctx: TestContext): void => {
+    test('a reasonless @skip still skips, and says so', (ctx) => {
       equal(fileWith('a/b.zena', '// @skip:\n').skipReason(), '(no reason given)');
     });
   });
 
-  suite('siblingImports', (): void => {
-    test('resolves against the importing file directory', (ctx: TestContext): void => {
+  suite('siblingImports', () => {
+    test('resolves against the importing file directory', (ctx) => {
       let f = fileWith(
         'tests/language/execution/imports/main.zena',
         "import { x } from './helper.zena';\n");
@@ -109,14 +109,14 @@ export let tests = suite('Portable harness', (): void => {
       equal(imports[0], 'tests/language/execution/imports/helper.zena');
     });
 
-    test('adds the extension when the specifier omits it', (ctx: TestContext): void => {
+    test('adds the extension when the specifier omits it', (ctx) => {
       let f = fileWith('t/main.zena', "import { x } from './dep';\n");
       let imports = siblingImports(f);
       equal(imports.length, 1);
       equal(imports[0], 't/dep.zena');
     });
 
-    test('finds every import and ignores stdlib ones', (ctx: TestContext): void => {
+    test('finds every import and ignores stdlib ones', (ctx) => {
       let f = fileWith(
         't/main.zena',
         "import { console } from 'zena:console';\n" +
@@ -128,24 +128,24 @@ export let tests = suite('Portable harness', (): void => {
       equal(imports[1], 't/b.zena');
     });
 
-    test('a file that imports nothing relative yields none', (ctx: TestContext): void => {
+    test('a file that imports nothing relative yields none', (ctx) => {
       equal(siblingImports(fileWith('t/main.zena', "import { c } from 'zena:console';\n")).length, 0);
     });
   });
 
-  suite('directive values', (): void => {
-    test('unquote strips one matching pair', (ctx: TestContext): void => {
+  suite('directive values', () => {
+    test('unquote strips one matching pair', (ctx) => {
       equal(unquote('"Hello"'), 'Hello');
       equal(unquote("'Hello'"), 'Hello');
       equal(unquote('Hello'), 'Hello');
     });
 
-    test('unquote leaves mismatched or partial quotes alone', (ctx: TestContext): void => {
+    test('unquote leaves mismatched or partial quotes alone', (ctx) => {
       equal(unquote('"Hello'), '"Hello');
       equal(unquote('"'), '"');
     });
 
-    test('unescapeNewlines expands the two-character escape', (ctx: TestContext): void => {
+    test('unescapeNewlines expands the two-character escape', (ctx) => {
       equal(unescapeNewlines('a\\nb'), 'a\nb');
       equal(unescapeNewlines('no escapes'), 'no escapes');
     });

@@ -2,7 +2,7 @@
 // and block tags.
 
 import { suite, test, TestContext } from 'zena:test';
-import { StringReader } from 'zena:core';
+import { StringReader, growable } from 'zena:core';
 import { equal, isTrue } from 'zena:assert';
 import { Comment, VariableDeclaration } from '../lib/ast.zena';
 import { parse } from '../lib/parser.zena';
@@ -13,54 +13,58 @@ import {
 } from '../lib/doc-comment.zena';
 
 /** A block comment's body, as the tokenizer would hand it over. */
-let block = (body: String): Comment => new Comment(body, true, 0, 0, 1, 1);
+function block(body: String) {
+  return new Comment(body, true, 0, 0, 1, 1);
+}
 
-let line = (body: String): Comment => new Comment(body, false, 0, 0, 1, 1);
+function line(body: String) {
+  return new Comment(body, false, 0, 0, 1, 1);
+}
 
 /** Where `needle` starts in `source`, which the tests keep ASCII. */
-let offsetOf = (source: String, needle: String): i32 => {
+function offsetOf(source: String, needle: String) {
   let reader = new StringReader(source);
   let before = reader.readUntil(needle);
   if (before == null) {
     throw new Error(`${needle} is not in the source`);
   }
   return before.length;
-};
+}
 
 export let tests = suite('doc-comment', () => {
-  test('recognizes doc comments', (t: TestContext) => {
+  test('recognizes doc comments', (t) => {
     equal(isDocComment(block('* Docs. ')), true);
     equal(isDocComment(block(' not a doc comment ')), false);
     equal(isDocComment(line(' also not ')), false);
     equal(isDocComment(block('')), false);
   });
 
-  test('strips star prefixes and keeps paragraphs', (t: TestContext) => {
+  test('strips star prefixes and keeps paragraphs', (t) => {
     let doc = parseDocCommentBody(
         '*\n * First paragraph.\n *\n * Second paragraph.\n ');
     equal(doc.description, 'First paragraph.\n\nSecond paragraph.');
     equal(doc.summary, 'First paragraph.');
   });
 
-  test('joins a wrapped first paragraph into the summary', (t: TestContext) => {
+  test('joins a wrapped first paragraph into the summary', (t) => {
     let doc = parseDocCommentBody(
         '* A summary that runs\n * onto a second line.\n *\n * More.\n ');
     equal(doc.summary, 'A summary that runs onto a second line.');
     equal(doc.description, 'A summary that runs\nonto a second line.\n\nMore.');
   });
 
-  test('keeps indentation inside the description', (t: TestContext) => {
+  test('keeps indentation inside the description', (t) => {
     let doc = parseDocCommentBody('* Text.\n *\n * ```zena\n * let x = 1;\n * ```\n ');
     equal(doc.description, 'Text.\n\n```zena\nlet x = 1;\n```');
   });
 
   test('has no summary when the description opens with a fence',
-      (t: TestContext) => {
+      (t) => {
     let doc = parseDocCommentBody('* ```zena\n * let x = 1;\n * ```\n ');
     equal(doc.summary, '');
   });
 
-  test('reads a tag with a subject', (t: TestContext) => {
+  test('reads a tag with a subject', (t) => {
     let doc = parseDocCommentBody(
         '* Reads a byte.\n * @param index the offset to read\n ');
     equal(doc.description, 'Reads a byte.');
@@ -70,14 +74,14 @@ export let tests = suite('doc-comment', () => {
     equal(doc.tags[0].text, 'the offset to read');
   });
 
-  test('reads a tag without a subject', (t: TestContext) => {
+  test('reads a tag without a subject', (t) => {
     let doc = parseDocCommentBody('* Sums.\n * @returns the total\n ');
     equal(doc.tags[0].name, 'returns');
     equal(doc.tags[0].subject, '');
     equal(doc.tags[0].text, 'the total');
   });
 
-  test('continues a tag across lines until the next tag', (t: TestContext) => {
+  test('continues a tag across lines until the next tag', (t) => {
     let doc = parseDocCommentBody(
         '* Docs.\n * @param a the first,\n *   which wraps\n * @param b the second\n ');
     equal(doc.tags.length, 2);
@@ -87,7 +91,7 @@ export let tests = suite('doc-comment', () => {
     equal(doc.tags[1].text, 'the second');
   });
 
-  test('carries fenced code inside a tag', (t: TestContext) => {
+  test('carries fenced code inside a tag', (t) => {
     let doc = parseDocCommentBody(
         '* Docs.\n * @example\n * ```zena\n * @param not a tag\n * ```\n * @returns nothing\n ');
     equal(doc.tags.length, 2);
@@ -96,20 +100,20 @@ export let tests = suite('doc-comment', () => {
     equal(doc.tags[1].name, 'returns');
   });
 
-  test('does not open a tag inside a fenced description', (t: TestContext) => {
+  test('does not open a tag inside a fenced description', (t) => {
     let doc = parseDocCommentBody(
         '* Docs.\n *\n * ```zena\n * @param x\n * ```\n ');
     equal(doc.tags.length, 0);
     equal(doc.description, 'Docs.\n\n```zena\n@param x\n```');
   });
 
-  test('does not treat an address as a tag', (t: TestContext) => {
+  test('does not treat an address as a tag', (t) => {
     let doc = parseDocCommentBody('* Ask user@example.com about it.\n ');
     equal(doc.tags.length, 0);
     equal(doc.summary, 'Ask user@example.com about it.');
   });
 
-  test('looks tags up by name', (t: TestContext) => {
+  test('looks tags up by name', (t) => {
     let doc = parseDocCommentBody(
         '* Docs.\n * @param a one\n * @param b two\n * @deprecated use `next`\n ');
     equal(doc.tagsNamed('param').length, 2);
@@ -117,21 +121,22 @@ export let tests = suite('doc-comment', () => {
     equal(doc.deprecation(), 'use `next`');
   });
 
-  test('reports no deprecation when the tag is absent', (t: TestContext) => {
+  test('reports no deprecation when the tag is absent', (t) => {
     equal(parseDocCommentBody('* Docs.\n ').deprecation() == null, true);
   });
 
   test('reports an empty deprecation when the tag has no text',
-      (t: TestContext) => {
+      (t) => {
     equal(parseDocCommentBody('* Docs.\n * @deprecated\n ').deprecation(), '');
   });
 
   test('joins consecutive doc comments and ignores the rest',
-      (t: TestContext) => {
-    let comments = new Array<Comment>(3);
-    comments.push(line(' ordinary'));
-    comments.push(block('* First.'));
-    comments.push(block('* Second.'));
+      (t) => {
+    let comments = growable<Comment>([
+      line(' ordinary'),
+      block('* First.'),
+      block('* Second.'),
+    ]);
     let doc = parseLeadingDoc(comments);
     equal(doc == null, false);
     if (doc != null) {
@@ -139,19 +144,18 @@ export let tests = suite('doc-comment', () => {
     }
   });
 
-  test('reports no doc when no leading comment is one', (t: TestContext) => {
-    let comments = new Array<Comment>(1);
-    comments.push(line(' ordinary'));
+  test('reports no doc when no leading comment is one', (t) => {
+    let comments = growable<Comment>([line(' ordinary')]);
     equal(parseLeadingDoc(comments) == null, true);
     equal(parseLeadingDoc(null) == null, true);
   });
 
-  test('keeps the raw body', (t: TestContext) => {
+  test('keeps the raw body', (t) => {
     let doc = parseDocCommentBody('* Docs.\n * @returns nothing\n ');
     equal(doc.raw, 'Docs.\n@returns nothing');
   });
 
-  test('docCommentAt finds the member around an offset', (t: TestContext) => {
+  test('docCommentAt finds the member around an offset', (t) => {
     let source = '/** A point. */\nclass Point {\n  /** Across. */\n  x: f64;\n  y: f64;\n  new(this.x, this.y);\n}\n';
     let ast = parse(source, 'test.zena');
     let comments = attachComments(ast);
@@ -164,7 +168,7 @@ export let tests = suite('doc-comment', () => {
     equal((cls as DocComment).raw, 'A point.');
   });
 
-  test('declarationDoc reads a let binding from its statement', (t: TestContext) => {
+  test('declarationDoc reads a let binding from its statement', (t) => {
     let source = '/**\n * The answer.\n *\n * To everything.\n */\nlet answer = 42;\nlet other = 1;\n';
     let ast = parse(source, 'test.zena');
     let comments = attachComments(ast);

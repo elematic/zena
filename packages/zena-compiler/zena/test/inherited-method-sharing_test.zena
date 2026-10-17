@@ -15,7 +15,7 @@ import { Program, CompilationUnit } from '../lib/program.zena';
 import { makeCompiler, MockHost } from './test-utils.zena';
 import { checkCompilation } from '../lib/compiler.zena';
 
-let compileToWat = (source: String): String => {
+function compileToWat(source: String) {
   let host = new MockHost();
   host.addFile("test.zena", source);
 
@@ -43,7 +43,7 @@ let compileToWat = (source: String): String => {
   let program = new Program(units, entryUnit);
   let generator = new WatGenerator("zena-cli", false);
   return generator.generate(program);
-};
+}
 
 /**
  * The names of every function the module DEFINES whose name starts
@@ -52,8 +52,8 @@ let compileToWat = (source: String): String => {
  * ("Derived_s891_i32"), so exact names are unstable; the prefix+part
  * match is not.
  */
-let definedFunctionsMatching = (wat: String, classPrefix: String,
-    memberPart: String): Array<String> => {
+function definedFunctionsMatching(wat: String, classPrefix: String,
+    memberPart: String): Array<String> {
   let found = new Array<String>();
   let chunks = wat.split('(func $');
   for (var ci = 1; ci < chunks.length; ci += 1) {
@@ -70,10 +70,10 @@ let definedFunctionsMatching = (wat: String, classPrefix: String,
     }
   }
   return found;
-};
+}
 
-let assertNoSubclassCopy = (wat: String, subclassPrefix: String,
-    memberPart: String, basePrefix: String): void => {
+function assertNoSubclassCopy(wat: String, subclassPrefix: String,
+    memberPart: String, basePrefix: String) {
   let baseCopies = definedFunctionsMatching(wat, basePrefix, memberPart);
   isTrue(baseCopies.length > 0,
       `expected a ${basePrefix}*${memberPart}* function to be emitted — ` +
@@ -83,7 +83,7 @@ let assertNoSubclassCopy = (wat: String, subclassPrefix: String,
     fail(`subclass-keyed copy ${subCopies[0]} was emitted; the inherited ` +
         'body must register under the declaring class only');
   }
-};
+}
 
 // The private-generic-return-subclass portable fixture, inlined: the
 // shape PR #246 fixed a substitution bug in, and the natural fixture
@@ -114,20 +114,20 @@ export let main = (): i32 => {
 };
 `;
 
-export let tests = suite('inherited method sharing', (): void => {
+export let tests = suite('inherited method sharing', () => {
   test('an inherited private method is not copied to the subclass',
-      (ctx: TestContext): void => {
+      (ctx) => {
     let wat = compileToWat(privateFixture);
     assertNoSubclassCopy(wat, 'Derived', '.#find', 'Base');
   });
 
   test('an inherited public method is not copied to the subclass',
-      (ctx: TestContext): void => {
+      (ctx) => {
     let wat = compileToWat(privateFixture);
     assertNoSubclassCopy(wat, 'Derived', '.size', 'Base');
   });
 
-  test('an override still gets its own copy', (ctx: TestContext): void => {
+  test('an override still gets its own copy', (ctx) => {
     let wat = compileToWat(`
 class Base<T> {
 

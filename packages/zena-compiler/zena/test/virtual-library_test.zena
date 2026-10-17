@@ -61,8 +61,7 @@ final class Implementation(target: String, path: String)
  * targets all name the same file — `console` on the three hostless
  * targets — has nothing to compare and is left out.
  */
-let virtualLibraries = (): GrowableArray<
-    (String, GrowableArray<Implementation>)> => {
+function virtualLibraries() {
   let out = new Array<(String, GrowableArray<Implementation>)>();
   let config = buildStdlibConfig(stdlibRoot);
   let exports = config.exports as Map<String, ModuleExport>;
@@ -87,7 +86,7 @@ let virtualLibraries = (): GrowableArray<
     }
   }
   return out;
-};
+}
 
 /**
  * One implementation, checked: its signature, and every library the
@@ -109,10 +108,10 @@ final class CheckedImplementation(
  * it, and return the whole result — the signature map is keyed by path,
  * and rule two needs the types themselves.
  */
-let checkImplementation = (
+function checkImplementation(
   compiler: Compiler,
   impl: Implementation
-): CheckedImplementation => {
+) {
   let result = compiler.compile({
     entry: `zena:${impl.path}`,
     target: impl.target,
@@ -129,14 +128,15 @@ let checkImplementation = (
     paths.add(file.path);
   }
   return new CheckedImplementation(impl, checked, paths);
-};
+}
 
 /** The export signature of `impl`, by exported name. */
-let signatureOf = (
+function signatureOf(
   checked: ProgramCheckResult,
   impl: Implementation
-): Map<String, Type> =>
-    checked.exportSignatures.get(`zena:${impl.path}`) ?? new Map<String, Type>();
+) {
+  return checked.exportSignatures.get(`zena:${impl.path}`) ?? new Map<String, Type>();
+}
 
 /**
  * Which part of two signatures differs, for a failure message.
@@ -149,7 +149,7 @@ let signatureOf = (
  * that differs keeps a failure actionable instead of leaving the reader
  * to guess which of those it was.
  */
-let describeDifference = (a: Type, b: Type): String => {
+function describeDifference(a: Type, b: Type) {
   if (a is FunctionType && b is FunctionType) {
     let fa = a as FunctionType;
     let fb = b as FunctionType;
@@ -174,7 +174,7 @@ let describeDifference = (a: Type, b: Type): String => {
     return 'the parameters and return agree; some other signature field differs';
   }
   return `${typeToString(a)} vs ${typeToString(b)}`;
-};
+}
 
 /**
  * Virtual libraries whose implementations disagree on a shared name, and
@@ -185,44 +185,42 @@ let describeDifference = (a: Type, b: Type): String => {
  * removing its entry rather than leaving a stale exemption behind. Same
  * idea as `@missing-error:` in the portable tests.
  */
-let signatureGaps = (): Map<String, String> => {
-  let out = new Map<String, String>();
-  out['fetch'] =
-      '`Response` is a class declared in both implementations, so the two ' +
-      '`Response` types compare unequal and `fetch`\'s `Future<Response>` ' +
-      'return follows. One root cause; see typeDeclarationGaps. Issue #191.';
-  out['console'] =
-      '`console` is exported as `new HostConsole()` / ' +
-      '`new ComponentConsole()`, so the value\'s type is the per-target ' +
-      'class rather than the shared `Console` interface the two implement. ' +
-      'The fix is to annotate it `console: Console`, which puts an ' +
-      'interface dispatch on every `console.log`. Issue #191.';
-  out['memory'] =
-      '`defaultAllocator` is annotated `FreeListAllocator` in `memory.zena` ' +
-      'and `Allocator` in `memory/component.zena`. The component target ' +
-      'already pays the interface dispatch; annotating both `Allocator` ' +
-      'would extend it to allocation on `js` and `freestanding`, which is ' +
-      'a hot path. Issue #191.';
+function signatureGaps(): Map<String, String> {
+  let out: HashMap<String, String> = {
+    'fetch' => '`Response` is a class declared in both implementations, so the two ' +
+        '`Response` types compare unequal and `fetch`\'s `Future<Response>` ' +
+        'return follows. One root cause; see typeDeclarationGaps. Issue #191.',
+    'console' => '`console` is exported as `new HostConsole()` / ' +
+        '`new ComponentConsole()`, so the value\'s type is the per-target ' +
+        'class rather than the shared `Console` interface the two implement. ' +
+        'The fix is to annotate it `console: Console`, which puts an ' +
+        'interface dispatch on every `console.log`. Issue #191.',
+    'memory' => '`defaultAllocator` is annotated `FreeListAllocator` in `memory.zena` ' +
+        'and `Allocator` in `memory/component.zena`. The component target ' +
+        'already pays the interface dispatch; annotating both `Allocator` ' +
+        'would extend it to allocation on `js` and `freestanding`, which is ' +
+        'a hot path. Issue #191.',
+  };
   return out;
-};
+}
 
 /**
  * Virtual libraries that declare a type no sibling implementation
  * loads, and why each is not fixed. As above, an entry asserts its gap.
  */
-let typeDeclarationGaps = (): Map<String, String> => {
-  let out = new Map<String, String>();
-  out['fetch'] =
-      '`Response` is a class both implementations declare, so the name ' +
-      'stands for two types. Sharing it needs either a shared interface ' +
-      'with per-target classes, as `console` does for `Console`, or the ' +
-      'canonical-declaration machinery for class bodies, which does not ' +
-      'exist yet. Issue #191.';
+function typeDeclarationGaps(): Map<String, String> {
+  let out: HashMap<String, String> = {
+    'fetch' => '`Response` is a class both implementations declare, so the name ' +
+        'stands for two types. Sharing it needs either a shared interface ' +
+        'with per-target classes, as `console` does for `Console`, or the ' +
+        'canonical-declaration machinery for class bodies, which does not ' +
+        'exist yet. Issue #191.',
+  };
   return out;
-};
+}
 
 /** Whether `x` sorts before `y` by bytes; `String` has no `<`. */
-let byteLess = (x: String, y: String): boolean => {
+function byteLess(x: String, y: String) {
   var minLen = x.length;
   if (y.length < minLen) { minLen = y.length; }
   for (var i = 0; i < minLen; i += 1) {
@@ -230,9 +228,9 @@ let byteLess = (x: String, y: String): boolean => {
     if (d != 0) { return d < 0; }
   }
   return x.length < y.length;
-};
+}
 
-let sortedKeys = (sig: Map<String, Type>): GrowableArray<String> => {
+function sortedKeys(sig: Map<String, Type>) {
   let keys = new Array<String>(sig.size);
   for (let key in sig.keys()) {
     keys.push(key);
@@ -249,13 +247,13 @@ let sortedKeys = (sig: Map<String, Type>): GrowableArray<String> => {
     }
   }
   return keys;
-};
+}
 
-export let tests = suite('virtual library implementations', (): void => {
+export let tests = suite('virtual library implementations', () => {
   // One compiler for every implementation across every target, which is
   // what makes this affordable: the standard library each target draws
   // on is loaded once per target rather than once per implementation.
-  let newCompiler = (): Compiler => createCompiler(new PlainHost(), {
+  let newCompiler = () => createCompiler(new PlainHost(), {
     stdlibRoot,
     packages: new Map<String, PackageConfig>(),
   });
@@ -263,7 +261,7 @@ export let tests = suite('virtual library implementations', (): void => {
   /** Every implementation of every multi-implementation virtual library. */
   let checkAll = (
     compiler: Compiler
-  ): GrowableArray<(String, GrowableArray<CheckedImplementation>)> => {
+  ) => {
     let out = new Array<(String, GrowableArray<CheckedImplementation>)>();
     for (let (name, impls) in virtualLibraries()) {
       let checked = new Array<CheckedImplementation>();
@@ -275,7 +273,7 @@ export let tests = suite('virtual library implementations', (): void => {
     return out;
   };
 
-  test('implementations agree on every name they share', (ctx: TestContext): void => {
+  test('implementations agree on every name they share', (ctx) => {
     let gaps = signatureGaps();
     var compared = 0;
     for (let (name, impls) in checkAll(newCompiler())) {
@@ -313,7 +311,7 @@ export let tests = suite('virtual library implementations', (): void => {
   });
 
   test('every exported type is declared where all implementations see it',
-      (ctx: TestContext): void => {
+      (ctx) => {
     let gaps = typeDeclarationGaps();
     var checkedTypes = 0;
     for (let (name, impls) in checkAll(newCompiler())) {

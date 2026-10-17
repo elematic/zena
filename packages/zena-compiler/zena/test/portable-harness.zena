@@ -22,7 +22,7 @@ export type Directive = { name: String, line: i32, value: String };
  * is everything after the colon with surrounding whitespace stripped;
  * only the first directive on a line is read.
  */
-export let parseDirectives = (source: String): Array<Directive> => {
+export function parseDirectives(source: String): Array<Directive> {
   let results = new Array<Directive>(4);
   let marker = '// @';
   if (!source.contains(marker)) {
@@ -87,7 +87,7 @@ export let parseDirectives = (source: String): Array<Directive> => {
   }
 
   return results;
-};
+}
 
 /** A `.zena` file discovered under a `tests/language/` category. */
 export class TestFile {
@@ -192,7 +192,7 @@ export class Discovery {
 }
 
 /** Byte-wise `a < b`, so discovery order does not depend on the host. */
-let lexLess = (a: String, b: String): boolean => {
+function lexLess(a: String, b: String) {
   let n = if (a.length < b.length) { a.length } else { b.length };
   for (var i = 0; i < n; i += 1) {
     let ca = a.getByteAt(i);
@@ -202,10 +202,10 @@ let lexLess = (a: String, b: String): boolean => {
     }
   }
   return a.length < b.length;
-};
+}
 
 /** Insertion sort by entry name (byte-wise ascending). */
-let sortByName = (entries: GrowableArray<DirEntry>): void => {
+function sortByName(entries: GrowableArray<DirEntry>) {
   for (var i = 1; i < entries.length; i += 1) {
     let e = entries[i];
     var j = i - 1;
@@ -215,7 +215,7 @@ let sortByName = (entries: GrowableArray<DirEntry>): void => {
     }
     entries[j + 1] = e;
   }
-};
+}
 
 /** The `.zena` files and the subdirectories of `dirPath`, each sorted by name. */
 class DirContents {
@@ -242,14 +242,15 @@ class DirContents {
   }
 }
 
-let joinRel = (prefix: String, name: String): String =>
-  if (prefix.length > 0) { `${prefix}/${name}` } else { name };
+function joinRel(prefix: String, name: String) {
+  return if (prefix.length > 0) { `${prefix}/${name}` } else { name };
+}
 
-let load = (dirPath: String, relPrefix: String, name: String): TestFile => {
+function load(dirPath: String, relPrefix: String, name: String) {
   let path = `${dirPath}/${name}`;
   let source = readFileSync(path);
   return new TestFile(path, joinRel(relPrefix, name), name, source, parseDirectives(source));
-};
+}
 
 /**
  * Walks `dirPath` recursively and registers a `zena:test` case per file,
@@ -260,12 +261,12 @@ let load = (dirPath: String, relPrefix: String, name: String): TestFile => {
  * Used by the in-process runners (syntax, semantics). The execution
  * runner spawns a process per test and uses `collect` instead.
  */
-export let registerSuites = (
+export function registerSuites(
     dirPath: String,
     relPrefix: String,
     d: Discovery,
     isTest: (f: TestFile) => boolean,
-    run: (f: TestFile) => void): void => {
+    run: (f: TestFile) => void): void {
   let contents = new DirContents(dirPath);
 
   for (let entry in contents.files) {
@@ -276,30 +277,30 @@ export let registerSuites = (
       d.support.push(f);
     } else {
       d.tests.push(f);
-      test(f.name, (ctx: TestContext): void => {
+      test(f.name, (ctx) => {
         run(f);
       });
     }
   }
 
   for (let entry in contents.subdirs) {
-    suite(entry.name, (): void => {
+    suite(entry.name, () => {
       registerSuites(
         `${dirPath}/${entry.name}`, joinRel(relPrefix, entry.name), d, isTest, run);
     });
   }
-};
+}
 
 /**
  * Walks `dirPath` recursively, sorting every file found into `d`. Used
  * by the execution runner, which needs the whole list up front so it can
  * keep a pool of worker processes busy.
  */
-export let collect = (
+export function collect(
     dirPath: String,
     relPrefix: String,
     d: Discovery,
-    isTest: (f: TestFile) => boolean): void => {
+    isTest: (f: TestFile) => boolean): void {
   let contents = new DirContents(dirPath);
 
   for (let entry in contents.files) {
@@ -316,7 +317,7 @@ export let collect = (
   for (let entry in contents.subdirs) {
     collect(`${dirPath}/${entry.name}`, joinRel(relPrefix, entry.name), d, isTest);
   }
-};
+}
 
 /**
  * The `./name` module specifiers a source imports, resolved against the
@@ -326,7 +327,7 @@ export let collect = (
  * for `from './…'` rather than a parse — it exists to prove that a file
  * with no test directives is genuinely somebody's dependency.
  */
-export let siblingImports = (f: TestFile): Array<String> => {
+export function siblingImports(f: TestFile): Array<String> {
   let dir = f.path.sliceBytes(0, f.path.length - f.name.length - 1);
   let found = new Array<String>(2);
   let marker = "from './";
@@ -349,13 +350,13 @@ export let siblingImports = (f: TestFile): Array<String> => {
     i = end + 1;
   }
   return found;
-};
+}
 
 /**
  * Strips one layer of matching quotes from a directive value, so
  * `@result: "a b"` and `@result: a b` mean the same thing.
  */
-export let unquote = (value: String): String => {
+export function unquote(value: String): String {
   if (value.length < 2) {
     return value;
   }
@@ -365,10 +366,10 @@ export let unquote = (value: String): String => {
     return value.sliceBytes(1, value.length - 1);
   }
   return value;
-};
+}
 
 /** Expands the `\n` escape directive values use for multi-line expectations. */
-export let unescapeNewlines = (value: String): String => {
+export function unescapeNewlines(value: String): String {
   if (!value.contains('\\n')) {
     return value;
   }
@@ -385,4 +386,4 @@ export let unescapeNewlines = (value: String): String => {
     }
   }
   return out.toString();
-};
+}

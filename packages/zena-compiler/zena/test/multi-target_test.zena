@@ -31,15 +31,15 @@ import { PlainHost, stdlibRoot } from './test-utils.zena';
 
 let fixtures = 'packages/zena-compiler/test-files/multi-target';
 
-let newCompiler = (): Compiler => {
+function newCompiler() {
   let host = new PlainHost();
   return createCompiler(host, {
     stdlibRoot,
     packages: loadPackageMap(host, 'zena-packages.json'),
   });
-};
+}
 
-let errorsOf = (checked: ProgramCheckResult): GrowableArray<String> => {
+function errorsOf(checked: ProgramCheckResult) {
   let messages = new Array<String>();
   for (let diagnostic in checked.diagnostics) {
     if (diagnostic.severity == DiagnosticSeverity.Error) {
@@ -47,22 +47,24 @@ let errorsOf = (checked: ProgramCheckResult): GrowableArray<String> => {
     }
   }
   return messages;
-};
+}
 
 /** The first error, for a failure message, or '' when there is none. */
-let firstError = (checked: ProgramCheckResult): String => {
+function firstError(checked: ProgramCheckResult) {
   let messages = errorsOf(checked);
   return if (messages.length == 0) { '' } else { messages[0] };
-};
+}
 
-let compileAndCheck = (
+function compileAndCheck(
   compiler: Compiler,
   entry: String,
   target: String
-): ProgramCheckResult => checkCompilation(compiler.compile({entry, target}));
+) {
+  return checkCompilation(compiler.compile({entry, target}));
+}
 
 /** The module bytes for an entry on a target, throwing on a check error. */
-let wasmFor = (compiler: Compiler, entry: String, target: String): ByteArray => {
+function wasmFor(compiler: Compiler, entry: String, target: String) {
   let result = compiler.compile({entry, target});
   let checked = checkCompilation(result);
   let failure = firstError(checked);
@@ -82,21 +84,21 @@ let wasmFor = (compiler: Compiler, entry: String, target: String): ByteArray => 
   return new BinaryGenerator(target, false)
       .generate(new Program(units, entryUnit))
       .toByteArray();
-};
+}
 
-let bytesEqual = (a: ByteArray, b: ByteArray): boolean => {
+function bytesEqual(a: ByteArray, b: ByteArray): boolean {
   if (a.length != b.length) { return false; }
   for (var i = 0; i < a.length; i += 1) {
     if (a[i] != b[i]) { return false; }
   }
   return true;
-};
+}
 
 let allocating = `${fixtures}/allocating.zena`;
 let usesFs = `${fixtures}/uses-fs.zena`;
 
-export let tests = suite('one compiler, several targets', (): void => {
-  test('a virtual specifier resolves to each target\'s own file', (ctx: TestContext): void => {
+export let tests = suite('one compiler, several targets', () => {
+  test('a virtual specifier resolves to each target\'s own file', (ctx) => {
     let compiler = newCompiler();
 
     equal(compiler.forTarget('js').resolve('zena:console', '').path,
@@ -115,7 +117,7 @@ export let tests = suite('one compiler, several targets', (): void => {
         'host and js share one CompilerTarget');
   });
 
-  test('an unknown target is rejected by name', (ctx: TestContext): void => {
+  test('an unknown target is rejected by name', (ctx) => {
     let compiler = newCompiler();
     var message = '';
     try {
@@ -127,7 +129,7 @@ export let tests = suite('one compiler, several targets', (): void => {
         `expected the typo to be named, got: ${message}`);
   });
 
-  test('one compiler checks the same program on four targets', (ctx: TestContext): void => {
+  test('one compiler checks the same program on four targets', (ctx) => {
     let compiler = newCompiler();
     for (let target in ['js', 'freestanding', 'component', 'zena-cli']) {
       let checked = compileAndCheck(compiler, allocating, target);
@@ -139,7 +141,7 @@ export let tests = suite('one compiler, several targets', (): void => {
     equal(compiler.compiledTargets.length, 4);
   });
 
-  test('each target keeps its own library for a shared path', (ctx: TestContext): void => {
+  test('each target keeps its own library for a shared path', (ctx) => {
     let compiler = newCompiler();
     compileAndCheck(compiler, allocating, 'js');
     compileAndCheck(compiler, allocating, 'component');
@@ -167,7 +169,7 @@ export let tests = suite('one compiler, several targets', (): void => {
         'each target parsed its own AST');
   });
 
-  test('a library only one target has resolves only there', (ctx: TestContext): void => {
+  test('a library only one target has resolves only there', (ctx) => {
     let compiler = newCompiler();
 
     let onComponent = compileAndCheck(compiler, usesFs, 'component');
@@ -182,7 +184,7 @@ export let tests = suite('one compiler, several targets', (): void => {
         'expected zena:fs to be unavailable on js');
   });
 
-  test('a target emits the same bytes whatever else was compiled', (ctx: TestContext): void => {
+  test('a target emits the same bytes whatever else was compiled', (ctx) => {
     // Symbol and node ids are per target, so a compile must not depend
     // on which other targets the compiler was asked for first.
     let alone = wasmFor(newCompiler(), allocating, 'freestanding');
@@ -200,7 +202,7 @@ export let tests = suite('one compiler, several targets', (): void => {
         `${i32ToString(after.length)} after compiling other targets`);
   });
 
-  test('targets load different files even when they emit the same bytes', (ctx: TestContext): void => {
+  test('targets load different files even when they emit the same bytes', (ctx) => {
     // `allocating.zena` reaches nothing target-specific, so `js` and
     // `freestanding` emit the same module — they differ only in the
     // prelude's `zena:console`, which neither program calls. The two
@@ -222,7 +224,7 @@ export let tests = suite('one compiler, several targets', (): void => {
         'freestanding loaded the component console');
   });
 
-  test('a check result carries forward within a target', (ctx: TestContext): void => {
+  test('a check result carries forward within a target', (ctx) => {
     let compiler = newCompiler();
     let first = checkCompilation(
         compiler.compile({entry: allocating, target: 'js'}));
@@ -242,7 +244,7 @@ export let tests = suite('one compiler, several targets', (): void => {
         `expected the stdlib to carry forward, ${i32ToString(carried)} files did`);
   });
 
-  test('a check result does not carry across targets', (ctx: TestContext): void => {
+  test('a check result does not carry across targets', (ctx) => {
     // Both targets key their results by file path and mean different
     // libraries by the same path, so threading one into the other has to
     // be refused rather than mixed in.
@@ -266,7 +268,7 @@ export let tests = suite('one compiler, several targets', (): void => {
         'the two targets share no checker state');
   });
 
-  test('a check result does not carry across checking flags', (ctx: TestContext): void => {
+  test('a check result does not carry across checking flags', (ctx) => {
     // `warnUnnecessaryCasts` changes the diagnostics a check produces,
     // so it belongs to the compiler and its results are not
     // interchangeable with another compiler's.
@@ -291,7 +293,7 @@ export let tests = suite('one compiler, several targets', (): void => {
   });
 
   test('a virtual library resolves to the implementation this compile linked',
-      (ctx: TestContext): void => {
+      (ctx) => {
     // What a shared check result will need from codegen. A Symbol
     // carries the implementation its own compile resolved
     // (`zena:console/host.zena`), and a compile for another target has

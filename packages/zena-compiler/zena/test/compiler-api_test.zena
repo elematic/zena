@@ -13,20 +13,19 @@ import { parse } from '../lib/parser.zena';
 // Helpers
 // ============================================================================
 
-let errorDiagnostics = (diags: Array<Diagnostic>): Array<Diagnostic> => {
+function errorDiagnostics(diags: Array<Diagnostic>): Array<Diagnostic> {
   let errors = new Array<Diagnostic>(4);
   var i = 0;
   while (i < diags.length) {
-    match (diags[i].severity) {
-      case DiagnosticSeverity.Error: errors.push(diags[i])
-      case _: {}
+    if (diags[i].severity == DiagnosticSeverity.Error) {
+      errors.push(diags[i]);
     }
     i += 1;
   }
   return errors;
-};
+}
 
-let contains = (s: String, sub: String): boolean => {
+function contains(s: String, sub: String): boolean {
   if (sub.length > s.length) { return false; }
   var i = 0;
   while (i <= s.length - sub.length) {
@@ -36,39 +35,39 @@ let contains = (s: String, sub: String): boolean => {
     i += 1;
   }
   return false;
-};
+}
 
 // ============================================================================
 // Tests
 // ============================================================================
 
-export let tests = suite('Compiler Single-File API', (): void => {
+export let tests = suite('Compiler Single-File API', () => {
 
   // ==========================================================================
   // checkSource
   // ==========================================================================
 
-  suite('checkSource', (): void => {
+  suite('checkSource', () => {
 
-    test('valid code returns no errors', (ctx: TestContext): void => {
+    test('valid code returns no errors', (ctx) => {
       let result = checkSource("let x = 42;", "<test>");
       let errors = errorDiagnostics(result.diagnostics);
       equal(errors.length, 0);
     });
 
-    test('returns SemanticModel with node types', (ctx: TestContext): void => {
+    test('returns SemanticModel with node types', (ctx) => {
       let result = checkSource("let x = 42;", "<test>");
       // The model should have recorded types
       isTrue(result.model.nodeTypes.size > 0);
     });
 
-    test('type mismatch produces diagnostic', (ctx: TestContext): void => {
+    test('type mismatch produces diagnostic', (ctx) => {
       let result = checkSource("let x: i32 = 'hello';", "<test>");
       let errors = errorDiagnostics(result.diagnostics);
       isTrue(errors.length > 0);
     });
 
-    test('diagnostics have location info', (ctx: TestContext): void => {
+    test('diagnostics have location info', (ctx) => {
       let result = checkSource("let x: i32 = 'hello';", "<test>");
       let errors = errorDiagnostics(result.diagnostics);
       isTrue(errors.length > 0);
@@ -78,7 +77,7 @@ export let tests = suite('Compiler Single-File API', (): void => {
       isTrue(loc.column > 0);
     });
 
-    test('path is recorded in diagnostic location', (ctx: TestContext): void => {
+    test('path is recorded in diagnostic location', (ctx) => {
       let result = checkSource("let x: i32 = 'hello';", "my-file.zena");
       let errors = errorDiagnostics(result.diagnostics);
       isTrue(errors.length > 0);
@@ -87,14 +86,14 @@ export let tests = suite('Compiler Single-File API', (): void => {
       equal(loc.file, "my-file.zena");
     });
 
-    test('multiple errors are collected', (ctx: TestContext): void => {
+    test('multiple errors are collected', (ctx) => {
       let source = "let x: i32 = 'hello';\nlet y: boolean = 42;";
       let result = checkSource(source, "<test>");
       let errors = errorDiagnostics(result.diagnostics);
       isTrue(errors.length >= 2);
     });
 
-    test('scope errors are reported', (ctx: TestContext): void => {
+    test('scope errors are reported', (ctx) => {
       let result = checkSource("let x = unknownVar;", "<test>");
       let errors = errorDiagnostics(result.diagnostics);
       isTrue(errors.length > 0);
@@ -106,16 +105,16 @@ export let tests = suite('Compiler Single-File API', (): void => {
   // findNodeAtOffset
   // ==========================================================================
 
-  suite('findNodeAtOffset', (): void => {
+  suite('findNodeAtOffset', () => {
 
-    test('returns null for offset outside root', (ctx: TestContext): void => {
+    test('returns null for offset outside root', (ctx) => {
       // "let x = 42;" is 12 bytes (indices 0..11)
       let ast = parse("let x = 42;", "<test>");
       let result = findNodeAtOffset(ast, 1000);
       isTrue(result == null);
     });
 
-    test('finds number literal at its offset', (ctx: TestContext): void => {
+    test('finds number literal at its offset', (ctx) => {
       // "let x = 42;"
       //  0123456789...
       //          ^^ 42 starts at offset 8
@@ -126,7 +125,7 @@ export let tests = suite('Compiler Single-File API', (): void => {
       isTrue(node is NumberLiteral);
     });
 
-    test('finds identifier at its offset', (ctx: TestContext): void => {
+    test('finds identifier at its offset', (ctx) => {
       // "let x = 42;"
       //  01234
       //      ^ x is at offset 4
@@ -138,7 +137,7 @@ export let tests = suite('Compiler Single-File API', (): void => {
       isTrue(node is IdentifierPattern);
     });
 
-    test('finds string literal', (ctx: TestContext): void => {
+    test('finds string literal', (ctx) => {
       // "let s = 'hello';"
       //  01234567890123456
       //          ^ quote starts at 8
@@ -149,7 +148,7 @@ export let tests = suite('Compiler Single-File API', (): void => {
       isTrue(node is StringLiteral);
     });
 
-    test('finds deepest node in nested expression', (ctx: TestContext): void => {
+    test('finds deepest node in nested expression', (ctx) => {
       // "let x = 1 + 2;"
       //  0123456789012345
       //              ^ 2 at offset 12
@@ -161,7 +160,7 @@ export let tests = suite('Compiler Single-File API', (): void => {
       isTrue(node is NumberLiteral);
     });
 
-    test('finds binary expression between operands', (ctx: TestContext): void => {
+    test('finds binary expression between operands', (ctx) => {
       // "let x = 1 + 2;"
       //  0123456789012345
       //            ^ + at offset 10
@@ -174,7 +173,7 @@ export let tests = suite('Compiler Single-File API', (): void => {
       isTrue(node is BinaryExpression);
     });
 
-    test('works on multi-line source', (ctx: TestContext): void => {
+    test('works on multi-line source', (ctx) => {
       let source = "let x = 1;\nlet y = 2;";
       //             0123456789 0 1234567890
       //                        ^ offset 11 = start of 'let y ...'
