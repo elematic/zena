@@ -84,7 +84,9 @@ export function lintFile(project: Project, path: String, options: LintOptions, w
   if (!options.fix) {
     report.passes = 1;
     for (let edit in proposeEdits(checked, options.rules)) {
-      report.findings.push(edit);
+      if (!edit.shared) {
+        report.findings.push(edit);
+      }
     }
     report.result = checked.source;
     project.reset();
@@ -98,9 +100,14 @@ export function lintFile(project: Project, path: String, options: LintOptions, w
   let rejected = new Set<String>();
   while (report.passes < options.maxPasses) {
     report.passes += 1;
+    // Supporting edits (an import a fix needs) go with every attempt and
+    // are kept when any fix is; the rest are the fixes to settle.
     let proposed = new Array<Edit>();
+    let shared = new Array<Edit>();
     for (let edit in runRules(current, options.rules)) {
-      if (!rejected.has(editKey(edit, source))) {
+      if (edit.shared) {
+        shared.push(edit);
+      } else if (!rejected.has(editKey(edit, source))) {
         proposed.push(edit);
       }
     }
@@ -114,7 +121,7 @@ export function lintFile(project: Project, path: String, options: LintOptions, w
     while (remaining.length > 0) {
       let candidates = groupEdits(disjointEdits(remaining));
       let before = report.rejected.length;
-      accepted = flattenGroups(settle(project, path, source, candidates, report));
+      accepted = flattenGroups(settle(project, path, source, candidates, shared, report));
       if (report.rejected.length == before) {
         break;
       }
@@ -136,9 +143,14 @@ export function lintFile(project: Project, path: String, options: LintOptions, w
     if (accepted.length == 0) {
       break;
     }
-    source = applyEdits(source, accepted);
+    for (let edit in shared) {
+      accepted.push(edit);
+    }
+    source = applyEdits(source, disjointEdits(accepted));
     for (let edit in accepted) {
-      report.applied.push(edit);
+      if (!edit.shared) {
+        report.applied.push(edit);
+      }
     }
     report.changed = true;
     project.override(path, source);
@@ -198,9 +210,10 @@ function settle(
   path: String,
   source: String,
   groups: GrowableArray<GrowableArray<Edit>>,
+  shared: GrowableArray<Edit>,
   report: FileReport
 ): GrowableArray<GrowableArray<Edit>> {
-  let failure = tryGroups(project, path, source, groups);
+  let failure = tryGroups(project, path, source, groups, shared);
   if (failure == null) {
     return groups;
   }
@@ -209,8 +222,8 @@ function settle(
     return new Array<GrowableArray<Edit>>(0);
   }
   let mid = groups.length - (groups.length >> 1);
-  let left = settle(project, path, source, groups.slice(0, mid), report);
-  let right = settle(project, path, source, groups.slice(mid, groups.length), report);
+  let left = settle(project, path, source, groups.slice(0, mid), shared, report);
+  let right = settle(project, path, source, groups.slice(mid, groups.length), shared, report);
   let combined = new Array<GrowableArray<Edit>>(left.length + right.length);
   for (let g in left) {
     combined.push(g);
@@ -218,7 +231,7 @@ function settle(
   for (let g in right) {
     combined.push(g);
   }
-  if (combined.length == 0 || tryGroups(project, path, source, combined) == null) {
+  if (combined.length == 0 || tryGroups(project, path, source, combined, shared) == null) {
     return combined;
   }
   // Each half checks alone and not together: add one at a time.
@@ -229,7 +242,7 @@ function settle(
       attempt.push(a);
     }
     attempt.push(g);
-    let error = tryGroups(project, path, source, attempt);
+    let error = tryGroups(project, path, source, attempt, shared);
     if (error == null) {
       accepted.push(g);
     } else {
@@ -239,9 +252,17 @@ function settle(
   return accepted;
 }
 
-/** Null when `source` with the groups' edits applied checks, else the first error. */
-function tryGroups(project: Project, path: String, source: String, groups: GrowableArray<GrowableArray<Edit>>): String | null {
-  let text = applyEdits(source, flattenGroups(groups));
+/**
+ * Null when `source` with the groups' edits (and the shared ones) applied
+ * checks, else the first error.
+ */
+function tryGroups(project: Project, path: String, source: String,
+    groups: GrowableArray<GrowableArray<Edit>>, shared: GrowableArray<Edit>): String | null {
+  let edits = flattenGroups(groups);
+  for (let edit in shared) {
+    edits.push(edit);
+  }
+  let text = applyEdits(source, disjointEdits(edits));
   try {
     // Setting the override re-reads the file, so a parse error lands here.
     project.override(path, text);

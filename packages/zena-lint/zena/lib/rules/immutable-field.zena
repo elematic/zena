@@ -17,7 +17,8 @@
  * check never sees, so only `#private` fields and the fields of classes
  * that are not exported are considered. A field with a separate setter
  * name (`var(#count) count`), a static, shared, abstract or decorated
- * field, and a symbol-keyed field are left alone.
+ * field, and a symbol-keyed field are left alone, and so is the whole
+ * standard library, some of whose fields the compiler writes itself.
  */
 
 import {
@@ -30,6 +31,12 @@ import { RuleContext } from '../context.zena';
 import { skipWhitespace } from '../source.zena';
 
 export function immutableFields(ctx: RuleContext): void {
+  // The compiler writes some standard library fields itself
+  // (`String.#hashCode`, from the string-hash helper it generates), and no
+  // rule can see that.
+  if (ctx.file.isStdlib) {
+    return;
+  }
   // Every member name some assignment in the file writes.
   let written = new Set<String>();
   walkEnter(ctx.ast, (n) => {

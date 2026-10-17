@@ -107,6 +107,11 @@ export interface LintFinding {
   rule: string;
   message: string;
   replacement: string;
+  /**
+   * A supporting edit (an import the rule's fixes need) rather than a
+   * finding: show nothing for it, and apply it with any fix of its rule.
+   */
+  shared: boolean;
 }
 
 /** Anything {@link createLanguageService} can instantiate. */
@@ -188,6 +193,7 @@ export interface LspExports extends WebAssembly.Exports {
   getLintRule(findings: unknown, index: number): unknown;
   getLintMessage(findings: unknown, index: number): unknown;
   getLintReplacement(findings: unknown, index: number): unknown;
+  getLintShared(findings: unknown, index: number): number;
   getDefinition(path: unknown, offset: number): unknown;
   getDefinitionFile(result: unknown): unknown;
   getDefinitionLine(result: unknown): number;
@@ -518,6 +524,7 @@ export class ZenaLanguageService {
         rule: this.#readRef(this.#exports.getLintRule(handle, i)),
         message: this.#readRef(this.#exports.getLintMessage(handle, i)),
         replacement: this.#readRef(this.#exports.getLintReplacement(handle, i)),
+        shared: this.#exports.getLintShared(handle, i) !== 0,
       });
     }
     return findings;
