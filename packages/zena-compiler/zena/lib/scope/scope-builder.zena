@@ -218,13 +218,13 @@ export final class ScopeResult(
   implicitImportDeclarations: GrowableArray<ImportDeclaration>
 )
 
-let populateParents = (ast: Node, parents: DenseNodeMap<Node>): void => {
+function populateParents(ast: Node, parents: DenseNodeMap<Node>): void {
   walkChildren(ast, (child) => {
     parents[child] = ast;
     populateParents(child, parents);
     return false; // we handle recursion manually to track the parent
   }, (child) => {});
-};
+}
 
 /**
  * Builds the scope tree and export catalog for a single module.
@@ -316,11 +316,8 @@ export final class ScopeBuilder {
     populateParents(ast, this.#parents);
     this.#declareBuiltins();
     this.#declarePrelude(ast.loc);
-    match (ast) {
-      case Module {body}: {
-        this.#processStatements(body);
-      }
-      case _: {}
+    if (let Module {body} = ast) {
+      this.#processStatements(body);
     }
 
     let unused = new Array<Symbol>();
@@ -715,41 +712,35 @@ export final class ScopeBuilder {
         this.#exitScope();
       }
       case IfStatement {test, consequent, alternate}: {
-        match (test) {
-          case LetPatternCondition {pattern, init}: {
-            this.#processExpression(init);
+        if (let LetPatternCondition {pattern, init} = test) {
+          this.#processExpression(init);
+          this.#enterScope(ScopeKind.Block);
+          this.#declarePattern(pattern, "let", test);
+          this.#processStatement(consequent);
+          this.#exitScope();
+          if (alternate != null) {
             this.#enterScope(ScopeKind.Block);
-            this.#declarePattern(pattern, "let", test);
-            this.#processStatement(consequent);
+            this.#processStatement(alternate);
             this.#exitScope();
-            if (alternate != null) {
-              this.#enterScope(ScopeKind.Block);
-              this.#processStatement(alternate);
-              this.#exitScope();
-            }
           }
-          case _: {
-            this.#processNode(test);
-            this.#processStatement(consequent);
-            if (alternate != null) {
-              this.#processStatement(alternate);
-            }
+        } else {
+          this.#processNode(test);
+          this.#processStatement(consequent);
+          if (alternate != null) {
+            this.#processStatement(alternate);
           }
         }
       }
       case WhileStatement {test, body}: {
-        match (test) {
-          case LetPatternCondition {pattern, init}: {
-            this.#processExpression(init);
-            this.#enterScope(ScopeKind.Block);
-            this.#declarePattern(pattern, "let", test);
-            this.#processStatement(body);
-            this.#exitScope();
-          }
-          case _: {
-            this.#processNode(test);
-            this.#processStatement(body);
-          }
+        if (let LetPatternCondition {pattern, init} = test) {
+          this.#processExpression(init);
+          this.#enterScope(ScopeKind.Block);
+          this.#declarePattern(pattern, "let", test);
+          this.#processStatement(body);
+          this.#exitScope();
+        } else {
+          this.#processNode(test);
+          this.#processStatement(body);
         }
       }
       case ForStatement {init, test, update, body}: {
@@ -999,12 +990,9 @@ export final class ScopeBuilder {
           }
         }
         if (constructorName != null) {
-          match (constructorName) {
-            case SymbolPropertyName {symbolRef}: {
-              this.#processExpression(symbolRef);
-            }
-            case _: {}
-          }
+          if (let SymbolPropertyName {symbolRef} = constructorName) {
+            this.#processExpression(symbolRef);
+          } else {}
         }
         for (let arg in args) {
           this.#processExpression(arg);
@@ -1071,24 +1059,21 @@ export final class ScopeBuilder {
         }
       }
       case IfExpression {test, consequent, alternate}: {
-        match (test) {
-          case LetPatternCondition {pattern, init}: {
-            this.#processExpression(init);
+        if (let LetPatternCondition {pattern, init} = test) {
+          this.#processExpression(init);
+          this.#enterScope(ScopeKind.Block);
+          this.#declarePattern(pattern, "let", test);
+          this.#processNode(consequent);
+          this.#exitScope();
+          if (alternate != null) {
             this.#enterScope(ScopeKind.Block);
-            this.#declarePattern(pattern, "let", test);
-            this.#processNode(consequent);
+            this.#processNode(alternate);
             this.#exitScope();
-            if (alternate != null) {
-              this.#enterScope(ScopeKind.Block);
-              this.#processNode(alternate);
-              this.#exitScope();
-            }
           }
-          case _: {
-            this.#processNode(test);
-            this.#processNode(consequent);
-            if (alternate != null) { this.#processNode(alternate); }
-          }
+        } else {
+          this.#processNode(test);
+          this.#processNode(consequent);
+          if (alternate != null) { this.#processNode(alternate); }
         }
       }
       case ThrowExpression {argument}: {
@@ -1220,31 +1205,22 @@ export final class ScopeBuilder {
           let {initializerList} = md;
           if (initializerList != null) {
             for (let init in initializerList) {
-              match (init) {
-                case FieldInitializer {value}: {
-                  this.#processExpression(value);
-                }
-                case _: {}
+              if (let FieldInitializer {value} = init) {
+                this.#processExpression(value);
               }
             }
           }
           if (md.superInitializer != null) {
-            match (md.superInitializer) {
-              case SuperInitializer {args, constructorName}: {
-                if (constructorName != null) {
-                  match (constructorName) {
-                    case SymbolPropertyName {symbolRef}: {
-                      this.#processExpression(symbolRef);
-                    }
-                    case _: {}
-                  }
-                }
-                for (let arg in args) {
-                  this.#processExpression(arg);
-                }
+            if (let SuperInitializer {args, constructorName} = md.superInitializer) {
+              if (constructorName != null) {
+                if (let SymbolPropertyName {symbolRef} = constructorName) {
+                  this.#processExpression(symbolRef);
+                } else {}
               }
-              case _: {}
-            }
+              for (let arg in args) {
+                this.#processExpression(arg);
+              }
+            } else {}
           }
           if (md.body != null) {
             this.#processNode(md.body);

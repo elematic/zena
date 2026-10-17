@@ -78,11 +78,11 @@ var byOpcode: HashMap<i32, SimdInstruction> | null = null;
  * only ever be in both or neither — the opcode index is the same rows
  * read the other way, not a second list to keep in step.
  */
-let buildTable = (): HashMap<String, SimdInstruction> => {
+function buildTable() {
   let t = new Map<String, SimdInstruction>();
   let byOp = new Map<i32, SimdInstruction>();
   let add = (name: String, opcode: i32, shape: SimdShape, result: SimdResult,
-      align: i32): void => {
+      align: i32) => {
     let instr = new SimdInstruction(name, opcode, shape, result, align);
     t[name] = instr;
     byOp[opcode] = instr;
@@ -325,28 +325,28 @@ let buildTable = (): HashMap<String, SimdInstruction> => {
   add('f64x2.promote_low_f32x4', 0x5F, SimdShape.Unary, SimdResult.V128, -1);
   byOpcode = byOp;
   return t;
-};
+}
 
 /** The name index, built on first use. */
-let nameIndex = (): HashMap<String, SimdInstruction> => {
+function nameIndex() {
   var t = table;
   if (t == null) {
     t = buildTable();
     table = t;
   }
   return t;
-};
+}
 
 /**
  * The instruction named `name`, or null if it is not a SIMD instruction.
  * A null answer is the caller's cue to keep looking, not an error.
  */
-export let simdInstruction = (name: String): SimdInstruction | null => {
+export function simdInstruction(name: String): SimdInstruction | null {
   if (let (true, instr) = nameIndex().get(name)) {
     return instr;
   }
   return null;
-};
+}
 
 /**
  * The wasm name of the instruction with this opcode. Only the WAT
@@ -354,7 +354,7 @@ export let simdInstruction = (name: String): SimdInstruction | null => {
  * printing something a human will read, so an unknown opcode formats as
  * itself rather than throwing mid-dump.
  */
-export let simdName = (opcode: i32): String => {
+export function simdName(opcode: i32): String {
   nameIndex();
   let m = byOpcode;
   if (m != null) {
@@ -363,7 +363,7 @@ export let simdName = (opcode: i32): String => {
     }
   }
   return 'simd:' + i32ToString(opcode);
-};
+}
 
 /**
  * How many lanes `instr` sees the vector as having — the bound its lane
@@ -376,7 +376,7 @@ export let simdName = (opcode: i32): String => {
  * CONCATENATION of two vectors, so they run to 32 and are bounded at
  * the call site instead.
  */
-export let simdLaneCount = (instr: SimdInstruction): i32 => {
+export function simdLaneCount(instr: SimdInstruction): i32 {
   let n = instr.name;
   if (n.startsWith('v128.load8_') || n.startsWith('v128.store8_') ||
       n.startsWith('i8x16')) {
@@ -391,10 +391,11 @@ export let simdLaneCount = (instr: SimdInstruction): i32 => {
     return 4;
   }
   return 2;
-};
+}
 
 /** How many arguments a call to `instr` must supply. */
-export let simdArgCount = (instr: SimdInstruction): i32 => match (instr.shape) {
+export function simdArgCount(instr: SimdInstruction): i32 {
+  return match (instr.shape) {
   case SimdShape.Unary: 1
   case SimdShape.Binary: 2
   case SimdShape.Ternary: 3
@@ -407,3 +408,4 @@ export let simdArgCount = (instr: SimdInstruction): i32 => match (instr.shape) {
   case SimdShape.Const: 4
   case SimdShape.Shuffle: 18
 };
+}

@@ -183,8 +183,9 @@ export final class CompilerTarget {
         componentEntryWrapperFor(options.entry, entry.ast)
       };
       if (wrapper != null) {
-        let pinned = new Map<String, String>();
-        pinned[wrapper.entrySpecifier] = wrapper.entryPath;
+        let pinned: HashMap<String, String> = {
+          wrapper.entrySpecifier => wrapper.entryPath,
+        };
         entries.push(this.#loader.loadSynthesized(
             wrapper.path, wrapper.source, pinned));
       }
@@ -557,11 +558,11 @@ export final class CompilerTarget {
  * library is unavailable, and the first error names one of the standard
  * library's own libraries rather than the target.
  */
-export let makeCompilerTarget = (
+export function makeCompilerTarget(
   host: CompilerHost,
   target: String,
   options: CompilerOptions
-): CompilerTarget => {
+): CompilerTarget {
   if (!isKnownTarget(target)) {
     throw new Error(
         `Unknown target '${target}' (expected ${knownTargetsDescription()})`);
@@ -573,4 +574,4 @@ export let makeCompilerTarget = (
   let loader = new LibraryLoader(
       host, resolver, options.recoverFromParseErrors ?? false);
   return new CompilerTarget(canonical, options, resolver, loader);
-};
+}

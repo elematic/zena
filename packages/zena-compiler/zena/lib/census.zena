@@ -44,22 +44,26 @@ import {
  * The wasm GC heap size of an object with `fields` 4-byte fields: the
  * 16-byte header plus the fields, rounded up to the 16-byte quantum.
  */
-export let objectBytes = (fields: i32): i32 => {
+export function objectBytes(fields: i32): i32 {
   return (((16 + 4 * fields + 15) / 16) as i32) * 16;
-};
+}
 
 /**
  * What one entry in a `Map<K, V>` costs: a `MapEntry` (key, value,
  * next) plus its share of the bucket array, which grows at a 0.75 load
  * factor, so about 1.33 four-byte slots per live entry.
  */
-let mapEntryBytes = (entries: i32): i32 => entries * (objectBytes(3) + 5);
+function mapEntryBytes(entries: i32) {
+  return entries * (objectBytes(3) + 5);
+}
 
 /**
  * The same for an ordered map, whose entry adds forward and backward
  * links and a `removed` flag.
  */
-let orderedEntryBytes = (entries: i32): i32 => entries * (objectBytes(6) + 5);
+function orderedEntryBytes(entries: i32) {
+  return entries * (objectBytes(6) + 5);
+}
 
 /**
  * How many fields each AST node kind declares, counting the two it
@@ -68,7 +72,7 @@ let orderedEntryBytes = (entries: i32): i32 => entries * (objectBytes(6) + 5);
  * updated here is reported too small, which its row's name makes
  * findable.
  */
-let nodeFieldCount = (node: Node): i32 => {
+function nodeFieldCount(node: Node): i32 {
   return match (node) {
     case AbsencePattern: 2
     case AccessorDeclaration: 9
@@ -173,10 +177,10 @@ let nodeFieldCount = (node: Node): i32 => {
     case WhileStatement: 4
     case YieldStatement: 3
   };
-};
+}
 
 /** The declaration name of a node kind, for the census row. */
-let nodeKindName = (node: Node): String => {
+function nodeKindName(node: Node) {
   return match (node) {
     case AbsencePattern: 'AbsencePattern'
     case AccessorDeclaration: 'AccessorDeclaration'
@@ -281,7 +285,7 @@ let nodeKindName = (node: Node): String => {
     case WhileStatement: 'WhileStatement'
     case YieldStatement: 'YieldStatement'
   };
-};
+}
 
 /** One row of the census: a kind, how many there are, and their bytes. */
 final class Row {
@@ -346,26 +350,26 @@ final class Table {
   }
 }
 
-let padRight = (s: String, width: i32): String => {
+function padRight(s: String, width: i32) {
   var out = s;
   while (out.length < width) { out = out + " "; }
   return out;
-};
+}
 
-let padLeft = (s: String, width: i32): String => {
+function padLeft(s: String, width: i32) {
   var out = s;
   while (out.length < width) { out = " " + out; }
   return out;
-};
+}
 
 /** A byte count as MiB to one decimal, for a table a human reads. */
-let mib = (bytes: i32): String => {
+function mib(bytes: i32) {
   let tenths = (((bytes as f64) / 1048576.0) * 10.0) as i32;
   let whole = (tenths / 10) as i32;
   return `${i32ToString(whole)}.${i32ToString(tenths - whole * 10)}`;
-};
+}
 
-let printTable = (title: String, table: Table, limit: i32): void => {
+function printTable(title: String, table: Table, limit: i32) {
   console.log("");
   console.log(`-- ${title}: ${i32ToString(table.totalCount())} objects, ${mib(table.totalBytes())} MiB`);
   var shown = 0;
@@ -374,11 +378,11 @@ let printTable = (title: String, table: Table, limit: i32): void => {
     console.log(`   ${padRight(row.name, 32)}${padLeft(i32ToString(row.count), 11)}${padLeft(mib(row.bytes), 10)}`);
     shown += 1;
   }
-};
+}
 
-let line = (label: String, value: i32): void => {
+function line(label: String, value: i32) {
   console.log(`   ${padRight(label, 32)}${padLeft(i32ToString(value), 11)}`);
-};
+}
 
 /**
  * Prints the census for a compile's `Program`.
@@ -386,7 +390,7 @@ let line = (label: String, value: i32): void => {
  * Walks every unit's AST once, which is a second traversal of the whole
  * program — hence the flag.
  */
-export let reportCensus = (program: Program): void => {
+export function reportCensus(program: Program): void {
   let ast = new Table();
   let side = new Table();
   let other = new Table();
@@ -397,7 +401,7 @@ export let reportCensus = (program: Program): void => {
   var commentCount = 0;
 
   for (let unit in program.units) {
-    walkEnter(unit.ast, (n: Node): void => {
+    walkEnter(unit.ast, (n) => {
       nodeCount += 1;
       ast.add(nodeKindName(n), 1, objectBytes(nodeFieldCount(n)));
       if (n.loc != null) { withLocation += 1; }
@@ -560,4 +564,4 @@ export let reportCensus = (program: Program): void => {
   console.log(`   ${padRight("side tables", 32)}${padLeft(mib(side.totalBytes()), 11)}`);
   console.log(`   ${padRight("locations, comments, source", 32)}${padLeft(mib(other.totalBytes()), 11)}`);
   console.log(`   ${padRight("type key strings", 32)}${padLeft(mib(typeKeyBytes()), 11)}`);
-};
+}

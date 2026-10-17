@@ -39,10 +39,10 @@ import { HashMap } from 'zena:collections';
 //
 // Returns a map of package name → PackageConfig. The "zena" package (stdlib)
 // is NOT included — the compiler adds that automatically.
-export let loadPackageMap = (
+export function loadPackageMap(
   host: CompilerHost,
   manifestPath: String
-): HashMap<String, PackageConfig> => {
+): HashMap<String, PackageConfig> {
   let source = host.readFile(manifestPath);
   let json = parseJson(source);
   let root = json as JsonObject;
@@ -50,7 +50,7 @@ export let loadPackageMap = (
   let manifestDir = dirName(manifestPath);
   let result = new Map<String, PackageConfig>();
 
-  packages.forEach((name: String, value: JsonValue): void => {
+  packages.forEach((name, value) => {
     // Skip "zena" — stdlib is handled by the compiler.
     if (name == "zena") {
       return;
@@ -60,17 +60,17 @@ export let loadPackageMap = (
   });
 
   return result;
-};
+}
 
 // Parse a single package entry from the manifest.
 //
 // Supports two forms:
 // - String shorthand: "./path/to/lib" → open package with that root
 // - Object form: { root, exports? }
-let parsePackageEntry = (value: JsonValue, manifestDir: String): PackageConfig => {
+function parsePackageEntry(value: JsonValue, manifestDir: String): PackageConfig {
   // String shorthand: just a path.
   if (value is String) {
-    let resolved = normalizePath(manifestDir + "/" + value);
+    let resolved = normalizePath(`${manifestDir}/${value}`);
     return new PackageConfig(resolved, null);
   }
 
@@ -82,19 +82,19 @@ let parsePackageEntry = (value: JsonValue, manifestDir: String): PackageConfig =
   if (obj.has("wit")) {
     let witValue = obj["wit"] as String;
     let config = new PackageConfig("", null);
-    config.witRoot = normalizePath(manifestDir + "/" + witValue);
+    config.witRoot = normalizePath(`${manifestDir}/${witValue}`);
     return config;
   }
 
   let rootValue = obj["root"] as String;
-  let root = normalizePath(manifestDir + "/" + rootValue);
+  let root = normalizePath(`${manifestDir}/${rootValue}`);
 
   // Parse exports (optional).
   var exports: HashMap<String, ModuleExport> | null = null;
   if (obj.has("exports")) {
     let exportsMap = new Map<String, ModuleExport>();
     let exportsObj = obj["exports"] as JsonObject;
-    exportsObj.forEach((moduleName: String, moduleValue: JsonValue): void => {
+    exportsObj.forEach((moduleName, moduleValue) => {
       let moduleExport = parseModuleExport(moduleValue);
       exportsMap[moduleName] = moduleExport;
     });
@@ -102,11 +102,11 @@ let parsePackageEntry = (value: JsonValue, manifestDir: String): PackageConfig =
   }
 
   return new PackageConfig(root, exports);
-};
+}
 
 // Parse a module export entry: {}, { "path": "..." }, or { "virtual": { ... } },
 // any of which may carry "internal": true.
-let parseModuleExport = (value: JsonValue): ModuleExport => {
+function parseModuleExport(value: JsonValue): ModuleExport {
   let obj = value as JsonObject;
   let internalValue = obj["internal"];
   let internal = internalValue is Box<boolean> &&
@@ -117,7 +117,7 @@ let parseModuleExport = (value: JsonValue): ModuleExport => {
     let virtual = new Map<String, String>();
     // Keyed by current target names, as the resolver looks them up; a
     // manifest that still says "host" keeps working.
-    virtualObj.forEach((target: String, entryPath: JsonValue): void => {
+    virtualObj.forEach((target, entryPath) => {
       virtual[canonicalTarget(target)] = entryPath as String;
     });
     return new ModuleExport(virtual, null, internal);
@@ -128,7 +128,7 @@ let parseModuleExport = (value: JsonValue): ModuleExport => {
   }
 
   return new ModuleExport(null, null, internal);
-};
+}
 
 /**
  * The user's packages plus the ones the stdlib carries: `wasi`, the
@@ -138,10 +138,10 @@ let parseModuleExport = (value: JsonValue): ModuleExport => {
  * `wasi` keeps its own — a test's fixture package, say. The `zena`
  * package is not here: it is built from the manifest, not a path.
  */
-export let withBuiltinPackages = (
+export function withBuiltinPackages(
   stdlibRoot: String,
   packages: Map<String, PackageConfig>
-): HashMap<String, PackageConfig> => {
+): HashMap<String, PackageConfig> {
   let all = new Map<String, PackageConfig>();
   for (let name in packages.keys()) {
     all[name] = packages[name];
@@ -161,7 +161,7 @@ export let withBuiltinPackages = (
     all["zena-cli"] = host;
   }
   return all;
-};
+}
 
 // The stdlib's own manifest lives in ./stdlib-manifest.zena; re-exported
 // here so callers keep one import for both manifests.
