@@ -36,6 +36,7 @@ import { walkEnter } from '../../visitor.zena';
 import { resolveImportedSymbolId } from './import-resolver.zena';
 import { WellKnown, isWellKnown } from '../../well-known.zena';
 import { stdlibLibraryOf, stdlibLibraryAnswers } from '../../stdlib-manifest.zena';
+import { growable } from 'zena:core';
 
 /**
  * TypeLowerer translates Zena semantic types into their target WebAssembly representation,
@@ -441,14 +442,12 @@ export final class TypeLowerer implements TypeLowererInterface {
         this.pass.suppressNameEvidence = true;
         let faClass = this.pass.findPreludeClass("FixedArray");
         if (faClass != null) {
-          let typeArgs = new Array<Type>();
-          typeArgs.push(t.elementType);
+          let typeArgs = growable<Type>([t.elementType]);
           this.discoverType(instantiateClassType(faClass, typeArgs), model);
         }
         let iaClass = this.pass.findPreludeClass("ImmutableArray");
         if (iaClass != null) {
-          let typeArgs = new Array<Type>();
-          typeArgs.push(t.elementType);
+          let typeArgs = growable<Type>([t.elementType]);
           this.discoverType(instantiateClassType(iaClass, typeArgs), model);
         }
         this.pass.suppressNameEvidence = savedSuppress;
@@ -500,7 +499,7 @@ export final class TypeLowerer implements TypeLowererInterface {
  * standard library's functions the compiler roots by name may be
  * written either way.
  */
-let declaredPattern = (stmt: Node): IdentifierPattern | null => {
+function declaredPattern(stmt: Node): IdentifierPattern | null {
   match (stmt) {
     case VariableDeclaration {pattern}: {
       if (pattern is IdentifierPattern) {
@@ -511,9 +510,9 @@ let declaredPattern = (stmt: Node): IdentifierPattern | null => {
     case _: {}
   }
   return null;
-};
+}
 
-let isInterfaceOperand = (t: Type): boolean => {
+function isInterfaceOperand(t: Type): boolean {
   if (t is InterfaceType) {
     return true;
   }
@@ -525,7 +524,7 @@ let isInterfaceOperand = (t: Type): boolean => {
     }
   }
   return false;
-};
+}
 
 export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
   pass: ReachabilityContext;
@@ -711,11 +710,11 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
     }
     this.pass.typeLowerer.discoverType(left, model);
     this.pass.typeLowerer.discoverType(right, model);
-    let params = new Array<ValType>();
-    params.push(typeToValType(wasm, left));
-    params.push(typeToValType(wasm, right));
-    let returns = new Array<ValType>();
-    returns.push(new ValTypeI32());
+    let params = growable<ValType>([
+      typeToValType(wasm, left),
+      typeToValType(wasm, right),
+    ]);
+    let returns = growable<ValType>([new ValTypeI32()]);
     let fn = new WasmFunction(wasm.getSignature(params, returns), null, model);
     fn.name = '$valueEq';
     fn.valueEqLeft = left;
@@ -753,10 +752,8 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
       return;
     }
     this.pass.typeLowerer.discoverType(type, model);
-    let params = new Array<ValType>();
-    params.push(typeToValType(wasm, type));
-    let returns = new Array<ValType>();
-    returns.push(new ValTypeI32());
+    let params = growable<ValType>([typeToValType(wasm, type)]);
+    let returns = growable<ValType>([new ValTypeI32()]);
     let fn = new WasmFunction(wasm.getSignature(params, returns), null, model);
     fn.name = '$valueHash';
     fn.valueHashType = type;
@@ -816,7 +813,7 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
   }
 
   registerLiterals(root: Node): void {
-    walkEnter(root, (n: Node) => {
+    walkEnter(root, (n) => {
       if (n is StringLiteral) {
         this.noteStringLiteral(n.value);
       }
@@ -861,7 +858,7 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
     // The body's own mixin scope, if it was written in a mixin: it
     // decides which member a private name in this body refers to.
     let bodyScope = mixinScopeOfNode(model, root);
-    walkEnter(root, (n: Node) => {
+    walkEnter(root, (n) => {
       // Private-method calls are lexically bound and never virtual, so
       // the dependency records are their ONLY discovery edge when the
       // body walk is skipped — and the records miss them for
@@ -1453,7 +1450,7 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
     let source = it.genericSource ?? it;
     let declId = source.symbolId;
     if (!this.pass.interfaceDecls.has(declId)) {
-      throw new Error("interface constructor: declaration of '" + it.name + "' is not indexed");
+      throw new Error(`interface constructor: declaration of '${it.name}' is not indexed`);
     }
     let decl = this.pass.interfaceDecls[declId];
     let declModel = this.pass.interfaceModels[declId];
@@ -1470,7 +1467,7 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
         }
       }
     }
-    throw new Error("interface constructor '" + targetName + "' not found on '" + it.name + "'");
+    throw new Error(`interface constructor '${targetName}' not found on '${it.name}'`);
   }
 
   /**
@@ -1787,7 +1784,7 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
       let itKey = getInterfaceMemberKey(iterableKey, symbolKey);
       this.pass.wasm.usedInterfaceMembers[itKey] = true;
 
-      let resolvedIfaceStr = i32ToString((iterableIface.genericSource ?? iterableIface).id as i32) + "." + symbolKey;
+      let resolvedIfaceStr = `${i32ToString((iterableIface.genericSource ?? iterableIface).id as i32)}.${symbolKey}`;
       this.pass.addReferencedInterfaceMember(resolvedIfaceStr);
 
       let cha = this.pass.cha;
@@ -2264,7 +2261,7 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
     // The body's own mixin scope, if it was written in a mixin: it
     // decides which member a private name in this body refers to.
     let bodyScope = mixinScopeOfNode(model, root);
-    walkEnter(root, (n: Node) => {
+    walkEnter(root, (n) => {
       // One field increment per node walked, on this class rather than
       // through `pass`: a compound write to a field reached through an
       // interface-typed reference does not lower ("zir unsupported:
@@ -2681,7 +2678,7 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
             
             let resolvedName = if (isMethod) propName else "get#" + propName;
             this.pass.wasm.usedInterfaceMembers[getInterfaceMemberKey(iName, resolvedName)] = true;
-            let resolvedIfaceStr = i32ToString((resolvedObj.genericSource ?? resolvedObj).id as i32) + "." + resolvedName;
+            let resolvedIfaceStr = `${i32ToString((resolvedObj.genericSource ?? resolvedObj).id as i32)}.${resolvedName}`;
             this.pass.addReferencedInterfaceMember(resolvedIfaceStr);
             this.registerGenericInterfaceMethodUse(n, model, resolveType, resolvedObj);
           } else if (resolvedObj is ClassType) {
@@ -2819,14 +2816,14 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
                 if (member is FieldInfo) {
                   if (member.isMutable) {
                     this.pass.wasm.usedInterfaceMembers[getInterfaceMemberKey(iName, "set#" + propName)] = true;
-                    let resolvedIfaceStr = i32ToString((resolvedObj.genericSource ?? resolvedObj).id as i32) + ".set#" + propName;
+                    let resolvedIfaceStr = `${i32ToString((resolvedObj.genericSource ?? resolvedObj).id as i32)}.set#${propName}`;
                     this.pass.addReferencedInterfaceMember(resolvedIfaceStr);
                   }
                 }
               }
               if (resolvedObj.members.has(setterName)) {
                 this.pass.wasm.usedInterfaceMembers[getInterfaceMemberKey(iName, setterName)] = true;
-                let resolvedIfaceStr = i32ToString((resolvedObj.genericSource ?? resolvedObj).id as i32) + "." + setterName;
+                let resolvedIfaceStr = `${i32ToString((resolvedObj.genericSource ?? resolvedObj).id as i32)}.${setterName}`;
                 this.pass.addReferencedInterfaceMember(resolvedIfaceStr);
               }
             } else if (resolvedObj is ClassType) {
@@ -2956,25 +2953,23 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
       keyName = i32ToString(sym.resolveTarget().id as i32);
       if (let (true, f) = this.pass.wasm.functionMap.get(targetSymId)) {
         targetWasmFunc = f;
-      } else {
-        if (!this.#discoveringOnDemand.has(targetSymId)) {
-          this.#discoveringOnDemand.add(targetSymId);
-          if (let (true, targetModel) = this.pass.symbolIdToModel.get(targetSymId)) {
-            if (let (true, decl) = targetModel.globalDeclarations.get(targetSymId)) {
-              let resolver = (t: Type): Type => t;
-              this.discoverNodeTypes(decl, targetModel, resolver);
-              if (decl is VariableDeclaration) {
-                this.discoverVariableDeclaration(targetSymId, decl, targetModel);
-              } else if (decl is FunctionDeclaration) {
-                this.discoverFunctionDeclaration(targetSymId, decl, targetModel);
-              }
-              if (let (true, f) = this.pass.wasm.functionMap.get(targetSymId)) {
-                targetWasmFunc = f;
-              }
+      } else if (!this.#discoveringOnDemand.has(targetSymId)) {
+        this.#discoveringOnDemand.add(targetSymId);
+        if (let (true, targetModel) = this.pass.symbolIdToModel.get(targetSymId)) {
+          if (let (true, decl) = targetModel.globalDeclarations.get(targetSymId)) {
+            let resolver = (t: Type) => t;
+            this.discoverNodeTypes(decl, targetModel, resolver);
+            if (decl is VariableDeclaration) {
+              this.discoverVariableDeclaration(targetSymId, decl, targetModel);
+            } else if (decl is FunctionDeclaration) {
+              this.discoverFunctionDeclaration(targetSymId, decl, targetModel);
+            }
+            if (let (true, f) = this.pass.wasm.functionMap.get(targetSymId)) {
+              targetWasmFunc = f;
             }
           }
-          this.#discoveringOnDemand.delete(targetSymId);
         }
+        this.#discoveringOnDemand.delete(targetSymId);
       }
     }
     if (targetWasmFunc != null) {
@@ -3004,8 +2999,7 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
   }
 
   registerWrapper(keyName: String, ft: FunctionType, targetWasmFunc: WasmFunction, model: SemanticModel): void {
-    let wrapperParams = new Array<ValType>();
-    wrapperParams.push(new ValTypeStructRef());
+    let wrapperParams = growable<ValType>([new ValTypeStructRef()]);
     for (let p in ft.parameters) {
       mapParamTypeToWasmParams(this.pass.wasm, p, wrapperParams);
     }
@@ -3018,7 +3012,7 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
     if (!this.pass.wasm.functionValueWrappers.has(wrapperKey)) {
       let wrapperFunc = new WasmFunction(sig, null, model);
       let targetName = if (targetWasmFunc.name != null) targetWasmFunc.name as String else "func";
-      wrapperFunc.name = targetName + "_valwrapper_" + getSignatureKey(ft);
+      wrapperFunc.name = `${targetName}_valwrapper_${getSignatureKey(ft)}`;
       wrapperFunc.isClosureWrapper = true;
       wrapperFunc.closureWrapperTarget = targetWasmFunc;
       wrapperFunc.isReferenceTaken = true;
@@ -3065,25 +3059,23 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
       keyName = i32ToString(targetSymId as i32);
       if (let (true, f) = this.pass.wasm.functionMap.get(targetSymId)) {
         targetWasmFunc = f;
-      } else {
-        if (!this.#discoveringOnDemand.has(targetSymId)) {
-          this.#discoveringOnDemand.add(targetSymId);
-          if (let (true, targetModel) = this.pass.symbolIdToModel.get(targetSymId)) {
-            if (let (true, decl) = targetModel.globalDeclarations.get(targetSymId)) {
-              let resolver = (t: Type): Type => t;
-              this.discoverNodeTypes(decl, targetModel, resolver);
-              if (decl is VariableDeclaration) {
-                this.discoverVariableDeclaration(targetSymId, decl, targetModel);
-              } else if (decl is FunctionDeclaration) {
-                this.discoverFunctionDeclaration(targetSymId, decl, targetModel);
-              }
-              if (let (true, f) = this.pass.wasm.functionMap.get(targetSymId)) {
-                targetWasmFunc = f;
-              }
+      } else if (!this.#discoveringOnDemand.has(targetSymId)) {
+        this.#discoveringOnDemand.add(targetSymId);
+        if (let (true, targetModel) = this.pass.symbolIdToModel.get(targetSymId)) {
+          if (let (true, decl) = targetModel.globalDeclarations.get(targetSymId)) {
+            let resolver = (t: Type) => t;
+            this.discoverNodeTypes(decl, targetModel, resolver);
+            if (decl is VariableDeclaration) {
+              this.discoverVariableDeclaration(targetSymId, decl, targetModel);
+            } else if (decl is FunctionDeclaration) {
+              this.discoverFunctionDeclaration(targetSymId, decl, targetModel);
+            }
+            if (let (true, f) = this.pass.wasm.functionMap.get(targetSymId)) {
+              targetWasmFunc = f;
             }
           }
-          this.#discoveringOnDemand.delete(targetSymId);
         }
+        this.#discoveringOnDemand.delete(targetSymId);
       }
     }
     if (targetWasmFunc != null) {
@@ -3175,7 +3167,7 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
 
         let sym = moduleModel.resolveDeclaration(ident);
         if (sym != null) {
-          let name = ident.name + "_" + i32ToString(sym.id as i32);
+          let name = `${ident.name}_${i32ToString(sym.id as i32)}`;
           let wasmGlobal = new WasmGlobal(name, ident.name, vType, isMutable, expr, null, moduleModel);
           wasmGlobal.symbolId = sym.id;
           this.pass.wasm.globals.push(wasmGlobal);
@@ -3270,7 +3262,7 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
           if (nodeType != null) {
             this.pass.typeLowerer.discoverType(nodeType, moduleModel);
             let vType = typeToValType(this.pass.wasm, nodeType);
-            let name = localIdent.name + "_" + i32ToString(sym.id as i32);
+            let name = `${localIdent.name}_${i32ToString(sym.id as i32)}`;
             
             let wasmGlobal = new WasmGlobal(name, localIdent.name, vType, true, null, null, moduleModel);
             wasmGlobal.namespaceImport = spec;
@@ -3286,7 +3278,7 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
                 let referrer = moduleModel.getParent(parentNode);
                 if (referrer is Module) {
                   let dir = dirName(referrer.path);
-                  canonicalPath = normalizePath(dir + "/" + specifier);
+                  canonicalPath = normalizePath(`${dir}/${specifier}`);
                 }
               }
               
@@ -3315,8 +3307,9 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
                       f.isReferenceTaken = true;
                       this.pass.markFunctionReached(f);
                       if (f.closureTrampoline == null) {
-                        let tParams = new Array<ValType>();
-                        tParams.push(new ValTypeStructRef());
+                        let tParams = growable<ValType>([
+                          new ValTypeStructRef(),
+                        ]);
                         for (let p in f.signature.params) {
                           tParams.push(p);
                         }
@@ -3428,7 +3421,7 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
     }
 
     if (isIntrinsic) {
-      let key = moduleModel.sourcePath + "::" + decl.name.name;
+      let key = `${moduleModel.sourcePath}::${decl.name.name}`;
       if (let (true, list) = this.pass.program.exportedFunctions.get(key)) {
         for (let df in list) {
           var dfIntrinsicName = "";
@@ -3503,8 +3496,7 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
       }
 
       if (isGcRef) {
-        let importReturns = new Array<ValType>();
-        importReturns.push(new ValTypeExternRef());
+        let importReturns = growable<ValType>([new ValTypeExternRef()]);
         let importSig = this.pass.wasm.getSignature(params, importReturns);
         let importFunc = new WasmFunction(importSig, decl, moduleModel);
         importFunc.isImport = true;
@@ -3558,10 +3550,8 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
       throw new Error("string_hash_helper discovery: String class struct not found!");
     }
     
-    let helperParams = new Array<ValType>();
-    helperParams.push(new ValTypeRefNull(stringStruct));
-    let helperReturns = new Array<ValType>();
-    helperReturns.push(new ValTypeI32());
+    let helperParams = growable<ValType>([new ValTypeRefNull(stringStruct)]);
+    let helperReturns = growable<ValType>([new ValTypeI32()]);
     let helperSig = this.pass.wasm.getSignature(helperParams, helperReturns);
     
     let helperFunc = new WasmFunction(helperSig, null, model);
@@ -3585,14 +3575,14 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
  * (getTypeKeyForSpecialization), so the body is one that cannot lower
  * `hash`/`eq`, which dispatch on their operand's type.
  */
-let noOpenTypeParameters = (args: Array<Type>): boolean => {
+function noOpenTypeParameters(args: Array<Type>): boolean {
   for (let a in args) {
     if (a is TypeParameterType) { return false; }
   }
   return true;
-};
+}
 
-let eraseType = (t: Type): Type => {
+function eraseType(t: Type): Type {
   return match (t) {
     case TypeParameterType: new ErasedType()
     case FunctionType as ft: {
@@ -3642,11 +3632,11 @@ let eraseType = (t: Type): Type => {
     }
     case _: t
   };
-};
+}
 
 
 
-let matchTypesForImport = (t1: Type, t2: Type): boolean => {
+function matchTypesForImport(t1: Type, t2: Type): boolean {
   if (t1 is TypeParameterType) {
     return true;
   }
@@ -3698,9 +3688,9 @@ let matchTypesForImport = (t1: Type, t2: Type): boolean => {
       return getTypeUniqueKey(t1) == getTypeUniqueKey(t2);
     }
   }
-};
+}
 
-let matchOverloadForImport = (t1: Type, t2: Type): boolean => {
+function matchOverloadForImport(t1: Type, t2: Type): boolean {
   if (t1 is FunctionType && t2 is FunctionType) {
     if (t1.parameters.length != t2.parameters.length) {
       return false;
@@ -3715,22 +3705,20 @@ let matchOverloadForImport = (t1: Type, t2: Type): boolean => {
     return true;
   }
   return false;
-};
+}
 
 
-let accessorMemberName =
-    (model: SemanticModel, acc: AccessorDeclaration): String => {
+function accessorMemberName(model: SemanticModel, acc: AccessorDeclaration): String {
   return memberKeyOf(model, acc.name as Node);
-};
+}
 
-let getNodeMemberName = (model: SemanticModel, node: Node): String => {
+function getNodeMemberName(model: SemanticModel, node: Node): String {
   return memberKeyOf(model, node);
-};
+}
 
-let ctorMethodName =
-    (model: SemanticModel, md: MethodDefinition): String => {
+function ctorMethodName(model: SemanticModel, md: MethodDefinition): String {
   return memberKeyOf(model, md.name as Node);
-};
+}
 
 /**
  * True when lowerForIn (ir/control-flow.zena) takes the direct
@@ -3742,7 +3730,7 @@ let ctorMethodName =
  * the arrays — a bare mention with no arguments has no element type
  * there and falls back to the iterator path.
  */
-let forInLowersToIndexLoop = (ct: ClassType): boolean => {
+function forInLowersToIndexLoop(ct: ClassType): boolean {
   var canonical = ct;
   while (canonical.genericSource != null) {
     canonical = canonical.genericSource as ClassType;
@@ -3756,13 +3744,13 @@ let forInLowersToIndexLoop = (ct: ClassType): boolean => {
   }
   let targs = ct.typeArguments;
   return targs != null && targs.length > 0;
-};
+}
 
 /** True for the stdlib's BoundedRange and FromRange classes. */
-let isIterableRangeClass = (ct: ClassType): boolean => {
+function isIterableRangeClass(ct: ClassType): boolean {
   return isWellKnown(WellKnown.BoundedRangeClass, ct.name, ct.sourcePath) ||
       isWellKnown(WellKnown.FromRangeClass, ct.name, ct.sourcePath);
-};
+}
 
 /**
  * True when `range` is a literal written directly as a for-in's
@@ -3770,8 +3758,8 @@ let isIterableRangeClass = (ct: ClassType): boolean => {
  * from the literal's bounds and never constructs the range, so the
  * range class needs no instance, constructor or struct type.
  */
-let isForInRangeLiteral = (model: SemanticModel,
-    range: RangeExpression): boolean => {
+function isForInRangeLiteral(model: SemanticModel,
+    range: RangeExpression): boolean {
   let parent = model.getParent(range);
   if (!(parent is ForInStatement)) {
     return false;
@@ -3781,4 +3769,4 @@ let isForInRangeLiteral = (model: SemanticModel,
   }
   let t = model.getNodeType(range);
   return t is ClassType && isIterableRangeClass(t);
-};
+}

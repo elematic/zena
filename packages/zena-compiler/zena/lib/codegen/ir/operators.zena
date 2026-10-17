@@ -32,33 +32,34 @@ import { lowerClassEquality, lowerErasedEq, lowerValueEq } from './equality.zena
 import { valueEqOperand } from '../value-equality.zena';
 import { lowerNullishCoalesce } from './control-flow.zena';
 import { exactLiteralFields, lowerExpr } from './lowering.zena';
+import { growable } from 'zena:core';
 
 
 /** Bail with the lowering-side message shape (reason @function). */
-let bail = (cx: LoweringContext, reason: String): never => {
-  throw new ZirUnsupported(reason + ' @' + (cx.func.name ?? '?'));
-};
+function bail(cx: LoweringContext, reason: String): never {
+  throw new ZirUnsupported(`${reason} @${cx.func.name ?? '?'}`);
+}
 
 /** Base type of the substituted checked type (unions unwrapped). */
-let substitutedBaseType = (cx: LoweringContext, expr: Expression): Type | null => {
+function substitutedBaseType(cx: LoweringContext, expr: Expression): Type | null {
   let t = cx.substitutedNodeType(expr);
   if (t == null) {
     return null;
   }
   return baseType(t);
-};
+}
 
 /** Whether the operand's checked type is unsigned (name-driven: only
  * these pick the _u operator variants). u8/u16 count — they are held
  * zero-extended, so the unsigned comparison is the correct one even
  * though the operands have already widened to i32. */
-export let isUnsignedNode = (cx: LoweringContext, expr: Expression): boolean => {
+export function isUnsignedNode(cx: LoweringContext, expr: Expression): boolean {
   let bt = substitutedBaseType(cx, expr);
   return bt != null && isUnsignedIntType(bt);
-};
+}
 
-export let mapBinaryOp = (cx: LoweringContext, operator: String, vt: ValType,
-    unsigned: boolean): IrOp => {
+export function mapBinaryOp(cx: LoweringContext, operator: String, vt: ValType,
+    unsigned: boolean): IrOp {
   if (vt is ValTypeI32) {
     if (operator == "+") { return IrOp.i32_add; }
     if (operator == "-") { return IrOp.i32_sub; }
@@ -119,10 +120,10 @@ export let mapBinaryOp = (cx: LoweringContext, operator: String, vt: ValType,
     if (operator == ">=") { return IrOp.f32_ge; }
   }
   cx.fail('operator ' + operator);
-};
+}
 
 /** Requires a scalar (or scalar-represented, e.g. numeric enum) operand. */
-let requireScalarNode = (cx: LoweringContext, expr: Expression): void => {
+function requireScalarNode(cx: LoweringContext, expr: Expression) {
   let bt = substitutedBaseType(cx, expr);
   if (bt == null) {
     bail(cx, 'untyped operand');
@@ -143,7 +144,7 @@ let requireScalarNode = (cx: LoweringContext, expr: Expression): void => {
   if (!reprOk) {
     bail(cx, 'operand type ' + typeToString(bt));
   }
-};
+}
 
 /**
  * Numeric conversions between scalar wasm types, shared by `as`
@@ -153,7 +154,7 @@ let requireScalarNode = (cx: LoweringContext, expr: Expression): void => {
  * opcodes here, so u32 values >= 2^31 cast to i64/f64 diverge
  * above 2^31 sign-extend when widened — elematic/zena#90.
  */
-let scalarConvert = (cx: LoweringContext, value: i32, dstVt: ValType): i32 => {
+function scalarConvert(cx: LoweringContext, value: i32, dstVt: ValType): i32 {
   let srcVt = cx.valueTypeOf(value);
   if (valTypeEquals(srcVt, dstVt)) {
     return value;
@@ -176,21 +177,21 @@ let scalarConvert = (cx: LoweringContext, value: i32, dstVt: ValType): i32 => {
     if (dstVt is ValTypeF64) { return cx.b.emit(IrOp.f64_promote_f32, dstVt, value, -1); }
   }
   cx.fail('cast kind');
-};
+}
 
 /** Whether the checked type's runtime representation is a wasm
  * reference (class, record, tuple, distinct-over-ref, ref union). */
-let refReprType = (cx: LoweringContext, t: Type): boolean => {
+function refReprType(cx: LoweringContext, t: Type) {
   let vt = typeToValTypeWithSub(cx.wasm, t, cx.func);
   return isRefValType(vt);
-};
+}
 
 /**
  * True when `t` is a reference type with no operator== anywhere on
  * it, so == means identity. Nullable unions strip their null;
  * unions of multiple non-null members stay conservative (false).
  */
-let refIdentityEqType = (tIn: Type): boolean => {
+function refIdentityEqType(tIn: Type): boolean {
   var t = tIn;
   if (t is UnionType) {
     let ut = t;
@@ -213,14 +214,14 @@ let refIdentityEqType = (tIn: Type): boolean => {
   // An interface value's class is not known statically: its `==` is the
   // runtime class's, through the erased comparison.
   return false;
-};
+}
 
 /**
  * The class `==` compares through when the operand's type is a class or a
  * class or null: a struct-backed class, not an extension class (whose values
  * are another type's) and not a type parameter.
  */
-let equalityClassOf = (cx: LoweringContext, tIn: Type): ClassType | null => {
+function equalityClassOf(cx: LoweringContext, tIn: Type): ClassType | null {
   var t = tIn;
   if (t is UnionType) {
     var nonNull: Type | null = null;
@@ -247,7 +248,7 @@ let equalityClassOf = (cx: LoweringContext, tIn: Type): ClassType | null => {
     return null;
   }
   return ct;
-};
+}
 
 /**
  * A record or tuple operand of `==`: a record literal of exactly the
@@ -255,7 +256,7 @@ let equalityClassOf = (cx: LoweringContext, tIn: Type): ClassType | null => {
  * record (`explodedRecords`), so the comparison reads the fields and the
  * record is never built. Anything else lowers as usual.
  */
-let lowerValueEqOperand = (cx: LoweringContext, e: Expression, t: Type): i32 => {
+function lowerValueEqOperand(cx: LoweringContext, e: Expression, t: Type) {
   let bt = baseType(t);
   if (bt is RecordType) {
     let d = cx.recordDispatchOf(bt);
@@ -265,10 +266,10 @@ let lowerValueEqOperand = (cx: LoweringContext, e: Expression, t: Type): i32 => 
     }
   }
   return lowerExpr(cx, e, null);
-};
+}
 
 /** Short-circuit && and || as a value-producing diamond. */
-let lowerLogical = (cx: LoweringContext, bin: BinaryExpression): i32 => {
+function lowerLogical(cx: LoweringContext, bin: BinaryExpression) {
   let left = lowerExpr(cx, bin.left, null);
   let evalRight = cx.b.newBlock();
   let merge = cx.b.newBlock();
@@ -285,9 +286,9 @@ let lowerLogical = (cx: LoweringContext, bin: BinaryExpression): i32 => {
   cx.b.br(merge, oneValue(right));
   cx.b.switchTo(merge);
   return result;
-};
+}
 
-export let lowerBinary = (cx: LoweringContext, bin: BinaryExpression): i32 => {
+export function lowerBinary(cx: LoweringContext, bin: BinaryExpression): i32 {
   if (bin.operator == "&&" || bin.operator == "||") {
     return lowerLogical(cx, bin);
   }
@@ -522,18 +523,19 @@ export let lowerBinary = (cx: LoweringContext, bin: BinaryExpression): i32 => {
     // Mixed numeric operands promote to the wider type, mirroring
     // streaming's table: f64 wins; f32 wins unless the other side
     // is i64 (then f64); i64 wins over i32.
-    var target: ValType | null = null;
-    if (leftType is ValTypeF64 || rightType is ValTypeF64) {
-      target = new ValTypeF64();
+    let target: ValType | null = if (leftType is ValTypeF64 || rightType is ValTypeF64) {
+      new ValTypeF64()
     } else if (leftType is ValTypeF32 || rightType is ValTypeF32) {
-      target = if (leftType is ValTypeI64 || rightType is ValTypeI64) {
+      if (leftType is ValTypeI64 || rightType is ValTypeI64) {
         new ValTypeF64()
       } else {
         new ValTypeF32()
-      };
+      }
     } else if (leftType is ValTypeI64 || rightType is ValTypeI64) {
-      target = new ValTypeI64();
-    }
+      new ValTypeI64()
+    } else {
+      null
+    };
     if (target == null) {
       bail(cx, 'mixed operand types');
     }
@@ -573,10 +575,10 @@ export let lowerBinary = (cx: LoweringContext, bin: BinaryExpression): i32 => {
       bin.operator == ">" || bin.operator == ">=";
   let resultType = if (isComparison) new ValTypeI32() as ValType else leftType;
   return cx.b.binary(op, resultType, left, right);
-};
+}
 
-export let lowerIntPow = (cx: LoweringContext, baseVal: i32, expVal: i32,
-    vt: ValType, unsigned: boolean): i32 => {
+export function lowerIntPow(cx: LoweringContext, baseVal: i32, expVal: i32,
+    vt: ValType, unsigned: boolean): i32 {
   let is64 = vt is ValTypeI64;
   let zero = if (is64) cx.b.constI64(0 as i64, vt) else cx.b.constI32(0, vt);
   let one = if (is64) cx.b.constI64(1 as i64, vt) else cx.b.constI32(1, vt);
@@ -600,48 +602,39 @@ export let lowerIntPow = (cx: LoweringContext, baseVal: i32, expVal: i32,
   let baseParam = cx.b.blockParam(header, vt);
   let expParam = cx.b.blockParam(header, vt);
 
-  let initArgs = new Array<i32>();
-  initArgs.push(one);
-  initArgs.push(baseVal);
-  initArgs.push(expVal);
+  let initArgs = growable<i32>([one, baseVal, expVal]);
   cx.b.br(header, initArgs);
 
   cx.b.switchTo(header);
   let cond = cx.b.binary(gtOp, new ValTypeI32(), expParam, zero);
-  let exitArgs = new Array<i32>();
-  exitArgs.push(accParam);
+  let exitArgs = growable<i32>([accParam]);
   cx.b.brIf(cond, loopBody, noValues(), exitB, exitArgs);
 
   cx.b.switchTo(loopBody);
   let isOddBit = cx.b.binary(andOp, vt, expParam, one);
   let isOdd = cx.b.binary(neOp, new ValTypeI32(), isOddBit, zero);
   let nextAccParam = cx.b.blockParam(nextB, vt);
-  let notOddArgs = new Array<i32>();
-  notOddArgs.push(accParam);
+  let notOddArgs = growable<i32>([accParam]);
   cx.b.brIf(isOdd, mulB, noValues(), nextB, notOddArgs);
 
   cx.b.switchTo(mulB);
   let newAcc = cx.b.binary(mulOp, vt, accParam, baseParam);
-  let oddArgs = new Array<i32>();
-  oddArgs.push(newAcc);
+  let oddArgs = growable<i32>([newAcc]);
   cx.b.br(nextB, oddArgs);
 
   cx.b.switchTo(nextB);
   let nextBase = cx.b.binary(mulOp, vt, baseParam, baseParam);
   let nextExp = cx.b.binary(shrOp, vt, expParam, shiftOne);
-  let loopArgs = new Array<i32>();
-  loopArgs.push(nextAccParam);
-  loopArgs.push(nextBase);
-  loopArgs.push(nextExp);
+  let loopArgs = growable<i32>([nextAccParam, nextBase, nextExp]);
   cx.b.br(header, loopArgs);
 
   let result = cx.b.blockParam(exitB, vt);
   cx.b.switchTo(exitB);
   return result;
-};
+}
 
-export let lowerFloatPow = (cx: LoweringContext, baseVal: i32, expVal: i32,
-    vt: ValType): i32 => {
+export function lowerFloatPow(cx: LoweringContext, baseVal: i32, expVal: i32,
+    vt: ValType): i32 {
   let is64 = vt is ValTypeF64;
   let oneF = if (is64) cx.b.constF64(1.0, vt) else cx.b.constF32(1.0, vt);
   let mulOp = if (is64) IrOp.f64_mul else IrOp.f32_mul;
@@ -693,39 +686,30 @@ export let lowerFloatPow = (cx: LoweringContext, baseVal: i32, expVal: i32,
   let baseParam = cx.b.blockParam(header, vt);
   let expParam = cx.b.blockParam(header, new ValTypeI32());
 
-  let initArgs = new Array<i32>();
-  initArgs.push(oneF);
-  initArgs.push(baseVal);
-  initArgs.push(absExpParam);
+  let initArgs = growable<i32>([oneF, baseVal, absExpParam]);
   cx.b.br(header, initArgs);
 
   cx.b.switchTo(header);
   let cond = cx.b.binary(IrOp.i32_gt_s, new ValTypeI32(), expParam, zeroI);
-  let exitArgs = new Array<i32>();
-  exitArgs.push(accParam);
+  let exitArgs = growable<i32>([accParam]);
   cx.b.brIf(cond, loopBody, noValues(), exitB, exitArgs);
 
   cx.b.switchTo(loopBody);
   let isOddBit = cx.b.binary(IrOp.i32_and, new ValTypeI32(), expParam, oneI);
   let isOdd = cx.b.binary(IrOp.i32_ne, new ValTypeI32(), isOddBit, zeroI);
   let nextAccParam = cx.b.blockParam(nextB, vt);
-  let notOddArgs = new Array<i32>();
-  notOddArgs.push(accParam);
+  let notOddArgs = growable<i32>([accParam]);
   cx.b.brIf(isOdd, mulB, noValues(), nextB, notOddArgs);
 
   cx.b.switchTo(mulB);
   let newAcc = cx.b.binary(mulOp, vt, accParam, baseParam);
-  let oddArgs = new Array<i32>();
-  oddArgs.push(newAcc);
+  let oddArgs = growable<i32>([newAcc]);
   cx.b.br(nextB, oddArgs);
 
   cx.b.switchTo(nextB);
   let nextBase = cx.b.binary(mulOp, vt, baseParam, baseParam);
   let nextExp = cx.b.binary(IrOp.i32_shr_u, new ValTypeI32(), expParam, oneI);
-  let loopArgs = new Array<i32>();
-  loopArgs.push(nextAccParam);
-  loopArgs.push(nextBase);
-  loopArgs.push(nextExp);
+  let loopArgs = growable<i32>([nextAccParam, nextBase, nextExp]);
   cx.b.br(header, loopArgs);
 
   let rawRes = cx.b.blockParam(exitB, vt);
@@ -747,9 +731,9 @@ export let lowerFloatPow = (cx: LoweringContext, baseVal: i32, expVal: i32,
 
   cx.b.switchTo(finalMergeB);
   return finalResult;
-};
+}
 
-export let lowerUnary = (cx: LoweringContext, un: UnaryExpression): i32 => {
+export function lowerUnary(cx: LoweringContext, un: UnaryExpression): i32 {
   let value = lowerExpr(cx, un.argument, null);
   let vt = cx.valueTypeOf(value);
   if (un.operator == "!") {
@@ -787,7 +771,7 @@ export let lowerUnary = (cx: LoweringContext, un: UnaryExpression): i32 => {
     bail(cx, 'bitwise not type');
   }
   cx.fail('unary operator');
-};
+}
 
 /**
  * Re-normalize a value that has just been cast to a narrow integer type.
@@ -803,7 +787,7 @@ export let lowerUnary = (cx: LoweringContext, un: UnaryExpression): i32 => {
  * the contiguous enum bands that `isBinaryNumericOp` decodes by range —
  * a poor trade for saving one instruction on a rare operation.
  */
-let normalizeNarrow = (cx: LoweringContext, value: i32, target: Type | null): i32 => {
+function normalizeNarrow(cx: LoweringContext, value: i32, target: Type | null) {
   if (target == null) {
     return value;
   }
@@ -819,17 +803,17 @@ let normalizeNarrow = (cx: LoweringContext, value: i32, target: Type | null): i3
   let shift = cx.b.constI32(32 - bits, vt);
   let shifted = cx.b.binary(IrOp.i32_shl, vt, value, shift);
   return cx.b.binary(IrOp.i32_shr_s, vt, shifted, shift);
-};
+}
 
 /** The narrow type an `as` expression targets, or null if it is not one. */
-let narrowCastTarget = (cx: LoweringContext, expr: AsExpression): Type | null => {
+function narrowCastTarget(cx: LoweringContext, expr: AsExpression): Type | null {
   let t = cx.substitutedNodeType(expr);
   if (t == null) {
     return null;
   }
   let bt = baseType(t);
   return if (isNarrowIntType(bt)) bt else null;
-};
+}
 
 /**
  * Scalar `as` casts. Same-representation casts (i32 as u32, boolean as
@@ -851,13 +835,13 @@ let narrowCastTarget = (cx: LoweringContext, expr: AsExpression): Type | null =>
  * after the cast lowers against a placeholder, in a block nothing
  * branches to.
  */
-let impossibleRefCast = (cx: LoweringContext, dstVt: ValType): i32 => {
+function impossibleRefCast(cx: LoweringContext, dstVt: ValType) {
   cx.b.unreachable();
   cx.b.switchTo(cx.b.newBlock());
   return cx.b.emit(IrOp.ref_null, dstVt, -1, -1);
-};
+}
 
-export let lowerAs = (cx: LoweringContext, expr: AsExpression): i32 => {
+export function lowerAs(cx: LoweringContext, expr: AsExpression): i32 {
   let dstVt = cx.exprVt(expr);
   let narrowTarget = narrowCastTarget(cx, expr);
   // Literal-through-cast (`9223372036854775807 as u64`,
@@ -968,4 +952,4 @@ export let lowerAs = (cx: LoweringContext, expr: AsExpression): i32 => {
     return impossibleRefCast(cx, dstVt);
   }
   return normalizeNarrow(cx, scalarConvert(cx, value, dstVt), narrowTarget);
-};
+}

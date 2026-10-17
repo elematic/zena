@@ -16,6 +16,7 @@ import {
 import { getClassKey } from '../codegen-utils.zena';
 import { IrBody, IrOp, IrRefType, IrRefField, IrRefGlobal, IrRefFunc } from './ir.zena';
 import { IrBuilder } from './builder.zena';
+import { growable } from 'zena:core';
 
 /** The String struct, its vtable global, and the field names by role. */
 final class StringLayout {
@@ -30,7 +31,7 @@ final class StringLayout {
       this.encoding, this.hashCode);
 }
 
-let stringLayoutOf = (wasm: WasmModule): StringLayout => {
+function stringLayoutOf(wasm: WasmModule) {
   let {stringClass} = wasm;
   if (stringClass == null) {
     throw new Error('string helper synthesis: String class not found');
@@ -72,30 +73,28 @@ let stringLayoutOf = (wasm: WasmModule): StringLayout => {
   }
   return new StringLayout(st, vt, data, start,
       end, encoding, hashCode);
-};
+}
 
-let fieldGet = (b: IrBuilder, st: WasmStruct, name: String, recv: i32): i32 => {
+function fieldGet(b: IrBuilder, st: WasmStruct, name: String, recv: i32) {
   let idx = st.fieldIndexByName(name);
   if (idx < 0) {
     throw new Error('string helper synthesis: missing field ' + name);
   }
   return b.emit(IrOp.struct_get, st.fields[idx].type, recv,
       b.addRef(new IrRefField(st, name)));
-};
+}
 
-let fieldSet = (b: IrBuilder, st: WasmStruct, name: String, recv: i32, value: i32): void => {
-  let pair = new Array<i32>();
-  pair.push(recv);
-  pair.push(value);
+function fieldSet(b: IrBuilder, st: WasmStruct, name: String, recv: i32, value: i32) {
+  let pair = growable<i32>([recv, value]);
   b.emitVoid(IrOp.struct_set, b.pushExtra(pair), b.addRef(new IrRefField(st, name)));
-};
+}
 
-let i32c = (b: IrBuilder, v: i32): i32 => {
+function i32c(b: IrBuilder, v: i32) {
   return b.constI32(v, new ValTypeI32());
-};
+}
 
 /** entry block with one param per signature slot, left current. */
-let entryOf = (b: IrBuilder, func: WasmFunction): GrowableArray<i32> => {
+function entryOf(b: IrBuilder, func: WasmFunction) {
   let entry = b.newBlock();
   let params = new Array<i32>();
   for (let vt in func.signature.params) {
@@ -103,21 +102,19 @@ let entryOf = (b: IrBuilder, func: WasmFunction): GrowableArray<i32> => {
   }
   b.switchTo(entry);
   return params;
-};
+}
 
 /**
  * The FNV-1a byte loop both hash helpers share: hashes
  * data[start..end) starting from the offset basis, returning the
  * running-hash value in the block the builder is left in.
  */
-let fnvLoop = (b: IrBuilder, data: i32, start: i32, end: i32): i32 => {
+function fnvLoop(b: IrBuilder, data: i32, start: i32, end: i32) {
   let i32vt = new ValTypeI32() as ValType;
   let header = b.newBlock();
   let hParam = b.blockParam(header, i32vt);
   let iParam = b.blockParam(header, i32vt);
-  let seed = new Array<i32>();
-  seed.push(i32c(b, -2128831035));
-  seed.push(start);
+  let seed = growable<i32>([i32c(b, -2128831035), start]);
   b.br(header, seed);
 
   b.switchTo(header);
@@ -125,8 +122,7 @@ let fnvLoop = (b: IrBuilder, data: i32, start: i32, end: i32): i32 => {
   let bodyB = b.newBlock();
   let exitB = b.newBlock();
   let hOut = b.blockParam(exitB, i32vt);
-  let exitArgs = new Array<i32>();
-  exitArgs.push(hParam);
+  let exitArgs = growable<i32>([hParam]);
   b.brIf(done, exitB, exitArgs, bodyB, new Array<i32>());
 
   b.switchTo(bodyB);
@@ -135,17 +131,15 @@ let fnvLoop = (b: IrBuilder, data: i32, start: i32, end: i32): i32 => {
   let mixed = b.binary(IrOp.i32_mul, i32vt, xored, i32c(b, 16777619));
   let one = i32c(b, 1);
   let next = b.binary(IrOp.i32_add, i32vt, iParam, one);
-  let back = new Array<i32>();
-  back.push(mixed);
-  back.push(next);
+  let back = growable<i32>([mixed, next]);
   b.br(header, back);
 
   b.switchTo(exitB);
   return hOut;
-};
+}
 
 /** $stringCreate(len) -> externref: fresh empty String of `len` bytes. */
-let synthStringCreate = (wasm: WasmModule, func: WasmFunction): IrBody => {
+function synthStringCreate(wasm: WasmModule, func: WasmFunction) {
   let lay = stringLayoutOf(wasm);
   if (lay.vtable == null || lay.encoding == null) {
     throw new Error('string helper synthesis: $stringCreate layout');
@@ -153,9 +147,7 @@ let synthStringCreate = (wasm: WasmModule, func: WasmFunction): IrBody => {
   let byteArr = wasm.getByteArrayType();
   let b = new IrBuilder();
   let params = entryOf(b, func);
-  let lenInit = new Array<i32>();
-  lenInit.push(params[0]);
-  lenInit.push(-1);
+  let lenInit = growable<i32>([params[0], -1]);
   let bytes = b.emit(IrOp.array_new, new ValTypeRef(byteArr) as ValType,
       b.pushExtra(lenInit), b.addRef(new IrRefType(byteArr)));
   // Single-shot struct.new in field order, like string_from_shared:
@@ -183,17 +175,17 @@ let synthStringCreate = (wasm: WasmModule, func: WasmFunction): IrBody => {
   let ext = b.emit(IrOp.extern_convert_any, new ValTypeExternRef(), inst, -1);
   b.ret(ext);
   return b.finish();
-};
+}
 
 /** externref param -> non-null String struct value. */
-let externToString = (b: IrBuilder, lay: StringLayout, ext: i32): i32 => {
+function externToString(b: IrBuilder, lay: StringLayout, ext: i32) {
   let anyv = b.emit(IrOp.any_convert_extern, new ValTypeAnyRef(), ext, -1);
   let vt = new ValTypeRef(lay.st) as ValType;
   return b.emit(IrOp.ref_cast, vt, anyv, b.internType(vt));
-};
+}
 
 /** $stringSetByte(str externref, index, value). */
-let synthStringSetByte = (wasm: WasmModule, func: WasmFunction): IrBody => {
+function synthStringSetByte(wasm: WasmModule, func: WasmFunction) {
   let lay = stringLayoutOf(wasm);
   let b = new IrBuilder();
   let params = entryOf(b, func);
@@ -201,17 +193,14 @@ let synthStringSetByte = (wasm: WasmModule, func: WasmFunction): IrBody => {
   let data = fieldGet(b, lay.st, lay.data, s);
   let start = fieldGet(b, lay.st, lay.start, s);
   let idx = b.binary(IrOp.i32_add, new ValTypeI32(), start, params[1]);
-  let triple = new Array<i32>();
-  triple.push(data);
-  triple.push(idx);
-  triple.push(params[2]);
+  let triple = growable<i32>([data, idx, params[2]]);
   b.emitVoid(IrOp.array_set, b.pushExtra(triple), -1);
   b.retVoid();
   return b.finish();
-};
+}
 
 /** $stringGetByte(str externref, index) -> i32. */
-let synthStringGetByte = (wasm: WasmModule, func: WasmFunction): IrBody => {
+function synthStringGetByte(wasm: WasmModule, func: WasmFunction) {
   let lay = stringLayoutOf(wasm);
   let b = new IrBuilder();
   let params = entryOf(b, func);
@@ -221,10 +210,10 @@ let synthStringGetByte = (wasm: WasmModule, func: WasmFunction): IrBody => {
   let idx = b.binary(IrOp.i32_add, new ValTypeI32(), start, params[1]);
   b.ret(b.emit(IrOp.array_get_u, new ValTypeI32(), data, idx));
   return b.finish();
-};
+}
 
 /** $stringGetLength(str externref) -> i32 (#end - #start). */
-let synthStringGetLength = (wasm: WasmModule, func: WasmFunction): IrBody => {
+function synthStringGetLength(wasm: WasmModule, func: WasmFunction) {
   let lay = stringLayoutOf(wasm);
   let b = new IrBuilder();
   let params = entryOf(b, func);
@@ -233,10 +222,10 @@ let synthStringGetLength = (wasm: WasmModule, func: WasmFunction): IrBody => {
   let start = fieldGet(b, lay.st, lay.start, s);
   b.ret(b.binary(IrOp.i32_sub, new ValTypeI32(), end, start));
   return b.finish();
-};
+}
 
 /** string_hash_helper(str anyref-ish) -> i32: plain FNV-1a, no memo. */
-let synthStringHashHelper = (wasm: WasmModule, func: WasmFunction): IrBody => {
+function synthStringHashHelper(wasm: WasmModule, func: WasmFunction) {
   let lay = stringLayoutOf(wasm);
   let b = new IrBuilder();
   let params = entryOf(b, func);
@@ -247,14 +236,14 @@ let synthStringHashHelper = (wasm: WasmModule, func: WasmFunction): IrBody => {
   let end = fieldGet(b, lay.st, lay.end, s);
   b.ret(fnvLoop(b, data, start, end));
   return b.finish();
-};
+}
 
 /**
  * $stringHash(s) -> i32: memoized FNV-1a — a cached non-zero
  * #hashCode returns directly; otherwise hash, coerce 0 to 1 (0 means
  * "uncomputed"), store the cache, return.
  */
-let synthStringHash = (wasm: WasmModule, func: WasmFunction): IrBody => {
+function synthStringHash(wasm: WasmModule, func: WasmFunction) {
   let lay = stringLayoutOf(wasm);
   let hashField = lay.hashCode;
   if (hashField == null) {
@@ -281,18 +270,16 @@ let synthStringHash = (wasm: WasmModule, func: WasmFunction): IrBody => {
   let zeroB = b.newBlock();
   let storeB = b.newBlock();
   let hFinal = b.blockParam(storeB, i32vt);
-  let hArgs = new Array<i32>();
-  hArgs.push(h);
+  let hArgs = growable<i32>([h]);
   b.brIf(h, storeB, hArgs, zeroB, new Array<i32>());
   b.switchTo(zeroB);
-  let oneArg = new Array<i32>();
-  oneArg.push(i32c(b, 1));
+  let oneArg = growable<i32>([i32c(b, 1)]);
   b.br(storeB, oneArg);
   b.switchTo(storeB);
   fieldSet(b, lay.st, hashField, s, hFinal);
   b.ret(hFinal);
   return b.finish();
-};
+}
 
 /**
  * string_from_shared(offset, len): a String struct.new with every
@@ -301,7 +288,7 @@ let synthStringHash = (wasm: WasmModule, func: WasmFunction): IrBody => {
  * (#encoding, #hashCode) zero. Mirrors streaming; any field shape it
  * does not recognize is a layout change and fails loudly.
  */
-let synthStringFromShared = (wasm: WasmModule, func: WasmFunction): IrBody => {
+function synthStringFromShared(wasm: WasmModule, func: WasmFunction) {
   let lay = stringLayoutOf(wasm);
   let shared = wasm.sharedStringsGlobal;
   if (shared == null) {
@@ -342,7 +329,7 @@ let synthStringFromShared = (wasm: WasmModule, func: WasmFunction): IrBody => {
       b.pushArgList(args), b.addRef(new IrRefType(lay.st)));
   b.ret(inst);
   return b.finish();
-};
+}
 
 /**
  * get_string_literal(id): the lazy literal cache — a non-null
@@ -351,7 +338,7 @@ let synthStringFromShared = (wasm: WasmModule, func: WasmFunction): IrBody => {
  * packed shared segment, stores it back, and returns it. Mirrors
  * streaming's if-chain shape.
  */
-let synthGetStringLiteral = (wasm: WasmModule, func: WasmFunction): IrBody => {
+function synthGetStringLiteral(wasm: WasmModule, func: WasmFunction) {
   let arrGlobal = wasm.stringLiteralsArrayGlobal;
   let arrTypeOpt = wasm.stringArrayType;
   let sfs = wasm.stringFromSharedFunc;
@@ -405,10 +392,7 @@ let synthGetStringLiteral = (wasm: WasmModule, func: WasmFunction): IrBody => {
     // does not recurse either. A range of one id calls
     // string_from_shared unconditionally — callers only pass ids the
     // compiler assigned, matching streaming's untested trailing else.
-    let work = new Array<i32>();
-    work.push(0);
-    work.push(count);
-    work.push(missB);
+    let work = growable<i32>([0, count, missB]);
     while (work.length > 0) {
       let blk = work.pop();
       let hi = work.pop();
@@ -419,12 +403,12 @@ let synthGetStringLiteral = (wasm: WasmModule, func: WasmFunction): IrBody => {
         if (loc == null) {
           throw new Error('get_string_literal: literal location missing');
         }
-        let callArgs = new Array<i32>();
-        callArgs.push(i32c(b, loc.offset));
-        callArgs.push(i32c(b, loc.length));
+        let callArgs = growable<i32>([
+          i32c(b, loc.offset),
+          i32c(b, loc.length),
+        ]);
         let v = b.callFunc(b.addRef(new IrRefFunc(sfs)), callArgs, strVt);
-        let brArgs = new Array<i32>();
-        brArgs.push(v);
+        let brArgs = growable<i32>([v]);
         b.br(storeB, brArgs);
       } else {
         let mid = lo + ((hi - lo) >> 1);
@@ -444,20 +428,17 @@ let synthGetStringLiteral = (wasm: WasmModule, func: WasmFunction): IrBody => {
   b.switchTo(storeB);
   let arr2 = b.emit(IrOp.global_get, arrGlobal.type, -1,
       b.addRef(new IrRefGlobal(arrGlobal)));
-  let triple = new Array<i32>();
-  triple.push(arr2);
-  triple.push(id);
-  triple.push(fresh);
+  let triple = growable<i32>([arr2, id, fresh]);
   b.emitVoid(IrOp.array_set, b.pushExtra(triple), -1);
   b.ret(b.emit(IrOp.ref_as_non_null, retVt, fresh, -1));
   return b.finish();
-};
+}
 
 /**
  * Routes a named scaffold helper to its synthesizer, or null when the
  * name is not one of the seven.
  */
-export let synthesizeScaffold = (wasm: WasmModule, func: WasmFunction): IrBody | null => {
+export function synthesizeScaffold(wasm: WasmModule, func: WasmFunction): IrBody | null {
   let {name} = func;
   if (name == null) {
     return null;
@@ -471,4 +452,4 @@ export let synthesizeScaffold = (wasm: WasmModule, func: WasmFunction): IrBody |
   if (name == 'string_from_shared') { return synthStringFromShared(wasm, func); }
   if (name == 'get_string_literal') { return synthGetStringLiteral(wasm, func); }
   return null;
-};
+}

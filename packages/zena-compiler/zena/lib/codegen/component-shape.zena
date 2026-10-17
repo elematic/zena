@@ -41,11 +41,13 @@ import {
  * unannotated `main` returning `false` is typed at the literal) to
  * its base.
  */
-let underlying = (t: Type): Type => match (t) {
+function underlying(t: Type): Type {
+  return match (t) {
   case TypeAliasType as alias: underlying(alias.target)
   case EnumType as et: underlying(et.backingType)
   case _: baseType(t)
 };
+}
 
 /**
  * Whether `t` is the standard library's `String`, compared by identity
@@ -53,7 +55,7 @@ let underlying = (t: Type): Type => match (t) {
  * program is free to declare a `String` of its own, and it does not
  * cross the boundary as `string`.
  */
-let isStringType = (wasm: WasmModule, t: Type): boolean => {
+function isStringType(wasm: WasmModule, t: Type): boolean {
   let {stringClass} = wasm;
   if (stringClass == null) {
     return false;
@@ -63,7 +65,7 @@ let isStringType = (wasm: WasmModule, t: Type): boolean => {
     return false;
   }
   return u.symbolId == stringClass.symbolId;
-};
+}
 
 /**
  * The component-level type of a Zena parameter or result type, or -1 if
@@ -76,7 +78,7 @@ let isStringType = (wasm: WasmModule, t: Type): boolean => {
  * wrapper to do the copying. Everything else still waits on C3's type
  * encoder.
  */
-export let componentTypeOf = (wasm: WasmModule, t: Type): i32 => {
+export function componentTypeOf(wasm: WasmModule, t: Type): i32 {
   if (isStringType(wasm, t)) {
     return ComponentValType.String as i32;
   }
@@ -94,10 +96,10 @@ export let componentTypeOf = (wasm: WasmModule, t: Type): i32 => {
     case BooleanType: ComponentValType.Bool as i32
     case _: -1
   };
-};
+}
 
 /** The `FunctionType` a function was declared with. */
-export let declaredTypeOf = (func: WasmFunction, what: String): FunctionType => {
+export function declaredTypeOf(func: WasmFunction, what: String): FunctionType {
   let {node} = func;
   if (node == null) {
     throw new Error(
@@ -113,9 +115,9 @@ export let declaredTypeOf = (func: WasmFunction, what: String): FunctionType => 
     );
   }
   return t;
-};
+}
 
-let nameOf = (func: WasmFunction): String => {
+function nameOf(func: WasmFunction): String {
   let n = func.name;
   if (n != null) {
     return n;
@@ -125,7 +127,7 @@ let nameOf = (func: WasmFunction): String => {
     return m;
   }
   return "<unnamed>";
-};
+}
 
 /**
  * A parameter's name at the component level. Zena identifiers are
@@ -137,7 +139,7 @@ let nameOf = (func: WasmFunction): String => {
  * `how-long` — so the name is documentation, and only its *shape* is
  * load-bearing.
  */
-let paramName = (declared: FunctionType, index: i32): String => {
+function paramName(declared: FunctionType, index: i32) {
   let names = declared.parameterNames;
   if (names != null) {
     if (index < names.length) {
@@ -148,13 +150,14 @@ let paramName = (declared: FunctionType, index: i32): String => {
     }
   }
   return "a" + i32ToString(index);
-};
+}
 
 /** What the boundary carries so far, for the message that says it does not. */
-let crossesToday = (): String =>
-    "Only u8-u64, i8-i64, f32, f64, boolean and String cross the boundary " +
+function crossesToday() {
+  return "Only u8-u64, i8-i64, f32, f64, boolean and String cross the boundary " +
     "today; richer types need C3's type encoder " +
     "(docs/design/component-emission.md).";
+}
 
 /**
  * A `string` can be lifted but not yet lowered, and the reason is
@@ -168,11 +171,11 @@ let crossesToday = (): String =>
  * and the allocator. See docs/design/component-emission.md 1.3; it is
  * what C3 builds for stdio.
  */
-let checkMemoryDirection = (
+function checkMemoryDirection(
   mapped: i32,
   func: WasmFunction,
   what: String
-): void => {
+) {
   if (what == "import" && componentTypeNeedsMemory(mapped)) {
     throw new Error(
       "The component target cannot import '" + nameOf(func) +
@@ -182,7 +185,7 @@ let checkMemoryDirection = (
         "(docs/design/component-emission.md 1.3)."
     );
   }
-};
+}
 
 /**
  * The component-level signature of a function, or a loud failure.
@@ -191,12 +194,12 @@ let checkMemoryDirection = (
  * `async` option is only legal against a function type that is itself
  * async, which is the format saying the two cannot disagree.
  */
-let signatureOf = (
+function signatureOf(
   wasm: WasmModule,
   func: WasmFunction,
   what: String,
   isAsync: boolean = false
-): ComponentFuncType => {
+) {
   let declared = declaredTypeOf(func, what);
   let paramTypes = new Array<i32>();
   let paramNames = new Array<String>();
@@ -244,7 +247,7 @@ let signatureOf = (
     checkMemoryDirection(result, func, what);
   }
   return new ComponentFuncType(paramTypes, paramNames, result, isAsync);
-};
+}
 
 /**
  * The shape of the component wrapping `wasm`'s core module.
@@ -255,10 +258,10 @@ let signatureOf = (
  * silently missing the entry point the program wrote — both worse than
  * a compile error naming the function.
  */
-export let buildComponentShape = (
+export function buildComponentShape(
   wasm: WasmModule,
   importEncoder: ImportTypeEncoder | null
-): ComponentShape => {
+): ComponentShape {
   let shape = new ComponentShape();
   // On this target the program module never owns its memory: if it
   // touches linear memory at all, it imports the runtime memory
@@ -445,10 +448,11 @@ export let buildComponentShape = (
     // Its result is what the program's main resolves to, returned
     // through the typed `task.return` the entry wrapper declares —
     // nothing, for a main that returns nothing.
-    var entryResult = noComponentResult;
-    if (wasm.componentEntryResult >= 0) {
-      entryResult = wasm.componentEntryResult;
-    }
+    let entryResult = if (wasm.componentEntryResult >= 0) {
+      wasm.componentEntryResult
+    } else {
+      noComponentResult
+    };
     shape.exports.push(new ComponentExportFunc(
       componentEntryExport, "main",
       new ComponentFuncType(new Array<i32>(), new Array<String>(),
@@ -564,4 +568,4 @@ export let buildComponentShape = (
   }
 
   return shape;
-};
+}

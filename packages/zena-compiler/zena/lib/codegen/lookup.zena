@@ -18,7 +18,7 @@ import { dirName, normalizePath } from '../module-resolver.zena';
 import { getTypeUniqueKey } from './codegen-utils.zena';
 import { HashMap } from 'zena:collections';
 
-let matchTypes = (t1: Type, t2: Type): boolean => {
+function matchTypes(t1: Type, t2: Type): boolean {
   if (t1 is TypeParameterType) {
     return true;
   }
@@ -69,9 +69,9 @@ let matchTypes = (t1: Type, t2: Type): boolean => {
       return getTypeUniqueKey(t1) == getTypeUniqueKey(t2);
     }
   }
-};
+}
 
-let matchOverload = (t1: Type, t2: Type): boolean => {
+function matchOverload(t1: Type, t2: Type): boolean {
   if (t1 is FunctionType && t2 is FunctionType) {
     if (t1.parameters.length != t2.parameters.length) {
       return false;
@@ -86,9 +86,9 @@ let matchOverload = (t1: Type, t2: Type): boolean => {
     return true;
   }
   return matchTypes(t1, t2);
-};
+}
 
-export let findDeclaration = (wasm: WasmModule, sym: Symbol, expectedType: Type | null): DeclareFunction | null => {
+export function findDeclaration(wasm: WasmModule, sym: Symbol, expectedType: Type | null): DeclareFunction | null {
   let resolved = sym.resolveTarget();
   let decl = resolved.declaration;
   if (decl == null) return null;
@@ -128,10 +128,10 @@ export let findDeclaration = (wasm: WasmModule, sym: Symbol, expectedType: Type 
     return decl;
   }
   return null;
-};
+}
 
 
-export let collectValueExports = (program: Program, unit: CompilationUnit, result: HashMap<String, Symbol>): void => {
+export function collectValueExports(program: Program, unit: CompilationUnit, result: HashMap<String, Symbol>): void {
   for (let stmt in unit.ast.body) {
     match (stmt) {
       case VariableDeclaration {pattern, exported}: {
@@ -179,7 +179,7 @@ export let collectValueExports = (program: Program, unit: CompilationUnit, resul
         var canonicalPath = specifier;
         if (specifier.startsWith("./") || specifier.startsWith("../")) {
           let dir = dirName(unit.ast.path);
-          canonicalPath = normalizePath(dir + "/" + specifier);
+          canonicalPath = normalizePath(`${dir}/${specifier}`);
         }
         if (program.unitsByPath.has(canonicalPath)) {
           let targetUnit = program.unitsByPath[canonicalPath];
@@ -199,7 +199,7 @@ export let collectValueExports = (program: Program, unit: CompilationUnit, resul
         var canonicalPath = specifier;
         if (specifier.startsWith("./") || specifier.startsWith("../")) {
           let dir = dirName(unit.ast.path);
-          canonicalPath = normalizePath(dir + "/" + specifier);
+          canonicalPath = normalizePath(`${dir}/${specifier}`);
         }
         if (program.unitsByPath.has(canonicalPath)) {
           let targetUnit = program.unitsByPath[canonicalPath];
@@ -209,14 +209,14 @@ export let collectValueExports = (program: Program, unit: CompilationUnit, resul
       case _: {}
     }
   }
-};
+}
 
 
-export let isArrayIntrinsic = (name: String): boolean => {
+export function isArrayIntrinsic(name: String): boolean {
   return name == "__array_len" || name == "__byte_array_length" ||
          name == "__array_get" || name == "__byte_array_get" ||
          name == "__array_set" || name == "__byte_array_set" ||
          name == "__array_new" || name == "__array_new_empty" ||
          name == "__byte_array_new" || name == "__byte_array_copy";
-};
+}
 

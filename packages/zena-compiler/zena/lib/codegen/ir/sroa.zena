@@ -33,16 +33,17 @@ import { IrBody, IrOp, IrRefField, buildUseLists, IrScratch } from './ir.zena';
 import { IrCfg } from './cfg.zena';
 import { WasmStruct } from '../wasm-module.zena';
 import { allocatedStruct } from './simplify.zena';
+import { growable } from 'zena:core';
 
 /** Runs the pass; returns the number of allocations replaced. */
-export let runSroa = (body: IrBody, scratch: IrScratch): i32 => {
+export function runSroa(body: IrBody, scratch: IrScratch): i32 {
   scratch.enter();
   let result = runSroaOn(body, scratch);
   scratch.exit();
   return result;
-};
+}
 
-let runSroaOn = (body: IrBody, scratch: IrScratch): i32 => {
+function runSroaOn(body: IrBody, scratch: IrScratch): i32 {
   let count = body.instCount();
   let nb = body.blocks.length;
   if (nb == 0) {
@@ -154,8 +155,7 @@ let runSroaOn = (body: IrBody, scratch: IrScratch): i32 => {
     for (var f = 0; f < nf; f += 1) {
       cur.push(-1);
     }
-    let walk = new Array<i32>();
-    walk.push(home);
+    let walk = growable<i32>([home]);
     for (let b in order) {
       walk.push(b);
     }
@@ -215,7 +215,7 @@ let runSroaOn = (body: IrBody, scratch: IrScratch): i32 => {
     replaced += 1;
   }
 
-  let canon = (v: i32): i32 => {
+  let canon = (v: i32) => {
     var c = v;
     while (c >= 0 && c < count && repl[c] != c) {
       c = repl[c];
@@ -229,16 +229,16 @@ let runSroaOn = (body: IrBody, scratch: IrScratch): i32 => {
     }
   }
   return replaced;
-};
+}
 
 /** The index in `s` of the field a struct_get/struct_set names. */
-let fieldIndex = (body: IrBody, s: WasmStruct, refIdx: i32): i32 => {
+function fieldIndex(body: IrBody, s: WasmStruct, refIdx: i32): i32 {
   let r = body.refTable[refIdx];
   if (r is IrRefField) {
     return s.fieldIndexByName(r.fieldName);
   }
   return -1;
-};
+}
 
 /**
  * Rebuilds a terminator's successor records with `values` appended
@@ -247,14 +247,15 @@ let fieldIndex = (body: IrBody, s: WasmStruct, refIdx: i32): i32 => {
  * and the terminator repointed; every branch shape is
  * [prefix] ([target, argc, args…])* (see blockmerge's dropBranchArg).
  */
-let appendBranchArgs = (body: IrBody, term: i32,
-    dominated: GrowableArray<boolean>, values: GrowableArray<i32>): void => {
+function appendBranchArgs(body: IrBody, term: i32,
+    dominated: GrowableArray<boolean>, values: GrowableArray<i32>): void {
   let op = body.op(term);
-  var prefixLen = 0;
-  if (op == IrOp.br_on_cast || op == IrOp.br_on_cast_fail ||
+  let prefixLen = if (op == IrOp.br_on_cast || op == IrOp.br_on_cast_fail ||
       op == IrOp.br_table) {
-    prefixLen = 1;
-  }
+    1
+  } else {
+    0
+  };
   let recordStart = if (op == IrOp.br) body.a[term] else body.b[term];
   let sN = body.successorCount(term);
   let idx = body.extra.length;
@@ -284,12 +285,12 @@ let appendBranchArgs = (body: IrBody, term: i32,
   } else {
     body.b[term] = idx;
   }
-};
+}
 
 /** A nop stays listed in its block, so it keeps its block id. */
-let nopOut = (body: IrBody, inst: i32): void => {
+function nopOut(body: IrBody, inst: i32): void {
   body.opcode[inst] = IrOp.nop as i32;
   body.typeId[inst] = -1;
   body.a[inst] = -1;
   body.b[inst] = -1;
-};
+}

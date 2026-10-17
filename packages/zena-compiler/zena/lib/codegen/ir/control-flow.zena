@@ -49,11 +49,12 @@ import {
 } from './patterns.zena';
 import { WellKnown, isWellKnown } from '../../well-known.zena';
 import { HashMap } from 'zena:collections';
+import { growable } from 'zena:core';
 
 /** Bail with the lowering-side message shape (reason @function). */
-let bail = (cx: LoweringContext, reason: String): never => {
-  throw new ZirUnsupported(reason + ' @' + (cx.func.name ?? '?'));
-};
+function bail(cx: LoweringContext, reason: String): never {
+  throw new ZirUnsupported(`${reason} @${cx.func.name ?? '?'}`);
+}
 
 /**
  * `let PATTERN = init` conditions (if-let / while-let): evaluates
@@ -64,7 +65,7 @@ let bail = (cx: LoweringContext, reason: String): never => {
  * bindings are unconditionally bound (they only flow into the arm
  * the checker allows them in).
  */
-export let lowerLetCondition = (cx: LoweringContext, lpc: LetPatternCondition): LetCondBinds => {
+export function lowerLetCondition(cx: LoweringContext, lpc: LetPatternCondition): LetCondBinds {
   var pat = lpc.pattern;
   if (pat is BindingPattern) {
     pat = pat.pattern;
@@ -77,10 +78,8 @@ export let lowerLetCondition = (cx: LoweringContext, lpc: LetPatternCondition): 
       bail(cx, 'let-condition pattern');
     }
     let value = lowerExpr(cx, lpc.init, null);
-    let patterns = new Array<Node>();
-    patterns.push(pat);
-    let patternValues = new Array<i32>();
-    patternValues.push(value);
+    let patterns = growable<Node>([pat]);
+    let patternValues = growable<i32>([value]);
     let cond = cx.b.constI32(1, new ValTypeI32() as ValType);
     return new LetCondBinds(cond, new Array<Symbol>(), new Array<i32>(),
         new Array<ValType>(), patterns, patternValues);
@@ -161,24 +160,24 @@ export let lowerLetCondition = (cx: LoweringContext, lpc: LetPatternCondition): 
     vts.push(bindVt);
   }
   return new LetCondBinds(cond, syms, bindValues, vts, patterns, patternValues);
-};
+}
 
 /** Whether any deferred let-condition pattern is refutable. */
-export let letBindsNeedFail = (cx: LoweringContext, binds: LetCondBinds): boolean => {
+export function letBindsNeedFail(cx: LoweringContext, binds: LetCondBinds): boolean {
   for (let pat in binds.patterns) {
     if (patternRefutable(cx, pat)) {
       return true;
     }
   }
   return false;
-};
+}
 
 /**
  * Applies a let-condition's bindings in the CURRENT (taken) block.
  * Nested destructuring elements run their tests here, branching to
  * `failB` (the not-taken side) on mismatch, then bind.
  */
-export let applyLetBinds = (cx: LoweringContext, binds: LetCondBinds, failB: i32): void => {
+export function applyLetBinds(cx: LoweringContext, binds: LetCondBinds, failB: i32): void {
   for (var i = 0; i < binds.syms.length; i += 1) {
     var bound = binds.values[i];
     let bindVt = binds.vts[i];
@@ -203,7 +202,7 @@ export let applyLetBinds = (cx: LoweringContext, binds: LetCondBinds, failB: i32
     }
     lowerPatternBindings(cx, binds.patterns[i], value);
   }
-};
+}
 
 /**
  * Lowers an if-expression or match-case arm: a plain expression, or a
@@ -215,7 +214,7 @@ export let applyLetBinds = (cx: LoweringContext, binds: LetCondBinds, failB: i32
  * null when the context is void. Returns -1 when the arm ends
  * unreachable (or the context is void).
  */
-export let lowerValueNode = (cx: LoweringContext, node: Node, isVoid: boolean, ctxVt: ValType | null): i32 => {
+export function lowerValueNode(cx: LoweringContext, node: Node, isVoid: boolean, ctxVt: ValType | null): i32 {
   if (node is Expression) {
     if (node is ThrowExpression) {
       // A bare throw as an arm: the arm ends unreachable and
@@ -247,7 +246,7 @@ export let lowerValueNode = (cx: LoweringContext, node: Node, isVoid: boolean, c
     return lowerBlockValueFrom(cx, body, 0, isVoid, ctxVt);
   }
   cx.fail('value arm kind');
-};
+}
 
 /**
  * Statements `start..` of a value block, ending at the tail. A `using`
@@ -257,8 +256,8 @@ export let lowerValueNode = (cx: LoweringContext, node: Node, isVoid: boolean, c
  * carries the tail's value out through the region's result variable,
  * exactly as a valued try/finally does.
  */
-let lowerBlockValueFrom = (cx: LoweringContext, body: GrowableArray<Statement>,
-    start: i32, isVoid: boolean, ctxVt: ValType | null): i32 => {
+function lowerBlockValueFrom(cx: LoweringContext, body: GrowableArray<Statement>,
+    start: i32, isVoid: boolean, ctxVt: ValType | null): i32 {
   if (isVoid) {
     // A void block (a try body, a statement arm) is a statement list
     // like any other, tail included.
@@ -327,8 +326,7 @@ let lowerBlockValueFrom = (cx: LoweringContext, body: GrowableArray<Statement>,
       if (symOpt == null) {
         bail(cx, 'implicit-drop binding symbol');
       }
-      let syms = new Array<SymbolId>();
-      syms.push(symOpt.id);
+      let syms = growable<SymbolId>([symOpt.id]);
       let value = cx.envValues(syms)[0];
       return lowerValueRegionRest(cx, value, owners, body, i + 1, ctxVt);
     }
@@ -369,7 +367,7 @@ let lowerBlockValueFrom = (cx: LoweringContext, body: GrowableArray<Statement>,
     return -1;
   }
   bail(cx, 'value block tail');
-};
+}
 
 /**
  * The rest of a value block behind a release region: the tail value
@@ -377,9 +375,9 @@ let lowerBlockValueFrom = (cx: LoweringContext, body: GrowableArray<Statement>,
  * out through the dispatch — so the release runs after the value is
  * read, and every early exit and the unwind path release too.
  */
-let lowerValueRegionRest = (cx: LoweringContext, value: i32,
+function lowerValueRegionRest(cx: LoweringContext, value: i32,
     owners: GrowableArray<ClassType>, body: GrowableArray<Statement>, start: i32,
-    ctxVt: ValType | null): i32 => {
+    ctxVt: ValType | null): i32 {
   if (ctxVt == null) {
     bail(cx, 'value region result type');
   }
@@ -393,15 +391,15 @@ let lowerValueRegionRest = (cx: LoweringContext, value: i32,
         finishProtectedArm(cx, scope, resultVar, v);
       },
       (fscope) => { emitMaybeDispose(cx, value, owners); });
-};
+}
 
 /**
  * The same, for a `var` owner binding whose release interval reaches
  * the block's tail: the finalizer releases what the binding holds at
  * the exit (see lowerVarDropRegion).
  */
-let lowerValueRegionRestVar = (cx: LoweringContext, plan: VarDropPlan,
-    body: GrowableArray<Statement>, start: i32, ctxVt: ValType | null): i32 => {
+function lowerValueRegionRestVar(cx: LoweringContext, plan: VarDropPlan,
+    body: GrowableArray<Statement>, start: i32, ctxVt: ValType | null): i32 {
   if (ctxVt == null) {
     bail(cx, 'value region result type');
   }
@@ -418,7 +416,7 @@ let lowerValueRegionRestVar = (cx: LoweringContext, plan: VarDropPlan,
       (fscope) => { emitVarDropRelease(cx, plan); });
   cx.openVarDrops.delete(plan.symId as i32);
   return result;
-};
+}
 
 /**
  * Match lowering. Each case chains its tests so the first failure
@@ -438,7 +436,7 @@ let lowerValueRegionRestVar = (cx: LoweringContext, plan: VarDropPlan,
  * it is decomposed with the same `multiSource` machinery as a
  * let-condition rather than read with `struct_get`.
  */
-let isInlineTupleUnionSource = (t: Type): boolean => {
+function isInlineTupleUnionSource(t: Type): boolean {
   let resolved = unwrapAliases(t);
   if (resolved is InlineTupleType) { return true; }
   if (!(resolved is UnionType)) { return false; }
@@ -448,7 +446,7 @@ let isInlineTupleUnionSource = (t: Type): boolean => {
     if (!(member is InlineTupleType)) { return false; }
   }
   return true;
-};
+}
 
 /**
  * Tests and binds one tuple-pattern arm against the discriminant's
@@ -457,8 +455,8 @@ let isInlineTupleUnionSource = (t: Type): boolean => {
  * The checker has already narrowed each binding to the arm its
  * discriminant selects.
  */
-let lowerInlineTupleArm = (cx: LoweringContext, pat: TuplePattern,
-    lanes: GrowableArray<i32>, failB: i32): void => {
+function lowerInlineTupleArm(cx: LoweringContext, pat: TuplePattern,
+    lanes: GrowableArray<i32>, failB: i32) {
   if (lanes.length != pat.elements.length) {
     bail(cx, 'match inline union arity');
   }
@@ -474,9 +472,9 @@ let lowerInlineTupleArm = (cx: LoweringContext, pat: TuplePattern,
       lowerPatternBindings(cx, el, lanes[i]);
     }
   }
-};
+}
 
-export let lowerMatch = (cx: LoweringContext, expr: MatchExpression): i32 => {
+export function lowerMatch(cx: LoweringContext, expr: MatchExpression): i32 {
   let armFields = cx.takeResultFields();
   let nodeType = cx.substitutedNodeType(expr);
   if (nodeType == null) {
@@ -497,10 +495,7 @@ export let lowerMatch = (cx: LoweringContext, expr: MatchExpression): i32 => {
   } else {
     null
   };
-  var disc = -1;
-  if (lanes == null) {
-    disc = lowerExpr(cx, expr.discriminant, null);
-  }
+  let disc = if (lanes == null) lowerExpr(cx, expr.discriminant, null) else -1;
 
   let mergeSyms = new Array<SymbolId>();
   for (let mc in expr.cases) {
@@ -573,7 +568,7 @@ export let lowerMatch = (cx: LoweringContext, expr: MatchExpression): i32 => {
   }
 
   return finishArmsMerge(cx, m, saved);
-};
+}
 
 /**
  * The compensating drops one match arm owes at its end: another arm
@@ -581,7 +576,7 @@ export let lowerMatch = (cx: LoweringContext, expr: MatchExpression): i32 => {
  * merge — the same rule emitEdgeDrops applies to an if's arms, indexed
  * by case instead of by side. Plain calls, not a region.
  */
-let emitMatchArmDrops = (cx: LoweringContext, expr: MatchExpression, armIndex: i32): void => {
+function emitMatchArmDrops(cx: LoweringContext, expr: MatchExpression, armIndex: i32): void {
   let dropsOpt = cx.func.model.edgeDropsOf(expr as Node);
   if (dropsOpt == null) { return; }
   for (let d in dropsOpt) {
@@ -591,12 +586,11 @@ let emitMatchArmDrops = (cx: LoweringContext, expr: MatchExpression, armIndex: i
       bail(cx, 'edge drop untyped binding');
     }
     let owners = disposeOwnerClasses(cx, declType);
-    let syms = new Array<SymbolId>();
-    syms.push(d.symbolId);
+    let syms = growable<SymbolId>([d.symbolId]);
     let value = cx.envValues(syms)[0];
     emitMaybeDispose(cx, value, owners);
   }
-};
+}
 
 /**
  * The compensating drops one arm of an `if` owes at its end: the other
@@ -604,7 +598,7 @@ let emitMatchArmDrops = (cx: LoweringContext, expr: MatchExpression, armIndex: i
  * the merge (ownership.md §"The branch-join rule"). Plain calls, not a
  * region — the drop belongs to one specific point on one edge.
  */
-let emitEdgeDrops = (cx: LoweringContext, stmt: IfStatement, onTrue: boolean): void => {
+function emitEdgeDrops(cx: LoweringContext, stmt: IfStatement, onTrue: boolean) {
   let dropsOpt = cx.func.model.edgeDropsOf(stmt as Node);
   if (dropsOpt == null) { return; }
   for (let d in dropsOpt) {
@@ -614,24 +608,23 @@ let emitEdgeDrops = (cx: LoweringContext, stmt: IfStatement, onTrue: boolean): v
       bail(cx, 'edge drop untyped binding');
     }
     let ownerClasses = disposeOwnerClasses(cx, declType);
-    let syms = new Array<SymbolId>();
-    syms.push(d.symbolId);
+    let syms = growable<SymbolId>([d.symbolId]);
     let value = cx.envValues(syms)[0];
     emitMaybeDispose(cx, value, ownerClasses);
   }
-};
+}
 
 /** Whether the if has any drops owed on the given arm. */
-let hasEdgeDrops = (cx: LoweringContext, stmt: IfStatement, onTrue: boolean): boolean => {
+function hasEdgeDrops(cx: LoweringContext, stmt: IfStatement, onTrue: boolean): boolean {
   let dropsOpt = cx.func.model.edgeDropsOf(stmt as Node);
   if (dropsOpt == null) { return false; }
   for (let d in dropsOpt) {
     if (d.onTrueArm == onTrue) { return true; }
   }
   return false;
-};
+}
 
-export let lowerIf = (cx: LoweringContext, stmt: IfStatement): void => {
+export function lowerIf(cx: LoweringContext, stmt: IfStatement): void {
   var cond = -1;
   var letBinds: LetCondBinds | null = null;
   if (stmt.test is Expression) {
@@ -724,7 +717,7 @@ export let lowerIf = (cx: LoweringContext, stmt: IfStatement): void => {
   }
 
   cx.finishMerge(m, saved);
-};
+}
 
 /**
  * If-expressions: like #lowerIf, plus one extra merge parameter carrying
@@ -732,7 +725,7 @@ export let lowerIf = (cx: LoweringContext, stmt: IfStatement): void => {
  * whose trailing expression statement is the value). Void-typed
  * if-expressions lower like statements and yield no value.
  */
-export let lowerIfExpression = (cx: LoweringContext, expr: IfExpression): i32 => {
+export function lowerIfExpression(cx: LoweringContext, expr: IfExpression): i32 {
   let armFields = cx.takeResultFields();
   let nodeType = cx.substitutedNodeType(expr);
   if (nodeType == null) {
@@ -790,11 +783,11 @@ export let lowerIfExpression = (cx: LoweringContext, expr: IfExpression): i32 =>
   }
 
   return finishArmsMerge(cx, m, saved);
-};
+}
 
 /** Lowers one arm and branches to the merge with its value or its fields. */
-let mergeValueArm = (cx: LoweringContext, m: MergeState, node: Node,
-    isVoid: boolean, resultVt: ValType | null, armKind: String): void => {
+function mergeValueArm(cx: LoweringContext, m: MergeState, node: Node,
+    isVoid: boolean, resultVt: ValType | null, armKind: String): void {
   let fieldsMode = m.fields;
   if (fieldsMode != null) {
     let values = lowerArmFields(cx, node, fieldsMode, resultVt);
@@ -807,7 +800,7 @@ let mergeValueArm = (cx: LoweringContext, m: MergeState, node: Node,
   if (cx.reachable) {
     cx.mergeArm(m, value, armKind);
   }
-};
+}
 
 /**
  * One arm of an `if` or `match` whose record a core returns as its
@@ -815,8 +808,8 @@ let mergeValueArm = (cx: LoweringContext, m: MergeState, node: Node,
  * lowered straight to its fields, a nested `if` or `match` merges its own
  * arms' fields, and any other arm's record has its fields read.
  */
-let lowerArmFields = (cx: LoweringContext, node: Node, d: RecordDispatchInfo,
-    resultVt: ValType | null): GrowableArray<i32> => {
+function lowerArmFields(cx: LoweringContext, node: Node, d: RecordDispatchInfo,
+    resultVt: ValType | null): GrowableArray<i32> {
   if (node is Expression) {
     let literal = exactLiteralFields(cx, node, d);
     if (literal != null) {
@@ -832,28 +825,28 @@ let lowerArmFields = (cx: LoweringContext, node: Node, d: RecordDispatchInfo,
     return new Array<i32>();
   }
   return cx.recordFieldsOf(d, record);
-};
+}
 
 /**
  * finishMerge, and in fields mode the record rebuilt from the merged
  * fields and held as them, so the core returns the fields and the record
  * dies.
  */
-let finishArmsMerge = (cx: LoweringContext, m: MergeState,
-    saved: HashMap<SymbolId, i32>): i32 => {
+function finishArmsMerge(cx: LoweringContext, m: MergeState,
+    saved: HashMap<SymbolId, i32>): i32 {
   let result = cx.finishMerge(m, saved);
   let fieldsMode = m.fields;
   if (fieldsMode != null && m.block >= 0) {
     return packHeldRecord(cx, fieldsMode, m.fieldParams as GrowableArray<i32>);
   }
   return result;
-};
+}
 
 /**
  * Binds a catch clause's parameter to the in-flight exception, read
  * out of the payload global at the top of the handler block.
  */
-let bindCatchParam = (cx: LoweringContext, handler: CatchClause): void => {
+function bindCatchParam(cx: LoweringContext, handler: CatchClause) {
   let paramIdent = handler.param;
   if (paramIdent == null) {
     return;
@@ -871,7 +864,7 @@ let bindCatchParam = (cx: LoweringContext, handler: CatchClause): void => {
         new ValTypeRef(t) as ValType, payload, -1);
   }
   cx.bindPatternSym(symOpt, payload);
-};
+}
 
 // `FinallyScope.codeVar` values: which exit the dispatch must replay.
 let finallyExitNormal = 0;
@@ -882,12 +875,12 @@ let finallyExitThrow = 4;
 let finallyExitCancel = 5;
 
 /** Parks `code` as the pending exit and branches to the dispatch. */
-let parkExit = (cx: LoweringContext, scope: FinallyScope, code: i32): void => {
+function parkExit(cx: LoweringContext, scope: FinallyScope, code: i32) {
   let i32vt = new ValTypeI32() as ValType;
   cx.b.varSet(scope.codeVar, cx.b.constI32(code, i32vt));
   cx.b.br(scope.dispatch, noValues());
   cx.reachable = false;
-};
+}
 
 /**
  * Routes a `return` out through the innermost pending finalizer, or
@@ -895,7 +888,7 @@ let parkExit = (cx: LoweringContext, scope: FinallyScope, code: i32): void => {
  * `value` is -1 for a valueless return; the value is conformed to the
  * return slot HERE, so replaying it is a bare `ret`.
  */
-export let returnThroughFinally = (cx: LoweringContext, value: i32): boolean => {
+export function returnThroughFinally(cx: LoweringContext, value: i32): boolean {
   if (cx.finallyScopes.length == 0) {
     return false;
   }
@@ -914,7 +907,7 @@ export let returnThroughFinally = (cx: LoweringContext, value: i32): boolean => 
   scope.exitsByReturn = true;
   parkExit(cx, scope, finallyExitReturn);
   return true;
-};
+}
 
 /**
  * The multi-value sibling of `returnThroughFinally`: one variable per
@@ -922,8 +915,8 @@ export let returnThroughFinally = (cx: LoweringContext, value: i32): boolean => 
  * region. The replay arm reads them back and either parks them into
  * the next enclosing region or emits the ret_multi itself.
  */
-export let returnMultiThroughFinally = (cx: LoweringContext,
-    values: GrowableArray<i32>): boolean => {
+export function returnMultiThroughFinally(cx: LoweringContext,
+    values: GrowableArray<i32>): boolean {
   if (cx.finallyScopes.length == 0) {
     return false;
   }
@@ -945,23 +938,23 @@ export let returnMultiThroughFinally = (cx: LoweringContext,
   scope.exitsByReturn = true;
   parkExit(cx, scope, finallyExitReturn);
   return true;
-};
+}
 
 /**
  * The innermost finalizer a `break`/`continue` here owes, or null.
  * A loop opened INSIDE the region is left without leaving the region,
  * and `loopDepth` is what tells the two apart.
  */
-let finallyForLoopExit = (cx: LoweringContext): FinallyScope | null => {
+function finallyForLoopExit(cx: LoweringContext): FinallyScope | null {
   if (cx.finallyScopes.length == 0) {
     return null;
   }
   let scope = cx.finallyScopes[cx.finallyScopes.length - 1];
   return if (scope.loopDepth >= cx.loops.length) scope else null;
-};
+}
 
 /** Routes a `break` out through pending finalizers; false when none. */
-export let breakThroughFinally = (cx: LoweringContext): boolean => {
+export function breakThroughFinally(cx: LoweringContext): boolean {
   let scope = finallyForLoopExit(cx);
   if (scope == null) {
     return false;
@@ -969,10 +962,10 @@ export let breakThroughFinally = (cx: LoweringContext): boolean => {
   scope.exitsByBreak = true;
   parkExit(cx, scope, finallyExitBreak);
   return true;
-};
+}
 
 /** Routes a `continue` out through pending finalizers; false when none. */
-export let continueThroughFinally = (cx: LoweringContext): boolean => {
+export function continueThroughFinally(cx: LoweringContext): boolean {
   let scope = finallyForLoopExit(cx);
   if (scope == null) {
     return false;
@@ -980,12 +973,12 @@ export let continueThroughFinally = (cx: LoweringContext): boolean => {
   scope.exitsByContinue = true;
   parkExit(cx, scope, finallyExitContinue);
   return true;
-};
+}
 
 /** An arm of the protected part that completed normally: park the
  * value and join the dispatch. */
-let finishProtectedArm = (cx: LoweringContext, scope: FinallyScope,
-    resultVar: i32, value: i32): void => {
+function finishProtectedArm(cx: LoweringContext, scope: FinallyScope,
+    resultVar: i32, value: i32): void {
   if (!cx.reachable) {
     return;
   }
@@ -995,7 +988,7 @@ let finishProtectedArm = (cx: LoweringContext, scope: FinallyScope,
   }
   scope.exitsNormally = true;
   parkExit(cx, scope, finallyExitNormal);
-};
+}
 
 /**
  * `try` with a finalizer, in value or statement position.
@@ -1038,12 +1031,12 @@ let finishProtectedArm = (cx: LoweringContext, scope: FinallyScope,
  * one level up: the cancel handler edge is a predecessor, and the
  * emitter streams it past the outer region's end.
  */
-let lowerFinallyRegion = (cx: LoweringContext, mirrored: GrowableArray<SymbolId>,
+function lowerFinallyRegion(cx: LoweringContext, mirrored: GrowableArray<SymbolId>,
     isVoid: boolean, resultVt: ValType | null,
     lowerProtected: (scope: FinallyScope, resultVar: i32,
         saved: HashMap<SymbolId, i32>) => void,
     lowerFinalizer: (scope: FinallyScope) => void,
-    finalizeOnNormal: boolean = true): i32 => {
+    finalizeOnNormal: boolean = true): i32 {
   if (cx.wasm.exceptionTag == null || cx.wasm.exceptionPayload == null) {
     bail(cx, 'exception infra missing');
   }
@@ -1269,7 +1262,7 @@ let lowerFinallyRegion = (cx: LoweringContext, mirrored: GrowableArray<SymbolId>
   cx.b.switchTo(contB);
   cx.reachable = true;
   return if (resultVar >= 0) cx.b.varGet(resultVar) else -1;
-};
+}
 
 /**
  * `try` with a finalizer and/or a `cancel` clause, in value or
@@ -1290,7 +1283,7 @@ let lowerFinallyRegion = (cx: LoweringContext, mirrored: GrowableArray<SymbolId>
  * dispatch target gives these blocks extra predecessors that hoist
  * them outside — the park-and-replay shape is placement-independent.
  */
-let lowerTryFinally = (cx: LoweringContext, expr: TryExpression): i32 => {
+function lowerTryFinally(cx: LoweringContext, expr: TryExpression) {
   let nodeType = cx.substitutedNodeType(expr);
   if (nodeType == null) {
     bail(cx, 'untyped try expression');
@@ -1327,7 +1320,7 @@ let lowerTryFinally = (cx: LoweringContext, expr: TryExpression): i32 => {
 
   let tag = cx.wasm.exceptionTag as WasmTag;
   let lowerArmsInto = (scope: FinallyScope, resultVar: i32,
-      saved: HashMap<SymbolId, i32>): void => {
+      saved: HashMap<SymbolId, i32>) => {
     let handler = expr.handler;
     if (handler == null) {
       let bodyValue = lowerValueNode(cx, expr.body as Node, isVoid, resultVt);
@@ -1357,26 +1350,24 @@ let lowerTryFinally = (cx: LoweringContext, expr: TryExpression): i32 => {
   // The cancel clause's region: its "finalizer" runs the block only
   // when the parked exit is CANCEL, and passes every other exit
   // through untouched.
-  let lowerCancelClauseRegion = (): i32 => {
-    return lowerFinallyRegion(cx, mirrored, isVoid, resultVt,
-        lowerArmsInto,
-        (scope) => {
-          let i32vt = new ValTypeI32() as ValType;
-          let code = cx.b.varGet(scope.codeVar);
-          let runB = cx.b.newBlock();
-          let skipB = cx.b.newBlock();
-          cx.b.brIf(cx.b.binary(IrOp.i32_eq, i32vt, code,
-                  cx.b.constI32(finallyExitCancel, i32vt)),
-              runB, noValues(), skipB, noValues());
-          cx.b.switchTo(runB);
-          lowerValueNode(cx, expr.cancelBlock as Node, true, null);
-          if (cx.reachable) {
-            cx.b.br(skipB, noValues());
-          }
-          cx.b.switchTo(skipB);
-          cx.reachable = true;
-        });
-  };
+  let lowerCancelClauseRegion = () => lowerFinallyRegion(cx, mirrored, isVoid, resultVt,
+      lowerArmsInto,
+      (scope) => {
+        let i32vt = new ValTypeI32() as ValType;
+        let code = cx.b.varGet(scope.codeVar);
+        let runB = cx.b.newBlock();
+        let skipB = cx.b.newBlock();
+        cx.b.brIf(cx.b.binary(IrOp.i32_eq, i32vt, code,
+                cx.b.constI32(finallyExitCancel, i32vt)),
+            runB, noValues(), skipB, noValues());
+        cx.b.switchTo(runB);
+        lowerValueNode(cx, expr.cancelBlock as Node, true, null);
+        if (cx.reachable) {
+          cx.b.br(skipB, noValues());
+        }
+        cx.b.switchTo(skipB);
+        cx.reachable = true;
+      });
 
   let finalizerOpt = expr.finalizer;
   if (finalizerOpt == null) {
@@ -1395,7 +1386,7 @@ let lowerTryFinally = (cx: LoweringContext, expr: TryExpression): i32 => {
   }
   return lowerFinallyRegion(cx, mirrored, isVoid, resultVt, lowerArmsInto,
       (fscope) => { lowerValueNode(cx, finalizer, true, null); });
-};
+}
 
 /**
  * `shielded { ... }` (docs/design/cancellation.md §Shields): the body
@@ -1408,8 +1399,8 @@ let lowerTryFinally = (cx: LoweringContext, expr: TryExpression): i32 => {
  * error unwind, a raised cancellation crossing the region — puts the
  * current scope back, and level-triggering resumes at the closing brace.
  */
-export let lowerShieldedRegion = (cx: LoweringContext,
-    stmt: ShieldedStatement): void => {
+export function lowerShieldedRegion(cx: LoweringContext,
+    stmt: ShieldedStatement): void {
   if (!cx.wasm.scopeCancellationActive) {
     // Under a closed scope-cancellation gate there are no checkpoints
     // to mask and no scopes to rebind: the region is only its body.
@@ -1450,12 +1441,10 @@ export let lowerShieldedRegion = (cx: LoweringContext,
 
   let cur = cx.b.callFunc(cx.b.addRef(new IrRefFunc(currentScopeFn)),
       noValues(), scopeVt);
-  let shieldArgs = new Array<i32>();
-  shieldArgs.push(cur);
+  let shieldArgs = growable<i32>([cur]);
   let shield = cx.b.callFunc(cx.b.addRef(new IrRefFunc(shieldFn)),
       shieldArgs, scopeVt);
-  let installArgs = new Array<i32>();
-  installArgs.push(shield);
+  let installArgs = growable<i32>([shield]);
   let prev = cx.b.callFunc(cx.b.addRef(new IrRefFunc(installFn)),
       installArgs, scopeVt);
 
@@ -1473,12 +1462,11 @@ export let lowerShieldedRegion = (cx: LoweringContext,
         finishProtectedArm(cx, scope, resultVar, -1);
       },
       (fscope) => {
-        let restoreArgs = new Array<i32>();
-        restoreArgs.push(prev);
+        let restoreArgs = growable<i32>([prev]);
         let ignored = cx.b.callFunc(cx.b.addRef(new IrRefFunc(installFn)),
             restoreArgs, scopeVt);
       });
-};
+}
 
 /**
  * try/catch, in value or statement position. The protector block
@@ -1499,7 +1487,7 @@ export let lowerShieldedRegion = (cx: LoweringContext,
  * suspension, so there the symbols are celled instead (RTA, gated on
  * the enclosing function being `async`/`gen`) and never reach here.
  */
-export let lowerTryExpression = (cx: LoweringContext, expr: TryExpression): i32 => {
+export function lowerTryExpression(cx: LoweringContext, expr: TryExpression): i32 {
   // Under a closed cancellation gate a `cancel` clause is dead code:
   // nothing in the program can raise on the cancellation channel, so
   // the clause is elided rather than lowered.
@@ -1619,7 +1607,7 @@ export let lowerTryExpression = (cx: LoweringContext, expr: TryExpression): i32 
     cx.b.body.tryJoin[tryInst] = m.block;
   }
   return cx.finishMerge(m, saved);
-};
+}
 
 /**
  * The classes whose `:dispose` can release a value of type `t`: one
@@ -1631,7 +1619,7 @@ export let lowerTryExpression = (cx: LoweringContext, expr: TryExpression): i32 
  * `Descriptor`'s member; the checker has already established that the
  * members exist, and that a `Borrow<R>` never reaches here.
  */
-export let disposeOwnerClasses = (cx: LoweringContext, t: Type): GrowableArray<ClassType> => {
+export function disposeOwnerClasses(cx: LoweringContext, t: Type): GrowableArray<ClassType> {
   // Peel the handle the way the checker did when it found the `:dispose`.
   // Neither `baseType` nor `unwrapAliases` gets here: the handles are
   // *generic* aliases, so `Own<T> = T` has the bare type parameter as its
@@ -1659,7 +1647,7 @@ export let disposeOwnerClasses = (cx: LoweringContext, t: Type): GrowableArray<C
     case _: { bail(cx, 'using operand is not a class'); }
   }
   return result;
-};
+}
 
 /**
  * Emits one release: `value.[Disposable.dispose]()`.
@@ -1669,7 +1657,7 @@ export let disposeOwnerClasses = (cx: LoweringContext, t: Type): GrowableArray<C
  * run the subclass's release, and a `resource class` hierarchy is exactly
  * where that happens.
  */
-let emitDispose = (cx: LoweringContext, value: i32, ownerClass: ClassType): void => {
+function emitDispose(cx: LoweringContext, value: i32, ownerClass: ClassType) {
   let ct = ownerClass;
   let cKey = getClassKey(ct);
   let classInfo = if (let (true, info) = cx.wasm.classInfos.get(cKey)) info else null;
@@ -1701,8 +1689,7 @@ let emitDispose = (cx: LoweringContext, value: i32, ownerClass: ClassType): void
   }
 
   let receiver = cx.conformToSlot(value, sig.params[0], 'dispose receiver type');
-  let args = new Array<i32>();
-  args.push(receiver);
+  let args = growable<i32>([receiver]);
 
   if (!cx.exactValues.has(value) &&
       cx.memberProvidedBySubclass(classInfo, ':dispose')) {
@@ -1713,7 +1700,7 @@ let emitDispose = (cx: LoweringContext, value: i32, ownerClass: ClassType): void
     return;
   }
   cx.b.callFunc(cx.b.addRef(new IrRefFunc(method)), args, null);
-};
+}
 
 /**
  * One release, dispatched on the dynamic class when the static owner
@@ -1723,7 +1710,7 @@ let emitDispose = (cx: LoweringContext, value: i32, ownerClass: ClassType): void
  * because emitDispose dispatches virtually when a subclass overrides
  * `:dispose`.
  */
-let emitDisposeDispatch = (cx: LoweringContext, value: i32, owners: GrowableArray<ClassType>): void => {
+function emitDisposeDispatch(cx: LoweringContext, value: i32, owners: GrowableArray<ClassType>) {
   if (owners.length == 1) {
     emitDispose(cx, value, owners[0]);
     return;
@@ -1752,14 +1739,14 @@ let emitDisposeDispatch = (cx: LoweringContext, value: i32, owners: GrowableArra
     }
   }
   cx.b.switchTo(endB);
-};
+}
 
 /**
  * Emits a release, guarded when the value can be null at runtime: a
  * nullable binding holds nothing when it holds null, and the dispose is
  * skipped rather than trapped — the same rule TC39 `using` adopted.
  */
-export let emitMaybeDispose = (cx: LoweringContext, value: i32, owners: GrowableArray<ClassType>): void => {
+export function emitMaybeDispose(cx: LoweringContext, value: i32, owners: GrowableArray<ClassType>): void {
   let vt = cx.valueTypeOf(value);
   if (!isRefValType(vt)) {
     bail(cx, 'dispose operand kind');
@@ -1782,7 +1769,7 @@ export let emitMaybeDispose = (cx: LoweringContext, value: i32, owners: Growable
   emitDisposeDispatch(cx, value, owners);
   cx.b.br(skipB, noValues());
   cx.b.switchTo(skipB);
-};
+}
 
 /**
  * A `using` statement and everything after it in its block.
@@ -1817,7 +1804,7 @@ final class VarDropPlan {
   new(this.symId, this.owners, this.intervals);
 }
 
-let varDropPlans = (cx: LoweringContext, body: GrowableArray<Statement>): GrowableArray<VarDropPlan> => {
+function varDropPlans(cx: LoweringContext, body: GrowableArray<Statement>): GrowableArray<VarDropPlan> {
   let plans = new Array<VarDropPlan>();
   for (let s in body) {
     if (!(s is VariableDeclaration)) { continue; }
@@ -1835,13 +1822,13 @@ let varDropPlans = (cx: LoweringContext, body: GrowableArray<Statement>): Growab
     plans.push(new VarDropPlan(symOpt.id, disposeOwnerClasses(cx, bt), intervals));
   }
   return plans;
-};
+}
 
 /**
  * The recorded end of the plan's interval covering statement `i`: an
  * exclusive index, or -1 for the block's end; -2 when none covers it.
  */
-let varDropIntervalEnd = (plan: VarDropPlan, i: i32, len: i32): i32 => {
+function varDropIntervalEnd(plan: VarDropPlan, i: i32, len: i32): i32 {
   var k = 0;
   while (k + 1 < plan.intervals.length) {
     let a = plan.intervals[k];
@@ -1851,7 +1838,7 @@ let varDropIntervalEnd = (plan: VarDropPlan, i: i32, len: i32): i32 => {
     k += 2;
   }
   return -2;
-};
+}
 
 /**
  * Releases what a `var` owner binding holds at a region's exit. A store
@@ -1860,11 +1847,10 @@ let varDropIntervalEnd = (plan: VarDropPlan, i: i32, len: i32): i32 => {
  * finalizer runs; a binding no statement in the region assigned still
  * holds its entry value.
  */
-let emitVarDropRelease = (cx: LoweringContext, plan: VarDropPlan): void => {
-  let syms = new Array<SymbolId>();
-  syms.push(plan.symId);
+function emitVarDropRelease(cx: LoweringContext, plan: VarDropPlan): void {
+  let syms = growable<SymbolId>([plan.symId]);
   emitMaybeDispose(cx, cx.envValues(syms)[0], plan.owners);
-};
+}
 
 /**
  * One release region of a `var` owner binding, over statements
@@ -1874,8 +1860,8 @@ let emitVarDropRelease = (cx: LoweringContext, plan: VarDropPlan): void => {
  * — releases only on the exits that leave early, since on normal
  * completion the value is still the binding's.
  */
-let lowerVarDropRegion = (cx: LoweringContext, plan: VarDropPlan,
-    body: GrowableArray<Statement>, start: i32, end: i32, toBlockEnd: boolean): void => {
+function lowerVarDropRegion(cx: LoweringContext, plan: VarDropPlan,
+    body: GrowableArray<Statement>, start: i32, end: i32, toBlockEnd: boolean): void {
   let mirrored = new Array<SymbolId>();
   for (var k = start; k < end; k += 1) {
     cx.appendAssignedEnvSyms(body[k] as Node, mirrored);
@@ -1889,7 +1875,7 @@ let lowerVarDropRegion = (cx: LoweringContext, plan: VarDropPlan,
       (fscope) => { emitVarDropRelease(cx, plan); },
       toBlockEnd);
   cx.openVarDrops.delete(plan.symId as i32);
-};
+}
 
 /**
  * Statements [start, end) of a statement list, with the release regions
@@ -1904,8 +1890,8 @@ let lowerVarDropRegion = (cx: LoweringContext, plan: VarDropPlan,
  * whose region is open are on the context, so a nested list (a
  * `using` region's rest) opens no second region for one.
  */
-export let lowerStatementRange = (cx: LoweringContext, body: GrowableArray<Statement>,
-    start: i32, end: i32): void => {
+export function lowerStatementRange(cx: LoweringContext, body: GrowableArray<Statement>,
+    start: i32, end: i32): void {
   let plans = varDropPlans(cx, body);
   var i = start;
   while (i < end) {
@@ -1939,10 +1925,10 @@ export let lowerStatementRange = (cx: LoweringContext, body: GrowableArray<State
     lowerStmt(cx, s);
     i += 1;
   }
-};
+}
 
-export let lowerUsingRegion = (cx: LoweringContext, stmt: UsingStatement,
-    rest: GrowableArray<Statement>, restStart: i32, restEnd: i32): void => {
+export function lowerUsingRegion(cx: LoweringContext, stmt: UsingStatement,
+    rest: GrowableArray<Statement>, restStart: i32, restEnd: i32): void {
   let declType = cx.substitutedNodeType(stmt.init);
   if (declType == null) {
     bail(cx, 'untyped using initializer');
@@ -1974,12 +1960,12 @@ export let lowerUsingRegion = (cx: LoweringContext, stmt: UsingStatement,
         finishProtectedArm(cx, scope, resultVar, -1);
       },
       (fscope) => { emitMaybeDispose(cx, value, ownerClasses); });
-};
+}
 
 /** Whether the checker marked this declaration for release at scope exit. */
-export let declScopeDrop = (cx: LoweringContext, vd: VariableDeclaration): boolean => {
+export function declScopeDrop(cx: LoweringContext, vd: VariableDeclaration): boolean {
   return cx.func.model.hasScopeExitDrop(vd.pattern as Node);
-};
+}
 
 /**
  * The dispose glue's field list: the affine fields the lowered
@@ -1987,8 +1973,8 @@ export let declScopeDrop = (cx: LoweringContext, vd: VariableDeclaration): boole
  * (instantiated) member types. Empty for anything but a `:dispose` of
  * a class with such fields.
  */
-export let collectAffineDropFields = (cx: LoweringContext,
-    names: GrowableArray<String>, types: GrowableArray<Type>): void => {
+export function collectAffineDropFields(cx: LoweringContext,
+    names: GrowableArray<String>, types: GrowableArray<Type>): void {
   let ctOpt = cx.func.classType;
   if (ctOpt == null) { return; }
   let ct = ctOpt;
@@ -2022,7 +2008,7 @@ export let collectAffineDropFields = (cx: LoweringContext,
     names.push(fName);
     types.push(fType);
   }
-};
+}
 
 /**
  * Stores `ResourceState.Dropped` into the receiver's lifecycle flag —
@@ -2036,7 +2022,7 @@ export let collectAffineDropFields = (cx: LoweringContext,
  * blaming a phantom owner. `Dropped == 3` is pinned by zena:ownership's
  * `ResourceState` (as `Owned == 0` is pinned by `struct.new_default`).
  */
-export let emitMarkDropped = (cx: LoweringContext): void => {
+export function emitMarkDropped(cx: LoweringContext): void {
   let ctOpt = cx.func.classType;
   if (ctOpt == null) {
     bail(cx, 'dispose prologue without class');
@@ -2055,13 +2041,11 @@ export let emitMarkDropped = (cx: LoweringContext): void => {
     bail(cx, 'resource lifecycle field missing');
   }
   let dropped = cx.b.constI32(3, new ValTypeI32() as ValType);
-  let pair = new Array<i32>();
-  pair.push(cx.thisValue);
-  pair.push(dropped);
+  let pair = growable<i32>([cx.thisValue, dropped]);
   let fieldRef = cx.b.addRef(new IrRefField(st, key));
   let pairIdx = cx.b.pushExtra(pair);
   cx.b.emitVoid(IrOp.struct_set, pairIdx, fieldRef);
-};
+}
 
 /**
  * The synthesized `:dispose` of a resource class whose only release
@@ -2069,7 +2053,7 @@ export let emitMarkDropped = (cx: LoweringContext): void => {
  * regions around nothing (ownership.md §Affine fields). The signature
  * is the consuming receiver alone.
  */
-export let lowerSyntheticDispose = (cx: LoweringContext): IrBody => {
+export function lowerSyntheticDispose(cx: LoweringContext): IrBody {
   let sig = cx.func.signature;
   if (sig.params.length != 1) {
     bail(cx, 'synthetic dispose shape');
@@ -2093,7 +2077,7 @@ export let lowerSyntheticDispose = (cx: LoweringContext): IrBody => {
     cx.b.retVoid();
   }
   return cx.b.finish();
-};
+}
 
 /**
  * Release regions for a resource's affine fields, wrapped around its
@@ -2104,10 +2088,10 @@ export let lowerSyntheticDispose = (cx: LoweringContext): IrBody => {
  * statements. Fields are immutable, so reading each once at region
  * entry reads the value the finalizer releases.
  */
-export let lowerFieldDropRegions = (cx: LoweringContext,
+export function lowerFieldDropRegions(cx: LoweringContext,
     names: GrowableArray<String>, types: Array<Type>, idx: i32,
     paramSyms: GrowableArray<Symbol>,
-    body: GrowableArray<Statement>, start: i32, end: i32): void => {
+    body: GrowableArray<Statement>, start: i32, end: i32): void {
   if (idx >= names.length) {
     lowerParamDropRegions(cx, paramSyms, 0, body, start, end);
     return;
@@ -2153,7 +2137,7 @@ export let lowerFieldDropRegions = (cx: LoweringContext,
         finishProtectedArm(cx, scope, resultVar, -1);
       },
       () => { emitMaybeDispose(cx, value, owners); });
-};
+}
 
 /**
  * Release regions for owned parameters the body never moves: the
@@ -2164,9 +2148,9 @@ export let lowerFieldDropRegions = (cx: LoweringContext,
  * last parameter, the body statements lower with the same
  * using/scope-drop dispatch #lowerStatementList applies.
  */
-export let lowerParamDropRegions = (cx: LoweringContext,
+export function lowerParamDropRegions(cx: LoweringContext,
     dropSyms: GrowableArray<Symbol>, idx: i32,
-    body: GrowableArray<Statement>, start: i32, end: i32): void => {
+    body: GrowableArray<Statement>, start: i32, end: i32): void {
   if (idx >= dropSyms.length) {
     lowerStatementRange(cx, body, start, end);
     return;
@@ -2176,8 +2160,7 @@ export let lowerParamDropRegions = (cx: LoweringContext,
     bail(cx, 'param drop untyped binding');
   }
   let owners = disposeOwnerClasses(cx, declType);
-  let syms = new Array<SymbolId>();
-  syms.push(dropSyms[idx].id);
+  let syms = growable<SymbolId>([dropSyms[idx].id]);
   let value = cx.envValues(syms)[0];
 
   let mirrored = new Array<SymbolId>();
@@ -2191,7 +2174,7 @@ export let lowerParamDropRegions = (cx: LoweringContext,
         finishProtectedArm(cx, scope, resultVar, -1);
       },
       (fscope) => { emitMaybeDispose(cx, value, owners); });
-};
+}
 
 /**
  * An implicit-drop declaration and everything after it in its block:
@@ -2202,8 +2185,8 @@ export let lowerParamDropRegions = (cx: LoweringContext,
  * region `using` compiles to — one dispose, outside the region, reached
  * by normal completion, the handler edge, and every early exit.
  */
-export let lowerScopeDropRegion = (cx: LoweringContext, vd: VariableDeclaration,
-    rest: GrowableArray<Statement>, restStart: i32, restEnd: i32): void => {
+export function lowerScopeDropRegion(cx: LoweringContext, vd: VariableDeclaration,
+    rest: GrowableArray<Statement>, restStart: i32, restEnd: i32): void {
   let declType = cx.substitutedNodeType(vd.init);
   if (declType == null) {
     bail(cx, 'untyped implicit-drop binding');
@@ -2216,8 +2199,7 @@ export let lowerScopeDropRegion = (cx: LoweringContext, vd: VariableDeclaration,
   if (symOpt == null) {
     bail(cx, 'implicit-drop binding symbol');
   }
-  let syms = new Array<SymbolId>();
-  syms.push(symOpt.id);
+  let syms = growable<SymbolId>([symOpt.id]);
   let value = cx.envValues(syms)[0];
 
   let mirrored = new Array<SymbolId>();
@@ -2231,9 +2213,9 @@ export let lowerScopeDropRegion = (cx: LoweringContext, vd: VariableDeclaration,
         finishProtectedArm(cx, scope, resultVar, -1);
       },
       (fscope) => { emitMaybeDispose(cx, value, ownerClasses); });
-};
+}
 
-export let lowerWhile = (cx: LoweringContext, stmt: WhileStatement): void => {
+export function lowerWhile(cx: LoweringContext, stmt: WhileStatement): void {
   if (!(stmt.test is Expression) && !(stmt.test is LetPatternCondition)) {
     bail(cx, 'while-let');
   }
@@ -2297,22 +2279,22 @@ export let lowerWhile = (cx: LoweringContext, stmt: WhileStatement): void => {
   cx.b.switchTo(exitB);
   cx.applyParams(carried, exitParams);
   cx.reachable = true;
-};
+}
 
 /**
  * The variable a `for` header declares when it lives in a heap cell, or
  * null. Such a variable is a fresh variable on each iteration (see
  * lowerFor), so the loop carries its cell rather than its value.
  */
-let celledHeaderSym = (cx: LoweringContext, init: VariableDeclaration): Symbol | null => {
+function celledHeaderSym(cx: LoweringContext, init: VariableDeclaration): Symbol | null {
   let pat = init.pattern;
   if (!(pat is IdentifierPattern)) { return null; }
   let sym = cx.func.model.resolveDeclaration(pat);
   if (sym == null || !cx.isCelled(sym.id)) { return null; }
   return sym;
-};
+}
 
-export let lowerFor = (cx: LoweringContext, stmt: ForStatement): void => {
+export function lowerFor(cx: LoweringContext, stmt: ForStatement): void {
   // C-style for. The init runs in the current block; the update gets its
   // own block so `continue` can route through it.
   var headerCell: Symbol | null = null;
@@ -2350,12 +2332,11 @@ export let lowerFor = (cx: LoweringContext, stmt: ForStatement): void => {
 
   cx.b.switchTo(header);
   cx.applyParams(carried, headerParams);
-  var cond = -1;
-  if (stmt.test != null) {
-    cond = lowerExpr(cx, stmt.test as Expression, null);
+  let cond = if (stmt.test != null) {
+    lowerExpr(cx, stmt.test as Expression, null)
   } else {
-    cond = cx.b.constI32(1, new ValTypeI32());
-  }
+    cx.b.constI32(1, new ValTypeI32())
+  };
 
   let bodyB = cx.b.newBlock();
   let updateB = cx.b.newBlock();
@@ -2397,7 +2378,7 @@ export let lowerFor = (cx: LoweringContext, stmt: ForStatement): void => {
   cx.b.switchTo(exitB);
   cx.applyParams(carried, exitParams);
   cx.reachable = true;
-};
+}
 
 /**
  * `left ?? right`: the left evaluates once; null short-circuits to
@@ -2409,7 +2390,7 @@ export let lowerFor = (cx: LoweringContext, stmt: ForStatement): void => {
  */
 /** The two-arm bool-discriminated inline-tuple union (`Iterator.next`
  * / `Map.get` / Result shapes) that `??` may coalesce. */
-let isProtocolUnion = (t: Type): boolean => {
+function isProtocolUnion(t: Type): boolean {
   if (!(t is UnionType)) { return false; }
   let types = t.types;
   if (types.length != 2) { return false; }
@@ -2428,15 +2409,15 @@ let isProtocolUnion = (t: Type): boolean => {
     }
   }
   return sawTrue && sawFalse;
-};
+}
 
 /** The shared merge tail of the coalesce lowerings. The caller has
  * branched, saved the env, switched to the ok block and computed
  * `okValue` there; the right arm evaluates lazily; both meet at one
  * merge. */
-let coalesceMerge = (cx: LoweringContext, bin: BinaryExpression,
+function coalesceMerge(cx: LoweringContext, bin: BinaryExpression,
     overallVt: ValType, mergeSyms: GrowableArray<SymbolId>,
-    rightB: i32, okValue: i32, saved: HashMap<SymbolId, i32>): i32 => {
+    rightB: i32, okValue: i32, saved: HashMap<SymbolId, i32>) {
   // The ok arm comes out of the left operand's maybe-form — a tuple
   // slot or an optional record field — so it is not an expression the
   // post-expression adaptation hook can reach. The checker records the
@@ -2471,12 +2452,12 @@ let coalesceMerge = (cx: LoweringContext, bin: BinaryExpression,
   cx.applyParams(mergeSyms, mergeParams);
   cx.reachable = true;
   return resultParam;
-};
+}
 
 /** `opts.f ?? d` on an OPTIONAL record field: the presence-tested
  * read — the slot value when the bit is set, the default otherwise. */
-let lowerPresenceCoalesce = (cx: LoweringContext, bin: BinaryExpression,
-    member: MemberExpression, rec: RecordType): i32 => {
+function lowerPresenceCoalesce(cx: LoweringContext, bin: BinaryExpression,
+    member: MemberExpression, rec: RecordType) {
   let overallVt = cx.exprVt(bin);
   let mergeSyms = cx.assignedEnvSyms(bin.right);
   let name = member.property.name;
@@ -2505,12 +2486,12 @@ let lowerPresenceCoalesce = (cx: LoweringContext, bin: BinaryExpression,
   }
   return coalesceMerge(cx, bin, overallVt, mergeSyms, rightB, okValue,
       saved);
-};
+}
 
 /** A protocol inline-tuple union under `??`: the true arm's payload
  * when the flag is set, the default otherwise (a Result-shaped
  * union's error slot plays no part). */
-let lowerProtocolCoalesce = (cx: LoweringContext, bin: BinaryExpression): i32 => {
+function lowerProtocolCoalesce(cx: LoweringContext, bin: BinaryExpression) {
   let overallVt = cx.exprVt(bin);
   let mergeSyms = cx.assignedEnvSyms(bin.right);
   let values = multiSource(cx, bin.left);
@@ -2528,9 +2509,9 @@ let lowerProtocolCoalesce = (cx: LoweringContext, bin: BinaryExpression): i32 =>
   cx.b.switchTo(okB);
   return coalesceMerge(cx, bin, overallVt, mergeSyms, rightB,
       values[1], saved);
-};
+}
 
-export let lowerNullishCoalesce = (cx: LoweringContext, bin: BinaryExpression): i32 => {
+export function lowerNullishCoalesce(cx: LoweringContext, bin: BinaryExpression): i32 {
   // Optional record field: `opts.f ?? d` is the licensed guarded read.
   if (bin.left is MemberExpression) {
     let member = bin.left as MemberExpression;
@@ -2616,7 +2597,7 @@ export let lowerNullishCoalesce = (cx: LoweringContext, bin: BinaryExpression): 
   cx.applyParams(mergeSyms, mergeParams);
   cx.reachable = true;
   return resultParam;
-};
+}
 
 /**
  * for-in via the iterator protocol, mirroring streaming: class
@@ -2635,7 +2616,7 @@ export let lowerNullishCoalesce = (cx: LoweringContext, bin: BinaryExpression): 
  * `for` and a `for await`. Only a `for await` reaches the asynchronous
  * half; the checker rejects a plain `for` over it.
  */
-export let lowerForInIterator = (cx: LoweringContext, stmt: ForInStatement, iterableType: Type): void => {
+export function lowerForInIterator(cx: LoweringContext, stmt: ForInStatement, iterableType: Type): void {
   let resolved = cx.resolveSelfType(iterableType);
   var iter = -1;
   if (resolved is ClassType) {
@@ -2725,7 +2706,7 @@ export let lowerForInIterator = (cx: LoweringContext, stmt: ForInStatement, iter
     return;
   }
   lowerForInIteratorLoop(cx, stmt, iter, symOpt, bindVtOpt, pat);
-};
+}
 
 /**
  * A `for await`'s Pending arm: suspend on the step's future, then enter
@@ -2734,9 +2715,9 @@ export let lowerForInIterator = (cx: LoweringContext, stmt: ForInStatement, iter
  * (async-iteration.md, "Consuming"). The future's type is the one the
  * checker recorded on the statement.
  */
-let lowerPendingStep = (cx: LoweringContext, stmt: ForInStatement,
+function lowerPendingStep(cx: LoweringContext, stmt: ForInStatement,
     future: i32, zeroWidthElem: boolean, bodyB: i32, exitB: i32,
-    exitArgs: GrowableArray<i32>): void => {
+    exitArgs: GrowableArray<i32>) {
   let pendingT = cx.substitutedNodeType(stmt);
   if (pendingT == null || !(pendingT is ClassType)) {
     bail(cx, 'for await without a pending future type');
@@ -2776,12 +2757,12 @@ let lowerPendingStep = (cx: LoweringContext, stmt: ForInStatement,
         casted, fieldRef));
   }
   cx.b.br(bodyB, intoBody);
-};
+}
 
 /** The protocol loop itself: next() in the header, bind, body, back. */
-let lowerForInIteratorLoop = (cx: LoweringContext, stmt: ForInStatement,
+function lowerForInIteratorLoop(cx: LoweringContext, stmt: ForInStatement,
     iter: i32, symOpt: Symbol | null, bindVtOpt: ValType | null,
-    pat: Node): void => {
+    pat: Node): void {
   let carried = cx.assignedEnvSyms(stmt.body);
   let header = cx.b.newBlock();
   let headerParams = cx.addParams(header, carried);
@@ -2884,7 +2865,7 @@ let lowerForInIteratorLoop = (cx: LoweringContext, stmt: ForInStatement,
   cx.b.switchTo(exitB);
   cx.applyParams(carried, exitParams);
   cx.reachable = true;
-};
+}
 
 /**
  * for-in over a BoundedRange or FromRange: a loop counting up from the
@@ -2900,8 +2881,8 @@ let lowerForInIteratorLoop = (cx: LoweringContext, stmt: ForInStatement,
  * A FromRange has no end. Its loop stops after binding the largest
  * i32 instead of wrapping around, matching FromRangeIterator.
  */
-let lowerForInRange = (cx: LoweringContext, stmt: ForInStatement,
-    rangeCt: ClassType, bounded: boolean): void => {
+function lowerForInRange(cx: LoweringContext, stmt: ForInStatement,
+    rangeCt: ClassType, bounded: boolean) {
   let i32Vt = new ValTypeI32() as ValType;
   var start = -1;
   var end = -1;
@@ -3018,7 +2999,7 @@ let lowerForInRange = (cx: LoweringContext, stmt: ForInStatement,
   cx.b.switchTo(exitB);
   cx.applyParams(carried, exitParams);
   cx.reachable = true;
-};
+}
 
 /**
  * for-in over FixedArray/ImmutableArray values (a wasm array) and
@@ -3035,7 +3016,7 @@ let lowerForInRange = (cx: LoweringContext, stmt: ForInStatement,
  * genuinely-custom iterators (which do need multi-value) and
  * default-iterator sequences (which don't).
  */
-export let lowerForIn = (cx: LoweringContext, stmt: ForInStatement): void => {
+export function lowerForIn(cx: LoweringContext, stmt: ForInStatement): void {
   // `for await` over a synchronous iterable never awaits: every step is
   // Ready, so the loop is exactly a `for` (async-iteration.md, "a `for
   // await` over [a sync iterator] never awaits"). The Pending arm — the
@@ -3229,4 +3210,4 @@ export let lowerForIn = (cx: LoweringContext, stmt: ForInStatement): void => {
   cx.b.switchTo(exitB);
   cx.applyParams(carried, exitParams);
   cx.reachable = true;
-};
+}

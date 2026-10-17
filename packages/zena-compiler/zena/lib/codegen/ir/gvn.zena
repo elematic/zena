@@ -26,19 +26,19 @@ import {
   ValType, ValTypeRef, ValTypeRefNull, valTypeToOpcode,
 } from '../wasm.zena';
 
-export let runGvn = (body: IrBody, scratch: IrScratch): void => {
+export function runGvn(body: IrBody, scratch: IrScratch): void {
   scratch.enter();
   runGvnOn(body, new IrCfg(body, scratch), scratch);
   scratch.exit();
-};
+}
 
-let runGvnOn = (body: IrBody, cfg: IrCfg, scratch: IrScratch): void => {
+function runGvnOn(body: IrBody, cfg: IrCfg, scratch: IrScratch): void {
   let count = body.instCount();
   let repl = scratch.i32();
   for (var i = 0; i < count; i += 1) {
     repl.push(i);
   }
-  let canon = (v: i32): i32 => {
+  let canon = (v: i32) => {
     if (v < 0 || v >= count) {
       return v;
     }
@@ -70,8 +70,7 @@ let runGvnOn = (body: IrBody, cfg: IrCfg, scratch: IrScratch): void => {
     work.push(-1);
 
     let insts = body.blocks[item].insts;
-    for (var j = 0; j < insts.length; j += 1) {
-      let inst = insts[j];
+    for (let inst in insts) {
       body.rewriteValueOperands(inst, canon);
       let key = gvnKey(body, inst);
       if (key == null) {
@@ -97,7 +96,7 @@ let runGvnOn = (body: IrBody, cfg: IrCfg, scratch: IrScratch): void => {
       ci -= 1;
     }
   }
-};
+}
 
 /**
  * The value-numbering key for pure instructions; null for anything
@@ -111,7 +110,7 @@ let runGvnOn = (body: IrBody, cfg: IrCfg, scratch: IrScratch): void => {
  * two casts to the same type from two inlined bodies name it at two
  * indices, and the point of numbering them is that they are one.
  */
-let typeCode = (vt: ValType): i32 => {
+function typeCode(vt: ValType) {
   if (vt is ValTypeRef) {
     return vt.target.uid * 4 + 1;
   }
@@ -119,7 +118,7 @@ let typeCode = (vt: ValType): i32 => {
     return vt.target.uid * 4 + 2;
   }
   return valTypeToOpcode(vt) * 4 + 3;
-};
+}
 
 /**
  * A value-numbering key. A case class rather than a string: the
@@ -130,7 +129,7 @@ let typeCode = (vt: ValType): i32 => {
  */
 final class GvnKey(kind: i32, a: i32, b: i32, c: i32, ty: i32, name: String)
 
-let gvnKey = (body: IrBody, inst: i32): GvnKey | null => {
+function gvnKey(body: IrBody, inst: i32): GvnKey | null {
   let op = body.op(inst);
   let av = body.a[inst];
   let bv = body.b[inst];
@@ -191,4 +190,4 @@ let gvnKey = (body: IrBody, inst: i32): GvnKey | null => {
     return new GvnKey(6, av, 0, 0, ty, '');
   }
   return null;
-};
+}

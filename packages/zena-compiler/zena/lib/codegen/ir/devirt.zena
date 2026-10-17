@@ -65,7 +65,7 @@ export final class DevirtContext {
 }
 
 /** Runs the pass on one body; returns the number of sites rewritten. */
-export let runDevirt = (cx: DevirtContext, body: IrBody): i32 => {
+export function runDevirt(cx: DevirtContext, body: IrBody): i32 {
   var count = 0;
   for (let blk in body.blocks) {
     for (let inst in blk.insts) {
@@ -111,10 +111,10 @@ export let runDevirt = (cx: DevirtContext, body: IrBody): i32 => {
     }
   }
   return count;
-};
+}
 
 /** Steps over the casts lowering wraps around vtable and slot loads. */
-let throughCasts = (body: IrBody, v: i32): i32 => {
+function throughCasts(body: IrBody, v: i32) {
   var c = v;
   while (c >= 0) {
     let op = body.op(c);
@@ -125,10 +125,10 @@ let throughCasts = (body: IrBody, v: i32): i32 => {
     return c;
   }
   return c;
-};
+}
 
 /** The vtable global a `global_get` reads, when it is one. */
-let vtableGlobalOf = (body: IrBody, v: i32): VTableInit | null => {
+function vtableGlobalOf(body: IrBody, v: i32): VTableInit | null {
   if (v < 0 || body.op(v) != IrOp.global_get) {
     return null;
   }
@@ -137,14 +137,14 @@ let vtableGlobalOf = (body: IrBody, v: i32): VTableInit | null => {
     return r.target.initVTable;
   }
   return null;
-};
+}
 
 /**
  * The function a callee value can only ever be, or null. `callee` is
  * the call_ref's callee operand, before any cast stepping.
  */
-let resolveCallee = (cx: DevirtContext, body: IrBody,
-    callee: i32): WasmFunction | null => {
+function resolveCallee(cx: DevirtContext, body: IrBody,
+    callee: i32): WasmFunction | null {
   let v = throughCasts(body, callee);
   if (v < 0) {
     return null;
@@ -202,13 +202,13 @@ let resolveCallee = (cx: DevirtContext, body: IrBody,
     }
   }
   return agreed;
-};
+}
 
 /**
  * The initializer of the vtable a value holds, when the value's
  * construction is visible in this body.
  */
-let knownVTable = (body: IrBody, vt: i32): VTableInit | null => {
+function knownVTable(body: IrBody, vt: i32): VTableInit | null {
   let direct = vtableGlobalOf(body, vt);
   if (direct != null) {
     return direct;
@@ -253,10 +253,10 @@ let knownVTable = (body: IrBody, vt: i32): VTableInit | null => {
     return vtableGlobalOf(body, arg);
   }
   return null;
-};
+}
 
 /** `s` is `base` or transitively extends it (by identity). */
-let extendsStruct = (s: WasmStruct, base: WasmStruct): boolean => {
+function extendsStruct(s: WasmStruct, base: WasmStruct): boolean {
   var cur: WasmStruct | null = s;
   while (cur != null) {
     if (cur.uid == base.uid) {
@@ -265,4 +265,4 @@ let extendsStruct = (s: WasmStruct, base: WasmStruct): boolean => {
     cur = cur.superStruct;
   }
   return false;
-};
+}

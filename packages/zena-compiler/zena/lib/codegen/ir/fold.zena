@@ -65,7 +65,7 @@ export final class IrConst {
 }
 
 /** The constant an instruction IS, or null if it is not a constant. */
-export let constOf = (body: IrBody, inst: i32): IrConst | null => {
+export function constOf(body: IrBody, inst: i32): IrConst | null {
   if (inst < 0 || inst >= body.instCount()) {
     return null;
   }
@@ -84,14 +84,14 @@ export let constOf = (body: IrBody, inst: i32): IrConst | null => {
     return IrConst.ofF64(d);
   }
   return null;
-};
+}
 
 /**
  * Rewrites `inst` in place into the constant `c`. The id and the
  * result type stay, so every use — branch arguments included — stays
  * valid unchanged.
  */
-export let foldInstTo = (body: IrBody, inst: i32, c: IrConst): void => {
+export function foldInstTo(body: IrBody, inst: i32, c: IrConst): void {
   if (c.kind == 1) {
     body.opcode[inst] = IrOp.const_i32 as i32;
     body.a[inst] = c.i;
@@ -105,14 +105,14 @@ export let foldInstTo = (body: IrBody, inst: i32, c: IrConst): void => {
     body.a[inst] = body.constF64.length - 1;
   }
   body.b[inst] = -1;
-};
+}
 
 /**
  * Binary ops with an entry in evalBinary, plus the unsigned integer
  * division and remainder that share their operand shape (evalBinary
  * answers null for those; the peephole pass strength-reduces them).
  */
-export let isFoldableBinary = (op: IrOp): boolean => {
+export function isFoldableBinary(op: IrOp): boolean {
   let v = op as i32;
   if (v >= IrOp.i32_add as i32 && v <= IrOp.i32_ge_u as i32) {
     return op != IrOp.i32_eqz && op != IrOp.i32_div_s && op != IrOp.i32_rem_s;
@@ -125,17 +125,17 @@ export let isFoldableBinary = (op: IrOp): boolean => {
       op == IrOp.f64_div || op == IrOp.f64_eq || op == IrOp.f64_ne ||
       op == IrOp.f64_lt || op == IrOp.f64_le || op == IrOp.f64_gt ||
       op == IrOp.f64_ge;
-};
+}
 
 /** Unary ops with an entry in evalUnary. */
-export let isFoldableUnary = (op: IrOp): boolean => {
+export function isFoldableUnary(op: IrOp): boolean {
   return op == IrOp.i32_eqz || op == IrOp.i64_eqz || op == IrOp.f64_neg ||
       op == IrOp.i32_wrap_i64 || op == IrOp.i64_extend_i32_s ||
       op == IrOp.f64_convert_i32_s || op == IrOp.f64_convert_i64_s;
-};
+}
 
 /** The value of `x op y`, or null when the op does not fold. */
-export let evalBinary = (op: IrOp, x: IrConst, y: IrConst): IrConst | null => {
+export function evalBinary(op: IrOp, x: IrConst, y: IrConst): IrConst | null {
   if (x.kind == 1 && y.kind == 1) {
     let a = x.i;
     let b = y.i;
@@ -205,10 +205,10 @@ export let evalBinary = (op: IrOp, x: IrConst, y: IrConst): IrConst | null => {
     return IrConst.ofF64(r);
   }
   return null;
-};
+}
 
 /** The value of `op x`, or null when the op does not fold. */
-export let evalUnary = (op: IrOp, x: IrConst): IrConst | null => {
+export function evalUnary(op: IrOp, x: IrConst): IrConst | null {
   if (x.kind == 1) {
     if (op == IrOp.i32_eqz) { return IrConst.ofBool(x.i == 0); }
     if (op == IrOp.i64_extend_i32_s) { return IrConst.ofI64(x.i as i64); }
@@ -226,7 +226,7 @@ export let evalUnary = (op: IrOp, x: IrConst): IrConst | null => {
     return IrConst.ofF64(-x.d);
   }
   return null;
-};
+}
 
 /**
  * A cast from `from` to `to` that can neither trap nor change the
@@ -235,10 +235,10 @@ export let evalUnary = (op: IrOp, x: IrConst): IrConst | null => {
  * null-stripping cast that folds is a silent miscompile, and this is
  * the one place that decides it.
  */
-export let castIsIdentity = (from: ValType, to: ValType): boolean => {
+export function castIsIdentity(from: ValType, to: ValType): boolean {
   let stripsNull = from is ValTypeRefNull && !(to is ValTypeRefNull);
   return !stripsNull && isValSubtype(from, to);
-};
+}
 
 /**
  * What a runtime type test of a value of static type `from` against
@@ -254,7 +254,7 @@ export let castIsIdentity = (from: ValType, to: ValType): boolean => {
  * the heap types say, and for the abstract types (anyref, eqref,
  * structref), which have no chain to walk.
  */
-export let castOutcome = (from: ValType, to: ValType): i32 => {
+export function castOutcome(from: ValType, to: ValType): i32 {
   if (castIsIdentity(from, to)) {
     return 1;
   }
@@ -270,15 +270,15 @@ export let castOutcome = (from: ValType, to: ValType): i32 => {
     return -1;
   }
   return 0;
-};
+}
 
 /** True if `ancestor` is `t` or one of `t`'s declared supertypes. */
-let onChainOf = (t: WasmType, ancestor: WasmType): boolean => {
+function onChainOf(t: WasmType, ancestor: WasmType): boolean {
   if (sameHeapType(t, ancestor)) {
     return true;
   }
   if (t is WasmStruct) {
-    var current: WasmStruct | null = t.superStruct;
+    var current = t.superStruct;
     while (current != null) {
       if (sameHeapType(current, ancestor)) {
         return true;
@@ -287,13 +287,13 @@ let onChainOf = (t: WasmType, ancestor: WasmType): boolean => {
     }
   }
   return false;
-};
+}
 
 /** Signed comparison of sign-flipped values = unsigned comparison. */
-let flipSign = (v: i32): i32 => {
+function flipSign(v: i32): i32 {
   return v ^ (1 << 31);
-};
+}
 
-let flipSign64 = (v: i64): i64 => {
+function flipSign64(v: i64): i64 {
   return v ^ ((1 as i64) << (63 as i64));
-};
+}

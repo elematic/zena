@@ -104,7 +104,7 @@ let splicesPerCallee = 4;
 /**
  * The callee's real instruction count when eligible, or -1.
  */
-let inlinableSize = (body: IrBody): i32 => {
+function inlinableSize(body: IrBody): i32 {
   if (body.blocks.length == 0) {
     return -1;
   }
@@ -137,10 +137,10 @@ let inlinableSize = (body: IrBody): i32 => {
     }
   }
   return count;
-};
+}
 
 /** A single block ending in a return or tail call: the straight-line shape. */
-let isStraightLine = (body: IrBody): boolean => {
+function isStraightLine(body: IrBody): boolean {
   if (body.blocks.length != 1) {
     return false;
   }
@@ -148,9 +148,9 @@ let isStraightLine = (body: IrBody): boolean => {
   let op = body.op(insts[insts.length - 1]);
   return op == IrOp.ret || op == IrOp.ret_multi || op == IrOp.ret_call ||
       op == IrOp.ret_call_ref;
-};
+}
 
-let tailCallSignature = (body: IrBody, inst: i32): WasmSignature | null => {
+function tailCallSignature(body: IrBody, inst: i32): WasmSignature | null {
   if (body.op(inst) == IrOp.ret_call) {
     let r = body.refTable[body.b[inst]];
     if (r is IrRefFunc) {
@@ -164,16 +164,16 @@ let tailCallSignature = (body: IrBody, inst: i32): WasmSignature | null => {
     return null;
   }
   return asWasmSignature(t);
-};
+}
 
 /**
  * Runs one inline sweep over every body. `changed[i]` is set for each
  * caller that had a site inlined (the driver re-runs cleanup on
  * those). Returns the number of sites inlined.
  */
-export let runInline = (wasm: WasmModule, bodies: GrowableArray<IrBody>,
+export function runInline(wasm: WasmModule, bodies: GrowableArray<IrBody>,
     changed: GrowableArray<boolean>, escapes: EscapeSummaries,
-    scratch: IrScratch): i32 => {
+    scratch: IrScratch): i32 {
   let bodyIndex = wasm.functionIndex();
   // Direct call sites per callee, over the module as it stands at the
   // start of the sweep.
@@ -181,8 +181,7 @@ export let runInline = (wasm: WasmModule, bodies: GrowableArray<IrBody>,
   for (var i = 0; i < bodies.length; i += 1) {
     siteCounts.push(0);
   }
-  for (var i = 0; i < bodies.length; i += 1) {
-    let body = bodies[i];
+  for (let body in bodies) {
     let n = body.instCount();
     for (var inst = 0; inst < n; inst += 1) {
       if (body.op(inst) == IrOp.call) {
@@ -213,7 +212,7 @@ export let runInline = (wasm: WasmModule, bodies: GrowableArray<IrBody>,
     }
   }
   return total;
-};
+}
 
 /**
  * Per-splice state: the callee's tables appended to the caller, and
@@ -371,17 +370,17 @@ final class Splice {
   }
 }
 
-let nopOut = (body: IrBody, inst: i32): void => {
+function nopOut(body: IrBody, inst: i32) {
   body.opcode[inst] = IrOp.nop as i32;
   body.typeId[inst] = -1;
   body.a[inst] = -1;
   body.b[inst] = -1;
-};
+}
 
-let inlineIntoBody = (caller: IrBody, bodyIndex: HashMap<WasmFunction, i32>,
+function inlineIntoBody(caller: IrBody, bodyIndex: HashMap<WasmFunction, i32>,
     bodies: GrowableArray<IrBody>, callerIdx: i32,
     siteCounts: GrowableArray<i32>, escapes: EscapeSummaries,
-    sizes: GrowableArray<i32>, scratch: IrScratch): i32 => {
+    sizes: GrowableArray<i32>, scratch: IrScratch): i32 {
   var count = 0;
   var generalSplices = 0;
   let perCallee = new Map<i32, i32>();
@@ -455,13 +454,13 @@ let inlineIntoBody = (caller: IrBody, bodyIndex: HashMap<WasmFunction, i32>,
   // sweep goes on to visit, so a copied call (with a fresh, larger
   // id) can itself be inlined and replaced.
   let repl = scratch.i32();
-  let growRepl = (): void => {
+  let growRepl = () => {
     while (repl.length < caller.instCount()) {
       repl.push(repl.length);
     }
   };
   growRepl();
-  let canon = (v: i32): i32 => {
+  let canon = (v: i32) => {
     var c = v;
     while (c >= 0 && c < repl.length && repl[c] != c) {
       c = repl[c];
@@ -539,7 +538,7 @@ let inlineIntoBody = (caller: IrBody, bodyIndex: HashMap<WasmFunction, i32>,
       // zero-width has a one-lane next()). A projection that is
       // nowhere (deleted as unused) needs nothing.
       let callIsValue = caller.typeId[inst] >= 0;
-      let mapResults = (results: GrowableArray<i32>): void => {
+      let mapResults = (results: GrowableArray<i32>) => {
         if (results.length != sig.returns.length) {
           throw new Error('inline: ' + i32ToString(results.length) +
               ' results for a callee returning ' +
@@ -607,15 +606,15 @@ let inlineIntoBody = (caller: IrBody, bodyIndex: HashMap<WasmFunction, i32>,
     }
   }
   return count;
-};
+}
 
 /**
  * Straight-line splice: the callee's instructions are copied into
  * block `b` in place of the call at index `j`. Returns the ids the
  * call's values map to, one per result.
  */
-let spliceStraight = (caller: IrBody, callee: IrBody, b: i32, j: i32,
-    inst: i32, args: GrowableArray<i32>, scratch: IrScratch): GrowableArray<i32> => {
+function spliceStraight(caller: IrBody, callee: IrBody, b: i32, j: i32,
+    inst: i32, args: GrowableArray<i32>, scratch: IrScratch): GrowableArray<i32> {
   let sp = new Splice(caller, callee, scratch);
   let params = callee.blocks[0].params;
   for (var p = 0; p < params.length; p += 1) {
@@ -634,10 +633,10 @@ let spliceStraight = (caller: IrBody, callee: IrBody, b: i32, j: i32,
     next += 1;
     order.push(ci);
   }
-  let identity = (blockId: i32): i32 => blockId;
+  let identity = (blockId: i32) => blockId;
   let copied = scratch.i32();
   for (let ci in order) {
-    let newId = caller.copyFrom(callee, ci, (v: i32): i32 => sp.mapValue(v),
+    let newId = caller.copyFrom(callee, ci, (v) => sp.mapValue(v),
         sp.typeOffset, sp.refOffset, sp.varOffset, identity);
     if (newId != sp.map[ci]) {
       throw new Error('inline: copied id does not match its assignment');
@@ -680,7 +679,7 @@ let spliceStraight = (caller: IrBody, callee: IrBody, b: i32, j: i32,
     blk.insts.push(r);
   }
   return results;
-};
+}
 
 /**
  * General splice: every callee block becomes a new caller block, each
@@ -688,9 +687,9 @@ let spliceStraight = (caller: IrBody, callee: IrBody, b: i32, j: i32,
  * its parameters and the rest of block `b` as its body. Returns the
  * continuation parameters, one per result of `sig`.
  */
-let spliceGeneral = (caller: IrBody, callee: IrBody, b: i32, j: i32,
+function spliceGeneral(caller: IrBody, callee: IrBody, b: i32, j: i32,
     inst: i32, args: GrowableArray<i32>, sig: WasmSignature,
-    scratch: IrScratch): GrowableArray<i32> => {
+    scratch: IrScratch): GrowableArray<i32> {
   let sp = new Splice(caller, callee, scratch);
   let nb = callee.blocks.length;
   let blockBase = caller.blocks.length;
@@ -700,7 +699,7 @@ let spliceGeneral = (caller: IrBody, callee: IrBody, b: i32, j: i32,
   let cont = new IrBlock();
   let contId = caller.blocks.length;
   caller.blocks.push(cont);
-  let mapBlock = (blockId: i32): i32 => blockBase + blockId;
+  let mapBlock = (blockId: i32) => blockBase + blockId;
 
   // Entry params are the arguments; every other block's params are
   // fresh param instructions on the copied block.
@@ -798,7 +797,7 @@ let spliceGeneral = (caller: IrBody, callee: IrBody, b: i32, j: i32,
       caller.blocks[dstBlock].insts.push(brId);
       continue;
     } else {
-      newId = caller.copyFrom(callee, ci, (v: i32): i32 => sp.mapValue(v),
+      newId = caller.copyFrom(callee, ci, (v) => sp.mapValue(v),
           sp.typeOffset, sp.refOffset, sp.varOffset, mapBlock);
       caller.instBlock[newId] = dstBlock;
     }
@@ -833,14 +832,14 @@ let spliceGeneral = (caller: IrBody, callee: IrBody, b: i32, j: i32,
   let noArgs = new Array<i32>();
   blk.insts.push(sp.newBr(blockBase, noArgs, b));
   return results;
-};
+}
 
 /**
  * The body index of a call's target when it is a known local function;
  * -1 otherwise (imports, wrappers this module never lowered).
  */
-let calleeBodyFor = (caller: IrBody, inst: i32,
-    bodyIndex: HashMap<WasmFunction, i32>): i32 => {
+function calleeBodyFor(caller: IrBody, inst: i32,
+    bodyIndex: HashMap<WasmFunction, i32>): i32 {
   let r = caller.refTable[caller.b[inst]];
   if (!(r is IrRefFunc)) {
     return -1;
@@ -849,19 +848,19 @@ let calleeBodyFor = (caller: IrBody, inst: i32,
     return idx;
   }
   return -1;
-};
+}
 
 /** The signature of a direct call's target. */
-let calleeSignature = (caller: IrBody, inst: i32): WasmSignature | null => {
+function calleeSignature(caller: IrBody, inst: i32): WasmSignature | null {
   let r = caller.refTable[caller.b[inst]];
   if (r is IrRefFunc) {
     return r.target.signature;
   }
   return null;
-};
+}
 
 /** The target's name, for error messages. */
-let calleeName = (caller: IrBody, inst: i32): String => {
+function calleeName(caller: IrBody, inst: i32): String {
   let r = caller.refTable[caller.b[inst]];
   if (r is IrRefFunc) {
     let n = r.target.name;
@@ -870,4 +869,4 @@ let calleeName = (caller: IrBody, inst: i32): String => {
     }
   }
   return '<unnamed>';
-};
+}

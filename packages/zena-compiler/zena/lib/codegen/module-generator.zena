@@ -9,7 +9,7 @@ import { simdInstruction } from '../simd.zena';
 import {
   WasmModule, WasmFunction, WasmSignature, WasmExport, WasmGlobal, WasmStruct, VTableInit, WasmArray, StringLiteralLocation,
 } from './wasm-module.zena';
-import { ByteBuffer } from 'zena:core';
+import { ByteBuffer, growable } from 'zena:core';
 import { ReachabilityAnalysis } from './reachability/analysis.zena';
 import { prepareGenerators } from './ir/generators.zena';
 import { prepareAsyncFunctions } from './ir/async.zena';
@@ -366,8 +366,7 @@ export final class ModuleGenerator {
         // the buffer by up to 3 bytes so windows spanning an append
         // boundary are indexed once the bytes after them exist.
         var indexedUpTo = 0;
-        for (var idx = 0; idx < sortedStrings.length; idx += 1) {
-          let s = sortedStrings[idx];
+        for (let s in sortedStrings) {
           let sLen = s.length;
 
           var foundOffset = -1;
@@ -424,8 +423,7 @@ export final class ModuleGenerator {
               if (let (true, list) = windowIndex.get(wKey)) {
                 list.push(w);
               } else {
-                let list = new Array<i32>();
-                list.push(w);
+                let list = growable<i32>([w]);
                 windowIndex[wKey] = list;
               }
               indexedUpTo += 1;
@@ -510,7 +508,7 @@ export final class ModuleGenerator {
             let referrer = moduleModel.getParent(parentNode);
             if (referrer is Module) {
               let dir = dirName(referrer.path);
-              canonicalPath = normalizePath(dir + "/" + specifier);
+              canonicalPath = normalizePath(`${dir}/${specifier}`);
             }
           }
           if (this.program.unitsByPath.has(canonicalPath)) {
@@ -524,8 +522,7 @@ export final class ModuleGenerator {
                 let f = wasm.functionMap[sym.id];
                 f.isReferenceTaken = true;
                 if (f.closureTrampoline == null) {
-                  let tParams = new Array<ValType>();
-                  tParams.push(new ValTypeStructRef());
+                  let tParams = growable<ValType>([new ValTypeStructRef()]);
                   for (let p in f.signature.params) {
                     tParams.push(p);
                   }
@@ -629,14 +626,14 @@ export final class ModuleGenerator {
       let verifyErrors = verifyIr(body, scratch);
       if (verifyErrors.length > 0) {
         let fname = if (wasmFunc.name != null) wasmFunc.name as String else "<unnamed>";
-        var message = "zir verify failed for " + fname + ":";
+        var message = `zir verify failed for ${fname}:`;
         for (let e in verifyErrors) {
-          message = message + "\n  " + e;
+          message = `${message}\n  ${e}`;
         }
         if (this.zirStats) {
           // The body as the passes left it: the ids the errors name
           // are meaningless without it.
-          message = message + "\n" + printIr(body, fname);
+          message = `${message}\n${printIr(body, fname)}`;
         }
         throw new Error(message);
       }
@@ -673,7 +670,7 @@ export final class ModuleGenerator {
       }
       // Re-runs the cleanup passes on every body a sweep changed, and
       // clears the flags.
-      let cleanupChanged = (what: String): void => {
+      let cleanupChanged = (what: String) => {
         for (var i = 0; i < bodies.length; i += 1) {
           if (!changed[i]) {
             continue;
@@ -694,7 +691,7 @@ export final class ModuleGenerator {
             var message = "zir verify failed after " + what + " into " +
                 (if (f.name != null) f.name as String else "<unnamed>") + ":";
             for (let e in errors) {
-              message = message + "\n  " + e;
+              message = `${message}\n  ${e}`;
             }
             throw new Error(message);
           }
@@ -707,7 +704,7 @@ export final class ModuleGenerator {
       // the next round's inline sweep consumes. Escape summaries are
       // recomputed per round, since a parameter can stop escaping once
       // the call it was passed to has been inlined and simplified.
-      let runRounds = (maxRounds: i32, devirt: DevirtContext): void => {
+      let runRounds = (maxRounds: i32, devirt: DevirtContext) => {
       var round = 0;
       while (round < maxRounds) {
         let escapes = new EscapeSummaries(wasm, bodies, scratch);
@@ -892,7 +889,7 @@ export final class ModuleGenerator {
 
     this.emitter.emitTypeSectionStart(recGroupSizes.length);
 
-    let emitTypeAtIndex = (idx: i32): void => {
+    let emitTypeAtIndex = (idx: i32) => {
       let t = wasm.types[idx];
       if (t is WasmSignature) {
         this.emitter.emitFunctionTypeStart(idx);
@@ -958,7 +955,7 @@ export final class ModuleGenerator {
       let {importModule} = f;
       if (importModule != null && f.importName != null) {
         if (f.signature.index < 0) {
-          throw new Error("Function import " + (if (f.name != null) f.name as String else "<unnamed>") + " has unassigned signature index (-1)!");
+          throw new Error(`Function import ${if (f.name != null) f.name as String else "<unnamed>"} has unassigned signature index (-1)!`);
         }
         this.emitter.emitFunctionImport(importModule, f.importName as String, f.signature.index);
       }
@@ -972,7 +969,7 @@ export final class ModuleGenerator {
     this.emitter.emitFunctionSectionStart(wasm.functions.length);
     for (let f in wasm.functions) {
       if (f.signature.index < 0) {
-        throw new Error("Function " + (if (f.name != null) f.name as String else "<unnamed>") + " has unassigned signature index (-1)!");
+        throw new Error(`Function ${if (f.name != null) f.name as String else "<unnamed>"} has unassigned signature index (-1)!`);
       }
       this.emitter.emitFunctionDefinition(f.signature.index);
     }
@@ -983,8 +980,7 @@ export final class ModuleGenerator {
     }
 
     this.emitter.emitTagSectionStart(wasm.tags.length);
-    for (var i = 0; i < wasm.tags.length; i += 1) {
-      let tag = wasm.tags[i];
+    for (let tag in wasm.tags) {
       if (tag.signature.index < 0) {
         throw new Error("Tag has unassigned signature index (-1)!");
       }
@@ -1038,7 +1034,7 @@ export final class ModuleGenerator {
         let vtableInit = g.initVTable as VTableInit;
         for (let func in vtableInit.funcs) {
           if (func.index == -1) {
-            throw new Error("DIAGNOSTIC VTABLE INIT ERROR: func.name=" + (if (func.name == null) "null" else func.name as String) + " has index -1");
+            throw new Error(`DIAGNOSTIC VTABLE INIT ERROR: func.name=${if (func.name == null) "null" else func.name as String} has index -1`);
           }
           this.emitter.emitRefFunc(func.index);
         }
@@ -1164,7 +1160,7 @@ export final class ModuleGenerator {
           // The body as emission saw it: a schedule violation names
           // value ids that mean nothing without it.
           let fname = if (wasmFunc.name != null) wasmFunc.name as String else "<unnamed>";
-          throw new Error(e.message + "\n" + printIr(bodies[bodyIndex], fname));
+          throw new Error(`${e.message}\n${printIr(bodies[bodyIndex], fname)}`);
         }
         throw e;
       }
@@ -1173,14 +1169,13 @@ export final class ModuleGenerator {
       zirDemoted += demoted;
     }
     if (this.zirStats) {
-      console.log("zir backend: " + i32ToString(zirLowered) + " lowered");
+      console.log(`zir backend: ${i32ToString(zirLowered)} lowered`);
       console.log("zir simplify: " + i32ToString(zirSimplified) +
           " instructions rewritten");
       console.log("zir cleanup: " + i32ToString(zirBlocksRemoved) +
           " blocks removed, " + i32ToString(zirDceRemoved) +
           " dead instructions removed");
-      console.log("zir inline: " + i32ToString(zirInlined) +
-          " call sites inlined");
+      console.log(`zir inline: ${i32ToString(zirInlined)} call sites inlined`);
       console.log("zir devirt: " + i32ToString(zirDevirtualized) +
           " call_ref sites made direct");
       console.log("zir licm: " + i32ToString(zirHoisted) +

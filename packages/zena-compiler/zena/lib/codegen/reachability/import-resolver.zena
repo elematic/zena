@@ -5,17 +5,14 @@ import { Type, FunctionType } from '../../types.zena';
 import { Symbol, SymbolId, noSymbolId } from '../../scope/symbol.zena';
 import { dirName, normalizePath } from '../../module-resolver.zena';
 
-let matchOverloadForImport = (fnType: Type, expectedType: Type): boolean => {
+function matchOverloadForImport(fnType: Type, expectedType: Type): boolean {
   if (!(fnType is FunctionType) || !(expectedType is FunctionType)) {
     return false;
   }
-  if (fnType.parameters.length != expectedType.parameters.length) {
-    return false;
-  }
-  return true;
-};
+  return fnType.parameters.length == expectedType.parameters.length;
+}
 
-export let resolveImportedSymbolId = (program: Program, model: SemanticModel, spec: ImportSpecifier, expectedType: Type | null = null): SymbolId => {
+export function resolveImportedSymbolId(program: Program, model: SemanticModel, spec: ImportSpecifier, expectedType: Type | null = null): SymbolId {
   var parentNode = model.getParent(spec);
   if (parentNode == null) {
     for (let u in program.units) {
@@ -44,7 +41,7 @@ export let resolveImportedSymbolId = (program: Program, model: SemanticModel, sp
     let referrer = model.getParent(parentNode);
     if (referrer is Module) {
       let dir = dirName(referrer.path);
-      canonicalPath = normalizePath(dir + "/" + specifier);
+      canonicalPath = normalizePath(`${dir}/${specifier}`);
     }
   }
   
@@ -53,7 +50,7 @@ export let resolveImportedSymbolId = (program: Program, model: SemanticModel, sp
   // import that resolves at all resolves here. Searching for a unit whose
   // file name ends the same way used to stand in for that index being
   // wrong, and matched any path with the right last segment.
-  var targetUnitOpt: CompilationUnit | null = if (program.unitsByPath.has(canonicalPath)) program.unitsByPath[canonicalPath] else null;
+  let targetUnitOpt: CompilationUnit | null = if (program.unitsByPath.has(canonicalPath)) program.unitsByPath[canonicalPath] else null;
   if (targetUnitOpt == null) {
     // Not an error: a module outside this program's units is one whose
     // symbols nothing here can reach, and the caller treats an unresolved
@@ -63,8 +60,8 @@ export let resolveImportedSymbolId = (program: Program, model: SemanticModel, sp
   let targetUnit = targetUnitOpt as CompilationUnit;
   let importedName = spec.imported.name;
   
-  let key1 = targetUnit.ast.path + "::" + importedName;
-  let key2 = canonicalPath + "::" + importedName;
+  let key1 = `${targetUnit.ast.path}::${importedName}`;
+  let key2 = `${canonicalPath}::${importedName}`;
   let listOpt: GrowableArray<Symbol> | null = if (program.exportedSymbols.has(key1)) {
     program.exportedSymbols[key1]
   } else if (program.exportedSymbols.has(key2)) {
@@ -94,4 +91,4 @@ export let resolveImportedSymbolId = (program: Program, model: SemanticModel, sp
   }
   
   return noSymbolId;
-};
+}

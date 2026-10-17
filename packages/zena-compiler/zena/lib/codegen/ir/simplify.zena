@@ -33,14 +33,14 @@ import {
 } from './fold.zena';
 
 /** Runs the pass; returns the number of instructions rewritten. */
-export let runSimplify = (body: IrBody, scratch: IrScratch): i32 => {
+export function runSimplify(body: IrBody, scratch: IrScratch): i32 {
   scratch.enter();
   let result = runSimplifyOn(body, scratch);
   scratch.exit();
   return result;
-};
+}
 
-let runSimplifyOn = (body: IrBody, scratch: IrScratch): i32 => {
+function runSimplifyOn(body: IrBody, scratch: IrScratch): i32 {
   let count = body.instCount();
   var rewrites = 0;
 
@@ -70,7 +70,7 @@ let runSimplifyOn = (body: IrBody, scratch: IrScratch): i32 => {
   for (var i = 0; i < count; i += 1) {
     repl.push(i);
   }
-  let canon = (v: i32): i32 => {
+  let canon = (v: i32) => {
     if (v < 0 || v >= count) {
       return v;
     }
@@ -81,7 +81,7 @@ let runSimplifyOn = (body: IrBody, scratch: IrScratch): i32 => {
     return c;
   };
 
-  let replaceWithValue = (inst: i32, value: i32): void => {
+  let replaceWithValue = (inst: i32, value: i32) => {
     repl[inst] = value;
     body.opcode[inst] = IrOp.nop as i32;
     body.typeId[inst] = -1;
@@ -91,20 +91,20 @@ let runSimplifyOn = (body: IrBody, scratch: IrScratch): i32 => {
   };
   // In-place folds keep the instruction's id and result type, so
   // every use — including branch arguments — stays valid unchanged.
-  let foldToI32 = (inst: i32, value: i32): void => {
+  let foldToI32 = (inst: i32, value: i32) => {
     body.opcode[inst] = IrOp.const_i32 as i32;
     body.a[inst] = value;
     body.b[inst] = -1;
     rewrites += 1;
   };
-  let foldToI64 = (inst: i32, value: i64): void => {
+  let foldToI64 = (inst: i32, value: i64) => {
     body.constI64.push(value);
     body.opcode[inst] = IrOp.const_i64 as i32;
     body.a[inst] = body.constI64.length - 1;
     body.b[inst] = -1;
     rewrites += 1;
   };
-  let foldToBool = (inst: i32, value: boolean): void => {
+  let foldToBool = (inst: i32, value: boolean) => {
     foldToI32(inst, if (value) 1 else 0);
   };
 
@@ -253,8 +253,8 @@ let runSimplifyOn = (body: IrBody, scratch: IrScratch): i32 => {
     if (isI64Binary(op)) {
       let aConst = body.op(av) == IrOp.const_i64;
       let bConst = body.op(bv) == IrOp.const_i64;
-      let ac: i64 = if (aConst) body.constI64[body.a[av]] else 0 as i64;
-      let bc: i64 = if (bConst) body.constI64[body.a[bv]] else 0 as i64;
+      let ac = if (aConst) body.constI64[body.a[av]] else 0 as i64;
+      let bc = if (bConst) body.constI64[body.a[bv]] else 0 as i64;
       let zero = 0 as i64;
       let one = 1 as i64;
       if (op == IrOp.i64_add) {
@@ -441,14 +441,14 @@ let runSimplifyOn = (body: IrBody, scratch: IrScratch): i32 => {
     }
   }
   return rewrites;
-};
+}
 
 /**
  * Rewrites a two-or-more-way terminator into an unconditional br to
  * `s`. The [target, argc, args…] record is appended fresh to `extra`
  * (append-only, so reading the old record while pushing is safe).
  */
-export let rewriteToBr = (body: IrBody, inst: i32, s: IrSuccessor): void => {
+export function rewriteToBr(body: IrBody, inst: i32, s: IrSuccessor): void {
   let idx = body.extra.length;
   body.extra.push(s.target);
   body.extra.push(s.argCount);
@@ -460,10 +460,10 @@ export let rewriteToBr = (body: IrBody, inst: i32, s: IrSuccessor): void => {
   body.opcode[inst] = IrOp.br as i32;
   body.a[inst] = idx;
   body.b[inst] = -1;
-};
+}
 
 /** The struct a struct_new allocates, or null if its ref is not one. */
-export let allocatedStruct = (body: IrBody, alloc: i32): WasmStruct | null => {
+export function allocatedStruct(body: IrBody, alloc: i32): WasmStruct | null {
   let typeRef = body.refTable[body.b[alloc]];
   if (typeRef is IrRefType) {
     let t = typeRef.target;
@@ -472,13 +472,13 @@ export let allocatedStruct = (body: IrBody, alloc: i32): WasmStruct | null => {
     }
   }
   return null;
-};
+}
 
-let isPowerOfTwoI32 = (v: i32): boolean => {
+function isPowerOfTwoI32(v: i32): boolean {
   return v > 0 && (v & (v - 1)) == 0;
-};
+}
 
-let log2I32 = (v: i32): i32 => {
+function log2I32(v: i32): i32 {
   var k = 0;
   var c = v;
   while (c > 1) {
@@ -486,7 +486,7 @@ let log2I32 = (v: i32): i32 => {
     k += 1;
   }
   return k;
-};
+}
 
 /**
  * The integer comparison that is true exactly when `op` is false, as
@@ -494,7 +494,7 @@ let log2I32 = (v: i32): i32 => {
  * comparisons have no such partner: every one of them is false when
  * an operand is NaN, so `!(a < b)` is not `a >= b`.
  */
-let invertedIntComparison = (op: IrOp): i32 => {
+function invertedIntComparison(op: IrOp): i32 {
   let inverse = if (op == IrOp.i32_eq) IrOp.i32_ne
     else if (op == IrOp.i32_ne) IrOp.i32_eq
     else if (op == IrOp.i32_lt_s) IrOp.i32_ge_s
@@ -517,13 +517,13 @@ let invertedIntComparison = (op: IrOp): i32 => {
     else if (op == IrOp.i64_le_u) IrOp.i64_gt_u
     else IrOp.nop;
   return if (inverse == IrOp.nop) -1 else inverse as i32;
-};
+}
 
 /**
  * Ops whose result is always 0 or 1. Consulted before collapsing
  * eqz(eqz(x)) to x, which is only sound when x is already boolean.
  */
-let producesBool = (op: IrOp): boolean => {
+function producesBool(op: IrOp): boolean {
   return op == IrOp.i32_eqz || op == IrOp.i64_eqz ||
       op == IrOp.ref_test || op == IrOp.ref_is_null || op == IrOp.ref_eq ||
       (op as i32 >= IrOp.i32_eq as i32 && op as i32 <= IrOp.i32_ge_u as i32 &&
@@ -539,7 +539,7 @@ let producesBool = (op: IrOp): boolean => {
       op == IrOp.f64_eq || op == IrOp.f64_ne ||
       op == IrOp.f64_lt || op == IrOp.f64_le ||
       op == IrOp.f64_gt || op == IrOp.f64_ge;
-};
+}
 
 /**
  * The i32 band minus the unary eqz and minus signed div/rem (which
@@ -547,15 +547,15 @@ let producesBool = (op: IrOp): boolean => {
  * are strength-reduction targets, and the constant-fold chain simply
  * has no arm for them.
  */
-let isI32Binary = (op: IrOp): boolean => {
+function isI32Binary(op: IrOp): boolean {
   let v = op as i32;
   return v >= IrOp.i32_add as i32 && v <= IrOp.i32_ge_u as i32 &&
       op != IrOp.i32_eqz && op != IrOp.i32_div_s && op != IrOp.i32_rem_s;
-};
+}
 
-let isI64Binary = (op: IrOp): boolean => {
+function isI64Binary(op: IrOp): boolean {
   let v = op as i32;
   return v >= IrOp.i64_add as i32 && v <= IrOp.i64_ge_u as i32 &&
       op != IrOp.i64_div_s && op != IrOp.i64_rem_s &&
       op != IrOp.i64_div_u && op != IrOp.i64_rem_u;
-};
+}

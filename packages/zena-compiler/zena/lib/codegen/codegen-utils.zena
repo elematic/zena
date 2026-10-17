@@ -28,30 +28,27 @@ declare function hash<T>(value: T): i32;
  * The suffix is zero-padded so canonical field sorting keeps the words
  * in index order.
  */
-export let presentWordName = (word: i32): String => {
+export function presentWordName(word: i32): String {
   var suffix = i32ToString(word);
   while (suffix.length < 3) {
     suffix = '0' + suffix;
   }
   return '$present' + suffix;
-};
+}
 
-export let isPresentWordName = (name: String): boolean => {
+export function isPresentWordName(name: String): boolean {
   return name.length == 11 && name.sliceBytes(0, 8) == '$present';
-};
+}
 
-export let presentWordCount = (optionalCount: i32): i32 => {
+export function presentWordCount(optionalCount: i32): i32 {
   return (optionalCount + 63) >> 6;
-};
+}
 
 // TODO: Add string comparison to the stdlib and use that instead.
-export let compareStrings = (a: String, b: String): i32 => {
+export function compareStrings(a: String, b: String): i32 {
   let lenA = a.length;
   let lenB = b.length;
-  var minLen = lenA;
-  if (lenB < lenA) {
-    minLen = lenB;
-  }
+  let minLen = if (lenB < lenA) lenB else lenA;
   
   for (var i = 0; i < minLen; i += 1) {
     let byteA = a.getByteAt(i);
@@ -63,7 +60,7 @@ export let compareStrings = (a: String, b: String): i32 => {
   if (lenA < lenB) return -1;
   if (lenA > lenB) return 1;
   return 0;
-};
+}
 
 /**
  * Returns the highest non-mixin-intermediate ancestor of `classType` (or
@@ -71,7 +68,7 @@ export let compareStrings = (a: String, b: String): i32 => {
  * (`_spec_...`) and overload (`$...`) suffixes so specialized or
  * overloaded slot names match the member table's declared key.
  */
-export let getMemberRootClass = (classType: ClassType, memberName: String): ClassType => {
+export function getMemberRootClass(classType: ClassType, memberName: String): ClassType {
   var baseName = memberName;
   if (memberName.contains("_spec_")) {
     baseName = memberName.split("_spec_")[0];
@@ -108,7 +105,7 @@ export let getMemberRootClass = (classType: ClassType, memberName: String): Clas
     currClass = superCt.superType;
   }
   return rootClass;
-};
+}
 
 export distinct type ClassKey = String;
 export distinct type InterfaceKey = String;
@@ -246,7 +243,7 @@ export final class SpecializedFunctionKey implements Hashable {
 // Type, and the checker needs it too). Re-exported here for existing callers.
 export { typeContainsTypeParameter } from '../types.zena';
 
-export let isConcrete = (t: Type): boolean => {
+export function isConcrete(t: Type): boolean {
   return match (t) {
     case TypeParameterType: false
     // An erasure is concrete in the sense this predicate asks about: it
@@ -352,10 +349,10 @@ export let isConcrete = (t: Type): boolean => {
     }
     case _: true
   };
-};
+}
 
 
-export let getTypeKeyForSpecialization = (t: Type): String => {
+export function getTypeKeyForSpecialization(t: Type): String {
   let cached = t.specializationKeyCache;
   if (cached != null) {
     return cached;
@@ -367,9 +364,9 @@ export let getTypeKeyForSpecialization = (t: Type): String => {
   t.specializationKeyCache = key;
   countTypeKey(key);
   return key;
-};
+}
 
-let getTypeKeyForSpecializationRaw = (type: Type): String => {
+function getTypeKeyForSpecializationRaw(type: Type): String {
   return match (type) {
     case I32Type: "i32"
     case U32Type: "u32"
@@ -389,10 +386,10 @@ let getTypeKeyForSpecializationRaw = (type: Type): String => {
     case ClassType as ct: {
       let symId = (ct.genericSource ?? ct).symbolId;
       let base = if (symId != noSymbolId) {
-        ct.name + "_s" + i32ToString(symId as i32)
+        `${ct.name}_s${i32ToString(symId as i32)}`
       } else {
         let baseId = if (ct.genericSource != null) (ct.genericSource as ClassType).id else ct.id;
-        ct.name + "_t" + i32ToString(baseId as i32)
+        `${ct.name}_t${i32ToString(baseId as i32)}`
       };
       let {typeArguments} = ct;
       if (typeArguments != null && typeArguments.length > 0 && isConcrete(ct)) {
@@ -413,10 +410,10 @@ let getTypeKeyForSpecializationRaw = (type: Type): String => {
     case InterfaceType as it: {
       let symId = (it.genericSource ?? it).symbolId;
       let base = if (symId != noSymbolId) {
-        it.name + "_s" + i32ToString(symId as i32)
+        `${it.name}_s${i32ToString(symId as i32)}`
       } else {
         let baseId = if (it.genericSource != null) (it.genericSource as InterfaceType).id else it.id;
-        it.name + "_t" + i32ToString(baseId as i32)
+        `${it.name}_t${i32ToString(baseId as i32)}`
       };
       let {typeArguments} = it;
       if (typeArguments != null && typeArguments.length > 0 && isConcrete(it)) {
@@ -519,7 +516,7 @@ let getTypeKeyForSpecializationRaw = (type: Type): String => {
     case ThisType: "this"
     case _: "unknown"
   };
-};
+}
 
 /**
  * Whether `t` is, or contains, the erasure of a type parameter.
@@ -529,7 +526,7 @@ let getTypeKeyForSpecializationRaw = (type: Type): String => {
  * so "did this mention come from inside generic code" is a question
  * about the type itself rather than about which walk produced it.
  */
-export let containsErasedType = (t: Type): boolean => {
+export function containsErasedType(t: Type): boolean {
   return match (t) {
     case ErasedType: true
     // A type parameter still standing and its erasure key the SAME
@@ -603,9 +600,9 @@ export let containsErasedType = (t: Type): boolean => {
     }
     case _: false
   };
-};
+}
 
-export let getSpecializedName = (baseName: String, typeArgs: Array<Type>): String => {
+export function getSpecializedName(baseName: String, typeArgs: Array<Type>): String {
   let len = typeArgs.length;
   let parts = new Array<String>.fixed(2 + 2 * len, "");
   parts[0] = baseName;
@@ -617,9 +614,9 @@ export let getSpecializedName = (baseName: String, typeArgs: Array<Type>): Strin
     i += 1;
   }
   return String.fromParts(parts);
-};
+}
 
-export let getClassKey = (ct: ClassType): ClassKey => {
+export function getClassKey(ct: ClassType): ClassKey {
   let cached = ct.classKey;
   if (cached != null) {
     return cached as ClassKey;
@@ -627,9 +624,9 @@ export let getClassKey = (ct: ClassType): ClassKey => {
   let key = getTypeKeyForSpecialization(ct) as ClassKey;
   ct.classKey = key as String;
   return key;
-};
+}
 
-export let getInterfaceKey = (it: InterfaceType): InterfaceKey => {
+export function getInterfaceKey(it: InterfaceType): InterfaceKey {
   let cached = it.interfaceKey;
   if (cached != null) {
     return cached as InterfaceKey;
@@ -637,7 +634,7 @@ export let getInterfaceKey = (it: InterfaceType): InterfaceKey => {
   let key = getTypeKeyForSpecialization(it) as InterfaceKey;
   it.interfaceKey = key as String;
   return key;
-};
+}
 
 /**
  * The name an interface constructor's specializations are registered
@@ -645,20 +642,20 @@ export let getInterfaceKey = (it: InterfaceType): InterfaceKey => {
  * type arguments): the declaring interface's key, then `.new` or
  * `.new.<name>`. RTA mints under it and lowering looks it up.
  */
-export let getInterfaceConstructorBaseName = (it: InterfaceType, ctorName: String): String => {
+export function getInterfaceConstructorBaseName(it: InterfaceType, ctorName: String): String {
   let key = getInterfaceKey(it.genericSource ?? it) as String;
   if (ctorName == "<constructor>") {
     return key + ".new";
   }
-  return key + ".new." + ctorName;
-};
+  return `${key}.new.${ctorName}`;
+}
 
 /**
  * Resolves or constructs the MixinKey for the generic mixin declaration.
  * Note that this ignores any parameterized type arguments on the MixinType,
  * since the layout and reachability caches care only about the base mixin declaration.
  */
-export let getMixinKey = (mt: MixinType): MixinKey => {
+export function getMixinKey(mt: MixinType): MixinKey {
   let cached = mt.mixinKeyCache;
   if (cached != null) {
     return cached;
@@ -666,52 +663,52 @@ export let getMixinKey = (mt: MixinType): MixinKey => {
   let key = new MixinKey(mt.sourcePath, mt.name);
   mt.mixinKeyCache = key;
   return key;
-};
+}
 
-export let getMixinKeyFromSymbol = (model: SemanticModel, sym: Symbol): MixinKey => {
+export function getMixinKeyFromSymbol(model: SemanticModel, sym: Symbol): MixinKey {
   let mt = model.getBindingType(sym);
   if (mt == null || !(mt is MixinType)) {
     throw new Error(`Symbol is not a mixin: ${sym.name}`);
   }
   return getMixinKey(mt);
-};
+}
 
-export let getClassInterfaceKey = (classKey: ClassKey, interfaceKey: InterfaceKey): ClassInterfaceKey => {
+export function getClassInterfaceKey(classKey: ClassKey, interfaceKey: InterfaceKey): ClassInterfaceKey {
   return new ClassInterfaceKey(classKey, interfaceKey);
-};
+}
 
-export let getInterfaceMemberKey = (interfaceKey: InterfaceKey, memberName: String): InterfaceMemberKey => {
+export function getInterfaceMemberKey(interfaceKey: InterfaceKey, memberName: String): InterfaceMemberKey {
   return new InterfaceMemberKey(interfaceKey, memberName);
-};
+}
 
-export let getClassPrivateFieldKey = (classKey: ClassKey, fieldName: String): String => {
+export function getClassPrivateFieldKey(classKey: ClassKey, fieldName: String): String {
   return `${classKey as String}::${fieldName}`;
-};
+}
 
-export let getClassInterfaceVTableName = (cName: ClassKey, iName: InterfaceKey): String => {
+export function getClassInterfaceVTableName(cName: ClassKey, iName: InterfaceKey): String {
   return `${cName as String}_${iName as String}_vtable`;
-};
+}
 
-export let getInterfaceTrampolineName = (cName: ClassKey, iName: InterfaceKey, fieldName: String): String => {
+export function getInterfaceTrampolineName(cName: ClassKey, iName: InterfaceKey, fieldName: String): String {
   return `${cName as String}_${iName as String}_${fieldName}_trampoline`;
-};
+}
 
-export let getClassVTableName = (cName: ClassKey): String => {
+export function getClassVTableName(cName: ClassKey): String {
   return `${cName as String}_vtable`;
-};
+}
 
-export let getClassSingletonName = (cName: ClassKey): String => {
+export function getClassSingletonName(cName: ClassKey): String {
   return `${cName as String}_singleton`;
-};
+}
 
-export let classInterfaceKeyToString = (key: ClassInterfaceKey): String => {
-  return (key.classKey as String) + "::" + (key.interfaceKey as String);
-};
+export function classInterfaceKeyToString(key: ClassInterfaceKey): String {
+  return `${key.classKey as String}::${key.interfaceKey as String}`;
+}
 
 
 /** `<a,b>` for a type's arguments, keyed like `getTypeKey`; empty when
  * it has none. */
-let typeArgumentsKey = (typeArguments: Array<Type> | null): String => {
+function typeArgumentsKey(typeArguments: Array<Type> | null) {
   if (typeArguments == null || typeArguments.length == 0) {
     return "";
   }
@@ -723,9 +720,9 @@ let typeArgumentsKey = (typeArguments: Array<Type> | null): String => {
     key = key + getTypeKey(typeArguments[i]);
   }
   return key + ">";
-};
+}
 
-export let getTypeKey = (type: Type): String => {
+export function getTypeKey(type: Type): String {
   return match (type) {
     case I32Type: "i32"
     case U32Type: "u32"
@@ -764,9 +761,9 @@ export let getTypeKey = (type: Type): String => {
     case ErasedType: "erased"
     case _: "unknown"
   };
-};
+}
 
-export let getSignatureKey = (funcType: FunctionType): String => {
+export function getSignatureKey(funcType: FunctionType): String {
   let len = funcType.parameters.length;
   if (len == 0) {
     return "$void";
@@ -779,9 +776,9 @@ export let getSignatureKey = (funcType: FunctionType): String => {
     i += 1;
   }
   return String.fromParts(parts);
-};
+}
 
-export let matchOverload = (moduleModel: SemanticModel, ft: FunctionType, mDef: MethodDefinition): FunctionType | null => {
+export function matchOverload(moduleModel: SemanticModel, ft: FunctionType, mDef: MethodDefinition): FunctionType | null {
   if (ft.overloads == null) {
     return null;
   }
@@ -800,10 +797,7 @@ export let matchOverload = (moduleModel: SemanticModel, ft: FunctionType, mDef: 
     }
   }
 
-  let methName = match (mDef.name) {
-    case Identifier {name}: name
-    case _: ""
-  };
+  let methName = if (let Identifier {name} = mDef.name) name else "";
 
   // Check if main function type matches
   if (ft.parameters.length == paramTypes.length) {
@@ -833,9 +827,9 @@ export let matchOverload = (moduleModel: SemanticModel, ft: FunctionType, mDef: 
     }
   }
   return null;
-};
+}
 
-export let findMixinDeclaration = (program: Program, mt: MixinType): MixinDeclaration | null => {
+export function findMixinDeclaration(program: Program, mt: MixinType): MixinDeclaration | null {
   let path = mt.sourcePath;
   var unitOpt: CompilationUnit | null = null;
   if (let (true, unit) = program.unitsByPath.get(path)) {
@@ -844,10 +838,8 @@ export let findMixinDeclaration = (program: Program, mt: MixinType): MixinDeclar
     if (let (true, unit) = program.unitsByPath.get(path.sliceBytes(1, path.length))) {
       unitOpt = unit;
     }
-  } else {
-    if (let (true, unit) = program.unitsByPath.get("/" + path)) {
-      unitOpt = unit;
-    }
+  } else if (let (true, unit) = program.unitsByPath.get("/" + path)) {
+    unitOpt = unit;
   }
   if (unitOpt != null) {
     for (let stmt in (unitOpt as CompilationUnit).ast.body) {
@@ -868,9 +860,9 @@ export let findMixinDeclaration = (program: Program, mt: MixinType): MixinDeclar
     }
   }
   return null;
-};
+}
 
-export let collectMixinMembers = (
+export function collectMixinMembers(
   program: Program,
   model: SemanticModel,
   mixinAnns: GrowableArray<TypeAnnotation> | null,
@@ -878,7 +870,7 @@ export let collectMixinMembers = (
   seen: HashMap<MixinKey, boolean>,
   scopes: GrowableArray<String> | null = null,
   models: GrowableArray<SemanticModel> | null = null
-): void => {
+): void {
   if (mixinAnns == null) { return; }
   for (let ann in mixinAnns) {
     let sym = model.resolve(ann);
@@ -903,7 +895,7 @@ export let collectMixinMembers = (
             } else {
               mt.name + "_This"
             };
-            var mixinModel: SemanticModel = model;
+            var mixinModel = model;
             if (let (true, unit) = program.unitsByPath.get(mt.sourcePath)) {
               mixinModel = unit.model;
             }
@@ -923,7 +915,7 @@ export let collectMixinMembers = (
       }
     }
   }
-};
+}
 
 /**
  * The private scope key of the mixin that declares `member`, when the
@@ -932,12 +924,12 @@ export let collectMixinMembers = (
  * registration paths that reach members via nodes rather than via
  * the member-collection loops.
  */
-export let mixinScopeOfMember = (
+export function mixinScopeOfMember(
   program: Program,
   model: SemanticModel,
   cd: Node | null,
   member: Node
-): String | null => {
+): String | null {
   match (cd) {
     case ClassDeclaration as cdd: {
       if (cdd.mixins == null) { return null; }
@@ -954,14 +946,14 @@ export let mixinScopeOfMember = (
     case _: {}
   }
   return null;
-};
+}
 
-export let mixinModelOfMember = (
+export function mixinModelOfMember(
   program: Program,
   model: SemanticModel,
   cd: Node | null,
   member: Node
-): SemanticModel | null => {
+): SemanticModel | null {
   match (cd) {
     case ClassDeclaration as cdd: {
       if (cdd.mixins == null) { return null; }
@@ -978,7 +970,7 @@ export let mixinModelOfMember = (
     case _: {}
   }
   return null;
-};
+}
 
 /**
  * The private scope key of the mixin declaration a node sits inside
@@ -995,7 +987,7 @@ export let mixinModelOfMember = (
  * The walk stops at a ClassDeclaration — classes do not nest inside
  * mixin bodies, so a class member's answer costs one step.
  */
-export let mixinScopeOfNode = (model: SemanticModel, node: Node): String | null => {
+export function mixinScopeOfNode(model: SemanticModel, node: Node): String | null {
   var cur: Node | null = node;
   while (cur != null) {
     let c = cur;
@@ -1018,16 +1010,16 @@ export let mixinScopeOfNode = (model: SemanticModel, node: Node): String | null 
     cur = model.getParent(c);
   }
   return null;
-};
+}
 
-export let collectMixinFields = (
+export function collectMixinFields(
   program: Program,
   model: SemanticModel,
   mixinAnns: GrowableArray<TypeAnnotation> | null,
   fields: GrowableArray<FieldDefinition>,
   scopes: GrowableArray<String>,
   seen: HashMap<MixinKey, boolean>
-): void => {
+): void {
   if (mixinAnns == null) { return; }
   for (let ann in mixinAnns) {
     let sym = model.resolve(ann);
@@ -1062,13 +1054,13 @@ export let collectMixinFields = (
       }
     }
   }
-};
+}
 
-export let substituteTypeParams = (
+export function substituteTypeParams(
   typeParams: Array<TypeParameterType> | null,
   typeArgs: Array<Type> | null,
   t: Type
-): Type => {
+): Type {
   if (typeParams == null || typeArgs == null) { return t; }
   let tpLen = typeParams.length;
   let taLen = typeArgs.length;
@@ -1151,9 +1143,9 @@ export let substituteTypeParams = (
     }
     case _: t
   };
-};
+}
 
-export let unwrapAliases = (t: Type): Type => {
+export function unwrapAliases(t: Type): Type {
   var curr = t;
   while (curr is TypeAliasType) {
     curr = curr.target;
@@ -1162,9 +1154,9 @@ export let unwrapAliases = (t: Type): Type => {
     return baseType((curr as EnumType).backingType);
   }
   return baseType(curr);
-};
+}
 
-export let getTypeUniqueKey = (t: Type): String => {
+export function getTypeUniqueKey(t: Type): String {
   let cached = t.uniqueKeyCache;
   if (cached != null) {
     return cached;
@@ -1176,9 +1168,10 @@ export let getTypeUniqueKey = (t: Type): String => {
   t.uniqueKeyCache = key;
   countTypeKey(key);
   return key;
-};
+}
 
-let getTypeUniqueKeyRaw = (t: Type): String => match (t) {
+function getTypeUniqueKeyRaw(t: Type): String {
+  return match (t) {
   case ClassType as ct: {
     let baseId = if (ct.genericSource != null) (ct.genericSource as ClassType).id else ct.id;
     let base = `${ct.name}_${i32ToString(baseId as i32)}`;
@@ -1234,7 +1227,7 @@ let getTypeUniqueKeyRaw = (t: Type): String => match (t) {
     }
   }
   case ArrayType {elementType, elementsMutable}:
-    (if (elementsMutable) "Array<" else "Array<imm ") + getTypeUniqueKey(elementType) + ">"
+    `${if (elementsMutable) "Array<" else "Array<imm "}${getTypeUniqueKey(elementType)}>`
   case TupleType {elementTypes}: {
     let len = elementTypes.length;
     if (len > 0) {
@@ -1366,18 +1359,19 @@ let getTypeUniqueKeyRaw = (t: Type): String => match (t) {
   case EnumType as e: `alias_${getTypeUniqueKey(e.backingType)}`
   case _: typeToString(t)
 };
+}
 
-export let getFunctionAdaptationKey = (src: Type, tgt: Type): FunctionAdaptationKey => {
+export function getFunctionAdaptationKey(src: Type, tgt: Type): FunctionAdaptationKey {
   return new FunctionAdaptationKey(src, tgt);
-};
+}
 
-export let getClassMethodKey = (classKey: ClassKey, methodName: String): ClassMethodKey => {
+export function getClassMethodKey(classKey: ClassKey, methodName: String): ClassMethodKey {
   return new ClassMethodKey(classKey, methodName);
-};
+}
 
-export let getSpecializedFunctionKey = (baseName: String, typeArgs: Array<Type>): SpecializedFunctionKey => {
+export function getSpecializedFunctionKey(baseName: String, typeArgs: Array<Type>): SpecializedFunctionKey {
   return new SpecializedFunctionKey(baseName, typeArgs);
-};
+}
 
 /**
  * The function axis of a closure specialization key: the enclosing
@@ -1386,40 +1380,40 @@ export let getSpecializedFunctionKey = (baseName: String, typeArgs: Array<Type>)
  * to bind (a non-generic enclosing function, or its template walked
  * with parameters still open).
  */
-export let getFunctionArgsKey = (
+export function getFunctionArgsKey(
     typeParameters: Array<TypeParameterType> | null,
-    typeArguments: Array<Type> | null): FunctionArgsKey => {
+    typeArguments: Array<Type> | null): FunctionArgsKey {
   if (typeParameters == null || typeParameters.length == 0 ||
       typeArguments == null) {
     return "" as FunctionArgsKey;
   }
   return getSpecializedName("", typeArguments) as FunctionArgsKey;
-};
+}
 
-export let getClosureSpecializationKey = (closureId: NodeId, classKey: ClassKey,
+export function getClosureSpecializationKey(closureId: NodeId, classKey: ClassKey,
     typeParameters: Array<TypeParameterType> | null = null,
-    typeArguments: Array<Type> | null = null): ClosureSpecializationKey => {
+    typeArguments: Array<Type> | null = null): ClosureSpecializationKey {
   return new ClosureSpecializationKey(closureId, classKey,
       getFunctionArgsKey(typeParameters, typeArguments));
-};
+}
 
-export let getFunctionValueWrapperKey = (keyName: String, ft: FunctionType): FunctionValueWrapperKey => {
+export function getFunctionValueWrapperKey(keyName: String, ft: FunctionType): FunctionValueWrapperKey {
   return new FunctionValueWrapperKey(keyName, getSignatureKey(ft));
-};
+}
 
-export let sortStringsByLengthDescending = (arr: GrowableArray<String>): void => {
+export function sortStringsByLengthDescending(arr: GrowableArray<String>): void {
   quickSortStringsByLengthDescending(arr, 0, arr.length - 1);
-};
+}
 
-let quickSortStringsByLengthDescending = (arr: GrowableArray<String>, low: i32, high: i32): void => {
+function quickSortStringsByLengthDescending(arr: GrowableArray<String>, low: i32, high: i32): void {
   if (low < high) {
     let pIdx = partitionStringsByLengthDescending(arr, low, high);
     quickSortStringsByLengthDescending(arr, low, pIdx);
     quickSortStringsByLengthDescending(arr, pIdx + 1, high);
   }
-};
+}
 
-let partitionStringsByLengthDescending = (arr: GrowableArray<String>, low: i32, high: i32): i32 => {
+function partitionStringsByLengthDescending(arr: GrowableArray<String>, low: i32, high: i32): i32 {
   let mid = low + ((high - low) >> 1);
   let pivot = arr[mid];
   let pivotLen = pivot.length;
@@ -1447,11 +1441,11 @@ let partitionStringsByLengthDescending = (arr: GrowableArray<String>, low: i32, 
     arr[j] = temp;
   }
   return j;
-};
+}
 
 // ---- Literal parsing shared across codegen ----
 
-export let parseI64OrU64Literal = (raw: String): inline (boolean, i64) => {
+export function parseI64OrU64Literal(raw: String): inline (boolean, i64) {
   if (raw.length == 0) return (false, 0 as i64);
   
   var isNeg = false;
@@ -1474,7 +1468,7 @@ export let parseI64OrU64Literal = (raw: String): inline (boolean, i64) => {
     }
   }
   
-  var res: u64 = 0 as u64;
+  var res = 0 as u64;
   let ten = 10 as u64;
   let sixteen = 16 as u64;
   
@@ -1506,9 +1500,9 @@ export let parseI64OrU64Literal = (raw: String): inline (boolean, i64) => {
   
   let finalVal = if (isNeg) (0 as i64) - (res as i64) else res as i64;
   return (true, finalVal);
-};
+}
 
-export let parseI32WithHex = (s: String): (boolean, i32) => {
+export function parseI32WithHex(s: String): (boolean, i32) {
   if (s.length == 0) return (false, 0);
   var start = 0;
   var isNeg = false;
@@ -1530,7 +1524,7 @@ export let parseI32WithHex = (s: String): (boolean, i32) => {
     }
   }
   
-  var res: i32 = 0;
+  var res = 0;
   var i = start;
   var hasDigits = false;
   while (i < s.length) {
@@ -1557,7 +1551,7 @@ export let parseI32WithHex = (s: String): (boolean, i32) => {
   if (!hasDigits) return (false, 0);
   let finalVal = if (isNeg) 0 - res else res;
   return (true, finalVal);
-};
+}
 
 /**
  * The `zena:string-convert` helper a template interpolation of type
@@ -1570,7 +1564,7 @@ export let parseI32WithHex = (s: String): (boolean, i32) => {
  * to see — the two have to agree, and a disagreement shows up as
  * `Invalid function call: function index < 0`.
  */
-export let templateConvertHelperName = (t: Type): String => {
+export function templateConvertHelperName(t: Type): String {
   return match (baseType(t)) {
     case I32Type: 'i32ToString'
     case U32Type: 'u32ToString'
@@ -1587,14 +1581,14 @@ export let templateConvertHelperName = (t: Type): String => {
     case BooleanType: 'boolToString'
     case _: ''
   };
-};
+}
 
 /**
  * `Some<V>`, out of the `Future<Option<V>>` a Pending iteration step
  * carries: the member of the future's `Option<V>` argument that holds a
  * value. Null for anything else.
  */
-export let pendingSomeClass = (pendingFuture: ClassType): ClassType | null => {
+export function pendingSomeClass(pendingFuture: ClassType): ClassType | null {
   let args = pendingFuture.typeArguments;
   if (args == null || args.length != 1) {
     return null;
@@ -1608,14 +1602,14 @@ export let pendingSomeClass = (pendingFuture: ClassType): ClassType | null => {
     }
   }
   return null;
-};
+}
 
 /**
  * `None`, out of the `Future<Option<V>>` a Pending iteration step
  * carries: the exhausted-step member of `Option<V>`. Null for anything
  * else.
  */
-export let pendingNoneClass = (pendingFuture: ClassType): ClassType | null => {
+export function pendingNoneClass(pendingFuture: ClassType): ClassType | null {
   let args = pendingFuture.typeArguments;
   if (args == null || args.length != 1) {
     return null;
@@ -1629,4 +1623,4 @@ export let pendingNoneClass = (pendingFuture: ClassType): ClassType | null => {
     }
   }
   return null;
-};
+}

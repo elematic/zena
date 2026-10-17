@@ -41,7 +41,7 @@ import {
 import { HashMap } from 'zena:collections';
 
 /** The WIT spelling of a flat-scalar component value type opcode. */
-let scalarWitName = (opcode: i32): String => {
+function scalarWitName(opcode: i32): String {
   if (opcode == 0x7f) { return "bool"; }
   if (opcode == 0x7e) { return "s8"; }
   if (opcode == 0x7d) { return "u8"; }
@@ -59,7 +59,7 @@ let scalarWitName = (opcode: i32): String => {
   // produces the scalars and string; anything else is a bug there.
   throw new Error(
       "no WIT spelling for component type opcode " + i32ToString(opcode));
-};
+}
 
 /** One imported interface: its qualified name split into WIT's parts. */
 final class InterfacePath {
@@ -72,7 +72,7 @@ final class InterfacePath {
   new(this.packageName, this.interfaceName, this.version);
 }
 
-let splitInterfaceName = (name: String): InterfacePath => {
+function splitInterfaceName(name: String) {
   var slash = -1;
   for (var i = 0; i < name.length; i += 1) {
     if (name.getByteAt(i) == 47) { // '/'
@@ -99,10 +99,10 @@ let splitInterfaceName = (name: String): InterfacePath => {
     rest = rest.sliceBytes(0, at);
   }
   return new InterfacePath(packageName, rest, version);
-};
+}
 
 /** One function of an interface, as WIT source. */
-let renderFunc = (sb: StringBuilder, f: ComponentImportFunc): void => {
+function renderFunc(sb: StringBuilder, f: ComponentImportFunc) {
   let sig = f.signature;
   sb.append("    ").append(f.fieldName).append(": ");
   if (sig.isAsync) {
@@ -121,7 +121,7 @@ let renderFunc = (sb: StringBuilder, f: ComponentImportFunc): void => {
     sb.append(" -> ").append(scalarWitName(sig.result));
   }
   sb.append(";\n");
-};
+}
 
 /** The name of the synthetic world the derived document declares. */
 let derivedWorldName = "imports";
@@ -143,7 +143,7 @@ let derivedWorldName = "imports";
 var memoPackagesWit = "";
 var memoPackagesAst: Ast | null = null;
 
-let packagesAstOf = (packagesWit: String): Ast | null => {
+function packagesAstOf(packagesWit: String): Ast | null {
   if (packagesWit == "") {
     return null;
   }
@@ -155,7 +155,7 @@ let packagesAstOf = (packagesWit: String): Ast | null => {
   memoPackagesWit = packagesWit;
   memoPackagesAst = parsed;
   return parsed;
-};
+}
 
 /**
  * Add the packages `packages` declares to `into`, as nested packages:
@@ -163,7 +163,7 @@ let packagesAstOf = (packagesWit: String): Ast | null => {
  * when the document was built as text. The corpus's main package is
  * wrapped; its nested ones are shared as they are.
  */
-let addPackages = (into: Ast, packages: Ast): void => {
+function addPackages(into: Ast, packages: Ast) {
   let main = packages.packageName;
   if (main != null) {
     let name = main as PackageName;
@@ -178,19 +178,19 @@ let addPackages = (into: Ast, packages: Ast): void => {
   for (let nested in packages.nestedPackages) {
     into.nestedPackages.push(nested);
   }
-};
+}
 
 /** Whether `ast` declares the package `ns:pkg@version`, in its main
  * package or a nested one. */
-let docDeclaresPackage = (ast: Ast, packageKey: String): boolean => {
-  let keyOf = (pkg: PackageName | null): String => {
+function docDeclaresPackage(ast: Ast, packageKey: String): boolean {
+  let keyOf = (pkg: PackageName | null) => {
     if (pkg == null) {
       return "";
     }
     let p = pkg as PackageName;
-    var key = p.namespace.name + ":" + p.name.name;
+    var key = `${p.namespace.name}:${p.name.name}`;
     if (p.version != null) {
-      key = key + "@" + (p.version as String);
+      key = `${key}@${p.version as String}`;
     }
     return key;
   };
@@ -203,22 +203,19 @@ let docDeclaresPackage = (ast: Ast, packageKey: String): boolean => {
     }
   }
   return false;
-};
+}
 
-let docDeclaresInterface = (ast: Ast, qualified: String): boolean => {
+function docDeclaresInterface(ast: Ast, qualified: String): boolean {
   let path = splitInterfaceName(qualified);
   let matches = (pkg: PackageName | null, items: GrowableArray<AstItem>): boolean => {
     if (pkg == null) {
       return false;
     }
     let p = pkg as PackageName;
-    if (p.namespace.name + ":" + p.name.name != path.packageName) {
+    if (`${p.namespace.name}:${p.name.name}` != path.packageName) {
       return false;
     }
-    var version = "";
-    if (p.version != null) {
-      version = p.version as String;
-    }
+    let version = if (p.version != null) p.version as String else "";
     if (version != path.version) {
       return false;
     }
@@ -242,7 +239,7 @@ let docDeclaresInterface = (ast: Ast, qualified: String): boolean => {
     }
   }
   return false;
-};
+}
 
 /**
  * The shape's imports as a WIT document: one interface per `@external`
@@ -255,12 +252,12 @@ let docDeclaresInterface = (ast: Ast, qualified: String): boolean => {
  * shapes, and deriving from those would declare the flattening as the
  * interface's type.
  */
-export let deriveImportsWit = (
+export function deriveImportsWit(
   shape: ComponentShape,
   packagesWit: String = ""
-): String => {
+): String {
   let packagesAst = packagesAstOf(packagesWit);
-  let provided = (name: String): boolean =>
+  let provided = (name: String) =>
       packagesAst != null && docDeclaresInterface(packagesAst as Ast, name);
   // Group by interface, preserving first-appearance order (the same
   // grouping the emitter's aliases use), then group interfaces by
@@ -285,7 +282,7 @@ export let deriveImportsWit = (
   for (let name in interfaceNames) {
     if (provided(name)) { continue; }
     let path = splitInterfaceName(name);
-    let packageKey = path.packageName + "@" + path.version;
+    let packageKey = `${path.packageName}@${path.version}`;
     if (packagesAst != null &&
         docDeclaresPackage(packagesAst as Ast, packageKey)) {
       throw new Error(
@@ -309,7 +306,7 @@ export let deriveImportsWit = (
     for (let other in interfaceNames) {
       if (provided(other)) { continue; }
       let otherPath = splitInterfaceName(other);
-      if (otherPath.packageName + "@" + otherPath.version != packageKey) {
+      if (`${otherPath.packageName}@${otherPath.version}` != packageKey) {
         continue;
       }
       sb.append("  interface ").append(otherPath.interfaceName)
@@ -330,7 +327,7 @@ export let deriveImportsWit = (
   }
   sb.append("}\n");
   return sb.toString();
-};
+}
 
 /**
  * Encode the shape's imported interfaces; the emitter's front matter.
@@ -341,10 +338,10 @@ export let deriveImportsWit = (
  * An empty import list encodes to an empty world — no pieces, every
  * count zero — so the caller need not special-case it.
  */
-export let encodeImportTypes = (
+export function encodeImportTypes(
   shape: ComponentShape,
   packagesWit: String = ""
-): EncodedImports => {
+): EncodedImports {
   if (shape.imports.length == 0) {
     return new EncodedImports();
   }
@@ -378,16 +375,16 @@ export let encodeImportTypes = (
   let out = mirrorEncodedWorld(world);
   copyIndices(canonTypes, out.canonTypeIndices);
   return out;
-};
+}
 
 /** Copy every entry of `from` into `into`. */
-let copyIndices = (from: HashMap<String, i32>,
-    into: HashMap<String, i32>): void => {
+function copyIndices(from: HashMap<String, i32>,
+    into: HashMap<String, i32>): void {
   let keys = from.keys();
   for (let key in keys) {
     into[key] = from[key];
   }
-};
+}
 
 /**
  * The type immediates the canon builtins need, by their `canonType`
@@ -402,10 +399,10 @@ let copyIndices = (from: HashMap<String, i32>,
  * the alias pieces travel. The FIRST '#' splits — a qualified interface
  * name contains none, a type may.
  */
-let resolveCanonTypes = (
+function resolveCanonTypes(
   encoder: ComponentTypeEncoder,
   shape: ComponentShape
-): HashMap<String, i32> => {
+): HashMap<String, i32> {
   let indices = new Map<String, i32>();
   let split = (canonType: String, prefixLength: i32,
       expected: String): (String, String) => {
@@ -441,10 +438,10 @@ let resolveCanonTypes = (
     }
   }
   return indices;
-};
+}
 
 /** `EncodedWorld`, mirrored into codegen's own classes. */
-let mirrorEncodedWorld = (world: EncodedWorld): EncodedImports => {
+function mirrorEncodedWorld(world: EncodedWorld): EncodedImports {
   let out = new EncodedImports();
   for (let piece in world.pieces) {
     out.pieces.push(new EncodedImportPiece(piece.id, piece.payload));
@@ -467,7 +464,7 @@ let mirrorEncodedWorld = (world: EncodedWorld): EncodedImports => {
     out.exportedTypes[iface] = mirrored;
   }
   return out;
-};
+}
 
 /**
  * The default encoder: no world was declared, so each interface's WIT
@@ -491,20 +488,20 @@ final class DerivedImportEncoder implements ImportTypeEncoder {
 }
 
 /** The WIT spelling of a declared export's WIT type, for messages. */
-let witTypeName = (t: Type): String => {
+function witTypeName(t: Type) {
   let opcode = exportableWitOpcode(t);
   if (opcode >= 0) {
     return scalarWitName(opcode);
   }
   return "<not a flat scalar or string>";
-};
+}
 
 /**
  * The component opcode of a WIT type a program export can carry today —
  * the flat scalars and `string` — or -1. Richer world exports need the
  * marshaling C-track work and are rejected by name.
  */
-let exportableWitOpcode = (t: Type): i32 => {
+function exportableWitOpcode(t: Type): i32 {
   if (t.tag == TypeTag.Bool) { return 0x7f; }
   if (t.tag == TypeTag.S8) { return 0x7e; }
   if (t.tag == TypeTag.U8) { return 0x7d; }
@@ -518,7 +515,7 @@ let exportableWitOpcode = (t: Type): i32 => {
   if (t.tag == TypeTag.F64) { return 0x75; }
   if (t.tag == TypeTag.String) { return 0x73; }
   return -1;
-};
+}
 
 /**
  * Parse a declared world's document, with the program's WIT-backed
@@ -527,9 +524,9 @@ let exportableWitOpcode = (t: Type): i32 => {
  * itself, in which case its definitions win and theirs stay out of the
  * way.
  */
-let parseWithWasi = (witSource: String, packagesWit: String = ""): Ast => {
+function parseWithWasi(witSource: String, packagesWit: String = "") {
   return parse(withWasiPackages(witSource, packagesWit));
-};
+}
 
 /**
  * `witSource` with the program's WIT-backed packages appended — the
@@ -547,8 +544,8 @@ let parseWithWasi = (witSource: String, packagesWit: String = ""): Ast => {
  * without vendoring them. Packages that `witSource` already declares
  * are omitted so they do not conflict.
  */
-export let withWasiPackages = (witSource: String,
-    packagesWit: String = ""): String => {
+export function withWasiPackages(witSource: String,
+    packagesWit: String = ""): String {
   if (packagesWit == "") {
     return witSource;
   }
@@ -576,7 +573,7 @@ export let withWasiPackages = (witSource: String,
     }
   }
   return sb.toString();
-};
+}
 
 /**
  * One function export a declared world demands of the program: a
@@ -622,7 +619,7 @@ final class DeclaredWorldEncoder implements ImportTypeEncoder {
         var listed = "";
         for (let n in names) {
           if (listed != "") { listed = listed + ", "; }
-          listed = listed + "'" + n + "'";
+          listed = `${listed}'${n}'`;
         }
         throw new Error(if (names.length == 0) {
           "--wit names a document with no world; declare one, or pass " +
@@ -712,14 +709,13 @@ final class DeclaredWorldEncoder implements ImportTypeEncoder {
           let td = item.typeDef as TypeDef;
           let resourceName = td.name.name;
           for (let rf in td.resourceFuncs as GrowableArray<ResourceFunc>) {
-            var exported = "";
-            if (rf.tag == ResourceFuncTag.Constructor) {
-              exported = "[constructor]" + resourceName;
+            let exported = if (rf.tag == ResourceFuncTag.Constructor) {
+              "[constructor]" + resourceName
             } else if (rf.tag == ResourceFuncTag.Method) {
-              exported = "[method]" + resourceName + "." + rf.func.name.name;
+              `[method]${resourceName}.${rf.func.name.name}`
             } else {
-              exported = "[static]" + resourceName + "." + rf.func.name.name;
-            }
+              `[static]${resourceName}.${rf.func.name.name}`
+            };
             this.#declaredExports.push(
                 new DeclaredExport(exported, rf.func.func, qualified));
           }
@@ -1047,13 +1043,13 @@ final class DeclaredWorldEncoder implements ImportTypeEncoder {
  * (and `--world`'s name, or "" to take the document's sole world), the
  * declared world becomes the authority and disagreements are errors.
  */
-export let makeImportEncoder = (
+export function makeImportEncoder(
   witSource: String | null = null,
   worldName: String = "",
   packagesWit: String = ""
-): ImportTypeEncoder => {
+): ImportTypeEncoder {
   if (witSource == null) {
     return new DerivedImportEncoder(packagesWit);
   }
   return new DeclaredWorldEncoder(witSource as String, worldName, packagesWit);
-};
+}

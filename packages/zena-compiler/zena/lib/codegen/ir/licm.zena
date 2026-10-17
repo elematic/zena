@@ -47,14 +47,14 @@ import { IrCfg } from './cfg.zena';
 import { ValTypeRef } from '../wasm.zena';
 
 /** Runs the pass; returns the number of instructions moved. */
-export let runLicm = (body: IrBody, scratch: IrScratch): i32 => {
+export function runLicm(body: IrBody, scratch: IrScratch): i32 {
   scratch.enter();
   let result = runLicmOn(body, scratch);
   scratch.exit();
   return result;
-};
+}
 
-let runLicmOn = (body: IrBody, scratch: IrScratch): i32 => {
+function runLicmOn(body: IrBody, scratch: IrScratch): i32 {
   var total = 0;
   var pass = 0;
   while (pass < 3) {
@@ -66,16 +66,16 @@ let runLicmOn = (body: IrBody, scratch: IrScratch): i32 => {
     pass += 1;
   }
   return total;
-};
+}
 
-let hoistOnce = (body: IrBody, scratch: IrScratch): i32 => {
+function hoistOnce(body: IrBody, scratch: IrScratch): i32 {
   scratch.enter();
   let result = hoistOnceOn(body, scratch);
   scratch.exit();
   return result;
-};
+}
 
-let hoistOnceOn = (body: IrBody, scratch: IrScratch): i32 => {
+function hoistOnceOn(body: IrBody, scratch: IrScratch): i32 {
   let cfg = new IrCfg(body, scratch);
   let nb = body.blocks.length;
   let dominates = (a: i32, b: i32): boolean => {
@@ -220,10 +220,10 @@ let hoistOnceOn = (body: IrBody, scratch: IrScratch): i32 => {
     }
   }
   return moved;
-};
+}
 
 /** Pure, trap-free, and not an allocation: safe to run speculatively. */
-let hoistable = (body: IrBody, inst: i32): boolean => {
+function hoistable(body: IrBody, inst: i32): boolean {
   if (body.typeId[inst] < 0) {
     return false;
   }
@@ -269,14 +269,14 @@ let hoistable = (body: IrBody, inst: i32): boolean => {
     return true;
   }
   return false;
-};
+}
 
 /**
  * Pure but able to trap: a cast, a null assertion, or a load of an
  * immutable field, an array length or a fat pointer's fields through
  * a nullable receiver. Movable from a loop header alone.
  */
-let trapHoistable = (body: IrBody, inst: i32): boolean => {
+function trapHoistable(body: IrBody, inst: i32): boolean {
   if (body.typeId[inst] < 0) {
     return false;
   }
@@ -292,13 +292,13 @@ let trapHoistable = (body: IrBody, inst: i32): boolean => {
     return body.a[inst] >= 0 && fieldIsImmutable(body, inst);
   }
   return false;
-};
+}
 
-let fieldIsImmutable = (body: IrBody, inst: i32): boolean => {
+function fieldIsImmutable(body: IrBody, inst: i32): boolean {
   let r = body.refTable[body.b[inst]];
   if (r is IrRefField) {
     let idx = r.owner.fieldIndexByName(r.fieldName);
     return idx >= 0 && !r.owner.fields[idx].isMutable;
   }
   return false;
-};
+}

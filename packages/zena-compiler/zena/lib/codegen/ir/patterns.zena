@@ -37,12 +37,13 @@ import {
 } from './lowering-context.zena';
 import { lowerStringLiteral } from './templates.zena';
 import { lowerExpr, repackRecordUnion } from './lowering.zena';
+import { growable } from 'zena:core';
 
 
 /** Bail with the lowering-side message shape (reason @function). */
-let bail = (cx: LoweringContext, reason: String): never => {
-  throw new ZirUnsupported(reason + ' @' + (cx.func.name ?? '?'));
-};
+function bail(cx: LoweringContext, reason: String): never {
+  throw new ZirUnsupported(`${reason} @${cx.func.name ?? '?'}`);
+}
 
 /**
  * The value a record pattern destructures. A pattern whose value is a
@@ -51,23 +52,23 @@ let bail = (cx: LoweringContext, reason: String): never => {
  * here, and everything downstream — the presence mask, guarded
  * defaults, nested patterns — works against a single record type.
  */
-let recordPatternValue = (cx: LoweringContext, rp: RecordPattern,
-    value: i32): i32 => {
+function recordPatternValue(cx: LoweringContext, rp: RecordPattern,
+    value: i32) {
   let raOpt = cx.func.model.getRecordUnionAdaptation(rp as Node);
   if (raOpt == null) { return value; }
   return repackRecordUnion(cx, raOpt, value);
-};
+}
 
 /** Branches to `failB` when `cond` is false; continues in a new block. */
-export let branchUnless = (cx: LoweringContext, cond: i32, failB: i32): void => {
+export function branchUnless(cx: LoweringContext, cond: i32, failB: i32): void {
   let contB = cx.b.newBlock();
   cx.b.brIf(cond, contB, noValues(), failB, noValues());
   cx.b.switchTo(contB);
-};
+}
 
 /** ref.test `value` against `st`, branching to `failB` on failure. */
-let emitRefTest = (cx: LoweringContext, value: i32, st: WasmStruct,
-    failB: i32): void => {
+function emitRefTest(cx: LoweringContext, value: i32, st: WasmStruct,
+    failB: i32) {
   let vt = cx.valueTypeOf(value);
   if (!isRefValType(vt)) {
     bail(cx, 'type test operand');
@@ -76,28 +77,28 @@ let emitRefTest = (cx: LoweringContext, value: i32, st: WasmStruct,
   let cond = cx.b.emit(IrOp.ref_test, new ValTypeI32(), value,
       cx.b.internType(targetVt));
   branchUnless(cx, cond, failB);
-};
+}
 
 /** The struct a class lowers to; ZirUnsupported when undiscovered. */
-let classStructOf = (cx: LoweringContext, ct: ClassType): WasmStruct => {
+function classStructOf(cx: LoweringContext, ct: ClassType): WasmStruct {
   if (let (true, info) = cx.wasm.classInfos.get(getClassKey(ct))) {
     return info.structType;
   }
   throw new ZirUnsupported('pattern class not discovered');
-};
+}
 
 /** The struct behind a (boxed) tuple or class value; bails otherwise. */
-let structOfValue = (cx: LoweringContext, value: i32): WasmStruct => {
+function structOfValue(cx: LoweringContext, value: i32) {
   let stOpt = asWasmStruct(cx.valueTypeOf(value));
   if (stOpt == null) {
     bail(cx, 'pattern operand kind');
   }
   return stOpt;
-};
+}
 
 /** The record dispatch whose fat-pointer struct backs `value`, if any. */
-export let recordDispatchOfValue = (cx: LoweringContext,
-    value: i32): RecordDispatchInfo | null => {
+export function recordDispatchOfValue(cx: LoweringContext,
+    value: i32): RecordDispatchInfo | null {
   let stOpt = asWasmStruct(cx.valueTypeOf(value));
   if (stOpt == null) {
     return null;
@@ -108,10 +109,10 @@ export let recordDispatchOfValue = (cx: LoweringContext,
     }
   }
   return null;
-};
+}
 
 /** The boxed-tuple field value at `index` of a tuple-struct value. */
-let tupleFieldRead = (cx: LoweringContext, value: i32, index: i32): i32 => {
+function tupleFieldRead(cx: LoweringContext, value: i32, index: i32) {
   let st = structOfValue(cx, value);
   let fieldName = i32ToString(index);
   let fieldIdx = st.fieldIndexByName(fieldName);
@@ -120,11 +121,11 @@ let tupleFieldRead = (cx: LoweringContext, value: i32, index: i32): i32 => {
   }
   let fieldRef = cx.b.addRef(new IrRefField(st, fieldName));
   return cx.b.emit(IrOp.struct_get, st.fields[fieldIdx].type, value, fieldRef);
-};
+}
 
 /** `case "lit":` — a direct call to String.==, mirroring streaming. */
-let stringPatternEq = (cx: LoweringContext, value: i32,
-    sl: StringLiteral): i32 => {
+function stringPatternEq(cx: LoweringContext, value: i32,
+    sl: StringLiteral) {
   if (cx.wasm.stringClass == null) {
     bail(cx, 'string pattern without String class');
   }
@@ -145,10 +146,10 @@ let stringPatternEq = (cx: LoweringContext, value: i32,
   }
   let funcRef = cx.b.addRef(new IrRefFunc(eqFunc));
   return cx.b.callFunc(funcRef, twoValues(recv, lit), sig.returns[0]);
-};
+}
 
 /** The length of an array (wasm array or struct with #length / get:length). */
-export let arrayLengthRead = (cx: LoweringContext, value: i32): i32 => {
+export function arrayLengthRead(cx: LoweringContext, value: i32): i32 {
   let arrOpt = asWasmArray(cx.valueTypeOf(value));
   if (arrOpt != null) {
     return cx.b.emit(IrOp.array_len, new ValTypeI32(), value, -1);
@@ -194,10 +195,10 @@ export let arrayLengthRead = (cx: LoweringContext, value: i32): i32 => {
     }
   }
   bail(cx, 'array pattern length');
-};
+}
 
 /** The array element value at `index` of an array or sliceable struct. */
-export let arrayElementRead = (cx: LoweringContext, value: i32, index: i32): i32 => {
+export function arrayElementRead(cx: LoweringContext, value: i32, index: i32): i32 {
   let arrOpt = asWasmArray(cx.valueTypeOf(value));
   if (arrOpt != null) {
     let arr = arrOpt;
@@ -249,7 +250,7 @@ export let arrayElementRead = (cx: LoweringContext, value: i32, index: i32): i32
     }
   }
   bail(cx, 'array element read');
-};
+}
 
 /**
  * The name of the interface vtable slot that reads one element by index,
@@ -257,7 +258,7 @@ export let arrayElementRead = (cx: LoweringContext, value: i32, index: i32): i32
  * slices by range), each overload has its own slot, named by its
  * signature key, and this is the one whose parameter is an i32.
  */
-let indexReadSlotName = (vtable: WasmStruct): String | null => {
+function indexReadSlotName(vtable: WasmStruct): String | null {
   if (vtable.fieldIndexByName('[]') >= 0) {
     return '[]';
   }
@@ -272,10 +273,10 @@ let indexReadSlotName = (vtable: WasmStruct): String | null => {
     }
   }
   return null;
-};
+}
 
 /** Slices an array from `startIndex` to the end, returning a new FixedArray. */
-export let arraySliceRead = (cx: LoweringContext, value: i32, startIndex: i32): i32 => {
+export function arraySliceRead(cx: LoweringContext, value: i32, startIndex: i32): i32 {
   let len = arrayLengthRead(cx, value);
   let startVal = cx.b.constI32(startIndex, new ValTypeI32());
   let sliceLen = cx.b.binary(IrOp.i32_sub, new ValTypeI32(), len, startVal);
@@ -326,23 +327,25 @@ export let arraySliceRead = (cx: LoweringContext, value: i32, startIndex: i32): 
 
               cx.b.switchTo(mutB);
               let castMut = cx.b.emit(IrOp.ref_cast, mutRefVt, inst, cx.b.internType(mutRefVt));
-              let mutTuple = new Array<i32>();
-              mutTuple.push(dest);
-              mutTuple.push(zero);
-              mutTuple.push(castMut);
-              mutTuple.push(startVal);
-              mutTuple.push(sliceLen);
+              let mutTuple = growable<i32>([
+                dest,
+                zero,
+                castMut,
+                startVal,
+                sliceLen,
+              ]);
               cx.b.emitVoid(IrOp.array_copy, cx.b.pushExtra(mutTuple), -1);
               cx.b.br(doneB, noValues());
 
               cx.b.switchTo(immB);
               let castImm = cx.b.emit(IrOp.ref_cast, immRefVt, inst, cx.b.internType(immRefVt));
-              let immTuple = new Array<i32>();
-              immTuple.push(dest);
-              immTuple.push(zero);
-              immTuple.push(castImm);
-              immTuple.push(startVal);
-              immTuple.push(sliceLen);
+              let immTuple = growable<i32>([
+                dest,
+                zero,
+                castImm,
+                startVal,
+                sliceLen,
+              ]);
               cx.b.emitVoid(IrOp.array_copy, cx.b.pushExtra(immTuple), -1);
               cx.b.br(doneB, noValues());
 
@@ -362,22 +365,17 @@ export let arraySliceRead = (cx: LoweringContext, value: i32, startIndex: i32): 
     let arrType = cx.wasm.getArray((arrOpt as WasmArray).elementType, true);
     let destPair = cx.b.pushExtra(twoValues(sliceLen, -1));
     let dest = cx.b.emit(IrOp.array_new, new ValTypeRef(arrType) as ValType, destPair, cx.b.addRef(new IrRefType(arrType)));
-    let copyTuple = new Array<i32>();
-    copyTuple.push(dest);
-    copyTuple.push(zero);
-    copyTuple.push(buf);
-    copyTuple.push(startVal);
-    copyTuple.push(sliceLen);
+    let copyTuple = growable<i32>([dest, zero, buf, startVal, sliceLen]);
     let copyTupleIdx = cx.b.pushExtra(copyTuple);
     cx.b.emitVoid(IrOp.array_copy, copyTupleIdx, -1);
     return dest;
   }
 
   bail(cx, 'array slice read');
-};
+}
 
 /** Whether `pattern` can fail to match (needs a fail edge). */
-export let patternRefutable = (cx: LoweringContext, pattern: Node): boolean => {
+export function patternRefutable(cx: LoweringContext, pattern: Node): boolean {
   return match (pattern) {
     case IdentifierPattern: false
     case Identifier as ident: {
@@ -432,10 +430,10 @@ export let patternRefutable = (cx: LoweringContext, pattern: Node): boolean => {
     case AbsencePattern: true
     case _: true
   };
-};
+}
 
 /** Whether `pattern` introduces any bindings. */
-export let patternBinds = (cx: LoweringContext, pattern: Node): boolean => {
+export function patternBinds(cx: LoweringContext, pattern: Node): boolean {
   return match (pattern) {
     case IdentifierPattern as pat: pat.name != "_"
     case Identifier as ident: {
@@ -491,11 +489,11 @@ export let patternBinds = (cx: LoweringContext, pattern: Node): boolean => {
     case AssignmentPattern as ap: patternBinds(cx, ap.left)
     case _: false
   };
-};
+}
 
 /** All symbols a pattern binds, in source order. */
-export let collectPatternBindSyms = (cx: LoweringContext, pattern: Node,
-    out: GrowableArray<SymbolId>): void => {
+export function collectPatternBindSyms(cx: LoweringContext, pattern: Node,
+    out: GrowableArray<SymbolId>): void {
   if (pattern is IdentifierPattern) {
     if (pattern.name != "_") {
       let sym = cx.func.model.resolveDeclaration(pattern);
@@ -568,15 +566,15 @@ export let collectPatternBindSyms = (cx: LoweringContext, pattern: Node,
   if (pattern is AssignmentPattern) {
     collectPatternBindSyms(cx, pattern.left, out);
   }
-};
+}
 
 /**
  * Emits the refutable tests for `pattern` against `value`, branching
  * to `failB` at the first failure; on success execution falls through
  * in the current block. Pattern kinds not modeled yet bail here.
  */
-export let lowerPatternTest = (cx: LoweringContext, pattern: Node,
-    value: i32, failB: i32): void => {
+export function lowerPatternTest(cx: LoweringContext, pattern: Node,
+    value: i32, failB: i32): void {
   match (pattern) {
     case IdentifierPattern: {}
     case Identifier as ident: {
@@ -831,11 +829,11 @@ export let lowerPatternTest = (cx: LoweringContext, pattern: Node,
       bail(cx, 'pattern kind');
     }
   }
-};
+}
 
 /** Binds `pattern`'s variables against `value` in the current block. */
-export let lowerPatternBindings = (cx: LoweringContext, pattern: Node,
-    value: i32): void => {
+export function lowerPatternBindings(cx: LoweringContext, pattern: Node,
+    value: i32): void {
   match (pattern) {
     case IdentifierPattern as pat: {
       if (pat.name != "_") {
@@ -943,14 +941,14 @@ export let lowerPatternBindings = (cx: LoweringContext, pattern: Node,
     }
     case _: {}
   }
-};
+}
 
 /**
  * An i32 0/1 condition for "optional field `bit` is present": reads
  * the record's presence word for that bit and extracts it.
  */
-export let maskBitTest = (cx: LoweringContext, dispatch: RecordDispatchInfo,
-    bit: i32, receiver: i32): i32 => {
+export function maskBitTest(cx: LoweringContext, dispatch: RecordDispatchInfo,
+    bit: i32, receiver: i32): i32 {
   let i64Vt: ValType = new ValTypeI64();
   let mask = cx.recordDispatchRead(
       dispatch, presentWordName(bit >> 6), receiver);
@@ -960,11 +958,11 @@ export let maskBitTest = (cx: LoweringContext, dispatch: RecordDispatchInfo,
       cx.b.constI64(1, i64Vt));
   return cx.b.emit(IrOp.i32_wrap_i64,
       new ValTypeI32() as ValType, bitVal, -1);
-};
+}
 
 /** Whether a record property's Zena type itself admits null (as opposed
  *  to its slot being nullable only because the field is optional). */
-export let propTypeAdmitsNull = (rec: RecordType | null, name: String): boolean => {
+export function propTypeAdmitsNull(rec: RecordType | null, name: String): boolean {
   if (rec == null) { return true; }
   if (!rec.properties.has(name)) { return true; }
   let bt = baseType(rec.properties[name]);
@@ -979,7 +977,7 @@ export let propTypeAdmitsNull = (rec: RecordType | null, name: String): boolean 
     }
     case _: false
   };
-};
+}
 
 /**
  * Binds one record-pattern property against a dispatch-carried record
@@ -990,9 +988,9 @@ export let propTypeAdmitsNull = (rec: RecordType | null, name: String): boolean 
  * already ran; the slot holds the value, re-asserted non-null when the
  * slot is nullable only because the field is optional.
  */
-export let bindRecordProp = (cx: LoweringContext,
+export function bindRecordProp(cx: LoweringContext,
     dispatch: RecordDispatchInfo, rec: RecordType | null,
-    prop: BindingProperty, receiver: i32): void => {
+    prop: BindingProperty, receiver: i32): void {
   let {name} = prop.name;
   let bit = dispatch.optionalBitOf(name);
   if (bit < 0) {
@@ -1034,4 +1032,4 @@ export let bindRecordProp = (cx: LoweringContext,
         new ValTypeRef((rv as ValTypeRefNull).target) as ValType);
   }
   lowerPatternBindings(cx, prop.value, read);
-};
+}
