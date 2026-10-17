@@ -15,12 +15,13 @@
  * proves close to nothing.
  */
 import { isTrue, fail } from 'zena:assert';
+import { growable } from 'zena:core';
 
 /**
  * The text of one function definition: from `(func $name` up to the
  * next `(func `. Empty when the module defines no such function.
  */
-export let watFunction = (wat: String, name: String): String => {
+export function watFunction(wat: String, name: String): String {
   for (let chunk in wat.split('(func ')) {
     // A definition is `$name (type …)`; the same split also yields the
     // parameter lists of `(type (;n;) (func …))`, which never match.
@@ -29,31 +30,31 @@ export let watFunction = (wat: String, name: String): String => {
     }
   }
   return '';
-};
+}
 
 /** `name` must exist and its body must contain none of `ops`. */
-export let assertFunctionOmits = (wat: String, name: String,
-    ops: Array<String>, why: String): void => {
+export function assertFunctionOmits(wat: String, name: String,
+    ops: Array<String>, why: String): void {
   let body = watFunction(wat, name);
-  isTrue(body.length > 0, 'no function ' + name + ' in the emitted module');
+  isTrue(body.length > 0, `no function ${name} in the emitted module`);
   for (let op in ops) {
     if (body.contains(op)) {
-      fail(name + ' emits `' + op + '`: ' + why);
+      fail(`${name} emits \`${op}\`: ${why}`);
     }
   }
-};
+}
 
 /** `name` must exist and its body must contain every one of `ops`. */
-export let assertFunctionUses = (wat: String, name: String,
-    ops: Array<String>, why: String): void => {
+export function assertFunctionUses(wat: String, name: String,
+    ops: Array<String>, why: String): void {
   let body = watFunction(wat, name);
-  isTrue(body.length > 0, 'no function ' + name + ' in the emitted module');
+  isTrue(body.length > 0, `no function ${name} in the emitted module`);
   for (let op in ops) {
     if (!body.contains(op)) {
-      fail(name + ' never emits `' + op + '`: ' + why);
+      fail(`${name} never emits \`${op}\`: ${why}`);
     }
   }
-};
+}
 
 /**
  * `name` must exist and its body must contain `op` exactly `times`.
@@ -61,26 +62,24 @@ export let assertFunctionUses = (wat: String, name: String,
  * is supposed to be emitted once (or the other way round) — presence
  * alone would pass either way.
  */
-export let assertFunctionUsesTimes = (wat: String, name: String,
-    op: String, times: i32, why: String): void => {
+export function assertFunctionUsesTimes(wat: String, name: String,
+    op: String, times: i32, why: String): void {
   let body = watFunction(wat, name);
-  isTrue(body.length > 0, 'no function ' + name + ' in the emitted module');
+  isTrue(body.length > 0, `no function ${name} in the emitted module`);
   let seen = body.split(op).length - 1;
   if (seen != times) {
     fail(name + ' emits `' + op + '` ' + i32ToString(seen) + ' time(s), ' +
         'expected ' + i32ToString(times) + ': ' + why);
   }
-};
+}
 
 /**
  * `name` must not allocate. `struct.new` and `array.new` are prefixes
  * of every wasm GC allocation opcode (`…_default`, `…_fixed`,
  * `…_data`), so the two of them cover all of it.
  */
-export let assertNoAllocation = (wat: String, name: String,
-    why: String): void => {
-  let ops = new Array<String>();
-  ops.push('struct.new');
-  ops.push('array.new');
+export function assertNoAllocation(wat: String, name: String,
+    why: String): void {
+  let ops = growable<String>(['struct.new', 'array.new']);
   assertFunctionOmits(wat, name, ops, why);
-};
+}

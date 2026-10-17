@@ -15,8 +15,8 @@ import { BinaryEmitter } from '../lib/codegen/binary-emitter.zena';
  * intern a distinct Wasm array type and emit `(array T)` rather than
  * `(array (mut T))`.
  */
-export let tests = suite('array element mutability', (): void => {
-  test('typeToValType keeps mutable and immutable arrays distinct', (ctx: TestContext): void => {
+export let tests = suite('array element mutability', () => {
+  test('typeToValType keeps mutable and immutable arrays distinct', (ctx) => {
     let wasm = new WasmModule();
     let mutVt = typeToValType(wasm, new ArrayType(new I32Type(), true));
     let immVt = typeToValType(wasm, new ArrayType(new I32Type(), false));
@@ -33,17 +33,17 @@ export let tests = suite('array element mutability', (): void => {
     isTrue(again == immArr);
   });
 
-  test('specialization keys distinguish element mutability', (ctx: TestContext): void => {
+  test('specialization keys distinguish element mutability', (ctx) => {
     let mutKey = getTypeKeyForSpecialization(new ArrayType(new I32Type(), true));
     let immKey = getTypeKeyForSpecialization(new ArrayType(new I32Type(), false));
     equal(mutKey, 'arr_i32');
     equal(immKey, 'arrimm_i32');
   });
 
-  test('binary emitter writes the element mutability bit', (ctx: TestContext): void => {
+  test('binary emitter writes the element mutability bit', (ctx) => {
     // An array of values writes: 0x4F (sub final), 0 supertypes, 0x5E
     // (array form), the element valtype, then the mutability byte.
-    let checkMutByte = (isMutable: boolean, expected: i32): void => {
+    let checkMutByte = (isMutable: boolean, expected: i32) => {
       let emitter = new BinaryEmitter(new ByteBuffer());
       emitter.emitTypeSectionStart(1);
       emitter.emitArrayType(0, new ValTypeI32(), isMutable, -1, true);
@@ -59,7 +59,7 @@ export let tests = suite('array element mutability', (): void => {
     checkMutByte(false, 0);
   });
 
-  test('binary emitter writes the supertype an immutable reference array declares', (ctx: TestContext): void => {
+  test('binary emitter writes the supertype an immutable reference array declares', (ctx) => {
     // The root of a chain, (array anyref), has no supertype of its own,
     // and the arrays below it name it, so it is emitted open: 0x50
     // (sub), 0 supertypes. Who is open and who is final is decided by

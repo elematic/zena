@@ -3,13 +3,13 @@ import { equal } from 'zena:assert';
 import { readFileSync, listDirSync, FileType } from 'zena:fs';
 import { parse } from '../lib/parser.zena';
 
-let parseFile = (path: String): boolean => {
+function parseFile(path: String): boolean {
   let source = readFileSync(path);
   let mod = try {
     parse(source, path);
     true
   } catch (e) {
-    console.log("Parse error in " + path + ": " + e.message);
+    console.log(`Parse error in ${path}: ${e.message}`);
     let stack = e.getStackTrace();
     if (stack != null) {
       console.log(stack);
@@ -17,29 +17,29 @@ let parseFile = (path: String): boolean => {
     false
   };
   return mod;
-};
+}
 
 /** Every `.zena` file under `dirPath`, deepest directories included. */
-let zenaFilesUnder = (dirPath: String, out: GrowableArray<String>): void => {
+function zenaFilesUnder(dirPath: String, out: GrowableArray<String>): void {
   for (let entry in listDirSync(dirPath)) {
     if (entry.fileType == FileType.Directory) {
       if (entry.name != "." && entry.name != "..") {
-        zenaFilesUnder(dirPath + "/" + entry.name, out);
+        zenaFilesUnder(`${dirPath}/${entry.name}`, out);
       }
     } else if (entry.fileType == FileType.RegularFile) {
       if (entry.name.endsWith(".zena")) {
-        out.push(dirPath + "/" + entry.name);
+        out.push(`${dirPath}/${entry.name}`);
       }
     }
   }
-};
+}
 
 // The files are listed inside the test rather than while the suite
 // registers: registration runs in the instance's start function,
 // before any task exists, and a component's file system calls block
 // in a task.
-export let tests = suite('Parser: Real Files', (): void => {
-  test('every standard library file parses', (ctx: TestContext): void => {
+export let tests = suite('Parser: Real Files', () => {
+  test('every standard library file parses', (ctx) => {
     let files = new Array<String>();
     zenaFilesUnder('packages/stdlib/zena', files);
     var failed = 0;
@@ -47,7 +47,7 @@ export let tests = suite('Parser: Real Files', (): void => {
     for (let path in files) {
       if (!parseFile(path)) {
         failed += 1;
-        names = names + ' ' + path;
+        names = `${names} ${path}`;
       }
     }
     equal(failed, 0, `files that did not parse:${names}`);

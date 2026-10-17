@@ -11,7 +11,7 @@ import {
 // ============================================================================
 
 // Create a minimal stdlib package config for testing.
-let makeStdlibConfig = (): PackageConfig => {
+function makeStdlibConfig() {
   let exports = new Map<String, ModuleExport>();
   exports["string"] = new ModuleExport(null);
   exports["array"] = new ModuleExport(null);
@@ -22,90 +22,93 @@ let makeStdlibConfig = (): PackageConfig => {
 
   // An internal module: the manifest entry is what picks its file, and
   // only the package's own modules may name it.
-  let stackVirtual = new Map<String, String>();
-  stackVirtual["js"] = "core/error/stack-host.zena";
+  let stackVirtual: HashMap<String, String> = {
+    "js" => "core/error/stack-host.zena",
+  };
   exports["error-stack"] = new ModuleExport(stackVirtual, null, true);
 
-  let consoleVirtual = new Map<String, String>();
-  consoleVirtual["js"] = "console/host.zena";
-  consoleVirtual["zena-cli"] = "console/component.zena";
+  let consoleVirtual: HashMap<String, String> = {
+    "js" => "console/host.zena",
+    "zena-cli" => "console/component.zena",
+  };
   exports["console"] = new ModuleExport(consoleVirtual);
 
   return new PackageConfig("/stdlib", exports);
-};
+}
 
 // Create a user package config for testing.
-let makeUserPackageConfig = (): PackageConfig => {
+function makeUserPackageConfig() {
   return new PackageConfig("/project/packages/mylib/zena/lib", null);
-};
+}
 
 // Create a resolver with stdlib + user package.
-let makeResolver = (target: String): ModuleResolver => {
-  let packages = new Map<String, PackageConfig>();
-  packages["zena"] = makeStdlibConfig();
-  packages["mylib"] = makeUserPackageConfig();
+function makeResolver(target: String) {
+  let packages: HashMap<String, PackageConfig> = {
+    "zena" => makeStdlibConfig(),
+    "mylib" => makeUserPackageConfig(),
+  };
   return new ModuleResolver(packages, target);
-};
+}
 
-export let tests = suite("Module Resolver", (): void => {
+export let tests = suite("Module Resolver", () => {
 
 // ============================================================================
 // Path Utility Tests
 // ============================================================================
 
-  suite("Path Utilities", (): void => {
+  suite("Path Utilities", () => {
 
-  test("indexOfByte finds byte", (t: TestContext): void => {
+  test("indexOfByte finds byte", (t) => {
     equal(indexOfByte("hello:world", 58), 5); // 58 = ':'
   });
 
-  test("indexOfByte returns -1 when not found", (t: TestContext): void => {
+  test("indexOfByte returns -1 when not found", (t) => {
     equal(indexOfByte("hello", 58), 0 - 1);
   });
 
-  test("indexOfByte finds first occurrence", (t: TestContext): void => {
+  test("indexOfByte finds first occurrence", (t) => {
     equal(indexOfByte("a:b:c", 58), 1);
   });
 
-  test("dirName extracts directory", (t: TestContext): void => {
+  test("dirName extracts directory", (t) => {
     equal(dirName("/foo/bar/baz.zena"), "/foo/bar");
   });
 
-  test("dirName returns . for no separator", (t: TestContext): void => {
+  test("dirName returns . for no separator", (t) => {
     equal(dirName("file.zena"), ".");
   });
 
-  test("normalizePath preserves leading double-dots in relative paths", (t: TestContext): void => {
+  test("normalizePath preserves leading double-dots in relative paths", (t) => {
     equal(normalizePath("../foo.zena"), "../foo.zena");
     equal(normalizePath("a/../../foo.zena"), "../foo.zena");
   });
 
-  test("stdlibIdToRelativeFile maps name ids", (t: TestContext): void => {
+  test("stdlibIdToRelativeFile maps name ids", (t) => {
     equal(stdlibIdToRelativeFile("zena:string"), "string.zena");
     equal(stdlibIdToRelativeFile("string"), "string.zena");
   });
 
-  test("stdlibIdToRelativeFile maps path ids", (t: TestContext): void => {
+  test("stdlibIdToRelativeFile maps path ids", (t) => {
     equal(stdlibIdToRelativeFile("zena:console/host.zena"), "console/host.zena");
   });
 
-  test("normalizePath resolves dots", (t: TestContext): void => {
+  test("normalizePath resolves dots", (t) => {
     equal(normalizePath("/foo/bar/./baz.zena"), "/foo/bar/baz.zena");
   });
 
-  test("normalizePath resolves double-dots", (t: TestContext): void => {
+  test("normalizePath resolves double-dots", (t) => {
     equal(normalizePath("/foo/bar/../baz.zena"), "/foo/baz.zena");
   });
 
-  test("normalizePath preserves absolute path", (t: TestContext): void => {
+  test("normalizePath preserves absolute path", (t) => {
     equal(normalizePath("/foo/bar"), "/foo/bar");
   });
 
-  test("normalizePath handles relative path", (t: TestContext): void => {
+  test("normalizePath handles relative path", (t) => {
     equal(normalizePath("foo/bar"), "foo/bar");
   });
 
-  test("splitByByte splits on delimiter", (t: TestContext): void => {
+  test("splitByByte splits on delimiter", (t) => {
     let parts = splitByByte("a/b/c", 47); // 47 = '/'
     equal(parts.length, 3);
     equal(parts[0], "a");
@@ -113,7 +116,7 @@ export let tests = suite("Module Resolver", (): void => {
     equal(parts[2], "c");
   });
 
-  test("splitByByte handles leading delimiter", (t: TestContext): void => {
+  test("splitByByte handles leading delimiter", (t) => {
     let parts = splitByByte("/a/b", 47);
     equal(parts.length, 3);
     equal(parts[0], "");
@@ -126,25 +129,25 @@ export let tests = suite("Module Resolver", (): void => {
 // Module Resolver Tests
 // ============================================================================
 
-  suite("ModuleResolver", (): void => {
+  suite("ModuleResolver", () => {
 
   // --- Stdlib resolution ---
 
-  test("resolves stdlib module", (t: TestContext): void => {
+  test("resolves stdlib module", (t) => {
     let resolver = makeResolver("host");
     let result = resolver.resolve("zena:string", "/my/file.zena");
     equal(result.path, "zena:string");
     equal(result.packageName, "zena");
   });
 
-  test("resolves stdlib virtual module for js", (t: TestContext): void => {
+  test("resolves stdlib virtual module for js", (t) => {
     let resolver = makeResolver("js");
     let result = resolver.resolve("zena:console", "/my/file.zena");
     equal(result.path, "zena:console/host.zena");
     equal(result.packageName, "zena");
   });
 
-  test("resolves the legacy target name host as js", (t: TestContext): void => {
+  test("resolves the legacy target name host as js", (t) => {
     // Manifests list entries under "js" only.
     let resolver = makeResolver("host");
     equal(resolver.target, "js");
@@ -153,63 +156,63 @@ export let tests = suite("Module Resolver", (): void => {
     equal(result.packageName, "zena");
   });
 
-  test("resolves stdlib virtual module for zena-cli", (t: TestContext): void => {
+  test("resolves stdlib virtual module for zena-cli", (t) => {
     let resolver = makeResolver("zena-cli");
     let result = resolver.resolve("zena:console", "/my/file.zena");
     equal(result.path, "zena:console/component.zena");
     equal(result.packageName, "zena");
   });
 
-  test("resolves stdlib module with explicit entry path", (t: TestContext): void => {
+  test("resolves stdlib module with explicit entry path", (t) => {
     let resolver = makeResolver("host");
     let result = resolver.resolve("zena:url", "/my/file.zena");
     equal(result.path, "zena:url/index.zena");
     equal(result.packageName, "zena");
   });
 
-  test("blocks import of unlisted stdlib file by name", (t: TestContext): void => {
+  test("blocks import of unlisted stdlib file by name", (t) => {
     let resolver = makeResolver("host");
-    throws((): void => {
+    throws(() => {
       resolver.resolve("zena:console-host", "/my/file.zena");
     });
   });
 
-  test("rejects unknown stdlib module", (t: TestContext): void => {
+  test("rejects unknown stdlib module", (t) => {
     let resolver = makeResolver("host");
-    throws((): void => {
+    throws(() => {
       resolver.resolve("zena:nonexistent", "/my/file.zena");
     });
   });
 
   // --- Relative imports between stdlib files ---
 
-  test("resolves relative import from a stdlib path id", (t: TestContext): void => {
+  test("resolves relative import from a stdlib path id", (t) => {
     let resolver = makeResolver("host");
     let result = resolver.resolve("./interface.zena", "zena:console/host.zena");
     equal(result.path, "zena:console/interface.zena");
     equal(result.packageName, "zena");
   });
 
-  test("relative import to a manifest module canonicalizes to its name id", (t: TestContext): void => {
+  test("relative import to a manifest module canonicalizes to its name id", (t) => {
     let resolver = makeResolver("host");
     let result = resolver.resolve("./array.zena", "zena:string");
     equal(result.path, "zena:array");
     equal(result.packageName, "zena");
   });
 
-  test("relative import from a subdirectory up to a manifest module", (t: TestContext): void => {
+  test("relative import from a subdirectory up to a manifest module", (t) => {
     let resolver = makeResolver("host");
     let result = resolver.resolve("../string.zena", "zena:console/host.zena");
     equal(result.path, "zena:string");
   });
 
-  test("relative import to an unlisted stdlib file gets a path id", (t: TestContext): void => {
+  test("relative import to an unlisted stdlib file gets a path id", (t) => {
     let resolver = makeResolver("host");
     let result = resolver.resolve("./helper.zena", "zena:string");
     equal(result.path, "zena:helper.zena");
   });
 
-  test("relative import to an explicit-path module keeps the path id", (t: TestContext): void => {
+  test("relative import to an explicit-path module keeps the path id", (t) => {
     // url has path "url/index.zena", so its canonical id is the path id,
     // and relative imports to the same file must agree.
     let resolver = makeResolver("host");
@@ -217,53 +220,53 @@ export let tests = suite("Module Resolver", (): void => {
     equal(result.path, "zena:url/index.zena");
   });
 
-  test("an internal module resolves for its own package", (t: TestContext): void => {
+  test("an internal module resolves for its own package", (t) => {
     let resolver = makeResolver("host");
     let result = resolver.resolve("zena:error-stack", "zena:core/error.zena");
     equal(result.path, "zena:core/error/stack-host.zena");
   });
 
-  test("an internal module is refused from outside its package", (t: TestContext): void => {
+  test("an internal module is refused from outside its package", (t) => {
     // The name exists and picks a file per target. That is machinery for
     // the library that owns it, and not an API a program may import.
     let resolver = makeResolver("host");
-    throws((): void => {
+    throws(() => {
       resolver.resolve("zena:error-stack", "/project/src/main.zena");
     });
   });
 
-  test("relative import escaping the stdlib throws", (t: TestContext): void => {
+  test("relative import escaping the stdlib throws", (t) => {
     let resolver = makeResolver("host");
-    throws((): void => {
+    throws(() => {
       resolver.resolve("../outside.zena", "zena:string");
     });
   });
 
   // --- User package resolution ---
 
-  test("resolves user package module", (t: TestContext): void => {
+  test("resolves user package module", (t) => {
     let resolver = makeResolver("host");
     let result = resolver.resolve("mylib:utils", "/my/file.zena");
     equal(result.path, "/project/packages/mylib/zena/lib/utils.zena");
     equal(result.packageName, "mylib");
   });
 
-  test("rejects unknown package", (t: TestContext): void => {
+  test("rejects unknown package", (t) => {
     let resolver = makeResolver("host");
-    throws((): void => {
+    throws(() => {
       resolver.resolve("unknown:module", "/my/file.zena");
     });
   });
 
   // --- Relative resolution ---
 
-  test("resolves relative import", (t: TestContext): void => {
+  test("resolves relative import", (t) => {
     let resolver = makeResolver("host");
     let result = resolver.resolve("./utils.zena", "/project/src/main.zena");
     equal(result.path, "/project/src/utils.zena");
   });
 
-  test("resolves parent relative import", (t: TestContext): void => {
+  test("resolves parent relative import", (t) => {
     let resolver = makeResolver("host");
     let result = resolver.resolve("../lib/utils.zena", "/project/src/main.zena");
     equal(result.path, "/project/lib/utils.zena");
@@ -271,26 +274,26 @@ export let tests = suite("Module Resolver", (): void => {
 
   // --- Specifier validation ---
 
-  test("rejects bare specifier without colon", (t: TestContext): void => {
+  test("rejects bare specifier without colon", (t) => {
     let resolver = makeResolver("host");
-    throws((): void => {
+    throws(() => {
       resolver.resolve("bare-specifier", "/my/file.zena");
     });
   });
 
   // --- Package membership ---
 
-  test("findPackageForPath identifies stdlib", (t: TestContext): void => {
+  test("findPackageForPath identifies stdlib", (t) => {
     let resolver = makeResolver("host");
     equal(resolver.findPackageForPath("zena:string"), "zena");
   });
 
-  test("findPackageForPath identifies user package", (t: TestContext): void => {
+  test("findPackageForPath identifies user package", (t) => {
     let resolver = makeResolver("host");
     equal(resolver.findPackageForPath("/project/packages/mylib/zena/lib/foo.zena"), "mylib");
   });
 
-  test("findPackageForPath returns empty for unknown", (t: TestContext): void => {
+  test("findPackageForPath returns empty for unknown", (t) => {
     let resolver = makeResolver("host");
     equal(resolver.findPackageForPath("/unknown/file.zena"), "");
   });

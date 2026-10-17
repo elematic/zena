@@ -5,26 +5,28 @@ import { IrOp } from '../lib/codegen/ir/ir.zena';
 import { IrBuilder } from '../lib/codegen/ir/builder.zena';
 import { printIr } from '../lib/codegen/ir/printer.zena';
 import { verifyIr } from '../lib/codegen/ir/verifier.zena';
+import { growable } from 'zena:core';
 
-let i32Type = (): ValType => new ValTypeI32() as ValType;
+function i32Type() {
+  return new ValTypeI32() as ValType;
+}
 
-let noArgs = (): GrowableArray<i32> => new Array<i32>();
+function noArgs() {
+  return new Array<i32>();
+}
 
-let args1 = (a: i32): GrowableArray<i32> => {
-  let result = new Array<i32>();
-  result.push(a);
+function args1(a: i32) {
+  let result = growable<i32>([a]);
   return result;
-};
+}
 
-let args2 = (a: i32, b: i32): GrowableArray<i32> => {
-  let result = new Array<i32>();
-  result.push(a);
-  result.push(b);
+function args2(a: i32, b: i32) {
+  let result = growable<i32>([a, b]);
   return result;
-};
+}
 
-export let tests = suite('ir: core', (): void => {
-  test('straight-line function prints and verifies', (ctx: TestContext): void => {
+export let tests = suite('ir: core', () => {
+  test('straight-line function prints and verifies', (ctx) => {
     let b = new IrBuilder();
     let entry = b.newBlock();
     let x = b.blockParam(entry, i32Type());
@@ -43,7 +45,7 @@ export let tests = suite('ir: core', (): void => {
     equal(verifyIr(body).length, 0);
   });
 
-  test('loop with block params prints and verifies', (ctx: TestContext): void => {
+  test('loop with block params prints and verifies', (ctx) => {
     // sum = 0; i = 0; while (i < n) { sum += i; i += 1; } return sum;
     let b = new IrBuilder();
     let entry = b.newBlock();
@@ -93,7 +95,7 @@ export let tests = suite('ir: core', (): void => {
     equal(verifyIr(body).length, 0);
   });
 
-  test('successor records match the decoded successors', (ctx: TestContext): void => {
+  test('successor records match the decoded successors', (ctx) => {
     let b = new IrBuilder();
     let entry = b.newBlock();
     let thenBlk = b.newBlock();
@@ -126,10 +128,10 @@ export let tests = suite('ir: core', (): void => {
     equal(body.extra[second + 1], 2);
     equal(body.extra[second + 2], v);
     equal(body.extra[second + 3], cond);
-    throws((): void => { body.successorRecord(2, 2); });
+    throws(() => { body.successorRecord(2, 2); });
   });
 
-  test('types and refs are interned', (ctx: TestContext): void => {
+  test('types and refs are interned', (ctx) => {
     let b = new IrBuilder();
     let entry = b.newBlock();
     b.switchTo(entry);
@@ -141,24 +143,24 @@ export let tests = suite('ir: core', (): void => {
     equal(body.typeTable.length, 1);
   });
 
-  test('builder rejects emission without a block', (ctx: TestContext): void => {
+  test('builder rejects emission without a block', (ctx) => {
     let b = new IrBuilder();
-    throws((): void => {
+    throws(() => {
       b.constI32(1, i32Type());
     });
   });
 
-  test('builder rejects emission after a terminator', (ctx: TestContext): void => {
+  test('builder rejects emission after a terminator', (ctx) => {
     let b = new IrBuilder();
     let entry = b.newBlock();
     b.switchTo(entry);
     b.retVoid();
-    throws((): void => {
+    throws(() => {
       b.constI32(1, i32Type());
     });
   });
 
-  test('verifier accepts a minimal void function', (ctx: TestContext): void => {
+  test('verifier accepts a minimal void function', (ctx) => {
     let b = new IrBuilder();
     let entry = b.newBlock();
     b.switchTo(entry);
@@ -166,7 +168,7 @@ export let tests = suite('ir: core', (): void => {
     equal(verifyIr(b.finish()).length, 0);
   });
 
-  test('verifier rejects an unterminated block', (ctx: TestContext): void => {
+  test('verifier rejects an unterminated block', (ctx) => {
     let b = new IrBuilder();
     let entry = b.newBlock();
     b.switchTo(entry);
@@ -174,7 +176,7 @@ export let tests = suite('ir: core', (): void => {
     greater(verifyIr(b.finish()).length, 0);
   });
 
-  test('verifier rejects branch arg count mismatch', (ctx: TestContext): void => {
+  test('verifier rejects branch arg count mismatch', (ctx) => {
     let b = new IrBuilder();
     let entry = b.newBlock();
     let next = b.newBlock();
@@ -186,7 +188,7 @@ export let tests = suite('ir: core', (): void => {
     greater(verifyIr(b.finish()).length, 0);
   });
 
-  test('verifier rejects a use that is not dominated by its definition', (ctx: TestContext): void => {
+  test('verifier rejects a use that is not dominated by its definition', (ctx) => {
     // Diamond: the value is defined in one arm and used after the merge.
     let b = new IrBuilder();
     let entry = b.newBlock();
@@ -210,7 +212,7 @@ export let tests = suite('ir: core', (): void => {
     greater(verifyIr(b.finish()).length, 0);
   });
 
-  test('verifier rejects unreachable blocks', (ctx: TestContext): void => {
+  test('verifier rejects unreachable blocks', (ctx) => {
     let b = new IrBuilder();
     let entry = b.newBlock();
     let orphan = b.newBlock();

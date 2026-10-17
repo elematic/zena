@@ -47,7 +47,7 @@
  */
 
 import { Set } from 'zena:collections';
-import { ByteBuffer, StringBuilder, Unmanaged, disown } from 'zena:core';
+import { ByteBuffer, StringBuilder, Unmanaged, disown, growable } from 'zena:core';
 import { Process, ProcessResult, spawn } from 'zena:process';
 import { readFileSync, readFileBytesSync, writeFileSync, writeFileBytesSync, mkdirSync, existsSync, unlinkSync } from 'zena:fs';
 import {
@@ -88,14 +88,14 @@ let compileSliceCommand = 'compile-slice';
 let outRoot = 'packages/zena-compiler/zena/out/test-exec';
 
 /** ANSI SGR sequence (string literals have no escape for ESC). */
-let sgr = (code: String): String => {
+function sgr(code: String) {
   let b = new StringBuilder();
   b.appendByte(27);
   b.append('[');
   b.append(code);
   b.append('m');
   return b.toString();
-};
+}
 
 let green = sgr('32');
 let red = sgr('31');
@@ -114,7 +114,7 @@ class Expectation {
   new(this.result, this.stdout, this.invoke);
 }
 
-let expectationOf = (f: TestFile): Expectation => {
+function expectationOf(f: TestFile) {
   let result = f.directive('result');
   let stdout = f.directive('stdout');
   let invoke = f.directive('invoke');
@@ -122,14 +122,18 @@ let expectationOf = (f: TestFile): Expectation => {
     if (result == null) { null } else { unquote(result) },
     if (stdout == null) { null } else { unescapeNewlines(unquote(stdout)) },
     if (invoke == null) { 'main' } else { invoke });
-};
+}
 
 /** A test file is only a test if it says what running it should produce. */
-let isExecutionTest = (f: TestFile): boolean => f.has('result') || f.has('stdout');
+function isExecutionTest(f: TestFile) {
+  return f.has('result') || f.has('stdout');
+}
 
-let isWhitespaceByte = (b: i32): boolean => b == 32 || b == 9 || b == 13 || b == 10;
+function isWhitespaceByte(b: i32) {
+  return b == 32 || b == 9 || b == 13 || b == 10;
+}
 
-let trim = (s: String): String => {
+function trim(s: String) {
   var start = 0;
   var end = s.length;
   while (start < end && isWhitespaceByte(s.getByteAt(start))) {
@@ -139,7 +143,7 @@ let trim = (s: String): String => {
     end -= 1;
   }
   return s.sliceBytes(start, end);
-};
+}
 
 /**
  * `zena-cli run --invoke` prints the returned value on its own final
@@ -147,7 +151,7 @@ let trim = (s: String): String => {
  * prints nothing, which is why `@result: undefined` expects the empty
  * string.
  */
-let lastLine = (output: String): String => {
+function lastLine(output: String) {
   let trimmed = trim(output);
   var i = trimmed.length - 1;
   while (i >= 0) {
@@ -157,7 +161,7 @@ let lastLine = (output: String): String => {
     i -= 1;
   }
   return trimmed;
-};
+}
 
 /**
  * Booleans cross the `--invoke` boundary as the i32 they are, so the
@@ -165,7 +169,7 @@ let lastLine = (output: String): String => {
  * a representation mapping, not a fuzzy match: `1` only reads as `true`
  * where `true` was the stated expectation.
  */
-let normalizeResult = (actual: String, expected: String): String => {
+function normalizeResult(actual: String, expected: String) {
   if (expected == 'true' && actual == '1') {
     return 'true';
   }
@@ -176,7 +180,7 @@ let normalizeResult = (actual: String, expected: String): String => {
     return 'undefined';
   }
   return actual;
-};
+}
 
 /**
  * A test whose worker process has been started but not yet waited on —
@@ -237,7 +241,7 @@ let compileTimeoutMs = 600000 as i64;
 let entriesPerCompiler = 16;
 
 /** Why a test failed, or null if it passed. */
-let failureOf = (e: Expectation, res: ProcessResult): String | null => {
+function failureOf(e: Expectation, res: ProcessResult): String | null {
   if (res.timedOut) {
     return `timed out after ${testTimeoutMs}ms and was killed`;
   }
@@ -261,10 +265,10 @@ let failureOf = (e: Expectation, res: ProcessResult): String | null => {
     return null;
   }
   return `expected: ${expected}\n  actual:   ${actual}`;
-};
+}
 
 /** Waits on a started test and prints its outcome. Returns whether it passed. */
-let report = (running: RunningTest): boolean => {
+function report(running: RunningTest): boolean {
   let {compileError} = running;
   let process = running.process;
   let failure = if (compileError != null) {
@@ -282,7 +286,7 @@ let report = (running: RunningTest): boolean => {
     console.log(`  ${dim}${line}${reset}`);
   }
   return false;
-};
+}
 
 /**
  * Support modules that nothing imports.
@@ -293,7 +297,7 @@ let report = (running: RunningTest): boolean => {
  * So the claim is checked: every non-test must be some other file's
  * import, and anything left over is reported as an error.
  */
-let orphanedSupportModules = (d: Discovery): Array<TestFile> => {
+function orphanedSupportModules(d: Discovery): Array<TestFile> {
   let imported = new Set<String>();
   for (let f in d.all()) {
     for (let path in siblingImports(f)) {
@@ -307,7 +311,7 @@ let orphanedSupportModules = (d: Discovery): Array<TestFile> => {
     }
   }
   return orphans;
-};
+}
 
 // ---------------------------------------------------------------------
 // Compile phase
@@ -337,7 +341,7 @@ class FsHost implements CompilerHost {
  * category, so flattening its separators keeps the name unique without
  * needing nested directories.
  */
-let artifactBase = (relPath: String): String => {
+function artifactBase(relPath: String) {
   let b = new StringBuilder();
   b.append(outRoot);
   b.append('/');
@@ -352,9 +356,11 @@ let artifactBase = (relPath: String): String => {
     i += 1;
   }
   return b.toString();
-};
+}
 
-let wasmPathOf = (relPath: String): String => `${artifactBase(relPath)}.wasm`;
+function wasmPathOf(relPath: String) {
+  return `${artifactBase(relPath)}.wasm`;
+}
 
 /**
  * What the compile phase says about this test, this run: `ok`, or the
@@ -362,9 +368,11 @@ let wasmPathOf = (relPath: String): String => `${artifactBase(relPath)}.wasm`;
  * unusable, which is why the module itself is not deleted up front —
  * see `emit` for why its mtime is worth preserving.
  */
-let statusPathOf = (relPath: String): String => `${artifactBase(relPath)}.status`;
+function statusPathOf(relPath: String) {
+  return `${artifactBase(relPath)}.status`;
+}
 
-let bytesEqual = (a: ByteArray, b: ByteArray): boolean => {
+function bytesEqual(a: ByteArray, b: ByteArray): boolean {
   if (a.length != b.length) {
     return false;
   }
@@ -376,7 +384,7 @@ let bytesEqual = (a: ByteArray, b: ByteArray): boolean => {
     i += 1;
   }
   return true;
-};
+}
 
 /**
  * Writes a module only when its bytes changed. `zena-cli` caches the
@@ -387,16 +395,16 @@ let bytesEqual = (a: ByteArray, b: ByteArray): boolean => {
  * compile cache: the module was compiled either way, and it is the
  * status file, not this one, that says the result is from this run.
  */
-let emit = (relPath: String, bytes: ByteArray): void => {
+function emit(relPath: String, bytes: ByteArray) {
   let path = wasmPathOf(relPath);
   if (existsSync(path) && bytesEqual(readFileBytesSync(path) as ByteArray, bytes)) {
     return;
   }
   writeFileBytesSync(path, bytes as FixedArray<u8>);
-};
+}
 
 /** The tests this run covers, in discovery order — the order slices index into. */
-let selectedTests = (filter: String): Array<TestFile> => {
+function selectedTests(filter: String): Array<TestFile> {
   let discovery = new Discovery();
   collect(testsRoot, '', discovery, isExecutionTest);
   let files = new Array<TestFile>(discovery.tests.length);
@@ -406,7 +414,7 @@ let selectedTests = (filter: String): Array<TestFile> => {
     }
   }
   return files;
-};
+}
 
 /**
  * What every component build in a slice shares, since neither depends
@@ -429,12 +437,12 @@ final class ComponentSettings {
  * rather than raised, so one bad test costs one test rather than the
  * rest of the slice.
  */
-let compileOne = (
+function compileOne(
   compiler: Compiler,
   f: TestFile,
   previous: ProgramCheckResult | null,
   settings: ComponentSettings
-): ProgramCheckResult | null => {
+) {
   return try {
     let compResult = compiler.compile({entry: f.path, target: 'zena-cli'});
     let checked = checkCompilation(compResult, previous);
@@ -494,7 +502,7 @@ let compileOne = (
     writeFileSync(statusPathOf(f.relPath), `the compiler threw: ${e.message}`);
     null
   };
-};
+}
 
 /**
  * Worker entry point: compile every test whose position in discovery
@@ -502,7 +510,7 @@ let compileOne = (
  * `zena-cli run --dir .::/ <self.wasm> compile-slice <index> <count> <filter>`,
  * and dispatched to from `main` on that first argument.
  */
-let compileSlice = (args: Array<String>): i32 => {
+function compileSlice(args: Array<String>): i32 {
   if (args.length < 5) {
     console.error('Usage: portable_execution compile-slice <index> <count> <filter>');
     return 1;
@@ -550,7 +558,7 @@ let compileSlice = (args: Array<String>): i32 => {
     pos += 1;
   }
   return 0;
-};
+}
 
 /**
  * Runs the compile phase across `workers` processes and waits for all
@@ -558,12 +566,12 @@ let compileSlice = (args: Array<String>): i32 => {
  * dies is not fatal on its own, since each of its tests then reports
  * its own missing artifact, but it is worth saying so once.
  */
-let runCompilePhase = (
+function runCompilePhase(
   zenaCli: String,
   selfWasm: String,
   workers: i32,
   filter: String
-): boolean => {
+) {
   if (!existsSync(outRoot)) {
     mkdirSync(outRoot);
   }
@@ -608,7 +616,7 @@ let runCompilePhase = (
     `${dim}compiled in ${(slowestNanos / (1000000 as i64)) as i32}ms ` +
     `across ${workers} worker(s)${reset}`);
   return allOk;
-};
+}
 
 /**
  * The execution runner, as a function the test wrapper dispatches to.
@@ -616,7 +624,7 @@ let runCompilePhase = (
  * runner already removed, so `args[1]` is either `compile-slice` or the
  * `zena-cli` path, exactly as when this was its own program.
  */
-export let runPortableExecution = (args: Array<String>): i32 => {
+export function runPortableExecution(args: Array<String>): i32 {
   if (args.length > 1 && args[1] == compileSliceCommand) {
     return compileSlice(args);
   }
@@ -661,7 +669,7 @@ export let runPortableExecution = (args: Array<String>): i32 => {
 
   // Report what was found before running anything, so a run that stalls
   // still says what it was going to do.
-  discovery.report('Execution', (s: String): void => { console.log(s); });
+  discovery.report('Execution', (s) => { console.log(s); });
   if (filter.length > 0) {
     console.log(`${dim}(filter '${filter}': ${files.length} of ${discovery.tests.length} run)${reset}`);
   }
@@ -713,12 +721,13 @@ export let runPortableExecution = (args: Array<String>): i32 => {
       running.push(new RunningTest(file, expectation, null, why));
       continue;
     }
-    let argv = new Array<String>(6);
-    argv.push(zenaCli);
-    argv.push('run');
-    argv.push('--invoke');
-    argv.push(toKebabName(expectation.invoke));
-    argv.push(wasmPath);
+    let argv = growable<String>([
+      zenaCli,
+      'run',
+      '--invoke',
+      toKebabName(expectation.invoke),
+      wasmPath,
+    ]);
     running.push(new RunningTest(file, expectation, disown(spawn(argv)), null));
   }
 
@@ -731,4 +740,4 @@ export let runPortableExecution = (args: Array<String>): i32 => {
     console.log(`${red}✗ ${failed} failed, ${passed} passed of ${passed + failed} test(s)${reset}`);
   }
   return failed;
-};
+}

@@ -19,11 +19,12 @@ import { compileFile } from '../lib/compile-file.zena';
 
 let fixtures = 'packages/zena-compiler/test-files/wit-diagnostics';
 
-let documentAt = (path: String): WitDocument =>
-    readWitDocument(new DiskHost(), path);
+function documentAt(path: String) {
+  return readWitDocument(new DiskHost(), path);
+}
 
 /** The diagnostic parsing `doc` produces, or null if it parsed. */
-let parseFailureText = (doc: WitDocument): String | null => {
+function parseFailureText(doc: WitDocument) {
   var text: String | null = null;
   try {
     parseSyntax(doc.source);
@@ -33,12 +34,12 @@ let parseFailureText = (doc: WitDocument): String | null => {
     }
   }
   return text;
-};
+}
 
-export let tests = suite("WIT diagnostics", (): void => {
+export let tests = suite("WIT diagnostics", () => {
 
   test("a keyword as a parameter name names the file and position",
-      (t: TestContext): void => {
+      (t) => {
     let doc = documentAt(`${fixtures}/single/world.wit`);
     let text = parseFailureText(doc);
     isNotNull(text);
@@ -51,7 +52,7 @@ export let tests = suite("WIT diagnostics", (): void => {
   });
 
   test("a directory names the file the offending token is actually in",
-      (t: TestContext): void => {
+      (t) => {
     // `greeter.wit` comes first in name order, so the world's offsets
     // are nowhere near the start of the document the parser saw.
     let doc = documentAt(`${fixtures}/split`);
@@ -65,7 +66,7 @@ export let tests = suite("WIT diagnostics", (): void => {
         "                     ^^^^^");
   });
 
-  test("locate puts an offset in the file it came from", (t: TestContext): void => {
+  test("locate puts an offset in the file it came from", (t) => {
     let doc = documentAt(`${fixtures}/split`);
     equal(doc.files.length, 2);
     equal(doc.files[0].name, `${fixtures}/split/greeter.wit`);
@@ -84,7 +85,7 @@ export let tests = suite("WIT diagnostics", (): void => {
     equal(second.column, 1);
   });
 
-  test("a single file is one file starting at zero", (t: TestContext): void => {
+  test("a single file is one file starting at zero", (t) => {
     let doc = documentAt(`${fixtures}/single/world.wit`);
     equal(doc.files.length, 1);
     equal(doc.files[0].name, `${fixtures}/single/world.wit`);
@@ -92,7 +93,7 @@ export let tests = suite("WIT diagnostics", (): void => {
   });
 
   test("a malformed declared world fails the compile, not the compiler",
-      (t: TestContext): void => {
+      (t) => {
     // The diagnostic goes to stderr, so what is asserted here is the
     // status: `compileFile` reports and returns 1 where it used to throw
     // past its own caller.

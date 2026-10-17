@@ -15,7 +15,7 @@ import { Program, CompilationUnit } from '../lib/program.zena';
 import { makeCompiler, MockHost } from './test-utils.zena';
 import { checkCompilation } from '../lib/compiler.zena';
 
-let compileToWat = (source: String): String => {
+function compileToWat(source: String) {
   let host = new MockHost();
   host.addFile("test.zena", source);
 
@@ -43,10 +43,10 @@ let compileToWat = (source: String): String => {
   let program = new Program(units, entryUnit);
   let generator = new WatGenerator("zena-cli", false);
   return generator.generate(program);
-};
+}
 
 /** The number of `(type ` definitions inside each `(rec ` group. */
-let recGroupSizes = (wat: String): Array<i32> => {
+function recGroupSizes(wat: String): Array<i32> {
   let sizes = new Array<i32>();
   let chunks = wat.split('(rec');
   for (var ci = 1; ci < chunks.length; ci += 1) {
@@ -73,7 +73,7 @@ let recGroupSizes = (wat: String): Array<i32> => {
     sizes.push(count);
   }
   return sizes;
-};
+}
 
 /**
  * The type names declared in a rec-group body. A program class prints
@@ -81,7 +81,7 @@ let recGroupSizes = (wat: String): Array<i32> => {
  * ("$FixedArray_s187_i32") — membership accepts both and filters the
  * vtable twin explicitly.
  */
-let groupTypeNames = (body: String): Array<String> => {
+function groupTypeNames(body: String): Array<String> {
   let names = new Array<String>();
   let chunks = body.split('(type $');
   for (var ci = 1; ci < chunks.length; ci += 1) {
@@ -93,9 +93,9 @@ let groupTypeNames = (body: String): Array<String> => {
     names.push(chunk.sliceBytes(0, end));
   }
   return names;
-};
+}
 
-let groupHasClassStruct = (body: String, cls: String): boolean => {
+function groupHasClassStruct(body: String, cls: String): boolean {
   for (let name in groupTypeNames(body)) {
     if (name.contains('_VTable')) { continue; }
     if (name == cls || name.startsWith(`${cls}_s`)) {
@@ -103,10 +103,10 @@ let groupHasClassStruct = (body: String, cls: String): boolean => {
     }
   }
   return false;
-};
+}
 
 /** The bodies of every `(rec ...)` group in the module. */
-let recGroupBodies = (wat: String): Array<String> => {
+function recGroupBodies(wat: String): Array<String> {
   let bodies = new Array<String>();
   let chunks = wat.split('(rec');
   for (var ci = 1; ci < chunks.length; ci += 1) {
@@ -122,11 +122,11 @@ let recGroupBodies = (wat: String): Array<String> => {
     bodies.push(chunk.sliceBytes(0, i));
   }
   return bodies;
-};
+}
 
-export let tests = suite('rec groups', (): void => {
+export let tests = suite('rec groups', () => {
   test('mutually recursive classes share one minimal group',
-      (ctx: TestContext): void => {
+      (ctx) => {
     // A and B reference each other: a genuine two-member recursion.
     // Their group holds exactly the cycle — not the vtable structs,
     // not the signatures, not the String machinery. (OTHER multi-member
@@ -164,7 +164,7 @@ export let main = (): i32 => {
   });
 
   test('a self-referential class needs no rec group at all',
-      (ctx: TestContext): void => {
+      (ctx) => {
     // A singleton type may reference itself without a group header —
     // the shorthand IS a one-member rec group.
     let wat = compileToWat(`
@@ -186,7 +186,7 @@ export let main = (): i32 => {
   });
 
   test('structurally identical classes stay nominally distinct',
-      (ctx: TestContext): void => {
+      (ctx) => {
     // P and Q have the same source shape; wasm-gc canonicalizes
     // identical groups to ONE type, which would make `is Q` true for a
     // P. Canonically-identical groups therefore merge into one rec

@@ -1,9 +1,10 @@
 import { suite, test, TestContext } from 'zena:test';
 import { equal } from 'zena:assert';
 import { zena, render, ZenaTemplate } from '../lib/code-template.zena';
+import { growable } from 'zena:core';
 
-export let tests = suite('code-template', (): void => {
-  test('basic dedent without holes', (ctx: TestContext): void => {
+export let tests = suite('code-template', () => {
+  test('basic dedent without holes', (ctx) => {
     let t = zena`
       let x = 1;
       let y = 2;
@@ -11,7 +12,7 @@ export let tests = suite('code-template', (): void => {
     equal(render(t), 'let x = 1;\nlet y = 2;');
   });
 
-  test('basic dedent with base indent', (ctx: TestContext): void => {
+  test('basic dedent with base indent', (ctx) => {
     let t = zena`
       let x = 1;
       let y = 2;
@@ -19,7 +20,7 @@ export let tests = suite('code-template', (): void => {
     equal(render(t, '  '), '  let x = 1;\n  let y = 2;');
   });
 
-  test('inline string interpolation', (ctx: TestContext): void => {
+  test('inline string interpolation', (ctx) => {
     let name = 'foo';
     let value = '42';
     let t = zena`
@@ -28,7 +29,7 @@ export let tests = suite('code-template', (): void => {
     equal(render(t), 'let foo = 42;');
   });
 
-  test('nested template indentation', (ctx: TestContext): void => {
+  test('nested template indentation', (ctx) => {
     let body = zena`
       let inner = 1;
       let inner2 = 2;
@@ -41,10 +42,8 @@ export let tests = suite('code-template', (): void => {
     equal(render(t), 'if (true) {\n  let inner = 1;\n  let inner2 = 2;\n}');
   });
 
-  test('array of templates indentation', (ctx: TestContext): void => {
-    let items = new Array<ZenaTemplate>();
-    items.push(zena`var a = 1;`);
-    items.push(zena`var b = 2;`);
+  test('array of templates indentation', (ctx) => {
+    let items = growable<ZenaTemplate>([zena`var a = 1;`, zena`var b = 2;`]);
     let t = zena`
       function init() {
         ${items}
@@ -53,7 +52,7 @@ export let tests = suite('code-template', (): void => {
     equal(render(t), 'function init() {\n  var a = 1;\n  var b = 2;\n}');
   });
 
-  test('multiline string indentation', (ctx: TestContext): void => {
+  test('multiline string indentation', (ctx) => {
     let multi = 'line1\nline2';
     let t = zena`
       function test() {
@@ -63,7 +62,7 @@ export let tests = suite('code-template', (): void => {
     equal(render(t), 'function test() {\n  line1\n  line2\n}');
   });
 
-  test('emitListStaging shape', (ctx: TestContext): void => {
+  test('emitListStaging shape', (ctx) => {
     let b = 'b0';
     let n = 'n1';
     let idx = 'i2';

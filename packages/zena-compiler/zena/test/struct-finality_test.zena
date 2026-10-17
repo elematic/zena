@@ -21,7 +21,7 @@ import { Program, CompilationUnit } from '../lib/program.zena';
 import { makeCompiler, MockHost } from './test-utils.zena';
 import { checkCompilation } from '../lib/compiler.zena';
 
-let compileToWat = (source: String): String => {
+function compileToWat(source: String) {
   let host = new MockHost();
   host.addFile("test.zena", source);
 
@@ -49,7 +49,7 @@ let compileToWat = (source: String): String => {
   let program = new Program(units, entryUnit);
   let generator = new WatGenerator("zena-cli", false);
   return generator.generate(program);
-};
+}
 
 /**
  * The subtype header of the struct type named `name`: everything the
@@ -57,40 +57,40 @@ let compileToWat = (source: String): String => {
  * the index comment and the `(sub ...)` clause. Empty when the module
  * declares no such type.
  */
-let subtypeHeader = (wat: String, name: String): String => {
+function subtypeHeader(wat: String, name: String) {
   let chunks = wat.split(`(type $${name} `);
   if (chunks.length < 2) {
     return '';
   }
   return chunks[1].split('(struct')[0];
-};
+}
 
 /**
  * Whether the struct named `name` is emitted open. A bare
  * `(struct ...)` with no `(sub ...)` clause already means `sub final`,
  * so open means the clause is present and does not say `final`.
  */
-let isOpenStruct = (header: String): boolean => {
+function isOpenStruct(header: String) {
   return header.contains('(sub ') && !header.contains('final');
-};
+}
 
 /** The struct named `name` must be emitted, and declared `final`. */
-let assertFinal = (wat: String, name: String, why: String): void => {
+function assertFinal(wat: String, name: String, why: String) {
   let header = subtypeHeader(wat, name);
   isTrue(header.length > 0, `no struct type $${name} in the emitted module`);
   isTrue(!isOpenStruct(header), `$${name} is not declared final: ${why}`);
-};
+}
 
 /** The struct named `name` must be emitted, and left open. */
-let assertOpen = (wat: String, name: String, why: String): void => {
+function assertOpen(wat: String, name: String, why: String) {
   let header = subtypeHeader(wat, name);
   isTrue(header.length > 0, `no struct type $${name} in the emitted module`);
   isTrue(isOpenStruct(header), `$${name} is declared final: ${why}`);
-};
+}
 
-export let tests = suite('struct finality', (): void => {
+export let tests = suite('struct finality', () => {
   test('a class nothing extends is final; its superclass is open',
-      (ctx: TestContext): void => {
+      (ctx) => {
     // Base is extended, so its struct has to stay open — Derived
     // declares it as a supertype. Derived is a leaf, and so is Tag,
     // which is in no hierarchy at all.
@@ -123,7 +123,7 @@ export let main = (): i32 => {
   });
 
   test('a sealed hierarchy leaves only the root open',
-      (ctx: TestContext): void => {
+      (ctx) => {
     // The shape a match compiles against: one `ref.test` per case,
     // all but one of them failing. Every case struct is a leaf.
     let wat = compileToWat(`
