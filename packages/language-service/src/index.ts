@@ -96,6 +96,19 @@ export interface DocumentSymbolInfo {
   children: DocumentSymbolInfo[];
 }
 
+/**
+ * A lint finding: a range of the document and the text that fixes it.
+ * Offsets are bytes into the document's UTF-8 source. `rule` is the
+ * zena-lint rule's name, `message` its one-line description.
+ */
+export interface LintFinding {
+  start: number;
+  end: number;
+  rule: string;
+  message: string;
+  replacement: string;
+}
+
 /** Anything {@link createLanguageService} can instantiate. */
 export type WasmSource =
   | WebAssembly.Module
@@ -168,6 +181,13 @@ export interface LspExports extends WebAssembly.Exports {
   getCompletionKind(item: unknown): number;
   getCompletionDetail(item: unknown): unknown;
   getCompletionDoc(item: unknown): unknown;
+  lint(path: unknown): unknown;
+  getLintCount(findings: unknown): number;
+  getLintStart(findings: unknown, index: number): number;
+  getLintEnd(findings: unknown, index: number): number;
+  getLintRule(findings: unknown, index: number): unknown;
+  getLintMessage(findings: unknown, index: number): unknown;
+  getLintReplacement(findings: unknown, index: number): unknown;
   getDefinition(path: unknown, offset: number): unknown;
   getDefinitionFile(result: unknown): unknown;
   getDefinitionLine(result: unknown): number;
@@ -475,6 +495,32 @@ export class ZenaLanguageService {
       return a.start - b.start;
     });
     return diagnostics;
+  }
+
+  /**
+   * What the lint rules find in a document, each with its fix.
+   *
+   * Pass `source` to lint unsaved contents; without it the analysis the last
+   * {@link check} left behind is read. A document with errors has no
+   * findings: the rules read types the checker could not give.
+   */
+  lint(path: string, source?: string): LintFinding[] {
+    if (source !== undefined) {
+      this.check(path, source);
+    }
+    const handle = this.#exports.lint(this.#writeString(path));
+    const count = this.#exports.getLintCount(handle);
+    const findings: LintFinding[] = [];
+    for (let i = 0; i < count; i++) {
+      findings.push({
+        start: this.#exports.getLintStart(handle, i),
+        end: this.#exports.getLintEnd(handle, i),
+        rule: this.#readRef(this.#exports.getLintRule(handle, i)),
+        message: this.#readRef(this.#exports.getLintMessage(handle, i)),
+        replacement: this.#readRef(this.#exports.getLintReplacement(handle, i)),
+      });
+    }
+    return findings;
   }
 
   /**

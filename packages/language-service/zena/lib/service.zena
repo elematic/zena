@@ -19,6 +19,7 @@
 
 import {
   Compiler, CompilerTarget, createCompiler, checkCompilation, ProgramCheckResult, findNodeAtOffset, resolveMemberDefinition, CompilationResult,
+  CheckResult,
 } from 'zena-compiler:compiler';
 import { parse as parseSource, ParseCompleteness } from 'zena-compiler:parser';
 import { PackageConfig } from 'zena-compiler:module-resolver';
@@ -32,7 +33,13 @@ import { FileAnalysis, symbolUnder } from './analysis.zena';
 import { HoverResult, hoverAt } from './hover.zena';
 import { CompletionItem, memberCompletions, scopeCompletions } from './completion.zena';
 import { DocumentSymbol, documentSymbols } from './symbols.zena';
+import { CheckedFile } from 'zena-lint:checked';
+import { NamedRule, proposeEdits, messageOf } from 'zena-lint:rule';
+import { allRules } from 'zena-lint:rules';
+import { Edit, applyEdits } from 'zena-lint:source';
 import { growable } from 'zena:core';
+
+export { Edit } from 'zena-lint:source';
 
 export { FileReader } from './host.zena';
 export { HoverResult } from './hover.zena';
@@ -249,6 +256,57 @@ export class LanguageService {
     return new Program(units, entryUnit);
   }
 
+  /**
+   * What the lint rules find in a checked document: the edits of one
+   * pass, in order and not overlapping, each the fix for its finding.
+   * Empty until `check` has seen the document, or when it has errors —
+   * a rule reads types the checker could not give.
+   */
+  lint(path: String): GrowableArray<Edit> {
+    let key = normalizePath(path);
+    let checked = this.#checked;
+    var compilation: CompilationResult | null = null;
+    if (let (true, c) = this.#compilations.get(key)) {
+      compilation = c;
+    }
+    if (compilation == null || checked == null) {
+      return new GrowableArray<Edit>(0);
+    }
+    let entry = compilation.entry;
+    var result: CheckResult | null = null;
+    if (let (true, r) = checked.results.get(entry.path)) {
+      result = r;
+    }
+    if (result == null) {
+      return new GrowableArray<Edit>(0);
+    }
+    for (let diagnostic in result.diagnostics) {
+      if (diagnostic.severity == DiagnosticSeverity.Error) {
+        return new GrowableArray<Edit>(0);
+      }
+    }
+    for (let file in compilation.files) {
+      if (file.completeness != ParseCompleteness.Complete) {
+        return new GrowableArray<Edit>(0);
+      }
+    }
+    let file = new CheckedFile(entry.path, entry.source, entry.ast, result.model,
+        result.diagnostics);
+    return proposeEdits(file, this.#rules);
+  }
+
+  /** The document's text with every lint finding fixed. */
+  fixAll(path: String, source: String): String {
+    return applyEdits(source, this.lint(path));
+  }
+
+  /** The one-line message of the rule a finding came from. */
+  lintMessage(finding: Edit): String {
+    return messageOf(finding, this.#rules);
+  }
+
+  #rules: GrowableArray<NamedRule> = allRules();
+
   #scopesOf(key: String): ScopeResult | null {
     if (let (true, scopes) = this.#scopes.get(key)) {
       return scopes;
@@ -388,6 +446,10 @@ export function createLanguageService(
   // recovered from, so an unfinished import still yields an AST to
   // answer completions and symbols against. The errors are still
   // reported — check() folds them in with the rest.
+  // Not `warnUnnecessaryCasts`: that flag also turns on the checker's
+  // adaptation warnings ("boxed to pass as"), which valid code gets, so
+  // the lint rule for unnecessary casts has nothing to read here and is a
+  // command-line rule only.
   let compiler = createCompiler(host, {
     stdlibRoot,
     packages,

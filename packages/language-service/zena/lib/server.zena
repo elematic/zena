@@ -17,14 +17,27 @@
 
 import { JsonBuilder, JsonObject, JsonValue, parseJson } from 'zena:json';
 import { fileURLToPath, pathToFileURL } from 'zena:url';
-import { Diagnostic } from 'zena-compiler:diagnostics';
+import { Diagnostic, DiagnosticCode } from 'zena-compiler:diagnostics';
 import { format as formatSource } from 'zena-formatter:printer';
+import { growable } from 'zena:core';
+import { Edit } from 'zena-lint:source';
 import { FileReader, LanguageService } from './service.zena';
 import { normalizePath } from './host.zena';
-import { offsetOf } from './positions.zena';
+import { offsetOf, positionOf } from './positions.zena';
 import {
-  ErrorCode, RequestError, initializeResult, writeCompletion, writeDiagnostic, writeHover, writeRange, writeSpan, writeSymbol,
+  ErrorCode, RequestError, initializeResult, writeCodeAction, writeCompletion, writeDiagnostic,
+  writeHover, writeLintDiagnostic, writeRange, writeSpan, writeSymbol,
 } from './protocol.zena';
+
+/** Whether a finding starts at `offset`. */
+function hasFindingAt(findings: GrowableArray<Edit>, offset: i32): boolean {
+  for (let finding in findings) {
+    if (finding.start == offset) {
+      return true;
+    }
+  }
+  return false;
+}
 
 export { MessageReader, frame } from './framing.zena';
 export { Position, offsetOf, positionOf } from './positions.zena';
@@ -137,7 +150,7 @@ export final class LspServer {
         let path = pathOf(uri);
         this.#documents.delete(path);
         this.#service.closeDocument(path);
-        this.#publish(uri, path, '', new Array<Diagnostic>());
+        this.#publish(uri, path, '', new Array<Diagnostic>(), new GrowableArray<Edit>(0));
       }
       case _: {
         // Everything else ('initialized', '$/cancelRequest', saves) needs
@@ -156,6 +169,7 @@ export final class LspServer {
       case 'textDocument/documentSymbol': this.#documentSymbols(params)
       case 'textDocument/completion': this.#completions(params)
       case 'textDocument/formatting': this.#formatting(params)
+      case 'textDocument/codeAction': this.#codeActions(params)
       case _: null
     };
   }
@@ -187,15 +201,19 @@ export final class LspServer {
   #setDocument(uri: String, text: String): void {
     let path = pathOf(uri);
     this.#documents[path] = text;
-    this.#publish(uri, path, text, this.#service.check(path, text));
+    let diagnostics = this.#service.check(path, text);
+    this.#publish(uri, path, text, diagnostics, this.#service.lint(path));
   }
 
   /**
-   * Sends the diagnostics that belong to `path`. A check also reports
-   * problems in the files a document imports; those are left for when
-   * the files are opened themselves.
+   * Sends the diagnostics that belong to `path`, the checker's and then
+   * the lint findings. A check also reports problems in the files a
+   * document imports; those are left for when the files are opened
+   * themselves. The checker's own "unnecessary cast" warning is left
+   * out when the lint rule reports the same cast with its fix.
    */
-  #publish(uri: String, path: String, text: String, diagnostics: Array<Diagnostic>): void {
+  #publish(uri: String, path: String, text: String, diagnostics: Array<Diagnostic>,
+      findings: GrowableArray<Edit>): void {
     let b = new JsonBuilder();
     b.beginObject().key('jsonrpc').string('2.0')
       .key('method').string('textDocument/publishDiagnostics')
@@ -205,12 +223,83 @@ export final class LspServer {
     for (let diagnostic in diagnostics) {
       let location = diagnostic.location;
       if (location == null || normalizePath(location.file) == key) {
+        if (diagnostic.code == DiagnosticCode.UnnecessaryCast && location != null &&
+            hasFindingAt(findings, location.start)) {
+          continue;
+        }
         writeDiagnostic(b, text, diagnostic);
       }
+    }
+    for (let finding in findings) {
+      writeLintDiagnostic(b, text, finding, this.#service.lintMessage(finding));
     }
     b.endArray().endObject().endObject();
     let send = this.#send;
     send(b.toString());
+  }
+
+  /**
+   * The code actions for a range: a quick fix for each lint finding that
+   * touches it, and when the document has any finding at all, one that
+   * fixes them all.
+   */
+  #codeActions(params: JsonObject): String {
+    let uri = this.#uriIn(params);
+    let path = pathOf(uri);
+    let text = this.#openText(path);
+    let start = this.#offsetAt(params, 'range.start', text);
+    let end = this.#offsetAt(params, 'range.end', text);
+    let findings = this.#service.lint(path);
+    let b = new JsonBuilder();
+    b.beginArray();
+    for (let finding in findings) {
+      if (finding.end < start || finding.start > end) {
+        continue;
+      }
+      let one = growable<Edit>([finding]);
+      writeCodeAction(b, `Fix: ${this.#service.lintMessage(finding)}`, 'quickfix', uri, text,
+          one, this.#diagnosticFor(params, text, finding));
+    }
+    if (findings.length > 0) {
+      writeCodeAction(b, 'Fix all zena-lint findings', 'source.fixAll.zena', uri, text,
+          findings, null);
+    }
+    b.endArray();
+    return b.toString();
+  }
+
+  /**
+   * The diagnostic the client sent for a finding, as JSON, so the quick
+   * fix can name it and the editor can clear it; null when the client
+   * sent none that starts where the finding does.
+   */
+  #diagnosticFor(params: JsonObject, text: String, finding: Edit): String | null {
+    if (let (true, diagnostics) = params.arrayAt('context.diagnostics')) {
+      let at = positionOf(text, finding.start);
+      var i = 0;
+      while (i < diagnostics.length) {
+        let candidate = diagnostics[i];
+        i += 1;
+        if (candidate is JsonObject) {
+          if ((candidate.stringAt('source') ?? '') == 'zena-lint' &&
+              (candidate.intAt('range.start.line') ?? -1) == at.line &&
+              (candidate.intAt('range.start.character') ?? -1) == at.character) {
+            return candidate.stringify();
+          }
+        }
+      }
+    }
+    return null;
+  }
+
+  /** The byte offset in `text` of the position at `key` in the params. */
+  #offsetAt(params: JsonObject, key: String, text: String): i32 {
+    if (let (true, line) = params.intAt(`${key}.line`)) {
+      if (let (true, character) = params.intAt(`${key}.character`)) {
+        return offsetOf(text, {line: line, character: character});
+      }
+    }
+    throw new RequestError(ErrorCode.InvalidParams, `The request has no ${key}`);
   }
 
   #hover(params: JsonObject): String {

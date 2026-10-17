@@ -10,6 +10,7 @@ import { CompletionItem } from './completion.zena';
 import { HoverResult } from './hover.zena';
 import { DocumentSymbol } from './symbols.zena';
 import { Position, positionOf } from './positions.zena';
+import { Edit } from 'zena-lint:source';
 
 /** The JSON-RPC error codes the server answers with. */
 export enum ErrorCode {
@@ -76,6 +77,52 @@ export function writeDiagnostic(b: JsonBuilder, source: String, diagnostic: Diag
     .endObject();
 }
 
+/**
+ * A lint finding as a diagnostic: a warning from `zena-lint`, with the
+ * rule as its code so a client can filter on it.
+ */
+export function writeLintDiagnostic(b: JsonBuilder, source: String, edit: Edit, message: String): void {
+  b.beginObject().key('range');
+  writeSpan(b, source, edit.start, edit.end);
+  b.key('severity').i32(2)
+    .key('source').string('zena-lint')
+    .key('code').string(edit.rule)
+    .key('message').string(message)
+    .endObject();
+}
+
+/** A `TextEdit`: the bytes `start` to `end` of `source` become `newText`. */
+export function writeTextEdit(b: JsonBuilder, source: String, start: i32, end: i32, newText: String): void {
+  b.beginObject().key('range');
+  writeSpan(b, source, start, end);
+  b.key('newText').string(newText).endObject();
+}
+
+/**
+ * A `CodeAction` editing one document: `edits` applied to `uri`, whose
+ * text is `source`. `diagnosticsJson` is the finding's diagnostic as the
+ * client sent it back, or null for an action that answers no diagnostic.
+ */
+export function writeCodeAction(
+  b: JsonBuilder,
+  title: String,
+  kind: String,
+  uri: String,
+  source: String,
+  edits: GrowableArray<Edit>,
+  diagnosticJson: String | null
+): void {
+  b.beginObject().key('title').string(title).key('kind').string(kind);
+  if (diagnosticJson != null) {
+    b.key('diagnostics').beginArray().raw(diagnosticJson).endArray();
+  }
+  b.key('edit').beginObject().key('changes').beginObject().key(uri).beginArray();
+  for (let edit in edits) {
+    writeTextEdit(b, source, edit.start, edit.end, edit.replacement);
+  }
+  b.endArray().endObject().endObject().endObject();
+}
+
 /** A hover: the label as Zena code, then the doc comment if there is one. */
 export function writeHover(b: JsonBuilder, hover: HoverResult): void {
   let label = `\`\`\`zena\n${hover.label}\n\`\`\``;
@@ -130,6 +177,12 @@ export function initializeResult(): String {
     .key('completionProvider').beginObject()
       .key('triggerCharacters').beginArray().string('.').endArray().endObject()
     .key('documentFormattingProvider').bool(true)
+    // Each lint finding is a quick fix; `source.fixAll.zena` applies them
+    // all, for clients that run one on save.
+    .key('codeActionProvider').beginObject()
+      .key('codeActionKinds').beginArray()
+        .string('quickfix').string('source.fixAll.zena').endArray()
+      .endObject()
     .endObject()
     .key('serverInfo').beginObject().key('name').string('zena').endObject()
     .endObject();
