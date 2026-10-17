@@ -136,8 +136,8 @@ waits only on its own prerequisites. The order:
 
 1. Structural `==` and hashing for closed records and tuples (#372).
    This is correct under closed semantics before the representation
-   changes. Done, except for the erased comparison, which waits for
-   step 3 (#399).
+   changes. Done; the erased comparison of records came with step 3
+   (#399), and of tuples remains identity (equality.md).
 2. Row generics, value-level spread on row types, and `...rest`
    (implementation-plan.md, Track A). Rows are in for records and
    tuples: `R extends record` and `R extends tuple`, type-level spread
@@ -153,8 +153,10 @@ waits only on its own prerequisites. The order:
    decided by the types (an always-false `is` and an `as` that cannot
    succeed are errors; `as` to a narrower type projects). Records stay
    fat pointers until the representation harvest (implementation-plan.md,
-   Track B). Existentials, and equality by underlying shape (#399), are
-   next. Two parts of the original plan turned out not to apply: a
+   Track B). Erased `==` compares records by shape: every record
+   dispatch table carries its shape's id (equality.md, "The erased
+   comparison"; #399). Existentials are next, and reuse the shape ids.
+   Two parts of the original plan turned out not to apply: a
    class was already not assignable to a record type, and A3's presence
    bitmask (record-presence.md) keeps `?` fields valid on closed types,
    so §3.4's restriction of `?` to existential and parameter positions

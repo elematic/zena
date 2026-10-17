@@ -814,6 +814,12 @@ export final class VTableInit {
    * survive (#pruneUndispatchedSlots). A function marked here is
    * declared in the module's element section whether or not it stays.
    */
+  /**
+   * A record table's shape id (`RecordDispatchInfo.shapeId`), stored in
+   * the field after the functions; -1 for any other table.
+   */
+  var shapeTag: i32 = -1;
+
   new(this.structType, this.funcs, markReferences: boolean = true) {
     if (markReferences) {
       for (let f in this.funcs) {
@@ -881,6 +887,15 @@ export final class RecordDispatchInfo {
   /** For an adapted dispatch: the SOURCE shape's sorted optional names
    *  (equals optionalNames on a plain dispatch). */
   inOptionalNames: GrowableArray<String>;
+  /**
+   * The record shape this dispatch's values have, also stored in the
+   * table's trailing `<shape>` field. Record types whose getters have
+   * the same signatures share wasm types, so `{a: i32}` and `{b: i32}`
+   * have one fat pointer type; the id tells them apart where only the
+   * value is known (`lowerErasedEqDispatch`). An adapted dispatch is a
+   * projection to its target shape, so it carries the target's id.
+   */
+  var shapeId: i32 = -1;
 
   new(this.fatPtrType, this.vtableType, this.concreteType, this.vtableGlobal, this.fields, this.getterTypes, this.optionalNames, this.inOptionalNames);
 
@@ -890,6 +905,25 @@ export final class RecordDispatchInfo {
     }
     return -1;
   }
+}
+
+/** The name of a record table's trailing shape-id field. */
+export let recordShapeFieldName = "<shape>";
+
+function copyFields(fields: GrowableArray<WasmField>) {
+  let out = new Array<WasmField>();
+  for (let f in fields) {
+    out.push(f);
+  }
+  return out;
+}
+
+function copyStrings(strings: GrowableArray<String>) {
+  let out = new Array<String>();
+  for (let s in strings) {
+    out.push(s);
+  }
+  return out;
 }
 
 function stringArraysEqual(a: GrowableArray<String>, b: GrowableArray<String>): boolean {
@@ -1459,6 +1493,8 @@ export final class WasmModule {
   
   recordDispatchInfos = new Array<RecordDispatchInfo>();
   adaptedDispatchInfos = new Array<RecordDispatchInfo>();
+  /** The next record shape id (`RecordDispatchInfo.shapeId`). */
+  var recordShapeCount = 0;
   
   cellStructs = new Map<CellKey, WasmStruct>();
   closureStructs = new Map<ClosureKey, WasmStruct>();
@@ -1690,21 +1726,26 @@ export final class WasmModule {
         false
       ));
     }
-    
+    vtableFields.push(new WasmField(recordShapeFieldName, new ValTypeI32(), false));
+
     let vtableType = this.getStruct(null, vtableFields);
-    
+
     let fatPtrFields = growable<WasmField>([
       new WasmField(null, new ValTypeStructRef(), false),
       new WasmField(null, new ValTypeRef(vtableType), false),
     ]);
-    
+
     let fatPtrType = this.getStruct(null, fatPtrFields);
-    
+
+    let shapeId = this.recordShapeCount;
+    this.recordShapeCount += 1;
     let vtableInit = new VTableInit(vtableType, getters);
+    vtableInit.shapeTag = shapeId;
     let vtableGlobal = new WasmGlobal("vtable_record", "vtable_record", new ValTypeRef(vtableType), false, null, vtableInit, model);
     this.globals.push(vtableGlobal);
-    
+
     let info = new RecordDispatchInfo(fatPtrType, vtableType, concreteType, vtableGlobal, fields, getterTypes, optionalNames, optionalNames);
+    info.shapeId = shapeId;
     this.recordDispatchInfos.push(info);
 
     return info;
@@ -1811,23 +1852,29 @@ export final class WasmModule {
         false
       ));
     }
-    
+    vtableFields.push(new WasmField(recordShapeFieldName, new ValTypeI32(), false));
+
     let vtableType = this.getStruct(null, vtableFields);
-    
+
     let fatPtrFields = growable<WasmField>([
       new WasmField(null, new ValTypeStructRef(), false),
       new WasmField(null, new ValTypeRef(vtableType), false),
     ]);
-    
+
     let fatPtrType = this.getStruct(null, fatPtrFields);
-    
+
+    // A projection: the value is the target shape, whose plain dispatch
+    // owns the id.
+    let target = this.getRecordDispatch(model, copyFields(outFields), copyStrings(outOptionalNames));
     let vtableInit = new VTableInit(vtableType, getters);
+    vtableInit.shapeTag = target.shapeId;
     // TODO: better naming since keyStr is gone
     let vtableGlobal = new WasmGlobal("vtable_adapt", "vtable_adapt", new ValTypeRef(vtableType), false, null, vtableInit, model);
     this.globals.push(vtableGlobal);
     
     // We return information about the TARGET shape (outFields), but with a vtable matching our adapted getters
     let info = new RecordDispatchInfo(fatPtrType, vtableType, inStructType, vtableGlobal, outFields, getterTypes, outOptionalNames, inOptionalNames);
+    info.shapeId = target.shapeId;
     this.adaptedDispatchInfos.push(info);
     
     return info;
