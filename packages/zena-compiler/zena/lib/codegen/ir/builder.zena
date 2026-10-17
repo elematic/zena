@@ -3,6 +3,7 @@ import {
 } from '../wasm.zena';
 import { IrBody, IrBlock, IrOp, IrRef, isIrTerminator } from './ir.zena';
 import { simdInstruction } from '../../simd.zena';
+import { growable } from 'zena:core';
 
 /**
  * Compares ref targets by OBJECT IDENTITY, not type-section index:
@@ -12,7 +13,8 @@ import { simdInstruction } from '../../simd.zena';
  * equality for laid-out types — see valTypeKeyEquals in
  * wasm-module.zena for the same reasoning.
  */
-export let valTypesStrictlyEqual = (a: ValType, b: ValType): boolean => match (a) {
+export function valTypesStrictlyEqual(a: ValType, b: ValType): boolean {
+  return match (a) {
   case ValTypeRef as ta: match (b) {
     case ValTypeRef as tb: ta.target === tb.target
     case _: false
@@ -23,6 +25,7 @@ export let valTypesStrictlyEqual = (a: ValType, b: ValType): boolean => match (a
   }
   case _: valTypeToOpcode(a) == valTypeToOpcode(b)
 };
+}
 
 /**
  * ZIR construction API.
@@ -190,8 +193,7 @@ export final class IrBuilder {
     if (instr == null) {
       throw new Error('v128.const is missing from the SIMD table');
     }
-    let imm = new Array<i32>();
-    imm.push(instr.opcode);
+    let imm = growable<i32>([instr.opcode]);
     var i = 0;
     while (i < 16) {
       imm.push(0);

@@ -358,16 +358,16 @@ export enum IrOp {
   op_count
 }
 
-export let isIrTerminator = (op: IrOp): boolean => {
+export function isIrTerminator(op: IrOp): boolean {
   return op as i32 >= IrOp.br as i32;
-};
+}
 
 /**
  * Unary numeric and conversion ops: exactly one value operand (slot a),
  * no payload. Shared by the operand decoder, the emitter, and (soon)
  * the simplify/constant-folding pass.
  */
-export let isUnaryNumericOp = (op: IrOp): boolean => {
+export function isUnaryNumericOp(op: IrOp): boolean {
   return op == IrOp.i32_eqz || op == IrOp.i64_eqz || op == IrOp.f64_neg ||
       op == IrOp.f32_neg || op == IrOp.i32_wrap_i64 ||
       op == IrOp.i64_extend_i32_s || op == IrOp.f64_convert_i32_s ||
@@ -401,31 +401,31 @@ export let isUnaryNumericOp = (op: IrOp): boolean => {
       op == IrOp.f64_nearest ||
       op == IrOp.f64_sqrt ||
       op == IrOp.f64_trunc;
-};
+}
 
 /**
  * The wide-arithmetic ops: two i64 results each, read through
  * `mv_get`. Grouped because every place that asks "does this leave
  * more than one value on the stack?" wants all four at once.
  */
-export let isWideArithOp = (op: IrOp): boolean => {
+export function isWideArithOp(op: IrOp): boolean {
   return op == IrOp.i64_mul_wide_s || op == IrOp.i64_mul_wide_u ||
       op == IrOp.i64_add128 || op == IrOp.i64_sub128;
-};
+}
 
 /** The two-operand half of the above (the multiplies). */
-export let isWideMulOp = (op: IrOp): boolean => {
+export function isWideMulOp(op: IrOp): boolean {
   return op == IrOp.i64_mul_wide_s || op == IrOp.i64_mul_wide_u;
-};
+}
 
 /** The wasm opcode (after the 0xFC prefix) a wide-arithmetic op emits. */
-export let wideArithOpcode = (op: IrOp): i32 => {
+export function wideArithOpcode(op: IrOp): i32 {
   if (op == IrOp.i64_add128) { return WideArithOpcode.i64_add128 as i32; }
   if (op == IrOp.i64_sub128) { return WideArithOpcode.i64_sub128 as i32; }
   if (op == IrOp.i64_mul_wide_s) { return WideArithOpcode.i64_mul_wide_s as i32; }
   if (op == IrOp.i64_mul_wide_u) { return WideArithOpcode.i64_mul_wide_u as i32; }
   throw new Error(`wideArithOpcode: ${irOpName(op)} is not one`);
-};
+}
 
 /**
  * Ops taking exactly ONE value operand (slot a): the unary numerics
@@ -435,7 +435,7 @@ export let wideArithOpcode = (op: IrOp): i32 => {
  * index rather than a value. global_set is here too: its one value
  * operand is the stored value; the target global rides in slot b.
  */
-export let isSingleValueOp = (op: IrOp): boolean => {
+export function isSingleValueOp(op: IrOp): boolean {
   return isUnaryNumericOp(op) ||
       op == IrOp.ref_is_null || op == IrOp.ref_as_non_null ||
       op == IrOp.ref_test || op == IrOp.ref_cast || op == IrOp.array_len ||
@@ -451,16 +451,16 @@ export let isSingleValueOp = (op: IrOp): boolean => {
       // alignment immediates) — never a value.
       op == IrOp.simd_unary || op == IrOp.simd_extract_lane ||
       op == IrOp.simd_load;
-};
+}
 
 /**
  * Any of the eleven SIMD shapes. They form a contiguous band, so this
  * is a range check — keep them together in the enum.
  */
-export let isSimdOp = (op: IrOp): boolean => {
+export function isSimdOp(op: IrOp): boolean {
   let v = op as i32;
   return v >= IrOp.simd_unary as i32 && v <= IrOp.simd_store_lane as i32;
-};
+}
 
 /**
  * How many value operands a SIMD op parks in `extra`, starting at slot
@@ -468,7 +468,7 @@ export let isSimdOp = (op: IrOp): boolean => {
  * go through `isSingleValueOp`) and for `simd_const`, which reads
  * nothing. Immediates never appear in this list.
  */
-export let simdExtraOperandCount = (op: IrOp): i32 => {
+export function simdExtraOperandCount(op: IrOp): i32 {
   if (op == IrOp.simd_binary || op == IrOp.simd_shuffle ||
       op == IrOp.simd_store || op == IrOp.simd_replace_lane ||
       op == IrOp.simd_load_lane || op == IrOp.simd_store_lane) {
@@ -478,7 +478,7 @@ export let simdExtraOperandCount = (op: IrOp): i32 => {
     return 3;
   }
   return 0;
-};
+}
 
 /**
  * Binary numeric ops: two inline value operands (slots a and b), no
@@ -490,7 +490,7 @@ export let simdExtraOperandCount = (op: IrOp): i32 => {
  * value-equal either way, but NaN payload propagation is
  * implementation-defined and reordering them buys nothing here.
  */
-export let isCommutativeOp = (op: IrOp): boolean => {
+export function isCommutativeOp(op: IrOp): boolean {
   return op == IrOp.i32_add || op == IrOp.i32_mul || op == IrOp.i32_and ||
       op == IrOp.i32_or || op == IrOp.i32_xor || op == IrOp.i32_eq ||
       op == IrOp.i32_ne ||
@@ -498,9 +498,9 @@ export let isCommutativeOp = (op: IrOp): boolean => {
       op == IrOp.i64_or || op == IrOp.i64_xor || op == IrOp.i64_eq ||
       op == IrOp.i64_ne ||
       op == IrOp.ref_eq;
-};
+}
 
-export let isBinaryNumericOp = (op: IrOp): boolean => {
+export function isBinaryNumericOp(op: IrOp): boolean {
   let v = op as i32;
   return (v >= IrOp.i32_add as i32 && v <= IrOp.i32_ge_u as i32 &&
           v != IrOp.i32_eqz as i32) ||
@@ -508,7 +508,7 @@ export let isBinaryNumericOp = (op: IrOp): boolean => {
          op == IrOp.f32_min || op == IrOp.f32_max ||
          op == IrOp.f32_copysign || op == IrOp.f64_min ||
          op == IrOp.f64_max || op == IrOp.f64_copysign;
-};
+}
 
 /**
  * A symbolic reference to a module entity. Instructions address these via
@@ -953,7 +953,7 @@ export final class IrBody {
     let ty = src.typeId[inst];
     let newTy = if (ty >= 0) ty + typeOffset else -1;
     let newId = this.opcode.length;
-    let emit = (na: i32, nb: i32): i32 => {
+    let emit = (na: i32, nb: i32) => {
       this.opcode.push(op as i32);
       this.typeId.push(newTy);
       this.a.push(na);
@@ -961,7 +961,7 @@ export final class IrBody {
       this.instBlock.push(-1);
       return newId;
     };
-    let copyExtraRecord = (start: i32, len: i32): i32 => {
+    let copyExtraRecord = (start: i32, len: i32) => {
       let idx = this.extra.length;
       var i = 0;
       while (i < len) {
@@ -970,7 +970,7 @@ export final class IrBody {
       }
       return idx;
     };
-    let copyMappedRecord = (start: i32, len: i32): i32 => {
+    let copyMappedRecord = (start: i32, len: i32) => {
       let idx = this.extra.length;
       var i = 0;
       while (i < len) {
@@ -991,7 +991,7 @@ export final class IrBody {
     }
     // Branch terminators: successor records [target, argc, args…]
     // copied with targets through mapBlock and args through map.
-    let copySuccessors = (start: i32, count: i32, prefixLen: i32): i32 => {
+    let copySuccessors = (start: i32, count: i32, prefixLen: i32) => {
       let idx = this.extra.length;
       var p = 0;
       while (p < prefixLen) {
@@ -1294,7 +1294,7 @@ export final class IrBody {
  * Wasm-style mnemonic per op, indexed by the dense IrOp value; ops
  * without an entry (empty string) print as op#N.
  */
-let buildIrOpNames = (): GrowableArray<String> => {
+function buildIrOpNames() {
   let count = IrOp.op_count as i32;
   let n = new Array<String>(count);
   for (var i = 0; i < count; i += 1) {
@@ -1497,11 +1497,11 @@ let buildIrOpNames = (): GrowableArray<String> => {
   n[IrOp.yield_ as i32] = 'yield';
   n[IrOp.await_ as i32] = 'await';
   return n;
-};
+}
 
 let irOpNames = buildIrOpNames();
 
-export let irOpName = (op: IrOp): String => {
+export function irOpName(op: IrOp): String {
   let raw = op as i32;
   if (raw >= 0 && raw < irOpNames.length) {
     let name = irOpNames[raw];
@@ -1510,7 +1510,7 @@ export let irOpName = (op: IrOp): String => {
     }
   }
   return `op#${raw}`;
-};
+}
 
 /**
  * The users of every value of a body, packed: value `v`'s users are
@@ -1599,7 +1599,7 @@ export final class IrScratch {
 }
 
 /** The use lists of `body`'s non-nop instructions, in `scratch`'s scope. */
-export let buildUseLists = (body: IrBody, scratch: IrScratch): IrUseLists => {
+export function buildUseLists(body: IrBody, scratch: IrScratch): IrUseLists {
   let count = body.instCount();
   let start = scratch.i32();
   for (var i = 0; i <= count; i += 1) {
@@ -1646,4 +1646,4 @@ export let buildUseLists = (body: IrBody, scratch: IrScratch): IrUseLists => {
     }
   }
   return new IrUseLists(start, list);
-};
+}

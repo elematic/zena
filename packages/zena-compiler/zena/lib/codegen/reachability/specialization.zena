@@ -15,6 +15,7 @@ import { Set } from 'zena:collections';
 
 import { getClassKey, getInterfaceKey, getInterfaceConstructorBaseName, getClassMethodKey, getClassInterfaceKey, getSignatureKey, matchOverload, collectMixinMembers, getMemberRootClass, getClassPrivateFieldKey, getSpecializedFunctionKey, getSpecializedName, isConcrete, MixinKey, containsErasedType } from '../codegen-utils.zena';
 import { typeToValType, mapReturnTypeToWasmResults, mapParamTypeToWasmParams, substituteTypeParamsInCodegen, substituteTypeParamsInClassContext, getClassTypeParameters, getInterfaceTypeParameters, getInterfaceMemberSignature, interfaceMethodOverloads, pushInterfaceMethodSlots } from '../type-mapping.zena';
+import { growable } from 'zena:core';
 
 /**
  * A struct field whose class type was not yet registered when the
@@ -41,8 +42,8 @@ final class ErasedFieldBake {
  * class's own body resolve its `#` names in the mixin's namespace, where
  * lowering cannot find them.
  */
-export let applyMixinPrivateScope = (
-    fn: WasmFunction, node: Node | null, scope: String | null): void => {
+export function applyMixinPrivateScope(
+    fn: WasmFunction, node: Node | null, scope: String | null): void {
   if (scope == null) {
     return;
   }
@@ -51,7 +52,7 @@ export let applyMixinPrivateScope = (
     return;
   }
   fn.privateScopeKey = key;
-};
+}
 
 /**
  * Specializer handles the monomorphization of generic classes and functions,
@@ -108,7 +109,7 @@ export final class Specializer implements SpecializerInterface {
       if (isSymbolFieldDeclaration(member)) { continue; }
       let fieldName = memberKeyOf(model, member.name as Node);
       if (fieldName == "") { continue; }
-      let name = cd.name.name + "_" + fieldName;
+      let name = `${cd.name.name}_${fieldName}`;
       // One global per class, not per specialization: two instantiations
       // of a generic class share the cell, and reaching a static can now
       // get here without any instantiation at all.
@@ -362,7 +363,7 @@ export final class Specializer implements SpecializerInterface {
           for (let mName in refMems) {
             let targetClassType = classType;
             let targetModel = this.pass.getClassModel(targetClassType);
-            let refMemKey = i32ToString(ifaceId as i32) + "." + mName;
+            let refMemKey = `${i32ToString(ifaceId as i32)}.${mName}`;
             let isReachable = this.pass.referencedReachableInterfaceMembers.has(refMemKey);
             let mds = cha.findImplementingMethods(targetClassType, mName);
             if (mds.length > 0) {
@@ -511,7 +512,7 @@ export final class Specializer implements SpecializerInterface {
     let classDeclCd = if (classDecl is ClassDeclaration) classDecl else null;
     let mixinDeclMd = if (classDecl is MixinDeclaration) classDecl else null;
     if (classDeclCd != null) {
-      var mixinSup: ClassType | null = ct.superType;
+      var mixinSup = ct.superType;
       let mixinChain = new Array<ClassType>();
       while (mixinSup != null && mixinSup.isMixinIntermediate) {
         mixinChain.push(mixinSup);
@@ -711,12 +712,13 @@ export final class Specializer implements SpecializerInterface {
         // their own private accesses.
         let declNode = allDecls[msIdx];
         let memberScope = this.#memberScopeOf(ms, msScope, allDeclaringTypes[msIdx]);
-        var regName = methName;
-        if (ms.isConstructor) {
-          regName = if (methName == "<constructor>") "<constructor>" else "<constructor>." + methName;
+        let regName = if (ms.isConstructor) {
+          if (methName == "<constructor>") "<constructor>" else "<constructor>." + methName
         } else if (memberScope != "" && methName.length > 0 && methName.sliceBytes(0, 1) == "#") {
-          regName = memberScope + "::" + methName;
-        }
+          `${memberScope}::${methName}`
+        } else {
+          methName
+        };
         let regFn = this.registerClassMethod(ct, declNode, regName, ms as Node, false, false, null, allModels[msIdx]);
         regFn.declaringType = allDeclaringTypes[msIdx];
         applyMixinPrivateScope(regFn, ms as Node, memberScope);
@@ -728,7 +730,7 @@ export final class Specializer implements SpecializerInterface {
         if (ms.getter != null) {
           var getterRegName = "get#" + accName;
           if (isPrivateAcc && msScope != "") {
-            getterRegName = msScope + "::" + getterRegName;
+            getterRegName = `${msScope}::${getterRegName}`;
           }
           let regG = this.registerClassMethod(ct, declNode, getterRegName, ms as Node, false, false, null, allModels[msIdx]);
           regG.declaringType = allDeclaringTypes[msIdx];
@@ -738,7 +740,7 @@ export final class Specializer implements SpecializerInterface {
         if (setter != null) {
           var setterRegName = "set#" + accName;
           if (isPrivateAcc && msScope != "") {
-            setterRegName = msScope + "::" + setterRegName;
+            setterRegName = `${msScope}::${setterRegName}`;
           }
           let regS = this.registerClassMethod(ct, declNode, setterRegName, setter, false, false, null, allModels[msIdx]);
           regS.declaringType = allDeclaringTypes[msIdx];
@@ -773,14 +775,15 @@ export final class Specializer implements SpecializerInterface {
 
     var hasExplicitCtor = false;
     if (classDecl != null) {
-      var bodyNodes: GrowableArray<Node> | null = null;
-      if (classDecl is ClassDeclaration) {
-        bodyNodes = classDecl.body;
+      let bodyNodes: GrowableArray<Node> | null = if (classDecl is ClassDeclaration) {
+        classDecl.body
       } else if (classDecl is InterfaceDeclaration) {
-        bodyNodes = classDecl.body;
+        classDecl.body
       } else if (classDecl is MixinDeclaration) {
-        bodyNodes = classDecl.body;
-      }
+        classDecl.body
+      } else {
+        null
+      };
       if (bodyNodes != null) {
         for (let member in bodyNodes) {
           if (member is MethodDefinition) {
@@ -858,9 +861,10 @@ export final class Specializer implements SpecializerInterface {
     this.pass.wasm.types.push(emptyVTableStruct);
     this.pass.wasm.interfaceVTableStructs[iKey] = emptyVTableStruct;
 
-    let fatPtrFields = new Array<WasmField>();
-    fatPtrFields.push(new WasmField("instance", new ValTypeAnyRef(), false));
-    fatPtrFields.push(new WasmField("vtable", new ValTypeRef(emptyVTableStruct), false));
+    let fatPtrFields = growable<WasmField>([
+      new WasmField("instance", new ValTypeAnyRef(), false),
+      new WasmField("vtable", new ValTypeRef(emptyVTableStruct), false),
+    ]);
     let emptyStruct = new WasmStruct(structName + "_FatPtr", fatPtrFields);
     this.pass.wasm.types.push(emptyStruct);
     this.pass.wasm.interfaceStructs[iKey] = emptyStruct;
@@ -987,7 +991,7 @@ export final class Specializer implements SpecializerInterface {
       let declaring = this.declaringClassOf(cType, methodNode);
       if (declaring != null && declaring != cType) {
         let declId = ((declaring.genericSource ?? declaring)).symbolId;
-        let dDecl: Node | null = if (this.pass.classDecls.has(declId)) {
+        let dDecl = if (this.pass.classDecls.has(declId)) {
           this.pass.classDecls[declId]
         } else {
           cDecl
@@ -1113,29 +1117,27 @@ export final class Specializer implements SpecializerInterface {
                   }
                 }
               }
+            } else if (cc.members.has(methName)) {
+              let mInfo = cc.members[methName];
+              // A METHOD registration must not take its signature from
+              // a same-named FIELD: a distributed variant's case param
+              // may shadow the sealed base's accessor method (docs()
+              // over a docs field), and the walk must continue up to
+              // the class that declares the method itself.
+              let isMethodReg = methodNode != null &&
+                  methodNode is MethodDefinition;
+              if (!isMethodReg || mInfo is MethodInfo) {
+                methodTypeNode = mInfo.type;
+              }
             } else {
-              if (cc.members.has(methName)) {
-                let mInfo = cc.members[methName];
-                // A METHOD registration must not take its signature from
-                // a same-named FIELD: a distributed variant's case param
-                // may shadow the sealed base's accessor method (docs()
-                // over a docs field), and the walk must continue up to
-                // the class that declares the method itself.
-                let isMethodReg = methodNode != null &&
-                    methodNode is MethodDefinition;
-                if (!isMethodReg || mInfo is MethodInfo) {
-                  methodTypeNode = mInfo.type;
-                }
-              } else {
-                for (let k in cc.members.keys()) {
-                  if (k.endsWith("::" + methName)) {
-                    let mInfo = cc.members[k];
-                    let isMethodReg = methodNode != null &&
-                        methodNode is MethodDefinition;
-                    if (!isMethodReg || mInfo is MethodInfo) {
-                      methodTypeNode = mInfo.type;
-                      break;
-                    }
+              for (let k in cc.members.keys()) {
+                if (k.endsWith("::" + methName)) {
+                  let mInfo = cc.members[k];
+                  let isMethodReg = methodNode != null &&
+                      methodNode is MethodDefinition;
+                  if (!isMethodReg || mInfo is MethodInfo) {
+                    methodTypeNode = mInfo.type;
+                    break;
                   }
                 }
               }
@@ -1157,8 +1159,7 @@ export final class Specializer implements SpecializerInterface {
             strippedMethName = parts[parts.length - 1];
           }
           if (methName == "==") {
-            let eqParams = new Array<Type>();
-            eqParams.push(cType);
+            let eqParams = growable<Type>([cType]);
             methodTypeNode = new FunctionType(eqParams, new BooleanType());
           } else if (methName == "hashCode") {
             methodTypeNode = new FunctionType(new Array<Type>(), new I32Type());
@@ -1282,8 +1283,7 @@ export final class Specializer implements SpecializerInterface {
               curr = cc.superType;
             }
             if (pType != null) {
-              let params = new Array<Type>();
-              params.push(pType);
+              let params = growable<Type>([pType]);
               methodTypeNode = new FunctionType(params, new VoidType());
             }
           }
@@ -1393,14 +1393,12 @@ export final class Specializer implements SpecializerInterface {
       } else {
         this.#pushCtorReturn(cType, returns);
       }
+    } else if (!isCtor) {
+      returns.push(new ValTypeI32());
+    } else if (cType.isExtension && cType.onType != null) {
+      returns.push(typeToValType(this.pass.wasm, cType.onType as Type));
     } else {
-      if (!isCtor) {
-        returns.push(new ValTypeI32());
-      } else if (cType.isExtension && cType.onType != null) {
-        returns.push(typeToValType(this.pass.wasm, cType.onType as Type));
-      } else {
-        this.#pushCtorReturn(cType, returns);
-      }
+      this.#pushCtorReturn(cType, returns);
     }
     
 
@@ -1443,7 +1441,7 @@ export final class Specializer implements SpecializerInterface {
 
     wasmFunc.isStatic = isStatic;
     let cName = getClassKey(cType) as String;
-    wasmFunc.name = cName + "." + realMethName;
+    wasmFunc.name = `${cName}.${realMethName}`;
     wasmFunc.methodName = realMethName;
     wasmFunc.classDecl = cDecl;
     
@@ -1589,7 +1587,7 @@ export final class Specializer implements SpecializerInterface {
   #reachSuperConstructors(func: WasmFunction): void {
     if (func.classType == null) { return; }
     let ct = func.classType as ClassType;
-    var curr: ClassType | null = ct.superType;
+    var curr = ct.superType;
     var currentFunc: WasmFunction | null = func;
     while (curr != null) {
       let superCt = curr;
@@ -1701,10 +1699,8 @@ export final class Specializer implements SpecializerInterface {
 
     if (ct.derivesEquality) {
       if (!ct.members.has("==")) {
-        let eqParams = new Array<Type>();
-        eqParams.push(ct);
-        let eqNames = new Array<String>();
-        eqNames.push("other");
+        let eqParams = growable<Type>([ct]);
+        let eqNames = growable<String>(["other"]);
         ct.members["=="] = new MethodInfo(new FunctionType(eqParams, new BooleanType(), new FunctionDeclInfo(eqNames)), false, false, false, false);
       }
       if (!vtableSet.has("==")) {
@@ -1735,7 +1731,7 @@ export final class Specializer implements SpecializerInterface {
       let allDecls = new Array<Node>();
       let allDeclaringTypes = new Array<ClassType | null>();
       if (cdDecl != null) {
-        var mixinSup: ClassType | null = ct.superType;
+        var mixinSup = ct.superType;
         let mixinChain = new Array<ClassType>();
         while (mixinSup != null && mixinSup.isMixinIntermediate) {
           mixinChain.push(mixinSup);
@@ -1827,12 +1823,13 @@ export final class Specializer implements SpecializerInterface {
             if (ms.isAbstract) { continue; }
             let declNode = allDecls[msIdx];
             let memberScope = this.#memberScopeOf(ms, msScope, allDeclaringTypes[msIdx]);
-            var regName = methName;
-            if (ms.isConstructor) {
-              regName = if (methName == "<constructor>") "<constructor>" else "<constructor>." + methName;
+            let regName = if (ms.isConstructor) {
+              if (methName == "<constructor>") "<constructor>" else "<constructor>." + methName
             } else if (memberScope != "" && methName.length > 0 && methName.sliceBytes(0, 1) == "#") {
-              regName = memberScope + "::" + methName;
-            }
+              `${memberScope}::${methName}`
+            } else {
+              methName
+            };
             let regFn = this.registerClassMethod(ct, declNode, regName, ms as Node, false, false, null, allModels[msIdx]);
             regFn.declaringType = allDeclaringTypes[msIdx];
             applyMixinPrivateScope(regFn, ms as Node, memberScope);
@@ -1845,7 +1842,7 @@ export final class Specializer implements SpecializerInterface {
           if (ms.getter != null) {
             var getterRegName = "get#" + accName;
             if (isPrivateAcc && msScope != "") {
-              getterRegName = msScope + "::" + getterRegName;
+              getterRegName = `${msScope}::${getterRegName}`;
             }
             let regG = this.registerClassMethod(ct, declNode, getterRegName, ms as Node, false, false, null, allModels[msIdx]);
             regG.declaringType = allDeclaringTypes[msIdx];
@@ -1855,7 +1852,7 @@ export final class Specializer implements SpecializerInterface {
           if (setter != null) {
             var setterRegName = "set#" + accName;
             if (isPrivateAcc && msScope != "") {
-              setterRegName = msScope + "::" + setterRegName;
+              setterRegName = `${msScope}::${setterRegName}`;
             }
             let regS = this.registerClassMethod(ct, declNode, setterRegName, setter, false, false, null, allModels[msIdx]);
             regS.declaringType = allDeclaringTypes[msIdx];
@@ -1931,8 +1928,7 @@ export final class Specializer implements SpecializerInterface {
         // Re-derive the factory's return at the now-registered struct;
         // the first registration may have preceded it and fallen back to
         // structref.
-        let returns = new Array<ValType>();
-        returns.push(new ValTypeRef(st));
+        let returns = growable<ValType>([new ValTypeRef(st)]);
         let sig = this.pass.wasm.getSignature(
             wasmFunc.signature.params, returns);
         wasmFunc.signature = sig;
@@ -1952,8 +1948,7 @@ export final class Specializer implements SpecializerInterface {
           if (ctorFn.structType == null) {
             ctorFn.structType = st;
           }
-          let returns = new Array<ValType>();
-          returns.push(new ValTypeRef(st));
+          let returns = growable<ValType>([new ValTypeRef(st)]);
           let sig = this.pass.wasm.getSignature(
               ctorFn.signature.params, returns);
           ctorFn.signature = sig;
@@ -2068,10 +2063,11 @@ export final class Specializer implements SpecializerInterface {
         // are immutable — single-shot construction supplies every
         // field's value to struct.new, so nothing needs the
         // defaultable/mutable widening anymore.
-        var fieldIsMutable = true;
-        if (pair.value is FieldInfo) {
-          fieldIsMutable = (pair.value as FieldInfo).isMutable;
-        }
+        let fieldIsMutable = if (pair.value is FieldInfo) {
+          (pair.value as FieldInfo).isMutable
+        } else {
+          true
+        };
         let wf = new WasmField(fName, valType, fieldIsMutable);
         // `structref` for a class-typed field means the class had no
         // registration yet — discovery may still produce one, and then
@@ -2129,7 +2125,7 @@ export final class Specializer implements SpecializerInterface {
       }
     }
     for (let f in ctors) {
-      var currFn: WasmFunction = f;
+      var currFn = f;
       var anc = (f.classType as ClassType).superType;
       while (anc != null) {
         let ancCt = anc;
@@ -2178,7 +2174,7 @@ export final class Specializer implements SpecializerInterface {
     // Own fields start after the inherited prefix; a root class's
     // field 0 is the synthetic <vtable>.
     var ownStart = 1;
-    var s: WasmStruct | null = structType.superStruct;
+    var s = structType.superStruct;
     while (s != null) {
       let curr = s;
       if (curr.classType != null && (curr.classType as ClassType).isMixinIntermediate) {
@@ -2222,7 +2218,7 @@ export final class Specializer implements SpecializerInterface {
     let initSig = this.pass.wasm.getSignature(
         factory.signature.params, initReturns);
     let initFn = new WasmFunction(initSig, factory.node, factory.model);
-    initFn.name = (cKey as String) + '.' + initMethName;
+    initFn.name = `${cKey as String}.${initMethName}`;
     initFn.methodName = initMethName;
     initFn.classType = cType;
     initFn.classDecl = factory.classDecl;
@@ -2232,15 +2228,14 @@ export final class Specializer implements SpecializerInterface {
     this.pass.markFunctionReached(initFn);
 
     if (ctorHasRunnableBody(factory)) {
-      let bodyParams = new Array<ValType>();
-      bodyParams.push(new ValTypeRef(structType));
+      let bodyParams = growable<ValType>([new ValTypeRef(structType)]);
       for (let p in factory.signature.params) {
         bodyParams.push(p);
       }
       let bodySig = this.pass.wasm.getSignature(
           bodyParams, new Array<ValType>());
       let bodyFn = new WasmFunction(bodySig, factory.node, factory.model);
-      bodyFn.name = (cKey as String) + '.' + bodyMethName;
+      bodyFn.name = `${cKey as String}.${bodyMethName}`;
       bodyFn.methodName = bodyMethName;
       bodyFn.classType = cType;
       bodyFn.classDecl = factory.classDecl;
@@ -2255,7 +2250,7 @@ export final class Specializer implements SpecializerInterface {
   instantiateInterfaceConstructor(it: InterfaceType, ctorName: String, methodNode: Node, model: SemanticModel): WasmFunction {
     let source = it.genericSource ?? it;
     let targsOpt = it.typeArguments;
-    let typeArgs: Array<Type> = if (targsOpt != null) targsOpt else new Array<Type>();
+    let typeArgs = if (targsOpt != null) targsOpt else new Array<Type>();
     let baseName = getInterfaceConstructorBaseName(it, ctorName);
     let specKey = getSpecializedFunctionKey(baseName, typeArgs);
     if (let (true, existing) = this.pass.wasm.specializedFunctions.get(specKey)) {
@@ -2406,24 +2401,24 @@ export final class Specializer implements SpecializerInterface {
   }
 }
 
-let getNodeMemberName = (model: SemanticModel, node: Node): String => {
+function getNodeMemberName(model: SemanticModel, node: Node): String {
   return memberKeyOf(model, node as Node);
-};
+}
 
-let isConstructorMethodName = (name: String): boolean => {
+function isConstructorMethodName(name: String): boolean {
   return name == "<constructor>" || (name.length > 14 && name.startsWith("<constructor>."));
-};
+}
 
-let getMethodName = (model: SemanticModel, md: MethodDefinition): String => {
+function getMethodName(model: SemanticModel, md: MethodDefinition) {
   return memberKeyOf(model, md.name as Node);
-};
+}
 
 /**
  * Whether a constructor has body statements to run post-allocation.
  * Synthesized constructors (node-less) never do; a written `new(...);`
  * or an empty block has nothing to run either.
  */
-let ctorHasRunnableBody = (factory: WasmFunction): boolean => {
+function ctorHasRunnableBody(factory: WasmFunction): boolean {
   if (!(factory.node is MethodDefinition)) {
     return false;
   }
@@ -2436,4 +2431,4 @@ let ctorHasRunnableBody = (factory: WasmFunction): boolean => {
     return b.body.length > 0;
   }
   return true;
-};
+}

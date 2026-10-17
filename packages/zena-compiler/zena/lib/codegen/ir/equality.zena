@@ -34,19 +34,19 @@ import {
 } from './lowering-context.zena';
 
 /** Bail with the lowering-side message shape (reason @function). */
-let bail = (cx: LoweringContext, reason: String): never => {
-  throw new ZirUnsupported(reason + ' @' + (cx.func.name ?? '?'));
-};
+function bail(cx: LoweringContext, reason: String): never {
+  throw new ZirUnsupported(`${reason} @${cx.func.name ?? '?'}`);
+}
 
-let isNullableRef = (vt: ValType): boolean => {
+function isNullableRef(vt: ValType) {
   return isNullableAnyRef(vt);
-};
+}
 
 /** True when the struct IS the String struct (covers generic
  * specializations with String arguments). Identity-first via
  * sameHeapType: an index-only comparison matched EVERY struct
  * before layout() assigned indices. */
-let isStringStruct = (cx: LoweringContext, st: WasmStruct): boolean => {
+function isStringStruct(cx: LoweringContext, st: WasmStruct): boolean {
   let strClass = cx.wasm.stringClass;
   if (strClass == null) {
     return false;
@@ -55,12 +55,12 @@ let isStringStruct = (cx: LoweringContext, st: WasmStruct): boolean => {
     return sameHeapType(info.structType, st);
   }
   return false;
-};
+}
 
 /** String's operator== function, or a bail. (Inline throw rather than a
  * bail() call: written when the checker did not treat a never-returning
  * call as terminating. It does now, so this could be simplified.) */
-let stringEqFunc = (cx: LoweringContext): WasmFunction => {
+function stringEqFunc(cx: LoweringContext): WasmFunction {
   let strClass = cx.wasm.stringClass;
   if (strClass != null) {
     let key = getClassMethodKey(getClassKey(strClass), "==");
@@ -69,22 +69,22 @@ let stringEqFunc = (cx: LoweringContext): WasmFunction => {
     }
   }
   throw new ZirUnsupported('string eq method');
-};
+}
 
 /** Direct call to a devirtualized single-result unary method
  * (hashCode, the string-hash helper), coercing the receiver. */
-let callUnary = (cx: LoweringContext, fn: WasmFunction, v: i32): i32 => {
+function callUnary(cx: LoweringContext, fn: WasmFunction, v: i32) {
   if (fn.signature.params.length != 1 || fn.signature.returns.length != 1) {
     bail(cx, 'unary method shape');
   }
   let recv = cx.coerceTo(v, fn.signature.params[0]);
   let funcRef = cx.b.addRef(new IrRefFunc(fn));
   return cx.b.callFunc(funcRef, oneValue(recv), fn.signature.returns[0]);
-};
+}
 
 /** Direct call to a two-operand boolean method (String.== or a
  * devirtualized operator==), coercing operands to its params. */
-let callEqMethod = (cx: LoweringContext, method: WasmFunction, a: i32, b2: i32): i32 => {
+function callEqMethod(cx: LoweringContext, method: WasmFunction, a: i32, b2: i32) {
   let sig = method.signature;
   if (sig.params.length != 2 || sig.returns.length != 1) {
     bail(cx, 'eq method shape');
@@ -93,27 +93,27 @@ let callEqMethod = (cx: LoweringContext, method: WasmFunction, a: i32, b2: i32):
   let cb = cx.coerceTo(b2, sig.params[1]);
   let funcRef = cx.b.addRef(new IrRefFunc(method));
   return cx.b.callFunc(funcRef, twoValues(ca, cb), sig.returns[0]);
-};
+}
 
 /** i64 -> i32 hash fold (lo ^ hi), shared by the hash intrinsic
  * and the case-class hashCode synthesis (mirrors streaming). */
-let hashI64Fold = (cx: LoweringContext, v: i32): i32 => {
+function hashI64Fold(cx: LoweringContext, v: i32) {
   let i32vt = new ValTypeI32() as ValType;
   let lo = cx.b.emit(IrOp.i32_wrap_i64, i32vt, v, -1);
   let thirtyTwo = cx.b.constI64(32 as i64, new ValTypeI64() as ValType);
   let shifted = cx.b.binary(IrOp.i64_shr_u, new ValTypeI64() as ValType, v, thirtyTwo);
   let hi = cx.b.emit(IrOp.i32_wrap_i64, i32vt, shifted, -1);
   return cx.b.binary(IrOp.i32_xor, i32vt, lo, hi);
-};
+}
 
 /** Call the runtime string-hash helper on a String value. */
-let callStringHash = (cx: LoweringContext, v: i32): i32 => {
+function callStringHash(cx: LoweringContext, v: i32) {
   let hashFn = cx.wasm.stringHashFunc;
   if (hashFn == null) {
     bail(cx, 'string hash helper');
   }
   return callUnary(cx, hashFn, v);
-};
+}
 
 /**
  * The reference-equality fast path around a content-equality call,
@@ -133,8 +133,8 @@ let callStringHash = (cx: LoweringContext, v: i32): i32 => {
  * with non-nullable operands pass nullSafe=false and skip the null
  * checks entirely.
  */
-let refEqFastPathCall = (cx: LoweringContext, method: WasmFunction, a: i32, b2: i32,
-    nullSafe: boolean): i32 => {
+function refEqFastPathCall(cx: LoweringContext, method: WasmFunction, a: i32, b2: i32,
+    nullSafe: boolean) {
   let i32vt = new ValTypeI32() as ValType;
   let same = cx.b.emit(IrOp.ref_eq, i32vt, a, b2);
   let sameB = cx.b.newBlock();
@@ -167,10 +167,10 @@ let refEqFastPathCall = (cx: LoweringContext, method: WasmFunction, a: i32, b2: 
 
   cx.b.switchTo(mergeB);
   return result;
-};
+}
 
 /** The codegen info of a class an equality test names. */
-let equalityClassInfo = (cx: LoweringContext, ct: ClassType): ClassCodegenInfo => {
+function equalityClassInfo(cx: LoweringContext, ct: ClassType) {
   var infoOpt: ClassCodegenInfo | null = null;
   if (let (true, info) = cx.wasm.classInfos.get(getClassKey(ct))) {
     infoOpt = info;
@@ -179,29 +179,32 @@ let equalityClassInfo = (cx: LoweringContext, ct: ClassType): ClassCodegenInfo =
     bail(cx, 'equality class not discovered');
   }
   return infoOpt;
-};
+}
 
-let refTestOf = (cx: LoweringContext, v: i32, st: WasmStruct): i32 =>
-    cx.b.emit(IrOp.ref_test, new ValTypeI32(), v,
+function refTestOf(cx: LoweringContext, v: i32, st: WasmStruct) {
+  return cx.b.emit(IrOp.ref_test, new ValTypeI32(), v,
         cx.b.internType(new ValTypeRef(st) as ValType));
+}
 
-let refCastTo = (cx: LoweringContext, v: i32, st: WasmStruct): i32 => {
+function refCastTo(cx: LoweringContext, v: i32, st: WasmStruct) {
   let vt = new ValTypeRef(st) as ValType;
   if (isValSubtype(cx.valueTypeOf(v), vt)) {
     return v;
   }
   return cx.b.emit(IrOp.ref_cast, vt, v, cx.b.internType(vt));
-};
+}
 
 /**
  * Whether a class can have instances: its struct was laid out. A class no
  * reached code instantiates is left out of the type section, and so is
  * every class below it.
  */
-let laidOut = (info: ClassCodegenInfo): boolean => info.structType.index >= 0;
+function laidOut(info: ClassCodegenInfo) {
+  return info.structType.index >= 0;
+}
 
 /** True when `v` is exactly of the class `info` describes, not a subclass. */
-let exactlyOf = (cx: LoweringContext, v: i32, info: ClassCodegenInfo): i32 => {
+function exactlyOf(cx: LoweringContext, v: i32, info: ClassCodegenInfo) {
   let i32vt = new ValTypeI32() as ValType;
   var acc = refTestOf(cx, v, info.structType);
   for (let sub in info.subclasses) {
@@ -213,25 +216,25 @@ let exactlyOf = (cx: LoweringContext, v: i32, info: ClassCodegenInfo): i32 => {
     acc = cx.b.binary(IrOp.i32_and, i32vt, acc, notSub);
   }
   return acc;
-};
+}
 
 /** `info`'s subtree, each class after all of its subclasses. */
-let subtreePostOrder = (info: ClassCodegenInfo, out: GrowableArray<ClassCodegenInfo>): void => {
+function subtreePostOrder(info: ClassCodegenInfo, out: GrowableArray<ClassCodegenInfo>): void {
   for (let sub in info.subclasses) {
     if (laidOut(sub)) {
       subtreePostOrder(sub, out);
     }
   }
   out.push(info);
-};
+}
 
 /**
  * Whether `other` is of exactly `self`'s class, found by testing `self`
  * against the declaring class's subtree, subclasses first, so the first
  * match is its own class.
  */
-let subtreeExactTest = (cx: LoweringContext, self: i32, other: i32,
-    info: ClassCodegenInfo): i32 => {
+function subtreeExactTest(cx: LoweringContext, self: i32, other: i32,
+    info: ClassCodegenInfo) {
   let i32vt = new ValTypeI32() as ValType;
   let order = new Array<ClassCodegenInfo>();
   subtreePostOrder(info, order);
@@ -250,7 +253,7 @@ let subtreeExactTest = (cx: LoweringContext, self: i32, other: i32,
   cx.b.br(mergeB, oneValue(exactlyOf(cx, other, info)));
   cx.b.switchTo(mergeB);
   return result;
-};
+}
 
 /**
  * The test at the top of a declared `operator ==`: `other` is of exactly
@@ -264,8 +267,8 @@ let subtreeExactTest = (cx: LoweringContext, self: i32, other: i32,
  * would be shorter, but reading the field keeps every class's vtable global
  * alive in a hierarchy that otherwise dispatches nothing.
  */
-export let exactClassTest = (cx: LoweringContext, self: i32, other: i32,
-    declaring: ClassType): i32 => {
+export function exactClassTest(cx: LoweringContext, self: i32, other: i32,
+    declaring: ClassType): i32 {
   let info = equalityClassInfo(cx, declaring);
   if (!info.subclasses.some((sub) => laidOut(sub))) {
     return refTestOf(cx, other, info.structType);
@@ -283,7 +286,7 @@ export let exactClassTest = (cx: LoweringContext, self: i32, other: i32,
   cx.b.br(mergeB, oneValue(subtreeExactTest(cx, self, other, info)));
   cx.b.switchTo(mergeB);
   return result;
-};
+}
 
 /**
  * The classes below `info` that introduce `operator ==`: each declares or
@@ -292,8 +295,8 @@ export let exactClassTest = (cx: LoweringContext, self: i32, other: i32,
  * never reached has no instances (reachability reaches the operator of
  * every instantiated class below a compared base), so it needs no test.
  */
-let equalityIntroducers = (cx: LoweringContext, info: ClassCodegenInfo,
-    out: GrowableArray<ClassCodegenInfo>): void => {
+function equalityIntroducers(cx: LoweringContext, info: ClassCodegenInfo,
+    out: GrowableArray<ClassCodegenInfo>): void {
   for (let sub in info.subclasses) {
     if (!laidOut(sub)) {
       continue;
@@ -307,7 +310,7 @@ let equalityIntroducers = (cx: LoweringContext, info: ClassCodegenInfo,
       equalityIntroducers(cx, sub, out);
     }
   }
-};
+}
 
 /**
  * How many introducing classes a comparison tests inline before it calls
@@ -316,7 +319,7 @@ let equalityIntroducers = (cx: LoweringContext, info: ClassCodegenInfo,
 let inlineIntroducerLimit = 4;
 
 /** `a == b` with both operands non-null references of class `ct` or below. */
-let classEqNonNull = (cx: LoweringContext, a: i32, b2: i32, ct: ClassType): i32 => {
+function classEqNonNull(cx: LoweringContext, a: i32, b2: i32, ct: ClassType): i32 {
   let i32vt = new ValTypeI32() as ValType;
   if (ct.members.has("==")) {
     // The operator's parameter is the class that roots its slot; an
@@ -379,7 +382,7 @@ let classEqNonNull = (cx: LoweringContext, a: i32, b2: i32, ct: ClassType): i32 
   cx.b.br(mergeB, oneValue(cx.b.binary(IrOp.ref_eq, i32vt, a, b2)));
   cx.b.switchTo(mergeB);
   return result;
-};
+}
 
 /**
  * `a == b` on operands of class type `ct`, either of which may be null
@@ -388,8 +391,8 @@ let classEqNonNull = (cx: LoweringContext, a: i32, b2: i32, ct: ClassType): i32 
  * `operator ==` answers, which is identity unless some class declares or
  * derives one.
  */
-export let lowerClassEquality = (cx: LoweringContext, a: i32, b2: i32,
-    ct: ClassType): i32 => {
+export function lowerClassEquality(cx: LoweringContext, a: i32, b2: i32,
+    ct: ClassType): i32 {
   let i32vt = new ValTypeI32() as ValType;
   if (!ct.members.has("==")) {
     let introducers = new Array<ClassCodegenInfo>();
@@ -420,7 +423,7 @@ export let lowerClassEquality = (cx: LoweringContext, a: i32, b2: i32,
   cx.b.br(mergeB, oneValue(classEqNonNull(cx, aV, bV, ct)));
   cx.b.switchTo(mergeB);
   return result;
-};
+}
 
 /**
  * The type of the synthesized function's class's field `name`, as the
@@ -428,7 +431,7 @@ export let lowerClassEquality = (cx: LoweringContext, a: i32, b2: i32,
  * derived `==` and `hashCode` treat such a field by value, like any `==`
  * on it, which its wasm type alone (a reference) cannot tell.
  */
-let caseValueFieldType = (cx: LoweringContext, name: String): Type | null => {
+function caseValueFieldType(cx: LoweringContext, name: String): Type | null {
   let owner = cx.func.classType;
   if (owner == null) {
     return null;
@@ -444,10 +447,10 @@ let caseValueFieldType = (cx: LoweringContext, name: String): Type | null => {
     }
   }
   return null;
-};
+}
 
 /** Field-wise equality for the synthesized case-class ==. */
-let synthFieldEq = (cx: LoweringContext, f: WasmField, a: i32, b2: i32): i32 => {
+function synthFieldEq(cx: LoweringContext, f: WasmField, a: i32, b2: i32) {
   let i32vt = new ValTypeI32() as ValType;
   let ft = f.type;
   if (ft is ValTypeI32) {
@@ -464,10 +467,11 @@ let synthFieldEq = (cx: LoweringContext, f: WasmField, a: i32, b2: i32): i32 => 
   }
   let fieldStruct = refTargetOf(ft);
   if (fieldStruct is WasmStruct) {
-    var eqFunc: WasmFunction | null = null;
-    if (isStringStruct(cx, fieldStruct)) {
-      eqFunc = stringEqFunc(cx);
-    }
+    let eqFunc: WasmFunction | null = if (isStringStruct(cx, fieldStruct)) {
+      stringEqFunc(cx)
+    } else {
+      null
+    };
     if (eqFunc == null && fieldStruct.classType != null) {
       let fct = fieldStruct.classType as ClassType;
       if (!fct.isExtension) {
@@ -483,11 +487,11 @@ let synthFieldEq = (cx: LoweringContext, f: WasmField, a: i32, b2: i32): i32 => 
   }
   // Fallback: reference identity (also covers arrays/closures).
   return cx.b.emit(IrOp.ref_eq, i32vt, a, b2);
-};
+}
 
 /** Field-wise hash for the synthesized case-class hashCode. */
-let synthFieldHash = (cx: LoweringContext, st: WasmStruct, f: WasmField,
-    selfC: i32): i32 => {
+function synthFieldHash(cx: LoweringContext, st: WasmStruct, f: WasmField,
+    selfC: i32) {
   let i32vt = new ValTypeI32() as ValType;
   let ft = f.type;
   // A record or tuple field hashes its fields, consistent with `==`.
@@ -523,13 +527,14 @@ let synthFieldHash = (cx: LoweringContext, st: WasmStruct, f: WasmField,
   }
   // Fresh binding: the narrowing state after the bail/return chain
   // above over-narrows `ft`.
-  let ftRef: ValType = f.type;
+  let ftRef = f.type;
   let fieldStruct = refTargetOf(ftRef);
   if (fieldStruct is WasmStruct) {
-    var hashFunc: WasmFunction | null = null;
-    if (isStringStruct(cx, fieldStruct) && cx.wasm.stringHashFunc != null) {
-      hashFunc = cx.wasm.stringHashFunc;
-    }
+    var hashFunc: WasmFunction | null = if (isStringStruct(cx, fieldStruct) && cx.wasm.stringHashFunc != null) {
+      cx.wasm.stringHashFunc
+    } else {
+      null
+    };
     var hashVtInfo: ClassCodegenInfo | null = null;
     var hashSlotSig: WasmSignature | null = null;
     if (hashFunc == null && fieldStruct.classType != null) {
@@ -595,7 +600,7 @@ let synthFieldHash = (cx: LoweringContext, st: WasmStruct, f: WasmField,
   }
   // Unsupported field kinds hash to 0 (mirrors streaming).
   return cx.b.constI32(0, i32vt);
-};
+}
 
 /**
  * Synthesized case-class operator== (mirrors the streaming
@@ -605,7 +610,7 @@ let synthFieldHash = (cx: LoweringContext, st: WasmStruct, f: WasmField,
  * other references by identity. Virtual dispatch bails to
  * streaming.
  */
-export let lowerCaseClassEq = (cx: LoweringContext): IrBody => {
+export function lowerCaseClassEq(cx: LoweringContext): IrBody {
   let sig = cx.func.signature;
   if (sig.params.length != 2 || sig.returns.length != 1 ||
       cx.func.structType == null) {
@@ -641,8 +646,7 @@ export let lowerCaseClassEq = (cx: LoweringContext): IrBody => {
   let selfC = cx.b.emit(IrOp.ref_cast, stVt, params[0], cx.b.internType(stVt));
   let otherC = cx.b.emit(IrOp.ref_cast, stVt, params[1], cx.b.internType(stVt));
   var acc = -1;
-  for (var fi = 0; fi < st.fields.length; fi += 1) {
-    let f = st.fields[fi];
+  for (let f in st.fields) {
     if (f.name == null || (f.name as String) == "<vtable>") {
       continue;
     }
@@ -663,7 +667,7 @@ export let lowerCaseClassEq = (cx: LoweringContext): IrBody => {
   cx.b.switchTo(mergeB);
   cx.b.ret(resultParam);
   return cx.b.finish();
-};
+}
 
 /**
  * Synthesized case-class hashCode (mirrors the streaming
@@ -673,7 +677,7 @@ export let lowerCaseClassEq = (cx: LoweringContext): IrBody => {
  * null hashing to 0); other reference fields hash to 0. Float
  * fields bail (no reinterpret ops in ZIR yet).
  */
-export let lowerCaseClassHash = (cx: LoweringContext): IrBody => {
+export function lowerCaseClassHash(cx: LoweringContext): IrBody {
   let sig = cx.func.signature;
   if (sig.params.length != 1 || sig.returns.length != 1 ||
       cx.func.structType == null) {
@@ -695,8 +699,7 @@ export let lowerCaseClassHash = (cx: LoweringContext): IrBody => {
   let stVt = new ValTypeRef(st) as ValType;
   let selfC = cx.b.emit(IrOp.ref_cast, stVt, params[0], cx.b.internType(stVt));
   var h = -1;
-  for (var fi = 0; fi < st.fields.length; fi += 1) {
-    let f = st.fields[fi];
+  for (let f in st.fields) {
     if (f.name == null || (f.name as String) == "<vtable>") {
       continue;
     }
@@ -714,7 +717,7 @@ export let lowerCaseClassHash = (cx: LoweringContext): IrBody => {
   }
   cx.b.ret(h);
   return cx.b.finish();
-};
+}
 
 /**
  * `a == b` for record or tuple operands of types `lType` and `rType`,
@@ -723,8 +726,8 @@ export let lowerCaseClassHash = (cx: LoweringContext): IrBody => {
  * false, and otherwise the pair's comparison function answers. Operands
  * whose fields do not pair up are never equal.
  */
-export let lowerValueEq = (cx: LoweringContext, lType: Type, a: i32,
-    rType: Type, b2: i32): i32 => {
+export function lowerValueEq(cx: LoweringContext, lType: Type, a: i32,
+    rType: Type, b2: i32): i32 {
   let i32vt = new ValTypeI32() as ValType;
   let l = valueEqOperand(lType);
   let r = valueEqOperand(rType);
@@ -747,7 +750,7 @@ export let lowerValueEq = (cx: LoweringContext, lType: Type, a: i32,
   if (found == null && !fromFields) {
     bail(cx, 'structural equality not reached');
   }
-  let compare = (x: i32, y: i32): i32 =>
+  let compare = (x: i32, y: i32) =>
       if (fromFields) inlineValueEq(cx, l as Type, x, r as Type, y, fields)
       else callEqMethod(cx, found as WasmFunction, x, y);
   let aNullable = isNullableRef(cx.valueTypeOf(a));
@@ -769,13 +772,13 @@ export let lowerValueEq = (cx: LoweringContext, lType: Type, a: i32,
   cx.b.br(mergeB, oneValue(compare(a, b2)));
   cx.b.switchTo(mergeB);
   return result;
-};
+}
 
 /**
  * The class a field of type `t` holds (without `| null`), when it is a
  * laid-out class that is not an extension.
  */
-let fieldClassOf = (cx: LoweringContext, t: Type): ClassType | null => {
+function fieldClassOf(cx: LoweringContext, t: Type): ClassType | null {
   var b = baseType(t);
   if (b is UnionType) {
     var only: Type | null = null;
@@ -799,14 +802,14 @@ let fieldClassOf = (cx: LoweringContext, t: Type): ClassType | null => {
     return null;
   }
   return ct;
-};
+}
 
 /**
  * The class two fields compare at: the wider of the two when one class
  * extends the other (`{a: Dog}` against `{a: Animal}` compares at
  * `Animal`), else the left one's.
  */
-let comparedClassOf = (cx: LoweringContext, tl: Type, tr: Type): ClassType | null => {
+function comparedClassOf(cx: LoweringContext, tl: Type, tr: Type): ClassType | null {
   let l = fieldClassOf(cx, tl);
   let r = fieldClassOf(cx, tr);
   if (l == null || r == null) {
@@ -821,7 +824,7 @@ let comparedClassOf = (cx: LoweringContext, tl: Type, tr: Type): ClassType | nul
     s = (s as ClassType).superType;
   }
   return l;
-};
+}
 
 /**
  * One pair of fields of a structural comparison, typed `tl` and `tr`,
@@ -830,7 +833,7 @@ let comparedClassOf = (cx: LoweringContext, tl: Type, tr: Type): ClassType | nul
  * a class through its `operator ==`, and any other reference through
  * the erased comparison.
  */
-let valueFieldEq = (cx: LoweringContext, tl: Type, a: i32, tr: Type, b2: i32): i32 => {
+function valueFieldEq(cx: LoweringContext, tl: Type, a: i32, tr: Type, b2: i32) {
   let i32vt = new ValTypeI32() as ValType;
   if (valueEqOperand(tl) != null && valueEqOperand(tr) != null) {
     return lowerValueEq(cx, tl, a, tr, b2);
@@ -860,15 +863,15 @@ let valueFieldEq = (cx: LoweringContext, tl: Type, a: i32, tr: Type, b2: i32): i
     bail(cx, 'structural equality field type');
   }
   return lowerErasedEq(cx, a, b2);
-};
+}
 
 /**
  * Whether the optional field `name` is present in `rec`, an i32 0 or 1,
  * read from the record's `$present` word through dispatch `d`; 1 for a
  * required field.
  */
-let presenceOf = (cx: LoweringContext, d: RecordDispatchInfo, name: String,
-    optional: boolean, rec: i32): i32 => {
+function presenceOf(cx: LoweringContext, d: RecordDispatchInfo, name: String,
+    optional: boolean, rec: i32) {
   let i32vt = new ValTypeI32() as ValType;
   if (!optional) {
     return cx.b.constI32(1, i32vt);
@@ -880,7 +883,7 @@ let presenceOf = (cx: LoweringContext, d: RecordDispatchInfo, name: String,
       cx.b.constI64((bit & 63) as i64, i64vt));
   let masked = cx.b.binary(IrOp.i64_and, i64vt, shifted, cx.b.constI64(1, i64vt));
   return cx.b.emit(IrOp.i32_wrap_i64, i32vt, masked, -1);
-};
+}
 
 /**
  * The body of a structural comparison function (`valueEqLeft` and
@@ -889,7 +892,7 @@ let presenceOf = (cx: LoweringContext, d: RecordDispatchInfo, name: String,
  * are absent, or both present with equal values; their values are read
  * only when present.
  */
-export let lowerValueEqFunction = (cx: LoweringContext): IrBody => {
+export function lowerValueEqFunction(cx: LoweringContext): IrBody {
   let func = cx.func;
   let l = func.valueEqLeft as Type;
   let r = func.valueEqRight as Type;
@@ -914,7 +917,7 @@ export let lowerValueEqFunction = (cx: LoweringContext): IrBody => {
   cx.b.switchTo(falseB);
   cx.b.ret(cx.b.constI32(0, i32vt));
   return cx.b.finish();
-};
+}
 
 /**
  * Compares `a` and `b2`, records or tuples of types `l` and `r`, pair of
@@ -924,8 +927,8 @@ export let lowerValueEqFunction = (cx: LoweringContext): IrBody => {
  * with equal values; their values are read only when present. A record
  * held as its fields (`explodedRecords`) answers its reads from them.
  */
-let emitFieldComparisons = (cx: LoweringContext, l: Type, a: i32, r: Type,
-    b2: i32, fields: GrowableArray<ValueEqField>, falseB: i32): void => {
+function emitFieldComparisons(cx: LoweringContext, l: Type, a: i32, r: Type,
+    b2: i32, fields: GrowableArray<ValueEqField>, falseB: i32): void {
   let i32vt = new ValTypeI32() as ValType;
   for (let f in fields) {
     let nextB = cx.b.newBlock();
@@ -955,7 +958,7 @@ let emitFieldComparisons = (cx: LoweringContext, l: Type, a: i32, r: Type,
         nextB, noValues(), falseB, noValues());
     cx.b.switchTo(nextB);
   }
-};
+}
 
 /**
  * `a == b2` compared at the site, pair of fields by pair: what
@@ -963,8 +966,8 @@ let emitFieldComparisons = (cx: LoweringContext, l: Type, a: i32, r: Type,
  * the comparison reads the fields instead of passing a record to the
  * pair's function.
  */
-let inlineValueEq = (cx: LoweringContext, l: Type, a: i32, r: Type, b2: i32,
-    fields: GrowableArray<ValueEqField>): i32 => {
+function inlineValueEq(cx: LoweringContext, l: Type, a: i32, r: Type, b2: i32,
+    fields: GrowableArray<ValueEqField>): i32 {
   let i32vt = new ValTypeI32() as ValType;
   if (fields.length == 0) {
     return cx.b.constI32(1, i32vt);
@@ -978,14 +981,14 @@ let inlineValueEq = (cx: LoweringContext, l: Type, a: i32, r: Type, b2: i32,
   cx.b.br(mergeB, oneValue(cx.b.constI32(0, i32vt)));
   cx.b.switchTo(mergeB);
   return result;
-};
+}
 
 /**
  * `hashOf(v)` when `v`, a reference, is not null, and 0 when it is.
  * Non-null values pass straight through.
  */
-let nullSafeHash = (cx: LoweringContext, v: i32,
-    hashOf: (nonNull: i32) => i32): i32 => {
+function nullSafeHash(cx: LoweringContext, v: i32,
+    hashOf: (nonNull: i32) => i32) {
   let i32vt = new ValTypeI32() as ValType;
   let vt = cx.valueTypeOf(v);
   if (!isNullableRef(vt)) {
@@ -1005,13 +1008,13 @@ let nullSafeHash = (cx: LoweringContext, v: i32,
   cx.b.br(mergeB, oneValue(hashOf(nonNull)));
   cx.b.switchTo(mergeB);
   return result;
-};
+}
 
 /**
  * The hash of `v`, a record or tuple of type `t` (with or without
  * `| null`), through the type's hash function. Null hashes to 0.
  */
-export let lowerValueHash = (cx: LoweringContext, t: Type, v: i32): i32 => {
+export function lowerValueHash(cx: LoweringContext, t: Type, v: i32): i32 {
   let type = valueEqOperand(t);
   if (type == null) {
     bail(cx, 'structural hash operand');
@@ -1025,7 +1028,7 @@ export let lowerValueHash = (cx: LoweringContext, t: Type, v: i32): i32 => {
   }
   let fn = found as WasmFunction;
   return nullSafeHash(cx, v, (nonNull) => callUnary(cx, fn, nonNull));
-};
+}
 
 /**
  * The hash of one field of type `t`, consistent with comparing it by its
@@ -1035,7 +1038,7 @@ export let lowerValueHash = (cx: LoweringContext, t: Type, v: i32): i32 => {
  * without `hashCode`, an array or a closure, contributes 0, which no
  * `==` can disagree with.
  */
-let fieldHash = (cx: LoweringContext, t: Type, v: i32): i32 => {
+function fieldHash(cx: LoweringContext, t: Type, v: i32) {
   let i32vt = new ValTypeI32() as ValType;
   if (valueEqOperand(t) != null) {
     return lowerValueHash(cx, t, v);
@@ -1056,7 +1059,7 @@ let fieldHash = (cx: LoweringContext, t: Type, v: i32): i32 => {
     return cx.b.constI32(0, i32vt);
   }
   return nullSafeHash(cx, v, (nonNull) => hashClassValue(cx, fieldClass, nonNull));
-};
+}
 
 /**
  * The body of a record or tuple type's hash function (`valueHashType`
@@ -1064,7 +1067,7 @@ let fieldHash = (cx: LoweringContext, t: Type, v: i32): i32 => {
  * case-class `hashCode` folds. An optional field contributes its value's
  * hash only when present, so two equal records hash alike.
  */
-export let lowerValueHashFunction = (cx: LoweringContext): IrBody => {
+export function lowerValueHashFunction(cx: LoweringContext): IrBody {
   let t = cx.func.valueHashType as Type;
   let fieldsOpt = valueEqFields(t, t);
   let sig = cx.func.signature;
@@ -1106,10 +1109,10 @@ export let lowerValueHashFunction = (cx: LoweringContext): IrBody => {
   }
   cx.b.ret(h);
   return cx.b.finish();
-};
+}
 
 /** Element `name` (its index as a string) of the tuple `t`. */
-let tupleElement = (cx: LoweringContext, t: i32, name: String): i32 => {
+function tupleElement(cx: LoweringContext, t: i32, name: String): i32 {
   let st = refTargetOf(cx.valueTypeOf(t));
   if (!(st is WasmStruct)) {
     bail(cx, 'tuple equality operand');
@@ -1121,7 +1124,7 @@ let tupleElement = (cx: LoweringContext, t: i32, name: String): i32 => {
   }
   return cx.b.emit(IrOp.struct_get, tupleStruct.fields[index].type, t,
       cx.b.addRef(new IrRefField(tupleStruct, name)));
-};
+}
 
 /**
  * Erased equality over eqref-typed operands: identity, then null, then
@@ -1129,7 +1132,7 @@ let tupleElement = (cx: LoweringContext, t: i32, name: String): i32 => {
  * false. Without the dispatch (nothing marked equality as dispatched)
  * the references are simply different.
  */
-export let lowerErasedEq = (cx: LoweringContext, leftIn: i32, rightIn: i32): i32 => {
+export function lowerErasedEq(cx: LoweringContext, leftIn: i32, rightIn: i32): i32 {
   let i32vt = new ValTypeI32() as ValType;
   let eqVt = new ValTypeEqRef() as ValType;
   var left = leftIn;
@@ -1153,7 +1156,7 @@ export let lowerErasedEq = (cx: LoweringContext, leftIn: i32, rightIn: i32): i32
   let lNull = cx.b.emit(IrOp.ref_is_null, i32vt, left, -1);
   let rNull = cx.b.emit(IrOp.ref_is_null, i32vt, right, -1);
   let anyNull = cx.b.binary(IrOp.i32_or, i32vt, lNull, rNull);
-  var contB = cx.b.newBlock();
+  let contB = cx.b.newBlock();
   cx.b.brIf(anyNull, merge, oneValue(zero), contB, noValues());
 
   // The runtime class's operator: the shared dispatch tests each class
@@ -1175,7 +1178,7 @@ export let lowerErasedEq = (cx: LoweringContext, leftIn: i32, rightIn: i32): i32
   cx.b.br(merge, oneValue(zero));
   cx.b.switchTo(merge);
   return res;
-};
+}
 
 /**
  * The introducing classes the erased dispatch tests: each declares or
@@ -1184,7 +1187,7 @@ export let lowerErasedEq = (cx: LoweringContext, leftIn: i32, rightIn: i32): i32
  * dispatch picks the override. String first, as the common case; the rest
  * in type order, so the output does not depend on hash order.
  */
-let erasedEqualityIntroducers = (cx: LoweringContext): GrowableArray<ClassCodegenInfo> => {
+function erasedEqualityIntroducers(cx: LoweringContext) {
   let found = new Array<ClassCodegenInfo>();
   for (let entry in cx.wasm.classInfos) {
     let info = entry.value;
@@ -1223,7 +1226,7 @@ let erasedEqualityIntroducers = (cx: LoweringContext): GrowableArray<ClassCodege
     }
   }
   return ordered;
-};
+}
 
 /**
  * The body of `$erasedEq(a, b)`: equality of two references whose class
@@ -1234,7 +1237,7 @@ let erasedEqualityIntroducers = (cx: LoweringContext): GrowableArray<ClassCodege
  * (lowerClassEquality's path). A class that matches none compares
  * identity, already answered.
  */
-export let lowerErasedEqDispatch = (cx: LoweringContext): IrBody => {
+export function lowerErasedEqDispatch(cx: LoweringContext): IrBody {
   let i32vt = new ValTypeI32() as ValType;
   let sig = cx.func.signature;
   let entry = cx.b.newBlock();
@@ -1277,7 +1280,7 @@ export let lowerErasedEqDispatch = (cx: LoweringContext): IrBody => {
   }
   cx.b.ret(cx.b.constI32(0, i32vt));
   return cx.b.finish();
-};
+}
 
 /**
  * equals<T>(a, b) — the @intrinsic declare from zena:map,
@@ -1296,7 +1299,7 @@ export let lowerErasedEqDispatch = (cx: LoweringContext): IrBody => {
  *   anything else (nullable refs, erased operands, virtual ==)
  *                   -> bail to streaming.
  */
-export let lowerEqIntrinsic = (cx: LoweringContext, call: CallExpression): i32 => {
+export function lowerEqIntrinsic(cx: LoweringContext, call: CallExpression): i32 {
   let i32vt = new ValTypeI32() as ValType;
   if (call.args.length != 2) {
     bail(cx, 'eq arity');
@@ -1356,7 +1359,7 @@ export let lowerEqIntrinsic = (cx: LoweringContext, call: CallExpression): i32 =
     bail(cx, 'nullable eq operand');
   }
   return cx.b.binary(IrOp.ref_eq, new ValTypeI32(), a, b2);
-};
+}
 
 /**
  * hash<T>(v): by operand wasm type —
@@ -1368,7 +1371,7 @@ export let lowerEqIntrinsic = (cx: LoweringContext, call: CallExpression): i32 =
  *   nullable refs, erased operands -> bail;
  *   overridden hashCode -> vtable dispatch.
  */
-export let lowerHashIntrinsic = (cx: LoweringContext, call: CallExpression): i32 => {
+export function lowerHashIntrinsic(cx: LoweringContext, call: CallExpression): i32 {
   if (call.args.length != 1) {
     bail(cx, 'hash arity');
   }
@@ -1387,14 +1390,14 @@ export let lowerHashIntrinsic = (cx: LoweringContext, call: CallExpression): i32
     bail(cx, 'hash operand type');
   }
   return hashClassValue(cx, ctV as ClassType, v);
-};
+}
 
 /**
  * The hash of a numeric or vector value, by its wasm type: an i32 is
  * itself, an i64 folds, floats hash their bits after normalizing -0.0.
  * -1 when `v` is a reference.
  */
-let hashNumeric = (cx: LoweringContext, v: i32): i32 => {
+function hashNumeric(cx: LoweringContext, v: i32): i32 {
   let vv = cx.valueTypeOf(v);
   if (vv is ValTypeI32) {
     return v;
@@ -1427,14 +1430,14 @@ let hashNumeric = (cx: LoweringContext, v: i32): i32 => {
     return cx.b.binary(IrOp.i32_xor, i32vt, x01, x23);
   }
   return -1;
-};
+}
 
 /**
  * The hash of `v`, a value of class `ctV`: `String` through the runtime
  * helper, any other class through its `hashCode`, called directly when
  * no reached subclass overrides it and through the vtable when one does.
  */
-let hashClassValue = (cx: LoweringContext, ctV: ClassType, v: i32): i32 => {
+function hashClassValue(cx: LoweringContext, ctV: ClassType, v: i32): i32 {
   let vv = cx.valueTypeOf(v);
   let strClass = cx.wasm.stringClass;
   if (strClass != null &&
@@ -1474,4 +1477,4 @@ let hashClassValue = (cx: LoweringContext, ctV: ClassType, v: i32): i32 => {
   let recv = cx.conformReceiver(v, hsig.params[0], 'hash receiver type');
   return cx.lowerVtableCall(recv, ci, 'hashCode', hsig,
       oneValue(recv), hsig.returns[0]);
-};
+}

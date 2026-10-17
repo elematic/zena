@@ -43,7 +43,7 @@ import { ValType, WasmType, refTargetOf } from '../wasm.zena';
 import { getClassKey } from '../codegen-utils.zena';
 
 /** Deletes the types nothing names; returns how many went. */
-export let pruneTypes = (wasm: WasmModule, bodies: GrowableArray<IrBody>): i32 => {
+export function pruneTypes(wasm: WasmModule, bodies: GrowableArray<IrBody>): i32 {
   let count = wasm.types.length;
   let position = new Map<WasmType, i32>();
   for (var i = 0; i < count; i += 1) {
@@ -54,7 +54,7 @@ export let pruneTypes = (wasm: WasmModule, bodies: GrowableArray<IrBody>): i32 =
     live.push(false);
   }
   let work = new Array<i32>();
-  let mark = (t: WasmType): void => {
+  let mark = (t: WasmType) => {
     if (let (true, i) = position.get(t)) {
       if (!live[i]) {
         live[i] = true;
@@ -62,7 +62,7 @@ export let pruneTypes = (wasm: WasmModule, bodies: GrowableArray<IrBody>): i32 =
       }
     }
   };
-  let markVal = (vt: ValType): void => {
+  let markVal = (vt: ValType) => {
     let t = refTargetOf(vt);
     if (t != null) {
       mark(t);
@@ -97,7 +97,7 @@ export let pruneTypes = (wasm: WasmModule, bodies: GrowableArray<IrBody>): i32 =
   // of the ops whose ref slot names a struct or an array (the others
   // name functions, globals, tags and literals). Every mutable
   // variable gets a local, so their types all count.
-  let markRef = (body: IrBody, idx: i32): void => {
+  let markRef = (body: IrBody, idx: i32) => {
     let r = body.refTable[idx];
     if (r is IrRefType) {
       mark(r.target);
@@ -204,4 +204,4 @@ export let pruneTypes = (wasm: WasmModule, bodies: GrowableArray<IrBody>): i32 =
     kept[i].index = i;
   }
   return removed;
-};
+}

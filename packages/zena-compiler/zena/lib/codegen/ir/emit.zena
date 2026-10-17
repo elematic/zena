@@ -26,6 +26,7 @@ import {
   IrBody, IrOp, IrSuccessor, IrRefFunc, IrRefGlobal, IrRefType, IrRefField, IrRefTag, irOpName, isUnaryNumericOp, isBinaryNumericOp, isCommutativeOp, isIrTerminator, simdExtraOperandCount, isWideArithOp, isWideMulOp, wideArithOpcode, IrScratch } from './ir.zena';
 import { WasmStruct } from '../wasm-module.zena';
 import { IrCfg } from './cfg.zena';
+import { growable } from 'zena:core';
 
 final class EmitFrame {
   /** CFG block this label is the branch target of; -1 for if/else frames. */
@@ -277,8 +278,7 @@ export final class ZirFunctionEmitter {
         if (let (true, list) = this.#mvProjections.get(callInst)) {
           list.push(i);
         } else {
-          let list = new Array<i32>();
-          list.push(i);
+          let list = growable<i32>([i]);
           this.#mvProjections[callInst] = list;
         }
       }
@@ -374,10 +374,11 @@ export final class ZirFunctionEmitter {
     if (t == null) {
       return;
     }
-    var ok = false;
-    if (vt is ValTypeRef) {
-      ok = (vt as ValTypeRef).target == (t as WasmType);
-    }
+    let ok = if (vt is ValTypeRef) {
+      (vt as ValTypeRef).target == (t as WasmType)
+    } else {
+      false
+    };
     if (!ok) {
       this.#candTarget[idx] = null;
     }
@@ -466,15 +467,14 @@ export final class ZirFunctionEmitter {
         let dstIdx = this.#copyEdgeDst[c] - paramCount;
         if (this.#candTarget[dstIdx] != null) {
           let src = this.#copyEdgeSrc[c];
-          var srcTarget: WasmType | null = null;
-          if (src < paramCount) {
-            srcTarget = match (this.func.signature.params[src]) {
+          let srcTarget: WasmType | null = if (src < paramCount) {
+            match (this.func.signature.params[src]) {
               case ValTypeRef as r: r.target
               case _: null
-            };
+            }
           } else {
-            srcTarget = this.#candTarget[src - paramCount];
-          }
+            this.#candTarget[src - paramCount]
+          };
           if (srcTarget == null ||
               (srcTarget as WasmType) !=
                   (this.#candTarget[dstIdx] as WasmType)) {
@@ -585,9 +585,9 @@ export final class ZirFunctionEmitter {
       defs.push(0);
       upUse.push(0);
     }
-    let bitGet = (arr: GrowableArray<i32>, blk: i32, v: i32): boolean =>
+    let bitGet = (arr: GrowableArray<i32>, blk: i32, v: i32) =>
         (arr[blk * words + (v >> 5)] & (1 << (v & 31))) != 0;
-    let bitSet = (arr: GrowableArray<i32>, blk: i32, v: i32): void => {
+    let bitSet = (arr: GrowableArray<i32>, blk: i32, v: i32) => {
       let at = blk * words + (v >> 5);
       arr[at] = arr[at] | (1 << (v & 31));
     };
@@ -700,7 +700,7 @@ export final class ZirFunctionEmitter {
     for (var i = 0; i < count; i += 1) {
       parent.push(i);
     }
-    let find = (v: i32): i32 => {
+    let find = (v: i32) => {
       var c = v;
       while (parent[c] != c) {
         c = parent[c];
@@ -708,17 +708,16 @@ export final class ZirFunctionEmitter {
       return c;
     };
     let membersOf = new Map<i32, GrowableArray<i32>>();
-    let members = (root: i32): GrowableArray<i32> => {
+    let members = (root: i32) => {
       if (let (true, list) = membersOf.get(root)) {
         return list;
       }
-      let list = new Array<i32>();
-      list.push(root);
+      let list = growable<i32>([root]);
       membersOf[root] = list;
       return list;
     };
 
-    let tryUnion = (arg: i32, param: i32): void => {
+    let tryUnion = (arg: i32, param: i32) => {
       if (arg < 0 || arg >= count || !body.producesValue(arg) ||
           streamed[arg] || this.remat[arg]) {
         return;
@@ -988,7 +987,7 @@ export final class ZirFunctionEmitter {
     // Rematerialized constants and elision candidates emit nothing at
     // their site, so they are invisible to emission adjacency, like
     // nops.
-    let nonEmitting = (inst: i32): boolean => {
+    let nonEmitting = (inst: i32) => {
       let op = body.op(inst);
       return op == IrOp.nop || op == IrOp.mv_get || this.remat[inst] ||
           this.#elisionCandidate[inst];
@@ -2073,7 +2072,7 @@ export final class ZirFunctionEmitter {
   #globalIndexOf(inst: i32): i32 {
     let ref = this.body.refTable[this.body.b[inst]];
     if (!(ref is IrRefGlobal)) {
-      throw new Error('zir emit: ' + irOpName(this.body.op(inst)) + ' ref kind');
+      throw new Error(`zir emit: ${irOpName(this.body.op(inst))} ref kind`);
     }
     return ref.target.index;
   }
@@ -2103,7 +2102,7 @@ export final class ZirFunctionEmitter {
   #typeIndexOf(inst: i32): i32 {
     let ref = this.body.refTable[this.body.b[inst]];
     if (!(ref is IrRefType)) {
-      throw new Error('zir emit: ' + irOpName(this.body.op(inst)) + ' ref kind');
+      throw new Error(`zir emit: ${irOpName(this.body.op(inst))} ref kind`);
     }
     let {target} = ref;
     if (target.index < 0) {
@@ -2206,7 +2205,7 @@ export final class ZirFunctionEmitter {
           case ValTypeVoid: 'void'
           case _: 'a non-reference type'
         };
-        throw new Error('zir emit: ref.cast target kind ' + kind + ' [in ' + this.#funcName() + ']');
+        throw new Error(`zir emit: ref.cast target kind ${kind} [in ${this.#funcName()}]`);
       }
     }
   }
@@ -2642,11 +2641,11 @@ export final class ZirFunctionEmitter {
 }
 
 /** Emits one function; returns (graduated, kept-nullable) ref-local counts. */
-export let emitZirFunction = (wasm: WasmModule, emitter: WasmEmitter, func: WasmFunction, body: IrBody, scratch: IrScratch): (i32, i32) => {
+export function emitZirFunction(wasm: WasmModule, emitter: WasmEmitter, func: WasmFunction, body: IrBody, scratch: IrScratch): (i32, i32) {
   scratch.enter();
   let cfg = new IrCfg(body, scratch);
   let zirEmitter = new ZirFunctionEmitter(wasm, emitter, func, body, cfg, scratch);
   zirEmitter.emit();
   scratch.exit();
   return (zirEmitter.graduatedLocals, zirEmitter.demotedLocals);
-};
+}

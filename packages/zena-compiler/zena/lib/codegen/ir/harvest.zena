@@ -42,9 +42,9 @@ export final class HarvestResult {
  * Deletes unreachable functions (from `wasm.functions` and `bodies`,
  * kept parallel) and globals, and rebinds their indices.
  */
-export let pruneUnreached = (wasm: WasmModule,
+export function pruneUnreached(wasm: WasmModule,
     bodies: GrowableArray<IrBody>,
-    roots: GrowableArray<WasmFunction>): HarvestResult => {
+    roots: GrowableArray<WasmFunction>): HarvestResult {
   let fcount = wasm.functions.length;
   let bodyIndex = wasm.functionIndex();
   // Globals are looked up by their index, which layout assigned as
@@ -62,7 +62,7 @@ export let pruneUnreached = (wasm: WasmModule,
   // One worklist for both kinds: function entries are their body
   // index, global entries are offset past the function count.
   let work = new Array<i32>();
-  let markFunction = (f: WasmFunction): void => {
+  let markFunction = (f: WasmFunction) => {
     if (let (true, idx) = bodyIndex.get(f)) {
       if (!liveF[idx]) {
         liveF[idx] = true;
@@ -70,7 +70,7 @@ export let pruneUnreached = (wasm: WasmModule,
       }
     }
   };
-  let markGlobal = (g: WasmGlobal): void => {
+  let markGlobal = (g: WasmGlobal) => {
     let idx = g.index;
     if (idx < 0 || idx >= gcount) {
       throw new Error('harvest: a global outside the module');
@@ -213,4 +213,4 @@ export let pruneUnreached = (wasm: WasmModule,
     }
   }
   return new HarvestResult(removedF, removedG);
-};
+}

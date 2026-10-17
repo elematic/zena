@@ -31,14 +31,14 @@ import { IrBody, IrOp, isBinaryNumericOp, isUnaryNumericOp, IrScratch } from './
 import { ValTypeRef } from '../wasm.zena';
 
 /** Runs the pass; returns the number of instructions removed. */
-export let runDce = (body: IrBody, scratch: IrScratch): i32 => {
+export function runDce(body: IrBody, scratch: IrScratch): i32 {
   scratch.enter();
   let result = runDceOn(body, scratch);
   scratch.exit();
   return result;
-};
+}
 
-let runDceOn = (body: IrBody, scratch: IrScratch): i32 => {
+function runDceOn(body: IrBody, scratch: IrScratch): i32 {
   let count = body.instCount();
   let useCount = scratch.i32();
   for (var i = 0; i < count; i += 1) {
@@ -80,9 +80,9 @@ let runDceOn = (body: IrBody, scratch: IrScratch): i32 => {
     inst -= 1;
   }
   return removed;
-};
+}
 
-let isRemovable = (body: IrBody, inst: i32): boolean => {
+function isRemovable(body: IrBody, inst: i32): boolean {
   let op = body.op(inst);
   if (op == IrOp.const_i32 || op == IrOp.const_i64 ||
       op == IrOp.const_f32 || op == IrOp.const_f64) {
@@ -114,19 +114,16 @@ let isRemovable = (body: IrBody, inst: i32): boolean => {
       op == IrOp.iface_vtable || op == IrOp.iface_instance) {
     return receiverNonNull(body, body.a[inst]);
   }
-  if (op == IrOp.simd_unary || op == IrOp.simd_binary ||
+  return op == IrOp.simd_unary || op == IrOp.simd_binary ||
       op == IrOp.simd_ternary || op == IrOp.simd_extract_lane ||
       op == IrOp.simd_replace_lane || op == IrOp.simd_const ||
-      op == IrOp.simd_shuffle) {
-    return true;
-  }
-  return false;
-};
+      op == IrOp.simd_shuffle;
+}
 
-let receiverNonNull = (body: IrBody, receiver: i32): boolean => {
+function receiverNonNull(body: IrBody, receiver: i32): boolean {
   if (receiver < 0) {
     return false;
   }
   let t = body.resultType(receiver);
   return t is ValTypeRef;
-};
+}

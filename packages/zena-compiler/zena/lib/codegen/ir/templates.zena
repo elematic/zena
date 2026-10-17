@@ -24,6 +24,7 @@ import {
   LoweringContext, noValues, oneValue, twoValues,
 } from './lowering-context.zena';
 import { WellKnown, isWellKnown } from '../../well-known.zena';
+import { growable } from 'zena:core';
 
 /**
  * A string literal: id lookup in the shared registry, then the
@@ -32,7 +33,7 @@ import { WellKnown, isWellKnown } from '../../well-known.zena';
  * — a plain Error (not ZirUnsupported) fails the compile loudly
  * rather than falling back to a second storage story.
  */
-export let lowerStringLiteral = (cx: LoweringContext, lit: StringLiteral): i32 => {
+export function lowerStringLiteral(cx: LoweringContext, lit: StringLiteral): i32 {
   let litId = if (let (true, id) = cx.wasm.stringLiteralIds.get(lit.value)) id else -1;
   if (litId < 0) {
     throw new Error("String literal missing from the shared registry: '" +
@@ -56,7 +57,7 @@ export let lowerStringLiteral = (cx: LoweringContext, lit: StringLiteral): i32 =
     return cx.stripNonNull(call);
   }
   return cx.reassertNonNull(call, cx.exprVt(lit));
-};
+}
 
 /**
  * Template literals: quasi/expression parts in order, primitives
@@ -64,7 +65,7 @@ export let lowerStringLiteral = (cx: LoweringContext, lit: StringLiteral): i32 =
  * __concatN for 2..5 parts, else array.new_fixed + String.fromRawParts
  * (streaming's shape exactly).
  */
-export let lowerTemplateLiteral = (cx: LoweringContext, tpl: TemplateLiteral): i32 => {
+export function lowerTemplateLiteral(cx: LoweringContext, tpl: TemplateLiteral): i32 {
   if (tpl.quasis.length + tpl.expressions.length == 0) {
     return lowerStringLiteral(cx, new StringLiteral('', tpl.loc));
   }
@@ -128,19 +129,18 @@ export let lowerTemplateLiteral = (cx: LoweringContext, tpl: TemplateLiteral): i
   if (!isValSubtype(cx.valueTypeOf(arrValue), fsig.params[0])) {
     cx.fail('fromParts operand type');
   }
-  let args = new Array<i32>();
-  args.push(arrValue);
+  let args = growable<i32>([arrValue]);
   let call = cx.b.callFunc(
       cx.b.addRef(new IrRefFunc(fromParts)), args, fsig.returns[0]);
   return cx.reassertNonNull(call, cx.exprVt(tpl as Expression));
-};
+}
 
 /**
  * A template interpolation as a String value: primitives convert
  * through the zena:string-convert helpers; String values pass
  * through; anything else bails.
  */
-let templateOperandString = (cx: LoweringContext, expr: Expression): i32 => {
+function templateOperandString(cx: LoweringContext, expr: Expression): i32 {
   let value = lowerExpr(cx, expr, null);
   let tOpt = cx.substitutedNodeType(expr);
   if (tOpt == null) {
@@ -169,7 +169,7 @@ let templateOperandString = (cx: LoweringContext, expr: Expression): i32 => {
   }
   return cx.b.callFunc(
       cx.b.addRef(new IrRefFunc(helper)), oneValue(value), sig.returns[0]);
-};
+}
 
 /**
  * Tagged templates: the TemplateStringsArray is built once and
@@ -179,8 +179,8 @@ let templateOperandString = (cx: LoweringContext, expr: Expression): i32 => {
  * top-level functions, through the closure pair for local values.
  * Streaming's shape throughout, including the lazy-init null check.
  */
-export let lowerTaggedTemplate = (cx: LoweringContext,
-    expr: TaggedTemplateExpression): i32 => {
+export function lowerTaggedTemplate(cx: LoweringContext,
+    expr: TaggedTemplateExpression): i32 {
   let tsaClassOpt = cx.wasm.templateStringsArrayClass;
   if (tsaClassOpt == null) {
     cx.fail('template strings array class missing');
@@ -266,9 +266,10 @@ export let lowerTaggedTemplate = (cx: LoweringContext,
       tsaArgs.push(raw);
     } else {
       let ft = tsaStruct.fields[f].type;
-      tsaArgs.push(match (ft) {
-        case ValTypeI32: cx.b.constI32(0, new ValTypeI32())
-        case _: cx.b.emit(IrOp.ref_null, ft, -1, -1)
+      tsaArgs.push(if (ft is ValTypeI32) {
+        cx.b.constI32(0, new ValTypeI32())
+      } else {
+        cx.b.emit(IrOp.ref_null, ft, -1, -1)
       });
     }
   }
@@ -363,10 +364,7 @@ export let lowerTaggedTemplate = (cx: LoweringContext,
       callee, cx.b.addRef(new IrRefField(closureStruct, 'ctx')));
   let funcVal = cx.b.emit(IrOp.struct_get, closureStruct.fields[0].type,
       callee, cx.b.addRef(new IrRefField(closureStruct, 'func')));
-  let clArgs = new Array<i32>();
-  clArgs.push(ctxVal);
-  clArgs.push(tsa);
-  clArgs.push(values);
+  let clArgs = growable<i32>([ctxVal, tsa, values]);
   for (var i = 1; i < csig.params.length; i += 1) {
     if (!isValSubtype(cx.valueTypeOf(clArgs[i]), csig.params[i])) {
       cx.failConformance(clArgs[i], csig.params[i],
@@ -375,4 +373,4 @@ export let lowerTaggedTemplate = (cx: LoweringContext,
   }
   let resultType = if (csig.returns.length == 1) csig.returns[0] else null;
   return cx.b.callRef(funcVal, clArgs, resultType);
-};
+}

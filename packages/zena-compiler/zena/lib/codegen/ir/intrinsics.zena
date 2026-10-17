@@ -27,6 +27,7 @@ import { IrOp, IrRefTag, IrRefType, isWideMulOp } from './ir.zena';
 import { LoweringContext } from './lowering-context.zena';
 import { lowerEqIntrinsic, lowerHashIntrinsic } from './equality.zena';
 import { lowerExpr } from './lowering.zena';
+import { growable } from 'zena:core';
 
 /**
  * The slice of FunctionLowerer the intrinsic lowerings need. `fail`
@@ -37,25 +38,23 @@ import { lowerExpr } from './lowering.zena';
  * case-class synthesizers.
  */
 /** Memory load: addr operand; alignment hint matches streaming. */
-let lowerMemLoad = (cx: LoweringContext, call: CallExpression, op: IrOp, resultVt: ValType, align: i32): i32 => {
+function lowerMemLoad(cx: LoweringContext, call: CallExpression, op: IrOp, resultVt: ValType, align: i32) {
   let addr = lowerExpr(cx, call.args[0], null);
   return cx.b.emit(op, resultVt, addr, align);
-};
+}
 
 /** Memory store: addr + value operands; align matches streaming. */
-let lowerMemStore = (cx: LoweringContext, call: CallExpression, op: IrOp, align: i32): i32 => {
+function lowerMemStore(cx: LoweringContext, call: CallExpression, op: IrOp, align: i32) {
   let addr = lowerExpr(cx, call.args[0], null);
   let value = lowerExpr(cx, call.args[1], null);
-  let pair = new Array<i32>();
-  pair.push(addr);
-  pair.push(value);
+  let pair = growable<i32>([addr, value]);
   return cx.b.emitVoid(op, cx.b.pushExtra(pair), align);
-};
+}
 
 /** A call-position intrinsic that is one wasm instruction: lowers the
  * arguments in order and emits the op. Operand agreement is the
  * checker's (and finally the verifier's/validator's) problem. */
-let lowerInstr = (cx: LoweringContext, call: CallExpression, op: IrOp, resultVt: ValType): i32 => {
+function lowerInstr(cx: LoweringContext, call: CallExpression, op: IrOp, resultVt: ValType): i32 {
   if (call.args.length == 1) {
     let a = lowerExpr(cx, call.args[0], null);
     return cx.b.emit(op, resultVt, a, -1);
@@ -66,14 +65,14 @@ let lowerInstr = (cx: LoweringContext, call: CallExpression, op: IrOp, resultVt:
     return cx.b.binary(op, resultVt, a, c);
   }
   cx.fail('intrinsic arity');
-};
+}
 
 /** cancel.raise: a throw on the cancellation tag — the channel user
  * `catch` cannot observe (docs/design/cancellation.md). No payload is
  * set: nothing may observe a cancellation, so there is nothing to
  * carry. RTA ensures the tag when the intrinsic is reached; a miss
  * here is a reachability bug, not a fallback site. */
-let lowerCancelRaise = (cx: LoweringContext, call: CallExpression): i32 => {
+function lowerCancelRaise(cx: LoweringContext, call: CallExpression): i32 {
   let tagOpt = cx.wasm.cancellationTag;
   if (tagOpt == null) {
     // The whole-program gate is closed: nothing can cancel, so this
@@ -87,37 +86,37 @@ let lowerCancelRaise = (cx: LoweringContext, call: CallExpression): i32 => {
       cx.b.addRef(new IrRefTag(tagOpt as WasmTag)));
   cx.reachable = false;
   return -1;
-};
+}
 
 /** Lowers `e` and requires an array-typed value: (value, its array). */
-let arrayOperand = (cx: LoweringContext, e: Expression): (i32, WasmArray) => {
+function arrayOperand(cx: LoweringContext, e: Expression): (i32, WasmArray) {
   let value = lowerExpr(cx, e, null);
   let arrOpt = asWasmArray(cx.valueTypeOf(value));
   if (arrOpt == null) {
     cx.fail('array builtin receiver');
   }
   return (value, arrOpt);
-};
+}
 
 /** Lowers `e` and requires an i32 value (indexes, offsets, lengths). */
-let indexOperand = (cx: LoweringContext, e: Expression): i32 => {
+function indexOperand(cx: LoweringContext, e: Expression) {
   let value = lowerExpr(cx, e, null);
   if (!(cx.valueTypeOf(value) is ValTypeI32)) {
     cx.fail('array builtin index type');
   }
   return value;
-};
+}
 
 /** __array_len / __byte_array_length: array.len is width-agnostic. */
-let lowerArrayLen = (cx: LoweringContext, call: CallExpression): i32 => {
+function lowerArrayLen(cx: LoweringContext, call: CallExpression) {
   let (arr, _) = arrayOperand(cx, call.args[0]);
   return cx.b.emit(IrOp.array_len, new ValTypeI32(), arr, -1);
-};
+}
 
 /** Whether a wasm element type is one of the packed widths. */
-let isPackedElement = (vt: ValType): boolean => {
+function isPackedElement(vt: ValType) {
   return vt is ValTypeI8 || vt is ValTypeI16;
-};
+}
 
 /**
  * Whether a packed array's elements should be read sign-extended.
@@ -129,7 +128,7 @@ let isPackedElement = (vt: ValType): boolean => {
  * recovered — a zero-extending read of a `u8` is always correct, while
  * a sign-extending read of one silently invents negative values.
  */
-let packedArrayElementSigned = (cx: LoweringContext, e: Expression): boolean => {
+function packedArrayElementSigned(cx: LoweringContext, e: Expression): boolean {
   let t = cx.substitutedNodeType(e);
   if (t == null) {
     return false;
@@ -139,7 +138,7 @@ let packedArrayElementSigned = (cx: LoweringContext, e: Expression): boolean => 
     return false;
   }
   return isSignedNarrowIntType(elem);
-};
+}
 
 /**
  * Whether the argument's checked type is zero-width (void/never). A
@@ -148,13 +147,13 @@ let packedArrayElementSigned = (cx: LoweringContext, e: Expression): boolean => 
  * fill and no value to fill it with: the argument runs for its
  * effects and the slot stores a constant.
  */
-let zeroWidthArg = (cx: LoweringContext, e: Expression): boolean => {
+function zeroWidthArg(cx: LoweringContext, e: Expression) {
   let t = cx.substitutedNodeType(e);
   return t != null && isVoidOrNeverType(t);
-};
+}
 
 /** __array_get: array.get, choosing the packed read for narrow elements. */
-let lowerArrayGet = (cx: LoweringContext, call: CallExpression): i32 => {
+function lowerArrayGet(cx: LoweringContext, call: CallExpression) {
   let (arr, arrType) = arrayOperand(cx, call.args[0]);
   let index = indexOperand(cx, call.args[1]);
   if (isPackedElement(arrType.elementType)) {
@@ -170,20 +169,20 @@ let lowerArrayGet = (cx: LoweringContext, call: CallExpression): i32 => {
   cx.requireSupported(arrType.elementType, 'array element type');
   let value = cx.b.emit(IrOp.array_get, arrType.elementType, arr, index);
   return cx.reassertNonNull(value, cx.exprVt(call));
-};
+}
 
 /** __byte_array_get: packed i8 elements read unsigned (array.get_u). */
-let lowerByteArrayGet = (cx: LoweringContext, call: CallExpression): i32 => {
+function lowerByteArrayGet(cx: LoweringContext, call: CallExpression) {
   let (arr, arrType) = arrayOperand(cx, call.args[0]);
   let index = indexOperand(cx, call.args[1]);
   if (!(arrType.elementType is ValTypeI8)) {
     cx.fail('byte builtin on non-byte array');
   }
   return cx.b.emit(IrOp.array_get_u, new ValTypeI32(), arr, index);
-};
+}
 
 /** __array_set: array.set, taking a plain i32 for packed elements. */
-let lowerArraySet = (cx: LoweringContext, call: CallExpression): i32 => {
+function lowerArraySet(cx: LoweringContext, call: CallExpression) {
   let (arr, arrType) = arrayOperand(cx, call.args[0]);
   let index = indexOperand(cx, call.args[1]);
   if (isPackedElement(arrType.elementType)) {
@@ -209,10 +208,10 @@ let lowerArraySet = (cx: LoweringContext, call: CallExpression): i32 => {
   }
   let tripleIdx = cx.b.pushExtra(threeValues(arr, index, value));
   return cx.b.emitVoid(IrOp.array_set, tripleIdx, -1);
-};
+}
 
 /** __byte_array_set: packed i8 elements take plain i32 values. */
-let lowerByteArraySet = (cx: LoweringContext, call: CallExpression): i32 => {
+function lowerByteArraySet(cx: LoweringContext, call: CallExpression) {
   let (arr, arrType) = arrayOperand(cx, call.args[0]);
   let index = indexOperand(cx, call.args[1]);
   if (!(arrType.elementType is ValTypeI8)) {
@@ -224,24 +223,24 @@ let lowerByteArraySet = (cx: LoweringContext, call: CallExpression): i32 => {
   }
   let tripleIdx = cx.b.pushExtra(threeValues(arr, index, value));
   return cx.b.emitVoid(IrOp.array_set, tripleIdx, -1);
-};
+}
 
 /**
  * The array type both new-family builtins allocate: the call's own
  * checked type — the same source streaming uses for the array.new
  * type index.
  */
-let newResultArray = (cx: LoweringContext, call: CallExpression): (ValType, WasmArray) => {
+function newResultArray(cx: LoweringContext, call: CallExpression): (ValType, WasmArray) {
   let resultVt = cx.exprVt(call);
   let arrTypeOpt = asWasmArray(resultVt);
   if (arrTypeOpt == null) {
     cx.fail('array builtin result type');
   }
   return (resultVt, arrTypeOpt);
-};
+}
 
 /** __array_new: array.new with an explicit init value. */
-let lowerArrayNew = (cx: LoweringContext, call: CallExpression): i32 => {
+function lowerArrayNew(cx: LoweringContext, call: CallExpression) {
   let (resultVt, arrType) = newResultArray(cx, call);
   let length = indexOperand(cx, call.args[0]);
   if (isPackedElement(arrType.elementType)) {
@@ -269,22 +268,22 @@ let lowerArrayNew = (cx: LoweringContext, call: CallExpression): i32 => {
   let pairIdx = cx.b.pushExtra(twoValues(length, init));
   return cx.b.emit(IrOp.array_new, resultVt, pairIdx,
       cx.b.addRef(new IrRefType(arrType)));
-};
+}
 
 /** __array_new_empty / __byte_array_new: array.new_default. */
-let lowerArrayNewDefault = (cx: LoweringContext, call: CallExpression): i32 => {
+function lowerArrayNewDefault(cx: LoweringContext, call: CallExpression) {
   let (resultVt, arrType) = newResultArray(cx, call);
   let length = indexOperand(cx, call.args[0]);
   let pairIdx = cx.b.pushExtra(twoValues(length, -1));
   return cx.b.emit(IrOp.array_new, resultVt, pairIdx,
       cx.b.addRef(new IrRefType(arrType)));
-};
+}
 
 /**
  * __byte_array_copy: argument order (dest, destOff, src, srcOff, len)
  * matches array.copy's operand order exactly.
  */
-let lowerByteArrayCopy = (cx: LoweringContext, call: CallExpression): i32 => {
+function lowerByteArrayCopy(cx: LoweringContext, call: CallExpression) {
   let (dest, destType) = arrayOperand(cx, call.args[0]);
   let destOff = indexOperand(cx, call.args[1]);
   let (src, srcType) = arrayOperand(cx, call.args[2]);
@@ -294,36 +293,26 @@ let lowerByteArrayCopy = (cx: LoweringContext, call: CallExpression): i32 => {
       !(srcType.elementType is ValTypeI8)) {
     cx.fail('byte builtin on non-byte array');
   }
-  let tuple = new Array<i32>();
-  tuple.push(dest);
-  tuple.push(destOff);
-  tuple.push(src);
-  tuple.push(srcOff);
-  tuple.push(len);
+  let tuple = growable<i32>([dest, destOff, src, srcOff, len]);
   let tupleIdx = cx.b.pushExtra(tuple);
   return cx.b.emitVoid(IrOp.array_copy, tupleIdx, -1);
-};
+}
 
-let twoValues = (a: i32, b: i32): GrowableArray<i32> => {
-  let out = new Array<i32>();
-  out.push(a);
-  out.push(b);
+function twoValues(a: i32, b: i32): GrowableArray<i32> {
+  let out = growable<i32>([a, b]);
   return out;
-};
+}
 
-let threeValues = (a: i32, b: i32, c: i32): GrowableArray<i32> => {
-  let out = new Array<i32>();
-  out.push(a);
-  out.push(b);
-  out.push(c);
+function threeValues(a: i32, b: i32, c: i32): GrowableArray<i32> {
+  let out = growable<i32>([a, b, c]);
   return out;
-};
+}
 
 /** memory.grow(pages) -> previous size in pages. */
-let lowerMemoryGrow = (cx: LoweringContext, call: CallExpression): i32 => {
+function lowerMemoryGrow(cx: LoweringContext, call: CallExpression) {
   let pages = lowerExpr(cx, call.args[0], null);
   return cx.b.emit(IrOp.memory_grow, new ValTypeI32(), pages, -1);
-};
+}
 
 
 
@@ -342,34 +331,36 @@ let lowerMemoryGrow = (cx: LoweringContext, call: CallExpression): i32 => {
 // the 128-bit product — and only the high half needs the four
 // 32x32->64 partial products.
 
-let i64vt = (): ValType => new ValTypeI64();
+function i64vt(): ValType {
+  return new ValTypeI64();
+}
 
 /** `x op y` on i64s. */
-let i64bin = (cx: LoweringContext, op: IrOp, x: i32, y: i32): i32 => {
+function i64bin(cx: LoweringContext, op: IrOp, x: i32, y: i32) {
   return cx.b.binary(op, i64vt(), x, y);
-};
+}
 
 /** An i64 constant. */
-let i64const = (cx: LoweringContext, v: i64): i32 => {
+function i64const(cx: LoweringContext, v: i64) {
   return cx.b.constI64(v, i64vt());
-};
+}
 
 /** The low 32 bits of an i64, zero-extended. */
-let lowHalf = (cx: LoweringContext, x: i32): i32 => {
+function lowHalf(cx: LoweringContext, x: i32) {
   return i64bin(cx, IrOp.i64_and, x, i64const(cx, 0xFFFFFFFF as i64));
-};
+}
 
 /** The high 32 bits of an i64, shifted down (unsigned). */
-let highHalf = (cx: LoweringContext, x: i32): i32 => {
+function highHalf(cx: LoweringContext, x: i32) {
   return i64bin(cx, IrOp.i64_shr_u, x, i64const(cx, 32 as i64));
-};
+}
 
 /**
  * The high 64 bits of the unsigned 128-bit product x*y, from the four
  * 32x32->64 partial products. `mid` cannot overflow: it is at most
  * (2^32-1) + 2*(2^32-1) < 2^34.
  */
-let mulHighU = (cx: LoweringContext, x: i32, y: i32): i32 => {
+function mulHighU(cx: LoweringContext, x: i32, y: i32) {
   let x0 = lowHalf(cx, x);
   let x1 = highHalf(cx, x);
   let y0 = lowHalf(cx, y);
@@ -384,7 +375,7 @@ let mulHighU = (cx: LoweringContext, x: i32, y: i32): i32 => {
   return i64bin(cx, IrOp.i64_add,
       i64bin(cx, IrOp.i64_add, p11, highHalf(cx, p01)),
       i64bin(cx, IrOp.i64_add, highHalf(cx, p10), highHalf(cx, mid)));
-};
+}
 
 /**
  * The signed high half, from the unsigned one: reading a negative
@@ -392,30 +383,30 @@ let mulHighU = (cx: LoweringContext, x: i32, y: i32): i32 => {
  * operand, so subtract each operand masked by the other's sign
  * (`x >> 63` is 0 or all-ones).
  */
-let mulHighS = (cx: LoweringContext, x: i32, y: i32): i32 => {
+function mulHighS(cx: LoweringContext, x: i32, y: i32) {
   let hi = mulHighU(cx, x, y);
   let sx = i64bin(cx, IrOp.i64_shr_s, x, i64const(cx, 63 as i64));
   let sy = i64bin(cx, IrOp.i64_shr_s, y, i64const(cx, 63 as i64));
   return i64bin(cx, IrOp.i64_sub,
       i64bin(cx, IrOp.i64_sub, hi, i64bin(cx, IrOp.i64_and, sx, y)),
       i64bin(cx, IrOp.i64_and, sy, x));
-};
+}
 
 /**
  * A 0-or-1 i64 from an i64 comparison. `i64.lt_u` leaves an i32, and
  * sign-extending it is exact for 0 and 1.
  */
-let carryBit = (cx: LoweringContext, op: IrOp, x: i32, y: i32): i32 => {
+function carryBit(cx: LoweringContext, op: IrOp, x: i32, y: i32) {
   let cmp = cx.b.binary(op, new ValTypeI32(), x, y);
   return cx.b.emit(IrOp.i64_extend_i32_s, i64vt(), cmp, -1);
-};
+}
 
 /** The polyfill for one wide-arithmetic op: [lo, hi]. */
-let wideArithPolyfill = (
+function wideArithPolyfill(
   cx: LoweringContext,
   op: IrOp,
   ops: GrowableArray<i32>
-): GrowableArray<i32> => {
+) {
   let out = new Array<i32>();
   if (op == IrOp.i64_mul_wide_u || op == IrOp.i64_mul_wide_s) {
     let x = ops[0];
@@ -447,23 +438,23 @@ let wideArithPolyfill = (
   out.push(i64bin(cx, IrOp.i64_sub,
       i64bin(cx, IrOp.i64_sub, aHi, bHi), borrow));
   return out;
-};
+}
 
 /** The ZIR op an `@intrinsic` name in the wide-arithmetic set names. */
-let wideArithOp = (name: String): IrOp => {
+function wideArithOp(name: String) {
   return match (name) {
     case 'i64.mul_wide_u': IrOp.i64_mul_wide_u
     case 'i64.mul_wide_s': IrOp.i64_mul_wide_s
     case 'i64.add128': IrOp.i64_add128
     case _: IrOp.i64_sub128
   };
-};
+}
 
 /** Whether `name` is one of the four. */
-export let isWideArithIntrinsic = (name: String): boolean => {
+export function isWideArithIntrinsic(name: String): boolean {
   return name == 'i64.mul_wide_u' || name == 'i64.mul_wide_s' ||
       name == 'i64.add128' || name == 'i64.sub128';
-};
+}
 
 /**
  * Lowers a wide-arithmetic intrinsic to its two result values. The
@@ -472,12 +463,12 @@ export let isWideArithIntrinsic = (name: String): boolean => {
  * else there is no pair of slots to land in, and the checker's
  * inline-tuple type has no single wasm value type to fall back on.
  */
-let lowerWideArith = (
+function lowerWideArith(
   cx: LoweringContext,
   name: String,
   call: CallExpression,
   outs: GrowableArray<i32>
-): void => {
+) {
   let op = wideArithOp(name);
   let arity = if (isWideMulOp(op)) 2 else 4;
   if (call.args.length != arity) {
@@ -495,7 +486,7 @@ let lowerWideArith = (
   for (let r in results) {
     outs.push(r);
   }
-};
+}
 
 /**
  * A wasm IMMEDIATE, which is encoded in the instruction rather than
@@ -507,15 +498,15 @@ let lowerWideArith = (
  * picking one silently would be the wrong call to make on the author's
  * behalf.
  */
-let simdImmediate = (
+function simdImmediate(
   cx: LoweringContext,
   name: String,
   what: String,
   e: Expression,
   limit: i32
-): i32 => {
+) {
   if (!(e is NumberLiteral)) {
-    cx.fail(name + ': ' + what + ' must be a literal');
+    cx.fail(`${name}: ${what} must be a literal`);
   }
   let raw = (e as NumberLiteral).raw;
   let (ok, parsed) = parseI32WithHex(raw);
@@ -524,10 +515,11 @@ let simdImmediate = (
         i32ToString(limit - 1) + ', got ' + raw);
   }
   return parsed;
-};
+}
 
 /** The wasm value type an instruction leaves on the stack. */
-let simdResultVt = (result: SimdResult): ValType => match (result) {
+function simdResultVt(result: SimdResult): ValType {
+  return match (result) {
   case SimdResult.V128: new ValTypeV128()
   case SimdResult.I32: new ValTypeI32()
   case SimdResult.I64: new ValTypeI64()
@@ -535,14 +527,15 @@ let simdResultVt = (result: SimdResult): ValType => match (result) {
   case SimdResult.F64: new ValTypeF64()
   case SimdResult.Void: new ValTypeVoid()
 };
+}
 
 /** Lowers `count` arguments starting at `from`, in source order. */
-let simdOperands = (
+function simdOperands(
   cx: LoweringContext,
   call: CallExpression,
   from: i32,
   count: i32
-): GrowableArray<i32> => {
+) {
   let out = new Array<i32>(count);
   var i = 0;
   while (i < count) {
@@ -550,7 +543,7 @@ let simdOperands = (
     i += 1;
   }
   return out;
-};
+}
 
 /**
  * One 32-bit word of a `v128.const`. Unlike a lane index this is a
@@ -558,11 +551,11 @@ let simdOperands = (
  * which reach the AST as a negation wrapped around a literal rather
  * than as a literal of their own.
  */
-let simdImmediateWord = (
+function simdImmediateWord(
   cx: LoweringContext,
   name: String,
   e: Expression
-): i32 => {
+) {
   var negative = false;
   var operand = e;
   match (e) {
@@ -580,10 +573,10 @@ let simdImmediateWord = (
   let raw = (operand as NumberLiteral).raw;
   let (ok, parsed) = parseI32WithHex(raw);
   if (!ok) {
-    cx.fail(name + ': ' + raw + ' is not an integer word');
+    cx.fail(`${name}: ${raw} is not an integer word`);
   }
   return if (negative) 0 - parsed else parsed;
-};
+}
 
 /**
  * Every SIMD intrinsic, routed by the operand shape its table row
@@ -595,11 +588,11 @@ let simdImmediateWord = (
  * each immediate next to the operand it qualifies — `replaceLane(vec,
  * lane, value)` — rather than in wasm's operands-then-immediates order.
  */
-let lowerSimd = (
+function lowerSimd(
   cx: LoweringContext,
   instr: SimdInstruction,
   call: CallExpression
-): i32 => {
+) {
   let {name} = instr;
   if (call.args.length != simdArgCount(instr)) {
     cx.fail(name + ': wrong argument count');
@@ -661,8 +654,7 @@ let lowerSimd = (
     case SimdShape.Const: {
       // Four i32 literals, little-endian, into the sixteen immediate
       // bytes — the same order `v128.const i32x4 a b c d` writes them.
-      let imm = new Array<i32>();
-      imm.push(instr.opcode);
+      let imm = growable<i32>([instr.opcode]);
       var w = 0;
       while (w < 4) {
         let word = simdImmediateWord(cx, name, call.args[w]);
@@ -677,8 +669,7 @@ let lowerSimd = (
     }
     case SimdShape.Shuffle: {
       let ops = simdOperands(cx, call, 0, 2);
-      let imm = new Array<i32>();
-      imm.push(instr.opcode);
+      let imm = growable<i32>([instr.opcode]);
       var i = 0;
       while (i < 16) {
         // Selectors index the two operands end to end, so they run to 31.
@@ -689,7 +680,7 @@ let lowerSimd = (
           cx.b.pushExtra(imm))
     }
   };
-};
+}
 
 /**
  * The single name -> lowering router for call-position intrinsics.
@@ -702,7 +693,7 @@ let lowerSimd = (
  * both length builtins are the width-agnostic array.len, and
  * __array_new_empty / __byte_array_new are both array.new_default.
  */
-export let lowerIntrinsic = (cx: LoweringContext, name: String, call: CallExpression, multiOut: GrowableArray<i32> | null): i32 => {
+export function lowerIntrinsic(cx: LoweringContext, name: String, call: CallExpression, multiOut: GrowableArray<i32> | null): i32 {
   if (isWideArithIntrinsic(name)) {
     if (multiOut == null) {
       // `inline (u64, u64)` has no single wasm value type, so there is
@@ -797,4 +788,4 @@ export let lowerIntrinsic = (cx: LoweringContext, name: String, call: CallExpres
       }
     }
   };
-};
+}

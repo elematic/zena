@@ -20,25 +20,26 @@ import {
   unwrapAliases,
 } from './codegen-utils.zena';
 import { HashMap } from 'zena:collections';
+import { growable } from 'zena:core';
 
-export let getClassTypeParameters = (ct: ClassType): Array<TypeParameterType> | null => {
+export function getClassTypeParameters(ct: ClassType): Array<TypeParameterType> | null {
   return (ct.genericSource ?? ct).typeParameters;
-};
+}
 
-export let getInterfaceTypeParameters = (it: InterfaceType): Array<TypeParameterType> | null => {
+export function getInterfaceTypeParameters(it: InterfaceType): Array<TypeParameterType> | null {
   return (it.genericSource ?? it).typeParameters;
-};
+}
 
 /**
  * Counts each outermost call for the census; the recursion below goes
  * through `substituteTypeParamsInCodegenInner` directly.
  */
-export let substituteTypeParamsInCodegen = (
+export function substituteTypeParamsInCodegen(
   wasm: WasmModule,
   typeParams: Array<TypeParameterType> | null,
   typeArgs: Array<Type> | null,
   t: Type
-): Type => {
+): Type {
   if (typeParams == null || typeArgs == null || typeParams.length == 0 || typeArgs.length == 0) {
     return t;
   }
@@ -61,14 +62,14 @@ export let substituteTypeParamsInCodegen = (
   node.value = result;
   countCodegenSubstitution(t, typeArgs, result);
   return result;
-};
+}
 
-let substituteTypeParamsInCodegenInner = (
+function substituteTypeParamsInCodegenInner(
   wasm: WasmModule,
   typeParams: Array<TypeParameterType> | null,
   typeArgs: Array<Type> | null,
   t: Type
-): Type => {
+): Type {
   if (typeParams == null || typeArgs == null || typeParams.length == 0 || typeArgs.length == 0) {
     return t;
   }
@@ -296,7 +297,7 @@ let substituteTypeParamsInCodegenInner = (
         // covers) or already concrete.
         var instKey = "";
         for (let arg in newArgs) {
-          instKey = instKey + i32ToString(arg.uid) + ",";
+          instKey = `${instKey}${i32ToString(arg.uid)},`;
         }
         let icacheVal = wasm.substitutionsFor(ct).instantiations;
         if (let (true, hit) = icacheVal.get(instKey)) {
@@ -429,7 +430,7 @@ let substituteTypeParamsInCodegenInner = (
         // without end.
         var instKey = "";
         for (let arg in newArgs) {
-          instKey = instKey + i32ToString(arg.uid) + ",";
+          instKey = `${instKey}${i32ToString(arg.uid)},`;
         }
         let icacheVal = wasm.interfaceInstantiationsFor(it);
         if (let (true, hit) = icacheVal.get(instKey)) {
@@ -527,15 +528,15 @@ let substituteTypeParamsInCodegenInner = (
     }
     case _: t
   };
-};
+}
 
-let addTransitiveInterfaces = (
+function addTransitiveInterfaces(
   wasm: WasmModule,
   it: InterfaceType,
   allParams: GrowableArray<TypeParameterType>,
   allArgs: GrowableArray<Type>,
   seen: HashMap<String, boolean>
-): void => {
+): void {
   let key = getInterfaceKey(it) as String;
   if (seen.has(key)) {
     return;
@@ -563,15 +564,15 @@ let addTransitiveInterfaces = (
     let resolvedExt = substituteTypeParamsInCodegen(wasm, itParamsVal, it.typeArguments, ext) as InterfaceType;
     addTransitiveInterfaces(wasm, resolvedExt, allParams, allArgs, seen);
   }
-};
+}
 
-let addClassTransitiveInterfaces = (
+function addClassTransitiveInterfaces(
   wasm: WasmModule,
   ct: ClassType,
   allParams: GrowableArray<TypeParameterType>,
   allArgs: GrowableArray<Type>,
   seen: HashMap<String, boolean>
-): void => {
+): void {
   let ctParams = getClassTypeParameters(ct);
   for (let impl in ct.implementsList) {
     if (impl is InterfaceType) {
@@ -604,15 +605,15 @@ let addClassTransitiveInterfaces = (
     // Recursively add superclass's interfaces and superclasses
     addClassTransitiveInterfaces(wasm, superResolved, allParams, allArgs, seen);
   }
-};
+}
 
-let addTransitiveMixins = (
+function addTransitiveMixins(
   mt: MixinType,
   allParams: GrowableArray<TypeParameterType>,
   allArgs: GrowableArray<Type>,
   seen: HashMap<String, boolean>
-): void => {
-  let key = mt.sourcePath + "::" + mt.name;
+): void {
+  let key = `${mt.sourcePath}::${mt.name}`;
   if (seen.has(key)) {
     return;
   }
@@ -634,14 +635,14 @@ let addTransitiveMixins = (
   for (let composed in mt.mixins) {
     addTransitiveMixins(composed, allParams, allArgs, seen);
   }
-};
+}
 
-let addClassTransitiveMixins = (
+function addClassTransitiveMixins(
   ct: ClassType,
   allParams: GrowableArray<TypeParameterType>,
   allArgs: GrowableArray<Type>,
   seen: HashMap<String, boolean>
-): void => {
+): void {
   for (let m in ct.mixins) {
     addTransitiveMixins(m, allParams, allArgs, seen);
   }
@@ -649,10 +650,10 @@ let addClassTransitiveMixins = (
   if (superType != null) {
     addClassTransitiveMixins(superType, allParams, allArgs, seen);
   }
-};
+}
 
-export let substituteTypeParamsInClassContext = (
-    wasm: WasmModule, classType: ClassType | null, t: Type): Type => {
+export function substituteTypeParamsInClassContext(
+    wasm: WasmModule, classType: ClassType | null, t: Type): Type {
   if (classType == null) {
     return t;
   }
@@ -697,7 +698,7 @@ export let substituteTypeParamsInClassContext = (
   let result = mapMixinThisInType(classType, substituted);
   cacheVal[t] = result;
   return result;
-};
+}
 
 /**
  * The (substituted) InterfaceType named `name` that `ct` implements,
@@ -706,7 +707,7 @@ export let substituteTypeParamsInClassContext = (
  * per-module (stmt/loops.zena, reachability/visitor.zena, ir/); this
  * is the one shared copy.
  */
-export let findImplementedInterfaceTransitive = (wasm: WasmModule, ct: ClassType, name: String): InterfaceType | null => {
+export function findImplementedInterfaceTransitive(wasm: WasmModule, ct: ClassType, name: String): InterfaceType | null {
   let seen = new Map<InterfaceKey, boolean>();
   let queue = new Array<InterfaceType>();
 
@@ -746,17 +747,16 @@ export let findImplementedInterfaceTransitive = (wasm: WasmModule, ct: ClassType
     }
   }
   return null;
-};
+}
 
 /**
  * The (substituted) InterfaceType named `name` that `it` is or extends,
  * transitively — findImplementedInterfaceTransitive for a receiver that
  * is an interface value rather than a class.
  */
-export let findExtendedInterfaceTransitive = (wasm: WasmModule, it: InterfaceType, name: String): InterfaceType | null => {
+export function findExtendedInterfaceTransitive(wasm: WasmModule, it: InterfaceType, name: String): InterfaceType | null {
   let seen = new Map<InterfaceKey, boolean>();
-  let queue = new Array<InterfaceType>();
-  queue.push(it);
+  let queue = growable<InterfaceType>([it]);
   var head = 0;
   while (head < queue.length) {
     let cur = queue[head];
@@ -775,9 +775,9 @@ export let findExtendedInterfaceTransitive = (wasm: WasmModule, it: InterfaceTyp
     }
   }
   return null;
-};
+}
 
-export let substituteTypeParamsInFunctionContext = (wasm: WasmModule, wasmFunction: WasmFunction | null, t: Type): Type => {
+export function substituteTypeParamsInFunctionContext(wasm: WasmModule, wasmFunction: WasmFunction | null, t: Type): Type {
   if (wasmFunction == null) {
     return t;
   }
@@ -820,9 +820,9 @@ export let substituteTypeParamsInFunctionContext = (wasm: WasmModule, wasmFuncti
 
   cache[t] = substituted;
   return substituted;
-};
+}
 
-export let getInterfaceMemberSignature = (wasm: WasmModule, it: InterfaceType, fieldName: String): WasmSignature => {
+export function getInterfaceMemberSignature(wasm: WasmModule, it: InterfaceType, fieldName: String): WasmSignature {
   let itParams = getInterfaceTypeParameters(it);
   if (fieldName.startsWith("get#")) {
     let propName = fieldName.sliceBytes(4, fieldName.length);
@@ -847,12 +847,10 @@ export let getInterfaceMemberSignature = (wasm: WasmModule, it: InterfaceType, f
       }
     }
     if (memberType == null) {
-      throw new Error("Interface getter member " + fieldName + " not found on interface " + it.name);
+      throw new Error(`Interface getter member ${fieldName} not found on interface ${it.name}`);
     }
-    let params = new Array<ValType>();
-    params.push(new ValTypeAnyRef());
-    let returns = new Array<ValType>();
-    returns.push(typeToValType(wasm, memberType));
+    let params = growable<ValType>([new ValTypeAnyRef()]);
+    let returns = growable<ValType>([typeToValType(wasm, memberType)]);
     return wasm.getSignature(params, returns);
   } else if (fieldName.startsWith("set#")) {
     let propName = fieldName.sliceBytes(4, fieldName.length);
@@ -881,10 +879,9 @@ export let getInterfaceMemberSignature = (wasm: WasmModule, it: InterfaceType, f
       }
     }
     if (memberType == null) {
-      throw new Error("Interface setter member " + fieldName + " not found on interface " + it.name);
+      throw new Error(`Interface setter member ${fieldName} not found on interface ${it.name}`);
     }
-    let params = new Array<ValType>();
-    params.push(new ValTypeAnyRef());
+    let params = growable<ValType>([new ValTypeAnyRef()]);
     mapParamTypeToWasmParams(wasm, memberType, params);
     let returns = new Array<ValType>();
     return wasm.getSignature(params, returns);
@@ -898,11 +895,10 @@ export let getInterfaceMemberSignature = (wasm: WasmModule, it: InterfaceType, f
       }
     }
     if (resolvedFt == null) {
-      throw new Error("Interface method " + fieldName + " not found on interface " + it.name);
+      throw new Error(`Interface method ${fieldName} not found on interface ${it.name}`);
     }
     let rFt = resolvedFt;
-    let params = new Array<ValType>();
-    params.push(new ValTypeAnyRef());
+    let params = growable<ValType>([new ValTypeAnyRef()]);
     for (let p in rFt.parameters) {
       mapParamTypeToWasmParams(wasm, p, params);
     }
@@ -910,7 +906,7 @@ export let getInterfaceMemberSignature = (wasm: WasmModule, it: InterfaceType, f
     mapReturnTypeToWasmResults(wasm, rFt.returnType, returns);
     return wasm.getSignature(params, returns);
   }
-};
+}
 
 /**
  * The overloads of interface method `name`, each with the interface's
@@ -919,8 +915,8 @@ export let getInterfaceMemberSignature = (wasm: WasmModule, it: InterfaceType, f
  * `interfaceOverloadSlotName`; a method with one signature keeps the
  * slot named after the method.
  */
-export let interfaceMethodOverloads = (wasm: WasmModule, iface: InterfaceType,
-    name: String): GrowableArray<FunctionType> | null => {
+export function interfaceMethodOverloads(wasm: WasmModule, iface: InterfaceType,
+    name: String): GrowableArray<FunctionType> | null {
   if (let (true, member) = iface.members.get(name)) {
     let memberType = member.type;
     if (memberType is FunctionType) {
@@ -933,33 +929,32 @@ export let interfaceMethodOverloads = (wasm: WasmModule, iface: InterfaceType,
     }
   }
   return null;
-};
+}
 
 /** The vtable slot of one overload of an interface method. */
-export let interfaceOverloadSlotName = (name: String,
-    overload: FunctionType): String => {
+export function interfaceOverloadSlotName(name: String,
+    overload: FunctionType): String {
   return name + getSignatureKey(overload);
-};
+}
 
 /** The signature of an interface vtable slot for one overload. */
-export let interfaceOverloadSignature = (wasm: WasmModule,
-    overload: FunctionType): WasmSignature => {
-  let params = new Array<ValType>();
-  params.push(new ValTypeAnyRef());
+export function interfaceOverloadSignature(wasm: WasmModule,
+    overload: FunctionType): WasmSignature {
+  let params = growable<ValType>([new ValTypeAnyRef()]);
   for (let parameter in overload.parameters) {
     mapParamTypeToWasmParams(wasm, parameter, params);
   }
   let returns = new Array<ValType>();
   mapReturnTypeToWasmResults(wasm, overload.returnType, returns);
   return wasm.getSignature(params, returns);
-};
+}
 
 /**
  * Which overload of which method an interface vtable slot holds, when the
  * slot belongs to an overloaded method; null for any other slot.
  */
-export let interfaceSlotOverload = (wasm: WasmModule, iface: InterfaceType,
-    slotName: String): InterfaceSlotOverload | null => {
+export function interfaceSlotOverload(wasm: WasmModule, iface: InterfaceType,
+    slotName: String): InterfaceSlotOverload | null {
   for (let name in iface.members.keys()) {
     if (!slotName.startsWith(name)) {
       continue;
@@ -973,7 +968,7 @@ export let interfaceSlotOverload = (wasm: WasmModule, iface: InterfaceType,
     }
   }
   return null;
-};
+}
 
 /**
  * Appends the vtable slots of interface method `name` to `vtable`: one
@@ -981,8 +976,8 @@ export let interfaceSlotOverload = (wasm: WasmModule, iface: InterfaceType,
  * signature. A generic overload has no slot of its own; its uses get
  * slots per specialization (`#syncGenericInterfaceSlots`).
  */
-export let pushInterfaceMethodSlots = (wasm: WasmModule, iface: InterfaceType,
-    name: String, vtable: WasmStruct): void => {
+export function pushInterfaceMethodSlots(wasm: WasmModule, iface: InterfaceType,
+    name: String, vtable: WasmStruct): void {
   let overloads = interfaceMethodOverloads(wasm, iface, name);
   if (overloads == null) {
     let signature = getInterfaceMemberSignature(wasm, iface, name);
@@ -997,7 +992,7 @@ export let pushInterfaceMethodSlots = (wasm: WasmModule, iface: InterfaceType,
     vtable.fields.push(new WasmField(interfaceOverloadSlotName(name, overload),
         new ValTypeRef(interfaceOverloadSignature(wasm, overload)), false));
   }
-};
+}
 
 /**
  * The vtable slot a use of interface method `name` goes through, given
@@ -1006,8 +1001,8 @@ export let pushInterfaceMethodSlots = (wasm: WasmModule, iface: InterfaceType,
  * declared or with the receiver's type arguments substituted, so both
  * forms are matched.
  */
-export let interfaceCallSlotName = (wasm: WasmModule, iface: InterfaceType,
-    name: String, chosen: FunctionType | null): String => {
+export function interfaceCallSlotName(wasm: WasmModule, iface: InterfaceType,
+    name: String, chosen: FunctionType | null): String {
   let overloads = interfaceMethodOverloads(wasm, iface, name);
   if (overloads == null) {
     return name;
@@ -1026,7 +1021,7 @@ export let interfaceCallSlotName = (wasm: WasmModule, iface: InterfaceType,
     return interfaceOverloadSlotName(name, overload);
   }
   throw new Error(`Interface method ${name} of ${iface.name} has no overload ${declaredKey}`);
-};
+}
 
 /** An overloaded interface method's name and one of its overloads. */
 export final class InterfaceSlotOverload {
@@ -1043,7 +1038,7 @@ export final class InterfaceSlotOverload {
  * left unsubstituted would lower to anyref and mint a closure struct
  * the call site's closure does not have.
  */
-export let substituteThisTypeInCodegen = (receiverType: Type, t: Type): Type => {
+export function substituteThisTypeInCodegen(receiverType: Type, t: Type): Type {
   match (t) {
     case ThisType: { return receiverType; }
     case FunctionType as ft: {
@@ -1080,7 +1075,7 @@ export let substituteThisTypeInCodegen = (receiverType: Type, t: Type): Type => 
     }
     case _: { return t; }
   }
-};
+}
 
 /**
  * The interface-view function type of a generic interface method at
@@ -1091,7 +1086,7 @@ export let substituteThisTypeInCodegen = (receiverType: Type, t: Type): Type => 
  * slot's signature — and any trampoline adaptation against an
  * implementing class's own view — derives from.
  */
-export let getGenericInterfaceMethodType = (wasm: WasmModule, it: InterfaceType, methName: String, typeArgs: Array<Type>): FunctionType => {
+export function getGenericInterfaceMethodType(wasm: WasmModule, it: InterfaceType, methName: String, typeArgs: Array<Type>): FunctionType {
   let itParams = getInterfaceTypeParameters(it);
   var resolvedFt: FunctionType | null = null;
   if (it.members.has(methName)) {
@@ -1102,7 +1097,7 @@ export let getGenericInterfaceMethodType = (wasm: WasmModule, it: InterfaceType,
     }
   }
   if (resolvedFt == null) {
-    throw new Error("Interface method " + methName + " not found on interface " + it.name);
+    throw new Error(`Interface method ${methName} not found on interface ${it.name}`);
   }
   var rFt = substituteThisTypeInCodegen(it as Type, resolvedFt) as FunctionType;
   let mtps = rFt.typeParameters;
@@ -1110,26 +1105,25 @@ export let getGenericInterfaceMethodType = (wasm: WasmModule, it: InterfaceType,
     rFt = substituteTypeParamsInCodegen(wasm, mtps, typeArgs, rFt) as FunctionType;
   }
   return rFt;
-};
+}
 
 /**
  * The vtable slot signature for one monomorphized instantiation of a
  * generic interface method: anyref receiver plus the interface-view
  * parameter and result types at `typeArgs`.
  */
-export let getGenericInterfaceMemberSignature = (wasm: WasmModule, it: InterfaceType, methName: String, typeArgs: Array<Type>): WasmSignature => {
+export function getGenericInterfaceMemberSignature(wasm: WasmModule, it: InterfaceType, methName: String, typeArgs: Array<Type>): WasmSignature {
   let rFt = getGenericInterfaceMethodType(wasm, it, methName, typeArgs);
-  let params = new Array<ValType>();
-  params.push(new ValTypeAnyRef());
+  let params = growable<ValType>([new ValTypeAnyRef()]);
   for (let p in rFt.parameters) {
     mapParamTypeToWasmParams(wasm, p, params);
   }
   let returns = new Array<ValType>();
   mapReturnTypeToWasmResults(wasm, rFt.returnType, returns);
   return wasm.getSignature(params, returns);
-};
+}
 
-export let eraseTypeParameters = (wasm: WasmModule, t: Type): Type => {
+export function eraseTypeParameters(wasm: WasmModule, t: Type): Type {
   return match (t) {
     case TypeParameterType: new ErasedType()
     // An enum is nominally distinct only to the checker; it is carried
@@ -1379,9 +1373,9 @@ export let eraseTypeParameters = (wasm: WasmModule, t: Type): Type => {
     }
     case _: t
   };
-};
+}
 
-export let getClassMemberSignature = (wasm: WasmModule, ct: ClassType, fieldName: String): WasmSignature => {
+export function getClassMemberSignature(wasm: WasmModule, ct: ClassType, fieldName: String): WasmSignature {
   let key = getClassMethodKey(getClassKey(ct), fieldName);
   if (let (true, f) = wasm.classMethodMap.get(key)) {
     return f.signature;
@@ -1453,9 +1447,9 @@ export let getClassMemberSignature = (wasm: WasmModule, ct: ClassType, fieldName
     }
     return wasm.getSignature(params, returns);
   }
-};
+}
 
-let getWasmTypeKey = (target: WasmType): String => {
+function getWasmTypeKey(target: WasmType) {
   if (target is WasmStruct) {
     let {name} = target;
     if (name != null) {
@@ -1467,61 +1461,63 @@ let getWasmTypeKey = (target: WasmType): String => {
       // bare name handed `(x: A.Payload) => i32` the struct built for
       // `(x: B.Payload) => i32`. uid is the identity WasmType hashes
       // on everywhere else.
-      return (name as String) + "#" + i32ToString(target.uid);
+      return `${name as String}#${i32ToString(target.uid)}`;
     }
     var structKey = "struct_anon_";
     for (let f in target.fields) {
-      structKey = structKey + (if (f.name == null) "null" else f.name as String) + "_" + (if (f.isMutable) "mut_" else "imm_") + getValTypeKey(f.type) + "_";
+      structKey = `${structKey}${if (f.name == null) "null" else f.name as String}_${if (f.isMutable) "mut_" else "imm_"}${getValTypeKey(f.type)}_`;
     }
     return structKey;
   }
   if (target is WasmArray) {
-    return "array_" + (if (target.isMutable) "mut_" else "imm_") + getValTypeKey(target.elementType);
+    return `array_${if (target.isMutable) "mut_" else "imm_"}${getValTypeKey(target.elementType)}`;
   }
   if (target is WasmSignature) {
     var s = "sig_";
     for (let p in target.params) {
-      s = s + getValTypeKey(p) + "_";
+      s = `${s}${getValTypeKey(p)}_`;
     }
     s = s + "returns_";
     for (let ret in target.returns) {
-      s = s + getValTypeKey(ret) + "_";
+      s = `${s}${getValTypeKey(ret)}_`;
     }
     return s;
   }
   return "anon";
-};
+}
 
-export let getValTypeKey = (type: ValType): String => match (type) {
+export function getValTypeKey(type: ValType): String {
+  return match (type) {
   case ValTypeRef {target}: "ref_" + getWasmTypeKey(target)
   case ValTypeRefNull {target}: "refnull_" + getWasmTypeKey(target)
   case _: i32ToString(valTypeToOpcode(type))
 };
+}
 
-export let getClosureKey = (params: GrowableArray<ValType>, returns: GrowableArray<ValType>): ClosureKey => {
+export function getClosureKey(params: GrowableArray<ValType>, returns: GrowableArray<ValType>): ClosureKey {
   var keyStr = "";
   for (let p in params) {
-    keyStr = keyStr + getValTypeKey(p) + ",";
+    keyStr = `${keyStr}${getValTypeKey(p)},`;
   }
   keyStr = keyStr + "=>";
   for (let r in returns) {
-    keyStr = keyStr + getValTypeKey(r) + ",";
+    keyStr = `${keyStr}${getValTypeKey(r)},`;
   }
   return keyStr as ClosureKey;
-};
+}
 
-export let getCellKey = (valType: ValType): CellKey => {
-  let normalizedType = match (valType) {
-    case ValTypeRef {target}: new ValTypeRefNull(target)
-    case _: valType
+export function getCellKey(valType: ValType): CellKey {
+  let normalizedType = if (let ValTypeRef {target} = valType) {
+    new ValTypeRefNull(target)
+  } else {
+    valType
   };
   return getValTypeKey(normalizedType) as CellKey;
-};
+}
 
-export let getClosureStruct = (wasm: WasmModule, ftVal: anyref): WasmStruct => {
+export function getClosureStruct(wasm: WasmModule, ftVal: anyref): WasmStruct {
   let ft = ftVal as FunctionType;
-  let params = new Array<ValType>();
-  params.push(new ValTypeStructRef()); // ctx
+  let params = growable<ValType>([new ValTypeStructRef()]); // ctx
   for (let p in ft.parameters) {
     mapParamTypeToWasmParams(wasm, p, params);
   }
@@ -1538,31 +1534,32 @@ export let getClosureStruct = (wasm: WasmModule, ftVal: anyref): WasmStruct => {
 
 
 
-  let fields = new Array<WasmField>();
-  fields.push(new WasmField("func", new ValTypeRef(implSig), false));
-  fields.push(new WasmField("ctx", new ValTypeStructRef(), false));
+  let fields = growable<WasmField>([
+    new WasmField("func", new ValTypeRef(implSig), false),
+    new WasmField("ctx", new ValTypeStructRef(), false),
+  ]);
   let st = wasm.getStruct(null, fields);
   wasm.closureStructs[key] = st;
   return st;
-};
+}
 
-export let getCellStruct = (wasm: WasmModule, valType: ValType): WasmStruct => {
-  let valTypeNull = match (valType) {
-    case ValTypeRef {target}: new ValTypeRefNull(target)
-    case _: valType
+export function getCellStruct(wasm: WasmModule, valType: ValType): WasmStruct {
+  let valTypeNull = if (let ValTypeRef {target} = valType) {
+    new ValTypeRefNull(target)
+  } else {
+    valType
   };
   let key = getCellKey(valTypeNull);
   if (wasm.cellStructs.has(key)) {
     return wasm.cellStructs[key];
   }
-  let fields = new Array<WasmField>();
-  fields.push(new WasmField("value", valTypeNull, true)); // mutable
+  let fields = growable<WasmField>([new WasmField("value", valTypeNull, true)]); // mutable
   let name = "Cell_" + (key as String);
   let st = new WasmStruct(name, fields);
   wasm.types.push(st);
   wasm.cellStructs[key] = st;
   return st;
-};
+}
 
 /**
  * The wasm type a value of `t` occupies in *storage* — an array element
@@ -1578,7 +1575,7 @@ export let getCellStruct = (wasm: WasmModule, valType: ValType): WasmStruct => {
  * has to consult the *semantic* element type at each read; see
  * `packedArrayElementSigned` in `ir/intrinsics.zena`.
  */
-export let typeToStorageValType = (wasm: WasmModule, t: Type): ValType => {
+export function typeToStorageValType(wasm: WasmModule, t: Type): ValType {
   let b = baseType(t);
   if (b is U8Type || b is I8Type) {
     return new ValTypeI8();
@@ -1597,9 +1594,9 @@ export let typeToStorageValType = (wasm: WasmModule, t: Type): ValType => {
     return new ValTypeI8();
   }
   return vt;
-};
+}
 
-export let typeToValType = (wasm: WasmModule, t: Type): ValType => {
+export function typeToValType(wasm: WasmModule, t: Type): ValType {
   let erasedT = eraseTypeParameters(wasm, t);
   return match (erasedT) {
     case TypeAliasType as a: typeToValType(wasm, a.target)
@@ -1645,7 +1642,7 @@ export let typeToValType = (wasm: WasmModule, t: Type): ValType => {
       case null: {
         var errStr = "";
         for (let f in fields) {
-           if (f.name != null) errStr = errStr + (f.name as String) + ", ";
+           if (f.name != null) errStr = `${errStr}${f.name as String}, `;
         }
         throw new Error("Record fat ptr type not generated during discovery pass! Fields: " + errStr);
       }
@@ -1791,7 +1788,7 @@ export let typeToValType = (wasm: WasmModule, t: Type): ValType => {
     throw new Error("typeToValType: unsupported type: " + typeToString(t));
   }
   };
-};
+}
 
 /**
  * The per-SEMANTIC-lane value types of an inline-tuple type or a
@@ -1802,7 +1799,7 @@ export let typeToValType = (wasm: WasmModule, t: Type): ValType => {
  * these lanes with a separate wasm cursor, exactly as zero-width
  * arguments already pair against parameter lists.
  */
-export let inlineLaneValTypes = (wasm: WasmModule, type: Type): GrowableArray<ValType> | null => {
+export function inlineLaneValTypes(wasm: WasmModule, type: Type): GrowableArray<ValType> | null {
   if (type is InlineTupleType) {
     let lanes = new Array<ValType>();
     for (let el in type.elementTypes) {
@@ -1877,9 +1874,9 @@ export let inlineLaneValTypes = (wasm: WasmModule, type: Type): GrowableArray<Va
     i += 1;
   }
   return lanes;
-};
+}
 
-let mapUnionOfInlineTuplesToWasmResults = (wasm: WasmModule, unionType: UnionType, returns: GrowableArray<ValType>): boolean => {
+function mapUnionOfInlineTuplesToWasmResults(wasm: WasmModule, unionType: UnionType, returns: GrowableArray<ValType>): boolean {
   let lanes = inlineLaneValTypes(wasm, unionType as Type);
   if (lanes == null) {
     return false;
@@ -1890,7 +1887,7 @@ let mapUnionOfInlineTuplesToWasmResults = (wasm: WasmModule, unionType: UnionTyp
     }
   }
   return true;
-};
+}
 
 /**
  * Appends the wasm parameter slots for one source parameter.
@@ -1905,20 +1902,20 @@ let mapUnionOfInlineTuplesToWasmResults = (wasm: WasmModule, unionType: UnionTyp
  * every site that lowers an argument list must skip the matching
  * arguments (isZeroWidthValType), or the arity gates in lowering fire.
  */
-export let mapParamTypeToWasmParams = (wasm: WasmModule, type: Type, params: GrowableArray<ValType>): void => {
+export function mapParamTypeToWasmParams(wasm: WasmModule, type: Type, params: GrowableArray<ValType>): void {
   let vt = typeToValType(wasm, type);
   if (vt is ValTypeVoid) {
     return;
   }
   params.push(vt);
-};
+}
 
 /** Whether a lowered value of this type occupies a wasm slot. */
-export let isZeroWidthValType = (vt: ValType): boolean => {
+export function isZeroWidthValType(vt: ValType): boolean {
   return vt is ValTypeVoid;
-};
+}
 
-export let mapReturnTypeToWasmResults = (wasm: WasmModule, type: Type, returns: GrowableArray<ValType>): void => {
+export function mapReturnTypeToWasmResults(wasm: WasmModule, type: Type, returns: GrowableArray<ValType>): void {
   if (type is VoidType || type is NeverType || type is HoleType) {
     return;
   }
@@ -1946,10 +1943,10 @@ export let mapReturnTypeToWasmResults = (wasm: WasmModule, type: Type, returns: 
     }
   }
   returns.push(typeToValType(wasm, type));
-};
+}
 
-export let getNonNullableType = (type: Type): Type => match (type) {
-  case UnionType {types}: {
+export function getNonNullableType(type: Type): Type {
+  return if (let UnionType {types} = type) {
     let nonNullTypes = new Array<Type>();
     for (let t_i in types) {
       if (!(t_i is NullType)) {
@@ -1961,13 +1958,14 @@ export let getNonNullableType = (type: Type): Type => match (type) {
     } else {
       type
     }
-  }
-  case _: type
-};
+  } else {
+    type
+  };
+}
 
 /** A record type's optional field names in sorted order — the canonical
  *  presence-bit assignment shared by every consumer of the mask. */
-export let sortedOptionalNames = (rec: RecordType): GrowableArray<String> => {
+export function sortedOptionalNames(rec: RecordType): GrowableArray<String> {
   let names = new Array<String>();
   let optionals = rec.optionalProperties;
   if (optionals != null) {
@@ -1986,24 +1984,24 @@ export let sortedOptionalNames = (rec: RecordType): GrowableArray<String> => {
     }
   }
   return names;
-};
+}
 
 /** An optional field's slot must be able to hold a placeholder when the
  *  field is absent, so reference slots widen to nullable. */
-let optionalSlotValType = (vt: ValType): ValType => {
+function optionalSlotValType(vt: ValType): ValType {
   return match (vt) {
     case ValTypeRef as r: new ValTypeRefNull(r.target)
     case _: vt
   };
-};
+}
 
 /**
  * The canonical wasm field list for a record type: one slot per
  * property (optional properties' reference slots nullable-ized), plus
  * the `$present` mask when the type has optional fields, sorted.
  */
-export let recordWasmFields = (wasm: WasmModule, recIn: RecordType,
-    subFunc: WasmFunction | null): GrowableArray<WasmField> => {
+export function recordWasmFields(wasm: WasmModule, recIn: RecordType,
+    subFunc: WasmFunction | null): GrowableArray<WasmField> {
   // A row is fields only the whole substitution supplies.
   var rec = recIn;
   if (recIn.row != null && subFunc != null) {
@@ -2029,24 +2027,25 @@ export let recordWasmFields = (wasm: WasmModule, recIn: RecordType,
   }
   sortWasmFields(fields);
   return fields;
-};
+}
 
-export let typeToValTypeWithSub = (wasm: WasmModule, t: Type, wasmFunction: WasmFunction | null): ValType => {
+export function typeToValTypeWithSub(wasm: WasmModule, t: Type, wasmFunction: WasmFunction | null): ValType {
   if (wasmFunction != null) {
     return typeToValType(wasm, substituteTypeParamsInFunctionContext(wasm, wasmFunction, t));
   }
   return typeToValType(wasm, t);
-};
+}
 
-export let mapReturnTypeToWasmResultsWithSub = (wasm: WasmModule, type: Type, returns: GrowableArray<ValType>, wasmFunction: WasmFunction | null): void => {
+export function mapReturnTypeToWasmResultsWithSub(wasm: WasmModule, type: Type, returns: GrowableArray<ValType>, wasmFunction: WasmFunction | null): void {
   if (wasmFunction != null) {
     mapReturnTypeToWasmResults(wasm, substituteTypeParamsInFunctionContext(wasm, wasmFunction, type), returns);
   } else {
     mapReturnTypeToWasmResults(wasm, type, returns);
   }
-};
+}
 
-export let containsMixinThis = (type: Type): boolean => match (type) {
+export function containsMixinThis(type: Type): boolean {
+  return match (type) {
   case ThisType: true
   case ClassType as resolvedCt: {
     if (resolvedCt.name.length >= 5 && resolvedCt.name.sliceBytes(resolvedCt.name.length - 5, resolvedCt.name.length) == "_This") {
@@ -2112,8 +2111,9 @@ export let containsMixinThis = (type: Type): boolean => match (type) {
   }
   case _: false
 };
+}
 
-export let mapMixinThisInType = (ct: ClassType, type: Type): Type => {
+export function mapMixinThisInType(ct: ClassType, type: Type): Type {
   if (!containsMixinThis(type)) {
     return type;
   }
@@ -2219,9 +2219,9 @@ export let mapMixinThisInType = (ct: ClassType, type: Type): Type => {
     }
     case _: type
   };
-};
+}
 
-export let isStructSubtype = (sub: WasmType, superType: WasmType): boolean => {
+export function isStructSubtype(sub: WasmType, superType: WasmType): boolean {
   if (sub.index == superType.index && sub.index != -1) {
     return true;
   }
@@ -2239,9 +2239,10 @@ export let isStructSubtype = (sub: WasmType, superType: WasmType): boolean => {
     }
   }
   return false;
-};
+}
 
-export let isWasmSubtypeWithStructs = (sub: ValType, superType: ValType): boolean => match (sub) {
+export function isWasmSubtypeWithStructs(sub: ValType, superType: ValType): boolean {
+  return match (sub) {
   case ValTypeRef as ta: match (superType) {
     case ValTypeRef as tb: isStructSubtype(ta.target, tb.target)
     case ValTypeRefNull as tb: isStructSubtype(ta.target, tb.target)
@@ -2260,6 +2261,7 @@ export let isWasmSubtypeWithStructs = (sub: ValType, superType: ValType): boolea
   case ValTypeNullRef: isNullableAnyRef(superType)
   case _: valTypeToOpcode(sub) == valTypeToOpcode(superType)
 };
+}
 
 /**
  * `Future<Option<V>>`, out of an `AsyncIterator<V>` instantiation: the
@@ -2267,10 +2269,10 @@ export let isWasmSubtypeWithStructs = (sub: ValType, superType: ValType): boolea
  * of `next(): AsyncStep<V>`, with `V` substituted at `iterType`'s type
  * arguments. Null for a synchronous `Iterator<V>` or anything else.
  */
-export let asyncIteratorPendingFuture = (
+export function asyncIteratorPendingFuture(
   wasm: WasmModule,
   iterType: InterfaceType
-): ClassType | null => {
+): ClassType | null {
   if (!iterType.members.has('next')) {
     return null;
   }
@@ -2298,4 +2300,4 @@ export let asyncIteratorPendingFuture = (
     }
   }
   return null;
-};
+}
