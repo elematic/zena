@@ -11,82 +11,82 @@ import { suite, test, TestContext } from 'zena:test';
 import { equal, isTrue, isFalse, throws } from 'zena:assert';
 import { URL, URLSearchParams } from 'zena:url';
 
-export let tests = suite('URLSearchParams', (): void => {
+export let tests = suite('URLSearchParams', () => {
 
-  suite('construction and parsing', (): void => {
-    test('empty by default', (ctx: TestContext): void => {
+  suite('construction and parsing', () => {
+    test('empty by default', (ctx) => {
       let p = new URLSearchParams();
       equal(p.size, 0);
       equal(p.toString(), '');
     });
 
-    test('parses name=value pairs', (ctx: TestContext): void => {
+    test('parses name=value pairs', (ctx) => {
       let p = new URLSearchParams('a=1&b=2');
       equal(p.size, 2);
       equal(p.get('a') as String, '1');
       equal(p.get('b') as String, '2');
     });
 
-    test('ignores a single leading question mark', (ctx: TestContext): void => {
+    test('ignores a single leading question mark', (ctx) => {
       let p = new URLSearchParams('?a=1');
       equal(p.size, 1);
       equal(p.get('a') as String, '1');
     });
 
-    test('only the FIRST leading question mark is stripped', (ctx: TestContext): void => {
+    test('only the FIRST leading question mark is stripped', (ctx) => {
       let p = new URLSearchParams('??a=1');
       equal(p.get('?a') as String, '1');
     });
 
-    test('a pair with no "=" has an empty value', (ctx: TestContext): void => {
+    test('a pair with no "=" has an empty value', (ctx) => {
       let p = new URLSearchParams('a');
       equal(p.size, 1);
       equal(p.get('a') as String, '');
     });
 
-    test('empty value after "="', (ctx: TestContext): void => {
+    test('empty value after "="', (ctx) => {
       let p = new URLSearchParams('a=');
       equal(p.get('a') as String, '');
     });
 
-    test('empty name before "="', (ctx: TestContext): void => {
+    test('empty name before "="', (ctx) => {
       let p = new URLSearchParams('=b');
       equal(p.get('') as String, 'b');
     });
 
-    test('empty segments are dropped', (ctx: TestContext): void => {
+    test('empty segments are dropped', (ctx) => {
       let p = new URLSearchParams('&a=1&&b=2&');
       equal(p.size, 2);
     });
 
-    test('"+" decodes to a space', (ctx: TestContext): void => {
+    test('"+" decodes to a space', (ctx) => {
       let p = new URLSearchParams('a=b+c');
       equal(p.get('a') as String, 'b c');
     });
 
-    test('percent escapes decode in names and values', (ctx: TestContext): void => {
+    test('percent escapes decode in names and values', (ctx) => {
       let p = new URLSearchParams('a%20b=c%26d');
       equal(p.get('a b') as String, 'c&d');
     });
 
-    test('only the first "=" splits a pair', (ctx: TestContext): void => {
+    test('only the first "=" splits a pair', (ctx) => {
       let p = new URLSearchParams('a=b=c');
       equal(p.get('a') as String, 'b=c');
     });
   });
 
-  suite('lookup', (): void => {
-    test('get returns the FIRST value', (ctx: TestContext): void => {
+  suite('lookup', () => {
+    test('get returns the FIRST value', (ctx) => {
       let p = new URLSearchParams('a=1&a=2');
       equal(p.get('a') as String, '1');
     });
 
-    test('get returns null when absent', (ctx: TestContext): void => {
+    test('get returns null when absent', (ctx) => {
       let p = new URLSearchParams('a=1');
       isTrue(p.get('nope') == null);
     });
 
-    test('getAll returns every value in order', (ctx: TestContext): void => {
+    test('getAll returns every value in order', (ctx) => {
       let p = new URLSearchParams('a=1&b=x&a=2');
       let all = p.getAll('a');
       equal(all.length, 2);
@@ -94,26 +94,26 @@ export let tests = suite('URLSearchParams', (): void => {
       equal(all[1], '2');
     });
 
-    test('getAll is empty when absent', (ctx: TestContext): void => {
+    test('getAll is empty when absent', (ctx) => {
       let p = new URLSearchParams('a=1');
       equal(p.getAll('nope').length, 0);
     });
 
-    test('has by name', (ctx: TestContext): void => {
+    test('has by name', (ctx) => {
       let p = new URLSearchParams('a=1');
       isTrue(p.has('a'));
       isFalse(p.has('b'));
     });
 
-    test('has by name AND value', (ctx: TestContext): void => {
+    test('has by name AND value', (ctx) => {
       let p = new URLSearchParams('a=1&a=2');
       isTrue(p.has('a', '2'));
       isFalse(p.has('a', '3'));
     });
   });
 
-  suite('mutation', (): void => {
-    test('append keeps duplicates, in order', (ctx: TestContext): void => {
+  suite('mutation', () => {
+    test('append keeps duplicates, in order', (ctx) => {
       let p = new URLSearchParams();
       p.append('a', '1');
       p.append('a', '2');
@@ -121,51 +121,51 @@ export let tests = suite('URLSearchParams', (): void => {
       equal(p.toString(), 'a=1&a=2');
     });
 
-    test('set replaces the first and drops the rest', (ctx: TestContext): void => {
+    test('set replaces the first and drops the rest', (ctx) => {
       let p = new URLSearchParams('a=1&b=x&a=2');
       p.set('a', '9');
       equal(p.toString(), 'a=9&b=x');
     });
 
-    test('set appends when the name is absent', (ctx: TestContext): void => {
+    test('set appends when the name is absent', (ctx) => {
       let p = new URLSearchParams('a=1');
       p.set('b', '2');
       equal(p.toString(), 'a=1&b=2');
     });
 
-    test('set on an empty params', (ctx: TestContext): void => {
+    test('set on an empty params', (ctx) => {
       let p = new URLSearchParams();
       p.set('a', '1');
       equal(p.toString(), 'a=1');
     });
 
-    test('delete removes every pair with the name', (ctx: TestContext): void => {
+    test('delete removes every pair with the name', (ctx) => {
       let p = new URLSearchParams('a=1&b=x&a=2');
       p.delete('a');
       equal(p.toString(), 'b=x');
     });
 
-    test('delete by name AND value removes only exact matches', (ctx: TestContext): void => {
+    test('delete by name AND value removes only exact matches', (ctx) => {
       let p = new URLSearchParams('a=1&a=2');
       p.delete('a', '1');
       equal(p.toString(), 'a=2');
     });
 
-    test('delete of an absent name is a no-op', (ctx: TestContext): void => {
+    test('delete of an absent name is a no-op', (ctx) => {
       let p = new URLSearchParams('a=1');
       p.delete('nope');
       equal(p.toString(), 'a=1');
     });
   });
 
-  suite('serialization', (): void => {
-    test('space serializes as "+"', (ctx: TestContext): void => {
+  suite('serialization', () => {
+    test('space serializes as "+"', (ctx) => {
       let p = new URLSearchParams();
       p.append('a', 'b c');
       equal(p.toString(), 'a=b+c');
     });
 
-    test('separators in a value are escaped, so they round-trip', (ctx: TestContext): void => {
+    test('separators in a value are escaped, so they round-trip', (ctx) => {
       let p = new URLSearchParams();
       p.append('a', 'b&c=d');
       equal(p.toString(), 'a=b%26c%3Dd');
@@ -174,13 +174,13 @@ export let tests = suite('URLSearchParams', (): void => {
       equal(again.get('a') as String, 'b&c=d');
     });
 
-    test('non-ASCII is UTF-8 percent-encoded', (ctx: TestContext): void => {
+    test('non-ASCII is UTF-8 percent-encoded', (ctx) => {
       let p = new URLSearchParams();
       p.append('a', 'é');
       equal(p.toString(), 'a=%C3%A9');
     });
 
-    test('"+" in a value is escaped, not left as a space', (ctx: TestContext): void => {
+    test('"+" in a value is escaped, not left as a space', (ctx) => {
       let p = new URLSearchParams();
       p.append('a', 'b+c');
       equal(p.toString(), 'a=b%2Bc');
@@ -188,34 +188,34 @@ export let tests = suite('URLSearchParams', (): void => {
     });
   });
 
-  suite('sort', (): void => {
-    test('sorts by name', (ctx: TestContext): void => {
+  suite('sort', () => {
+    test('sorts by name', (ctx) => {
       let p = new URLSearchParams('c=3&a=1&b=2');
       p.sort();
       equal(p.toString(), 'a=1&b=2&c=3');
     });
 
-    test('is stable across equal names', (ctx: TestContext): void => {
+    test('is stable across equal names', (ctx) => {
       let p = new URLSearchParams('a=first&b=x&a=second');
       p.sort();
       equal(p.toString(), 'a=first&a=second&b=x');
     });
 
-    test('sorting an empty params is a no-op', (ctx: TestContext): void => {
+    test('sorting an empty params is a no-op', (ctx) => {
       let p = new URLSearchParams();
       p.sort();
       equal(p.size, 0);
     });
 
-    test('shorter name sorts before its own prefix-extension', (ctx: TestContext): void => {
+    test('shorter name sorts before its own prefix-extension', (ctx) => {
       let p = new URLSearchParams('ab=2&a=1');
       p.sort();
       equal(p.toString(), 'a=1&ab=2');
     });
   });
 
-  suite('iteration', (): void => {
-    test('for-in yields pairs in order', (ctx: TestContext): void => {
+  suite('iteration', () => {
+    test('for-in yields pairs in order', (ctx) => {
       let p = new URLSearchParams('a=1&b=2');
       let names = new Array<String>();
       let values = new Array<String>();
@@ -231,7 +231,7 @@ export let tests = suite('URLSearchParams', (): void => {
       equal(values[1], '2');
     });
 
-    test('iterating an empty params yields nothing', (ctx: TestContext): void => {
+    test('iterating an empty params yields nothing', (ctx) => {
       let p = new URLSearchParams();
       var count = 0;
       for (let pair in p) {
@@ -246,9 +246,9 @@ export let tests = suite('URLSearchParams', (): void => {
   // 'b' while sitting on 'a' yields ["a","c"] — 'b' is skipped, because the
   // live iterator's index now points past it — and appending never
   // terminates. See ConcurrentModificationError for the reasoning.
-  suite('mutation during iteration fails fast', (): void => {
-    test('append during iteration throws', (ctx: TestContext): void => {
-      throws((): void => {
+  suite('mutation during iteration fails fast', () => {
+    test('append during iteration throws', (ctx) => {
+      throws(() => {
         let p = new URLSearchParams('a=1&b=2');
         for (let pair in p) {
           p.append('c', '3');
@@ -256,8 +256,8 @@ export let tests = suite('URLSearchParams', (): void => {
       });
     });
 
-    test('delete of a LATER pair throws instead of skipping it', (ctx: TestContext): void => {
-      throws((): void => {
+    test('delete of a LATER pair throws instead of skipping it', (ctx) => {
+      throws(() => {
         let p = new URLSearchParams('a=1&b=2&c=3');
         for (let pair in p) {
           let (n, _v) = pair;
@@ -268,8 +268,8 @@ export let tests = suite('URLSearchParams', (): void => {
       });
     });
 
-    test('set during iteration throws', (ctx: TestContext): void => {
-      throws((): void => {
+    test('set during iteration throws', (ctx) => {
+      throws(() => {
         let p = new URLSearchParams('a=1&b=2');
         for (let pair in p) {
           p.set('a', '9');
@@ -277,8 +277,8 @@ export let tests = suite('URLSearchParams', (): void => {
       });
     });
 
-    test('sort during iteration throws', (ctx: TestContext): void => {
-      throws((): void => {
+    test('sort during iteration throws', (ctx) => {
+      throws(() => {
         let p = new URLSearchParams('b=2&a=1');
         for (let pair in p) {
           p.sort();
@@ -286,7 +286,7 @@ export let tests = suite('URLSearchParams', (): void => {
       });
     });
 
-    test('a read-only pass over the params does NOT throw', (ctx: TestContext): void => {
+    test('a read-only pass over the params does NOT throw', (ctx) => {
       let p = new URLSearchParams('a=1&b=2&c=3');
       var count = 0;
       for (let pair in p) {
@@ -295,7 +295,7 @@ export let tests = suite('URLSearchParams', (): void => {
       equal(count, 3);
     });
 
-    test('mutating BETWEEN iterations is fine', (ctx: TestContext): void => {
+    test('mutating BETWEEN iterations is fine', (ctx) => {
       let p = new URLSearchParams('a=1');
       for (let pair in p) {
         equal(p.size, 1);
@@ -308,10 +308,10 @@ export let tests = suite('URLSearchParams', (): void => {
       equal(count, 2);
     });
 
-    test('IterableUtils methods inherit the check', (ctx: TestContext): void => {
-      throws((): void => {
+    test('IterableUtils methods inherit the check', (ctx) => {
+      throws(() => {
         let p = new URLSearchParams('a=1&b=2');
-        p.some((pair: (String, String)): boolean => {
+        p.some((pair): boolean => {
           p.append('c', '3');
           return false;
         });
@@ -319,20 +319,20 @@ export let tests = suite('URLSearchParams', (): void => {
     });
   });
 
-  suite('URL.searchParams', (): void => {
-    test('parses the URL query', (ctx: TestContext): void => {
+  suite('URL.searchParams', () => {
+    test('parses the URL query', (ctx) => {
       let u = URL.parse('https://example.com/?a=1&b=2', null) as URL;
       let p = u.searchParams();
       equal(p.size, 2);
       equal(p.get('a') as String, '1');
     });
 
-    test('is empty when there is no query', (ctx: TestContext): void => {
+    test('is empty when there is no query', (ctx) => {
       let u = URL.parse('https://example.com/', null) as URL;
       equal(u.searchParams().size, 0);
     });
 
-    test('is a snapshot — mutating it does not touch the URL', (ctx: TestContext): void => {
+    test('is a snapshot — mutating it does not touch the URL', (ctx) => {
       let u = URL.parse('https://example.com/?a=1', null) as URL;
       let p = u.searchParams();
       p.set('a', '999');
@@ -344,7 +344,7 @@ export let tests = suite('URLSearchParams', (): void => {
       equal(u.searchParams().get('a') as String, '1');
     });
 
-    test('decodes escapes from the query', (ctx: TestContext): void => {
+    test('decodes escapes from the query', (ctx) => {
       let u = URL.parse('https://example.com/?a=b%20c', null) as URL;
       equal(u.searchParams().get('a') as String, 'b c');
     });

@@ -16,7 +16,7 @@ import { Disposable, Option, Some } from 'zena:core';
 import { Completer } from 'zena:async';
 import { Stream } from 'zena:stream';
 
-function unit(): void {}
+function unit() {}
 
 let emptyHeadersList = new GrowableArray<(String, String)>(0);
 
@@ -31,7 +31,7 @@ function completeTextResponse(
   res: Response,
   body: String,
   defaultCt: String
-): void {
+) {
   var reqOpt: Option<WireRequest> = none;
   if (req.isBodyConsumed) {
     req.close();
@@ -39,11 +39,11 @@ function completeTextResponse(
     reqOpt = some(wireReq);
   }
   let ctOpt = res.contentTypeHeader;
-  var ct = if (ctOpt != null) ctOpt as String else defaultCt;
+  var ct = ctOpt ?? defaultCt;
   var headers = getEmptyHeaders();
   if (res.hasCustomHeaders) {
     let custom = new GrowableArray<(String, String)>();
-    res.forEachHeader((name: String, val: String): void => {
+    res.forEachHeader((name, val) => {
       if (name == 'content-type') {
         ct = val;
       } else {
@@ -170,7 +170,7 @@ export class Server implements Disposable {
       await this.#app.handleRequest(req, res);
       let b = res.body;
       if (b is String) {
-        completeTextResponse(wireReq, writer, req, res, b as String, 'text/plain; charset=utf-8');
+        completeTextResponse(wireReq, writer, req, res, b, 'text/plain; charset=utf-8');
       } else if (b == null) {
         completeTextResponse(wireReq, writer, req, res, '', '');
       } else {

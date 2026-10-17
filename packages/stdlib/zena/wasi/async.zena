@@ -139,8 +139,8 @@ let EXIT = 0;
 /** Wake me when something in this waitable set fires. */
 let WAIT = 2;
 
-let exitCode = (): CallbackCode => EXIT as CallbackCode;
-let waitOn = (set: WaitableSet): CallbackCode =>
+let exitCode = () => EXIT as CallbackCode;
+let waitOn = (set: WaitableSet) =>
     (WAIT | ((set as i32) << 4)) as CallbackCode;
 
 /**
@@ -358,7 +358,7 @@ let registerFor = (
   waitable: Waitable,
   subtask: Completer<void> | null,
   copy: ((payload: i32) => void) | null
-): void => {
+) => {
   waitableJoin(waitable, ensureSet(ctx));
   let i = waitable as i32;
   while (waits.length <= i) {
@@ -370,7 +370,7 @@ let registerFor = (
 
 /** Forget the wait recorded for `waitable` and count it off the task
  * that was waiting. Null if nothing was. */
-let release = (waitable: Waitable): Wait | null => {
+let release = (waitable: Waitable) => {
   let wait = waitFor(waitable);
   if (wait != null) {
     waits[waitable as i32] = null;
@@ -414,7 +414,7 @@ export function awaitWaitable(end: i32): Future<i32> {
   // Typed by hand: a parameter's type is not inferred from a nullable
   // function type.
   registerFor(currentContext(), end as Waitable, null,
-      (payload: i32): void => {
+      (payload: i32) => {
         completer.complete(payload);
       });
   return completer.future;
@@ -429,7 +429,7 @@ export function awaitWaitable(end: i32): Future<i32> {
  * settles there; either way the ends are the instance's, and joining
  * from any task works.
  */
-let armWake = (ctx: TaskContext): void => {
+let armWake = (ctx: TaskContext) => {
   let pair = wakeFutureNew();
   let readable = pair as i32;
   ctx.wakeReadable = readable;
@@ -459,7 +459,7 @@ let armWake = (ctx: TaskContext): void => {
  * own entry needs none of this: that entry's `nextCode` runs the
  * return.
  */
-let wake = (ctx: TaskContext): void => {
+let wake = (ctx: TaskContext) => {
   if (ctx.wakeWritable == 0) {
     if (currentTask == ctx) {
       // Settled in its own entry: the entry's `nextCode` runs the
@@ -498,7 +498,7 @@ export async function finishTask<T>(
   ctx.returnsValue = true;
   try {
     let value = await result;
-    ctx.pendingReturn = (): void => {
+    ctx.pendingReturn = () => {
       ret(value);
     };
   } catch (e) {
@@ -537,7 +537,7 @@ export function markReturned(): void {
  * never comes leaves the task waiting forever, which is what the
  * deadlock is; nothing here can tell it apart from a slow one.
  */
-let nextCode = (ctx: TaskContext): CallbackCode => {
+let nextCode = (ctx: TaskContext) => {
   let failure = ctx.failure;
   if (failure != null) {
     throw failure;
@@ -634,7 +634,7 @@ export function componentResume(
  */
 let dispatchEvent = (event: i32, waitable: Waitable, code: i32): TaskContext => {
   let wait = release(waitable);
-  let ctx = if (wait != null) wait.owner else currentContext();
+  let ctx = wait?.owner ?? currentContext();
   currentTask = ctx;
   if (wait != null) {
     let subtask = wait.subtask;

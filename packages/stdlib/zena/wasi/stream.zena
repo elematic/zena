@@ -148,7 +148,7 @@ let awaitWrite = (end: WritableByteStream): i32 => {
  * readable end, which a synchronous writer has no way to wait out, so
  * it throws.
  */
-let flushBlocking = (end: WritableByteStream, ptr: i32, len: i32): void => {
+let flushBlocking = (end: WritableByteStream, ptr: i32, len: i32) => {
   var at = 0;
   while (at < len) {
     var packed = streamWrite(end, ptr + at, len - at);
@@ -202,7 +202,7 @@ let CHUNK = 4096;
 
 var sharedWriteChunk = 0;
 
-function flushTextStreamTurn(s: String, end: WritableByteStream): void {
+function flushTextStreamTurn(s: String, end: WritableByteStream) {
   let len = s.length;
   if (len == 0) {
     streamDropWritable(end);
@@ -313,14 +313,14 @@ final class TextStreamPump implements Waiter {
  */
 export function lowerByteStream(source: Stream<u8>): i32 {
   if (source is HostByteStream) {
-    let end = (source as HostByteStream).takeEnd();
+    let end = source.takeEnd();
     if (end != 0) {
       return end;
     }
   }
   if (source is TextStream) {
     let pair = newByteStreamPair();
-    let s = (source as TextStream).takeRemainingText();
+    let s = source.takeRemainingText();
     scheduleTask(new TextStreamPump(s, pair.writable));
     return pair.readable as i32;
   }

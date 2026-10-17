@@ -23,9 +23,7 @@ symbol nextLive;
  * Rounds a capacity up to a power of two, so that `hash & (length - 1)` is a
  * valid bucket index.
  */
-let getPowerOfTwoCapacity = (capacity: i32): i32 => {
-  return 1 << (32 - clz(capacity - 1));
-};
+let getPowerOfTwoCapacity = (capacity: i32) => 1 << (32 - clz(capacity - 1));
 
 /**
  * A bucket entry that is also a node of an insertion-order list.
@@ -129,10 +127,7 @@ export class HashMap<K extends Hashable, V> with IterableUtils<MapEntry<K, V>> i
   /** The value for `key`, or `defaultValue` if the key is absent. */
   getOr(key: K, defaultValue: V): V {
     let entry = this.#findEntry(key, hash(key));
-    if (entry != null) {
-      return entry.value;
-    }
-    return defaultValue;
+    return entry?.value ?? defaultValue;
   }
 
   /**
@@ -348,12 +343,11 @@ export final class OrderedMap<K extends Hashable, V> extends HashMap<K, V> {
    * past any deleted since `last` was visited.
    */
   [nextLive](last: OrderedEntry<K, V> | null): OrderedEntry<K, V> | null {
-    var node: OrderedEntry<K, V> | null = null;
-    if (last == null) {
-      node = this.#head;
+    var node = if (last == null) {
+      this.#head
     } else {
-      node = last.next;
-    }
+      last.next
+    };
     while (node != null) {
       let current = node;
       if (!current.removed) {

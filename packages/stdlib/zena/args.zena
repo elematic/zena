@@ -143,7 +143,7 @@ export class ParsedArgs {
   getFlag(name: String): boolean {
     if (let (true, val) = this.options.get(name)) {
       if (val is Flag) {
-        return (val as Flag).value;
+        return val.value;
       }
     }
     return false;
@@ -158,7 +158,7 @@ export class ParsedArgs {
   getOption(name: String): inline (true, String) | inline (false, _) {
     if (let (true, val) = this.options.get(name)) {
       if (val is Single) {
-        return (true, (val as Single).value);
+        return (true, val.value);
       }
     }
     return (false, _);
@@ -171,7 +171,7 @@ export class ParsedArgs {
   getInt(name: String): inline (true, i32) | inline (false, _) {
     if (let (true, val) = this.options.get(name)) {
       if (val is Single) {
-        return parseI32((val as Single).value);
+        return parseI32(val.value);
       }
     }
     return (false, _);
@@ -183,7 +183,7 @@ export class ParsedArgs {
   getMultiOption(name: String): Array<String> {
     if (let (true, val) = this.options.get(name)) {
       if (val is Multi) {
-        return (val as Multi).values;
+        return val.values;
       }
     }
     return [];
@@ -264,10 +264,10 @@ export class ArgParser {
     commands: Map<String, CommandConfig> | null = null
   ) {
     if (options != null) {
-      this.addOptions(options as Map<String, OptionConfig>);
+      this.addOptions(options);
     }
     if (commands != null) {
-      this.addCommands(commands as Map<String, CommandConfig>);
+      this.addCommands(commands);
     }
   }
 
@@ -348,7 +348,7 @@ export class ArgParser {
     var commandName: String | null = null;
     var commandArgs: ParsedArgs | null = null;
 
-    let pushMulti = (name: String, val: String): void => {
+    let pushMulti = (name: String, val: String) => {
       if (let (true, Multi {values}) = options.get(name)) {
         values.push(val);
       } else {
@@ -381,7 +381,7 @@ export class ArgParser {
 
         let maybeName = reader.readUntil('=');
         if (maybeName != null) {
-          let name = maybeName as String;
+          let name = maybeName;
           let val = reader.readToEnd();
           if (let (true, opt) = this.#options.get(name)) {
             let optType = opt.type ?? OptionType.StringVal;
@@ -526,7 +526,7 @@ export class ArgParser {
           }
         } else if (optType == OptionType.StringVal || optType == OptionType.Int) {
           if (optDefault != null) {
-            options[optName] = new Single(optDefault as String);
+            options[optName] = new Single(optDefault);
           }
         }
       }
@@ -572,12 +572,11 @@ export class ArgParser {
         let optDefault = opt.defaultVal ?? null;
 
         sb.append('  ');
-        var optStr = '';
-        if (optAbbr.length > 0) {
-          optStr = `-${optAbbr}, --${optName}`;
+        var optStr = if (optAbbr.length > 0) {
+          `-${optAbbr}, --${optName}`
         } else {
-          optStr = `    --${optName}`;
-        }
+          `    --${optName}`
+        };
         if (optType != OptionType.Flag) {
           optStr = `${optStr} <value>`;
         }
@@ -590,7 +589,7 @@ export class ArgParser {
 
         sb.append(optHelp);
         if (optDefault != null && optType != OptionType.Flag) {
-          sb.append(` (default: ${optDefault as String})`);
+          sb.append(` (default: ${optDefault})`);
         }
         sb.append('\n');
       }

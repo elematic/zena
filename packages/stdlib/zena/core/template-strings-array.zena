@@ -98,7 +98,7 @@ export final class TemplateStringsArray {
  * spaces and tabs; treating, say, a no-break space as indentation would
  * silently delete a character the author put there as content.
  */
-let isIndentByte = (b: i32): boolean => b == 0x20 || b == 0x09;
+let isIndentByte = (b: i32) => b == 0x20 || b == 0x09;
 
 /**
  * Whether the line whose indentation ends at `wsEnd` holds nothing but its
@@ -136,7 +136,7 @@ let nextNewline = (seg: String, from: i32, end: i32): i32 => {
 };
 
 /** The end of the indentation run that starts at `pos`. */
-let indentEnd = (seg: String, pos: i32, end: i32): i32 => {
+let indentEnd = (seg: String, pos: i32, end: i32) => {
   var i = pos;
   while (i < end && isIndentByte(seg.getByteAt(i))) {
     i += 1;
@@ -152,7 +152,7 @@ let indentEnd = (seg: String, pos: i32, end: i32): i32 => {
  * it is one of the lines that indent was computed from — but the minimum is
  * taken anyway so that a miscount could never eat a line's first character.
  */
-let dropAt = (seg: String, pos: i32, end: i32, valueFollows: boolean, indentLen: i32): i32 => {
+let dropAt = (seg: String, pos: i32, end: i32, valueFollows: boolean, indentLen: i32) => {
   let wsEnd = indentEnd(seg, pos, end);
   if (isBlankRest(seg, wsEnd, end, valueFollows)) {
     return wsEnd - pos;
@@ -161,7 +161,7 @@ let dropAt = (seg: String, pos: i32, end: i32, valueFollows: boolean, indentLen:
 };
 
 /** The longest common prefix of two indentation runs. */
-let commonIndent = (a: String, b: String): String => {
+let commonIndent = (a: String, b: String) => {
   let limit = if (a.length < b.length) a.length else b.length;
   var i = 0;
   while (i < limit && a.getByteAt(i) == b.getByteAt(i)) {
@@ -193,7 +193,7 @@ let contentStart = (first: String): i32 => {
  * that line is blank — dropping its line break with it — and at the end
  * otherwise.
  */
-let contentEnd = (last: String): i32 => {
+let contentEnd = (last: String) => {
   let len = last.length;
   var i = len - 1;
   while (i >= 0) {
@@ -222,7 +222,7 @@ let contentEnd = (last: String): i32 => {
  * the closing line has content there is no break to keep, and `contentEnd`
  * has already returned the literal's length.
  */
-let contentEndKeepingBreak = (last: String): i32 => {
+let contentEndKeepingBreak = (last: String) => {
   let end = contentEnd(last);
   if (end >= last.length) {
     return last.length;
@@ -249,7 +249,7 @@ let copySegment = (
     valueFollows: boolean,
     indentLen: i32,
     data: ByteArray | null,
-    out: i32): i32 => {
+    out: i32) => {
   var written = 0;
   var i = start;
   var atLineStart = startsLine;
@@ -283,10 +283,10 @@ let dedentImpl = (
     strings: TemplateStringsArray,
     values: FixedArray<String>,
     useRaw: boolean,
-    keepTrailingBreak: boolean): String => {
+    keepTrailingBreak: boolean) => {
   // The literals, read cooked or raw. Everything below works on bytes, and
   // the two arrays differ only in whether an escape has been decoded.
-  let segAt = (i: i32): String => if (useRaw) strings.raw[i] else strings[i];
+  let segAt = (i: i32) => if (useRaw) strings.raw[i] else strings[i];
 
   let segCount = strings.length;
   let start0 = contentStart(segAt(0));
@@ -312,7 +312,7 @@ let dedentImpl = (
         let wsEnd = indentEnd(seg, pos, segEnd);
         if (!isBlankRest(seg, wsEnd, segEnd, valueFollows)) {
           let run = seg.sliceBytes(pos, wsEnd);
-          indent = if (indent == null) run else commonIndent(indent as String, run);
+          indent = if (indent == null) run else commonIndent(indent, run);
         }
       }
       let nl = nextNewline(seg, pos, segEnd);
@@ -323,7 +323,7 @@ let dedentImpl = (
       atLineStart = true;
     }
   }
-  let indentLen = if (indent == null) 0 else (indent as String).length;
+  let indentLen = indent?.length ?? 0;
 
   if (segCount == 1 && indentLen == 0 && start0 == 0 && endN == segAt(0).length) {
     // Nothing to strip and nothing to trim: hand back the literal itself.

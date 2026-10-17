@@ -3,8 +3,8 @@ import {suite, test, TestContext} from 'zena:test';
 import { equal } from 'zena:assert';
 import {ByteBuffer} from 'zena:core';
 
-export let tests = suite('ByteBuffer', (): void => {
-  test('writeByte and getByte', (ctx: TestContext): void => {
+export let tests = suite('ByteBuffer', () => {
+  test('writeByte and getByte', (ctx) => {
     let buf = new ByteBuffer();
     buf.writeByte(0x00);
     buf.writeByte(0x61);
@@ -19,7 +19,7 @@ export let tests = suite('ByteBuffer', (): void => {
     equal(buf.length, 4);
   });
 
-  test('length property', (ctx: TestContext): void => {
+  test('length property', (ctx) => {
     let buf = new ByteBuffer();
     equal(buf.length, 0);
     buf.writeByte(1);
@@ -29,7 +29,7 @@ export let tests = suite('ByteBuffer', (): void => {
     equal(buf.length, 3);
   });
 
-  test('writeU16 little-endian', (ctx: TestContext): void => {
+  test('writeU16 little-endian', (ctx) => {
     let buf = new ByteBuffer();
     buf.writeU16(0x1234);
     // Little-endian: 0x34, 0x12
@@ -38,7 +38,7 @@ export let tests = suite('ByteBuffer', (): void => {
     equal(buf.length, 2);
   });
 
-  test('writeU32 little-endian', (ctx: TestContext): void => {
+  test('writeU32 little-endian', (ctx) => {
     let buf = new ByteBuffer();
     buf.writeU32(0x12345678);
     // Little-endian: 0x78, 0x56, 0x34, 0x12
@@ -49,14 +49,14 @@ export let tests = suite('ByteBuffer', (): void => {
     equal(buf.length, 4);
   });
 
-  test('writeULEB128 small value', (ctx: TestContext): void => {
+  test('writeULEB128 small value', (ctx) => {
     let buf = new ByteBuffer();
     buf.writeULEB128(127); // Single byte: 0x7F
     equal(buf.length, 1);
     equal(buf.getByte(0), 0x7F);
   });
 
-  test('writeULEB128 multi-byte value', (ctx: TestContext): void => {
+  test('writeULEB128 multi-byte value', (ctx) => {
     let buf = new ByteBuffer();
     buf.writeULEB128(128); // Two bytes: 0x80 0x01
     equal(buf.length, 2);
@@ -64,7 +64,7 @@ export let tests = suite('ByteBuffer', (): void => {
     equal(buf.getByte(1), 0x01);
   });
 
-  test('writeULEB128 larger value', (ctx: TestContext): void => {
+  test('writeULEB128 larger value', (ctx) => {
     let buf = new ByteBuffer();
     buf.writeULEB128(624485); // = 0x98765 => 0xE5 0x8E 0x26
     equal(buf.length, 3);
@@ -73,28 +73,28 @@ export let tests = suite('ByteBuffer', (): void => {
     equal(buf.getByte(2), 0x26);
   });
 
-  test('writeULEB128 zero', (ctx: TestContext): void => {
+  test('writeULEB128 zero', (ctx) => {
     let buf = new ByteBuffer();
     buf.writeULEB128(0);
     equal(buf.length, 1);
     equal(buf.getByte(0), 0x00);
   });
 
-  test('writeSLEB128 positive', (ctx: TestContext): void => {
+  test('writeSLEB128 positive', (ctx) => {
     let buf = new ByteBuffer();
     buf.writeSLEB128(63); // Single byte, high bit clear: 0x3F
     equal(buf.length, 1);
     equal(buf.getByte(0), 0x3F);
   });
 
-  test('writeSLEB128 negative', (ctx: TestContext): void => {
+  test('writeSLEB128 negative', (ctx) => {
     let buf = new ByteBuffer();
     buf.writeSLEB128(-1); // -1 in signed LEB128 is 0x7F
     equal(buf.length, 1);
     equal(buf.getByte(0), 0x7F);
   });
 
-  test('writeSLEB128 negative multi-byte', (ctx: TestContext): void => {
+  test('writeSLEB128 negative multi-byte', (ctx) => {
     let buf = new ByteBuffer();
     buf.writeSLEB128(-128); // 0x80 0x7F
     equal(buf.length, 2);
@@ -102,14 +102,14 @@ export let tests = suite('ByteBuffer', (): void => {
     equal(buf.getByte(1), 0x7F);
   });
 
-  test('writeSLEB128 zero', (ctx: TestContext): void => {
+  test('writeSLEB128 zero', (ctx) => {
     let buf = new ByteBuffer();
     buf.writeSLEB128(0);
     equal(buf.length, 1);
     equal(buf.getByte(0), 0x00);
   });
 
-  test('chunk growth', (ctx: TestContext): void => {
+  test('chunk growth', (ctx) => {
     // Start with tiny capacity of 4
     let buf = new ByteBuffer(4);
     
@@ -131,7 +131,7 @@ export let tests = suite('ByteBuffer', (): void => {
     }
   });
 
-  test('writeBuffer copies another buffer', (ctx: TestContext): void => {
+  test('writeBuffer copies another buffer', (ctx) => {
     let buf1 = new ByteBuffer();
     buf1.writeByte(1);
     buf1.writeByte(2);
@@ -148,7 +148,7 @@ export let tests = suite('ByteBuffer', (): void => {
     equal(buf2.getByte(3), 3);
   });
 
-  test('writeBufferRange copies a byte range across chunks', (ctx: TestContext): void => {
+  test('writeBufferRange copies a byte range across chunks', (ctx) => {
     // Small initial capacity forces the source range to span chunks.
     let src = new ByteBuffer(4);
     var i = 0;
@@ -172,7 +172,7 @@ export let tests = suite('ByteBuffer', (): void => {
     equal(dst.getByte(6), 101);
   });
 
-  test('writeBufferRange of an empty range writes nothing', (ctx: TestContext): void => {
+  test('writeBufferRange of an empty range writes nothing', (ctx) => {
     let src = new ByteBuffer();
     src.writeByte(9);
     let dst = new ByteBuffer();
@@ -180,7 +180,7 @@ export let tests = suite('ByteBuffer', (): void => {
     equal(dst.length, 0);
   });
 
-  test('setByte for patching', (ctx: TestContext): void => {
+  test('setByte for patching', (ctx) => {
     let buf = new ByteBuffer();
     buf.writeByte(0);
     buf.writeByte(0);
@@ -194,7 +194,7 @@ export let tests = suite('ByteBuffer', (): void => {
     equal(buf.getByte(2), 0);
   });
 
-  test('patchU32', (ctx: TestContext): void => {
+  test('patchU32', (ctx) => {
     let buf = new ByteBuffer();
     // Write placeholder
     buf.writeU32(0);
@@ -210,7 +210,7 @@ export let tests = suite('ByteBuffer', (): void => {
     equal(buf.getByte(4), 0xFF);
   });
 
-  test('clear resets buffer', (ctx: TestContext): void => {
+  test('clear resets buffer', (ctx) => {
     let buf = new ByteBuffer();
     buf.writeByte(1);
     buf.writeByte(2);
@@ -224,7 +224,7 @@ export let tests = suite('ByteBuffer', (): void => {
     equal(buf.getByte(0), 9);
   });
 
-  test('method chaining', (ctx: TestContext): void => {
+  test('method chaining', (ctx) => {
     let buf = new ByteBuffer();
     buf.writeByte(1).writeByte(2).writeU16(0x0304);
     
@@ -235,7 +235,7 @@ export let tests = suite('ByteBuffer', (): void => {
     equal(buf.getByte(3), 3);  // Little-endian: 0x03
   });
 
-  test('WASM module header construction', (ctx: TestContext): void => {
+  test('WASM module header construction', (ctx) => {
     let buf = new ByteBuffer();
     
     // Magic number: \0asm
@@ -258,7 +258,7 @@ export let tests = suite('ByteBuffer', (): void => {
     equal(buf.getByte(7), 0x00);
   });
 
-  test('writeU64 little-endian', (ctx: TestContext): void => {
+  test('writeU64 little-endian', (ctx) => {
     let buf = new ByteBuffer();
     // Use a value: 0x0807060504030201
     let hi = 0x08070605;
@@ -278,7 +278,7 @@ export let tests = suite('ByteBuffer', (): void => {
     equal(buf.getByte(7), 0x08);
   });
 
-  test('cross-chunk getByte and setByte', (ctx: TestContext): void => {
+  test('cross-chunk getByte and setByte', (ctx) => {
     // Create buffer with tiny chunks
     let buf = new ByteBuffer(2);
     

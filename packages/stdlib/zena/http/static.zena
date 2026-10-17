@@ -169,7 +169,7 @@ async function sendFound(
   try {
     return (await files.send(req, res, path)) != null;
   } catch (e) {
-    if (e is HttpError && (e as HttpError).status == 404) {
+    if (e is HttpError && e.status == 404) {
       return false;
     }
     throw e;
@@ -274,7 +274,7 @@ final class StaticFiles {
       if (!this.#format || dirIndex == null) {
         return null;
       }
-      path = `${path}/${dirIndex as String}`;
+      path = `${path}/${dirIndex}`;
       resolved = true;
     }
     if (resolved) {
@@ -310,7 +310,7 @@ final class StaticFiles {
     if (res.type == null) {
       let unencoded = path.sliceBytes(0, path.length - encodingExt.length);
       let type = mimeType(unencoded);
-      res.type = if (type != null) type else 'application/octet-stream';
+      res.type = type ?? 'application/octet-stream';
     }
 
     let readOnly = (req.method == 'GET' || req.method == 'HEAD') &&
@@ -431,7 +431,7 @@ async function statOf(base: Unmanaged<Descriptor>, path: String): Future<FileSta
   try {
     return await base.statAt(path);
   } catch (e) {
-    throw httpErrorOf(e as Error);
+    throw httpErrorOf(e);
   }
 }
 
@@ -441,7 +441,7 @@ async function openFile(base: Unmanaged<Descriptor>, path: String): Future<Own<D
   try {
     return await base.openAt(path, DescriptorFlags.Read);
   } catch (e) {
-    throw httpErrorOf(e as Error);
+    throw httpErrorOf(e);
   }
 }
 
@@ -451,7 +451,7 @@ let httpErrorOf = (e: Error): Error => {
   if (!(e is FsError)) {
     return e;
   }
-  let code = (e as FsError).code;
+  let code = e.code;
   if (code == FsErrorCode.NotFound || code == FsErrorCode.NameTooLong ||
       code == FsErrorCode.NotDirectory) {
     return new HttpError(404);
@@ -543,7 +543,7 @@ let matchesEtag = (header: String | null, etag: String): boolean => {
     return false;
   }
   let target = stripWeak(etag);
-  for (let item in (header as String).split(',')) {
+  for (let item in header.split(',')) {
     let tag = item.trim();
     if (tag == '*' || stripWeak(tag) == target) {
       return true;
@@ -562,7 +562,7 @@ let MONTH_NAMES = [
 ];
 
 /** Two digits, zero-padded. */
-let pad2 = (n: i32): String => if (n < 10) `0${n}` else `${n}`;
+let pad2 = (n: i32) => if (n < 10) `0${n}` else `${n}`;
 
 /**
  * An HTTP date (RFC 9110 IMF-fixdate) for seconds since the Unix

@@ -10,7 +10,7 @@ import { Server } from './server.zena';
 import { checkCancellation } from 'zena:async';
 import { Stream } from 'zena:stream';
 
-function unit(): void {}
+function unit() {}
 
 /**
  * Configuration options for the HTTP App.
@@ -51,7 +51,7 @@ export class App {
 
   new(options: AppOptions | null = null) {
     if (options != null) {
-      this.#dev = (options as AppOptions).dev;
+      this.#dev = options.dev;
     }
   }
 
@@ -79,7 +79,7 @@ export class App {
     var noop = this.#noopNext;
     if (noop == null) {
       let completed = this.#completedVoid;
-      let fn: NextFunction = (): Future<void> => completed;
+      let fn: NextFunction = () => completed;
       this.#noopNext = fn;
       noop = fn;
     }
@@ -111,14 +111,14 @@ export class App {
     // stream body now: stop it, so a file's handle is released.
     let abandoned = res.body;
     if (abandoned is Stream<u8>) {
-      (abandoned as Stream<u8>).stop();
+      abandoned.stop();
     }
     if (e is HttpError) {
-      let httpErr = e as HttpError;
+      let httpErr = e;
       res.statusCode = httpErr.status;
       var msg = httpErr.message;
       if (this.#dev && httpErr.privateMessage != null) {
-        msg = msg + '\n' + (httpErr.privateMessage as String);
+        msg = `${msg}\n${httpErr.privateMessage as String}`;
       }
       res.type = 'text/plain; charset=utf-8';
       res.body = msg;
@@ -126,7 +126,7 @@ export class App {
       res.statusCode = 500;
       var msg = 'Internal Server Error';
       if (this.#dev) {
-        msg = msg + '\n' + e.message;
+        msg = `${msg}\n${e.message}`;
       }
       res.type = 'text/plain; charset=utf-8';
       res.body = msg;

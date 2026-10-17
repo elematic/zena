@@ -25,18 +25,18 @@ import { HTMLPartial, htmlStream } from './html.zena';
 export { Request as WireRequest, Response as WireResponse, ErrorCode, Fields } from 'wasi:http/types';
 export { AppOptions } from './app.zena';
 
-function unit(): void {}
+function unit() {}
 
-let emptyTrailersFuture: Future<Outcome<Option<Fields>, ErrorCode>> =
+let emptyTrailersFuture =
     Future.of<Outcome<Option<Fields>, ErrorCode>>(new Ok<Option<Fields>, ErrorCode>(none));
 
-let bytesTextPlain: FixedArray<u8> = 'text/plain; charset=utf-8'.toBytes();
-let bytesTextHtml: FixedArray<u8> = 'text/html; charset=utf-8'.toBytes();
-let bytesAppJsonUtf8: FixedArray<u8> = 'application/json; charset=utf-8'.toBytes();
-let bytesAppJson: FixedArray<u8> = 'application/json'.toBytes();
-let bytesOctetStream: FixedArray<u8> = 'application/octet-stream'.toBytes();
+let bytesTextPlain = 'text/plain; charset=utf-8'.toBytes();
+let bytesTextHtml = 'text/html; charset=utf-8'.toBytes();
+let bytesAppJsonUtf8 = 'application/json; charset=utf-8'.toBytes();
+let bytesAppJson = 'application/json'.toBytes();
+let bytesOctetStream = 'application/octet-stream'.toBytes();
 
-function buildSmallLengths(): FixedArray<FixedArray<u8>> {
+function buildSmallLengths() {
   let table = new Array<FixedArray<u8>>.fixed(256, ''.toBytes());
   var i = 0;
   while (i < 256) {
@@ -45,16 +45,16 @@ function buildSmallLengths(): FixedArray<FixedArray<u8>> {
   }
   return table;
 }
-let smallLengthBytes: FixedArray<FixedArray<u8>> = buildSmallLengths();
+let smallLengthBytes = buildSmallLengths();
 
-function lengthToBytes(len: i32): FixedArray<u8> {
+function lengthToBytes(len: i32) {
   if (len >= 0 && len < 256) {
     return smallLengthBytes[len];
   }
   return i32ToString(len).toBytes();
 }
 
-function contentTypeToBytes(ct: String): FixedArray<u8> {
+function contentTypeToBytes(ct: String) {
   if (ct == 'application/json; charset=utf-8') return bytesAppJsonUtf8;
   if (ct == 'application/json') return bytesAppJson;
   if (ct == 'text/plain; charset=utf-8') return bytesTextPlain;
@@ -63,7 +63,7 @@ function contentTypeToBytes(ct: String): FixedArray<u8> {
   return ct.toBytes();
 }
 
-function methodToString(m: Method): String {
+function methodToString(m: Method) {
   if (m is MethodGet) return 'GET';
   if (m is MethodPost) return 'POST';
   if (m is MethodPut) return 'PUT';
@@ -73,14 +73,14 @@ function methodToString(m: Method): String {
   if (m is MethodOptions) return 'OPTIONS';
   if (m is MethodConnect) return 'CONNECT';
   if (m is MethodTrace) return 'TRACE';
-  if (m is MethodOther) return (m as MethodOther).value.asciiUpperCase();
+  if (m is MethodOther) return m.value.asciiUpperCase();
   return 'GET';
 }
 
-function schemeToString(s: Scheme): String {
+function schemeToString(s: Scheme) {
   if (s is SchemeHTTP) return 'http';
   if (s is SchemeHTTPS) return 'https';
-  if (s is SchemeOther) return (s as SchemeOther).value;
+  if (s is SchemeOther) return s.value;
   return 'http';
 }
 
@@ -90,9 +90,9 @@ export async function drainFuture<T>(f: Future<T>): Future<void> {
   } catch (e) {}
 }
 
-function disposeDeferred<T>(f: Future<T>): void {
+function disposeDeferred<T>(f: Future<T>) {
   if (f is DeferredFuture<T>) {
-    (f as DeferredFuture<T>).[Disposable.dispose]();
+    f.[Disposable.dispose]();
   }
 }
 
@@ -108,7 +108,7 @@ final class WireRequestSource implements RequestSource {
 
   loadPath(): String {
     let pathOpt = this.#wire.getPathWithQuery();
-    let pathWithQuery = if (pathOpt is Some<String>) (pathOpt as Some<String>).value else '/';
+    let pathWithQuery = if (pathOpt is Some<String>) pathOpt.value else '/';
     let fullPath = if (pathWithQuery.startsWith('/')) pathWithQuery else '/' + pathWithQuery;
     var i = 0;
     while (i < fullPath.length) {
@@ -142,9 +142,9 @@ final class WireRequestSource implements RequestSource {
 
   loadUrl(): URL {
     let schemeOpt = this.#wire.getScheme();
-    let scheme = if (schemeOpt is Some<Scheme>) schemeToString((schemeOpt as Some<Scheme>).value) else 'http';
+    let scheme = if (schemeOpt is Some<Scheme>) schemeToString(schemeOpt.value) else 'http';
     let authOpt = this.#wire.getAuthority();
-    var auth = if (authOpt is Some<String>) (authOpt as Some<String>).value else '';
+    var auth = if (authOpt is Some<String>) authOpt.value else '';
     if (auth.length == 0) {
       let wireHeaders = this.#wire.getHeaders();
       let hostEntries = wireHeaders.get('host');
@@ -155,11 +155,11 @@ final class WireRequestSource implements RequestSource {
     }
     if (auth.length == 0) auth = 'localhost';
     let pathOpt = this.#wire.getPathWithQuery();
-    let pathWithQuery = if (pathOpt is Some<String>) (pathOpt as Some<String>).value else '/';
+    let pathWithQuery = if (pathOpt is Some<String>) pathOpt.value else '/';
     let fullPath = if (pathWithQuery.startsWith('/')) pathWithQuery else '/' + pathWithQuery;
     let href = `${scheme}://${auth}${fullPath}`;
     let parsedUrl = URL.parse(href, null);
-    return if (parsedUrl != null) parsedUrl as URL else fallbackUrl();
+    return parsedUrl ?? fallbackUrl();
   }
 
   loadBody(): Stream<u8> {
@@ -197,7 +197,7 @@ export function toWireResponseWithTransmitted(res: Response): (WireResponse, Fut
   let hasCustom = res.hasCustomHeaders;
   var hasCl = false;
   if (hasCustom) {
-    res.forEachHeader((name: String, val: String): void => {
+    res.forEachHeader((name, val) => {
       if (name == 'content-type') {
         hasCt = true;
         fields.append(name, contentTypeToBytes(val));
@@ -214,7 +214,7 @@ export function toWireResponseWithTransmitted(res: Response): (WireResponse, Fut
   var streamOpt: Option<Stream<u8>> = none;
 
   if (b is String) {
-    let s = b as String;
+    let s = b;
     if (!hasCt) {
       fields.append('content-type', bytesTextPlain);
     }
@@ -226,9 +226,9 @@ export function toWireResponseWithTransmitted(res: Response): (WireResponse, Fut
     if (!hasCt) {
       fields.append('content-type', bytesTextHtml);
     }
-    streamOpt = some(htmlStream(b as HTMLPartial, 1024));
+    streamOpt = some(htmlStream(b, 1024));
   } else if (b is FixedArray<u8>) {
-    let bytes = b as FixedArray<u8>;
+    let bytes = b;
     if (!hasCt) {
       fields.append('content-type', bytesOctetStream);
     }
@@ -237,7 +237,7 @@ export function toWireResponseWithTransmitted(res: Response): (WireResponse, Fut
     }
     streamOpt = some(bytesStream(bytes));
   } else if (b is Stream<u8>) {
-    streamOpt = some(b as Stream<u8>);
+    streamOpt = some(b);
   }
 
   let (wireResp, transmitted) = WireResponse.new_(fields, streamOpt, emptyTrailersFuture);

@@ -96,16 +96,16 @@ class BenchVariant {
   }
 }
 
-let numberOf = (v: JsonValue, fallback: f64): f64 => {
+let numberOf = (v: JsonValue, fallback: f64) => {
   return if (v is Box<f64>) { v.value } else { fallback };
 };
 
-let stringOf = (v: JsonValue, fallback: String): String => {
+let stringOf = (v: JsonValue, fallback: String) => {
   return if (v is String) { v } else { fallback };
 };
 
 /** Directory part of a path ('.' when there is no '/'). */
-let dirName = (path: String): String => {
+let dirName = (path: String) => {
   var i = path.length - 1;
   while (i >= 0) {
     if (path.getByteAt(i) == 47) {
@@ -121,12 +121,12 @@ let dirName = (path: String): String => {
  * a path that has one, and configs reach shared build output with them
  * (`../../out/minimal/zena.wasm`).
  */
-let joinPath = (dir: String, rel: String): String => {
-  return normalize(if (rel.startsWith('/')) { rel } else { dir + '/' + rel });
+let joinPath = (dir: String, rel: String) => {
+  return normalize(if (rel.startsWith('/')) { rel } else { `${dir}/${rel}` });
 };
 
 /** Drops ANSI SGR escape sequences (ESC '[' … final-letter). */
-let stripAnsi = (s: String): String => {
+let stripAnsi = (s: String) => {
   let out = new StringBuilder();
   var i = 0;
   while (i < s.length) {
@@ -148,11 +148,9 @@ let stripAnsi = (s: String): String => {
   return out.toString();
 };
 
-let isWhitespaceByte = (b: i32): boolean => {
-  return b == 32 || b == 9 || b == 13 || b == 10;
-};
+let isWhitespaceByte = (b: i32) => b == 32 || b == 9 || b == 13 || b == 10;
 
-let trim = (s: String): String => {
+let trim = (s: String) => {
   var start = 0;
   var end = s.length;
   while (start < end && isWhitespaceByte(s.getByteAt(start))) {
@@ -172,10 +170,7 @@ let looksLikeFloat = (s: String): boolean => {
   if (s.length == 0) {
     return false;
   }
-  var i = 0;
-  if (s.getByteAt(0) == 43 || s.getByteAt(0) == 45) {
-    i = 1;
-  }
+  var i = if (s.getByteAt(0) == 43 || s.getByteAt(0) == 45) 1 else 0;
   var digits = 0;
   var dots = 0;
   while (i < s.length) {
@@ -230,7 +225,7 @@ let parseReportedMs = (stdout: String): (boolean, f64) => {
 };
 
 /** Takes one sample of a variant, in milliseconds. */
-let sampleVariant = (v: BenchVariant, debug: boolean): f64 => {
+let sampleVariant = (v: BenchVariant, debug: boolean) => {
   if (!v.isCommand) {
     // Measured variants are workloads, not tools: no grant, and their
     // output is captured and dropped.
@@ -261,7 +256,7 @@ let sampleVariant = (v: BenchVariant, debug: boolean): f64 => {
 };
 
 /** The config's `options`, over the defaults. */
-let readOptions = (config: JsonObject): BenchOptions => {
+let readOptions = (config: JsonObject) => {
   let options = new BenchOptions();
   let optionsVal = config['options'];
   if (optionsVal is JsonObject) {
@@ -291,7 +286,7 @@ let readVariant = (
   name: String,
   configDir: String,
   options: SuiteOptions,
-): BenchVariant => {
+) => {
   let commandVal = spec['command'];
   if (commandVal is JsonArray) {
     let argv = new GrowableArray<String>();
@@ -407,7 +402,7 @@ let runSuiteOrThrow = (configPath: String, suiteOptions: SuiteOptions): i32 => {
     cases.push(new NamedSamples(v.name, v.samples));
   }
 
-  let rounds = (n: i32): void => {
+  let rounds = (n: i32) => {
     var r = 0;
     while (r < n) {
       for (let v in variants) {

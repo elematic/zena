@@ -29,13 +29,13 @@ async function rejectMultipleNext(): Future<void> {
 export function compose(middleware: Array<Middleware>): Middleware {
   let len = middleware.length;
   if (len == 0) {
-    return (req: Request, res: Response, next: NextFunction): Future<void> => next();
+    return (req: Request, res: Response, next: NextFunction) => next();
   }
   if (len == 1) {
     let fn = middleware[0];
-    return (req: Request, res: Response, next: NextFunction): Future<void> => {
+    return (req: Request, res: Response, next: NextFunction) => {
       var called = false;
-      return fn(req, res, (): Future<void> => {
+      return fn(req, res, () => {
         if (called) {
           return rejectMultipleNext();
         }
@@ -44,14 +44,14 @@ export function compose(middleware: Array<Middleware>): Middleware {
       });
     };
   }
-  return (req: Request, res: Response, next: NextFunction): Future<void> => {
-    var currentNext: NextFunction = next;
+  return (req: Request, res: Response, next: NextFunction) => {
+    var currentNext = next;
     var i = len - 1;
     while (i >= 0) {
       let fn = middleware[i];
       let downstreamNext = currentNext;
       var called = false;
-      currentNext = (): Future<void> => {
+      currentNext = () => {
         if (called) {
           return rejectMultipleNext();
         }
@@ -76,11 +76,11 @@ export function mount(prefix: String, middleware: Middleware): Middleware {
     let originalPath = req.path;
     let subpath = matchPath(prefix, originalPath);
     if (subpath != null) {
-      req.path = subpath as String;
+      req.path = subpath;
       await middleware(req, res, async (): Future<void> => {
         req.path = originalPath;
         await next();
-        req.path = subpath as String;
+        req.path = subpath;
       });
       req.path = originalPath;
     } else {

@@ -73,9 +73,9 @@ final class DecodedTable {
 
 var cached: DecodedTable | null = null;
 
-let decodeTable = (): DecodedTable => {
+let decodeTable = () => {
   let existing = cached;
-  if (existing != null) return existing as DecodedTable;
+  if (existing != null) return existing;
 
   let reader = new TableReader(0);
   let count = reader.next();
@@ -109,7 +109,7 @@ let decodeTable = (): DecodedTable => {
  * The table covers every code point with no gaps — the generator fails if it
  * does not — so this always finds one.
  */
-let rangeOf = (table: DecodedTable, cp: i32): i32 => {
+let rangeOf = (table: DecodedTable, cp: i32) => {
   var lo = 0;
   var hi = table.starts.length - 1;
   while (lo < hi) {
@@ -125,7 +125,7 @@ let rangeOf = (table: DecodedTable, cp: i32): i32 => {
 };
 
 /** Zigzag decode, matching the generator's encoding of signed deltas. */
-let unzigzag = (n: i32): i32 => (n >> 1) ^ (0 - (n & 1));
+let unzigzag = (n: i32) => (n >> 1) ^ (0 - (n & 1));
 
 /**
  * Applies UTS 46's mapping step to one code point, appending the result to
@@ -165,7 +165,7 @@ let hasNonAscii = (s: String): boolean => {
 };
 
 /** True if `label` starts with the ACE prefix, which by here is lowercase. */
-let hasAcePrefix = (label: String): boolean =>
+let hasAcePrefix = (label: String) =>
   label.length >= 4 && label.getByteAt(0) == 0x78 && label.getByteAt(1) == 0x6E &&
   label.getByteAt(2) == 0x2D && label.getByteAt(3) == 0x2D;
 
@@ -190,7 +190,7 @@ export let domainToASCII = (domain: String): String | null => {
   let cps = toCodePoints(domain);
   if (cps == null) return null;
   let mappedBuilder = new StringBuilder(domain.length);
-  for (let cp in cps as Array<i32>) {
+  for (let cp in cps) {
     if (!mapCodePoint(table, cp, mappedBuilder)) return null;
   }
   let mapped = mappedBuilder.toString();
@@ -218,7 +218,7 @@ export let domainToASCII = (domain: String): String | null => {
       let encoded = punycodeEncode(label);
       if (encoded == null) return null;
       out.append('xn--');
-      out.append(encoded as String);
+      out.append(encoded);
     } else {
       // Mapping already replaced or removed everything that needed it, so an
       // all-ASCII label at this point is valid by construction.

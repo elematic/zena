@@ -17,13 +17,13 @@ import {
   FileType, readFileBytesSync, writeFileBytesSync,
 } from 'zena:fs';
 
-export let tests = suite('Filesystem', (): void => {
-  test('getPreopens returns preopened directories', (ctx: TestContext): void => {
+export let tests = suite('Filesystem', () => {
+  test('getPreopens returns preopened directories', (ctx) => {
     let preopens = getPreopens();
     isTrue(preopens.length > 0);
   });
 
-  test('writeFile and readFile roundtrip', (ctx: TestContext): void => {
+  test('writeFile and readFile roundtrip', (ctx) => {
     let testPath = 'fs-test-roundtrip.txt';
     let content = 'Hello from Zena fs test!';
 
@@ -40,19 +40,19 @@ export let tests = suite('Filesystem', (): void => {
     isFalse(existsSync(testPath));
   });
 
-  test('the asynchronous forms do the same through an await', (ctx: TestContext): void => {
+  test('the asynchronous forms do the same through an await', (ctx) => {
     let path = '/tmp/zena-fs-async-roundtrip.txt';
     blockOn(roundTrip(path, 'written asynchronously'));
     isFalse(existsSync(path));
   });
 
-  test('exists returns false for missing file', (ctx: TestContext): void => {
+  test('exists returns false for missing file', (ctx) => {
     isFalse(existsSync('non-existent-file-12345.txt'));
     isFalse(blockOn(exists('non-existent-file-12345.txt')));
   });
 
-  test('a missing file fails with an FsError naming the path', (ctx: TestContext): void => {
-    throws((): void => {
+  test('a missing file fails with an FsError naming the path', (ctx) => {
+    throws(() => {
       readFileSync('non-existent-file-12345.txt');
     });
     let failure = blockOn(readFailure('non-existent-file-12345.txt'));
@@ -60,7 +60,7 @@ export let tests = suite('Filesystem', (): void => {
     isTrue((failure as FsError).message.contains('non-existent-file-12345.txt'));
   });
 
-  test('readFile across different preopened directories', (ctx: TestContext): void => {
+  test('readFile across different preopened directories', (ctx) => {
     let preopens = getPreopens();
     // The test runner maps the repository to `.` and a scratch directory
     // to `/tmp`; an absolute path resolves against its preopen.
@@ -73,12 +73,12 @@ export let tests = suite('Filesystem', (): void => {
     }
   });
 
-  test('resolvePreopen matches a preopen at a segment boundary', (ctx: TestContext): void => {
+  test('resolvePreopen matches a preopen at a segment boundary', (ctx) => {
     let (tmp, rel) = resolvePreopen('/tmp/zena-resolve-test.txt');
     equal(rel, 'zena-resolve-test.txt');
     // `/tmpfiles` is not under `/tmp`; with no preopen holding it, the
     // lookup fails rather than guessing.
-    throws((): void => {
+    throws(() => {
       resolvePreopen('/tmpfiles/x');
     });
     // Naming the preopen itself resolves to its own directory.
@@ -88,7 +88,7 @@ export let tests = suite('Filesystem', (): void => {
     equal(slashed, 'a/b');
   });
 
-  test('writeFile preserves newlines', (ctx: TestContext): void => {
+  test('writeFile preserves newlines', (ctx) => {
     let testPath = 'fs-test-newlines.txt';
     let content = 'line1\nline2\nline3';
 
@@ -99,7 +99,7 @@ export let tests = suite('Filesystem', (): void => {
     unlinkSync(testPath);
   });
 
-  test('glob filesystem search', (ctx: TestContext): void => {
+  test('glob filesystem search', (ctx) => {
     let found = globSync('packages/stdlib/tests/path/*_test.zena');
     isTrue(found.length > 0);
     equal(found[0], 'packages/stdlib/tests/path/path_test.zena');
@@ -126,7 +126,7 @@ export let tests = suite('Filesystem', (): void => {
     equal(excluded.length, 0);
   });
 
-  test('glob with braces in a directory segment', (ctx: TestContext): void => {
+  test('glob with braces in a directory segment', (ctx) => {
     // The walk has to start above the braces: there is no directory
     // named `{path,glob}` to start from.
     let found = globSync('packages/stdlib/tests/{path,glob}/*_test.zena');
@@ -135,7 +135,7 @@ export let tests = suite('Filesystem', (): void => {
     equal(found[1], 'packages/stdlib/tests/path/path_test.zena');
   });
 
-  test('stat reports a modification time', (ctx: TestContext): void => {
+  test('stat reports a modification time', (ctx) => {
     let path = '/tmp/zena-fs-stat-test.txt';
     writeFileSync(path, 'x');
     let info = statSync(path);
@@ -146,14 +146,14 @@ export let tests = suite('Filesystem', (): void => {
     unlinkSync(path);
   });
 
-  test('readFileBytes reads an empty file', (ctx: TestContext): void => {
+  test('readFileBytes reads an empty file', (ctx) => {
     let path = '/tmp/zena-fs-empty.bin';
     writeFileBytesSync(path, new FixedArray<u8>(0, 0 as u8));
     equal(readFileBytesSync(path).length, 0);
     unlinkSync(path);
   });
 
-  test('readFileBytes reads a file larger than one host read', (ctx: TestContext): void => {
+  test('readFileBytes reads a file larger than one host read', (ctx) => {
     // zena-runtime reads 256 KiB per host read (fs_read.rs): this spans
     // several, with a pattern whose period does not divide the read
     // size, so a misplaced or repeated chunk shows.
@@ -176,7 +176,7 @@ export let tests = suite('Filesystem', (): void => {
     unlinkSync(path);
   });
 
-  test('rename moves a file and replaces an existing one', (ctx: TestContext): void => {
+  test('rename moves a file and replaces an existing one', (ctx) => {
     let from = '/tmp/zena-fs-rename-from.txt';
     let to = '/tmp/zena-fs-rename-to.txt';
     writeFileSync(to, 'old');
@@ -187,7 +187,7 @@ export let tests = suite('Filesystem', (): void => {
     unlinkSync(to);
   });
 
-  test('a directory is made, listed and removed asynchronously', (ctx: TestContext): void => {
+  test('a directory is made, listed and removed asynchronously', (ctx) => {
     let names = blockOn(directoryRoundTrip('/tmp/zena-fs-dir-test'));
     equal(names.length, 2);
     isTrue(names[0] == 'a.txt' || names[1] == 'a.txt');
@@ -195,7 +195,7 @@ export let tests = suite('Filesystem', (): void => {
     isFalse(existsSync('/tmp/zena-fs-dir-test'));
   });
 
-  test('a descriptor opened through resolvePreopen reads and streams a file', (ctx: TestContext): void => {
+  test('a descriptor opened through resolvePreopen reads and streams a file', (ctx) => {
     let path = '/tmp/zena-fs-descriptor-test.txt';
     writeFileSync(path, 'through a descriptor');
     equal(blockOn(viaDescriptor(path)), 'through a descriptor');
@@ -223,7 +223,7 @@ async function readFailure(path: String): Future<Error> {
   try {
     await readFile(path);
   } catch (e) {
-    return e as Error;
+    return e;
   }
   throw new Error('readFile did not fail');
 }

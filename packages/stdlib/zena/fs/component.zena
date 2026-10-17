@@ -85,26 +85,24 @@ export enum FsErrorCode {
   NotPermitted,     // Operation not permitted (63)
 }
 
-let errnoToCode = (errno: i32): FsErrorCode => {
-  return match (errno) {
-    case 0: FsErrorCode.Success
-    case 2: FsErrorCode.Access
-    case 8: FsErrorCode.BadDescriptor
-    case 20: FsErrorCode.Exist
-    case 44: FsErrorCode.NotFound
-    case 31: FsErrorCode.IsDirectory
-    case 54: FsErrorCode.NotDirectory
-    case 55: FsErrorCode.NotEmpty
-    case 69: FsErrorCode.ReadOnly
-    case 70: FsErrorCode.InvalidSeek
-    case 29: FsErrorCode.Io
-    case 28: FsErrorCode.InvalidArgument
-    case 72: FsErrorCode.TooManyLinks
-    case 37: FsErrorCode.NameTooLong
-    case 51: FsErrorCode.NoSpace
-    case 63: FsErrorCode.NotPermitted
-    case _: FsErrorCode.Io
-  };
+let errnoToCode = (errno: i32) => match (errno) {
+  case 0: FsErrorCode.Success
+  case 2: FsErrorCode.Access
+  case 8: FsErrorCode.BadDescriptor
+  case 20: FsErrorCode.Exist
+  case 44: FsErrorCode.NotFound
+  case 31: FsErrorCode.IsDirectory
+  case 54: FsErrorCode.NotDirectory
+  case 55: FsErrorCode.NotEmpty
+  case 69: FsErrorCode.ReadOnly
+  case 70: FsErrorCode.InvalidSeek
+  case 29: FsErrorCode.Io
+  case 28: FsErrorCode.InvalidArgument
+  case 72: FsErrorCode.TooManyLinks
+  case 37: FsErrorCode.NameTooLong
+  case 51: FsErrorCode.NoSpace
+  case 63: FsErrorCode.NotPermitted
+  case _: FsErrorCode.Io
 };
 
 /** The errno a 0.3 `error-code` stands for; anything unlisted is I/O. */
@@ -126,24 +124,22 @@ let errnoOf = (code: ErrorCode): i32 => {
   return 29;
 };
 
-let describe = (code: ErrorCode): String => {
-  return match (errnoOf(code)) {
-    case 2: 'permission denied'
-    case 8: 'bad descriptor'
-    case 20: 'already exists'
-    case 44: 'no such file or directory'
-    case 31: 'is a directory'
-    case 54: 'not a directory'
-    case 55: 'directory not empty'
-    case 69: 'read-only file system'
-    case 70: 'invalid seek'
-    case 28: 'invalid argument'
-    case 72: 'too many links'
-    case 37: 'name too long'
-    case 51: 'no space left'
-    case 63: 'operation not permitted'
-    case _: 'I/O error'
-  };
+let describe = (code: ErrorCode) => match (errnoOf(code)) {
+  case 2: 'permission denied'
+  case 8: 'bad descriptor'
+  case 20: 'already exists'
+  case 44: 'no such file or directory'
+  case 31: 'is a directory'
+  case 54: 'not a directory'
+  case 55: 'directory not empty'
+  case 69: 'read-only file system'
+  case 70: 'invalid seek'
+  case 28: 'invalid argument'
+  case 72: 'too many links'
+  case 37: 'name too long'
+  case 51: 'no space left'
+  case 63: 'operation not permitted'
+  case _: 'I/O error'
 };
 
 /** A failed file operation: its code, and what was being done. */
@@ -159,9 +155,9 @@ let fail = (code: ErrorCode, what: String): never => {
 };
 
 /** Throw for a failed `result<_, error-code>`. */
-let check = (outcome: Outcome<void, ErrorCode>, what: String): void => {
+let check = (outcome: Outcome<void, ErrorCode>, what: String) => {
   if (outcome is Err<void, ErrorCode>) {
-    fail((outcome as Err<void, ErrorCode>).error, what);
+    fail(outcome.error, what);
   }
 };
 
@@ -180,7 +176,7 @@ export enum FileType {
   Socket,
 }
 
-let fileTypeOf = (t: DescriptorType): FileType => {
+let fileTypeOf = (t: DescriptorType) => {
   if (t is DescriptorTypeRegularFile) { return FileType.RegularFile; }
   if (t is DescriptorTypeDirectory) { return FileType.Directory; }
   if (t is DescriptorTypeSymbolicLink) { return FileType.SymbolicLink; }
@@ -216,7 +212,7 @@ let statOf = (s: DescriptorStat): FileStat => {
   var modified = 0 as i64;
   let stamp = s.dataModificationTimestamp;
   if (stamp is Some<Instant>) {
-    let at = (stamp as Some<Instant>).value;
+    let at = stamp.value;
     modified = at.seconds * (1000000000 as i64) + (at.nanoseconds as i64);
   }
   return {
@@ -232,17 +228,15 @@ let statOf = (s: DescriptorStat): FileStat => {
 
 let noOpenFlags = (0 as u32) as WitOpenFlags;
 
-let witDescriptorFlags = (flags: DescriptorFlags): WitDescriptorFlags => {
-  return match (flags) {
-    case DescriptorFlags.Read: descriptorFlagsRead
-    case DescriptorFlags.Write: descriptorFlagsWrite
-    case DescriptorFlags.ReadWrite: {
-      ((descriptorFlagsRead as u32) | (descriptorFlagsWrite as u32)) as WitDescriptorFlags
-    }
-    case DescriptorFlags.MutateDirectory: {
-      ((descriptorFlagsRead as u32) | (descriptorFlagsMutateDirectory as u32)) as WitDescriptorFlags
-    }
-  };
+let witDescriptorFlags = (flags: DescriptorFlags) => match (flags) {
+  case DescriptorFlags.Read: descriptorFlagsRead
+  case DescriptorFlags.Write: descriptorFlagsWrite
+  case DescriptorFlags.ReadWrite: {
+    ((descriptorFlagsRead as u32) | (descriptorFlagsWrite as u32)) as WitDescriptorFlags
+  }
+  case DescriptorFlags.MutateDirectory: {
+    ((descriptorFlagsRead as u32) | (descriptorFlagsMutateDirectory as u32)) as WitDescriptorFlags
+  }
 };
 
 /** Every entry of a directory stream. */
@@ -251,7 +245,7 @@ async function collectEntries(stream: Stream<DirectoryEntry>): Future<Array<DirE
   while (true) {
     let next = await stream.readOne();
     if (next is Some<DirectoryEntry>) {
-      let entry = (next as Some<DirectoryEntry>).value;
+      let entry = next.value;
       out.push({ name: entry.name, fileType: fileTypeOf(entry.type) });
     } else {
       break;
@@ -380,7 +374,7 @@ export resource class Descriptor {
   async stat(): Future<FileStat> {
     let outcome = await this.#inner.stat();
     if (outcome is Err<DescriptorStat, ErrorCode>) {
-      fail((outcome as Err<DescriptorStat, ErrorCode>).error, 'stat');
+      fail(outcome.error, 'stat');
     }
     return statOf((outcome as Ok<DescriptorStat, ErrorCode>).value);
   }
@@ -389,7 +383,7 @@ export resource class Descriptor {
   async statAt(path: String): Future<FileStat> {
     let outcome = await this.#inner.statAt(pathFlagsSymlinkFollow, path);
     if (outcome is Err<DescriptorStat, ErrorCode>) {
-      fail((outcome as Err<DescriptorStat, ErrorCode>).error, `stat '${path}'`);
+      fail(outcome.error, `stat '${path}'`);
     }
     return statOf((outcome as Ok<DescriptorStat, ErrorCode>).value);
   }
@@ -484,7 +478,7 @@ let SLASH = 0x2F;
  * left: a path operation rejects an empty path, so a path that names a
  * preopen exactly names the preopen's own directory.
  */
-let normalizeRelative = (path: String): String => {
+let normalizeRelative = (path: String) => {
   let kept = new GrowableArray<String>(4);
   for (let segment in path.split('/')) {
     if (segment != '' && segment != '.') {
@@ -648,7 +642,7 @@ export class GlobOptions {
 }
 
 /** Insertion sort, in place: directory listings are nearly sorted. */
-let sortStrings = (arr: GrowableArray<String>): void => {
+let sortStrings = (arr: GrowableArray<String>) => {
   for (var i = 1; i < arr.length; i += 1) {
     let cur = arr[i];
     var j = i - 1;
@@ -660,7 +654,7 @@ let sortStrings = (arr: GrowableArray<String>): void => {
 };
 
 /** The directory prefix of a pattern before its first wildcard. */
-let baseDirOf = (pattern: String): String => {
+let baseDirOf = (pattern: String) => {
   var lastSlash = 0 - 1;
   for (var i = 0; i < pattern.length; i += 1) {
     let b = pattern.getByteAt(i);
@@ -701,19 +695,19 @@ async function scanDir(
   if (entries == null) {
     return;
   }
-  for (let entry in entries as Array<DirEntry>) {
+  for (let entry in entries) {
     if (entry.name == '.' || entry.name == '..') {
       continue;
     }
     let relPath = if (relPrefix.length == 0 || relPrefix == '.') {
       entry.name
     } else {
-      relPrefix + '/' + entry.name
+      `${relPrefix}/${entry.name}`
     };
     let fullPath = if (currentDir == '.') {
       entry.name
     } else {
-      currentDir + '/' + entry.name
+      `${currentDir}/${entry.name}`
     };
     var excluded = false;
     for (var ex = 0; ex < excludePatterns.length; ex += 1) {
@@ -745,11 +739,7 @@ export async function glob(
   pattern: String,
   options: GlobOptions | null = null
 ): Future<Array<String>> {
-  let opts = if (options != null) {
-    options as GlobOptions
-  } else {
-    new GlobOptions()
-  };
+  let opts = options ?? new GlobOptions();
   let results = new GrowableArray<String>();
   let excludePatterns = new GrowableArray<GlobPattern>();
   for (var ex = 0; ex < opts.exclude.length; ex += 1) {
@@ -759,7 +749,7 @@ export async function glob(
     let target = if (opts.cwd == '.') {
       pattern
     } else {
-      opts.cwd + '/' + pattern
+      `${opts.cwd}/${pattern}`
     };
     if (await exists(target)) {
       var excluded = false;
@@ -781,7 +771,7 @@ export async function glob(
   } else if (baseDir == '.') {
     opts.cwd
   } else {
-    opts.cwd + '/' + baseDir
+    `${opts.cwd}/${baseDir}`
   };
   let relPrefix = if (baseDir == '.') '' else baseDir;
   let globPattern = new GlobPattern(pattern);

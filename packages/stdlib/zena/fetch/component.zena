@@ -31,7 +31,7 @@ import {
 import { send } from 'wasi:http/client';
 
 /** The one spellable value of type void, for a `result<_, e>` ok arm. */
-function unit(): void {}
+function unit() {}
 
 /**
  * An HTTP response: the status, and a one-shot handle on the body.
@@ -118,17 +118,17 @@ export async function fetch(url: String | URL): Future<Response> {
   if (url is URL) {
     parsed = url;
   } else {
-    parsed = URL.parse(url as String);
+    parsed = URL.parse(url);
     if (parsed == null) {
-      throw new Error('zena:fetch: not a URL: ' + (url as String));
+      throw new Error('zena:fetch: not a URL: ' + (url));
     }
   }
-  let target = parsed as URL;
+  let target = parsed;
   let request = requestFor(target);
   let sent = await send(request);
   if (sent is Err<WireResponse, ErrorCode>) {
     throw new Error('zena:fetch: ' + describe(
-        (sent as Err<WireResponse, ErrorCode>).error) + ': ' + target.href);
+        sent.error) + ': ' + target.href);
   }
   let wire = (sent as Ok<WireResponse, ErrorCode>).value;
   return new Response(wire.getStatusCode() as i32, wire);
@@ -190,9 +190,9 @@ let describe = (code: ErrorCode): String => {
     return 'the server rejected the request URI';
   }
   if (code is ErrorCodeInternalError) {
-    let detail = (code as ErrorCodeInternalError).value;
+    let detail = code.value;
     if (detail is Some<String>) {
-      return 'the host reported: ' + (detail as Some<String>).value;
+      return 'the host reported: ' + detail.value;
     }
     return 'the host reported an internal error';
   }

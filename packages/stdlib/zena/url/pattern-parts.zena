@@ -158,12 +158,12 @@ enum PendingKind {
 }
 
 /** `$`, `_`, or an ASCII letter — see the header on the non-ASCII gap. */
-let isIdentifierStart = (b: i32): boolean =>
+let isIdentifierStart = (b: i32) =>
   b == DOLLAR || b == UNDERSCORE ||
   (b >= 0x41 && b <= 0x5A) || (b >= 0x61 && b <= 0x7A);
 
 /** An identifier start, or an ASCII digit. */
-let isIdentifierPart = (b: i32): boolean =>
+let isIdentifierPart = (b: i32) =>
   isIdentifierStart(b) || (b >= 0x30 && b <= 0x39);
 
 /**
@@ -259,7 +259,7 @@ final class Parser {
    */
   #claimName(name: String): void {
     if (this.#names.has(name)) {
-      throw new PatternSyntaxError("Duplicate name '" + name + "'.");
+      throw new PatternSyntaxError(`Duplicate name '${name}'.`);
     }
     this.#names.add(name);
   }
@@ -331,7 +331,7 @@ final class Parser {
     // with "zir unsupported: non-local identifier", because reachability
     // registers no function-value wrapper for it. Calling it from a closure
     // built here sidesteps that.
-    this.#reader.skipBytesWhile((b: i32): boolean => isIdentifierPart(b));
+    this.#reader.skipBytesWhile((b) => isIdentifierPart(b));
     return this.#reader.sliceFrom(start);
   }
 
@@ -360,7 +360,7 @@ final class Parser {
       // is a byte rather than something printable.
       if (c >= 0x80) {
         throw new PatternSyntaxError(
-          'Invalid character at ' + i32ToString(this.#reader.position) + '.'
+          `Invalid character at ${i32ToString(this.#reader.position)}.`
         );
       }
 
@@ -470,7 +470,7 @@ final class Parser {
     this.#reader.advanceByte();
 
     // The prefix runs up to whatever starts the group's body.
-    var prefix = this.#readEscapedUntil((b: i32): boolean =>
+    var prefix = this.#readEscapedUntil((b) =>
       b == CLOSE_BRACE || b == COLON || b == ASTERISK || b == OPEN_PAREN);
 
     var name = '';
@@ -497,7 +497,7 @@ final class Parser {
       kind = PendingKind.FullWildcard;
     }
 
-    let suffix = this.#readEscapedUntil((b: i32): boolean => b == CLOSE_BRACE);
+    let suffix = this.#readEscapedUntil((b) => b == CLOSE_BRACE);
 
     if (!this.#reader.matchByte(CLOSE_BRACE)) {
       throw new PatternSyntaxError(
@@ -666,7 +666,7 @@ final class Parser {
 export let parsePattern = (
   pattern: String,
   componentType: URLComponentType = URLComponentType.Pathname,
-  encode: (s: String) => String = (s: String): String => s
+  encode: (s: String) => String = (s: String) => s
 ): Array<Part> => {
   let parser = new Parser(pattern, componentType, encode);
   return parser.parse();

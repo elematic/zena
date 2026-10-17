@@ -5,11 +5,11 @@ import {
   untrack, currentComputed, introspectSources, introspectSinks, hasSinks, hasSources,
 } from 'zena:signals';
 
-export let tests = suite('Signals: Watcher', (): void => {
-  test('notify runs inside set, once until re-armed', (ctx: TestContext): void => {
+export let tests = suite('Signals: Watcher', () => {
+  test('notify runs inside set, once until re-armed', (ctx) => {
     let s = new State(1);
     var notified = 0;
-    let w = new Watcher((w: Watcher): void => {
+    let w = new Watcher((w: Watcher) => {
       notified += 1;
     });
     w.watch(s);
@@ -22,11 +22,11 @@ export let tests = suite('Signals: Watcher', (): void => {
     equal(notified, 2);
   });
 
-  test('a watched computed notifies through its sources', (ctx: TestContext): void => {
+  test('a watched computed notifies through its sources', (ctx) => {
     let s = new State(1);
-    let c = new Computed<i32>((): i32 => s.get() * 2);
+    let c = new Computed<i32>(() => s.get() * 2);
     var notified = 0;
-    let w = new Watcher((w: Watcher): void => {
+    let w = new Watcher((w: Watcher) => {
       notified += 1;
     });
     w.watch(c);
@@ -40,9 +40,9 @@ export let tests = suite('Signals: Watcher', (): void => {
     equal(w.getPending().length, 0);
   });
 
-  test('a watched computed that was never read is pending', (ctx: TestContext): void => {
+  test('a watched computed that was never read is pending', (ctx) => {
     let s = new State(1);
-    let c = new Computed<i32>((): i32 => s.get());
+    let c = new Computed<i32>(() => s.get());
     let w = new Watcher();
     w.watch(c);
     equal(w.getPending().length, 1);
@@ -50,13 +50,13 @@ export let tests = suite('Signals: Watcher', (): void => {
     equal(w.getPending().length, 0);
   });
 
-  test('reading or writing in notify throws', (ctx: TestContext): void => {
+  test('reading or writing in notify throws', (ctx) => {
     let s = new State(1);
     let other = new State(0);
     var readThrew = false;
     var writeThrew = false;
     var untrackThrew = false;
-    let w = new Watcher((w: Watcher): void => {
+    let w = new Watcher((w: Watcher) => {
       try {
         other.get();
       } catch (e) {
@@ -68,7 +68,7 @@ export let tests = suite('Signals: Watcher', (): void => {
         writeThrew = true;
       }
       try {
-        untrack<i32>((): i32 => other.get());
+        untrack<i32>(() => other.get());
       } catch (e) {
         untrackThrew = true;
       }
@@ -81,50 +81,50 @@ export let tests = suite('Signals: Watcher', (): void => {
     equal(other.get(), 0);
   });
 
-  test('an error in notify reaches set after every watcher ran', (ctx: TestContext): void => {
+  test('an error in notify reaches set after every watcher ran', (ctx) => {
     let s = new State(1);
     var secondRan = false;
-    let w1 = new Watcher((w: Watcher): void => {
+    let w1 = new Watcher((w: Watcher) => {
       throw new Error('first');
     });
-    let w2 = new Watcher((w: Watcher): void => {
+    let w2 = new Watcher((w: Watcher) => {
       secondRan = true;
     });
     w1.watch(s);
     w2.watch(s);
-    throws((): void => {
+    throws(() => {
       s.set(2);
     });
     isTrue(secondRan);
     equal(s.get(), 2);
   });
 
-  test('unwatch stops notifications and throws for an unwatched signal', (ctx: TestContext): void => {
+  test('unwatch stops notifications and throws for an unwatched signal', (ctx) => {
     let s = new State(1);
     var notified = 0;
-    let w = new Watcher((w: Watcher): void => {
+    let w = new Watcher((w: Watcher) => {
       notified += 1;
     });
     w.watch(s);
     w.unwatch(s);
     s.set(2);
     equal(notified, 0);
-    throws((): void => {
+    throws(() => {
       w.unwatch(s);
     });
   });
 
-  test('watched and unwatched callbacks', (ctx: TestContext): void => {
+  test('watched and unwatched callbacks', (ctx) => {
     var log = '';
     let s = new State<i32>(1, {
-      watched: (): void => {
+      watched: () => {
         log = log + 'w';
       },
-      unwatched: (): void => {
+      unwatched: () => {
         log = log + 'u';
       },
     });
-    let c = new Computed<i32>((): i32 => s.get() + 1);
+    let c = new Computed<i32>(() => s.get() + 1);
     c.get();
     equal(log, '');
     let w = new Watcher();
@@ -139,9 +139,9 @@ export let tests = suite('Signals: Watcher', (): void => {
     equal(log, 'wu');
   });
 
-  test('a computed is live only while something live reads it', (ctx: TestContext): void => {
+  test('a computed is live only while something live reads it', (ctx) => {
     let s = new State(1);
-    let c = new Computed<i32>((): i32 => s.get());
+    let c = new Computed<i32>(() => s.get());
     c.get();
     isFalse(hasSinks(s));
     isTrue(hasSources(c));
@@ -156,9 +156,9 @@ export let tests = suite('Signals: Watcher', (): void => {
     isFalse(hasSinks(c));
   });
 
-  test('a computed made live after a write is checked', (ctx: TestContext): void => {
+  test('a computed made live after a write is checked', (ctx) => {
     let s = new State(1);
-    let c = new Computed<i32>((): i32 => s.get() * 10);
+    let c = new Computed<i32>(() => s.get() * 10);
     equal(c.get(), 10);
     s.set(2);
     let w = new Watcher();
@@ -166,10 +166,10 @@ export let tests = suite('Signals: Watcher', (): void => {
     equal(c.get(), 20);
   });
 
-  test('introspectSources lists sources in read order', (ctx: TestContext): void => {
+  test('introspectSources lists sources in read order', (ctx) => {
     let a = new State(1);
     let b = new State(2);
-    let c = new Computed<i32>((): i32 => b.get() + a.get() + b.get());
+    let c = new Computed<i32>(() => b.get() + a.get() + b.get());
     c.get();
     let sources = introspectSources(c);
     equal(sources.length, 2);
@@ -178,13 +178,13 @@ export let tests = suite('Signals: Watcher', (): void => {
     equal(introspectSources(a).length, 0);
   });
 
-  test('currentComputed and untrack', (ctx: TestContext): void => {
+  test('currentComputed and untrack', (ctx) => {
     let s = new State(1);
     let t = new State(10);
     var inside: ReactiveNode | null = null;
-    let c = new Computed<i32>((): i32 => {
+    let c = new Computed<i32>(() => {
       inside = currentComputed();
-      return s.get() + untrack<i32>((): i32 => t.get());
+      return s.get() + untrack<i32>(() => t.get());
     });
     equal(c.get(), 11);
     same(inside as ReactiveNode, c as ReactiveNode);
@@ -195,11 +195,11 @@ export let tests = suite('Signals: Watcher', (): void => {
     equal(c.get(), 22);
   });
 
-  test('a live computed that switches branches releases the old source', (ctx: TestContext): void => {
+  test('a live computed that switches branches releases the old source', (ctx) => {
     let useA = new State<boolean>(true);
     let a = new State(1);
     let b = new State(2);
-    let c = new Computed<i32>((): i32 => if (useA.get()) a.get() else b.get());
+    let c = new Computed<i32>(() => if (useA.get()) a.get() else b.get());
     let w = new Watcher();
     w.watch(c);
     c.get();
@@ -211,11 +211,11 @@ export let tests = suite('Signals: Watcher', (): void => {
     isTrue(hasSinks(b));
   });
 
-  test('watch inside notify throws', (ctx: TestContext): void => {
+  test('watch inside notify throws', (ctx) => {
     let s = new State(1);
     let other = new State(2);
     var threw = false;
-    let w = new Watcher((w: Watcher): void => {
+    let w = new Watcher((w: Watcher) => {
       try {
         w.watch(other);
       } catch (e) {
@@ -227,15 +227,15 @@ export let tests = suite('Signals: Watcher', (): void => {
     isTrue(threw);
   });
 
-  test('a watcher is notified once per write in depth-first order', (ctx: TestContext): void => {
+  test('a watcher is notified once per write in depth-first order', (ctx) => {
     let s = new State(1);
-    let c1 = new Computed<i32>((): i32 => s.get() + 1);
-    let c2 = new Computed<i32>((): i32 => s.get() + 2);
+    let c1 = new Computed<i32>(() => s.get() + 1);
+    let c2 = new Computed<i32>(() => s.get() + 2);
     var log = '';
-    let w1 = new Watcher((w: Watcher): void => {
+    let w1 = new Watcher((w: Watcher) => {
       log = log + '1';
     });
-    let w2 = new Watcher((w: Watcher): void => {
+    let w2 = new Watcher((w: Watcher) => {
       log = log + '2';
     });
     w1.watch(c1);

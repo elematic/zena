@@ -18,7 +18,7 @@ var outcomes = '';
 let probe = async (f: Future<i32>): Future<void> => {
   try {
     let v = await f;
-    outcomes = outcomes + 'v' + i32ToString(v);
+    outcomes = `${outcomes}v${i32ToString(v)}`;
   } cancel {
     outcomes = outcomes + 'C';
   } catch (e) {
@@ -26,15 +26,15 @@ let probe = async (f: Future<i32>): Future<void> => {
   }
 };
 
-let assertCancelled = (f: Future<i32>): void => {
+let assertCancelled = (f: Future<i32>) => {
   outcomes = '';
   probe(f);
   drainMicrotasks();
   equal(outcomes, 'C');
 };
 
-export let tests = suite('FutureClaim', (): void => {
-  test('releasing the only claim cancels the work', (ctx: TestContext): void => {
+export let tests = suite('FutureClaim', () => {
+  test('releasing the only claim cancels the work', (ctx) => {
     let gate = new Completer<i32>();
     let h = FutureClaim.spawn(() => doubled(gate.future));
     drainMicrotasks();
@@ -47,7 +47,7 @@ export let tests = suite('FutureClaim', (): void => {
     assertCancelled(h.future);
   });
 
-  test('a split claim keeps the work alive', (ctx: TestContext): void => {
+  test('a split claim keeps the work alive', (ctx) => {
     let gate = new Completer<i32>();
     let h = FutureClaim.spawn(() => doubled(gate.future));
     let h2 = h.split();
@@ -61,7 +61,7 @@ export let tests = suite('FutureClaim', (): void => {
     h2.release();
   });
 
-  test('release is idempotent per handle', (ctx: TestContext): void => {
+  test('release is idempotent per handle', (ctx) => {
     let gate = new Completer<i32>();
     let h = FutureClaim.spawn(() => doubled(gate.future));
     let h2 = h.split();
@@ -78,7 +78,7 @@ export let tests = suite('FutureClaim', (): void => {
     assertCancelled(h2.future);
   });
 
-  test('a released handle cannot split', (ctx: TestContext): void => {
+  test('a released handle cannot split', (ctx) => {
     let gate = new Completer<i32>();
     let h = FutureClaim.spawn(() => doubled(gate.future));
     h.release();
@@ -92,20 +92,20 @@ export let tests = suite('FutureClaim', (): void => {
     drainMicrotasks();
   });
 
-  test('`using` releases the claim at the end of the block', (ctx: TestContext): void => {
+  test('`using` releases the claim at the end of the block', (ctx) => {
     let gate = new Completer<i32>();
     var f: Future<i32> | null = null;
     {
       using h = FutureClaim.spawn(() => doubled(gate.future));
       f = h.future;
       drainMicrotasks();
-      isFalse((f as Future<i32>).isCompleted);
+      isFalse(f.isCompleted);
     }
     drainMicrotasks();
-    assertCancelled((f as Future<i32>));
+    assertCancelled((f));
   });
 
-  test('enclosing cancellation still reaches owned work', (ctx: TestContext): void => {
+  test('enclosing cancellation still reaches owned work', (ctx) => {
     let gate = new Completer<i32>();
     let outer = new TaskGroup();
     var h: FutureClaim<i32> | null = null;
@@ -122,17 +122,15 @@ export let tests = suite('FutureClaim', (): void => {
     drainMicrotasks();
   });
 
-  test('work spawned under a detached group ignores enclosing cancellation', (ctx: TestContext): void => {
+  test('work spawned under a detached group ignores enclosing cancellation', (ctx) => {
     let gate = new Completer<i32>();
     let outer = new TaskGroup();
     let shared = TaskGroup.detached();
     var h: FutureClaim<i32> | null = null;
-    outer.spawn(() => {
-      return shared.spawn(() => {
-        h = FutureClaim.spawn(() => doubled(gate.future));
-        return Future.of(0);
-      });
-    });
+    outer.spawn(() => shared.spawn(() => {
+      h = FutureClaim.spawn(() => doubled(gate.future));
+      return Future.of(0);
+    }));
     let handle = h as FutureClaim<i32>;
     outer.cancel();
     drainMicrotasks();

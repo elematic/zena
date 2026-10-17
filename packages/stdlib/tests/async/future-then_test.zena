@@ -19,30 +19,30 @@ let doubled = async (gate: Future<i32>): Future<i32> => {
 let probe = async (f: Future<i32>): Future<void> => {
   try {
     let v = await f;
-    log = log + 'v' + i32ToString(v);
+    log = `${log}v${i32ToString(v)}`;
   } cancel {
     log = log + 'C';
   } catch (e) {
-    log = log + 'e' + e.message;
+    log = `${log}e${e.message}`;
   }
 };
 
-export let tests = suite('Future.then', (): void => {
-  test('then transforms the value', (ctx: TestContext): void => {
-    let f = Future.of(21).then((v: i32) => v * 2);
+export let tests = suite('Future.then', () => {
+  test('then transforms the value', (ctx) => {
+    let f = Future.of(21).then((v) => v * 2);
     equal(runFuture(f), 42);
   });
 
-  test('then chains', (ctx: TestContext): void => {
+  test('then chains', (ctx) => {
     let f = Future.of(1)
-      .then((v: i32) => v + 1)
-      .then((v: i32) => v * 10);
+      .then((v) => v + 1)
+      .then((v) => v * 10);
     equal(runFuture(f), 20);
   });
 
-  test('a failure propagates past then untransformed', (ctx: TestContext): void => {
+  test('a failure propagates past then untransformed', (ctx) => {
     var ran = false;
-    let f = Future.failed<i32>(new Error('boom')).then((v: i32): i32 => {
+    let f = Future.failed<i32>(new Error('boom')).then((v) => {
       ran = true;
       return v;
     });
@@ -57,15 +57,15 @@ export let tests = suite('Future.then', (): void => {
     isFalse(ran);
   });
 
-  test('onError recovers the chain', (ctx: TestContext): void => {
+  test('onError recovers the chain', (ctx) => {
     let f = Future.failed<i32>(new Error('boom')).then(
-      (v: i32) => v,
+      (v) => v,
       (e: Error) => 7);
     equal(runFuture(f), 7);
   });
 
-  test('a throwing callback fails the derived future', (ctx: TestContext): void => {
-    let f = Future.of(1).then((v: i32): i32 => {
+  test('a throwing callback fails the derived future', (ctx) => {
+    let f = Future.of(1).then((v): i32 => {
       throw new Error('cb threw');
     });
     var msg = '';
@@ -78,17 +78,17 @@ export let tests = suite('Future.then', (): void => {
     equal(msg, 'cb threw');
   });
 
-  test('then flattens a future-returning callback', (ctx: TestContext): void => {
+  test('then flattens a future-returning callback', (ctx) => {
     let gate = new Completer<i32>();
-    let f = Future.of(5).then((v: i32) => doubled(gate.future));
+    let f = Future.of(5).then((v) => doubled(gate.future));
     drainMicrotasks();
     gate.complete(6);
     equal(runFuture(f), 12);
   });
 
-  test('an inner failure propagates through the flattening', (ctx: TestContext): void => {
+  test('an inner failure propagates through the flattening', (ctx) => {
     let f = Future.of(1).then(
-      (v: i32) => Future.failed<i32>(new Error('inner')));
+      (v) => Future.failed<i32>(new Error('inner')));
     var msg = '';
     try {
       runFuture(f);
@@ -99,10 +99,10 @@ export let tests = suite('Future.then', (): void => {
     equal(msg, 'inner');
   });
 
-  test('a throwing callback is not caught by its own onError', (ctx: TestContext): void => {
+  test('a throwing callback is not caught by its own onError', (ctx) => {
     var recovered = false;
     let f = Future.of(1).then(
-      (v: i32): i32 => {
+      (v): i32 => {
         throw new Error('from onValue');
       },
       (e: Error): i32 => {
@@ -120,13 +120,13 @@ export let tests = suite('Future.then', (): void => {
     isFalse(recovered);
   });
 
-  test('cancellation forwards without running callbacks', (ctx: TestContext): void => {
+  test('cancellation forwards without running callbacks', (ctx) => {
     log = '';
     let gate = new Completer<i32>();
     let group = new TaskGroup();
     let src = group.spawn(() => doubled(gate.future));
     var ran = false;
-    let derived = src.then((v: i32): i32 => {
+    let derived = src.then((v) => {
       ran = true;
       return v;
     });

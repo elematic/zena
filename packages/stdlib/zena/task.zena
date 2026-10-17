@@ -30,7 +30,7 @@ import { div } from 'zena:math';
 export type Op<T> = () => Future<T>;
 
 /** `d` as whole milliseconds, for error messages. */
-let wholeMs = (d: Duration): i64 => {
+let wholeMs = (d: Duration) => {
   let ns = d as i64;
   let perMs: i64 = 1000000;
   return div(ns, perMs);
@@ -41,7 +41,7 @@ let wholeMs = (d: Duration): i64 => {
 export class TimeoutError extends Error {
   budget: Duration;
   new(this.budget)
-    : super('timed out after ' + i64ToString(wholeMs(budget)) + 'ms');
+    : super(`timed out after ${i64ToString(wholeMs(budget))}ms`);
 }
 
 /**
@@ -66,14 +66,12 @@ export let timeout = <T>(budget: Duration, op: Op<T>): Op<T> => {
  * spends one budget across all of them. An attempt starting past the
  * deadline fails immediately, without running the operation.
  */
-export let deadline = <T>(at: Instant, op: Op<T>): Op<T> => {
-  return (): Future<T> => {
-    let remaining = at - monotonic();
-    if (!remaining.isPositive()) {
-      return Future.failed<T>(new TimeoutError(milliseconds(0)));
-    }
-    return timeout(remaining, op)();
-  };
+export let deadline = <T>(at: Instant, op: Op<T>): Op<T> => () => {
+  let remaining = at - monotonic();
+  if (!remaining.isPositive()) {
+    return Future.failed<T>(new TimeoutError(milliseconds(0)));
+  }
+  return timeout(remaining, op)();
 };
 
 /** `retry`'s body. A top-level function rather than an async closure
@@ -125,14 +123,12 @@ export let retry = <T>(
  * completes cancelled, the unwind passes through and `alt` never
  * runs.
  */
-export let fallback = <T>(op: Op<T>, alt: Op<T>): Op<T> => {
-  return async () => {
-    try {
-      return await op();
-    } catch (e) {
-      return await alt();
-    }
-  };
+export let fallback = <T>(op: Op<T>, alt: Op<T>): Op<T> => async () => {
+  try {
+    return await op();
+  } catch (e) {
+    return await alt();
+  }
 };
 
 /**
@@ -142,12 +138,10 @@ export let fallback = <T>(op: Op<T>, alt: Op<T>): Op<T> => {
  * occasionally very slow. The loser is cancelled. A hedge trims
  * slowness and does not mask errors; layer `retry` on top for that.
  */
-export let hedge = <T>(delay: Duration, op: Op<T>): Op<T> => {
-  return () => TaskGroup.race([op, async () => {
-    await sleep(delay);
-    return await op();
-  }]);
-};
+export let hedge = <T>(delay: Duration, op: Op<T>): Op<T> => () => TaskGroup.race([op, async () => {
+  await sleep(delay);
+  return await op();
+}]);
 
 // ---------------------------------------------------------------------------
 // Task<T>: an operation's observable lifecycle (docs/design/task.md)

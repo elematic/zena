@@ -3,12 +3,12 @@ import {suite, test, TestContext} from 'zena:test';
 import {equal} from 'zena:assert';
 import {Memory, Allocator, BumpAllocator, FreeListAllocator, defaultAllocator} from 'zena:memory';
 
-export let tests = suite('Memory', (): void => {
+export let tests = suite('Memory', () => {
   // =========================================================================
   // Memory class tests
   // =========================================================================
 
-  test('array-like byte access', (ctx: TestContext): void => {
+  test('array-like byte access', (ctx) => {
     let mem = Memory.default;
     
     // Write bytes at safe addresses (after allocator region)
@@ -22,7 +22,7 @@ export let tests = suite('Memory', (): void => {
     equal(mem[1002], 255);
   });
 
-  test('i32 typed accessors', (ctx: TestContext): void => {
+  test('i32 typed accessors', (ctx) => {
     let mem = Memory.default;
     
     mem.setI32(1004, 12345);
@@ -32,7 +32,7 @@ export let tests = suite('Memory', (): void => {
     equal(mem.getI32(1008), -9999);
   });
 
-  test('narrow integer accessors', (ctx: TestContext): void => {
+  test('narrow integer accessors', (ctx) => {
     let mem = Memory.default;
 
     mem.setU8(1012, 200);
@@ -49,7 +49,7 @@ export let tests = suite('Memory', (): void => {
     equal(mem.getS16(1016), 1234);
   });
 
-  test('copies between arrays and memory, in whole words and tails', (ctx: TestContext): void => {
+  test('copies between arrays and memory, in whole words and tails', (ctx) => {
     let mem = Memory.default;
     // Lengths on both sides of a word boundary, so the word loop and
     // the byte tail are both exercised, and a nonzero start index.
@@ -83,14 +83,14 @@ export let tests = suite('Memory', (): void => {
     }
   });
 
-  test('copies a string\'s bytes and reads them back', (ctx: TestContext): void => {
+  test('copies a string\'s bytes and reads them back', (ctx) => {
     let mem = Memory.default;
     let s = 'hello, linear memory';
     mem.copyFromString(2100, s, 7, 13);
     equal(String.fromBytes(mem.bytesAt(2100, 13)), 'linear memory');
   });
 
-  test('copies within memory, including a destination below an overlapping source', (ctx: TestContext): void => {
+  test('copies within memory, including a destination below an overlapping source', (ctx) => {
     let mem = Memory.default;
     for (var i = 0; i < 16; i += 1) {
       mem[2200 + i] = i;
@@ -109,7 +109,7 @@ export let tests = suite('Memory', (): void => {
     equal(mem[2211], 11);
   });
 
-  test('size and grow', (ctx: TestContext): void => {
+  test('size and grow', (ctx) => {
     let mem = Memory.default;
     
     let sizeBefore = mem.size();
@@ -131,7 +131,7 @@ export let tests = suite('Memory', (): void => {
   // BumpAllocator tests
   // =========================================================================
 
-  test('BumpAllocator alloc returns sequential addresses', (ctx: TestContext): void => {
+  test('BumpAllocator alloc returns sequential addresses', (ctx) => {
     if (let (true, region) = defaultAllocator.alloc(1024)) {
       let alloc = new BumpAllocator(region, 1024);
       
@@ -149,7 +149,7 @@ export let tests = suite('Memory', (): void => {
     }
   });
 
-  test('BumpAllocator returns failure when exhausted', (ctx: TestContext): void => {
+  test('BumpAllocator returns failure when exhausted', (ctx) => {
     if (let (true, region) = defaultAllocator.alloc(100)) {
       let alloc = new BumpAllocator(region, 100);
       
@@ -182,7 +182,7 @@ export let tests = suite('Memory', (): void => {
     }
   });
 
-  test('BumpAllocator allocAligned respects alignment', (ctx: TestContext): void => {
+  test('BumpAllocator allocAligned respects alignment', (ctx) => {
     if (let (true, region) = defaultAllocator.alloc(1024)) {
       let alloc = new BumpAllocator(region, 1024);
       
@@ -201,7 +201,7 @@ export let tests = suite('Memory', (): void => {
     }
   });
 
-  test('BumpAllocator reset allows reuse', (ctx: TestContext): void => {
+  test('BumpAllocator reset allows reuse', (ctx) => {
     if (let (true, region) = defaultAllocator.alloc(256)) {
       let arena = new BumpAllocator(region, 256);
       let mem = Memory.default;
@@ -230,7 +230,7 @@ export let tests = suite('Memory', (): void => {
   // FreeListAllocator tests
   // =========================================================================
 
-  test('FreeListAllocator alloc and free', (ctx: TestContext): void => {
+  test('FreeListAllocator alloc and free', (ctx) => {
     let alloc = FreeListAllocator.default;
     let mem = Memory.default;
     
@@ -260,7 +260,7 @@ export let tests = suite('Memory', (): void => {
     }
   });
 
-  test('FreeListAllocator reuses freed memory', (ctx: TestContext): void => {
+  test('FreeListAllocator reuses freed memory', (ctx) => {
     let alloc = FreeListAllocator.default;
     
     // Allocate and free repeatedly
@@ -279,7 +279,7 @@ export let tests = suite('Memory', (): void => {
     }
   });
 
-  test('FreeListAllocator frees an aligned block', (ctx: TestContext): void => {
+  test('FreeListAllocator frees an aligned block', (ctx) => {
     let mem = Memory.default;
 
     // A private allocator over a 64-aligned region, so the addresses are
@@ -316,7 +316,7 @@ export let tests = suite('Memory', (): void => {
     }
   });
 
-  test('FreeListAllocator preserves large blocks across small allocations', (ctx: TestContext): void => {
+  test('FreeListAllocator preserves large blocks across small allocations', (ctx) => {
     if (let (true, region) = defaultAllocator.alloc(16384)) {
       let alloc = new FreeListAllocator(region);
       if (let (true, big1) = alloc.alloc(4096)) {
@@ -336,7 +336,7 @@ export let tests = suite('Memory', (): void => {
   // Allocator interface polymorphism
   // =========================================================================
 
-  test('Allocator interface polymorphism', (ctx: TestContext): void => {
+  test('Allocator interface polymorphism', (ctx) => {
     let useAllocator = (alloc: Allocator): i32 => {
       if (let (true, p) = alloc.alloc(32)) {
         Memory.default.setI32(p, 42);

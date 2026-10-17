@@ -6,8 +6,8 @@ import {suite, test, TestContext} from 'zena:test';
 import {equal, isTrue, isFalse} from 'zena:assert';
 import {run, runIn, runInheriting, runWith, spawn} from 'zena:process';
 
-export let tests = suite('zena:process', (): void => {
-  test('run captures stdout, stderr, and the exit code', (ctx: TestContext): void => {
+export let tests = suite('zena:process', () => {
+  test('run captures stdout, stderr, and the exit code', (ctx) => {
     let res = run(['/bin/sh', '-c', 'printf out; printf err >&2; exit 3']);
     equal(res.exitCode, 3);
     equal(res.stdout, 'out');
@@ -16,7 +16,7 @@ export let tests = suite('zena:process', (): void => {
     isTrue(res.wallNanos > 0 as i64, 'wallNanos is positive');
   });
 
-  test('runInheriting passes the exit code and captures nothing', (ctx: TestContext): void => {
+  test('runInheriting passes the exit code and captures nothing', (ctx) => {
     // What the child prints goes to this process's own stdout, which the
     // test cannot read back; what it can check is that none of it was
     // captured and the status still arrives.
@@ -26,38 +26,38 @@ export let tests = suite('zena:process', (): void => {
     equal(res.stderr, '');
   });
 
-  test('succeeded on a zero exit', (ctx: TestContext): void => {
+  test('succeeded on a zero exit', (ctx) => {
     let res = run(['/bin/sh', '-c', 'true']);
     equal(res.exitCode, 0);
     isTrue(res.succeeded());
   });
 
-  test('runIn sets the working directory', (ctx: TestContext): void => {
+  test('runIn sets the working directory', (ctx) => {
     let res = runIn(['/bin/sh', '-c', 'pwd'], '/tmp');
     equal(res.exitCode, 0);
     // /tmp may be a symlink (e.g. to /private/tmp); accept a suffix match.
     isTrue(res.stdout.contains('tmp'), `pwd printed ${res.stdout}`);
   });
 
-  test('runWith writes input to stdin and closes it', (ctx: TestContext): void => {
+  test('runWith writes input to stdin and closes it', (ctx) => {
     let res = runWith(['cat'], {input: 'one\ntwo\n'});
     equal(res.exitCode, 0);
     equal(res.stdout, 'one\ntwo\n');
   });
 
-  test('without input, stdin is at end of input', (ctx: TestContext): void => {
+  test('without input, stdin is at end of input', (ctx) => {
     let res = runWith(['cat'], {});
     equal(res.exitCode, 0);
     equal(res.stdout, '');
   });
 
-  test('runWith combines input with a working directory', (ctx: TestContext): void => {
+  test('runWith combines input with a working directory', (ctx) => {
     let res = runWith(['/bin/sh', '-c', 'pwd; cat'], {cwd: '/tmp', input: 'piped'});
     isTrue(res.stdout.contains('tmp'), `pwd printed ${res.stdout}`);
     isTrue(res.stdout.endsWith('piped'), `cat printed ${res.stdout}`);
   });
 
-  test('spawned processes run concurrently and wait() joins them', (ctx: TestContext): void => {
+  test('spawned processes run concurrently and wait() joins them', (ctx) => {
     // Two 0.2s sleeps in parallel should finish well under 0.4s of
     // combined wall time each; mostly this asserts both complete and
     // report independently.
@@ -71,7 +71,7 @@ export let tests = suite('zena:process', (): void => {
     equal(rb.exitCode, 0);
   });
 
-  test('wait() twice returns the same result', (ctx: TestContext): void => {
+  test('wait() twice returns the same result', (ctx) => {
     let p = spawn(['/bin/sh', '-c', 'printf once']);
     let first = p.wait();
     let second = p.wait();
@@ -80,7 +80,7 @@ export let tests = suite('zena:process', (): void => {
     equal(second.exitCode, 0);
   });
 
-  test('a process that finishes in time is not flagged as timed out', (ctx: TestContext): void => {
+  test('a process that finishes in time is not flagged as timed out', (ctx) => {
     let res = spawn(['/bin/sh', '-c', 'printf quick']).waitFor(30000 as i64);
     equal(res.exitCode, 0);
     equal(res.stdout, 'quick');
@@ -88,7 +88,7 @@ export let tests = suite('zena:process', (): void => {
     isTrue(res.succeeded());
   });
 
-  test('waitFor kills a process that overruns its deadline', (ctx: TestContext): void => {
+  test('waitFor kills a process that overruns its deadline', (ctx) => {
     // Would sleep for 30s; the deadline must cut it far shorter.
     let p = spawn(['/bin/sh', '-c', 'exec sleep 30']);
     let res = p.waitFor(200 as i64);
@@ -99,20 +99,20 @@ export let tests = suite('zena:process', (): void => {
       `expected to be killed promptly, took ${res.wallNanos}ns`);
   });
 
-  test('output written before the deadline survives the kill', (ctx: TestContext): void => {
+  test('output written before the deadline survives the kill', (ctx) => {
     let p = spawn(['/bin/sh', '-c', 'printf early; exec sleep 30']);
     let res = p.waitFor(400 as i64);
     isTrue(res.timedOut, 'expected timedOut');
     equal(res.stdout, 'early');
   });
 
-  test('a non-positive deadline waits indefinitely', (ctx: TestContext): void => {
+  test('a non-positive deadline waits indefinitely', (ctx) => {
     let res = spawn(['/bin/sh', '-c', 'sleep 0.2; printf done']).waitFor(0 as i64);
     equal(res.stdout, 'done');
     isFalse(res.timedOut);
   });
 
-  test('waitFor twice returns the same result', (ctx: TestContext): void => {
+  test('waitFor twice returns the same result', (ctx) => {
     let p = spawn(['/bin/sh', '-c', 'exec sleep 30']);
     let first = p.waitFor(200 as i64);
     let second = p.waitFor(200 as i64);

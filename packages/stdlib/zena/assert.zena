@@ -27,7 +27,7 @@ export class AssertionError extends Error {
   loc: String | null;
 
   new(message: String, this.op: String, this.loc: String | null = null)
-    : super(if (loc != null) { loc + ": " + message } else { message });
+    : super(if (loc != null) { `${loc}: ${message}` } else { message });
 }
 
 export let equal = <T>(actual: T, expected: T, message: String = 'Values not equal', loc: String | null = __LOCATION__): void => {
@@ -145,7 +145,7 @@ export let fail = (message: String = 'Test failed', loc: String | null = __LOCAT
 // ============================================================================
 
 // Describe the JSON type of a value for error messages.
-let describeJsonType = (value: JsonValue): String => {
+let describeJsonType = (value: JsonValue) => {
   if (value == null) { return 'null'; }
   if (value is JsonObject) { return 'object'; }
   if (value is JsonArray) { return 'array'; }
@@ -156,13 +156,13 @@ let describeJsonType = (value: JsonValue): String => {
 };
 
 // Short string representation of a JSON value for error messages.
-let describeJsonValue = (value: JsonValue): String => {
+let describeJsonValue = (value: JsonValue) => {
   if (value == null) { return 'null'; }
   if (value is String) {
     if (value.length > 50) {
-      return '"' + value.sliceBytes(0, 47) + '..."';
+      return `"${value.sliceBytes(0, 47)}..."`;
     }
-    return '"' + value + '"';
+    return `"${value}"`;
   }
   if (value is Box<f64>) {
     let sb = new StringBuilder();
@@ -176,7 +176,7 @@ let describeJsonValue = (value: JsonValue): String => {
     let sb = new StringBuilder();
     sb.append('{');
     var count = 0;
-    value.forEach((key: String, v: JsonValue) => {
+    value.forEach((key, v) => {
       if (count >= 5) { return; }
       if (count > 0) { sb.append(', '); }
       sb.append(key);
@@ -197,7 +197,7 @@ let describeJsonValue = (value: JsonValue): String => {
 };
 
 // Format a single diff entry with path, source location, and expected/actual.
-let formatJsonDiff = (path: String, loc: SourceLocation | null, expected: String, actual: String): String => {
+let formatJsonDiff = (path: String, loc: SourceLocation | null, expected: String, actual: String) => {
   let sb = new StringBuilder();
   sb.append('  at ');
   sb.append(path);
@@ -214,7 +214,7 @@ let formatJsonDiff = (path: String, loc: SourceLocation | null, expected: String
 };
 
 // Format an array index as a string, e.g. "[3]"
-let indexStr = (i: i32): String => {
+let indexStr = (i: i32) => {
   let sb = new StringBuilder();
   sb.append('[');
   sb.appendI32(i);
@@ -255,28 +255,28 @@ let collectJsonDiffs = (
     }
 
     // Missing keys (in expected but not actual)
-    expected.forEach((key: String, value: JsonValue) => {
+    expected.forEach((key, value) => {
       if (diffs.length >= maxDiffs) { return; }
       if (!actual.has(key)) {
         let keyLoc = expected.locationOf(key);
-        diffs.push(formatJsonDiff(path + '.' + key, keyLoc, describeJsonValue(value), 'missing'));
+        diffs.push(formatJsonDiff(`${path}.${key}`, keyLoc, describeJsonValue(value), 'missing'));
       }
     });
 
     // Extra keys (in actual but not expected)
-    actual.forEach((key: String, value: JsonValue) => {
+    actual.forEach((key, value) => {
       if (diffs.length >= maxDiffs) { return; }
       if (!expected.has(key)) {
-        diffs.push(formatJsonDiff(path + '.' + key, null, 'missing', describeJsonValue(value)));
+        diffs.push(formatJsonDiff(`${path}.${key}`, null, 'missing', describeJsonValue(value)));
       }
     });
 
     // Recurse on shared keys
-    expected.forEach((key: String, value: JsonValue) => {
+    expected.forEach((key, value) => {
       if (diffs.length >= maxDiffs) { return; }
       if (actual.has(key)) {
         let keyLoc = expected.locationOf(key);
-        collectJsonDiffs(actual[key], value, path + '.' + key, keyLoc, diffs, maxDiffs);
+        collectJsonDiffs(actual[key], value, `${path}.${key}`, keyLoc, diffs, maxDiffs);
       }
     });
     return;

@@ -8,7 +8,7 @@ import {punycodeEncode, punycodeDecode} from 'zena:url';
 // any of the case folding UTS 46 would apply.
 
 /** Asserts that `label` encodes to `expected` and decodes back unchanged. */
-let roundTrips = (label: String, expected: String): void => {
+let roundTrips = (label: String, expected: String) => {
   let encoded = punycodeEncode(label);
   isTrue(encoded != null);
   equal(encoded as String, expected);
@@ -17,48 +17,48 @@ let roundTrips = (label: String, expected: String): void => {
   equal(decoded as String, label);
 };
 
-export let tests = suite('punycode', (): void => {
-  suite('RFC 3492 section 7.1 sample strings', (): void => {
-    test('(A) Arabic (Egyptian)', (ctx: TestContext): void => {
+export let tests = suite('punycode', () => {
+  suite('RFC 3492 section 7.1 sample strings', () => {
+    test('(A) Arabic (Egyptian)', (ctx) => {
       roundTrips('ليهمابتكلموشعربي؟', 'egbpdaj6bu4bxfgehfvwxn');
     });
 
-    test('(B) Chinese (simplified)', (ctx: TestContext): void => {
+    test('(B) Chinese (simplified)', (ctx) => {
       roundTrips('他们为什么不说中文', 'ihqwcrb4cv8a8dqg056pqjye');
     });
 
-    test('(C) Chinese (traditional)', (ctx: TestContext): void => {
+    test('(C) Chinese (traditional)', (ctx) => {
       roundTrips('他們爲什麽不說中文', 'ihqwctvzc91f659drss3x8bo0yb');
     });
 
-    test('(D) Czech — mixed script and case', (ctx: TestContext): void => {
+    test('(D) Czech — mixed script and case', (ctx) => {
       roundTrips('Pročprostěnemluvíčesky', 'Proprostnemluvesky-uyb24dma41a');
     });
 
-    test('(E) Hebrew', (ctx: TestContext): void => {
+    test('(E) Hebrew', (ctx) => {
       roundTrips('למההםפשוטלאמדבריםעברית', '4dbcagdahymbxekheh6e0a7fei0b');
     });
 
-    test('(J) Japanese with ASCII digits and letters mixed in', (ctx: TestContext): void => {
+    test('(J) Japanese with ASCII digits and letters mixed in', (ctx) => {
       roundTrips('3年B組金八先生', '3B-ww4c5e180e575a65lsy2b');
     });
 
-    test('(K) a long ASCII run after the non-ASCII prefix', (ctx: TestContext): void => {
+    test('(K) a long ASCII run after the non-ASCII prefix', (ctx) => {
       roundTrips('安室奈美恵-with-SUPER-MONKEYS',
                  '-with-SUPER-MONKEYS-pc58ag80a8qai00g7n9n');
     });
 
-    test('(O) all-ASCII input still gets the trailing delimiter', (ctx: TestContext): void => {
+    test('(O) all-ASCII input still gets the trailing delimiter', (ctx) => {
       roundTrips('de:pod', 'de:pod-');
     });
 
-    test('(P) ASCII with spaces and punctuation', (ctx: TestContext): void => {
+    test('(P) ASCII with spaces and punctuation', (ctx) => {
       roundTrips('-> $1.00 <-', '-> $1.00 <--');
     });
   });
 
-  suite('encoding', (): void => {
-    test('common IDN labels', (ctx: TestContext): void => {
+  suite('encoding', () => {
+    test('common IDN labels', (ctx) => {
       roundTrips('bücher', 'bcher-kva');
       roundTrips('münchen', 'mnchen-3ya');
       roundTrips('faß', 'fa-hia');
@@ -66,58 +66,58 @@ export let tests = suite('punycode', (): void => {
       roundTrips('é', '9ca');
     });
 
-    test('an all-ASCII label encodes to itself plus a delimiter', (ctx: TestContext): void => {
+    test('an all-ASCII label encodes to itself plus a delimiter', (ctx) => {
       // Nothing needs encoding, but the delimiter still marks the boundary.
       // IDNA never encodes such a label; the codec is RFC-faithful anyway.
       equal(punycodeEncode('abc') as String, 'abc-');
       equal(punycodeEncode('a') as String, 'a-');
     });
 
-    test('the empty label encodes to the empty string', (ctx: TestContext): void => {
+    test('the empty label encodes to the empty string', (ctx) => {
       equal(punycodeEncode('') as String, '');
     });
 
-    test('a label of only non-ASCII gets no delimiter', (ctx: TestContext): void => {
+    test('a label of only non-ASCII gets no delimiter', (ctx) => {
       // With no basic code points there is no boundary to mark.
       equal(punycodeEncode('你好') as String, '6qq79v');
     });
   });
 
-  suite('decoding rejects invalid input', (): void => {
-    test('a character that is not a punycode digit', (ctx: TestContext): void => {
+  suite('decoding rejects invalid input', () => {
+    test('a character that is not a punycode digit', (ctx) => {
       isTrue(punycodeDecode('a b') == null);
       isTrue(punycodeDecode('$') == null);
       isTrue(punycodeDecode('ab-x y') == null);
     });
 
-    test('a leading delimiter is a digit, not a separator', (ctx: TestContext): void => {
+    test('a leading delimiter is a digit, not a separator', (ctx) => {
       // Nothing precedes it, so it is not consumed as a boundary — and '-'
       // is not a valid digit.
       isTrue(punycodeDecode('-') == null);
     });
 
-    test('non-ASCII in the literal portion', (ctx: TestContext): void => {
+    test('non-ASCII in the literal portion', (ctx) => {
       isTrue(punycodeDecode('é-a') == null);
     });
 
-    test('input that would overflow', (ctx: TestContext): void => {
+    test('input that would overflow', (ctx) => {
       isTrue(punycodeDecode('999999999999999999999') == null);
       isTrue(punycodeDecode('zzzzzzzzzzzzzzzzzzzzzzzzzzzzzz') == null);
     });
 
-    test('input that runs out mid-digit', (ctx: TestContext): void => {
+    test('input that runs out mid-digit', (ctx) => {
       isTrue(punycodeDecode('xn') == null);
     });
 
-    test('a trailing delimiter with nothing after it is fine', (ctx: TestContext): void => {
+    test('a trailing delimiter with nothing after it is fine', (ctx) => {
       // This is the all-ASCII encoding, so it must decode back.
       equal(punycodeDecode('a-') as String, 'a');
       equal(punycodeDecode('abc-') as String, 'abc');
     });
   });
 
-  suite('decoding accepts what the encoder never emits', (): void => {
-    test('uppercase digits decode the same as lowercase', (ctx: TestContext): void => {
+  suite('decoding accepts what the encoder never emits', () => {
+    test('uppercase digits decode the same as lowercase', (ctx) => {
       // Punycode digits are case-insensitive on the way in, though the
       // literal portion keeps whatever case it was written with.
       equal(punycodeDecode('bcher-KVA') as String, 'bücher');

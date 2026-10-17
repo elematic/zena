@@ -7,15 +7,15 @@ import {URL, URLSearchParams} from 'zena:url';
 // conformance of the parser itself lives in wpt_urltestdata_test.zena.
 
 /** Parses input the test expects to be valid, failing the test if it isn't. */
-let mustParse = (input: String, base: String | null = null): URL => {
+let mustParse = (input: String, base: String | null = null) => {
   let u = URL.parse(input, base);
   isTrue(u != null);
   return u as URL;
 };
 
-export let tests = suite('URL API', (): void => {
-  suite('parsing', (): void => {
-    test('parses an absolute URL into its components', (ctx: TestContext): void => {
+export let tests = suite('URL API', () => {
+  suite('parsing', () => {
+    test('parses an absolute URL into its components', (ctx) => {
       let u = mustParse('https://example.com/a/b?q=1#f');
       equal(u.href, 'https://example.com/a/b?q=1#f');
       equal(u.protocol, 'https:');
@@ -25,7 +25,7 @@ export let tests = suite('URL API', (): void => {
       equal(u.hash, '#f');
     });
 
-    test('resolves against a base', (ctx: TestContext): void => {
+    test('resolves against a base', (ctx) => {
       equal(mustParse('/x', 'https://example.com/a/b').href, 'https://example.com/x');
       equal(mustParse('y', 'https://example.com/a/b').href, 'https://example.com/a/y');
       equal(mustParse('../z', 'https://example.com/a/b/c').href, 'https://example.com/a/z');
@@ -33,24 +33,24 @@ export let tests = suite('URL API', (): void => {
     });
   });
 
-  suite('failure is a null return, not an exception', (): void => {
+  suite('failure is a null return, not an exception', () => {
     // A string that does not parse is an ordinary outcome, so there is no
     // throwing constructor to test — URL.parse is the only way to build one.
-    test('unparsable input returns null', (ctx: TestContext): void => {
+    test('unparsable input returns null', (ctx) => {
       isTrue(URL.parse('not a url') == null);
       isTrue(URL.parse('http://f:b/c') == null);
       isTrue(URL.parse('') == null);
     });
 
-    test('an unparsable base returns null', (ctx: TestContext): void => {
+    test('an unparsable base returns null', (ctx) => {
       isTrue(URL.parse('/x', 'not a base') == null);
     });
 
-    test('a relative input with no base returns null', (ctx: TestContext): void => {
+    test('a relative input with no base returns null', (ctx) => {
       isTrue(URL.parse('/just/a/path') == null);
     });
 
-    test('canParse mirrors parse', (ctx: TestContext): void => {
+    test('canParse mirrors parse', (ctx) => {
       isTrue(URL.canParse('https://example.com/'));
       isTrue(URL.canParse('sub', 'https://example.com/dir/'));
       isFalse(URL.canParse('not a url'));
@@ -59,8 +59,8 @@ export let tests = suite('URL API', (): void => {
     });
   });
 
-  suite('derived components', (): void => {
-    test('host includes the port only when present', (ctx: TestContext): void => {
+  suite('derived components', () => {
+    test('host includes the port only when present', (ctx) => {
       equal(mustParse('https://example.com/').host(), 'example.com');
       equal(mustParse('https://example.com:8080/').host(), 'example.com:8080');
       // A default port is dropped during parsing.
@@ -69,53 +69,53 @@ export let tests = suite('URL API', (): void => {
       equal(defaulted.port, '');
     });
 
-    test('origin is opaque for non-tuple schemes', (ctx: TestContext): void => {
+    test('origin is opaque for non-tuple schemes', (ctx) => {
       equal(mustParse('https://example.com:8080/a').origin(), 'https://example.com:8080');
       equal(mustParse('mailto:a@b.com').origin(), 'null');
       equal(mustParse('file:///tmp/x').origin(), 'null');
     });
 
-    test('a blob URL takes the origin of the URL in its path', (ctx: TestContext): void => {
+    test('a blob URL takes the origin of the URL in its path', (ctx) => {
       equal(mustParse('blob:https://example.com:443/x').origin(), 'https://example.com');
       equal(mustParse('blob:http://example.org:88/x').origin(), 'http://example.org:88');
     });
 
-    test('toString equals href', (ctx: TestContext): void => {
+    test('toString equals href', (ctx) => {
       let u = mustParse('https://example.com/a?b#c');
       equal(u.toString(), u.href);
     });
   });
 
-  suite('normalization', (): void => {
-    test('dot segments are resolved', (ctx: TestContext): void => {
+  suite('normalization', () => {
+    test('dot segments are resolved', (ctx) => {
       equal(mustParse('https://example.com/a/./b/../c').pathname, '/a/c');
     });
 
-    test('the scheme and host are lowercased', (ctx: TestContext): void => {
+    test('the scheme and host are lowercased', (ctx) => {
       let u = mustParse('HTTPS://Example.COM/');
       equal(u.protocol, 'https:');
       equal(u.hostname, 'example.com');
     });
 
-    test('IPv6 hosts keep their brackets and compress', (ctx: TestContext): void => {
+    test('IPv6 hosts keep their brackets and compress', (ctx) => {
       equal(mustParse('http://[2001:0db8:0000:0000:0000:0000:0000:0001]/').hostname,
             '[2001:db8::1]');
     });
 
-    test('IPv4 hosts are canonicalized to dotted decimal', (ctx: TestContext): void => {
+    test('IPv4 hosts are canonicalized to dotted decimal', (ctx) => {
       equal(mustParse('http://0x7f.1/').hostname, '127.0.0.1');
     });
   });
 
-  suite('IDNA', (): void => {
-    test('a non-ASCII domain is converted to its ACE form', (ctx: TestContext): void => {
+  suite('IDNA', () => {
+    test('a non-ASCII domain is converted to its ACE form', (ctx) => {
       equal(mustParse('http://你好/').hostname, 'xn--6qq79v');
       // Nontransitional processing keeps the sharp s rather than folding it
       // to "ss", which is what the transitional rules would have done.
       equal(mustParse('https://faß.example/').hostname, 'xn--fa-hia.example');
     });
 
-    test('the mapping step lowercases and normalizes width', (ctx: TestContext): void => {
+    test('the mapping step lowercases and normalizes width', (ctx) => {
       // Fullwidth letters map to their ASCII equivalents, so this is not an
       // IDN at all once mapped.
       equal(mustParse('http://Ｇｏ.com/').hostname, 'go.com');
@@ -123,28 +123,28 @@ export let tests = suite('URL API', (): void => {
       equal(mustParse('http://www.foo。bar.com/').hostname, 'www.foo.bar.com');
     });
 
-    test('ignorable code points are removed', (ctx: TestContext): void => {
+    test('ignorable code points are removed', (ctx) => {
       // %C2%AD is U+00AD SOFT HYPHEN, which maps to nothing. Written
       // percent-encoded because the character is invisible in source.
       equal(mustParse('https://a%C2%ADb/').hostname, 'ab');
     });
 
-    test('a domain of only ignorable code points fails', (ctx: TestContext): void => {
+    test('a domain of only ignorable code points fails', (ctx) => {
       // Mapping leaves the empty string, and an empty domain is a failure
       // rather than a URL with an empty host.
       isTrue(URL.parse('https://%C2%AD/') == null);
     });
 
-    test('an ACE label is kept as-is when it decodes', (ctx: TestContext): void => {
+    test('an ACE label is kept as-is when it decodes', (ctx) => {
       equal(mustParse('http://xn--fsq.example/').hostname, 'xn--fsq.example');
     });
 
-    test('a label that is not valid punycode fails', (ctx: TestContext): void => {
+    test('a label that is not valid punycode fails', (ctx) => {
       // 'xn' runs out of input mid-digit, so the label cannot be decoded.
       isTrue(URL.parse('http://xn--xn.example/') == null);
     });
 
-    test('an ACE label is not re-validated after decoding', (ctx: TestContext): void => {
+    test('an ACE label is not re-validated after decoding', (ctx) => {
       // This decodes to circled digits, which the mapping table would map
       // rather than accept — the UTS 46 validity criteria would reject the
       // label. WPT expects it kept, so the decode is only checked for being
@@ -152,7 +152,7 @@ export let tests = suite('URL API', (): void => {
       equal(mustParse('http://a.b.c.xn--pokxncvks/').hostname, 'a.b.c.xn--pokxncvks');
     });
 
-    test('fullwidth digits reach the IPv4 parser after mapping', (ctx: TestContext): void => {
+    test('fullwidth digits reach the IPv4 parser after mapping', (ctx) => {
       // The mapping runs before the ends-in-a-number check, so this is an
       // IPv4 address written in fullwidth forms.
       equal(mustParse('http://０Ｘｃ０．０２５０．０１/').hostname, '192.168.0.1');
@@ -163,15 +163,15 @@ export let tests = suite('URL API', (): void => {
   // These cover what that suite cannot: that the receiver is untouched, and
   // that withHref/withSearchParams — which have no web setter equivalent to
   // port — behave.
-  suite('with* methods', (): void => {
-    test('the receiver is unchanged', (ctx: TestContext): void => {
+  suite('with* methods', () => {
+    test('the receiver is unchanged', (ctx) => {
       let u = mustParse('https://example.com/a?q=1#f');
       let changed = u.withPathname('/b').withHash('#g').withSearch('?r=2');
       equal(u.href, 'https://example.com/a?q=1#f');
       equal(changed.href, 'https://example.com/b?r=2#g');
     });
 
-    test('a rejected value leaves the component alone', (ctx: TestContext): void => {
+    test('a rejected value leaves the component alone', (ctx) => {
       // An empty scheme is not valid, so the URL comes back unchanged.
       let u = mustParse('https://example.com/');
       equal(u.withProtocol('').href, u.href);
@@ -181,7 +181,7 @@ export let tests = suite('URL API', (): void => {
       equal(mustParse('https://example.com:8080/').withPort('nope').port, '8080');
     });
 
-    test('a partially applied change sticks, as on the web', (ctx: TestContext): void => {
+    test('a partially applied change sticks, as on the web', (ctx) => {
       // The host takes effect, then the out-of-range port fails. The spec
       // parses in place and does not roll back, so the host change stands.
       let u = mustParse('http://example.net/path');
@@ -190,7 +190,7 @@ export let tests = suite('URL API', (): void => {
       equal(out.port, '');
     });
 
-    test('withSearchParams serializes the params into the query', (ctx: TestContext): void => {
+    test('withSearchParams serializes the params into the query', (ctx) => {
       let p = new URLSearchParams('');
       p.append('q', 'a b');
       p.append('x', '1&2');
@@ -198,12 +198,12 @@ export let tests = suite('URL API', (): void => {
             'https://example.com/?q=a+b&x=1%262');
     });
 
-    test('withSearchParams with no pairs drops the query entirely', (ctx: TestContext): void => {
+    test('withSearchParams with no pairs drops the query entirely', (ctx) => {
       equal(mustParse('https://example.com/?q=1').withSearchParams(new URLSearchParams('')).href,
             'https://example.com/');
     });
 
-    test('withHref reparses from scratch and returns null on failure', (ctx: TestContext): void => {
+    test('withHref reparses from scratch and returns null on failure', (ctx) => {
       let u = mustParse('https://example.com/a');
       let ok = u.withHref('http://other.example/b?c');
       isTrue(ok != null);
@@ -213,7 +213,7 @@ export let tests = suite('URL API', (): void => {
       isTrue(u.withHref('not a url') == null);
     });
 
-    test('withHost sets hostname and port together', (ctx: TestContext): void => {
+    test('withHost sets hostname and port together', (ctx) => {
       let u = mustParse('https://example.com/').withHost('other.example:8080');
       equal(u.hostname, 'other.example');
       equal(u.port, '8080');
@@ -221,7 +221,7 @@ export let tests = suite('URL API', (): void => {
       equal(u.withHostname('third.example').port, '8080');
     });
 
-    test('an IPv6 host round-trips through withHost and withHostname', (ctx: TestContext): void => {
+    test('an IPv6 host round-trips through withHost and withHostname', (ctx) => {
       let u = mustParse('http://example.com/a').withHost('[2001:db8::1]:8080');
       equal(u.hostname, '[2001:db8::1]');
       equal(u.port, '8080');
@@ -233,56 +233,56 @@ export let tests = suite('URL API', (): void => {
       equal(v.href, 'http://[::1]:8080/a');
     });
 
-    test('a malformed IPv6 address leaves the host alone', (ctx: TestContext): void => {
+    test('a malformed IPv6 address leaves the host alone', (ctx) => {
       let u = mustParse('http://example.com/a');
       equal(u.withHostname('[::1').hostname, 'example.com');
       equal(u.withHostname('[1:2:3:4:5:6:7:8:9]').hostname, 'example.com');
     });
 
-    test('with* results are usable as HashMap keys', (ctx: TestContext): void => {
+    test('with* results are usable as HashMap keys', (ctx) => {
       isTrue(mustParse('https://example.com/a').withPathname('/b') ==
              mustParse('https://example.com/b'));
     });
   });
 
-  suite('equality and hashing', (): void => {
-    test('URLs parsed from the same text are equal', (ctx: TestContext): void => {
+  suite('equality and hashing', () => {
+    test('URLs parsed from the same text are equal', (ctx) => {
       isTrue(mustParse('https://example.com/a') == mustParse('https://example.com/a'));
     });
 
-    test('equality is on the canonical form, not the input text', (ctx: TestContext): void => {
+    test('equality is on the canonical form, not the input text', (ctx) => {
       // Both sides normalize to https://example.com/b during parsing.
       isTrue(mustParse('https://EXAMPLE.com:443/a/../b') == mustParse('https://example.com/b'));
     });
 
-    test('differing URLs are not equal', (ctx: TestContext): void => {
+    test('differing URLs are not equal', (ctx) => {
       isFalse(mustParse('https://example.com/a') == mustParse('https://example.com/b'));
     });
 
-    test('the fragment is part of the identity', (ctx: TestContext): void => {
+    test('the fragment is part of the identity', (ctx) => {
       isFalse(mustParse('https://example.com/a#x') == mustParse('https://example.com/a'));
     });
 
-    test('equal URLs hash equally — the Hashable contract', (ctx: TestContext): void => {
+    test('equal URLs hash equally — the Hashable contract', (ctx) => {
       let a = mustParse('https://EXAMPLE.com:443/a/../b');
       let b = mustParse('https://example.com/b');
       isTrue(a == b);
       equal(a.hashCode(), b.hashCode());
     });
 
-    test('hashCode is stable across repeated calls', (ctx: TestContext): void => {
+    test('hashCode is stable across repeated calls', (ctx) => {
       let u = mustParse('https://example.com/a?q=1#f');
       equal(u.hashCode(), u.hashCode());
     });
 
-    test('href is stable across repeated reads (it is cached)', (ctx: TestContext): void => {
+    test('href is stable across repeated reads (it is cached)', (ctx) => {
       let u = mustParse('https://example.com/a/../b?q=1#f');
       equal(u.href, 'https://example.com/b?q=1#f');
       equal(u.href, u.href);
       equal(u.toString(), u.href);
     });
 
-    test('works as a HashMap key, matching on canonical form', (ctx: TestContext): void => {
+    test('works as a HashMap key, matching on canonical form', (ctx) => {
       let m = new Map<URL, String>();
       m[mustParse('https://example.com/a')] = 'first';
       // A different spelling of the same URL must hit the same entry.
@@ -291,10 +291,11 @@ export let tests = suite('URL API', (): void => {
       equal(m[mustParse('https://example.com/a')], 'second');
     });
 
-    test('distinct URLs occupy distinct HashMap entries', (ctx: TestContext): void => {
-      let m = new Map<URL, String>();
-      m[mustParse('https://example.com/a')] = 'a';
-      m[mustParse('https://example.com/b')] = 'b';
+    test('distinct URLs occupy distinct HashMap entries', (ctx) => {
+      let m: HashMap<URL, String> = {
+        mustParse('https://example.com/a') => 'a',
+        mustParse('https://example.com/b') => 'b',
+      };
       equal(m.size, 2);
       equal(m[mustParse('https://example.com/a')], 'a');
       equal(m[mustParse('https://example.com/b')], 'b');

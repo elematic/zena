@@ -22,7 +22,7 @@ import {
   toWireResponse
 } from 'zena:http';
 
-function unit(): void {}
+function unit() {}
 
 class CustomTemplateIterable with IterableUtils<TemplateValue> implements Iterable<TemplateValue> {
   #items: Array<TemplateValue>;
@@ -47,22 +47,22 @@ async function readNextTextChunk(stream: Stream<u8>, maxLen: i32 = 256): Future<
   return String.fromBytes(buf.slice(0, n));
 }
 
-export let tests = suite('zena:http html', (): void => {
-  test('escape replaces HTML special characters', (ctx: TestContext): void => {
+export let tests = suite('zena:http html', () => {
+  test('escape replaces HTML special characters', (ctx) => {
     equal(escape('hello'), 'hello');
     equal(escape('a & b < c > d "e" \'f\''), 'a &amp; b &lt; c &gt; d &quot;e&quot; &apos;f&apos;');
   });
 
-  suite('toString', (): void => {
-    test('Plain text', (ctx: TestContext): void => {
+  suite('toString', () => {
+    test('Plain text', (ctx) => {
       equal(html`Hello World`.toString(), 'Hello World');
     });
 
-    test('Simple HTML', (ctx: TestContext): void => {
+    test('Simple HTML', (ctx) => {
       equal(html`<h1>Hello World</h1>`.toString(), '<h1>Hello World</h1>');
     });
 
-    test('Indented HTML', (ctx: TestContext): void => {
+    test('Indented HTML', (ctx) => {
       equal(html`
         <h1>Hello World!</h1>
       `.toString(), '\n<h1>Hello World!</h1>\n');
@@ -74,7 +74,7 @@ export let tests = suite('zena:http html', (): void => {
       `.toString(), '\n<div>\n  <p>Hello World!</p>\n</div>\n');
     });
 
-    test('Nested HTML', (ctx: TestContext): void => {
+    test('Nested HTML', (ctx) => {
       equal(html`
         <h1>Hello World!</h1>
           ${html`<p>Foo</p>`}
@@ -92,26 +92,26 @@ export let tests = suite('zena:http html', (): void => {
       `.toString(), '\n<div>\n  \n<section>\n  <p>Foo</p>\n</section>\n\n</div>\n');
     });
 
-    test('Interpolated String', (ctx: TestContext): void => {
+    test('Interpolated String', (ctx) => {
       equal(html`Hello ${'World'}`.toString(), 'Hello World');
     });
 
-    test('Escape HTML in strings', (ctx: TestContext): void => {
+    test('Escape HTML in strings', (ctx) => {
       equal(html`Hello ${'<h1>World'}`.toString(), 'Hello &lt;h1&gt;World');
     });
 
-    test('Null values', (ctx: TestContext): void => {
+    test('Null values', (ctx) => {
       equal(html`a${null}b`.toString(), 'ab');
     });
 
-    test('Arrays and Iterables', (ctx: TestContext): void => {
+    test('Arrays and Iterables', (ctx) => {
       equal(html`${['a', 'b']}`.toString(), 'ab');
       equal(html`${['<a', '>b']}`.toString(), '&lt;a&gt;b');
 
       let items = ['foo', 'bar', 'baz'];
       equal(html`
         <ul>
-          ${items.map((item: String, _i: i32, _seq: ImmutableArray<String>): TemplateValue => html`<li>${item}</li>`)}
+          ${items.map((item, _i, _seq): TemplateValue => html`<li>${item}</li>`)}
         </ul>`.toString(), '\n<ul>\n  <li>foo</li><li>bar</li><li>baz</li>\n</ul>');
 
       let withNull: Array<TemplateValue> = ['foo', null, 'bar'];
@@ -132,11 +132,11 @@ export let tests = suite('zena:http html', (): void => {
       equal(html`[${custom}]`.toString(), '[mn]');
     });
 
-    test('unsafeHTML bypasses escaping', (ctx: TestContext): void => {
+    test('unsafeHTML bypasses escaping', (ctx) => {
       equal(html`Hello ${unsafeHTML('<h1>World</h1>')}`.toString(), 'Hello <h1>World</h1>');
     });
 
-    test('Rejects templates with Futures in synchronous toString()', (ctx: TestContext): void => {
+    test('Rejects templates with Futures in synchronous toString()', (ctx) => {
       var threw = false;
       try {
         let _ = html`Hello ${resolveValue('World')}`.toString();
@@ -149,8 +149,8 @@ export let tests = suite('zena:http html', (): void => {
     });
   });
 
-  suite('Iteration', (): void => {
-    let joinSync = (partial: HTMLPartial): String => {
+  suite('Iteration', () => {
+    let joinSync = (partial: HTMLPartial) => {
       let sb = new StringBuilder();
       for (let chunk in requireSync(partial)) {
         sb.append(chunk);
@@ -158,15 +158,15 @@ export let tests = suite('zena:http html', (): void => {
       return sb.toString();
     };
 
-    test('Plain text', (ctx: TestContext): void => {
+    test('Plain text', (ctx) => {
       equal(joinSync(html`Hello World`), 'Hello World');
     });
 
-    test('Simple HTML', (ctx: TestContext): void => {
+    test('Simple HTML', (ctx) => {
       equal(joinSync(html`<h1>Hello World</h1>`), '<h1>Hello World</h1>');
     });
 
-    test('Indented HTML', (ctx: TestContext): void => {
+    test('Indented HTML', (ctx) => {
       let result = html`
         <div>
           <h1>Hello World</h1>
@@ -180,7 +180,7 @@ export let tests = suite('zena:http html', (): void => {
       equal(joinSync(result), expected);
     });
 
-    test('Nested HTML', (ctx: TestContext): void => {
+    test('Nested HTML', (ctx) => {
       let nested = html`
         <h1>
           Hello World
@@ -203,23 +203,23 @@ export let tests = suite('zena:http html', (): void => {
       equal(joinSync(result), expected);
     });
 
-    test('Interpolated String', (ctx: TestContext): void => {
+    test('Interpolated String', (ctx) => {
       equal(joinSync(html`Hello ${'World'}`), 'Hello World');
     });
 
-    test('Escape HTML', (ctx: TestContext): void => {
+    test('Escape HTML', (ctx) => {
       equal(joinSync(html`Hello ${'<h1>World'}`), 'Hello &lt;h1&gt;World');
     });
 
-    test('Iterables', (ctx: TestContext): void => {
+    test('Iterables', (ctx) => {
       equal(joinSync(html`${['a', 'b']}`), 'ab');
     });
 
-    test('unsafeHTML', (ctx: TestContext): void => {
+    test('unsafeHTML', (ctx) => {
       equal(joinSync(html`Hello ${unsafeHTML('<h1>World</h1>')}`), 'Hello <h1>World</h1>');
     });
 
-    test('requireSync throws AsyncInSyncIteration when template has a Future', (ctx: TestContext): void => {
+    test('requireSync throws AsyncInSyncIteration when template has a Future', (ctx) => {
       var threw = false;
       try {
         let _ = joinSync(html`Hello ${resolveValue('World')}`);
@@ -231,7 +231,7 @@ export let tests = suite('zena:http html', (): void => {
       isTrue(threw);
     });
 
-    test('Async Futures with collectResult and for await', (ctx: TestContext): void => {
+    test('Async Futures with collectResult and for await', (ctx) => {
       runFuture((async (): Future<void> => {
         equal(
           await collectResult(html`Hello ${resolveValue('World')}`),
@@ -260,8 +260,8 @@ export let tests = suite('zena:http html', (): void => {
     });
   });
 
-  suite('Streaming', (): void => {
-    test('htmlStream flushes buffered prefix before awaiting an unresolved Future', (ctx: TestContext): void => {
+  suite('Streaming', () => {
+    test('htmlStream flushes buffered prefix before awaiting an unresolved Future', (ctx) => {
       runFuture((async (): Future<void> => {
         let gate = new Completer<TemplateValue>();
         let tpl = html`<header>Title</header><main>${gate.future}</main><footer>End</footer>`;
@@ -280,7 +280,7 @@ export let tests = suite('zena:http html', (): void => {
       })());
     });
 
-    test('pipeToStream respects flushSize for synchronous chunks', (ctx: TestContext): void => {
+    test('pipeToStream respects flushSize for synchronous chunks', (ctx) => {
       runFuture((async (): Future<void> => {
         let writer = new StreamWriter<u8>();
         let tpl = html`12345${'67890'}abcdef`;
@@ -297,7 +297,7 @@ export let tests = suite('zena:http html', (): void => {
       })());
     });
 
-    test('htmlStream terminates cleanly when reader calls stop()', (ctx: TestContext): void => {
+    test('htmlStream terminates cleanly when reader calls stop()', (ctx) => {
       runFuture((async (): Future<void> => {
         let gate = new Completer<TemplateValue>();
         let tpl = html`<div>Start</div>${gate.future}<div>Never read</div>`;
@@ -313,9 +313,9 @@ export let tests = suite('zena:http html', (): void => {
       })());
     });
 
-    test('Response and toWireResponse set text/html content-type and stream HTMLPartial', (ctx: TestContext): void => {
+    test('Response and toWireResponse set text/html content-type and stream HTMLPartial', (ctx) => {
       let app = new App();
-      app.use(async (req: Request, res: Response, next: () => Future<void>): Future<void> => {
+      app.use(async (req, res, next): Future<void> => {
         res.body = html`<h1>Hello ${'Zena'} &amp; ${resolveValue('<Friends>')}</h1>`;
       });
 

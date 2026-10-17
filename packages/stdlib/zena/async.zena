@@ -88,10 +88,10 @@ declare function raiseCancellation(): never;
  */
 var current: CancelScope | null = null;
 var rootScope: CancelScope | null = null;
-let getRootScope = (): CancelScope => {
+let getRootScope = () => {
   let s = rootScope;
   if (s != null) {
-    return s as CancelScope;
+    return s;
   }
   let newScope = new CancelScope.[detachedScope]();
   rootScope = newScope;
@@ -131,7 +131,7 @@ export class CancelScope {
   new [childScope]() : #parent = current {
     let p = this.#parent;
     if (p != null) {
-      let parent = p as CancelScope;
+      let parent = p;
       parent.#children.push(this);
       this.#cancelled = parent.#cancelled;
     }
@@ -200,7 +200,7 @@ export class CancelScope {
   [install](): CancelScope {
     let p = current;
     current = this;
-    return if (p != null) p else getRootScope();
+    return p ?? getRootScope();
   }
 
   /**
@@ -230,7 +230,7 @@ export class CancelScope {
  * stop early without any signature change. */
 export let currentScope = (): CancelScope => {
   let s = current;
-  return if (s != null) s as CancelScope else getRootScope();
+  return s ?? getRootScope();
 };
 
 /**
