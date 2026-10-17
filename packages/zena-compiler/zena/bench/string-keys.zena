@@ -42,18 +42,18 @@ import {matchKeyword, isIdentifierPart} from '../lib/tokenizer.zena';
 /** One identifier occurrence, as a range into the file that produced it. */
 final class Occurrence(source: String, start: i32, length: i32)
 
-let loadCorpus = (dir: String): Array<String> => {
+function loadCorpus(dir: String): Array<String> {
   let sources = new Array<String>();
   for (let entry in listDirSync(dir)) {
     if (entry.name.endsWith('.zena')) {
-      sources.push(readFileSync(dir + '/' + entry.name));
+      sources.push(readFileSync(`${dir}/${entry.name}`));
     }
   }
   return sources;
-};
+}
 
 /** Every identifier in the corpus, keywords excluded — interning's actual input. */
-let collectIdentifiers = (sources: Array<String>): Array<Occurrence> => {
+function collectIdentifiers(sources: Array<String>): Array<Occurrence> {
   let out = new Array<Occurrence>();
   for (let source in sources) {
     let n = source.length;
@@ -73,9 +73,9 @@ let collectIdentifiers = (sources: Array<String>): Array<Occurrence> => {
     }
   }
   return out;
-};
+}
 
-export let main = (): i32 => {
+export function main(): i32 {
   let args = getArguments();
   let dir = if (args.length > 1) args[1] else 'packages/zena-compiler/zena/lib';
   let sources = loadCorpus(dir);
@@ -113,7 +113,7 @@ export let main = (): i32 => {
   coldRunner.options.minSamples = 30;
   coldRunner.options.timeBudgetMs = 60000.0;
   coldRunner.options.horizons = ['1%'];
-  coldRunner.bench('fresh-slice', (_ctx: BenchContext) => {
+  coldRunner.bench('fresh-slice', (_ctx) => {
     var sink = 0;
     for (let o in occurrences) {
       let key = o.source.sliceBytes(o.start, o.start + o.length);
@@ -122,7 +122,7 @@ export let main = (): i32 => {
       }
     }
   });
-  coldRunner.bench('canonical', (_ctx: BenchContext) => {
+  coldRunner.bench('canonical', (_ctx) => {
     var sink = 0;
     for (let key in canonical) {
       if (let (true, v) = table.get(key)) {
@@ -149,7 +149,7 @@ export let main = (): i32 => {
   warmRunner.options.minSamples = 30;
   warmRunner.options.timeBudgetMs = 60000.0;
   warmRunner.options.horizons = ['1%'];
-  warmRunner.bench('equal-but-distinct', (_ctx: BenchContext) => {
+  warmRunner.bench('equal-but-distinct', (_ctx) => {
     var sink = 0;
     for (let key in warm) {
       if (let (true, v) = table.get(key)) {
@@ -157,7 +157,7 @@ export let main = (): i32 => {
       }
     }
   });
-  warmRunner.bench('canonical', (_ctx: BenchContext) => {
+  warmRunner.bench('canonical', (_ctx) => {
     var sink = 0;
     for (let key in canonical) {
       if (let (true, v) = table.get(key)) {
@@ -167,4 +167,4 @@ export let main = (): i32 => {
   });
   console.log(reportToString(warmRunner.run()));
   return 0;
-};
+}
