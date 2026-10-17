@@ -1,0 +1,38 @@
+/**
+ * One file, checked: what the rules read. Kept apart from `checking.zena`
+ * (which reads files and runs the compiler) so that a host with a
+ * compiler of its own — the language service — can build one without
+ * importing the filesystem.
+ */
+
+import { Diagnostic, DiagnosticSeverity, SemanticModel } from 'zena-compiler:compiler';
+import { Module } from 'zena-compiler:ast';
+
+/** One file, checked: its syntax tree, its types, and what the checker said. */
+export final class CheckedFile {
+  path: String;
+  source: String;
+  ast: Module;
+  model: SemanticModel;
+  /** The diagnostics reported against this file, not its dependencies. */
+  diagnostics: GrowableArray<Diagnostic>;
+
+  new(this.path, this.source, this.ast, this.model, this.diagnostics);
+
+  /** The errors, as `line: message` strings. */
+  errors(): GrowableArray<String> {
+    let out = new Array<String>();
+    for (let diagnostic in this.diagnostics) {
+      if (diagnostic.severity == DiagnosticSeverity.Error) {
+        let location = diagnostic.location;
+        let line = if (location != null) i32ToString(location.line) else '?';
+        out.push(`${line}: ${diagnostic.message}`);
+      }
+    }
+    return out;
+  }
+
+  hasErrors(): boolean {
+    return this.errors().length > 0;
+  }
+}

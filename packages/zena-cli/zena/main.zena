@@ -26,6 +26,7 @@ import { Options, repoRelative, resolveUserPath, userCwd } from './env.zena';
 import { runCommand } from './run.zena';
 import { lspCommand } from './lsp.zena';
 import { testCommand } from './test-run.zena';
+import { lintCommand } from './lint.zena';
 
 /** The whole command line, described once. */
 function describe() {
@@ -121,6 +122,19 @@ function describe() {
             type: OptionType.Flag,
             help: 'Document non-exported and #private members',
           },
+        },
+      },
+      'lint' => {
+        help: 'Report what the lint rules find in Zena files, or fix it',
+        options: {
+          'help' => help,
+          'fix' => {
+            type: OptionType.Flag,
+            help: 'Rewrite the files, keeping each fix the checker accepts',
+          },
+          'only' => {help: 'Run only these rules, comma-separated'},
+          'skip' => {help: 'Run every rule but these, comma-separated'},
+          'list-rules' => {type: OptionType.Flag, help: 'Print the rules'},
         },
       },
       'fmt' => {
@@ -225,6 +239,9 @@ function dispatch(parser: ArgParser, args: ParsedArgs): i32 {
   }
   if (name == 'fmt') {
     return fmt(sub);
+  }
+  if (name == 'lint') {
+    return lintCommand(sub, options);
   }
   if (name == 'bench') {
     return benchCommand(sub, options);

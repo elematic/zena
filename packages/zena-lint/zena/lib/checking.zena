@@ -14,13 +14,14 @@ import { existsSync, readFileSync } from 'zena:fs';
 import { join2 } from 'zena:path';
 import {
   createCompiler, checkCompilation, CompilerHost, Compiler, PackageConfig,
-  ProgramCheckResult, Diagnostic, DiagnosticSeverity, SemanticModel,
-  loadPackageMap,
+  ProgramCheckResult, Diagnostic, loadPackageMap,
 } from 'zena-compiler:compiler';
-import { Module } from 'zena-compiler:ast';
 import { stdlibIdToRelativeFile } from 'zena-compiler:module-resolver';
 import { isWitModulePath, synthesizeWitModule } from 'zena-compiler:wit-module-synth';
 import { directoryNames } from 'zena-compiler:fs-host';
+import { CheckedFile } from './checked.zena';
+
+export { CheckedFile } from './checked.zena';
 
 /** How many entry points share one compiler before it is replaced. */
 let ENTRIES_PER_COMPILER = 16;
@@ -47,35 +48,6 @@ final class OverlayHost implements CompilerHost {
 
   listDir(path: String): Array<String> | null {
     return directoryNames(path);
-  }
-}
-
-/** One file, checked: its syntax tree, its types, and what the checker said. */
-export final class CheckedFile {
-  path: String;
-  source: String;
-  ast: Module;
-  model: SemanticModel;
-  /** The diagnostics reported against this file, not its dependencies. */
-  diagnostics: GrowableArray<Diagnostic>;
-
-  new(this.path, this.source, this.ast, this.model, this.diagnostics);
-
-  /** The errors, as `line: message` strings. */
-  errors(): GrowableArray<String> {
-    let out = new Array<String>();
-    for (let diagnostic in this.diagnostics) {
-      if (diagnostic.severity == DiagnosticSeverity.Error) {
-        let location = diagnostic.location;
-        let line = if (location != null) i32ToString(location.line) else '?';
-        out.push(`${line}: ${diagnostic.message}`);
-      }
-    }
-    return out;
-  }
-
-  hasErrors(): boolean {
-    return this.errors().length > 0;
   }
 }
 
@@ -118,10 +90,11 @@ export final class Project {
    * null to read the disk again. Call before `check` for the same path.
    */
   override(path: String, text: String | null): void {
+    let key = this.entryIdOf(path);
     if (text == null) {
-      this.#host.overrides.delete(path);
+      this.#host.overrides.delete(key);
     } else {
-      this.#host.overrides[path] = text;
+      this.#host.overrides[key] = text;
     }
     if (this.#cyclic) {
       // A file in an import cycle cannot be re-read on its own: the
@@ -136,8 +109,23 @@ export final class Project {
     // Not `compiler?.invalidate(path)`: an optional method call does not
     // lower yet (see the nullish rule).
     if (compiler != null) {
-      compiler.invalidate(path);
+      compiler.invalidate(key);
     }
+  }
+
+  /**
+   * The id the compiler knows a file by. A standard library file is
+   * `zena:<path under the root>`: compiled by its disk path it would be a
+   * second copy of its library, with types that match nothing the rest
+   * of the standard library has (`'Encoding' is not assignable to
+   * 'Encoding'`).
+   */
+  entryIdOf(path: String): String {
+    let root = `${this.stdlibRoot}/`;
+    if (path.startsWith(root)) {
+      return `zena:${path.sliceBytes(root.length, path.length)}`;
+    }
+    return path;
   }
 
   /** Forget every override and every cached file. Call between files. */
@@ -159,8 +147,9 @@ export final class Project {
     let compiler = this.#compiler ?? this.#freshCompiler();
     // The file itself may have changed since the last check; the
     // dependencies are trusted until `reset`.
-    compiler.invalidate(path);
-    let result = compiler.compile({entry: path, target: this.target});
+    let id = this.entryIdOf(path);
+    compiler.invalidate(id);
+    let result = compiler.compile({entry: id, target: this.target});
     if (result.hasCycle) {
       this.#cyclic = true;
     }
@@ -170,7 +159,8 @@ export final class Project {
     let own = new Array<Diagnostic>();
     for (let diagnostic in checked.entry.diagnostics) {
       let location = diagnostic.location;
-      if (location == null || location.file == entryPath || location.file == path) {
+      if (location == null || location.file == entryPath || location.file == path ||
+          location.file == id) {
         own.push(diagnostic);
       }
     }

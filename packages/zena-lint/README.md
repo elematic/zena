@@ -1,26 +1,24 @@
 # zena-lint
 
-Lint rules for Zena source, each with the fix the tool applies. The
-compiler and type checker drive every rule, and every fix is checked
-again before it is kept. Today every rule has a fix and the tool applies
-it; `--dry-run` reports instead.
+Lint rules for Zena source, each with a fix. The compiler and type
+checker drive every rule, and when a fix is applied it is checked again
+before it is kept.
 
 ```bash
-npm run lint -w @zena-lang/zena-lint -- [options] <paths...>
-# or, from the repository root:
-./target/release/zena-cli run --dir . packages/zena-lint/zena/cli/main.zena -- [options] <paths...>
+zena lint [--fix] [--only a,b] [--skip a,b] <paths...>
+zena lint --list-rules
 ```
 
-A path is a `.zena` file or a directory, searched for them. Options:
+A path is a `.zena` file or a directory, searched for them. Without
+`--fix` the command prints each finding as `path:line:column: message
+[rule]` and exits 1 when there is one; with `--fix` it rewrites the
+files. `-v` on the command lists every fix and the text of a rejected
+one.
 
-| option                | effect                                                 |
-| --------------------- | ------------------------------------------------------ |
-| `--dry-run`, `-n`     | report what would change, write nothing                |
-| `--verbose`, `-v`     | list every edit, and the text of rejected ones         |
-| `--only a,b`          | run only these rules                                   |
-| `--skip a,b`          | run every rule but these                               |
-| `--list-rules`        | print the rule names                                   |
-| `--stdlib-root <dir>` | where the standard library is (`packages/stdlib/zena`) |
+The language server (`zena lsp`) publishes the findings as warnings and
+offers each as a quick fix, plus a `source.fixAll.zena` code action for
+the whole file. The VS Code extension does the same, and adds the
+command "Zena: Fix lint findings in file".
 
 ## Rules
 

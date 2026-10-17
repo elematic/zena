@@ -1,0 +1,48 @@
+/**
+ * Which files to lint: `.zena` files under the paths given, less build
+ * output, the compiler's bootstrap, and generated files.
+ */
+
+import { isDirectorySync, listDirSync, readFileSync, FileType } from 'zena:fs';
+import { join2 } from 'zena:path';
+
+/**
+ * `.zena` files at or under `path`, in directory order. A generated
+ * file is skipped: a generator's output says "Do not edit" in its first
+ * lines, and a test checks it against the generator. A file named on the
+ * command line is linted whatever directory it is in.
+ */
+export function collectZenaFiles(path: String, out: GrowableArray<String>): void {
+  if (!isDirectorySync(path)) {
+    if (path.endsWith('.zena') && !isGenerated(path)) {
+      out.push(path);
+    }
+    return;
+  }
+  for (let entry in listDirSync(path)) {
+    let name = entry.name;
+    // A `fixtures` directory holds test inputs, which are what they are
+    // on purpose — this package's own fixtures are written the old way so
+    // that the rules have something to find.
+    if (name == '.' || name == '..' || name == 'node_modules' || name == 'out' ||
+        name == 'bootstrap' || name == 'target' || name == 'fixtures' ||
+        name.startsWith('.')) {
+      continue;
+    }
+    let child = join2(path, name);
+    if (entry.fileType == FileType.Directory) {
+      collectZenaFiles(child, out);
+    } else if (entry.fileType == FileType.RegularFile && name.endsWith('.zena') &&
+        !isGenerated(child)) {
+      out.push(child);
+    }
+  }
+}
+
+/** Whether the file's opening comment marks it as a generator's output. */
+export function isGenerated(path: String): boolean {
+  let source = readFileSync(path);
+  let head = source.sliceBytes(0, if (source.length < 400) source.length else 400);
+  return head.contains('Do not edit') || head.contains('do not edit') ||
+      head.contains('DO NOT EDIT');
+}

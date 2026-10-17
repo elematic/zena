@@ -1,0 +1,44 @@
+/**
+ * What a rule is, and one pass of a rule set over a checked file. No
+ * filesystem here: the language service runs this on a document it
+ * checked itself.
+ */
+
+import { CheckedFile } from './checked.zena';
+import { RuleContext, Rule } from './context.zena';
+import { Edit, disjointEdits } from './source.zena';
+
+/**
+ * A rule by name, with the one-line finding it reports. The message says
+ * what is there and what it should be, in the voice of a diagnostic.
+ */
+export final class NamedRule(name: String, run: Rule, message: String)
+
+/**
+ * The findings of one pass on a checked file: every rule's proposals,
+ * less those that overlap an earlier one. What an editor shows, and what
+ * a report lists.
+ */
+export function proposeEdits(checked: CheckedFile, rules: GrowableArray<NamedRule>): GrowableArray<Edit> {
+  return disjointEdits(runRules(checked, rules));
+}
+
+/** Every rule's proposals for one checked file, overlapping or not. */
+export function runRules(checked: CheckedFile, rules: GrowableArray<NamedRule>): GrowableArray<Edit> {
+  let ctx = new RuleContext(checked);
+  for (let rule in rules) {
+    ctx.rule = rule.name;
+    rule.run(ctx);
+  }
+  return ctx.edits;
+}
+
+/** The message of the rule an edit came from. */
+export function messageOf(edit: Edit, rules: GrowableArray<NamedRule>): String {
+  for (let rule in rules) {
+    if (rule.name == edit.rule) {
+      return rule.message;
+    }
+  }
+  return edit.rule;
+}
