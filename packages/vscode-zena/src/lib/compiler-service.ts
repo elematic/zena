@@ -57,6 +57,13 @@ interface LspExports extends WebAssembly.Exports {
   getDiagnosticMessage(diagnostics: unknown, index: number): unknown;
   getDiagnosticFile(diagnostics: unknown, index: number): unknown;
   format(source: unknown): unknown;
+  lint(path: unknown): unknown;
+  getLintCount(findings: unknown): number;
+  getLintStart(findings: unknown, index: number): number;
+  getLintEnd(findings: unknown, index: number): number;
+  getLintRule(findings: unknown, index: number): unknown;
+  getLintMessage(findings: unknown, index: number): unknown;
+  getLintReplacement(findings: unknown, index: number): unknown;
   getDefinition(path: unknown, offset: number): unknown;
   getDefinitionFile(result: unknown): unknown;
   getDefinitionLine(result: unknown): number;
@@ -87,6 +94,17 @@ interface LspExports extends WebAssembly.Exports {
 /**
  * A document symbol with optional children for the outline view.
  */
+/**
+ * A lint finding: a byte range of the document and the text that fixes it.
+ */
+export interface LintFindingInfo {
+  start: number;
+  end: number;
+  rule: string;
+  message: string;
+  replacement: string;
+}
+
 export interface DocumentSymbolInfo {
   name: string;
   kind: number;
@@ -337,6 +355,37 @@ export class ZenaCompilerService {
       const msg = e instanceof Error ? (e.stack ?? e.message) : String(e);
       this.#outputChannel.appendLine(`getDefinition failed: ${msg}`);
       return null;
+    }
+  }
+
+  /**
+   * What the lint rules find in a document `checkDocument` has seen: each
+   * finding is a byte range of the document, the rule, its message, and
+   * the text that fixes it. Empty when the document has errors.
+   */
+  lintDocument(path: string): LintFindingInfo[] {
+    const exports = this.#exports!;
+    const readString = this.#readString!;
+    try {
+      const handle = exports.lint(this.#writeString!(path));
+      const count = exports.getLintCount(handle);
+      const findings: LintFindingInfo[] = [];
+      for (let i = 0; i < count; i++) {
+        const read = (ref: unknown) =>
+          readString(ref, exports.$stringGetLength(ref));
+        findings.push({
+          start: exports.getLintStart(handle, i),
+          end: exports.getLintEnd(handle, i),
+          rule: read(exports.getLintRule(handle, i)),
+          message: read(exports.getLintMessage(handle, i)),
+          replacement: read(exports.getLintReplacement(handle, i)),
+        });
+      }
+      return findings;
+    } catch (e) {
+      const msg = e instanceof Error ? (e.stack ?? e.message) : String(e);
+      this.#outputChannel.appendLine(`Lint failed: ${msg}`);
+      return [];
     }
   }
 
