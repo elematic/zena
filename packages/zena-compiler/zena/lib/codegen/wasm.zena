@@ -66,6 +66,7 @@ export sealed class ValType {
   case ValTypeV128
   case ValTypeFuncRef
   case ValTypeExternRef
+  case ValTypeRefExtern
   case ValTypeAnyRef
   case ValTypeEqRef
   case ValTypeStructRef
@@ -95,6 +96,7 @@ export function valTypeToOpcode(type: ValType): i32 {
   case ValTypeV128: 0x7B
   case ValTypeFuncRef: 0x70
   case ValTypeExternRef: 0x6F
+  case ValTypeRefExtern: 0x65
   case ValTypeAnyRef: 0x6E
   case ValTypeEqRef: 0x6D
   case ValTypeStructRef: 0x6B
@@ -137,6 +139,16 @@ export function valTypeEquals(a: ValType, b: ValType): boolean {
       case ValTypeRefNull as tb: sameHeapType(ta.target, tb.target)
       case _: false
     }
+    case ValTypeRefExtern: match (b) {
+      case ValTypeRefExtern: true
+      case ValTypeExternRef: true
+      case _: false
+    }
+    case ValTypeExternRef: match (b) {
+      case ValTypeRefExtern: true
+      case ValTypeExternRef: true
+      case _: false
+    }
     case _: valTypeToOpcode(a) == valTypeToOpcode(b)
   };
 }
@@ -159,6 +171,12 @@ export function isWasmSubtype(sub: ValType, superType: ValType): boolean {
     case _: false
   }
   case ValTypeNullRef: isNullableAnyRef(superType)
+  case ValTypeRefExtern: match (superType) {
+    case ValTypeRefExtern: true
+    case ValTypeExternRef: true
+    case _: false
+  }
+  case ValTypeExternRef: superType is ValTypeExternRef
   case _: valTypeToOpcode(sub) == valTypeToOpcode(superType)
 };
 }
@@ -198,6 +216,7 @@ export function isRefValType(vt: ValType): boolean {
     case ValTypeFuncRef: true
     case ValTypeExternRef: true
     case ValTypeNullRef: true
+    case ValTypeRefExtern: true
     case _: false
   };
 }

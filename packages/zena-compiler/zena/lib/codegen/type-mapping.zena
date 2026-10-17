@@ -2,7 +2,7 @@ import {
   Type, FunctionType, I32Type, F32Type, F64Type, VoidType, BooleanType, ClassType, 
   InterfaceType, TypeAliasType, EnumType, applyTypeIntrinsic, U32Type, I64Type, U64Type, ArrayType, NullType,
   U8Type, U16Type, I8Type, I16Type, V128Type,
-  UnknownType, ErrorType, AnyRefType, EqRefType, NeverType, HoleType,
+  UnknownType, ErrorType, AnyRefType, EqRefType, ExternRefType, NeverType, HoleType,
   FieldInfo, MethodInfo, typeToString, TypeParameterType, ThisType,
   UnionType, InlineTupleType, baseType, BoolLiteralType, NumLiteralType, StringLiteralType,
   RecordType, TupleType, MixinType, ErasedType, countCodegenFunctionType,
@@ -12,7 +12,7 @@ import {
   sortWasmFields, WasmArray
 } from './wasm-module.zena';
 import {
-  ValType, ValTypeVoid, ValTypeI32, ValTypeI64, ValTypeF32, ValTypeF64, ValTypeI8, ValTypeI16, ValTypeV128, ValTypeAnyRef, ValTypeStructRef, ValTypeEqRef, ValTypeRefNull, ValTypeRef, ValTypeNullRef, isNullableAnyRef, valTypeToOpcode, WasmType,
+  ValType, ValTypeVoid, ValTypeI32, ValTypeI64, ValTypeF32, ValTypeF64, ValTypeI8, ValTypeI16, ValTypeV128, ValTypeAnyRef, ValTypeStructRef, ValTypeEqRef, ValTypeRefNull, ValTypeRef, ValTypeRefExtern, ValTypeExternRef, ValTypeNullRef, isNullableAnyRef, valTypeToOpcode, WasmType,
 } from './wasm.zena';
 import { compareStrings, presentWordCount, presentWordName, getSignatureKey } from './codegen-utils.zena';
 import {
@@ -1490,6 +1490,7 @@ export function getValTypeKey(type: ValType): String {
   return match (type) {
   case ValTypeRef {target}: "ref_" + getWasmTypeKey(target)
   case ValTypeRefNull {target}: "refnull_" + getWasmTypeKey(target)
+  case ValTypeRefExtern: "ref_extern"
   case _: i32ToString(valTypeToOpcode(type))
 };
 }
@@ -1507,10 +1508,10 @@ export function getClosureKey(params: GrowableArray<ValType>, returns: GrowableA
 }
 
 export function getCellKey(valType: ValType): CellKey {
-  let normalizedType = if (let ValTypeRef {target} = valType) {
-    new ValTypeRefNull(target)
-  } else {
-    valType
+  let normalizedType = match (valType) {
+    case ValTypeRef {target}: new ValTypeRefNull(target)
+    case ValTypeRefExtern: new ValTypeExternRef()
+    case _: valType
   };
   return getValTypeKey(normalizedType) as CellKey;
 }
@@ -1544,10 +1545,10 @@ export function getClosureStruct(wasm: WasmModule, ftVal: anyref): WasmStruct {
 }
 
 export function getCellStruct(wasm: WasmModule, valType: ValType): WasmStruct {
-  let valTypeNull = if (let ValTypeRef {target} = valType) {
-    new ValTypeRefNull(target)
-  } else {
-    valType
+  let valTypeNull = match (valType) {
+    case ValTypeRef {target}: new ValTypeRefNull(target)
+    case ValTypeRefExtern: new ValTypeExternRef()
+    case _: valType
   };
   let key = getCellKey(valTypeNull);
   if (wasm.cellStructs.has(key)) {
@@ -1707,6 +1708,7 @@ export function typeToValType(wasm: WasmModule, t: Type): ValType {
   // and `anyref` DO share; see ErasedType in types.zena for the rest.
   case ErasedType: new ValTypeAnyRef()
   case EqRefType: new ValTypeEqRef()
+  case ExternRefType: new ValTypeExternRef()
   case TypeParameterType: new ValTypeAnyRef()
   case ThisType: new ValTypeAnyRef()
   case NeverType: new ValTypeVoid()
@@ -1737,6 +1739,7 @@ export function typeToValType(wasm: WasmModule, t: Type): ValType {
           let v = typeToValType(wasm, nonNeverTypes[0]);
           match (v) {
             case ValTypeRef as vr: new ValTypeRefNull(vr.target)
+            case ValTypeRefExtern: new ValTypeExternRef()
             case _: v
           }
         } else {
@@ -1773,6 +1776,7 @@ export function typeToValType(wasm: WasmModule, t: Type): ValType {
           if (hasNull) {
             match (commonValType) {
               case ValTypeRef as vr: new ValTypeRefNull(vr.target)
+              case ValTypeRefExtern: new ValTypeExternRef()
               case _: commonValType
             }
           } else {
@@ -1991,6 +1995,7 @@ export function sortedOptionalNames(rec: RecordType): GrowableArray<String> {
 function optionalSlotValType(vt: ValType): ValType {
   return match (vt) {
     case ValTypeRef as r: new ValTypeRefNull(r.target)
+    case ValTypeRefExtern: new ValTypeExternRef()
     case _: vt
   };
 }
@@ -2259,6 +2264,12 @@ export function isWasmSubtypeWithStructs(sub: ValType, superType: ValType): bool
     case _: false
   }
   case ValTypeNullRef: isNullableAnyRef(superType)
+  case ValTypeRefExtern: match (superType) {
+    case ValTypeRefExtern: true
+    case ValTypeExternRef: true
+    case _: false
+  }
+  case ValTypeExternRef: superType is ValTypeExternRef
   case _: valTypeToOpcode(sub) == valTypeToOpcode(superType)
 };
 }

@@ -31,7 +31,7 @@ import { dirName, normalizePath } from '../../module-resolver.zena';
 
 
 
-import { ValType, ValTypeVoid, ValTypeI32, ValTypeI64, ValTypeF32, ValTypeF64, ValTypeV128, ValTypeRef, ValTypeRefNull, ValTypeAnyRef, ValTypeEqRef, ValTypeStructRef, ValTypeExternRef, ValTypeNullRef, ValTypeI8, ValTypeI16, valTypeEquals, isWasmSubtype, isRefValType, isNullableAnyRef, WasmType, refTargetOf } from '../wasm.zena';
+import { ValType, ValTypeVoid, ValTypeI32, ValTypeI64, ValTypeF32, ValTypeF64, ValTypeV128, ValTypeRef, ValTypeRefNull, ValTypeRefExtern, ValTypeAnyRef, ValTypeEqRef, ValTypeStructRef, ValTypeExternRef, ValTypeNullRef, ValTypeI8, ValTypeI16, valTypeEquals, isWasmSubtype, isRefValType, isNullableAnyRef, WasmType, refTargetOf } from '../wasm.zena';
 import {
   WasmModule, WasmFunction, WasmStruct, WasmField, WasmGlobal, WasmSignature, ClassCodegenInfo, isValSubtype, sortWasmFields, RecordDispatchInfo, asWasmStruct, asWasmSignature, asWasmArray, valTypeIdentical, ClosureForwarderSpec, ExplosionSpec,
   noCaptures,
@@ -2937,7 +2937,7 @@ export final class FunctionLowerer {
     if (vt is ValTypeV128) {
       return this.b.constV128Zero(vt);
     }
-    if (isNullableAnyRef(vt)) {
+    if (isNullableAnyRef(vt) || vt is ValTypeExternRef) {
       return this.b.emit(IrOp.ref_null, vt, -1, -1);
     }
     return this.#bailValue('placeholder type');
@@ -5326,6 +5326,9 @@ export final class FunctionLowerer {
         return this.b.emit(IrOp.ref_as_non_null, wantVt, value, -1);
       }
     }
+    if (wantVt is ValTypeRefExtern && haveVt is ValTypeExternRef) {
+      return this.b.emit(IrOp.ref_as_non_null, wantVt, value, -1);
+    }
     if (isValSubtype(haveVt, wantVt)) {
       // Widening (e.g. a non-null value read at a nullable type): the
       // value passes as-is under wasm subtyping.
@@ -6477,6 +6480,9 @@ export final class FunctionLowerer {
         if (want is ValTypeRef && resultType is ValTypeRefNull) {
           return this.b.emit(IrOp.ref_as_non_null, want, result, -1);
         }
+        if (want is ValTypeRefExtern && resultType is ValTypeExternRef) {
+          return this.b.emit(IrOp.ref_as_non_null, want, result, -1);
+        }
       }
     }
     return result;
@@ -7204,6 +7210,9 @@ export final class FunctionLowerer {
       if (nodeType != null && !(baseType(nodeType) is VoidType)) {
         let want = typeToValTypeWithSub(this.wasm, nodeType, this.func);
         if (want is ValTypeRef && resultType is ValTypeRefNull) {
+          return this.b.emit(IrOp.ref_as_non_null, want, result, -1);
+        }
+        if (want is ValTypeRefExtern && resultType is ValTypeExternRef) {
           return this.b.emit(IrOp.ref_as_non_null, want, result, -1);
         }
       }
@@ -9480,7 +9489,7 @@ export final class FunctionLowerer {
       if (contextVt == null) {
         this.#bail('null without context');
       }
-      if (!isNullableAnyRef(contextVt)) {
+      if (!isNullableAnyRef(contextVt) && !(contextVt is ValTypeExternRef)) {
         this.#bail('null into non-nullable context');
       }
       return this.b.emit(IrOp.ref_null, contextVt, -1, -1);
