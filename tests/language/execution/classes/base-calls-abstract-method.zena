@@ -1,0 +1,32 @@
+// @mode: run
+// @result: 42
+// @skip: lowering bails with "zir unsupported: method not found @Base.twice"
+
+// The same shape as `base-calls-overridden-method.zena`, with the step declared
+// abstract instead of given a default. That one difference is what breaks it:
+// the sibling test passes, so the gap is not virtual dispatch from a base
+// method, it is that an abstract declaration leaves nothing for the call in
+// `twice` to resolve against.
+//
+// This is the whole of a framework base class: the base holds the state and the
+// sequence, the subclass writes one method, and every call into the subclass
+// comes from a base method. `examples/zenafx/framework.zena` wants exactly this
+// and gives `build` a throwing body instead.
+
+abstract class Base {
+  abstract step(): i32;
+
+  twice(): i32 {
+    return this.step() * 2;
+  }
+}
+
+class Derived extends Base {
+  step(): i32 {
+    return 21;
+  }
+}
+
+export let main = (): i32 => {
+  return new Derived().twice();
+};

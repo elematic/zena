@@ -1,0 +1,28 @@
+// @mode: run
+// @result: 3
+
+// An array literal of case-class instances passed where the parameter is an
+// array of the sealed base.
+//
+// The element type has to widen on the way in, and the widening is the whole of
+// the test: `[new Count(3)]` is an `Array<Count>` at the literal and an
+// `Array<Value>` at the parameter.
+
+sealed class Value {
+  case Count(n: i32)
+  case Nothing
+}
+
+class Holder {
+  values: Array<Value>;
+
+  new(this.values);
+}
+
+export let main = (): i32 => {
+  let held = new Holder([new Count(3)]);
+  return match (held.values[0]) {
+    case Count {n}: n
+    case Nothing: 0
+  };
+};
