@@ -4,20 +4,27 @@
  * bodies are streaming's shapes exactly (see the per-function docs).
  */
 import {
-  Expression, Identifier, StringLiteral, TaggedTemplateExpression,
+  Expression, Identifier, SourceLocation, StringLiteral, TaggedTemplateExpression,
   TemplateLiteral,
 } from '../../ast.zena';
 import {
-  AnyRefType, ArrayType, ClassType, FunctionType, Type, baseType,
+  AnyRefType, ArrayType, ClassType, FunctionType, InlineTupleType, InterfaceType,
+  NullType, RecordType, TupleType, Type, UnionType, baseType,
 } from '../../types.zena';
 import { Symbol } from '../../scope/symbol.zena';
-import { ValType, ValTypeI32, ValTypeRef, ValTypeRefNull } from '../wasm.zena';
+import {
+  ValType, ValTypeAnyRef, ValTypeEqRef, ValTypeI32, ValTypeRef, ValTypeRefNull,
+  ValTypeStructRef,
+} from '../wasm.zena';
 import {
   ClassCodegenInfo, WasmFunction, WasmGlobal, WasmSignature, WasmStruct,
   asWasmSignature, asWasmStruct, isValSubtype,
 } from '../wasm-module.zena';
 import { getClassKey, getClassMethodKey, templateConvertHelperName } from '../codegen-utils.zena';
-import { typeToValTypeWithSub } from '../type-mapping.zena';
+import {
+  findExtendedInterfaceTransitive, findImplementedInterfaceTransitive,
+  getNonNullableType, typeToValTypeWithSub,
+} from '../type-mapping.zena';
 import { IrOp, IrRefField, IrRefFunc, IrRefGlobal, IrRefType } from './ir.zena';
 import { lowerExpr } from './lowering.zena';
 import {
@@ -148,10 +155,153 @@ export function lowerTemplateLiteral(cx: LoweringContext, tpl: TemplateLiteral):
   return cx.reassertNonNull(call, cx.exprVt(tpl as Expression));
 }
 
+function isNullableRef(vt: ValType): boolean {
+  return match (vt) {
+    case ValTypeRefNull: true
+    case ValTypeAnyRef: true
+    case ValTypeEqRef: true
+    case ValTypeStructRef: true
+    case _: false
+  };
+}
+
+function callUnaryToString(cx: LoweringContext, fn: WasmFunction, v: i32) {
+  if (fn.signature.params.length != 1 || fn.signature.returns.length != 1) {
+    cx.fail('unary method shape');
+  }
+  let recv = cx.coerceTo(v, fn.signature.params[0]);
+  let funcRef = cx.b.addRef(new IrRefFunc(fn));
+  return cx.b.callFunc(funcRef, oneValue(recv), fn.signature.returns[0]);
+}
+
+function convertClassToString(cx: LoweringContext, value: i32, ct: ClassType, loc: SourceLocation | null) {
+  if (isWellKnown(WellKnown.StringClass, ct.name, ct.sourcePath)) {
+    return value;
+  }
+  let stringableIface = findImplementedInterfaceTransitive(cx.wasm, ct, 'Stringable');
+  if (stringableIface != null &&
+      isWellKnown(WellKnown.StringableInterface, stringableIface.name, stringableIface.sourcePath)) {
+    let toStringMethod = cx.resolveDevirtualizedMethod(ct, ':toString');
+    if (toStringMethod != null) {
+      return callUnaryToString(cx, toStringMethod, value);
+    }
+    var resolvedOpt: WasmFunction | null = null;
+    var hc: ClassType | null = ct;
+    while (hc != null && resolvedOpt == null) {
+      var hg: ClassType | null = hc;
+      while (hg != null && resolvedOpt == null) {
+        let key = getClassMethodKey(getClassKey(hg), ':toString');
+        if (let (true, m) = cx.wasm.classMethodMap.get(key)) {
+          resolvedOpt = m;
+        }
+        hg = hg.genericSource;
+      }
+      hc = hc.superType;
+    }
+    let ci = if (let (true, info) = cx.wasm.classInfos.get(getClassKey(ct))) info else null;
+    if (resolvedOpt != null && ci != null && cx.vtableSlotIndex(ci, ':toString') >= 0) {
+      let hsig = resolvedOpt.signature;
+      return cx.lowerVtableCall(value, ci, ':toString', hsig,
+          oneValue(value), hsig.returns[0]);
+    }
+  }
+  return lowerStringLiteral(cx, new StringLiteral(`<${ct.name}>`, loc));
+}
+
+function convertNonNullValueToString(cx: LoweringContext, value: i32, tOpt: Type, loc: SourceLocation | null) {
+  let bt = baseType(tOpt);
+  let helperName = templateConvertHelperName(tOpt);
+  if (helperName != '') {
+    let helperOpt = cx.wasm.getStdlibFunc('core', helperName);
+    if (helperOpt == null) {
+      cx.fail('template helper missing: ' + helperName);
+    }
+    let helper = helperOpt;
+    let sig = helper.signature;
+    if (sig.params.length != 1 || sig.returns.length != 1) {
+      cx.fail('template helper shape');
+    }
+    if (!isValSubtype(cx.valueTypeOf(value), sig.params[0])) {
+      cx.failConformance(value, sig.params[0], 'template operand type');
+    }
+    return cx.b.callFunc(
+        cx.b.addRef(new IrRefFunc(helper)), oneValue(value), sig.returns[0]);
+  }
+  if (bt is ClassType) {
+    return convertClassToString(cx, value, bt, loc);
+  }
+  if (bt is InterfaceType) {
+    let stringableIface = findExtendedInterfaceTransitive(cx.wasm, bt, 'Stringable');
+    if (stringableIface != null &&
+        isWellKnown(WellKnown.StringableInterface, stringableIface.name, stringableIface.sourcePath)) {
+      return cx.slotCallSingle(value, ':toString');
+    }
+    return lowerStringLiteral(cx, new StringLiteral(`<${bt.name}>`, loc));
+  }
+  if (bt is RecordType) {
+    return lowerStringLiteral(cx, new StringLiteral('<record>', loc));
+  }
+  if (bt is TupleType || bt is InlineTupleType) {
+    return lowerStringLiteral(cx, new StringLiteral('<tuple>', loc));
+  }
+  if (tOpt is NullType) {
+    return lowerStringLiteral(cx, new StringLiteral('null', loc));
+  }
+  return lowerStringLiteral(cx, new StringLiteral('<object>', loc));
+}
+
+function typeHasNull(t: Type): boolean {
+  return match (t) {
+    case NullType: true
+    case UnionType {types}: {
+      var found = false;
+      for (let m in types) {
+        if (m is NullType) {
+          found = true;
+        }
+      }
+      found
+    }
+    case _: false
+  };
+}
+
 /**
- * A template interpolation as a String value: primitives convert
- * through the zena:string-convert helpers; String values pass
- * through; anything else bails.
+ * Converts any value to a String. Used by template literals and the to_string intrinsic.
+ */
+export function convertValueToString(cx: LoweringContext, value: i32, tOpt: Type, loc: SourceLocation | null): i32 {
+  if (tOpt is NullType) {
+    return lowerStringLiteral(cx, new StringLiteral('null', loc));
+  }
+  let valVt = cx.valueTypeOf(value);
+  let nonNullT = getNonNullableType(tOpt);
+  if (typeHasNull(tOpt) && isNullableRef(valVt)) {
+    let isNull = cx.b.emit(IrOp.ref_is_null, new ValTypeI32() as ValType, value, -1);
+    let nullB = cx.b.newBlock();
+    let nonNullB = cx.b.newBlock();
+    cx.b.brIf(isNull, nullB, noValues(), nonNullB, noValues());
+
+    cx.b.switchTo(nullB);
+    let nullStr = lowerStringLiteral(cx, new StringLiteral('null', loc));
+    let strVt = cx.valueTypeOf(nullStr);
+
+    let mergeB = cx.b.newBlock();
+    let result = cx.b.blockParam(mergeB, strVt);
+    cx.b.br(mergeB, oneValue(nullStr));
+
+    cx.b.switchTo(nonNullB);
+    let nonNullVal = cx.stripNonNull(value);
+    let converted = cx.stripNonNull(convertNonNullValueToString(cx, nonNullVal, nonNullT, loc));
+    cx.b.br(mergeB, oneValue(converted));
+
+    cx.b.switchTo(mergeB);
+    return result;
+  }
+  return convertNonNullValueToString(cx, value, nonNullT, loc);
+}
+
+/**
+ * A template interpolation as a String value: delegates to convertValueToString.
  */
 function templateOperandString(cx: LoweringContext, expr: Expression): i32 {
   let value = lowerExpr(cx, expr, null);
@@ -159,29 +309,7 @@ function templateOperandString(cx: LoweringContext, expr: Expression): i32 {
   if (tOpt == null) {
     cx.fail('untyped template operand');
   }
-  let bt = baseType(tOpt);
-  let helperName = templateConvertHelperName(tOpt);
-  if (helperName == '') {
-    if (bt is ClassType &&
-        isWellKnown(WellKnown.StringClass, bt.name, bt.sourcePath)) {
-      return value;
-    }
-    cx.fail('template operand type');
-  }
-  let helperOpt = cx.wasm.getStdlibFunc('core', helperName);
-  if (helperOpt == null) {
-    cx.fail('template helper missing');
-  }
-  let helper = helperOpt;
-  let sig = helper.signature;
-  if (sig.params.length != 1 || sig.returns.length != 1) {
-    cx.fail('template helper shape');
-  }
-  if (!isValSubtype(cx.valueTypeOf(value), sig.params[0])) {
-    cx.failConformance(value, sig.params[0], 'template operand type');
-  }
-  return cx.b.callFunc(
-      cx.b.addRef(new IrRefFunc(helper)), oneValue(value), sig.returns[0]);
+  return convertValueToString(cx, value, tOpt, expr.loc);
 }
 
 /**
