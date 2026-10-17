@@ -22,7 +22,7 @@ interface style {
   /// Non-premultiplied sRGB; each channel runs 0..1.
   record color { r: f32, g: f32, b: f32, a: f32 }
 
-  record box-look {
+  record box-style {
     background: option<color>,
     border-color: option<color>,
     border-width: f32,
@@ -30,7 +30,7 @@ interface style {
     opacity: f32,
   }
 
-  record text-look {
+  record text-style {
     family: string,
     size: f32,
     weight: u16,
@@ -47,7 +47,7 @@ interface style {
   record edges { top: f32, right: f32, bottom: f32, left: f32 }
 
   /// Geometry only. Nothing here affects painting, and nothing in
-  /// `box-look` or `text-look` affects measurement.
+  /// `box-style` or `text-style` affects measurement.
   record flex {
     axis: axis,
     justify-content: justify,
@@ -63,18 +63,18 @@ interface style {
 
 interface scene {
   use geometry.{rect};
-  use style.{box-look, text-look, flex, color, length};
+  use style.{box-style, text-style, flex, color, length};
 
   /// A node within one viewport, named by whoever holds that viewport.
   /// Node 0 is the viewport's own root and already exists. An id means
   /// nothing outside the viewport it is used with.
   type node = u32;
 
-  record box-op { id: node, parent: node, layout: flex, look: box-look }
+  record box-op { id: node, parent: node, layout: flex, style: box-style }
   record text-op { id: node, parent: node, content: string, layout: flex,
-                   look: text-look }
+                   style: text-style }
   record layout-op { target: node, layout: flex }
-  record look-op { target: node, look: box-look }
+  record style-op { target: node, style: box-style }
   record content-op { target: node, content: string }
 
   /// A value that inherits down the tree, resolved at the nearest node
@@ -97,7 +97,7 @@ interface scene {
     make-box(box-op),
     make-text(text-op),
     set-layout(layout-op),
-    set-look(look-op),
+    set-style(style-op),
     set-content(content-op),
     provide(provide-op),
     /// Removes the node and its descendants, and frees the ids.
@@ -156,14 +156,14 @@ interface session {
 package zenafx:host@0.1.0 {
 
   interface text {
-    use zenafx:ui/style@0.1.0.{text-look};
+    use zenafx:ui/style@0.1.0.{text-style};
 
     record measured { width: f32, height: f32, baseline: f32 }
 
-    /// Shape `content` under `look` and keep it. The id is valid until
+    /// Shape `content` under `style` and keep it. The id is valid until
     /// `release-run`.
-    register-run: func(content: string, look: text-look) -> u32;
-    update-run: func(run: u32, content: string, look: text-look);
+    register-run: func(content: string, style: text-style) -> u32;
+    update-run: func(run: u32, content: string, style: text-style);
     release-run: func(run: u32);
 
     /// Shape at a width. `none` asks for the unconstrained size.
@@ -214,7 +214,7 @@ package zenafx:host@0.1.0 {
     /// only keeps siblings adjacent when no child but the last has
     /// children of its own, so it works for a chain and breaks for a tree.
     record node {
-      style: flex,
+      layout: flex,
       content: content,
       first-child: u32,
       child-count: u32,
@@ -271,88 +271,191 @@ package zenafx:host@0.1.0 {
     request-redraw: func();
   }
 
-  /// The retained scene: the tree the host holds and draws from.
+  /// The retained scene: a tree of trees the host holds and draws from.
   ///
-  /// A component installs a tree once and the host keeps it. A frame is
-  /// then a solve and a paint over what the host already has, with no call
-  /// into any component — which is what makes resizing free. The component
-  /// is back on the path only when something it draws actually changes, and
-  /// then it replaces a subtree rather than describing an edit.
+  /// Every widget occupies exactly one node and owns the subtree beneath it —
+  /// its **interior**. What a parent puts *into* a widget is its **content**,
+  /// which lands in slots the interior marks. Those are a widget's two child
+  /// axes and they never mix: a widget authors its interior, is handed its
+  /// content, and can name neither inside another widget.
   ///
-  /// Whole-subtree replacement is the only update. It is coarse, and the
-  /// grain is the widget: a widget that changes replaces itself and
-  /// everything under it. Finer edits are an optimisation over this, not a
-  /// different design.
+  /// A component installs a tree once and the host keeps it. A frame is then a
+  /// solve and a paint over what the host already has, with no call into any
+  /// component — which is what makes resizing free.
   interface scene {
-    use zenafx:ui/style@0.1.0.{flex, box-look, text-look};
+    use zenafx:ui/style@0.1.0.{flex, box-style, text-style};
 
-    /// A node of the retained tree. Ids are the host's, not the
-    /// component's, and mean nothing to anyone else.
-    type node-id = u32;
+    /// Chosen by the guest, so a template definition needs no round trip.
+    type template-id = u32;
 
     record text-content {
       content: string,
-      look: text-look,
+      style: text-style,
     }
 
-    /// What a node draws. A node's appearance travels with its geometry,
-    /// so the host paints the same tree it solved and a component never
-    /// builds a display list.
-    variant look {
-      /// Nothing of its own: a box that exists to lay out its children.
+    /// What a node draws. A node's appearance travels with its geometry, so
+    /// the host paints the same tree it solved and a component never builds a
+    /// display list.
+    variant appearance {
+      /// Nothing of its own: a box that exists to lay out what is under it.
       nothing,
-      /// A filled and bordered rectangle.
-      fill(box-look),
+      fill(box-style),
       /// Text. The host shapes it and keeps the result for as long as the
       /// node lives, so a component never handles a shaped run.
       text(text-content),
     }
 
-    /// One node of a flat tree. Index 0 is the tree's root; a node's
-    /// children are the `child-count` entries starting at `first-child`,
-    /// and must come after it. Breadth-first order always satisfies that.
-    record node {
+    /// One node of a template, in a flat list.
+    ///
+    /// Node 0 describes the node being rendered into — the widget's own box,
+    /// what CSS would reach with `:host`. The rest are its interior and hang
+    /// beneath it. So a widget is one box and not two: its template's root is
+    /// its node rather than something inside it.
+    ///
+    /// `first-child` and `child-count` index that same list: they are
+    /// positions in a description, never scene identities. WIT value types
+    /// cannot recurse, and breadth-first order keeps a node's children
+    /// contiguous and after it.
+    record node-def {
       layout: flex,
-      look: look,
+      appearance: appearance,
       first-child: u32,
       child-count: u32,
+      /// Whether content hangs here instead of interior. Slots are numbered by
+      /// the order they appear in the list; node 0 is the widget's own box, so
+      /// this is ignored there.
+      ///
+      /// A slot is not a box. Like `<slot>`'s own `display: contents`, it
+      /// contributes no geometry: what hangs in it lays out as a child of
+      /// whatever contains the slot. That is the other half of one box per
+      /// widget — a widget's node is a box, and the slot it was placed in is
+      /// not.
+      is-slot: bool,
     }
 
-    /// Install a tree and return the id of its root. `parent` is the node
-    /// to hang it under; `none` installs the scene's own root, replacing
-    /// whatever was there.
-    install: func(parent: option<node-id>, nodes: list<node>) -> node-id;
+    /// Which property of a node a hole writes. The set is what the host can
+    /// patch in place without rebuilding the node.
+    enum binding-target { content, style, layout }
 
-    /// Replace the subtree rooted at `target`, returning the new root's
-    /// id. The old nodes are dropped and any text they held is released.
-    replace: func(target: node-id, nodes: list<node>) -> node-id;
+    /// One hole in a template, named by the interior node it belongs to and
+    /// the property it sets. A hole is identified by its index in the
+    /// template's list; nothing on the wire names it.
+    record binding {
+      node: u32,
+      target: binding-target,
+    }
 
-    /// Ask for a frame. Coalesced; a resize does not need one, because the
-    /// host already knows the tree changed shape.
-    invalidate: func();
+    variant binding-value {
+      content(string),
+      style(box-style),
+      text-style(text-style),
+      layout(flex),
+    }
+
+    /// One hole and what to put in it.
+    ///
+    /// The guest holds each hole's last value and sends only the ones that
+    /// changed, so this list is sparse. It diffs rather than the host because
+    /// every value here is marshalled, where an in-process renderer compares
+    /// for free.
+    record hole {
+      binding: u32,
+      value: binding-value,
+    }
+
+    /// A template, the first time it is used.
+    record template-def {
+      id: template-id,
+      nodes: list<node-def>,
+      bindings: list<binding>,
+    }
+
+    /// A template the host may not have seen.
+    ///
+    /// Nothing is registered up front: a definition travels with the first
+    /// render that uses it, and afterwards only its id does. The guest tracks
+    /// which it has sent, and the host's table lives and dies with the
+    /// component instance, so the two cannot drift.
+    variant template-ref {
+      known(template-id),
+      fresh(template-def),
+    }
+
+    /// A widget's place in the scene, and its authority over what is beneath.
+    ///
+    /// One per widget, held by it for as long as it lives. Dropping the handle
+    /// releases only the handle: the node itself belongs to whoever's interior
+    /// it sits in, so a child cannot delete a slot its parent declared.
+    ///
+    /// A node goes away when the interior holding it is rebuilt — its parent
+    /// renders a template without that slot — so removal is a consequence of
+    /// the parent's own render, never of a child dropping something.
+    resource node {
+      /// Show `template` here, with `holes` applied: node 0 of it becomes this
+      /// node's own box, and the rest become its interior.
+      ///
+      /// One operation for creating and for updating, because the host can
+      /// tell which is which: nothing there yet, it builds the template and
+      /// fills every hole; the same template already there, it writes the
+      /// holes it was given; a different template, it drops what was there
+      /// and builds the new one. Template identity is what decides patch
+      /// against replace, and the guest never says which it meant.
+      ///
+      /// A patch leaves the content hanging in this node's slots alone, since
+      /// the slots are still there. Rebuilding takes that content with it —
+      /// none of it belongs to a template that no longer exists.
+      render: func(template: template-ref, holes: list<hole>);
+
+      /// The nodes hanging in slot `slot` of this node's interior, made exactly
+      /// `count` long, so a parent can give each of its children somewhere to
+      /// render.
+      ///
+      /// Growing creates empty nodes, shrinking drops the ones past the end
+      /// with everything beneath them, and the nodes that stay keep their
+      /// identity and their subtrees. That is positional reconciliation, and
+      /// the only place a parent ever adds or removes a child.
+      ///
+      /// The one way a node inside an interior is ever named, and a widget can
+      /// reach only its own slots. That is the boundary selectors will scope to
+      /// and the one a component cannot see across: a parent is handed a node
+      /// to put a child in and can read nothing the child puts there.
+      content: func(slot: u32, count: u32) -> list<own<node>>;
+    }
+
+    /// The scene's root. The first `render` on it installs the tree.
+    root: func() -> own<node>;
+
+    /// Say that the tree is complete and worth drawing.
+    ///
+    /// Called once, when the component has finished building what it wants on
+    /// screen. The host waits for it before the first frame, because it cannot
+    /// wait for the entry to return: a component that keeps working never
+    /// returns from it.
+    ///
+    /// Nothing else needs it. `render` marks the scene for redraw on its own,
+    /// because the host performs the change and knows which node it touched.
+    ready: func();
   }
 
-  /// How a component hands the host a widget instance.
+  /// How a component is started.
   ///
-  /// `widget` below exports two free functions, so it can describe exactly
-  /// one widget per component and cannot say which instance is being
-  /// drawn. This describes instances: the host asks for the root and gets
-  /// a handle. What is under that handle is the component's business —
-  /// widgets inside one component compose in their own language, not
-  /// through the host.
+  /// One function and no types: a component builds its own tree through
+  /// `zenafx:host/scene`, so nothing about what it draws crosses here.
   interface app {
-    use scene.{node, look, text-content};
-    use zenafx:ui/style@0.1.0.{flex, box-look, text-look, color, axis,
-                               justify, align, edges, length};
-
-    /// The tree the component's root widget describes.
+    /// The component's entry.
     ///
-    /// A widget describes a tree; it does not install one, and does not
-    /// learn that it was installed. The host takes what this returns and
-    /// mounts it, so nothing in a component has mounting logic. After
-    /// that nothing calls back into the component — a resize is handled
-    /// entirely by the host.
-    start: func() -> list<node>;
+    /// Called once. It builds its widgets and installs the tree it wants
+    /// drawn through `zenafx:host/scene`, then returns; the host owns the
+    /// tree from then on and a resize never enters the component again.
+    ///
+    /// `async func` so the lift carries a callback, which is the only way
+    /// the host can re-enter the component to run work it started — a
+    /// `sleep` from `zena:time`, a fetch, anything parked on a waitable.
+    /// The program's own `main` may be an ordinary synchronous function:
+    /// Zena lets one call an async function, it just cannot `await` the
+    /// result, and the task the lift opens is what keeps the continuation
+    /// reachable.
+    main: async func();
   }
 
   world runtime {

@@ -120,7 +120,7 @@ impl Painter {
         };
         self.ctx
             .set_transform(Affine::translate((x as f64, y as f64)));
-        self.ctx.set_paint(alpha(registered.look().color));
+        self.ctx.set_paint(alpha(registered.style().color));
 
         for line in registered.layout().lines() {
             for item in line.items() {
@@ -189,7 +189,7 @@ fn quad_path(r: &Rect, corner_radius: f32) -> BezPath {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ui::types::{Glyphs, Quad, TextLook};
+    use crate::ui::types::{Glyphs, Quad, TextStyle};
 
     const WHITE: Color = Color::rgb(1.0, 1.0, 1.0);
 
@@ -340,11 +340,11 @@ mod tests {
     #[test]
     fn a_glyph_run_puts_dark_pixels_inside_its_box() {
         let mut text = TextEngine::new();
-        let look = TextLook {
+        let style = TextStyle {
             size: 40.0,
-            ..TextLook::default()
+            ..TextStyle::default()
         };
-        let run = text.register_run("HHHH", &look);
+        let run = text.register_run("HHHH", &style);
         let m = text.measure_run(run, None);
         let mut p = Painter::new(m.width.ceil() as u16 + 4, m.height.ceil() as u16 + 4);
         p.draw(
@@ -367,11 +367,11 @@ mod tests {
     #[test]
     fn a_wrapped_run_paints_wrapped() {
         let mut text = TextEngine::new();
-        let look = TextLook {
+        let style = TextStyle {
             size: 20.0,
-            ..TextLook::default()
+            ..TextStyle::default()
         };
-        let run = text.register_run("The quick brown fox jumps over the lazy dog", &look);
+        let run = text.register_run("The quick brown fox jumps over the lazy dog", &style);
 
         // One line, then the width the solve would have settled on.
         let one_line = text.measure_run(run, None);

@@ -77,7 +77,7 @@ pub fn solve_with(
     // end means every child exists by the time its parent is created.
     for i in (0..nodes.len()).rev() {
         let node = &nodes[i];
-        let style = taffy_style(&node.style);
+        let style = taffy_style(&node.layout);
         let children: Vec<NodeId> = (node.first_child as usize
             ..node.first_child as usize + node.child_count as usize)
             .filter_map(|c| ids.get(c).copied().flatten())
@@ -229,11 +229,11 @@ fn dimension(length: Length) -> Dimension {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ui::types::{Edges, TextLook};
+    use crate::ui::types::{Edges, TextStyle};
 
-    fn boxed(style: Flex, first_child: u32, child_count: u32) -> Node {
+    fn boxed(layout: Flex, first_child: u32, child_count: u32) -> Node {
         Node {
-            style,
+            layout,
             content: Content::Box,
             first_child,
             child_count,
@@ -242,7 +242,7 @@ mod tests {
 
     fn leaf(run: u32) -> Node {
         Node {
-            style: Flex::default(),
+            layout: Flex::default(),
             content: Content::Text(run),
             first_child: 0,
             child_count: 0,
@@ -254,7 +254,7 @@ mod tests {
     #[test]
     fn text_is_centred_in_a_filling_container() {
         let mut text = TextEngine::new();
-        let run = text.register_run("Hello, world", &TextLook::default());
+        let run = text.register_run("Hello, world", &TextStyle::default());
         let nodes = vec![
             boxed(
                 Flex {
@@ -295,7 +295,7 @@ mod tests {
         let mut text = TextEngine::new();
         let run = text.register_run(
             "The quick brown fox jumps over the lazy dog",
-            &TextLook::default(),
+            &TextStyle::default(),
         );
         let nodes = vec![
             boxed(
@@ -444,7 +444,7 @@ mod tests {
 
         // A fixed-width parent: the child's width is imposed.
         let mut text = TextEngine::new();
-        let run = text.register_run(long, &TextLook::default());
+        let run = text.register_run(long, &TextStyle::default());
         let fixed = vec![
             boxed(
                 Flex {
@@ -475,7 +475,7 @@ mod tests {
         // A shrink-to-fit parent: the child's width is its own to choose, so
         // the solve has to discover it.
         let mut text = TextEngine::new();
-        let run = text.register_run(long, &TextLook::default());
+        let run = text.register_run(long, &TextStyle::default());
         let hugging = vec![
             boxed(
                 Flex {

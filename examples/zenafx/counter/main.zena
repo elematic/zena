@@ -1,0 +1,155 @@
+/**
+ * Two counters advancing at their own rates, as one template used twice with
+ * one hole in it.
+ *
+ * The widgets example installs a tree and is never entered again. This one
+ * exercises the other half: a counter writes a single hole when its own timer
+ * comes due, naming a template the host already has. The host patches that one
+ * node — it keeps its id and the run the host shaped for it — and nothing is
+ * rebuilt.
+ *
+ * The rate belongs to the counter. One advances every 500ms and the other every
+ * 1500ms, through `sleep` from `zena:time` over `wasi:clocks` — the display's
+ * refresh rate has nothing to do with either, and ZenaFX needs no timer
+ * interface of its own.
+ */
+import { Color, BoxStyle, TextStyle, Flex, Edges, Axis, Justify, Align,
+         LengthPercent, LengthAuto } from 'zenafx:ui/style';
+import { NodeDef, AppearanceNothing, AppearanceFill, AppearanceText, TextContent,
+         Binding, BindingTarget, BindingValueContent } from 'zenafx:host/scene';
+import { Template, Rendering, Widget, shows, holds, runApp } from '../framework.zena';
+import { Duration, sleep, milliseconds } from 'zena:time';
+import { some, none } from 'zena:core';
+
+let page = new Color(0.98, 0.98, 0.99, 1.0);
+let ink = new Color(0.10, 0.11, 0.13, 1.0);
+let dial = new Color(0.93, 0.94, 0.97, 1.0);
+let edge = new Color(0.72, 0.76, 0.85, 1.0);
+let pageStyle = new BoxStyle(some(page), none, 0.0, 0.0, 1.0);
+let dialStyle = new BoxStyle(some(dial), some(edge), 1.0, 12.0, 1.0);
+let digitStyle = new TextStyle('system-ui', 64.0, 600 as u16, false, ink);
+
+let noPadding = new Edges(0.0, 0.0, 0.0, 0.0);
+let dialPadding = new Edges(16.0, 28.0, 16.0, 28.0);
+
+/** The page's own box: fills the window and sits its content in a row. */
+let pageLayout = new Flex(Axis.Row, Justify.Center, Align.Center, 24.0,
+    noPadding, new LengthPercent(100.0), new LengthPercent(100.0), 0.0, 1.0);
+
+/** A dial's own box: a panel sized around its digits. */
+let dialLayout = new Flex(Axis.Column, Justify.Center, Align.Center, 0.0,
+    dialPadding, new LengthAuto(), new LengthAuto(), 0.0, 1.0);
+
+/** The digits, and the slot: sized by what is in them. */
+let contentLayout = new Flex(Axis.Column, Justify.Start, Align.Start, 0.0,
+    noPadding, new LengthAuto(), new LengthAuto(), 0.0, 1.0);
+
+/**
+ * A counter's template.
+ *
+ * Node 0 is the dial itself — the counter's own box, which is why a counter is
+ * one box and not a box inside a box — and node 1 is its digits. The digits'
+ * content is a placeholder, because hole 0 supplies it.
+ */
+let dialTemplate = new Template(
+  [
+    new NodeDef(dialLayout, new AppearanceFill(dialStyle), 1 as u32, 1 as u32, false),
+    new NodeDef(contentLayout, new AppearanceText(new TextContent('', digitStyle)),
+                0 as u32, 0 as u32, false),
+  ],
+  [new Binding(1 as u32, BindingTarget.Content)],
+);
+
+/**
+ * A counter: its own period, its own count, and nothing else.
+ *
+ * It holds no node id and knows nothing about where it was placed. Nothing here
+ * is shared with another counter, which is what makes two of them on screen
+ * advance independently.
+ */
+class Counter extends Widget {
+  #period: Duration;
+  var #count: i32 = 0;
+
+  /**
+   * A counter starts its own clock. Nothing hands it one and nothing ticks it:
+   * the rate is the widget's business, and at 2Hz and 0.67Hz it has nothing to
+   * do with the frame rate.
+   */
+  new(period: Duration) : #period = period, super() {
+    this.#run();
+  }
+
+  build(): Rendering {
+    return shows(dialTemplate, [new BindingValueContent(`${this.#count}`)]);
+  }
+
+  /**
+   * Wait one period, advance, and wait again.
+   *
+   * No `await` anywhere: this is reached from a synchronous `main`, and Zena
+   * lets a synchronous function call an asynchronous one — what it cannot do is
+   * await the result. The continuation runs because the entry's lift is async,
+   * so its task reports WAIT while a sleep is outstanding and the host re-enters
+   * to deliver it.
+   *
+   * `refresh` is what makes an advance one hole rather than a rebuild: the
+   * template has not changed, so the only thing that crosses is the digits.
+   * Before the page has placed this counter it is a no-op, which is why the
+   * first period may elapse unseen and the second shows `1` all the same.
+   */
+  #run(): void {
+    sleep(this.#period).then(() => {
+      this.#count += 1;
+      this.refresh();
+      this.#run();
+    });
+  }
+}
+
+/**
+ * The page's template: its own box, and one slot for the counters.
+ *
+ * The slot is not a box. Its content lays out in the page's row, so the two
+ * counters sit side by side with the row's gap between them rather than stacked
+ * inside a wrapper.
+ */
+let pageTemplate = new Template(
+  [
+    new NodeDef(pageLayout, new AppearanceFill(pageStyle), 1 as u32, 1 as u32, false),
+    new NodeDef(contentLayout, new AppearanceNothing(), 0 as u32, 0 as u32, true),
+  ],
+  [],
+);
+
+/**
+ * The page the counters sit in: content and no state of its own, which is the
+ * common case — most widgets are structure.
+ */
+class Page extends Widget {
+  /**
+   * The counters, built with the page and held rather than made fresh by each
+   * `build` call. A widget's identity is what its state hangs off: two new
+   * `Counter`s per render would be two counters that had never counted.
+   */
+  #counters: Array<Widget> =[
+    new Counter(milliseconds(500)),
+    new Counter(milliseconds(1500))
+  ];
+
+  build(): Rendering {
+    return holds(pageTemplate, [this.#counters]);
+  }
+}
+
+/**
+ * The component's entry: build the widget tree and show it.
+ *
+ * Synchronous, though the world declares `main: async func()`. Each counter
+ * leaves a sleep outstanding, so the entry's task reports WAIT instead of
+ * finishing, and the host keeps re-entering for as long as the counters are
+ * counting — the same rule that ends a program when nothing is left.
+ */
+export function main(): void {
+  runApp(new Page());
+}

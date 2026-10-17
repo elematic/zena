@@ -8,7 +8,7 @@
 //! `docs/design/zenafx-ui.md`.
 
 use std::num::NonZeroU32;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use anyhow::{Context as _, Result};
@@ -35,11 +35,11 @@ pub trait Scene {
     /// The runs this scene's display list refers to.
     ///
     /// A scene owns its text engine: the ids in a `Glyphs` command mean
-    /// nothing without the engine that minted them, and for a guest scene
-    /// the engine lives inside the component's store.
-    fn text(&self) -> &TextEngine;
-
-    fn text_mut(&mut self) -> &mut TextEngine;
+    /// nothing without the engine that minted them. It is shared rather
+    /// than borrowed because a guest scene's engine is also written from
+    /// inside the component's store, whose task holds the store for as
+    /// long as it is parked.
+    fn text(&self) -> Arc<Mutex<TextEngine>>;
 
     /// What to clear to before drawing.
     fn background(&self) -> Color {
@@ -152,7 +152,7 @@ impl ApplicationHandler for App {
             }
         };
         let size = window.inner_size();
-        self.scene.text_mut().set_scale(window.scale_factor() as f32);
+        self.scene.text().lock().unwrap().set_scale(window.scale_factor() as f32);
         self.window = Some(Live {
             window: window.clone(),
             surface,
@@ -176,7 +176,11 @@ impl ApplicationHandler for App {
             WindowEvent::CloseRequested => event_loop.exit(),
 
             WindowEvent::Resized(_) | WindowEvent::ScaleFactorChanged { .. } => {
-                self.scene.text_mut().set_scale(live.window.scale_factor() as f32);
+                self.scene
+                    .text()
+                    .lock()
+                    .unwrap()
+                    .set_scale(live.window.scale_factor() as f32);
                 live.window.request_redraw();
             }
 
@@ -238,7 +242,11 @@ impl ApplicationHandler for App {
 
                 live.painter.resize(size.width as u16, size.height as u16);
                 live.painter
-                    .draw(&commands, self.scene.background(), self.scene.text());
+                    .draw(
+                        &commands,
+                        self.scene.background(),
+                        &self.scene.text().lock().unwrap(),
+                    );
 
                 if let Err(e) = live.surface.resize(w, h) {
                     log::error!("could not resize the surface: {e}");
