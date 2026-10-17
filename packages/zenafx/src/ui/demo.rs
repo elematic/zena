@@ -11,21 +11,22 @@
 //! What it does establish is that the four host primitives compose, which is
 //! the part the component cannot tell us.
 
+use std::sync::{Arc, Mutex};
 use super::layout::solve;
 use super::surface::Scene;
 use super::text::TextEngine;
 use super::types::{
-    Align, Axis, BoxLook, Color, Command, Content, Edges, Flex, FrameEvent, Glyphs, Length, Node,
-    Quad, Size, TextLook,
+    Align, Axis, BoxStyle, Color, Command, Content, Edges, Flex, FrameEvent, Glyphs, Length, Node,
+    Quad, Size, TextStyle,
 };
 
-/// A flat scene: layout nodes in pre-order, with a look for each.
+/// A flat scene: layout nodes in pre-order, with a style for each.
 ///
 /// Parallel arrays rather than a tree of structs, because that is the shape
 /// `zenafx:host/layout` takes and the shape the paint walk wants back.
 pub struct FlatScene {
     pub nodes: Vec<Node>,
-    pub looks: Vec<Option<BoxLook>>,
+    pub styles: Vec<Option<BoxStyle>>,
 }
 
 impl FlatScene {
@@ -34,13 +35,13 @@ impl FlatScene {
         let rects = solve(&self.nodes, available, text);
         let mut commands = Vec::with_capacity(rects.len());
         for (i, rect) in rects.iter().enumerate() {
-            if let Some(look) = self.looks.get(i).copied().flatten() {
+            if let Some(style) = self.styles.get(i).copied().flatten() {
                 commands.push(Command::Quad(Quad {
                     bounds: *rect,
-                    background: look.background,
-                    border_color: look.border_color,
-                    border_width: look.border_width,
-                    corner_radius: look.corner_radius,
+                    background: style.background,
+                    border_color: style.border_color,
+                    border_width: style.border_width,
+                    corner_radius: style.corner_radius,
                 }));
             }
             if let Content::Text(run) = self.nodes[i].content {
@@ -67,7 +68,7 @@ pub const PAGE: Color = Color::rgb(1.0, 1.0, 1.0);
 pub fn hello(text: &mut TextEngine, message: &str) -> FlatScene {
     let run = text.register_run(
         message,
-        &TextLook {
+        &TextStyle {
             family: "system-ui".to_owned(),
             size: 32.0,
             weight: 500,
@@ -79,7 +80,7 @@ pub fn hello(text: &mut TextEngine, message: &str) -> FlatScene {
     FlatScene {
         nodes: vec![
             Node {
-                style: Flex {
+                layout: Flex {
                     axis: Axis::Column,
                     justify_content: super::types::Justify::Center,
                     align_items: Align::Center,
@@ -92,7 +93,7 @@ pub fn hello(text: &mut TextEngine, message: &str) -> FlatScene {
                 child_count: 1,
             },
             Node {
-                style: Flex {
+                layout: Flex {
                     padding: Edges {
                         top: 24.0,
                         right: 40.0,
@@ -106,15 +107,15 @@ pub fn hello(text: &mut TextEngine, message: &str) -> FlatScene {
                 child_count: 1,
             },
             Node {
-                style: Flex::default(),
+                layout: Flex::default(),
                 content: Content::Text(run),
                 first_child: 0,
                 child_count: 0,
             },
         ],
-        looks: vec![
+        styles: vec![
             None,
-            Some(BoxLook {
+            Some(BoxStyle {
                 background: Some(CARD),
                 border_color: Some(EDGE),
                 border_width: 1.0,
@@ -130,7 +131,7 @@ pub fn hello(text: &mut TextEngine, message: &str) -> FlatScene {
 /// whatever size each frame arrives with.
 pub struct HelloScene {
     message: String,
-    text: TextEngine,
+    text: Arc<Mutex<TextEngine>>,
     scene: Option<FlatScene>,
 }
 
@@ -138,7 +139,7 @@ impl HelloScene {
     pub fn new(message: impl Into<String>) -> Self {
         Self {
             message: message.into(),
-            text: TextEngine::new(),
+            text: Arc::new(Mutex::new(TextEngine::new())),
             scene: None,
         }
     }
@@ -147,23 +148,20 @@ impl HelloScene {
 impl Scene for HelloScene {
     fn frame(&mut self, frame: FrameEvent) -> Vec<Command> {
         let message = self.message.clone();
-        let text = &mut self.text;
-        let scene = self.scene.get_or_insert_with(|| hello(text, &message));
+        let engine = self.text.clone();
+        let mut text = engine.lock().unwrap();
+        let scene = self.scene.get_or_insert_with(|| hello(&mut text, &message));
         scene.display_list(
             Size {
                 width: frame.width as f32,
                 height: frame.height as f32,
             },
-            text,
+            &mut text,
         )
     }
 
-    fn text(&self) -> &TextEngine {
-        &self.text
-    }
-
-    fn text_mut(&mut self) -> &mut TextEngine {
-        &mut self.text
+    fn text(&self) -> Arc<Mutex<TextEngine>> {
+        self.text.clone()
     }
 
     fn background(&self) -> Color {

@@ -2,16 +2,21 @@
 
 ## Status
 
-- **Status**: Proposed, and partly built. `zfx --app` loads a tree of Zena
-  components, binds their `zenafx:host` imports and shows the window they
-  draw. Text, flexbox layout, painting and the window are real ([Host primitives](#host-primitives)); so are
-  child components and slot projection ([Children and slots](#children-and-slots)), with each child's layout
-  queried and each child's drawing clipped by the host. What is not built is
-  [The scene interface](#the-scene-interface) — there is no runtime component, so no `zenafx:ui/scene`, no viewport
-  resource and no scene graph — and the host calls the root once a frame
-  rather than the root driving the frame as [The root drives the frame](#the-root-drives-the-frame) has it. Input, navigation
-  and assets do not exist.
-- **Date**: 2026-09-25
+- **Status**: Proposed, and partly built. `zfx --app` loads a Zena component,
+  binds its `zenafx:host` imports and shows the window it draws. Text, flexbox
+  layout, painting and the window are real ([Host primitives](#host-primitives)),
+  and so is the retained tree: templates, holes, slots and one box per widget,
+  driven by `examples/zenafx/counter/` and `examples/zenafx/widgets/`.
+  [Implementation status of the protocol](#implementation-status-of-the-protocol)
+  says which parts of [The scene protocol](#the-scene-protocol) are built.
+  [The scene interface](#the-scene-interface) is not: there is no runtime
+  component, so no `zenafx:ui/scene` and no viewport resource, and the host calls
+  the root once a frame rather than the root driving the frame as
+  [The root drives the frame](#the-root-drives-the-frame) has it. Input, events,
+  context, styling, navigation and assets do not exist. The authoring surface in
+  [zenafx-widget-authoring.md](./zenafx-widget-authoring.md) does not exist, so a
+  widget is written by hand against the protocol.
+- **Date**: 2026-10-02
 - **Scope**: a retained-mode UI system whose applications are trees of
   WebAssembly components linked at run time; which parts of it are written in
   Zena and which stay in Rust; the WIT interface at each seam; and the path to
@@ -58,17 +63,15 @@
     - [Paint](#paint)
     - [Surface, frames and demand-driven redraw](#surface-frames-and-demand-driven-redraw)
     - [`zenafx:host` in WIT](#zenafxhost-in-wit)
-  - [Widgets, templates and updates](#widgets-templates-and-updates)
-    - [Widgets, templates and bindings](#widgets-templates-and-bindings)
-      - [What identifies a property](#what-identifies-a-property)
-      - [What a frame costs](#what-a-frame-costs)
-      - [The first render](#the-first-render)
-    - [Children and slots](#children-and-slots)
-      - [How a slot gets a size](#how-a-slot-gets-a-size)
-      - [What a child may draw](#what-a-child-may-draw)
-      - [What is missing](#what-is-missing)
-    - [The retained scene](#the-retained-scene)
-    - [What the widget prototype found](#what-the-widget-prototype-found)
+  - [The scene protocol](#the-scene-protocol)
+    - [Reasons for a retained tree](#reasons-for-a-retained-tree)
+    - [Templates, nodes and holes](#templates-nodes-and-holes)
+    - [One box per widget](#one-box-per-widget)
+    - [Interior and content](#interior-and-content)
+    - [Choice](#choice)
+    - [Identity and host state](#identity-and-host-state)
+    - [Batching and the frame](#batching-and-the-frame)
+    - [Implementation status of the protocol](#implementation-status-of-the-protocol)
     - [Moving the component boundary](#moving-the-component-boundary)
   - [Scheduling](#scheduling)
   - [Reactive state](#reactive-state)
@@ -79,7 +82,6 @@
     - [What the compiler still has to build](#what-the-compiler-still-has-to-build)
   - [Milestones](#milestones)
     - [Milestone 1: text centred in a window](#milestone-1-text-centred-in-a-window)
-      - [What exists, and how it is reduced](#what-exists-and-how-it-is-reduced)
     - [Later milestones](#later-milestones)
   - [Repository layout](#repository-layout)
   - [Prior implementations](#prior-implementations)
@@ -130,7 +132,8 @@ rule that produced that split and what it costs.
   [Component Model][component-model]. It never means a UI widget.
 - **Widget** is the unit of UI: private state, a template, and an update
   function. A widget may be a component of its own or one of many inside a
-  component, and [Children and slots](#children-and-slots) is about why that choice is free.
+  component, and [Moving the component boundary](#moving-the-component-boundary) is
+  about why that choice is free.
 - **Viewport** is the region a widget paints into and the authority to do so.
   Fuchsia calls the child's end of the same link a _view_; this document uses
   "viewport" for both ends and reserves "view" for quoting Flatland.
@@ -236,7 +239,7 @@ boundaries have to stay cheap.
 changed rather than its tree. A widget whose re-render changes three bindings
 sends three operations in one `apply` call, and building a subtree of N nodes
 also costs one `apply` call rather than N calls. [Feed-forward mutation](#feed-forward-mutation) covers the batch
-operation and [Widgets, templates and updates](#widgets-templates-and-updates) covers where the three values come from.
+operation and [The scene protocol](#the-scene-protocol) covers where the three values come from.
 
 **Runtime component to host.** Per frame the runtime makes one `solve` call
 per dirty subtree and one `present` call. `solve` is proportional to the dirty
@@ -557,7 +560,7 @@ interface style {
   /// Non-premultiplied sRGB; each channel runs 0..1.
   record color { r: f32, g: f32, b: f32, a: f32 }
 
-  record box-look {
+  record box-style {
     background: option<color>,
     border-color: option<color>,
     border-width: f32,
@@ -565,7 +568,7 @@ interface style {
     opacity: f32,
   }
 
-  record text-look {
+  record text-style {
     family: string,
     size: f32,
     weight: u16,
@@ -582,7 +585,7 @@ interface style {
   record edges { top: f32, right: f32, bottom: f32, left: f32 }
 
   /// Geometry only. Nothing here affects painting, and nothing in
-  /// `box-look` or `text-look` affects measurement.
+  /// `box-style` or `text-style` affects measurement.
   record flex {
     axis: axis,
     justify-content: justify,
@@ -598,18 +601,18 @@ interface style {
 
 interface scene {
   use geometry.{rect};
-  use style.{box-look, text-look, flex, color, length};
+  use style.{box-style, text-style, flex, color, length};
 
   /// A node within one viewport, named by whoever holds that viewport.
   /// Node 0 is the viewport's own root and already exists. An id means
   /// nothing outside the viewport it is used with.
   type node = u32;
 
-  record box-op { id: node, parent: node, layout: flex, look: box-look }
+  record box-op { id: node, parent: node, layout: flex, style: box-style }
   record text-op { id: node, parent: node, content: string, layout: flex,
-                   look: text-look }
+                   style: text-style }
   record layout-op { target: node, layout: flex }
-  record look-op { target: node, look: box-look }
+  record style-op { target: node, style: box-style }
   record content-op { target: node, content: string }
 
   /// A value that inherits down the tree ([Context](#context-values-that-inherit-down-the-tree)). The set is closed on
@@ -631,7 +634,7 @@ interface scene {
     make-box(box-op),
     make-text(text-op),
     set-layout(layout-op),
-    set-look(look-op),
+    set-style(style-op),
     set-content(content-op),
     provide(provide-op),
     /// Removes the node and its descendants, and frees the ids.
@@ -688,7 +691,7 @@ interface session {
 }
 ```
 
-`flex` describes geometry and `box-look` describes appearance, with no field
+`flex` describes geometry and `box-style` describes appearance, with no field
 in either affecting the other. That separation is what lets the runtime skip a
 layout solve when only colours changed, and skip re-measuring text when only a
 parent's background changed.
@@ -959,7 +962,7 @@ Two consequences for the rest of this document. A leaf is measured four or
 more times per frame, so measurement must be cheap and side-effect free —
 which is why a run is registered once and referred to by id ([Text](#text)), and why
 `measure_run` re-breaks only when the width it is asked about differs from the
-one it holds. And when a leaf is a child _component_ ([The retained scene](#the-retained-scene)), those four
+one it holds. And when a leaf is a child _component_ ([The scene protocol](#the-scene-protocol)), those four
 questions are four calls into that component.
 
 The tree is passed flat, in pre-order, with each node naming the index of its
@@ -982,7 +985,7 @@ tractable. The first milestones use `taffy` in the host; [Tiers beyond boxes and
 ### Text
 
 Text is registered, not passed per frame. `register-run` shapes a string under
-a `text-look` and returns an id; the id then stands for the shaped run through
+a `text-style` and returns an id; the id then stands for the shaped run through
 measurement, painting and hit testing until `release-run`. A widget that changes
 a label calls `update-run`, which reshapes in place and keeps the id.
 
@@ -1027,14 +1030,14 @@ package present in `deps/`.
 package zenafx:host@0.1.0;
 
 interface text {
-  use zenafx:ui/style@0.1.0.{text-look};
+  use zenafx:ui/style@0.1.0.{text-style};
 
   record measured { width: f32, height: f32, baseline: f32 }
 
-  /// Shape `content` under `look` and keep it. The id is valid until
+  /// Shape `content` under `style` and keep it. The id is valid until
   /// `release-run`.
-  register-run: func(content: string, look: text-look) -> u32;
-  update-run: func(run: u32, content: string, look: text-look);
+  register-run: func(content: string, style: text-style) -> u32;
+  update-run: func(run: u32, content: string, style: text-style);
   release-run: func(run: u32);
 
   /// Shape at a width. `none` asks for the unconstrained size.
@@ -1125,351 +1128,264 @@ in both directions in
 [gfx-provider.zena](../../packages/zena-compiler/test-files/component/gfx-provider.zena)
 and its consumer, so the event streams need no new compiler work.
 
-## Widgets, templates and updates
+## The scene protocol
 
-### Widgets, templates and bindings
+The host holds the tree. A component describes what it draws once, and afterwards
+sends only the values that changed. `zenafx:host/scene` is that interface.
 
-A widget owns its **interior** — the nodes it declares — and not its children.
-The interior is declared once as a **template**, and after that only the values
-in it change.
+Nothing in it names a signal, a closure, a component or a widget. A framework of
+any shape has to be able to target it, and the test applied throughout is whether
+a framework that re-renders, such as lit or React in any language, can drive this
+protocol as well as one built on fine-grained subscriptions. Both write holes.
+They differ in how many they write and when.
 
-A template is a flat list of nodes. Each node has a kind, children by index, and
-the properties that node sets; a property is either **given** a value in the
-template or marked **bound**, meaning it arrives later. A bound property is a
-binding, and a binding is identified by its position in template order — nothing
-on the wire names it.
+### Reasons for a retained tree
 
-```wit
-/// A property's value in a template.
-variant slot {
-  given(value),
-  /// Supplied by the next binding, in template order.
-  bound,
-}
+Sending a display list or a node tree every frame puts the whole picture through
+the canonical ABI every frame, and the ABI copies every value. A tree of a few
+hundred nodes at 120Hz is a large copy, repeated. Holding the tree in the host
+moves that cost to the first frame, and later frames carry the changed values
+only.
 
-record template-node {
-  /// A built-in kind, or a widget type the component declares.
-  kind: kind,
-  /// Only the properties this node sets; the rest take the kind's defaults.
-  props: list<prop>,
-  /// Indices into the template's own `nodes`, contiguous and after this one.
-  /// WIT has no recursive types, so a tree is a flat list plus indices — the
-  /// same shape `node` uses. A compiler emits it from a nested node block.
-  first-child: u32,
-  child-count: u32,
-  /// If content is projected here, its position in this widget's slot order.
-  /// Any children are then the fallback, shown when nothing is assigned.
-  slot: option<u32>,
-}
+Layout is the second reason, and it was measured. A solve needs the size of a text
+run, and the run belongs to whoever owns the text. An earlier implementation gave
+every widget its own component and asked each one to measure itself. One frame of
+a card containing a label cost:
 
-record template {
-  /// Chosen by the component, like a node id.
-  id: u32,
-  nodes: list<template-node>,
-  /// So arity can be checked without walking.
-  binding-count: u32,
-}
-```
+|                           | `solve` calls | cross-component `measure` calls |
+| ------------------------- | ------------- | ------------------------------- |
+| one component per widget  | 6             | 54                              |
+| retained tree in the host | 0             | 0                               |
 
-Registration and instantiation are ops, so they batch and keep
-[Feed-forward mutation](#feed-forward-mutation)'s property of returning nothing:
+Taffy queries a text leaf four or more times per solve, every component boundary
+turns each of those into a call, and each embedded component then solves its own
+subtree. With the tree in the host the same question needs no call, because the
+host already holds the text. `solve` reaches zero as well, because the component
+describes a tree and the host solves it.
 
-```wit
-variant op {
-  /// Once per template per program.
-  register-template(template),
-  /// Stamp out a template, supplying one value per binding in order. The
-  /// instance's nodes occupy a contiguous range from `base`, so node
-  /// `base + i` is template node `i`, and `base` is the instance's identity.
-  instantiate(tuple<node, u32, list<value>>),      // base, template id, values
-  /// Write one binding of one instance. No node and no property name: the
-  /// template already said where binding `i` goes.
-  set-binding(tuple<node, u32, value>),            // base, binding index, value
-  /// Project content into a child's slot. The caller names the child and the
-  /// slot, never the child's slot node, which it has no id for.
-  assign-content(tuple<node, u32, list<node>>),    // child, slot index, content
-  // … the ops [Feed-forward mutation](#feed-forward-mutation) defines
-}
-```
+A resize costs nothing in the guest for the same reason.
+`resizing_never_re_enters_the_component` resizes four times and asserts the entry
+count stays at one; `the_entry_is_called_once` asserts the same for a component
+that is still running work.
 
-#### What identifies a property
+One component per widget is a shape nobody would deploy, so those numbers answer a
+narrower question than they look. What they support is putting a component
+boundary where isolation is wanted and nowhere else. Widgets that trust each other
+compose in the language, inside one component, and
+[Moving the component boundary](#moving-the-component-boundary) is why that choice
+is free.
 
-A binding's _target_ is named once, in the template, and never again. That is
-what keeps the update path narrow and it is also what keeps it typed.
+### Templates, nodes and holes
 
-For a built-in kind the property is a named field in this package's WIT, because
-the host interprets it — taffy needs the flex values and the rasterizer needs the
-fills. For a widget kind the property is named in the template too, as the
-identifier the widget's own interface declares. Either way the name crosses once,
-at registration, and an update carries a `u32` position.
+A **node** is an entry in the retained tree: a layout box with an appearance,
+which is `nothing`, `fill` or `text`. Appearance travels with geometry, so the
+host paints the tree it solved. No component builds a display list, and none
+handles a shaped text run.
 
-So the host receives `(base, 2, value)`, looks up what that template declared
-binding 2 to be, and either applies it to a node it owns or calls the widget that
-owns the node. A parent never learns another widget's property numbering, because
-there isn't one.
+A **template** is a flat list of node descriptions plus a list of holes. The list
+is flat because WIT value types cannot recurse. `first-child` and `child-count`
+index that same list, in breadth-first order, which keeps a node's children
+contiguous and after it.
 
-#### What a frame costs
-
-The diff is the guest's. A widget re-evaluates its binding expressions, compares
-each against the value its instance holds, and emits `set-binding` only for the
-ones that changed. A parent that hands a child the value it already had makes no
-op and no call.
-
-Ops then accumulate and take effect at the frame, so setting a binding twice
-before a frame costs one solve and the intermediate value is never drawn. Reads
-go the other way: `bounds` reports the previous pass, and there is no way to ask
-for a synchronous solve, which makes layout thrashing unexpressible rather than
-merely discouraged.
-
-One `apply` is both the batch and the atomic unit. Ops in one call cannot be
-split by a frame; ops in two calls can.
-
-#### The first render
-
-A widget's first render sends the templates it has not sent yet, and a tree of
-template results — each a template id and its binding values. Widgets in the same
-component are collected into that one tree, because reaching them is an ordinary
-in-language call. The tree stops at a component boundary: a child component
-registers its own templates and sends its own result, and the parent's tree holds
-an anchor where the child's root attaches.
-
-Children assembled into one tree still own their own bindings afterwards. The
-shared send is for structure, once; every later change is the owning widget's own
-`set-binding`.
-
-### Children and slots
-
-A widget declares a slot in its interior and the host projects content into it.
-The widget that declares the slot never receives, names, reads or holds what
-fills it; the widget that supplies the content never names the slot node, because
-that node is inside an instance it did not create.
-
-That is shadow DOM's arrangement, where the outer author declares children of the
-host element and the browser flattens them into the `<slot>`, and it is the only
-arrangement the ownership rule permits: neither side has an id for the other's
-nodes, so the host — which holds both trees — is what matches them.
-
-`assign-content` therefore names a child and a slot **index**. Slots are numbered
-in the order a template declares them, and a caller pairs its own property names
-against that order at compile time, so no slot name reaches the protocol and
-nothing can be misspelled. A slot node's own template children are its fallback,
-shown when nothing is assigned.
-
-None of this is built. A string-named variant of it was, and
-[Prior implementations](#prior-implementations) records what that cost.
-
-#### How a slot gets a size
-
-The question a slot raises is where its size comes from, when the content belongs
-to someone else. The answer falls out of
-[Layout](#layout-with-measurement-inside-the-solve): **the host owns the solve**,
-and the host holds both trees, so it needs to ask nobody. Projected content is
-already in the tree being solved, as a subtree hanging under the slot node, and
-the solve walks into it like any other child.
-
-That is the difference the retained scene makes. The removed implementation had
-to call the filling component's `measure` export to size a slot, and
-[What the widget prototype found](#what-the-widget-prototype-found) measured the
-result: 54 cross-component `measure` calls per frame for a card containing a
-label. With a retained tree the same question costs nothing, because no call is
-needed to answer it.
-
-#### What a child may draw
-
-A slot's subtree is clipped to the box the _declaring_ widget's layout chose, so
-content cannot paint outside what it was given, and it draws in its own
-coordinates without being told where it ended up. That is the compositor half of
-[Capabilities and isolation](#capabilities-and-isolation).
-
-#### What is missing
-
-Several slots of the same index, reassigning a filled slot, and ordering between
-content from different sources are all unspecified. Input routing is the larger
-gap: a container hears from its children by registering on its own slot node,
-which needs the dispatch in
-[Events](#events-input-and-what-a-widget-reports) and does not exist yet.
-
-### The retained scene
-
-`zenafx:host/scene` is the tree the host holds. A component installs one
-through `install(parent, nodes)` and gets back a node id; a frame after that
-is a solve and a paint over what the host already has, with no call into any
-component. `replace(target, nodes)` swaps a subtree, and `invalidate()` asks
-for a frame.
-
-A node carries its appearance as well as its geometry — `nothing`, `fill` or
-`text` — so the host paints the same tree it solved. Nothing builds a display
-list, and nothing handles a shaped run: the host shapes a text node when it
-is installed and releases it when the node is replaced.
-
-**Resizing is free, and that is the point.** The component is entered once,
-at load, to ask what it draws. Every frame after that, at any size, is
-host-side. `resizing_never_re_enters_the_component` resizes four times and
-asserts the entry count stays at one. Layout still changes — the same nodes solve
-differently at a different size, which is what declarative layout is for.
-
-**A widget does not receive its children.** It puts a `slot` in the tree it
-builds, and the framework places them there. A container decides where its
-children go and how much room they get, and has no reference to them: it
-cannot read them, call them, or keep them across a rebuild. That is the
-property worth having when the container and the content come from
-components that do not trust each other, and it is why the in-component
-design keeps slots rather than passing a child into a constructor — which is
-what the first prototype did, and what made `Card` hold a `Widget`.
-
-The shape is shadow DOM's and React's: the content is declared where it is
-used, the container declares where it goes, and neither names the other.
-
-```zena
-card('Card widget — container', [
-  label('This is a child widget inside of a slot', bodyLook),
-])
-```
-
-**Options are a record with every field optional.** A box names the two or
-three things it cares about and takes the rest — a column, packed to the
-start, sized by its content, drawing nothing — from the defaults:
-
-```zena
-box({look: cardLook, align: Align.Stretch, gap: 10.0, padding: cardPadding}, [
-  text(this.#title, headingLook),
-  slot({look: wellLook, padding: wellPadding}),
-])
-```
-
-That needs presence-optional record fields, which landed in August, and `??`
-reads one: `opts.axis ?? Axis.Column`, where the default is any expression
-and is evaluated only on absence. Nine of those are the whole of `flexOf`.
-
-Presence is real rather than a sentinel, which matters for the numeric
-fields: `{gap: 0.0}` reads `0.0` and not the default. A default in a
-_destructuring pattern_ is the thing that is still limited to a literal —
-`let {axis = Axis.Column} = opts` fails with "Variable 'Axis' not found" —
-but nothing here needs one.
-
-**Whole-subtree replacement is the only update, and the grain is the
-widget.** A widget that changes rebuilds itself and replaces its subtree,
-which discards and re-shapes everything under it. That is coarse, and it is
-where Flutter sat before stateful widgets. Finer updates are an optimisation
-over this — the host can diff a replacement against what it held — rather
-than a different design, and nothing in the interface has to change for that
-to arrive later.
-
-A widget keeps nothing. Replacement needs the id of the subtree being
-replaced, but that is the framework's bookkeeping rather than the widget's:
-a widget is a description of a tree, and a description that also holds a
-node id is no longer one. Putting appearance in the tree and mounting in the
-host is what leaves it with nothing: there is no shaped run to hold, no node of
-its own to reference, and nothing to do at mount time.
-
-Untested: the guest-side `update()` path. `replace` has host-side tests, but
-nothing triggers a state change yet because no input reaches a component.
-
-### What the widget prototype found
-
-`examples/zenafx/widgets/` is one component holding three widget classes,
-composed in the language. The same picture was also built across three
-components, one per widget, and the comparison below is what came of running
-both. `zenafx:host/app` is how the host reaches the surviving one, and it is one
-function:
+A **hole** is one property of one template node that a value arrives at later. The
+template says which node and which property, so a hole on the wire is an index
+into the template's hole list and carries no name.
 
 ```wit
-start: func() -> list<node>;
+enum binding-target { content, style, layout, active }
+
+record binding { node: u32, target: binding-target }
+record hole { binding: u32, value: binding-value }
+
+record template-def {
+  id: template-id,
+  nodes: list<node-def>,
+  bindings: list<binding>,
+}
+variant template-ref { known(template-id), fresh(template-def) }
+
+resource node {
+  render: func(template: template-ref, holes: list<hole>);
+  content: func(slot: u32, nodes: u32) -> list<own<node>>;
+}
+
+root: func() -> own<node>;
+ready: func();
 ```
 
-**A widget never mounts itself.** The component builds its root widget and
-returns the tree that widget describes; the host installs it. There is no
-`mount`, because a widget that mounts itself has to know it was mounted, and
-then it is not just a description any more. `Root` is a class with one
-method, `build`, and no fields:
+`render` creates, patches and replaces. The host compares the template it is given
+against what the node already shows. Nothing there yet: build the template and
+fill every hole. The same template: write the holes it was given and leave the
+rest, including whatever hangs in the node's slots. A different template: drop
+what was there and build the new one. Template identity is what decides, and the
+guest never states which case it meant. lit-html resolves patch against replace
+the same way; the alternative is two operations whose difference the caller has to
+get right.
 
-```zena
-export function start(): GrowableArray<Node> {
-  return layoutTree(new Root());
+Holes are sparse. A guest sends the ones whose values changed and says nothing
+about the others.
+
+A `template-ref` is `fresh(def)` the first time a template is used and `known(id)`
+afterwards, so a definition travels with the first render that needs it and
+nothing is registered up front. The guest tracks what it has sent; the host's
+table lives and dies with the component instance. A component with a dozen
+templates and one on screen has sent one.
+
+`ready` says the tree is worth drawing. The host waits for it rather than for the
+entry to return, because a component that keeps working never returns — see
+[Scheduling](#scheduling).
+
+### One box per widget
+
+Node 0 of a template describes the node being rendered into, which is the box CSS
+would reach with `:host`. Nodes 1 and up are its interior and hang beneath it. A
+widget therefore occupies exactly one box in the tree.
+
+A slot contributes no geometry. `<slot>` in shadow DOM defaults to
+`display: contents`, and a ZenaFX slot behaves the same way: layout splices what
+hangs in a slot into whatever contains the slot, so a parent's row lays out its
+children's own boxes. To give content a panel, put the slot inside a box and style
+that box.
+
+`content_hangs_in_the_slot_its_parent_declared` renders two children into one slot
+of a row and asserts they sit side by side rather than stacked, which holds only
+when the slot is spliced out. Taffy has no `display: contents` and needs none: the
+host builds the flat list it hands taffy, so leaving a node out of that list is the
+whole implementation.
+
+### Interior and content
+
+A widget's **interior** is what its own template describes. Its **content** is
+what its parent put in it. The two never mix: a widget authors its interior, is
+handed its content, and can name a node in neither of the other's.
+
+`content(slot, nodes)` gives a parent one node per child to render into. It makes
+the slot exactly `nodes` long: growing creates empty nodes, shrinking drops the
+ones past the end along with everything beneath them, and the nodes that stay keep
+their identity and their subtrees. `shrinking_a_slot_drops_what_is_past_the_end`
+holds the kept node's identity and counts the arena.
+
+Slots are numbered in the order a template declares them. A caller pairs its own
+property names against that order at compile time, so no slot name reaches the
+protocol.
+
+A parent reaches only its own slots. It is handed a node per child and can read
+nothing the child renders there. Shadow DOM uses the same arrangement, and it is
+the only one the ownership rule permits: neither side has an id for the other's
+nodes, and the host holds both.
+
+The solve walks into content like any other subtree, so sizing a slot needs no call
+to whoever filled it. The subtree is clipped to the box the declaring widget's
+layout chose, so content cannot paint outside what it was given, which is the
+compositor half of [Capabilities and isolation](#capabilities-and-isolation).
+
+Dropping a node handle releases the handle and nothing else. A node belongs to
+whoever's interior it sits in, so a child cannot delete a slot its parent declared;
+a node goes away when the interior holding it is rebuilt. The host therefore keeps
+no table for node handles: the scene id is the resource representation, and two
+handles onto one node are sound because the destructor does nothing.
+
+### Choice
+
+Control flow that picks among known alternatives is a node kind, and which
+alternative shows is a hole:
+
+```wit
+variant node-kind {
+  /// Every child shows, in order.
+  box,
+  /// One child shows, named by an `active` hole.
+  choice,
+  /// Content hangs here.
+  slot,
 }
 ```
 
-`start` is entered once, at load, before the first frame — so the entry
-count is one before anything is drawn, not one after the first frame.
+Flipping a branch is then a `u32` write. The host keeps every alternative's nodes,
+so flipping back reshapes no text. This works because a template enumerates the
+shapes a position can take, which is also what lets the host allocate those nodes
+once. SwiftUI reaches the same arrangement through types, where `if` inside a
+`ViewBuilder` produces `_ConditionalContent<A, B>`.
 
-**A widget inside a component needs no measure protocol.** Every widget
-contributes boxes to one tree, the root flattens it, and one `solve` sizes
-everything. Nothing asks a widget how big it is, because the solve already
-knows.
+A shape that cannot be enumerated, such as a tree view over recursive data, uses
+`render` with a different template instead, at the cost of rebuilding that node's
+interior.
 
-**A widget class earns its keep at the second instance.** The demo puts
-three `Card`s on the page, each constructed with its own title and accent
-colour, and one of them holding two labels in its slot. The split that falls
-out is that per-card values — the title, the accent — are instance fields,
-and values every card draws the same way — the fill, the border, the corner
-radius — stay module-level constants.
+One question here is open. While a branch is inactive the values behind its holes
+can change. Writing them anyway spends calls on nodes nobody is looking at;
+suspending an inactive subtree and replaying on activation is correct and requires
+the branch to track what went stale. Solid's `<Show>` and lit's `cache` choose
+differently.
 
-Card _width_ does not test this, because a card is sized by the label in its
-slot rather than by its title: move the title to the module and the three
-cards still come out three widths, sized by three different labels.
-`each_card_instance_draws_its_own_title` measures the three shaped title runs
-instead and asserts they differ. Against a `Card` that reads a module-level
-title, all three measure 31.19px and it fails; the width assertion passes.
+### Identity and host state
 
-**The boundary is expensive, measured.** The same picture, one frame:
+The guest states node identity and the host never infers it. A parent names a slot
+and a child count; a child renders into the node it was handed. Nothing in the
+protocol matches a description against an existing node, so there is no
+reconciliation and nothing needs keys.
 
-|                         | `solve` calls | cross-component `measure` calls |
-| ----------------------- | ------------- | ------------------------------- |
-| three components        | 6             | 54                              |
-| one component, retained | 0             | 0                               |
+Keys are what React, Flutter and Solid use to decide which existing instance a new
+description refers to. Two properties make them unnecessary here. Guest-side
+widget state is reached by ordinary references rather than by position in a
+framework tree, so recreating a node loses no state. And the host holds nothing on
+a node that it could not rebuild: a node carries its layout, its appearance, its
+children and a shaped text run, and the run is a cache.
 
-Zero, not one, because a retained tree does not call `solve` either: the
-component installed a tree and the host solves it.
+The second property has to be maintained deliberately, because a UI eventually
+needs focus, text selection, scroll offsets, animations in flight and media
+playback, and none of those can be rebuilt from a description. The rule is that no
+host-side state lives on a render-tree node. A stateful thing is its own resource,
+and a node points at one:
 
-54 re-entries into a guest, per frame, for a card containing a label. [Layout](#layout-with-measurement-inside-the-solve)
-explains where they come from: a leaf is queried four or more times per
-solve, every component boundary turns each of those into a call, and each
-embedded component then solves its own subtree. It is also two frames rather
-than one, because a spawned child is not instantiated until the frame that
-asked for it ends.
+```wit
+resource text-field { … }   // its string, selection and IME state
+resource scroll-view { … }  // its offset
+resource media { … }        // its decoder
+```
 
-That is not an argument against component boundaries. It is an argument that
-a boundary should be where isolation is wanted and nowhere else, and that
-[Children and slots](#children-and-slots)'s machinery is for the boundary rather than for composition. Widgets
-that trust each other should compose in the language.
+A guest creates a `text-field`, holds the handle for as long as that widget lives,
+and renders a node that shows it. Rebuilding that node, rendering a different
+template, or reordering the list it sits in leaves the field's cursor alone,
+because the cursor was never in the node. Focus becomes a request naming a
+focusable resource, which also gives the host the arbitration it needs: it chooses
+among focusables it was handed, and one component cannot name another's.
 
-**One widget per component was the wrong unit.** The numbers above come from
-making every widget a component, which is a shape nobody would deploy: a
-component that wants isolation still wants many widgets inside it. So the
-measurement answers a question narrower than it looks, and the comparison worth
-having is between two components of the `zenafx:host/app` shape, each holding a
-widget tree. That one has not been run, and the code for the three-component
-version is gone, so the numbers stand as a record rather than something
-reproducible — [Prior implementations](#prior-implementations) says what was
-removed.
+Keys remain available as an optimisation. Recreating a node invalidates the guest
+handles beneath it, so a guest that reorders a long list re-points its bindings and
+re-sends their values. Reordering by key would leave those handles valid. The
+change is additive — `content(slot, nodes)` becomes `content(slot, keys)` with
+positional reconciliation as `keys = 0..n` — so it can wait for a benchmark that
+asks for it.
 
-**Breadth first, not pre-order.** `solve` needs a node's children contiguous
-and after it. Pre-order only manages that when no child except the last has
-children of its own — true of every tree written by hand so far, false in
-general. The WIT said "pre-order" and now says what it means.
+### Batching and the frame
 
-**Compiler gaps the prototype hit.** An interface-typed field initialised
-from a `new` expression in a constructor initialiser list fails with `zir
-unsupported: constructor field type`; taking it as a parameter works, which
-is why the tree is composed in `start` rather than in `Root`'s constructor.
-A `use`d `variant` in an _imported_ interface encodes as a `future` — "type
-mismatch for import `import-type-available`: expected variant, found future".
-A `use` does not bring in what the named type depends on, so an interface
-that uses `node` must also name `look`, `flex`, `axis` and the rest by hand,
-or the build fails with "declares no type 'axis'".
+`render` and `content` return handles, so they are ordinary calls. Hole writes are
+the frame-by-frame traffic and return nothing, so they batch:
 
-And an **exported resource emits an invalid component**: `wasm-tools
-validate` rejects the output with "unknown type 13: type index out of
-bounds", pointing into the instance section that groups the exported
-interface's types, so the encoder counts a type it never defines. The same
-interface with the resource replaced by a plain function — same `use` list,
-same `list<node>` return — validates. That is why `start` returns the tree
-rather than a handle to the root widget.
+```wit
+record write { node: borrow<node>, holes: list<hole> }
+apply: func(writes: list<write>);
+```
 
-A handle would be worth having once input reaches a component and the host
-needs somewhere to send it. Until then it would be a handle nothing holds
-for a call nothing makes, and the thing the host actually wants from a
-component at startup is the picture.
+A guest driven by fine-grained subscriptions would otherwise call once per changed
+value. Marking nodes dirty and flushing one `apply` per frame makes the cost
+proportional to the frame rather than to the number of values changed, which puts
+the frame scheduler inside this design rather than on top of it. Writes in one
+`apply` cannot be split across frames; writes in two calls can.
+
+Reads go the other way and do not batch. Geometry read back reports the previous
+solve, and there is no way to ask for a synchronous one, so layout thrashing cannot
+be expressed.
+
+### Implementation status of the protocol
+
+`render`, `content`, `root` and `ready` are built, with the `node` resource and
+one-box-per-widget. `examples/zenafx/counter/` and `examples/zenafx/widgets/`
+drive them.
+
+`active` and the `choice` node kind, `apply`, keyed `content`, and the state
+resources are designed and not built. A guest today writes a hole with
+`render(known(id), holes)`, which is what `apply` batches.
 
 ### Moving the component boundary
 
@@ -1625,9 +1541,13 @@ value each consumer imports.
 
 ## Reactive state
 
-Shared state inside one component is a Zena-level signal: a typed value with
-a set of dependent widgets, invalidating them on change. It needs no WIT and no
-host support, and it stays typed.
+State inside one component is a Zena-level signal: a typed cell with the holes
+that read it. Writing one marks those holes dirty, and the frame flush sends them.
+Signals need no WIT and no host support, because a hole is already addressable
+from the guest — see [Batching and the frame](#batching-and-the-frame) — and they
+are what makes the guest side of
+[widget authoring](zenafx-widget-authoring.md) work without re-running a build
+function.
 
 Shared state across components is a typed interface the owning component
 exports — a `stream<T>` of a record, or a function returning the current value
@@ -1896,8 +1816,11 @@ described under the list.
    in milestone 4.
 7. **Runtime component.** `packages/zenafx-ui/zena/`: the node arena, the
    dirty set, the id table keyed by viewport, `flush` calling `solve` then
-   `present`, and the paint walk. Compiled against `world runtime`.
-8. ~~**The application.**~~ `examples/zenafx/widgets/` and its world.
+   `present`, and the paint walk. Compiled against `world runtime`. The host
+   holds the tree instead today, behind `zenafx:host/scene`, which
+   [Alternatives considered](#alternatives-considered) covers.
+8. ~~**The application.**~~ `examples/zenafx/widgets/` and
+   `examples/zenafx/counter/`, with their worlds.
 9. **Build wiring.** Two separate mechanisms have to be set up, and confusing
    them is the likely first stumble. A Zena `import {...} from
 'zenafx:ui/scene'` resolves through a **package manifest** entry, which is
@@ -1948,97 +1871,34 @@ world app {
 }
 ```
 
-And the application itself. The spellings follow the WIT-typed module
-conventions the compiler already uses: a `record` becomes a case class, a
-`variant` a sealed class whose cases are named for the variant and the case
-together, and an `option<T>` becomes `Option<T>` with `some`/`none` from
-`zena:core` — as in
+The application is written against [The scene protocol](#the-scene-protocol).
+`examples/zenafx/widgets/` is the one that centres text in a window;
+`examples/zenafx/counter/` adds a value that changes over time. The spellings
+follow the WIT-typed module conventions the compiler already uses: a `record`
+becomes a case class, a `variant` a sealed class whose cases are named for the
+variant and the case together, and an `option<T>` becomes `Option<T>` with
+`some`/`none` from `zena:core` — as in
 [geo-wit.zena](../../packages/zena-compiler/test-files/component/geo-wit.zena).
+A WIT `resource` becomes a `final class` implementing `Disposable`, which is how
+`node` reaches Zena.
 
-```zena
-// examples/zenafx/hello.zena — world: demo:hello/app
-import {Viewport, BoxOp, TextOp, OpMakeBox, OpMakeText, flush}
-    from 'zenafx:ui/scene';
-import {Flex, BoxLook, TextLook, Color, Edges, Axis, Justify, Align,
-    LengthAuto, LengthPercent} from 'zenafx:ui/style';
-import {frames, FrameEvent} from 'zenafx:host/surface';
-import {Future} from 'zena:async';
-import {Some, some, none} from 'zena:core';
+Milestone 1 is done: `zfx --app packages/zenafx/out/widgets.wasm` shows the
+window and re-centres on resize, which puts the layout solve, the measure
+callback and the demand-driven redraw all on the path. `tests/app.rs` asserts
+the component's geometry against the same numbers `ui::demo`'s tests assert, so
+the Rust-only scene and the component-driven one are known to agree.
 
-/** Node ids are ours to choose. 0 is the viewport's root. */
-let PAGE = 1 as u32;
-let LABEL = 2 as u32;
+Two things in milestone 1 remain as the design has them rather than as the code
+has them, both waiting on a second component:
 
-let noPadding = new Edges(0.0, 0.0, 0.0, 0.0);
-let paper = new Color(0.99, 0.99, 0.98, 1.0);
-let ink = new Color(0.10, 0.10, 0.12, 1.0);
-
-/** A column that fills its parent and centres its one child. */
-let centred = new Flex(Axis.Column, Justify.Center, Align.Center, 0.0,
-    noPadding, new LengthPercent(100.0), new LengthPercent(100.0), 1.0, 1.0);
-/** A node sized by its own content. */
-let intrinsic = new Flex(Axis.Row, Justify.Start, Align.Start, 0.0,
-    noPadding, new LengthAuto(), new LengthAuto(), 0.0, 0.0);
-
-export async function main(widget: Viewport): Future<void> {
-  // The whole tree in one feed-forward batch: no ids come back, because
-  // we named them.
-  widget.apply([
-    new OpMakeBox(new BoxOp(PAGE, 0 as u32, centred,
-        new BoxLook(some(paper), none, 0.0, 0.0, 1.0))),
-    new OpMakeText(new TextOp(LABEL, PAGE, 'Hello, world', intrinsic,
-        new TextLook('system-ui', 48.0, 400 as u16, false, ink))),
-  ]);
-  widget.invalidate();
-
-  let tick = frames();
-  var open = true;
-  while (open) {
-    let event = await tick.readOne();
-    if (event is Some<FrameEvent>) {
-      flush();
-    } else {
-      open = false;
-    }
-  }
-}
-```
-
-One `apply` for the whole tree, because naming our own ids means the second
-operation can refer to the first without a round trip. The `while` loop is what
-a template and a scheduler ([Widgets, templates and updates](#widgets-templates-and-updates), [Scheduling](#scheduling)) replace.
-
-Milestone 1 is done when `zfx` shows the window, and when resizing it
-re-centres the text — which proves the layout solve, the measure callback and
-the demand-driven redraw are all on the path.
-
-#### What exists, and how it is reduced
-
-`zfx --app packages/zenafx/out/widgets.wasm` shows the window and re-centres
-on resize. One component does it, against a world that imports
-`zenafx:host/scene` and exports `start: func() -> list<node>`; `src/loader/`
-compiles it, defines the host imports on a `Linker` of its own, and calls
-`start` once. Two differences from the design, both of them the missing
-second component rather than a change of mind:
-
-- **The host drives the frame.** [Call direction](#call-direction-within-a-frame) fixes the call direction the other
-  way: the root awaits `zenafx:host/surface`'s frame events and the host
-  enters only the root. The reasons given there — update order across a tree,
-  and re-entrancy — need a tree, and one component is not one. Today the
-  component is not entered on the frame path at all: the host solves and
-  paints the tree it was given. The `Scene` trait in `ui/surface.rs` is where
-  a guest sits and where the frame stream will attach.
-- **The scene graph is the host's, not a runtime component's.** The host
-  holds the retained tree behind `zenafx:host/scene` and solves and paints it
-  itself, which is the job [The scene interface](#the-scene-interface) gives a Zena runtime component. Node ids and a
-  dirty flag exist; a viewport, `apply` and a dirty set do not.
-
-What the reduced form does establish is the part that had never been tried:
-a Zena component's records, variants, enums and options crossing the canonical
-ABI into a Rust host in a real embedding, and the host's flexbox solve
-measuring the text it was handed. `tests/app.rs` asserts the component's
-geometry against the same numbers `ui::demo`'s tests assert, so the two sides
-are known to agree.
+- **The host drives the frame.** [Call direction](#call-direction-within-a-frame) has the root awaiting
+  `zenafx:host/surface`'s frame events, with the host entering only the root.
+  The reasons given there, update order across a tree and re-entrancy, need a
+  tree. Today the component is not entered on the frame path at all: the host
+  solves and paints the tree it holds. The `Scene` trait in `ui/surface.rs` is
+  where a guest attaches.
+- **The scene tree is the host's.** [The scene interface](#the-scene-interface) gives that job to a Zena
+  runtime component serving `zenafx:ui/scene`, with viewports and a dirty set.
 
 ### Later milestones
 
@@ -2119,7 +1979,7 @@ belonging to someone else, and the host called that component's `measure` to siz
 it.
 
 It worked, and
-[What the widget prototype found](#what-the-widget-prototype-found) has the
+[Reasons for a retained tree](#reasons-for-a-retained-tree) has the
 measurement: three components drawing one card cost 6 solves and 54
 cross-component `measure` calls per frame, where one retained component cost
 nothing. It was removed because the unit was wrong rather than because the
@@ -2142,42 +2002,56 @@ to report.
 **A handle to a subtree.** A `content` resource, minted by `viewport.seal`, let a
 container hold a subtree it could not read. It was never built, and it is recorded
 here because it is the obvious reach and it is unnecessary: the host does the
-projection, so a container is never given its children at all. See
-[Children and slots](#children-and-slots).
+projection, so a container is handed a node per child and nothing else. See
+[Interior and content](#interior-and-content).
 
-**Mounting in the guest.** `zenafx:host/app` briefly handed the host a `root`
-resource with a `mount` method, so a widget installed its own tree. A widget that
-mounts itself has to know it was mounted, which makes it more than a description,
-so `start` now returns the tree and the host installs it. The resource form also
-could not be compiled: a component exporting an interface containing a `resource`
-emits a module that does not validate, which
+**Returning the tree from the entry.** `zenafx:host/app` exported
+`start: func() -> list<node>`, so a component described its whole tree once and
+the host installed it. That cannot express an update, since there is no node the
+component can name afterwards, so the entry is now `main: async func()` and the
+component renders into the nodes `zenafx:host/scene` hands it.
+
+An exported interface containing a `resource` also could not be compiled at the
+time, which
 [What the compiler still has to build](#what-the-compiler-still-has-to-build)
-records.
+records. Importing one works, which is how `node` reaches a guest.
 
 ## Alternatives considered
 
-**A retained scene graph in Rust, with the Zena work deferred.** The host
-would own the node tree and serve `zenafx:ui/scene` directly, and milestone 1
-would need no runtime component and no guest-to-guest binding. It was rejected on total
-work: a retained tree, dirty set, viewport table and paint walk in Rust is
-about the same size as the same thing in Zena, and it is then either discarded
-or maintained as a second implementation. The host as specified holds no tree
-at all, so its share of milestone 1 is smaller than it would be here.
+**A runtime component holding the tree, instead of the host.** `zenafx:ui/scene`
+is a WIT interface rather than a Zena API, so a Zena component could serve it and
+be swapped for the host's implementation without changing an application. The host
+holds the tree today because a retained tree, a dirty set and a paint walk are
+about the same size in Rust as in Zena, and the host already owns taffy and the
+text engine that the solve needs. The component version stays available for the
+case where scene policy should be swappable per application.
 
-The structure does keep the alternative available at low cost, because
-`zenafx:ui/scene` is a WIT interface rather than a Zena API. A host
-implementation of it would be swappable with the component implementation
-without any change to an application. That is worth preserving as a
-performance escape hatch, and worth not building now.
+**An immediate-mode interface, with the guest sending the picture each frame.**
+Rejected on the canonical ABI's copy cost, measured in
+[Reasons for a retained tree](#reasons-for-a-retained-tree).
+
+**Re-rendering with reconciliation, as React and Flutter do.** A guest would
+re-run a build function and the framework would match new descriptions against
+existing instances. Rejected because it needs machinery that this protocol makes
+unnecessary: keys to decide which instance a description refers to, a framework
+tree of instances to match against, and a split between stateless and stateful
+widgets so that the framework knows what survives a rebuild. The guest here
+subscribes a hole instead, and writes it when the value changes.
+
+**Positional state, as React hooks and Jetpack Compose do.** State would live in a
+slot table keyed by call position. Rejected because the ordering rules that make it
+sound — no state declared inside a condition or a loop — are not expressible in the
+type system, so they would be a convention enforced by a lint Zena does not have.
+
+**A signal resource in the host.** Rejected in
+[Reactive state](#reactive-state): a `variant value` erases the value's type at
+every read.
 
 **Layout as a guest component from the start.** Measurement is what rules it
 out for milestone 1: a guest solver needs a re-entrant call into the host text
 engine mid-solve, which is more machinery than calling `taffy` in the host, and
 it buys nothing until someone writes a custom layout. [Tiers beyond boxes and text](#tiers-beyond-boxes-and-text) describes the shape
 it takes then.
-
-**Signals as a host resource.** Rejected in [Reactive state](#reactive-state): a `variant value` erases the
-value's type at every read.
 
 **A global registry, so a template can name a child widget by tag.** Rejected
 because it reintroduces the collision described in [Prior art](#prior-art): a component that wants
@@ -2186,7 +2060,22 @@ button then coexist.
 
 ## Open questions
 
-1. **What WIT type an event payload has.** The `handle` export in
+1. **Whether node identity comes from the host or the guest.** `render` and
+   `content` hand back `own<node>` handles the host minted. A guest naming its own
+   node ids inside a viewport would make every scene call return nothing, so
+   writes, creation and reordering would all batch into one `apply` — the
+   feed-forward property [Feed-forward mutation](#feed-forward-mutation) wants, and
+   the shape `zenafx:ui/scene` already assumes. Holding a viewport would still be
+   the authority, so a forged id could only reach the forger's own subtree. What
+   host-minted handles buy is that a guest cannot name a node it was never given,
+   without the host checking. The two interfaces differ substantially and only one
+   should survive.
+2. **Staleness behind an inactive branch.** The values behind a hidden branch's
+   holes can change while the branch is inactive. Writing them anyway spends calls
+   on nodes nobody is looking at; suspending the subtree and replaying on
+   activation requires the branch to track what went stale. See
+   [Choice](#choice).
+3. **What WIT type an event payload has.** The `handle` export in
    [Events](#events-input-and-what-a-widget-reports) takes `list<u8>`, which is
    the untyped envelope the rest of that section argues against. A closed variant
    of built-in input events with an opaque tail for widget-defined ones keeps the
@@ -2194,7 +2083,7 @@ button then coexist.
    event type is fully typed and grows the world with every event a program
    declares. Neither is obviously right, and the choice is visible to every
    widget that raises or listens.
-2. **Whether the loader should refuse a cyclic binding outright.** [Call direction](#call-direction-within-a-frame) settles
+4. **Whether the loader should refuse a cyclic binding outright.** [Call direction](#call-direction-within-a-frame) settles
    what happens when one is exercised — `do_not_enter` and
    `Trap::CannotBlockSyncTask`, so a deadlock rather than corruption. What is
    undecided is whether the loader should detect the cycle when it binds and
@@ -2205,38 +2094,38 @@ button then coexist.
    component exporting `ping` and importing `host-call`, with `ping` calling
    `host-call` and the host calling `ping` again, run under the wasmtime the
    workspace pins.
-3. **Component identity.** Two documents naming the same URL: one instance
+5. **Component identity.** Two documents naming the same URL: one instance
    shared, or one per document? Sharing makes a component a channel between
    documents, which the isolation story has to account for. A separate instance
    per document costs memory and loses warm state. The compiled artifact can be
    cached by content hash either way; this question is about instances.
-4. **Integrity and versioning of a fetched component.** A URL is not a
+6. **Integrity and versioning of a fetched component.** A URL is not a
    version, and a component that changes under the same URL changes an
    application's behaviour silently. Whether a document pins a content hash
    alongside the URL, and what happens when the fetched bytes do not match, is
    undecided.
-5. **Cost of the dynamic binding path.** A guest→guest call goes through a
+7. **Cost of the dynamic binding path.** A guest→guest call goes through a
    host function that lowers and lifts through `Val`. On the frame path that is
    `apply` and `flush` once per frame, which should be immaterial, but it has
    not been measured. If it is not immaterial, `zenafx:ui` is known at build
    time and can use generated bindings for those two calls while everything
    else stays dynamic.
-6. **Coordinate spaces.** `bounds` returns window coordinates, so a component
+8. **Coordinate spaces.** `bounds` returns window coordinates, so a component
    can learn where it sits on screen. Viewport-local coordinates would hide
    that, and would then need pointer positions translated into each
    component's own space before they are dispatched.
-7. **Retained display lists.** At what scene size does
+9. **Retained display lists.** At what scene size does
    `present(list<command>)` stop being adequate, and what replaces it — a
    retained list with per-node invalidation, or damage rectangles plus a full
    list for the damaged area? The answer needs a measurement on a real scene.
-8. **Text runs and reflow.** A run is shaped at registration and measured at
+10. **Text runs and reflow.** A run is shaped at registration and measured at
    a width during the solve. Whether the measured layout at the final width is
    reused for painting, or the run is reshaped once layout settles, decides
    whether a wrapped paragraph costs one shaping pass per frame or none.
-9. **Accessibility.** A retained tree of boxes and text with known bounds is
+11. **Accessibility.** A retained tree of boxes and text with known bounds is
    most of what an accessibility tree needs. Whether the host derives one from
    the scene, or components describe one explicitly, is undecided.
-10. **Per-component frame budget.** A component that takes 50 ms in its update
+12. **Per-component frame budget.** A component that takes 50 ms in its update
     stalls the frame for everyone: the frame is one synchronous top-down pass,
     and [Serialization across components](#serialization-across-components) rules out running the others meanwhile. [Capabilities and isolation](#capabilities-and-isolation) names the mechanism —
     an async epoch deadline or a fuel interval yields out of the overrunning
@@ -2254,13 +2143,13 @@ button then coexist.
   `import ... from` a WIT means, resource lifetime, and the type mapping
 - [component-emission.md](./component-emission.md) — how components are
   emitted, and the `--wit`/`--world` surface
-- [declarative.md](./declarative.md) — the `html <tag>` syntax that becomes
-  ZenaFX's template authoring surface
+- [declarative.md](./declarative.md) — the typed node-block grammar that becomes
+  ZenaFX's authoring surface, and the `html <tag>` markup sugar over it
 - [zenafx-widget-authoring.md](./zenafx-widget-authoring.md) — what a widget
-  looks like written against that syntax: node blocks instead of one
-  convenience function per node kind, children as an opaque value rather than
-  a second call, the template protocol the static/dynamic split needs, and
-  selectors shipped as data. An exploration; nothing in it is built.
+  looks like written against that grammar: node blocks instead of one convenience
+  function per node kind, children as an opaque value rather than a second call,
+  the rules that split a tree into a template and its holes, and selectors
+  shipped as data. An exploration; nothing in it is built.
 - [capabilities.md](./capabilities.md) — capability-based I/O in the language,
   of which viewports are one instance
 - [streams.md](./streams.md) — `Stream<T>` and the rendezvous core the event

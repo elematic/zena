@@ -137,6 +137,65 @@ Declarative files (`.zconf`) and blocks (`data { ... }`) use a node-oriented sta
 3. **Positional Arguments & Attributes**: `Type "name" { key: value }` supplies positional arguments and properties.
 4. **Nested Children Blocks**: `{ ... }` blocks contain child node declarations without array bracket syntax.
 
+`new` does not appear in a node block, because the statement's type name is the
+constructor. In ordinary expression position the recommendation is to make `new`
+optional rather than remove it: a class name in call position can only mean
+construction, and keeping the keyword available preserves a reading cue, since
+Zena has case classes with value equality and ordinary classes with reference
+identity.
+
+### Control Flow in Node Blocks
+
+Configuration files declare no control flow, which is what makes them statically
+parseable. A UI tree needs conditional and repeated children, so in a node block
+`if` and `for` are statements like any other, and the nodes their bodies declare
+append to the enclosing node's children:
+
+```zena
+Box {
+  Text 'Items'
+
+  for (let item in this.#items) {
+    Row { Text item.name }
+  }
+
+  if (this.#items.length == 0) {
+    Text 'Nothing here'
+  }
+}
+```
+
+A `for` appends its body once per iteration. An `if` without an `else` appends
+nothing when its condition is false.
+
+A `for` over a list that can be reordered takes a `keyed` clause naming each item's
+identity:
+
+```zena
+for (let item in this.#items) keyed item.id {
+  Row { Text item.name }
+}
+```
+
+Omitting it is positional. The two differ in where per-item state goes when items
+move — keyed state follows the item, positional state follows the position — so a
+consumer that keeps per-item state should require the clause rather than pick a
+default.
+
+Markup mode spells these as `${ for … }` and `${ if … }` because raw text has to
+be escaped before an expression can be read. A node block contains no raw text,
+so the bare statement suffices and `${ }` does not appear in one.
+
+`.zconf` files stay free of both forms, which is what keeps them parseable
+without execution. A declarative file that wants control flow is a `.zena`
+module with a `data { }` block, and a build system reads that by running it.
+
+A consumer that compiles node blocks into templates treats these forms as
+structure rather than as values, so that the shapes a position can take are known
+before anything runs; see
+[Control flow](./zenafx-widget-authoring.md#control-flow) for how ZenaFX lowers
+them.
+
 ### Markup Sugar and Component Sigil
 
 Markup syntax (`<div class="card">...</div>`) desugars 1:1 into the Node-Block AST.
@@ -158,7 +217,7 @@ In markup mode (`html <tag>` or `.zhtml` files):
 - `${ expression }` pauses text scanning to evaluate standard Zena expressions.
 - `<child>` opens a child tag; `</div>` closes a tag and resumes the outer context.
 
-### Control Flow Mapping
+### Control Flow in Markup Mode
 
 Control flow blocks inside `${ ... }` (`${ for }`, `${ if }`, `${ match }`) evaluate as expressions yielding node sequences:
 
@@ -338,7 +397,9 @@ _No major features listed for this patch release._
    - Support `.zconf` standalone files for manifests and choreographies.
    - Support `data { ... }` and `html { ... }` embedded expressions.
    - Support `.ztpl`, `.zhtml`, `.zsvg`, and `.zmd` template files.
-2. **Standardize `${ ... }` Interpolation**:
+   - Support `if` and `for` statements inside node blocks, appending to the
+     enclosing node's children.
+2. **Standardize `${ ... }` Interpolation in markup mode**:
    - Lower `${ for (x in xs) { ... } }` to `xs.map(...)`.
    - Lower `${ if (cond) { ... } }` to conditional ternary expressions.
    - Automatically flatten array outputs into child node streams.

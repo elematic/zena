@@ -1,7 +1,7 @@
 //! `zenafx:host/text`: shaped runs, kept by id.
 //!
 //! Text is registered, not passed per frame. `register_run` shapes a string
-//! under a look and returns an id; the id stands for that run through
+//! under a style and returns an id; the id stands for that run through
 //! measurement, painting and hit testing until `release_run`. A glyph run in
 //! a display list is then an id and a position, not a string and a font.
 //!
@@ -13,14 +13,14 @@ use parley::{
     Layout, LayoutContext, StyleProperty,
 };
 
-use super::types::{Measured, TextLook};
+use super::types::{Measured, TextStyle};
 
-/// A registered run: the source text, the look it was shaped under, and the
+/// A registered run: the source text, the style it was shaped under, and the
 /// parley layout, broken at whatever width it was last measured or painted
 /// at.
 pub struct Run {
     content: String,
-    look: TextLook,
+    style: TextStyle,
     layout: Layout<()>,
     /// The `max_advance` the layout currently reflects. `None` means it was
     /// broken unconstrained.
@@ -32,8 +32,8 @@ impl Run {
         &self.content
     }
 
-    pub fn look(&self) -> &TextLook {
-        &self.look
+    pub fn style(&self) -> &TextStyle {
+        &self.style
     }
 
     pub fn layout(&self) -> &Layout<()> {
@@ -80,7 +80,7 @@ impl TextEngine {
             self.scale = scale;
             for slot in self.runs.iter_mut().flatten() {
                 slot.layout =
-                    shape(&mut self.font_cx, &mut self.layout_cx, &slot.content, &slot.look, scale);
+                    shape(&mut self.font_cx, &mut self.layout_cx, &slot.content, &slot.style, scale);
                 slot.broken_at = Some(f32::NAN);
             }
         }
@@ -90,17 +90,17 @@ impl TextEngine {
         self.scale
     }
 
-    /// Shape `content` under `look` and keep it. The id is valid until
+    /// Shape `content` under `style` and keep it. The id is valid until
     /// [`TextEngine::release_run`].
-    pub fn register_run(&mut self, content: &str, look: &TextLook) -> u32 {
+    pub fn register_run(&mut self, content: &str, style: &TextStyle) -> u32 {
         let run = Run {
             content: content.to_owned(),
-            look: look.clone(),
+            style: style.clone(),
             layout: shape(
                 &mut self.font_cx,
                 &mut self.layout_cx,
                 content,
-                look,
+                style,
                 self.scale,
             ),
             // No break has been applied yet; NaN never equals a requested
@@ -120,17 +120,17 @@ impl TextEngine {
     }
 
     /// Reshape a run in place, keeping its id.
-    pub fn update_run(&mut self, id: u32, content: &str, look: &TextLook) {
+    pub fn update_run(&mut self, id: u32, content: &str, style: &TextStyle) {
         let layout = shape(
             &mut self.font_cx,
             &mut self.layout_cx,
             content,
-            look,
+            style,
             self.scale,
         );
         if let Some(slot) = self.runs.get_mut(id as usize).and_then(Option::as_mut) {
             slot.content = content.to_owned();
-            slot.look = look.clone();
+            slot.style = style.clone();
             slot.layout = layout;
             slot.broken_at = Some(f32::NAN);
         }
@@ -214,16 +214,16 @@ fn shape(
     font_cx: &mut FontContext,
     layout_cx: &mut LayoutContext<()>,
     content: &str,
-    look: &TextLook,
+    style: &TextStyle,
     scale: f32,
 ) -> Layout<()> {
     let mut builder = layout_cx.ranged_builder(font_cx, content, scale, true);
-    builder.push_default(StyleProperty::FontFamily(font_family(&look.family)));
-    builder.push_default(StyleProperty::FontSize(look.size));
+    builder.push_default(StyleProperty::FontFamily(font_family(&style.family)));
+    builder.push_default(StyleProperty::FontSize(style.size));
     builder.push_default(StyleProperty::FontWeight(FontWeight::new(
-        look.weight as f32,
+        style.weight as f32,
     )));
-    if look.italic {
+    if style.italic {
         builder.push_default(StyleProperty::FontStyle(FontStyle::Italic));
     }
     builder.build(content)
@@ -255,7 +255,7 @@ mod tests {
     #[test]
     fn a_registered_run_measures_wider_than_tall() {
         let mut text = TextEngine::new();
-        let id = text.register_run("Hello, world", &TextLook::default());
+        let id = text.register_run("Hello, world", &TextStyle::default());
         let m = text.measure_run(id, None);
         assert!(m.width > 0.0, "width was {}", m.width);
         assert!(m.height > 0.0, "height was {}", m.height);
@@ -273,7 +273,7 @@ mod tests {
         let mut text = TextEngine::new();
         let id = text.register_run(
             "The quick brown fox jumps over the lazy dog",
-            &TextLook::default(),
+            &TextStyle::default(),
         );
         let wide = text.measure_run(id, None);
         let narrow = text.measure_run(id, Some(wide.width / 4.0));
@@ -284,7 +284,7 @@ mod tests {
     #[test]
     fn measuring_back_at_the_old_width_restores_the_old_size() {
         let mut text = TextEngine::new();
-        let id = text.register_run("The quick brown fox jumps over", &TextLook::default());
+        let id = text.register_run("The quick brown fox jumps over", &TextStyle::default());
         let wide = text.measure_run(id, None);
         text.measure_run(id, Some(wide.width / 3.0));
         assert_eq!(text.measure_run(id, None), wide);
@@ -297,7 +297,7 @@ mod tests {
         let mut text = TextEngine::new();
         let id = text.register_run(
             "The quick brown fox jumps over the lazy dog",
-            &TextLook::default(),
+            &TextStyle::default(),
         );
         let (min, max) = text.content_widths(id).expect("a registered run");
         assert!(min > 0.0 && min < max, "min {min} max {max}");
@@ -317,19 +317,19 @@ mod tests {
     #[test]
     fn a_released_id_is_reused() {
         let mut text = TextEngine::new();
-        let a = text.register_run("a", &TextLook::default());
+        let a = text.register_run("a", &TextStyle::default());
         text.release_run(a);
         assert!(text.get(a).is_none());
-        assert_eq!(text.register_run("b", &TextLook::default()), a);
+        assert_eq!(text.register_run("b", &TextStyle::default()), a);
         assert_eq!(text.get(a).map(Run::content), Some("b"));
     }
 
     #[test]
     fn update_keeps_the_id_and_changes_the_size() {
         let mut text = TextEngine::new();
-        let id = text.register_run("x", &TextLook::default());
+        let id = text.register_run("x", &TextStyle::default());
         let short = text.measure_run(id, None);
-        text.update_run(id, "xxxxxxxxxxxxxxxx", &TextLook::default());
+        text.update_run(id, "xxxxxxxxxxxxxxxx", &TextStyle::default());
         let long = text.measure_run(id, None);
         assert!(long.width > short.width, "short {short:?} long {long:?}");
     }
@@ -337,13 +337,13 @@ mod tests {
     #[test]
     fn a_bigger_size_measures_bigger() {
         let mut text = TextEngine::new();
-        let small = TextLook {
+        let small = TextStyle {
             size: 12.0,
-            ..TextLook::default()
+            ..TextStyle::default()
         };
-        let large = TextLook {
+        let large = TextStyle {
             size: 48.0,
-            ..TextLook::default()
+            ..TextStyle::default()
         };
         let a = text.register_run("Hello", &small);
         let b = text.register_run("Hello", &large);
