@@ -68,6 +68,12 @@ export type SendOptions = {
    */
   extensions?: Array<String>,
   /**
+   * The file under `root` to serve with status 404 when `serve` finds
+   * no matching file and `next` leaves the response unhandled. Ignored
+   * by `send`.
+   */
+  notFound?: String,
+  /**
    * Called with the response, the file's path and its metadata before
    * the default headers are set, so headers it sets win.
    */
@@ -77,9 +83,9 @@ export type SendOptions = {
 /**
  * Sends the file at `path`, relative to `options.root`, as the
  * response: sets the status, `Content-Type`, `Content-Length`,
- * `Last-Modified`, `ETag` and `Cache-Control`, and the file as the
- * body. Answers a matching `If-None-Match` with 304 and a HEAD
- * request without a body.
+ * `Last-Modified`, `ETag`, `Cache-Control` and
+ * `X-Content-Type-Options`, and the file as the body. Answers a
+ * matching `If-None-Match` with 304 and a HEAD request without a body.
  *
  * Returns the path served, relative to the preopen it is under, or
  * null when nothing was sent: a hidden path, or a directory with no
@@ -115,37 +121,53 @@ export async function send(
  * Middleware that serves the files under `root` for GET and HEAD
  * requests, at `req.path` (so under `mount`, at the path below the
  * mount point). A request it does not answer — another method, a
- * missing or hidden file — goes on to `next`.
+ * missing or hidden file — goes on to `next`. When `options.notFound`
+ * is set and `next` leaves a GET or HEAD request unhandled, serves that
+ * file under `root` with status 404.
  *
  * ## Examples
  *
  * ```zena
  * let app = new App();
- * app.use(serve('public'));
+ * app.use(serve('public', {notFound: '404.html'}));
  * app.use(mount('/assets', serve('dist', {maxAge: milliseconds(86400000)})));
  * ```
  */
 export function serve(root: String, options: SendOptions = {}): Middleware {
   let files = new StaticFiles(root, options, 'index.html');
   return async (req, res, next) => {
-    if (!await sendFound(files, req, res)) {
-      await next();
+    if (await sendFound(files, req, res, req.path)) {
+      return;
+    }
+    await next();
+    if (let {notFound} = options) {
+      if (!res.statusCodeSet && res.body == null &&
+          (req.method == 'GET' || req.method == 'HEAD')) {
+        res.statusCode = 404;
+        await sendFound(files, req, res, notFound);
+      }
     }
   };
 }
 
 /**
- * Whether `files` answered a GET or HEAD request; a 404 counts as not
- * answered. (A helper rather than a `try` in `serve`'s closure: an
- * assignment to the closure's local in a `try` body that awaits
- * fails to compile, tests/language/execution/async/try_assign_after_await.zena.)
+ * Whether `files` answered a GET or HEAD request for `path`; a 404
+ * counts as not answered. (A helper rather than a `try` in `serve`'s
+ * closure: an assignment to the closure's local in a `try` body that
+ * awaits fails to compile,
+ * tests/language/execution/async/try_assign_after_await.zena.)
  */
-async function sendFound(files: StaticFiles, req: Request, res: Response): Future<boolean> {
+async function sendFound(
+  files: StaticFiles,
+  req: Request,
+  res: Response,
+  path: String
+): Future<boolean> {
   if (req.method != 'GET' && req.method != 'HEAD') {
     return false;
   }
   try {
-    return (await files.send(req, res, req.path)) != null;
+    return (await files.send(req, res, path)) != null;
   } catch (e) {
     if (e is HttpError && (e as HttpError).status == 404) {
       return false;
@@ -281,6 +303,9 @@ final class StaticFiles {
     }
     if (!res.hasHeader('etag')) {
       res.setHeader('etag', `W/"${info.size}-${div(info.modified, NS_PER_MILLI)}"`);
+    }
+    if (!res.hasHeader('x-content-type-options')) {
+      res.setHeader('x-content-type-options', 'nosniff');
     }
     if (res.type == null) {
       let unencoded = path.sliceBytes(0, path.length - encodingExt.length);
