@@ -761,6 +761,34 @@ let tests = suite('lint', () => {
     `, 'template-literal');
   });
 
+  test('trivial string conversions in console calls go', (t) => {
+    check(t, dedentRaw`
+      import { boolToString, f32ToString } from 'zena:core';
+      export function run(x: i32, ok: boolean, f: f32): i32 {
+        console.log(${'`'}${'${'}x}${'`'});
+        console.log(i32ToString(x));
+        console.error(boolToString(ok));
+        console.warn(toString(x));
+        console.log(f32ToString(f));
+        console.log(f32ToString(0.1));
+        console.log(${'`'}x = ${'${'}x}${'`'});
+        return 0;
+      }
+    `, dedentRaw`
+      import { boolToString, f32ToString } from 'zena:core';
+      export function run(x: i32, ok: boolean, f: f32): i32 {
+        console.log(x);
+        console.log(x);
+        console.error(ok);
+        console.warn(x);
+        console.log(f);
+        console.log(f32ToString(0.1));
+        console.log(${'`'}x = ${'${'}x}${'`'});
+        return 0;
+      }
+    `, 'console-to-string');
+  });
+
   test('an arrow returning one expression loses its block', (t) => {
     check(t, dedentRaw`
       export function run(): i32 {
