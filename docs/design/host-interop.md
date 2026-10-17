@@ -55,9 +55,16 @@ The only way to exchange complex data between WASM GC and JavaScript is:
 2. Through exported WASM functions that JS can call
 3. By streaming data byte-by-byte through host function calls
 
-### Strings: V8-Optimized Pattern (Recommended)
+### Strings
 
-Zena strings are implemented as a GC struct wrapping a `ByteArray` (WASM GC `(array i8)`).
+Zena supports two deployment models for interacting with JavaScript:
+
+1. **Universal modules running in JavaScript**: A single WebAssembly binary compiled to run across all host environments (browsers, Node.js, Wasmtime, embedded engines). In this model, strings default to UTF-8 representations and cross the JavaScript boundary through host-side transcoding or `HostString` wrappers.
+2. **JavaScript-targeted modules (`--target js`)**: A WebAssembly binary compiled specifically for JavaScript hosts. In this model, `String` is backed by a native JavaScript string reference (`externref`) and uses the WebAssembly JS String Builtins proposal (`wasm:js-string`) for zero-copy operations and minimal binary size.
+
+#### Universal modules: host-side transcoding
+
+When compiling without a host-specific target, Zena strings are WebAssembly GC structs wrapping a `ByteArray` (a Wasm GC array of `i8`) containing UTF-8 encoded bytes:
 
 ```wat
 (type $String (struct
@@ -66,6 +73,17 @@ Zena strings are implemented as a GC struct wrapping a `ByteArray` (WASM GC `(ar
   (field $length i32)
 ))
 ```
+
+JavaScript strings are UTF-16, so crossing the boundary requires transcoding between UTF-8 and UTF-16.
+
+##### Transcoding location
+
+Transcoding is performed on the host side (JavaScript) rather than inside WebAssembly:
+
+- **Inside WebAssembly**: Performing transcoding in Wasm would require embedding a UTF-8/UTF-16 conversion table and codec routines into every binary, increasing code size. Wasm would also need to inspect host capabilities at runtime to select an encoding.
+- **On the host**: JavaScript engines possess native, hardware-accelerated transcoding implementations through the `TextDecoder` and `TextEncoder` Web APIs. JavaScript already knows its internal string encoding and can decode byte buffers in bulk.
+
+##### The V8-optimized getter pattern
 
 **Problem**: Since WASM GC arrays are opaque, we cannot simply pass a
 `ByteArray` to JavaScript and have JS iterate over it.
@@ -100,10 +118,12 @@ that allows JavaScript to read individual bytes from a Zena string:
   array.get_u $ByteArray)   ;; get byte at index
 ```
 
+Zena also exports `$stringGetLength(externref) -> i32` returning the string length in bytes.
+
 Host functions receive the string as `externref` plus its length:
 
 ```zena
-// In console.zena
+// In zena:console/host.zena
 @external("console", "log_string")
 declare function __console_log_string(s: String, len: i32): void;
 
@@ -111,7 +131,7 @@ declare function __console_log_string(s: String, len: i32): void;
 __console_log_string(message, message.length);
 ```
 
-JavaScript iterates using the exported getter:
+JavaScript iterates using the exported getter and decodes the buffer via `TextDecoder`:
 
 ```javascript
 // In @zena-lang/runtime
@@ -128,24 +148,195 @@ function createStringReader(exports) {
 }
 ```
 
-**Trade-offs**:
+Passing strings from JavaScript into Zena works symmetrically: `@zena-lang/runtime` uses `TextEncoder` to encode the JavaScript string to UTF-8 bytes, allocates a Zena string via `$stringCreate(len)`, and populates it via `$stringSetByte(strRef, index, byte)`.
 
-- ✅ Works with current WASM GC spec
-- ✅ More efficient than byte-streaming (1 host call instead of N+2)
-- ✅ JS engine can optimize the loop better than repeated WASM->JS calls
-- ✅ No linear memory needed
-- ❌ Requires exported getter function in WASM module
+##### HostString in universal modules
 
-The inverse direction works the same way: `createStringWriter` in
-`@zena-lang/runtime` builds a Zena string through exported
-`$stringCreate`/`$stringSetByte` functions — this is how host-async
-string completions (`__zena_complete_string`) deliver their payloads.
+While raw host references can always cross the boundary as opaque `externref` values, the purpose of `HostString` is to act as a full `String` within Zena code while retaining a host-backed representation.
 
-**Why this is faster** (per V8 team):
+`HostString` has an asymmetric performance profile:
 
-- JS-to-WASM calls are cheaper than WASM-to-JS calls
-- JS can inline and optimize the loop
-- Avoids creating many short-lived closures in WASM
+- **Passing back to the host**: $O(1)$ and zero-copy. The boundary wrapper extracts `#handle: externref` directly with no transcoding.
+- **Byte-level logic in WebAssembly**: Slower than a GC-backed string. Operations that inspect characters (`indexOf`, `charCodeAt`, slicing) call out to the host for each access.
+
+```zena
+class HostString extends String {
+  #handle: externref;
+  new(this.#handle);
+
+  get length(): i32 {
+    return __host_string_get_length(this.#handle);
+  }
+
+  byteAt(index: i32): i32 {
+    return __host_string_get_byte(this.#handle, index);
+  }
+}
+```
+
+##### The inverse host helper pattern
+
+To support `HostString`, the host contract does not need a large suite of string operations. Following the template method design in [strings.md](strings.md), the abstract `String` base class implements all higher-level string algorithms (`indexOf`, `startsWith`, `substring`, etc.) in terms of two abstract primitives: `length` and `byteAt`.
+
+Symmetrically to the exported string helpers that JavaScript uses to read Zena strings (`$stringGetLength` and `$stringGetByte`), a universal module needs only the exact inverse from the host:
+
+```zena
+@external("host:string", "getLength")
+declare function __host_string_get_length(s: externref): i32;
+
+@external("host:string", "getByte")
+declare function __host_string_get_byte(s: externref, index: i32): i32;
+```
+
+This keeps the required host surface to two functions.
+
+##### Managing host contract size in universal modules
+
+Because WebAssembly imports are mandatory at instantiation time (a missing import produces a `LinkError`), requiring host string imports unconditionally would break non-JS hosts such as standalone WASI runtimes.
+
+Zena prevents host contract expansion through two mechanisms:
+
+1. **Reachability (RTA)**: The compiler emits the `host:string` imports only when code reachable in the module actually instantiates or references `HostString`. A universal module that does not use host strings has zero host string imports.
+2. **Dynamic accessor registration (alternative)**: To allow a universal module to accept host strings without declaring static imports, the module can export a registration function:
+   ```wat
+   (func $registerHostStringAccessors (export "$registerHostStringAccessors")
+     (param $getLength funcref) (param $getByte funcref) ...)
+   ```
+   Hosts that support host strings provide the function references at startup, while hosts that do not leave them uninitialized. Calling character-inspection methods on an unregistered `HostString` then traps or throws.
+
+#### JavaScript-targeted modules: native host strings (`--target js`)
+
+When a program is compiled specifically for JavaScript hosts (`--target js`), the compiler assumes JavaScript is the host environment and uses the WebAssembly JS String Builtins proposal (`wasm:js-string`) alongside imported string constants (`_`).
+
+##### Unified class representation
+
+To preserve Zena's type system semantics (`String <: anyref`, union types such as `String | Foo`, generics `Box<T>`, and type tests `is`/`as`), `String` remains a normal WebAssembly GC class rather than raw `(ref extern)`:
+
+```zena
+export class String {
+  #handle: externref;
+  new(this.#handle);
+
+  get length(): i32 {
+    return __js_string_length(this.#handle);
+  }
+
+  operator +(other: String): String {
+    return new String(__js_string_concat(this.#handle, other.#handle));
+  }
+
+  operator ==(other: String): boolean {
+    return __js_string_equals(this.#handle, other.#handle);
+  }
+
+  substring(start: i32, end: i32): String {
+    var s = start;
+    var e = end;
+    let len = this.length;
+    if (s < 0) { s = 0; }
+    if (e > len) { e = len; }
+    if (s > e) { s = e; }
+    return new String(__js_string_substring(this.#handle, s, e));
+  }
+}
+```
+
+Because `String` is a standard class:
+
+- `String <: anyref` and `String <: eqref` hold naturally.
+- A union like `String | Foo` maps to `ValTypeEqRef()` (`eqref`) without type conflict.
+- Generic type parameters `T` instantiated as `T = String` store `(ref $String)` in `anyref` fields without conversion instructions.
+- `val is String` and `val as String` use standard WebAssembly `ref.test` and `ref.cast`.
+
+##### Builtin delegation
+
+All operations on `#handle` delegate to the WebAssembly JS String Builtins imports:
+
+```zena
+@external("wasm:js-string", "length")
+declare function __js_string_length(s: externref): i32;
+
+@external("wasm:js-string", "concat")
+declare function __js_string_concat(a: externref, b: externref): externref;
+
+@external("wasm:js-string", "equals")
+declare function __js_string_equals(a: externref, b: externref): boolean;
+
+@external("wasm:js-string", "substring")
+declare function __js_string_substring(s: externref, start: i32, end: i32): externref;
+```
+
+JavaScript engines that support `wasm:js-string` recognize these imports and bind them directly to native string primitives in the engine.
+
+##### String literals and imported constants
+
+String literals do not emit UTF-8 data segments. The compiler emits imported string constants:
+
+```wat
+(import "_" "hello" (global $raw_str_0 (ref extern)))
+```
+
+In the module start function (`__start`), each unique literal is wrapped once into a `String` instance and stored in an immutable global:
+
+```wat
+(global $str_0 (mut (ref null $String)) (ref.null $String))
+;; In __start:
+global.get $raw_str_0
+call $String.<constructor>
+global.set $str_0
+```
+
+Referencing `"hello"` in Zena code compiles to `global.get $str_0`, returning `(ref $String)` in $O(1)$ time with no per-occurrence allocation.
+
+#### Automatic boundary wrapping
+
+To eliminate manual handle management, the compiler synthesizes boundary wrappers for external functions and module exports.
+
+##### Host imports (`@external`)
+
+When a function is declared with `@external` in a module other than `"wasm:js-string"`:
+
+```zena
+@external("console", "log_string")
+declare function log_string(s: String): void;
+
+@external("dom", "setTitle")
+declare function setTitle(title: String): void;
+
+@external("dom", "getTitle")
+declare function getTitle(): String;
+```
+
+Under `--target js`, the compiler synthesizes an ABI wrapper:
+
+1. **Raw import**: Emits `externref` in place of `String` in the import signature:
+   ```wat
+   (import "dom" "setTitle" (func $setTitle_raw (param externref)))
+   (import "dom" "getTitle" (func $getTitle_raw (result externref)))
+   ```
+2. **Wrapper function**: Emits a Zena-facing wrapper:
+   - For `String` parameters: extracts `arg.#handle` (`externref`) and passes it to the raw import.
+   - For `String` returns: takes the returned `externref`, constructs a `new String(handle)`, and returns `(ref $String)`.
+
+Zena code calls the declared function directly using `String`, without manually unpacking `#handle`.
+
+##### Exported functions
+
+When a Zena function is exported to JavaScript:
+
+```zena
+export function greet(name: String): String {
+  return "Hello, " + name;
+}
+```
+
+Under `--target js`, the compiler synthesizes an export wrapper with signature `(param externref) (result externref)`:
+
+1. Receives native JavaScript strings (`externref`) from the caller and wraps them into `String` instances.
+2. Invokes the internal Zena function.
+3. Extracts `#handle` from the returned `String` and returns the native JavaScript string to the host.
+
+In addition, the module exports a fast getter `$stringGetHandle(str: (ref null $String)) -> externref`. The `@zena-lang/runtime` package checks for this export, allowing $O(1)$ unwrapping of any Zena string without byte copying.
 
 ### Legacy: Byte Streaming (Deprecated)
 
@@ -635,45 +826,52 @@ entirely.
 
 ## Console Implementation
 
-The console standard library (`stdlib/console.zena`) uses the V8-optimized pattern:
+The console standard library provides two implementations selected through standard library virtualization (`stdlib-manifest.json`):
+
+### Universal console (`zena:console/host.zena`)
+
+Universal modules use the V8-optimized byte-iteration pattern:
 
 ```zena
 // External host functions receive string ref + length
 @external("console", "log_string")
 declare function __console_log_string(s: String, len: i32): void;
 
-// Console interface - matches JavaScript's Console API (subset)
-export interface Console {
-  log(message: String): void;
-  error(message: String): void;
-  warn(message: String): void;
-  info(message: String): void;
-  debug(message: String): void;
-}
-
-// HostConsole passes strings to host with length
 export class HostConsole implements Console {
   log(message: String): void {
     __console_log_string(message, message.length);
   }
-  // ... other methods
 }
-
-// Global console instance
-export let console = new HostConsole();
 ```
 
 The host function receives the string as `externref` and uses the exported `$stringGetByte` to read its content.
 
-The `@zena-lang/runtime` package provides `createConsoleImports()` which returns the necessary host functions with deferred binding to the `$stringGetByte` export.
+### JavaScript-targeted console (`zena:console/js.zena`)
+
+Under `--target js`, the console implementation passes `String` directly:
+
+```zena
+@external("console", "log_string")
+declare function __console_log_string(s: String): void;
+
+export class HostConsole implements Console {
+  log<T>(message: T): void {
+    __console_log_string(toString(message));
+  }
+}
+```
+
+The compiler's automatic boundary wrapper unboxes `#handle` (`externref`), so the JavaScript host receives the native JavaScript string directly with no length parameter and no getter loop.
 
 ## Runtime Package
 
 The `@zena-lang/runtime` npm package provides:
 
-- `createConsoleImports(getExports)`: Console host functions using V8-optimized pattern
-- `instantiate(wasm, imports)`: Helper to instantiate Zena modules with merged imports and deferred export binding
-- `readByteArray(bytes, length)`: Decode an iterable of bytes to a JS string (for testing)
+- `createConsoleImports(getExports)`: Console host functions supporting both the `$stringGetByte` loop for universal modules and direct native string logging for `--target js`.
+- `createStringReader(exports)`: Returns a string reader function that fast-paths to `$stringGetHandle` when present, falling back to `$stringGetByte` and `TextDecoder`.
+- `createStringWriter(exports)`: Returns a string writer function that fast-paths to `$stringCreate(jsStr)` when present, falling back to `$stringCreate(len)`/`$stringSetByte` and `TextEncoder`.
+- `instantiate(wasm, imports)`: Helper to instantiate Zena modules with merged imports, builtins (`wasm:js-string`), and deferred export binding.
+- `readByteArray(bytes, length)`: Decode an iterable of bytes to a JS string (for testing).
 
 ### Usage
 
@@ -736,14 +934,13 @@ longer appears anywhere in the repository.
 
 - [x] Anyref host object handles + the `extern` completion kind (see
       "Host object handles" above; replaced `zena:fetch`'s id registry)
+- [ ] Native JS strings via WebAssembly JS String Builtins (`wasm:js-string`)
+      and imported string constants (`_`) for `--target js`
+- [ ] Automatic boundary wrapping for `@external` imports and exports under `--target js`
+- [ ] `HostString` subclass wrapping `externref` for universal modules running in JS hosts
 - [ ] Generic JS interop layer over interned selectors (see "Generic JS
       interop" above)
 - [ ] Per-receiver access control for the interop allowlist
-- [ ] Bulk string passing over the `wasm:js-string` builtin functions
-      (`fromCharCodeArray`/`intoCharCodeArray`) in place of the
-      per-byte getter loop — needs a UTF-8 ↔ UTF-16 decision first:
-      the builtins speak `(array i16)` char codes, Zena strings are
-      UTF-8 `(array i8)`
 - [ ] Linear memory buffer for large data transfer
 - [x] Support for passing strings from JS to Zena (`createStringWriter`
       over `$stringCreate`/`$stringSetByte`)
