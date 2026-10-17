@@ -1,5 +1,5 @@
 import { ValTypeRef, ValTypeRefNull, ValTypeRefExtern } from './wasm.zena';
-import { ByteBuffer } from 'zena:core';
+import { ByteBuffer, Encoding } from 'zena:core';
 import { WasmEmitter } from './wasm-emitter.zena';
 import {
   WasmSignature, WasmFunction, WasmStruct, WasmArray,
@@ -58,6 +58,62 @@ export function emitValType(buffer: ByteBuffer, type: ValType) {
       buffer.writeByte(valTypeToOpcode(type));
     }
   };
+}
+
+function writeWasmString(buffer: ByteBuffer, s: String) {
+  if (s.encoding == Encoding.WTF16) {
+    let sLen = s.length;
+    var utf8Len = 0;
+    var i = 0;
+    while (i < sLen) {
+      let cp = s.codePointAt(i);
+      if (cp < 0x80) {
+        utf8Len += 1;
+      } else if (cp < 0x800) {
+        utf8Len += 2;
+      } else if (cp < 0x10000) {
+        utf8Len += 3;
+      } else {
+        utf8Len += 4;
+      }
+      if (cp >= 0x10000) {
+        i += 2;
+      } else {
+        i += 1;
+      }
+    }
+    buffer.writeULEB128(utf8Len);
+    i = 0;
+    while (i < sLen) {
+      let cp = s.codePointAt(i);
+      if (cp < 0x80) {
+        buffer.writeByte(cp);
+      } else if (cp < 0x800) {
+        buffer.writeByte(0xC0 | (cp >> 6));
+        buffer.writeByte(0x80 | (cp & 0x3F));
+      } else if (cp < 0x10000) {
+        buffer.writeByte(0xE0 | (cp >> 12));
+        buffer.writeByte(0x80 | ((cp >> 6) & 0x3F));
+        buffer.writeByte(0x80 | (cp & 0x3F));
+      } else {
+        buffer.writeByte(0xF0 | (cp >> 18));
+        buffer.writeByte(0x80 | ((cp >> 12) & 0x3F));
+        buffer.writeByte(0x80 | ((cp >> 6) & 0x3F));
+        buffer.writeByte(0x80 | (cp & 0x3F));
+      }
+      if (cp >= 0x10000) {
+        i += 2;
+      } else {
+        i += 1;
+      }
+    }
+  } else {
+    let len = s.length;
+    buffer.writeULEB128(len);
+    for (var j = 0; j < len; j += 1) {
+      buffer.writeByte(s.getByteAt(j));
+    }
+  }
 }
 
 /**
@@ -207,14 +263,8 @@ export final class BinaryEmitter implements WasmEmitter {
   emitFunctionImport(module: String, name: String, typeIndex: i32): void {
     let section = this.currentSection;
     if (section != null) {
-      section.writeULEB128(module.length);
-      for (var j = 0; j < module.length; j += 1) {
-        section.writeByte(module.getByteAt(j));
-      }
-      section.writeULEB128(name.length);
-      for (var j = 0; j < name.length; j += 1) {
-        section.writeByte(name.getByteAt(j));
-      }
+      writeWasmString(section, module);
+      writeWasmString(section, name);
       section.writeByte(0x00); // 0 = function import
       section.writeULEB128(typeIndex);
     }
@@ -222,14 +272,8 @@ export final class BinaryEmitter implements WasmEmitter {
   emitGlobalImport(module: String, name: String, type: ValType, isMutable: boolean): void {
     let section = this.currentSection;
     if (section != null) {
-      section.writeULEB128(module.length);
-      for (var j = 0; j < module.length; j += 1) {
-        section.writeByte(module.getByteAt(j));
-      }
-      section.writeULEB128(name.length);
-      for (var j = 0; j < name.length; j += 1) {
-        section.writeByte(name.getByteAt(j));
-      }
+      writeWasmString(section, module);
+      writeWasmString(section, name);
       section.writeByte(0x03); // 3 = global import
       emitValType(section, type);
       section.writeByte(if (isMutable) 1 else 0);
@@ -310,11 +354,7 @@ export final class BinaryEmitter implements WasmEmitter {
       return;
     }
     
-    let nameLen = name.length;
-    section.writeULEB128(nameLen);
-    for (var j = 0; j < nameLen; j += 1) {
-      section.writeByte(name.getByteAt(j));
-    }
+    writeWasmString(section, name);
     section.writeByte(0); // func
     section.writeULEB128(func.index);
   }
@@ -325,11 +365,7 @@ export final class BinaryEmitter implements WasmEmitter {
       return;
     }
     
-    let nameLen = name.length;
-    section.writeULEB128(nameLen);
-    for (var j = 0; j < nameLen; j += 1) {
-      section.writeByte(name.getByteAt(j));
-    }
+    writeWasmString(section, name);
     section.writeByte(3); // global
     section.writeULEB128(globalIndex);
   }
@@ -340,11 +376,7 @@ export final class BinaryEmitter implements WasmEmitter {
       return;
     }
     
-    let nameLen = name.length;
-    section.writeULEB128(nameLen);
-    for (var j = 0; j < nameLen; j += 1) {
-      section.writeByte(name.getByteAt(j));
-    }
+    writeWasmString(section, name);
     section.writeByte(4); // tag
     section.writeULEB128(tagIndex);
   }
@@ -501,11 +533,7 @@ export final class BinaryEmitter implements WasmEmitter {
           name = f.methodName;
         }
         let nameStr = name as String;
-        let len = nameStr.length;
-        subPayload.writeULEB128(len);
-        for (var i = 0; i < len; i += 1) {
-          subPayload.writeByte(nameStr.getByteAt(i));
-        }
+        writeWasmString(subPayload, nameStr);
       }
 
       payload.writeByte(1); // subsection id for function names
@@ -518,11 +546,7 @@ export final class BinaryEmitter implements WasmEmitter {
         typePayload.writeULEB128(this.#typeNames.length);
         for (var t = 0; t < this.#typeNames.length; t += 1) {
           typePayload.writeULEB128(this.#typeNameIndices[t]);
-          let typeName = this.#typeNames[t];
-          typePayload.writeULEB128(typeName.length);
-          for (var i = 0; i < typeName.length; i += 1) {
-            typePayload.writeByte(typeName.getByteAt(i));
-          }
+          writeWasmString(typePayload, this.#typeNames[t]);
         }
         payload.writeByte(4);
         payload.writeULEB128(typePayload.length);
@@ -1026,14 +1050,8 @@ export final class BinaryEmitter implements WasmEmitter {
     if (section == null) {
       return;
     }
-    section.writeULEB128(module.length);
-    for (var j = 0; j < module.length; j += 1) {
-      section.writeByte(module.getByteAt(j));
-    }
-    section.writeULEB128(name.length);
-    for (var j = 0; j < name.length; j += 1) {
-      section.writeByte(name.getByteAt(j));
-    }
+    writeWasmString(section, module);
+    writeWasmString(section, name);
     section.writeByte(0x02); // 2 = memory import
     section.writeByte(0x00); // limits: min only
     section.writeULEB128(minPages);
@@ -1052,11 +1070,7 @@ export final class BinaryEmitter implements WasmEmitter {
     if (section == null) {
       return;
     }
-    let nameLen = name.length;
-    section.writeULEB128(nameLen);
-    for (var j = 0; j < nameLen; j += 1) {
-      section.writeByte(name.getByteAt(j));
-    }
+    writeWasmString(section, name);
     section.writeByte(2); // memory export kind
     section.writeULEB128(memIndex);
   }
