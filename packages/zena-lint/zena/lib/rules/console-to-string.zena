@@ -1,0 +1,115 @@
+/**
+ * `console` methods take any value and format it with `toString`, so a
+ * string conversion around the argument can go.
+ *
+ *     console.log(`${x}`);          →   console.log(x);
+ *     console.log(i32ToString(x));  →   console.log(x);
+ */
+
+import {
+  Expression, CallExpression, MemberExpression, Identifier, TemplateLiteral,
+} from 'zena-compiler:ast';
+import { walkEnter } from 'zena-compiler:visitor';
+import { typeToString } from 'zena-compiler:types';
+import { RuleContext } from '../context.zena';
+
+export function consoleToString(ctx: RuleContext): void {
+  walkEnter(ctx.ast, (n) => {
+    if (n is CallExpression) {
+      rewrite(ctx, n);
+    }
+  });
+}
+
+function rewrite(ctx: RuleContext, call: CallExpression): void {
+  if (call.optional || call.typeArguments != null || call.args.length != 1) {
+    return;
+  }
+  if (!(call.callee is MemberExpression)) {
+    return;
+  }
+  let callee = call.callee as MemberExpression;
+  if (callee.optional || callee.isSymbolAccess || !isConsoleMethod(callee.property.name) ||
+      !isConsole(ctx, callee.object)) {
+    return;
+  }
+  let arg = call.args[0];
+  let inner = unwrap(ctx, arg);
+  if (inner === arg) {
+    return;
+  }
+  let text = ctx.text(inner);
+  if (text.length == 0) {
+    return;
+  }
+  ctx.replace(arg, text);
+}
+
+function isConsoleMethod(name: String): boolean {
+  return name == 'log' || name == 'error' || name == 'warn' ||
+      name == 'info' || name == 'debug';
+}
+
+function isConsole(ctx: RuleContext, object: Expression): boolean {
+  let t = ctx.typeOf(object);
+  if (t == null) {
+    return false;
+  }
+  let name = typeToString(ctx.unwrap(t));
+  return name == 'Console' || name == 'HostConsole' || name == 'ComponentConsole';
+}
+
+function unwrap(ctx: RuleContext, expr: Expression): Expression {
+  var current = expr;
+  while (!ctx.hasComment(current)) {
+    let next = unwrapOnce(ctx, current);
+    if (next == null) {
+      break;
+    }
+    current = next;
+  }
+  return current;
+}
+
+function unwrapOnce(ctx: RuleContext, expr: Expression): Expression | null {
+  if (let TemplateLiteral {quasis, expressions} = expr) {
+    if (expressions.length == 1 && quasis.length == 2 &&
+        quasis[0].raw.length == 0 && quasis[1].raw.length == 0) {
+      return expressions[0];
+    }
+    return null;
+  }
+  if (let CallExpression {callee, args, typeArguments, optional} = expr) {
+    if (optional || typeArguments != null) {
+      return null;
+    }
+    if (args.length == 1 && callee is Identifier) {
+      let sym = ctx.symbolOf(callee);
+      if (sym == null) {
+        return null;
+      }
+      let target = sym.resolveTarget();
+      if (!target.modulePath.startsWith('zena:')) {
+        return null;
+      }
+      let inner = args[0];
+      let name = target.name;
+      if (name == 'toString' || name == 'i32ToString' || name == 'f64ToString' ||
+          name == 'boolToString') {
+        return inner;
+      }
+      if ((name == 'u32ToString' || name == 'i64ToString' || name == 'u64ToString' ||
+          name == 'f32ToString') && !ctx.isContextuallyTyped(inner)) {
+        return inner;
+      }
+      return null;
+    }
+    if (args.length == 0 && callee is MemberExpression) {
+      let member = callee as MemberExpression;
+      if (!member.optional && member.isSymbolAccess && member.property.name == 'toString') {
+        return member.object;
+      }
+    }
+  }
+  return null;
+}

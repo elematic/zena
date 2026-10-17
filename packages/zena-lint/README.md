@@ -35,6 +35,7 @@ command "Zena: Fix lint findings in file".
 | `for-in`                 | index loops that read only `xs[i]` → `for (let x in xs)`                                    |
 | `boolean-return`         | `if (c) { return true; } return false;` → `return c;`; `if (c) true else false` → `c`       |
 | `template-literal`       | three or more `+`-joined strings → a template literal                                       |
+| `console-to-string`      | ``console.log(`${x}`)`` and `console.log(i32ToString(x))` → `console.log(x)`                |
 | `arrow-body`             | `(x) => { return e; }` → `(x) => e`                                                         |
 | `prefer-let`             | `var` never assigned again → `let`                                                          |
 | `immutable-field`        | `var` field nothing assigns → immutable field (`#private`, or the class is not exported)    |
