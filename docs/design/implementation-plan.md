@@ -51,7 +51,7 @@ in [ownership.md](ownership.md).
    event (R3) for record semantics, not a drip.
 4. **Generators/async first.** The G-track has no dependency on the
    records/equality arc, and it advances the M-track (fusion builds the
-   M3 inliner's splice substrate) while rows want M5 (template ZIR) —
+   M3 inliner's splice substrate) while rows want M5 (template ZIR, #410) —
    so concurrency-first is also the infrastructure-optimal order.
 
 ## Track G — generators, then async (the priority track)
@@ -124,11 +124,12 @@ Per row-types.md §9, refined:
   needed by ownership's container work and by A1).
 - **A1 — row generics**: `R extends record`/`tuple`, type-level spread,
   lacks constraints, monomorphized instantiation with
-  `ZENA_ZIR_STATS` counters. Coordinate with **M5** (template ZIR) for
-  instantiation cost — don't block on it, but gate stdlib-hot-path
-  adoption on it. **Status:** record and tuple rows are implemented
-  (bounds, type-level spread, inference, lacks, per-row
-  specialization). The `ZENA_ZIR_STATS` instantiation counters remain.
+  `ZENA_ZIR_STATS` counters. Coordinate with **M5** (template ZIR,
+  #410) for instantiation cost — don't block on it, but gate
+  stdlib-hot-path adoption on it. **Status:** implemented: bounds,
+  type-level spread, inference, lacks, per-row specialization, and
+  `ZENA_ZIR_STATS=1` printing each row-generic function's instantiation
+  count.
 - **A2 — value-level ops**: spread over row types (TypeScript's rule,
   row-types.md Decisions), rest patterns and typed `...rest` (record +
   tuple). **Status:** the record half is implemented: spread of a
@@ -240,7 +241,7 @@ shared lowering (row-types.md §7.4) wired to `-Osize`; SoA/`MultiList`;
 | V0 `===` ban            | nothing                         | everything           |
 | V1 virtual `==`         | `Type`/`Node` sites made `===`  | G-track, rows        |
 | V2 IdentityMap/WeakMap  | RTA injection + V1 `Hashable`   | records flip         |
-| A0/A1/A2 rows           | bounds infra; M5 for scale      | G-track              |
+| A0/A1/A2 rows           | bounds infra; #410 for scale    | G-track              |
 | A3 config records       | nothing (better after M4)       | A0/A1                |
 | R3 flip                 | V0, #372, Track A               | —                    |
 | Track B harvest         | R3                              | —                    |

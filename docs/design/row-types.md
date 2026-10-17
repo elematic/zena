@@ -661,13 +661,17 @@ types are statically known").
 1. **Monomorphization pressure.** Rows add an instantiation axis
    (function × tail), and monomorphization explosion is already the
    compiler's headline compile-time problem (ir.md §1). Mitigations, in
-   order: canonical-row interning (exists); template ZIR (M5) making
+   order: canonical-row interning (exists); template ZIR (ir.md §8,
+   milestone M5 in ir.md §14; #410) making
    each instantiation a memcpy-and-patch; and a future sharing
    refinement — key specializations by the _layout of the fields the
    body actually touches_ rather than the full row, so `{x: i32, y: f64}`
    and `{x: i32, y: f64, z: string}` share code for a body that only
    reads `x` when `x`'s slot coincides. Sequencing consequence: ship
-   row generics after or alongside M5, not long before.
+   row generics after or alongside template ZIR, not long before.
+   Row generics shipped first, so `ZENA_ZIR_STATS=1` reports each
+   row-generic function's instantiation count (`codegen/row-stats.zena`)
+   to keep this pressure visible until then.
 2. **Existential overuse.** TS-trained users may write `{x: i32, ...}`
    reflexively, recreating today's dispatch-everywhere world with extra
    steps. The defaults defend against this: the terse spelling is

@@ -11,6 +11,7 @@ import {
 } from './wasm-module.zena';
 import { ByteBuffer, growable } from 'zena:core';
 import { ReachabilityAnalysis } from './reachability/analysis.zena';
+import { rowInstantiationCounts, rowInstantiationReport } from './row-stats.zena';
 import { prepareGenerators } from './ir/generators.zena';
 import { prepareAsyncFunctions } from './ir/async.zena';
 import { explodeRecordParameters } from './ir/explode.zena';
@@ -306,6 +307,12 @@ export final class ModuleGenerator {
     let tDiscovery = performance.start("codegen-discovery");
     let pass = new ReachabilityAnalysis(this.program, wasm, this.target);
     pass.run();
+    if (this.zirStats) {
+      // Before explosion splits functions, so each counts once.
+      for (let line in rowInstantiationReport(rowInstantiationCounts(wasm))) {
+        console.log(line);
+      }
+    }
     // Class structs now have their supertypes; immutable arrays of
     // them can declare theirs (lowering's conformance checks read it).
     wasm.linkArraySupertypes();

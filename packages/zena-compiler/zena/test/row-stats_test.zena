@@ -1,0 +1,81 @@
+/**
+ * `ZENA_ZIR_STATS` reports how many times each row-generic function was
+ * instantiated (docs/design/row-types.md §7.3, open question 6). The
+ * counts come from reachability's specializations, so they have to
+ * match the rows the program calls with: one per distinct row, none for
+ * a generic over an ordinary type parameter.
+ */
+import { suite, test } from 'zena:test';
+import { equal } from 'zena:assert';
+import { Program, CompilationUnit } from '../lib/program.zena';
+import { WasmModule } from '../lib/codegen/wasm-module.zena';
+import { ReachabilityAnalysis } from '../lib/codegen/reachability/analysis.zena';
+import { rowInstantiationCounts, rowInstantiationReport } from '../lib/codegen/row-stats.zena';
+import { makeCompiler, MockHost, errorDiagnostics } from './test-utils.zena';
+import { checkCompilation } from '../lib/compiler.zena';
+
+/** Runs reachability over `source` and returns the module it fills in. */
+function reach(source: String) {
+  let host = new MockHost();
+  host.addFile("test.zena", source);
+  let compiler = makeCompiler(host);
+  let compResult = compiler.compile({entry: "test.zena", target: 'js'});
+  let checkRes = checkCompilation(compResult);
+  let errors = errorDiagnostics(checkRes.diagnostics);
+  if (errors.length > 0) {
+    throw new Error(`the fixture does not compile: ${errors[0].message}`);
+  }
+  let entryAst = compResult.entry.ast;
+  let units = new Array<CompilationUnit>();
+  var entryUnit: CompilationUnit | null = null;
+  for (let file in compResult.files) {
+    if (!file.isStdlib) {
+      let res = checkRes.results[file.path];
+      if (res != null) {
+        let unit = {ast: file.ast, model: res.model};
+        units.push(unit);
+        if (file.ast.path == entryAst.path) {
+          entryUnit = unit;
+        }
+      }
+    }
+  }
+  let wasm = new WasmModule();
+  let program = new Program(units, entryUnit);
+  wasm.program = program;
+  new ReachabilityAnalysis(program, wasm, 'js').run();
+  return wasm;
+}
+
+let fixture = `
+let keep = <R extends record>(p: {x: i32, ...R}): {x: i32, ...R} => p;
+let first = <R extends tuple>(t: (i32, ...R)): i32 => t[0];
+let plain = <T>(v: T): T => v;
+
+export let main = (): i32 => {
+  let a = keep({x: 1, y: 2});
+  let b = keep({x: 1, z: true});
+  let c = keep({x: 2, y: 3});
+  let n = first((1, 2.5)) + first((2, 3.5));
+  return a.y + c.y + n + plain(1) + (if (b.z) 1 else 0);
+};
+`;
+
+export let tests = suite('row instantiation counts', () => {
+  test('counts one instantiation per distinct row', () => {
+    let counts = rowInstantiationCounts(reach(fixture));
+    equal(counts.length, 2);
+    equal(counts[0].name, 'keep');
+    equal(counts[0].count, 2);
+    equal(counts[1].name, 'first');
+    equal(counts[1].count, 1);
+  });
+
+  test('reports a total and a line per function', () => {
+    let lines = rowInstantiationReport(rowInstantiationCounts(reach(fixture)));
+    equal(lines.length, 3);
+    equal(lines[0], 'zir rows: 2 row-generic functions, 3 instantiations');
+    equal(lines[1], '  keep: 2');
+    equal(lines[2], '  first: 1');
+  });
+});
