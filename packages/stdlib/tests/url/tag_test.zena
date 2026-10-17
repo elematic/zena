@@ -3,32 +3,32 @@ import {equal, isTrue} from 'zena:assert';
 import {URL, url} from 'zena:url';
 
 /** Builds via the tag, failing the test if the template did not parse. */
-let must = (u: URL | null): URL => {
+let must = (u: URL | null) => {
   isTrue(u != null);
   return u as URL;
 };
 
-export let tests = suite('url template tag', (): void => {
-  test('a template with no holes is just parsed', (ctx: TestContext): void => {
+export let tests = suite('url template tag', () => {
+  test('a template with no holes is just parsed', (ctx) => {
     equal(must(url`https://example.com/a?q=1#f`).href, 'https://example.com/a?q=1#f');
   });
 
-  test('an unparsable template returns null', (ctx: TestContext): void => {
+  test('an unparsable template returns null', (ctx) => {
     let x = 'y';
     isTrue(url`not a url/${x}` == null);
     // Relative templates have no base to resolve against.
     isTrue(url`/a/${x}` == null);
   });
 
-  suite('interpolation is encoded for its component', (): void => {
-    test('a path hole cannot add a segment', (ctx: TestContext): void => {
+  suite('interpolation is encoded for its component', () => {
+    test('a path hole cannot add a segment', (ctx) => {
       let team = 'a/b team';
       let u = must(url`https://example.com/teams/${team}/dashboard`);
       equal(u.pathname, '/teams/a%2Fb%20team/dashboard');
       equal(u.href, 'https://example.com/teams/a%2Fb%20team/dashboard');
     });
 
-    test('a path hole cannot start a query or fragment', (ctx: TestContext): void => {
+    test('a path hole cannot start a query or fragment', (ctx) => {
       let evil = '../../etc?x=1#y';
       let u = must(url`https://example.com/files/${evil}`);
       equal(u.pathname, '/files/..%2F..%2Fetc%3Fx%3D1%23y');
@@ -36,7 +36,7 @@ export let tests = suite('url template tag', (): void => {
       equal(u.hash, '');
     });
 
-    test('a query hole cannot add a parameter', (ctx: TestContext): void => {
+    test('a query hole cannot add a parameter', (ctx) => {
       let q = 'a&admin=true';
       let u = must(url`https://example.com/s?q=${q}`);
       equal(u.search, '?q=a%26admin%3Dtrue');
@@ -44,24 +44,24 @@ export let tests = suite('url template tag', (): void => {
       isTrue(u.searchParams().get('admin') == null);
     });
 
-    test('a fragment hole is encoded too', (ctx: TestContext): void => {
+    test('a fragment hole is encoded too', (ctx) => {
       let f = 'a b&c';
       equal(must(url`https://example.com/#${f}`).hash, '#a%20b%26c');
     });
 
-    test('an existing percent sign is escaped, not passed through', (ctx: TestContext): void => {
+    test('an existing percent sign is escaped, not passed through', (ctx) => {
       let raw = '100%2F';
       // Without escaping the '%' this would decode back to a slash.
       let u = must(url`https://example.com/${raw}`);
       equal(u.pathname, '/100%252F');
     });
 
-    test('non-ASCII values are UTF-8 percent-encoded', (ctx: TestContext): void => {
+    test('non-ASCII values are UTF-8 percent-encoded', (ctx) => {
       let name = 'café';
       equal(must(url`https://example.com/${name}`).pathname, '/caf%C3%A9');
     });
 
-    test('several holes each take their own component', (ctx: TestContext): void => {
+    test('several holes each take their own component', (ctx) => {
       let seg = 'a b';
       let q = 'c&d';
       let f = 'e f';
@@ -69,70 +69,70 @@ export let tests = suite('url template tag', (): void => {
             'https://example.com/a%20b?q=c%26d#e%20f');
     });
 
-    test('an opaque path takes holes as well', (ctx: TestContext): void => {
+    test('an opaque path takes holes as well', (ctx) => {
       let who = 'a b@example.com';
       equal(must(url`mailto:${who}`).pathname, 'a%20b%40example.com');
     });
   });
 
-  suite('IPv6 hosts', (): void => {
+  suite('IPv6 hosts', () => {
     // The scanner ignores ':' inside the authority, so the colons of an IPv6
     // address and the one before a port both pass through without ending it.
-    test('a path hole after a bracketed host lands in the path', (ctx: TestContext): void => {
+    test('a path hole after a bracketed host lands in the path', (ctx) => {
       let x = 'a b';
       let u = must(url`http://[2001:db8::1]/${x}`);
       equal(u.hostname, '[2001:db8::1]');
       equal(u.pathname, '/a%20b');
     });
 
-    test('a port after a bracketed host does not confuse the scanner', (ctx: TestContext): void => {
+    test('a port after a bracketed host does not confuse the scanner', (ctx) => {
       let x = 'a b';
       let u = must(url`http://[::1]:8080/${x}`);
       equal(u.host(), '[::1]:8080');
       equal(u.pathname, '/a%20b');
     });
 
-    test('a query hole with a bracketed host and no path', (ctx: TestContext): void => {
+    test('a query hole with a bracketed host and no path', (ctx) => {
       let q = 'a&b';
       let u = must(url`http://[::1]?q=${q}`);
       equal(u.hostname, '[::1]');
       equal(u.search, '?q=a%26b');
     });
 
-    test('the address is canonicalized like any other host', (ctx: TestContext): void => {
+    test('the address is canonicalized like any other host', (ctx) => {
       let x = 'y';
       equal(must(url`http://[2001:0db8:0000:0000:0000:0000:0000:0001]/${x}`).href,
             'http://[2001:db8::1]/y');
     });
 
-    test('a hole inside the brackets is refused', (ctx: TestContext): void => {
+    test('a hole inside the brackets is refused', (ctx) => {
       let group = '2001:db8';
       isTrue(url`http://[${group}::1]/a` == null);
     });
   });
 
-  suite('holes before the path are refused', (): void => {
+  suite('holes before the path are refused', () => {
     // These have no safe encoding — a host is parsed from its raw text, not
     // percent-decoded — so the tag refuses rather than encoding something that
     // would not mean what it looks like.
-    test('a host hole returns null', (ctx: TestContext): void => {
+    test('a host hole returns null', (ctx) => {
       let host = 'example.com';
       isTrue(url`https://${host}/a` == null);
     });
 
-    test('a scheme hole returns null', (ctx: TestContext): void => {
+    test('a scheme hole returns null', (ctx) => {
       let scheme = 'https';
       isTrue(url`${scheme}://example.com/` == null);
     });
 
-    test('credential and port holes return null', (ctx: TestContext): void => {
+    test('credential and port holes return null', (ctx) => {
       let secret = 'hunter2';
       let port = '8080';
       isTrue(url`https://user:${secret}@example.com/` == null);
       isTrue(url`https://example.com:${port}/` == null);
     });
 
-    test('a single slash after a special scheme still reaches the host', (ctx: TestContext): void => {
+    test('a single slash after a special scheme still reaches the host', (ctx) => {
       // 'https:/x' is parsed as 'https://x', so the hole would be the HOST
       // even though only one slash was written. Refused, unlike the opaque
       // path case above where no slash at all means no authority.
@@ -140,14 +140,14 @@ export let tests = suite('url template tag', (): void => {
       isTrue(url`https:/${host}/a` == null);
     });
 
-    test('a hole after the authority is fine', (ctx: TestContext): void => {
+    test('a hole after the authority is fine', (ctx) => {
       // The boundary case for the one above: the same template with the hole
       // moved past the first '/'.
       let x = 'a b';
       equal(must(url`https://user:pw@example.com:8080/${x}`).pathname, '/a%20b');
     });
 
-    test('a query hole on a URL with no path is fine', (ctx: TestContext): void => {
+    test('a query hole on a URL with no path is fine', (ctx) => {
       let q = 'a b';
       equal(must(url`https://example.com?q=${q}`).href, 'https://example.com/?q=a%20b');
     });

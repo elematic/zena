@@ -73,7 +73,7 @@ export class Stream<T> implements AsyncIterable<T> {
     }
     let src = this.#writeBuf;
     if (src != null) {
-      let from = src as FixedArray<T>;
+      let from = src;
       let remaining = this.#writeEnd - this.#writeOffset;
       let n = if (remaining < buf.length) remaining else buf.length;
       var i = 0;
@@ -110,7 +110,7 @@ export class Stream<T> implements AsyncIterable<T> {
     }
     let src = this.#writeBuf;
     if (src != null) {
-      let from = src as FixedArray<T>;
+      let from = src;
       let value = from[this.#writeOffset];
       this.#writeOffset += 1;
       this.#completeIfDrained();
@@ -155,18 +155,18 @@ export class Stream<T> implements AsyncIterable<T> {
       this.#writeDone = null;
       this.#writeOffset = 0;
       this.#writeEnd = 0;
-      (done as Completer<boolean>).complete(false);
+      done.complete(false);
     }
     let pending = this.#pendingRead;
     if (pending != null) {
       this.#pendingRead = null;
       this.#pendingBuf = null;
-      (pending as Completer<i32>).complete(0);
+      pending.complete(0);
     }
     let pendingOne = this.#pendingOne;
     if (pendingOne != null) {
       this.#pendingOne = null;
-      (pendingOne as Completer<Option<T>>).complete(none);
+      pendingOne.complete(none);
     }
   }
 
@@ -185,7 +185,7 @@ export class Stream<T> implements AsyncIterable<T> {
     let pendingOne = this.#pendingOne;
     if (pendingOne != null) {
       this.#pendingOne = null;
-      (pendingOne as Completer<Option<T>>).complete(some(value));
+      pendingOne.complete(some(value));
       return Future.of(true as boolean);
     }
     let pending = this.#pendingRead;
@@ -194,7 +194,7 @@ export class Stream<T> implements AsyncIterable<T> {
       buf[0] = value;
       this.#pendingRead = null;
       this.#pendingBuf = null;
-      (pending as Completer<i32>).complete(1);
+      pending.complete(1);
       return Future.of(true as boolean);
     }
     let single = new Array<T>.fixed(1, value);
@@ -224,7 +224,7 @@ export class Stream<T> implements AsyncIterable<T> {
     if (pendingOne != null) {
       // Rendezvous with the blocked one-element reader; the rest parks.
       this.#pendingOne = null;
-      (pendingOne as Completer<Option<T>>).complete(some(buf[0]));
+      pendingOne.complete(some(buf[0]));
       if (count == 1) {
         return Future.of(true as boolean);
       }
@@ -244,7 +244,7 @@ export class Stream<T> implements AsyncIterable<T> {
       }
       this.#pendingRead = null;
       this.#pendingBuf = null;
-      (pending as Completer<i32>).complete(n);
+      pending.complete(n);
       if (n >= count) {
         return Future.of(true as boolean);
       }
@@ -289,12 +289,12 @@ export class Stream<T> implements AsyncIterable<T> {
     if (pending != null) {
       this.#pendingRead = null;
       this.#pendingBuf = null;
-      (pending as Completer<i32>).complete(0);
+      pending.complete(0);
     }
     let pendingOne = this.#pendingOne;
     if (pendingOne != null) {
       this.#pendingOne = null;
-      (pendingOne as Completer<Option<T>>).complete(none);
+      pendingOne.complete(none);
     }
   }
 
@@ -318,7 +318,7 @@ export class Stream<T> implements AsyncIterable<T> {
     }
     let src = this.#writeBuf;
     if (src != null) {
-      let from = src as FixedArray<T>;
+      let from = src;
       let value = from[this.#writeOffset];
       this.#writeOffset += 1;
       this.#completeIfDrained();

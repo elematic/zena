@@ -8,7 +8,7 @@ import {
   summarize, sortedCopy, tCritical95, differenceOfMeans, parseHorizons, isResolved,
 } from 'zena:bench';
 
-let approx = (actual: f64, expected: f64, tolerance: f64, label: String): void => {
+let approx = (actual: f64, expected: f64, tolerance: f64, label: String) => {
   isTrue(
     abs(actual - expected) <= tolerance,
     `${label}: expected ${expected}, got ${actual}`);
@@ -22,8 +22,8 @@ let arrayOf = (values: FixedArray<f64>): Array<f64> => {
   return out;
 };
 
-export let tests = suite('zena:bench statistics', (): void => {
-  test('sortedCopy sorts and preserves the input', (ctx: TestContext): void => {
+export let tests = suite('zena:bench statistics', () => {
+  test('sortedCopy sorts and preserves the input', (ctx) => {
     let input = arrayOf([3.0, 1.0, 2.0, 5.0, 4.0]);
     let sorted = sortedCopy(input);
     equal(sorted.length, 5);
@@ -36,7 +36,7 @@ export let tests = suite('zena:bench statistics', (): void => {
     equal(input[0], 3.0);
   });
 
-  test('summarize on a known distribution', (ctx: TestContext): void => {
+  test('summarize on a known distribution', (ctx) => {
     // Classic example: mean 5, sample sd sqrt(32/7) ≈ 2.13809.
     let stats = summarize(arrayOf([2.0, 4.0, 4.0, 4.0, 5.0, 5.0, 7.0, 9.0]));
     equal(stats.n, 8);
@@ -50,12 +50,12 @@ export let tests = suite('zena:bench statistics', (): void => {
     approx(stats.ciHigh, 6.78777, 0.001, 'ciHigh');
   });
 
-  test('summarize median of odd-length samples', (ctx: TestContext): void => {
+  test('summarize median of odd-length samples', (ctx) => {
     let stats = summarize(arrayOf([9.0, 1.0, 5.0]));
     approx(stats.median, 5.0, 0.000001, 'median');
   });
 
-  test('summarize degenerate cases', (ctx: TestContext): void => {
+  test('summarize degenerate cases', (ctx) => {
     let empty = summarize(new Array<f64>());
     equal(empty.n, 0);
 
@@ -68,7 +68,7 @@ export let tests = suite('zena:bench statistics', (): void => {
     approx(one.ciHigh, 3.5, 0.000001, 'ciHigh');
   });
 
-  test('t critical values match the standard table', (ctx: TestContext): void => {
+  test('t critical values match the standard table', (ctx) => {
     approx(tCritical95(1.0), 12.706, 0.0001, 't(1)');
     approx(tCritical95(7.0), 2.365, 0.0001, 't(7)');
     approx(tCritical95(30.0), 2.042, 0.001, 't(30)');
@@ -84,7 +84,7 @@ export let tests = suite('zena:bench statistics', (): void => {
     approx(tCritical95(60.0), 2.000, 0.01, 't(60)');
   });
 
-  test('difference of clearly separated distributions excludes zero', (ctx: TestContext): void => {
+  test('difference of clearly separated distributions excludes zero', (ctx) => {
     let a = summarize(arrayOf([10.0, 10.1, 9.9, 10.05, 9.95, 10.02, 9.98, 10.0]));
     let b = summarize(arrayOf([5.0, 5.1, 4.9, 5.05, 4.95, 5.02, 4.98, 5.0]));
     let d = differenceOfMeans(a, b);
@@ -99,14 +99,14 @@ export let tests = suite('zena:bench statistics', (): void => {
     approx(rev.absHigh, 0.0 - d.absLow, 0.000001, 'reverse absHigh');
   });
 
-  test('difference of overlapping distributions straddles zero', (ctx: TestContext): void => {
+  test('difference of overlapping distributions straddles zero', (ctx) => {
     let a = summarize(arrayOf([10.0, 11.0, 9.0, 10.5, 9.5, 10.2, 9.8, 10.1]));
     let b = summarize(arrayOf([10.1, 10.9, 9.1, 10.4, 9.6, 10.3, 9.7, 10.0]));
     let d = differenceOfMeans(a, b);
     isFalse(d.excludesZero(), 'CI straddles zero');
   });
 
-  test('horizon parsing', (ctx: TestContext): void => {
+  test('horizon parsing', (ctx) => {
     let h = parseHorizons(['0%', '2.5%', '0.5ms', '3']);
     equal(h.percents.length, 2);
     approx(h.percents[0], 0.0, 0.000001, 'percent 0');
@@ -116,7 +116,7 @@ export let tests = suite('zena:bench statistics', (): void => {
     approx(h.absolutes[1], 3.0, 0.000001, 'absolute 3');
   });
 
-  test('resolution against horizons', (ctx: TestContext): void => {
+  test('resolution against horizons', (ctx) => {
     let separated = differenceOfMeans(
       summarize(arrayOf([10.0, 10.1, 9.9, 10.05, 9.95])),
       summarize(arrayOf([5.0, 5.1, 4.9, 5.05, 4.95])));

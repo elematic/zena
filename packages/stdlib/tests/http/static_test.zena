@@ -10,7 +10,7 @@ import {
   httpDate, mimeType, send, serve, toWireResponse
 } from 'zena:http';
 
-function unit(): void {}
+function unit() {}
 
 /** The outcome of one request through `serve`. */
 class Served {
@@ -20,13 +20,13 @@ class Served {
   new(this.res, this.passed);
 }
 
-let fixtures = (): String => 'packages/stdlib/tests/http/fixtures/static';
+let fixtures = () => 'packages/stdlib/tests/http/fixtures/static';
 
 /** One request through `serve(fixtures(), options)`, run to completion. */
 let serveOne = (
   req: Request,
   options: SendOptions
-): Served => {
+) => {
   let middleware = serve(fixtures(), options);
   let res = new Response();
   var passed = false;
@@ -36,12 +36,11 @@ let serveOne = (
   return new Served(res, passed);
 };
 
-let get = (path: String): Served =>
+let get = (path: String) =>
     serveOne(new Request.fromUrl(`http://localhost${path}`), {});
 
-let getWith = (path: String, name: String, value: String): Served => {
-  let headers = new Map<String, String>();
-  headers[name] = value;
+let getWith = (path: String, name: String, value: String) => {
+  let headers: HashMap<String, String> = {name => value};
   return serveOne(
       new Request.fromUrl(`http://localhost${path}`, 'GET', headers), {});
 };
@@ -49,8 +48,8 @@ let getWith = (path: String, name: String, value: String): Served => {
 let bodyText = (res: Response): String =>
     blockOn(readAllText(res.body as Stream<u8>));
 
-export let tests = suite('zena:http static files', (): void => {
-  test('serves a file with its headers', (ctx: TestContext): void => {
+export let tests = suite('zena:http static files', () => {
+  test('serves a file with its headers', (ctx) => {
     let served = get('/hello.txt');
     isFalse(served.passed);
     let res = served.res;
@@ -64,7 +63,7 @@ export let tests = suite('zena:http static files', (): void => {
     isTrue((res.getHeader('etag') as String).startsWith('W/"6-'));
   });
 
-  test('serves the index file for a directory', (ctx: TestContext): void => {
+  test('serves the index file for a directory', (ctx) => {
     equal(bodyText(get('/').res), '<h1>home</h1>\n');
     equal(bodyText(get('/docs/').res), '<h1>docs</h1>\n');
     // Without the trailing slash too, since `format` is on.
@@ -73,19 +72,19 @@ export let tests = suite('zena:http static files', (): void => {
         'text/html; charset=utf-8');
   });
 
-  test('passes a directory on when format is off', (ctx: TestContext): void => {
+  test('passes a directory on when format is off', (ctx) => {
     let served = serveOne(new Request.fromUrl('http://localhost/docs'), {format: false});
     isTrue(served.passed);
   });
 
-  test('passes a missing file on to next', (ctx: TestContext): void => {
+  test('passes a missing file on to next', (ctx) => {
     let served = get('/missing.txt');
     isTrue(served.passed);
     equal(served.res.statusCode, 404);
     isTrue(served.res.body == null);
   });
 
-  test('serves the notFound file with status 404 when next leaves the response unhandled', (ctx: TestContext): void => {
+  test('serves the notFound file with status 404 when next leaves the response unhandled', (ctx) => {
     let served = serveOne(
         new Request.fromUrl('http://localhost/missing'), {notFound: 'about.html'});
     isTrue(served.passed);
@@ -112,21 +111,21 @@ export let tests = suite('zena:http static files', (): void => {
     equal(handledRes.body as String, 'downstream');
   });
 
-  test('passes hidden paths on to next', (ctx: TestContext): void => {
+  test('passes hidden paths on to next', (ctx) => {
     isTrue(get('/.private/key.txt').passed);
   });
 
-  test('serves hidden paths when asked to', (ctx: TestContext): void => {
+  test('serves hidden paths when asked to', (ctx) => {
     let served = serveOne(
         new Request.fromUrl('http://localhost/.private/key.txt'), {hidden: true});
     equal(bodyText(served.res), 'secret\n');
   });
 
-  test('decodes the path', (ctx: TestContext): void => {
+  test('decodes the path', (ctx) => {
     equal(bodyText(get('/hell%6F.txt').res), 'world\n');
   });
 
-  test('refuses a path above the root with 403', (ctx: TestContext): void => {
+  test('refuses a path above the root with 403', (ctx) => {
     let req = new Request.fromUrl('http://localhost/');
     req.path = '/docs/../../static_test.zena';
     var status = 0;
@@ -134,19 +133,19 @@ export let tests = suite('zena:http static files', (): void => {
       serveOne(req, {});
     } catch (e) {
       if (e is HttpError) {
-        status = (e as HttpError).status;
+        status = e.status;
       }
     }
     equal(status, 403);
   });
 
-  test('passes other methods on to next', (ctx: TestContext): void => {
+  test('passes other methods on to next', (ctx) => {
     let served = serveOne(
         new Request.fromUrl('http://localhost/hello.txt', 'POST'), {});
     isTrue(served.passed);
   });
 
-  test('answers HEAD without a body', (ctx: TestContext): void => {
+  test('answers HEAD without a body', (ctx) => {
     let served = serveOne(
         new Request.fromUrl('http://localhost/hello.txt', 'HEAD'), {});
     equal(served.res.statusCode, 200);
@@ -154,7 +153,7 @@ export let tests = suite('zena:http static files', (): void => {
     equal(served.res.getHeader('content-length') as String, '6');
   });
 
-  test('answers a matching If-None-Match with 304', (ctx: TestContext): void => {
+  test('answers a matching If-None-Match with 304', (ctx) => {
     let etag = get('/hello.txt').res.getHeader('etag') as String;
     let res = getWith('/hello.txt', 'If-None-Match', etag).res;
     equal(res.statusCode, 304);
@@ -166,10 +165,9 @@ export let tests = suite('zena:http static files', (): void => {
     equal(getWith('/hello.txt', 'If-None-Match', '"other"').res.statusCode, 200);
   });
 
-  test('answers If-None-Match with 304 only for GET and HEAD', (ctx: TestContext): void => {
+  test('answers If-None-Match with 304 only for GET and HEAD', (ctx) => {
     let etag = get('/hello.txt').res.getHeader('etag') as String;
-    let headers = new Map<String, String>();
-    headers['If-None-Match'] = etag;
+    let headers: HashMap<String, String> = {'If-None-Match' => etag};
     let req = new Request.fromUrl('http://localhost/', 'POST', headers);
     let res = new Response();
     blockOn(send(req, res, 'hello.txt', {root: fixtures()}));
@@ -177,7 +175,7 @@ export let tests = suite('zena:http static files', (): void => {
     equal(bodyText(res), 'world\n');
   });
 
-  test('an error after a file is sent stops its stream', (ctx: TestContext): void => {
+  test('an error after a file is sent stops its stream', (ctx) => {
     let app = new App();
     var sentBody: Stream<u8> | null = null;
     app.use(async (req, res, next) => {
@@ -193,7 +191,7 @@ export let tests = suite('zena:http static files', (): void => {
     equal(blockOn(readAllText(sentBody as Stream<u8>)), '');
   });
 
-  test('prefers a brotli variant the client accepts', (ctx: TestContext): void => {
+  test('prefers a brotli variant the client accepts', (ctx) => {
     let res = getWith('/style.css', 'Accept-Encoding', 'gzip, deflate, br').res;
     equal(bodyText(res), 'brotli bytes of style.css\n');
     equal(res.getHeader('content-encoding') as String, 'br');
@@ -201,13 +199,13 @@ export let tests = suite('zena:http static files', (): void => {
     equal(res.getHeader('vary') as String, 'Accept-Encoding');
   });
 
-  test('falls back to a gzip variant', (ctx: TestContext): void => {
+  test('falls back to a gzip variant', (ctx) => {
     let res = getWith('/style.css', 'Accept-Encoding', 'gzip, br;q=0').res;
     equal(bodyText(res), 'gzip bytes of style.css\n');
     equal(res.getHeader('content-encoding') as String, 'gzip');
   });
 
-  test('serves the plain file without an accepted encoding', (ctx: TestContext): void => {
+  test('serves the plain file without an accepted encoding', (ctx) => {
     let res = getWith('/style.css', 'Accept-Encoding', 'identity').res;
     equal(bodyText(res), 'body { color: red; }\n');
     isNull(res.getHeader('content-encoding'));
@@ -217,20 +215,20 @@ export let tests = suite('zena:http static files', (): void => {
     isNull(res2.getHeader('content-encoding'));
   });
 
-  test('tries extensions for a path without one', (ctx: TestContext): void => {
+  test('tries extensions for a path without one', (ctx) => {
     let served = serveOne(
         new Request.fromUrl('http://localhost/about'), {extensions: ['html']});
     equal(bodyText(served.res), '<h1>about</h1>\n');
     isTrue(get('/about').passed);
   });
 
-  test('sets Cache-Control from maxAge and immutable', (ctx: TestContext): void => {
+  test('sets Cache-Control from maxAge and immutable', (ctx) => {
     let served = serveOne(new Request.fromUrl('http://localhost/hello.txt'),
         {maxAge: milliseconds(60000 as i64), immutable: true});
     equal(served.res.getHeader('cache-control') as String, 'max-age=60,immutable');
   });
 
-  test('calls setHeaders with the file', (ctx: TestContext): void => {
+  test('calls setHeaders with the file', (ctx) => {
     var seen = '';
     let served = serveOne(new Request.fromUrl('http://localhost/hello.txt'), {
       setHeaders: (res, path, stat) => {
@@ -242,25 +240,25 @@ export let tests = suite('zena:http static files', (): void => {
     equal(served.res.getHeader('cache-control') as String, 'no-store');
   });
 
-  test('serves application/octet-stream for an unknown type', (ctx: TestContext): void => {
+  test('serves application/octet-stream for an unknown type', (ctx) => {
     equal(get('/data.xyz').res.getHeader('content-type') as String,
         'application/octet-stream');
   });
 
-  test('send throws 404 for a missing file', (ctx: TestContext): void => {
+  test('send throws 404 for a missing file', (ctx) => {
     var status = 0;
     try {
       let req = new Request.fromUrl('http://localhost/');
       blockOn(send(req, new Response(), 'nope.txt', {root: fixtures()}));
     } catch (e) {
       if (e is HttpError) {
-        status = (e as HttpError).status;
+        status = e.status;
       }
     }
     equal(status, 404);
   });
 
-  test('send serves a file under its root', (ctx: TestContext): void => {
+  test('send serves a file under its root', (ctx) => {
     let req = new Request.fromUrl('http://localhost/');
     let res = new Response();
     let sent = blockOn(send(req, res, 'docs/index.html', {root: fixtures()}));
@@ -268,7 +266,7 @@ export let tests = suite('zena:http static files', (): void => {
     equal(bodyText(res), '<h1>docs</h1>\n');
   });
 
-  test('send preserves an explicitly set status code on GET and HEAD', (ctx: TestContext): void => {
+  test('send preserves an explicitly set status code on GET and HEAD', (ctx) => {
     let getReq = new Request.fromUrl('http://localhost/missing');
     let getRes = new Response();
     getRes.statusCode = 404;
@@ -284,7 +282,7 @@ export let tests = suite('zena:http static files', (): void => {
     isTrue(headRes.body == null);
   });
 
-  test('a served file reaches the wire response', (ctx: TestContext): void => {
+  test('a served file reaches the wire response', (ctx) => {
     // The file's stream goes into `response.new` as it is; reading the
     // wire response's body back brings the file's bytes.
     let res = get('/hello.txt').res;
@@ -296,7 +294,7 @@ export let tests = suite('zena:http static files', (): void => {
     received.complete(new Ok<void, ErrorCode>(unit()));
   });
 
-  test('httpDate formats IMF-fixdate', (ctx: TestContext): void => {
+  test('httpDate formats IMF-fixdate', (ctx) => {
     equal(httpDate(0 as i64), 'Thu, 01 Jan 1970 00:00:00 GMT');
     equal(httpDate(86399 as i64), 'Thu, 01 Jan 1970 23:59:59 GMT');
     equal(httpDate(951782400 as i64), 'Tue, 29 Feb 2000 00:00:00 GMT');
@@ -304,7 +302,7 @@ export let tests = suite('zena:http static files', (): void => {
     equal(httpDate(4102444799 as i64), 'Thu, 31 Dec 2099 23:59:59 GMT');
   });
 
-  test('mimeType maps extensions', (ctx: TestContext): void => {
+  test('mimeType maps extensions', (ctx) => {
     equal(mimeType('a/b/index.HTML') as String, 'text/html; charset=utf-8');
     equal(mimeType('app.wasm') as String, 'application/wasm');
     isNull(mimeType('README'));

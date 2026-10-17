@@ -12,12 +12,12 @@ import {
 // Hand-written from the WHATWG URL Standard (https://url.spec.whatwg.org/).
 // Each suite links the spec section it covers. The generated WPT suites in
 // this directory cover conformance; these cover the API surface directly.
-export let tests = suite('URL percent-encoding', (): void => {
+export let tests = suite('URL percent-encoding', () => {
   // Set definitions: https://url.spec.whatwg.org/#percent-encoded-bytes
   // (one anchor per set is noted on its test below).
-  suite('encode sets', (): void => {
+  suite('encode sets', () => {
     // https://url.spec.whatwg.org/#c0-control-percent-encode-set
-    test('C0 control set encodes controls, DEL, and non-ASCII only', (ctx: TestContext): void => {
+    test('C0 control set encodes controls, DEL, and non-ASCII only', (ctx) => {
       isTrue(byteNeedsPercentEncoding(0x00, EncodeSet.C0Control));
       isTrue(byteNeedsPercentEncoding(0x1F, EncodeSet.C0Control));
       isTrue(byteNeedsPercentEncoding(0x7F, EncodeSet.C0Control));
@@ -27,7 +27,7 @@ export let tests = suite('URL percent-encoding', (): void => {
     });
 
     // https://url.spec.whatwg.org/#fragment-percent-encode-set
-    test('fragment set', (ctx: TestContext): void => {
+    test('fragment set', (ctx) => {
       // C0 + space, '"', '<', '>', '`'
       isTrue(byteNeedsPercentEncoding(0x20, EncodeSet.Fragment));
       isTrue(byteNeedsPercentEncoding(0x22, EncodeSet.Fragment));
@@ -39,7 +39,7 @@ export let tests = suite('URL percent-encoding', (): void => {
     });
 
     // https://url.spec.whatwg.org/#query-percent-encode-set
-    test('query set adds "#" but not backtick', (ctx: TestContext): void => {
+    test('query set adds "#" but not backtick', (ctx) => {
       isTrue(byteNeedsPercentEncoding(0x23, EncodeSet.Query));
       isFalse(byteNeedsPercentEncoding(0x60, EncodeSet.Query));
       isFalse(byteNeedsPercentEncoding(0x5E, EncodeSet.Query));  // '^'
@@ -47,12 +47,12 @@ export let tests = suite('URL percent-encoding', (): void => {
     });
 
     // https://url.spec.whatwg.org/#special-query-percent-encode-set
-    test('special-query set adds single quote', (ctx: TestContext): void => {
+    test('special-query set adds single quote', (ctx) => {
       isTrue(byteNeedsPercentEncoding(0x27, EncodeSet.SpecialQuery));
     });
 
     // https://url.spec.whatwg.org/#path-percent-encode-set
-    test('path set adds "?", "^", backtick, braces', (ctx: TestContext): void => {
+    test('path set adds "?", "^", backtick, braces', (ctx) => {
       isTrue(byteNeedsPercentEncoding(0x3F, EncodeSet.Path));
       // '^' is in the path set — missed on the first hand-written pass and
       // caught by the WPT suite, so it is pinned explicitly here.
@@ -65,7 +65,7 @@ export let tests = suite('URL percent-encoding', (): void => {
     });
 
     // https://url.spec.whatwg.org/#userinfo-percent-encode-set
-    test('userinfo set adds separators and brackets', (ctx: TestContext): void => {
+    test('userinfo set adds separators and brackets', (ctx) => {
       isTrue(byteNeedsPercentEncoding(0x2F, EncodeSet.Userinfo));  // '/'
       isTrue(byteNeedsPercentEncoding(0x3A, EncodeSet.Userinfo));  // ':'
       isTrue(byteNeedsPercentEncoding(0x3B, EncodeSet.Userinfo));  // ';'
@@ -80,7 +80,7 @@ export let tests = suite('URL percent-encoding', (): void => {
     });
 
     // https://url.spec.whatwg.org/#component-percent-encode-set
-    test('component set adds $ % & + ,', (ctx: TestContext): void => {
+    test('component set adds $ % & + ,', (ctx) => {
       isTrue(byteNeedsPercentEncoding(0x24, EncodeSet.Component));
       isTrue(byteNeedsPercentEncoding(0x25, EncodeSet.Component));
       isTrue(byteNeedsPercentEncoding(0x26, EncodeSet.Component));
@@ -90,7 +90,7 @@ export let tests = suite('URL percent-encoding', (): void => {
     });
 
     // https://url.spec.whatwg.org/#application-x-www-form-urlencoded-percent-encode-set
-    test('form-urlencoded set adds ! \' ( ) ~', (ctx: TestContext): void => {
+    test('form-urlencoded set adds ! \' ( ) ~', (ctx) => {
       isTrue(byteNeedsPercentEncoding(0x21, EncodeSet.FormUrlencoded));
       isTrue(byteNeedsPercentEncoding(0x27, EncodeSet.FormUrlencoded));
       isTrue(byteNeedsPercentEncoding(0x28, EncodeSet.FormUrlencoded));
@@ -106,43 +106,43 @@ export let tests = suite('URL percent-encoding', (): void => {
   // https://url.spec.whatwg.org/#string-percent-encode-after-encoding
   // (UTF-8 percent-encode of a string; spaceAsPlus is the form-urlencoded
   // serializer's 0x20 special case).
-  suite('percentEncode', (): void => {
-    test('passes through safe ASCII', (ctx: TestContext): void => {
+  suite('percentEncode', () => {
+    test('passes through safe ASCII', (ctx) => {
       equal(percentEncode('abc123-._~', EncodeSet.Component), 'abc123-._~');
     });
 
-    test('encodes with uppercase hex', (ctx: TestContext): void => {
+    test('encodes with uppercase hex', (ctx) => {
       equal(percentEncode(' ', EncodeSet.Fragment), '%20');
       equal(percentEncode('a b', EncodeSet.Path), 'a%20b');
     });
 
-    test('encodes UTF-8 bytes of non-ASCII characters', (ctx: TestContext): void => {
+    test('encodes UTF-8 bytes of non-ASCII characters', (ctx) => {
       equal(percentEncode('é', EncodeSet.C0Control), '%C3%A9');
       equal(percentEncode('€', EncodeSet.Query), '%E2%82%AC');
       equal(percentEncode('☃', EncodeSet.Component), '%E2%98%83');
     });
 
-    test('space as plus for form-urlencoded', (ctx: TestContext): void => {
+    test('space as plus for form-urlencoded', (ctx) => {
       equal(percentEncode('a b', EncodeSet.FormUrlencoded, true), 'a+b');
       equal(percentEncode('a+b', EncodeSet.FormUrlencoded, true), 'a%2Bb');
     });
 
-    test('path segment example from the design doc', (ctx: TestContext): void => {
+    test('path segment example from the design doc', (ctx) => {
       equal(percentEncode('a/b team', EncodeSet.Component), 'a%2Fb%20team');
     });
   });
 
   // https://url.spec.whatwg.org/#percent-decode
   // (a '%' not followed by two hex digits passes through unchanged).
-  suite('percentDecode', (): void => {
-    test('decodes hex escapes case-insensitively', (ctx: TestContext): void => {
+  suite('percentDecode', () => {
+    test('decodes hex escapes case-insensitively', (ctx) => {
       equal(percentDecode('%20'), ' ');
       equal(percentDecode('a%20b'), 'a b');
       equal(percentDecode('%C3%A9'), 'é');
       equal(percentDecode('%c3%a9'), 'é');
     });
 
-    test('passes through malformed escapes', (ctx: TestContext): void => {
+    test('passes through malformed escapes', (ctx) => {
       equal(percentDecode('%'), '%');
       equal(percentDecode('%2'), '%2');
       equal(percentDecode('%zz'), '%zz');
@@ -150,17 +150,17 @@ export let tests = suite('URL percent-encoding', (): void => {
       equal(percentDecode('%%41'), '%A');
     });
 
-    test('plus is literal unless plusAsSpace', (ctx: TestContext): void => {
+    test('plus is literal unless plusAsSpace', (ctx) => {
       equal(percentDecode('a+b'), 'a+b');
       equal(percentDecode('a+b', true), 'a b');
     });
 
-    test('round-trips every byte value', (ctx: TestContext): void => {
+    test('round-trips every byte value', (ctx) => {
       for (var b = 0; b < 256; b += 1) {
         let hi = (b >> 4) & 0xF;
         let lo = b & 0xF;
         let digits = '0123456789ABCDEF';
-        let encoded = '%' + digits.sliceBytes(hi, hi + 1) + digits.sliceBytes(lo, lo + 1);
+        let encoded = `%${digits.sliceBytes(hi, hi + 1)}${digits.sliceBytes(lo, lo + 1)}`;
         let decoded = percentDecode(encoded);
         equal(decoded.length, 1);
         equal(decoded.getByteAt(0), b);
@@ -170,8 +170,8 @@ export let tests = suite('URL percent-encoding', (): void => {
 
   // Parser: https://url.spec.whatwg.org/#concept-urlencoded-parser
   // Serializer: https://url.spec.whatwg.org/#concept-urlencoded-serializer
-  suite('form-urlencoded', (): void => {
-    test('parses pairs in order', (ctx: TestContext): void => {
+  suite('form-urlencoded', () => {
+    test('parses pairs in order', (ctx) => {
       let pairs = parseFormUrlencoded('a=1&b=2&a=3');
       equal(pairs.length, 3);
       let (n0, v0) = pairs[0];
@@ -185,7 +185,7 @@ export let tests = suite('URL percent-encoding', (): void => {
       equal(v2, '3');
     });
 
-    test('handles missing values and empty segments', (ctx: TestContext): void => {
+    test('handles missing values and empty segments', (ctx) => {
       let pairs = parseFormUrlencoded('a&&b=&=c');
       equal(pairs.length, 3);
       let (n0, v0) = pairs[0];
@@ -199,7 +199,7 @@ export let tests = suite('URL percent-encoding', (): void => {
       equal(v2, 'c');
     });
 
-    test('decodes plus and percent escapes', (ctx: TestContext): void => {
+    test('decodes plus and percent escapes', (ctx) => {
       let pairs = parseFormUrlencoded('q=a+b%21');
       equal(pairs.length, 1);
       let (name, value) = pairs[0];
@@ -207,16 +207,16 @@ export let tests = suite('URL percent-encoding', (): void => {
       equal(value, 'a b!');
     });
 
-    test('empty input parses to no pairs', (ctx: TestContext): void => {
+    test('empty input parses to no pairs', (ctx) => {
       equal(parseFormUrlencoded('').length, 0);
     });
 
-    test('serializes with encoding and plus-for-space', (ctx: TestContext): void => {
+    test('serializes with encoding and plus-for-space', (ctx) => {
       let pairs = [('q', 'a b'), ('x', '1&2=3')];
       equal(serializeFormUrlencoded(pairs), 'q=a+b&x=1%262%3D3');
     });
 
-    test('round-trips', (ctx: TestContext): void => {
+    test('round-trips', (ctx) => {
       let input = 'name=Jane+Doe&tags=a%2Cb&note=100%25';
       equal(serializeFormUrlencoded(parseFormUrlencoded(input)), input);
     });

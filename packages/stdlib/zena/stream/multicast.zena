@@ -175,12 +175,13 @@ export class Multicast<T> {
   /** A fresh subscription delivering under `policy`, starting at the
    * next element the source produces. */
   subscribe(policy: Policy): Subscription<T> {
-    var capacity = -1;
-    if (policy is Waits) {
-      capacity = 0;
+    let capacity = if (policy is Waits) {
+      0
     } else if (policy is Buffered) {
-      capacity = policy.capacity;
-    }
+      policy.capacity
+    } else {
+      -1
+    };
     let sub = new SubState<T>(capacity, this.#tail());
     if (this.#done) {
       sub.closed = true;
@@ -244,16 +245,13 @@ export class Multicast<T> {
       this.#trim();
     }
     this.#done = true;
-    var s = 0;
-    while (s < this.#subs.length) {
-      let sub = this.#subs[s];
+    for (let sub in this.#subs) {
       sub.closed = true;
       let w = sub.wake;
       if (w != null) {
         sub.wake = null;
         w.complete();
       }
-      s += 1;
     }
     for (let d in drains) {
       await d;

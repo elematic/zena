@@ -3,17 +3,17 @@
 import {suite, test, TestContext} from 'zena:test';
 import {equal, isTrue, isFalse} from 'zena:assert';
 import { Set, OrderedHashMap, HashSet, OrderedHashSet } from 'zena:collections';
-import {StringBuilder} from 'zena:core';
+import {StringBuilder, growable} from 'zena:core';
 
-let joinKeys = (m: Map<String, i32>): String => {
+let joinKeys = (m: Map<String, i32>) => {
   let sb = new StringBuilder();
-  m.forEach((key: String, value: i32): void => {
+  m.forEach((key, value) => {
     sb.append(key);
   });
   return sb.toString();
 };
 
-let joinValues = (s: Set<String>): String => {
+let joinValues = (s: Set<String>) => {
   let sb = new StringBuilder();
   for (let v in s) {
     sb.append(v);
@@ -21,8 +21,8 @@ let joinValues = (s: Set<String>): String => {
   return sb.toString();
 };
 
-export let tests = suite('interface constructors', (): void => {
-  test('new Map() is a HashMap', (ctx: TestContext): void => {
+export let tests = suite('interface constructors', () => {
+  test('new Map() is a HashMap', (ctx) => {
     let m = new Map<String, i32>();
     isTrue(m is HashMap<String, i32>);
     m["a"] = 1;
@@ -30,7 +30,7 @@ export let tests = suite('interface constructors', (): void => {
     equal(m.size, 1);
   });
 
-  test('new Map.ordered() keeps insertion order', (ctx: TestContext): void => {
+  test('new Map.ordered() keeps insertion order', (ctx) => {
     let m = new Map<String, i32>.ordered();
     isTrue(m is OrderedHashMap<String, i32>);
     m["c"] = 3;
@@ -39,16 +39,14 @@ export let tests = suite('interface constructors', (): void => {
     equal(joinKeys(m), "cab");
   });
 
-  test('new Map() takes its type arguments from the context', (ctx: TestContext): void => {
-    let m: Map<String, i32> = new Map();
-    m["x"] = 42;
+  test('new Map() takes its type arguments from the context', (ctx) => {
+    let m: Map<String, i32> = {"x" => 42};
     equal(m.getOr("x", 0), 42);
-    let capacity: Map<i32, i32> = new Map(4);
-    capacity[1] = 2;
+    let capacity: Map<i32, i32> = {1 => 2};
     equal(capacity[1], 2);
   });
 
-  test('new Set() is a HashSet', (ctx: TestContext): void => {
+  test('new Set() is a HashSet', (ctx) => {
     let s = new Set<i32>();
     isTrue(s is HashSet<i32>);
     isTrue(s.add(1));
@@ -56,7 +54,7 @@ export let tests = suite('interface constructors', (): void => {
     isTrue(s.has(1));
   });
 
-  test('new Set.ordered() keeps insertion order', (ctx: TestContext): void => {
+  test('new Set.ordered() keeps insertion order', (ctx) => {
     let s: Set<String> = new Set.ordered();
     isTrue(s is OrderedHashSet<String>);
     s.add("b");
@@ -65,17 +63,15 @@ export let tests = suite('interface constructors', (): void => {
     equal(joinValues(s), "bac");
   });
 
-  test('new Array() is a GrowableArray', (ctx: TestContext): void => {
-    let a = new Array<i32>();
-    a.push(1);
-    a.push(2);
+  test('new Array() is a GrowableArray', (ctx) => {
+    let a = growable<i32>([1, 2]);
     equal(a.length, 2);
     equal(a[1], 2);
     let b: Array<String> = new Array();
     equal(b.length, 0);
   });
 
-  test('new Array.growable() takes a capacity', (ctx: TestContext): void => {
+  test('new Array.growable() takes a capacity', (ctx) => {
     let a = new Array<i32>.growable(2);
     a.push(1);
     a.push(2);
@@ -84,7 +80,7 @@ export let tests = suite('interface constructors', (): void => {
     equal(a[2], 3);
   });
 
-  test('new Array.fixed() is a FixedArray of one value', (ctx: TestContext): void => {
+  test('new Array.fixed() is a FixedArray of one value', (ctx) => {
     let a = new Array<i32>.fixed(3, 7);
     equal(a.length, 3);
     equal(a[0] + a[1] + a[2], 21);

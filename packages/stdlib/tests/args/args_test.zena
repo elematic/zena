@@ -6,8 +6,8 @@ import {
   ParsedValue, Flag, Single, Multi
 } from 'zena:args';
 
-export let tests = suite('Args', (): void => {
-  test('boolean flags', (ctx: TestContext): void => {
+export let tests = suite('Args', () => {
+  test('boolean flags', (ctx) => {
     let parser = new ArgParser('app')
       .addOption('verbose', {type: OptionType.Flag, abbr: 'v', help: 'Verbose output'})
       .addOption('debug', {type: OptionType.Flag, abbr: 'g', help: 'Debug mode'})
@@ -34,7 +34,7 @@ export let tests = suite('Args', (): void => {
     isTrue(res3.getFlag('debug'));
   });
 
-  test('string options', (ctx: TestContext): void => {
+  test('string options', (ctx) => {
     let parser = new ArgParser('app')
       .addOption('output', {abbr: 'o', help: 'Output path', defaultVal: 'default.out'})
       .addOption('target', {abbr: 't', help: 'Target'});
@@ -73,7 +73,7 @@ export let tests = suite('Args', (): void => {
     equal(res5.getOption('output') ?? null, 'file4.txt');
   });
 
-  test('integer options', (ctx: TestContext): void => {
+  test('integer options', (ctx) => {
     let parser = new ArgParser('app')
       .addOption('count', {type: OptionType.Int, abbr: 'n', help: 'Count', defaultVal: '1'});
 
@@ -88,7 +88,7 @@ export let tests = suite('Args', (): void => {
     equal(res2.getInt('count') ?? 0, 1);
   });
 
-  test('multi options', (ctx: TestContext): void => {
+  test('multi options', (ctx) => {
     let parser = new ArgParser('app')
       .addOption('dir', {type: OptionType.MultiString, abbr: 'd', help: 'Preopened directory'});
 
@@ -107,7 +107,7 @@ export let tests = suite('Args', (): void => {
     equal(dirs[2], '/var');
   });
 
-  test('positional arguments and delimiter (--)', (ctx: TestContext): void => {
+  test('positional arguments and delimiter (--)', (ctx) => {
     let parser = new ArgParser('app')
       .addOption('verbose', {type: OptionType.Flag, abbr: 'v'});
 
@@ -126,7 +126,7 @@ export let tests = suite('Args', (): void => {
     equal(res.rest[2], 'final.txt');
   });
 
-  test('subcommands', (ctx: TestContext): void => {
+  test('subcommands', (ctx) => {
     let root = new ArgParser('zena', 'The Zena toolchain');
     let buildCmd = root.addCommand('build', {
       description: 'Build a Zena file',
@@ -160,7 +160,7 @@ export let tests = suite('Args', (): void => {
     equal(buildArgs.rest[0], 'main.zena');
   });
 
-  test('help formatting', (ctx: TestContext): void => {
+  test('help formatting', (ctx) => {
     let parser = new ArgParser('mytool', 'A helpful tool')
       .addOption('verbose', {type: OptionType.Flag, abbr: 'v', help: 'Verbose logging'})
       .addOption('output', {abbr: 'o', help: 'Output file', defaultVal: 'out.txt'});
@@ -175,7 +175,7 @@ export let tests = suite('Args', (): void => {
     isTrue(help.contains('run'));
   });
 
-  test('declarative options map constructor', (ctx: TestContext): void => {
+  test('declarative options map constructor', (ctx) => {
     let parser = new ArgParser('app', 'Application', {
       'output'  => {abbr: 'o', defaultVal: 'default.out', help: 'Output path'},
       'verbose' => {type: OptionType.Flag, abbr: 'v', help: 'Enable verbose'},
@@ -205,7 +205,7 @@ export let tests = suite('Args', (): void => {
     equal(res.rest[0], 'input.txt');
   });
 
-  test('fromConfig with nested subcommands', (ctx: TestContext): void => {
+  test('fromConfig with nested subcommands', (ctx) => {
     let parser = new ArgParser.fromConfig({
       name: 'tool',
       description: 'Multi-command tool',
@@ -241,7 +241,7 @@ export let tests = suite('Args', (): void => {
     equal(buildArgs.rest[0], 'src/main.zena');
   });
 
-  test('parseArgs convenience function', (ctx: TestContext): void => {
+  test('parseArgs convenience function', (ctx) => {
     let args = new GrowableArray<String>();
     args.push('ignored_binary');
     args.push('--quiet');
@@ -259,7 +259,7 @@ export let tests = suite('Args', (): void => {
     equal(res.rest[0], 'arg1');
   });
 
-  test('unknown option throws', (ctx: TestContext): void => {
+  test('unknown option throws', (ctx) => {
     let parser = new ArgParser('app');
     let args = new GrowableArray<String>();
     args.push('--invalid');
@@ -269,7 +269,7 @@ export let tests = suite('Args', (): void => {
     });
   });
 
-  test('parsed values sealed class and pattern matching', (ctx: TestContext): void => {
+  test('parsed values sealed class and pattern matching', (ctx) => {
     let parser = new ArgParser('app')
       .addOption('flag', {type: OptionType.Flag})
       .addOption('single', {})
@@ -285,48 +285,39 @@ export let tests = suite('Args', (): void => {
 
     // Test get(name)
     if (let (true, val) = res.get('flag')) {
-      match (val) {
-        case Flag {value}: {
-          isTrue(value);
-        }
-        case _: {
-          throws(() => { throw new Error('expected Flag'); });
-        }
+      if (let Flag {value} = val) {
+        isTrue(value);
+      } else {
+        throws(() => { throw new Error('expected Flag'); });
       }
     } else {
       throws(() => { throw new Error('missing flag'); });
     }
 
     if (let (true, val) = res.get('single')) {
-      match (val) {
-        case Single {value}: {
-          equal(value, 'hello');
-        }
-        case _: {
-          throws(() => { throw new Error('expected Single'); });
-        }
+      if (let Single {value} = val) {
+        equal(value, 'hello');
+      } else {
+        throws(() => { throw new Error('expected Single'); });
       }
     } else {
       throws(() => { throw new Error('missing single'); });
     }
 
     if (let (true, val) = res.get('multi')) {
-      match (val) {
-        case Multi {values}: {
-          equal(values.length, 2);
+      if (let Multi {values} = val) {
+        equal(values.length, 2);
           equal(values[0], 'first');
           equal(values[1], 'second');
-        }
-        case _: {
-          throws(() => { throw new Error('expected Multi'); });
-        }
+      } else {
+        throws(() => { throw new Error('expected Multi'); });
       }
     } else {
       throws(() => { throw new Error('missing multi'); });
     }
   });
 
-  test('parsed options map', (ctx: TestContext): void => {
+  test('parsed options map', (ctx) => {
     let parser = new ArgParser('app')
       .addOption('zeta', {})
       .addOption('alpha', {})
@@ -347,7 +338,7 @@ export let tests = suite('Args', (): void => {
     isTrue(res.hasOption('defaultOpt'));
   });
 
-  test('hasOption', (ctx: TestContext): void => {
+  test('hasOption', (ctx) => {
     let parser = new ArgParser('app')
       .addOption('present', {})
       .addOption('absent', {})
@@ -362,7 +353,7 @@ export let tests = suite('Args', (): void => {
     isTrue(res.hasOption('defaulted'));
   });
 
-  test('stopAtPositional hands the tail to the positional', (ctx: TestContext): void => {
+  test('stopAtPositional hands the tail to the positional', (ctx) => {
     // A command that runs another program: everything after the program
     // name is that program's, even when it looks like an option here.
     let parser = new ArgParser.fromConfig({
@@ -410,7 +401,7 @@ export let tests = suite('Args', (): void => {
     });
   });
 
-  test('option name validation', (ctx: TestContext): void => {
+  test('option name validation', (ctx) => {
     // Option without a name throws
     throws(() => {
       let parser = new ArgParser('bad')

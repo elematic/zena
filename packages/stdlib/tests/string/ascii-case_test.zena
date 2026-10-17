@@ -5,21 +5,21 @@ import { asciiLowerByte, asciiUpperByte } from 'zena:core';
 // ASCII case mapping. Deliberately NOT Unicode-aware — see asciiLowerByte's
 // doc comment. The tests below pin that non-ASCII input passes through
 // untouched, which is the property callers like zena:url depend on.
-export let tests = suite('ASCII case mapping', (): void => {
-  suite('asciiLowerByte / asciiUpperByte', (): void => {
-    test('maps the ASCII letters', (ctx: TestContext): void => {
+export let tests = suite('ASCII case mapping', () => {
+  suite('asciiLowerByte / asciiUpperByte', () => {
+    test('maps the ASCII letters', (ctx) => {
       equal(asciiLowerByte(0x41), 0x61);  // A -> a
       equal(asciiLowerByte(0x5A), 0x7A);  // Z -> z
       equal(asciiUpperByte(0x61), 0x41);  // a -> A
       equal(asciiUpperByte(0x7A), 0x5A);  // z -> Z
     });
 
-    test('leaves already-cased letters alone', (ctx: TestContext): void => {
+    test('leaves already-cased letters alone', (ctx) => {
       equal(asciiLowerByte(0x61), 0x61);
       equal(asciiUpperByte(0x41), 0x41);
     });
 
-    test('leaves the bytes adjacent to the letter ranges alone', (ctx: TestContext): void => {
+    test('leaves the bytes adjacent to the letter ranges alone', (ctx) => {
       // '@' (0x40) and '[' (0x5B) bracket A-Z; '`' (0x60) and '{' (0x7B)
       // bracket a-z. Off-by-one here would corrupt real URL characters.
       equal(asciiLowerByte(0x40), 0x40);
@@ -28,7 +28,7 @@ export let tests = suite('ASCII case mapping', (): void => {
       equal(asciiUpperByte(0x7B), 0x7B);
     });
 
-    test('leaves digits, punctuation, and non-ASCII bytes alone', (ctx: TestContext): void => {
+    test('leaves digits, punctuation, and non-ASCII bytes alone', (ctx) => {
       equal(asciiLowerByte(0x30), 0x30);  // '0'
       equal(asciiLowerByte(0x2F), 0x2F);  // '/'
       equal(asciiLowerByte(0xC3), 0xC3);  // a UTF-8 lead byte
@@ -37,20 +37,20 @@ export let tests = suite('ASCII case mapping', (): void => {
     });
   });
 
-  suite('String.asciiLowerCase / asciiUpperCase', (): void => {
-    test('maps ASCII letters in a string', (ctx: TestContext): void => {
+  suite('String.asciiLowerCase / asciiUpperCase', () => {
+    test('maps ASCII letters in a string', (ctx) => {
       equal('Hello, World!'.asciiLowerCase(), 'hello, world!');
       equal('Hello, World!'.asciiUpperCase(), 'HELLO, WORLD!');
       equal('HTTP'.asciiLowerCase(), 'http');
     });
 
-    test('is a no-op on strings with nothing to change', (ctx: TestContext): void => {
+    test('is a no-op on strings with nothing to change', (ctx) => {
       equal('already lower'.asciiLowerCase(), 'already lower');
       equal('12345'.asciiLowerCase(), '12345');
       equal(''.asciiLowerCase(), '');
     });
 
-    test('leaves non-ASCII characters untouched', (ctx: TestContext): void => {
+    test('leaves non-ASCII characters untouched', (ctx) => {
       // The whole point: no Unicode case mapping, and — critically — the
       // multi-byte sequences must come through byte-identical.
       equal('ÉCOLE'.asciiLowerCase(), 'École');
@@ -62,7 +62,7 @@ export let tests = suite('ASCII case mapping', (): void => {
       equal('ÀÉÎÕÜ'.asciiLowerCase(), 'ÀÉÎÕÜ');
     });
 
-    test('does not apply locale-sensitive Unicode rules', (ctx: TestContext): void => {
+    test('does not apply locale-sensitive Unicode rules', (ctx) => {
       // Under Turkish rules 'I' lowercases to a dotless i; ASCII mapping must
       // not do that. zena:url depends on this being locale-independent.
       equal('I'.asciiLowerCase(), 'i');
@@ -70,13 +70,13 @@ export let tests = suite('ASCII case mapping', (): void => {
       equal('KK'.asciiLowerCase().length, 'kK'.length);
     });
 
-    test('preserves length in bytes', (ctx: TestContext): void => {
+    test('preserves length in bytes', (ctx) => {
       let mixed = 'AbÇdE';
       equal(mixed.asciiLowerCase().length, mixed.length);
       equal(mixed.asciiUpperCase().length, mixed.length);
     });
 
-    test('round-trips ASCII through both directions', (ctx: TestContext): void => {
+    test('round-trips ASCII through both directions', (ctx) => {
       let s = 'MixedCase123';
       equal(s.asciiUpperCase().asciiLowerCase(), s.asciiLowerCase());
     });

@@ -2,18 +2,18 @@ import {suite, test, TestContext} from 'zena:test';
 import {equal, isTrue, isFalse, throws} from 'zena:assert';
 import {State, Computed} from 'zena:signals';
 
-export let tests = suite('Signals: State and Computed', (): void => {
-  test('a state holds a value', (ctx: TestContext): void => {
+export let tests = suite('Signals: State and Computed', () => {
+  test('a state holds a value', (ctx) => {
     let s = new State(1);
     equal(s.get(), 1);
     s.set(2);
     equal(s.get(), 2);
   });
 
-  test('a computed is lazy and cached', (ctx: TestContext): void => {
+  test('a computed is lazy and cached', (ctx) => {
     let s = new State(1);
     var runs = 0;
-    let c = new Computed<i32>((): i32 => {
+    let c = new Computed<i32>(() => {
       runs += 1;
       return s.get() * 10;
     });
@@ -27,10 +27,10 @@ export let tests = suite('Signals: State and Computed', (): void => {
     equal(runs, 2);
   });
 
-  test('setting an equal value does not rerun', (ctx: TestContext): void => {
+  test('setting an equal value does not rerun', (ctx) => {
     let s = new State(1);
     var runs = 0;
-    let c = new Computed<i32>((): i32 => {
+    let c = new Computed<i32>(() => {
       runs += 1;
       return s.get();
     });
@@ -40,11 +40,11 @@ export let tests = suite('Signals: State and Computed', (): void => {
     equal(runs, 1);
   });
 
-  test('an unchanged computed stops the update', (ctx: TestContext): void => {
+  test('an unchanged computed stops the update', (ctx) => {
     let s = new State(1);
-    let parity = new Computed<i32>((): i32 => s.get() % 2);
+    let parity = new Computed<i32>(() => s.get() % 2);
     var runs = 0;
-    let label = new Computed<String>((): String => {
+    let label = new Computed<String>(() => {
       runs += 1;
       return if (parity.get() == 0) 'even' else 'odd';
     });
@@ -57,20 +57,20 @@ export let tests = suite('Signals: State and Computed', (): void => {
     equal(runs, 2);
   });
 
-  test('a diamond runs each computed once', (ctx: TestContext): void => {
+  test('a diamond runs each computed once', (ctx) => {
     let a = new State(1);
     var bRuns = 0;
     var cRuns = 0;
     var dRuns = 0;
-    let b = new Computed<i32>((): i32 => {
+    let b = new Computed<i32>(() => {
       bRuns += 1;
       return a.get() + 1;
     });
-    let c = new Computed<i32>((): i32 => {
+    let c = new Computed<i32>(() => {
       cRuns += 1;
       return a.get() * 2;
     });
-    let d = new Computed<i32>((): i32 => {
+    let d = new Computed<i32>(() => {
       dRuns += 1;
       return b.get() + c.get();
     });
@@ -82,12 +82,12 @@ export let tests = suite('Signals: State and Computed', (): void => {
     equal(dRuns, 2);
   });
 
-  test('dependencies follow the branch taken', (ctx: TestContext): void => {
+  test('dependencies follow the branch taken', (ctx) => {
     let useA = new State<boolean>(true);
     let a = new State(1);
     let b = new State(2);
     var runs = 0;
-    let c = new Computed<i32>((): i32 => {
+    let c = new Computed<i32>(() => {
       runs += 1;
       return if (useA.get()) a.get() else b.get();
     });
@@ -103,11 +103,11 @@ export let tests = suite('Signals: State and Computed', (): void => {
     equal(runs, 2);
   });
 
-  test('custom equals', (ctx: TestContext): void => {
+  test('custom equals', (ctx) => {
     // Equal when the last digits match.
-    let s = new State<i32>(1, {equals: (a: i32, b: i32): boolean => a % 10 == b % 10});
+    let s = new State<i32>(1, {equals: (a: i32, b: i32) => a % 10 == b % 10});
     var runs = 0;
-    let c = new Computed<i32>((): i32 => {
+    let c = new Computed<i32>(() => {
       runs += 1;
       return s.get();
     });
@@ -120,20 +120,20 @@ export let tests = suite('Signals: State and Computed', (): void => {
     equal(runs, 2);
   });
 
-  test('an error is cached and rethrown', (ctx: TestContext): void => {
+  test('an error is cached and rethrown', (ctx) => {
     let s = new State(0);
     var runs = 0;
-    let c = new Computed<i32>((): i32 => {
+    let c = new Computed<i32>(() => {
       runs += 1;
       if (s.get() == 0) {
         throw new Error('zero');
       }
       return 100 / s.get() as i32;
     });
-    throws((): void => {
+    throws(() => {
       c.get();
     });
-    throws((): void => {
+    throws(() => {
       c.get();
     });
     equal(runs, 1);
@@ -141,18 +141,18 @@ export let tests = suite('Signals: State and Computed', (): void => {
     equal(c.get(), 25);
   });
 
-  test('reading itself is a cycle', (ctx: TestContext): void => {
+  test('reading itself is a cycle', (ctx) => {
     let holder = new State<Computed<i32> | null>(null);
     let c = new Computed<i32>((): i32 => {
       let me = holder.get();
       if (me == null) {
         return 0;
       }
-      return (me as Computed<i32>).get() + 1;
+      return me.get() + 1;
     });
     equal(c.get(), 0);
     holder.set(c);
-    throws((): void => {
+    throws(() => {
       c.get();
     });
   });

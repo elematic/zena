@@ -83,7 +83,7 @@ let IS_WATCHER = 2048;
 
 let STALE = 3; // DIRTY | CHECK
 
-function without(f: i32, bits: i32): i32 {
+function without(f: i32, bits: i32) {
   return f & (bits ^ -1);
 }
 
@@ -124,11 +124,11 @@ var hookNodes: GrowableArray<ReactiveNode> | null = null;
 var hookWatched: GrowableArray<boolean> | null = null;
 var hookCount = 0;
 
-function frozenError(): Error {
+function frozenError() {
   return new Error('Signals cannot be read or written in a Watcher notify callback or a watched/unwatched callback');
 }
 
-function cycleError(): Error {
+function cycleError() {
   return new Error('Cycle detected: a computed signal read itself');
 }
 
@@ -172,7 +172,7 @@ final class Link {
  * Otherwise a new link goes in at the cursor; the links this run never
  * reached are removed by `finishRun`.
  */
-function track(dep: ReactiveNode, depComputed: Consumer | null): void {
+function track(dep: ReactiveNode, depComputed: Consumer | null) {
   let sub = activeConsumer;
   if (sub == null) {
     return;
@@ -202,7 +202,7 @@ function track(dep: ReactiveNode, depComputed: Consumer | null): void {
 }
 
 /** Removes the sources the run that just ended did not read. */
-function finishRun(sub: Consumer): void {
+function finishRun(sub: Consumer) {
   let tail = sub.[depsTail];
   var stale: Link | null = null;
   if (tail == null) {
@@ -214,7 +214,7 @@ function finishRun(sub: Consumer): void {
   }
   let live = isLive(sub);
   while (stale != null) {
-    let link = stale as Link;
+    let link = stale;
     stale = link.nextDep;
     link.nextDep = null;
     if (live) {
@@ -254,7 +254,7 @@ function linkSub(link: Link): void {
     }
     var each = c.[deps];
     while (each != null) {
-      let l = each as Link;
+      let l = each;
       linkSub(l);
       each = l.nextDep;
     }
@@ -291,7 +291,7 @@ function unlinkSub(link: Link): void {
   if (c != null) {
     var each = c.[deps];
     while (each != null) {
-      let l = each as Link;
+      let l = each;
       unlinkSub(l);
       each = l.nextDep;
     }
@@ -314,7 +314,7 @@ function unlinkSub(link: Link): void {
 function propagate(node: ReactiveNode, mark: i32): void {
   var each = node.[subs];
   while (each != null) {
-    let link = each as Link;
+    let link = each;
     let sub = link.sub;
     let f = sub.[flags];
     if ((f & STALE) == 0) {
@@ -336,7 +336,7 @@ function propagate(node: ReactiveNode, mark: i32): void {
 }
 
 /** Records a change to `node`'s value and tells its consumers. */
-function changed(node: ReactiveNode): void {
+function changed(node: ReactiveNode) {
   node.[version] = node.[version] + 1;
   epoch += 1;
   if (node.[subs] == null) {
@@ -399,7 +399,7 @@ function enqueueWatcher(c: Consumer): void {
 function notifyWatchers(): Error | null {
   var errors: ErrorCollector | null = null;
   while (watcherHead != null) {
-    let w = watcherHead as Consumer;
+    let w = watcherHead;
     watcherHead = w.[nextQueued];
     if (watcherHead == null) {
       watcherTail = null;
@@ -466,7 +466,7 @@ function queueHook(node: ReactiveNode, watched: boolean): void {
     hookNodes = new GrowableArray<ReactiveNode>();
     hookWatched = new GrowableArray<boolean>();
   }
-  (hookNodes as GrowableArray<ReactiveNode>).push(node);
+  hookNodes.push(node);
   (hookWatched as GrowableArray<boolean>).push(watched);
   hookCount += 1;
 }
@@ -522,7 +522,6 @@ function errorResult(errors: ErrorCollector | null): Error | null {
 final class ErrorCollector {
   var first: Error | null = null;
   var rest: GrowableArray<Error> | null = null;
-  new();
 
   add(e: Error | null): void {
     if (e == null) {
@@ -535,7 +534,7 @@ final class ErrorCollector {
     if (this.rest == null) {
       this.rest = new GrowableArray<Error>();
     }
-    (this.rest as GrowableArray<Error>).push(e as Error);
+    (this.rest as GrowableArray<Error>).push(e);
   }
 
   result(): Error | null {
@@ -638,7 +637,7 @@ abstract class Consumer extends ReactiveNode {
   #sourcesChanged(): boolean {
     var each = this.[deps];
     while (each != null) {
-      let link = each as Link;
+      let link = each;
       let c = link.depComputed;
       if (c != null) {
         if ((c.[flags] & COMPUTING) != 0) {
@@ -690,7 +689,7 @@ function hookFlag<T>(options: SignalOptions<T> | null): i32 {
   return 0;
 }
 
-function callHook<T>(options: SignalOptions<T> | null, watched: boolean): void {
+function callHook<T>(options: SignalOptions<T> | null, watched: boolean) {
   if (options == null) {
     return;
   }
@@ -910,7 +909,7 @@ export class Watcher extends Consumer {
       throw frozenError();
     }
     if (signal != null) {
-      let s = signal as ReactiveNode;
+      let s = signal;
       if ((s.[flags] & (IS_EFFECT | IS_WATCHER)) != 0) {
         throw new Error('Watcher.watch: only a State, Computed or Tracker can be watched');
       }
@@ -939,7 +938,7 @@ export class Watcher extends Consumer {
     var prev: Link | null = null;
     var each = this.[deps];
     while (each != null) {
-      let link = each as Link;
+      let link = each;
       if (link.dep === signal) {
         if (prev == null) {
           this.[deps] = link.nextDep;
@@ -971,7 +970,7 @@ export class Watcher extends Consumer {
     let pending = new GrowableArray<ReactiveNode>();
     var each = this.[deps];
     while (each != null) {
-      let link = each as Link;
+      let link = each;
       let f = link.dep.[flags];
       if ((f & IS_COMPUTED) != 0 && (f & STALE) != 0) {
         pending.push(link.dep);
@@ -984,7 +983,7 @@ export class Watcher extends Consumer {
   #find(signal: ReactiveNode): Link | null {
     var each = this.[deps];
     while (each != null) {
-      let link = each as Link;
+      let link = each;
       if (link.dep === signal) {
         return link;
       }
@@ -1063,7 +1062,7 @@ export class Effect extends Consumer {
     this.[deps] = null;
     this.[depsTail] = null;
     while (each != null) {
-      let link = each as Link;
+      let link = each;
       each = link.nextDep;
       link.nextDep = null;
       unlinkSub(link);
@@ -1117,7 +1116,7 @@ export class Effect extends Consumer {
     if (prev == null) {
       this.#cleanup = fn;
     } else {
-      this.#cleanup = (): void => {
+      this.#cleanup = () => {
         prev();
         fn();
       };
@@ -1136,7 +1135,7 @@ export class Effect extends Consumer {
     }
     var errors: ErrorCollector | null = null;
     while (child != null) {
-      let c = child as Effect;
+      let c = child;
       child = c.#nextSibling;
       c.#nextSibling = null;
       try {
@@ -1302,7 +1301,7 @@ export let introspectSources = (node: ReactiveNode): GrowableArray<ReactiveNode>
   }
   var each = (node as Consumer).[deps];
   while (each != null) {
-    let link = each as Link;
+    let link = each;
     result.push(link.dep);
     each = link.nextDep;
   }
@@ -1318,7 +1317,7 @@ export let introspectSinks = (node: ReactiveNode): GrowableArray<ReactiveNode> =
   let result = new GrowableArray<ReactiveNode>();
   var each = node.[subs];
   while (each != null) {
-    let link = each as Link;
+    let link = each;
     result.push(link.sub);
     each = link.nextSub;
   }

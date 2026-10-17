@@ -19,7 +19,7 @@
  * ```
  */
 
-import { StringBuilder, asciiLowerByte, asciiUpperByte, TemplateStringsArray } from 'zena:core';
+import { StringBuilder, asciiLowerByte, asciiUpperByte, TemplateStringsArray, growable } from 'zena:core';
 
 // ============================================================================
 // Zena Regular Expression Engine
@@ -585,9 +585,7 @@ final class Parser {
 
   // Create a digit class [0-9]
   #makeDigitClass(): GrowableArray<i32> {
-    let class_ = new Array<i32>();
-    class_.push(48);
-    class_.push(57);
+    let class_ = growable<i32>([48, 57]);
     return class_;
   }
 
@@ -897,8 +895,8 @@ final class Parser {
     var i = pos + 2;  // Start after '(?'
     
     // Parse flags: i, m, s, and their negations with -
-    var setFlags: i32 = 0;
-    var clearFlags: i32 = 0;
+    var setFlags = 0;
+    var clearFlags = 0;
     var negating = false;
     
     while (i < len) {
@@ -1492,27 +1490,19 @@ final class NfaCompiler {
       }
       i += 1;
     }
-    if (frag == null) {
-      return this.#compileEmpty();
-    }
-    return frag;
+    return frag ?? this.#compileEmpty();
   }
 
   // Patch all dangling outputs in a fragment to point to the given state
   #patchFrag(frag: Frag, target: State): void {
-    var i = 0;
-    while (i < frag.patches.length) {
-      let patch = frag.patches[i];
+    for (let patch in frag.patches) {
       if (patch.field == 1) {
         if (patch.state.out1 == null) {
           patch.state.out1 = target;
         }
-      } else {
-        if (patch.state.out2 == null) {
-          patch.state.out2 = target;
-        }
+      } else if (patch.state.out2 == null) {
+        patch.state.out2 = target;
       }
-      i += 1;
     }
   }
 }
@@ -1522,7 +1512,7 @@ final class NfaCompiler {
 // ============================================================================
 
 // Global epoch counter to ensure unique listIds across all NFA simulations
-var nfaEpoch: i32 = 0;
+var nfaEpoch = 0;
 
 // A Thread represents the state of a single path through the NFA.
 // Following Go's implementation, each thread carries its own capture array.
@@ -1627,10 +1617,7 @@ final class NfaRunner {
 
     var pos = startPos;
     while (pos <= inputLen) {
-      var c: i32 = 0 - 1;
-      if (pos < inputLen) {
-        c = input.getByteAt(pos);
-      }
+      let c: i32 = if (pos < inputLen) input.getByteAt(pos) else 0 - 1;
 
       // If no threads left and we already have a match, we're done
       if (runq.length == 0) {
@@ -2023,7 +2010,7 @@ export final class Regex {
    * its flags as given, so it still reads `Flags.None` as line anchoring.
    */
   #parseFlags(flagStr: String): Flags {
-    var flags: i32 = Flags.OneLine as i32;
+    var flags = Flags.OneLine as i32;
     var i = 0;
     while (i < flagStr.length) {
       let c = flagStr.getByteAt(i);
@@ -2331,7 +2318,7 @@ export final class Regex {
   }
 
   replaceAll(input: String, replacement: String): String {
-    return this.#replaceAllImpl(input, (_: Match) => replacement);
+    return this.#replaceAllImpl(input, (_) => replacement);
   }
 
   replaceAll(input: String, replacer: (m: Match) => String): String {
@@ -2350,9 +2337,7 @@ export final class Regex {
     }
     let sb = new StringBuilder(input.length);
     var pos = 0;
-    var i = 0;
-    while (i < matches.length) {
-      let m = matches[i];
+    for (let m in matches) {
       sb.append(input.sliceBytes(pos, m.index));
       sb.append(replacer(m));
       // For zero-width matches, advance by 1 to include the character after
@@ -2364,7 +2349,6 @@ export final class Regex {
       } else {
         pos = m.index + m.value.length;
       }
-      i += 1;
     }
     // Add remaining input (only if we didn't already consume it)
     if (pos <= input.length) {
@@ -2406,9 +2390,7 @@ export final class Regex {
     }
     var pos = 0;
     var lastMatchStart = 0;
-    var i = 0;
-    while (i < matches.length) {
-      let m = matches[i];
+    for (let m in matches) {
       let matchEnd = m.index + m.value.length;
       // Go regexp compatibility: skip adding part when match ends at position 0
       // This prevents an empty string at the start when pattern matches empty at position 0
@@ -2417,7 +2399,6 @@ export final class Regex {
       }
       pos = matchEnd;
       lastMatchStart = m.index;
-      i += 1;
     }
     // Add final part if the last match didn't start at the end of input
     // (Go's behavior: checks match[0] != len(s), not match[1])

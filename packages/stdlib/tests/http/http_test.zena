@@ -8,8 +8,8 @@ import {
   Fields, WireRequest, ErrorCode, fromWireRequest
 } from 'zena:http';
 
-export let tests = suite('zena:http', (): void => {
-  test('HttpError has status and message', (ctx: TestContext): void => {
+export let tests = suite('zena:http', () => {
+  test('HttpError has status and message', (ctx) => {
     let err = new HttpError(404);
     equal(err.status, 404);
     equal(err.message, 'Not Found');
@@ -20,14 +20,14 @@ export let tests = suite('zena:http', (): void => {
     equal(custom.privateMessage as String, 'Debug details');
   });
 
-  test('statusText returns correct descriptions', (ctx: TestContext): void => {
+  test('statusText returns correct descriptions', (ctx) => {
     equal(statusText(200), 'OK');
     equal(statusText(302), 'Found');
     equal(statusText(404), 'Not Found');
     equal(statusText(500), 'Internal Server Error');
   });
 
-  test('matchPath extracts subpaths correctly', (ctx: TestContext): void => {
+  test('matchPath extracts subpaths correctly', (ctx) => {
     equal(matchPath('/api', '/api') as String, '/');
     equal(matchPath('/api', '/api/users') as String, '/users');
     equal(matchPath('/api/', '/api/users') as String, '/users');
@@ -35,7 +35,7 @@ export let tests = suite('zena:http', (): void => {
     isTrue(matchPath('/api', '/apipath') == null);
   });
 
-  test('Response defaults to 404 and changes to 200 on body set', (ctx: TestContext): void => {
+  test('Response defaults to 404 and changes to 200 on body set', (ctx) => {
     let res = new Response();
     equal(res.statusCode, 404);
     equal(res.statusCodeSet, false);
@@ -54,7 +54,7 @@ export let tests = suite('zena:http', (): void => {
     equal(res.statusCode, 201);
   });
 
-  test('Response headers manipulation', (ctx: TestContext): void => {
+  test('Response headers manipulation', (ctx) => {
     let res = new Response();
     res.setHeader('X-Custom', 'Value1');
     equal(res.getHeader('x-custom') as String, 'Value1');
@@ -78,7 +78,7 @@ export let tests = suite('zena:http', (): void => {
     isTrue(res.getHeader('X-Custom') == null);
   });
 
-  test('Response redirect', (ctx: TestContext): void => {
+  test('Response redirect', (ctx) => {
     let res = new Response();
     res.redirect('/login');
     equal(res.statusCode, 302);
@@ -86,9 +86,10 @@ export let tests = suite('zena:http', (): void => {
     equal(res.body as String, 'Redirecting to /login.');
   });
 
-  test('Request exposes URL, method, and headers', (ctx: TestContext): void => {
-    let headers = new Map<String, String>();
-    headers['Authorization'] = 'Bearer token123';
+  test('Request exposes URL, method, and headers', (ctx) => {
+    let headers: HashMap<String, String> = {
+      'Authorization' => 'Bearer token123',
+    };
     let req = new Request.fromUrl('https://example.com:8080/users?sort=asc', 'POST', headers);
 
     equal(req.method, 'POST');
@@ -103,7 +104,7 @@ export let tests = suite('zena:http', (): void => {
     equal(req.path, '/custom');
   });
 
-  test('compose executes middleware in onion order', (ctx: TestContext): void => {
+  test('compose executes middleware in onion order', (ctx) => {
     runFuture((async (): Future<void> => {
       let trace = new GrowableArray<String>();
 
@@ -139,7 +140,7 @@ export let tests = suite('zena:http', (): void => {
     })());
   });
 
-  test('mount rewrites path for sub-middleware and restores it', (ctx: TestContext): void => {
+  test('mount rewrites path for sub-middleware and restores it', (ctx) => {
     runFuture((async (): Future<void> => {
       var subpathSeen = '';
 
@@ -160,16 +161,16 @@ export let tests = suite('zena:http', (): void => {
     })());
   });
 
-  test('Router matches methods and extracts params', (ctx: TestContext): void => {
+  test('Router matches methods and extracts params', (ctx) => {
     runFuture((async (): Future<void> => {
       let router = new Router();
 
-      router.get('/users/:id', async (req: Request, res: Response, next: () => Future<void>, params: Map<String, String>): Future<void> => {
+      router.get('/users/:id', async (req, res, next, params): Future<void> => {
         let id = params['id'] ?? '';
         res.body = 'User ' + id;
       });
 
-      router.get('/static/*', async (req: Request, res: Response, next: () => Future<void>, params: Map<String, String>): Future<void> => {
+      router.get('/static/*', async (req, res, next, params): Future<void> => {
         let file = params['*'] ?? '';
         res.body = 'Static: ' + file;
       });
@@ -199,11 +200,11 @@ export let tests = suite('zena:http', (): void => {
     })());
   });
 
-  test('App handles requests and handles HttpError', (ctx: TestContext): void => {
+  test('App handles requests and handles HttpError', (ctx) => {
     runFuture((async (): Future<void> => {
       let app = new App();
 
-      app.use(async (req: Request, res: Response, next: () => Future<void>): Future<void> => {
+      app.use(async (req, res, next): Future<void> => {
         if (req.path == '/error') {
           throw new HttpError(403, 'Forbidden action');
         }
@@ -224,7 +225,7 @@ export let tests = suite('zena:http', (): void => {
     })());
   });
 
-  test('Server lifecycle (bind port, status, close, done)', (ctx: TestContext): void => {
+  test('Server lifecycle (bind port, status, close, done)', (ctx) => {
     let app = new App();
     let server = new Server(app, 0 as u16);
     isTrue(server.isOpen, 'server should be open after construction');
@@ -235,7 +236,7 @@ export let tests = suite('zena:http', (): void => {
     isTrue(server.isDone, 'server should be done after close()');
   });
 
-  test('App.listen starts server and resolves to Server', (ctx: TestContext): void => {
+  test('App.listen starts server and resolves to Server', (ctx) => {
     runFuture((async (): Future<void> => {
       let app = new App();
       let server = await app.listen(0 as u16);
@@ -247,7 +248,7 @@ export let tests = suite('zena:http', (): void => {
     })());
   });
 
-  test('App.listen rejects when port is already in use', (ctx: TestContext): void => {
+  test('App.listen rejects when port is already in use', (ctx) => {
     runFuture((async (): Future<void> => {
       let app1 = new App();
       let server1 = await app1.listen(0 as u16);
@@ -269,7 +270,7 @@ export let tests = suite('zena:http', (): void => {
     })());
   });
 
-  test('App.listen closes server when enclosing TaskGroup is cancelled', (ctx: TestContext): void => {
+  test('App.listen closes server when enclosing TaskGroup is cancelled', (ctx) => {
     runFuture((async (): Future<void> => {
       let app = new App();
       let group = new TaskGroup();
@@ -310,7 +311,7 @@ export let tests = suite('zena:http', (): void => {
     })());
   });
 
-  test('fromWireRequest correctly parses method and consumes body without error', (ctx: TestContext): void => {
+  test('fromWireRequest correctly parses method and consumes body without error', (ctx) => {
     let fields = Fields.create();
     fields.append('user-agent', 'curl/8.0.0'.toBytes());
     let trailers = new Completer<Outcome<Option<Fields>, ErrorCode>>();

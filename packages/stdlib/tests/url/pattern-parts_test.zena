@@ -12,7 +12,7 @@ import {
 } from 'zena:url';
 
 /** Asserts a Fixed part's value, prefix and modifier. */
-let fixedIs = (part: Part, value: String, prefix: String, modifier: Modifier): void => {
+let fixedIs = (part: Part, value: String, prefix: String, modifier: Modifier) => {
   isTrue(part is FixedPart);
   let p = part as FixedPart;
   equal(p.value, value);
@@ -21,7 +21,7 @@ let fixedIs = (part: Part, value: String, prefix: String, modifier: Modifier): v
 };
 
 /** Asserts a `:name` part's name, prefix and modifier. */
-let segmentIs = (part: Part, name: String, prefix: String, modifier: Modifier): void => {
+let segmentIs = (part: Part, name: String, prefix: String, modifier: Modifier) => {
   isTrue(part is SegmentWildcardPart);
   let p = part as SegmentWildcardPart;
   equal(p.name, name);
@@ -30,7 +30,7 @@ let segmentIs = (part: Part, name: String, prefix: String, modifier: Modifier): 
 };
 
 /** Asserts a `*` part's name, prefix and modifier. */
-let wildcardIs = (part: Part, name: String, prefix: String, modifier: Modifier): void => {
+let wildcardIs = (part: Part, name: String, prefix: String, modifier: Modifier) => {
   isTrue(part is FullWildcardPart);
   let p = part as FullWildcardPart;
   equal(p.name, name);
@@ -39,7 +39,7 @@ let wildcardIs = (part: Part, name: String, prefix: String, modifier: Modifier):
 };
 
 /** Asserts a `(regex)` part's name, source and prefix. */
-let regexIs = (part: Part, name: String, source: String, prefix: String): void => {
+let regexIs = (part: Part, name: String, source: String, prefix: String) => {
   isTrue(part is RegexPart);
   let p = part as RegexPart;
   equal(p.name, name);
@@ -47,9 +47,9 @@ let regexIs = (part: Part, name: String, source: String, prefix: String): void =
   equal(p.prefix, prefix);
 };
 
-export let tests = suite('URLPattern pattern parser', (): void => {
-  suite('fixed text', (): void => {
-    test('a simple fixed path splits into one part per segment', (ctx: TestContext): void => {
+export let tests = suite('URLPattern pattern parser', () => {
+  suite('fixed text', () => {
+    test('a simple fixed path splits into one part per segment', (ctx) => {
       // The split is what lets a prefix tree share `/foo` across patterns.
       let parts = parsePattern('/foo/bar');
       equal(parts.length, 2);
@@ -57,24 +57,24 @@ export let tests = suite('URLPattern pattern parser', (): void => {
       fixedIs(parts[1], '/bar', '', Modifier.None);
     });
 
-    test('the root path is a segment of its own', (ctx: TestContext): void => {
+    test('the root path is a segment of its own', (ctx) => {
       let parts = parsePattern('/');
       equal(parts.length, 1);
       fixedIs(parts[0], '/', '', Modifier.None);
     });
 
-    test('an empty pattern has no parts', (ctx: TestContext): void => {
+    test('an empty pattern has no parts', (ctx) => {
       equal(parsePattern('').length, 0);
     });
 
-    test('a trailing slash is its own part', (ctx: TestContext): void => {
+    test('a trailing slash is its own part', (ctx) => {
       let parts = parsePattern('/foo/');
       equal(parts.length, 2);
       fixedIs(parts[0], '/foo', '', Modifier.None);
       fixedIs(parts[1], '/', '', Modifier.None);
     });
 
-    test('a pattern with no leading slash keeps the first segment bare', (ctx: TestContext): void => {
+    test('a pattern with no leading slash keeps the first segment bare', (ctx) => {
       let parts = parsePattern('foo/bar');
       equal(parts.length, 2);
       fixedIs(parts[0], 'foo', '', Modifier.None);
@@ -82,91 +82,91 @@ export let tests = suite('URLPattern pattern parser', (): void => {
     });
   });
 
-  suite('named parameters', (): void => {
-    test('a named parameter takes the preceding slash as its prefix', (ctx: TestContext): void => {
+  suite('named parameters', () => {
+    test('a named parameter takes the preceding slash as its prefix', (ctx) => {
       let parts = parsePattern('/users/:id');
       equal(parts.length, 2);
       fixedIs(parts[0], '/users', '', Modifier.None);
       segmentIs(parts[1], 'id', '/', Modifier.None);
     });
 
-    test('several named parameters', (ctx: TestContext): void => {
+    test('several named parameters', (ctx) => {
       let parts = parsePattern('/users/:id/posts/:postId');
       equal(parts.length, 4);
       segmentIs(parts[1], 'id', '/', Modifier.None);
       segmentIs(parts[3], 'postId', '/', Modifier.None);
     });
 
-    test('a dot is a prefix too', (ctx: TestContext): void => {
+    test('a dot is a prefix too', (ctx) => {
       let parts = parsePattern('/file.:ext');
       equal(parts.length, 2);
       fixedIs(parts[0], '/file', '', Modifier.None);
       segmentIs(parts[1], 'ext', '.', Modifier.None);
     });
 
-    test('a parameter with a regex becomes a Regex part', (ctx: TestContext): void => {
+    test('a parameter with a regex becomes a Regex part', (ctx) => {
       let parts = parsePattern('/:id(\\d+)');
       equal(parts.length, 1);
       regexIs(parts[0], 'id', '\\d+', '/');
     });
 
-    test('a pattern that is only a parameter has no prefix', (ctx: TestContext): void => {
+    test('a pattern that is only a parameter has no prefix', (ctx) => {
       let parts = parsePattern(':id');
       equal(parts.length, 1);
       segmentIs(parts[0], 'id', '', Modifier.None);
     });
   });
 
-  suite('modifiers', (): void => {
-    test('optional', (ctx: TestContext): void => {
+  suite('modifiers', () => {
+    test('optional', (ctx) => {
       let parts = parsePattern('/:id?');
       equal(parts.length, 1);
       segmentIs(parts[0], 'id', '/', Modifier.Optional);
     });
 
-    test('zero or more', (ctx: TestContext): void => {
+    test('zero or more', (ctx) => {
       let parts = parsePattern('/:id*');
       equal(parts.length, 1);
       segmentIs(parts[0], 'id', '/', Modifier.ZeroOrMore);
     });
 
-    test('one or more', (ctx: TestContext): void => {
+    test('one or more', (ctx) => {
       let parts = parsePattern('/:id+');
       equal(parts.length, 1);
       segmentIs(parts[0], 'id', '/', Modifier.OneOrMore);
     });
   });
 
-  suite('wildcards', (): void => {
-    test('a bare wildcard is named positionally', (ctx: TestContext): void => {
+  suite('wildcards', () => {
+    test('a bare wildcard is named positionally', (ctx) => {
       let parts = parsePattern('*');
       equal(parts.length, 1);
       wildcardIs(parts[0], '0', '', Modifier.None);
     });
 
-    test('a wildcard after fixed text takes the slash as its prefix', (ctx: TestContext): void => {
+    test('a wildcard after fixed text takes the slash as its prefix', (ctx) => {
       let parts = parsePattern('/files/*');
       equal(parts.length, 2);
       fixedIs(parts[0], '/files', '', Modifier.None);
       wildcardIs(parts[1], '0', '/', Modifier.None);
     });
 
-    test('positional names count up across parts', (ctx: TestContext): void => {
+    test('positional names count up across parts', (ctx) => {
       let parts = parsePattern('/*/*');
       equal(parts.length, 2);
       wildcardIs(parts[0], '0', '/', Modifier.None);
       wildcardIs(parts[1], '1', '/', Modifier.None);
     });
 
-    test('an anonymous regex is positional as well', (ctx: TestContext): void => {
+    test('an anonymous regex is positional as well', (ctx) => {
       let parts = parsePattern('/(\\d+)');
       equal(parts.length, 1);
       regexIs(parts[0], '0', '\\d+', '/');
     });
   });
 
-  suite('braced groups', (): void => {
-    test('a group of only fixed text contributes ordinary fixed parts', (ctx: TestContext): void => {
+  suite('braced groups', () => {
+    test('a group of only fixed text contributes ordinary fixed parts', (ctx) => {
       // The group names nothing and takes no modifier, so its text is just
       // more fixed text. It still lands as its own segment, because entering
       // the brace flushes whatever came before it.
@@ -176,7 +176,7 @@ export let tests = suite('URLPattern pattern parser', (): void => {
       fixedIs(parts[1], '/v1', '', Modifier.None);
     });
 
-    test('a group of fixed text WITH a modifier is its own part', (ctx: TestContext): void => {
+    test('a group of fixed text WITH a modifier is its own part', (ctx) => {
       // The modifier is what it applies to, so the text becomes a value.
       let parts = parsePattern('/foo{bar}?');
       equal(parts.length, 2);
@@ -184,40 +184,40 @@ export let tests = suite('URLPattern pattern parser', (): void => {
       fixedIs(parts[1], 'bar', '', Modifier.Optional);
     });
 
-    test('a group carries its prefix onto the parameter', (ctx: TestContext): void => {
+    test('a group carries its prefix onto the parameter', (ctx) => {
       let parts = parsePattern('{/:name}?');
       equal(parts.length, 1);
       segmentIs(parts[0], 'name', '/', Modifier.Optional);
     });
 
-    test('a group with a suffix', (ctx: TestContext): void => {
+    test('a group with a suffix', (ctx) => {
       let parts = parsePattern('{:name.json}');
       equal(parts.length, 1);
       segmentIs(parts[0], 'name', '', Modifier.None);
       equal((parts[0] as SegmentWildcardPart).suffix, '.json');
     });
 
-    test('an empty group is ignored', (ctx: TestContext): void => {
+    test('an empty group is ignored', (ctx) => {
       equal(parsePattern('{}').length, 0);
     });
   });
 
-  suite('escapes', (): void => {
-    test('an escaped colon is literal text', (ctx: TestContext): void => {
+  suite('escapes', () => {
+    test('an escaped colon is literal text', (ctx) => {
       let parts = parsePattern('/\\:notaparam');
       equal(parts.length, 1);
       fixedIs(parts[0], '/:notaparam', '', Modifier.None);
     });
 
-    test('an escaped brace is literal text', (ctx: TestContext): void => {
+    test('an escaped brace is literal text', (ctx) => {
       let parts = parsePattern('/\\{x\\}');
       equal(parts.length, 1);
       fixedIs(parts[0], '/{x}', '', Modifier.None);
     });
   });
 
-  suite('component type', (): void => {
-    test('every part carries the component it was parsed for', (ctx: TestContext): void => {
+  suite('component type', () => {
+    test('every part carries the component it was parsed for', (ctx) => {
       let parts = parsePattern(':sub.example.com', URLComponentType.Hostname);
       isTrue(parts.length > 0);
       for (let part in parts) {
@@ -225,20 +225,20 @@ export let tests = suite('URLPattern pattern parser', (): void => {
       }
     });
 
-    test('pathname is the default', (ctx: TestContext): void => {
+    test('pathname is the default', (ctx) => {
       equal(parsePattern('/a')[0].urlComponentType, URLComponentType.Pathname);
     });
   });
 
-  suite('matching over the variants', (): void => {
-    test('every part is one of the four kinds', (ctx: TestContext): void => {
+  suite('matching over the variants', () => {
+    test('every part is one of the four kinds', (ctx) => {
       // What the hierarchy buys downstream: the compiler checks the arms,
       // and each arm sees only the fields its kind actually has.
-      let describe = (part: Part): String => match (part) {
+      let describe = (part: Part) => match (part) {
         case FixedPart {value}: 'fixed ' + value
         case SegmentWildcardPart {name}: 'segment ' + name
         case FullWildcardPart {name}: 'wildcard ' + name
-        case RegexPart {name, source}: 'regex ' + name + '=' + source
+        case RegexPart {name, source}: `regex ${name}=${source}`
       };
 
       let parts = parsePattern('/a/:b/*/(\\d+)');
@@ -250,39 +250,39 @@ export let tests = suite('URLPattern pattern parser', (): void => {
     });
   });
 
-  suite('rejects invalid patterns', (): void => {
-    test('a duplicate parameter name', (ctx: TestContext): void => {
-      throws((): void => { parsePattern('/:id/:id'); });
+  suite('rejects invalid patterns', () => {
+    test('a duplicate parameter name', (ctx) => {
+      throws(() => { parsePattern('/:id/:id'); });
     });
 
-    test('a missing parameter name', (ctx: TestContext): void => {
-      throws((): void => { parsePattern('/:'); });
+    test('a missing parameter name', (ctx) => {
+      throws(() => { parsePattern('/:'); });
     });
 
-    test('unbalanced parentheses', (ctx: TestContext): void => {
-      throws((): void => { parsePattern('/:id(\\d+'); });
+    test('unbalanced parentheses', (ctx) => {
+      throws(() => { parsePattern('/:id(\\d+'); });
     });
 
-    test('an empty regex', (ctx: TestContext): void => {
-      throws((): void => { parsePattern('/:id()'); });
+    test('an empty regex', (ctx) => {
+      throws(() => { parsePattern('/:id()'); });
     });
 
-    test('a regex starting with "?"', (ctx: TestContext): void => {
-      throws((): void => { parsePattern('/:id(?foo)'); });
+    test('a regex starting with "?"', (ctx) => {
+      throws(() => { parsePattern('/:id(?foo)'); });
     });
 
-    test('a capturing group inside a regex', (ctx: TestContext): void => {
+    test('a capturing group inside a regex', (ctx) => {
       // The compiled matcher owns capture numbering, so a group here
       // would shift it.
-      throws((): void => { parsePattern('/:id((a))'); });
+      throws(() => { parsePattern('/:id((a))'); });
     });
 
-    test('a non-ASCII character inside a regex', (ctx: TestContext): void => {
-      throws((): void => { parsePattern('/:id(é)'); });
+    test('a non-ASCII character inside a regex', (ctx) => {
+      throws(() => { parsePattern('/:id(é)'); });
     });
 
-    test('an unbalanced brace', (ctx: TestContext): void => {
-      throws((): void => { parsePattern('/{foo'); });
+    test('an unbalanced brace', (ctx) => {
+      throws(() => { parsePattern('/{foo'); });
     });
   });
 });

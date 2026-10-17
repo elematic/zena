@@ -4,114 +4,114 @@ import {equal, isTrue, isFalse, throws} from 'zena:assert';
 import {parseJson, jsonGet, JsonObject, JsonArray, JsonOptions, JsonParseError, stringify} from 'zena:json';
 
 // Helper to test that parsing throws JsonParseError
-let expectParseError = (input: String): void => {
+let expectParseError = (input: String) => {
   throws(() => {
     parseJson(input);
   });
 };
 
-let expectParseErrorWithComments = (input: String): void => {
+let expectParseErrorWithComments = (input: String) => {
   let opts: JsonOptions = { allowComments: true, trackLocations: false };
   throws(() => {
     parseJson(input, opts);
   });
 };
 
-export let tests = suite('JSON Parser', (): void => {
+export let tests = suite('JSON Parser', () => {
 
   // ==========================================================================
   // STRINGS
   // ==========================================================================
 
-  suite('strings - valid', (): void => {
-    test('empty string', (ctx: TestContext): void => {
-      let s: String = parseJson('""') as String;
+  suite('strings - valid', () => {
+    test('empty string', (ctx) => {
+      let s = parseJson('""') as String;
       equal(s, '');
     });
 
-    test('simple ASCII', (ctx: TestContext): void => {
-      let s: String = parseJson('"hello world"') as String;
+    test('simple ASCII', (ctx) => {
+      let s = parseJson('"hello world"') as String;
       equal(s, 'hello world');
     });
 
-    test('whitespace only', (ctx: TestContext): void => {
-      let s: String = parseJson('"   "') as String;
+    test('whitespace only', (ctx) => {
+      let s = parseJson('"   "') as String;
       equal(s, '   ');
     });
 
-    test('escape sequence - newline', (ctx: TestContext): void => {
-      let s: String = parseJson('"line1\\nline2"') as String;
+    test('escape sequence - newline', (ctx) => {
+      let s = parseJson('"line1\\nline2"') as String;
       // Check length includes newline
       equal(s.length, 11);
     });
 
-    test('escape sequence - tab', (ctx: TestContext): void => {
-      let s: String = parseJson('"a\\tb"') as String;
+    test('escape sequence - tab', (ctx) => {
+      let s = parseJson('"a\\tb"') as String;
       equal(s.length, 3);
     });
 
-    test('escape sequence - carriage return', (ctx: TestContext): void => {
-      let s: String = parseJson('"a\\rb"') as String;
+    test('escape sequence - carriage return', (ctx) => {
+      let s = parseJson('"a\\rb"') as String;
       equal(s.length, 3);
     });
 
-    test('escape sequence - quote', (ctx: TestContext): void => {
-      let s: String = parseJson('"say \\"hello\\""') as String;
+    test('escape sequence - quote', (ctx) => {
+      let s = parseJson('"say \\"hello\\""') as String;
       // Contains actual quote characters
       isTrue(s.length > 0);
     });
 
-    test('escape sequence - backslash', (ctx: TestContext): void => {
-      let s: String = parseJson('"path\\\\to\\\\file"') as String;
+    test('escape sequence - backslash', (ctx) => {
+      let s = parseJson('"path\\\\to\\\\file"') as String;
       isTrue(s.length > 0);
     });
 
-    test('escape sequence - forward slash', (ctx: TestContext): void => {
-      let s: String = parseJson('"a\\/b"') as String;
+    test('escape sequence - forward slash', (ctx) => {
+      let s = parseJson('"a\\/b"') as String;
       equal(s, 'a/b');
     });
 
-    test('escape sequence - unicode, one byte', (ctx: TestContext): void => {
-      let s: String = parseJson('"\\u0041\\u007a"') as String;
+    test('escape sequence - unicode, one byte', (ctx) => {
+      let s = parseJson('"\\u0041\\u007a"') as String;
       equal(s, 'Az');
     });
 
-    test('escape sequence - unicode, two and three bytes', (ctx: TestContext): void => {
+    test('escape sequence - unicode, two and three bytes', (ctx) => {
       // U+00E9 is two bytes in UTF-8, U+20AC three.
-      let s: String = parseJson('"caf\\u00e9 \\u20AC"') as String;
+      let s = parseJson('"caf\\u00e9 \\u20AC"') as String;
       equal(s, 'café €');
     });
 
-    test('escape sequence - unicode surrogate pair', (ctx: TestContext): void => {
+    test('escape sequence - unicode surrogate pair', (ctx) => {
       // U+1F600, written as the UTF-16 pair JSON uses for it.
-      let s: String = parseJson('"\\ud83d\\ude00"') as String;
+      let s = parseJson('"\\ud83d\\ude00"') as String;
       equal(s, '😀');
       equal(s.length, 4);
     });
 
-    test('escape sequence - lone surrogate becomes U+FFFD', (ctx: TestContext): void => {
-      let s: String = parseJson('"a\\ud83db"') as String;
+    test('escape sequence - lone surrogate becomes U+FFFD', (ctx) => {
+      let s = parseJson('"a\\ud83db"') as String;
       equal(s, 'a�b');
     });
 
-    test('escape sequence - backspace and form feed', (ctx: TestContext): void => {
-      let s: String = parseJson('"\\b\\f"') as String;
+    test('escape sequence - backspace and form feed', (ctx) => {
+      let s = parseJson('"\\b\\f"') as String;
       equal(s.length, 2);
       equal(s.getByteAt(0), 8);
       equal(s.getByteAt(1), 12);
     });
   });
 
-  suite('strings - errors', (): void => {
-    test('unterminated string', (ctx: TestContext): void => {
+  suite('strings - errors', () => {
+    test('unterminated string', (ctx) => {
       expectParseError('"hello');
     });
 
-    test('single quotes not allowed', (ctx: TestContext): void => {
+    test('single quotes not allowed', (ctx) => {
       expectParseError("'hello'");
     });
 
-    test('newline in string', (ctx: TestContext): void => {
+    test('newline in string', (ctx) => {
       // Actual newline character inside string is not allowed
       expectParseError('"hello\nworld"');
     });
@@ -121,28 +121,28 @@ export let tests = suite('JSON Parser', (): void => {
   // NUMBERS
   // ==========================================================================
 
-  suite('numbers - valid', (): void => {
-    test('zero', (ctx: TestContext): void => {
+  suite('numbers - valid', () => {
+    test('zero', (ctx) => {
       let n = (parseJson('0') as Box<f64>).value;
       isTrue(n == 0.0);
     });
 
-    test('positive integer', (ctx: TestContext): void => {
+    test('positive integer', (ctx) => {
       let n = (parseJson('42') as Box<f64>).value;
       isTrue(n == 42.0);
     });
 
-    test('negative integer', (ctx: TestContext): void => {
+    test('negative integer', (ctx) => {
       let n = (parseJson('-42') as Box<f64>).value;
       isTrue(n == (0.0 - 42.0));
     });
 
-    test('decimal', (ctx: TestContext): void => {
+    test('decimal', (ctx) => {
       let n = (parseJson('3.14159') as Box<f64>).value;
       isTrue(n > 3.14 && n < 3.15);
     });
 
-    test('negative decimal', (ctx: TestContext): void => {
+    test('negative decimal', (ctx) => {
       let n = (parseJson('-3.14') as Box<f64>).value;
       // n should be between -4 and -3
       let negFour = 0.0 - 4.0;
@@ -150,67 +150,67 @@ export let tests = suite('JSON Parser', (): void => {
       isTrue(n > negFour && n < negThree);
     });
 
-    test('exponent lowercase', (ctx: TestContext): void => {
+    test('exponent lowercase', (ctx) => {
       let n = (parseJson('1e3') as Box<f64>).value;
       isTrue(n == 1000.0);
     });
 
-    test('exponent uppercase', (ctx: TestContext): void => {
+    test('exponent uppercase', (ctx) => {
       let n = (parseJson('1E3') as Box<f64>).value;
       isTrue(n == 1000.0);
     });
 
-    test('negative exponent', (ctx: TestContext): void => {
+    test('negative exponent', (ctx) => {
       let n = (parseJson('1e-5') as Box<f64>).value;
       isTrue(n < 0.001 && n > 0.0);
     });
 
-    test('positive exponent with sign', (ctx: TestContext): void => {
+    test('positive exponent with sign', (ctx) => {
       let n = (parseJson('1e+5') as Box<f64>).value;
       isTrue(n == 100000.0);
     });
 
-    test('decimal with exponent', (ctx: TestContext): void => {
+    test('decimal with exponent', (ctx) => {
       let n = (parseJson('1.5e2') as Box<f64>).value;
       isTrue(n == 150.0);
     });
 
-    test('small decimal', (ctx: TestContext): void => {
+    test('small decimal', (ctx) => {
       let n = (parseJson('0.001') as Box<f64>).value;
       isTrue(n > 0.0009 && n < 0.0011);
     });
   });
 
-  suite('numbers - errors', (): void => {
-    test('leading decimal', (ctx: TestContext): void => {
+  suite('numbers - errors', () => {
+    test('leading decimal', (ctx) => {
       expectParseError('.5');
     });
 
-    test('trailing decimal', (ctx: TestContext): void => {
+    test('trailing decimal', (ctx) => {
       expectParseError('5.');
     });
 
-    test('multiple decimals', (ctx: TestContext): void => {
+    test('multiple decimals', (ctx) => {
       expectParseError('1.2.3');
     });
 
-    test('leading zeros', (ctx: TestContext): void => {
+    test('leading zeros', (ctx) => {
       expectParseError('007');
     });
 
-    test('plus sign', (ctx: TestContext): void => {
+    test('plus sign', (ctx) => {
       expectParseError('+5');
     });
 
-    test('hex notation', (ctx: TestContext): void => {
+    test('hex notation', (ctx) => {
       expectParseError('0xFF');
     });
 
-    test('empty exponent', (ctx: TestContext): void => {
+    test('empty exponent', (ctx) => {
       expectParseError('1e');
     });
 
-    test('exponent with only sign', (ctx: TestContext): void => {
+    test('exponent with only sign', (ctx) => {
       expectParseError('1e+');
     });
   });
@@ -219,101 +219,101 @@ export let tests = suite('JSON Parser', (): void => {
   // OBJECTS
   // ==========================================================================
 
-  suite('objects - valid', (): void => {
-    test('empty object', (ctx: TestContext): void => {
+  suite('objects - valid', () => {
+    test('empty object', (ctx) => {
       let obj = parseJson('{}') as JsonObject;
       equal(obj.size, 0);
     });
 
-    test('single property', (ctx: TestContext): void => {
+    test('single property', (ctx) => {
       let obj = parseJson('{"key": "value"}') as JsonObject;
       equal(obj.size, 1);
-      let v: String = obj['key'] as String;
+      let v = obj['key'] as String;
       equal(v, 'value');
     });
 
-    test('multiple properties', (ctx: TestContext): void => {
+    test('multiple properties', (ctx) => {
       let obj = parseJson('{"a": 1, "b": 2, "c": 3}') as JsonObject;
       equal(obj.size, 3);
     });
 
-    test('null value', (ctx: TestContext): void => {
+    test('null value', (ctx) => {
       let obj = parseJson('{"key": null}') as JsonObject;
       isTrue(obj['key'] == null);
     });
 
-    test('boolean values', (ctx: TestContext): void => {
+    test('boolean values', (ctx) => {
       let obj = parseJson('{"t": true, "f": false}') as JsonObject;
-      let t: boolean = (obj['t'] as Box<boolean>).value;
-      let f: boolean = (obj['f'] as Box<boolean>).value;
+      let t = (obj['t'] as Box<boolean>).value;
+      let f = (obj['f'] as Box<boolean>).value;
       isTrue(t);
       isFalse(f);
     });
 
-    test('number value', (ctx: TestContext): void => {
+    test('number value', (ctx) => {
       let obj = parseJson('{"n": 42}') as JsonObject;
       let n = (obj['n'] as Box<f64>).value;
       isTrue(n == 42.0);
     });
 
-    test('nested object', (ctx: TestContext): void => {
+    test('nested object', (ctx) => {
       let obj = parseJson('{"outer": {"inner": "value"}}') as JsonObject;
       let inner = obj['outer'] as JsonObject;
-      let v: String = inner['inner'] as String;
+      let v = inner['inner'] as String;
       equal(v, 'value');
     });
 
-    test('array value', (ctx: TestContext): void => {
+    test('array value', (ctx) => {
       let obj = parseJson('{"arr": [1, 2, 3]}') as JsonObject;
       let arr = obj['arr'] as JsonArray;
       equal(arr.length, 3);
     });
 
-    test('whitespace variations', (ctx: TestContext): void => {
+    test('whitespace variations', (ctx) => {
       let obj = parseJson('{  "a"  :  1  ,  "b"  :  2  }') as JsonObject;
       equal(obj.size, 2);
     });
 
-    test('newlines in object', (ctx: TestContext): void => {
+    test('newlines in object', (ctx) => {
       let obj = parseJson('{\n  "a": 1,\n  "b": 2\n}') as JsonObject;
       equal(obj.size, 2);
     });
   });
 
-  suite('objects - errors', (): void => {
-    test('missing colon', (ctx: TestContext): void => {
+  suite('objects - errors', () => {
+    test('missing colon', (ctx) => {
       expectParseError('{"key" "value"}');
     });
 
-    test('missing comma', (ctx: TestContext): void => {
+    test('missing comma', (ctx) => {
       expectParseError('{"a": 1 "b": 2}');
     });
 
-    test('trailing comma', (ctx: TestContext): void => {
+    test('trailing comma', (ctx) => {
       expectParseError('{"a": 1,}');
     });
 
-    test('unquoted key', (ctx: TestContext): void => {
+    test('unquoted key', (ctx) => {
       expectParseError('{key: "value"}');
     });
 
-    test('single-quoted key', (ctx: TestContext): void => {
+    test('single-quoted key', (ctx) => {
       expectParseError("{\'key\': \"value\"}");
     });
 
-    test('missing value', (ctx: TestContext): void => {
+    test('missing value', (ctx) => {
       expectParseError('{"key":}');
     });
 
-    test('missing key', (ctx: TestContext): void => {
+    test('missing key', (ctx) => {
       expectParseError('{: "value"}');
     });
 
-    test('unclosed object', (ctx: TestContext): void => {
+    test('unclosed object', (ctx) => {
       expectParseError('{"key": "value"');
     });
 
-    test('extra comma between properties', (ctx: TestContext): void => {
+    test('extra comma between properties', (ctx) => {
       expectParseError('{"a": 1,, "b": 2}');
     });
   });
@@ -322,25 +322,25 @@ export let tests = suite('JSON Parser', (): void => {
   // ARRAYS
   // ==========================================================================
 
-  suite('arrays - valid', (): void => {
-    test('empty array', (ctx: TestContext): void => {
+  suite('arrays - valid', () => {
+    test('empty array', (ctx) => {
       let arr = parseJson('[]') as JsonArray;
       equal(arr.length, 0);
     });
 
-    test('single element', (ctx: TestContext): void => {
+    test('single element', (ctx) => {
       let arr = parseJson('[42]') as JsonArray;
       equal(arr.length, 1);
       let n = (arr[0] as Box<f64>).value;
       isTrue(n == 42.0);
     });
 
-    test('multiple elements', (ctx: TestContext): void => {
+    test('multiple elements', (ctx) => {
       let arr = parseJson('[1, 2, 3, 4, 5]') as JsonArray;
       equal(arr.length, 5);
     });
 
-    test('mixed types', (ctx: TestContext): void => {
+    test('mixed types', (ctx) => {
       let arr = parseJson('[1, "two", true, null, {}]') as JsonArray;
       equal(arr.length, 5);
       isTrue(arr[0] is Box<f64>);
@@ -350,14 +350,14 @@ export let tests = suite('JSON Parser', (): void => {
       isTrue(arr[4] is JsonObject);
     });
 
-    test('nested arrays', (ctx: TestContext): void => {
+    test('nested arrays', (ctx) => {
       let arr = parseJson('[[1, 2], [3, 4]]') as JsonArray;
       equal(arr.length, 2);
       let inner = arr[0] as JsonArray;
       equal(inner.length, 2);
     });
 
-    test('deeply nested', (ctx: TestContext): void => {
+    test('deeply nested', (ctx) => {
       let arr = parseJson('[[[1]]]') as JsonArray;
       let a1 = arr[0] as JsonArray;
       let a2 = a1[0] as JsonArray;
@@ -365,35 +365,35 @@ export let tests = suite('JSON Parser', (): void => {
       isTrue(n == 1.0);
     });
 
-    test('whitespace variations', (ctx: TestContext): void => {
+    test('whitespace variations', (ctx) => {
       let arr = parseJson('[  1  ,  2  ,  3  ]') as JsonArray;
       equal(arr.length, 3);
     });
 
-    test('newlines in array', (ctx: TestContext): void => {
+    test('newlines in array', (ctx) => {
       let arr = parseJson('[\n  1,\n  2\n]') as JsonArray;
       equal(arr.length, 2);
     });
   });
 
-  suite('arrays - errors', (): void => {
-    test('missing comma', (ctx: TestContext): void => {
+  suite('arrays - errors', () => {
+    test('missing comma', (ctx) => {
       expectParseError('[1 2]');
     });
 
-    test('trailing comma', (ctx: TestContext): void => {
+    test('trailing comma', (ctx) => {
       expectParseError('[1, 2,]');
     });
 
-    test('double comma', (ctx: TestContext): void => {
+    test('double comma', (ctx) => {
       expectParseError('[1,, 2]');
     });
 
-    test('unclosed array', (ctx: TestContext): void => {
+    test('unclosed array', (ctx) => {
       expectParseError('[1, 2');
     });
 
-    test('leading comma', (ctx: TestContext): void => {
+    test('leading comma', (ctx) => {
       expectParseError('[, 1, 2]');
     });
   });
@@ -402,60 +402,60 @@ export let tests = suite('JSON Parser', (): void => {
   // KEYWORDS (true, false, null)
   // ==========================================================================
 
-  suite('keywords - valid', (): void => {
-    test('true', (ctx: TestContext): void => {
-      let b: boolean = (parseJson('true') as Box<boolean>).value;
+  suite('keywords - valid', () => {
+    test('true', (ctx) => {
+      let b = (parseJson('true') as Box<boolean>).value;
       isTrue(b);
     });
 
-    test('false', (ctx: TestContext): void => {
-      let b: boolean = (parseJson('false') as Box<boolean>).value;
+    test('false', (ctx) => {
+      let b = (parseJson('false') as Box<boolean>).value;
       isFalse(b);
     });
 
-    test('null', (ctx: TestContext): void => {
+    test('null', (ctx) => {
       isTrue(parseJson('null') == null);
     });
   });
 
-  suite('keywords - errors', (): void => {
-    test('tru (incomplete)', (ctx: TestContext): void => {
+  suite('keywords - errors', () => {
+    test('tru (incomplete)', (ctx) => {
       expectParseError('tru');
     });
 
-    test('fals (incomplete)', (ctx: TestContext): void => {
+    test('fals (incomplete)', (ctx) => {
       expectParseError('fals');
     });
 
-    test('nul (incomplete)', (ctx: TestContext): void => {
+    test('nul (incomplete)', (ctx) => {
       expectParseError('nul');
     });
 
-    test('nulll (extra letter)', (ctx: TestContext): void => {
+    test('nulll (extra letter)', (ctx) => {
       expectParseError('nulll');
     });
 
-    test('True (wrong case)', (ctx: TestContext): void => {
+    test('True (wrong case)', (ctx) => {
       expectParseError('True');
     });
 
-    test('FALSE (wrong case)', (ctx: TestContext): void => {
+    test('FALSE (wrong case)', (ctx) => {
       expectParseError('FALSE');
     });
 
-    test('Null (wrong case)', (ctx: TestContext): void => {
+    test('Null (wrong case)', (ctx) => {
       expectParseError('Null');
     });
 
-    test('undefined (not JSON)', (ctx: TestContext): void => {
+    test('undefined (not JSON)', (ctx) => {
       expectParseError('undefined');
     });
 
-    test('NaN (not JSON)', (ctx: TestContext): void => {
+    test('NaN (not JSON)', (ctx) => {
       expectParseError('NaN');
     });
 
-    test('Infinity (not JSON)', (ctx: TestContext): void => {
+    test('Infinity (not JSON)', (ctx) => {
       expectParseError('Infinity');
     });
   });
@@ -464,60 +464,60 @@ export let tests = suite('JSON Parser', (): void => {
   // STRUCTURAL / GENERAL
   // ==========================================================================
 
-  suite('structural - valid', (): void => {
-    test('string as root', (ctx: TestContext): void => {
-      let s: String = parseJson('"hello"') as String;
+  suite('structural - valid', () => {
+    test('string as root', (ctx) => {
+      let s = parseJson('"hello"') as String;
       equal(s, 'hello');
     });
 
-    test('number as root', (ctx: TestContext): void => {
+    test('number as root', (ctx) => {
       let n = (parseJson('42') as Box<f64>).value;
       isTrue(n == 42.0);
     });
 
-    test('true as root', (ctx: TestContext): void => {
-      let b: boolean = (parseJson('true') as Box<boolean>).value;
+    test('true as root', (ctx) => {
+      let b = (parseJson('true') as Box<boolean>).value;
       isTrue(b);
     });
 
-    test('null as root', (ctx: TestContext): void => {
+    test('null as root', (ctx) => {
       isTrue(parseJson('null') == null);
     });
 
-    test('leading whitespace', (ctx: TestContext): void => {
+    test('leading whitespace', (ctx) => {
       let n = (parseJson('   42') as Box<f64>).value;
       isTrue(n == 42.0);
     });
 
-    test('trailing whitespace', (ctx: TestContext): void => {
+    test('trailing whitespace', (ctx) => {
       let n = (parseJson('42   ') as Box<f64>).value;
       isTrue(n == 42.0);
     });
 
-    test('tabs and newlines', (ctx: TestContext): void => {
+    test('tabs and newlines', (ctx) => {
       let n = (parseJson('\t\n42\n\t') as Box<f64>).value;
       isTrue(n == 42.0);
     });
   });
 
-  suite('structural - errors', (): void => {
-    test('empty input', (ctx: TestContext): void => {
+  suite('structural - errors', () => {
+    test('empty input', (ctx) => {
       expectParseError('');
     });
 
-    test('whitespace only', (ctx: TestContext): void => {
+    test('whitespace only', (ctx) => {
       expectParseError('   ');
     });
 
-    test('multiple values', (ctx: TestContext): void => {
+    test('multiple values', (ctx) => {
       expectParseError('1 2');
     });
 
-    test('trailing content after object', (ctx: TestContext): void => {
+    test('trailing content after object', (ctx) => {
       expectParseError('{} extra');
     });
 
-    test('trailing content after array', (ctx: TestContext): void => {
+    test('trailing content after array', (ctx) => {
       expectParseError('[] extra');
     });
   });
@@ -526,32 +526,32 @@ export let tests = suite('JSON Parser', (): void => {
   // jq-STYLE QUERIES
   // ==========================================================================
 
-  suite('jq-style queries', (): void => {
-    test('jsonGet with simple path', (ctx: TestContext): void => {
+  suite('jq-style queries', () => {
+    test('jsonGet with simple path', (ctx) => {
       let value = parseJson('{"name": "Alice"}');
       let name = jsonGet(value, '.name');
       isTrue(name is String);
-      let s: String = name as String;
+      let s = name as String;
       equal(s, 'Alice');
     });
 
-    test('jsonGet with nested path', (ctx: TestContext): void => {
+    test('jsonGet with nested path', (ctx) => {
       let value = parseJson('{"user": {"name": "Alice"}}');
       let name = jsonGet(value, '.user.name');
       isTrue(name is String);
-      let s: String = name as String;
+      let s = name as String;
       equal(s, 'Alice');
     });
 
-    test('jsonGet with array index', (ctx: TestContext): void => {
+    test('jsonGet with array index', (ctx) => {
       let value = parseJson('{"items": ["a", "b", "c"]}');
       let item = jsonGet(value, '.items[1]');
       isTrue(item is String);
-      let s: String = item as String;
+      let s = item as String;
       equal(s, 'b');
     });
 
-    test('jsonGet returns null for missing key', (ctx: TestContext): void => {
+    test('jsonGet returns null for missing key', (ctx) => {
       let value = parseJson('{"name": "Alice"}');
       let missing = jsonGet(value, '.age');
       isTrue(missing == null);
@@ -562,41 +562,41 @@ export let tests = suite('JSON Parser', (): void => {
   // JSONC (comments)
   // ==========================================================================
 
-  suite('JSONC (comments)', (): void => {
+  suite('JSONC (comments)', () => {
     let opts: JsonOptions = { allowComments: true, trackLocations: false };
 
-    test('line comment', (ctx: TestContext): void => {
+    test('line comment', (ctx) => {
       let obj = parseJson('{"a": 1} // comment', opts) as JsonObject;
       equal(obj.size, 1);
     });
 
-    test('line comment before value', (ctx: TestContext): void => {
+    test('line comment before value', (ctx) => {
       let obj = parseJson('// comment\n{"a": 1}', opts) as JsonObject;
       equal(obj.size, 1);
     });
 
-    test('line comment inside object', (ctx: TestContext): void => {
+    test('line comment inside object', (ctx) => {
       let input = '{ // comment
         "name": "Alice"  // another comment
       }';
       let obj = parseJson(input, opts) as JsonObject;
-      let name: String = obj['name'] as String;
+      let name = obj['name'] as String;
       equal(name, 'Alice');
     });
 
-    test('block comment', (ctx: TestContext): void => {
+    test('block comment', (ctx) => {
       let obj = parseJson('{"a": /* comment */ 1}', opts) as JsonObject;
       let n = (obj['a'] as Box<f64>).value;
       isTrue(n == 1.0);
     });
 
-    test('block comment spanning lines', (ctx: TestContext): void => {
+    test('block comment spanning lines', (ctx) => {
       let input = '/* multi\nline\ncomment */{"a": 1}';
       let obj = parseJson(input, opts) as JsonObject;
       equal(obj.size, 1);
     });
 
-    test('comments not allowed by default', (ctx: TestContext): void => {
+    test('comments not allowed by default', (ctx) => {
       expectParseError('{"a": 1} // comment');
     });
   });
@@ -605,10 +605,10 @@ export let tests = suite('JSON Parser', (): void => {
   // SOURCE LOCATIONS
   // ==========================================================================
 
-  suite('source locations', (): void => {
+  suite('source locations', () => {
     let opts: JsonOptions = { allowComments: false, trackLocations: true };
 
-    test('tracks location of object fields', (ctx: TestContext): void => {
+    test('tracks location of object fields', (ctx) => {
       let input = '{"name": "Alice"}';
       let obj = parseJson(input, opts) as JsonObject;
       let loc = obj.locationOf('name');
@@ -625,8 +625,8 @@ export let tests = suite('JSON Parser', (): void => {
   // ERROR INFORMATION
   // ==========================================================================
 
-  suite('error handling', (): void => {
-    test('throws JsonParseError', (ctx: TestContext): void => {
+  suite('error handling', () => {
+    test('throws JsonParseError', (ctx) => {
       let result = try {
         parseJson('{invalid}');
         0
@@ -636,7 +636,7 @@ export let tests = suite('JSON Parser', (): void => {
       equal(result, 1);
     });
 
-    test('error has line number', (ctx: TestContext): void => {
+    test('error has line number', (ctx) => {
       let result = try {
         parseJson('{invalid}');
         0
@@ -650,7 +650,7 @@ export let tests = suite('JSON Parser', (): void => {
       equal(result, 1);
     });
 
-    test('error line number for multiline', (ctx: TestContext): void => {
+    test('error line number for multiline', (ctx) => {
       let result = try {
         parseJson('{\n  "a": invalid\n}');
         0
@@ -669,38 +669,38 @@ export let tests = suite('JSON Parser', (): void => {
   // STRINGIFY
   // ==========================================================================
 
-  suite('stringify - primitives', (): void => {
-    test('null', (ctx: TestContext): void => {
+  suite('stringify - primitives', () => {
+    test('null', (ctx) => {
       let s = stringify(null);
       equal(s, 'null');
     });
 
-    test('boolean true', (ctx: TestContext): void => {
+    test('boolean true', (ctx) => {
       let s = stringify(new Box<boolean>(true));
       equal(s, 'true');
     });
 
-    test('boolean false', (ctx: TestContext): void => {
+    test('boolean false', (ctx) => {
       let s = stringify(new Box<boolean>(false));
       equal(s, 'false');
     });
 
-    test('integer zero', (ctx: TestContext): void => {
+    test('integer zero', (ctx) => {
       let s = stringify(new Box<f64>(0.0));
       equal(s, '0');
     });
 
-    test('positive integer', (ctx: TestContext): void => {
+    test('positive integer', (ctx) => {
       let s = stringify(new Box<f64>(42.0));
       equal(s, '42');
     });
 
-    test('negative integer', (ctx: TestContext): void => {
+    test('negative integer', (ctx) => {
       let s = stringify(new Box<f64>(-123.0));
       equal(s, '-123');
     });
 
-    test('float', (ctx: TestContext): void => {
+    test('float', (ctx) => {
       let PI: f64 = 3.14;
       let s = stringify(new Box<f64>(PI));
       // Should start with 3.14
@@ -711,73 +711,73 @@ export let tests = suite('JSON Parser', (): void => {
       equal(s.getByteAt(3), 52); // '4'
     });
 
-    test('simple string', (ctx: TestContext): void => {
+    test('simple string', (ctx) => {
       let s = stringify('hello');
       equal(s, '"hello"');
     });
 
-    test('empty string', (ctx: TestContext): void => {
+    test('empty string', (ctx) => {
       let s = stringify('');
       equal(s, '""');
     });
 
-    test('string with quotes', (ctx: TestContext): void => {
+    test('string with quotes', (ctx) => {
       let s = stringify('say "hi"');
       equal(s, '"say \\"hi\\""');
     });
 
-    test('string with backslash', (ctx: TestContext): void => {
+    test('string with backslash', (ctx) => {
       let s = stringify('a\\b');
       equal(s, '"a\\\\b"');
     });
 
-    test('string with newline', (ctx: TestContext): void => {
+    test('string with newline', (ctx) => {
       let s = stringify('line1\nline2');
       equal(s, '"line1\\nline2"');
     });
 
-    test('string with tab', (ctx: TestContext): void => {
+    test('string with tab', (ctx) => {
       let s = stringify('a\tb');
       equal(s, '"a\\tb"');
     });
   });
 
-  suite('stringify - objects', (): void => {
-    test('empty object', (ctx: TestContext): void => {
+  suite('stringify - objects', () => {
+    test('empty object', (ctx) => {
       let obj = new JsonObject();
       let s = stringify(obj);
       equal(s, '{}');
     });
 
-    test('object with one string', (ctx: TestContext): void => {
+    test('object with one string', (ctx) => {
       let obj = new JsonObject();
       obj['name'] = 'Alice';
       let s = stringify(obj);
       equal(s, '{"name":"Alice"}');
     });
 
-    test('object with number', (ctx: TestContext): void => {
+    test('object with number', (ctx) => {
       let obj = new JsonObject();
       obj['count'] = new Box<f64>(42.0);
       let s = stringify(obj);
       equal(s, '{"count":42}');
     });
 
-    test('object with boolean', (ctx: TestContext): void => {
+    test('object with boolean', (ctx) => {
       let obj = new JsonObject();
       obj['active'] = new Box<boolean>(true);
       let s = stringify(obj);
       equal(s, '{"active":true}');
     });
 
-    test('object with null', (ctx: TestContext): void => {
+    test('object with null', (ctx) => {
       let obj = new JsonObject();
       obj['value'] = null;
       let s = stringify(obj);
       equal(s, '{"value":null}');
     });
 
-    test('nested object', (ctx: TestContext): void => {
+    test('nested object', (ctx) => {
       let inner = new JsonObject();
       inner['x'] = new Box<f64>(1.0);
       let outer = new JsonObject();
@@ -787,21 +787,21 @@ export let tests = suite('JSON Parser', (): void => {
     });
   });
 
-  suite('stringify - arrays', (): void => {
-    test('empty array', (ctx: TestContext): void => {
+  suite('stringify - arrays', () => {
+    test('empty array', (ctx) => {
       let arr = new JsonArray();
       let s = stringify(arr);
       equal(s, '[]');
     });
 
-    test('array with one element', (ctx: TestContext): void => {
+    test('array with one element', (ctx) => {
       let arr = new JsonArray();
       arr.push(new Box<f64>(42.0));
       let s = stringify(arr);
       equal(s, '[42]');
     });
 
-    test('array with multiple elements', (ctx: TestContext): void => {
+    test('array with multiple elements', (ctx) => {
       let arr = new JsonArray();
       arr.push(new Box<f64>(1.0));
       arr.push(new Box<f64>(2.0));
@@ -810,7 +810,7 @@ export let tests = suite('JSON Parser', (): void => {
       equal(s, '[1,2,3]');
     });
 
-    test('array with mixed types', (ctx: TestContext): void => {
+    test('array with mixed types', (ctx) => {
       let arr = new JsonArray();
       arr.push('hello');
       arr.push(new Box<f64>(42.0));
@@ -820,7 +820,7 @@ export let tests = suite('JSON Parser', (): void => {
       equal(s, '["hello",42,true,null]');
     });
 
-    test('nested array', (ctx: TestContext): void => {
+    test('nested array', (ctx) => {
       let inner = new JsonArray();
       inner.push(new Box<f64>(1.0));
       inner.push(new Box<f64>(2.0));
@@ -831,7 +831,7 @@ export let tests = suite('JSON Parser', (): void => {
       equal(s, '[[1,2],3]');
     });
 
-    test('array in object', (ctx: TestContext): void => {
+    test('array in object', (ctx) => {
       let arr = new JsonArray();
       arr.push('a');
       arr.push('b');
@@ -842,20 +842,20 @@ export let tests = suite('JSON Parser', (): void => {
     });
   });
 
-  suite('stringify - round-trip', (): void => {
-    test('parse then stringify preserves structure', (ctx: TestContext): void => {
+  suite('stringify - round-trip', () => {
+    test('parse then stringify preserves structure', (ctx) => {
       let original = '{"name":"test","value":42}';
       let parsed = parseJson(original);
       let output = stringify(parsed);
       // Parse the output to verify structure is preserved
       let reparsed = parseJson(output) as JsonObject;
-      let name: String = reparsed['name'] as String;
+      let name = reparsed['name'] as String;
       let valueBox = reparsed['value'] as Box<f64>;
       equal(name, 'test');
       equal(valueBox.value as i32, 42);
     });
 
-    test('complex nested structure', (ctx: TestContext): void => {
+    test('complex nested structure', (ctx) => {
       let obj = new JsonObject();
       obj['string'] = 'hello';
       obj['number'] = new Box<f64>(123.0);
@@ -874,20 +874,20 @@ export let tests = suite('JSON Parser', (): void => {
       let s = stringify(obj);
       // Verify it can be parsed back
       let parsed = parseJson(s) as JsonObject;
-      let str: String = parsed['string'] as String;
+      let str = parsed['string'] as String;
       equal(str, 'hello');
     });
   });
 
-  suite('stringify - method form', (): void => {
-    test('JsonObject.stringify()', (ctx: TestContext): void => {
+  suite('stringify - method form', () => {
+    test('JsonObject.stringify()', (ctx) => {
       let obj = new JsonObject();
       obj['a'] = new Box<f64>(1.0);
       let s = obj.stringify();
       equal(s, '{"a":1}');
     });
 
-    test('JsonArray.stringify()', (ctx: TestContext): void => {
+    test('JsonArray.stringify()', (ctx) => {
       let arr = new JsonArray();
       arr.push(new Box<f64>(1.0));
       arr.push(new Box<f64>(2.0));
@@ -896,27 +896,27 @@ export let tests = suite('JSON Parser', (): void => {
     });
   });
 
-  suite('stringify - pretty print', (): void => {
-    test('empty object', (ctx: TestContext): void => {
+  suite('stringify - pretty print', () => {
+    test('empty object', (ctx) => {
       let obj = new JsonObject();
       let s = stringify(obj, "  ");
       equal(s, "{}\n");
     });
 
-    test('empty array', (ctx: TestContext): void => {
+    test('empty array', (ctx) => {
       let arr = new JsonArray();
       let s = stringify(arr, "  ");
       equal(s, "[]\n");
     });
 
-    test('simple object', (ctx: TestContext): void => {
+    test('simple object', (ctx) => {
       let obj = new JsonObject();
       obj['name'] = 'test';
       let s = stringify(obj, "  ");
       equal(s, "{\n  \"name\": \"test\"\n}\n");
     });
 
-    test('simple array', (ctx: TestContext): void => {
+    test('simple array', (ctx) => {
       let arr = new JsonArray();
       arr.push(new Box<f64>(1.0));
       arr.push(new Box<f64>(2.0));
@@ -924,7 +924,7 @@ export let tests = suite('JSON Parser', (): void => {
       equal(s, "[\n  1,\n  2\n]\n");
     });
 
-    test('nested object', (ctx: TestContext): void => {
+    test('nested object', (ctx) => {
       let obj = new JsonObject();
       let inner = new JsonObject();
       inner['x'] = new Box<f64>(1.0);
@@ -933,7 +933,7 @@ export let tests = suite('JSON Parser', (): void => {
       equal(s, "{\n  \"inner\": {\n    \"x\": 1\n  }\n}\n");
     });
 
-    test('array of objects', (ctx: TestContext): void => {
+    test('array of objects', (ctx) => {
       let arr = new JsonArray();
       let obj1 = new JsonObject();
       obj1['id'] = new Box<f64>(1.0);
@@ -945,21 +945,21 @@ export let tests = suite('JSON Parser', (): void => {
       equal(s, "[\n  {\n    \"id\": 1\n  },\n  {\n    \"id\": 2\n  }\n]\n");
     });
 
-    test('custom indent - 4 spaces', (ctx: TestContext): void => {
+    test('custom indent - 4 spaces', (ctx) => {
       let obj = new JsonObject();
       obj['a'] = new Box<f64>(1.0);
       let s = stringify(obj, "    ");
       equal(s, "{\n    \"a\": 1\n}\n");
     });
 
-    test('custom indent - tab', (ctx: TestContext): void => {
+    test('custom indent - tab', (ctx) => {
       let obj = new JsonObject();
       obj['a'] = new Box<f64>(1.0);
       let s = stringify(obj, "\t");
       equal(s, "{\n\t\"a\": 1\n}\n");
     });
 
-    test('round-trip with parse', (ctx: TestContext): void => {
+    test('round-trip with parse', (ctx) => {
       let obj = new JsonObject();
       obj['name'] = 'test';
       obj['count'] = new Box<f64>(42.0);
@@ -970,10 +970,10 @@ export let tests = suite('JSON Parser', (): void => {
       
       let pretty = stringify(obj, "  ");
       let parsed = parseJson(pretty) as JsonObject;
-      let name: String = parsed['name'] as String;
+      let name = parsed['name'] as String;
       equal(name, 'test');
       let countBox = parsed['count'] as Box<f64>;
-      let countVal: f64 = countBox.value;
+      let countVal = countBox.value;
       let EXPECTED: f64 = 42.0;
       isTrue(countVal == EXPECTED);
     });

@@ -36,10 +36,7 @@ export let writeI32 = (value: i32, buffer: ByteArray, bufferEnd: i32): inline (i
   }
   
   let isNegative = value < 0;
-  var absValue = value;
-  if (isNegative) {
-    absValue = 0 - value;
-  }
+  var absValue = if (isNegative) 0 - value else value;
   
   var pos = bufferEnd;
   while (absValue > 0) {
@@ -61,7 +58,7 @@ export let writeI32 = (value: i32, buffer: ByteArray, bufferEnd: i32): inline (i
  * Returns (startPos, endPos).
  */
 export let writeU32 = (value: u32, buffer: ByteArray, bufferEnd: i32): inline (i32, i32) => {
-  let zero: u32 = 0 as u32;
+  let zero = 0 as u32;
   if (value == zero) {
     __byte_array_set(buffer, bufferEnd - 1, 48);
     return (bufferEnd - 1, bufferEnd);
@@ -84,7 +81,7 @@ export let writeU32 = (value: u32, buffer: ByteArray, bufferEnd: i32): inline (i
  * Returns (startPos, endPos).
  */
 export let writeI64 = (value: i64, buffer: ByteArray, bufferEnd: i32): inline (i32, i32) => {
-  let zero: i64 = 0 as i64;
+  let zero = 0 as i64;
   if (value == zero) {
     __byte_array_set(buffer, bufferEnd - 1, 48);
     return (bufferEnd - 1, bufferEnd);
@@ -99,10 +96,7 @@ export let writeI64 = (value: i64, buffer: ByteArray, bufferEnd: i32): inline (i
   }
   
   let isNegative = value < zero;
-  var absValue = value;
-  if (isNegative) {
-    absValue = zero - value;
-  }
+  var absValue = if (isNegative) zero - value else value;
   
   var pos = bufferEnd;
   while (absValue > zero) {
@@ -125,7 +119,7 @@ export let writeI64 = (value: i64, buffer: ByteArray, bufferEnd: i32): inline (i
  * Returns (startPos, endPos).
  */
 export let writeU64 = (value: u64, buffer: ByteArray, bufferEnd: i32): inline (i32, i32) => {
-  let zero: u64 = 0 as u64;
+  let zero = 0 as u64;
   if (value == zero) {
     __byte_array_set(buffer, bufferEnd - 1, 48);
     return (bufferEnd - 1, bufferEnd);
@@ -345,10 +339,10 @@ let POW5_SHIFTED: FixedArray<u64> = [
 // ---------------------------------------------------------------------------
 
 /** floor(log2(10^p)). */
-let log2Pow10 = (p: i32): i32 => (p * 108853) >> 15;
+let log2Pow10 = (p: i32) => (p * 108853) >> 15;
 
 /** floor(log10(2^e)). */
-let log10Pow2 = (e: i32): i32 => (e * 78913) >> 18;
+let log10Pow2 = (e: i32) => (e * 78913) >> 18;
 
 /**
  * floor(log10(3 * 2^(e-2))) — the estimate for an exact power of two,
@@ -356,7 +350,7 @@ let log10Pow2 = (e: i32): i32 => (e * 78913) >> 18;
  * one: the binade below has half the spacing, so the interval runs a
  * quarter ulp down and half an ulp up. 125076 is round(log10(3) * 2^18).
  */
-let skewedPow2 = (e: i32): i32 => (((e - 2) * 78913) + 125076) >> 18;
+let skewedPow2 = (e: i32) => (((e - 2) * 78913) + 125076) >> 18;
 
 // ---------------------------------------------------------------------------
 // The unrounded number.
@@ -366,16 +360,16 @@ let skewedPow2 = (e: i32): i32 => (((e - 2) * 78913) + 125076) >> 18;
 // Every rounding mode is then an add and a shift.
 // ---------------------------------------------------------------------------
 
-let ZERO: u64 = 0 as u64;
-let ONE: u64 = 1 as u64;
+let ZERO = 0 as u64;
+let ONE = 1 as u64;
 
-let uFloor = (u: u64): u64 => u >> (2 as u64);
-let uCeil = (u: u64): u64 => (u + (3 as u64)) >> (2 as u64);
+let uFloor = (u: u64) => u >> (2 as u64);
+let uCeil = (u: u64) => (u + (3 as u64)) >> (2 as u64);
 /** Round half to even. */
-let uRound = (u: u64): u64 =>
+let uRound = (u: u64) =>
     (u + ONE + ((u >> (2 as u64)) & ONE)) >> (2 as u64);
 /** Halve, keeping the sticky bit. */
-let uHalve = (u: u64): u64 => (u >> ONE) | (u & ONE);
+let uHalve = (u: u64) => (u >> ONE) | (u & ONE);
 
 // ---------------------------------------------------------------------------
 // The power-of-ten cache
@@ -470,7 +464,7 @@ let prescale = (e: i32, p: i32): inline (u64, u64, i32) => {
  * argument is exactly the claim that it never has to be: at this scale
  * the true value is exact, or it is more than a unit away from exact.
  */
-let uscale = (x: u64, pmHi: u64, pmLo: u64, s: i32): u64 => {
+let uscale = (x: u64, pmHi: u64, pmLo: u64, s: i32) => {
   if (s >= 64) {
     // Everything shifts out. x >= 2^63 and pm >= 2^127 make the
     // product nonzero, and 4*value < 1, so the answer is "zero, but
@@ -508,8 +502,8 @@ let F64_MIN_EXP: i32 = -1085;
 let F32_Z: i32 = 40;
 let F32_MIN_EXP: i32 = -189;
 
-let INFINITY_BITS: i64 = 9218868437227405312 as i64;   // 0x7FF0000000000000
-let SIGN_BIT: i64 = -9223372036854775808 as i64;       // 0x8000000000000000
+let INFINITY_BITS = 9218868437227405312 as i64;   // 0x7FF0000000000000
+let SIGN_BIT = -9223372036854775808 as i64;       // 0x8000000000000000
 
 /** A positive finite f64's bits as (m, e), m normalized to bit 63. */
 let unpackF64 = (bits: i64): inline (u64, i32) => {
@@ -542,7 +536,7 @@ let unpackF32 = (bits: i32): inline (u64, i32) => {
  * overflows. A `mant` below 2^52 is a subnormal and carries its own
  * (zero) exponent field, which is also how a zero result arrives.
  */
-let packF64 = (mant: u64, e: i32, negative: boolean): f64 => {
+let packF64 = (mant: u64, e: i32, negative: boolean) => {
   var m = mant;
   var ex = e;
   if (m >= (ONE << (53 as u64))) {
@@ -550,15 +544,13 @@ let packF64 = (mant: u64, e: i32, negative: boolean): f64 => {
     m = m >> ONE;
     ex = ex - 1;
   }
-  var biased = 1075 - ex;
-  if (m < (ONE << (52 as u64))) {
-    biased = 0;
-  }
-  var bits = INFINITY_BITS;
-  if (biased < 0x7FF) {
-    bits = ((biased as i64) << (52 as i64)) |
-        ((m & (0xFFFFFFFFFFFFF as u64)) as i64);
-  }
+  let biased = if (m < (ONE << (52 as u64))) 0 else 1075 - ex;
+  var bits = if (biased < 0x7FF) {
+    ((biased as i64) << (52 as i64)) |
+        ((m & (0xFFFFFFFFFFFFF as u64)) as i64)
+  } else {
+    INFINITY_BITS
+  };
   if (negative) {
     bits = bits | SIGN_BIT;
   }
@@ -748,9 +740,9 @@ let formatDecimal = (
   numDigits: i32,
   decExp: i32,
   isNegative: boolean
-): String => {
+) => {
   let exp = decExp;
-  let ten_i: u64 = 10 as u64;
+  let ten_i = 10 as u64;
 
   // Extract individual digits to temp buffer (right to left)
   let digitBuf = __byte_array_new(20);
@@ -903,7 +895,7 @@ let formatDecimal = (
 };
 
 /** NaN, the infinities and the zeros, which have no digits to compute. */
-let nonFiniteToString = (value: f64, bits: i64): String => {
+let nonFiniteToString = (value: f64, bits: i64) => {
   if (value != value) {
     return "NaN";
   }
@@ -921,7 +913,7 @@ let nonFiniteToString = (value: f64, bits: i64): String => {
 };
 
 /** How many decimal digits `d` has (d != 0). */
-let digitCount = (d: u64): i32 => {
+let digitCount = (d: u64) => {
   var n = 1;
   var rest = div(d, 10 as u64);
   while (rest != (0 as u64)) {
@@ -937,7 +929,7 @@ let digitCount = (d: u64): i32 => {
  * rounding interval contains the float, and the nearest such when
  * there is a choice.
  */
-let floatToStringImpl = (value: f64, isF32: boolean): String => {
+let floatToStringImpl = (value: f64, isF32: boolean) => {
   let bits = i64_reinterpret_f64(value);
   if (value != value || value - value != 0.0 || value == 0.0) {
     return nonFiniteToString(value, bits);
@@ -1020,7 +1012,7 @@ export let parseF64 = (s: String): f64 => {
     let next = s.getByteAt(i + 1);
     if (next == 120 || next == 88) { // 'x' or 'X'
       i += 2;
-      var hexValue: f64 = 0.0;
+      var hexValue = 0.0;
       while (i < len) {
         let hb = s.getByteAt(i);
         var digit = -1;
@@ -1047,7 +1039,7 @@ export let parseF64 = (s: String): f64 => {
   // overflow (10^19 < 2^64); the twentieth onwards only need to be
   // remembered as "there was more".
   let maxDigits = 19;
-  var sig: u64 = 0 as u64;
+  var sig = 0 as u64;
   var digits = 0;
   var exp10 = 0;
   var sawDigit = false;
@@ -1055,7 +1047,7 @@ export let parseF64 = (s: String): f64 => {
   // The first few digits that do not fit, as a fraction of the last
   // one that did. Six is comfortably more than the eleven bits it is
   // scaled into below.
-  var tailValue: u64 = 0 as u64;
+  var tailValue = 0 as u64;
   var tailCount = 0;
 
   while (i < len) {
@@ -1158,9 +1150,9 @@ export let parseF64 = (s: String): f64 => {
   if (exp10 < -100000) {
     exp10 = -100000;
   }
-  var tail: u64 = 0 as u64;
+  var tail = 0 as u64;
   if (truncated && tailCount > 0) {
-    var scale: u64 = 1 as u64;
+    var scale = 1 as u64;
     var t = 0;
     while (t < tailCount) {
       scale = scale * (10 as u64);
@@ -1206,7 +1198,7 @@ export let parseI64 = (s: String): inline (true, i64) | inline (false, _) => {
     return (false, _);
   }
 
-  var res: u64 = 0 as u64;
+  var res = 0 as u64;
   var i = start;
   let ten = 10 as u64;
   let sixteen = 16 as u64;
@@ -1229,7 +1221,7 @@ export let parseI64 = (s: String): inline (true, i64) | inline (false, _) => {
     }
     
     let base = if (isHex) sixteen else ten;
-    let limit: u64 = if (isNeg) (9223372036854775807 as u64) + (1 as u64) else 9223372036854775807 as u64;
+    let limit = if (isNeg) (9223372036854775807 as u64) + (1 as u64) else 9223372036854775807 as u64;
 
     let limitDivBase = div(limit, base);
     let limitModBase = (limit - div(limit, base) * base) as i32;
@@ -1247,6 +1239,6 @@ export let parseI64 = (s: String): inline (true, i64) | inline (false, _) => {
     return (false, _);
   }
 
-  let finalVal: i64 = if (isNeg) (0 as i64) - (res as i64) else res as i64;
+  let finalVal = if (isNeg) (0 as i64) - (res as i64) else res as i64;
   return (true, finalVal);
 };
