@@ -163,7 +163,7 @@ function substituteTypeParamsInCodegenInner(
       if (!propsChanged) {
         return rec;
       }
-      let newRec = new RecordType(newProps, rec.optionalProperties, null);
+      let newRec = new RecordType(newProps, rec.optionalProperties, null, rec.isExistential);
       newRec
     }
     case FunctionType as ft: {
@@ -1368,7 +1368,7 @@ export function eraseTypeParameters(wasm: WasmModule, t: Type): Type {
       // An erased row is no fields at all: nothing is emitted at an
       // erasure (reachability/CONTEXT.md), so this only names a struct.
       if (!changed && rec.row == null) { return t; }
-      let newRec = new RecordType(newProps, rec.optionalProperties, null);
+      let newRec = new RecordType(newProps, rec.optionalProperties, null, rec.isExistential);
       newRec
     }
     case _: t
@@ -1637,7 +1637,9 @@ export function typeToValType(wasm: WasmModule, t: Type): ValType {
   case BooleanType: new ValTypeI32()
   case RecordType as rec: {
     let fields = recordWasmFields(wasm, rec, null);
-    let info_opt = wasm.findRecordDispatch(fields, sortedOptionalNames(rec));
+    let info_opt = if (rec.isExistential)
+        wasm.findExistentialDispatch(fields, sortedOptionalNames(rec))
+        else wasm.findRecordDispatch(fields, sortedOptionalNames(rec));
     match (info_opt) {
       case RecordDispatchInfo as info: new ValTypeRef(info.fatPtrType)
       case null: {

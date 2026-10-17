@@ -1,0 +1,42 @@
+// @mode: check
+// Existential record types (docs/design/row-types.md, Decisions): `{x:
+// i32, ...}` holds any record that has an `x`, and keeps the rest of
+// its fields, which the type does not name.
+
+type Named = {name: String, ...};
+
+// Any record with the named fields packs into it, literals included.
+let withAge: Named = {name: 'a', age: 3};
+let bare: Named = {name: 'b'};
+let mixed: Array<Named> = [withAge, bare];
+
+// Only the named fields can be read.
+let n: String = withAge.name;
+let age = withAge.age; // @error: Property 'age' does not exist
+
+// It converts to a closed type naming some of its fields, and to an
+// existential naming fewer.
+let closed: {name: String} = withAge;
+let anything: {...} = withAge;
+let wider: {name: String, age: i32} = withAge; // @error: is not assignable to
+
+// `is` and `as` to a closed type test the record it holds.
+let isAged = withAge is {name: String, age: i32};
+let aged = withAge as {name: String, age: i32};
+
+// Its other fields are not known, so it cannot be spread, take a rest,
+// or instantiate a row.
+let spread = {...withAge}; // @error: Cannot spread '{ name: String, ... }': an existential record's fields are not all known.
+let {name, ...rest} = withAge; // @error: A '...rest' pattern needs a record whose fields are all known
+let keep = <R extends record>(p: {name: String, ...R}): String => p.name;
+let kept = keep(withAge); // @error: an existential record's fields are not all known.
+
+// A class instance does not pack into one.
+class Person(name: String)
+let person: Named = new Person('p'); // @error: is not assignable to
+
+// A row and `...` do not go together.
+type Both<R extends record> = {x: i32, ...R, ...}; // @error: A record type cannot spread a row parameter and also be existential.
+
+// Optional fields are not supported on an existential yet.
+type Optional = {x?: i32, ...}; // @error: An existential record type cannot have optional fields yet.

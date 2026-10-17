@@ -1,0 +1,81 @@
+// @mode: run
+// @result: 1
+// Existential record types hold records of different shapes side by
+// side, and compare, hash, test and convert by the record each holds
+// (docs/design/row-types.md, Decisions: Operations per form).
+
+import { hash } from 'zena:core';
+import { HashSet } from 'zena:collections';
+
+type Named = {name: String, ...};
+
+let same = (x: anyref, y: anyref): boolean => x == y;
+
+let isAged = (n: Named): boolean => n is {name: String, age: i32};
+let isBare = (n: Named): boolean => n is {name: String};
+
+let names = (items: Array<Named>): String => {
+  var s = '';
+  for (let item in items) {
+    s = s + item.name;
+  }
+  return s;
+};
+
+export let main = (): i32 => {
+  let a: Named = {name: 'a', age: 1};
+  let b: Named = {name: 'b'};
+  let c: Named = {name: 'c', tags: (1, 2)};
+  if (names([a, b, c]) != 'abc') {
+    return 10;
+  }
+  // `is` tests whether the record held is exactly that type, as for a
+  // closed record; `as` projects when the record has the type's fields.
+  if (!isAged(a) || isAged(b)) {
+    return 11;
+  }
+  if ((a as {name: String, age: i32}).age != 1) {
+    return 12;
+  }
+  if (!isBare(b) || isBare(a)) {
+    return 13;
+  }
+  if ((a as {name: String}).name != 'a') {
+    return 19;
+  }
+  // `==` compares the records held, by shape and fields.
+  let a2: Named = {name: 'a', age: 1};
+  if (a != a2 || a == b) {
+    return 14;
+  }
+  let b2: Named = {name: 'b', extra: 0};
+  if (b == b2) {
+    return 15;
+  }
+  if (hash(a) != hash({name: 'a', age: 1})) {
+    return 16;
+  }
+  // Converting to a closed type projects; to an existential naming
+  // fewer fields keeps the record.
+  let closed: {name: String} = a;
+  if (closed.name != 'a' || closed != {name: 'a'}) {
+    return 17;
+  }
+  let anything: {...} = a;
+  if (anything != a) {
+    return 18;
+  }
+  // A hash set keys them by the records held.
+  let set = new HashSet<Named>();
+  set.add(a);
+  set.add(a2);
+  set.add(b);
+  if (set.size != 2 || !set.has({name: 'b'} as Named)) {
+    return 20;
+  }
+  // Through `anyref` too.
+  if (!same(a, a2) || same(a, b) || !same(a, {name: 'a', age: 1})) {
+    return 21;
+  }
+  return 1;
+};

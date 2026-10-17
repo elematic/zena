@@ -63,6 +63,10 @@ import {
   lowerErasedEqDispatch, lowerEqIntrinsic, lowerHashIntrinsic,
   lowerValueEqFunction, lowerValueHash, lowerValueHashFunction,
 } from './equality.zena';
+import {
+  existentialAs, existentialHash, existentialIs, existentialUnderlying, lowerExistentialForward,
+  packExistential, projectExistential,
+} from './existential.zena';
 import { isValueHashCodeCall } from '../value-equality.zena';
 import {
   bindRecordProp, branchUnless, collectPatternBindSyms,
@@ -905,6 +909,9 @@ function lowerFunctionOrThrow(wasm: WasmModule, func: WasmFunction): IrBody {
     }
     if (func.closureForwarder != null) {
       return lowerClosureForwarder(wasm, func);
+    }
+    if (func.existentialForward != null) {
+      return lowerExistentialForward(func);
     }
     if (func.getterStruct != null) {
       return synthesizeAccessor(func, true);
@@ -4007,9 +4014,37 @@ export final class FunctionLowerer {
     return this.#recordRestValue(rest, value);
   }
 
+  /**
+   * A conversion involving an existential record type: a pack into one;
+   * a projection out of one to a closed type naming only fields it
+   * knows; or an `as` to a closed type naming others, which finds the
+   * record held at run time (ir/existential.zena).
+   */
+  #convertExistential(source: RecordType, target: RecordType, value: i32): i32 {
+    let cx = this.#cx();
+    let sourceD = cx.recordDispatchOf(source);
+    let targetD = cx.recordDispatchOf(target);
+    if (target.isExistential) {
+      return packExistential(cx, value, sourceD, targetD);
+    }
+    for (let key in target.properties.keys()) {
+      if (!source.properties.has(key)) {
+        return existentialAs(cx, value, sourceD, targetD);
+      }
+    }
+    return projectExistential(cx, value, sourceD, targetD);
+  }
+
   #applyRecordAdaptation(ra: RecordAdaptation, value: i32): i32 {
     if (value < 0 || this.b.body.typeId[value] < 0) {
       this.#bail('record adaptation without value');
+    }
+    let sourceRec = substituteTypeParamsInFunctionContext(this.wasm, this.func, ra.source);
+    let targetRec = substituteTypeParamsInFunctionContext(this.wasm, this.func, ra.target);
+    if (sourceRec is RecordType && targetRec is RecordType) {
+      if (sourceRec.isExistential || targetRec.isExistential) {
+        return this.#convertExistential(sourceRec, targetRec, value);
+      }
     }
     let inFields = recordWasmFields(this.wasm, ra.source, this.func);
     let inOptionals = sortedOptionalNames(ra.source);
@@ -5150,9 +5185,19 @@ export final class FunctionLowerer {
     if (targetTypeOpt == null) {
       this.#bail('untyped is target');
     }
-    let targetType = substituteTypeParamsInFunctionContext(this.wasm, 
+    let targetType = substituteTypeParamsInFunctionContext(this.wasm,
         this.func, targetTypeOpt);
     let value = this.#lowerExpression(isExpr.expression);
+    // An existential holds a record of a shape only the run time knows:
+    // `is` asks whether it is exactly a value of the closed target type.
+    let sourceBase = baseType(sourceType);
+    let targetBase = baseType(targetType);
+    if (sourceBase is RecordType && targetBase is RecordType) {
+      if (sourceBase.isExistential && !targetBase.isExistential) {
+        return existentialIs(this.#cx(), value, this.#cx().recordDispatchOf(sourceBase),
+            this.#cx().recordDispatchOf(targetBase));
+      }
+    }
     if (!isRefType(sourceType)) {
       let same = getTypeUniqueKey(sourceType) == getTypeUniqueKey(targetType) ||
           targetType is AnyRefType ||

@@ -166,6 +166,14 @@ types in their fields) and `$erasedEq` covers only their fat pointer
 types. The compiler converts no record that way, so its own build pays
 nothing beyond the `<shape>` field in each record table.
 
+An existential record (`{x: i32, ...}`) compares and hashes as the
+record it holds. Its `==` goes straight to `$erasedEq`, which first
+unwraps any existential operand through its table's `<underlying>` slot
+and compares again; packing a record into an existential notes the
+record's type for the erased comparison, as any conversion to a slot
+that does not know the shape does. Its hash is the `<hash>` slot, which
+calls the held record's `$valueHash` (ir/existential.zena).
+
 Tuples still compare by identity in erased positions. A tuple is a plain
 struct of its element types, and the dead-field pass can leave a class
 struct with the same layout, so a type test cannot tell a tuple from
