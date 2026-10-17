@@ -98,6 +98,14 @@ export final class RuleContext {
     this.edits.push(new Edit(start, end, text, this.rule, lineOf(this.source, start), group));
   }
 
+  /** An edit that supports the rule's fixes rather than being one; see `Edit.shared`. */
+  #insertShared(at: i32, text: String): void {
+    this.#nextGroup += 1;
+    let edit = new Edit(at, at, text, this.rule, lineOf(this.source, at), this.#nextGroup);
+    edit.shared = true;
+    this.edits.push(edit);
+  }
+
   /**
    * Starts a rewrite of several edits that stand or fall together. Every
    * edit until `endGroup` joins it.
@@ -168,7 +176,7 @@ export final class RuleContext {
         }
         if (imports.length > 0) {
           let at = this.end(imports[imports.length - 1]);
-          this.replaceRange(at, at, `, ${name}`);
+          this.#insertShared(at, `, ${name}`);
           return;
         }
       }
@@ -176,10 +184,10 @@ export final class RuleContext {
     let line = `import { ${name} } from '${module}';`;
     if (lastImport != null) {
       let at = this.statementEnd(lastImport);
-      this.replaceRange(at, at, `\n${line}`);
+      this.#insertShared(at, `\n${line}`);
     } else if (this.ast.body.length > 0) {
       let at = this.start(this.ast.body[0]);
-      this.replaceRange(at, at, `${line}\n\n`);
+      this.#insertShared(at, `${line}\n\n`);
     }
   }
 

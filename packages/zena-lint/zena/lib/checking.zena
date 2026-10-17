@@ -11,6 +11,7 @@
  */
 
 import { existsSync, readFileSync } from 'zena:fs';
+import { getEnv } from 'zena:cli';
 import { join2 } from 'zena:path';
 import {
   createCompiler, checkCompilation, CompilerHost, Compiler, PackageConfig,
@@ -56,7 +57,14 @@ final class OverlayHost implements CompilerHost {
  * which packages `zena-packages.json` declares, plus the warm compiler.
  */
 export final class Project {
+  /** Where the compiler reads the standard library from. */
   stdlibRoot: String;
+  /**
+   * Where the standard library's files are named on a command line, when
+   * that is somewhere else: the `zena` command reads them through the
+   * host's `/stdlib` preopen but is asked about `packages/stdlib/zena/…`.
+   */
+  stdlibSources: String;
   target: String;
   #host: OverlayHost;
   #packages: Map<String, PackageConfig>;
@@ -66,8 +74,10 @@ export final class Project {
   /** Whether the current file is in an import cycle; see `override`. */
   var #cyclic = false;
 
-  new(stdlibRoot: String = 'packages/stdlib/zena', target: String = 'zena-cli')
+  new(stdlibRoot: String = 'packages/stdlib/zena', stdlibSources: String | null = null,
+      target: String = 'zena-cli')
     : stdlibRoot = stdlibRoot,
+      stdlibSources = stdlibSources ?? stdlibRoot,
       target = target,
       #host = new OverlayHost(stdlibRoot),
       #packages = loadPackages(new OverlayHost(stdlibRoot));
@@ -121,7 +131,7 @@ export final class Project {
    * 'Encoding'`).
    */
   entryIdOf(path: String): String {
-    let root = `${this.stdlibRoot}/`;
+    let root = `${this.stdlibSources}/`;
     if (path.startsWith(root)) {
       return `zena:${path.sliceBytes(root.length, path.length)}`;
     }
@@ -148,6 +158,9 @@ export final class Project {
     // The file itself may have changed since the last check; the
     // dependencies are trusted until `reset`.
     let id = this.entryIdOf(path);
+    if (getEnv('ZENA_LINT_DEBUG') != null) {
+      console.log(`checking ${path} as ${id} (stdlib root ${this.stdlibRoot})`);
+    }
     compiler.invalidate(id);
     let result = compiler.compile({entry: id, target: this.target});
     if (result.hasCycle) {
@@ -164,8 +177,10 @@ export final class Project {
         own.push(diagnostic);
       }
     }
-    return new CheckedFile(path, result.entry.source, result.entry.ast,
+    let file = new CheckedFile(path, result.entry.source, result.entry.ast,
         checked.entry.model, own);
+    file.isStdlib = id.startsWith('zena:');
+    return file;
   }
 }
 

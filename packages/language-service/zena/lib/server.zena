@@ -231,7 +231,9 @@ export final class LspServer {
       }
     }
     for (let finding in findings) {
-      writeLintDiagnostic(b, text, finding, this.#service.lintMessage(finding));
+      if (!finding.shared) {
+        writeLintDiagnostic(b, text, finding, this.#service.lintMessage(finding));
+      }
     }
     b.endArray().endObject().endObject();
     let send = this.#send;
@@ -253,10 +255,16 @@ export final class LspServer {
     let b = new JsonBuilder();
     b.beginArray();
     for (let finding in findings) {
-      if (finding.end < start || finding.start > end) {
+      if (finding.shared || finding.end < start || finding.start > end) {
         continue;
       }
+      // A fix takes the supporting edits of its rule (an import) along.
       let one = growable<Edit>([finding]);
+      for (let other in findings) {
+        if (other.shared && other.rule == finding.rule) {
+          one.push(other);
+        }
+      }
       writeCodeAction(b, `Fix: ${this.#service.lintMessage(finding)}`, 'quickfix', uri, text,
           one, this.#diagnosticFor(params, text, finding));
     }

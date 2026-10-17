@@ -241,6 +241,11 @@ function callbackAnnotations(ctx: RuleContext, call: CallExpression): void {
     calleeType = u;
   }
   let ft = calleeType;
+  // An overloaded callee is chosen by the argument types, which the
+  // annotations are.
+  if (isOverloaded(ft) || isOverloaded(ctx.typeOf(call.callee))) {
+    return;
+  }
   // The signature as declared: a method-level type parameter that the
   // callback's annotations are what pins down still shows there, where
   // the resolved signature has it filled in already.
@@ -255,6 +260,16 @@ function callbackAnnotations(ctx: RuleContext, call: CallExpression): void {
     }
     i += 1;
   }
+}
+
+/** Whether the type is a function with other overloads. */
+function isOverloaded(t: Type | null): boolean {
+  if (t == null || !(t is FunctionType)) {
+    return false;
+  }
+  let ft = t as FunctionType;
+  let overloads = (ft.genericSource ?? ft).overloads;
+  return overloads != null && overloads.length > 0;
 }
 
 /**

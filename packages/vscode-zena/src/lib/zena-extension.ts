@@ -132,6 +132,7 @@ export class ZenaExtension {
             const source = document.getText();
             const actions: vscode.CodeAction[] = [];
             for (const finding of findings) {
+              if (finding.shared) continue;
               const findingRange = this.#rangeOf(document, source, finding);
               if (
                 !findingRange.intersection(range) &&
@@ -143,12 +144,11 @@ export class ZenaExtension {
                 `Fix: ${finding.message}`,
                 vscode.CodeActionKind.QuickFix,
               );
-              action.edit = new vscode.WorkspaceEdit();
-              action.edit.replace(
-                document.uri,
-                findingRange,
-                finding.replacement,
-              );
+              // A fix takes the supporting edits of its rule (an import) along.
+              action.edit = this.#fixAllEdit(document, source, [
+                finding,
+                ...findings.filter((f) => f.shared && f.rule === finding.rule),
+              ]);
               action.diagnostics = (
                 this.#diagnosticCollection.get(document.uri) ?? []
               ).filter(
@@ -183,7 +183,8 @@ export class ZenaExtension {
         if (!editor || editor.document.languageId !== 'zena') return;
         this.#checkDocument(editor.document);
         const findings = this.#findingsFor(editor.document);
-        if (findings.length === 0) {
+        const count = findings.filter((f) => !f.shared).length;
+        if (count === 0) {
           vscode.window.showInformationMessage('Zena: nothing to fix.');
           return;
         }
@@ -195,7 +196,7 @@ export class ZenaExtension {
           ),
         );
         vscode.window.showInformationMessage(
-          `Zena: applied ${findings.length} fix${findings.length === 1 ? '' : 'es'}.`,
+          `Zena: applied ${count} fix${count === 1 ? '' : 'es'}.`,
         );
       }),
     );
@@ -398,6 +399,7 @@ export class ZenaExtension {
             ),
         );
         for (const finding of findings) {
+          if (finding.shared) continue;
           const range = new vscode.Range(
             document.positionAt(byteToCharOffset(source, finding.start)),
             document.positionAt(byteToCharOffset(source, finding.end)),

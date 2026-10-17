@@ -64,6 +64,7 @@ interface LspExports extends WebAssembly.Exports {
   getLintRule(findings: unknown, index: number): unknown;
   getLintMessage(findings: unknown, index: number): unknown;
   getLintReplacement(findings: unknown, index: number): unknown;
+  getLintShared(findings: unknown, index: number): number;
   getDefinition(path: unknown, offset: number): unknown;
   getDefinitionFile(result: unknown): unknown;
   getDefinitionLine(result: unknown): number;
@@ -103,6 +104,11 @@ export interface LintFindingInfo {
   rule: string;
   message: string;
   replacement: string;
+  /**
+   * A supporting edit (an import the rule's fixes need) rather than a
+   * finding: shown as nothing, applied with any fix of its rule.
+   */
+  shared: boolean;
 }
 
 export interface DocumentSymbolInfo {
@@ -379,6 +385,7 @@ export class ZenaCompilerService {
           rule: read(exports.getLintRule(handle, i)),
           message: read(exports.getLintMessage(handle, i)),
           replacement: read(exports.getLintReplacement(handle, i)),
+          shared: exports.getLintShared(handle, i) !== 0,
         });
       }
       return findings;
