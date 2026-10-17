@@ -46,7 +46,7 @@ final class Fixture {
   new(this.name, this.path, this.samples, this.args);
 }
 
-let fixtures = (): Array<Fixture> => {
+function fixtures(): Array<Fixture> {
   let base = 'packages/zena-compiler/test-files/benchmarks';
   let all = new Array<Fixture>(6);
   // The floor: what any program pays before its own code is looked at.
@@ -64,7 +64,7 @@ let fixtures = (): Array<Fixture> => {
   all.push(new Fixture('portable-semantics',
       'packages/zena-compiler/zena/test/portable_semantics.zena', 2, []));
   return all;
-};
+}
 
 /** One phase's time across the samples of one fixture. */
 final class PhaseStat {
@@ -96,7 +96,7 @@ final class FixtureResult {
   name: String;
   var failed = false;
   #byName = new Map<String, PhaseStat>();
-  var #inOrder = new GrowableArray<PhaseStat>();
+  #inOrder = new GrowableArray<PhaseStat>();
   new(this.name);
 
   record(phase: String, parent: String | null, ms: f64, entries: i32): void {
@@ -127,38 +127,37 @@ final class FixtureResult {
 }
 
 /** JSON accessors: the parser returns a union, so each shape is asked for. */
-let asString = (value: JsonValue, what: String): String => {
+function asString(value: JsonValue, what: String): String {
   if (value is String) { return value; }
   throw new Error(`compile bench: expected a string for ${what}`);
-};
+}
 
-let asNumber = (value: JsonValue, what: String): f64 => {
+function asNumber(value: JsonValue, what: String): f64 {
   if (value is Box<f64>) { return value.value; }
   throw new Error(`compile bench: expected a number for ${what}`);
-};
+}
 
-let asArray = (value: JsonValue, what: String): JsonArray => {
+function asArray(value: JsonValue, what: String): JsonArray {
   if (value is JsonArray) { return value; }
   throw new Error(`compile bench: expected an array for ${what}`);
-};
+}
 
-let asObject = (value: JsonValue, what: String): JsonObject => {
+function asObject(value: JsonValue, what: String): JsonObject {
   if (value is JsonObject) { return value; }
   throw new Error(`compile bench: expected an object for ${what}`);
-};
+}
 
-let zenaCli = (): String => {
+function zenaCli() {
   let named = getEnv('ZENA_CLI');
-  if (named != null) { return named as String; }
-  return './target/release/zena-cli';
-};
+  return named ?? './target/release/zena-cli';
+}
 
 /**
  * Compiles `fixture` once and folds its phase table into `into`.
  * Returns whether the compile succeeded; a failure is reported once
  * per fixture rather than once per sample.
  */
-let sampleOnce = (fixture: Fixture, into: FixtureResult): boolean => {
+function sampleOnce(fixture: Fixture, into: FixtureResult): boolean {
   let args = new GrowableArray<String>();
   args.push(zenaCli());
   args.push('build');
@@ -197,9 +196,9 @@ let sampleOnce = (fixture: Fixture, into: FixtureResult): boolean => {
     i += 1;
   }
   return true;
-};
+}
 
-let pad = (text: String, width: i32, left: boolean): String => {
+function pad(text: String, width: i32, left: boolean) {
   let b = new StringBuilder();
   if (left) {
     var i = text.length;
@@ -211,12 +210,13 @@ let pad = (text: String, width: i32, left: boolean): String => {
   var i = text.length;
   while (i < width) { b.append(' '); i += 1; }
   return b.toString();
-};
+}
 
-let ms1 = (value: f64): String =>
-    f64ToString(((value * 10.0) as i64 as f64) / 10.0);
+function ms1(value: f64) {
+  return f64ToString(((value * 10.0) as i64 as f64) / 10.0);
+}
 
-let printTable = (results: Array<FixtureResult>): void => {
+function printTable(results: Array<FixtureResult>) {
   for (let r in results) {
     console.log('');
     if (r.failed) {
@@ -250,9 +250,9 @@ let printTable = (results: Array<FixtureResult>): void => {
           pad(ms1(p.max), 10, true) + '   ' + entries);
     }
   }
-};
+}
 
-let printJson = (results: Array<FixtureResult>): void => {
+function printJson(results: Array<FixtureResult>) {
   let b = new JsonBuilder();
   b.beginObject();
   b.key('schemaVersion').i32(1);
@@ -281,9 +281,9 @@ let printJson = (results: Array<FixtureResult>): void => {
   b.endArray();
   b.endObject();
   console.log(b.toString());
-};
+}
 
-export let main = (): i32 => {
+export function main(): i32 {
   if (getEnv('ZENA_TIME_JSON') == null) {
     console.error(
         'Set ZENA_TIME_JSON=1: the compilers this spawns inherit it, and ' +
@@ -349,4 +349,4 @@ export let main = (): i32 => {
     printTable(results);
   }
   return if (failures > 0) { 1 } else { 0 };
-};
+}
