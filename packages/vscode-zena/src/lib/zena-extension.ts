@@ -1,8 +1,24 @@
 import * as vscode from 'vscode';
 import {formatError} from '@zena-lang/runtime';
 import {ZenaCompilerService} from './compiler-service.js';
+import type {LintFindingInfo} from './compiler-service.js';
 
 export const outputChannel = vscode.window.createOutputChannel('Zena');
+
+/**
+ * The UTF-16 offset in `source` of a UTF-8 byte offset into it, which is
+ * what the service reports and what `TextDocument.positionAt` wants.
+ */
+function byteToCharOffset(source: string, byteOffset: number): number {
+  let bytes = 0;
+  let chars = 0;
+  for (const ch of source) {
+    if (bytes >= byteOffset) break;
+    bytes += Buffer.byteLength(ch, 'utf8');
+    chars += ch.length;
+  }
+  return chars;
+}
 
 /**
  * Holds the shared state of the Zena extension and manages its lifecycle.
@@ -12,6 +28,8 @@ export class ZenaExtension {
   #compiler: ZenaCompilerService;
   #diagnosticCollection: vscode.DiagnosticCollection;
   #statusBarItem: vscode.StatusBarItem;
+  /** The lint findings of each document's last check, by file path. */
+  #lintFindings = new Map<string, LintFindingInfo[]>();
 
   constructor(context: vscode.ExtensionContext) {
     this.context = context;
@@ -100,6 +118,85 @@ export class ZenaExtension {
     context.subscriptions.push(
       vscode.commands.registerCommand('zena.helloWorld', () => {
         vscode.window.showInformationMessage('Hello from Zena!');
+      }),
+    );
+
+    // Lint findings as quick fixes, and one action that fixes them all.
+    context.subscriptions.push(
+      vscode.languages.registerCodeActionsProvider(
+        'zena',
+        {
+          provideCodeActions: (document, range) => {
+            const findings = this.#findingsFor(document);
+            if (findings.length === 0) return [];
+            const source = document.getText();
+            const actions: vscode.CodeAction[] = [];
+            for (const finding of findings) {
+              const findingRange = this.#rangeOf(document, source, finding);
+              if (
+                !findingRange.intersection(range) &&
+                !range.contains(findingRange)
+              ) {
+                continue;
+              }
+              const action = new vscode.CodeAction(
+                `Fix: ${finding.message}`,
+                vscode.CodeActionKind.QuickFix,
+              );
+              action.edit = new vscode.WorkspaceEdit();
+              action.edit.replace(
+                document.uri,
+                findingRange,
+                finding.replacement,
+              );
+              action.diagnostics = (
+                this.#diagnosticCollection.get(document.uri) ?? []
+              ).filter(
+                (d) =>
+                  d.source === 'zena-lint' &&
+                  d.range.start.isEqual(findingRange.start),
+              );
+              actions.push(action);
+            }
+            const all = new vscode.CodeAction(
+              'Fix all zena-lint findings',
+              vscode.CodeActionKind.SourceFixAll.append('zena'),
+            );
+            all.edit = this.#fixAllEdit(document, source, findings);
+            actions.push(all);
+            return actions;
+          },
+        },
+        {
+          providedCodeActionKinds: [
+            vscode.CodeActionKind.QuickFix,
+            vscode.CodeActionKind.SourceFixAll.append('zena'),
+          ],
+        },
+      ),
+    );
+
+    // "Zena: Fix lint findings in file" on the active document.
+    context.subscriptions.push(
+      vscode.commands.registerCommand('zena.fixLint', async () => {
+        const editor = vscode.window.activeTextEditor;
+        if (!editor || editor.document.languageId !== 'zena') return;
+        this.#checkDocument(editor.document);
+        const findings = this.#findingsFor(editor.document);
+        if (findings.length === 0) {
+          vscode.window.showInformationMessage('Zena: nothing to fix.');
+          return;
+        }
+        await vscode.workspace.applyEdit(
+          this.#fixAllEdit(
+            editor.document,
+            editor.document.getText(),
+            findings,
+          ),
+        );
+        vscode.window.showInformationMessage(
+          `Zena: applied ${findings.length} fix${findings.length === 1 ? '' : 'es'}.`,
+        );
       }),
     );
 
@@ -282,12 +379,82 @@ export class ZenaExtension {
         const uri = vscode.Uri.file(filePath);
         this.#diagnosticCollection.set(uri, diagnostics);
       }
+
+      // The lint findings, as warnings beside the checker's diagnostics.
+      // The checker's own "unnecessary cast" warning gives way to the
+      // lint finding for the same cast, which carries the fix.
+      const findings = this.#compiler.lintDocument(path);
+      this.#lintFindings.set(path, findings);
+      if (findings.length > 0) {
+        const own = (this.#diagnosticCollection.get(document.uri) ?? []).filter(
+          (d) =>
+            !(
+              d.message.startsWith('Unnecessary cast') &&
+              findings.some((f) =>
+                document
+                  .positionAt(byteToCharOffset(source, f.start))
+                  .isEqual(d.range.start),
+              )
+            ),
+        );
+        for (const finding of findings) {
+          const range = new vscode.Range(
+            document.positionAt(byteToCharOffset(source, finding.start)),
+            document.positionAt(byteToCharOffset(source, finding.end)),
+          );
+          const diagnostic = new vscode.Diagnostic(
+            range,
+            finding.message,
+            vscode.DiagnosticSeverity.Warning,
+          );
+          diagnostic.source = 'zena-lint';
+          diagnostic.code = finding.rule;
+          own.push(diagnostic);
+        }
+        this.#diagnosticCollection.set(document.uri, own);
+      }
     } catch (e) {
       const msg = formatError(e);
       outputChannel.appendLine(
         `Check failed for ${document.uri.fsPath}: ${msg}`,
       );
     }
+  }
+
+  /** The lint findings of the document's last check. */
+  #findingsFor(document: vscode.TextDocument): LintFindingInfo[] {
+    return this.#lintFindings.get(document.uri.fsPath) ?? [];
+  }
+
+  #rangeOf(
+    document: vscode.TextDocument,
+    source: string,
+    finding: LintFindingInfo,
+  ): vscode.Range {
+    return new vscode.Range(
+      document.positionAt(byteToCharOffset(source, finding.start)),
+      document.positionAt(byteToCharOffset(source, finding.end)),
+    );
+  }
+
+  /**
+   * One edit applying every finding. The findings do not overlap, so the
+   * edit holds one replacement per finding.
+   */
+  #fixAllEdit(
+    document: vscode.TextDocument,
+    source: string,
+    findings: LintFindingInfo[],
+  ): vscode.WorkspaceEdit {
+    const edit = new vscode.WorkspaceEdit();
+    for (const finding of findings) {
+      edit.replace(
+        document.uri,
+        this.#rangeOf(document, source, finding),
+        finding.replacement,
+      );
+    }
+    return edit;
   }
 
   #setStatusBarOk() {
