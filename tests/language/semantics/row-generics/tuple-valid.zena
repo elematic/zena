@@ -1,0 +1,40 @@
+// @mode: check
+// Tuple rows (docs/design/row-types.md §3.3): concrete tuple spreads, a
+// generic alias over a row, and functions whose `(i32, ...R)` parameter
+// keeps the caller's other elements in the result type.
+
+type Pair = (i32, i32);
+type Triple = (...Pair, String);
+let triple: Triple = (1, 2, 'a');
+let third: String = triple[2];
+
+type Prepend<T, R extends tuple> = (T, ...R);
+let prepended: Prepend<String, (i32, boolean)> = ('a', 1, true);
+let flag: boolean = prepended[2];
+
+let keep = <R extends tuple>(t: (i32, ...R)): (i32, ...R) => t;
+let kept = keep((1, 'a', true));
+let s: String = kept[1];
+let b: boolean = kept[2];
+
+// The elements before the row are read directly.
+let first = <R extends tuple>(t: (i32, ...R)): i32 => t[0];
+let one: i32 = first((1, 2.5));
+
+// A row passes through another row-generic function.
+let twice = <S extends tuple>(t: (i32, ...S)): (i32, ...S) => keep(keep(t));
+let tw = twice((0, 'z'));
+let z: String = tw[1];
+
+// A row may sit anywhere among the elements.
+let lastFixed = <R extends tuple>(t: (...R, String)): (...R, String) => t;
+let lf = lastFixed((1, true, 'end'));
+let lfFlag: boolean = lf[1];
+
+// A row variable on its own.
+let same = <R extends tuple>(t: R): R => t;
+let pair: (i32, String) = same((1, 'a'));
+
+// An explicit row.
+let explicit = keep<(f64, String)>((1, 2.0, 's'));
+let explicitString: String = explicit[2];

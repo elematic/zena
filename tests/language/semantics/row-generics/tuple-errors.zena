@@ -1,0 +1,14 @@
+// @mode: check
+// What tuple rows reject (docs/design/row-types.md §3.3).
+
+type TwoRows<A extends tuple, B extends tuple> = (...A, ...B); // @error: A tuple type can spread at most one row type parameter.
+type NotTuple = (i32, ...String); // @error: Cannot spread 'String' into a tuple type
+type RecordRow<R extends record> = (i32, ...R); // @error: Cannot spread 'R' into a tuple type
+type TupleRowInRecord<R extends tuple> = {x: i32, ...R}; // @error: Cannot spread 'R' into a record type
+
+let first = <R extends tuple>(t: (i32, ...R)): i32 => t[0];
+let wrongHead = first(('a', 1)); // @error: is not assignable to parameter
+let notATuple = first<i32>((1, 2)); // @error: Type 'i32' does not satisfy constraint 'tuple' for type parameter 'R'.
+
+// The row's elements are the caller's, so their positions are unknown.
+let pastRow = <R extends tuple>(t: (i32, ...R)): i32 => t[1]; // @error: Index 1 is at or past the row 'R' of type '[i32, ...R]'

@@ -2059,11 +2059,16 @@ function printTypeAnnotation(ann: TypeAnnotation): Doc {
     }
     concat(docs3(text('{'), join(text(', '), propDocs), text('}')))
   }
-  case TupleTypeAnnotation {elementTypes}: {
+  case TupleTypeAnnotation {elementTypes, spreadIndices}: {
     let eDocs = new Array<Doc>();
     var i = 0;
     while (i < elementTypes.length) {
-      eDocs.push(printTypeAnnotation(elementTypes[i]));
+      let elementDoc = printTypeAnnotation(elementTypes[i]);
+      if (spreadIndices != null && spreadIndices.contains(i)) {
+        eDocs.push(concat(docs2(text('...'), elementDoc)));
+      } else {
+        eDocs.push(elementDoc);
+      }
       i += 1;
     }
     concat(docs3(text('('), join(text(', '), eDocs), text(')')))

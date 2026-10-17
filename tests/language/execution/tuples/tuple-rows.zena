@@ -1,0 +1,67 @@
+// @mode: run
+// @result: 1
+// Tuple-row functions run once per row (docs/design/row-types.md §3.3,
+// §7.2).
+
+import { hash } from 'zena:core';
+
+let first = <R extends tuple>(t: (i32, ...R)): i32 => t[0];
+
+let keep = <R extends tuple>(t: (i32, ...R)): (i32, ...R) => t;
+
+let twice = <S extends tuple>(t: (i32, ...S)): (i32, ...S) => keep(keep(t));
+
+let lastFixed = <R extends tuple>(t: (...R, String)): (...R, String) => t;
+
+type Prepend<T, R extends tuple> = (T, ...R);
+
+let head = <R extends tuple>(t: Prepend<String, R>): String => t[0];
+
+let same = <R extends tuple>(a: (i32, ...R), b: (i32, ...R)): boolean => a == b;
+
+let hashOf = <R extends tuple>(t: (i32, ...R)): i32 => hash(t);
+
+class Tagged<R extends tuple>(tag: String, value: (i32, ...R)) {
+  headPlus(n: i32): i32 {
+    return this.value[0] + n;
+  }
+}
+
+export let main = (): i32 => {
+  let a = keep((1, 'a'));
+  if (a[0] != 1 || a[1] != 'a') {
+    return 10;
+  }
+  let b = twice((3, true, 'n'));
+  if (b[0] != 3 || !b[1] || b[2] != 'n') {
+    return 11;
+  }
+  if (first((4, 1.5)) + first((5, 'x', 'y')) != 9) {
+    return 12;
+  }
+  let l = lastFixed((1, true, 'end'));
+  if (l[0] != 1 || !l[1] || l[2] != 'end') {
+    return 13;
+  }
+  if (head(('h', 1)) != 'h') {
+    return 14;
+  }
+  let held: (i32, f64) = (7, 0.5);
+  if (keep(held)[1] != 0.5 || first(held) != 7) {
+    return 15;
+  }
+  if (!same((1, 2), (1, 2)) || same((1, 2), (1, 3))) {
+    return 16;
+  }
+  if (hashOf((1, 2)) != hash((1, 2)) || hashOf((1, 2)) == hashOf((1, 3))) {
+    return 17;
+  }
+  let t = new Tagged('t', (4, 'n'));
+  if (t.value[1] != 'n' || t.headPlus(1) != 5) {
+    return 18;
+  }
+  if (t != new Tagged('t', (4, 'n')) || t == new Tagged('t', (4, 'm'))) {
+    return 19;
+  }
+  return 1;
+};

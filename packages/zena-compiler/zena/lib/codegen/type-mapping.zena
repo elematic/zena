@@ -6,7 +6,7 @@ import {
   FieldInfo, MethodInfo, typeToString, TypeParameterType, ThisType,
   UnionType, InlineTupleType, baseType, BoolLiteralType, NumLiteralType, StringLiteralType,
   RecordType, TupleType, MixinType, ErasedType, countCodegenFunctionType,
-  countCodegenSubstitution, classShapeStamp, interfaceShapeStamp, internFunctionType, mergeRow } from '../types.zena';
+  countCodegenSubstitution, classShapeStamp, interfaceShapeStamp, internFunctionType, mergeRow, mergeTupleRow } from '../types.zena';
 import { 
   WasmModule, WasmStruct, WasmField, WasmSignature, WasmFunction, RecordDispatchInfo,
   sortWasmFields, WasmArray
@@ -93,7 +93,7 @@ let substituteTypeParamsInCodegenInner = (
       }
       new ArrayType(sub, elementsMutable)
     }
-    case TupleType {elementTypes}: {
+    case TupleType {elementTypes, row, rowIndex}: {
       let newElems = new Array<Type>(elementTypes.length);
       var elemsChanged = false;
       for (let el in elementTypes) {
@@ -103,10 +103,14 @@ let substituteTypeParamsInCodegenInner = (
           elemsChanged = true;
         }
       }
+      if (row != null) {
+        return mergeTupleRow(newElems, rowIndex,
+            substituteTypeParamsInCodegenInner(wasm, typeParams, typeArgs, row));
+      }
       if (!elemsChanged) {
         return t;
       }
-      new TupleType(newElems)
+      new TupleType(newElems, null, 0)
     }
     case InlineTupleType {elementTypes}: {
       let newElems = new Array<Type>(elementTypes.length);
@@ -1333,7 +1337,7 @@ export let eraseTypeParameters = (wasm: WasmModule, t: Type): Type => {
       if (!changed) { return t; }
       wasm.interner.union(newTypes)
     }
-    case TupleType {elementTypes}: {
+    case TupleType {elementTypes, row}: {
       let newElems = new Array<Type>();
       var changed = false;
       for (let subT in elementTypes) {
@@ -1341,8 +1345,10 @@ export let eraseTypeParameters = (wasm: WasmModule, t: Type): Type => {
         if (sub !== subT) { changed = true; }
         newElems.push(sub);
       }
-      if (!changed) { return t; }
-      new TupleType(newElems)
+      // An erased row is no elements: nothing is emitted at an erasure,
+      // so this only names a struct.
+      if (!changed && row == null) { return t; }
+      new TupleType(newElems, null, 0)
     }
     case InlineTupleType {elementTypes}: {
       let newElems = new Array<Type>();
@@ -2185,12 +2191,12 @@ export let mapMixinThisInType = (ct: ClassType, type: Type): Type => {
     case ArrayType {elementType, elementsMutable}: {
       new ArrayType(mapMixinThisInType(ct, elementType), elementsMutable) as Type
     }
-    case TupleType {elementTypes}: {
+    case TupleType {elementTypes, row, rowIndex}: {
       let newElems = new Array<Type>();
       for (let el in elementTypes) {
         newElems.push(mapMixinThisInType(ct, el));
       }
-      new TupleType(newElems) as Type
+      new TupleType(newElems, row, rowIndex) as Type
     }
     case InlineTupleType {elementTypes}: {
       let newElems = new Array<Type>();

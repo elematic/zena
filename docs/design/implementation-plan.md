@@ -126,9 +126,9 @@ Per row-types.md §9, refined:
   lacks constraints, monomorphized instantiation with
   `ZENA_ZIR_STATS` counters. Coordinate with **M5** (template ZIR) for
   instantiation cost — don't block on it, but gate stdlib-hot-path
-  adoption on it. **Status:** record rows are implemented (bound,
-  type-level spread, inference, lacks, per-row specialization).
-  Tuple rows and the `ZENA_ZIR_STATS` instantiation counters remain.
+  adoption on it. **Status:** record and tuple rows are implemented
+  (bounds, type-level spread, inference, lacks, per-row
+  specialization). The `ZENA_ZIR_STATS` instantiation counters remain.
 - **A2 — value-level ops**: spread over row types (TypeScript's rule,
   row-types.md Decisions), rest patterns and typed `...rest` (record +
   tuple).

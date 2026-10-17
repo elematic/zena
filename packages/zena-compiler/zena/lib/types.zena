@@ -258,7 +258,13 @@ export sealed class Type implements Hashable {
   // Until the surface default flips, every checker-built ArrayType has
   // mutable elements; `array<var T>` spells the mutability explicitly.
   case ArrayType(elementType: Type, elementsMutable: boolean)
-  case TupleType(elementTypes: Array<Type>)
+  // `row` is the type parameter bounded by `tuple` that `(T, ...R)`
+  // spreads, standing for elements spliced in at `rowIndex` among
+  // `elementTypes` (docs/design/row-types.md §3.3). Substituting a tuple
+  // for it splices that tuple's elements in. Null, with `rowIndex` 0,
+  // for a tuple type that lists all its elements, which is every tuple
+  // type codegen sees.
+  case TupleType(elementTypes: Array<Type>, row: TypeParameterType | null, rowIndex: i32)
   case InlineTupleType(elementTypes: Array<Type>)
   case UnionType(types: Array<Type>)
   case RecordType, FunctionType, ClassType, InterfaceType
@@ -1754,15 +1760,17 @@ let reentrantSubstitution = (source: Type, key: TypeListEntry): Type | null => {
 /**
  * `{...fields, ...R}` once R is `row`: a record type merges its fields in
  * and passes on its own row variable, and another row parameter replaces
- * R. Anything else (an error) leaves the named fields alone. The checker
- * rejects a row that names one of `fields` (`rowLacks`), so on a
- * collision the field written beside the spread is kept.
+ * R. An error row (an argument the checker rejected) makes the whole type
+ * an error, so nothing downstream reports it again; anything else leaves
+ * the named fields alone. The checker rejects a row that names one of
+ * `fields` (`rowLacks`), so on a collision the field written beside the
+ * spread is kept.
  */
 export let mergeRow = (
   fields: HashMap<String, Type>,
   optionals: HashSet<String> | null,
   row: Type
-): RecordType => {
+): Type => {
   match (row) {
     case RecordType as r: {
       let props = new Map<String, Type>();
@@ -1788,8 +1796,53 @@ export let mergeRow = (
     case TypeParameterType as tp: {
       return new RecordType(fields, optionals, tp);
     }
+    case ErrorType: {
+      return row;
+    }
     case _: {
       return new RecordType(fields, optionals, null);
+    }
+  }
+};
+
+/**
+ * `(...before, ...R, ...after)` once R is `row`, where `elements` holds
+ * `before` and `after` and `rowIndex` is where R sits: a tuple type
+ * splices its elements in there and passes on its own row, another row
+ * parameter replaces R, an error row makes the whole type an error (as
+ * in `mergeRow`), and anything else leaves the listed elements alone.
+ */
+export let mergeTupleRow = (
+  elements: Array<Type>,
+  rowIndex: i32,
+  row: Type
+): Type => {
+  match (row) {
+    case TupleType as r: {
+      let out = new Array<Type>();
+      for (var i = 0; i < rowIndex; i += 1) {
+        out.push(elements[i]);
+      }
+      for (let element in r.elementTypes) {
+        out.push(element);
+      }
+      for (var i = rowIndex; i < elements.length; i += 1) {
+        out.push(elements[i]);
+      }
+      let inner = r.row;
+      if (inner != null) {
+        return new TupleType(out, inner, rowIndex + r.rowIndex);
+      }
+      return new TupleType(out, null, 0);
+    }
+    case TypeParameterType as tp: {
+      return new TupleType(elements, tp, rowIndex);
+    }
+    case ErrorType: {
+      return row;
+    }
+    case _: {
+      return new TupleType(elements, null, 0);
     }
   }
 };
@@ -1825,13 +1878,18 @@ let substituteInType = (
         t
       }
     }
-    case TupleType {elementTypes}: {
+    case TupleType {elementTypes, row, rowIndex}: {
       let newElems = new Array<Type>();
       for (let el in elementTypes) {
         let sub = substituteInType(el, typeParameters, typeArguments);
         newElems.push((sub ?? el));
       }
-      new TupleType(newElems)
+      if (row != null) {
+        mergeTupleRow(newElems, rowIndex,
+            substituteInType(row, typeParameters, typeArguments) ?? row)
+      } else {
+        new TupleType(newElems, null, 0)
+      }
     }
     case InlineTupleType {elementTypes}: {
       let newElems = new Array<Type>();
@@ -2287,13 +2345,24 @@ let instantiationKeyOf = (t: Type): String => match (t) {
   case TypeParameterType as tp: tp.name + "#" + i32ToString(tp.uid)
   case ArrayType {elementType, elementsMutable}:
     (if (elementsMutable) "Array<" else "Array<imm ") + instantiationKeyOf(elementType) + ">"
-  case TupleType {elementTypes}: {
+  case TupleType {elementTypes, row, rowIndex}: {
     var s = "[";
     var first = true;
+    var i = 0;
     for (let elem in elementTypes) {
+      if (row != null && i == rowIndex) {
+        if (!first) { s = s + ","; }
+        first = false;
+        s = s + "..." + instantiationKeyOf(row);
+      }
       if (!first) { s = s + ","; }
       first = false;
       s = s + instantiationKeyOf(elem);
+      i += 1;
+    }
+    if (row != null && rowIndex == elementTypes.length) {
+      if (!first) { s = s + ","; }
+      s = s + "..." + instantiationKeyOf(row);
     }
     s + "]"
   }
@@ -2773,6 +2842,12 @@ export final class TypeParameterType extends Type {
    */
   var isRecordRow: boolean = false;
   /**
+   * Declared `R extends tuple`: the parameter ranges over tuple element
+   * lists and can be spread into a tuple type (row-types.md §3.3).
+   * `constraint` is null for one.
+   */
+  var isTupleRow: boolean = false;
+  /**
    * For a row parameter, the fields its declaration's signature names
    * beside `...R`. A row bound to it must have none of them.
    */
@@ -2990,7 +3065,8 @@ export let typeContainsTypeParameter = (t: Type): boolean => {
       false
     }
     case ArrayType {elementType}: typeContainsTypeParameter(elementType)
-    case TupleType {elementTypes}: {
+    case TupleType {elementTypes, row}: {
+      if (row != null) { return true; }
       for (let elem in elementTypes) {
         if (typeContainsTypeParameter(elem)) { return true; }
       }
@@ -3701,12 +3777,21 @@ export let typeToString = (t: Type): String => match (t) {
   // `array<T>`, the surface spelling they will own once the default flips.
   case ArrayType {elementType, elementsMutable}:
     (if (elementsMutable) "Array<" else "array<") + typeToString(elementType) + ">"
-  case TupleType {elementTypes}: {
+  case TupleType {elementTypes, row, rowIndex}: {
     var s = "[";
     var i = 0;
-    while (i < elementTypes.length) {
-      if (i > 0) { s = s + ", "; }
-      s = s + typeToString(elementTypes[i]);
+    var written = 0;
+    while (i <= elementTypes.length) {
+      if (row != null && i == rowIndex) {
+        if (written > 0) { s = s + ", "; }
+        s = s + "..." + row.name;
+        written += 1;
+      }
+      if (i < elementTypes.length) {
+        if (written > 0) { s = s + ", "; }
+        s = s + typeToString(elementTypes[i]);
+        written += 1;
+      }
       i += 1;
     }
     s + "]"
