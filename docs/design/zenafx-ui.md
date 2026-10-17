@@ -95,13 +95,15 @@ link either resolves or visibly does not.
 
 ## Overview
 
-ZenaFX is a UI system in which an application is a tree of WebAssembly
+ZenaFX is a UI system in which an application is a graph of WebAssembly
 components that share one window. Each component holds private state and
-private nodes, receives the authority to draw from its parent, and cannot
-reach into its parent's or its children's nodes.
+private UI nodes: the boxes and runs of text that layout positions and paint
+draws. A widget — a button, a card, a label — occupies one node and owns what
+hangs beneath it. A component receives the authority to draw from whoever
+granted it, and cannot reach into another component's nodes.
 
-Rendering is retained: a component builds a tree of boxes and text once and
-then mutates it, instead of re-issuing drawing commands every frame. Painting
+Rendering is retained: a component builds its nodes once and then writes values
+into them, instead of re-issuing drawing commands every frame. Painting
 is demand-driven: a frame happens because something was invalidated, not
 because 16 ms elapsed.
 
@@ -114,11 +116,11 @@ position to decide, per instance, which interfaces that component reaches at
 all. [Runtime linking](#runtime-linking-and-import-interposition) describes the mechanism.
 
 Two further consequences of the structure shape the rest of the design. A
-component reaches a child by importing the child's WIT world, so there is no
-registry mapping a name like `my-button` to an implementation, and two libraries
-that both supply a button coexist. A component draws only inside the box its
-parent gave it, and the compositor clips it there in hardware, so many mutually
-untrusted components can share one window.
+component reaches a child by importing the child's WIT world, so a child is
+named by the interface it implements, and two libraries that each supply a
+button coexist. A component draws only inside the box its parent gave it, and
+the compositor clips it there in hardware, so many mutually untrusted components
+can share one window.
 
 The division of labour is the other half of the design. The scene graph, the
 widget model, the scheduler and the capability bookkeeping are written in Zena,
@@ -129,7 +131,9 @@ rule that produced that split and what it costs.
 ## Terms
 
 - **Component** always means a WebAssembly component in the sense of the
-  [Component Model][component-model]. It never means a UI widget.
+  [Component Model][component-model]. It never means a UI widget. An instance of
+  one is a running program holding any number of widget definitions and widget
+  instances, with no I/O it was not granted.
 - **Widget** is the unit of UI: private state, a template, and an update
   function. A widget may be a component of its own or one of many inside a
   component, and [Moving the component boundary](#moving-the-component-boundary) is
@@ -148,7 +152,8 @@ rule that produced that split and what it costs.
 
 ## Prior art
 
-Three systems supply the main ideas.
+Four systems supply the main ideas, and the web supplies two mechanisms ZenaFX
+replaces.
 
 **Fuchsia's [Flatland][flatland]**, the 2D composition API of
 [Scenic][scenic], puts the scene graph in a service that clients talk to over
@@ -164,6 +169,23 @@ that, for a reason specific to the component boundary: sending a whole tree
 across a [canonical ABI][canonical-abi] call per frame would be the dominant
 cost, and sending a handful of values is not.
 
+**[Solid][solid]** runs a component once and routes every later change through a
+fine-grained subscription, so writing a piece of state updates the one place that
+reads it with no re-run and no tree comparison. ZenaFX takes that for the same
+reason it takes Lit's templates: a change that arrives as one value is a change
+that costs one small call across the boundary. It also takes Solid's habit of
+making keyed and positional iteration separate constructs, `<For>` and `<Index>`,
+rather than inferring which one an author meant.
+
+**[SwiftUI][swiftui]** reifies control flow in its types: `if` and `switch`
+inside a [`ViewBuilder`][viewbuilder] become a `_ConditionalContent`, so the
+shapes a position can take are known before anything runs, and a view's identity
+comes from where it sits rather than from a key an author supplied. ZenaFX takes
+both. A template enumerating a position's alternatives is what lets the host
+build those nodes once and reduce a branch change to a single value, and
+identity-by-position is what leaves keys an optimisation rather than a
+correctness requirement.
+
 **The web** supplies two mechanisms ZenaFX replaces with ordinary lexical
 imports. [`customElements.define('my-button', ...)`][custom-elements] writes
 into one global table, so two libraries that both define `my-button` cannot be
@@ -175,6 +197,9 @@ document-wide, so styling is not a local property of the code that wrote it.
 [scenic]: https://fuchsia.dev/fuchsia-src/concepts/ui/scenic
 [lit]: https://lit.dev
 [lit-templates]: https://lit.dev/docs/templates/overview/
+[solid]: https://www.solidjs.com
+[swiftui]: https://developer.apple.com/documentation/swiftui
+[viewbuilder]: https://developer.apple.com/documentation/swiftui/viewbuilder
 [canonical-abi]: https://github.com/WebAssembly/component-model/blob/main/design/mvp/CanonicalABI.md
 [custom-elements]: https://developer.mozilla.org/en-US/docs/Web/API/CustomElementRegistry/define
 [cascade]: https://developer.mozilla.org/en-US/docs/Web/CSS/CSS_cascade/Cascade
@@ -250,8 +275,8 @@ has no node-shaped API at all.
 The `present` call as specified in [`zenafx:host` in WIT](#zenafxhost-in-wit) sends the whole frame's display list
 each time. For the first milestones that is the right simplification; a scene
 with tens of thousands of quads will want a retained display list with
-per-node invalidation, which is a change to `zenafx:host/paint` and not to
-`zenafx:ui`.
+per-node invalidation, which is a change inside the host and not to any
+interface, since nothing a component calls carries a display list.
 
 ## Component and process structure
 
@@ -294,6 +319,16 @@ The runtime component is passive: it exports the scene interface and imports
 the host primitives. It never calls an application. The arrow marked `scene` is
 a binding the host makes at load time, not a link baked into either binary.
 
+The arrows are a graph rather than a tree, and the diagram already shows why: the
+application root and the child component both reach the one runtime component.
+Capability transfer adds the rest. A viewport is a value, so an instance can
+receive one from each of several grantors and sit at several places in the node
+tree, and a grant can travel upward as readily as downward — a child offering its
+parent a slot hands the parent a viewport inside the child's own subtree. The
+loader does not require the result to be acyclic; what happens when a cycle is
+exercised is under [Call direction](#call-direction-within-a-frame), and whether
+to reject one at bind time is open.
+
 ### Runtime linking and import interposition
 
 Every component arrives as its own `.wasm` file, named by a URL. Nothing is
@@ -318,9 +353,9 @@ Two details make this work per instance rather than per process.
 
 **A fresh `Linker` per instance.** `wasmtime::component::Linker` is keyed by
 import name, so one shared linker gives every component the same bindings. A
-linker built for one instance can bind `zenafx:host/paint` to a paint proxy
-scoped to that component's viewport, and bind nothing at all where the policy
-says no. The blanket registrations — `wasmtime_wasi::p3::add_to_linker`
+linker built for one instance can bind `zenafx:host/scene` to a proxy scoped to
+that component's viewport, and bind nothing at all where the policy says no.
+The blanket registrations — `wasmtime_wasi::p3::add_to_linker`
 and friends — are still usable for the baseline that every component gets, and
 are simply not called for an instance that is not entitled to that surface.
 Building a `WasiCtx` per instance covers the rest: stdio, environment and
@@ -461,10 +496,31 @@ outer call is suspended still has nothing to run.
 
 [wasmtime-14146]: https://github.com/bytecodealliance/wasmtime/pull/14146
 
-The call direction is therefore fixed: parents call children, and applications
-call the runtime. The root is the only thing the host enters. The consequence
-[Scheduling](#scheduling) depends on is that the call graph of a frame is the component tree, walked
-top-down.
+The call direction is therefore fixed: a grantor calls into what it granted a
+viewport to, and applications call the runtime. The root is the only thing the
+host enters. The consequence [Scheduling](#scheduling) depends on is that a frame
+walks the node tree top-down.
+
+The walk is over nodes rather than over components, and the two differ once a
+component holds viewports from two grantors: that instance is reached once per
+viewport, at each of the places its nodes sit. So a frame visits every node once
+and may enter one component more than once, which is what
+[Call direction](#call-direction-within-a-frame) above makes safe — a component
+re-entered on the same frame is re-entered through a different viewport, holding
+no lock on the first.
+
+Whether a frame enters a component at all is what decides how a slow or blocked
+component affects the window, so it is a property to settle before trusting one
+less than fully. With the tree in the host and no component on the frame path,
+a component stuck in a loop leaves its last-written values on screen and the
+window keeps repainting; `the_entry_is_called_once` asserts that a frame does not
+re-enter a component that is still running work. The exposure that remains is
+host work the component asked for, since the scene and text locks are held for
+the duration of a `render` call and shaping happens inside it — bounded by what
+one call costs rather than by how long a guest runs. Walking the node tree
+through components, as above, and a guest layout solver from
+[Tiers beyond boxes and text](#tiers-beyond-boxes-and-text) each put a guest back
+on the frame path and give that property up.
 
 ### Serialization across components
 
@@ -1064,31 +1120,6 @@ interface layout {
   solve: func(nodes: list<node>, available: size) -> list<rect>;
 }
 
-interface paint {
-  use zenafx:ui/geometry@0.1.0.{rect};
-  use zenafx:ui/style@0.1.0.{color};
-
-  record quad {
-    bounds: rect,
-    background: option<color>,
-    border-color: option<color>,
-    border-width: f32,
-    corner-radius: f32,
-  }
-
-  record glyphs { run: u32, x: f32, y: f32 }
-
-  variant command {
-    quad(quad),
-    glyphs(glyphs),
-    push-clip(rect),
-    pop-clip,
-  }
-
-  /// Draw the frame and present it.
-  present: func(commands: list<command>);
-}
-
 interface surface {
   record frame-event {
     /// Milliseconds on a monotonic clock since the window opened.
@@ -1113,7 +1144,6 @@ interface surface {
 world runtime {
   import text;
   import layout;
-  import paint;
   import surface;
 
   export zenafx:ui/scene@0.1.0;
@@ -1168,9 +1198,9 @@ A resize costs nothing in the guest for the same reason.
 count stays at one; `the_entry_is_called_once` asserts the same for a component
 that is still running work.
 
-One component per widget is a shape nobody would deploy, so those numbers answer a
-narrower question than they look. What they support is putting a component
-boundary where isolation is wanted and nowhere else. Widgets that trust each other
+One component per widget is finer than any real deployment would be, so those
+numbers are an upper bound on what a boundary costs. What they support is putting
+a component boundary where isolation is wanted and nowhere else. Widgets that trust each other
 compose in the language, inside one component, and
 [Moving the component boundary](#moving-the-component-boundary) is why that choice
 is free.
@@ -1219,8 +1249,7 @@ fill every hole. The same template: write the holes it was given and leave the
 rest, including whatever hangs in the node's slots. A different template: drop
 what was there and build the new one. Template identity is what decides, and the
 guest never states which case it meant. lit-html resolves patch against replace
-the same way; the alternative is two operations whose difference the caller has to
-get right.
+the same way.
 
 Holes are sparse. A guest sends the ones whose values changed and says nothing
 about the others.
@@ -1596,7 +1625,7 @@ caller already holds. Dropping the handle drops the subtree, and the runtime
 learns it happened because it owns the resource's destructor.
 
 **What the loader adds.** The scene is one capability among several. A component
-reaches `zenafx:host/paint` or a network interface only if the loader bound it
+reaches `zenafx:host/scene` or a network interface only if the loader bound it
 ([Runtime linking](#runtime-linking-and-import-interposition)), and the check runs before instantiation, so a component asking for
 something it may not have fails to load rather than failing at its first call.
 
@@ -1619,21 +1648,40 @@ the mechanism [Open questions](#open-questions)'s frame-budget question needs, a
 A node is a rectangle with a transform and a clip. What happens inside it is
 the component's choice among three tiers.
 
+Every tier above the first is opt-in twice: the node kind has to be asked for,
+and the interface that fills it has to be bound by the loader. A component that
+shows boxes and text imports `zenafx:host/scene` and meets no painting concept
+at all — no display list, no surface, no renderer — and the scene protocol reads
+the same whether a higher tier is in use or not. What a higher tier changes is
+what a node's content can be, which is why each one arrives through `render`
+rather than through an interface of its own. Removing `zenafx:host/paint` is
+what bought that: a component gets at painting by holding a node that paints,
+not by being able to paint.
+
 **Tier 1, retained boxes and text**, is what [The scene interface](#the-scene-interface) and [Host primitives](#host-primitives) describe: the host does
 layout, shaping and high-DPI scaling, and the nodes are available for hit
 testing and accessibility.
 
-**Tier 2, a 2D vector canvas.** A canvas node carries a retained display list
-of path commands that the component builds and mutates. The host rasterizes it
-with the same renderer that draws Tier 1, which is why `zenafx:host/paint`'s
-command list is the natural place for it to grow: adding `fill-path` and
-`stroke-path` to `command` makes a canvas node a display list the component
-owns rather than a separate mechanism.
+**Tier 2, a 2D vector canvas.** A canvas node carries a retained list of path
+commands, and the host rasterizes it with the same renderer that draws Tier 1.
+The paths arrive the way every other node property does: a node kind whose
+appearance is a path list, written by `render` and patched by a hole. That keeps
+the rule that a component changes what is on screen by changing its nodes, so a
+canvas is a node with richer content rather than a second way to draw.
 
-**Tier 3, a WebGPU viewport.** A GPU viewport node gets a texture sized to its
-box; the component renders into it through [`wasi:webgpu`][wasi-webgpu], which
-tracks the [W3C WebGPU][webgpu] API, and presents it; the compositor maps the
-texture into the scene with the right z-order and scissor.
+**Tier 3, a WebGPU viewport.** This is the tier where a component paints for
+itself. A GPU viewport node gets a texture sized to its box; the component
+renders into it through [`wasi:webgpu`][wasi-webgpu], which tracks the
+[W3C WebGPU][webgpu] API, and presents it; the compositor maps the texture into
+the scene with the right z-order and scissor. Reaching it needs `wasi:webgpu`
+bound, so which components may paint is the loader's decision rather than a
+property of the scene.
+
+A Tier-3 node has its own producer and so its own cadence. The compositor draws
+whatever the texture last held, which means a component that misses its frame
+delays nothing but itself — the property
+[Call direction](#call-direction-within-a-frame) wants for a component trusted
+less than fully, arriving here for free.
 
 [webgpu]: https://www.w3.org/TR/webgpu/
 
@@ -2114,17 +2162,18 @@ button then coexist.
    can learn where it sits on screen. Viewport-local coordinates would hide
    that, and would then need pointer positions translated into each
    component's own space before they are dispatched.
-9. **Retained display lists.** At what scene size does
-   `present(list<command>)` stop being adequate, and what replaces it — a
-   retained list with per-node invalidation, or damage rectangles plus a full
-   list for the damaged area? The answer needs a measurement on a real scene.
+9. **Retained display lists.** The host walks the whole tree into a display list
+   every frame. At what scene size does that stop being adequate, and what
+   replaces it — a retained list with per-node invalidation, or damage
+   rectangles plus a full list for the damaged area? The answer needs a
+   measurement on a real scene.
 10. **Text runs and reflow.** A run is shaped at registration and measured at
-   a width during the solve. Whether the measured layout at the final width is
-   reused for painting, or the run is reshaped once layout settles, decides
-   whether a wrapped paragraph costs one shaping pass per frame or none.
+    a width during the solve. Whether the measured layout at the final width is
+    reused for painting, or the run is reshaped once layout settles, decides
+    whether a wrapped paragraph costs one shaping pass per frame or none.
 11. **Accessibility.** A retained tree of boxes and text with known bounds is
-   most of what an accessibility tree needs. Whether the host derives one from
-   the scene, or components describe one explicitly, is undecided.
+    most of what an accessibility tree needs. Whether the host derives one from
+    the scene, or components describe one explicitly, is undecided.
 12. **Per-component frame budget.** A component that takes 50 ms in its update
     stalls the frame for everyone: the frame is one synchronous top-down pass,
     and [Serialization across components](#serialization-across-components) rules out running the others meanwhile. [Capabilities and isolation](#capabilities-and-isolation) names the mechanism —
@@ -2134,6 +2183,22 @@ button then coexist.
     its update into the next one, or hold the whole frame until it finishes.
     The first choice needs the scene graph to keep a component's last-good
     subtree, which it does not today.
+13. **Capabilities of a shared instance.** An instance's I/O — network,
+    filesystem, clocks — is bound once, at instantiation, so an instance
+    reachable from two importers has one set of it. If those importers would
+    grant different sets, the instance can hold the intersection, which denies
+    one importer something it wanted to allow, or there can be an instance per
+    importer, which gives up the sharing that makes a graph worth having. The
+    union is not available: it would let the instance act on one importer's
+    authority while serving the other's request. This is the same question as
+    **Component identity** above, reached from the capability side rather than
+    the memory side.
+
+    Scene authority is not affected. A viewport is attenuated per grant and an
+    instance holds one per grantor, so nothing has to be intersected; the
+    question is only about what the loader binds at instantiation, which is
+    where [Capabilities and isolation](#capabilities-and-isolation) already runs
+    its check.
 
 ## Related
 

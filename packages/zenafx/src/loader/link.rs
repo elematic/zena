@@ -17,7 +17,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::ui::scene::{Hole, Scene, TemplateRef};
 use crate::ui::text::TextEngine;
-use crate::ui::types::{Command, Content, Measured, Node, Rect, Size, TextStyle};
+use crate::ui::types::{Content, Measured, Node, Rect, Size, TextStyle};
 
 /// What a `node` handle names.
 ///
@@ -46,9 +46,6 @@ pub struct UiHostState {
     /// The retained tree. The component installs one when it starts, and a
     /// frame after that is a solve and a paint over this and nothing else.
     pub scene: Arc<Mutex<Scene>>,
-    /// The frame being built. A component that paints for itself, rather
-    /// than describing a tree, appends to this through `present`.
-    pub frame: Vec<Command>,
     /// Every entry into the component since the scene was created. A
     /// retained tree should leave this at one while the window resizes.
     /// Shared for the same reason the scene is: the store it lives in is
@@ -81,7 +78,6 @@ impl UiHostState {
         Self {
             text: Arc::new(Mutex::new(TextEngine::new())),
             scene: Arc::new(Mutex::new(Scene::new())),
-            frame: Vec::new(),
             guest_entries: Arc::new(AtomicU32::new(0)),
             ready: Arc::new(AtomicBool::new(false)),
             clocks: WasiClocksCtx::default(),
@@ -96,7 +92,11 @@ impl Default for UiHostState {
     }
 }
 
-/// Define `zenafx:host/{text,layout,paint,scene}` on `linker`.
+/// Define `zenafx:host/{text,layout,scene}` on `linker`.
+///
+/// No interface here hands the host a display list or pixels. A component
+/// changes what is on screen by changing its nodes, and rasterizing and
+/// presenting stay inside the host's graphics engine.
 ///
 /// `zenafx:ui/{style,geometry}` are imported too — a component that names
 /// `text-style` imports the interface that declares it — but they carry only
@@ -145,15 +145,6 @@ pub fn add_host_to_linker(linker: &mut Linker<UiHostState>) -> Result<()> {
         "solve",
         |mut caller: StoreContextMut<'_, UiHostState>, (nodes, available): (Vec<Node>, Size)| {
             Ok((solve_tree(&mut caller, &nodes, available),))
-        },
-    )?;
-
-    let mut paint = linker.instance("zenafx:host/paint@0.1.0")?;
-    paint.func_wrap(
-        "present",
-        |mut caller: StoreContextMut<'_, UiHostState>, (commands,): (Vec<Command>,)| {
-            caller.data_mut().frame.extend(commands);
-            Ok(())
         },
     )?;
 

@@ -41,8 +41,13 @@ designed in [docs/design/zenafx-ui.md](../../docs/design/zenafx-ui.md).
 | ------------ | --------------------- | ---------------------- |
 | `text.rs`    | `zenafx:host/text`    | `parley`               |
 | `layout.rs`  | `zenafx:host/layout`  | `taffy`                |
-| `paint.rs`   | `zenafx:host/paint`   | `vello_cpu`            |
+| `paint.rs`   | the host alone        | `vello_cpu`            |
 | `surface.rs` | `zenafx:host/surface` | `winit` + `softbuffer` |
+
+`paint.rs` serves no interface. Rasterizing and presenting belong to the host
+alone: a component changes what is on screen by changing its nodes, and the
+host walks the tree it already holds into a display list. Nothing a component
+can call takes a display list or pixels.
 
 Text measurement happens _inside_ the layout solve, because how tall a run is
 depends on the width flexbox gives it. `layout::solve` hands taffy a closure

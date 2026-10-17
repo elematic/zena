@@ -1,12 +1,13 @@
 /**
- * Two counters advancing at their own rates, as one template used twice with
- * one hole in it.
+ * Two counters advancing at their own rates, as one template used twice with a
+ * label and a digit hole in it.
  *
  * The widgets example installs a tree and is never entered again. This one
  * exercises the other half: a counter writes a single hole when its own timer
  * comes due, naming a template the host already has. The host patches that one
  * node — it keeps its id and the run the host shaped for it — and nothing is
- * rebuilt.
+ * rebuilt. The label is the other hole and never changes, so an advance leaves
+ * it out.
  *
  * The rate belongs to the counter. One advances every 500ms and the other every
  * 1500ms, through `sleep` from `zena:time` over `wasi:clocks` — the display's
@@ -23,24 +24,31 @@ import { some, none } from 'zena:core';
 
 let page = new Color(0.98, 0.98, 0.99, 1.0);
 let ink = new Color(0.10, 0.11, 0.13, 1.0);
+let muted = new Color(0.42, 0.45, 0.52, 1.0);
 let dial = new Color(0.93, 0.94, 0.97, 1.0);
 let edge = new Color(0.72, 0.76, 0.85, 1.0);
 let pageStyle = new BoxStyle(some(page), none, 0.0, 0.0, 1.0);
 let dialStyle = new BoxStyle(some(dial), some(edge), 1.0, 12.0, 1.0);
 let digitStyle = new TextStyle('system-ui', 64.0, 600 as u16, false, ink);
+let labelStyle = new TextStyle('system-ui', 14.0, 500 as u16, false, muted);
 
 let noPadding = new Edges(0.0, 0.0, 0.0, 0.0);
-let dialPadding = new Edges(16.0, 28.0, 16.0, 28.0);
+let dialPadding = new Edges(14.0, 28.0, 18.0, 28.0);
 
-/** The page's own box: fills the window and sits its content in a row. */
-let pageLayout = new Flex(Axis.Row, Justify.Center, Align.Center, 24.0,
+/**
+ * The page's own box: fills the window and stacks its content.
+ *
+ * A column rather than a row, because two large numbers side by side read as
+ * one number with twice the digits.
+ */
+let pageLayout = new Flex(Axis.Column, Justify.Center, Align.Center, 20.0,
     noPadding, new LengthPercent(100.0), new LengthPercent(100.0), 0.0, 1.0);
 
-/** A dial's own box: a panel sized around its digits. */
-let dialLayout = new Flex(Axis.Column, Justify.Center, Align.Center, 0.0,
+/** A dial's own box: a panel sized around its label and digits. */
+let dialLayout = new Flex(Axis.Column, Justify.Center, Align.Center, 2.0,
     dialPadding, new LengthAuto(), new LengthAuto(), 0.0, 1.0);
 
-/** The digits, and the slot: sized by what is in them. */
+/** A line of text, and the slot: sized by what is in it. */
 let contentLayout = new Flex(Axis.Column, Justify.Start, Align.Start, 0.0,
     noPadding, new LengthAuto(), new LengthAuto(), 0.0, 1.0);
 
@@ -48,16 +56,24 @@ let contentLayout = new Flex(Axis.Column, Justify.Start, Align.Start, 0.0,
  * A counter's template.
  *
  * Node 0 is the dial itself — the counter's own box, which is why a counter is
- * one box and not a box inside a box — and node 1 is its digits. The digits'
- * content is a placeholder, because hole 0 supplies it.
+ * one box and not a box inside a box. Node 1 is its label and node 2 its
+ * digits, both placeholders, because the holes supply them.
+ *
+ * Two holes and one template. The label says which counter this is and never
+ * changes after the first render, so an advance sends the digits alone: the
+ * guest compares each value against the one it last sent and leaves the equal
+ * one out.
  */
 let dialTemplate = new Template(
   [
-    new NodeDef(dialLayout, new AppearanceFill(dialStyle), 1 as u32, 1 as u32, false),
+    new NodeDef(dialLayout, new AppearanceFill(dialStyle), 1 as u32, 2 as u32, false),
+    new NodeDef(contentLayout, new AppearanceText(new TextContent('', labelStyle)),
+                0 as u32, 0 as u32, false),
     new NodeDef(contentLayout, new AppearanceText(new TextContent('', digitStyle)),
                 0 as u32, 0 as u32, false),
   ],
-  [new Binding(1 as u32, BindingTarget.Content)],
+  [new Binding(1 as u32, BindingTarget.Content),
+   new Binding(2 as u32, BindingTarget.Content)],
 );
 
 /**
@@ -68,6 +84,8 @@ let dialTemplate = new Template(
  * advance independently.
  */
 class Counter extends Widget {
+  /** What this counter is, shown above its digits. */
+  #label: String;
   #period: Duration;
   var #count: i32 = 0;
 
@@ -76,12 +94,15 @@ class Counter extends Widget {
    * the rate is the widget's business, and at 2Hz and 0.67Hz it has nothing to
    * do with the frame rate.
    */
-  new(period: Duration) : #period = period, super() {
+  new(label: String, period: Duration) : #label = label, #period = period, super() {
     this.#run();
   }
 
   build(): Rendering {
-    return shows(dialTemplate, [new BindingValueContent(`${this.#count}`)]);
+    return shows(dialTemplate, [
+      new BindingValueContent(this.#label),
+      new BindingValueContent(`${this.#count}`)
+    ]);
   }
 
   /**
@@ -110,9 +131,9 @@ class Counter extends Widget {
 /**
  * The page's template: its own box, and one slot for the counters.
  *
- * The slot is not a box. Its content lays out in the page's row, so the two
- * counters sit side by side with the row's gap between them rather than stacked
- * inside a wrapper.
+ * The slot is not a box. Its content lays out in the page's column, so the two
+ * dials stack with the column's gap between them and take the page's centring,
+ * which they would not if the slot wrapped them in a box of its own.
  */
 let pageTemplate = new Template(
   [
@@ -128,17 +149,35 @@ let pageTemplate = new Template(
  */
 class Page extends Widget {
   /**
-   * The counters, built with the page and held rather than made fresh by each
-   * `build` call. A widget's identity is what its state hangs off: two new
-   * `Counter`s per render would be two counters that had never counted.
+   * The counters, made on the first render and held after it.
+   *
+   * Held rather than made fresh by each `build` call, because a widget's
+   * identity is what its state hangs off: two new `Counter`s per render would be
+   * two counters that had never counted.
+   *
+   * Made in `build` rather than in a field initializer or the constructor,
+   * because an array literal reaching a field typed at an interface — and
+   * `Array<T>` is one — fails to lower there with `zir unsupported: constructor
+   * field type`, which
+   * `tests/language/execution/interfaces/interface-field-default.zena` records
+   * as issue 475.
    */
-  #counters: Array<Widget> =[
-    new Counter(milliseconds(500)),
-    new Counter(milliseconds(1500))
-  ];
+  var #counters: Array<Widget> | null = null;
 
   build(): Rendering {
-    return holds(pageTemplate, [this.#counters]);
+    var counters = this.#counters;
+    if (counters == null) {
+      // Short labels on purpose: a dial is as wide as the wider of its label
+      // and its digits, so a long label would size every dial and the digits
+      // would stop reaching layout.
+      let made: Array<Widget> = [
+        new Counter('500ms', milliseconds(500)),
+        new Counter('1500ms', milliseconds(1500))
+      ];
+      this.#counters = made;
+      counters = made;
+    }
+    return holds(pageTemplate, [counters]);
   }
 }
 
