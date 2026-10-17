@@ -494,6 +494,25 @@ export final class TypeLowerer implements TypeLowererInterface {
  * An interface-typed `==` operand, possibly nullable: its class is not
  * known statically, so the comparison goes through the erased dispatch.
  */
+/**
+ * The name a top-level statement binds a function to: the pattern of
+ * `let name = (…) => …` or of `function name(…) { … }`, else null. The
+ * standard library's functions the compiler roots by name may be
+ * written either way.
+ */
+let declaredPattern = (stmt: Node): IdentifierPattern | null => {
+  match (stmt) {
+    case VariableDeclaration {pattern}: {
+      if (pattern is IdentifierPattern) {
+        return pattern;
+      }
+    }
+    case FunctionDeclaration {name}: { return name; }
+    case _: {}
+  }
+  return null;
+};
+
 let isInterfaceOperand = (t: Type): boolean => {
   if (t is InterfaceType) {
     return true;
@@ -1610,16 +1629,14 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
     }
     let unit = prog.unitsByPath['zena:async'];
     for (let stmt in unit.ast.body) {
-      if (stmt is VariableDeclaration) {
-        let vd = stmt;
-        if (vd.pattern is IdentifierPattern &&
-            (vd.pattern as IdentifierPattern).name == 'currentScope') {
-          let t = unit.model.getNodeType(vd.init);
-          if (t != null && t is FunctionType) {
-            let ret = t.returnType;
-            if (ret is ClassType) {
-              return ret;
-            }
+      let pattern = declaredPattern(stmt);
+      if (pattern != null && pattern.name == 'currentScope') {
+        let sym = unit.model.resolveDeclaration(pattern);
+        let t = if (sym != null) unit.model.getBindingType(sym) else null;
+        if (t != null && t is FunctionType) {
+          let ret = t.returnType;
+          if (ret is ClassType) {
+            return ret;
           }
         }
       }
@@ -1862,10 +1879,12 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
         continue;
       }
       for (let stmt in unit.ast.body) {
-        if (stmt is VariableDeclaration) {
-          if (stmt.pattern is IdentifierPattern &&
-              (stmt.pattern as IdentifierPattern).name == exportName) {
-            let sym = unit.model.resolveDeclaration(stmt.pattern as IdentifierPattern);
+        // Declared either way: `export let name = (…) => …` or
+        // `export function name(…) { … }`.
+        let pattern = declaredPattern(stmt);
+        if (pattern != null) {
+          if (pattern.name == exportName) {
+            let sym = unit.model.resolveDeclaration(pattern);
             if (sym == null) {
               throw new Error("Standard library '" + library + "' declares '" +
                   exportName + "' in " + unit.ast.path +
