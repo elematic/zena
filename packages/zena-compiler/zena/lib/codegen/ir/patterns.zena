@@ -36,7 +36,7 @@ import {
   LoweringContext, ZirUnsupported, noValues, oneValue, twoValues,
 } from './lowering-context.zena';
 import { lowerStringLiteral } from './templates.zena';
-import { lowerExpr, repackRecordUnion } from './lowering.zena';
+import { lowerExpr, recordRestValue, repackRecordUnion } from './lowering.zena';
 
 
 /** Bail with the lowering-side message shape (reason @function). */
@@ -486,6 +486,10 @@ export let patternBinds = (cx: LoweringContext, pattern: Node): boolean => {
           binds = true;
         }
       }
+      let rest = rp.rest;
+      if (rest != null && patternBinds(cx, rest)) {
+        binds = true;
+      }
       binds
     }
     case AssignmentPattern as ap: patternBinds(cx, ap.left)
@@ -549,6 +553,10 @@ export let collectPatternBindSyms = (cx: LoweringContext, pattern: Node,
   if (pattern is RecordPattern) {
     for (let prop in pattern.properties) {
       collectPatternBindSyms(cx, prop.value, out);
+    }
+    let rest = pattern.rest;
+    if (rest != null) {
+      collectPatternBindSyms(cx, rest, out);
     }
     return;
   }
@@ -932,6 +940,10 @@ export let lowerPatternBindings = (cx: LoweringContext, pattern: Node,
             lowerPatternBindings(cx, prop.value, read);
           }
         }
+      }
+      let rest = rp.rest;
+      if (rest != null && patternBinds(cx, rest)) {
+        lowerPatternBindings(cx, rest, recordRestValue(cx, rest, recordValue));
       }
     }
     case AssignmentPattern as ap: {

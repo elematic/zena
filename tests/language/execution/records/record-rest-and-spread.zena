@@ -1,0 +1,55 @@
+// @mode: run
+// @result: 1
+// `...rest` in record patterns, and spread of a row-typed record
+// (docs/design/row-types.md, Decisions: Syntax).
+
+let dropX = <R extends record>(p: {x: i32, ...R}): {...R} => {
+  let {x, ...more} = p;
+  return more;
+};
+
+let moveRight = <R extends record>(p: {x: i32, ...R}): {x: i32, ...R} => {
+  return {...p, x: p.x + 1};
+};
+
+let restOf = (p: {x: i32, y: i32, label: String}): {y: i32, label: String} => {
+  let {x, ...others} = p;
+  return others;
+};
+
+// In a destructured parameter.
+let sumRest = ({a, ...bc}: {a: i32, b: i32, c: i32}): i32 => a * 100 + bc.b * 10 + bc.c;
+
+export let main = (): i32 => {
+  let others = restOf({x: 1, y: 2, label: 'a'});
+  if (others.y != 2 || others.label != 'a') {
+    return 10;
+  }
+  if (others != {y: 2, label: 'a'}) {
+    return 11;
+  }
+  let dropped = dropX({x: 1, z: true, w: 3});
+  if (!dropped.z || dropped.w != 3) {
+    return 12;
+  }
+  let moved = moveRight({x: 1, name: 'n'});
+  if (moved.x != 2 || moved.name != 'n') {
+    return 13;
+  }
+  let held: {x: i32, f: f64} = {x: 4, f: 0.5};
+  let movedHeld = moveRight(held);
+  if (movedHeld.x != 5 || movedHeld.f != 0.5) {
+    return 14;
+  }
+  // In a match arm too.
+  let total = match ({x: 1, y: 2, z: 3}) {
+    case {x, ...yz}: x + yz.y + yz.z
+  };
+  if (total != 6) {
+    return 15;
+  }
+  if (sumRest({a: 1, b: 2, c: 3}) != 123) {
+    return 16;
+  }
+  return 1;
+};

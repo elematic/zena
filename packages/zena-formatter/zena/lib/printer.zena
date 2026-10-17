@@ -1929,12 +1929,14 @@ function printPattern(pat: Pattern): Doc {
 }
 
 function printRecordPattern(pattern: RecordPattern): Doc {
-  if (pattern.properties.length == 0) { return text('{}'); }
+  let rest = pattern.rest;
+  if (pattern.properties.length == 0 && rest == null) { return text('{}'); }
   let propDocs = new Array<Doc>();
-  var i = 0;
-  while (i < pattern.properties.length) {
-    propDocs.push(printBindingProperty(pattern.properties[i]));
-    i += 1;
+  for (let prop in pattern.properties) {
+    propDocs.push(printBindingProperty(prop));
+  }
+  if (rest != null) {
+    propDocs.push(concat(docs2(text('...'), printNode(rest))));
   }
   return concat(docs3(text('{'), join(text(', '), propDocs), text('}')));
 }

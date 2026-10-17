@@ -1,0 +1,49 @@
+// @mode: check
+// `...rest` in record patterns, and spread of a row-typed record
+// (docs/design/row-types.md, Decisions: Syntax).
+
+// A rest binding gets the fields the pattern does not name.
+let point = {x: 1, y: 2, label: 'a'};
+let {x, ...others} = point;
+let y: i32 = others.y;
+let label: String = others.label;
+let noX = others.x; // @error: Property 'x' does not exist
+
+// Optional fields stay optional in the rest.
+type Opts = {url: String, timeout?: i32};
+let opts: Opts = {url: '/'};
+let {url, ...rest} = opts;
+let {timeout = 5} = rest;
+
+// On a row type, the rest keeps the row.
+let dropX = <R extends record>(p: {x: i32, ...R}): {...R} => {
+  let {x, ...more} = p;
+  return more;
+};
+let dropped = dropX({x: 1, z: true});
+let z: boolean = dropped.z;
+
+// Spreading a row-typed record keeps the row, and a field beside it is
+// one the row lacks.
+let moveRight = <R extends record>(p: {x: i32, ...R}): {x: i32, ...R} => {
+  return {...p, x: p.x + 1};
+};
+let moved = moveRight({x: 1, name: 'n'});
+let name: String = moved.name;
+
+// Here the signature says R lacks `y`, so the literal can add it.
+let addY = <R extends record>(p: {x: i32, ...R}): {x: i32, y: i32, ...R} => {
+  return {...p, y: 0};
+};
+let withY = addY({x: 1, z: 'z'});
+let addedY: i32 = withY.y;
+
+// Here it does not, so R may already have a `y`.
+let addW = <R extends record>(p: {x: i32, ...R}): i32 => {
+  let q = {...p, w: 0}; // @error: 'R' may have a field 'w'
+  return q.x;
+};
+
+// A rest needs a record.
+class C(a: i32, b: i32)
+let {a, ...restOfC} = new C(1, 2); // @error: A '...rest' pattern needs a record

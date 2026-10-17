@@ -4383,9 +4383,24 @@ the signature already does. Other rules:
 - Generic aliases, classes and methods take row parameters too:
   `type WithId<R extends record> = {id: i32, ...R};`.
 
+Spreading a value whose type spreads `R` keeps the row, so a row-generic
+function can update a field of the caller's record and return the rest
+of it as it was:
+
+```zena
+let moveRight = <R extends record>(p: {x: i32, ...R}): {x: i32, ...R} =>
+    {...p, x: p.x + 1};
+```
+
+The literal's other fields must be ones `R` lacks, as for a record type
+in the body: by TypeScript's rule a later field replaces an earlier one,
+so a field `R` might also have would make the result's type depend on
+`R`. A `...rest` pattern on such a value keeps the row too (see
+[Record Destructuring](#record-destructuring)).
+
 Tuples have rows too, declared `R extends tuple` (see
-[Tuple Spreads and Tuple Rows](#tuple-spreads-and-tuple-rows)). Spread and
-`...rest` patterns on values of row types are planned (see
+[Tuple Spreads and Tuple Rows](#tuple-spreads-and-tuple-rows)). Spread
+and `...rest` patterns on tuple values are planned (see
 [row-types.md](design/row-types.md)).
 
 ### Tuples
@@ -5794,6 +5809,22 @@ let p = { x: 10, y: 20 };
 let { x, y } = p;
 let { x as a, y as b } = p; // Renaming
 ```
+
+A trailing `...rest` binds a record of the fields the pattern does not
+name, optional where they were optional. It works in `let`, in `match`
+arms and in destructured parameters, and the value must be a record:
+
+```zena
+let { x, ...others } = { x: 1, y: 2, label: 'a' }; // others: {y: i32, label: String}
+
+let total = ({ a, ...bc }: {a: i32, b: i32, c: i32}) => a + bc.b + bc.c;
+```
+
+A destructured parameter with a rest takes its type after the pattern
+rather than on its fields, since field types would leave the rest
+nothing. On a [row type](#row-generic-functions), the rest keeps the
+row: in a function taking `p: {x: i32, ...R}`, `let {x, ...more} = p`
+gives `more` the type `{...R}`.
 
 #### Tuple Destructuring
 
