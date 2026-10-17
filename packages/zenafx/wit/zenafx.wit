@@ -6,8 +6,11 @@
 //
 //   zenafx:ui    what a widget component imports, and what the runtime
 //                component exports.
-//   zenafx:host  the primitives `zfx` serves in Rust: text, layout,
-//                paint and the window.
+//   zenafx:host  the primitives `zfx` serves in Rust: the retained scene,
+//                text, layout and the window. Rasterizing and presenting
+//                are the host's alone — a component changes what is on
+//                screen by changing its nodes, and never by handing over
+//                pixels or a display list.
 //
 // Designed in docs/design/zenafx-ui.md.
 
@@ -225,31 +228,6 @@ package zenafx:host@0.1.0 {
     solve: func(nodes: list<node>, available: size) -> list<rect>;
   }
 
-  interface paint {
-    use zenafx:ui/geometry@0.1.0.{rect};
-    use zenafx:ui/style@0.1.0.{color};
-
-    record quad {
-      bounds: rect,
-      background: option<color>,
-      border-color: option<color>,
-      border-width: f32,
-      corner-radius: f32,
-    }
-
-    record glyphs { run: u32, x: f32, y: f32 }
-
-    variant command {
-      quad(quad),
-      glyphs(glyphs),
-      push-clip(rect),
-      pop-clip,
-    }
-
-    /// Draw the frame and present it.
-    present: func(commands: list<command>);
-  }
-
   interface surface {
     record frame-event {
       /// Milliseconds on a monotonic clock since the window opened.
@@ -461,7 +439,6 @@ package zenafx:host@0.1.0 {
   world runtime {
     import text;
     import layout;
-    import paint;
     import surface;
 
     export zenafx:ui/scene@0.1.0;

@@ -77,6 +77,20 @@ fn runs(commands: &[Command]) -> Vec<u32> {
         .collect()
 }
 
+/// The digit runs, in the order they paint.
+///
+/// Each dial paints a small label above its digits, so the glyph runs arrive in
+/// pairs. The digits are 64pt against the label's 14pt, so picking them by
+/// height keeps these assertions off the order `draw` happens to flatten in.
+fn digit_runs(app: &GuestScene, commands: &[Command]) -> Vec<u32> {
+    let text = app.text();
+    let mut text = text.lock().unwrap();
+    runs(commands)
+        .into_iter()
+        .filter(|run| text.measure_run(*run, None).height > 40.0)
+        .collect()
+}
+
 /// Draw frames at roughly 60Hz until `how_long` of real time has passed,
 /// returning the last frame's commands.
 ///
@@ -103,7 +117,12 @@ fn the_first_frame_draws_both_instances() {
     let mut app = counter();
     let commands = app.frame(frame_at(0.0));
     assert_eq!(quads(&commands).len(), 3, "page and two dials: {commands:?}");
-    assert_eq!(runs(&commands).len(), 2, "two sets of digits: {commands:?}");
+    assert_eq!(
+        runs(&commands).len(),
+        4,
+        "a label and a set of digits per dial: {commands:?}"
+    );
+    assert_eq!(digit_runs(&app, &commands).len(), 2);
 }
 
 /// `main` is the one call into the component.
@@ -142,7 +161,7 @@ fn counting_does_not_grow_the_tree() {
         let commands = app.frame(frame_at(elapsed));
         assert_eq!(
             (quads(&commands).len(), runs(&commands).len()),
-            (3, 2),
+            (3, 4),
             "frame at {elapsed}ms drew {commands:?}"
         );
         std::thread::sleep(Duration::from_millis(16));
@@ -160,12 +179,12 @@ fn a_binding_write_keeps_the_node_and_reshapes_its_run() {
     let mut app = counter();
 
     let first = app.frame(frame_at(0.0));
-    let early = runs(&first);
+    let early = digit_runs(&app, &first);
     let early_width = app.text().lock().unwrap().measure_run(early[0], None).width;
 
     // Ten periods of the fast counter, so it reads "10" — two digits.
     let late_commands = run_for(&mut app, 10 * FAST + Duration::from_millis(300));
-    let late = runs(&late_commands);
+    let late = digit_runs(&app, &late_commands);
     let late_width = app.text().lock().unwrap().measure_run(late[0], None).width;
 
     assert_eq!(
@@ -189,7 +208,7 @@ fn each_counter_keeps_its_own_rate() {
     let mut app = counter();
 
     let commands = run_for(&mut app, 10 * FAST + Duration::from_millis(300));
-    let later = runs(&commands);
+    let later = digit_runs(&app, &commands);
     let fast = app.text().lock().unwrap().measure_run(later[0], None).width;
     let slow = app.text().lock().unwrap().measure_run(later[1], None).width;
 
@@ -199,8 +218,9 @@ fn each_counter_keeps_its_own_rate() {
     );
 }
 
-/// The two dials sit side by side, and the one whose digits are wider is
-/// wider, so a binding write goes through layout rather than around it.
+/// The dial whose digits are wider is wider, so a hole write goes through
+/// layout rather than around it. The two dials stack, which is what the slot
+/// contributing no box of its own gets us.
 #[test]
 #[ignore = "waits out real sleeps; needs a substitutable clock"]
 fn the_wider_counter_gets_the_wider_dial() {
@@ -215,7 +235,7 @@ fn the_wider_counter_gets_the_wider_dial() {
         "two digits should make a wider dial: {fast_dial:?} against {slow_dial:?}"
     );
     assert!(
-        (fast_dial.y - slow_dial.y).abs() < 1.0,
-        "the dials sit in a row: {fast_dial:?} against {slow_dial:?}"
+        slow_dial.y >= fast_dial.y + fast_dial.height,
+        "the dials stack: {fast_dial:?} against {slow_dial:?}"
     );
 }

@@ -50,11 +50,11 @@ to whoever supplied it, and the host does the projection, so a widget can name
 nothing inside its own content: it is handed a node per child and reads nothing
 through it.
 
-Within one component a container does refer to its children, because they are
-ordinary Zena objects and composing them is an ordinary call. That costs nothing
-the host cares about, since the container still has no id for anything a child
-rendered. Across a component boundary a child is not an object at all, and the
-container refers to the node it gave away instead.
+Within one component a container refers to its children as ordinary Zena objects,
+and composing them is an ordinary call. Naming a child and naming what the child
+rendered are separate things: the container has an object for the first and no id
+for the second. Across a component boundary a child is not an object at all, and
+the container refers to the node it gave away instead.
 
 Whether a container should be able to introspect its content is open. A widget
 that needs to is plausible and nothing here forecloses it.
@@ -276,17 +276,17 @@ A node block compiles to two artifacts:
 Every entry in the block appears in the template. They differ in how much of the
 entry also lives in the code:
 
-| source                      | template                     | build program                   |
-| --------------------------- | ---------------------------- | ------------------------------- |
-| `Box { … }`                 | a node, flex folded          | nothing                         |
-| `Text 'Settings'`           | a node, content folded       | nothing                         |
-| `Text this.#title`          | a node, content bound        | subscribe; write the hole        |
-| `Card { title: this.#t }`   | a node of kind `Card`        | construct it; subscribe the property |
-| `Slot { … }`                | a node marked as a slot      | ask for content nodes           |
-| `if (…) { … } else { … }`   | a `choice` node per branch   | subscribe; write `active`       |
-| `for (…) { Row { … } }`     | a slot plus the `Row` template | subscribe; resize the content   |
+| source                    | template                       | build program                        |
+| ------------------------- | ------------------------------ | ------------------------------------ |
+| `Box { … }`               | a node, flex folded            | nothing                              |
+| `Text 'Settings'`         | a node, content folded         | nothing                              |
+| `Text this.#title`        | a node, content bound          | subscribe; write the hole            |
+| `Card { title: this.#t }` | a node of kind `Card`          | construct it; subscribe the property |
+| `Slot { … }`              | a node marked as a slot        | ask for content nodes                |
+| `if (…) { … } else { … }` | a `choice` node per branch     | subscribe; write `active`            |
+| `for (…) { Row { … } }`   | a slot plus the `Row` template | subscribe; resize the content        |
 
-A property of a child *widget* is set by a typed call to that widget rather than by
+A property of a child _widget_ is set by a typed call to that widget rather than by
 writing a hole, because the host has no use for its value and neither lays it out
 nor paints it. Hole indices therefore number only the holes the host can see, which
 is what lets a template mark them in place and count them.
@@ -380,7 +380,7 @@ children of the host element and never references the `<slot>`.
 
 So `content` names a slot index, never a slot node, and the host hands back the
 nodes to render into. Slot fallback content is not free under that rule, because
-a slot's children *are* its content: showing a template's own children there when
+a slot's children _are_ its content: showing a template's own children there when
 nothing is assigned would need the host to tell the two apart. Nothing needs it
 yet.
 

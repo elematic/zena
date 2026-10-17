@@ -1,4 +1,8 @@
-//! `zenafx:host/paint`: rasterize a display list with [`vello_cpu`].
+//! Rasterizing a display list with [`vello_cpu`], inside the host.
+//!
+//! This serves no WIT interface. A component changes what is on screen by
+//! changing its nodes; the host walks the tree it holds into the display list
+//! this module draws, so nothing a component can call takes one.
 //!
 //! The commands are rounded quads, glyph runs, and clip push/pop. Clips are
 //! what enforce the compositor's part of the capability model: the runtime

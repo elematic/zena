@@ -11,9 +11,8 @@
  * never learns what contains it, which is what lets a tree of widgets be
  * described without a single parent pointer.
  *
- * The diff is here rather than in the host because every value crossing
- * `render` is marshalled, so comparing before the call is strictly cheaper than
- * comparing after it.
+ * The diff is here rather than in the host because every value crossing `render`
+ * is marshalled: a value that compared equal is never encoded at all.
  */
 import { Node, NodeDef, Binding, BindingValue, Hole, TemplateDef, TemplateRef,
          TemplateRefKnown, TemplateRefFresh, root, ready } from 'zenafx:host/scene';
@@ -130,17 +129,8 @@ export abstract class Widget {
   /**
    * What to show: the template, its hole values, and the content for its slots.
    * Called on every render, so it is a description and not a side effect.
-   *
-   * Every subclass overrides it, so this body is unreachable. It wants to be
-   * `abstract` and cannot be: a base method calling an abstract one fails to
-   * lower, with `zir unsupported: method not found`, which
-   * `tests/language/execution/classes/base-calls-abstract-method.zena` records
-   * beside the concrete-override version that works. `abstract class` still
-   * keeps a bare `Widget` from being constructed.
    */
-  build(): Rendering {
-    throw new Error('a widget must override build()');
-  }
+  abstract build(): Rendering;
 
   /**
    * Give this widget a node to live in, forgetting whatever it showed before.

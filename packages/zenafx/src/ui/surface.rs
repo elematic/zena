@@ -262,7 +262,19 @@ impl ApplicationHandler for App {
                             if self.scene.wants_another_frame() {
                                 live.window.request_redraw();
                             }
-                            log::info!(
+                            // The first frame is the one worth a line: it says
+                            // the window came up and drew something, and
+                            // `tests/run.rs` waits for it. A component that
+                            // keeps asking for redraws would make every frame
+                            // after it a line, so those are trace and come back
+                            // with `RUST_LOG=zenafx=trace`.
+                            let level = if self.frames == 1 {
+                                log::Level::Info
+                            } else {
+                                log::Level::Trace
+                            };
+                            log::log!(
+                                level,
                                 "presented frame {} at {}x{}, {} commands",
                                 self.frames,
                                 size.width,
