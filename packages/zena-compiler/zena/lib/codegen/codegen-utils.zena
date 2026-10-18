@@ -436,7 +436,8 @@ function getTypeKeyForSpecializationRaw(type: Type): String {
     case RecordType as rec: {
       let len = rec.properties.size;
       let parts = new Array<String>.fixed(1 + 4 * len, "");
-      parts[0] = "rec";
+      // An existential lowers to a fat pointer of its own.
+      parts[0] = if (rec.isExistential) "recx" else "rec";
       let keys = rec.properties.keys();
       var i = 0;
       for (let key in keys) {
@@ -1114,7 +1115,7 @@ export function substituteTypeParams(
         return mergeRow(subProps, rec.optionalProperties,
             substituteTypeParams(typeParams, typeArgs, row));
       }
-      let res = new RecordType(subProps, rec.optionalProperties, null);
+      let res = new RecordType(subProps, rec.optionalProperties, null, rec.isExistential);
       res
     }
     case FunctionType as ft: {
@@ -1303,10 +1304,11 @@ function getTypeUniqueKeyRaw(t: Type): String {
         }
         i += 1;
       }
-      parts[4 * len] = " }";
+      // An existential lowers to a fat pointer of its own.
+      parts[4 * len] = if (recT.isExistential) ", ... }" else " }";
       String.fromParts(parts)
     } else {
-      "{  }"
+      if (recT.isExistential) "{ ... }" else "{  }"
     }
   }
   case FunctionType as ft: {

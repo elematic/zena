@@ -1,7 +1,7 @@
 import { Set } from 'zena:collections';
 import { collectValueExports, findDeclaration } from '../lookup.zena';
 import {
-  isValueHashCodeCall, valueEqFields, valueEqKey, valueEqOperand, valueHashKey,
+  isExistentialRecord, isValueHashCodeCall, valueEqFields, valueEqKey, valueEqOperand, valueHashKey,
 } from '../value-equality.zena';
 import {
   Referrer, ReachabilityContext, TypeLowererInterface, ReachabilityVisitorInterface,
@@ -17,7 +17,7 @@ import {
   Node, decoratorStringArg, AsExpression, IsExpression, RecordLiteral, ClassPattern, MatchCase, LetPatternCondition, AsPattern, BindingPattern, LogicalPattern, TuplePattern, ArrayPattern, RestPattern, RecordPattern, AccessorDeclaration, BinaryExpression, LiteralPattern, NewExpression, MethodDefinition, SymbolPropertyName, RangeExpression, ArrayLiteral, MapLiteral, TupleLiteral, Expression, TemplateElement, TaggedTemplateExpression, ForInStatement, MemberExpression, AwaitExpression, IndexExpression, AssignmentExpression, Identifier, CallExpression, VariableDeclaration, FunctionDeclaration, Pattern, ImportDeclaration, DeclareFunction, ImportSpecifier, IdentifierPattern, FunctionExpression, MixinDeclaration, ClassDeclaration, Module, ThrowExpression, TryExpression, ShieldedStatement, StringLiteral, TemplateLiteral,
 } from '../../ast.zena';
 import {
-  WasmStruct, WasmField, WasmGlobal, WasmFunction,
+  WasmStruct, WasmField, WasmGlobal, WasmFunction, RecordDispatchInfo,
 } from '../wasm-module.zena';
 import {
   ValType, ValTypeRefNull, ValTypeAnyRef, ValTypeEqRef, ValTypeStructRef, ValTypeRef, ValTypeI32, ValTypeI64, ValTypeF32, ValTypeF64, ValTypeExternRef, ValTypeRefExtern, isRefValType,
@@ -165,8 +165,9 @@ export final class TypeLowerer implements TypeLowererInterface {
         this.discoverType(pair.value, model);
       }
       let fields = recordWasmFields(this.pass.wasm, t, null);
-      let st = this.pass.wasm.getRecordDispatch(model, fields,
-          sortedOptionalNames(t));
+      let st = if (t.isExistential)
+          this.pass.wasm.getExistentialDispatch(model, fields, sortedOptionalNames(t))
+          else this.pass.wasm.getRecordDispatch(model, fields, sortedOptionalNames(t));
       this.pass.markTypeReached(st.fatPtrType);
       this.pass.markTypeReached(st.vtableType);
       this.pass.markTypeReached(st.concreteType);
@@ -697,6 +698,12 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
     if (l == null || r == null || !this.pass.currentReachable) {
       return;
     }
+    // An existential compares the records it holds, through the erased
+    // comparison (ir/existential.zena).
+    if (isExistentialRecord(l as Type) || isExistentialRecord(r as Type)) {
+      this.pass.equalityDispatchUsed = true;
+      return;
+    }
     let left = l as Type;
     let right = r as Type;
     let fields = valueEqFields(left, right);
@@ -740,9 +747,56 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
    * type, then what hashing each field needs: a nested record's or
    * tuple's function, or a class's `hashCode`.
    */
+  /**
+   * The tables a conversion involving an existential record type needs
+   * (ir/existential.zena): a pack into an existential, from a closed
+   * record (whose hash its `<hash>` slot calls) or from another
+   * existential; a projection of an existential to a closed type naming
+   * only fields it knows; or, for one naming others, an `as` decided at
+   * run time, whose tables the analysis makes once every pack is known.
+   */
+  #registerExistentialConversion(srcRec: RecordType, tgtRec: RecordType, model: SemanticModel): void {
+    let wasm = this.pass.wasm;
+    let srcD = this.#dispatchOf(srcRec, model);
+    let tgtD = this.#dispatchOf(tgtRec, model);
+    if (tgtRec.isExistential) {
+      var hashFunc: WasmFunction | null = null;
+      if (!srcRec.isExistential) {
+        this.noteValueHash(srcRec, model);
+        if (let (true, f) = wasm.valueHashFuncs.get(valueHashKey(srcRec))) {
+          hashFunc = f;
+        }
+      }
+      wasm.getExistentialPack(model, srcD, tgtD, hashFunc);
+      return;
+    }
+    var knows = true;
+    for (let key in tgtRec.properties.keys()) {
+      if (!srcRec.properties.has(key)) {
+        knows = false;
+      }
+    }
+    if (knows) {
+      wasm.getForwardDispatch(model, srcD, tgtD);
+    } else {
+      this.pass.noteExistentialCastTarget(tgtD);
+    }
+  }
+
+  #dispatchOf(rec: RecordType, model: SemanticModel): RecordDispatchInfo {
+    let fields = recordWasmFields(this.pass.wasm, rec, null);
+    return if (rec.isExistential)
+        this.pass.wasm.getExistentialDispatch(model, fields, sortedOptionalNames(rec))
+        else this.pass.wasm.getRecordDispatch(model, fields, sortedOptionalNames(rec));
+  }
+
   noteValueHash(t: Type, model: SemanticModel): void {
     let v = valueEqOperand(t);
     if (v == null || !this.pass.currentReachable) {
+      return;
+    }
+    // An existential hashes the record it holds, through its table.
+    if (isExistentialRecord(v as Type)) {
       return;
     }
     let type = v as Type;
@@ -2581,11 +2635,15 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
         let tgtRec = resolveType(adaptation.target) as RecordType;
         typeLowerer.discoverType(tgtRec, model);
         typeLowerer.discoverType(srcRec, model);
-        let inFields = recordWasmFields(this.pass.wasm, srcRec, null);
-        let outFields = recordWasmFields(this.pass.wasm, tgtRec, null);
-        this.pass.wasm.getAdaptedRecordDispatch(model,
-            inFields, sortedOptionalNames(srcRec),
-            outFields, sortedOptionalNames(tgtRec));
+        if (srcRec.isExistential || tgtRec.isExistential) {
+          this.#registerExistentialConversion(srcRec, tgtRec, model);
+        } else {
+          let inFields = recordWasmFields(this.pass.wasm, srcRec, null);
+          let outFields = recordWasmFields(this.pass.wasm, tgtRec, null);
+          this.pass.wasm.getAdaptedRecordDispatch(model,
+              inFields, sortedOptionalNames(srcRec),
+              outFields, sortedOptionalNames(tgtRec));
+        }
       }
       if (n is Expression) {
         let ifaceAdaptation = model.getInterfaceAdaptation(n);

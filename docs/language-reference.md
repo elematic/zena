@@ -4198,6 +4198,37 @@ record or tuple types are answered by the types:
 A function that accepts records with more fields than it reads, and
 keeps them, takes a [row type parameter](#row-generic-functions).
 
+#### Existential Record Types
+
+A record type ending in a bare `...` is _existential_: `{name: String, ...}`
+holds any record that has a `name`, and the record keeps its other fields,
+which the type does not name. It is the type for storing records of
+different shapes together:
+
+```zena
+type Named = {name: String, ...};
+
+let people: Array<Named> = [{name: 'a', age: 3}, {name: 'b'}];
+people[0].name; // reads the fields the type names
+```
+
+Only the named fields can be read. An existential converts to a closed
+record type that names only fields it knows (a projection), and to an
+existential naming fewer fields. To reach the other fields, test or
+convert the record it holds:
+
+- `e is T`, for a closed record type `T`, is true when the record held is
+  exactly a `T`, as for a closed record.
+- `e as T` projects the record held to `T` when it has `T`'s fields, and
+  traps otherwise.
+- `==` and `hash` compare and hash the records held, by their shape and
+  fields, so two existentials holding equal records are equal.
+
+Because its fields are not all known, an existential cannot be spread,
+taken apart with `...rest`, or used to instantiate a row type parameter.
+A class instance does not convert to one, and an existential record type
+cannot have optional fields yet.
+
 #### Optional Fields
 
 A record field marked `?` may be **absent** — this is presence, not

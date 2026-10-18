@@ -1156,6 +1156,17 @@ p as {x: i32};      // ✅ projects
 p is {x: i32};      // ❌ never true: p has a field y
 ```
 
+A record type ending in `...` is existential: it holds any record with the
+named fields, keeps the others, and compares and hashes by the record held.
+`is` and `as` test that record at run time:
+
+```zena
+type Named = {name: String, ...};
+let people: Array<Named> = [{name: 'a', age: 3}, {name: 'b'}];
+people[0] is {name: String, age: i32}; // ✅ true
+(people[0] as {name: String, age: i32}).age; // ✅ 3
+```
+
 An `if` or `match` whose arms are records of different shapes has the union
 of their types. It goes anywhere a record type every member satisfies is
 expected, a field every member holds (present, required, one type) can be

@@ -1038,7 +1038,13 @@ export final class RecordType(
    * for a record type that names all its fields, which is every record
    * type codegen sees.
    */
-  row: TypeParameterType | null
+  row: TypeParameterType | null,
+  /**
+   * `{x: i32, ...}`: an existential record type. Its values have
+   * `properties` and other fields the type does not name, which they
+   * keep (docs/design/row-types.md, Decisions). Never set with `row`.
+   */
+  isExistential: boolean
 ) extends Type {
   isOptional(name: String): boolean {
     let optionals = this.optionalProperties;
@@ -1845,16 +1851,16 @@ export function mergeRow(
           opts.delete(key);
         }
       }
-      return new RecordType(props, opts, r.row);
+      return new RecordType(props, opts, r.row, false);
     }
     case TypeParameterType as tp: {
-      return new RecordType(fields, optionals, tp);
+      return new RecordType(fields, optionals, tp, false);
     }
     case ErrorType: {
       return row;
     }
     case _: {
-      return new RecordType(fields, optionals, null);
+      return new RecordType(fields, optionals, null, false);
     }
   }
 }
@@ -1973,7 +1979,7 @@ function substituteInType(
         mergeRow(newProps, rec.optionalProperties,
             substituteInType(row, typeParameters, typeArguments) ?? row)
       } else {
-        new RecordType(newProps, rec.optionalProperties, null)
+        new RecordType(newProps, rec.optionalProperties, null, rec.isExistential)
       }
     }
     case FunctionType as ft: {
@@ -2454,6 +2460,9 @@ function instantiationKeyOf(t: Type): String {
     if (row != null) {
       if (!first) { s = s + ","; }
       s = `${s}...${instantiationKeyOf(row)}`;
+    } else if (rec.isExistential) {
+      if (!first) { s = s + ","; }
+      s = `${s}...`;
     }
     s + "}"
   }
@@ -3934,6 +3943,9 @@ export function typeToString(t: Type): String {
     if (row != null) {
       if (!first) { s = s + ", "; }
       s = `${s}...${row.name}`;
+    } else if (rec.isExistential) {
+      if (!first) { s = s + ", "; }
+      s = `${s}...`;
     }
     s + " }"
   }

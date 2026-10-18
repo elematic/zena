@@ -27,9 +27,10 @@ import {
   substituteTypeParamsInCodegen,
 } from '../type-mapping.zena';
 import {
-  ValueEqField, valueEqFields, valueEqKey, valueEqOperand, valueHashKey,
+  ValueEqField, isExistentialRecord, valueEqFields, valueEqKey, valueEqOperand, valueHashKey,
 } from '../value-equality.zena';
 import { IrBody, IrOp, IrRefField, IrRefFunc } from './ir.zena';
+import { existentialHash, existentialUnderlying } from './existential.zena';
 import { lowerExpr } from './lowering.zena';
 import {
   LoweringContext, ZirUnsupported, noValues, oneValue, twoValues,
@@ -736,6 +737,12 @@ export function lowerValueEq(cx: LoweringContext, lType: Type, a: i32,
   if (l == null || r == null) {
     bail(cx, 'structural equality operand');
   }
+  // An existential compares the record it holds, whose shape only the
+  // run time knows: the erased comparison unwraps it and compares by
+  // shape and fields.
+  if (isExistentialRecord(l as Type) || isExistentialRecord(r as Type)) {
+    return lowerErasedEq(cx, a, b2);
+  }
   let fieldsOpt = valueEqFields(l as Type, r as Type);
   if (fieldsOpt == null) {
     return cx.b.constI32(0, i32vt);
@@ -1020,6 +1027,14 @@ export function lowerValueHash(cx: LoweringContext, t: Type, v: i32): i32 {
   let type = valueEqOperand(t);
   if (type == null) {
     bail(cx, 'structural hash operand');
+  }
+  // An existential hashes the record it holds, through its table.
+  let existential = baseType(type as Type);
+  if (existential is RecordType) {
+    let rec = existential;
+    if (rec.isExistential) {
+      return existentialHash(cx, v, cx.recordDispatchOf(rec));
+    }
   }
   var found: WasmFunction | null = null;
   if (let (true, f) = cx.wasm.valueHashFuncs.get(valueHashKey(type as Type))) {
@@ -1381,6 +1396,22 @@ export function lowerErasedEqDispatch(cx: LoweringContext): IrBody {
   cx.b.switchTo(nullB);
   cx.b.ret(cx.b.constI32(0, i32vt));
   cx.b.switchTo(testsB);
+  // An existential compares as the record it holds: compare again with
+  // that in its place, one side at a time.
+  for (let e in cx.wasm.existentialDispatchInfos) {
+    for (var side = 0; side < 2; side += 1) {
+      let operand = if (side == 0) a else b2;
+      let isExistential = refTestOf(cx, operand, e.fatPtrType);
+      let unwrapB = cx.b.newBlock();
+      let nextB = cx.b.newBlock();
+      cx.b.brIf(isExistential, unwrapB, noValues(), nextB, noValues());
+      cx.b.switchTo(unwrapB);
+      let held = cx.coerceTo(existentialUnderlying(cx, refCastTo(cx, operand, e.fatPtrType), e), sig.params[0]);
+      let pair = if (side == 0) twoValues(held, b2) else twoValues(a, held);
+      cx.b.ret(cx.b.callFunc(cx.b.addRef(new IrRefFunc(cx.func)), pair, i32vt));
+      cx.b.switchTo(nextB);
+    }
+  }
   for (let d in erasedRecordFatPointers(cx)) {
     let isRecord = refTestOf(cx, a, d.fatPtrType);
     let recordB = cx.b.newBlock();

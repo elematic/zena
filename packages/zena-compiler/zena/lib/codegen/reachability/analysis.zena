@@ -1,6 +1,6 @@
 import { Program, CompilationUnit } from '../../program.zena';
 import {
-  WasmModule, WasmFunction, WasmSignature, WasmGlobal, WasmStruct, WasmField, WasmArray, VTableInit, ClassCodegenInfo, asWasmSignature, TrampolineParamWrap, ClosureForwarderSpec, ForwarderParamPack, isValSubtype,
+  WasmModule, WasmFunction, WasmSignature, WasmGlobal, WasmStruct, WasmField, WasmArray, VTableInit, ClassCodegenInfo, asWasmSignature, TrampolineParamWrap, ClosureForwarderSpec, ForwarderParamPack, isValSubtype, RecordDispatchInfo, existentialCastCandidates,
 } from '../wasm-module.zena';
 import { SemanticModel, SymbolDependencies, memberKeyOf } from '../../semantic-model.zena';
 import {
@@ -194,6 +194,37 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
   reachablyNamedClasses = new Set<String>();
   /** See ReachabilityVisitor.noteEqualityUse. */
   var equalityDispatchUsed = false;
+  /**
+   * The closed record types an `as` converts an existential to when they
+   * name fields it does not know: the run time finds the record among
+   * the shapes packed into existentials (`#finishExistentialCasts`).
+   */
+  existentialCastTargets = new Array<RecordDispatchInfo>();
+
+  noteExistentialCastTarget(target: RecordDispatchInfo): void {
+    for (let t in this.existentialCastTargets) {
+      if (t === target) {
+        return;
+      }
+    }
+    this.existentialCastTargets.push(target);
+  }
+
+  /**
+   * A table reading each run-time `as` target through every packed shape
+   * that has its fields. Runs once discovery has settled, when every pack
+   * the program makes is known; the tables reach nothing new.
+   */
+  #finishExistentialCasts(): void {
+    let model = this.program.units[0].model;
+    for (let target in this.existentialCastTargets) {
+      for (let source in existentialCastCandidates(this.wasm.existentialPacks, target)) {
+        if (source !== target) {
+          this.wasm.getForwardDispatch(model, source, target);
+        }
+      }
+    }
+  }
   /** Generic-source symbols with at least one `new` site; see queueExplicitCtor. */
   ctorDemandedGenerics = new Set<SymbolId>();
   /**
@@ -1923,6 +1954,7 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
         lateVtRound = true;
       }
     }
+    this.#finishExistentialCasts();
 
     // Discovery is settled. Catch layout up with anything the vtable
     // pass or the final drain instantiated, then CLOSE: from here a
@@ -2164,6 +2196,12 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
     }
     for (let rd in this.wasm.adaptedDispatchInfos) {
       this.markTypeReached(rd.concreteType);
+      this.markTypeReached(rd.fatPtrType);
+      this.markTypeReached(rd.vtableType);
+    }
+    // An existential's fat pointer and table, which its packs' slots
+    // cast to and read (ir/existential.zena).
+    for (let rd in this.wasm.existentialDispatchInfos) {
       this.markTypeReached(rd.fatPtrType);
       this.markTypeReached(rd.vtableType);
     }

@@ -1701,7 +1701,7 @@ export final class Parser {
     }
 
     if (hasTypeAnnotations) {
-      this.#combinedTypeAnnotation = new RecordTypeAnnotation(typeSigs, null, this.#makeLocation(startToken));
+      this.#combinedTypeAnnotation = new RecordTypeAnnotation(typeSigs, null, false, this.#makeLocation(startToken));
     } else {
       this.#combinedTypeAnnotation = null;
     }
@@ -3139,10 +3139,18 @@ export final class Parser {
     this.#advance(); // consume '{'
     let properties = new Array<PropertySignature>(4);
     var spreads: GrowableArray<TypeAnnotation> | null = null;
+    var isExistential = false;
 
     while (!this.#check(TokenType.RBrace) && !this.#isAtEnd()) {
       // Spread: ...T
       if (this.#match(TokenType.DotDotDot)) {
+        // A bare trailing `...`: an existential record type.
+        if (this.#check(TokenType.RBrace) ||
+            (this.#check(TokenType.Comma) && this.#peek2().kind == TokenType.RBrace)) {
+          this.#match(TokenType.Comma);
+          isExistential = true;
+          continue;
+        }
         let spreadType = this.#parseTypeAnnotation();
         spreads ??= new Array<TypeAnnotation>();
         spreads.push(spreadType);
@@ -3168,7 +3176,7 @@ export final class Parser {
     }
     
     this.#consume(TokenType.RBrace, "Expected '}' after record type");
-    return new RecordTypeAnnotation(properties, spreads, this.#makeLocation(startToken));
+    return new RecordTypeAnnotation(properties, spreads, isExistential, this.#makeLocation(startToken));
   }
   
   /**
