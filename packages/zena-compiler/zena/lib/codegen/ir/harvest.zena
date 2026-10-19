@@ -71,13 +71,15 @@ export function pruneUnreached(wasm: WasmModule,
       }
     }
   };
+  // The function whose body is being walked, for the error below.
+  var referrerName = 'the roots';
   let markGlobal = (g: WasmGlobal) => {
     if (g.isImport) {
       return;
     }
     let idx = g.index - importGCount;
     if (idx < 0 || idx >= gcount) {
-      throw new Error('harvest: a global outside the module');
+      throw new Error(`harvest: a global outside the module: ${g.name} (index ${i32ToString(g.index)}), referenced from ${referrerName}`);
     }
     if (!liveG[idx]) {
       liveG[idx] = true;
@@ -125,6 +127,7 @@ export function pruneUnreached(wasm: WasmModule,
       continue;
     }
     let body = bodies[item];
+    referrerName = wasm.functions[item].name ?? '<unnamed>';
     let n = body.instCount();
     for (var inst = 0; inst < n; inst += 1) {
       let op = body.op(inst);
