@@ -820,6 +820,24 @@ export final class TypeTestSite {
   new(this.iface, this.source);
 }
 
+/**
+ * The most candidate pairs an interface may have and still be tested
+ * by a chain of class tests. A `ref.test` against a final class struct
+ * is an inline type-index compare, about 0.35 ns each on wasmtime;
+ * the type-info read costs one `is_subtype` libcall, about 20 ns, for
+ * an operand that is not statically a class (docs/design/
+ * interface-type-tests.md, "Measured cost"). Sixteen keeps the worst
+ * chain well under the libcall.
+ */
+export let typeTestChainMax = 16;
+
+/** A class a chained interface test tries: its struct, and the pair vtable an `as` packs with. */
+export final class TypeTestCandidate {
+  structType: WasmStruct;
+  vtableGlobal: WasmGlobal;
+  new(this.structType, this.vtableGlobal);
+}
+
 /** The `TypeInfo` field for the tested interface in slot `slot`. */
 export function typeTestSlotName(slot: i32): String {
   return `<impl${i32ToString(slot)}>`;
@@ -1465,10 +1483,16 @@ export final class WasmModule {
    * docs/design/interface-type-tests.md.
    */
   typeTestSites = new Array<TypeTestSite>();
-  /** The slot of each tested interface in the `TypeInfo` struct. */
+  /**
+   * The slot of each tested interface in the `TypeInfo` struct: the
+   * interfaces with more than `typeTestChainMax` candidate pairs. The
+   * rest are in `typeTestChained`, tested by a chain of class tests.
+   */
   typeTestSlots = new Map<InterfaceKey, i32>();
-  /** The tested interfaces, in slot order. */
+  /** The tested interfaces with a slot, in slot order. */
   typeTestSlotInterfaces = new Array<InterfaceType>();
+  /** The tested interfaces answered by a chain of class tests (#layoutTypeTests). */
+  typeTestChained = new Map<InterfaceKey, InterfaceType>();
   /** The (class, interface) pairs some test can answer true for. */
   typeTestPairs = new Map<ClassInterfaceKey, boolean>();
   /** The classes in `typeTestPairs`, in classInfos order. */

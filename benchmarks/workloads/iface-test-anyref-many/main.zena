@@ -1,0 +1,105 @@
+// `x is Shape` on an `anyref` operand where Shape has more implementers
+// than a chain of class tests is allowed (sixteen), so the test reads
+// the class's type info: a `ref.test` against `Object`, an open type
+// that wasmtime answers with the `is_subtype` libcall, then three
+// loads and a null test. Twenty-four classes implement Shape; the
+// operand cycles through eight of them and two other classes, the
+// same mix as iface-test-anyref, whose eight implementers take the
+// chain instead.
+interface Shape {
+  area(): i32;
+}
+
+final class S0 implements Shape { area(): i32 { return 0; } }
+final class S1 implements Shape { area(): i32 { return 1; } }
+final class S2 implements Shape { area(): i32 { return 2; } }
+final class S3 implements Shape { area(): i32 { return 3; } }
+final class S4 implements Shape { area(): i32 { return 4; } }
+final class S5 implements Shape { area(): i32 { return 5; } }
+final class S6 implements Shape { area(): i32 { return 6; } }
+final class S7 implements Shape { area(): i32 { return 7; } }
+final class S8 implements Shape { area(): i32 { return 8; } }
+final class S9 implements Shape { area(): i32 { return 9; } }
+final class S10 implements Shape { area(): i32 { return 10; } }
+final class S11 implements Shape { area(): i32 { return 11; } }
+final class S12 implements Shape { area(): i32 { return 12; } }
+final class S13 implements Shape { area(): i32 { return 13; } }
+final class S14 implements Shape { area(): i32 { return 14; } }
+final class S15 implements Shape { area(): i32 { return 15; } }
+final class S16 implements Shape { area(): i32 { return 16; } }
+final class S17 implements Shape { area(): i32 { return 17; } }
+final class S18 implements Shape { area(): i32 { return 18; } }
+final class S19 implements Shape { area(): i32 { return 19; } }
+final class S20 implements Shape { area(): i32 { return 20; } }
+final class S21 implements Shape { area(): i32 { return 21; } }
+final class S22 implements Shape { area(): i32 { return 22; } }
+final class S23 implements Shape { area(): i32 { return 23; } }
+final class N0 {}
+final class N1 {}
+
+// Every implementer is instantiated, so each is a candidate.
+function makeAll() {
+  let all = new FixedArray<anyref>(24, null);
+  all[0] = new S0();
+  all[1] = new S1();
+  all[2] = new S2();
+  all[3] = new S3();
+  all[4] = new S4();
+  all[5] = new S5();
+  all[6] = new S6();
+  all[7] = new S7();
+  all[8] = new S8();
+  all[9] = new S9();
+  all[10] = new S10();
+  all[11] = new S11();
+  all[12] = new S12();
+  all[13] = new S13();
+  all[14] = new S14();
+  all[15] = new S15();
+  all[16] = new S16();
+  all[17] = new S17();
+  all[18] = new S18();
+  all[19] = new S19();
+  all[20] = new S20();
+  all[21] = new S21();
+  all[22] = new S22();
+  all[23] = new S23();
+  return all;
+}
+let all = makeAll();
+
+function makeValues() {
+  let values = new FixedArray<anyref>(10, null);
+  values[0] = all[0];
+  values[1] = new N0();
+  values[2] = all[1];
+  values[3] = all[2];
+  values[4] = all[3];
+  values[5] = new N1();
+  values[6] = all[4];
+  values[7] = all[5];
+  values[8] = all[6];
+  values[9] = all[7];
+  return values;
+}
+let values = makeValues();
+
+function count(xs: FixedArray<anyref>, rounds: i32) {
+  var hits = 0;
+  var round = 0;
+  while (round < rounds) {
+    var i = 0;
+    while (i < xs.length) {
+      if (xs[i] is Shape) {
+        hits += 1;
+      }
+      i += 1;
+    }
+    round += 1;
+  }
+  return hits;
+}
+
+export function main(): i32 {
+  return count(values, 100000) & 255;
+}

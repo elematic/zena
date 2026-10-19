@@ -31,7 +31,7 @@ import {
   RecordDispatchInfo, WasmField, WasmGlobal, WasmStruct, asWasmSignature,
   asWasmStruct, isValSubtype,
   valTypeIdentical,
-  sortWasmFields, typeTestSlotName, rootStruct,
+  sortWasmFields, typeTestSlotName, rootStruct, TypeTestCandidate,
 } from '../wasm-module.zena';
 import { getCellKey, getCellStruct } from '../type-mapping.zena';
 import {
@@ -896,7 +896,8 @@ export final class LoweringContext {
    * that is not already an `it` answers false.
    */
   typeTestHasSlot(it: InterfaceType): boolean {
-    return this.wasm.typeTestSlots.has(getInterfaceKey(it));
+    let iKey = getInterfaceKey(it);
+    return this.wasm.typeTestSlots.has(iKey) || this.wasm.typeTestChained.has(iKey);
   }
 
   /**
@@ -913,6 +914,14 @@ export final class LoweringContext {
     let one = this.b.constI32(1, i32vt);
     let zero = this.b.constI32(0, i32vt);
     this.#typeTestFatPointer(value, it, merge, oneValue(one), false);
+    if (this.wasm.typeTestChained.has(getInterfaceKey(it))) {
+      this.#typeTestChain(value, it, (inst: i32, c: TypeTestCandidate): void => {
+        this.b.br(merge, oneValue(one));
+      });
+      this.b.br(merge, oneValue(zero));
+      this.b.switchTo(merge);
+      return result;
+    }
     let (slot, _) = this.#typeTestSlot(value, it, merge, oneValue(zero));
     if (slot < 0) {
       this.b.br(merge, oneValue(zero));
@@ -951,7 +960,27 @@ export final class LoweringContext {
       this.b.brIf(isNull, merge, oneValue(nullValue), cont, noValues());
       this.b.switchTo(cont);
     }
-    this.#typeTestFatPointer(value, it, merge, noValues(), true);
+    let fatTested = this.#typeTestFatPointer(value, it, merge, noValues(), true);
+    if (this.wasm.typeTestChained.has(iKey)) {
+      let fatStruct = fat;
+      let tested = this.#typeTestChain(value, it, (inst: i32, c: TypeTestCandidate): void => {
+        let classVt = new ValTypeRef(c.structType) as ValType;
+        let cast = this.b.emit(IrOp.ref_cast, classVt, inst, this.b.internType(classVt));
+        let packed = this.b.emit(IrOp.iface_pack, new ValTypeRef(fatStruct) as ValType,
+            cast, this.b.addRef(new IrRefGlobal(c.vtableGlobal)));
+        this.b.br(merge, oneValue(packed));
+      });
+      // No candidate matched: the cast traps. With nothing to test at
+      // all, the cast is statically impossible, and `merge` has no
+      // predecessor for block cleanup to keep.
+      this.b.unreachable();
+      if (!fatTested && !tested) {
+        this.b.switchTo(this.b.newBlock());
+        return this.b.emit(IrOp.ref_null, resultVt, -1, -1);
+      }
+      this.b.switchTo(merge);
+      return result;
+    }
     let trapB = this.b.newBlock();
     let (slot, inst) = this.#typeTestSlot(value, it, trapB, noValues());
     if (slot < 0) {
@@ -1009,6 +1038,9 @@ export final class LoweringContext {
         return this.typeTestPack(value, it, want is ValTypeRefNull);
       }
     }
+    if (let (true, it) = this.wasm.typeTestChained.get(key as InterfaceKey)) {
+      return this.typeTestPack(value, it, want is ValTypeRefNull);
+    }
     return -1;
   }
 
@@ -1030,20 +1062,20 @@ export final class LoweringContext {
    * pointer of another interface.
    */
   #typeTestFatPointer(value: i32, it: InterfaceType, target: i32,
-      args: GrowableArray<i32>, passCast: boolean): void {
+      args: GrowableArray<i32>, passCast: boolean): boolean {
     let vt = this.valueTypeOf(value);
     if (!isRefValType(vt)) {
-      return;
+      return false;
     }
     let fatOpt = if (let (true, st) = this.wasm.interfaceStructs.get(getInterfaceKey(it))) st else null;
     if (fatOpt == null) {
-      return;
+      return false;
     }
     let fat = fatOpt;
     let st = asWasmStruct(vt);
     if (st != null && st !== fat &&
         (st.classType != null || this.#isInterfaceStruct(st))) {
-      return;
+      return false;
     }
     let fatVt = new ValTypeRef(fat) as ValType;
     let i32vt = new ValTypeI32() as ValType;
@@ -1059,6 +1091,133 @@ export final class LoweringContext {
       this.b.brIf(isFat, target, args, cont, noValues());
     }
     this.b.switchTo(cont);
+    return true;
+  }
+
+  /**
+   * The classes a chained test against `it` tries: the candidate
+   * pairs of `it` (ReachabilityAnalysis's #markTypeTestPairs), less
+   * the classes a class-typed operand cannot be. Each comes with the
+   * pair vtable an `as` packs with.
+   */
+  #typeTestCandidates(value: i32, it: InterfaceType): GrowableArray<TypeTestCandidate> {
+    let wasm = this.wasm;
+    let iKey = getInterfaceKey(it);
+    var bound: WasmStruct | null = null;
+    let st = asWasmStruct(this.valueTypeOf(value));
+    if (st != null && st.classType != null) {
+      bound = st;
+    }
+    let candidates = new Array<TypeTestCandidate>();
+    for (let cPair in wasm.typeTestClasses) {
+      let key = getClassInterfaceKey(cPair.key, iKey);
+      if (!wasm.typeTestPairs.has(key)) {
+        continue;
+      }
+      let info = wasm.classInfos[cPair.key];
+      if (bound != null) {
+        var s: WasmStruct | null = info.structType;
+        var below = false;
+        while (s != null) {
+          if (s === bound) {
+            below = true;
+            break;
+          }
+          s = s.superStruct;
+        }
+        if (!below) {
+          continue;
+        }
+      }
+      let g = wasm.getClassInterfaceVTable(key);
+      if (g == null) {
+        this.fail(`interface vtable global not found: ${cPair.key as String} as ${iKey as String}`);
+      }
+      candidates.push(new TypeTestCandidate(info.structType, g));
+    }
+    return candidates;
+  }
+
+  /**
+   * A chain of class tests for `it` over `value`: `onHit` emits the
+   * branch out for a candidate the instance passed, in a block where
+   * `inst` is the instance; execution falls through when none passed.
+   * Each test is a `ref.test` against a final struct, an inline
+   * compare. An operand that can hold a fat pointer of another
+   * interface is unwrapped through `FatPtrBase` after the chain
+   * misses, and the chain runs again on the instance inside; the
+   * miss path pays that open-type test, hits never do. Returns
+   * whether any test was emitted.
+   */
+  #typeTestChain(value: i32, it: InterfaceType,
+      onHit: (inst: i32, c: TypeTestCandidate) => void): boolean {
+    let candidates = this.#typeTestCandidates(value, it);
+    let i32vt = new ValTypeI32() as ValType;
+    let vt = this.valueTypeOf(value);
+    if (!isRefValType(vt)) {
+      return false;
+    }
+    let st = asWasmStruct(vt);
+    var inst = value;
+    var tested = false;
+    if (st != null && this.#isInterfaceStruct(st)) {
+      if (candidates.length == 0) {
+        return false;
+      }
+      if (vt is ValTypeRefNull) {
+        let isNull = this.b.emit(IrOp.ref_is_null, i32vt, value, -1);
+        let cont = this.b.newBlock();
+        let miss = this.b.newBlock();
+        this.b.brIf(isNull, miss, noValues(), cont, noValues());
+        this.b.switchTo(cont);
+        inst = this.fatPointerInstance(st, value);
+        this.#typeTestChainOver(inst, candidates, onHit);
+        this.b.br(miss, noValues());
+        this.b.switchTo(miss);
+        return true;
+      }
+      inst = this.fatPointerInstance(st, value);
+      this.#typeTestChainOver(inst, candidates, onHit);
+      return true;
+    }
+    if (candidates.length > 0) {
+      this.#typeTestChainOver(inst, candidates, onHit);
+      tested = true;
+    }
+    let baseOpt = this.wasm.fatPointerBaseStruct;
+    if (baseOpt != null && candidates.length > 0 &&
+        !(st != null && st.classType != null)) {
+      let base = baseOpt;
+      let baseVt = new ValTypeRef(base) as ValType;
+      let isFat = this.b.emit(IrOp.ref_test, i32vt, inst, this.b.internType(baseVt));
+      let unwrap = this.b.newBlock();
+      let miss = this.b.newBlock();
+      this.b.brIf(isFat, unwrap, noValues(), miss, noValues());
+      this.b.switchTo(unwrap);
+      let fat = this.b.emit(IrOp.ref_cast, baseVt, inst, this.b.internType(baseVt));
+      let inner = this.b.emit(IrOp.struct_get, new ValTypeAnyRef(), fat,
+          this.b.addRef(new IrRefField(base, 'instance')));
+      this.#typeTestChainOver(inner, candidates, onHit);
+      this.b.br(miss, noValues());
+      this.b.switchTo(miss);
+      tested = true;
+    }
+    return tested;
+  }
+
+  #typeTestChainOver(inst: i32, candidates: GrowableArray<TypeTestCandidate>,
+      onHit: (inst: i32, c: TypeTestCandidate) => void): void {
+    let i32vt = new ValTypeI32() as ValType;
+    for (let c in candidates) {
+      let classVt = new ValTypeRef(c.structType) as ValType;
+      let isClass = this.b.emit(IrOp.ref_test, i32vt, inst, this.b.internType(classVt));
+      let hit = this.b.newBlock();
+      let next = this.b.newBlock();
+      this.b.brIf(isClass, hit, noValues(), next, noValues());
+      this.b.switchTo(hit);
+      onHit(inst, c);
+      this.b.switchTo(next);
+    }
   }
 
   /**

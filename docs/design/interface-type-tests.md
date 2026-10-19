@@ -76,23 +76,52 @@ the number of implementers.
 ## Measured cost
 
 `benchmarks/workloads/iface-test-anyref` runs a million `x is Shape`
-tests over ten values, eight of them implementers, held three ways;
-`iface-test-class` holds them as their base class and `iface-test-chain`
-asks the same question as a hand-written chain of eight class tests.
-On wasmtime 48, AMD Ryzen 9 9955HX:
+tests over ten values, eight of them implementers, held as `anyref`;
+`iface-test-anyref-many` is the same loop with twenty-four
+implementers, `iface-test-class` holds the values as their base
+class, and `iface-test-chain` asks the question as a hand-written
+chain of eight class tests. On wasmtime 48, AMD Ryzen 9 9955HX, per
+test:
 
-| operand                          | per test |
-| -------------------------------- | -------- |
-| class-typed (loads, no cast)     | 1.3 ns   |
-| chain of up to 8 final `ref.test` | 3.0 ns  |
-| `anyref` (`Object` cast)         | 24 ns    |
+| form                                              | per test |
+| ------------------------------------------------- | -------- |
+| type-info read, class-typed operand (loads only)  | 1.3 ns   |
+| hand-written chain of 8 final `ref.test`          | 3.1 ns   |
+| compiler chain, class-typed operand               | 2.8 ns   |
+| compiler chain, `anyref` operand                  | 4.9 ns   |
+| type-info read, `anyref` operand (`Object` cast)  | 16 ns    |
 
-The `Object` cast is the whole difference: the `is_subtype` libcall
-costs about 20 ns, and a chain of inline compares against final
-structs beats it until the chain is some sixty classes long. A
-lowering that chooses the chain below a candidate count and the
-type-info read above it would get both; the layout stays the same
-either way, since the chain's `as` would select the same pair vtables.
+The `Object` cast is the whole difference between the last two rows:
+the `is_subtype` libcall costs over 10 ns, and a chain of inline
+compares against final structs beats it until the chain is some forty
+classes long. (Before the `Object` test was moved ahead of the
+`FatPtrBase` test, the `anyref` row paid two libcalls, 24 ns.) The
+compiler's chain on an `anyref` costs more than the hand-written one
+because it first tests for `Shape`'s own fat pointer and, on a miss,
+tests `FatPtrBase` to unwrap a fat pointer of another interface; the
+two non-implementers in the loop pay that open-type test.
+
+## The chain below the threshold
+
+So the lowering chooses per interface. An interface with at most
+`typeTestChainMax` (sixteen) candidate pairs gets no `TypeInfo` slot;
+`#layoutTypeTests` puts it in `typeTestChained`, and a test against it
+is a chain of `ref.test`s over the pairs' class structs
+(`#typeTestChain` in `lowering-context.zena`), each an inline compare.
+A hit on `as` casts to the class and packs with that pair's vtable,
+which the chain selects by construction. A class-typed operand tries
+only the candidates below its class. An operand that can hold a fat
+pointer of another interface is unwrapped through `FatPtrBase` after
+the chain misses and tried again, so only the miss path pays that
+open-type test. Sixteen keeps the worst chain near 6 ns, well under
+the libcall.
+
+Above the threshold the type-info read is as described. `TypeInfo`,
+`VTableBase` and `Object` exist only when some tested interface is
+above it; `FatPtrBase` exists for either form when some operand can
+hold an unknown fat pointer. `iface-test-anyref` (eight implementers,
+chained) and `iface-test-anyref-many` (twenty-four, through type
+info) measure the two forms on the same loop.
 
 ## What exists only when needed
 
@@ -109,11 +138,13 @@ pair is marked as an interface adaptation so `#buildClassInterfaceVTables`
 builds its vtable and trampolines, and the class gets a class vtable
 global if it had none.
 
-`#layoutTypeTests` then lays out the structs above for exactly those
-classes: only hierarchies holding a candidate get `<typeinfo>` and
-`VTableBase`; only hierarchies some test reaches through a non-class
-operand extend `Object`; `FatPtrBase` exists only when some operand can
-hold a fat pointer of an unknown interface. It runs after
+`#layoutTypeTests` then sorts the tested interfaces by their pair
+count into chained ones and slot ones, and lays out the structs above
+for exactly the slot ones' classes: only hierarchies holding such a
+candidate get `<typeinfo>` and `VTableBase`; only hierarchies some
+test reaches through a non-class operand extend `Object`;
+`FatPtrBase` exists only when some operand can hold a fat pointer of
+an unknown interface. It runs after
 `#pruneUndispatchedSlots`, which aligns vtable fields with their
 functions by index; the leading `<typeinfo>` value travels separately
 in `VTableInit.slotGlobals`, which the emitter stores before the

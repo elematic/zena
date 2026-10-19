@@ -1,13 +1,13 @@
 // `x is Shape` on an `anyref` operand, the regime a `Stringable`-style
-// test on an unknown value runs in. Each test reads the class's type
-// info: a `ref.test` against `Object`, which is an open type, so
-// wasmtime answers it with the `is_subtype` libcall (the exact-type
-// compare never matches), then three loads and a null test. Eight
-// classes implement Shape, so the operand cycles through eight
+// test on an unknown value runs in. Eight classes implement Shape,
+// under the chain limit, so the compiler emits a chain of class tests,
+// each a `ref.test` against a final struct that wasmtime compiles to
+// an inline type-index compare. The operand cycles through eight
 // implementers and two non-implementers; compares itself against
-// iface-test-class (the same test on a class-typed operand, no cast)
-// and iface-test-chain (a hand-written chain of class tests, each an
-// inline compare against a final struct).
+// iface-test-chain (the same chain written by hand),
+// iface-test-anyref-many (twenty-four implementers, over the limit,
+// so the type-info read through `Object` and its libcall) and
+// iface-test-class (a class-typed operand, loads only).
 interface Shape {
   area(): i32;
 }
