@@ -73,6 +73,27 @@ leaves JIT code once. That is the constant the design pays; a chain of
 per-class `ref.test`s against final structs stays inline but grows with
 the number of implementers.
 
+## Measured cost
+
+`benchmarks/workloads/iface-test-anyref` runs a million `x is Shape`
+tests over ten values, eight of them implementers, held three ways;
+`iface-test-class` holds them as their base class and `iface-test-chain`
+asks the same question as a hand-written chain of eight class tests.
+On wasmtime 48, AMD Ryzen 9 9955HX:
+
+| operand                          | per test |
+| -------------------------------- | -------- |
+| class-typed (loads, no cast)     | 1.3 ns   |
+| chain of up to 8 final `ref.test` | 3.0 ns  |
+| `anyref` (`Object` cast)         | 24 ns    |
+
+The `Object` cast is the whole difference: the `is_subtype` libcall
+costs about 20 ns, and a chain of inline compares against final
+structs beats it until the chain is some sixty classes long. A
+lowering that chooses the chain below a candidate count and the
+type-info read above it would get both; the layout stays the same
+either way, since the chain's `as` would select the same pair vtables.
+
 ## What exists only when needed
 
 Nothing above is emitted for a program that tests no interface. The
@@ -123,9 +144,11 @@ codegen with no vtable to pack through, now reaches the type-info path.
   and `FatPtrBase` exists only when an interface test needs it.
 - An extension class has no struct of its own, so it is never a
   candidate: a value of one is a value of its `on` type.
-- An operand whose static type is a type parameter is "anything", and
-  a test against an interface whose type arguments are still erased
-  inside generic code tests the erased key.
+- A type parameter never reaches a lowered body erased: every reached
+  body is a specialization, so an operand or target written with a
+  type parameter is its concrete argument by the time the test
+  lowers. Erasure (`ErasedType`) exists only for the signature of a
+  generic function used as a value, whose body is never lowered.
 - The candidate set is bounded by the operand's static type only.
   Interprocedural type propagation (elematic/zena#421) would narrow it
   to the classes that reach the operand.

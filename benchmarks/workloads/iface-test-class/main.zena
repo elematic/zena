@@ -1,0 +1,56 @@
+// `x is Shape` on a class-typed operand: the same ten values as
+// iface-test-anyref, held as their common base class, so the test
+// reads the operand's own `<vtable>` field and casts nothing — three
+// loads and a null test. The baseline for iface-test-anyref: the
+// difference between the two is the `Object` cast.
+interface Shape {
+  area(): i32;
+}
+
+class Base {}
+final class S0 extends Base implements Shape { area(): i32 { return 0; } }
+final class S1 extends Base implements Shape { area(): i32 { return 1; } }
+final class S2 extends Base implements Shape { area(): i32 { return 2; } }
+final class S3 extends Base implements Shape { area(): i32 { return 3; } }
+final class S4 extends Base implements Shape { area(): i32 { return 4; } }
+final class S5 extends Base implements Shape { area(): i32 { return 5; } }
+final class S6 extends Base implements Shape { area(): i32 { return 6; } }
+final class S7 extends Base implements Shape { area(): i32 { return 7; } }
+final class N0 extends Base {}
+final class N1 extends Base {}
+
+function makeValues() {
+  let values = new FixedArray<Base>(10, new N0());
+  values[0] = new S0();
+  values[1] = new N0();
+  values[2] = new S1();
+  values[3] = new S2();
+  values[4] = new S3();
+  values[5] = new N1();
+  values[6] = new S4();
+  values[7] = new S5();
+  values[8] = new S6();
+  values[9] = new S7();
+  return values;
+}
+let values = makeValues();
+
+function count(xs: FixedArray<Base>, rounds: i32) {
+  var hits = 0;
+  var round = 0;
+  while (round < rounds) {
+    var i = 0;
+    while (i < xs.length) {
+      if (xs[i] is Shape) {
+        hits += 1;
+      }
+      i += 1;
+    }
+    round += 1;
+  }
+  return hits;
+}
+
+export function main(): i32 {
+  return count(values, 100000) & 255;
+}

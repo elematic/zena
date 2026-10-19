@@ -1,0 +1,60 @@
+// `x is Shape` on an `anyref` operand, the regime a `Stringable`-style
+// test on an unknown value runs in. Each test reads the class's type
+// info: a `ref.test` against `Object`, which is an open type, so
+// wasmtime answers it with the `is_subtype` libcall (the exact-type
+// compare never matches), then three loads and a null test. Eight
+// classes implement Shape, so the operand cycles through eight
+// implementers and two non-implementers; compares itself against
+// iface-test-class (the same test on a class-typed operand, no cast)
+// and iface-test-chain (a hand-written chain of class tests, each an
+// inline compare against a final struct).
+interface Shape {
+  area(): i32;
+}
+
+final class S0 implements Shape { area(): i32 { return 0; } }
+final class S1 implements Shape { area(): i32 { return 1; } }
+final class S2 implements Shape { area(): i32 { return 2; } }
+final class S3 implements Shape { area(): i32 { return 3; } }
+final class S4 implements Shape { area(): i32 { return 4; } }
+final class S5 implements Shape { area(): i32 { return 5; } }
+final class S6 implements Shape { area(): i32 { return 6; } }
+final class S7 implements Shape { area(): i32 { return 7; } }
+final class N0 {}
+final class N1 {}
+
+function makeValues() {
+  let values = new FixedArray<anyref>(10, null);
+  values[0] = new S0();
+  values[1] = new N0();
+  values[2] = new S1();
+  values[3] = new S2();
+  values[4] = new S3();
+  values[5] = new N1();
+  values[6] = new S4();
+  values[7] = new S5();
+  values[8] = new S6();
+  values[9] = new S7();
+  return values;
+}
+let values = makeValues();
+
+function count(xs: FixedArray<anyref>, rounds: i32) {
+  var hits = 0;
+  var round = 0;
+  while (round < rounds) {
+    var i = 0;
+    while (i < xs.length) {
+      if (xs[i] is Shape) {
+        hits += 1;
+      }
+      i += 1;
+    }
+    round += 1;
+  }
+  return hits;
+}
+
+export function main(): i32 {
+  return count(values, 100000) & 255;
+}

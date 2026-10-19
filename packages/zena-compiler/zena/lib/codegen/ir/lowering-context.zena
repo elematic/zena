@@ -1131,33 +1131,52 @@ export final class LoweringContext {
           this.b.switchTo(cont);
         }
         inst = this.fatPointerInstance(st, value);
-      } else {
-        let baseOpt = wasm.fatPointerBaseStruct;
-        if (baseOpt != null) {
-          let base = baseOpt;
-          let baseVt = new ValTypeRef(base) as ValType;
-          let isFat = this.b.emit(IrOp.ref_test, i32vt, inst, this.b.internType(baseVt));
-          let unwrap = this.b.newBlock();
-          let join = this.b.newBlock();
-          let joined = this.b.blockParam(join, new ValTypeAnyRef());
-          this.b.brIf(isFat, unwrap, noValues(), join, oneValue(inst));
-          this.b.switchTo(unwrap);
-          let fat = this.b.emit(IrOp.ref_cast, baseVt, inst, this.b.internType(baseVt));
-          let inner = this.b.emit(IrOp.struct_get, new ValTypeAnyRef(), fat,
-              this.b.addRef(new IrRefField(base, 'instance')));
-          this.b.br(join, oneValue(inner));
-          this.b.switchTo(join);
-          inst = joined;
-        }
       }
+      // `Object` and `FatPtrBase` are open types, so wasmtime answers
+      // a test against either with the `is_subtype` libcall whenever
+      // the exact-type compare fails, which it always does here
+      // (docs/design/struct-finality.md). Test `Object` first: a raw
+      // instance, the common case behind an `anyref`, then pays one
+      // libcall; a fat pointer of another interface pays the
+      // `FatPtrBase` test and a second `Object` cast after unwrapping.
+      // `ok` takes the instance as an `Object`, which is also the
+      // instance a pack stores.
       let objVt = new ValTypeRef(obj) as ValType;
-      let isObj = this.b.emit(IrOp.ref_test, i32vt, inst, this.b.internType(objVt));
       let ok = this.b.newBlock();
-      this.b.brIf(isObj, ok, noValues(), fail, failArgs);
+      let okValue = this.b.blockParam(ok, objVt);
+      let isObj = this.b.emit(IrOp.ref_test, i32vt, inst, this.b.internType(objVt));
+      let direct = this.b.newBlock();
+      let notObj = this.b.newBlock();
+      this.b.brIf(isObj, direct, noValues(), notObj, noValues());
+      this.b.switchTo(direct);
+      this.b.br(ok, oneValue(this.b.emit(IrOp.ref_cast, objVt, inst,
+          this.b.internType(objVt))));
+      this.b.switchTo(notObj);
+      let baseOpt = wasm.fatPointerBaseStruct;
+      if (baseOpt == null || (st != null && this.#isInterfaceStruct(st))) {
+        // Nothing else the value could be holds an instance.
+        this.b.br(fail, failArgs);
+      } else {
+        let base = baseOpt;
+        let baseVt = new ValTypeRef(base) as ValType;
+        let isFat = this.b.emit(IrOp.ref_test, i32vt, inst, this.b.internType(baseVt));
+        let unwrap = this.b.newBlock();
+        this.b.brIf(isFat, unwrap, noValues(), fail, failArgs);
+        this.b.switchTo(unwrap);
+        let fat = this.b.emit(IrOp.ref_cast, baseVt, inst, this.b.internType(baseVt));
+        let inner = this.b.emit(IrOp.struct_get, new ValTypeAnyRef(), fat,
+            this.b.addRef(new IrRefField(base, 'instance')));
+        let innerIsObj = this.b.emit(IrOp.ref_test, i32vt, inner, this.b.internType(objVt));
+        let innerOk = this.b.newBlock();
+        this.b.brIf(innerIsObj, innerOk, noValues(), fail, failArgs);
+        this.b.switchTo(innerOk);
+        this.b.br(ok, oneValue(this.b.emit(IrOp.ref_cast, objVt, inner,
+            this.b.internType(objVt))));
+      }
       this.b.switchTo(ok);
-      let objValue = this.b.emit(IrOp.ref_cast, objVt, inst, this.b.internType(objVt));
+      inst = okValue;
       let vtRaw = this.b.emit(IrOp.struct_get, new ValTypeRefNull(vtableBase),
-          objValue, this.b.addRef(new IrRefField(obj, '<vtable>')));
+          okValue, this.b.addRef(new IrRefField(obj, '<vtable>')));
       ti = this.#typeInfoOfVTable(vtRaw, vtableBase, typeInfo, fail, failArgs);
     }
     let tiNull = this.b.emit(IrOp.ref_is_null, i32vt, ti, -1);
