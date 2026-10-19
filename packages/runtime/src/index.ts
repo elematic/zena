@@ -19,6 +19,13 @@ export interface ZenaImports {
    */
   fetch?: boolean | typeof globalThis.fetch;
   /**
+   * The module the program's string literals are imported from: what it
+   * was built with `--imported-string-constants`. Defaults to `'_'`.
+   * Ignored when `instantiate` is given a `WebAssembly.Module`, which was
+   * compiled with its own.
+   */
+  importedStringConstants?: string;
+  /**
    * Promise-returning host functions, exposed to Zena as async imports
    * (async.md §4, Level 2). Keyed by import module, then by name.
    *
@@ -1140,6 +1147,7 @@ export async function instantiate(
     asyncImports,
     fetch: _fetch,
     web: _web,
+    importedStringConstants = '_',
     ...plainUserImports
   } = userImports;
   const imports: Record<string, Record<string, unknown>> = {
@@ -1245,7 +1253,7 @@ export async function instantiate(
 
   const compileOptions = {
     builtins: ['js-string'],
-    importedStringConstants: '_',
+    importedStringConstants,
   };
   const module: WebAssembly.Module = await (WebAssembly.compile as any)(
     wasm,

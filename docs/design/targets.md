@@ -65,7 +65,8 @@ The `js` target is optimized for execution inside JavaScript engines
   `fromCharCode`, etc.) delegate to the **WebAssembly JS String Builtins
   proposal** under import module `"wasm:js-string"`.
 - String literals in source code do not emit data segments. Instead, the
-  compiler emits imported string constants under module name `"_"`:
+  compiler emits imported string constants under module name `"_"`, or
+  the module `--imported-string-constants` names:
   ```wat
   (import "_" "Hello, World!" (global $raw_str (ref extern)))
   ```
@@ -82,8 +83,11 @@ A host executing a `--target js` module must supply:
    native support,
    [`@zena-lang/runtime`](file:///Users/justin/Projects/Zena/zena/packages/runtime/src/index.ts)
    provides default fallback implementations.
-2. **String constants module (`"_"`)**: The loader inspects module imports from
-   `"_"` and supplies matching JavaScript string handles.
+2. **String constants module (`"_"` by default)**: The host compiles the
+   module with that name as its `importedStringConstants`, and the engine
+   supplies each literal. ESM integration hosts fix the name to
+   `wasm:js/string-constants`; see
+   [host-interop.md](./host-interop.md#string-literals-and-imported-constants).
 3. **Console import (`"console"`)**: When `console.log(...)` is reachable, the
    module imports `@external("console", "log_string")` taking an `externref`.
 4. **Runtime helpers exported by guest**: The module exports three helper
