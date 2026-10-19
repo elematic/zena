@@ -17027,6 +17027,32 @@ function checkClassBodies(
 /**
  * Build a FunctionType for a method from its MethodDefinition.
  */
+/**
+ * The return type of the nearest superclass method `md` overrides, or
+ * null when no superclass declares one. Private methods are never
+ * inherited, and a static method is not an override.
+ */
+function inheritedMethodReturnType(ctx: CheckerContext, classType: ClassType,
+    md: MethodDefinition): Type | null {
+  let methodName = getMemberName(ctx, md.name as Node);
+  if (methodName.length == 0 || methodName.startsWith("#")) {
+    return null;
+  }
+  var cur = classType.superType;
+  while (cur != null) {
+    let c = cur;
+    if (c.members.has(methodName)) {
+      let member = c.members[methodName];
+      if (member is MethodInfo && !member.isStatic && member.type is FunctionType) {
+        return (member.type as FunctionType).returnType;
+      }
+      return null;
+    }
+    cur = c.superType;
+  }
+  return null;
+}
+
 function checkMethodSignature(
     ctx: CheckerContext,
     classType: ClassType | null,
@@ -17170,6 +17196,15 @@ function checkMethodSignature(
   let {returnType} = md;
   if (returnType != null) {
     retType = resolveTypeAnnotation(ctx, returnType, true);
+  } else if (classType != null && !md.isStatic && !md.isGenerator && !md.isAsync) {
+    // Methods do not infer return types from their bodies, so an
+    // unannotated method is `void` — except an override, which means the
+    // same thing as the method it replaces: `render()` over an abstract
+    // `render(): TemplateResult` returns a `TemplateResult`.
+    let inherited = inheritedMethodReturnType(ctx, classType, md);
+    if (inherited != null) {
+      retType = inherited;
+    }
   }
 
   // A `Scoped` return on an async or gen method is validated against
@@ -22930,10 +22965,28 @@ function checkFunctionExpression(
   let paramNames = new Array<String>();
 
   // If there's a contextual function type, use it for parameter inference.
+  // A union with exactly one function member contextualizes the same
+  // way: an arrow written where `String | (e: Event) => void` is expected
+  // can only be the function, so its parameters take that member's
+  // types.
   var contextualFn: FunctionType | null = null;
   if (expectedType != null) {
-    match (expectedType) {
+    match (unwrapAliases(expectedType)) {
       case FunctionType as ft: { contextualFn = ft; }
+      case UnionT {types}: {
+        var only: FunctionType | null = null;
+        var count = 0;
+        for (let member in types) {
+          let m = unwrapAliases(member);
+          if (m is FunctionType) {
+            only = m as FunctionType;
+            count += 1;
+          }
+        }
+        if (count == 1) {
+          contextualFn = only;
+        }
+      }
       case _: {}
     }
   }
