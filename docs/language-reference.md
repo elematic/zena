@@ -725,6 +725,37 @@ let speak = (pet: Cat | Dog): String => {
 Type narrowing is scoped to the block where the narrowing applies. Once you exit
 the block, the original type is restored.
 
+`x is I` for an interface `I` asks whether the class of `x` implements `I`,
+whatever `x` is held as: an `anyref`, a class, another interface, or a
+union. `x as I` converts on the same terms, and traps when the class does
+not implement `I`. A `case I` arm in a `match` is the same test. Values
+with no class — strings, arrays, records, closures, `null` — are never
+`is I`.
+
+```zena
+interface Shape {
+  area(): i32;
+}
+
+class Square implements Shape {
+  side: i32;
+  new(this.side);
+  area(): i32 { return this.side * this.side; }
+}
+
+let x: anyref = new Square(3);
+x is Shape;             // true
+(x as Shape).area();    // 9
+if (x is Shape) {
+  x.area();             // x is narrowed to Shape
+}
+```
+
+The test reads a table the compiler attaches to each class that implements
+an interface some test names, so its cost does not depend on how many
+classes implement the interface. The table exists only in programs that
+test an interface; see `docs/design/interface-type-tests.md`.
+
 ##### Field and Element Narrowing
 
 Type narrowing also works for member expressions when the path is **immutable**:

@@ -55,6 +55,11 @@ export function eliminateDeadFields(
 
   // Which declared fields some body reads, by declaring struct.
   let read = new HashMap<WasmStruct, GrowableArray<boolean>>();
+  // An interface type test reads `<vtable>` through `Object`, the
+  // supertype of the hierarchies it can answer for; that read keeps
+  // field 0 of every struct below `Object`.
+  var objectVtableRead = false;
+  let objectStruct = wasm.objectStruct;
   for (let body in bodies) {
     let count = body.instCount();
     for (var inst = 0; inst < count; inst += 1) {
@@ -66,6 +71,10 @@ export function eliminateDeadFields(
         continue;
       }
       let field = ref as IrRefField;
+      if (objectStruct != null && field.owner === objectStruct) {
+        objectVtableRead = true;
+        continue;
+      }
       if (!classStructs.has(field.owner)) {
         continue;
       }
@@ -96,6 +105,16 @@ export function eliminateDeadFields(
       var live = false;
       if (let (true, bits) = read.get(declaring)) {
         live = i < bits.length && bits[i];
+      }
+      if (!live && i == 0 && objectVtableRead && objectStruct != null) {
+        var ancestor: WasmStruct | null = s.superStruct;
+        while (ancestor != null) {
+          if (ancestor === objectStruct) {
+            live = true;
+            break;
+          }
+          ancestor = ancestor.superStruct;
+        }
       }
       flags.push(live);
       if (!live) {

@@ -574,9 +574,14 @@ The `as` operator casts between types (checked at runtime for reference types).
 The `is` operator tests types and enables type narrowing.
 
 ```zena
-x as i64      // Type cast (checked at runtime)
-x is MyClass  // Type check (returns boolean)
+x as i64          // Type cast (checked at runtime)
+x is MyClass      // Type check (returns boolean)
+x is MyInterface  // True when the class of x implements MyInterface
 ```
+
+`x is I` and `x as I` for an interface `I` ask whether the class of `x`
+implements `I`, however `x` is held: as an `anyref`, a class, another
+interface, or a union.
 
 ### Range Operators
 

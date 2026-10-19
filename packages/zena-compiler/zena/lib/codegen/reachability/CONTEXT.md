@@ -202,6 +202,21 @@ alone: `noteSpecialization` is also called from `instantiateClassType`,
 so a specialization rejoins the register at the `new` that makes it
 real. See §18 of `docs/design/binary-size.md`.
 
+## Interface Type Tests Read Per-Class Tables
+
+`x is I`, `x as I` and `case I` mean "the class of `x` implements `I`",
+answered from a `TypeInfo` table hung off the class vtable rather than
+a `ref.test` of the interface's fat pointer struct, which only says how
+the value is held. The visitor records each site with its operand's
+static type (`noteTypeTestSites`), `#markTypeTestPairs` turns the sites
+into the `(class, interface)` pairs that can answer true once the
+instantiated classes are known (inside the late vtable fixpoint, since
+each pair needs its class-interface vtable), and `#layoutTypeTests`,
+after slot pruning, lays out `TypeInfo`, `VTableBase`, `Object` and
+`FatPtrBase` for exactly those classes and orders the globals so the
+initializers' `global.get`s point backwards. A program that tests no
+interface emits none of it. See `docs/design/interface-type-tests.md`.
+
 ## Code Generation Pipeline Integration
 
 The reachability pass is run in [module-generator.zena](../module-generator.zena):

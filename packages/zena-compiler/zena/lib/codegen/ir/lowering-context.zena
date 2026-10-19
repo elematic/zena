@@ -31,11 +31,12 @@ import {
   RecordDispatchInfo, WasmField, WasmGlobal, WasmStruct, asWasmSignature,
   asWasmStruct, isValSubtype,
   valTypeIdentical,
-  sortWasmFields,
+  sortWasmFields, typeTestSlotName, rootStruct,
 } from '../wasm-module.zena';
 import { getCellKey, getCellStruct } from '../type-mapping.zena';
 import {
   getClassInterfaceKey, getClassKey, getClassMethodKey, getInterfaceKey,
+  InterfaceKey,
 } from '../codegen-utils.zena';
 import { IrRefField, IrRefFunc, IrRefGlobal, IrRefType } from './ir.zena';
 import { IrBuilder } from './builder.zena';
@@ -334,7 +335,7 @@ export final class LoweringContext {
     let key = getClassInterfaceKey(getClassKey(ct), iName);
     let vtOpt = this.wasm.getClassInterfaceVTable(key);
     if (vtOpt == null) {
-      this.fail('interface vtable global not found');
+      this.fail(`interface vtable global not found: ${key.classKey as String} as ${key.interfaceKey as String}`);
     }
     let fatPtrOpt = if (let (true, st) = this.wasm.interfaceStructs.get(iName)) st else null;
     if (fatPtrOpt == null) {
@@ -888,6 +889,308 @@ export final class LoweringContext {
     return value;
   }
 
+  /**
+   * Whether a type test against `it` reads type info: some class can
+   * answer it true (ReachabilityAnalysis's #markTypeTestPairs). When
+   * none can, the test is the fat pointer test alone, and a value
+   * that is not already an `it` answers false.
+   */
+  typeTestHasSlot(it: InterfaceType): boolean {
+    return this.wasm.typeTestSlots.has(getInterfaceKey(it));
+  }
+
+  /**
+   * `value is it`, meaning the value's class implements `it`
+   * (docs/design/interface-type-tests.md): true when the value is a
+   * fat pointer of `it`, else when its class's type info holds a
+   * vtable for `it`. A fixed sequence of loads and tests whatever the
+   * number of implementers; #typeTestSlot does the lookup.
+   */
+  typeTestImplements(value: i32, it: InterfaceType): i32 {
+    let i32vt = new ValTypeI32() as ValType;
+    let merge = this.b.newBlock();
+    let result = this.b.blockParam(merge, i32vt);
+    let one = this.b.constI32(1, i32vt);
+    let zero = this.b.constI32(0, i32vt);
+    this.#typeTestFatPointer(value, it, merge, oneValue(one), false);
+    let (slot, _) = this.#typeTestSlot(value, it, merge, oneValue(zero));
+    if (slot < 0) {
+      this.b.br(merge, oneValue(zero));
+    } else {
+      let isNull = this.b.emit(IrOp.ref_is_null, i32vt, slot, -1);
+      let res = this.b.emit(IrOp.i32_eqz, i32vt, isNull, -1);
+      this.b.br(merge, oneValue(res));
+    }
+    this.b.switchTo(merge);
+    return result;
+  }
+
+  /**
+   * `value as it` with the same meaning: the fat pointer of `it` for
+   * the value, built around the instance with the class-interface
+   * vtable its type info holds. Traps when the class does not
+   * implement `it`. With `nullable`, a null value is null.
+   */
+  typeTestPack(value: i32, it: InterfaceType, nullable: boolean): i32 {
+    let iKey = getInterfaceKey(it);
+    let fatOpt = if (let (true, st) = this.wasm.interfaceStructs.get(iKey)) st else null;
+    if (fatOpt == null) {
+      this.fail('interface struct not found');
+    }
+    let fat = fatOpt;
+    let fatVt = new ValTypeRef(fat) as ValType;
+    let resultVt: ValType = if (nullable) new ValTypeRefNull(fat) else fatVt;
+    let i32vt = new ValTypeI32() as ValType;
+    let merge = this.b.newBlock();
+    let result = this.b.blockParam(merge, resultVt);
+    let vt = this.valueTypeOf(value);
+    if (nullable && isRefValType(vt) && !(vt is ValTypeRef)) {
+      let isNull = this.b.emit(IrOp.ref_is_null, i32vt, value, -1);
+      let nullValue = this.b.emit(IrOp.ref_null, resultVt, -1, -1);
+      let cont = this.b.newBlock();
+      this.b.brIf(isNull, merge, oneValue(nullValue), cont, noValues());
+      this.b.switchTo(cont);
+    }
+    this.#typeTestFatPointer(value, it, merge, noValues(), true);
+    let trapB = this.b.newBlock();
+    let (slot, inst) = this.#typeTestSlot(value, it, trapB, noValues());
+    if (slot < 0) {
+      // No class the value can be implements `it`: the cast traps.
+      this.b.unreachable();
+      this.b.switchTo(trapB);
+      this.b.unreachable();
+    } else {
+      let vstVt = this.valueTypeOf(slot);
+      let vstNN: ValType = match (vstVt) {
+        case ValTypeRefNull as rn: new ValTypeRef(rn.target)
+        case _: vstVt
+      };
+      let vtable = this.b.emit(IrOp.ref_as_non_null, vstNN, slot, -1);
+      let packed = this.b.emit(IrOp.struct_new, fatVt,
+          this.b.pushArgList(growable<i32>([inst, vtable])),
+          this.b.addRef(new IrRefType(fat)));
+      this.b.br(merge, oneValue(packed));
+      this.b.switchTo(trapB);
+      this.b.unreachable();
+    }
+    this.b.switchTo(merge);
+    return result;
+  }
+
+  /**
+   * `typeTestPack` for a value stored at `want`, when `want` is an
+   * interface fat pointer some test reads type info for: a narrowed
+   * read, or a pattern binding, of a value that is not that fat
+   * pointer. Returns -1 when `want` is not such a slot.
+   */
+  typeTestPackForSlot(value: i32, want: ValType): i32 {
+    let stOpt = asWasmStruct(want);
+    if (stOpt == null) {
+      return -1;
+    }
+    let st = stOpt;
+    // A value that is that fat pointer already (nullable, say) is the
+    // caller's cast or re-assertion, not a pack.
+    if (asWasmStruct(this.valueTypeOf(value)) === st) {
+      return -1;
+    }
+    var key: InterfaceKey | null = null;
+    for (let pair in this.wasm.interfaceStructs) {
+      if (pair.value === st) {
+        key = pair.key;
+        break;
+      }
+    }
+    if (key == null) {
+      return -1;
+    }
+    for (let it in this.wasm.typeTestSlotInterfaces) {
+      if (getInterfaceKey(it) == (key as InterfaceKey)) {
+        return this.typeTestPack(value, it, want is ValTypeRefNull);
+      }
+    }
+    return -1;
+  }
+
+  /** Whether `st` is some interface's fat pointer struct. */
+  #isInterfaceStruct(st: WasmStruct): boolean {
+    for (let pair in this.wasm.interfaceStructs) {
+      if (pair.value === st) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Branches to `target` when `value` is already a fat pointer of
+   * `it` — with `args`, or with the value cast to the fat pointer when
+   * `passCast` — and continues otherwise. Emits nothing for a value
+   * whose static type cannot be one: a class instance, or a fat
+   * pointer of another interface.
+   */
+  #typeTestFatPointer(value: i32, it: InterfaceType, target: i32,
+      args: GrowableArray<i32>, passCast: boolean): void {
+    let vt = this.valueTypeOf(value);
+    if (!isRefValType(vt)) {
+      return;
+    }
+    let fatOpt = if (let (true, st) = this.wasm.interfaceStructs.get(getInterfaceKey(it))) st else null;
+    if (fatOpt == null) {
+      return;
+    }
+    let fat = fatOpt;
+    let st = asWasmStruct(vt);
+    if (st != null && st !== fat &&
+        (st.classType != null || this.#isInterfaceStruct(st))) {
+      return;
+    }
+    let fatVt = new ValTypeRef(fat) as ValType;
+    let i32vt = new ValTypeI32() as ValType;
+    let isFat = this.b.emit(IrOp.ref_test, i32vt, value, this.b.internType(fatVt));
+    let cont = this.b.newBlock();
+    if (passCast) {
+      let yes = this.b.newBlock();
+      this.b.brIf(isFat, yes, noValues(), cont, noValues());
+      this.b.switchTo(yes);
+      let cast = this.b.emit(IrOp.ref_cast, fatVt, value, this.b.internType(fatVt));
+      this.b.br(target, oneValue(cast));
+    } else {
+      this.b.brIf(isFat, target, args, cont, noValues());
+    }
+    this.b.switchTo(cont);
+  }
+
+  /**
+   * The `TypeInfo` slot for `it` of the class of `value` — a nullable
+   * reference to the class-interface vtable, null when the class does
+   * not implement `it` — and the instance the value holds. Branches
+   * to `fail` with `failArgs` when the value has no type info: it is
+   * null, not a class instance, or an instance of a class in no
+   * candidate hierarchy. Returns a slot of -1, emitting nothing, when
+   * the static type says there is no slot to read.
+   *
+   * A class-typed value reads its own `<vtable>`; an interface-typed
+   * one is unwrapped through its fat pointer struct; any other value
+   * is unwrapped through `FatPtrBase` when it is a fat pointer, then
+   * cast to `Object`.
+   */
+  #typeTestSlot(value: i32, it: InterfaceType, fail: i32,
+      failArgs: GrowableArray<i32>): (i32, i32) {
+    let wasm = this.wasm;
+    let typeInfoOpt = wasm.typeInfoStruct;
+    let vtableBaseOpt = wasm.vtableBaseStruct;
+    if (typeInfoOpt == null || vtableBaseOpt == null) {
+      return (-1, value);
+    }
+    let typeInfo = typeInfoOpt;
+    let vtableBase = vtableBaseOpt;
+    let iKey = getInterfaceKey(it);
+    if (!wasm.typeTestSlots.has(iKey)) {
+      return (-1, value);
+    }
+    let slotName = typeTestSlotName(wasm.typeTestSlots[iKey]);
+    let vt = this.valueTypeOf(value);
+    if (!isRefValType(vt)) {
+      return (-1, value);
+    }
+    let i32vt = new ValTypeI32() as ValType;
+    let st = asWasmStruct(vt);
+    var ti = -1;
+    var inst = value;
+    if (st != null && st.classType != null) {
+      let infoOpt = if (let (true, i) = wasm.classInfos.get(getClassKey(st.classType as ClassType))) i else null;
+      if (infoOpt == null || infoOpt.vtableStructType == null) {
+        return (-1, value);
+      }
+      let vstRoot = rootStruct(infoOpt.vtableStructType as WasmStruct);
+      if (vstRoot.fieldIndexByName('<typeinfo>') < 0) {
+        return (-1, value);
+      }
+      if (vt is ValTypeRefNull) {
+        let isNull = this.b.emit(IrOp.ref_is_null, i32vt, value, -1);
+        let cont = this.b.newBlock();
+        this.b.brIf(isNull, fail, failArgs, cont, noValues());
+        this.b.switchTo(cont);
+        inst = this.reassertNonNull(value, new ValTypeRef(st));
+      }
+      let vtRaw = this.b.emit(IrOp.struct_get, this.fieldValType(st, '<vtable>'),
+          inst, this.b.addRef(new IrRefField(st, '<vtable>')));
+      ti = this.#typeInfoOfVTable(vtRaw, vstRoot, typeInfo, fail, failArgs);
+    } else {
+      let objOpt = wasm.objectStruct;
+      if (objOpt == null) {
+        return (-1, value);
+      }
+      let obj = objOpt;
+      if (st != null && this.#isInterfaceStruct(st)) {
+        if (vt is ValTypeRefNull) {
+          let isNull = this.b.emit(IrOp.ref_is_null, i32vt, value, -1);
+          let cont = this.b.newBlock();
+          this.b.brIf(isNull, fail, failArgs, cont, noValues());
+          this.b.switchTo(cont);
+        }
+        inst = this.fatPointerInstance(st, value);
+      } else {
+        let baseOpt = wasm.fatPointerBaseStruct;
+        if (baseOpt != null) {
+          let base = baseOpt;
+          let baseVt = new ValTypeRef(base) as ValType;
+          let isFat = this.b.emit(IrOp.ref_test, i32vt, inst, this.b.internType(baseVt));
+          let unwrap = this.b.newBlock();
+          let join = this.b.newBlock();
+          let joined = this.b.blockParam(join, new ValTypeAnyRef());
+          this.b.brIf(isFat, unwrap, noValues(), join, oneValue(inst));
+          this.b.switchTo(unwrap);
+          let fat = this.b.emit(IrOp.ref_cast, baseVt, inst, this.b.internType(baseVt));
+          let inner = this.b.emit(IrOp.struct_get, new ValTypeAnyRef(), fat,
+              this.b.addRef(new IrRefField(base, 'instance')));
+          this.b.br(join, oneValue(inner));
+          this.b.switchTo(join);
+          inst = joined;
+        }
+      }
+      let objVt = new ValTypeRef(obj) as ValType;
+      let isObj = this.b.emit(IrOp.ref_test, i32vt, inst, this.b.internType(objVt));
+      let ok = this.b.newBlock();
+      this.b.brIf(isObj, ok, noValues(), fail, failArgs);
+      this.b.switchTo(ok);
+      let objValue = this.b.emit(IrOp.ref_cast, objVt, inst, this.b.internType(objVt));
+      let vtRaw = this.b.emit(IrOp.struct_get, new ValTypeRefNull(vtableBase),
+          objValue, this.b.addRef(new IrRefField(obj, '<vtable>')));
+      ti = this.#typeInfoOfVTable(vtRaw, vtableBase, typeInfo, fail, failArgs);
+    }
+    let tiNull = this.b.emit(IrOp.ref_is_null, i32vt, ti, -1);
+    let slotB = this.b.newBlock();
+    this.b.brIf(tiNull, fail, failArgs, slotB, noValues());
+    this.b.switchTo(slotB);
+    let tiNN = this.reassertNonNull(ti, new ValTypeRef(typeInfo));
+    let slot = this.b.emit(IrOp.struct_get, this.fieldValType(typeInfo, slotName),
+        tiNN, this.b.addRef(new IrRefField(typeInfo, slotName)));
+    return (slot, inst);
+  }
+
+  /**
+   * The `<typeinfo>` of a nullable vtable reference, read through
+   * `owner` (the struct that declares the field for the reference's
+   * type); branches to `fail` for a null vtable.
+   */
+  #typeInfoOfVTable(vtRaw: i32, owner: WasmStruct, typeInfo: WasmStruct,
+      fail: i32, failArgs: GrowableArray<i32>): i32 {
+    let i32vt = new ValTypeI32() as ValType;
+    let vtNull = this.b.emit(IrOp.ref_is_null, i32vt, vtRaw, -1);
+    let cont = this.b.newBlock();
+    this.b.brIf(vtNull, fail, failArgs, cont, noValues());
+    this.b.switchTo(cont);
+    let vtVt = this.valueTypeOf(vtRaw);
+    let vtNN = match (vtVt) {
+      case ValTypeRefNull as rn: this.reassertNonNull(vtRaw, new ValTypeRef(rn.target))
+      case _: vtRaw
+    };
+    return this.b.emit(IrOp.struct_get, new ValTypeRefNull(typeInfo), vtNN,
+        this.b.addRef(new IrRefField(owner, '<typeinfo>')));
+  }
+
   fatPointerInstance(fatPtr: WasmStruct, value: i32): i32 {
     let fatVt = new ValTypeRef(fatPtr) as ValType;
     var v = value;
@@ -1104,6 +1407,15 @@ export final class LoweringContext {
       let nn = new ValTypeRefExtern() as ValType;
       return this.reassertNonNull(value, nn);
     }
+    if (isRefValType(have)) {
+      // A binding declared at an interface some test reads type info
+      // for, initialized from a value the checker narrowed to it: pack
+      // through the class's type info.
+      let packed = this.typeTestPackForSlot(value, bindingVt);
+      if (packed >= 0) {
+        return packed;
+      }
+    }
     if (isRefValType(have) && isValSubtype(bindingVt, have)) {
       return this.b.emit(IrOp.ref_cast, bindingVt, value,
           this.b.internType(bindingVt));
@@ -1137,8 +1449,12 @@ export final class LoweringContext {
       if (!isRefValType(have) || !wantRef) {
         this.fail('match binding coercion');
       }
-      bound = this.b.emit(IrOp.ref_cast, bindingVt, value,
-          this.b.internType(bindingVt));
+      // `case I as x` on a value that is not an `I` fat pointer: the
+      // test that got here read the class's type info, and the binding
+      // packs the same way.
+      let packed = this.typeTestPackForSlot(value, bindingVt);
+      bound = if (packed >= 0) packed else this.b.emit(IrOp.ref_cast,
+          bindingVt, value, this.b.internType(bindingVt));
     }
     if (this.isCelled(sym.id)) {
       this.env[sym.id] = this.cellAlloc(bindingVt, bound);

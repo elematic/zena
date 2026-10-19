@@ -1120,6 +1120,20 @@ export final class ModuleGenerator {
         }
       } else if (g.initVTable != null) {
         let vtableInit = g.initVTable as VTableInit;
+        let slots = vtableInit.slotGlobals;
+        if (slots != null) {
+          for (var si = 0; si < slots.length; si += 1) {
+            let slot = slots[si];
+            if (slot == null) {
+              this.emitDefaultValue(vtableInit.structType.fields[si].type);
+            } else {
+              if (slot.index == -1) {
+                throw new Error(`vtable initializer reads global ${slot.name} before it is declared`);
+              }
+              this.emitter.emitGlobalGet(slot.index);
+            }
+          }
+        }
         for (let func in vtableInit.funcs) {
           if (func.index == -1) {
             throw new Error(`DIAGNOSTIC VTABLE INIT ERROR: func.name=${if (func.name == null) "null" else func.name as String} has index -1`);
@@ -1128,6 +1142,11 @@ export final class ModuleGenerator {
         }
         if (vtableInit.shapeTag >= 0) {
           this.emitter.emitI32Const(vtableInit.shapeTag);
+        }
+        let stored = (if (slots == null) 0 else slots.length) +
+            vtableInit.funcs.length + (if (vtableInit.shapeTag >= 0) 1 else 0);
+        if (stored != vtableInit.structType.fields.length) {
+          throw new Error(`vtable initializer of ${g.name} stores ${i32ToString(stored)} values for ${i32ToString(vtableInit.structType.fields.length)} fields`);
         }
         this.emitter.emitStructNew(vtableInit.structType.index);
         emitted = true;
