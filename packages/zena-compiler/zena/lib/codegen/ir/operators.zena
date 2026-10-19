@@ -20,7 +20,9 @@ import {
   isVoidOrNeverType,
 } from '../../types.zena';
 import {
-  ValType, ValTypeF32, ValTypeF64, ValTypeI32, ValTypeI64, ValTypeV128, ValTypeRefNull, isRefValType, valTypeEquals,
+  ValType, ValTypeAnyRef, ValTypeExternRef, ValTypeF32, ValTypeF64, ValTypeI32,
+  ValTypeI64, ValTypeRefExtern, ValTypeRefNull, ValTypeV128, isExternValType,
+  isRefValType, valTypeEquals,
 } from '../wasm.zena';
 import { eraseTypeParameters, getNonNullableType, typeToValTypeWithSub } from '../type-mapping.zena';
 import { getClassKey, parseI64OrU64Literal } from '../codegen-utils.zena';
@@ -907,6 +909,30 @@ export function lowerAs(cx: LoweringContext, expr: AsExpression): i32 {
     // non-null target must emit the trapping cast, not pass through.
     if (cx.refConforms(srcVt, dstVt)) {
       return value;
+    }
+    // The `extern` and `any` hierarchies are disjoint, so a cast between
+    // them is a conversion, never a `ref.cast`. Both conversions are
+    // total: `x as externref` wraps any GC reference, and `e as anyref`
+    // (or `e as C`) unwraps a host reference, with the class cast after
+    // it trapping on a host value that is not a module object.
+    let srcExtern = isExternValType(srcVt);
+    let dstExtern = isExternValType(dstVt);
+    if (dstExtern && !srcExtern) {
+      var converted = cx.b.emit(IrOp.extern_convert_any,
+          new ValTypeExternRef() as ValType, value, -1);
+      if (dstVt is ValTypeRefExtern) {
+        converted = cx.b.emit(IrOp.ref_as_non_null, dstVt, converted, -1);
+      }
+      return converted;
+    }
+    if (srcExtern && !dstExtern) {
+      let unwrapped = cx.b.emit(IrOp.any_convert_extern,
+          new ValTypeAnyRef() as ValType, value, -1);
+      if (cx.refConforms(cx.valueTypeOf(unwrapped), dstVt)) {
+        return unwrapped;
+      }
+      return cx.b.emit(IrOp.ref_cast, dstVt, unwrapped,
+          cx.b.internType(dstVt));
     }
     var operand = value;
     let dstSemOpt = cx.substitutedNodeType(expr);
