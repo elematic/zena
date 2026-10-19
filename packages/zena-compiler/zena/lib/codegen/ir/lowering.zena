@@ -283,7 +283,7 @@ function lowerFunctionAdaptation(wasm: WasmModule, func: WasmFunction) {
  * methods are callable, just not lowerable.
  */
 function usesSynthesizedMachinery(func: WasmFunction) {
-  return func.importWrapperTarget != null ||
+  return func.importWrapperTarget != null || func.decoratorAccessorTarget != null ||
       func.interfaceTrampolineTarget != null || func.isFunctionAdaptation ||
       func.closureForwarder != null ||
       func.isClosureWrapper || func.isClosureTrampoline ||
@@ -791,6 +791,38 @@ function synthesizeClosureWrapper(func: WasmFunction) {
   return b.finish();
 }
 
+/**
+ * A field decorator's `context.get` or `context.set`: a closure-ABI
+ * function `(ctx, host[, value])` that casts `host` to the application's
+ * intermediate class and calls the decorated field's accessor on it.
+ */
+function synthesizeDecoratorAccessorWrapper(func: WasmFunction) {
+  let target = func.decoratorAccessorTarget;
+  if (target == null) {
+    throw new ZirUnsupported('decorator accessor wrapper without target');
+  }
+  if (func.signature.params.length != target.signature.params.length + 1 ||
+      target.signature.params.length < 1) {
+    throw new ZirUnsupported('decorator accessor wrapper shape');
+  }
+  let b = new IrBuilder();
+  let params = synthEntryParams(b, func);
+  let receiverVt = target.signature.params[0];
+  var receiver = params[1];
+  if (!isValSubtype(b.body.resultType(receiver) as ValType, receiverVt)) {
+    receiver = b.emit(IrOp.ref_cast, receiverVt, receiver, b.internType(receiverVt));
+  }
+  let args = new Array<i32>();
+  args.push(receiver);
+  for (var i = 2; i < params.length; i += 1) {
+    args.push(params[i]);
+  }
+  let funcRef = b.addRef(new IrRefFunc(target));
+  requireForwardableResults(func, target, 'decorator accessor wrapper');
+  b.retCall(funcRef, args);
+  return b.finish();
+}
+
 /** The one intrinsic with a body streaming synthesizes: array.len. */
 function synthesizeIntrinsic(func: WasmFunction) {
   if ((func.intrinsic as String) == 'array.len' &&
@@ -922,6 +954,9 @@ function lowerFunctionOrThrow(wasm: WasmModule, func: WasmFunction): IrBody {
     if (func.isClosureWrapper) {
       return synthesizeClosureWrapper(func);
     }
+    if (func.decoratorAccessorTarget != null) {
+      return synthesizeDecoratorAccessorWrapper(func);
+    }
     if (func.isClosureTrampoline) {
       return synthesizeClosureTrampoline(func);
     }
@@ -1013,6 +1048,7 @@ function lowerFunctionOrThrow(wasm: WasmModule, func: WasmFunction): IrBody {
   // getterStruct/setterStruct only routes to synthesis when there is
   // no AST node (field-backed synthesized accessors above).
   if (func.isImport || func.importWrapperTarget != null ||
+      func.decoratorAccessorTarget != null ||
       func.interfaceTrampolineTarget != null || func.isFunctionAdaptation ||
       func.closureForwarder != null ||
       func.isClosureWrapper || func.isClosureTrampoline) {
@@ -2113,17 +2149,47 @@ export final class FunctionLowerer {
         }
         let name = (fd.name as Identifier).name;
         if (name == storageName && member.value != null) { continue; }
+        // The initializer is the decorator's body compiled under this
+        // application: the intermediate whose scope key is the field's.
+        // Its type parameters bind before the host's while it lowers —
+        // a second application of the same decorator in this class
+        // may bind them differently — and `context` in it names it.
+        let app = this.#decoratorIntermediateOf(ct, df.scope);
+        let savedApp = this.#cx().decoratorApplication;
+        let savedSubst = this.func.substitutionApplication;
+        let savedCache = this.func.codegenSubstCache;
+        this.#cx().decoratorApplication = app;
+        this.func.substitutionApplication = app;
+        this.func.codegenSubstCache = null;
         if (fd.isShared) {
           // One copy per class: the first application initializes it.
-          if (values.has(`${sharedScope}::${name}`)) { continue; }
+          if (!values.has(`${sharedScope}::${name}`)) {
+            this.#computeCtorField(values, ct, structType, name,
+                fd.value as Expression, mapSetterNames, sharedScope);
+          }
+        } else {
           this.#computeCtorField(values, ct, structType, name,
-              fd.value as Expression, mapSetterNames, sharedScope);
-          continue;
+              fd.value as Expression, mapSetterNames, df.scope);
         }
-        this.#computeCtorField(values, ct, structType, name,
-            fd.value as Expression, mapSetterNames, df.scope);
+        this.#cx().decoratorApplication = savedApp;
+        this.func.substitutionApplication = savedSubst;
+        this.func.codegenSubstCache = savedCache;
       }
     }
+  }
+
+  /** The intermediate class of the decorator application scoped `scope` in `ct`'s chain. */
+  #decoratorIntermediateOf(ct: ClassType, scope: String): ClassType | null {
+    var chain = ct.superType;
+    while (chain != null && chain.isMixinIntermediate) {
+      let sc = chain;
+      if (sc.decoratorSubjectName != null && sc.privateScopeKey != null &&
+          (sc.privateScopeKey as String) == scope) {
+        return sc;
+      }
+      chain = sc.superType;
+    }
+    return null;
   }
 
   #synthCaseLevel(ct: ClassType, structType: WasmStruct,
@@ -5299,6 +5365,71 @@ export final class FunctionLowerer {
     return this.#bailValue('literal type');
   }
 
+  /**
+   * A decorator body's `context`: the record `{name, get[, set]}` for
+   * the application this body is compiled for — the intermediate class
+   * the function was registered on, or the one the host constructor is
+   * initializing. `name` is the decorated field's name as a literal;
+   * `get` and `set` are closure pairs around the wrappers RTA registered
+   * for the application (`decoratorContextWrappers`).
+   */
+  #lowerDecoratorContext(ident: Identifier): i32 {
+    var appOpt = this.#cx().decoratorApplication;
+    if (appOpt == null) {
+      appOpt = this.func.declaringType;
+    }
+    if (appOpt == null || appOpt.decoratorFieldName == null) {
+      this.#bail('decorator context outside an application');
+    }
+    let app = appOpt;
+    let fieldName = app.decoratorFieldName as String;
+    // The function context binds the application's `T` first — the
+    // body's own in an accessor, `substitutionApplication` in a host
+    // constructor — so the closures' shapes are this field's type,
+    // which is what the wrappers RTA minted for this application take.
+    let tOpt = this.#substitutedNodeType(ident);
+    if (tOpt == null) {
+      this.#bail('untyped decorator context');
+    }
+    let bt = baseType(tOpt as Type);
+    if (!(bt is RecordType)) {
+      this.#bail('decorator context type');
+    }
+    let rt = bt as RecordType;
+    let dispatch = this.#cx().recordDispatchOf(rt);
+    let appKey = getClassKey(app) as String;
+    let args = new Array<i32>();
+    for (let f in dispatch.fields) {
+      let key = if (f.name != null) f.name as String else '';
+      if (key == 'name') {
+        args.push(this.#lowerStringLiteral(new StringLiteral(fieldName, ident.loc)));
+      } else if (key == 'get' || key == 'set') {
+        let wrapperKey = `${appKey}::${key}`;
+        let wrapper = if (let (true, w) = this.wasm.decoratorContextWrappers.get(wrapperKey)) w else null;
+        if (wrapper == null) {
+          this.#bail(`decorator context ${key} wrapper missing`);
+        }
+        let fieldT = if (rt.properties.has(key)) rt.properties[key] else null;
+        if (fieldT == null || !(fieldT is FunctionType)) {
+          this.#bail('decorator context accessor type');
+        }
+        let closureStruct = getClosureStruct(this.wasm, fieldT);
+        let funcVal = this.b.emit(IrOp.ref_func,
+            closureStruct.fields[0].type, -1,
+            this.b.addRef(new IrRefFunc(wrapper)));
+        let nullCtx = this.b.emit(IrOp.ref_null,
+            new ValTypeStructRef() as ValType, -1, -1);
+        args.push(this.b.emit(IrOp.struct_new,
+            new ValTypeRef(closureStruct) as ValType,
+            this.b.pushArgList(this.#twoValues(funcVal, nullCtx)),
+            this.b.addRef(new IrRefType(closureStruct))));
+      } else {
+        this.#bail('decorator context field');
+      }
+    }
+    return this.#packRecord(dispatch, args);
+  }
+
   #lowerIdentifier(ident: Identifier): i32 {
     // A use typed `void` or `never` may still have an ordinary slot
     // behind it, because narrowing can empty a use's type (see the
@@ -5314,6 +5445,9 @@ export final class FunctionLowerer {
       this.#bail('unresolved identifier');
     }
     let resolved = sym.resolveTarget();
+    if (resolved.isDecoratorContext) {
+      return this.#lowerDecoratorContext(ident);
+    }
     if (!this.#cx().env.has(resolved.id)) {
       if (zeroWidthUse) {
         // A zero-width binding (a `void` parameter) holds no value and

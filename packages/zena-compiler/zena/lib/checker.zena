@@ -1078,6 +1078,11 @@ final class CheckerContext {
     if (deps != null) {
       deps.referencedSymbols.add(resolvedSym.id);
     }
+    // A decorator body reading its `context`: reachability roots the
+    // field's accessors and their wrappers only for decorators that do.
+    if (resolvedSym.isDecoratorContext) {
+      resolvedSym.decoratorContextUsed = true;
+    }
 
     // The binding's declared type, refined by the flow graph: the
     // nearest narrowing or assignment on the way back to the entry.
@@ -18641,6 +18646,30 @@ function checkMixinDeclaration(ctx: CheckerContext, md: MixinDeclaration): void 
         DiagnosticCode.SymbolNotFound,
         md.loc
       );
+    }
+  }
+
+  // A decorator body's `context`: the decorated field's name and its
+  // accessors as functions over the host, `{name: String, get: (host:
+  // Host) => T, set: (host: Host, value: T) => void}`, with `set` only
+  // for a `var` subject. `Host` is the `on` type; `anyref` when the
+  // decorator constrains nothing. One record type serves every
+  // application: codegen substitutes `T` per application and
+  // materializes the record from the field's name and accessors
+  // (docs/design/decorators.md, "The decorated field's context").
+  if (decoratorSubject != null && (decoratorSubject as FieldDefinition).name is Identifier) {
+    let contextSym = ctx.model.resolveDeclaration((decoratorSubject as FieldDefinition).name);
+    if (contextSym != null && contextSym.isDecoratorContext) {
+      let stringType = ctx.tryResolveWellKnownType(WellKnown.StringClass);
+      let hostType: Type = mixinType.onType ?? new AnyRefType();
+      let subjectT: Type = mixinType.decoratorSubjectType ?? new ErrorType();
+      let props = new Map<String, Type>();
+      props["name"] = stringType ?? new ErrorType();
+      props["get"] = new FunctionType(growable<Type>([hostType]), subjectT);
+      if (mixinType.decoratorSubjectMutable) {
+        props["set"] = new FunctionType(growable<Type>([hostType, subjectT]), new VoidType());
+      }
+      ctx.declareBinding(contextSym, new RecordT(props, null, null, false));
     }
   }
 

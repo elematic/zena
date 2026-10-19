@@ -837,9 +837,23 @@ export final class ScopeBuilder {
           this.#declareTypeParameters(typeParameters);
         }
         // A decorator's subject is a placeholder, not a binding: only its
-        // type annotation names anything.
-        if (decoratorSubject != null && decoratorSubject.typeAnnotation != null) {
-          this.#processTypeAnnotation(decoratorSubject.typeAnnotation as TypeAnnotation);
+        // type annotation names anything. The body does get one implicit
+        // binding, `context`, declared on the subject's name node so the
+        // checker can find and type it (the name, getter and setter of
+        // the decorated field).
+        if (decoratorSubject != null) {
+          if (decoratorSubject.typeAnnotation != null) {
+            this.#processTypeAnnotation(decoratorSubject.typeAnnotation as TypeAnnotation);
+          }
+          let subjectName = decoratorSubject.name;
+          if (subjectName is Identifier) {
+            this.#current.declare("context", false, subjectName, this.#modulePath);
+            let contextSym = this.#current.getLocal("context");
+            if (contextSym != null) {
+              contextSym.isDecoratorContext = true;
+              this.#symbols.record(subjectName, contextSym);
+            }
+          }
         }
         // Traverse `with` clause so mixin names are linked in the ReferenceMap.
         if (on != null) {

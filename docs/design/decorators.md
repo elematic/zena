@@ -83,8 +83,9 @@ class body written against it, with three rules:
 3. **Everything else is private**: further fields and methods, each
    named with `#`. These are the decorator's state and helpers.
 
-A decorator has no constructor, no `on` clause and no `with` clause.
-Like a mixin, its body's names resolve in the module that declares it.
+A decorator has no constructor and no `with` clause; `on` constrains the
+host (below). Like a mixin, its body's names resolve in the module that
+declares it.
 
 ### Applying it
 
@@ -107,6 +108,75 @@ decorator named `name`. The checker verifies:
 Reads and writes of the field, anywhere, go through the accessor. The
 only writes that bypass it are the three initialization forms above,
 which store into the storage field, as they would for a plain field.
+
+### Constraining the host
+
+A decorator whose body needs public API from its host constrains the
+host with `on`, as a mixin does:
+
+```zena
+decorator property<T>(var value: T) on ReactiveElement {
+  var #value: T;
+  value: T {
+    get { return this.#value; }
+    set(v) {
+      this.#value = v;
+      this.requestUpdate();     // from ReactiveElement
+    }
+  }
+}
+```
+
+Applying `@property` to a field of a class that neither extends nor
+implements `ReactiveElement` is an error. The `on` type is also the type
+at which `context` hands out the host (next).
+
+### The decorated field's context
+
+A decorator body can name the field it is applied to. Inside the body,
+`context` is a record of the field's name and its accessors as functions
+over the host:
+
+```zena
+{
+  name: String,                         // the decorated field's name
+  get: (host: Host) => T,               // reads it through the getter
+  set: (host: Host, value: T) => void,  // writes it; only for a `var` subject
+}
+```
+
+`Host` is the `on` type, or `anyref` for a decorator that constrains
+nothing; `T` is the subject's type, so the field's at each application.
+Each application has its own context: one decorator applied to `count`
+and `label` in one class sees `'count'` with `i32` accessors in one and
+`'label'` with `String` accessors in the other.
+
+What it is for is declaring the field to something outside the class.
+Lit's `@property` registers the field with the element class so the host
+can define a property and observe an attribute; with `context`, that
+registration is an initializer in the decorator's body, run once per
+decorated field when the host is constructed:
+
+```zena
+export decorator property<T>(var value: T) on ZenaElement {
+  var #value: T;
+  var #declared: i32 =
+      registerProperty<T>(context.name, context.get, context.set);
+  value: T { … }
+}
+```
+
+`registerProperty` is a function in the decorator's module. What it
+keeps, a name and two closures per field, is enough to read and write
+the field on any host it is later handed as a `ZenaElement`, without
+knowing the class; the class names the property once, in the field
+declaration. `zena:web-elements` is built this way
+([wasm-web-ui.md](wasm-web-ui.md)).
+
+`context` is a value like any other: it can be passed whole, stored, or
+read in an accessor or method body. Reading it in an initializer is the
+common case because that is the one place a decorator's code runs on its
+own, once per application, without being called.
 
 ## Implementation
 
@@ -141,7 +211,24 @@ things differ from a mixin application (`applyFieldDecorator` in
   generic decorator to fields of different types, and the host's
   flattened substitution context then holds the parameter once per
   application, so a decorator body binds its own application's arguments
-  first (`type-mapping.zena`, the per-function substitution).
+  first (`type-mapping.zena`, the per-function substitution). A host
+  constructor inlines every application's initializers, so lowering
+  binds the application per initializer there
+  (`WasmFunction.substitutionApplication`), which
+  `tests/language/execution/decorators/context-generic.zena` checks with
+  one decorator on an `i32` and a `String` field.
+- **`context`.** The scope builder declares `context` in the body's scope
+  (`Symbol.isDecoratorContext`); the checker binds it to the record
+  above, at the subject's type and the `on` type, and marks a body that
+  reads it (`decoratorContextUsed`). When reachability instantiates a
+  host class, it roots, for each application whose decorator reads
+  `context`, the subject's accessors under the field's name, mints one
+  wrapper per accessor in the closure calling convention
+  (`WasmModule.decoratorContextWrappers`, keyed by the application's
+  class key), and discovers the record type at that application's field
+  type. Lowering builds the record at each read: the name as a string
+  literal, each accessor as a closure around its wrapper
+  (`#lowerDecoratorContext`).
 
 The host class registers no member for the decorated field. Its
 `decoratedFields` map records each application's scope and storage key,
@@ -174,6 +261,13 @@ decorated field's getter was dropped from the module.
   for a decorator is the declaration-level key rather than the
   application's. Such a closure fails to lower. Accessor and method
   bodies themselves are fine.
+- **Module-level variables in decorator bodies.** A body resolves the
+  functions of its module but not its `let` and `var` declarations, so a
+  registration through `context` goes through a function
+  (`tests/language/execution/decorators/context.zena`).
+- **`context` in a `shared` member.** A shared member belongs to no one
+  application, so `context` there has no meaning; the checker does not
+  reject it yet.
 - **Methods, classes and functions as decorator targets**, and
   **decorating an expression** to apply a macro to it. These are
   the macro tier (below).

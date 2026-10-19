@@ -1,0 +1,69 @@
+// @mode: run
+// @invoke: main
+// @result: 42
+
+// One generic decorator on fields of two types in one class: each
+// application's `context` accessors take that field's type. The host's
+// constructor initializes every application, so the decorator's
+// parameter is bound per application there, not once for the host —
+// bound once, the second field's accessors would carry the first
+// field's type.
+class Model {
+  var writes = 0;
+}
+
+let names = new GrowableArray<String>();
+let readers = new GrowableArray<(host: Model) => anyref>();
+let writers = new GrowableArray<(host: Model, value: anyref) => void>();
+
+let register = <T>(name: String, get: (host: Model) => T,
+    set: (host: Model, value: T) => void): i32 => {
+  names.push(name);
+  readers.push((host: Model): anyref => new Box<T>(get(host)));
+  writers.push((host: Model, value: anyref): void => {
+    set(host, (value as Box<T>).value);
+  });
+  return names.length;
+};
+
+decorator tracked<T>(var value: T) on Model {
+  var #value: T;
+  var #slot: i32 = register<T>(context.name, context.get, context.set);
+
+  value: T {
+    get {
+      return this.#value;
+    }
+    set(v) {
+      this.#value = v;
+      this.writes += 1;
+    }
+  }
+}
+
+class Point extends Model {
+  @tracked var x: i32 = 1;
+  @tracked var label: String = 'p';
+}
+
+export let main = (): i32 => {
+  let p = new Point();
+  if (names.length != 2) {
+    return 1;
+  }
+  if (names[0] != 'x' || names[1] != 'label') {
+    return 2;
+  }
+  writers[0](p, new Box<i32>(40));
+  writers[1](p, new Box<String>('point'));
+  if (p.writes != 2) {
+    return 3;
+  }
+  if (p.x != 40 || p.label != 'point') {
+    return 4;
+  }
+  let x = (readers[0](p) as Box<i32>).value;
+  let label = (readers[1](p) as Box<String>).value;
+  // 40 + 5 - 3
+  return x + label.length - 3;
+};

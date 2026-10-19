@@ -2044,6 +2044,20 @@ decorator property<T>(var value: T) on ReactiveElement {
 }
 ```
 
+In the body, `context` is the decorated field: its `name`, and `get` and
+`set` as functions over the host (`set` only for a `var` subject). An
+initializer that reads it runs once per decorated field, which is how a
+decorator declares its fields to something outside the class:
+
+```zena
+decorator property<T>(var value: T) on ReactiveElement {
+  var #value: T;
+  var #declared: i32 =
+      declareProperty<T>(context.name, context.get, context.set);
+  value: T { ... }
+}
+```
+
 ## Arrays & Collections
 
 Zena provides universal interfaces for indexed collections (`Array<T>` and `MutableArray<T>`), along with concrete implementations for fixed-size and resizable arrays, plus a hash map. All collections are generic and type-safe.
