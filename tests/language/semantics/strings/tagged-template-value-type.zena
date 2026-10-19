@@ -1,0 +1,29 @@
+// @mode: check
+
+// A tagged template's interpolations are checked against the element
+// type of the tag's second parameter. A value the tag cannot hold is an
+// error at the interpolation, where it used to pass the checker and
+// fail in codegen or at run time inside the tag.
+import { TemplateStringsArray } from 'zena:core';
+
+class Item {
+  new();
+}
+
+let tag = (strings: TemplateStringsArray, values: FixedArray<String>): i32 => values.length;
+
+let count = 3;
+let ok = tag`a ${'b'} c`;
+let bad = tag`a ${count} c`; // @error: Type mismatch: interpolated value 'i32' is not assignable to the tag's value type 'String'.
+let worse = tag`a ${new Item()} c`; // @error: Type mismatch: interpolated value 'Item' is not assignable to the tag's value type 'String'.
+
+type Value = String | Item | Iterable<Value> | null;
+
+let union = (strings: TemplateStringsArray, values: FixedArray<Value>): i32 => values.length;
+
+let items = new GrowableArray<Value>();
+let fine = union`${'s'} ${new Item()} ${items} ${null}`;
+let names = new GrowableArray<String>();
+// Generic interfaces are invariant: an array of String is not an
+// array of Value.
+let notFine = union`${names}`; // @error: Type mismatch: interpolated value 'GrowableArray<String>' is not assignable to the tag's value type 'String | Item | Iterable<Value> | null'.

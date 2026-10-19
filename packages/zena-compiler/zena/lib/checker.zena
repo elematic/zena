@@ -13945,10 +13945,20 @@ function checkExpressionInner(ctx: CheckerContext, expr: Expression, expectedTyp
         }
       }
     }
-    // Check the interpolated expressions.
+    // Check the interpolated expressions against the tag's value type.
+    // A tag receives its values as they are, with none of the
+    // conversion an untagged literal performs, so a value the tag's
+    // array cannot hold is an error here rather than a lowering bail
+    // or a trap in the tag.
     for (let expr in quasi.expressions) {
       let exprType = checkExpression(ctx, expr, valueType);
       if (valueType != null) {
+        if (!isAssignableTo(ctx, exprType, valueType) && !(exprType is ErrorType)) {
+          ctx.error(
+            `Type mismatch: interpolated value '${typeToString(exprType)}' is not assignable to the tag's value type '${typeToString(valueType)}'.`,
+            DiagnosticCode.TypeMismatch, expr.loc
+          );
+        }
         checkAndRegisterInterfaceAdaptation(ctx, expr, exprType, valueType);
       }
     }
