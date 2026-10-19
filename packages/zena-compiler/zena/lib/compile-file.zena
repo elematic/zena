@@ -26,7 +26,10 @@ import { WatGenerator } from './codegen/wat-generator.zena';
 import { Program, CompilationUnit } from './program.zena';
 import { Module } from './ast.zena';
 import { nowMs, performance } from './time.zena';
-import { isKnownTarget, knownTargetsDescription, targetEmitsComponent } from './targets.zena';
+import {
+  defaultImportedStringConstants, isKnownTarget, knownTargetsDescription,
+  targetEmitsComponent, targetUsesJsStrings
+} from './targets.zena';
 import { compileComponentRuntimeModule } from './codegen/component-runtime.zena';
 import { reportCensus } from './census.zena';
 import { markTypes, setCensusEnabled } from './types.zena';
@@ -77,6 +80,13 @@ export type CompileFileOptions = {
   witPath?: String,
   /** Which world in `witPath`, when it declares several. */
   worldName?: String,
+  /**
+   * The module string literals are imported from on the `js` target:
+   * the `importedStringConstants` the host compiles the module with.
+   * `defaultImportedStringConstants` when absent; an error on any other
+   * target.
+   */
+  importedStringConstants?: String,
   /** Emit a name section, so traps name functions. */
   debugNames?: boolean,
   warnUnnecessaryCasts?: boolean,
@@ -371,11 +381,13 @@ export function compileFile(options: CompileFileOptions): i32 {
   } = options;
   // Read with `??` rather than a destructuring default: a default in a
   // destructuring pattern does not see module-level bindings, and these
-  // three name theirs rather than writing it out.
+  // name theirs rather than writing it out.
   let target = options.target ?? defaultTarget;
   let runtimeMemoryPath = options.runtimeMemoryPath ?? "";
   let optLevel = options.optLevel ?? defaultOptLevel;
   let onRead = options.onRead ?? ignoreRead;
+  let importedStringConstants =
+      options.importedStringConstants ?? defaultImportedStringConstants;
 
   if (!isKnownTarget(target)) {
     console.error("Error: invalid target '" + target + "' (expected " +
@@ -395,6 +407,20 @@ export function compileFile(options: CompileFileOptions): i32 {
     console.error("Error: --world names a world in a --wit document, " +
         "and no --wit was given.");
     return 1;
+  }
+  if (let {importedStringConstants: given} = options) {
+    if (given == "") {
+      console.error("Error: --imported-string-constants names a module, " +
+          "and the name is empty.");
+      return 1;
+    }
+    if (!targetUsesJsStrings(target)) {
+      console.error(
+          "Error: --imported-string-constants names the module string " +
+          "literals are imported from, and the target is '" + target +
+          "', which imports none. Use --target js.");
+      return 1;
+    }
   }
 
   let host = new FileHost(testMode, filename, stdlibRoot, onRead);
@@ -569,6 +595,7 @@ export function compileFile(options: CompileFileOptions): i32 {
     if (outPath.endsWith(".wat")) {
       let watOnly = new WatGenerator(target, zirStats, optLevel);
       watOnly.wideArithmetic = wideArithmetic;
+      watOnly.importedStringConstants = importedStringConstants;
       watOnly.interner = checkResults.sharedState.interner;
       writeFileSync(outPath, watOnly.generate(program));
       performance.end(tCodegen);
@@ -580,6 +607,7 @@ export function compileFile(options: CompileFileOptions): i32 {
 
     let generator = new BinaryGenerator(target, zirStats, debugNames, optLevel);
     generator.wideArithmetic = wideArithmetic;
+    generator.importedStringConstants = importedStringConstants;
     // Codegen builds its unions through the checker's interner, so a
     // union means one object across the whole compile.
     generator.interner = checkResults.sharedState.interner;
@@ -626,6 +654,7 @@ export function compileFile(options: CompileFileOptions): i32 {
     // so it is opt-in for debugging.
     if (getEnv("ZENA_EMIT_WAT") != null) {
       let watGenerator = new WatGenerator(target, false, optLevel);
+      watGenerator.importedStringConstants = importedStringConstants;
       let watString = watGenerator.generate(program);
       writeFileSync(outPath + ".wat", watString);
     }

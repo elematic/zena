@@ -259,6 +259,9 @@ Subcommands (`./target/release/zena-cli <subcommand>`):
     alias), or `freestanding` (core module with no host imports beyond
     `@external`).
   - `--wit <path>`, `--world <name>`: WIT world for `component` builds.
+  - `--imported-string-constants <module>`: The module `js` builds import
+    string literals from (default `_`; WebAssembly ESM integration uses
+    `wasm:js/string-constants`).
   - `--time`: Print compiler phase timings.
   - Global flags before subcommand: `-g` / `--debug` (emit WASM name section
     and disable inlining on run), `-O <0|1|2|s>` (optimization level; default

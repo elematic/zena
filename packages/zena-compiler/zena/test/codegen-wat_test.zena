@@ -1,10 +1,11 @@
 import { suite, test, TestContext } from 'zena:test';
-import { equal, isTrue } from 'zena:assert';
+import { equal, isTrue, isFalse } from 'zena:assert';
 import { WatGenerator } from '../lib/codegen/wat-generator.zena';
+import { CompileFileOptions, compileFile } from '../lib/compile-file.zena';
 import { Module } from '../lib/ast.zena';
 import { Program, CompilationUnit } from '../lib/program.zena';
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'zena:fs';
-import { makeCompiler, MockHost, errorDiagnostics } from './test-utils.zena';
+import { makeCompiler, MockHost, errorDiagnostics, stdlibRoot } from './test-utils.zena';
 import { checkCompilation, createCompiler } from '../lib/compiler.zena';
 import { PackageConfig } from '../lib/module-resolver.zena';
 import { getEnv } from 'zena:cli';
@@ -63,6 +64,15 @@ function generateWat(
   let generator = new WatGenerator();
   generator.wideArithmetic = wideArithmetic;
   return generator.generate(program);
+}
+
+let stringConstantsEntry = 'packages/zena-compiler/test-files/imported-string-constants.zena';
+let stringConstantsOut = 'packages/zena-compiler/zena/out/imported-string-constants.wat';
+
+/** The WAT `compileFile` writes for `options`, which must compile. */
+function stringConstantsWat(options: CompileFileOptions) {
+  equal(compileFile(options), 0);
+  return readFileSync(options.outPath);
 }
 
 function compileAndGenerateWatWith(source: String, wideArithmetic: boolean) {
@@ -377,6 +387,38 @@ export let tests = suite('WatGenerator', () => {
     let result = generator.generate(program);
     
     assertSnapshot('console_target_js', result);
+  });
+
+  // A module is compiled with one `importedStringConstants` name, and a
+  // host can fix it: WebAssembly ESM integration uses
+  // `wasm:js/string-constants`. The fixture's literals come from a
+  // `console.log` argument and a template's two quasis.
+  test('string literals import from the importedStringConstants module', (ctx) => {
+    let wat = stringConstantsWat({
+      entry: stringConstantsEntry,
+      outPath: stringConstantsOut,
+      target: 'js',
+      stdlibRoot,
+      importedStringConstants: 'wasm:js/string-constants',
+    });
+    for (let literal in ['hello', 'Hello, ', '!']) {
+      isTrue(wat.contains(
+          `(import "wasm:js/string-constants" "${literal}" (global (ref extern)))`),
+          literal);
+    }
+    isFalse(wat.contains('(import "_"'));
+  });
+
+  test('string literals import from "_" by default', (ctx) => {
+    let wat = stringConstantsWat({
+      entry: stringConstantsEntry,
+      outPath: stringConstantsOut,
+      target: 'js',
+      stdlibRoot,
+    });
+    for (let literal in ['hello', 'Hello, ', '!']) {
+      isTrue(wat.contains(`(import "_" "${literal}" (global (ref extern)))`), literal);
+    }
   });
 
   // Nothing is emitted at an erasure. A generic named from inside

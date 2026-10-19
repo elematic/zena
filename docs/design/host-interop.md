@@ -276,6 +276,23 @@ String literals do not emit UTF-8 data segments. The compiler emits imported str
 (import "_" "hello" (global $raw_str_0 (ref extern)))
 ```
 
+The import module is the `importedStringConstants` name the host passes
+to `WebAssembly.compile`, and a module is compiled with only one. It is
+`_` by default, and `--imported-string-constants <module>` names another.
+Hosts that fix the name, such as WebAssembly ESM integration, use
+`wasm:js/string-constants`:
+
+```bash
+zena build main.zena -t js --imported-string-constants wasm:js/string-constants -o main.wasm
+```
+
+```wat
+(import "wasm:js/string-constants" "hello" (global $raw_str_0 (ref extern)))
+```
+
+`@zena-lang/runtime`'s `instantiate` takes the same name as its
+`importedStringConstants` option.
+
 In the module start function (`__start`), each unique literal is wrapped once into a `String` instance and stored in an immutable global:
 
 ```wat

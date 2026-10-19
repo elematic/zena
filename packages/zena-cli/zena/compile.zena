@@ -41,6 +41,11 @@ export final class CompileRequest {
   /** A WIT file or directory declaring a component's world. */
   var wit: AbsolutePath | null = null;
   var world: String | null = null;
+  /**
+   * The module string literals are imported from on the `js` target;
+   * null for the compiler's default.
+   */
+  var importedStringConstants: String | null = null;
   /** Compile a test suite, giving it a `main` that runs `tests`. */
   var testMode = false;
   /** Print the compiler's phase timings. */
@@ -201,7 +206,7 @@ function compileRecording(
     }
     runtime.value
   };
-  let compileOptions: CompileFileOptions = {
+  let baseOptions: CompileFileOptions = {
     entry: repoRelative(request.source),
     outPath: out.value,
     stdlibRoot: stdlibDir().value,
@@ -215,6 +220,12 @@ function compileRecording(
     worldName: request.world ?? '',
     optLevel,
     runtimeMemoryPath: runtimeMemory,
+  };
+  let stringConstants = request.importedStringConstants;
+  let compileOptions: CompileFileOptions = if (stringConstants == null) {
+    baseOptions
+  } else {
+    {...baseOptions, importedStringConstants: stringConstants}
   };
   var status = 1;
   try {
@@ -267,6 +278,11 @@ function compileWith(
   if (world != null) {
     args.push('--world');
     args.push(world);
+  }
+  let stringConstants = request.importedStringConstants;
+  if (stringConstants != null) {
+    args.push('--imported-string-constants');
+    args.push(stringConstants);
   }
   let outDir = dirname(out.value);
   // Flags reach the compiler as environment variables: the checked-in
@@ -366,6 +382,7 @@ function cacheKey(request: CompileRequest, options: Options) {
   var key = `zena-cache-1\n${request.source.value}\n`;
   key = key + `test=${request.testMode} debug=${options.debug}\n`;
   key = key + `target=${request.target ?? ''} opt=${optLevelText(options)}\n`;
+  key = key + `strings=${request.importedStringConstants ?? ''}\n`;
   key = key + `wide=${envSet('ZENA_WIDE_ARITHMETIC')}\n`;
   key = `${key}${compiler} ${identity(resolveUserPath(compiler).value)}\n`;
   return sha256HexOfString(key).sliceBytes(0, 16);

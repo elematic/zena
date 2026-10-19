@@ -134,6 +134,115 @@ test('console.log and return string in Node.js (target js)', async () => {
   }
 });
 
+// WebAssembly ESM integration compiles every module with this
+// `importedStringConstants` name.
+const esmStringConstants = 'wasm:js/string-constants';
+
+test('string literals from the --imported-string-constants module (zc, target js)', async () => {
+  const zenaCli = join(repoRoot, 'target', 'release', 'zena-cli');
+  const compilerWasm = join(pkgDir, 'zena', 'out', 'cli.wasm');
+  const zenaFileRel = relative(
+    repoRoot,
+    join(pkgDir, 'test-files', 'console-log-and-return.zena'),
+  );
+  const wasmFile = join(pkgDir, 'test', 'console-log-and-return-esm-zc.wasm');
+
+  execSync(`mkdir -p "${dirname(wasmFile)}"`);
+  execSync(
+    `"${zenaCli}" run --dir "." --dir "packages/stdlib/zena::/stdlib" "${compilerWasm}" -- build "${zenaFileRel}" -o "${relative(repoRoot, wasmFile)}" -t js --imported-string-constants ${esmStringConstants}`,
+    {stdio: 'pipe', cwd: repoRoot},
+  );
+
+  const module = new (WebAssembly.Module as any)(readFileSync(wasmFile), {
+    builtins: ['js-string'],
+    importedStringConstants: esmStringConstants,
+  }) as WebAssembly.Module;
+  let loggedMsg = '';
+  const instance = new WebAssembly.Instance(module, {
+    console: {
+      log_string: (s: string) => {
+        loggedMsg = s;
+      },
+    },
+  });
+  const {main, $stringGetHandle} = instance.exports as Record<string, Function>;
+  assert.equal($stringGetHandle(main()), 'success');
+  assert.equal(loggedMsg, 'hello from integration test');
+});
+
+test('string literals from the --imported-string-constants module (zena build, runtime)', async () => {
+  const zenaCli = join(repoRoot, 'target', 'release', 'zena-cli');
+  const zenaFileRel = relative(
+    repoRoot,
+    join(pkgDir, 'test-files', 'console-log-and-return.zena'),
+  );
+  const wasmFile = join(pkgDir, 'test', 'console-log-and-return-esm.wasm');
+
+  execSync(`mkdir -p "${dirname(wasmFile)}"`);
+  execSync(
+    `"${zenaCli}" build "${zenaFileRel}" -t js --imported-string-constants ${esmStringConstants} -o "${relative(repoRoot, wasmFile)}"`,
+    {stdio: 'pipe', cwd: repoRoot},
+  );
+
+  const originalLog = console.log;
+  let loggedMsg = '';
+  console.log = (msg: any) => {
+    loggedMsg = String(msg);
+  };
+
+  try {
+    const wasmModule = await instantiate(readFileSync(wasmFile), {
+      importedStringConstants: esmStringConstants,
+    });
+    const wasmInstance =
+      wasmModule instanceof WebAssembly.Instance
+        ? wasmModule
+        : wasmModule.instance;
+    assert.equal((wasmInstance.exports.main as Function)(), 'success');
+    assert.equal(loggedMsg, 'hello from integration test');
+  } finally {
+    console.log = originalLog;
+  }
+});
+
+test('--imported-string-constants rejects an empty name and a target without string constants', () => {
+  const zenaCli = join(repoRoot, 'target', 'release', 'zena-cli');
+  const zenaFileRel = relative(
+    repoRoot,
+    join(pkgDir, 'test-files', 'console-log-and-return.zena'),
+  );
+  const wasmFileRel = relative(
+    repoRoot,
+    join(pkgDir, 'test', 'imported-string-constants-rejected.wasm'),
+  );
+
+  const stderrOf = (flags: string): string => {
+    try {
+      execSync(
+        `"${zenaCli}" build "${zenaFileRel}" ${flags} -o "${wasmFileRel}"`,
+        {
+          stdio: 'pipe',
+          cwd: repoRoot,
+        },
+      );
+    } catch (err) {
+      return String((err as {stderr: Buffer}).stderr);
+    }
+    assert.fail(`zena build ${flags} succeeded`);
+  };
+
+  assert.match(
+    stderrOf('-t js --imported-string-constants ""'),
+    /--imported-string-constants names a module, and the name is empty/,
+  );
+  assert.match(
+    stderrOf(
+      `-t freestanding --imported-string-constants ${esmStringConstants}`,
+    ),
+    /the target is 'freestanding', which imports none/,
+  );
+});
+
 test('console.log and return a status in zena-cli (target zena-cli, a component)', async () => {
   const zenaFile = join(pkgDir, 'test-files', 'console-log-and-exit-code.zena');
   const wasmCliFile = join(

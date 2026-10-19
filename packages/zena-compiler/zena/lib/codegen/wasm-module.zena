@@ -18,7 +18,7 @@ import {
 } from '../types.zena';
 import { Program, CompilationUnit } from '../program.zena';
 import { stdlibLibraryOf, stdlibLibraryAnswers } from '../stdlib-manifest.zena';
-import { targetUsesJsStrings } from '../targets.zena';
+import { defaultImportedStringConstants, targetUsesJsStrings } from '../targets.zena';
 
 import {
   compareStrings, ClassKey, InterfaceKey, ClassInterfaceKey, InterfaceMemberKey, CellKey, ClosureKey, ExportKey, ExportGlobalKey, getClassKey, getClassPrivateFieldKey, isPresentWordName, presentWordCount, presentWordName, FunctionAdaptationKey, getFunctionAdaptationKey, ClassMethodKey, getClassMethodKey, SpecializedFunctionKey, ClosureSpecializationKey, FunctionValueWrapperKey,
@@ -1291,6 +1291,8 @@ export final class WasmModule {
   globalImports = new Array<WasmGlobal>();
   importedStringGlobals = new HashMap<String, WasmGlobal>();
   importedStringWrappers = new HashMap<String, WasmGlobal>();
+  /** The import module of every string literal's global. */
+  var importedStringConstants = defaultImportedStringConstants;
 
   getImportedStringGlobal(value: String, model: SemanticModel): WasmGlobal {
     if (let (true, g) = this.importedStringGlobals.get(value)) {
@@ -1300,7 +1302,7 @@ export final class WasmModule {
     let g = new WasmGlobal(name, name, new ValTypeRefExtern(), false, null, null, model);
     g.isImport = true;
     g.type = new ValTypeRefExtern();
-    g.importModule = "_";
+    g.importModule = this.importedStringConstants;
     g.importName = value;
     this.globalImports.push(g);
     this.importedStringGlobals[value] = g;

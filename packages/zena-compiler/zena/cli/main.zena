@@ -9,7 +9,8 @@ import {
 export function main(): i32 {
   let args = getArguments();
   if (args.length < 2) {
-    console.error('Usage: zc <filename> [-o <output_path>] [-t <target>] [-g] [--test]');
+    console.error('Usage: zc <filename> [-o <output_path>] [-t <target>] ' +
+        '[--imported-string-constants <module>] [-g] [--test]');
     exit(1);
   }
 
@@ -20,6 +21,7 @@ export function main(): i32 {
   var time = false;
   var witPath = "";
   var worldName = "";
+  var importedStringConstants: String | null = null;
   // Name section: opt-in. zena-cli's `-g` arrives as an env var
   // (the checked-in bootstrap predates the flag and would read an
   // unknown `-g` as the input filename); `-g` here serves direct
@@ -58,6 +60,9 @@ export function main(): i32 {
     } else if (args[i] == "--world" && i + 1 < args.length) {
       worldName = args[i + 1];
       i += 1;
+    } else if (args[i] == "--imported-string-constants" && i + 1 < args.length) {
+      importedStringConstants = args[i + 1];
+      i += 1;
     } else if (args[i] == "-g" || args[i] == "--debug") {
       debugNames = true;
     } else if (args[i].startsWith("-O")) {
@@ -78,7 +83,7 @@ export function main(): i32 {
     exit(1);
   }
 
-  let status = compileFile({
+  let options: CompileFileOptions = {
     entry: filename,
     outPath,
     target,
@@ -90,6 +95,12 @@ export function main(): i32 {
     warnUnnecessaryCasts,
     optLevel,
     progress: true,
+  };
+  let stringConstants = importedStringConstants;
+  let status = compileFile(if (stringConstants == null) {
+    options
+  } else {
+    {...options, importedStringConstants: stringConstants}
   });
   if (status != 0) {
     exit(status);

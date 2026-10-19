@@ -5,7 +5,7 @@ import { BinaryEmitter } from './binary-emitter.zena';
 import { ModuleGenerator } from './module-generator.zena';
 import { TypeInterner } from '../types.zena';
 import { emitComponent, ComponentShape, ImportTypeEncoder } from './component-emitter.zena';
-import { targetEmitsComponent } from '../targets.zena';
+import { defaultImportedStringConstants, targetEmitsComponent } from '../targets.zena';
 
 /**
  * The stateless entry point for WebAssembly code generation.
@@ -47,6 +47,9 @@ export final class BinaryGenerator implements CodeGenerator<ByteBuffer> {
    */
   var wideArithmetic: boolean = false;
 
+  /** `WasmModule.importedStringConstants`. */
+  var importedStringConstants = defaultImportedStringConstants;
+
   /** The checker's interned types, passed on to the module; see `WasmModule.interner`. */
   var interner: TypeInterner | null = null;
 
@@ -62,6 +65,7 @@ export final class BinaryGenerator implements CodeGenerator<ByteBuffer> {
     let generator = new ModuleGenerator(program, emitter, this.target, this.zirStats,
         this.optLevel);
     generator.wideArithmetic = this.wideArithmetic;
+    generator.importedStringConstants = this.importedStringConstants;
     generator.interner = this.interner;
     generator.importEncoder = this.importEncoder;
     generator.compile();
