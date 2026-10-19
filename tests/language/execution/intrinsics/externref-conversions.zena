@@ -1,0 +1,32 @@
+// @mode: run
+// @invoke: main
+// @result: 42
+
+// `as externref` wraps a module object as a host reference and `as anyref`
+// (or `as C`) unwraps it again: the two hierarchies are disjoint in wasm,
+// so the casts are conversions rather than `ref.cast`s, and a round trip
+// gives back the same object.
+class Point {
+  x: i32;
+  new(this.x);
+}
+
+let wrap = (p: Point): externref => p as externref;
+
+let unwrap = (e: externref): Point => e as Point;
+
+let unwrapAny = (e: externref): anyref => e as anyref;
+
+export let main = (): i32 => {
+  let p = new Point(40);
+  let e = wrap(p);
+  let back = unwrap(e);
+  if (back != p) {
+    return 1;
+  }
+  let any = unwrapAny(e);
+  if (!(any is Point)) {
+    return 2;
+  }
+  return (any as Point).x + 2;
+};
