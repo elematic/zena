@@ -1,0 +1,66 @@
+// @mode: run
+// @invoke: main
+// @result: 42
+
+// A field decorator's body sees `context`: the decorated field's name,
+// and its accessors as functions over the host (`get`, and `set` for a
+// `var` subject). A decorator registers its field with a table through
+// them, which is what a Lit-style `@property` needs to declare a
+// property to a host without a hand-written table.
+//
+// The registration goes through a module-level function: a decorator
+// body can call the functions of its module, while its module's
+// variables are not in scope there today.
+class Model {
+  var writes = 0;
+}
+
+let names = new GrowableArray<String>();
+let getters = new GrowableArray<(host: Model) => i32>();
+let setters = new GrowableArray<(host: Model, value: i32) => void>();
+
+let register = (name: String, get: (host: Model) => i32,
+    set: (host: Model, value: i32) => void): i32 => {
+  names.push(name);
+  getters.push(get);
+  setters.push(set);
+  return names.length;
+};
+
+decorator tracked(var value: i32) on Model {
+  var #value: i32;
+  var #slot: i32 = register(context.name, context.get, context.set);
+
+  value: i32 {
+    get {
+      return this.#value;
+    }
+    set(v) {
+      this.#value = v;
+      this.writes += 1;
+    }
+  }
+}
+
+class Point extends Model {
+  @tracked var x: i32 = 1;
+  @tracked var y: i32 = 2;
+}
+
+export let main = (): i32 => {
+  let p = new Point();
+  if (names.length != 2) {
+    return 1;
+  }
+  if (names[0] != 'x' || names[1] != 'y') {
+    return 2;
+  }
+  // Through the registered accessors, on a host the table only knows
+  // as a Model: the setter runs the decorator's setter.
+  setters[0](p, 40);
+  setters[1](p, 2);
+  if (p.writes != 2) {
+    return 3;
+  }
+  return getters[0](p) + getters[1](p);
+};

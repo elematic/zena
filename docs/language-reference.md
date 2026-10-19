@@ -4825,6 +4825,34 @@ ReactiveElement { ... }` may call `this.requestUpdate()`, and applying
 `@property` to a field of a class that does not extend or implement
 `ReactiveElement` is an error.
 
+A decorator body can also name the field it is applied to. `context` is
+bound in the body to a record `{name, get, set}`: the decorated field's
+name, and its accessors as functions taking the host, typed by the `on`
+clause (`anyref` without one). `set` is present exactly when the subject
+is `var`. Each application has its own, so a decorator can declare every
+field it is applied to, by name, to something outside the class:
+
+```zena
+decorator property<T>(var value: T) on ReactiveElement {
+  var #value: T;
+  var #declared: i32 =
+      declareProperty<T>(context.name, context.get, context.set);
+  value: T {
+    get { return this.#value; }
+    set(v) {
+      this.#value = v;
+      this.requestUpdate();
+    }
+  }
+}
+```
+
+`declareProperty` is a function in the decorator's module, and the
+initializer runs once per decorated field when the host is constructed.
+Applied to `count` and `label` in one class, the decorator registers
+`'count'` with accessors over the field's `i32` and `'label'` with
+accessors over its `String`.
+
 Decorator syntax also accepts a dotted name (`@signals.state`) and
 arguments (`@property({attribute: false})`), but applying either to a
 field is reported as not yet supported. The design and the remaining work

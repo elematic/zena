@@ -2,7 +2,7 @@ import {
   Referrer, ReachabilityContext, SpecializerInterface,
 } from './context.zena';
 import { SemanticModel, memberKeyOf } from '../../semantic-model.zena';
-import { Type, ClassType, InterfaceType, FunctionType, TypeParameterType, VoidType, BooleanType, I32Type, MethodInfo, FieldInfo, FunctionDeclInfo } from '../../types.zena';
+import { Type, ClassType, InterfaceType, FunctionType, TypeParameterType, VoidType, BooleanType, I32Type, MethodInfo, FieldInfo, FunctionDeclInfo, AnyRefType, RecordType } from '../../types.zena';
 import {
   Node, ClassDeclaration, FieldDefinition, MethodDefinition, AccessorDeclaration, VariableDeclaration, FunctionDeclaration, IdentifierPattern, Decorator, decoratorStringArg, Identifier, SymbolPropertyName, MemberExpression, TypeParameter, SealedVariant, InterfaceDeclaration, Expression, MixinDeclaration, BlockStatement, SuperInitializer, isSymbolFieldDeclaration,
 } from '../../ast.zena';
@@ -13,8 +13,8 @@ import {
 import { SymbolId, noSymbolId } from '../../scope/symbol.zena';
 import { Set } from 'zena:collections';
 
-import { getClassKey, getInterfaceKey, getInterfaceConstructorBaseName, getClassMethodKey, getClassInterfaceKey, getSignatureKey, matchOverload, collectMixinMembers, getMemberRootClass, getClassPrivateFieldKey, getSpecializedFunctionKey, getSpecializedName, isConcrete, MixinKey, containsErasedType } from '../codegen-utils.zena';
-import { typeToValType, mapReturnTypeToWasmResults, mapParamTypeToWasmParams, substituteTypeParamsInCodegen, substituteTypeParamsInClassContext, getClassTypeParameters, getInterfaceTypeParameters, interfaceMethodOverloads } from '../type-mapping.zena';
+import { getClassKey, getInterfaceKey, getInterfaceConstructorBaseName, getClassMethodKey, getClassInterfaceKey, getSignatureKey, matchOverload, collectMixinMembers, getMemberRootClass, getClassPrivateFieldKey, getSpecializedFunctionKey, getSpecializedName, isConcrete, MixinKey, containsErasedType, findMixinDeclaration } from '../codegen-utils.zena';
+import { typeToValType, mapReturnTypeToWasmResults, mapParamTypeToWasmParams, substituteTypeParamsInCodegen, substituteTypeParamsInClassContext, getClassTypeParameters, getInterfaceTypeParameters, interfaceMethodOverloads, getClosureStruct } from '../type-mapping.zena';
 import { growable } from 'zena:core';
 
 /**
@@ -130,6 +130,139 @@ export final class Specializer implements SpecializerInterface {
     }
   }
 
+  /**
+   * The field decorator applications in `classType`'s chain whose body
+   * reads its `context` (docs/design/decorators.md, "The decorated
+   * field's context"). For each: the decorated field's accessors are
+   * registered on the host and reached, whether or not the program
+   * reads the field directly, and one closure-ABI wrapper per accessor
+   * is minted — `context.get`'s `(ctx, host) -> T` and `context.set`'s
+   * `(ctx, host, value)` — keyed by the application's class key in
+   * `decoratorContextWrappers`, where lowering finds them. The field's
+   * name is noted as a string literal, since `context.name` lowers to
+   * one.
+   */
+  #rootDecoratorContexts(classType: ClassType, model: SemanticModel): void {
+    let decorated = classType.decoratedFields;
+    if (decorated == null) {
+      return;
+    }
+    let hostId = (classType.genericSource ?? classType).symbolId;
+    let cd = if (let (true, decl) = this.pass.classDecls.get(hostId)) decl else null;
+    var chain = classType.superType;
+    while (chain != null && chain.isMixinIntermediate) {
+      let sc = chain;
+      chain = sc.superType;
+      if (sc.decoratorSubjectName == null || sc.decoratorFieldName == null) {
+        continue;
+      }
+      let fieldName = sc.decoratorFieldName as String;
+      if (!decorated.has(fieldName)) {
+        continue;
+      }
+      let df = decorated[fieldName];
+      let source = df.decorator.genericSource ?? df.decorator;
+      let decl = findMixinDeclaration(this.pass.program, df.decorator);
+      if (decl == null) {
+        continue;
+      }
+      let subjectOpt = decl.decoratorSubject;
+      if (subjectOpt == null) {
+        continue;
+      }
+      let subjectNode = subjectOpt as FieldDefinition;
+      if (!(subjectNode.name is Identifier)) {
+        continue;
+      }
+      // Rooted only for a decorator whose body reads `context`.
+      let decId = source.symbolId;
+      let nodeModel = if (this.pass.classModels.has(decId)) {
+        this.pass.classModels[decId]
+      } else {
+        model
+      };
+      let contextSym = nodeModel.resolveDeclaration(subjectNode.name);
+      if (contextSym == null || !contextSym.decoratorContextUsed) {
+        continue;
+      }
+      let appKey = getClassKey(sc) as String;
+      if (this.pass.wasm.decoratorContextWrappers.has(`${appKey}::get`)) {
+        continue;
+      }
+      // The subject accessor, registered under the field's name as the
+      // member loop registers it (analysis.zena, the decorator path).
+      let subject = sc.decoratorSubjectName as String;
+      var accNode: AccessorDeclaration | null = null;
+      for (let m in decl.body) {
+        if (m is AccessorDeclaration && memberKeyOf(nodeModel, m.name as Node) == subject) {
+          accNode = m as AccessorDeclaration;
+        }
+      }
+      if (accNode == null) {
+        continue;
+      }
+      let acc = accNode as AccessorDeclaration;
+      let scope = sc.privateScopeKey;
+      let hostType: Type = sc.onType ?? new AnyRefType();
+      let fieldType = df.fieldType;
+      // The record `context` lowers to, at this application's field
+      // type: discovered here because the body's own walk sees it at
+      // the decorator's type parameter, and the host constructor lowers
+      // an initializer that reads it under this application.
+      let contextProps = new Map<String, Type>();
+      let stringClass = this.pass.wasm.stringClass;
+      if (stringClass != null) {
+        contextProps["name"] = stringClass as Type;
+      }
+      contextProps["get"] = new FunctionType(growable<Type>([hostType]), fieldType);
+      if (acc.setter != null) {
+        contextProps["set"] = new FunctionType(growable<Type>([hostType, fieldType]), new VoidType());
+      }
+      this.pass.typeLowerer.discoverType(
+          new RecordType(contextProps, null, null, false), nodeModel);
+      if (acc.getter != null) {
+        let regG = this.registerClassMethod(classType, cd, `get#${fieldName}`, acc, false, false, null, nodeModel, null);
+        regG.declaringType = sc;
+        applyMixinPrivateScope(regG, acc, scope);
+        this.pass.wasm.addFunction(regG);
+        this.pass.markFunctionReached(regG);
+        let getFt = new FunctionType(growable<Type>([hostType]), fieldType);
+        this.#mintDecoratorContextWrapper(`${appKey}::get`, getFt, regG, nodeModel);
+      }
+      let {setter} = acc;
+      if (setter != null) {
+        let regS = this.registerClassMethod(classType, cd, `set#${fieldName}`, setter, false, false, null, nodeModel, null);
+        regS.declaringType = sc;
+        applyMixinPrivateScope(regS, setter, scope);
+        this.pass.wasm.addFunction(regS);
+        this.pass.markFunctionReached(regS);
+        let setFt = new FunctionType(growable<Type>([hostType, fieldType]), new VoidType());
+        this.#mintDecoratorContextWrapper(`${appKey}::set`, setFt, regS, nodeModel);
+      }
+      this.pass.visitor.noteStringLiteral(fieldName);
+    }
+  }
+
+  /** One `context.get`/`context.set` wrapper: the closure ABI around `target`. */
+  #mintDecoratorContextWrapper(key: String, ft: FunctionType, target: WasmFunction, model: SemanticModel): void {
+    let wrapperParams = growable<ValType>([new ValTypeStructRef()]);
+    for (let p in ft.parameters) {
+      mapParamTypeToWasmParams(this.pass.wasm, p, wrapperParams);
+    }
+    let wrapperReturns = new Array<ValType>();
+    mapReturnTypeToWasmResults(this.pass.wasm, ft.returnType, wrapperReturns);
+    let sig = this.pass.wasm.getSignature(wrapperParams, wrapperReturns);
+    let wrapper = new WasmFunction(sig, null, model);
+    let targetName = if (target.name != null) target.name as String else "accessor";
+    wrapper.name = `${targetName}_context_${getSignatureKey(ft)}`;
+    wrapper.decoratorAccessorTarget = target;
+    wrapper.isReferenceTaken = true;
+    this.pass.wasm.decoratorContextWrappers[key] = wrapper;
+    this.pass.wasm.addFunction(wrapper);
+    this.pass.markFunctionReached(wrapper);
+    this.pass.reachablyNamedClosures.add(getClosureStruct(this.pass.wasm, ft));
+  }
+
   instantiateClassType(classType: ClassType, model: SemanticModel): void {
     if (!this.pass.isRtaActive) {
       return;
@@ -154,6 +287,7 @@ export final class Specializer implements SpecializerInterface {
     // the module will never emit, and this is where such a
     // specialization rejoins the register if it turns out to be real.
     this.pass.noteSpecialization(classType, model);
+    this.#rootDecoratorContexts(classType, model);
 
     // Instantiation promotes constructors only for DEMANDED generics —
     // ones with a `new` site somewhere (queueExplicitCtor records the

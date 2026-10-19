@@ -635,6 +635,16 @@ export final class WasmFunction implements Hashable {
   var privateScopeResolved: boolean = false;
   /** For mixin methods, the mixin intermediate ClassType in the super chain. */
   var declaringType: ClassType | null = null;
+  /**
+   * While a host constructor lowers one of a field decorator's
+   * initializers: that application's intermediate, whose type
+   * parameters bind before the host's (`substituteTypeParamsInFunctionContext`).
+   * One constructor initializes every application in the chain, and the
+   * host's flattened context would answer the decorator's parameter with
+   * whichever application came first. Lowering sets and restores it per
+   * initializer, together with `codegenSubstCache`.
+   */
+  var substitutionApplication: ClassType | null = null;
   /** The target class struct for a synthesized field getter. */
   var getterStruct: WasmStruct | null = null;
   /** The index of the field in the class struct for the synthesized getter. */
@@ -691,6 +701,13 @@ export final class WasmFunction implements Hashable {
   var functionAdaptationResolvedTargetStruct: WasmStruct | null = null;
   var isClosureWrapper: boolean = false;
   var closureWrapperTarget: WasmFunction | null = null;
+  /**
+   * A field decorator's `context.get`/`context.set` function: the
+   * closure-ABI wrapper around the decorated field's accessor on one
+   * application (docs/design/decorators.md). Synthesized by RTA,
+   * lowered by `synthesizeDecoratorAccessorWrapper`.
+   */
+  var decoratorAccessorTarget: WasmFunction | null = null;
   var typeParameters: Array<TypeParameterType> | null = null;
   var typeArguments: Array<Type> | null = null;
   /**
@@ -1380,6 +1397,12 @@ export final class WasmModule {
   globals = new Array<WasmGlobal>();
   globalImports = new Array<WasmGlobal>();
   importedStringGlobals = new HashMap<String, WasmGlobal>();
+  /**
+   * The `context.get`/`context.set` wrappers of each field decorator
+   * application that reads its `context`, keyed by the application's
+   * intermediate class key plus `::get` or `::set`.
+   */
+  decoratorContextWrappers = new HashMap<String, WasmFunction>();
   importedStringWrappers = new HashMap<String, WasmGlobal>();
   /** The import module of every string literal's global. */
   var importedStringConstants = defaultImportedStringConstants;
