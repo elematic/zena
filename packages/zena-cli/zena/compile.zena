@@ -46,6 +46,8 @@ export final class CompileRequest {
    * null for the compiler's default.
    */
   var importedStringConstants: String | null = null;
+  /** Group imports by module; see `CompileFileOptions.compactImports`. */
+  var compactImports = false;
   /** Compile a test suite, giving it a `main` that runs `tests`. */
   var testMode = false;
   /** Print the compiler's phase timings. */
@@ -220,6 +222,7 @@ function compileRecording(
     worldName: request.world ?? '',
     optLevel,
     runtimeMemoryPath: runtimeMemory,
+    compactImports: request.compactImports,
   };
   let stringConstants = request.importedStringConstants;
   let compileOptions: CompileFileOptions = if (stringConstants == null) {
@@ -283,6 +286,9 @@ function compileWith(
   if (stringConstants != null) {
     args.push('--imported-string-constants');
     args.push(stringConstants);
+  }
+  if (request.compactImports) {
+    args.push('--compact-imports');
   }
   let outDir = dirname(out.value);
   // Flags reach the compiler as environment variables: the checked-in
@@ -383,6 +389,7 @@ function cacheKey(request: CompileRequest, options: Options) {
   key = key + `test=${request.testMode} debug=${options.debug}\n`;
   key = key + `target=${request.target ?? ''} opt=${optLevelText(options)}\n`;
   key = key + `strings=${request.importedStringConstants ?? ''}\n`;
+  key = key + `compact=${request.compactImports}\n`;
   key = key + `wide=${envSet('ZENA_WIDE_ARITHMETIC')}\n`;
   key = `${key}${compiler} ${identity(resolveUserPath(compiler).value)}\n`;
   return sha256HexOfString(key).sliceBytes(0, 16);

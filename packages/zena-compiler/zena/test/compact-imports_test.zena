@@ -1,0 +1,81 @@
+/**
+ * `BinaryEmitter.compactImports` writes the import section in the
+ * encoding of the compact import section proposal. No engine Node or
+ * wasmtime embeds reads it yet, so the bytes are asserted here.
+ */
+
+import { suite, test, TestContext } from 'zena:test';
+import { equal } from 'zena:assert';
+import { ByteBuffer } from 'zena:core';
+import { BinaryEmitter } from '../lib/codegen/binary-emitter.zena';
+import { ValTypeI32, ValTypeRefExtern } from '../lib/codegen/wasm.zena';
+
+let digits = '0123456789abcdef';
+
+function hex(buffer: ByteBuffer): String {
+  var out = '';
+  for (var i = 0; i < buffer.length; i += 1) {
+    let b = buffer.getByte(i);
+    let sep = if (i == 0) '' else ' ';
+    out = `${out}${sep}${digits.sliceBytes(b >> 4, (b >> 4) + 1)}${digits.sliceBytes(b & 15, (b & 15) + 1)}`;
+  }
+  return out;
+}
+
+function stringImports(compact: boolean, modules: Array<String>): String {
+  let buffer = new ByteBuffer();
+  let emitter = new BinaryEmitter(buffer);
+  emitter.compactImports = compact;
+  emitter.emitImportSectionStart(modules.length);
+  let names = ['a', 'b', 'c'];
+  for (var i = 0; i < modules.length; i += 1) {
+    emitter.emitGlobalImport(modules[i], names[i], new ValTypeRefExtern(), false);
+  }
+  emitter.emitImportSectionEnd();
+  return hex(buffer);
+}
+
+function mixedImports(compact: boolean, module: String): String {
+  let buffer = new ByteBuffer();
+  let emitter = new BinaryEmitter(buffer);
+  emitter.compactImports = compact;
+  emitter.emitImportSectionStart(2);
+  emitter.emitFunctionImport(module, 'f', 0);
+  emitter.emitGlobalImport(module, 'g', new ValTypeI32(), false);
+  emitter.emitImportSectionEnd();
+  return hex(buffer);
+}
+
+export let tests = suite('compact imports', () => {
+  test('imports are written one by one by default', (ctx) => {
+    equal(stringImports(false, ['_', '_', '_']),
+        '02 19 03 ' +
+        '01 5f 01 61 03 64 6f 00 ' +
+        '01 5f 01 62 03 64 6f 00 ' +
+        '01 5f 01 63 03 64 6f 00');
+  });
+
+  test('imports of one module and type share both', (ctx) => {
+    // module "_", empty name, 0x7E, (global (ref extern)), then the names.
+    equal(stringImports(true, ['_', '_', '_']),
+        '02 10 01 01 5f 00 7e 03 64 6f 00 03 01 61 01 62 01 63');
+  });
+
+  test('imports of one module and different types share the module', (ctx) => {
+    // module "env", empty name, 0x7F, then each name and type.
+    equal(mixedImports(true, 'env'),
+        '02 11 01 03 65 6e 76 00 7f 02 01 66 00 00 01 67 03 7f 00');
+  });
+
+  test('a group longer than its imports is not written', (ctx) => {
+    // A one-byte module costs less to repeat than 0x00 0x7F and a count.
+    equal(mixedImports(true, '_'), mixedImports(false, '_'));
+    equal(mixedImports(true, '_'), '02 0e 02 01 5f 01 66 00 00 01 5f 01 67 03 7f 00');
+  });
+
+  test('only consecutive imports are grouped, so indices are kept', (ctx) => {
+    equal(stringImports(true, ['_', 'm', '_']), stringImports(false, ['_', 'm', '_']));
+    equal(stringImports(true, ['_', '_', 'm']),
+        '02 16 02 01 5f 00 7e 03 64 6f 00 02 01 61 01 62 01 6d 01 63 03 64 6f 00');
+  });
+});
