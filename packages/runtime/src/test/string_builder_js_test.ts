@@ -131,10 +131,7 @@ suite('Runtime - StringBuilder on the js target', () => {
           \${line}
       \`;
     `);
-    assert.equal(
-      exports.text('Zoë', '日本 😀'),
-      'Grüße, Zoë!\n  日本 😀',
-    );
+    assert.equal(exports.text('Zoë', '日本 😀'), 'Grüße, Zoë!\n  日本 😀');
   });
 
   test('String.fromBytes decodes WTF-8', async () => {
