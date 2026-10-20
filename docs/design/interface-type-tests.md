@@ -83,13 +83,13 @@ class, and `iface-test-chain` asks the question as a hand-written
 chain of eight class tests. On wasmtime 48, AMD Ryzen 9 9955HX, per
 test:
 
-| form                                              | per test |
-| ------------------------------------------------- | -------- |
-| type-info read, class-typed operand (loads only)  | 1.3 ns   |
-| hand-written chain of 8 final `ref.test`          | 3.1 ns   |
-| compiler chain, class-typed operand               | 2.8 ns   |
-| compiler chain, `anyref` operand                  | 4.9 ns   |
-| type-info read, `anyref` operand (`Object` cast)  | 16 ns    |
+| form                                             | per test |
+| ------------------------------------------------ | -------- |
+| type-info read, class-typed operand (loads only) | 1.3 ns   |
+| hand-written chain of 8 final `ref.test`         | 3.1 ns   |
+| compiler chain, class-typed operand              | 2.8 ns   |
+| compiler chain, `anyref` operand                 | 4.9 ns   |
+| type-info read, `anyref` operand (`Object` cast) | 16 ns    |
 
 The `Object` cast is the whole difference between the last two rows:
 the `is_subtype` libcall costs over 10 ns, and a chain of inline
@@ -169,7 +169,7 @@ codegen with no vtable to pack through, now reaches the type-info path.
 ## Limits
 
 - A class-typed operand tested against a class, `y is Square` for `y:
-  anyref` holding a `Named` fat pointer around a `Square`, is still a
+anyref` holding a `Named` fat pointer around a `Square`, is still a
   `ref.test` against the class struct and answers false. Seeing
   through a fat pointer there would unwrap through `FatPtrBase` first,
   and `FatPtrBase` exists only when an interface test needs it.
