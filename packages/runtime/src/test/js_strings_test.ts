@@ -88,7 +88,12 @@ suite('Runtime - Target JS WebAssembly Strings', () => {
       export let testSubstring = (s: String, start: i32, end: i32): String => s.substring(start, end);
       export let testStartsWith = (s: String, prefix: String): boolean => s.startsWith(prefix);
       export let testEndsWith = (s: String, suffix: String): boolean => s.endsWith(suffix);
-      export let testIndexOf = (s: String, needle: String): i32 => s.indexOf(needle);
+      export let testIndexOf = (s: String, needle: String): i32 => {
+        if (let (true, idx) = s.indexOf(needle)) {
+          return idx as i32;
+        }
+        return -1;
+      };
       export let testCharCodeAt = (s: String, index: i32): i32 => s.charCodeAt(index);
       export let testCodePointAt = (s: String, index: i32): i32 => s.codePointAt(index);
       export let testLowerCase = (s: String): String => s.asciiLowerCase();
