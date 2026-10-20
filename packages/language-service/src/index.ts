@@ -19,6 +19,7 @@ import {
   createStringReader,
   createStringWriter,
   createConsoleImports,
+  numberImports,
 } from '@zena-lang/runtime';
 
 /**
@@ -305,6 +306,7 @@ export async function createLanguageService(
       toLowerCase: (s: string) => s.toLowerCase(),
       toUpperCase: (s: string) => s.toUpperCase(),
     },
+    'zena:host:number': numberImports,
   };
 
   const instance = await instantiate(wasm, imports);

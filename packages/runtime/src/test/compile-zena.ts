@@ -23,6 +23,7 @@ import {
   createConsoleImports,
   createStringWriter,
   createStringReader,
+  numberImports,
 } from '../index.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -106,6 +107,7 @@ const languageService = (): Service => {
       toLowerCase: (s: string) => s.toLowerCase(),
       toUpperCase: (s: string) => s.toUpperCase(),
     },
+    'zena:host:number': numberImports,
   });
   exports = instance.exports as LspExports;
   writeString = createStringWriter(exports);
