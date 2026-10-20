@@ -265,8 +265,8 @@ Subcommands (`./target/release/zena-cli <subcommand>`):
   - `--compact-imports`: Group imports by module, and by type within a
     module, in the encodings of the compact import section proposal,
     reordering them to do so. Experimental: V8 reads it behind
-    `--wasm-compact-imports`, and wasmtime does not, so component targets
-    reject it.
+    `--experimental-wasm-compact-imports`, and wasmtime does not, so
+    component targets reject it.
   - `--time`: Print compiler phase timings.
   - Global flags before subcommand: `-g` / `--debug` (emit WASM name section
     and disable inlining on run), `-O <0|1|2|s>` (optimization level; default

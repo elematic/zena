@@ -310,7 +310,8 @@ shorter:
 ```
 
 It is experimental and off by default. V8 reads it only behind
-`--wasm-compact-imports`, and no shipping engine reads it at all.
+`--experimental-wasm-compact-imports`, and no shipping engine reads it at
+all.
 
 In the module start function (`__start`), each unique literal is wrapped once into a `String` instance and stored in an immutable global:
 
