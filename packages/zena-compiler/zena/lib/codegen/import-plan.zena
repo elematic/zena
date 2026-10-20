@@ -13,27 +13,28 @@
  */
 
 import { ByteBuffer } from 'zena:core';
-import { HashMap } from 'zena:collections';
 import { ImportDesc } from './wasm.zena';
-import { writeImportDesc, writeWasmString } from './binary-emitter.zena';
-
-/** An import, and its position in the list it was planned from. */
-export final class PlannedImport(module: String, name: String, desc: ImportDesc, position: i32)
+import { ImportItem } from './wasm-emitter.zena';
+import { writeImportDesc, utf8ByteLength } from './binary-emitter.zena';
 
 export sealed class ImportEntry {
-  case SingleImport(item: PlannedImport)
+  case SingleImport(item: ImportItem)
   /** Imports of one module (0x7F). */
-  case ImportGroup(module: String, items: GrowableArray<PlannedImport>)
+  case ImportGroup(module: String, items: GrowableArray<ImportItem>)
   /** Imports of one module and one type (0x7E). */
-  case ImportTypeGroup(module: String, desc: ImportDesc, items: GrowableArray<PlannedImport>)
+  case ImportTypeGroup(module: String, desc: ImportDesc, items: GrowableArray<ImportItem>)
 }
 
-/** The imports of one module with the same encoded type. */
+/** The imports of one module with one type, and what each way of writing them costs. */
 final class TypeRun {
   desc: ImportDesc;
-  descBytes: ByteBuffer;
-  items = new Array<PlannedImport>();
-  new(this.desc, this.descBytes);
+  descSize: i32;
+  items = new Array<ImportItem>();
+  /** Bytes as a 0x7E group, inside a 0x7F group, and as single entries. */
+  var asTypeGroup = 0;
+  var inGroup = 0;
+  var asSingles = 0;
+  new(this.desc, this.descSize);
 }
 
 /**
@@ -41,7 +42,7 @@ final class TypeRun {
  * imports are written together, modules in the order they first appear,
  * and every run that the compact encodings make shorter is grouped.
  */
-export function planImports(imports: GrowableArray<PlannedImport>,
+export function planImports(imports: GrowableArray<ImportItem>,
     compact: boolean): GrowableArray<ImportEntry> {
   let entries = new Array<ImportEntry>();
   if (!compact) {
@@ -50,30 +51,26 @@ export function planImports(imports: GrowableArray<PlannedImport>,
     }
     return entries;
   }
-  let modules = new Array<String>();
-  let byModule = new HashMap<String, GrowableArray<PlannedImport>>();
+  let byModule = new Map<String, GrowableArray<ImportItem>>.ordered();
   for (let item in imports) {
     if (let (true, items) = byModule.get(item.module)) {
       items.push(item);
     } else {
-      let items = new Array<PlannedImport>();
+      let items = new Array<ImportItem>();
       items.push(item);
       byModule[item.module] = items;
-      modules.push(item.module);
     }
   }
-  for (let module in modules) {
-    if (let (true, items) = byModule.get(module)) {
-      planModule(entries, module, items);
-    }
+  for (let {key as module, value as items} in byModule) {
+    planModule(entries, module, items);
   }
   return entries;
 }
 
+/** A name's bytes: its length prefix and its UTF-8. */
 function stringSize(s: String): i32 {
-  let buffer = new ByteBuffer();
-  writeWasmString(buffer, s);
-  return buffer.length;
+  let len = utf8ByteLength(s);
+  return ulebSize(len) + len;
 }
 
 function ulebSize(value: i32): i32 {
@@ -86,104 +83,70 @@ function ulebSize(value: i32): i32 {
   return size;
 }
 
-function sameBytes(a: ByteBuffer, b: ByteBuffer): boolean {
-  if (a.length != b.length) return false;
-  for (var i = 0; i < a.length; i += 1) {
-    if (a.getByte(i) != b.getByte(i)) return false;
-  }
-  return true;
-}
-
 /**
  * Plans one module's imports by size. Whatever is not in a type group is
  * written either as one 0x7F group or as single entries, and the best
  * choice of type groups differs between the two: against a 0x7F group a
  * run only saves its repeated type, against single entries it saves the
- * repeated module too. So both are worked out and the shorter is written.
+ * repeated module too. So both are costed and the shorter is written.
  */
 function planModule(entries: GrowableArray<ImportEntry>, module: String,
-    items: GrowableArray<PlannedImport>): void {
+    items: GrowableArray<ImportItem>): void {
   let moduleSize = stringSize(module);
-  let runs = new Array<TypeRun>();
-  let runOf = new Array<i32>();
+  let runs = new Map<ImportDesc, TypeRun>.ordered();
   for (let item in items) {
-    let bytes = new ByteBuffer();
-    writeImportDesc(bytes, item.desc);
-    var found = -1;
-    for (var r = 0; r < runs.length; r += 1) {
-      if (sameBytes(runs[r].descBytes, bytes)) {
-        found = r;
-        break;
-      }
+    if (let (true, run) = runs.get(item.desc)) {
+      run.items.push(item);
+    } else {
+      let bytes = new ByteBuffer();
+      writeImportDesc(bytes, item.desc);
+      let run = new TypeRun(item.desc, bytes.length);
+      run.items.push(item);
+      runs[item.desc] = run;
     }
-    if (found < 0) {
-      found = runs.length;
-      runs.push(new TypeRun(item.desc, bytes));
-    }
-    runs[found].items.push(item);
-    runOf.push(found);
   }
 
-  // Per run: the bytes as a type group, inside a 0x7F group, and as
-  // single entries.
-  let asTypeGroup = new Array<i32>();
-  let inGroup = new Array<i32>();
-  let asSingles = new Array<i32>();
-  for (let run in runs) {
+  // A group's fixed bytes: the module, the empty name, the marker and
+  // the count.
+  let groupOverhead = (count: i32) => moduleSize + 2 + ulebSize(count);
+  // The module written with the rest in a 0x7F group, and written with
+  // the rest as single entries.
+  var groupedCost = 0;
+  var singlesCost = 0;
+  var restInGroup = 0;
+  var restAsSingles = 0;
+  var restCount = 0;
+  for (let {value as run} in runs) {
     let n = run.items.length;
-    let typeSize = run.descBytes.length;
     var names = 0;
     for (let item in run.items) {
       names += stringSize(item.name);
     }
-    asTypeGroup.push(moduleSize + 2 + typeSize + ulebSize(n) + names);
-    inGroup.push(names + n * typeSize);
-    asSingles.push(names + n * (moduleSize + typeSize));
-  }
-
-  // Leftovers in a 0x7F group: a run is a type group if that beats its
-  // share of the group.
-  var groupedCost = 0;
-  var groupedRest = 0;
-  var groupedRestSingles = 0;
-  var groupedRestCount = 0;
-  for (var r = 0; r < runs.length; r += 1) {
-    if (asTypeGroup[r] < inGroup[r]) {
-      groupedCost += asTypeGroup[r];
+    run.asTypeGroup = groupOverhead(n) + run.descSize + names;
+    run.inGroup = names + n * run.descSize;
+    run.asSingles = names + n * (moduleSize + run.descSize);
+    if (run.asTypeGroup < run.inGroup) {
+      groupedCost += run.asTypeGroup;
     } else {
-      groupedRest += inGroup[r];
-      groupedRestSingles += asSingles[r];
-      groupedRestCount += runs[r].items.length;
+      restInGroup += run.inGroup;
+      restAsSingles += run.asSingles;
+      restCount += n;
     }
+    singlesCost += if (run.asTypeGroup < run.asSingles) run.asTypeGroup else run.asSingles;
   }
-  let restAsGroup = groupedRestCount > 1 &&
-      moduleSize + 2 + ulebSize(groupedRestCount) + groupedRest < groupedRestSingles;
-  if (restAsGroup) {
-    groupedCost += moduleSize + 2 + ulebSize(groupedRestCount) + groupedRest;
-  } else {
-    groupedCost += groupedRestSingles;
-  }
-
-  // Leftovers as single entries.
-  var singlesCost = 0;
-  for (var r = 0; r < runs.length; r += 1) {
-    singlesCost += if (asTypeGroup[r] < asSingles[r]) asTypeGroup[r] else asSingles[r];
-  }
-
+  let restAsGroup = restCount > 1 && groupOverhead(restCount) + restInGroup < restAsSingles;
+  groupedCost += if (restAsGroup) groupOverhead(restCount) + restInGroup else restAsSingles;
   let useGroup = restAsGroup && groupedCost < singlesCost;
-  let isTypeGroup = new Array<boolean>();
-  for (var r = 0; r < runs.length; r += 1) {
-    let cost = if (useGroup) inGroup[r] else asSingles[r];
-    let typed = asTypeGroup[r] < cost;
-    isTypeGroup.push(typed);
-    if (typed) {
-      entries.push(new ImportTypeGroup(module, runs[r].desc, runs[r].items));
-    }
-  }
-  let rest = new Array<PlannedImport>();
-  for (var i = 0; i < items.length; i += 1) {
-    if (!isTypeGroup[runOf[i]]) {
-      rest.push(items[i]);
+
+  let rest = new Array<ImportItem>();
+  for (let {value as run} in runs) {
+    let cost = if (useGroup) run.inGroup else run.asSingles;
+    if (run.asTypeGroup < cost) {
+      entries.push(new ImportTypeGroup(module, run.desc, run.items));
+    } else {
+      for (let item in run.items) {
+        rest.push(item);
+      }
     }
   }
   if (useGroup) {

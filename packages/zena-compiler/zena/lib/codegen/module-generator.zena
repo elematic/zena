@@ -27,14 +27,14 @@ import {
 } from '../ast.zena';
 import { Symbol } from '../scope/symbol.zena';
 import {
-  ValType, resetWasmTypeUids, ImportDesc, FuncImport, GlobalImport, MemoryImport,
+  ValType, resetWasmTypeUids, FuncImport, GlobalImport, MemoryImport,
 } from './wasm.zena';
 import {
-  PlannedImport, SingleImport, ImportGroup, ImportTypeGroup, planImports,
+  SingleImport, ImportGroup, ImportTypeGroup, planImports,
 } from './import-plan.zena';
 import { parseF64, parseI64, i32ToString } from 'zena:core';
 
-import { WasmEmitter } from './wasm-emitter.zena';
+import { WasmEmitter, ImportItem } from './wasm-emitter.zena';
 import { performance } from '../time.zena';
 import { dirName, normalizePath } from '../module-resolver.zena';
 import { lowerFunction } from './ir/lowering.zena';
@@ -999,10 +999,8 @@ export final class ModuleGenerator {
     let memoryImported =
         targetEmitsComponent(this.target) && wasm.hasMemory;
 
-    let functionImports = wasm.functionImports;
-    let globalImports = wasm.globalImports;
-    let planned = new Array<PlannedImport>();
-    for (let f in functionImports) {
+    let imports = new Array<ImportItem>();
+    for (let f in wasm.functionImports) {
       let {importModule, importName} = f;
       if (importModule == null || importName == null) {
         throw new Error(`Function import ${f.name ?? "<unnamed>"} has no module or name`);
@@ -1010,30 +1008,28 @@ export final class ModuleGenerator {
       if (f.signature.index < 0) {
         throw new Error(`Function import ${f.name ?? "<unnamed>"} has unassigned signature index (-1)!`);
       }
-      planned.push(new PlannedImport(importModule, importName,
-          new FuncImport(f.signature.index), planned.length));
+      imports.push(new ImportItem(importModule, importName, new FuncImport(f.signature.index), f));
     }
-    for (let g in globalImports) {
-      planned.push(new PlannedImport(g.importModule as String, g.importName as String,
-          new GlobalImport(g.type, g.isMutable), planned.length));
+    for (let g in wasm.globalImports) {
+      imports.push(new ImportItem(g.importModule as String, g.importName as String,
+          new GlobalImport(g.type, g.isMutable), g));
     }
     if (memoryImported) {
-      planned.push(new PlannedImport(componentRuntimeNamespace, componentMemoryExport,
-          new MemoryImport(1), planned.length));
+      imports.push(new ImportItem(componentRuntimeNamespace, componentMemoryExport,
+          new MemoryImport(1), null));
     }
-    let importEntries = planImports(planned, this.compactImports);
+    let importEntries = planImports(imports, this.compactImports);
     if (this.compactImports) {
       // Bodies name functions and globals by object, and nothing has
       // been emitted by index yet, so the plan's order can become the
       // index order.
       let funcs = new Array<WasmFunction>();
       let globals = new Array<WasmGlobal>();
-      let take = (item: PlannedImport) => {
-        let position = item.position;
-        if (position < functionImports.length) {
-          funcs.push(functionImports[position]);
-        } else if (position < functionImports.length + globalImports.length) {
-          globals.push(globalImports[position - functionImports.length]);
+      let take = (item: ImportItem) => {
+        match (item.target) {
+          case WasmFunction as f: { funcs.push(f); }
+          case WasmGlobal as g: { globals.push(g); }
+          case null: {}
         }
       };
       for (let entry in importEntries) {
@@ -1049,24 +1045,10 @@ export final class ModuleGenerator {
     this.emitter.emitImportSectionStart(importEntries.length);
     for (let entry in importEntries) {
       match (entry) {
-        case SingleImport {item}: {
-          this.emitter.emitImport(item.module, item.name, item.desc);
-        }
-        case ImportGroup {module, items}: {
-          let names = new Array<String>();
-          let descs = new Array<ImportDesc>();
-          for (let item in items) {
-            names.push(item.name);
-            descs.push(item.desc);
-          }
-          this.emitter.emitImportGroup(module, names, descs);
-        }
+        case SingleImport {item}: { this.emitter.emitImport(item); }
+        case ImportGroup {module, items}: { this.emitter.emitImportGroup(module, items); }
         case ImportTypeGroup {module, desc, items}: {
-          let names = new Array<String>();
-          for (let item in items) {
-            names.push(item.name);
-          }
-          this.emitter.emitImportTypeGroup(module, desc, names);
+          this.emitter.emitImportTypeGroup(module, desc, items);
         }
       }
     }

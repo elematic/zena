@@ -1,6 +1,6 @@
 import { ValTypeRef, ValTypeRefNull, ValTypeRefExtern } from './wasm.zena';
 import { ByteBuffer, Encoding } from 'zena:core';
-import { WasmEmitter } from './wasm-emitter.zena';
+import { WasmEmitter, ImportItem } from './wasm-emitter.zena';
 import {
   WasmSignature, WasmFunction, WasmStruct, WasmArray,
 } from './wasm-module.zena';
@@ -61,30 +61,39 @@ export function emitValType(buffer: ByteBuffer, type: ValType) {
   };
 }
 
+/** The bytes `writeWasmString` writes for `s` after the length prefix. */
+export function utf8ByteLength(s: String): i32 {
+  if (s.encoding != Encoding.WTF16) {
+    return s.length;
+  }
+  let sLen = s.length;
+  var utf8Len = 0;
+  var i = 0;
+  while (i < sLen) {
+    let cp = s.codePointAt(i);
+    if (cp < 0x80) {
+      utf8Len += 1;
+    } else if (cp < 0x800) {
+      utf8Len += 2;
+    } else if (cp < 0x10000) {
+      utf8Len += 3;
+    } else {
+      utf8Len += 4;
+    }
+    if (cp >= 0x10000) {
+      i += 2;
+    } else {
+      i += 1;
+    }
+  }
+  return utf8Len;
+}
+
 export function writeWasmString(buffer: ByteBuffer, s: String) {
   if (s.encoding == Encoding.WTF16) {
     let sLen = s.length;
-    var utf8Len = 0;
+    buffer.writeULEB128(utf8ByteLength(s));
     var i = 0;
-    while (i < sLen) {
-      let cp = s.codePointAt(i);
-      if (cp < 0x80) {
-        utf8Len += 1;
-      } else if (cp < 0x800) {
-        utf8Len += 2;
-      } else if (cp < 0x10000) {
-        utf8Len += 3;
-      } else {
-        utf8Len += 4;
-      }
-      if (cp >= 0x10000) {
-        i += 2;
-      } else {
-        i += 1;
-      }
-    }
-    buffer.writeULEB128(utf8Len);
-    i = 0;
     while (i < sLen) {
       let cp = s.codePointAt(i);
       if (cp < 0x80) {
@@ -280,37 +289,36 @@ export final class BinaryEmitter implements WasmEmitter {
     this.currentSection = new ByteBuffer();
     (this.currentSection as ByteBuffer).writeULEB128(count);
   }
-  emitImport(module: String, name: String, desc: ImportDesc): void {
+  emitImport(item: ImportItem): void {
     let section = this.currentSection;
     if (section != null) {
-      writeWasmString(section, module);
-      writeWasmString(section, name);
-      writeImportDesc(section, desc);
+      writeWasmString(section, item.module);
+      writeWasmString(section, item.name);
+      writeImportDesc(section, item.desc);
     }
   }
-  emitImportGroup(module: String, names: GrowableArray<String>,
-      descs: GrowableArray<ImportDesc>): void {
+  emitImportGroup(module: String, items: GrowableArray<ImportItem>): void {
     let section = this.currentSection;
     if (section != null) {
       writeWasmString(section, module);
       section.writeByte(0x00);
       section.writeByte(0x7F);
-      section.writeULEB128(names.length);
-      for (var i = 0; i < names.length; i += 1) {
-        writeWasmString(section, names[i]);
-        writeImportDesc(section, descs[i]);
+      section.writeULEB128(items.length);
+      for (let {name, desc} in items) {
+        writeWasmString(section, name);
+        writeImportDesc(section, desc);
       }
     }
   }
-  emitImportTypeGroup(module: String, desc: ImportDesc, names: GrowableArray<String>): void {
+  emitImportTypeGroup(module: String, desc: ImportDesc, items: GrowableArray<ImportItem>): void {
     let section = this.currentSection;
     if (section != null) {
       writeWasmString(section, module);
       section.writeByte(0x00);
       section.writeByte(0x7E);
       writeImportDesc(section, desc);
-      section.writeULEB128(names.length);
-      for (let name in names) {
+      section.writeULEB128(items.length);
+      for (let {name} in items) {
         writeWasmString(section, name);
       }
     }

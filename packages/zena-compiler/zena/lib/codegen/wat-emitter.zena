@@ -1,6 +1,6 @@
 import { ValTypeVoid, ValTypeFunc, ValTypeStructRef, ValTypeNullRef, ValTypeI32, ValTypeF32, ValTypeF64, ValTypeI64, ValTypeI8, ValTypeI16, ValTypeV128, ValTypeOptRef, ValTypeAnyRef, ValTypeFuncRef, ValTypeExternRef, ValTypeRefExtern, ValTypeEqRef, ValTypeRef, ValTypeRefNull } from './wasm.zena';
 import { StringBuilder, ByteBuffer } from 'zena:core';
-import { WasmEmitter } from './wasm-emitter.zena';
+import { WasmEmitter, ImportItem } from './wasm-emitter.zena';
 import { ValType, ImportDesc, FuncImport, GlobalImport, MemoryImport } from "./wasm.zena";
 import { WasmFunction } from "./wasm-module.zena";
 import { simdName } from '../simd.zena';
@@ -145,29 +145,28 @@ export final class WatEmitter implements WasmEmitter {
   emitFunctionSectionEnd(): void {}
 
   emitImportSectionStart(count: i32): void {}
-  emitImport(module: String, name: String, desc: ImportDesc): void {
+  emitImport(item: ImportItem): void {
     this.indent();
-    this.sb.append('(import "').append(module).append('" "').append(name).append('" ');
-    this.#importDesc(desc);
+    this.sb.append('(import "').append(item.module).append('" "').append(item.name).append('" ');
+    this.#importDesc(item.desc);
     this.sb.append(')\n');
   }
-  emitImportGroup(module: String, names: GrowableArray<String>,
-      descs: GrowableArray<ImportDesc>): void {
+  emitImportGroup(module: String, items: GrowableArray<ImportItem>): void {
     this.indent();
     this.sb.append('(import "').append(module).append('"');
-    for (var i = 0; i < names.length; i += 1) {
+    for (let {name, desc} in items) {
       this.sb.append('\n');
       this.indent();
-      this.sb.append('  (item "').append(names[i]).append('" ');
-      this.#importDesc(descs[i]);
+      this.sb.append('  (item "').append(name).append('" ');
+      this.#importDesc(desc);
       this.sb.append(')');
     }
     this.sb.append(')\n');
   }
-  emitImportTypeGroup(module: String, desc: ImportDesc, names: GrowableArray<String>): void {
+  emitImportTypeGroup(module: String, desc: ImportDesc, items: GrowableArray<ImportItem>): void {
     this.indent();
     this.sb.append('(import "').append(module).append('"');
-    for (let name in names) {
+    for (let {name} in items) {
       this.sb.append('\n');
       this.indent();
       this.sb.append('  (item "').append(name).append('")');

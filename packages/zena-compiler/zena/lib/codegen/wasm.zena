@@ -85,11 +85,62 @@ export sealed class ValType {
   case ValTypeI16
 }
 
-/** What an import brings in: its external type in the import section. */
-export sealed class ImportDesc {
+/**
+ * What an import brings in: its external type in the import section. Two
+ * are equal when they encode the same bytes, which is what lets imports
+ * share one (import-plan.zena).
+ */
+export sealed class ImportDesc implements Hashable {
+  operator ==(other: ImportDesc): boolean {
+    return match (this) {
+      case FuncImport {typeIndex}: match (other) {
+        case FuncImport {typeIndex as otherIndex}: typeIndex == otherIndex
+        case _: false
+      }
+      case GlobalImport {type, isMutable}: match (other) {
+        case GlobalImport {type as otherType, isMutable as otherMutable}:
+            isMutable == otherMutable && sameValTypeBytes(type, otherType)
+        case _: false
+      }
+      case MemoryImport {minPages}: match (other) {
+        case MemoryImport {minPages as otherPages}: minPages == otherPages
+        case _: false
+      }
+    };
+  }
+
+  hashCode(): i32 {
+    return match (this) {
+      case FuncImport {typeIndex}: typeIndex * 31 + 1
+      case GlobalImport {type, isMutable}:
+          (valTypeToOpcode(type) * 31 + refTargetIndex(type)) * 31 + (if (isMutable) 3 else 2)
+      case MemoryImport {minPages}: minPages * 31 + 4
+    };
+  }
+
   case FuncImport(typeIndex: i32)
   case GlobalImport(type: ValType, isMutable: boolean)
   case MemoryImport(minPages: i32)
+}
+
+/** Whether `emitValType` writes the same bytes for both: one opcode, and one heap type for a ref. */
+function sameValTypeBytes(a: ValType, b: ValType): boolean {
+  if (valTypeToOpcode(a) != valTypeToOpcode(b)) {
+    return false;
+  }
+  return match (a) {
+    case ValTypeRef {target}: target == (b as ValTypeRef).target
+    case ValTypeRefNull {target}: target == (b as ValTypeRefNull).target
+    case _: true
+  };
+}
+
+function refTargetIndex(type: ValType): i32 {
+  return match (type) {
+    case ValTypeRef {target}: target.index
+    case ValTypeRefNull {target}: target.index
+    case _: 0
+  };
 }
 
 export function valTypeToOpcode(type: ValType): i32 {
