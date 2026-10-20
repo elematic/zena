@@ -293,6 +293,25 @@ zena build main.zena -t js --imported-string-constants wasm:js/string-constants 
 `@zena-lang/runtime`'s `instantiate` takes the same name as its
 `importedStringConstants` option.
 
+Each import repeats its module name and type. The
+[compact import section](https://github.com/WebAssembly/compact-import-section)
+proposal writes the module once for a run of imports, and the type once
+when they share it, which every string constant does. `--compact-imports`
+writes the import section that way. It moves each module's imports
+together, and within a module the imports of each type, renumbering
+functions and globals to match, then groups every run the encoding makes
+shorter:
+
+```wat
+(import "_"
+  (item "hello")
+  (item "world")
+  (global (ref extern)))
+```
+
+It is experimental and off by default. V8 reads it only behind
+`--experimental-wasm-compact-imports`, and no shipping engine reads it.
+
 In the module start function (`__start`), each unique literal is wrapped once into a `String` instance and stored in an immutable global:
 
 ```wat

@@ -26,10 +26,15 @@ import {
   NumberLiteral, StringLiteral, BooleanLiteral, EnumDeclaration, ImportDeclaration, Module,
 } from '../ast.zena';
 import { Symbol } from '../scope/symbol.zena';
-import { ValType, resetWasmTypeUids } from './wasm.zena';
+import {
+  ValType, resetWasmTypeUids, FuncImport, GlobalImport, MemoryImport,
+} from './wasm.zena';
+import {
+  SingleImport, ImportGroup, ImportTypeGroup, planImports,
+} from './import-plan.zena';
 import { parseF64, parseI64, i32ToString } from 'zena:core';
 
-import { WasmEmitter } from './wasm-emitter.zena';
+import { WasmEmitter, ImportItem } from './wasm-emitter.zena';
 import { performance } from '../time.zena';
 import { dirName, normalizePath } from '../module-resolver.zena';
 import { lowerFunction } from './ir/lowering.zena';
@@ -92,6 +97,13 @@ export final class ModuleGenerator {
   var wideArithmetic: boolean = false;
   /** `WasmModule.importedStringConstants`. */
   var importedStringConstants = defaultImportedStringConstants;
+  /**
+   * Group imports in the encodings of the compact import section
+   * proposal (`planImports`), reordering them to do so. Off by default:
+   * V8 reads them only behind `--experimental-wasm-compact-imports`,
+   * and no engine ships them.
+   */
+  var compactImports = false;
 
   /**
    * The checker's interned types, for the module to build unions
@@ -987,24 +999,58 @@ export final class ModuleGenerator {
     let memoryImported =
         targetEmitsComponent(this.target) && wasm.hasMemory;
 
-    this.emitter.emitImportSectionStart(
-        wasm.functionImports.length + wasm.globalImports.length + (if (memoryImported) 1 else 0));
+    let imports = new Array<ImportItem>();
     for (let f in wasm.functionImports) {
-      let {importModule} = f;
-      if (importModule != null && f.importName != null) {
-        if (f.signature.index < 0) {
-          throw new Error(`Function import ${if (f.name != null) f.name as String else "<unnamed>"} has unassigned signature index (-1)!`);
-        }
-        this.emitter.emitFunctionImport(importModule, f.importName as String, f.signature.index);
+      let {importModule, importName} = f;
+      if (importModule == null || importName == null) {
+        throw new Error(`Function import ${f.name ?? "<unnamed>"} has no module or name`);
       }
+      if (f.signature.index < 0) {
+        throw new Error(`Function import ${f.name ?? "<unnamed>"} has unassigned signature index (-1)!`);
+      }
+      imports.push(new ImportItem(importModule, importName, new FuncImport(f.signature.index), f));
     }
     for (let g in wasm.globalImports) {
-      this.emitter.emitGlobalImport(
-          g.importModule as String, g.importName as String, g.type, g.isMutable);
+      imports.push(new ImportItem(g.importModule as String, g.importName as String,
+          new GlobalImport(g.type, g.isMutable), g));
     }
     if (memoryImported) {
-      this.emitter.emitMemoryImport(
-          componentRuntimeNamespace, componentMemoryExport, 1);
+      imports.push(new ImportItem(componentRuntimeNamespace, componentMemoryExport,
+          new MemoryImport(1), null));
+    }
+    let importEntries = planImports(imports, this.compactImports);
+    if (this.compactImports) {
+      // Bodies name functions and globals by object, and nothing has
+      // been emitted by index yet, so the plan's order can become the
+      // index order.
+      let funcs = new Array<WasmFunction>();
+      let globals = new Array<WasmGlobal>();
+      let take = (item: ImportItem) => {
+        match (item.target) {
+          case WasmFunction as f: { funcs.push(f); }
+          case WasmGlobal as g: { globals.push(g); }
+          case null: {}
+        }
+      };
+      for (let entry in importEntries) {
+        match (entry) {
+          case SingleImport {item}: { take(item); }
+          case ImportGroup {items}: { for (let item in items) { take(item); } }
+          case ImportTypeGroup {items}: { for (let item in items) { take(item); } }
+        }
+      }
+      wasm.reorderImports(funcs, globals);
+    }
+
+    this.emitter.emitImportSectionStart(importEntries.length);
+    for (let entry in importEntries) {
+      match (entry) {
+        case SingleImport {item}: { this.emitter.emitImport(item); }
+        case ImportGroup {module, items}: { this.emitter.emitImportGroup(module, items); }
+        case ImportTypeGroup {module, desc, items}: {
+          this.emitter.emitImportTypeGroup(module, desc, items);
+        }
+      }
     }
     this.emitter.emitImportSectionEnd();
 

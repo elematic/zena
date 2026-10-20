@@ -1,7 +1,15 @@
-import { ValType } from "./wasm.zena";
+import { ValType, ImportDesc } from "./wasm.zena";
 
-import { WasmFunction } from './wasm-module.zena';
+import { WasmFunction, WasmGlobal } from './wasm-module.zena';
 import { ByteBuffer } from 'zena:core';
+
+/**
+ * One import of the import section, and the function or global it binds,
+ * which is how `ModuleGenerator` reorders the import lists when the plan
+ * moves it. The memory import binds neither.
+ */
+export final class ImportItem(module: String, name: String, desc: ImportDesc,
+    target: WasmFunction | WasmGlobal | null)
 
 export interface WasmEmitter {
   emitModuleStart(): void;
@@ -31,10 +39,17 @@ export interface WasmEmitter {
   emitFunctionDefinition(typeIndex: i32): void;
   emitFunctionSectionEnd(): void;
 
+  /**
+   * `count` is the number of entries, each one call to `emitImport`,
+   * `emitImportGroup` or `emitImportTypeGroup`. The two groups are the
+   * compact import section proposal's: a module written once for a run
+   * of names and types, and a module and type written once for a run of
+   * names (see import-plan.zena).
+   */
   emitImportSectionStart(count: i32): void;
-  emitFunctionImport(module: String, name: String, typeIndex: i32): void;
-  emitGlobalImport(module: String, name: String, type: ValType, isMutable: boolean): void;
-  emitMemoryImport(module: String, name: String, minPages: i32): void;
+  emitImport(item: ImportItem): void;
+  emitImportGroup(module: String, items: GrowableArray<ImportItem>): void;
+  emitImportTypeGroup(module: String, desc: ImportDesc, items: GrowableArray<ImportItem>): void;
   emitImportSectionEnd(): void;
 
   emitGlobalSectionStart(count: i32): void;

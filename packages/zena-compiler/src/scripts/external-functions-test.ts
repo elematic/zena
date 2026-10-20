@@ -243,6 +243,44 @@ test('--imported-string-constants rejects an empty name and a target without str
   );
 });
 
+test('--compact-imports groups imports, and only on a core module', () => {
+  const zenaCli = join(repoRoot, 'target', 'release', 'zena-cli');
+  const zenaFileRel = relative(
+    repoRoot,
+    join(pkgDir, 'test-files', 'console-log-and-return.zena'),
+  );
+  const build = (flags: string, name: string): Buffer => {
+    const wasmFile = join(pkgDir, 'test', `${name}.wasm`);
+    execSync(`mkdir -p "${dirname(wasmFile)}"`);
+    execSync(
+      `"${zenaCli}" build "${zenaFileRel}" ${flags} -o "${relative(repoRoot, wasmFile)}"`,
+      {stdio: 'pipe', cwd: repoRoot},
+    );
+    return readFileSync(wasmFile);
+  };
+
+  // Nothing Node embeds reads the encoding yet, so this asserts only
+  // that the string constants stopped repeating their module and type.
+  const plain = build('-t js', 'compact-imports-plain');
+  const compact = build('-t js --compact-imports', 'compact-imports');
+  assert.ok(
+    compact.length < plain.length,
+    `${compact.length} bytes compact, ${plain.length} plain`,
+  );
+
+  assert.throws(
+    () =>
+      execSync(
+        `"${zenaCli}" build "${zenaFileRel}" --compact-imports -o "${relative(repoRoot, join(pkgDir, 'test', 'compact-imports-rejected.wasm'))}"`,
+        {stdio: 'pipe', cwd: repoRoot},
+      ),
+    (err: {stderr: Buffer}) =>
+      /the target is 'zena-cli', which emits a component/.test(
+        String(err.stderr),
+      ),
+  );
+});
+
 test('console.log and return a status in zena-cli (target zena-cli, a component)', async () => {
   const zenaFile = join(pkgDir, 'test-files', 'console-log-and-exit-code.zena');
   const wasmCliFile = join(

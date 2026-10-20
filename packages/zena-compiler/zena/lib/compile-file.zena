@@ -87,6 +87,13 @@ export type CompileFileOptions = {
    * target.
    */
   importedStringConstants?: String,
+  /**
+   * Group imports by module, and by type within a module, in the
+   * encodings of the compact import section proposal
+   * (`ModuleGenerator.compactImports`). Only on a target that emits a
+   * core module.
+   */
+  compactImports?: boolean,
   /** Emit a name section, so traps name functions. */
   debugNames?: boolean,
   warnUnnecessaryCasts?: boolean,
@@ -376,6 +383,7 @@ export function compileFile(options: CompileFileOptions): i32 {
     testMode = false,
     time = false,
     debugNames = false,
+    compactImports = false,
     warnUnnecessaryCasts = false,
     progress = false,
   } = options;
@@ -421,6 +429,12 @@ export function compileFile(options: CompileFileOptions): i32 {
           "', which imports none. Use --target js.");
       return 1;
     }
+  }
+  if (compactImports && targetEmitsComponent(target)) {
+    console.error("Error: --compact-imports writes a core module's imports " +
+        `in an encoding wasmtime does not read, and the target is '${target}', ` +
+        "which emits a component.");
+    return 1;
   }
 
   let host = new FileHost(testMode, filename, stdlibRoot, onRead);
@@ -596,6 +610,7 @@ export function compileFile(options: CompileFileOptions): i32 {
       let watOnly = new WatGenerator(target, zirStats, optLevel);
       watOnly.wideArithmetic = wideArithmetic;
       watOnly.importedStringConstants = importedStringConstants;
+      watOnly.compactImports = compactImports;
       watOnly.interner = checkResults.sharedState.interner;
       writeFileSync(outPath, watOnly.generate(program));
       performance.end(tCodegen);
@@ -608,6 +623,7 @@ export function compileFile(options: CompileFileOptions): i32 {
     let generator = new BinaryGenerator(target, zirStats, debugNames, optLevel);
     generator.wideArithmetic = wideArithmetic;
     generator.importedStringConstants = importedStringConstants;
+    generator.compactImports = compactImports;
     // Codegen builds its unions through the checker's interner, so a
     // union means one object across the whole compile.
     generator.interner = checkResults.sharedState.interner;
@@ -655,6 +671,7 @@ export function compileFile(options: CompileFileOptions): i32 {
     if (getEnv("ZENA_EMIT_WAT") != null) {
       let watGenerator = new WatGenerator(target, false, optLevel);
       watGenerator.importedStringConstants = importedStringConstants;
+      watGenerator.compactImports = compactImports;
       let watString = watGenerator.generate(program);
       writeFileSync(outPath + ".wat", watString);
     }

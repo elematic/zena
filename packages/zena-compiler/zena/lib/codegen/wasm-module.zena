@@ -1280,6 +1280,23 @@ export final class WasmModule {
    */
   functionImports = new Array<WasmFunction>();
 
+  /**
+   * Replaces the import lists with the same imports in another order,
+   * and rebinds indices to match.
+   */
+  reorderImports(functionImports: GrowableArray<WasmFunction>,
+      globalImports: GrowableArray<WasmGlobal>): void {
+    this.functionImports.clear();
+    for (let f in functionImports) {
+      this.functionImports.push(f);
+    }
+    this.globalImports.clear();
+    for (let g in globalImports) {
+      this.globalImports.push(g);
+    }
+    this.bindIndices();
+  }
+
   /** 
    * A complete list of all functions in the module, including anonymous
    * functions that do not have a corresponding symbol. Array order dictates
@@ -2598,6 +2615,15 @@ export final class WasmModule {
       let t = this.tags[i];
       t.index = i;
     }
+    this.bindIndices();
+  }
+
+  /**
+   * Numbers functions and globals by position, imports first, as wasm
+   * does. Layout calls it, and so does anything that removes or reorders
+   * functions or globals afterwards.
+   */
+  bindIndices(): void {
     var functionIndex = 0;
     for (let f in this.functionImports) {
       f.index = functionIndex;
