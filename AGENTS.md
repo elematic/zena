@@ -262,8 +262,9 @@ Subcommands (`./target/release/zena-cli <subcommand>`):
   - `--imported-string-constants <module>`: The module `js` builds import
     string literals from (default `_`; WebAssembly ESM integration uses
     `wasm:js/string-constants`).
-  - `--compact-imports`: Group the imports of one module in the encoding of
-    the compact import section proposal. Experimental: V8 reads it behind
+  - `--compact-imports`: Group imports by module, and by type within a
+    module, in the encodings of the compact import section proposal,
+    reordering them to do so. Experimental: V8 reads it behind
     `--wasm-compact-imports`, and wasmtime does not, so component targets
     reject it.
   - `--time`: Print compiler phase timings.

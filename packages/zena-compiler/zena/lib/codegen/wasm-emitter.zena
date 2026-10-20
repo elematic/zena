@@ -1,4 +1,4 @@
-import { ValType } from "./wasm.zena";
+import { ValType, ImportDesc } from "./wasm.zena";
 
 import { WasmFunction } from './wasm-module.zena';
 import { ByteBuffer } from 'zena:core';
@@ -31,10 +31,18 @@ export interface WasmEmitter {
   emitFunctionDefinition(typeIndex: i32): void;
   emitFunctionSectionEnd(): void;
 
+  /**
+   * `count` is the number of entries, each one call to `emitImport`,
+   * `emitImportGroup` or `emitImportTypeGroup`. The two groups are the
+   * compact import section proposal's: a module written once for a run
+   * of names and types, and a module and type written once for a run of
+   * names (see import-plan.zena).
+   */
   emitImportSectionStart(count: i32): void;
-  emitFunctionImport(module: String, name: String, typeIndex: i32): void;
-  emitGlobalImport(module: String, name: String, type: ValType, isMutable: boolean): void;
-  emitMemoryImport(module: String, name: String, minPages: i32): void;
+  emitImport(module: String, name: String, desc: ImportDesc): void;
+  emitImportGroup(module: String, names: GrowableArray<String>,
+      descs: GrowableArray<ImportDesc>): void;
+  emitImportTypeGroup(module: String, desc: ImportDesc, names: GrowableArray<String>): void;
   emitImportSectionEnd(): void;
 
   emitGlobalSectionStart(count: i32): void;

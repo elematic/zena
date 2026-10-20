@@ -1,7 +1,7 @@
 import { ValTypeVoid, ValTypeFunc, ValTypeStructRef, ValTypeNullRef, ValTypeI32, ValTypeF32, ValTypeF64, ValTypeI64, ValTypeI8, ValTypeI16, ValTypeV128, ValTypeOptRef, ValTypeAnyRef, ValTypeFuncRef, ValTypeExternRef, ValTypeRefExtern, ValTypeEqRef, ValTypeRef, ValTypeRefNull } from './wasm.zena';
 import { StringBuilder, ByteBuffer } from 'zena:core';
 import { WasmEmitter } from './wasm-emitter.zena';
-import { ValType } from "./wasm.zena";
+import { ValType, ImportDesc, FuncImport, GlobalImport, MemoryImport } from "./wasm.zena";
 import { WasmFunction } from "./wasm-module.zena";
 import { simdName } from '../simd.zena';
 import { wideArithName } from './wasm.zena';
@@ -145,19 +145,55 @@ export final class WatEmitter implements WasmEmitter {
   emitFunctionSectionEnd(): void {}
 
   emitImportSectionStart(count: i32): void {}
-  emitFunctionImport(module: String, name: String, typeIndex: i32): void {
+  emitImport(module: String, name: String, desc: ImportDesc): void {
     this.indent();
-    this.sb.append('(import "').append(module).append('" "').append(name).append('" (func (type ').append(i32ToString(typeIndex)).append(')))\n');
+    this.sb.append('(import "').append(module).append('" "').append(name).append('" ');
+    this.#importDesc(desc);
+    this.sb.append(')\n');
   }
-  emitGlobalImport(module: String, name: String, type: ValType, isMutable: boolean): void {
+  emitImportGroup(module: String, names: GrowableArray<String>,
+      descs: GrowableArray<ImportDesc>): void {
     this.indent();
-    this.sb.append('(import "').append(module).append('" "').append(name).append('" (global ');
-    if (isMutable) {
-      this.sb.append('(mut ').append(getTypeName(type)).append(')');
-    } else {
-      this.sb.append(getTypeName(type));
+    this.sb.append('(import "').append(module).append('"');
+    for (var i = 0; i < names.length; i += 1) {
+      this.sb.append('\n');
+      this.indent();
+      this.sb.append('  (item "').append(names[i]).append('" ');
+      this.#importDesc(descs[i]);
+      this.sb.append(')');
     }
-    this.sb.append('))\n');
+    this.sb.append(')\n');
+  }
+  emitImportTypeGroup(module: String, desc: ImportDesc, names: GrowableArray<String>): void {
+    this.indent();
+    this.sb.append('(import "').append(module).append('"');
+    for (let name in names) {
+      this.sb.append('\n');
+      this.indent();
+      this.sb.append('  (item "').append(name).append('")');
+    }
+    this.sb.append('\n');
+    this.indent();
+    this.sb.append('  ');
+    this.#importDesc(desc);
+    this.sb.append(')\n');
+  }
+  #importDesc(desc: ImportDesc): void {
+    match (desc) {
+      case FuncImport {typeIndex}: {
+        this.sb.append('(func (type ').append(i32ToString(typeIndex)).append('))');
+      }
+      case GlobalImport {type, isMutable}: {
+        if (isMutable) {
+          this.sb.append('(global (mut ').append(getTypeName(type)).append('))');
+        } else {
+          this.sb.append('(global ').append(getTypeName(type)).append(')');
+        }
+      }
+      case MemoryImport {minPages}: {
+        this.sb.append('(memory ').append(i32ToString(minPages)).append(')');
+      }
+    }
   }
   emitImportSectionEnd(): void {}
 
@@ -733,12 +769,6 @@ export final class WatEmitter implements WasmEmitter {
       this.sb.append(')');
     }
     this.sb.append(')\n');
-  }
-
-  emitMemoryImport(module: String, name: String, minPages: i32): void {
-    this.indent();
-    this.sb.append('(import "').append(module).append('" "').append(name)
-        .append('" (memory ').append(i32ToString(minPages)).append('))\n');
   }
 
   emitMemorySection(minPages: i32): void {

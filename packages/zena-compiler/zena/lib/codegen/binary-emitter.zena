@@ -6,6 +6,7 @@ import {
 } from './wasm-module.zena';
 import {
   SectionId, ValType, Opcode, SatOpcode, GcOpcode, HeapType, valTypeToOpcode, heapTypeToSigned,
+  ImportDesc, FuncImport, GlobalImport, MemoryImport,
 } from './wasm.zena';
 
 export function emitValType(buffer: ByteBuffer, type: ValType) {
@@ -60,7 +61,7 @@ export function emitValType(buffer: ByteBuffer, type: ValType) {
   };
 }
 
-function writeWasmString(buffer: ByteBuffer, s: String) {
+export function writeWasmString(buffer: ByteBuffer, s: String) {
   if (s.encoding == Encoding.WTF16) {
     let sLen = s.length;
     var utf8Len = 0;
@@ -116,71 +117,23 @@ function writeWasmString(buffer: ByteBuffer, s: String) {
   }
 }
 
-/** An import, with its external type already encoded. */
-final class PendingImport {
-  module: String;
-  name: String;
-  externType: ByteBuffer;
-  new(this.module, this.name, this.externType);
-}
-
-function sameBytes(a: ByteBuffer, b: ByteBuffer): boolean {
-  if (a.length != b.length) return false;
-  for (var i = 0; i < a.length; i += 1) {
-    if (a.getByte(i) != b.getByte(i)) return false;
-  }
-  return true;
-}
-
-/**
- * Writes `imports[start..end)`, which share a module, and returns how
- * many section entries it took. A group of two or more is written in the
- * compact form when that is shorter: the module once, an empty name and
- * a marker, then 0x7E with one type and the names when every type is the
- * same, or 0x7F with each name and type when they differ.
- */
-function writeImportRun(
-    out: ByteBuffer, imports: GrowableArray<PendingImport>, start: i32, end: i32): i32 {
-  let first = imports[start];
-  if (end - start == 1) {
-    writeWasmString(out, first.module);
-    writeWasmString(out, first.name);
-    out.writeBuffer(first.externType);
-    return 1;
-  }
-  let plain = new ByteBuffer();
-  var sameType = true;
-  for (var i = start; i < end; i += 1) {
-    let imp = imports[i];
-    writeWasmString(plain, imp.module);
-    writeWasmString(plain, imp.name);
-    plain.writeBuffer(imp.externType);
-    sameType = sameType && sameBytes(imp.externType, first.externType);
-  }
-  let grouped = new ByteBuffer();
-  writeWasmString(grouped, first.module);
-  grouped.writeByte(0x00);
-  if (sameType) {
-    grouped.writeByte(0x7E);
-    grouped.writeBuffer(first.externType);
-    grouped.writeULEB128(end - start);
-    for (var i = start; i < end; i += 1) {
-      writeWasmString(grouped, imports[i].name);
+export function writeImportDesc(buffer: ByteBuffer, desc: ImportDesc): void {
+  match (desc) {
+    case FuncImport {typeIndex}: {
+      buffer.writeByte(0x00);
+      buffer.writeULEB128(typeIndex);
     }
-  } else {
-    grouped.writeByte(0x7F);
-    grouped.writeULEB128(end - start);
-    for (var i = start; i < end; i += 1) {
-      writeWasmString(grouped, imports[i].name);
-      grouped.writeBuffer(imports[i].externType);
+    case GlobalImport {type, isMutable}: {
+      buffer.writeByte(0x03);
+      emitValType(buffer, type);
+      buffer.writeByte(if (isMutable) 1 else 0);
+    }
+    case MemoryImport {minPages}: {
+      buffer.writeByte(0x02);
+      buffer.writeByte(0x00); // limits: min only
+      buffer.writeULEB128(minPages);
     }
   }
-  if (grouped.length < plain.length) {
-    out.writeBuffer(grouped);
-    return 1;
-  }
-  out.writeBuffer(plain);
-  return end - start;
 }
 
 /**
@@ -215,14 +168,6 @@ export final class BinaryEmitter implements WasmEmitter {
    * than unconditional.
    */
   debugNames: boolean;
-  /**
-   * Write consecutive imports from one module as one entry, in the
-   * encoding of the compact import section proposal. Off by default: V8
-   * implements it behind `--wasm-compact-imports`, and no engine ships it.
-   */
-  var compactImports = false;
-  /** The import section's imports, written together when it ends. */
-  var #imports: GrowableArray<PendingImport> | null = null;
 
   new(this.mainBuffer, this.debugNames = false);
 
@@ -332,48 +277,50 @@ export final class BinaryEmitter implements WasmEmitter {
 
   emitImportSectionStart(count: i32): void {
     if (count == 0) return;
-    this.#imports = new Array<PendingImport>();
+    this.currentSection = new ByteBuffer();
+    (this.currentSection as ByteBuffer).writeULEB128(count);
   }
-  emitFunctionImport(module: String, name: String, typeIndex: i32): void {
-    let func = new ByteBuffer(8);
-    func.writeByte(0x00); // 0 = function import
-    func.writeULEB128(typeIndex);
-    this.#addImport(module, name, func);
+  emitImport(module: String, name: String, desc: ImportDesc): void {
+    let section = this.currentSection;
+    if (section != null) {
+      writeWasmString(section, module);
+      writeWasmString(section, name);
+      writeImportDesc(section, desc);
+    }
   }
-  emitGlobalImport(module: String, name: String, type: ValType, isMutable: boolean): void {
-    let global = new ByteBuffer(8);
-    global.writeByte(0x03); // 3 = global import
-    emitValType(global, type);
-    global.writeByte(if (isMutable) 1 else 0);
-    this.#addImport(module, name, global);
+  emitImportGroup(module: String, names: GrowableArray<String>,
+      descs: GrowableArray<ImportDesc>): void {
+    let section = this.currentSection;
+    if (section != null) {
+      writeWasmString(section, module);
+      section.writeByte(0x00);
+      section.writeByte(0x7F);
+      section.writeULEB128(names.length);
+      for (var i = 0; i < names.length; i += 1) {
+        writeWasmString(section, names[i]);
+        writeImportDesc(section, descs[i]);
+      }
+    }
   }
-  #addImport(module: String, name: String, externType: ByteBuffer): void {
-    let imports = this.#imports;
-    if (imports != null) {
-      imports.push(new PendingImport(module, name, externType));
+  emitImportTypeGroup(module: String, desc: ImportDesc, names: GrowableArray<String>): void {
+    let section = this.currentSection;
+    if (section != null) {
+      writeWasmString(section, module);
+      section.writeByte(0x00);
+      section.writeByte(0x7E);
+      writeImportDesc(section, desc);
+      section.writeULEB128(names.length);
+      for (let name in names) {
+        writeWasmString(section, name);
+      }
     }
   }
   emitImportSectionEnd(): void {
-    let imports = this.#imports;
-    if (imports == null) return;
-    this.#imports = null;
-    let entries = new ByteBuffer();
-    var count = 0;
-    var start = 0;
-    while (start < imports.length) {
-      var end = start + 1;
-      if (this.compactImports) {
-        while (end < imports.length && imports[end].module == imports[start].module) {
-          end += 1;
-        }
-      }
-      count += writeImportRun(entries, imports, start, end);
-      start = end;
+    let section = this.currentSection;
+    if (section != null) {
+      this.writeSection(SectionId.Import as i32, section);
+      this.currentSection = null;
     }
-    let section = new ByteBuffer();
-    section.writeULEB128(count);
-    section.writeBuffer(entries);
-    this.writeSection(SectionId.Import as i32, section);
   }
 
   emitGlobalSectionStart(count: i32): void {
@@ -1132,14 +1079,6 @@ export final class BinaryEmitter implements WasmEmitter {
     b.writeByte(0x5E); // array form
     emitValType(b, elementType);
     b.writeByte(if (isMutable) 1 else 0);
-  }
-
-  emitMemoryImport(module: String, name: String, minPages: i32): void {
-    let memory = new ByteBuffer(8);
-    memory.writeByte(0x02); // 2 = memory import
-    memory.writeByte(0x00); // limits: min only
-    memory.writeULEB128(minPages);
-    this.#addImport(module, name, memory);
   }
 
   emitMemorySection(minPages: i32): void {

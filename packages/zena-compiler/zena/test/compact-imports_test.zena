@@ -1,14 +1,60 @@
 /**
- * `BinaryEmitter.compactImports` writes the import section in the
- * encoding of the compact import section proposal. No engine Node or
- * wasmtime embeds reads it yet, so the bytes are asserted here.
+ * `compactImports` groups the import section in the encodings of the
+ * compact import section proposal (`planImports`). No engine Node or
+ * wasmtime embeds reads them yet, so the WAT, the plan's choices and the
+ * bytes of each encoding are asserted here.
  */
 
 import { suite, test, TestContext } from 'zena:test';
-import { equal } from 'zena:assert';
-import { ByteBuffer } from 'zena:core';
+import { equal, isTrue } from 'zena:assert';
+import { ByteBuffer, growable } from 'zena:core';
+import { readFileSync } from 'zena:fs';
+import { compileFile } from '../lib/compile-file.zena';
 import { BinaryEmitter } from '../lib/codegen/binary-emitter.zena';
-import { ValTypeI32, ValTypeRefExtern } from '../lib/codegen/wasm.zena';
+import {
+  PlannedImport, ImportEntry, SingleImport, ImportGroup, ImportTypeGroup, planImports,
+} from '../lib/codegen/import-plan.zena';
+import {
+  ValTypeI32, ValTypeRefExtern, ImportDesc, FuncImport, GlobalImport,
+} from '../lib/codegen/wasm.zena';
+import { stdlibRoot } from './test-utils.zena';
+import { watFunction } from './wat-invariants.zena';
+
+let entry = 'packages/zena-compiler/test-files/compact-imports.zena';
+
+function wat(compactImports: boolean): String {
+  let outPath = `packages/zena-compiler/zena/out/compact-imports-${compactImports}.wat`;
+  equal(compileFile({entry, outPath, target: 'js', stdlibRoot, compactImports}), 0);
+  return readFileSync(outPath);
+}
+
+/** The module's import declarations, one per line as emitted. */
+function importSection(wat: String): String {
+  var out = '';
+  var inImports = false;
+  for (let line in wat.split('\n')) {
+    if (line.startsWith('  (import ')) {
+      inImports = true;
+    } else if (inImports && !line.startsWith('    ')) {
+      break;
+    }
+    if (inImports) {
+      out = `${out}${line}\n`;
+    }
+  }
+  return out;
+}
+
+/** The imports `main` calls, in order. */
+function importCalls(wat: String): String {
+  var out = '';
+  for (let line in watFunction(wat, '$main').split('\n')) {
+    if (line.contains('call $func')) {
+      out = `${out}${line.trim()}\n`;
+    }
+  }
+  return out;
+}
 
 let digits = '0123456789abcdef';
 
@@ -22,60 +68,120 @@ function hex(buffer: ByteBuffer): String {
   return out;
 }
 
-function stringImports(compact: boolean, modules: Array<String>): String {
-  let buffer = new ByteBuffer();
-  let emitter = new BinaryEmitter(buffer);
-  emitter.compactImports = compact;
-  emitter.emitImportSectionStart(modules.length);
-  let names = ['a', 'b', 'c'];
-  for (var i = 0; i < modules.length; i += 1) {
-    emitter.emitGlobalImport(modules[i], names[i], new ValTypeRefExtern(), false);
-  }
-  emitter.emitImportSectionEnd();
-  return hex(buffer);
+function stringImport(module: String, name: String, position: i32): PlannedImport {
+  return new PlannedImport(module, name, new GlobalImport(new ValTypeRefExtern(), false), position);
 }
 
-function mixedImports(compact: boolean, module: String): String {
-  let buffer = new ByteBuffer();
-  let emitter = new BinaryEmitter(buffer);
-  emitter.compactImports = compact;
-  emitter.emitImportSectionStart(2);
-  emitter.emitFunctionImport(module, 'f', 0);
-  emitter.emitGlobalImport(module, 'g', new ValTypeI32(), false);
-  emitter.emitImportSectionEnd();
-  return hex(buffer);
+/** Each entry as its kind and its import names. */
+function describe(entries: GrowableArray<ImportEntry>): String {
+  var out = '';
+  for (let entry in entries) {
+    let line = match (entry) {
+      case SingleImport {item}: `single ${item.module} ${item.name}`
+      case ImportGroup {module, items}: {
+        var names = '';
+        for (let item in items) {
+          names = `${names} ${item.name}`;
+        }
+        `group ${module}:${names}`
+      }
+      case ImportTypeGroup {module, items}: {
+        var names = '';
+        for (let item in items) {
+          names = `${names} ${item.name}`;
+        }
+        `type group ${module}:${names}`
+      }
+    };
+    out = `${out}${line}\n`;
+  }
+  return out;
 }
 
 export let tests = suite('compact imports', () => {
-  test('imports are written one by one by default', (ctx) => {
-    equal(stringImports(false, ['_', '_', '_']),
-        '02 19 03 ' +
-        '01 5f 01 61 03 64 6f 00 ' +
-        '01 5f 01 62 03 64 6f 00 ' +
-        '01 5f 01 63 03 64 6f 00');
+  test('imports are emitted one by one, in order, by default', (ctx) => {
+    equal(importSection(wat(false)),
+        '  (import "env" "log_i32" (func (type 2)))\n' +
+        '  (import "other" "tick" (func (type 3)))\n' +
+        '  (import "env" "log_f64" (func (type 4)))\n' +
+        '  (import "env" "log_i32_again" (func (type 2)))\n' +
+        '  (import "console" "log_string" (func (type 5)))\n' +
+        '  (import "wasm:js-string" "length" (func (type 6)))\n' +
+        '  (import "_" "a" (global (ref extern)))\n' +
+        '  (import "_" "b" (global (ref extern)))\n' +
+        '  (import "_" "c" (global (ref extern)))\n');
   });
 
-  test('imports of one module and type share both', (ctx) => {
-    // module "_", empty name, 0x7E, (global (ref extern)), then the names.
-    equal(stringImports(true, ['_', '_', '_']),
-        '02 10 01 01 5f 00 7e 03 64 6f 00 03 01 61 01 62 01 63');
+  test("a module's imports are grouped, and its imports of one type share it", (ctx) => {
+    equal(importSection(wat(true)),
+        '  (import "env"\n' +
+        '    (item "log_i32" (func (type 2)))\n' +
+        '    (item "log_f64" (func (type 4)))\n' +
+        '    (item "log_i32_again" (func (type 2))))\n' +
+        '  (import "other" "tick" (func (type 3)))\n' +
+        '  (import "console" "log_string" (func (type 5)))\n' +
+        '  (import "wasm:js-string" "length" (func (type 6)))\n' +
+        '  (import "_"\n' +
+        '    (item "a")\n' +
+        '    (item "b")\n' +
+        '    (item "c")\n' +
+        '    (global (ref extern)))\n');
   });
 
-  test('imports of one module and different types share the module', (ctx) => {
-    // module "env", empty name, 0x7F, then each name and type.
-    equal(mixedImports(true, 'env'),
-        '02 11 01 03 65 6e 76 00 7f 02 01 66 00 00 01 67 03 7f 00');
+  // An import's index is its position, so moving `tick` after the `env`
+  // imports renumbers it, and the calls have to follow.
+  test('calls name the reordered imports by their new indices', (ctx) => {
+    equal(importCalls(wat(false)),
+        'call $func0\ncall $func1\ncall $func2\ncall $func3\n');
+    equal(importCalls(wat(true)),
+        'call $func0\ncall $func3\ncall $func1\ncall $func2\n');
   });
 
-  test('a group longer than its imports is not written', (ctx) => {
+  test('two imports of one type share it, even from a one-byte module', (ctx) => {
+    // `_` and `(global (ref extern))` once: 13 bytes against 16.
+    equal(describe(planImports(growable([stringImport('_', 'a', 0), stringImport('_', 'b', 1)]), true)),
+        'type group _: a b\n');
+  });
+
+  test('a group is not written when it is longer than its imports', (ctx) => {
     // A one-byte module costs less to repeat than 0x00 0x7F and a count.
-    equal(mixedImports(true, '_'), mixedImports(false, '_'));
-    equal(mixedImports(true, '_'), '02 0e 02 01 5f 01 66 00 00 01 5f 01 67 03 7f 00');
+    let mixed = growable([
+      new PlannedImport('_', 'f', new FuncImport(0), 0),
+      new PlannedImport('_', 'g', new GlobalImport(new ValTypeI32(), false), 1),
+    ]);
+    equal(describe(planImports(mixed, true)), 'single _ f\nsingle _ g\n');
   });
 
-  test('only consecutive imports are grouped, so indices are kept', (ctx) => {
-    equal(stringImports(true, ['_', 'm', '_']), stringImports(false, ['_', 'm', '_']));
-    equal(stringImports(true, ['_', '_', 'm']),
-        '02 16 02 01 5f 00 7e 03 64 6f 00 02 01 61 01 62 01 6d 01 63 03 64 6f 00');
+  test('imports of a shared type are grouped apart from the rest of the module', (ctx) => {
+    let imports = growable([
+      new PlannedImport('env', 'f', new FuncImport(0), 0),
+      stringImport('env', 'a', 1),
+      new PlannedImport('env', 'g', new FuncImport(1), 2),
+      stringImport('env', 'b', 3),
+      stringImport('env', 'c', 4),
+      new PlannedImport('env', 'h', new GlobalImport(new ValTypeI32(), false), 5),
+    ]);
+    equal(describe(planImports(imports, true)),
+        'type group env: a b c\ngroup env: f g h\n');
+  });
+
+  test('the 0x7F encoding writes the module once, then each name and type', (ctx) => {
+    let buffer = new ByteBuffer();
+    let emitter = new BinaryEmitter(buffer);
+    emitter.emitImportSectionStart(1);
+    emitter.emitImportGroup('env', growable(['f', 'g']),
+        growable<ImportDesc>([new FuncImport(0), new GlobalImport(new ValTypeI32(), false)]));
+    emitter.emitImportSectionEnd();
+    equal(hex(buffer), '02 11 01 03 65 6e 76 00 7f 02 01 66 00 00 01 67 03 7f 00');
+  });
+
+  test('the 0x7E encoding writes the module and type once, then the names', (ctx) => {
+    let buffer = new ByteBuffer();
+    let emitter = new BinaryEmitter(buffer);
+    emitter.emitImportSectionStart(1);
+    emitter.emitImportTypeGroup('_', new GlobalImport(new ValTypeRefExtern(), false),
+        growable(['a', 'b', 'c']));
+    emitter.emitImportSectionEnd();
+    equal(hex(buffer), '02 10 01 01 5f 00 7e 03 64 6f 00 03 01 61 01 62 01 63');
   });
 });

@@ -297,7 +297,10 @@ Each import repeats its module name and type. The
 [compact import section](https://github.com/WebAssembly/compact-import-section)
 proposal writes the module once for a run of imports, and the type once
 when they share it, which every string constant does. `--compact-imports`
-writes the import section that way, leaving the names alone:
+writes the import section that way. It moves each module's imports
+together, and within a module the imports of each type, renumbering
+functions and globals to match, then groups every run the encoding makes
+shorter:
 
 ```wat
 (import "_"

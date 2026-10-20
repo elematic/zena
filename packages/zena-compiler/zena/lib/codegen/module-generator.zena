@@ -26,7 +26,12 @@ import {
   NumberLiteral, StringLiteral, BooleanLiteral, EnumDeclaration, ImportDeclaration, Module,
 } from '../ast.zena';
 import { Symbol } from '../scope/symbol.zena';
-import { ValType, resetWasmTypeUids } from './wasm.zena';
+import {
+  ValType, resetWasmTypeUids, ImportDesc, FuncImport, GlobalImport, MemoryImport,
+} from './wasm.zena';
+import {
+  PlannedImport, SingleImport, ImportGroup, ImportTypeGroup, planImports,
+} from './import-plan.zena';
 import { parseF64, parseI64, i32ToString } from 'zena:core';
 
 import { WasmEmitter } from './wasm-emitter.zena';
@@ -92,6 +97,13 @@ export final class ModuleGenerator {
   var wideArithmetic: boolean = false;
   /** `WasmModule.importedStringConstants`. */
   var importedStringConstants = defaultImportedStringConstants;
+  /**
+   * Group imports in the encodings of the compact import section
+   * proposal (`planImports`), reordering them to do so. Off by default:
+   * V8 reads them only behind `--wasm-compact-imports`, and no engine
+   * ships them.
+   */
+  var compactImports = false;
 
   /**
    * The checker's interned types, for the module to build unions
@@ -987,24 +999,76 @@ export final class ModuleGenerator {
     let memoryImported =
         targetEmitsComponent(this.target) && wasm.hasMemory;
 
-    this.emitter.emitImportSectionStart(
-        wasm.functionImports.length + wasm.globalImports.length + (if (memoryImported) 1 else 0));
-    for (let f in wasm.functionImports) {
-      let {importModule} = f;
-      if (importModule != null && f.importName != null) {
-        if (f.signature.index < 0) {
-          throw new Error(`Function import ${if (f.name != null) f.name as String else "<unnamed>"} has unassigned signature index (-1)!`);
-        }
-        this.emitter.emitFunctionImport(importModule, f.importName as String, f.signature.index);
+    let functionImports = wasm.functionImports;
+    let globalImports = wasm.globalImports;
+    let planned = new Array<PlannedImport>();
+    for (let f in functionImports) {
+      let {importModule, importName} = f;
+      if (importModule == null || importName == null) {
+        throw new Error(`Function import ${f.name ?? "<unnamed>"} has no module or name`);
       }
+      if (f.signature.index < 0) {
+        throw new Error(`Function import ${f.name ?? "<unnamed>"} has unassigned signature index (-1)!`);
+      }
+      planned.push(new PlannedImport(importModule, importName,
+          new FuncImport(f.signature.index), planned.length));
     }
-    for (let g in wasm.globalImports) {
-      this.emitter.emitGlobalImport(
-          g.importModule as String, g.importName as String, g.type, g.isMutable);
+    for (let g in globalImports) {
+      planned.push(new PlannedImport(g.importModule as String, g.importName as String,
+          new GlobalImport(g.type, g.isMutable), planned.length));
     }
     if (memoryImported) {
-      this.emitter.emitMemoryImport(
-          componentRuntimeNamespace, componentMemoryExport, 1);
+      planned.push(new PlannedImport(componentRuntimeNamespace, componentMemoryExport,
+          new MemoryImport(1), planned.length));
+    }
+    let importEntries = planImports(planned, this.compactImports);
+    if (this.compactImports) {
+      // Bodies name functions and globals by object, and nothing has
+      // been emitted by index yet, so the plan's order can become the
+      // index order.
+      let funcs = new Array<WasmFunction>();
+      let globals = new Array<WasmGlobal>();
+      let take = (item: PlannedImport) => {
+        let position = item.position;
+        if (position < functionImports.length) {
+          funcs.push(functionImports[position]);
+        } else if (position < functionImports.length + globalImports.length) {
+          globals.push(globalImports[position - functionImports.length]);
+        }
+      };
+      for (let entry in importEntries) {
+        match (entry) {
+          case SingleImport {item}: { take(item); }
+          case ImportGroup {items}: { for (let item in items) { take(item); } }
+          case ImportTypeGroup {items}: { for (let item in items) { take(item); } }
+        }
+      }
+      wasm.reorderImports(funcs, globals);
+    }
+
+    this.emitter.emitImportSectionStart(importEntries.length);
+    for (let entry in importEntries) {
+      match (entry) {
+        case SingleImport {item}: {
+          this.emitter.emitImport(item.module, item.name, item.desc);
+        }
+        case ImportGroup {module, items}: {
+          let names = new Array<String>();
+          let descs = new Array<ImportDesc>();
+          for (let item in items) {
+            names.push(item.name);
+            descs.push(item.desc);
+          }
+          this.emitter.emitImportGroup(module, names, descs);
+        }
+        case ImportTypeGroup {module, desc, items}: {
+          let names = new Array<String>();
+          for (let item in items) {
+            names.push(item.name);
+          }
+          this.emitter.emitImportTypeGroup(module, desc, names);
+        }
+      }
     }
     this.emitter.emitImportSectionEnd();
 
