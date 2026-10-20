@@ -27,3 +27,14 @@ let names = new GrowableArray<String>();
 // Generic interfaces are invariant: an array of String is not an
 // array of Value.
 let notFine = union`${names}`; // @error: Type mismatch: interpolated value 'GrowableArray<String>' is not assignable to the tag's value type 'String | Item | Iterable<Value> | null'.
+
+// A tag that accepts a box for a primitive opts into boxing: the
+// checker wraps the interpolation in `Box<i32>`. A primitive the tag
+// accepts no box for keeps the error.
+type Boxed = String | Box<i32> | null;
+
+let boxing = (strings: TemplateStringsArray, values: FixedArray<Boxed>): i32 => values.length;
+
+let boxed = boxing`${count} ${'s'} ${null}`;
+let ratio = 0.5;
+let unboxed = boxing`${ratio}`; // @error: Type mismatch: interpolated value 'f64' is not assignable to the tag's value type 'String | Box<i32> | null'.

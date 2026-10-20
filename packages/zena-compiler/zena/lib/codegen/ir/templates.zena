@@ -22,8 +22,8 @@ import {
 } from '../wasm-module.zena';
 import { getClassKey, getClassMethodKey, templateConvertHelperName } from '../codegen-utils.zena';
 import {
-  findExtendedInterfaceTransitive, findImplementedInterfaceTransitive,
-  getNonNullableType, typeToValTypeWithSub,
+  eraseTypeParameters, findExtendedInterfaceTransitive, findImplementedInterfaceTransitive,
+  getNonNullableType, substituteTypeParamsInFunctionContext, typeToValTypeWithSub,
 } from '../type-mapping.zena';
 import { IrOp, IrRefField, IrRefFunc, IrRefGlobal, IrRefType } from './ir.zena';
 import { lowerExpr } from './lowering.zena';
@@ -33,6 +33,38 @@ import {
 import { WellKnown, isWellKnown } from '../../well-known.zena';
 import { growable } from 'zena:core';
 import { targetUsesJsStrings } from '../../targets.zena';
+
+/**
+ * A primitive interpolation the checker boxed for its tag
+ * (`SemanticModel.getBoxAdaptation`): the value, then the box class's
+ * constructor around it — `new Box<P>(value)` with the class resolved
+ * in this function's context.
+ */
+function lowerBoxedTemplateValue(cx: LoweringContext, sub: Expression, box: ClassType): i32 {
+  let resolved = eraseTypeParameters(cx.wasm,
+      substituteTypeParamsInFunctionContext(cx.wasm, cx.func, box));
+  if (!(resolved is ClassType)) {
+    cx.fail('boxed interpolation class');
+  }
+  let cKey = getClassKey(resolved);
+  let ctorKey = getClassMethodKey(cKey, '<constructor>');
+  let ctor = if (let (true, c) = cx.wasm.classMethodMap.get(ctorKey)) c else null;
+  if (ctor == null) {
+    cx.fail('boxed interpolation constructor');
+  }
+  let sig = ctor.signature;
+  if (sig.params.length != 1 || sig.returns.length != 1) {
+    cx.fail('boxed interpolation constructor shape');
+  }
+  let valueVt = sig.params[0];
+  let value = lowerExpr(cx, sub, valueVt);
+  if (!isValSubtype(cx.valueTypeOf(value), valueVt)) {
+    cx.failConformance(value, valueVt, 'boxed interpolation value');
+  }
+  let args = new Array<i32>();
+  args.push(value);
+  return cx.b.callFunc(cx.b.addRef(new IrRefFunc(ctor)), args, sig.returns[0]);
+}
 
 /**
  * A string literal: id lookup in the shared registry, then the
@@ -450,7 +482,12 @@ export function lowerTaggedTemplate(cx: LoweringContext,
   let valuesArr = cx.wasm.getArray(valVt, true);
   let valueParts = new Array<i32>();
   for (let sub in expr.quasi.expressions) {
-    let v = lowerExpr(cx, sub, valVt);
+    let box = cx.func.model.getBoxAdaptation(sub);
+    let v = if (box != null) {
+      lowerBoxedTemplateValue(cx, sub, box)
+    } else {
+      lowerExpr(cx, sub, valVt)
+    };
     if (!isValSubtype(cx.valueTypeOf(v), valVt)) {
       cx.failConformance(v, valVt, 'tagged template value type');
     }

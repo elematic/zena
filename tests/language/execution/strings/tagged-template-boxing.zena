@@ -1,0 +1,35 @@
+// @mode: run
+// @invoke: main
+// @result: 42
+
+// A tag opts into boxing by accepting `Box<P>` among its values: a
+// primitive interpolation is then wrapped in the box the tag accepts,
+// as an untagged literal converts one to text. A value the tag takes
+// as it is (a String here) is passed unboxed.
+import { TemplateStringsArray } from 'zena:core';
+
+type Value = String | Box<i32> | Box<f64> | Box<boolean> | null;
+
+let sum = (strings: TemplateStringsArray, values: FixedArray<Value>): i32 => {
+  var total = 0;
+  for (let value in values) {
+    if (value is Box<i32>) {
+      total += (value as Box<i32>).value;
+    } else if (value is Box<f64>) {
+      total += (value as Box<f64>).value as i32;
+    } else if (value is Box<boolean>) {
+      total += if ((value as Box<boolean>).value) 1 else 0;
+    } else if (value is String) {
+      total += (value as String).length;
+    }
+  }
+  return total;
+};
+
+export let main = (): i32 => {
+  let n = 30;
+  let half = 2.5;
+  let flag = true;
+  // 30 + 2 + 1 + 'zena'.length + 5
+  return sum`${n} ${half} ${flag} ${'zena'} ${5}`;
+};
