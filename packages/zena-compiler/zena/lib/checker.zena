@@ -8528,26 +8528,14 @@ function checkAndRegisterInterfaceAdaptation(ctx: CheckerContext, node: Node, so
       isAssignableTo(ctx, effectiveSource, effectiveTarget)) {
     ctx.model.setInterfaceAdaptation(node, effectiveSource, effectiveTarget,
         sourceIsNullable);
+    // The upcast copies the target's vtable slots out of the source's.
+    // It references no member itself: codegen gives the target a slot
+    // for each member called through it, and the source, which extends
+    // the target, a slot for each of those too.
     let deps = ctx.currentDependencies();
     if (deps != null) {
       deps.referencedTypes.add(effectiveSource);
       deps.referencedTypes.add(effectiveTarget);
-      let unspecSourceId = (effectiveSource.genericSource ?? effectiveSource).symbolId;
-      let unspecTargetId = (effectiveTarget.genericSource ?? effectiveTarget).symbolId;
-      for (let mKey in effectiveTarget.members.keys()) {
-        let mem = effectiveTarget.members[mKey];
-        if (mem is FieldInfo) {
-          deps.referencedInterfaceMembers.add(`${i32ToString(unspecSourceId as i32)}.get#${mKey}`);
-          deps.referencedInterfaceMembers.add(`${i32ToString(unspecTargetId as i32)}.get#${mKey}`);
-          if (mem.isMutable) {
-            deps.referencedInterfaceMembers.add(`${i32ToString(unspecSourceId as i32)}.set#${mKey}`);
-            deps.referencedInterfaceMembers.add(`${i32ToString(unspecTargetId as i32)}.set#${mKey}`);
-          }
-        } else if (mem is MethodInfo) {
-          deps.referencedInterfaceMembers.add(`${i32ToString(unspecSourceId as i32)}.${mKey}`);
-          deps.referencedInterfaceMembers.add(`${i32ToString(unspecTargetId as i32)}.${mKey}`);
-        }
-      }
     }
   } else if (sourceType is FunctionType && effectiveTarget is FunctionType) {
     if (!typesEqual(sourceType, effectiveTarget)) {

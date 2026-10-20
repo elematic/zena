@@ -1348,6 +1348,96 @@ whenever they are registered because the erased-`==` diamond ref_tests
 every registered one with no AST naming it (section 8). Bounded at the
 five boxable primitives, so it does not grow with the facade.
 
+## 19. Interface vtable slots follow calls (fixed)
+
+A class packed as an interface gets a vtable for that pair, with one
+trampoline per slot of the interface's vtable struct, and the trampoline
+reaches the class's method. The struct had a slot for every member of
+every reached interface (except generic methods, which already got one
+slot per specialization a call site asked for), so packing a
+`GrowableArray<Value>` as `Iterable<Value>` reached `contains`, `all`,
+`some`, `find` and `filter`. `filter` constructs a `FilteredIterable`,
+which implements `Iterable` too and repeated the cost, and its iterator
+brought `FilterIterator`. GitHub issue #425 has the measurements from
+the Wasm Web UI demo, where this was 1,518 of 21,867 bytes.
+
+A member now gets a slot only when reachable code calls it through the
+interface. `demandInterfaceMember` records the call, and
+`#syncInterfaceSlots` appends the slot inside the class-interface vtable
+fixpoint. Pair vtables built before the slot existed get the trampoline
+for it the way they already did for generic slots: slots are appended,
+never reordered, and dispatch finds a slot by name. Neither Pass 0.8 nor
+`registerSpecializedInterface` adds slots any more.
+
+Three things had to be right for this to hold:
+
+- **Where demands come from.** Every interface dispatch lowering emits
+  needs a demand: member reads, calls and writes, index reads and
+  writes, a for-in's `:iterator` and `next`, an array pattern's length
+  and element reads, `:toString` in a template, and the `next` and
+  `run` slots generator and async frames implement. Most bodies are not
+  walked by `discoverNodeTypes` but by `registerInstantiations`, with
+  the checker's dependency records standing in for the rest. The
+  records carry member reads and index writes, not index reads or
+  iteration, so `noteInterfaceDispatch` runs in both walks.
+  `GrowableArray.from` (an index read) and a for-in over an `Array`
+  field in a method failed to lower until it did.
+- **Upcasts.** `repackInterface` builds the target interface's vtable
+  from the source's by slot name, so a member called through an
+  interface needs a slot in every interface that extends it.
+  `#interfaceLineage` gives each interface its own declaration and the
+  ones it extends, and a demand on any of them gives it the slot.
+  Interface assignability is nominal through `extendsList`, so this
+  covers every upcast the checker accepts. The checker used to record
+  every member of the target as referenced, on both interfaces, at each
+  interface-to-interface adaptation. That record is gone: it put all of
+  `Iterable` back the moment an `Array` was passed where an `Iterable`
+  was expected.
+- **Late demands.** A member demanded after the last class-interface
+  vtable round would leave earlier pair vtables without its trampoline.
+  `#checkNoLateInterfaceSlot` runs after the post-close drain and
+  throws if any pair vtable is shorter than its struct.
+
+`WasmModule.usedInterfaceMembers`, which every one of these sites
+already wrote, was never read, and is removed. Its keys mixed
+specialized and unspecialized interface keys.
+
+|                                                 | bytes | functions |
+| ----------------------------------------------- | ----: | --------: |
+| `test-files/iterable-slots.zena`, before        | 3,048 |        39 |
+| after                                           | 1,014 |        13 |
+| `test-files/iterable-slots-upcast.zena`, before | 3,387 |        49 |
+| after                                           | 1,135 |        13 |
+
+Both at `-O2 --target js` without names. The thirteen are the three
+exports, the three string helpers, `__start`, `GrowableArray<Value>`'s
+constructor and `#grow`, and `GrowableArray<Value>.:iterator` and
+`GrowableArrayIterator<Value>.next` with their trampolines.
+`binary-size_test.zena` asserts that neither fixture emits `filter`'s
+classes or any of the five uncalled members.
+
+Larger programs, each compiled from the same source by a stage A built
+from before and after the change:
+
+|                                        |    before |     after |
+| -------------------------------------- | --------: | --------: |
+| the compiler, `-O1`                    | 2,031,487 | 1,943,518 |
+| the compiler, `-O2`                    | 2,042,259 | 2,012,800 |
+| `examples/zenafx/widgets` component    |    53,634 |    32,014 |
+| `test-files/component/print.zena`      |     7,968 |     7,907 |
+| `test-files/component/async-noop.zena` |     4,770 |     4,770 |
+
+The compiler's own `-O1` build also got faster to compile, 12.6s to
+11.3s, from the trampolines and method bodies it no longer builds.
+
+One thing found along the way and left alone: the visitor builds its
+`"<id>.<member>"` reference strings from the interface's `TypeId`,
+where `instantiatedClassesByInterface` and the dependency records use
+its `SymbolId`, so a reference recorded by the visitor rarely reaches
+implementations through `addReferencedInterfaceMember`. Trampolines
+reach them instead. Fixing the key would reach the implementation on
+every instantiated class that implements the interface, packed or not.
+
 ## The keystone: `hasInst` and the class vtable
 
 Everything still in the module traces back to a single coupling.
@@ -1540,12 +1630,10 @@ different place. Prerequisite for 1 and everything after it.
    its fields without its methods (2c). Blunt-skipping it does not
    work — tried, and it breaks the self-compile with `member not found
 @FixedArray_…[]$BoundedRange`.
-7. **Prune interface vtables to referenced selectors.** RTA already
-   tracks `referencedInterfaceMembers` / `usedInterfaceMembers`; the
-   vtable struct shape should be built from that set rather than from
-   every declared member. This is what makes 2b stop mattering: a
-   selector nobody dispatches on should not occupy a slot, and then
-   nothing forces its implementation to be emitted.
+7. ~~**Prune interface vtables to referenced selectors.**~~ Done
+   (section 19): an interface vtable struct has a slot for each member
+   reachable code calls through the interface or one it extends, and
+   nothing else.
 8. **Register function-value wrappers from genuine value positions
    only** — 7 remain for stdlib functions never used as values.
 9. **Key inherited members by declaring-class instantiation**

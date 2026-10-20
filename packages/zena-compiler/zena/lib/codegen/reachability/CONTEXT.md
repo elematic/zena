@@ -152,6 +152,30 @@ and classes:
   fields root-first so `#fillReachedSlots` and `#pruneUndispatchedSlots`
   treat the specialized slot identically to a non-generic method slot.
 
+## An Interface Slot Exists Only When Something Calls It
+
+An interface vtable struct starts empty. A member gets a slot when
+reachable code calls it through the interface, recorded by
+`demandInterfaceMember`, or through an interface it extends: an upcast
+(`repackInterface`) copies the target's slots out of the source's
+vtable by name, so `#interfaceLineage` makes a demand on an interface
+count for every interface below it. `#syncInterfaceSlots` appends the
+slots inside the class-interface vtable fixpoint, and pair vtables
+built earlier get trampolines for the new tail. Each slot is a
+trampoline per packed class, and each trampoline reaches a method, so
+a slot nothing dispatches through used to keep that method and
+whatever it constructed (#425).
+
+So **a new interface dispatch in lowering needs a demand**, or it
+fails with `interface member not in vtable: <member>`. Node-level
+dispatches go in `noteInterfaceDispatch` (visitor), which both body
+walks run — most bodies get `registerInstantiations` and the checker's
+dependency records, not `discoverNodeTypes`, and the records hold
+member reads and index writes only. Dispatches a construct implies
+without naming them (a generator's `next`, an async frame's `run`,
+`:toString` in a template) are demanded where that construct is
+registered. See §19 of `docs/design/binary-size.md`.
+
 ## A Class Nothing Reaches Specializes Nothing
 
 `#layoutClassStructs` lays out every declared class in every loaded

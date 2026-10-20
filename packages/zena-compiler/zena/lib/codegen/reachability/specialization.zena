@@ -14,7 +14,7 @@ import { SymbolId, noSymbolId } from '../../scope/symbol.zena';
 import { Set } from 'zena:collections';
 
 import { getClassKey, getInterfaceKey, getInterfaceConstructorBaseName, getClassMethodKey, getClassInterfaceKey, getSignatureKey, matchOverload, collectMixinMembers, getMemberRootClass, getClassPrivateFieldKey, getSpecializedFunctionKey, getSpecializedName, isConcrete, MixinKey, containsErasedType } from '../codegen-utils.zena';
-import { typeToValType, mapReturnTypeToWasmResults, mapParamTypeToWasmParams, substituteTypeParamsInCodegen, substituteTypeParamsInClassContext, getClassTypeParameters, getInterfaceTypeParameters, getInterfaceMemberSignature, interfaceMethodOverloads, pushInterfaceMethodSlots } from '../type-mapping.zena';
+import { typeToValType, mapReturnTypeToWasmResults, mapParamTypeToWasmParams, substituteTypeParamsInCodegen, substituteTypeParamsInClassContext, getClassTypeParameters, getInterfaceTypeParameters, interfaceMethodOverloads } from '../type-mapping.zena';
 import { growable } from 'zena:core';
 
 /**
@@ -891,35 +891,8 @@ export final class Specializer implements SpecializerInterface {
     }
     this.pass.suppressNameEvidence = savedSuppress;
 
-    let keys = it.members.keys();
-    for (let key in keys) {
-      let member = it.members[key];
-      match (member) {
-        case FieldInfo as fi: {
-          let sig = getInterfaceMemberSignature(this.pass.wasm, it, "get#" + key);
-          emptyVTableStruct.fields.push(new WasmField("get#" + key, new ValTypeRef(sig), false));
-          if (fi.isMutable) {
-            let sigSet = getInterfaceMemberSignature(this.pass.wasm, it, "set#" + key);
-            emptyVTableStruct.fields.push(new WasmField("set#" + key, new ValTypeRef(sigSet), false));
-          }
-        }
-        case MethodInfo as mi: {
-          var isGeneric = false;
-          if (mi.type is FunctionType) {
-            let ft = mi.type as FunctionType;
-            let {typeParameters} = ft;
-            if (typeParameters != null && typeParameters.length > 0) {
-              isGeneric = true;
-            }
-          }
-          if (!isGeneric) {
-            pushInterfaceMethodSlots(this.pass.wasm, it, key, emptyVTableStruct);
-          }
-        }
-        case _: {}
-      }
-    }
-    
+    // The vtable's slots are added for the members reached code calls
+    // (ReachabilityAnalysis.#syncInterfaceSlots).
     this.pass.specializedInterfaces.push(it);
   }
 

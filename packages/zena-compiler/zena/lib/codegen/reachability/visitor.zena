@@ -24,7 +24,7 @@ import {
 } from '../wasm.zena';
 import { SymbolId, Symbol, noSymbolId } from '../../scope/symbol.zena';
 import {
-  getClassKey, getClassMethodKey, getInterfaceKey, getClassInterfaceKey, getInterfaceMemberKey, getMixinKeyFromSymbol, getSpecializedFunctionKey, getSpecializedName, getFunctionValueWrapperKey, getSignatureKey, collectMixinMembers, mixinScopeOfNode, MixinKey, isConcrete, ExportKey, ExportGlobalKey, getTypeUniqueKey, templateConvertHelperName, containsErasedType, pendingSomeClass, pendingNoneClass,
+  getClassKey, getClassMethodKey, getInterfaceKey, getClassInterfaceKey, getMixinKeyFromSymbol, getSpecializedFunctionKey, getSpecializedName, getFunctionValueWrapperKey, getSignatureKey, collectMixinMembers, mixinScopeOfNode, MixinKey, isConcrete, ExportKey, ExportGlobalKey, getTypeUniqueKey, templateConvertHelperName, containsErasedType, pendingSomeClass, pendingNoneClass,
 } from '../codegen-utils.zena';
 import {
   typeToValType, typeToStorageValType, mapReturnTypeToWasmResults, mapParamTypeToWasmParams, substituteTypeParamsInCodegen, getClosureStruct, getClassTypeParameters, getInterfaceTypeParameters, substituteTypeParamsInClassContext, eraseTypeParameters, findImplementedInterfaceTransitive, findExtendedInterfaceTransitive, recordWasmFields, sortedOptionalNames, asyncIteratorPendingFuture, getNonNullableType,
@@ -943,6 +943,8 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
       if (n is ForInStatement) {
         this.registerForInPendingArm(n, model, resolveType);
       }
+      // So are the interface members the body dispatches through.
+      this.noteInterfaceDispatch(n, model, resolveType);
       // Interface adaptations (a class value packed at an interface
       // slot) are node-level facts the dependency records never carry
       // — the fourth organ. Without this, a generic class packed into
@@ -1661,9 +1663,7 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
     }
     let iface = params[0] as InterfaceType;
     this.pass.typeLowerer.discoverType(iface as Type, model);
-    let iKey = getInterfaceKey(iface.genericSource ?? iface);
-    this.pass.wasm.usedInterfaceMembers[
-        getInterfaceMemberKey(iKey, 'run')] = true;
+    this.pass.demandInterfaceMember(iface, 'run');
     this.pass.addReferencedInterfaceMember(
         i32ToString((iface.genericSource ?? iface).id as i32) + '.run');
   }
@@ -1790,9 +1790,7 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
       let iterIface = ret as InterfaceType;
       if (!containsErasedType(iterIface as Type)) {
         this.pass.typeLowerer.discoverType(iterIface as Type, model);
-        let iKey = getInterfaceKey(iterIface.genericSource ?? iterIface);
-        this.pass.wasm.usedInterfaceMembers[
-            getInterfaceMemberKey(iKey, 'next')] = true;
+        this.pass.demandInterfaceMember(iterIface, 'next');
         this.pass.addReferencedInterfaceMember(
             i32ToString((iterIface.genericSource ?? iterIface).id as i32) + '.next');
         let stepFuture = asyncIteratorPendingFuture(this.pass.wasm, iterIface);
@@ -1853,6 +1851,74 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
    * same branch lowering will.
    */
   /**
+   * Records the members `n` calls through an interface vtable, so that
+   * they get slots (ReachabilityContext.demandInterfaceMember): a member
+   * read, call or write, an index read or write, a for-in's iteration
+   * protocol, and an array pattern's length and element reads. Both body
+   * walks run this. The checker's dependency records, which stand in for
+   * the full walk on most bodies, carry member reads and index writes
+   * but not index reads or iteration.
+   */
+  noteInterfaceDispatch(n: Node, model: SemanticModel,
+      resolveType: (t: Type) => Type): void {
+    if (n is ArrayPattern) {
+      this.pass.noteArrayPattern();
+    } else if (n is MemberExpression) {
+      let recv = interfaceReceiver(n.object, model, resolveType);
+      if (recv != null) {
+        let name = if (n.isSymbolAccess) ":" + n.property.name else n.property.name;
+        let isMethod = recv.members.has(name) && recv.members[name] is MethodInfo;
+        this.pass.demandInterfaceMember(recv, if (isMethod) name else "get#" + name);
+      }
+    } else if (n is IndexExpression) {
+      let recv = interfaceReceiver(n.object, model, resolveType);
+      if (recv != null) {
+        this.pass.demandInterfaceMember(recv, "[]");
+      }
+    } else if (n is AssignmentExpression) {
+      let left = n.left;
+      if (left is MemberExpression) {
+        let recv = interfaceReceiver(left.object, model, resolveType);
+        if (recv != null) {
+          let name = if (left.isSymbolAccess) ":" + left.property.name else left.property.name;
+          this.pass.demandInterfaceMember(recv, "set#" + name);
+        }
+      } else if (left is IndexExpression) {
+        let recv = interfaceReceiver(left.object, model, resolveType);
+        if (recv != null) {
+          this.pass.demandInterfaceMember(recv, "[]=");
+        }
+      }
+    } else if (n is ForInStatement) {
+      let t = model.getNodeType(n.iterable);
+      if (t == null) {
+        return;
+      }
+      let iterable = resolveType(t);
+      if (iterable is ArrayType ||
+          (iterable is ClassType && forInLowersToIndexLoop(iterable))) {
+        return;
+      }
+      // Demanding a member of Iterable demands it of every interface
+      // that extends Iterable too, so this covers an interface-typed
+      // iterable as well as the iterator a class's `:iterator` returns.
+      this.#demandPreludeMember("Iterable", ":iterator");
+      this.#demandPreludeMember("Iterator", "next");
+      if (n.isAwait) {
+        this.#demandPreludeMember("AsyncIterable", ":asyncIterator");
+        this.#demandPreludeMember("AsyncIterator", "next");
+      }
+    }
+  }
+
+  #demandPreludeMember(interfaceName: String, memberName: String): void {
+    let iface = this.pass.findPreludeInterface(interfaceName);
+    if (iface != null) {
+      this.pass.demandInterfaceMember(iface, memberName);
+    }
+  }
+
+  /**
    * Roots one iteration protocol a for-in drives — the iterable
    * interface's iterator-producing symbol member, the iterator
    * interface's `next`, and for each class the loop is known to
@@ -1866,8 +1932,6 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
     let iteratorIface = this.pass.findPreludeInterface(iteratorName);
     if (iterableIface != null) {
       let iterableKey = getInterfaceKey(iterableIface);
-      let itKey = getInterfaceMemberKey(iterableKey, symbolKey);
-      this.pass.wasm.usedInterfaceMembers[itKey] = true;
 
       let resolvedIfaceStr = `${i32ToString((iterableIface.genericSource ?? iterableIface).id as i32)}.${symbolKey}`;
       this.pass.addReferencedInterfaceMember(resolvedIfaceStr);
@@ -1896,9 +1960,6 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
     }
 
     if (iteratorIface != null) {
-      let iteratorKey = getInterfaceKey(iteratorIface);
-      let nextKey = getInterfaceMemberKey(iteratorKey, "next");
-      this.pass.wasm.usedInterfaceMembers[nextKey] = true;
 
       let resolvedIfaceStr = i32ToString((iteratorIface.genericSource ?? iteratorIface).id as i32) + ".next";
       this.pass.addReferencedInterfaceMember(resolvedIfaceStr);
@@ -2193,12 +2254,10 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
       let stringableIface = findExtendedInterfaceTransitive(this.pass.wasm, bt, "Stringable");
       if (stringableIface != null &&
           isWellKnown(WellKnown.StringableInterface, stringableIface.name, stringableIface.sourcePath)) {
-        let iName = getInterfaceKey(bt.genericSource ?? bt);
-        this.pass.wasm.usedInterfaceMembers[getInterfaceMemberKey(iName, ":toString")] = true;
+        this.pass.demandInterfaceMember(bt, ":toString");
         let resolvedIfaceStr = `${i32ToString((bt.genericSource ?? bt).id as i32)}.:toString`;
         this.pass.addReferencedInterfaceMember(resolvedIfaceStr);
-        let extName = getInterfaceKey(stringableIface.genericSource ?? stringableIface);
-        this.pass.wasm.usedInterfaceMembers[getInterfaceMemberKey(extName, ":toString")] = true;
+        this.pass.demandInterfaceMember(stringableIface, ":toString");
         let extIfaceStr = `${i32ToString((stringableIface.genericSource ?? stringableIface).id as i32)}.:toString`;
         this.pass.addReferencedInterfaceMember(extIfaceStr);
       } else {
@@ -2435,6 +2494,7 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
       if (n is LetPatternCondition) {
         this.discoverPatternTypes(n.pattern, model, resolveType);
       }
+      this.noteInterfaceDispatch(n, model, resolveType);
       // `x is T`: the test's own type is boolean, so the target class
       // appears on no expression node — the annotation is the only
       // mention, exactly as in registerInstantiations. Without this, a
@@ -2680,17 +2740,6 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
         if (iterableType != null) {
           let resolvedIterable = resolveType(iterableType);
 
-          if (resolvedIterable is InterfaceType) {
-            let iName = getInterfaceKey(resolvedIterable.genericSource ?? resolvedIterable);
-            let symbolKey = if (findExtendedInterfaceTransitive(this.pass.wasm, resolvedIterable, "AsyncIterable") != null &&
-                findExtendedInterfaceTransitive(this.pass.wasm, resolvedIterable, "Iterable") == null) {
-              ":asyncIterator"
-            } else {
-              ":iterator"
-            };
-            this.pass.wasm.usedInterfaceMembers[getInterfaceMemberKey(iName, symbolKey)] = true;
-          }
-          
           let resolvedIterableTypes = new Array<ClassType>();
           if (resolvedIterable is ClassType) {
             if (resolvedIterable.name.length >= 5 && resolvedIterable.name.sliceBytes(resolvedIterable.name.length - 5, resolvedIterable.name.length) == "_This") {
@@ -2848,8 +2897,6 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
           let propName = if (n.isSymbolAccess) ":" + n.property.name else n.property.name;
           
           if (resolvedObj is InterfaceType) {
-            let iName = getInterfaceKey(resolvedObj.genericSource ?? resolvedObj);
-            
             var isMethod = false;
             if (resolvedObj.members.has(propName)) {
               let mi = resolvedObj.members[propName];
@@ -2857,9 +2904,8 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
                 isMethod = true;
               }
             }
-            
+
             let resolvedName = if (isMethod) propName else "get#" + propName;
-            this.pass.wasm.usedInterfaceMembers[getInterfaceMemberKey(iName, resolvedName)] = true;
             let resolvedIfaceStr = `${i32ToString((resolvedObj.genericSource ?? resolvedObj).id as i32)}.${resolvedName}`;
             this.pass.addReferencedInterfaceMember(resolvedIfaceStr);
             this.registerGenericInterfaceMethodUse(n, model, resolveType, resolvedObj);
@@ -2976,10 +3022,8 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
         if (objType != null) {
           let resolvedObj = resolveType(objType);
           if (resolvedObj is InterfaceType) {
-            let iName = getInterfaceKey(resolvedObj.genericSource ?? resolvedObj);
             let targetName = "[]";
             if (resolvedObj.members.has(targetName)) {
-              this.pass.wasm.usedInterfaceMembers[getInterfaceMemberKey(iName, "[]")] = true;
               let resolvedIfaceStr = i32ToString((resolvedObj.genericSource ?? resolvedObj).id as i32) + ".[]";
               this.pass.addReferencedInterfaceMember(resolvedIfaceStr);
             }
@@ -2993,21 +3037,18 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
           if (objType != null) {
             let resolvedObj = resolveType(objType);
             if (resolvedObj is InterfaceType) {
-              let iName = getInterfaceKey(resolvedObj.genericSource ?? resolvedObj);
               let propName = if (mem.isSymbolAccess) ":" + mem.property.name else mem.property.name;
               let setterName = "set#" + propName;
               if (resolvedObj.members.has(propName)) {
                 let member = resolvedObj.members[propName];
                 if (member is FieldInfo) {
                   if (member.isMutable) {
-                    this.pass.wasm.usedInterfaceMembers[getInterfaceMemberKey(iName, "set#" + propName)] = true;
                     let resolvedIfaceStr = `${i32ToString((resolvedObj.genericSource ?? resolvedObj).id as i32)}.set#${propName}`;
                     this.pass.addReferencedInterfaceMember(resolvedIfaceStr);
                   }
                 }
               }
               if (resolvedObj.members.has(setterName)) {
-                this.pass.wasm.usedInterfaceMembers[getInterfaceMemberKey(iName, setterName)] = true;
                 let resolvedIfaceStr = `${i32ToString((resolvedObj.genericSource ?? resolvedObj).id as i32)}.${setterName}`;
                 this.pass.addReferencedInterfaceMember(resolvedIfaceStr);
               }
@@ -3027,10 +3068,8 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
           if (objType != null) {
             let resolvedObj = resolveType(objType);
             if (resolvedObj is InterfaceType) {
-              let iName = getInterfaceKey(resolvedObj.genericSource ?? resolvedObj);
               let targetName = "[]=";
               if (resolvedObj.members.has(targetName)) {
-                this.pass.wasm.usedInterfaceMembers[getInterfaceMemberKey(iName, "[]=")] = true;
                 let resolvedIfaceStr = i32ToString((resolvedObj.genericSource ?? resolvedObj).id as i32) + ".[]=";
                 this.pass.addReferencedInterfaceMember(resolvedIfaceStr);
               }
@@ -3925,6 +3964,21 @@ function ctorMethodName(model: SemanticModel, md: MethodDefinition): String {
  * the arrays — a bare mention with no arguments has no element type
  * there and falls back to the iterator path.
  */
+/**
+ * The interface a member access or index on `object` dispatches
+ * through, or null when `object` is not interface-typed. A nullable
+ * receiver (`x?.m()`) dispatches through its non-null member.
+ */
+function interfaceReceiver(object: Expression, model: SemanticModel,
+    resolveType: (t: Type) => Type): InterfaceType | null {
+  let t = model.getNodeType(object);
+  if (t == null) {
+    return null;
+  }
+  let resolved = getNonNullableType(resolveType(t));
+  return if (resolved is InterfaceType) resolved else null;
+}
+
 function forInLowersToIndexLoop(ct: ClassType): boolean {
   var canonical = ct;
   while (canonical.genericSource != null) {

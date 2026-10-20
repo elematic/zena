@@ -14,7 +14,7 @@ import { Set, HashMap, HashSet } from 'zena:collections';
 
 import { StringBuilder, growable } from 'zena:core';
 import {
-  getClassKey, getInterfaceKey, getClassMethodKey, getInterfaceMemberKey, getClassInterfaceKey, getClassInterfaceVTableName, getClassVTableName, getClassSingletonName, getInterfaceTrampolineName, getSignatureKey, collectMixinMembers, mixinScopeOfMember, mixinModelOfMember, getClassPrivateFieldKey, MixinKey, getFunctionAdaptationKey, ClassKey, ClassMethodKey, getTypeUniqueKey, getClosureSpecializationKey, isConcrete, getSpecializedName, containsErasedType, InterfaceKey, getMemberRootClass,
+  getClassKey, getInterfaceKey, getClassMethodKey, getClassInterfaceKey, getClassInterfaceVTableName, getClassVTableName, getClassSingletonName, getInterfaceTrampolineName, getSignatureKey, collectMixinMembers, mixinScopeOfMember, mixinModelOfMember, getClassPrivateFieldKey, MixinKey, getFunctionAdaptationKey, ClassKey, ClassMethodKey, getTypeUniqueKey, getClosureSpecializationKey, isConcrete, getSpecializedName, containsErasedType, InterfaceKey, getMemberRootClass,
 } from '../codegen-utils.zena';
 import {
   typeToValType, getClosureStruct, getInterfaceMemberSignature, interfaceMethodOverloads, pushInterfaceMethodSlots, interfaceSlotOverload, interfaceOverloadSignature, InterfaceSlotOverload, mapReturnTypeToWasmResults, mapParamTypeToWasmParams, substituteTypeParamsInCodegen, getClassTypeParameters, getInterfaceTypeParameters, getCellStruct, substituteTypeParamsInClassContext, getGenericInterfaceMemberSignature, getGenericInterfaceMethodType, substituteThisTypeInCodegen,
@@ -128,6 +128,16 @@ function referrerKey(isSymbol: boolean, id: i32, ct: ClassType | null) {
   let ctUid = if (ct != null) (ct as ClassType).uid else 0;
   let sym: i64 = if (isSymbol) 1 else 0;
   return ((ctUid as i64) * 2 + sym) * 4294967296 + ((id as i64) + 2147483648);
+}
+
+/** Whether method `mi` has type parameters of its own. */
+function isGenericMethod(mi: MethodInfo): boolean {
+  let ft = mi.type;
+  if (ft is FunctionType) {
+    let {typeParameters} = ft;
+    return typeParameters != null && typeParameters.length > 0;
+  }
+  return false;
 }
 
 export final class ReachabilityAnalysis implements ReachabilityContext {
@@ -266,6 +276,18 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
   var isRtaActive = true;
   referencedInterfaceMembers = new Set<String>();
   referencedReachableInterfaceMembers = new Set<String>();
+  /**
+   * The members reachable code calls through an interface, keyed
+   * "<symbol id of the interface declaration>.<member name>".
+   */
+  #demandedInterfaceMembers = new Set<String>();
+  var #arrayPatternReached = false;
+  /** The symbol ids of each interface declaration and those it extends. */
+  #interfaceLineages = new Map<SymbolId, GrowableArray<SymbolId>>();
+  /** Interface members given slots, keyed "<interfaceKey>|<member name>". */
+  #slottedInterfaceMembers = new Set<String>();
+  /** What #syncInterfaceSlots last looked at; see there. */
+  var #interfaceSlotSyncState = -1;
   discoveredTypes = new Set<String>();
   reachedSemanticTypes = new Set<String>();
   specializedInterfaces = new Array<InterfaceType>();
@@ -1553,32 +1575,16 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
       this.#linkSuperAndVT(ct, model, linkedClasses);
     }
 
-    // Pass 0.8: Populate interface vtable fields
-    // Each interface is paired with the model to resolve its member types in:
-    // the declaring module's model for declared interfaces, the root unit's
-    // model for specializations.
-    let allInterfaces = new Array<(InterfaceType, SemanticModel)>();
+    // Pass 0.8: Discover declared interfaces' member types, in the
+    // declaring module's model, so that slot signatures resolve to
+    // concrete wasm types. Without this, types not yet lowered fall back
+    // to structref in the vtable field while the trampolines created
+    // later use the concrete type, producing an invalid module.
+    // Specializations discover theirs when they are registered. The
+    // slots themselves are added on demand (#syncInterfaceSlots).
     for (let pair in this.interfaceDecls) {
-      let ifaceDecl = pair.value;
-      let moduleModel = this.interfaceModels[pair.key];
-      let ifaceType = moduleModel.getNodeType(ifaceDecl) as InterfaceType;
-      allInterfaces.push((ifaceType, moduleModel));
-    }
-    for (let it in this.specializedInterfaces) {
-      allInterfaces.push((it, this.program.units[0].model));
-    }
-
-    for (let ifaceEntry in allInterfaces) {
-      let (it, ifaceModel) = ifaceEntry;
-      let iName = getInterfaceKey(it);
-      let vst = this.wasm.interfaceVTableStructs[iName];
-      if (vst.fields.length > 0) {
-        continue;
-      }
-      // Discover member types first so signatures resolve to concrete wasm
-      // types. Without this, types not yet lowered fall back to structref in
-      // the vtable field while the trampolines created later use the concrete
-      // type, producing an invalid module.
+      let ifaceModel = this.interfaceModels[pair.key];
+      let it = ifaceModel.getNodeType(pair.value) as InterfaceType;
       let itParams = getInterfaceTypeParameters(it);
       for (let mPair in it.members) {
         let resolvedType = substituteTypeParamsInCodegen(this.wasm, itParams, it.typeArguments, mPair.value.type);
@@ -1590,34 +1596,6 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
           for (let overload in overloads) {
             this.typeLowerer.discoverType(overload, ifaceModel);
           }
-        }
-      }
-      let keys = it.members.keys();
-      for (let key in keys) {
-        let member = it.members[key];
-        match (member) {
-          case FieldInfo as fi: {
-            let sig = getInterfaceMemberSignature(this.wasm, it, "get#" + key);
-            vst.fields.push(new WasmField("get#" + key, new ValTypeRef(sig), false));
-            if (fi.isMutable) {
-              let sigSet = getInterfaceMemberSignature(this.wasm, it, "set#" + key);
-              vst.fields.push(new WasmField("set#" + key, new ValTypeRef(sigSet), false));
-            }
-          }
-          case MethodInfo as mi: {
-            var isGeneric = false;
-            if (mi.type is FunctionType) {
-              let ft = mi.type as FunctionType;
-              let {typeParameters} = ft;
-              if (typeParameters != null && typeParameters.length > 0) {
-                isGeneric = true;
-              }
-            }
-            if (!isGeneric) {
-              pushInterfaceMethodSlots(this.wasm, it, key, vst);
-            }
-          }
-          case _: {}
         }
       }
     }
@@ -2085,6 +2063,7 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
     this.ensureAllHelperFunctionsReached();
     this.processQueues();
     this.#checkNoPrunedSlotDispatched();
+    this.#checkNoLateInterfaceSlot();
 
     for (let iface in this.usedInterfaceTypes) {
       let iName = getInterfaceKey(iface);
@@ -2519,6 +2498,25 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
   }
 
   /**
+   * After the post-close drain: an interface member demanded this late
+   * would get a slot that pair vtables built earlier have no trampoline
+   * for, and the class's method would never be reached.
+   */
+  #checkNoLateInterfaceSlot(): void {
+    let addedSlots = this.#syncInterfaceSlots();
+    if (!this.#syncGenericInterfaceSlots() && !addedSlots) {
+      return;
+    }
+    for (let entry in this.wasm.classInterfaceVTables) {
+      let init = entry.value.initVTable;
+      if (init != null && init.funcs.length < init.structType.fields.length) {
+        throw new Error(`Internal error: interface vtable ${entry.value.name} ` +
+            "gained a slot after the class-interface vtables were built");
+      }
+    }
+  }
+
+  /**
    * Builds the class vtable global for each instantiated class that has
    * none yet and declares its own version of a slot whose method is
    * reached somewhere in the slot's hierarchy. Without it, lowering sees
@@ -2711,10 +2709,152 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
     let d = new GenericInterfaceMethodDemand(it, methName, slotName, typeArgs, model);
     this.#genericInterfaceDemandsByKey[dedupKey] = d;
     this.genericInterfaceMethodDemands.push(d);
-    // The unspecialized member is in use, exactly as a non-generic
-    // virtual reference records it.
-    let unspecIName = getInterfaceKey(it.genericSource ?? it);
-    this.wasm.usedInterfaceMembers[getInterfaceMemberKey(unspecIName, methName)] = true;
+  }
+
+  demandInterfaceMember(it: InterfaceType, memberName: String): void {
+    if (!this.currentReachable) {
+      return;
+    }
+    let id = (it.genericSource ?? it).symbolId;
+    this.#demandedInterfaceMembers.add(`${i32ToString(id as i32)}.${memberName}`);
+  }
+
+  noteArrayPattern(): void {
+    if (this.currentReachable) {
+      this.#arrayPatternReached = true;
+    }
+  }
+
+  /**
+   * Appends to each interface's vtable struct a slot for every member
+   * that reachable code calls through the interface or through one it
+   * extends, and returns whether it added any. A slot comes with a
+   * trampoline for each class packed as the interface, and the
+   * trampoline reaches the class's method, so a slot nothing dispatches
+   * through keeps that method and everything it constructs (#425).
+   *
+   * A member demanded through an interface this one extends gets a slot
+   * here too: an upcast (`repackInterface`) copies the target
+   * interface's slots out of the source's vtable by name. Slots are
+   * appended in the order demands are found. Dispatch looks a slot up by
+   * name, and #buildClassInterfaceVTables extends pair vtables that were
+   * built before the slot existed.
+   */
+  #syncInterfaceSlots(): boolean {
+    // Every term only grows, so an unchanged sum means nothing changed.
+    let state = this.#demandedInterfaceMembers.size +
+        this.interfaceDecls.size + this.specializedInterfaces.length +
+        (if (this.#arrayPatternReached) 1 else 0);
+    if (state == this.#interfaceSlotSyncState) {
+      return false;
+    }
+    this.#interfaceSlotSyncState = state;
+    var changed = false;
+    for (let pair in this.interfaceDecls) {
+      let model = this.interfaceModels[pair.key];
+      if (this.#addDemandedSlots(model.getNodeType(pair.value) as InterfaceType)) {
+        changed = true;
+      }
+    }
+    // Index loop: computing a slot's signature can specialize further
+    // interfaces, which the next call picks up.
+    var i = 0;
+    while (i < this.specializedInterfaces.length) {
+      if (this.#addDemandedSlots(this.specializedInterfaces[i])) {
+        changed = true;
+      }
+      i += 1;
+    }
+    return changed;
+  }
+
+  #addDemandedSlots(it: InterfaceType): boolean {
+    let iKey = getInterfaceKey(it);
+    if (!this.wasm.interfaceVTableStructs.has(iKey)) {
+      return false;
+    }
+    let vst = this.wasm.interfaceVTableStructs[iKey];
+    let lineage = this.#interfaceLineage(it);
+    var changed = false;
+    for (let key in it.members.keys()) {
+      let member = it.members[key];
+      if (member is FieldInfo) {
+        if (this.#addSlotIfDemanded(it, vst, lineage, "get#" + key, false)) {
+          changed = true;
+        }
+        if (member.isMutable &&
+            this.#addSlotIfDemanded(it, vst, lineage, "set#" + key, false)) {
+          changed = true;
+        }
+      } else if (member is MethodInfo) {
+        // A generic method's slots are per specialization
+        // (#syncGenericInterfaceSlots).
+        if (!isGenericMethod(member) &&
+            this.#addSlotIfDemanded(it, vst, lineage, key, true)) {
+          changed = true;
+        }
+      }
+    }
+    return changed;
+  }
+
+  /**
+   * Appends the slot of member `name` of `it` (every overload's, for a
+   * method) to `vst` if it is demanded and not there yet.
+   */
+  #addSlotIfDemanded(it: InterfaceType, vst: WasmStruct,
+      lineage: GrowableArray<SymbolId>, name: String, isMethod: boolean): boolean {
+    let slottedKey = `${getInterfaceKey(it) as String}|${name}`;
+    if (this.#slottedInterfaceMembers.has(slottedKey) ||
+        !this.#isInterfaceMemberDemanded(lineage, name)) {
+      return false;
+    }
+    this.#slottedInterfaceMembers.add(slottedKey);
+    if (isMethod) {
+      pushInterfaceMethodSlots(this.wasm, it, name, vst);
+    } else {
+      let sig = getInterfaceMemberSignature(this.wasm, it, name);
+      vst.fields.push(new WasmField(name, new ValTypeRef(sig), false));
+    }
+    return true;
+  }
+
+  #isInterfaceMemberDemanded(lineage: GrowableArray<SymbolId>, name: String): boolean {
+    if (this.#arrayPatternReached &&
+        (name == "[]" || name == "get#length" || name == "length")) {
+      return true;
+    }
+    for (let id in lineage) {
+      if (this.#demandedInterfaceMembers.has(`${i32ToString(id as i32)}.${name}`)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  #interfaceLineage(it: InterfaceType): GrowableArray<SymbolId> {
+    let decl = it.genericSource ?? it;
+    if (let (true, cached) = this.#interfaceLineages.get(decl.symbolId)) {
+      return cached;
+    }
+    let ids = new Array<SymbolId>();
+    let seen = new Set<SymbolId>();
+    let pending = growable<InterfaceType>([decl]);
+    var i = 0;
+    while (i < pending.length) {
+      let curr = pending[i].genericSource ?? pending[i];
+      i += 1;
+      if (seen.has(curr.symbolId)) {
+        continue;
+      }
+      seen.add(curr.symbolId);
+      ids.push(curr.symbolId);
+      for (let ext in curr.extendsList) {
+        pending.push(ext);
+      }
+    }
+    this.#interfaceLineages[decl.symbolId] = ids;
+    return ids;
   }
 
   findGenericInterfaceDemand(iKey: String, slotName: String): GenericInterfaceMethodDemand | null {
@@ -3414,7 +3554,10 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
    * The pair set is finite and only ever grows, so this terminates.
    */
   #buildClassInterfaceVTables(): boolean {
-    var created = this.#syncGenericInterfaceSlots();
+    var created = this.#syncInterfaceSlots();
+    if (this.#syncGenericInterfaceSlots()) {
+      created = true;
+    }
     // Pass 2: Generate class-interface trampoline vtables
     let classes = new Array<ClassType>();
     let seenClassKeys = new Map<ClassKey, boolean>();
@@ -3472,11 +3615,11 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
         let key = getClassInterfaceKey(cName, iName);
         if (this.wasm.usedInterfaceAdaptations.has(unspecKey)) {
           if (this.wasm.classInterfaceVTables.has(key)) {
-            // Generic slots appended after this pair's vtable was
-            // built (a demand discovered in a later round) leave the
-            // stored funcs list short — extend it with trampolines
-            // for the tail slots. Fields are append-only, so the
-            // existing entries still align.
+            // Slots appended after this pair's vtable was built (a
+            // demand discovered in a later round) leave the stored
+            // funcs list short — extend it with trampolines for the
+            // tail slots. Fields are append-only, so the existing
+            // entries still align.
             let existing = this.wasm.classInterfaceVTables[key];
             let init = existing.initVTable;
             if (init != null) {
@@ -4193,9 +4336,7 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
                 }
               }
             }
-            let unspecIName = getInterfaceKey(targetIfaceType.genericSource ?? targetIfaceType);
-            this.wasm.usedInterfaceMembers[getInterfaceMemberKey(unspecIName, mName)] = true;
-            
+            this.demandInterfaceMember(targetIfaceType, mName);
             let resolvedIfaceStr = `${i32ToString((targetIfaceType.genericSource ?? targetIfaceType).symbolId as i32)}.${mName}`;
             this.addReferencedInterfaceMember(resolvedIfaceStr);
           }
@@ -4569,10 +4710,6 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
           for (let pair in pairList) {
             let {cha} = this;
             let cType = pair.classType;
-            let ifaceType = pair.interfaceType;
-            let unspecIName = getInterfaceKey(ifaceType.genericSource ?? ifaceType);
-            this.wasm.usedInterfaceMembers[getInterfaceMemberKey(unspecIName, mName)] = true;
-
             let mds = cha.findImplementingMethods(cType, mName);
             if (mds.length > 0) {
               for (let md in mds) {

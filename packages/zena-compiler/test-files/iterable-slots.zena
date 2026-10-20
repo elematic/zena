@@ -1,0 +1,31 @@
+// A list packed into a union's `Iterable<Value>` member and iterated
+// through the interface. Only `:iterator` (and the iterator's `next`) is
+// called through an interface, so the module should hold
+// `GrowableArray<Value>.:iterator` and `GrowableArrayIterator<Value>.next`
+// with their trampolines, and none of Iterable's other methods
+// (`contains`, `all`, `some`, `find`, `filter`, and with `filter`
+// `FilteredIterable` and `FilterIterator`). The module-level `var` keeps
+// the pack site from being devirtualized. GitHub issue #425.
+type Value = String | Iterable<Value>;
+
+var current: Value = 'none';
+
+export let store = (n: i32): void => {
+  let items = new GrowableArray<Value>();
+  for (var i = 0; i < n; i += 1) { items.push('x'); }
+  current = items;
+};
+
+export let count = (): i32 => match (current) {
+  case Iterable as it: {
+    var n = 0;
+    for (let item in it) { n += 1; }
+    n
+  }
+  case _: 1
+};
+
+export let main = (): i32 => {
+  store(3);
+  return count();
+};
