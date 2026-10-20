@@ -1213,6 +1213,21 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
         this.registerGenericMethodUse(n, model, resolveType);
         this.#noteMemberStaticTarget(n, model, resolveType);
       }
+      // A primitive interpolation the checker boxed for its tag
+      // (`setBoxAdaptation`): the box class appears on no expression
+      // node, so the adaptation is its one mention here.
+      if (n is TaggedTemplateExpression) {
+        for (let sub in n.quasi.expressions) {
+          let box = model.getBoxAdaptation(sub);
+          if (box != null) {
+            let resolvedBox = resolveType(box) as ClassType;
+            if (isConcrete(resolvedBox) && !containsErasedType(resolvedBox as Type)) {
+              specializer.instantiateClassType(resolvedBox, model);
+            }
+            this.queueExplicitCtor(resolvedBox, "<constructor>");
+          }
+        }
+      }
       if (n is NewExpression) {
         let neType = model.getNodeType(n);
         let ctorName = if (n.constructorName != null) {
@@ -2623,6 +2638,21 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
           typeLowerer.discoverSignatureType(resolved, model);
         } else {
           typeLowerer.discoverType(resolved, model);
+        }
+      }
+      // A primitive interpolation the checker boxed for its tag
+      // (`setBoxAdaptation`): the box class appears on no expression
+      // node, so the adaptation is its one mention here.
+      if (n is TaggedTemplateExpression) {
+        for (let sub in n.quasi.expressions) {
+          let box = model.getBoxAdaptation(sub);
+          if (box != null) {
+            let resolvedBox = resolveType(box) as ClassType;
+            if (isConcrete(resolvedBox) && !containsErasedType(resolvedBox as Type)) {
+              specializer.instantiateClassType(resolvedBox, model);
+            }
+            this.queueExplicitCtor(resolvedBox, "<constructor>");
+          }
         }
       }
       if (n is NewExpression) {

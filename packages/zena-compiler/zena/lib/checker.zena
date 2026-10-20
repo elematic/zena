@@ -8487,6 +8487,37 @@ function noteErasedRecord(ctx: CheckerContext, rec: RecordT): void {
   }
 }
 
+/**
+ * The `Box<P>` a tag's value type accepts for a primitive interpolation
+ * of type `primitive`, or null when it accepts none. Accepting the box
+ * is how a tag opts into boxing (docs/design/wasm-web-ui.md, "Zena
+ * changes"); the box's constructor is referenced so reachability keeps
+ * it, since no expression names the class.
+ */
+function boxForTemplateValue(ctx: CheckerContext, primitive: Type, valueType: Type): ClassType | null {
+  let base = baseType(primitive);
+  if (!(isNumericType(base) || base is BooleanType) || typeContainsTypeParameter(base)) {
+    return null;
+  }
+  let boxGeneric = ctx.tryResolveWellKnownType(WellKnown.BoxClass);
+  if (boxGeneric == null || !(boxGeneric is ClassType)) {
+    return null;
+  }
+  let generic = boxGeneric as ClassType;
+  let args = new Array<Type>();
+  args.push(base);
+  let boxed = instantiateClassType(generic, args);
+  if (!isAssignableTo(ctx, boxed, valueType)) {
+    return null;
+  }
+  let deps = ctx.currentDependencies();
+  if (deps != null) {
+    deps.referencedTypes.add(boxed as Type);
+    deps.referencedClassMethods.add(`${i32ToString(generic.symbolId as i32)}.<constructor>`);
+  }
+  return boxed;
+}
+
 function checkAndRegisterInterfaceAdaptation(ctx: CheckerContext, node: Node, sourceType: Type, targetType: Type): void {
   noteRecordErasure(ctx, sourceType, targetType);
   // `C | null` is assignable to no single member of `I | null`, so the
@@ -13953,13 +13984,24 @@ function checkExpressionInner(ctx: CheckerContext, expr: Expression, expectedTyp
     for (let expr in quasi.expressions) {
       let exprType = checkExpression(ctx, expr, valueType);
       if (valueType != null) {
-        if (!isAssignableTo(ctx, exprType, valueType) && !(exprType is ErrorType)) {
-          ctx.error(
-            `Type mismatch: interpolated value '${typeToString(exprType)}' is not assignable to the tag's value type '${typeToString(valueType)}'.`,
-            DiagnosticCode.TypeMismatch, expr.loc
-          );
+        if (isAssignableTo(ctx, exprType, valueType)) {
+          checkAndRegisterInterfaceAdaptation(ctx, expr, exprType, valueType);
+        } else if (!(exprType is ErrorType)) {
+          // A primitive where the tag takes its box. A tag opts into
+          // boxing by accepting `Box<P>` among its values; the box is
+          // recorded for codegen to construct around the value, as an
+          // untagged literal converts a primitive to text in the same
+          // position. A tag that accepts no box keeps the error.
+          let box = boxForTemplateValue(ctx, exprType, valueType);
+          if (box != null) {
+            ctx.model.setBoxAdaptation(expr, box);
+          } else {
+            ctx.error(
+              `Type mismatch: interpolated value '${typeToString(exprType)}' is not assignable to the tag's value type '${typeToString(valueType)}'.`,
+              DiagnosticCode.TypeMismatch, expr.loc
+            );
+          }
         }
-        checkAndRegisterInterfaceAdaptation(ctx, expr, exprType, valueType);
       }
     }
     match (tagType) {

@@ -951,6 +951,11 @@ The `TemplateStringsArray` is guaranteed to be referentially stable—the same
 template literal in source code always produces the same array instance. This
 enables caching based on array identity.
 
+Interpolations are checked against the tag's value type. A tag that accepts
+a primitive's box among its values (`String | Box<i32> | null`) opts into
+boxing: `${n}` with an `i32` crosses as a `Box<i32>`, while a tag that
+accepts no box for the type reports the mismatch.
+
 #### Raw Strings
 
 Tag functions can access unprocessed string content (with escape sequences

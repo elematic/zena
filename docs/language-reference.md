@@ -1711,6 +1711,23 @@ The tag function receives:
 
 The strings array length is always `values.length + 1`.
 
+Each interpolation is checked against the element type of the tag's second
+parameter, and a value the tag cannot hold is an error at the interpolation.
+A tag opts into boxing by accepting a primitive's box among its values: when
+an interpolation is a primitive the tag does not take as it is, and the
+tag's value type accepts `Box<P>` for it, the compiler wraps the value in
+that box. An untagged literal converts a primitive to text in the same
+position; a tag that accepts no box for the type keeps the error.
+
+```zena
+type Value = String | Box<i32> | null;
+let count = (strings: TemplateStringsArray, values: FixedArray<Value>): i32 =>
+  values.length;
+
+let n = 3;
+let parts = count`${n} ${'items'}`;   // n crosses as a Box<i32>
+```
+
 **Note**: The strings array maintains identity across evaluations of the same
 template expression, allowing it to be used as a cache key for expensive
 one-time processing.
