@@ -1,3 +1,7 @@
+import {numberImports} from './number-format.js';
+
+export {numberImports};
+
 export interface ZenaImports {
   env?: Record<string, Function>;
   console?: Record<string, Function>;
@@ -1138,6 +1142,7 @@ export async function instantiate(
       toLowerCase: (s: string) => s.toLowerCase(),
       toUpperCase: (s: string) => s.toUpperCase(),
     },
+    'zena:host:number': numberImports,
   };
   if (userImports.web !== false) {
     defaultImports.web = webHost.imports;
@@ -1166,6 +1171,10 @@ export async function instantiate(
     'zena:host:string': {
       ...defaultImports['zena:host:string'],
       ...userImports['zena:host:string'],
+    },
+    'zena:host:number': {
+      ...defaultImports['zena:host:number'],
+      ...userImports['zena:host:number'],
     },
   };
   if (userImports.web !== false) {

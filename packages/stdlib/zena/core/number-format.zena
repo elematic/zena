@@ -1,0 +1,80 @@
+/**
+ * Number-to-string conversion on the byte targets, which write ASCII
+ * digits into a byte array with the functions in `string-convert.zena`.
+ *
+ * A virtual module. The js target selects `number-format-js.zena`, which
+ * asks the host instead. The names are declared here rather than in
+ * `string-convert.zena`, which both targets load, because codegen finds a
+ * template literal's converter by its name in `zena:core`, and the name
+ * must be declared once.
+ */
+import { Encoding } from './encoding.zena';
+import { I32_MIN, I64_MIN } from 'zena:math';
+import {
+  writeI32, writeU32, writeI64, writeU64, floatToStringImpl,
+  fixedToStringImpl,
+} from './string-convert.zena';
+
+/**
+ * Converts an i32 to its decimal string representation.
+ */
+export let i32ToString = (value: i32): String => {
+  if (value == I32_MIN) {
+    return "-2147483648";
+  }
+  let buffer = __byte_array_new(12);
+  let (start, end) = writeI32(value, buffer, 12);
+  return String.fromByteArray(buffer, start, end, Encoding.WTF8);
+};
+
+/**
+ * Converts a u32 to its decimal string representation.
+ */
+export let u32ToString = (value: u32): String => {
+  let buffer = __byte_array_new(11);
+  let (start, end) = writeU32(value, buffer, 11);
+  return String.fromByteArray(buffer, start, end, Encoding.WTF8);
+};
+
+/**
+ * Converts an i64 to its decimal string representation.
+ */
+export let i64ToString = (value: i64): String => {
+  if (value == I64_MIN) {
+    return "-9223372036854775808";
+  }
+  let buffer = __byte_array_new(21);
+  let (start, end) = writeI64(value, buffer, 21);
+  return String.fromByteArray(buffer, start, end, Encoding.WTF8);
+};
+
+/**
+ * Converts a u64 to its decimal string representation.
+ */
+export let u64ToString = (value: u64): String => {
+  let buffer = __byte_array_new(21);
+  let (start, end) = writeU64(value, buffer, 21);
+  return String.fromByteArray(buffer, start, end, Encoding.WTF8);
+};
+
+/**
+ * The shortest decimal string that reads back as this f32. The f32
+ * interval is used, not the f64 one the promoted value would have, so
+ * `0.1 as f32` prints "0.1" rather than "0.10000000149011612".
+ */
+export let f32ToString = (value: f32): String => {
+  return floatToStringImpl(value as f64, true);
+};
+
+/** The shortest decimal string that reads back as this f64. */
+export let f64ToString = (value: f64): String => {
+  return floatToStringImpl(value, false);
+};
+
+/**
+ * `value` rounded to `sigDigits` significant decimal digits, in the
+ * same format `f64ToString` uses. `sigDigits` is clamped to [1, 17].
+ */
+export let f64ToPrecision = (value: f64, sigDigits: i32): String => {
+  return fixedToStringImpl(value, sigDigits);
+};
