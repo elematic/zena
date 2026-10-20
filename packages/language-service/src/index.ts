@@ -20,6 +20,7 @@ import {
   createStringWriter,
   createConsoleImports,
   numberImports,
+  stringImports,
 } from '@zena-lang/runtime';
 
 /**
@@ -302,10 +303,7 @@ export async function createLanguageService(
       captureStackTrace: () => null,
       formatStackTrace: () => null,
     },
-    'zena:host:string': {
-      toLowerCase: (s: string) => s.toLowerCase(),
-      toUpperCase: (s: string) => s.toUpperCase(),
-    },
+    'zena:host:string': stringImports,
     'zena:host:number': numberImports,
   };
 

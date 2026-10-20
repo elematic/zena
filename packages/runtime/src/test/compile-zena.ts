@@ -24,6 +24,7 @@ import {
   createStringWriter,
   createStringReader,
   numberImports,
+  stringImports,
 } from '../index.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -103,10 +104,7 @@ const languageService = (): Service => {
         }
       },
     },
-    'zena:host:string': {
-      toLowerCase: (s: string) => s.toLowerCase(),
-      toUpperCase: (s: string) => s.toUpperCase(),
-    },
+    'zena:host:string': stringImports,
     'zena:host:number': numberImports,
   });
   exports = instance.exports as LspExports;

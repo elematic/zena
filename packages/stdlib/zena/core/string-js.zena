@@ -149,6 +149,13 @@ declare function __js_string_to_lower(s: externref): externref;
 @external("zena:host:string", "toUpperCase")
 declare function __js_string_to_upper(s: externref): externref;
 
+@external("zena:host:string", "indexOf")
+declare function __js_string_index_of(s: externref, needle: externref, fromIndex: i32): i32;
+
+@external("zena:host:string", "replaceAll")
+declare function __js_string_replace_all(
+    s: externref, needle: externref, replacement: externref): externref;
+
 // Template string join helpers
 export let __concat2 = (a: String, b: String): String => a + b;
 export let __concat3 = (a: String, b: String, c: String): String => a + b + c;
@@ -589,27 +596,7 @@ export final class String implements Hashable, Stringable, Iterable<String> {
   }
 
   #indexOfFrom(needle: String, fromIndex: i32): i32 {
-    let nLen = __js_string_length(needle.#handle);
-    let thisLen = __js_string_length(this.#handle);
-    if (nLen == 0) {
-      return if (fromIndex > thisLen) thisLen else if (fromIndex < 0) 0 else fromIndex;
-    }
-    if (fromIndex >= thisLen || nLen > thisLen) {
-      return -1;
-    }
-    let start = if (fromIndex < 0) 0 else fromIndex;
-    let first = __js_string_char_code_at(needle.#handle, 0);
-    let limit = thisLen - nLen;
-    var i = start;
-    while (i <= limit) {
-      if (__js_string_char_code_at(this.#handle, i) == first) {
-        if (nLen == 1 || __js_string_equals(__js_string_substring(this.#handle, i, i + nLen), needle.#handle)) {
-          return i;
-        }
-      }
-      i += 1;
-    }
-    return -1;
+    return __js_string_index_of(this.#handle, needle.#handle, fromIndex);
   }
 
   indexOf(needle: String): inline (true, StringIndex) | inline (false, _) {
@@ -692,18 +679,8 @@ export final class String implements Hashable, Stringable, Iterable<String> {
   }
 
   replaceAll(needle: String, replacement: String): String {
-    let idx = this.#indexOfFrom(needle, 0);
-    if (idx < 0) {
-      return this;
-    }
-    let parts = this.split(needle);
-    var res = parts[0];
-    var i = 1;
-    while (i < parts.length) {
-      res = new String.#fromHandle(__js_string_concat(__js_string_concat(res.#handle, replacement.#handle), parts[i].#handle));
-      i += 1;
-    }
-    return res;
+    return new String.#fromHandle(
+        __js_string_replace_all(this.#handle, needle.#handle, replacement.#handle));
   }
 
   trim(): String {

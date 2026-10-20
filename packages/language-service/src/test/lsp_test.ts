@@ -17,6 +17,7 @@ import {
   createConsoleImports,
   instantiate,
   numberImports,
+  stringImports,
 } from '@zena-lang/runtime';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -123,10 +124,7 @@ async function loadLsp(): Promise<LspHandle> {
       },
       console: consoleImports,
       compiler: compilerImports,
-      'zena:host:string': {
-        toLowerCase: (s: string) => s.toLowerCase(),
-        toUpperCase: (s: string) => s.toUpperCase(),
-      },
+      'zena:host:string': stringImports,
       'zena:host:number': numberImports,
     },
     {
