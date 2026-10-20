@@ -58,7 +58,7 @@ import { walkEnter } from './visitor.zena';
 import {
   Node, Module, SourceLocation,
   // Expressions
-  Expression, Identifier, NumberLiteral, StringLiteral, BooleanLiteral,
+  NodeId, Expression, Identifier, NumberLiteral, StringLiteral, BooleanLiteral,
   NullLiteral, BinaryExpression, UnaryExpression, AssignmentExpression,
   FunctionExpression, CallExpression, MemberExpression, IndexExpression,
   ThisExpression, SuperExpression, NewExpression, AsExpression, IsExpression,
@@ -103,7 +103,7 @@ import {
   MemberTable, setMemberTypeSubstitution,
   DecoratedField, ReceiverKind,
   TypeParameterType, TypeAliasType, SymbolType, ThisType,
-  instantiateClassType, instantiateInterfaceType, instantiateMixinType,
+  recursiveAliasKey, instantiateClassType, instantiateInterfaceType, instantiateMixinType,
   instantiateTypeAliasType, instantiateFunctionType, GenericNamedType,
   applyTypeIntrinsic, isFutureClassType,
   isNumericType, isIntegerType, isFloatType, is64BitType,
@@ -886,10 +886,13 @@ final class CheckerContext {
   #materializedTypes = new Map<SymbolId, Type>();
 
   /**
-   * Materialized declaration types keyed by declaration offset.
-   * Keeps type/value namespace symbols for the same declaration unified.
+   * Materialized declaration types keyed by the declaration node's id,
+   * so the type-namespace and value-namespace symbols of one
+   * declaration resolve to one type object. A node minted outside the
+   * parser carries id 0 and is not cached, since every such node would
+   * share the key.
    */
-  #materializedDeclTypes = new Map<i32, Type>();
+  #materializedDeclTypes = new Map<NodeId, Type>();
 
   /**
    * Dependency exports map: import specifier → ModuleExports.
@@ -1580,7 +1583,7 @@ final class CheckerContext {
     if (let (true, mat) = this.#materializedTypes.get(info.id)) {
       return mat;
     }
-    
+
     let btType = this.model.getBindingType(info);
     if (btType != null) {
       return btType;
@@ -1607,10 +1610,8 @@ final class CheckerContext {
 
     if (target.declaration != null) {
       let declNode = target.declaration as Node;
-      let loc = declNode.loc;
-      if (loc != null) {
-        let declLoc = loc;
-        if (let (true, cached) = this.#materializedDeclTypes.get(declLoc.start)) {
+      if ((declNode.id as i32) != 0) {
+        if (let (true, cached) = this.#materializedDeclTypes.get(declNode.id)) {
           this.#materializedTypes[info.id] = cached;
           this.#materializedTypes[target.id] = cached;
           this.model.setBindingType(info, cached);
@@ -1652,10 +1653,8 @@ final class CheckerContext {
       this.model.setBindingType(info, materialized);
       if (target.declaration != null) {
         let declNode = target.declaration as Node;
-        let loc = declNode.loc;
-        if (loc != null) {
-          let declLoc = loc;
-          this.#materializedDeclTypes[declLoc.start] = materialized;
+        if ((declNode.id as i32) != 0) {
+          this.#materializedDeclTypes[declNode.id] = materialized;
         }
         if (isTypeDeclaration(declNode)) {
           this.#sharedState.declaredNominalTypes[target.id] = materialized;
@@ -4416,20 +4415,24 @@ export function finishModule(mc: ModuleCheck): CheckResult {
     let {declaration} = exInfo;
     var exportType = ctx.resolveTypeName(expName);
     if (exportType == null) {
-      // Re-exported types (export {X} from './dep'): this module has no local
-      // type registration for the name, so forward the origin module's export
-      // type. Without this, importers fall back to the export symbol's VALUE
-      // binding for the type — wrong for enums, whose type (the alias) and
-      // value (the member record) differ.
-      let models = ctx.depModels;
-      if (models != null) {
-        for (let depKey in models.keys()) {
-          if (let (true, depModel) = models.get(depKey)) {
-            let depExportType = depModel.getExportType(expName);
-            if (depExportType != null) {
-              exportType = depExportType;
-              break;
-            }
+      // A re-exported type (`export {X} from './dep'`): this module has
+      // no local type registration for the name, so forward the origin's
+      // type. Without this, importers fall back to the export symbol's
+      // VALUE binding for the type — wrong for enums, whose type (the
+      // alias) and value (the member record) differ. The origin is the
+      // export symbol's target across the re-export, and its type is
+      // found by that symbol: the canonical type its declaration
+      // registered, else its own module's export of the name. Never by
+      // the name across every dependency — two libraries can each
+      // declare a `TemplateValue`, and whichever model came first in
+      // the walk used to answer for both.
+      let origin = exInfo.resolveTarget();
+      if (origin !== exInfo) {
+        exportType = ctx.canonicalTypeOf(origin);
+        let models = ctx.depModels;
+        if (exportType == null && models != null) {
+          if (let (true, originModel) = models.get(origin.modulePath)) {
+            exportType = originModel.getExportType(expName);
           }
         }
       }
@@ -5709,8 +5712,8 @@ function resolveTypeAnnotationInner(ctx: CheckerContext, ann: TypeAnnotation, al
             ctx.error(`Type '${name}' is not generic.`, DiagnosticCode.TypeMismatch, ann.loc);
           }
           if (tat.resolving && !tat.isDistinct) {
-            tat.specializationKeyCache = tat.name;
-            tat.uniqueKeyCache = "alias_" + tat.name;
+            tat.specializationKeyCache = recursiveAliasKey(tat);
+            tat.uniqueKeyCache = "alias_" + recursiveAliasKey(tat);
           }
           return if (tat.isDistinct || tat.resolving) tat else tat.target;
         }

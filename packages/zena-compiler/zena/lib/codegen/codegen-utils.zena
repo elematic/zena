@@ -8,7 +8,8 @@ import {
   TupleType, InlineTupleType, UnionType, TypeParameterType, FunctionType, UnknownType, typeToString,
   MixinType, MixinKey, instantiateClassType, TypeAliasType, EnumType, ErrorType, HoleType, NeverType, ThisType,
   AnyRefType, EqRefType, ExternRefType, StringLiteralType, NumLiteralType, baseType, ErasedType,
-  MethodInfo, countTypeKey, countCodegenFunctionType, internFunctionType, mergeRow, mergeTupleRow } from '../types.zena';
+  MethodInfo, countTypeKey, countCodegenFunctionType, internFunctionType, mergeRow, mergeTupleRow,
+  recursiveAliasKey } from '../types.zena';
 import { SemanticModel } from '../semantic-model.zena';
 import { Symbol, noSymbolId } from '../scope/symbol.zena';
 import { Program, CompilationUnit } from '../program.zena';
@@ -344,7 +345,10 @@ export function getTypeKeyForSpecialization(t: Type): String {
     return cached;
   }
   if (t is TypeAliasType) {
-    t.specializationKeyCache = t.name;
+    // Provisional, so a self-referencing alias's target can be keyed
+    // without unwrapping the alias again: the name qualified by its
+    // module, since the name alone is shared across libraries.
+    t.specializationKeyCache = recursiveAliasKey(t);
   }
   let key = getTypeKeyForSpecializationRaw(t);
   t.specializationKeyCache = key;
@@ -1148,7 +1152,7 @@ export function getTypeUniqueKey(t: Type): String {
     return cached;
   }
   if (t is TypeAliasType) {
-    t.uniqueKeyCache = "alias_" + t.name;
+    t.uniqueKeyCache = "alias_" + recursiveAliasKey(t);
   }
   let key = getTypeUniqueKeyRaw(t);
   t.uniqueKeyCache = key;
