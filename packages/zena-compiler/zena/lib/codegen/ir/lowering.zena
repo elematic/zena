@@ -7397,10 +7397,12 @@ export final class FunctionLowerer {
     }
 
     // Class receiver: [] overload, resolved by mangled signature key.
-    // The receiver VALUE's class wins (specializations); the checked
-    // type is the fallback.
+    // The receiver VALUE's class wins (specializations), except for
+    // extension classes where the value is the underlying onType.
     let fromValue = this.#classTypeOfValue(receiver);
-    let ct = if (fromValue != null) {
+    let ct = if (selfResolved is ClassType && selfResolved.isExtension) {
+      eraseTypeParameters(this.wasm, selfResolved) as ClassType
+    } else if (fromValue != null) {
       fromValue
     } else if (selfResolved is ClassType) {
       eraseTypeParameters(this.wasm, selfResolved) as ClassType
@@ -8006,7 +8008,9 @@ export final class FunctionLowerer {
     // with the same declaration's signature key. No record means no
     // overloads.
     let fromValue = this.#classTypeOfValue(receiver);
-    let ct = if (fromValue != null) {
+    let ct = if (selfResolved is ClassType && selfResolved.isExtension) {
+      eraseTypeParameters(this.wasm, selfResolved) as ClassType
+    } else if (fromValue != null) {
       fromValue
     } else if (selfResolved is ClassType) {
       eraseTypeParameters(this.wasm, selfResolved) as ClassType

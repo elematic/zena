@@ -1,4 +1,5 @@
 import { hash } from './hashable.zena';
+import { FilteredIterable } from './iterable-utils.zena';
 
 import { Encoding } from './encoding.zena';
 export { Encoding } from './encoding.zena';
@@ -23,18 +24,177 @@ let isAsciiSpace = (b: i32) =>
   b == 0x20 || b == 0x09 || b == 0x0A || b == 0x0C || b == 0x0D;
 
 /**
+ * Whether `cp` is a C0/C1 control character, CR, or LF (UAX #29 Control / CR / LF).
+ */
+let isGraphemeControl = (cp: i32): boolean =>
+  cp < 0x20 || (cp >= 0x7F && cp <= 0x9F);
+
+/**
+ * Whether `cp` extends the preceding grapheme cluster (combining marks,
+ * enclosing marks, variation selectors, ZWJ/ZWNJ, emoji skin-tone modifiers,
+ * and subdivision flag tags).
+ */
+let isGraphemeExtend = (cp: i32): boolean => {
+  if (cp < 0x0300) {
+    return false;
+  }
+  if (cp <= 0x036F) {
+    return true; // Combining Diacritical Marks
+  }
+  if (cp >= 0x0483 && cp <= 0x0489) {
+    return true; // Cyrillic combining marks
+  }
+  if ((cp >= 0x0591 && cp <= 0x05BD) || cp == 0x05BF ||
+      (cp >= 0x05C1 && cp <= 0x05C2) || (cp >= 0x05C4 && cp <= 0x05C5) ||
+      cp == 0x05C7) {
+    return true; // Hebrew marks
+  }
+  if ((cp >= 0x0610 && cp <= 0x061A) || (cp >= 0x064B && cp <= 0x065F) ||
+      cp == 0x0670 || (cp >= 0x06D6 && cp <= 0x06ED)) {
+    return true; // Arabic marks
+  }
+  if ((cp >= 0x0900 && cp <= 0x0903) || (cp >= 0x093A && cp <= 0x094F) ||
+      (cp >= 0x0951 && cp <= 0x0957) || (cp >= 0x0962 && cp <= 0x0963)) {
+    return true; // Devanagari marks
+  }
+  if (cp == 0x0E31 || (cp >= 0x0E34 && cp <= 0x0E3A) ||
+      (cp >= 0x0E47 && cp <= 0x0E4E)) {
+    return true; // Thai marks
+  }
+  if (cp >= 0x1AB0 && cp <= 0x1AFF) {
+    return true; // Combining Diacritical Marks Extended
+  }
+  if (cp >= 0x1DC0 && cp <= 0x1DFF) {
+    return true; // Combining Diacritical Marks Supplement
+  }
+  if (cp >= 0x200C && cp <= 0x200D) {
+    return true; // ZWNJ and ZWJ
+  }
+  if (cp >= 0x20D0 && cp <= 0x20FF) {
+    return true; // Combining Diacritical Marks for Symbols (includes U+20E3 keycap)
+  }
+  if (cp >= 0xFE00 && cp <= 0xFE0F) {
+    return true; // Variation Selectors
+  }
+  if (cp >= 0xFE20 && cp <= 0xFE2F) {
+    return true; // Combining Half Marks
+  }
+  if (cp >= 0x1F3FB && cp <= 0x1F3FF) {
+    return true; // Emoji Fitzpatrick skin-tone modifiers
+  }
+  if (cp >= 0xE0020 && cp <= 0xE007F) {
+    return true; // Subdivision flag tag characters
+  }
+  if (cp >= 0xE0100 && cp <= 0xE01EF) {
+    return true; // Variation Selectors Supplement
+  }
+  return false;
+};
+
+/**
+ * Whether `cp` is a Regional Indicator symbol (`U+1F1E6..U+1F1FF`).
+ */
+let isRegionalIndicator = (cp: i32): boolean =>
+  cp >= 0x1F1E6 && cp <= 0x1F1FF;
+
+/**
+ * Returns the Hangul syllable category for `cp`:
+ * 0 = Not Hangul, 1 = L, 2 = V, 3 = T, 4 = LV, 5 = LVT.
+ */
+let hangulSyllableType = (cp: i32): i32 => {
+  if ((cp >= 0x1100 && cp <= 0x115F) || (cp >= 0xA960 && cp <= 0xA97C)) {
+    return 1; // L
+  }
+  if ((cp >= 0x1160 && cp <= 0x11A7) || (cp >= 0xD7B0 && cp <= 0xD7C6)) {
+    return 2; // V
+  }
+  if ((cp >= 0x11A8 && cp <= 0x11FF) || (cp >= 0xD7CB && cp <= 0xD7FB)) {
+    return 3; // T
+  }
+  if (cp >= 0xAC00 && cp <= 0xD7A3) {
+    let offset = cp - 0xAC00;
+    let rem = offset - (offset / 28) * 28;
+    return if (rem == 0) 4 else 5; // LV or LVT
+  }
+  return 0;
+};
+
+/**
+ * A byte offset within a `String` that has been validated to lie on a
+ * Unicode boundary.
+ *
+ * `StringIndex` values are produced by `String` methods (`startIndex`,
+ * `endIndex`, `indexAfter`, `indexBefore`, `scalarIndexAfter`,
+ * `scalarIndexBefore`, `indexOffsetBy`, `validateByteIndex`, `indexOf`)
+ * and cannot be forged by casting an arbitrary `i32` outside `zena:core`.
+ * Reading the underlying byte offset with `idx as i32` is always legal.
+ */
+export opaque type StringIndex = i32;
+
+/**
+ * A range bounded by `StringIndex` endpoints: `start..end`, `start..`, or
+ * `..end`. For an unbounded full slice `str[..]`, `FullRange` is used.
+ */
+export sealed class StringRange {
+  case BoundedStringRange, FromStringRange, ToStringRange
+
+  abstract bounds(endIndex: StringIndex): inline (StringIndex, StringIndex);
+}
+
+/**
+ * A bounded string range `[start, end)`.
+ */
+export final class BoundedStringRange extends StringRange {
+  start: StringIndex;
+  end: StringIndex;
+
+  new(start: StringIndex, end: StringIndex) : start = start, end = end, super();
+
+  bounds(_endIndex: StringIndex): inline (StringIndex, StringIndex) {
+    return (this.start, this.end);
+  }
+}
+
+/**
+ * A string range `[start, endIndex)`.
+ */
+export final class FromStringRange extends StringRange {
+  start: StringIndex;
+
+  new(start: StringIndex) : start = start, super();
+
+  bounds(endIndex: StringIndex): inline (StringIndex, StringIndex) {
+    return (this.start, endIndex);
+  }
+}
+
+/**
+ * A string range `[startIndex, end)`.
+ */
+export final class ToStringRange extends StringRange {
+  end: StringIndex;
+
+  new(end: StringIndex) : end = end, super();
+
+  bounds(_endIndex: StringIndex): inline (StringIndex, StringIndex) {
+    return (0 as StringIndex, this.end);
+  }
+}
+
+/**
  * An immutable sequence of characters with value equality.
  *
  * Strings are created from string literals, template literals, concatenation,
  * slicing, and `StringBuilder`.
  *
- * ::: warning Evolving String Internals
- * Low-level byte operations like `getByteAt` and `sliceBytes` are temporary
- * implementation details that will become private or restricted in future
- * releases. See the [Strings guide](/guide/strings/) for current details.
- * :::
+ * Indexing and slicing operate on `StringIndex` values (`str[i]`,
+ * `str[start..end]`, `str[start..]`, `str[..end]`, `str[..]`), which are
+ * guaranteed to lie on Unicode scalar boundaries. Iteration (`for (let ch in str)`)
+ * yields grapheme clusters as `String` slices by default. Use `str.codePoints`
+ * to iterate Unicode scalar values (`i32`), `str.utf8` for a UTF-8 byte view
+ * (`u8`), or `str.utf16` for a UTF-16 code unit view (`u16`).
  */
-export final class String implements Hashable, Stringable {
+export final class String implements Hashable, Stringable, Iterable<String> {
   // Internal storage - accessed by compiler intrinsics
   #data: ByteArray;    // Backing storage (may be shared with other Strings)
   #start: i32;         // Start offset into #data (inclusive)
@@ -48,12 +208,11 @@ export final class String implements Hashable, Stringable {
   var #hashCode: i32 = 0;
 
   /**
-   * Create a new array from a ByteArray.
+   * Create a new String view over a ByteArray.
    *
    * Important: This should be considered a private constructor - strings are
    * created by the compiler for literals or by StringBuilder/transcoding
-   * functions. When Zena supports private constructors, this will be marked as
-   * private to prevent misuse.
+   * functions.
    */
   new #fromBytes(data: ByteArray, start: i32, end: i32, encoding: Encoding)
     : #data = data, #start = start, #end = end, #encoding = encoding;
@@ -81,16 +240,90 @@ export final class String implements Hashable, Stringable {
   }
 
   /**
-   * A copy of this string's bytes, as they are stored — WTF-8 for
-   * every string a component builds. The inverse of `fromBytes`: what
-   * a `list<u8>` position wants, a header value or a body.
+   * Creates a String containing a single Unicode code point `code`.
+   * Throws `IndexOutOfBoundsError` if `code` is outside `0..0x10FFFF`.
+   */
+  static fromCodePoint(code: i32): String {
+    if (code < 0 || code > 0x10FFFF) {
+      throw new IndexOutOfBoundsError(code, 0x10FFFF);
+    }
+    if (code < 0x80) {
+      let data = __byte_array_new(1);
+      __byte_array_set(data, 0, code);
+      return new String.#fromBytes(data, 0, 1, Encoding.WTF8);
+    }
+    if (code < 0x800) {
+      let data = __byte_array_new(2);
+      __byte_array_set(data, 0, 0xC0 | (code >> 6));
+      __byte_array_set(data, 1, 0x80 | (code & 0x3F));
+      return new String.#fromBytes(data, 0, 2, Encoding.WTF8);
+    }
+    if (code < 0x10000) {
+      let data = __byte_array_new(3);
+      __byte_array_set(data, 0, 0xE0 | (code >> 12));
+      __byte_array_set(data, 1, 0x80 | ((code >> 6) & 0x3F));
+      __byte_array_set(data, 2, 0x80 | (code & 0x3F));
+      return new String.#fromBytes(data, 0, 3, Encoding.WTF8);
+    }
+    let data = __byte_array_new(4);
+    __byte_array_set(data, 0, 0xF0 | (code >> 18));
+    __byte_array_set(data, 1, 0x80 | ((code >> 12) & 0x3F));
+    __byte_array_set(data, 2, 0x80 | ((code >> 6) & 0x3F));
+    __byte_array_set(data, 3, 0x80 | (code & 0x3F));
+    return new String.#fromBytes(data, 0, 4, Encoding.WTF8);
+  }
+
+  /**
+   * Creates a String from a sequence of Unicode code points.
+   * Throws `IndexOutOfBoundsError` if any code point is outside `0..0x10FFFF`.
+   */
+  static fromCodePoints<A extends Array<i32>>(codes: A): String {
+    let count = codes.length;
+    var totalBytes = 0;
+    var i = 0;
+    while (i < count) {
+      let cp = codes[i];
+      if (cp < 0 || cp > 0x10FFFF) {
+        throw new IndexOutOfBoundsError(cp, 0x10FFFF);
+      }
+      totalBytes += if (cp < 0x80) 1 else if (cp < 0x800) 2 else if (cp < 0x10000) 3 else 4;
+      i += 1;
+    }
+    let data = __byte_array_new(totalBytes);
+    var pos = 0;
+    i = 0;
+    while (i < count) {
+      let cp = codes[i];
+      if (cp < 0x80) {
+        __byte_array_set(data, pos, cp);
+        pos += 1;
+      } else if (cp < 0x800) {
+        __byte_array_set(data, pos, 0xC0 | (cp >> 6));
+        __byte_array_set(data, pos + 1, 0x80 | (cp & 0x3F));
+        pos += 2;
+      } else if (cp < 0x10000) {
+        __byte_array_set(data, pos, 0xE0 | (cp >> 12));
+        __byte_array_set(data, pos + 1, 0x80 | ((cp >> 6) & 0x3F));
+        __byte_array_set(data, pos + 2, 0x80 | (cp & 0x3F));
+        pos += 3;
+      } else {
+        __byte_array_set(data, pos, 0xF0 | (cp >> 18));
+        __byte_array_set(data, pos + 1, 0x80 | ((cp >> 12) & 0x3F));
+        __byte_array_set(data, pos + 2, 0x80 | ((cp >> 6) & 0x3F));
+        __byte_array_set(data, pos + 3, 0x80 | (cp & 0x3F));
+        pos += 4;
+      }
+      i += 1;
+    }
+    return new String.#fromBytes(data, 0, totalBytes, Encoding.WTF8);
+  }
+
+  /**
+   * A copy of this string's UTF-8 / WTF-8 bytes. The inverse of `fromBytes`:
+   * what a `list<u8>` position wants, a header value or a body.
    */
   toBytes(): FixedArray<u8> {
-    let out = new FixedArray<u8>(this.length, 0);
-    for (var i = 0; i < this.length; i += 1) {
-      out[i] = this.getByteAt(i) as u8;
-    }
-    return out;
+    return this.utf8.toArray();
   }
 
   /**
@@ -156,13 +389,27 @@ export final class String implements Hashable, Stringable {
   }
 
   /**
+   * True when this string contains zero bytes.
+   */
+  isEmpty: boolean {
+    get {
+      return this.#end == this.#start;
+    }
+  }
+
+  /**
+   * The length of the string in encoded bytes.
+   */
+  byteLength: i32 {
+    get {
+      return this.#end - this.#start;
+    }
+  }
+
+  /**
    * The length of the string in bytes.
-   * 
-   * Since string operations like slicing and `getByteAt` operate on bytes,
-   * this consistently returns the byte capacity of the view regardless of
-   * the underlying encoding (WTF-8 or WTF-16).
    *
-   * TODO: Rename to byteLength or remove entirely.
+   * @deprecated Use `byteLength`, `isEmpty`, or `graphemes.count()` instead.
    */
   length: i32 {
     get {
@@ -171,19 +418,597 @@ export final class String implements Hashable, Stringable {
   }
 
   /**
-   * Returns the byte at the given index.
+   * The index of the first character in this string (always byte offset 0).
+   */
+  startIndex: StringIndex {
+    get {
+      return 0 as StringIndex;
+    }
+  }
+
+  /**
+   * The "past the end" index of this string (equal to `byteLength`).
+   */
+  endIndex: StringIndex {
+    get {
+      return (this.#end - this.#start) as StringIndex;
+    }
+  }
+
+  /**
+   * View of this string's extended grapheme clusters as `String` slices.
+   * Zero heap allocation.
+   */
+  graphemes: StringGraphemes {
+    get {
+      return this as StringGraphemes;
+    }
+  }
+
+  /**
+   * View of this string's decoded Unicode scalar values as `i32`.
+   * Zero heap allocation.
+   */
+  codePoints: StringCodePoints {
+    get {
+      return this as StringCodePoints;
+    }
+  }
+
+  /**
+   * Contiguous UTF-8 / WTF-8 byte view (`u8`) of this string.
+   *
+   * Zero-copy when `this.encoding == Encoding.WTF8`; transcodes to a fresh
+   * UTF-8 `ByteArray` when `this.encoding == Encoding.WTF16`.
+   */
+  utf8: StringUtf8View {
+    get {
+      if (this.#encoding == Encoding.WTF8) {
+        return new StringUtf8View(this.#data, this.#start, this.#end);
+      }
+      let len = this.#end - this.#start;
+      var utf8Len = 0;
+      var pos = 0;
+      while (pos < len) {
+        let (cp, next) = this.#decodeScalarAt(pos);
+        utf8Len += if (cp < 0x80) 1 else if (cp < 0x800) 2 else if (cp < 0x10000) 3 else 4;
+        pos = next;
+      }
+      let out = __byte_array_new(utf8Len);
+      var outPos = 0;
+      pos = 0;
+      while (pos < len) {
+        let (cp, next) = this.#decodeScalarAt(pos);
+        if (cp < 0x80) {
+          __byte_array_set(out, outPos, cp);
+          outPos += 1;
+        } else if (cp < 0x800) {
+          __byte_array_set(out, outPos, 0xC0 | (cp >> 6));
+          __byte_array_set(out, outPos + 1, 0x80 | (cp & 0x3F));
+          outPos += 2;
+        } else if (cp < 0x10000) {
+          __byte_array_set(out, outPos, 0xE0 | (cp >> 12));
+          __byte_array_set(out, outPos + 1, 0x80 | ((cp >> 6) & 0x3F));
+          __byte_array_set(out, outPos + 2, 0x80 | (cp & 0x3F));
+          outPos += 3;
+        } else {
+          __byte_array_set(out, outPos, 0xF0 | (cp >> 18));
+          __byte_array_set(out, outPos + 1, 0x80 | ((cp >> 12) & 0x3F));
+          __byte_array_set(out, outPos + 2, 0x80 | ((cp >> 6) & 0x3F));
+          __byte_array_set(out, outPos + 3, 0x80 | (cp & 0x3F));
+          outPos += 4;
+        }
+        pos = next;
+      }
+      return new StringUtf8View(out, 0, utf8Len);
+    }
+  }
+
+  /**
+   * Contiguous UTF-16 / WTF-16 code unit view (`u16`) of this string.
+   *
+   * Zero-copy when `this.encoding == Encoding.WTF16`; transcodes to a fresh
+   * little-endian UTF-16 `ByteArray` when `this.encoding == Encoding.WTF8`.
+   */
+  utf16: StringUtf16View {
+    get {
+      if (this.#encoding == Encoding.WTF16) {
+        return new StringUtf16View(this.#data, this.#start, this.#end);
+      }
+      let len = this.#end - this.#start;
+      var units = 0;
+      var pos = 0;
+      while (pos < len) {
+        let (cp, next) = this.#decodeScalarAt(pos);
+        units += if (cp >= 0x10000) 2 else 1;
+        pos = next;
+      }
+      let byteLen = units << 1;
+      let out = __byte_array_new(byteLen);
+      var outPos = 0;
+      pos = 0;
+      while (pos < len) {
+        let (cp, next) = this.#decodeScalarAt(pos);
+        if (cp < 0x10000) {
+          __byte_array_set(out, outPos, cp & 0xFF);
+          __byte_array_set(out, outPos + 1, (cp >> 8) & 0xFF);
+          outPos += 2;
+        } else {
+          let u = cp - 0x10000;
+          let hi = 0xD800 + (u >> 10);
+          let lo = 0xDC00 + (u & 0x3FF);
+          __byte_array_set(out, outPos, hi & 0xFF);
+          __byte_array_set(out, outPos + 1, (hi >> 8) & 0xFF);
+          __byte_array_set(out, outPos + 2, lo & 0xFF);
+          __byte_array_set(out, outPos + 3, (lo >> 8) & 0xFF);
+          outPos += 4;
+        }
+        pos = next;
+      }
+      return new StringUtf16View(out, 0, byteLen);
+    }
+  }
+
+  /**
+   * Returns an iterator over the extended grapheme clusters of this string.
+   */
+  [Iterable.iterator](): Iterator<String> {
+    return new StringGraphemeIterator(this);
+  }
+
+  /**
+   * True if `offset` is within `[0, byteLength]` and lies on a Unicode scalar
+   * boundary for this string's encoding.
+   */
+  #isScalarBoundary(offset: i32): boolean {
+    let len = this.#end - this.#start;
+    if (offset < 0 || offset > len) {
+      return false;
+    }
+    if (offset == 0 || offset == len) {
+      return true;
+    }
+    if (this.#encoding == Encoding.WTF16) {
+      if ((offset & 1) != 0) {
+        return false;
+      }
+      let base = this.#start + offset;
+      let prev = __byte_array_get(this.#data, base - 2) | (__byte_array_get(this.#data, base - 1) << 8);
+      let curr = __byte_array_get(this.#data, base) | (__byte_array_get(this.#data, base + 1) << 8);
+      if (prev >= 0xD800 && prev <= 0xDBFF && curr >= 0xDC00 && curr <= 0xDFFF) {
+        return false;
+      }
+      return true;
+    }
+    let b = __byte_array_get(this.#data, this.#start + offset);
+    return (b & 0xC0) != 0x80;
+  }
+
+  /**
+   * Validates that `offset` is a scalar boundary in `[0, byteLength]`, throwing
+   * `IndexOutOfBoundsError` otherwise.
+   */
+  #checkBoundary(offset: i32): void {
+    if (!this.#isScalarBoundary(offset)) {
+      throw new IndexOutOfBoundsError(offset, this.#end - this.#start);
+    }
+  }
+
+  /**
+   * Validates that `offset` is a scalar boundary in `[0, byteLength)`, throwing
+   * `IndexOutOfBoundsError` otherwise.
+   */
+  #checkInBoundsBoundary(offset: i32): void {
+    let len = this.#end - this.#start;
+    if (offset < 0 || offset >= len || !this.#isScalarBoundary(offset)) {
+      throw new IndexOutOfBoundsError(offset, len);
+    }
+  }
+
+  /**
+   * Decodes the Unicode scalar at `offset` (`0 <= offset < byteLength`)
+   * and returns `(codePoint, nextByteOffset)`.
+   */
+  #decodeScalarAt(offset: i32): inline (i32, i32) {
+    let len = this.#end - this.#start;
+    if (this.#encoding == Encoding.WTF16) {
+      let base = this.#start + offset;
+      let c0 = __byte_array_get(this.#data, base) | (__byte_array_get(this.#data, base + 1) << 8);
+      if (c0 >= 0xD800 && c0 <= 0xDBFF && offset + 3 < len) {
+        let c1 = __byte_array_get(this.#data, base + 2) | (__byte_array_get(this.#data, base + 3) << 8);
+        if (c1 >= 0xDC00 && c1 <= 0xDFFF) {
+          let cp = 0x10000 + ((c0 - 0xD800) << 10) + (c1 - 0xDC00);
+          return (cp, offset + 4);
+        }
+      }
+      return (c0, offset + 2);
+    }
+    let b0 = __byte_array_get(this.#data, this.#start + offset);
+    if ((b0 & 0x80) == 0) {
+      return (b0, offset + 1);
+    }
+    if ((b0 & 0xE0) == 0xC0) {
+      if (offset + 1 < len) {
+        let b1 = __byte_array_get(this.#data, this.#start + offset + 1);
+        return (((b0 & 0x1F) << 6) | (b1 & 0x3F), offset + 2);
+      }
+      return (b0, offset + 1);
+    }
+    if ((b0 & 0xF0) == 0xE0) {
+      if (offset + 2 < len) {
+        let b1 = __byte_array_get(this.#data, this.#start + offset + 1);
+        let b2 = __byte_array_get(this.#data, this.#start + offset + 2);
+        return (((b0 & 0x0F) << 12) | ((b1 & 0x3F) << 6) | (b2 & 0x3F), offset + 3);
+      }
+      return (b0, offset + 1);
+    }
+    if ((b0 & 0xF8) == 0xF0) {
+      if (offset + 3 < len) {
+        let b1 = __byte_array_get(this.#data, this.#start + offset + 1);
+        let b2 = __byte_array_get(this.#data, this.#start + offset + 2);
+        let b3 = __byte_array_get(this.#data, this.#start + offset + 3);
+        return (((b0 & 0x07) << 18) | ((b1 & 0x3F) << 12) | ((b2 & 0x3F) << 6) | (b3 & 0x3F), offset + 4);
+      }
+      return (b0, offset + 1);
+    }
+    return (b0, offset + 1);
+  }
+
+  /**
+   * Steps backward one scalar from `offset` (`0 < offset <= byteLength`) and
+   * returns `(codePoint, prevByteOffset)`.
+   */
+  #decodeScalarBefore(offset: i32): inline (i32, i32) {
+    if (this.#encoding == Encoding.WTF16) {
+      let base = this.#start + offset;
+      let cLast = __byte_array_get(this.#data, base - 2) | (__byte_array_get(this.#data, base - 1) << 8);
+      if (cLast >= 0xDC00 && cLast <= 0xDFFF && offset >= 4) {
+        let cPrev = __byte_array_get(this.#data, base - 4) | (__byte_array_get(this.#data, base - 3) << 8);
+        if (cPrev >= 0xD800 && cPrev <= 0xDBFF) {
+          let cp = 0x10000 + ((cPrev - 0xD800) << 10) + (cLast - 0xDC00);
+          return (cp, offset - 4);
+        }
+      }
+      return (cLast, offset - 2);
+    }
+    var pos = offset - 1;
+    while (pos > 0 && (__byte_array_get(this.#data, this.#start + pos) & 0xC0) == 0x80) {
+      pos -= 1;
+    }
+    let (cp, _) = this.#decodeScalarAt(pos);
+    return (cp, pos);
+  }
+
+  /**
+   * Whether a grapheme cluster boundary exists between `prevCp` (starting at
+   * byte offset `prevStart`) and `nextCp`.
+   */
+  #shouldBreakBetween(prevCp: i32, nextCp: i32, prevStart: i32): boolean {
+    // GB3: Do not break between CR and LF.
+    if (prevCp == 0x0D && nextCp == 0x0A) {
+      return false;
+    }
+    // GB4, GB5: Break before and after Control, CR, LF.
+    if (isGraphemeControl(prevCp) || isGraphemeControl(nextCp)) {
+      return true;
+    }
+    // GB6, GB7, GB8: Hangul syllable sequences.
+    let hPrev = hangulSyllableType(prevCp);
+    let hNext = hangulSyllableType(nextCp);
+    if (hPrev != 0 && hNext != 0) {
+      if (hPrev == 1 && (hNext == 1 || hNext == 2 || hNext == 4 || hNext == 5)) {
+        return false;
+      }
+      if ((hPrev == 4 || hPrev == 2) && (hNext == 2 || hNext == 3)) {
+        return false;
+      }
+      if ((hPrev == 5 || hPrev == 3) && hNext == 3) {
+        return false;
+      }
+    }
+    // GB9, GB9a: Do not break before extending characters, ZWJ, or spacing marks.
+    if (isGraphemeExtend(nextCp)) {
+      return false;
+    }
+    // GB11: Do not break after ZWJ within emoji ZWJ sequences.
+    if (prevCp == 0x200D) {
+      return false;
+    }
+    // GB12, GB13: Pair Regional Indicator symbols two by two.
+    if (isRegionalIndicator(prevCp) && isRegionalIndicator(nextCp)) {
+      var riCount = 1;
+      var scan = prevStart;
+      while (scan > 0) {
+        let (scanCp, scanPrev) = this.#decodeScalarBefore(scan);
+        if (!isRegionalIndicator(scanCp)) {
+          break;
+        }
+        riCount += 1;
+        scan = scanPrev;
+      }
+      return (riCount & 1) == 0;
+    }
+    // GB999: Otherwise, break everywhere.
+    return true;
+  }
+
+  /**
+   * Returns the `StringIndex` immediately following the extended grapheme
+   * cluster at `i`. Throws `IndexOutOfBoundsError` if `i` is at `endIndex`
+   * or is not a valid boundary of this string.
+   */
+  indexAfter(i: StringIndex): StringIndex {
+    let offset = i as i32;
+    this.#checkInBoundsBoundary(offset);
+    let len = this.#end - this.#start;
+
+    // Fast path for ASCII in WTF-8.
+    if (this.#encoding == Encoding.WTF8) {
+      let b0 = __byte_array_get(this.#data, this.#start + offset);
+      if (b0 < 0x80) {
+        if (offset + 1 == len) {
+          return (offset + 1) as StringIndex;
+        }
+        let b1 = __byte_array_get(this.#data, this.#start + offset + 1);
+        if (b0 == 0x0D && b1 == 0x0A) {
+          return (offset + 2) as StringIndex;
+        }
+        if (b1 < 0x80) {
+          return (offset + 1) as StringIndex;
+        }
+      }
+    }
+
+    var prevStart = offset;
+    let (firstCp, firstNext) = this.#decodeScalarAt(offset);
+    var prevCp = firstCp;
+    var pos = firstNext;
+    while (pos < len) {
+      let (nextCp, nextEnd) = this.#decodeScalarAt(pos);
+      if (this.#shouldBreakBetween(prevCp, nextCp, prevStart)) {
+        break;
+      }
+      prevStart = pos;
+      prevCp = nextCp;
+      pos = nextEnd;
+    }
+    return pos as StringIndex;
+  }
+
+  /**
+   * Returns the `StringIndex` at the start of the extended grapheme cluster
+   * immediately preceding `i`. Throws `IndexOutOfBoundsError` if `i` is at
+   * `startIndex` or is not a valid boundary of this string.
+   */
+  indexBefore(i: StringIndex): StringIndex {
+    let offset = i as i32;
+    let len = this.#end - this.#start;
+    if (offset <= 0 || offset > len || !this.#isScalarBoundary(offset)) {
+      throw new IndexOutOfBoundsError(offset, len);
+    }
+
+    // Fast path for ASCII in WTF-8.
+    if (this.#encoding == Encoding.WTF8) {
+      let bLast = __byte_array_get(this.#data, this.#start + offset - 1);
+      if (bLast < 0x80) {
+        if (offset == 1) {
+          return 0 as StringIndex;
+        }
+        let bPrev = __byte_array_get(this.#data, this.#start + offset - 2);
+        if (bPrev == 0x0D && bLast == 0x0A) {
+          return (offset - 2) as StringIndex;
+        }
+        if (bPrev < 0x80) {
+          return (offset - 1) as StringIndex;
+        }
+      }
+    }
+
+    let (lastCp, lastStart) = this.#decodeScalarBefore(offset);
+    var nextCp = lastCp;
+    var pos = lastStart;
+    while (pos > 0) {
+      let (prevCp, prevStart) = this.#decodeScalarBefore(pos);
+      if (this.#shouldBreakBetween(prevCp, nextCp, prevStart)) {
+        break;
+      }
+      nextCp = prevCp;
+      pos = prevStart;
+    }
+    return pos as StringIndex;
+  }
+
+  /**
+   * Returns the `StringIndex` immediately following the Unicode scalar value
+   * at `i`. Throws `IndexOutOfBoundsError` if `i` is at `endIndex` or is not
+   * a valid boundary of this string.
+   */
+  scalarIndexAfter(i: StringIndex): StringIndex {
+    let offset = i as i32;
+    this.#checkInBoundsBoundary(offset);
+    let (_, nextOffset) = this.#decodeScalarAt(offset);
+    return nextOffset as StringIndex;
+  }
+
+  /**
+   * Returns the `StringIndex` of the Unicode scalar value immediately
+   * preceding `i`. Throws `IndexOutOfBoundsError` if `i` is at `startIndex`
+   * or is not a valid boundary of this string.
+   */
+  scalarIndexBefore(i: StringIndex): StringIndex {
+    let offset = i as i32;
+    let len = this.#end - this.#start;
+    if (offset <= 0 || offset > len || !this.#isScalarBoundary(offset)) {
+      throw new IndexOutOfBoundsError(offset, len);
+    }
+    let (_, prevOffset) = this.#decodeScalarBefore(offset);
+    return prevOffset as StringIndex;
+  }
+
+  /**
+   * Advances `from` by `count` grapheme clusters (`count >= 0` moves forward,
+   * `count < 0` moves backward). Returns `(true, index)` if within bounds, or
+   * `(false, _)` if stepping past `startIndex` or `endIndex`.
+   */
+  indexOffsetBy(from: StringIndex, count: i32): inline (true, StringIndex) | inline (false, _) {
+    let startOffset = from as i32;
+    if (!this.#isScalarBoundary(startOffset)) {
+      return (false, _);
+    }
+    let len = this.#end - this.#start;
+    var cur = from;
+    if (count >= 0) {
+      var rem = count;
+      while (rem > 0) {
+        if ((cur as i32) >= len) {
+          return (false, _);
+        }
+        cur = this.indexAfter(cur);
+        rem -= 1;
+      }
+      return (true, cur);
+    } else {
+      var rem = 0 - count;
+      while (rem > 0) {
+        if ((cur as i32) <= 0) {
+          return (false, _);
+        }
+        cur = this.indexBefore(cur);
+        rem -= 1;
+      }
+      return (true, cur);
+    }
+  }
+
+  /**
+   * Validates that `byteOffset` lies on a Unicode scalar boundary within
+   * `[0, byteLength]`. Returns `(true, index)` if valid, or `(false, _)`
+   * otherwise.
+   */
+  validateByteIndex(byteOffset: i32): inline (true, StringIndex) | inline (false, _) {
+    if (this.#isScalarBoundary(byteOffset)) {
+      return (true, byteOffset as StringIndex);
+    }
+    return (false, _);
+  }
+
+  /**
+   * Returns the single extended grapheme cluster starting at `index` as a
+   * zero-copy `String` slice. Throws `IndexOutOfBoundsError` if `index` is at
+   * `endIndex` or is not a valid boundary of this string.
+   */
+  operator [](index: StringIndex): String {
+    let next = this.indexAfter(index);
+    return new String.#fromBytes(
+      this.#data,
+      this.#start + (index as i32),
+      this.#start + (next as i32),
+      this.#encoding
+    );
+  }
+
+  /**
+   * Returns the substring covered by `r` (`start..end`, `start..`, or `..end`)
+   * as a zero-copy `String` slice. Throws `IndexOutOfBoundsError` if the
+   * bounds are invalid or out of order.
+   */
+  operator [](r: StringRange): String {
+    let (start, end) = r.bounds(this.endIndex);
+    return this.slice(start, end);
+  }
+
+  /**
+   * Returns the full string slice for `str[..]`.
+   */
+  operator [](_r: FullRange): String {
+    return this;
+  }
+
+  /**
+   * O(1) zero-copy slice from `start` to `end` (exclusive).
+   * Throws `IndexOutOfBoundsError` if `start` or `end` is not a valid boundary
+   * of this string or if `start > end`.
+   */
+  slice(start: StringIndex, end: StringIndex): String {
+    let s = start as i32;
+    let e = end as i32;
+    this.#checkBoundary(s);
+    this.#checkBoundary(e);
+    if (s > e) {
+      throw new IndexOutOfBoundsError(s, e);
+    }
+    return new String.#fromBytes(
+      this.#data,
+      this.#start + s,
+      this.#start + e,
+      this.#encoding
+    );
+  }
+
+  /**
+   * O(1) zero-copy slice from `start` to `endIndex`.
+   */
+  slice(start: StringIndex): String {
+    return this.slice(start, this.endIndex);
+  }
+
+  /**
+   * Returns a new `String` with its extended grapheme clusters in reverse
+   * order. Preserves combining mark sequences and multi-code-point emojis.
+   */
+  reverse(): String {
+    let len = this.#end - this.#start;
+    if (len <= 1) {
+      return this;
+    }
+    let newData = __byte_array_new(len);
+    var cur = 0;
+    while (cur < len) {
+      let next = (this.indexAfter(cur as StringIndex)) as i32;
+      let clusterLen = next - cur;
+      __byte_array_copy(newData, len - next, this.#data, this.#start + cur, clusterLen);
+      cur = next;
+    }
+    return new String.#fromBytes(newData, 0, len, this.#encoding);
+  }
+
+  /**
+   * Returns the byte at `index` without checking Unicode boundaries.
    *
    * For WTF-8 strings, this is the UTF-8 byte at the given index.
    * For WTF-16 strings, this is the byte (not code unit) at the given index.
+   */
+  unsafeByteAt(index: i32): i32 {
+    return __byte_array_get(this.#data, this.#start + index);
+  }
+
+  /**
+   * Returns the byte at the given index.
+   *
+   * @deprecated Use `str.utf8[index]` or `unsafeByteAt(index)` instead.
    */
   getByteAt(index: i32): i32 {
     return __byte_array_get(this.#data, this.#start + index);
   }
 
   /**
+   * Returns the Unicode scalar value at `index`.
+   * Throws `IndexOutOfBoundsError` if `index` is at `endIndex` or is not a
+   * valid boundary of this string.
+   */
+  codePointAt(index: StringIndex): i32 {
+    let offset = index as i32;
+    this.#checkInBoundsBoundary(offset);
+    let (cp, _) = this.#decodeScalarAt(offset);
+    return cp;
+  }
+
+  /**
    * Returns the Unicode code point at byte offset `index`.
    * For multi-byte UTF-8 sequences, decodes the full code point.
    * Returns -1 if `index` is out of bounds or points to an invalid sequence.
+   *
+   * @deprecated Use `codePointAt(StringIndex)` or `codePoints` instead.
    */
   codePointAt(index: i32): i32 {
     let len = this.#end - this.#start;
@@ -234,28 +1059,41 @@ export final class String implements Hashable, Stringable {
   }
 
   /**
-   * O(1) zero-copy slice by byte indices.
-   * Returns a new String sharing the backing array.
-   * 
-   * SAFETY: Indices are byte offsets, not code point offsets.
-   * Slicing in the middle of a multi-byte UTF-8 sequence produces
-   * an invalid string. Use StringReader.mark() to get safe positions.
+   * O(1) zero-copy slice by raw byte offsets `[start, end)`, clamping to
+   * `[0, byteLength]`.
+   *
+   * SAFETY: Offsets are byte indices, not Unicode boundaries. Slicing inside
+   * a multi-byte UTF-8 sequence produces an ill-formed string view. Prefer
+   * `str[start..end]` or `slice(start, end)` with `StringIndex`.
    */
-  sliceBytes(start: i32, end: i32): String {
-    // Clamp indices to valid range
+  unsafeSliceBytes(start: i32, end: i32): String {
     var s = start;
     var e = end;
     let len = this.#end - this.#start;
     if (s < 0) { s = 0; }
     if (e > len) { e = len; }
     if (s > e) { s = e; }
-    
+
     return new String.#fromBytes(
       this.#data,
       this.#start + s,
       this.#start + e,
       this.#encoding
     );
+  }
+
+  /**
+   * O(1) zero-copy slice by byte indices.
+   * Returns a new String sharing the backing array.
+   *
+   * SAFETY: Indices are byte offsets, not code point offsets.
+   * Slicing in the middle of a multi-byte UTF-8 sequence produces
+   * an invalid string. Use StringReader.mark() to get safe positions.
+   *
+   * @deprecated Use `str[start..end]`, `slice(start, end)`, or `unsafeSliceBytes(start, end)` instead.
+   */
+  sliceBytes(start: i32, end: i32): String {
+    return this.unsafeSliceBytes(start, end);
   }
 
   /**
@@ -405,7 +1243,7 @@ export final class String implements Hashable, Stringable {
       if (__byte_array_get(this.#data, currentIndex) == firstByte &&
           __byte_array_get(this.#data, currentIndex + lastIndex) == lastByte &&
           (sepLength <= 2 || this.#regionEquals(separator, currentIndex + 1, separator.#start + 1, sepLength - 2))) {
-        result[partIdx] = this.sliceBytes(lastStart, i);
+        result[partIdx] = this.unsafeSliceBytes(lastStart, i);
         partIdx += 1;
         i += sepLength;
         lastStart = i;
@@ -414,45 +1252,34 @@ export final class String implements Hashable, Stringable {
       }
     }
     // Add the last part
-    let lastPart = this.sliceBytes(lastStart, haystackLength);
+    let lastPart = this.unsafeSliceBytes(lastStart, haystackLength);
     result[partIdx] = lastPart;
 
     return result;
   }
 
   /**
-   * Returns the byte-index of the first occurrence of `needle`.
+   * Returns the byte-index of the first occurrence of `needle` at or after
+   * `fromByteOffset`.
    */
-  #indexOf(needle: String): i32 {
-    // This is a simplified search algorithm that checks the first and last byte
-    // of the needle to quickly skip non-matching positions. It performs well
-    // for short needles. If we find that this is a bottleneck, we can implement
-    // a more advanced algorithm like Boyer-Moore-Horspool.
-    //
-    // https://en.wikipedia.org/wiki/Boyer%E2%80%93Moore%E2%80%93Horspool_algorithm
-    //
-    // That would require building a skip table for the needle, which adds
-    // overhead for short needles, but can be faster for longer needles. For
-    // repeated searches with the same needle, we could cache the skip table,
-    // but in order to not bloat the String class with extra fields, we would
-    // need to store the skip table in a side table.
-
-    let needleLength = needle.#end - needle.#start;    
-    if (needleLength == 0) {
-      return 0;
-    }
-
+  #indexOfFrom(needle: String, fromByteOffset: i32): i32 {
+    let needleLength = needle.#end - needle.#start;
     let haystackLength = this.#end - this.#start;
-    if (needleLength > haystackLength) {
+    if (fromByteOffset < 0 || fromByteOffset > haystackLength) {
+      return -1;
+    }
+    if (needleLength == 0) {
+      return fromByteOffset;
+    }
+    if (needleLength > haystackLength - fromByteOffset) {
       return -1;
     }
 
     let lastIndex = needleLength - 1;
     let firstByte = __byte_array_get(needle.#data, needle.#start);
-    let lastByte = __byte_array_get(needle.#data,
-      needle.#start + lastIndex);
+    let lastByte = __byte_array_get(needle.#data, needle.#start + lastIndex);
 
-    for (var i = 0; i <= haystackLength - needleLength; i += 1) {
+    for (var i = fromByteOffset; i <= haystackLength - needleLength; i += 1) {
       let currentIndex = this.#start + i;
 
       // 1. Check the first byte
@@ -466,13 +1293,10 @@ export final class String implements Hashable, Stringable {
       }
 
       if (needleLength <= 2) {
-        // For 1 or 2 byte needles, we can skip the full comparison since the
-        // first and last byte checks are sufficient.
         return i;
       }
 
       // 3. Only then do the full comparison
-      // TODO: Use skip tables in the future
       if (this.#regionEquals(needle, currentIndex + 1, needle.#start + 1, needleLength - 2)) {
         return i;
       }
@@ -480,8 +1304,39 @@ export final class String implements Hashable, Stringable {
     return -1;
   }
 
+  /**
+   * Finds the first occurrence of `needle` in this string.
+   * Returns `(true, index)` if found, or `(false, _)` if not found.
+   */
+  indexOf(needle: String): inline (true, StringIndex) | inline (false, _) {
+    let pos = this.#indexOfFrom(needle, 0);
+    if (pos < 0) {
+      return (false, _);
+    }
+    return (true, pos as StringIndex);
+  }
+
+  /**
+   * Finds the first occurrence of `needle` at or after `from`.
+   * Throws `IndexOutOfBoundsError` if `from` is not a valid boundary of this
+   * string. Returns `(true, index)` if found, or `(false, _)` if not found.
+   */
+  indexOf(needle: String, from: StringIndex): inline (true, StringIndex) | inline (false, _) {
+    let fromOffset = from as i32;
+    this.#checkBoundary(fromOffset);
+    let pos = this.#indexOfFrom(needle, fromOffset);
+    if (pos < 0) {
+      return (false, _);
+    }
+    return (true, pos as StringIndex);
+  }
+
+  /**
+   * Returns true if `needle` occurs anywhere in this string.
+   * Overrides `IterableUtils<String>.contains` to perform a substring search.
+   */
   contains(needle: String): boolean {
-    return this.#indexOf(needle) != -1;
+    return this.#indexOfFrom(needle, 0) != -1;
   }
 
   /**
@@ -559,11 +1414,6 @@ export final class String implements Hashable, Stringable {
   }
 
   /**
-   * FNV-1a hash of the string's bytes, cached in #hashCode after the first
-   * computation. Delegates to the compiler's shared string hash helper
-   * (generateStringHashFunction), which reads and updates the cache field.
-   */
-  /**
    * Returns this string with every ASCII letter lowercased; every other byte
    * is left alone. See `asciiLowerByte` for why this is deliberately not
    * Unicode-aware.
@@ -597,18 +1447,19 @@ export final class String implements Hashable, Stringable {
    * ```
    */
   trim(): String {
+    let len = this.#end - this.#start;
     var start = 0;
-    var end = this.length;
-    while (start < end && isAsciiSpace(this.getByteAt(start))) {
+    var end = len;
+    while (start < end && isAsciiSpace(__byte_array_get(this.#data, this.#start + start))) {
       start += 1;
     }
-    while (end > start && isAsciiSpace(this.getByteAt(end - 1))) {
+    while (end > start && isAsciiSpace(__byte_array_get(this.#data, this.#start + end - 1))) {
       end -= 1;
     }
-    if (start == 0 && end == this.length) {
+    if (start == 0 && end == len) {
       return this;
     }
-    return this.sliceBytes(start, end);
+    return this.unsafeSliceBytes(start, end);
   }
 
   #mapAscii(lower: boolean): String {
@@ -634,6 +1485,45 @@ export final class String implements Hashable, Stringable {
     return new String.#fromBytes(newData, 0, len, this.#encoding);
   }
 
+  filter(predicate: (item: String) => boolean): Iterable<String> {
+    return new FilteredIterable<String>(this, predicate);
+  }
+
+  all(predicate: (item: String) => boolean): boolean {
+    for (let item in this) {
+      if (!predicate(item)) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  some(predicate: (item: String) => boolean): boolean {
+    for (let item in this) {
+      if (predicate(item)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  fold<R>(initial: R, combine: (acc: R, item: String) => R): R {
+    var acc = initial;
+    for (let item in this) {
+      acc = combine(acc, item);
+    }
+    return acc;
+  }
+
+  find(predicate: (item: String) => boolean): inline (true, String) | inline (false, _) {
+    for (let item in this) {
+      if (predicate(item)) {
+        return (true, item);
+      }
+    }
+    return (false, _);
+  }
+
   hashCode(): i32 {
     return hash(this);
   }
@@ -642,3 +1532,537 @@ export final class String implements Hashable, Stringable {
     return this;
   }
 }
+
+/**
+ * Zero-allocation view of a `String`'s extended grapheme clusters.
+ */
+export final extension class StringGraphemes on String implements Iterable<String> {
+  /**
+   * Returns an iterator yielding each extended grapheme cluster as a `String` slice.
+   */
+  [Iterable.iterator](): Iterator<String> {
+    return new StringGraphemeIterator(this);
+  }
+
+  filter(predicate: (item: String) => boolean): Iterable<String> {
+    return new FilteredIterable<String>(this, predicate);
+  }
+
+  contains(value: String): boolean {
+    for (let item in this) {
+      if (item == value) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  all(predicate: (item: String) => boolean): boolean {
+    for (let item in this) {
+      if (!predicate(item)) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  some(predicate: (item: String) => boolean): boolean {
+    for (let item in this) {
+      if (predicate(item)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  fold<R>(initial: R, combine: (acc: R, item: String) => R): R {
+    var acc = initial;
+    for (let item in this) {
+      acc = combine(acc, item);
+    }
+    return acc;
+  }
+
+  find(predicate: (item: String) => boolean): inline (true, String) | inline (false, _) {
+    for (let item in this) {
+      if (predicate(item)) {
+        return (true, item);
+      }
+    }
+    return (false, _);
+  }
+
+  /**
+   * Counts the number of extended grapheme clusters in this string in $O(n)$ time.
+   */
+  count(): i32 {
+    var n = 0;
+    var cur = this.startIndex;
+    let end = this.endIndex;
+    while ((cur as i32) < (end as i32)) {
+      cur = this.indexAfter(cur);
+      n += 1;
+    }
+    return n;
+  }
+
+  /**
+   * Collects all extended grapheme clusters into a `FixedArray<String>`.
+   */
+  toArray(): FixedArray<String> {
+    let len = (this as StringGraphemes).count();
+    let out = __array_new_empty<String>(len) as FixedArray<String>;
+    var i = 0;
+    var cur = this.startIndex;
+    let end = this.endIndex;
+    while ((cur as i32) < (end as i32)) {
+      let next = this.indexAfter(cur);
+      out[i] = this.unsafeSliceBytes(cur as i32, next as i32);
+      cur = next;
+      i += 1;
+    }
+    return out;
+  }
+}
+
+/**
+ * Zero-allocation view of a `String`'s decoded Unicode scalar values (`i32`).
+ */
+export final extension class StringCodePoints on String implements Iterable<i32> {
+  /**
+   * Returns an iterator yielding each decoded Unicode scalar value as an `i32`.
+   */
+  [Iterable.iterator](): Iterator<i32> {
+    return new StringCodePointIterator(this);
+  }
+
+  filter(predicate: (item: i32) => boolean): Iterable<i32> {
+    return new FilteredIterable<i32>(this, predicate);
+  }
+
+  contains(value: i32): boolean {
+    for (let item in (this as StringCodePoints)) {
+      if (item == value) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  all(predicate: (item: i32) => boolean): boolean {
+    for (let item in (this as StringCodePoints)) {
+      if (!predicate(item)) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  some(predicate: (item: i32) => boolean): boolean {
+    for (let item in (this as StringCodePoints)) {
+      if (predicate(item)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  fold<R>(initial: R, combine: (acc: R, item: i32) => R): R {
+    var acc = initial;
+    for (let item in (this as StringCodePoints)) {
+      acc = combine(acc, item);
+    }
+    return acc;
+  }
+
+  find(predicate: (item: i32) => boolean): inline (true, i32) | inline (false, _) {
+    for (let item in (this as StringCodePoints)) {
+      if (predicate(item)) {
+        return (true, item);
+      }
+    }
+    return (false, _);
+  }
+
+  /**
+   * Counts the number of Unicode scalar values in this string in $O(n)$ time.
+   */
+  count(): i32 {
+    var n = 0;
+    var cur = this.startIndex;
+    let end = this.endIndex;
+    while ((cur as i32) < (end as i32)) {
+      cur = this.scalarIndexAfter(cur);
+      n += 1;
+    }
+    return n;
+  }
+
+  /**
+   * Collects all decoded Unicode scalar values into a `FixedArray<i32>`.
+   */
+  toArray(): FixedArray<i32> {
+    let len = (this as StringCodePoints).count();
+    let out = new FixedArray<i32>(len, 0);
+    var i = 0;
+    var cur = this.startIndex;
+    let end = this.endIndex;
+    while ((cur as i32) < (end as i32)) {
+      out[i] = this.codePointAt(cur);
+      cur = this.scalarIndexAfter(cur);
+      i += 1;
+    }
+    return out;
+  }
+}
+
+/**
+ * Contiguous view of a `String`'s UTF-8 / WTF-8 encoded bytes (`u8`).
+ *
+ * When created from a `WTF8` string, this view shares the string's backing
+ * `ByteArray` without copying. When created from a `WTF16` string, the
+ * string's contents are transcoded to a fresh UTF-8 `ByteArray`.
+ */
+export final class StringUtf8View implements Iterable<u8> {
+  #data: ByteArray;
+  #start: i32;
+  #end: i32;
+
+  new(data: ByteArray, start: i32, end: i32) : #data = data, #start = start, #end = end;
+
+  /**
+   * The number of UTF-8 bytes in this view.
+   */
+  length: i32 {
+    get {
+      return this.#end - this.#start;
+    }
+  }
+
+  /**
+   * True when this view contains zero bytes.
+   */
+  isEmpty: boolean {
+    get {
+      return this.#end == this.#start;
+    }
+  }
+
+  /**
+   * Returns the UTF-8 byte at `index` as a `u8`. Throws
+   * `IndexOutOfBoundsError` if `index` is out of bounds.
+   */
+  operator [](index: i32): u8 {
+    let len = this.#end - this.#start;
+    if (index < 0 || index >= len) {
+      throw new IndexOutOfBoundsError(index, len);
+    }
+    return __byte_array_get(this.#data, this.#start + index) as u8;
+  }
+
+  /**
+   * Returns a zero-copy sub-view of `[start, end)`, clamped to `[0, length]`.
+   */
+  slice(start: i32, end: i32): StringUtf8View {
+    let len = this.#end - this.#start;
+    var s = start;
+    var e = end;
+    if (s < 0) { s = 0; }
+    if (e > len) { e = len; }
+    if (s > e) { s = e; }
+    return new StringUtf8View(this.#data, this.#start + s, this.#start + e);
+  }
+
+  /**
+   * Returns an iterator yielding each UTF-8 byte as a `u8`.
+   */
+  [Iterable.iterator](): Iterator<u8> {
+    return new StringUtf8Iterator(this.#data, this.#start, this.#end);
+  }
+
+  filter(predicate: (item: u8) => boolean): Iterable<u8> {
+    return new FilteredIterable<u8>(this, predicate);
+  }
+
+  contains(value: u8): boolean {
+    for (let item in this) {
+      if (item == value) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  all(predicate: (item: u8) => boolean): boolean {
+    for (let item in this) {
+      if (!predicate(item)) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  some(predicate: (item: u8) => boolean): boolean {
+    for (let item in this) {
+      if (predicate(item)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  fold<R>(initial: R, combine: (acc: R, item: u8) => R): R {
+    var acc = initial;
+    for (let item in this) {
+      acc = combine(acc, item);
+    }
+    return acc;
+  }
+
+  find(predicate: (item: u8) => boolean): inline (true, u8) | inline (false, _) {
+    for (let item in this) {
+      if (predicate(item)) {
+        return (true, item);
+      }
+    }
+    return (false, _);
+  }
+
+  /**
+   * Copies UTF-8 bytes from this view into `target` starting at `targetOffset`.
+   */
+  copyTo(target: ByteArray, targetOffset: i32 = 0, start: i32 = 0, length: i32 = -1): void {
+    let viewLen = this.#end - this.#start;
+    let copyLen = if (length < 0) viewLen - start else length;
+    __byte_array_copy(target, targetOffset, this.#data, this.#start + start, copyLen);
+  }
+
+  /**
+   * Returns a copy of this view's UTF-8 bytes as a `FixedArray<u8>`.
+   */
+  toArray(): FixedArray<u8> {
+    let len = this.#end - this.#start;
+    let out = new FixedArray<u8>(len, 0);
+    for (var i = 0; i < len; i += 1) {
+      out[i] = __byte_array_get(this.#data, this.#start + i) as u8;
+    }
+    return out;
+  }
+}
+
+/**
+ * Contiguous view of a `String`'s UTF-16 / WTF-16 code units (`u16`).
+ *
+ * When created from a `WTF16` string, this view shares the string's backing
+ * `ByteArray` without copying. When created from a `WTF8` string, the
+ * string's contents are transcoded to a fresh little-endian UTF-16 `ByteArray`.
+ */
+export final class StringUtf16View implements Iterable<u16> {
+  #data: ByteArray;
+  #start: i32;
+  #end: i32;
+
+  new(data: ByteArray, start: i32, end: i32) : #data = data, #start = start, #end = end;
+
+  /**
+   * The number of 16-bit code units in this view.
+   */
+  length: i32 {
+    get {
+      return (this.#end - this.#start) >> 1;
+    }
+  }
+
+  /**
+   * True when this view contains zero code units.
+   */
+  isEmpty: boolean {
+    get {
+      return this.#end == this.#start;
+    }
+  }
+
+  /**
+   * Returns the 16-bit code unit at `index` as a `u16`. Throws
+   * `IndexOutOfBoundsError` if `index` is out of bounds.
+   */
+  operator [](index: i32): u16 {
+    let len = (this.#end - this.#start) >> 1;
+    if (index < 0 || index >= len) {
+      throw new IndexOutOfBoundsError(index, len);
+    }
+    let bytePos = this.#start + (index << 1);
+    let lo = __byte_array_get(this.#data, bytePos);
+    let hi = __byte_array_get(this.#data, bytePos + 1);
+    return (lo | (hi << 8)) as u16;
+  }
+
+  /**
+   * Returns a zero-copy sub-view of code units `[start, end)`, clamped to
+   * `[0, length]`.
+   */
+  slice(start: i32, end: i32): StringUtf16View {
+    let len = (this.#end - this.#start) >> 1;
+    var s = start;
+    var e = end;
+    if (s < 0) { s = 0; }
+    if (e > len) { e = len; }
+    if (s > e) { s = e; }
+    return new StringUtf16View(this.#data, this.#start + (s << 1), this.#start + (e << 1));
+  }
+
+  /**
+   * Returns an iterator yielding each UTF-16 code unit as a `u16`.
+   */
+  [Iterable.iterator](): Iterator<u16> {
+    return new StringUtf16Iterator(this.#data, this.#start, this.#end);
+  }
+
+  filter(predicate: (item: u16) => boolean): Iterable<u16> {
+    return new FilteredIterable<u16>(this, predicate);
+  }
+
+  contains(value: u16): boolean {
+    for (let item in this) {
+      if (item == value) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  all(predicate: (item: u16) => boolean): boolean {
+    for (let item in this) {
+      if (!predicate(item)) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  some(predicate: (item: u16) => boolean): boolean {
+    for (let item in this) {
+      if (predicate(item)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  fold<R>(initial: R, combine: (acc: R, item: u16) => R): R {
+    var acc = initial;
+    for (let item in this) {
+      acc = combine(acc, item);
+    }
+    return acc;
+  }
+
+  find(predicate: (item: u16) => boolean): inline (true, u16) | inline (false, _) {
+    for (let item in this) {
+      if (predicate(item)) {
+        return (true, item);
+      }
+    }
+    return (false, _);
+  }
+
+  /**
+   * Returns a copy of this view's UTF-16 code units as a `FixedArray<u16>`.
+   */
+  toArray(): FixedArray<u16> {
+    let len = (this.#end - this.#start) >> 1;
+    let out = new FixedArray<u16>(len, 0 as u16);
+    for (var i = 0; i < len; i += 1) {
+      let bytePos = this.#start + (i << 1);
+      let lo = __byte_array_get(this.#data, bytePos);
+      let hi = __byte_array_get(this.#data, bytePos + 1);
+      out[i] = (lo | (hi << 8)) as u16;
+    }
+    return out;
+  }
+}
+
+/**
+ * Iterator over the extended grapheme clusters of a `String`.
+ */
+final class StringGraphemeIterator implements Iterator<String> {
+  #str: String;
+  var #pos: StringIndex;
+  #end: StringIndex;
+
+  new(str: String) : #str = str, #pos = str.startIndex, #end = str.endIndex;
+
+  next(): Step<String> {
+    if ((this.#pos as i32) >= (this.#end as i32)) {
+      return (0, _, _);
+    }
+    let start = this.#pos;
+    let nextPos = this.#str.indexAfter(start);
+    this.#pos = nextPos;
+    return (1, this.#str.unsafeSliceBytes(start as i32, nextPos as i32), _);
+  }
+}
+
+/**
+ * Iterator over the decoded Unicode scalar values (`i32`) of a `String`.
+ */
+final class StringCodePointIterator implements Iterator<i32> {
+  #str: String;
+  var #pos: StringIndex;
+  #end: StringIndex;
+
+  new(str: String) : #str = str, #pos = str.startIndex, #end = str.endIndex;
+
+  next(): Step<i32> {
+    if ((this.#pos as i32) >= (this.#end as i32)) {
+      return (0, _, _);
+    }
+    let cur = this.#pos;
+    let cp = this.#str.codePointAt(cur);
+    this.#pos = this.#str.scalarIndexAfter(cur);
+    return (1, cp, _);
+  }
+}
+
+/**
+ * Iterator over the UTF-8 bytes (`u8`) of a `StringUtf8View`.
+ */
+final class StringUtf8Iterator implements Iterator<u8> {
+  #data: ByteArray;
+  var #pos: i32;
+  #end: i32;
+
+  new(data: ByteArray, start: i32, end: i32) : #data = data, #pos = start, #end = end;
+
+  next(): Step<u8> {
+    if (this.#pos >= this.#end) {
+      return (0, _, _);
+    }
+    let b = __byte_array_get(this.#data, this.#pos) as u8;
+    this.#pos += 1;
+    return (1, b, _);
+  }
+}
+
+/**
+ * Iterator over the UTF-16 code units (`u16`) of a `StringUtf16View`.
+ */
+final class StringUtf16Iterator implements Iterator<u16> {
+  #data: ByteArray;
+  var #pos: i32;
+  #end: i32;
+
+  new(data: ByteArray, start: i32, end: i32) : #data = data, #pos = start, #end = end;
+
+  next(): Step<u16> {
+    if (this.#pos >= this.#end) {
+      return (0, _, _);
+    }
+    let lo = __byte_array_get(this.#data, this.#pos);
+    let hi = __byte_array_get(this.#data, this.#pos + 1);
+    this.#pos += 2;
+    return (1, (lo | (hi << 8)) as u16, _);
+  }
+}
+
+

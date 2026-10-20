@@ -14114,30 +14114,58 @@ function checkExpressionInner(ctx: CheckerContext, expr: Expression, expectedTyp
     }
   }
   case RangeExpression {start, end, loc}: {
-    // Check start/end are i32.
+    // Check start/end are i32 or StringIndex.
+    let stringIndexType = ctx.resolveTypeName("StringIndex");
+    var startIsStringIndex = false;
+    var endIsStringIndex = false;
+    var startType: Type | null = null;
+    var endType: Type | null = null;
     if (start != null) {
-      let startType = checkExpression(ctx, start, null);
-      if (!isAssignableTo(ctx, startType, new I32Type())) {
+      let st = checkExpression(ctx, start, null);
+      startType = st;
+      if (stringIndexType != null && isAssignableTo(ctx, st, stringIndexType)) {
+        startIsStringIndex = true;
+      } else if (!isAssignableTo(ctx, st, new I32Type())) {
         ctx.error(
-          `Range start must be i32, got '${typeToString(startType)}'.`,
+          `Range start must be i32 or StringIndex, got '${typeToString(st)}'.`,
           DiagnosticCode.TypeMismatch, loc
         );
       }
     }
     if (end != null) {
-      let endType = checkExpression(ctx, end, null);
-      if (!isAssignableTo(ctx, endType, new I32Type())) {
+      let et = checkExpression(ctx, end, null);
+      endType = et;
+      if (stringIndexType != null && isAssignableTo(ctx, et, stringIndexType)) {
+        endIsStringIndex = true;
+      } else if (!isAssignableTo(ctx, et, new I32Type())) {
         ctx.error(
-          `Range end must be i32, got '${typeToString(endType)}'.`,
+          `Range end must be i32 or StringIndex, got '${typeToString(et)}'.`,
+          DiagnosticCode.TypeMismatch, loc
+        );
+      }
+    }
+    if (start != null && end != null && startIsStringIndex != endIsStringIndex) {
+      let st = startType as Type;
+      let et = endType as Type;
+      if (!(st is ErrorType) && !(et is ErrorType)) {
+        ctx.error(
+          `Range bounds must have the same type, got '${typeToString(st)}' and '${typeToString(et)}'.`,
           DiagnosticCode.TypeMismatch, loc
         );
       }
     }
     // Determine which range variant to return.
-    let rangeTypeName = if (start != null && end != null) { "BoundedRange" }
+    let isStringRange = startIsStringIndex || endIsStringIndex;
+    let rangeTypeName = if (isStringRange) {
+      if (start != null && end != null) { "BoundedStringRange" }
+      else if (start != null) { "FromStringRange" }
+      else { "ToStringRange" }
+    } else {
+      if (start != null && end != null) { "BoundedRange" }
       else if (start != null) { "FromRange" }
       else if (end != null) { "ToRange" }
-      else { "FullRange" };
+      else { "FullRange" }
+    };
     let rangeType = ctx.resolveTypeName(rangeTypeName);
     if (rangeType != null) { rangeType }
     else { new ErrorType() }

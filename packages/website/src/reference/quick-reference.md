@@ -861,16 +861,30 @@ let text = `
 
 ### String Operations
 
-String slicing is O(1) and shares backing storage with the original string—no
-copying required. Use `copy()` when you need to release the parent string's
-memory.
+Strings are indexed by `StringIndex` rather than raw integers so multi-byte
+UTF-8 characters and multi-code-point emojis are never split. Range slicing is
+$O(1)$ and shares backing storage with the original string; use `copy()` when
+you need to release the parent string's memory.
 
 ```zena
-let s = 'hello';
-s.length; // Length in code units
-s.slice(1, 3); // "el" (O(1), shares backing storage)
-s.copy(); // Force a copy (release parent memory)
-s + ' world'; // Concatenation
+let s = 'café😀';
+s.byteLength;                      // 8 (length in UTF-8 bytes)
+s.isEmpty;                         // false
+s.graphemes.count();               // 5 (grapheme clusters)
+s.codePoints.count();              // 5 (Unicode scalar values)
+
+let i0 = s.startIndex;
+let i1 = s.indexAfter(i0);
+s[i0];                             // "c"
+s[i1..];                           // "afé😀" (O(1) zero-copy slice)
+s.reverse();                       // "😀éfac"
+s.copy();                          // Force a copy (release parent memory)
+s + '!';                           // Concatenation
+
+for (let g in s) { ... }           // Iterates grapheme clusters (String)
+for (let cp in s.codePoints) { ... } // Iterates Unicode code points (i32)
+s.utf8[0];                         // 99 as u8 (UTF-8 byte view)
+s.utf16[0];                        // 99 as u16 (UTF-16 code unit view)
 ```
 
 ### StringBuilder
