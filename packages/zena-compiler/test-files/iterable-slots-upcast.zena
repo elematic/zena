@@ -1,0 +1,29 @@
+// iterable-slots.zena with the list held as an Array<Value> first, so
+// storing it into `current` upcasts Array<Value> to Iterable<Value>. The
+// upcast copies Iterable's slots out of Array's vtable, and still calls
+// nothing but `:iterator`. GitHub issue #425.
+type Value = String | Iterable<Value>;
+
+var current: Value = 'none';
+var list: Array<Value> = new GrowableArray<Value>();
+
+export let store = (n: i32): void => {
+  let items = new GrowableArray<Value>();
+  for (var i = 0; i < n; i += 1) { items.push('x'); }
+  list = items;
+  current = list;
+};
+
+export let count = (): i32 => match (current) {
+  case Iterable as it: {
+    var n = 0;
+    for (let item in it) { n += 1; }
+    n
+  }
+  case _: 1
+};
+
+export let main = (): i32 => {
+  store(3);
+  return count();
+};

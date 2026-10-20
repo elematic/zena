@@ -195,6 +195,16 @@ let subclassedTarget = 'packages/zena-compiler/test-files/subclassed-generic.zen
 let mixinTarget = 'packages/zena-compiler/test-files/uncalled-methods.zena';
 
 /**
+ * A list packed into an interface-typed slot and iterated through it:
+ * the only members called through the interface are `:iterator` and
+ * the iterator's `next`.
+ */
+let iterableSlotsTarget = 'packages/zena-compiler/test-files/iterable-slots.zena';
+
+/** The same, with the list upcast from Array to Iterable on the way. */
+let iterableSlotsUpcastTarget = 'packages/zena-compiler/test-files/iterable-slots-upcast.zena';
+
+/**
  * An async `main` with an empty body, built as a component: nothing of
  * its own, so its size is what the event loop in `zena:wasi` and the
  * async runtime cost every program that awaits.
@@ -395,6 +405,27 @@ export let tests = suite('Binary size', () => {
       `that nothing calls.`);
     isTrue(wat.contains('Dog_') && wat.contains('.speak'),
       `${mixinTarget}: a call through Animal must reach Dog's speak.`);
+  });
+
+  test('interface members nothing calls through the interface get no slot', (ctx) => {
+    // An interface vtable slot comes with a trampoline per class, and the
+    // trampoline reaches the class's method. Packing a GrowableArray into
+    // an Iterable slot used to reach every Iterable method on it, and
+    // `filter` brought FilteredIterable and FilterIterator, which
+    // implement Iterable and Iterator in turn (#425). An upcast from
+    // Array to Iterable used to reference every member of Iterable too.
+    for (let path in [iterableSlotsTarget, iterableSlotsUpcastTarget]) {
+      let wat = new WatGenerator('freestanding', false).generate(programOf(path));
+      isTrue(wat.contains('.:iterator') && wat.contains('.next'),
+        `${path}: the for-in must dispatch :iterator and next.`);
+      isTrue(!wat.contains('FilteredIterable') && !wat.contains('FilterIterator'),
+        `${path} emits the classes of Iterable.filter, which nothing calls.`);
+      for (let name in ['contains', 'all', 'some', 'find', 'filter']) {
+        isTrue(!wat.contains(`_${name}_trampoline`) && !wat.contains(`Value.${name}`),
+          `${path} emits Iterable.${name}, which nothing calls through the ` +
+          `interface.`);
+      }
+    }
   });
 
   test('a subclassed generic emits no erased specialization', (ctx) => {

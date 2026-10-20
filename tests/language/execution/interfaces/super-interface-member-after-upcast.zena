@@ -1,0 +1,26 @@
+// @mode: run
+// @result: 42
+
+// `name` is only called through Named, but the value passed to
+// `viaNamed` is held as Labeled. The upcast copies Named's slots out of
+// Labeled's vtable, so a member called through an interface needs a slot
+// in every interface that extends it.
+interface Named {
+  name(): i32;
+}
+
+interface Labeled extends Named {
+  label(): i32;
+}
+
+class Thing implements Labeled {
+  name(): i32 { return 40; }
+  label(): i32 { return 2; }
+}
+
+let viaNamed = (n: Named): i32 => n.name();
+
+// A module-level `var` keeps the pack from being devirtualized.
+var held: Labeled = new Thing();
+
+export let main = (): i32 => viaNamed(held) + held.label();
