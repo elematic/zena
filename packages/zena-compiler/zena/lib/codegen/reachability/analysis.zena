@@ -23,7 +23,7 @@ import { SymbolId, Symbol, noSymbolId } from '../../scope/symbol.zena';
 import {
   ValType, ValTypeI32, ValTypeRefNull, ValTypeAnyRef, ValTypeRef, ValTypeStructRef, WasmType, ValTypeFuncRef, valTypeToOpcode, refTargetOf,
 } from '../wasm.zena';
-import { Referrer, RecordResultCall, ReachabilityContext, SpecializerInterface, TypeLowererInterface, ReachabilityVisitorInterface, ClassInterfacePair, GenericInterfaceMethodDemand, GenericClassMethodDemand } from './context.zena';
+import { Referrer, RecordResultCall, ReachabilityContext, SpecializerInterface, TypeLowererInterface, ReachabilityVisitorInterface, GenericInterfaceMethodDemand, GenericClassMethodDemand } from './context.zena';
 import { ClassHierarchyAnalysis } from './hierarchy.zena';
 import { Specializer, applyMixinPrivateScope } from './specialization.zena';
 import { ReachabilityVisitor, TypeLowerer } from './visitor.zena';
@@ -43,12 +43,6 @@ final class ParsedMethodRef {
   classSymId: SymbolId;
   mName: String;
   new(this.classSymId, this.mName);
-}
-
-final class ParsedInterfaceMemberRef {
-  ifaceSymId: SymbolId;
-  mName: String;
-  new(this.ifaceSymId, this.mName);
 }
 
 final class ParsedAdaptationRef {
@@ -274,8 +268,6 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
   /** See ReachabilityContext.walkingTemplateOf. */
   var walkingTemplateOf: ClassType | null = null;
   var isRtaActive = true;
-  referencedInterfaceMembers = new Set<String>();
-  referencedReachableInterfaceMembers = new Set<String>();
   /**
    * The members reachable code calls through an interface, keyed
    * "<symbol id of the interface declaration>.<member name>".
@@ -300,10 +292,6 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
   specializedClassTypes = new Map<SymbolId, GrowableArray<ClassType>>();
   reachedClassMembers = new Map<SymbolId, HashMap<i32, boolean>>();
   reachedReachableClassMembers = new Map<SymbolId, HashMap<i32, boolean>>();
-
-  // Tracks for interface dispatches: which instantiated classes implement an interface
-  instantiatedClassesByInterface = new Map<SymbolId, GrowableArray<ClassInterfacePair>>();
-  referencedInterfaceMembersById = new Map<SymbolId, GrowableArray<String>>();
 
   var mixinToClasses = new Map<MixinKey, GrowableArray<ClassType>>();
   #preludeClassCache = new Map<String, ClassType>();
@@ -435,7 +423,6 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
 
 
   parsedClassMethodRefs = new Map<String, ParsedMethodRef>();
-  parsedInterfaceMemberRefs = new Map<String, ParsedInterfaceMemberRef>();
   parsedAdaptationRefs = new Map<String, ParsedAdaptationRef>();
 
   var typeIdGenerator = makeTypeIdGenerator(1);
@@ -4294,57 +4281,7 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
       }
     }
 
-    // 4. Queue referenced interface members
-    for (let ifaceStr in deps.referencedInterfaceMembers) {
-      var parsed: ParsedInterfaceMemberRef | null = null;
-      if (let (true, cached) = this.parsedInterfaceMemberRefs.get(ifaceStr)) {
-        parsed = cached;
-      } else {
-        var dotIdx = -1;
-        for (var i = 0; i < ifaceStr.length; i += 1) {
-          if (ifaceStr.getByteAt(i) == 46) {
-            dotIdx = i;
-            break;
-          }
-        }
-        if (dotIdx != -1) {
-          let ifaceIdStr = ifaceStr.sliceBytes(0, dotIdx);
-          let mName = ifaceStr.sliceBytes(dotIdx + 1, ifaceStr.length);
-          let ifaceId = if (let (true, iid) = parseI32(ifaceIdStr)) iid else -1;
-          parsed = new ParsedInterfaceMemberRef(ifaceId as SymbolId, mName);
-        } else {
-          parsed = new ParsedInterfaceMemberRef(noSymbolId, "");
-        }
-        this.parsedInterfaceMemberRefs[ifaceStr] = parsed;
-      }
-
-      if (parsed != null && parsed.ifaceSymId as i32 != -1) {
-        let ifaceId = parsed.ifaceSymId;
-        let {mName} = parsed;
-        if (let (true, targetModel) = this.symbolIdToModel.get(ifaceId)) {
-          let ifaceDecl = this.interfaceDecls[ifaceId];
-          if (ifaceDecl != null) {
-            let baseIfaceType = targetModel.getNodeType(ifaceDecl) as InterfaceType;
-            var targetIfaceType = baseIfaceType;
-            if (classType != null) {
-              let specIfaces = this.cha.collectAllImplementedInterfaces(classType);
-              for (let specI in specIfaces) {
-                let genSrc = specI.genericSource ?? specI;
-                if (genSrc.symbolId == ifaceId) {
-                  targetIfaceType = specI;
-                  break;
-                }
-              }
-            }
-            this.demandInterfaceMember(targetIfaceType, mName);
-            let resolvedIfaceStr = `${i32ToString((targetIfaceType.genericSource ?? targetIfaceType).symbolId as i32)}.${mName}`;
-            this.addReferencedInterfaceMember(resolvedIfaceStr);
-          }
-        }
-      }
-    }
-
-    // 5. Record reached closures
+    // 3. Record reached closures
     for (let closureDep in deps.closures) {
       let funcExpr = closureDep.node as FunctionExpression;
       this.nodeIdToNode[funcExpr.id as i32] = funcExpr;
@@ -4546,7 +4483,7 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
       this.queueReferrer(new Referrer(false, noSymbolId, funcExpr.id as i32, model, classType, this.currentReachable, typeArguments));
     }
 
-    // 6. Record function adaptations
+    // 4. Record function adaptations
     for (let fAdapt in deps.functionAdaptations) {
       let src = resolveType(fAdapt.source) as FunctionType;
       let tgt = resolveType(fAdapt.target) as FunctionType;
@@ -4649,88 +4586,6 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
       }
     }
 
-  }
-
-  addReferencedInterfaceMember(ifaceStr: String): void {
-    if (this.currentReachable) {
-      if (this.referencedReachableInterfaceMembers.has(ifaceStr)) {
-        return;
-      }
-      this.referencedReachableInterfaceMembers.add(ifaceStr);
-      this.referencedInterfaceMembers.add(ifaceStr);
-    } else {
-      if (this.referencedInterfaceMembers.has(ifaceStr)) {
-        return;
-      }
-      this.referencedInterfaceMembers.add(ifaceStr);
-    }
-
-    var parsed: ParsedInterfaceMemberRef | null = null;
-    if (let (true, cached) = this.parsedInterfaceMemberRefs.get(ifaceStr)) {
-      parsed = cached;
-    } else {
-      var dotIdx = -1;
-      for (var i = 0; i < ifaceStr.length; i += 1) {
-        if (ifaceStr.getByteAt(i) == 46) {
-          dotIdx = i;
-          break;
-        }
-      }
-      if (dotIdx != -1) {
-        let ifaceIdStr = ifaceStr.sliceBytes(0, dotIdx);
-        let mName = ifaceStr.sliceBytes(dotIdx + 1, ifaceStr.length);
-        let ifaceId = if (let (true, iid) = parseI32(ifaceIdStr)) iid else -1;
-        let newRef = new ParsedInterfaceMemberRef(ifaceId as SymbolId, mName);
-        this.parsedInterfaceMemberRefs[ifaceStr] = newRef;
-        parsed = newRef;
-      }
-    }
-
-    if (parsed != null) {
-      let ifaceId = parsed.ifaceSymId;
-      let {mName} = parsed;
-      if (ifaceId as i32 != -1) {
-        let symId = ifaceId;
-        if (!this.referencedInterfaceMembersById.has(symId)) {
-          this.referencedInterfaceMembersById[symId] = new Array<String>();
-        }
-        let list = this.referencedInterfaceMembersById[symId];
-        var hasMem = false;
-        for (let existing in list) {
-          if (existing == mName) {
-            hasMem = true;
-            break;
-          }
-        }
-        if (!hasMem) {
-          list.push(mName);
-        }
-
-        if (let (true, pairList) = this.instantiatedClassesByInterface.get(symId)) {
-          for (let pair in pairList) {
-            let {cha} = this;
-            let cType = pair.classType;
-            let mds = cha.findImplementingMethods(cType, mName);
-            if (mds.length > 0) {
-              for (let md in mds) {
-                this.queueReferrer(new Referrer(false, noSymbolId, (md as Node).id as i32, this.getNodeModel(md as Node, this.getClassModel(cType)), cType, this.currentReachable));
-              }
-            } else {
-              let acc = cha.findImplementingAccessor(cType, mName);
-              if (acc != null) {
-                this.queueReferrer(new Referrer(false, noSymbolId, (acc as Node).id as i32, this.getNodeModel(acc as Node, this.getClassModel(cType)), cType, this.currentReachable));
-              } else if (mName.startsWith("get#") || mName.startsWith("set#")) {
-                let fieldName = mName.sliceBytes(4, mName.length);
-                let fd = cha.findImplementingField(cType, fieldName);
-                if (fd != null) {
-                  this.queueReferrer(new Referrer(false, noSymbolId, (fd as Node).id as i32, this.getNodeModel(fd as Node, this.getClassModel(cType)), cType, this.currentReachable));
-                }
-              }
-            }
-          }
-        }
-      }
-    }
   }
 
   getModelPath(model: SemanticModel): String {

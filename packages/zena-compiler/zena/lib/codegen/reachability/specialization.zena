@@ -1,5 +1,5 @@
 import {
-  Referrer, ReachabilityContext, SpecializerInterface, ClassInterfacePair,
+  Referrer, ReachabilityContext, SpecializerInterface,
 } from './context.zena';
 import { SemanticModel, memberKeyOf } from '../../semantic-model.zena';
 import { Type, ClassType, InterfaceType, FunctionType, TypeParameterType, VoidType, BooleanType, I32Type, MethodInfo, FieldInfo, FunctionDeclInfo } from '../../types.zena';
@@ -331,56 +331,6 @@ export final class Specializer implements SpecializerInterface {
           if (member is FieldDefinition) {
             if (member.value != null) {
               this.pass.queueReferrer(new Referrer(false, noSymbolId, (member as Node).id as i32, model, classType, this.pass.currentReachable));
-            }
-          }
-        }
-      }
-    }
-    
-    // Implements list logic
-    let allIfaces = cha.collectAllImplementedInterfaces(classType);
-    for (let iface in allIfaces) {
-      let unspecI = iface.genericSource ?? iface;
-      let ifaceId = unspecI.symbolId;
-      
-      if (!this.pass.instantiatedClassesByInterface.has(ifaceId)) {
-        this.pass.instantiatedClassesByInterface[ifaceId] = new Array<ClassInterfacePair>();
-      }
-      let list = this.pass.instantiatedClassesByInterface[ifaceId];
-      var hasC = false;
-      for (let existing in list) {
-        if (getClassKey(existing.classType) == getClassKey(classType)) {
-          hasC = true;
-          break;
-        }
-      }
-      if (!hasC) {
-        list.push(new ClassInterfacePair(classType, iface));
-        
-        // Trigger RTA: for any already-referenced member of this interface,
-        // the class's implementing method becomes reachable!
-        if (let (true, refMems) = this.pass.referencedInterfaceMembersById.get(ifaceId)) {
-          for (let mName in refMems) {
-            let targetClassType = classType;
-            let targetModel = this.pass.getClassModel(targetClassType);
-            let refMemKey = `${i32ToString(ifaceId as i32)}.${mName}`;
-            let isReachable = this.pass.referencedReachableInterfaceMembers.has(refMemKey);
-            let mds = cha.findImplementingMethods(targetClassType, mName);
-            if (mds.length > 0) {
-              for (let md in mds) {
-                this.pass.queueReferrer(new Referrer(false, noSymbolId, (md as Node).id as i32, this.pass.getNodeModel(md as Node, targetModel), targetClassType, isReachable));
-              }
-            } else {
-              let acc = cha.findImplementingAccessor(targetClassType, mName);
-              if (acc != null) {
-                this.pass.queueReferrer(new Referrer(false, noSymbolId, (acc as Node).id as i32, this.pass.getNodeModel(acc as Node, targetModel), targetClassType, isReachable));
-              } else if (mName.startsWith("get#") || mName.startsWith("set#")) {
-                let fieldName = mName.sliceBytes(4, mName.length);
-                let fd = cha.findImplementingField(targetClassType, fieldName);
-                if (fd != null) {
-                  this.pass.queueReferrer(new Referrer(false, noSymbolId, (fd as Node).id as i32, this.pass.getNodeModel(fd as Node, targetModel), targetClassType, isReachable));
-                }
-              }
             }
           }
         }

@@ -1430,13 +1430,36 @@ from before and after the change:
 The compiler's own `-O1` build also got faster to compile, 12.6s to
 11.3s, from the trampolines and method bodies it no longer builds.
 
-One thing found along the way and left alone: the visitor builds its
-`"<id>.<member>"` reference strings from the interface's `TypeId`,
-where `instantiatedClassesByInterface` and the dependency records use
-its `SymbolId`, so a reference recorded by the visitor rarely reaches
-implementations through `addReferencedInterfaceMember`. Trampolines
-reach them instead. Fixing the key would reach the implementation on
-every instantiated class that implements the interface, packed or not.
+### Trampolines are the only reach
+
+A second path reached interface implementations too.
+`addReferencedInterfaceMember` recorded each member referenced through
+an interface, and reached it on every instantiated class implementing
+the interface (`instantiatedClassesByInterface`), and on each such class
+instantiated later. A class never packed as the interface cannot be
+dispatched to through it, so those reaches kept code nothing could
+call. The path was also keyed inconsistently: the visitor built its
+`"<id>.<member>"` strings from the interface's `TypeId`, where the map
+and the checker's dependency records used its `SymbolId`, so the
+visitor's references reached nothing, or, where the two numbers
+collided, methods of the same name on classes implementing an
+unrelated interface.
+
+The follow-up to #430 removes the path, so a trampoline is the only
+thing that reaches an implementation through an interface: every
+dispatch needs a packed value, a packed value needs a pair vtable, and
+the pair vtable has a trampoline for every demanded slot. The checker's
+interface-member records went with it. `noteInterfaceDispatch` sees
+every member expression and index in both walks, so the records added
+nothing but a setter demand for each read of a mutable interface
+field. They did carry one thing the walk had to learn: a symbol-keyed
+member's key is the checker's (`accessKeyOf`), not the property name.
+
+After #430 there was little left for the path to keep: the compiler's
+own `-O1` build is 290 bytes smaller without it (1,935,850 to
+1,935,560), `-O2` 152, and the zenafx examples and component fixtures
+move by at most a byte. The point of removing it is that one mechanism
+decides what an interface call reaches, with no key to get wrong.
 
 ## The keystone: `hasInst` and the class vtable
 

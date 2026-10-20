@@ -12804,9 +12804,7 @@ function checkExpressionInner(ctx: CheckerContext, expr: Expression, expectedTyp
             } else {
               let deps = ctx.currentDependencies();
               if (deps != null) {
-                let ifaceSymId = (it.genericSource ?? it).symbolId;
-                deps.referencedSymbols.add(ifaceSymId);
-                deps.referencedInterfaceMembers.add(i32ToString(ifaceSymId as i32) + ".[]=");
+                deps.referencedSymbols.add((it.genericSource ?? it).symbolId);
               }
             }
           }
@@ -20257,20 +20255,10 @@ function resolveMemberType(
     }
     case InterfaceType as it: {
       let deps = ctx.currentDependencies();
+      // The member this reads is recorded by codegen's walk of the body
+      // (noteInterfaceDispatch), which gives it a vtable slot.
       if (deps != null) {
-        let ifaceSymId = (it.genericSource ?? it).symbolId;
-        deps.referencedSymbols.add(ifaceSymId);
-        if (it.members.has(propName) && it.members[propName] is MethodInfo) {
-          deps.referencedInterfaceMembers.add(`${i32ToString(ifaceSymId as i32)}.${propName}`);
-        } else if (it.members.has(propName) && it.members[propName] is FieldInfo) {
-          deps.referencedInterfaceMembers.add(`${i32ToString(ifaceSymId as i32)}.get#${propName}`);
-          let fi = it.members[propName] as FieldInfo;
-          if (fi.isMutable) {
-            deps.referencedInterfaceMembers.add(`${i32ToString(ifaceSymId as i32)}.set#${propName}`);
-          }
-        } else if (it.members.has("get#" + propName)) {
-          deps.referencedInterfaceMembers.add(`${i32ToString(ifaceSymId as i32)}.get#${propName}`);
-        }
+        deps.referencedSymbols.add((it.genericSource ?? it).symbolId);
       }
       if (it.members.has(propName) && it.members[propName] is FieldInfo) {
         let fieldType = it.members[propName].type;
