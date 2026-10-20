@@ -105,4 +105,61 @@ suite('Runtime - number formatting on the js target', () => {
     assert.equal(f64ToPrecision(Math.PI, 40), '3.1415926535897931');
     assert.equal(f64ToPrecision(-0, 3), '-0');
   });
+
+  test('parseF64 is imported from zena:host:number', async () => {
+    const wasm = compile(
+      `export let parse = (s: String): f64 => parseF64(s);`,
+      'js',
+    );
+    const module = new (WebAssembly.Module as any)(wasm, {
+      builtins: ['js-string'],
+      importedStringConstants: '_',
+    }) as WebAssembly.Module;
+    assert.deepEqual(
+      WebAssembly.Module.imports(module)
+        .filter((i) => i.module === 'zena:host:number')
+        .map((i) => i.name),
+      ['parseF64'],
+    );
+    const res = await instantiate(wasm);
+    const instance = res instanceof WebAssembly.Instance ? res : res.instance;
+    const parse = instance.exports.parse as (s: string) => number;
+    assert.equal(parse('3.25e2'), 325);
+    assert.equal(parse('0x1F'), 31);
+  });
+
+  test('parseF64 reads the prefix Zena reads, not what Number() reads', () => {
+    const {parseF64} = numberImports;
+    // Text after the number is ignored, and no digits at all is 0.
+    assert.equal(parseF64('12abc'), 12);
+    assert.equal(parseF64('1e5x'), 100000);
+    assert.equal(parseF64('1.5.5'), 1.5);
+    assert.equal(parseF64('1_000'), 1);
+    assert.equal(parseF64(''), 0);
+    assert.equal(parseF64('-'), 0);
+    assert.equal(parseF64('.'), 0);
+    assert.equal(parseF64('Infinity'), 0);
+    assert.equal(parseF64('NaN'), 0);
+    // Number() trims whitespace; Zena does not.
+    assert.equal(parseF64(' 1'), 0);
+    // An exponent marker with no digits is an exponent of zero.
+    assert.equal(parseF64('1e'), 1);
+    assert.equal(parseF64('1e+'), 1);
+    assert.equal(parseF64('.5'), 0.5);
+    assert.equal(parseF64('5.'), 5);
+    assert.ok(Object.is(parseF64('-0'), -0));
+    // Hex is an integer, accumulated a digit at a time.
+    assert.equal(parseF64('-0x10'), -16);
+    assert.equal(parseF64('0x1g'), 1);
+    assert.ok(Object.is(parseF64('-0x'), 0));
+    // Correctly rounded, whatever the digit count.
+    assert.equal(parseF64('2.4703282292062328e-324'), 5e-324);
+    assert.equal(parseF64('9007199254740993'), 9007199254740992);
+    assert.equal(
+      parseF64('-8719713712855776767.983584839753951'),
+      Number('-8719713712855776767.983584839753951'),
+    );
+    assert.equal(parseF64('1e99999999999'), Infinity);
+    assert.equal(parseF64(`0.${'0'.repeat(150000)}1e150000`), 0.1);
+  });
 });
