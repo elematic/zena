@@ -1,8 +1,8 @@
 /**
  * `compactImports` groups the import section in the encodings of the
- * compact import section proposal (`planImports`). No engine Node or
- * wasmtime embeds reads them yet, so the WAT, the plan's choices and the
- * bytes of each encoding are asserted here.
+ * compact import section proposal (`planImports`). Neither Node's V8 nor
+ * wasmtime reads them yet, so the WAT, the plan's choices and the bytes of
+ * each encoding are asserted here.
  */
 
 import { suite, test, TestContext } from 'zena:test';
@@ -15,7 +15,10 @@ import {
   ImportEntry, SingleImport, ImportGroup, ImportTypeGroup, planImports,
 } from '../lib/codegen/import-plan.zena';
 import { ImportItem } from '../lib/codegen/wasm-emitter.zena';
-import { ValTypeI32, ValTypeRefExtern, FuncImport, GlobalImport } from '../lib/codegen/wasm.zena';
+import {
+  ValTypeI32, ValTypeRef, ValTypeRefExtern, FuncImport, GlobalImport,
+} from '../lib/codegen/wasm.zena';
+import { WasmStruct, WasmField } from '../lib/codegen/wasm-module.zena';
 import { stdlibRoot } from './test-utils.zena';
 import { watFunction } from './wat-invariants.zena';
 
@@ -150,6 +153,41 @@ export let tests = suite('compact imports', () => {
     equal(describe(planImports(mixed, true)), 'single _ f\nsingle _ g\n');
   });
 
+  test('a type group can beat a module group that would also have paid', (ctx) => {
+    // In one `_` group the strings save only their type, 13 against 12,
+    // so they would stay in it; written apart, 13 against 16, they share
+    // their type and `f` stands alone: 19 bytes against 21.
+    let imports = growable([
+      stringImport('_', 'a'),
+      stringImport('_', 'b'),
+      new ImportItem('_', 'f', new FuncImport(0), null),
+    ]);
+    equal(describe(planImports(imports, true)), 'type group _: a b\nsingle _ f\n');
+  });
+
+  test('globals of one struct type share it, and of two do not', (ctx) => {
+    let a = new WasmStruct('A', new Array<WasmField>());
+    let b = new WasmStruct('B', new Array<WasmField>());
+    a.index = 0;
+    b.index = 1;
+    // A four-byte type pays to share from three imports on; `s` and `t`
+    // differ in mutability, so they are two types.
+    let ofA = new GlobalImport(new ValTypeRef(a), false);
+    let imports = growable([
+      new ImportItem('env', 'p', ofA, null),
+      new ImportItem('env', 'q', new GlobalImport(new ValTypeRef(a), false), null),
+      new ImportItem('env', 'r', new GlobalImport(new ValTypeRef(a), false), null),
+      new ImportItem('env', 's', new GlobalImport(new ValTypeRef(b), false), null),
+      new ImportItem('env', 't', new GlobalImport(new ValTypeRef(b), true), null),
+    ]);
+    equal(describe(planImports(imports, true)), 'type group env: p q r\ngroup env: s t\n');
+  });
+
+  test('--compact-imports is refused on a target that emits a component', (ctx) => {
+    let outPath = 'packages/zena-compiler/zena/out/compact-imports-component.wat';
+    equal(compileFile({entry, outPath, target: 'zena-cli', stdlibRoot, compactImports: true}), 1);
+  });
+
   test('imports of a shared type are grouped apart from the rest of the module', (ctx) => {
     let imports = growable([
       new ImportItem('env', 'f', new FuncImport(0), null),
@@ -169,10 +207,10 @@ export let tests = suite('compact imports', () => {
     emitter.emitImportSectionStart(1);
     emitter.emitImportGroup('env', growable([
       new ImportItem('env', 'f', new FuncImport(0), null),
-      new ImportItem('env', 'g', new GlobalImport(new ValTypeI32(), false), null),
+      new ImportItem('env', 'g', new GlobalImport(new ValTypeI32(), true), null),
     ]));
     emitter.emitImportSectionEnd();
-    equal(hex(buffer), '02 11 01 03 65 6e 76 00 7f 02 01 66 00 00 01 67 03 7f 00');
+    equal(hex(buffer), '02 11 01 03 65 6e 76 00 7f 02 01 66 00 00 01 67 03 7f 01');
   });
 
   test('the 0x7E encoding writes the module and type once, then the names', (ctx) => {
