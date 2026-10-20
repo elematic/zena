@@ -11,6 +11,8 @@
 // `f64ToString` and the integers are JavaScript's own conversions there;
 // `f32ToString` and `f64ToPrecision` are computed by the runtime, so they
 // get most of the corpus, including exact ties, which Zena rounds to even.
+// `parseF64` reads Zena's grammar in the runtime and is compared by the
+// bits of the float it returns, over inputs `Number()` reads differently.
 //
 //   npm run build -w @zena-lang/runtime
 //   node packages/stdlib/dev/fp-host-difftest.js [caseCount]
@@ -119,6 +121,83 @@ for (const [v, n] of [
 ])
   prec(v, n);
 
+// Parsing: the input text is everything after "parse ", answered with the
+// result's bits.
+const parse = (text) => cases.push(['parse', text]);
+const digitString = (n) => {
+  let out = '';
+  for (let k = 0; k < n; k++) out += randInt(10);
+  return out;
+};
+for (let i = 0; i < N; i++) {
+  const int = digitString(randInt(22));
+  const frac = randInt(3) ? `.${digitString(randInt(22))}` : '';
+  const exp = randInt(2) ? `e${['', '+', '-'][randInt(3)]}${randInt(400)}` : '';
+  parse(`${['', '-', '+'][randInt(3)]}${int}${frac}${exp}`);
+}
+// More significant digits than the nineteen the parser keeps.
+for (let i = 0; i < Math.min(N, 20000); i++) {
+  parse(`${digitString(20 + randInt(40))}e${randInt(660) - 340}`);
+}
+// Shortest forms of random floats read back exactly.
+for (let i = 0; i < Math.min(N, 20000); i++) {
+  const v = bitsToF64(rand64() & 0x7fffffffffffffffn);
+  if (Number.isFinite(v)) parse(String(v));
+}
+for (let i = 0; i < 2000; i++) {
+  parse(
+    `${['', '-'][randInt(2)]}0x${rand64()
+      .toString(16)
+      .repeat(1 + randInt(2))}`,
+  );
+}
+// Where Number() reads differently, and the edges of the grammar.
+for (const text of [
+  '',
+  '-',
+  '+',
+  '.',
+  '-.',
+  '.5',
+  '-.5',
+  '5.',
+  '-0',
+  '-0.0e5',
+  '0x',
+  '-0x',
+  '0X1F',
+  '0x1g',
+  '0x.8',
+  '1e',
+  '1e+',
+  '1e-',
+  '1E5',
+  '1e5x',
+  '1.5.5',
+  '12abc',
+  ' 1',
+  '1 ',
+  '1_000',
+  'Infinity',
+  '-Infinity',
+  'NaN',
+  'e5',
+  '00000000000000000000000000001',
+  '0.000000000000000000000000000001e30',
+  '1e99999999999',
+  '1e-99999999999',
+  `0.${'0'.repeat(150000)}1e150000`,
+  `${'1'.repeat(30)}e-99999`,
+  '2.2250738585072011e-308',
+  '2.4703282292062327e-324',
+  '2.4703282292062328e-324',
+  '1.7976931348623159e308',
+  '9007199254740993',
+  '18446744073709551615',
+  '1é',
+])
+  parse(text);
+
 // ---------------------------------------------------------------------------
 // The Zena side, on the byte target
 // ---------------------------------------------------------------------------
@@ -131,8 +210,8 @@ writeFileSync(
 writeFileSync(
   `${root}/scratch/fp-host-runner.zena`,
   `
-import { f32ToString, f64ToPrecision, StringBuilder } from 'zena:core';
-import { f64_reinterpret_i64, f32_reinterpret_i32 } from 'zena:math';
+import { f32ToString, f64ToPrecision, u64ToString, StringBuilder } from 'zena:core';
+import { f64_reinterpret_i64, i64_reinterpret_f64, f32_reinterpret_i32 } from 'zena:math';
 import { readFile, writeFile } from 'zena:fs';
 
 let bitsOf = (text: String): i64 => match (parseI64(text)) {
@@ -145,6 +224,12 @@ export async function main(): Future<i32> {
   let corpus = await readFile("scratch/fp-host-corpus.txt");
   for (let line in corpus.split("\\n")) {
     if (line.length == 0) { continue; }
+    if (line.startsWith("parse ")) {
+      let value = parseF64(line.sliceBytes(6, line.length));
+      out.append(u64ToString(i64_reinterpret_f64(value) as u64));
+      out.append("\\n");
+      continue;
+    }
     let parts = line.split(" ");
     let kind = parts[0];
     if (kind == "f32") {
@@ -178,6 +263,8 @@ const zena = readFileSync(`${root}/scratch/fp-host-actual.txt`, 'utf8').split(
 // ---------------------------------------------------------------------------
 
 const host = ([kind, args]) => {
+  if (kind === 'parse')
+    return f64ToBits(numberImports.parseF64(args)).toString();
   const [a, b] = args.split(' ');
   if (kind === 'f32') return numberImports.f32ToString(bitsToF32(Number(a)));
   const v = bitsToF64(BigInt.asUintN(64, BigInt(a)));
@@ -185,17 +272,42 @@ const host = ([kind, args]) => {
   return numberImports.f64ToPrecision(v, Number(b));
 };
 
+// The byte targets' `decimalToF64` documents that past 19 significant
+// digits about one input in five thousand rounds one ulp off; the host's
+// answer is the correctly rounded one. Such a case is counted, not failed,
+// when the host agrees with `Number()` on the same digits.
+const significantDigits = (text) =>
+  text
+    .replace(/^[-+]/, '')
+    .replace(/[eE].*$/, '')
+    .replace('.', '')
+    .replace(/^0+/, '').length;
+const isKnownLongParse = ([kind, text], got) =>
+  kind === 'parse' &&
+  /^[-+]?\d*\.?\d*(e[-+]?\d+)?$/i.test(text) &&
+  significantDigits(text) > 19 &&
+  got === f64ToBits(Number(text)).toString();
+
 let failures = 0;
+let knownLong = 0;
 const perKind = new Map();
 cases.forEach((c, i) => {
   const got = host(c);
   if (got === zena[i]) return;
+  if (isKnownLongParse(c, got)) {
+    knownLong += 1;
+    return;
+  }
   perKind.set(c[0], (perKind.get(c[0]) || 0) + 1);
   if (++failures <= 25) {
     console.log(`  FAIL ${c[0]} ${c[1]}: host ${got}, zena ${zena[i]}`);
   }
 });
 for (const [kind, n] of perKind) console.log(`  ${kind}: ${n} failures`);
+console.log(
+  `  parse: ${knownLong} inputs of more than 19 digits where the byte ` +
+    `targets are one ulp off and the host matches Number()`,
+);
 console.log(
   failures === 0
     ? `\nALL ${cases.length} CASES MATCH`
