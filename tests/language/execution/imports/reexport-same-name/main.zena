@@ -1,0 +1,27 @@
+// @mode: run
+// @invoke: main
+// @result: 42
+
+// Two libraries each declare a type alias named `Value`; a third
+// re-exports one of them. The re-export resolves to its origin's alias,
+// whatever else the program loaded: `facade.zena`'s `Value` is
+// `second.zena`'s, the one that takes a String and an i32 box, and not
+// `first.zena`'s, which is loaded first and would have answered a lookup
+// by name across every dependency.
+import { describe } from './first.zena';
+import { Value } from './facade.zena';
+
+export let main = (): i32 => {
+  let values = new GrowableArray<Value>();
+  values.push('forty');
+  values.push(new Box<i32>(2));
+  var total = 0;
+  for (let v in values) {
+    if (v is String) {
+      total += (v as String).length * 8;
+    } else if (v is Box<i32>) {
+      total += (v as Box<i32>).value;
+    }
+  }
+  return total + describe(null);
+};
