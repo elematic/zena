@@ -1,4 +1,4 @@
-import { Encoding } from './encoding.zena';
+import { StringBuilder } from './string-builder.zena';
 
 /**
  * Type alias for template tag functions.
@@ -235,8 +235,8 @@ let contentEndKeepingBreak = (last: String) => {
 
 /**
  * Walks one literal's retained region `[start, end)`, dropping the
- * indentation at every line start, and copies it into `data` when `data` is
- * non-null. Returns the number of bytes written.
+ * indentation at every line start, and appends it to `out` when `out` is
+ * non-null. Returns the number of bytes kept.
  *
  * Measuring and filling are the same walk, called twice, so the size of the
  * buffer and what goes into it cannot disagree.
@@ -248,8 +248,7 @@ let copySegment = (
     startsLine: boolean,
     valueFollows: boolean,
     indentLen: i32,
-    data: ByteArray | null,
-    out: i32) => {
+    out: StringBuilder | null) => {
   var written = 0;
   var i = start;
   var atLineStart = startsLine;
@@ -263,8 +262,8 @@ let copySegment = (
     }
     let nl = nextNewline(seg, i, end);
     let chunkEnd = if (nl < 0) end else nl + 1;
-    if (data != null) {
-      seg.copyBytesTo(data as ByteArray, out + written, i, chunkEnd - i);
+    if (out != null) {
+      out.appendSlice(seg, i, chunkEnd);
     }
     written += chunkEnd - i;
     i = chunkEnd;
@@ -330,36 +329,33 @@ let dedentImpl = (
     return segAt(0);
   }
 
-  // Pass two: measure the result, allocate once, then fill it.
+  // Pass two: measure the result, so that a byte target's builder allocates
+  // once, then fill it. The builder, not a byte array, so that the js target
+  // appends JavaScript strings and keeps every character.
   var total = 0;
   for (var s = 0; s < segCount; s += 1) {
     let seg = segAt(s);
     let segStart = if (s == 0) start0 else 0;
     let segEnd = if (s == segCount - 1) endN else seg.length;
     total += copySegment(
-        seg, segStart, segEnd, s == 0, s < segCount - 1, indentLen, null, 0);
+        seg, segStart, segEnd, s == 0, s < segCount - 1, indentLen, null);
     if (s < segCount - 1) {
       total += values[s].length;
     }
   }
 
-  let data = __byte_array_new(total);
-  var out = 0;
+  let out = new StringBuilder(total);
   for (var s = 0; s < segCount; s += 1) {
     let seg = segAt(s);
     let segStart = if (s == 0) start0 else 0;
     let segEnd = if (s == segCount - 1) endN else seg.length;
-    out += copySegment(
-        seg, segStart, segEnd, s == 0, s < segCount - 1, indentLen, data, out);
+    copySegment(
+        seg, segStart, segEnd, s == 0, s < segCount - 1, indentLen, out);
     if (s < segCount - 1) {
-      let value = values[s];
-      value.copyBytesTo(data, out, 0, value.length);
-      out += value.length;
+      out.append(values[s]);
     }
   }
-  // WTF-8: nothing in the stdlib constructs a WTF-16 String today, and a
-  // literal's bytes are the compiler's, which are WTF-8.
-  return String.fromByteArray(data, 0, total, Encoding.WTF8);
+  return out.toString();
 };
 
 /**

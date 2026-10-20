@@ -1,0 +1,140 @@
+/**
+ * `StringBuilder` for the JavaScript target (--target js).
+ *
+ * A `String` on this target is a JavaScript string (see `string-js.zena`), so
+ * the builder holds what has been appended as one JavaScript string and never
+ * looks at bytes. Each append is a `wasm:js-string` `concat`; V8 represents
+ * the result of a concatenation as a rope, so appending does not copy, and the
+ * rope is flattened once, when the built string is first read.
+ *
+ * The byte targets' builder (`string-builder.zena`) copies bytes into chunks.
+ * Here a byte is a UTF-16 code unit, as it is for `String.getByteAt` on this
+ * target, and lengths and offsets count code units.
+ */
+import { u32ToString, u64ToString, f32ToString } from './string-convert.zena';
+import {
+  __js_string_length, __js_string_concat, __js_string_substring,
+  __js_string_from_char_code,
+} from './js-string-builtins.zena';
+
+/**
+ * An append-only sequence of characters for efficient string construction.
+ */
+export final class StringBuilder {
+  /** Everything appended so far. */
+  var #handle: externref;
+
+  /**
+   * Creates a new, empty StringBuilder. The capacity is accepted for parity
+   * with the other targets and ignored: a JavaScript string has none.
+   */
+  new(_capacity: i32 = 16)
+    : #handle = ''.handle;
+
+  /**
+   * Current length of the built string in UTF-16 code units, which is what a
+   * `String`'s `length` counts on this target.
+   */
+  length: i32 {
+    get {
+      return __js_string_length(this.#handle);
+    }
+  }
+
+  /** The same as `length`: nothing is allocated ahead of an append. */
+  capacity: i32 {
+    get {
+      return __js_string_length(this.#handle);
+    }
+  }
+
+  /**
+   * Appends a string to the builder.
+   */
+  append(s: String): StringBuilder {
+    this.#handle = __js_string_concat(this.#handle, s.handle);
+    return this;
+  }
+
+  /**
+   * Appends the code units `[start, end)` of `s`.
+   */
+  appendSlice(s: String, start: i32, end: i32): StringBuilder {
+    if (end <= start) {
+      return this;
+    }
+    this.#handle = __js_string_concat(
+        this.#handle, __js_string_substring(s.handle, start, end));
+    return this;
+  }
+
+  /**
+   * Appends the code unit `b`.
+   */
+  appendByte(b: i32): StringBuilder {
+    this.#handle = __js_string_concat(this.#handle, __js_string_from_char_code(b));
+    return this;
+  }
+
+  /**
+   * Appends the code units `b0` and `b1` (such as a two-character escape
+   * sequence).
+   */
+  appendByte2(b0: i32, b1: i32): StringBuilder {
+    return this.appendByte(b0).appendByte(b1);
+  }
+
+  /** Appends a signed 32-bit integer as decimal. */
+  appendI32(n: i32): StringBuilder {
+    return this.append(i32ToString(n));
+  }
+
+  /** Appends an unsigned 32-bit integer as decimal. */
+  appendU32(n: u32): StringBuilder {
+    return this.append(u32ToString(n));
+  }
+
+  /** Appends a signed 64-bit integer as decimal. */
+  appendI64(n: i64): StringBuilder {
+    return this.append(i64ToString(n));
+  }
+
+  /** Appends an unsigned 64-bit integer as decimal. */
+  appendU64(n: u64): StringBuilder {
+    return this.append(u64ToString(n));
+  }
+
+  /** Appends a 32-bit float as decimal. */
+  appendF32(n: f32): StringBuilder {
+    return this.append(f32ToString(n));
+  }
+
+  /** Appends a 64-bit float as decimal. */
+  appendF64(n: f64): StringBuilder {
+    return this.append(f64ToString(n));
+  }
+
+  /**
+   * Returns the string content.
+   */
+  toString(): String {
+    return String.fromHandle(this.#handle);
+  }
+
+  /**
+   * Clears the builder.
+   */
+  clear(): void {
+    this.#handle = ''.handle;
+  }
+
+  /**
+   * Creates a new StringBuilder initialized with the content of the given
+   * String. The builder starts from `s` itself; nothing is copied.
+   */
+  static fromString(s: String): StringBuilder {
+    let sb = new StringBuilder();
+    sb.#handle = s.handle;
+    return sb;
+  }
+}

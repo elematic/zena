@@ -6,6 +6,12 @@
  * backed by #handle: externref.
  */
 import { Encoding } from './encoding.zena';
+import {
+  __js_string_length, __js_string_concat, __js_string_equals,
+  __js_string_compare, __js_string_substring, __js_string_char_code_at,
+  __js_string_code_point_at, __js_string_from_char_code,
+  __js_string_from_code_point,
+} from './js-string-builtins.zena';
 export { Encoding } from './encoding.zena';
 
 
@@ -14,34 +20,6 @@ export let asciiLowerByte = (b: i32): i32 =>
 
 export let asciiUpperByte = (b: i32): i32 =>
   if (b >= 0x61 && b <= 0x7A) b - 0x20 else b;
-
-// Builtin functions from wasm:js-string
-@external("wasm:js-string", "length")
-declare function __js_string_length(s: externref): i32;
-
-@external("wasm:js-string", "concat")
-declare function __js_string_concat(a: externref, b: externref): externref;
-
-@external("wasm:js-string", "equals")
-declare function __js_string_equals(a: externref, b: externref): boolean;
-
-@external("wasm:js-string", "compare")
-declare function __js_string_compare(a: externref, b: externref): i32;
-
-@external("wasm:js-string", "substring")
-declare function __js_string_substring(s: externref, start: i32, end: i32): externref;
-
-@external("wasm:js-string", "charCodeAt")
-declare function __js_string_char_code_at(s: externref, index: i32): i32;
-
-@external("wasm:js-string", "codePointAt")
-declare function __js_string_code_point_at(s: externref, index: i32): i32;
-
-@external("wasm:js-string", "fromCharCode")
-declare function __js_string_from_char_code(code: i32): externref;
-
-@external("wasm:js-string", "fromCodePoint")
-declare function __js_string_from_code_point(code: i32): externref;
 
 // Host delegate functions for Unicode case mapping
 @external("zena:host:string", "toLowerCase")
@@ -399,37 +377,93 @@ export final class String implements Hashable, Stringable {
     return new String.#fromHandle(__js_string_from_code_point(code));
   }
 
-  static fromByteArray(data: ByteArray, start: i32, end: i32, _encoding: Encoding): String {
-    let len = end - start;
-    if (len <= 0) {
-      return String.empty();
+  /**
+   * Decodes `data[start, end)` in `encoding`: WTF-8, or WTF-16 as
+   * little-endian code units.
+   */
+  static fromByteArray(data: ByteArray, start: i32, end: i32, encoding: Encoding): String {
+    if (encoding == Encoding.WTF16) {
+      var units = ''.handle;
+      var i = start;
+      while (i + 1 < end) {
+        units = __js_string_concat(units, __js_string_from_char_code(
+            __byte_array_get(data, i) | (__byte_array_get(data, i + 1) << 8)));
+        i += 2;
+      }
+      return new String.#fromHandle(units);
     }
-    var res = __js_string_substring(__js_string_from_char_code(32), 0, 0);
-    var i = start;
-    while (i < end) {
-      res = __js_string_concat(res, __js_string_from_char_code(__byte_array_get(data, i)));
-      i += 1;
-    }
-    return new String.#fromHandle(res);
+    return new String.#fromHandle(decodeWtf8(data, start, end));
   }
 
+  /** Decodes `bytes` as WTF-8. */
   static fromBytes(bytes: FixedArray<u8>): String {
     let len = bytes.length;
-    if (len <= 0) {
-      return String.empty();
+    let data = __byte_array_new(len);
+    for (var i = 0; i < len; i += 1) {
+      __byte_array_set(data, i, bytes[i] as i32);
     }
-    var res = __js_string_substring(__js_string_from_char_code(32), 0, 0);
-    var i = 0;
-    while (i < len) {
-      res = __js_string_concat(res, __js_string_from_char_code(bytes[i] as i32));
-      i += 1;
-    }
-    return new String.#fromHandle(res);
+    return new String.#fromHandle(decodeWtf8(data, 0, len));
   }
 
   [Stringable.toString](): String {
     return this;
   }
+}
+
+/** Whether `data[i]` is in bounds and a UTF-8 continuation byte. */
+function isContinuation(data: ByteArray, i: i32, end: i32): boolean {
+  return i < end && (__byte_array_get(data, i) & 0xC0) == 0x80;
+}
+
+/**
+ * Decodes `data[start, end)` as WTF-8: UTF-8 that may also carry a lone
+ * surrogate (U+D800 to U+DFFF) in its three-byte form. A byte that does not
+ * start a well-formed sequence decodes as U+FFFD, and decoding resumes at the
+ * next byte.
+ */
+function decodeWtf8(data: ByteArray, start: i32, end: i32): externref {
+  var res = ''.handle;
+  var i = start;
+  while (i < end) {
+    let b0 = __byte_array_get(data, i);
+    var cp = 0xFFFD;
+    var n = 1;
+    if (b0 < 0x80) {
+      cp = b0;
+    } else if (b0 >= 0xC2 && b0 < 0xE0) {
+      if (isContinuation(data, i + 1, end)) {
+        cp = ((b0 & 0x1F) << 6) | (__byte_array_get(data, i + 1) & 0x3F);
+        n = 2;
+      }
+    } else if (b0 >= 0xE0 && b0 < 0xF0) {
+      if (isContinuation(data, i + 1, end) && isContinuation(data, i + 2, end)) {
+        let c = ((b0 & 0x0F) << 12) |
+            ((__byte_array_get(data, i + 1) & 0x3F) << 6) |
+            (__byte_array_get(data, i + 2) & 0x3F);
+        // Below U+0800 is an overlong encoding.
+        if (c >= 0x800) {
+          cp = c;
+          n = 3;
+        }
+      }
+    } else if (b0 >= 0xF0 && b0 < 0xF5) {
+      if (isContinuation(data, i + 1, end) && isContinuation(data, i + 2, end) &&
+          isContinuation(data, i + 3, end)) {
+        let c = ((b0 & 0x07) << 18) |
+            ((__byte_array_get(data, i + 1) & 0x3F) << 12) |
+            ((__byte_array_get(data, i + 2) & 0x3F) << 6) |
+            (__byte_array_get(data, i + 3) & 0x3F);
+        if (c >= 0x10000 && c <= 0x10FFFF) {
+          cp = c;
+          n = 4;
+        }
+      }
+    }
+    res = __js_string_concat(res, if (cp < 0x10000)
+        __js_string_from_char_code(cp) else __js_string_from_code_point(cp));
+    i += n;
+  }
+  return res;
 }
 
 export function $stringGetHandle(s: String): externref {

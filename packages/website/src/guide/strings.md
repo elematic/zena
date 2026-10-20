@@ -416,6 +416,12 @@ let buildCsv = (items: Array<String>): String => {
 - **Zero-copy completion**: When accumulated content fits in the initial chunk,
   `toString()` returns a zero-copy `String` view sharing that buffer.
 
+On the `js` target a `String` is a JavaScript string, and `StringBuilder` has
+its own implementation: each append concatenates JavaScript strings, which V8
+keeps as a rope until the result is read, and the capacity argument is ignored.
+`length`, `appendSlice` offsets and `appendByte` values are UTF-16 code units
+there, as `String.length` and `getByteAt` are.
+
 ### Polymorphic backing storage
 
 Zena is designed around a single `String` API backed by specialized internal
