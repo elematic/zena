@@ -164,14 +164,16 @@ slots inside the class-interface vtable fixpoint, and pair vtables
 built earlier get trampolines for the new tail. Each slot is a
 trampoline per packed class, and each trampoline reaches a method, so
 a slot nothing dispatches through used to keep that method and
-whatever it constructed (#425).
+whatever it constructed (#425). Trampolines are also the only thing
+that reaches an implementation through an interface: a class never
+packed as an interface cannot be dispatched to through it.
 
 So **a new interface dispatch in lowering needs a demand**, or it
 fails with `interface member not in vtable: <member>`. Node-level
 dispatches go in `noteInterfaceDispatch` (visitor), which both body
 walks run — most bodies get `registerInstantiations` and the checker's
-dependency records, not `discoverNodeTypes`, and the records hold
-member reads and index writes only. Dispatches a construct implies
+dependency records, not `discoverNodeTypes`, and the records hold no
+interface members. Dispatches a construct implies
 without naming them (a generator's `next`, an async frame's `run`,
 `:toString` in a template) are demanded where that construct is
 registered. See §19 of `docs/design/binary-size.md`.
