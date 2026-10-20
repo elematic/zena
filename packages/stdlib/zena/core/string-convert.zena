@@ -710,19 +710,28 @@ let shortestDigits = (
  * having exactly n of them. n must be in [1, 18].
  */
 let fixedDigits = (m: u64, e: i32, n: i32): inline (u64, i32) => {
-  // m is normalized to 64 bits, so its leading digit sits at
-  // 10^floor(log10(2^(e+63))) and n digits start n-1 below that.
-  var p = n - 1 - log10Pow2(e + 63);
-  let (pmHi, pmLo, s) = prescale(e, p);
-  var d = uRound(uscale(m, pmHi, pmLo, s));
-  // The estimate can be one low, or rounding can carry into an extra
-  // digit; either way one division puts it back in range.
   var limit = ONE;
   var i = 0;
   while (i < n) {
     limit = limit * (10 as u64);
     i = i + 1;
   }
+  // m is normalized to 64 bits, so the value is in [2^(e+63), 2^(e+64))
+  // and its leading digit sits at 10^floor(log10(2^(e+63))) or one
+  // decade above: 10.6 is in [8, 16), and its leading digit is a ten.
+  var p = n - 1 - log10Pow2(e + 63);
+  let (pmHi, pmLo, s) = prescale(e, p);
+  var u = uscale(m, pmHi, pmLo, s);
+  if (uFloor(u) >= limit) {
+    // One decade above: scale again rather than divide the rounded
+    // digits by ten, which would truncate the last digit.
+    p = p - 1;
+    let (pmHi2, pmLo2, s2) = prescale(e, p);
+    u = uscale(m, pmHi2, pmLo2, s2);
+  }
+  var d = uRound(u);
+  // Rounding up can carry into an extra digit: 9.999 to two digits is
+  // 10.0, exactly a power of ten, so the division is exact.
   if (d >= limit) {
     d = div(d, 10 as u64);
     p = p - 1;
