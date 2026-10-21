@@ -210,18 +210,29 @@ fn main() -> Result<()> {
     let mut args = vec!["zena".to_string()];
     args.extend(std::env::args().skip(1));
 
+    let mut host_env = vec![
+        ("ZENA_CWD".to_string(), cwd.to_string_lossy().into_owned()),
+        (
+            "ZENA_CLI_MODULE".to_string(),
+            module_path.to_string_lossy().into_owned(),
+        ),
+        ("ZENA_AVAILABLE_PARALLELISM".to_string(), cpus.to_string()),
+        ("ZENA_STDLIB_DIR".to_string(), "/stdlib".to_string()),
+    ];
+    if let Some(ref root) = repo_root {
+        host_env.push((
+            "ZENA_REPO_ROOT".to_string(),
+            root.to_string_lossy().into_owned(),
+        ));
+    }
+
     let mut wasi = WasiCtxBuilder::new();
     wasi.inherit_stdio()
-        .inherit_env()
-        .args(&args)
-        .env("ZENA_CWD", cwd.to_string_lossy())
-        .env("ZENA_CLI_MODULE", module_path.to_string_lossy())
-        .env("ZENA_AVAILABLE_PARALLELISM", cpus.to_string())
-        .env("ZENA_STDLIB_DIR", "/stdlib");
+        .envs(&zena_runtime::inherited_env_with(&host_env))
+        .args(&args);
 
     if let Some(ref root) = repo_root {
-        wasi.env("ZENA_REPO_ROOT", root.to_string_lossy())
-            .preopened_dir(root, ".", FsPerms::ReadWrite)?;
+        wasi.preopened_dir(root, ".", FsPerms::ReadWrite)?;
     } else {
         wasi.preopened_dir(&cwd, ".", FsPerms::ReadWrite)?;
     }

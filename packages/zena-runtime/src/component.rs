@@ -719,10 +719,9 @@ fn run(engine: &Engine, config: &RunConfig) -> RunFinished {
     let mut wasi = WasiCtxBuilder::new();
     wasi.args(&config.args);
     if config.inherit_env {
-        wasi.inherit_env();
-    }
-    for (key, value) in &config.env {
-        wasi.env(key, value);
+        wasi.envs(&crate::inherited_env_with(&config.env));
+    } else {
+        wasi.envs(&config.env);
     }
     for (guest, host) in &config.dirs {
         if let Err(e) = wasi.preopened_dir(host, guest, FsPerms::ReadWrite) {

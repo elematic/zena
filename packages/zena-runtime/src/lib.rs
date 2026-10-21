@@ -49,6 +49,21 @@ pub fn spawn_allowed(flag: bool) -> bool {
     flag || std::env::var("ZENA_ALLOW_SPAWN").is_ok_and(|v| v == "1")
 }
 
+/// The host process's environment followed by `overrides`, leaving out
+/// the inherited variables that `overrides` sets again.
+///
+/// WASI gives a guest every entry it is handed, duplicates included, and
+/// `zena:cli`'s `getEnv` returns the first. Inheriting the environment and
+/// then setting a variable the shell also has would leave the shell's
+/// value in effect.
+pub fn inherited_env_with(overrides: &[(String, String)]) -> Vec<(String, String)> {
+    let mut env: Vec<(String, String)> = std::env::vars()
+        .filter(|(name, _)| !overrides.iter().any(|(set, _)| set == name))
+        .collect();
+    env.extend(overrides.iter().cloned());
+    env
+}
+
 /// Guest-to-host directory mappings, mirroring the invocation's WASI
 /// preopens. The guest names paths by its preopen layout ('.', '/tmp'),
 /// but children spawn on the host, where those directories may live
