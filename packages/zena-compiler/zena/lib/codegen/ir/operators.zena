@@ -20,7 +20,7 @@ import {
   isVoidOrNeverType,
 } from '../../types.zena';
 import {
-  ValType, ValTypeF32, ValTypeF64, ValTypeI32, ValTypeI64, ValTypeV128, isRefValType, valTypeEquals,
+  ValType, ValTypeF32, ValTypeF64, ValTypeI32, ValTypeI64, ValTypeV128, ValTypeRefNull, isRefValType, valTypeEquals,
 } from '../wasm.zena';
 import { eraseTypeParameters, getNonNullableType, typeToValTypeWithSub } from '../type-mapping.zena';
 import { getClassKey, parseI64OrU64Literal } from '../codegen-utils.zena';
@@ -928,6 +928,18 @@ export function lowerAs(cx: LoweringContext, expr: AsExpression): i32 {
         getNonNullableType(baseType(dstSemOpt)) is InterfaceType &&
         cx.func.model.getInterfaceAdaptation(expr) != null) {
       return value;
+    }
+    // `x as I` on a value the checker could not pack statically (an
+    // `anyref`, a class the value might not be): the value's class
+    // implements `I` or the cast traps, read from its type info
+    // (docs/design/interface-type-tests.md). Without a class that can
+    // answer, the ref.cast below traps unless the value is an `I`
+    // fat pointer already, which is the same answer.
+    if (dstSemOpt != null) {
+      let dstBase = getNonNullableType(baseType(dstSemOpt));
+      if (dstBase is InterfaceType && cx.typeTestHasSlot(dstBase)) {
+        return cx.typeTestPack(value, dstBase, dstVt is ValTypeRefNull);
+      }
     }
     // A value held as an interface (or a record) is a fat POINTER — the
     // instance paired with a vtable — so casting it to a concrete class

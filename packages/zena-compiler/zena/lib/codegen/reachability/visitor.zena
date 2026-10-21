@@ -11,13 +11,13 @@ import {
 } from './context.zena';
 import { SemanticModel, memberKeyOf } from '../../semantic-model.zena';
 import {
-  Type, ClassType, InterfaceType, FunctionType, TypeParameterType, RecordType, TupleType, InlineTupleType, UnionType, TypeAliasType, EnumType, ArrayType, NullType, MethodInfo, FieldInfo, instantiateClassType, instantiateInterfaceType, ThisType, baseType, ErasedType,
+  Type, ClassType, InterfaceType, FunctionType, TypeParameterType, RecordType, TupleType, InlineTupleType, UnionType, TypeAliasType, EnumType, ArrayType, NullType, MethodInfo, FieldInfo, instantiateClassType, instantiateInterfaceType, ThisType, baseType, ErasedType, AnyRefType,
   isScopedType, scopedInner, internFunctionType } from '../../types.zena';
 import {
-  Node, decoratorStringArg, AsExpression, IsExpression, RecordLiteral, ClassPattern, MatchCase, LetPatternCondition, AsPattern, BindingPattern, LogicalPattern, TuplePattern, ArrayPattern, RestPattern, RecordPattern, AccessorDeclaration, BinaryExpression, LiteralPattern, NewExpression, MethodDefinition, SymbolPropertyName, RangeExpression, ArrayLiteral, MapLiteral, TupleLiteral, Expression, TemplateElement, TaggedTemplateExpression, ForInStatement, MemberExpression, AwaitExpression, IndexExpression, AssignmentExpression, Identifier, CallExpression, VariableDeclaration, FunctionDeclaration, Pattern, ImportDeclaration, DeclareFunction, ImportSpecifier, IdentifierPattern, FunctionExpression, MixinDeclaration, ClassDeclaration, Module, ThrowExpression, TryExpression, ShieldedStatement, StringLiteral, TemplateLiteral,
+  Node, decoratorStringArg, AsExpression, IsExpression, MatchExpression, RecordLiteral, ClassPattern, MatchCase, LetPatternCondition, AsPattern, BindingPattern, LogicalPattern, TuplePattern, ArrayPattern, RestPattern, RecordPattern, AccessorDeclaration, BinaryExpression, LiteralPattern, NewExpression, MethodDefinition, SymbolPropertyName, RangeExpression, ArrayLiteral, MapLiteral, TupleLiteral, Expression, TemplateElement, TaggedTemplateExpression, ForInStatement, MemberExpression, AwaitExpression, IndexExpression, AssignmentExpression, Identifier, CallExpression, VariableDeclaration, FunctionDeclaration, Pattern, ImportDeclaration, DeclareFunction, ImportSpecifier, IdentifierPattern, FunctionExpression, MixinDeclaration, ClassDeclaration, Module, ThrowExpression, TryExpression, ShieldedStatement, StringLiteral, TemplateLiteral,
 } from '../../ast.zena';
 import {
-  WasmStruct, WasmField, WasmGlobal, WasmFunction, RecordDispatchInfo,
+  WasmStruct, WasmField, WasmGlobal, WasmFunction, RecordDispatchInfo, TypeTestSite,
 } from '../wasm-module.zena';
 import {
   ValType, ValTypeRefNull, ValTypeAnyRef, ValTypeEqRef, ValTypeStructRef, ValTypeRef, ValTypeI32, ValTypeI64, ValTypeF32, ValTypeF64, ValTypeExternRef, ValTypeRefExtern, isRefValType,
@@ -557,6 +557,103 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
    * scalar-target cast whose operand is reference-typed roots
    * Box<target>.
    */
+  #typeTestSiteKeys = new Set<String>();
+
+  /**
+   * Records an interface type test — `x is I`, `x as I`, or a `case I`
+   * arm — with its operand's static type, for the analysis's
+   * #markTypeTestPairs: a test answers true for the reached classes
+   * that implement `I` and fit the operand's type. An operand that is
+   * statically `I` is not recorded, since it holds a fat pointer of
+   * `I` already and the lowering tests that struct.
+   */
+  noteTypeTestSites(n: Node, model: SemanticModel,
+      resolveType: (t: Type) => Type): void {
+    if (n is IsExpression) {
+      this.#noteTypeTest(model.getNodeType(n.typeAnnotation),
+          model.getNodeType(n.expression), resolveType);
+    } else if (n is AsExpression) {
+      // The cast's own type is its target; the checker records no type
+      // on the annotation node of an `as`.
+      this.#noteTypeTest(model.getNodeType(n),
+          model.getNodeType(n.expression), resolveType);
+    } else if (n is MatchExpression) {
+      let source = model.getNodeType(n.discriminant);
+      for (let c in n.cases) {
+        this.#noteTypeTestPattern(c.pattern, source, model, resolveType);
+      }
+    } else if (n is LetPatternCondition) {
+      this.#noteTypeTestPattern(n.pattern as Node, model.getNodeType(n.init),
+          model, resolveType);
+    }
+  }
+
+  /**
+   * The interface tests inside a pattern. A nested pattern (a tuple
+   * element, a record or class field) tests a value whose type this
+   * walk does not recover, so its tests are recorded against `anyref`,
+   * the widest operand.
+   */
+  #noteTypeTestPattern(p: Node, source: Type | null, model: SemanticModel,
+      resolveType: (t: Type) => Type): void {
+    if (p is Identifier) {
+      if (p.name != "_") {
+        this.#noteTypeTest(model.getNodeType(p), source, resolveType);
+      }
+    } else if (p is AsPattern) {
+      this.#noteTypeTestPattern(p.pattern, source, model, resolveType);
+    } else if (p is BindingPattern) {
+      this.#noteTypeTestPattern(p.pattern, source, model, resolveType);
+    } else if (p is LogicalPattern) {
+      this.#noteTypeTestPattern(p.left, source, model, resolveType);
+      this.#noteTypeTestPattern(p.right, source, model, resolveType);
+    } else if (p is ClassPattern) {
+      for (let prop in p.properties) {
+        this.#noteTypeTestPattern(prop.value, null, model, resolveType);
+      }
+    } else if (p is RecordPattern) {
+      for (let prop in p.properties) {
+        this.#noteTypeTestPattern(prop.value, null, model, resolveType);
+      }
+    } else if (p is TuplePattern) {
+      for (let el in p.elements) {
+        if (el != null) {
+          this.#noteTypeTestPattern(el, null, model, resolveType);
+        }
+      }
+    } else if (p is ArrayPattern) {
+      for (let el in p.elements) {
+        if (el != null) {
+          this.#noteTypeTestPattern(el, null, model, resolveType);
+        }
+      }
+    }
+  }
+
+  #noteTypeTest(targetOpt: Type | null, sourceOpt: Type | null,
+      resolveType: (t: Type) => Type): void {
+    if (targetOpt == null) {
+      return;
+    }
+    let target = getNonNullableType(baseType(resolveType(targetOpt)));
+    if (!(target is InterfaceType)) {
+      return;
+    }
+    let source: Type = if (sourceOpt == null) new AnyRefType() as Type
+        else resolveType(sourceOpt);
+    let sourceBase = getNonNullableType(baseType(source));
+    if (sourceBase is InterfaceType &&
+        getInterfaceKey(sourceBase) == getInterfaceKey(target)) {
+      return;
+    }
+    let key = `${getInterfaceKey(target) as String}|${getTypeUniqueKey(source)}`;
+    if (this.#typeTestSiteKeys.has(key)) {
+      return;
+    }
+    this.#typeTestSiteKeys.add(key);
+    this.pass.wasm.typeTestSites.push(new TypeTestSite(target, source));
+  }
+
   /**
    * Discovers the class types a PATTERN tests — `case Foo {..}:`
    * (ClassPattern, type on the name node) and the bare `case Foo:`
@@ -995,6 +1092,7 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
           this.pass.typeLowerer.discoverType(resolveType(t), model);
         }
       }
+      this.noteTypeTestSites(n, model, resolveType);
       if (n is VariableDeclaration) {
         let t = model.getNodeType(n.pattern);
         if (t != null) {
@@ -2507,6 +2605,7 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
           this.pass.typeLowerer.discoverType(resolveType(annotated), model);
         }
       }
+      this.noteTypeTestSites(n, model, resolveType);
       if (n is StringLiteral) {
         this.noteStringLiteral(n.value);
       }

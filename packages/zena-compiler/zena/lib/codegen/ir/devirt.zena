@@ -176,8 +176,11 @@ function resolveCallee(cx: DevirtContext, body: IrBody,
   // Provenance: the vtable value names its global.
   let known = knownVTable(body, vt);
   if (known != null) {
-    if (slot < known.funcs.length) {
-      return known.funcs[slot];
+    // A `<typeinfo>` field leads the functions in a vtable that
+    // answers interface type tests; `slotGlobals` holds it.
+    let funcSlot = slot - leadingSlots(known);
+    if (funcSlot >= 0 && funcSlot < known.funcs.length) {
+      return known.funcs[funcSlot];
     }
     return null;
   }
@@ -190,10 +193,11 @@ function resolveCallee(cx: DevirtContext, body: IrBody,
     if (!extendsStruct(cand.init.structType, vst)) {
       continue;
     }
-    if (slot >= cand.init.funcs.length) {
+    let funcSlot = slot - leadingSlots(cand.init);
+    if (funcSlot < 0 || funcSlot >= cand.init.funcs.length) {
       return null;
     }
-    let f = cand.init.funcs[slot];
+    let f = cand.init.funcs[funcSlot];
     if (agreed == null) {
       agreed = f;
       agreedUid = f.uid;
@@ -202,6 +206,12 @@ function resolveCallee(cx: DevirtContext, body: IrBody,
     }
   }
   return agreed;
+}
+
+/** The fields before the functions in a vtable: its `<typeinfo>` pointer, if it has one. */
+function leadingSlots(init: VTableInit): i32 {
+  let slots = init.slotGlobals;
+  return if (slots == null) 0 else slots.length;
 }
 
 /**

@@ -4,7 +4,7 @@ import {
 } from '../ast.zena';
 import { SemanticModel } from '../semantic-model.zena';
 import { SymbolId, noSymbolId } from '../scope/symbol.zena';
-import { ByteBuffer, growable } from 'zena:core';
+import { ByteBuffer, growable, i32ToString } from 'zena:core';
 import {
   ValType, ValTypeVoid, ValTypeStructRef, ValTypeRefNull, ValTypeRef, ValTypeEqRef,
   ValTypeAnyRef, ValTypeI8, WasmType, valTypeEquals, ValTypeExternRef, ValTypeRefExtern, ValTypeI32,
@@ -455,6 +455,9 @@ export function isValSubtype(a: ValType, b: ValType): boolean {
     // structref <: eqref <: anyref.
     return b is ValTypeAnyRef || b is ValTypeEqRef;
   }
+  if (a is ValTypeEqRef) {
+    return b is ValTypeAnyRef;
+  }
   if (a is ValTypeNullRef) {
     return isNullableAnyRef(b);
   }
@@ -805,6 +808,65 @@ export final class ForwarderParamPack {
   new(this.argIndex, this.pair, this.ifaceKey);
 }
 
+/**
+ * One interface type test the discovery walks found: `iface` is the
+ * tested interface and `source` the operand's static type. A site whose
+ * operand is statically the interface is not recorded; that operand is
+ * a fat pointer of it already and the test stays a `ref.test`.
+ */
+export final class TypeTestSite {
+  iface: InterfaceType;
+  source: Type;
+  new(this.iface, this.source);
+}
+
+/**
+ * The most candidate pairs an interface may have and still be tested
+ * by a chain of class tests. A `ref.test` against a final class struct
+ * is an inline type-index compare, about 0.35 ns each on wasmtime;
+ * the type-info read costs one `is_subtype` libcall, about 20 ns, for
+ * an operand that is not statically a class (docs/design/
+ * interface-type-tests.md, "Measured cost"). Sixteen keeps the worst
+ * chain well under the libcall.
+ */
+export let typeTestChainMax = 16;
+
+/** A class a chained interface test tries: its struct, and the pair vtable an `as` packs with. */
+export final class TypeTestCandidate {
+  structType: WasmStruct;
+  vtableGlobal: WasmGlobal;
+  new(this.structType, this.vtableGlobal);
+}
+
+/** The `TypeInfo` field for the tested interface in slot `slot`. */
+export function typeTestSlotName(slot: i32): String {
+  return `<impl${i32ToString(slot)}>`;
+}
+
+/** The furthest supertype of `st`. */
+export function rootStruct(st: WasmStruct): WasmStruct {
+  var s = st;
+  while (s.superStruct != null) {
+    s = s.superStruct as WasmStruct;
+  }
+  return s;
+}
+
+/** Puts `field` first in `st`'s field list. */
+export function prependField(st: WasmStruct, field: WasmField): void {
+  let rest = new Array<WasmField>();
+  for (let f in st.fields) {
+    rest.push(f);
+  }
+  while (st.fields.length > 0) {
+    st.fields.pop();
+  }
+  st.fields.push(field);
+  for (let f in rest) {
+    st.fields.push(f);
+  }
+}
+
 export final class VTableInit {
   structType: WasmStruct;
   funcs: GrowableArray<WasmFunction>;
@@ -825,6 +887,17 @@ export final class VTableInit {
    * the field after the functions; -1 for any other table.
    */
   var shapeTag: i32 = -1;
+  /**
+   * Globals stored in the fields BEFORE the functions, one per leading
+   * field, read with `global.get` in the initializer; a null entry
+   * stores the field's null. A class vtable with a `<typeinfo>` field
+   * holds its type-info global here, and a type-info table holds the
+   * class-interface vtables it answers `is` with (see
+   * ReachabilityAnalysis's #layoutTypeTests). Every global named here
+   * is declared before this one: the analysis orders the globals so
+   * that holds (#orderGlobalInitializers).
+   */
+  var slotGlobals: GrowableArray<WasmGlobal | null> | null = null;
 
   new(this.structType, this.funcs, markReferences: boolean = true) {
     if (markReferences) {
@@ -1401,6 +1474,47 @@ export final class WasmModule {
   anonymousStructs = new Array<WasmStruct>();
   #arrayCache = new Map<ArrayKey, WasmArray>();
   usedInterfaceAdaptations = new Map<ClassInterfaceKey, boolean>();
+  /**
+   * Interface type tests (`x is I`, `x as I`, `case I`) whose operand
+   * is not statically `I`, as the discovery walks record them. The
+   * analysis turns them into `typeTestPairs` once it knows which
+   * classes exist (#markTypeTestPairs), and lays out the type-info
+   * tables that answer them (#layoutTypeTests). See
+   * docs/design/interface-type-tests.md.
+   */
+  typeTestSites = new Array<TypeTestSite>();
+  /**
+   * The slot of each tested interface in the `TypeInfo` struct: the
+   * interfaces with more than `typeTestChainMax` candidate pairs. The
+   * rest are in `typeTestChained`, tested by a chain of class tests.
+   */
+  typeTestSlots = new Map<InterfaceKey, i32>();
+  /** The tested interfaces with a slot, in slot order. */
+  typeTestSlotInterfaces = new Array<InterfaceType>();
+  /** The tested interfaces answered by a chain of class tests (#layoutTypeTests). */
+  typeTestChained = new Map<InterfaceKey, InterfaceType>();
+  /** The (class, interface) pairs some test can answer true for. */
+  typeTestPairs = new Map<ClassInterfaceKey, boolean>();
+  /** The classes in `typeTestPairs`, in classInfos order. */
+  typeTestClasses = new Map<ClassKey, ClassType>();
+  /** The classes some test reaches through a non-class operand. */
+  typeTestOpenClasses = new Map<ClassKey, boolean>();
+  /** Whether some test's operand can hold a fat pointer of any interface. */
+  var typeTestOpenSite = false;
+  /**
+   * The struct with one slot per tested interface, holding the
+   * class-interface vtable for a class that implements it and null
+   * for one that does not; null until a test exists.
+   */
+  var typeInfoStruct: WasmStruct | null = null;
+  /** The supertype of every candidate hierarchy's root vtable struct: one `<typeinfo>` field. */
+  var vtableBaseStruct: WasmStruct | null = null;
+  /** The supertype of every candidate hierarchy's root class struct: one `<vtable>` field typed by `vtableBaseStruct`. */
+  var objectStruct: WasmStruct | null = null;
+  /** The supertype of every interface fat pointer struct: the `instance` field. */
+  var fatPointerBaseStruct: WasmStruct | null = null;
+  /** Each candidate class's `TypeInfo` global. */
+  typeInfoGlobals = new Map<ClassKey, WasmGlobal>();
   classMethodMap = new Map<ClassMethodKey, WasmFunction>();
   classMethods = new Map<String, GrowableArray<WasmFunction>>();
   var stringHashHelper: WasmFunction | null = null;

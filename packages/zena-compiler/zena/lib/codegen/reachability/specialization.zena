@@ -1971,7 +1971,11 @@ export final class Specializer implements SpecializerInterface {
       while (rootVst.superStruct != null) {
         rootVst = rootVst.superStruct as WasmStruct;
       }
-      fields.push(new WasmField("<vtable>", new ValTypeRefNull(rootVst), true));
+      // Immutable: the constructor passes it to struct.new and nothing
+      // writes it after, and an immutable field may refine its type in
+      // a subtype, which is what lets a root struct extend `Object`
+      // (ReachabilityAnalysis's #layoutTypeTests).
+      fields.push(new WasmField("<vtable>", new ValTypeRefNull(rootVst), false));
     }
 
     let isStaticField = (targetFieldName: String): boolean => {

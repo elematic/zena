@@ -1,0 +1,61 @@
+// What the compiler emits for iface-test-anyref, written by hand: a
+// chain of class tests over the eight implementers. Each `is Sn` is a
+// `ref.test` against a final struct, which wasmtime compiles to an
+// inline type-index compare with no libcall, so the chain costs up to
+// eight compares and never leaves JIT code. The same ten values, held
+// as `anyref`.
+interface Shape {
+  area(): i32;
+}
+
+final class S0 implements Shape { area(): i32 { return 0; } }
+final class S1 implements Shape { area(): i32 { return 1; } }
+final class S2 implements Shape { area(): i32 { return 2; } }
+final class S3 implements Shape { area(): i32 { return 3; } }
+final class S4 implements Shape { area(): i32 { return 4; } }
+final class S5 implements Shape { area(): i32 { return 5; } }
+final class S6 implements Shape { area(): i32 { return 6; } }
+final class S7 implements Shape { area(): i32 { return 7; } }
+final class N0 {}
+final class N1 {}
+
+function makeValues() {
+  let values = new FixedArray<anyref>(10, null);
+  values[0] = new S0();
+  values[1] = new N0();
+  values[2] = new S1();
+  values[3] = new S2();
+  values[4] = new S3();
+  values[5] = new N1();
+  values[6] = new S4();
+  values[7] = new S5();
+  values[8] = new S6();
+  values[9] = new S7();
+  return values;
+}
+let values = makeValues();
+
+function isShape(x: anyref): boolean {
+  return x is S0 || x is S1 || x is S2 || x is S3 ||
+      x is S4 || x is S5 || x is S6 || x is S7;
+}
+
+function count(xs: FixedArray<anyref>, rounds: i32) {
+  var hits = 0;
+  var round = 0;
+  while (round < rounds) {
+    var i = 0;
+    while (i < xs.length) {
+      if (isShape(xs[i])) {
+        hits += 1;
+      }
+      i += 1;
+    }
+    round += 1;
+  }
+  return hits;
+}
+
+export function main(): i32 {
+  return count(values, 100000) & 255;
+}

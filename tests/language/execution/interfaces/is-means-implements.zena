@@ -1,0 +1,129 @@
+// @mode: run
+// @result: 0
+//
+// `x is I`, `x as I` and `case I` mean "the class of `x` implements
+// `I`", whatever `x` is held as: an `anyref`, a class, another
+// interface, or a union. An interface value is a fat pointer, so a
+// `ref.test` against the interface's struct answers only for a value
+// already converted to it; these read the class's type info instead
+// (docs/design/interface-type-tests.md).
+
+interface Shape {
+  area(): i32;
+}
+
+interface Named {
+  name(): String;
+}
+
+interface Holder<T> {
+  held(): T;
+}
+
+class Animal {
+  sound(): String { return "..."; }
+}
+
+final class Dog extends Animal implements Named {
+  sound(): String { return "woof"; }
+  name(): String { return "dog"; }
+}
+
+final class Rock extends Animal {}
+
+final class Square implements Shape, Named {
+  side: i32;
+  new(this.side);
+  area(): i32 { return this.side * this.side; }
+  name(): String { return "square"; }
+}
+
+final class Circle implements Shape {
+  r: i32;
+  new(this.r);
+  area(): i32 { return 3 * this.r * this.r; }
+}
+
+final class Cell<T> implements Holder<T> {
+  v: T;
+  new(this.v);
+  held(): T { return this.v; }
+}
+
+class Plain {}
+
+function describe(x: anyref): i32 {
+  return match (x) {
+    case Shape as s: s.area()
+    case Named as n: n.name().length
+    case _: -1
+  };
+}
+
+export function main(): i32 {
+  // An anyref holding a class instance: implements, cast, narrowed use.
+  let x: anyref = new Square(3);
+  if (!(x is Shape)) { return 1; }
+  if (!(x is Named)) { return 2; }
+  if (!(x is Square)) { return 3; }
+  if (x is Holder<i32>) { return 4; }
+  if ((x as Shape).area() != 9) { return 5; }
+  if (x is Shape) {
+    if (x.area() != 9) { return 6; }
+  }
+
+  // A class that implements nothing, a string, and null answer false.
+  let p: anyref = new Plain();
+  if (p is Shape) { return 7; }
+  let s: anyref = "text";
+  if (s is Shape) { return 8; }
+  let n: anyref = null;
+  if (n is Shape) { return 9; }
+
+  // An anyref holding a fat pointer of another interface: the class
+  // behind it answers.
+  let named: Named = new Square(2);
+  let y: anyref = named;
+  if (!(y is Shape)) { return 10; }
+  if ((y as Shape).area() != 4) { return 11; }
+  if (!(y is Named)) { return 12; }
+
+  // A class-typed operand: the subclasses that implement.
+  let a: Animal = new Dog();
+  let b: Animal = new Rock();
+  if (!(a is Named)) { return 13; }
+  if (b is Named) { return 14; }
+  if ((a as Named).name() != "dog") { return 15; }
+
+  // An interface-typed operand tested against another interface.
+  let sh: Shape = new Square(5);
+  let ci: Shape = new Circle(1);
+  if (!(sh is Named)) { return 16; }
+  if (ci is Named) { return 17; }
+  if ((sh as Named).name() != "square") { return 18; }
+
+  // A union operand.
+  let u: Square | Circle | null = new Circle(2);
+  if (!(u is Shape)) { return 19; }
+  if (u is Named) { return 20; }
+
+  // Generic instantiations are distinct interfaces.
+  let c: anyref = new Cell<i32>(7);
+  if (!(c is Holder<i32>)) { return 21; }
+  if (c is Holder<String>) { return 22; }
+  if ((c as Holder<i32>).held() != 7) { return 23; }
+
+  // `case I as v` on an anyref.
+  if (describe(new Square(4)) != 16) { return 24; }
+  if (describe(new Dog()) != 3) { return 25; }
+  if (describe(new Plain()) != -1) { return 26; }
+
+  // A narrowed value stored at a nullable interface type.
+  let maybe: Shape | null = if (x is Shape) x else null;
+  if (maybe == null) { return 27; }
+  if (maybe.area() != 9) { return 28; }
+  let none: Shape | null = if (n is Shape) n else null;
+  if (none != null) { return 29; }
+
+  return 0;
+}

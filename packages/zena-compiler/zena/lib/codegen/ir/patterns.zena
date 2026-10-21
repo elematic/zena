@@ -597,12 +597,19 @@ export let lowerPatternTest = (cx: LoweringContext, pattern: Node,
           let st = classStructOf(cx, patType);
           emitRefTest(cx, value, st, failB);
         } else if (patType is InterfaceType) {
-          let targetVt = typeToValTypeWithSub(cx.wasm, patType, cx.func);
-          let stOpt = asWasmStruct(targetVt);
-          if (stOpt == null) {
-            bail(cx, 'pattern interface not discovered');
+          if (cx.typeTestHasSlot(patType)) {
+            // `case I:` means the value's class implements `I`
+            // (docs/design/interface-type-tests.md).
+            let cond = cx.typeTestImplements(value, patType);
+            branchUnless(cx, cond, failB);
           } else {
-            emitRefTest(cx, value, stOpt, failB);
+            let targetVt = typeToValTypeWithSub(cx.wasm, patType, cx.func);
+            let stOpt = asWasmStruct(targetVt);
+            if (stOpt == null) {
+              bail(cx, 'pattern interface not discovered');
+            } else {
+              emitRefTest(cx, value, stOpt, failB);
+            }
           }
         }
       }

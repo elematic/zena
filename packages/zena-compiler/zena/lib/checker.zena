@@ -8508,7 +8508,11 @@ function checkAndRegisterInterfaceAdaptation(ctx: CheckerContext, node: Node, so
     }
   }
 
-  if (effectiveSource is ClassType && effectiveTarget is InterfaceType) {
+  // A class that does not implement the interface has no pack: a
+  // downcast of one (`animal as Named`) is answered by the class's type
+  // info at run time (docs/design/interface-type-tests.md).
+  if (effectiveSource is ClassType && effectiveTarget is InterfaceType &&
+      isAssignableTo(ctx, effectiveSource, effectiveTarget)) {
     if (ctx.warnUnnecessaryCasts && ctx.model.getInterfaceAdaptationDirect(node) == null) {
       ctx.warning("'" + typeToString(effectiveSource) + "' is boxed to pass as '" +
           typeToString(effectiveTarget) + "': an allocation here and an indirect call at each use.",

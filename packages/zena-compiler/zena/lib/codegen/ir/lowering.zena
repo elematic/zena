@@ -5207,6 +5207,13 @@ export final class FunctionLowerer {
     if (!isRefValType(this.#valueType(value))) {
       this.#bail('is operand type');
     }
+    // An interface target means "the value's class implements it"
+    // when some class can answer true (docs/design/
+    // interface-type-tests.md); with no such class the fat pointer
+    // test below is the whole answer.
+    if (targetBase is InterfaceType && this.#cx().typeTestHasSlot(targetBase)) {
+      return this.#cx().typeTestImplements(value, targetBase);
+    }
     let targetVt = typeToValTypeWithSub(this.wasm, targetType, this.func);
     let target = refTargetOf(targetVt);
     if (target == null) {
@@ -5397,6 +5404,17 @@ export final class FunctionLowerer {
       // Widening (e.g. a non-null value read at a nullable type): the
       // value passes as-is under wasm subtyping.
       return value;
+    }
+    // A binding narrowed by `x is I` to an interface some test reads
+    // type info for, read at `I` while the value in hand is the
+    // instance, an `anyref`, or another interface's fat pointer: pack
+    // it the way the test answered. Before the downcast below, which
+    // would cast an `anyref` to the fat pointer and trap.
+    if (isRefValType(haveVt)) {
+      let packed = this.#cx().typeTestPackForSlot(value, wantVt);
+      if (packed >= 0) {
+        return packed;
+      }
     }
     // Downcast narrowing: the checker's flow analysis licenses reads
     // at a SUBTYPE of the stored value's type (`x is Dog` narrowing

@@ -1,10 +1,11 @@
 import { Program, CompilationUnit } from '../../program.zena';
 import {
   WasmModule, WasmFunction, WasmSignature, WasmGlobal, WasmStruct, WasmField, WasmArray, VTableInit, ClassCodegenInfo, asWasmSignature, TrampolineParamWrap, ClosureForwarderSpec, ForwarderParamPack, isValSubtype, RecordDispatchInfo, existentialCastCandidates,
+  typeTestSlotName, rootStruct, prependField, typeTestChainMax,
 } from '../wasm-module.zena';
 import { SemanticModel, SymbolDependencies, memberKeyOf } from '../../semantic-model.zena';
 import {
-  Type, ClassType, InterfaceType, FunctionType, TypeId, makeTypeIdGenerator, TypeParameterType, MethodInfo, FieldInfo, isVoidOrNeverType, UnionType, TupleType, InlineTupleType, ArrayType, RecordType, TypeAliasType, EnumType, TypeListTable,
+  Type, ClassType, InterfaceType, FunctionType, TypeId, makeTypeIdGenerator, TypeParameterType, MethodInfo, FieldInfo, isVoidOrNeverType, UnionType, TupleType, InlineTupleType, ArrayType, RecordType, TypeAliasType, EnumType, TypeListTable, baseType,
 } from '../../types.zena';
 import {
   Node, ClassDeclaration, InterfaceDeclaration, MixinDeclaration, MethodDefinition, AccessorDeclaration, FieldDefinition, VariableDeclaration, FunctionDeclaration, DeclareFunction, ImportDeclaration, IdentifierPattern, FunctionExpression, SealedVariant, SourceLocation, Module, Identifier, SymbolPropertyName, MemberExpression, CallExpression, ExportAllDeclaration, ExportFromDeclaration, IdGenerator, ShieldedStatement, TryExpression,
@@ -17,7 +18,7 @@ import {
   getClassKey, getInterfaceKey, getClassMethodKey, getClassInterfaceKey, getClassInterfaceVTableName, getClassVTableName, getClassSingletonName, getInterfaceTrampolineName, getSignatureKey, collectMixinMembers, mixinScopeOfMember, mixinModelOfMember, getClassPrivateFieldKey, MixinKey, getFunctionAdaptationKey, ClassKey, ClassMethodKey, getTypeUniqueKey, getClosureSpecializationKey, isConcrete, getSpecializedName, containsErasedType, InterfaceKey, getMemberRootClass,
 } from '../codegen-utils.zena';
 import {
-  typeToValType, getClosureStruct, getInterfaceMemberSignature, interfaceMethodOverloads, pushInterfaceMethodSlots, interfaceSlotOverload, interfaceOverloadSignature, InterfaceSlotOverload, mapReturnTypeToWasmResults, mapParamTypeToWasmParams, substituteTypeParamsInCodegen, getClassTypeParameters, getInterfaceTypeParameters, getCellStruct, substituteTypeParamsInClassContext, getGenericInterfaceMemberSignature, getGenericInterfaceMethodType, substituteThisTypeInCodegen,
+  typeToValType, getClosureStruct, getInterfaceMemberSignature, interfaceMethodOverloads, pushInterfaceMethodSlots, interfaceSlotOverload, interfaceOverloadSignature, InterfaceSlotOverload, mapReturnTypeToWasmResults, mapParamTypeToWasmParams, substituteTypeParamsInCodegen, getClassTypeParameters, getInterfaceTypeParameters, getCellStruct, substituteTypeParamsInClassContext, getGenericInterfaceMemberSignature, getGenericInterfaceMethodType, substituteThisTypeInCodegen, getNonNullableType,
 } from '../type-mapping.zena';
 import { SymbolId, Symbol, noSymbolId } from '../../scope/symbol.zena';
 import {
@@ -1918,6 +1919,13 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
     var lateVtRound = true;
     while (lateVtRound) {
       lateVtRound = this.#buildClassInterfaceVTables();
+      // Interface type tests pack through class-interface vtables too,
+      // and which classes a test can answer true for is known only
+      // once the classes exist: mark the pairs here, and the next
+      // round builds them.
+      if (this.#markTypeTestPairs()) {
+        lateVtRound = true;
+      }
       this.#settleQueues();
       let wasCancelActive = this.cancellationMachineryActive;
       let wasDisposeActive = this.wasm.generatorDisposalActive;
@@ -1952,6 +1960,9 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
       var lateOverrideVtRound = true;
       while (lateOverrideVtRound) {
         lateOverrideVtRound = this.#buildClassInterfaceVTables();
+        if (this.#markTypeTestPairs()) {
+          lateOverrideVtRound = true;
+        }
         this.#settleQueues();
       }
       this.#layoutClassStructs(populated);
@@ -2030,6 +2041,7 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
     }
     
     this.#pruneUndispatchedSlots();
+    this.#layoutTypeTests();
 
     let keptGlobals = new Array<WasmGlobal>();
     for (let g in this.wasm.globals) {
@@ -2480,6 +2492,384 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
       }
     }
   }
+  /**
+   * Turns the interface type tests the walks recorded into
+   * class-interface pairs: for each site, every instantiated class
+   * that implements the tested interface and fits the operand's static
+   * type. A class-typed operand admits the class and its subclasses,
+   * an interface-typed one the classes that implement both, and any
+   * other operand (`anyref`, a type parameter, a union) every
+   * implementer. A pair's test packs through the class-interface
+   * vtable, so the pair is marked as an adaptation for
+   * #buildClassInterfaceVTables, which the caller runs again while
+   * this finds new pairs. A candidate also needs its class vtable
+   * global, where #layoutTypeTests stores the type-info pointer.
+   * Returns whether it found a new pair.
+   */
+  #markTypeTestPairs(): boolean {
+    var marked = false;
+    let wasm = this.wasm;
+    for (let site in wasm.typeTestSites) {
+      let iKey = getInterfaceKey(site.iface);
+      let bound = getNonNullableType(baseType(site.source));
+      let open = !(bound is ClassType || bound is InterfaceType);
+      if (open) {
+        wasm.typeTestOpenSite = true;
+      }
+      for (let cPair in wasm.classInfos) {
+        let ctOpt = cPair.value.structType.classType;
+        if (ctOpt == null) {
+          continue;
+        }
+        let ct = ctOpt;
+        let cName = cPair.key;
+        if (ct.isExtension || containsErasedType(ct as Type)) {
+          continue;
+        }
+        let {typeParameters} = ct;
+        if (typeParameters != null && typeParameters.length > 0 &&
+            (ct.typeArguments == null || !isConcrete(ct))) {
+          continue;
+        }
+        if (!this.instantiatedSpecializedClasses.has(cName as String)) {
+          continue;
+        }
+        if (!this.#classImplementsKey(ct, iKey)) {
+          continue;
+        }
+        if (bound is ClassType) {
+          if (!this.cha.isSubclassOf(ct, bound)) {
+            continue;
+          }
+        } else if (bound is InterfaceType) {
+          if (!this.#classImplementsKey(ct, getInterfaceKey(bound))) {
+            continue;
+          }
+        }
+        let key = getClassInterfaceKey(cName, iKey);
+        if (!wasm.typeTestPairs.has(key)) {
+          wasm.typeTestPairs[key] = true;
+          wasm.typeTestClasses[cName] = ct;
+          let unspecKey = getClassInterfaceKey(
+              getClassKey(ct.genericSource ?? ct),
+              getInterfaceKey(site.iface.genericSource ?? site.iface));
+          wasm.usedInterfaceAdaptations[unspecKey] = true;
+          if (!wasm.typeTestSlots.has(iKey)) {
+            wasm.typeTestSlots[iKey] = wasm.typeTestSlotInterfaces.length;
+            wasm.typeTestSlotInterfaces.push(site.iface);
+          }
+          if (cPair.value.vtableGlobal == null) {
+            this.#buildClassVTableGlobals(cName);
+          }
+          marked = true;
+        }
+        if (open && !wasm.typeTestOpenClasses.has(cName)) {
+          wasm.typeTestOpenClasses[cName] = true;
+        }
+      }
+    }
+    return marked;
+  }
+
+  #classImplementsKey(ct: ClassType, iKey: InterfaceKey): boolean {
+    for (let iface in this.cha.collectAllImplementedInterfaces(ct)) {
+      if (getInterfaceKey(iface) == iKey) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Lays out what answers the interface type tests, once discovery
+   * and slot pruning have settled (docs/design/interface-type-tests.md):
+   *
+   * - `TypeInfo`: one field per tested interface, holding the
+   *   class-interface vtable of a class that implements it, or null.
+   *   Each candidate class gets a global of it.
+   * - `<typeinfo>`: a leading field on the vtable struct of every class
+   *   in a candidate hierarchy, holding that global or null.
+   *   `VTableBase`, with just that field, is the roots' supertype, so
+   *   a test reads the field from the vtable of any such class.
+   * - `Object`: one `<vtable>` field typed `VTableBase`, the supertype
+   *   of the root struct of every candidate hierarchy some test
+   *   reaches through a non-class operand; the test casts an `anyref`
+   *   to it and reads the vtable. A class-typed operand reads its own
+   *   `<vtable>` field and casts nothing.
+   * - `FatPtrBase`: the `instance` field alone, the supertype of every
+   *   interface fat pointer struct when some operand can hold a fat
+   *   pointer of any interface, so one cast unwraps it.
+   *
+   * The leading field is not a function slot: #pruneUndispatchedSlots
+   * aligns vtable fields with their functions by index, so this runs
+   * after it, and the field's value travels in `VTableInit.slotGlobals`.
+   */
+  #layoutTypeTests(): void {
+    let wasm = this.wasm;
+    if (wasm.typeTestSlotInterfaces.length == 0) {
+      return;
+    }
+    let model = this.program.units[0].model;
+    this.currentReachable = true;
+
+    // A chained test on an operand that can hold a fat pointer of any
+    // interface unwraps it through `FatPtrBase` on its miss path, so
+    // the base exists whenever such an operand does, slots or not.
+    if (wasm.typeTestOpenSite) {
+      let fatBase = new WasmStruct("FatPtrBase", growable<WasmField>([
+        new WasmField("instance", new ValTypeAnyRef(), false),
+      ]));
+      wasm.types.push(fatBase);
+      wasm.fatPointerBaseStruct = fatBase;
+      for (let pair in wasm.interfaceStructs) {
+        let st = pair.value;
+        if (st.superStruct == null) {
+          st.superStruct = fatBase;
+        }
+      }
+      this.markTypeReached(fatBase);
+    }
+
+    // An interface with few candidate pairs is tested by a chain of
+    // class tests, each an inline compare against a final struct, and
+    // gets no slot; the slots, and everything below, are for the rest.
+    let pairCounts = new HashMap<InterfaceKey, i32>();
+    for (let pPair in wasm.typeTestPairs) {
+      let iKey = pPair.key.interfaceKey;
+      var n = 0;
+      if (let (true, seen) = pairCounts.get(iKey)) {
+        n = seen;
+      }
+      pairCounts[iKey] = n + 1;
+    }
+    let slotInterfaces = new Array<InterfaceType>();
+    for (let iface in wasm.typeTestSlotInterfaces) {
+      let iKey = getInterfaceKey(iface);
+      var n = 0;
+      if (let (true, seen) = pairCounts.get(iKey)) {
+        n = seen;
+      }
+      if (n <= typeTestChainMax) {
+        wasm.typeTestChained[iKey] = iface;
+      } else {
+        slotInterfaces.push(iface);
+      }
+    }
+    while (wasm.typeTestSlotInterfaces.length > 0) {
+      wasm.typeTestSlotInterfaces.pop();
+    }
+    wasm.typeTestSlots.clear();
+    for (let iface in slotInterfaces) {
+      wasm.typeTestSlots[getInterfaceKey(iface)] = wasm.typeTestSlotInterfaces.length;
+      wasm.typeTestSlotInterfaces.push(iface);
+    }
+    if (slotInterfaces.length == 0) {
+      return;
+    }
+    // The candidate classes of some slot interface.
+    let slotClasses = new Map<ClassKey, ClassType>();
+    for (let cPair in wasm.typeTestClasses) {
+      for (let iface in slotInterfaces) {
+        if (wasm.typeTestPairs.has(getClassInterfaceKey(cPair.key, getInterfaceKey(iface)))) {
+          slotClasses[cPair.key] = cPair.value;
+          break;
+        }
+      }
+    }
+
+    let infoFields = new Array<WasmField>();
+    for (var i = 0; i < wasm.typeTestSlotInterfaces.length; i += 1) {
+      let iKey = getInterfaceKey(wasm.typeTestSlotInterfaces[i]);
+      if (!wasm.interfaceVTableStructs.has(iKey)) {
+        throw new Error(`Internal error: tested interface ${iKey as String} has no vtable struct`);
+      }
+      infoFields.push(new WasmField(typeTestSlotName(i),
+          new ValTypeRefNull(wasm.interfaceVTableStructs[iKey]), false));
+    }
+    let typeInfo = new WasmStruct("TypeInfo", infoFields);
+    wasm.types.push(typeInfo);
+    wasm.typeInfoStruct = typeInfo;
+    let vtableBase = new WasmStruct("VTableBase", growable<WasmField>([
+      new WasmField("<typeinfo>", new ValTypeRefNull(typeInfo), false),
+    ]));
+    wasm.types.push(vtableBase);
+    wasm.vtableBaseStruct = vtableBase;
+
+    // The hierarchies the candidates belong to, by root vtable struct,
+    // and the roots some test reaches through a non-class operand.
+    let candidateRoots = new HashSet<WasmStruct>();
+    let objectRoots = new Array<WasmStruct>();
+    let objectRootSet = new HashSet<WasmStruct>();
+    for (let cPair in slotClasses) {
+      let cName = cPair.key;
+      let info = wasm.classInfos[cName];
+      if (info.vtableGlobal == null || info.vtableStructType == null) {
+        throw new Error(`Internal error: type-test candidate ${cName as String} has no class vtable`);
+      }
+      candidateRoots.add(rootStruct(info.vtableStructType as WasmStruct));
+      if (wasm.typeTestOpenClasses.has(cName)) {
+        let root = rootStruct(info.structType);
+        if (!objectRootSet.has(root)) {
+          objectRootSet.add(root);
+          objectRoots.push(root);
+        }
+      }
+    }
+
+    // `<typeinfo>` leads every vtable struct in a candidate hierarchy.
+    // The root's field object is shared down the hierarchy, as every
+    // inherited field is.
+    let rootFields = new HashMap<WasmStruct, WasmField>();
+    // Every vtable struct in a candidate hierarchy, collected before the
+    // roots are linked below: once a root extends `VTableBase`, walking
+    // up from a struct ends there instead.
+    let candidateVsts = new HashSet<WasmStruct>();
+    for (let cPair in wasm.classInfos) {
+      let vstOpt = cPair.value.vtableStructType;
+      if (vstOpt == null) {
+        continue;
+      }
+      let vst = vstOpt;
+      // The hierarchy's root, which an earlier class in the hierarchy
+      // may already have linked to `VTableBase`.
+      var root = vst;
+      while (root.superStruct != null && root.superStruct !== vtableBase) {
+        root = root.superStruct as WasmStruct;
+      }
+      if (!candidateRoots.has(root)) {
+        continue;
+      }
+      candidateVsts.add(vst);
+      var field: WasmField | null = null;
+      if (let (true, f) = rootFields.get(root)) {
+        field = f;
+      } else {
+        let f = new WasmField("<typeinfo>", new ValTypeRefNull(typeInfo), false);
+        rootFields[root] = f;
+        field = f;
+      }
+      if (vst.fieldIndexByName("<typeinfo>") < 0) {
+        prependField(vst, field as WasmField);
+      }
+      if (root.superStruct == null) {
+        root.superStruct = vtableBase;
+      }
+    }
+
+    if (objectRoots.length > 0) {
+      let objectStruct = new WasmStruct("Object", growable<WasmField>([
+        new WasmField("<vtable>", new ValTypeRefNull(vtableBase), false),
+      ]));
+      wasm.types.push(objectStruct);
+      wasm.objectStruct = objectStruct;
+      for (let root in objectRoots) {
+        if (root.superStruct == null) {
+          root.superStruct = objectStruct;
+        }
+      }
+      this.markTypeReached(objectStruct);
+    }
+
+    // One TypeInfo global per candidate class, then the pointer to it
+    // in the class vtable; every other vtable in the hierarchy stores
+    // null there.
+    for (let cPair in slotClasses) {
+      let cName = cPair.key;
+      let slots = new Array<WasmGlobal | null>();
+      for (let iface in wasm.typeTestSlotInterfaces) {
+        let key = getClassInterfaceKey(cName, getInterfaceKey(iface));
+        let g = wasm.getClassInterfaceVTable(key);
+        if (g == null && wasm.typeTestPairs.has(key)) {
+          throw new Error(`Internal error: type-test pair ${cName as String} as ${getInterfaceKey(iface) as String} has no vtable`);
+        }
+        slots.push(g);
+      }
+      let init = new VTableInit(typeInfo, new Array<WasmFunction>());
+      init.slotGlobals = slots;
+      let name = `${cName as String}_TypeInfo`;
+      let g = new WasmGlobal(name, name, new ValTypeRef(typeInfo), false,
+          null, init, model);
+      wasm.globals.push(g);
+      wasm.typeInfoGlobals[cName] = g;
+    }
+    for (let cPair in wasm.classInfos) {
+      let info = cPair.value;
+      let vstOpt = info.vtableStructType;
+      let gOpt = info.vtableGlobal;
+      if (vstOpt == null || gOpt == null || !candidateVsts.has(vstOpt)) {
+        continue;
+      }
+      let init = gOpt.initVTable;
+      if (init == null) {
+        continue;
+      }
+      var tiGlobal: WasmGlobal | null = null;
+      if (let (true, ti) = wasm.typeInfoGlobals.get(cPair.key)) {
+        tiGlobal = ti;
+      }
+      init.slotGlobals = growable<WasmGlobal | null>([tiGlobal]);
+    }
+
+    this.markTypeReached(typeInfo);
+    this.markTypeReached(vtableBase);
+    this.#orderGlobalInitializers();
+  }
+
+  /**
+   * Reorders `wasm.globals` so that every global an initializer reads
+   * (`VTableInit.slotGlobals`, a singleton's class vtable) is declared
+   * before the global that reads it, keeping the order otherwise.
+   */
+  #orderGlobalInitializers(): void {
+    let wasm = this.wasm;
+    for (var i = 0; i < wasm.globals.length; i += 1) {
+      wasm.globals[i].index = i;
+    }
+    let placed = new Array<boolean>();
+    for (let g in wasm.globals) {
+      placed.push(false);
+    }
+    let ordered = new Array<WasmGlobal>();
+    for (let g in wasm.globals) {
+      this.#placeGlobal(g, ordered, placed);
+    }
+    while (wasm.globals.length > 0) {
+      wasm.globals.pop();
+    }
+    for (let g in ordered) {
+      wasm.globals.push(g);
+    }
+  }
+
+  #placeGlobal(g: WasmGlobal, ordered: GrowableArray<WasmGlobal>,
+      placed: GrowableArray<boolean>): void {
+    if (g.index < 0 || placed[g.index]) {
+      return;
+    }
+    placed[g.index] = true;
+    let init = g.initVTable;
+    if (init != null) {
+      let slots = init.slotGlobals;
+      if (slots != null) {
+        for (let s in slots) {
+          if (s != null) {
+            this.#placeGlobal(s, ordered, placed);
+          }
+        }
+      }
+    }
+    let singleton = g.initSingletonStruct;
+    if (singleton != null) {
+      if (let (true, info) = this.wasm.classInfos.get(getClassKey(singleton))) {
+        let vt = info.vtableGlobal;
+        if (vt != null) {
+          this.#placeGlobal(vt, ordered, placed);
+        }
+      }
+    }
+    ordered.push(g);
+  }
+
   var #dispatchedSlotKeys = new Set<String>();
 
   /**
