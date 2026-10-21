@@ -1,0 +1,170 @@
+import {suite, test} from 'zena:test';
+import {equal, isFalse, isTrue, throws} from 'zena:assert';
+import {
+  BaseEncoding,
+  base32,
+  base32Lower,
+  base64,
+  base64Url,
+  hex,
+  isValidUtf8
+} from 'zena:encoding';
+
+function utf8(s: String) {
+  return s.toBytes();
+}
+
+/** Checks `encoding` both ways on `text`'s bytes, padded and unpadded. */
+function roundTrip(encoding: BaseEncoding, text: String, padded: String, unpadded: String) {
+  let bytes = utf8(text);
+  equal(encoding.encode(bytes), padded);
+  equal(encoding.encode(bytes, false), unpadded);
+  isTrue(encoding.decode(padded).contentEquals(bytes));
+  isTrue(encoding.decode(unpadded).contentEquals(bytes));
+}
+
+// RFC 4648 section 10.
+let rfc4648: Array<(String, String, String, String)> = [
+  ('', '', '', ''),
+  ('f', 'Zg==', 'MY======', '66'),
+  ('fo', 'Zm8=', 'MZXQ====', '666f'),
+  ('foo', 'Zm9v', 'MZXW6===', '666f6f'),
+  ('foob', 'Zm9vYg==', 'MZXW6YQ=', '666f6f62'),
+  ('fooba', 'Zm9vYmE=', 'MZXW6YTB', '666f6f6261'),
+  ('foobar', 'Zm9vYmFy', 'MZXW6YTBOI======', '666f6f626172'),
+];
+
+function unpad(text: String) {
+  var end = text.length;
+  while (end > 0 && text.getByteAt(end - 1) == 61) {
+    end -= 1;
+  }
+  return text.sliceBytes(0, end);
+}
+
+export let tests = suite('zena:encoding', () => {
+  test('base64, base32 and hex match RFC 4648', (ctx) => {
+    for (let (text, b64, b32, b16) in rfc4648) {
+      roundTrip(base64, text, b64, unpad(b64));
+      roundTrip(base32, text, b32, unpad(b32));
+      roundTrip(hex, text, b16, b16);
+    }
+  });
+
+  test('base32Lower is base32 in lowercase', (ctx) => {
+    equal(base32Lower.encode(utf8('foobar'), false), 'mzxw6ytboi');
+    isTrue(base32Lower.decode('mzxw6ytboi').contentEquals(utf8('foobar')));
+    throws(() => {
+      base32Lower.decode('MZXW6YTBOI');
+    });
+  });
+
+  test('base64Url uses - and _', (ctx) => {
+    let bytes = hex.decode('fbff');
+    equal(base64.encode(bytes), '+/8=');
+    equal(base64Url.encode(bytes, false), '-_8');
+    isTrue(base64Url.decode('-_8').contentEquals(bytes));
+    throws(() => {
+      base64Url.decode('+/8');
+    });
+  });
+
+  test('hex decodes either case and encodes lowercase', (ctx) => {
+    let bytes = hex.decode('DeadBEEF');
+    equal(hex.encode(bytes), 'deadbeef');
+  });
+
+  test('rejects characters outside the alphabet', (ctx) => {
+    for (let text in ['Zm9v!', 'Zm 9', 'Zm9v\n']) {
+      throws(() => {
+        base64.decode(text);
+      });
+    }
+    throws(() => {
+      base32.decode('MZXW1');
+    });
+    throws(() => {
+      hex.decode('0g');
+    });
+  });
+
+  test('rejects lengths that no byte string encodes to', (ctx) => {
+    throws(() => {
+      base64.decode('Z');
+    });
+    throws(() => {
+      base32.decode('MZX');
+    });
+    throws(() => {
+      hex.decode('abc');
+    });
+  });
+
+  test('rejects padding of the wrong length', (ctx) => {
+    for (let text in ['Zg=', 'Zg===', 'Zm9v=', 'Zm9v====']) {
+      throws(() => {
+        base64.decode(text);
+      });
+    }
+    throws(() => {
+      base32.decode('MY==');
+    });
+    throws(() => {
+      hex.decode('66==');
+    });
+  });
+
+  test('rejects a last character with bits set beyond the last byte', (ctx) => {
+    // 'Zg' is "f"; 'Zh' sets a bit after it.
+    throws(() => {
+      base64.decode('Zh');
+    });
+    // 'MY' is "f"; 'MZ' sets a bit after it.
+    throws(() => {
+      base32.decode('MZ');
+    });
+  });
+
+  test('takes a custom alphabet', (ctx) => {
+    // RFC 4648 section 7, "base32hex".
+    let base32hex = new BaseEncoding('0123456789ABCDEFGHIJKLMNOPQRSTUV');
+    equal(base32hex.encode(utf8('foobar')), 'CPNMUOJ1E8======');
+    throws(() => {
+      new BaseEncoding('abc');
+    });
+    throws(() => {
+      new BaseEncoding('aacdefghijklmnop');
+    });
+  });
+
+  test('isValidUtf8 accepts UTF-8', (ctx) => {
+    isTrue(isValidUtf8(utf8('')));
+    isTrue(isValidUtf8(utf8('plain ASCII')));
+    // é, ⽘, ☎, 𓋓 and 😀: two, three, three and two four-byte forms.
+    isTrue(isValidUtf8(hex.decode('c3a9e2bd98e2988ef0938b93f09f9880')));
+    // U+10FFFF, the largest code point.
+    isTrue(isValidUtf8(hex.decode('f48fbfbf')));
+  });
+
+  test('isValidUtf8 rejects what RFC 3629 does not allow', (ctx) => {
+    for (let bad in [
+      'c328',       // a lead byte without its continuation
+      'c0af',       // an overlong '/'
+      'e080af',     // an overlong '/' in three bytes
+      'eda080',     // U+D800, a surrogate
+      'f4908080',   // above U+10FFFF
+      'ff',         // never valid
+      '80',         // a continuation with no lead
+      'e282',       // truncated
+    ]) {
+      isFalse(isValidUtf8(hex.decode(bad)), bad);
+    }
+  });
+
+  test('isValidUtf8 checks only the range it is given', (ctx) => {
+    let bytes = hex.decode('41ff42');
+    isTrue(isValidUtf8(bytes, 0, 1));
+    isFalse(isValidUtf8(bytes, 0, 2));
+    isTrue(isValidUtf8(bytes, 2));
+  });
+});
