@@ -34,6 +34,7 @@ import {
   componentAbiUnitId, componentDriverUnitId
 } from '../component-emitter.zena';
 import { targetEmitsComponent, targetUsesJsStrings } from '../../targets.zena';
+import { isHostBoundaryLibrary, isWebUiProtocolLibrary } from '../../stdlib-manifest.zena';
 import {
   isComponentEntryPath, componentSyncExportSuffix, componentEntryRunName,
   hasAsyncMain
@@ -1401,7 +1402,7 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
       // roots with the driver for the same reason: the entry adapter
       // calls its `run` from outside the program, and only exists when
       // the driver does.
-      let isHostBoundary = unit.ast.path == 'zena:js/index.zena';
+      let isHostBoundary = isHostBoundaryLibrary(unit.ast.path);
       // The root set is `main` plus the exports of those two units.
       // Every other unit is a library: its globals are roots only if
       // something reaches them. Queuing them all — which is what this
@@ -1417,21 +1418,38 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
         var isExported = false;
         var isMain = false;
 
+        var declName = "";
         if (decl is VariableDeclaration) {
           let isFunction = decl.init is FunctionExpression;
           isExported = rootsExports && (decl.exported || (isEntry && !isFunction));
-          if (isEntry && decl.pattern is IdentifierPattern && (decl.pattern as IdentifierPattern).name == "main") {
+          if (decl.pattern is IdentifierPattern) {
+            declName = (decl.pattern as IdentifierPattern).name;
+          }
+          if (isEntry && declName == "main") {
             isMain = true;
           }
         } else if (decl is FunctionDeclaration) {
           isExported = rootsExports && decl.exported;
-          if (isEntry && decl.name.name == "main") {
+          declName = decl.name.name;
+          if (isEntry && declName == "main") {
             isMain = true;
           }
         } else if (decl is DeclareFunction) {
           isExported = rootsExports && decl.exported;
+          declName = decl.name.name;
         }
-        
+        // A template-protocol library exports its API to programs too
+        // (`html`, `Event`, `defineElement`), and those are reached
+        // like any library's exports when something imports them. Only
+        // its `webui_*` functions are the host's to call, so only those
+        // root; the rest are left to be reached, and are not queued as
+        // checkable either, which would discover a global the layout
+        // then leaves out while `__start` still initializes it.
+        if (!isEntry && isWebUiProtocolLibrary(unit.ast.path) &&
+            !(declName.startsWith("webui_") && targetUsesJsStrings(this.target))) {
+          continue;
+        }
+
         if (isMain || isExported) {
           this.queueReferrer(new Referrer(true, id, -1, model, null, true));
           // An export whose type mentions String is boundary evidence

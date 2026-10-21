@@ -24,7 +24,9 @@ import { ClassType, TypeInterner, markTypes } from '../types.zena';
 import { Program } from '../program.zena';
 import {
   NumberLiteral, StringLiteral, BooleanLiteral, EnumDeclaration, ImportDeclaration, Module,
+  VariableDeclaration, IdentifierPattern,
 } from '../ast.zena';
+import { isWebUiProtocolLibrary } from '../stdlib-manifest.zena';
 import { Symbol } from '../scope/symbol.zena';
 import {
   ValType, resetWasmTypeUids, FuncImport, GlobalImport, MemoryImport,
@@ -247,6 +249,34 @@ export final class ModuleGenerator {
       let f = wasm.getStdlibFunc('js', zenaName);
       if (f != null) {
         exports.push(new WasmExport(exportName, f));
+      }
+    }
+    // The Wasm Web UI protocol (docs/design/wasm-web-ui.md): a
+    // program that imports zena:web-templates or zena:web-elements exports their
+    // `webui_*` functions under their own names, and the host calls them
+    // to read results and drive elements. Present exactly when the
+    // program imports the library, like the completion entries above,
+    // and only on the js target: a server has no host to call them.
+    for (let unit in this.program.units) {
+      if (!targetUsesJsStrings(this.target) || !isWebUiProtocolLibrary(unit.ast.path)) {
+        continue;
+      }
+      for (let stmt in unit.ast.body) {
+        if (!(stmt is VariableDeclaration)) {
+          continue;
+        }
+        let decl = stmt as VariableDeclaration;
+        if (!decl.exported || !(decl.pattern is IdentifierPattern)) {
+          continue;
+        }
+        let name = (decl.pattern as IdentifierPattern).name;
+        if (!name.startsWith('webui_')) {
+          continue;
+        }
+        let f = wasm.getUnitFunc(unit.ast.path, name);
+        if (f != null) {
+          exports.push(new WasmExport(name, f));
+        }
       }
     }
     let {componentEntryFunc} = wasm;
