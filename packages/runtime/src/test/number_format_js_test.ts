@@ -132,38 +132,50 @@ suite('Runtime - number formatting on the js target', () => {
     assert.equal(numberImports.parseFloat, parseFloat);
   });
 
-  test('parseF64 reads the prefix Zena reads, not what parseFloat reads', async () => {
+  test('parseF64 reads what parseFloat reads, and hex at the start', async () => {
     const parseF64 = await parseExports();
-    // Text after the number is ignored, and no digits at all is 0.
-    assert.equal(parseF64('12abc'), 12);
-    assert.equal(parseF64('1e5x'), 100000);
-    assert.equal(parseF64('1.5.5'), 1.5);
-    assert.equal(parseF64('1_000'), 1);
-    assert.equal(parseF64(''), 0);
-    assert.equal(parseF64('-'), 0);
-    assert.equal(parseF64('.'), 0);
-    assert.equal(parseF64('Infinity'), 0);
-    assert.equal(parseF64('NaN'), 0);
-    // parseFloat skips leading whitespace and reads Infinity; Zena does not.
-    assert.equal(parseF64(' 1'), 0);
-    // An exponent marker with no digits is an exponent of zero.
-    assert.equal(parseF64('1e'), 1);
-    assert.equal(parseF64('1e+'), 1);
-    assert.equal(parseF64('.5'), 0.5);
-    assert.equal(parseF64('5.'), 5);
-    assert.ok(Object.is(parseF64('-0'), -0));
-    // Hex is an integer, accumulated a digit at a time.
+    const same = [
+      '12abc',
+      '1e5x',
+      '1.5.5',
+      '1_000',
+      '',
+      '-',
+      '.',
+      'abc',
+      'NaN',
+      'Infinity',
+      '-Infinityx',
+      'infinity',
+      '- 1',
+      '1e',
+      '1e+',
+      '.5',
+      '5.',
+      '-0',
+      '2.4703282292062328e-324',
+      '9007199254740993',
+      '-8719713712855776767.983584839753951',
+      '1e99999999999',
+    ];
+    for (const text of same) {
+      assert.ok(
+        Object.is(parseF64(text), parseFloat(text)),
+        `parseF64(${JSON.stringify(text)})`,
+      );
+    }
+    // Leading whitespace, which parseFloat skips, is no number.
+    for (const text of [' 1', '\t\n-2', '\u00a0\u3000\ufeff3', ' 0x10']) {
+      assert.ok(
+        Number.isNaN(parseF64(text)),
+        `parseF64(${JSON.stringify(text)})`,
+      );
+    }
+    // Hex at the very start is Zena's own: an integer, accumulated a digit
+    // at a time.
+    assert.equal(parseF64('0x1F'), 31);
     assert.equal(parseF64('-0x10'), -16);
     assert.equal(parseF64('0x1g'), 1);
     assert.ok(Object.is(parseF64('-0x'), 0));
-    // Correctly rounded, whatever the digit count.
-    assert.equal(parseF64('2.4703282292062328e-324'), 5e-324);
-    assert.equal(parseF64('9007199254740993'), 9007199254740992);
-    assert.equal(
-      parseF64('-8719713712855776767.983584839753951'),
-      Number('-8719713712855776767.983584839753951'),
-    );
-    assert.equal(parseF64('1e99999999999'), Infinity);
-    assert.equal(parseF64(`0.${'0'.repeat(150000)}1e150000`), 0.1);
   });
 });
