@@ -710,40 +710,43 @@ export final class String implements Hashable, Stringable, Iterable<String> {
     return new String.#fromHandle(__js_string_substring(this.#handle, start, end));
   }
 
+  /**
+   * Returns this string with every ASCII letter lowercased; every other
+   * character is left alone, so the length does not change. Returns `this`
+   * when there is nothing to change. `toLowerCase` is the Unicode mapping.
+   */
   asciiLowerCase(): String {
-    let len = __js_string_length(this.#handle);
-    var needsChange = false;
-    var i = 0;
-    while (i < len) {
-      let c = __js_string_char_code_at(this.#handle, i);
-      if (c >= 0x41 && c <= 0x5A) {
-        needsChange = true;
-        break;
-      }
-      i += 1;
-    }
-    if (!needsChange) {
-      return this;
-    }
-    return new String.#fromHandle(__js_string_to_lower(this.#handle));
+    return this.#mapAscii(0x41);
   }
 
+  /** Returns this string with every ASCII letter uppercased. */
   asciiUpperCase(): String {
+    return this.#mapAscii(0x61);
+  }
+
+  /**
+   * This string with each of the 26 code units from `first` (`A` or `a`)
+   * flipped to the other case: the unchanged runs between them are copied
+   * whole, as substrings.
+   */
+  #mapAscii(first: i32): String {
     let len = __js_string_length(this.#handle);
-    var needsChange = false;
-    var i = 0;
-    while (i < len) {
+    var built = __js_string_substring(this.#handle, 0, 0);
+    var runStart = 0;
+    for (var i = 0; i < len; i += 1) {
       let c = __js_string_char_code_at(this.#handle, i);
-      if (c >= 0x61 && c <= 0x7A) {
-        needsChange = true;
-        break;
+      if (c >= first && c < first + 26) {
+        built = __js_string_concat(
+            __js_string_concat(built, __js_string_substring(this.#handle, runStart, i)),
+            __js_string_from_char_code(c ^ 0x20));
+        runStart = i + 1;
       }
-      i += 1;
     }
-    if (!needsChange) {
+    if (runStart == 0) {
       return this;
     }
-    return new String.#fromHandle(__js_string_to_upper(this.#handle));
+    return new String.#fromHandle(__js_string_concat(
+        built, __js_string_substring(this.#handle, runStart, len)));
   }
 
   toLowerCase(): String {
