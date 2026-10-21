@@ -1,0 +1,301 @@
+/**
+ * The Merkle search tree (MST) that holds an atproto repository's records
+ * (https://atproto.com/specs/repository#mst-structure).
+ *
+ * Keys are `<collection>/<record key>` and values are the records' CIDs.
+ * Each key has a height: the number of leading zero bits of its SHA-256
+ * hash, divided by two and rounded down. A key sits in the node at the
+ * layer equal to its height, and the keys of lower heights between two
+ * keys of a node sit in a subtree between them. The root is at the layer
+ * of the highest key. The tree for a set of keys is therefore unique, and
+ * so is its root CID.
+ *
+ * A node is DAG-CBOR: `{l, e}`, where `l` is the subtree before the first
+ * entry or null, and `e` lists the entries in key order. An entry is
+ * `{p, k, v, t}`: the number of leading bytes its key shares with the
+ * previous entry's key in the node, the rest of the key's bytes, the
+ * value, and the subtree after it or null. A node may have no entries and
+ * only a subtree, when a layer between two keys holds no key.
+ */
+
+import {GrowableArray} from 'zena:collections';
+import {Encoding, newByteArray, copyBytes} from 'zena:core';
+import {sha256} from 'zena:crypto';
+import {BlockMap} from './car.zena';
+import {decodeCbor} from './cbor.zena';
+import {Cid} from './cid.zena';
+import {
+  BytesValue,
+  IntValue,
+  LinkValue,
+  ListValue,
+  MapValue,
+  NullValue,
+  Value,
+  field,
+  newMap
+} from './data.zena';
+
+/** Fills arrays of entries before their elements are set. */
+let NO_CID = new Cid(1, 0 as i64, 0 as i64, newByteArray(0));
+
+/** A node that cannot be read, or a block a walk needed and did not have. */
+export class MstError extends Error {
+  new(message: String) : super(message);
+}
+
+/**
+ * The height of `key`: half the number of leading zero bits of its
+ * SHA-256 hash, rounded down.
+ */
+export function keyHeight(key: String): i32 {
+  let hash = sha256(key.toBytes() as ByteArray);
+  var zeros = 0;
+  for (var i = 0; i < hash.length; i += 1) {
+    let b = hash[i] as i32;
+    if (b == 0) {
+      zeros += 8;
+    } else {
+      var mask = 0x80;
+      while ((b & mask) == 0) {
+        zeros += 1;
+        mask = mask >> 1;
+      }
+      break;
+    }
+  }
+  return zeros >> 1;
+}
+
+/** The number of leading bytes `a` and `b` share. */
+export function commonPrefixLength(a: String, b: String): i32 {
+  let limit = if (a.length < b.length) a.length else b.length;
+  var i = 0;
+  while (i < limit && a.getByteAt(i) == b.getByteAt(i)) {
+    i += 1;
+  }
+  return i;
+}
+
+/** Negative when `a` sorts before `b` byte by byte. */
+export function compareKeys(a: String, b: String): i32 {
+  let shared = commonPrefixLength(a, b);
+  if (shared < a.length && shared < b.length) {
+    return a.getByteAt(shared) - b.getByteAt(shared);
+  }
+  return a.length - b.length;
+}
+
+/** An entry of a node, with its key in full. */
+export final class MstEntry {
+  key: String;
+  value: Cid;
+  var right: Cid | null;
+  new(key: String, value: Cid, right: Cid | null) : key = key, value = value, right = right;
+}
+
+/** A decoded node. */
+export final class MstNode {
+  left: Cid | null;
+  entries: FixedArray<MstEntry>;
+  new(left: Cid | null, entries: FixedArray<MstEntry>) : left = left, entries = entries;
+}
+
+function optionalLink(value: Value | null, what: String): Cid | null {
+  if (value == null || value is NullValue) {
+    return null;
+  }
+  if (value is LinkValue) {
+    return value.cid;
+  }
+  throw new MstError(`${what} is neither a CID nor null`);
+}
+
+/**
+ * Reads a node, checking its shape, that each prefix length fits the
+ * previous key, and that keys increase.
+ */
+export function decodeNode(bytes: ByteArray): MstNode {
+  let value = decodeCbor(bytes);
+  if (!(value is MapValue)) {
+    throw new MstError('node is not a map');
+  }
+  let map = value;
+  let list = field(map, 'e');
+  if (!(list is ListValue)) {
+    throw new MstError('node has no entry list');
+  }
+  let items = list.items;
+  let entries = new FixedArray<MstEntry>(items.length, new MstEntry('', NO_CID, null));
+  var previous = '';
+  for (var i = 0; i < items.length; i += 1) {
+    let item = items[i];
+    if (!(item is MapValue)) {
+      throw new MstError('entry is not a map');
+    }
+    let entry = item;
+    let p = field(entry, 'p');
+    let k = field(entry, 'k');
+    let v = field(entry, 'v');
+    if (!(p is IntValue) || !(k is BytesValue) || !(v is LinkValue)) {
+      throw new MstError('entry lacks p, k or v');
+    }
+    let prefix = p.value;
+    if (prefix < 0 || prefix > (previous.length as i64) || (i == 0 && prefix != 0)) {
+      throw new MstError(`entry ${i} has prefix length ${prefix}`);
+    }
+    let key = joinKey(previous, prefix as i32, k.value);
+    if (i > 0 && compareKeys(previous, key) >= 0) {
+      throw new MstError(`keys out of order at '${key}'`);
+    }
+    entries[i] = new MstEntry(key, v.cid, optionalLink(field(entry, 't'), 'subtree'));
+    previous = key;
+  }
+  return new MstNode(optionalLink(field(map, 'l'), 'left subtree'), entries);
+}
+
+/** The first `prefix` bytes of `previous` followed by `suffix`, as a key. */
+function joinKey(previous: String, prefix: i32, suffix: ByteArray): String {
+  let bytes = newByteArray(prefix + suffix.length);
+  previous.copyBytesTo(bytes, 0, 0, prefix);
+  copyBytes(bytes, prefix, suffix, 0, suffix.length);
+  return String.fromByteArray(bytes, 0, bytes.length, Encoding.WTF8);
+}
+
+/** The data-model form of a node. */
+export function encodeNode(node: MstNode): Value {
+  let items = new FixedArray<Value>(node.entries.length, new NullValue());
+  var previous = '';
+  for (var i = 0; i < node.entries.length; i += 1) {
+    let entry = node.entries[i];
+    let prefix = commonPrefixLength(previous, entry.key);
+    let keyBytes = entry.key.toBytes() as ByteArray;
+    let suffix = newByteArray(keyBytes.length - prefix);
+    copyBytes(suffix, 0, keyBytes, prefix, suffix.length);
+    let map = newMap();
+    map.entries['p'] = new IntValue(prefix as i64);
+    map.entries['k'] = new BytesValue(suffix);
+    map.entries['v'] = new LinkValue(entry.value);
+    map.entries['t'] = linkOrNull(entry.right);
+    items[i] = map;
+    previous = entry.key;
+  }
+  let map = newMap();
+  map.entries['l'] = linkOrNull(node.left);
+  map.entries['e'] = new ListValue(items);
+  return map;
+}
+
+function linkOrNull(cid: Cid | null): Value {
+  if (cid == null) {
+    return new NullValue();
+  }
+  return new LinkValue(cid);
+}
+
+/**
+ * Builds the tree for `keys`, which must be sorted byte by byte and
+ * distinct, with `values[i]` the value of `keys[i]`. Stores every node in
+ * `blocks` and returns the root's CID.
+ */
+export function buildMst(keys: FixedArray<String>, values: FixedArray<Cid>, blocks: BlockMap): Cid {
+  let heights = new FixedArray<i32>(keys.length, 0);
+  var top = 0;
+  for (var i = 0; i < keys.length; i += 1) {
+    if (i > 0 && compareKeys(keys[i - 1], keys[i]) >= 0) {
+      throw new MstError(`keys not sorted and distinct at '${keys[i]}'`);
+    }
+    heights[i] = keyHeight(keys[i]);
+    if (heights[i] > top) {
+      top = heights[i];
+    }
+  }
+  return buildNode(keys, values, heights, 0, keys.length, top, blocks);
+}
+
+/** Builds the node at `layer` holding `keys[start..end]`, and its subtrees. */
+function buildNode(
+  keys: FixedArray<String>,
+  values: FixedArray<Cid>,
+  heights: FixedArray<i32>,
+  start: i32,
+  end: i32,
+  layer: i32,
+  blocks: BlockMap
+): Cid {
+  var left: Cid | null = null;
+  let entries = new GrowableArray<MstEntry>();
+  var groupStart = start;
+  for (var i = start; i <= end; i += 1) {
+    if (i < end && heights[i] != layer) {
+      continue;
+    }
+    let subtree = if (groupStart < i) {
+      buildNode(keys, values, heights, groupStart, i, layer - 1, blocks)
+    } else {
+      null
+    };
+    if (entries.length == 0) {
+      left = subtree;
+    } else {
+      entries[entries.length - 1].right = subtree;
+    }
+    if (i < end) {
+      entries.push(new MstEntry(keys[i], values[i], null));
+    }
+    groupStart = i + 1;
+  }
+  let fixed = new FixedArray<MstEntry>(entries.length, new MstEntry('', NO_CID, null));
+  for (var j = 0; j < entries.length; j += 1) {
+    fixed[j] = entries[j];
+  }
+  return blocks.add(encodeNode(new MstNode(left, fixed)));
+}
+
+function loadNode(cid: Cid, blocks: BlockMap) {
+  let bytes = blocks.get(cid);
+  if (bytes == null) {
+    throw new MstError(`missing node ${cid.toString()}`);
+  }
+  return decodeNode(bytes);
+}
+
+/**
+ * The value of `key` in the tree at `root`, or null when the tree does not
+ * have it. Reads only the nodes on the path to `key`, so `blocks` can be a
+ * proof that holds just those; a node missing from it is an error.
+ */
+export function mstGet(root: Cid, key: String, blocks: BlockMap): Cid | null {
+  var cid: Cid | null = root;
+  while (cid != null) {
+    let node = loadNode(cid, blocks);
+    // The subtree before the first entry whose key is greater.
+    var next = node.left;
+    for (let entry in node.entries) {
+      let order = compareKeys(key, entry.key);
+      if (order == 0) {
+        return entry.value;
+      }
+      if (order < 0) {
+        break;
+      }
+      next = entry.right;
+    }
+    cid = next;
+  }
+  return null;
+}
+
+/** Calls `callback` with every key and value in the tree, in key order. */
+export function mstWalk(root: Cid, blocks: BlockMap, callback: (key: String, value: Cid) => void): void {
+  let node = loadNode(root, blocks);
+  if (node.left != null) {
+    mstWalk(node.left as Cid, blocks, callback);
+  }
+  for (let entry in node.entries) {
+    callback(entry.key, entry.value);
+    if (entry.right != null) {
+      mstWalk(entry.right as Cid, blocks, callback);
+    }
+  }
+}

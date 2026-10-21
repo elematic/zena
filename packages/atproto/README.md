@@ -19,6 +19,12 @@ Import them as `atproto:<module>`, with an
 - `atproto:cbor`: DAG-CBOR encoding and strict decoding, and `cidForValue`.
 - `atproto:syntax`: DIDs, handles, NSIDs, record keys, TIDs, datetimes and
   CID strings.
+- `atproto:car`: CAR files and `BlockMap`, checking every block against its
+  CID.
+- `atproto:mst`: the Merkle search tree: key heights, nodes, building a
+  tree, and looking a key up through the nodes of a proof.
+- `atproto:repo`: commits, and verifying `com.atproto.sync.getRecord`
+  proofs.
 
 ## Tests
 

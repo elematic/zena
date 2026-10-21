@@ -1,0 +1,141 @@
+import {suite, test} from 'zena:test';
+import {equal, isNull, isTrue, throws} from 'zena:assert';
+import {readFileBytesSync} from 'zena:fs';
+import {fromHex, toHex} from 'atproto:bytes';
+import {BlockMap, Car, readCar, writeCar} from 'atproto:car';
+import {encodeCbor} from 'atproto:cbor';
+import {Cid} from 'atproto:cid';
+import {BytesValue, IntValue, LinkValue, MapValue, NullValue, StringValue, newMap, stringField} from 'atproto:data';
+import {buildMst} from 'atproto:mst';
+import {decodeCommit, verifyRecordProof} from 'atproto:repo';
+
+let NETWORK = 'packages/atproto/zena/test/fixtures/network';
+let DID = 'did:plc:ewvi7nxzyoun6zhxrhs64oiz';
+
+function acceptAny(signed: ByteArray, sig: ByteArray) {
+  return true;
+}
+
+function networkCar() {
+  return readCar(readFileBytesSync(`${NETWORK}/atproto-com-profile.car`) as ByteArray);
+}
+
+/**
+ * A one-record repository: its CAR file in the shape `getRecord` answers
+ * with, signed with a placeholder signature.
+ */
+function smallRepo(key: String) {
+  let blocks = new BlockMap();
+  let record = newMap();
+  record.entries['$type'] = new StringValue('com.example.thing');
+  record.entries['text'] = new StringValue('hello');
+  let recordCid = blocks.add(record);
+  let keys = new FixedArray<String>(1, key);
+  let values = new FixedArray<Cid>(1, recordCid);
+  let root = buildMst(keys, values, blocks);
+  let commit = newMap();
+  commit.entries['did'] = new StringValue('did:example:alice');
+  commit.entries['version'] = new IntValue(3 as i64);
+  commit.entries['data'] = new LinkValue(root);
+  commit.entries['rev'] = new StringValue('3jqfcqzm3fo2j');
+  commit.entries['prev'] = new NullValue();
+  commit.entries['sig'] = new BytesValue(fromHex('00'));
+  let commitCid = blocks.add(commit);
+  return writeCar(new FixedArray<Cid>(1, commitCid), blocks);
+}
+
+export let tests = suite('atproto:car and atproto:repo', () => {
+  test('reads a getRecord answer from the network', (ctx) => {
+    let car = networkCar();
+    equal(car.roots.length, 1);
+    let commit = decodeCommit(car.blocks.get(car.roots[0]) as ByteArray);
+    equal(commit.did, DID);
+    equal(commit.version, 3 as i64);
+    equal(commit.sig.length, 64);
+  });
+
+  test('finds the record the proof is for', (ctx) => {
+    let proof = verifyRecordProof(networkCar(), DID, 'app.bsky.actor.profile', 'self', acceptAny);
+    let record = proof.record as MapValue;
+    equal(stringField(record, '$type') as String, 'app.bsky.actor.profile');
+    isTrue(proof.cid != null);
+  });
+
+  test('re-encodes the commit to the bytes it was signed over', (ctx) => {
+    let car = networkCar();
+    let commitBytes = car.blocks.get(car.roots[0]) as ByteArray;
+    let commit = decodeCommit(commitBytes);
+    // The signed bytes are the commit minus its `sig` field: a map of one
+    // entry fewer, without the 3-byte key and the 66-byte signature value.
+    equal(commit.signedBytes().length, commitBytes.length - 4 - 66);
+    equal(toHex(commitBytes).sliceBytes(0, 2), 'a6');
+    equal(toHex(commit.signedBytes()).sliceBytes(0, 2), 'a5');
+  });
+
+  test('rejects a proof whose signature check fails', (ctx) => {
+    throws(() => {
+      verifyRecordProof(networkCar(), DID, 'app.bsky.actor.profile', 'self', (signed, sig) => false);
+    });
+  });
+
+  test('rejects a proof for another repository', (ctx) => {
+    throws(() => {
+      verifyRecordProof(networkCar(), 'did:plc:someoneelse', 'app.bsky.actor.profile', 'self', acceptAny);
+    });
+  });
+
+  test('rejects a proof that lacks the nodes on the path to the key', (ctx) => {
+    // The proof holds only the path to app.bsky.actor.profile/self.
+    throws(() => {
+      verifyRecordProof(networkCar(), DID, 'app.bsky.feed.post', '3jqfcqzm3fo2j', acceptAny);
+    });
+  });
+
+  test('writes a CAR file that reads back, and proves a record', (ctx) => {
+    let car = readCar(smallRepo('com.example.thing/1'));
+    let proof = verifyRecordProof(car, 'did:example:alice', 'com.example.thing', '1', acceptAny);
+    equal(stringField(proof.record as MapValue, 'text') as String, 'hello');
+  });
+
+  test('proves a record absent when the path ends without it', (ctx) => {
+    // In a one-record tree the root is the whole path, so the proof shows
+    // that every other key is absent.
+    let car = readCar(smallRepo('com.example.thing/1'));
+    let proof = verifyRecordProof(car, 'did:example:alice', 'com.example.thing', '2', acceptAny);
+    isNull(proof.cid);
+    isNull(proof.record);
+  });
+
+  test('rejects a block that does not match its CID', (ctx) => {
+    let bytes = smallRepo('com.example.thing/1');
+    // Flip the last byte, which is inside the last block's data.
+    bytes[bytes.length - 1] = (bytes[bytes.length - 1] ^ 1) as u8;
+    throws(() => {
+      readCar(bytes);
+    });
+  });
+
+  test('rejects a truncated CAR file', (ctx) => {
+    let bytes = smallRepo('com.example.thing/1');
+    let truncated = new FixedArray<u8>(bytes.length - 3, 0 as u8) as ByteArray;
+    for (var i = 0; i < truncated.length; i += 1) {
+      truncated[i] = bytes[i];
+    }
+    throws(() => {
+      readCar(truncated);
+    });
+  });
+
+  test('writes blocks in the order given', (ctx) => {
+    let blocks = new BlockMap();
+    let a = blocks.add(new StringValue('a'));
+    let b = blocks.add(new StringValue('b'));
+    let order = new FixedArray<Cid>(2, b);
+    order[1] = a;
+    let bytes = writeCar(new FixedArray<Cid>(1, a), blocks, order);
+    let car = readCar(bytes);
+    equal(car.blocks.size, 2);
+    isTrue(car.roots[0].equals(a));
+    equal(toHex(encodeCbor(new StringValue('a'))), '6161');
+  });
+});
