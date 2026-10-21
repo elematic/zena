@@ -329,6 +329,8 @@ let uCeil = (u: u64) => (u + (3 as u64)) >> (2 as u64);
 /** Round half to even. */
 let uRound = (u: u64) =>
     (u + ONE + ((u >> (2 as u64)) & ONE)) >> (2 as u64);
+/** Round half up: to nearest, a tie away from zero for a magnitude. */
+let uRoundHalfUp = (u: u64) => (u + (2 as u64)) >> (2 as u64);
 /** Halve, keeping the sticky bit. */
 let uHalve = (u: u64) => (u >> ONE) | (u & ONE);
 
@@ -666,9 +668,10 @@ let shortestDigits = (
 // ---------------------------------------------------------------------------
 
 /**
- * `n` significant decimal digits of the float (m, e), correctly
- * rounded, as (digits, p) with value ~ digits * 10^p and digits
- * having exactly n of them. n must be in [1, 18].
+ * `n` significant decimal digits of the float (m, e), rounded to nearest
+ * with a tie away from zero, as JavaScript's `toPrecision` rounds, as
+ * (digits, p) with value ~ digits * 10^p and digits having exactly n of
+ * them. n must be in [1, 18].
  */
 let fixedDigits = (m: u64, e: i32, n: i32): inline (u64, i32) => {
   var limit = ONE;
@@ -690,7 +693,7 @@ let fixedDigits = (m: u64, e: i32, n: i32): inline (u64, i32) => {
     let (pmHi2, pmLo2, s2) = prescale(e, p);
     u = uscale(m, pmHi2, pmLo2, s2);
   }
-  var d = uRound(u);
+  var d = uRoundHalfUp(u);
   // Rounding up can carry into an extra digit: 9.999 to two digits is
   // 10.0, exactly a power of ten, so the division is exact.
   if (d >= limit) {
@@ -702,14 +705,17 @@ let fixedDigits = (m: u64, e: i32, n: i32): inline (u64, i32) => {
 
 /**
  * Renders `digits * 10^(exp - numDigits + 1)` in ECMAScript's format:
- * plain notation when the decimal exponent is in [-6, 21), scientific
- * otherwise. `exp` is the decimal exponent of the FIRST digit.
+ * plain notation when the decimal exponent is in [-6, plainBelow),
+ * scientific otherwise. `exp` is the decimal exponent of the FIRST digit.
+ * `Number.prototype.toString` switches at 21, `toPrecision` at the digit
+ * count.
  */
 let formatDecimal = (
   digits: u64,
   numDigits: i32,
   decExp: i32,
-  isNegative: boolean
+  isNegative: boolean,
+  plainBelow: i32
 ) => {
   let exp = decExp;
   let ten_i = 10 as u64;
@@ -738,7 +744,7 @@ let formatDecimal = (
   }
 
   // Choose format based on exponent range (ECMAScript-style)
-  if (exp >= 0 && exp < 21) {
+  if (exp >= 0 && exp < plainBelow) {
     // Normal notation with integer part
     let intDigitCount = exp + 1;
 
@@ -921,26 +927,35 @@ export let floatToStringImpl = (value: f64, isF32: boolean): String => {
     p = pp;
   }
   let numDigits = digitCount(d);
-  return formatDecimal(d, numDigits, numDigits - 1 + p, isNegative);
+  return formatDecimal(d, numDigits, numDigits - 1 + p, isNegative, 21);
 };
 
 /**
- * `value` rounded to `sigDigits` significant decimal digits, in the
- * same format `floatToStringImpl` uses. `sigDigits` is clamped to [1, 17].
- * `f64ToPrecision` in `number-format.zena`.
+ * `value` rounded to `sigDigits` significant decimal digits, as
+ * JavaScript's `toPrecision` prints it, with `sigDigits` clamped to
+ * [1, 17] rather than throwing outside [1, 100]. `f64ToPrecision` in
+ * `number-format.zena`.
  */
 export let fixedToStringImpl = (value: f64, sigDigits: i32): String => {
-  let bits = i64_reinterpret_f64(value);
-  if (value != value || value - value != 0.0 || value == 0.0) {
-    return nonFiniteToString(value, bits);
-  }
   var n = sigDigits;
   if (n < 1) { n = 1; }
   if (n > 17) { n = 17; }
+  if (value == 0.0) {
+    // Either zero, as "0.00" for three digits: toPrecision drops the sign.
+    let len = if (n == 1) 1 else n + 1;
+    let zeros = __byte_array_new(len);
+    for (var k = 0; k < len; k += 1) {
+      __byte_array_set(zeros, k, if (k == 1) 46 else 48);
+    }
+    return String.fromByteArray(zeros, 0, len, Encoding.WTF8);
+  }
+  if (value != value || value - value != 0.0) {
+    return nonFiniteToString(value, i64_reinterpret_f64(value));
+  }
   let isNegative = value < 0.0;
   let (m, e) = unpackF64(i64_reinterpret_f64(abs(value)));
   let (d, p) = fixedDigits(m, e, n);
-  return formatDecimal(d, n, n - 1 + p, isNegative);
+  return formatDecimal(d, n, n - 1 + p, isNegative, n);
 };
 
 /**

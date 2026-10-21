@@ -1,53 +1,64 @@
 /**
  * Number-to-string conversion on the JavaScript target (--target js).
  *
- * A `String` here is a JavaScript string, and the host already has number
- * formatting, so each conversion is one call to a `zena:host:number` import
- * that returns the JavaScript string. The byte targets' implementations in
- * `string-convert.zena` are several kilobytes of float printing, and build
- * their result a character at a time.
+ * A `String` here is a JavaScript string, and the host already formats
+ * numbers. The `zena:host:number` imports are JavaScript's own, which
+ * `@zena-lang/runtime` passes unwrapped (`numberImports`): `String`,
+ * imported once per Wasm type, and `toPrecision`. The output is the same
+ * text the byte targets' `string-convert.zena` prints; where JavaScript's
+ * differs, Zena makes up the difference here:
  *
- * The output is the same on every target. `@zena-lang/runtime` provides the
- * imports (`numberImports`); see its `number-format.ts` for where they differ
- * from JavaScript's own `String(x)`.
+ * - `f64ToString` prints negative zero as "-0", where `String` drops the
+ *   sign.
+ * - A `u32` reaches `String` as an f64, which holds it exactly, and a `u64`
+ *   above the `i64` range in two pieces.
+ * - JavaScript has no f32 printing, so `f32ToString` is the byte targets'.
+ *   Only a module that prints an f32 carries it.
  */
+import { I64_MIN, div, i64_reinterpret_f64 } from 'zena:math';
+import { floatToStringImpl } from './string-convert.zena';
 
-@external("zena:host:number", "i32ToString")
-declare function __host_i32_to_string(value: i32): externref;
+@external("zena:host:number", "String")
+declare function __string_from_i32(value: i32): externref;
 
-@external("zena:host:number", "u32ToString")
-declare function __host_u32_to_string(value: u32): externref;
+@external("zena:host:number", "String")
+declare function __string_from_f64(value: f64): externref;
 
-@external("zena:host:number", "i64ToString")
-declare function __host_i64_to_string(value: i64): externref;
+// An i64 reaches JavaScript as a BigInt, which `String` prints exactly.
+@external("zena:host:number", "String")
+declare function __string_from_i64(value: i64): externref;
 
-@external("zena:host:number", "u64ToString")
-declare function __host_u64_to_string(value: u64): externref;
-
-@external("zena:host:number", "f32ToString")
-declare function __host_f32_to_string(value: f32): externref;
-
-@external("zena:host:number", "f64ToString")
-declare function __host_f64_to_string(value: f64): externref;
-
-@external("zena:host:number", "f64ToPrecision")
-declare function __host_f64_to_precision(value: f64, sigDigits: i32): externref;
+@external("zena:host:number", "toPrecision")
+declare function __to_precision(value: f64, digits: i32): externref;
 
 /** Converts an i32 to its decimal string representation. */
 export let i32ToString = (value: i32): String =>
-  String.fromHandle(__host_i32_to_string(value));
+  String.fromHandle(__string_from_i32(value));
 
 /** Converts a u32 to its decimal string representation. */
-export let u32ToString = (value: u32): String =>
-  String.fromHandle(__host_u32_to_string(value));
+export let u32ToString = (value: u32): String => {
+  // `value as f64` converts as signed (issue #90), so a u32 of 2^31 or more
+  // comes out 2^32 too small.
+  let signed = (value as i32) as f64;
+  return String.fromHandle(
+      __string_from_f64(if (signed < 0.0) signed + 4294967296.0 else signed));
+};
 
 /** Converts an i64 to its decimal string representation. */
 export let i64ToString = (value: i64): String =>
-  String.fromHandle(__host_i64_to_string(value));
+  String.fromHandle(__string_from_i64(value));
 
 /** Converts a u64 to its decimal string representation. */
-export let u64ToString = (value: u64): String =>
-  String.fromHandle(__host_u64_to_string(value));
+export let u64ToString = (value: u64): String => {
+  if ((value as i64) >= (0 as i64)) {
+    return String.fromHandle(__string_from_i64(value as i64));
+  }
+  // Above the i64 range: every digit but the last, then the last.
+  let ten = 10 as u64;
+  let rest = div(value, ten);
+  return String.fromHandle(__string_from_i64(rest as i64)) +
+      String.fromHandle(__string_from_i32((value - rest * ten) as i32));
+};
 
 /**
  * The shortest decimal string that reads back as this f32. The f32
@@ -55,15 +66,18 @@ export let u64ToString = (value: u64): String =>
  * `0.1 as f32` prints "0.1" rather than "0.10000000149011612".
  */
 export let f32ToString = (value: f32): String =>
-  String.fromHandle(__host_f32_to_string(value));
+  floatToStringImpl(value as f64, true);
 
 /** The shortest decimal string that reads back as this f64. */
 export let f64ToString = (value: f64): String =>
-  String.fromHandle(__host_f64_to_string(value));
+  if (i64_reinterpret_f64(value) == I64_MIN) "-0"
+  else String.fromHandle(__string_from_f64(value));
 
 /**
- * `value` rounded to `sigDigits` significant decimal digits, in the
- * same format `f64ToString` uses. `sigDigits` is clamped to [1, 17].
+ * `value` rounded to `sigDigits` significant decimal digits, as
+ * JavaScript's `toPrecision` prints it. `sigDigits` is clamped to [1, 17].
  */
-export let f64ToPrecision = (value: f64, sigDigits: i32): String =>
-  String.fromHandle(__host_f64_to_precision(value, sigDigits));
+export let f64ToPrecision = (value: f64, sigDigits: i32): String => {
+  let n = if (sigDigits < 1) 1 else if (sigDigits > 17) 17 else sigDigits;
+  return String.fromHandle(__to_precision(value, n));
+};

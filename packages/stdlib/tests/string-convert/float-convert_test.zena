@@ -189,12 +189,31 @@ export let tests = suite('float conversion', () => {
 
   // -- fixed-width printing --------------------------------------------
 
+  // `f64ToPrecision` is JavaScript's `Number.prototype.toPrecision`, with
+  // the digit count clamped to [1, 17] instead of throwing outside it.
+
   test('prints a fixed number of significant digits', (ctx) => {
     equal(f64ToPrecision(3.14159265358979, 5), "3.1416");
     equal(f64ToPrecision(3.14159265358979, 1), "3");
     equal(f64ToPrecision(1.0 / 3.0, 10), "0.3333333333");
     equal(f64ToPrecision(0.0 - 2.5, 2), "-2.5");
-    equal(f64ToPrecision(0.0, 5), "0");
+    equal(f64ToPrecision(0.000001234, 2), "0.0000012");
+    equal(f64ToPrecision(3.14159265358979, 0), "3");
+    equal(f64ToPrecision(3.14159265358979, 40), "3.1415926535897900");
+  });
+
+  test('switches to exponent notation when the digits do not reach the point', (ctx) => {
+    equal(f64ToPrecision(123456.0, 2), "1.2e+5");
+    equal(f64ToPrecision(123456.0, 6), "123456");
+    equal(f64ToPrecision(parseF64("1e21"), 3), "1.00e+21");
+    equal(f64ToPrecision(parseF64("1.5e-7"), 3), "1.50e-7");
+    equal(f64ToPrecision(parseF64("1e-7"), 1), "1e-7");
+  });
+
+  test('prints zero with its digits, and drops the sign of negative zero', (ctx) => {
+    equal(f64ToPrecision(0.0, 5), "0.0000");
+    equal(f64ToPrecision(0.0, 1), "0");
+    equal(f64ToPrecision(0.0 - 0.0, 3), "0.00");
   });
 
   test('carries a fixed-width round-up into an extra digit', (ctx) => {
@@ -210,14 +229,15 @@ export let tests = suite('float conversion', () => {
     // estimate of its digits' position is one short.
     equal(f64ToPrecision(10.6, 2), "11");
     equal(f64ToPrecision(1000.6, 4), "1001");
-    equal(f64ToPrecision(0.0 - 125.5, 2), "-130");
+    equal(f64ToPrecision(0.0 - 125.5, 2), "-1.3e+2");
     equal(f64ToPrecision(0.0156, 2), "0.016");
   });
 
-  test('rounds an exact tie to even', (ctx) => {
-    equal(f64ToPrecision(2.5, 1), "2");
+  test('rounds an exact tie away from zero', (ctx) => {
+    equal(f64ToPrecision(2.5, 1), "3");
     equal(f64ToPrecision(3.5, 1), "4");
-    equal(f64ToPrecision(0.125, 2), "0.12");
+    equal(f64ToPrecision(0.125, 2), "0.13");
+    equal(f64ToPrecision(0.0 - 2.5, 1), "-3");
   });
 
   // -- the wide-arithmetic intrinsics underneath ------------------------

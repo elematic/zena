@@ -2,17 +2,19 @@
 // byte targets'.
 //
 // On `--target js`, `core/number-format-js.zena` and
-// `core/number-parse-js.zena` hand part of the work to the host, which
-// `@zena-lang/runtime` answers (`numberImports`). The results must be the
-// ones the byte targets' `core/string-convert.zena` gives. This runs a
-// corpus through the same Zena program built twice, for the default (byte)
-// target and for js, and compares the strings exactly; the js build runs
-// here, in node, with the runtime's imports.
+// `core/number-parse-js.zena` hand most of the work to JavaScript's own
+// `String`, `toPrecision` and `parseFloat` (`numberImports` in
+// `@zena-lang/runtime`). The results must be the ones the byte targets'
+// `core/string-convert.zena` gives. This runs a corpus through the same
+// Zena program built twice, for the default (byte) target and for js, and
+// compares the strings exactly; the js build runs here, in node, with the
+// runtime's imports. Where Zena's result is meant to be JavaScript's, it
+// also compares the byte targets' with JavaScript's directly.
 //
 // `f32ToString` and `f64ToPrecision` get most of the corpus, including
-// exact ties, which Zena rounds to even. `parseF64` is compared by the
-// bits of the float it returns, over inputs `parseFloat` reads
-// differently.
+// exact ties, which `toPrecision` rounds away from zero. `parseF64` is
+// compared by the bits of the float it returns, over inputs `parseFloat`
+// reads differently.
 //
 //   npm run build -w @zena-lang/runtime
 //   node packages/stdlib/dev/fp-host-difftest.js [caseCount]
@@ -341,19 +343,29 @@ const perKind = new Map();
 // leading whitespace, which `parseFloat` skips and Zena reads as no number.
 // JavaScript's `\s` is the whitespace `parseFloat` skips.
 const isHex = (text) => /^[-+]?0[xX]/.test(text);
+// What JavaScript itself gives, where Zena's result is meant to be the same:
+// `parseFloat` as above, `String` for f64 (but "-0"), and `toPrecision`
+// with the digit count clamped to [1, 17].
+const reference = ([kind, args]) => {
+  if (kind === 'parse') {
+    if (isHex(args)) return null;
+    return /^\s/.test(args) ? 'NaN' : parsedText(parseFloat(args));
+  }
+  if (kind === 'f32') return null;
+  const [a, b] = args.split(' ');
+  const v = bitsToF64(BigInt.asUintN(64, BigInt(a)));
+  if (kind === 'f64') return Object.is(v, -0) ? '-0' : String(v);
+  return v.toPrecision(Math.min(Math.max(Number(b), 1), 17));
+};
 cases.forEach((c, i) => {
-  if (c[0] === 'parse' && !isHex(c[1])) {
-    const want = /^\s/.test(c[1]) ? 'NaN' : parsedText(parseFloat(c[1]));
-    if (zena[i] !== want && !isKnownLongParse(c, want)) {
-      perKind.set(
-        'parse vs parseFloat',
-        (perKind.get('parse vs parseFloat') || 0) + 1,
+  const want = reference(c);
+  if (want !== null && zena[i] !== want && !isKnownLongParse(c, want)) {
+    const kind = `${c[0]} vs JavaScript`;
+    perKind.set(kind, (perKind.get(kind) || 0) + 1);
+    if (++failures <= 25) {
+      console.log(
+        `  FAIL ${kind} ${JSON.stringify(c[1])}: zena ${zena[i]}, want ${want}`,
       );
-      if (++failures <= 25) {
-        console.log(
-          `  FAIL parseFloat ${JSON.stringify(c[1])}: zena ${zena[i]}, want ${want}`,
-        );
-      }
     }
   }
   const got = host(c);
