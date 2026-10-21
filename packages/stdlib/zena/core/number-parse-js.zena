@@ -1,18 +1,62 @@
 /**
  * String-to-float parsing on the JavaScript target (--target js).
  *
- * One call to the `zena:host:number` import `parseF64`, which
- * `@zena-lang/runtime` provides (`numberImports`). It reads the same
- * grammar as the byte targets' `parseF64` in `string-convert.zena` and
- * returns the same float; the byte targets' version is several kilobytes
- * of tables and correctly rounded scaling.
+ * The decimal conversion is the host's own `parseFloat`, which
+ * `@zena-lang/runtime` passes as the `zena:host:number` import of that name.
+ * The byte targets' `parseF64` in `string-convert.zena` is several kilobytes
+ * of tables and correctly rounded scaling; `parseFloat` rounds correctly
+ * too.
+ *
+ * The grammars differ only at the start of the string. After an optional
+ * sign, `parseFloat` reads the same prefix `string-convert.zena` does —
+ * digits, an optional fraction, an optional exponent, stopping at anything
+ * else — but it also skips leading whitespace and reads `Infinity`, where
+ * Zena reads no number and returns 0, and it does not read `0x`. So this
+ * checks the start, parses hex itself, and hands the rest over whole.
+ *
+ * `parseFloat` returns the correctly rounded value in two cases where
+ * `string-convert.zena` does not: past 19 significant digits, where
+ * `decimalToF64` documents that it can be one ulp off, and where an
+ * exponent above 100,000, at which `string-convert.zena` saturates, is
+ * offset by a mantissa of more than 100,000 digits.
  */
 
-@external("zena:host:number", "parseF64")
-declare function __host_parse_f64(s: externref): f64;
+@external("zena:host:number", "parseFloat")
+declare function __parse_float(s: externref): f64;
+
+let isDigit = (c: i32): boolean => c >= 48 && c <= 57;
 
 /**
  * Parses a decimal (or hexadecimal) number string to the NEAREST f64,
  * correctly rounded.
  */
-export let parseF64 = (s: String): f64 => __host_parse_f64(s.handle);
+export let parseF64 = (s: String): f64 => {
+  // Past the end reads as 0, which is none of the characters below.
+  let len = s.length;
+  let sign = if (len > 0) s.charCodeAt(0) else 0;
+  let i = if (sign == 45 || sign == 43) 1 else 0; // '-' or '+'
+  let first = if (i < len) s.charCodeAt(i) else 0;
+  let second = if (i + 1 < len) s.charCodeAt(i + 1) else 0;
+
+  // Hex: an integer accumulated a digit at a time, as string-convert.zena
+  // does, so it rounds the same way past 53 bits.
+  if (first == 48 && (second | 0x20) == 120) { // "0x" or "0X"
+    var value = 0.0;
+    var k = i + 2;
+    while (k < len) {
+      let c = s.charCodeAt(k);
+      let letter = (c | 0x20) - 87; // 'a'..'f' and 'A'..'F' are 10..15
+      let digit = if (isDigit(c)) c - 48 else if (letter >= 10 && letter <= 15) letter else -1;
+      if (digit < 0) { break; }
+      value = value * 16.0 + (digit as f64);
+      k += 1;
+    }
+    return if (sign == 45) 0.0 - value else value;
+  }
+
+  // A decimal starts with a digit, or a point and then a digit.
+  if (!isDigit(if (first == 46) second else first)) {
+    return 0.0;
+  }
+  return __parse_float(s.handle);
+};

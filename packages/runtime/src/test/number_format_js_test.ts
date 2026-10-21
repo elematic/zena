@@ -106,12 +106,20 @@ suite('Runtime - number formatting on the js target', () => {
     assert.equal(f64ToPrecision(-0, 3), '-0');
   });
 
-  test('parseF64 is imported from zena:host:number', async () => {
-    const wasm = compile(
+  let parseModule: Uint8Array | undefined;
+  const parseExports = async () => {
+    parseModule ??= compile(
       `export let parse = (s: String): f64 => parseF64(s);`,
       'js',
     );
-    const module = new (WebAssembly.Module as any)(wasm, {
+    const res = await instantiate(parseModule);
+    const instance = res instanceof WebAssembly.Instance ? res : res.instance;
+    return instance.exports.parse as (s: string) => number;
+  };
+
+  test('parseF64 imports only the host parseFloat', async () => {
+    await parseExports();
+    const module = new (WebAssembly.Module as any)(parseModule, {
       builtins: ['js-string'],
       importedStringConstants: '_',
     }) as WebAssembly.Module;
@@ -119,17 +127,13 @@ suite('Runtime - number formatting on the js target', () => {
       WebAssembly.Module.imports(module)
         .filter((i) => i.module === 'zena:host:number')
         .map((i) => i.name),
-      ['parseF64'],
+      ['parseFloat'],
     );
-    const res = await instantiate(wasm);
-    const instance = res instanceof WebAssembly.Instance ? res : res.instance;
-    const parse = instance.exports.parse as (s: string) => number;
-    assert.equal(parse('3.25e2'), 325);
-    assert.equal(parse('0x1F'), 31);
+    assert.equal(numberImports.parseFloat, parseFloat);
   });
 
-  test('parseF64 reads the prefix Zena reads, not what Number() reads', () => {
-    const {parseF64} = numberImports;
+  test('parseF64 reads the prefix Zena reads, not what parseFloat reads', async () => {
+    const parseF64 = await parseExports();
     // Text after the number is ignored, and no digits at all is 0.
     assert.equal(parseF64('12abc'), 12);
     assert.equal(parseF64('1e5x'), 100000);
@@ -140,7 +144,7 @@ suite('Runtime - number formatting on the js target', () => {
     assert.equal(parseF64('.'), 0);
     assert.equal(parseF64('Infinity'), 0);
     assert.equal(parseF64('NaN'), 0);
-    // Number() trims whitespace; Zena does not.
+    // parseFloat skips leading whitespace and reads Infinity; Zena does not.
     assert.equal(parseF64(' 1'), 0);
     // An exponent marker with no digits is an exponent of zero.
     assert.equal(parseF64('1e'), 1);
