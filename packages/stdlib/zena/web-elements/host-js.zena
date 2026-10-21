@@ -1,0 +1,29 @@
+/**
+ * The elements layer's host calls on the js target: the DOM host's two
+ * imports, which act only on the module's own element instances, and
+ * the crossings between a Zena string and the JavaScript string the
+ * host holds.
+ */
+@external('wasm-web-ui', 'request_update')
+declare function __requestUpdate(element: anyref): void;
+
+@external('wasm-web-ui', 'dispatch_event')
+declare function __dispatchEvent(element: anyref, type: externref, flags: i32): i32;
+
+/** Ask the host to render `element` before the next frame. */
+export let hostRequestUpdate = (element: anyref): void => {
+  __requestUpdate(element);
+};
+
+/**
+ * Dispatch an `Event` of `type` from `element`; `flags` holds bubbles,
+ * composed and cancelable. False when a listener canceled it.
+ */
+export let hostDispatchEvent = (element: anyref, type: String, flags: i32): boolean =>
+  __dispatchEvent(element, type.handle, flags) != 0;
+
+/** The JavaScript string behind a Zena string, for the host. */
+export let stringHandle = (s: String): externref => s.handle;
+
+/** The Zena string over a JavaScript string the host passed. */
+export let stringFromHandle = (handle: externref): String => String.fromHandle(handle);

@@ -1,0 +1,74 @@
+/**
+ * The elements library's server renderer: the markup Lit's hydration
+ * reads, checked against what Lit's own renderer writes for the same
+ * templates. The digests are Lit's (`digestForTemplateResult` in
+ * `@lit-labs/ssr-client`) for these templates' strings.
+ */
+import { suite, test, TestContext } from 'zena:test';
+import { equal } from 'zena:assert';
+import {
+  ZenaElement, property, defineElement, html, css, TemplateValue,
+  renderElement, renderResult, templateDigest,
+} from 'zena:web-elements';
+
+class Hello extends ZenaElement {
+  @property var name: String = 'world';
+  @property var count: i32 = 0;
+
+  styles() {
+    return css`p { color: red; }`;
+  }
+
+  render() {
+    return html`<p class="greeting ${this.name}">Hello ${this.name}, ${this.count}</p>`;
+  }
+}
+
+let hello = defineElement('x-hello', () => new Hello());
+
+export let tests = suite('elements: server rendering', () => {
+  test('the template digest is Lit\'s', (ctx) => {
+    equal(templateDigest(html`<p>${1}</p>`.strings), 'y6RVfKR7hws=');
+    equal(templateDigest(html``.strings), 'BRUAAAUVAAA=');
+    // Code units, not bytes: an accented letter and an astral character.
+    equal(templateDigest(html`<p>héllo ${1} 😀</p>`.strings), 'kzOwpa9l96U=');
+  });
+
+  test('an element renders as declarative shadow DOM with hydration markers', (ctx) => {
+    let attributes = new Map<String, String>();
+    attributes['count'] = '3';
+    attributes['name'] = 'Zena';
+    equal(renderElement(hello, attributes),
+        '<x-hello name="Zena" count="3">' +
+        '<template shadowroot="open" shadowrootmode="open">' +
+        '<style>p { color: red; }</style>' +
+        '<!--lit-part ClmW3XlXvSk=--><!--lit-node 0--><p class="greeting Zena">' +
+        'Hello <!--lit-part-->Zena<!--/lit-part-->, <!--lit-part-->3<!--/lit-part-->' +
+        '</p><!--/lit-part-->' +
+        '</template></x-hello>');
+  });
+
+  test('child values: lists, nested templates, numbers; attributes by kind', (ctx) => {
+    let items = new GrowableArray<TemplateValue>();
+    items.push(html`<li>${'a'}</li>`);
+    items.push(html`<li>${'b'}</li>`);
+    let out = renderResult(html`<ul ?hidden=${false} @click=${(e) => {}}>${items}</ul><input .value=${'x'} ?disabled=${true}>`);
+    // The whitespace before a bound attribute stays, as in Lit's
+    // renderer; a false boolean attribute and an event write nothing; a
+    // bound property reflects where the attribute does.
+    equal(out,
+        '<!--lit-part +Gc7+9I9Xo0=--><!--lit-node 0--><ul  >' +
+        '<!--lit-part-->' +
+        '<!--lit-part PuAyB/F8cHw=--><li><!--lit-part-->a<!--/lit-part--></li><!--/lit-part-->' +
+        '<!--lit-part PuAyB/F8cHw=--><li><!--lit-part-->b<!--/lit-part--></li><!--/lit-part-->' +
+        '<!--/lit-part-->' +
+        '</ul><!--lit-node 2--><input value="x" disabled><!--/lit-part-->');
+  });
+
+  test('attribute text is joined and escaped; null omits the attribute', (ctx) => {
+    let out = renderResult(html`<a href="/items/${7}?x=${'y&z'}" title=${null}>${'<link>'}</a>`);
+    equal(out,
+        '<!--lit-part FguxETyzK4M=--><!--lit-node 0--><a href="/items/7?x=y&amp;z" >' +
+        '<!--lit-part-->&lt;link&gt;<!--/lit-part--></a><!--/lit-part-->');
+  });
+});

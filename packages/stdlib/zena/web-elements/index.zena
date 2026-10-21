@@ -1,0 +1,49 @@
+/**
+ * Custom elements for the Wasm Web UI protocol
+ * (docs/design/wasm-web-ui.md), in the shape of Lit's `LitElement`.
+ *
+ * An element is a class extending `ZenaElement` with a `render` method,
+ * `@property` and `@state` fields, optional `styles`, and a definition:
+ *
+ * ```zena
+ * import { ZenaElement, property, defineElement, html, css, Event } from 'zena:web-elements';
+ *
+ * class Counter extends ZenaElement {
+ *   @property var count: i32 = 0;
+ *
+ *   styles() {
+ *     return css`button { font: inherit; }`;
+ *   }
+ *
+ *   render() {
+ *     return html`<button @click=${(e) => { this.count += 1; }}>${this.count}</button>`;
+ *   }
+ * }
+ *
+ * export let counterElement = defineElement('x-counter', () => new Counter());
+ * ```
+ *
+ * `@property` declares the field to the host as a property of the
+ * element, reflected from the attribute of the same name in lowercase;
+ * `@state` declares internal state that re-renders but is not exposed.
+ * Both ask the host for a render when written. The declaration happens
+ * through the decorator's `context` — the field's name and accessors —
+ * when `defineElement` constructs one instance to read them, so no table
+ * of properties is written by hand. `styles` is read from that instance
+ * too, once per definition.
+ *
+ * The same source serves two hosts. On the js target the DOM host drives
+ * an element through the `webui_element_*` exports of `./protocol.zena`,
+ * which the compiler roots there and nowhere else; on a server,
+ * `renderElement` writes an element as declarative shadow DOM with the
+ * markers Lit's hydration reads (docs/design/wasm-web-ui.md, "Server
+ * rendering and hydration"). What the two hosts do differently sits
+ * behind `./host.zena`, chosen per target.
+ */
+export * from './core.zena';
+export * from './protocol.zena';
+export { renderElement, renderResult, templateDigest } from './ssr.zena';
+
+export {
+  html, svg, mathml, nothing, TemplateResult, TemplateValue, HostValue, Event, Listener,
+} from 'zena:web-templates';
