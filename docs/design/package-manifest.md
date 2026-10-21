@@ -132,7 +132,8 @@ Eventually, `zena-package.json` will declare dependencies by name (not path):
 ```
 
 A package never knows where its dependencies are located — that's the resolution
-file's job. This is not yet implemented.
+file's job. This is not yet implemented. [package-manager.md](package-manager.md)
+proposes declaring each dependency by DID and minimum version.
 
 ---
 
@@ -185,7 +186,9 @@ dependency name to different locations:
 }
 ```
 
-This is not yet implemented.
+This is not yet implemented. [package-manager.md](package-manager.md)
+proposes recording each resolved package's own local names in its entry
+instead.
 
 ---
 
