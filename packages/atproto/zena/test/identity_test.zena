@@ -1,0 +1,246 @@
+/**
+ * The XRPC client, identity resolution and verified fetching, against a
+ * `zena:http` server in the same program that plays the PLC directory, a
+ * DNS-over-HTTPS resolver, a web host and a PDS. The PDS serves a real
+ * `getRecord` answer for atproto.com, so the signature checked is real.
+ */
+
+import {suite, test} from 'zena:test';
+import {equal, isNull, isTrue} from 'zena:assert';
+import {Future, runFuture} from 'zena:async';
+import {readFileBytesSync, readFileSync} from 'zena:fs';
+import {App, Server} from 'zena:http';
+import {JsonArray, JsonObject, parseJson, stringify} from 'zena:json';
+import {hex} from 'zena:encoding';
+import {Cid} from 'atproto:cid';
+import {MapValue, stringField} from 'atproto:data';
+import {DidDocument} from 'atproto:did';
+import {Identity, IdentityError, IdentityResolver} from 'atproto:identity';
+import {RecordProof} from 'atproto:repo';
+import {SyncError, getVerifiedBlob, getVerifiedRecord} from 'atproto:sync';
+import {XrpcClient, XrpcError} from 'atproto:xrpc';
+
+let NETWORK = 'packages/atproto/zena/test/fixtures/network';
+let DID = 'did:plc:ewvi7nxzyoun6zhxrhs64oiz';
+let BLOB = hex.decode('68656c6c6f');
+
+/** What the fake services answer with, set per test. */
+final class World {
+  /** The DID document the PLC directory serves for DID, as JSON text. */
+  var didDocument: String = '';
+  /** The TXT data the DNS resolver serves for _atproto.atproto.com, or null for none. */
+  var txt: String | null = null;
+  /** What /.well-known/atproto-did answers, or null for a 404. */
+  var wellKnownDid: String | null = null;
+}
+
+function startServer(world: World) {
+  let car = readFileBytesSync(`${NETWORK}/atproto-com-profile.car`);
+  let app = new App();
+  app.use(async (req, res, next): Future<void> => {
+    let path = req.path;
+    if (path == `/plc/${DID}`) {
+      res.type = 'application/json';
+      res.body = world.didDocument;
+    } else if (path == '/dns-query') {
+      res.type = 'application/dns-json';
+      let txt = world.txt;
+      res.body = if (txt == null) {
+        '{"Status":3}'
+      } else {
+        `{"Status":0,"Answer":[{"name":"_atproto.atproto.com.","type":16,"data":${stringify(txt)}}]}`
+      };
+    } else if (path == '/.well-known/atproto-did') {
+      let did = world.wellKnownDid;
+      if (did == null) {
+        res.statusCode = 404;
+        res.body = 'not found';
+      } else {
+        res.body = did;
+      }
+    } else if (path == '/.well-known/did.json') {
+      res.type = 'application/json';
+      res.body = '{"id": "did:web:example.com", "service": []}';
+    } else if (path == '/xrpc/com.atproto.sync.getRecord') {
+      res.type = 'application/vnd.ipld.car';
+      res.body = car;
+    } else if (path == '/xrpc/com.atproto.sync.getBlob') {
+      res.type = 'application/octet-stream';
+      res.body = BLOB;
+    } else if (path == '/xrpc/com.example.echo') {
+      res.type = 'application/json';
+      res.body = `{"query":${stringify(req.url.search)}}`;
+    } else {
+      res.statusCode = 400;
+      res.type = 'application/json';
+      res.body = '{"error":"InvalidRequest","message":"no such method"}';
+    }
+  });
+  let server = new Server(app, 0 as u16);
+  server.start();
+  return server;
+}
+
+function originOf(server: Server) {
+  return `http://127.0.0.1:${server.port as i32}`;
+}
+
+/** The atproto.com DID document, with its PDS pointed at `origin`. */
+function didDocumentFor(origin: String, key: String | null = null) {
+  let json = parseJson(readFileSync(`${NETWORK}/atproto-com-did.json`)) as JsonObject;
+  let service = (json['service'] as JsonArray)[0] as JsonObject;
+  service['serviceEndpoint'] = origin;
+  if (key != null) {
+    let method = (json['verificationMethod'] as JsonArray)[0] as JsonObject;
+    method['publicKeyMultibase'] = key;
+  }
+  return stringify(json);
+}
+
+function resolverFor(origin: String) {
+  let resolver = new IdentityResolver();
+  resolver.plcDirectory = `${origin}/plc`;
+  resolver.dnsOverHttps = `${origin}/dns-query`;
+  resolver.originOf = (host) => origin;
+  return resolver;
+}
+
+async function message(call: () => Future<String>): Future<String> {
+  try {
+    return await call();
+  } catch (e) {
+    return `${e.message}`;
+  }
+}
+
+export let tests = suite('atproto:xrpc, atproto:identity and atproto:sync', () => {
+  test('an XRPC query sends its parameters encoded', (ctx) => {
+    let world = new World();
+    let server = startServer(world);
+    let client = new XrpcClient(originOf(server));
+    let answer = runFuture(client.query('com.example.echo', [('q', 'a b&c'), ('n', '1')])) as JsonObject;
+    equal(answer['query'] as String, '?q=a%20b%26c&n=1');
+    server.close();
+  });
+
+  test('an XRPC error answer becomes an XrpcError', (ctx) => {
+    let world = new World();
+    let server = startServer(world);
+    let client = new XrpcClient(originOf(server));
+    let error = runFuture((async (): Future<String> => {
+      try {
+        await client.query('com.example.missing');
+        return 'no error';
+      } catch (e) {
+        if (e is XrpcError) {
+          return `${e.status} ${e.error}`;
+        }
+        return 'another error';
+      }
+    })());
+    equal(error, '400 InvalidRequest');
+    server.close();
+  });
+
+  test('resolves a DID through the PLC directory', (ctx) => {
+    let world = new World();
+    let server = startServer(world);
+    world.didDocument = didDocumentFor(originOf(server));
+    let document = runFuture(resolverFor(originOf(server)).resolveDid(DID));
+    equal(document.handle as String, 'atproto.com');
+    equal(document.pds as String, originOf(server));
+    server.close();
+  });
+
+  test('resolves a did:web from its host', (ctx) => {
+    let world = new World();
+    let server = startServer(world);
+    let document = runFuture(resolverFor(originOf(server)).resolveDid('did:web:example.com'));
+    equal(document.id, 'did:web:example.com');
+    isNull(document.pds);
+    server.close();
+  });
+
+  test('resolves a handle through DNS, and through HTTPS when DNS has nothing', (ctx) => {
+    let world = new World();
+    let server = startServer(world);
+    let resolver = resolverFor(originOf(server));
+    world.txt = `"did=${DID}"`;
+    equal(runFuture(resolver.resolveHandle('atproto.com')) as String, DID);
+    world.txt = null;
+    world.wellKnownDid = `${DID}\n`;
+    equal(runFuture(resolver.resolveHandle('ATPROTO.com')) as String, DID);
+    world.wellKnownDid = null;
+    isNull(runFuture(resolver.resolveHandle('atproto.com')));
+    server.close();
+  });
+
+  test('checks a handle in both directions', (ctx) => {
+    let world = new World();
+    let server = startServer(world);
+    let resolver = resolverFor(originOf(server));
+    world.didDocument = didDocumentFor(originOf(server));
+    world.txt = `"did=${DID}"`;
+    let identity = runFuture(resolver.resolve('atproto.com'));
+    equal(identity.did, DID);
+    equal(identity.handle as String, 'atproto.com');
+    let fromDid = runFuture(resolver.resolve(DID));
+    equal(fromDid.handle as String, 'atproto.com');
+
+    // The handle now points at another DID: the DID keeps no handle, and
+    // resolving the handle fails.
+    world.txt = '"did=did:plc:someoneelse"';
+    isNull(runFuture(resolver.resolve(DID)).handle);
+    let failure = runFuture(message(async (): Future<String> => {
+      await resolver.resolve('atproto.com');
+      return 'resolved';
+    }));
+    isTrue(failure != 'resolved');
+    server.close();
+  });
+
+  test('fetches a record and checks its proof against the DID document key', (ctx) => {
+    let world = new World();
+    let server = startServer(world);
+    world.didDocument = didDocumentFor(originOf(server));
+    let resolver = resolverFor(originOf(server));
+    let proof = runFuture((async (): Future<RecordProof> => {
+      let document = await resolver.resolveDid(DID);
+      return await getVerifiedRecord(document, 'app.bsky.actor.profile', 'self');
+    })());
+    equal(stringField(proof.record as MapValue, '$type') as String, 'app.bsky.actor.profile');
+    equal(proof.commit.did, DID);
+    server.close();
+  });
+
+  test('refuses a record whose commit another key signed', (ctx) => {
+    let world = new World();
+    let server = startServer(world);
+    // A secp256k1 key from the W3C did:key vectors, which did not sign it.
+    world.didDocument = didDocumentFor(originOf(server), 'zQ3shokFTS3brHcDQrn82RUDfCZESWL1ZdCEJwekUDPQiYBme');
+    let resolver = resolverFor(originOf(server));
+    let failure = runFuture(message(async (): Future<String> => {
+      let document = await resolver.resolveDid(DID);
+      await getVerifiedRecord(document, 'app.bsky.actor.profile', 'self');
+      return 'verified';
+    }));
+    equal(failure, 'commit signature does not verify');
+    server.close();
+  });
+
+  test('fetches a blob and checks it against its CID', (ctx) => {
+    let world = new World();
+    let server = startServer(world);
+    world.didDocument = didDocumentFor(originOf(server));
+    let resolver = resolverFor(originOf(server));
+    let document = runFuture(resolver.resolveDid(DID));
+    let bytes = runFuture(getVerifiedBlob(document, Cid.forBlob(BLOB)));
+    equal(bytes.length, 5);
+    let failure = runFuture(message(async (): Future<String> => {
+      await getVerifiedBlob(document, Cid.forBlob(hex.decode('00')));
+      return 'verified';
+    }));
+    isTrue(failure.startsWith('blob '));
+    server.close();
+  });
+});

@@ -1,0 +1,64 @@
+/**
+ * Fetching records and blobs from an account's PDS and checking them, so
+ * that what is returned is what the account published, whoever served it.
+ *
+ * A record comes from `com.atproto.sync.getRecord` with a proof: the
+ * commit, signed with the key in the account's DID document, and the tree
+ * nodes from the commit to the record. A blob comes from
+ * `com.atproto.sync.getBlob` and is checked against its CID.
+ */
+
+import {readCar} from './car.zena';
+import {Cid, HASH_SHA256} from './cid.zena';
+import {DidDocument} from './did.zena';
+import {PublicKey, verifySignature} from './didkey.zena';
+import {RecordProof, verifyRecordProof} from './repo.zena';
+import {XrpcClient} from './xrpc.zena';
+
+/** A record or blob that could not be fetched or did not check out. */
+export class SyncError extends Error {
+  new(message: String) : super(message);
+}
+
+function clientFor(document: DidDocument) {
+  let pds = document.pds;
+  if (pds == null) {
+    throw new SyncError(`${document.id} names no PDS`);
+  }
+  return new XrpcClient(pds);
+}
+
+/**
+ * Fetches `collection/rkey` from the repository of the account `document`
+ * describes, and checks its proof against the document's signing key. The
+ * result's `record` is null when the proof shows there is no such record.
+ */
+export async function getVerifiedRecord(document: DidDocument, collection: String, rkey: String): Future<RecordProof> {
+  if (document.signingKey == null) {
+    throw new SyncError(`${document.id} has no signing key`);
+  }
+  let key = document.signingKey as PublicKey;
+  let response = await clientFor(document).queryRaw('com.atproto.sync.getRecord', [
+    ('did', document.id),
+    ('collection', collection),
+    ('rkey', rkey),
+  ]);
+  let car = readCar(response.body);
+  return verifyRecordProof(car, document.id, collection, rkey, (signed, sig) => verifySignature(key, signed, sig));
+}
+
+/** Fetches a blob of the account `document` describes, and checks it against `cid`. */
+export async function getVerifiedBlob(document: DidDocument, cid: Cid): Future<FixedArray<u8>> {
+  if (cid.hashType != HASH_SHA256) {
+    throw new SyncError(`cannot check blob ${cid.toString()}: not a SHA-256 CID`);
+  }
+  let response = await clientFor(document).queryRaw('com.atproto.sync.getBlob', [
+    ('did', document.id),
+    ('cid', cid.toString()),
+  ]);
+  let actual = Cid.create(cid.codec, response.body);
+  if (!actual.digest.contentEquals(cid.digest)) {
+    throw new SyncError(`blob ${cid.toString()} does not match its CID`);
+  }
+  return response.body;
+}
