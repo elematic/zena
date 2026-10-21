@@ -1,0 +1,267 @@
+/**
+ * The atproto data model (https://atproto.com/specs/data-model): the
+ * values a record, a commit or a repository node can hold, and their JSON
+ * form.
+ *
+ * A value is null, a boolean, a 64-bit integer, a string, bytes, a link to
+ * other data by CID, a list, or a map with string keys. There are no
+ * floats. A blob reference is an ordinary map with `$type: "blob"`.
+ *
+ * In JSON, bytes are `{"$bytes": "<base64>"}` and links are
+ * `{"$link": "<cid>"}`. `fromJson` reads JSON strictly, the way the
+ * reference implementation does: a `$bytes` or `$link` object must have no
+ * other keys, `$type` must be a non-empty string, a blob reference must
+ * have exactly the blob keys with a raw CID, and a number must be an
+ * integer no larger than 2^53 - 1 in magnitude.
+ */
+
+import {OrderedHashMap} from 'zena:collections';
+import {floor} from 'zena:math';
+import {JsonArray, JsonObject, JsonValue} from 'zena:json';
+import {CODEC_RAW, Cid} from './cid.zena';
+import {decodeBase64, encodeBase64} from './multibase.zena';
+
+/** Data outside the atproto data model, or JSON that does not map to it. */
+export class DataError extends Error {
+  new(message: String) : super(message);
+}
+
+/** The largest integer JSON carries exactly: 2^53 - 1. */
+let MAX_SAFE_INTEGER: i64 = 0x1fffffffffffff;
+
+/** A value in the atproto data model. */
+export sealed class Value {
+  case NullValue
+  case BoolValue(value: boolean)
+  case IntValue(value: i64)
+  case StringValue(value: String)
+  case BytesValue(value: ByteArray)
+  case LinkValue(cid: Cid)
+  case ListValue(items: FixedArray<Value>)
+  case MapValue(entries: OrderedHashMap<String, Value>)
+}
+
+/** The value at `key` in `map`, or null when the key is absent. */
+export function field(map: MapValue, key: String): Value | null {
+  if (let (true, value) = map.entries.get(key)) {
+    return value;
+  }
+  return null;
+}
+
+/** The string at `key`, or null when it is absent or not a string. */
+export function stringField(map: MapValue, key: String): String | null {
+  let value = field(map, key);
+  if (value is StringValue) {
+    return value.value;
+  }
+  return null;
+}
+
+/** The map at `key`, or null when it is absent or not a map. */
+export function mapField(map: MapValue, key: String): MapValue | null {
+  let value = field(map, key);
+  if (value is MapValue) {
+    return value;
+  }
+  return null;
+}
+
+/** The list at `key`, or null when it is absent or not a list. */
+export function listField(map: MapValue, key: String): ListValue | null {
+  let value = field(map, key);
+  if (value is ListValue) {
+    return value;
+  }
+  return null;
+}
+
+/** The link at `key`, or null when it is absent or not a link. */
+export function linkField(map: MapValue, key: String): Cid | null {
+  let value = field(map, key);
+  if (value is LinkValue) {
+    return value.cid;
+  }
+  return null;
+}
+
+/** A map with no entries yet, for building a value. */
+export function newMap(): MapValue {
+  return new MapValue(new OrderedHashMap<String, Value>());
+}
+
+/**
+ * Reads atproto JSON. Throws `DataError` for JSON outside the data model;
+ * see the module comment for the rules.
+ */
+export function fromJson(json: JsonValue): Value {
+  if (json == null) {
+    return new NullValue();
+  }
+  if (json is String) {
+    return new StringValue(json);
+  }
+  if (json is Box<boolean>) {
+    return new BoolValue(json.value);
+  }
+  if (json is Box<f64>) {
+    return new IntValue(integerOf(json.value));
+  }
+  if (json is JsonArray) {
+    let items = new FixedArray<Value>(json.length, new NullValue());
+    for (var i = 0; i < json.length; i += 1) {
+      items[i] = fromJson(json[i]);
+    }
+    return new ListValue(items);
+  }
+  return objectFromJson(json);
+}
+
+function integerOf(n: f64): i64 {
+  if (floor(n) != n) {
+    throw new DataError(`not an integer: ${n}`);
+  }
+  let limit = MAX_SAFE_INTEGER as f64;
+  if (n > limit || n < 0.0 - limit) {
+    throw new DataError(`integer too large for JSON: ${n}`);
+  }
+  return n as i64;
+}
+
+function objectFromJson(json: JsonObject): Value {
+  if (json.has('$link')) {
+    return new LinkValue(linkFromJson(json));
+  }
+  if (json.has('$bytes')) {
+    return new BytesValue(bytesFromJson(json));
+  }
+  let entries = new OrderedHashMap<String, Value>(json.size);
+  json.forEach((key, value) => {
+    entries[key] = fromJson(value);
+  });
+  let map = new MapValue(entries);
+  checkType(map);
+  return map;
+}
+
+function linkFromJson(json: JsonObject): Cid {
+  if (json.size != 1) {
+    throw new DataError('a $link object has other keys');
+  }
+  let text = json['$link'];
+  if (!(text is String)) {
+    throw new DataError('$link is not a string');
+  }
+  try {
+    return Cid.parse(text);
+  } catch (e) {
+    throw new DataError(`$link is not a CID: ${e.message}`);
+  }
+}
+
+function bytesFromJson(json: JsonObject): ByteArray {
+  if (json.size != 1) {
+    throw new DataError('a $bytes object has other keys');
+  }
+  let text = json['$bytes'];
+  if (!(text is String)) {
+    throw new DataError('$bytes is not a string');
+  }
+  try {
+    return decodeBase64(text);
+  } catch (e) {
+    throw new DataError(`$bytes is not base64: ${e.message}`);
+  }
+}
+
+/** Checks the `$type` of a map, and the shape of a blob reference. */
+function checkType(map: MapValue): void {
+  let type = field(map, '$type');
+  if (type == null) {
+    return;
+  }
+  if (!(type is StringValue)) {
+    throw new DataError('$type is not a string');
+  }
+  let name = type.value;
+  if (name.length == 0) {
+    throw new DataError('$type is empty');
+  }
+  if (name == 'blob') {
+    checkBlob(map);
+  }
+}
+
+function checkBlob(map: MapValue): void {
+  var keys = 0;
+  map.entries.forEach((key, value) => {
+    if (key != '$type' && key != 'ref' && key != 'mimeType' && key != 'size') {
+      throw new DataError(`blob reference has an unknown key '${key}'`);
+    }
+    keys += 1;
+  });
+  if (keys != 4) {
+    throw new DataError('blob reference is missing a key');
+  }
+  let ref = linkField(map, 'ref');
+  if (ref == null || ref.codec != CODEC_RAW) {
+    throw new DataError('blob reference has no raw CID');
+  }
+  let mimeType = stringField(map, 'mimeType');
+  if (mimeType == null || !mimeType.contains('/')) {
+    throw new DataError('blob reference has no MIME type');
+  }
+  let size = field(map, 'size');
+  if (!(size is IntValue) || size.value < 0) {
+    throw new DataError('blob reference size is not a non-negative integer');
+  }
+}
+
+/** The atproto JSON form of `value`. */
+export function toJson(value: Value): JsonValue {
+  return match (value) {
+    case NullValue: null
+    case BoolValue {value}: new Box<boolean>(value)
+    case IntValue {value}: intToJson(value)
+    case StringValue {value}: value
+    case BytesValue {value}: bytesToJson(value)
+    case LinkValue {cid}: linkToJson(cid)
+    case ListValue {items}: listToJson(items)
+    case MapValue {entries}: mapToJson(entries)
+  };
+}
+
+function intToJson(n: i64): JsonValue {
+  if (n > MAX_SAFE_INTEGER || n < 0 - MAX_SAFE_INTEGER) {
+    throw new DataError(`integer too large for JSON: ${n}`);
+  }
+  return new Box<f64>(n as f64);
+}
+
+function bytesToJson(bytes: ByteArray): JsonValue {
+  let json = new JsonObject();
+  json['$bytes'] = encodeBase64(bytes);
+  return json;
+}
+
+function linkToJson(cid: Cid): JsonValue {
+  let json = new JsonObject();
+  json['$link'] = cid.toString();
+  return json;
+}
+
+function listToJson(items: FixedArray<Value>): JsonValue {
+  let json = new JsonArray();
+  for (let item in items) {
+    json.push(toJson(item));
+  }
+  return json;
+}
+
+function mapToJson(entries: OrderedHashMap<String, Value>): JsonValue {
+  let json = new JsonObject();
+  entries.forEach((key, item) => {
+    json[key] = toJson(item);
+  });
+  return json;
+}

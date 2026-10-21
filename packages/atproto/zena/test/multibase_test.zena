@@ -1,0 +1,145 @@
+import {suite, test} from 'zena:test';
+import {equal, isTrue, throws} from 'zena:assert';
+import {equalBytes, fromHex, toHex} from 'atproto:bytes';
+import {
+  Base,
+  decodeBase32,
+  decodeBase58btc,
+  decodeBase64,
+  decodeBase64url,
+  decodeMultibase,
+  encodeBase32,
+  encodeBase58btc,
+  encodeBase64,
+  encodeBase64url,
+  encodeMultibase
+} from 'atproto:multibase';
+
+function utf8(s: String) {
+  return s.toBytes() as ByteArray;
+}
+
+// RFC 4648 section 10, lowercased and unpadded for base32.
+let rfc4648: Array<(String, String, String, String)> = [
+  ('', '', '', ''),
+  ('f', 'my', 'Zg', 'Zg=='),
+  ('fo', 'mzxq', 'Zm8', 'Zm8='),
+  ('foo', 'mzxw6', 'Zm9v', 'Zm9v'),
+  ('foob', 'mzxw6yq', 'Zm9vYg', 'Zm9vYg=='),
+  ('fooba', 'mzxw6ytb', 'Zm9vYmE', 'Zm9vYmE='),
+  ('foobar', 'mzxw6ytboi', 'Zm9vYmFy', 'Zm9vYmFy'),
+];
+
+// draft-msporny-base58-03, section 5.
+let base58: Array<(String, String)> = [
+  ('48656c6c6f20576f726c6421', '2NEpo7TZRRrLZSi2U'),
+  (
+    '54686520717569636b2062726f776e20666f78206a756d7073206f76657220746865206c617a7920646f672e',
+    'USm3fpXnKG5EUBx2ndxBDMPVciP5hGey2Jh4NDv6gmeo1LkMeiKrLJUUBk6Z'
+  ),
+  ('0000287fb4cd', '11233QC4'),
+];
+
+export let tests = suite('atproto:multibase', () => {
+  test('base32 and base64 match RFC 4648', (ctx) => {
+    for (let (text, b32, b64, b64padded) in rfc4648) {
+      let bytes = utf8(text);
+      equal(encodeBase32(bytes), b32);
+      equal(encodeBase64(bytes), b64);
+      equal(encodeBase64(bytes, true), b64padded);
+      isTrue(equalBytes(decodeBase32(b32), bytes));
+      isTrue(equalBytes(decodeBase64(b64), bytes));
+      isTrue(equalBytes(decodeBase64(b64padded), bytes));
+    }
+  });
+
+  test('base64url uses - and _', (ctx) => {
+    let bytes = fromHex('fbff');
+    equal(encodeBase64(bytes), '+/8');
+    equal(encodeBase64url(bytes), '-_8');
+    equal(toHex(decodeBase64url('-_8')), 'fbff');
+  });
+
+  test('base58btc matches the base58 draft', (ctx) => {
+    for (let (hex, encoded) in base58) {
+      equal(encodeBase58btc(fromHex(hex)), encoded);
+      equal(toHex(decodeBase58btc(encoded)), hex);
+    }
+  });
+
+  test('base58btc keeps leading zero bytes', (ctx) => {
+    equal(encodeBase58btc(fromHex('00')), '1');
+    equal(encodeBase58btc(fromHex('000000')), '111');
+    equal(toHex(decodeBase58btc('111')), '000000');
+    equal(encodeBase58btc(fromHex('')), '');
+  });
+
+  test('multibase strings carry their prefix', (ctx) => {
+    // From the multibase specification's test vectors.
+    let bytes = utf8('yes mani !');
+    equal(encodeMultibase(Base.Base16, bytes), 'f796573206d616e692021');
+    equal(encodeMultibase(Base.Base32, bytes), 'bpfsxgidnmfxgsibb');
+    equal(encodeMultibase(Base.Base58btc, bytes), 'z7paNL19xttacUY');
+    equal(encodeMultibase(Base.Base64, bytes), 'meWVzIG1hbmkgIQ');
+    equal(encodeMultibase(Base.Base64url, bytes), 'ueWVzIG1hbmkgIQ');
+    for (let text in [
+      'f796573206d616e692021',
+      'bpfsxgidnmfxgsibb',
+      'z7paNL19xttacUY',
+      'meWVzIG1hbmkgIQ',
+      'ueWVzIG1hbmkgIQ',
+    ]) {
+      isTrue(equalBytes(decodeMultibase(text), bytes));
+    }
+  });
+
+  test('rejects characters outside the alphabet', (ctx) => {
+    throws(() => {
+      decodeBase32('mzxw1');
+    });
+    throws(() => {
+      decodeBase32('MZXW6');
+    });
+    throws(() => {
+      decodeBase58btc('0OIl');
+    });
+    throws(() => {
+      decodeBase64('Zm9v-_');
+    });
+    throws(() => {
+      decodeBase64url('Zm9v+/');
+    });
+  });
+
+  test('rejects a final character with unused bits set', (ctx) => {
+    // 'my' is 'f'; 'mz' sets one of the four bits after the last byte.
+    throws(() => {
+      decodeBase32('mz');
+    });
+    // 'Zg' is 'f'; 'Zh' sets a bit after the last byte.
+    throws(() => {
+      decodeBase64('Zh');
+    });
+  });
+
+  test('rejects a length no byte string encodes to', (ctx) => {
+    throws(() => {
+      decodeBase32('m');
+    });
+    throws(() => {
+      decodeBase64('Z');
+    });
+    throws(() => {
+      decodeBase64('Zg=');
+    });
+  });
+
+  test('rejects an unknown multibase prefix', (ctx) => {
+    throws(() => {
+      decodeMultibase('Qmfoo');
+    });
+    throws(() => {
+      decodeMultibase('');
+    });
+  });
+});

@@ -1,0 +1,504 @@
+/**
+ * DAG-CBOR, the binary encoding of the atproto data model, as the DRISL
+ * specification restricts it (https://dasl.ing/drisl.html).
+ *
+ * The encoding of a value is unique: integers and lengths use the
+ * shortest head, map keys are sorted by length and then byte by byte, and
+ * a link is tag 42 holding a byte string of a zero byte followed by the
+ * binary CID. Because the encoding is unique, two encoders produce the same
+ * bytes and the same CID for the same value.
+ *
+ * `decodeCbor` accepts only that encoding: it rejects a longer head than
+ * needed, unsorted or repeated map keys, indefinite lengths, tags other
+ * than 42, invalid UTF-8, trailing bytes, and floats, which the atproto
+ * data model does not have. It checks the structure of the data model and
+ * not the `$type` rules that `fromJson` applies.
+ */
+
+import {ByteBuffer, Encoding} from 'zena:core';
+import {OrderedHashMap} from 'zena:collections';
+import {Cid} from './cid.zena';
+import {sliceBytes} from './bytes.zena';
+import {
+  BoolValue,
+  BytesValue,
+  IntValue,
+  LinkValue,
+  ListValue,
+  MapValue,
+  NullValue,
+  StringValue,
+  Value
+} from './data.zena';
+
+/** Bytes that are not DRISL DAG-CBOR, or a value that cannot be encoded. */
+export class CborError extends Error {
+  new(message: String) : super(message);
+}
+
+/**
+ * How deeply lists and maps may nest. Deeper input is rejected before the
+ * decoder's recursion can exhaust the stack.
+ */
+let MAX_DEPTH = 256;
+
+let MAJOR_UNSIGNED = 0;
+let MAJOR_NEGATIVE = 1;
+let MAJOR_BYTES = 2;
+let MAJOR_TEXT = 3;
+let MAJOR_LIST = 4;
+let MAJOR_MAP = 5;
+let MAJOR_TAG = 6;
+let MAJOR_SIMPLE = 7;
+
+let TAG_CID: i64 = 42;
+
+let LIMIT_8: i64 = 0x100;
+let LIMIT_16: i64 = 0x10000;
+let LIMIT_32: i64 = 0x100000000;
+
+/** The DAG-CBOR encoding of `value`. */
+export function encodeCbor(value: Value): ByteArray {
+  let out = new ByteBuffer();
+  writeValue(out, value);
+  return out.toByteArray();
+}
+
+/** The CID of `value`'s DAG-CBOR encoding. */
+export function cidForValue(value: Value): Cid {
+  return Cid.forDagCbor(encodeCbor(value));
+}
+
+/** The value DAG-CBOR `bytes` encode. */
+export function decodeCbor(bytes: ByteArray): Value {
+  return decodeCborRange(bytes, 0, bytes.length);
+}
+
+/** The value `bytes[start..end]` encode. */
+export function decodeCborRange(bytes: ByteArray, start: i32, end: i32): Value {
+  let decoder = new Decoder(bytes, start, end);
+  let value = decoder.readValue(0);
+  decoder.finish();
+  return value;
+}
+
+function writeHead(out: ByteBuffer, major: i32, n: i64) {
+  let m = major << 5;
+  if (n < 24) {
+    out.writeByte(m | (n as i32));
+  } else if (n < LIMIT_8) {
+    out.writeByte(m | 24);
+    out.writeByte(n as i32);
+  } else if (n < LIMIT_16) {
+    out.writeByte(m | 25);
+    out.writeByte(((n >> 8) as i32) & 0xff);
+    out.writeByte((n as i32) & 0xff);
+  } else if (n < LIMIT_32) {
+    out.writeByte(m | 26);
+    for (var shift = 24; shift >= 0; shift -= 8) {
+      out.writeByte(((n >> (shift as i64)) as i32) & 0xff);
+    }
+  } else {
+    out.writeByte(m | 27);
+    for (var shift = 56; shift >= 0; shift -= 8) {
+      out.writeByte(((n >> (shift as i64)) as i32) & 0xff);
+    }
+  }
+}
+
+function writeText(out: ByteBuffer, text: String) {
+  let bytes = text.toBytes() as ByteArray;
+  if (!isValidUtf8(bytes, 0, bytes.length)) {
+    throw new CborError('string is not valid UTF-8');
+  }
+  writeHead(out, MAJOR_TEXT, bytes.length as i64);
+  out.writeBytes(bytes);
+}
+
+function writeValue(out: ByteBuffer, value: Value): void {
+  match (value) {
+    case NullValue: {
+      out.writeByte(0xf6);
+    }
+    case BoolValue {value as b}: {
+      out.writeByte(if (b) 0xf5 else 0xf4);
+    }
+    case IntValue {value as n}: {
+      if (n >= 0) {
+        writeHead(out, MAJOR_UNSIGNED, n);
+      } else {
+        writeHead(out, MAJOR_NEGATIVE, -1 - n);
+      }
+    }
+    case StringValue {value as text}: {
+      writeText(out, text);
+    }
+    case BytesValue {value as bytes}: {
+      writeHead(out, MAJOR_BYTES, bytes.length as i64);
+      out.writeBytes(bytes);
+    }
+    case LinkValue {cid}: {
+      let cidBytes = cid.toBytes();
+      writeHead(out, MAJOR_TAG, TAG_CID);
+      writeHead(out, MAJOR_BYTES, (cidBytes.length + 1) as i64);
+      out.writeByte(0);
+      out.writeBytes(cidBytes);
+    }
+    case ListValue {items}: {
+      writeHead(out, MAJOR_LIST, items.length as i64);
+      for (let item in items) {
+        writeValue(out, item);
+      }
+    }
+    case MapValue {entries}: {
+      let keys = sortedKeys(entries);
+      writeHead(out, MAJOR_MAP, keys.length as i64);
+      for (let key in keys) {
+        writeText(out, key);
+        writeValue(out, entries[key]);
+      }
+    }
+  }
+}
+
+/**
+ * The order DAG-CBOR sorts map keys in: shorter keys first, and keys of the
+ * same length byte by byte. Negative when `a` comes first.
+ */
+export function compareKeys(a: String, b: String): i32 {
+  if (a.length != b.length) {
+    return a.length - b.length;
+  }
+  for (var i = 0; i < a.length; i += 1) {
+    let diff = a.getByteAt(i) - b.getByteAt(i);
+    if (diff != 0) {
+      return diff;
+    }
+  }
+  return 0;
+}
+
+/** The keys of `entries` in DAG-CBOR order. */
+function sortedKeys(entries: OrderedHashMap<String, Value>): FixedArray<String> {
+  let keys = new FixedArray<String>(entries.size, '');
+  var i = 0;
+  var sorted = true;
+  for (let key in entries.keys()) {
+    keys[i] = key;
+    if (i > 0 && compareKeys(keys[i - 1], key) > 0) {
+      sorted = false;
+    }
+    i += 1;
+  }
+  if (!sorted) {
+    mergeSort(keys, new FixedArray<String>(keys.length, ''), 0, keys.length);
+  }
+  return keys;
+}
+
+function mergeSort(keys: FixedArray<String>, scratch: FixedArray<String>, start: i32, end: i32): void {
+  if (end - start < 2) {
+    return;
+  }
+  let mid = start + ((end - start) >> 1);
+  mergeSort(keys, scratch, start, mid);
+  mergeSort(keys, scratch, mid, end);
+  var left = start;
+  var right = mid;
+  var out = start;
+  while (left < mid && right < end) {
+    if (compareKeys(keys[left], keys[right]) <= 0) {
+      scratch[out] = keys[left];
+      left += 1;
+    } else {
+      scratch[out] = keys[right];
+      right += 1;
+    }
+    out += 1;
+  }
+  while (left < mid) {
+    scratch[out] = keys[left];
+    left += 1;
+    out += 1;
+  }
+  while (right < end) {
+    scratch[out] = keys[right];
+    right += 1;
+    out += 1;
+  }
+  for (var i = start; i < end; i += 1) {
+    keys[i] = scratch[i];
+  }
+}
+
+/**
+ * Whether `bytes[start..end]` is UTF-8 as RFC 3629 defines it: no overlong
+ * forms, no surrogates, nothing above U+10FFFF.
+ */
+export function isValidUtf8(bytes: ByteArray, start: i32, end: i32): boolean {
+  var i = start;
+  while (i < end) {
+    let b = bytes[i] as i32;
+    if (b < 0x80) {
+      i += 1;
+      continue;
+    }
+    var need = 0;
+    var low = 0x80;
+    var high = 0xbf;
+    if (b >= 0xc2 && b <= 0xdf) {
+      need = 1;
+    } else if (b == 0xe0) {
+      need = 2;
+      low = 0xa0;
+    } else if (b == 0xed) {
+      need = 2;
+      high = 0x9f;
+    } else if (b >= 0xe1 && b <= 0xef) {
+      need = 2;
+    } else if (b == 0xf0) {
+      need = 3;
+      low = 0x90;
+    } else if (b == 0xf4) {
+      need = 3;
+      high = 0x8f;
+    } else if (b >= 0xf1 && b <= 0xf3) {
+      need = 3;
+    } else {
+      return false;
+    }
+    if (end - i - 1 < need) {
+      return false;
+    }
+    // Only the first continuation byte has a narrowed range.
+    let first = bytes[i + 1] as i32;
+    if (first < low || first > high) {
+      return false;
+    }
+    for (var j = 2; j <= need; j += 1) {
+      let c = bytes[i + j] as i32;
+      if (c < 0x80 || c > 0xbf) {
+        return false;
+      }
+    }
+    i += need + 1;
+  }
+  return true;
+}
+
+/** Reads one value from a byte range, checking every DRISL rule. */
+final class Decoder {
+  #bytes: ByteArray;
+  var #pos: i32;
+  #end: i32;
+  /** The major type of the head `#readHead` read last. */
+  var #major: i32 = 0;
+  /** Its argument: the integer, length or tag number. */
+  var #arg: i64 = 0;
+
+  new(bytes: ByteArray, start: i32, end: i32) : #bytes = bytes, #pos = start, #end = end;
+
+  /** Throws unless the value read so far ended exactly at the range's end. */
+  finish(): void {
+    if (this.#pos != this.#end) {
+      throw new CborError(`${this.#end - this.#pos} bytes after the value`);
+    }
+  }
+
+  #error(message: String): CborError {
+    return new CborError(`${message} at offset ${this.#pos}`);
+  }
+
+  #readByte(): i32 {
+    if (this.#pos >= this.#end) {
+      throw this.#error('truncated');
+    }
+    let b = this.#bytes[this.#pos] as i32;
+    this.#pos += 1;
+    return b;
+  }
+
+  #readUint(size: i32): i64 {
+    if (this.#end - this.#pos < size) {
+      throw this.#error('truncated');
+    }
+    var n: i64 = 0;
+    for (var i = 0; i < size; i += 1) {
+      n = (n << 8) | (this.#bytes[this.#pos + i] as i64);
+    }
+    this.#pos += size;
+    return n;
+  }
+
+  /**
+   * Reads a head into `#major` and `#arg`. For major type 7, `#arg` is the
+   * additional information itself.
+   */
+  #readHead(): void {
+    let b = this.#readByte();
+    let major = b >> 5;
+    let info = b & 0x1f;
+    this.#major = major;
+    if (major == MAJOR_SIMPLE) {
+      this.#arg = info as i64;
+      return;
+    }
+    if (info < 24) {
+      this.#arg = info as i64;
+    } else if (info == 24) {
+      let n = this.#readUint(1);
+      if (n < 24) {
+        throw this.#error('a one-byte argument below 24');
+      }
+      this.#arg = n;
+    } else if (info == 25) {
+      let n = this.#readUint(2);
+      if (n < LIMIT_8) {
+        throw this.#error('a two-byte argument below 256');
+      }
+      this.#arg = n;
+    } else if (info == 26) {
+      let n = this.#readUint(4);
+      if (n < LIMIT_16) {
+        throw this.#error('a four-byte argument below 65536');
+      }
+      this.#arg = n;
+    } else if (info == 27) {
+      let n = this.#readUint(8);
+      // An argument of 2^63 or more reads as negative, and no value in the
+      // data model needs one.
+      if (n >= 0 && n < LIMIT_32) {
+        throw this.#error('an eight-byte argument below 2^32');
+      }
+      this.#arg = n;
+    } else if (info == 31) {
+      throw this.#error('an indefinite length');
+    } else {
+      throw this.#error(`reserved additional information ${info}`);
+    }
+  }
+
+  /** `#arg` as a length, checked against the bytes left. */
+  #length(minBytesEach: i32): i32 {
+    let n = this.#arg;
+    let left = (this.#end - this.#pos) as i64;
+    if (n < 0 || n * (minBytesEach as i64) > left) {
+      throw this.#error('a length longer than the input');
+    }
+    return n as i32;
+  }
+
+  #readBytes(): ByteArray {
+    let length = this.#length(1);
+    let bytes = sliceBytes(this.#bytes, this.#pos, this.#pos + length);
+    this.#pos += length;
+    return bytes;
+  }
+
+  #readText(): String {
+    let length = this.#length(1);
+    let start = this.#pos;
+    if (!isValidUtf8(this.#bytes, start, start + length)) {
+      throw this.#error('invalid UTF-8');
+    }
+    this.#pos += length;
+    let copy = sliceBytes(this.#bytes, start, start + length);
+    return String.fromByteArray(copy, 0, length, Encoding.WTF8);
+  }
+
+  readValue(depth: i32): Value {
+    if (depth > MAX_DEPTH) {
+      throw this.#error(`lists and maps nested more than ${MAX_DEPTH} deep`);
+    }
+    this.#readHead();
+    let major = this.#major;
+    if (major == MAJOR_UNSIGNED) {
+      if (this.#arg < 0) {
+        throw this.#error('an integer of 2^63 or more');
+      }
+      return new IntValue(this.#arg);
+    }
+    if (major == MAJOR_NEGATIVE) {
+      if (this.#arg < 0) {
+        throw this.#error('an integer below -2^63');
+      }
+      return new IntValue(-1 - this.#arg);
+    }
+    if (major == MAJOR_BYTES) {
+      return new BytesValue(this.#readBytes());
+    }
+    if (major == MAJOR_TEXT) {
+      return new StringValue(this.#readText());
+    }
+    if (major == MAJOR_LIST) {
+      let count = this.#length(1);
+      let items = new FixedArray<Value>(count, new NullValue());
+      for (var i = 0; i < count; i += 1) {
+        items[i] = this.readValue(depth + 1);
+      }
+      return new ListValue(items);
+    }
+    if (major == MAJOR_MAP) {
+      return this.#readMap(depth);
+    }
+    if (major == MAJOR_TAG) {
+      return this.#readLink();
+    }
+    return this.#readSimple();
+  }
+
+  #readMap(depth: i32): Value {
+    let count = this.#length(2);
+    let entries = new OrderedHashMap<String, Value>(count);
+    var previous: String | null = null;
+    for (var i = 0; i < count; i += 1) {
+      this.#readHead();
+      if (this.#major != MAJOR_TEXT) {
+        throw this.#error('a map key that is not a string');
+      }
+      let key = this.#readText();
+      if (previous != null && compareKeys(previous, key) >= 0) {
+        throw this.#error(`map key '${key}' out of order or repeated`);
+      }
+      previous = key;
+      entries[key] = this.readValue(depth + 1);
+    }
+    return new MapValue(entries);
+  }
+
+  #readLink(): Value {
+    if (this.#arg != TAG_CID) {
+      throw this.#error(`tag ${this.#arg}; DAG-CBOR allows only tag 42`);
+    }
+    this.#readHead();
+    if (this.#major != MAJOR_BYTES) {
+      throw this.#error('tag 42 on something other than bytes');
+    }
+    let bytes = this.#readBytes();
+    if (bytes.length == 0 || bytes[0] != 0) {
+      throw this.#error('a CID without its leading zero byte');
+    }
+    let cid = Cid.fromBytes(sliceBytes(bytes, 1, bytes.length));
+    if (cid.version != 1) {
+      throw this.#error('a version 0 CID');
+    }
+    return new LinkValue(cid);
+  }
+
+  #readSimple(): Value {
+    let info = this.#arg;
+    if (info == 20) {
+      return new BoolValue(false);
+    }
+    if (info == 21) {
+      return new BoolValue(true);
+    }
+    if (info == 22) {
+      return new NullValue();
+    }
+    if (info >= 25 && info <= 27) {
+      throw this.#error('a float, which the atproto data model does not allow');
+    }
+    throw this.#error(`simple value ${info}`);
+  }
+}

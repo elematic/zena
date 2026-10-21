@@ -12,6 +12,14 @@ Import them as `atproto:<module>`, with an
 
 - `atproto:bytes`: hex encoding, comparison and slicing of byte arrays.
 - `atproto:varint`: multiformats unsigned varints.
+- `atproto:multibase`: base16, base32, base58btc, base64 and base64url, and
+  multibase strings.
+- `atproto:cid`: CIDs, their binary and string forms, and the CIDs atproto
+  gives records and blobs.
+- `atproto:data`: the data model (`Value` and its cases) and its JSON form.
+- `atproto:cbor`: DAG-CBOR encoding and strict decoding, and `cidForValue`.
+- `atproto:syntax`: DIDs, handles, NSIDs, record keys, TIDs, datetimes and
+  CID strings.
 
 ## Tests
 
