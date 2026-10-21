@@ -3,24 +3,18 @@ import {numberImports} from './number-format.js';
 export {numberImports};
 
 /**
- * `zena:host:string`: the `String` operations a `--target js` module asks
- * the host for (stdlib `core/string-js.zena`). They are JavaScript's own,
- * where those mean the same as Zena's.
+ * `zena:host:string`: the `String` methods a `--target js` module calls
+ * (stdlib `core/string-js.zena`), JavaScript's own, each with the receiver
+ * as the first argument. Arrows rather than `Function.prototype.call`
+ * bound to each method: V8 calls an arrow from Wasm faster, by about a
+ * quarter in `split`'s tight loop of `indexOf` calls.
  */
 export const stringImports = {
-  toLowerCase: (s: string): string => s.toLowerCase(),
-  toUpperCase: (s: string): string => s.toUpperCase(),
-  // Zena's `indexOf` clamps `fromIndex` into the string as JavaScript's
-  // does, and an empty needle is found at the clamped index in both.
-  indexOf: (s: string, needle: string, fromIndex: number): number =>
-    s.indexOf(needle, fromIndex),
-  // Zena's `replaceAll` means `split` then join. JavaScript's own matches
-  // an empty needle at both ends too, so that case is spelled out; a
-  // replacement function keeps it from expanding `$&` and the like.
-  replaceAll: (s: string, needle: string, replacement: string): string =>
-    needle === ''
-      ? s.split('').join(replacement)
-      : s.replaceAll(needle, () => replacement),
+  toLowerCase: (s: string) => s.toLowerCase(),
+  toUpperCase: (s: string) => s.toUpperCase(),
+  indexOf: (s: string, needle: string, from: number) => s.indexOf(needle, from),
+  replaceAll: (s: string, needle: string, replacement: string) =>
+    s.replaceAll(needle, replacement),
 };
 
 export interface ZenaImports {

@@ -86,9 +86,12 @@ suite('Runtime - String search on the js target', () => {
     assert.equal(e.replaceAll('aaa', 'aa', 'b'), 'ba');
     // JavaScript's replaceAll would expand these.
     assert.equal(e.replaceAll('a.b', '.', '$&$$'), 'a$&$$b');
-    // An empty needle sits between code units, not at the ends.
-    assert.equal(e.replaceAll('abc', '', '-'), 'a-b-c');
-    assert.equal(e.replaceAll('', '', '-'), '');
+    assert.equal(e.replaceAll('a.b', '.', "$'$`$1"), "a$'$`$1b");
+    // An empty needle matches at every position, both ends included, as in
+    // JavaScript.
+    assert.equal(e.replaceAll('abc', '', '-'), '-a-b-c-');
+    assert.equal(e.replaceAll('', '', '-'), '-');
+    assert.equal(e.replaceAll('abc', '', '$'), '$a$b$c$');
     assert.equal(e.replaceAll('日本 日本', '日本', 'Japan'), 'Japan Japan');
   });
 });

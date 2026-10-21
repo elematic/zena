@@ -678,9 +678,20 @@ export final class String implements Hashable, Stringable, Iterable<String> {
     return new String.#fromHandle(__js_string_concat(__js_string_concat(before, replacement.#handle), after));
   }
 
+  /**
+   * Replaces every occurrence of `needle` with `replacement`, as
+   * JavaScript's `replaceAll` does, except that `replacement` is inserted as
+   * written: JavaScript would expand `$&`, `$$` and the like in it. An
+   * empty needle matches at every position, both ends included.
+   */
   replaceAll(needle: String, replacement: String): String {
+    var literal = replacement.#handle;
+    if (__js_string_index_of(literal, '$'.#handle, 0) >= 0) {
+      // In a JavaScript replacement, `$$` stands for one `$`.
+      literal = __js_string_replace_all(literal, '$'.#handle, '$$$$'.#handle);
+    }
     return new String.#fromHandle(
-        __js_string_replace_all(this.#handle, needle.#handle, replacement.#handle));
+        __js_string_replace_all(this.#handle, needle.#handle, literal));
   }
 
   trim(): String {
