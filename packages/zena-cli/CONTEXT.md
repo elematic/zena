@@ -43,8 +43,10 @@ the `zena` command. The design is in
    - Grants spawning, so zb can run build commands and the module can run
      other modules with `zena:wasm`.
    - Sets `ZENA_REPO_ROOT`, `ZENA_CWD` (where the user is; user paths are
-     resolved against it, see `resolveUserPath`), `ZENA_CLI_MODULE` and
-     `ZENA_AVAILABLE_PARALLELISM`.
+     resolved against it, see `resolveUserPath`), `ZENA_CLI_MODULE`,
+     `ZENA_AVAILABLE_PARALLELISM` and `ZENA_STDLIB_DIR` (`/stdlib`), in
+     place of any values the shell has for them
+     (`zena_runtime::inherited_env_with`).
    - `ZENA_REPO_ROOT` defaults to the checkout the binary was built in;
      `ZENA_CLI_MODULE` defaults to `packages/zena-cli/out/zena.wasm` under
      it.
