@@ -1,0 +1,222 @@
+// `URL` on the JavaScript target (--target js): a wrapper over the host's
+// own WHATWG `URL`, so a js module carries no URL parser, IDNA table or
+// punycode codec. The rest of `zena:url` is the same on every target:
+// `URLSearchParams`, `URLPattern`, the percent-encoding helpers and the
+// `url` tag use `URL` only through the API below.
+//
+// The API is the one `url.zena` declares. A `URL` here holds a host `URL`
+// object that nothing mutates: each `with*` method asks the host for a copy
+// with one component set, which applies the spec's setter algorithm as
+// `url.zena` does, including ignoring a change the spec forbids.
+//
+// The host's parser is the one that answers here, so where it and
+// `url.zena` disagree (the WPT expected failures in
+// packages/stdlib/tests/url/wpt/), a js module follows the host.
+
+import { URLSearchParams } from './search-params.zena';
+
+@external("zena:host:url", "parse")
+declare function __url_parse(input: externref): externref | null;
+
+@external("zena:host:url", "parseWithBase")
+declare function __url_parse_with_base(input: externref, base: externref): externref | null;
+
+@external("zena:host:url", "get")
+declare function __url_get(url: externref, part: i32): externref;
+
+@external("zena:host:url", "with")
+declare function __url_with(url: externref, part: i32, value: externref): externref;
+
+// The components, numbered as the runtime's `urlImports` numbers them.
+let PROTOCOL = 0;
+let USERNAME = 1;
+let PASSWORD = 2;
+let HOSTNAME = 3;
+let PORT = 4;
+let PATHNAME = 5;
+let SEARCH = 6;
+let HASH = 7;
+let HREF = 8;
+let HOST = 9;
+let ORIGIN = 10;
+
+/**
+ * An immutable, parsed URL. Components are exposed with the same names and
+ * string shapes as the web API (`protocol` includes ':', `search` includes
+ * '?', `hash` includes '#', all empty when absent).
+ */
+export final class URL implements Hashable {
+  #handle: externref;
+
+  // Read on first use and kept, as in `url.zena`: `==` and `hashCode` are
+  // both defined on `href`.
+  var #hrefCache: String | null = null;
+
+  new #fromHandle(handle: externref) : #handle = handle;
+
+  #get(part: i32): String {
+    return String.fromHandle(__url_get(this.#handle, part));
+  }
+
+  #with(part: i32, value: String): URL {
+    return new URL.#fromHandle(__url_with(this.#handle, part, value.handle));
+  }
+
+  /**
+   * Parses `input`, optionally resolving it against `base`, and returns null
+   * if either fails to parse.
+   */
+  static parse(input: String, base: String | null = null): URL | null {
+    let handle = if (base == null) {
+      __url_parse(input.handle)
+    } else {
+      __url_parse_with_base(input.handle, base.handle)
+    };
+    if (handle == null) return null;
+    return new URL.#fromHandle(handle);
+  }
+
+  static canParse(input: String, base: String | null = null): boolean {
+    return URL.parse(input, base) != null;
+  }
+
+  protocol: String { get { return this.#get(PROTOCOL); } }
+  username: String { get { return this.#get(USERNAME); } }
+  password: String { get { return this.#get(PASSWORD); } }
+  hostname: String { get { return this.#get(HOSTNAME); } }
+  port: String { get { return this.#get(PORT); } }
+  pathname: String { get { return this.#get(PATHNAME); } }
+  search: String { get { return this.#get(SEARCH); } }
+  hash: String { get { return this.#get(HASH); } }
+  href: String {
+    get {
+      let cached = this.#hrefCache;
+      if (cached != null) {
+        return cached;
+      }
+      let serialized = this.#get(HREF);
+      this.#hrefCache = serialized;
+      return serialized;
+    }
+  }
+
+  /** "hostname:port", with the port omitted when it is null. */
+  host(): String {
+    return this.#get(HOST);
+  }
+
+  /** https://url.spec.whatwg.org/#concept-url-origin ("null" when opaque). */
+  origin(): String {
+    return this.#get(ORIGIN);
+  }
+
+  /**
+   * The query parsed as `URLSearchParams`.
+   *
+   * A SNAPSHOT, not the web API's live-bound object: `URL` is immutable
+   * here, so mutating the result does not touch this URL. Write changes
+   * back by building a new URL from `params.toString()`.
+   */
+  searchParams(): URLSearchParams {
+    return new URLSearchParams(this.search);
+  }
+
+  /**
+   * This URL with a different scheme, e.g. `withProtocol('http:')`. A
+   * trailing ':' is optional.
+   *
+   * Returns an unchanged URL when the change is one the spec forbids:
+   * moving between special schemes (http, https, ws, wss, ftp, file) and
+   * non-special ones, making a URL with credentials or a port into a `file:`
+   * URL, or making a hostless `file:` URL special.
+   */
+  withProtocol(value: String): URL {
+    return this.#with(PROTOCOL, value);
+  }
+
+  /**
+   * This URL with a different username. Ignored, per the spec, on a URL that
+   * cannot carry credentials — one with no host, or a `file:` URL.
+   */
+  withUsername(value: String): URL {
+    return this.#with(USERNAME, value);
+  }
+
+  /** This URL with a different password. Ignored like `withUsername`. */
+  withPassword(value: String): URL {
+    return this.#with(PASSWORD, value);
+  }
+
+  /**
+   * This URL with a different host, optionally including a port
+   * (`withHost('example.com:8080')`). Ignored on a URL with an opaque path,
+   * which has no authority to change.
+   */
+  withHost(value: String): URL {
+    return this.#with(HOST, value);
+  }
+
+  /** This URL with a different host, ignoring any port in `value`. */
+  withHostname(value: String): URL {
+    return this.#with(HOSTNAME, value);
+  }
+
+  /**
+   * This URL with a different port. An empty string removes the port, as
+   * does a port that is the scheme's default. Ignored on a URL that cannot
+   * carry one.
+   */
+  withPort(value: String): URL {
+    return this.#with(PORT, value);
+  }
+
+  /**
+   * This URL with a different path. Ignored on a URL with an opaque path,
+   * whose path is not a list of segments to replace.
+   */
+  withPathname(value: String): URL {
+    return this.#with(PATHNAME, value);
+  }
+
+  /**
+   * This URL with a different query. An empty string removes it; a leading
+   * '?' is optional.
+   */
+  withSearch(value: String): URL {
+    return this.#with(SEARCH, value);
+  }
+
+  /** This URL with the query replaced by `params`. */
+  withSearchParams(params: URLSearchParams): URL {
+    return this.withSearch(params.toString());
+  }
+
+  /**
+   * This URL with a different fragment. An empty string removes it; a
+   * leading '#' is optional.
+   */
+  withHash(value: String): URL {
+    return this.#with(HASH, value);
+  }
+
+  /**
+   * This URL reparsed from `value`, or null when `value` does not parse —
+   * unlike the other `with*` methods, replacing the whole URL has no
+   * component to fall back to.
+   */
+  withHref(value: String): URL | null {
+    return URL.parse(value, null);
+  }
+
+  /** Two URLs are equal when they serialize identically. */
+  operator ==(other: URL): boolean {
+    return this.href == other.href;
+  }
+
+  /** Hashes the serialization, so equal URLs always hash equal. */
+  hashCode(): i32 {
+    return this.href.hashCode();
+  }
+
+  toString(): String { return this.href; }
+}

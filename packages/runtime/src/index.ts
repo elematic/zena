@@ -17,6 +17,50 @@ export const stringImports = {
     s.replaceAll(needle, replacement),
 };
 
+/**
+ * The `URL` components `zena:host:url` reads and sets, numbered as the
+ * stdlib's `url/url-js.zena` numbers them.
+ */
+const urlParts = [
+  'protocol',
+  'username',
+  'password',
+  'hostname',
+  'port',
+  'pathname',
+  'search',
+  'hash',
+  'href',
+  'host',
+  'origin',
+] as const;
+
+const parseUrl = (input: string, base?: string): URL | null => {
+  try {
+    return new URL(input, base);
+  } catch {
+    return null;
+  }
+};
+
+/**
+ * `zena:host:url`: the host's WHATWG `URL`, which a `--target js` module's
+ * `zena:url` uses in place of its own parser (stdlib `url/url-js.zena`).
+ * A `URL` it hands out is never mutated: `with` sets a component on a copy.
+ */
+export const urlImports = {
+  parse: (input: string): URL | null => parseUrl(input),
+  parseWithBase: (input: string, base: string): URL | null =>
+    parseUrl(input, base),
+  get: (url: URL, part: number): string => url[urlParts[part]!],
+  with: (url: URL, part: number, value: string): URL => {
+    const copy = new URL(url.href);
+    // `origin` has no setter, and nothing asks to set it.
+    (copy as unknown as Record<string, string>)[urlParts[part]!] = value;
+    return copy;
+  },
+};
+
 export interface ZenaImports {
   env?: Record<string, Function>;
   console?: Record<string, Function>;
@@ -1155,6 +1199,7 @@ export async function instantiate(
     web: webHost.imports,
     'zena:host:string': stringImports,
     'zena:host:number': numberImports,
+    'zena:host:url': urlImports,
   };
   if (userImports.web !== false) {
     defaultImports.web = webHost.imports;
@@ -1187,6 +1232,10 @@ export async function instantiate(
     'zena:host:number': {
       ...defaultImports['zena:host:number'],
       ...userImports['zena:host:number'],
+    },
+    'zena:host:url': {
+      ...defaultImports['zena:host:url'],
+      ...userImports['zena:host:url'],
     },
   };
   if (userImports.web !== false) {

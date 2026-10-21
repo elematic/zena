@@ -77,52 +77,35 @@ Implementation files import each other with relative specifiers and are not
 reachable via `zena:` specifiers at all — stronger encapsulation than the
 manifest's current `internal` list gives.
 
-### A JS-host variant (planned)
+### The JS-host variant
 
-On a JS host the platform already has a conformant `URL` and
-`URLSearchParams`, and reusing them would drop the parser, the IDNA tables,
-and their supporting code from the binary. The manifest's `virtual` mechanism
-already swaps a module by target, and the seam fits it without extension:
+On the `js` target `URL` is the host's own. `url/url.zena` is an internal
+virtual module in the manifest: the `js` target selects `url/url-js.zena`, a
+wrapper over a host `URL` object, and every other target the parser in
+`url/url.zena`. The library's other files import `./url.zena`, which the
+manifest resolves per target, so nothing else forks. `URLSearchParams`,
+`URLPattern`, the percent-encoding and form-urlencoded helpers, the `url`
+tag and the file-URL functions are the same Zena code on every target, and
+use `URL` only through its public API.
 
-```jsonc
-"url": {"virtual": {"js": "url/index-js.zena", "component": "url/index.zena"}}
-```
+The wrapper keeps the API in this document. It holds a host `URL` that it
+never mutates, reads components through one `zena:host:url` import, and runs
+each `with*` method as the host setter on a copy, which ignores a forbidden
+change as the Zena methods do. `@zena-lang/runtime` provides the imports
+(`urlImports`). A js module that parses a URL and reads its hostname is 509
+bytes at `-O2`, against 66,273 with the parser, its IDNA table and punycode.
 
-`index-js.zena` is a second entry point, not a second library. It re-exports
-the parts JS has no equivalent for — the punycode codec, the percent-encode
-sets, the form-urlencoded codec, the `url` tag — verbatim from the same files,
-and replaces only `URL` and `URLSearchParams` with thin Zena shims over the
-host objects. Nothing forks: there is one implementation of everything except
-the two classes the platform supplies.
+`URLSearchParams` stays Zena's own on every target, so its fail-fast
+iteration does not change with the target; JavaScript's iterates live and can
+skip pairs or never end. Its `sort()` orders by `String.compareTo`, which is
+code-point order on the byte targets and UTF-16 code-unit order on `js`,
+where `compareTo` is JavaScript's comparison.
 
-The tables come out of the JS build because nothing imports them, not because
-the entry point hides them. That relies on DCE being precise about which
-module-level values a program actually reaches, which the measurements below
-confirm it now is: a program using only the percent-encode helpers carries
-neither the table nor the parser.
-
-Three things have to be true before this is worth building:
-
-1. **String interop.** There is none today — no `js-string` builtins, no
-   stringref. Every component read crosses a UTF-16/UTF-8 boundary. The glue
-   is small, but it is a compiler feature with a much wider blast radius than
-   this library, and should be justified on its own terms.
-2. **The two behavioural divergences have to go.** `URLSearchParams` iteration
-   is fail-fast here and silently lossy in JS, and `sort()` orders by code
-   point where JS orders by UTF-16 code unit. `console`'s two implementations
-   differ only in where output goes, which no program can observe; these would
-   make the same program behave differently per target, which is a materially
-   higher bar. Reconcile them — most likely by conforming to JS — before
-   splitting.
-3. **A size win worth the coupling.** The measurements below now say what the
-   split would save: about 82.6 KB for a program that parses URLs, over half
-   of it the IDNA table. That is a real number rather than the upper bound of
-   unknown tightness it used to be, so this precondition is met — what remains
-   is whether 82.6 KB is worth a per-target behavioural seam.
-
-Note also that WPT stops being a signal for the JS build, since it would be
-testing the host's own URL. The Zena implementation stays the conformance
-target regardless, so this saves binary size, not maintenance.
+WPT is not a signal for the js build, since it would be testing the host's
+own URL. The Zena implementation stays the conformance target. What
+`packages/runtime/src/test/url_js_test.ts` checks instead is the wrapper:
+that `URL.parse` and every `with*` method give the URL JavaScript's `URL`
+gives, over the vendored `urltestdata.json` and `setters_tests.json`.
 
 ### Required stdlib loader changes
 
