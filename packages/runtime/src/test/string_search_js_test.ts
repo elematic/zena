@@ -20,8 +20,22 @@ const exportsOf = async (source: string) => {
 };
 
 const searchSource = `
-  export let indexOf = (s: String, needle: String, from: i32): i32 =>
-    s.indexOf(needle, from);
+  export let indexOf = (s: String, needle: String): i32 => {
+    if (let (true, at) = s.indexOf(needle)) { return at as i32; }
+    return -1;
+  };
+  export let indexOfAfterFirst = (s: String, needle: String): i32 => {
+    if (let (true, first) = s.indexOf(needle)) {
+      if (let (true, at) = s.indexOf(needle, s.scalarIndexAfter(first))) {
+        return at as i32;
+      }
+    }
+    return -1;
+  };
+  export let indexOfFromEnd = (s: String, needle: String): i32 => {
+    if (let (true, at) = s.indexOf(needle, s.endIndex)) { return at as i32; }
+    return -1;
+  };
   export let contains = (s: String, needle: String): boolean =>
     s.contains(needle);
   export let replace = (s: String, needle: String, with: String): String =>
@@ -52,18 +66,17 @@ suite('Runtime - String search on the js target', () => {
     assert.deepEqual(imported, ['indexOf', 'replaceAll']);
   });
 
-  test('indexOf clamps fromIndex and finds an empty needle', async () => {
+  test('indexOf finds a needle, an empty one included', async () => {
     const {exports: e} = await exportsOf(searchSource);
-    assert.equal(e.indexOf('abcabc', 'c', 0), 2);
-    assert.equal(e.indexOf('abcabc', 'c', 3), 5);
-    assert.equal(e.indexOf('abcabc', 'c', -9), 2);
-    assert.equal(e.indexOf('abcabc', 'c', 9), -1);
-    assert.equal(e.indexOf('abc', 'bcd', 0), -1);
-    assert.equal(e.indexOf('abc', '', 5), 3);
-    assert.equal(e.indexOf('abc', '', -2), 0);
-    assert.equal(e.indexOf('', '', 0), 0);
+    assert.equal(e.indexOf('abcabc', 'c'), 2);
+    assert.equal(e.indexOfAfterFirst('abcabc', 'c'), 5);
+    assert.equal(e.indexOfAfterFirst('abc', 'c'), -1);
+    assert.equal(e.indexOf('abc', 'bcd'), -1);
+    assert.equal(e.indexOfFromEnd('abc', ''), 3);
+    assert.equal(e.indexOfFromEnd('abc', 'c'), -1);
+    assert.equal(e.indexOf('', ''), 0);
     // Code units: the emoji is two of them.
-    assert.equal(e.indexOf('😀日本', '日', 0), 2);
+    assert.equal(e.indexOf('😀日本', '日'), 2);
     assert.equal(e.contains('Grüße 日本', '日本'), 1);
     assert.equal(e.contains('Grüße', 'zz'), 0);
   });
