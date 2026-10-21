@@ -163,9 +163,16 @@ specifiers to file paths.
 | ---------- | ------------------------ | -------- | ---------------------------------- |
 | `packages` | `Record<string, string>` | yes      | Map of package name → path to root |
 
-Each value is a path to the package's root directory, relative to this file.
-The target directory is expected to contain `.zena` source files and optionally
-a `zena-package.json`.
+Each value is a path to the package's root directory, relative to this file,
+or absolute. The target directory is expected to contain `.zena` source files
+and optionally a `zena-package.json`.
+
+A relative path may leave the project: a project beside a Zena checkout can
+map `"google-cloud": "../zena/packages/google-cloud/zena"`. The compiler reads
+the resolution file from its working directory, the project root, and
+`zena-cli` gives it the root's absolute path (`CompileFileOptions.projectRoot`),
+so such an entry is read by its absolute path. Entries inside the project stay
+relative, which keeps module paths and diagnostics short.
 
 ### Future: Scopes
 

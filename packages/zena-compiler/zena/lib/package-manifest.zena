@@ -34,14 +34,20 @@ import { HashMap } from 'zena:collections';
 
 // Load and parse a `zena-packages.json` file.
 //
-// The `manifestPath` is an absolute path to the manifest file. All relative
-// paths in the manifest are resolved against the manifest's directory.
+// Relative paths in the manifest are resolved against the manifest's
+// directory, and absolute paths are kept as written. When `manifestPath` is
+// relative (the compiler reads `zena-packages.json` from its working
+// directory, the project root), a path that climbs out of the project,
+// such as `../zena/packages/lib`, cannot be read relative to that working
+// directory; `projectRoot`, the project's absolute path, turns it into an
+// absolute path. Without `projectRoot` it stays relative.
 //
 // Returns a map of package name → PackageConfig. The "zena" package (stdlib)
 // is NOT included — the compiler adds that automatically.
 export function loadPackageMap(
   host: CompilerHost,
-  manifestPath: String
+  manifestPath: String,
+  projectRoot: String | null = null
 ): HashMap<String, PackageConfig> {
   let source = host.readFile(manifestPath);
   let json = parseJson(source);
@@ -55,7 +61,7 @@ export function loadPackageMap(
     if (name == "zena") {
       return;
     }
-    let config = parsePackageEntry(value, manifestDir);
+    let config = parsePackageEntry(value, manifestDir, projectRoot);
     result[name] = config;
   });
 
@@ -67,11 +73,10 @@ export function loadPackageMap(
 // Supports two forms:
 // - String shorthand: "./path/to/lib" → open package with that root
 // - Object form: { root, exports? }
-function parsePackageEntry(value: JsonValue, manifestDir: String): PackageConfig {
+function parsePackageEntry(value: JsonValue, manifestDir: String, projectRoot: String | null): PackageConfig {
   // String shorthand: just a path.
   if (value is String) {
-    let resolved = normalizePath(`${manifestDir}/${value}`);
-    return new PackageConfig(resolved, null);
+    return new PackageConfig(resolveManifestPath(value, manifestDir, projectRoot), null);
   }
 
   // Object form.
@@ -82,12 +87,12 @@ function parsePackageEntry(value: JsonValue, manifestDir: String): PackageConfig
   if (obj.has("wit")) {
     let witValue = obj["wit"] as String;
     let config = new PackageConfig("", null);
-    config.witRoot = normalizePath(`${manifestDir}/${witValue}`);
+    config.witRoot = resolveManifestPath(witValue, manifestDir, projectRoot);
     return config;
   }
 
   let rootValue = obj["root"] as String;
-  let root = normalizePath(`${manifestDir}/${rootValue}`);
+  let root = resolveManifestPath(rootValue, manifestDir, projectRoot);
 
   // Parse exports (optional).
   var exports: HashMap<String, ModuleExport> | null = null;
@@ -102,6 +107,18 @@ function parsePackageEntry(value: JsonValue, manifestDir: String): PackageConfig
   }
 
   return new PackageConfig(root, exports);
+}
+
+// A directory the manifest names, as `loadPackageMap` describes.
+function resolveManifestPath(value: String, manifestDir: String, projectRoot: String | null): String {
+  if (value.startsWith("/")) {
+    return normalizePath(value);
+  }
+  let resolved = normalizePath(`${manifestDir}/${value}`);
+  if (projectRoot != null && (resolved == ".." || resolved.startsWith("../"))) {
+    return normalizePath(`${projectRoot}/${resolved}`);
+  }
+  return resolved;
 }
 
 // Parse a module export entry: {}, { "path": "..." }, or { "virtual": { ... } },

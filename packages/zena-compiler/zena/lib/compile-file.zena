@@ -101,6 +101,13 @@ export type CompileFileOptions = {
   optLevel?: i32,
   /** Where the standard library's `zena/` directory is. */
   stdlibRoot?: String,
+  /**
+   * The absolute path of the working directory, the project root. With
+   * it, a `zena-packages.json` entry outside the project
+   * (`../zena/packages/lib`) is read by its absolute path; without it, or
+   * when it is empty, such an entry cannot be read.
+   */
+  projectRoot?: String,
   /** Print "Compiling ..." and "Success: wrote ..." lines. */
   progress?: boolean,
   /**
@@ -188,11 +195,11 @@ class FileHost implements CompilerHost {
 // Load package configs ("zena-compiler:parser" → file path) from the manifest
 // in the working directory. A missing manifest is fine — standalone files need
 // only stdlib and relative imports — but a malformed one throws loudly.
-function loadPackages(host: CompilerHost) {
+function loadPackages(host: CompilerHost, projectRoot: String | null) {
   if (!existsSync("zena-packages.json")) {
     return new Map<String, PackageConfig>();
   }
-  return loadPackageMap(host, "zena-packages.json");
+  return loadPackageMap(host, "zena-packages.json", projectRoot);
 }
 
 function reportDiagnosticLine(kind: String, file: String, line: i32, column: i32, message: String) {
@@ -380,6 +387,7 @@ export function compileFile(options: CompileFileOptions): i32 {
     witPath = "",
     worldName = "",
     stdlibRoot = "/stdlib",
+    projectRoot = "",
     testMode = false,
     time = false,
     debugNames = false,
@@ -454,7 +462,7 @@ export function compileFile(options: CompileFileOptions): i32 {
     witDoc = doc;
     witSource = doc.source;
   }
-  let packages = loadPackages(host);
+  let packages = loadPackages(host, if (projectRoot == "") null else projectRoot);
   // A declared world's document answers for its own packages: the
   // program imports the world's interfaces by name (`test:app/oracle`
   // for a document declaring `package test:app`), and the resolver

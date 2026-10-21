@@ -28,6 +28,41 @@ export let tests = suite("Package Manifest", () => {
       equal(config.exports == null, true);
     });
 
+    test("keeps an absolute root as written", () => {
+      let host = new MockHost();
+      // compile-file reads the manifest by a relative path; the language
+      // server by an absolute one.
+      host.addFile("zena-packages.json", '{"packages": {"lib": "/elsewhere/lib"}}');
+      host.addFile("/project/zena-packages.json", '{"packages": {"lib": "/elsewhere/lib"}}');
+      equal(loadPackageMap(host, "zena-packages.json")["lib"].root, "/elsewhere/lib");
+      equal(loadPackageMap(host, "/project/zena-packages.json")["lib"].root, "/elsewhere/lib");
+    });
+
+    test("keeps absolute roots in the object form and for WIT packages", () => {
+      let host = new MockHost();
+      host.addFile("zena-packages.json", '{"packages": {"lib": {"root": "/elsewhere/lib"}, "w": {"wit": "/elsewhere/wit"}}}');
+      let packages = loadPackageMap(host, "zena-packages.json");
+      equal(packages["lib"].root, "/elsewhere/lib");
+      equal(packages["w"].witRoot as String, "/elsewhere/wit");
+    });
+
+    test("resolves a root above the project against the project's absolute path", () => {
+      let host = new MockHost();
+      host.addFile("zena-packages.json", '{"packages": {"sibling": "../zena/packages/lib", "inside": "./packages/app", "w": {"wit": "../zena/wit"}}}');
+      let packages = loadPackageMap(host, "zena-packages.json", "/home/me/project");
+      equal(packages["sibling"].root, "/home/me/zena/packages/lib");
+      equal(packages["w"].witRoot as String, "/home/me/zena/wit");
+      // A root inside the project stays relative, as module paths and
+      // diagnostics expect.
+      equal(packages["inside"].root, "packages/app");
+    });
+
+    test("leaves a root above the project relative when its path is unknown", () => {
+      let host = new MockHost();
+      host.addFile("zena-packages.json", '{"packages": {"sibling": "../zena/packages/lib"}}');
+      equal(loadPackageMap(host, "zena-packages.json")["sibling"].root, "../zena/packages/lib");
+    });
+
     test("parses object form packages", () => {
       let host = new MockHost();
       host.addFile("/project/zena-packages.json", '{"packages": {"mylib": {"root": "./lib/mylib", "exports": {"utils": {}, "math": {}}}}}');
