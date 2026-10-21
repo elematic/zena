@@ -1082,17 +1082,55 @@ export async function run(
 }
 
 /**
- * Instantiate a WebAssembly module with Zena default and user-provided imports.
- *
- * @param wasm
- * @param userImports
- * @returns
+ * The options a js-target Zena module is compiled with: the JS String
+ * Builtins (`wasm:js-string`) come from the engine, and the module's
+ * string literals are imported as engine-interned constants from the
+ * module named `_`. Pass them to `WebAssembly.compile`, or as the third
+ * argument of `WebAssembly.instantiate`.
  */
-export async function instantiate(
-  wasm: BufferSource | WebAssembly.Module,
-  userImports: ZenaImports = {},
-): Promise<WebAssembly.WebAssemblyInstantiatedSource | WebAssembly.Instance> {
-  // Deferred exports reference - will be set after instantiation
+export const compileOptions: WebAssembly.WebAssemblyCompileOptions = {
+  builtins: ['js-string'],
+  importedStringConstants: '_',
+};
+
+/**
+ * The imports of a js-target Zena module, for a caller that instantiates
+ * the module itself.
+ */
+export interface ZenaImportObject {
+  /**
+   * The import object: `env` (the Error stack hooks), `console`, `time`,
+   * `js`, `web` and `zena:host:string`, with the caller's own merged in.
+   * Spread it into the import object the module is instantiated with.
+   */
+  readonly imports: WebAssembly.Imports;
+  /**
+   * Binds the imports to the instance. Several of them read or write
+   * Zena strings through the instance's exports, so call this once with
+   * `instance.exports` right after instantiation.
+   */
+  attach(exports: WebAssembly.Exports): void;
+  /** The last Error `env.captureStackTrace` made, which `toError` reports. */
+  readonly lastError: Error | null;
+}
+
+/**
+ * Builds the import object `instantiate` uses, for a caller that calls
+ * `WebAssembly.instantiate` itself, to merge these imports with another
+ * library's:
+ *
+ * ```js
+ * const zena = createImports();
+ * const {instance} = await WebAssembly.instantiate(
+ *   bytes,
+ *   {...zena.imports, ...otherImports},
+ *   compileOptions,
+ * );
+ * zena.attach(instance.exports);
+ * ```
+ */
+export function createImports(userImports: ZenaImports = {}): ZenaImportObject {
+  // Deferred exports reference, set by `attach` after instantiation.
   let instanceExports: WebAssembly.Exports | undefined;
   let lastCapturedError: Error | null = null;
 
@@ -1179,7 +1217,8 @@ export async function instantiate(
     asyncImports,
     fetch: _fetch,
     web: _web,
-    importedStringConstants = '_',
+    // Read by `instantiate` when it compiles; not an import module.
+    importedStringConstants: _importedStringConstants,
     ...plainUserImports
   } = userImports;
   const imports: Record<string, Record<string, unknown>> = {
@@ -1228,6 +1267,34 @@ export async function instantiate(
   // ImportValue union does not yet describe.
   const importObject = imports as unknown as WebAssembly.Imports;
 
+  return {
+    imports: importObject,
+    attach: (exports) => {
+      instanceExports = exports;
+      idleWaiters.set(exports, pending.idle);
+    },
+    get lastError() {
+      return lastCapturedError;
+    },
+  };
+}
+
+/**
+ * Instantiate a WebAssembly module with Zena default and user-provided
+ * imports.
+ *
+ * The instance's exports are wrapped: a JS string argument becomes a Zena
+ * string, a Zena string result becomes a JS string, and a trap becomes an
+ * `Error` carrying the module's stack. A caller that wants the raw
+ * exports, or has imports of its own to merge, uses `createImports` and
+ * `WebAssembly.instantiate` directly.
+ */
+export async function instantiate(
+  wasm: BufferSource | WebAssembly.Module,
+  userImports: ZenaImports = {},
+): Promise<WebAssembly.WebAssemblyInstantiatedSource | WebAssembly.Instance> {
+  const zena = createImports(userImports);
+
   const wrapExports = (
     rawExports: WebAssembly.Exports,
   ): WebAssembly.Exports => {
@@ -1268,7 +1335,7 @@ export async function instantiate(
             }
             return result;
           } catch (err) {
-            throw toError(err, rawExports, lastCapturedError);
+            throw toError(err, rawExports, zena.lastError);
           }
         };
       } else {
@@ -1278,35 +1345,27 @@ export async function instantiate(
     return wrapped as WebAssembly.Exports;
   };
 
-  if (wasm instanceof WebAssembly.Module) {
-    const instance = await WebAssembly.instantiate(wasm, importObject);
+  const attach = (instance: WebAssembly.Instance): void => {
     const exports = wrapExports(instance.exports);
-    instanceExports = exports;
+    zena.attach(exports);
     Object.defineProperty(instance, 'exports', {
       value: exports,
       writable: true,
       configurable: true,
     });
-    idleWaiters.set(instanceExports, pending.idle);
+  };
+
+  if (wasm instanceof WebAssembly.Module) {
+    const instance = await WebAssembly.instantiate(wasm, zena.imports);
+    attach(instance);
     return instance;
   }
 
-  const compileOptions = {
-    builtins: ['js-string'],
-    importedStringConstants,
-  };
-  const module: WebAssembly.Module = await (WebAssembly.compile as any)(
-    wasm,
-    compileOptions,
-  );
-  const instance = await WebAssembly.instantiate(module, importObject);
-  const exports = wrapExports(instance.exports);
-  instanceExports = exports;
-  Object.defineProperty(instance, 'exports', {
-    value: exports,
-    writable: true,
-    configurable: true,
+  const module = await WebAssembly.compile(wasm, {
+    ...compileOptions,
+    importedStringConstants: userImports.importedStringConstants ?? '_',
   });
-  idleWaiters.set(instanceExports, pending.idle);
+  const instance = await WebAssembly.instantiate(module, zena.imports);
+  attach(instance);
   return {module, instance};
 }
