@@ -1,0 +1,265 @@
+/**
+ * Binary-to-text encodings, and a check for UTF-8.
+ *
+ * `BaseEncoding` implements the encodings of RFC 4648: an alphabet of 16,
+ * 32 or 64 characters, each standing for 4, 5 or 6 bits of the input. The
+ * common ones are ready to use:
+ *
+ * - `hex`: base16 in lowercase. Decoding accepts either case.
+ * - `base32`: the RFC 4648 alphabet, `A`-`Z` and `2`-`7`.
+ * - `base32Lower`: the same alphabet in lowercase, as multibase and CIDs use.
+ * - `base64`: `A`-`Z`, `a`-`z`, `0`-`9`, `+` and `/`.
+ * - `base64Url`: the URL- and filename-safe alphabet, with `-` and `_` for
+ *   `+` and `/`, as JWTs use.
+ *
+ * ```zena
+ * import {base64, base64Url, hex} from 'zena:encoding';
+ *
+ * let text = base64.encode(bytes);                 // padded with '='
+ * let token = base64Url.encode(bytes, false);      // unpadded
+ * let digest = hex.decode('e3b0c442');
+ * ```
+ *
+ * `encode` pads with `=` unless `pad` is false. `decode` accepts text with
+ * or without padding. It throws `EncodingError` for a character outside
+ * the alphabet, for a length that no byte string encodes to, for padding
+ * of the wrong length, and for a last character with bits set beyond the
+ * last whole byte. So a byte string has exactly one unpadded encoding and
+ * one padded one, and decoding never accepts two different texts as the
+ * same bytes in the same form.
+ */
+
+import {StringBuilder} from 'zena:core';
+import {div} from 'zena:math';
+
+/** Text that is not a valid encoding. */
+export class EncodingError extends Error {
+  new(message: String) : super(message);
+}
+
+/** An RFC 4648 encoding with a given alphabet. */
+export final class BaseEncoding {
+  #alphabet: String;
+  /** The bits each character stands for: 4, 5 or 6. */
+  #bits: i32;
+  /** The value of each byte as a character of the alphabet, or -1. */
+  #table: FixedArray<i32>;
+  /** The number of characters in a padded block: 2, 8 or 4. */
+  #block: i32;
+
+  /**
+   * An encoding with `alphabet`, which must have 16, 32 or 64 distinct
+   * ASCII characters. With `caseInsensitive`, decoding also accepts each
+   * letter of the alphabet in the other case; the alphabet must then not
+   * hold both cases of a letter.
+   */
+  new(alphabet: String, caseInsensitive: boolean = false)
+    : #alphabet = alphabet,
+      #bits = bitsFor(alphabet),
+      #table = decodeTable(alphabet, caseInsensitive),
+      #block = blockFor(alphabet);
+
+  /** `bytes` encoded, padded with `=` to a whole block unless `pad` is false. */
+  encode(bytes: FixedArray<u8>, pad: boolean = true): String {
+    let bits = this.#bits;
+    let length = encodedLength(bytes.length, bits);
+    let sb = new StringBuilder(length + this.#block);
+    let mask = (1 << bits) - 1;
+    var buffer = 0;
+    var buffered = 0;
+    for (var i = 0; i < bytes.length; i += 1) {
+      buffer = ((buffer << 8) | (bytes[i] as i32)) & 0xffff;
+      buffered += 8;
+      while (buffered >= bits) {
+        buffered -= bits;
+        sb.appendByte(this.#alphabet.getByteAt((buffer >> buffered) & mask));
+      }
+    }
+    if (buffered > 0) {
+      sb.appendByte(this.#alphabet.getByteAt((buffer << (bits - buffered)) & mask));
+    }
+    if (pad) {
+      var written = length;
+      while (written % this.#block != 0) {
+        sb.appendByte(61);
+        written += 1;
+      }
+    }
+    return sb.toString();
+  }
+
+  /** The bytes `text` encodes, with or without padding. */
+  decode(text: String): FixedArray<u8> {
+    var end = text.length;
+    while (end > 0 && text.getByteAt(end - 1) == 61) {
+      end -= 1;
+    }
+    let bits = this.#bits;
+    let byteLength = (end * bits) >> 3;
+    if (encodedLength(byteLength, bits) != end) {
+      throw new EncodingError(`${end} characters do not encode a whole number of bytes`);
+    }
+    if (end < text.length) {
+      let padded = end + (this.#block - end % this.#block) % this.#block;
+      if (padded != text.length) {
+        throw new EncodingError('wrong amount of padding');
+      }
+    }
+    let out = new FixedArray<u8>(byteLength, 0 as u8);
+    var buffer = 0;
+    var buffered = 0;
+    var written = 0;
+    for (var i = 0; i < end; i += 1) {
+      let value = this.#table[text.getByteAt(i)];
+      if (value < 0) {
+        throw new EncodingError(`invalid character at offset ${i}`);
+      }
+      buffer = ((buffer << bits) | value) & 0xffff;
+      buffered += bits;
+      if (buffered >= 8) {
+        buffered -= 8;
+        out[written] = ((buffer >> buffered) & 0xff) as u8;
+        written += 1;
+      }
+    }
+    if ((buffer & ((1 << buffered) - 1)) != 0) {
+      throw new EncodingError('the last character has bits set beyond the last byte');
+    }
+    return out;
+  }
+}
+
+function bitsFor(alphabet: String): i32 {
+  let length = alphabet.length;
+  if (length == 16) {
+    return 4;
+  }
+  if (length == 32) {
+    return 5;
+  }
+  if (length == 64) {
+    return 6;
+  }
+  throw new EncodingError(`an alphabet of ${length} characters; RFC 4648 encodings have 16, 32 or 64`);
+}
+
+/** Characters per block: the fewest that end on a byte boundary. */
+function blockFor(alphabet: String): i32 {
+  let bits = bitsFor(alphabet);
+  var chars = 1;
+  while ((chars * bits) % 8 != 0) {
+    chars += 1;
+  }
+  return chars;
+}
+
+/** The number of characters `byteLength` bytes encode to, unpadded. */
+function encodedLength(byteLength: i32, bits: i32): i32 {
+  return div(byteLength * 8 + bits - 1, bits);
+}
+
+function swapCase(b: i32) {
+  if (b >= 65 && b <= 90) {
+    return b + 32;
+  }
+  if (b >= 97 && b <= 122) {
+    return b - 32;
+  }
+  return b;
+}
+
+function decodeTable(alphabet: String, caseInsensitive: boolean): FixedArray<i32> {
+  let table = new FixedArray<i32>(256, -1);
+  for (var i = 0; i < alphabet.length; i += 1) {
+    let b = alphabet.getByteAt(i);
+    if (b >= 128 || b == 61 || table[b] >= 0) {
+      throw new EncodingError(`'${alphabet}' is not an alphabet of distinct ASCII characters other than '='`);
+    }
+    table[b] = i;
+  }
+  if (caseInsensitive) {
+    for (var i = 0; i < alphabet.length; i += 1) {
+      let other = swapCase(alphabet.getByteAt(i));
+      if (table[other] < 0) {
+        table[other] = i;
+      }
+    }
+  }
+  return table;
+}
+
+/** Base16 in lowercase; decoding accepts either case. */
+export let hex = new BaseEncoding('0123456789abcdef', true);
+
+/** RFC 4648 base32. */
+export let base32 = new BaseEncoding('ABCDEFGHIJKLMNOPQRSTUVWXYZ234567');
+
+/** RFC 4648 base32 in lowercase, as multibase (`b...`) and CIDs write it. */
+export let base32Lower = new BaseEncoding('abcdefghijklmnopqrstuvwxyz234567');
+
+/** RFC 4648 base64. */
+export let base64 = new BaseEncoding('ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/');
+
+/** RFC 4648 base64 with the URL- and filename-safe alphabet. */
+export let base64Url = new BaseEncoding('ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_');
+
+/**
+ * Whether `bytes[start..end]` is UTF-8 as RFC 3629 defines it: no
+ * overlong forms, no surrogates (U+D800 to U+DFFF), and nothing above
+ * U+10FFFF. `end` defaults to the length of `bytes`.
+ *
+ * Zena strings hold WTF-8, which allows surrogates, so a `String` is not
+ * always valid UTF-8; check bytes with this before handing them to a
+ * format that requires it.
+ */
+export function isValidUtf8(bytes: FixedArray<u8>, start: i32 = 0, end: i32 = -1): boolean {
+  let stop = if (end < 0) bytes.length else end;
+  var i = start;
+  while (i < stop) {
+    let b = bytes[i] as i32;
+    if (b < 0x80) {
+      i += 1;
+      continue;
+    }
+    var need = 0;
+    var low = 0x80;
+    var high = 0xbf;
+    if (b >= 0xc2 && b <= 0xdf) {
+      need = 1;
+    } else if (b == 0xe0) {
+      need = 2;
+      low = 0xa0;
+    } else if (b == 0xed) {
+      need = 2;
+      high = 0x9f;
+    } else if (b >= 0xe1 && b <= 0xef) {
+      need = 2;
+    } else if (b == 0xf0) {
+      need = 3;
+      low = 0x90;
+    } else if (b == 0xf4) {
+      need = 3;
+      high = 0x8f;
+    } else if (b >= 0xf1 && b <= 0xf3) {
+      need = 3;
+    } else {
+      return false;
+    }
+    if (stop - i - 1 < need) {
+      return false;
+    }
+    // Only the first continuation byte has a narrowed range.
+    let first = bytes[i + 1] as i32;
+    if (first < low || first > high) {
+      return false;
+    }
+    for (var j = 2; j <= need; j += 1) {
+      let c = bytes[i + j] as i32;
+      if (c < 0x80 || c > 0xbf) {
+        return false;
+      }
+    }
+    i += need + 1;
+  }
+  return true;
+}

@@ -1,6 +1,7 @@
 // FixedArray stdlib tests using zena:test
 import {suite, test, TestContext} from 'zena:test';
 import {equal} from 'zena:assert';
+import {fixed} from 'zena:core';
 
 export let tests = suite('FixedArray', () => {
   test('constructor with length creates array of given size', (ctx) => {
@@ -264,5 +265,28 @@ export let tests = suite('FixedArray', () => {
     } else {
       equal(1, 0);
     }
+  });
+
+  test('concat returns a new array of both arrays in order', (ctx) => {
+    let a = fixed([1, 2]);
+    let b = fixed([3]);
+    let joined = a.concat(b);
+    equal(joined.length, 3);
+    equal(joined[0], 1);
+    equal(joined[2], 3);
+    joined[0] = 9;
+    equal(a[0], 1);
+    equal(a.concat(new FixedArray<i32>(0, 0)).length, 2);
+  });
+
+  test('contentEquals compares elements, where == compares identity', (ctx) => {
+    let a = new FixedArray<u8>(3, 7 as u8);
+    let b = new FixedArray<u8>(3, 7 as u8);
+    equal(a == b, false);
+    equal(a.contentEquals(b), true);
+    b[2] = 8 as u8;
+    equal(a.contentEquals(b), false);
+    equal(a.contentEquals(new FixedArray<u8>(2, 7 as u8)), false);
+    equal(fixed(['x', 'y']).contentEquals(fixed(['x', 'y'])), true);
   });
 });
