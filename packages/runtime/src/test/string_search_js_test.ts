@@ -3,9 +3,7 @@
  * calls to the `zena:host:string` imports (`stringImports`), and
  * `contains`, `split` and `replace` are built on `indexOf`.
  *
- * Indices are UTF-16 code units, as a js `String`'s `length` is. Text
- * above U+00FF is passed in from JavaScript: a literal in these sources
- * would hit issue #431.
+ * Indices are UTF-16 code units, as a js `String`'s `length` is.
  */
 import {suite, test} from 'node:test';
 import assert from 'node:assert/strict';
