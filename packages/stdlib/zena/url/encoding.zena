@@ -1,11 +1,14 @@
 // Percent-encoding and application/x-www-form-urlencoded, per the WHATWG URL
 // Standard (https://url.spec.whatwg.org/#percent-encoded-bytes).
 //
-// Zena strings are UTF-8 byte sequences, so the spec's "UTF-8 percent-encode"
-// is a plain bytewise operation here: every byte outside 0x20..0x7E is in the
-// C0 control percent-encode set, which all other sets include.
+// Percent-encoding works on UTF-8 bytes, and every byte outside 0x20..0x7E is
+// in the C0 control percent-encode set, which all other sets include. The
+// codec reads a string's bytes through `str.utf8`, which on the byte targets
+// is the string's own storage and on the js target, where a `String` is
+// UTF-16, its UTF-8 encoding; and it builds a decoded string from UTF-8 with
+// `String.fromByteArray`.
 
-import { StringBuilder } from 'zena:core';
+import { StringBuilder, Encoding } from 'zena:core';
 
 /**
  * The percent-encode sets defined by the URL Standard. Each set includes all
@@ -109,9 +112,10 @@ export let percentEncode = (
   set: EncodeSet,
   spaceAsPlus: boolean = false
 ): String => {
-  let sb = new StringBuilder(input.length + 8);
-  for (var i = 0; i < input.length; i += 1) {
-    let b = input.getByteAt(i);
+  let bytes = input.utf8;
+  let sb = new StringBuilder(bytes.length + 8);
+  for (var i = 0; i < bytes.length; i += 1) {
+    let b = bytes[i] as i32;
     if (spaceAsPlus && b == 0x20) {
       sb.appendByte(0x2B); // '+'
     } else if (byteNeedsPercentEncoding(b, set)) {
@@ -145,29 +149,29 @@ export let percentDecode = (
   input: String,
   plusAsSpace: boolean = false
 ): String => {
-  let sb = new StringBuilder(input.length);
+  let bytes = input.utf8;
+  let len = bytes.length;
+  // Decoding only shortens: every %XX is one byte.
+  let out = __byte_array_new(len);
+  var n = 0;
   var i = 0;
-  while (i < input.length) {
-    let b = input.getByteAt(i);
+  while (i < len) {
+    var b = bytes[i] as i32;
+    i += 1;
     if (plusAsSpace && b == 0x2B) {
-      sb.appendByte(0x20);
-      i += 1;
-    } else if (b == 0x25 && i + 2 < input.length) {
-      let hi = hexValue(input.getByteAt(i + 1));
-      let lo = hexValue(input.getByteAt(i + 2));
+      b = 0x20;
+    } else if (b == 0x25 && i + 1 < len) {
+      let hi = hexValue(bytes[i] as i32);
+      let lo = hexValue(bytes[i + 1] as i32);
       if (hi >= 0 && lo >= 0) {
-        sb.appendByte((hi << 4) | lo);
-        i += 3;
-      } else {
-        sb.appendByte(b);
-        i += 1;
+        b = (hi << 4) | lo;
+        i += 2;
       }
-    } else {
-      sb.appendByte(b);
-      i += 1;
     }
+    __byte_array_set(out, n, b);
+    n += 1;
   }
-  return sb.toString();
+  return String.fromByteArray(out, 0, n, Encoding.WTF8);
 };
 
 /**
@@ -178,30 +182,17 @@ export let percentDecode = (
  */
 export let parseFormUrlencoded = (input: String): Array<(String, String)> => {
   let pairs = new Array<(String, String)>();
-  var start = 0;
-  var i = 0;
-  while (i <= input.length) {
-    if (i == input.length || input.getByteAt(i) == 0x26) { // '&'
-      if (i > start) {
-        let piece = input.sliceBytes(start, i);
-        var eq = -1;
-        for (var j = 0; j < piece.length; j += 1) {
-          if (piece.getByteAt(j) == 0x3D) { // '='
-            eq = j;
-            break;
-          }
-        }
-        var name = piece;
-        var value = "";
-        if (eq >= 0) {
-          name = piece.sliceBytes(0, eq);
-          value = piece.sliceBytes(eq + 1, piece.length);
-        }
-        pairs.push((percentDecode(name, true), percentDecode(value, true)));
-      }
-      start = i + 1;
+  for (let piece in input.split("&")) {
+    if (piece.isEmpty) {
+      continue;
     }
-    i += 1;
+    var name = piece;
+    var value = "";
+    if (let (true, eq) = piece.indexOf("=")) {
+      name = piece.slice(piece.startIndex, eq);
+      value = piece.slice(piece.scalarIndexAfter(eq));
+    }
+    pairs.push((percentDecode(name, true), percentDecode(value, true)));
   }
   return pairs;
 };
