@@ -263,7 +263,7 @@ await x` pays the bare-value queue hop for nothing — return
        `Own<T>`/`Borrow<T>`/`Unmanaged<T>`, `disown`/`adopt`) follows there and
        is what freezes the generated-wrapper signatures.
     5. Only then: first-class WIT imports.
-- **Tooling & DX**: A package manager, online playground, and enhanced VS Code integration.
+- **Tooling & DX**: A package manager ([design](docs/design/package-manager.md)), online playground, and enhanced VS Code integration.
   - **API documentation** (zenadoc): a `zena doc` subcommand that reads a
     package's source and emits a JSON description of its public API, which
     the website renders as the stdlib reference. Design in
