@@ -18,48 +18,18 @@ export const stringImports = {
 };
 
 /**
- * The `URL` components `zena:host:url` reads and sets, numbered as the
- * stdlib's `url/url-js.zena` numbers them.
- */
-const urlParts = [
-  'protocol',
-  'username',
-  'password',
-  'hostname',
-  'port',
-  'pathname',
-  'search',
-  'hash',
-  'href',
-  'host',
-  'origin',
-] as const;
-
-const parseUrl = (input: string, base?: string): URL | null => {
-  try {
-    return new URL(input, base);
-  } catch {
-    return null;
-  }
-};
-
-/**
  * `zena:host:url`: the host's WHATWG `URL`, which a `--target js` module's
- * `zena:url` uses in place of its own parser (stdlib `url/url-js.zena`).
- * A `URL` it hands out is never mutated: `with` sets a component on a copy.
+ * `zena:url` uses in place of its own parser (stdlib `url/url-js.zena`):
+ * `URL.parse` itself, and `get_<component>` and `set_<component>` for each
+ * accessor on `URL.prototype`, with the `URL` as the first argument.
  */
-export const urlImports = {
-  parse: (input: string): URL | null => parseUrl(input),
-  parseWithBase: (input: string, base: string): URL | null =>
-    parseUrl(input, base),
-  get: (url: URL, part: number): string => url[urlParts[part]!],
-  with: (url: URL, part: number, value: string): URL => {
-    const copy = new URL(url.href);
-    // `origin` has no setter, and nothing asks to set it.
-    (copy as unknown as Record<string, string>)[urlParts[part]!] = value;
-    return copy;
-  },
-};
+export const urlImports: Record<string, Function> = {parse: URL.parse};
+for (const name of Object.getOwnPropertyNames(URL.prototype)) {
+  urlImports[`get_${name}`] = (url: Record<string, unknown>) => url[name];
+  urlImports[`set_${name}`] = (url: Record<string, unknown>, value: string) => {
+    url[name] = value;
+  };
+}
 
 export interface ZenaImports {
   env?: Record<string, Function>;

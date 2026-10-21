@@ -14,7 +14,7 @@ import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import {join, dirname} from 'node:path';
 import {fileURLToPath} from 'node:url';
-import {instantiate} from '../index.js';
+import {instantiate, urlImports} from '../index.js';
 import {compile} from './compile-zena.js';
 
 const wptDir = join(
@@ -141,11 +141,19 @@ suite('Runtime - zena:url on the js target', () => {
       builtins: ['js-string'],
       importedStringConstants: '_',
     }) as WebAssembly.Module;
-    const imported = WebAssembly.Module.imports(module)
-      .filter((i) => i.module === 'zena:host:url')
-      .map((i) => i.name)
-      .sort();
-    assert.deepEqual(imported, ['get', 'parse', 'parseWithBase', 'with']);
+    const imported = new Set(
+      WebAssembly.Module.imports(module)
+        .filter((i) => i.module === 'zena:host:url')
+        .map((i) => i.name),
+    );
+    // `URL.parse` itself, and the accessors the module calls.
+    assert.ok(imported.has('parse'));
+    assert.ok(imported.has('get_href'));
+    assert.ok(imported.has('set_pathname'));
+    for (const name of imported) {
+      assert.ok(name in urlImports, `${name} is in urlImports`);
+    }
+    assert.equal(urlImports.parse, URL.parse);
   });
 
   test('URL.parse matches JavaScript over urltestdata.json', async () => {
