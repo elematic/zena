@@ -25,6 +25,8 @@ Import them as `atproto:<module>`, with an
   tree, and looking a key up through the nodes of a proof.
 - `atproto:repo`: commits, and verifying `com.atproto.sync.getRecord`
   proofs.
+- `atproto:didkey`: public keys as multikeys, `did:key`s and DID document
+  verification methods, and checking atproto signatures with them.
 
 ## Tests
 

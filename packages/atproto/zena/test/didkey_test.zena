@@ -1,0 +1,105 @@
+import {suite, test} from 'zena:test';
+import {equal, isFalse, isTrue, throws} from 'zena:assert';
+import {readFileSync} from 'zena:fs';
+import {JsonArray, JsonObject, parseJson} from 'zena:json';
+import {base64, hex} from 'zena:encoding';
+import {
+  KeyType,
+  PublicKey,
+  curveOf,
+  formatDidKey,
+  parseDidKey,
+  parseMultikey,
+  parseVerificationMethod,
+  publicKeyFor,
+  verifySignature
+} from 'atproto:didkey';
+import {decodeBase58btc} from 'atproto:multibase';
+
+let INTEROP = 'packages/atproto/zena/test/fixtures/interop/crypto';
+
+function fixtures(name: String) {
+  return parseJson(readFileSync(`${INTEROP}/${name}`)) as JsonArray;
+}
+
+function keyTypeName(key: PublicKey) {
+  return if (key.type == KeyType.P256) 'P-256' else 'secp256k1';
+}
+
+export let tests = suite('atproto:didkey', () => {
+  test('checks the atproto signature fixtures in strict mode', (ctx) => {
+    let cases = fixtures('signature-fixtures.json');
+    equal(cases.length, 6);
+    for (var i = 0; i < cases.length; i += 1) {
+      let c = cases[i] as JsonObject;
+      let comment = c['comment'] as String;
+      let key = parseDidKey(c['publicKeyDid'] as String);
+      let message = base64.decode(c['messageBase64'] as String);
+      let signature = base64.decode(c['signatureBase64'] as String);
+      let expected = c.boolAt('validSignature') ?? false;
+      equal(verifySignature(key, message, signature), expected, comment);
+      // The key from the DID document form, and the uncompressed point,
+      // verify the same way.
+      let fromMethod = parseVerificationMethod(c['didDocSuite'] as String, c['publicKeyMultibase'] as String);
+      isTrue((fromMethod.bytes).contentEquals(key.bytes), comment);
+      equal(fromMethod.jwtAlgorithm(), c['algorithm'] as String, comment);
+      let curve = curveOf(key.type);
+      equal(curve.verify(curve.decompressPublicKey(key.bytes), message, signature), expected, comment);
+    }
+  });
+
+  test('derives the did:key of each W3C test vector from its private key', (ctx) => {
+    let k256 = fixtures('w3c_didkey_K256.json');
+    equal(k256.length, 5);
+    for (var i = 0; i < k256.length; i += 1) {
+      let c = k256[i] as JsonObject;
+      let key = publicKeyFor(KeyType.Secp256k1, hex.decode(c['privateKeyBytesHex'] as String));
+      equal(formatDidKey(key), c['publicDidKey'] as String);
+    }
+    let p256 = fixtures('w3c_didkey_P256.json');
+    equal(p256.length, 1);
+    let c = p256[0] as JsonObject;
+    let privateKey = decodeBase58btc(c['privateKeyBytesBase58'] as String);
+    let key = publicKeyFor(KeyType.P256, privateKey);
+    equal(formatDidKey(key), c['publicDidKey'] as String);
+  });
+
+  test('a signature by a derived key verifies with its did:key', (ctx) => {
+    let privateKey = hex.decode('9085d2bef69286a6cbb51623c8fa258629945cd55ca705cc4e66700396894e0c');
+    let key = parseDidKey(formatDidKey(publicKeyFor(KeyType.Secp256k1, privateKey)));
+    let message = hex.decode('a16568656c6c6f65776f726c64');
+    let signature = curveOf(key.type).sign(privateKey, message);
+    isTrue(verifySignature(key, message, signature));
+    isFalse(verifySignature(key, hex.decode('00'), signature));
+  });
+
+  test('reads a key from a did:key and from the older DID document types alike', (ctx) => {
+    for (let (name, type) in [('w3c_didkey_K256.json', 'secp256k1'), ('w3c_didkey_P256.json', 'P-256')]) {
+      let cases = fixtures(name);
+      for (var i = 0; i < cases.length; i += 1) {
+        let did = (cases[i] as JsonObject)['publicDidKey'] as String;
+        let key = parseDidKey(did);
+        equal(keyTypeName(key), type);
+        equal(key.bytes.length, 33);
+        equal(formatDidKey(key), did);
+      }
+    }
+  });
+
+  test('rejects keys it cannot read', (ctx) => {
+    throws(() => {
+      parseDidKey('did:web:example.com');
+    });
+    // An Ed25519 multikey (multicodec 0xed).
+    throws(() => {
+      parseMultikey('z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK');
+    });
+    // Base32 rather than base58btc.
+    throws(() => {
+      parseMultikey('bafkreihdwdcefgh4dqkjv67uzcmw7ojee6xedzdetojuzjevtenxquvyku');
+    });
+    throws(() => {
+      parseVerificationMethod('JsonWebKey2020', 'zQ3shokFTS3brHcDQrn82RUDfCZESWL1ZdCEJwekUDPQiYBme');
+    });
+  });
+});
