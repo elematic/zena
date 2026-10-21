@@ -5224,6 +5224,18 @@ export mixin IterableUtils<T> on Iterable<T> {
 
 Collections like `FixedArray<T>`, `GrowableArray<T>`, `HashMap<K, V>`, `HashSet<T>`, `OrderedHashMap<K, V>`, and `OrderedHashSet<T>` implement `Iterable<T>` either directly or via `IterableUtils<T>`.
 
+#### zip
+
+`zip(a, b)`, from `zena:collections`, iterates two iterables in step, as pairs, and stops when either runs out. The result is a `ZippedIterable<A, B>`, which has the `IterableUtils` methods:
+
+```zena
+import {zip} from 'zena:collections';
+
+for (let (x, y) in zip(xs, ys)) {
+  dot += x * y;
+}
+```
+
 ### Arrays
 
 #### FixedArray\<T\>
