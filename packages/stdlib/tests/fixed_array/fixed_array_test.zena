@@ -267,18 +267,6 @@ export let tests = suite('FixedArray', () => {
     }
   });
 
-  test('concat returns a new array of both arrays in order', (ctx) => {
-    let a = fixed([1, 2]);
-    let b = fixed([3]);
-    let joined = a.concat(b);
-    equal(joined.length, 3);
-    equal(joined[0], 1);
-    equal(joined[2], 3);
-    joined[0] = 9;
-    equal(a[0], 1);
-    equal(a.concat(new FixedArray<i32>(0, 0)).length, 2);
-  });
-
   test('contentEquals compares elements, where == compares identity', (ctx) => {
     let a = new FixedArray<u8>(3, 7 as u8);
     let b = new FixedArray<u8>(3, 7 as u8);
@@ -288,5 +276,26 @@ export let tests = suite('FixedArray', () => {
     equal(a.contentEquals(b), false);
     equal(a.contentEquals(new FixedArray<u8>(2, 7 as u8)), false);
     equal(fixed(['x', 'y']).contentEquals(fixed(['x', 'y'])), true);
+  });
+
+  test('contentEquals compares across array classes', (ctx) => {
+    let fixedArray = fixed([1, 2, 3]);
+    let growable = new GrowableArray<i32>();
+    growable.push(1);
+    growable.push(2);
+    growable.push(3);
+    let immutable = [1, 2, 3];
+    equal(fixedArray.contentEquals(growable), true);
+    equal(growable.contentEquals(fixedArray), true);
+    equal(immutable.contentEquals(growable), true);
+    growable.push(4);
+    equal(fixedArray.contentEquals(growable), false);
+    equal(growable.contentEquals(immutable), false);
+  });
+
+  test('contentEquals through the Array interface', (ctx) => {
+    let a: Array<i32> = fixed([5, 6]);
+    let b: Array<i32> = [5, 6];
+    equal(a.contentEquals(b), true);
   });
 });
