@@ -1,18 +1,18 @@
-// Differential test of the js target's number formatting against the
+// Differential test of the js target's number conversions against the
 // byte targets'.
 //
-// On `--target js`, `core/number-format-js.zena` asks the host to format
-// numbers, and `@zena-lang/runtime` answers (`numberImports`, in
-// packages/runtime/src/number-format.ts). The output must be the same
-// text the byte targets' `core/string-convert.zena` produces. This runs a
-// corpus through a Zena program on the default (byte) target and through
-// the runtime's functions, and compares the strings exactly.
+// On `--target js`, `core/number-format-js.zena` and
+// `core/number-parse-js.zena` hand part of the work to the host, which
+// `@zena-lang/runtime` answers (`numberImports`). The results must be the
+// ones the byte targets' `core/string-convert.zena` gives. This runs a
+// corpus through the same Zena program built twice, for the default (byte)
+// target and for js, and compares the strings exactly; the js build runs
+// here, in node, with the runtime's imports.
 //
-// `f64ToString` and the integers are JavaScript's own conversions there;
-// `f32ToString` and `f64ToPrecision` are computed by the runtime, so they
-// get most of the corpus, including exact ties, which Zena rounds to even.
-// `parseF64` reads Zena's grammar in the runtime and is compared by the
-// bits of the float it returns, over inputs `Number()` reads differently.
+// `f32ToString` and `f64ToPrecision` get most of the corpus, including
+// exact ties, which Zena rounds to even. `parseF64` is compared by the
+// bits of the float it returns, over inputs `parseFloat` reads
+// differently.
 //
 //   npm run build -w @zena-lang/runtime
 //   node packages/stdlib/dev/fp-host-difftest.js [caseCount]
@@ -22,7 +22,7 @@ import {readFileSync, writeFileSync, mkdirSync} from 'node:fs';
 
 const N = Number(process.argv[2] || 20000);
 const root = new URL('../../..', import.meta.url).pathname.replace(/\/$/, '');
-const {numberImports} = await import(`${root}/packages/runtime/index.js`);
+const {instantiate} = await import(`${root}/packages/runtime/index.js`);
 
 const dv = new DataView(new ArrayBuffer(8));
 const bitsToF64 = (b) => {
@@ -151,7 +151,7 @@ for (let i = 0; i < 2000; i++) {
       .repeat(1 + randInt(2))}`,
   );
 }
-// Where Number() reads differently, and the edges of the grammar.
+// Where parseFloat reads differently, and the edges of the grammar.
 for (const text of [
   '',
   '-',
@@ -259,17 +259,43 @@ const zena = readFileSync(`${root}/scratch/fp-host-actual.txt`, 'utf8').split(
 );
 
 // ---------------------------------------------------------------------------
-// The host side, and the comparison
+// The js build, and the comparison
 // ---------------------------------------------------------------------------
 
+writeFileSync(
+  `${root}/scratch/fp-host-js.zena`,
+  `
+import { f32ToString, f64ToPrecision } from 'zena:core';
+export let printF32 = (v: f32): String => f32ToString(v);
+export let printF64 = (v: f64): String => f64ToString(v);
+export let precision = (v: f64, n: i32): String => f64ToPrecision(v, n);
+export let parse = (s: String): f64 => parseF64(s);
+`,
+);
+execFileSync(
+  './target/release/zena-cli',
+  [
+    'build',
+    'scratch/fp-host-js.zena',
+    '-o',
+    'scratch/fp-host-js.wasm',
+    '--target',
+    'js',
+  ],
+  {cwd: root, stdio: ['ignore', 'inherit', 'inherit']},
+);
+const instantiated = await instantiate(
+  readFileSync(`${root}/scratch/fp-host-js.wasm`),
+);
+const js = (instantiated.instance ?? instantiated).exports;
+
 const host = ([kind, args]) => {
-  if (kind === 'parse')
-    return f64ToBits(numberImports.parseF64(args)).toString();
+  if (kind === 'parse') return f64ToBits(js.parse(args)).toString();
   const [a, b] = args.split(' ');
-  if (kind === 'f32') return numberImports.f32ToString(bitsToF32(Number(a)));
+  if (kind === 'f32') return js.printF32(bitsToF32(Number(a)));
   const v = bitsToF64(BigInt.asUintN(64, BigInt(a)));
-  if (kind === 'f64') return numberImports.f64ToString(v);
-  return numberImports.f64ToPrecision(v, Number(b));
+  if (kind === 'f64') return js.printF64(v);
+  return js.precision(v, Number(b));
 };
 
 // The byte targets' `decimalToF64` documents that past 19 significant
