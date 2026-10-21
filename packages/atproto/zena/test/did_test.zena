@@ -1,0 +1,57 @@
+import {suite, test} from 'zena:test';
+import {equal, isNull, throws} from 'zena:assert';
+import {readFileSync} from 'zena:fs';
+import {parseJson} from 'zena:json';
+import {parseDidDocument} from 'atproto:did';
+import {KeyType, PublicKey, formatMultikey} from 'atproto:didkey';
+
+let NETWORK = 'packages/atproto/zena/test/fixtures/network';
+
+export let tests = suite('atproto:did', () => {
+  test('reads what atproto needs from a DID document', (ctx) => {
+    let doc = parseDidDocument(
+      parseJson(readFileSync(`${NETWORK}/atproto-com-did.json`)),
+      'did:plc:ewvi7nxzyoun6zhxrhs64oiz'
+    );
+    equal(doc.id, 'did:plc:ewvi7nxzyoun6zhxrhs64oiz');
+    equal(doc.handle as String, 'atproto.com');
+    equal(doc.pds as String, 'https://enoki.us-east.host.bsky.network');
+    let key = doc.signingKey as PublicKey;
+    equal(key.type == KeyType.Secp256k1, true);
+    equal(formatMultikey(key), 'zQ3shunBKsXixLxKtC5qeSG9E4J5RkGN57im31pcTzbNQnm5w');
+  });
+
+  test('accepts ids written in full, and ignores what it does not use', (ctx) => {
+    let doc = parseDidDocument(parseJson(`{
+      "id": "did:web:example.com",
+      "alsoKnownAs": ["https://example.com", "at://Alice.Example.com"],
+      "verificationMethod": [
+        {"id": "did:web:example.com#other", "type": "Multikey", "publicKeyMultibase": "z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK"},
+        {"id": "did:web:example.com#atproto", "type": "Multikey", "publicKeyMultibase": "zDnaembgSGUhZULN2Caob4HLJPaxBh92N7rtH21TErzqf8HQo"}
+      ],
+      "service": [
+        {"id": "#atproto_pds", "type": "SomethingElse", "serviceEndpoint": "https://wrong.example"},
+        {"id": "did:web:example.com#atproto_pds", "type": "AtprotoPersonalDataServer", "serviceEndpoint": "https://pds.example.com"}
+      ]
+    }`));
+    equal(doc.handle as String, 'alice.example.com');
+    equal(doc.pds as String, 'https://pds.example.com');
+    equal((doc.signingKey as PublicKey).type == KeyType.P256, true);
+  });
+
+  test('a document without a key or PDS reads with nulls', (ctx) => {
+    let doc = parseDidDocument(parseJson('{"id": "did:plc:abc"}'));
+    isNull(doc.handle);
+    isNull(doc.signingKey);
+    isNull(doc.pds);
+  });
+
+  test('rejects a document for another DID', (ctx) => {
+    throws(() => {
+      parseDidDocument(parseJson('{"id": "did:plc:abc"}'), 'did:plc:xyz');
+    });
+    throws(() => {
+      parseDidDocument(parseJson('[]'));
+    });
+  });
+});

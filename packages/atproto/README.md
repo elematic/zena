@@ -27,6 +27,17 @@ Import them as `atproto:<module>`, with an
   proofs.
 - `atproto:didkey`: public keys as multikeys, `did:key`s and DID document
   verification methods, and checking atproto signatures with them.
+- `atproto:did`: what atproto reads from a DID document: the signing key,
+  the PDS and the claimed handle.
+- `atproto:xrpc`: HTTP requests and an XRPC client.
+- `atproto:identity`: resolving DIDs (`did:plc`, `did:web`) and handles
+  (DNS over HTTPS, then HTTPS), checking handles in both directions.
+- `atproto:sync`: fetching a record and checking its proof against the DID
+  document's key, and fetching a blob and checking it against its CID.
+
+`atproto:xrpc`, `atproto:identity` and `atproto:sync` send requests with
+`wasi:http`, so they compile for the `zena-cli` and `component` targets
+only. The other modules have no imports from the host.
 
 ## Tests
 

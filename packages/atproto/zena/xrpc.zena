@@ -1,0 +1,224 @@
+/**
+ * HTTP requests, and a client for XRPC, atproto's HTTP API convention
+ * (https://atproto.com/specs/xrpc).
+ *
+ * An XRPC method is named by an NSID and served at `/xrpc/<nsid>`. A query
+ * is a GET with its parameters in the query string; a procedure is a POST
+ * with a body. An error answer is JSON, `{"error": "<Name>", "message":
+ * "..."}`, with a 4xx or 5xx status.
+ *
+ * This module sends requests with `wasi:http`, so it compiles for the
+ * `zena-cli` and `component` targets.
+ */
+
+import {Completer} from 'zena:async';
+import {Err, Ok, Option, Outcome, StringBuilder} from 'zena:core';
+import {JsonObject, JsonValue, parseJson, stringify} from 'zena:json';
+import {Stream, bytesStream, readAllBytes} from 'zena:stream';
+import {EncodeSet, URL, percentEncode} from 'zena:url';
+import {
+  ErrorCode,
+  Fields,
+  MethodGet,
+  MethodPost,
+  Request,
+  Response as WireResponse,
+  Scheme,
+  SchemeHTTP,
+  SchemeHTTPS
+} from 'wasi:http/types';
+import {send} from 'wasi:http/client';
+
+/** A request that got no answer: the host could not be reached, or the URL is malformed. */
+export class HttpError extends Error {
+  new(message: String) : super(message);
+}
+
+/** An XRPC call that was answered with an error. */
+export class XrpcError extends Error {
+  /** The HTTP status. */
+  status: i32;
+  /** The error name the server gave, such as `RecordNotFound`, or an empty string. */
+  error: String;
+
+  new(status: i32, error: String, message: String) : status = status, error = error, super(message);
+}
+
+/** An answer to a request: its status, headers and whole body. */
+export final class HttpResponse {
+  status: i32;
+  headers: Fields;
+  body: FixedArray<u8>;
+
+  new(status: i32, headers: Fields, body: FixedArray<u8>) : status = status, headers = headers, body = body;
+
+  /** The first value of header `name`, or null. */
+  header(name: String): String | null {
+    let values = this.headers.get(name);
+    return if (values.length > 0) String.fromBytes(values[0]) else null;
+  }
+
+  /** The body as text. */
+  text(): String {
+    return String.fromBytes(this.body);
+  }
+
+  /** The body parsed as JSON. */
+  json(): JsonValue {
+    return parseJson(this.text());
+  }
+}
+
+/** The one spellable value of type void, for a `result<_, e>` ok arm. */
+function unit() {}
+
+/**
+ * Sends one request and reads the whole answer. `method` is `GET` or
+ * `POST`; `headers` are name and value pairs. Throws `HttpError` when no
+ * answer arrives.
+ */
+export async function httpRequest(
+  method: String,
+  url: String,
+  headers: Array<(String, String)>,
+  body: FixedArray<u8> | null
+): Future<HttpResponse> {
+  let parsed = URL.parse(url);
+  if (parsed == null) {
+    throw new HttpError(`not a URL: ${url}`);
+  }
+  let target = parsed;
+  let fields = Fields.create();
+  for (let (name, value) in headers) {
+    fields.append(name, value.toBytes());
+  }
+  let trailers = Future.of<Outcome<Option<Fields>, ErrorCode>>(new Ok<Option<Fields>, ErrorCode>(none));
+  let contents: Option<Stream<u8>> = if (body == null) none else some(bytesStream(body));
+  let (request, transmitted) = Request.new_(fields, contents, trailers, none);
+  if (method == 'POST') {
+    request.setMethod(new MethodPost());
+  } else if (method == 'GET') {
+    request.setMethod(new MethodGet());
+  } else {
+    throw new HttpError(`unsupported method ${method}`);
+  }
+  let scheme: Scheme = if (target.protocol == 'http:') new SchemeHTTP() else new SchemeHTTPS();
+  request.setScheme(some(scheme));
+  request.setAuthority(some(target.host()));
+  request.setPathWithQuery(some(`${target.pathname}${target.search}`));
+  let sent = await send(request);
+  if (sent is Err<WireResponse, ErrorCode>) {
+    throw new HttpError(`no answer from ${target.host()}`);
+  }
+  let response = (sent as Ok<WireResponse, ErrorCode>).value;
+  let status = response.getStatusCode() as i32;
+  let responseHeaders = response.getHeaders();
+  let received = new Completer<Outcome<void, ErrorCode>>();
+  let (responseBody, responseTrailers) = WireResponse.consumeBody(response, received.future);
+  let bytes = await readAllBytes(responseBody);
+  received.tryComplete(new Ok<void, ErrorCode>(unit()));
+  return new HttpResponse(status, responseHeaders, bytes);
+}
+
+/** A client for the XRPC methods of one service, such as a PDS. */
+export final class XrpcClient {
+  /** The service's origin, such as `https://pds.example.com`. */
+  service: String;
+  /** The `authorization` header to send, or null. */
+  var authorization: String | null = null;
+
+  new(service: String) : service = service;
+
+  #url(nsid: String, params: Array<(String, String)> | null): String {
+    let sb = new StringBuilder();
+    sb.append(this.service);
+    sb.append('/xrpc/');
+    sb.append(nsid);
+    if (params != null) {
+      var first = true;
+      for (let (name, value) in params) {
+        sb.append(if (first) '?' else '&');
+        sb.append(percentEncode(name, EncodeSet.Component));
+        sb.append('=');
+        sb.append(percentEncode(value, EncodeSet.Component));
+        first = false;
+      }
+    }
+    return sb.toString();
+  }
+
+  #headers(contentType: String | null): GrowableArray<(String, String)> {
+    let headers = new GrowableArray<(String, String)>();
+    headers.push(('accept', 'application/json'));
+    if (contentType != null) {
+      headers.push(('content-type', contentType));
+    }
+    let authorization = this.authorization;
+    if (authorization != null) {
+      headers.push(('authorization', authorization));
+    }
+    return headers;
+  }
+
+  /**
+   * Calls a query and returns the raw answer, for methods that answer with
+   * something other than JSON, such as `com.atproto.sync.getRecord`.
+   * Throws `XrpcError` for an error answer.
+   */
+  async queryRaw(nsid: String, params: Array<(String, String)> | null = null): Future<HttpResponse> {
+    let response = await httpRequest('GET', this.#url(nsid, params), this.#headers(null), null);
+    checkAnswer(nsid, response);
+    return response;
+  }
+
+  /** Calls a query that answers with JSON. Throws `XrpcError` for an error answer. */
+  async query(nsid: String, params: Array<(String, String)> | null = null): Future<JsonValue> {
+    let response = await this.queryRaw(nsid, params);
+    return response.json();
+  }
+
+  /**
+   * Calls a procedure with a JSON body, or none when `input` is null, and
+   * returns its JSON answer, or null when it has none.
+   */
+  async procedure(nsid: String, input: JsonValue, params: Array<(String, String)> | null = null): Future<JsonValue> {
+    let body: FixedArray<u8> | null = if (input == null) null else stringify(input).toBytes();
+    let contentType: String | null = if (input == null) null else 'application/json';
+    let response = await httpRequest('POST', this.#url(nsid, params), this.#headers(contentType), body);
+    checkAnswer(nsid, response);
+    return if (response.body.length == 0) null else response.json();
+  }
+
+  /** Calls a procedure whose body is bytes of type `mimeType`, such as `com.atproto.repo.uploadBlob`. */
+  async upload(nsid: String, mimeType: String, bytes: FixedArray<u8>): Future<JsonValue> {
+    let response = await httpRequest('POST', this.#url(nsid, null), this.#headers(mimeType), bytes);
+    checkAnswer(nsid, response);
+    return response.json();
+  }
+}
+
+/** Throws `XrpcError` unless `response` is a success. */
+function checkAnswer(nsid: String, response: HttpResponse): void {
+  if (response.status >= 200 && response.status < 300) {
+    return;
+  }
+  var error = '';
+  var message = `${nsid} failed with HTTP ${response.status}`;
+  try {
+    let json = response.json();
+    if (json is JsonObject) {
+      let name = json['error'];
+      if (name is String) {
+        error = name;
+        message = `${nsid} failed: ${name}`;
+      }
+      let detail = json['message'];
+      if (detail is String) {
+        message = `${message}: ${detail}`;
+      }
+    }
+  } catch (e) {
+    // Not JSON: keep the status alone.
+  }
+  throw new XrpcError(response.status, error, message);
+}

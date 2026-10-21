@@ -1,0 +1,196 @@
+/**
+ * Resolving DIDs and handles (https://atproto.com/specs/did,
+ * https://atproto.com/specs/handle).
+ *
+ * - A `did:plc` resolves through the PLC directory: `<directory>/<did>`.
+ * - A `did:web` resolves to `https://<host>/.well-known/did.json`; atproto
+ *   allows a host name only, no path.
+ * - A handle resolves to a DID through a DNS TXT record at `_atproto.<handle>`
+ *   holding `did=<did>`, or else through `https://<handle>/.well-known/atproto-did`.
+ *   DNS is read over HTTPS, with the JSON API that Cloudflare and Google
+ *   serve, because WASI has no DNS TXT lookup.
+ *
+ * A handle belongs to an account only when the handle resolves to the
+ * account's DID and the DID document claims the handle. `resolve` checks
+ * both directions.
+ */
+
+import {StringBuilder} from 'zena:core';
+import {JsonArray, JsonObject} from 'zena:json';
+import {DidDocument, parseDidDocument} from './did.zena';
+import {isValidDid, isValidHandle, normalizeHandle} from './syntax.zena';
+import {httpRequest} from './xrpc.zena';
+
+/** A DID or handle that does not resolve. */
+export class IdentityError extends Error {
+  new(message: String) : super(message);
+}
+
+/** An account's DID, its DID document, and its handle if both directions agree. */
+export final class Identity {
+  did: String;
+  /** The handle, when it resolves to `did` and the document claims it; otherwise null. */
+  handle: String | null;
+  document: DidDocument;
+  new(did: String, handle: String | null, document: DidDocument) : did = did, handle = handle, document = document;
+}
+
+/** The `did=` value of TXT records, given the data strings of a DNS JSON answer. */
+function didFromTxt(answers: JsonArray): String | null {
+  var found: String | null = null;
+  var count = 0;
+  for (var i = 0; i < answers.length; i += 1) {
+    let answer = answers[i];
+    if (answer is JsonObject) {
+      let data = answer['data'];
+      if (data is String) {
+        let text = unquoteTxt(data);
+        if (text.startsWith('did=')) {
+          found = text.sliceBytes(4, text.length);
+          count += 1;
+        }
+      }
+    }
+  }
+  // More than one did= record is ambiguous, and resolves to nothing.
+  return if (count == 1) found else null;
+}
+
+/**
+ * The text of TXT record data as DNS JSON APIs write it: one or more
+ * quoted strings, which are joined.
+ */
+function unquoteTxt(data: String): String {
+  let sb = new StringBuilder(data.length);
+  var quoted = false;
+  var sawQuote = false;
+  for (var i = 0; i < data.length; i += 1) {
+    let b = data.getByteAt(i);
+    if (b == 34) {
+      quoted = !quoted;
+      sawQuote = true;
+    } else if (quoted || !sawQuote) {
+      sb.appendByte(b);
+    }
+  }
+  return sb.toString();
+}
+
+/** Resolves DIDs and handles. */
+export final class IdentityResolver {
+  /** The PLC directory's origin. */
+  var plcDirectory: String = 'https://plc.directory';
+  /** A DNS-over-HTTPS endpoint that answers `?name=&type=TXT` with JSON. */
+  var dnsOverHttps: String = 'https://cloudflare-dns.com/dns-query';
+  /**
+   * The origin to send a host's requests to. `https://<host>` unless a
+   * test points it elsewhere.
+   */
+  var originOf: (host: String) => String = (host) => `https://${host}`;
+
+  /** The DID document of `did`, a `did:plc` or `did:web`. */
+  async resolveDid(did: String): Future<DidDocument> {
+    if (!isValidDid(did)) {
+      throw new IdentityError(`not a DID: ${did}`);
+    }
+    let url = if (did.startsWith('did:plc:')) {
+      `${this.plcDirectory}/${did}`
+    } else if (did.startsWith('did:web:')) {
+      `${this.originOf(webHost(did))}/.well-known/did.json`
+    } else {
+      throw new IdentityError(`unsupported DID method: ${did}`)
+    };
+    let response = await httpRequest('GET', url, [('accept', 'application/json')], null);
+    if (response.status != 200) {
+      throw new IdentityError(`${did} did not resolve: HTTP ${response.status}`);
+    }
+    return parseDidDocument(response.json(), did);
+  }
+
+  /** The DID `handle` resolves to, or null when it resolves to none. */
+  async resolveHandle(handle: String): Future<String | null> {
+    if (!isValidHandle(handle)) {
+      throw new IdentityError(`not a handle: ${handle}`);
+    }
+    let name = normalizeHandle(handle);
+    let fromDns = await this.#resolveHandleDns(name);
+    return fromDns ?? await this.#resolveHandleHttps(name);
+  }
+
+  async #resolveHandleDns(handle: String): Future<String | null> {
+    let url = `${this.dnsOverHttps}?name=_atproto.${handle}&type=TXT`;
+    let response = await httpRequest('GET', url, [('accept', 'application/dns-json')], null);
+    if (response.status != 200) {
+      return null;
+    }
+    let json = response.json();
+    if (!(json is JsonObject)) {
+      return null;
+    }
+    let answers = json['Answer'];
+    if (!(answers is JsonArray)) {
+      return null;
+    }
+    let did = didFromTxt(answers);
+    return if (did != null && isValidDid(did)) did else null;
+  }
+
+  async #resolveHandleHttps(handle: String): Future<String | null> {
+    let url = `${this.originOf(handle)}/.well-known/atproto-did`;
+    let response = await httpRequest('GET', url, [], null);
+    if (response.status != 200) {
+      return null;
+    }
+    let did = response.text().trim();
+    return if (isValidDid(did)) did else null;
+  }
+
+  /**
+   * Resolves a DID or a handle to an identity, checking the handle in both
+   * directions. Resolving a handle that does not resolve, or whose DID
+   * document does not claim it, throws `IdentityError`.
+   */
+  async resolve(identifier: String): Future<Identity> {
+    if (identifier.startsWith('did:')) {
+      let document = await this.resolveDid(identifier);
+      let claimed = document.handle;
+      if (claimed == null) {
+        return new Identity(identifier, null, document);
+      }
+      let back = await this.resolveHandle(claimed);
+      return new Identity(identifier, if (back == identifier) claimed else null, document);
+    }
+    let handle = normalizeHandle(identifier);
+    let did = await this.resolveHandle(handle);
+    if (did == null) {
+      throw new IdentityError(`${handle} does not resolve to a DID`);
+    }
+    let document = await this.resolveDid(did);
+    if (document.handle != handle) {
+      throw new IdentityError(`${did} does not claim the handle ${handle}`);
+    }
+    return new Identity(did, handle, document);
+  }
+}
+
+/** The host of a `did:web`, with a percent-encoded port decoded. */
+function webHost(did: String): String {
+  let id = did.sliceBytes(8, did.length);
+  if (id.contains(':')) {
+    throw new IdentityError(`did:web with a path is not used by atproto: ${did}`);
+  }
+  let sb = new StringBuilder(id.length);
+  var i = 0;
+  while (i < id.length) {
+    if (i + 2 < id.length && id.getByteAt(i) == 37 && id.getByteAt(i + 1) == 51
+        && (id.getByteAt(i + 2) == 65 || id.getByteAt(i + 2) == 97)) {
+      // %3A or %3a
+      sb.appendByte(58);
+      i += 3;
+    } else {
+      sb.appendByte(id.getByteAt(i));
+      i += 1;
+    }
+  }
+  return sb.toString();
+}

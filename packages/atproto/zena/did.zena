@@ -1,0 +1,112 @@
+/**
+ * DID documents, and the parts of them atproto uses
+ * (https://atproto.com/specs/did).
+ *
+ * - The signing key: the verification method whose id is `#atproto`
+ *   (written either relative or as `<did>#atproto`).
+ * - The PDS: the service whose id is `#atproto_pds` and whose type is
+ *   `AtprotoPersonalDataServer`.
+ * - The handle: the first `at://` URI in `alsoKnownAs`. A handle is only
+ *   the account's if it also resolves back to the DID, which
+ *   `atproto:identity` checks.
+ */
+
+import {JsonArray, JsonObject, JsonValue} from 'zena:json';
+import {PublicKey, parseVerificationMethod} from './didkey.zena';
+import {isValidHandle, normalizeHandle} from './syntax.zena';
+
+/** A DID document that lacks what atproto needs from it. */
+export class DidDocumentError extends Error {
+  new(message: String) : super(message);
+}
+
+/** What atproto reads from a DID document. */
+export final class DidDocument {
+  /** The DID the document describes. */
+  id: String;
+  /** The handle the document claims, lowercased, or null. */
+  handle: String | null;
+  /** The repository signing key, or null when the document has none. */
+  signingKey: PublicKey | null;
+  /** The PDS's URL, or null when the document names none. */
+  pds: String | null;
+  /** The whole document. */
+  json: JsonObject;
+
+  new(id: String, handle: String | null, signingKey: PublicKey | null, pds: String | null, json: JsonObject)
+    : id = id, handle = handle, signingKey = signingKey, pds = pds, json = json;
+}
+
+/** Whether `id` names `fragment` within the document for `did`. */
+function isFragment(id: String, did: String, fragment: String) {
+  return id == fragment || id == `${did}${fragment}`;
+}
+
+function arrayOrEmpty(value: JsonValue) {
+  if (value is JsonArray) {
+    return value;
+  }
+  return new JsonArray();
+}
+
+/**
+ * Reads a DID document. When `expectedDid` is given, the document's `id`
+ * must equal it.
+ */
+export function parseDidDocument(json: JsonValue, expectedDid: String | null = null): DidDocument {
+  if (!(json is JsonObject)) {
+    throw new DidDocumentError('DID document is not an object');
+  }
+  let doc = json;
+  let id = doc['id'];
+  if (!(id is String)) {
+    throw new DidDocumentError('DID document has no id');
+  }
+  let did = id;
+  if (expectedDid != null && did != expectedDid) {
+    throw new DidDocumentError(`DID document is for ${did}, not ${expectedDid}`);
+  }
+
+  var handle: String | null = null;
+  let aliases = arrayOrEmpty(doc['alsoKnownAs']);
+  for (var i = 0; i < aliases.length; i += 1) {
+    let alias = aliases[i];
+    if (handle == null && alias is String && alias.startsWith('at://')) {
+      let candidate = alias.sliceBytes(5, alias.length);
+      if (isValidHandle(candidate)) {
+        handle = normalizeHandle(candidate);
+      }
+    }
+  }
+
+  var signingKey: PublicKey | null = null;
+  let methods = arrayOrEmpty(doc['verificationMethod']);
+  for (var i = 0; i < methods.length; i += 1) {
+    let method = methods[i];
+    if (signingKey == null && method is JsonObject) {
+      let methodId = method['id'];
+      let type = method['type'];
+      let key = method['publicKeyMultibase'];
+      if (methodId is String && isFragment(methodId, did, '#atproto') && type is String && key is String) {
+        signingKey = parseVerificationMethod(type, key);
+      }
+    }
+  }
+
+  var pds: String | null = null;
+  let services = arrayOrEmpty(doc['service']);
+  for (var i = 0; i < services.length; i += 1) {
+    let service = services[i];
+    if (pds == null && service is JsonObject) {
+      let serviceId = service['id'];
+      let type = service['type'];
+      let endpoint = service['serviceEndpoint'];
+      if (serviceId is String && isFragment(serviceId, did, '#atproto_pds')
+          && type == 'AtprotoPersonalDataServer' && endpoint is String) {
+        pds = endpoint;
+      }
+    }
+  }
+
+  return new DidDocument(did, handle, signingKey, pds, doc);
+}
