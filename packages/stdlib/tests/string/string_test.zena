@@ -277,23 +277,27 @@ export let tests = suite('String', () => {
     });
   });
 
-  suite('byteLength, isEmpty, unsafeByteAt, unsafeSliceBytes', () => {
-    test('reports byteLength and isEmpty', () => {
-      equal("".byteLength, 0);
+  suite('isEmpty and the utf8 view', () => {
+    test('reports isEmpty and the UTF-8 length', () => {
+      equal("".utf8.length, 0);
       equal("".isEmpty, true);
-      equal("abc".byteLength, 3);
+      equal("abc".utf8.length, 3);
       equal("abc".isEmpty, false);
-      equal("café".byteLength, 5);
-      equal("😀".byteLength, 4);
+      equal("café".utf8.length, 5);
+      equal("😀".utf8.length, 4);
     });
 
-    test('unsafeByteAt and unsafeSliceBytes read raw UTF-8 bytes', () => {
+    test('utf8[i] reads raw UTF-8 bytes and indexAt slices on them', () => {
       let s = "café";
-      equal(s.unsafeByteAt(0), 99);
-      equal(s.unsafeByteAt(3), 0xC3);
-      equal(s.unsafeByteAt(4), 0xA9);
-      equal(s.unsafeSliceBytes(0, 3), "caf");
-      equal(s.unsafeSliceBytes(3, 5), "é");
+      equal(s.utf8[0] as i32, 99);
+      equal(s.utf8[3] as i32, 0xC3);
+      equal(s.utf8[4] as i32, 0xA9);
+      if (let (true, three) = s.utf8.indexAt(3)) {
+        equal(s[..three], "caf");
+        equal(s[three..], "é");
+      } else {
+        isTrue(false);
+      }
     });
   });
 
@@ -362,40 +366,70 @@ export let tests = suite('String', () => {
       }
     });
 
-    test('validateByteIndex accepts scalar boundaries and rejects continuation bytes', () => {
+    test('utf8.indexAt accepts scalar boundaries and rejects continuation bytes', () => {
       let s = "aé😀"; // 'a' at 0, 'é' at 1..3, '😀' at 3..7
-      if (let (true, idx0) = s.validateByteIndex(0)) {
-        equal(idx0 as i32, 0);
+      let v = s.utf8;
+      if (let (true, idx0) = v.indexAt(0)) {
+        equal(idx0, s.startIndex);
       } else {
         isTrue(false);
       }
-      if (let (true, idx1) = s.validateByteIndex(1)) {
-        equal(idx1 as i32, 1);
+      if (let (true, idx1) = v.indexAt(1)) {
+        equal(s[idx1..], "é😀");
       } else {
         isTrue(false);
       }
       // Byte 2 is a continuation byte inside 'é'
-      if (let (true, _) = s.validateByteIndex(2)) {
+      if (let (true, _) = v.indexAt(2)) {
         isTrue(false);
       }
-      if (let (true, idx3) = s.validateByteIndex(3)) {
-        equal(idx3 as i32, 3);
+      if (let (true, idx3) = v.indexAt(3)) {
+        equal(s[idx3..], "😀");
       } else {
         isTrue(false);
       }
       // Bytes 4, 5, 6 are continuation bytes inside '😀'
-      if (let (true, _) = s.validateByteIndex(4)) {
+      if (let (true, _) = v.indexAt(4)) {
         isTrue(false);
       }
-      if (let (true, idxEnd) = s.validateByteIndex(7)) {
+      if (let (true, idxEnd) = v.indexAt(7)) {
         equal(idxEnd, s.endIndex);
       } else {
         isTrue(false);
       }
-      if (let (true, _) = s.validateByteIndex(-1)) {
+      if (let (true, _) = v.indexAt(-1)) {
         isTrue(false);
       }
-      if (let (true, _) = s.validateByteIndex(8)) {
+      if (let (true, _) = v.indexAt(8)) {
+        isTrue(false);
+      }
+    });
+
+    test('indexAt on a sub-view counts from the string, not the sub-view', () => {
+      let s = "aé😀";
+      let tail = s.utf8.slice(1, 7);
+      if (let (true, idx) = tail.indexAt(2)) {
+        equal(s[idx..], "😀");
+      } else {
+        isTrue(false);
+      }
+    });
+
+    test('utf16.indexAt maps code unit offsets to the string and rejects a split pair', () => {
+      let s = "aé😀"; // units: 'a', 'é', high surrogate, low surrogate
+      let v = s.utf16;
+      equal(v.length, 4);
+      if (let (true, idx2) = v.indexAt(2)) {
+        equal(s[idx2..], "😀");
+      } else {
+        isTrue(false);
+      }
+      if (let (true, _) = v.indexAt(3)) {
+        isTrue(false);
+      }
+      if (let (true, idxEnd) = v.indexAt(4)) {
+        equal(idxEnd, s.endIndex);
+      } else {
         isTrue(false);
       }
     });

@@ -868,7 +868,8 @@ you need to release the parent string's memory.
 
 ```zena
 let s = 'café😀';
-s.byteLength;                      // 8 (length in UTF-8 bytes)
+s.utf8.length;                     // 8 (length in UTF-8 bytes)
+s.utf16.length;                    // 6 (length in UTF-16 code units)
 s.isEmpty;                         // false
 s.graphemes.count();               // 5 (grapheme clusters)
 s.codePoints.count();              // 5 (Unicode scalar values)
