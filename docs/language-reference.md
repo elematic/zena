@@ -1644,7 +1644,7 @@ Strings are immutable sequences of characters.
 
 - **Literals**: `'text'` or `"text"`.
 - **Concatenation**: `+` operator.
-- **Length**: `str.byteLength` returns the length in encoded bytes; `str.isEmpty` checks for an empty string; `str.graphemes.count()` and `str.codePoints.count()` count extended grapheme clusters and Unicode scalar values in $O(n)$ time.
+- **Length**: `str.utf8.length` and `str.utf16.length` return the length in UTF-8 bytes and UTF-16 code units, whatever the string's own encoding; `str.isEmpty` checks for an empty string; `str.graphemes.count()` and `str.codePoints.count()` count extended grapheme clusters and Unicode scalar values in $O(n)$ time.
 - **Indexing and Slicing**: Raw integer indexing (`str[0]`) is a compile-time error. Strings are indexed by `StringIndex` (`str.startIndex`, `str.endIndex`, `str.indexAfter(i)`, `str.indexBefore(i)`, `str.indexOffsetBy(i, n)`, `str.indexOf(needle)`). `str[i]` returns the grapheme cluster at `i`, and `str[start..end]`, `str[start..]`, `str[..end]`, and `str[..]` return zero-copy `String` slices.
 - **Iteration and Views**: Iterating a `String` (`for (let g in str)` or `str.graphemes`) yields extended grapheme clusters as `String` slices, and `str.reverse()` reverses by grapheme clusters. `str.codePoints` iterates decoded Unicode scalar values (`i32`), `str.utf8` provides an indexed (`str.utf8[i]`) and iterable `u8` UTF-8 byte view, and `str.utf16` provides an indexed (`str.utf16[i]`) and iterable `u16` UTF-16 code unit view.
 

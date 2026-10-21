@@ -120,14 +120,16 @@ let hangulSyllableType = (cp: i32): i32 => {
 };
 
 /**
- * A byte offset within a `String` that has been validated to lie on a
- * Unicode boundary.
+ * A position within a `String` that has been validated to lie on a
+ * Unicode boundary: an offset in the string's own encoding, which an
+ * `i32` read of it exposes.
  *
  * `StringIndex` values are produced by `String` methods (`startIndex`,
  * `endIndex`, `indexAfter`, `indexBefore`, `scalarIndexAfter`,
- * `scalarIndexBefore`, `indexOffsetBy`, `validateByteIndex`, `indexOf`)
- * and cannot be forged by casting an arbitrary `i32` outside `zena:core`.
- * Reading the underlying byte offset with `idx as i32` is always legal.
+ * `scalarIndexBefore`, `indexOffsetBy`, `indexOf`) and by the views'
+ * `indexAt` (`utf8.indexAt`, `utf16.indexAt`), and cannot be forged by
+ * casting an arbitrary `i32` outside `zena:core`. Reading the underlying
+ * offset with `idx as i32` is always legal.
  */
 export opaque type StringIndex = i32;
 
@@ -398,18 +400,10 @@ export final class String implements Hashable, Stringable, Iterable<String> {
   }
 
   /**
-   * The length of the string in encoded bytes.
-   */
-  byteLength: i32 {
-    get {
-      return this.#end - this.#start;
-    }
-  }
-
-  /**
-   * The length of the string in bytes.
+   * The length of the string in bytes of its own encoding.
    *
-   * @deprecated Use `byteLength`, `isEmpty`, or `graphemes.count()` instead.
+   * @deprecated The byte length depends on the encoding. Use `isEmpty`,
+   * `utf8.length`, `utf16.length`, or `graphemes.count()` instead.
    */
   length: i32 {
     get {
@@ -427,7 +421,7 @@ export final class String implements Hashable, Stringable, Iterable<String> {
   }
 
   /**
-   * The "past the end" index of this string (equal to `byteLength`).
+   * The "past the end" index of this string.
    */
   endIndex: StringIndex {
     get {
@@ -464,7 +458,7 @@ export final class String implements Hashable, Stringable, Iterable<String> {
   utf8: StringUtf8View {
     get {
       if (this.#encoding == Encoding.WTF8) {
-        return new StringUtf8View(this.#data, this.#start, this.#end);
+        return new StringUtf8View(this.#data, this.#start, this.#end, this.#start, true);
       }
       let len = this.#end - this.#start;
       var utf8Len = 0;
@@ -500,7 +494,7 @@ export final class String implements Hashable, Stringable, Iterable<String> {
         }
         pos = next;
       }
-      return new StringUtf8View(out, 0, utf8Len);
+      return new StringUtf8View(out, 0, utf8Len, 0, false);
     }
   }
 
@@ -513,7 +507,7 @@ export final class String implements Hashable, Stringable, Iterable<String> {
   utf16: StringUtf16View {
     get {
       if (this.#encoding == Encoding.WTF16) {
-        return new StringUtf16View(this.#data, this.#start, this.#end);
+        return new StringUtf16View(this.#data, this.#start, this.#end, this.#start, true);
       }
       let len = this.#end - this.#start;
       var units = 0;
@@ -545,7 +539,7 @@ export final class String implements Hashable, Stringable, Iterable<String> {
         }
         pos = next;
       }
-      return new StringUtf16View(out, 0, byteLen);
+      return new StringUtf16View(out, 0, byteLen, 0, false);
     }
   }
 
@@ -881,18 +875,6 @@ export final class String implements Hashable, Stringable, Iterable<String> {
   }
 
   /**
-   * Validates that `byteOffset` lies on a Unicode scalar boundary within
-   * `[0, byteLength]`. Returns `(true, index)` if valid, or `(false, _)`
-   * otherwise.
-   */
-  validateByteIndex(byteOffset: i32): inline (true, StringIndex) | inline (false, _) {
-    if (this.#isScalarBoundary(byteOffset)) {
-      return (true, byteOffset as StringIndex);
-    }
-    return (false, _);
-  }
-
-  /**
    * Returns the single extended grapheme cluster starting at `index` as a
    * zero-copy `String` slice. Throws `IndexOutOfBoundsError` if `index` is at
    * `endIndex` or is not a valid boundary of this string.
@@ -973,19 +955,10 @@ export final class String implements Hashable, Stringable, Iterable<String> {
   }
 
   /**
-   * Returns the byte at `index` without checking Unicode boundaries.
+   * Returns the byte at `index` of the string's own encoding.
    *
-   * For WTF-8 strings, this is the UTF-8 byte at the given index.
-   * For WTF-16 strings, this is the byte (not code unit) at the given index.
-   */
-  unsafeByteAt(index: i32): i32 {
-    return __byte_array_get(this.#data, this.#start + index);
-  }
-
-  /**
-   * Returns the byte at the given index.
-   *
-   * @deprecated Use `str.utf8[index]` or `unsafeByteAt(index)` instead.
+   * @deprecated Which bytes a string has depends on its encoding. Use
+   * `utf8[index]` or `utf16[index]` instead.
    */
   getByteAt(index: i32): i32 {
     return __byte_array_get(this.#data, this.#start + index);
@@ -1059,14 +1032,25 @@ export final class String implements Hashable, Stringable, Iterable<String> {
   }
 
   /**
-   * O(1) zero-copy slice by raw byte offsets `[start, end)`, clamping to
-   * `[0, byteLength]`.
+   * O(1) zero-copy slice by byte offsets of the string's own encoding,
+   * clamped to the string. Returns a new String sharing the backing array.
    *
    * SAFETY: Offsets are byte indices, not Unicode boundaries. Slicing inside
-   * a multi-byte UTF-8 sequence produces an ill-formed string view. Prefer
-   * `str[start..end]` or `slice(start, end)` with `StringIndex`.
+   * a multi-byte UTF-8 sequence produces an ill-formed string.
+   *
+   * @deprecated Use `str[start..end]` with indices from `utf8.indexAt` or
+   * `utf16.indexAt`, or `slice(start, end)`.
    */
-  unsafeSliceBytes(start: i32, end: i32): String {
+  sliceBytes(start: i32, end: i32): String {
+    return this.#byteSlice(start, end);
+  }
+
+  /**
+   * O(1) zero-copy slice by byte offsets of this string's own encoding,
+   * clamped to the string. The offsets are the caller's to keep on scalar
+   * boundaries.
+   */
+  #byteSlice(start: i32, end: i32): String {
     var s = start;
     var e = end;
     let len = this.#end - this.#start;
@@ -1080,20 +1064,6 @@ export final class String implements Hashable, Stringable, Iterable<String> {
       this.#start + e,
       this.#encoding
     );
-  }
-
-  /**
-   * O(1) zero-copy slice by byte indices.
-   * Returns a new String sharing the backing array.
-   *
-   * SAFETY: Indices are byte offsets, not code point offsets.
-   * Slicing in the middle of a multi-byte UTF-8 sequence produces
-   * an invalid string. Use StringReader.mark() to get safe positions.
-   *
-   * @deprecated Use `str[start..end]`, `slice(start, end)`, or `unsafeSliceBytes(start, end)` instead.
-   */
-  sliceBytes(start: i32, end: i32): String {
-    return this.unsafeSliceBytes(start, end);
   }
 
   /**
@@ -1243,7 +1213,7 @@ export final class String implements Hashable, Stringable, Iterable<String> {
       if (__byte_array_get(this.#data, currentIndex) == firstByte &&
           __byte_array_get(this.#data, currentIndex + lastIndex) == lastByte &&
           (sepLength <= 2 || this.#regionEquals(separator, currentIndex + 1, separator.#start + 1, sepLength - 2))) {
-        result[partIdx] = this.unsafeSliceBytes(lastStart, i);
+        result[partIdx] = this.#byteSlice(lastStart, i);
         partIdx += 1;
         i += sepLength;
         lastStart = i;
@@ -1252,7 +1222,7 @@ export final class String implements Hashable, Stringable, Iterable<String> {
       }
     }
     // Add the last part
-    let lastPart = this.unsafeSliceBytes(lastStart, haystackLength);
+    let lastPart = this.#byteSlice(lastStart, haystackLength);
     result[partIdx] = lastPart;
 
     return result;
@@ -1459,7 +1429,7 @@ export final class String implements Hashable, Stringable, Iterable<String> {
     if (start == 0 && end == len) {
       return this;
     }
-    return this.unsafeSliceBytes(start, end);
+    return this.#byteSlice(start, end);
   }
 
   #mapAscii(lower: boolean): String {
@@ -1617,7 +1587,7 @@ export final extension class StringGraphemes on String implements Iterable<Strin
     let end = this.endIndex;
     while ((cur as i32) < (end as i32)) {
       let next = this.indexAfter(cur);
-      out[i] = this.unsafeSliceBytes(cur as i32, next as i32);
+      out[i] = this.slice(cur, next);
       cur = next;
       i += 1;
     }
@@ -1727,8 +1697,43 @@ export final class StringUtf8View implements Iterable<u8> {
   #data: ByteArray;
   #start: i32;
   #end: i32;
+  /** Where the string's own contents begin in `#data`. */
+  #origin: i32;
+  /** Whether `#data` is the string's own WTF-8 storage. */
+  #native: boolean;
 
-  new(data: ByteArray, start: i32, end: i32) : #data = data, #start = start, #end = end;
+  new(data: ByteArray, start: i32, end: i32, origin: i32, native: boolean)
+      : #data = data, #start = start, #end = end, #origin = origin, #native = native;
+
+  /**
+   * The string's index for the UTF-8 offset `offset` into this view:
+   * `(true, index)` when the offset is within `[0, length]` and on a
+   * Unicode scalar boundary, else `(false, _)`. O(1) for a WTF-8 string,
+   * whose storage this view shares; for a WTF-16 string it counts the
+   * code units of the scalars before the offset.
+   */
+  indexAt(offset: i32): inline (true, StringIndex) | inline (false, _) {
+    let len = this.#end - this.#start;
+    if (offset < 0 || offset > len) {
+      return (false, _);
+    }
+    let at = this.#start + offset;
+    if (offset < len && (__byte_array_get(this.#data, at) & 0xC0) == 0x80) {
+      return (false, _);
+    }
+    if (this.#native) {
+      return (true, (at - this.#origin) as StringIndex);
+    }
+    var units = 0;
+    var pos = this.#origin;
+    while (pos < at) {
+      let b = __byte_array_get(this.#data, pos);
+      let width = if (b < 0x80) 1 else if (b < 0xE0) 2 else if (b < 0xF0) 3 else 4;
+      units += if (width == 4) 4 else 2;
+      pos += width;
+    }
+    return (true, units as StringIndex);
+  }
 
   /**
    * The number of UTF-8 bytes in this view.
@@ -1770,7 +1775,8 @@ export final class StringUtf8View implements Iterable<u8> {
     if (s < 0) { s = 0; }
     if (e > len) { e = len; }
     if (s > e) { s = e; }
-    return new StringUtf8View(this.#data, this.#start + s, this.#start + e);
+    return new StringUtf8View(this.#data, this.#start + s, this.#start + e,
+        this.#origin, this.#native);
   }
 
   /**
@@ -1861,8 +1867,52 @@ export final class StringUtf16View implements Iterable<u16> {
   #data: ByteArray;
   #start: i32;
   #end: i32;
+  /** Where the string's own contents begin in `#data`. */
+  #origin: i32;
+  /** Whether `#data` is the string's own WTF-16 storage. */
+  #native: boolean;
 
-  new(data: ByteArray, start: i32, end: i32) : #data = data, #start = start, #end = end;
+  new(data: ByteArray, start: i32, end: i32, origin: i32, native: boolean)
+      : #data = data, #start = start, #end = end, #origin = origin, #native = native;
+
+  /**
+   * The string's index for the code unit offset `offset` into this view:
+   * `(true, index)` when the offset is within `[0, length]` and does not
+   * split a surrogate pair, else `(false, _)`. O(1) for a WTF-16 string,
+   * whose storage this view shares; for a WTF-8 string it counts the
+   * bytes of the scalars before the offset.
+   */
+  indexAt(offset: i32): inline (true, StringIndex) | inline (false, _) {
+    let len = (this.#end - this.#start) >> 1;
+    if (offset < 0 || offset > len) {
+      return (false, _);
+    }
+    let at = this.#start + (offset << 1);
+    if (offset > 0 && offset < len) {
+      let prev = __byte_array_get(this.#data, at - 2) | (__byte_array_get(this.#data, at - 1) << 8);
+      let curr = __byte_array_get(this.#data, at) | (__byte_array_get(this.#data, at + 1) << 8);
+      if (prev >= 0xD800 && prev <= 0xDBFF && curr >= 0xDC00 && curr <= 0xDFFF) {
+        return (false, _);
+      }
+    }
+    if (this.#native) {
+      return (true, (at - this.#origin) as StringIndex);
+    }
+    var bytes = 0;
+    var pos = this.#origin;
+    while (pos < at) {
+      let unit = __byte_array_get(this.#data, pos) | (__byte_array_get(this.#data, pos + 1) << 8);
+      if (unit >= 0xD800 && unit <= 0xDBFF && pos + 2 < at) {
+        // A surrogate pair is one four-byte scalar.
+        bytes += 4;
+        pos += 4;
+      } else {
+        bytes += if (unit < 0x80) 1 else if (unit < 0x800) 2 else 3;
+        pos += 2;
+      }
+    }
+    return (true, bytes as StringIndex);
+  }
 
   /**
    * The number of 16-bit code units in this view.
@@ -1908,7 +1958,8 @@ export final class StringUtf16View implements Iterable<u16> {
     if (s < 0) { s = 0; }
     if (e > len) { e = len; }
     if (s > e) { s = e; }
-    return new StringUtf16View(this.#data, this.#start + (s << 1), this.#start + (e << 1));
+    return new StringUtf16View(this.#data, this.#start + (s << 1), this.#start + (e << 1),
+        this.#origin, this.#native);
   }
 
   /**
@@ -1999,7 +2050,7 @@ final class StringGraphemeIterator implements Iterator<String> {
     let start = this.#pos;
     let nextPos = this.#str.indexAfter(start);
     this.#pos = nextPos;
-    return (1, this.#str.unsafeSliceBytes(start as i32, nextPos as i32), _);
+    return (1, this.#str.slice(start, nextPos), _);
   }
 }
 

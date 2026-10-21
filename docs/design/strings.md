@@ -34,7 +34,6 @@ export final class String implements Iterable<String>, Hashable {
   #encoding: Encoding; // WTF8 or WTF16
 
   isEmpty: boolean { get => this.#end == this.#start; }
-  byteLength: i32 { get => this.#end - this.#start; }
 
   startIndex: StringIndex { get => 0 as StringIndex; }
   endIndex: StringIndex { get => (this.#end - this.#start) as StringIndex; }
@@ -42,7 +41,7 @@ export final class String implements Iterable<String>, Hashable {
   // Grapheme cluster at `index` as a zero-copy String slice
   operator [](index: StringIndex): String {
     let next = this.indexAfter(index);
-    return this.unsafeSliceBytes(index as i32, next as i32);
+    return this.slice(index, next);
   }
 
   // Zero-copy slice between two validated StringIndex boundaries
@@ -67,7 +66,7 @@ Slicing creates a new `String` that shares the backing `ByteArray`:
 
 ```zena
 let json = readFile("data.json");        // String: #start=0, #end=10000
-let key = json.unsafeSliceBytes(100, 110); // String: shares #data, #start=100, #end=110
+let key = json[start..end];              // String: shares #data, #start=100, #end=110
 let owned = key.copy();                  // New String: owns its own ByteArray
 ```
 
@@ -107,7 +106,8 @@ WTF-8/WTF-16, so well-formed strings work identically.
 **When do unpaired surrogates occur?**
 
 - Receiving a string from JS that contains them
-- Slicing a string at an unvalidated byte offset with `unsafeSliceBytes`
+- Slicing a string at an unvalidated byte offset with the deprecated
+  `sliceBytes`
 
 Strings that originate entirely from Zena (literals, concatenation, and
 `StringIndex` slices) preserve scalar boundaries.
@@ -227,13 +227,16 @@ export opaque type StringIndex = i32;
 
 Outside `zena:core`, `StringIndex` is opaque (`0 as StringIndex` is a compile
 error), and every `StringIndex` produced by `String` is guaranteed to lie on a
-valid Unicode scalar boundary (`0 <= offset <= byteLength`). At runtime,
-`StringIndex` erases to an unboxed `i32`.
+valid Unicode scalar boundary of the string's own encoding. At runtime,
+`StringIndex` erases to an unboxed `i32`: an offset in that encoding, which
+is why `String` exposes no byte-level API of its own. The bytes belong to the
+views, `str.utf8` and `str.utf16`, and each view maps its own offsets back to
+`StringIndex` with `indexAt`.
 
 #### Navigation
 
 - `str.startIndex: StringIndex` — index of the first character (`0`).
-- `str.endIndex: StringIndex` — "past the end" index (`byteLength`).
+- `str.endIndex: StringIndex` — "past the end" index.
 - `str.indexAfter(i: StringIndex): StringIndex` — next extended grapheme
   cluster boundary after `i`.
 - `str.indexBefore(i: StringIndex): StringIndex` — previous extended grapheme
@@ -245,9 +248,15 @@ valid Unicode scalar boundary (`0 <= offset <= byteLength`). At runtime,
 - `str.indexOffsetBy(from: StringIndex, count: i32): inline (true, StringIndex) | inline (false, _)` —
   advances `from` by `count` grapheme clusters (or steps backward when
   `count < 0`), returning `(false, _)` if stepping moves past the string bounds.
-- `str.validateByteIndex(byteOffset: i32): inline (true, StringIndex) | inline (false, _)` —
-  validates in $O(1)$ that `byteOffset` is in `[0, byteLength]` and lies on a
-  UTF-8 scalar boundary (not a continuation byte `0b10xxxxxx`).
+- `str.utf8.indexAt(offset: i32): inline (true, StringIndex) | inline (false, _)` —
+  the string's index for a UTF-8 offset into the view, when the offset is in
+  `[0, length]` and on a scalar boundary (not a continuation byte
+  `0b10xxxxxx`). $O(1)$ when the view shares the string's storage (a WTF-8
+  string); for a WTF-16 string it counts the code units of the scalars before
+  the offset. `str.utf16.indexAt` is the same for code unit offsets, rejecting
+  an offset that splits a surrogate pair, $O(1)$ for a WTF-16 string. A
+  sub-view from `slice` maps offsets relative to itself, so an index found in
+  a sub-view still indexes the whole string.
 
 #### Table-Free Grapheme Cluster Segmentation
 
@@ -320,28 +329,27 @@ if (let (true, pos) = s.indexOf("é")) {
 }
 ```
 
-Low-level byte operations use explicit names that surface their encoding
-assumptions:
+`String` has no byte-level operations of its own, because what bytes a
+string has depends on its encoding: a WTF-8 and a WTF-16 string of the same
+text differ in length and in every offset. Byte-level work goes through a
+view, `str.utf8` or `str.utf16`, which reads one encoding whatever the
+string's own; `view[i]` reads a unit, `view.slice(start, end)` narrows the
+view, and `view.indexAt(offset)` turns a view offset on a scalar boundary into
+the `StringIndex` that slices the string (`str[a..b]`).
 
-- `str.unsafeByteAt(index: i32): i32` — returns the raw byte at `index` without
-  UTF-8 boundary checks.
-- `str.unsafeSliceBytes(start: i32, end: i32): String` — returns a zero-copy
-  byte slice `[start, end)` without verifying UTF-8 scalar boundaries.
-
-The older byte-oriented names (`length`, `getByteAt`, `sliceBytes`, and
-`codePointAt(index: i32)`) are marked `@deprecated` in favor of `byteLength`,
-`isEmpty`, `graphemes.count()`, `codePoints.count()`, `utf8[i]`, `utf16[i]`,
-`unsafeByteAt`, `unsafeSliceBytes`, and `codePointAt(index: StringIndex)`.
+The older byte-oriented names on `String` (`length`, `getByteAt`,
+`sliceBytes`, and `codePointAt(index: i32)`) read the string's own encoding
+and are marked `@deprecated` in favor of `isEmpty`, `graphemes.count()`,
+`codePoints.count()`, the views, and `codePointAt(index: StringIndex)`.
 
 ### Length
 
 - `str.isEmpty: boolean` — `O(1)` check for an empty string.
-- `str.byteLength: i32` — `O(1)` length in encoded backing bytes.
 - `str.utf8.length: i32` — length in UTF-8 bytes (`O(1)` on `StringUtf8View`).
 - `str.utf16.length: i32` — length in UTF-16 code units (`O(1)` on `StringUtf16View`).
 - `str.graphemes.count(): i32` — `O(n)` count of extended grapheme clusters.
 - `str.codePoints.count(): i32` — `O(n)` count of Unicode scalar values.
-- `str.length: i32` (_deprecated_) — alias for `byteLength`.
+- `str.length: i32` (_deprecated_) — length in the string's own encoding.
 
 | String         | `utf8.length` | `utf16.length` | `codePoints.count()` | `graphemes.count()` |
 | -------------- | ------------- | -------------- | -------------------- | ------------------- |
@@ -535,17 +543,19 @@ See [optimizations.md](optimizations.md) for the complete devirtualization strat
 
 ## Summary: Operation Costs
 
-| Operation                               | Time | Allocates?                    | Shares Memory? |
-| --------------------------------------- | ---- | ----------------------------- | -------------- |
-| `str[start..end]` / `slice`             | O(1) | Yes (String struct only)      | Yes            |
-| `str[i]`                                | O(1) | Yes (String struct only)      | Yes            |
-| `str.copy()`                            | O(n) | Yes (ByteArray + String)      | No             |
-| `str.reverse()`                         | O(n) | Yes (ByteArray + String)      | No             |
-| `str + other`                           | O(n) | Yes (ByteArray + String)      | No             |
-| `str == other`                          | O(n) | No                            | N/A            |
-| `str.byteLength` / `isEmpty`            | O(1) | No                            | N/A            |
-| `str.utf8` / `str.utf16` (same enc)     | O(1) | Yes (View struct only)        | Yes            |
-| `str.utf8` / `str.utf16` (transcoded)   | O(n) | Yes (ByteArray + View struct) | No             |
-| `utf8[i]` / `utf16[i]` / `unsafeByteAt` | O(1) | No                            | N/A            |
-| `str.graphemes.count()`                 | O(n) | No                            | N/A            |
-| `str.codePoints.count()`                | O(n) | No                            | N/A            |
+| Operation                              | Time | Allocates?                    | Shares Memory? |
+| -------------------------------------- | ---- | ----------------------------- | -------------- |
+| `str[start..end]` / `slice`            | O(1) | Yes (String struct only)      | Yes            |
+| `str[i]`                               | O(1) | Yes (String struct only)      | Yes            |
+| `str.copy()`                           | O(n) | Yes (ByteArray + String)      | No             |
+| `str.reverse()`                        | O(n) | Yes (ByteArray + String)      | No             |
+| `str + other`                          | O(n) | Yes (ByteArray + String)      | No             |
+| `str == other`                         | O(n) | No                            | N/A            |
+| `str.isEmpty`                          | O(1) | No                            | N/A            |
+| `str.utf8` / `str.utf16` (same enc)    | O(1) | Yes (View struct only)        | Yes            |
+| `str.utf8` / `str.utf16` (transcoded)  | O(n) | Yes (ByteArray + View struct) | No             |
+| `utf8[i]` / `utf16[i]` / `view.length` | O(1) | No                            | N/A            |
+| `view.indexAt(i)` (same enc)           | O(1) | No                            | N/A            |
+| `view.indexAt(i)` (transcoded)         | O(n) | No                            | N/A            |
+| `str.graphemes.count()`                | O(n) | No                            | N/A            |
+| `str.codePoints.count()`               | O(n) | No                            | N/A            |
