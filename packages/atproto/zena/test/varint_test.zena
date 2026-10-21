@@ -1,0 +1,80 @@
+import {suite, test} from 'zena:test';
+import {equal, throws} from 'zena:assert';
+import {ByteBuffer} from 'zena:core';
+import {fromHex, toHex} from 'atproto:bytes';
+import {readVarint, varintLength, writeVarint} from 'atproto:varint';
+
+let encode = (value: i64): String => {
+  let out = new ByteBuffer();
+  writeVarint(out, value);
+  return toHex(out.toByteArray());
+};
+
+let decode = (hex: String): i64 => {
+  let bytes = fromHex(hex);
+  let (value, next) = readVarint(bytes, 0, bytes.length);
+  equal(next, bytes.length);
+  return value;
+};
+
+// From the examples in https://github.com/multiformats/unsigned-varint.
+let examples: Array<(i64, String)> = [
+  (1 as i64, '01'),
+  (127 as i64, '7f'),
+  (128 as i64, '8001'),
+  (255 as i64, 'ff01'),
+  (300 as i64, 'ac02'),
+  (16384 as i64, '808001'),
+];
+
+export let tests = suite('atproto:varint', () => {
+  test('encodes the specification examples', (ctx) => {
+    for (let (value, hex) in examples) {
+      equal(encode(value), hex);
+      equal(varintLength(value), hex.length >> 1);
+    }
+  });
+
+  test('decodes the specification examples', (ctx) => {
+    for (let (value, hex) in examples) {
+      equal(decode(hex), value);
+    }
+  });
+
+  test('round-trips the largest value', (ctx) => {
+    let max: i64 = 0x7fffffffffffffff;
+    equal(encode(max), 'ffffffffffffffff7f');
+    equal(decode('ffffffffffffffff7f'), max);
+  });
+
+  test('reads from an offset and stops at the end of the varint', (ctx) => {
+    let bytes = fromHex('00ac02ff');
+    let (value, next) = readVarint(bytes, 1, bytes.length);
+    equal(value, 300 as i64);
+    equal(next, 3);
+  });
+
+  test('rejects a truncated varint', (ctx) => {
+    throws(() => {
+      decode('80');
+    });
+  });
+
+  test('rejects a varint that is not the shortest encoding', (ctx) => {
+    throws(() => {
+      decode('8000');
+    });
+  });
+
+  test('rejects a varint longer than nine bytes', (ctx) => {
+    throws(() => {
+      decode('80808080808080808001');
+    });
+  });
+
+  test('rejects a negative value', (ctx) => {
+    throws(() => {
+      encode(-1 as i64);
+    });
+  });
+});
