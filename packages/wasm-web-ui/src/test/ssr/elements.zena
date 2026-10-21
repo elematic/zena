@@ -1,0 +1,52 @@
+/**
+ * Templates rendered two ways by `ssr_test.ts`: in the browser host's
+ * shape through `@lit-labs/ssr`, from this file compiled for the js
+ * target, and by the elements library's own renderer, from this file
+ * compiled for `zena-cli` through `render.zena`. The two outputs have to
+ * agree byte for byte, since Lit's hydration reads one and the host
+ * attaches the module's instances to the other.
+ */
+import {
+  ZenaElement, property, defineElement, html, css, TemplateResult, TemplateValue, Event,
+} from 'zena:web-elements';
+
+class Counter extends ZenaElement {
+  @property var count: i32 = 0;
+  @property var label: String = 'Count';
+  @property var disabled: boolean = false;
+
+  styles() {
+    return css`button { font: inherit; }`;
+  }
+
+  render() {
+    return html`<button ?disabled=${this.disabled} @click=${(e) => { this.count += 1; }}>${this.label}: ${this.count}</button>`;
+  }
+}
+
+export let counterElement = defineElement('x-counter', () => new Counter());
+
+/** Attribute bindings: joined text, an unquoted single value, escaping. */
+export let attributes = (): TemplateResult =>
+  html`<a class="link ${'a'} ${'b'}" href=${'/x?y=1&z=2'} title="it is ${'q'}">${'<text> & more'}</a>`;
+
+/** A list of templates, and null, a float and a boolean as children. */
+export let list = (): TemplateResult => {
+  let rows = new GrowableArray<TemplateValue>();
+  for (var i = 0; i < 3; i += 1) {
+    rows.push(html`<li class=${if (i == 1) 'odd' else 'even'}>${i}</li>`);
+  }
+  return html`<ul>${rows}</ul><p>${null}${2.5}${true}</p>`;
+};
+
+/** A comment, a void element, a reflected property, a nested template. */
+export let nested = (): TemplateResult =>
+  html`<section><!-- a comment --><div><input .value=${'v'} ?checked=${false}><br>${html`<em>${'deep'}</em>`}</div></section>`;
+
+/** An element's own template at a given state. */
+export let counterView = (count: i32): TemplateResult => {
+  let counter = new Counter();
+  counter.count = count;
+  counter.disabled = true;
+  return counter.render();
+};

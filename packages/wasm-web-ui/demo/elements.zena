@@ -1,0 +1,204 @@
+/**
+ * The demo page's elements: a counter and a todo list, built for the js
+ * target and loaded by demo.js.
+ *
+ * This file is also a tour of what the Zena side of Wasm Web UI looks
+ * like today, with the rough edges called out where they are. The module
+ * imports nothing that can reach the page: it returns templates, and the
+ * host registers `<x-counter>` and `<x-todo>` from the definitions below
+ * and forwards their lifecycle here.
+ */
+import {
+  ZenaElement, property, state, defineElement, declareElement,
+  html, css, TemplateResult, TemplateValue, Event,
+} from 'zena:web-elements';
+
+/**
+ * An element is a class extending `ZenaElement` with a `render` method.
+ * `ZenaElement` carries the lifecycle (`connected`, `disconnected`,
+ * `attributeChanged`, `updated`), `requestUpdate` and `dispatchEvent`.
+ */
+class Counter extends ZenaElement {
+  /**
+   * `@property` is a field decorator. It stores the value in the
+   * element, asks the host for a render when the field is written (what
+   * Lit's `@property` setter does), and declares the field to the host:
+   * the decorator's body reads its `context` — the field's name and its
+   * accessors as functions over the element — and registers them while
+   * `defineElement` constructs one probe instance. The host then puts a
+   * `count` property on the element and observes a `count` attribute.
+   * Nothing names the property twice.
+   */
+  @property var count: i32 = 0;
+  @property var step: i32 = 1;
+  @property var disabled: boolean = false;
+
+  /**
+   * Styles, as Lit's `static styles`: the host reads them once per
+   * definition and adopts one constructed stylesheet into every
+   * instance's shadow root. A method rather than a static because a
+   * static is reachable only through the class name, and the definition
+   * has no class value to go through.
+   */
+  styles() {
+    return css`
+      :host { display: inline-block; font: 16px system-ui, sans-serif; }
+      button { font: inherit; padding: 0.4em 0.8em; }`;
+  }
+
+  /**
+   * No return type: an override takes the overridden method's, here
+   * `TemplateResult` from `ZenaElement.render`. A method that overrides
+   * nothing and has no annotation is `void`, since methods do not infer
+   * from their bodies.
+   *
+   * `${this.count}` interpolates a number. Zena never boxes a primitive
+   * on its own, but `html` accepts `Box<i32>` among its values, and a
+   * tag that accepts a primitive's box is asking for it: the checker
+   * wraps the interpolation in one.
+   *
+   * The listener's parameter needs no type: the template's value type is
+   * a union with one function member, `(event: Event) => void`, and an
+   * arrow written there takes its parameter types from it.
+   */
+  render() {
+    return html`
+      <button ?disabled=${this.disabled}
+          @click=${(e) => { this.count += this.step; }}>
+        Count: ${this.count}
+      </button>`;
+  }
+}
+
+/**
+ * `defineElement(tag, create)` records what the host needs to define the
+ * custom element:
+ *
+ * - `tag`: the name the host registers. `declareElement` (used for the
+ *   badge below) leaves it out, and the page names the element instead.
+ * - `create`: a factory. It is a closure rather than `Counter` itself
+ *   because a class is not a value in Zena: there is no constructor
+ *   reference (`Counter.new`) and no "class as value" yet. classes.md
+ *   §11 designs the latter as a static vtable behind an interface; a
+ *   constructor reference typed `() => Counter` is the smaller feature
+ *   and the one this call wants.
+ *
+ * The properties come from the class's decorators: `defineElement`
+ * constructs one instance, whose `@property` and `@state` fields
+ * register themselves. That instance is kept to decide each property's
+ * kind (text, number, boolean, host value) from its value.
+ *
+ * A module body holds only declarations, so the definition is a `let`;
+ * the entry module's declarations run at start, before the host reads
+ * the definitions.
+ */
+export let counterElement = defineElement('x-counter', () => new Counter());
+
+/** A plain class the element keeps in its state. Nothing crosses the boundary. */
+class Todo {
+  text: String;
+  var done = false;
+
+  new(this.text);
+}
+
+class TodoList extends ZenaElement {
+  /** `@state`: re-renders on write, declared to the host without an attribute. */
+  @state var draft: String = '';
+  @property var title: String = 'Todos';
+  var items = new GrowableArray<Todo>();
+
+  add(): void {
+    if (this.draft.length > 0) {
+      this.items.push(new Todo(this.draft));
+      this.draft = '';
+    }
+  }
+
+  /**
+   * `items` is a plain field, so a change to it does not schedule a
+   * render on its own; `requestUpdate` asks for one, as in Lit.
+   */
+  toggle(item: Todo): void {
+    item.done = !item.done;
+    this.requestUpdate();
+  }
+
+  remaining(): i32 {
+    var n = 0;
+    for (let item in this.items) {
+      if (!item.done) {
+        n += 1;
+      }
+    }
+    return n;
+  }
+
+  /**
+   * A list is interpolated as an iterable of `TemplateValue`. Generic
+   * interfaces are invariant, so the array is typed by the union; a
+   * `GrowableArray<TemplateResult>` would be rejected at the hole.
+   *
+   * `e.targetValue()` and `e.key()` are capability imports: the page
+   * grants them at instantiation (`webUiImports` in demo.js), and a
+   * module links only the ones its listeners call. This module's
+   * import list is `env.captureStackTrace`, `event_target_value`,
+   * `event_key` and `request_update`: the page can see that it reads
+   * input values and keys, and nothing else.
+   */
+  styles() {
+    return css`
+      :host { display: block; font: 16px system-ui, sans-serif; max-width: 24em; }
+      ul { padding-left: 1.2em; }
+      .done { text-decoration: line-through; color: #888; }
+      input[type=text] { font: inherit; }`;
+  }
+
+  render() {
+    let rows = new GrowableArray<TemplateValue>();
+    for (let item in this.items) {
+      rows.push(html`
+        <li class=${if (item.done) 'done' else ''}>
+          <label>
+            <input type="checkbox" .checked=${item.done}
+                @change=${(e) => { this.toggle(item); }}>
+            ${item.text}
+          </label>
+        </li>`);
+    }
+    return html`
+      <h2>${this.title}</h2>
+      <input type="text" placeholder="What needs doing?" .value=${this.draft}
+          @input=${(e) => { this.draft = e.targetValue(); }}
+          @keydown=${(e) => { if (e.key() == 'Enter') { this.add(); } }}>
+      <button @click=${(e) => { this.add(); }}>Add</button>
+      <ul>${rows}</ul>
+      <p>${this.remaining()} of ${this.items.length} remaining</p>`;
+  }
+}
+
+export let todoElement = defineElement('x-todo', () => new TodoList());
+
+/**
+ * An element the module declares without naming. The page builds its
+ * class with `elements.classFor` and registers it under a tag of its
+ * own choosing (demo.js registers it as `<page-badge>`), which is how
+ * one module serves pages that disagree about tag names, or a scoped
+ * registry. Registration is the page's act either way: `defineElement`
+ * only records a suggested tag.
+ */
+class Badge extends ZenaElement {
+  @property var text: String = 'badge';
+
+  styles() {
+    return css`
+      :host { display: inline-block; padding: 0.1em 0.5em; border-radius: 1em;
+              background: #246; color: white; font: 14px system-ui, sans-serif; }`;
+  }
+
+  render() {
+    return html`${this.text}`;
+  }
+}
+
+export let badgeElement = declareElement(() => new Badge());
