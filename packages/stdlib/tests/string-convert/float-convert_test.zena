@@ -151,6 +151,42 @@ export let tests = suite('float conversion', () => {
     equal(bitsOf(parseF64("-0xFF")), bitsOf(0.0 - 255.0));
   });
 
+  // -- what JavaScript's parseFloat reads ------------------------------
+
+  test('reads the number at the start and ignores the rest', (ctx) => {
+    equal(bitsOf(parseF64("12abc")), bitsOf(12.0));
+    equal(bitsOf(parseF64("1.5.5")), bitsOf(1.5));
+    equal(bitsOf(parseF64("1e5x")), bitsOf(100000.0));
+    equal(bitsOf(parseF64("1e")), bitsOf(1.0));
+    equal(bitsOf(parseF64("1e+")), bitsOf(1.0));
+    equal(bitsOf(parseF64("1_000")), bitsOf(1.0));
+  });
+
+  test('reads no number after leading whitespace', (ctx) => {
+    // JavaScript's parseFloat skips it; see parseF64 for why this does not.
+    for (let text in [" 1.5", "\t2", "\n3", " 0x10"]) {
+      let value = parseF64(text);
+      equal(value != value, true, `parseF64("${text}")`);
+    }
+    // Trailing whitespace ends the number, like anything else.
+    equal(bitsOf(parseF64("4 ")), bitsOf(4.0));
+  });
+
+  test('reads Infinity', (ctx) => {
+    equal(f64ToString(parseF64("Infinity")), "Infinity");
+    equal(f64ToString(parseF64("-Infinity")), "-Infinity");
+    equal(f64ToString(parseF64("+Infinityx")), "Infinity");
+    let lower = parseF64("infinity");
+    equal(lower != lower, true);
+  });
+
+  test('is NaN when there is no number', (ctx) => {
+    for (let text in ["", "-", "+", ".", "-.", "e5", "abc", "NaN", "Inf", "x"]) {
+      let value = parseF64(text);
+      equal(value != value, true, `parseF64("${text}")`);
+    }
+  });
+
   // -- fixed-width printing --------------------------------------------
 
   test('prints a fixed number of significant digits', (ctx) => {

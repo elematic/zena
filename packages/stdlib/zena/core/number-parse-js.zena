@@ -1,62 +1,55 @@
 /**
  * String-to-float parsing on the JavaScript target (--target js).
  *
- * The decimal conversion is the host's own `parseFloat`, which
- * `@zena-lang/runtime` passes as the `zena:host:number` import of that name.
- * The byte targets' `parseF64` in `string-convert.zena` is several kilobytes
- * of tables and correctly rounded scaling; `parseFloat` rounds correctly
- * too.
+ * `parseF64` reads what JavaScript's `parseFloat` reads, apart from two
+ * things (see `string-convert.zena`): `0x` and hex digits after an optional
+ * sign, which Zena adds, and leading whitespace, which `parseFloat` skips
+ * and Zena does not. So this parses hex itself, returns NaN for a string
+ * that starts with anything a number cannot start with, and otherwise
+ * calls the host's own `parseFloat`, which `@zena-lang/runtime` passes
+ * unwrapped as the `zena:host:number` import of that name.
  *
- * The grammars differ only at the start of the string. After an optional
- * sign, `parseFloat` reads the same prefix `string-convert.zena` does —
- * digits, an optional fraction, an optional exponent, stopping at anything
- * else — but it also skips leading whitespace and reads `Infinity`, where
- * Zena reads no number and returns 0, and it does not read `0x`. So this
- * checks the start, parses hex itself, and hands the rest over whole.
- *
- * `parseFloat` returns the correctly rounded value in two cases where
- * `string-convert.zena` does not: past 19 significant digits, where
- * `decimalToF64` documents that it can be one ulp off, and where an
- * exponent above 100,000, at which `string-convert.zena` saturates, is
- * offset by a mantissa of more than 100,000 digits.
+ * `parseFloat` is correctly rounded everywhere. `string-convert.zena` is not
+ * quite: past 19 significant digits `decimalToF64` documents that it can be
+ * one ulp off, and it saturates an exponent above 100,000, which matters
+ * only when a mantissa of more than 100,000 digits offsets it.
  */
 
 @external("zena:host:number", "parseFloat")
 declare function __parse_float(s: externref): f64;
 
-let isDigit = (c: i32): boolean => c >= 48 && c <= 57;
-
 /**
- * Parses a decimal (or hexadecimal) number string to the NEAREST f64,
- * correctly rounded.
+ * Parses the number at the start of `s` to the NEAREST f64, correctly
+ * rounded: an optional sign, then `Infinity`, `0x` and hex digits, or a
+ * decimal with an optional fraction and exponent. A string that does not
+ * start with one is NaN.
  */
 export let parseF64 = (s: String): f64 => {
-  // Past the end reads as 0, which is none of the characters below.
   let len = s.length;
-  let sign = if (len > 0) s.charCodeAt(0) else 0;
-  let i = if (sign == 45 || sign == 43) 1 else 0; // '-' or '+'
-  let first = if (i < len) s.charCodeAt(i) else 0;
-  let second = if (i + 1 < len) s.charCodeAt(i + 1) else 0;
-
-  // Hex: an integer accumulated a digit at a time, as string-convert.zena
-  // does, so it rounds the same way past 53 bits.
-  if (first == 48 && (second | 0x20) == 120) { // "0x" or "0X"
+  let first = if (len > 0) s.charCodeAt(0) else 0;
+  let i = if (first == 45 || first == 43) 1 else 0; // '-' or '+'
+  if (i + 1 < len && s.charCodeAt(i) == 48 && (s.charCodeAt(i + 1) | 0x20) == 120) {
+    // Hex: an integer accumulated a digit at a time, as string-convert.zena
+    // does, so it rounds the same way past 53 bits.
     var value = 0.0;
     var k = i + 2;
     while (k < len) {
       let c = s.charCodeAt(k);
       let letter = (c | 0x20) - 87; // 'a'..'f' and 'A'..'F' are 10..15
-      let digit = if (isDigit(c)) c - 48 else if (letter >= 10 && letter <= 15) letter else -1;
+      let digit = if (c >= 48 && c <= 57) c - 48
+          else if (letter >= 10 && letter <= 15) letter
+          else -1;
       if (digit < 0) { break; }
       value = value * 16.0 + (digit as f64);
       k += 1;
     }
-    return if (sign == 45) 0.0 - value else value;
+    return if (first == 45) 0.0 - value else value;
   }
-
-  // A decimal starts with a digit, or a point and then a digit.
-  if (!isDigit(if (first == 46) second else first)) {
-    return 0.0;
+  // A number starts with a sign, a point, a digit or the I of Infinity.
+  // Anything else is not a number to either, except whitespace, which
+  // `parseFloat` would skip.
+  if (!(i == 1 || first == 46 || first == 73 || (first >= 48 && first <= 57))) {
+    return 0.0 / 0.0;
   }
   return __parse_float(s.handle);
 };

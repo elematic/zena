@@ -195,6 +195,17 @@ for (const text of [
   '9007199254740993',
   '18446744073709551615',
   '1é',
+  'Infinity',
+  '-Infinityx',
+  '+Infinity',
+  'infinity',
+  'Inf',
+  ' \t1.5',
+  ' 0x10',
+  '        　﻿2',
+  '​3',
+  '\u00854',
+  '୬5',
 ])
   parse(text);
 
@@ -289,8 +300,17 @@ const instantiated = await instantiate(
 );
 const js = (instantiated.instance ?? instantiated).exports;
 
+// A parsed float as the comparison sees it: its bits, or NaN, whose bits
+// the two targets need not agree on.
+const parsedText = (v) => (Number.isNaN(v) ? 'NaN' : f64ToBits(v).toString());
+for (let i = 0; i < cases.length; i++) {
+  if (cases[i][0] === 'parse') {
+    zena[i] = parsedText(bitsToF64(BigInt(zena[i])));
+  }
+}
+
 const host = ([kind, args]) => {
-  if (kind === 'parse') return f64ToBits(js.parse(args)).toString();
+  if (kind === 'parse') return parsedText(js.parse(args));
   const [a, b] = args.split(' ');
   if (kind === 'f32') return js.printF32(bitsToF32(Number(a)));
   const v = bitsToF64(BigInt.asUintN(64, BigInt(a)));
@@ -317,7 +337,25 @@ const isKnownLongParse = ([kind, text], got) =>
 let failures = 0;
 let knownLong = 0;
 const perKind = new Map();
+// `parseF64` reads what `parseFloat` reads, except `0x` at the start and
+// leading whitespace, which `parseFloat` skips and Zena reads as no number.
+// JavaScript's `\s` is the whitespace `parseFloat` skips.
+const isHex = (text) => /^[-+]?0[xX]/.test(text);
 cases.forEach((c, i) => {
+  if (c[0] === 'parse' && !isHex(c[1])) {
+    const want = /^\s/.test(c[1]) ? 'NaN' : parsedText(parseFloat(c[1]));
+    if (zena[i] !== want && !isKnownLongParse(c, want)) {
+      perKind.set(
+        'parse vs parseFloat',
+        (perKind.get('parse vs parseFloat') || 0) + 1,
+      );
+      if (++failures <= 25) {
+        console.log(
+          `  FAIL parseFloat ${JSON.stringify(c[1])}: zena ${zena[i]}, want ${want}`,
+        );
+      }
+    }
+  }
   const got = host(c);
   if (got === zena[i]) return;
   if (isKnownLongParse(c, got)) {
