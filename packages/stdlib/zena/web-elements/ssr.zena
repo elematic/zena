@@ -1,0 +1,754 @@
+/**
+ * Server rendering for the elements layer, on the targets without a DOM
+ * host (docs/design/wasm-web-ui.md, "Server rendering and hydration").
+ *
+ * `renderElement` writes an element as its tag, its attributes and a
+ * declarative shadow root holding its styles and its rendered template;
+ * `renderResult` writes a template result on its own. Both write the
+ * markers Lit's hydration reads — `<!--lit-part DIGEST-->` around a
+ * template, `<!--lit-part-->` around a value, `<!--lit-node N-->` before
+ * an element with bindings — so a page rendered here hydrates in the
+ * browser with `@lit-labs/ssr-client`, and the host then attaches the
+ * module's instances to the elements.
+ *
+ * A template is scanned the way lit-html prepares it. A node index
+ * counts elements and comments in source order; a child binding is a
+ * comment node in lit-html's prepared template, so it counts too; an
+ * element is numbered when its start tag is seen. An element whose
+ * start tag holds a binding is preceded by `<!--lit-node N-->`, and its
+ * bound attributes are written from the values: an attribute from the
+ * text, a boolean attribute by presence, a property only where the
+ * property reflects to an attribute, an event never. The whitespace
+ * before a bound attribute stays whether or not the attribute is
+ * written, as it does in Lit's renderer, whose output this matches
+ * byte for byte on the templates the tests cover.
+ *
+ * Two things differ from Lit's own server renderer on purpose: `null` in
+ * an attribute omits the attribute, as Lit's `nothing` does, since
+ * `nothing` is `null` here; and a boolean bound to a reflecting property
+ * (`.checked`) reflects by presence rather than as the text `true` or
+ * `false`, which would check the box either way.
+ *
+ * Not supported, and reported: a binding inside a comment, inside a raw
+ * text element (`<style>`, `<script>`, `<textarea>`, `<title>`), in a
+ * tag name or in an end tag; a `?`, `.` or `@` binding with more than
+ * one expression; an element whose start tag ends in a later string
+ * than it began without a binding between.
+ */
+import { TemplateStringsArray, StringBuilder, i32ToString, i64ToString, f64ToString } from 'zena:core';
+import { Set } from 'zena:collections';
+import { TemplateResult, TemplateValue, HostValue, Listener } from 'zena:web-templates';
+import {
+  ZenaElement, ElementDefinition, PropertyDef, definitionFor, createElement, applyAttribute,
+  stylesOf, propertyForAttribute,
+} from './core.zena';
+
+/**
+ * Renders `definition` as an element: the tag with `attributes`, a
+ * declarative shadow root with the styles and the template, and the end
+ * tag. The attributes are applied to a fresh instance before it renders,
+ * as the host applies them on the page, so the markup matches what the
+ * page's instance will render from the same attributes. `tag` names a
+ * definition declared without one, or renames a tagged one, as the page
+ * does when it registers the class itself.
+ */
+export let renderElement = (definition: ElementDefinition,
+    attributes: Map<String, String>, tag: String = ''): String => {
+  let name = if (tag.length > 0) tag else definition.tag;
+  if (name.length == 0) {
+    throw new Error('renderElement: the definition has no tag; pass one');
+  }
+  let renderer = new Renderer();
+  renderer.element(definition, name, attributes, false);
+  return renderer.text();
+};
+
+/** Renders a template result with hydration markers. */
+export let renderResult = (result: TemplateResult): String => {
+  let renderer = new Renderer();
+  renderer.value(result);
+  return renderer.text();
+};
+
+/**
+ * Lit's digest of a template's strings, which hydration compares against
+ * the digest of the template it is given: two 32-bit DJB hashes over
+ * each string's UTF-16 code units, alternating per unit, as 8 bytes in
+ * base64.
+ */
+export let templateDigest = (strings: TemplateStringsArray): String => {
+  var h0 = 5381;
+  var h1 = 5381;
+  for (var si = 0; si < strings.length; si += 1) {
+    let s = strings[si];
+    var k = 0;
+    let len = s.length;
+    var i = 0;
+    while (i < len) {
+      let b = s.getByteAt(i);
+      var cp = 0;
+      var width = 1;
+      if (b < 0x80) {
+        cp = b;
+      } else if (b < 0xE0) {
+        cp = ((b & 0x1F) << 6) | (s.getByteAt(i + 1) & 0x3F);
+        width = 2;
+      } else if (b < 0xF0) {
+        cp = ((b & 0x0F) << 12) | ((s.getByteAt(i + 1) & 0x3F) << 6) | (s.getByteAt(i + 2) & 0x3F);
+        width = 3;
+      } else {
+        cp = ((b & 0x07) << 18) | ((s.getByteAt(i + 1) & 0x3F) << 12) |
+            ((s.getByteAt(i + 2) & 0x3F) << 6) | (s.getByteAt(i + 3) & 0x3F);
+        width = 4;
+      }
+      i += width;
+      if (cp >= 0x10000) {
+        let v = cp - 0x10000;
+        let high = 0xD800 | (v >> 10);
+        let low = 0xDC00 | (v & 0x3FF);
+        if ((k & 1) == 0) { h0 = (h0 * 33) ^ high; } else { h1 = (h1 * 33) ^ high; }
+        k += 1;
+        if ((k & 1) == 0) { h0 = (h0 * 33) ^ low; } else { h1 = (h1 * 33) ^ low; }
+        k += 1;
+      } else {
+        if ((k & 1) == 0) { h0 = (h0 * 33) ^ cp; } else { h1 = (h1 * 33) ^ cp; }
+        k += 1;
+      }
+    }
+  }
+  return base64Of8(h0, h1);
+};
+
+let base64Alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+
+/** Byte `index` (0..7) of the two hashes laid out little-endian. */
+let hashByte = (h0: i32, h1: i32, index: i32): i32 => {
+  let h = if (index < 4) h0 else h1;
+  return (h >> ((index & 3) * 8)) & 0xFF;
+};
+
+/** The eight bytes of two little-endian 32-bit hashes in base64, as `btoa` writes them. */
+let base64Of8 = (h0: i32, h1: i32): String => {
+  let out = new StringBuilder();
+  var i = 0;
+  while (i < 8) {
+    let b0 = hashByte(h0, h1, i);
+    let b1 = if (i + 1 < 8) hashByte(h0, h1, i + 1) else 0;
+    let b2 = if (i + 2 < 8) hashByte(h0, h1, i + 2) else 0;
+    out.appendByte(base64Alphabet.getByteAt(b0 >> 2));
+    out.appendByte(base64Alphabet.getByteAt(((b0 & 3) << 4) | (b1 >> 4)));
+    if (i + 1 < 8) {
+      out.appendByte(base64Alphabet.getByteAt(((b1 & 15) << 2) | (b2 >> 6)));
+    } else {
+      out.appendByte(0x3D);
+    }
+    if (i + 2 < 8) {
+      out.appendByte(base64Alphabet.getByteAt(b2 & 63));
+    } else {
+      out.appendByte(0x3D);
+    }
+    i += 3;
+  }
+  return out.toString();
+};
+
+/** Appends `s` with `&<>"'` escaped as Lit's renderer escapes them. */
+let appendEscaped = (out: StringBuilder, s: String): void => {
+  let len = s.length;
+  var start = 0;
+  for (var i = 0; i < len; i += 1) {
+    let b = s.getByteAt(i);
+    let replacement = if (b == 0x26) '&amp;'
+        else if (b == 0x3C) '&lt;'
+        else if (b == 0x3E) '&gt;'
+        else if (b == 0x22) '&quot;'
+        else if (b == 0x27) '&#39;'
+        else '';
+    if (replacement.length > 0) {
+      out.appendSlice(s, start, i);
+      out.append(replacement);
+      start = i + 1;
+    }
+  }
+  out.appendSlice(s, start, len);
+};
+
+/** Past this magnitude JavaScript writes a number in exponent form. */
+let exponentFrom = 1000000000000000000000.0;
+
+/** A number as JavaScript's `String(n)` writes it, for the common cases. */
+let numberText = (value: f64): String => {
+  let whole = value as i64;
+  if ((whole as f64) == value && value < exponentFrom && value > -exponentFrom) {
+    return i64ToString(whole);
+  }
+  return f64ToString(value);
+};
+
+/** The text of a value in an attribute or a child, as Lit's `String(v)`. */
+let valueText = (value: TemplateValue): String => {
+  if (value == null) {
+    return '';
+  }
+  if (value is String) {
+    return value as String;
+  }
+  if (value is Box<i32>) {
+    return i32ToString((value as Box<i32>).value);
+  }
+  if (value is Box<f64>) {
+    return numberText((value as Box<f64>).value);
+  }
+  if (value is Box<boolean>) {
+    return if ((value as Box<boolean>).value) 'true' else 'false';
+  }
+  return '';
+};
+
+/** Lit's truthiness of a value in a boolean attribute. */
+let truthy = (value: TemplateValue): boolean => {
+  if (value == null) {
+    return false;
+  }
+  if (value is Box<boolean>) {
+    return (value as Box<boolean>).value;
+  }
+  if (value is Box<i32>) {
+    return (value as Box<i32>).value != 0;
+  }
+  if (value is Box<f64>) {
+    return (value as Box<f64>).value != 0.0;
+  }
+  if (value is String) {
+    return (value as String).length > 0;
+  }
+  return true;
+};
+
+/**
+ * The attribute a bound property reflects to on an element, as Lit's
+ * renderer serializes it, or '' for a property that does not reflect.
+ * The common entries of Lit's table; `*` entries apply to every element.
+ */
+let reflectedAttribute = (tag: String, property: String): String => {
+  if (property == 'className') { return 'class'; }
+  if (property == 'id' || property == 'title' || property == 'lang' || property == 'dir' ||
+      property == 'slot' || property == 'style' || property == 'hidden' || property == 'draggable') {
+    return property;
+  }
+  if (property == 'tabIndex') { return 'tabindex'; }
+  if (tag == 'input' || tag == 'textarea' || tag == 'select' || tag == 'button' ||
+      tag == 'option') {
+    if (property == 'value' || property == 'checked' || property == 'disabled' ||
+        property == 'name' || property == 'type' || property == 'placeholder' ||
+        property == 'required' || property == 'selected' || property == 'min' ||
+        property == 'max' || property == 'step' || property == 'size') {
+      return property;
+    }
+    if (property == 'readOnly') { return 'readonly'; }
+    if (property == 'maxLength') { return 'maxlength'; }
+  }
+  if ((tag == 'a' || tag == 'area' || tag == 'link') && (property == 'href' || property == 'rel' ||
+      property == 'target')) {
+    return property;
+  }
+  if ((tag == 'img' || tag == 'source' || tag == 'iframe' || tag == 'script' ||
+      tag == 'video' || tag == 'audio') && (property == 'src' || property == 'alt' ||
+      property == 'width' || property == 'height')) {
+    return property;
+  }
+  if (tag == 'label' && property == 'htmlFor') { return 'for'; }
+  return '';
+};
+
+let isRawTextTag = (name: String): boolean =>
+  name == 'style' || name == 'script' || name == 'textarea' || name == 'title';
+
+let isSpace = (b: i32): boolean => b == 0x20 || b == 0x09 || b == 0x0A || b == 0x0D || b == 0x0C;
+
+let isNameChar = (b: i32): boolean =>
+  !isSpace(b) && b != 0x3E && b != 0x2F && b != 0x3D && b != 0x22 && b != 0x27;
+
+/** Where the scanner is in a template's text. */
+enum Scan {
+  Text,
+  Tag,
+  Comment,
+  RawText,
+}
+
+/** Where the scanner is inside a start tag. */
+enum TagScan {
+  Between,
+  Name,
+  AfterEq,
+  Unquoted,
+  Quoted,
+}
+
+/** The renderer: the output, and the depth of element hosts around it. */
+final class Renderer {
+  out = new StringBuilder();
+  /** Elements whose shadow root is being rendered, outermost first. */
+  var hostDepth = 0;
+
+  text(): String {
+    return this.out.toString();
+  }
+
+  /** `renderValue`: a child part, with the markers hydration reads. */
+  value(value: TemplateValue): void {
+    if (value is TemplateResult) {
+      let result = value as TemplateResult;
+      this.out.append('<!--lit-part ').append(templateDigest(result.strings)).append('-->');
+      this.template(result);
+      this.out.append('<!--/lit-part-->');
+      return;
+    }
+    this.out.append('<!--lit-part-->');
+    if (value == null || value is HostValue || value is Listener) {
+      // Nothing: a host value has no markup, and a listener runs on no
+      // server.
+    } else if (value is String || value is Box<i32> || value is Box<f64> || value is Box<boolean>) {
+      appendEscaped(this.out, valueText(value));
+    } else {
+      // What is left is the iterable member, packed as the interface;
+      // `case Iterable` is the test that recognizes the packed value.
+      match (value) {
+        case Iterable as iterable: {
+          for (let item in iterable) {
+            this.value(item);
+          }
+        }
+      }
+    }
+    this.out.append('<!--/lit-part-->');
+  }
+
+  /**
+   * An element: its tag with `attributes`, then its shadow root. The
+   * attributes that reflect into properties are written first, in the
+   * properties' declaration order, then the rest in the map's order.
+   * With `deferred`, the `defer-hydration` attribute Lit's hydration
+   * removes once the element's host has hydrated.
+   */
+  element(definition: ElementDefinition, tag: String, attributes: Map<String, String>,
+      deferred: boolean): void {
+    this.out.append('<').append(tag);
+    let written = new Set<String>();
+    for (let property in definition.properties) {
+      let name = property.attribute;
+      if (name.length > 0 && attributes.has(name)) {
+        this.attribute(name, attributes[name]);
+        written.add(name);
+      }
+    }
+    for (let entry in attributes) {
+      if (!written.has(entry.key)) {
+        this.attribute(entry.key, entry.value);
+      }
+    }
+    if (deferred) {
+      this.out.append(' defer-hydration');
+    }
+    this.out.append('>');
+    this.shadow(definition, attributes);
+    this.out.append('</').append(tag).append('>');
+  }
+
+  /** One attribute in a start tag, its value escaped. */
+  attribute(name: String, value: String): void {
+    this.out.append(' ').append(name).append('="');
+    appendEscaped(this.out, value);
+    this.out.append('"');
+  }
+
+  /** A declarative shadow root: the styles, then the instance's template. */
+  shadow(definition: ElementDefinition, attributes: Map<String, String>): void {
+    let instance = createElement(definition);
+    for (let entry in attributes) {
+      let property = propertyForAttribute(definition, entry.key);
+      if (property != null) {
+        applyAttribute(instance, property as PropertyDef, entry.value);
+      }
+    }
+    instance.connected();
+    this.out.append('<template shadowroot="open" shadowrootmode="open">');
+    let styles = stylesOf(definition);
+    if (styles != null) {
+      this.out.append('<style>').append(styles.cssText).append('</style>');
+    }
+    this.hostDepth += 1;
+    this.value(instance.render());
+    this.hostDepth -= 1;
+    this.out.append('</template>');
+  }
+
+  /** A template's text with its holes filled, scanned as lit-html prepares it. */
+  template(result: TemplateResult): void {
+    let strings = result.strings;
+    let values = result.values;
+    let out = this.out;
+    var scan = Scan.Text;
+    var rawTag = '';
+    var nodeIndex = 0;
+    var partIndex = 0;
+    // The start tag being assembled: its text so far, without the
+    // attribute being scanned, and what is known about it.
+    let tag = new StringBuilder();
+    var tagName = '';
+    var tagNodeIndex = 0;
+    var tagBound = false;
+    var tagDefinition: ElementDefinition | null = null;
+    let tagAttributes = new Map<String, String>();
+    // The attribute being scanned: its source text, name, value, quote.
+    let attr = new StringBuilder();
+    let attrValue = new StringBuilder();
+    var attrName = '';
+    var attrQuote = 0;
+    var tagScan = TagScan.Between;
+    // A bound attribute whose quoted value holds one or more holes: its
+    // static pieces, and the first value's index.
+    var bound = false;
+    var boundName = '';
+    let boundStatics = new GrowableArray<String>();
+    var boundFirst = 0;
+
+    let finishStaticAttribute = (): void => {
+      // A complete attribute without a binding: text as written.
+      tag.append(attr.toString());
+      tagAttributes[attrName] = attrValue.toString();
+      attr.clear();
+      attrValue.clear();
+      tagScan = TagScan.Between;
+    };
+
+    let writeBoundAttribute = (name: String, statics: GrowableArray<String>, first: i32): void => {
+      let prefix = name.getByteAt(0);
+      let realName = if (prefix == 0x2E || prefix == 0x3F || prefix == 0x40) {
+        name.sliceBytes(1, name.length)
+      } else {
+        name
+      };
+      let single = statics.length == 2 && statics[0].length == 0 && statics[1].length == 0;
+      if (prefix == 0x40) {
+        // An event listener: nothing to write.
+        return;
+      }
+      if (prefix == 0x3F) {
+        if (!single) {
+          throw new Error(`renderResult: a boolean attribute takes one expression (?${realName})`);
+        }
+        if (truthy(values[first])) {
+          tag.append(realName);
+          tagAttributes[realName] = '';
+        }
+        return;
+      }
+      if (prefix == 0x2E) {
+        if (!single) {
+          throw new Error(`renderResult: a property takes one expression (.${realName})`);
+        }
+        let reflected = reflectedAttribute(tagName, realName);
+        if (reflected.length == 0) {
+          return;
+        }
+        let value = values[first];
+        if (value == null) {
+          return;
+        }
+        if (value is Box<boolean>) {
+          if ((value as Box<boolean>).value) {
+            tag.append(reflected);
+            tagAttributes[reflected] = '';
+          }
+          return;
+        }
+        let text = valueText(value);
+        tag.append(reflected).append('="');
+        appendEscaped(tag, text);
+        tag.append('"');
+        tagAttributes[reflected] = text;
+        return;
+      }
+      if (single && values[first] == null) {
+        // `nothing` omits the attribute.
+        return;
+      }
+      let text = new StringBuilder();
+      for (var i = 0; i < statics.length; i += 1) {
+        text.append(statics[i]);
+        if (i + 1 < statics.length) {
+          text.append(valueText(values[first + i]));
+        }
+      }
+      let joined = text.toString();
+      tag.append(realName).append('="');
+      appendEscaped(tag, joined);
+      tag.append('"');
+      tagAttributes[realName] = joined;
+    };
+
+    let openTag = (name: String): void => {
+      tagName = name;
+      tagNodeIndex = nodeIndex;
+      nodeIndex += 1;
+      tagBound = false;
+      tagDefinition = definitionFor(name);
+      tagAttributes.clear();
+      tag.clear();
+      tag.append('<').append(name);
+      tagScan = TagScan.Between;
+      scan = Scan.Tag;
+    };
+
+    let closeTag = (): void => {
+      // The start tag is complete: the marker, the tag, and for one of
+      // this module's own elements, its shadow root.
+      let definition = tagDefinition;
+      if (tagBound || (definition != null && this.hostDepth > 0)) {
+        out.append('<!--lit-node ').append(i32ToString(tagNodeIndex)).append('-->');
+      }
+      out.append(tag.toString());
+      if (definition != null && this.hostDepth > 0) {
+        out.append(' defer-hydration');
+      }
+      out.append('>');
+      if (definition != null) {
+        this.shadow(definition as ElementDefinition, tagAttributes);
+      }
+      if (isRawTextTag(tagName)) {
+        rawTag = tagName;
+        scan = Scan.RawText;
+      } else {
+        scan = Scan.Text;
+      }
+    };
+
+    for (var si = 0; si < strings.length; si += 1) {
+      let s = strings[si];
+      let n = s.length;
+      var i = 0;
+      while (i < n) {
+        let b = s.getByteAt(i);
+        if (scan == Scan.Text) {
+          if (b != 0x3C) {
+            out.appendByte(b);
+            i += 1;
+            continue;
+          }
+          // `<`: a comment, a bogus comment, an end tag, a start tag, or text.
+          if (i + 3 < n && s.getByteAt(i + 1) == 0x21 && s.getByteAt(i + 2) == 0x2D &&
+              s.getByteAt(i + 3) == 0x2D) {
+            nodeIndex += 1;
+            out.append('<!--');
+            i += 4;
+            scan = Scan.Comment;
+            continue;
+          }
+          if (i + 1 < n && (s.getByteAt(i + 1) == 0x21 || s.getByteAt(i + 1) == 0x3F)) {
+            // `<!doctype …>` or `<?…>`: a comment node to the parser.
+            nodeIndex += 1;
+            var j = i;
+            while (j < n && s.getByteAt(j) != 0x3E) {
+              j += 1;
+            }
+            if (j >= n) {
+              throw new Error('renderResult: a binding inside a comment is not supported');
+            }
+            out.appendSlice(s, i, j + 1);
+            i = j + 1;
+            continue;
+          }
+          if (i + 1 < n && s.getByteAt(i + 1) == 0x2F) {
+            // An end tag: through its `>`.
+            var j = i;
+            while (j < n && s.getByteAt(j) != 0x3E) {
+              j += 1;
+            }
+            if (j >= n) {
+              throw new Error('renderResult: a binding inside an end tag is not supported');
+            }
+            out.appendSlice(s, i, j + 1);
+            i = j + 1;
+            continue;
+          }
+          if (i + 1 < n && isNameChar(s.getByteAt(i + 1))) {
+            var j = i + 1;
+            while (j < n && isNameChar(s.getByteAt(j))) {
+              j += 1;
+            }
+            openTag(s.sliceBytes(i + 1, j));
+            i = j;
+            continue;
+          }
+          out.appendByte(b);
+          i += 1;
+          continue;
+        }
+        if (scan == Scan.Comment) {
+          if (b == 0x2D && i + 2 < n && s.getByteAt(i + 1) == 0x2D && s.getByteAt(i + 2) == 0x3E) {
+            out.append('-->');
+            i += 3;
+            scan = Scan.Text;
+            continue;
+          }
+          out.appendByte(b);
+          i += 1;
+          continue;
+        }
+        if (scan == Scan.RawText) {
+          let close = `</${rawTag}`;
+          if (b == 0x3C && i + close.length <= n && s.sliceBytes(i, i + close.length) == close) {
+            scan = Scan.Text;
+            continue;
+          }
+          out.appendByte(b);
+          i += 1;
+          continue;
+        }
+        // Inside a start tag.
+        if (tagScan == TagScan.Quoted) {
+          if (b == attrQuote) {
+            if (bound) {
+              boundStatics.push(attrValue.toString());
+              writeBoundAttribute(boundName, boundStatics, boundFirst);
+              bound = false;
+              attr.clear();
+              attrValue.clear();
+              tagScan = TagScan.Between;
+            } else {
+              attr.appendByte(b);
+              finishStaticAttribute();
+            }
+            i += 1;
+            continue;
+          }
+          attr.appendByte(b);
+          attrValue.appendByte(b);
+          i += 1;
+          continue;
+        }
+        if (b == 0x3E) {
+          if (tagScan == TagScan.Name || tagScan == TagScan.Unquoted) {
+            finishStaticAttribute();
+          } else if (tagScan == TagScan.AfterEq) {
+            throw new Error(`renderResult: attribute ${attrName} has no value`);
+          }
+          closeTag();
+          i += 1;
+          continue;
+        }
+        if (isSpace(b)) {
+          if (tagScan == TagScan.Name || tagScan == TagScan.Unquoted) {
+            finishStaticAttribute();
+          }
+          if (tagScan == TagScan.AfterEq) {
+            attr.appendByte(b);
+          } else {
+            tag.appendByte(b);
+          }
+          i += 1;
+          continue;
+        }
+        if (tagScan == TagScan.Between) {
+          if (b == 0x2F) {
+            tag.appendByte(b);
+            i += 1;
+            continue;
+          }
+          var j = i;
+          while (j < n && isNameChar(s.getByteAt(j))) {
+            j += 1;
+          }
+          attrName = s.sliceBytes(i, j);
+          attr.clear();
+          attrValue.clear();
+          attr.append(attrName);
+          tagScan = TagScan.Name;
+          i = j;
+          continue;
+        }
+        if (tagScan == TagScan.Name) {
+          if (b == 0x3D) {
+            attr.appendByte(b);
+            tagScan = TagScan.AfterEq;
+            i += 1;
+            continue;
+          }
+          // `/` or a stray character: part of the tag.
+          finishStaticAttribute();
+          tag.appendByte(b);
+          i += 1;
+          continue;
+        }
+        if (tagScan == TagScan.AfterEq) {
+          if (b == 0x22 || b == 0x27) {
+            attrQuote = b;
+            attr.appendByte(b);
+            tagScan = TagScan.Quoted;
+          } else {
+            attr.appendByte(b);
+            attrValue.appendByte(b);
+            tagScan = TagScan.Unquoted;
+          }
+          i += 1;
+          continue;
+        }
+        // An unquoted value continues.
+        attr.appendByte(b);
+        attrValue.appendByte(b);
+        i += 1;
+      }
+      if (si >= values.length) {
+        break;
+      }
+      // A hole follows this string.
+      if (scan == Scan.Text) {
+        nodeIndex += 1;
+        this.value(values[partIndex]);
+        partIndex += 1;
+      } else if (scan == Scan.Tag) {
+        if (tagScan == TagScan.Quoted) {
+          if (!bound) {
+            bound = true;
+            boundName = attrName;
+            boundStatics.clear();
+            boundFirst = partIndex;
+          }
+          boundStatics.push(attrValue.toString());
+          attrValue.clear();
+          partIndex += 1;
+          tagBound = true;
+        } else if (tagScan == TagScan.AfterEq) {
+          let statics = new GrowableArray<String>();
+          statics.push('');
+          statics.push('');
+          writeBoundAttribute(attrName, statics, partIndex);
+          partIndex += 1;
+          tagBound = true;
+          attr.clear();
+          attrValue.clear();
+          tagScan = TagScan.Between;
+        } else if (tagScan == TagScan.Between || tagScan == TagScan.Name) {
+          // A binding in attribute-name position: an element part, with
+          // nothing to write.
+          if (tagScan == TagScan.Name) {
+            finishStaticAttribute();
+          }
+          partIndex += 1;
+          tagBound = true;
+        } else {
+          throw new Error(`renderResult: a binding after an unquoted attribute value is not supported (${attrName})`);
+        }
+      } else if (scan == Scan.Comment) {
+        throw new Error('renderResult: a binding inside a comment is not supported');
+      } else {
+        throw new Error(`renderResult: a binding inside <${rawTag}> is not supported`);
+      }
+    }
+    if (scan != Scan.Text) {
+      throw new Error('renderResult: the template ends inside a tag or comment');
+    }
+  }
+}

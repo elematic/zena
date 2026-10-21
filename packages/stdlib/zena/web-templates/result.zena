@@ -1,0 +1,122 @@
+/**
+ * The template layer's types and tags (docs/design/wasm-web-ui.md),
+ * on every target.
+ *
+ * `html` and `svg` are template tags whose result, a `TemplateResult`,
+ * a host renders: the DOM host through the protocol's `webui_*` exports on
+ * the js target (`./protocol.zena`), a server through the string
+ * renderer in `zena:web-elements`. The module never touches the DOM.
+ *
+ * ```zena
+ * import { html, TemplateResult } from 'zena:web-templates';
+ *
+ * export let greeting = (name: String, unread: i32): TemplateResult =>
+ *   html`<p>Hello ${name}, you have ${unread} messages.</p>`;
+ * ```
+ *
+ * Where a value lands is decided by the host from the template's text,
+ * as in lit-html: `class=${…}` is an attribute, `.value=${…}` a
+ * property, `?disabled=${…}` a boolean attribute and `@click=${…}` an
+ * event listener. The library carries no binding kinds of its own.
+ *
+ * The capability functions behind `Event`'s methods come from the host
+ * file chosen per target (`./host.zena`): the DOM host's imports on the
+ * js target, each linked only when something reachable calls it, and
+ * functions that throw on a server, where no listener ever runs.
+ */
+import { TemplateStringsArray } from 'zena:core';
+import {
+  eventTargetValue, eventKey, eventPreventDefault, eventStopPropagation,
+} from './host.zena';
+
+/**
+ * A JavaScript value the module holds without looking inside it, so it
+ * can sit in a template: a DOM node for `.node=${…}`, a `Date` for a
+ * child's property. The host hands the value back unchanged.
+ */
+export final class HostValue {
+  handle: externref;
+
+  new(this.handle);
+}
+
+/**
+ * The event a listener receives: the host's event object, with the
+ * capability functions as methods, which are all a module can do with
+ * an event unless the host grants more.
+ *
+ * An extension class rather than a wrapper, so a listener's event costs
+ * no allocation and a method's import is linked only when something
+ * calls it: a module whose listeners never read their events imports
+ * none of these.
+ */
+export extension class Event on externref {
+  /** `event.target.value`: the text of the input that fired the event. */
+  targetValue(): String {
+    return eventTargetValue(this);
+  }
+
+  /** `event.key` of a keyboard event. */
+  key(): String {
+    return eventKey(this);
+  }
+
+  preventDefault(): void {
+    eventPreventDefault(this);
+  }
+
+  stopPropagation(): void {
+    eventStopPropagation(this);
+  }
+}
+
+/** An event listener, for an `@event=${…}` hole. */
+export type Listener = (event: Event) => void;
+
+/**
+ * What a hole may hold. A number or boolean arrives boxed: the union
+ * accepts the box, which is what tells the checker to wrap a primitive
+ * interpolation in one. `null` renders nothing, and an iterable renders
+ * each of its items in turn.
+ */
+export type TemplateValue =
+  String
+  | TemplateResult
+  | Iterable<TemplateValue>
+  | Listener
+  | Box<i32>
+  | Box<f64>
+  | Box<boolean>
+  | HostValue
+  | null;
+
+/**
+ * A template and the values for its holes.
+ *
+ * `strings` is the tagged template's `TemplateStringsArray`, which the
+ * compiler makes once per call site; that identity is what tells the
+ * host it has seen the template before.
+ */
+export final class TemplateResult {
+  strings: TemplateStringsArray;
+  values: FixedArray<TemplateValue>;
+  /** 1 for HTML, 2 for SVG, 3 for MathML. */
+  kind: i32;
+
+  new(this.strings, this.values, this.kind);
+}
+
+/** An HTML template. */
+export let html = (strings: TemplateStringsArray, values: FixedArray<TemplateValue>): TemplateResult =>
+  new TemplateResult(strings, values, 1);
+
+/** An SVG template, for use inside an `<svg>` element. */
+export let svg = (strings: TemplateStringsArray, values: FixedArray<TemplateValue>): TemplateResult =>
+  new TemplateResult(strings, values, 2);
+
+/** A MathML template, for use inside a `<math>` element. */
+export let mathml = (strings: TemplateStringsArray, values: FixedArray<TemplateValue>): TemplateResult =>
+  new TemplateResult(strings, values, 3);
+
+/** The value that renders nothing. */
+export let nothing: TemplateValue = null;

@@ -1,0 +1,414 @@
+/**
+ * The elements layer on every target: the base class, the decorators,
+ * styles, definitions and the property machinery the protocol file
+ * (`./protocol.zena`, chosen per target) drives — the `webui_element_*`
+ * exports for the DOM host on the js target, the string renderer on a
+ * server. What differs per host is behind `./host.zena`: the request
+ * for an update and the dispatch of an event.
+ */
+import { TemplateResult, HostValue } from 'zena:web-templates';
+import { TemplateStringsArray, StringBuilder, parseF64 } from 'zena:core';
+import { hostRequestUpdate, hostDispatchEvent } from './host.zena';
+
+/**
+ * The base class of an element the host defines from this module.
+ *
+ * The lifecycle methods have empty defaults; a subclass overrides the
+ * ones it needs. `render` is called by the host after `requestUpdate`,
+ * once per microtask however many times it was asked.
+ */
+export abstract class ZenaElement {
+  /** The definition this instance was made from; set by the host's create. */
+  var definition: ElementDefinition | null = null;
+
+  /** What the element shows now. */
+  abstract render(): TemplateResult;
+
+  /**
+   * The element's styles, from `css`. The host reads them once per
+   * definition, from the instance `defineElement` constructs, and adopts
+   * one stylesheet into every instance's shadow root. Lit's `styles` is
+   * a static field; a static cannot be reached from a definition
+   * without a class value, so this is a method, at the same cost.
+   */
+  styles(): CSSResult | null {
+    return null;
+  }
+
+  /** The element was inserted into a document. */
+  connected(): void {}
+
+  /** The element was removed from its document. */
+  disconnected(): void {}
+
+  /** An observed attribute changed; `value` is null when it was removed. */
+  attributeChanged(name: String, value: String | null): void {}
+
+  /** The host rendered the last result; `first` on the first render. */
+  updated(first: boolean): void {}
+
+  /** Ask the host to render before the next frame. */
+  requestUpdate(): void {
+    hostRequestUpdate(this);
+  }
+
+  /**
+   * Dispatch an `Event` of `type` from the element, bubbling and
+   * composed by default. The event carries no payload: a listener reads
+   * what it needs off the element, as it does for `change` or `input`,
+   * which is also how an element dispatches those standard events. Returns
+   * false when a listener canceled a cancelable event.
+   */
+  dispatchEvent(type: String, bubbles: boolean = true, composed: boolean = true,
+      cancelable: boolean = false): boolean {
+    let flags = (if (bubbles) 1 else 0) | (if (composed) 2 else 0) | (if (cancelable) 4 else 0);
+    return hostDispatchEvent(this, type, flags);
+  }
+}
+
+/**
+ * A property of the element: declared to the host, reflected from its
+ * attribute (the lowercased field name), and re-rendering on write.
+ *
+ * The `#declared` initializer runs once per instance; it registers the
+ * field with the definition being probed by `defineElement` and does
+ * nothing for every later instance. Registering from an initializer is
+ * what field decorators can do today; a per-class registration, run
+ * once at module start, is the form this will take once decorators have
+ * static members.
+ */
+export decorator property<T>(var value: T) on ZenaElement {
+  var #value: T;
+  var #declared: i32 = registerProperty<T>(context.name, context.get, context.set, true);
+
+  value: T {
+    get {
+      return this.#value;
+    }
+    set(v) {
+      this.#value = v;
+      this.requestUpdate();
+    }
+  }
+}
+
+/**
+ * Internal reactive state: re-renders on write, like `@property`, and is
+ * declared to the host as a property without an attribute, which is
+ * what Lit's `@state` is.
+ */
+export decorator state<T>(var value: T) on ZenaElement {
+  var #value: T;
+  var #declared: i32 = registerProperty<T>(context.name, context.get, context.set, false);
+
+  value: T {
+    get {
+      return this.#value;
+    }
+    set(v) {
+      this.#value = v;
+      this.requestUpdate();
+    }
+  }
+}
+
+/**
+ * A stylesheet for an element's `styles`: the text the host puts in one
+ * constructible stylesheet per definition. Only `css` results and
+ * numbers interpolate, as in Lit; `unsafeCSS` admits text the author
+ * vouches for.
+ */
+export final class CSSResult {
+  cssText: String;
+
+  new(this.cssText);
+}
+
+export type CSSValue = CSSResult | Box<i32> | Box<f64>;
+
+/** The `css` tag: a stylesheet, with `css` results and numbers interpolated. */
+export let css = (strings: TemplateStringsArray, values: FixedArray<CSSValue>): CSSResult => {
+  var text = strings[0];
+  for (var i = 0; i < values.length; i += 1) {
+    let value = values[i];
+    let part = if (value is CSSResult) {
+      (value as CSSResult).cssText
+    } else if (value is Box<i32>) {
+      `${(value as Box<i32>).value}`
+    } else {
+      `${(value as Box<f64>).value}`
+    };
+    text = text + part + strings[i + 1];
+  }
+  return new CSSResult(text);
+};
+
+/** A stylesheet from text the author vouches for, as Lit's `unsafeCSS`. */
+export let unsafeCSS = (text: String): CSSResult => new CSSResult(text);
+
+/** The protocol's property kinds; the values are its value kinds. */
+export enum PropertyKind {
+  Unknown = 0,
+  Text = 1,
+  Number = 2,
+  Boolean = 3,
+  Host = 7,
+}
+
+/**
+ * One declared property: its name, its attribute, and its accessors over
+ * boxed values. The accessors are generic over the field's type where
+ * `registerProperty` makes them, and box so the protocol's typed getter
+ * and setter exports can test the box for the kind.
+ */
+export final class PropertyDef {
+  name: String;
+  /** The observed attribute, or the empty string for none. */
+  attribute: String;
+  read: (element: ZenaElement) => anyref;
+  write: (element: ZenaElement, value: anyref) => void;
+  /** Decided from the probe instance's value on first demand. */
+  var kind: PropertyKind = PropertyKind.Unknown;
+  /** The definition that declares the property; set when it is added. */
+  var definition: ElementDefinition | null = null;
+
+  new(this.name, this.attribute, this.read, this.write);
+}
+
+/**
+ * The definition `defineElement` is constructing a probe instance for,
+ * while it does: the one that `registerProperty` adds properties to. A
+ * later instance of the same class registers nothing.
+ */
+var probing: ElementDefinition | null = null;
+
+/**
+ * Declares a property of the element class being probed: its name, its
+ * accessors over the host, and whether an attribute reflects into it.
+ * Called by `@property` and `@state` through the decorator's `context`.
+ * Returns 0, so it can initialize a field.
+ */
+export let registerProperty = <T>(name: String, get: (element: ZenaElement) => T,
+    set: (element: ZenaElement, value: T) => void, attribute: boolean): i32 => {
+  let definition = probing;
+  if (definition == null) {
+    return 0;
+  }
+  let attributeName = if (attribute) asciiLower(name) else '';
+  (definition as ElementDefinition).addProperty(new PropertyDef(name, attributeName,
+      (element: ZenaElement): anyref => new Box<T>(get(element)),
+      (element: ZenaElement, value: anyref): void => { set(element, (value as Box<T>).value); }));
+  return 0;
+};
+
+/**
+ * ASCII lowercase over the bytes, written out rather than through
+ * `toLowerCase` because the js target's `String` delegates case mapping
+ * to a host import, and the one place this library would reach it is a
+ * default attribute name. An element module's import list should be the
+ * protocol's and nothing else.
+ */
+let asciiLower = (name: String): String => {
+  let out = new StringBuilder();
+  let len = name.length;
+  for (var i = 0; i < len; i += 1) {
+    let b = name.getByteAt(i);
+    out.appendByte(if (b >= 0x41 && b <= 0x5A) b + 0x20 else b);
+  }
+  return out.toString();
+};
+
+/** A registered element: what `defineElement` records and the host reads. */
+export final class ElementDefinition {
+  tag: String;
+  create: () => ZenaElement;
+  var properties = new GrowableArray<PropertyDef>();
+  /**
+   * The instance constructed to read the property declarations. Kept,
+   * because a property's kind is decided from its value on first demand,
+   * and the styles are read from it.
+   */
+  var probe: ZenaElement | null = null;
+
+  new(this.tag, this.create);
+
+  addProperty(property: PropertyDef): void {
+    property.definition = this;
+    this.properties.push(property);
+  }
+}
+
+/** Every definition the module registered, in registration order. */
+export let definitions = new GrowableArray<ElementDefinition>();
+
+/**
+ * Registers an element definition. The host defines a custom element
+ * named `tag` whose instances `create` makes, with the properties its
+ * `@property` and `@state` fields declare.
+ *
+ * `create` is a closure because a class is not a value in Zena today:
+ * there is no constructor reference to pass, so the factory is written
+ * out. The design document lists a constructor reference among the
+ * language changes this library would use.
+ *
+ * One instance is constructed here and kept: constructing it is what
+ * runs the decorators' registrations, and its values decide each
+ * property's kind.
+ */
+export let defineElement = (tag: String, create: () => ZenaElement): ElementDefinition => {
+  let definition = new ElementDefinition(tag, create);
+  probing = definition;
+  let probe = create();
+  probing = null;
+  probe.definition = definition;
+  definition.probe = probe;
+  definitions.push(definition);
+  return definition;
+};
+
+/**
+ * Registers an element definition with no tag name. The host builds the
+ * custom element class from it and leaves naming and registration to the
+ * page (`elementDefinitions` in `@zena-lang/wasm-web-ui/elements`),
+ * which is how one module serves pages that disagree about tag names.
+ */
+export let declareElement = (create: () => ZenaElement): ElementDefinition =>
+  defineElement('', create);
+
+/** The definition registered under `tag`, or null. */
+export let definitionFor = (tag: String): ElementDefinition | null => {
+  for (let definition in definitions) {
+    if (definition.tag == tag) {
+      return definition;
+    }
+  }
+  return null;
+};
+
+/** A new instance of `definition`, bound to it. */
+export let createElement = (definition: ElementDefinition): ZenaElement => {
+  let element = definition.create();
+  element.definition = definition;
+  return element;
+};
+
+/** The kind of a boxed value, from the box's instantiation. */
+let kindOfBox = (boxed: anyref): PropertyKind => {
+  if (boxed is Box<String>) {
+    return PropertyKind.Text;
+  }
+  if (boxed is Box<i32> || boxed is Box<f64>) {
+    return PropertyKind.Number;
+  }
+  if (boxed is Box<boolean>) {
+    return PropertyKind.Boolean;
+  }
+  if (boxed is Box<HostValue | null> || boxed is Box<HostValue>) {
+    return PropertyKind.Host;
+  }
+  return PropertyKind.Unknown;
+};
+
+/** A property's kind, decided from its definition's probe instance once. */
+export let propertyKind = (property: PropertyDef): PropertyKind => {
+  if (property.kind == PropertyKind.Unknown) {
+    let definition = property.definition;
+    let probe = if (definition == null) null else (definition as ElementDefinition).probe;
+    if (probe != null) {
+      property.kind = kindOfBox(property.read(probe as ZenaElement));
+    }
+  }
+  return property.kind;
+};
+
+/** The definition's styles, from its probe instance; null for none. */
+export let stylesOf = (definition: ElementDefinition): CSSResult | null => {
+  let probe = definition.probe;
+  if (probe == null) {
+    return null;
+  }
+  return (probe as ZenaElement).styles();
+};
+
+/** The box a number becomes for `property`, matching the field's instantiation. */
+let boxNumber = (property: PropertyDef, value: f64): anyref | null => {
+  let kind = propertyKind(property);
+  if (kind == PropertyKind.Boolean) {
+    return new Box<boolean>(value != 0.0);
+  }
+  if (kind != PropertyKind.Number) {
+    return null;
+  }
+  let definition = property.definition;
+  let probe = if (definition == null) null else (definition as ElementDefinition).probe;
+  if (probe != null && property.read(probe as ZenaElement) is Box<f64>) {
+    return new Box<f64>(value);
+  }
+  return new Box<i32>(value as i32);
+};
+
+/** The boxed value of `property` on `element`, as the field's box. */
+export let readProperty = (element: ZenaElement, property: PropertyDef): anyref =>
+  property.read(element);
+
+/** Sets a text property from `text`; nothing for a property of another kind. */
+export let setTextProperty = (element: ZenaElement, property: PropertyDef, text: String): void => {
+  if (propertyKind(property) == PropertyKind.Text) {
+    property.write(element, new Box<String>(text));
+  }
+};
+
+/** Sets a host-value property from the host's reference. */
+export let setHostProperty = (element: ZenaElement, property: PropertyDef, value: externref): void => {
+  if (propertyKind(property) == PropertyKind.Host) {
+    property.write(element, new Box<HostValue | null>(new HostValue(value)));
+  }
+};
+
+/** Sets a number or boolean property from a number; nothing for another kind. */
+export let setNumberProperty = (element: ZenaElement, property: PropertyDef, value: f64): void => {
+  let boxed = boxNumber(property, value);
+  if (boxed != null) {
+    property.write(element, boxed as anyref);
+  }
+};
+
+/**
+ * An observed attribute was set. The attribute's text is converted by
+ * the property's kind, as Lit's default converters do: a number is
+ * parsed, a boolean attribute is true when present, text is taken as it
+ * is. A host-value property takes nothing from an attribute.
+ */
+export let applyAttribute = (element: ZenaElement, property: PropertyDef, text: String): void => {
+  let kind = propertyKind(property);
+  if (kind == PropertyKind.Number) {
+    setNumberProperty(element, property, parseF64(text));
+  } else if (kind == PropertyKind.Boolean) {
+    property.write(element, new Box<boolean>(true));
+  } else if (kind == PropertyKind.Text) {
+    property.write(element, new Box<String>(text));
+  }
+  element.attributeChanged(property.attribute, text);
+};
+
+/** An observed attribute was removed: a boolean goes false, text goes empty. */
+export let removeAttribute = (element: ZenaElement, property: PropertyDef): void => {
+  let kind = propertyKind(property);
+  if (kind == PropertyKind.Boolean) {
+    property.write(element, new Box<boolean>(false));
+  } else if (kind == PropertyKind.Text) {
+    property.write(element, new Box<String>(''));
+  }
+  element.attributeChanged(property.attribute, null);
+};
+
+/** The property whose attribute is `name`, or null. */
+export let propertyForAttribute = (definition: ElementDefinition, name: String): PropertyDef | null => {
+  for (let property in definition.properties) {
+    let attribute = property.attribute;
+    if (attribute.length > 0 && attribute == name) {
+      return property;
+    }
+  }
+  return null;
+};

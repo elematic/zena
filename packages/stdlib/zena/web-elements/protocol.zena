@@ -1,0 +1,134 @@
+/**
+ * The Wasm Web UI protocol's elements layer: the `webui_*` functions
+ * the DOM host reads definitions and drives instances through, which
+ * the compiler exports from every js-target program that imports
+ * `zena:web-elements` (docs/design/wasm-web-ui.md, "Definitions"). On
+ * another target nothing reaches them; a server renders an element
+ * through `renderElement` instead.
+ *
+ * What a module exports for its elements is, in effect, a list of
+ * records: each definition is a tag, its properties, its styles and a
+ * constructor, read once when the page registers it, and each property
+ * is a record too. A core module cannot export a record as such, so a
+ * record crosses as an opaque object with one accessor per field, the
+ * way a template result does, and the host keeps the object as its
+ * handle.
+ */
+import { HostValue, TemplateResult } from 'zena:web-templates';
+import {
+  ZenaElement, ElementDefinition, PropertyDef, PropertyKind, definitions, createElement,
+  propertyKind, stylesOf, readProperty, setTextProperty, setHostProperty, setNumberProperty,
+  applyAttribute, removeAttribute,
+} from './core.zena';
+import { stringHandle, stringFromHandle } from './host.zena';
+
+// The definitions: a list, then each one's record.
+
+export let webui_element_count = (): i32 => definitions.length;
+
+export let webui_element_at = (index: i32): ElementDefinition => definitions[index];
+
+export let webui_definition_tag = (definition: ElementDefinition): externref =>
+  stringHandle(definition.tag);
+
+/** The definition's stylesheet text, or null for none. */
+export let webui_definition_styles = (definition: ElementDefinition): externref | null => {
+  let result = stylesOf(definition);
+  if (result == null) {
+    return null;
+  }
+  return stringHandle(result.cssText);
+};
+
+export let webui_definition_property_count = (definition: ElementDefinition): i32 =>
+  definition.properties.length;
+
+export let webui_definition_property = (definition: ElementDefinition, index: i32): PropertyDef =>
+  definition.properties[index];
+
+/** The constructor: a new instance of the definition. */
+export let webui_definition_create = (definition: ElementDefinition): ZenaElement =>
+  createElement(definition);
+
+// A property's record.
+
+export let webui_property_name = (property: PropertyDef): externref => stringHandle(property.name);
+
+export let webui_property_attribute = (property: PropertyDef): externref =>
+  stringHandle(property.attribute);
+
+export let webui_property_kind = (property: PropertyDef): i32 => propertyKind(property) as i32;
+
+// An instance's lifecycle and properties.
+
+export let webui_element_connected = (element: ZenaElement): void => {
+  element.connected();
+};
+
+export let webui_element_disconnected = (element: ZenaElement): void => {
+  element.disconnected();
+};
+
+/** The property's observed attribute was set; `value` is the attribute's text. */
+export let webui_element_attribute_changed = (element: ZenaElement, property: PropertyDef,
+    value: externref): void => {
+  if (propertyKind(property) == PropertyKind.Host) {
+    setHostProperty(element, property, value);
+    element.attributeChanged(property.attribute, stringFromHandle(value));
+    return;
+  }
+  applyAttribute(element, property, stringFromHandle(value));
+};
+
+export let webui_element_attribute_removed = (element: ZenaElement, property: PropertyDef): void => {
+  removeAttribute(element, property);
+};
+
+export let webui_element_get_extern = (element: ZenaElement, property: PropertyDef): externref | null => {
+  let boxed = readProperty(element, property);
+  if (boxed is Box<String>) {
+    return stringHandle((boxed as Box<String>).value);
+  }
+  if (boxed is Box<HostValue | null>) {
+    let host = (boxed as Box<HostValue | null>).value;
+    return if (host == null) null else (host as HostValue).handle;
+  }
+  if (boxed is Box<HostValue>) {
+    return (boxed as Box<HostValue>).value.handle;
+  }
+  return null;
+};
+
+export let webui_element_get_number = (element: ZenaElement, property: PropertyDef): f64 => {
+  let boxed = readProperty(element, property);
+  if (boxed is Box<i32>) {
+    return (boxed as Box<i32>).value as f64;
+  }
+  if (boxed is Box<f64>) {
+    return (boxed as Box<f64>).value;
+  }
+  if (boxed is Box<boolean>) {
+    return if ((boxed as Box<boolean>).value) 1.0 else 0.0;
+  }
+  return 0.0;
+};
+
+export let webui_element_set_extern = (element: ZenaElement, property: PropertyDef,
+    value: externref): void => {
+  if (propertyKind(property) == PropertyKind.Host) {
+    setHostProperty(element, property, value);
+  } else {
+    setTextProperty(element, property, stringFromHandle(value));
+  }
+};
+
+export let webui_element_set_number = (element: ZenaElement, property: PropertyDef,
+    value: f64): void => {
+  setNumberProperty(element, property, value);
+};
+
+export let webui_element_render = (element: ZenaElement): TemplateResult => element.render();
+
+export let webui_element_updated = (element: ZenaElement, first: i32): void => {
+  element.updated(first != 0);
+};

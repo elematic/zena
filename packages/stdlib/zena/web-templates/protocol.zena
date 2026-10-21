@@ -1,0 +1,144 @@
+/**
+ * The Wasm Web UI protocol's template layer: the `webui_*` functions the
+ * DOM host reads results through, which the compiler exports from every
+ * js-target program that imports `zena:web-templates`
+ * (docs/design/wasm-web-ui.md, "Exports"). On another target nothing
+ * reaches them; a result is read in Zena there, by the renderer in
+ * `zena:web-elements`.
+ */
+import { TemplateStringsArray } from 'zena:core';
+import { TemplateResult, TemplateValue, HostValue, Event, Listener } from './result.zena';
+import { stringHandle } from './host.zena';
+
+/** The protocol's value kinds, as `webui_value_kind` reports them. */
+enum ValueKind {
+  Nothing = 0,
+  Text = 1,
+  Number = 2,
+  Boolean = 3,
+  Template = 4,
+  List = 5,
+  Listener = 6,
+  Host = 7,
+}
+
+let kindOf = (value: TemplateValue): ValueKind => {
+  if (value == null) {
+    return ValueKind.Nothing;
+  }
+  if (value is String) {
+    return ValueKind.Text;
+  }
+  if (value is TemplateResult) {
+    return ValueKind.Template;
+  }
+  if (value is HostValue) {
+    return ValueKind.Host;
+  }
+  if (value is Box<boolean>) {
+    return ValueKind.Boolean;
+  }
+  if (value is Box<i32> || value is Box<f64>) {
+    return ValueKind.Number;
+  }
+  if (value is Listener) {
+    return ValueKind.Listener;
+  }
+  return ValueKind.List;
+};
+
+/**
+ * A container is a result (its holes) or a list the host asked for
+ * through `webui_value_ref`, which is always one of the arrays below.
+ */
+let valueAt = (container: anyref, index: i32): TemplateValue => {
+  if (container is TemplateResult) {
+    return (container as TemplateResult).values[index];
+  }
+  return (container as GrowableArray<TemplateValue>)[index];
+};
+
+/** The protocol version this library implements. */
+export let webui_version = (): i32 => 1;
+
+export let webui_result_strings = (result: TemplateResult): TemplateStringsArray => result.strings;
+
+export let webui_result_type = (result: TemplateResult): i32 => result.kind;
+
+export let webui_strings_count = (strings: TemplateStringsArray): i32 => strings.length;
+
+export let webui_strings_at = (strings: TemplateStringsArray, index: i32): externref =>
+  stringHandle(strings[index]);
+
+export let webui_strings_raw_at = (strings: TemplateStringsArray, index: i32): externref =>
+  stringHandle(strings.raw[index]);
+
+export let webui_value_count = (container: anyref): i32 => {
+  if (container is TemplateResult) {
+    return (container as TemplateResult).values.length;
+  }
+  return (container as GrowableArray<TemplateValue>).length;
+};
+
+export let webui_value_kind = (container: anyref, index: i32): i32 =>
+  kindOf(valueAt(container, index)) as i32;
+
+/** The host value of a `Text` or `Host` value. */
+export let webui_value_extern = (container: anyref, index: i32): externref => {
+  let value = valueAt(container, index);
+  if (value is String) {
+    return stringHandle(value as String);
+  }
+  if (value is HostValue) {
+    return (value as HostValue).handle;
+  }
+  return stringHandle('');
+};
+
+/**
+ * The module object of a `Template`, `List` or `Listener` value. An
+ * iterable is read into an array here, so the host can index it; the
+ * array is handed out once and read with the `webui_value_*` accessors.
+ */
+export let webui_value_ref = (container: anyref, index: i32): anyref => {
+  let value = valueAt(container, index);
+  if (value is TemplateResult) {
+    return value as TemplateResult;
+  }
+  if (value is Listener) {
+    return value as Listener;
+  }
+  // `match` rather than `is`: an interpolated array is packed as the
+  // union's `Iterable<TemplateValue>` member, and `case Iterable` is
+  // the test that recognizes the packed value.
+  return match (value) {
+    case Iterable as iterable: {
+      let items = new GrowableArray<TemplateValue>();
+      for (let item in iterable) {
+        items.push(item);
+      }
+      items
+    }
+    case _: null
+  };
+};
+
+/** The number of a `Number` value, or 0 or 1 for a `Boolean`. */
+export let webui_value_number = (container: anyref, index: i32): f64 => {
+  let value = valueAt(container, index);
+  if (value is Box<boolean>) {
+    return if ((value as Box<boolean>).value) 1.0 else 0.0;
+  }
+  if (value is Box<i32>) {
+    return (value as Box<i32>).value as f64;
+  }
+  if (value is Box<f64>) {
+    return (value as Box<f64>).value;
+  }
+  return 0.0;
+};
+
+/** Calls a listener with the host's event. */
+export let webui_listener_invoke = (listener: anyref, event: externref): void => {
+  (listener as Listener)(event as Event);
+};
