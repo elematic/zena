@@ -89,10 +89,11 @@ tag and the file-URL functions are the same Zena code on every target, and
 use `URL` only through its public API.
 
 The wrapper keeps the API in this document. It holds a host `URL` that it
-never mutates, reads components through one `zena:host:url` import, and runs
-each `with*` method as the host setter on a copy, which ignores a forbidden
-change as the Zena methods do. `@zena-lang/runtime` provides the imports
-(`urlImports`). A js module that parses a URL and reads its hostname is 509
+never mutates, and its imports are the host's own: `URL.parse`, which also
+copies a `URL`, and the getter and setter of each component. Each `with*`
+method runs the host setter on a copy, which ignores a forbidden change as
+the Zena methods do. `@zena-lang/runtime` provides the imports
+(`urlImports`). A js module that parses a URL and reads its hostname is 508
 bytes at `-O2`, against 66,273 with the parser, its IDNA table and punycode.
 
 `URLSearchParams` stays Zena's own on every target, so its fail-fast
