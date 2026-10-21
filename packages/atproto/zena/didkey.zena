@@ -1,0 +1,146 @@
+/**
+ * Public keys as atproto writes them (https://atproto.com/specs/cryptography).
+ *
+ * atproto uses two curves: NIST P-256 and secp256k1. A public key is the
+ * 33-byte compressed point, and it is written three ways:
+ *
+ * - As a multikey: base58btc multibase (`z...`) of a multicodec prefix
+ *   (`0x1200` for P-256, `0xe7` for secp256k1, both as varints) followed by
+ *   the point. DID documents use this with type `Multikey`.
+ * - As a `did:key`: `did:key:` followed by the multikey.
+ * - In older DID documents, with type `EcdsaSecp256r1VerificationKey2019`
+ *   or `EcdsaSecp256k1VerificationKey2019`: base58btc multibase of the
+ *   point alone.
+ *
+ * `verifySignature` checks a signature the way atproto checks commits and
+ * JWTs: ECDSA over the SHA-256 hash of the data, with a 64-byte low-S
+ * signature.
+ */
+
+import {ByteBuffer} from 'zena:core';
+import {EcdsaCurve, p256, secp256k1} from 'zena:crypto';
+import {decodeMultibase, encodeBase58btc} from './multibase.zena';
+import {readVarint, writeVarint} from './varint.zena';
+
+/** A key that cannot be read. */
+export class KeyError extends Error {
+  new(message: String) : super(message);
+}
+
+/** The curves atproto keys use. */
+export enum KeyType {
+  P256,
+  Secp256k1
+}
+
+let CODEC_P256: i64 = 0x1200;
+let CODEC_SECP256K1: i64 = 0xe7;
+
+/** A public key: its curve and its compressed point. */
+export final class PublicKey {
+  type: KeyType;
+  /** The 33-byte compressed point. */
+  bytes: FixedArray<u8>;
+
+  new(type: KeyType, bytes: FixedArray<u8>) : type = type, bytes = bytes;
+
+  /** The JWT algorithm name of signatures with this key: ES256 or ES256K. */
+  jwtAlgorithm(): String {
+    return if (this.type == KeyType.P256) 'ES256' else 'ES256K';
+  }
+}
+
+function codecOf(type: KeyType) {
+  return if (type == KeyType.P256) CODEC_P256 else CODEC_SECP256K1;
+}
+
+function checkPoint(bytes: FixedArray<u8>) {
+  if (bytes.length != 33 || (bytes[0] != 2 && bytes[0] != 3)) {
+    throw new KeyError(`not a compressed point: ${bytes.length} bytes`);
+  }
+}
+
+function decodeBase58Multibase(text: String): FixedArray<u8> {
+  if (text.length == 0 || text.getByteAt(0) != 122) {
+    throw new KeyError('key is not base58btc multibase');
+  }
+  try {
+    return decodeMultibase(text);
+  } catch (e) {
+    throw new KeyError(`key is not base58btc: ${e.message}`);
+  }
+}
+
+/** Reads a multikey (`z...` with a multicodec prefix). */
+export function parseMultikey(text: String): PublicKey {
+  let bytes = decodeBase58Multibase(text);
+  let (codec, start) = readVarint(bytes, 0, bytes.length);
+  let point = bytes.slice(start, bytes.length);
+  checkPoint(point);
+  if (codec == CODEC_P256) {
+    return new PublicKey(KeyType.P256, point);
+  }
+  if (codec == CODEC_SECP256K1) {
+    return new PublicKey(KeyType.Secp256k1, point);
+  }
+  throw new KeyError(`unsupported key type: multicodec ${codec}`);
+}
+
+/** Reads a `did:key`. */
+export function parseDidKey(did: String): PublicKey {
+  if (!did.startsWith('did:key:')) {
+    throw new KeyError(`not a did:key: ${did}`);
+  }
+  return parseMultikey(did.sliceBytes(8, did.length));
+}
+
+/**
+ * Reads a key from a verification method of a DID document, by its `type`:
+ * `Multikey`, or one of the two older types that name the curve.
+ */
+export function parseVerificationMethod(type: String, publicKeyMultibase: String): PublicKey {
+  if (type == 'Multikey') {
+    return parseMultikey(publicKeyMultibase);
+  }
+  let keyType = if (type == 'EcdsaSecp256r1VerificationKey2019') {
+    KeyType.P256
+  } else if (type == 'EcdsaSecp256k1VerificationKey2019') {
+    KeyType.Secp256k1
+  } else {
+    throw new KeyError(`unsupported verification method type ${type}`)
+  };
+  let point = decodeBase58Multibase(publicKeyMultibase);
+  checkPoint(point);
+  return new PublicKey(keyType, point);
+}
+
+/** `key` as a multikey. */
+export function formatMultikey(key: PublicKey): String {
+  let out = new ByteBuffer(40);
+  writeVarint(out, codecOf(key.type));
+  out.writeBytes(key.bytes as ByteArray);
+  return `z${encodeBase58btc(out.toByteArray() as FixedArray<u8>)}`;
+}
+
+/** `key` as a `did:key`. */
+export function formatDidKey(key: PublicKey): String {
+  return `did:key:${formatMultikey(key)}`;
+}
+
+/** The ECDSA curve keys of `type` are on. */
+export function curveOf(type: KeyType): EcdsaCurve {
+  return if (type == KeyType.P256) p256 else secp256k1;
+}
+
+/** The public key for a 32-byte private key on the curve of `type`. */
+export function publicKeyFor(type: KeyType, privateKey: FixedArray<u8>): PublicKey {
+  return new PublicKey(type, curveOf(type).publicKey(privateKey));
+}
+
+/**
+ * Whether `signature` is `key`'s signature of `data`: ECDSA over the
+ * SHA-256 hash of `data`, 64 bytes of r then s, with s in the low half.
+ */
+export function verifySignature(key: PublicKey, data: FixedArray<u8>, signature: FixedArray<u8>): boolean {
+  return curveOf(key.type).verify(key.bytes, data, signature);
+}
