@@ -158,6 +158,29 @@ export function buildStdlibConfig(stdlibRoot: String): PackageConfig {
   let jsVirtual: HashMap<String, String> = {"js" => "js/index.zena"};
   exports["js"] = new ModuleExport(jsVirtual);
 
+  // Modules: web-templates and web-elements → the Wasm Web UI protocol
+  // (docs/design/wasm-web-ui.md). One source serves every target;
+  // what differs per host is behind one internal virtual file each: the
+  // DOM host's imports and string crossings on the js target, and their
+  // stand-ins elsewhere, which throw or do nothing. The `webui_*` exports
+  // are shared files that only a js-target compile roots.
+  exports["web-templates"] = new ModuleExport(null, "web-templates/index.zena");
+  let htmlHostVirtual: HashMap<String, String> = {
+    "js" => "web-templates/host-js.zena",
+    "zena-cli" => "web-templates/host-none.zena",
+    "component" => "web-templates/host-none.zena",
+    "freestanding" => "web-templates/host-none.zena",
+  };
+  exports["web-templates/host.zena"] = new ModuleExport(htmlHostVirtual, null, true);
+  exports["web-elements"] = new ModuleExport(null, "web-elements/index.zena");
+  let elementsHostVirtual: HashMap<String, String> = {
+    "js" => "web-elements/host-js.zena",
+    "zena-cli" => "web-elements/host-none.zena",
+    "component" => "web-elements/host-none.zena",
+    "freestanding" => "web-elements/host-none.zena",
+  };
+  exports["web-elements/host.zena"] = new ModuleExport(elementsHostVirtual, null, true);
+
   // Virtual module: fetch → HTTP requests. The JS-hosted targets go
   // through the host's own fetch(); the component target speaks
   // wasi:http through the bindings synthesized from the stdlib's WIT.
@@ -422,6 +445,28 @@ function buildLibraryMoves() {
   let t = new Map<String, String>();
   libraryMoves = t;
   return t;
+}
+
+/**
+ * Whether the library at `path` is a host boundary: a library whose
+ * exports the host calls from outside the program, so nothing inside
+ * the program references them and reachability roots them instead.
+ * `zena:js` holds the host-async completion entry points (async.md §4);
+ * the protocol files of `zena:web-templates` and `zena:web-elements`
+ * hold the Wasm Web UI protocol's `webui_*` functions
+ * (docs/design/wasm-web-ui.md), which only a js-target compile roots.
+ */
+export function isHostBoundaryLibrary(path: String): boolean {
+  return path == "zena:js/index.zena" || isWebUiProtocolLibrary(path);
+}
+
+/**
+ * Whether the library at `path` is one whose exported functions named
+ * with the Wasm Web UI prefix are exported from the module under
+ * their own names, on the js target.
+ */
+export function isWebUiProtocolLibrary(path: String): boolean {
+  return path == "zena:web-templates/protocol.zena" || path == "zena:web-elements/protocol.zena";
 }
 
 /**
