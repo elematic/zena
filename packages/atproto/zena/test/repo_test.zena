@@ -1,7 +1,7 @@
 import {suite, test} from 'zena:test';
 import {equal, isNull, isTrue, throws} from 'zena:assert';
 import {readFileBytesSync} from 'zena:fs';
-import {fromHex, toHex} from 'atproto:bytes';
+import {hex} from 'zena:encoding';
 import {BlockMap, Car, readCar, writeCar} from 'atproto:car';
 import {encodeCbor} from 'atproto:cbor';
 import {Cid} from 'atproto:cid';
@@ -12,12 +12,12 @@ import {decodeCommit, verifyRecordProof} from 'atproto:repo';
 let NETWORK = 'packages/atproto/zena/test/fixtures/network';
 let DID = 'did:plc:ewvi7nxzyoun6zhxrhs64oiz';
 
-function acceptAny(signed: ByteArray, sig: ByteArray) {
+function acceptAny(signed: FixedArray<u8>, sig: FixedArray<u8>) {
   return true;
 }
 
 function networkCar() {
-  return readCar(readFileBytesSync(`${NETWORK}/atproto-com-profile.car`) as ByteArray);
+  return readCar(readFileBytesSync(`${NETWORK}/atproto-com-profile.car`));
 }
 
 /**
@@ -39,7 +39,7 @@ function smallRepo(key: String) {
   commit.entries['data'] = new LinkValue(root);
   commit.entries['rev'] = new StringValue('3jqfcqzm3fo2j');
   commit.entries['prev'] = new NullValue();
-  commit.entries['sig'] = new BytesValue(fromHex('00'));
+  commit.entries['sig'] = new BytesValue(hex.decode('00'));
   let commitCid = blocks.add(commit);
   return writeCar(new FixedArray<Cid>(1, commitCid), blocks);
 }
@@ -48,7 +48,7 @@ export let tests = suite('atproto:car and atproto:repo', () => {
   test('reads a getRecord answer from the network', (ctx) => {
     let car = networkCar();
     equal(car.roots.length, 1);
-    let commit = decodeCommit(car.blocks.get(car.roots[0]) as ByteArray);
+    let commit = decodeCommit(car.blocks.get(car.roots[0]) as FixedArray<u8>);
     equal(commit.did, DID);
     equal(commit.version, 3 as i64);
     equal(commit.sig.length, 64);
@@ -63,13 +63,13 @@ export let tests = suite('atproto:car and atproto:repo', () => {
 
   test('re-encodes the commit to the bytes it was signed over', (ctx) => {
     let car = networkCar();
-    let commitBytes = car.blocks.get(car.roots[0]) as ByteArray;
+    let commitBytes = car.blocks.get(car.roots[0]) as FixedArray<u8>;
     let commit = decodeCommit(commitBytes);
     // The signed bytes are the commit minus its `sig` field: a map of one
     // entry fewer, without the 3-byte key and the 66-byte signature value.
     equal(commit.signedBytes().length, commitBytes.length - 4 - 66);
-    equal(toHex(commitBytes).sliceBytes(0, 2), 'a6');
-    equal(toHex(commit.signedBytes()).sliceBytes(0, 2), 'a5');
+    equal(hex.encode(commitBytes).sliceBytes(0, 2), 'a6');
+    equal(hex.encode(commit.signedBytes()).sliceBytes(0, 2), 'a5');
   });
 
   test('rejects a proof whose signature check fails', (ctx) => {
@@ -117,7 +117,7 @@ export let tests = suite('atproto:car and atproto:repo', () => {
 
   test('rejects a truncated CAR file', (ctx) => {
     let bytes = smallRepo('com.example.thing/1');
-    let truncated = new FixedArray<u8>(bytes.length - 3, 0 as u8) as ByteArray;
+    let truncated = new FixedArray<u8>(bytes.length - 3, 0 as u8);
     for (var i = 0; i < truncated.length; i += 1) {
       truncated[i] = bytes[i];
     }
@@ -136,6 +136,6 @@ export let tests = suite('atproto:car and atproto:repo', () => {
     let car = readCar(bytes);
     equal(car.blocks.size, 2);
     isTrue(car.roots[0].equals(a));
-    equal(toHex(encodeCbor(new StringValue('a'))), '6161');
+    equal(hex.encode(encodeCbor(new StringValue('a'))), '6161');
   });
 });

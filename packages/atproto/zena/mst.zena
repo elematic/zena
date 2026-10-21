@@ -19,7 +19,7 @@
  */
 
 import {GrowableArray} from 'zena:collections';
-import {Encoding, newByteArray, copyBytes} from 'zena:core';
+import {Encoding, copyBytes, newByteArray} from 'zena:core';
 import {sha256} from 'zena:crypto';
 import {BlockMap} from './car.zena';
 import {decodeCbor} from './cbor.zena';
@@ -37,7 +37,7 @@ import {
 } from './data.zena';
 
 /** Fills arrays of entries before their elements are set. */
-let NO_CID = new Cid(1, 0 as i64, 0 as i64, newByteArray(0));
+let NO_CID = new Cid(1, 0 as i64, 0 as i64, new FixedArray<u8>(0, 0 as u8));
 
 /** A node that cannot be read, or a block a walk needed and did not have. */
 export class MstError extends Error {
@@ -49,7 +49,7 @@ export class MstError extends Error {
  * SHA-256 hash, rounded down.
  */
 export function keyHeight(key: String): i32 {
-  let hash = sha256(key.toBytes() as ByteArray);
+  let hash = sha256(key.toBytes());
   var zeros = 0;
   for (var i = 0; i < hash.length; i += 1) {
     let b = hash[i] as i32;
@@ -115,7 +115,7 @@ function optionalLink(value: Value | null, what: String): Cid | null {
  * Reads a node, checking its shape, that each prefix length fits the
  * previous key, and that keys increase.
  */
-export function decodeNode(bytes: ByteArray): MstNode {
+export function decodeNode(bytes: FixedArray<u8>): MstNode {
   let value = decodeCbor(bytes);
   if (!(value is MapValue)) {
     throw new MstError('node is not a map');
@@ -155,10 +155,10 @@ export function decodeNode(bytes: ByteArray): MstNode {
 }
 
 /** The first `prefix` bytes of `previous` followed by `suffix`, as a key. */
-function joinKey(previous: String, prefix: i32, suffix: ByteArray): String {
+function joinKey(previous: String, prefix: i32, suffix: FixedArray<u8>): String {
   let bytes = newByteArray(prefix + suffix.length);
   previous.copyBytesTo(bytes, 0, 0, prefix);
-  copyBytes(bytes, prefix, suffix, 0, suffix.length);
+  copyBytes(bytes, prefix, suffix as ByteArray, 0, suffix.length);
   return String.fromByteArray(bytes, 0, bytes.length, Encoding.WTF8);
 }
 
@@ -169,9 +169,7 @@ export function encodeNode(node: MstNode): Value {
   for (var i = 0; i < node.entries.length; i += 1) {
     let entry = node.entries[i];
     let prefix = commonPrefixLength(previous, entry.key);
-    let keyBytes = entry.key.toBytes() as ByteArray;
-    let suffix = newByteArray(keyBytes.length - prefix);
-    copyBytes(suffix, 0, keyBytes, prefix, suffix.length);
+    let suffix = entry.key.toBytes().slice(prefix, entry.key.length);
     let map = newMap();
     map.entries['p'] = new IntValue(prefix as i64);
     map.entries['k'] = new BytesValue(suffix);

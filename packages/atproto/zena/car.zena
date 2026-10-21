@@ -10,17 +10,16 @@
  * CAR file holds only data whose hashes match.
  */
 
-import {ByteBuffer, newByteArray} from 'zena:core';
+import {ByteBuffer} from 'zena:core';
 import {HashMap} from 'zena:collections';
 import {sha256} from 'zena:crypto';
-import {equalBytes, sliceBytes} from './bytes.zena';
 import {decodeCborRange, encodeCbor} from './cbor.zena';
 import {Cid, HASH_SHA256} from './cid.zena';
 import {IntValue, LinkValue, ListValue, MapValue, Value, field, newMap} from './data.zena';
 import {readVarint, writeVarint} from './varint.zena';
 
 /** Fills arrays of CIDs before their elements are set. */
-let NO_CID = new Cid(1, 0 as i64, 0 as i64, newByteArray(0));
+let NO_CID = new Cid(1, 0 as i64, 0 as i64, new FixedArray<u8>(0, 0 as u8));
 
 /** A CAR file that cannot be read, or a block that does not match its CID. */
 export class CarError extends Error {
@@ -29,11 +28,11 @@ export class CarError extends Error {
 
 /** Blocks by CID. */
 export final class BlockMap {
-  #blocks = new HashMap<String, ByteArray>();
+  #blocks = new HashMap<String, FixedArray<u8>>();
   #cids = new HashMap<String, Cid>();
 
   /** The bytes `cid` names, or null when the map does not have them. */
-  get(cid: Cid): ByteArray | null {
+  get(cid: Cid): FixedArray<u8> | null {
     if (let (true, bytes) = this.#blocks.get(cid.toString())) {
       return bytes;
     }
@@ -45,7 +44,7 @@ export final class BlockMap {
   }
 
   /** Stores `bytes` under `cid`. The caller vouches that they match. */
-  set(cid: Cid, bytes: ByteArray): void {
+  set(cid: Cid, bytes: FixedArray<u8>): void {
     let key = cid.toString();
     this.#blocks[key] = bytes;
     this.#cids[key] = cid;
@@ -66,7 +65,7 @@ export final class BlockMap {
   }
 
   /** Calls `callback` with each block, in no particular order. */
-  forEach(callback: (cid: Cid, bytes: ByteArray) => void): void {
+  forEach(callback: (cid: Cid, bytes: FixedArray<u8>) => void): void {
     this.#cids.forEach((key, cid) => {
       callback(cid, this.#blocks[key]);
     });
@@ -84,7 +83,7 @@ export final class Car {
  * Reads a CAR file and checks each block against its CID. Only SHA-256
  * CIDs can be checked, so a block with any other hash is rejected.
  */
-export function readCar(bytes: ByteArray): Car {
+export function readCar(bytes: FixedArray<u8>): Car {
   let (headerLength, headerStart) = readVarint(bytes, 0, bytes.length);
   let headerEnd = headerStart + (headerLength as i32);
   if (headerLength > (bytes.length - headerStart) as i64) {
@@ -100,8 +99,8 @@ export function readCar(bytes: ByteArray): Car {
     }
     let end = start + (length as i32);
     let (cid, dataStart) = Cid.decode(bytes, start, end);
-    let data = sliceBytes(bytes, dataStart, end);
-    if (cid.hashType != HASH_SHA256 || !equalBytes(sha256(data), cid.digest)) {
+    let data = bytes.slice(dataStart, end);
+    if (cid.hashType != HASH_SHA256 || !sha256(data).contentEquals(cid.digest)) {
       throw new CarError(`block ${cid.toString()} does not match its CID`);
     }
     blocks.set(cid, data);
@@ -139,7 +138,7 @@ function readHeader(header: Value): FixedArray<Cid> {
  * Writes a CAR file with these roots and blocks. Blocks are written in the
  * order `order` lists them, or in no particular order when it is null.
  */
-export function writeCar(roots: FixedArray<Cid>, blocks: BlockMap, order: FixedArray<Cid> | null = null): ByteArray {
+export function writeCar(roots: FixedArray<Cid>, blocks: BlockMap, order: FixedArray<Cid> | null = null): FixedArray<u8> {
   let rootValues = new FixedArray<Value>(roots.length, new IntValue(0 as i64));
   for (var i = 0; i < roots.length; i += 1) {
     rootValues[i] = new LinkValue(roots[i]);
@@ -151,12 +150,12 @@ export function writeCar(roots: FixedArray<Cid>, blocks: BlockMap, order: FixedA
 
   let out = new ByteBuffer();
   writeVarint(out, headerBytes.length as i64);
-  out.writeBytes(headerBytes);
-  let writeBlock = (cid: Cid, data: ByteArray) => {
+  out.writeBytes(headerBytes as ByteArray);
+  let writeBlock = (cid: Cid, data: FixedArray<u8>) => {
     let cidBytes = cid.toBytes();
     writeVarint(out, (cidBytes.length + data.length) as i64);
-    out.writeBytes(cidBytes);
-    out.writeBytes(data);
+    out.writeBytes(cidBytes as ByteArray);
+    out.writeBytes(data as ByteArray);
   };
   if (order == null) {
     blocks.forEach(writeBlock);
@@ -169,5 +168,5 @@ export function writeCar(roots: FixedArray<Cid>, blocks: BlockMap, order: FixedA
       writeBlock(cid, data);
     }
   }
-  return out.toByteArray();
+  return out.toByteArray() as FixedArray<u8>;
 }

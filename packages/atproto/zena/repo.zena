@@ -43,21 +43,21 @@ export final class Commit {
   /** The revision, a TID that increases with every commit. */
   rev: String;
   prev: Cid | null;
-  sig: ByteArray;
+  sig: FixedArray<u8>;
   /** The commit's fields without `sig`, as they were signed. */
   unsigned: MapValue;
 
-  new(did: String, version: i64, data: Cid, rev: String, prev: Cid | null, sig: ByteArray, unsigned: MapValue)
+  new(did: String, version: i64, data: Cid, rev: String, prev: Cid | null, sig: FixedArray<u8>, unsigned: MapValue)
     : did = did, version = version, data = data, rev = rev, prev = prev, sig = sig, unsigned = unsigned;
 
   /** The bytes the signature covers: the commit encoded without `sig`. */
-  signedBytes(): ByteArray {
+  signedBytes(): FixedArray<u8> {
     return encodeCbor(this.unsigned);
   }
 }
 
 /** Reads a commit block. Accepts versions 2 and 3, which differ only in what `prev` means. */
-export function decodeCommit(bytes: ByteArray): Commit {
+export function decodeCommit(bytes: FixedArray<u8>): Commit {
   let value = decodeCbor(bytes);
   if (!(value is MapValue)) {
     throw new RepoError('commit is not a map');
@@ -124,7 +124,7 @@ export function verifyRecordProof(
   did: String,
   collection: String,
   rkey: String,
-  verifySignature: (signed: ByteArray, sig: ByteArray) => boolean
+  verifySignature: (signed: FixedArray<u8>, sig: FixedArray<u8>) => boolean
 ): RecordProof {
   if (car.roots.length != 1) {
     throw new RepoError(`proof has ${car.roots.length} roots`);
