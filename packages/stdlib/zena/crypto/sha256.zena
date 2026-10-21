@@ -1,20 +1,33 @@
-import {newByteArray, StringBuilder} from 'zena:core';
+import {newByteArray} from 'zena:core';
+import {hex} from 'zena:encoding';
 
 /**
- * SHA-256, for content fingerprints. Pure Zena, verified against the FIPS
- * 180-4 test vectors in `tests/crypto/sha256_test.zena`.
+ * SHA-256 (FIPS 180-4), verified against the FIPS test vectors in
+ * `tests/crypto/sha256_test.zena`.
  */
 
 // Casts cannot appear as binary operands, so they are wrapped in
 // helper calls throughout.
-let u = (x: i32) => x as u32;
-let ub = (x: u8) => x as u32;
-let b8 = (x: i32) => x as u8;
-let toI64 = (x: i32) => x as i64;
-let byteOf = (x: u32, shift: i32) => ((x >>> u(shift)) & u(0xff)) as u8;
-let i64Low8 = (x: i64) => (x & 0xff) as u8;
+function u(x: i32) {
+  return x as u32;
+}
+function ub(x: u8) {
+  return x as u32;
+}
+function b8(x: i32) {
+  return x as u8;
+}
+function toI64(x: i32) {
+  return x as i64;
+}
+function byteOf(x: u32, shift: i32) {
+  return ((x >>> u(shift)) & u(0xff)) as u8;
+}
+function i64Low8(x: i64) {
+  return (x & 0xff) as u8;
+}
 
-let parseHexWords = (hex: String, count: i32) => {
+function parseHexWords(hex: String, count: i32) {
   let words = new FixedArray<u32>(count, u(0));
   var word = u(0);
   var digits = 0;
@@ -37,7 +50,7 @@ let parseHexWords = (hex: String, count: i32) => {
     }
   }
   return words;
-};
+}
 
 let roundConstants = parseHexWords(
   '428a2f98 71374491 b5c0fbcf e9b5dba5 3956c25b 59f111f1 923f82a4 ab1c5ed5 ' +
@@ -58,10 +71,12 @@ let initialState = parseHexWords(
 
 let allOnes = parseHexWords('ffffffff', 1)[0];
 
-let rotr = (x: u32, n: i32) => (x >>> u(n)) | (x << u(32 - n));
+function rotr(x: u32, n: i32) {
+  return (x >>> u(n)) | (x << u(32 - n));
+}
 
 /** The 32-byte SHA-256 digest of `data`. */
-export let sha256 = (data: ByteArray): ByteArray => {
+export function sha256(data: FixedArray<u8>): FixedArray<u8> {
   let len = data.length;
   // Padded to a multiple of 64 bytes: data, 0x80, zeros, then the
   // 8-byte big-endian bit length.
@@ -143,29 +158,20 @@ export let sha256 = (data: ByteArray): ByteArray => {
     digest[i * 4 + 2] = byteOf(word, 8);
     digest[i * 4 + 3] = byteOf(word, 0);
   }
-  return digest;
-};
+  return digest as FixedArray<u8>;
+}
 
-let hexDigits = '0123456789abcdef';
-
-export let toHex = (bytes: ByteArray): String => {
-  let sb = new StringBuilder(bytes.length * 2);
-  for (var i = 0; i < bytes.length; i += 1) {
-    let b = bytes[i] as i32;
-    sb.appendByte(hexDigits.getByteAt((b >> 4) & 0xf));
-    sb.appendByte(hexDigits.getByteAt(b & 0xf));
-  }
-  return sb.toString();
-};
+/** `bytes` as lowercase hex; the same as `hex.encode` from `zena:encoding`. */
+export function toHex(bytes: FixedArray<u8>): String {
+  return hex.encode(bytes);
+}
 
 /** The digest as a lowercase hex string. */
-export let sha256Hex = (data: ByteArray): String => toHex(sha256(data));
+export function sha256Hex(data: FixedArray<u8>): String {
+  return hex.encode(sha256(data));
+}
 
 /** The digest of a string's bytes as a lowercase hex string. */
-export let sha256HexOfString = (s: String): String => {
-  let bytes = newByteArray(s.length);
-  for (var i = 0; i < s.length; i += 1) {
-    bytes[i] = b8(s.getByteAt(i));
-  }
-  return sha256Hex(bytes);
-};
+export function sha256HexOfString(s: String): String {
+  return sha256Hex(s.toBytes());
+}

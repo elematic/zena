@@ -1,0 +1,135 @@
+import {suite, test} from 'zena:test';
+import {equal, throws} from 'zena:assert';
+import {hex} from 'zena:encoding';
+import {hkdf, hkdfExpand, hkdfExtract, hmacSha256} from 'zena:crypto';
+
+function repeatByte(byte: i32, count: i32) {
+  let out = new FixedArray<u8>(count, 0 as u8);
+  for (var i = 0; i < count; i += 1) {
+    out[i] = byte as u8;
+  }
+  return out;
+}
+
+function mac(key: FixedArray<u8>, data: FixedArray<u8>) {
+  return hex.encode(hmacSha256(key, data));
+}
+
+function hmacHex(keyHex: String, dataHex: String) {
+  return mac(hex.decode(keyHex), hex.decode(dataHex));
+}
+
+export let tests = suite('zena:crypto HMAC', () => {
+  // RFC 4231, section 4.
+  test('HMAC-SHA256 test case 1', (ctx) => {
+    equal(
+      hmacHex('0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b', '4869205468657265'),
+      'b0344c61d8db38535ca8afceaf0bf12b881dc200c9833da726e9376c2e32cff7',
+    );
+  });
+
+  test('HMAC-SHA256 test case 2, a key shorter than the output', (ctx) => {
+    equal(
+      hmacHex('4a656665', '7768617420646f2079612077616e7420666f72206e6f7468696e673f'),
+      '5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843',
+    );
+  });
+
+  test('HMAC-SHA256 test case 3, key and data over one block', (ctx) => {
+    equal(
+      mac(repeatByte(0xaa, 20), repeatByte(0xdd, 50)),
+      '773ea91e36800e46854db8ebd09181a72959098b3ef8c122d9635514ced565fe',
+    );
+  });
+
+  test('HMAC-SHA256 test case 4', (ctx) => {
+    equal(
+      mac(hex.decode('0102030405060708090a0b0c0d0e0f10111213141516171819'), repeatByte(0xcd, 50)),
+      '82558a389a443c0ea4cc819899f2083a85f0faa3e578f8077a2e3ff46729665b',
+    );
+  });
+
+  test('HMAC-SHA256 test case 5, truncated to 128 bits', (ctx) => {
+    let mac = hmacSha256(
+      hex.decode('0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c'),
+      hex.decode('546573742057697468205472756e636174696f6e'),
+    );
+    equal(hex.encode((mac).slice(0, 16)), 'a3b6167473100ee06e0c796c2955552b');
+  });
+
+  test('HMAC-SHA256 test case 6, a key longer than a block', (ctx) => {
+    equal(
+      mac(
+        repeatByte(0xaa, 131),
+        hex.decode('54657374205573696e67204c6172676572205468616e20426c6f636b2d53697a65204b6579202d2048617368204b6579204669727374'),
+      ),
+      '60e431591ee0b67f0d8a26aacbf5b77f8e0bc6213728c5140546040f0ee37f54',
+    );
+  });
+
+  test('HMAC-SHA256 test case 7, key and data longer than a block', (ctx) => {
+    equal(
+      mac(
+        repeatByte(0xaa, 131),
+        hex.decode('5468697320697320612074657374207573696e672061206c6172676572207468616e20626c6f636b2d73697a65206b657920616e642061206c6172676572207468616e20626c6f636b2d73697a6520646174612e20546865206b6579206e6565647320746f20626520686173686564206265666f7265206265696e6720757365642062792074686520484d414320616c676f726974686d2e'),
+      ),
+      '9b09ffa71b942fcb27635fbcd5b0e944bfdc63644f0713938a7f51535c3a35e2',
+    );
+  });
+
+  // RFC 5869, appendix A.
+  test('HKDF test case 1', (ctx) => {
+    let salt = hex.decode('000102030405060708090a0b0c');
+    let ikm = repeatByte(0x0b, 22);
+    let info = hex.decode('f0f1f2f3f4f5f6f7f8f9');
+    let prk = hkdfExtract(salt, ikm);
+    equal(hex.encode(prk), '077709362c2e32df0ddc3f0dc47bba6390b6c73bb50f9c3122ec844ad7c2b3e5');
+    let okm = '3cb25f25faacd57a90434f64d0362f2a2d2d0a90cf1a5a4c5db02d56ecc4c5bf34007208d5b887185865';
+    equal(hex.encode(hkdfExpand(prk, info, 42)), okm);
+    equal(hex.encode(hkdf(salt, ikm, info, 42)), okm);
+  });
+
+  test('HKDF test case 2, longer inputs and outputs', (ctx) => {
+    let ikm = hex.decode(
+      '000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f' +
+      '202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f' +
+      '404142434445464748494a4b4c4d4e4f',
+    );
+    let salt = hex.decode(
+      '606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f' +
+      '808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9f' +
+      'a0a1a2a3a4a5a6a7a8a9aaabacadaeaf',
+    );
+    let info = hex.decode(
+      'b0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecf' +
+      'd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeef' +
+      'f0f1f2f3f4f5f6f7f8f9fafbfcfdfeff',
+    );
+    let prk = hkdfExtract(salt, ikm);
+    equal(hex.encode(prk), '06a6b88c5853361a06104c9ceb35b45cef760014904671014a193f40c15fc244');
+    let okm =
+      'b11e398dc80327a1c8e7f78c596a49344f012eda2d4efad8a050cc4c19afa97c' +
+      '59045a99cac7827271cb41c65e590e09da3275600c2f09b8367793a9aca3db71' +
+      'cc30c58179ec3e87c14c01d5c1f3434f1d87';
+    equal(hex.encode(hkdfExpand(prk, info, 82)), okm);
+    equal(hex.encode(hkdf(salt, ikm, info, 82)), okm);
+  });
+
+  test('HKDF test case 3, empty salt and info', (ctx) => {
+    let ikm = repeatByte(0x0b, 22);
+    let empty = hex.decode('');
+    let prk = hkdfExtract(empty, ikm);
+    equal(hex.encode(prk), '19ef24a32c717b167f33a91d6f648bdf96596776afdb6377ac434c1c293ccb04');
+    let okm = '8da4e775a563c18f715f802a063c5a31b8a11f5c5ee1879ec3454e5f3c738d2d9d201395faa4b61a96c8';
+    equal(hex.encode(hkdfExpand(prk, empty, 42)), okm);
+    equal(hex.encode(hkdf(empty, ikm, empty, 42)), okm);
+  });
+
+  test('HKDF expands to at most 255 blocks', (ctx) => {
+    let prk = hkdfExtract(hex.decode(''), hex.decode('00'));
+    equal(hkdfExpand(prk, hex.decode(''), 255 * 32).length, 255 * 32);
+    throws(() => {
+      hkdfExpand(prk, hex.decode(''), 255 * 32 + 1);
+    });
+  });
+});

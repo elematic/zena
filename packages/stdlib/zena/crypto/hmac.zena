@@ -1,0 +1,76 @@
+/**
+ * HMAC-SHA256 (RFC 2104) and HKDF-SHA256 (RFC 5869). ECDSA signing
+ * derives its nonces with HMAC-SHA256 (RFC 6979).
+ */
+
+import {copyBytes, newByteArray} from 'zena:core';
+import {sha256} from './sha256.zena';
+
+/** An HKDF output length outside what RFC 5869 allows. */
+export class HkdfError extends Error {
+  new(message: String) : super(message);
+}
+
+let BLOCK_SIZE = 64;
+let HASH_SIZE = 32;
+
+/** The HMAC-SHA256 of `message` under `key`. */
+export function hmacSha256(key: FixedArray<u8>, message: FixedArray<u8>): FixedArray<u8> {
+  // A key longer than a block is replaced by its hash; a shorter one is
+  // padded with zeros, which the loop below does by reading past its end
+  // as 0.
+  let k = if (key.length > BLOCK_SIZE) sha256(key) else key;
+  let inner = newByteArray(BLOCK_SIZE + message.length);
+  let outer = newByteArray(BLOCK_SIZE + HASH_SIZE);
+  for (var i = 0; i < BLOCK_SIZE; i += 1) {
+    let b = if (i < k.length) k[i] as i32 else 0;
+    inner[i] = (b ^ 0x36) as u8;
+    outer[i] = (b ^ 0x5c) as u8;
+  }
+  copyBytes(inner, BLOCK_SIZE, message as ByteArray, 0, message.length);
+  copyBytes(outer, BLOCK_SIZE, sha256(inner as FixedArray<u8>) as ByteArray, 0, HASH_SIZE);
+  return sha256(outer as FixedArray<u8>);
+}
+
+/**
+ * HKDF's extract step: a 32-byte pseudorandom key from input keying
+ * material and an optional salt. RFC 5869 says an empty salt stands for
+ * 32 zero bytes; HMAC pads its key with zeros to a block either way, so
+ * passing the empty salt through gives the same result.
+ */
+export function hkdfExtract(salt: FixedArray<u8>, ikm: FixedArray<u8>): FixedArray<u8> {
+  return hmacSha256(salt, ikm);
+}
+
+/**
+ * HKDF's expand step: `length` bytes from a pseudorandom key and context
+ * `info`. `length` is at most 255 * 32 bytes.
+ */
+export function hkdfExpand(prk: FixedArray<u8>, info: FixedArray<u8>, length: i32): FixedArray<u8> {
+  if (length < 0 || length > 255 * HASH_SIZE) {
+    throw new HkdfError(`HKDF-SHA256 cannot produce ${length} bytes`);
+  }
+  let out = newByteArray(length);
+  // Block i is HMAC(prk, block i-1 || info || i), counting from 1, with
+  // an empty block 0.
+  var previous = new FixedArray<u8>(0, 0 as u8);
+  var written = 0;
+  var counter = 1;
+  while (written < length) {
+    let message = newByteArray(previous.length + info.length + 1);
+    copyBytes(message, 0, previous as ByteArray, 0, previous.length);
+    copyBytes(message, previous.length, info as ByteArray, 0, info.length);
+    message[message.length - 1] = counter as u8;
+    previous = hmacSha256(prk, message as FixedArray<u8>);
+    let take = if (length - written < HASH_SIZE) length - written else HASH_SIZE;
+    copyBytes(out, written, previous as ByteArray, 0, take);
+    written += take;
+    counter += 1;
+  }
+  return out as FixedArray<u8>;
+}
+
+/** HKDF-SHA256: extract, then expand to `length` bytes. */
+export function hkdf(salt: FixedArray<u8>, ikm: FixedArray<u8>, info: FixedArray<u8>, length: i32): FixedArray<u8> {
+  return hkdfExpand(hkdfExtract(salt, ikm), info, length);
+}

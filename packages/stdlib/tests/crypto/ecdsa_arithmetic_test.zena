@@ -1,0 +1,153 @@
+import {suite, test} from 'zena:test';
+import {equal, isFalse, isTrue} from 'zena:assert';
+import {hex} from 'zena:encoding';
+// The arithmetic is private to zena:crypto, so this test imports its files
+// by path. That gives the test its own copy of them, separate from the
+// ones behind `zena:crypto`, which is why it uses their curves directly.
+import {Curve, P256, Point, SECP256K1, Scratch} from '../../zena/crypto/ecdsa/curve.zena';
+import {Fe, Field} from '../../zena/crypto/ecdsa/field.zena';
+
+// Expected values computed with Python integers.
+let p256P = 'ffffffff00000001000000000000000000000000ffffffffffffffffffffffff';
+let k256N = 'fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141';
+let a = '8c2b1f3e5d6a7b9c0d1e2f3a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e';
+let b = 'fffffffe00000001000000000000000000000000fffffffffffffffffffffff0';
+
+function hexOf(x: Fe) {
+  return hex.encode(x.toBytes());
+}
+
+/** Applies a Montgomery-form operation to plain hex inputs. */
+function binary(field: Field, x: String, y: String, op: (out: Fe, a: Fe, b: Fe) => void) {
+  let xm = field.mont(Fe.fromHex(x));
+  let ym = field.mont(Fe.fromHex(y));
+  let out = Fe.zero();
+  op(out, xm, ym);
+  field.fromMont(out, out);
+  return hexOf(out);
+}
+
+function checkField(modulus: String, product: String, sum: String, difference: String,
+    reverseDifference: String, inverse: String) {
+  let field = new Field(Fe.fromHex(modulus));
+  equal(binary(field, a, b, (out, x, y) => field.mul(out, x, y)), product);
+  equal(binary(field, a, b, (out, x, y) => field.add(out, x, y)), sum);
+  equal(binary(field, a, b, (out, x, y) => field.sub(out, x, y)), difference);
+  equal(binary(field, b, a, (out, x, y) => field.sub(out, x, y)), reverseDifference);
+  equal(binary(field, a, b, (out, x, y) => field.inv(out, x)), inverse);
+  // (m - 1)^2 = 1, and (m - 1) + 1 = 0.
+  let minusOne = Fe.fromHex(modulus);
+  minusOne.l0 = minusOne.l0 - 1;
+  let one = '0000000000000000000000000000000000000000000000000000000000000001';
+  equal(binary(field, hexOf(minusOne), hexOf(minusOne), (out, x, y) => field.mul(out, x, y)), one);
+  equal(
+    binary(field, hexOf(minusOne), one, (out, x, y) => field.add(out, x, y)),
+    '0000000000000000000000000000000000000000000000000000000000000000',
+  );
+}
+
+/** p's affine coordinates as plain hex, or 'infinity'. */
+function affineHex(curve: Curve, p: Point) {
+  let x = Fe.zero();
+  let y = Fe.zero();
+  if (!curve.toAffine(p, x, y)) {
+    return 'infinity';
+  }
+  curve.fp.fromMont(x, x);
+  curve.fp.fromMont(y, y);
+  return `${hexOf(x)},${hexOf(y)}`;
+}
+
+/** The special cases of the complete addition formulas. */
+function checkPointFormulas(curve: Curve) {
+  let s = new Scratch();
+  let g = curve.generator();
+  let gHex = affineHex(curve, g);
+  let sum = curve.identity();
+  let doubled = curve.identity();
+  // G + G by the addition formula and by the doubling formula.
+  curve.add(sum, g, g, s);
+  curve.double(doubled, g, s);
+  equal(affineHex(curve, sum), affineHex(curve, doubled));
+  // 2G = 2·G by scalar multiplication, which also checks mulBase.
+  equal(affineHex(curve, curve.mulBase(new Fe(2, 0, 0, 0))), affineHex(curve, doubled));
+  // G + O, O + G, O + O and 2·O.
+  let identity = curve.identity();
+  curve.add(sum, g, identity, s);
+  equal(affineHex(curve, sum), gHex);
+  curve.add(sum, identity, g, s);
+  equal(affineHex(curve, sum), gHex);
+  curve.add(sum, identity, identity, s);
+  equal(affineHex(curve, sum), 'infinity');
+  curve.double(sum, identity, s);
+  equal(affineHex(curve, sum), 'infinity');
+  // G + (-G) and (n - 1)·G = -G.
+  let minusG = curve.generator();
+  curve.fp.sub(minusG.y, Fe.zero(), minusG.y);
+  curve.add(sum, g, minusG, s);
+  equal(affineHex(curve, sum), 'infinity');
+  let nMinusOne = curve.fn.modulus.copy();
+  nMinusOne.l0 = nMinusOne.l0 - 1;
+  equal(affineHex(curve, curve.mulBase(nMinusOne)), affineHex(curve, minusG));
+  equal(affineHex(curve, curve.mulBase(Fe.zero())), 'infinity');
+  // 1·G + 1·G and 1·G + 0·(-G) by Shamir's trick; 1·G + 1·(-G) = O.
+  equal(affineHex(curve, curve.mulDouble(new Fe(1, 0, 0, 0), new Fe(1, 0, 0, 0), g)),
+    affineHex(curve, doubled));
+  equal(affineHex(curve, curve.mulDouble(new Fe(1, 0, 0, 0), Fe.zero(), minusG)), gHex);
+  equal(affineHex(curve, curve.mulDouble(new Fe(1, 0, 0, 0), new Fe(1, 0, 0, 0), minusG)),
+    'infinity');
+}
+
+export let tests = suite('zena:crypto ECDSA field and point arithmetic', () => {
+  test('P-256 point formulas', (ctx) => {
+    checkPointFormulas(P256);
+  });
+
+  test('secp256k1 point formulas', (ctx) => {
+    checkPointFormulas(SECP256K1);
+  });
+
+  test('round-trips bytes and hex', (ctx) => {
+    let x = Fe.fromHex(a);
+    equal(hexOf(x), a);
+    equal(hexOf(Fe.fromBytes(x.toBytes(), 0)), a);
+    equal(x.l3, 0x8c2b1f3e5d6a7b9c as u64);
+    equal(x.l0, 0x0718293a4b5c6d7e as u64);
+  });
+
+  test('compares and reads bits', (ctx) => {
+    let x = Fe.fromHex(a);
+    let y = Fe.fromHex(b);
+    isTrue(x.lessThan(y));
+    isFalse(y.lessThan(x));
+    isFalse(x.lessThan(x));
+    equal(x.bit(0), 0);
+    equal(x.bit(1), 1);
+    equal(x.bit(255), 1);
+    equal(x.bit(254), 0);
+    equal(x.window(0), 0xe as u64);
+    equal(x.window(63), 0x8 as u64);
+  });
+
+  test('P-256 field', (ctx) => {
+    checkField(
+      p256P,
+      'bc7a4e9d4fc3f7bc42fd151187bea8535313e0b2952f123f38e3d8020cb8bdf8',
+      '8c2b1f3d5d6a7b9c0d1e2f3a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d6f',
+      '8c2b1f3f5d6a7b9c0d1e2f3a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d8d',
+      '73d4e0bfa2958464f2e1d0c5b4a39281706f5e4e3c2b1a09f8e7d6c5b4a39272',
+      'cfa5874d36126e5095f0392b5dc1d0aae8b34531762ed139ed4c208115adde81',
+    );
+  });
+
+  test('secp256k1 group order', (ctx) => {
+    checkField(
+      k256N,
+      '3a038eb7e5aef04423f00c456aad992094997ed933f0a87d7eadc3d15dffa910',
+      '8c2b1f3c5d6a7b9d0d1e2f3a4b5c6d7fd4e1c4cd148c45ba4745caad7b262c2d',
+      '8c2b1f405d6a7b9b0d1e2f3a4b5c6d7d4a3f7e98731d8631c6ea87c71b92aecf',
+      '73d4e0bfa2958464f2e1d0c5b4a39281706f5e4e3c2b1a09f8e7d6c5b4a39272',
+      'fae993efc2b46f289815bbcecf2831ee449f65f340ec9f6e197245c4492af47b',
+    );
+  });
+});

@@ -1,0 +1,273 @@
+import {suite, test} from 'zena:test';
+import {equal, isFalse, isTrue, throws} from 'zena:assert';
+import {EcdsaCurve, EcdsaError, p256, secp256k1, sha256} from 'zena:crypto';
+import {hex} from 'zena:encoding';
+
+function bytesOf(text: String) {
+  let out = new FixedArray<u8>(text.length, 0 as u8);
+  for (var i = 0; i < text.length; i += 1) {
+    out[i] = text.getByteAt(i) as u8;
+  }
+  return out;
+}
+
+/** `a` followed by `b`. TODO(#455): `[...a, ...b]`. */
+function join(a: FixedArray<u8>, b: FixedArray<u8>) {
+  let out = new FixedArray<u8>(a.length + b.length, 0 as u8);
+  for (var i = 0; i < a.length; i += 1) {
+    out[i] = a[i];
+  }
+  for (var i = 0; i < b.length; i += 1) {
+    out[a.length + i] = b[i];
+  }
+  return out;
+}
+
+/** `bytes` with bit 0 of byte `index` flipped. */
+function flipBit(bytes: FixedArray<u8>, index: i32) {
+  let out = bytes[..];
+  out[index] = ((out[index] as i32) ^ 1) as u8;
+  return out;
+}
+
+/** `bytes` with its first byte replaced by `prefix`. */
+function withPrefix(bytes: FixedArray<u8>, prefix: i32) {
+  let out = bytes[..];
+  out[0] = prefix as u8;
+  return out;
+}
+
+function signHex(curve: EcdsaCurve, keyHex: String, message: String) {
+  return hex.encode(curve.sign(hex.decode(keyHex), bytesOf(message)));
+}
+
+// RFC 6979, appendix A.2.5: P-256 with SHA-256.
+let rfcKey = 'c9afa9d845ba75166b5c215767b1d6934e50c3db36e89b127b8a622b120f6721';
+let rfcPublicX = '60fed4ba255a9d31c961eb74c6356d68c049b8923b61fa6ce669622e60f29fb6';
+let rfcPublicY = '7903fe1008b8bc99a41ae9e95628bc64f2f1b20c2d7e9f5177a3c294d4462299';
+
+/**
+ * RFC 6979 secp256k1 signatures with SHA-256, from bitcoinjs-lib v3.3.2,
+ * test/fixtures/ecdsa.json ("valid.ecdsa"), with each DER signature
+ * written out as r and s. Every s there is already low.
+ */
+let k256Vectors: Array<(String, String, String, String)> = [
+  (
+    '0000000000000000000000000000000000000000000000000000000000000001',
+    'Everything should be made as simple as possible, but not simpler.',
+    '33a69cd2065432a30f3d1ce4eb0d59b8ab58c74f27c41a7fdb5696ad4e6108c9',
+    '6f807982866f785d3f6418d24163ddae117b7db4d5fdf0071de069fa54342262',
+  ),
+  (
+    'fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364140',
+    'Equations are more important to me, because politics is for the present, but an equation is something for eternity.',
+    '54c4a33c6423d689378f160a7ff8b61330444abb58fb470f96ea16d99d4a2fed',
+    '07082304410efa6b2943111b6a4e0aaa7b7db55a07e9861d1fb3cb1f421044a5',
+  ),
+  (
+    'fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364140',
+    'Not only is the Universe stranger than we think, it is stranger than we can think.',
+    'ff466a9f1b7b273e2f4c3ffe032eb2e814121ed18ef84665d0f515360dab3dd0',
+    '6fc95f5132e5ecfdc8e5e6e616cc77151455d46ed48f5589b7db7771a332b283',
+  ),
+  (
+    '0000000000000000000000000000000000000000000000000000000000000001',
+    'How wonderful that we have met with a paradox. Now we have some hope of making progress.',
+    'c0dafec8251f1d5010289d210232220b03202cba34ec11fec58b3e93a85b91d3',
+    '75afdc06b7d6322a590955bf264e7aaa155847f614d80078a90292fe205064d3',
+  ),
+  (
+    '69ec59eaa1f4f2e36b639716b7c30ca86d9a5375c7b38d8918bd9c0ebc80ba64',
+    'Computer science is no more about computers than astronomy is about telescopes.',
+    '7186363571d65e084e7f02b0b77c3ec44fb1b257dee26274c38c928986fea45d',
+    '0de0b38e06807e46bda1f1e293f4f6323e854c86d58abdd00c46c16441085df6',
+  ),
+  (
+    '00000000000000000000000000007246174ab1e92e9149c6e446fe194d072637',
+    "...if you aren't, at any given time, scandalized by code you wrote five or even three years ago, you're not learning anywhere near enough",
+    'fbfe5076a15860ba8ed00e75e9bd22e05d230f02a936b653eb55b61c99dda487',
+    '0e68880ebb0050fe4312b1b1eb0899e1b82da89baa5b895f612619edf34cbd37',
+  ),
+  (
+    '000000000000000000000000000000000000000000056916d0f9b31dc9b637f3',
+    'The question of whether computers can think is like the question of whether submarines can swim.',
+    'cde1302d83f8dd835d89aef803c74a119f561fbaef3eb9129e45f30de86abbf9',
+    '06ce643f5049ee1f27890467b77a6a8e11ec4661cc38cd8badf90115fbd03cef',
+  ),
+];
+
+let p256Order = 'ffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc632551';
+let k256Order = 'fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141';
+
+/** Private keys for the round trips: 1, n - 1, and two others. */
+function roundTripKeys(order: String) {
+  let minusOne = hex.decode(order);
+  minusOne[31] = ((minusOne[31] as i32) - 1) as u8;
+  return [
+    hex.decode('0000000000000000000000000000000000000000000000000000000000000001'),
+    minusOne,
+    hex.decode(rfcKey),
+    sha256(bytesOf('a private key')),
+  ];
+}
+
+function checkRoundTrips(curve: EcdsaCurve, order: String) {
+  let message = bytesOf('round trip');
+  for (let key in roundTripKeys(order)) {
+    let compressed = curve.publicKey(key);
+    let uncompressed = curve.publicKey(key, false);
+    equal(compressed.length, 33);
+    equal(uncompressed.length, 65);
+    equal(hex.encode(curve.compressPublicKey(uncompressed)), hex.encode(compressed));
+    equal(hex.encode(curve.decompressPublicKey(compressed)), hex.encode(uncompressed));
+
+    let signature = curve.sign(key, message);
+    equal(signature.length, 64);
+    // Deterministic: the same inputs give the same signature.
+    equal(hex.encode(curve.sign(key, message)), hex.encode(signature));
+    isTrue(curve.verify(compressed, message, signature));
+    isTrue(curve.verify(uncompressed, message, signature));
+    isTrue(curve.verifyDigest(compressed, sha256(message), signature));
+    isTrue(curve.verify(compressed, message, curve.signDigest(key, sha256(message))));
+
+    isFalse(curve.verify(compressed, bytesOf('round trap'), signature));
+    isFalse(curve.verify(compressed, message, flipBit(signature, 5)));
+    isFalse(curve.verify(compressed, message, flipBit(signature, 40)));
+    isFalse(curve.verify(curve.publicKey(sha256(key)), message, signature));
+  }
+}
+
+export let tests = suite('zena:crypto ECDSA', () => {
+  test('derives the RFC 6979 P-256 public key', (ctx) => {
+    let key = hex.decode(rfcKey);
+    equal(hex.encode(p256.publicKey(key, false)), `04${rfcPublicX}${rfcPublicY}`);
+    // Uy is odd.
+    equal(hex.encode(p256.publicKey(key)), `03${rfcPublicX}`);
+  });
+
+  test('signs the RFC 6979 P-256 SHA-256 vectors', (ctx) => {
+    // "sample": the RFC's s is f7cb1c94...cda8, above n / 2; the low-S
+    // signature carries n - s.
+    equal(
+      signHex(p256, rfcKey, 'sample'),
+      'efd48b2aacb6a8fd1140dd9cd45e81d69d2c877b56aaf991c34d0ea84eaf3716' +
+        '0834e36ad29a83bf2bc9385e491d6099c8fdf9d1ed67aa7ea5f51f93782857a9',
+    );
+    equal(
+      signHex(p256, rfcKey, 'test'),
+      'f1abb023518351cd71d881567b1ea663ed3efcf6c5132b354f28d3b0b7d38367' +
+        '019f4113742a2b14bd25926b49c649155f267e60d3814b4c0cc84250e46f0083',
+    );
+  });
+
+  test('accepts the RFC 6979 high-S signature only when asked to', (ctx) => {
+    let key = hex.decode(`04${rfcPublicX}${rfcPublicY}`);
+    let highS = hex.decode(
+      'efd48b2aacb6a8fd1140dd9cd45e81d69d2c877b56aaf991c34d0ea84eaf3716' +
+        'f7cb1c942d657c41d436c7a1b6e29f65f3e900dbb9aff4064dc4ab2f843acda8',
+    );
+    isTrue(p256.verify(key, bytesOf('sample'), highS, true));
+    isFalse(p256.verify(key, bytesOf('sample'), highS));
+  });
+
+  test('signs the secp256k1 vectors', (ctx) => {
+    for (let (key, message, r, s) in k256Vectors) {
+      equal(signHex(secp256k1, key, message), `${r}${s}`);
+      isTrue(secp256k1.verify(secp256k1.publicKey(hex.decode(key)), bytesOf(message), hex.decode(`${r}${s}`)));
+    }
+  });
+
+  test('derives the secp256k1 generator from private key 1', (ctx) => {
+    equal(
+      hex.encode(secp256k1.publicKey(hex.decode(k256Vectors[0][0]))),
+      '0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798',
+    );
+  });
+
+  test('round-trips P-256 signatures and keys', (ctx) => {
+    checkRoundTrips(p256, p256Order);
+  });
+
+  test('round-trips secp256k1 signatures and keys', (ctx) => {
+    checkRoundTrips(secp256k1, k256Order);
+  });
+
+  test('rejects private keys outside 1 to n - 1', (ctx) => {
+    let message = bytesOf('m');
+    for (let (curve, order) in [(p256, p256Order), (secp256k1, k256Order)]) {
+      throws(() => {
+        curve.sign(new FixedArray<u8>(32, 0 as u8), message);
+      });
+      throws(() => {
+        curve.sign(hex.decode(order), message);
+      });
+      throws(() => {
+        curve.publicKey(hex.decode('ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff'));
+      });
+      throws(() => {
+        curve.publicKey(new FixedArray<u8>(31, 0 as u8));
+      });
+    }
+    var caught = false;
+    try {
+      p256.publicKey(new FixedArray<u8>(32, 0 as u8));
+    } catch (e) {
+      caught = e is EcdsaError;
+    }
+    isTrue(caught);
+  });
+
+  test('returns false for malformed signatures and public keys', (ctx) => {
+    let key = hex.decode(rfcKey);
+    let message = bytesOf('test');
+    let signature = p256.sign(key, message);
+    let compressed = p256.publicKey(key);
+    isTrue(p256.verify(compressed, message, signature));
+    // Wrong lengths.
+    isFalse(p256.verify(compressed, message, join(signature, new FixedArray<u8>(1, 0 as u8))));
+    isFalse(p256.verify(compressed, message, new FixedArray<u8>(63, 0 as u8)));
+    // r or s zero, or at least n.
+    let zero = new FixedArray<u8>(32, 0 as u8);
+    let order = hex.decode(p256Order);
+    let r = signature[0..32];
+    let s = signature[32..64];
+    isFalse(p256.verify(compressed, message, join(zero, s)));
+    isFalse(p256.verify(compressed, message, join(r, zero)));
+    isFalse(p256.verify(compressed, message, join(order, s), true));
+    isFalse(p256.verify(compressed, message, join(r, order), true));
+    // The same x with the other prefix is the negated key.
+    equal(compressed[0] as i32, 3);
+    isFalse(p256.verify(withPrefix(compressed, 2), message, signature));
+    // Prefixes that do not match the length.
+    let uncompressed = p256.publicKey(key, false);
+    isFalse(p256.verify(withPrefix(compressed, 4), message, signature));
+    isFalse(p256.verify(withPrefix(compressed, 5), message, signature));
+    isFalse(p256.verify(withPrefix(uncompressed, 3), message, signature));
+    isFalse(p256.verify(new FixedArray<u8>(0, 0 as u8), message, signature));
+    isFalse(p256.verify(hex.decode('00'), message, signature));
+    // x = p, x = 1 (which has no y on P-256), and a y off the curve.
+    let p = 'ffffffff00000001000000000000000000000000ffffffffffffffffffffffff';
+    isFalse(p256.verify(hex.decode(`02${p}`), message, signature));
+    let one = '0000000000000000000000000000000000000000000000000000000000000001';
+    isFalse(p256.verify(hex.decode(`02${one}`), message, signature));
+    isFalse(p256.verify(flipBit(uncompressed, 64), message, signature));
+    isFalse(p256.verify(join(hex.decode('04'), new FixedArray<u8>(64, 0 as u8)), message, signature));
+    // A P-256 key read as secp256k1.
+    isFalse(secp256k1.verify(compressed, message, signature));
+    throws(() => {
+      p256.compressPublicKey(flipBit(uncompressed, 64));
+    });
+    throws(() => {
+      p256.decompressPublicKey(hex.decode(`03${one}`));
+    });
+    // x = 0 has no y on secp256k1.
+    throws(() => {
+      secp256k1.decompressPublicKey(new FixedArray<u8>(33, 0 as u8));
+    });
+  });
+
+  test('names the curves', (ctx) => {
+    equal(p256.name, 'P-256');
+    equal(secp256k1.name, 'secp256k1');
+  });
+});

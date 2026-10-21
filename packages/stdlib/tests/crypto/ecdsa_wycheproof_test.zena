@@ -1,0 +1,96 @@
+import {suite, test} from 'zena:test';
+import {equal, fail} from 'zena:assert';
+import {readFileSync} from 'zena:fs';
+import {JsonArray, JsonObject, parseJson} from 'zena:json';
+import {hex} from 'zena:encoding';
+import {EcdsaCurve, p256, secp256k1} from 'zena:crypto';
+
+/** How many tests of each kind one file had. */
+class Tally {
+  var valid = 0;
+  var invalid = 0;
+  /** Valid tests whose s is above n / 2. */
+  var highS = 0;
+}
+
+/** Whether the s half of a 64-byte signature is above `halfN`. */
+function isHighS(signature: FixedArray<u8>, halfN: FixedArray<u8>) {
+  for (var i = 0; i < 32; i += 1) {
+    let a = signature[32 + i] as i32;
+    let b = halfN[i] as i32;
+    if (a != b) {
+      return a > b;
+    }
+  }
+  return false;
+}
+
+function arrayAt(object: JsonObject, key: String) {
+  return object.arrayAt(key) ?? new JsonArray();
+}
+
+/**
+ * Verifies every test in a Wycheproof file, with high-S signatures
+ * allowed and in strict mode.
+ */
+function runFile(curve: EcdsaCurve, fileName: String, halfNHex: String) {
+  let text = readFileSync(`packages/stdlib/tests/crypto/fixtures/wycheproof/${fileName}`);
+  let root = parseJson(text) as JsonObject;
+  let halfN = hex.decode(halfNHex);
+  let tally = new Tally();
+  let groups = arrayAt(root, 'testGroups');
+  for (var g = 0; g < groups.length; g += 1) {
+    let group = groups[g] as JsonObject;
+    let key = hex.decode(group.stringAt('publicKey.uncompressed') ?? '');
+    let tests = arrayAt(group, 'tests');
+    for (var t = 0; t < tests.length; t += 1) {
+      let entry = tests[t] as JsonObject;
+      let id = entry.intAt('tcId') ?? -1;
+      let message = hex.decode(entry.stringAt('msg') ?? '');
+      let signature = hex.decode(entry.stringAt('sig') ?? '');
+      let result = entry.stringAt('result') ?? '';
+      let lenient = curve.verify(key, message, signature, true);
+      let strict = curve.verify(key, message, signature);
+      if (result == 'valid') {
+        tally.valid += 1;
+        equal(lenient, true, `tcId ${id} is valid`);
+        let high = isHighS(signature, halfN);
+        if (high) {
+          tally.highS += 1;
+        }
+        equal(strict, !high, `tcId ${id} in strict mode`);
+      } else if (result == 'invalid') {
+        tally.invalid += 1;
+        equal(lenient, false, `tcId ${id} is invalid`);
+        equal(strict, false, `tcId ${id} is invalid in strict mode`);
+      } else {
+        fail(`tcId ${id} has result '${result}'`);
+      }
+    }
+  }
+  return tally;
+}
+
+export let tests = suite('zena:crypto ECDSA Wycheproof', () => {
+  test('P-256 with SHA-256, P1363 signatures', (ctx) => {
+    let tally = runFile(
+      p256,
+      'ecdsa_secp256r1_sha256_p1363_test.json',
+      '7fffffff800000007fffffffffffffffde737d56d38bcf4279dce5617e3192a8',
+    );
+    equal(tally.valid, 173);
+    equal(tally.invalid, 89);
+    equal(tally.highS, 70);
+  });
+
+  test('secp256k1 with SHA-256, P1363 signatures', (ctx) => {
+    let tally = runFile(
+      secp256k1,
+      'ecdsa_secp256k1_sha256_p1363_test.json',
+      '7fffffffffffffffffffffffffffffff5d576e7357a4501ddfe92f46681b20a0',
+    );
+    equal(tally.valid, 167);
+    equal(tally.invalid, 85);
+    equal(tally.highS, 72);
+  });
+});
