@@ -147,36 +147,66 @@ function requireScalarNode(cx: LoweringContext, expr: Expression) {
 }
 
 /**
- * Numeric conversions between scalar wasm types, shared by `as`
- * casts and mixed-operand promotion. NOTE: unsigned sources use the
- * SIGNED conversion ops, matching the self-hosted streaming backend
- * exactly (it has no _u conversion path). The bootstrap DOES use _u
- * opcodes here, so u32 values >= 2^31 cast to i64/f64 diverge
- * above 2^31 sign-extend when widened — elematic/zena#90.
+ * Numeric conversions between scalar wasm types, shared by `as` casts
+ * and mixed-operand promotion. `srcUnsigned` says the value is a u32 or
+ * u64, so it widens by zero-extending and converts to a float by its
+ * unsigned value; `dstUnsigned` says a float becomes a u32 or u64, which
+ * saturates at 0 rather than at the signed minimum. Wasm valtypes do not
+ * carry signedness, so the callers read it from the checked types.
  */
-function scalarConvert(cx: LoweringContext, value: i32, dstVt: ValType): i32 {
+function scalarConvert(cx: LoweringContext, value: i32, dstVt: ValType,
+    srcUnsigned: boolean, dstUnsigned: boolean): i32 {
   let srcVt = cx.valueTypeOf(value);
   if (valTypeEquals(srcVt, dstVt)) {
     return value;
   }
-  if (srcVt is ValTypeI32) {
-    if (dstVt is ValTypeI64) { return cx.b.emit(IrOp.i64_extend_i32_s, dstVt, value, -1); }
-    if (dstVt is ValTypeF64) { return cx.b.emit(IrOp.f64_convert_i32_s, dstVt, value, -1); }
-    if (dstVt is ValTypeF32) { return cx.b.emit(IrOp.f32_convert_i32_s, dstVt, value, -1); }
+  let op = if (srcVt is ValTypeI32) {
+    if (dstVt is ValTypeI64) {
+      if (srcUnsigned) IrOp.i64_extend_i32_u else IrOp.i64_extend_i32_s
+    } else if (dstVt is ValTypeF64) {
+      if (srcUnsigned) IrOp.f64_convert_i32_u else IrOp.f64_convert_i32_s
+    } else if (dstVt is ValTypeF32) {
+      if (srcUnsigned) IrOp.f32_convert_i32_u else IrOp.f32_convert_i32_s
+    } else {
+      IrOp.op_count
+    }
   } else if (srcVt is ValTypeI64) {
-    if (dstVt is ValTypeI32) { return cx.b.emit(IrOp.i32_wrap_i64, dstVt, value, -1); }
-    if (dstVt is ValTypeF64) { return cx.b.emit(IrOp.f64_convert_i64_s, dstVt, value, -1); }
-    if (dstVt is ValTypeF32) { return cx.b.emit(IrOp.f32_convert_i64_s, dstVt, value, -1); }
+    if (dstVt is ValTypeI32) {
+      IrOp.i32_wrap_i64
+    } else if (dstVt is ValTypeF64) {
+      if (srcUnsigned) IrOp.f64_convert_i64_u else IrOp.f64_convert_i64_s
+    } else if (dstVt is ValTypeF32) {
+      if (srcUnsigned) IrOp.f32_convert_i64_u else IrOp.f32_convert_i64_s
+    } else {
+      IrOp.op_count
+    }
   } else if (srcVt is ValTypeF64) {
-    if (dstVt is ValTypeI32) { return cx.b.emit(IrOp.i32_trunc_sat_f64_s, dstVt, value, -1); }
-    if (dstVt is ValTypeI64) { return cx.b.emit(IrOp.i64_trunc_sat_f64_s, dstVt, value, -1); }
-    if (dstVt is ValTypeF32) { return cx.b.emit(IrOp.f32_demote_f64, dstVt, value, -1); }
+    if (dstVt is ValTypeI32) {
+      if (dstUnsigned) IrOp.i32_trunc_sat_f64_u else IrOp.i32_trunc_sat_f64_s
+    } else if (dstVt is ValTypeI64) {
+      if (dstUnsigned) IrOp.i64_trunc_sat_f64_u else IrOp.i64_trunc_sat_f64_s
+    } else if (dstVt is ValTypeF32) {
+      IrOp.f32_demote_f64
+    } else {
+      IrOp.op_count
+    }
   } else if (srcVt is ValTypeF32) {
-    if (dstVt is ValTypeI32) { return cx.b.emit(IrOp.i32_trunc_sat_f32_s, dstVt, value, -1); }
-    if (dstVt is ValTypeI64) { return cx.b.emit(IrOp.i64_trunc_sat_f32_s, dstVt, value, -1); }
-    if (dstVt is ValTypeF64) { return cx.b.emit(IrOp.f64_promote_f32, dstVt, value, -1); }
+    if (dstVt is ValTypeI32) {
+      if (dstUnsigned) IrOp.i32_trunc_sat_f32_u else IrOp.i32_trunc_sat_f32_s
+    } else if (dstVt is ValTypeI64) {
+      if (dstUnsigned) IrOp.i64_trunc_sat_f32_u else IrOp.i64_trunc_sat_f32_s
+    } else if (dstVt is ValTypeF64) {
+      IrOp.f64_promote_f32
+    } else {
+      IrOp.op_count
+    }
+  } else {
+    IrOp.op_count
+  };
+  if (op == IrOp.op_count) {
+    cx.fail('cast kind');
   }
-  cx.fail('cast kind');
+  return cx.b.emit(op, dstVt, value, -1);
 }
 
 /** Whether the checked type's runtime representation is a wasm
@@ -539,8 +569,8 @@ export function lowerBinary(cx: LoweringContext, bin: BinaryExpression): i32 {
     if (target == null) {
       bail(cx, 'mixed operand types');
     }
-    left = scalarConvert(cx, left, target);
-    right = scalarConvert(cx, right, target);
+    left = scalarConvert(cx, left, target, isUnsignedNode(cx, bin.left), false);
+    right = scalarConvert(cx, right, target, isUnsignedNode(cx, bin.right), false);
     leftType = target;
   }
   // Integer division: the checker promotes the RESULT to a float
@@ -553,8 +583,8 @@ export function lowerBinary(cx: LoweringContext, bin: BinaryExpression): i32 {
     if (!(resVt is ValTypeF32 || resVt is ValTypeF64)) {
       bail(cx, 'integer division result type');
     }
-    let lConv = scalarConvert(cx, left, resVt);
-    let rConv = scalarConvert(cx, right, resVt);
+    let lConv = scalarConvert(cx, left, resVt, isUnsignedNode(cx, bin.left), false);
+    let rConv = scalarConvert(cx, right, resVt, isUnsignedNode(cx, bin.right), false);
     let divOp = if (resVt is ValTypeF32) IrOp.f32_div else IrOp.f64_div;
     return cx.b.binary(divOp, resVt, lConv, rConv);
   }
@@ -817,11 +847,11 @@ function narrowCastTarget(cx: LoweringContext, expr: AsExpression): Type | null 
 
 /**
  * Scalar `as` casts. Same-representation casts (i32 as u32, boolean as
- * i32) are no-ops; cross-representation casts use signed conversions
- * and saturating truncation, matching the streaming backend. Casts
- * FROM unsigned types bail (no unsigned convert ops wired yet). A cast
- * TO a narrow integer additionally re-normalizes (`normalizeNarrow`),
- * including when the wasm type does not change.
+ * i32) are no-ops; cross-representation casts go through
+ * `scalarConvert`, unsigned where the source or destination type is, with
+ * saturating truncation from floats. A cast TO a narrow integer
+ * additionally re-normalizes (`normalizeNarrow`), including when the wasm
+ * type does not change.
  */
 /**
  * A cast to a reference type from a value that has no reference
@@ -970,5 +1000,9 @@ export function lowerAs(cx: LoweringContext, expr: AsExpression): i32 {
     // `v as anyref` where this specialization made T a primitive.
     return impossibleRefCast(cx, dstVt);
   }
-  return normalizeNarrow(cx, scalarConvert(cx, value, dstVt), narrowTarget);
+  let dstSem = cx.substitutedNodeType(expr);
+  let dstUnsigned = dstSem != null && isUnsignedIntType(baseType(dstSem));
+  return normalizeNarrow(cx,
+      scalarConvert(cx, value, dstVt, isUnsignedNode(cx, expr.expression), dstUnsigned),
+      narrowTarget);
 }

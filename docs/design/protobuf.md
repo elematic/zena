@@ -818,9 +818,6 @@ produce the same bytes for the same values
   `(v, p) => v.int32At(p)`.
   `tests/language/execution/imports/let_fn_value_in_class.zena`
   reproduces it, skipped.
-- `u32 as i64` sign-extends
-  ([#90](https://github.com/elematic/zena/issues/90)). The writer masks
-  `uint32` values to 32 bits instead.
 
 ## Firestore client layering
 
