@@ -1,0 +1,101 @@
+{
+  "name": "@zena-lang/wasm-web-ui",
+  "version": "0.0.1",
+  "description": "Wasm Web UI: a protocol for WebAssembly modules that render UI through templates, with a JavaScript host over lit-html and a custom elements layer.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/elematic/zena.git",
+    "directory": "packages/wasm-web-ui"
+  },
+  "type": "module",
+  "main": "./index.js",
+  "types": "./index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "default": "./index.js"
+    }
+  },
+  "files": [
+    "index.js",
+    "index.d.ts",
+    "templates.js",
+    "templates.d.ts",
+    "elements.js",
+    "elements.d.ts",
+    "listener.js",
+    "listener.d.ts"
+  ],
+  "scripts": {
+    "build": "wireit",
+    "build:demo": "wireit",
+    "test": "wireit"
+  },
+  "wireit": {
+    "build": {
+      "#": "The tests import the Zena runtime, a development dependency, so its declarations must exist before tsc runs.",
+      "command": "tsc",
+      "dependencies": [
+        "../runtime:build"
+      ],
+      "files": [
+        "src/**/*.ts",
+        "tsconfig.json"
+      ],
+      "output": [
+        "test",
+        "index.{js,d.ts,js.map,d.ts.map}",
+        "elements.{js,d.ts,js.map,d.ts.map}",
+        "templates.{js,d.ts,js.map,d.ts.map}",
+        "listener.{js,d.ts,js.map,d.ts.map}",
+        "tsconfig.tsbuildinfo"
+      ],
+      "clean": "if-file-deleted"
+    },
+    "build:demo": {
+      "#": "The demo page's module: the counter and todo elements, built for the js target. Depends on `build` because the page loads this package's compiled JavaScript straight from the package root.",
+      "command": "../../target/release/zena-cli build demo/elements.zena -o demo/elements.wasm --target js",
+      "dependencies": [
+        "build",
+        "../zena-cli:build"
+      ],
+      "files": [
+        "demo/*.zena",
+        "../stdlib/zena/**/*.zena",
+        "../stdlib/stdlib-manifest.json"
+      ],
+      "output": [
+        "demo/elements.wasm"
+      ]
+    },
+    "test": {
+      "#": "The server-rendering test runs `zena-cli` on `src/test/ssr/render.zena`, so it depends on the CLI build as well as on the language service module the other tests compile through.",
+      "command": "node --enable-source-maps --test test/**/*_test.js",
+      "dependencies": [
+        "build",
+        "../runtime:build",
+        "../language-service:build:wasm",
+        "../zena-cli:build"
+      ],
+      "files": [
+        "src/test/ssr/*.zena",
+        "../stdlib/zena/**/*.zena",
+        "../stdlib/stdlib-manifest.json"
+      ],
+      "output": []
+    }
+  },
+  "dependencies": {
+    "@lit-labs/ssr-client": "^1.1.8",
+    "lit-html": "^3.3.0"
+  },
+  "devDependencies": {
+    "@happy-dom/global-registrator": "^21.0.3",
+    "@lit-labs/ssr": "^4.1.0",
+    "@types/node": "^20.0.0",
+    "@zena-lang/runtime": "^0.0.1",
+    "happy-dom": "^21.0.3",
+    "typescript": "^7.0.2"
+  }
+}

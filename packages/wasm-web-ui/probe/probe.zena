@@ -1,0 +1,96 @@
+// Probes for the wasm-web-ui design: compiled with --target js and
+// driven by probe.js. Each export answers one question about the
+// boundary.
+
+import { TemplateStringsArray } from 'zena:core';
+
+export final class Result {
+  strings: TemplateStringsArray;
+  values: FixedArray<Value>;
+  new(this.strings, this.values);
+}
+
+export type Value = String | Result | GrowableArray<Value> | ((e: externref) => void) | Box<i32> | null;
+
+export let html = (strings: TemplateStringsArray, values: FixedArray<Value>): Result =>
+  new Result(strings, values);
+
+var clicks = 0;
+
+let item = (label: String): Result => html`<li>${label}</li>`;
+
+// The same call site evaluated twice: the strings object must be the
+// same object both times, and the host must see that.
+export let render = (nameHandle: externref, n: i32): Result => {
+  let name = String.fromHandle(nameHandle);
+  let items = new GrowableArray<Value>();
+  items.push(item('a'));
+  items.push(item('b'));
+  return html`<p class="x">Hello ${name}, ${new Box<i32>(n)}</p><ul>${items}</ul><button @click=${(e: externref) => { clicks += 1; }}>go</button>`;
+};
+
+export let resultStrings = (r: Result): TemplateStringsArray => r.strings;
+export let stringsCount = (s: TemplateStringsArray): i32 => s.length;
+export let stringsAt = (s: TemplateStringsArray, i: i32): externref => s[i].handle;
+export let valueCount = (r: Result): i32 => r.values.length;
+
+export let valueKind = (r: Result, i: i32): i32 => {
+  let v = r.values[i];
+  if (v == null) {
+    return 0;
+  }
+  if (v is String) {
+    return 1;
+  }
+  if (v is Box<i32>) {
+    return 2;
+  }
+  if (v is Result) {
+    return 4;
+  }
+  if (v is GrowableArray<Value>) {
+    return 5;
+  }
+  if (v is (e: externref) => void) {
+    return 6;
+  }
+  return -1;
+};
+
+export let valueExtern = (r: Result, i: i32): externref => {
+  let v = r.values[i];
+  if (v is String) {
+    return (v as String).handle;
+  }
+  return ''.handle;
+};
+
+export let valueRef = (r: Result, i: i32): anyref => {
+  let v = r.values[i];
+  if (v is Result) {
+    return v as Result;
+  }
+  if (v is GrowableArray<Value>) {
+    return v as GrowableArray<Value>;
+  }
+  if (v is (e: externref) => void) {
+    return v as (e: externref) => void;
+  }
+  return null;
+};
+export let valueNumber = (r: Result, i: i32): f64 => {
+  let v = r.values[i];
+  if (v is Box<i32>) {
+    return (v as Box<i32>).value as f64;
+  }
+  return 0.0;
+};
+export let listCount = (l: anyref): i32 => (l as GrowableArray<Value>).length;
+export let listRef = (l: anyref, i: i32): Value => (l as GrowableArray<Value>)[i];
+export let invoke = (f: anyref, e: externref): void => {
+  (f as (e: externref) => void)(e);
+};
+export let clickCount = (): i32 => clicks;
+
+// A host value in, the same host value out.
+export let echo = (x: externref): externref => x;

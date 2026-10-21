@@ -1,0 +1,113 @@
+/**
+ * The demo page, rendered on a server written in Zena.
+ *
+ * The elements are the ones in `elements.zena`, the file the browser
+ * module is built from, compiled here for `zena-cli`: `renderElement`
+ * writes each as declarative shadow DOM with the markers Lit's hydration
+ * reads. The page then loads the module as `index.html` does, and the
+ * host finds a shadow root on each element and hydrates it instead of
+ * rendering, attaching the module's instances to the server's markup.
+ *
+ * From the repository root, with the demo built
+ * (`npm run build:demo -w @zena-lang/wasm-web-ui`):
+ *
+ *     ./target/release/zena-cli run --dir . packages/wasm-web-ui/demo/server.zena
+ *
+ * then open http://127.0.0.1:8080/packages/wasm-web-ui/demo/. The
+ * rest of the repository is served as static files, because the page's
+ * import map reaches this package's JavaScript and lit-html through it;
+ * `--dir .` is what lets the program read them.
+ */
+import { App, AppOptions, Router, serve, html, unsafeHTML, HTMLPartial } from 'zena:http';
+import { renderElement } from 'zena:web-elements';
+import { counterElement, todoElement, badgeElement } from './elements.zena';
+
+let attributes = (pairs: FixedArray<(String, String)>): Map<String, String> => {
+  let map = new Map<String, String>();
+  for (let (name, value) in pairs) {
+    map[name] = value;
+  }
+  return map;
+};
+
+let page = (): HTMLPartial => {
+  let counters = unsafeHTML(
+      renderElement(counterElement, attributes([('count', '10'), ('step', '5')])) +
+      renderElement(counterElement, attributes([('disabled', '')])));
+  let todo = unsafeHTML(renderElement(todoElement, attributes([('title', 'Things to do')])));
+  let badges = unsafeHTML(
+      renderElement(badgeElement, attributes([('text', 'named here')]), 'page-badge') +
+      renderElement(badgeElement, attributes([]), 'page-badge'));
+  return html`<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Wasm Web UI demo, server rendered</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <style>
+      body { font: 16px system-ui, sans-serif; margin: 2em auto; max-width: 40em; padding: 0 1em; }
+      pre { background: #f4f4f4; padding: 0.5em; overflow-x: auto; }
+    </style>
+    <script type="importmap">
+      {
+        "imports": {
+          "lit-html": "../../../node_modules/lit-html/lit-html.js",
+          "lit-html/": "../../../node_modules/lit-html/",
+          "@lit-labs/ssr-client": "../../../node_modules/@lit-labs/ssr-client/index.js",
+          "@lit-labs/ssr-client/": "../../../node_modules/@lit-labs/ssr-client/",
+          "@zena-lang/wasm-web-ui": "../index.js",
+          "@zena-lang/runtime": "../../runtime/index.js"
+        }
+      }
+    </script>
+  </head>
+  <body>
+    <h1>Wasm Web UI, rendered by a Zena server</h1>
+    <p>
+      The elements below arrived as markup from a server running the same
+      Zena source as the module this page loads. Once the module is
+      instantiated, the host hydrates each element's shadow root rather
+      than rendering it, and the elements come alive without a repaint.
+    </p>
+
+    <h2>&lt;x-counter&gt;</h2>
+    ${counters}
+    <p>
+      <button id="bump">Set the first counter to 100 from JavaScript</button>
+    </p>
+
+    <h2>&lt;x-todo&gt;</h2>
+    ${todo}
+
+    <h2>&lt;page-badge&gt;</h2>
+    <p>
+      Declared by the module without a tag name and registered by this page as
+      <code>page-badge</code>: ${badges}
+    </p>
+
+    <h2>Module</h2>
+    <pre id="info">loading…</pre>
+
+    <script type="module" src="./demo.js"></script>
+  </body>
+</html>`;
+};
+
+export async function main(): Future<void> {
+  // A demo: an error's details go to the browser.
+  let options = new AppOptions();
+  options.dev = true;
+  let app = new App(options);
+  let router = new Router();
+  router.get('/packages/wasm-web-ui/demo/', async (req, res, next, params): Future<void> => {
+    res.setHeader('content-type', 'text/html; charset=utf-8');
+    res.body = page();
+  });
+  router.get('/', async (req, res, next, params): Future<void> => {
+    res.redirect('/packages/wasm-web-ui/demo/');
+  });
+  app.use(router.routes());
+  app.use(serve('.'));
+  let server = await app.listen(8080);
+  console.log(`Serving the demo at http://127.0.0.1:${server.port}/packages/wasm-web-ui/demo/`);
+}

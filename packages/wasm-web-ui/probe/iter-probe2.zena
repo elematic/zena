@@ -1,0 +1,50 @@
+import { html, TemplateResult, TemplateValue } from 'zena:web-templates';
+
+let items = (): GrowableArray<TemplateResult> => {
+  let out = new GrowableArray<TemplateResult>();
+  out.push(html`<li>a</li>`);
+  return out;
+};
+
+let names = (): GrowableArray<String> => {
+  let out = new GrowableArray<String>();
+  out.push('x');
+  out.push('y');
+  return out;
+};
+
+export let fromClass = (): TemplateResult => html`<ul>${items()}</ul>`;
+export let fromStrings = (): TemplateResult => html`<ul>${names()}</ul>`;
+export let fromMap = (): TemplateResult => html`<ul>${names().map((n: String, i: i32, seq): TemplateValue => html`<li>${n}</li>`)}</ul>`;
+export let fromLiteral = (): TemplateResult => html`<ul>${['a', 'b']}</ul>`;
+export let fromFixed = (): TemplateResult => html`<ul>${new FixedArray<String>(2, 'z')}</ul>`;
+
+export let classify = (r: TemplateResult): i32 => {
+  let v = r.values[0];
+  var code = 0;
+  if (v is GrowableArray<TemplateValue>) { code += 1; }
+  if (v is GrowableArray<String>) { code += 10; }
+  if (v is FixedArray<TemplateValue>) { code += 100; }
+  if (v is ImmutableArray<TemplateValue>) { code += 1000; }
+  match (v) {
+    case Iterable as xs: { code += 10000; }
+    case _: {}
+  }
+  return code;
+};
+
+export let countAll = (r: TemplateResult): i32 => {
+  let v = r.values[0];
+  var n = 0;
+  if (v is GrowableArray<TemplateValue>) {
+    for (let x in v as GrowableArray<TemplateValue>) { n += 1; }
+  } else if (v is FixedArray<TemplateValue>) {
+    for (let x in v as FixedArray<TemplateValue>) { n += 1; }
+  } else {
+    match (v) {
+      case Iterable as xs: { for (let x in xs) { n += 1; } }
+      case _: { n = -1; }
+    }
+  }
+  return n;
+};

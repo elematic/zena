@@ -1,0 +1,25 @@
+// Reproduction: a decorator body does not see its module's variables.
+// A module-level function is in scope there (`record`); a module-level
+// `var` or `let` is not (`counter`, `names`), and the checker reports
+// "Variable 'counter' not found". docs/design/decorators.md, "Not yet
+// implemented". Because of this, `zena:web-elements` registers properties
+// through a function rather than pushing onto a module-level table.
+var counter: i32 = 0;
+let names = new GrowableArray<String>();
+let record = (s: String): void => { names.push(s); };
+class Model { var writes = 0; }
+decorator tracked(var value: i32) on Model {
+  var #value: i32;
+  value: i32 {
+    get { return this.#value; }
+    set(v) {
+      this.#value = v;
+      let n = counter;          // plain read of a module var
+      counter = n + 1;          // assignment to a module var
+      record('w');              // call of a module function
+      let k = names.length;     // member read on a module let
+    }
+  }
+}
+class Point extends Model { @tracked var x: i32 = 1; }
+export let main = (): i32 => { let p = new Point(); p.x = 2; return counter + names.length; };
