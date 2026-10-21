@@ -1,0 +1,51 @@
+import { IterableUtils } from 'zena:core';
+
+/**
+ * An Iterator over two iterators in step. Each step is a pair of their
+ * next elements; it is done as soon as either iterator is.
+ */
+export final class ZipIterator<A, B> implements Iterator<(A, B)> {
+  #a: Iterator<A>;
+  #b: Iterator<B>;
+
+  new(a: Iterator<A>, b: Iterator<B>) : #a = a, #b = b;
+
+  next(): Step<(A, B)> {
+    if (let (1, x, _) = this.#a.next()) {
+      if (let (1, y, _) = this.#b.next()) {
+        return (1, (x, y), _);
+      }
+    }
+    return (0, _, _);
+  }
+}
+
+/**
+ * Two iterables in step, as pairs of their elements. See `zip`.
+ */
+export final class ZippedIterable<A, B> with IterableUtils<(A, B)> implements Iterable<(A, B)> {
+  #a: Iterable<A>;
+  #b: Iterable<B>;
+
+  new(a: Iterable<A>, b: Iterable<B>) : #a = a, #b = b;
+
+  [Iterable.iterator](): Iterator<(A, B)> {
+    return new ZipIterator<A, B>(this.#a.[Iterable.iterator](), this.#b.[Iterable.iterator]());
+  }
+}
+
+/**
+ * The elements of `a` and `b` in step, as pairs, until either runs out:
+ *
+ * ```zena
+ * for (let (x, y) in zip(xs, ys)) {
+ *   dot += x * y;
+ * }
+ * ```
+ *
+ * When `b` runs out first, the element of `a` read in that step is
+ * dropped.
+ */
+export function zip<A, B>(a: Iterable<A>, b: Iterable<B>): ZippedIterable<A, B> {
+  return new ZippedIterable<A, B>(a, b);
+}

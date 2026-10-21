@@ -1,0 +1,81 @@
+import {suite, test} from 'zena:test';
+import {equal, isFalse, isTrue} from 'zena:assert';
+import {growable} from 'zena:core';
+import {zip} from 'zena:collections';
+
+export let tests = suite('zip', () => {
+  test('pairs elements in order', (ctx) => {
+    let xs = [1, 2, 3];
+    let ys = [10, 20, 30];
+    let sums = new GrowableArray<i32>();
+    for (let (x, y) in zip(xs, ys)) {
+      sums.push(x + y);
+    }
+    equal(sums.length, 3);
+    equal(sums[0], 11);
+    equal(sums[1], 22);
+    equal(sums[2], 33);
+  });
+
+  test('stops at the shorter iterable', (ctx) => {
+    let short = [1, 2];
+    let long = [5, 6, 7, 8];
+    let seen = new GrowableArray<i32>();
+    for (let (x, y) in zip(short, long)) {
+      seen.push(x * 10 + y);
+    }
+    for (let (x, y) in zip(long, short)) {
+      seen.push(x * 10 + y);
+    }
+    for (let (x, y) in zip(new GrowableArray<i32>(), long)) {
+      seen.push(x * 10 + y);
+    }
+    equal(seen.length, 4);
+    equal(seen[0], 15);
+    equal(seen[1], 26);
+    equal(seen[2], 51);
+    equal(seen[3], 62);
+  });
+
+  test('pairs different element types and iterable classes', (ctx) => {
+    let names = growable(['a', 'b', 'c']);
+    let evens = [1, 2, 3, 4, 5, 6].filter((x) => x % 2 == 0);
+    let labels = new GrowableArray<String>();
+    for (let (name, n) in zip(names, evens)) {
+      labels.push(`${name}${n}`);
+    }
+    equal(labels.length, 3);
+    equal(labels[0], 'a2');
+    equal(labels[1], 'b4');
+    equal(labels[2], 'c6');
+  });
+
+  test('starts over each time it is iterated', (ctx) => {
+    let pairs = zip([1, 2], [3, 4]);
+    var total = 0;
+    for (let (x, y) in pairs) {
+      total += x * y;
+    }
+    for (let (x, y) in pairs) {
+      total += x * y;
+    }
+    equal(total, 22);
+  });
+
+  test('has the IterableUtils methods', (ctx) => {
+    let pairs = zip([1, 2, 3], [4, 5, 6]);
+    let dot = pairs.fold(0, (acc, pair) => {
+      let (x, y) = pair;
+      return acc + x * y;
+    });
+    equal(dot, 32);
+    isTrue(pairs.all((pair) => {
+      let (x, y) = pair;
+      return x < y;
+    }));
+    isFalse(pairs.some((pair) => {
+      let (x, y) = pair;
+      return x == y;
+    }));
+  });
+});

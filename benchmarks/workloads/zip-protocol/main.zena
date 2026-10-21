@@ -1,0 +1,29 @@
+// Sum the products of two arrays' elements in step, through the standard
+// library's `zip`: an Iterable of pairs whose iterator drives both arrays'
+// iterators. The paired workload, zip-loop, writes the same computation
+// as one index loop. For the zip to cost nothing, the optimizer has to
+// make every call direct, inline it, dissolve both array iterators and
+// the zip's own, and never build the (x, y) tuple (#456).
+import { zip } from 'zena:collections';
+
+export function main(): i32 {
+  let xs = new FixedArray<i32>(1024, 0);
+  let ys = new FixedArray<i32>(1024, 0);
+  var i = 0;
+  while (i < 1024) {
+    xs[i] = i;
+    ys[i] = 1024 - i;
+    i += 1;
+  }
+  var total = 0;
+  var round = 0;
+  while (round < 4000) {
+    var sum = 0;
+    for (let (x, y) in zip(xs, ys)) {
+      sum = (sum + x * y + round) & 16777215;
+    }
+    total = (total + sum) & 16777215;
+    round += 1;
+  }
+  return total & 255;
+}
