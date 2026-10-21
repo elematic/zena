@@ -1,0 +1,192 @@
+/**
+ * Content identifiers (https://github.com/multiformats/cid).
+ *
+ * A CID names data by its hash. Version 1, the version atproto uses, is
+ * four parts in binary: the version (1), a multicodec saying how to read
+ * the data, and a multihash, which is a hash function code, the digest's
+ * length, and the digest. Its string form is that binary in multibase.
+ *
+ * atproto uses two kinds of CID, both with SHA-256:
+ *
+ * - DAG-CBOR (codec `0x71`) for records, commits and repository nodes.
+ * - raw (codec `0x55`) for blobs.
+ *
+ * `Cid.parse` and `Cid.decode` also read other codecs and hash functions,
+ * and version 0 CIDs (a bare SHA-256 multihash, written in base58btc
+ * starting with `Qm`), which atproto data does not contain.
+ */
+
+import {ByteBuffer} from 'zena:core';
+import {sha256} from 'zena:crypto';
+import {equalBytes, sliceBytes} from './bytes.zena';
+import {decodeBase32, decodeBase58btc, encodeBase32, encodeBase58btc} from './multibase.zena';
+import {readVarint, writeVarint} from './varint.zena';
+
+/** The multicodec for raw bytes, used for blobs. */
+export let CODEC_RAW: i64 = 0x55;
+/** The multicodec for DAG-CBOR, used for records and repository data. */
+export let CODEC_DAG_CBOR: i64 = 0x71;
+/** The multicodec for DAG-PB, the codec of every version 0 CID. */
+export let CODEC_DAG_PB: i64 = 0x70;
+/** The multihash code for SHA-256. */
+export let HASH_SHA256: i64 = 0x12;
+
+/** A CID that cannot be read. */
+export class CidError extends Error {
+  new(message: String) : super(message);
+}
+
+/** A content identifier. */
+export final class Cid {
+  /** 0 or 1. */
+  version: i32;
+  /** The multicodec of the data the CID names. */
+  codec: i64;
+  /** The multihash code of the hash function. */
+  hashType: i64;
+  /** The hash of the data. */
+  digest: ByteArray;
+  var #bytes: ByteArray | null = null;
+  var #text: String | null = null;
+
+  new(version: i32, codec: i64, hashType: i64, digest: ByteArray)
+    : version = version, codec = codec, hashType = hashType, digest = digest;
+
+  /** The version 1 SHA-256 CID of `data` read as `codec`. */
+  static create(codec: i64, data: ByteArray): Cid {
+    return new Cid(1, codec, HASH_SHA256, sha256(data));
+  }
+
+  /** The CID atproto gives a blob with these contents. */
+  static forBlob(data: ByteArray): Cid {
+    return new Cid(1, CODEC_RAW, HASH_SHA256, sha256(data));
+  }
+
+  /** The CID of DAG-CBOR-encoded `data`. */
+  static forDagCbor(data: ByteArray): Cid {
+    return new Cid(1, CODEC_DAG_CBOR, HASH_SHA256, sha256(data));
+  }
+
+  /**
+   * Reads a CID from its string form: base32 (`b...`) or base58btc
+   * (`z...`) for version 1, or a version 0 CID (`Qm...`).
+   */
+  static parse(text: String): Cid {
+    if (text.length == 46 && text.getByteAt(0) == 81 && text.getByteAt(1) == 109) {
+      let bytes = decodeBase58btc(text);
+      return Cid.#decodeAll(bytes);
+    }
+    if (text.length < 2) {
+      throw new CidError(`not a CID: '${text}'`);
+    }
+    let body = text.sliceBytes(1, text.length);
+    let bytes = match (text.getByteAt(0)) {
+      case 98: decodeBase32(body)
+      case 122: decodeBase58btc(body)
+      case _: throw new CidError(`unsupported CID string encoding: '${text}'`)
+    };
+    let cid = Cid.#decodeAll(bytes);
+    if (cid.version == 0) {
+      throw new CidError('a version 0 CID has no multibase prefix');
+    }
+    return cid;
+  }
+
+  /** Reads a CID that fills `bytes`. */
+  static fromBytes(bytes: ByteArray): Cid {
+    return Cid.#decodeAll(bytes);
+  }
+
+  static #decodeAll(bytes: ByteArray): Cid {
+    let (cid, end) = Cid.decode(bytes, 0, bytes.length);
+    if (end != bytes.length) {
+      throw new CidError(`${bytes.length - end} bytes after the CID`);
+    }
+    return cid;
+  }
+
+  /**
+   * Reads the binary CID at `bytes[offset]`, reading no further than `end`.
+   * Returns the CID and the offset just past it.
+   */
+  static decode(bytes: ByteArray, offset: i32, end: i32): inline (Cid, i32) {
+    if (end - offset >= 2 && bytes[offset] == 0x12 && bytes[offset + 1] == 0x20) {
+      if (end - offset < 34) {
+        throw new CidError('truncated version 0 CID');
+      }
+      let digest = sliceBytes(bytes, offset + 2, offset + 34);
+      return (new Cid(0, CODEC_DAG_PB, HASH_SHA256, digest), offset + 34);
+    }
+    let (version, afterVersion) = readVarint(bytes, offset, end);
+    if (version != 1) {
+      throw new CidError(`unsupported CID version ${version}`);
+    }
+    let (codec, afterCodec) = readVarint(bytes, afterVersion, end);
+    let (hashType, afterHash) = readVarint(bytes, afterCodec, end);
+    let (length, afterLength) = readVarint(bytes, afterHash, end);
+    if (length > (end - afterLength) as i64) {
+      throw new CidError('CID digest is truncated');
+    }
+    let digestEnd = afterLength + (length as i32);
+    let digest = sliceBytes(bytes, afterLength, digestEnd);
+    if (hashType == HASH_SHA256 && digest.length != 32) {
+      throw new CidError(`SHA-256 digest of ${digest.length} bytes`);
+    }
+    return (new Cid(1, codec, hashType, digest), digestEnd);
+  }
+
+  /** The binary form. */
+  toBytes(): ByteArray {
+    let cached = this.#bytes;
+    if (cached != null) {
+      return cached;
+    }
+    let out = new ByteBuffer(this.digest.length + 8);
+    if (this.version == 0) {
+      out.writeByte(0x12);
+      out.writeByte(0x20);
+    } else {
+      writeVarint(out, 1 as i64);
+      writeVarint(out, this.codec);
+      writeVarint(out, this.hashType);
+      writeVarint(out, this.digest.length as i64);
+    }
+    out.writeBytes(this.digest);
+    let bytes = out.toByteArray();
+    this.#bytes = bytes;
+    return bytes;
+  }
+
+  /** The string form: base32 with a `b` prefix, or base58btc for version 0. */
+  toString(): String {
+    let cached = this.#text;
+    if (cached != null) {
+      return cached;
+    }
+    let text = if (this.version == 0) {
+      encodeBase58btc(this.toBytes())
+    } else {
+      `b${encodeBase32(this.toBytes())}`
+    };
+    this.#text = text;
+    return text;
+  }
+
+  /** Whether `other` names the same data the same way. */
+  equals(other: Cid): boolean {
+    return this.version == other.version
+      && this.codec == other.codec
+      && this.hashType == other.hashType
+      && equalBytes(this.digest, other.digest);
+  }
+
+  /**
+   * Whether this is a CID atproto data may contain: version 1, DAG-CBOR or
+   * raw, with a SHA-256 digest.
+   */
+  isAtproto(): boolean {
+    return this.version == 1
+      && (this.codec == CODEC_DAG_CBOR || this.codec == CODEC_RAW)
+      && this.hashType == HASH_SHA256;
+  }
+}

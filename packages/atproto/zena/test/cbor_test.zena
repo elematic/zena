@@ -1,0 +1,198 @@
+import {suite, test} from 'zena:test';
+import {equal, isTrue, jsonEqual, throws} from 'zena:assert';
+import {readFileSync} from 'zena:fs';
+import {JsonArray, JsonObject, parseJson} from 'zena:json';
+import {OrderedHashMap} from 'zena:collections';
+import {StringBuilder} from 'zena:core';
+import {fromHex, toHex} from 'atproto:bytes';
+import {cidForValue, decodeCbor, encodeCbor} from 'atproto:cbor';
+import {Cid} from 'atproto:cid';
+import {decodeBase64, encodeBase64} from 'atproto:multibase';
+import {
+  IntValue,
+  LinkValue,
+  ListValue,
+  MapValue,
+  NullValue,
+  StringValue,
+  Value,
+  fromJson,
+  toJson
+} from 'atproto:data';
+
+let FIXTURES = 'packages/atproto/zena/test/fixtures/interop/data-model';
+let I64_MIN: i64 = 0x8000000000000000;
+
+function encodeHex(value: Value) {
+  return toHex(encodeCbor(value));
+}
+
+function int(n: i64): Value {
+  return new IntValue(n);
+}
+
+function mapOf(keys: Array<String>): Value {
+  let entries = new OrderedHashMap<String, Value>();
+  var i = 0;
+  for (let key in keys) {
+    entries[key] = new IntValue(i as i64);
+    i += 1;
+  }
+  return new MapValue(entries);
+}
+
+function rejects(hex: String) {
+  throws(() => {
+    decodeCbor(fromHex(hex));
+  });
+}
+
+export let tests = suite('atproto:cbor', () => {
+  test('matches the interop fixtures in both directions', (ctx) => {
+    let fixtures = parseJson(readFileSync(`${FIXTURES}/data-model-fixtures.json`)) as JsonArray;
+    equal(fixtures.length, 3);
+    for (var i = 0; i < fixtures.length; i += 1) {
+      let fixture = fixtures[i] as JsonObject;
+      let json = fixture['json'];
+      let cbor = fixture['cbor_base64'] as String;
+      let cid = fixture['cid'] as String;
+
+      let value = fromJson(json);
+      equal(encodeBase64(encodeCbor(value)), cbor);
+      equal(cidForValue(value).toString(), cid);
+
+      let decoded = decodeCbor(decodeBase64(cbor));
+      jsonEqual(toJson(decoded), json);
+      equal(encodeBase64(encodeCbor(decoded)), cbor);
+    }
+  });
+
+  test('encodes integers with the shortest head', (ctx) => {
+    equal(encodeHex(int(0 as i64)), '00');
+    equal(encodeHex(int(23 as i64)), '17');
+    equal(encodeHex(int(24 as i64)), '1818');
+    equal(encodeHex(int(255 as i64)), '18ff');
+    equal(encodeHex(int(256 as i64)), '190100');
+    equal(encodeHex(int(65535 as i64)), '19ffff');
+    equal(encodeHex(int(65536 as i64)), '1a00010000');
+    equal(encodeHex(int(0xffffffff as i64)), '1affffffff');
+    equal(encodeHex(int(0x100000000 as i64)), '1b0000000100000000');
+    equal(encodeHex(int(0x7fffffffffffffff as i64)), '1b7fffffffffffffff');
+    equal(encodeHex(int(-1 as i64)), '20');
+    equal(encodeHex(int(-24 as i64)), '37');
+    equal(encodeHex(int(-25 as i64)), '3818');
+    equal(encodeHex(int(I64_MIN)), '3b7fffffffffffffff');
+  });
+
+  test('decodes the largest and smallest integers', (ctx) => {
+    let max = decodeCbor(fromHex('1b7fffffffffffffff')) as IntValue;
+    equal(max.value, 0x7fffffffffffffff as i64);
+    let min = decodeCbor(fromHex('3b7fffffffffffffff')) as IntValue;
+    equal(min.value, I64_MIN);
+  });
+
+  test('sorts map keys by length, then byte by byte', (ctx) => {
+    // {"b": 0, "aa": 1, "a": 2} is written {"a": 2, "b": 0, "aa": 1}.
+    equal(encodeHex(mapOf(['b', 'aa', 'a'])), 'a3616102616200626161' + '01');
+  });
+
+  test('writes a link as tag 42 over a zero byte and the CID', (ctx) => {
+    let cid = Cid.forBlob(fromHex(''));
+    let hex = encodeHex(new LinkValue(cid));
+    equal(hex, `d82a582500${toHex(cid.toBytes())}`);
+    let decoded = decodeCbor(fromHex(hex)) as LinkValue;
+    isTrue(decoded.cid.equals(cid));
+  });
+
+  test('round-trips nested lists and maps', (ctx) => {
+    let value = fromJson(parseJson('{"a": [1, [2, null], {"b": "c"}], "bytes": {"$bytes": "AAEC"}}'));
+    let bytes = encodeCbor(value);
+    equal(toHex(encodeCbor(decodeCbor(bytes))), toHex(bytes));
+  });
+
+  test('rejects heads longer than needed', (ctx) => {
+    rejects('1817');
+    rejects('190017');
+    rejects('1a000000ff');
+    rejects('1b00000000ffffffff');
+    rejects('7801' + '61');
+  });
+
+  test('rejects indefinite lengths', (ctx) => {
+    rejects('9fff');
+    rejects('bfff');
+    rejects('7f6161ff');
+  });
+
+  test('rejects unsorted and repeated map keys', (ctx) => {
+    // {"b": 1, "a": 2}
+    rejects('a2616201616102');
+    // {"aa": 1, "b": 2}: shorter keys come first.
+    rejects('a26261610161620002');
+    // {"a": 1, "a": 2}
+    rejects('a2616101616102');
+  });
+
+  test('rejects map keys that are not strings', (ctx) => {
+    rejects('a10102');
+  });
+
+  test('rejects floats and simple values other than true, false and null', (ctx) => {
+    rejects('f93c00');
+    rejects('fa3f800000');
+    rejects('fb3ff0000000000000');
+    rejects('f7');
+    rejects('e0');
+  });
+
+  test('rejects tags other than 42, and malformed links', (ctx) => {
+    rejects('c11a514b67b0');
+    // Tag 42 over a CID without the leading zero byte.
+    rejects('d82a582401551220e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855');
+    // Tag 42 over a string.
+    rejects('d82a6161');
+  });
+
+  test('rejects integers outside the 64-bit signed range', (ctx) => {
+    rejects('1b8000000000000000');
+    rejects('3b8000000000000000');
+  });
+
+  test('rejects invalid UTF-8', (ctx) => {
+    rejects('62c328');
+    // An overlong encoding of '/'.
+    rejects('62c0af');
+    // A UTF-16 surrogate.
+    rejects('63eda080');
+  });
+
+  test('rejects truncated input and trailing bytes', (ctx) => {
+    rejects('');
+    rejects('6261');
+    rejects('82f6');
+    rejects('f6f6');
+    rejects('5bffffffffffffffff');
+  });
+
+  test('rejects nesting deeper than its limit', (ctx) => {
+    let sb = new StringBuilder();
+    for (var i = 0; i < 300; i += 1) {
+      sb.append('81');
+    }
+    sb.append('f6');
+    rejects(sb.toString());
+  });
+
+  test('decodes a string as a copy of its bytes', (ctx) => {
+    let value = decodeCbor(fromHex('6568656c6c6f')) as StringValue;
+    equal(value.value, 'hello');
+  });
+
+  test('decodes lists', (ctx) => {
+    let value = decodeCbor(fromHex('8301f620')) as ListValue;
+    equal(value.items.length, 3);
+    equal((value.items[0] as IntValue).value, 1 as i64);
+    isTrue(value.items[1] is NullValue);
+    equal((value.items[2] as IntValue).value, -1 as i64);
+  });
+});

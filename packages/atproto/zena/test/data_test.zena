@@ -1,0 +1,132 @@
+import {suite, test} from 'zena:test';
+import {equal, fail, isNull, isTrue, jsonEqual, throws} from 'zena:assert';
+import {readFileSync} from 'zena:fs';
+import {JsonArray, JsonObject, parseJson} from 'zena:json';
+import {toHex} from 'atproto:bytes';
+import {Cid} from 'atproto:cid';
+import {
+  BytesValue,
+  IntValue,
+  MapValue,
+  StringValue,
+  Value,
+  field,
+  fromJson,
+  linkField,
+  listField,
+  mapField,
+  newMap,
+  stringField,
+  toJson
+} from 'atproto:data';
+
+let FIXTURES = 'packages/atproto/zena/test/fixtures/interop/data-model';
+
+/** A fixture is valid when it reads as data and its top level is a map. */
+function readsAsRecord(fixture: JsonObject): boolean {
+  try {
+    return fromJson(fixture['json']) is MapValue;
+  } catch (e) {
+    return false;
+  }
+}
+
+function fixtures(name: String) {
+  return parseJson(readFileSync(`${FIXTURES}/${name}`)) as JsonArray;
+}
+
+export let tests = suite('atproto:data', () => {
+  test('accepts the valid interop fixtures', (ctx) => {
+    let valid = fixtures('data-model-valid.json');
+    equal(valid.length, 5);
+    for (var i = 0; i < valid.length; i += 1) {
+      let fixture = valid[i] as JsonObject;
+      if (!readsAsRecord(fixture)) {
+        fail(`rejected valid fixture '${fixture['note'] as String}'`);
+      }
+    }
+  });
+
+  test('rejects the invalid interop fixtures', (ctx) => {
+    let invalid = fixtures('data-model-invalid.json');
+    equal(invalid.length, 12);
+    for (var i = 0; i < invalid.length; i += 1) {
+      let fixture = invalid[i] as JsonObject;
+      if (readsAsRecord(fixture)) {
+        fail(`accepted invalid fixture '${fixture['note'] as String}'`);
+      }
+    }
+  });
+
+  test('reads $bytes and $link objects', (ctx) => {
+    let value = fromJson(parseJson(
+      '{"b": {"$bytes": "AAEC"}, "l": {"$link": "bafkreihdwdcefgh4dqkjv67uzcmw7ojee6xedzdetojuzjevtenxquvyku"}}'
+    )) as MapValue;
+    equal(toHex((field(value, 'b') as BytesValue).value), '000102');
+    equal(
+      (linkField(value, 'l') as Cid).toString(),
+      'bafkreihdwdcefgh4dqkjv67uzcmw7ojee6xedzdetojuzjevtenxquvyku'
+    );
+  });
+
+  test('accepts padded base64 in $bytes', (ctx) => {
+    let value = fromJson(parseJson('{"$bytes": "AA=="}')) as BytesValue;
+    equal(toHex(value.value), '00');
+  });
+
+  test('writes the JSON it reads', (ctx) => {
+    let text = '{"a": [1, -2, null, true], "b": {"$bytes": "AAEC"}, "c": {"$type": "com.example.thing", "d": "e"}}';
+    let json = parseJson(text);
+    jsonEqual(toJson(fromJson(json)), json);
+  });
+
+  test('reads a whole number written with a decimal point', (ctx) => {
+    let value = fromJson(parseJson('123.0')) as IntValue;
+    equal(value.value, 123 as i64);
+  });
+
+  test('rejects numbers JSON cannot carry exactly', (ctx) => {
+    throws(() => {
+      fromJson(parseJson('9007199254740992'));
+    });
+    throws(() => {
+      fromJson(parseJson('1.5'));
+    });
+  });
+
+  test('checks blob references', (ctx) => {
+    let blob = '{"$type": "blob", "ref": {"$link": "bafkreihdwdcefgh4dqkjv67uzcmw7ojee6xedzdetojuzjevtenxquvyku"}, "mimeType": "image/png", "size": 0}';
+    isTrue(fromJson(parseJson(blob)) is MapValue);
+    // A blob's CID must be raw, not DAG-CBOR.
+    throws(() => {
+      fromJson(parseJson('{"$type": "blob", "ref": {"$link": "bafyreigbtj4x7ip5legnfznufuopl4sg4knzc2cof6duas4b3q2fy6swua"}, "mimeType": "image/png", "size": 0}'));
+    });
+    throws(() => {
+      fromJson(parseJson('{"$type": "blob", "ref": {"$link": "bafkreihdwdcefgh4dqkjv67uzcmw7ojee6xedzdetojuzjevtenxquvyku"}, "mimeType": "png", "size": 0}'));
+    });
+    throws(() => {
+      fromJson(parseJson('{"$type": "blob", "ref": {"$link": "bafkreihdwdcefgh4dqkjv67uzcmw7ojee6xedzdetojuzjevtenxquvyku"}, "mimeType": "image/png", "size": -1}'));
+    });
+    throws(() => {
+      fromJson(parseJson('{"$type": "blob", "ref": {"$link": "bafkreihdwdcefgh4dqkjv67uzcmw7ojee6xedzdetojuzjevtenxquvyku"}, "mimeType": "image/png", "size": 0, "x": 1}'));
+    });
+  });
+
+  test('field accessors return null for a missing key or another type', (ctx) => {
+    let value = fromJson(parseJson('{"s": "x", "m": {}, "l": [], "n": 1}')) as MapValue;
+    equal(stringField(value, 's') as String, 'x');
+    isTrue(mapField(value, 'm') != null);
+    isTrue(listField(value, 'l') != null);
+    isNull(stringField(value, 'n'));
+    isNull(stringField(value, 'missing'));
+    isNull(mapField(value, 's'));
+    isNull(linkField(value, 's'));
+  });
+
+  test('builds a map', (ctx) => {
+    let map = newMap();
+    map.entries['b'] = new StringValue('x');
+    map.entries['a'] = new IntValue(1 as i64);
+    jsonEqual(toJson(map), parseJson('{"b": "x", "a": 1}'));
+  });
+});

@@ -1,0 +1,327 @@
+/**
+ * The syntax of atproto identifiers and string formats
+ * (https://atproto.com/specs/did, /handle, /nsid, /record-key, /tid,
+ * /lexicon#string-formats).
+ *
+ * Each `isValid*` function checks syntax only. A valid DID may not
+ * resolve, and a valid handle may not be registered to anyone.
+ */
+
+import {StringBuilder} from 'zena:core';
+
+function isLower(b: i32) {
+  return b >= 97 && b <= 122;
+}
+
+function isUpper(b: i32) {
+  return b >= 65 && b <= 90;
+}
+
+function isLetter(b: i32) {
+  return isLower(b) || isUpper(b);
+}
+
+function isDigit(b: i32) {
+  return b >= 48 && b <= 57;
+}
+
+function isAlphanumeric(b: i32) {
+  return isLetter(b) || isDigit(b);
+}
+
+/**
+ * A DID: `did:`, a method of lowercase letters, `:`, and an identifier of
+ * letters, digits and `._:%-` that does not end in `:` or `%`. At most 2048
+ * characters.
+ */
+export function isValidDid(text: String): boolean {
+  if (text.length > 2048 || !text.startsWith('did:')) {
+    return false;
+  }
+  var i = 4;
+  while (i < text.length && isLower(text.getByteAt(i))) {
+    i += 1;
+  }
+  if (i == 4 || i >= text.length || text.getByteAt(i) != 58) {
+    return false;
+  }
+  i += 1;
+  if (i >= text.length) {
+    return false;
+  }
+  for (var j = i; j < text.length; j += 1) {
+    let b = text.getByteAt(j);
+    // . _ : % -
+    if (!isAlphanumeric(b) && b != 46 && b != 95 && b != 58 && b != 37 && b != 45) {
+      return false;
+    }
+  }
+  let last = text.getByteAt(text.length - 1);
+  return last != 58 && last != 37;
+}
+
+/**
+ * Whether `text[start..end]` is a DNS label of letters, digits and hyphens,
+ * 1 to 63 characters, not starting or ending with a hyphen.
+ */
+function isLabel(text: String, start: i32, end: i32): boolean {
+  let length = end - start;
+  if (length < 1 || length > 63) {
+    return false;
+  }
+  if (text.getByteAt(start) == 45 || text.getByteAt(end - 1) == 45) {
+    return false;
+  }
+  for (var i = start; i < end; i += 1) {
+    let b = text.getByteAt(i);
+    if (!isAlphanumeric(b) && b != 45) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/**
+ * A handle: a domain name of at least two labels, at most 253 characters,
+ * whose last label starts with a letter. Handles are case-insensitive;
+ * `normalizeHandle` gives the lowercase form.
+ */
+export function isValidHandle(text: String): boolean {
+  if (text.length > 253) {
+    return false;
+  }
+  var labels = 0;
+  var start = 0;
+  for (var i = 0; i <= text.length; i += 1) {
+    if (i == text.length || text.getByteAt(i) == 46) {
+      if (!isLabel(text, start, i)) {
+        return false;
+      }
+      labels += 1;
+      if (i == text.length && !isLetter(text.getByteAt(start))) {
+        return false;
+      }
+      start = i + 1;
+    }
+  }
+  return labels >= 2;
+}
+
+/** The lowercase form of a handle. */
+export function normalizeHandle(handle: String): String {
+  let sb = new StringBuilder(handle.length);
+  for (var i = 0; i < handle.length; i += 1) {
+    let b = handle.getByteAt(i);
+    sb.appendByte(if (isUpper(b)) b + 32 else b);
+  }
+  return sb.toString();
+}
+
+/**
+ * A DID or a handle, as an `at://` URI's authority or an XRPC parameter
+ * names an account.
+ */
+export function isValidAtIdentifier(text: String): boolean {
+  if (text.startsWith('did:')) {
+    return isValidDid(text);
+  }
+  return isValidHandle(text);
+}
+
+/**
+ * An NSID: a reversed domain name and a name, at least three segments in
+ * all, at most 317 characters. The first segment starts with a letter, and
+ * the name has only letters and digits and starts with a letter.
+ */
+export function isValidNsid(text: String): boolean {
+  if (text.length > 253 + 1 + 63) {
+    return false;
+  }
+  var segments = 0;
+  var start = 0;
+  for (var i = 0; i <= text.length; i += 1) {
+    if (i == text.length || text.getByteAt(i) == 46) {
+      if (!isLabel(text, start, i)) {
+        return false;
+      }
+      if (segments == 0 && !isLetter(text.getByteAt(start))) {
+        return false;
+      }
+      if (i == text.length) {
+        // The name.
+        if (!isLetter(text.getByteAt(start))) {
+          return false;
+        }
+        for (var j = start; j < i; j += 1) {
+          if (!isAlphanumeric(text.getByteAt(j))) {
+            return false;
+          }
+        }
+      }
+      segments += 1;
+      start = i + 1;
+    }
+  }
+  return segments >= 3;
+}
+
+/**
+ * A record key: 1 to 512 characters of letters, digits and `_~.:-`, other
+ * than `.` and `..`.
+ */
+export function isValidRecordKey(text: String): boolean {
+  if (text.length < 1 || text.length > 512 || text == '.' || text == '..') {
+    return false;
+  }
+  for (var i = 0; i < text.length; i += 1) {
+    let b = text.getByteAt(i);
+    // _ ~ . : -
+    if (!isAlphanumeric(b) && b != 95 && b != 126 && b != 46 && b != 58 && b != 45) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/** Whether `b` is a digit of the sortable base32 alphabet `234567a-z`. */
+function isTidDigit(b: i32) {
+  return (b >= 50 && b <= 55) || isLower(b);
+}
+
+/**
+ * A TID: 13 characters of sortable base32 (`234567abcdefghijklmnopqrstuvwxyz`),
+ * the first of them `2`-`7` or `a`-`j`, since the top bit is always zero.
+ */
+export function isValidTid(text: String): boolean {
+  if (text.length != 13) {
+    return false;
+  }
+  let first = text.getByteAt(0);
+  if (!((first >= 50 && first <= 55) || (first >= 97 && first <= 106))) {
+    return false;
+  }
+  for (var i = 1; i < 13; i += 1) {
+    if (!isTidDigit(text.getByteAt(i))) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/**
+ * A CID as the lexicon `cid` string format checks it: 8 to 256 characters
+ * of letters, digits, `+` and `=`, not starting with `Qmb`, which marks a
+ * version 0 CID. This is a loose check; `Cid.parse` reads the CID itself.
+ */
+export function isValidCidSyntax(text: String): boolean {
+  if (text.length < 8 || text.length > 256 || text.startsWith('Qmb')) {
+    return false;
+  }
+  for (var i = 0; i < text.length; i += 1) {
+    let b = text.getByteAt(i);
+    if (!isAlphanumeric(b) && b != 43 && b != 61) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/** The value of `count` digits at `text[start]`, or -1 if any is not a digit. */
+function digits(text: String, start: i32, count: i32): i32 {
+  var value = 0;
+  for (var i = start; i < start + count; i += 1) {
+    let b = text.getByteAt(i);
+    if (!isDigit(b)) {
+      return -1;
+    }
+    value = value * 10 + (b - 48);
+  }
+  return value;
+}
+
+function isLeapYear(year: i32) {
+  return (year % 4 == 0 && year % 100 != 0) || year % 400 == 0;
+}
+
+function daysInMonth(year: i32, month: i32): i32 {
+  if (month == 2) {
+    return if (isLeapYear(year)) 29 else 28;
+  }
+  if (month == 4 || month == 6 || month == 9 || month == 11) {
+    return 30;
+  }
+  return 31;
+}
+
+/**
+ * A datetime as the lexicon `datetime` format requires: RFC 3339 with
+ * uppercase `T`, seconds, an optional fraction, and `Z` or a `±hh:mm`
+ * offset other than `-00:00`. At most 64 characters. The date must exist,
+ * and the time in UTC must fall within years 0000 to 9999.
+ */
+export function isValidDatetime(text: String): boolean {
+  if (text.length > 64 || text.length < 20) {
+    return false;
+  }
+  // YYYY-MM-DDTHH:MM:SS
+  let year = digits(text, 0, 4);
+  let month = digits(text, 5, 2);
+  let day = digits(text, 8, 2);
+  let hour = digits(text, 11, 2);
+  let minute = digits(text, 14, 2);
+  let second = digits(text, 17, 2);
+  if (text.getByteAt(4) != 45 || text.getByteAt(7) != 45 || text.getByteAt(10) != 84
+      || text.getByteAt(13) != 58 || text.getByteAt(16) != 58) {
+    return false;
+  }
+  if (year < 0 || month < 1 || month > 12 || day < 1 || day > daysInMonth(year, month)
+      || hour < 0 || hour > 23 || minute < 0 || minute > 59 || second < 0 || second > 59) {
+    return false;
+  }
+  var i = 19;
+  if (text.getByteAt(i) == 46) {
+    i += 1;
+    let fractionStart = i;
+    while (i < text.length && isDigit(text.getByteAt(i))) {
+      i += 1;
+    }
+    if (i == fractionStart) {
+      return false;
+    }
+  }
+  if (i >= text.length) {
+    return false;
+  }
+  var offsetMinutes = 0;
+  let sign = text.getByteAt(i);
+  if (sign == 90) {
+    i += 1;
+  } else if (sign == 43 || sign == 45) {
+    if (text.length - i != 6 || text.getByteAt(i + 3) != 58) {
+      return false;
+    }
+    let offsetHour = digits(text, i + 1, 2);
+    let offsetMinute = digits(text, i + 4, 2);
+    if (offsetHour < 0 || offsetHour > 23 || offsetMinute < 0 || offsetMinute > 59) {
+      return false;
+    }
+    if (sign == 45 && offsetHour == 0 && offsetMinute == 0) {
+      return false;
+    }
+    offsetMinutes = offsetHour * 60 + offsetMinute;
+    if (sign == 45) {
+      offsetMinutes = 0 - offsetMinutes;
+    }
+    i += 6;
+  } else {
+    return false;
+  }
+  if (i != text.length) {
+    return false;
+  }
+  // Converting to UTC can only leave the year range from its first or last day.
+  let minuteOfDay = hour * 60 + minute - offsetMinutes;
+  let beforeYear0 = year == 0 && month == 1 && day == 1 && minuteOfDay < 0;
+  let afterYear9999 = year == 9999 && month == 12 && day == 31 && minuteOfDay >= 24 * 60;
+  return !beforeYear0 && !afterYear9999;
+}

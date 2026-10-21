@@ -1,0 +1,99 @@
+import {suite, test} from 'zena:test';
+import {equal, fail, isFalse, isTrue} from 'zena:assert';
+import {readFileSync} from 'zena:fs';
+import {
+  isValidAtIdentifier,
+  isValidCidSyntax,
+  isValidDatetime,
+  isValidDid,
+  isValidHandle,
+  isValidNsid,
+  isValidRecordKey,
+  isValidTid,
+  normalizeHandle
+} from 'atproto:syntax';
+
+let FIXTURES = 'packages/atproto/zena/test/fixtures/interop/syntax';
+
+/** The cases in an interop syntax file: every line but comments and blank lines. */
+function cases(name: String) {
+  let out = new GrowableArray<String>();
+  for (let line in readFileSync(`${FIXTURES}/${name}`).split('\n')) {
+    if (line.length > 0 && !line.startsWith('#')) {
+      out.push(line);
+    }
+  }
+  return out;
+}
+
+/**
+ * Checks `check` against `<kind>_syntax_valid.txt` and
+ * `<kind>_syntax_invalid.txt`, and returns how many cases there were.
+ */
+function checkFixtures(kind: String, check: (text: String) => boolean) {
+  var count = 0;
+  for (let text in cases(`${kind}_syntax_valid.txt`)) {
+    if (!check(text)) {
+      fail(`rejected valid ${kind} '${text}'`);
+    }
+    count += 1;
+  }
+  for (let text in cases(`${kind}_syntax_invalid.txt`)) {
+    if (check(text)) {
+      fail(`accepted invalid ${kind} '${text}'`);
+    }
+    count += 1;
+  }
+  return count;
+}
+
+export let tests = suite('atproto:syntax', () => {
+  test('DIDs match the interop fixtures', (ctx) => {
+    isTrue(checkFixtures('did', (text) => isValidDid(text)) > 30);
+  });
+
+  test('handles match the interop fixtures', (ctx) => {
+    isTrue(checkFixtures('handle', (text) => isValidHandle(text)) > 30);
+  });
+
+  test('NSIDs match the interop fixtures', (ctx) => {
+    isTrue(checkFixtures('nsid', (text) => isValidNsid(text)) > 20);
+  });
+
+  test('record keys match the interop fixtures', (ctx) => {
+    isTrue(checkFixtures('recordkey', (text) => isValidRecordKey(text)) > 20);
+  });
+
+  test('TIDs match the interop fixtures', (ctx) => {
+    isTrue(checkFixtures('tid', (text) => isValidTid(text)) > 5);
+  });
+
+  test('datetimes match the interop fixtures', (ctx) => {
+    isTrue(checkFixtures('datetime', (text) => isValidDatetime(text)) > 60);
+  });
+
+  test('AT identifiers match the interop fixtures', (ctx) => {
+    isTrue(checkFixtures('atidentifier', (text) => isValidAtIdentifier(text)) > 10);
+  });
+
+  test('CID strings match the interop fixtures', (ctx) => {
+    isTrue(checkFixtures('cid', (text) => isValidCidSyntax(text)) > 10);
+  });
+
+  test('datetimes must name a day that exists', (ctx) => {
+    isTrue(isValidDatetime('2024-02-29T00:00:00Z'));
+    isFalse(isValidDatetime('2023-02-29T00:00:00Z'));
+    isFalse(isValidDatetime('1985-04-31T00:00:00Z'));
+  });
+
+  test('datetimes must fall within years 0000 to 9999 in UTC', (ctx) => {
+    isTrue(isValidDatetime('0000-01-01T00:00:00Z'));
+    isFalse(isValidDatetime('0000-01-01T00:30:00+01:00'));
+    isTrue(isValidDatetime('9999-12-31T23:00:00Z'));
+    isFalse(isValidDatetime('9999-12-31T23:30:00-01:00'));
+  });
+
+  test('normalizes a handle to lowercase', (ctx) => {
+    equal(normalizeHandle('Alice.Example.COM'), 'alice.example.com');
+  });
+});
