@@ -1,17 +1,17 @@
 import {suite, test} from 'zena:test';
 import {equal, throws} from 'zena:assert';
 import {ByteBuffer} from 'zena:core';
-import {fromHex, toHex} from 'atproto:bytes';
+import {hex} from 'zena:encoding';
 import {readVarint, varintLength, writeVarint} from 'atproto:varint';
 
 function encode(value: i64) {
   let out = new ByteBuffer();
   writeVarint(out, value);
-  return toHex(out.toByteArray());
+  return hex.encode(out.toByteArray() as FixedArray<u8>);
 }
 
-function decode(hex: String) {
-  let bytes = fromHex(hex);
+function decode(encoded: String) {
+  let bytes = hex.decode(encoded);
   let (value, next) = readVarint(bytes, 0, bytes.length);
   equal(next, bytes.length);
   return value;
@@ -29,15 +29,15 @@ let examples: Array<(i64, String)> = [
 
 export let tests = suite('atproto:varint', () => {
   test('encodes the specification examples', (ctx) => {
-    for (let (value, hex) in examples) {
-      equal(encode(value), hex);
-      equal(varintLength(value), hex.length >> 1);
+    for (let (value, encoded) in examples) {
+      equal(encode(value), encoded);
+      equal(varintLength(value), encoded.length >> 1);
     }
   });
 
   test('decodes the specification examples', (ctx) => {
-    for (let (value, hex) in examples) {
-      equal(decode(hex), value);
+    for (let (value, encoded) in examples) {
+      equal(decode(encoded), value);
     }
   });
 
@@ -48,7 +48,7 @@ export let tests = suite('atproto:varint', () => {
   });
 
   test('reads from an offset and stops at the end of the varint', (ctx) => {
-    let bytes = fromHex('00ac02ff');
+    let bytes = hex.decode('00ac02ff');
     let (value, next) = readVarint(bytes, 1, bytes.length);
     equal(value, 300 as i64);
     equal(next, 3);

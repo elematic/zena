@@ -19,7 +19,7 @@ import {OrderedHashMap} from 'zena:collections';
 import {floor} from 'zena:math';
 import {JsonArray, JsonObject, JsonValue} from 'zena:json';
 import {CODEC_RAW, Cid} from './cid.zena';
-import {decodeBase64, encodeBase64} from './multibase.zena';
+import {base64} from 'zena:encoding';
 
 /** Data outside the atproto data model, or JSON that does not map to it. */
 export class DataError extends Error {
@@ -35,7 +35,7 @@ export sealed class Value {
   case BoolValue(value: boolean)
   case IntValue(value: i64)
   case StringValue(value: String)
-  case BytesValue(value: ByteArray)
+  case BytesValue(value: FixedArray<u8>)
   case LinkValue(cid: Cid)
   case ListValue(items: FixedArray<Value>)
   case MapValue(entries: OrderedHashMap<String, Value>)
@@ -159,7 +159,7 @@ function linkFromJson(json: JsonObject): Cid {
   }
 }
 
-function bytesFromJson(json: JsonObject): ByteArray {
+function bytesFromJson(json: JsonObject): FixedArray<u8> {
   if (json.size != 1) {
     throw new DataError('a $bytes object has other keys');
   }
@@ -168,7 +168,7 @@ function bytesFromJson(json: JsonObject): ByteArray {
     throw new DataError('$bytes is not a string');
   }
   try {
-    return decodeBase64(text);
+    return base64.decode(text);
   } catch (e) {
     throw new DataError(`$bytes is not base64: ${e.message}`);
   }
@@ -238,9 +238,9 @@ function intToJson(n: i64): JsonValue {
   return new Box<f64>(n as f64);
 }
 
-function bytesToJson(bytes: ByteArray): JsonValue {
+function bytesToJson(bytes: FixedArray<u8>): JsonValue {
   let json = new JsonObject();
-  json['$bytes'] = encodeBase64(bytes);
+  json['$bytes'] = base64.encode(bytes, false);
   return json;
 }
 

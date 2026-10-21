@@ -1,19 +1,19 @@
 import {suite, test} from 'zena:test';
 import {equal, isFalse, isTrue, throws} from 'zena:assert';
-import {fromHex, toHex} from 'atproto:bytes';
+import {hex} from 'zena:encoding';
 import {CODEC_DAG_CBOR, CODEC_DAG_PB, CODEC_RAW, Cid, HASH_SHA256} from 'atproto:cid';
 
 export let tests = suite('atproto:cid', () => {
   test('names an empty blob by its SHA-256', (ctx) => {
-    let cid = Cid.forBlob(fromHex(''));
+    let cid = Cid.forBlob(hex.decode(''));
     equal(cid.toString(), 'bafkreihdwdcefgh4dqkjv67uzcmw7ojee6xedzdetojuzjevtenxquvyku');
-    equal(toHex(cid.digest), 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855');
+    equal(hex.encode(cid.digest), 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855');
     isTrue(cid.isAtproto());
   });
 
   test('names DAG-CBOR data with codec 0x71', (ctx) => {
     // The DAG-CBOR encoding of an empty map.
-    let cid = Cid.forDagCbor(fromHex('a0'));
+    let cid = Cid.forDagCbor(hex.decode('a0'));
     equal(cid.codec, CODEC_DAG_CBOR);
     equal(cid.toString(), 'bafyreigbtj4x7ip5legnfznufuopl4sg4knzc2cof6duas4b3q2fy6swua');
   });
@@ -25,7 +25,7 @@ export let tests = suite('atproto:cid', () => {
     equal(cid.codec, CODEC_DAG_CBOR);
     equal(cid.hashType, HASH_SHA256);
     equal(cid.toString(), text);
-    equal(toHex(cid.toBytes()).sliceBytes(0, 8), '01711220');
+    equal(hex.encode(cid.toBytes()).sliceBytes(0, 8), '01711220');
     isTrue(Cid.fromBytes(cid.toBytes()).equals(cid));
   });
 
@@ -46,8 +46,8 @@ export let tests = suite('atproto:cid', () => {
   });
 
   test('reads a CID from the middle of a buffer', (ctx) => {
-    let cid = Cid.forBlob(fromHex('00'));
-    let bytes = fromHex(`ff${toHex(cid.toBytes())}ff`);
+    let cid = Cid.forBlob(hex.decode('00'));
+    let bytes = hex.decode(`ff${hex.encode(cid.toBytes())}ff`);
     let (decoded, end) = Cid.decode(bytes, 1, bytes.length);
     isTrue(decoded.equals(cid));
     equal(end, bytes.length - 1);
@@ -55,8 +55,8 @@ export let tests = suite('atproto:cid', () => {
   });
 
   test('distinguishes codecs with the same digest', (ctx) => {
-    let raw = Cid.create(CODEC_RAW, fromHex('a0'));
-    let cbor = Cid.create(CODEC_DAG_CBOR, fromHex('a0'));
+    let raw = Cid.create(CODEC_RAW, hex.decode('a0'));
+    let cbor = Cid.create(CODEC_DAG_CBOR, hex.decode('a0'));
     isFalse(raw.equals(cbor));
   });
 
@@ -74,14 +74,14 @@ export let tests = suite('atproto:cid', () => {
     }
     // Version 2, and a SHA-256 digest of 31 bytes.
     throws(() => {
-      Cid.fromBytes(fromHex('0271122000'));
+      Cid.fromBytes(hex.decode('0271122000'));
     });
     throws(() => {
-      Cid.fromBytes(fromHex('0155121f00000000000000000000000000000000000000000000000000000000000000'));
+      Cid.fromBytes(hex.decode('0155121f00000000000000000000000000000000000000000000000000000000000000'));
     });
     // Trailing bytes.
     throws(() => {
-      Cid.fromBytes(fromHex(`${toHex(Cid.forBlob(fromHex('')).toBytes())}00`));
+      Cid.fromBytes(hex.decode(`${hex.encode(Cid.forBlob(hex.decode('')).toBytes())}00`));
     });
   });
 });

@@ -10,10 +10,9 @@ Import them as `atproto:<module>`, with an
 
 ## Modules
 
-- `atproto:bytes`: hex encoding, comparison and slicing of byte arrays.
 - `atproto:varint`: multiformats unsigned varints.
-- `atproto:multibase`: base16, base32, base58btc, base64 and base64url, and
-  multibase strings.
+- `atproto:multibase`: multibase strings, and base58btc. The other base
+  encodings are in `zena:encoding`.
 - `atproto:cid`: CIDs, their binary and string forms, and the CIDs atproto
   gives records and blobs.
 - `atproto:data`: the data model (`Value` and its cases) and its JSON form.
