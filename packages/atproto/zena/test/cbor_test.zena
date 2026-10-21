@@ -4,10 +4,9 @@ import {readFileSync} from 'zena:fs';
 import {JsonArray, JsonObject, parseJson} from 'zena:json';
 import {OrderedHashMap} from 'zena:collections';
 import {StringBuilder} from 'zena:core';
-import {fromHex, toHex} from 'atproto:bytes';
 import {cidForValue, decodeCbor, encodeCbor} from 'atproto:cbor';
 import {Cid} from 'atproto:cid';
-import {decodeBase64, encodeBase64} from 'atproto:multibase';
+import {base64, hex} from 'zena:encoding';
 import {
   IntValue,
   LinkValue,
@@ -24,7 +23,7 @@ let FIXTURES = 'packages/atproto/zena/test/fixtures/interop/data-model';
 let I64_MIN: i64 = 0x8000000000000000;
 
 function encodeHex(value: Value) {
-  return toHex(encodeCbor(value));
+  return hex.encode(encodeCbor(value));
 }
 
 function int(n: i64): Value {
@@ -41,9 +40,9 @@ function mapOf(keys: Array<String>): Value {
   return new MapValue(entries);
 }
 
-function rejects(hex: String) {
+function rejects(encoded: String) {
   throws(() => {
-    decodeCbor(fromHex(hex));
+    decodeCbor(hex.decode(encoded));
   });
 }
 
@@ -58,12 +57,12 @@ export let tests = suite('atproto:cbor', () => {
       let cid = fixture['cid'] as String;
 
       let value = fromJson(json);
-      equal(encodeBase64(encodeCbor(value)), cbor);
+      equal(base64.encode(encodeCbor(value), false), cbor);
       equal(cidForValue(value).toString(), cid);
 
-      let decoded = decodeCbor(decodeBase64(cbor));
+      let decoded = decodeCbor(base64.decode(cbor));
       jsonEqual(toJson(decoded), json);
-      equal(encodeBase64(encodeCbor(decoded)), cbor);
+      equal(base64.encode(encodeCbor(decoded), false), cbor);
     }
   });
 
@@ -85,9 +84,9 @@ export let tests = suite('atproto:cbor', () => {
   });
 
   test('decodes the largest and smallest integers', (ctx) => {
-    let max = decodeCbor(fromHex('1b7fffffffffffffff')) as IntValue;
+    let max = decodeCbor(hex.decode('1b7fffffffffffffff')) as IntValue;
     equal(max.value, 0x7fffffffffffffff as i64);
-    let min = decodeCbor(fromHex('3b7fffffffffffffff')) as IntValue;
+    let min = decodeCbor(hex.decode('3b7fffffffffffffff')) as IntValue;
     equal(min.value, I64_MIN);
   });
 
@@ -97,17 +96,17 @@ export let tests = suite('atproto:cbor', () => {
   });
 
   test('writes a link as tag 42 over a zero byte and the CID', (ctx) => {
-    let cid = Cid.forBlob(fromHex(''));
-    let hex = encodeHex(new LinkValue(cid));
-    equal(hex, `d82a582500${toHex(cid.toBytes())}`);
-    let decoded = decodeCbor(fromHex(hex)) as LinkValue;
+    let cid = Cid.forBlob(hex.decode(''));
+    let encoded = encodeHex(new LinkValue(cid));
+    equal(encoded, `d82a582500${hex.encode(cid.toBytes())}`);
+    let decoded = decodeCbor(hex.decode(encoded)) as LinkValue;
     isTrue(decoded.cid.equals(cid));
   });
 
   test('round-trips nested lists and maps', (ctx) => {
     let value = fromJson(parseJson('{"a": [1, [2, null], {"b": "c"}], "bytes": {"$bytes": "AAEC"}}'));
     let bytes = encodeCbor(value);
-    equal(toHex(encodeCbor(decodeCbor(bytes))), toHex(bytes));
+    equal(hex.encode(encodeCbor(decodeCbor(bytes))), hex.encode(bytes));
   });
 
   test('rejects heads longer than needed', (ctx) => {
@@ -184,12 +183,12 @@ export let tests = suite('atproto:cbor', () => {
   });
 
   test('decodes a string as a copy of its bytes', (ctx) => {
-    let value = decodeCbor(fromHex('6568656c6c6f')) as StringValue;
+    let value = decodeCbor(hex.decode('6568656c6c6f')) as StringValue;
     equal(value.value, 'hello');
   });
 
   test('decodes lists', (ctx) => {
-    let value = decodeCbor(fromHex('8301f620')) as ListValue;
+    let value = decodeCbor(hex.decode('8301f620')) as ListValue;
     equal(value.items.length, 3);
     equal((value.items[0] as IntValue).value, 1 as i64);
     isTrue(value.items[1] is NullValue);

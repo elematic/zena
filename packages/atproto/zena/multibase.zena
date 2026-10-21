@@ -1,31 +1,27 @@
 /**
- * The base encodings atproto uses, and multibase strings: an encoding
- * named by a one-character prefix (https://github.com/multiformats/multibase).
+ * Multibase strings: bytes in an encoding named by a one-character prefix
+ * (https://github.com/multiformats/multibase), and base58btc, which
+ * `zena:encoding` does not have.
  *
- * - base32, lowercase RFC 4648 alphabet, no padding (prefix `b`): CIDs.
- * - base58btc, the Bitcoin alphabet (prefix `z`): `did:key` and multikey.
- * - base64, standard alphabet (prefix `m` unpadded): `$bytes` in atproto JSON.
- * - base64url (prefix `u` unpadded): JWTs.
- * - base16, lowercase (prefix `f`).
+ * The encodings atproto uses, all unpadded:
  *
- * Decoders reject characters outside the alphabet, and for base32 and
- * base64 a final character with bits set below the last whole byte, so that
- * each byte string has one encoding.
+ * - `b`: base32, lowercase. CIDs.
+ * - `z`: base58btc, the Bitcoin alphabet. `did:key` and multikey.
+ * - `m`: base64. `$bytes` in atproto JSON, without the prefix.
+ * - `u`: base64url. JWTs, without the prefix.
+ * - `f`: base16, lowercase.
  */
 
-import {ByteBuffer, StringBuilder, newByteArray} from 'zena:core';
+import {StringBuilder} from 'zena:core';
+import {EncodingError, base32Lower, base64, base64Url, hex} from 'zena:encoding';
 import {div} from 'zena:math';
-import {fromHex, toHex} from './bytes.zena';
 
 /** Text that is not valid in the encoding it claims. */
 export class MultibaseError extends Error {
   new(message: String) : super(message);
 }
 
-let BASE32_ALPHABET = 'abcdefghijklmnopqrstuvwxyz234567';
 let BASE58_ALPHABET = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
-let BASE64_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
-let BASE64URL_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
 
 /** The multibase encodings this module reads and writes. */
 export enum Base {
@@ -36,145 +32,21 @@ export enum Base {
   Base64url
 }
 
-/**
- * The value of each byte in `alphabet`, or -1 for a byte that is not in it.
- */
-function decodeTable(alphabet: String) {
+function base58Table() {
   let table = new FixedArray<i32>(256, -1);
-  for (var i = 0; i < alphabet.length; i += 1) {
-    table[alphabet.getByteAt(i)] = i;
+  for (var i = 0; i < BASE58_ALPHABET.length; i += 1) {
+    table[BASE58_ALPHABET.getByteAt(i)] = i;
   }
   return table;
 }
 
-let base32Table = decodeTable(BASE32_ALPHABET);
-let base58Table = decodeTable(BASE58_ALPHABET);
-let base64Table = decodeTable(BASE64_ALPHABET);
-let base64urlTable = decodeTable(BASE64URL_ALPHABET);
-
-/**
- * Encodes `bytes` with an RFC 4648 alphabet of 2^bits characters, without
- * padding.
- */
-function encodeRfc4648(bytes: ByteArray, alphabet: String, bits: i32) {
-  let sb = new StringBuilder(div(bytes.length * 8 + bits - 1, bits) + 1);
-  let mask = (1 << bits) - 1;
-  var buffer = 0;
-  var buffered = 0;
-  for (var i = 0; i < bytes.length; i += 1) {
-    buffer = ((buffer << 8) | (bytes[i] as i32)) & 0xffff;
-    buffered += 8;
-    while (buffered >= bits) {
-      buffered -= bits;
-      sb.appendByte(alphabet.getByteAt((buffer >> buffered) & mask));
-    }
-  }
-  if (buffered > 0) {
-    sb.appendByte(alphabet.getByteAt((buffer << (bits - buffered)) & mask));
-  }
-  return sb.toString();
-}
-
-/**
- * Decodes `text[start..end]`, unpadded, with an RFC 4648 alphabet of
- * 2^bits characters.
- */
-function decodeRfc4648(
-  text: String,
-  start: i32,
-  end: i32,
-  table: FixedArray<i32>,
-  bits: i32,
-  name: String
-) {
-  let out = new ByteBuffer(((end - start) * bits) >> 3);
-  var buffer = 0;
-  var buffered = 0;
-  for (var i = start; i < end; i += 1) {
-    let value = table[text.getByteAt(i)];
-    if (value < 0) {
-      throw new MultibaseError(`invalid ${name} character at offset ${i}`);
-    }
-    buffer = ((buffer << bits) | value) & 0xffff;
-    buffered += bits;
-    if (buffered >= 8) {
-      buffered -= 8;
-      out.writeByte((buffer >> buffered) & 0xff);
-    }
-  }
-  if (buffered >= bits || (buffer & ((1 << buffered) - 1)) != 0) {
-    throw new MultibaseError(`${name} text ends in the middle of a byte`);
-  }
-  return out.toByteArray();
-}
-
-/** `bytes` in lowercase base32, without padding. */
-export function encodeBase32(bytes: ByteArray): String {
-  return encodeRfc4648(bytes, BASE32_ALPHABET, 5);
-}
-
-/** The bytes of unpadded lowercase base32 text. */
-export function decodeBase32(text: String): ByteArray {
-  return decodeRfc4648(text, 0, text.length, base32Table, 5, 'base32');
-}
-
-/** `bytes` in base64, with `=` padding when `pad` is set. */
-export function encodeBase64(bytes: ByteArray, pad: boolean = false): String {
-  let text = encodeRfc4648(bytes, BASE64_ALPHABET, 6);
-  if (!pad) {
-    return text;
-  }
-  return padBase64(text);
-}
-
-/** `bytes` in base64url, without padding. */
-export function encodeBase64url(bytes: ByteArray): String {
-  return encodeRfc4648(bytes, BASE64URL_ALPHABET, 6);
-}
-
-function padBase64(text: String): String {
-  let rem = text.length % 4;
-  if (rem == 0) {
-    return text;
-  }
-  let sb = new StringBuilder(text.length + 4 - rem);
-  sb.append(text);
-  for (var i = rem; i < 4; i += 1) {
-    sb.appendByte(61);
-  }
-  return sb.toString();
-}
-
-/** The length of `text` without trailing `=` padding. */
-function unpaddedEnd(text: String, name: String) {
-  var end = text.length;
-  while (end > 0 && text.getByteAt(end - 1) == 61) {
-    end -= 1;
-  }
-  if (end < text.length && text.length % 4 != 0) {
-    throw new MultibaseError(`padded ${name} text is not a multiple of four characters`);
-  }
-  if (text.length - end > 2) {
-    throw new MultibaseError(`too much padding in ${name} text`);
-  }
-  return end;
-}
-
-/** The bytes of base64 text, padded or not. */
-export function decodeBase64(text: String): ByteArray {
-  return decodeRfc4648(text, 0, unpaddedEnd(text, 'base64'), base64Table, 6, 'base64');
-}
-
-/** The bytes of base64url text, padded or not. */
-export function decodeBase64url(text: String): ByteArray {
-  return decodeRfc4648(text, 0, unpaddedEnd(text, 'base64url'), base64urlTable, 6, 'base64url');
-}
+let base58Values = base58Table();
 
 /**
  * `bytes` in base58btc. Each leading zero byte becomes a leading `1`, and
  * the rest is the bytes read as one big-endian number, in base 58.
  */
-export function encodeBase58btc(bytes: ByteArray): String {
+export function encodeBase58btc(bytes: FixedArray<u8>): String {
   var zeros = 0;
   while (zeros < bytes.length && bytes[zeros] == 0) {
     zeros += 1;
@@ -207,21 +79,17 @@ export function encodeBase58btc(bytes: ByteArray): String {
 }
 
 /** The bytes of base58btc text. */
-export function decodeBase58btc(text: String): ByteArray {
-  return decodeBase58Range(text, 0, text.length);
-}
-
-function decodeBase58Range(text: String, start: i32, end: i32): ByteArray {
+export function decodeBase58btc(text: String): FixedArray<u8> {
   var zeros = 0;
-  while (start + zeros < end && text.getByteAt(start + zeros) == 49) {
+  while (zeros < text.length && text.getByteAt(zeros) == 49) {
     zeros += 1;
   }
   // log(58) / log(256) is under 0.733, so 733 bytes per 1000 digits suffice.
-  let size = div((end - start - zeros) * 733, 1000) + 1;
+  let size = div((text.length - zeros) * 733, 1000) + 1;
   let bytes = new FixedArray<i32>(size, 0);
   var length = 0;
-  for (var i = start + zeros; i < end; i += 1) {
-    var carry = base58Table[text.getByteAt(i)];
+  for (var i = zeros; i < text.length; i += 1) {
+    var carry = base58Values[text.getByteAt(i)];
     if (carry < 0) {
       throw new MultibaseError(`invalid base58btc character at offset ${i}`);
     }
@@ -236,61 +104,60 @@ function decodeBase58Range(text: String, start: i32, end: i32): ByteArray {
     }
     length = j;
   }
-  let out = newByteArray(zeros + length);
+  let out = new FixedArray<u8>(zeros + length, 0 as u8);
   for (var i = 0; i < length; i += 1) {
     out[zeros + i] = bytes[length - 1 - i] as u8;
   }
   return out;
 }
 
-/** The prefix character of a multibase encoding. */
-function prefixOf(base: Base): i32 {
-  return match (base) {
-    case Base.Base16: 102
-    case Base.Base32: 98
-    case Base.Base58btc: 122
-    case Base.Base64: 109
-    case Base.Base64url: 117
-  };
-}
-
 /** `bytes` as a multibase string in `base`. */
-export function encodeMultibase(base: Base, bytes: ByteArray): String {
-  let body = match (base) {
-    case Base.Base16: toHex(bytes)
-    case Base.Base32: encodeBase32(bytes)
-    case Base.Base58btc: encodeBase58btc(bytes)
-    case Base.Base64: encodeBase64(bytes)
-    case Base.Base64url: encodeBase64url(bytes)
+export function encodeMultibase(base: Base, bytes: FixedArray<u8>): String {
+  return match (base) {
+    case Base.Base16: `f${hex.encode(bytes)}`
+    case Base.Base32: `b${base32Lower.encode(bytes, false)}`
+    case Base.Base58btc: `z${encodeBase58btc(bytes)}`
+    case Base.Base64: `m${base64.encode(bytes, false)}`
+    case Base.Base64url: `u${base64Url.encode(bytes, false)}`
   };
-  let sb = new StringBuilder(body.length + 1);
-  sb.appendByte(prefixOf(base));
-  sb.append(body);
-  return sb.toString();
 }
 
 /** The bytes of a multibase string in one of the encodings above. */
-export function decodeMultibase(text: String): ByteArray {
+export function decodeMultibase(text: String): FixedArray<u8> {
   if (text.length == 0) {
     throw new MultibaseError('empty multibase string');
   }
   let body = text.sliceBytes(1, text.length);
-  return match (text.getByteAt(0)) {
-    case 102: decodeLowerHex(body)
-    case 98: decodeBase32(body)
-    case 122: decodeBase58btc(body)
-    case 109: decodeBase64(body)
-    case 117: decodeBase64url(body)
-    case _: throw new MultibaseError(`unsupported multibase prefix '${text.sliceBytes(0, 1)}'`)
-  };
+  let prefix = text.getByteAt(0);
+  if (prefix == 122) {
+    return decodeBase58btc(body);
+  }
+  if (body.length > 0 && body.getByteAt(body.length - 1) == 61) {
+    throw new MultibaseError('multibase text is unpadded');
+  }
+  try {
+    return match (prefix) {
+      case 102: decodeLowerHex(body)
+      case 98: base32Lower.decode(body)
+      case 109: base64.decode(body)
+      case 117: base64Url.decode(body)
+      case _: throw new MultibaseError(`unsupported multibase prefix '${text.sliceBytes(0, 1)}'`)
+    };
+  } catch (e) {
+    if (e is EncodingError) {
+      throw new MultibaseError(e.message);
+    }
+    throw e;
+  }
 }
 
-function decodeLowerHex(text: String): ByteArray {
+/** Base16 in lowercase only, as multibase's `f` requires. */
+function decodeLowerHex(text: String): FixedArray<u8> {
   for (var i = 0; i < text.length; i += 1) {
     let b = text.getByteAt(i);
     if (b >= 65 && b <= 70) {
       throw new MultibaseError(`uppercase base16 character at offset ${i}`);
     }
   }
-  return fromHex(text);
+  return hex.decode(text);
 }

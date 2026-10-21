@@ -17,8 +17,8 @@
 
 import {ByteBuffer, Encoding} from 'zena:core';
 import {OrderedHashMap} from 'zena:collections';
+import {isValidUtf8} from 'zena:encoding';
 import {Cid} from './cid.zena';
-import {sliceBytes} from './bytes.zena';
 import {
   BoolValue,
   BytesValue,
@@ -42,14 +42,17 @@ export class CborError extends Error {
  */
 let MAX_DEPTH = 256;
 
-let MAJOR_UNSIGNED = 0;
-let MAJOR_NEGATIVE = 1;
-let MAJOR_BYTES = 2;
-let MAJOR_TEXT = 3;
-let MAJOR_LIST = 4;
-let MAJOR_MAP = 5;
-let MAJOR_TAG = 6;
-let MAJOR_SIMPLE = 7;
+/** The major type in a head's top three bits. */
+enum Major {
+  Unsigned = 0,
+  Negative = 1,
+  Bytes = 2,
+  Text = 3,
+  List = 4,
+  Map = 5,
+  Tag = 6,
+  Simple = 7
+}
 
 let TAG_CID: i64 = 42;
 
@@ -58,10 +61,10 @@ let LIMIT_16: i64 = 0x10000;
 let LIMIT_32: i64 = 0x100000000;
 
 /** The DAG-CBOR encoding of `value`. */
-export function encodeCbor(value: Value): ByteArray {
+export function encodeCbor(value: Value): FixedArray<u8> {
   let out = new ByteBuffer();
   writeValue(out, value);
-  return out.toByteArray();
+  return out.toByteArray() as FixedArray<u8>;
 }
 
 /** The CID of `value`'s DAG-CBOR encoding. */
@@ -70,20 +73,20 @@ export function cidForValue(value: Value): Cid {
 }
 
 /** The value DAG-CBOR `bytes` encode. */
-export function decodeCbor(bytes: ByteArray): Value {
+export function decodeCbor(bytes: FixedArray<u8>): Value {
   return decodeCborRange(bytes, 0, bytes.length);
 }
 
 /** The value `bytes[start..end]` encode. */
-export function decodeCborRange(bytes: ByteArray, start: i32, end: i32): Value {
+export function decodeCborRange(bytes: FixedArray<u8>, start: i32, end: i32): Value {
   let decoder = new Decoder(bytes, start, end);
   let value = decoder.readValue(0);
   decoder.finish();
   return value;
 }
 
-function writeHead(out: ByteBuffer, major: i32, n: i64) {
-  let m = major << 5;
+function writeHead(out: ByteBuffer, major: Major, n: i64) {
+  let m = (major as i32) << 5;
   if (n < 24) {
     out.writeByte(m | (n as i32));
   } else if (n < LIMIT_8) {
@@ -107,12 +110,12 @@ function writeHead(out: ByteBuffer, major: i32, n: i64) {
 }
 
 function writeText(out: ByteBuffer, text: String) {
-  let bytes = text.toBytes() as ByteArray;
-  if (!isValidUtf8(bytes, 0, bytes.length)) {
+  let bytes = text.toBytes();
+  if (!isValidUtf8(bytes)) {
     throw new CborError('string is not valid UTF-8');
   }
-  writeHead(out, MAJOR_TEXT, bytes.length as i64);
-  out.writeBytes(bytes);
+  writeHead(out, Major.Text, bytes.length as i64);
+  out.writeBytes(bytes as ByteArray);
 }
 
 function writeValue(out: ByteBuffer, value: Value): void {
@@ -125,34 +128,34 @@ function writeValue(out: ByteBuffer, value: Value): void {
     }
     case IntValue {value as n}: {
       if (n >= 0) {
-        writeHead(out, MAJOR_UNSIGNED, n);
+        writeHead(out, Major.Unsigned, n);
       } else {
-        writeHead(out, MAJOR_NEGATIVE, -1 - n);
+        writeHead(out, Major.Negative, -1 - n);
       }
     }
     case StringValue {value as text}: {
       writeText(out, text);
     }
     case BytesValue {value as bytes}: {
-      writeHead(out, MAJOR_BYTES, bytes.length as i64);
-      out.writeBytes(bytes);
+      writeHead(out, Major.Bytes, bytes.length as i64);
+      out.writeBytes(bytes as ByteArray);
     }
     case LinkValue {cid}: {
       let cidBytes = cid.toBytes();
-      writeHead(out, MAJOR_TAG, TAG_CID);
-      writeHead(out, MAJOR_BYTES, (cidBytes.length + 1) as i64);
+      writeHead(out, Major.Tag, TAG_CID);
+      writeHead(out, Major.Bytes, (cidBytes.length + 1) as i64);
       out.writeByte(0);
-      out.writeBytes(cidBytes);
+      out.writeBytes(cidBytes as ByteArray);
     }
     case ListValue {items}: {
-      writeHead(out, MAJOR_LIST, items.length as i64);
+      writeHead(out, Major.List, items.length as i64);
       for (let item in items) {
         writeValue(out, item);
       }
     }
     case MapValue {entries}: {
       let keys = sortedKeys(entries);
-      writeHead(out, MAJOR_MAP, keys.length as i64);
+      writeHead(out, Major.Map, keys.length as i64);
       for (let key in keys) {
         writeText(out, key);
         writeValue(out, entries[key]);
@@ -196,6 +199,7 @@ function sortedKeys(entries: OrderedHashMap<String, Value>): FixedArray<String> 
   return keys;
 }
 
+// TODO(#450): use the standard library's sort once it has one.
 function mergeSort(keys: FixedArray<String>, scratch: FixedArray<String>, start: i32, end: i32): void {
   if (end - start < 2) {
     return;
@@ -231,72 +235,17 @@ function mergeSort(keys: FixedArray<String>, scratch: FixedArray<String>, start:
   }
 }
 
-/**
- * Whether `bytes[start..end]` is UTF-8 as RFC 3629 defines it: no overlong
- * forms, no surrogates, nothing above U+10FFFF.
- */
-export function isValidUtf8(bytes: ByteArray, start: i32, end: i32): boolean {
-  var i = start;
-  while (i < end) {
-    let b = bytes[i] as i32;
-    if (b < 0x80) {
-      i += 1;
-      continue;
-    }
-    var need = 0;
-    var low = 0x80;
-    var high = 0xbf;
-    if (b >= 0xc2 && b <= 0xdf) {
-      need = 1;
-    } else if (b == 0xe0) {
-      need = 2;
-      low = 0xa0;
-    } else if (b == 0xed) {
-      need = 2;
-      high = 0x9f;
-    } else if (b >= 0xe1 && b <= 0xef) {
-      need = 2;
-    } else if (b == 0xf0) {
-      need = 3;
-      low = 0x90;
-    } else if (b == 0xf4) {
-      need = 3;
-      high = 0x8f;
-    } else if (b >= 0xf1 && b <= 0xf3) {
-      need = 3;
-    } else {
-      return false;
-    }
-    if (end - i - 1 < need) {
-      return false;
-    }
-    // Only the first continuation byte has a narrowed range.
-    let first = bytes[i + 1] as i32;
-    if (first < low || first > high) {
-      return false;
-    }
-    for (var j = 2; j <= need; j += 1) {
-      let c = bytes[i + j] as i32;
-      if (c < 0x80 || c > 0xbf) {
-        return false;
-      }
-    }
-    i += need + 1;
-  }
-  return true;
-}
-
 /** Reads one value from a byte range, checking every DRISL rule. */
 final class Decoder {
-  #bytes: ByteArray;
+  #bytes: FixedArray<u8>;
   var #pos: i32;
   #end: i32;
   /** The major type of the head `#readHead` read last. */
-  var #major: i32 = 0;
+  var #major: Major = Major.Unsigned;
   /** Its argument: the integer, length or tag number. */
   var #arg: i64 = 0;
 
-  new(bytes: ByteArray, start: i32, end: i32) : #bytes = bytes, #pos = start, #end = end;
+  new(bytes: FixedArray<u8>, start: i32, end: i32) : #bytes = bytes, #pos = start, #end = end;
 
   /** Throws unless the value read so far ended exactly at the range's end. */
   finish(): void {
@@ -336,10 +285,10 @@ final class Decoder {
    */
   #readHead(): void {
     let b = this.#readByte();
-    let major = b >> 5;
+    let major = (b >> 5) as Major;
     let info = b & 0x1f;
     this.#major = major;
-    if (major == MAJOR_SIMPLE) {
+    if (major == Major.Simple) {
       this.#arg = info as i64;
       return;
     }
@@ -388,9 +337,9 @@ final class Decoder {
     return n as i32;
   }
 
-  #readBytes(): ByteArray {
+  #readBytes(): FixedArray<u8> {
     let length = this.#length(1);
-    let bytes = sliceBytes(this.#bytes, this.#pos, this.#pos + length);
+    let bytes = this.#bytes.slice(this.#pos, this.#pos + length);
     this.#pos += length;
     return bytes;
   }
@@ -402,8 +351,8 @@ final class Decoder {
       throw this.#error('invalid UTF-8');
     }
     this.#pos += length;
-    let copy = sliceBytes(this.#bytes, start, start + length);
-    return String.fromByteArray(copy, 0, length, Encoding.WTF8);
+    let copy = this.#bytes.slice(start, start + length);
+    return String.fromByteArray(copy as ByteArray, 0, length, Encoding.WTF8);
   }
 
   readValue(depth: i32): Value {
@@ -411,40 +360,41 @@ final class Decoder {
       throw this.#error(`lists and maps nested more than ${MAX_DEPTH} deep`);
     }
     this.#readHead();
-    let major = this.#major;
-    if (major == MAJOR_UNSIGNED) {
-      if (this.#arg < 0) {
-        throw this.#error('an integer of 2^63 or more');
-      }
-      return new IntValue(this.#arg);
+    return match (this.#major) {
+      case Major.Unsigned: this.#readInteger(false)
+      case Major.Negative: this.#readInteger(true)
+      case Major.Bytes: this.#readByteString()
+      case Major.Text: this.#readTextString()
+      case Major.List: this.#readList(depth)
+      case Major.Map: this.#readMap(depth)
+      case Major.Tag: this.#readLink()
+      case Major.Simple: this.#readSimple()
+    };
+  }
+
+  #readInteger(negative: boolean): Value {
+    // An argument of 2^63 or more reads as negative.
+    if (this.#arg < 0) {
+      throw this.#error(if (negative) 'an integer below -2^63' else 'an integer of 2^63 or more');
     }
-    if (major == MAJOR_NEGATIVE) {
-      if (this.#arg < 0) {
-        throw this.#error('an integer below -2^63');
-      }
-      return new IntValue(-1 - this.#arg);
+    return new IntValue(if (negative) -1 - this.#arg else this.#arg);
+  }
+
+  #readByteString(): Value {
+    return new BytesValue(this.#readBytes());
+  }
+
+  #readTextString(): Value {
+    return new StringValue(this.#readText());
+  }
+
+  #readList(depth: i32): Value {
+    let count = this.#length(1);
+    let items = new FixedArray<Value>(count, new NullValue());
+    for (var i = 0; i < count; i += 1) {
+      items[i] = this.readValue(depth + 1);
     }
-    if (major == MAJOR_BYTES) {
-      return new BytesValue(this.#readBytes());
-    }
-    if (major == MAJOR_TEXT) {
-      return new StringValue(this.#readText());
-    }
-    if (major == MAJOR_LIST) {
-      let count = this.#length(1);
-      let items = new FixedArray<Value>(count, new NullValue());
-      for (var i = 0; i < count; i += 1) {
-        items[i] = this.readValue(depth + 1);
-      }
-      return new ListValue(items);
-    }
-    if (major == MAJOR_MAP) {
-      return this.#readMap(depth);
-    }
-    if (major == MAJOR_TAG) {
-      return this.#readLink();
-    }
-    return this.#readSimple();
+    return new ListValue(items);
   }
 
   #readMap(depth: i32): Value {
@@ -453,7 +403,7 @@ final class Decoder {
     var previous: String | null = null;
     for (var i = 0; i < count; i += 1) {
       this.#readHead();
-      if (this.#major != MAJOR_TEXT) {
+      if (this.#major != Major.Text) {
         throw this.#error('a map key that is not a string');
       }
       let key = this.#readText();
@@ -471,14 +421,14 @@ final class Decoder {
       throw this.#error(`tag ${this.#arg}; DAG-CBOR allows only tag 42`);
     }
     this.#readHead();
-    if (this.#major != MAJOR_BYTES) {
+    if (this.#major != Major.Bytes) {
       throw this.#error('tag 42 on something other than bytes');
     }
     let bytes = this.#readBytes();
     if (bytes.length == 0 || bytes[0] != 0) {
       throw this.#error('a CID without its leading zero byte');
     }
-    let cid = Cid.fromBytes(sliceBytes(bytes, 1, bytes.length));
+    let cid = Cid.fromBytes(bytes.slice(1, bytes.length));
     if (cid.version != 1) {
       throw this.#error('a version 0 CID');
     }

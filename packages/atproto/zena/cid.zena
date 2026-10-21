@@ -1,5 +1,5 @@
 /**
- * Content identifiers (https://github.com/multiformats/cid).
+ * Content identifiers (https://specs.ipfs.tech/cid/).
  *
  * A CID names data by its hash. Version 1, the version atproto uses, is
  * four parts in binary: the version (1), a multicodec saying how to read
@@ -18,8 +18,8 @@
 
 import {ByteBuffer} from 'zena:core';
 import {sha256} from 'zena:crypto';
-import {equalBytes, sliceBytes} from './bytes.zena';
-import {decodeBase32, decodeBase58btc, encodeBase32, encodeBase58btc} from './multibase.zena';
+import {base32Lower} from 'zena:encoding';
+import {decodeBase58btc, encodeBase58btc} from './multibase.zena';
 import {readVarint, writeVarint} from './varint.zena';
 
 /** The multicodec for raw bytes, used for blobs. */
@@ -45,25 +45,25 @@ export final class Cid {
   /** The multihash code of the hash function. */
   hashType: i64;
   /** The hash of the data. */
-  digest: ByteArray;
-  var #bytes: ByteArray | null = null;
+  digest: FixedArray<u8>;
+  var #bytes: FixedArray<u8> | null = null;
   var #text: String | null = null;
 
-  new(version: i32, codec: i64, hashType: i64, digest: ByteArray)
+  new(version: i32, codec: i64, hashType: i64, digest: FixedArray<u8>)
     : version = version, codec = codec, hashType = hashType, digest = digest;
 
   /** The version 1 SHA-256 CID of `data` read as `codec`. */
-  static create(codec: i64, data: ByteArray): Cid {
+  static create(codec: i64, data: FixedArray<u8>): Cid {
     return new Cid(1, codec, HASH_SHA256, sha256(data));
   }
 
   /** The CID atproto gives a blob with these contents. */
-  static forBlob(data: ByteArray): Cid {
+  static forBlob(data: FixedArray<u8>): Cid {
     return new Cid(1, CODEC_RAW, HASH_SHA256, sha256(data));
   }
 
   /** The CID of DAG-CBOR-encoded `data`. */
-  static forDagCbor(data: ByteArray): Cid {
+  static forDagCbor(data: FixedArray<u8>): Cid {
     return new Cid(1, CODEC_DAG_CBOR, HASH_SHA256, sha256(data));
   }
 
@@ -93,11 +93,11 @@ export final class Cid {
   }
 
   /** Reads a CID that fills `bytes`. */
-  static fromBytes(bytes: ByteArray): Cid {
+  static fromBytes(bytes: FixedArray<u8>): Cid {
     return Cid.#decodeAll(bytes);
   }
 
-  static #decodeAll(bytes: ByteArray): Cid {
+  static #decodeAll(bytes: FixedArray<u8>): Cid {
     let (cid, end) = Cid.decode(bytes, 0, bytes.length);
     if (end != bytes.length) {
       throw new CidError(`${bytes.length - end} bytes after the CID`);
@@ -109,12 +109,12 @@ export final class Cid {
    * Reads the binary CID at `bytes[offset]`, reading no further than `end`.
    * Returns the CID and the offset just past it.
    */
-  static decode(bytes: ByteArray, offset: i32, end: i32): inline (Cid, i32) {
+  static decode(bytes: FixedArray<u8>, offset: i32, end: i32): inline (Cid, i32) {
     if (end - offset >= 2 && bytes[offset] == 0x12 && bytes[offset + 1] == 0x20) {
       if (end - offset < 34) {
         throw new CidError('truncated version 0 CID');
       }
-      let digest = sliceBytes(bytes, offset + 2, offset + 34);
+      let digest = bytes.slice(offset + 2, offset + 34);
       return (new Cid(0, CODEC_DAG_PB, HASH_SHA256, digest), offset + 34);
     }
     let (version, afterVersion) = readVarint(bytes, offset, end);
@@ -128,7 +128,7 @@ export final class Cid {
       throw new CidError('CID digest is truncated');
     }
     let digestEnd = afterLength + (length as i32);
-    let digest = sliceBytes(bytes, afterLength, digestEnd);
+    let digest = bytes.slice(afterLength, digestEnd);
     if (hashType == HASH_SHA256 && digest.length != 32) {
       throw new CidError(`SHA-256 digest of ${digest.length} bytes`);
     }
@@ -136,7 +136,7 @@ export final class Cid {
   }
 
   /** The binary form. */
-  toBytes(): ByteArray {
+  toBytes(): FixedArray<u8> {
     let cached = this.#bytes;
     if (cached != null) {
       return cached;
@@ -151,8 +151,8 @@ export final class Cid {
       writeVarint(out, this.hashType);
       writeVarint(out, this.digest.length as i64);
     }
-    out.writeBytes(this.digest);
-    let bytes = out.toByteArray();
+    out.writeBytes(this.digest as ByteArray);
+    let bytes = out.toByteArray() as FixedArray<u8>;
     this.#bytes = bytes;
     return bytes;
   }
@@ -166,7 +166,7 @@ export final class Cid {
     let text = if (this.version == 0) {
       encodeBase58btc(this.toBytes())
     } else {
-      `b${encodeBase32(this.toBytes())}`
+      `b${base32Lower.encode(this.toBytes(), false)}`
     };
     this.#text = text;
     return text;
@@ -177,7 +177,7 @@ export final class Cid {
     return this.version == other.version
       && this.codec == other.codec
       && this.hashType == other.hashType
-      && equalBytes(this.digest, other.digest);
+      && this.digest.contentEquals(other.digest);
   }
 
   /**
@@ -188,5 +188,17 @@ export final class Cid {
     return this.version == 1
       && (this.codec == CODEC_DAG_CBOR || this.codec == CODEC_RAW)
       && this.hashType == HASH_SHA256;
+  }
+}
+
+/** Unpadded lowercase base32, the body of a `b...` CID string. */
+function decodeBase32(text: String): FixedArray<u8> {
+  if (text.length > 0 && text.getByteAt(text.length - 1) == 61) {
+    throw new CidError('a CID string is unpadded');
+  }
+  try {
+    return base32Lower.decode(text);
+  } catch (e) {
+    throw new CidError(e.message);
   }
 }
