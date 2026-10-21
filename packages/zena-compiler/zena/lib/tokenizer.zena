@@ -526,10 +526,17 @@ export final class Tokenizer {
   #scanString(startPos: i32, startCol: i32): void {
     let quote = this.#advance();
     let builder = new StringBuilder();
+    // Plain characters are copied a run at a time, as a slice of the
+    // source: offsets are bytes on the byte targets and UTF-16 code units
+    // on js, and a slice keeps every character on both. Copying a byte at
+    // a time kept only the low byte of each code unit on js (#431).
+    let source = this.#reader.source;
+    var runStart = this.#reader.position;
 
     while (!this.#reader.isAtEnd && this.#peek() != quote) {
       if (this.#peek() == 92) {
         // backslash=92
+        builder.appendSlice(source, runStart, this.#reader.position);
         this.#advance();
         if (this.#reader.isAtEnd) {
           break;
@@ -562,10 +569,12 @@ export final class Tokenizer {
           builder.appendByte(92);
           builder.appendByte(escaped);
         }
+        runStart = this.#reader.position;
       } else {
-        builder.appendByte(this.#advance());
+        this.#advance();
       }
     }
+    builder.appendSlice(source, runStart, this.#reader.position);
 
     if (!this.#reader.isAtEnd) {
       this.#advance(); // closing quote
@@ -580,7 +589,11 @@ export final class Tokenizer {
 
   #scanTemplatePart(isMiddleOrTail: boolean, startPos: i32, startCol: i32): void {
     let cooked = new StringBuilder();
-    let raw = new StringBuilder();
+    // As in `#scanString`, plain characters are copied a run at a time.
+    // The raw string is the part's source text exactly, so it is one slice.
+    let source = this.#reader.source;
+    let partStart = this.#reader.position;
+    var runStart = partStart;
 
     while (!this.#reader.isAtEnd) {
       let c = this.#peek();
@@ -588,19 +601,23 @@ export final class Tokenizer {
       // End of template
       if (c == 96) {
         // backtick=96
+        cooked.appendSlice(source, runStart, this.#reader.position);
+        let raw = source.sliceBytes(partStart, this.#reader.position);
         this.#advance();
         let tokenType = if (isMiddleOrTail) {
           TokenType.TemplateTail
         } else {
           TokenType.NoSubstitutionTemplate
         };
-        this.#addTemplateToken(tokenType, cooked.toString(), raw.toString(), startPos, startCol);
+        this.#addTemplateToken(tokenType, cooked.toString(), raw, startPos, startCol);
         return;
       }
 
       // Template expression start
       if (c == 36 && this.#peekNext() == 123) {
         // '$'=36, '{'=123
+        cooked.appendSlice(source, runStart, this.#reader.position);
+        let raw = source.sliceBytes(partStart, this.#reader.position);
         this.#advance(); // $
         this.#advance(); // {
         this.#templateStack.push(1); // start tracking braces
@@ -609,37 +626,38 @@ export final class Tokenizer {
         } else {
           TokenType.TemplateHead
         };
-        this.#addTemplateToken(tokenType, cooked.toString(), raw.toString(), startPos, startCol);
+        this.#addTemplateToken(tokenType, cooked.toString(), raw, startPos, startCol);
         return;
       }
 
       // Escape sequence
       if (c == 92) {
         // backslash=92
-        raw.appendByte(this.#advance());
-        this.#processTemplateEscape(cooked, raw);
+        cooked.appendSlice(source, runStart, this.#reader.position);
+        this.#advance();
+        this.#processTemplateEscape(cooked);
+        runStart = this.#reader.position;
       } else {
-        let ch = this.#advance();
-        cooked.appendByte(ch);
-        raw.appendByte(ch);
+        this.#advance();
       }
     }
 
     // Reached end without closing
+    cooked.appendSlice(source, runStart, this.#reader.position);
     let tokenType = if (isMiddleOrTail) {
       TokenType.TemplateTail
     } else {
       TokenType.NoSubstitutionTemplate
     };
-    this.#addTemplateToken(tokenType, cooked.toString(), raw.toString(), startPos, startCol);
+    this.#addTemplateToken(tokenType, cooked.toString(),
+        source.sliceBytes(partStart, this.#reader.position), startPos, startCol);
   }
 
-  #processTemplateEscape(cooked: StringBuilder, raw: StringBuilder): void {
+  #processTemplateEscape(cooked: StringBuilder): void {
     if (this.#reader.isAtEnd) {
       return;
     }
     let escaped = this.#advance();
-    raw.appendByte(escaped);
     // 'n'=110, 'r'=114, 't'=116, '\\'=92, '`'=96, '$'=36, '0'=48, '\n'=10, '\r'=13
     if (escaped == 110) {
       cooked.appendByte(10); // newline
@@ -656,11 +674,11 @@ export final class Tokenizer {
     } else if (escaped == 48) {
       cooked.appendByte(0); // null
     } else if (escaped == 10) {
-      // Line continuation (LF) - omitted from cooked, raw already has \ and \n
+      // Line continuation (LF) - omitted from cooked
     } else if (escaped == 13) {
       // Line continuation (CR or CRLF)
       if (this.#peek() == 10) {
-        raw.appendByte(this.#advance());
+        this.#advance();
       }
       // omitted from cooked
     } else {

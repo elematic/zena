@@ -6,10 +6,6 @@
  * the js implementation (`core/string-builder-js.zena`), which holds host
  * strings and never looks at bytes, so text above U+00FF survives a round
  * trip through it (issue #427).
- *
- * Text above U+00FF is passed in from JavaScript rather than written as a
- * literal: these sources are compiled by lsp.wasm, a js-target build of the
- * compiler, whose tokenizer reads a literal's code units one byte each.
  */
 import {suite, test} from 'node:test';
 import assert from 'node:assert/strict';
