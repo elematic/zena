@@ -1,0 +1,71 @@
+/**
+ * Unsigned varints as multiformats defines them
+ * (https://github.com/multiformats/unsigned-varint): seven bits per byte,
+ * least significant group first, with the high bit set on every byte but
+ * the last. CIDs and multicodec prefixes are made of them.
+ *
+ * The specification allows at most nine bytes, so values below 2^63, and
+ * only the shortest encoding of a value. The decoder rejects anything
+ * else.
+ */
+
+import {ByteBuffer} from 'zena:core';
+
+/** A varint that is truncated, too long, or not the shortest encoding. */
+export class VarintError extends Error {
+  new(message: String) : super(message);
+}
+
+let MAX_BYTES = 9;
+
+/** Appends the encoding of `value`, which must not be negative. */
+export function writeVarint(out: ByteBuffer, value: i64): void {
+  if (value < 0) {
+    throw new VarintError(`a varint cannot encode ${value}`);
+  }
+  var rest = value;
+  while (rest >= 0x80) {
+    out.writeByte(((rest & 0x7f) | 0x80) as i32);
+    rest = rest >>> 7;
+  }
+  out.writeByte(rest as i32);
+}
+
+/** The number of bytes `writeVarint` writes for `value`. */
+export function varintLength(value: i64): i32 {
+  var rest = value;
+  var length = 1;
+  while (rest >= 0x80) {
+    rest = rest >>> 7;
+    length += 1;
+  }
+  return length;
+}
+
+/**
+ * Decodes the varint at `bytes[offset]`, reading no further than `end`.
+ * Returns the value and the offset just past it.
+ */
+export function readVarint(bytes: ByteArray, offset: i32, end: i32): inline (i64, i32) {
+  var value: i64 = 0;
+  var shift: i64 = 0;
+  var i = offset;
+  while (true) {
+    if (i >= end) {
+      throw new VarintError(`varint at offset ${offset} is truncated`);
+    }
+    if (i - offset == MAX_BYTES) {
+      throw new VarintError(`varint at offset ${offset} is longer than ${MAX_BYTES} bytes`);
+    }
+    let b = bytes[i] as i64;
+    i += 1;
+    value = value | ((b & 0x7f) << shift);
+    if ((b & 0x80) == 0) {
+      if (b == 0 && i - offset > 1) {
+        throw new VarintError(`varint at offset ${offset} is not minimally encoded`);
+      }
+      return (value, i);
+    }
+    shift += 7;
+  }
+}
