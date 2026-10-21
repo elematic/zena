@@ -1,0 +1,33 @@
+// @mode: run
+// @result: 1023
+// Conversions from and to unsigned types use the unsigned wasm ops: a u32
+// at or above 2^31, or a u64 at or above 2^63, keeps its value when it
+// widens or becomes a float, and a float becomes an unsigned integer by
+// saturating at 0 and at the type's maximum (issue #90).
+
+export let main = (): i32 => {
+  var r = 0;
+  let big32 = 3000000000 as u32;
+  let big64 = 18446744073709551615 as u64;
+
+  // Widening and int-to-float conversions, from unsigned.
+  if ((big32 as u64) == (3000000000 as u64)) { r += 1; }
+  if ((big32 as f64) == 3000000000.0) { r += 2; }
+  if ((big32 as f32) == (3000000000.0 as f32)) { r += 4; }
+  if ((big64 as f64) == 18446744073709551616.0) { r += 8; }
+  if ((big64 as f32) == (18446744073709551616.0 as f32)) { r += 16; }
+
+  // Float-to-int conversions, to unsigned.
+  let f = 3000000000.0;
+  if ((f as u32) == big32) { r += 32; }
+  let g = 10000000000000000000.0;
+  if ((g as u64) == (10000000000000000000 as u64)) { r += 64; }
+  let negative = 0.0 - 1.0;
+  if ((negative as u32) == (0 as u32)) { r += 128; }
+
+  // Mixed operands promote an unsigned side without sign-extending it.
+  if (big32 + 0.5 == 3000000000.5) { r += 256; }
+  let half = big32 / (2 as u32);
+  if (half > 1000000000.0) { r += 512; }
+  return r;
+};
