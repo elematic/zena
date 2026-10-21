@@ -47,7 +47,11 @@ suite('Runtime - number conversion on the js target', () => {
         .filter((i) => i.module === 'zena:host:number')
         .map((i) => i.name),
     );
-    assert.deepEqual([...imported].sort(), ['String', 'toPrecision']);
+    assert.deepEqual([...imported].sort(), [
+      'String',
+      'parseFloat',
+      'toPrecision',
+    ]);
     assert.equal(numberImports.String, String);
     assert.equal(numberImports.parseFloat, parseFloat);
   });
@@ -90,7 +94,10 @@ suite('Runtime - number conversion on the js target', () => {
       '3.4028235e+38',
     );
     assert.equal(e.showF32(2 ** -149), '1e-45');
-    assert.equal(e.showF32(440878.625), '440878.62');
+    // A tie between two shortest candidates goes away from zero.
+    assert.equal(e.showF32(440878.625), '440878.63');
+    // One of the three powers of two where js prints a digit more.
+    assert.equal(e.showF32(2 ** 87), '1.54742505e+26');
     assert.equal(e.showF32(-0), '-0');
   });
 

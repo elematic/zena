@@ -12,11 +12,15 @@
  *   sign.
  * - A `u32` reaches `String` as an f64, which holds it exactly, and a `u64`
  *   above the `i64` range in two pieces.
- * - JavaScript has no f32 printing, so `f32ToString` is the byte targets'.
- *   Only a module that prints an f32 carries it.
+ * - JavaScript has no f32 printing. `f32ToString` takes the shortest
+ *   `toPrecision(p)` that reads back as the f32, which is what the byte
+ *   targets print, ties included: they also take the digits away from
+ *   zero. At three powers of two, 2^-96, 2^87 and 2^90 (and their
+ *   negatives), it prints one digit more than they do: there the rounding
+ *   interval reaches only a quarter ulp down, and the nearest p-digit
+ *   decimal falls outside it while the one above is inside.
  */
 import { I64_MIN, div, i64_reinterpret_f64 } from 'zena:math';
-import { floatToStringImpl } from './string-convert.zena';
 
 @external("zena:host:number", "String")
 declare function __string_from_i32(value: i32): externref;
@@ -30,6 +34,9 @@ declare function __string_from_i64(value: i64): externref;
 
 @external("zena:host:number", "toPrecision")
 declare function __to_precision(value: f64, digits: i32): externref;
+
+@external("zena:host:number", "parseFloat")
+declare function __parse_float(s: externref): f64;
 
 /** Converts an i32 to its decimal string representation. */
 export let i32ToString = (value: i32): String =>
@@ -65,8 +72,20 @@ export let u64ToString = (value: u64): String => {
  * interval is used, not the f64 one the promoted value would have, so
  * `0.1 as f32` prints "0.1" rather than "0.10000000149011612".
  */
-export let f32ToString = (value: f32): String =>
-  floatToStringImpl(value as f64, true);
+export let f32ToString = (value: f32): String => {
+  let v = value as f64;
+  if (v != v || v - v != 0.0 || v == 0.0) {
+    return f64ToString(v);
+  }
+  // The fewest digits that read back as this f32: nine always do.
+  for (var p = 1; p < 9; p += 1) {
+    let back = __parse_float(__to_precision(v, p));
+    if ((back as f32) == value) {
+      return String.fromHandle(__string_from_f64(back));
+    }
+  }
+  return String.fromHandle(__string_from_f64(__parse_float(__to_precision(v, 9))));
+};
 
 /** The shortest decimal string that reads back as this f64. */
 export let f64ToString = (value: f64): String =>

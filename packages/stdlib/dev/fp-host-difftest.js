@@ -336,8 +336,25 @@ const isKnownLongParse = ([kind, text], got) =>
   significantDigits(text) > 19 &&
   got === f64ToBits(Number(text)).toString();
 
+// On js, `f32ToString` takes the shortest `toPrecision(p)` that reads back
+// as the f32. At a power of two the rounding interval reaches only a
+// quarter ulp down, so the nearest p-digit decimal can fall outside it
+// while the one above is inside, and js then prints one digit more than
+// the byte targets. Of every f32 power of two, which the corpus holds, this
+// happens at three: 2^-96, 2^87 and 2^90.
+const isKnownPowerOfTwo = ([kind, args], got, want) => {
+  if (kind !== 'f32') return false;
+  const bits = Number(args);
+  return (
+    (bits & 0x7fffff) === 0 &&
+    significantDigits(got) === significantDigits(want) + 1 &&
+    Math.fround(Number(got)) === bitsToF32(bits)
+  );
+};
+
 let failures = 0;
 let knownLong = 0;
+let knownPowerOfTwo = 0;
 const perKind = new Map();
 // `parseF64` reads what `parseFloat` reads, except `0x` at the start and
 // leading whitespace, which `parseFloat` skips and Zena reads as no number.
@@ -374,6 +391,10 @@ cases.forEach((c, i) => {
     knownLong += 1;
     return;
   }
+  if (isKnownPowerOfTwo(c, got, zena[i])) {
+    knownPowerOfTwo += 1;
+    return;
+  }
   perKind.set(c[0], (perKind.get(c[0]) || 0) + 1);
   if (++failures <= 25) {
     console.log(`  FAIL ${c[0]} ${c[1]}: host ${got}, zena ${zena[i]}`);
@@ -383,6 +404,9 @@ for (const [kind, n] of perKind) console.log(`  ${kind}: ${n} failures`);
 console.log(
   `  parse: ${knownLong} inputs of more than 19 digits where the byte ` +
     `targets are one ulp off and the host matches Number()`,
+);
+console.log(
+  `  f32: ${knownPowerOfTwo} powers of two that js prints with one more digit`,
 );
 console.log(
   failures === 0

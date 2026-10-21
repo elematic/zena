@@ -616,12 +616,19 @@ export let decimalToF64 = (
  * only a quarter ulp down. `odd` decides whether the endpoints
  * themselves belong to it — with an even significand a tie rounds
  * inward, so they do.
+ *
+ * When several shortest candidates fit, the nearest is taken, and
+ * `tieAway` says which of two equally near ones: the one away from zero,
+ * or the even one. f64 printing takes the even one, as JavaScript's
+ * `String` does. f32 printing takes the one away from zero, which is what
+ * the js target gets from `toPrecision`, as it has no f32 printing.
  */
 let shortestDigits = (
   m: u64,
   e: i32,
   zBase: i32,
-  minExp: i32
+  minExp: i32,
+  tieAway: boolean
 ): inline (u64, i32) => {
   var z = zBase;
   var p = 0;
@@ -658,7 +665,8 @@ let shortestDigits = (
   d = dmin;
   if (d < dmax) {
     // More than one shortest candidate: take the nearest.
-    d = uRound(uscale(m, pmHi, pmLo, s));
+    let u = uscale(m, pmHi, pmLo, s);
+    d = if (tieAway) uRoundHalfUp(u) else uRound(u);
   }
   return (d, 0 - p);
 };
@@ -917,12 +925,12 @@ export let floatToStringImpl = (value: f64, isF32: boolean): String => {
   var p = 0;
   if (isF32) {
     let (m, e) = unpackF32(i32_reinterpret_f32(magnitude as f32));
-    let (dd, pp) = shortestDigits(m, e, F32_Z, F32_MIN_EXP);
+    let (dd, pp) = shortestDigits(m, e, F32_Z, F32_MIN_EXP, true);
     d = dd;
     p = pp;
   } else {
     let (m, e) = unpackF64(i64_reinterpret_f64(magnitude));
-    let (dd, pp) = shortestDigits(m, e, F64_Z, F64_MIN_EXP);
+    let (dd, pp) = shortestDigits(m, e, F64_Z, F64_MIN_EXP, false);
     d = dd;
     p = pp;
   }
