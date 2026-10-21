@@ -1,0 +1,40 @@
+/**
+ * Times 100 signatures and 100 verifications on each curve, after one
+ * untimed run of each. From the repository root:
+ *
+ * ```sh
+ * ./target/release/zena-cli run packages/stdlib/benchmarks/ecdsa_bench.zena
+ * ```
+ */
+
+import {runTest} from 'zena:bench';
+import {EcdsaCurve, p256, secp256k1, sha256} from 'zena:crypto';
+
+let ROUNDS = 100;
+
+function benchCurve(curve: EcdsaCurve) {
+  let privateKey = sha256(new FixedArray<u8>(1, 0 as u8));
+  let key = curve.publicKey(privateKey);
+  let message = new FixedArray<u8>(64, 0 as u8);
+  let signature = curve.sign(privateKey, message);
+  runTest(`${curve.name}: ${ROUNDS} signatures`, () => {
+    for (var i = 0; i < ROUNDS; i += 1) {
+      message[1] = i as u8;
+      curve.sign(privateKey, message);
+    }
+  }, '');
+  message[1] = 0 as u8;
+  runTest(`${curve.name}: ${ROUNDS} verifications`, () => {
+    for (var i = 0; i < ROUNDS; i += 1) {
+      if (!curve.verify(key, message, signature)) {
+        throw new Error('the benchmark signature does not verify');
+      }
+    }
+  }, '');
+}
+
+export function main(): i32 {
+  benchCurve(p256);
+  benchCurve(secp256k1);
+  return 0;
+}

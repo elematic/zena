@@ -1,0 +1,283 @@
+/**
+ * ECDSA with SHA-256 on NIST P-256 (JWT algorithm `ES256`) and secp256k1
+ * (`ES256K`).
+ *
+ * A signature is 64 bytes: r then s, each a 32-byte big-endian number
+ * (the IEEE P1363 layout; DER-encoded signatures do not verify). `sign`
+ * produces only low-S signatures, whose s is at most n / 2 for the group
+ * order n, as Bitcoin and atproto require; `verify` rejects a high-S
+ * signature unless `allowHighS` is set.
+ *
+ * Public keys are SEC1 encodings: 33 bytes compressed (02 or 03, then x)
+ * or 65 bytes uncompressed (04, x, y). Private keys are 32-byte
+ * big-endian numbers from 1 to n - 1.
+ *
+ * ```zena
+ * import {p256} from 'zena:crypto';
+ *
+ * let signature = p256.sign(privateKey, message);
+ * let ok = p256.verify(p256.publicKey(privateKey), message, signature);
+ * ```
+ *
+ * ## Timing
+ *
+ * WebAssembly engines promise nothing about the timing of instructions,
+ * so nothing here is constant-time in a guaranteed sense. Within that,
+ * the code that handles the private key and the nonce runs the same
+ * sequence of operations whatever their values: the scalar
+ * multiplication k·G (a fixed 4-bit window whose table lookup reads every
+ * entry and keeps one by masking, with complete addition formulas), the
+ * field arithmetic (carries and reductions as masks), and the inverse of
+ * k (a power with the public exponent n - 2). These do not:
+ *
+ * - RFC 6979 draws another nonce when the first is not below n, which
+ *   happens with probability about 2^-32 on P-256 and 2^-128 on
+ *   secp256k1.
+ * - Checking the private key's range branches on the result.
+ * - Making s low branches on s, which the signature reveals anyway.
+ * - The masks are ordinary integer arithmetic, which the compiler or the
+ *   engine could turn into branches, and some processors multiply in
+ *   data-dependent time.
+ *
+ * Verification handles only public values and runs in variable time.
+ */
+
+import {ByteBuffer, newByteArray} from 'zena:core';
+import {hmacSha256} from './hmac.zena';
+import {sha256} from './sha256.zena';
+import {Fe} from './ecdsa/field.zena';
+import {Curve, P256, SECP256K1} from './ecdsa/curve.zena';
+
+/** A private key out of range, a malformed public key, or a digest that is not 32 bytes. */
+export class EcdsaError extends Error {
+  new(message: String) : super(message);
+}
+
+/** A curve to sign and verify on: `p256` or `secp256k1`. */
+export final class EcdsaCurve {
+  #curve: Curve;
+
+  new(curve: Curve) : #curve = curve;
+
+  /** `P-256` or `secp256k1`. */
+  name: String {
+    get {
+      return this.#curve.name;
+    }
+  }
+
+  /**
+   * The SEC1 encoding of the public key for `privateKey`. Throws an
+   * `EcdsaError` when the private key is not 32 bytes or not from 1 to
+   * n - 1, as `sign` does.
+   */
+  publicKey(privateKey: FixedArray<u8>, compressed: boolean = true): FixedArray<u8> {
+    let curve = this.#curve;
+    let point = curve.mulBase(privateScalar(curve, privateKey));
+    let x = Fe.zero();
+    let y = Fe.zero();
+    curve.toAffine(point, x, y);
+    return curve.encodePoint(x, y, compressed) as FixedArray<u8>;
+  }
+
+  /**
+   * The 33-byte compressed form of a SEC1 public key in either form.
+   * Throws an `EcdsaError` when `key` is malformed or not on the curve.
+   */
+  compressPublicKey(key: FixedArray<u8>): FixedArray<u8> {
+    return reencode(this.#curve, key, true);
+  }
+
+  /** The 65-byte uncompressed form of a SEC1 public key, as `compressPublicKey` takes it. */
+  decompressPublicKey(key: FixedArray<u8>): FixedArray<u8> {
+    return reencode(this.#curve, key, false);
+  }
+
+  /** The low-S signature of the SHA-256 hash of `message`. */
+  sign(privateKey: FixedArray<u8>, message: FixedArray<u8>): FixedArray<u8> {
+    return this.signDigest(privateKey, sha256(message));
+  }
+
+  /**
+   * The low-S signature of a 32-byte SHA-256 digest, with the nonce
+   * derived from the key and the digest as RFC 6979 section 3.2 describes.
+   */
+  signDigest(privateKey: FixedArray<u8>, digest: FixedArray<u8>): FixedArray<u8> {
+    let curve = this.#curve;
+    let d = privateScalar(curve, privateKey);
+    let e = digestScalar(curve, digest);
+    let fn = curve.fn;
+    let dm = fn.mont(d);
+    let em = fn.mont(e);
+    // RFC 6979 with SHA-256 and a 256-bit n: the private key and the
+    // reduced digest are each 32 bytes as they stand.
+    let h = e.toBytes() as FixedArray<u8>;
+    var key = new FixedArray<u8>(32, 0 as u8);
+    var v = new FixedArray<u8>(32, 1 as u8);
+    key = hmacSha256(key, nonceInput(v, 0, privateKey, h));
+    v = hmacSha256(key, v);
+    key = hmacSha256(key, nonceInput(v, 1, privateKey, h));
+    v = hmacSha256(key, v);
+    var signature: FixedArray<u8> | null = null;
+    while (signature == null) {
+      v = hmacSha256(key, v);
+      let k = Fe.fromBytes(v as ByteArray, 0);
+      if (!k.isZero() && fn.isReduced(k)) {
+        signature = signWithNonce(curve, dm, em, k);
+      }
+      if (signature == null) {
+        let retry = new ByteBuffer().writeBytes(v as ByteArray).writeByte(0).toByteArray();
+        key = hmacSha256(key, retry as FixedArray<u8>);
+        v = hmacSha256(key, v);
+      }
+    }
+    return signature;
+  }
+
+  /**
+   * Whether `signature` is a valid signature of the SHA-256 hash of
+   * `message` under the SEC1 public key `key`. False for a malformed
+   * signature or key, a key not on the curve, and, unless `allowHighS`, a
+   * high-S signature.
+   */
+  verify(
+    key: FixedArray<u8>,
+    message: FixedArray<u8>,
+    signature: FixedArray<u8>,
+    allowHighS: boolean = false,
+  ): boolean {
+    return this.verifyDigest(key, sha256(message), signature, allowHighS);
+  }
+
+  /**
+   * `verify` for a SHA-256 digest of the message. Throws an `EcdsaError`
+   * when `digest` is not 32 bytes.
+   */
+  verifyDigest(
+    key: FixedArray<u8>,
+    digest: FixedArray<u8>,
+    signature: FixedArray<u8>,
+    allowHighS: boolean = false,
+  ): boolean {
+    let curve = this.#curve;
+    let e = digestScalar(curve, digest);
+    if (signature.length != 64) {
+      return false;
+    }
+    let fn = curve.fn;
+    let r = Fe.fromBytes(signature as ByteArray, 0);
+    let s = Fe.fromBytes(signature as ByteArray, 32);
+    if (r.isZero() || s.isZero() || !fn.isReduced(r) || !fn.isReduced(s)) {
+      return false;
+    }
+    if (!allowHighS && curve.halfN.lessThan(s)) {
+      return false;
+    }
+    let q = curve.decodePoint(key as ByteArray);
+    if (q == null) {
+      return false;
+    }
+    // R = (e / s)·G + (r / s)·Q, and the signature is valid when
+    // R's x mod n is r.
+    let sInverse = Fe.zero();
+    fn.inv(sInverse, fn.mont(s));
+    let u1 = fn.mont(e);
+    fn.mul(u1, u1, sInverse);
+    fn.fromMont(u1, u1);
+    let u2 = fn.mont(r);
+    fn.mul(u2, u2, sInverse);
+    fn.fromMont(u2, u2);
+    let x = Fe.zero();
+    let y = Fe.zero();
+    if (!curve.toAffine(curve.mulDouble(u1, u2, q), x, y)) {
+      return false;
+    }
+    let v = Fe.zero();
+    curve.fp.fromMont(v, x);
+    fn.reduce(v, v);
+    return v.equals(r);
+  }
+}
+
+/** The private key as a number, checked to be from 1 to n - 1. */
+function privateScalar(curve: Curve, privateKey: FixedArray<u8>) {
+  if (privateKey.length != 32) {
+    throw new EcdsaError(`a ${curve.name} private key is 32 bytes, not ${privateKey.length}`);
+  }
+  let d = Fe.fromBytes(privateKey as ByteArray, 0);
+  if (d.isZero() || !curve.fn.isReduced(d)) {
+    throw new EcdsaError(`the private key is out of range for ${curve.name}`);
+  }
+  return d;
+}
+
+/** The digest as a number modulo n. */
+function digestScalar(curve: Curve, digest: FixedArray<u8>) {
+  if (digest.length != 32) {
+    throw new EcdsaError(`a SHA-256 digest is 32 bytes, not ${digest.length}`);
+  }
+  let e = Fe.fromBytes(digest as ByteArray, 0);
+  curve.fn.reduce(e, e);
+  return e;
+}
+
+function reencode(curve: Curve, key: FixedArray<u8>, compressed: boolean) {
+  let point = curve.decodePoint(key as ByteArray);
+  if (point == null) {
+    throw new EcdsaError(`not a ${curve.name} public key`);
+  }
+  // decodePoint gives Z = 1, so x and y are the affine coordinates.
+  return curve.encodePoint(point.x, point.y, compressed) as FixedArray<u8>;
+}
+
+function nonceInput(v: FixedArray<u8>, separator: i32, privateKey: FixedArray<u8>, h: FixedArray<u8>) {
+  return new ByteBuffer()
+    .writeBytes(v as ByteArray)
+    .writeByte(separator)
+    .writeBytes(privateKey as ByteArray)
+    .writeBytes(h as ByteArray)
+    .toByteArray() as FixedArray<u8>;
+}
+
+/**
+ * r || s for nonce k, given the private key and digest in Montgomery
+ * form modulo n, or null when r or s comes out 0 and RFC 6979 moves on
+ * to the next nonce.
+ */
+function signWithNonce(curve: Curve, dm: Fe, em: Fe, k: Fe): FixedArray<u8> | null {
+  let fn = curve.fn;
+  let x = Fe.zero();
+  let y = Fe.zero();
+  curve.toAffine(curve.mulBase(k), x, y);
+  // r = x mod n; x < p < 2n, so one conditional subtraction does it.
+  let r = Fe.zero();
+  curve.fp.fromMont(r, x);
+  fn.reduce(r, r);
+  if (r.isZero()) {
+    return null;
+  }
+  // s = (e + r·d) / k mod n.
+  let kInverse = Fe.zero();
+  fn.inv(kInverse, fn.mont(k));
+  let s = fn.mont(r);
+  fn.mul(s, s, dm);
+  fn.add(s, s, em);
+  fn.mul(s, s, kInverse);
+  fn.fromMont(s, s);
+  if (s.isZero()) {
+    return null;
+  }
+  if (curve.halfN.lessThan(s)) {
+    fn.sub(s, Fe.zero(), s);
+  }
+  let out = newByteArray(64);
+  r.writeBytes(out, 0);
+  s.writeBytes(out, 32);
+  return out as FixedArray<u8>;
+}
+
+/** NIST P-256, also called secp256r1 and prime256v1. */
+export let p256 = new EcdsaCurve(P256);
+
+/** secp256k1, the curve Bitcoin uses. */
+export let secp256k1 = new EcdsaCurve(SECP256K1);

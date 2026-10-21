@@ -1,0 +1,532 @@
+/**
+ * The curves `zena:crypto` signs with, y^2 = x^3 + ax + b over a
+ * 256-bit prime field with a = -3 (P-256) or a = 0 (secp256k1), and
+ * their point arithmetic.
+ *
+ * Points are added with the complete formulas of Renes, Costello and
+ * Batina, "Complete addition formulas for prime order elliptic curves"
+ * (https://eprint.iacr.org/2015/1060): algorithms 4 and 6 for a = -3,
+ * 7 and 9 for a = 0. They give the right answer for every pair of
+ * inputs, including equal points and the point at infinity, so the
+ * scalar multiplications need no special cases.
+ */
+
+import {newByteArray} from 'zena:core';
+import {Fe, Field} from './field.zena';
+
+/**
+ * A point in projective coordinates (X : Y : Z), which stands for the
+ * affine point (X/Z, Y/Z). Z = 0 is the point at infinity. Coordinates
+ * are in Montgomery form.
+ */
+export final class Point {
+  x: Fe;
+  y: Fe;
+  z: Fe;
+
+  new(x: Fe, y: Fe, z: Fe) : x = x, y = y, z = z;
+
+  set(other: Point): void {
+    this.x.set(other.x);
+    this.y.set(other.y);
+    this.z.set(other.z);
+  }
+
+  /** Sets each coordinate to `other`'s where `mask` is all ones. */
+  select(mask: u64, other: Point): void {
+    this.x.select(mask, other.x);
+    this.y.select(mask, other.y);
+    this.z.select(mask, other.z);
+  }
+}
+
+/** Temporaries for the point formulas, allocated once per scalar multiplication. */
+export final class Scratch {
+  t0 = Fe.zero();
+  t1 = Fe.zero();
+  t2 = Fe.zero();
+  t3 = Fe.zero();
+  t4 = Fe.zero();
+  x3 = Fe.zero();
+  y3 = Fe.zero();
+  z3 = Fe.zero();
+}
+
+/** All ones when `a == b`, else 0, for `a` and `b` below 2^63. */
+function equalMask(a: u64, b: u64) {
+  return 0 - (((a ^ b) - 1) >>> 63);
+}
+
+/**
+ * An elliptic curve for ECDSA, with the arithmetic `EcdsaCurve` is built
+ * from, on Montgomery-form coordinates. This file is private to
+ * `zena:crypto`; `EcdsaCurve` is the public face.
+ */
+export final class Curve {
+  /** `P-256` or `secp256k1`. */
+  name: String;
+  /** Arithmetic modulo the field prime p. */
+  fp: Field;
+  /** Arithmetic modulo the group order n. */
+  fn: Field;
+  /** n / 2, rounded down. A signature's s is high when it is above this. */
+  halfN: Fe;
+  #aIsZero: boolean;
+  #b: Fe;
+  /** 3b, which the a = 0 formulas use. */
+  #b3: Fe;
+  #gx: Fe;
+  #gy: Fe;
+  /** (p + 1) / 4. Both primes are 3 mod 4, so a^((p+1)/4) is a square root of a square a. */
+  #sqrtExponent: Fe;
+  /** 0·G to 15·G, for `mulBase`; made on first use. */
+  var #baseTable: FixedArray<Point> | null = null;
+
+  new(
+    name: String, fp: Field, fn: Field, halfN: Fe, aIsZero: boolean, b: Fe, b3: Fe, gx: Fe,
+    gy: Fe, sqrtExponent: Fe,
+  )
+    : name = name,
+      fp = fp,
+      fn = fn,
+      halfN = halfN,
+      #aIsZero = aIsZero,
+      #b = b,
+      #b3 = b3,
+      #gx = gx,
+      #gy = gy,
+      #sqrtExponent = sqrtExponent;
+
+  /** A new point at infinity. */
+  identity(): Point {
+    return new Point(Fe.zero(), this.fp.one.copy(), Fe.zero());
+  }
+
+  /** A new copy of the base point G. */
+  generator(): Point {
+    return new Point(this.#gx.copy(), this.#gy.copy(), this.fp.one.copy());
+  }
+
+  /** out = p + q. `out` may be `p` or `q`. */
+  add(out: Point, p: Point, q: Point, s: Scratch): void {
+    if (this.#aIsZero) {
+      this.#addA0(out, p, q, s);
+    } else {
+      this.#addAMinus3(out, p, q, s);
+    }
+  }
+
+  /** out = 2p. `out` may be `p`. */
+  double(out: Point, p: Point, s: Scratch): void {
+    if (this.#aIsZero) {
+      this.#doubleA0(out, p, s);
+    } else {
+      this.#doubleAMinus3(out, p, s);
+    }
+  }
+
+  /**
+   * k·G for a plain number k below 2^256. The field operations and the
+   * table reads are the same for every k: a 4-bit fixed window, whose
+   * lookup reads all 16 entries and keeps one by masking.
+   */
+  mulBase(k: Fe): Point {
+    var table = this.#baseTable;
+    if (table == null) {
+      let built = this.#multiples(this.generator());
+      this.#baseTable = built;
+      table = built;
+    }
+    let s = new Scratch();
+    let r = this.identity();
+    let entry = this.identity();
+    for (var w = 63; w >= 0; w -= 1) {
+      this.double(r, r, s);
+      this.double(r, r, s);
+      this.double(r, r, s);
+      this.double(r, r, s);
+      let digit = k.window(w);
+      entry.set(table[0]);
+      for (var i = 1; i < 16; i += 1) {
+        entry.select(equalMask(i as u64, digit), table[i]);
+      }
+      this.add(r, r, entry, s);
+    }
+    return r;
+  }
+
+  /**
+   * u1·G + u2·q for plain numbers u1 and u2, by Shamir's trick: one
+   * shared run of doublings, adding G, q or G + q by the bits of u1 and
+   * u2. Its running time depends on u1 and u2, which are public when
+   * verifying.
+   */
+  mulDouble(u1: Fe, u2: Fe, q: Point): Point {
+    let s = new Scratch();
+    let g = this.generator();
+    let gq = this.identity();
+    this.add(gq, g, q, s);
+    let r = this.identity();
+    for (var i = 255; i >= 0; i -= 1) {
+      this.double(r, r, s);
+      let bits = u1.bit(i) | (u2.bit(i) << 1);
+      if (bits == 1) {
+        this.add(r, r, g, s);
+      } else if (bits == 2) {
+        this.add(r, r, q, s);
+      } else if (bits == 3) {
+        this.add(r, r, gq, s);
+      }
+    }
+    return r;
+  }
+
+  /**
+   * Sets `x` and `y` to p's affine coordinates, in Montgomery form.
+   * Returns false, setting nothing, when p is the point at infinity.
+   */
+  toAffine(p: Point, x: Fe, y: Fe): boolean {
+    if (p.z.isZero()) {
+      return false;
+    }
+    let zInverse = Fe.zero();
+    this.fp.inv(zInverse, p.z);
+    this.fp.mul(x, p.x, zInverse);
+    this.fp.mul(y, p.y, zInverse);
+    return true;
+  }
+
+  /**
+   * The point a SEC1 encoding names, with Z = 1, or null when the bytes
+   * are not a compressed or uncompressed encoding of a point on the
+   * curve.
+   */
+  decodePoint(bytes: ByteArray): Point | null {
+    let fp = this.fp;
+    let prefix = if (bytes.length > 0) bytes[0] as i32 else 0;
+    if (bytes.length == 33 && (prefix == 2 || prefix == 3)) {
+      let x = Fe.fromBytes(bytes, 1);
+      if (!fp.isReduced(x)) {
+        return null;
+      }
+      let xm = fp.mont(x);
+      let ySquared = Fe.zero();
+      this.#rightSide(ySquared, xm);
+      let y = Fe.zero();
+      fp.pow(y, ySquared, this.#sqrtExponent);
+      let check = Fe.zero();
+      fp.sqr(check, y);
+      if (!check.equals(ySquared)) {
+        return null;
+      }
+      let plainY = Fe.zero();
+      fp.fromMont(plainY, y);
+      if ((plainY.l0 & 1) as i32 != (prefix & 1)) {
+        fp.sub(y, Fe.zero(), y);
+      }
+      return new Point(xm, y, fp.one.copy());
+    }
+    if (bytes.length == 65 && prefix == 4) {
+      let x = Fe.fromBytes(bytes, 1);
+      let y = Fe.fromBytes(bytes, 33);
+      if (!fp.isReduced(x) || !fp.isReduced(y)) {
+        return null;
+      }
+      let xm = fp.mont(x);
+      let ym = fp.mont(y);
+      let ySquared = Fe.zero();
+      this.#rightSide(ySquared, xm);
+      let check = Fe.zero();
+      fp.sqr(check, ym);
+      if (!check.equals(ySquared)) {
+        return null;
+      }
+      return new Point(xm, ym, fp.one.copy());
+    }
+    return null;
+  }
+
+  /** The SEC1 encoding of the affine point (x, y), given in Montgomery form. */
+  encodePoint(x: Fe, y: Fe, compressed: boolean): ByteArray {
+    let plainX = Fe.zero();
+    let plainY = Fe.zero();
+    this.fp.fromMont(plainX, x);
+    this.fp.fromMont(plainY, y);
+    if (compressed) {
+      let out = newByteArray(33);
+      out[0] = (2 + (plainY.l0 & 1)) as u8;
+      plainX.writeBytes(out, 1);
+      return out;
+    }
+    let out = newByteArray(65);
+    out[0] = 4 as u8;
+    plainX.writeBytes(out, 1);
+    plainY.writeBytes(out, 33);
+    return out;
+  }
+
+  /** 0·p to 15·p. */
+  #multiples(p: Point): FixedArray<Point> {
+    let s = new Scratch();
+    let table = new FixedArray<Point>(16, p);
+    table[0] = this.identity();
+    for (var i = 1; i < 16; i += 1) {
+      let next = this.identity();
+      this.add(next, table[i - 1], p, s);
+      table[i] = next;
+    }
+    return table;
+  }
+
+  /** out = x^3 + ax + b, for a Montgomery-form x. */
+  #rightSide(out: Fe, x: Fe): void {
+    let fp = this.fp;
+    let t = Fe.zero();
+    fp.sqr(t, x);
+    fp.mul(t, t, x);
+    if (!this.#aIsZero) {
+      let threeX = Fe.zero();
+      fp.add(threeX, x, x);
+      fp.add(threeX, threeX, x);
+      fp.sub(t, t, threeX);
+    }
+    fp.add(out, t, this.#b);
+  }
+
+  /** Algorithm 4: complete addition for a = -3. */
+  #addAMinus3(out: Point, p: Point, q: Point, s: Scratch): void {
+    let f = this.fp;
+    let b = this.#b;
+    let t0 = s.t0;
+    let t1 = s.t1;
+    let t2 = s.t2;
+    let t3 = s.t3;
+    let t4 = s.t4;
+    let x3 = s.x3;
+    let y3 = s.y3;
+    let z3 = s.z3;
+    f.mul(t0, p.x, q.x);
+    f.mul(t1, p.y, q.y);
+    f.mul(t2, p.z, q.z);
+    f.add(t3, p.x, p.y);
+    f.add(t4, q.x, q.y);
+    f.mul(t3, t3, t4);
+    f.add(t4, t0, t1);
+    f.sub(t3, t3, t4);
+    f.add(t4, p.y, p.z);
+    f.add(x3, q.y, q.z);
+    f.mul(t4, t4, x3);
+    f.add(x3, t1, t2);
+    f.sub(t4, t4, x3);
+    f.add(x3, p.x, p.z);
+    f.add(y3, q.x, q.z);
+    f.mul(x3, x3, y3);
+    f.add(y3, t0, t2);
+    f.sub(y3, x3, y3);
+    f.mul(z3, b, t2);
+    f.sub(x3, y3, z3);
+    f.add(z3, x3, x3);
+    f.add(x3, x3, z3);
+    f.sub(z3, t1, x3);
+    f.add(x3, t1, x3);
+    f.mul(y3, b, y3);
+    f.add(t1, t2, t2);
+    f.add(t2, t1, t2);
+    f.sub(y3, y3, t2);
+    f.sub(y3, y3, t0);
+    f.add(t1, y3, y3);
+    f.add(y3, t1, y3);
+    f.add(t1, t0, t0);
+    f.add(t0, t1, t0);
+    f.sub(t0, t0, t2);
+    f.mul(t1, t4, y3);
+    f.mul(t2, t0, y3);
+    f.mul(y3, x3, z3);
+    f.add(y3, y3, t2);
+    f.mul(x3, t3, x3);
+    f.sub(x3, x3, t1);
+    f.mul(z3, t4, z3);
+    f.mul(t1, t3, t0);
+    f.add(z3, z3, t1);
+    out.x.set(x3);
+    out.y.set(y3);
+    out.z.set(z3);
+  }
+
+  /** Algorithm 6: doubling for a = -3. */
+  #doubleAMinus3(out: Point, p: Point, s: Scratch): void {
+    let f = this.fp;
+    let b = this.#b;
+    let t0 = s.t0;
+    let t1 = s.t1;
+    let t2 = s.t2;
+    let t3 = s.t3;
+    let x3 = s.x3;
+    let y3 = s.y3;
+    let z3 = s.z3;
+    f.sqr(t0, p.x);
+    f.sqr(t1, p.y);
+    f.sqr(t2, p.z);
+    f.mul(t3, p.x, p.y);
+    f.add(t3, t3, t3);
+    f.mul(z3, p.x, p.z);
+    f.add(z3, z3, z3);
+    f.mul(y3, b, t2);
+    f.sub(y3, y3, z3);
+    f.add(x3, y3, y3);
+    f.add(y3, x3, y3);
+    f.sub(x3, t1, y3);
+    f.add(y3, t1, y3);
+    f.mul(y3, x3, y3);
+    f.mul(x3, x3, t3);
+    f.add(t3, t2, t2);
+    f.add(t2, t2, t3);
+    f.mul(z3, b, z3);
+    f.sub(z3, z3, t2);
+    f.sub(z3, z3, t0);
+    f.add(t3, z3, z3);
+    f.add(z3, z3, t3);
+    f.add(t3, t0, t0);
+    f.add(t0, t3, t0);
+    f.sub(t0, t0, t2);
+    f.mul(t0, t0, z3);
+    f.add(y3, y3, t0);
+    f.mul(t0, p.y, p.z);
+    f.add(t0, t0, t0);
+    f.mul(z3, t0, z3);
+    f.sub(x3, x3, z3);
+    f.mul(z3, t0, t1);
+    f.add(z3, z3, z3);
+    f.add(z3, z3, z3);
+    out.x.set(x3);
+    out.y.set(y3);
+    out.z.set(z3);
+  }
+
+  /** Algorithm 7: complete addition for a = 0. */
+  #addA0(out: Point, p: Point, q: Point, s: Scratch): void {
+    let f = this.fp;
+    let b3 = this.#b3;
+    let t0 = s.t0;
+    let t1 = s.t1;
+    let t2 = s.t2;
+    let t3 = s.t3;
+    let t4 = s.t4;
+    let x3 = s.x3;
+    let y3 = s.y3;
+    let z3 = s.z3;
+    f.mul(t0, p.x, q.x);
+    f.mul(t1, p.y, q.y);
+    f.mul(t2, p.z, q.z);
+    f.add(t3, p.x, p.y);
+    f.add(t4, q.x, q.y);
+    f.mul(t3, t3, t4);
+    f.add(t4, t0, t1);
+    f.sub(t3, t3, t4);
+    f.add(t4, p.y, p.z);
+    f.add(x3, q.y, q.z);
+    f.mul(t4, t4, x3);
+    f.add(x3, t1, t2);
+    f.sub(t4, t4, x3);
+    f.add(x3, p.x, p.z);
+    f.add(y3, q.x, q.z);
+    f.mul(x3, x3, y3);
+    f.add(y3, t0, t2);
+    f.sub(y3, x3, y3);
+    f.add(x3, t0, t0);
+    f.add(t0, x3, t0);
+    f.mul(t2, b3, t2);
+    f.add(z3, t1, t2);
+    f.sub(t1, t1, t2);
+    f.mul(y3, b3, y3);
+    f.mul(x3, t4, y3);
+    f.mul(t2, t3, t1);
+    f.sub(x3, t2, x3);
+    f.mul(y3, y3, t0);
+    f.mul(t1, t1, z3);
+    f.add(y3, t1, y3);
+    f.mul(t0, t0, t3);
+    f.mul(z3, z3, t4);
+    f.add(z3, z3, t0);
+    out.x.set(x3);
+    out.y.set(y3);
+    out.z.set(z3);
+  }
+
+  /** Algorithm 9: doubling for a = 0. */
+  #doubleA0(out: Point, p: Point, s: Scratch): void {
+    let f = this.fp;
+    let b3 = this.#b3;
+    let t0 = s.t0;
+    let t1 = s.t1;
+    let t2 = s.t2;
+    let x3 = s.x3;
+    let y3 = s.y3;
+    let z3 = s.z3;
+    f.sqr(t0, p.y);
+    f.add(z3, t0, t0);
+    f.add(z3, z3, z3);
+    f.add(z3, z3, z3);
+    f.mul(t1, p.y, p.z);
+    f.sqr(t2, p.z);
+    f.mul(t2, b3, t2);
+    f.mul(x3, t2, z3);
+    f.add(y3, t0, t2);
+    f.mul(z3, t1, z3);
+    f.add(t1, t2, t2);
+    f.add(t2, t1, t2);
+    f.sub(t0, t0, t2);
+    f.mul(y3, t0, y3);
+    f.add(y3, x3, y3);
+    f.mul(t1, p.x, p.y);
+    f.mul(x3, t0, t1);
+    f.add(x3, x3, x3);
+    out.x.set(x3);
+    out.y.set(y3);
+    out.z.set(z3);
+  }
+}
+
+/**
+ * The curve y^2 = x^3 + ax + b with a = 0 when `aIsZero` and -3
+ * otherwise, field prime `p`, group order `n` and base point
+ * (`gx`, `gy`), all given as 64 hexadecimal digits.
+ */
+export function makeCurve(
+  name: String, aIsZero: boolean, p: String, n: String, b: String, gx: String, gy: String,
+): Curve {
+  let fp = new Field(Fe.fromHex(p));
+  let fn = new Field(Fe.fromHex(n));
+  let bm = fp.mont(Fe.fromHex(b));
+  let b3 = Fe.zero();
+  fp.add(b3, bm, bm);
+  fp.add(b3, b3, bm);
+  let sqrtExponent = Fe.zero();
+  fp.add(sqrtExponent, fp.modulus.shiftRight(2), new Fe(1, 0, 0, 0));
+  return new Curve(
+    name, fp, fn, fn.modulus.shiftRight(1), aIsZero, bm, b3, fp.mont(Fe.fromHex(gx)),
+    fp.mont(Fe.fromHex(gy)), sqrtExponent,
+  );
+}
+
+/** NIST P-256, also called secp256r1 and prime256v1. */
+export let P256 = makeCurve(
+  'P-256',
+  false,
+  'ffffffff00000001000000000000000000000000ffffffffffffffffffffffff',
+  'ffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc632551',
+  '5ac635d8aa3a93e7b3ebbd55769886bc651d06b0cc53b0f63bce3c3e27d2604b',
+  '6b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c296',
+  '4fe342e2fe1a7f9b8ee7eb4a7c0f9e162bce33576b315ececbb6406837bf51f5',
+);
+
+/** secp256k1, the curve Bitcoin uses. */
+export let SECP256K1 = makeCurve(
+  'secp256k1',
+  true,
+  'fffffffffffffffffffffffffffffffffffffffffffffffffffffffefffffc2f',
+  'fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141',
+  '0000000000000000000000000000000000000000000000000000000000000007',
+  '79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798',
+  '483ada7726a3c4655da4fbfc0e1108a8fd17b448a68554199c47d08ffb10d4b8',
+);

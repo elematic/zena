@@ -1,0 +1,390 @@
+/**
+ * Arithmetic modulo a 256-bit odd number, for ECDSA in `zena:crypto`: the field
+ * primes and group orders of P-256 and secp256k1. All four are above
+ * 2^255, and the reductions below rely on that: any 256-bit number is
+ * below twice the modulus, so one conditional subtraction reduces it.
+ *
+ * Numbers are four 64-bit limbs. Multiplication is Montgomery
+ * multiplication: an element a is held as aR mod m, with R = 2^256, so a
+ * product reduces with multiplications and shifts and no division.
+ * `toMont` and `fromMont` convert at the edges.
+ *
+ * Carries, borrows and conditional subtractions are computed as masks, so
+ * `add`, `sub` and `mul` run the same instructions whatever the values.
+ * `pow` branches on the bits of its exponent, which is public everywhere
+ * it is used (m - 2 for inverses, (p + 1) / 4 for square roots).
+ */
+
+import {newByteArray} from 'zena:core';
+import {add128, mulWide, sub128} from 'zena:math';
+
+/** A 256-bit number as four 64-bit limbs, least significant first. */
+export final class Fe {
+  var l0: u64;
+  var l1: u64;
+  var l2: u64;
+  var l3: u64;
+
+  new(l0: u64, l1: u64, l2: u64, l3: u64) : l0 = l0, l1 = l1, l2 = l2, l3 = l3;
+
+  static zero(): Fe {
+    return new Fe(0, 0, 0, 0);
+  }
+
+  /** The big-endian number in `bytes[offset..offset + 32]`. */
+  static fromBytes(bytes: ByteArray, offset: i32): Fe {
+    return new Fe(
+      readWord(bytes, offset + 24),
+      readWord(bytes, offset + 16),
+      readWord(bytes, offset + 8),
+      readWord(bytes, offset),
+    );
+  }
+
+  /** The number 64 hexadecimal digits spell. */
+  static fromHex(hex: String): Fe {
+    return new Fe(
+      parseWord(hex, 48),
+      parseWord(hex, 32),
+      parseWord(hex, 16),
+      parseWord(hex, 0),
+    );
+  }
+
+  /** Writes the number big-endian to `bytes[offset..offset + 32]`. */
+  writeBytes(bytes: ByteArray, offset: i32): void {
+    writeWord(bytes, offset, this.l3);
+    writeWord(bytes, offset + 8, this.l2);
+    writeWord(bytes, offset + 16, this.l1);
+    writeWord(bytes, offset + 24, this.l0);
+  }
+
+  /** The number as 32 big-endian bytes. */
+  toBytes(): ByteArray {
+    let out = newByteArray(32);
+    this.writeBytes(out, 0);
+    return out;
+  }
+
+  copy(): Fe {
+    return new Fe(this.l0, this.l1, this.l2, this.l3);
+  }
+
+  set(other: Fe): void {
+    this.l0 = other.l0;
+    this.l1 = other.l1;
+    this.l2 = other.l2;
+    this.l3 = other.l3;
+  }
+
+  isZero(): boolean {
+    return (this.l0 | this.l1 | this.l2 | this.l3) == 0;
+  }
+
+  equals(other: Fe): boolean {
+    return ((this.l0 ^ other.l0) | (this.l1 ^ other.l1) | (this.l2 ^ other.l2) |
+      (this.l3 ^ other.l3)) == 0;
+  }
+
+  /** Whether this number is below `other`. */
+  lessThan(other: Fe): boolean {
+    let (d0, b0) = sub128(this.l0, 0, other.l0, 0);
+    let (d1, b1) = subBorrow(this.l1, other.l1, b0);
+    let (d2, b2) = subBorrow(this.l2, other.l2, b1);
+    let (d3, b3) = subBorrow(this.l3, other.l3, b2);
+    return b3 != 0;
+  }
+
+  /** This number shifted right by 1 to 63 bits, as a new number. */
+  shiftRight(bits: i32): Fe {
+    let right = bits as u64;
+    let left = (64 - bits) as u64;
+    return new Fe(
+      (this.l0 >>> right) | (this.l1 << left),
+      (this.l1 >>> right) | (this.l2 << left),
+      (this.l2 >>> right) | (this.l3 << left),
+      this.l3 >>> right,
+    );
+  }
+
+  /** Bit `i`, counting from the least significant. */
+  bit(i: i32): i32 {
+    return ((this.limb(i >> 6) >>> ((i & 63) as u64)) & 1) as i32;
+  }
+
+  /** Bits `4w..4w + 3` as a number from 0 to 15. */
+  window(w: i32): u64 {
+    return (this.limb(w >> 4) >>> (((w & 15) * 4) as u64)) & 15;
+  }
+
+  limb(i: i32): u64 {
+    if (i == 0) {
+      return this.l0;
+    }
+    if (i == 1) {
+      return this.l1;
+    }
+    if (i == 2) {
+      return this.l2;
+    }
+    return this.l3;
+  }
+
+  /** Sets every limb to `a`'s where `mask` is all ones, and keeps it where `mask` is 0. */
+  select(mask: u64, a: Fe): void {
+    this.l0 = this.l0 ^ ((this.l0 ^ a.l0) & mask);
+    this.l1 = this.l1 ^ ((this.l1 ^ a.l1) & mask);
+    this.l2 = this.l2 ^ ((this.l2 ^ a.l2) & mask);
+    this.l3 = this.l3 ^ ((this.l3 ^ a.l3) & mask);
+  }
+}
+
+function readWord(bytes: ByteArray, offset: i32): u64 {
+  var w: u64 = 0;
+  for (var i = 0; i < 8; i += 1) {
+    w = (w << 8) | (bytes[offset + i] as u64);
+  }
+  return w;
+}
+
+function writeWord(bytes: ByteArray, offset: i32, w: u64): void {
+  for (var i = 0; i < 8; i += 1) {
+    bytes[offset + i] = ((w >>> ((56 - 8 * i) as u64)) & 0xff) as u8;
+  }
+}
+
+function parseWord(hex: String, offset: i32): u64 {
+  var w: u64 = 0;
+  for (var i = 0; i < 16; i += 1) {
+    let c = hex.getByteAt(offset + i);
+    let digit = if (c <= 57) c - 48 else (c | 0x20) - 87;
+    w = (w << 4) | (digit as u64);
+  }
+  return w;
+}
+
+/** a + b + carry, where carry is 0 or 1, as (sum, carry out). */
+function addCarry(a: u64, b: u64, carry: u64) {
+  let (s, c) = add128(a, 0, b, 0);
+  return add128(s, c, carry, 0);
+}
+
+/**
+ * a - b - borrow, where the borrow is a mask (0 or all ones), as
+ * (difference, borrow out as a mask).
+ */
+function subBorrow(a: u64, b: u64, borrow: u64): inline (u64, u64) {
+  let (d, h) = sub128(a, 0, b, 0);
+  // An all-ones mask added to both halves is the 128-bit -1.
+  return add128(d, h, borrow, borrow);
+}
+
+/** a * b + c + d, as (low, high). The result always fits in 128 bits. */
+function mulAdd(a: u64, b: u64, c: u64, d: u64) {
+  let (lo, hi) = mulWide(a, b);
+  let (lo2, hi2) = add128(lo, hi, c, 0);
+  return add128(lo2, hi2, d, 0);
+}
+
+/**
+ * One round of CIOS Montgomery multiplication (Koç, Acar and Kaliski,
+ * "Analyzing and comparing Montgomery multiplication algorithms"):
+ * (t + a·bi + q·m) / 2^64, where q makes the division exact. t and the
+ * result are five limbs and stay below 2m.
+ */
+function montRound(
+  t0: u64, t1: u64, t2: u64, t3: u64, t4: u64,
+  a0: u64, a1: u64, a2: u64, a3: u64, bi: u64,
+  m0: u64, m1: u64, m2: u64, m3: u64, mInv: u64,
+): inline (u64, u64, u64, u64, u64) {
+  let (s0, c0) = mulAdd(a0, bi, t0, 0);
+  let (s1, c1) = mulAdd(a1, bi, t1, c0);
+  let (s2, c2) = mulAdd(a2, bi, t2, c1);
+  let (s3, c3) = mulAdd(a3, bi, t3, c2);
+  let (s4, s5) = add128(t4, 0, c3, 0);
+  let q = s0 * mInv;
+  let (z0, d0) = mulAdd(q, m0, s0, 0);
+  let (r0, d1) = mulAdd(q, m1, s1, d0);
+  let (r1, d2) = mulAdd(q, m2, s2, d1);
+  let (r2, d3) = mulAdd(q, m3, s3, d2);
+  let (r3, e) = add128(s4, 0, d3, 0);
+  return (r0, r1, r2, r3, s5 + e);
+}
+
+/** -m0^-1 mod 2^64, for odd m0. */
+function negInverse(m0: u64) {
+  // Newton's iteration doubles the number of correct low bits, and
+  // m0 * m0 = 1 mod 8 makes m0 its own inverse to three bits.
+  var inv = m0;
+  for (var i = 0; i < 5; i += 1) {
+    inv = inv * (2 - m0 * inv);
+  }
+  return 0 - inv;
+}
+
+/** Arithmetic modulo one 256-bit odd number above 2^255. */
+export final class Field {
+  #m0: u64;
+  #m1: u64;
+  #m2: u64;
+  #m3: u64;
+  #mInv: u64;
+  /** The modulus. */
+  modulus: Fe;
+  /** 1 in Montgomery form, R mod m. */
+  one: Fe;
+  /** R^2 mod m, which `toMont` multiplies by. */
+  #r2: Fe;
+  /** m - 2, the exponent that inverts. */
+  #inverseExponent: Fe;
+  #plainOne = new Fe(1, 0, 0, 0);
+
+  new(modulus: Fe)
+    : #m0 = modulus.l0,
+      #m1 = modulus.l1,
+      #m2 = modulus.l2,
+      #m3 = modulus.l3,
+      #mInv = negInverse(modulus.l0),
+      modulus = modulus,
+      one = Fe.zero(),
+      #r2 = Fe.zero(),
+      #inverseExponent = Fe.zero() {
+    // R mod m is 2^256 - m, since m > 2^255.
+    let zero = Fe.zero();
+    subRaw(this.one, zero, modulus);
+    // Doubling R mod m 256 times gives R^2 mod m.
+    this.#r2.set(this.one);
+    for (var i = 0; i < 256; i += 1) {
+      this.add(this.#r2, this.#r2, this.#r2);
+    }
+    subRaw(this.#inverseExponent, modulus, new Fe(2, 0, 0, 0));
+  }
+
+  /** Whether `a` is below the modulus. */
+  isReduced(a: Fe): boolean {
+    return a.lessThan(this.modulus);
+  }
+
+  /** Sets `out` to `a` mod m, for any 256-bit `a`. */
+  reduce(out: Fe, a: Fe): void {
+    this.#reduce(out, a.l0, a.l1, a.l2, a.l3, 0);
+  }
+
+  /** out = a + b mod m. */
+  add(out: Fe, a: Fe, b: Fe): void {
+    let (s0, c0) = add128(a.l0, 0, b.l0, 0);
+    let (s1, c1) = addCarry(a.l1, b.l1, c0);
+    let (s2, c2) = addCarry(a.l2, b.l2, c1);
+    let (s3, c3) = addCarry(a.l3, b.l3, c2);
+    this.#reduce(out, s0, s1, s2, s3, c3);
+  }
+
+  /** out = a - b mod m. */
+  sub(out: Fe, a: Fe, b: Fe): void {
+    let (d0, b0) = sub128(a.l0, 0, b.l0, 0);
+    let (d1, b1) = subBorrow(a.l1, b.l1, b0);
+    let (d2, b2) = subBorrow(a.l2, b.l2, b1);
+    let (d3, b3) = subBorrow(a.l3, b.l3, b2);
+    // Adds m back when the subtraction went below zero.
+    let (e0, c0) = add128(d0, 0, this.#m0 & b3, 0);
+    let (e1, c1) = addCarry(d1, this.#m1 & b3, c0);
+    let (e2, c2) = addCarry(d2, this.#m2 & b3, c1);
+    let (e3, c3) = addCarry(d3, this.#m3 & b3, c2);
+    out.l0 = e0;
+    out.l1 = e1;
+    out.l2 = e2;
+    out.l3 = e3;
+  }
+
+  /** out = a·b·R^-1 mod m: the product of two Montgomery-form numbers. */
+  mul(out: Fe, a: Fe, b: Fe): void {
+    let a0 = a.l0;
+    let a1 = a.l1;
+    let a2 = a.l2;
+    let a3 = a.l3;
+    let m0 = this.#m0;
+    let m1 = this.#m1;
+    let m2 = this.#m2;
+    let m3 = this.#m3;
+    let mInv = this.#mInv;
+    let (t0, t1, t2, t3, t4) =
+      montRound(0, 0, 0, 0, 0, a0, a1, a2, a3, b.l0, m0, m1, m2, m3, mInv);
+    let (u0, u1, u2, u3, u4) =
+      montRound(t0, t1, t2, t3, t4, a0, a1, a2, a3, b.l1, m0, m1, m2, m3, mInv);
+    let (v0, v1, v2, v3, v4) =
+      montRound(u0, u1, u2, u3, u4, a0, a1, a2, a3, b.l2, m0, m1, m2, m3, mInv);
+    let (w0, w1, w2, w3, w4) =
+      montRound(v0, v1, v2, v3, v4, a0, a1, a2, a3, b.l3, m0, m1, m2, m3, mInv);
+    this.#reduce(out, w0, w1, w2, w3, w4);
+  }
+
+  /** out = a·a·R^-1 mod m. */
+  sqr(out: Fe, a: Fe): void {
+    this.mul(out, a, a);
+  }
+
+  /** Sets `out` to the Montgomery form of `a`, which must be below m. */
+  toMont(out: Fe, a: Fe): void {
+    this.mul(out, a, this.#r2);
+  }
+
+  /** Sets `out` to the number the Montgomery-form `a` stands for. */
+  fromMont(out: Fe, a: Fe): void {
+    // Multiplying by a plain 1 divides by R.
+    this.mul(out, a, this.#plainOne);
+  }
+
+  /** The Montgomery form of `a`, as a new number. */
+  mont(a: Fe): Fe {
+    let out = Fe.zero();
+    this.toMont(out, a);
+    return out;
+  }
+
+  /**
+   * out = a^e, with `a` and the result in Montgomery form and `e` a plain
+   * number. Branches on the bits of `e`.
+   */
+  pow(out: Fe, a: Fe, e: Fe): void {
+    let base = a.copy();
+    let acc = this.one.copy();
+    for (var i = 255; i >= 0; i -= 1) {
+      this.mul(acc, acc, acc);
+      if (e.bit(i) == 1) {
+        this.mul(acc, acc, base);
+      }
+    }
+    out.set(acc);
+  }
+
+  /** out = a^-1, with both in Montgomery form; 0 maps to 0. */
+  inv(out: Fe, a: Fe): void {
+    this.pow(out, a, this.#inverseExponent);
+  }
+
+  /** out = t mod m, for a five-limb t below 2m. */
+  #reduce(out: Fe, t0: u64, t1: u64, t2: u64, t3: u64, t4: u64): void {
+    let (d0, b0) = sub128(t0, 0, this.#m0, 0);
+    let (d1, b1) = subBorrow(t1, this.#m1, b0);
+    let (d2, b2) = subBorrow(t2, this.#m2, b1);
+    let (d3, b3) = subBorrow(t3, this.#m3, b2);
+    // All ones when t < m, so t is already reduced.
+    let (d4, keep) = subBorrow(t4, 0, b3);
+    out.l0 = d0 ^ ((d0 ^ t0) & keep);
+    out.l1 = d1 ^ ((d1 ^ t1) & keep);
+    out.l2 = d2 ^ ((d2 ^ t2) & keep);
+    out.l3 = d3 ^ ((d3 ^ t3) & keep);
+  }
+}
+
+/** out = a - b mod 2^256. */
+function subRaw(out: Fe, a: Fe, b: Fe): void {
+  let (d0, b0) = sub128(a.l0, 0, b.l0, 0);
+  let (d1, b1) = subBorrow(a.l1, b.l1, b0);
+  let (d2, b2) = subBorrow(a.l2, b.l2, b1);
+  let (d3, b3) = subBorrow(a.l3, b.l3, b2);
+  out.l0 = d0;
+  out.l1 = d1;
+  out.l2 = d2;
+  out.l3 = d3;
+}
