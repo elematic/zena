@@ -17,6 +17,20 @@ export const stringImports = {
     s.replaceAll(needle, replacement),
 };
 
+/**
+ * `zena:host:url`: the host's WHATWG `URL`, which a `--target js` module's
+ * `zena:url` uses in place of its own parser (stdlib `url/url-js.zena`):
+ * `URL.parse` itself, and `get_<component>` and `set_<component>` for each
+ * accessor on `URL.prototype`, with the `URL` as the first argument.
+ */
+export const urlImports: Record<string, Function> = {parse: URL.parse};
+for (const name of Object.getOwnPropertyNames(URL.prototype)) {
+  urlImports[`get_${name}`] = (url: Record<string, unknown>) => url[name];
+  urlImports[`set_${name}`] = (url: Record<string, unknown>, value: string) => {
+    url[name] = value;
+  };
+}
+
 export interface ZenaImports {
   env?: Record<string, Function>;
   console?: Record<string, Function>;
@@ -1155,6 +1169,7 @@ export async function instantiate(
     web: webHost.imports,
     'zena:host:string': stringImports,
     'zena:host:number': numberImports,
+    'zena:host:url': urlImports,
   };
   if (userImports.web !== false) {
     defaultImports.web = webHost.imports;
@@ -1187,6 +1202,10 @@ export async function instantiate(
     'zena:host:number': {
       ...defaultImports['zena:host:number'],
       ...userImports['zena:host:number'],
+    },
+    'zena:host:url': {
+      ...defaultImports['zena:host:url'],
+      ...userImports['zena:host:url'],
     },
   };
   if (userImports.web !== false) {

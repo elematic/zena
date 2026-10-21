@@ -1,0 +1,268 @@
+// `URL` on the JavaScript target (--target js): a wrapper over the host's
+// own WHATWG `URL`, so a js module carries no URL parser, IDNA table or
+// punycode codec. The rest of `zena:url` is the same on every target:
+// `URLSearchParams`, `URLPattern`, the percent-encoding helpers and the
+// `url` tag use `URL` only through the API below.
+//
+// The API is the one `url.zena` declares. A `URL` here holds a host `URL`
+// object that nothing mutates: each `with*` method copies it and runs the
+// host's setter on the copy, which applies the spec's setter algorithm as
+// `url.zena` does, including ignoring a change the spec forbids.
+//
+// The host's parser is the one that answers here, so where it and
+// `url.zena` disagree (the WPT expected failures in
+// packages/stdlib/tests/url/wpt/), a js module follows the host.
+//
+// The imports are the host's own: `URL.parse`, and the getter and setter
+// of each component, `get_href` and so on, taking the `URL` first. A
+// module imports only those it calls.
+
+import { URLSearchParams } from './search-params.zena';
+
+@external("zena:host:url", "parse")
+declare function __url_parse(input: externref): externref | null;
+
+@external("zena:host:url", "parse")
+declare function __url_parse_with_base(input: externref, base: externref): externref | null;
+
+// `URL.parse` also takes a `URL`, and copies it.
+@external("zena:host:url", "parse")
+declare function __url_copy(url: externref): externref;
+
+@external("zena:host:url", "get_href")
+declare function __url_get_href(url: externref): externref;
+@external("zena:host:url", "get_origin")
+declare function __url_get_origin(url: externref): externref;
+@external("zena:host:url", "get_protocol")
+declare function __url_get_protocol(url: externref): externref;
+@external("zena:host:url", "get_username")
+declare function __url_get_username(url: externref): externref;
+@external("zena:host:url", "get_password")
+declare function __url_get_password(url: externref): externref;
+@external("zena:host:url", "get_host")
+declare function __url_get_host(url: externref): externref;
+@external("zena:host:url", "get_hostname")
+declare function __url_get_hostname(url: externref): externref;
+@external("zena:host:url", "get_port")
+declare function __url_get_port(url: externref): externref;
+@external("zena:host:url", "get_pathname")
+declare function __url_get_pathname(url: externref): externref;
+@external("zena:host:url", "get_search")
+declare function __url_get_search(url: externref): externref;
+@external("zena:host:url", "get_hash")
+declare function __url_get_hash(url: externref): externref;
+
+@external("zena:host:url", "set_protocol")
+declare function __url_set_protocol(url: externref, value: externref): void;
+@external("zena:host:url", "set_username")
+declare function __url_set_username(url: externref, value: externref): void;
+@external("zena:host:url", "set_password")
+declare function __url_set_password(url: externref, value: externref): void;
+@external("zena:host:url", "set_host")
+declare function __url_set_host(url: externref, value: externref): void;
+@external("zena:host:url", "set_hostname")
+declare function __url_set_hostname(url: externref, value: externref): void;
+@external("zena:host:url", "set_port")
+declare function __url_set_port(url: externref, value: externref): void;
+@external("zena:host:url", "set_pathname")
+declare function __url_set_pathname(url: externref, value: externref): void;
+@external("zena:host:url", "set_search")
+declare function __url_set_search(url: externref, value: externref): void;
+@external("zena:host:url", "set_hash")
+declare function __url_set_hash(url: externref, value: externref): void;
+
+/**
+ * An immutable, parsed URL. Components are exposed with the same names and
+ * string shapes as the web API (`protocol` includes ':', `search` includes
+ * '?', `hash` includes '#', all empty when absent).
+ */
+export final class URL implements Hashable {
+  #handle: externref;
+
+  // Read on first use and kept, as in `url.zena`: `==` and `hashCode` are
+  // both defined on `href`.
+  var #hrefCache: String | null = null;
+
+  new #fromHandle(handle: externref) : #handle = handle;
+
+  /** A copy of the host `URL`, for a `with*` method to set. */
+  #copy(): externref {
+    return __url_copy(this.#handle);
+  }
+
+  /**
+   * Parses `input`, optionally resolving it against `base`, and returns null
+   * if either fails to parse.
+   */
+  static parse(input: String, base: String | null = null): URL | null {
+    let handle = if (base == null) {
+      __url_parse(input.handle)
+    } else {
+      __url_parse_with_base(input.handle, base.handle)
+    };
+    if (handle == null) return null;
+    return new URL.#fromHandle(handle);
+  }
+
+  static canParse(input: String, base: String | null = null): boolean {
+    return URL.parse(input, base) != null;
+  }
+
+  protocol: String { get { return String.fromHandle(__url_get_protocol(this.#handle)); } }
+  username: String { get { return String.fromHandle(__url_get_username(this.#handle)); } }
+  password: String { get { return String.fromHandle(__url_get_password(this.#handle)); } }
+  hostname: String { get { return String.fromHandle(__url_get_hostname(this.#handle)); } }
+  port: String { get { return String.fromHandle(__url_get_port(this.#handle)); } }
+  pathname: String { get { return String.fromHandle(__url_get_pathname(this.#handle)); } }
+  search: String { get { return String.fromHandle(__url_get_search(this.#handle)); } }
+  hash: String { get { return String.fromHandle(__url_get_hash(this.#handle)); } }
+  href: String {
+    get {
+      let cached = this.#hrefCache;
+      if (cached != null) {
+        return cached;
+      }
+      let serialized = String.fromHandle(__url_get_href(this.#handle));
+      this.#hrefCache = serialized;
+      return serialized;
+    }
+  }
+
+  /** "hostname:port", with the port omitted when it is null. */
+  host(): String {
+    return String.fromHandle(__url_get_host(this.#handle));
+  }
+
+  /** https://url.spec.whatwg.org/#concept-url-origin ("null" when opaque). */
+  origin(): String {
+    return String.fromHandle(__url_get_origin(this.#handle));
+  }
+
+  /**
+   * The query parsed as `URLSearchParams`.
+   *
+   * A SNAPSHOT, not the web API's live-bound object: `URL` is immutable
+   * here, so mutating the result does not touch this URL. Write changes
+   * back by building a new URL from `params.toString()`.
+   */
+  searchParams(): URLSearchParams {
+    return new URLSearchParams(this.search);
+  }
+
+  /**
+   * This URL with a different scheme, e.g. `withProtocol('http:')`. A
+   * trailing ':' is optional.
+   *
+   * Returns an unchanged URL when the change is one the spec forbids:
+   * moving between special schemes (http, https, ws, wss, ftp, file) and
+   * non-special ones, making a URL with credentials or a port into a `file:`
+   * URL, or making a hostless `file:` URL special.
+   */
+  withProtocol(value: String): URL {
+    let copy = this.#copy();
+    __url_set_protocol(copy, value.handle);
+    return new URL.#fromHandle(copy);
+  }
+
+  /**
+   * This URL with a different username. Ignored, per the spec, on a URL that
+   * cannot carry credentials — one with no host, or a `file:` URL.
+   */
+  withUsername(value: String): URL {
+    let copy = this.#copy();
+    __url_set_username(copy, value.handle);
+    return new URL.#fromHandle(copy);
+  }
+
+  /** This URL with a different password. Ignored like `withUsername`. */
+  withPassword(value: String): URL {
+    let copy = this.#copy();
+    __url_set_password(copy, value.handle);
+    return new URL.#fromHandle(copy);
+  }
+
+  /**
+   * This URL with a different host, optionally including a port
+   * (`withHost('example.com:8080')`). Ignored on a URL with an opaque path,
+   * which has no authority to change.
+   */
+  withHost(value: String): URL {
+    let copy = this.#copy();
+    __url_set_host(copy, value.handle);
+    return new URL.#fromHandle(copy);
+  }
+
+  /** This URL with a different host, ignoring any port in `value`. */
+  withHostname(value: String): URL {
+    let copy = this.#copy();
+    __url_set_hostname(copy, value.handle);
+    return new URL.#fromHandle(copy);
+  }
+
+  /**
+   * This URL with a different port. An empty string removes the port, as
+   * does a port that is the scheme's default. Ignored on a URL that cannot
+   * carry one.
+   */
+  withPort(value: String): URL {
+    let copy = this.#copy();
+    __url_set_port(copy, value.handle);
+    return new URL.#fromHandle(copy);
+  }
+
+  /**
+   * This URL with a different path. Ignored on a URL with an opaque path,
+   * whose path is not a list of segments to replace.
+   */
+  withPathname(value: String): URL {
+    let copy = this.#copy();
+    __url_set_pathname(copy, value.handle);
+    return new URL.#fromHandle(copy);
+  }
+
+  /**
+   * This URL with a different query. An empty string removes it; a leading
+   * '?' is optional.
+   */
+  withSearch(value: String): URL {
+    let copy = this.#copy();
+    __url_set_search(copy, value.handle);
+    return new URL.#fromHandle(copy);
+  }
+
+  /** This URL with the query replaced by `params`. */
+  withSearchParams(params: URLSearchParams): URL {
+    return this.withSearch(params.toString());
+  }
+
+  /**
+   * This URL with a different fragment. An empty string removes it; a
+   * leading '#' is optional.
+   */
+  withHash(value: String): URL {
+    let copy = this.#copy();
+    __url_set_hash(copy, value.handle);
+    return new URL.#fromHandle(copy);
+  }
+
+  /**
+   * This URL reparsed from `value`, or null when `value` does not parse —
+   * unlike the other `with*` methods, replacing the whole URL has no
+   * component to fall back to.
+   */
+  withHref(value: String): URL | null {
+    return URL.parse(value, null);
+  }
+
+  /** Two URLs are equal when they serialize identically. */
+  operator ==(other: URL): boolean {
+    return this.href == other.href;
+  }
+
+  /** Hashes the serialization, so equal URLs always hash equal. */
+  hashCode(): i32 {
+    return this.href.hashCode();
+  }
+
+  toString(): String { return this.href; }
+}

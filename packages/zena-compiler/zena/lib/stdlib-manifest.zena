@@ -238,6 +238,15 @@ export function buildStdlibConfig(stdlibRoot: String): PackageConfig {
   exports["core/number-parse.zena"] =
       new ModuleExport(numberParseVirtual, null, true);
   exports["url"] = new ModuleExport(null, "url/index.zena");
+  // `URL` itself: the WHATWG parser on most targets, the host's `URL` on
+  // js. The library's other files reach it by relative import.
+  let urlVirtual: HashMap<String, String> = {
+    "js" => "url/url-js.zena",
+    "zena-cli" => "url/url.zena",
+    "component" => "url/url.zena",
+    "freestanding" => "url/url.zena",
+  };
+  exports["url/url.zena"] = new ModuleExport(urlVirtual, null, true);
   exports["bench"] = new ModuleExport(null, "bench/index.zena");
   exports["collections"] = new ModuleExport(null, "collections/index.zena");
   exports["simd"] = new ModuleExport(null, "simd/index.zena");
@@ -268,8 +277,10 @@ function buildLibraryIndex() {
   let config = buildStdlibConfig("");
   let exports = config.exports as HashMap<String, ModuleExport>;
   exports.forEach((name, entry) => {
-    let owningLibrary = if (name.startsWith("core/")) {
-      "core"
+    // An internal entry named for a file, such as "core/string.zena" or
+    // "url/url.zena", belongs to the library of its directory.
+    let owningLibrary = if (entry.internal) {
+      firstSegment(name)
     } else {
       name
     };
