@@ -18,6 +18,14 @@ Import its modules as `package-manager:<module>`, with a
 - `package-manager:archive`: source archives, the CAR files that hold a
   release's source. Packing is deterministic, so the same files always have
   the same CID, and unpacking accepts only what packing writes.
+- `package-manager:resolution`: the packages a resolution file pins, in its
+  `resolved` section.
+- `package-manager:cache`: the package cache, where each source archive is
+  unpacked into `sources/<CID>` for the compiler to read.
+- `package-manager:fetch`: fetching a pinned package into the cache. The
+  release record's proof is checked against the account's signing key, the
+  record and the source archive against the CIDs the resolution file pins,
+  and the release's dependencies against the names it maps.
 
 ## Lexicons
 

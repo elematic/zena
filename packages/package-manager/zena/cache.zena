@@ -1,0 +1,116 @@
+/**
+ * The package cache, where `zena fetch` stores packages and the compiler
+ * reads them. Each source archive is unpacked into `sources/<CID>`, the
+ * directory `zena-compiler:package-manifest` roots a pinned package at.
+ *
+ * A source directory is written under `tmp/` and renamed into `sources/`
+ * when it is complete, so the compiler never reads half a package. The
+ * contents of `sources/<CID>` are fixed by the CID, so when two fetches
+ * store the same archive, whichever renames first wins and the other's
+ * copy is dropped.
+ */
+
+import {exists, mkdir, rename, rmdir, unlink, writeFileBytes} from 'zena:fs';
+import {monotonic} from 'zena:time';
+import {Cid} from 'atproto:cid';
+import {SourceFile} from './archive.zena';
+
+/** A package cache rooted at a directory. */
+export final class PackageCache {
+  /** The cache directory, such as `~/.cache/zena/packages`. */
+  root: String;
+
+  new(root: String) : root = root;
+
+  /** Where the source archive `cid` is unpacked. */
+  sourceDir(cid: Cid): String {
+    return `${this.root}/sources/${cid.toString()}`;
+  }
+
+  /** Whether the source archive `cid` is unpacked in the cache. */
+  async hasSource(cid: Cid): Future<boolean> {
+    return await exists(this.sourceDir(cid));
+  }
+
+  /** Writes `files`, the contents of the source archive `cid`, into the cache. */
+  async storeSource(cid: Cid, files: FixedArray<SourceFile>): Future<void> {
+    let target = this.sourceDir(cid);
+    if (await exists(target)) {
+      return;
+    }
+    await makeDirectories(`${this.root}/sources`);
+    await makeDirectories(`${this.root}/tmp`);
+    let staging = `${this.root}/tmp/${cid.toString()}.${monotonic() as i64}`;
+    await mkdir(staging);
+    let made = new GrowableArray<String>();
+    try {
+      for (let file in files) {
+        await makeParents(staging, file.path, made);
+        await writeFileBytes(`${staging}/${file.path}`, file.contents);
+      }
+      await rename(staging, target);
+    } catch (e) {
+      await removeStaging(staging, files, made);
+      // Another fetch may have stored the same archive first.
+      if (!(await exists(target))) {
+        throw e;
+      }
+    }
+  }
+}
+
+/** Creates `path` and any of its parents that are missing. */
+async function makeDirectories(path: String): Future<void> {
+  let missing = new GrowableArray<String>();
+  var current = path;
+  while (current != '' && current != '/' && !(await exists(current))) {
+    missing.push(current);
+    current = parentOf(current);
+  }
+  for (var i = missing.length - 1; i >= 0; i -= 1) {
+    await mkdir(missing[i]);
+  }
+}
+
+/**
+ * Creates the directories between `root` and the file `path` under it,
+ * recording each one it creates in `made`.
+ */
+async function makeParents(root: String, path: String, made: GrowableArray<String>): Future<void> {
+  for (var i = 0; i < path.length; i += 1) {
+    if (path.getByteAt(i) == 47) { // '/'
+      let dir = `${root}/${path.sliceBytes(0, i)}`;
+      if (!(await exists(dir))) {
+        await mkdir(dir);
+        made.push(dir);
+      }
+    }
+  }
+}
+
+/** Removes a staging directory that was not renamed into place. */
+async function removeStaging(staging: String, files: FixedArray<SourceFile>,
+    made: GrowableArray<String>): Future<void> {
+  if (!(await exists(staging))) {
+    return;
+  }
+  for (let file in files) {
+    let path = `${staging}/${file.path}`;
+    if (await exists(path)) {
+      await unlink(path);
+    }
+  }
+  for (var i = made.length - 1; i >= 0; i -= 1) {
+    await rmdir(made[i]);
+  }
+  await rmdir(staging);
+}
+
+function parentOf(path: String): String {
+  for (var i = path.length - 1; i > 0; i -= 1) {
+    if (path.getByteAt(i) == 47) {
+      return path.sliceBytes(0, i);
+    }
+  }
+  return if (path.startsWith('/')) '/' else '';
+}

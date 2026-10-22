@@ -1,0 +1,131 @@
+/**
+ * Fetching pinned packages into the package cache
+ * (docs/design/package-manager.md, "Fetching and verification").
+ *
+ * For each package, `fetchPackage`:
+ *
+ * 1. resolves its DID to the document that names its PDS and signing key;
+ * 2. fetches the release record with `com.atproto.sync.getRecord`, whose
+ *    proof is checked against that key, and checks that the record's CID
+ *    is the one the resolution file pins;
+ * 3. checks the release: its version, that its dependencies are the ones
+ *    the resolution file maps the package's names to, and that its source
+ *    artifact is the pinned one;
+ * 4. downloads the source archive, in one blob or in parts, and checks it
+ *    against its CID;
+ * 5. unpacks it into the cache.
+ *
+ * Checking the release against the checksum log comes later, with the
+ * log.
+ */
+
+import {ByteBuffer} from 'zena:core';
+import {Cid} from 'atproto:cid';
+import {BlobRef, Value} from 'atproto:data';
+import {DidDocument} from 'atproto:did';
+import {IdentityResolver} from 'atproto:identity';
+import {getVerifiedBlob, getVerifiedRecord} from 'atproto:sync';
+import {SourceFile, unpackSource} from './archive.zena';
+import {PackageCache} from './cache.zena';
+import {Artifact, RELEASE_TYPE, Release, SOURCE} from './records.zena';
+import {Pin, packageKey} from './resolution.zena';
+
+/** A pinned package that cannot be fetched as pinned. */
+export class FetchError extends Error {
+  new(message: String) : super(message);
+}
+
+/**
+ * Fetches `pin` into `cache` unless it is already there. Returns whether
+ * it fetched it. Throws `FetchError` when what the package's PDS serves
+ * differs from what the resolution file pins, and the error of whatever
+ * else failed, such as resolving the DID or a request.
+ */
+export async function fetchPackage(pin: Pin, cache: PackageCache,
+    resolver: IdentityResolver): Future<boolean> {
+  if (await cache.hasSource(pin.source)) {
+    return false;
+  }
+  let document = await resolver.resolveDid(pin.did);
+  let versionText = pin.version.toString();
+  let proof = await getVerifiedRecord(document, RELEASE_TYPE, versionText);
+  let record = proof.record;
+  let recordCid = proof.cid;
+  if (record == null || recordCid == null) {
+    throw new FetchError(`${pin.key}: the package has no release ${versionText}`);
+  }
+  if (!recordCid.equals(pin.release)) {
+    throw new FetchError(
+        `${pin.key}: release ${versionText} is ${recordCid.toString()}, but zena-packages.json pins ${pin.release.toString()}. The release changed after it was pinned.`);
+  }
+  let release = readRelease(record, versionText, pin);
+  checkDependencies(pin, release);
+  let source = release.artifact(SOURCE);
+  if (source == null) {
+    throw new FetchError(`${pin.key}: release ${versionText} has no source artifact`);
+  }
+  if (!source.cid.equals(pin.source)) {
+    throw new FetchError(
+        `${pin.key}: release ${versionText} has source ${source.cid.toString()}, but zena-packages.json pins ${pin.source.toString()}`);
+  }
+  let bytes = await download(document, source, pin);
+  await cache.storeSource(pin.source, unpack(bytes, pin));
+  return true;
+}
+
+function unpack(bytes: FixedArray<u8>, pin: Pin): FixedArray<SourceFile> {
+  try {
+    return unpackSource(bytes);
+  } catch (e) {
+    throw new FetchError(`${pin.key}: its source archive cannot be unpacked: ${e.message}`);
+  }
+}
+
+function readRelease(record: Value, versionText: String, pin: Pin): Release {
+  try {
+    return Release.fromValue(record, versionText);
+  } catch (e) {
+    throw new FetchError(`${pin.key}: ${e.message}`);
+  }
+}
+
+/**
+ * The resolution file maps each of the package's own names to a pinned
+ * package, and the release says which package each name is: they must
+ * agree, name for name.
+ */
+function checkDependencies(pin: Pin, release: Release): void {
+  for (let dependency in release.dependencies) {
+    let key = packageKey(dependency.did, dependency.version.major);
+    if (let (true, pinned) = pin.dependencies.get(dependency.name)) {
+      if (pinned != key) {
+        throw new FetchError(
+            `${pin.key}: its dependency '${dependency.name}' is ${key}, but zena-packages.json maps it to ${pinned}`);
+      }
+    } else {
+      throw new FetchError(
+          `${pin.key}: its dependency '${dependency.name}' (${key}) is not in zena-packages.json`);
+    }
+  }
+  if (pin.dependencies.size != release.dependencies.length) {
+    throw new FetchError(
+        `${pin.key}: zena-packages.json gives it ${pin.dependencies.size} dependencies, but release ${pin.version.toString()} has ${release.dependencies.length}`);
+  }
+}
+
+/** The artifact's bytes, from its one blob or its parts, checked against its CID. */
+async function download(document: DidDocument, artifact: Artifact, pin: Pin): Future<FixedArray<u8>> {
+  let blob = artifact.blob;
+  if (blob != null) {
+    return await getVerifiedBlob(document, blob.cid);
+  }
+  let whole = new ByteBuffer();
+  for (let part in artifact.parts as FixedArray<BlobRef>) {
+    whole.writeBytes((await getVerifiedBlob(document, part.cid)) as ByteArray);
+  }
+  let bytes = whole.toByteArray() as FixedArray<u8>;
+  if (!Cid.forBlob(bytes).equals(artifact.cid)) {
+    throw new FetchError(`${pin.key}: the parts of ${artifact.cid.toString()} do not make it up`);
+  }
+  return bytes;
+}

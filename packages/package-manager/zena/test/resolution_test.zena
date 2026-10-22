@@ -1,0 +1,72 @@
+import {suite, test} from 'zena:test';
+import {equal, isTrue} from 'zena:assert';
+import {Cid} from 'atproto:cid';
+import {ResolutionError, packageKey, readPins} from 'package-manager:resolution';
+
+let RELEASE = 'bafyreie5737gdxlw5i64vzichcalba3z2v5n6icifvx5xytvske7mr3hpm';
+let SOURCE = 'bafkreihdwdcefgh4dqkjv67uzcmw7ojee6xedzdetojuzjevtenxquvyku';
+
+function entry(version: String = '1.4.2', release: String = RELEASE, source: String = SOURCE,
+    extra: String = '') {
+  return `{"version": "${version}", "release": "${release}", "source": "${source}"${extra}}`;
+}
+
+function rejects(text: String) {
+  var caught = false;
+  try {
+    readPins(text);
+  } catch (e) {
+    caught = e is ResolutionError;
+  }
+  isTrue(caught, text);
+}
+
+export let tests = suite('package-manager:resolution', () => {
+  test('reads the pins of a resolution file', (ctx) => {
+    let pins = readPins(`{
+      "packages": {"app": "./src"},
+      "dependencies": {"router": "did:plc:router@1"},
+      "resolved": {
+        "did:plc:router@1": ${entry('1.4.2', RELEASE, SOURCE, ', "dependencies": {"json": "did:web:json.example.com@2"}')},
+        "did:web:json.example.com@2": ${entry('2.1.0-rc.1')}
+      }
+    }`);
+    equal(pins.length, 2);
+    let router = pins[0];
+    equal(router.key, 'did:plc:router@1');
+    equal(router.did, 'did:plc:router');
+    equal(router.version.toString(), '1.4.2');
+    isTrue(router.release.equals(Cid.parse(RELEASE)));
+    isTrue(router.source.equals(Cid.parse(SOURCE)));
+    equal(router.dependencies.size, 1);
+    equal(router.dependencies['json'], 'did:web:json.example.com@2');
+    equal(pins[1].did, 'did:web:json.example.com');
+    equal(pins[1].version.toString(), '2.1.0-rc.1');
+    equal(pins[1].dependencies.size, 0);
+  });
+
+  test('has no pins without a resolved section', (ctx) => {
+    equal(readPins('{"packages": {"app": "./src"}}').length, 0);
+  });
+
+  test('names packages by DID and major version', (ctx) => {
+    equal(packageKey('did:plc:router', 1 as i64), 'did:plc:router@1');
+  });
+
+  test('rejects pins that cannot be fetched as written', (ctx) => {
+    rejects('not json');
+    rejects('[]');
+    rejects('{"resolved": []}');
+    rejects(`{"resolved": {"router@1": ${entry()}}}`);
+    rejects(`{"resolved": {"did:plc:router": ${entry()}}}`);
+    rejects(`{"resolved": {"did:plc:router@2": ${entry()}}}`);
+    rejects(`{"resolved": {"did:plc:router@1": ${entry('1.4')}}}`);
+    rejects(`{"resolved": {"did:plc:router@1": ${entry('1.4.2', 'not a cid')}}}`);
+    // The release is a record and the source a blob, not the other way round.
+    rejects(`{"resolved": {"did:plc:router@1": ${entry('1.4.2', SOURCE, SOURCE)}}}`);
+    rejects(`{"resolved": {"did:plc:router@1": ${entry('1.4.2', RELEASE, RELEASE)}}}`);
+    rejects('{"resolved": {"did:plc:router@1": {"version": "1.4.2"}}}');
+    rejects(`{"resolved": {"did:plc:router@1": ${entry('1.4.2', RELEASE, SOURCE, ', "dependencies": []')}}}`);
+    rejects(`{"resolved": {"did:plc:router@1": ${entry('1.4.2', RELEASE, SOURCE, ', "dependencies": {"json": 2}')}}}`);
+  });
+});
