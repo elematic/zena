@@ -42,12 +42,15 @@ export class RecordError extends Error {
 }
 
 /**
- * Whether `name` can name a package in imports and resolution files:
- * lowercase ASCII letters, digits and `-`, starting with a letter, and at
- * most 64 bytes. `zena` names the standard library, so no package has it.
+ * Whether `name` can name a package: in imports, in resolution files, and
+ * as the first label of its handle. It is one DNS label: lowercase ASCII
+ * letters, digits and `-`, starting with a letter, not ending with `-`,
+ * without `--` as its third and fourth characters, which internationalized
+ * domain names reserve (`xn--`), and at most 63 bytes. `zena` names the
+ * standard library, so no package has it.
  */
 export function isValidPackageName(name: String): boolean {
-  if (name.length == 0 || name.length > 64 || name == 'zena') {
+  if (name.length == 0 || name.length > 63 || name == 'zena') {
     return false;
   }
   for (var i = 0; i < name.length; i += 1) {
@@ -57,7 +60,10 @@ export function isValidPackageName(name: String): boolean {
       return false;
     }
   }
-  return true;
+  if (name.getByteAt(name.length - 1) == 45) {
+    return false;
+  }
+  return !(name.length >= 4 && name.getByteAt(2) == 45 && name.getByteAt(3) == 45);
 }
 
 /** A package's profile, at record key `self`. */

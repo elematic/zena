@@ -246,13 +246,17 @@ export let tests = suite('package-manager:records', () => {
     isTrue(caught);
   });
 
-  test('accepts package names of lowercase letters, digits and hyphens', (ctx) => {
-    for (let name in ['a', 'router', 'zena-http', 'json2', 'a-1-b']) {
+  test('accepts package names that are DNS labels', (ctx) => {
+    let longest = 'abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijk';
+    equal(longest.length, 63);
+    for (let name in ['a', 'router', 'zena-http', 'json2', 'a-1-b', 'abc--d', longest]) {
       isTrue(isValidPackageName(name), name);
     }
-    let tooLong = 'abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklm';
-    equal(tooLong.length, 65);
-    for (let name in ['', 'zena', 'Router', '1router', '-router', 'my_router', 'my.router', 'rout er', tooLong]) {
+    let tooLong = `${longest}l`;
+    for (let name in [
+      '', 'zena', 'Router', '1router', '-router', 'router-', 'my_router', 'my.router',
+      'rout er', 'ab--cd', 'xn--router', tooLong
+    ]) {
       isFalse(isValidPackageName(name), name);
     }
   });
