@@ -49,7 +49,9 @@ export final class PackageConfig {
 
   // Explicit module exports. If null, all .zena files are importable (open
   // package). If present, only listed modules can be imported (closed package).
-  exports: HashMap<String, ModuleExport> | null;
+  // A published package's are read from its manifest once it is in the
+  // cache, after the config is made.
+  var exports: HashMap<String, ModuleExport> | null;
 
   // WIT-backed package: the path to a .wit file, or a directory of them,
   // declared with `{"wit": "./path"}` in the manifest. Its modules are
@@ -348,7 +350,7 @@ export final class ModuleResolver {
     let iter = this.#packages.keys();
     for (let name in iter) {
       let root = this.#packages[name].root;
-      if (root == "" || (path != root && !path.startsWith(`${root}/`))) {
+      if (root == "" || !isUnder(path, root)) {
         continue;
       }
       // A HashMap's order varies between processes, so equal roots are
@@ -365,6 +367,16 @@ export final class ModuleResolver {
 // ============================================================================
 // Path Utilities
 // ============================================================================
+
+// Whether `path` is `root` or a file under it. A root of `.`, the workspace's
+// own directory, holds every relative path that does not climb out of it.
+function isUnder(path: String, root: String): boolean {
+  if (root == ".") {
+    return !path.startsWith("/") && !path.startsWith("../") && path != ".." &&
+        !path.startsWith("zena:") && !path.startsWith("wit:");
+  }
+  return path == root || path.startsWith(`${root}/`);
+}
 
 // Map a stdlib canonical id (with or without the "zena:" prefix) to its file
 // path relative to the stdlib source root. Name ids ("zena:string") map to

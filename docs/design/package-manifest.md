@@ -6,10 +6,11 @@ together form a workspace, and how the lockfile pins the published
 packages a workspace uses. [package-manager.md](package-manager.md)
 designs publishing and fetching packages.
 
-> **Current status**: The compiler reads `zena-packages.json`, an older,
-> hand-written file that maps package names to paths and holds the pins
-> of published packages ([Current implementation](#current-implementation)).
-> The manifests and lockfile described here replace it.
+> **Current status**: The compiler reads a workspace from its manifests
+> and `zena-lock.json`. Where a workspace's root has no `zena-package.json`
+> but a `zena-packages.json`, the older, hand-written format, it reads that
+> instead ([zena-packages.json](#zena-packagesjson)). `zena add`,
+> `zena update` and `zena fetch` still write and read `zena-packages.json`.
 
 ## Terms
 
@@ -294,10 +295,10 @@ my-app/
 `main.zena` imports `router:server` and `lib:lib`; `lib.zena` imports
 `json:parse`. Neither sees the other's names.
 
-## Current implementation
+## `zena-packages.json`
 
-Until the compiler reads manifests, it reads `zena-packages.json` from its
-working directory:
+The format that predates the manifests. The compiler reads it from a
+workspace's root when the root has no `zena-package.json`:
 
 ```json
 {
@@ -317,6 +318,7 @@ working directory:
   (`CompileFileOptions.projectRoot`), so such a path is read by its
   absolute path. Path dependencies keep this.
 
-Moving to manifests means giving every package in this repository a
-`zena-package.json` with its name and its path dependencies, and adding
-a root `zena-package.json` whose `workspace` lists them.
+Moving a workspace to manifests means giving each of its packages a
+`zena-package.json` with its name and its path dependencies, adding a
+root `zena-package.json` whose `workspace` lists them, and removing
+`zena-packages.json`.

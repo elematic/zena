@@ -16,7 +16,8 @@ import { logString } from 'zena:console';
 import { isFileSync, readFileSync } from 'zena:fs';
 import { CompilerHost } from 'zena-compiler:library-loader';
 import { PackageConfig } from 'zena-compiler:module-resolver';
-import { loadPackageMap } from 'zena-compiler:package-manifest';
+import { loadWorkspace } from 'zena-compiler:package-manifest';
+import { directoryNames } from 'zena-compiler:fs-host';
 import { createLanguageService } from 'language-service:service';
 import { LspServer, MessageReader, frame } from 'language-service:server';
 import { Options, repoRoot, stdlibDir } from './env.zena';
@@ -31,7 +32,7 @@ function readOrNull(path: String): String | null {
   }
 }
 
-/** Reads the package manifest for `loadPackageMap`. */
+/** Reads the workspace's manifests for `loadWorkspace`. */
 class ManifestHost implements CompilerHost {
   readFile(path: String): String {
     return readFileSync(path);
@@ -39,20 +40,20 @@ class ManifestHost implements CompilerHost {
 
   /** Null: this host reads only the manifest. */
   listDir(path: String): Array<String> | null {
-    return null;
+    return directoryNames(path);
   }
 }
 
 /**
- * The repository's package map, with absolute roots so that they match
- * the absolute paths an editor sends.
+ * The workspace's packages, with absolute roots so that they match the
+ * absolute paths an editor sends.
  */
 function packageMap(): Map<String, PackageConfig> | null {
-  let manifest = `${repoRoot().value}/zena-packages.json`;
-  if (!isFileSync(manifest)) {
+  let root = repoRoot().value;
+  if (!isFileSync(`${root}/zena-package.json`) && !isFileSync(`${root}/zena-packages.json`)) {
     return null;
   }
-  return loadPackageMap(new ManifestHost(), manifest, null, packageCacheDir());
+  return loadWorkspace(new ManifestHost(), root, null, packageCacheDir());
 }
 
 export function lspCommand(args: ParsedArgs, options: Options): i32 {

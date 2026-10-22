@@ -24,7 +24,7 @@
 // A project that uses published packages also has `dependencies` and
 // `resolved` sections; see `addResolvedPackages`.
 
-import { parseJson, JsonValue, JsonObject } from 'zena:json';
+import { parseJson, JsonArray, JsonValue, JsonObject } from 'zena:json';
 import { PackageConfig, ModuleExport } from './module-resolver.zena';
 import { CompilerHost } from './library-loader.zena';
 import { dirName, normalizePath } from './module-resolver.zena';
@@ -102,43 +102,8 @@ function addResolvedPackages(
   packageCache: String,
   result: HashMap<String, PackageConfig>
 ): void {
-  let keys = new Array<String>();
-  let sources = new Map<String, String>();
-  if (manifest.has("resolved")) {
-    let resolved = manifest["resolved"] as JsonObject;
-    resolved.forEach((key, value) => {
-      if (!isPackageKey(key)) {
-        throw new Error(
-            `zena-packages.json: "resolved" has '${key}', which is not a DID and major version such as did:plc:example@1`);
-      }
-      if (!(value is JsonObject)) {
-        throw new Error(`zena-packages.json: "resolved" entry ${key} is not an object`);
-      }
-      let entry = value as JsonObject;
-      let source = stringMember(entry, "source", key);
-      if (!isCidText(source)) {
-        throw new Error(`zena-packages.json: ${key} has source '${source}', which is not a CID`);
-      }
-      if (let (true, other) = sources.get(source)) {
-        throw new Error(`zena-packages.json: ${other} and ${key} have the same source archive, ${source}`);
-      }
-      sources[source] = key;
-      let config = new PackageConfig(`${packageCache}/sources/${source}`, null);
-      config.dependencies = nameMap(entry, key);
-      result[key] = config;
-      keys.push(key);
-    });
-  }
-  for (let key in keys) {
-    let dependencies = result[key].dependencies as HashMap<String, String>;
-    dependencies.forEach((name, target) => {
-      if (!isResolved(result, target)) {
-        throw new Error(
-            `zena-packages.json: ${key} depends on ${target}, as '${name}', but "resolved" has no ${target}`);
-      }
-    });
-  }
-  let projectNames = nameMap(manifest, "the project");
+  addPins(manifest, packageCache, result, "zena-packages.json");
+  let projectNames = nameMap(manifest, "the workspace", "zena-packages.json");
   projectNames.forEach((name, target) => {
     if (result.has(name)) {
       throw new Error(`zena-packages.json: '${name}' is both a package and a dependency`);
@@ -153,23 +118,73 @@ function addResolvedPackages(
   });
 }
 
+// Adds the packages the `resolved` section of `json`, from `file`, pins:
+// each keyed by DID and major version and rooted at its unpacked source
+// archive in `packageCache`, with the names its own libraries import.
+// Returns their keys.
+function addPins(
+  json: JsonObject,
+  packageCache: String,
+  result: HashMap<String, PackageConfig>,
+  file: String
+): GrowableArray<String> {
+  let manifest = json;
+  let keys = new Array<String>();
+  let sources = new Map<String, String>();
+  if (manifest.has("resolved")) {
+    let resolved = manifest["resolved"] as JsonObject;
+    resolved.forEach((key, value) => {
+      if (!isPackageKey(key)) {
+        throw new Error(
+            `${file}: "resolved" has '${key}', which is not a DID and major version such as did:plc:example@1`);
+      }
+      if (!(value is JsonObject)) {
+        throw new Error(`${file}: "resolved" entry ${key} is not an object`);
+      }
+      let entry = value as JsonObject;
+      let source = stringMember(entry, "source", key, file);
+      if (!isCidText(source)) {
+        throw new Error(`${file}: ${key} has source '${source}', which is not a CID`);
+      }
+      if (let (true, other) = sources.get(source)) {
+        throw new Error(`${file}: ${other} and ${key} have the same source archive, ${source}`);
+      }
+      sources[source] = key;
+      let config = new PackageConfig(`${packageCache}/sources/${source}`, null);
+      config.dependencies = nameMap(entry, key, file);
+      result[key] = config;
+      keys.push(key);
+    });
+  }
+  for (let key in keys) {
+    let dependencies = result[key].dependencies as HashMap<String, String>;
+    dependencies.forEach((name, target) => {
+      if (!isResolved(result, target)) {
+        throw new Error(
+            `${file}: ${key} depends on ${target}, as '${name}', but "resolved" has no ${target}`);
+      }
+    });
+  }
+  return keys;
+}
+
 // The `dependencies` member of `object`: local names, each mapped to a
 // package key. Empty when there is none.
-function nameMap(object: JsonObject, owner: String): HashMap<String, String> {
+function nameMap(object: JsonObject, owner: String, file: String): HashMap<String, String> {
   let names = new Map<String, String>();
   if (!object.has("dependencies")) {
     return names;
   }
   let dependencies = object["dependencies"];
   if (!(dependencies is JsonObject)) {
-    throw new Error(`zena-packages.json: the dependencies of ${owner} are not an object`);
+    throw new Error(`${file}: the dependencies of ${owner} are not an object`);
   }
   (dependencies as JsonObject).forEach((name, target) => {
     if (name == "" || name == "zena" || name.contains(":")) {
-      throw new Error(`zena-packages.json: ${owner} has a dependency named '${name}'`);
+      throw new Error(`${file}: ${owner} has a dependency named '${name}'`);
     }
     if (!(target is String)) {
-      throw new Error(`zena-packages.json: ${owner}'s dependency '${name}' is not a string`);
+      throw new Error(`${file}: ${owner}'s dependency '${name}' is not a string`);
     }
     names[name] = target as String;
   });
@@ -183,10 +198,10 @@ function isResolved(packages: HashMap<String, PackageConfig>, key: String): bool
   return false;
 }
 
-function stringMember(object: JsonObject, member: String, owner: String): String {
+function stringMember(object: JsonObject, member: String, owner: String, file: String): String {
   let value = object[member];
   if (!(value is String)) {
-    throw new Error(`zena-packages.json: ${owner} has no "${member}" string`);
+    throw new Error(`${file}: ${owner} has no "${member}" string`);
   }
   return value as String;
 }
@@ -231,6 +246,227 @@ function isCidText(text: String): boolean {
   return true;
 }
 
+// The packages of the workspace in `root` (docs/design/package-manifest.md).
+// With a `zena-package.json` there, they come from the manifests: the root's,
+// each workspace package's, and those of the packages they depend on by
+// path, with published packages pinned in `zena-lock.json`. With only a
+// `zena-packages.json`, the format that predates the manifests, they come
+// from that (`loadPackageMap`). Without either, there are none.
+//
+// Each package is keyed by its `name`, or by its directory when it has
+// none, and gets its own names (`PackageConfig.dependencies`): its
+// dependencies' local names, and its own. Files in no package see the
+// packages by their keys. Published packages are added only with a
+// `packageCache`, as `loadPackageMap` does.
+export function loadWorkspace(
+  host: CompilerHost,
+  root: String,
+  projectRoot: String | null = null,
+  packageCache: String | null = null
+): HashMap<String, PackageConfig> {
+  if (fileExists(host, joinPath(root, "zena-package.json"))) {
+    return new WorkspaceLoader(host, projectRoot, packageCache).load(root);
+  }
+  let legacy = joinPath(root, "zena-packages.json");
+  if (fileExists(host, legacy)) {
+    return loadPackageMap(host, legacy, projectRoot, packageCache);
+  }
+  return new Map<String, PackageConfig>();
+}
+
+final class WorkspaceLoader {
+  #host: CompilerHost;
+  #projectRoot: String | null;
+  #packageCache: String | null;
+  #result = new Map<String, PackageConfig>();
+  // Package keys by directory, so a package two others depend on is
+  // loaded once.
+  #keys = new Map<String, String>();
+  // Directories by package key, to report two packages with one name.
+  #dirs = new Map<String, String>();
+
+  new(host: CompilerHost, projectRoot: String | null, packageCache: String | null)
+    : #host = host, #projectRoot = projectRoot, #packageCache = packageCache;
+
+  load(root: String): HashMap<String, PackageConfig> {
+    let cache = this.#packageCache;
+    let lock = joinPath(root, "zena-lock.json");
+    if (cache != null && fileExists(this.#host, lock)) {
+      let pins = this.#readJson(lock);
+      for (let key in addPins(pins, cache, this.#result, "zena-lock.json")) {
+        // A published package's own manifest gives its exports, once it is
+        // in the cache.
+        let config = this.#result[key];
+        let manifest = joinPath(config.root, "zena-package.json");
+        if (fileExists(this.#host, manifest)) {
+          config.exports = parseExports(this.#readJson(manifest));
+        }
+      }
+    }
+    let manifest = this.#readJson(joinPath(root, "zena-package.json"));
+    if (manifest.has("name")) {
+      this.#loadPackage(root, manifest);
+    }
+    let workspace = manifest["workspace"];
+    if (workspace != null) {
+      let packages = (workspace as JsonObject)["packages"];
+      if (packages != null) {
+        let list = packages as JsonArray;
+        for (var i = 0; i < list.length; i += 1) {
+          this.#loadWorkspaceEntry(root, list[i] as String);
+        }
+      }
+    }
+    return this.#result;
+  }
+
+  // A `workspace.packages` entry: a directory, or `dir/*` for each
+  // directory in `dir` that holds a manifest.
+  #loadWorkspaceEntry(root: String, entry: String): void {
+    if (entry.endsWith("/*")) {
+      let parent = joinPath(root, entry.sliceBytes(0, entry.length - 2));
+      let names = this.#host.listDir(parent);
+      if (names == null) {
+        throw new Error(`zena-package.json: workspace.packages names ${parent}, which is not a directory`);
+      }
+      for (let name in names as Array<String>) {
+        let dir = joinPath(parent, name);
+        if (fileExists(this.#host, joinPath(dir, "zena-package.json"))) {
+          this.#loadPackageAt(dir);
+        }
+      }
+      return;
+    }
+    this.#loadPackageAt(joinPath(root, entry));
+  }
+
+  // The key of the package in `dir`, loading it first if need be.
+  #loadPackageAt(dir: String): String {
+    let path = normalizePath(dir);
+    if (let (true, key) = this.#keys.get(path)) {
+      return key;
+    }
+    let manifest = joinPath(path, "zena-package.json");
+    if (!fileExists(this.#host, manifest)) {
+      throw new Error(`${path} has no zena-package.json`);
+    }
+    return this.#loadPackage(path, this.#readJson(manifest));
+  }
+
+  #loadPackage(dir: String, manifest: JsonObject): String {
+    let path = normalizePath(dir);
+    let nameValue = manifest["name"];
+    var name: String | null = null;
+    if (nameValue != null) {
+      if (!(nameValue is String) || !isLocalName(nameValue as String)) {
+        throw new Error(`${path}/zena-package.json: the name is not a package name`);
+      }
+      name = nameValue as String;
+    }
+    let key = name ?? path;
+    if (let (true, other) = this.#dirs.get(key)) {
+      throw new Error(`${other} and ${path} are both packages named '${key}'`);
+    }
+    let config = new PackageConfig(path, parseExports(manifest));
+    let names = new Map<String, String>();
+    config.dependencies = names;
+    this.#result[key] = config;
+    this.#keys[path] = key;
+    this.#dirs[key] = path;
+    if (name != null) {
+      names[name] = key;
+    }
+    let dependencies = manifest["dependencies"];
+    if (dependencies == null) {
+      return key;
+    }
+    (dependencies as JsonObject).forEach((localName, value) => {
+      if (!isLocalName(localName)) {
+        throw new Error(`${path}/zena-package.json: '${localName}' is not a package name`);
+      }
+      let entry = value as JsonObject;
+      if (entry.has("path")) {
+        let target = resolveManifestPath(entry["path"] as String, path, this.#projectRoot);
+        names[localName] = this.#loadPackageAt(target);
+      } else if (entry.has("wit")) {
+        let witRoot = resolveManifestPath(entry["wit"] as String, path, this.#projectRoot);
+        if (let (true, existing) = this.#result.get(localName)) {
+          if (existing.witRoot != witRoot) {
+            throw new Error(`${path}/zena-package.json: '${localName}' names a WIT package another package names differently`);
+          }
+        } else {
+          let wit = new PackageConfig("", null);
+          wit.witRoot = witRoot;
+          this.#result[localName] = wit;
+        }
+        names[localName] = localName;
+      } else if (this.#packageCache != null) {
+        let did = entry["did"] as String;
+        let pinned = `${did}@${majorOf(entry["version"] as String)}`;
+        if (!isResolved(this.#result, pinned)) {
+          throw new Error(
+              `${path}/zena-package.json: '${localName}' is ${pinned}, which zena-lock.json does not pin. Run 'zena add' or 'zena update'.`);
+        }
+        names[localName] = pinned;
+      }
+    });
+    return key;
+  }
+
+  #readJson(path: String): JsonObject {
+    let json = parseJson(this.#host.readFile(path));
+    if (!(json is JsonObject)) {
+      throw new Error(`${path} is not a JSON object`);
+    }
+    return json as JsonObject;
+  }
+}
+
+// `name` joined onto `dir`, leaving a path relative to the working
+// directory as short as it was.
+function joinPath(dir: String, name: String): String {
+  if (dir == "" || dir == ".") {
+    return name;
+  }
+  return `${dir}/${name}`;
+}
+
+// Whether the file `path` exists, asked of its directory's listing, which
+// every host answers.
+function fileExists(host: CompilerHost, path: String): boolean {
+  let names = host.listDir(dirName(path));
+  if (names == null) {
+    return false;
+  }
+  var base = path;
+  for (var i = 0; i < path.length; i += 1) {
+    if (path.getByteAt(i) == 47) { // '/'
+      base = path.sliceBytes(i + 1, path.length);
+    }
+  }
+  for (let name in names as Array<String>) {
+    if (name == base) {
+      return true;
+    }
+  }
+  return false;
+}
+
+// Whether `name` can be a package's name or a local name in imports.
+function isLocalName(name: String): boolean {
+  return name != "" && name != "zena" && !name.contains(":") && !name.contains("/");
+}
+
+// The major version of `version`, such as `1` of `1.4.2`.
+function majorOf(version: String): String {
+  for (var i = 0; i < version.length; i += 1) {
+    if (version.getByteAt(i) == 46) { // '.'
+      return version.sliceBytes(0, i);
+    }
+  }
+  return version;
+}
+
 // Parse a single package entry from the manifest.
 //
 // Supports two forms:
@@ -257,19 +493,22 @@ function parsePackageEntry(value: JsonValue, manifestDir: String, projectRoot: S
   let rootValue = obj["root"] as String;
   let root = resolveManifestPath(rootValue, manifestDir, projectRoot);
 
-  // Parse exports (optional).
-  var exports: HashMap<String, ModuleExport> | null = null;
-  if (obj.has("exports")) {
-    let exportsMap = new Map<String, ModuleExport>();
-    let exportsObj = obj["exports"] as JsonObject;
-    exportsObj.forEach((moduleName, moduleValue) => {
-      let moduleExport = parseModuleExport(moduleValue);
-      exportsMap[moduleName] = moduleExport;
-    });
-    exports = exportsMap;
-  }
+  return new PackageConfig(root, parseExports(obj));
+}
 
-  return new PackageConfig(root, exports);
+// The `exports` of a package entry or manifest, or null when it has none:
+// an open package.
+function parseExports(obj: JsonObject): HashMap<String, ModuleExport> | null {
+  if (!obj.has("exports")) {
+    return null;
+  }
+  let exportsMap = new Map<String, ModuleExport>();
+  let exportsObj = obj["exports"] as JsonObject;
+  exportsObj.forEach((moduleName, moduleValue) => {
+    let moduleExport = parseModuleExport(moduleValue);
+    exportsMap[moduleName] = moduleExport;
+  });
+  return exportsMap;
 }
 
 // A directory the manifest names, as `loadPackageMap` describes.

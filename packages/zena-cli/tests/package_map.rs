@@ -9,6 +9,8 @@
 //!
 //! A published package is pinned in the resolution file's `resolved`
 //! section and read from the package cache, where `zena fetch` unpacks it.
+//! A workspace described by `zena-package.json` manifests pins them in
+//! `zena-lock.json` instead (docs/design/package-manifest.md).
 //! The fetch tests run `tests/fixtures/fetch-pds.zena` as the package's PLC
 //! directory and PDS.
 
@@ -385,4 +387,95 @@ fn fetch_refuses_a_release_that_differs_from_its_pin() {
                 .is_none(),
         "zena fetch stored a package it refused"
     );
+}
+
+/// Lays out `scratch` as a workspace described by manifests: the root
+/// package `app`, which depends on the workspace package `lib` by path and
+/// on the published package `router`, and `lib`, which depends on `router`
+/// under a name of its own. `router` is pinned in `zena-lock.json` and
+/// already in the package cache.
+fn manifest_layout(scratch: &Scratch) -> PathBuf {
+    let workspace = scratch.path().join("workspace");
+    write(
+        &scratch
+            .path()
+            .join("cache/packages/sources/bafkreirouter/match.zena"),
+        "export function route(): i32 { return 40; }\n",
+    );
+    write(
+        &workspace.join("zena-package.json"),
+        r#"{
+  "name": "app",
+  "dependencies": {
+    "lib": {"path": "./packages/lib"},
+    "router": {"did": "did:plc:routerrouterrouterrouter", "version": "1.4.2"}
+  },
+  "workspace": {"packages": ["packages/*"]}
+}
+"#,
+    );
+    write(
+        &workspace.join("zena-lock.json"),
+        r#"{
+  "resolved": {
+    "did:plc:routerrouterrouterrouter@1": {
+      "version": "1.4.2",
+      "release": "bafyreirouter",
+      "source": "bafkreirouter"
+    }
+  }
+}
+"#,
+    );
+    write(
+        &workspace.join("packages/lib/zena-package.json"),
+        r#"{
+  "name": "lib",
+  "dependencies": {
+    "paths": {"did": "did:plc:routerrouterrouterrouter", "version": "1.0.0"}
+  }
+}
+"#,
+    );
+    write(
+        &workspace.join("packages/lib/lib.zena"),
+        "import { route } from 'paths:match';\n\
+         export function two(): i32 { return route() - 38; }\n",
+    );
+    write(
+        &workspace.join("prog.zena"),
+        "import { two } from 'lib:lib';\n\
+         import { route } from 'router:match';\n\
+         export function main(): i32 {\n  \
+           return route() + two() - 42;\n\
+         }\n",
+    );
+    workspace
+}
+
+#[test]
+fn run_reads_a_workspace_from_its_manifests_and_lockfile() {
+    let scratch = Scratch::new("package-map-manifests");
+    let workspace = manifest_layout(&scratch);
+    let output = zena_in(&workspace, &scratch, &["run", "prog.zena"]);
+    assert_success("zena run", &output);
+}
+
+#[test]
+fn a_workspace_package_sees_only_its_own_names() {
+    let scratch = Scratch::new("package-map-manifest-names");
+    let workspace = manifest_layout(&scratch);
+    // `router` is app's name for the package, not lib's.
+    write(
+        &workspace.join("packages/lib/lib.zena"),
+        "import { route } from 'router:match';\n\
+         export function two(): i32 { return route() - 38; }\n",
+    );
+    let output = zena_in(&workspace, &scratch, &["run", "prog.zena"]);
+    assert!(
+        !output.status.success(),
+        "lib imported app's name for router"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("router"), "unexpected error:\n{stderr}");
 }
