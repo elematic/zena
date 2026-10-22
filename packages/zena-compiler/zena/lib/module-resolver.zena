@@ -59,6 +59,19 @@ export final class PackageConfig {
   // exclusive with `root`/`exports`.
   var witRoot: String | null = null;
 
+  // A package the resolution file pins (its `resolved` section), keyed by
+  // DID and major version, `did:plc:...@1`: the local names its own
+  // imports use, each mapped to the key of the package it stands for.
+  // Such a package sees only these names, the standard library and
+  // WIT-backed packages. Null for a package listed by path, whose files
+  // see the project's names.
+  var dependencies: HashMap<String, String> | null = null;
+
+  // One of the project's dependency names (the resolution file's
+  // `dependencies` section): the key of the resolved package the name
+  // stands for. An alias has no root of its own.
+  var aliasOf: String | null = null;
+
   new(
     root: String,
     exports: HashMap<String, ModuleExport> | null
@@ -129,7 +142,35 @@ export final class ModuleResolver {
 
     let packageName = specifier.sliceBytes(0, colonPos);
     let moduleName = specifier.sliceBytes(colonPos + 1, specifier.length);
-    return this.resolvePackage(packageName, moduleName, referrer);
+    return this.resolvePackage(this.#packageKey(packageName, referrer), moduleName, referrer);
+  }
+
+  // The key of the package `name` stands for in an import from
+  // `referrer`. A resolved package's files resolve names through its own
+  // dependencies; every other file through the package map, where the
+  // project's dependency names are aliases.
+  #packageKey(name: String, referrer: String): String {
+    let owner = this.findPackageForPath(referrer);
+    if (owner != "" && owner != "zena") {
+      let dependencies = this.#packages[owner].dependencies;
+      if (dependencies != null) {
+        if (let (true, key) = dependencies.get(name)) {
+          return key;
+        }
+        if (name == "zena" || this.#isWitPackage(name)) {
+          return name;
+        }
+        throw new Error(`Package '${owner}' has no dependency named '${name}'`);
+      }
+    }
+    return name;
+  }
+
+  #isWitPackage(name: String): boolean {
+    if (let (true, config) = this.#packages.get(name)) {
+      return config.witRoot != null;
+    }
+    return false;
   }
 
   // Resolve a relative import specifier.
@@ -220,6 +261,10 @@ export final class ModuleResolver {
     referrer: String
   ): ResolvedModule {
     if (let (true, config) = this.#packages.get(packageName)) {
+      let aliasOf = config.aliasOf;
+      if (aliasOf != null) {
+        return this.resolvePackage(aliasOf, moduleName, referrer);
+      }
 
       // A WIT-backed package: the module is a WIT interface, and the
       // canonical path carries everything the host needs to synthesize
@@ -290,19 +335,30 @@ export final class ModuleResolver {
     throw new Error(`Unknown package: '${packageName}'`);
   }
 
-  // Find which package (if any) contains the given path.
+  // Find which package (if any) contains the given path: the one with the
+  // longest root the path is inside, so a package nested in another's
+  // directory owns its own files. WIT-backed packages and aliases have no
+  // root and own nothing.
   findPackageForPath(path: String): String {
     if (path.startsWith("zena:")) {
       return "zena";
     }
+    var found = "";
+    var foundLength = -1;
     let iter = this.#packages.keys();
     for (let name in iter) {
-      let config = this.#packages[name];
-      if (path.startsWith(config.root)) {
-        return name;
+      let root = this.#packages[name].root;
+      if (root == "" || (path != root && !path.startsWith(`${root}/`))) {
+        continue;
+      }
+      // A HashMap's order varies between processes, so equal roots are
+      // decided by name.
+      if (root.length > foundLength || (root.length == foundLength && name.compareTo(found) < 0)) {
+        found = name;
+        foundLength = root.length;
       }
     }
-    return "";
+    return found;
   }
 }
 

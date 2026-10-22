@@ -18,9 +18,9 @@ The key distinction: `zena-package.json` is about **identity** (what a package
 is and what it exposes), while the resolution file is about **location** (where
 packages live on disk, the network, or in memory).
 
-> **Current status**: Only the resolution file and stdlib's `zena-package.json`
-> are implemented. Dependency declaration in `zena-package.json` and scoped
-> resolution are future work.
+> **Current status**: The resolution file, including published packages
+> pinned in it, and stdlib's `zena-package.json` are implemented. Declaring
+> dependencies in `zena-package.json` is future work.
 
 ---
 
@@ -159,9 +159,11 @@ specifiers to file paths.
 
 ### Schema
 
-| Field      | Type                     | Required | Description                        |
-| ---------- | ------------------------ | -------- | ---------------------------------- |
-| `packages` | `Record<string, string>` | yes      | Map of package name → path to root |
+| Field          | Type                            | Required | Description                                                                     |
+| -------------- | ------------------------------- | -------- | ------------------------------------------------------------------------------- |
+| `packages`     | `Record<string, string>`        | no       | Map of package name → path to root                                              |
+| `dependencies` | `Record<string, string>`        | no       | Map of local name → published package key (`did:plc:...@1`)                     |
+| `resolved`     | `Record<string, ResolvedEntry>` | no       | Published packages pinned by key; see [Published packages](#published-packages) |
 
 Each value is a path to the package's root directory, relative to this file,
 or absolute. The target directory is expected to contain `.zena` source files
@@ -174,28 +176,56 @@ the resolution file from its working directory, the project root, and
 so such an entry is read by its absolute path. Entries inside the project stay
 relative, which keeps module paths and diagnostics short.
 
-### Future: Scopes
+### Published packages
 
-For transitive dependencies, the resolution file will need scoped mappings
-(similar to import map scopes) so that different packages can resolve the same
-dependency name to different locations:
+A project that uses packages published on atproto
+([package-manager.md](package-manager.md)) names them in `dependencies` and
+pins each in `resolved`, keyed by DID and major version:
 
 ```json
 {
-  "packages": {
-    "my-lib": "./packages/my-lib/zena"
-  },
-  "scopes": {
-    "./packages/my-lib/zena/": {
-      "utils": "./packages/utils-v2/zena"
+  "packages": {"app": "./src"},
+  "dependencies": {"router": "did:plc:routerrouterrouterrouter@1"},
+  "resolved": {
+    "did:plc:routerrouterrouterrouter@1": {
+      "version": "1.4.2",
+      "release": "bafyrei...",
+      "source": "bafkrei...",
+      "dependencies": {"json": "did:web:json.example.com@2"}
+    },
+    "did:web:json.example.com@2": {
+      "version": "2.1.0",
+      "release": "bafyrei...",
+      "source": "bafkrei..."
     }
   }
 }
 ```
 
-This is not yet implemented. [package-manager.md](package-manager.md)
-proposes recording each resolved package's own local names in its entry
-instead.
+The compiler reads a pinned package from the package cache, where
+`zena fetch` unpacks each source archive into `sources/<source CID>`. The
+cache is `packages` under the user's cache directory (`$ZENA_CACHE_DIR`,
+`$XDG_CACHE_HOME/zena` or `~/.cache/zena`), or `.zena/packages` in the
+project when `ZENA_PROJECT_CACHE` is set. A pinned package that is not in
+the cache is an error that says to run `zena fetch`.
+
+Names resolve per package, in place of import-map scopes:
+
+- The project's own files, and the packages listed by path, see the
+  `packages` names and the `dependencies` names.
+- A pinned package's files see the names in its own entry's
+  `dependencies`, the standard library, and WIT-backed packages. They do
+  not see the project's names, so `router` above cannot import `app`, and
+  the project cannot import `json`, which only `router` names.
+
+The compiler checks that every name maps to a pinned package, that no
+`dependencies` name is also a `packages` name, and that each `source` is a
+CID string, since it becomes a directory name. Two pinned packages with
+the same source archive are an error, because the compiler tells packages
+apart by their directories.
+
+Tools without a package cache, such as the browser language service, see
+only the packages listed by path.
 
 ---
 

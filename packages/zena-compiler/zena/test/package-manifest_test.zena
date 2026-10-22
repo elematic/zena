@@ -11,6 +11,30 @@ import { loadPackageMap, buildStdlibConfig } from '../lib/package-manifest.zena'
 import { stdlibLibraryOf, stdlibLibraryAnswers } from '../lib/stdlib-manifest.zena';
 import { MockHost } from './test-utils.zena';
 
+/**
+ * A resolution file for a project that uses one published package,
+ * router, which itself uses json.
+ */
+function resolutionFile() {
+  return `{
+    "packages": {"app": "./src"},
+    "dependencies": {"router": "did:plc:router@1"},
+    "resolved": {
+      "did:plc:router@1": {
+        "version": "1.4.2",
+        "release": "bafyreirouter",
+        "source": "bafkreirouter",
+        "dependencies": {"json": "did:web:json.example.com@2"}
+      },
+      "did:web:json.example.com@2": {
+        "version": "2.1.0",
+        "release": "bafyreijson",
+        "source": "bafkreijson"
+      }
+    }
+  }`;
+}
+
 export let tests = suite("Package Manifest", () => {
 
   suite("loadPackageMap", () => {
@@ -147,6 +171,77 @@ export let tests = suite("Package Manifest", () => {
 
       let packages = loadPackageMap(host, "/project/zena-packages.json");
       equal(packages.size, 0);
+    });
+
+    test("adds the packages a resolution file pins, rooted in the package cache", () => {
+      let host = new MockHost();
+      host.addFile("zena-packages.json", resolutionFile());
+      let packages = loadPackageMap(host, "zena-packages.json", null, "/cache");
+
+      equal(packages["app"].root, "src");
+      isTrue(packages["app"].dependencies == null);
+
+      let router = packages["did:plc:router@1"];
+      equal(router.root, "/cache/sources/bafkreirouter");
+      let routerNames = router.dependencies as HashMap<String, String>;
+      equal(routerNames.size, 1);
+      equal(routerNames["json"], "did:web:json.example.com@2");
+      let json = packages["did:web:json.example.com@2"];
+      equal(json.root, "/cache/sources/bafkreijson");
+      equal((json.dependencies as HashMap<String, String>).size, 0);
+
+      // The project's name for router is an alias with no root.
+      equal(packages["router"].aliasOf as String, "did:plc:router@1");
+      equal(packages["router"].root, "");
+      isFalse(packages.has("json"));
+    });
+
+    test("leaves the pinned packages out without a package cache", () => {
+      let host = new MockHost();
+      host.addFile("zena-packages.json", resolutionFile());
+      let packages = loadPackageMap(host, "zena-packages.json");
+      equal(packages.size, 1);
+      isTrue(packages.has("app"));
+    });
+
+    test("reads a resolution file with no packages listed by path", () => {
+      let host = new MockHost();
+      host.addFile("zena-packages.json", '{"dependencies": {}, "resolved": {}}');
+      equal(loadPackageMap(host, "zena-packages.json", null, "/cache").size, 0);
+    });
+
+    test("rejects a resolution file whose pins do not hold together", () => {
+      let router = '"did:plc:router@1": {"source": "bafkreirouter"}';
+      let rejects = (text: String) => {
+        let host = new MockHost();
+        host.addFile("zena-packages.json", text);
+        var caught = false;
+        try {
+          loadPackageMap(host, "zena-packages.json", null, "/cache");
+        } catch (e) {
+          caught = true;
+        }
+        isTrue(caught, text);
+      };
+      // Keys that are not a DID and major version.
+      rejects('{"resolved": {"router@1": {"source": "bafkreirouter"}}}');
+      rejects('{"resolved": {"did:plc:router": {"source": "bafkreirouter"}}}');
+      rejects('{"resolved": {"did:plc:router@one": {"source": "bafkreirouter"}}}');
+      // Sources that are not CIDs, which could name any directory.
+      rejects('{"resolved": {"did:plc:router@1": {"source": "../../etc"}}}');
+      rejects('{"resolved": {"did:plc:router@1": {"source": "bafkrei/router"}}}');
+      rejects('{"resolved": {"did:plc:router@1": {}}}');
+      rejects('{"resolved": {"did:plc:router@1": "bafkreirouter"}}');
+      // Two packages in one directory.
+      rejects(`{"resolved": {${router}, "did:plc:copy@1": {"source": "bafkreirouter"}}}`);
+      // Names for packages that are not pinned.
+      rejects(`{"dependencies": {"router": "did:plc:other@1"}, "resolved": {${router}}}`);
+      rejects('{"resolved": {"did:plc:router@1": {"source": "bafkreirouter", "dependencies": {"json": "did:web:json@2"}}}}');
+      // Names that clash or cannot be imported.
+      rejects(`{"packages": {"router": "./router"}, "dependencies": {"router": "did:plc:router@1"}, "resolved": {${router}}}`);
+      rejects(`{"dependencies": {"zena": "did:plc:router@1"}, "resolved": {${router}}}`);
+      rejects(`{"dependencies": {"a:b": "did:plc:router@1"}, "resolved": {${router}}}`);
+      rejects(`{"dependencies": {"router": 1}, "resolved": {${router}}}`);
     });
   });
 

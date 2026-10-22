@@ -74,13 +74,17 @@ export final class Project {
   /** Whether the current file is in an import cycle; see `override`. */
   var #cyclic = false;
 
+  /**
+   * `packageCache` is where fetched packages are, for a project whose
+   * `zena-packages.json` pins some; see `CompileFileOptions.packageCache`.
+   */
   new(stdlibRoot: String = 'packages/stdlib/zena', stdlibSources: String | null = null,
-      target: String = 'zena-cli')
+      target: String = 'zena-cli', packageCache: String | null = null)
     : stdlibRoot = stdlibRoot,
       stdlibSources = stdlibSources ?? stdlibRoot,
       target = target,
       #host = new OverlayHost(stdlibRoot),
-      #packages = loadPackages(new OverlayHost(stdlibRoot));
+      #packages = loadPackages(new OverlayHost(stdlibRoot), packageCache);
 
   /** A fresh compiler, dropping whatever the old one accumulated. */
   #freshCompiler(): Compiler {
@@ -185,9 +189,9 @@ export final class Project {
 }
 
 /** The package map in the working directory, or none. */
-function loadPackages(host: CompilerHost): Map<String, PackageConfig> {
+function loadPackages(host: CompilerHost, packageCache: String | null): Map<String, PackageConfig> {
   if (!existsSync('zena-packages.json')) {
     return new Map<String, PackageConfig>();
   }
-  return loadPackageMap(host, 'zena-packages.json');
+  return loadPackageMap(host, 'zena-packages.json', null, packageCache);
 }

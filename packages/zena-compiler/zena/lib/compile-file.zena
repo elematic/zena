@@ -108,6 +108,13 @@ export type CompileFileOptions = {
    * when it is empty, such an entry cannot be read.
    */
   projectRoot?: String,
+  /**
+   * Where fetched packages are, as `zena fetch` stores them: each
+   * package's source archive unpacked in `sources/<CID>`. Without it, or
+   * when it is empty, the packages a `zena-packages.json` pins in its
+   * `resolved` section are not available.
+   */
+  packageCache?: String,
   /** Print "Compiling ..." and "Success: wrote ..." lines. */
   progress?: boolean,
   /**
@@ -194,12 +201,20 @@ class FileHost implements CompilerHost {
 
 // Load package configs ("zena-compiler:parser" → file path) from the manifest
 // in the working directory. A missing manifest is fine — standalone files need
-// only stdlib and relative imports — but a malformed one throws loudly.
-function loadPackages(host: CompilerHost, projectRoot: String | null) {
+// only stdlib and relative imports — but a malformed one throws loudly, and so
+// does one that pins a package the cache does not have.
+function loadPackages(host: CompilerHost, projectRoot: String | null, packageCache: String | null) {
   if (!existsSync("zena-packages.json")) {
     return new Map<String, PackageConfig>();
   }
-  return loadPackageMap(host, "zena-packages.json", projectRoot);
+  let packages = loadPackageMap(host, "zena-packages.json", projectRoot, packageCache);
+  for (let key in packages.keys()) {
+    let config = packages[key];
+    if (config.dependencies != null && !existsSync(config.root)) {
+      throw new Error(`${key} is not in the package cache (${config.root}). Run 'zena fetch'.`);
+    }
+  }
+  return packages;
 }
 
 function reportDiagnosticLine(kind: String, file: String, line: i32, column: i32, message: String) {
@@ -388,6 +403,7 @@ export function compileFile(options: CompileFileOptions): i32 {
     worldName = "",
     stdlibRoot = "/stdlib",
     projectRoot = "",
+    packageCache = "",
     testMode = false,
     time = false,
     debugNames = false,
@@ -462,7 +478,8 @@ export function compileFile(options: CompileFileOptions): i32 {
     witDoc = doc;
     witSource = doc.source;
   }
-  let packages = loadPackages(host, if (projectRoot == "") null else projectRoot);
+  let packages = loadPackages(host, if (projectRoot == "") null else projectRoot,
+      if (packageCache == "") null else packageCache);
   // A declared world's document answers for its own packages: the
   // program imports the world's interfaces by name (`test:app/oracle`
   // for a document declaring `package test:app`), and the resolver

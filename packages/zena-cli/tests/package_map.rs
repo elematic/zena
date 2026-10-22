@@ -6,6 +6,9 @@
 //! `zena-packages.json` from its working directory, the project root, and
 //! the CLI module gives it the root's absolute path, so a `..` entry is
 //! read by its absolute path and an absolute entry as written.
+//!
+//! A published package is pinned in the resolution file's `resolved`
+//! section and read from the package cache, where `zena fetch` unpacks it.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -146,4 +149,90 @@ fn test_reads_packages_above_the_project_and_at_absolute_paths() {
     let project = layout(&scratch);
     let output = zena_in(&project, &scratch, &["test", "numbers_test.zena"]);
     assert_success("zena test", &output);
+}
+
+/// Lays out `scratch` as a project that uses a published package,
+/// `router`, which uses another, `json`, by a name of its own. Both are in
+/// the package cache as `zena fetch` leaves them: each source archive
+/// unpacked under `cache/packages/sources/<CID>`.
+fn published_layout(scratch: &Scratch) -> PathBuf {
+    let project = scratch.path().join("project");
+    let sources = scratch.path().join("cache/packages/sources");
+    write(
+        &sources.join("bafkreirouter/match.zena"),
+        "import { parse } from 'json:parse';\n\
+         export function route(): i32 { return parse() + 1; }\n",
+    );
+    write(
+        &sources.join("bafkreijson/parse.zena"),
+        "export function parse(): i32 { return 41; }\n",
+    );
+    write(
+        &project.join("zena-packages.json"),
+        r#"{
+  "dependencies": {"router": "did:plc:router@1"},
+  "resolved": {
+    "did:plc:router@1": {
+      "version": "1.4.2",
+      "release": "bafyreirouter",
+      "source": "bafkreirouter",
+      "dependencies": {"json": "did:web:json.example.com@2"}
+    },
+    "did:web:json.example.com@2": {
+      "version": "2.1.0",
+      "release": "bafyreijson",
+      "source": "bafkreijson"
+    }
+  }
+}
+"#,
+    );
+    write(
+        &project.join("prog.zena"),
+        "import { route } from 'router:match';\n\
+         export function main(): i32 {\n  \
+           return route() - 42;\n\
+         }\n",
+    );
+    write(
+        &project.join("direct.zena"),
+        "import { parse } from 'json:parse';\n\
+         export function main(): i32 {\n  \
+           return parse() - 41;\n\
+         }\n",
+    );
+    project
+}
+
+#[test]
+fn run_reads_published_packages_from_the_package_cache() {
+    let scratch = Scratch::new("package-map-published");
+    let project = published_layout(&scratch);
+    let output = zena_in(&project, &scratch, &["run", "prog.zena"]);
+    assert_success("zena run", &output);
+}
+
+#[test]
+fn a_dependency_of_a_dependency_is_not_the_projects_to_import() {
+    let scratch = Scratch::new("package-map-transitive");
+    let project = published_layout(&scratch);
+    let output = zena_in(&project, &scratch, &["run", "direct.zena"]);
+    assert!(!output.status.success(), "importing json from the project compiled");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("json"), "unexpected error:\n{stderr}");
+}
+
+#[test]
+fn a_package_missing_from_the_cache_says_to_fetch_it() {
+    let scratch = Scratch::new("package-map-missing");
+    let project = published_layout(&scratch);
+    fs::remove_dir_all(scratch.path().join("cache/packages/sources/bafkreijson"))
+        .expect("removed json's source");
+    let output = zena_in(&project, &scratch, &["run", "prog.zena"]);
+    assert!(!output.status.success(), "compiled without json in the cache");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("did:web:json.example.com@2") && stderr.contains("zena fetch"),
+        "unexpected error:\n{stderr}"
+    );
 }

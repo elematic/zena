@@ -62,6 +62,29 @@ function makeResolver(target: String) {
   return new ModuleResolver(packages, target);
 }
 
+// A resolver for a project that uses router, a published package, which
+// itself uses json; with a WIT package, as the stdlib carries.
+function makeResolvedResolver() {
+  let router = new PackageConfig("/cache/sources/bafkreirouter", null);
+  router.dependencies = {"json" => "did:web:json@2"};
+  let json = new PackageConfig("/cache/sources/bafkreijson", null);
+  json.dependencies = new Map<String, String>();
+  let alias = new PackageConfig("", null);
+  alias.aliasOf = "did:plc:router@1";
+  let wasi = new PackageConfig("", null);
+  wasi.witRoot = "/stdlib/wit";
+  let packages: HashMap<String, PackageConfig> = {
+    "zena" => makeStdlibConfig(),
+    "app" => new PackageConfig("/project/src", null),
+    "vendored" => new PackageConfig("/project/src/vendor/lib", null),
+    "did:plc:router@1" => router,
+    "did:web:json@2" => json,
+    "router" => alias,
+    "wasi" => wasi,
+  };
+  return new ModuleResolver(packages, "zena-cli");
+}
+
 export let tests = suite("Module Resolver", () => {
 
 // ============================================================================
@@ -327,6 +350,58 @@ export let tests = suite("Module Resolver", () => {
     equal(resolver.findPackageForPath("/unknown/file.zena"), "");
   });
 
+  });
+  suite("Published packages", () => {
+
+  test("a project name resolves through its alias to the pinned package", (t) => {
+    let resolved = makeResolvedResolver().resolve("router:match", "/project/src/main.zena");
+    equal(resolved.path, "/cache/sources/bafkreirouter/match.zena");
+    equal(resolved.packageName, "did:plc:router@1");
+  });
+
+  test("a pinned package's files resolve names through its own dependencies", (t) => {
+    let resolver = makeResolvedResolver();
+    let resolved = resolver.resolve("json:parse", "/cache/sources/bafkreirouter/match.zena");
+    equal(resolved.path, "/cache/sources/bafkreijson/parse.zena");
+    equal(resolved.packageName, "did:web:json@2");
+    // The project has no name for json.
+    throws(() => {
+      resolver.resolve("json:parse", "/project/src/main.zena");
+    });
+  });
+
+  test("a pinned package sees the standard library and WIT packages", (t) => {
+    let resolver = makeResolvedResolver();
+    equal(resolver.resolve("zena:string", "/cache/sources/bafkreirouter/match.zena").path, "zena:string");
+    let wit = resolver.resolve("wasi:clocks/monotonic-clock", "/cache/sources/bafkreirouter/match.zena");
+    equal(wit.path, "wit:/stdlib/wit#wasi:clocks/monotonic-clock");
+  });
+
+  test("a pinned package does not see the project's names", (t) => {
+    let resolver = makeResolvedResolver();
+    throws(() => {
+      resolver.resolve("app:main", "/cache/sources/bafkreirouter/match.zena");
+    });
+    throws(() => {
+      resolver.resolve("router:match", "/cache/sources/bafkreijson/parse.zena");
+    });
+  });
+
+  test("a relative import stays in the pinned package", (t) => {
+    let resolved = makeResolvedResolver().resolve("./util.zena", "/cache/sources/bafkreirouter/match.zena");
+    equal(resolved.path, "/cache/sources/bafkreirouter/util.zena");
+    equal(resolved.packageName, "did:plc:router@1");
+  });
+
+  test("findPackageForPath matches whole directories, the longest first", (t) => {
+    let resolver = makeResolvedResolver();
+    equal(resolver.findPackageForPath("/project/src/main.zena"), "app");
+    equal(resolver.findPackageForPath("/project/src/vendor/lib/x.zena"), "vendored");
+    equal(resolver.findPackageForPath("/project/srcs/main.zena"), "");
+    equal(resolver.findPackageForPath("/cache/sources/bafkreijson/parse.zena"), "did:web:json@2");
+    // Aliases and WIT packages have no root, and own nothing.
+    equal(resolver.findPackageForPath("/elsewhere/x.zena"), "");
+  });
   });
 });
 
