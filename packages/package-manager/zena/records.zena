@@ -1,0 +1,450 @@
+/**
+ * The records a package's repository holds (docs/design/package-manager.md,
+ * "Records"): one profile, a release per version, and a yank per yanked
+ * version. Their lexicons are in `packages/package-manager/lexicons`.
+ *
+ * Each class reads its record from the data model with `fromValue`, which
+ * checks it against the lexicon and throws `RecordError`, and writes it
+ * back with `toValue`. Fields a lexicon does not define are ignored, so a
+ * record written by a newer client still reads.
+ */
+
+import {HashSet} from 'zena:collections';
+import {CODEC_RAW, Cid} from 'atproto:cid';
+import {
+  BlobRef,
+  IntValue,
+  ListValue,
+  MapValue,
+  StringValue,
+  Value,
+  field,
+  newMap
+} from 'atproto:data';
+import {isValidCidSyntax, isValidDatetime, isValidDid} from 'atproto:syntax';
+import {Version} from './version.zena';
+
+export let PROFILE_TYPE = 'dev.zena-lang.package.profile';
+export let RELEASE_TYPE = 'dev.zena-lang.package.release';
+export let YANK_TYPE = 'dev.zena-lang.package.yank';
+
+/** The record key of a package's profile. */
+export let PROFILE_KEY = 'self';
+
+/** Artifact kinds. A release may also list kinds a client does not know. */
+export let SOURCE = 'source';
+export let COMPONENT = 'component';
+export let CORE_MODULE = 'core-module';
+
+/** A record that does not follow its lexicon. */
+export class RecordError extends Error {
+  new(message: String) : super(message);
+}
+
+/**
+ * Whether `name` can name a package in imports and resolution files:
+ * lowercase ASCII letters, digits and `-`, starting with a letter, and at
+ * most 64 bytes. `zena` names the standard library, so no package has it.
+ */
+export function isValidPackageName(name: String): boolean {
+  if (name.length == 0 || name.length > 64 || name == 'zena') {
+    return false;
+  }
+  for (var i = 0; i < name.length; i += 1) {
+    let b = name.getByteAt(i);
+    let letter = b >= 97 && b <= 122;
+    if (!letter && (i == 0 || !((b >= 48 && b <= 57) || b == 45))) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/** A package's profile, at record key `self`. */
+export final class Profile {
+  /** The local name the package suggests for itself. */
+  name: String;
+  description: String | null;
+  /** An SPDX license expression. */
+  license: String | null;
+  homepage: String | null;
+  /** Where the package's source is developed. */
+  source: String | null;
+
+  new(name: String, description: String | null = null, license: String | null = null,
+      homepage: String | null = null, source: String | null = null)
+      : name = name, description = description, license = license,
+        homepage = homepage, source = source;
+
+  static fromValue(value: Value): Profile {
+    let map = recordMap(value, PROFILE_TYPE, 'profile');
+    let name = requiredString(map, 'name', 'profile');
+    if (!isValidPackageName(name)) {
+      throw new RecordError(`profile: '${name}' is not a valid package name`);
+    }
+    return new Profile(name, optionalString(map, 'description', 'profile'),
+        optionalString(map, 'license', 'profile'), optionalString(map, 'homepage', 'profile'),
+        optionalString(map, 'source', 'profile'));
+  }
+
+  toValue(): MapValue {
+    let map = typedMap(PROFILE_TYPE);
+    map.entries['name'] = new StringValue(this.name);
+    putString(map, 'description', this.description);
+    putString(map, 'license', this.license);
+    putString(map, 'homepage', this.homepage);
+    putString(map, 'source', this.source);
+    return map;
+  }
+}
+
+/**
+ * One of a release's artifacts: the blob that holds it, or for a large
+ * artifact the parts it was uploaded in, which concatenate to it.
+ */
+export final class Artifact {
+  /** `source`, `component`, `core-module`, or a kind this client does not know. */
+  kind: String;
+  /** The blob holding the whole artifact, or null when it is in parts. */
+  blob: BlobRef | null;
+  /** The parts, in order, or null when the artifact is one blob. */
+  parts: FixedArray<BlobRef> | null;
+  /** The raw CID of the whole artifact. */
+  cid: Cid;
+  /** The whole artifact's size in bytes. */
+  size: i64;
+  /** The WIT world a component targets. */
+  world: String | null;
+  /** A component's WIT text. */
+  wit: BlobRef | null;
+
+  new(kind: String, blob: BlobRef | null, parts: FixedArray<BlobRef> | null, cid: Cid,
+      size: i64, world: String | null, wit: BlobRef | null)
+      : kind = kind, blob = blob, parts = parts, cid = cid, size = size, world = world,
+        wit = wit;
+
+  /** An artifact held in one blob. */
+  static whole(kind: String, blob: BlobRef, world: String | null = null,
+      wit: BlobRef | null = null): Artifact {
+    return new Artifact(kind, blob, null, blob.cid, blob.size, world, wit);
+  }
+
+  /** A large artifact held in `parts`, whose concatenation has `cid` and `size`. */
+  static inParts(kind: String, parts: FixedArray<BlobRef>, cid: Cid, size: i64,
+      world: String | null = null, wit: BlobRef | null = null): Artifact {
+    return new Artifact(kind, null, parts, cid, size, world, wit);
+  }
+
+  static fromValue(value: Value): Artifact {
+    if (!(value is MapValue)) {
+      throw new RecordError('release: an artifact is not an object');
+    }
+    let map = value;
+    let kind = requiredString(map, 'kind', 'release artifact');
+    if (kind.length == 0) {
+      throw new RecordError('release: an artifact has an empty kind');
+    }
+    let where = `release: '${kind}' artifact`;
+    let world = optionalString(map, 'world', where);
+    let witValue = field(map, 'wit');
+    let wit = if (witValue == null) null else readBlob(witValue, where);
+    if (kind == COMPONENT && (world == null || wit == null)) {
+      throw new RecordError(`${where} has no world or no WIT`);
+    }
+    let blobValue = field(map, 'blob');
+    let partsValue = field(map, 'parts');
+    if (blobValue != null) {
+      if (partsValue != null || field(map, 'cid') != null || field(map, 'size') != null) {
+        throw new RecordError(`${where} has a blob and also parts, a CID or a size`);
+      }
+      return Artifact.whole(kind, readBlob(blobValue, where), world, wit);
+    }
+    if (!(partsValue is ListValue)) {
+      throw new RecordError(`${where} has no blob and no parts`);
+    }
+    let items = partsValue.items;
+    if (items.length == 0) {
+      throw new RecordError(`${where} has an empty list of parts`);
+    }
+    let first = readBlob(items[0], where);
+    let parts = new FixedArray<BlobRef>(items.length, first);
+    var total: i64 = 0;
+    for (var i = 0; i < items.length; i += 1) {
+      parts[i] = readBlob(items[i], where);
+      total += parts[i].size;
+    }
+    let cidText = requiredString(map, 'cid', where);
+    if (!isValidCidSyntax(cidText)) {
+      throw new RecordError(`${where}: '${cidText}' is not a CID`);
+    }
+    let cid = Cid.parse(cidText);
+    if (cid.codec != CODEC_RAW) {
+      throw new RecordError(`${where}: ${cidText} is not a raw CID`);
+    }
+    let size = field(map, 'size');
+    if (!(size is IntValue) || size.value != total) {
+      throw new RecordError(`${where}: size is not the sum of its parts' sizes, ${total}`);
+    }
+    return Artifact.inParts(kind, parts, cid, total, world, wit);
+  }
+
+  toValue(): MapValue {
+    let map = newMap();
+    map.entries['kind'] = new StringValue(this.kind);
+    putString(map, 'world', this.world);
+    let blob = this.blob;
+    if (blob != null) {
+      map.entries['blob'] = blob.toValue();
+    } else {
+      let parts = this.parts as FixedArray<BlobRef>;
+      let items = new FixedArray<Value>(parts.length, new IntValue(0 as i64));
+      for (var i = 0; i < parts.length; i += 1) {
+        items[i] = parts[i].toValue();
+      }
+      map.entries['parts'] = new ListValue(items);
+      map.entries['size'] = new IntValue(this.size);
+      map.entries['cid'] = new StringValue(this.cid.toString());
+    }
+    let wit = this.wit;
+    if (wit != null) {
+      map.entries['wit'] = wit.toValue();
+    }
+    return map;
+  }
+}
+
+/** A package a release depends on. */
+export final class Dependency {
+  did: String;
+  /** The lowest version the release works with. */
+  version: Version;
+  /** The local name the release's own imports use for the package. */
+  name: String;
+
+  new(did: String, version: Version, name: String) : did = did, version = version, name = name;
+
+  static fromValue(value: Value): Dependency {
+    if (!(value is MapValue)) {
+      throw new RecordError('release: a dependency is not an object');
+    }
+    let map = value;
+    let did = requiredString(map, 'did', 'release dependency');
+    if (!isValidDid(did)) {
+      throw new RecordError(`release: dependency '${did}' is not a DID`);
+    }
+    let name = requiredString(map, 'name', 'release dependency');
+    if (!isValidPackageName(name)) {
+      throw new RecordError(`release: dependency name '${name}' is not a valid package name`);
+    }
+    let version = readVersion(requiredString(map, 'version', 'release dependency'), 'release dependency');
+    return new Dependency(did, version, name);
+  }
+
+  toValue(): MapValue {
+    let map = newMap();
+    map.entries['did'] = new StringValue(this.did);
+    map.entries['version'] = new StringValue(this.version.toString());
+    map.entries['name'] = new StringValue(this.name);
+    return map;
+  }
+}
+
+/** A release, at record key equal to its version. */
+export final class Release {
+  version: Version;
+  /** When the release was published, an atproto datetime. */
+  createdAt: String;
+  artifacts: FixedArray<Artifact>;
+  dependencies: FixedArray<Dependency>;
+
+  new(version: Version, createdAt: String, artifacts: FixedArray<Artifact>,
+      dependencies: FixedArray<Dependency>)
+      : version = version, createdAt = createdAt, artifacts = artifacts,
+        dependencies = dependencies;
+
+  /**
+   * Reads a release record. Given the record key `key`, also checks that
+   * the version repeats it.
+   */
+  static fromValue(value: Value, key: String | null = null): Release {
+    let map = recordMap(value, RELEASE_TYPE, 'release');
+    let versionText = requiredString(map, 'version', 'release');
+    let version = readVersion(versionText, 'release');
+    if (key != null && key != versionText) {
+      throw new RecordError(`release: version ${versionText} is not its record key, '${key}'`);
+    }
+    let createdAt = requiredString(map, 'createdAt', 'release');
+    if (!isValidDatetime(createdAt)) {
+      throw new RecordError(`release: createdAt '${createdAt}' is not a datetime`);
+    }
+
+    let artifactList = field(map, 'artifacts');
+    if (!(artifactList is ListValue)) {
+      throw new RecordError('release: artifacts is not a list');
+    }
+    let artifactItems = artifactList.items;
+    if (artifactItems.length == 0) {
+      throw new RecordError('release: artifacts is empty');
+    }
+    let artifacts = new FixedArray<Artifact>(artifactItems.length, Artifact.fromValue(artifactItems[0]));
+    for (var i = 1; i < artifactItems.length; i += 1) {
+      artifacts[i] = Artifact.fromValue(artifactItems[i]);
+    }
+
+    var dependencies = new FixedArray<Dependency>(0, new Dependency('', version, ''));
+    let dependencyList = field(map, 'dependencies');
+    if (dependencyList != null) {
+      if (!(dependencyList is ListValue)) {
+        throw new RecordError('release: dependencies is not a list');
+      }
+      let items = dependencyList.items;
+      if (items.length > 0) {
+        dependencies = new FixedArray<Dependency>(items.length, Dependency.fromValue(items[0]));
+        for (var i = 1; i < items.length; i += 1) {
+          dependencies[i] = Dependency.fromValue(items[i]);
+        }
+      }
+      checkDependencies(dependencies);
+    }
+    return new Release(version, createdAt, artifacts, dependencies);
+  }
+
+  /** The first artifact of kind `kind`, or null when the release has none. */
+  artifact(kind: String): Artifact | null {
+    for (let artifact in this.artifacts) {
+      if (artifact.kind == kind) {
+        return artifact;
+      }
+    }
+    return null;
+  }
+
+  toValue(): MapValue {
+    let map = typedMap(RELEASE_TYPE);
+    map.entries['version'] = new StringValue(this.version.toString());
+    map.entries['createdAt'] = new StringValue(this.createdAt);
+    let artifacts = new FixedArray<Value>(this.artifacts.length, new IntValue(0 as i64));
+    for (var i = 0; i < artifacts.length; i += 1) {
+      artifacts[i] = this.artifacts[i].toValue();
+    }
+    map.entries['artifacts'] = new ListValue(artifacts);
+    if (this.dependencies.length > 0) {
+      let dependencies = new FixedArray<Value>(this.dependencies.length, new IntValue(0 as i64));
+      for (var i = 0; i < dependencies.length; i += 1) {
+        dependencies[i] = this.dependencies[i].toValue();
+      }
+      map.entries['dependencies'] = new ListValue(dependencies);
+    }
+    return map;
+  }
+}
+
+/** A yanked version, at record key equal to the version. */
+export final class Yank {
+  version: Version;
+  /** Why the version was yanked. */
+  reason: String | null;
+
+  new(version: Version, reason: String | null = null) : version = version, reason = reason;
+
+  /**
+   * Reads a yank record. Given the record key `key`, also checks that the
+   * version repeats it.
+   */
+  static fromValue(value: Value, key: String | null = null): Yank {
+    let map = recordMap(value, YANK_TYPE, 'yank');
+    let versionText = requiredString(map, 'version', 'yank');
+    let version = readVersion(versionText, 'yank');
+    if (key != null && key != versionText) {
+      throw new RecordError(`yank: version ${versionText} is not its record key, '${key}'`);
+    }
+    return new Yank(version, optionalString(map, 'reason', 'yank'));
+  }
+
+  toValue(): MapValue {
+    let map = typedMap(YANK_TYPE);
+    map.entries['version'] = new StringValue(this.version.toString());
+    putString(map, 'reason', this.reason);
+    return map;
+  }
+}
+
+/**
+ * A release's dependencies give each local name once, and each package's
+ * major version once.
+ */
+function checkDependencies(dependencies: FixedArray<Dependency>): void {
+  let names = new HashSet<String>();
+  let packages = new HashSet<String>();
+  for (let dependency in dependencies) {
+    if (names.has(dependency.name)) {
+      throw new RecordError(`release: two dependencies are named '${dependency.name}'`);
+    }
+    names.add(dependency.name);
+    let key = `${dependency.did}@${dependency.version.major}`;
+    if (packages.has(key)) {
+      throw new RecordError(`release: ${key} is a dependency twice`);
+    }
+    packages.add(key);
+  }
+}
+
+/** `value` as a record map whose `$type` is `type`. */
+function recordMap(value: Value, type: String, what: String): MapValue {
+  if (!(value is MapValue)) {
+    throw new RecordError(`${what}: the record is not an object`);
+  }
+  let map = value;
+  let actual = field(map, '$type');
+  if (!(actual is StringValue) || actual.value != type) {
+    throw new RecordError(`${what}: $type is not '${type}'`);
+  }
+  return map;
+}
+
+function typedMap(type: String): MapValue {
+  let map = newMap();
+  map.entries['$type'] = new StringValue(type);
+  return map;
+}
+
+function requiredString(map: MapValue, key: String, what: String): String {
+  let value = optionalString(map, key, what);
+  if (value == null) {
+    throw new RecordError(`${what}: '${key}' is missing`);
+  }
+  return value;
+}
+
+function optionalString(map: MapValue, key: String, what: String): String | null {
+  let value = field(map, key);
+  if (value == null) {
+    return null;
+  }
+  if (!(value is StringValue)) {
+    throw new RecordError(`${what}: '${key}' is not a string`);
+  }
+  return value.value;
+}
+
+function putString(map: MapValue, key: String, value: String | null): void {
+  if (value != null) {
+    map.entries[key] = new StringValue(value);
+  }
+}
+
+function readBlob(value: Value, what: String): BlobRef {
+  try {
+    return BlobRef.fromValue(value);
+  } catch (e) {
+    throw new RecordError(`${what}: ${e.message}`);
+  }
+}
+
+function readVersion(text: String, what: String): Version {
+  try {
+    return Version.parse(text);
+  } catch (e) {
+    throw new RecordError(`${what}: ${e.message}`);
+  }
+}

@@ -1,0 +1,259 @@
+import {suite, test} from 'zena:test';
+import {equal, isFalse, isNull, isTrue, jsonEqual} from 'zena:assert';
+import {readFileSync} from 'zena:fs';
+import {JsonObject, parseJson} from 'zena:json';
+import {Cid} from 'atproto:cid';
+import {BlobRef, Value, fromJson, toJson} from 'atproto:data';
+import {isValidNsid} from 'atproto:syntax';
+import {
+  Artifact,
+  COMPONENT,
+  PROFILE_TYPE,
+  Profile,
+  RELEASE_TYPE,
+  RecordError,
+  Release,
+  SOURCE,
+  YANK_TYPE,
+  Yank,
+  isValidPackageName
+} from 'package-manager:records';
+
+function bytes(text: String) {
+  let out = new FixedArray<u8>(text.length, 0 as u8);
+  for (var i = 0; i < text.length; i += 1) {
+    out[i] = text.getByteAt(i) as u8;
+  }
+  return out;
+}
+
+let SOURCE_CID = Cid.forBlob(bytes('source archive')).toString();
+let COMPONENT_CID = Cid.forBlob(bytes('component')).toString();
+let WIT_CID = Cid.forBlob(bytes('wit')).toString();
+let PART_ONE_CID = Cid.forBlob(bytes('part one')).toString();
+let PART_TWO_CID = Cid.forBlob(bytes('part two')).toString();
+let WHOLE_CID = Cid.forBlob(bytes('part onepart two')).toString();
+let RECORD_CID = Cid.forDagCbor(bytes('not really cbor')).toString();
+
+function blob(cid: String, mimeType: String, size: i32) {
+  return `{"$type": "blob", "ref": {"$link": "${cid}"}, "mimeType": "${mimeType}", "size": ${size}}`;
+}
+
+let SOURCE_ARTIFACT = `{"kind": "source", "blob": ${blob(SOURCE_CID, 'application/vnd.ipld.car', 48211)}}`;
+
+/**
+ * A valid release with these artifacts, and with these dependencies when
+ * they are given.
+ */
+function release(artifacts: String = `[${SOURCE_ARTIFACT}]`, dependencies: String | null = null,
+    version: String = '1.4.2', createdAt: String = '2026-10-21T00:00:00.000Z') {
+  let dependencyField = if (dependencies == null) '' else `, "dependencies": ${dependencies}`;
+  return `{
+    "$type": "dev.zena-lang.package.release",
+    "version": "${version}",
+    "createdAt": "${createdAt}",
+    "artifacts": ${artifacts}${dependencyField}
+  }`;
+}
+
+function value(json: String) {
+  return fromJson(parseJson(json));
+}
+
+function rejectsRelease(json: String, key: String | null = '1.4.2') {
+  var caught = false;
+  try {
+    Release.fromValue(value(json), key);
+  } catch (e) {
+    caught = e is RecordError;
+  }
+  isTrue(caught, `accepted ${json}`);
+}
+
+function rejectsProfile(json: String) {
+  var caught = false;
+  try {
+    Profile.fromValue(value(json));
+  } catch (e) {
+    caught = e is RecordError;
+  }
+  isTrue(caught, `accepted ${json}`);
+}
+
+export let tests = suite('package-manager:records', () => {
+  test('names each record type after its lexicon', (ctx) => {
+    for (let type in [PROFILE_TYPE, RELEASE_TYPE, YANK_TYPE]) {
+      isTrue(isValidNsid(type), type);
+      let parts = type.split('.');
+      let path = `packages/package-manager/lexicons/dev/zena-lang/package/${parts[parts.length - 1]}.json`;
+      let lexicon = parseJson(readFileSync(path)) as JsonObject;
+      equal(lexicon['id'] as String, type);
+    }
+  });
+
+  test('reads a release and writes it back', (ctx) => {
+    let component = `{
+      "kind": "component",
+      "world": "wasi:http/proxy@0.3.0",
+      "blob": ${blob(COMPONENT_CID, 'application/wasm', 1840233)},
+      "wit": ${blob(WIT_CID, 'text/plain', 2210)}
+    }`;
+    let json = release(`[${SOURCE_ARTIFACT}, ${component}]`,
+        '[{"did": "did:web:json.example.com", "version": "2.1.0", "name": "json"}]');
+    let record = Release.fromValue(value(json), '1.4.2');
+    equal(record.version.toString(), '1.4.2');
+    equal(record.createdAt, '2026-10-21T00:00:00.000Z');
+    equal(record.artifacts.length, 2);
+
+    let source = record.artifact(SOURCE);
+    isTrue(source != null);
+    let sourceArtifact = source as Artifact;
+    equal(sourceArtifact.cid.toString(), SOURCE_CID);
+    equal(sourceArtifact.size, 48211 as i64);
+    isTrue(sourceArtifact.parts == null);
+    equal((sourceArtifact.blob as BlobRef).mimeType, 'application/vnd.ipld.car');
+
+    let componentArtifact = record.artifact(COMPONENT) as Artifact;
+    equal(componentArtifact.world as String, 'wasi:http/proxy@0.3.0');
+    equal((componentArtifact.wit as BlobRef).cid.toString(), WIT_CID);
+    isNull(record.artifact('core-module'));
+
+    equal(record.dependencies.length, 1);
+    equal(record.dependencies[0].did, 'did:web:json.example.com');
+    equal(record.dependencies[0].version.toString(), '2.1.0');
+    equal(record.dependencies[0].name, 'json');
+
+    jsonEqual(toJson(record.toValue()), parseJson(json));
+  });
+
+  test('reads an artifact uploaded in parts', (ctx) => {
+    let parts = `{
+      "kind": "core-module",
+      "parts": [
+        ${blob(PART_ONE_CID, 'application/octet-stream', 8)},
+        ${blob(PART_TWO_CID, 'application/octet-stream', 8)}
+      ],
+      "size": 16,
+      "cid": "${WHOLE_CID}"
+    }`;
+    let json = release(`[${SOURCE_ARTIFACT}, ${parts}]`);
+    let artifact = Release.fromValue(value(json)).artifact('core-module') as Artifact;
+    let partList = artifact.parts as FixedArray<BlobRef>;
+    isNull(artifact.blob);
+    equal(partList.length, 2);
+    equal(partList[1].cid.toString(), PART_TWO_CID);
+    equal(artifact.cid.toString(), WHOLE_CID);
+    equal(artifact.size, 16 as i64);
+    jsonEqual(toJson(Release.fromValue(value(json)).toValue()), parseJson(json));
+  });
+
+  test('ignores fields and artifact kinds it does not know', (ctx) => {
+    let future = `{"kind": "future-kind", "blob": ${blob(COMPONENT_CID, 'application/octet-stream', 9)}}`;
+    let json = `{
+      "$type": "dev.zena-lang.package.release",
+      "version": "1.4.2",
+      "createdAt": "2026-10-21T00:00:00.000Z",
+      "artifacts": [${SOURCE_ARTIFACT}, ${future}],
+      "signedBy": "someone"
+    }`;
+    let record = Release.fromValue(value(json), '1.4.2');
+    equal(record.artifacts[1].kind, 'future-kind');
+    equal(record.dependencies.length, 0);
+  });
+
+  test('rejects releases outside the lexicon', (ctx) => {
+    // The record itself.
+    rejectsRelease(`{"version": "1.4.2", "createdAt": "2026-10-21T00:00:00.000Z", "artifacts": [${SOURCE_ARTIFACT}]}`);
+    rejectsRelease(`{"$type": "dev.zena-lang.package.yank", "version": "1.4.2", "createdAt": "2026-10-21T00:00:00.000Z", "artifacts": [${SOURCE_ARTIFACT}]}`);
+    rejectsRelease(release(), '1.4.3');
+    rejectsRelease(release(`[${SOURCE_ARTIFACT}]`, '[]', '1.4'), '1.4');
+    rejectsRelease(release(`[${SOURCE_ARTIFACT}]`, '[]', '1.4.2', 'yesterday'));
+    rejectsRelease(release('[]'));
+    rejectsRelease(release('{}'));
+
+    // Artifacts.
+    rejectsRelease(release(`[{"blob": ${blob(SOURCE_CID, 'application/vnd.ipld.car', 1)}}]`));
+    rejectsRelease(release(`[{"kind": "", "blob": ${blob(SOURCE_CID, 'application/vnd.ipld.car', 1)}}]`));
+    rejectsRelease(release('[{"kind": "source"}]'));
+    rejectsRelease(release(`[{"kind": "source", "blob": ${blob(SOURCE_CID, 'application/vnd.ipld.car', 1)}, "size": 1}]`));
+    rejectsRelease(release(`[{"kind": "source", "blob": {"$link": "${SOURCE_CID}"}}]`));
+    rejectsRelease(release(`[{"kind": "component", "blob": ${blob(COMPONENT_CID, 'application/wasm', 1)}}]`));
+    let part = blob(PART_ONE_CID, 'application/octet-stream', 8);
+    rejectsRelease(release(`[{"kind": "source", "parts": [], "size": 0, "cid": "${WHOLE_CID}"}]`));
+    rejectsRelease(release(`[{"kind": "source", "parts": [${part}], "size": 9, "cid": "${WHOLE_CID}"}]`));
+    rejectsRelease(release(`[{"kind": "source", "parts": [${part}], "size": 8}]`));
+    rejectsRelease(release(`[{"kind": "source", "parts": [${part}], "size": 8, "cid": "${RECORD_CID}"}]`));
+    rejectsRelease(release(`[{"kind": "source", "parts": [${part}], "size": 8, "cid": "not a cid"}]`));
+
+    // Dependencies.
+    let dependency = (did: String, version: String, name: String) =>
+        `{"did": "${did}", "version": "${version}", "name": "${name}"}`;
+    let json = dependency('did:web:json.example.com', '2.1.0', 'json');
+    rejectsRelease(release(`[${SOURCE_ARTIFACT}]`, '{}'));
+    rejectsRelease(release(`[${SOURCE_ARTIFACT}]`, `[${dependency('json.example.com', '2.1.0', 'json')}]`));
+    rejectsRelease(release(`[${SOURCE_ARTIFACT}]`, `[${dependency('did:web:json.example.com', '2.1', 'json')}]`));
+    rejectsRelease(release(`[${SOURCE_ARTIFACT}]`, `[${dependency('did:web:json.example.com', '2.1.0', 'Json')}]`));
+    rejectsRelease(release(`[${SOURCE_ARTIFACT}]`,
+        `[${json}, ${dependency('did:web:other.example.com', '1.0.0', 'json')}]`));
+    rejectsRelease(release(`[${SOURCE_ARTIFACT}]`,
+        `[${json}, ${dependency('did:web:json.example.com', '2.3.0', 'json2')}]`));
+    // Two major versions of one package may both be dependencies.
+    let twoMajors = release(`[${SOURCE_ARTIFACT}]`,
+        `[${json}, ${dependency('did:web:json.example.com', '3.0.0', 'json3')}]`);
+    equal(Release.fromValue(value(twoMajors), '1.4.2').dependencies.length, 2);
+  });
+
+  test('reads profiles', (ctx) => {
+    let json = `{
+      "$type": "dev.zena-lang.package.profile",
+      "name": "router",
+      "description": "Routing for zena:http servers",
+      "license": "MIT",
+      "homepage": "https://example.com/router",
+      "source": "https://github.com/example/router"
+    }`;
+    let profile = Profile.fromValue(value(json));
+    equal(profile.name, 'router');
+    equal(profile.license as String, 'MIT');
+    jsonEqual(toJson(profile.toValue()), parseJson(json));
+
+    let minimal = Profile.fromValue(value('{"$type": "dev.zena-lang.package.profile", "name": "r"}'));
+    isNull(minimal.description);
+    jsonEqual(toJson(minimal.toValue()), parseJson('{"$type": "dev.zena-lang.package.profile", "name": "r"}'));
+
+    rejectsProfile('{"$type": "dev.zena-lang.package.profile"}');
+    rejectsProfile('{"$type": "dev.zena-lang.package.profile", "name": "Router"}');
+    rejectsProfile('{"$type": "dev.zena-lang.package.profile", "name": "router", "license": 3}');
+    rejectsProfile('{"$type": "dev.zena-lang.package.release", "name": "router"}');
+  });
+
+  test('reads yanks', (ctx) => {
+    let json = `{
+      "$type": "dev.zena-lang.package.yank",
+      "version": "1.4.1",
+      "reason": "Routes with a trailing slash matched the wrong handler"
+    }`;
+    let yank = Yank.fromValue(value(json), '1.4.1');
+    equal(yank.version.toString(), '1.4.1');
+    jsonEqual(toJson(yank.toValue()), parseJson(json));
+
+    var caught = false;
+    try {
+      Yank.fromValue(value(json), '1.4.2');
+    } catch (e) {
+      caught = e is RecordError;
+    }
+    isTrue(caught);
+  });
+
+  test('accepts package names of lowercase letters, digits and hyphens', (ctx) => {
+    for (let name in ['a', 'router', 'zena-http', 'json2', 'a-1-b']) {
+      isTrue(isValidPackageName(name), name);
+    }
+    let tooLong = 'abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklm';
+    equal(tooLong.length, 65);
+    for (let name in ['', 'zena', 'Router', '1router', '-router', 'my_router', 'my.router', 'rout er', tooLong]) {
+      isFalse(isValidPackageName(name), name);
+    }
+  });
+});

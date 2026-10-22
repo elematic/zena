@@ -4,8 +4,12 @@ import {readFileSync} from 'zena:fs';
 import {JsonArray, JsonObject, parseJson} from 'zena:json';
 import {hex} from 'zena:encoding';
 import {Cid} from 'atproto:cid';
+import {decodeCbor, encodeCbor} from 'atproto:cbor';
 import {
+  BlobRef,
   BytesValue,
+  DataError,
+  LinkValue,
   IntValue,
   MapValue,
   StringValue,
@@ -128,5 +132,46 @@ export let tests = suite('atproto:data', () => {
     map.entries['b'] = new StringValue('x');
     map.entries['a'] = new IntValue(1 as i64);
     jsonEqual(toJson(map), parseJson('{"b": "x", "a": 1}'));
+  });
+
+  test('reads and writes blob references', (ctx) => {
+    let cid = Cid.forBlob(hex.decode('68656c6c6f'));
+    let value = new BlobRef(cid, 'text/plain', 5 as i64).toValue();
+    jsonEqual(toJson(value), parseJson(
+        `{"$type": "blob", "ref": {"$link": "${cid.toString()}"}, "mimeType": "text/plain", "size": 5}`));
+    // Through DAG-CBOR, which fromJson's checks do not see.
+    let ref = BlobRef.fromValue(decodeCbor(encodeCbor(value)));
+    isTrue(ref.cid.equals(cid));
+    equal(ref.mimeType, 'text/plain');
+    equal(ref.size, 5 as i64);
+
+    let rejects = (map: MapValue, what: String) => {
+      var caught = false;
+      try {
+        BlobRef.fromValue(decodeCbor(encodeCbor(map)));
+      } catch (e) {
+        caught = e is DataError;
+      }
+      isTrue(caught, what);
+    };
+    let extra = BlobRef.fromValue(value).toValue();
+    extra.entries['x'] = new IntValue(1 as i64);
+    rejects(extra, 'an unknown key');
+    let noSize = BlobRef.fromValue(value).toValue();
+    noSize.entries.delete('size');
+    rejects(noSize, 'no size');
+    let cborRef = BlobRef.fromValue(value).toValue();
+    cborRef.entries['ref'] = new LinkValue(Cid.forDagCbor(encodeCbor(newMap())));
+    rejects(cborRef, 'a DAG-CBOR CID');
+    let untyped = BlobRef.fromValue(value).toValue();
+    untyped.entries.delete('$type');
+    rejects(untyped, 'no $type');
+    var caught = false;
+    try {
+      BlobRef.fromValue(new StringValue('blob'));
+    } catch (e) {
+      caught = e is DataError;
+    }
+    isTrue(caught, 'not a map');
   });
 });

@@ -1,0 +1,184 @@
+import {suite, test} from 'zena:test';
+import {equal, isFalse, isTrue} from 'zena:assert';
+import {OrderedHashMap} from 'zena:collections';
+import {BlockMap, readCar, writeCar} from 'atproto:car';
+import {Cid} from 'atproto:cid';
+import {LinkValue, ListValue, MapValue, StringValue, Value, newMap} from 'atproto:data';
+import {
+  ArchiveError,
+  TREE_TYPE,
+  isValidSourcePath,
+  packSource,
+  unpackSource
+} from 'package-manager:archive';
+
+function bytes(text: String) {
+  let out = new FixedArray<u8>(text.length, 0 as u8);
+  for (var i = 0; i < text.length; i += 1) {
+    out[i] = text.getByteAt(i) as u8;
+  }
+  return out;
+}
+
+function files(paths: Array<String>) {
+  let map = new OrderedHashMap<String, FixedArray<u8>>();
+  for (let path in paths) {
+    map[path] = bytes(`contents of ${path}`);
+  }
+  return map;
+}
+
+function packRejects(paths: Array<String>) {
+  var caught = false;
+  try {
+    packSource(files(paths));
+  } catch (e) {
+    caught = e is ArchiveError;
+  }
+  isTrue(caught, `packed ${paths[0]}`);
+}
+
+function unpackRejects(archive: FixedArray<u8>, what: String) {
+  var caught = false;
+  try {
+    unpackSource(archive);
+  } catch (e) {
+    caught = e is ArchiveError;
+  }
+  isTrue(caught, what);
+}
+
+/** A tree root listing `tree`, with `$type` `type`. */
+function root(tree: Value, type: String = TREE_TYPE) {
+  let map = newMap();
+  map.entries['$type'] = new StringValue(type);
+  map.entries['files'] = tree;
+  return map;
+}
+
+/** A tree from path to the raw CID of `contents of <path>`, with those blocks added to `blocks`. */
+function tree(paths: Array<String>, blocks: BlockMap) {
+  let map = newMap();
+  for (let path in paths) {
+    let contents = bytes(`contents of ${path}`);
+    let cid = Cid.forBlob(contents);
+    blocks.set(cid, contents);
+    map.entries[path] = new LinkValue(cid);
+  }
+  return map;
+}
+
+/** An archive whose one root is `rootValue`, holding `blocks` too. */
+function archive(rootValue: Value, blocks: BlockMap) {
+  let rootCid = blocks.add(rootValue);
+  return writeCar(new FixedArray<Cid>(1, rootCid), blocks);
+}
+
+export let tests = suite('package-manager:archive', () => {
+  test('packs files and unpacks them in DAG-CBOR key order', (ctx) => {
+    let packed = packSource(files(['zena-package.json', 'server.zena', 'router/match.zena']));
+    let unpacked = unpackSource(packed);
+    equal(unpacked.length, 3);
+    // Shorter keys first, then byte order.
+    equal(unpacked[0].path, 'server.zena');
+    equal(unpacked[1].path, 'router/match.zena');
+    equal(unpacked[2].path, 'zena-package.json');
+    for (let file in unpacked) {
+      isTrue(file.contents.contentEquals(bytes(`contents of ${file.path}`)), file.path);
+      isTrue(file.cid.equals(Cid.forBlob(file.contents)), file.path);
+    }
+  });
+
+  test('packs the same files to the same bytes in any order', (ctx) => {
+    let a = packSource(files(['a.zena', 'b/c.zena', 'd.zena']));
+    let b = packSource(files(['d.zena', 'a.zena', 'b/c.zena']));
+    isTrue(a.contentEquals(b));
+    isFalse(a.contentEquals(packSource(files(['a.zena', 'b/c.zena']))));
+  });
+
+  test('stores contents two files share once', (ctx) => {
+    let map = new OrderedHashMap<String, FixedArray<u8>>();
+    map['LICENSE'] = bytes('MIT');
+    map['third_party/LICENSE'] = bytes('MIT');
+    let packed = packSource(map);
+    equal(readCar(packed).blocks.size, 2);
+    let unpacked = unpackSource(packed);
+    equal(unpacked.length, 2);
+    isTrue(unpacked[0].cid.equals(unpacked[1].cid));
+  });
+
+  test('packs and unpacks an empty package', (ctx) => {
+    equal(unpackSource(packSource(new OrderedHashMap<String, FixedArray<u8>>())).length, 0);
+  });
+
+  test('accepts portable relative paths', (ctx) => {
+    for (let path in ['a', 'main.zena', 'lib/x-y_z.zena', '.prettierignore', 'a/.b/c', 'A1/b2']) {
+      isTrue(isValidSourcePath(path), path);
+    }
+    for (let path in ['', '/a', 'a/', 'a//b', './a', 'a/../b', '..', 'a b', 'a\\b', 'a:b', 'ü.zena']) {
+      isFalse(isValidSourcePath(path), path);
+    }
+  });
+
+  test('refuses to pack paths a file system cannot hold', (ctx) => {
+    packRejects(['../escape.zena']);
+    packRejects(['Main.zena', 'main.zena']);
+    packRejects(['lib', 'lib/x.zena']);
+    packRejects(['Lib', 'lib/x.zena']);
+  });
+
+  test('rejects archives packSource would not write', (ctx) => {
+    unpackRejects(bytes('not a CAR file'), 'not a CAR file');
+
+    let blocks = new BlockMap();
+    let valid = root(tree(['a.zena'], blocks));
+    let validCid = blocks.add(valid);
+    unpackRejects(writeCar(new FixedArray<Cid>(2, validCid), blocks), 'two roots');
+    unpackRejects(writeCar(new FixedArray<Cid>(0, validCid), blocks), 'no roots');
+
+    let rawRoot = Cid.forBlob(bytes('contents of a.zena'));
+    unpackRejects(writeCar(new FixedArray<Cid>(1, rawRoot), blocks), 'a raw root');
+
+    let missing = new BlockMap();
+    let missingCid = missing.add(valid);
+    unpackRejects(writeCar(new FixedArray<Cid>(1, missingCid), new BlockMap()), 'no root block');
+
+    unpackRejects(archive(new ListValue(new FixedArray<Value>(0, new StringValue(''))), new BlockMap()),
+        'a list root');
+    let other = new BlockMap();
+    unpackRejects(archive(root(tree(['a.zena'], other), 'dev.zena-lang.package.other'), other),
+        'another $type');
+    unpackRejects(archive(root(new StringValue('a.zena')), new BlockMap()), 'files is not a map');
+
+    let notLink = newMap();
+    notLink.entries['a.zena'] = new StringValue('contents');
+    unpackRejects(archive(root(notLink), new BlockMap()), 'a file that is not a link');
+
+    let cborBlocks = new BlockMap();
+    let cborFile = newMap();
+    cborFile.entries['a.zena'] = new LinkValue(cborBlocks.add(newMap()));
+    unpackRejects(archive(root(cborFile), cborBlocks), 'a file in a DAG-CBOR block');
+
+    let absent = newMap();
+    absent.entries['a.zena'] = new LinkValue(Cid.forBlob(bytes('absent')));
+    unpackRejects(archive(root(absent), new BlockMap()), 'a file with no block');
+
+    let extra = new BlockMap();
+    let withExtra = root(tree(['a.zena'], extra));
+    extra.set(Cid.forBlob(bytes('extra')), bytes('extra'));
+    unpackRejects(archive(withExtra, extra), 'a block the root does not name');
+
+    let badPath = new BlockMap();
+    unpackRejects(archive(root(tree(['../a.zena'], badPath)), badPath), 'an invalid path');
+    let caseBlocks = new BlockMap();
+    unpackRejects(archive(root(tree(['A.zena', 'a.zena'], caseBlocks)), caseBlocks), 'paths that differ in case');
+    let dirBlocks = new BlockMap();
+    unpackRejects(archive(root(tree(['lib', 'lib/a.zena'], dirBlocks)), dirBlocks), 'a file that is a directory');
+
+    // An unknown key in the root still reads.
+    let futureBlocks = new BlockMap();
+    let future = root(tree(['a.zena'], futureBlocks));
+    future.entries['compression'] = new StringValue('none');
+    equal(unpackSource(archive(future, futureBlocks)).length, 1);
+  });
+});

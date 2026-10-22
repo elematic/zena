@@ -15,8 +15,10 @@ Import them as `atproto:<module>`, with an
   encodings are in `zena:encoding`.
 - `atproto:cid`: CIDs, their binary and string forms, and the CIDs atproto
   gives records and blobs.
-- `atproto:data`: the data model (`Value` and its cases) and its JSON form.
-- `atproto:cbor`: DAG-CBOR encoding and strict decoding, and `cidForValue`.
+- `atproto:data`: the data model (`Value` and its cases), its JSON form, and
+  blob references (`BlobRef`).
+- `atproto:cbor`: DAG-CBOR encoding and strict decoding, `cidForValue`, and
+  `sortedKeys`, the order DAG-CBOR writes map keys in.
 - `atproto:syntax`: DIDs, handles, NSIDs, record keys, TIDs, datetimes and
   CID strings.
 - `atproto:car`: CAR files and `BlockMap`, checking every block against its

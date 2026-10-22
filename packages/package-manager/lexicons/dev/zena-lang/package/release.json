@@ -1,0 +1,84 @@
+{
+  "lexicon": 1,
+  "id": "dev.zena-lang.package.release",
+  "defs": {
+    "main": {
+      "type": "record",
+      "description": "A release of a Zena package, at the record key equal to its version. A client rejects a release whose version is not its record key.",
+      "key": "any",
+      "record": {
+        "type": "object",
+        "required": ["version", "createdAt", "artifacts"],
+        "properties": {
+          "version": {
+            "type": "string",
+            "description": "A semantic version without build metadata, such as '1.4.2' or '2.0.0-rc.1'."
+          },
+          "createdAt": {"type": "string", "format": "datetime"},
+          "artifacts": {
+            "type": "array",
+            "minLength": 1,
+            "items": {"type": "ref", "ref": "#artifact"}
+          },
+          "dependencies": {
+            "type": "array",
+            "description": "No two dependencies have the same name, or the same DID and major version.",
+            "items": {"type": "ref", "ref": "#dependency"}
+          }
+        }
+      }
+    },
+    "artifact": {
+      "type": "object",
+      "description": "An artifact, held either in 'blob' or, when it is larger than the PDS accepts, in 'parts' that concatenate to it, with 'size' and 'cid' giving the whole.",
+      "required": ["kind"],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "knownValues": ["source", "component", "core-module"],
+          "description": "A 'source' artifact is a source archive, a CAR file whose root is a 'dev.zena-lang.package.tree'. A 'component' needs 'world' and 'wit'."
+        },
+        "blob": {"type": "blob"},
+        "parts": {
+          "type": "array",
+          "minLength": 1,
+          "items": {"type": "blob"}
+        },
+        "size": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "With 'parts': the sum of the parts' sizes."
+        },
+        "cid": {
+          "type": "string",
+          "format": "cid",
+          "description": "With 'parts': the raw CID of their concatenation."
+        },
+        "world": {
+          "type": "string",
+          "description": "The WIT world a component targets, such as 'wasi:http/proxy@0.3.0'."
+        },
+        "wit": {
+          "type": "blob",
+          "description": "A component's WIT text."
+        }
+      }
+    },
+    "dependency": {
+      "type": "object",
+      "required": ["did", "version", "name"],
+      "properties": {
+        "did": {"type": "string", "format": "did"},
+        "version": {
+          "type": "string",
+          "description": "The lowest version the release works with."
+        },
+        "name": {
+          "type": "string",
+          "maxLength": 64,
+          "description": "The local name the release's own imports use for the package, under the rules for a profile's name."
+        }
+      }
+    }
+  }
+}

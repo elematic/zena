@@ -1,0 +1,212 @@
+/**
+ * Source archives: the CAR files that hold a release's `source` artifact
+ * (docs/design/package-manager.md, "Source archives").
+ *
+ * The archive's one root is a DAG-CBOR map,
+ * `{$type: "dev.zena-lang.package.tree", files: {path: cid}}`, and each
+ * file's contents are a raw block. Packing is deterministic: the same
+ * files give the same bytes, and so the same CID, in whatever order they
+ * are given. The root comes first, then the files' blocks in the order the
+ * root lists them, and contents two files share are stored once.
+ *
+ * Unpacking accepts only what packing produces, apart from keys the root
+ * map may gain later: one root, every file's block present and raw, valid
+ * paths, and no block the root does not name.
+ */
+
+import {HashMap, HashSet} from 'zena:collections';
+import {BlockMap, Car, readCar, writeCar} from 'atproto:car';
+import {decodeCbor, sortedKeys} from 'atproto:cbor';
+import {CODEC_DAG_CBOR, CODEC_RAW, Cid} from 'atproto:cid';
+import {LinkValue, MapValue, StringValue, Value, field, newMap} from 'atproto:data';
+
+export let TREE_TYPE = 'dev.zena-lang.package.tree';
+
+/** An archive that cannot be packed or unpacked. */
+export class ArchiveError extends Error {
+  new(message: String) : super(message);
+}
+
+/** A file in a source archive. */
+export final class SourceFile {
+  /** The path from the package root, with `/` between directories. */
+  path: String;
+  /** The raw CID of the contents. */
+  cid: Cid;
+  contents: FixedArray<u8>;
+
+  new(path: String, cid: Cid, contents: FixedArray<u8>) : path = path, cid = cid, contents = contents;
+}
+
+/**
+ * Whether `path` can name a file in a source archive: at most 1,024 bytes
+ * of ASCII letters, digits, `.`, `_`, `-` and `/`, where `/` separates
+ * non-empty names that are not `.` or `..`. Every such path is also a
+ * valid relative path on Windows, macOS and Linux.
+ */
+export function isValidSourcePath(path: String): boolean {
+  if (path.length == 0 || path.length > 1024) {
+    return false;
+  }
+  var segmentStart = 0;
+  for (var i = 0; i <= path.length; i += 1) {
+    if (i == path.length || path.getByteAt(i) == 47) { // '/'
+      let segment = path.sliceBytes(segmentStart, i);
+      if (segment.length == 0 || segment == '.' || segment == '..') {
+        return false;
+      }
+      segmentStart = i + 1;
+    } else {
+      let b = path.getByteAt(i);
+      let allowed = (b >= 48 && b <= 57) || (b >= 65 && b <= 90) || (b >= 97 && b <= 122) ||
+          b == 46 || b == 95 || b == 45;
+      if (!allowed) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
+/**
+ * Packs `files`, from path to contents, into a source archive. Throws
+ * `ArchiveError` for an invalid path, for two paths that differ only in
+ * case, and for a path that is also another's directory.
+ */
+export function packSource(files: HashMap<String, FixedArray<u8>>): FixedArray<u8> {
+  let paths = new GrowableArray<String>();
+  for (let path in files.keys()) {
+    paths.push(path);
+  }
+  checkPaths(paths);
+
+  let blocks = new BlockMap();
+  let tree = newMap();
+  files.forEach((path, contents) => {
+    let cid = Cid.forBlob(contents);
+    blocks.set(cid, contents);
+    tree.entries[path] = new LinkValue(cid);
+  });
+  let root = newMap();
+  root.entries['$type'] = new StringValue(TREE_TYPE);
+  root.entries['files'] = tree;
+  let rootCid = blocks.add(root);
+
+  let order = new FixedArray<Cid>(blocks.size, rootCid);
+  let written = new HashSet<String>();
+  var n = 1;
+  for (let path in sortedKeys(tree.entries)) {
+    let cid = (tree.entries[path] as LinkValue).cid;
+    if (!written.has(cid.toString())) {
+      written.add(cid.toString());
+      order[n] = cid;
+      n += 1;
+    }
+  }
+  return writeCar(fixedOf(rootCid), blocks, order);
+}
+
+/**
+ * Unpacks a source archive into its files, in the order its root lists
+ * them. Throws `ArchiveError` for anything `packSource` would not have
+ * written.
+ */
+export function unpackSource(bytes: FixedArray<u8>): FixedArray<SourceFile> {
+  let car = readCarOrThrow(bytes);
+  if (car.roots.length != 1) {
+    throw new ArchiveError(`the archive has ${car.roots.length} roots, not one`);
+  }
+  let rootCid = car.roots[0];
+  if (rootCid.codec != CODEC_DAG_CBOR) {
+    throw new ArchiveError('the root is not a DAG-CBOR block');
+  }
+  let rootBytes = car.blocks.get(rootCid);
+  if (rootBytes == null) {
+    throw new ArchiveError('the archive has no root block');
+  }
+  let root = decodeOrThrow(rootBytes);
+  if (!(root is MapValue)) {
+    throw new ArchiveError('the root is not a map');
+  }
+  let type = field(root, '$type');
+  if (!(type is StringValue) || type.value != TREE_TYPE) {
+    throw new ArchiveError(`the root's $type is not '${TREE_TYPE}'`);
+  }
+  let tree = field(root, 'files');
+  if (!(tree is MapValue)) {
+    throw new ArchiveError('the root has no map of files');
+  }
+
+  let paths = sortedKeys(tree.entries);
+  checkPaths(paths);
+  let used = new HashSet<String>();
+  used.add(rootCid.toString());
+  let files = new FixedArray<SourceFile>(paths.length, new SourceFile('', rootCid, rootBytes));
+  for (var i = 0; i < paths.length; i += 1) {
+    let path = paths[i];
+    let link = tree.entries[path];
+    if (!(link is LinkValue)) {
+      throw new ArchiveError(`'${path}' is not a link`);
+    }
+    if (link.cid.codec != CODEC_RAW) {
+      throw new ArchiveError(`'${path}' is not a link to a raw block`);
+    }
+    let contents = car.blocks.get(link.cid);
+    if (contents == null) {
+      throw new ArchiveError(`the archive has no block for '${path}'`);
+    }
+    used.add(link.cid.toString());
+    files[i] = new SourceFile(path, link.cid, contents);
+  }
+  if (used.size != car.blocks.size) {
+    throw new ArchiveError(`the archive has ${car.blocks.size - used.size} blocks its root does not name`);
+  }
+  return files;
+}
+
+/**
+ * Checks that each path is valid, that no two differ only in case, and
+ * that none is also a directory of another. An archive that broke these
+ * could not be written out on every file system.
+ */
+function checkPaths(paths: Array<String>): void {
+  let folded = new HashSet<String>();
+  for (let path in paths) {
+    if (!isValidSourcePath(path)) {
+      throw new ArchiveError(`'${path}' is not a valid source path`);
+    }
+    let key = path.asciiLowerCase();
+    if (folded.has(key)) {
+      throw new ArchiveError(`'${path}' is a second file with that name, ignoring case`);
+    }
+    folded.add(key);
+  }
+  for (let path in paths) {
+    let key = path.asciiLowerCase();
+    for (var i = 0; i < key.length; i += 1) {
+      if (key.getByteAt(i) == 47 && folded.has(key.sliceBytes(0, i))) {
+        throw new ArchiveError(`'${path}' is inside '${path.sliceBytes(0, i)}', which is a file`);
+      }
+    }
+  }
+}
+
+function readCarOrThrow(bytes: FixedArray<u8>): Car {
+  try {
+    return readCar(bytes);
+  } catch (e) {
+    throw new ArchiveError(`the archive is not a valid CAR file: ${e.message}`);
+  }
+}
+
+function decodeOrThrow(bytes: FixedArray<u8>): Value {
+  try {
+    return decodeCbor(bytes);
+  } catch (e) {
+    throw new ArchiveError(`the root is not valid DAG-CBOR: ${e.message}`);
+  }
+}
+
+function fixedOf(cid: Cid): FixedArray<Cid> {
+  return new FixedArray<Cid>(1, cid);
+}
