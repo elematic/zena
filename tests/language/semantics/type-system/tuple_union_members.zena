@@ -1,0 +1,36 @@
+// @mode: check
+// Boxed tuple unions follow the same rule as inline ones: every tuple in
+// the union starts with a literal of one type, a different value in each,
+// and the tuples have the same length. Enums and literal types erase, so
+// `(Color, i32)` and `(Size, i32)` are the same struct at run time and
+// only a literal can tell them apart.
+
+enum Color { Red, Green }
+enum Size { Small, Large }
+
+class Dog {}
+
+type Event = (0, Color) | (1, Size);
+type Reply = (true, String) | (false, i32);
+
+// Other members are told apart by their own runtime types.
+type Maybe = (true, String) | (false, i32) | Dog | null;
+
+// One tuple needs no literal.
+type One = (i32, i32) | Dog | null;
+
+type Untagged = (Color, i32) | (Size, i32); // @error: Each tuple in a union must start with a literal of the same type, a different one in each, as in '(true, T) | (false, E)'.
+
+type Late = (i32, true) | (f64, false); // @error: Each tuple in a union must start with a literal of the same type, a different one in each, as in '(true, T) | (false, E)'.
+
+type Mixed = (true, i32) | (1, f64); // @error: Each tuple in a union must start with a literal of the same type, a different one in each, as in '(true, T) | (false, E)'.
+
+type Lengths = (true, i32, i32) | (false, i32); // @error: The tuples in a union must have the same length.
+
+export let tests = (e: Event, r: Reply): boolean => {
+  let a = e is (0, Color);
+  let b = r as (false, i32);
+  // Not a member: the struct and literal test cannot answer it.
+  let c = r is (true, Dog); // @error: '[true, Dog]' is not one of the tuples in '[true, String] | [false, i32]'. Test against one of them, or match on its literal.
+  return a;
+};

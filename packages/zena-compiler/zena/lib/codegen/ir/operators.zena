@@ -15,7 +15,7 @@ import {
 import {
   AnyRefType, BooleanType, ClassType, EqRefType, F32Type, F64Type,
   I32Type, I64Type, InterfaceType, NullType, RecordType, Type, TypeParameterType,
-  U32Type, U64Type, UnionType, baseType,
+  TupleType, U32Type, U64Type, UnionType, baseType,
   typeToString, isNarrowIntType, isUnsignedIntType, narrowIntBits,
   isVoidOrNeverType,
 } from '../../types.zena';
@@ -25,7 +25,7 @@ import {
   isRefValType, valTypeEquals,
 } from '../wasm.zena';
 import { eraseTypeParameters, getNonNullableType, typeToValTypeWithSub } from '../type-mapping.zena';
-import { getClassKey, parseI64OrU64Literal } from '../codegen-utils.zena';
+import { getClassKey, parseI64OrU64Literal, unwrapAliases } from '../codegen-utils.zena';
 import { IrOp } from './ir.zena';
 import {
   LoweringContext, ZirUnsupported, noValues, oneValue, twoValues,
@@ -33,7 +33,7 @@ import {
 import { lowerClassEquality, lowerErasedEq, lowerValueEq } from './equality.zena';
 import { valueEqOperand } from '../value-equality.zena';
 import { lowerNullishCoalesce } from './control-flow.zena';
-import { exactLiteralFields, lowerExpr } from './lowering.zena';
+import { exactLiteralFields, isTupleTag, lowerExpr, tupleTagTest } from './lowering.zena';
 import { growable } from 'zena:core';
 
 
@@ -873,6 +873,34 @@ function impossibleRefCast(cx: LoweringContext, dstVt: ValType) {
   return cx.b.emit(IrOp.ref_null, dstVt, -1, -1);
 }
 
+/**
+ * `x as (1, Size)` on a union of tuples: the members can share a struct,
+ * so the cast below would pass a `(0, Color)`. The literal in field 0
+ * has to match too, and a value whose literal does not traps, as a
+ * failed `ref.cast` does.
+ */
+function checkTupleTag(cx: LoweringContext, expr: AsExpression, value: i32): void {
+  let srcOpt = cx.substitutedNodeType(expr.expression);
+  let dstOpt = cx.substitutedNodeType(expr);
+  if (srcOpt == null || dstOpt == null) {
+    return;
+  }
+  let dst = baseType(dstOpt);
+  if (!(unwrapAliases(srcOpt) is UnionType) || !(dst is TupleType)) {
+    return;
+  }
+  if (dst.elementTypes.length == 0 || !isTupleTag(dst.elementTypes[0])) {
+    return;
+  }
+  let ok = tupleTagTest(cx, value, dst);
+  let pass = cx.b.newBlock();
+  let fail = cx.b.newBlock();
+  cx.b.brIf(ok, pass, noValues(), fail, noValues());
+  cx.b.switchTo(fail);
+  cx.b.unreachable();
+  cx.b.switchTo(pass);
+}
+
 export function lowerAs(cx: LoweringContext, expr: AsExpression): i32 {
   let dstVt = cx.exprVt(expr);
   let narrowTarget = narrowCastTarget(cx, expr);
@@ -924,6 +952,7 @@ export function lowerAs(cx: LoweringContext, expr: AsExpression): i32 {
     // first would trap, since the value is the wider shape.
     return value;
   }
+  checkTupleTag(cx, expr, value);
   let srcVt = cx.valueTypeOf(value);
   if (valTypeEquals(srcVt, dstVt)) {
     // Same wasm type, but possibly a different narrow width: `x as u8`

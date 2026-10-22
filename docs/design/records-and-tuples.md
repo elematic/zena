@@ -494,6 +494,44 @@ This is the one place the repack is reached from a node that is not an
 expression, which is why reachability's registration of the per-member
 dispatches does not sit under its `n is Expression` guard.
 
+### 5.6 Unions of Tuple Types
+
+A union with two or more tuple members needs a discriminant the author
+writes: every tuple starts with a literal, all boolean or all integers
+of one type, with a different value in each, and the tuples have the
+same length (`checkTupleUnionMembers`). The rule is the same for boxed
+and inline tuples, and was settled on #371.
+
+A tuple struct is interned by the wasm types of its fields, and enums,
+`boolean`, literal types and generic arguments all erase. So
+`(Color, i32)`, `(Size, i32)`, `(true, i32)` and `(i32, i32)` are one
+struct, and a `ref.test` cannot tell them apart. Without the rule,
+`x is (Size, i32)` was true for a `(Color, i32)`, and `as` performed no
+check at all.
+
+With it, every reader goes through the literal:
+
+- **Patterns.** Destructuring, `if let` and `match` read a boxed tuple
+  union into the slots its inline form would occupy (`#unboxTuples` in
+  `codegen/ir/lowering.zena`). Each member's struct is tested in turn,
+  the matching one has its fields read into its slots, and a join block
+  takes them. From there the readers are the inline ones
+  (`MultiValues.positions`): the pattern's literal picks the member and
+  the member picks the slot. Members that share a struct share slots,
+  since their fields have the same wasm types. Before this, a `match`
+  over members with different structs failed to lower, because the
+  union is an `eqref` and the pattern code needed a struct.
+- **`is` and `as`.** A tuple target that starts with a literal is tested
+  by its struct and then by field 0 (`#tupleTagTest`). `as` traps when
+  the test fails, as a failed `ref.cast` does. The checker requires the
+  target to be one of the union's tuples (`checkTupleUnionTest`): a
+  tuple type that is not a member, such as `(true, Animal)` against a
+  `(true, Dog)` member, would need its elements tested, and tuples have
+  no wasm subtyping (#483).
+
+Other members of the union, such as classes and `null`, keep their own
+runtime types, so they need no literal.
+
 ### 5.2 Type Syntax
 
 We will adopt TypeScript's syntax.

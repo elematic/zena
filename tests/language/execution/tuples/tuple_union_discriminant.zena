@@ -1,0 +1,52 @@
+// @mode: run
+// @result: 138
+// A union of boxed tuples is told apart by the literal each member starts
+// with. Members can share a struct (`(0, Color)` and `(1, Size)` are both
+// two i32 fields, since enums erase to their backing type) or have
+// different structs (`(true, String)` and `(false, i32)`); either way
+// the literal picks the member.
+
+enum Color { Red, Green }
+enum Size { Small, Large }
+
+type Event = (0, Color) | (1, Size);
+type Reply = (true, String) | (false, i32);
+
+let describe = (e: Event): i32 => match (e) {
+  case (0, let c): if (c == Color.Green) 1 else 2
+  case (1, let s): if (s == Size.Large) 10 else 20
+};
+
+let reply = (ok: boolean): Reply => if (ok) (true, 'hello') else (false, 7);
+
+let measure = (r: Reply): i32 => match (r) {
+  case (true, let text): text.length
+  case (false, let code): code
+};
+
+export let main = (): i32 => {
+  // Stored, so each is a boxed tuple.
+  let events: Array<Event> = [(0, Color.Green), (1, Size.Small)];
+  var total = describe(events[0]) + describe(events[1]); // 21
+  total += measure(reply(true)) + measure(reply(false)); // 33
+  if (let (true, text) = reply(true)) {
+    total += text.length; // 38
+  }
+  let r = reply(false);
+  if (r is (false, i32)) {
+    total += 100; // 138
+  }
+  if (r is (true, String)) {
+    total += 1000;
+  }
+  let e: Event = (1, Size.Large);
+  if (e is (0, Color)) {
+    total += 1000;
+  }
+  let sized = e as (1, Size);
+  let (_, s) = sized;
+  if (s != Size.Large) {
+    total += 1000;
+  }
+  return total;
+};
