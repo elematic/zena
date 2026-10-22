@@ -1,7 +1,8 @@
 # Package Manager
 
-Status: **Proposed.** Nothing is built. The AT Protocol libraries it needs
-are being added as `packages/atproto`.
+Status: **Proposed**, and partly built: the AT Protocol libraries
+(`packages/atproto`) and the package records and source archives
+(`packages/package-manager`).
 
 This document designs Zena's package manager. Packages are published on the
 AT Protocol (atproto), the protocol behind Bluesky. A package is an atproto
@@ -17,7 +18,10 @@ It builds on [package-manifest.md](package-manifest.md), which defines
 
 - **Identity.** Every package has its own DID, `did:plc` or `did:web`.
   Nothing is registered in a global namespace of names. A package can
-  change hosts, handles and maintainers and keep its DID.
+  change hosts, handles and maintainers and keep its DID. Handles, which
+  are for finding packages, always have a scope:
+  `router.acme.pkg.zena-lang.dev`, or a domain the package's maintainers
+  control.
 - **Local names.** A project gives each dependency a name of its own,
   used in imports (`import {Router} from 'router:server'`). A package
   suggests a name, and the importer is free to pick another.
@@ -37,6 +41,18 @@ It builds on [package-manifest.md](package-manifest.md), which defines
 - **Verification.** Records come with signed proofs from the package's
   repository, and artifacts are addressed by hash. A client checks both,
   so a cache or proxy needs no trust.
+- **Hosting and maintainers.** A package host, a PDS that creates package
+  accounts on request, lets maintainers publish by signing in with their
+  own atproto accounts, so no one holds a password for a package. Each
+  release is attested by the package's maintainers, M of N if the package
+  asks for it, and the checksum log checks the attestations. Teams and
+  organizations have roles, and who belongs to them stays private until
+  they act.
+- **Supply-chain security.** A project gets the bytes it pinned, a release
+  counts only with its maintainers' approval, and no new release reaches a
+  project until someone asks for it. Packages can require a person to
+  approve releases that CI publishes, and a passkey or security key for
+  each approval. See [Security and supply-chain attacks](#security-and-supply-chain-attacks).
 - **Discovery and trust.** An index (an atproto AppView) collects packages
   across PDSes and serves search. atproto labelers mark packages as
   malicious, deprecated, reviewed and so on, and clients choose which
@@ -101,43 +117,108 @@ It builds on [package-manifest.md](package-manifest.md), which defines
 ## Package identity
 
 A package is an atproto account, and the account's DID is the package's
-identity. Imports, dependency lists and resolution files all name
-packages by DID.
+identity. Dependency lists and resolution files name packages by DID, and
+imports by a name each project chooses.
 
-### Creating a package
+How a package's account is created, where it is hosted, who holds its
+keys and who may publish to it is in
+[Hosting, keys and maintainers](#hosting-keys-and-maintainers).
 
-`zena package create` creates an account on a PDS with
-`com.atproto.server.createAccount`. For a `did:plc` package it passes a
-rotation key the maintainers hold as `recoveryKey`. The PDS puts that key
-in the DID's rotation keys, ahead of its own, so the maintainers can move
-the package to another PDS without the first one's help. PLC allows up to
-five rotation keys, so several maintainers can each hold one.
+### Names and scopes
 
-A `did:web` package is controlled by whoever controls the domain's
-`/.well-known/did.json`. It cannot move to another domain, but it can
-change PDS by editing that file.
+A package has three kinds of name:
 
-### Handles
+- **Its DID** is its identity. Dependency lists, resolution files and
+  pins record it. A `did:plc` is a hash and a `did:web` belongs to a
+  domain, so DIDs cannot collide, and there is no short one to take.
+- **A local name** is what a project's imports use
+  (`import {Router} from 'router:server'`). Each project chooses its own,
+  starting from the name the package's profile suggests, so two packages
+  that both suggest `router` can be used side by side.
+- **A handle** is for finding a package. `zena add` resolves it to a DID
+  once and records the DID, so a handle that later points elsewhere
+  changes no project. The index shows handles.
 
-A package may have a handle, such as `router.pkg.example.com`. Handles
-are for people: the index shows them, and `zena add router.pkg.example.com`
-resolves the handle to a DID once and records the DID. A handle that later
-points elsewhere does not change any project.
+Only handles are scarce, and the compiler and the resolution file never
+see them, so the rules below are about finding packages.
 
-### Maintainers
+**Scopes on a package host.** A package's handle on a package host always
+has a scope: `<package>.<scope>.<host domain>`, such as
+`router.acme.pkg.zena-lang.dev`. A name one label below the host's
+domain, `acme.pkg.zena-lang.dev`, is the handle of a scope, which is an
+organization account (see
+[Maintainers, teams and organizations](#maintainers-teams-and-organizations)).
+A person's scope is an organization with them as its only owner. No
+package has a name directly under the host's domain, so no one can take a
+short name for a package. A package is created in a scope by the scope's
+admins, or by a team they allow. Scope names on a host are first come,
+first served, so names can be taken only as scopes, and only on that
+host's domain.
 
-atproto has no way for several accounts to write to one repository.
-Publishing therefore uses the package account's own credentials, an app
-password or an OAuth session. A team shares those credentials as a CI
-secret. A PDS could also let an organization's members act as the
-organization's package accounts; nothing in the package format depends on
-that.
+**Domains as scopes.** A handle is a domain name, so any domain a
+package's maintainers control can hold its handle: `router.pkg.acme.com`,
+or `router.acme.com`. The maintainers publish the `_atproto` DNS records,
+or delegate a subdomain to the host. No one else can take those names,
+and they stay with the package when it moves to another host. An
+organization with a domain should use it; a host's scopes are for those
+without one.
+
+**The `@scope/name` shorthand.** `zena add @acme/router` means
+`router.acme.pkg.zena-lang.dev`: the name in the scope on the default
+domain, which a user or a project can change. A scope on another domain
+is mapped to it by name, in `zena-package.json` or the user's
+configuration:
+
+```json
+{"scopes": {"@widgets": "widgets.alt-pkg.org"}}
+```
+
+`@widgets/foo` then means `foo.widgets.alt-pkg.org`, and never anything
+on another domain. A full handle, as in `zena add router.acme.com`, needs
+no scope. `zena add` prints the DID, handle and maintainers it resolved
+before it writes anything.
+
+The shorthand does not try several domains in turn. If it did, someone
+who registered `widgets` on a domain tried before the scope's own would
+take over every new `zena add @widgets/foo`, and nothing would fail to
+show it. This is the dependency confusion that pip's `--extra-index-url`
+allows. If several default domains are ever needed, `zena add` should
+resolve a scoped name on all of them and stop with an error when more
+than one answers. A scope that appears on a second domain then turns
+working adds into errors, and not into adds of another package.
+
+**Serving handles.** atproto checks a handle with a DNS TXT record at
+`_atproto.<handle>` or with `https://<handle>/.well-known/atproto-did`,
+and prefers DNS when the two disagree. A host's package handles are two
+labels below its domain, and a wildcard TLS certificate covers one label,
+so answering over HTTPS would need a certificate per scope. Let's Encrypt
+issues 50 per registered domain per week. The host answers DNS instead:
+its domain's zone is delegated to it, and it answers TXT queries from its
+scopes' records. A scope's admins decide which DID each of its names
+points to, and a handle is valid only when that DID's document names the
+handle back. So a scope's names need not belong to packages hosted there,
+and a package that moves to another host can keep its handle.
+
+Renaming a package changes its handle, in the scope's records and with a
+PLC operation, and not its DID, so no project notices. A name freed by a
+rename can be given to another package by the scope's admins. Projects
+that pinned the first package's DID keep it.
+
+**Names are DNS labels.** A package name, whether a local name, a
+profile's suggested name or the first label of a handle, is one DNS
+label: lowercase ASCII letters, digits and `-`, starting with a letter,
+not ending with `-`, without `--` as its third and fourth characters,
+which internationalized domain names reserve, and at most 63 characters.
+`zena` names the standard library and no package. Scope names follow the
+same rules, and a host reserves some, such as `www`.
 
 ## Records
 
 The record schemas are named under `dev.zena-lang.package`, after the
 project's domain, `zena-lang.dev`. They are published as lexicons at
-that domain.
+that domain. The profile, releases and yanks are below. The maintainers
+record, attestations, and an organization's records are in
+[Hosting, keys and maintainers](#hosting-keys-and-maintainers).
 
 ### Profile
 
@@ -316,8 +397,9 @@ minimum version:
 }
 ```
 
-`zena add <did-or-handle>` adds an entry, with the name the package's
-profile suggests unless one is given.
+`zena add` takes a DID, a handle or `@scope/name` (see
+[Names and scopes](#names-and-scopes)) and adds an entry, with the name the
+package's profile suggests unless one is given.
 
 ### Version selection
 
@@ -436,6 +518,15 @@ did:plc:routerrouterrouterrouter 1.4.2 release=bafyrei... source=bafkrei... comp
   checks that each newer one extends it. Independent witnesses can
   cosign heads later ([C2SP tlog-witness](https://c2sp.org/tlog-witness)).
   Tiles are static files, so any web server or CDN can mirror the log.
+- **Attestations.** The log records a release only when as many of the
+  package's publishers and owners as its threshold have attested it, and
+  records who did. It reads the maintainers from the latest maintainers
+  record it has recorded for the package, and a team member's role from
+  the membership entry their attestation includes. It records a change to
+  a maintainers record, an organization's members or a team the same way:
+  once the roles and threshold of the record before it have attested the
+  change. See [Who signs what](#who-signs-what) and
+  [Roles](#roles).
 - **Private packages.** A configured list of DIDs is never looked up, because the log's server cannot reach them and the lookup itself
   would reveal that they exist.
 
@@ -486,18 +577,473 @@ Zena project's index runs a proxy that keeps every logged artifact, so a
 release deleted from its PDS stays buildable for the projects that
 depend on it.
 
-## Publishing
+## Hosting, keys and maintainers
 
-- `zena package create` creates the account and writes the profile (see
-  [Creating a package](#creating-a-package)).
-- `zena publish` builds the release's artifacts and uploads them with
-  `com.atproto.repo.uploadBlob`. It then writes the release record with
-  `com.atproto.repo.createRecord` and looks the version up in the checksum
-  log.
-- `zena yank <version>` writes a yank record.
+A package is an atproto account, so it lives on a PDS and someone holds
+its keys. Creating each package with `com.atproto.server.createAccount`
+on whatever PDS its publisher uses would give every package a password
+of its own to keep and share. The largest PDS, bsky.social, is also not a
+place for package accounts: each account there needs its own email
+address, and every package would be a Bluesky user.
 
-The client signs in with `com.atproto.server.createSession` and an app
-password at first, and with an atproto OAuth session later.
+A **package host** is a PDS that creates package accounts on request and
+lets their maintainers publish to them as themselves. Maintainers sign in
+with their own atproto account, the one they use for Bluesky or any other
+app, and no one has a password for a package account. The Zena project
+runs a package host, a PDS written in Zena, at a name still
+to be chosen (`pkg.zena-lang.dev` below). Anyone can run another, and a
+package can also live on an ordinary PDS (see
+[Holding keys elsewhere](#holding-keys-elsewhere)).
+
+### Keys
+
+| Key or credential                                            | Created by                                           | Held by                                                                                                             | Controls                                                       |
+| ------------------------------------------------------------ | ---------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------- |
+| A maintainer's account keys                                  | the maintainer's PDS                                 | the maintainer's PDS                                                                                                | the maintainer's repository, where their attestations are      |
+| A maintainer's OAuth session: a refresh token and a DPoP key | `zena login`                                         | the `zena` command, in `$XDG_CONFIG_HOME/zena/session.json`, mode 0600, or the management interface, in the browser | acting as the maintainer toward their PDS                      |
+| The package's signing key                                    | the host, when it creates the package                | the host, encrypted at rest                                                                                         | commits to the package's repository                            |
+| The host's rotation key                                      | the host, once                                       | the host, in a key store apart from its database                                                                    | PLC operations for every package it hosts, ranked last         |
+| Recovery keys                                                | `zena`, for the creator, or an organization's owners | up to four maintainers, in `$XDG_CONFIG_HOME/zena/recovery-key`, mode 0600, backed up                               | PLC operations, ranked above the host's rotation key           |
+| Approval keys, if a maintainer adds them                     | the maintainer, as passkeys or security keys         | the maintainer's devices                                                                                            | nothing alone: they countersign that maintainer's attestations |
+| CI credentials                                               | a maintainer                                         | the CI system, as a secret                                                                                          | publishing as a bot maintainer                                 |
+
+Keys are secp256k1, the curve the reference PDS uses. A maintainer uses
+the same recovery key for every package they hold one for.
+
+There is no maintainer's own key for signing releases. In atproto an
+account's signing key is held by its PDS, not by the person, and this
+design does not add one.
+
+### Creating a package
+
+The first `zena publish` of a package creates its account, after asking.
+`zena package create` does only that, for scripts.
+
+1. **Sign in.** Once per machine, `zena login` signs the maintainer in to
+   their own PDS with atproto OAuth, through the browser and a redirect to
+   a port on localhost. It asks for one permission set,
+   `dev.zena-lang.authPublish`, which allows writing attestation records
+   and calling the package host's methods. The host's methods are `rpc`
+   permissions, which cover `com.atproto.server.getServiceAuth`.
+2. **A recovery key.** If the maintainer has none, `zena` generates one
+   and asks them to back it up.
+3. **A token for the host.** `zena` asks the maintainer's PDS for a
+   service-auth token with `com.atproto.server.getServiceAuth`, addressed
+   to the host's DID, for the method `dev.zena-lang.host.createPackage`.
+   The token is a short-lived JWT signed with the maintainer's account
+   key. The host checks it against the maintainer's DID document, so it
+   knows which account the request is from without a password of its own.
+   Every later call to the host is made the same way.
+4. **The DID.** `zena` calls `dev.zena-lang.host.createPackage` with the
+   name, the scope and the recovery key's public key. A maintainer with no
+   scope on the host yet gets one first: an organization with them as its
+   only owner, under a scope name they choose. The host generates the
+   package's signing key, writes the genesis operation, signs it with its
+   rotation key and submits it to the PLC directory:
+
+   ```json
+   {
+     "type": "plc_operation",
+     "rotationKeys": [
+       "did:key:zQ3sh...(the maintainer's recovery key)",
+       "did:key:zQ3sh...(the host's rotation key)"
+     ],
+     "verificationMethods": {
+       "atproto": "did:key:zQ3sh...(the package's signing key)"
+     },
+     "alsoKnownAs": ["at://router.acme.pkg.zena-lang.dev"],
+     "services": {
+       "atproto_pds": {
+         "type": "AtprotoPersonalDataServer",
+         "endpoint": "https://pkg.zena-lang.dev"
+       }
+     },
+     "prev": null,
+     "sig": "..."
+   }
+   ```
+
+   The DID is the first 24 characters of the base32 SHA-256 hash of this
+   signed operation. A new package's DID document therefore names the
+   host as its PDS and the host's key as its signing key, and lists the
+   maintainer's recovery key ahead of the host's rotation key.
+
+5. **The repository.** The host creates the account's repository with the
+   profile, from `zena-package.json`, and a maintainers record listing the
+   maintainer, which `zena` attests. The log takes a package's first
+   maintainers record once as many of the maintainers it lists as its
+   threshold have attested it.
+6. **The manifest.** `zena` writes the DID into `zena-package.json` as
+   `"did"`, so that later publishes go to the same package, and goes on to
+   publish the release.
+
+The handle, `router.acme.pkg.zena-lang.dev`, is the name in the scope the
+maintainer asked for. See [Names and scopes](#names-and-scopes).
+
+### Publishing a release
+
+1. `zena publish` builds the artifacts and the release record. The
+   record's CID is known before it is written, since it is the record's
+   hash.
+2. It calls `dev.zena-lang.host.publish` with the record and the
+   artifacts, with a service-auth token as above. The host checks that the
+   caller is a maintainer, stores the artifacts as blobs of the package's
+   account, and writes the release record. It refuses a version that
+   exists.
+3. It writes an attestation of the release to the maintainer's own
+   repository.
+4. It looks the version up in the checksum log, which records it.
+
+`zena yank <version>` writes a yank record the same way.
+
+Publishing changes the package's repository and not its DID document. The
+DID document changes only when the package moves to another host, its
+handle changes, its signing key is replaced, or recovery keys are added or
+removed. Each of these is a PLC operation, signed with a rotation key.
+
+CI publishes as an automation account: a maintainer marked `automation`,
+which an organization's host creates on request, from `zena ci create` or
+the management interface, and whose app password is a CI secret. The host
+holds that account, so its attestation is one the host could make itself.
+The log therefore counts an automation account on the package's own host
+only together with at least one person's attestation; an automation
+account on another PDS counts like any maintainer. Publishing from CI
+with no stored secret, as npm and PyPI allow with GitHub's OIDC tokens,
+is an open question.
+
+### Who signs what
+
+- The **release record** is signed as part of a commit to the package's
+  repository, with the package's signing key. The host holds that key, so
+  this signature shows that the host wrote the release, and not who asked
+  it to.
+- An **attestation** is a record in the publishing maintainer's own
+  repository. It is signed with their account's key, held by their own
+  PDS:
+
+  ```json
+  {
+    "$type": "dev.zena-lang.package.attestation",
+    "subject": {
+      "uri": "at://did:plc:routerrouterrouterrouter/dev.zena-lang.package.release/1.4.2",
+      "cid": "bafyrei..."
+    },
+    "createdAt": "2026-10-21T00:00:00.000Z"
+  }
+  ```
+
+  Its record key is derived from the subject's AT-URI, so the
+  attestation of a release by a given maintainer can be fetched without
+  listing their records.
+
+The checksum log fetches the attestations when it records a release, and
+records the release only when the package's threshold of maintainers have
+attested it. Clients already check releases against the log, so they
+rely on attestations without fetching them, and anyone can fetch them to
+audit the log. A release in the log was approved by the package's
+maintainers, each through a PDS they chose, and the host cannot make one
+alone. A host that also holds the maintainers' own accounts could, which
+is why the Zena project's host holds package and organization accounts,
+and automation accounts that cannot publish without a person (see
+[Publishing a release](#publishing-a-release)), and no one's own account.
+
+### Maintainers, teams and organizations
+
+A package's repository has a maintainers record at record key `self`:
+
+```json
+{
+  "$type": "dev.zena-lang.package.maintainers",
+  "maintainers": [
+    {"did": "did:plc:alicealicealicealicealic", "role": "owner"},
+    {
+      "org": "did:plc:acmeacmeacmeacmeacmeacme",
+      "team": "core",
+      "role": "publisher"
+    }
+  ],
+  "threshold": 1,
+  "ownerThreshold": 1
+}
+```
+
+- **An individual** is the only maintainer, an owner, with thresholds of 1.
+- **A team** without an organization is several DIDs. `threshold` says how
+  many attestations each release needs, and `ownerThreshold` how many
+  owners must attest a change to the maintainers record.
+- **An organization** is an account of its own on a package host, with
+  two kinds of record:
+  - `dev.zena-lang.org.members`, at `self`: who belongs to the
+    organization and in which role, and the thresholds for changing its
+    members and its teams;
+  - `dev.zena-lang.org.team`, one per team, keyed by the team's name:
+    who is on the team and in which role.
+
+  Both list their members privately, as
+  [Private membership](#private-membership) describes. An organization's
+  handle on its host is a scope, and its packages' handles are in it. A
+  package maintained by a team names the organization, the team and the
+  team's role on the package, and every member of the team has that role.
+  Changing who is on a team changes it for every package the team
+  maintains. The packages an organization creates list the
+  organization's recovery keys, held by its owners, rather than one
+  person's.
+
+#### Roles
+
+| Record                    | Role       | Can                                                                                              |
+| ------------------------- | ---------- | ------------------------------------------------------------------------------------------------ |
+| a package's maintainers   | publisher  | attest releases, and yank them                                                                   |
+|                           | owner      | also attest changes to the maintainers record, and edit the profile, rename and move the package |
+| an organization's members | member     | be put on teams                                                                                  |
+|                           | admin      | also create packages in the organization's scope, create teams, and attest changes to them       |
+|                           | owner      | also attest changes to the members record, and hold the organization's recovery keys             |
+| a team                    | member     | act on each of the team's packages in the role the package gives the team                        |
+|                           | maintainer | also attest changes to the team                                                                  |
+
+The log checks roles for everything that decides which releases count:
+releases, and changes to maintainers, members and teams. The host checks
+the same records for the rest: profile edits, renames, moves, yanks,
+creating packages in a scope, and its own settings.
+
+#### Private membership
+
+Who approved each release is public. An attestation is a record in the
+approver's own repository, and the log names the approvers of every
+release. That is what a project needs when an account turns out to have
+been taken: the list of releases it approved. A package a team maintains
+is shown as published by the team, with its approvers one step away.
+
+Who belongs to an organization or a team is not public. Membership tells
+an attacker whom to go after, and tells a project nothing it can use. The
+accounts most worth hiding are owners and admins who never publish, since
+they decide who is on each team. npm lists every package's maintainers,
+and the maintainers of popular npm packages were phished in
+September 2025. GitHub keeps organization membership private by default.
+
+Members and team records therefore list commitments rather than DIDs:
+
+```json
+{
+  "$type": "dev.zena-lang.org.team",
+  "members": ["bafyreib2rxk3rh6kzwq...", "bafyreidfcm5xvkhxs4o..."]
+}
+```
+
+Each commitment is the CID of one member's entry, which stays private:
+
+```json
+{
+  "did": "did:plc:alicealicealicealicealic",
+  "role": "maintainer",
+  "approvalKeys": ["did:key:zDnae..."],
+  "salt": {"$bytes": "q83vEjRWeJA..."}
+}
+```
+
+- **The salt** is 32 random bytes, so no one can find a commitment by
+  trying DIDs.
+- **The host keeps the entries.** It gives each member their own entry,
+  an organization's owners and admins every entry, and a team's
+  maintainers their team's.
+- **Acting reveals the entry.** An attestation that relies on a
+  membership includes the entry, and the log checks it against the
+  commitment. A member becomes known in a role when they first act in
+  it, and not before.
+- **The host cannot add members unseen.** A new members or team record
+  counts only with the attestations its owners' or admins' threshold
+  requires. They approve it in the management interface, which shows the
+  entry behind each commitment, so an account they do not know is
+  visible to them before they approve.
+
+A package's maintainers record can list individuals by commitment too,
+in place of a DID.
+
+What still shows:
+
+- Acting reveals the role for good: an admin who approves a change to a
+  team is publicly an admin of that organization from then on.
+- The number of commitments shows how large a team is, unless the team
+  pads it with entries for no one.
+- Who has approved releases suggests who can.
+- The index cannot list memberships it cannot see. The management
+  interface asks the hosts instead.
+
+**Separate maintainer accounts.** A maintainer need not use the atproto
+account they use elsewhere. Someone who wants their maintenance kept
+apart from their public identity can make an account just for it, on any
+PDS but the package's host, so that its record of approvals points to no
+one in particular.
+
+#### Adding and removing people
+
+`zena owner add <package> <handle or DID>` and `zena owner remove` write a
+new maintainers record through the host. `zena org add` and
+`zena org remove` do the same to an organization's members, and
+`zena team add` and `zena team remove` to a team. A change counts once
+the roles and threshold of the record before it have attested it: the
+owners for a maintainers or members record, and the admins, owners or the
+team's maintainers for a team. So one owner of a package whose
+`ownerThreshold` is 2 cannot replace the others. The log records each
+change that counts. A release counts under the maintainers record the log
+held when it recorded the release, so someone who leaves cannot attest
+new releases, and the releases they attested stay valid.
+
+Someone who leaves and holds a recovery key must also lose the key: the
+remaining holders remove it from the DID's rotation keys with a PLC
+operation. A higher-ranked rotation key can undo an operation signed by a
+lower-ranked one within 72 hours, so the removal is signed with a recovery
+key ranked above the departing one, not with the host's key, which ranks
+last. The first rotation key should be the one trusted most, such as an
+organization's offline key.
+
+### Thresholds
+
+- **Releases and changes of maintainers** can require M of N
+  maintainers, through attestations. A release with fewer attestations
+  than its threshold waits. `zena approve <package>@<version>` adds one,
+  and the log records the release once it has enough.
+- **Control of the DID** cannot. PLC accepts an operation signed by any
+  one rotation key, with rank deciding conflicts for 72 hours, and has no
+  thresholds. The host signs with its own rotation key only for changes
+  the maintainers' threshold has attested, but a recovery key can act
+  alone. A package should have few recovery keys, kept offline.
+
+Threshold signatures, where several holders together act as one key, are
+not planned.
+
+### The management interface
+
+People sign in as themselves, never as an organization or a package:
+those have no passwords, and are managed through someone's role in them.
+The management interface is a browser app on the index's site, and has no
+privileges of its own:
+
+- **Signing in.** It signs in with atproto OAuth, as a browser client.
+  The session's DPoP key is a non-extractable WebCrypto key, and signing
+  out revokes the session.
+- **Reading.** It reads public data from the index: packages, their
+  maintainers records, releases waiting for approvals, pending recovery
+  resets and PLC operations. It asks each host the person uses for the
+  memberships the index cannot see: the person's own, and for an
+  organization's owners and admins, the whole list.
+- **Writing.** It writes attestations to the person's own repository.
+  Everything else goes to the package's or organization's host, through
+  the person's PDS, which proxies the call with a service-auth token
+  (`atproto-proxy`, which the `rpc` permission covers).
+
+Neither the index nor the site's server holds anything that can publish,
+attest or change a record, so a compromised index can show wrong data,
+and do no more.
+
+The interface lists a person's packages, organizations and teams with
+their roles, the releases waiting for their approval, with the changes to
+the source fetched by CID and shown in the browser, pending recovery
+resets, each package's PLC history and which recovery keys rank where,
+and the settings of each record: thresholds, `humans`, and approval keys.
+
+How it handles keys:
+
+- **Approval keys** are registered and used here, since passkeys are a
+  browser feature, and `zena approve` opens the same page. The page's
+  domain is the passkeys' relying party, and must never change: a passkey
+  made for one domain cannot sign for another.
+- **Recovery keys** never enter the browser. WebAuthn signs only its own
+  data, not a PLC operation, and a key held by a page is exposed to every
+  script on it. The interface prepares PLC operations, and `zena` signs
+  them, with a key from a file or a hardware key such as a YubiKey's PIV
+  applet.
+- **The host's keys** never appear. The interface calls the host's
+  methods.
+- **CI credentials.** Creating a CI token has the host create an
+  automation account in the organization, and shows its app password
+  once.
+
+People approve what the interface shows them, so its code is what they
+trust. It is served as static, versioned files built from open source,
+with Subresource Integrity on its scripts, and `zena approve` remains a
+way to inspect and approve releases without it. A package host can also
+have pages of its own for settings only it holds, such as claims on scope
+names.
+
+### Moving to another host
+
+Keys do not move. The new host generates a signing key of its own, and
+the DID document is changed to name it:
+
+1. The new host creates an account for the existing DID, with
+   `com.atproto.server.createAccount` and the DID, as atproto account
+   migration does.
+2. The repository and its blobs are copied from the old host, with
+   `com.atproto.sync.getRepo` and `com.atproto.sync.getBlob`. A record's
+   CID is a hash of its content, so every pinned release keeps its CID.
+3. A PLC operation names the new host's endpoint and signing key, and
+   replaces the old host's rotation key with the new host's. The old host
+   signs it if it cooperates, and a recovery key holder if it does not.
+
+`zena package move --to <host>` does all three. If the old host is gone,
+the records and blobs can be rebuilt from caches and proxies, which hold
+every release anyone has fetched, and checked against the log.
+
+### Holding keys elsewhere
+
+- **Recovery keys** are held by maintainers already. A key on a laptop
+  can be lost, which leaves moving the package to the host's cooperation,
+  or stolen, and a thief with the first-ranked key can take the DID.
+  Keeping recovery keys in hardware keys or the OS keychain is an open
+  question.
+- **The signing key** is held by whatever serves the repository, since a
+  commit is signed when records are written and served from there. A
+  package that trusts no host runs its own: the Zena project's host
+  software or the reference PDS, with `zena package create --host <url>`. A key on a laptop that is
+  usually offline cannot serve the repository, so this is not supported.
+  A self-hosted package's risks are its host's: when the server is down,
+  the package can be fetched only from caches, and if its signing key
+  leaks, anyone can write releases, which still go unattested and so are
+  never recorded by the log.
+- **A `did:web` package** has no rotation keys. Whoever controls the
+  domain's `/.well-known/did.json` controls the package, and moving host
+  means editing that file. It cannot move to another domain.
+
+### Trusting a host
+
+A host can write anything to the repositories it holds, refuse to serve
+them, and sign PLC operations with its rotation key. What limits it:
+
+- Resolution files pin the CID of every release, so a project that has
+  resolved a release gets those bytes or fails.
+- The log records a release only with its maintainers' attestations, so
+  a release the host wrote alone is never recorded. A release changed
+  after the log recorded it is labeled `release-mutated`.
+- PLC operations are public: the directory's export stream lists every
+  operation on every DID, so a change a host makes to a package's DID
+  document can be seen.
+- Recovery keys rank above the host's rotation key, so for 72 hours
+  maintainers can undo any PLC operation the host signs.
+
+A project relies on a package's maintainers, through their attestations,
+and on the log. It does not choose the package's host, and does not need
+to trust it.
+
+### The PLC directory
+
+Creating a package's DID is one request. The host posts the signed
+genesis operation, the directory validates and stores it, and the DID
+resolves as soon as the request returns. Later operations work the same
+way. Resolvers that cache DID documents can serve an old one for a while
+after an update, which matters when a package moves, not when it is
+created.
+
+The directory holds the DID of every Bluesky account, tens of millions of
+them, and an operation is limited to 7,500 bytes. npm holds about three
+million packages after fifteen years, so packages would add few DIDs by
+comparison, and slowly. The directory limits requests per client at its
+load balancer, with limits its specification calls generous, and has no
+limit per DID yet. A host that creates accounts in volume should agree it
+with the directory's operators, which are becoming an independent
+association. Every operation stays in the directory's log for good, so an
+abandoned package keeps costing its few operations. Packages made for
+testing should use `did:web`.
 
 ## Discovery and trust
 
@@ -521,6 +1067,215 @@ for example blocking `malware`, warning on `deprecated`, or requiring
 `release-mutated` and reports of malicious packages, and others can run
 their own.
 
+## Security and supply-chain attacks
+
+Three properties do most of the work against attacks on a project's
+dependencies:
+
+1. **A project gets the bytes it pinned.** The resolution file pins the
+   CID of every release record and artifact, so nothing anyone does later
+   changes what a resolved project builds.
+2. **A release counts only when its maintainers approved it.** The
+   checksum log records a release only with attestations from the
+   package's threshold of maintainers, each made through the maintainer's
+   own PDS, and clients refuse releases the log does not have. Whoever
+   holds the package's repository cannot publish alone.
+3. **Nothing new arrives unasked.** Minimal version selection uses the
+   lowest version anyone in the graph asks for, so a new release,
+   malicious or not, reaches a project only when someone raises a
+   minimum, usually with `zena update`. Nothing in a package runs when it
+   is added, fetched or compiled: Zena packages have no install or build
+   scripts. The macros Zena may add ([macros.md](macros.md)) would run at
+   compile time, in the compiler's Wasm sandbox and without its access to
+   files or the network.
+
+The design does not stop a maintainer from publishing malicious code on
+purpose, or approving it unaware. See [Malicious releases](#malicious-releases)
+for what limits that.
+
+### Unauthorized publishing
+
+Who might publish without the maintainers' consent, and what stops them:
+
+- **The host**, or whoever controls it, holds the package's signing key
+  and can write any record. It cannot write attestations in the
+  maintainers' repositories, so the log records none of it.
+- **Someone with a maintainer's session**, taken from their machine, can
+  do what the maintainer can, attesting included. A threshold of 2 or
+  more needs a second maintainer, and a maintainer with approval keys
+  (below) needs one of those too. The maintainer revokes the session at
+  their PDS.
+- **Someone who takes over a maintainer's account**, by phishing its
+  password, say, is held back by the same things. How an account signs in
+  is up to its PDS, including whether it asks for a second factor
+  (bsky.social can send one by email). Approval keys are a second factor
+  that does not depend on the PDS.
+- **Someone with a CI secret** can attest as the bot account. A package
+  that publishes from CI should require a person's attestation as well.
+- **The log's operator** could add an entry without its attestations, or
+  change one. The log is a transparency log with witnesses (see
+  [The checksum log](#the-checksum-log)), so either can be shown.
+
+The index sees every publish, every change of maintainers and every PLC
+operation for a package, and tells the package's maintainers, so a
+publish one of them did not expect is noticed by the others.
+
+### Human approval and second factors
+
+Three fields of the maintainers record control this:
+
+```json
+{
+  "$type": "dev.zena-lang.package.maintainers",
+  "maintainers": [
+    {
+      "did": "did:plc:alicealicealicealicealic",
+      "role": "owner",
+      "approvalKeys": ["did:key:zDnae..."]
+    },
+    {
+      "did": "did:plc:bobbobbobbobbobbobbobbob",
+      "role": "publisher",
+      "approvalKeys": ["did:key:zDnaf..."]
+    },
+    {
+      "did": "did:plc:acmebotacmebotacmebotacm",
+      "role": "publisher",
+      "automation": true
+    }
+  ],
+  "threshold": 2,
+  "ownerThreshold": 1,
+  "humans": 1,
+  "approvalKeysRequired": true
+}
+```
+
+- **`automation`** marks a maintainer as a bot, such as the account CI
+  publishes as. Team members' entries can carry it, and approval keys,
+  the same way.
+- **`humans`** is how many of a release's attestations must come from
+  maintainers that are not automation. With CI attesting and `humans` at
+  1, a release CI publishes waits until a person runs `zena approve`,
+  which shows what they are approving: the version, the artifacts' CIDs,
+  and the changes to the source since the previous release. A release
+  made with a stolen CI secret reaches the log only if a person approves
+  it.
+- **`approvalKeys`** are a maintainer's passkeys or security keys. When a
+  maintainer has some, their attestations count only with a signature
+  from one: `zena approve` asks for a WebAuthn assertion over the
+  release's CID, through a page at `zena-lang.dev` opened in the browser,
+  and includes it in the attestation, where the log checks it against the
+  key. With `approvalKeysRequired`, every person's attestation needs one.
+  Someone with the maintainer's session or account, and not their key,
+  cannot attest.
+
+A maintainer should register two approval keys, as with any second
+factor. Adding or removing one is a change of maintainers, attested like
+any other.
+
+### Recovery
+
+Two cases need a way back that does not go through the maintainers'
+attestations: an only maintainer who has lost their account or approval
+keys, and a team that can no longer reach its threshold. A new
+maintainers record signed with one of the package's recovery keys, in
+place of attestations, counts once the log has shown it for seven days,
+unless the current maintainers attest a different record in that time.
+The index tells the maintainers when such a change is pending. A recovery
+key is kept offline and rarely used, so it is harder to take than a
+session, and the seven days give the maintainers time to answer if it is
+taken.
+
+### Compromised keys
+
+| If this is taken                  | The attacker can                                                       | What stops them                                                                                                              | Recovery                                                                                                                      |
+| --------------------------------- | ---------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| A maintainer's session or account | attest as the maintainer, and ask the host for what the maintainer can | the threshold, `humans` and approval keys; the other maintainers are told                                                    | revoke the session or recover the account; the other maintainers remove the person if needed, and yank what was published     |
+| A CI secret                       | attest as the bot                                                      | `humans`; an automation account on the package's host counts only with a person's attestation                                | replace the app password                                                                                                      |
+| An approval key                   | nothing alone                                                          | it signs only together with the maintainer's account                                                                         | remove it from the maintainers record                                                                                         |
+| The package's signing key         | write records to the repository                                        | the log, which records nothing unattested                                                                                    | the host replaces the key with a PLC operation                                                                                |
+| The host's rotation key           | change the DID document of every package on the host                   | recovery keys, which rank above it, undo its operations for 72 hours; the index watches PLC operations and tells maintainers | maintainers undo the operations with their recovery keys                                                                      |
+| A recovery key                    | change the DID document at that key's rank, and start a recovery reset | higher-ranked keys, for 72 hours; the seven days of a reset; new releases still need the maintainers' attestations           | undo with a higher-ranked key; if the first-ranked key was taken, the DID is lost, and the package moves to a new DID (below) |
+| The log's signing key             | sign a log head that drops or changes entries                          | witnesses, and clients, which refuse a head that does not extend the last one they saw                                       | the log rotates its key                                                                                                       |
+
+A package whose DID is taken cannot be published by its attacker, as
+long as its maintainers answer any recovery reset the attacker starts:
+the log keeps the package's maintainers record, and a release still needs
+those maintainers' attestations. The maintainers cannot publish to it
+either, since they no longer control its repository. They publish under
+a new DID, and a labeler marks the old one `compromised`, naming the new
+DID, so projects can move.
+
+### Squatting
+
+- **DIDs** cannot be squatted: a `did:plc` is a hash, and a `did:web`
+  belongs to its domain.
+- **Local names** cannot be squatted: each project chooses its own.
+- **Handles** can be taken only as scope names on a host's domain, first
+  come, first served. A host can reserve scopes for people who show they
+  own a matching domain or GitHub organization, and settle disputes, as
+  package registries do. An organization that uses its own domain as its
+  scope is out of reach. A handle that a scope gives to another package
+  moves no project, since projects record DIDs.
+
+### Confusion
+
+- **Typosquatting**, as in `@acme/routr` beside `@acme/router`. Handles
+  are ASCII, which rules out look-alike Unicode. `zena add` shows the DID,
+  handle, maintainers, and how many packages depend on the package before
+  it writes anything, and the index can label handles that look like
+  those of popular packages. After `zena add`, the project refers to the
+  package by DID and by its own local name, so a typo can do harm only at
+  that moment.
+- **Dependency confusion**, where a public package shadows a private one
+  of the same name, needs names that resolve by search. Packages are
+  named by DID, and `@scope/name` maps to one domain per scope (see
+  [Names and scopes](#names-and-scopes)).
+- **Expired domains.** Whoever registers a domain a package's handle was
+  on can point the handle at their own DID, which affects only new
+  `zena add`s by that handle. For a `did:web` package the DID itself
+  becomes theirs, but the log still holds the old maintainers record, so
+  it records no release they make.
+- **Manifest confusion**, where what a registry shows about a package
+  differs from what the package contains. A release lists its
+  dependencies, and its source archive holds `zena-package.json`, which
+  lists them too. The log and `zena fetch` check that the two agree.
+- **Lockfile injection**, where a pull request changes
+  `zena-packages.json` to pin another DID or CID. `zena fetch --check`
+  recomputes the selection from the `zena-package.json` files and checks
+  each pin against the log, and fails when the resolution file differs,
+  so CI can refuse such a change.
+- **Source that differs from its repository.** Source archives are packed
+  deterministically, so anyone can pack the repository at a release's tag
+  and compare the CID with the release's, with `zena verify-source`.
+
+### Malicious releases
+
+When a maintainer publishes malicious code, or approves it without
+noticing:
+
+- Minimal version selection takes a new release only when someone raises
+  a minimum, so a malicious release reaches the projects that update, not
+  every build. A release found out in that time can be yanked and labeled
+  before most projects take it.
+- Labelers mark malicious releases `malware`, and clients that follow
+  them refuse those releases, pinned ones included.
+- A project can follow a labeler that reviews releases, and require
+  `reviewed` for some or all of its dependencies.
+- A library's source is compiled into the program that uses it, and runs
+  with that program's capabilities. A prebuilt component can reach only
+  what its world imports and the program gives it.
+
+### Availability
+
+A package whose host deletes it, or disappears, can still be fetched from
+caches and proxies, since every artifact is addressed by its CID, and its
+maintainers can move it to another host with a recovery key. The PLC
+directory and the log are needed to resolve new releases. A build from an
+existing resolution file needs neither, given a cache or proxy that holds
+its artifacts.
+
 ## What this needs
 
 - **`packages/atproto`**: identifier syntax, base encodings, CIDs,
@@ -529,13 +1284,29 @@ their own.
   Creating a `did:plc` package also needs signing.
 - **Outgoing HTTP** with methods and headers on the `zena-cli` target,
   which `wasi:http` provides directly.
-- **Package roots outside the project.** The compiler joins every
-  resolution-file path onto the project root, so it cannot read packages
-  from the cache directory yet.
-- **The `zena` command**: `add`, `update`, `fetch`, `publish`, `yank` and
-  `package create`.
+- **The `zena` command**: `login`, `add`, `update`, `fetch`, `publish`,
+  `approve`, `yank`, `owner`, `team`, `package create` and
+  `package move`, and the `@scope/name` shorthand with its `scopes`
+  mapping. Signing in needs OAuth with a loopback redirect, a
+  client metadata document at `zena-lang.dev`, and the
+  `dev.zena-lang.authPublish` permission set.
+- **A package host**: a PDS written in Zena, with `dev.zena-lang.host.*`
+  methods for creating packages, scopes and automation accounts without
+  an email address, publishing, changing maintainers, members and teams,
+  and moving packages. It checks service-auth tokens against roles, keeps
+  membership entries and gives them to those allowed to see them, and
+  serves its domain's DNS zone to answer for its scopes' handles.
+- **The management interface**: a browser app on the index's site, with
+  no privileges of its own.
+- **Lexicons** for the maintainers record, attestations, membership
+  entries, and an organization's members and teams.
 - **Services**: the checksum log, the index and its proxy, and a labeler,
-  all Zena servers.
+  all Zena servers. The log also checks attestations, approval-key
+  signatures and recovery resets. The index watches PLC operations,
+  publishes and changes of maintainers, and tells maintainers about them.
+- **Approvals**: `zena approve`, and the management interface's page that
+  asks a passkey or security key for a WebAuthn assertion. `zena fetch --check`
+  and `zena verify-source`.
 
 ## Alternatives considered
 
@@ -547,6 +1318,51 @@ account could publish today, with no new accounts. A package could then
 never change hands, and it would share its fate with one person's
 account. A DID per package keeps the package's identity separate from
 anyone who maintains it.
+
+### Package accounts on any PDS, with a password each
+
+The first version of this design created each package with
+`com.atproto.server.createAccount` on whatever PDS its publisher chose,
+and published with that account's app password, which a team shared as a
+secret. It needs no package host. It gives each package a password to
+keep, makes everyone who publishes share it, records nothing about who
+published, and has no default PDS: bsky.social would need an email
+address per package and make each one a Bluesky user. It remains possible
+for a package on a self-hosted PDS.
+
+### Releases signed with maintainers' own keys
+
+Each maintainer could hold a key, on their machine or a hardware key, and
+sign releases with it alone, as Sigstore and PGP-signed packages do. Their
+public keys would have to be published and replaced somewhere, and a lost
+key would need a recovery story of its own. Attestations get a signature
+for each maintainer from the key their PDS already holds, with the
+account's recovery behind it. Approval keys add the maintainer's own key
+as an optional second factor: they are published in the maintainers
+record, replaced like any change of maintainers, and recovered with a
+recovery reset.
+
+### A threshold of rotation keys
+
+PLC has no threshold of rotation keys, and a threshold signature scheme
+would make several holders act as one rotation key without PLC knowing.
+Both are out of reach or complex, and releases, which are what clients
+use, get M of N through attestations instead.
+
+### Public membership
+
+Members and team records could list DIDs, as the maintainers record does
+for individuals. Anyone could then see who can change a team or publish
+for it, which is what an attacker wants to know, while projects need only
+who approved each release. Commitments keep the log's checks, and reveal
+a member only when they act.
+
+### Anonymous approvals
+
+Group signatures or zero-knowledge proofs could show that some member of
+a team approved a release without saying which. They would also hide
+which releases an account approved, which a project needs to know when
+the account turns out to have been taken.
 
 ### Enforcing immutability at the PDS
 
@@ -580,6 +1396,17 @@ the cache share files across versions.
 ## Open questions
 
 - **Who runs the checksum log and its witnesses.**
+- **The Zena package host's domain, and its policy on scope names**: for
+  example, reserving scopes for verified domains or GitHub organizations,
+  and settling disputes.
+- **Publishing from CI with no stored secret**, through the CI system's
+  OIDC tokens, as npm and PyPI allow.
+- **Recovery keys in hardware**, such as security keys or the OS
+  keychain.
+- **How the index reaches maintainers** with what it notices: a Bluesky
+  direct message, an email address they register, or a feed.
+- **Approval keys without a browser**, with `zena` talking to a security
+  key directly.
 - **Private packages.** A package in an atproto space, the proposed
   permissioned-data extension, could be readable by an organization only.
   Spaces are an alpha with an unstable wire format.
