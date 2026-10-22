@@ -1919,9 +1919,8 @@ export final class InlineLayout {
   /** The longest member's length. */
   arity: i32;
   /**
-   * A position where every member has a literal, a different one in
-   * each (`true`/`false`, or `0`, `1`, `2`), or -1 when there is none
-   * (one member). The checker requires one for a union of several.
+   * The position of the literal that tells the members apart: 0, where
+   * the checker requires it, or -1 for a single member.
    */
   discriminant: i32;
 
@@ -2089,51 +2088,10 @@ export function inlineLayoutOf(wasm: WasmModule, type: Type): InlineLayout | nul
       }
     }
   }
+  // The checker requires a union of several to start each member with
+  // a distinct literal (`checkInlineUnionMembers`).
   return new InlineLayout(slots, members, slotPositions, memberSlots, arity,
-      discriminantPosition(members, arity));
-}
-
-function discriminantPosition(members: GrowableArray<InlineTupleType>, arity: i32): i32 {
-  if (members.length < 2) {
-    return -1;
-  }
-  for (var p = 0; p < arity; p += 1) {
-    let seen = new Array<String>();
-    var allDistinct = true;
-    for (let member in members) {
-      let key = if (p < member.elementTypes.length) {
-        literalTypeKey(member.elementTypes[p])
-      } else {
-        null
-      };
-      if (key == null) {
-        allDistinct = false;
-        break;
-      }
-      for (let other in seen) {
-        if (other == key) {
-          allDistinct = false;
-        }
-      }
-      if (!allDistinct) {
-        break;
-      }
-      seen.push(key);
-    }
-    if (allDistinct) {
-      return p;
-    }
-  }
-  return -1;
-}
-
-/** A key that is equal for equal boolean or number literal types. */
-export function literalTypeKey(t: Type): String | null {
-  return match (t) {
-    case BoolLiteralType {value}: if (value) 'true' else 'false'
-    case NumLiteralType {raw}: `n:${raw}`
-    case _: null
-  };
+      if (members.length < 2) -1 else 0);
 }
 
 function isNullableValType(vt: ValType): boolean {
