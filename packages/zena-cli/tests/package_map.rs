@@ -252,11 +252,10 @@ impl Drop for KillOnDrop {
     }
 }
 
-/// Starts `tests/fixtures/fetch-pds.zena`, which serves one published
-/// package, and waits until it has written a workspace root depending on
-/// it and the lockfile pinning it.
-/// Returns the server and the PLC directory's origin.
-fn start_fake_pds(scratch: &Scratch) -> (KillOnDrop, String) {
+/// Starts `tests/fixtures/<fixture>`, which serves published packages, and
+/// waits until it has written the PLC directory's origin. Returns the
+/// server and that origin.
+fn start_fake_pds(scratch: &Scratch, fixture: &str) -> (KillOnDrop, String) {
     let out = scratch.path().join("pds");
     fs::create_dir_all(&out).expect("a directory for the fake PDS");
     let log = fs::File::create(scratch.path().join("pds.log")).expect("a log file");
@@ -268,7 +267,7 @@ fn start_fake_pds(scratch: &Scratch) -> (KillOnDrop, String) {
             "run",
             "--dir",
             &mapping,
-            "packages/zena-cli/tests/fixtures/fetch-pds.zena",
+            &format!("packages/zena-cli/tests/fixtures/{fixture}"),
         ],
     )
     .stdout(Stdio::null())
@@ -295,7 +294,7 @@ fn start_fake_pds(scratch: &Scratch) -> (KillOnDrop, String) {
 #[test]
 fn fetch_downloads_pinned_packages_that_the_compiler_then_reads() {
     let scratch = Scratch::new("package-map-fetch");
-    let (_server, plc) = start_fake_pds(&scratch);
+    let (_server, plc) = start_fake_pds(&scratch, "fetch-pds.zena");
     let workspace = scratch.path().join("workspace");
     fs::create_dir_all(&workspace).expect("a workspace directory");
     for file in ["zena-package.json", "zena-lock.json"] {
@@ -337,7 +336,7 @@ fn fetch_downloads_pinned_packages_that_the_compiler_then_reads() {
 #[test]
 fn fetch_refuses_a_release_that_differs_from_its_pin() {
     let scratch = Scratch::new("package-map-fetch-changed");
-    let (_server, plc) = start_fake_pds(&scratch);
+    let (_server, plc) = start_fake_pds(&scratch, "fetch-pds.zena");
     let workspace = scratch.path().join("workspace");
     fs::create_dir_all(&workspace).expect("a workspace directory");
     // Pin a release record CID the PDS does not serve.
@@ -372,4 +371,143 @@ fn fetch_refuses_a_release_that_differs_from_its_pin() {
                 .is_none(),
         "zena fetch stored a package it refused"
     );
+}
+
+/// The zena command in the workspace `workspace`, run from `dir`, finding
+/// packages through the fake PDS whose PLC directory is `plc`.
+fn zena_with_pds(
+    workspace: &Path,
+    dir: &Path,
+    scratch: &Scratch,
+    plc: &str,
+    args: &[&str],
+) -> Output {
+    let dns = format!("{}/dns-query", plc.trim_end_matches("/plc"));
+    zena_command(workspace, &scratch.path().join("cache"), args)
+        .current_dir(dir)
+        .env("ZENA_PLC_DIRECTORY", plc)
+        .env("ZENA_DNS_OVER_HTTPS", dns)
+        .output()
+        .expect("the zena command to start")
+}
+
+fn read(path: &Path) -> String {
+    fs::read_to_string(path).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
+}
+
+#[test]
+fn add_and_update_select_pin_and_fetch_dependencies() {
+    let scratch = Scratch::new("package-map-add");
+    let (_server, plc) = start_fake_pds(&scratch, "add-pds.zena");
+    let workspace = scratch.path().join("workspace");
+    let manifest = workspace.join("zena-package.json");
+    let lockfile = workspace.join("zena-lock.json");
+    write(
+        &workspace.join("prog.zena"),
+        "import { route } from 'router:match';\n\
+         export function main(): i32 {\n  \
+           return route() - 42;\n\
+         }\n",
+    );
+
+    // Add router at a version, by its scoped name, to a workspace with no
+    // manifest yet. Its dependency, json, is selected and fetched with it.
+    let add = zena_with_pds(
+        &workspace,
+        &workspace,
+        &scratch,
+        &plc,
+        &["add", "@acme/router@1.4.2"],
+    );
+    assert_success("zena add", &add);
+    let text = read(&manifest);
+    assert!(
+        text.contains("\"router\"") && text.contains("1.4.2"),
+        "{text}"
+    );
+    let pins = read(&lockfile);
+    assert!(
+        pins.contains("did:plc:routerrouterrouterrouter@1")
+            && pins.contains("did:plc:jsonjsonjsonjsonjsonjson@2")
+            && pins.contains("2.1.0"),
+        "{pins}"
+    );
+    let stdout = String::from_utf8_lossy(&add.stdout);
+    assert!(stdout.contains("2 fetched"), "unexpected output:\n{stdout}");
+    assert_success(
+        "zena run",
+        &zena_in(&workspace, &scratch, &["run", "prog.zena"]),
+    );
+
+    // Update to the latest version that is not yanked: 1.5.0, not 1.6.0.
+    let update = zena_with_pds(&workspace, &workspace, &scratch, &plc, &["update"]);
+    assert_success("zena update", &update);
+    let stdout = String::from_utf8_lossy(&update.stdout);
+    assert!(
+        stdout.contains("1.4.2 -> 1.5.0"),
+        "unexpected output:\n{stdout}"
+    );
+    let text = read(&manifest);
+    assert!(text.contains("1.5.0") && !text.contains("1.6.0"), "{text}");
+    assert_success(
+        "zena run",
+        &zena_in(&workspace, &scratch, &["run", "prog.zena"]),
+    );
+
+    // Give the workspace a package, lib, and add json 2.0.0 to it from its
+    // directory. Only lib's manifest changes, and the lockfile still pins
+    // json 2.1.0, which router needs: one version for the whole workspace.
+    write(
+        &manifest,
+        &text.replacen('{', r#"{"workspace": {"packages": ["packages/*"]},"#, 1),
+    );
+    let lib = workspace.join("packages/lib");
+    write(&lib.join("zena-package.json"), r#"{"name": "lib"}"#);
+    let before = read(&manifest);
+    let add_to_lib = zena_with_pds(
+        &workspace,
+        &lib,
+        &scratch,
+        &plc,
+        &["add", "@acme/json@2.0.0"],
+    );
+    assert_success("zena add in a workspace package", &add_to_lib);
+    let lib_text = read(&lib.join("zena-package.json"));
+    assert!(
+        lib_text.contains("\"json\"") && lib_text.contains("2.0.0"),
+        "{lib_text}"
+    );
+    assert_eq!(read(&manifest), before);
+    let pins = read(&lockfile);
+    assert!(pins.contains("2.1.0") && !pins.contains("2.0.0"), "{pins}");
+
+    // Add json to the root without a version: its latest, under the name
+    // its profile suggests.
+    let add_json = zena_with_pds(
+        &workspace,
+        &workspace,
+        &scratch,
+        &plc,
+        &["add", "@acme/json"],
+    );
+    assert_success("zena add without a version", &add_json);
+    let text = read(&manifest);
+    assert!(
+        text.contains("\"json\"") && text.contains("2.1.0"),
+        "{text}"
+    );
+
+    // A name that does not resolve is an error, and changes nothing.
+    let missing = zena_with_pds(
+        &workspace,
+        &workspace,
+        &scratch,
+        &plc,
+        &["add", "@acme/nothing"],
+    );
+    assert!(
+        !missing.status.success(),
+        "zena add accepted a package that does not exist"
+    );
+    assert_eq!(read(&manifest), text);
 }

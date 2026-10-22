@@ -286,9 +286,16 @@ Subcommands (`./target/release/zena-cli <subcommand>`):
   `path:line:column: message [rule]`, exiting 1 when there are findings;
   `--fix` rewrites the files, keeping each fix the type checker accepts.
   `--list-rules` prints the rules.
+- **`add <package>[@version] [--name <local>]`**: Add a published package,
+  by DID, handle or `@scope/name`, to `zena-package.json`; select versions
+  for everything it leads to, pin them in `zena-lock.json`, and fetch
+  them.
+- **`update [names...]`**: Raise dependencies to the latest version of their
+  major version that is not yanked, then pin and fetch as `add` does.
 - **`fetch`**: Fetch the published packages `zena-lock.json` pins into
   the package cache, checking each against its pins. `ZENA_PLC_DIRECTORY`
-  replaces the PLC directory.
+  and `ZENA_DNS_OVER_HTTPS` replace the PLC directory and the DNS resolver
+  handles are looked up with.
 - **`doc <path> [-o <out.json>]`**: Extract a package's public API as JSON.
 - **`bench <suite.json> [-o <out.json>]`**: Run a benchmark suite.
 - **`lsp`**: Run the Zena language server over stdin/stdout.

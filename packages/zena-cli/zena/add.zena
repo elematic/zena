@@ -1,0 +1,173 @@
+/**
+ * `zena add` and `zena update`: change a package's dependencies in its
+ * `zena-package.json`, select versions across the whole workspace, pin
+ * them in `zena-lock.json`, and fetch them (docs/design/package-manager.md,
+ * "Dependencies and resolution"). The workspace's root is the repository
+ * root, and the package changed is the one the command is run in: the
+ * workspace package whose directory holds the current directory, or else
+ * the root, whose manifest `zena add` creates if need be.
+ *
+ * `zena add <package>[@<version>]` takes a DID, a handle or `@scope/name`,
+ * and the latest version that is not yanked unless one is given. The local
+ * name is the one the package's profile suggests, unless `--name` gives
+ * another. `zena update [<name>...]` raises each named dependency, or all
+ * of them, to the latest version of its major version that is not yanked.
+ */
+
+import { ParsedArgs } from 'zena:args';
+import { runFuture } from 'zena:async';
+import { OrderedHashMap } from 'zena:collections';
+import { writeFileSync } from 'zena:fs';
+import { IdentityResolver } from 'atproto:identity';
+import { writeDependencies } from 'package-manager:manifest';
+import { isValidPackageName } from 'package-manager:records';
+import { fetchProfile, listVersions, networkReleases, resolveIdentifier } from 'package-manager:registry';
+import { readPins, writeLockfile } from 'package-manager:resolution';
+import { Requirement, resolve } from 'package-manager:resolve';
+import { Version } from 'package-manager:version';
+import { DiskFiles, Workspace, WorkspacePackage, readWorkspace } from 'package-manager:workspace';
+import { Options, repoRoot, userCwd } from './env.zena';
+import { fetchAndReport, packageResolver } from './fetch.zena';
+
+export function addCommand(args: ParsedArgs, options: Options): i32 {
+  if (args.rest.length != 1) {
+    console.error('Error: zena add takes one package: a DID, a handle or @scope/name, with @<version> if wanted.');
+    return 2;
+  }
+  let (identifier, versionText) = splitVersion(args.rest[0]);
+  let workspace = readWorkspace(repoRoot().value, new DiskFiles());
+  let target = workspace.packageAt(userCwd().value);
+  let manifest = target.manifest;
+  let requirements = manifest.requirements;
+  let resolver = packageResolver();
+  let did = runFuture(resolveIdentifier(identifier, workspace.root.manifest.scopes, resolver));
+  let document = runFuture(resolver.resolveDid(did));
+
+  var version: Version | null = null;
+  if (versionText != null) {
+    version = Version.parse(versionText);
+  } else {
+    version = runFuture(listVersions(document)).latest();
+    if (version == null) {
+      console.error(`Error: ${identifier} (${did}) has no release that is not yanked.`);
+      return 1;
+    }
+  }
+  let chosen = version;
+
+  var name = '';
+  if (let (true, given) = args.getOption('name')) {
+    name = given;
+  } else {
+    let profile = runFuture(fetchProfile(document));
+    if (profile == null) {
+      console.error(`Error: ${identifier} has no profile to suggest a name; give one with --name.`);
+      return 1;
+    }
+    name = profile.name;
+  }
+  if (!isValidPackageName(name)) {
+    console.error(`Error: '${name}' is not a valid package name.`);
+    return 1;
+  }
+  let taken = nameTaken(workspace, target, name, did);
+  if (taken != null) {
+    console.error(`Error: '${name}' already names ${taken}; give this package another name with --name.`);
+    return 1;
+  }
+
+  requirements[name] = new Requirement(did, chosen);
+  console.log(`Adding ${name} to ${target.manifestPath()}: ${did} ${chosen.toString()}`);
+  return resolveWriteAndFetch(workspace, target, resolver, options);
+}
+
+export function updateCommand(args: ParsedArgs, options: Options): i32 {
+  let workspace = readWorkspace(repoRoot().value, new DiskFiles());
+  let target = workspace.packageAt(userCwd().value);
+  let requirements = target.manifest.requirements;
+  if (requirements.size == 0) {
+    console.log(`Nothing to update: ${target.manifestPath()} declares no published dependencies.`);
+    return 0;
+  }
+  for (let name in args.rest) {
+    if (!requirements.has(name)) {
+      console.error(`Error: ${target.manifestPath()} has no published dependency named '${name}'.`);
+      return 1;
+    }
+  }
+  let resolver = packageResolver();
+  let updated = new OrderedHashMap<String, Requirement>();
+  requirements.forEach((name, requirement) => {
+    if (args.rest.length == 0 || args.rest.contains(name)) {
+      let document = runFuture(resolver.resolveDid(requirement.did));
+      let latest = runFuture(listVersions(document)).latest(requirement.version.major);
+      if (latest != null && latest.compareTo(requirement.version) > 0) {
+        console.log(`Updating ${name}: ${requirement.version.toString()} -> ${latest.toString()}`);
+        updated[name] = new Requirement(requirement.did, latest);
+      }
+    }
+  });
+  if (updated.size == 0) {
+    console.log('Every dependency is at its latest version.');
+  }
+  updated.forEach((name, requirement) => {
+    requirements[name] = requirement;
+  });
+  return resolveWriteAndFetch(workspace, target, resolver, options);
+}
+
+/**
+ * What `name` already names in `target`, when it is not `did`: another
+ * published package, a package on disk, the package itself, or, in a root
+ * that is not a package, a workspace package. Null when it is free.
+ */
+function nameTaken(workspace: Workspace, target: WorkspacePackage, name: String,
+    did: String): String | null {
+  let manifest = target.manifest;
+  if (let (true, existing) = manifest.requirements.get(name)) {
+    return if (existing.did == did) null else existing.did;
+  }
+  if (let (true, path) = manifest.paths.get(name)) {
+    return `the package in ${path}`;
+  }
+  if (manifest.name != null && manifest.name == name) {
+    return 'this package';
+  }
+  if (target.dir == workspace.root.dir && manifest.name == null) {
+    for (let pkg in workspace.packages) {
+      if (pkg.manifest.name != null && pkg.manifest.name == name) {
+        return `the workspace package in ${pkg.dir}`;
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * Selects versions for the whole workspace, with `target`'s changed
+ * requirements, writes `target`'s manifest and the lockfile, and fetches
+ * what the lockfile pins. Nothing is written when selection fails.
+ */
+function resolveWriteAndFetch(workspace: Workspace, target: WorkspacePackage,
+    resolver: IdentityResolver, options: Options): i32 {
+  let requirements = target.manifest.requirements;
+  let resolution = runFuture(resolve(workspace.requirements(), networkReleases(resolver)));
+  let lockfile = writeLockfile(resolution);
+  writeFileSync(target.manifestPath(), writeDependencies(target.text, requirements, target.manifest.paths));
+  writeFileSync(workspace.lockfilePath(), lockfile);
+  resolution.packages.forEach((key, pkg) => {
+    console.log(`Selected ${key} ${pkg.version.toString()}`);
+  });
+  return fetchAndReport(readPins(lockfile), options);
+}
+
+/** `text` split into the package and the version after its last `@`, if any. */
+function splitVersion(text: String): inline (String, String | null) {
+  // A leading `@` begins `@scope/name`, and is not a version.
+  for (var i = text.length - 1; i > 0; i -= 1) {
+    if (text.getByteAt(i) == 64) {
+      return (text.sliceBytes(0, i), text.sliceBytes(i + 1, text.length));
+    }
+  }
+  return (text, null);
+}

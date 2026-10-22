@@ -3,7 +3,7 @@
 Status: **Proposed**, and partly built: the AT Protocol libraries
 (`packages/atproto`), the package records, source archives and fetching
 (`packages/package-manager`), the compiler's reading of pinned packages,
-and `zena fetch`.
+and `zena add`, `zena update` and `zena fetch`.
 
 This document designs Zena's package manager. Packages are published on the
 AT Protocol (atproto), the protocol behind Bluesky. A package is an atproto

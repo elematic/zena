@@ -7,9 +7,8 @@ packages a workspace uses. [package-manager.md](package-manager.md)
 designs publishing and fetching packages.
 
 > **Current status**: The compiler reads a workspace from its manifests
-> and `zena-lock.json`, and `zena fetch` fetches what `zena-lock.json`
-> pins. `zena add` and `zena update`, which write the lockfile, are in
-> progress.
+> and `zena-lock.json`. `zena add` and `zena update` write the manifests
+> and the lockfile, and `zena fetch` fetches what the lockfile pins.
 
 ## Terms
 
