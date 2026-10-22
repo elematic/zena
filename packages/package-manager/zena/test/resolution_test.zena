@@ -1,7 +1,17 @@
 import {suite, test} from 'zena:test';
-import {equal, isTrue} from 'zena:assert';
+import {equal, isTrue, jsonEqual} from 'zena:assert';
+import {OrderedHashMap} from 'zena:collections';
+import {parseJson} from 'zena:json';
 import {Cid} from 'atproto:cid';
-import {ResolutionError, packageKey, readPins} from 'package-manager:resolution';
+import {
+  Resolution,
+  ResolutionError,
+  ResolvedPackage,
+  packageKey,
+  readPins,
+  writeLockfile
+} from 'package-manager:resolution';
+import {Version} from 'package-manager:version';
 
 let RELEASE = 'bafyreie5737gdxlw5i64vzichcalba3z2v5n6icifvx5xytvske7mr3hpm';
 let SOURCE = 'bafkreihdwdcefgh4dqkjv67uzcmw7ojee6xedzdetojuzjevtenxquvyku';
@@ -22,10 +32,8 @@ function rejects(text: String) {
 }
 
 export let tests = suite('package-manager:resolution', () => {
-  test('reads the pins of a resolution file', (ctx) => {
+  test('reads the pins of a lockfile', (ctx) => {
     let pins = readPins(`{
-      "packages": {"app": "./src"},
-      "dependencies": {"router": "did:plc:router@1"},
       "resolved": {
         "did:plc:router@1": ${entry('1.4.2', RELEASE, SOURCE, ', "dependencies": {"json": "did:web:json.example.com@2"}')},
         "did:web:json.example.com@2": ${entry('2.1.0-rc.1')}
@@ -68,5 +76,30 @@ export let tests = suite('package-manager:resolution', () => {
     rejects('{"resolved": {"did:plc:router@1": {"version": "1.4.2"}}}');
     rejects(`{"resolved": {"did:plc:router@1": ${entry('1.4.2', RELEASE, SOURCE, ', "dependencies": []')}}}`);
     rejects(`{"resolved": {"did:plc:router@1": ${entry('1.4.2', RELEASE, SOURCE, ', "dependencies": {"json": 2}')}}}`);
+  });
+  test('writes a lockfile that reads back as the same pins', (ctx) => {
+    let router = 'did:plc:routerrouterrouterrouter';
+    let dependencies = new OrderedHashMap<String, String>();
+    dependencies['json'] = 'did:web:json.example.com@2';
+    let packages = new OrderedHashMap<String, ResolvedPackage>();
+    packages[`${router}@1`] = new ResolvedPackage(`${router}@1`, router, Version.parse('1.4.2'),
+        Cid.parse(RELEASE), Cid.parse(SOURCE), dependencies);
+    packages['did:web:json.example.com@2'] = new ResolvedPackage('did:web:json.example.com@2',
+        'did:web:json.example.com', Version.parse('2.1.0'), Cid.parse(RELEASE), Cid.parse(SOURCE),
+        new OrderedHashMap<String, String>());
+    let text = writeLockfile(new Resolution(packages));
+    jsonEqual(parseJson(text), parseJson(`{
+      "resolved": {
+        "${router}@1": {
+          "version": "1.4.2", "release": "${RELEASE}", "source": "${SOURCE}",
+          "dependencies": {"json": "did:web:json.example.com@2"}
+        },
+        "did:web:json.example.com@2": {"version": "2.1.0", "release": "${RELEASE}", "source": "${SOURCE}"}
+      }
+    }`));
+    isTrue(text.endsWith('}\n') && !text.endsWith('\n\n'));
+    let pins = readPins(text);
+    equal(pins.length, 2);
+    equal(pins[0].key, `${router}@1`);
   });
 });

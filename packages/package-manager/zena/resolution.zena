@@ -1,7 +1,9 @@
 /**
- * The packages a resolution file pins: its `resolved` section
- * (docs/design/package-manager.md, "The resolution file"). `zena fetch`
+ * The packages a workspace pins: the `resolved` section of its lockfile
+ * (docs/design/package-manifest.md, "zena-lock.json"). `zena fetch`
  * fetches them, and the compiler reads them from the package cache.
+ *
+ * `writeLockfile` writes a `Resolution` as `zena-lock.json`.
  *
  * ```json
  * "resolved": {
@@ -15,23 +17,23 @@
  * ```
  */
 
-import {HashMap} from 'zena:collections';
-import {JsonObject, JsonValue, parseJson} from 'zena:json';
+import {HashMap, OrderedHashMap} from 'zena:collections';
+import {JsonObject, JsonValue, parseJson, stringify} from 'zena:json';
 import {CODEC_DAG_CBOR, CODEC_RAW, Cid} from 'atproto:cid';
 import {isValidCidSyntax, isValidDid} from 'atproto:syntax';
 import {Version} from './version.zena';
 
-/** A resolution file whose pins cannot be read. */
+/** A lockfile whose pins cannot be read. */
 export class ResolutionError extends Error {
   new(message: String) : super(message);
 }
 
-/** How a resolution file names a package: its DID and major version. */
+/** How a lockfile names a package: its DID and major version. */
 export function packageKey(did: String, major: i64): String {
   return `${did}@${major}`;
 }
 
-/** A package a resolution file pins. */
+/** A package a lockfile pins. */
 export final class Pin {
   /** The package's DID and major version, `did:plc:...@1`. */
   key: String;
@@ -51,7 +53,7 @@ export final class Pin {
 }
 
 /**
- * The packages the resolution file `text` pins, in the order it lists
+ * The packages the lockfile `text` pins, in the order it lists
  * them; none when it has no `resolved` section. Throws `ResolutionError`
  * for a pin that cannot be fetched as written.
  */
@@ -147,4 +149,56 @@ function parseVersion(text: String, key: String): Version {
   } catch (e) {
     throw new ResolutionError(`${key}: ${e.message}`);
   }
+}
+
+/** A published package as the lockfile pins it. */
+export final class ResolvedPackage {
+  /** The package's DID and major version. */
+  key: String;
+  did: String;
+  version: Version;
+  /** The CID of the release record. */
+  release: Cid;
+  /** The raw CID of the source archive. */
+  source: Cid;
+  /** The release's names for its dependencies, each mapped to a package's key. */
+  dependencies: OrderedHashMap<String, String>;
+
+  new(key: String, did: String, version: Version, release: Cid, source: Cid,
+      dependencies: OrderedHashMap<String, String>)
+      : key = key, did = did, version = version, release = release, source = source,
+        dependencies = dependencies;
+}
+
+/** What minimal version selection chose for a workspace. */
+export final class Resolution {
+  /** The selected packages, by key, in key order. */
+  packages: OrderedHashMap<String, ResolvedPackage>;
+
+  new(packages: OrderedHashMap<String, ResolvedPackage>) : packages = packages;
+}
+
+/**
+ * `zena-lock.json` text pinning `resolution`'s packages. The lockfile holds
+ * nothing else, so it is written whole.
+ */
+export function writeLockfile(resolution: Resolution): String {
+  let resolved = new JsonObject();
+  resolution.packages.forEach((key, pkg) => {
+    let entry = new JsonObject();
+    entry['version'] = pkg.version.toString();
+    entry['release'] = pkg.release.toString();
+    entry['source'] = pkg.source.toString();
+    if (pkg.dependencies.size > 0) {
+      let dependencies = new JsonObject();
+      pkg.dependencies.forEach((name, target) => {
+        dependencies[name] = target;
+      });
+      entry['dependencies'] = dependencies;
+    }
+    resolved[key] = entry;
+  });
+  let root = new JsonObject();
+  root['resolved'] = resolved;
+  return stringify(root, '  ');
 }

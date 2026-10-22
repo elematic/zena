@@ -1,0 +1,143 @@
+/**
+ * Finding packages against `package-manager:testing/fake-pds`, which plays
+ * the PLC directory, a DNS-over-HTTPS resolver and the packages' PDS.
+ */
+
+import {suite, test} from 'zena:test';
+import {equal, isNull, isTrue} from 'zena:assert';
+import {runFuture} from 'zena:async';
+import {OrderedHashMap} from 'zena:collections';
+import {Cid} from 'atproto:cid';
+import {BlobRef} from 'atproto:data';
+import {Artifact, Dependency, Profile, Release, SOURCE, Yank} from 'package-manager:records';
+import {
+  RegistryError,
+  fetchProfile,
+  listVersions,
+  networkReleases,
+  resolveIdentifier,
+  scopedHandle
+} from 'package-manager:registry';
+import {Requirement, resolve} from 'package-manager:resolve';
+import {DID, FakeAccount, FakePds} from 'package-manager:testing/fake-pds';
+import {Version} from 'package-manager:version';
+
+let JSON_DID = 'did:plc:jsonjsonjsonjsonjsonjson';
+
+function bytesOf(text: String) {
+  let out = new FixedArray<u8>(text.length, 0 as u8);
+  for (var i = 0; i < text.length; i += 1) {
+    out[i] = text.getByteAt(i) as u8;
+  }
+  return out;
+}
+
+/** Publishes `version` on `account`, depending on `dependencies`. */
+function publish(account: FakeAccount, version: String,
+    dependencies: FixedArray<Dependency> = new FixedArray<Dependency>(0,
+        new Dependency('', Version.parse('0.0.0'), ''))) {
+  let source = account.addBlob(bytesOf(`${account.did} ${version}`));
+  let artifact = Artifact.whole(SOURCE, new BlobRef(source, 'application/vnd.ipld.car', 1 as i64));
+  return account.publish(new Release(Version.parse(version), '2026-10-22T00:00:00.000Z',
+      new FixedArray<Artifact>(1, artifact), dependencies));
+}
+
+function started() {
+  let pds = new FakePds();
+  pds.start();
+  return pds;
+}
+
+function noScopes() {
+  return new OrderedHashMap<String, String>();
+}
+
+export let tests = suite('package-manager:registry', () => {
+  test('turns @scope/name into a handle', (ctx) => {
+    equal(scopedHandle('@acme/router', noScopes()), 'router.acme.pkg.zena-lang.dev');
+    equal(scopedHandle('@acme/router', noScopes(), 'pkg.example.com'), 'router.acme.pkg.example.com');
+    let scopes = new OrderedHashMap<String, String>();
+    scopes['@widgets'] = 'widgets.alt-pkg.org';
+    equal(scopedHandle('@widgets/foo', scopes), 'foo.widgets.alt-pkg.org');
+    for (let bad in ['acme/router', '@acme', '@/router', '@acme/']) {
+      var caught = false;
+      try {
+        scopedHandle(bad, noScopes());
+      } catch (e) {
+        caught = e is RegistryError;
+      }
+      isTrue(caught, bad);
+    }
+  });
+
+  test('resolves a DID, a handle and @scope/name to a DID', (ctx) => {
+    let pds = started();
+    pds.account(JSON_DID, 'json.acme.pkg.zena-lang.dev');
+    let resolver = pds.resolver();
+    equal(runFuture(resolveIdentifier(JSON_DID, noScopes(), resolver)), JSON_DID);
+    equal(runFuture(resolveIdentifier('json.acme.pkg.zena-lang.dev', noScopes(), resolver)), JSON_DID);
+    equal(runFuture(resolveIdentifier('@acme/json', noScopes(), resolver)), JSON_DID);
+    var message = '';
+    try {
+      runFuture(resolveIdentifier('@acme/nothing', noScopes(), resolver));
+    } catch (e) {
+      message = e.message;
+    }
+    isTrue(message.contains('does not resolve'), message);
+    pds.close();
+  });
+
+  test('lists versions, and picks the latest that is not yanked', (ctx) => {
+    let pds = started();
+    let account = pds.main;
+    for (let version in ['1.0.0', '1.4.2', '1.5.0', '2.0.0-rc.1', '2.0.0', '2.1.0']) {
+      publish(account, version);
+    }
+    account.yank(new Yank(Version.parse('2.1.0'), 'broken'));
+    let document = runFuture(pds.resolver().resolveDid(DID));
+    let versions = runFuture(listVersions(document));
+    equal(versions.releases.length, 6);
+    equal((versions.latest() as Version).toString(), '2.0.0');
+    equal((versions.latest(1 as i64) as Version).toString(), '1.5.0');
+    equal((versions.latest(2 as i64, true) as Version).toString(), '2.0.0');
+    isNull(versions.latest(3 as i64));
+    isTrue(versions.has(Version.parse('1.4.2')));
+    pds.close();
+  });
+
+  test('reads a profile with its proof', (ctx) => {
+    let pds = started();
+    let resolver = pds.resolver();
+    isTrue(runFuture(fetchProfile(runFuture(resolver.resolveDid(DID)))) == null);
+    pds.main.setProfile(new Profile('router', 'Routing'));
+    equal((runFuture(fetchProfile(runFuture(resolver.resolveDid(DID)))) as Profile).name, 'router');
+    pds.close();
+  });
+
+  test('resolves over the network, each release checked', (ctx) => {
+    let pds = started();
+    let json = pds.account(JSON_DID);
+    publish(json, '2.0.0');
+    publish(json, '2.1.0');
+    let needsJson = new FixedArray<Dependency>(1, new Dependency(JSON_DID, Version.parse('2.1.0'), 'json'));
+    let routerRecord = publish(pds.main, '1.4.2', needsJson);
+    let requirements = new GrowableArray<Requirement>();
+    requirements.push(new Requirement(DID, Version.parse('1.4.2')));
+    requirements.push(new Requirement(JSON_DID, Version.parse('2.0.0')));
+
+    let resolution = runFuture(resolve(requirements, networkReleases(pds.resolver())));
+    equal(resolution.packages[`${JSON_DID}@2`].version.toString(), '2.1.0');
+    isTrue(resolution.packages[`${DID}@1`].release.equals(routerRecord));
+    isTrue(resolution.packages[`${DID}@1`].source.equals(Cid.forBlob(bytesOf(`${DID} 1.4.2`))));
+
+    var message = '';
+    try {
+      requirements[1] = new Requirement(JSON_DID, Version.parse('2.9.0'));
+      runFuture(resolve(requirements, networkReleases(pds.resolver())));
+    } catch (e) {
+      message = e.message;
+    }
+    isTrue(message.contains('has no release 2.9.0'), message);
+    pds.close();
+  });
+});

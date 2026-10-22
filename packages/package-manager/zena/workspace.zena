@@ -1,0 +1,174 @@
+/**
+ * A workspace's packages, as `zena add` and `zena update` need them
+ * (docs/design/package-manifest.md): the root's manifest, the packages its
+ * `workspace.packages` lists, and every package any of them depends on by
+ * path. Versions are selected for all of them at once, and pinned in the
+ * one `zena-lock.json` beside the root's manifest.
+ *
+ * Files are read through `WorkspaceFiles`, so that tests can hold a
+ * workspace in memory; `DiskFiles` reads them with `zena:fs`.
+ */
+
+import {HashMap} from 'zena:collections';
+import {isDirectorySync, isFileSync, listDirSync, readFileSync} from 'zena:fs';
+import {join2, normalize} from 'zena:path';
+import {Manifest, ManifestError, readManifest} from './manifest.zena';
+import {Requirement} from './resolve.zena';
+
+/** The manifest's file name. */
+export let MANIFEST = 'zena-package.json';
+
+/** The lockfile's file name. */
+export let LOCKFILE = 'zena-lock.json';
+
+/** How a workspace's files are read. */
+export interface WorkspaceFiles {
+  /** The text of the file `path`, or null when there is none. */
+  read(path: String): String | null;
+  /** The names in the directory `path`, or null when it is not one. */
+  list(path: String): Array<String> | null;
+}
+
+/** A workspace's files on disk. */
+export final class DiskFiles implements WorkspaceFiles {
+  read(path: String): String | null {
+    return if (isFileSync(path)) readFileSync(path) else null;
+  }
+
+  list(path: String): Array<String> | null {
+    if (!isDirectorySync(path)) {
+      return null;
+    }
+    let names = new GrowableArray<String>();
+    for (let entry in listDirSync(path)) {
+      names.push(entry.name);
+    }
+    return names;
+  }
+}
+
+/** A package of a workspace, and its manifest. */
+export final class WorkspacePackage {
+  /** The package's directory. */
+  dir: String;
+  /** Its manifest's text; null for a root that has no manifest yet. */
+  text: String | null;
+  manifest: Manifest;
+
+  new(dir: String, text: String | null, manifest: Manifest)
+      : dir = dir, text = text, manifest = manifest;
+
+  /** The path of its manifest. */
+  manifestPath(): String {
+    return join2(this.dir, MANIFEST);
+  }
+}
+
+/** A workspace: its root and the packages it is made of. */
+export final class Workspace {
+  /** The root, whose manifest has the workspace's packages and scopes. */
+  root: WorkspacePackage;
+  /**
+   * Every package, the root first, then each in the order it was reached:
+   * the ones `workspace.packages` lists, and the ones they depend on by path.
+   */
+  packages: GrowableArray<WorkspacePackage>;
+
+  new(root: WorkspacePackage, packages: GrowableArray<WorkspacePackage>)
+      : root = root, packages = packages;
+
+  /** The path of the lockfile. */
+  lockfilePath(): String {
+    return join2(this.root.dir, LOCKFILE);
+  }
+
+  /** What every package requires of published packages. */
+  requirements(): GrowableArray<Requirement> {
+    let all = new GrowableArray<Requirement>();
+    for (let pkg in this.packages) {
+      pkg.manifest.requirements.forEach((name, requirement) => {
+        all.push(requirement);
+      });
+    }
+    return all;
+  }
+
+  /**
+   * The package whose directory holds `dir`, the innermost one if several
+   * do, and the root if no other does.
+   */
+  packageAt(dir: String): WorkspacePackage {
+    let path = normalize(dir);
+    var found = this.root;
+    for (let pkg in this.packages) {
+      if ((path == pkg.dir || path.startsWith(`${pkg.dir}/`)) &&
+          pkg.dir.length > found.dir.length) {
+        found = pkg;
+      }
+    }
+    return found;
+  }
+}
+
+/**
+ * Reads the workspace whose root is `root`. The root need not have a
+ * manifest yet. Throws `ManifestError`, its message naming the manifest,
+ * for one that cannot be read, and for a path dependency on a directory
+ * with no manifest.
+ */
+export function readWorkspace(root: String, files: WorkspaceFiles): Workspace {
+  let reader = new WorkspaceReader(files);
+  let rootPackage = reader.read(normalize(root), true);
+  for (let entry in rootPackage.manifest.workspacePackages) {
+    if (entry.endsWith('/*')) {
+      let parent = join2(rootPackage.dir, entry.sliceBytes(0, entry.length - 2));
+      let names = files.list(parent);
+      if (names == null) {
+        throw new ManifestError(
+            `${rootPackage.manifestPath()}: workspace.packages names ${parent}, which is not a directory`);
+      }
+      for (let name in names) {
+        let dir = join2(parent, name);
+        if (files.read(join2(dir, MANIFEST)) != null) {
+          reader.read(dir, false);
+        }
+      }
+    } else {
+      reader.read(join2(rootPackage.dir, entry), false);
+    }
+  }
+  return new Workspace(rootPackage, reader.packages);
+}
+
+/** Reads packages once each, following their path dependencies. */
+final class WorkspaceReader {
+  #files: WorkspaceFiles;
+  #byDir = new HashMap<String, WorkspacePackage>();
+  packages = new GrowableArray<WorkspacePackage>();
+
+  new(files: WorkspaceFiles) : #files = files;
+
+  read(dir: String, isRoot: boolean): WorkspacePackage {
+    if (let (true, pkg) = this.#byDir.get(dir)) {
+      return pkg;
+    }
+    let path = join2(dir, MANIFEST);
+    let text = this.#files.read(path);
+    if (text == null && !isRoot) {
+      throw new ManifestError(`${dir} has no ${MANIFEST}`);
+    }
+    var manifest: Manifest | null = null;
+    try {
+      manifest = readManifest(text);
+    } catch (e) {
+      throw new ManifestError(`${dir}/${e.message}`);
+    }
+    let pkg = new WorkspacePackage(dir, text, manifest as Manifest);
+    this.#byDir[dir] = pkg;
+    this.packages.push(pkg);
+    pkg.manifest.paths.forEach((name, target) => {
+      this.read(join2(dir, target), false);
+    });
+    return pkg;
+  }
+}

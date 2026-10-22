@@ -6,6 +6,10 @@
  * commit, signed with the key in the account's DID document, and the tree
  * nodes from the commit to the record. A blob comes from
  * `com.atproto.sync.getBlob` and is checked against its CID.
+ *
+ * `listRecords` is the exception: `com.atproto.repo.listRecords` answers
+ * with no proof, so it is for finding records, and anything relied on is
+ * fetched again with `getVerifiedRecord`.
  */
 
 import {readCar} from './car.zena';
@@ -13,7 +17,9 @@ import {Cid, HASH_SHA256} from './cid.zena';
 import {DidDocument} from './did.zena';
 import {PublicKey, verifySignature} from './didkey.zena';
 import {RecordProof, verifyRecordProof} from './repo.zena';
+import {Value, fromJson} from './data.zena';
 import {XrpcClient} from './xrpc.zena';
+import {JsonArray, JsonObject, JsonValue} from 'zena:json';
 
 /** A record or blob that could not be fetched or did not check out. */
 export class SyncError extends Error {
@@ -61,4 +67,76 @@ export async function getVerifiedBlob(document: DidDocument, cid: Cid): Future<F
     throw new SyncError(`blob ${cid.toString()} does not match its CID`);
   }
   return response.body;
+}
+
+/** A record as `com.atproto.repo.listRecords` lists it. */
+export final class ListedRecord {
+  /** The record key. */
+  rkey: String;
+  cid: Cid;
+  value: Value;
+
+  new(rkey: String, cid: Cid, value: Value) : rkey = rkey, cid = cid, value = value;
+}
+
+/**
+ * The records of `collection` in the repository of the account `document`
+ * describes, as its PDS lists them, every page of them. Nothing here is
+ * checked against the account's key: fetch a record with
+ * `getVerifiedRecord` before relying on it.
+ */
+export async function listRecords(document: DidDocument, collection: String): Future<GrowableArray<ListedRecord>> {
+  let client = clientFor(document);
+  let records = new GrowableArray<ListedRecord>();
+  var cursor: String | null = null;
+  while (true) {
+    let params = new GrowableArray<(String, String)>();
+    params.push(('repo', document.id));
+    params.push(('collection', collection));
+    params.push(('limit', '100'));
+    let after = cursor;
+    if (after != null) {
+      params.push(('cursor', after));
+    }
+    let answer = await client.query('com.atproto.repo.listRecords', params);
+    if (!(answer is JsonObject)) {
+      throw new SyncError('listRecords answered with something other than an object');
+    }
+    let page = answer;
+    let listed = page['records'];
+    if (!(listed is JsonArray)) {
+      throw new SyncError('listRecords answered with no records');
+    }
+    let items = listed;
+    for (var i = 0; i < items.length; i += 1) {
+      records.push(listedRecord(items[i]));
+    }
+    let next = page['cursor'];
+    if (!(next is String) || items.length == 0) {
+      return records;
+    }
+    cursor = next;
+  }
+  return records;
+}
+
+function listedRecord(item: JsonValue): ListedRecord {
+  if (!(item is JsonObject)) {
+    throw new SyncError('listRecords listed something other than a record');
+  }
+  let record = item;
+  let uri = record['uri'];
+  let cid = record['cid'];
+  if (!(uri is String) || !(cid is String)) {
+    throw new SyncError('listRecords listed a record with no URI or CID');
+  }
+  let text = uri;
+  var slash = -1;
+  for (var i = 0; i < text.length; i += 1) {
+    if (text.getByteAt(i) == 47) {
+      slash = i;
+    }
+  }
+  return new ListedRecord(text.sliceBytes(slash + 1, text.length), Cid.parse(cid),
+      fromJson(record['value']));
 }

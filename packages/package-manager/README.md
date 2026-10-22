@@ -18,19 +18,29 @@ package in this repository's workspace or from a package that lists it in its
 - `package-manager:archive`: source archives, the CAR files that hold a
   release's source. Packing is deterministic, so the same files always have
   the same CID, and unpacking accepts only what packing writes.
-- `package-manager:resolution`: the packages a resolution file pins, in its
-  `resolved` section.
+- `package-manager:resolution`: the packages a workspace's lockfile,
+  `zena-lock.json`, pins, and writing it.
 - `package-manager:cache`: the package cache, where each source archive is
   unpacked into `sources/<CID>` for the compiler to read.
 - `package-manager:fetch`: fetching pinned packages into the cache, which
   `zena fetch` does. The release record's proof is checked against the
   account's signing key, the record and the source archive against the
-  CIDs the resolution file pins, and the release's dependencies against
+  CIDs the lockfile pins, and the release's dependencies against
   the names it maps.
-- `package-manager:testing/fake-pds`: a PLC directory and PDS for one
-  package account, served in the same program, for testing what fetches
-  packages. It signs what it serves, so the proofs clients check are
-  real.
+- `package-manager:resolve`: minimal version selection, from the
+  requirements in all of a workspace's manifests to what its lockfile pins.
+- `package-manager:workspace`: a workspace's packages, read from disk: the
+  root's manifest, the packages it lists, and the ones they depend on by
+  path.
+- `package-manager:manifest`: reading a package's `zena-package.json`, and
+  rewriting its dependencies while keeping the rest of the file.
+- `package-manager:registry`: finding packages: a DID, a handle or
+  `@scope/name` to a DID, a package's versions and yanks, its profile, and
+  its releases with their proofs.
+- `package-manager:testing/fake-pds`: a PLC directory, DNS-over-HTTPS
+  resolver and PDS for package accounts, served in the same program, for
+  testing what finds and fetches packages. It signs what it serves, so the
+  proofs clients check are real.
 
 ## Lexicons
 

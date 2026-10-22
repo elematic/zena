@@ -1,10 +1,11 @@
 /**
- * A fake PLC directory and PDS for one package account, for testing what
- * fetches packages. A `zena:http` server in the same program serves the
- * account's DID document, `com.atproto.sync.getRecord` and
- * `com.atproto.sync.getBlob`. The repository holds the release last
- * published, in a commit signed with the account's key, so every proof a
- * client checks is a real one.
+ * A fake PLC directory, DNS-over-HTTPS resolver and PDS for package
+ * accounts, for testing what fetches and resolves packages. A `zena:http`
+ * server in the same program serves each account's DID document,
+ * `com.atproto.sync.getRecord`, `com.atproto.sync.getBlob` and
+ * `com.atproto.repo.listRecords`, and answers `_atproto` TXT queries for
+ * their handles. Each account's records are in a repository whose commit
+ * is signed with KEY, so every proof a client checks is a real one.
  *
  * ```zena
  * let pds = new FakePds();
@@ -14,35 +15,44 @@
  * await fetchPackage(pin, cache, pds.resolver());
  * pds.close();
  * ```
+ *
+ * `FakePds`'s own methods act on the account DID; `account` adds others.
  */
 
 import {Future} from 'zena:async';
-import {HashMap} from 'zena:collections';
+import {HashMap, OrderedHashMap} from 'zena:collections';
 import {p256} from 'zena:crypto';
 import {hex} from 'zena:encoding';
 import {App, Server} from 'zena:http';
+import {JsonArray, JsonObject, stringify} from 'zena:json';
 import {BlockMap, writeCar} from 'atproto:car';
 import {encodeCbor} from 'atproto:cbor';
 import {Cid} from 'atproto:cid';
-import {BytesValue, IntValue, LinkValue, NullValue, StringValue, newMap} from 'atproto:data';
+import {BytesValue, IntValue, LinkValue, MapValue, NullValue, StringValue, newMap, toJson} from 'atproto:data';
 import {KeyType, formatMultikey, publicKeyFor} from 'atproto:didkey';
 import {IdentityResolver} from 'atproto:identity';
-import {buildMst} from 'atproto:mst';
-import {RELEASE_TYPE, Release} from '../records.zena';
+import {buildMst, compareKeys} from 'atproto:mst';
+import {PROFILE_KEY, PROFILE_TYPE, Profile, RELEASE_TYPE, Release, YANK_TYPE, Yank} from '../records.zena';
 
-/** The package account's DID. */
+/** The first package account's DID. */
 export let DID = 'did:plc:routerrouterrouterrouter';
 
-/** The account's signing key: the P-256 key from RFC 6979, appendix A.2.5. */
+/** The accounts' signing key: the P-256 key from RFC 6979, appendix A.2.5. */
 export let KEY = hex.decode('c9afa9d845ba75166b5c215767b1d6934e50c3db36e89b127b8a622b120f6721');
 
-/** DID's document, with its PDS at `origin` and the public key of `key`. */
-export function didDocument(origin: String, key: FixedArray<u8> = KEY): String {
+/**
+ * The document of `did`, with its PDS at `origin`, the public key of
+ * `key`, and `handle` when it has one.
+ */
+export function didDocument(origin: String, key: FixedArray<u8> = KEY, did: String = DID,
+    handle: String | null = null): String {
   let multikey = formatMultikey(publicKeyFor(KeyType.P256, key));
+  let aka = if (handle == null) '' else `"alsoKnownAs": ["at://${handle}"],`;
   return `{
-    "id": "${DID}",
+    "id": "${did}",
+    ${aka}
     "verificationMethod": [
-      {"id": "${DID}#atproto", "type": "Multikey", "controller": "${DID}", "publicKeyMultibase": "${multikey}"}
+      {"id": "${did}#atproto", "type": "Multikey", "controller": "${did}", "publicKeyMultibase": "${multikey}"}
     ],
     "service": [
       {"id": "#atproto_pds", "type": "AtprotoPersonalDataServer", "serviceEndpoint": "${origin}"}
@@ -50,26 +60,149 @@ export function didDocument(origin: String, key: FixedArray<u8> = KEY): String {
   }`;
 }
 
-/** A fake PLC directory and PDS for DID. */
-export final class FakePds {
-  /** DID's document, as JSON text. A test may replace it. */
+/** One account on a FakePds: its document, records and blobs. */
+export final class FakeAccount {
+  did: String;
+  handle: String | null;
+  /** The account's DID document, as JSON text. A test may replace it. */
   var didDocument = '';
-  /** The getRecord answer, for whichever record is asked for. */
-  var recordCar = new FixedArray<u8>(0, 0 as u8);
-  /** The blobs the PDS has, by CID. */
+  /** The account's records, by `<collection>/<rkey>`. */
+  records = new OrderedHashMap<String, MapValue>();
+  /** The account's blobs, by CID. */
   blobs = new HashMap<String, FixedArray<u8>>();
+
+  new(did: String, handle: String | null) : did = did, handle = handle;
+
+  /** Stores `bytes` as a blob, and returns its CID. */
+  addBlob(bytes: FixedArray<u8>): Cid {
+    let cid = Cid.forBlob(bytes);
+    this.blobs[cid.toString()] = bytes;
+    return cid;
+  }
+
+  /** Adds `release` at its version, and returns the record's CID. */
+  publish(release: Release): Cid {
+    return this.put(RELEASE_TYPE, release.version.toString(), release.toValue());
+  }
+
+  /** Adds `yank` at its version. */
+  yank(yank: Yank): void {
+    this.put(YANK_TYPE, yank.version.toString(), yank.toValue());
+  }
+
+  /** Sets the account's profile. */
+  setProfile(profile: Profile): void {
+    this.put(PROFILE_TYPE, PROFILE_KEY, profile.toValue());
+  }
+
+  /** Stores `value` at `collection/rkey`, and returns its CID. */
+  put(collection: String, rkey: String, value: MapValue): Cid {
+    this.records[`${collection}/${rkey}`] = value;
+    return Cid.forDagCbor(encodeCbor(value));
+  }
+
+  /**
+   * The repository as a `getRecord` answer: every record, the tree over
+   * them and a commit signed with KEY.
+   */
+  repositoryCar(): FixedArray<u8> {
+    let blocks = new BlockMap();
+    let keys = new GrowableArray<String>();
+    for (let key in this.records.keys()) {
+      keys.push(key);
+    }
+    let sorted = sortByBytes(keys);
+    let values = new FixedArray<Cid>(sorted.length, Cid.forBlob(new FixedArray<u8>(0, 0 as u8)));
+    for (var i = 0; i < sorted.length; i += 1) {
+      values[i] = blocks.add(this.records[sorted[i]]);
+    }
+    let root = buildMst(sorted, values, blocks);
+    let commit = newMap();
+    commit.entries['did'] = new StringValue(this.did);
+    commit.entries['version'] = new IntValue(3 as i64);
+    commit.entries['data'] = new LinkValue(root);
+    commit.entries['rev'] = new StringValue('3l3qo2vutsw2b');
+    commit.entries['prev'] = new NullValue();
+    commit.entries['sig'] = new BytesValue(p256.sign(KEY, encodeCbor(commit)));
+    return writeCar(new FixedArray<Cid>(1, blocks.add(commit)), blocks);
+  }
+
+  /** A `listRecords` answer for `collection`, every record on one page. */
+  listRecordsJson(collection: String): String {
+    let records = new JsonArray();
+    let prefix = `${collection}/`;
+    this.records.forEach((key, value) => {
+      if (key.startsWith(prefix)) {
+        let entry = new JsonObject();
+        entry['uri'] = `at://${this.did}/${key}`;
+        entry['cid'] = Cid.forDagCbor(encodeCbor(value)).toString();
+        entry['value'] = toJson(value);
+        records.push(entry);
+      }
+    });
+    let page = new JsonObject();
+    page['records'] = records;
+    return stringify(page);
+  }
+}
+
+/** A fake PLC directory, DNS resolver and PDS. */
+export final class FakePds {
+  /** The accounts, by DID. */
+  accounts = new OrderedHashMap<String, FakeAccount>();
   /** How many requests the server has answered. */
   var requests = 0;
   /** The server's origin, `http://127.0.0.1:<port>`, once it has started. */
   var origin = '';
   var #server: Server | null = null;
 
+  new() {
+    this.accounts[DID] = new FakeAccount(DID, null);
+  }
+
   /** Starts serving, on a port of the system's choosing. */
   start(): void {
     let server = serve(this);
     this.#server = server;
     this.origin = `http://127.0.0.1:${server.port as i32}`;
-    this.didDocument = didDocument(this.origin);
+    this.accounts.forEach((did, account) => {
+      account.didDocument = didDocument(this.origin, KEY, did, account.handle);
+    });
+  }
+
+  /**
+   * Adds an account, with `handle` if given, and returns it. Call after
+   * `start`, so that its document names the server.
+   */
+  account(did: String, handle: String | null = null): FakeAccount {
+    let account = new FakeAccount(did, handle);
+    account.didDocument = didDocument(this.origin, KEY, did, handle);
+    this.accounts[did] = account;
+    return account;
+  }
+
+  /** The account DID. */
+  main: FakeAccount {
+    get {
+      return this.accounts[DID];
+    }
+  }
+
+  /** DID's document, as JSON text. A test may replace it. */
+  didDocument: String {
+    get {
+      return this.main.didDocument;
+    }
+    set(value) {
+      this.main.didDocument = value;
+    }
+  }
+
+  /** DID's blobs, by CID. */
+  blobs: HashMap<String, FixedArray<u8>> {
+    get {
+      return this.main.blobs;
+    }
   }
 
   /** The PLC directory's origin, for `IdentityResolver.plcDirectory`. */
@@ -79,41 +212,31 @@ export final class FakePds {
     }
   }
 
-  /** A resolver that finds DID's document here. */
+  /** The DNS-over-HTTPS endpoint, for `IdentityResolver.dnsOverHttps`. */
+  dnsOverHttps: String {
+    get {
+      return `${this.origin}/dns-query`;
+    }
+  }
+
+  /** A resolver that finds the accounts' documents and handles here. */
   resolver(): IdentityResolver {
     let resolver = new IdentityResolver();
     resolver.plcDirectory = this.plcDirectory;
+    resolver.dnsOverHttps = this.dnsOverHttps;
     let origin = this.origin;
     resolver.originOf = (host) => origin;
     return resolver;
   }
 
-  /** Stores `bytes` as a blob, and returns its CID. */
+  /** Stores `bytes` as a blob of DID, and returns its CID. */
   addBlob(bytes: FixedArray<u8>): Cid {
-    let cid = Cid.forBlob(bytes);
-    this.blobs[cid.toString()] = bytes;
-    return cid;
+    return this.main.addBlob(bytes);
   }
 
-  /**
-   * Makes `release` the repository's one record, at its version, and
-   * returns the record's CID.
-   */
+  /** Adds `release` to DID's repository, and returns the record's CID. */
   publish(release: Release): Cid {
-    let value = release.toValue();
-    let blocks = new BlockMap();
-    let recordCid = blocks.add(value);
-    let root = buildMst(new FixedArray<String>(1, `${RELEASE_TYPE}/${release.version.toString()}`),
-        new FixedArray<Cid>(1, recordCid), blocks);
-    let commit = newMap();
-    commit.entries['did'] = new StringValue(DID);
-    commit.entries['version'] = new IntValue(3 as i64);
-    commit.entries['data'] = new LinkValue(root);
-    commit.entries['rev'] = new StringValue('3l3qo2vutsw2b');
-    commit.entries['prev'] = new NullValue();
-    commit.entries['sig'] = new BytesValue(p256.sign(KEY, encodeCbor(commit)));
-    this.recordCar = writeCar(new FixedArray<Cid>(1, blocks.add(commit)), blocks);
-    return recordCid;
+    return this.main.publish(release);
   }
 
   /** Completes when the server stops. */
@@ -134,29 +257,80 @@ function serve(pds: FakePds): Server {
   app.use(async (req, res, next): Future<void> => {
     pds.requests += 1;
     let path = req.path;
-    if (path == `/plc/${DID}`) {
-      res.type = 'application/json';
-      res.body = pds.didDocument;
-    } else if (path == '/xrpc/com.atproto.sync.getRecord') {
-      res.type = 'application/vnd.ipld.car';
-      res.body = pds.recordCar;
-    } else if (path == '/xrpc/com.atproto.sync.getBlob') {
-      let cid = req.url.searchParams().get('cid') ?? '';
-      if (let (true, blob) = pds.blobs.get(cid)) {
-        res.type = 'application/octet-stream';
-        res.body = blob;
+    let params = req.url.searchParams();
+    if (path.startsWith('/plc/')) {
+      let did = path.sliceBytes(5, path.length);
+      if (let (true, account) = pds.accounts.get(did)) {
+        res.type = 'application/json';
+        res.body = account.didDocument;
       } else {
+        res.statusCode = 404;
+        res.body = 'no such DID';
+      }
+      return;
+    }
+    if (path == '/dns-query') {
+      res.type = 'application/dns-json';
+      let name = params.get('name') ?? '';
+      var did: String | null = null;
+      pds.accounts.forEach((accountDid, account) => {
+        if (account.handle != null && name == `_atproto.${account.handle as String}`) {
+          did = accountDid;
+        }
+      });
+      let found = did;
+      res.body = if (found == null) {
+        '{"Status":3}'
+      } else {
+        `{"Status":0,"Answer":[{"name":"${name}.","type":16,"data":${stringify(`"did=${found}"`)}}]}`
+      };
+      return;
+    }
+    let did = params.get('did') ?? params.get('repo') ?? '';
+    if (let (true, account) = pds.accounts.get(did)) {
+      if (path == '/xrpc/com.atproto.sync.getRecord') {
+        res.type = 'application/vnd.ipld.car';
+        res.body = account.repositoryCar();
+        return;
+      }
+      if (path == '/xrpc/com.atproto.sync.getBlob') {
+        let cid = params.get('cid') ?? '';
+        if (let (true, blob) = account.blobs.get(cid)) {
+          res.type = 'application/octet-stream';
+          res.body = blob;
+          return;
+        }
         res.statusCode = 400;
         res.type = 'application/json';
         res.body = '{"error":"BlobNotFound","message":"no such blob"}';
+        return;
       }
-    } else {
-      res.statusCode = 400;
-      res.type = 'application/json';
-      res.body = '{"error":"InvalidRequest","message":"no such method"}';
+      if (path == '/xrpc/com.atproto.repo.listRecords') {
+        res.type = 'application/json';
+        res.body = account.listRecordsJson(params.get('collection') ?? '');
+        return;
+      }
     }
+    res.statusCode = 400;
+    res.type = 'application/json';
+    res.body = '{"error":"InvalidRequest","message":"no such method or repository"}';
   });
   let server = new Server(app, 0 as u16);
   server.start();
   return server;
+}
+
+/** `keys` sorted byte by byte, as the tree wants them. */
+function sortByBytes(keys: GrowableArray<String>): FixedArray<String> {
+  let sorted = new FixedArray<String>(keys.length, '');
+  for (var i = 0; i < keys.length; i += 1) {
+    // Insertion sort: test repositories hold a handful of records.
+    var j = i;
+    while (j > 0 && compareKeys(sorted[j - 1], keys[i]) > 0) {
+      sorted[j] = sorted[j - 1];
+      j -= 1;
+    }
+    sorted[j] = keys[i];
+  }
+  return sorted;
 }
