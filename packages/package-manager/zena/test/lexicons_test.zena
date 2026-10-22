@@ -1,0 +1,152 @@
+/**
+ * The lexicons in `packages/package-manager/lexicons` hold together: each
+ * file's `id` is the NSID its path spells, every reference to a
+ * `dev.zena-lang` definition names one that exists, every required
+ * property is declared, and the permission set covers every host method.
+ * No lexicon tool checks them otherwise.
+ */
+
+import {suite, test} from 'zena:test';
+import {equal, isTrue} from 'zena:assert';
+import {HashMap, HashSet} from 'zena:collections';
+import {join} from 'zena:core';
+import {globSync, readFileSync} from 'zena:fs';
+import {JsonArray, JsonObject, JsonValue, parseJson} from 'zena:json';
+import {isValidNsid} from 'atproto:syntax';
+
+let ROOT = 'packages/package-manager/lexicons';
+
+/** Every lexicon, by NSID. */
+function lexicons(): HashMap<String, JsonObject> {
+  let all = new HashMap<String, JsonObject>();
+  for (let path in globSync(`${ROOT}/**/*.json`)) {
+    let lexicon = parseJson(readFileSync(path)) as JsonObject;
+    let relative = path.sliceBytes(ROOT.length + 1, path.length - '.json'.length);
+    let nsid = join(relative.split('/'), '.');
+    equal(lexicon['id'] as String, nsid, path);
+    isTrue(isValidNsid(nsid), nsid);
+    let version = lexicon['lexicon'];
+    isTrue(version is Box<f64> && (version as Box<f64>).value == 1.0, `${nsid}: lexicon 1`);
+    isTrue(lexicon['defs'] is JsonObject, `${nsid}: defs`);
+    all[nsid] = lexicon;
+  }
+  return all;
+}
+
+function defs(lexicon: JsonObject): JsonObject {
+  return lexicon['defs'] as JsonObject;
+}
+
+/**
+ * Whether `ref`, written in the lexicon `nsid`, names a definition that
+ * exists. References outside `dev.zena-lang` are not checked.
+ */
+function resolves(all: HashMap<String, JsonObject>, nsid: String, ref: String): boolean {
+  var target = nsid;
+  var name = 'main';
+  let parts = ref.split('#');
+  if (parts.length == 2) {
+    if (parts[0] != '') {
+      target = parts[0];
+    }
+    name = parts[1];
+  } else {
+    target = ref;
+  }
+  if (!target.startsWith('dev.zena-lang.')) {
+    return true;
+  }
+  if (let (true, lexicon) = all.get(target)) {
+    return defs(lexicon).has(name);
+  }
+  return false;
+}
+
+/** Problems in `value`, part of the lexicon `nsid`, added to `problems`. */
+function check(all: HashMap<String, JsonObject>, nsid: String, value: JsonValue,
+    problems: GrowableArray<String>): void {
+  if (value is JsonArray) {
+    let list = value as JsonArray;
+    for (var i = 0; i < list.length; i += 1) {
+      check(all, nsid, list[i], problems);
+    }
+    return;
+  }
+  if (!(value is JsonObject)) {
+    return;
+  }
+  let object = value as JsonObject;
+  let type = object['type'];
+  if (type is String) {
+    if (type == 'ref') {
+      let ref = object['ref'] as String;
+      if (!resolves(all, nsid, ref)) {
+        problems.push(`${nsid}: '${ref}' names no definition`);
+      }
+    }
+    if (type == 'union') {
+      let refs = object['refs'] as JsonArray;
+      for (var i = 0; i < refs.length; i += 1) {
+        let ref = refs[i] as String;
+        if (!resolves(all, nsid, ref)) {
+          problems.push(`${nsid}: '${ref}' names no definition`);
+        }
+      }
+    }
+    if ((type == 'object' || type == 'params') && object.has('required')) {
+      let properties = object['properties'] as JsonObject;
+      let required = object['required'] as JsonArray;
+      for (var i = 0; i < required.length; i += 1) {
+        let name = required[i] as String;
+        if (!properties.has(name)) {
+          problems.push(`${nsid}: '${name}' is required and not declared`);
+        }
+      }
+    }
+  }
+  object.forEach((key, member) => {
+    check(all, nsid, member, problems);
+  });
+}
+
+export let tests = suite('package-manager:lexicons', () => {
+  test('each lexicon is named by its path, and its references resolve', (ctx) => {
+    let all = lexicons();
+    isTrue(all.size >= 20, `${all.size} lexicons`);
+    let problems = new GrowableArray<String>();
+    for (let nsid in all.keys()) {
+      let main = defs(all[nsid])['main'];
+      if (main != null) {
+        let type = (main as JsonObject)['type'] as String;
+        isTrue(type == 'record' || type == 'query' || type == 'procedure' ||
+            type == 'permission-set', `${nsid}: main is a ${type}`);
+      }
+      check(all, nsid, all[nsid], problems);
+    }
+    equal(problems.length, 0, join(problems, '\n'));
+  });
+
+  test('the publishing permission set covers every host method', (ctx) => {
+    let all = lexicons();
+    let main = defs(all['dev.zena-lang.authPublish'])['main'] as JsonObject;
+    let covered = new HashSet<String>();
+    let permissions = main['permissions'] as JsonArray;
+    for (var i = 0; i < permissions.length; i += 1) {
+      let permission = permissions[i] as JsonObject;
+      if (permission['resource'] as String == 'rpc') {
+        let methods = permission['lxm'] as JsonArray;
+        for (var j = 0; j < methods.length; j += 1) {
+          covered.add(methods[j] as String);
+        }
+      }
+    }
+    var methods = 0;
+    for (let nsid in all.keys()) {
+      if (nsid.startsWith('dev.zena-lang.host.')) {
+        isTrue(covered.has(nsid), `${nsid} is not in dev.zena-lang.authPublish`);
+        methods += 1;
+      }
+    }
+    equal(covered.size, methods);
+  });
+});
