@@ -1,0 +1,198 @@
+import {suite, test} from 'zena:test';
+import {equal, fail, isNull, isTrue, throws} from 'zena:assert';
+import {readFileSync} from 'zena:fs';
+import {JsonArray, JsonObject, parseJson} from 'zena:json';
+import {growable} from 'zena:core';
+import {BlockMap} from 'atproto:car';
+import {Cid} from 'atproto:cid';
+import {buildMst, commonPrefixLength, compareKeys, keyHeight, mstGet, mstWalk} from 'atproto:mst';
+
+let FIXTURES = 'packages/atproto/zena/test/fixtures/interop';
+
+let LEAF = 'bafyreie5cvv4h45feadgeuwhbcutmh6t2ceseocckahdoe6uat64zmz454';
+
+/** Sorts a few keys byte by byte; the lists here are short. */
+function sorted(keys: Array<String>) {
+  let out = new FixedArray<String>(keys.length, '');
+  var n = 0;
+  for (let key in keys) {
+    var i = n;
+    while (i > 0 && compareKeys(out[i - 1], key) > 0) {
+      out[i] = out[i - 1];
+      i -= 1;
+    }
+    out[i] = key;
+    n += 1;
+  }
+  return out;
+}
+
+/** The root CID of the tree mapping every key in `keys` to `value`. */
+function rootOf(keys: Array<String>, value: String) {
+  let ordered = sorted(keys);
+  let values = new FixedArray<Cid>(ordered.length, Cid.parse(value));
+  return buildMst(ordered, values, new BlockMap()).toString();
+}
+
+function record(rkey: String) {
+  return `com.example.record/${rkey}`;
+}
+
+function fixtures(name: String) {
+  return parseJson(readFileSync(`${FIXTURES}/${name}`)) as JsonArray;
+}
+
+export let tests = suite('atproto:mst', () => {
+  test('key heights match the interop fixtures', (ctx) => {
+    let cases = fixtures('mst/key_heights.json');
+    isTrue(cases.length > 5);
+    for (var i = 0; i < cases.length; i += 1) {
+      let c = cases[i] as JsonObject;
+      let key = c['key'] as String;
+      if (let (true, height) = c.intAt('height')) {
+        if (keyHeight(key) != height) {
+          fail(`height of '${key}' is ${keyHeight(key)}, not ${height}`);
+        }
+      } else {
+        fail('fixture without a height');
+      }
+    }
+  });
+
+  test('common prefixes match the interop fixtures', (ctx) => {
+    let cases = fixtures('mst/common_prefix.json');
+    isTrue(cases.length > 5);
+    for (var i = 0; i < cases.length; i += 1) {
+      let c = cases[i] as JsonObject;
+      if (let (true, length) = c.intAt('len')) {
+        equal(commonPrefixLength(c['left'] as String, c['right'] as String), length);
+      } else {
+        fail('fixture without a length');
+      }
+    }
+  });
+
+  // The "MST Interop Known Maps" and edge cases in the reference
+  // implementation, packages/repo/tests/mst.test.ts.
+  test('builds the known trees of the reference implementation', (ctx) => {
+    equal(rootOf([], LEAF), 'bafyreie5737gdxlw5i64vzichcalba3z2v5n6icifvx5xytvske7mr3hpm');
+    equal(rootOf([record('3jqfcqzm3fo2j')], LEAF), 'bafyreibj4lsc3aqnrvphp5xmrnfoorvru4wynt6lwidqbm2623a6tatzdu');
+    equal(rootOf([record('3jqfcqzm3fx2j')], LEAF), 'bafyreih7wfei65pxzhauoibu3ls7jgmkju4bspy4t2ha2qdjnzqvoy33ai');
+    equal(
+      rootOf([
+        record('3jqfcqzm3fp2j'),
+        record('3jqfcqzm3fr2j'),
+        record('3jqfcqzm3fs2j'),
+        record('3jqfcqzm3ft2j'),
+        record('3jqfcqzm4fc2j'),
+      ], LEAF),
+      'bafyreicmahysq4n6wfuxo522m6dpiy7z7qzym3dzs756t5n7nfdgccwq7m'
+    );
+  });
+
+  test('a key two layers above the rest adds layers with no keys', (ctx) => {
+    let a = record('3jqfcqzm3ft2j');
+    let b = record('3jqfcqzm3fx2j');
+    let c = record('3jqfcqzm3fz2j');
+    equal(rootOf([a, c], LEAF), 'bafyreidfcktqnfmykz2ps3dbul35pepleq7kvv526g47xahuz3rqtptmky');
+    equal(rootOf([a, b, c], LEAF), 'bafyreiavxaxdz7o7rbvr3zg2liox2yww46t7g6hkehx4i4h3lwudly7dhy');
+  });
+
+  test('a key inserted two layers up splits the layers below', (ctx) => {
+    let keys = growable([
+      record('3jqfcqzm3fo2j'),
+      record('3jqfcqzm3fp2j'),
+      record('3jqfcqzm3fr2j'),
+      record('3jqfcqzm3fs2j'),
+      record('3jqfcqzm3ft2j'),
+      record('3jqfcqzm3fz2j'),
+      record('3jqfcqzm4fc2j'),
+      record('3jqfcqzm4fd2j'),
+      record('3jqfcqzm4ff2j'),
+      record('3jqfcqzm4fg2j'),
+      record('3jqfcqzm4fh2j'),
+    ]);
+    equal(rootOf(keys, LEAF), 'bafyreiettyludka6fpgp33stwxfuwhkzlur6chs4d2v4nkmq2j3ogpdjem');
+    keys.push(record('3jqfcqzm3fx2j'));
+    equal(rootOf(keys, LEAF), 'bafyreid2x5eqs4w4qxvc5jiwda4cien3gw2q6cshofxwnvv7iucrmfohpm');
+  });
+
+  test('roots before and after each commit match the commit-proof fixtures', (ctx) => {
+    let cases = fixtures('firehose/commit-proof-fixtures.json');
+    equal(cases.length, 6);
+    for (var i = 0; i < cases.length; i += 1) {
+      let c = cases[i] as JsonObject;
+      let leaf = c['leafValue'] as String;
+      let before = new Array<String>();
+      let keys = c['keys'] as JsonArray;
+      for (var j = 0; j < keys.length; j += 1) {
+        before.push(keys[j] as String);
+      }
+      equal(rootOf(before, leaf), c['rootBeforeCommit'] as String);
+
+      let deleted = c['dels'] as JsonArray;
+      let after = new Array<String>();
+      for (let key in before) {
+        var keep = true;
+        for (var j = 0; j < deleted.length; j += 1) {
+          if (key == deleted[j] as String) {
+            keep = false;
+          }
+        }
+        if (keep) {
+          after.push(key);
+        }
+      }
+      let added = c['adds'] as JsonArray;
+      for (var j = 0; j < added.length; j += 1) {
+        after.push(added[j] as String);
+      }
+      equal(rootOf(after, leaf), c['rootAfterCommit'] as String);
+    }
+  });
+
+  test('finds every key it was built with, and no other', (ctx) => {
+    let keys = sorted([
+      record('3jqfcqzm3fo2j'),
+      record('3jqfcqzm3fs2j'),
+      record('3jqfcqzm3fx2j'),
+      record('3jqfcqzm4fc2j'),
+      record('3jqfcqzm4fd2j'),
+    ]);
+    let values = new FixedArray<Cid>(keys.length, Cid.parse(LEAF));
+    for (var i = 0; i < keys.length; i += 1) {
+      values[i] = Cid.forBlob(keys[i].toBytes());
+    }
+    let blocks = new BlockMap();
+    let root = buildMst(keys, values, blocks);
+    for (var i = 0; i < keys.length; i += 1) {
+      isTrue((mstGet(root, keys[i], blocks) as Cid).equals(values[i]));
+    }
+    isNull(mstGet(root, record('3jqfcqzm3fn2j'), blocks));
+    isNull(mstGet(root, record('3jqfcqzm4fe2j'), blocks));
+    isNull(mstGet(root, 'zzz/last', blocks));
+
+    var walked = 0;
+    mstWalk(root, blocks, (key, value) => {
+      equal(key, keys[walked]);
+      walked += 1;
+    });
+    equal(walked, keys.length);
+  });
+
+  test('a walk that needs a missing node fails', (ctx) => {
+    let blocks = new BlockMap();
+    let root = buildMst(sorted([record('3jqfcqzm3fx2j')]), new FixedArray<Cid>(1, Cid.parse(LEAF)), blocks);
+    throws(() => {
+      mstGet(root, record('3jqfcqzm3fx2j'), new BlockMap());
+    });
+  });
+
+  test('rejects unsorted keys', (ctx) => {
+    let keys = new FixedArray<String>(2, 'b/1');
+    keys[1] = 'a/1';
+    throws(() => {
+      buildMst(keys, new FixedArray<Cid>(2, Cid.parse(LEAF)), new BlockMap());
+    });
+  });
+});

@@ -1,0 +1,172 @@
+/**
+ * CAR files, version 1 (https://ipld.io/specs/transport/car/carv1/): the
+ * archive format atproto uses for repositories and proofs.
+ *
+ * A CAR file is a header and then blocks, each preceded by its length as a
+ * varint. The header is DAG-CBOR, `{version: 1, roots: [cid, ...]}`, and a
+ * block is a binary CID followed by the bytes it names.
+ *
+ * `readCar` checks every block against its CID, so a block map read from a
+ * CAR file holds only data whose hashes match.
+ */
+
+import {ByteBuffer} from 'zena:core';
+import {HashMap} from 'zena:collections';
+import {sha256} from 'zena:crypto';
+import {decodeCborRange, encodeCbor} from './cbor.zena';
+import {Cid, HASH_SHA256} from './cid.zena';
+import {IntValue, LinkValue, ListValue, MapValue, Value, field, newMap} from './data.zena';
+import {readVarint, writeVarint} from './varint.zena';
+
+/** Fills arrays of CIDs before their elements are set. */
+let NO_CID = new Cid(1, 0 as i64, 0 as i64, new FixedArray<u8>(0, 0 as u8));
+
+/** A CAR file that cannot be read, or a block that does not match its CID. */
+export class CarError extends Error {
+  new(message: String) : super(message);
+}
+
+/** Blocks by CID. */
+export final class BlockMap {
+  #blocks = new HashMap<String, FixedArray<u8>>();
+  #cids = new HashMap<String, Cid>();
+
+  /** The bytes `cid` names, or null when the map does not have them. */
+  get(cid: Cid): FixedArray<u8> | null {
+    if (let (true, bytes) = this.#blocks.get(cid.toString())) {
+      return bytes;
+    }
+    return null;
+  }
+
+  has(cid: Cid): boolean {
+    return this.#blocks.has(cid.toString());
+  }
+
+  /** Stores `bytes` under `cid`. The caller vouches that they match. */
+  set(cid: Cid, bytes: FixedArray<u8>): void {
+    let key = cid.toString();
+    this.#blocks[key] = bytes;
+    this.#cids[key] = cid;
+  }
+
+  /** Stores `bytes` under the CID of their DAG-CBOR encoding, and returns it. */
+  add(value: Value): Cid {
+    let bytes = encodeCbor(value);
+    let cid = Cid.forDagCbor(bytes);
+    this.set(cid, bytes);
+    return cid;
+  }
+
+  size: i32 {
+    get {
+      return this.#blocks.size;
+    }
+  }
+
+  /** Calls `callback` with each block, in no particular order. */
+  forEach(callback: (cid: Cid, bytes: FixedArray<u8>) => void): void {
+    this.#cids.forEach((key, cid) => {
+      callback(cid, this.#blocks[key]);
+    });
+  }
+}
+
+/** A CAR file's roots and blocks. */
+export final class Car {
+  roots: FixedArray<Cid>;
+  blocks: BlockMap;
+  new(roots: FixedArray<Cid>, blocks: BlockMap) : roots = roots, blocks = blocks;
+}
+
+/**
+ * Reads a CAR file and checks each block against its CID. Only SHA-256
+ * CIDs can be checked, so a block with any other hash is rejected.
+ */
+export function readCar(bytes: FixedArray<u8>): Car {
+  let (headerLength, headerStart) = readVarint(bytes, 0, bytes.length);
+  let headerEnd = headerStart + (headerLength as i32);
+  if (headerLength > (bytes.length - headerStart) as i64) {
+    throw new CarError('truncated header');
+  }
+  let roots = readHeader(decodeCborRange(bytes, headerStart, headerEnd));
+  let blocks = new BlockMap();
+  var pos = headerEnd;
+  while (pos < bytes.length) {
+    let (length, start) = readVarint(bytes, pos, bytes.length);
+    if (length > (bytes.length - start) as i64) {
+      throw new CarError(`truncated block at offset ${pos}`);
+    }
+    let end = start + (length as i32);
+    let (cid, dataStart) = Cid.decode(bytes, start, end);
+    let data = bytes.slice(dataStart, end);
+    if (cid.hashType != HASH_SHA256 || !sha256(data).contentEquals(cid.digest)) {
+      throw new CarError(`block ${cid.toString()} does not match its CID`);
+    }
+    blocks.set(cid, data);
+    pos = end;
+  }
+  return new Car(roots, blocks);
+}
+
+function readHeader(header: Value): FixedArray<Cid> {
+  if (!(header is MapValue)) {
+    throw new CarError('header is not a map');
+  }
+  let map = header;
+  let version = field(map, 'version');
+  if (!(version is IntValue) || version.value != 1) {
+    throw new CarError('not a version 1 CAR file');
+  }
+  let list = field(map, 'roots');
+  if (!(list is ListValue)) {
+    throw new CarError('header has no roots');
+  }
+  let items = list.items;
+  let roots = new FixedArray<Cid>(items.length, NO_CID);
+  for (var i = 0; i < items.length; i += 1) {
+    let item = items[i];
+    if (!(item is LinkValue)) {
+      throw new CarError('a root is not a CID');
+    }
+    roots[i] = item.cid;
+  }
+  return roots;
+}
+
+/**
+ * Writes a CAR file with these roots and blocks. Blocks are written in the
+ * order `order` lists them, or in no particular order when it is null.
+ */
+export function writeCar(roots: FixedArray<Cid>, blocks: BlockMap, order: FixedArray<Cid> | null = null): FixedArray<u8> {
+  let rootValues = new FixedArray<Value>(roots.length, new IntValue(0 as i64));
+  for (var i = 0; i < roots.length; i += 1) {
+    rootValues[i] = new LinkValue(roots[i]);
+  }
+  let header = newMap();
+  header.entries['version'] = new IntValue(1 as i64);
+  header.entries['roots'] = new ListValue(rootValues);
+  let headerBytes = encodeCbor(header);
+
+  let out = new ByteBuffer();
+  writeVarint(out, headerBytes.length as i64);
+  out.writeBytes(headerBytes as ByteArray);
+  let writeBlock = (cid: Cid, data: FixedArray<u8>) => {
+    let cidBytes = cid.toBytes();
+    writeVarint(out, (cidBytes.length + data.length) as i64);
+    out.writeBytes(cidBytes as ByteArray);
+    out.writeBytes(data as ByteArray);
+  };
+  if (order == null) {
+    blocks.forEach(writeBlock);
+  } else {
+    for (let cid in order) {
+      let data = blocks.get(cid);
+      if (data == null) {
+        throw new CarError(`no block for ${cid.toString()}`);
+      }
+      writeBlock(cid, data);
+    }
+  }
+  return out.toByteArray() as FixedArray<u8>;
+}

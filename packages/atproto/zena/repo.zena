@@ -1,0 +1,152 @@
+/**
+ * Repository commits and record proofs
+ * (https://atproto.com/specs/repository#commit-objects).
+ *
+ * A commit is a DAG-CBOR map signed by the repository's signing key:
+ * `{did, version: 3, data, rev, prev, sig}`, where `data` is the root of
+ * the MST and `sig` is a signature over the commit encoded without `sig`.
+ *
+ * `com.atproto.sync.getRecord` answers with a CAR file whose root is the
+ * commit, holding the MST nodes on the path to the record and the record
+ * itself. `verifyRecordProof` checks such a file. It takes the signature
+ * check as a function, so this module needs no particular key type; the
+ * caller gets the key from the repository's DID document.
+ */
+
+import {Car} from './car.zena';
+import {decodeCbor, encodeCbor} from './cbor.zena';
+import {Cid} from './cid.zena';
+import {
+  BytesValue,
+  IntValue,
+  LinkValue,
+  MapValue,
+  NullValue,
+  StringValue,
+  Value,
+  field,
+  newMap
+} from './data.zena';
+import {mstGet} from './mst.zena';
+
+/** A commit or proof that is malformed or does not verify. */
+export class RepoError extends Error {
+  new(message: String) : super(message);
+}
+
+/** A decoded commit. */
+export final class Commit {
+  did: String;
+  version: i64;
+  /** The root of the record tree. */
+  data: Cid;
+  /** The revision, a TID that increases with every commit. */
+  rev: String;
+  prev: Cid | null;
+  sig: FixedArray<u8>;
+  /** The commit's fields without `sig`, as they were signed. */
+  unsigned: MapValue;
+
+  new(did: String, version: i64, data: Cid, rev: String, prev: Cid | null, sig: FixedArray<u8>, unsigned: MapValue)
+    : did = did, version = version, data = data, rev = rev, prev = prev, sig = sig, unsigned = unsigned;
+
+  /** The bytes the signature covers: the commit encoded without `sig`. */
+  signedBytes(): FixedArray<u8> {
+    return encodeCbor(this.unsigned);
+  }
+}
+
+/** Reads a commit block. Accepts versions 2 and 3, which differ only in what `prev` means. */
+export function decodeCommit(bytes: FixedArray<u8>): Commit {
+  let value = decodeCbor(bytes);
+  if (!(value is MapValue)) {
+    throw new RepoError('commit is not a map');
+  }
+  let map = value;
+  let did = field(map, 'did');
+  let version = field(map, 'version');
+  let data = field(map, 'data');
+  let rev = field(map, 'rev');
+  let sig = field(map, 'sig');
+  if (!(did is StringValue) || !(version is IntValue) || !(data is LinkValue)
+      || !(rev is StringValue) || !(sig is BytesValue)) {
+    throw new RepoError('commit lacks did, version, data, rev or sig');
+  }
+  let versionNumber = version.value;
+  if (versionNumber != 2 && versionNumber != 3) {
+    throw new RepoError(`unsupported commit version ${versionNumber}`);
+  }
+  let prevValue = field(map, 'prev');
+  var prev: Cid | null = null;
+  if (prevValue is LinkValue) {
+    prev = prevValue.cid;
+  } else if (prevValue != null && !(prevValue is NullValue)) {
+    throw new RepoError('commit prev is neither a CID nor null');
+  }
+  let unsigned = newMap();
+  map.entries.forEach((key, item) => {
+    if (key != 'sig') {
+      unsigned.entries[key] = item;
+    }
+  });
+  return new Commit(
+    did.value,
+    versionNumber,
+    data.cid,
+    rev.value,
+    prev,
+    sig.value,
+    unsigned
+  );
+}
+
+/** A verified answer to `com.atproto.sync.getRecord`. */
+export final class RecordProof {
+  commit: Commit;
+  /** The record's CID, or null when the proof shows the record is absent. */
+  cid: Cid | null;
+  /** The record, or null when it is absent. */
+  record: Value | null;
+  new(commit: Commit, cid: Cid | null, record: Value | null) : commit = commit, cid = cid, record = record;
+}
+
+/**
+ * Checks a `getRecord` CAR file for `did`'s record at `collection/rkey`.
+ *
+ * The CAR file's blocks were already checked against their CIDs when it
+ * was read. This checks that its root is a commit by `did` that
+ * `verifySignature` accepts, and walks the record tree from the commit to
+ * the key. The result names the record, or shows that the repository has
+ * no record there.
+ */
+export function verifyRecordProof(
+  car: Car,
+  did: String,
+  collection: String,
+  rkey: String,
+  verifySignature: (signed: FixedArray<u8>, sig: FixedArray<u8>) => boolean
+): RecordProof {
+  if (car.roots.length != 1) {
+    throw new RepoError(`proof has ${car.roots.length} roots`);
+  }
+  let commitBytes = car.blocks.get(car.roots[0]);
+  if (commitBytes == null) {
+    throw new RepoError('proof lacks its commit');
+  }
+  let commit = decodeCommit(commitBytes);
+  if (commit.did != did) {
+    throw new RepoError(`commit is by ${commit.did}, not ${did}`);
+  }
+  if (!verifySignature(commit.signedBytes(), commit.sig)) {
+    throw new RepoError('commit signature does not verify');
+  }
+  let cid = mstGet(commit.data, `${collection}/${rkey}`, car.blocks);
+  if (cid == null) {
+    return new RecordProof(commit, null, null);
+  }
+  let recordBytes = car.blocks.get(cid);
+  if (recordBytes == null) {
+    throw new RepoError('proof lacks the record');
+  }
+  return new RecordProof(commit, cid, decodeCbor(recordBytes));
+}
