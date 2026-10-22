@@ -37,7 +37,8 @@ file outside a package can; a package lists
 - `atproto:identity`: resolving DIDs (`did:plc`, `did:web`) and handles
   (DNS over HTTPS, then HTTPS), checking handles in both directions.
 - `atproto:sync`: fetching a record and checking its proof against the DID
-  document's key, and fetching a blob and checking it against its CID.
+  document's key, fetching a blob and checking it against its CID, and
+  listing a collection's records, which comes with no proof.
 
 `atproto:xrpc`, `atproto:identity` and `atproto:sync` send requests with
 `wasi:http`, so they compile for the `zena-cli` and `component` targets

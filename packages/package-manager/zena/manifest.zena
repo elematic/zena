@@ -1,0 +1,231 @@
+/**
+ * A package's manifest, `zena-package.json`
+ * (docs/design/package-manifest.md): its name, its DID, its dependencies,
+ * and at a workspace's root, the workspace's other packages and the
+ * domains of `@scope/name`.
+ *
+ * ```json
+ * {
+ *   "name": "app",
+ *   "dependencies": {
+ *     "router": {"did": "did:plc:routerrouterrouterrouter", "version": "1.4.2"},
+ *     "lib": {"path": "./packages/lib"}
+ *   },
+ *   "workspace": {"packages": ["packages/*"]},
+ *   "scopes": {"@widgets": "widgets.alt-pkg.org"}
+ * }
+ * ```
+ *
+ * `writeDependencies` rewrites the dependencies and keeps the rest of the
+ * file, each key where it was.
+ */
+
+import {HashSet, OrderedHashMap} from 'zena:collections';
+import {JsonArray, JsonObject, JsonValue, parseJson, stringify} from 'zena:json';
+import {isValidDid} from 'atproto:syntax';
+import {isValidPackageName} from './records.zena';
+import {Requirement} from './resolve.zena';
+import {Version} from './version.zena';
+
+/** A manifest the package manager cannot read or update. */
+export class ManifestError extends Error {
+  new(message: String) : super(message);
+}
+
+/** What a package's `zena-package.json` says. */
+export final class Manifest {
+  /** The package's name, or null when the manifest gives none. */
+  name: String | null;
+  /** The package's DID, once it has been created on a package host. */
+  did: String | null;
+  /** The published packages it depends on, by local name, in file order. */
+  requirements: OrderedHashMap<String, Requirement>;
+  /**
+   * The packages on disk it depends on, by local name: each one's
+   * directory, relative to the manifest's.
+   */
+  paths: OrderedHashMap<String, String>;
+  /**
+   * At a workspace's root, the directories of the workspace's other
+   * packages, or patterns ending in `/*`. Empty elsewhere.
+   */
+  workspacePackages: GrowableArray<String>;
+  /** At a workspace's root, each `@scope` mapped to its domain. */
+  scopes: OrderedHashMap<String, String>;
+
+  new(name: String | null, did: String | null, requirements: OrderedHashMap<String, Requirement>,
+      paths: OrderedHashMap<String, String>, workspacePackages: GrowableArray<String>,
+      scopes: OrderedHashMap<String, String>)
+      : name = name, did = did, requirements = requirements, paths = paths,
+        workspacePackages = workspacePackages, scopes = scopes;
+}
+
+/**
+ * Reads `zena-package.json` text. A null `text`, for a directory with no
+ * manifest, reads as an empty manifest. Throws `ManifestError`.
+ */
+export function readManifest(text: String | null): Manifest {
+  let root = parse(text);
+  let name = optionalString(root, 'name');
+  if (name != null && !isValidPackageName(name)) {
+    throw new ManifestError(`zena-package.json: '${name}' is not a valid package name`);
+  }
+  let did = optionalString(root, 'did');
+  if (did != null && !isValidDid(did)) {
+    throw new ManifestError(`zena-package.json: '${did}' is not a DID`);
+  }
+
+  let requirements = new OrderedHashMap<String, Requirement>();
+  let paths = new OrderedHashMap<String, String>();
+  let dependencies = member(root, 'dependencies');
+  if (dependencies != null) {
+    dependencies.forEach((localName, value) => {
+      if (!isValidPackageName(localName)) {
+        throw new ManifestError(`zena-package.json: '${localName}' is not a valid package name`);
+      }
+      if (!(value is JsonObject)) {
+        throw new ManifestError(`zena-package.json: dependency '${localName}' is not an object`);
+      }
+      let entry = value;
+      let path = entry['path'];
+      if (path != null) {
+        if (!(path is String) || entry.has('did') || entry.has('version')) {
+          throw new ManifestError(
+              `zena-package.json: dependency '${localName}' has a path and a DID or version, or a path that is not a string`);
+        }
+        paths[localName] = path;
+        return;
+      }
+      let did = entry['did'];
+      let version = entry['version'];
+      if (!(did is String) || !isValidDid(did)) {
+        throw new ManifestError(`zena-package.json: dependency '${localName}' has no DID or path`);
+      }
+      if (!(version is String)) {
+        throw new ManifestError(`zena-package.json: dependency '${localName}' has no version`);
+      }
+      requirements[localName] = new Requirement(did, parseVersion(version, localName));
+    });
+  }
+
+  let workspacePackages = new GrowableArray<String>();
+  let workspace = member(root, 'workspace');
+  if (workspace != null) {
+    let packages = workspace['packages'];
+    if (packages != null) {
+      if (!(packages is JsonArray)) {
+        throw new ManifestError('zena-package.json: workspace.packages is not a list');
+      }
+      let list = packages;
+      for (var i = 0; i < list.length; i += 1) {
+        let item = list[i];
+        if (!(item is String)) {
+          throw new ManifestError('zena-package.json: workspace.packages lists something other than a directory');
+        }
+        workspacePackages.push(item);
+      }
+    }
+  }
+
+  let scopes = new OrderedHashMap<String, String>();
+  let scopeMap = member(root, 'scopes');
+  if (scopeMap != null) {
+    scopeMap.forEach((scope, domain) => {
+      if (!scope.startsWith('@') || !(domain is String)) {
+        throw new ManifestError(`zena-package.json: scope '${scope}' is not '@name' mapped to a domain`);
+      }
+      scopes[scope] = domain;
+    });
+  }
+  return new Manifest(name, did, requirements, paths, workspacePackages, scopes);
+}
+
+/**
+ * `zena-package.json` text with its `dependencies` replaced by
+ * `requirements` and `paths`, or a new manifest holding only them when
+ * `text` is null. A dependency the file already has keeps its place, new
+ * ones follow, and every other key stays where it was.
+ */
+export function writeDependencies(text: String | null, requirements: OrderedHashMap<String, Requirement>,
+    paths: OrderedHashMap<String, String>): String {
+  let root = parse(text);
+  let section = new JsonObject();
+  let written = new HashSet<String>();
+  let write = (localName: String) => {
+    if (written.has(localName)) {
+      return;
+    }
+    if (let (true, requirement) = requirements.get(localName)) {
+      let entry = new JsonObject();
+      entry['did'] = requirement.did;
+      entry['version'] = requirement.version.toString();
+      section[localName] = entry;
+      written.add(localName);
+    } else if (let (true, path) = paths.get(localName)) {
+      let entry = new JsonObject();
+      entry['path'] = path;
+      section[localName] = entry;
+      written.add(localName);
+    }
+  };
+  let existing = member(root, 'dependencies');
+  if (existing != null) {
+    existing.forEach((localName, value) => {
+      write(localName);
+    });
+  }
+  for (let localName in requirements.keys()) {
+    write(localName);
+  }
+  for (let localName in paths.keys()) {
+    write(localName);
+  }
+  root['dependencies'] = section;
+  return stringify(root, '  ');
+}
+
+function parse(text: String | null): JsonObject {
+  if (text == null) {
+    return new JsonObject();
+  }
+  var json: JsonValue = null;
+  try {
+    json = parseJson(text);
+  } catch (e) {
+    throw new ManifestError(`zena-package.json is not JSON: ${e.message}`);
+  }
+  if (!(json is JsonObject)) {
+    throw new ManifestError('zena-package.json is not a JSON object');
+  }
+  return json;
+}
+
+function member(root: JsonObject, name: String): JsonObject | null {
+  let value = root[name];
+  if (value == null) {
+    return null;
+  }
+  if (!(value is JsonObject)) {
+    throw new ManifestError(`zena-package.json: "${name}" is not an object`);
+  }
+  return value;
+}
+
+function optionalString(root: JsonObject, name: String): String | null {
+  let value = root[name];
+  if (value == null) {
+    return null;
+  }
+  if (!(value is String)) {
+    throw new ManifestError(`zena-package.json: "${name}" is not a string`);
+  }
+  return value;
+}
+
+function parseVersion(text: String, localName: String): Version {
+  try {
+    return Version.parse(text);
+  } catch (e) {
+    throw new ManifestError(`zena-package.json: dependency '${localName}': ${e.message}`);
+  }
+}

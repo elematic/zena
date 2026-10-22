@@ -1,0 +1,167 @@
+/**
+ * Finding packages on the network, for `zena add` and `zena update`
+ * (docs/design/package-manager.md, "Names and scopes"): turning what a
+ * person typed into a DID, listing a package's versions, and reading its
+ * profile and releases with their proofs.
+ */
+
+import {HashMap, HashSet, OrderedHashMap} from 'zena:collections';
+import {DidDocument} from 'atproto:did';
+import {IdentityResolver} from 'atproto:identity';
+import {getVerifiedRecord, listRecords} from 'atproto:sync';
+import {isValidDid, isValidHandle} from 'atproto:syntax';
+import {PROFILE_KEY, PROFILE_TYPE, Profile, RELEASE_TYPE, Release, YANK_TYPE} from './records.zena';
+import {CheckedRelease, ReleaseSource} from './resolve.zena';
+import {Version} from './version.zena';
+
+/** The domain `@scope/name` is looked up in when no `scopes` entry names one. */
+export let DEFAULT_DOMAIN = 'pkg.zena-lang.dev';
+
+/** A package that cannot be found as asked. */
+export class RegistryError extends Error {
+  new(message: String) : super(message);
+}
+
+/**
+ * The handle `@scope/name` stands for: `name.<domain>`, where the domain
+ * is the one `scopes` maps `@scope` to, or `scope.<defaultDomain>`.
+ */
+export function scopedHandle(identifier: String, scopes: OrderedHashMap<String, String>,
+    defaultDomain: String = DEFAULT_DOMAIN): String {
+  var slash = -1;
+  for (var i = 0; i < identifier.length; i += 1) {
+    if (identifier.getByteAt(i) == 47) {
+      slash = i;
+      break;
+    }
+  }
+  if (!identifier.startsWith('@') || slash < 2 || slash == identifier.length - 1) {
+    throw new RegistryError(`'${identifier}' is not @scope/name`);
+  }
+  let scope = identifier.sliceBytes(0, slash);
+  let name = identifier.sliceBytes(slash + 1, identifier.length);
+  if (let (true, domain) = scopes.get(scope)) {
+    return `${name}.${domain}`;
+  }
+  return `${name}.${scope.sliceBytes(1, scope.length)}.${defaultDomain}`;
+}
+
+/**
+ * The DID that `identifier` names: a DID as it is, `@scope/name` by the
+ * handle it stands for, and a handle by resolving it and checking that the
+ * DID's document claims it back.
+ */
+export async function resolveIdentifier(identifier: String, scopes: OrderedHashMap<String, String>,
+    resolver: IdentityResolver, defaultDomain: String = DEFAULT_DOMAIN): Future<String> {
+  if (identifier.startsWith('did:')) {
+    if (!isValidDid(identifier)) {
+      throw new RegistryError(`'${identifier}' is not a DID`);
+    }
+    return identifier;
+  }
+  let handle = if (identifier.startsWith('@')) scopedHandle(identifier, scopes, defaultDomain) else identifier;
+  if (!isValidHandle(handle)) {
+    throw new RegistryError(`'${identifier}' is not a DID, a handle or @scope/name`);
+  }
+  let identity = await resolver.resolve(handle);
+  return identity.did;
+}
+
+/** The versions a package's repository lists, and which of them are yanked. */
+export final class Versions {
+  releases: GrowableArray<Version>;
+  /** The yanked versions, as text. */
+  yanked: HashSet<String>;
+
+  new(releases: GrowableArray<Version>, yanked: HashSet<String>) : releases = releases, yanked = yanked;
+
+  /**
+   * The highest version that is not yanked, in major version `major` when
+   * it is given. Pre-releases count only with `prereleases`.
+   */
+  latest(major: i64 = -1, prereleases: boolean = false): Version | null {
+    var best: Version | null = null;
+    for (let version in this.releases) {
+      if (this.yanked.has(version.toString())) {
+        continue;
+      }
+      if (major >= 0 && version.major != major) {
+        continue;
+      }
+      if (version.isPrerelease && !prereleases) {
+        continue;
+      }
+      let current = best;
+      if (current == null || version.compareTo(current) > 0) {
+        best = version;
+      }
+    }
+    return best;
+  }
+
+  has(version: Version): boolean {
+    for (let listed in this.releases) {
+      if (listed.compareTo(version) == 0) {
+        return true;
+      }
+    }
+    return false;
+  }
+}
+
+/**
+ * The versions the package `document` describes lists. The list is its
+ * PDS's word: whatever is chosen from it is fetched again with its proof.
+ * Record keys that are not versions are skipped.
+ */
+export async function listVersions(document: DidDocument): Future<Versions> {
+  let releases = new GrowableArray<Version>();
+  for (let record in await listRecords(document, RELEASE_TYPE)) {
+    try {
+      releases.push(Version.parse(record.rkey));
+    } catch (e) {
+      // Not a version: no client publishes such a record.
+    }
+  }
+  let yanked = new HashSet<String>();
+  for (let record in await listRecords(document, YANK_TYPE)) {
+    yanked.add(record.rkey);
+  }
+  return new Versions(releases, yanked);
+}
+
+/** The package's profile, with its proof, or null when it has none. */
+export async function fetchProfile(document: DidDocument): Future<Profile | null> {
+  let proof = await getVerifiedRecord(document, PROFILE_TYPE, PROFILE_KEY);
+  let record = proof.record;
+  if (record == null) {
+    return null;
+  }
+  return Profile.fromValue(record);
+}
+
+/**
+ * A `ReleaseSource` that fetches each release from its package's PDS with
+ * its proof, resolving each DID once.
+ */
+export function networkReleases(resolver: IdentityResolver): ReleaseSource {
+  let documents = new HashMap<String, DidDocument>();
+  return async (did: String, version: Version): Future<CheckedRelease> => {
+    var document: DidDocument | null = null;
+    if (let (true, known) = documents.get(did)) {
+      document = known;
+    } else {
+      let resolved = await resolver.resolveDid(did);
+      documents[did] = resolved;
+      document = resolved;
+    }
+    let text = version.toString();
+    let proof = await getVerifiedRecord(document, RELEASE_TYPE, text);
+    let record = proof.record;
+    let cid = proof.cid;
+    if (record == null || cid == null) {
+      throw new RegistryError(`${did} has no release ${text}`);
+    }
+    return new CheckedRelease(Release.fromValue(record, text), cid);
+  };
+}

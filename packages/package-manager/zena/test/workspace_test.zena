@@ -1,0 +1,135 @@
+import {suite, test} from 'zena:test';
+import {equal, isTrue} from 'zena:assert';
+import {HashMap} from 'zena:collections';
+import {ManifestError} from 'package-manager:manifest';
+import {WorkspaceFiles, readWorkspace} from 'package-manager:workspace';
+
+let ROUTER = 'did:plc:routerrouterrouterrouter';
+let JSON = 'did:web:json.example.com';
+
+/** Files held in memory, by path. */
+final class MemoryFiles implements WorkspaceFiles {
+  files = new HashMap<String, String>();
+
+  add(path: String, text: String): MemoryFiles {
+    this.files[path] = text;
+    return this;
+  }
+
+  read(path: String): String | null {
+    if (let (true, text) = this.files.get(path)) {
+      return text;
+    }
+    return null;
+  }
+
+  list(path: String): Array<String> | null {
+    let prefix = `${path}/`;
+    let names = new GrowableArray<String>();
+    for (let file in this.files.keys()) {
+      if (file.startsWith(prefix)) {
+        let rest = file.sliceBytes(prefix.length, file.length);
+        var name = rest;
+        for (var i = 0; i < rest.length; i += 1) {
+          if (rest.getByteAt(i) == 47) {
+            name = rest.sliceBytes(0, i);
+            break;
+          }
+        }
+        if (!names.contains(name)) {
+          names.push(name);
+        }
+      }
+    }
+    return if (names.length == 0) null else names;
+  }
+}
+
+/**
+ * A workspace whose root is the package `app`, with `lib` in packages/,
+ * a directory in packages/ that is not a package, and `tool` outside the
+ * workspace, which lib depends on by path.
+ */
+function files(): MemoryFiles {
+  return new MemoryFiles()
+    .add('/ws/zena-package.json', `{
+      "name": "app",
+      "dependencies": {
+        "router": {"did": "${ROUTER}", "version": "1.4.2"},
+        "lib": {"path": "./packages/lib"}
+      },
+      "workspace": {"packages": ["packages/*"]}
+    }`)
+    .add('/ws/packages/lib/zena-package.json', `{
+      "name": "lib",
+      "dependencies": {
+        "json": {"did": "${JSON}", "version": "2.0.1"},
+        "tool": {"path": "../../../tool"}
+      }
+    }`)
+    .add('/ws/packages/lib/lib.zena', '')
+    .add('/ws/packages/notes/README.md', '')
+    .add('/tool/zena-package.json', `{
+      "name": "tool",
+      "dependencies": {"router": {"did": "${ROUTER}", "version": "1.5.0"}}
+    }`);
+}
+
+export let tests = suite('package-manager:workspace', () => {
+  test('reads the root, the workspace packages and their path dependencies', (ctx) => {
+    let workspace = readWorkspace('/ws', files());
+    equal(workspace.root.dir, '/ws');
+    equal(workspace.root.manifest.name as String, 'app');
+    equal(workspace.packages.length, 3);
+    equal(workspace.packages[0].dir, '/ws');
+    equal(workspace.packages[1].dir, '/ws/packages/lib');
+    equal(workspace.packages[2].dir, '/tool');
+    equal(workspace.lockfilePath(), '/ws/zena-lock.json');
+    equal(workspace.packages[1].manifestPath(), '/ws/packages/lib/zena-package.json');
+  });
+
+  test("gathers every package's requirements", (ctx) => {
+    let requirements = readWorkspace('/ws', files()).requirements();
+    equal(requirements.length, 3);
+    equal(requirements[0].did, ROUTER);
+    equal(requirements[0].version.toString(), '1.4.2');
+    equal(requirements[1].did, JSON);
+    equal(requirements[2].version.toString(), '1.5.0');
+  });
+
+  test('finds the package a directory is in', (ctx) => {
+    let workspace = readWorkspace('/ws', files());
+    equal(workspace.packageAt('/ws/packages/lib').dir, '/ws/packages/lib');
+    equal(workspace.packageAt('/ws/packages/lib/src/deep').dir, '/ws/packages/lib');
+    equal(workspace.packageAt('/ws/packages/library').dir, '/ws');
+    equal(workspace.packageAt('/ws/scripts').dir, '/ws');
+    equal(workspace.packageAt('/ws').dir, '/ws');
+  });
+
+  test('reads a root with no manifest yet as an empty one', (ctx) => {
+    let workspace = readWorkspace('/ws', new MemoryFiles());
+    equal(workspace.packages.length, 1);
+    isTrue(workspace.root.text == null);
+    equal(workspace.requirements().length, 0);
+  });
+
+  test('names the manifest it cannot read', (ctx) => {
+    let fails = (files: MemoryFiles, expected: String) => {
+      var message = '';
+      try {
+        readWorkspace('/ws', files);
+      } catch (e) {
+        message = if (e is ManifestError) e.message else 'another error';
+      }
+      isTrue(message.contains(expected), message);
+    };
+    fails(new MemoryFiles().add('/ws/zena-package.json', '{"dependencies": {"lib": {"path": "./lib"}}}'),
+        '/ws/lib has no zena-package.json');
+    fails(new MemoryFiles()
+        .add('/ws/zena-package.json', '{"workspace": {"packages": ["lib"]}}')
+        .add('/ws/lib/zena-package.json', '{"name": 1}'),
+        '/ws/lib/zena-package.json');
+    fails(new MemoryFiles().add('/ws/zena-package.json', '{"workspace": {"packages": ["missing/*"]}}'),
+        '/ws/missing, which is not a directory');
+  });
+});

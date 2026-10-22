@@ -1,0 +1,127 @@
+import {suite, test} from 'zena:test';
+import {equal, isNull, isTrue, jsonEqual} from 'zena:assert';
+import {OrderedHashMap} from 'zena:collections';
+import {parseJson} from 'zena:json';
+import {ManifestError, readManifest, writeDependencies} from 'package-manager:manifest';
+import {Requirement} from 'package-manager:resolve';
+import {Version} from 'package-manager:version';
+
+let ROUTER = 'did:plc:routerrouterrouterrouter';
+
+function rejects(text: String) {
+  var caught = false;
+  try {
+    readManifest(text);
+  } catch (e) {
+    caught = e is ManifestError;
+  }
+  isTrue(caught, text);
+}
+
+/** The byte offset of `needle` in `text`, or -1. */
+function offsetOf(text: String, needle: String): i32 {
+  for (var i = 0; i + needle.length <= text.length; i += 1) {
+    if (text.sliceBytes(i, i + needle.length) == needle) {
+      return i;
+    }
+  }
+  return -1;
+}
+
+export let tests = suite('package-manager:manifest', () => {
+  test('reads a workspace root manifest', (ctx) => {
+    let manifest = readManifest(`{
+      "name": "app",
+      "did": "did:plc:appappappappappappappapp",
+      "exports": {"server": {}},
+      "dependencies": {
+        "router": {"did": "${ROUTER}", "version": "1.4.2"},
+        "lib": {"path": "./packages/lib"},
+        "json": {"did": "did:web:json.example.com", "version": "2.0.1"}
+      },
+      "workspace": {"packages": ["packages/*", "tools/gen"]},
+      "scopes": {"@widgets": "widgets.alt-pkg.org"}
+    }`);
+    equal(manifest.name as String, 'app');
+    equal(manifest.did as String, 'did:plc:appappappappappappappapp');
+    equal(manifest.requirements.size, 2);
+    let names = new GrowableArray<String>();
+    for (let name in manifest.requirements.keys()) {
+      names.push(name);
+    }
+    equal(names[0], 'router');
+    equal(names[1], 'json');
+    equal(manifest.requirements['router'].did, ROUTER);
+    equal(manifest.requirements['json'].version.toString(), '2.0.1');
+    equal(manifest.paths['lib'], './packages/lib');
+    equal(manifest.workspacePackages.length, 2);
+    equal(manifest.workspacePackages[1], 'tools/gen');
+    equal(manifest.scopes['@widgets'], 'widgets.alt-pkg.org');
+  });
+
+  test('reads a missing or minimal manifest as empty', (ctx) => {
+    let empty = readManifest(null);
+    isNull(empty.name);
+    isNull(empty.did);
+    equal(empty.requirements.size, 0);
+    equal(empty.paths.size, 0);
+    equal(empty.workspacePackages.length, 0);
+    equal(readManifest('{"exports": {}}').requirements.size, 0);
+  });
+
+  test('rejects manifests it cannot use', (ctx) => {
+    rejects('not json');
+    rejects('[]');
+    rejects('{"name": "App"}');
+    rejects('{"did": "app"}');
+    rejects('{"dependencies": []}');
+    rejects(`{"dependencies": {"Router": {"did": "${ROUTER}", "version": "1.4.2"}}}`);
+    rejects('{"dependencies": {"router": {"did": "router", "version": "1.4.2"}}}');
+    rejects(`{"dependencies": {"router": {"did": "${ROUTER}", "version": "1.4"}}}`);
+    rejects(`{"dependencies": {"router": {"did": "${ROUTER}"}}}`);
+    rejects('{"dependencies": {"router": "1.4.2"}}');
+    rejects(`{"dependencies": {"lib": {"path": "./lib", "did": "${ROUTER}"}}}`);
+    rejects('{"dependencies": {"lib": {"path": 3}}}');
+    rejects('{"workspace": {"packages": "packages/*"}}');
+    rejects('{"scopes": {"widgets": "widgets.alt-pkg.org"}}');
+  });
+
+  test('writes dependencies in place, keeping the rest of the manifest', (ctx) => {
+    let manifest = readManifest(`{
+      "name": "app",
+      "dependencies": {
+        "lib": {"path": "./packages/lib"},
+        "router": {"did": "${ROUTER}", "version": "1.4.2"}
+      },
+      "license": "MIT"
+    }`);
+    manifest.requirements['router'] = new Requirement(ROUTER, Version.parse('1.5.0'));
+    manifest.requirements['json'] = new Requirement('did:web:json.example.com', Version.parse('2.1.0'));
+    let text = writeDependencies(`{
+      "name": "app",
+      "dependencies": {
+        "lib": {"path": "./packages/lib"},
+        "router": {"did": "${ROUTER}", "version": "1.4.2"}
+      },
+      "license": "MIT"
+    }`, manifest.requirements, manifest.paths);
+    jsonEqual(parseJson(text), parseJson(`{
+      "name": "app",
+      "dependencies": {
+        "lib": {"path": "./packages/lib"},
+        "router": {"did": "${ROUTER}", "version": "1.5.0"},
+        "json": {"did": "did:web:json.example.com", "version": "2.1.0"}
+      },
+      "license": "MIT"
+    }`));
+    // The existing entries keep their places, and the new one follows.
+    isTrue(offsetOf(text, '"lib"') < offsetOf(text, '"router"'));
+    isTrue(offsetOf(text, '"router"') < offsetOf(text, '"json"'));
+    isTrue(offsetOf(text, '"json"') < offsetOf(text, '"license"'));
+    let written = writeDependencies(null, manifest.requirements, new OrderedHashMap<String, String>());
+    jsonEqual(parseJson(written), parseJson(`{"dependencies": {
+      "router": {"did": "${ROUTER}", "version": "1.5.0"},
+      "json": {"did": "did:web:json.example.com", "version": "2.1.0"}
+    }}`));
+  });
+});

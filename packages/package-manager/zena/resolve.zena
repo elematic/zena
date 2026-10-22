@@ -1,0 +1,123 @@
+/**
+ * Minimal version selection (docs/design/package-manager.md, "Version
+ * selection"): for each package and major version, the highest of the
+ * minimum versions a workspace's packages and their dependencies require.
+ *
+ * Resolution starts from the requirements in all of a workspace's
+ * manifests, so that the workspace uses one version of each package and
+ * major version. It reads the release record of every version any of them
+ * names, following each release's own dependencies, as Go's modules do. A
+ * version that a
+ * higher minimum later overrides still contributes its dependencies'
+ * minimums. The result is a `Resolution`: for each selected package, its
+ * version, release and source CIDs and its own names for its dependencies.
+ */
+
+import {HashMap, HashSet, OrderedHashMap} from 'zena:collections';
+import {Cid} from 'atproto:cid';
+import {Release, SOURCE} from './records.zena';
+import {Resolution, ResolutionError, ResolvedPackage, packageKey} from './resolution.zena';
+import {Version} from './version.zena';
+
+/** A published package a package depends on, and the lowest version it needs. */
+export final class Requirement {
+  did: String;
+  version: Version;
+
+  new(did: String, version: Version) : did = did, version = version;
+}
+
+/** A release record, and its CID, fetched with its proof. */
+export final class CheckedRelease {
+  release: Release;
+  cid: Cid;
+
+  new(release: Release, cid: Cid) : release = release, cid = cid;
+}
+
+/**
+ * Where resolution reads release records: `did`'s release `version`,
+ * checked against the account's key. Throws when there is no such release.
+ */
+export type ReleaseSource = (did: String, version: Version) => Future<CheckedRelease>;
+
+/**
+ * Selects a version of every package `requirements` lead to, reading
+ * release records from `source`. Throws `ResolutionError` for a selected
+ * release with no source artifact, and whatever `source` throws.
+ */
+export async function resolve(requirements: Array<Requirement>,
+    source: ReleaseSource): Future<Resolution> {
+  let cache = new HashMap<String, CheckedRelease>();
+  let read = async (did: String, version: Version): Future<CheckedRelease> => {
+    let id = `${did} ${version.toString()}`;
+    if (let (true, checked) = cache.get(id)) {
+      return checked;
+    }
+    let checked = await source(did, version);
+    cache[id] = checked;
+    return checked;
+  };
+
+  let selected = new HashMap<String, Requirement>();
+  let visited = new HashSet<String>();
+  let queue = new GrowableArray<Requirement>();
+  for (let requirement in requirements) {
+    queue.push(requirement);
+  }
+  var next = 0;
+  while (next < queue.length) {
+    let requirement = queue[next];
+    next += 1;
+    let key = packageKey(requirement.did, requirement.version.major);
+    let id = `${key} ${requirement.version.toString()}`;
+    if (visited.has(id)) {
+      continue;
+    }
+    visited.add(id);
+    if (let (true, current) = selected.get(key)) {
+      if (requirement.version.compareTo(current.version) > 0) {
+        selected[key] = requirement;
+      }
+    } else {
+      selected[key] = requirement;
+    }
+    let checked = await read(requirement.did, requirement.version);
+    for (let dependency in checked.release.dependencies) {
+      queue.push(new Requirement(dependency.did, dependency.version));
+    }
+  }
+
+  let packages = new OrderedHashMap<String, ResolvedPackage>();
+  for (let key in sortedKeys(selected)) {
+    let requirement = selected[key];
+    let checked = await read(requirement.did, requirement.version);
+    let artifact = checked.release.artifact(SOURCE);
+    if (artifact == null) {
+      throw new ResolutionError(`${key}: release ${requirement.version.toString()} has no source artifact`);
+    }
+    let dependencies = new OrderedHashMap<String, String>();
+    for (let dependency in checked.release.dependencies) {
+      dependencies[dependency.name] = packageKey(dependency.did, dependency.version.major);
+    }
+    packages[key] = new ResolvedPackage(key, requirement.did, requirement.version, checked.cid,
+        artifact.cid, dependencies);
+  }
+  return new Resolution(packages);
+}
+
+// TODO(#450): use the standard library's sort once it has one.
+function sortedKeys(map: HashMap<String, Requirement>): FixedArray<String> {
+  let keys = new FixedArray<String>(map.size, '');
+  var n = 0;
+  for (let key in map.keys()) {
+    var j = n;
+    while (j > 0 && keys[j - 1].compareTo(key) > 0) {
+      keys[j] = keys[j - 1];
+      j -= 1;
+    }
+    keys[j] = key;
+    n += 1;
+  }
+  return keys;
+}
