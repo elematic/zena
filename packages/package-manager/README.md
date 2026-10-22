@@ -4,11 +4,11 @@ The client side of Zena packages published on atproto, as designed in
 [docs/design/package-manager.md](../../docs/design/package-manager.md). The
 `zena` commands that fetch and publish packages are built on it.
 
-Import its modules as `package-manager:<module>`, with a
+Import its libraries as `package-manager:<library>`, with a
 `"package-manager": "./packages/package-manager/zena"` entry in
 `zena-packages.json`.
 
-## Modules
+## Libraries
 
 - `package-manager:version`: semantic versions without build metadata, and
   their precedence.

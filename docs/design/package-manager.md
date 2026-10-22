@@ -12,8 +12,9 @@ the account's repository, and its artifacts (source archives and prebuilt
 Wasm) are blobs. Packages can be hosted on any atproto PDS.
 
 It builds on [package-manifest.md](package-manifest.md), which defines
-`zena-package.json` (what a package is) and the resolution file,
-`zena-packages.json` (where each package a compilation uses is found).
+packages, workspaces, the manifest every package has
+(`zena-package.json`), and the lockfile that pins a workspace's published
+dependencies (`zena-lock.json`).
 
 ## Overview
 
@@ -23,7 +24,7 @@ It builds on [package-manifest.md](package-manifest.md), which defines
   are for finding packages, always have a scope:
   `router.acme.pkg.zena-lang.dev`, or a domain the package's maintainers
   control.
-- **Local names.** A project gives each dependency a name of its own,
+- **Local names.** A package gives each dependency a name of its own,
   used in imports (`import {Router} from 'router:server'`). A package
   suggests a name, and the importer is free to pick another.
   `zena-package.json` maps local names to DIDs and minimum versions.
@@ -33,7 +34,7 @@ It builds on [package-manifest.md](package-manifest.md), which defines
 - **Artifacts.** Zena source, Wasm components and core modules. An artifact
   too large for one blob is split over several.
 - **Version selection.** Minimal version selection, as in Go modules: the
-  version used is the highest minimum anyone asks for. The resolution file
+  version used is the highest minimum anyone asks for. The lockfile
   records the result, with the CID of every release and artifact.
 - **Immutability.** A publisher can edit their own repository, so the
   package manager makes edits ineffective. Lockfiles pin CIDs, and a
@@ -49,9 +50,9 @@ It builds on [package-manifest.md](package-manifest.md), which defines
   asks for it, and the checksum log checks the attestations. Teams and
   organizations have roles, and who belongs to them stays private until
   they act.
-- **Supply-chain security.** A project gets the bytes it pinned, a release
-  counts only with its maintainers' approval, and no new release reaches a
-  project until someone asks for it. Packages can require a person to
+- **Supply-chain security.** A workspace builds the bytes it pinned, a
+  release counts only with its maintainers' approval, and no new release
+  reaches a workspace until someone asks for it. Packages can require a person to
   approve releases that CI publishes, and a passkey or security key for
   each approval. See [Security and supply-chain attacks](#security-and-supply-chain-attacks).
 - **Discovery and trust.** An index (an atproto AppView) collects packages
@@ -118,8 +119,8 @@ It builds on [package-manifest.md](package-manifest.md), which defines
 ## Package identity
 
 A package is an atproto account, and the account's DID is the package's
-identity. Dependency lists and resolution files name packages by DID, and
-imports by a name each project chooses.
+identity. Manifests and lockfiles name packages by DID, and imports by a
+name each depending package chooses.
 
 How a package's account is created, where it is hosted, who holds its
 keys and who may publish to it is in
@@ -129,19 +130,18 @@ keys and who may publish to it is in
 
 A package has three kinds of name:
 
-- **Its DID** is its identity. Dependency lists, resolution files and
-  pins record it. A `did:plc` is a hash and a `did:web` belongs to a
+- **Its DID** is its identity. Manifests and lockfiles record it. A `did:plc` is a hash and a `did:web` belongs to a
   domain, so DIDs cannot collide, and there is no short one to take.
-- **A local name** is what a project's imports use
-  (`import {Router} from 'router:server'`). Each project chooses its own,
+- **A local name** is what a package's imports use
+  (`import {Router} from 'router:server'`). Each package chooses its own,
   starting from the name the package's profile suggests, so two packages
   that both suggest `router` can be used side by side.
 - **A handle** is for finding a package. `zena add` resolves it to a DID
   once and records the DID, so a handle that later points elsewhere
-  changes no project. The index shows handles.
+  changes nothing that depends on the package. The index shows handles.
 
-Only handles are scarce, and the compiler and the resolution file never
-see them, so the rules below are about finding packages.
+Only handles are scarce, and the compiler and the lockfile never see
+them, so the rules below are about finding packages.
 
 **Scopes on a package host.** A package's handle on a package host always
 has a scope: `<package>.<scope>.<host domain>`, such as
@@ -166,7 +166,7 @@ without one.
 
 **The `@scope/name` shorthand.** `zena add @acme/router` means
 `router.acme.pkg.zena-lang.dev`: the name in the scope on the default
-domain, which a user or a project can change. A scope on another domain
+domain, which a user or a workspace can change. A scope on another domain
 is mapped to it by name, in `zena-package.json` or the user's
 configuration:
 
@@ -201,9 +201,9 @@ handle back. So a scope's names need not belong to packages hosted there,
 and a package that moves to another host can keep its handle.
 
 Renaming a package changes its handle, in the scope's records and with a
-PLC operation, and not its DID, so no project notices. A name freed by a
-rename can be given to another package by the scope's admins. Projects
-that pinned the first package's DID keep it.
+PLC operation, and not its DID, so nothing that depends on it notices. A
+name freed by a rename can be given to another package by the scope's
+admins. Manifests that name the first package's DID keep it.
 
 **Names are DNS labels.** A package name, whether a local name, a
 profile's suggested name or the first label of a handle, is one DNS
@@ -216,7 +216,7 @@ same rules, and a host reserves some, such as `www`.
 ## Records
 
 The record schemas are named under `dev.zena-lang.package`, after the
-project's domain, `zena-lang.dev`. They are published as lexicons at
+Zena project's domain, `zena-lang.dev`. They are published as lexicons at
 that domain. The profile, releases and yanks are below. The maintainers
 record, attestations, and an organization's records are in
 [Hosting, keys and maintainers](#hosting-keys-and-maintainers).
@@ -385,8 +385,9 @@ record keeps the PDS from deleting them as unreferenced.
 
 ### Declaring dependencies
 
-`zena-package.json` gains a `dependencies` map from local name to DID and
-minimum version:
+A package's `zena-package.json` maps each local name to a published
+package's DID and the lowest version it needs, or to a package on disk by
+its directory ([package-manifest.md](package-manifest.md#dependencies)):
 
 ```json
 {
@@ -399,15 +400,17 @@ minimum version:
 ```
 
 `zena add` takes a DID, a handle or `@scope/name` (see
-[Names and scopes](#names-and-scopes)) and adds an entry, with the name the
-package's profile suggests unless one is given.
+[Names and scopes](#names-and-scopes)) and adds an entry to the manifest of
+the package in the current directory, with the name the added package's
+profile suggests unless one is given.
 
 ### Version selection
 
 The package manager uses minimal version selection: for each package, it
-selects the highest of the minimum versions that the project and its
-dependencies require. Suppose the project needs `router` 1.4.2 and `json`
-2.0.1, and `router` 1.4.2 needs `json` 2.1.0. Then `json` 2.1.0 is
+selects the highest of the minimum versions that the workspace's
+packages and their dependencies require. Suppose a workspace package
+needs `router` 1.4.2 and `json` 2.0.1, and `router` 1.4.2 needs `json`
+2.1.0. Then `json` 2.1.0 is
 selected, even if 2.3.0 exists. Nothing newer than someone asked for is
 used until someone asks, by running `zena update`.
 
@@ -423,19 +426,13 @@ Minimal version selection needs no constraint solver. It gives the same
 answer on any machine without a lockfile, because it depends only on the
 releases the dependency graph names.
 
-### The resolution file
+### The lockfile
 
-The resolution file records the selection, and every CID needed to
-reproduce it:
+The workspace's lockfile, `zena-lock.json`, records the selection and
+every CID needed to reproduce it. `zena add` and `zena update` write it:
 
 ```json
 {
-  "packages": {
-    "app": "./src"
-  },
-  "dependencies": {
-    "router": "did:plc:routerrouterrouterrouter@1"
-  },
   "resolved": {
     "did:plc:routerrouterrouterrouter@1": {
       "version": "1.4.2",
@@ -452,17 +449,12 @@ reproduce it:
 }
 ```
 
-- `packages` keeps today's form: local packages by path.
-- `dependencies` maps the project's local names to a package and major
-  version.
-- `resolved` holds one entry per package and major version: the selected
-  version, the CID of its release record and of its source artifact, and
-  how its own local names resolve. This takes the place of the scopes
-  that [package-manifest.md](package-manifest.md#future-scopes) left for
-  later.
-
-The compiler reads the entries and finds each package's files in the
-cache by its source artifact's CID.
+It holds one entry per package and major version: the selected version,
+the CID of its release record and of its source artifact, and how the
+release's own local names resolve. The workspace's own names are in its
+manifests, so the lockfile holds only pins. The compiler reads the
+manifests and the pins, and finds each published package in the cache by
+its source artifact's CID ([package-manifest.md](package-manifest.md#how-the-compiler-finds-packages)).
 
 ## Fetching and verification
 
@@ -491,8 +483,8 @@ log. There are four layers.
 
 ### Lockfiles
 
-The resolution file pins the CID of each release record and artifact. A
-build from an existing resolution file gets those bytes or fails.
+The lockfile pins the CID of each release record and artifact. A build
+from an existing lockfile gets those bytes or fails.
 
 ### The checksum log
 
@@ -556,7 +548,7 @@ The local cache lives in `$ZENA_CACHE_DIR/packages` (by default
 - DID documents, kept for a configurable time.
 
 Every entry is either content-addressed or carries its own proof, so the
-cache can be shared between projects and copied between machines, as CI
+cache can be shared between workspaces and copied between machines, as CI
 caches are.
 
 A proxy serves the same requests as the PDS (`com.atproto.sync.getRecord`
@@ -575,7 +567,7 @@ Self-hosted caches and mirrors are this same proxy. Most of it follows
 from atproto and content addressing. What a proxy adds is answering for
 every DID at one URL, where a PDS serves only its own accounts. The
 Zena project's index runs a proxy that keeps every logged artifact, so a
-release deleted from its PDS stays buildable for the projects that
+release deleted from its PDS stays buildable for the packages that
 depend on it.
 
 ## Hosting, keys and maintainers
@@ -684,8 +676,12 @@ maintainer asked for. See [Names and scopes](#names-and-scopes).
 ### Publishing a release
 
 1. `zena publish` builds the artifacts and the release record. The
-   record's CID is known before it is written, since it is the record's
-   hash.
+   release's dependencies are those in the package's manifest, with each
+   path dependency replaced by the depended-on package's DID and the
+   version the workspace uses
+   ([package-manifest.md](package-manifest.md#publishing-a-workspace-package)).
+   The record's CID is known before it is written, since it is the
+   record's hash.
 2. It calls `dev.zena-lang.host.publish` with the record and the
    artifacts, with a service-auth token as above. The host checks that the
    caller is a maintainer, stores the artifacts as blobs of the package's
@@ -811,12 +807,12 @@ creating packages in a scope, and its own settings.
 
 Who approved each release is public. An attestation is a record in the
 approver's own repository, and the log names the approvers of every
-release. That is what a project needs when an account turns out to have
-been taken: the list of releases it approved. A package a team maintains
+release. That is what a package's dependents need when an account turns
+out to have been taken: the list of releases it approved. A package a team maintains
 is shown as published by the team, with its approvers one step away.
 
 Who belongs to an organization or a team is not public. Membership tells
-an attacker whom to go after, and tells a project nothing it can use. The
+an attacker whom to go after, and tells dependents nothing they can use. The
 accounts most worth hiding are owners and admins who never publish, since
 they decide who is on each team. npm lists every package's maintainers,
 and the maintainers of popular npm packages were phished in
@@ -1011,7 +1007,7 @@ every release anyone has fetched, and checked against the log.
 A host can write anything to the repositories it holds, refuse to serve
 them, and sign PLC operations with its rotation key. What limits it:
 
-- Resolution files pin the CID of every release, so a project that has
+- Lockfiles pin the CID of every release, so a workspace that has
   resolved a release gets those bytes or fails.
 - The log records a release only with its maintainers' attestations, so
   a release the host wrote alone is never recorded. A release changed
@@ -1022,9 +1018,9 @@ them, and sign PLC operations with its rotation key. What limits it:
 - Recovery keys rank above the host's rotation key, so for 72 hours
   maintainers can undo any PLC operation the host signs.
 
-A project relies on a package's maintainers, through their attestations,
-and on the log. It does not choose the package's host, and does not need
-to trust it.
+A package's dependents rely on its maintainers, through their
+attestations, and on the log. They do not choose the package's host, and
+do not need to trust it.
 
 ### The PLC directory
 
@@ -1070,12 +1066,12 @@ their own.
 
 ## Security and supply-chain attacks
 
-Three properties do most of the work against attacks on a project's
+Three properties do most of the work against attacks on a package's
 dependencies:
 
-1. **A project gets the bytes it pinned.** The resolution file pins the
-   CID of every release record and artifact, so nothing anyone does later
-   changes what a resolved project builds.
+1. **A workspace gets the bytes it pinned.** The lockfile pins the CID of
+   every release record and artifact, so nothing anyone does later changes
+   what a resolved workspace builds.
 2. **A release counts only when its maintainers approved it.** The
    checksum log records a release only with attestations from the
    package's threshold of maintainers, each made through the maintainer's
@@ -1083,7 +1079,7 @@ dependencies:
    holds the package's repository cannot publish alone.
 3. **Nothing new arrives unasked.** Minimal version selection uses the
    lowest version anyone in the graph asks for, so a new release,
-   malicious or not, reaches a project only when someone raises a
+   malicious or not, reaches a workspace only when someone raises a
    minimum, usually with `zena update`. Nothing in a package runs when it
    is added, fetched or compiled: Zena packages have no install or build
    scripts. The macros Zena may add ([macros.md](macros.md)) would run at
@@ -1206,19 +1202,19 @@ the log keeps the package's maintainers record, and a release still needs
 those maintainers' attestations. The maintainers cannot publish to it
 either, since they no longer control its repository. They publish under
 a new DID, and a labeler marks the old one `compromised`, naming the new
-DID, so projects can move.
+DID, so dependents can move.
 
 ### Squatting
 
 - **DIDs** cannot be squatted: a `did:plc` is a hash, and a `did:web`
   belongs to its domain.
-- **Local names** cannot be squatted: each project chooses its own.
+- **Local names** cannot be squatted: each package chooses its own.
 - **Handles** can be taken only as scope names on a host's domain, first
   come, first served. A host can reserve scopes for people who show they
   own a matching domain or GitHub organization, and settle disputes, as
   package registries do. An organization that uses its own domain as its
   scope is out of reach. A handle that a scope gives to another package
-  moves no project, since projects record DIDs.
+  moves no dependent, since manifests and lockfiles record DIDs.
 
 ### Confusion
 
@@ -1226,8 +1222,8 @@ DID, so projects can move.
   are ASCII, which rules out look-alike Unicode. `zena add` shows the DID,
   handle, maintainers, and how many packages depend on the package before
   it writes anything, and the index can label handles that look like
-  those of popular packages. After `zena add`, the project refers to the
-  package by DID and by its own local name, so a typo can do harm only at
+  those of popular packages. After `zena add`, the depending package
+  refers to the package by DID and by its own local name, so a typo can do harm only at
   that moment.
 - **Dependency confusion**, where a public package shadows a private one
   of the same name, needs names that resolve by search. Packages are
@@ -1242,10 +1238,10 @@ DID, so projects can move.
   differs from what the package contains. A release lists its
   dependencies, and its source archive holds `zena-package.json`, which
   lists them too. The log and `zena fetch` check that the two agree.
-- **Lockfile injection**, where a pull request changes
-  `zena-packages.json` to pin another DID or CID. `zena fetch --check`
-  recomputes the selection from the `zena-package.json` files and checks
-  each pin against the log, and fails when the resolution file differs,
+- **Lockfile injection**, where a pull request changes `zena-lock.json`
+  to pin another DID or CID. `zena fetch --check` recomputes the selection
+  from the `zena-package.json` files and checks each pin against the log,
+  and fails when the lockfile differs,
   so CI can refuse such a change.
 - **Source that differs from its repository.** Source archives are packed
   deterministically, so anyone can pack the repository at a release's tag
@@ -1257,12 +1253,12 @@ When a maintainer publishes malicious code, or approves it without
 noticing:
 
 - Minimal version selection takes a new release only when someone raises
-  a minimum, so a malicious release reaches the projects that update, not
-  every build. A release found out in that time can be yanked and labeled
-  before most projects take it.
+  a minimum, so a malicious release reaches the workspaces that update,
+  not every build. A release found out in that time can be yanked and
+  labeled before most workspaces take it.
 - Labelers mark malicious releases `malware`, and clients that follow
   them refuse those releases, pinned ones included.
-- A project can follow a labeler that reviews releases, and require
+- A workspace can follow a labeler that reviews releases, and require
   `reviewed` for some or all of its dependencies.
 - A library's source is compiled into the program that uses it, and runs
   with that program's capabilities. A prebuilt component can reach only
@@ -1274,7 +1270,7 @@ A package whose host deletes it, or disappears, can still be fetched from
 caches and proxies, since every artifact is addressed by its CID, and its
 maintainers can move it to another host with a recovery key. The PLC
 directory and the log are needed to resolve new releases. A build from an
-existing resolution file needs neither, given a cache or proxy that holds
+existing lockfile needs neither, given a cache or proxy that holds
 its artifacts.
 
 ## What this needs
@@ -1354,7 +1350,7 @@ use, get M of N through attestations instead.
 
 Members and team records could list DIDs, as the maintainers record does
 for individuals. Anyone could then see who can change a team or publish
-for it, which is what an attacker wants to know, while projects need only
+for it, which is what an attacker wants to know, while dependents need only
 who approved each release. Commitments keep the log's checks, and reveal
 a member only when they act.
 
@@ -1362,14 +1358,14 @@ a member only when they act.
 
 Group signatures or zero-knowledge proofs could show that some member of
 a team approved a release without saying which. They would also hide
-which releases an account approved, which a project needs to know when
+which releases an account approved, which dependents need to know when
 the account turns out to have been taken.
 
 ### Enforcing immutability at the PDS
 
 A PDS that refuses to change release records is easy to build and covers
 packages hosted there. The package's owner can move it to another PDS,
-and its DID and every project's dependency on it follow. A check that
+and its DID and every dependency on it follow. A check that
 holds wherever the package goes has to be made by clients.
 
 ### OCI registries
@@ -1415,6 +1411,3 @@ the cache share files across versions.
   library.
 - **Toolchain requirements.** A release may need to state the oldest Zena
   compiler that builds it.
-- **The resolution file's name.** [package-manifest.md](package-manifest.md)
-  notes that `zena-packages.json` is easily confused with
-  `zena-package.json`.
