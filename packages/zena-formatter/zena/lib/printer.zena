@@ -13,7 +13,7 @@ import {
   Expression, Identifier, NumberLiteral, StringLiteral, BooleanLiteral, NullLiteral, TemplateLiteral, TaggedTemplateExpression, BinaryExpression, UnaryExpression, AssignmentExpression, AsExpression, IsExpression, RangeExpression, PipelineExpression, PipePlaceholder, FunctionExpression, CallExpression, MemberExpression, IndexExpression, ThisExpression, SuperExpression, NewExpression, ArrayLiteral, RecordLiteral, MapLiteral, TupleLiteral, MatchExpression, IfExpression, ThrowExpression, TryExpression, AwaitExpression, // Statements
   Statement, VariableDeclaration, UsingStatement, ShieldedStatement, FunctionDeclaration, ExpressionStatement, BlockStatement, ReturnStatement, YieldStatement, BreakStatement, ContinueStatement, IfStatement, WhileStatement, ForStatement, ForInStatement, ClassDeclaration, InterfaceDeclaration, EnumDeclaration, MixinDeclaration, TypeAliasDeclaration, Decorator, ImportDeclaration, ExportAllDeclaration, ExportFromDeclaration, DeclareFunction, SymbolDeclaration, isSymbolFieldDeclaration, // Patterns
   Pattern, BindingPattern, IdentifierPattern, RecordPattern, TuplePattern, ArrayPattern, RestPattern, AsPattern, ClassPattern, LogicalPattern, AssignmentPattern, AbsencePattern, LiteralPattern, // Type Annotations
-  TypeAnnotation, NamedTypeAnnotation, UnionTypeAnnotation, NullableTypeAnnotation, FunctionTypeAnnotation, LiteralTypeAnnotation, RecordTypeAnnotation, TupleTypeAnnotation, InlineTupleTypeAnnotation, ThisTypeAnnotation, // Direct Node variants
+  TypeAnnotation, NamedTypeAnnotation, UnionTypeAnnotation, NullableTypeAnnotation, FunctionTypeAnnotation, LiteralTypeAnnotation, RecordTypeAnnotation, TupleTypeAnnotation, InlineTypeAnnotation, ThisTypeAnnotation, // Direct Node variants
   TemplateElement, PropertyAssignment, SpreadElement, BindingProperty, LetPatternCondition, TypeParameter, Parameter, CaseClassParam, SealedVariant, FieldDefinition, MethodDefinition, AccessorDeclaration, SetterInfo, FieldInitializer, SuperInitializer, MethodSignature, AccessorSignature, CatchClause, PropertySignature, SymbolPropertyName,
 } from 'zena-compiler:ast';
 import {
@@ -2015,16 +2015,26 @@ function printTypeAnnotation(ann: TypeAnnotation): Doc {
     let typeDocs = new Array<Doc>();
     var i = 0;
     while (i < types.length) {
-      typeDocs.push(printTypeAnnotation(types[i]));
+      // `inline` takes every member after it, so one that stops short of
+      // the end was parenthesized.
+      let member = types[i];
+      let doc = printTypeAnnotation(member);
+      if (member is InlineTypeAnnotation && i < types.length - 1) {
+        typeDocs.push(concat(docs3(text('('), doc, text(')'))));
+      } else {
+        typeDocs.push(doc);
+      }
       i += 1;
     }
     join(text(' | '), typeDocs)
   }
   case NullableTypeAnnotation {typeAnnotation}: {
-    // `?` binds tighter than `|` and function arrows, so those need parens
-    // to survive a round-trip; so does a nested `?` (`??` lexes as one token).
+    // `?` binds tighter than `|`, function arrows and `inline`, so those
+    // need parens to survive a round-trip; so does a nested `?` (`??`
+    // lexes as one token).
     match (typeAnnotation) {
       case UnionTypeAnnotation {}: concat(docs3(text('('), printTypeAnnotation(typeAnnotation), text(')?')))
+      case InlineTypeAnnotation {}: concat(docs3(text('('), printTypeAnnotation(typeAnnotation), text(')?')))
       case FunctionTypeAnnotation {}: concat(docs3(text('('), printTypeAnnotation(typeAnnotation), text(')?')))
       case NullableTypeAnnotation {}: concat(docs3(text('('), printTypeAnnotation(typeAnnotation), text(')?')))
       case _: concat(docs2(printTypeAnnotation(typeAnnotation), text('?')))
@@ -2084,15 +2094,7 @@ function printTypeAnnotation(ann: TypeAnnotation): Doc {
     }
     concat(docs3(text('('), join(text(', '), eDocs), text(')')))
   }
-  case InlineTupleTypeAnnotation {elementTypes}: {
-    let eDocs = new Array<Doc>();
-    var i = 0;
-    while (i < elementTypes.length) {
-      eDocs.push(printTypeAnnotation(elementTypes[i]));
-      i += 1;
-    }
-    concat(docs3(text('('), join(text(', '), eDocs), text(')')))
-  }
+  case InlineTypeAnnotation {typeAnnotation}: concat(docs2(text('inline '), printTypeAnnotation(typeAnnotation)))
   case ThisTypeAnnotation {}: text('this')
 };
 }
@@ -2235,7 +2237,7 @@ function printNode(node: Node): Doc {
   case LiteralTypeAnnotation {}: printTypeAnnotation(node as TypeAnnotation)
   case RecordTypeAnnotation {}: printTypeAnnotation(node as TypeAnnotation)
   case TupleTypeAnnotation {}: printTypeAnnotation(node as TypeAnnotation)
-  case InlineTupleTypeAnnotation {}: printTypeAnnotation(node as TypeAnnotation)
+  case InlineTypeAnnotation {}: printTypeAnnotation(node as TypeAnnotation)
   case ThisTypeAnnotation {}: printTypeAnnotation(node as TypeAnnotation)
   // Direct variants
   case LetPatternCondition {pattern, init}: {

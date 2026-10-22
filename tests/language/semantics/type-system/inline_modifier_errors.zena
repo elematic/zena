@@ -1,0 +1,42 @@
+// @mode: check
+// What `inline` cannot apply to. Each of these is an error rather than a
+// silent no-op, so a reader can trust that `inline` always means "unboxed".
+
+class Box<T> {
+  value: T;
+  new(this.value);
+}
+
+type Point = {x: i32, y: i32};
+
+// A primitive is never boxed.
+export let primitive = (): inline i32 => 0; // @error: 'inline' applies to tuple types and unions of them, not 'i32'.
+
+// A class instance is a reference by definition.
+export let klass = (): inline String => ''; // @error: 'inline' applies to tuple types and unions of them, not 'String'.
+
+// A type parameter may stand for anything, including a class.
+export let param = <T>(x: T): inline T => x; // @error: 'inline' cannot apply to type parameter 'T': its argument may not be a tuple.
+
+// Inline records are planned (#371).
+export let record = (): inline Point => ({x: 1, y: 2}); // @error: Inline record types are not supported yet.
+
+// An existential's shape is not known, so it has no layout to unbox.
+export let existential = (): inline {x: i32, ...} => ({x: 1}); // @error: 'inline' cannot apply to an existential record type.
+
+// `null` has no slots: an inline value is never absent.
+export let nullable = (): inline (i32, i32)? => null; // @error: 'inline' applies to tuple types and unions of them, not 'null'.
+
+// A type argument is storage, not a return position.
+export let typeArg = (): Box<inline (i32, i32)> => { throw new Error('unreachable'); }; // @error: Inline tuple types can only appear in function return types, not here.
+
+// A plain tuple's element is storage too: `inline` nests only inside an
+// inline value.
+export let nested = (): (String, inline (i32, i32)) => ('', (1, 2)); // @error: Inline tuple types can only appear in function return types, not here.
+
+// A function type's parameter is not a return position.
+export let callback = (): ((p: inline (i32, i32)) => i32) => (p) => 0; // @error: Inline tuple types can only appear in function return types, not here.
+
+// Legal by design, once codegen flattens the inner tuple's slots into the
+// outer one's (#371; execution/tuples/inline_nested.zena).
+export let nestedInline = (): inline (i32, inline (i32, i32)) => (1, (2, 3)); // @error: An inline tuple inside an inline tuple is not supported yet.

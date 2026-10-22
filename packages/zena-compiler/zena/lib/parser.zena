@@ -49,7 +49,7 @@ import {
   LiteralTypeAnnotation,
   RecordTypeAnnotation,
   TupleTypeAnnotation,
-  InlineTupleTypeAnnotation,
+  InlineTypeAnnotation,
   ThisTypeAnnotation,
   PropertySignature,
   TypeParameter,
@@ -3009,18 +3009,11 @@ export final class Parser {
       return new LiteralTypeAnnotation(new StringLiteral(token.value, this.#makeLocation(startToken)), this.#makeLocation(startToken));
     }
     
-    // inline tuple type: inline (T1, T2)
-    if (this.#check(TokenType.Inline)) {
-      this.#advance();
-      this.#consume(TokenType.LParen, "Expected '(' after 'inline'");
-      let elementTypes = growable<TypeAnnotation>([
-        this.#parseTypeAnnotation(),
-      ]);
-      while (this.#match(TokenType.Comma) && !this.#check(TokenType.RParen)) {
-        elementTypes.push(this.#parseTypeAnnotation());
-      }
-      this.#consume(TokenType.RParen, "Expected ')' after inline tuple type elements");
-      return new InlineTupleTypeAnnotation(elementTypes, this.#makeLocation(startToken));
+    // `inline T`: the operand is a whole union, so `inline A | B` is
+    // `inline (A | B)`, and so is `A | inline B | C` from `B` on.
+    if (this.#match(TokenType.Inline)) {
+      let operand = this.#parseTypeAnnotation();
+      return new InlineTypeAnnotation(operand, this.#makeLocation(startToken));
     }
     
     // Parenthesized: function type or tuple type

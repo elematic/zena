@@ -1,0 +1,48 @@
+// @mode: check
+// `inline` is a prefix modifier on a value type: a tuple, a union of tuples,
+// or a name for either. It takes the whole union to its right, so one
+// modifier covers every member, and it unboxes only the value it is written
+// on — a tuple element stays a reference unless it says `inline` too.
+//
+// No @error directives: the misuse cases are in inline_modifier_errors.zena,
+// so this file fails if any of these forms is rejected.
+
+type Pair = (i32, i32);
+type Checked<T, E> = (true, T, _) | (false, _, E);
+
+export let pair = (): inline Pair => (1, 2);
+
+export let checkedSub = (a: i32, b: i32): inline Checked<i32, String> => {
+  if (b > a) {
+    return (false, _, 'underflow');
+  }
+  return (true, a - b, _);
+};
+
+export let either = (flag: boolean): inline (true, i32, _) | (false, _, f64) => {
+  if (flag) {
+    return (true, 1, _);
+  }
+  return (false, _, 2.0);
+};
+
+// The old spelling, `inline` on every member, still means the same thing.
+export let legacy = (): inline (true, i32, _) | inline (false, _, f64) => (true, 1, _);
+
+// Parentheses around the operand group; they do not make a one-tuple.
+export let grouped = (): inline ((i32, i32)) => (1, 2);
+
+// Shallow: the inner tuple is a reference held in the second slot.
+export let shallow = (): inline (i32, (i32, i32)) => (1, (2, 3));
+
+// A function type's result is a return position, and inline-ness is part
+// of the function type.
+export let makePair: () => inline (i32, i32) = () => (1, 2);
+
+export let okOr = (a: i32, b: i32): i32 => {
+  if (let (true, v, _) = checkedSub(a, b)) {
+    return v;
+  }
+  let (x, y) = pair();
+  return x + y;
+};

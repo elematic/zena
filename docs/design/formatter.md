@@ -857,16 +857,16 @@ Track each AST node type and its print function.
 
 **Type Annotations**
 
-| AST Node                    | Print function         | Status |
-| --------------------------- | ---------------------- | ------ |
-| `NamedTypeAnnotation`       | `printNamedType`       | Done   |
-| `UnionTypeAnnotation`       | `printUnionType`       | Done   |
-| `FunctionTypeAnnotation`    | `printFunctionType`    | Done   |
-| `RecordTypeAnnotation`      | `printRecordType`      | Done   |
-| `TupleTypeAnnotation`       | `printTupleType`       | Done   |
-| `InlineTupleTypeAnnotation` | `printInlineTupleType` | Done   |
-| `LiteralTypeAnnotation`     | `printLiteralType`     | Done   |
-| `ThisTypeAnnotation`        | `printThisType`        | Done   |
+| AST Node                 | Print function      | Status |
+| ------------------------ | ------------------- | ------ |
+| `NamedTypeAnnotation`    | `printNamedType`    | Done   |
+| `UnionTypeAnnotation`    | `printUnionType`    | Done   |
+| `FunctionTypeAnnotation` | `printFunctionType` | Done   |
+| `RecordTypeAnnotation`   | `printRecordType`   | Done   |
+| `TupleTypeAnnotation`    | `printTupleType`    | Done   |
+| `InlineTypeAnnotation`   | `printInlineType`   | Done   |
+| `LiteralTypeAnnotation`  | `printLiteralType`  | Done   |
+| `ThisTypeAnnotation`     | `printThisType`     | Done   |
 
 ---
 

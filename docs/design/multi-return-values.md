@@ -111,6 +111,36 @@ let pair = (): (i32, i32) => (1, 2);
 - `(i32, i32)` - Boxed tuple, heap-allocated struct
 - `inline (i32, i32)` - Inline tuple, exists only on WASM stack
 
+### The `inline` Modifier (#371)
+
+`inline` is a prefix modifier whose operand is a whole union:
+`inline A | B` is `inline (A | B)`. The parser records it as
+`InlineTypeAnnotation(operand)`, and the checker converts the resolved
+operand to its unboxed form (`inlineFormOf`): a tuple becomes an
+`InlineTupleType`, a union converts member by member, and an alias
+converts its target. So `inline Pair` works when `Pair` names a boxed
+tuple, and `inline (true, T, _) | (false, _, E)` needs one modifier.
+
+Any other operand is an error rather than a no-op: a primitive, a class,
+a type parameter, `null`, an existential record, and, until inline
+records are implemented (#371), a closed record. If one member of a union fails, the whole type becomes an
+error type, because half an inline union would only produce follow-on
+errors.
+
+Only return positions accept an inline type. Every other position is
+resolved as a position of its own and rejects one at its top: type
+arguments, record fields, function parameters and the elements of a
+boxed tuple. Union members and a `?` operand are not positions of their
+own; the enclosing type is checked as a whole. The elements of an inline
+tuple are the one place `inline` nests. Codegen does not flatten a nested
+inline tuple yet, so the checker reports it. The inner tuple's slots
+will become part of the outer tuple's once codegen derives an inline
+type's slot layout from its members (#371).
+
+Inline-ness is part of a function type. An unannotated arrow written
+where an inline result is expected takes that result type, because
+inference never produces an inline type.
+
 ### Destructuring at Call Sites
 
 ```zena

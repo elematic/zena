@@ -16,7 +16,7 @@
 import {
   TypeAnnotation, NamedTypeAnnotation, UnionTypeAnnotation,
   NullableTypeAnnotation, FunctionTypeAnnotation, LiteralTypeAnnotation,
-  RecordTypeAnnotation, TupleTypeAnnotation, InlineTupleTypeAnnotation,
+  RecordTypeAnnotation, TupleTypeAnnotation, InlineTypeAnnotation,
   ThisTypeAnnotation, StringLiteral, NumberLiteral,
   BooleanLiteral, NullLiteral, Node,
 } from 'zena-compiler:ast';
@@ -107,10 +107,9 @@ function renderAnnotation(out: Render, annotation: TypeAnnotation): void {
       }
       out.write(')');
     }
-    case InlineTupleTypeAnnotation {elementTypes}: {
-      out.write('inline (');
-      renderJoined(out, elementTypes, ', ');
-      out.write(')');
+    case InlineTypeAnnotation {typeAnnotation}: {
+      out.write('inline ');
+      renderAnnotation(out, typeAnnotation);
     }
     case ThisTypeAnnotation {}: out.write('this')
   }
@@ -137,6 +136,7 @@ function renderNullable(out: Render, inner: TypeAnnotation): void {
   let needsParens = match (inner) {
     case UnionTypeAnnotation {}: true
     case FunctionTypeAnnotation {}: true
+    case InlineTypeAnnotation {}: true
     case _: false
   };
   if (needsParens) {

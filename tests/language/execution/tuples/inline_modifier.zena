@@ -1,0 +1,54 @@
+// @mode: run
+// @result: 42
+// `inline` on an alias and on a union written once, compiled to multi-value
+// returns.
+
+type Pair = (i32, i32);
+type Checked<T, E> = (true, T, _) | (false, _, E);
+
+let pair = (a: i32): inline Pair => (a, a * 2);
+
+let checkedSub = (a: i32, b: i32): inline Checked<i32, String> => {
+  if (b > a) {
+    return (false, _, 'underflow');
+  }
+  return (true, a - b, _);
+};
+
+let either = (flag: boolean): inline (true, i32, _) | (false, _, f64) => {
+  if (flag) {
+    return (true, 10, _);
+  }
+  return (false, _, 2.5);
+};
+
+// The second slot is a reference: `inline` is shallow.
+let shallow = (): inline (i32, (i32, i32)) => (1, (2, 3));
+
+// Inline-ness is part of a function type, and an arrow written where one is
+// expected returns it.
+let makePair: (n: i32) => inline Pair = (n) => (n, n + 1);
+
+export let main = (): i32 => {
+  var total = 0;
+  let (x, y) = pair(3);
+  total += x + y; // 9
+  if (let (true, v, _) = checkedSub(20, 5)) {
+    total += v; // 24
+  }
+  if (let (false, _, message) = checkedSub(1, 5)) {
+    total += message.length; // 33
+  }
+  if (let (true, n, _) = either(true)) {
+    total += n; // 43
+  }
+  if (let (false, _, f) = either(false)) {
+    total += (f * 2.0) as i32; // 48
+  }
+  let (a, inner) = shallow();
+  let (b, c) = inner;
+  total += a + b + c - 12; // 42
+  let (p, q) = makePair(4);
+  total += p + q - 9; // 42
+  return total;
+};

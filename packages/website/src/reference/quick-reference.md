@@ -416,7 +416,7 @@ good performance since stack values are prime candidates for register
 allocation.
 
 ```zena
-let divide = (a: i32, b: i32): (i32, i32) => {
+let divide = (a: i32, b: i32): inline (i32, i32) => {
   return (a / b, a % b);
 };
 
@@ -426,12 +426,25 @@ let (quot, rem) = divide(17, 5);  // quot=3, rem=2
 Multi-value returns must be immediately destructured at the call site—you cannot
 store them in a variable.
 
+`inline` applies to a tuple type, a union of tuples, or a name for either, and
+takes the whole union to its right:
+
+```zena
+type Pair = (i32, i32);
+let pair = (): inline Pair => (1, 2);
+let find = (): inline (true, i32) | (false, _) => (false, _);
+```
+
+It is an error on anything that cannot be unboxed: a primitive, a class, a type
+parameter, `null`, or a record (inline records are planned). `inline` is
+shallow: in `inline (i32, (i32, i32))` the inner tuple is still boxed.
+
 #### Use Case: Iterators
 
 The `Iterator` interface uses multi-value returns for efficient iteration:
 
 ```zena
-type Step<T> = inline (0, _, _) | inline (1, T, _);  // Done | Ready(value)
+type Step<T> = inline (0, _, _) | (1, T, _);  // Done | Ready(value)
 
 interface Iterator<T> {
   next(): Step<T>;
