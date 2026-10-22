@@ -1,36 +1,28 @@
 /**
- * Fetching pinned packages, against a `zena:http` server in the same
- * program that plays the PLC directory and the package's PDS. The PDS
- * serves a repository the test builds and signs, so the proof checked is
- * a real one.
+ * Fetching pinned packages, against `package-manager:testing/fake-pds`: a
+ * `zena:http` server in the same program that plays the PLC directory and
+ * the package's PDS, and serves a repository signed with the account's
+ * key, so the proof checked is a real one.
  */
 
 import {suite, test} from 'zena:test';
-import {equal, isFalse, isTrue} from 'zena:assert';
+import {equal, isFalse, isNull, isTrue} from 'zena:assert';
 import {Future, runFuture} from 'zena:async';
-import {HashMap, OrderedHashMap} from 'zena:collections';
-import {p256} from 'zena:crypto';
+import {OrderedHashMap} from 'zena:collections';
 import {hex} from 'zena:encoding';
 import {existsSync, listDirSync, readFileSync} from 'zena:fs';
-import {App, Server} from 'zena:http';
 import {monotonic} from 'zena:time';
-import {BlockMap, writeCar} from 'atproto:car';
 import {encodeCbor} from 'atproto:cbor';
 import {Cid} from 'atproto:cid';
-import {BlobRef, BytesValue, IntValue, LinkValue, MapValue, NullValue, StringValue, newMap} from 'atproto:data';
-import {KeyType, formatMultikey, publicKeyFor} from 'atproto:didkey';
-import {IdentityResolver} from 'atproto:identity';
-import {buildMst} from 'atproto:mst';
+import {BlobRef, newMap} from 'atproto:data';
 import {packSource} from 'package-manager:archive';
 import {PackageCache} from 'package-manager:cache';
-import {FetchError, fetchPackage} from 'package-manager:fetch';
-import {Artifact, Dependency, RELEASE_TYPE, Release, SOURCE} from 'package-manager:records';
+import {FetchError, fetchAll, fetchPackage} from 'package-manager:fetch';
+import {Artifact, Dependency, Release, SOURCE} from 'package-manager:records';
 import {Pin, readPins} from 'package-manager:resolution';
+import {DID, FakePds, didDocument} from 'package-manager:testing/fake-pds';
 import {Version} from 'package-manager:version';
 
-let DID = 'did:plc:routerrouterrouterrouter';
-/** The P-256 key from RFC 6979, appendix A.2.5. */
-let KEY = hex.decode('c9afa9d845ba75166b5c215767b1d6934e50c3db36e89b127b8a622b120f6721');
 let OTHER_KEY = hex.decode('0000000000000000000000000000000000000000000000000000000000000001');
 
 function bytesOf(text: String) {
@@ -41,73 +33,10 @@ function bytesOf(text: String) {
   return out;
 }
 
-/** What the fake PLC directory and PDS serve. */
-final class World {
-  /** The DID document of DID, as JSON text. */
-  var didDocument = '';
-  /** The getRecord answer for every release. */
-  var recordCar = new FixedArray<u8>(0, 0 as u8);
-  /** The blobs the PDS has, by CID. */
-  blobs = new HashMap<String, FixedArray<u8>>();
-  /** How many requests the server has answered. */
-  var requests = 0;
-}
-
-function startServer(world: World) {
-  let app = new App();
-  app.use(async (req, res, next): Future<void> => {
-    world.requests += 1;
-    let path = req.path;
-    if (path == `/plc/${DID}`) {
-      res.type = 'application/json';
-      res.body = world.didDocument;
-    } else if (path == '/xrpc/com.atproto.sync.getRecord') {
-      res.type = 'application/vnd.ipld.car';
-      res.body = world.recordCar;
-    } else if (path == '/xrpc/com.atproto.sync.getBlob') {
-      let cid = req.url.searchParams().get('cid') ?? '';
-      if (let (true, blob) = world.blobs.get(cid)) {
-        res.type = 'application/octet-stream';
-        res.body = blob;
-      } else {
-        res.statusCode = 400;
-        res.type = 'application/json';
-        res.body = '{"error":"BlobNotFound","message":"no such blob"}';
-      }
-    } else {
-      res.statusCode = 400;
-      res.type = 'application/json';
-      res.body = '{"error":"InvalidRequest","message":"no such method"}';
-    }
-  });
-  let server = new Server(app, 0 as u16);
-  server.start();
-  return server;
-}
-
-function originOf(server: Server) {
-  return `http://127.0.0.1:${server.port as i32}`;
-}
-
-/** DID's document, with its PDS at `origin` and the public key of `key`. */
-function didDocument(origin: String, key: FixedArray<u8> = KEY) {
-  let multikey = formatMultikey(publicKeyFor(KeyType.P256, key));
-  return `{
-    "id": "${DID}",
-    "verificationMethod": [
-      {"id": "${DID}#atproto", "type": "Multikey", "controller": "${DID}", "publicKeyMultibase": "${multikey}"}
-    ],
-    "service": [
-      {"id": "#atproto_pds", "type": "AtprotoPersonalDataServer", "serviceEndpoint": "${origin}"}
-    ]
-  }`;
-}
-
-function resolverFor(origin: String) {
-  let resolver = new IdentityResolver();
-  resolver.plcDirectory = `${origin}/plc`;
-  resolver.originOf = (host) => origin;
-  return resolver;
+function startedPds() {
+  let pds = new FakePds();
+  pds.start();
+  return pds;
 }
 
 /** The package's source files. */
@@ -116,25 +45,6 @@ function sourceFiles() {
   files['match.zena'] = bytesOf('export function route(): i32 { return 42; }\n');
   files['util/strings.zena'] = bytesOf("export let name = 'router';\n");
   return files;
-}
-
-/**
- * The getRecord answer for `record` at `rkey` in DID's repository: a
- * one-record repository whose commit is signed with KEY.
- */
-function proofFor(record: MapValue, rkey: String) {
-  let blocks = new BlockMap();
-  let recordCid = blocks.add(record);
-  let root = buildMst(new FixedArray<String>(1, `${RELEASE_TYPE}/${rkey}`),
-      new FixedArray<Cid>(1, recordCid), blocks);
-  let commit = newMap();
-  commit.entries['did'] = new StringValue(DID);
-  commit.entries['version'] = new IntValue(3 as i64);
-  commit.entries['data'] = new LinkValue(root);
-  commit.entries['rev'] = new StringValue('3l3qo2vutsw2b');
-  commit.entries['prev'] = new NullValue();
-  commit.entries['sig'] = new BytesValue(p256.sign(KEY, encodeCbor(commit)));
-  return writeCar(new FixedArray<Cid>(1, blocks.add(commit)), blocks);
 }
 
 /** A release of 1.4.2 with these artifacts and dependencies. */
@@ -147,13 +57,6 @@ function release(artifacts: FixedArray<Artifact>,
 function sourceArtifact(archive: FixedArray<u8>) {
   return Artifact.whole(SOURCE,
       new BlobRef(Cid.forBlob(archive), 'application/vnd.ipld.car', archive.length as i64));
-}
-
-/** Has `world` serve `release` as 1.4.2 and returns the CID of its record. */
-function publish(world: World, record: Release) {
-  let value = record.toValue();
-  world.recordCar = proofFor(value, '1.4.2');
-  return Cid.forDagCbor(encodeCbor(value));
 }
 
 /** The pin a resolution file would hold for 1.4.2. */
@@ -173,10 +76,10 @@ function freshCache() {
 }
 
 /** What fetching `pin` throws, as `FetchError: <message>` when it is a FetchError. */
-function failure(pin: Pin, cache: PackageCache, origin: String): String {
+function failure(pin: Pin, cache: PackageCache, pds: FakePds): String {
   return runFuture((async (): Future<String> => {
     try {
-      await fetchPackage(pin, cache, resolverFor(origin));
+      await fetchPackage(pin, cache, pds.resolver());
       return 'no error';
     } catch (e) {
       return if (e is FetchError) `FetchError: ${e.message}` else e.message;
@@ -186,17 +89,14 @@ function failure(pin: Pin, cache: PackageCache, origin: String): String {
 
 export let tests = suite('package-manager:fetch', () => {
   test('fetches a release and unpacks its source into the cache', (ctx) => {
-    let world = new World();
-    let server = startServer(world);
-    let origin = originOf(server);
-    world.didDocument = didDocument(origin);
+    let pds = startedPds();
     let archive = packSource(sourceFiles());
-    world.blobs[Cid.forBlob(archive).toString()] = archive;
-    let recordCid = publish(world, release(new FixedArray<Artifact>(1, sourceArtifact(archive))));
+    pds.addBlob(archive);
+    let recordCid = pds.publish(release(new FixedArray<Artifact>(1, sourceArtifact(archive))));
     let pin = pinFor(recordCid, Cid.forBlob(archive));
     let cache = freshCache();
 
-    isTrue(runFuture(fetchPackage(pin, cache, resolverFor(origin))));
+    isTrue(runFuture(fetchPackage(pin, cache, pds.resolver())));
     let dir = cache.sourceDir(pin.source);
     equal(readFileSync(`${dir}/match.zena`), 'export function route(): i32 { return 42; }\n');
     equal(readFileSync(`${dir}/util/strings.zena`), "export let name = 'router';\n");
@@ -204,133 +104,137 @@ export let tests = suite('package-manager:fetch', () => {
     equal(listDirSync(`${cache.root}/tmp`).length, 0);
 
     // A second fetch finds it in the cache and asks the network nothing.
-    let requests = world.requests;
-    isFalse(runFuture(fetchPackage(pin, cache, resolverFor(origin))));
-    equal(world.requests, requests);
-    server.close();
+    let requests = pds.requests;
+    isFalse(runFuture(fetchPackage(pin, cache, pds.resolver())));
+    equal(pds.requests, requests);
+    pds.close();
   });
 
   test('fetches a source archive uploaded in parts', (ctx) => {
-    let world = new World();
-    let server = startServer(world);
-    let origin = originOf(server);
-    world.didDocument = didDocument(origin);
+    let pds = startedPds();
     let archive = packSource(sourceFiles());
     let half = archive.length >> 1;
     let first = archive.slice(0, half);
     let second = archive.slice(half, archive.length);
-    world.blobs[Cid.forBlob(first).toString()] = first;
-    world.blobs[Cid.forBlob(second).toString()] = second;
+    pds.addBlob(first);
+    pds.addBlob(second);
     let parts = new FixedArray<BlobRef>(2, new BlobRef(Cid.forBlob(first), 'application/octet-stream', first.length as i64));
     parts[1] = new BlobRef(Cid.forBlob(second), 'application/octet-stream', second.length as i64);
     let artifact = Artifact.inParts(SOURCE, parts, Cid.forBlob(archive), archive.length as i64);
-    let recordCid = publish(world, release(new FixedArray<Artifact>(1, artifact)));
+    let recordCid = pds.publish(release(new FixedArray<Artifact>(1, artifact)));
     let cache = freshCache();
 
-    isTrue(runFuture(fetchPackage(pinFor(recordCid, Cid.forBlob(archive)), cache, resolverFor(origin))));
+    isTrue(runFuture(fetchPackage(pinFor(recordCid, Cid.forBlob(archive)), cache, pds.resolver())));
     isTrue(existsSync(`${cache.sourceDir(Cid.forBlob(archive))}/match.zena`));
-    server.close();
+    pds.close();
   });
 
   test('refuses a release that changed after it was pinned', (ctx) => {
-    let world = new World();
-    let server = startServer(world);
-    let origin = originOf(server);
-    world.didDocument = didDocument(origin);
+    let pds = startedPds();
     let archive = packSource(sourceFiles());
-    world.blobs[Cid.forBlob(archive).toString()] = archive;
-    publish(world, release(new FixedArray<Artifact>(1, sourceArtifact(archive))));
+    pds.addBlob(archive);
+    pds.publish(release(new FixedArray<Artifact>(1, sourceArtifact(archive))));
     let pinned = Cid.forDagCbor(encodeCbor(newMap()));
     let cache = freshCache();
 
-    let message = failure(pinFor(pinned, Cid.forBlob(archive)), cache, origin);
+    let message = failure(pinFor(pinned, Cid.forBlob(archive)), cache, pds);
     isTrue(message.startsWith('FetchError: ') && message.contains('changed after it was pinned'), message);
     isFalse(existsSync(cache.sourceDir(Cid.forBlob(archive))));
-    server.close();
+    pds.close();
   });
 
   test('refuses a release whose source is not the pinned one', (ctx) => {
-    let world = new World();
-    let server = startServer(world);
-    let origin = originOf(server);
-    world.didDocument = didDocument(origin);
+    let pds = startedPds();
     let archive = packSource(sourceFiles());
-    world.blobs[Cid.forBlob(archive).toString()] = archive;
-    let recordCid = publish(world, release(new FixedArray<Artifact>(1, sourceArtifact(archive))));
+    pds.addBlob(archive);
+    let recordCid = pds.publish(release(new FixedArray<Artifact>(1, sourceArtifact(archive))));
     let other = Cid.forBlob(bytesOf('another archive'));
 
-    let message = failure(pinFor(recordCid, other), freshCache(), origin);
+    let message = failure(pinFor(recordCid, other), freshCache(), pds);
     isTrue(message.startsWith('FetchError: ') && message.contains('pins'), message);
-    server.close();
+    pds.close();
   });
 
   test('refuses a source archive that does not match its CID', (ctx) => {
-    let world = new World();
-    let server = startServer(world);
-    let origin = originOf(server);
-    world.didDocument = didDocument(origin);
+    let pds = startedPds();
     let archive = packSource(sourceFiles());
-    world.blobs[Cid.forBlob(archive).toString()] = packSource(new OrderedHashMap<String, FixedArray<u8>>());
-    let recordCid = publish(world, release(new FixedArray<Artifact>(1, sourceArtifact(archive))));
+    pds.blobs[Cid.forBlob(archive).toString()] = packSource(new OrderedHashMap<String, FixedArray<u8>>());
+    let recordCid = pds.publish(release(new FixedArray<Artifact>(1, sourceArtifact(archive))));
     let cache = freshCache();
 
-    let message = failure(pinFor(recordCid, Cid.forBlob(archive)), cache, origin);
+    let message = failure(pinFor(recordCid, Cid.forBlob(archive)), cache, pds);
     isTrue(message.contains('does not match its CID'), message);
     isFalse(existsSync(cache.sourceDir(Cid.forBlob(archive))));
-    server.close();
+    pds.close();
   });
 
   test('refuses a release the account did not sign', (ctx) => {
-    let world = new World();
-    let server = startServer(world);
-    let origin = originOf(server);
-    world.didDocument = didDocument(origin, OTHER_KEY);
+    let pds = startedPds();
+    pds.didDocument = didDocument(pds.origin, OTHER_KEY);
     let archive = packSource(sourceFiles());
-    world.blobs[Cid.forBlob(archive).toString()] = archive;
-    let recordCid = publish(world, release(new FixedArray<Artifact>(1, sourceArtifact(archive))));
+    pds.addBlob(archive);
+    let recordCid = pds.publish(release(new FixedArray<Artifact>(1, sourceArtifact(archive))));
 
-    let message = failure(pinFor(recordCid, Cid.forBlob(archive)), freshCache(), origin);
+    let message = failure(pinFor(recordCid, Cid.forBlob(archive)), freshCache(), pds);
     isFalse(message == 'no error', message);
-    server.close();
+    pds.close();
   });
 
   test('refuses a version the repository does not have', (ctx) => {
-    let world = new World();
-    let server = startServer(world);
-    let origin = originOf(server);
-    world.didDocument = didDocument(origin);
+    let pds = startedPds();
     let archive = packSource(sourceFiles());
-    world.blobs[Cid.forBlob(archive).toString()] = archive;
-    let recordCid = publish(world, release(new FixedArray<Artifact>(1, sourceArtifact(archive))));
+    pds.addBlob(archive);
+    let recordCid = pds.publish(release(new FixedArray<Artifact>(1, sourceArtifact(archive))));
 
-    let message = failure(pinFor(recordCid, Cid.forBlob(archive), '1.4.3'), freshCache(), origin);
+    let message = failure(pinFor(recordCid, Cid.forBlob(archive), '1.4.3'), freshCache(), pds);
     isTrue(message.startsWith('FetchError: ') && message.contains('no release 1.4.3'), message);
-    server.close();
+    pds.close();
   });
 
   test('refuses dependencies the resolution file maps differently', (ctx) => {
-    let world = new World();
-    let server = startServer(world);
-    let origin = originOf(server);
-    world.didDocument = didDocument(origin);
+    let pds = startedPds();
     let archive = packSource(sourceFiles());
-    world.blobs[Cid.forBlob(archive).toString()] = archive;
+    pds.addBlob(archive);
     let json = new Dependency('did:web:json.example.com', Version.parse('2.1.0'), 'json');
-    let recordCid = publish(world, release(new FixedArray<Artifact>(1, sourceArtifact(archive)),
+    let recordCid = pds.publish(release(new FixedArray<Artifact>(1, sourceArtifact(archive)),
         new FixedArray<Dependency>(1, json)));
     let source = Cid.forBlob(archive);
 
     let wrongMajor = failure(pinFor(recordCid, source, '1.4.2',
-        ', "dependencies": {"json": "did:web:json.example.com@3"}'), freshCache(), origin);
+        ', "dependencies": {"json": "did:web:json.example.com@3"}'), freshCache(), pds);
     isTrue(wrongMajor.startsWith('FetchError: ') && wrongMajor.contains('@3'), wrongMajor);
-    let missing = failure(pinFor(recordCid, source), freshCache(), origin);
+    let missing = failure(pinFor(recordCid, source), freshCache(), pds);
     isTrue(missing.startsWith('FetchError: ') && missing.contains('not in zena-packages.json'), missing);
     let extra = failure(pinFor(recordCid, source, '1.4.2',
         ', "dependencies": {"json": "did:web:json.example.com@2", "more": "did:web:more.example.com@1"}'),
-        freshCache(), origin);
+        freshCache(), pds);
     isTrue(extra.startsWith('FetchError: '), extra);
     isTrue(runFuture(fetchPackage(pinFor(recordCid, source, '1.4.2',
-        ', "dependencies": {"json": "did:web:json.example.com@2"}'), freshCache(), resolverFor(origin))));
-    server.close();
+        ', "dependencies": {"json": "did:web:json.example.com@2"}'), freshCache(), pds.resolver())));
+    pds.close();
+  });
+
+  test('fetches every pin, and reports each failure without stopping', (ctx) => {
+    let pds = startedPds();
+    let archive = packSource(sourceFiles());
+    pds.addBlob(archive);
+    let recordCid = pds.publish(release(new FixedArray<Artifact>(1, sourceArtifact(archive))));
+    let good = pinFor(recordCid, Cid.forBlob(archive));
+    let changed = pinFor(Cid.forDagCbor(encodeCbor(newMap())), Cid.forBlob(archive));
+    let pins = new GrowableArray<Pin>();
+    pins.push(changed);
+    pins.push(good);
+    pins.push(good);
+
+    let results = runFuture(fetchAll(pins, freshCache(), pds.resolver()));
+    equal(results.length, 3);
+    isFalse(results[0].fetched);
+    isTrue((results[0].error as String).contains('changed after it was pinned'));
+    isTrue(results[1].fetched);
+    isNull(results[1].error);
+    // The same package again is in the cache by then.
+    isFalse(results[2].fetched);
+    isNull(results[2].error);
+    pds.close();
   });
 });

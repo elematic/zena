@@ -9,11 +9,13 @@
 //!
 //! A published package is pinned in the resolution file's `resolved`
 //! section and read from the package cache, where `zena fetch` unpacks it.
+//! The fetch tests run `tests/fixtures/fetch-pds.zena` as the package's PLC
+//! directory and PDS.
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::process::{Child, Command, Output, Stdio};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 /// The repository root: this crate is `packages/zena-cli`.
 fn repo_root() -> PathBuf {
@@ -103,6 +105,14 @@ fn layout(scratch: &Scratch) -> PathBuf {
 /// Runs the zena command in `project` as a project of its own, with a
 /// cache in `scratch`.
 fn zena_in(project: &Path, scratch: &Scratch, args: &[&str]) -> Output {
+    zena_command(project, &scratch.path().join("cache"), args)
+        .output()
+        .expect("the zena command to start")
+}
+
+/// The zena command, run in `project` as a project of its own, with its
+/// caches in `cache`.
+fn zena_command(project: &Path, cache: &Path, args: &[&str]) -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_zena-cli"));
     command
         .args(args)
@@ -113,17 +123,18 @@ fn zena_in(project: &Path, scratch: &Scratch, args: &[&str]) -> Output {
             repo_root().join("packages/zena-cli/out/zena.wasm"),
         )
         .env("ZENA_STDLIB_DIR", repo_root().join("packages/stdlib/zena"))
-        .env("ZENA_CACHE_DIR", scratch.path().join("cache"));
+        .env("ZENA_CACHE_DIR", cache);
     for name in [
         "ZENA_PROJECT_CACHE",
         "ZENA_LOCAL_CACHE",
         "ZENA_COMPILER_WASM",
         "XDG_CACHE_HOME",
         "ZENA_OPT_LEVEL",
+        "ZENA_PLC_DIRECTORY",
     ] {
         command.env_remove(name);
     }
-    command.output().expect("the zena command to start")
+    command
 }
 
 fn assert_success(what: &str, output: &Output) {
@@ -217,7 +228,10 @@ fn a_dependency_of_a_dependency_is_not_the_projects_to_import() {
     let scratch = Scratch::new("package-map-transitive");
     let project = published_layout(&scratch);
     let output = zena_in(&project, &scratch, &["run", "direct.zena"]);
-    assert!(!output.status.success(), "importing json from the project compiled");
+    assert!(
+        !output.status.success(),
+        "importing json from the project compiled"
+    );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("json"), "unexpected error:\n{stderr}");
 }
@@ -229,10 +243,146 @@ fn a_package_missing_from_the_cache_says_to_fetch_it() {
     fs::remove_dir_all(scratch.path().join("cache/packages/sources/bafkreijson"))
         .expect("removed json's source");
     let output = zena_in(&project, &scratch, &["run", "prog.zena"]);
-    assert!(!output.status.success(), "compiled without json in the cache");
+    assert!(
+        !output.status.success(),
+        "compiled without json in the cache"
+    );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         stderr.contains("did:web:json.example.com@2") && stderr.contains("zena fetch"),
         "unexpected error:\n{stderr}"
+    );
+}
+
+/// A child process killed when this is dropped, so a failed assertion does
+/// not leave it running.
+struct KillOnDrop(Child);
+
+impl Drop for KillOnDrop {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+/// Starts `tests/fixtures/fetch-pds.zena`, which serves one published
+/// package, and waits until it has written the resolution file pinning it.
+/// Returns the server and the PLC directory's origin.
+fn start_fake_pds(scratch: &Scratch) -> (KillOnDrop, String) {
+    let out = scratch.path().join("pds");
+    fs::create_dir_all(&out).expect("a directory for the fake PDS");
+    let log = fs::File::create(scratch.path().join("pds.log")).expect("a log file");
+    let mapping = format!("{}::/out", out.display());
+    let child = zena_command(
+        &repo_root(),
+        &scratch.path().join("pds-cache"),
+        &[
+            "run",
+            "--dir",
+            &mapping,
+            "packages/zena-cli/tests/fixtures/fetch-pds.zena",
+        ],
+    )
+    .stdout(Stdio::null())
+    .stderr(log)
+    .spawn()
+    .expect("the fake PDS to start");
+    let mut server = KillOnDrop(child);
+    let plc = out.join("plc.txt");
+    let deadline = Instant::now() + Duration::from_secs(300);
+    while !plc.exists() {
+        if let Ok(Some(status)) = server.0.try_wait() {
+            panic!(
+                "the fake PDS exited ({status}):\n{}",
+                fs::read_to_string(scratch.path().join("pds.log")).unwrap_or_default()
+            );
+        }
+        assert!(Instant::now() < deadline, "the fake PDS did not start");
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    let origin = fs::read_to_string(&plc).expect("the PLC directory's origin");
+    (server, origin)
+}
+
+#[test]
+fn fetch_downloads_pinned_packages_that_the_compiler_then_reads() {
+    let scratch = Scratch::new("package-map-fetch");
+    let (_server, plc) = start_fake_pds(&scratch);
+    let project = scratch.path().join("project");
+    fs::create_dir_all(&project).expect("a project directory");
+    fs::copy(
+        scratch.path().join("pds/zena-packages.json"),
+        project.join("zena-packages.json"),
+    )
+    .expect("the resolution file");
+    write(
+        &project.join("prog.zena"),
+        "import { route } from 'router:match';\n\
+         export function main(): i32 {\n  \
+           return route() - 42;\n\
+         }\n",
+    );
+    let cache = scratch.path().join("cache");
+    let fetch = || {
+        zena_command(&project, &cache, &["fetch"])
+            .env("ZENA_PLC_DIRECTORY", &plc)
+            .output()
+            .expect("zena fetch to start")
+    };
+
+    let first = fetch();
+    assert_success("zena fetch", &first);
+    let stdout = String::from_utf8_lossy(&first.stdout);
+    assert!(stdout.contains("1 fetched"), "unexpected output:\n{stdout}");
+
+    let second = fetch();
+    assert_success("a second zena fetch", &second);
+    let stdout = String::from_utf8_lossy(&second.stdout);
+    assert!(
+        stdout.contains("1 already in the cache"),
+        "unexpected output:\n{stdout}"
+    );
+
+    let run = zena_in(&project, &scratch, &["run", "prog.zena"]);
+    assert_success("zena run", &run);
+}
+
+#[test]
+fn fetch_refuses_a_release_that_differs_from_its_pin() {
+    let scratch = Scratch::new("package-map-fetch-changed");
+    let (_server, plc) = start_fake_pds(&scratch);
+    let project = scratch.path().join("project");
+    fs::create_dir_all(&project).expect("a project directory");
+    // Pin a release record CID the PDS does not serve.
+    let pinned = fs::read_to_string(scratch.path().join("pds/zena-packages.json"))
+        .expect("the resolution file");
+    let start = pinned.find("\"release\": \"").expect("a release pin") + 12;
+    let end = start + pinned[start..].find('"').expect("the pin's end");
+    let changed = format!(
+        "{}bafyreie5737gdxlw5i64vzichcalba3z2v5n6icifvx5xytvske7mr3hpm{}",
+        &pinned[..start],
+        &pinned[end..]
+    );
+    write(&project.join("zena-packages.json"), &changed);
+    let output = zena_command(&project, &scratch.path().join("cache"), &["fetch"])
+        .env("ZENA_PLC_DIRECTORY", &plc)
+        .output()
+        .expect("zena fetch to start");
+    assert!(
+        !output.status.success(),
+        "zena fetch accepted a changed release"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("changed after it was pinned"),
+        "unexpected error:\n{stderr}"
+    );
+    assert!(
+        !scratch.path().join("cache/packages/sources").exists()
+            || fs::read_dir(scratch.path().join("cache/packages/sources"))
+                .expect("the sources directory")
+                .next()
+                .is_none(),
+        "zena fetch stored a package it refused"
     );
 }

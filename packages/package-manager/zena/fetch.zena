@@ -81,6 +81,35 @@ function unpack(bytes: FixedArray<u8>, pin: Pin): FixedArray<SourceFile> {
   }
 }
 
+/** What `fetchAll` did with one pin. */
+export final class FetchResult {
+  pin: Pin;
+  /** Whether the package was fetched, rather than found in the cache. */
+  fetched: boolean;
+  /** Why the package could not be fetched, or null when it was. */
+  error: String | null;
+
+  new(pin: Pin, fetched: boolean, error: String | null) : pin = pin, fetched = fetched, error = error;
+}
+
+/**
+ * Fetches each of `pins` into `cache`, one after another, and returns what
+ * happened to each. A pin that cannot be fetched does not stop the rest.
+ */
+export async function fetchAll(pins: GrowableArray<Pin>, cache: PackageCache,
+    resolver: IdentityResolver): Future<GrowableArray<FetchResult>> {
+  let results = new GrowableArray<FetchResult>();
+  for (let pin in pins) {
+    try {
+      let fetched = await fetchPackage(pin, cache, resolver);
+      results.push(new FetchResult(pin, fetched, null));
+    } catch (e) {
+      results.push(new FetchResult(pin, false, e.message));
+    }
+  }
+  return results;
+}
+
 function readRelease(record: Value, versionText: String, pin: Pin): Release {
   try {
     return Release.fromValue(record, versionText);

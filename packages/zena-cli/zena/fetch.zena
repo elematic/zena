@@ -1,0 +1,60 @@
+/**
+ * `zena fetch`: fetches the packages the project's `zena-packages.json`
+ * pins into the package cache, where the compiler reads them
+ * (docs/design/package-manager.md, "Fetching and verification").
+ *
+ * Each pinned release is fetched from its package's PDS and checked
+ * against the CIDs the resolution file pins; see `package-manager:fetch`.
+ * Packages already in the cache cost no requests. `ZENA_PLC_DIRECTORY`
+ * replaces the PLC directory, `https://plc.directory`, for mirrors and
+ * tests.
+ */
+
+import { ParsedArgs } from 'zena:args';
+import { runFuture } from 'zena:async';
+import { getEnv } from 'zena:cli';
+import { existsSync, readFileSync } from 'zena:fs';
+import { IdentityResolver } from 'atproto:identity';
+import { PackageCache } from 'package-manager:cache';
+import { fetchAll } from 'package-manager:fetch';
+import { readPins } from 'package-manager:resolution';
+import { packageCacheDir } from './compile.zena';
+import { Options } from './env.zena';
+
+export function fetchCommand(args: ParsedArgs, options: Options): i32 {
+  if (!existsSync('zena-packages.json')) {
+    console.log('Nothing to fetch: there is no zena-packages.json here.');
+    return 0;
+  }
+  let pins = readPins(readFileSync('zena-packages.json'));
+  if (pins.length == 0) {
+    console.log('Nothing to fetch: zena-packages.json pins no packages.');
+    return 0;
+  }
+  let resolver = new IdentityResolver();
+  let plcDirectory = getEnv('ZENA_PLC_DIRECTORY');
+  if (plcDirectory != null && plcDirectory != '') {
+    resolver.plcDirectory = plcDirectory;
+  }
+  let cache = new PackageCache(packageCacheDir());
+  let results = runFuture(fetchAll(pins, cache, resolver));
+
+  var fetched = 0;
+  var failed = 0;
+  for (let result in results) {
+    let error = result.error;
+    if (error != null) {
+      console.error(`Error: ${error}`);
+      failed += 1;
+    } else if (result.fetched) {
+      console.log(`Fetched ${result.pin.key} ${result.pin.version.toString()}`);
+      fetched += 1;
+    } else if (options.verbose) {
+      console.log(`Cached ${result.pin.key} ${result.pin.version.toString()}`);
+    }
+  }
+  let cached = results.length - fetched - failed;
+  let noun = if (results.length == 1) 'package' else 'packages';
+  console.log(`${results.length} ${noun}: ${fetched} fetched, ${cached} already in the cache, ${failed} failed.`);
+  return if (failed > 0) 1 else 0;
+}

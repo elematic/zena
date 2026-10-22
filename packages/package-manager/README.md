@@ -22,10 +22,15 @@ Import its modules as `package-manager:<module>`, with a
   `resolved` section.
 - `package-manager:cache`: the package cache, where each source archive is
   unpacked into `sources/<CID>` for the compiler to read.
-- `package-manager:fetch`: fetching a pinned package into the cache. The
-  release record's proof is checked against the account's signing key, the
-  record and the source archive against the CIDs the resolution file pins,
-  and the release's dependencies against the names it maps.
+- `package-manager:fetch`: fetching pinned packages into the cache, which
+  `zena fetch` does. The release record's proof is checked against the
+  account's signing key, the record and the source archive against the
+  CIDs the resolution file pins, and the release's dependencies against
+  the names it maps.
+- `package-manager:testing/fake-pds`: a PLC directory and PDS for one
+  package account, served in the same program, for testing what fetches
+  packages. It signs what it serves, so the proofs clients check are
+  real.
 
 ## Lexicons
 
