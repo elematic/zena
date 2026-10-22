@@ -988,7 +988,7 @@ The `LanguageService` maintains the set of open files. When creating a new
 
 - loader discovers the rest.
 
-Later, `zena-packages.json` can define explicit root files, include/exclude
+Later, `zena-package.json` can define explicit root files, include/exclude
 patterns, and become the project definition. But for now, the implicit
 approach works — TypeScript works the same way with the IDE only activating
 when a `.ts` file is opened.
@@ -1142,8 +1142,8 @@ consistent style. This is:
 - `module-resolver.zena` — Import resolution supporting stdlib (`zena:*`),
   user packages, relative paths, target-conditional modules (`*.host.zena`,
   `*.wasi.zena`), and internal modules (~700 lines, 30 tests)
-- `package-manifest.zena` — `zena-packages.json` parsing for package config
-  with shorthand and full-form syntax, stdlib config builder (9 tests)
+- `package-manifest.zena` — reads a workspace's `zena-package.json`
+  manifests and `zena-lock.json` into package configs; stdlib config builder
 - `library-loader.zena` — Source loading, parsing, caching, dependency
   resolution via `CompilerHost` interface. Handles circular imports via
   cache-before-resolve. `SourceFile` tracks path, source, AST, resolved

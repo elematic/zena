@@ -104,7 +104,7 @@ remove it.
   free functions.
 - **WIT synthesis** (`packages/zena-compiler/zena/lib/wit-module-synth.zena`).
   The one existing case of generating Zena from an interface language. A
-  `zena-packages.json` entry `{"wit": "./path"}` makes the CLI host turn a
+  dependency `{"wit": "./path"}` in a `zena-package.json` makes the host turn a
   WIT interface into Zena source text when a module imports it. The
   sections on where generation runs build on this.
 
@@ -707,7 +707,7 @@ when it is stale, and its `generate` script rewrites it.
 
 The WIT path, repeated for `.proto`:
 
-- a `zena-packages.json` entry `{"proto": "./protos"}`;
+- a dependency `{"proto": "./protos"}` in `zena-package.json`;
 - a `proto:` branch in the module resolver;
 - a case in each host's `readFile` that synthesizes source text.
 

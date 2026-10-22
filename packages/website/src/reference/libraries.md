@@ -285,7 +285,8 @@ three formats:
    manifest shipped with the compiler.
 3. **Package specifiers**: Follow the format `package:library` (such as
    `compiler:parser` or `ui:components`). The compiler resolves the package name
-   using the active package manifest (`zena-packages.json`).
+   through the importing package's dependencies, which its
+   `zena-package.json` lists.
 
 The resolver normalizes all paths to a canonical identity. Every library is
 loaded, parsed, and checked exactly once, ensuring that types originating from
@@ -296,51 +297,57 @@ resolved across compilation units before code generation.
 
 ## Packages and manifests
 
-Multi-package workspaces configure package boundaries and external library
-access using a package manifest file named `zena-packages.json`.
+A package is a directory of libraries with a `zena-package.json`. The
+manifest gives the package's name, the libraries other packages may import,
+and the packages its own libraries import, each under a local name of the
+package's choosing.
 
 ```json
 {
-  "packages": {
-    "utils": "./packages/utils/zena/lib",
-    "parser": {
-      "root": "./packages/parser/zena/lib",
-      "exports": {
-        "ast": {},
-        "scanner": {"path": "lexer/scanner.zena"},
-        "console": {
-          "virtual": {
-            "js": "console/host.zena",
-            "component": "console/component.zena"
-          }
-        }
+  "name": "parser",
+  "exports": {
+    "ast": {},
+    "scanner": {"path": "lexer/scanner.zena"},
+    "console": {
+      "virtual": {
+        "js": "console/host.zena",
+        "component": "console/component.zena"
       }
-    },
-    "wasi-clocks": {
-      "wit": "./wit/clocks"
     }
+  },
+  "dependencies": {
+    "utils": {"path": "../utils"},
+    "router": {"did": "did:plc:routerrouterrouterrouter", "version": "1.4.2"},
+    "wasi-clocks": {"wit": "./wit/clocks"}
   }
 }
 ```
 
-A package entry takes one of three forms:
-
-- **Path shorthand string**: `"name": "./path/to/lib"`. All `.zena` libraries
-  under that root directory can be imported from outside the package as
-  `name:library`.
-- **Package object with explicit exports**:
-  - `root`: The filesystem directory containing the package source files.
-  - `exports`: A map of exposed library names. When `exports` is specified,
-    libraries not listed in the map are package-private and cannot be imported
-    by code outside the package. Libraries within the package can still reference
-    them using relative paths.
-  - `path`: Overrides the entry file for a library relative to `root`.
-  - `virtual`: Target-conditional mapping. Selects different library files based
-    on the compilation target (`js`, `zena-cli`, `freestanding` or
+- `exports`: The libraries other packages can import as `name:library`.
+  Without it, every `.zena` library under the package's directory can be.
+  With it, libraries not listed are private to the package, which reaches
+  them by relative paths.
+  - `path`: Overrides the entry file for a library, relative to the
+    package's directory.
+  - `virtual`: Target-conditional mapping. Selects different library files
+    based on the compilation target (`js`, `zena-cli`, `freestanding` or
     `component`).
-- **WIT-backed package**: `"wit": "./path"`. Configures a package backed by
-  WebAssembly Component Model WIT interfaces. The compiler synthesizes
-  declarations directly from the WIT definitions.
+- `dependencies`: Each one is one of three kinds:
+  - **A package on disk**, `{"path": "../utils"}`, a directory with a
+    `zena-package.json` of its own.
+  - **A published package**, by DID and the lowest version needed. `zena add`
+    writes these, and the versions chosen are pinned in `zena-lock.json`.
+  - **A WIT-backed package**, `{"wit": "./path"}`. The compiler synthesizes
+    declarations directly from the WebAssembly Component Model WIT
+    definitions.
+
+A package can import its own libraries by its own name, the standard library
+as `zena` and the WIT packages it carries (`wasi`), and the packages it lists.
+
+Several packages developed together form a workspace: the manifest at its
+root lists their directories under `workspace`, as in
+`{"workspace": {"packages": ["packages/*"]}}`, and the workspace has one
+`zena-lock.json`.
 
 ## Initialization order
 

@@ -1,16 +1,14 @@
-//! Packages outside the project.
+//! Packages outside the workspace, as the `zena` command finds them.
 //!
-//! A project outside this repository names packages that live elsewhere:
-//! a sibling checkout (`../zena/packages/google-cloud/zena`), or a
-//! package manager's cache, by absolute path. The compiler reads
-//! `zena-packages.json` from its working directory, the project root, and
-//! the CLI module gives it the root's absolute path, so a `..` entry is
-//! read by its absolute path and an absolute entry as written.
+//! How a workspace's manifests and lockfile resolve imports is the
+//! compiler's, and tested in Zena (`zena-compiler/zena/test/workspace_test`
+//! and `package-manifest_test`). What these tests vary is what only the
+//! command supplies: the workspace's absolute path, which the CLI module
+//! gives the compiler so that a path dependency outside the workspace
+//! (`../zena/packages/google-cloud/zena`) is read by its absolute path, and
+//! the package cache, where `zena fetch` unpacks the published packages
+//! `zena-lock.json` pins (docs/design/package-manifest.md).
 //!
-//! A published package is pinned in the resolution file's `resolved`
-//! section and read from the package cache, where `zena fetch` unpacks it.
-//! A workspace described by `zena-package.json` manifests pins them in
-//! `zena-lock.json` instead (docs/design/package-manifest.md).
 //! The fetch tests run `tests/fixtures/fetch-pds.zena` as the package's PLC
 //! directory and PDS.
 
@@ -59,29 +57,32 @@ fn write(path: &Path, text: &str) {
     fs::write(path, text).expect("a written file");
 }
 
-/// Lays out `scratch` as a project, `project/`, beside two libraries,
-/// `libs/near` (named in the package map as `../libs/near`) and
-/// `libs/far` (named by its absolute path).
+/// Lays out `scratch` as a workspace, `workspace/`, beside two packages:
+/// `libs/near` (a path dependency `../libs/near`) and `libs/far` (by its
+/// absolute path).
 fn layout(scratch: &Scratch) -> PathBuf {
-    let project = scratch.path().join("project");
+    let workspace = scratch.path().join("workspace");
+    let near = scratch.path().join("libs/near");
     let far = scratch.path().join("libs/far");
+    write(&near.join("zena-package.json"), r#"{"name": "near"}"#);
     write(
-        &scratch.path().join("libs/near/numbers.zena"),
+        &near.join("numbers.zena"),
         "export function two(): i32 { return 2; }\n",
     );
+    write(&far.join("zena-package.json"), r#"{"name": "far"}"#);
     write(
         &far.join("numbers.zena"),
         "export function three(): i32 { return 3; }\n",
     );
     write(
-        &project.join("zena-packages.json"),
+        &workspace.join("zena-package.json"),
         &format!(
-            "{{\"packages\": {{\"near\": \"../libs/near\", \"far\": \"{}\"}}}}\n",
+            "{{\"dependencies\": {{\"near\": {{\"path\": \"../libs/near\"}}, \"far\": {{\"path\": \"{}\"}}}}}}\n",
             far.display()
         ),
     );
     write(
-        &project.join("prog.zena"),
+        &workspace.join("prog.zena"),
         "import { two } from 'near:numbers';\n\
          import { three } from 'far:numbers';\n\
          export function main(): i32 {\n  \
@@ -89,7 +90,7 @@ fn layout(scratch: &Scratch) -> PathBuf {
          }\n",
     );
     write(
-        &project.join("numbers_test.zena"),
+        &workspace.join("numbers_test.zena"),
         "import { suite, test } from 'zena:test';\n\
          import { equal } from 'zena:assert';\n\
          import { two } from 'near:numbers';\n\
@@ -101,25 +102,25 @@ fn layout(scratch: &Scratch) -> PathBuf {
            });\n\
          });\n",
     );
-    project
+    workspace
 }
 
-/// Runs the zena command in `project` as a project of its own, with a
+/// Runs the zena command in `workspace` as a workspace of its own, with a
 /// cache in `scratch`.
-fn zena_in(project: &Path, scratch: &Scratch, args: &[&str]) -> Output {
-    zena_command(project, &scratch.path().join("cache"), args)
+fn zena_in(workspace: &Path, scratch: &Scratch, args: &[&str]) -> Output {
+    zena_command(workspace, &scratch.path().join("cache"), args)
         .output()
         .expect("the zena command to start")
 }
 
-/// The zena command, run in `project` as a project of its own, with its
+/// The zena command, run in `workspace` as a workspace of its own, with its
 /// caches in `cache`.
-fn zena_command(project: &Path, cache: &Path, args: &[&str]) -> Command {
+fn zena_command(workspace: &Path, cache: &Path, args: &[&str]) -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_zena-cli"));
     command
         .args(args)
-        .current_dir(project)
-        .env("ZENA_REPO_ROOT", project)
+        .current_dir(workspace)
+        .env("ZENA_REPO_ROOT", workspace)
         .env(
             "ZENA_CLI_MODULE",
             repo_root().join("packages/zena-cli/out/zena.wasm"),
@@ -149,27 +150,28 @@ fn assert_success(what: &str, output: &Output) {
 }
 
 #[test]
-fn run_reads_packages_above_the_project_and_at_absolute_paths() {
+fn run_reads_packages_outside_the_workspace_and_at_absolute_paths() {
     let scratch = Scratch::new("package-map-run");
-    let project = layout(&scratch);
-    let output = zena_in(&project, &scratch, &["run", "prog.zena"]);
+    let workspace = layout(&scratch);
+    let output = zena_in(&workspace, &scratch, &["run", "prog.zena"]);
     assert_success("zena run", &output);
 }
 
 #[test]
-fn test_reads_packages_above_the_project_and_at_absolute_paths() {
+fn test_reads_packages_outside_the_workspace_and_at_absolute_paths() {
     let scratch = Scratch::new("package-map-test");
-    let project = layout(&scratch);
-    let output = zena_in(&project, &scratch, &["test", "numbers_test.zena"]);
+    let workspace = layout(&scratch);
+    let output = zena_in(&workspace, &scratch, &["test", "numbers_test.zena"]);
     assert_success("zena test", &output);
 }
 
-/// Lays out `scratch` as a project that uses a published package,
-/// `router`, which uses another, `json`, by a name of its own. Both are in
-/// the package cache as `zena fetch` leaves them: each source archive
-/// unpacked under `cache/packages/sources/<CID>`.
+/// Lays out `scratch` as a workspace that uses a published package,
+/// `router`, which uses another, `json`, by a name of its own. Both are
+/// pinned in `zena-lock.json` and in the package cache as `zena fetch`
+/// leaves them: each source archive unpacked under
+/// `cache/packages/sources/<CID>`.
 fn published_layout(scratch: &Scratch) -> PathBuf {
-    let project = scratch.path().join("project");
+    let workspace = scratch.path().join("workspace");
     let sources = scratch.path().join("cache/packages/sources");
     write(
         &sources.join("bafkreirouter/match.zena"),
@@ -181,9 +183,12 @@ fn published_layout(scratch: &Scratch) -> PathBuf {
         "export function parse(): i32 { return 41; }\n",
     );
     write(
-        &project.join("zena-packages.json"),
+        &workspace.join("zena-package.json"),
+        r#"{"dependencies": {"router": {"did": "did:plc:router", "version": "1.4.2"}}}"#,
+    );
+    write(
+        &workspace.join("zena-lock.json"),
         r#"{
-  "dependencies": {"router": "did:plc:router@1"},
   "resolved": {
     "did:plc:router@1": {
       "version": "1.4.2",
@@ -201,50 +206,30 @@ fn published_layout(scratch: &Scratch) -> PathBuf {
 "#,
     );
     write(
-        &project.join("prog.zena"),
+        &workspace.join("prog.zena"),
         "import { route } from 'router:match';\n\
          export function main(): i32 {\n  \
            return route() - 42;\n\
          }\n",
     );
-    write(
-        &project.join("direct.zena"),
-        "import { parse } from 'json:parse';\n\
-         export function main(): i32 {\n  \
-           return parse() - 41;\n\
-         }\n",
-    );
-    project
+    workspace
 }
 
 #[test]
 fn run_reads_published_packages_from_the_package_cache() {
     let scratch = Scratch::new("package-map-published");
-    let project = published_layout(&scratch);
-    let output = zena_in(&project, &scratch, &["run", "prog.zena"]);
+    let workspace = published_layout(&scratch);
+    let output = zena_in(&workspace, &scratch, &["run", "prog.zena"]);
     assert_success("zena run", &output);
-}
-
-#[test]
-fn a_dependency_of_a_dependency_is_not_the_projects_to_import() {
-    let scratch = Scratch::new("package-map-transitive");
-    let project = published_layout(&scratch);
-    let output = zena_in(&project, &scratch, &["run", "direct.zena"]);
-    assert!(
-        !output.status.success(),
-        "importing json from the project compiled"
-    );
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("json"), "unexpected error:\n{stderr}");
 }
 
 #[test]
 fn a_package_missing_from_the_cache_says_to_fetch_it() {
     let scratch = Scratch::new("package-map-missing");
-    let project = published_layout(&scratch);
+    let workspace = published_layout(&scratch);
     fs::remove_dir_all(scratch.path().join("cache/packages/sources/bafkreijson"))
         .expect("removed json's source");
-    let output = zena_in(&project, &scratch, &["run", "prog.zena"]);
+    let output = zena_in(&workspace, &scratch, &["run", "prog.zena"]);
     assert!(
         !output.status.success(),
         "compiled without json in the cache"
@@ -268,7 +253,8 @@ impl Drop for KillOnDrop {
 }
 
 /// Starts `tests/fixtures/fetch-pds.zena`, which serves one published
-/// package, and waits until it has written the resolution file pinning it.
+/// package, and waits until it has written a workspace root depending on
+/// it and the lockfile pinning it.
 /// Returns the server and the PLC directory's origin.
 fn start_fake_pds(scratch: &Scratch) -> (KillOnDrop, String) {
     let out = scratch.path().join("pds");
@@ -310,15 +296,14 @@ fn start_fake_pds(scratch: &Scratch) -> (KillOnDrop, String) {
 fn fetch_downloads_pinned_packages_that_the_compiler_then_reads() {
     let scratch = Scratch::new("package-map-fetch");
     let (_server, plc) = start_fake_pds(&scratch);
-    let project = scratch.path().join("project");
-    fs::create_dir_all(&project).expect("a project directory");
-    fs::copy(
-        scratch.path().join("pds/zena-packages.json"),
-        project.join("zena-packages.json"),
-    )
-    .expect("the resolution file");
+    let workspace = scratch.path().join("workspace");
+    fs::create_dir_all(&workspace).expect("a workspace directory");
+    for file in ["zena-package.json", "zena-lock.json"] {
+        fs::copy(scratch.path().join("pds").join(file), workspace.join(file))
+            .expect("the fake PDS's workspace files");
+    }
     write(
-        &project.join("prog.zena"),
+        &workspace.join("prog.zena"),
         "import { route } from 'router:match';\n\
          export function main(): i32 {\n  \
            return route() - 42;\n\
@@ -326,7 +311,7 @@ fn fetch_downloads_pinned_packages_that_the_compiler_then_reads() {
     );
     let cache = scratch.path().join("cache");
     let fetch = || {
-        zena_command(&project, &cache, &["fetch"])
+        zena_command(&workspace, &cache, &["fetch"])
             .env("ZENA_PLC_DIRECTORY", &plc)
             .output()
             .expect("zena fetch to start")
@@ -345,7 +330,7 @@ fn fetch_downloads_pinned_packages_that_the_compiler_then_reads() {
         "unexpected output:\n{stdout}"
     );
 
-    let run = zena_in(&project, &scratch, &["run", "prog.zena"]);
+    let run = zena_in(&workspace, &scratch, &["run", "prog.zena"]);
     assert_success("zena run", &run);
 }
 
@@ -353,11 +338,11 @@ fn fetch_downloads_pinned_packages_that_the_compiler_then_reads() {
 fn fetch_refuses_a_release_that_differs_from_its_pin() {
     let scratch = Scratch::new("package-map-fetch-changed");
     let (_server, plc) = start_fake_pds(&scratch);
-    let project = scratch.path().join("project");
-    fs::create_dir_all(&project).expect("a project directory");
+    let workspace = scratch.path().join("workspace");
+    fs::create_dir_all(&workspace).expect("a workspace directory");
     // Pin a release record CID the PDS does not serve.
-    let pinned = fs::read_to_string(scratch.path().join("pds/zena-packages.json"))
-        .expect("the resolution file");
+    let pinned =
+        fs::read_to_string(scratch.path().join("pds/zena-lock.json")).expect("the lockfile");
     let start = pinned.find("\"release\": \"").expect("a release pin") + 12;
     let end = start + pinned[start..].find('"').expect("the pin's end");
     let changed = format!(
@@ -365,8 +350,8 @@ fn fetch_refuses_a_release_that_differs_from_its_pin() {
         &pinned[..start],
         &pinned[end..]
     );
-    write(&project.join("zena-packages.json"), &changed);
-    let output = zena_command(&project, &scratch.path().join("cache"), &["fetch"])
+    write(&workspace.join("zena-lock.json"), &changed);
+    let output = zena_command(&workspace, &scratch.path().join("cache"), &["fetch"])
         .env("ZENA_PLC_DIRECTORY", &plc)
         .output()
         .expect("zena fetch to start");
@@ -387,95 +372,4 @@ fn fetch_refuses_a_release_that_differs_from_its_pin() {
                 .is_none(),
         "zena fetch stored a package it refused"
     );
-}
-
-/// Lays out `scratch` as a workspace described by manifests: the root
-/// package `app`, which depends on the workspace package `lib` by path and
-/// on the published package `router`, and `lib`, which depends on `router`
-/// under a name of its own. `router` is pinned in `zena-lock.json` and
-/// already in the package cache.
-fn manifest_layout(scratch: &Scratch) -> PathBuf {
-    let workspace = scratch.path().join("workspace");
-    write(
-        &scratch
-            .path()
-            .join("cache/packages/sources/bafkreirouter/match.zena"),
-        "export function route(): i32 { return 40; }\n",
-    );
-    write(
-        &workspace.join("zena-package.json"),
-        r#"{
-  "name": "app",
-  "dependencies": {
-    "lib": {"path": "./packages/lib"},
-    "router": {"did": "did:plc:routerrouterrouterrouter", "version": "1.4.2"}
-  },
-  "workspace": {"packages": ["packages/*"]}
-}
-"#,
-    );
-    write(
-        &workspace.join("zena-lock.json"),
-        r#"{
-  "resolved": {
-    "did:plc:routerrouterrouterrouter@1": {
-      "version": "1.4.2",
-      "release": "bafyreirouter",
-      "source": "bafkreirouter"
-    }
-  }
-}
-"#,
-    );
-    write(
-        &workspace.join("packages/lib/zena-package.json"),
-        r#"{
-  "name": "lib",
-  "dependencies": {
-    "paths": {"did": "did:plc:routerrouterrouterrouter", "version": "1.0.0"}
-  }
-}
-"#,
-    );
-    write(
-        &workspace.join("packages/lib/lib.zena"),
-        "import { route } from 'paths:match';\n\
-         export function two(): i32 { return route() - 38; }\n",
-    );
-    write(
-        &workspace.join("prog.zena"),
-        "import { two } from 'lib:lib';\n\
-         import { route } from 'router:match';\n\
-         export function main(): i32 {\n  \
-           return route() + two() - 42;\n\
-         }\n",
-    );
-    workspace
-}
-
-#[test]
-fn run_reads_a_workspace_from_its_manifests_and_lockfile() {
-    let scratch = Scratch::new("package-map-manifests");
-    let workspace = manifest_layout(&scratch);
-    let output = zena_in(&workspace, &scratch, &["run", "prog.zena"]);
-    assert_success("zena run", &output);
-}
-
-#[test]
-fn a_workspace_package_sees_only_its_own_names() {
-    let scratch = Scratch::new("package-map-manifest-names");
-    let workspace = manifest_layout(&scratch);
-    // `router` is app's name for the package, not lib's.
-    write(
-        &workspace.join("packages/lib/lib.zena"),
-        "import { route } from 'router:match';\n\
-         export function two(): i32 { return route() - 38; }\n",
-    );
-    let output = zena_in(&workspace, &scratch, &["run", "prog.zena"]);
-    assert!(
-        !output.status.success(),
-        "lib imported app's name for router"
-    );
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("router"), "unexpected error:\n{stderr}");
 }

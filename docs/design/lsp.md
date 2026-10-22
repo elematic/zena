@@ -79,7 +79,7 @@ module (see [cli-module.md](./cli-module.md)).
 
 The analysis moved out of `lsp.zena` into a library both use,
 `packages/language-service/zena/lib/service.zena` (`language-service:service`
-in `zena-packages.json`). A program passes the service a function that
+to the repository's workspace). A program passes the service a function that
 reads files that are not open: `lsp.zena` passes one that calls its
 `read_file` host import, and `zena lsp` one over `zena:fs`.
 Each of the service's features is a module of its own beside it
@@ -108,7 +108,7 @@ import is followed to its declaration with `Symbol.resolveTarget()`.
   symbols, completions and hovers.
 
 `zena lsp` analyses for the `zena-cli` target and loads the repository's
-`zena-packages.json`, so a file that uses `zena:fs` or imports
+workspace (`zena-package.json`), so a file that uses `zena:fs` or imports
 `zena-compiler:parser` checks the way it builds. It reads stdin with
 `zena:cli`'s `readStdinSync`. Diagnostics are published for the document
 that was checked; problems it finds in the files that document imports
@@ -342,8 +342,8 @@ packages/vscode-zena/
 
 ## Open Questions
 
-- **Multi-root workspaces**: How to handle multiple `zena-packages.json`
-  roots? Start with single-root.
+- **Multi-root workspaces**: How to handle several workspace roots, each
+  with its own `zena-package.json`? Start with single-root.
 - **Stdlib bundling**: Currently resolved via `../stdlib/zena` relative to
   the extension path. Works for development; need a strategy for published
   extension (bundle stdlib sources or rely on npm).

@@ -10,8 +10,8 @@
 //! - Where the module is, and the repository it works in.
 //! - The directory the user ran the command from. The module's working
 //!   directory is the repository root (or current directory if standalone),
-//!   preopened as `.`, because that is where the compiler finds
-//!   `zena-packages.json`; the standard library is preopened as `/stdlib`,
+//!   preopened as `.`, because that is where the compiler finds the
+//!   workspace's `zena-package.json`; the standard library is preopened as `/stdlib`,
 //!   and the whole filesystem is preopened as `/` for everything else.
 //! - How many CPUs there are, which WASI cannot ask.
 //!

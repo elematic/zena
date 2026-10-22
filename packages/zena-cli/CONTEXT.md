@@ -17,7 +17,7 @@ the `zena` command. The design is in
      (`language-service:server`) to stdin and stdout, `lint.zena`,
      which runs zena-lint's rules (`zena-lint:lint`) over files and
      prints the findings or, with `--fix`, applies them, and `fetch.zena`,
-     which fetches the packages `zena-packages.json` pins into the package
+     which fetches the packages `zena-lock.json` pins into the package
      cache with `package-manager:fetch`.
    - It is built to `out/zena.wasm` by `build:module`, with the compiler
      (`zena-compiler:compile-file`), zb, zenadoc, the language service and
@@ -40,7 +40,7 @@ the `zena` command. The design is in
      standard library or the compiler needs no Rust rebuild to take
      effect.
    - Preopens the repository root as `.` (first, so relative paths mean the
-     repository: the compiler reads `zena-packages.json` and
+     repository: the compiler reads the workspace's `zena-package.json` and
      `packages/stdlib/zena` relative to it) and `/` as `/`.
    - Grants spawning, so zb can run build commands and the module can run
      other modules with `zena:wasm`.
