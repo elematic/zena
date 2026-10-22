@@ -1,0 +1,162 @@
+/**
+ * A fake PLC directory and PDS for one package account, for testing what
+ * fetches packages. A `zena:http` server in the same program serves the
+ * account's DID document, `com.atproto.sync.getRecord` and
+ * `com.atproto.sync.getBlob`. The repository holds the release last
+ * published, in a commit signed with the account's key, so every proof a
+ * client checks is a real one.
+ *
+ * ```zena
+ * let pds = new FakePds();
+ * pds.start();
+ * let source = pds.addBlob(packSource(files));
+ * let record = pds.publish(release);
+ * await fetchPackage(pin, cache, pds.resolver());
+ * pds.close();
+ * ```
+ */
+
+import {Future} from 'zena:async';
+import {HashMap} from 'zena:collections';
+import {p256} from 'zena:crypto';
+import {hex} from 'zena:encoding';
+import {App, Server} from 'zena:http';
+import {BlockMap, writeCar} from 'atproto:car';
+import {encodeCbor} from 'atproto:cbor';
+import {Cid} from 'atproto:cid';
+import {BytesValue, IntValue, LinkValue, NullValue, StringValue, newMap} from 'atproto:data';
+import {KeyType, formatMultikey, publicKeyFor} from 'atproto:didkey';
+import {IdentityResolver} from 'atproto:identity';
+import {buildMst} from 'atproto:mst';
+import {RELEASE_TYPE, Release} from '../records.zena';
+
+/** The package account's DID. */
+export let DID = 'did:plc:routerrouterrouterrouter';
+
+/** The account's signing key: the P-256 key from RFC 6979, appendix A.2.5. */
+export let KEY = hex.decode('c9afa9d845ba75166b5c215767b1d6934e50c3db36e89b127b8a622b120f6721');
+
+/** DID's document, with its PDS at `origin` and the public key of `key`. */
+export function didDocument(origin: String, key: FixedArray<u8> = KEY): String {
+  let multikey = formatMultikey(publicKeyFor(KeyType.P256, key));
+  return `{
+    "id": "${DID}",
+    "verificationMethod": [
+      {"id": "${DID}#atproto", "type": "Multikey", "controller": "${DID}", "publicKeyMultibase": "${multikey}"}
+    ],
+    "service": [
+      {"id": "#atproto_pds", "type": "AtprotoPersonalDataServer", "serviceEndpoint": "${origin}"}
+    ]
+  }`;
+}
+
+/** A fake PLC directory and PDS for DID. */
+export final class FakePds {
+  /** DID's document, as JSON text. A test may replace it. */
+  var didDocument = '';
+  /** The getRecord answer, for whichever record is asked for. */
+  var recordCar = new FixedArray<u8>(0, 0 as u8);
+  /** The blobs the PDS has, by CID. */
+  blobs = new HashMap<String, FixedArray<u8>>();
+  /** How many requests the server has answered. */
+  var requests = 0;
+  /** The server's origin, `http://127.0.0.1:<port>`, once it has started. */
+  var origin = '';
+  var #server: Server | null = null;
+
+  /** Starts serving, on a port of the system's choosing. */
+  start(): void {
+    let server = serve(this);
+    this.#server = server;
+    this.origin = `http://127.0.0.1:${server.port as i32}`;
+    this.didDocument = didDocument(this.origin);
+  }
+
+  /** The PLC directory's origin, for `IdentityResolver.plcDirectory`. */
+  plcDirectory: String {
+    get {
+      return `${this.origin}/plc`;
+    }
+  }
+
+  /** A resolver that finds DID's document here. */
+  resolver(): IdentityResolver {
+    let resolver = new IdentityResolver();
+    resolver.plcDirectory = this.plcDirectory;
+    let origin = this.origin;
+    resolver.originOf = (host) => origin;
+    return resolver;
+  }
+
+  /** Stores `bytes` as a blob, and returns its CID. */
+  addBlob(bytes: FixedArray<u8>): Cid {
+    let cid = Cid.forBlob(bytes);
+    this.blobs[cid.toString()] = bytes;
+    return cid;
+  }
+
+  /**
+   * Makes `release` the repository's one record, at its version, and
+   * returns the record's CID.
+   */
+  publish(release: Release): Cid {
+    let value = release.toValue();
+    let blocks = new BlockMap();
+    let recordCid = blocks.add(value);
+    let root = buildMst(new FixedArray<String>(1, `${RELEASE_TYPE}/${release.version.toString()}`),
+        new FixedArray<Cid>(1, recordCid), blocks);
+    let commit = newMap();
+    commit.entries['did'] = new StringValue(DID);
+    commit.entries['version'] = new IntValue(3 as i64);
+    commit.entries['data'] = new LinkValue(root);
+    commit.entries['rev'] = new StringValue('3l3qo2vutsw2b');
+    commit.entries['prev'] = new NullValue();
+    commit.entries['sig'] = new BytesValue(p256.sign(KEY, encodeCbor(commit)));
+    this.recordCar = writeCar(new FixedArray<Cid>(1, blocks.add(commit)), blocks);
+    return recordCid;
+  }
+
+  /** Completes when the server stops. */
+  done(): Future<void> {
+    return (this.#server as Server).done;
+  }
+
+  close(): void {
+    let server = this.#server;
+    if (server != null) {
+      server.close();
+    }
+  }
+}
+
+function serve(pds: FakePds): Server {
+  let app = new App();
+  app.use(async (req, res, next): Future<void> => {
+    pds.requests += 1;
+    let path = req.path;
+    if (path == `/plc/${DID}`) {
+      res.type = 'application/json';
+      res.body = pds.didDocument;
+    } else if (path == '/xrpc/com.atproto.sync.getRecord') {
+      res.type = 'application/vnd.ipld.car';
+      res.body = pds.recordCar;
+    } else if (path == '/xrpc/com.atproto.sync.getBlob') {
+      let cid = req.url.searchParams().get('cid') ?? '';
+      if (let (true, blob) = pds.blobs.get(cid)) {
+        res.type = 'application/octet-stream';
+        res.body = blob;
+      } else {
+        res.statusCode = 400;
+        res.type = 'application/json';
+        res.body = '{"error":"BlobNotFound","message":"no such blob"}';
+      }
+    } else {
+      res.statusCode = 400;
+      res.type = 'application/json';
+      res.body = '{"error":"InvalidRequest","message":"no such method"}';
+    }
+  });
+  let server = new Server(app, 0 as u16);
+  server.start();
+  return server;
+}

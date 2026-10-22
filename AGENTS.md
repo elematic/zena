@@ -286,6 +286,9 @@ Subcommands (`./target/release/zena-cli <subcommand>`):
   `path:line:column: message [rule]`, exiting 1 when there are findings;
   `--fix` rewrites the files, keeping each fix the type checker accepts.
   `--list-rules` prints the rules.
+- **`fetch`**: Fetch the published packages `zena-packages.json` pins into
+  the package cache, checking each against its pins. `ZENA_PLC_DIRECTORY`
+  replaces the PLC directory.
 - **`doc <path> [-o <out.json>]`**: Extract a package's public API as JSON.
 - **`bench <suite.json> [-o <out.json>]`**: Run a benchmark suite.
 - **`lsp`**: Run the Zena language server over stdin/stdout.

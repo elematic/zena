@@ -1,0 +1,61 @@
+/**
+ * A PLC directory and PDS serving one published package, `router`, for
+ * `tests/package_map.rs`. Run from the repository root with `--dir
+ * <scratch>::/out`, it writes:
+ *
+ * - `/out/zena-packages.json`, a resolution file that names and pins
+ *   `router` 1.4.2;
+ * - `/out/plc.txt`, the PLC directory's origin, for ZENA_PLC_DIRECTORY;
+ *
+ * and then serves until it is killed.
+ */
+
+import {Future} from 'zena:async';
+import {OrderedHashMap} from 'zena:collections';
+import {writeFileSync} from 'zena:fs';
+import {Cid} from 'atproto:cid';
+import {BlobRef} from 'atproto:data';
+import {packSource} from 'package-manager:archive';
+import {Artifact, Dependency, Release, SOURCE} from 'package-manager:records';
+import {DID, FakePds} from 'package-manager:testing/fake-pds';
+import {Version} from 'package-manager:version';
+
+function bytesOf(text: String) {
+  let out = new FixedArray<u8>(text.length, 0 as u8);
+  for (var i = 0; i < text.length; i += 1) {
+    out[i] = text.getByteAt(i) as u8;
+  }
+  return out;
+}
+
+export async function main(): Future<i32> {
+  let pds = new FakePds();
+  pds.start();
+
+  let files = new OrderedHashMap<String, FixedArray<u8>>();
+  files['match.zena'] = bytesOf("import { prefix } from './util/strings.zena';\nexport function route(): i32 { return prefix + 40; }\n");
+  files['util/strings.zena'] = bytesOf('export let prefix = 2;\n');
+  let archive = packSource(files);
+  let source = pds.addBlob(archive);
+  let artifact = Artifact.whole(SOURCE,
+      new BlobRef(source, 'application/vnd.ipld.car', archive.length as i64));
+  let release = new Release(Version.parse('1.4.2'), '2026-10-22T00:00:00.000Z',
+      new FixedArray<Artifact>(1, artifact),
+      new FixedArray<Dependency>(0, new Dependency('', Version.parse('0.0.0'), '')));
+  let record = pds.publish(release);
+
+  writeFileSync('/out/zena-packages.json', `{
+  "dependencies": {"router": "${DID}@1"},
+  "resolved": {
+    "${DID}@1": {
+      "version": "1.4.2",
+      "release": "${record.toString()}",
+      "source": "${source.toString()}"
+    }
+  }
+}
+`);
+  writeFileSync('/out/plc.txt', pds.plcDirectory);
+  await pds.done();
+  return 0;
+}
