@@ -1319,16 +1319,20 @@ operator handles reports.
 ### What a package account can do
 
 A package account exists to hold package records, and the host lets it do
-nothing else. The same goes for organization and automation accounts.
+nothing else. The same goes for organization accounts.
 
 - The host has no way to sign in as one of these accounts: no
   `com.atproto.server.createSession`, no app passwords and no OAuth
   authorization. It does not serve `com.atproto.repo.createRecord`,
   `putRecord`, `deleteRecord`, `applyWrites` or `uploadBlob` for them.
   They are written only through the extension's methods.
+- An automation account signs in with its app password, since that is
+  how CI publishes. It can write attestations
+  (`dev.zena-lang.package.attestation`) to its own repository and call
+  the extension's methods, and nothing else.
 - The host's repository code refuses a write to any collection outside
-  `dev.zena-lang.*` in these accounts, whichever method makes it, so a bug
-  in one method cannot open an account up.
+  `dev.zena-lang.*` in all of these accounts, whichever method makes it,
+  so a bug in one method cannot open an account up.
 - Blobs are stored only as the artifacts a release declares, within the
   limits below.
 
