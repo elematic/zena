@@ -7,10 +7,9 @@ packages a workspace uses. [package-manager.md](package-manager.md)
 designs publishing and fetching packages.
 
 > **Current status**: The compiler reads a workspace from its manifests
-> and `zena-lock.json`. Where a workspace's root has no `zena-package.json`
-> but a `zena-packages.json`, the older, hand-written format, it reads that
-> instead ([zena-packages.json](#zena-packagesjson)). `zena add`,
-> `zena update` and `zena fetch` still write and read `zena-packages.json`.
+> and `zena-lock.json`, and `zena fetch` fetches what `zena-lock.json`
+> pins. `zena add` and `zena update`, which write the lockfile, are in
+> progress.
 
 ## Terms
 
@@ -297,28 +296,8 @@ my-app/
 
 ## `zena-packages.json`
 
-The format that predates the manifests. The compiler reads it from a
-workspace's root when the root has no `zena-package.json`:
-
-```json
-{
-  "packages": {"zena-compiler": "./packages/zena-compiler/zena/lib"},
-  "dependencies": {"router": "did:plc:routerrouterrouterrouter@1"},
-  "resolved": {"...": "as in zena-lock.json"}
-}
-```
-
-- `packages` maps a name to a package's directory, or to an object with a
-  `root` and `exports`, or `{"wit": path}` for a WIT-backed package. Every
-  file outside a pinned package sees all of these names.
-- `dependencies` maps names to pinned packages, for the same files.
-- A relative path may leave the workspace, as for a sibling checkout:
-  `"google-cloud": "../zena/packages/google-cloud/zena"`. `zena-cli` gives
-  the compiler the workspace's absolute path
-  (`CompileFileOptions.projectRoot`), so such a path is read by its
-  absolute path. Path dependencies keep this.
-
-Moving a workspace to manifests means giving each of its packages a
-`zena-package.json` with its name and its path dependencies, adding a
-root `zena-package.json` whose `workspace` lists them, and removing
-`zena-packages.json`.
+The format the manifests replaced: one file at the root mapping names
+to directories, which every file saw. The compiler no longer reads it.
+This repository keeps one only for the checked-in bootstrap compiler,
+which predates the manifests and reads it to build the compiler, until
+the next re-baseline (bootstrapping.md).

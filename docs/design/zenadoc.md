@@ -103,8 +103,8 @@ even if it compiles.
 
 ## The extractor
 
-`packages/zenadoc` is a Zena package registered in
-`zena-packages.json` as `zenadoc`, importing the compiler the same way
+`packages/zenadoc` is a Zena package of the repository's workspace,
+named `zenadoc`, importing the compiler the same way
 `zena-formatter` and `language-service` do. Its inputs are things the
 compiler already produces:
 

@@ -1,28 +1,8 @@
-// Package manifest parsing for the Zena compiler.
-//
-// Parses `zena-packages.json` files into `PackageConfig` maps. The manifest
-// format is:
-//
-//   {
-//     "packages": {
-//       "my-lib": "./packages/my-lib/zena/lib",         // shorthand
-//       "my-other-lib": {                                // full form
-//         "root": "./packages/other/zena/lib",
-//         "exports": {
-//           "utils": {},
-//           "widgets": { "path": "widgets/index.zena" },
-//           "console": { "virtual": { "js": "console/host.zena", ... } }
-//         }
-//       }
-//     }
-//   }
-//
-// `path` and `virtual` values are entry file paths relative to the package
-// root. Files not listed in `exports` are private to the package and are
-// reachable only via relative imports from its own files.
-//
-// A project that uses published packages also has `dependencies` and
-// `resolved` sections; see `addResolvedPackages`.
+// Reading a workspace's packages for the Zena compiler
+// (docs/design/package-manifest.md): `loadWorkspace` reads the
+// `zena-package.json` manifests and the pins in `zena-lock.json` into
+// `PackageConfig`s, keyed by package. The standard library's manifest is
+// built in (`buildStdlibConfig`).
 
 import { parseJson, JsonArray, JsonValue, JsonObject } from 'zena:json';
 import { PackageConfig, ModuleExport } from './module-resolver.zena';
@@ -32,91 +12,8 @@ import { canonicalTarget } from './targets.zena';
 import { HashMap } from 'zena:collections';
 
 // ============================================================================
-// Package Map Loading
+// Pins
 // ============================================================================
-
-// Load and parse a `zena-packages.json` file.
-//
-// Relative paths in the manifest are resolved against the manifest's
-// directory, and absolute paths are kept as written. When `manifestPath` is
-// relative (the compiler reads `zena-packages.json` from its working
-// directory, the project root), a path that climbs out of the project,
-// such as `../zena/packages/lib`, cannot be read relative to that working
-// directory; `projectRoot`, the project's absolute path, turns it into an
-// absolute path. Without `projectRoot` it stays relative.
-//
-// Returns a map of package name → PackageConfig. The "zena" package (stdlib)
-// is NOT included — the compiler adds that automatically.
-//
-// With `packageCache`, the map also holds the packages the file pins in
-// its `resolved` section, and the project's names for them from its
-// `dependencies` section (see `addResolvedPackages`). A tool without a
-// package cache sees only the packages listed by path.
-export function loadPackageMap(
-  host: CompilerHost,
-  manifestPath: String,
-  projectRoot: String | null = null,
-  packageCache: String | null = null
-): HashMap<String, PackageConfig> {
-  let source = host.readFile(manifestPath);
-  let json = parseJson(source);
-  let root = json as JsonObject;
-  let manifestDir = dirName(manifestPath);
-  let result = new Map<String, PackageConfig>();
-
-  if (root.has("packages")) {
-    let packages = root["packages"] as JsonObject;
-    packages.forEach((name, value) => {
-      // Skip "zena" — stdlib is handled by the compiler.
-      if (name == "zena") {
-        return;
-      }
-      let config = parsePackageEntry(value, manifestDir, projectRoot);
-      result[name] = config;
-    });
-  }
-
-  if (packageCache != null) {
-    addResolvedPackages(root, packageCache, result);
-  }
-  return result;
-}
-
-// Adds the packages a resolution file pins, and the project's names for
-// them (docs/design/package-manager.md, "The resolution file"):
-//
-//   "dependencies": {"router": "did:plc:...@1"},
-//   "resolved": {
-//     "did:plc:...@1": {
-//       "version": "1.4.2", "release": "bafyrei...", "source": "bafkrei...",
-//       "dependencies": {"json": "did:web:json.example.com@2"}
-//     }
-//   }
-//
-// Each resolved package is keyed by DID and major version and rooted at
-// its unpacked source archive, `<packageCache>/sources/<source CID>`. Its
-// own `dependencies` are the names its files import. Each of the
-// project's `dependencies` becomes an alias of the key it names.
-function addResolvedPackages(
-  manifest: JsonObject,
-  packageCache: String,
-  result: HashMap<String, PackageConfig>
-): void {
-  addPins(manifest, packageCache, result, "zena-packages.json");
-  let projectNames = nameMap(manifest, "the workspace", "zena-packages.json");
-  projectNames.forEach((name, target) => {
-    if (result.has(name)) {
-      throw new Error(`zena-packages.json: '${name}' is both a package and a dependency`);
-    }
-    if (!isResolved(result, target)) {
-      throw new Error(
-          `zena-packages.json: dependency '${name}' is ${target}, but "resolved" has no ${target}`);
-    }
-    let alias = new PackageConfig("", null);
-    alias.aliasOf = target;
-    result[name] = alias;
-  });
-}
 
 // Adds the packages the `resolved` section of `json`, from `file`, pins:
 // each keyed by DID and major version and rooted at its unpacked source
@@ -246,18 +143,19 @@ function isCidText(text: String): boolean {
   return true;
 }
 
-// The packages of the workspace in `root` (docs/design/package-manifest.md).
-// With a `zena-package.json` there, they come from the manifests: the root's,
-// each workspace package's, and those of the packages they depend on by
-// path, with published packages pinned in `zena-lock.json`. With only a
-// `zena-packages.json`, the format that predates the manifests, they come
-// from that (`loadPackageMap`). Without either, there are none.
+// The packages of the workspace in `root` (docs/design/package-manifest.md):
+// the root manifest's, each workspace package's, and those of the packages
+// they depend on by path, with published packages pinned in
+// `zena-lock.json`. Without a `zena-package.json` in `root`, there are none,
+// and a file sees only the standard library and its relative imports.
 //
 // Each package is keyed by its `name`, or by its directory when it has
 // none, and gets its own names (`PackageConfig.dependencies`): its
 // dependencies' local names, and its own. Files in no package see the
-// packages by their keys. Published packages are added only with a
-// `packageCache`, as `loadPackageMap` does.
+// packages by their keys, and the dependencies of a root manifest that is
+// not a package. A relative path that climbs out of the working directory
+// is read against `projectRoot`, its absolute path, when given. Published
+// packages are added only with a `packageCache`.
 export function loadWorkspace(
   host: CompilerHost,
   root: String,
@@ -266,10 +164,6 @@ export function loadWorkspace(
 ): HashMap<String, PackageConfig> {
   if (fileExists(host, joinPath(root, "zena-package.json"))) {
     return new WorkspaceLoader(host, projectRoot, packageCache).load(root);
-  }
-  let legacy = joinPath(root, "zena-packages.json");
-  if (fileExists(host, legacy)) {
-    return loadPackageMap(host, legacy, projectRoot, packageCache);
   }
   return new Map<String, PackageConfig>();
 }
@@ -306,6 +200,8 @@ final class WorkspaceLoader {
     let manifest = this.#readJson(joinPath(root, "zena-package.json"));
     if (manifest.has("name")) {
       this.#loadPackage(root, manifest);
+    } else {
+      this.#loadRootNames(root, manifest);
     }
     let workspace = manifest["workspace"];
     if (workspace != null) {
@@ -367,6 +263,9 @@ final class WorkspaceLoader {
     if (let (true, other) = this.#dirs.get(key)) {
       throw new Error(`${other} and ${path} are both packages named '${key}'`);
     }
+    if (this.#result.has(key)) {
+      throw new Error(`${path}/zena-package.json: '${key}' is also the root's name for another package`);
+    }
     let config = new PackageConfig(path, parseExports(manifest));
     let names = new Map<String, String>();
     config.dependencies = names;
@@ -381,36 +280,77 @@ final class WorkspaceLoader {
       return key;
     }
     (dependencies as JsonObject).forEach((localName, value) => {
-      if (!isLocalName(localName)) {
-        throw new Error(`${path}/zena-package.json: '${localName}' is not a package name`);
-      }
-      let entry = value as JsonObject;
-      if (entry.has("path")) {
-        let target = resolveManifestPath(entry["path"] as String, path, this.#projectRoot);
-        names[localName] = this.#loadPackageAt(target);
-      } else if (entry.has("wit")) {
-        let witRoot = resolveManifestPath(entry["wit"] as String, path, this.#projectRoot);
-        if (let (true, existing) = this.#result.get(localName)) {
-          if (existing.witRoot != witRoot) {
-            throw new Error(`${path}/zena-package.json: '${localName}' names a WIT package another package names differently`);
-          }
-        } else {
-          let wit = new PackageConfig("", null);
-          wit.witRoot = witRoot;
-          this.#result[localName] = wit;
-        }
-        names[localName] = localName;
-      } else if (this.#packageCache != null) {
-        let did = entry["did"] as String;
-        let pinned = `${did}@${majorOf(entry["version"] as String)}`;
-        if (!isResolved(this.#result, pinned)) {
-          throw new Error(
-              `${path}/zena-package.json: '${localName}' is ${pinned}, which zena-lock.json does not pin. Run 'zena add' or 'zena update'.`);
-        }
-        names[localName] = pinned;
+      let target = this.#dependency(path, localName, value);
+      if (target != null) {
+        names[localName] = target;
       }
     });
     return key;
+  }
+
+  // A root manifest that is not a package: its dependencies are names for
+  // the files in no package, such as scripts and examples.
+  #loadRootNames(root: String, manifest: JsonObject): void {
+    let dependencies = manifest["dependencies"];
+    if (dependencies == null) {
+      return;
+    }
+    let path = normalizePath(root);
+    (dependencies as JsonObject).forEach((localName, value) => {
+      let target = this.#dependency(path, localName, value);
+      if (target != null && target != localName) {
+        if (this.#result.has(localName)) {
+          throw new Error(`${path}/zena-package.json: '${localName}' is also a package's name`);
+        }
+        let alias = new PackageConfig("", null);
+        alias.aliasOf = target;
+        this.#result[localName] = alias;
+      }
+    });
+  }
+
+  // The key of the package the dependency `localName` of the manifest in
+  // `dir` names, loading or registering it first; null for a published
+  // package when there is no package cache.
+  #dependency(dir: String, localName: String, value: JsonValue): String | null {
+    if (!isLocalName(localName)) {
+      throw new Error(`${dir}/zena-package.json: '${localName}' is not a package name`);
+    }
+    if (!(value is JsonObject)) {
+      throw new Error(`${dir}/zena-package.json: dependency '${localName}' is not an object`);
+    }
+    let entry = value as JsonObject;
+    if (entry.has("path")) {
+      let target = resolveManifestPath(entry["path"] as String, dir, this.#projectRoot);
+      return this.#loadPackageAt(target);
+    }
+    if (entry.has("wit")) {
+      let witRoot = resolveManifestPath(entry["wit"] as String, dir, this.#projectRoot);
+      if (let (true, existing) = this.#result.get(localName)) {
+        if (existing.witRoot != witRoot) {
+          throw new Error(`${dir}/zena-package.json: '${localName}' names a WIT package another package names differently`);
+        }
+      } else {
+        let wit = new PackageConfig("", null);
+        wit.witRoot = witRoot;
+        this.#result[localName] = wit;
+      }
+      return localName;
+    }
+    if (this.#packageCache == null) {
+      return null;
+    }
+    let did = entry["did"];
+    let version = entry["version"];
+    if (!(did is String) || !(version is String)) {
+      throw new Error(`${dir}/zena-package.json: dependency '${localName}' has no path, WIT, or DID and version`);
+    }
+    let pinned = `${did as String}@${majorOf(version as String)}`;
+    if (!isResolved(this.#result, pinned)) {
+      throw new Error(
+          `${dir}/zena-package.json: '${localName}' is ${pinned}, which zena-lock.json does not pin. Run 'zena add' or 'zena update'.`);
+    }
+    return pinned;
   }
 
   #readJson(path: String): JsonObject {
@@ -431,12 +371,17 @@ function joinPath(dir: String, name: String): String {
   return `${dir}/${name}`;
 }
 
-// Whether the file `path` exists, asked of its directory's listing, which
-// every host answers.
+// Whether the file `path` exists, asked of its directory's listing. A host
+// that cannot list directories, such as the browser language service's, is
+// asked for the file, and an empty or missing one counts as absent.
 function fileExists(host: CompilerHost, path: String): boolean {
   let names = host.listDir(dirName(path));
   if (names == null) {
-    return false;
+    try {
+      return host.readFile(path) != "";
+    } catch (e) {
+      return false;
+    }
   }
   var base = path;
   for (var i = 0; i < path.length; i += 1) {
@@ -467,37 +412,7 @@ function majorOf(version: String): String {
   return version;
 }
 
-// Parse a single package entry from the manifest.
-//
-// Supports two forms:
-// - String shorthand: "./path/to/lib" → open package with that root
-// - Object form: { root, exports? }
-function parsePackageEntry(value: JsonValue, manifestDir: String, projectRoot: String | null): PackageConfig {
-  // String shorthand: just a path.
-  if (value is String) {
-    return new PackageConfig(resolveManifestPath(value, manifestDir, projectRoot), null);
-  }
-
-  // Object form.
-  let obj = value as JsonObject;
-
-  // WIT-backed form: {"wit": "./path"} — the package's modules are WIT
-  // interfaces, synthesized by the host from the .wit source there.
-  if (obj.has("wit")) {
-    let witValue = obj["wit"] as String;
-    let config = new PackageConfig("", null);
-    config.witRoot = resolveManifestPath(witValue, manifestDir, projectRoot);
-    return config;
-  }
-
-  let rootValue = obj["root"] as String;
-  let root = resolveManifestPath(rootValue, manifestDir, projectRoot);
-
-  return new PackageConfig(root, parseExports(obj));
-}
-
-// The `exports` of a package entry or manifest, or null when it has none:
-// an open package.
+// The `exports` of a manifest, or null when it has none: an open package.
 function parseExports(obj: JsonObject): HashMap<String, ModuleExport> | null {
   if (!obj.has("exports")) {
     return null;
@@ -511,7 +426,8 @@ function parseExports(obj: JsonObject): HashMap<String, ModuleExport> | null {
   return exportsMap;
 }
 
-// A directory the manifest names, as `loadPackageMap` describes.
+// A directory a manifest names, relative to `manifestDir` (see
+// `loadWorkspace`).
 function resolveManifestPath(value: String, manifestDir: String, projectRoot: String | null): String {
   if (value.startsWith("/")) {
     return normalizePath(value);

@@ -21,7 +21,7 @@
 
 import { Diagnostic, DiagnosticSeverity, SourceSpan } from 'zena-compiler:diagnostics';
 import { PackageConfig } from 'zena-compiler:module-resolver';
-import { loadPackageMap } from 'zena-compiler:package-manifest';
+import { loadWorkspace } from 'zena-compiler:package-manifest';
 import { DocumentHost } from './lib/host.zena';
 import { format as formatSource } from 'zena-formatter:printer';
 import {
@@ -57,14 +57,13 @@ var __ls: LanguageService | null = null;
  * Must be called once before check().
  */
 export let init = (stdlibRoot: String): void => {
-  // The project's package map, when the host can read one from the
-  // working directory, so that imports like `wit-parser:wit` resolve
-  // the way they do for `zena build`. Without it a library of a
+  // The workspace's packages, when the host can read its manifests from
+  // the working directory, so that imports like `wit-parser:wit` resolve
+  // the way they do for `zena build`. Without them a library of a
   // package in this repository reports every such import missing.
   var packageMap: Map<String, PackageConfig> | null = null;
-  if (readHostFile("zena-packages.json") != null) {
-    packageMap = loadPackageMap(
-        new DocumentHost(stdlibRoot, readHostFile), "zena-packages.json");
+  if (readHostFile("zena-package.json") != null) {
+    packageMap = loadWorkspace(new DocumentHost(stdlibRoot, readHostFile), ".");
   }
   __ls = createLanguageService(stdlibRoot, readHostFile, 'js', packageMap);
 };

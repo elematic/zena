@@ -141,6 +141,15 @@ syntax it just gained). Two options, in order of preference:
    impractical: build the new bootstrap from the last commit the old
    bootstrap could build, then apply the source change on top.
 
+The same holds for what the compiler reads besides source. The
+repository's packages are a workspace of `zena-package.json` manifests
+(package-manifest.md), and the compiler reads nothing else, but the
+checked-in bootstrap predates them: it reads `zena-packages.json`, the
+format they replaced, to find `wit-parser` when `build:cli` runs it. So
+the repository keeps a `zena-packages.json` for the bootstrap alone,
+and `build:cli` lists it as an input. It goes in the first change after
+a re-baseline.
+
 ## Re-baselining
 
 ```bash

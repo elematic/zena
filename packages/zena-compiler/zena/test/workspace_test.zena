@@ -1,0 +1,106 @@
+/**
+ * Compiling in a workspace: the packages `loadWorkspace` reads from the
+ * manifests and the lockfile, handed to a compiler, resolve each import by
+ * the names its own package gives (docs/design/package-manifest.md).
+ *
+ * The workspace's root is the package `app`, which depends on the
+ * workspace package `lib` by path and on the published package `router`.
+ * `lib` depends on `router` too, under a name of its own, `paths`, and
+ * `router` depends on `json`. Both published packages are pinned in
+ * `zena-lock.json` and unpacked in the package cache. What the `zena`
+ * command adds, the cache's directory and the workspace's absolute path,
+ * is tested with the command (packages/zena-cli/tests/package_map.rs).
+ */
+
+import { suite, test } from 'zena:test';
+import { equal, isTrue } from 'zena:assert';
+import { checkCompilation } from '../lib/compiler.zena';
+import { Diagnostic } from '../lib/diagnostics.zena';
+import { loadWorkspace } from '../lib/package-manifest.zena';
+import { MockHost, makeCompiler, errorDiagnostics } from './test-utils.zena';
+
+function workspace(): MockHost {
+  let host = new MockHost();
+  host.addFile("/ws/zena-package.json", `{
+    "name": "app",
+    "dependencies": {
+      "lib": {"path": "./packages/lib"},
+      "router": {"did": "did:plc:router", "version": "1.4.2"}
+    },
+    "workspace": {"packages": ["packages/*"]}
+  }`);
+  host.addFile("/ws/zena-lock.json", `{
+    "resolved": {
+      "did:plc:router@1": {
+        "version": "1.4.2",
+        "release": "bafyreirouter",
+        "source": "bafkreirouter",
+        "dependencies": {"json": "did:web:json@2"}
+      },
+      "did:web:json@2": {"version": "2.1.0", "release": "bafyreijson", "source": "bafkreijson"}
+    }
+  }`);
+  host.addFile("/ws/packages/lib/zena-package.json", `{
+    "name": "lib",
+    "dependencies": {"paths": {"did": "did:plc:router", "version": "1.0.0"}}
+  }`);
+  host.addFile("/ws/packages/lib/lib.zena",
+      "import { route } from 'paths:match';\nexport let two = (): i32 => route() - 38;\n");
+  host.addFile("/cache/sources/bafkreirouter/match.zena",
+      "import { parse } from 'json:parse';\nexport let route = (): i32 => parse() - 1;\n");
+  host.addFile("/cache/sources/bafkreijson/parse.zena",
+      "export let parse = (): i32 => 41;\n");
+  host.addFile("/ws/prog.zena",
+      "import { two } from 'lib:lib';\nimport { route } from 'router:match';\n" +
+      "export let run = (): i32 => route() + two() - 42;\n");
+  return host;
+}
+
+/** The errors from compiling `entry` in the workspace `host` holds. */
+function compileErrors(host: MockHost, entry: String): Array<Diagnostic> {
+  let packages = loadWorkspace(host, "/ws", null, "/cache");
+  let compiler = makeCompiler(host, packages);
+  return errorDiagnostics(checkCompilation(compiler.compile({entry, target: 'js'})).diagnostics);
+}
+
+/**
+ * Whether compiling `entry` fails with a message that mentions `name`, as
+ * a diagnostic or as the error a name that resolves to nothing throws.
+ */
+function failsNaming(host: MockHost, entry: String, name: String): boolean {
+  let packages = loadWorkspace(host, "/ws", null, "/cache");
+  let compiler = makeCompiler(host, packages);
+  try {
+    let errors = errorDiagnostics(checkCompilation(compiler.compile({entry, target: 'js'})).diagnostics);
+    for (let error in errors) {
+      if (error.message.contains(name)) {
+        return true;
+      }
+    }
+    return false;
+  } catch (e) {
+    return e.message.contains(name);
+  }
+}
+
+export let tests = suite('Workspace', () => {
+
+  test('compiles with workspace and published packages, each under its own names', () => {
+    equal(compileErrors(workspace(), "/ws/prog.zena").length, 0);
+  });
+
+  test("a workspace package does not see another package's names", () => {
+    let host = workspace();
+    // `router` is app's name for the package, not lib's.
+    host.addFile("/ws/packages/lib/lib.zena",
+        "import { route } from 'router:match';\nexport let two = (): i32 => route() - 38;\n");
+    isTrue(failsNaming(host, "/ws/prog.zena", "router"));
+  });
+
+  test("a dependency's dependency is not the workspace's to import", () => {
+    let host = workspace();
+    host.addFile("/ws/direct.zena",
+        "import { parse } from 'json:parse';\nexport let run = (): i32 => parse() - 41;\n");
+    isTrue(failsNaming(host, "/ws/direct.zena", "json"));
+  });
+});

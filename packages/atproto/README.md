@@ -5,8 +5,10 @@ encodings, cryptography and repositories. The package manager
 ([docs/design/package-manager.md](../../docs/design/package-manager.md))
 publishes and verifies packages with them.
 
-Import them as `atproto:<library>`, with an
-`"atproto": "./packages/atproto/zena"` entry in `zena-packages.json`.
+Import them as `atproto:<library>`. In this repository's workspace any
+file outside a package can; a package lists
+`"atproto": {"path": "<path to packages/atproto/zena>"}` in its
+`zena-package.json` dependencies.
 
 ## Libraries
 

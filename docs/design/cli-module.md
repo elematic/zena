@@ -258,8 +258,8 @@ about 130 lines) does what `zena-run` does, plus three things:
   checkout the binary was built in, and `ZENA_CLI_MODULE`, else
   `packages/zena-cli/out/zena.wasm` under it.
 - It preopens the repository as `.`, first, because `zena:fs` resolves a
-  relative path against the first preopen and the compiler reads
-  `zena-packages.json` and the standard library relative to it. It
+  relative path against the first preopen and the compiler reads the
+  workspace's `zena-package.json` and the standard library relative to it. It
   preopens `/` as `/` too, because the command works with files anywhere
   the user points it, and grants the module the spawn capability.
 - It tells the module what it cannot find out for itself, in environment

@@ -4,9 +4,9 @@ The client side of Zena packages published on atproto, as designed in
 [docs/design/package-manager.md](../../docs/design/package-manager.md). The
 `zena` commands that fetch and publish packages are built on it.
 
-Import its libraries as `package-manager:<library>`, with a
-`"package-manager": "./packages/package-manager/zena"` entry in
-`zena-packages.json`.
+Import its libraries as `package-manager:<library>`, from a file outside a
+package in this repository's workspace or from a package that lists it in its
+`zena-package.json` dependencies.
 
 ## Libraries
 

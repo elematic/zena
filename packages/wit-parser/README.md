@@ -25,8 +25,9 @@ TEST-STATUS.md.
 
 ## Using it
 
-The parser is a Zena package. `zena-packages.json` at the repository root maps
-it, so any Zena code in this repo can import it:
+The parser is a Zena package of the repository's workspace
+(`zena/zena-package.json`), so any Zena code in this repo outside a package, or
+in one that depends on it, can import it:
 
 ```zena
 import { parse } from 'wit-parser:wit';

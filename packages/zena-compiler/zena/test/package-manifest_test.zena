@@ -5,35 +5,11 @@
 import { suite, test } from 'zena:test';
 import { equal, isTrue, isFalse } from 'zena:assert';
 import { readFileSync } from 'zena:fs';
-import { JsonObject, JsonValue, parseJson } from 'zena:json';
+import { JsonObject, parseJson } from 'zena:json';
 import { ModuleExport } from '../lib/module-resolver.zena';
-import { loadPackageMap, loadWorkspace, buildStdlibConfig } from '../lib/package-manifest.zena';
+import { loadWorkspace, buildStdlibConfig } from '../lib/package-manifest.zena';
 import { stdlibLibraryOf, stdlibLibraryAnswers } from '../lib/stdlib-manifest.zena';
 import { MockHost } from './test-utils.zena';
-
-/**
- * A resolution file for a project that uses one published package,
- * router, which itself uses json.
- */
-function resolutionFile() {
-  return `{
-    "packages": {"app": "./src"},
-    "dependencies": {"router": "did:plc:router@1"},
-    "resolved": {
-      "did:plc:router@1": {
-        "version": "1.4.2",
-        "release": "bafyreirouter",
-        "source": "bafkreirouter",
-        "dependencies": {"json": "did:web:json.example.com@2"}
-      },
-      "did:web:json.example.com@2": {
-        "version": "2.1.0",
-        "release": "bafyreijson",
-        "source": "bafkreijson"
-      }
-    }
-  }`;
-}
 
 export let tests = suite("Package Manifest", () => {
 
@@ -121,13 +97,110 @@ export let tests = suite("Package Manifest", () => {
       equal(packages["b"].root, "/ws/b");
     });
 
-    test("falls back to zena-packages.json without a manifest", () => {
+    test("gives the files in no package the dependencies of a root that is not a package", () => {
       let host = new MockHost();
-      host.addFile("/ws/zena-packages.json", '{"packages": {"lib": "./lib"}}');
-      let packages = loadWorkspace(host, "/ws");
+      host.addFile("/ws/zena-package.json", `{
+        "workspace": {"packages": ["lib"]},
+        "dependencies": {
+          "library": {"path": "./lib"},
+          "gfx": {"wit": "./wit"},
+          "router": {"did": "did:plc:router", "version": "1.0.0"}
+        }
+      }`);
+      host.addFile("/ws/lib/zena-package.json", '{"name": "lib"}');
+      host.addFile("/ws/zena-lock.json",
+          '{"resolved": {"did:plc:router@1": {"version": "1.0.0", "source": "bafkreirouter"}}}');
+      let packages = loadWorkspace(host, "/ws", null, "/cache");
+      equal(packages["library"].aliasOf as String, "lib");
+      equal(packages["router"].aliasOf as String, "did:plc:router@1");
+      equal(packages["gfx"].witRoot as String, "/ws/wit");
       equal(packages["lib"].root, "/ws/lib");
-      isTrue(packages["lib"].dependencies == null);
-      equal(loadWorkspace(new MockHost(), "/ws").size, 0);
+    });
+
+    test("reads a path outside the workspace against the workspace's absolute path", () => {
+      let host = new MockHost();
+      host.addFile("zena-package.json", `{
+        "name": "app",
+        "dependencies": {
+          "sibling": {"path": "../zena/packages/lib"},
+          "inside": {"path": "./packages/inside"},
+          "elsewhere": {"path": "/elsewhere/lib"},
+          "w": {"wit": "../zena/wit"}
+        }
+      }`);
+      host.addFile("/home/me/zena/packages/lib/zena-package.json", '{"name": "sibling"}');
+      host.addFile("packages/inside/zena-package.json", '{"name": "inside"}');
+      host.addFile("/elsewhere/lib/zena-package.json", '{"name": "elsewhere"}');
+      let packages = loadWorkspace(host, ".", "/home/me/project");
+      equal(packages["app"].root, ".");
+      equal(packages["sibling"].root, "/home/me/zena/packages/lib");
+      equal(packages["w"].witRoot as String, "/home/me/zena/wit");
+      equal(packages["elsewhere"].root, "/elsewhere/lib");
+      // A package inside the workspace stays relative, as library paths
+      // and diagnostics expect.
+      equal(packages["inside"].root, "packages/inside");
+    });
+
+    test("parses each form of export", () => {
+      let host = new MockHost();
+      host.addFile("/ws/zena-package.json", `{
+        "name": "lib",
+        "exports": {
+          "plain": {},
+          "widgets": {"path": "widgets/index.zena", "internal": true},
+          "console": {"virtual": {"js": "console/js.zena", "zena-cli": "console/cli.zena"}},
+          "legacy": {"virtual": {"host": "legacy/js.zena"}}
+        }
+      }`);
+      let exports = loadWorkspace(host, "/ws")["lib"].exports as HashMap<String, ModuleExport>;
+      equal(exports.size, 4);
+      isTrue(exports["plain"].path == null);
+      isFalse(exports["plain"].internal);
+      equal(exports["widgets"].path as String, "widgets/index.zena");
+      isTrue(exports["widgets"].internal);
+      let console = exports["console"].virtual as HashMap<String, String>;
+      equal(console["js"], "console/js.zena");
+      equal(console["zena-cli"], "console/cli.zena");
+      // A virtual entry under the old target name `host` is the `js` one.
+      let legacy = exports["legacy"].virtual as HashMap<String, String>;
+      equal(legacy["js"], "legacy/js.zena");
+      isFalse(legacy.has("host"));
+    });
+
+    test("has no packages without a manifest", () => {
+      let host = new MockHost();
+      host.addFile("/ws/main.zena", "");
+      equal(loadWorkspace(host, "/ws", null, "/cache").size, 0);
+    });
+
+    test("rejects a lockfile whose pins do not hold together", () => {
+      let router = '"did:plc:router@1": {"source": "bafkreirouter"}';
+      let rejects = (lock: String) => {
+        let host = new MockHost();
+        host.addFile("/ws/zena-package.json", '{"name": "app"}');
+        host.addFile("/ws/zena-lock.json", lock);
+        var caught = false;
+        try {
+          loadWorkspace(host, "/ws", null, "/cache");
+        } catch (e) {
+          caught = true;
+        }
+        isTrue(caught, lock);
+      };
+      // Keys that are not a DID and major version.
+      rejects('{"resolved": {"router@1": {"source": "bafkreirouter"}}}');
+      rejects('{"resolved": {"did:plc:router": {"source": "bafkreirouter"}}}');
+      rejects('{"resolved": {"did:plc:router@one": {"source": "bafkreirouter"}}}');
+      // Sources that are not CIDs, which could name any directory.
+      rejects('{"resolved": {"did:plc:router@1": {"source": "../../etc"}}}');
+      rejects('{"resolved": {"did:plc:router@1": {"source": "bafkrei/router"}}}');
+      rejects('{"resolved": {"did:plc:router@1": {}}}');
+      rejects('{"resolved": {"did:plc:router@1": "bafkreirouter"}}');
+      // Two packages in one directory.
+      rejects(`{"resolved": {${router}, "did:plc:copy@1": {"source": "bafkreirouter"}}}`);
+      // A pin's dependency that is not pinned, or not a name.
+      rejects('{"resolved": {"did:plc:router@1": {"source": "bafkreirouter", "dependencies": {"json": "did:web:json@2"}}}}');
+      rejects(`{"resolved": {"did:plc:router@1": {"source": "bafkreirouter", "dependencies": {"a:b": "did:plc:router@1"}}}}`);
     });
 
     test("rejects a workspace that does not hold together", () => {
@@ -155,214 +228,13 @@ export let tests = suite("Package Manifest", () => {
           '{"name": "app", "dependencies": {"router": {"did": "did:plc:router", "version": "1.0.0"}}}')],
           "a published dependency the lockfile does not pin");
       rejects([("/ws/zena-package.json", '{"name": "zena"}')], "the standard library's name");
-    });
-  });
-
-  suite("loadPackageMap", () => {
-
-    test("parses string shorthand packages", () => {
-      let host = new MockHost();
-      host.addFile("/project/zena-packages.json", '{"packages": {"mylib": "./lib/mylib"}}');
-
-      let packages = loadPackageMap(host, "/project/zena-packages.json");
-      isTrue(packages.has("mylib"));
-
-      let config = packages["mylib"];
-      equal(config.root, "/project/lib/mylib");
-      // String shorthand → open package (no exports restriction).
-      equal(config.exports == null, true);
-    });
-
-    test("keeps an absolute root as written", () => {
-      let host = new MockHost();
-      // compile-file reads the manifest by a relative path; the language
-      // server by an absolute one.
-      host.addFile("zena-packages.json", '{"packages": {"lib": "/elsewhere/lib"}}');
-      host.addFile("/project/zena-packages.json", '{"packages": {"lib": "/elsewhere/lib"}}');
-      equal(loadPackageMap(host, "zena-packages.json")["lib"].root, "/elsewhere/lib");
-      equal(loadPackageMap(host, "/project/zena-packages.json")["lib"].root, "/elsewhere/lib");
-    });
-
-    test("keeps absolute roots in the object form and for WIT packages", () => {
-      let host = new MockHost();
-      host.addFile("zena-packages.json", '{"packages": {"lib": {"root": "/elsewhere/lib"}, "w": {"wit": "/elsewhere/wit"}}}');
-      let packages = loadPackageMap(host, "zena-packages.json");
-      equal(packages["lib"].root, "/elsewhere/lib");
-      equal(packages["w"].witRoot as String, "/elsewhere/wit");
-    });
-
-    test("resolves a root above the project against the project's absolute path", () => {
-      let host = new MockHost();
-      host.addFile("zena-packages.json", '{"packages": {"sibling": "../zena/packages/lib", "inside": "./packages/app", "w": {"wit": "../zena/wit"}}}');
-      let packages = loadPackageMap(host, "zena-packages.json", "/home/me/project");
-      equal(packages["sibling"].root, "/home/me/zena/packages/lib");
-      equal(packages["w"].witRoot as String, "/home/me/zena/wit");
-      // A root inside the project stays relative, as module paths and
-      // diagnostics expect.
-      equal(packages["inside"].root, "packages/app");
-    });
-
-    test("leaves a root above the project relative when its path is unknown", () => {
-      let host = new MockHost();
-      host.addFile("zena-packages.json", '{"packages": {"sibling": "../zena/packages/lib"}}');
-      equal(loadPackageMap(host, "zena-packages.json")["sibling"].root, "../zena/packages/lib");
-    });
-
-    test("parses object form packages", () => {
-      let host = new MockHost();
-      host.addFile("/project/zena-packages.json", '{"packages": {"mylib": {"root": "./lib/mylib", "exports": {"utils": {}, "math": {}}}}}');
-
-      let packages = loadPackageMap(host, "/project/zena-packages.json");
-      let config = packages["mylib"];
-      equal(config.root, "/project/lib/mylib");
-
-      // Exports present.
-      isTrue(config.exports != null);
-      let exports = config.exports as Map<String, ModuleExport>;
-      isTrue(exports.has("utils"));
-      isFalse(exports.has("impl"));
-    });
-
-    test("parses module exports with explicit entry paths", () => {
-      let host = new MockHost();
-      host.addFile("/project/zena-packages.json", '{"packages": {"mylib": {"root": "./lib", "exports": {"widgets": {"path": "widgets/index.zena"}, "utils": {}}}}}');
-
-      let packages = loadPackageMap(host, "/project/zena-packages.json");
-      let config = packages["mylib"];
-      let exports = config.exports as Map<String, ModuleExport>;
-      equal(exports["widgets"].path as String, "widgets/index.zena");
-      equal(exports["utils"].path == null, true);
-    });
-
-    test("parses virtual module exports", () => {
-      let host = new MockHost();
-      host.addFile("/project/zena-packages.json", '{"packages": {"mylib": {"root": "./lib", "exports": {"console": {"virtual": {"js": "console/js.zena", "zena-cli": "console/cli.zena"}}}}}}');
-
-      let packages = loadPackageMap(host, "/project/zena-packages.json");
-      let config = packages["mylib"];
-      let exports = config.exports as Map<String, ModuleExport>;
-      let consoleExport = exports["console"];
-      let virtual = consoleExport.virtual as Map<String, String>;
-      equal(virtual["js"], "console/js.zena");
-      equal(virtual["zena-cli"], "console/cli.zena");
-    });
-
-    test("keys a virtual entry under the legacy name host as js", () => {
-      let host = new MockHost();
-      host.addFile("/project/zena-packages.json", '{"packages": {"mylib": {"root": "./lib", "exports": {"console": {"virtual": {"host": "console/js.zena"}}}}}}');
-
-      let packages = loadPackageMap(host, "/project/zena-packages.json");
-      let exports = packages["mylib"].exports as Map<String, ModuleExport>;
-      let virtual = exports["console"].virtual as Map<String, String>;
-      equal(virtual["js"], "console/js.zena");
-      isFalse(virtual.has("host"));
-    });
-
-    test("parses the internal flag, on any entry shape", () => {
-      let host = new MockHost();
-      host.addFile("/project/zena-packages.json",
-          '{"packages": {"mylib": {"root": "./lib", "exports": {' +
-          '"plain": {"internal": true}, ' +
-          '"withPath": {"path": "impl/x.zena", "internal": true}, ' +
-          '"virt": {"virtual": {"js": "impl/h.zena"}, "internal": true}, ' +
-          '"open": {}}}}}');
-
-      let packages = loadPackageMap(host, "/project/zena-packages.json");
-      let exports = packages["mylib"].exports as Map<String, ModuleExport>;
-      isTrue(exports["plain"].internal);
-      isTrue(exports["withPath"].internal);
-      isTrue(exports["virt"].internal);
-      // An entry that says nothing is public, which is the common case.
-      isFalse(exports["open"].internal);
-    });
-
-    test("skips zena package from manifest", () => {
-      let host = new MockHost();
-      host.addFile("/project/zena-packages.json", '{"packages": {"zena": {"root": "/stdlib"}, "mylib": "./lib"}}');
-
-      let packages = loadPackageMap(host, "/project/zena-packages.json");
-      // "zena" is skipped — the compiler handles stdlib internally.
-      isFalse(packages.has("zena"));
-      isTrue(packages.has("mylib"));
-    });
-
-    test("handles empty packages", () => {
-      let host = new MockHost();
-      host.addFile("/project/zena-packages.json", '{"packages": {}}');
-
-      let packages = loadPackageMap(host, "/project/zena-packages.json");
-      equal(packages.size, 0);
-    });
-
-    test("adds the packages a resolution file pins, rooted in the package cache", () => {
-      let host = new MockHost();
-      host.addFile("zena-packages.json", resolutionFile());
-      let packages = loadPackageMap(host, "zena-packages.json", null, "/cache");
-
-      equal(packages["app"].root, "src");
-      isTrue(packages["app"].dependencies == null);
-
-      let router = packages["did:plc:router@1"];
-      equal(router.root, "/cache/sources/bafkreirouter");
-      let routerNames = router.dependencies as HashMap<String, String>;
-      equal(routerNames.size, 1);
-      equal(routerNames["json"], "did:web:json.example.com@2");
-      let json = packages["did:web:json.example.com@2"];
-      equal(json.root, "/cache/sources/bafkreijson");
-      equal((json.dependencies as HashMap<String, String>).size, 0);
-
-      // The project's name for router is an alias with no root.
-      equal(packages["router"].aliasOf as String, "did:plc:router@1");
-      equal(packages["router"].root, "");
-      isFalse(packages.has("json"));
-    });
-
-    test("leaves the pinned packages out without a package cache", () => {
-      let host = new MockHost();
-      host.addFile("zena-packages.json", resolutionFile());
-      let packages = loadPackageMap(host, "zena-packages.json");
-      equal(packages.size, 1);
-      isTrue(packages.has("app"));
-    });
-
-    test("reads a resolution file with no packages listed by path", () => {
-      let host = new MockHost();
-      host.addFile("zena-packages.json", '{"dependencies": {}, "resolved": {}}');
-      equal(loadPackageMap(host, "zena-packages.json", null, "/cache").size, 0);
-    });
-
-    test("rejects a resolution file whose pins do not hold together", () => {
-      let router = '"did:plc:router@1": {"source": "bafkreirouter"}';
-      let rejects = (text: String) => {
-        let host = new MockHost();
-        host.addFile("zena-packages.json", text);
-        var caught = false;
-        try {
-          loadPackageMap(host, "zena-packages.json", null, "/cache");
-        } catch (e) {
-          caught = true;
-        }
-        isTrue(caught, text);
-      };
-      // Keys that are not a DID and major version.
-      rejects('{"resolved": {"router@1": {"source": "bafkreirouter"}}}');
-      rejects('{"resolved": {"did:plc:router": {"source": "bafkreirouter"}}}');
-      rejects('{"resolved": {"did:plc:router@one": {"source": "bafkreirouter"}}}');
-      // Sources that are not CIDs, which could name any directory.
-      rejects('{"resolved": {"did:plc:router@1": {"source": "../../etc"}}}');
-      rejects('{"resolved": {"did:plc:router@1": {"source": "bafkrei/router"}}}');
-      rejects('{"resolved": {"did:plc:router@1": {}}}');
-      rejects('{"resolved": {"did:plc:router@1": "bafkreirouter"}}');
-      // Two packages in one directory.
-      rejects(`{"resolved": {${router}, "did:plc:copy@1": {"source": "bafkreirouter"}}}`);
-      // Names for packages that are not pinned.
-      rejects(`{"dependencies": {"router": "did:plc:other@1"}, "resolved": {${router}}}`);
-      rejects('{"resolved": {"did:plc:router@1": {"source": "bafkreirouter", "dependencies": {"json": "did:web:json@2"}}}}');
-      // Names that clash or cannot be imported.
-      rejects(`{"packages": {"router": "./router"}, "dependencies": {"router": "did:plc:router@1"}, "resolved": {${router}}}`);
-      rejects(`{"dependencies": {"zena": "did:plc:router@1"}, "resolved": {${router}}}`);
-      rejects(`{"dependencies": {"a:b": "did:plc:router@1"}, "resolved": {${router}}}`);
-      rejects(`{"dependencies": {"router": 1}, "resolved": {${router}}}`);
+      rejects([("/ws/zena-package.json", '{"name": "app", "dependencies": {"a:b": {"path": "."}}}')],
+          "a local name that cannot be imported");
+      rejects([
+        ("/ws/zena-package.json", '{"workspace": {"packages": ["lib"]}, "dependencies": {"lib": {"path": "./other"}}}'),
+        ("/ws/lib/zena-package.json", '{"name": "lib"}'),
+        ("/ws/other/zena-package.json", '{"name": "other"}'),
+      ], "a root name that is also a package's");
     });
   });
 

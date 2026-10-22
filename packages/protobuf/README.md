@@ -25,8 +25,9 @@ From the repository root:
   what it refers to. Repeatable. Without it, everything declared in the
   named files is generated.
 - `--runtime <specifier>`: where the generated module imports the
-  runtime from. The default is `protobuf:runtime`, which needs a
-  `"protobuf": "./packages/protobuf/zena"` entry in `zena-packages.json`.
+  runtime from. The default is `protobuf:runtime`, which needs `protobuf` among the
+  importing package's dependencies, or the file to be outside a package in
+  this repository's workspace.
 
 The same generator is a library, with no I/O of its own:
 

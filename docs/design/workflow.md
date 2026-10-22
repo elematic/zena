@@ -74,7 +74,7 @@ back decisions and, through the callbacks, drives execution.
 
 ## Core library
 
-Package `workflow`, registered in `zena-packages.json` like `wit-parser`.
+Package `workflow`, a package of the repository's workspace like `wit-parser`.
 
 ### Model
 
