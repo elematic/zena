@@ -91,6 +91,44 @@ export function newMap(): MapValue {
 }
 
 /**
+ * A reference to a blob: its raw CID, MIME type and size. In the data
+ * model it is a map, `{$type: "blob", ref, mimeType, size}`.
+ */
+export final class BlobRef {
+  cid: Cid;
+  mimeType: String;
+  size: i64;
+
+  new(cid: Cid, mimeType: String, size: i64) : cid = cid, mimeType = mimeType, size = size;
+
+  /**
+   * Reads a blob reference, from JSON or DAG-CBOR alike. Throws
+   * `DataError` for any other value.
+   */
+  static fromValue(value: Value): BlobRef {
+    if (!(value is MapValue)) {
+      throw new DataError('blob reference is not a map');
+    }
+    let map = value;
+    if (stringField(map, '$type') != 'blob') {
+      throw new DataError("blob reference does not have $type 'blob'");
+    }
+    checkBlob(map);
+    let size = field(map, 'size') as IntValue;
+    return new BlobRef(linkField(map, 'ref') as Cid, stringField(map, 'mimeType') as String, size.value);
+  }
+
+  toValue(): MapValue {
+    let map = newMap();
+    map.entries['$type'] = new StringValue('blob');
+    map.entries['ref'] = new LinkValue(this.cid);
+    map.entries['mimeType'] = new StringValue(this.mimeType);
+    map.entries['size'] = new IntValue(this.size);
+    return map;
+  }
+}
+
+/**
  * Reads atproto JSON. Throws `DataError` for JSON outside the data model;
  * see the module comment for the rules.
  */
