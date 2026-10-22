@@ -18,7 +18,7 @@ import {
 } from '../../ast.zena';
 import {
   Type, VoidType, NeverType, ClassType, InterfaceType, FunctionType, FieldInfo, MethodInfo, ArrayType, InlineTupleType, TupleType, RecordType, EnumType, TypeParameterType, UnionType, baseType, isVoidOrNeverType, isRefType, AnyRefType, EqRefType, arrayElementType, isSignedNarrowIntType, typeToString,
-  ownershipHandleName, soleNonNullMember, NullType, BoolLiteralType, NumLiteralType, HoleType,
+  ownershipHandleName, soleNonNullMember, NullType, BoolLiteralType, NumLiteralType, HoleType, isIntegerType,
 } from '../../types.zena';
 import {
   RecordAdaptation, RecordUnionAdaptation, FunctionAdaptation, SemanticModel,
@@ -43,7 +43,7 @@ import {
 
 import { IrBody, IrOp, IrRefFunc, IrRefGlobal, IrRefType, IrRefField, IrRefTag } from './ir.zena';
 import {
-  getClassKey, getClassMethodKey, getClassPrivateFieldKey, getMemberRootClass, getInterfaceKey, getInterfaceConstructorBaseName, getClosureSpecializationKey, getSignatureKey, ClassKey, getTypeKeyForSpecialization, getTypeUniqueKey, collectMixinFields, findMixinDeclaration, mixinScopeOfNode, MixinKey, getSpecializedFunctionKey, getSpecializedName, getFunctionValueWrapperKey, parseI32WithHex, parseI64OrU64Literal, isPresentWordName, presentWordCount, presentWordName,
+  getClassKey, getClassMethodKey, getClassPrivateFieldKey, getMemberRootClass, getInterfaceKey, getInterfaceConstructorBaseName, getClosureSpecializationKey, getSignatureKey, ClassKey, getTypeKeyForSpecialization, getTypeUniqueKey, collectMixinFields, findMixinDeclaration, mixinScopeOfNode, MixinKey, getSpecializedFunctionKey, getSpecializedName, getFunctionValueWrapperKey, parseI32WithHex, parseI64OrU64Literal, unwrapAliases, isPresentWordName, presentWordCount, presentWordName,
 } from '../codegen-utils.zena';
 import { IrBuilder } from './builder.zena';
 import { synthesizeScaffold } from './scaffold.zena';
@@ -3608,6 +3608,203 @@ export final class FunctionLowerer {
    * sources come back as one-element lists.
    */
   #lowerMultiSource(init: Expression): MultiValues {
+    let source = this.#lowerMultiSourceValues(init);
+    if (source.layout == null && source.values.length == 1 &&
+        !(init is TupleLiteral)) {
+      // A boxed tuple, or a union of them, reads through its slots like
+      // an inline value.
+      let t = this.#substitutedNodeType(init);
+      if (t != null) {
+        let unboxed = this.#unboxTuples(source.values[0], t);
+        if (unboxed != null) {
+          return unboxed;
+        }
+      }
+    }
+    return source;
+  }
+
+  /**
+   * A boxed tuple, or a union of boxed tuples, read into the slots its
+   * inline form would occupy (`InlineLayout`), so that destructuring,
+   * `if let` and `match` read it like an inline value. Null when `t` is
+   * not tuples.
+   *
+   * Each member's struct is tested in turn, and the one that matches has
+   * its fields read into its slots. Members that share a struct share
+   * slots too, because their fields have the same wasm types: `(0, Color)`
+   * and `(1, Size)` are one struct of two `i32`s, and the literal in
+   * field 0 tells them apart. A join block takes every slot, with the
+   * slots a struct does not fill at their default.
+   */
+  #unboxTuples(value: i32, t: Type): MultiValues | null {
+    let tuples = new Array<TupleType>();
+    let resolved = unwrapAliases(t);
+    if (resolved is TupleType) {
+      tuples.push(resolved);
+    } else if (resolved is UnionType) {
+      for (let member in resolved.types) {
+        if (!(member is TupleType)) {
+          return null;
+        }
+        tuples.push(member);
+      }
+    } else {
+      return null;
+    }
+    let inlineMembers = new Array<Type>();
+    for (let tuple in tuples) {
+      if (tuple.row != null) {
+        return null;
+      }
+      inlineMembers.push(new InlineTupleType(tuple.elementTypes));
+    }
+    let layoutType = if (inlineMembers.length == 1) {
+      inlineMembers[0]
+    } else {
+      new UnionType(inlineMembers) as Type
+    };
+    let layoutOpt = inlineLayoutOf(this.wasm, layoutType);
+    if (layoutOpt == null) {
+      return null;
+    }
+    let layout = layoutOpt as InlineLayout;
+    // Each distinct struct, with the first member that has it.
+    let structs = new Array<WasmStruct>();
+    let firstMembers = new Array<i32>();
+    for (var m = 0; m < tuples.length; m += 1) {
+      let st = this.#tupleStruct(tuples[m]);
+      var seen = false;
+      for (let other in structs) {
+        if (other === st) {
+          seen = true;
+        }
+      }
+      if (!seen) {
+        structs.push(st);
+        firstMembers.push(m);
+      }
+    }
+    let have = this.#valueType(value);
+    if (structs.length == 1 &&
+        isValSubtype(have, new ValTypeRef(structs[0]) as ValType)) {
+      return new MultiValues(
+          this.#tupleFieldsToSlots(value, structs[0], layout, firstMembers[0]),
+          layout);
+    }
+    let join = this.b.newBlock();
+    let params = new Array<i32>();
+    for (let slotVt in layout.slots) {
+      params.push(this.b.blockParam(join, slotVt));
+    }
+    for (var i = 0; i < structs.length; i += 1) {
+      let structVt = new ValTypeRef(structs[i]) as ValType;
+      let isLast = i == structs.length - 1;
+      var next = -1;
+      if (!isLast) {
+        let test = this.b.emit(IrOp.ref_test, new ValTypeI32() as ValType,
+            value, this.b.internType(structVt));
+        let hit = this.b.newBlock();
+        next = this.b.newBlock();
+        this.b.brIf(test, hit, this.#noArgs(), next, this.#noArgs());
+        this.b.switchTo(hit);
+      }
+      // The last struct is the only one left, so its cast cannot fail.
+      let cast = this.b.emit(IrOp.ref_cast, structVt, value,
+          this.b.internType(structVt));
+      this.b.br(join,
+          this.#tupleFieldsToSlots(cast, structs[i], layout, firstMembers[i]));
+      if (!isLast) {
+        this.b.switchTo(next);
+      }
+    }
+    this.b.switchTo(join);
+    return new MultiValues(params, layout);
+  }
+
+  /**
+   * Whether `value` is a tuple of type `tt`, which starts with a literal:
+   * its struct, and that literal in field 0. A struct test alone is not
+   * enough, because the members of a tuple union can share a struct:
+   * `(0, Color)` and `(1, Size)` are both two `i32`s.
+   */
+  #tupleTagTest(value: i32, tt: TupleType): i32 {
+    let st = this.#tupleStruct(tt);
+    let structVt = new ValTypeRef(st) as ValType;
+    let i32Vt = new ValTypeI32() as ValType;
+    if (isValSubtype(this.#valueType(value), structVt)) {
+      return this.#tupleTagCompare(value, st, tt);
+    }
+    let join = this.b.newBlock();
+    let result = this.b.blockParam(join, i32Vt);
+    let test = this.b.emit(IrOp.ref_test, i32Vt, value,
+        this.b.internType(structVt));
+    let hit = this.b.newBlock();
+    let miss = this.b.newBlock();
+    this.b.brIf(test, hit, this.#noArgs(), miss, this.#noArgs());
+    this.b.switchTo(hit);
+    let cast = this.b.emit(IrOp.ref_cast, structVt, value,
+        this.b.internType(structVt));
+    this.b.br(join, growable<i32>([this.#tupleTagCompare(cast, st, tt)]));
+    this.b.switchTo(miss);
+    this.b.br(join, growable<i32>([this.b.constI32(0, i32Vt)]));
+    this.b.switchTo(join);
+    return result;
+  }
+
+  /** Whether field 0 of a tuple struct holds the literal `tt` starts with. */
+  #tupleTagCompare(value: i32, st: WasmStruct, tt: TupleType): i32 {
+    let i32Vt = new ValTypeI32() as ValType;
+    let fieldRef = this.b.addRef(new IrRefField(st, '0'));
+    let fieldVt = this.#fieldValType(st, '0');
+    let field = this.b.emit(IrOp.struct_get, fieldVt, value, fieldRef);
+    let tag = tt.elementTypes[0];
+    if (let BoolLiteralType {value as expected} = tag) {
+      return if (expected) field else this.b.emit(IrOp.i32_eqz, i32Vt, field, -1);
+    }
+    if (let NumLiteralType {raw} = tag) {
+      if (let (true, parsed) = parseI64OrU64Literal(raw)) {
+        if (fieldVt is ValTypeI32) {
+          return this.b.binary(IrOp.i32_eq, i32Vt, field,
+              this.b.constI32(parsed as i32, i32Vt));
+        }
+        if (fieldVt is ValTypeI64) {
+          return this.b.binary(IrOp.i64_eq, i32Vt, field,
+              this.b.constI64(parsed, fieldVt));
+        }
+      }
+    }
+    return this.#bailValue('tuple tag type');
+  }
+
+  /** A tuple struct's fields placed in member `m`'s slots of `layout`,
+   * with every other slot at its default. */
+  #tupleFieldsToSlots(value: i32, st: WasmStruct, layout: InlineLayout,
+      m: i32): GrowableArray<i32> {
+    let slots = new Array<i32>();
+    for (var s = 0; s < layout.slots.length; s += 1) {
+      slots.push(NO_VALUE);
+    }
+    let n = layout.members[m].elementTypes.length;
+    for (var k = 0; k < n; k += 1) {
+      let slot = layout.slotOf(m, k);
+      if (slot < 0) {
+        continue;
+      }
+      let fieldName = i32ToString(k);
+      let fieldRef = this.b.addRef(new IrRefField(st, fieldName));
+      slots[slot] = this.b.emit(IrOp.struct_get,
+          this.#fieldValType(st, fieldName), value, fieldRef);
+    }
+    for (var s = 0; s < slots.length; s += 1) {
+      if (slots[s] == NO_VALUE) {
+        slots[s] = this.#defaultValueOf(layout.slots[s]);
+      }
+    }
+    return slots;
+  }
+
+  #lowerMultiSourceValues(init: Expression): MultiValues {
     let out = new Array<i32>();
     // A literal with spreads is not one value per element; it lowers as
     // one tuple, which the destructuring site splits.
@@ -5322,6 +5519,10 @@ export final class FunctionLowerer {
     // test below is the whole answer.
     if (targetBase is InterfaceType && this.#cx().typeTestHasSlot(targetBase)) {
       return this.#cx().typeTestImplements(value, targetBase);
+    }
+    if (targetBase is TupleType && targetBase.elementTypes.length > 0 &&
+        isTupleTag(targetBase.elementTypes[0])) {
+      return this.#tupleTagTest(value, targetBase);
     }
     let targetVt = typeToValTypeWithSub(this.wasm, targetType, this.func);
     let target = refTargetOf(targetVt);
@@ -8663,6 +8864,10 @@ export final class FunctionLowerer {
   hostThrowStmt(thr: ThrowExpression): void {
     this.#lowerThrowStatement(thr);
   }
+  hostTupleTagTest(value: i32, tt: TupleType): i32 {
+    return this.#tupleTagTest(value, tt);
+  }
+
   hostMultiSource(init: Expression): MultiValues {
     return this.#lowerMultiSource(init);
   }
@@ -9902,6 +10107,17 @@ export function packHeldRecord(cx: LoweringContext, d: RecordDispatchInfo,
 /** Lower a throw in statement position. */
 export function throwStmt(cx: LoweringContext, thr: ThrowExpression): void {
   hostOf(cx).hostThrowStmt(thr);
+}
+
+/** Whether `value` is a tuple of type `tt`, which starts with a literal. */
+export function tupleTagTest(cx: LoweringContext, value: i32, tt: TupleType): i32 {
+  return hostOf(cx).hostTupleTagTest(value, tt);
+}
+
+/** Whether a tuple's first element type is a literal that can tell it
+ * apart from the other members of a union (a boolean or an integer). */
+export function isTupleTag(t: Type): boolean {
+  return t is BoolLiteralType || (t is NumLiteralType && isIntegerType(baseType(t)));
 }
 
 /** Lower a let-condition multi-value source. */

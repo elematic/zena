@@ -6328,12 +6328,12 @@ function createUnionType(types: Array<Type>, ctx: CheckerContext | null = null, 
 
     if (hasInlineTuple && (hasPrimitive || hasReference)) {
       ctx.error("cannot mix inline tuple types with other representations", DiagnosticCode.TypeMismatch, loc);
-    } else if (hasInlineTuple) {
-      checkInlineUnionMembers(ctx, deduped, loc);
     } else if (hasPrimitive && hasReference) {
       ctx.error("Union types cannot mix primitive types with reference types", DiagnosticCode.TypeMismatch, loc);
     } else if (primitiveBases.length > 1) {
       ctx.error("Union types cannot mix primitives of different base types", DiagnosticCode.TypeMismatch, loc);
+    } else {
+      checkTupleUnionMembers(ctx, deduped, loc);
     }
   }
 
@@ -6341,42 +6341,54 @@ function createUnionType(types: Array<Type>, ctx: CheckerContext | null = null, 
 }
 
 /**
- * Report an inline union whose members a reader cannot tell apart.
+ * Report a union whose tuple members a reader cannot tell apart.
  *
- * An inline value carries no type identity, only its slot values, so a
- * reader finds the member from a literal the author wrote: every member
- * starts with one, a different value in each, and all of the same type.
- * `inline (true, i32) | (false, String)` and `inline (0, _) | (1, T)`
- * qualify. The literals must share a type because `true` and `1` are
- * the same value at run time. The members have the same length because
- * pattern typing merges them position by position.
+ * Zena's primitives carry no runtime type: enums, `boolean`, literal
+ * types and generic arguments erase, so `(Color, i32)` and `(Size, i32)`
+ * are the same struct, and an inline tuple has no type identity at all.
+ * A reader finds the member from a literal the author wrote instead:
+ * every tuple in the union starts with one, a different value in each,
+ * all of the same type. `(true, i32) | (false, String)` and
+ * `(0, _) | (1, T)` qualify. The literals must share a type because
+ * `true` and `1` are the same value at run time. The tuples have the
+ * same length because pattern typing merges them position by position.
+ * Other members, such as classes and `null`, are told apart from the
+ * tuples by their own runtime types. See #371.
  */
-function checkInlineUnionMembers(ctx: CheckerContext, members: Array<Type>,
+function checkTupleUnionMembers(ctx: CheckerContext, members: Array<Type>,
     loc: SourceLocation | null): void {
-  let tuples = new Array<InlineTupleT>();
+  let tuples = new Array<Array<Type>>();
+  var anyRow = false;
   for (let member in members) {
-    if (member is InlineTupleT) {
-      tuples.push(member);
+    if (let InlineTupleT {elementTypes} = member) {
+      tuples.push(elementTypes);
+    } else if (let TupleT {elementTypes, row} = member) {
+      tuples.push(elementTypes);
+      if (row != null) {
+        anyRow = true;
+      }
     }
   }
   if (tuples.length < 2) {
     return;
   }
-  let arity = tuples[0].elementTypes.length;
-  for (let tuple in tuples) {
-    if (tuple.elementTypes.length != arity) {
-      ctx.error(
-        "The members of an inline union must have the same length.",
-        DiagnosticCode.TypeMismatch,
-        loc,
-      );
-      return;
+  let arity = tuples[0].length;
+  if (!anyRow) {
+    for (let tuple in tuples) {
+      if (tuple.length != arity) {
+        ctx.error(
+          "The tuples in a union must have the same length.",
+          DiagnosticCode.TypeMismatch,
+          loc,
+        );
+        return;
+      }
     }
   }
   var tagType: String | null = null;
   let seen = new Set<String>();
   for (let tuple in tuples) {
-    let head = if (arity > 0) tuple.elementTypes[0] else new ErrorType() as Type;
+    let head = if (tuple.length > 0) tuple[0] else new ErrorType() as Type;
     let tag = discriminantTag(head);
     let ok = if (tag == null) {
       false
@@ -6387,7 +6399,7 @@ function checkInlineUnionMembers(ctx: CheckerContext, members: Array<Type>,
     };
     if (!ok) {
       ctx.error(
-        "Each member of an inline union must start with a literal of the same type, a different one in each, as in '(true, T) | (false, E)'.",
+        "Each tuple in a union must start with a literal of the same type, a different one in each, as in '(true, T) | (false, E)'.",
         DiagnosticCode.TypeMismatch,
         loc,
       );
@@ -6397,6 +6409,42 @@ function checkInlineUnionMembers(ctx: CheckerContext, members: Array<Type>,
       tagType = tag.type;
       seen.add(tag.value);
     }
+  }
+}
+
+/**
+ * Report `x is T` or `x as T` with a tuple type `T`, where `x` is a union
+ * holding tuples, unless `T` is one of them. The test reads the
+ * member's literal and checks its struct, which answers exactly whether
+ * `x` is that member. A tuple type that is not a member, such as
+ * `(true, Animal)` against a `(true, Dog)` member, would need its
+ * elements tested too, and tuples have no wasm subtyping for that.
+ */
+function checkTupleUnionTest(ctx: CheckerContext, source: Type, target: Type,
+    loc: SourceLocation | null): void {
+  let resolvedTarget = baseType(target);
+  if (!(resolvedTarget is TupleT)) {
+    return;
+  }
+  let resolvedSource = unwrapAliases(source);
+  if (!(resolvedSource is UnionT)) {
+    return;
+  }
+  var hasTuple = false;
+  for (let member in resolvedSource.types) {
+    if (member is TupleT) {
+      hasTuple = true;
+      if (typesEqual(member, resolvedTarget)) {
+        return;
+      }
+    }
+  }
+  if (hasTuple) {
+    ctx.error(
+      `'${typeToString(target)}' is not one of the tuples in '${typeToString(source)}'. Test against one of them, or match on its literal.`,
+      DiagnosticCode.TypeMismatch,
+      loc,
+    );
   }
 }
 
@@ -13684,6 +13732,7 @@ function checkExpressionInner(ctx: CheckerContext, expr: Expression, expectedTyp
         typeAnnotation.loc
       );
     }
+    checkTupleUnionTest(ctx, sourceType, targetType, loc);
     let validCast = isValidCast(sourceType, targetType);
     if (!validCast) {
       var errorMsg = `Cannot cast type '${typeToString(sourceType)}' to '${typeToString(targetType)}'.`;
@@ -13744,6 +13793,7 @@ function checkExpressionInner(ctx: CheckerContext, expr: Expression, expectedTyp
         case _: {}
       }
     }
+    checkTupleUnionTest(ctx, operandType, targetType, loc);
     ctx.setNodeType(typeAnnotation, targetType);
     new BooleanType()
   }

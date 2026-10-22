@@ -16,7 +16,7 @@ import {
   BindingPattern, BlockStatement, BooleanLiteral, CatchClause, ClassDeclaration, Expression, FieldDefinition, ForStatement, Identifier, IfExpression, IfStatement, LetPatternCondition, LiteralPattern, MatchExpression, Node, Statement, ThrowExpression, TryExpression, TuplePattern, UsingStatement, ShieldedStatement, VariableDeclaration, WhileStatement, ExpressionStatement, NullLiteral, NumberLiteral, StringLiteral, BinaryExpression, CallExpression, ForInStatement, IdentifierPattern, IndexExpression, MemberExpression, RangeExpression,
 } from '../../ast.zena';
 import {
-  ArrayType, BoolLiteralType, ClassType, InlineTupleType, InterfaceType,
+  ArrayType, BoolLiteralType, ClassType, InlineTupleType, InterfaceType, TupleType,
   RecordType, Type, UnionType, VoidType, baseType,
   isVoidOrNeverType, NeverType, arrayElementType, isSignedNarrowIntType,
   isOwnershipWrapper, ownershipHandleInner, ownershipHandleName,
@@ -450,18 +450,24 @@ function multiPositions(cx: LoweringContext, source: MultiValues,
  * A `match` discriminant whose type is a single inline tuple or a
  * union of them arrives as multi-value lanes, not a boxed struct, so
  * it is decomposed with the same `multiSource` machinery as a
- * let-condition rather than read with `struct_get`.
+ * let-condition rather than read with `struct_get`. So is a union of
+ * boxed tuples: its members can have different structs, and
+ * `multiSource` reads whichever one it holds into the same slots
+ * (`#unboxTuples`).
  */
-function isInlineTupleUnionSource(t: Type): boolean {
+function isTupleUnionSource(t: Type): boolean {
   let resolved = unwrapAliases(t);
   if (resolved is InlineTupleType) { return true; }
   if (!(resolved is UnionType)) { return false; }
   let types = resolved.types;
   if (types.length == 0) { return false; }
+  var allInline = true;
+  var allBoxed = true;
   for (let member in types) {
-    if (!(member is InlineTupleType)) { return false; }
+    if (!(member is InlineTupleType)) { allInline = false; }
+    if (!(member is TupleType)) { allBoxed = false; }
   }
-  return true;
+  return allInline || (allBoxed && types.length > 1);
 }
 
 /**
@@ -507,7 +513,7 @@ export function lowerMatch(cx: LoweringContext, expr: MatchExpression): i32 {
   };
 
   let discType = cx.substitutedNodeType(expr.discriminant);
-  let lanes = if (discType != null && isInlineTupleUnionSource(discType)) {
+  let lanes = if (discType != null && isTupleUnionSource(discType)) {
     multiSource(cx, expr.discriminant)
   } else {
     null

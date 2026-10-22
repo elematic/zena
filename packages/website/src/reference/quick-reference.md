@@ -1264,6 +1264,18 @@ var i = 0;
 let x = t[i]; // ❌ var is not compile-time known
 ```
 
+A union of tuples needs a literal at the start of each tuple to tell them
+apart: all booleans or all integers of one type, a different value in each:
+
+```zena
+type Reply = (true, String) | (false, i32); // ✅
+type Bad = (i32, i32) | (f64, f64);         // ❌ no literal
+let size = (r: Reply): i32 => match (r) {
+  case (true, let text): text.length
+  case (false, let code): code
+};
+```
+
 Tuple elements support type narrowing since tuples are immutable:
 
 ```zena

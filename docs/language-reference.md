@@ -4635,6 +4635,47 @@ let prepend = <R extends tuple>(t: (...R)): (String, ...R) => ('p', ...t);
 at most one value with a row. A `...rest` pattern takes elements apart
 again (see [Tuple Destructuring](#tuple-destructuring)).
 
+#### Unions of Tuples
+
+A union may hold several tuple types, boxed or inline. Every tuple in it must
+start with a literal that tells it apart from the others: all boolean literals,
+or all integer literals of one type, with a different value in each. The tuples
+must also have the same length.
+
+```zena
+enum Color { Red, Green }
+enum Size { Small, Large }
+
+type Event = (0, Color) | (1, Size);         // OK
+type Reply = (true, String) | (false, i32);  // OK
+type Bad = (Color, i32) | (Size, i32);       // Error: no literal
+type Late = (i32, true) | (f64, false);      // Error: the literal must come first
+type Mixed = (true, i32) | (1, f64);         // Error: true and 1 are the same value
+```
+
+The literal is needed because primitive types leave no trace at run time: enums
+are their backing integers and literal types are their values, so
+`(Color, i32)` and `(Size, i32)` are indistinguishable once built. Other members
+of the union, such as classes and `null`, are told apart by their own runtime
+types. A union with a single tuple needs no literal.
+
+A pattern reads the members by their literal, and `is` and `as` test the
+literal too:
+
+```zena
+let describe = (e: Event): i32 => match (e) {
+  case (0, let c): if (c == Color.Green) 1 else 2
+  case (1, let s): if (s == Size.Large) 10 else 20
+};
+
+let e: Event = (1, Size.Large);
+e is (0, Color);  // false
+e as (1, Size);   // OK; `e as (0, Color)` would trap
+```
+
+The type in `is` or `as` must be one of the union's tuples; to test for
+anything else, match on the literal.
+
 ### Inline Tuples (Multi-Value Returns)
 
 Inline tuples enable functions to return multiple values without heap
@@ -4762,11 +4803,11 @@ if (let (true, value) = maybeValue()) {
 The narrowing works by filtering tuple union variants based on literal patterns:
 
 ```zena
-let data = (): inline (true, true, i32) | inline (true, false, _) | inline (false, _, _) => { ... };
+let data = (): inline (0, _) | (1, i32) | (2, String) => { ... };
 
-// Pattern (true, true, value) filters to just the first variant
-if (let (true, true, value) = data()) {
-  // value is i32, not i32 | _
+// Pattern (1, value) filters to just the second variant
+if (let (1, value) = data()) {
+  // value is i32, not i32 | String
 }
 ```
 
