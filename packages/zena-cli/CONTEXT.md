@@ -16,9 +16,12 @@ the `zena` command. The design is in
      variants, `lsp.zena`, which connects the language server
      (`language-service:server`) to stdin and stdout, `lint.zena`,
      which runs zena-lint's rules (`zena-lint:lint`) over files and
-     prints the findings or, with `--fix`, applies them, and `fetch.zena`,
+     prints the findings or, with `--fix`, applies them, `fetch.zena`,
      which fetches the packages `zena-lock.json` pins into the package
-     cache with `package-manager:fetch`.
+     cache with `package-manager:fetch`, and `add.zena`, for `zena add`
+     and `zena update`, which change the dependencies in
+     `zena-package.json`, select versions (`package-manager:resolve`), pin
+     them and fetch them.
    - It is built to `out/zena.wasm` by `build:module`, with the compiler
      (`zena-compiler:compile-file`), zb, zenadoc, the language service and
      the formatter linked

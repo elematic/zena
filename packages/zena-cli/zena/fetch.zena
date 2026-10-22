@@ -1,13 +1,14 @@
 /**
- * `zena fetch`: fetches the packages the project's `zena-lock.json`
+ * `zena fetch`: fetches the packages the workspace's `zena-lock.json`
  * pins into the package cache, where the compiler reads them
  * (docs/design/package-manager.md, "Fetching and verification").
  *
  * Each pinned release is fetched from its package's PDS and checked
- * against the CIDs the resolution file pins; see `package-manager:fetch`.
+ * against the CIDs the lockfile pins; see `package-manager:fetch`.
  * Packages already in the cache cost no requests. `ZENA_PLC_DIRECTORY`
- * replaces the PLC directory, `https://plc.directory`, for mirrors and
- * tests.
+ * replaces the PLC directory, `https://plc.directory`, and
+ * `ZENA_DNS_OVER_HTTPS` the DNS-over-HTTPS endpoint handles are resolved
+ * with, for mirrors and tests.
  */
 
 import { ParsedArgs } from 'zena:args';
@@ -17,7 +18,7 @@ import { existsSync, readFileSync } from 'zena:fs';
 import { IdentityResolver } from 'atproto:identity';
 import { PackageCache } from 'package-manager:cache';
 import { fetchAll } from 'package-manager:fetch';
-import { readPins } from 'package-manager:resolution';
+import { Pin, readPins } from 'package-manager:resolution';
 import { packageCacheDir } from './compile.zena';
 import { Options } from './env.zena';
 
@@ -31,13 +32,34 @@ export function fetchCommand(args: ParsedArgs, options: Options): i32 {
     console.log('Nothing to fetch: zena-lock.json pins no packages.');
     return 0;
   }
+  return fetchAndReport(pins, options);
+}
+
+/**
+ * Resolves DIDs and handles, with the PLC directory from
+ * `ZENA_PLC_DIRECTORY` and the DNS-over-HTTPS endpoint from
+ * `ZENA_DNS_OVER_HTTPS` when they are set, for mirrors and tests.
+ */
+export function packageResolver(): IdentityResolver {
   let resolver = new IdentityResolver();
   let plcDirectory = getEnv('ZENA_PLC_DIRECTORY');
   if (plcDirectory != null && plcDirectory != '') {
     resolver.plcDirectory = plcDirectory;
   }
+  let dnsOverHttps = getEnv('ZENA_DNS_OVER_HTTPS');
+  if (dnsOverHttps != null && dnsOverHttps != '') {
+    resolver.dnsOverHttps = dnsOverHttps;
+  }
+  return resolver;
+}
+
+/**
+ * Fetches `pins` into the package cache, prints what happened, and
+ * returns the exit code: 1 when any failed.
+ */
+export function fetchAndReport(pins: GrowableArray<Pin>, options: Options): i32 {
   let cache = new PackageCache(packageCacheDir());
-  let results = runFuture(fetchAll(pins, cache, resolver));
+  let results = runFuture(fetchAll(pins, cache, packageResolver()));
 
   var fetched = 0;
   var failed = 0;
