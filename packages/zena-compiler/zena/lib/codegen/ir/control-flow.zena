@@ -38,7 +38,7 @@ import {
 } from '../type-mapping.zena';
 import { IrBody, IrOp, IrRefField, IrRefFunc, IrRefGlobal, IrRefTag } from './ir.zena';
 import { emitGeneratorDispose } from './generators.zena';
-import { coalesceArmAdaptation, exactLiteralFields, inSuspensionBody, lowerExpr, lowerExprRaw, lowerStmt, multiSource, optionalHit, packHeldRecord, returnSlotVt, suspendOnFuture, throwStmt, varDecl } from './lowering.zena';
+import { coalesceArmAdaptation, exactLiteralFields, inSuspensionBody, lowerExpr, lowerExprRaw, lowerStmt, multiSource, MultiValues, inlineMembersMatching, optionalHit, packHeldRecord, returnSlotVt, suspendOnFuture, throwStmt, varDecl } from './lowering.zena';
 import {
   FinallyScope, LetCondBinds, LoopCtx, LoweringContext, MergeState, ZirUnsupported, noValues,
 } from './lowering-context.zena';
@@ -84,7 +84,7 @@ export function lowerLetCondition(cx: LoweringContext, lpc: LetPatternCondition)
     return new LetCondBinds(cond, new Array<Symbol>(), new Array<i32>(),
         new Array<ValType>(), patterns, patternValues);
   }
-  let values = multiSource(cx, lpc.init);
+  let values = multiPositions(cx, multiSource(cx, lpc.init), pat);
   if (values.length != pat.elements.length) {
     bail(cx, 'let-condition arity');
   }
@@ -431,6 +431,22 @@ function lowerValueRegionRestVar(cx: LoweringContext, plan: VarDropPlan,
  * unreachable.
  */
 /**
+ * A multi-value source's value at each position, as `pattern` reads it:
+ * its literal elements rule out the union's other members, so it can
+ * read a position those members keep in a slot of their own.
+ */
+function multiPositions(cx: LoweringContext, source: MultiValues,
+    pattern: TuplePattern): GrowableArray<i32> {
+  let layout = source.layout;
+  let allowed = if (layout != null) {
+    inlineMembersMatching(layout, pattern.elements)
+  } else {
+    null
+  };
+  return source.positions(cx, allowed);
+}
+
+/**
  * A `match` discriminant whose type is a single inline tuple or a
  * union of them arrives as multi-value lanes, not a boxed struct, so
  * it is decomposed with the same `multiSource` machinery as a
@@ -456,7 +472,8 @@ function isInlineTupleUnionSource(t: Type): boolean {
  * discriminant selects.
  */
 function lowerInlineTupleArm(cx: LoweringContext, pat: TuplePattern,
-    lanes: GrowableArray<i32>, failB: i32) {
+    source: MultiValues, failB: i32) {
+  let lanes = multiPositions(cx, source, pat);
   if (lanes.length != pat.elements.length) {
     bail(cx, 'match inline union arity');
   }
@@ -526,7 +543,7 @@ export function lowerMatch(cx: LoweringContext, expr: MatchExpression): i32 {
       exhausted = true;
     }
     if (lanes != null) {
-      let laneVals = lanes as GrowableArray<i32>;
+      let laneVals = lanes as MultiValues;
       if (mc.pattern is TuplePattern) {
         lowerInlineTupleArm(cx, mc.pattern as TuplePattern, laneVals, failB);
       } else if (patternBinds(cx, mc.pattern) || patternRefutable(cx, mc.pattern)) {
@@ -2494,7 +2511,20 @@ function lowerPresenceCoalesce(cx: LoweringContext, bin: BinaryExpression,
 function lowerProtocolCoalesce(cx: LoweringContext, bin: BinaryExpression) {
   let overallVt = cx.exprVt(bin);
   let mergeSyms = cx.assignedEnvSyms(bin.right);
-  let values = multiSource(cx, bin.left);
+  let source = multiSource(cx, bin.left);
+  // The payload is the `true` member's.
+  let layout = source.layout;
+  let allowed = if (layout != null) {
+    let keep = new Array<boolean>();
+    for (let member in layout.members) {
+      let head = member.elementTypes[0];
+      keep.push(head is BoolLiteralType && head.value);
+    }
+    keep
+  } else {
+    null
+  };
+  let values = source.positions(cx, allowed);
   if (values.length < 2) {
     bail(cx, 'protocol coalesce arity');
   }

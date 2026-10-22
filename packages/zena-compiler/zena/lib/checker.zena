@@ -6328,6 +6328,8 @@ function createUnionType(types: Array<Type>, ctx: CheckerContext | null = null, 
 
     if (hasInlineTuple && (hasPrimitive || hasReference)) {
       ctx.error("cannot mix inline tuple types with other representations", DiagnosticCode.TypeMismatch, loc);
+    } else if (hasInlineTuple) {
+      checkInlineUnionMembers(ctx, deduped, loc);
     } else if (hasPrimitive && hasReference) {
       ctx.error("Union types cannot mix primitive types with reference types", DiagnosticCode.TypeMismatch, loc);
     } else if (primitiveBases.length > 1) {
@@ -6336,6 +6338,69 @@ function createUnionType(types: Array<Type>, ctx: CheckerContext | null = null, 
   }
 
   return if (ctx != null) ctx.interner.union(deduped) else new UnionT(deduped);
+}
+
+/**
+ * Report an inline union whose members a reader cannot tell apart.
+ *
+ * Codegen gives each position one slot per wasm type its members put
+ * there, so `inline (true, i32) | (false, String)` has an `i32` slot and
+ * a `String` slot at position 1. A reader picks the slot by the member,
+ * and finds the member from a literal: some position must hold a
+ * literal in every member, a different one in each. Without one the
+ * compiler would have to add a tag slot.
+ */
+function checkInlineUnionMembers(ctx: CheckerContext, members: Array<Type>,
+    loc: SourceLocation | null): void {
+  let tuples = new Array<InlineTupleT>();
+  for (let member in members) {
+    if (member is InlineTupleT) {
+      tuples.push(member);
+    }
+  }
+  if (tuples.length < 2) {
+    return;
+  }
+  let arity = tuples[0].elementTypes.length;
+  for (let tuple in tuples) {
+    if (tuple.elementTypes.length != arity) {
+      ctx.error(
+        "The members of an inline union must have the same length.",
+        DiagnosticCode.TypeMismatch,
+        loc,
+      );
+      return;
+    }
+  }
+  for (var p = 0; p < arity; p += 1) {
+    let seen = new Set<String>();
+    var allDistinct = true;
+    for (let tuple in tuples) {
+      let key = literalTypeKey(tuple.elementTypes[p]);
+      if (key == null || seen.has(key)) {
+        allDistinct = false;
+        break;
+      }
+      seen.add(key);
+    }
+    if (allDistinct) {
+      return;
+    }
+  }
+  ctx.error(
+    "The members of an inline union must differ in a literal at the same position, as in '(true, T) | (false, E)'.",
+    DiagnosticCode.TypeMismatch,
+    loc,
+  );
+}
+
+/** A key that is equal for equal boolean or number literal types. */
+function literalTypeKey(t: Type): String | null {
+  return match (t) {
+    case BoolLiteralType {value}: if (value) 'true' else 'false'
+    case NumLiteralType {raw}: `n:${raw}`
+    case _: null
+  };
 }
 
 /**
@@ -11842,6 +11907,86 @@ function getTuplePatternElementTypes(t: Type): Array<Type> | null {
   }
 }
 
+/**
+ * Report a tuple pattern element that reads a position of an inline union
+ * where the members it may be hold values no single type can carry.
+ *
+ * Each member's value at a position has its own wasm slot when the
+ * types differ, so `(false, message)` on `(true, i32) | (false, String)`
+ * reads the `String` slot. A pattern that does not narrow to one member
+ * there reads the union of the members' types, and `i32 | String` is
+ * not a type.
+ */
+function checkInlinePositionReads(ctx: CheckerContext, t: Type,
+    elements: GrowableArray<Node | null>): void {
+  if (!(t is UnionT)) {
+    return;
+  }
+  let members = new Array<InlineTupleT>();
+  for (let member in t.types) {
+    if (member is InlineTupleT) {
+      members.push(member);
+    }
+  }
+  if (members.length < 2) {
+    return;
+  }
+  for (var i = 0; i < elements.length; i += 1) {
+    let element = elements[i];
+    if (element == null || !readsPosition(element)) {
+      continue;
+    }
+    var hasPrimitive = false;
+    var hasReference = false;
+    let bases = new Array<String>();
+    for (let member in members) {
+      if (i >= member.elementTypes.length) {
+        continue;
+      }
+      let el = member.elementTypes[i];
+      if (el is HoleType || el is NeverType || el is ErrorType) {
+        continue;
+      }
+      let base: String | null = if (isNumericType(el)) {
+        typeToString(baseType(el))
+      } else if (el is BooleanType || el is BoolLiteralType) {
+        'boolean'
+      } else {
+        null
+      };
+      if (base != null) {
+        hasPrimitive = true;
+        if (!bases.contains(base)) {
+          bases.push(base);
+        }
+      } else {
+        hasReference = true;
+      }
+    }
+    if ((hasPrimitive && hasReference) || bases.length > 1) {
+      ctx.error(
+        `The members of this inline union hold different kinds of values at position ${i}, so a pattern must match the literal that tells them apart to read it.`,
+        DiagnosticCode.TypeMismatch,
+        element.loc,
+      );
+    }
+  }
+}
+
+/** Whether a tuple pattern element reads its position's value. */
+function readsPosition(element: Node): boolean {
+  return match (element) {
+    case LiteralPattern {}: false
+    case BooleanLiteral {}: false
+    case NumberLiteral {}: false
+    case StringLiteral {}: false
+    case NullLiteral {}: false
+    case Identifier {name}: name != '_'
+    case IdentifierPattern {name}: name != '_'
+    case _: true
+  };
+}
+
 function literalPatternCanMatchType(value: Expression, t: Type): boolean {
   match (t) {
     case BoolLiteralType {value as expected}: {
@@ -12157,6 +12302,7 @@ function bindPattern(ctx: CheckerContext, pattern: Pattern, t: Type): void {
         }
         return;
       }
+      checkInlinePositionReads(ctx, t, elements);
       // TODO: we seem to have a narrowing bug here. `elementTypes` should
       // already be non-null.
       if (elements.length > elementTypes.length) {
@@ -22591,6 +22737,7 @@ function checkPattern(ctx: CheckerContext, pattern: Node, expectedType: Type): v
         }
         return;
       }
+      checkInlinePositionReads(ctx, narrowed, elements);
 
 
       for (var i = 0; i < elements.length; i += 1) {

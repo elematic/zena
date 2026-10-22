@@ -1,0 +1,95 @@
+// @mode: run
+// @result: 100
+// An inline union's members need no `_` holes: each position holds one
+// slot per wasm type its members put there, and the literal in front of
+// the payload tells the reader which slot to take.
+
+type Checked<T, E> = (true, T) | (false, E);
+
+// Position 1 holds an `i32` in one member and a `String` in the other,
+// so it has two slots.
+let parse = (s: String): inline Checked<i32, String> => {
+  if (s == '42') {
+    return (true, 42);
+  }
+  return (false, `bad: ${s}`);
+};
+
+// Three members, three types at position 1.
+let classify = (n: i32): inline (0, i32) | (1, f64) | (2, String) => {
+  if (n == 0) {
+    return (0, 7);
+  }
+  if (n == 1) {
+    return (1, 2.5);
+  }
+  return (2, 'three');
+};
+
+// The same type in both members: one shared slot, read without
+// narrowing.
+let pick = (flag: boolean): inline Checked<String, String> => {
+  if (flag) {
+    return (true, 'yes');
+  }
+  return (false, 'no!');
+};
+
+let describe = (n: i32): i32 => match (classify(n)) {
+  case (0, let i): i
+  case (1, let f): (f * 2.0) as i32
+  case (2, let s): s.length
+};
+
+// A narrower union forwards into a wider one: the slots move, and the
+// slot only the wider one has takes its default.
+let always = (n: i32): inline (true, i32) => (true, n);
+let widened = (n: i32): inline Checked<i32, String> => always(n);
+
+class Problem {
+  message: String;
+  new(this.message);
+}
+
+// Two reference types at position 1: a read the pattern does not narrow
+// picks the slot by the literal at position 0.
+let lookup = (ok: boolean): inline (true, String) | (false, Problem) => {
+  if (ok) {
+    return (true, 'found');
+  }
+  return (false, new Problem('missing'));
+};
+
+export let main = (): i32 => {
+  var total = 0;
+  if (let (true, v) = parse('42')) {
+    total += v; // 42
+  }
+  if (let (false, message) = parse('x')) {
+    total += message.length; // 48
+  }
+  total += describe(0) + describe(1) + describe(2); // 48 + 7 + 5 + 5 = 65
+  let (ok, word) = pick(false);
+  if (!ok) {
+    total += word.length; // 68
+  }
+  total += parse('42') ?? 0; // 110
+  total -= parse('nope') ?? 10; // 100
+  if (let (true, w) = widened(3)) {
+    total += w; // 103
+  }
+  if (let (false, e) = widened(0)) {
+    total += e.length;
+  } else {
+    total -= 3; // 100
+  }
+  let (found, thing) = lookup(false);
+  if (!found && thing is Problem) {
+    total += (thing as Problem).message.length; // 107
+  }
+  let (found2, thing2) = lookup(true);
+  if (found2 && thing2 is String) {
+    total += (thing2 as String).length - 12; // 100
+  }
+  return total;
+};

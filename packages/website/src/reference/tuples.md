@@ -335,12 +335,27 @@ directly to WebAssembly multi-value returns with zero heap allocation:
   };
   ```
 
-Why three lanes rather than two? WebAssembly multi-value returns require each
-return position across all union members to have a single, compatible value
-type. Sharing a slot between `T` and `E` would force dynamic casts or fail when
-types have incompatible representations (such as `i32` versus a heap reference).
-Using three lanes—`(tag, ok_payload, error_payload)` with crossed holes
-`_`—ensures every lane remains type-homogeneous across branches.
+The holes in `Result` are not needed any more: `(true, T) | (false, E)` gets
+the same slots (see below).
+
+#### Slots of an inline union
+
+An inline union is returned as a set of WebAssembly values, called slots. Each
+position gets one slot per value type its members put there. In
+`inline (true, i32) | (false, String)`, position 0 has one `i32` slot for the
+tag, and position 1 has an `i32` slot and a `String` slot. A member leaves the
+slots it does not use at their default (0 or null). Members with the same type
+at a position share its slot, so `inline (true, String) | (false, String)` has
+two slots.
+
+A reader takes the slot that belongs to the member its pattern matches, so the
+members must be told apart by a literal at the same position, and must have
+the same length:
+
+```zena
+let ok = (): inline (true, i32) | (false, String) => (true, 1);
+let bad = (): inline (i32, i32) | (f64, f64) => (1, 2); // @error
+```
 
 ##### Storable counterparts
 
