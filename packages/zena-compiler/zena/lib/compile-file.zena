@@ -15,7 +15,7 @@ import { JsonBuilder } from 'zena:json';
 import { readFileSync, readFileBytesSync, writeFileBytesSync, writeFileSync, existsSync } from 'zena:fs';
 import { CompilerHost } from './library-loader.zena';
 import { PackageConfig, stdlibIdToRelativeFile } from './module-resolver.zena';
-import { loadPackageMap } from './package-manifest.zena';
+import { loadWorkspace } from './package-manifest.zena';
 import {
   createCompiler, CompileOptions, checkCompilation, withBuiltinPackages,
   setCheckAllBodies
@@ -199,18 +199,19 @@ class FileHost implements CompilerHost {
   }
 }
 
-// Load package configs ("zena-compiler:parser" → file path) from the manifest
-// in the working directory. A missing manifest is fine — standalone files need
-// only stdlib and relative imports — but a malformed one throws loudly, and so
-// does one that pins a package the cache does not have.
+// Load the packages of the workspace in the working directory, from its
+// manifests or its `zena-packages.json` (`loadWorkspace`). No workspace is
+// fine — standalone files need only stdlib and relative imports — but a
+// malformed one throws loudly, and so does one that pins a package the cache
+// does not have.
 function loadPackages(host: CompilerHost, projectRoot: String | null, packageCache: String | null) {
-  if (!existsSync("zena-packages.json")) {
-    return new Map<String, PackageConfig>();
+  let packages = loadWorkspace(host, ".", projectRoot, packageCache);
+  if (packageCache == null) {
+    return packages;
   }
-  let packages = loadPackageMap(host, "zena-packages.json", projectRoot, packageCache);
   for (let key in packages.keys()) {
     let config = packages[key];
-    if (config.dependencies != null && !existsSync(config.root)) {
+    if (config.root.startsWith(`${packageCache}/`) && !existsSync(config.root)) {
       throw new Error(`${key} is not in the package cache (${config.root}). Run 'zena fetch'.`);
     }
   }

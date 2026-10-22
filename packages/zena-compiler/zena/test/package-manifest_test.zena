@@ -7,7 +7,7 @@ import { equal, isTrue, isFalse } from 'zena:assert';
 import { readFileSync } from 'zena:fs';
 import { JsonObject, JsonValue, parseJson } from 'zena:json';
 import { ModuleExport } from '../lib/module-resolver.zena';
-import { loadPackageMap, buildStdlibConfig } from '../lib/package-manifest.zena';
+import { loadPackageMap, loadWorkspace, buildStdlibConfig } from '../lib/package-manifest.zena';
 import { stdlibLibraryOf, stdlibLibraryAnswers } from '../lib/stdlib-manifest.zena';
 import { MockHost } from './test-utils.zena';
 
@@ -36,6 +36,127 @@ function resolutionFile() {
 }
 
 export let tests = suite("Package Manifest", () => {
+
+  suite("loadWorkspace", () => {
+
+    // A workspace whose root is the package `app`, with a package `lib`
+    // in packages/, a published dependency pinned in zena-lock.json, and
+    // a WIT-backed one.
+    let workspace = () => {
+      let host = new MockHost();
+      host.addFile("/ws/zena-package.json", `{
+        "name": "app",
+        "exports": {"server": {}},
+        "dependencies": {
+          "lib": {"path": "./packages/lib"},
+          "router": {"did": "did:plc:router", "version": "1.4.2"},
+          "gfx": {"wit": "./wit"}
+        },
+        "workspace": {"packages": ["packages/*"]}
+      }`);
+      host.addFile("/ws/main.zena", "");
+      host.addFile("/ws/wit/gfx.wit", "");
+      host.addFile("/ws/packages/lib/zena-package.json", `{
+        "name": "lib",
+        "dependencies": {"router2": {"did": "did:plc:router", "version": "2.0.0"}}
+      }`);
+      host.addFile("/ws/packages/lib/lib.zena", "");
+      host.addFile("/ws/packages/tool/zena-package.json", '{"name": "tool"}');
+      host.addFile("/ws/packages/notes/README.md", "");
+      host.addFile("/ws/zena-lock.json", `{
+        "resolved": {
+          "did:plc:router@1": {"version": "1.4.2", "release": "bafyrei1", "source": "bafkreione"},
+          "did:plc:router@2": {"version": "2.0.0", "release": "bafyrei2", "source": "bafkreitwo"}
+        }
+      }`);
+      // Router 1.4.2 is in the cache, with a manifest of its own.
+      host.addFile("/cache/sources/bafkreione/zena-package.json", '{"exports": {"match": {}}}');
+      host.addFile("/cache/sources/bafkreione/match.zena", "");
+      return host;
+    };
+
+    test("reads the packages from the manifests, each with its own names", () => {
+      let packages = loadWorkspace(workspace(), "/ws", null, "/cache");
+      let app = packages["app"];
+      equal(app.root, "/ws");
+      isTrue(app.exports != null);
+      let appNames = app.dependencies as HashMap<String, String>;
+      equal(appNames["app"], "app");
+      equal(appNames["lib"], "lib");
+      equal(appNames["router"], "did:plc:router@1");
+      equal(appNames["gfx"], "gfx");
+      equal(packages["gfx"].witRoot as String, "/ws/wit");
+
+      let lib = packages["lib"];
+      equal(lib.root, "/ws/packages/lib");
+      let libNames = lib.dependencies as HashMap<String, String>;
+      equal(libNames["router2"], "did:plc:router@2");
+      isFalse(libNames.has("router"));
+      // `tool` is a workspace package; packages/notes has no manifest.
+      isTrue(packages.has("tool"));
+      isFalse(packages.has("notes"));
+
+      // A published package's exports come from its manifest in the cache.
+      let router = packages["did:plc:router@1"];
+      equal(router.root, "/cache/sources/bafkreione");
+      isTrue((router.exports as HashMap<String, ModuleExport>).has("match"));
+      isTrue(packages["did:plc:router@2"].exports == null);
+    });
+
+    test("leaves published packages out without a package cache", () => {
+      let packages = loadWorkspace(workspace(), "/ws");
+      isFalse(packages.has("did:plc:router@1"));
+      isFalse((packages["app"].dependencies as HashMap<String, String>).has("router"));
+      isTrue(packages.has("lib"));
+    });
+
+    test("reads a workspace whose root is not a package", () => {
+      let host = new MockHost();
+      host.addFile("/ws/zena-package.json", '{"workspace": {"packages": ["a", "b"]}}');
+      host.addFile("/ws/a/zena-package.json", '{"name": "a", "dependencies": {"b": {"path": "../b"}}}');
+      host.addFile("/ws/b/zena-package.json", '{"name": "b"}');
+      let packages = loadWorkspace(host, "/ws", null, "/cache");
+      equal(packages.size, 2);
+      equal((packages["a"].dependencies as HashMap<String, String>)["b"], "b");
+      equal(packages["b"].root, "/ws/b");
+    });
+
+    test("falls back to zena-packages.json without a manifest", () => {
+      let host = new MockHost();
+      host.addFile("/ws/zena-packages.json", '{"packages": {"lib": "./lib"}}');
+      let packages = loadWorkspace(host, "/ws");
+      equal(packages["lib"].root, "/ws/lib");
+      isTrue(packages["lib"].dependencies == null);
+      equal(loadWorkspace(new MockHost(), "/ws").size, 0);
+    });
+
+    test("rejects a workspace that does not hold together", () => {
+      let rejects = (files: Array<(String, String)>, what: String) => {
+        let host = new MockHost();
+        for (let (path, text) in files) {
+          host.addFile(path, text);
+        }
+        var caught = false;
+        try {
+          loadWorkspace(host, "/ws", null, "/cache");
+        } catch (e) {
+          caught = true;
+        }
+        isTrue(caught, what);
+      };
+      rejects([("/ws/zena-package.json", '{"name": "app", "dependencies": {"lib": {"path": "./lib"}}}')],
+          "a path dependency with no manifest");
+      rejects([
+        ("/ws/zena-package.json", '{"workspace": {"packages": ["a", "b"]}}'),
+        ("/ws/a/zena-package.json", '{"name": "same"}'),
+        ("/ws/b/zena-package.json", '{"name": "same"}'),
+      ], "two packages with one name");
+      rejects([("/ws/zena-package.json",
+          '{"name": "app", "dependencies": {"router": {"did": "did:plc:router", "version": "1.0.0"}}}')],
+          "a published dependency the lockfile does not pin");
+      rejects([("/ws/zena-package.json", '{"name": "zena"}')], "the standard library's name");
+    });
+  });
 
   suite("loadPackageMap", () => {
 

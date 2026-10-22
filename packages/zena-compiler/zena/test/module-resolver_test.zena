@@ -403,6 +403,22 @@ export let tests = suite("Module Resolver", () => {
     equal(resolver.findPackageForPath("/elsewhere/x.zena"), "");
   });
   });
+  suite("A workspace's root package", () => {
+  test("a package rooted at . owns the relative paths no other package does", (t) => {
+    let packages: HashMap<String, PackageConfig> = {
+      "zena" => makeStdlibConfig(),
+      "app" => new PackageConfig(".", null),
+      "lib" => new PackageConfig("packages/lib", null),
+    };
+    let resolver = new ModuleResolver(packages, "zena-cli");
+    equal(resolver.findPackageForPath("main.zena"), "app");
+    equal(resolver.findPackageForPath("src/server.zena"), "app");
+    equal(resolver.findPackageForPath("packages/lib/lib.zena"), "lib");
+    equal(resolver.findPackageForPath("../other/x.zena"), "");
+    equal(resolver.findPackageForPath("/elsewhere/x.zena"), "");
+    equal(resolver.findPackageForPath("zena:string"), "zena");
+  });
+  });
 });
 
 
