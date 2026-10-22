@@ -22,11 +22,7 @@ moves toward **true value types**:
    type checker contains a bug where index assignments (such as `t[0] = 10`) are
    not yet rejected. They will be strictly rejected in an upcoming compiler
    update.
-3. **Inline union distribution**: Currently, a union of inline tuples requires
-   repeating `inline` on every arm (`inline (true, T) | inline (false, _)`). A
-   planned update will allow `inline` to distribute across the union: `inline
-(true, T) | (false, _)`.
-4. **Inline tuple indexing**: Direct element indexing (`expr[0]`) on inline
+3. **Inline tuple indexing**: Direct element indexing (`expr[0]`) on inline
    tuples is not yet supported
    ([#155](https://github.com/elematic/zena/issues/155)); callers must
    destructure the return value.
@@ -414,21 +410,27 @@ When applied to an inline tuple union:
 For full details on operator precedence and interactions with other types, see
 [Nullish coalescing in Operators](/reference/operators/#nullish-coalescing-).
 
-### Planned union distribution <span class="badge info">Planned</span>
+### `inline` over a union
 
-Currently, a union of inline tuples requires prefixing each union arm with the
-`inline` keyword:
-
-```zena
-next(): inline (true, T) | inline (false, _);
-```
-
-A planned enhancement will allow `inline` to distribute across the entire union,
-removing the need to repeat it on each member:
+`inline` takes the whole union to its right, so one modifier covers every
+member:
 
 ```zena
 next(): inline (true, T) | (false, _);
 ```
+
+Writing it on each member, `inline (true, T) | inline (false, _)`, means the
+same thing. The operand may also be a name for a tuple or a union of tuples:
+
+```zena
+type Pair = (i32, i32);
+let pair = (): inline Pair => (1, 2);
+```
+
+`inline` on a type that cannot be unboxed is an error: a primitive, a class, a
+type parameter, `null`, an existential record, or a record (inline records are
+planned). It is shallow: in `inline (i32, (i32, i32))` the inner tuple is still
+boxed.
 
 ## Multi-value returns
 

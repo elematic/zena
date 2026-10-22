@@ -1051,6 +1051,26 @@ let tests = suite('formatter', () => {
     checkStable('doubled nullable', 'let x: (String?)? = null;');
   });
 
+  test('keeps inline on a tuple type', (t) => {
+    checkStable('inline tuple', 'let f = (): inline (i32, i32) => (1, 2);');
+  });
+
+  test('keeps inline over a union', (t) => {
+    checkStable('inline union', 'type R = inline (true, i32, _) | (false, _, String);');
+  });
+
+  test('keeps inline on each union member', (t) => {
+    checkStable('inline members', 'type R = inline (true, i32) | inline (false, _);');
+  });
+
+  test('parenthesizes inline before another union member', (t) => {
+    checkStable('inline first member', 'type R = (inline Pair) | Other;');
+  });
+
+  test('parenthesizes nullable of inline', (t) => {
+    checkStable('nullable of inline', 'type R = (inline Pair)?;');
+  });
+
   test('formats nullable field without initializer', (t) => {
     checkStable('nullable field', dedentRaw`
       class Foo {

@@ -81,7 +81,7 @@ import {
   // Type Annotations
   TypeAnnotation, NamedTypeAnnotation, UnionTypeAnnotation, NullableTypeAnnotation,
   FunctionTypeAnnotation, LiteralTypeAnnotation, RecordTypeAnnotation,
-  TupleTypeAnnotation, InlineTupleTypeAnnotation, ThisTypeAnnotation,
+  TupleTypeAnnotation, InlineTypeAnnotation, ThisTypeAnnotation,
   // Helpers
   TypeParameter, Parameter, FieldDefinition, MethodDefinition,
   AccessorDeclaration, MatchCase, PropertyAssignment, SpreadElement,
@@ -1887,7 +1887,6 @@ final class CheckerContext {
         let bodyAnn = ta.typeAnnotation;
         if (bodyAnn != null) {
           let targetType = resolveTypeAnnotation(this, bodyAnn, true);
-          checkAliasTargetInlineTuples(this, targetType, bodyAnn.loc);
           aliasType.target = targetType;
           if (aliasType.specializationKeyCache != null) {
             targetType.specializationKeyCache = aliasType.specializationKeyCache;
@@ -4491,19 +4490,28 @@ export function finishModule(mc: ModuleCheck): CheckResult {
 }
 
 /**
- * Maximum alias hops `containsInlineTuple` will follow. Aliases nest only a
- * few deep in practice; the bound exists because a recursive alias
- * (`type T = Array<T>`) otherwise cycles forever between the structural and
- * alias steps — `resolving` guards only the declaration, not later uses. A
- * chain this long is already an error elsewhere, and an endlessly expanding
- * alias cannot name a concrete inline tuple, so giving up is safe.
+ * Maximum alias hops `isInlineType` and `inlineFormOf` will follow. Aliases
+ * nest only a few deep in practice; the bound exists because a recursive
+ * alias (`type T = Array<T>`) otherwise cycles forever between the
+ * structural and alias steps — `resolving` guards only the declaration,
+ * not later uses. A chain this long is already an error elsewhere, and an
+ * endlessly expanding alias cannot name a concrete inline tuple, so giving
+ * up is safe.
  */
 let maxAliasHops = 32;
 
-function containsInlineTuple(t: Type, aliasHops: i32 = 0): boolean {
-  if (t is InlineTupleT) { return true; }
-  match (t) {
-    case InlineTupleT as _tut: true
+/**
+ * Whether a resolved type is an inline value: an inline tuple, a union of
+ * them, or an alias for either.
+ *
+ * This looks at the top only. A type argument, record field, function
+ * parameter or plain tuple element is resolved as a position of its own,
+ * which reports an inline type there, so a deeper walk would report it
+ * twice.
+ */
+function isInlineType(t: Type, aliasHops: i32 = 0): boolean {
+  return match (t) {
+    case InlineTupleT {}: true
     // Aliases are transparent here — `type Pair = inline (i32, i32)` is
     // legal to declare, so the restriction has to be enforced through the
     // name at each use. `resolving` means we are inside this alias's own
@@ -4513,108 +4521,158 @@ function containsInlineTuple(t: Type, aliasHops: i32 = 0): boolean {
         false
       } else {
         alias.resolving = true;
-        let res = containsInlineTuple(alias.target, aliasHops + 1);
+        let res = isInlineType(alias.target, aliasHops + 1);
         alias.resolving = false;
         res
       }
     }
     case UnionT {types}: {
-      for (let subtype in types) {
-        if (containsInlineTuple(subtype, aliasHops)) return true;
-      }
-      false
-    }
-    case ArrayType {elementType}: containsInlineTuple(elementType, aliasHops)
-    case TupleT {elementTypes}: {
-      for (let subtype in elementTypes) {
-        if (containsInlineTuple(subtype, aliasHops)) return true;
-      }
-      false
-    }
-    case RecordT {properties}: {
-      for (let entry in properties) {
-        if (containsInlineTuple(entry.value, aliasHops)) return true;
-      }
-      false
-    }
-    case FunctionType {parameters, typeArguments}: {
-      for (let param in parameters) {
-        if (containsInlineTuple(param, aliasHops)) return true;
-      }
-      if (typeArguments != null) {
-        for (let arg in typeArguments) {
-          if (containsInlineTuple(arg, aliasHops)) return true;
+      var found = false;
+      for (let member in types) {
+        if (isInlineType(member, aliasHops)) {
+          found = true;
+          break;
         }
       }
-      false
-    }
-    case ClassType {typeArguments}: {
-      if (typeArguments != null) {
-        for (let arg in typeArguments) {
-          if (containsInlineTuple(arg, aliasHops)) return true;
-        }
-      }
-      false
-    }
-    case InterfaceType {typeArguments}: {
-      if (typeArguments != null) {
-        for (let arg in typeArguments) {
-          if (containsInlineTuple(arg, aliasHops)) return true;
-        }
-      }
-      false
+      found
     }
     case _: false
-  }
-  // TODO: this is unreachable, shouldn't be neccessary
-  return false;
+  };
 }
 
+/**
+ * Resolve the operand of `inline` to the unboxed form of its type.
+ *
+ * A tuple written in place has its elements resolved here, where they may
+ * be `inline` themselves: an inline value is the one place `inline` nests.
+ * A union distributes over its members, so `inline A | B` needs no
+ * modifier on `B`. Anything else (a name, above all) is resolved as
+ * written and then converted by `inlineFormOf`, which is where the
+ * operands that cannot be unboxed are reported.
+ */
+function resolveInlineOperand(ctx: CheckerContext, ann: TypeAnnotation): Type {
+  return match (ann) {
+    case TupleTypeAnnotation {elementTypes, spreadIndices}: {
+      if (spreadIndices != null) {
+        // A spread splices in a whole tuple type, so let the tuple arm
+        // resolve it; its elements then follow the storage rule.
+        inlineFormOf(ctx, resolveTypeAnnotation(ctx, ann), ann.loc)
+      } else {
+        let elTypes = new Array<Type>();
+        for (let element in elementTypes) {
+          let elType = resolveTypeAnnotation(ctx, element, true);
+          if (isInlineType(elType)) {
+            // Legal by design: the inner tuple's slots become the outer
+            // one's. Codegen does not flatten them yet.
+            ctx.error(
+              "An inline tuple inside an inline tuple is not supported yet.",
+              DiagnosticCode.TypeMismatch,
+              element.loc,
+            );
+          }
+          elTypes.push(elType);
+        }
+        new InlineTupleT(elTypes) as Type
+      }
+    }
+    case UnionTypeAnnotation {types}: {
+      let members = new Array<Type>();
+      for (let member in types) {
+        members.push(resolveInlineOperand(ctx, member));
+      }
+      unionOfInlineMembers(ctx, members, ann.loc)
+    }
+    case _: inlineFormOf(ctx, resolveTypeAnnotation(ctx, ann, true), ann.loc)
+  };
+}
 
 /**
- * Report inline tuples that a type alias may not contain.
- *
- * An alias may *name* an inline tuple — `type Pair = inline (i32, i32)` — so
- * the target's top level is allowed to be one, or a union of them. That is the
- * position the alias stands for, and every use of the name is re-checked
- * against the position it appears in.
- *
- * Anything deeper is illegal no matter where the alias is used: an inline
- * tuple in a parameter, an array element, or a record field has no legal
- * position to be used *from*. Those are reported here, at the declaration,
- * which is where the author can see them.
+ * The union of converted members, or an error type when a member could not
+ * be converted: half an inline union would only produce follow-on errors.
  */
-function checkAliasTargetInlineTuples(
+function unionOfInlineMembers(
   ctx: CheckerContext,
-  target: Type,
+  members: Array<Type>,
   loc: SourceLocation | null,
-): void {
-  let reportNested = (t: Type) => {
-    if (containsInlineTuple(t)) {
+): Type {
+  for (let member in members) {
+    if (member is ErrorType) {
+      return member;
+    }
+  }
+  return createUnionType(members, ctx, loc);
+}
+
+/**
+ * The unboxed form of a resolved type: a tuple becomes an inline tuple, a
+ * union converts member by member, and an alias converts its target. Every
+ * other type is an error rather than a no-op, so `inline` always means the
+ * value is unboxed.
+ */
+function inlineFormOf(ctx: CheckerContext, t: Type, loc: SourceLocation | null, aliasHops: i32 = 0): Type {
+  return match (t) {
+    case InlineTupleT {}: t
+    case ErrorType {}: t
+    case TupleT as tuple: {
+      if (tuple.row != null) {
+        ctx.error(
+          "'inline' cannot apply to a tuple type with a rest: its length is not known.",
+          DiagnosticCode.TypeMismatch,
+          loc,
+        );
+        new ErrorType() as Type
+      } else {
+        new InlineTupleT(tuple.elementTypes)
+      }
+    }
+    case TypeAliasType as alias: {
+      // `resolving` and the hop bound guard a recursive alias, as in
+      // `isInlineType`.
+      if (alias.resolving || aliasHops >= maxAliasHops) {
+        new ErrorType() as Type
+      } else {
+        alias.resolving = true;
+        let converted = inlineFormOf(ctx, alias.target, loc, aliasHops + 1);
+        alias.resolving = false;
+        converted
+      }
+    }
+    case UnionT {types}: {
+      let members = new Array<Type>();
+      for (let member in types) {
+        members.push(inlineFormOf(ctx, member, loc, aliasHops));
+      }
+      unionOfInlineMembers(ctx, members, loc)
+    }
+    case TypeParameterType as tp: {
       ctx.error(
-        "Inline tuple types can only appear in function return types, not here.",
+        `'inline' cannot apply to type parameter '${tp.name}': its argument may not be a tuple.`,
         DiagnosticCode.TypeMismatch,
         loc,
       );
+      new ErrorType() as Type
+    }
+    case RecordT as record: {
+      ctx.error(
+        if (record.isExistential) {
+          "'inline' cannot apply to an existential record type."
+        } else {
+          "Inline record types are not supported yet."
+        },
+        DiagnosticCode.TypeMismatch,
+        loc,
+      );
+      new ErrorType() as Type
+    }
+    case _: {
+      ctx.error(
+        `'inline' applies to tuple types and unions of them, not '${typeToString(t)}'.`,
+        DiagnosticCode.TypeMismatch,
+        loc,
+      );
+      new ErrorType() as Type
     }
   };
-  // A top-level inline tuple is fine, but its own elements are not.
-  let checkMember = (member: Type) => {
-    if (member is InlineTupleT) {
-      for (let element in member.elementTypes) {
-        reportNested(element);
-      }
-    } else {
-      reportNested(member);
-    }
-  };
-  if (let UnionT {types} = target) {
-    for (let member in types) {
-      checkMember(member);
-    }
-  } else {
-    checkMember(target);
-  }
 }
 
 /**
@@ -5567,10 +5625,10 @@ function isBodyOf(parent: Node, child: Node): boolean {
 }
 
 function resolveTypeAnnotation(ctx: CheckerContext, ann: TypeAnnotation, allowInlineTuple: boolean = false): Type {
-  let t = resolveTypeAnnotationInner(ctx, ann, allowInlineTuple);
+  let t = resolveTypeAnnotationInner(ctx, ann);
   if (!allowInlineTuple) {
-    if (containsInlineTuple(t)) {
-    ctx.error("Inline tuple types can only appear in function return types, not here.", DiagnosticCode.TypeMismatch, ann.loc);
+    if (isInlineType(t)) {
+      ctx.error("Inline tuple types can only appear in function return types, not here.", DiagnosticCode.TypeMismatch, ann.loc);
     }
   }
   return t;
@@ -5598,7 +5656,7 @@ function resolveExplicitTypeArgument(ctx: CheckerContext, ann: TypeAnnotation) {
   return t;
 }
 
-function resolveTypeAnnotationInner(ctx: CheckerContext, ann: TypeAnnotation, allowInlineTuple: boolean): Type {
+function resolveTypeAnnotationInner(ctx: CheckerContext, ann: TypeAnnotation): Type {
   return match (ann) {
   case NamedTypeAnnotation {name, typeArguments, elementsMutable}: {
     // Resolve through scope analysis so lexical shadowing is honored.
@@ -5649,7 +5707,7 @@ function resolveTypeAnnotationInner(ctx: CheckerContext, ann: TypeAnnotation, al
         hasTypeArgs = true;
         for (let typeArgument in typeArguments) {
           ctx.resourceMentionOk = argsMayBeResource;
-          let resolvedArg = resolveTypeAnnotation(ctx, typeArgument, allowInlineTuple);
+          let resolvedArg = resolveTypeAnnotation(ctx, typeArgument);
           // A generic type is a heap object, so its arguments are storage:
           // `Array<Borrow<File>>` is the array case of the field rule. The
           // handles themselves are the exception -- `Borrow<File>` is the
@@ -5763,7 +5821,9 @@ function resolveTypeAnnotationInner(ctx: CheckerContext, ann: TypeAnnotation, al
     var i = 0;
     while (i < types.length) {
       ctx.resourceMentionOk = memberResourceOk;
-      let t = resolveTypeAnnotation(ctx, types[i], allowInlineTuple);
+      // A member is not a position of its own: the union is checked
+      // as a whole, by whoever resolves it.
+      let t = resolveTypeAnnotation(ctx, types[i], true);
       resolved.push(t);
       i += 1;
     }
@@ -5819,7 +5879,7 @@ function resolveTypeAnnotationInner(ctx: CheckerContext, ann: TypeAnnotation, al
   }
   case NullableTypeAnnotation {typeAnnotation}: {
     // T? desugars to T | null; T?? and (T | null)? collapse in the union.
-    let inner = resolveTypeAnnotation(ctx, typeAnnotation, allowInlineTuple);
+    let inner = resolveTypeAnnotation(ctx, typeAnnotation, true);
     if (isNumericType(inner) || inner is BooleanType) {
       ctx.error(
         `'${typeToString(inner)}' is not nullable: primitives cannot be null.`,
@@ -5836,7 +5896,7 @@ function resolveTypeAnnotationInner(ctx: CheckerContext, ann: TypeAnnotation, al
     let paramTypes = new Array<Type>();
     var i = 0;
     while (i < params.length) {
-      let paramType = resolveTypeAnnotation(ctx, params[i], allowInlineTuple);
+      let paramType = resolveTypeAnnotation(ctx, params[i]);
             paramTypes.push(paramType);
       i += 1;
     }
@@ -5863,7 +5923,7 @@ function resolveTypeAnnotationInner(ctx: CheckerContext, ann: TypeAnnotation, al
     // values have fields neither type names.
     var existential = isExistential;
     for (let prop in properties) {
-      let resolved = resolveTypeAnnotation(ctx, prop.typeAnnotation, allowInlineTuple);
+      let resolved = resolveTypeAnnotation(ctx, prop.typeAnnotation);
       rejectSecondClassStorage(ctx, resolved, "a record field", prop.typeAnnotation.loc);
       rejectAffineStructuralMember(ctx, resolved, "a record member", prop.typeAnnotation.loc);
       if (props.has(prop.name.name)) {
@@ -5878,7 +5938,7 @@ function resolveTypeAnnotationInner(ctx: CheckerContext, ann: TypeAnnotation, al
     var row: TypeParameterType | null = null;
     if (spreads != null) {
       for (let spread in spreads) {
-        let spreadType = resolveTypeAnnotation(ctx, spread, allowInlineTuple);
+        let spreadType = resolveTypeAnnotation(ctx, spread);
         match (baseType(spreadType)) {
           case RecordT as rec: {
             // A record type's fields merge in, and its row with them.
@@ -5945,7 +6005,7 @@ function resolveTypeAnnotationInner(ctx: CheckerContext, ann: TypeAnnotation, al
     var rowIndex = 0;
     var i = 0;
     while (i < elementTypes.length) {
-      let resolved = resolveTypeAnnotation(ctx, elementTypes[i], allowInlineTuple);
+      let resolved = resolveTypeAnnotation(ctx, elementTypes[i]);
       if (spreadIndices != null && spreadIndices.contains(i)) {
         // `...T`: a tuple type's elements splice in, and its row with
         // them; a row parameter becomes this type's row.
@@ -5988,15 +6048,7 @@ function resolveTypeAnnotationInner(ctx: CheckerContext, ann: TypeAnnotation, al
     }
     new TupleT(elTypes, row, rowIndex)
   }
-  case InlineTupleTypeAnnotation {elementTypes}: {
-    let elTypes = new Array<Type>();
-    var i = 0;
-    while (i < elementTypes.length) {
-      elTypes.push(resolveTypeAnnotation(ctx, elementTypes[i], allowInlineTuple));
-      i += 1;
-    }
-    new InlineTupleT(elTypes)
-  }
+  case InlineTypeAnnotation {typeAnnotation}: resolveInlineOperand(ctx, typeAnnotation)
   case ThisTypeAnnotation {loc}: {
     let bound = ctx.bodyThisType;
     if (bound != null) {
@@ -23170,6 +23222,12 @@ function checkFunctionExpression(
   var needsInference = false;
   if (returnTypeAnn != null) {
     retType = resolveTypeAnnotation(ctx, returnTypeAnn, true);
+  } else if (contextualFn != null && isInlineType(contextualFn.returnType) &&
+      !fe.isGenerator && !fe.isAsync) {
+    // Inference never produces an inline type, and inline-ness is part of
+    // a function type, so an arrow written where one is expected returns
+    // it: `let f: () => inline (i32, i32) = () => (1, 2)`.
+    retType = contextualFn.returnType;
   } else {
     needsInference = true;
   }

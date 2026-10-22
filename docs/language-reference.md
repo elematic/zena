@@ -4660,6 +4660,53 @@ let (quot, rem) = divide(17, 5);
   in variables or passed as arguments
 - They compile to zero-allocation WASM multi-value returns
 
+#### The `inline` Modifier
+
+`inline` is a prefix modifier on a type. Its operand is a tuple type, a union
+of tuple types, or a name for either:
+
+```zena
+type Pair = (i32, i32);
+type Checked<T, E> = (true, T, _) | (false, _, E);
+
+let pair = (): inline Pair => (1, 2);
+let checkedSub = (a: i32, b: i32): inline Checked<i32, String> => {
+  if (b > a) {
+    return (false, _, 'underflow');
+  }
+  return (true, a - b, _);
+};
+```
+
+`inline` takes the whole union to its right, so one modifier covers every
+member: `inline A | B` is `inline (A | B)`. Writing `inline` on each member,
+as in `inline (true, T) | inline (false, _)`, means the same thing. Parentheses
+group as usual, so `(inline A) | B` mixes an inline member with a boxed one,
+which is an error.
+
+An inline type may appear only in return position: a function's return type,
+the result of a function type, or a type alias used there. A type argument, a
+record field, a function parameter and an element of a boxed tuple are storage
+positions, and an inline type in one is an error. Because inline-ness is part
+of a function type, an arrow written where `() => inline Pair` is expected
+returns `inline Pair`.
+
+`inline` is shallow. It unboxes the value it is written on, and nothing
+inside it: in `inline (i32, (i32, i32))` the second element is a boxed tuple.
+An inline tuple inside an inline tuple is legal by design, but the compiler
+does not flatten it yet and reports an error.
+
+`inline` is an error on a type that cannot be unboxed, rather than a no-op:
+
+- a primitive (`inline i32`) or a class (`inline String`), which are already
+  unboxed or are references by definition;
+- a type parameter (`inline T`), whose argument may not be a tuple;
+- `null`, including `inline (i32, i32)?`, because an inline value has no
+  absent form;
+- an existential record type (`inline {x: i32, ...}`), whose shape is not
+  known;
+- a record type, until inline records are implemented.
+
 #### Boolean Literal Types
 
 The types `true` and `false` are literal types that are subtypes of `boolean`.
