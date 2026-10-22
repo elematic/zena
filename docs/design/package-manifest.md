@@ -209,6 +209,8 @@ entry `<did>@<major>`.
    `<name>` up among P's dependencies:
    - a path dependency is the package in that directory, whose manifest
      the compiler reads too;
+   - a WIT dependency is the package whose libraries the compiler
+     synthesizes from that WIT;
    - a published dependency is the pinned package `<did>@<major>`, found
      in the package cache, where `zena fetch` unpacks each source archive
      into `sources/<source CID>`.
