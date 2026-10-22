@@ -1,0 +1,74 @@
+{
+  "lexicon": 1,
+  "id": "dev.zena-lang.host.createPackage",
+  "defs": {
+    "main": {
+      "type": "procedure",
+      "description": "Creates a package in an organization's scope. The caller must be an admin of the organization, or on a team it allows. The host generates the package's signing key, submits its DID's genesis operation with 'recoveryKeys' ranked above the host's rotation key, and writes the profile and the maintainers record. The maintainers record counts once its maintainers' threshold attests it.",
+      "input": {
+        "encoding": "application/json",
+        "schema": {
+          "type": "object",
+          "required": [
+            "organization",
+            "recoveryKeys",
+            "profile",
+            "maintainers"
+          ],
+          "properties": {
+            "organization": {
+              "type": "string",
+              "format": "did",
+              "description": "The organization, whose handle is a scope on this host."
+            },
+            "recoveryKeys": {
+              "type": "array",
+              "minLength": 1,
+              "maxLength": 4,
+              "items": {
+                "type": "string",
+                "description": "A public key as a 'did:key'."
+              },
+              "description": "Recovery keys, ranked first to last above the host's rotation key."
+            },
+            "profile": {
+              "type": "unknown",
+              "description": "A 'dev.zena-lang.package.profile' record."
+            },
+            "maintainers": {
+              "type": "unknown",
+              "description": "A 'dev.zena-lang.package.maintainers' record."
+            },
+            "entries": {
+              "type": "array",
+              "items": {"type": "ref", "ref": "dev.zena-lang.org.defs#entry"},
+              "description": "The entries behind the record's commitments, which the host keeps private."
+            }
+          }
+        }
+      },
+      "output": {
+        "encoding": "application/json",
+        "schema": {
+          "type": "object",
+          "required": ["did", "handle", "maintainers"],
+          "properties": {
+            "did": {"type": "string", "format": "did"},
+            "handle": {"type": "string", "format": "handle"},
+            "maintainers": {"type": "ref", "ref": "com.atproto.repo.strongRef"}
+          }
+        }
+      },
+      "errors": [
+        {
+          "name": "NameTaken",
+          "description": "The scope has a name equal to the profile's 'name'."
+        },
+        {
+          "name": "QuotaExceeded",
+          "description": "The organization has created as many packages as the host allows."
+        }
+      ]
+    }
+  }
+}

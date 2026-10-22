@@ -44,11 +44,24 @@ package in this repository's workspace or from a package that lists it in its
 
 ## Lexicons
 
-`lexicons/dev/zena-lang/package/` holds the lexicons for
-`dev.zena-lang.package.profile`, `dev.zena-lang.package.release` and
-`dev.zena-lang.package.yank`. They are to be published at
-`zena-lang.dev`. They state only constraints that `package-manager:records`
-checks.
+`lexicons/dev/zena-lang/` holds the lexicons, to be published at
+`zena-lang.dev`:
+
+- `package/`: a package's records: profile, releases, yanks, the
+  maintainers record, and attestations, which maintainers write to their
+  own repositories. `package-manager:records` reads and checks the first
+  three, and their lexicons state only constraints it checks.
+- `org/`: an organization's members and team records, and the private
+  entries their commitments stand for.
+- `host/`: the package host's methods
+  ([docs/design/package-manager.md](../../docs/design/package-manager.md),
+  "The host's methods").
+- `authPublish.json`: the OAuth permission set `zena login` asks for:
+  writing attestations and calling the host's methods.
+
+`zena/test/lexicons_test.zena` checks that each file is named by its NSID,
+that its references resolve, and that the permission set covers every host
+method.
 
 ## Tests
 

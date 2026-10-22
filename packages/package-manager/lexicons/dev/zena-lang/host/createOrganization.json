@@ -1,0 +1,60 @@
+{
+  "lexicon": 1,
+  "id": "dev.zena-lang.host.createOrganization",
+  "defs": {
+    "main": {
+      "type": "procedure",
+      "description": "Creates an organization, whose handle is a scope on this host, with the caller as its only owner. The host writes its members record and its DID's genesis operation, with 'recoveryKeys' ranked above the host's rotation key. The members record counts once the caller attests it.",
+      "input": {
+        "encoding": "application/json",
+        "schema": {
+          "type": "object",
+          "required": ["name", "recoveryKeys"],
+          "properties": {
+            "name": {
+              "type": "string",
+              "maxLength": 63,
+              "description": "The scope's name: the first label of the organization's handle."
+            },
+            "recoveryKeys": {
+              "type": "array",
+              "minLength": 1,
+              "maxLength": 4,
+              "items": {
+                "type": "string",
+                "description": "A public key as a 'did:key'."
+              },
+              "description": "Recovery keys, ranked first to last above the host's rotation key."
+            }
+          }
+        }
+      },
+      "output": {
+        "encoding": "application/json",
+        "schema": {
+          "type": "object",
+          "required": ["did", "handle", "members"],
+          "properties": {
+            "did": {"type": "string", "format": "did"},
+            "handle": {"type": "string", "format": "handle"},
+            "members": {"type": "ref", "ref": "com.atproto.repo.strongRef"}
+          }
+        }
+      },
+      "errors": [
+        {
+          "name": "NameTaken",
+          "description": "The scope exists, or the host reserves its name."
+        },
+        {
+          "name": "NotAllowed",
+          "description": "The host's rules do not let the caller create a scope, such as one that needs the operator's approval or a claim on a domain."
+        },
+        {
+          "name": "QuotaExceeded",
+          "description": "The caller has created as many scopes as the host allows."
+        }
+      ]
+    }
+  }
+}

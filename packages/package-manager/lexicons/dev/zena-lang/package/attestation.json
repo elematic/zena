@@ -1,0 +1,42 @@
+{
+  "lexicon": 1,
+  "id": "dev.zena-lang.package.attestation",
+  "defs": {
+    "main": {
+      "type": "record",
+      "description": "A maintainer's approval of a record in a package's or organization's repository: a release, or a change to a maintainers, members or team record. It is written to the maintainer's own repository. Its record key is the SHA-256 hash of the subject's AT-URI, a space and its CID, in lowercase base32 without padding, so it can be fetched without listing records.",
+      "key": "any",
+      "record": {
+        "type": "object",
+        "required": ["subject", "createdAt"],
+        "properties": {
+          "subject": {"type": "ref", "ref": "com.atproto.repo.strongRef"},
+          "createdAt": {"type": "string", "format": "datetime"},
+          "entries": {
+            "type": "array",
+            "items": {"type": "ref", "ref": "dev.zena-lang.org.defs#entry"},
+            "description": "The private entries the attestation relies on, revealed: the maintainer's own in a team, an organization or a maintainers record that lists commitments."
+          },
+          "approval": {"type": "ref", "ref": "#approval"}
+        }
+      }
+    },
+    "approval": {
+      "type": "object",
+      "description": "A WebAuthn assertion by one of the maintainer's approval keys over the subject's CID.",
+      "required": ["key", "authenticatorData", "clientDataJSON", "signature"],
+      "properties": {
+        "key": {
+          "type": "string",
+          "description": "A public key as a 'did:key'."
+        },
+        "authenticatorData": {"type": "bytes"},
+        "clientDataJSON": {
+          "type": "bytes",
+          "description": "Its challenge is the subject's CID."
+        },
+        "signature": {"type": "bytes"}
+      }
+    }
+  }
+}

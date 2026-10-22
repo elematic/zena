@@ -660,9 +660,11 @@ The first `zena publish` of a package creates its account, after asking.
    knows which account the request is from without a password of its own.
    Every later call to the host is made the same way.
 4. **The DID.** `zena` calls `dev.zena-lang.host.createPackage` with the
-   name, the scope and the recovery key's public key. A maintainer with no
-   scope on the host yet gets one first: an organization with them as its
-   only owner, under a scope name they choose. The host generates the
+   scope's organization, the recovery key's public key, the profile and
+   the maintainers record. A maintainer with no scope on the host yet
+   creates one first, with `dev.zena-lang.host.createOrganization`: an
+   organization with them as its only owner, under a scope name they
+   choose. The host generates the
    package's signing key, writes the genesis operation, signs it with its
    rotation key and submits it to the PLC directory:
 
@@ -761,9 +763,11 @@ is an open question.
   }
   ```
 
-  Its record key is derived from the subject's AT-URI, so the
-  attestation of a release by a given maintainer can be fetched without
-  listing their records.
+  Its record key is the SHA-256 hash of the subject's AT-URI, a space and
+  the subject's CID, in lowercase base32 without padding. So the
+  attestation of a given record by a given maintainer can be fetched
+  without listing their records. Successive maintainers records share an
+  AT-URI, and the CID keeps their attestations apart.
 
 The checksum log fetches the attestations when it records a release, and
 records the release only when the package's threshold of maintainers have
@@ -859,7 +863,8 @@ Members and team records therefore list commitments rather than DIDs:
 }
 ```
 
-Each commitment is the CID of one member's entry, which stays private:
+Each commitment is the CID of one member's entry: the entry encoded as
+DAG-CBOR and hashed with SHA-256. The entry stays private:
 
 ```json
 {
@@ -994,6 +999,40 @@ with Subresource Integrity on its scripts, and `zena approve` remains a
 way to inspect and approve releases without it. A package host can also
 have pages of its own for settings only it holds, such as claims on scope
 names.
+
+### The host's methods
+
+Each method of the extension is a lexicon in
+`packages/package-manager/lexicons/dev/zena-lang/host/`. Every call
+carries a service-auth token from the caller's PDS, addressed to the
+host's DID with the method's NSID as its `lxm`, and the host checks the
+caller's role in the records it already holds. A write that changes
+which releases count, such as a new maintainers record, takes effect
+once the attestations the previous record requires reach the log.
+
+| Method                    | Caller                                                          | What it does                                                         |
+| ------------------------- | --------------------------------------------------------------- | -------------------------------------------------------------------- |
+| `createOrganization`      | anyone the host's limits allow                                  | creates a scope, with the caller as its only owner                   |
+| `createPackage`           | an organization's admins, or a team they allow                  | creates a package with its profile and maintainers record            |
+| `createAutomationAccount` | an organization's admins                                        | creates an account for CI and returns its app password once          |
+| `uploadArtifact`          | a package's maintainers                                         | stores an artifact, or one part of it, as a blob of the package      |
+| `publish`                 | a package's maintainers                                         | writes a release record, refusing a version that exists              |
+| `yank`                    | a package's maintainers                                         | writes a yank record                                                 |
+| `putProfile`              | a package's owners                                              | replaces the profile                                                 |
+| `renamePackage`           | a package's owners                                              | changes the handle, with a PLC operation, and the profile's name     |
+| `putMaintainers`          | a package's owners                                              | writes a maintainers record, with the entries behind its commitments |
+| `putMembers`              | an organization's owners                                        | writes the members record, with its entries                          |
+| `putTeam`, `deleteTeam`   | an organization's admins, or a team's maintainers for `putTeam` | creates, replaces or deletes a team                                  |
+| `getEntries`              | members, owners, admins and team maintainers                    | returns the private entries the caller may see                       |
+
+The `put` methods take the CID the record must have now, as
+`com.atproto.repo.putRecord` does, so two owners editing at once do not
+overwrite each other unseen.
+
+Moving a package to another host, and the recovery of
+[Recovery](#recovery), have no methods yet. Both need PLC operations that
+the host signs only with the maintainers' attestations, and the rules for
+that are a later revision of this design.
 
 ### Moving to another host
 
@@ -1432,8 +1471,10 @@ throttled. The host therefore limits who creates accounts and how many:
   operator's tools for reviewing scopes and taking content down.
 - **The management interface**: a browser app on the index's site, with
   no privileges of its own.
-- **Lexicons** for the maintainers record, attestations, membership
-  entries, and an organization's members and teams.
+- **Lexicons** for the records, the host's methods and the
+  `dev.zena-lang.authPublish` permission set, in
+  `packages/package-manager/lexicons`. Moving a package and recovering
+  one have no methods yet.
 - **Services**: the checksum log, the index and its proxy, and a labeler,
   all Zena servers. The log also checks attestations, approval-key
   signatures and recovery resets. The index watches PLC operations,
