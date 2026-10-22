@@ -6343,12 +6343,13 @@ function createUnionType(types: Array<Type>, ctx: CheckerContext | null = null, 
 /**
  * Report an inline union whose members a reader cannot tell apart.
  *
- * Codegen gives each position one slot per wasm type its members put
- * there, so `inline (true, i32) | (false, String)` has an `i32` slot and
- * a `String` slot at position 1. A reader picks the slot by the member,
- * and finds the member from a literal: some position must hold a
- * literal in every member, a different one in each. Without one the
- * compiler would have to add a tag slot.
+ * An inline value carries no type identity, only its slot values, so a
+ * reader finds the member from a literal the author wrote: every member
+ * starts with one, a different value in each, and all of the same type.
+ * `inline (true, i32) | (false, String)` and `inline (0, _) | (1, T)`
+ * qualify. The literals must share a type because `true` and `1` are
+ * the same value at run time. The members have the same length because
+ * pattern typing merges them position by position.
  */
 function checkInlineUnionMembers(ctx: CheckerContext, members: Array<Type>,
     loc: SourceLocation | null): void {
@@ -6372,35 +6373,55 @@ function checkInlineUnionMembers(ctx: CheckerContext, members: Array<Type>,
       return;
     }
   }
-  for (var p = 0; p < arity; p += 1) {
-    let seen = new Set<String>();
-    var allDistinct = true;
-    for (let tuple in tuples) {
-      let key = literalTypeKey(tuple.elementTypes[p]);
-      if (key == null || seen.has(key)) {
-        allDistinct = false;
-        break;
-      }
-      seen.add(key);
-    }
-    if (allDistinct) {
+  var tagType: String | null = null;
+  let seen = new Set<String>();
+  for (let tuple in tuples) {
+    let head = if (arity > 0) tuple.elementTypes[0] else new ErrorType() as Type;
+    let tag = discriminantTag(head);
+    let ok = if (tag == null) {
+      false
+    } else if (tagType != null && tagType != tag.type) {
+      false
+    } else {
+      !seen.has(tag.value)
+    };
+    if (!ok) {
+      ctx.error(
+        "Each member of an inline union must start with a literal of the same type, a different one in each, as in '(true, T) | (false, E)'.",
+        DiagnosticCode.TypeMismatch,
+        loc,
+      );
       return;
     }
+    if (tag != null) {
+      tagType = tag.type;
+      seen.add(tag.value);
+    }
   }
-  ctx.error(
-    "The members of an inline union must differ in a literal at the same position, as in '(true, T) | (false, E)'.",
-    DiagnosticCode.TypeMismatch,
-    loc,
-  );
 }
 
-/** A key that is equal for equal boolean or number literal types. */
-function literalTypeKey(t: Type): String | null {
-  return match (t) {
-    case BoolLiteralType {value}: if (value) 'true' else 'false'
-    case NumLiteralType {raw}: `n:${raw}`
-    case _: null
-  };
+/**
+ * The type and value of a literal that can tell union members apart: a
+ * boolean literal, or an integer literal (by its parsed value, so `0x1`
+ * and `1` are the same tag). Null for anything else.
+ */
+function discriminantTag(t: Type): {type: String, value: String} | null {
+  if (let BoolLiteralType {value} = t) {
+    return {type: 'boolean', value: if (value) 'true' else 'false'};
+  }
+  if (let NumLiteralType {raw} = t) {
+    let base = baseType(t);
+    if (!isIntegerType(base)) {
+      return null;
+    }
+    let negative = raw.length > 0 && raw.getByteAt(0) == 45;
+    let digits = if (negative) raw.sliceBytes(1, raw.length) else raw;
+    if (let (true, magnitude) = integerLiteralMagnitude(digits)) {
+      let sign = if (negative) '-' else '';
+      return {type: typeToString(base), value: `${sign}${magnitude}`};
+    }
+  }
+  return null;
 }
 
 /**

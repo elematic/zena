@@ -4701,9 +4701,13 @@ Each position is returned as one WebAssembly value per type its members put
 there, and a member leaves the values it does not use at their default (0 or
 null). So `inline (true, i32) | (false, String)` needs no `_` holes, and a
 pattern such as `(false, message)` reads the `String`. Because the reader finds
-the member from a literal, the members must have the same length and differ in
-a literal at the same position: `inline (i32, i32) | (f64, f64)` is an error.
-A pattern that reads a position without matching that literal reads the union
+the member from a literal, every member must start with one: a boolean literal
+in every member, or an integer literal of one type in every member, with a
+different value in each. The members must also have the same length. So
+`inline (i32, i32) | (f64, f64)`, `inline (i32, true) | (f64, false)` and
+`inline (true, i32) | (1, f64)` are errors; in the last, `true` and `1` are the
+same value at run time. A pattern that reads a position without matching that
+literal reads the union
 of the members' types there, so `let (ok, v) = r` on
 `inline (true, i32) | (false, String)` is an error, while `(false, message)`
 reads the `String`.

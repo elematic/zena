@@ -348,14 +348,20 @@ slots it does not use at their default (0 or null). Members with the same type
 at a position share its slot, so `inline (true, String) | (false, String)` has
 two slots.
 
-A reader takes the slot that belongs to the member its pattern matches, so the
-members must be told apart by a literal at the same position, and must have
-the same length:
+A reader takes the slot that belongs to the member its pattern matches, and
+finds the member from a literal. So every member must start with a literal, a
+different one in each, all of the same type (booleans, or integers of one
+type), and the members must have the same length:
 
 ```zena
 let ok = (): inline (true, i32) | (false, String) => (true, 1);
 let bad = (): inline (i32, i32) | (f64, f64) => (1, 2); // @error
+let late = (): inline (i32, true) | (f64, false) => (1, true); // @error
+let mixed = (): inline (true, i32) | (1, f64) => (true, 1); // @error
 ```
+
+The literals must share a type because `true` and `1` are the same value at run
+time.
 
 ##### Storable counterparts
 

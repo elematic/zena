@@ -166,9 +166,13 @@ results directly, did not change:
 - A `null` element shares the position's reference slot.
 
 The checker requires the members of an inline union to have the same
-length and to differ in a literal at the same position
-(`checkInlineUnionMembers`), because a reader picks the slot by the
-member and finds the member from that literal.
+length and to start with a literal: all boolean or all integers of one
+type, with a different value in each, compared by parsed value
+(`checkInlineUnionMembers`). A reader picks the slot by the member and
+finds the member from that literal, so the literals have to differ at
+run time, where `true` and `1` are both `i32` 1. Fixing the position
+at 0 means any two such unions still have a common discriminant when
+they are joined.
 
 Every reader goes through `MultiValues.positions` (`codegen/ir/lowering.zena`),
 which maps slots back to positions for the members a pattern's literal

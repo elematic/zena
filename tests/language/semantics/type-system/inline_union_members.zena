@@ -1,18 +1,28 @@
 // @mode: check
-// A reader of an inline union finds the member from a literal, so some
-// position must hold a different literal in every member. Members may put
-// different types at the same position: each type gets a slot of its own.
+// A reader of an inline union finds the member from a literal, so every
+// member starts with one: of the same type, a different value in each.
+// Members may put different types at the same position after it: each
+// type gets a slot of its own.
 
 export let ok = (s: String): inline (true, i32) | (false, String) => (true, 1);
 
 export let three = (n: i32): inline (0, i32) | (1, f64) | (2, String) => (0, n);
 
-// The literal need not come first.
-export let second = (): inline (i32, true) | (f64, false) => (1, true);
+// The literal must come first.
+export let second = (): inline (i32, true) | (f64, false) => (1, true); // @error: Each member of an inline union must start with a literal of the same type, a different one in each, as in '(true, T) | (false, E)'.
 
-export let noLiteral = (): inline (i32, i32) | (f64, f64) => (1, 2); // @error: The members of an inline union must differ in a literal at the same position, as in '(true, T) | (false, E)'.
+// `true` and `1` are the same value at run time.
+export let mixedTags = (): inline (true, i32) | (1, f64) => (true, 1); // @error: Each member of an inline union must start with a literal of the same type, a different one in each, as in '(true, T) | (false, E)'.
 
-export let sameLiteral = (): inline (true, i32) | (true, String) => (true, 1); // @error: The members of an inline union must differ in a literal at the same position, as in '(true, T) | (false, E)'.
+// `0x1` and `1` are the same tag.
+export let sameValue = (): inline (0x1, i32) | (1, f64) => (1, 2); // @error: Each member of an inline union must start with a literal of the same type, a different one in each, as in '(true, T) | (false, E)'.
+
+// A float literal is not a tag.
+export let floatTag = (): inline (1.5, i32) | (2.5, f64) => (1.5, 2); // @error: Each member of an inline union must start with a literal of the same type, a different one in each, as in '(true, T) | (false, E)'.
+
+export let noLiteral = (): inline (i32, i32) | (f64, f64) => (1, 2); // @error: Each member of an inline union must start with a literal of the same type, a different one in each, as in '(true, T) | (false, E)'.
+
+export let sameLiteral = (): inline (true, i32) | (true, String) => (true, 1); // @error: Each member of an inline union must start with a literal of the same type, a different one in each, as in '(true, T) | (false, E)'.
 
 export let lengths = (): inline (true, i32, i32) | (false, i32) => (false, 1); // @error: The members of an inline union must have the same length.
 
