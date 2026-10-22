@@ -1,0 +1,150 @@
+/**
+ * The packages a resolution file pins: its `resolved` section
+ * (docs/design/package-manager.md, "The resolution file"). `zena fetch`
+ * fetches them, and the compiler reads them from the package cache.
+ *
+ * ```json
+ * "resolved": {
+ *   "did:plc:...@1": {
+ *     "version": "1.4.2",
+ *     "release": "bafyrei...",
+ *     "source": "bafkrei...",
+ *     "dependencies": {"json": "did:web:json.example.com@2"}
+ *   }
+ * }
+ * ```
+ */
+
+import {HashMap} from 'zena:collections';
+import {JsonObject, JsonValue, parseJson} from 'zena:json';
+import {CODEC_DAG_CBOR, CODEC_RAW, Cid} from 'atproto:cid';
+import {isValidCidSyntax, isValidDid} from 'atproto:syntax';
+import {Version} from './version.zena';
+
+/** A resolution file whose pins cannot be read. */
+export class ResolutionError extends Error {
+  new(message: String) : super(message);
+}
+
+/** How a resolution file names a package: its DID and major version. */
+export function packageKey(did: String, major: i64): String {
+  return `${did}@${major}`;
+}
+
+/** A package a resolution file pins. */
+export final class Pin {
+  /** The package's DID and major version, `did:plc:...@1`. */
+  key: String;
+  did: String;
+  version: Version;
+  /** The CID of the release record. */
+  release: Cid;
+  /** The raw CID of the release's source archive. */
+  source: Cid;
+  /** The local names the package's own imports use, each mapped to a pinned package's key. */
+  dependencies: HashMap<String, String>;
+
+  new(key: String, did: String, version: Version, release: Cid, source: Cid,
+      dependencies: HashMap<String, String>)
+      : key = key, did = did, version = version, release = release, source = source,
+        dependencies = dependencies;
+}
+
+/**
+ * The packages the resolution file `text` pins, in the order it lists
+ * them; none when it has no `resolved` section. Throws `ResolutionError`
+ * for a pin that cannot be fetched as written.
+ */
+export function readPins(text: String): GrowableArray<Pin> {
+  var json: JsonValue = null;
+  try {
+    json = parseJson(text);
+  } catch (e) {
+    throw new ResolutionError(`zena-packages.json is not JSON: ${e.message}`);
+  }
+  if (!(json is JsonObject)) {
+    throw new ResolutionError('zena-packages.json is not an object');
+  }
+  let root = json;
+  let pins = new GrowableArray<Pin>();
+  let resolved = root['resolved'];
+  if (resolved == null) {
+    return pins;
+  }
+  if (!(resolved is JsonObject)) {
+    throw new ResolutionError('the "resolved" section of zena-packages.json is not an object');
+  }
+  resolved.forEach((key, value) => {
+    pins.push(readPin(key, value));
+  });
+  return pins;
+}
+
+function readPin(key: String, value: JsonValue): Pin {
+  var at = -1;
+  for (var i = 0; i < key.length; i += 1) {
+    if (key.getByteAt(i) == 64) { // '@'
+      at = i;
+    }
+  }
+  let did = if (at < 0) key else key.sliceBytes(0, at);
+  if (!isValidDid(did)) {
+    throw new ResolutionError(`'${key}' is not a DID and major version, such as did:plc:example@1`);
+  }
+  if (!(value is JsonObject)) {
+    throw new ResolutionError(`${key} is not an object`);
+  }
+  let entry = value;
+  let versionText = member(entry, 'version', key);
+  let version = parseVersion(versionText, key);
+  if (packageKey(did, version.major) != key) {
+    throw new ResolutionError(`${key} pins version ${versionText}, which is not major version ${key.sliceBytes(at + 1, key.length)}`);
+  }
+  let release = cidMember(entry, 'release', key);
+  if (release.codec != CODEC_DAG_CBOR) {
+    throw new ResolutionError(`${key}: release ${release.toString()} is not the CID of a record`);
+  }
+  let source = cidMember(entry, 'source', key);
+  if (source.codec != CODEC_RAW) {
+    throw new ResolutionError(`${key}: source ${source.toString()} is not the raw CID of a blob`);
+  }
+
+  let dependencies = new HashMap<String, String>();
+  let names = entry['dependencies'];
+  if (names != null) {
+    if (!(names is JsonObject)) {
+      throw new ResolutionError(`${key}: dependencies is not an object`);
+    }
+    names.forEach((name, target) => {
+      if (!(target is String)) {
+        throw new ResolutionError(`${key}: dependency '${name}' is not a string`);
+      }
+      dependencies[name] = target;
+    });
+  }
+  return new Pin(key, did, version, release, source, dependencies);
+}
+
+function member(entry: JsonObject, name: String, key: String): String {
+  let value = entry[name];
+  if (!(value is String)) {
+    throw new ResolutionError(`${key} has no "${name}" string`);
+  }
+  return value;
+}
+
+function cidMember(entry: JsonObject, name: String, key: String): Cid {
+  let text = member(entry, name, key);
+  if (!isValidCidSyntax(text)) {
+    throw new ResolutionError(`${key}: ${name} '${text}' is not a CID`);
+  }
+  return Cid.parse(text);
+}
+
+function parseVersion(text: String, key: String): Version {
+  try {
+    return Version.parse(text);
+  } catch (e) {
+    throw new ResolutionError(`${key}: ${e.message}`);
+  }
+}
