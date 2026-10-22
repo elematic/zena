@@ -43,8 +43,8 @@ dependencies (`zena-lock.json`).
 - **Verification.** Records come with signed proofs from the package's
   repository, and artifacts are addressed by hash. A client checks both,
   so a cache or proxy needs no trust.
-- **Hosting and maintainers.** A package host, a PDS that creates package
-  accounts on request, lets maintainers publish by signing in with their
+- **Hosting and maintainers.** A package host, a PDS with an extension that
+  creates package accounts on request, lets maintainers publish by signing in with their
   own atproto accounts, so no one holds a password for a package. Each
   release is attested by the package's maintainers, M of N if the package
   asks for it, and the checksum log checks the attestations. Teams and
@@ -87,6 +87,20 @@ dependencies (`zena-lock.json`).
   verified both ways between DNS or HTTPS and the DID document. Handles
   can change. DIDs do not.
 - An account can **migrate** to another PDS and keep its DID.
+- **XRPC** is how atproto services are called: an HTTP `GET` (a query) or
+  `POST` (a procedure) to `https://<server>/xrpc/<NSID>`. A method's
+  lexicon declares its input and output. The NSID says who defines the
+  method, and any server may implement it. A PDS serves the
+  `com.atproto.*` methods for its own accounts. Other services are found
+  through the `services` entries of their DID documents. A client can also
+  send a call for another service through its own PDS, with an
+  `atproto-proxy` header naming that service; the PDS forwards it with a
+  service-auth token for the client's account (see
+  [Creating a package](#creating-a-package)).
+- **Creating an account** is `com.atproto.server.createAccount` on a PDS.
+  PDSes that accept accounts from the public usually require an invite
+  code or a verified email address, and apply other limits against
+  spammers creating accounts in bulk.
 - **Relays** collect repository changes from many PDSes. An **AppView**
   indexes them for an application. A **labeler** publishes signed labels
   on accounts and records, and clients choose which labelers to apply.
@@ -575,18 +589,36 @@ depend on it.
 A package is an atproto account, so it lives on a PDS and someone holds
 its keys. Creating each package with `com.atproto.server.createAccount`
 on whatever PDS its publisher uses would give every package a password
-of its own to keep and share. The largest PDS, bsky.social, is also not a
-place for package accounts: each account there needs its own email
-address, and every package would be a Bluesky user.
+of its own to keep and share, and most PDSes would ask for an invite code
+or an email address per package. On bsky.social every package would also
+be a Bluesky user.
 
-A **package host** is a PDS that creates package accounts on request and
-lets their maintainers publish to them as themselves. Maintainers sign in
-with their own atproto account, the one they use for Bluesky or any other
-app, and no one has a password for a package account. The Zena project
-runs a package host, a PDS written in Zena, at a name still
-to be chosen (`pkg.zena-lang.dev` below). Anyone can run another, and a
-package can also live on an ordinary PDS (see
-[Holding keys elsewhere](#holding-keys-elsewhere)).
+A **package host** is a PDS with an extension: methods named
+`dev.zena-lang.host.*` that create package accounts on request and let
+their maintainers publish to them as themselves. Maintainers sign in with
+their own atproto account, the one they use for Bluesky or any other app,
+and no one has a password for a package account. The extension's methods
+are XRPC methods like any other. The host serves them at its own
+endpoint, and its service DID document lists them as a service,
+`#zena_package_host`, so that a client can also call them through its own
+PDS with `atproto-proxy`. To relays, AppViews and other PDSes, a package
+host is an ordinary PDS: they read its repositories with
+`com.atproto.sync.*` and never call the extension.
+
+The Zena project runs a package host, a PDS written in Zena, at a name
+still to be chosen (`pkg.zena-lang.dev` below). Anyone can run another by
+implementing the extension's lexicons.
+
+The `zena` command reads packages from any PDS, since reading needs only
+`com.atproto.sync.*` and the checks in
+[Fetching and verification](#fetching-and-verification). A package can
+also move from a package host to any PDS that accepts it (see
+[Moving to another host](#moving-to-another-host)), keeping its DID, its
+releases and its dependents. Publishing to a package on an ordinary PDS,
+with that account's own credentials and the maintainers' attestations,
+uses the same records, but the `zena` command does not implement it. That
+is left to whoever wants it. What the design guarantees is that no
+package depends on the Zena project's host to stay readable or to leave.
 
 ### Keys
 
@@ -992,8 +1024,10 @@ every release anyone has fetched, and checked against the log.
 - **The signing key** is held by whatever serves the repository, since a
   commit is signed when records are written and served from there. A
   package that trusts no host runs its own: the Zena project's host
-  software or the reference PDS, with `zena package create --host <url>`. A key on a laptop that is
-  usually offline cannot serve the repository, so this is not supported.
+  software, with `zena package create --host <url>`, or an ordinary PDS,
+  which the `zena` command can read from but not publish to. A key on a
+  laptop that is usually offline cannot serve the repository, so this is
+  not supported.
   A self-hosted package's risks are its host's: when the server is down,
   the package can be fetched only from caches, and if its signing key
   leaks, anyone can write releases, which still go unattested and so are
@@ -1273,6 +1307,101 @@ directory and the log are needed to resolve new releases. A build from an
 existing lockfile needs neither, given a cache or proxy that holds
 its artifacts.
 
+## Abuse and moderation
+
+A package host's operator answers for what the host stores and serves, as
+any registry's or PDS's does. The Zena project's host will receive legal
+takedown notices and reports of spam, malware and impersonation, and
+people will try to use it for things other than packages. This section
+says what the host allows, how it limits creating accounts, and how its
+operator handles reports.
+
+### What a package account can do
+
+A package account exists to hold package records, and the host lets it do
+nothing else. The same goes for organization and automation accounts.
+
+- The host has no way to sign in as one of these accounts: no
+  `com.atproto.server.createSession`, no app passwords and no OAuth
+  authorization. It does not serve `com.atproto.repo.createRecord`,
+  `putRecord`, `deleteRecord`, `applyWrites` or `uploadBlob` for them.
+  They are written only through the extension's methods.
+- The host's repository code refuses a write to any collection outside
+  `dev.zena-lang.*` in these accounts, whichever method makes it, so a bug
+  in one method cannot open an account up.
+- Blobs are stored only as the artifacts a release declares, within the
+  limits below.
+
+So an account created by publishing a package cannot post to Bluesky
+(`app.bsky.feed.post`) or Leaflet, follow anyone, or hold a profile for
+any other application.
+
+A package that moves to another PDS leaves these limits behind, along
+with the host's domain: its handle under the host's domain resolves only
+while the host's DNS answers for it, and the host stops answering for a
+package it has taken down. What leaves with it is its DID, and anyone can
+create a `did:plc` at the PLC directory without a host.
+
+### Limits on creating accounts
+
+Each account a host creates costs others something: an operation at the
+PLC directory, and an account that relays carry, with its events on the
+host's firehose. Relays can limit how many accounts they carry from one
+PDS, so a host flooded with accounts risks having all of its packages
+throttled. The host therefore limits who creates accounts and how many:
+
+- **Scopes.** Creating a scope is the step the host checks. It needs the
+  operator's approval, or a claim on a matching domain or GitHub
+  organization (see [Squatting](#squatting)), and the host can reserve
+  names (see [Confusion](#confusion)).
+- **Packages.** Within a scope, packages are created without review, up
+  to a number per day and a number in all, which the operator can raise.
+- **Maintainers.** Every request carries the maintainer's DID, through
+  its service-auth token, so the host can limit requests per maintainer.
+  Accounts on permissive PDSes cost little to create, so the host also
+  considers how old the maintainer's account is, which PDS holds it, and
+  the labels that labelers the operator follows put on it.
+- **Storage.** Each artifact, each release and each scope has a size
+  limit, and a release can store only the artifact kinds the release
+  schema defines. Without limits a host is free file hosting.
+
+### Reports and takedowns
+
+- **Reports.** The host takes reports through
+  `com.atproto.moderation.createReport`, which atproto clients already
+  use, and through an address on its site. The index links every package
+  page to it.
+- **Takedowns.** The operator can take down a release, a package or an
+  organization. The host then stops serving the records and blobs
+  involved, stops answering for a taken-down account's handle, and marks
+  the account as taken down on its firehose, as atproto's account status
+  events do. The operator's labeler labels what was taken down and why
+  (`legal`, `malware`, `spam`, `impersonation`), so a client whose fetch
+  fails can say why.
+- **Legal notices.** The operator names an agent for notices such as DMCA
+  takedowns, takes down what a valid notice names, and restores it on a
+  valid counter-notice, as the law requires. A notice usually names a
+  release or an artifact, which can be taken down without the rest of
+  the package.
+- **Dependents.** Workspaces that pinned a taken-down release still have
+  it in their caches. The Zena project's proxy follows the host's
+  takedowns for malware and legal notices and stops serving those blobs.
+  The checksum log keeps the release's CIDs, which are hashes and not the
+  content, so a release can be taken down without changing the log.
+
+### Proactive measures
+
+- The index looks at every new release before most workspaces could have
+  taken it: binary files in source archives, archives much larger than
+  the package's earlier releases, and handles close to those of popular
+  packages. It labels what it finds for review.
+- The first releases of a new scope are reviewed first.
+- The host rate-limits `createPackage` and `publish`, and the operator
+  watches for bursts of accounts or releases.
+- The host follows labels from labelers that mark spam and abusive
+  accounts, Bluesky's own moderation among them, and refuses requests
+  from maintainers they label.
+
 ## What this needs
 
 - **`packages/atproto`**: identifier syntax, base encodings, CIDs,
@@ -1287,12 +1416,16 @@ its artifacts.
   mapping. Signing in needs OAuth with a loopback redirect, a
   client metadata document at `zena-lang.dev`, and the
   `dev.zena-lang.authPublish` permission set.
-- **A package host**: a PDS written in Zena, with `dev.zena-lang.host.*`
-  methods for creating packages, scopes and automation accounts without
-  an email address, publishing, changing maintainers, members and teams,
-  and moving packages. It checks service-auth tokens against roles, keeps
-  membership entries and gives them to those allowed to see them, and
-  serves its domain's DNS zone to answer for its scopes' handles.
+- **A package host**: a PDS written in Zena, with the
+  `dev.zena-lang.host.*` extension: methods for creating packages, scopes
+  and automation accounts without an email address, publishing, changing
+  maintainers, members and teams, and moving packages. It checks
+  service-auth tokens against roles, keeps membership entries and gives
+  them to those allowed to see them, and serves its domain's DNS zone to
+  answer for its scopes' handles. It confines package, organization and
+  automation accounts to `dev.zena-lang.*` records, enforces the limits on
+  creating accounts and on storage, takes reports, and has the
+  operator's tools for reviewing scopes and taking content down.
 - **The management interface**: a browser app on the index's site, with
   no privileges of its own.
 - **Lexicons** for the maintainers record, attestations, membership
@@ -1324,8 +1457,21 @@ and published with that account's app password, which a team shared as a
 secret. It needs no package host. It gives each package a password to
 keep, makes everyone who publishes share it, records nothing about who
 published, and has no default PDS: bsky.social would need an email
-address per package and make each one a Bluesky user. It remains possible
-for a package on a self-hosted PDS.
+address per package and make each one a Bluesky user. The `zena` command
+still reads packages from any PDS, and a package can move to one, but it
+does not publish to one.
+
+### A publishing gateway in front of an ordinary PDS
+
+A separate service could create package accounts on a reference PDS with
+its administrator's invite codes, keep each account's password, and write
+releases with `com.atproto.repo.*` after checking the maintainer's
+service-auth token. It controls package accounts as fully as a package
+host does, and needs no PDS of our own. It also keeps a password per
+package, needs an email address for each account where the PDS requires
+one, and is a second service to run beside the PDS. Clients would call
+the same `dev.zena-lang.host.*` methods, so a gateway could replace a
+package host, or the reverse, without changing them.
 
 ### Releases signed with maintainers' own keys
 
@@ -1396,6 +1542,9 @@ the cache share files across versions.
 - **The Zena package host's domain, and its policy on scope names**: for
   example, reserving scopes for verified domains or GitHub organizations,
   and settling disputes.
+- **The Zena package host's moderation**: who reviews new scopes and
+  reports, the quotas on packages and storage, the legal entity that
+  receives notices, and which labelers the host follows for maintainers.
 - **Publishing from CI with no stored secret**, through the CI system's
   OIDC tokens, as npm and PyPI allow.
 - **Recovery keys in hardware**, such as security keys or the OS
