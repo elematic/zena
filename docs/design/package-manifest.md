@@ -131,11 +131,19 @@ dependency is one of two kinds:
   (`{"path": "../zena/packages/atproto/zena"}`), for developing against
   a package before it is published. The directory must hold a
   `zena-package.json`.
+- **A WIT-backed package**, by the `.wit` file or directory that declares
+  its interfaces: `{"wit": "./wit"}`. Its libraries are WIT interfaces,
+  imported as `<name>:<interface>`, and the compiler synthesizes their
+  declarations from the WIT (component-model.md, Part 2). A published
+  package cannot depend on one, since the path is on the developer's
+  disk; it would publish the WIT as a package of its own.
 
 Local names belong to the package that chooses them. Two packages can give
 the same dependency different names, or the same name to different
-packages, and a package sees only its own names, the standard library
-(`zena`) and WIT-backed packages.
+packages. A package sees its own dependencies' names, its own name, so
+that its tests can import its libraries as a dependent would, the
+standard library (`zena`), and the WIT packages the standard library
+carries (`wasi`).
 
 ### `workspace`
 
