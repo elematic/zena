@@ -213,6 +213,7 @@ function compileRecording(
     outPath: out.value,
     stdlibRoot: stdlibDir().value,
     projectRoot: repoRoot().value,
+    packageCache: packageCacheDir(),
     testMode: request.testMode,
     time: request.time,
     debugNames: options.debug,
@@ -359,22 +360,42 @@ export function ensureDir(path: String): void {
  * `zena/wasm_objects` under the user's cache directory.
  */
 export function cacheDir(): String {
+  return cacheSubdir('cache', 'wasm_objects');
+}
+
+/**
+ * Where `zena fetch` keeps packages and the compiler reads them:
+ * `.zena/packages` in the repository when ZENA_PROJECT_CACHE or
+ * ZENA_LOCAL_CACHE is set, and otherwise `zena/packages` under the
+ * user's cache directory.
+ */
+export function packageCacheDir(): String {
+  return cacheSubdir('packages', 'packages');
+}
+
+/**
+ * `.zena/<inProject>` in the repository when ZENA_PROJECT_CACHE or
+ * ZENA_LOCAL_CACHE is set or there is no user cache directory, and
+ * otherwise `<inUserCache>` under $ZENA_CACHE_DIR, $XDG_CACHE_HOME/zena
+ * or $HOME/.cache/zena.
+ */
+function cacheSubdir(inProject: String, inUserCache: String): String {
   if (envSet('ZENA_PROJECT_CACHE') || envSet('ZENA_LOCAL_CACHE')) {
-    return repoRoot().value + '/.zena/cache';
+    return `${repoRoot().value}/.zena/${inProject}`;
   }
   let custom = getEnv('ZENA_CACHE_DIR');
   if (custom != null && custom != '') {
-    return custom + '/wasm_objects';
+    return `${custom}/${inUserCache}`;
   }
   let xdg = getEnv('XDG_CACHE_HOME');
   if (xdg != null && xdg != '') {
-    return xdg + '/zena/wasm_objects';
+    return `${xdg}/zena/${inUserCache}`;
   }
   let home = getEnv('HOME');
   if (home == null || home == '') {
-    return repoRoot().value + '/.zena/cache';
+    return `${repoRoot().value}/.zena/${inProject}`;
   }
-  return home + '/.cache/zena/wasm_objects';
+  return `${home}/.cache/zena/${inUserCache}`;
 }
 
 /** A file's identity for the cache: its modification time and size. */
