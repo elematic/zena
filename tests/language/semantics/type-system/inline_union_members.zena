@@ -1,0 +1,40 @@
+// @mode: check
+// A reader of an inline union finds the member from a literal, so some
+// position must hold a different literal in every member. Members may put
+// different types at the same position: each type gets a slot of its own.
+
+export let ok = (s: String): inline (true, i32) | (false, String) => (true, 1);
+
+export let three = (n: i32): inline (0, i32) | (1, f64) | (2, String) => (0, n);
+
+// The literal need not come first.
+export let second = (): inline (i32, true) | (f64, false) => (1, true);
+
+export let noLiteral = (): inline (i32, i32) | (f64, f64) => (1, 2); // @error: The members of an inline union must differ in a literal at the same position, as in '(true, T) | (false, E)'.
+
+export let sameLiteral = (): inline (true, i32) | (true, String) => (true, 1); // @error: The members of an inline union must differ in a literal at the same position, as in '(true, T) | (false, E)'.
+
+export let lengths = (): inline (true, i32, i32) | (false, i32) => (false, 1); // @error: The members of an inline union must have the same length.
+
+// Reading a position without narrowing gives it the union of the members'
+// types there, which must be a type.
+export let mixedRead = (): i32 => {
+  let (tag, value) = ok('x'); // @error: The members of this inline union hold different kinds of values at position 1, so a pattern must match the literal that tells them apart to read it.
+  if (let (true, n) = ok('y')) {
+    return n;
+  }
+  return match (three(1)) {
+    case (0, let n): n
+    case (_, let other): 0 // @error: The members of this inline union hold different kinds of values at position 1, so a pattern must match the literal that tells them apart to read it.
+  };
+};
+
+class Problem {}
+
+// Two reference types read together are a union like any other.
+export let refRead = (): i32 => {
+  let (found, thing) = refs();
+  return if (thing is Problem) 1 else 0;
+};
+
+export let refs = (): inline (true, String) | (false, Problem) => (true, 'x');

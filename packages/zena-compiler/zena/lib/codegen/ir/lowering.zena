@@ -18,7 +18,7 @@ import {
 } from '../../ast.zena';
 import {
   Type, VoidType, NeverType, ClassType, InterfaceType, FunctionType, FieldInfo, MethodInfo, ArrayType, InlineTupleType, TupleType, RecordType, EnumType, TypeParameterType, UnionType, baseType, isVoidOrNeverType, isRefType, AnyRefType, EqRefType, arrayElementType, isSignedNarrowIntType, typeToString,
-  ownershipHandleName, soleNonNullMember, NullType,
+  ownershipHandleName, soleNonNullMember, NullType, BoolLiteralType, NumLiteralType, HoleType,
 } from '../../types.zena';
 import {
   RecordAdaptation, RecordUnionAdaptation, FunctionAdaptation, SemanticModel,
@@ -38,7 +38,7 @@ import {
   noCaptures,
 } from '../wasm-module.zena';
 import {
-  typeToValTypeWithSub, eraseTypeParameters, substituteTypeParamsInClassContext, substituteTypeParamsInFunctionContext, inlineLaneValTypes, getClosureStruct, getClosureKey, getNonNullableType, recordWasmFields, sortedOptionalNames, interfaceCallSlotName,
+  typeToValType, typeToValTypeWithSub, eraseTypeParameters, substituteTypeParamsInClassContext, substituteTypeParamsInFunctionContext, InlineLayout, inlineLayoutOf, getClosureStruct, getClosureKey, getNonNullableType, recordWasmFields, sortedOptionalNames, interfaceCallSlotName,
 } from '../type-mapping.zena';
 
 import { IrBody, IrOp, IrRefFunc, IrRefGlobal, IrRefType, IrRefField, IrRefTag } from './ir.zena';
@@ -2892,19 +2892,22 @@ export final class FunctionLowerer {
    * without emitting the return — so a `return` inside a finalizer
    * region can park them instead (one variable per slot). */
   #lowerMultiReturnValues(arg: Expression): GrowableArray<i32> {
+    let sig = this.func.signature;
+    let layout = this.#functionReturnLayout();
+    if (layout != null && layout.slots.length != sig.returns.length) {
+      this.#bail('multi-value return arity');
+    }
     if (arg is CallExpression) {
-      // Forwarding form: `return f(...)` where the callee returns the
-      // same multi-value shape. The decode wove NO_VALUE at
-      // zero-width lanes for destructuring sites; a forwarded return
-      // re-drops them, back to the wasm shape.
-      let sig = this.func.signature;
+      // Forwarding form: `return f(...)`. The callee's union can be a
+      // narrower one than this function's (`Step<T>` into
+      // `AsyncStep<T>`), with different slots.
       let outs = new Array<i32>();
       this.#lowerCall(arg, outs);
-      let flat = new Array<i32>();
-      for (let o in outs) {
-        if (o != NO_VALUE) {
-          flat.push(o);
-        }
+      let calleeLayout = this.#callResultLayout(arg);
+      var flat = outs;
+      if (layout != null && calleeLayout != null &&
+          !this.#slotsForwardDirectly(outs, sig.returns)) {
+        flat = this.#convertInlineSlots(outs, calleeLayout, layout);
       }
       if (flat.length != sig.returns.length) {
         this.#bail('multi-value return arity');
@@ -2912,9 +2915,9 @@ export final class FunctionLowerer {
       for (var i = 0; i < flat.length; i += 1) {
         let have = this.#valueType(flat[i]);
         if (have is ValTypeNullRef && !isValSubtype(have, sig.returns[i])) {
-          // The callee's lane is a hole in every arm (`nullref`), and
-          // this function's lane holds something — a wider union that
-          // fills it in an arm the callee never produces. There is no
+          // The callee's slot is `_` in every member (`nullref`), and
+          // this function's holds something — a wider union that fills
+          // it in a member the callee never produces. There is no
           // value to forward, so the slot takes its default.
           flat[i] = this.#defaultValueOf(sig.returns[i]);
           continue;
@@ -2929,40 +2932,45 @@ export final class FunctionLowerer {
     if (!(arg is TupleLiteral)) {
       this.#bail('multi-value return');
     }
-    let sig = this.func.signature;
     let nt = this.func.model.getNodeType(arg);
     if (nt == null || !(baseType(nt) is InlineTupleType)) {
       this.#bail('boxed tuple return');
     }
-    // Lane classification comes from the FUNCTION's declared return
-    // type, not this arm's elements: a `(false, _, Error)` arm has a
-    // hole where a `T = void` instantiation dropped the lane, and
-    // only the union of arms says which is which.
-    let lanes = this.#functionReturnLanes();
-    let values = new Array<i32>();
-    if (lanes != null) {
-      let semLanes = lanes as GrowableArray<ValType>;
-      if (arg.elements.length != semLanes.length) {
-        this.#bail('multi-value return arity');
+    // Slots come from the FUNCTION's declared return type, not this
+    // literal's elements: a `(false, _, Error)` member has a hole where
+    // a `T = void` instantiation dropped a slot, and only the union of
+    // members says which is which.
+    if (layout != null) {
+      let shape = layout as InlineLayout;
+      // The members this literal can be: its literal elements rule
+      // the others out. Each position goes in the slot they agree on.
+      let elements = new Array<Node | null>();
+      for (let el in arg.elements) {
+        elements.push(el);
       }
-      var w = 0;
-      for (var i = 0; i < arg.elements.length; i += 1) {
-        let el = arg.elements[i];
-        if (semLanes[i] is ValTypeVoid) {
-          // The lane does not exist at this instantiation: a hole
+      let candidates = inlineMembersMatching(shape, elements);
+      let values = new Array<i32>();
+      for (var s = 0; s < shape.slots.length; s += 1) {
+        values.push(NO_VALUE);
+      }
+      for (var p = 0; p < arg.elements.length; p += 1) {
+        let el = arg.elements[p];
+        let isHole = el is Identifier && el.name == '_';
+        let slot = if (p < shape.arity) shape.positionSlot(p, candidates) else -1;
+        if (slot == -2) {
+          this.#bail('inline union member of a returned tuple');
+        }
+        if (slot < 0) {
+          // No member has a value here at this instantiation: a hole
           // contributes nothing, and a real element runs for its
           // effects only.
-          if (!(el is Identifier && el.name == '_')) {
+          if (!isHole) {
             this.#lowerExpression(el);
           }
           continue;
         }
-        if (w >= sig.returns.length) {
-          this.#bail('multi-value return arity');
-        }
-        let expected = sig.returns[w];
-        w += 1;
-        let v = if (el is Identifier && el.name == '_') {
+        let expected = shape.slots[slot];
+        let v = if (isHole) {
           this.#defaultValueOf(expected)
         } else {
           this.#lowerExpressionCtx(el, expected)
@@ -2970,16 +2978,20 @@ export final class FunctionLowerer {
         if (!isValSubtype(this.#valueType(v), expected)) {
           this.#failConformance(v, expected, 'multi-value return type');
         }
-        values.push(v);
+        values[slot] = v;
       }
-      if (w != sig.returns.length) {
-        this.#bail('multi-value return arity');
+      // The slots this member does not use hold their defaults.
+      for (var s = 0; s < values.length; s += 1) {
+        if (values[s] == NO_VALUE) {
+          values[s] = this.#defaultValueOf(shape.slots[s]);
+        }
       }
       return values;
     }
     if (arg.elements.length != sig.returns.length) {
       this.#bail('multi-value return arity');
     }
+    let values = new Array<i32>();
     for (var i = 0; i < arg.elements.length; i += 1) {
       let el = arg.elements[i];
       let expected = sig.returns[i];
@@ -2996,9 +3008,69 @@ export final class FunctionLowerer {
     return values;
   }
 
-  /** The current function's semantic return lanes, when its declared
-   * (substituted) return type is an inline-tuple shape. */
-  #functionReturnLanes(): GrowableArray<ValType> | null {
+  /** Whether a call's results already fit this function's results slot
+   * for slot: the same count, each a subtype or a `nullref` hole. */
+  #slotsForwardDirectly(values: GrowableArray<i32>,
+      returns: GrowableArray<ValType>): boolean {
+    if (values.length != returns.length) {
+      return false;
+    }
+    for (var i = 0; i < values.length; i += 1) {
+      let have = this.#valueType(values[i]);
+      if (!(have is ValTypeNullRef) && !isValSubtype(have, returns[i])) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  /**
+   * Moves the slots of one inline union into the slots of a wider one.
+   * Each source member corresponds to the destination members its
+   * literal elements allow, and each of its values moves to the slot
+   * those members use at the same position. A destination slot no
+   * source value moves to takes its default. When two source slots
+   * would land in one destination slot, choosing between them needs a
+   * branch on the member, which is not implemented.
+   */
+  #convertInlineSlots(values: GrowableArray<i32>, from: InlineLayout,
+      to: InlineLayout): GrowableArray<i32> {
+    let target = new Array<i32>();
+    for (var d = 0; d < to.slots.length; d += 1) {
+      target.push(-1);
+    }
+    for (var m = 0; m < from.members.length; m += 1) {
+      let candidates = inlineMembersLike(to, from.members[m]);
+      for (var p = 0; p < from.members[m].elementTypes.length; p += 1) {
+        let s = from.slotOf(m, p);
+        if (s < 0 || p >= to.arity) {
+          continue;
+        }
+        let d = to.positionSlot(p, candidates);
+        if (d == -2) {
+          this.#bail('inline union conversion needs a branch');
+        }
+        if (d < 0) {
+          continue;
+        }
+        if (target[d] == -1) {
+          target[d] = s;
+        } else if (target[d] != s) {
+          this.#bail('inline union conversion needs a branch');
+        }
+      }
+    }
+    let out = new Array<i32>();
+    for (var d = 0; d < to.slots.length; d += 1) {
+      let s = target[d];
+      out.push(if (s >= 0) values[s] else this.#defaultValueOf(to.slots[d]));
+    }
+    return out;
+  }
+
+  /** The slot layout of the current function's declared (substituted)
+   * return type, when it is an inline tuple or a union of them. */
+  #functionReturnLayout(): InlineLayout | null {
     let node = this.func.node;
     if (node == null) {
       return null;
@@ -3009,7 +3081,7 @@ export final class FunctionLowerer {
     }
     let rt = substituteTypeParamsInFunctionContext(
         this.wasm, this.func, ft.returnType);
-    return inlineLaneValTypes(this.wasm, rt);
+    return inlineLayoutOf(this.wasm, rt);
   }
 
   /** The zero value of a result slot (for `_` tuple placeholders). */
@@ -3350,7 +3422,7 @@ export final class FunctionLowerer {
         } else if (!this.presplitAsync &&
             (this.func.signature.returns.length > 1 ||
              (argument is TupleLiteral &&
-              this.#functionReturnLanes() != null))) {
+              this.#functionReturnLayout() != null))) {
           // The second disjunct: an inline-tuple return whose
           // zero-width lanes leave one (or zero) wasm results —
           // `find` at `T = void` returns `inline (boolean, T)` as a
@@ -3535,7 +3607,7 @@ export final class FunctionLowerer {
    * receiver-only interface dispatch (iterator next()). Single-result
    * sources come back as one-element lists.
    */
-  #lowerMultiSource(init: Expression): GrowableArray<i32> {
+  #lowerMultiSource(init: Expression): MultiValues {
     let out = new Array<i32>();
     // A literal with spreads is not one value per element; it lowers as
     // one tuple, which the destructuring site splits.
@@ -3545,14 +3617,14 @@ export final class FunctionLowerer {
         for (let el in literal.elements) {
           out.push(this.#lowerExpression(el));
         }
-        return out;
+        return new MultiValues(out, null);
       }
     }
     if (!(init is CallExpression)) {
       // Any other expression: a single value (a boxed tuple splits at
       // the destructuring site).
       out.push(this.#lowerExpression(init));
-      return out;
+      return new MultiValues(out, null);
     }
     if (init.callee is MemberExpression) {
       let member = init.callee as MemberExpression;
@@ -3561,25 +3633,25 @@ export final class FunctionLowerer {
           this.#resolveSelfType(objT) is InterfaceType) {
         let recv = this.#lowerExpression(member.object);
         let raw = this.#cx().slotCallOnValue(recv, accessKeyOf(this.func.model, member));
-        return this.#weaveMultiSource(init, raw);
+        return this.#multiValuesOf(init, raw);
       }
       let rep = this.#lowerMethodCall(init, member, out);
       if (out.length == 0) {
         out.push(rep);
       }
-      return this.#weaveMultiSource(init, out);
+      return this.#multiValuesOf(init, out);
     }
     if (init.callee is Identifier) {
       let rep = this.#lowerCall(init, out);
       if (out.length == 0) {
         out.push(rep);
       }
-      return this.#weaveMultiSource(init, out);
+      return this.#multiValuesOf(init, out);
     }
     // Any other expression: a single value (a boxed tuple splits at
     // the destructuring site).
     out.push(this.#lowerExpression(init));
-    return out;
+    return new MultiValues(out, null);
   }
 
   /**
@@ -3608,7 +3680,8 @@ export final class FunctionLowerer {
       this.#bindTupleWithRest(tp, st, value);
       return;
     }
-    var values = this.#lowerMultiSource(vd.init);
+    let source = this.#lowerMultiSource(vd.init);
+    var values = source.positions(this.#cx(), null);
     if (values.length == 1 && tp.elements.length != 1) {
       // A single value can still be a BOXED tuple (fields "0"..):
       // non-inline tuple returns arrive as one struct reference.
@@ -3878,62 +3951,32 @@ export final class FunctionLowerer {
     return this.#reassertCallResult(call, result, resultType);
   }
 
-  /**
-   * Re-weaves a multi-value source's results to SEMANTIC arity when a
-   * zero-width instantiation collapsed the wasm result count below
-   * the lane count: `Iterator<void>.next()` returns the done flag
-   * alone, and the destructuring site still pairs one slot per lane.
-   * A list already at semantic arity (the >1-result call paths weave
-   * through #pushMultiResults themselves) passes through untouched.
-   */
-  #weaveMultiSource(call: CallExpression,
-      raw: GrowableArray<i32>): GrowableArray<i32> {
-    let lanes = this.#callResultLanes(call);
-    if (lanes == null || raw.length == lanes.length) {
-      return raw;
+  /** A call's wasm results with the layout of its result type. */
+  #multiValuesOf(call: CallExpression, raw: GrowableArray<i32>): MultiValues {
+    let layout = this.#callResultLayout(call);
+    if (layout != null && raw.length != layout.slots.length) {
+      this.#bail('multi-value slot count');
     }
-    let woven = new Array<i32>();
-    this.#pushMultiResults(call, raw, woven);
-    return woven;
+    return new MultiValues(raw, layout);
   }
 
-  /** The call's semantic result lanes when its (substituted) type is
-   * an inline-tuple shape, else null. */
-  #callResultLanes(call: CallExpression): GrowableArray<ValType> | null {
+  /** The slot layout of a call's (substituted) result type when it is
+   * an inline tuple or a union of them, else null. */
+  #callResultLayout(call: CallExpression): InlineLayout | null {
     let t = this.#substitutedNodeType(call as Expression);
     if (t == null) {
       return null;
     }
-    return inlineLaneValTypes(this.wasm, t);
+    return inlineLayoutOf(this.wasm, t);
   }
 
-  /** Pushes a multi-value call's projections into `outs` at SEMANTIC
-   * arity: a zero-width lane contributes NO_VALUE, the convention
-   * zero-width bindings and parameters already share, so
-   * destructuring sites keep their one-slot-per-lane pairing. */
+  /** Pushes a multi-value call's projections into `outs`, one per
+   * wasm slot. Readers map slots to positions through the call's
+   * `InlineLayout` (`MultiValues.positions`). */
   #pushMultiResults(call: CallExpression, projs: GrowableArray<i32>,
       outs: GrowableArray<i32>): void {
-    let lanes = this.#callResultLanes(call);
-    if (lanes == null) {
-      for (let p in projs) {
-        outs.push(p);
-      }
-      return;
-    }
-    var w = 0;
-    for (let vt in lanes) {
-      if (vt is ValTypeVoid) {
-        outs.push(NO_VALUE);
-      } else {
-        if (w >= projs.length) {
-          this.#bail('multi-value lane pairing');
-        }
-        outs.push(projs[w]);
-        w += 1;
-      }
-    }
-    if (w != projs.length) {
-      this.#bail('multi-value lane pairing');
+    for (let p in projs) {
+      outs.push(p);
     }
   }
 
@@ -8620,7 +8663,7 @@ export final class FunctionLowerer {
   hostThrowStmt(thr: ThrowExpression): void {
     this.#lowerThrowStatement(thr);
   }
-  hostMultiSource(init: Expression): GrowableArray<i32> {
+  hostMultiSource(init: Expression): MultiValues {
     return this.#lowerMultiSource(init);
   }
   hostOptionalHit(expr: Expression, recv: i32): i32 {
@@ -9669,7 +9712,7 @@ export final class FunctionLowerer {
     if (t == null) {
       return false;
     }
-    return inlineLaneValTypes(this.wasm, t) != null;
+    return inlineLayoutOf(this.wasm, t) != null;
   }
 
   /** Base type of #substitutedNodeType (unions unwrapped by baseType). */
@@ -9862,8 +9905,213 @@ export function throwStmt(cx: LoweringContext, thr: ThrowExpression): void {
 }
 
 /** Lower a let-condition multi-value source. */
-export function multiSource(cx: LoweringContext, init: Expression): GrowableArray<i32> {
+export function multiSource(cx: LoweringContext, init: Expression): MultiValues {
   return hostOf(cx).hostMultiSource(init);
+}
+
+/**
+ * The values a multi-value source produced: one per wasm slot of
+ * `layout`, or one per element when the source was a tuple literal or a
+ * single value (`layout` null).
+ */
+export final class MultiValues {
+  values: GrowableArray<i32>;
+  layout: InlineLayout | null;
+
+  new(this.values, this.layout);
+
+  /**
+   * One value per position, for a reader that can only see the members
+   * `allowed` keeps (every member when null): the slot those members
+   * use at the position, or NO_VALUE where none has a value. Where they
+   * use different slots, the value is chosen by the discriminant
+   * (`joinInlinePosition`).
+   */
+  positions(cx: LoweringContext,
+      allowed: GrowableArray<boolean> | null): GrowableArray<i32> {
+    let layout = this.layout;
+    if (layout == null) {
+      return this.values;
+    }
+    let out = new Array<i32>();
+    for (var p = 0; p < layout.arity; p += 1) {
+      var s = layout.positionSlot(p, allowed);
+      if (s == -1 && allowed != null) {
+        // The kept members write `_` here. The slot the others use
+        // holds its default for them, which is as good as any value.
+        let other = layout.positionSlot(p, null);
+        if (other >= 0) {
+          s = other;
+        }
+      }
+      if (s == -2) {
+        out.push(joinInlinePosition(cx, layout, this.values, p, allowed));
+      } else {
+        out.push(if (s >= 0) this.values[s] else NO_VALUE);
+      }
+    }
+    return out;
+  }
+}
+
+/** Bail with the lowering-side message shape (reason @function). */
+function bail(cx: LoweringContext, reason: String): never {
+  throw new ZirUnsupported(`${reason} @${cx.func.name ?? '?'}`);
+}
+
+/**
+ * The value at position `p` when the members `allowed` keeps put it in
+ * different slots: `let (ok, v) = r` on `(true, String) | (false, Error)`.
+ * The discriminant's literal says which member `r` is, so each slot's
+ * value branches to a join block when the discriminant names a member
+ * that uses it. The join holds `anyref`, and the binding casts it down
+ * like any erased slot.
+ */
+function joinInlinePosition(cx: LoweringContext, layout: InlineLayout,
+    values: GrowableArray<i32>, p: i32,
+    allowed: GrowableArray<boolean> | null): i32 {
+  let d = layout.discriminant;
+  let tagSlot = if (d >= 0) layout.positionSlot(d, null) else -1;
+  if (tagSlot < 0) {
+    bail(cx, 'inline union without a discriminant');
+  }
+  let tag = values[tagSlot];
+  if (!(cx.valueTypeOf(tag) is ValTypeI32)) {
+    bail(cx, 'inline union discriminant type');
+  }
+  let slots = new Array<i32>();
+  let elementTypes = new Array<Type>();
+  for (var m = 0; m < layout.members.length; m += 1) {
+    if (allowed != null && !allowed[m]) {
+      continue;
+    }
+    let s = layout.slotOf(m, p);
+    if (s >= 0) {
+      elementTypes.push(layout.members[m].elementTypes[p]);
+      if (!slots.contains(s)) {
+        slots.push(s);
+      }
+    }
+  }
+  for (let s in slots) {
+    if (!isRefValType(layout.slots[s])) {
+      bail(cx, 'inline union position of mixed value types');
+    }
+  }
+  // The type the checker gives the position: the union of the members'
+  // element types there.
+  let joinVt = typeToValType(cx.wasm, new UnionType(elementTypes));
+  for (let s in slots) {
+    if (!isValSubtype(layout.slots[s], joinVt)) {
+      bail(cx, 'inline union position of mixed value types');
+    }
+  }
+  let i32Vt = new ValTypeI32() as ValType;
+  let join = cx.b.newBlock();
+  let result = cx.b.blockParam(join, joinVt);
+  for (var i = 0; i < slots.length - 1; i += 1) {
+    // Whether the discriminant names a member that uses this slot.
+    var cond = -1;
+    for (var m = 0; m < layout.members.length; m += 1) {
+      if (layout.slotOf(m, p) != slots[i]) {
+        continue;
+      }
+      let lit = layout.members[m].elementTypes[d];
+      let test = match (lit) {
+        case BoolLiteralType {value}:
+            if (value) tag else cx.b.emit(IrOp.i32_eqz, i32Vt, tag, -1)
+        case NumLiteralType {raw}: {
+          if (let (true, parsed) = parseI64OrU64Literal(raw)) {
+            cx.b.binary(IrOp.i32_eq, i32Vt, tag, cx.b.constI32(parsed as i32, i32Vt))
+          } else {
+            bail(cx, 'unparseable discriminant literal')
+          }
+        }
+        case _: bail(cx, 'inline union discriminant type')
+      };
+      cond = if (cond == -1) test else cx.b.binary(IrOp.i32_or, i32Vt, cond, test);
+    }
+    let next = cx.b.newBlock();
+    cx.b.brIf(cond, join, growable<i32>([values[slots[i]]]), next, new Array<i32>());
+    cx.b.switchTo(next);
+  }
+  cx.b.br(join, growable<i32>([values[slots[slots.length - 1]]]));
+  cx.b.switchTo(join);
+  return result;
+}
+
+/**
+ * Which members of an inline union a tuple literal or tuple pattern can
+ * be: a literal element (`true`, `1`) rules out every member whose
+ * element at that position is a different literal or `_`.
+ */
+export function inlineMembersMatching(layout: InlineLayout,
+    elements: GrowableArray<Node | null>): GrowableArray<boolean> {
+  let allowed = new Array<boolean>();
+  for (let member in layout.members) {
+    var ok = true;
+    for (var p = 0; p < elements.length && p < member.elementTypes.length; p += 1) {
+      var el = elements[p];
+      if (el is LiteralPattern) {
+        el = el.value;
+      }
+      let memberType = member.elementTypes[p];
+      if (el is BooleanLiteral) {
+        if (memberType is HoleType) {
+          ok = false;
+        } else if (memberType is BoolLiteralType && memberType.value != el.value) {
+          ok = false;
+        }
+      } else if (el is NumberLiteral) {
+        if (memberType is HoleType) {
+          ok = false;
+        } else if (memberType is NumLiteralType &&
+            !sameNumberLiteral(memberType.raw, el.raw)) {
+          ok = false;
+        }
+      }
+    }
+    allowed.push(ok);
+  }
+  return allowed;
+}
+
+/**
+ * Which members of `layout`'s union a value of `member` can become: the
+ * ones whose literal elements agree with its literal elements.
+ */
+export function inlineMembersLike(layout: InlineLayout,
+    member: InlineTupleType): GrowableArray<boolean> {
+  let allowed = new Array<boolean>();
+  for (let other in layout.members) {
+    var ok = true;
+    let n = if (member.elementTypes.length < other.elementTypes.length) {
+      member.elementTypes.length
+    } else {
+      other.elementTypes.length
+    };
+    for (var p = 0; p < n; p += 1) {
+      let a = member.elementTypes[p];
+      let b = other.elementTypes[p];
+      if (a is BoolLiteralType && b is BoolLiteralType && a.value != b.value) {
+        ok = false;
+      } else if (a is NumLiteralType && b is NumLiteralType &&
+          !sameNumberLiteral(a.raw, b.raw)) {
+        ok = false;
+      }
+    }
+    allowed.push(ok);
+  }
+  return allowed;
+}
+
+function sameNumberLiteral(a: String, b: String): boolean {
+  if (let (true, x) = parseI64OrU64Literal(a)) {
+    if (let (true, y) = parseI64OrU64Literal(b)) {
+      return x == y;
+    }
+  }
+  return a == b;
 }
 
 /** Optional-chain hit arm (member machinery). */

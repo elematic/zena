@@ -141,6 +141,53 @@ Inline-ness is part of a function type. An unannotated arrow written
 where an inline result is expected takes that result type, because
 inference never produces an inline type.
 
+### Slots of an Inline Union (#371)
+
+A union of inline tuples is returned as a set of wasm values, called
+slots. `inlineLayoutOf` (`codegen/type-mapping.zena`) derives them from
+the members. Each element with a value gets a slot keyed by its
+position and its wasm type, ignoring nullability. Members with the same
+wasm type at a position share a slot; another type gets a slot of its
+own. In `inline (true, i32) | (false, String)` position 0 has one `i32`
+slot, and position 1 has an `i32` slot and a `String` slot. A member
+leaves the slots it does not use at their default, so a reference slot
+some member does not use is nullable.
+
+Three cases keep the layouts the earlier, positional rule produced, so
+the generator and async passes, which build `Step` and `AsyncStep`
+results directly, did not change:
+
+- `_` takes no slot, and neither does a zero-width (`void`) element.
+- A position where every member writes `_` keeps one `nullref` slot
+  (unless some member is zero-width there). `Step<T>`, written
+  `(0, _, _) | (1, T, _)`, therefore has the same three slots as
+  `AsyncStep<T>`, which fills the last position with a `Future`, and
+  forwards into it unchanged.
+- A `null` element shares the position's reference slot.
+
+The checker requires the members of an inline union to have the same
+length and to differ in a literal at the same position
+(`checkInlineUnionMembers`), because a reader picks the slot by the
+member and finds the member from that literal.
+
+Every reader goes through `MultiValues.positions` (`codegen/ir/lowering.zena`),
+which maps slots back to positions for the members a pattern's literal
+elements allow (`inlineMembersMatching`). `(false, message)` therefore
+reads the `String` slot. A read that the pattern does not narrow to one
+slot, such as `let (ok, v)` on `(true, String) | (false, Error)`,
+branches on the discriminant: each slot's value goes to a join block,
+typed as the union of the members' element types there
+(`joinInlinePosition`). Only reference slots can be joined. A position
+holding `i32` in one member and `String` in another has no type to join
+to, so the checker reports a pattern that reads it without matching the
+discriminant (`checkInlinePositionReads`).
+
+A returned tuple literal writes each element into the slot its
+candidate members agree on, and fills the rest with defaults.
+`return f()` forwards the callee's slots unchanged when they fit, and
+otherwise moves each slot to the slot of the corresponding member in
+the wider union (`#convertInlineSlots`).
+
 ### Destructuring at Call Sites
 
 ```zena

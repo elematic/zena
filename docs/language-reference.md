@@ -4696,6 +4696,18 @@ inside it: in `inline (i32, (i32, i32))` the second element is a boxed tuple.
 An inline tuple inside an inline tuple is legal by design, but the compiler
 does not flatten it yet and reports an error.
 
+The members of an inline union may put different types at the same position.
+Each position is returned as one WebAssembly value per type its members put
+there, and a member leaves the values it does not use at their default (0 or
+null). So `inline (true, i32) | (false, String)` needs no `_` holes, and a
+pattern such as `(false, message)` reads the `String`. Because the reader finds
+the member from a literal, the members must have the same length and differ in
+a literal at the same position: `inline (i32, i32) | (f64, f64)` is an error.
+A pattern that reads a position without matching that literal reads the union
+of the members' types there, so `let (ok, v) = r` on
+`inline (true, i32) | (false, String)` is an error, while `(false, message)`
+reads the `String`.
+
 `inline` is an error on a type that cannot be unboxed, rather than a no-op:
 
 - a primitive (`inline i32`) or a class (`inline String`), which are already

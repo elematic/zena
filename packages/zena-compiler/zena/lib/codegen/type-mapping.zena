@@ -12,7 +12,7 @@ import {
   sortWasmFields, WasmArray
 } from './wasm-module.zena';
 import {
-  ValType, ValTypeVoid, ValTypeI32, ValTypeI64, ValTypeF32, ValTypeF64, ValTypeI8, ValTypeI16, ValTypeV128, ValTypeAnyRef, ValTypeStructRef, ValTypeEqRef, ValTypeRefNull, ValTypeRef, ValTypeRefExtern, ValTypeExternRef, ValTypeNullRef, isNullableAnyRef, valTypeToOpcode, WasmType,
+  ValType, ValTypeVoid, ValTypeI32, ValTypeI64, ValTypeF32, ValTypeF64, ValTypeI8, ValTypeI16, ValTypeV128, ValTypeAnyRef, ValTypeStructRef, ValTypeEqRef, ValTypeRefNull, ValTypeRef, ValTypeRefExtern, ValTypeExternRef, ValTypeNullRef, isNullableAnyRef, valTypeToOpcode, valTypeEquals, WasmType,
 } from './wasm.zena';
 import { compareStrings, presentWordCount, presentWordName, getSignatureKey } from './codegen-utils.zena';
 import {
@@ -1884,15 +1884,303 @@ export function inlineLaneValTypes(wasm: WasmModule, type: Type): GrowableArray<
   return lanes;
 }
 
+/**
+ * The wasm slots an inline tuple, or a union of them, occupies: a
+ * function's results, and the values its caller reads back.
+ *
+ * Each element that holds a value gets a slot keyed by its position and
+ * its wasm type, ignoring nullability. Members whose elements at one
+ * position have the same wasm type share a slot, and a different wasm
+ * type gets a slot of its own. In `inline (true, i32) | (false, String)`
+ * position 0 has one `i32` slot, and position 1 has an `i32` slot and a
+ * `String` slot. A member leaves the slots it does not use at their
+ * default (0 or null), so a reference slot that some member does not
+ * use is nullable.
+ *
+ * `_` takes no slot, and neither does an element whose type is
+ * zero-width at this instantiation (`void`). A position where every
+ * member writes `_` still keeps one `nullref` slot (unless some member
+ * is zero-width there, as in `Step<void>`): a union that drops
+ * the members filling a position of a wider one — `Step<T>` against
+ * `AsyncStep<T>` — then has the same slots, and forwards into it. A
+ * `null` element shares the position's reference slot when there is
+ * one.
+ */
+export final class InlineLayout {
+  slots: GrowableArray<ValType>;
+  members: GrowableArray<InlineTupleType>;
+  /** The position each slot belongs to, parallel to `slots`. */
+  slotPositions: GrowableArray<i32>;
+  /**
+   * For member `m` and position `p`, the slot its element occupies, or
+   * -1 when it occupies none (`_`, or a zero-width element).
+   */
+  memberSlots: GrowableArray<GrowableArray<i32>>;
+  /** The longest member's length. */
+  arity: i32;
+  /**
+   * A position where every member has a literal, a different one in
+   * each (`true`/`false`, or `0`, `1`, `2`), or -1 when there is none
+   * (one member). The checker requires one for a union of several.
+   */
+  discriminant: i32;
+
+  new(this.slots, this.members, this.slotPositions, this.memberSlots, this.arity,
+      this.discriminant);
+
+  /** The slot member `m`'s element at position `p` occupies, or -1. */
+  slotOf(m: i32, p: i32): i32 {
+    let row = this.memberSlots[m];
+    return if (p < row.length) row[p] else -1;
+  }
+
+  /**
+   * The one slot position `p` reads from for the members `allowed`
+   * keeps (every member when null): -1 when none of them has a value
+   * there, -2 when they use different slots.
+   */
+  positionSlot(p: i32, allowed: GrowableArray<boolean> | null): i32 {
+    var found = -1;
+    for (var m = 0; m < this.members.length; m += 1) {
+      if (allowed != null && !allowed[m]) {
+        continue;
+      }
+      let s = this.slotOf(m, p);
+      if (s < 0) {
+        continue;
+      }
+      if (found == -1) {
+        found = s;
+      } else if (found != s) {
+        return -2;
+      }
+    }
+    return found;
+  }
+
+  /** Whether every member puts each position in the same slot. */
+  isPositional(): boolean {
+    for (var p = 0; p < this.arity; p += 1) {
+      if (this.positionSlot(p, null) == -2) {
+        return false;
+      }
+    }
+    return true;
+  }
+}
+
+/**
+ * The slot layout of an inline tuple or a union of them, or null when
+ * `type` is neither. See `InlineLayout`.
+ */
+export function inlineLayoutOf(wasm: WasmModule, type: Type): InlineLayout | null {
+  let members = new Array<InlineTupleType>();
+  if (type is InlineTupleType) {
+    members.push(type);
+  } else if (type is UnionType) {
+    for (let t in type.types) {
+      if (t is InlineTupleType) {
+        members.push(t);
+      }
+    }
+  }
+  if (members.length == 0) {
+    return null;
+  }
+  var arity = 0;
+  for (let member in members) {
+    if (member.elementTypes.length > arity) {
+      arity = member.elementTypes.length;
+    }
+  }
+  let slots = new Array<ValType>();
+  let slotPositions = new Array<i32>();
+  let memberSlots = new Array<GrowableArray<i32>>();
+  for (let member in members) {
+    let row = new Array<i32>();
+    for (var p = 0; p < member.elementTypes.length; p += 1) {
+      row.push(-1);
+    }
+    memberSlots.push(row);
+  }
+  for (var p = 0; p < arity; p += 1) {
+    let firstSlot = slots.length;
+    var anyHole = false;
+    var anyNull = false;
+    var anyZeroWidth = false;
+    // Values first: a slot per distinct wasm type, in member order.
+    for (var m = 0; m < members.length; m += 1) {
+      let elements = members[m].elementTypes;
+      if (p >= elements.length) {
+        continue;
+      }
+      let el = elements[p];
+      if (el is HoleType) {
+        anyHole = true;
+        continue;
+      }
+      if (el is NullType) {
+        anyNull = true;
+        continue;
+      }
+      let vt = typeToValType(wasm, el);
+      if (vt is ValTypeVoid) {
+        anyZeroWidth = true;
+        continue;
+      }
+      var slot = -1;
+      for (var s = firstSlot; s < slots.length; s += 1) {
+        if (valTypeEquals(slots[s], vt)) {
+          slot = s;
+          break;
+        }
+      }
+      if (slot == -1) {
+        slot = slots.length;
+        slots.push(vt);
+        slotPositions.push(p);
+      } else if (isNullableValType(vt)) {
+        slots[slot] = vt;
+      }
+      memberSlots[m][p] = slot;
+    }
+    // `null` shares the position's first reference slot, or gets one.
+    if (anyNull) {
+      var refSlot = -1;
+      for (var s = firstSlot; s < slots.length; s += 1) {
+        if (isRefValType(slots[s])) {
+          refSlot = s;
+          break;
+        }
+      }
+      if (refSlot == -1) {
+        refSlot = slots.length;
+        slots.push(typeToValType(wasm, new NullType()));
+        slotPositions.push(p);
+      }
+      slots[refSlot] = nullableValType(slots[refSlot]);
+      for (var m = 0; m < members.length; m += 1) {
+        let elements = members[m].elementTypes;
+        if (p < elements.length && elements[p] is NullType) {
+          memberSlots[m][p] = refSlot;
+        }
+      }
+    }
+    if (slots.length == firstSlot && anyHole && !anyZeroWidth) {
+      slots.push(new ValTypeNullRef());
+      slotPositions.push(p);
+      for (var m = 0; m < members.length; m += 1) {
+        let elements = members[m].elementTypes;
+        if (p < elements.length && elements[p] is HoleType) {
+          memberSlots[m][p] = firstSlot;
+        }
+      }
+    }
+    // A slot some member leaves unused holds that member's default.
+    for (var s = firstSlot; s < slots.length; s += 1) {
+      var allUse = true;
+      for (var m = 0; m < members.length; m += 1) {
+        if (memberSlots[m].length <= p || memberSlots[m][p] != s) {
+          allUse = false;
+        }
+      }
+      if (!allUse) {
+        slots[s] = nullableValType(slots[s]);
+      }
+    }
+  }
+  return new InlineLayout(slots, members, slotPositions, memberSlots, arity,
+      discriminantPosition(members, arity));
+}
+
+function discriminantPosition(members: GrowableArray<InlineTupleType>, arity: i32): i32 {
+  if (members.length < 2) {
+    return -1;
+  }
+  for (var p = 0; p < arity; p += 1) {
+    let seen = new Array<String>();
+    var allDistinct = true;
+    for (let member in members) {
+      let key = if (p < member.elementTypes.length) {
+        literalTypeKey(member.elementTypes[p])
+      } else {
+        null
+      };
+      if (key == null) {
+        allDistinct = false;
+        break;
+      }
+      for (let other in seen) {
+        if (other == key) {
+          allDistinct = false;
+        }
+      }
+      if (!allDistinct) {
+        break;
+      }
+      seen.push(key);
+    }
+    if (allDistinct) {
+      return p;
+    }
+  }
+  return -1;
+}
+
+/** A key that is equal for equal boolean or number literal types. */
+export function literalTypeKey(t: Type): String | null {
+  return match (t) {
+    case BoolLiteralType {value}: if (value) 'true' else 'false'
+    case NumLiteralType {raw}: `n:${raw}`
+    case _: null
+  };
+}
+
+function isNullableValType(vt: ValType): boolean {
+  return match (vt) {
+    case ValTypeRef {}: false
+    case ValTypeRefExtern {}: false
+    case ValTypeI32 {}: false
+    case ValTypeI64 {}: false
+    case ValTypeF32 {}: false
+    case ValTypeF64 {}: false
+    case ValTypeV128 {}: false
+    case ValTypeI8 {}: false
+    case ValTypeI16 {}: false
+    case _: true
+  };
+}
+
+function isRefValType(vt: ValType): boolean {
+  return match (vt) {
+    case ValTypeI32 {}: false
+    case ValTypeI64 {}: false
+    case ValTypeF32 {}: false
+    case ValTypeF64 {}: false
+    case ValTypeV128 {}: false
+    case ValTypeI8 {}: false
+    case ValTypeI16 {}: false
+    case ValTypeVoid {}: false
+    case _: true
+  };
+}
+
+/** `vt` widened to admit null, when it is a non-null reference. */
+function nullableValType(vt: ValType): ValType {
+  return match (vt) {
+    case ValTypeRef as r: new ValTypeRefNull(r.target) as ValType
+    case ValTypeRefExtern {}: new ValTypeExternRef()
+    case _: vt
+  };
+}
+
 function mapUnionOfInlineTuplesToWasmResults(wasm: WasmModule, unionType: UnionType, returns: GrowableArray<ValType>): boolean {
-  let lanes = inlineLaneValTypes(wasm, unionType as Type);
-  if (lanes == null) {
+  let layout = inlineLayoutOf(wasm, unionType as Type);
+  if (layout == null) {
     return false;
   }
-  for (let vt in lanes) {
-    if (!(vt is ValTypeVoid)) {
-      returns.push(vt);
-    }
+  for (let vt in layout.slots) {
+    returns.push(vt);
   }
   return true;
 }
