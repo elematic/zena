@@ -1,41 +1,87 @@
-# Package Manifests
+# Packages, Workspaces and Manifests
 
-Zena has two manifest files that serve distinct purposes:
+This document defines how Zena source is organized into packages, how a
+package describes itself in `zena-package.json`, how packages developed
+together form a workspace, and how the lockfile pins the published
+packages a workspace uses. [package-manager.md](package-manager.md)
+designs publishing and fetching packages.
 
-1. **`zena-package.json`** — self-describes a single package: its exports and
-   (eventually) its dependencies by name. All paths are relative to the
-   package's own root and point to its own files. A package does not know
-   where its dependencies are physically located.
+> **Current status**: The compiler reads `zena-packages.json`, an older,
+> hand-written file that maps package names to paths and holds the pins
+> of published packages ([Current implementation](#current-implementation)).
+> The manifests and lockfile described here replace it.
 
-2. **Resolution file** (currently `zena-packages.json`, name TBD) — maps
-   package names to physical locations for a compilation unit. Lives at the
-   project root. Analogous to a combination of npm's `package-lock.json` and
-   an import map: it pins all packages for a compilation and maps names to
-   locations. Will eventually need scopes (like import maps) to handle
-   transitive dependencies that may resolve differently for different packages.
+## Terms
 
-The key distinction: `zena-package.json` is about **identity** (what a package
-is and what it exposes), while the resolution file is about **location** (where
-packages live on disk, the network, or in memory).
+- A **library** is a `.zena` file. Its imports name other libraries.
+  ("Module" means a Wasm module, which the compiler produces.)
+- A **package** is a directory of libraries with a `zena-package.json`
+  that gives the package's name, the libraries other packages may import,
+  and the packages its own libraries import. A package is what is
+  published, and a published package is always exactly one package.
+- A **workspace** is the directory a developer works in: one package, or
+  several developed together, with one lockfile. A workspace exists only
+  during development: nothing about it is published, and a
+  `zena-lock.json` inside a published package has no effect.
+- A **workspace package** is one of the packages in a workspace.
 
-> **Current status**: The resolution file, including published packages
-> pinned in it, and stdlib's `zena-package.json` are implemented. Declaring
-> dependencies in `zena-package.json` is future work.
+A single package is a workspace of one, which is the common case. Growing
+it into a workspace of several means adding a `workspace` key to its
+manifest and a manifest in each new package's directory, with nothing
+else moved.
 
----
+## `zena-package.json`
 
-## `zena-package.json` (Package Manifest)
+```json
+{
+  "name": "app",
+  "did": "did:plc:appappappappappappappapp",
+  "exports": {"server": {}},
+  "dependencies": {
+    "router": {"did": "did:plc:routerrouterrouterrouter", "version": "1.4.2"},
+    "lib": {"path": "./packages/lib"}
+  },
+  "workspace": {"packages": ["packages/*"]},
+  "scopes": {"@widgets": "widgets.alt-pkg.org"}
+}
+```
 
-Lives inside a package's root directory. Describes the package's public API and
-internal structure. All paths are relative to the package root.
+| Field          | Type                            | Where          | Description                                                            |
+| -------------- | ------------------------------- | -------------- | ---------------------------------------------------------------------- |
+| `name`         | `string`                        | any package    | The package's own name, and the name it suggests to its dependents     |
+| `did`          | `string`                        | any package    | The package's DID, once it has been created on a package host          |
+| `exports`      | `Record<string, LibraryExport>` | any package    | The libraries other packages may import                                |
+| `dependencies` | `Record<string, Dependency>`    | any package    | The packages this package's libraries import, by local name            |
+| `workspace`    | `{packages: string[]}`          | workspace root | The directories of the workspace's other packages                      |
+| `scopes`       | `Record<string, string>`        | workspace root | Domains for `@scope/name` (see package-manager.md, "Names and scopes") |
 
-### Format
+All paths are relative to the directory the manifest is in.
+
+### `name`
+
+A package name is one DNS label: lowercase ASCII letters, digits and `-`,
+starting with a letter, not ending with `-`, without `--` as its third and
+fourth characters, and at most 63 characters. `zena` is the standard
+library's. The name is what a published package's profile suggests to
+the packages that add it, and what a workspace's other packages call it
+unless they choose another name.
+
+### `did`
+
+`zena publish` writes the DID when it creates the package's account (see
+package-manager.md, "Creating a package"), so that later releases are
+published to the same package.
+
+### `exports`
+
+Each key under `exports` names a library other packages may import, as
+`<package>:<library>`. The value is an empty object, for the library
+`<name>.zena`, or an object with a `path` or `virtual` field.
 
 ```json
 {
   "exports": {
     "array": {},
-    "string": {},
     "url": {"path": "url/index.zena"},
     "console": {
       "virtual": {
@@ -47,145 +93,79 @@ internal structure. All paths are relative to the package root.
 }
 ```
 
-### Schema
+- **`{}`**: the library is `<root>/<name>.zena`.
+- **`path`**: the library's entry file, relative to the package root. A
+  library implemented in several files exposes one entry file, which
+  re-exports its public API and reaches the other files with relative
+  imports (`./encoding.zena`). Those files cannot be imported by name.
+- **`virtual`**: a different entry file for each compilation target (`js`
+  for browsers and Node.js, `component` for a WASI component, `zena-cli`
+  for the `zena` command's host, `freestanding` for a core module with no
+  imports). Compiling with `--target component`,
+  `import { log } from 'pkg:console'` resolves to
+  `<root>/console/component.zena`. A library with no entry for the target
+  does not resolve there.
 
-| Field     | Type                           | Required | Description                             |
-| --------- | ------------------------------ | -------- | --------------------------------------- |
-| `exports` | `Record<string, ModuleExport>` | no       | Modules importable by external packages |
+| Field     | Type                     | Description              |
+| --------- | ------------------------ | ------------------------ |
+| `path`    | `string`                 | The library's entry file |
+| `virtual` | `Record<string, string>` | Target name → entry file |
 
-If no `zena-package.json` exists (or `exports` is absent), the package is
-**open** — all `.zena` files under the root are importable. If `exports` is
-present, the package is **closed** — only listed modules are importable.
-Files not listed in `exports` are private to the package: they are reachable
-only via relative imports from the package's own files. There is no separate
-`internal` mechanism.
+Without `exports`, the package is **open**: every `.zena` file under its
+root can be imported. With `exports`, it is **closed**: only the listed
+libraries can. A file a closed package does not list is private to it,
+reachable only through relative imports from the package's own files.
 
-### Module Export
+### `dependencies`
 
-Each key under `exports` is a module name (without `.zena` extension). The
-value is an empty object (regular module) or an object with a `path` or
-`virtual` field.
+Each key is a **local name**: what this package's libraries call the
+dependency in their imports (`import {Router} from 'router:server'`). A
+dependency is one of two kinds:
 
-#### Regular Module
+- **A published package**, by DID and the lowest version this package
+  needs: `{"did": "did:plc:...", "version": "1.4.2"}`. `zena add` writes
+  these.
+- **A package on disk**, by its directory: `{"path": "./packages/lib"}`.
+  This is how workspace packages depend on each other, and it can also
+  point outside the workspace, as to a package in a sibling checkout
+  (`{"path": "../zena/packages/atproto/zena"}`), for developing against
+  a package before it is published. The directory must hold a
+  `zena-package.json`.
 
-An empty object `{}` means the module is a normal source file at
-`<root>/<name>.zena`.
+Local names belong to the package that chooses them. Two packages can give
+the same dependency different names, or the same name to different
+packages, and a package sees only its own names, the standard library
+(`zena`) and WIT-backed packages.
 
-```json
-"utils": {}
-```
+### `workspace`
 
-#### Explicit Entry File
+Only the manifest at a workspace's root has `workspace`. Its `packages`
+lists the directories of the workspace's other packages, as paths or as
+patterns ending in `/*`, which match each directory that holds a
+`zena-package.json`. The root's own directory is a workspace package too
+when its manifest has a `name`. A root with only `workspace` and `scopes`
+is a workspace whose packages are all in subdirectories.
 
-A `path` field names the module's entry file, relative to the package root.
-This is how a directory-based library exposes one public module implemented
-as multiple files:
+Files in the workspace that belong to no package, such as scripts and
+benchmarks, can import the workspace packages by their names, and
+nothing else besides the standard library.
 
-```json
-"url": { "path": "url/index.zena" }
-```
+### `scopes`
 
-The entry file re-exports the public API and reaches its sibling
-implementation files via relative imports (`./encoding.zena`). Those files
-are not importable by name.
+Only the manifest at a workspace's root has `scopes`. It maps a scope in
+`@scope/name` to the domain its handles are under, for `zena add`. See
+package-manager.md, "Names and scopes".
 
-#### Virtual Module
+## `zena-lock.json`
 
-A virtual module resolves to different entry files depending on the
-compilation target (`js` for browser/Node.js, `component` for a WASI
-component, `zena-cli` for the zena command's host, `freestanding` for a
-core module with no imports).
-
-| Field     | Type                     | Required | Description                                                  |
-| --------- | ------------------------ | -------- | ------------------------------------------------------------ |
-| `virtual` | `Record<string, string>` | yes      | Map of target name → entry file path (package-root-relative) |
-
-```json
-"console": { "virtual": { "js": "console/js.zena", "component": "console/component.zena" } }
-```
-
-When compiling with `--target component`, `import { log } from 'pkg:console'`
-resolves to `<root>/console/component.zena`. With `--target js`, it resolves
-to `<root>/console/js.zena`. The keys are target names (`js`, `zena-cli`,
-`freestanding`, `component`), and a module with no entry for the current
-target does not resolve.
-
-### Package-Private Files
-
-There is no `internal` list. Files not named in `exports` (directly or via a
-`path`/`virtual` entry file) are private to the package: they can only be
-reached through relative imports from the package's own files. In the stdlib,
-such files get path-shaped canonical ids (`zena:console/interface.zena`)
-while manifest modules keep name ids (`zena:string`).
-
-### Future: Dependencies
-
-Eventually, `zena-package.json` will declare dependencies by name (not path):
+The lockfile sits beside the workspace root's manifest. `zena add` and
+`zena update` write it, and no one edits it. It pins every published
+package any workspace package needs, directly or through other packages,
+with the versions minimal version selection chose across the whole
+workspace (package-manager.md, "Version selection"):
 
 ```json
 {
-  "dependencies": {
-    "zena": "^1.0.0"
-  },
-  "exports": { ... }
-}
-```
-
-A package never knows where its dependencies are located — that's the resolution
-file's job. This is not yet implemented. [package-manager.md](package-manager.md)
-proposes declaring each dependency by DID and minimum version.
-
----
-
-## Resolution File (currently `zena-packages.json`)
-
-Lives at the project root. Maps package names to physical locations for a
-specific compilation unit. The compiler uses this to resolve `pkg:module` import
-specifiers to file paths.
-
-> **Naming**: `zena-packages.json` is confusingly close to `zena-package.json`.
-> A future rename is likely (e.g., `zena-lock.json`, `zena-resolve.json`).
-
-### Format
-
-```json
-{
-  "packages": {
-    "my-lib": "./packages/my-lib/zena/lib",
-    "utils": "./packages/utils/zena"
-  }
-}
-```
-
-### Schema
-
-| Field          | Type                            | Required | Description                                                                     |
-| -------------- | ------------------------------- | -------- | ------------------------------------------------------------------------------- |
-| `packages`     | `Record<string, string>`        | no       | Map of package name → path to root                                              |
-| `dependencies` | `Record<string, string>`        | no       | Map of local name → published package key (`did:plc:...@1`)                     |
-| `resolved`     | `Record<string, ResolvedEntry>` | no       | Published packages pinned by key; see [Published packages](#published-packages) |
-
-Each value is a path to the package's root directory, relative to this file,
-or absolute. The target directory is expected to contain `.zena` source files
-and optionally a `zena-package.json`.
-
-A relative path may leave the project: a project beside a Zena checkout can
-map `"google-cloud": "../zena/packages/google-cloud/zena"`. The compiler reads
-the resolution file from its working directory, the project root, and
-`zena-cli` gives it the root's absolute path (`CompileFileOptions.projectRoot`),
-so such an entry is read by its absolute path. Entries inside the project stay
-relative, which keeps module paths and diagnostics short.
-
-### Published packages
-
-A project that uses packages published on atproto
-([package-manager.md](package-manager.md)) names them in `dependencies` and
-pins each in `resolved`, keyed by DID and major version:
-
-```json
-{
-  "packages": {"app": "./src"},
-  "dependencies": {"router": "did:plc:routerrouterrouterrouter@1"},
   "resolved": {
     "did:plc:routerrouterrouterrouter@1": {
       "version": "1.4.2",
@@ -202,89 +182,131 @@ pins each in `resolved`, keyed by DID and major version:
 }
 ```
 
-The compiler reads a pinned package from the package cache, where
-`zena fetch` unpacks each source archive into `sources/<source CID>`. The
-cache is `packages` under the user's cache directory (`$ZENA_CACHE_DIR`,
-`$XDG_CACHE_HOME/zena` or `~/.cache/zena`), or `.zena/packages` in the
-project when `ZENA_PROJECT_CACHE` is set. A pinned package that is not in
-the cache is an error that says to run `zena fetch`.
+Each entry is keyed by a package's DID and major version, since a
+workspace can use two major versions of one package. It records the
+selected version, the CID of its release record and of its source
+archive, and the names the release gives its own dependencies.
 
-Names resolve per package, in place of import-map scopes:
+The lockfile holds no names of the workspace's own: those are in the
+manifests, and a published dependency `{"did", "version"}` names the
+entry `<did>@<major>`.
 
-- The project's own files, and the packages listed by path, see the
-  `packages` names and the `dependencies` names.
-- A pinned package's files see the names in its own entry's
-  `dependencies`, the standard library, and WIT-backed packages. They do
-  not see the project's names, so `router` above cannot import `app`, and
-  the project cannot import `json`, which only `router` names.
+## How the compiler finds packages
 
-The compiler checks that every name maps to a pinned package, that no
-`dependencies` name is also a `packages` name, and that each `source` is a
-CID string, since it becomes a directory name. Two pinned packages with
-the same source archive are an error, because the compiler tells packages
-apart by their directories.
+1. It reads the `zena-package.json` in its working directory, the
+   workspace root, expands `workspace.packages`, and reads each workspace
+   package's manifest.
+2. It reads the pins from `zena-lock.json`.
+3. For an import `<name>:<library>` in a library of package P, it looks
+   `<name>` up among P's dependencies:
+   - a path dependency is the package in that directory, whose manifest
+     the compiler reads too;
+   - a published dependency is the pinned package `<did>@<major>`, found
+     in the package cache, where `zena fetch` unpacks each source archive
+     into `sources/<source CID>`.
+4. A published package's libraries resolve names through the
+   `dependencies` of its lockfile entry, which come from its release, and
+   its `exports` come from the `zena-package.json` in its source archive.
+
+The package cache is `packages` under the user's cache directory
+(`$ZENA_CACHE_DIR`, `$XDG_CACHE_HOME/zena` or `~/.cache/zena`), or
+`.zena/packages` in the workspace when `ZENA_PROJECT_CACHE` is set.
+
+The compiler reports:
+
+- a published dependency the lockfile does not pin, which `zena add` or
+  `zena update` fixes;
+- a pinned package that is not in the cache, which `zena fetch` fixes;
+- a `source` that is not a CID string, since it becomes a directory name;
+- two pinned packages with the same source archive, since the compiler
+  tells packages apart by their directories;
+- a path dependency to a directory with no `zena-package.json`.
 
 Tools without a package cache, such as the browser language service, see
-only the packages listed by path.
+only the workspace's own packages.
 
----
+## Publishing a workspace package
 
-## The `zena` Package (stdlib)
+`zena publish` publishes one workspace package at a time. Its release
+lists the dependencies in its manifest, with each path dependency
+replaced by the depended-on package's DID and the version of it the
+workspace uses, so a workspace package that others depend on is published
+first. A package without a `did`, such as one only on disk, cannot be a
+published package's dependency.
 
-The standard library uses the package name `zena`. The compiler loads it
-automatically — user code does not need to list it in the resolution file. When
-loading a resolution file, entries named `"zena"` are skipped; the compiler
-builds the stdlib config internally via `buildStdlibConfig()`.
+## The `zena` package (the standard library)
 
-The stdlib has its own `zena-package.json` (currently `stdlib-manifest.json`)
-that declares its exports and internal modules.
-
-Stdlib modules are imported with the `zena:` prefix:
-`import { HashMap } from 'zena:map'`.
-
----
+The standard library's package name is `zena`, and every package can
+import it without listing it. Its manifest is built into the compiler,
+generated from `packages/stdlib/stdlib-manifest.json`. Its libraries are
+imported as `zena:<library>`, as in `import { HashMap } from 'zena:map'`.
 
 ## Example
 
 ```
-project/
-  zena-packages.json              # resolution file
+my-app/
+  zena-package.json        # name "app", workspace {packages: ["packages/*"]}
+  zena-lock.json           # pins, written by zena add
+  main.zena
   packages/
-    stdlib/
-      zena/
-        zena-package.json         # exports
-        array.zena
-        console/
-          interface.zena          # private (unlisted)
-          host.zena               # private (virtual target: js)
-          component.zena          # private (virtual target: component)
-    my-app/
-      zena/
-        main.zena
+    lib/
+      zena-package.json    # name "lib", exports, dependencies
+      lib.zena
+      internal/
+        helpers.zena       # private: lib's exports do not list it
 ```
 
-`packages/stdlib/zena/zena-package.json`:
+`my-app/zena-package.json`:
 
 ```json
 {
-  "exports": {
-    "array": {},
-    "console": {
-      "virtual": {
-        "js": "console/host.zena",
-        "component": "console/component.zena"
-      }
-    }
+  "name": "app",
+  "dependencies": {
+    "router": {"did": "did:plc:routerrouterrouterrouter", "version": "1.4.2"},
+    "lib": {"path": "./packages/lib"}
+  },
+  "workspace": {"packages": ["packages/*"]}
+}
+```
+
+`my-app/packages/lib/zena-package.json`:
+
+```json
+{
+  "name": "lib",
+  "exports": {"lib": {}},
+  "dependencies": {
+    "json": {"did": "did:web:json.example.com", "version": "2.0.1"}
   }
 }
 ```
 
-`zena-packages.json`:
+`main.zena` imports `router:server` and `lib:lib`; `lib.zena` imports
+`json:parse`. Neither sees the other's names.
+
+## Current implementation
+
+Until the compiler reads manifests, it reads `zena-packages.json` from its
+working directory:
 
 ```json
 {
-  "packages": {
-    "my-lib": "./packages/my-lib/zena"
-  }
+  "packages": {"zena-compiler": "./packages/zena-compiler/zena/lib"},
+  "dependencies": {"router": "did:plc:routerrouterrouterrouter@1"},
+  "resolved": {"...": "as in zena-lock.json"}
 }
 ```
+
+- `packages` maps a name to a package's directory, or to an object with a
+  `root` and `exports`, or `{"wit": path}` for a WIT-backed package. Every
+  file outside a pinned package sees all of these names.
+- `dependencies` maps names to pinned packages, for the same files.
+- A relative path may leave the workspace, as for a sibling checkout:
+  `"google-cloud": "../zena/packages/google-cloud/zena"`. `zena-cli` gives
+  the compiler the workspace's absolute path
+  (`CompileFileOptions.projectRoot`), so such a path is read by its
+  absolute path. Path dependencies keep this.
+
+Moving to manifests means giving every package in this repository a
+`zena-package.json` with its name and its path dependencies, and adding
+a root `zena-package.json` whose `workspace` lists them.

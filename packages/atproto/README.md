@@ -5,10 +5,10 @@ encodings, cryptography and repositories. The package manager
 ([docs/design/package-manager.md](../../docs/design/package-manager.md))
 publishes and verifies packages with them.
 
-Import them as `atproto:<module>`, with an
+Import them as `atproto:<library>`, with an
 `"atproto": "./packages/atproto/zena"` entry in `zena-packages.json`.
 
-## Modules
+## Libraries
 
 - `atproto:varint`: multiformats unsigned varints.
 - `atproto:multibase`: multibase strings, and base58btc. The other base
@@ -39,7 +39,7 @@ Import them as `atproto:<module>`, with an
 
 `atproto:xrpc`, `atproto:identity` and `atproto:sync` send requests with
 `wasi:http`, so they compile for the `zena-cli` and `component` targets
-only. The other modules have no imports from the host.
+only. The other libraries have no imports from the host.
 
 ## Tests
 
