@@ -264,18 +264,10 @@ let opened = (
   outcome: Outcome<Own<WitDescriptor>, ErrorCode>,
   what: String
 ): Own<WitDescriptor> => {
-  // An `is` test with the type arguments spelled out, and not a class
-  // pattern (`if (let Ok {value} = outcome)`): the bootstrap compiles
-  // this module, and until it is reseeded its checker reads that pattern
-  // as the template `Ok<T, E>`, which matches nothing (#270). A cast to
-  // a type that names `Own` is refused.
-  if (outcome is Ok<Own<WitDescriptor>, ErrorCode>) {
-    return outcome.value;
-  }
-  if (outcome is Err<Own<WitDescriptor>, ErrorCode>) {
-    fail(outcome.error, what);
-  }
-  throw new Error(`${what}: open-at returned neither ok nor err`);
+  return match (outcome) {
+    case Ok {value}: value
+    case Err {error}: fail(error, what)
+  };
 };
 
 /**
@@ -374,19 +366,19 @@ export resource class Descriptor {
   /** This descriptor's metadata. */
   async stat(): Future<FileStat> {
     let outcome = await this.#inner.stat();
-    if (outcome is Err<DescriptorStat, ErrorCode>) {
-      fail(outcome.error, 'stat');
-    }
-    return statOf((outcome as Ok<DescriptorStat, ErrorCode>).value);
+    return match (outcome) {
+      case Ok {value}: statOf(value)
+      case Err {error}: fail(error, 'stat')
+    };
   }
 
   /** The metadata of a path under this directory, following symlinks. */
   async statAt(path: String): Future<FileStat> {
     let outcome = await this.#inner.statAt(pathFlagsSymlinkFollow, path);
-    if (outcome is Err<DescriptorStat, ErrorCode>) {
-      fail(outcome.error, `stat '${path}'`);
-    }
-    return statOf((outcome as Ok<DescriptorStat, ErrorCode>).value);
+    return match (outcome) {
+      case Ok {value}: statOf(value)
+      case Err {error}: fail(error, `stat '${path}'`)
+    };
   }
 
   /** Whether anything is at a path under this directory. */

@@ -1,0 +1,50 @@
+// @mode: run
+// @result: 0
+// A match arm whose value is a call to a function returning `never`:
+// the arm leaves by the throw, and the match's value is the other arm's.
+
+sealed class Either<L, R> {
+  case Left, Right
+}
+
+final class Left<L, R>(value: L) extends Either<L, R>
+
+final class Right<L, R>(value: R) extends Either<L, R>
+
+let fail = (message: String): never => {
+  throw new Error(message);
+};
+
+let leftOf = (e: Either<i32, String>): i32 => {
+  return match (e) {
+    case Left {value}: value
+    case Right {value}: fail(value)
+  };
+};
+
+let leftOfBlock = (e: Either<i32, String>): i32 => {
+  let n = match (e) {
+    case Left {value}: value
+    case Right {value}: {
+      fail(value);
+    }
+  };
+  return n + 1;
+};
+
+export let main = (): i32 => {
+  if (leftOf(new Left<i32, String>(4)) != 4) return 1;
+  if (leftOfBlock(new Left<i32, String>(4)) != 5) return 2;
+  var caught = 0;
+  try {
+    leftOf(new Right<i32, String>('no'));
+  } catch (e) {
+    caught += 1;
+  }
+  try {
+    leftOfBlock(new Right<i32, String>('no'));
+  } catch (e) {
+    caught += 10;
+  }
+  return if (caught == 11) 0 else 3;
+};

@@ -107,10 +107,10 @@ export async function httpRequest(
   request.setAuthority(some(target.host()));
   request.setPathWithQuery(some(`${target.pathname}${target.search}`));
   let sent = await send(request);
-  if (sent is Err<WireResponse, ErrorCode>) {
-    throw new HttpError(`no answer from ${target.host()}`);
-  }
-  let response = (sent as Ok<WireResponse, ErrorCode>).value;
+  let response = match (sent) {
+    case Ok {value}: value
+    case Err: throw new HttpError(`no answer from ${target.host()}`)
+  };
   let status = response.getStatusCode() as i32;
   let responseHeaders = response.getHeaders();
   let received = new Completer<Outcome<void, ErrorCode>>();

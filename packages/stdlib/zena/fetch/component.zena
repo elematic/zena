@@ -126,11 +126,10 @@ export async function fetch(url: String | URL): Future<Response> {
   let target = parsed;
   let request = requestFor(target);
   let sent = await send(request);
-  if (sent is Err<WireResponse, ErrorCode>) {
-    throw new Error('zena:fetch: ' + describe(
-        sent.error) + ': ' + target.href);
-  }
-  let wire = (sent as Ok<WireResponse, ErrorCode>).value;
+  let wire = match (sent) {
+    case Ok {value}: value
+    case Err {error}: throw new Error(`zena:fetch: ${describe(error)}: ${target.href}`)
+  };
   return new Response(wire.getStatusCode() as i32, wire);
 }
 
