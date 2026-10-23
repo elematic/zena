@@ -1750,9 +1750,18 @@ element that carries an owner is affine itself (`isAffineTuple`;
 
 The conversions between a tuple and its inline form, and the widening
 between unions, happen at sites that move their source, so they never
-leave two holders of one owner. Release at scope exit is the second half
-and is not implemented yet: an unmoved affine tuple, and an owner bound by
-destructuring, leak until it is.
+leave two holders of one owner.
+
+Release is the second half. A `let`, `var` or parameter of an affine tuple
+type is a drop candidate like an `Own<R>` one (`ownedResourcesIn` collects
+the resource classes to root), and so is each owner a `let` tuple pattern
+binds (`registerDestructuredOwners`). In codegen every drop site takes a
+`DropPlan` (control-flow.zena): a class owner disposes as before, and a
+tuple reads its slots through the pattern reader, branches on the tag for a
+union, and releases its owner elements last first, nested tuples
+included. A declaration that releases several bindings gets one region per
+binding, the first outermost. An owner bound by an `if let` or `match`
+pattern, and a discarded result holding one, are not released yet.
 
 **Generic fields are the other half, and defer to `scoped T`.**
 `class Box<scoped T> { var value: T }` stays an ordinary class; the
