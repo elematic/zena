@@ -1,0 +1,64 @@
+/**
+ * The storage conformance tests (`../test/storage-conformance.zena`)
+ * against the Firestore emulator, with blob bytes in memory: there is no
+ * emulator for Cloud Storage's gRPC API. Run with
+ * `npm run test:emulator -w @zena-lang/pds`, which starts the emulator and
+ * sets `FIRESTORE_EMULATOR_HOST`.
+ *
+ * Each test works in a project of its own, which the emulator keeps apart,
+ * so tests and runs do not see each other's documents.
+ */
+
+import {suite, test} from 'zena:test';
+import {equal, isTrue} from 'zena:assert';
+import {runFuture} from 'zena:async';
+import {getEnv} from 'zena:cli';
+import {getRandomU64} from 'wasi:random/random';
+import {AccessTokenCredentials} from 'google-cloud:auth';
+import {Firestore} from 'google-cloud:firestore';
+import {GrpcTransport} from 'protobuf:grpc';
+import {FirestoreHostStore, FirestoreStorage, MemoryBlobs} from 'pds:firestore';
+import {HostStore} from 'pds:host';
+import {Account, Head, RecordChange, SigningKey, Storage, StoredBlob} from 'pds:storage';
+import {Cid} from 'atproto:cid';
+import {KeyType} from 'atproto:didkey';
+import {hostStoreConformance, storageConformance} from '../test/storage-conformance.zena';
+
+/** A database in a new project on the emulator. */
+function freshDatabase(): Firestore {
+  let host = getEnv('FIRESTORE_EMULATOR_HOST');
+  if (host == null || host.length == 0) {
+    throw new Error('FIRESTORE_EMULATOR_HOST is not set; run npm run test:emulator -w @zena-lang/pds');
+  }
+  return new Firestore({
+    projectId: `pds-${getRandomU64() % (1000000000 as u64)}`,
+    transport: new GrpcTransport(`http://${host}`, new AccessTokenCredentials('owner')),
+  });
+}
+
+export let tests = suite('Firestore storage', () => {
+  // TODO(#520): drop the return types.
+  storageConformance((): Storage => new FirestoreStorage(freshDatabase(), 'test', new MemoryBlobs()));
+  hostStoreConformance((): HostStore => new FirestoreHostStore(freshDatabase(), 'test'));
+
+  test('keeps tenants apart', (ctx) => {
+    let db = freshDatabase();
+    let blobs = new MemoryBlobs();
+    let one = new FirestoreStorage(db, 'one', blobs);
+    let two = new FirestoreStorage(db, 'two', blobs);
+    let did = 'did:plc:alicealicealicealicealic';
+    runFuture(one.putAccount(new Account(did, 'alice.test', new SigningKey(KeyType.P256, new FixedArray<u8>(32, 7 as u8)))));
+    isTrue(runFuture(two.getAccount(did)) == null, 'no account in the other tenant');
+    isTrue(runFuture(two.accountByHandle('alice.test')) == null, 'no handle in the other tenant');
+    let cid = Cid.forBlob('x'.toBytes() as FixedArray<u8>);
+    isTrue(runFuture(one.store(did).commit(null, new Head(cid, '3l3qo2vutsw2a'),
+        [new RecordChange('com.example.post', 'a', cid)])), 'committed');
+    isTrue(runFuture(two.store(did).getHead()) == null, 'no head in the other tenant');
+    isTrue(runFuture(two.store(did).getRecord('com.example.post', 'a')) == null, 'no record in the other tenant');
+    runFuture(one.store(did).putBlob(cid, new StoredBlob('text/plain', 'x'.toBytes() as FixedArray<u8>)));
+    isTrue(runFuture(two.store(did).getBlob(cid)) == null, 'no blob in the other tenant');
+    let hostOne = new FirestoreHostStore(db, 'one');
+    isTrue(runFuture(hostOne.claimScope('acme', did)), 'claimed');
+    isTrue(runFuture(new FirestoreHostStore(db, 'two').claimScope('acme', did)), 'claimed in the other tenant');
+  });
+});

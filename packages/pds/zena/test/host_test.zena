@@ -24,7 +24,8 @@ import {
   Artifact, Dependency, Maintainer, Maintainers, OWNER, Profile, RELEASE_TYPE, Release, SOURCE
 } from 'package-manager:records';
 import {Version} from 'package-manager:version';
-import {HostConfig, MemoryHostStore, PackageHost} from 'pds:host';
+import {HostConfig, HostStore, MemoryHostStore, PackageHost} from 'pds:host';
+import {MemberEntry} from 'package-manager:records';
 import {Pds} from 'pds:pds';
 import {CreateRecord, RepositoryError, Write} from 'pds:repository';
 import {createApp} from 'pds:server';
@@ -41,17 +42,19 @@ final class Fixture {
   var app: App;
   pds: Pds;
   submitted = new HashMap<String, PlcOperation>();
+  /** Whether the PLC directory refuses operations. */
+  var plcDown = false;
   var #jti = 0;
   var #random = 0;
 
-  new() : pds = new Pds(new MemoryStorage()), app = new App() {
+  new(store: HostStore = new MemoryHostStore()) : pds = new Pds(new MemoryStorage()), app = new App() {
     let rotation = new SigningKey(KeyType.Secp256k1, filled(200));
     let config = new HostConfig(HOST, 'pkg.test', 'https://pkg.test', rotation);
     let callers = new HashMap<String, PublicKey>();
     callers[ALICE] = new SigningKey(KeyType.P256, ALICE_KEY).publicKey();
     callers[BOB] = new SigningKey(KeyType.P256, BOB_KEY).publicKey();
     let submitted = this.submitted;
-    let host = new PackageHost(this.pds, config, new MemoryHostStore(),
+    let host = new PackageHost(this.pds, config, store,
         async (did: String, fresh: boolean): Future<PublicKey | null> => {
           if (let (true, key) = callers.get(did)) {
             return key;
@@ -59,6 +62,9 @@ final class Fixture {
           return null;
         },
         async (did: String, operation: PlcOperation): Future<void> => {
+          if (this.plcDown) {
+            throw new Error('the PLC directory is down');
+          }
           submitted[did] = operation;
         },
         (count: i32) => {
@@ -106,6 +112,29 @@ final class Fixture {
       await app.handleRequest(req, res);
     })());
     return res;
+  }
+}
+
+/**
+ * A host store whose lookups always miss, as a read can that another
+ * server's claim races past.
+ */
+final class StaleHostStore implements HostStore {
+  #inner = new MemoryHostStore();
+
+  async scopeOwner(scope: String): Future<String | null> { return null; }
+  async claimScope(scope: String, org: String): Future<boolean> { return await this.#inner.claimScope(scope, org); }
+  async releaseScope(scope: String, org: String): Future<void> { await this.#inner.releaseScope(scope, org); }
+  async nameInScope(scope: String, name: String): Future<String | null> { return null; }
+  async claimName(scope: String, name: String, did: String): Future<boolean> {
+    return await this.#inner.claimName(scope, name, did);
+  }
+  async releaseName(scope: String, name: String, did: String): Future<void> {
+    await this.#inner.releaseName(scope, name, did);
+  }
+  async entries(account: String): Future<Array<MemberEntry>> { return await this.#inner.entries(account); }
+  async addEntries(account: String, entries: Array<MemberEntry>): Future<void> {
+    await this.#inner.addEntries(account, entries);
   }
 }
 
@@ -236,5 +265,27 @@ export let tests = suite('pds:host', () => {
         'BlobNotFound');
     equal(errorOf(fixture.call(BOB, 'publish', `{"package": "${pkgDid}", "release": ${releaseJson('1.2.0', blob)}}`)),
         'Forbidden');
+  });
+
+  test('takes a name only once, however the lookups race', (ctx) => {
+    let fixture = new Fixture(new StaleHostStore());
+    let orgDid = ok(createOrganization(fixture, ALICE, 'acme'))['did'] as String;
+    equal(errorOf(createOrganization(fixture, BOB, 'acme')), 'NameTaken');
+    ok(createPackage(fixture, ALICE, orgDid, 'router'));
+    equal(errorOf(createPackage(fixture, ALICE, orgDid, 'router')), 'NameTaken');
+    // Only the accounts that got their names were sent to the directory.
+    equal(fixture.submitted.size, 2);
+  });
+
+  test('gives a name back when its account cannot be made', (ctx) => {
+    let fixture = new Fixture();
+    fixture.plcDown = true;
+    equal(createOrganization(fixture, ALICE, 'acme').statusCode, 500);
+    fixture.plcDown = false;
+    let orgDid = ok(createOrganization(fixture, ALICE, 'acme'))['did'] as String;
+    fixture.plcDown = true;
+    equal(createPackage(fixture, ALICE, orgDid, 'router').statusCode, 500);
+    fixture.plcDown = false;
+    ok(createPackage(fixture, ALICE, orgDid, 'router'));
   });
 });

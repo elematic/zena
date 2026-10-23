@@ -8,7 +8,12 @@
  * store is one account's from the start, since this server holds many.
  *
  * Every method is asynchronous, as a database's are. `MemoryStorage` keeps
- * everything in memory.
+ * everything in memory; `pds:firestore` keeps it in Firestore, and blobs
+ * in Cloud Storage.
+ *
+ * Several servers can share one database, so a commit is one call that
+ * makes its changes only if the head is still the one it was built on
+ * (`AccountStore.commit`).
  */
 
 import {Future} from 'zena:async';
@@ -33,6 +38,11 @@ export final class SigningKey {
   #privateKey: FixedArray<u8>;
 
   new(type: KeyType, privateKey: FixedArray<u8>) : type = type, #privateKey = privateKey;
+
+  /** The private key's bytes, for a store to keep. */
+  privateKey: FixedArray<u8> {
+    get { return this.#privateKey; }
+  }
 
   publicKey(): PublicKey {
     return publicKeyFor(this.type, this.#privateKey);
@@ -93,6 +103,18 @@ export final class RecordEntry {
   }
 }
 
+/**
+ * A change to a repository's record index, as a commit makes it: the
+ * record at `collection/rkey` is now `cid`, or is gone when `cid` is null.
+ */
+export final class RecordChange {
+  collection: String;
+  rkey: String;
+  cid: Cid | null;
+
+  new(collection: String, rkey: String, cid: Cid | null) : collection = collection, rkey = rkey, cid = cid;
+}
+
 /** A blob and the MIME type it was uploaded with. */
 export final class StoredBlob {
   mimeType: String;
@@ -110,8 +132,6 @@ export interface AccountStore {
 
   /** The CID of the record at `collection/rkey`, or null. */
   getRecord(collection: String, rkey: String): Future<Cid | null>;
-  putRecord(collection: String, rkey: String, cid: Cid): Future<void>;
-  deleteRecord(collection: String, rkey: String): Future<void>;
   /**
    * Up to `limit` records of `collection`, in record-key order, or the
    * reverse with `descending`, starting after the record key `after`.
@@ -123,7 +143,13 @@ export interface AccountStore {
 
   /** The current commit, or null before the first. */
   getHead(): Future<Head | null>;
-  setHead(head: Head): Future<void>;
+  /**
+   * Makes `head` the current commit, and `changes` to the record index,
+   * together, if the current commit is still `previous` (null: there is
+   * none yet). Returns false, changing nothing, when it is not. The
+   * commit's blocks are stored first, with `putBlocks`.
+   */
+  commit(previous: Head | null, head: Head, changes: Array<RecordChange>): Future<boolean>;
 
   getBlob(cid: Cid): Future<StoredBlob | null>;
   putBlob(cid: Cid, blob: StoredBlob): Future<void>;
@@ -167,14 +193,6 @@ export final class MemoryAccountStore implements AccountStore {
     return null;
   }
 
-  async putRecord(collection: String, rkey: String, cid: Cid): Future<void> {
-    this.#records[`${collection}/${rkey}`] = new RecordEntry(collection, rkey, cid);
-  }
-
-  async deleteRecord(collection: String, rkey: String): Future<void> {
-    this.#records.delete(`${collection}/${rkey}`);
-  }
-
   async listRecords(collection: String, after: String | null, limit: i32, descending: boolean)
       : Future<Array<RecordEntry>> {
     let matching = new GrowableArray<RecordEntry>();
@@ -190,7 +208,7 @@ export final class MemoryAccountStore implements AccountStore {
       }
       matching.push(entry);
     });
-    let sorted = sortEntries(matching, (a, b) => compareKeys(a.rkey, b.rkey) * (if (descending) -1 else 1));
+    let sorted = sortRecordEntries(matching, (a, b) => compareKeys(a.rkey, b.rkey) * (if (descending) -1 else 1));
     let page = new GrowableArray<RecordEntry>();
     for (var i = 0; i < sorted.length && i < limit; i += 1) {
       page.push(sorted[i]);
@@ -203,15 +221,28 @@ export final class MemoryAccountStore implements AccountStore {
     this.#records.forEach((key, entry) => {
       all.push(entry);
     });
-    return sortEntries(all, (a, b) => compareKeys(a.key(), b.key()));
+    return sortRecordEntries(all, (a, b) => compareKeys(a.key(), b.key()));
   }
 
   async getHead(): Future<Head | null> {
     return this.#head;
   }
 
-  async setHead(head: Head): Future<void> {
+  async commit(previous: Head | null, head: Head, changes: Array<RecordChange>): Future<boolean> {
+    if (!sameHead(this.#head, previous)) {
+      return false;
+    }
+    for (let change in changes) {
+      let key = `${change.collection}/${change.rkey}`;
+      let cid = change.cid;
+      if (cid == null) {
+        this.#records.delete(key);
+      } else {
+        this.#records[key] = new RecordEntry(change.collection, change.rkey, cid);
+      }
+    }
     this.#head = head;
+    return true;
   }
 
   async getBlob(cid: Cid): Future<StoredBlob | null> {
@@ -262,8 +293,20 @@ export final class MemoryStorage implements Storage {
   }
 }
 
+/** Whether `a` and `b` are the same commit, or both none. */
+export function sameHead(a: Head | null, b: Head | null): boolean {
+  if (a == null || b == null) {
+    return a == null && b == null;
+  }
+  return a.cid.equals(b.cid);
+}
+
+/**
+ * `entries` sorted by `compare`. An insertion sort, which is linear on
+ * input that is nearly in order already, as a store's usually is.
+ */
 // TODO(#450): use the standard library's sort once it has one.
-function sortEntries(entries: GrowableArray<RecordEntry>, compare: (a: RecordEntry, b: RecordEntry) => i32)
+export function sortRecordEntries(entries: Array<RecordEntry>, compare: (a: RecordEntry, b: RecordEntry) => i32)
     : GrowableArray<RecordEntry> {
   let sorted = new GrowableArray<RecordEntry>();
   for (let entry in entries) {

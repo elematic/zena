@@ -11,6 +11,12 @@
  * accounts this serves first. Porting the path updates is a later change.
  * A `getRecord` proof holds the nodes on the path to the record, where
  * pds.js sends every node.
+ *
+ * pds.js serializes an account's writes by running it in one Durable
+ * Object. Here several servers may share a store, so a commit is built on
+ * the head read at its start, and stored only if that is still the head
+ * (`AccountStore.commit`); otherwise the writes are checked and applied
+ * again on the new head.
  */
 
 import {Future} from 'zena:async';
@@ -21,8 +27,11 @@ import {MapValue, stringField} from 'atproto:data';
 import {MstNode, buildMst, compareKeys, decodeNode} from 'atproto:mst';
 import {decodeCommit, signCommit} from 'atproto:repo';
 import {isValidNsid, isValidRecordKey} from 'atproto:syntax';
-import {TidClock} from 'atproto:tid';
-import {Account, AccountStore, Head} from './storage.zena';
+import {TidClock, tidMicros} from 'atproto:tid';
+import {Account, AccountStore, Head, RecordChange, RecordEntry, sortRecordEntries} from './storage.zena';
+
+/** How many times a write is tried while other writes keep moving the head. */
+let COMMIT_ATTEMPTS = 5;
 
 /** A write the repository refuses, with the XRPC error name to answer with. */
 export class RepositoryError extends Error {
@@ -53,11 +62,17 @@ export final class Repository {
    * one. `nowMicros` is the time, in microseconds since the Unix epoch.
    */
   async initialize(nowMicros: i64): Future<Head> {
-    let head = await this.#store.getHead();
-    if (head != null) {
-      return head as Head;
+    for (var attempt = 0; attempt < COMMIT_ATTEMPTS; attempt += 1) {
+      let head = await this.#store.getHead();
+      if (head != null) {
+        return head as Head;
+      }
+      let committed = await this.#commit(null, new BlockMap(), new GrowableArray<RecordChange>(), nowMicros);
+      if (committed != null) {
+        return committed as Head;
+      }
     }
-    return await this.#commit(new BlockMap(), nowMicros);
+    throw new Error(`${this.#account.did}: the repository's head kept moving`);
   }
 
   /**
@@ -67,8 +82,24 @@ export final class Repository {
    * then.
    */
   async applyWrites(writes: Array<Write>, nowMicros: i64): Future<Head> {
-    let blocks = new BlockMap();
-    let changes = new GrowableArray<(String, String, Cid | null)>();
+    for (var attempt = 0; attempt < COMMIT_ATTEMPTS; attempt += 1) {
+      let previous = await this.#store.getHead();
+      let blocks = new BlockMap();
+      let changes = await this.#changes(writes, blocks);
+      let head = await this.#commit(previous, blocks, changes, nowMicros);
+      if (head != null) {
+        return head as Head;
+      }
+    }
+    throw new Error(`${this.#account.did}: the repository's head kept moving`);
+  }
+
+  /**
+   * The changes `writes` make to the record index, checked against it, with
+   * each new record's block added to `blocks`.
+   */
+  async #changes(writes: Array<Write>, blocks: BlockMap): Future<GrowableArray<RecordChange>> {
+    let changes = new GrowableArray<RecordChange>();
     // A record created and then deleted in the same batch, say, is checked
     // against the batch's own earlier writes.
     let pending = new HashMap<String, boolean>();
@@ -92,33 +123,25 @@ export final class Repository {
           if (exists) {
             throw new RepositoryError('InvalidRequest', `${key} already exists`);
           }
-          changes.push((collection, rkey, addRecord(blocks, collection, record)));
+          changes.push(new RecordChange(collection, rkey, addRecord(blocks, collection, record)));
           pending[key] = true;
         }
         case UpdateRecord {record}: {
           if (!exists) {
             throw new RepositoryError('RecordNotFound', `${key} does not exist`);
           }
-          changes.push((collection, rkey, addRecord(blocks, collection, record)));
+          changes.push(new RecordChange(collection, rkey, addRecord(blocks, collection, record)));
         }
         case DeleteRecord {}: {
           if (!exists) {
             throw new RepositoryError('RecordNotFound', `${key} does not exist`);
           }
-          changes.push((collection, rkey, null));
+          changes.push(new RecordChange(collection, rkey, null));
           pending[key] = false;
         }
       }
     }
-    await this.#store.putBlocks(blocks);
-    for (let (collection, rkey, cid) in changes) {
-      if (cid == null) {
-        await this.#store.deleteRecord(collection, rkey);
-      } else {
-        await this.#store.putRecord(collection, rkey, cid as Cid);
-      }
-    }
-    return await this.#commit(new BlockMap(), nowMicros);
+    return changes;
   }
 
   /**
@@ -178,11 +201,13 @@ export final class Repository {
   }
 
   /**
-   * Builds the tree over the record index, stores its nodes and the commit
-   * over it, and makes that commit the head.
+   * Builds the tree over the record index with `changes` made, stores its
+   * nodes, `blocks` and a commit over it after `previous`, and makes that
+   * commit the head. Returns null, when `previous` is no longer the head.
    */
-  async #commit(blocks: BlockMap, nowMicros: i64): Future<Head> {
-    let records = await this.#store.allRecords();
+  async #commit(previous: Head | null, blocks: BlockMap, changes: GrowableArray<RecordChange>, nowMicros: i64)
+      : Future<Head | null> {
+    let records = withChanges(await this.#store.allRecords(), changes);
     let keys = new FixedArray<String>(records.length, '');
     let values = new FixedArray<Cid>(records.length, Cid.forBlob(new FixedArray<u8>(0, 0 as u8)));
     for (var i = 0; i < records.length; i += 1) {
@@ -190,16 +215,23 @@ export final class Repository {
       values[i] = records[i].cid;
     }
     let root = buildMst(keys, values, blocks);
-    let previous = await this.#store.getHead();
-    let rev = this.#clock.next(nowMicros);
+    // A revision follows the one before it, even one another server's
+    // clock gave out.
+    var micros = nowMicros;
+    if (previous != null && tidMicros(previous.rev) >= micros) {
+      micros = tidMicros(previous.rev) + 1;
+    }
+    let rev = this.#clock.next(micros);
     let key = this.#account.key;
     let commit = signCommit(this.#account.did, root, rev,
         if (previous == null) null else (previous as Head).cid, (bytes) => key.sign(bytes));
     blocks.set(commit.cid, commit.bytes);
     await this.#store.putBlocks(blocks);
     let head = new Head(commit.cid, rev);
-    await this.#store.setHead(head);
-    return head;
+    if (await this.#store.commit(previous, head, changes)) {
+      return head;
+    }
+    return null;
   }
 
   async #head(): Future<Head> {
@@ -217,6 +249,27 @@ export final class Repository {
     }
     return bytes as FixedArray<u8>;
   }
+}
+
+/** `records`, in tree-key order, with `changes` made, the last change to a key winning. */
+function withChanges(records: Array<RecordEntry>, changes: GrowableArray<RecordChange>): GrowableArray<RecordEntry> {
+  let changed = new HashMap<String, RecordChange>();
+  for (let change in changes) {
+    changed[`${change.collection}/${change.rkey}`] = change;
+  }
+  let result = new GrowableArray<RecordEntry>();
+  for (let record in records) {
+    if (!changed.has(record.key())) {
+      result.push(record);
+    }
+  }
+  changed.forEach((key, change) => {
+    let cid = change.cid;
+    if (cid != null) {
+      result.push(new RecordEntry(change.collection, change.rkey, cid));
+    }
+  });
+  return sortRecordEntries(result, (a, b) => compareKeys(a.key(), b.key()));
 }
 
 function collectionOf(write: Write): String {

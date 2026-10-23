@@ -39,10 +39,15 @@ The single-account server is built so these do not require a rewrite; see
 
 ## Status
 
-The server holds many accounts in memory (`MemoryStorage`). An account's
-repository applies writes and signs a commit for each batch, rebuilding the
-record tree from the record index; pds.js updates the tree along the changed
-paths, and porting that is still to do. The server answers `/`,
+The server holds many accounts, in memory (`MemoryStorage`) or in
+Firestore with blob bytes in Cloud Storage (`pds:firestore`), whose
+documents are keyed by tenant and account. An account's repository applies
+writes and signs a commit for each batch, rebuilding the record tree from
+the record index; pds.js updates the tree along the changed paths, and
+porting that is still to do. Several servers can share one store: a commit
+is stored only if the head it was built on is still the head, and is
+otherwise built again, and the host takes a scope or package name in one
+call that fails when it is taken. The server answers `/`,
 `/xrpc/_health`, the `com.atproto.sync` reads `getRecord`, `getRepo`,
 `getLatestCommit` and `getBlob`, and the `com.atproto.repo` reads
 `getRecord`, `listRecords` and `describeRepo`. Of the package host
@@ -198,7 +203,10 @@ grows. Milestones 1 to 4 are done.
    publishing tests run against it, in memory.
 7. **Deployment.** A Firestore adapter for the storage ports, GCS for blobs,
    and a Cloud Run image running under `zena-cli`, with the host's DNS zone.
-   Firestore documents are keyed by tenant and account from the start.
+   Firestore documents are keyed by tenant and account from the start. The
+   adapters are done, tested against the Firestore emulator with a suite
+   every storage passes (`zena/test/storage-conformance.zena`); the image,
+   the server's configuration and the DNS zone are not.
 8. **Conformance.** The pds.js e2e suite, run against this server, with
    `com.atproto.repo.*` and AppView proxying for ordinary accounts.
 9. **Firehose.** `subscribeRepos`, after the Zena host can upgrade a request
@@ -232,5 +240,11 @@ whichever is newer.
 
 - **Unit tests** are `packages/pds/zena/test/*_test.zena`, and use the
   interop vectors and vlpds vectors as known answers.
+- **Storage**: `zena/test/storage-conformance.zena` holds the tests every
+  `Storage` and `HostStore` passes. `npm test` runs them in memory, and
+  `npm run test:emulator -w @zena-lang/pds` against the Firestore
+  emulator, which the root `emulators:start` service runs. There is no
+  emulator for Cloud Storage's gRPC API, so that run keeps blob bytes in
+  memory.
 - **Conformance**: the pds.js e2e suite, run from a pinned pds.js checkout
   with a `zena` platform helper that starts `packages/pds/zena/main.zena`.

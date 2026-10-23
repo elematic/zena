@@ -31,3 +31,15 @@ lexicons are in `packages/package-manager/lexicons`.
   does: storage, accounts, serving repositories, and the host extension.
 - When Zena itself is missing something, the fix goes in the compiler or
   the standard library, in the same change if it is small.
+
+## Storage
+
+- `pds:storage` declares the storage interfaces and keeps everything in
+  memory; `pds:firestore` keeps it in Firestore, under a tenant, with blob
+  bytes in Cloud Storage. Both pass `zena/test/storage-conformance.zena`;
+  add a test there for anything a store must do.
+- Several servers may share a store. Write through `AccountStore.commit`,
+  which checks the head, and take names with `HostStore.claimScope` and
+  `claimName`, never with a read and then a write.
+- The emulator run is `npm run test:emulator -w @zena-lang/pds`. It is not
+  part of `npm test`, so run it after changing `pds:firestore`.
