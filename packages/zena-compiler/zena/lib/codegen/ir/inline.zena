@@ -175,8 +175,8 @@ export function runInline(wasm: WasmModule, bodies: GrowableArray<IrBody>,
     changed: GrowableArray<boolean>, escapes: EscapeSummaries,
     scratch: IrScratch): i32 {
   let bodyIndex = wasm.functionIndex();
-  // Direct call sites per callee, over the module as it stands at the
-  // start of the sweep.
+  // Direct call sites per callee, tail calls included, over the module
+  // as it stands at the start of the sweep.
   let siteCounts = new Array<i32>(bodies.length);
   for (var i = 0; i < bodies.length; i += 1) {
     siteCounts.push(0);
@@ -184,7 +184,8 @@ export function runInline(wasm: WasmModule, bodies: GrowableArray<IrBody>,
   for (let body in bodies) {
     let n = body.instCount();
     for (var inst = 0; inst < n; inst += 1) {
-      if (body.op(inst) == IrOp.call) {
+      let op = body.op(inst);
+      if (op == IrOp.call || op == IrOp.ret_call) {
         let idx = calleeBodyFor(body, inst, bodyIndex);
         if (idx >= 0) {
           siteCounts[idx] += 1;
@@ -474,6 +475,9 @@ function inlineIntoBody(caller: IrBody, bodyIndex: HashMap<WasmFunction, i32>,
   // the continuation after a split.
   for (var b = 0; b < caller.blocks.length; b += 1) {
     let blk = caller.blocks[b];
+    if (endsInThrow(caller, blk.insts)) {
+      continue;
+    }
     var j = 0;
     while (j < blk.insts.length) {
       let inst = blk.insts[j];
@@ -568,6 +572,7 @@ function inlineIntoBody(caller: IrBody, bodyIndex: HashMap<WasmFunction, i32>,
         scratch.enter();
         mapResults(spliceStraight(caller, callee, b, j, inst, args, scratch));
         scratch.exit();
+        countCopiedCalls(callee, calleeIdx, bodyIndex, siteCounts);
         count += 1;
         // The copies were inserted before the call; skip past them
         // and the nop-ed call.
@@ -589,6 +594,7 @@ function inlineIntoBody(caller: IrBody, bodyIndex: HashMap<WasmFunction, i32>,
       scratch.enter();
       mapResults(spliceGeneral(caller, callee, b, j, inst, args, sig, scratch));
       scratch.exit();
+      countCopiedCalls(callee, calleeIdx, bodyIndex, siteCounts);
       count += 1;
       generalSplices += 1;
       // The rest of this block moved to the continuation, which the
@@ -838,6 +844,49 @@ function spliceGeneral(caller: IrBody, callee: IrBody, b: i32, j: i32,
  * The body index of a call's target when it is a known local function;
  * -1 otherwise (imports, wrappers this module never lowered).
  */
+/**
+ * A block whose terminator throws or traps runs only on the way out of
+ * the function by an exception, so a copy of a callee there buys
+ * nothing and costs its size at every such site: every `new Error(...)`
+ * in a `throw` would take a copy of the error's constructor and of
+ * `captureStackTrace`.
+ */
+function endsInThrow(body: IrBody, insts: GrowableArray<i32>): boolean {
+  if (insts.length == 0) {
+    return false;
+  }
+  let op = body.op(insts[insts.length - 1]);
+  return op == IrOp.throw || op == IrOp.unreachable;
+}
+
+/**
+ * A splice of a callee with several call sites copies its direct calls
+ * into the caller, so each function they name has one call site more
+ * than the sweep counted. Without the update, a function whose only
+ * call was in `callee` would still count one site, and the one-site
+ * rule, which inlines a body because it moves rather than copies,
+ * would inline it into every copy. A callee with one site moves
+ * instead, and its calls move with it: the counts stay, so a chain of
+ * one-site functions still collapses into its caller in one sweep. A
+ * tail call counts too: the splice makes it an ordinary call.
+ */
+function countCopiedCalls(callee: IrBody, calleeIdx: i32,
+    bodyIndex: HashMap<WasmFunction, i32>, siteCounts: GrowableArray<i32>): void {
+  if (siteCounts[calleeIdx] <= 1) {
+    return;
+  }
+  let n = callee.instCount();
+  for (var inst = 0; inst < n; inst += 1) {
+    let op = callee.op(inst);
+    if (op == IrOp.call || op == IrOp.ret_call) {
+      let idx = calleeBodyFor(callee, inst, bodyIndex);
+      if (idx >= 0) {
+        siteCounts[idx] += 1;
+      }
+    }
+  }
+}
+
 function calleeBodyFor(caller: IrBody, inst: i32,
     bodyIndex: HashMap<WasmFunction, i32>): i32 {
   let r = caller.refTable[caller.b[inst]];

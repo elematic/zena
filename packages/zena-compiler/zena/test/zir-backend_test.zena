@@ -1598,6 +1598,45 @@ export let tests = suite('zir backend', () => {
         'the inlined call folded');
   });
 
+  test('-O2 does not copy a single-site callee into every copy of its caller', (ctx) => {
+    // `pick` has control flow and one call site, in `relay`, so the
+    // inliner may move its body there. `relay` is small enough to
+    // inline at both of its sites in `f`, and each copy brings a call
+    // to `pick` along; inlining `pick` into those copies would put its
+    // body in the module twice.
+    let result = compileWithZirAt(dedentRaw`
+        export let f = (a: i32, b: i32): i32 => relay(a) * relay(b);
+        let relay = (x: i32): i32 => pick(x);
+        let pick = (x: i32): i32 => {
+          if (x > 100) { return x * 3 + 7; }
+          if (x < 0) { return 0 - x; }
+          return x + 1;
+        };
+        export let main = (): i32 => f(5, 200);
+        `, 2);
+    assertFunctionUsesTimes(result, '$f', 'call $pick', 2,
+        'once relay is copied into f twice, pick has two call sites and stays a function');
+  });
+
+  test('-O2 does not inline into a block that ends in a throw', (ctx) => {
+    // The block that builds the error runs only on the way to an
+    // exception, so a copy of `twice` there is code nothing gains
+    // from. The return path inlines it as usual.
+    let result = compileWithZirStdlibAt(dedentRaw`
+        import { i32ToString } from 'zena:core';
+        let twice = (x: i32): i32 => x * 2 + 1;
+        export let check = (x: i32): i32 => {
+          if (x < 0) {
+            throw new Error('negative: ' + i32ToString(twice(x)));
+          }
+          return twice(x);
+        };
+        export let run = (): i32 => check(3);
+        `, 2);
+    assertFunctionUsesTimes(result, '$check', 'call $twice', 1,
+        'the throwing block keeps its call and the return path inlines it');
+  });
+
   test('-O1 keeps a function that is still called', (ctx) => {
     let result = compileWithZir(dedentRaw`
         let inc = (x: i32): i32 => x + 1;
