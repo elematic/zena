@@ -121,8 +121,32 @@ operand to its unboxed form (`inlineFormOf`): a tuple becomes an
 converts its target. So `inline Pair` works when `Pair` names a boxed
 tuple, and `inline (true, T, _) | (false, _, E)` needs one modifier.
 
+`inline` on a type parameter is an error. `inline` means the unboxed
+form is required, and the argument may not have one. Once records and
+classes can be inline, `inline T` can become a constraint on the
+argument, checked at instantiation. The permissive form is spelled
+`inline? T`, and it applies only to a type parameter. It resolves to
+`InlineParamType`, which stands for the parameter until a substitution
+replaces it (`inlineOf` in `types.zena`):
+
+- a tuple argument, or an alias for one, becomes an `InlineTupleType`;
+- another type parameter keeps the modifier;
+- anything else is itself.
+
+"If possible" means a tuple today. It is deliberately not widened to
+inline classes when they arrive: that would change the layout of every
+`Step` over such a class, which should be its own decision.
+
+Each of the substitution walkers (the checker's, codegen's, erasure)
+goes through `inlineOf`. Unsubstituted, it is assignable both ways with
+its parameter, and its boxed form is the parameter. It may not be a
+member of an inline union, and a union argument is left boxed because a
+nested inline union is not supported. `Step<(A, B)>` written as
+`inline (0, _, _) | (1, inline? T, _)` therefore returns `[i32, A, B,
+nullref]`, and `Step<i32>` keeps its three slots.
+
 Any other operand is an error rather than a no-op: a primitive, a class,
-a type parameter, `null`, an existential record, and, until inline
+`null`, an existential record, and, until inline
 records are implemented (#371), a closed record. If one member of a union fails, the whole type becomes an
 error type, because half an inline union would only produce follow-on
 errors.

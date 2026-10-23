@@ -440,8 +440,10 @@ let pair = (): inline Pair => (1, 2);
 let find = (): inline (true, i32) | (false, _) => (false, _);
 ```
 
-It is an error on anything that cannot be unboxed: a primitive, a class, a type
-parameter, `null`, or a record (inline records are planned). `inline` is
+It is an error on anything that cannot be unboxed: a primitive, a class,
+`null`, a record (inline records are planned), or a type parameter. `inline?
+T` is the type parameter form: unboxed when `T` is a tuple, and `T` otherwise.
+`inline` is
 shallow: in `inline (i32, (i32, i32))` the inner tuple is still boxed, and
 `inline (i32, inline (i32, i32))` unboxes both, so
 `let (a, (b, c)) = f()` allocates nothing.

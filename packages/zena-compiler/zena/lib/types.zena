@@ -308,6 +308,10 @@ export sealed class Type implements Hashable {
   // type codegen sees.
   case TupleType(elementTypes: Array<Type>, row: TypeParameterType | null, rowIndex: i32)
   case InlineTupleType(elementTypes: Array<Type>)
+  // `inline? T`: unboxed when the argument for `T` is a tuple and the
+  // argument as it is otherwise, decided per substitution (`inlineOf`).
+  // Until then it stands for `T`.
+  case InlineParamType(param: TypeParameterType)
   case UnionType(types: Array<Type>)
   case RecordType, FunctionType, ClassType, InterfaceType
   case MixinType, TypeParameterType, TypeAliasType, EnumType
@@ -1907,6 +1911,29 @@ export function mergeTupleRow(
   }
 }
 
+/**
+ * `inline` applied to what a type parameter stands for: a tuple that
+ * lists its elements is unboxed, another type parameter keeps the
+ * modifier for a later substitution, and anything else is itself.
+ */
+export function inlineOf(t: Type): Type {
+  return match (t) {
+    case TypeParameterType as tp: new InlineParamType(tp) as Type
+    case TupleType {elementTypes, row}:
+      if (row == null) new InlineTupleType(elementTypes) as Type else t
+    case TypeAliasType as alias: {
+      // Through aliases that are only names (`type Pair = (A, B)`).
+      if (alias.isDistinct || alias.intrinsicName != null || alias.resolving) {
+        t
+      } else {
+        let target = inlineOf(alias.target);
+        if (target is InlineTupleType) target else t
+      }
+    }
+    case _: t
+  };
+}
+
 function substituteInType(
   t: Type | null,
   typeParameters: Array<TypeParameterType> | null,
@@ -1959,6 +1986,8 @@ function substituteInType(
       }
       new InlineTupleType(newElems)
     }
+    case InlineParamType {param}:
+      inlineOf(substituteInType(param, typeParameters, typeArguments) ?? param)
     case UnionType {types}: {
       let newTypes = new Array<Type>();
       for (let ut in types) {
@@ -2405,6 +2434,7 @@ function nominalIdentity(name: String, symbolId: SymbolId, typeId: TypeId) {
 function instantiationKeyOf(t: Type): String {
   return match (t) {
   case TypeParameterType as tp: `${tp.name}#${i32ToString(tp.uid)}`
+  case InlineParamType {param}: `inline ${instantiationKeyOf(param)}`
   case ArrayType {elementType, elementsMutable}:
     `${if (elementsMutable) "Array<" else "Array<imm "}${instantiationKeyOf(elementType)}>`
   case TupleType {elementTypes, row, rowIndex}: {
@@ -3163,6 +3193,7 @@ export function typeContainsTypeParameter(t: Type): boolean {
       }
       false
     }
+    case InlineParamType: true
     case RecordType as rec: {
       if (rec.row != null) { return true; }
       for (let pair in rec.properties) {
@@ -4032,6 +4063,7 @@ export function typeToString(t: Type): String {
     }
   }
   case TypeParameterType as tp: tp.name
+  case InlineParamType {param}: `inline? ${param.name}`
   case EnumType as et: et.name
   case TypeAliasType as ta: {
     let {typeArguments} = ta;
