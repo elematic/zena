@@ -95,16 +95,21 @@ export final class GrpcTransport implements ProtoTransport {
   }
 
   async unary(method: RpcMethod, request: ProtoView, metadata: RpcMetadata): Future<ProtoView> {
-    return await singleMessage(method, new GrpcResponseReader(this.#post(method, request, metadata)));
+    return await singleMessage(method, new GrpcResponseReader(this.#post(method, frame(request), metadata)));
   }
 
   serverStream(method: RpcMethod, request: ProtoView, metadata: RpcMetadata): AsyncIterator<ProtoView> {
-    return new GrpcResponseReader(this.#post(method, request, metadata));
+    return new GrpcResponseReader(this.#post(method, frame(request), metadata));
   }
 
-  async #post(method: RpcMethod, request: ProtoView, metadata: RpcMetadata): Future<Exchange> {
+  /** Sends `requests` as one body of consecutive frames. */
+  async clientStream(method: RpcMethod, requests: Array<ProtoView>, metadata: RpcMetadata): Future<ProtoView> {
+    return await singleMessage(method, new GrpcResponseReader(this.#post(method, frames(requests), metadata)));
+  }
+
+  async #post(method: RpcMethod, body: ByteArray, metadata: RpcMetadata): Future<Exchange> {
     let headers = await callHeaders('application/grpc', this.#headers, metadata, this.#credentials);
-    return await post(this.#origin, `/${method.service}/${method.name}`, headers, frame(request), method, this.#timeout);
+    return await post(this.#origin, `/${method.service}/${method.name}`, headers, body, method, this.#timeout);
   }
 }
 
@@ -135,6 +140,24 @@ export function frame(message: ProtoView): ByteArray {
   out[3] = ((n >>> 8) & 0xFF) as u8;
   out[4] = (n & 0xFF) as u8;
   copyBytes(out, FRAME_HEADER, bytes, 0, n);
+  return out;
+}
+
+/** `messages` framed one after another, for a client-streaming call's body. */
+export function frames(messages: Array<ProtoView>): ByteArray {
+  let parts = new GrowableArray<ByteArray>();
+  var total = 0;
+  for (let message in messages) {
+    let part = frame(message);
+    parts.push(part);
+    total += part.length;
+  }
+  let out = newByteArray(total);
+  var at = 0;
+  for (let part in parts) {
+    copyBytes(out, at, part, 0, part.length);
+    at += part.length;
+  }
   return out;
 }
 

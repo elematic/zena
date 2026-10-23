@@ -156,18 +156,17 @@ and tenants are therefore designed here. Open questions:
 The standard library and `packages/atproto` have what the first endpoints
 need: an HTTP server with streaming bodies, async functions and streams,
 JSON, SHA-256, HMAC and HKDF, ECDSA on both curves, base encodings, random
-bytes, a Firestore client (`google-cloud:firestore`) and the atproto
-libraries listed in [Status](#status). What is left:
+bytes, Firestore and Cloud Storage clients (`google-cloud:firestore`,
+`google-cloud:storage`) and the atproto libraries listed in
+[Status](#status). What is left:
 
-| Need                                                                       | Status in Zena                                                                     | Plan                                                                                      |
-| -------------------------------------------------------------------------- | ---------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------- |
-| Signing PLC operations and deriving a `did:plc` from the genesis operation | None                                                                               | Add to `packages/atproto`, for the host's `createPackage`                                 |
-| PBKDF2 for passwords                                                       | None                                                                               | Over HMAC-SHA256, in `zena:crypto`                                                        |
-| BLAKE3                                                                     | None                                                                               | Port pds.js `packages/spaces/src/blake3.js`, for spaces                                   |
-| WebSocket server, for `com.atproto.sync.subscribeRepos`                    | None. The `zena-cli` host serves HTTP/1.1 and HTTP/2 through hyper with no upgrade | Add an upgrade API to the host                                                            |
-| A DNS server, for a package host's scope handles                           | None                                                                               | Answer `_atproto` TXT queries for the host's zone (package-manager.md, "Serving handles") |
-| Blob storage                                                               | No GCS client                                                                      | A GCS JSON API client over `google-cloud:auth`                                            |
-| Wall-clock dates                                                           | `wasi:clocks/system-clock` directly, and no ISO-8601 formatting                    | Add both to `zena:time`                                                                   |
+| Need                                                    | Status in Zena                                                                     | Plan                                                                                      |
+| ------------------------------------------------------- | ---------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------- |
+| PBKDF2 for passwords                                    | None                                                                               | Over HMAC-SHA256, in `zena:crypto`                                                        |
+| BLAKE3                                                  | None                                                                               | Port pds.js `packages/spaces/src/blake3.js`, for spaces                                   |
+| WebSocket server, for `com.atproto.sync.subscribeRepos` | None. The `zena-cli` host serves HTTP/1.1 and HTTP/2 through hyper with no upgrade | Add an upgrade API to the host                                                            |
+| A DNS server, for a package host's scope handles        | None                                                                               | Answer `_atproto` TXT queries for the host's zone (package-manager.md, "Serving handles") |
+| Wall-clock dates                                        | `wasi:clocks/system-clock` directly, and no ISO-8601 formatting                    | Add both to `zena:time`                                                                   |
 
 ## Milestones
 

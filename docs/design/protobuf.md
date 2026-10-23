@@ -412,8 +412,9 @@ between these and Zena's own types are not written yet.
 - An `Any` type registry, for the same reason.
 - The proto3 JSON codec. It is needed only for the REST transport (see
   [REST with JSON](#rest-with-json)).
-- Client methods for RPCs that stream requests (`Write` and `Listen` in
-  Firestore). The class comment lists them.
+- Client methods for RPCs that stream both ways (`Write` and `Listen` in
+  Firestore, `BidiReadObject` and `BidiWriteObject` in Cloud Storage).
+  The class comment lists them.
 
 Each of these can be added as an opt-in output later without changing
 the views or records.
@@ -430,6 +431,7 @@ The transport knows nothing of messages:
 export interface ProtoTransport {
   unary(method: RpcMethod, request: ProtoView, metadata: RpcMetadata): Future<ProtoView>;
   serverStream(method: RpcMethod, request: ProtoView, metadata: RpcMetadata): AsyncIterator<ProtoView>;
+  clientStream(method: RpcMethod, requests: Array<ProtoView>, metadata: RpcMetadata): Future<ProtoView>;
 }
 ```
 
@@ -440,6 +442,14 @@ a `ProtoStream<Response>`, which a `for await` consumes:
 ```zena
 for await (let response in client.runQuery({parent, structuredQuery})) { ... }
 ```
+
+A client-streaming method takes every request at once, and an optional
+`RpcMetadata`, and returns `Future<Response>`. Cloud Storage's
+`WriteObject` uploads an object this way, as a series of chunks of at
+most 2 MiB. Its requests are all known before the call starts, so gRPC
+sends them as consecutive frames in one request body, and the transport
+needs no streamed request bodies. The fallback protocol has no streamed
+requests, so `FallbackTransport` fails these calls with UNIMPLEMENTED.
 
 `RpcMetadata` holds headers for one call. A generated client puts the
 call's routing header there (see [Routing headers](#routing-headers)).
@@ -935,6 +945,8 @@ Done:
   `http://` gRPC requests. The Firestore client runs against the
   emulator over it (`npm run test:emulator -w @zena-lang/google-cloud`,
   which depends on the root `emulators:start` wireit service).
+- Client-streaming methods, and the generated Cloud Storage module
+  (`google-cloud:storage-v2`).
 
 Remaining:
 

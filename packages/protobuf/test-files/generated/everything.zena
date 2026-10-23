@@ -668,7 +668,7 @@ export final class Timestamp {
 /**
  * A service with one of each kind of method.
  *
- * A client for `zena.test.v1.Things`. Not generated, because they stream requests: `Upload`.
+ * A client for `zena.test.v1.Things`. Not generated, because they stream both ways: `Exchange`.
  */
 export final class ThingsClient {
   #transport: ProtoTransport;
@@ -713,6 +713,23 @@ export final class ThingsClient {
     }
     routing.addTo(metadata);
     let response = await this.#transport.unary(new RpcMethod('zena.test.v1.Things', 'RouteNode'), Node.of(request).protoView, metadata);
+    return new Node(response);
+  }
+
+  /** Streams requests, routed by the first. */
+  async upload(requests: Array<NodeInit>, metadata: RpcMetadata = new RpcMetadata()): Future<Node> {
+    if (requests.length > 0) {
+      let request = requests[0];
+      let routing = new RoutingHeader();
+      let r0 = request.name;
+      routing.match('node', '{node=nodes/*}', r0);
+      routing.addTo(metadata);
+    }
+    let views = new GrowableArray<ProtoView>();
+    for (let request in requests) {
+      views.push(Node.of(request).protoView);
+    }
+    let response = await this.#transport.clientStream(new RpcMethod('zena.test.v1.Things', 'Upload'), views, metadata);
     return new Node(response);
   }
 }

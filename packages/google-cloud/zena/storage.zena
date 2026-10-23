@@ -1,0 +1,172 @@
+/**
+ * A Cloud Storage client, over gRPC.
+ *
+ *     let storage = Storage.connect();
+ *     let bucket = storage.bucket('my-bucket');
+ *     await bucket.write('notes/hello.txt', bytes, 'text/plain');
+ *     let read = await bucket.read('notes/hello.txt');  // null when absent
+ *     await bucket.delete('notes/hello.txt');
+ *
+ * Requests go through the generated `StorageClient` (`./storage-v2.zena`)
+ * over a `ProtoTransport`. `Storage.connect()` uses `GrpcTransport`, which
+ * needs a host whose outgoing HTTP speaks HTTP/2, such as `zena-cli`.
+ * Google's gRPC fallback protocol cannot carry uploads, which stream
+ * requests.
+ *
+ * Writes send no CRC32C checksums, which Cloud Storage takes as optional,
+ * and reads do not check the ones it sends.
+ */
+
+import { ByteBuffer } from 'zena:core';
+import { Duration } from 'zena:time';
+import { GrpcTransport } from 'protobuf:grpc';
+import { ProtoBytes, ProtoTransport, RpcError, RpcMetadata, RoutingHeader } from 'protobuf:runtime';
+import { defaultCredentials } from './auth.zena';
+import {
+  ChecksummedData,
+  Object,
+  StorageClient,
+  WriteObjectRequestInit,
+  WriteObjectResponseResource,
+  WriteObjectSpec
+} from './storage-v2.zena';
+
+export { Object } from './storage-v2.zena';
+export { RpcError } from 'protobuf:runtime';
+
+/** The origin of the Cloud Storage API. */
+export let STORAGE_ORIGIN = 'https://storage.googleapis.com';
+
+/** The most data one request of an upload carries: 2 MiB. */
+export let MAX_WRITE_CHUNK = 2097152;
+
+let CODE_NOT_FOUND = 5;
+
+/** Options for `Storage.connect`. */
+export type ConnectOptions = {
+  /** Each call's deadline after it starts (`GrpcTransport.setTimeout`); none when absent. */
+  timeout?: Duration,
+};
+
+/** Cloud Storage. */
+export final class Storage {
+  /** The generated client every call goes through. */
+  client: StorageClient;
+
+  /**
+   * Storage over `transport`: a `GrpcTransport` to `STORAGE_ORIGIN` with
+   * credentials, or a test's own.
+   */
+  new(transport: ProtoTransport) : client = new StorageClient(transport);
+
+  /**
+   * Cloud Storage over gRPC, with the default credentials (see
+   * `defaultCredentials`).
+   */
+  static connect(options: ConnectOptions = {}): Storage {
+    let transport = new GrpcTransport(STORAGE_ORIGIN, defaultCredentials());
+    if (let {timeout} = options) {
+      transport.setTimeout(timeout);
+    }
+    return new Storage(transport);
+  }
+
+  /** The bucket named `name`. */
+  bucket(name: String): Bucket {
+    return new Bucket(this, name);
+  }
+}
+
+/** One bucket, whose objects are named by strings such as `notes/hello.txt`. */
+export final class Bucket {
+  #storage: Storage;
+  name: String;
+
+  new(storage: Storage, name: String) : #storage = storage, name = name;
+
+  /** The bucket's resource name, as the API takes it: `projects/_/buckets/<name>`. */
+  resource: String {
+    get { return `projects/_/buckets/${this.name}`; }
+  }
+
+  /**
+   * Writes `data` as object `name`, replacing any object of that name, and
+   * returns the object written. The data goes in requests of at most
+   * `MAX_WRITE_CHUNK` bytes, all sent in one call.
+   */
+  async write(name: String, data: ByteArray, contentType: String = 'application/octet-stream'): Future<Object> {
+    let spec = WriteObjectSpec.of({
+      resource: Object.of({bucket: this.resource, name, contentType}),
+      objectSize: data.length as i64,
+    });
+    let requests = new GrowableArray<WriteObjectRequestInit>();
+    var offset = 0;
+    while (offset < data.length || requests.length == 0) {
+      let end = if (data.length - offset > MAX_WRITE_CHUNK) offset + MAX_WRITE_CHUNK else data.length;
+      let chunk = ChecksummedData.of({content: new ProtoBytes(data, offset, end)});
+      let last = end == data.length;
+      if (requests.length == 0) {
+        requests.push({writeObjectSpec: spec, writeOffset: offset as i64, checksummedData: chunk, finishWrite: last});
+      } else {
+        requests.push({writeOffset: offset as i64, checksummedData: chunk, finishWrite: last});
+      }
+      offset = end;
+    }
+    // WriteObject declares no routing, so the bucket is named here, as
+    // Google's own clients do.
+    let metadata = new RpcMetadata();
+    let routing = new RoutingHeader();
+    routing.add('bucket', this.resource);
+    routing.addTo(metadata);
+    let response = await this.#storage.client.writeObject(requests, metadata);
+    let status = response.writeStatus;
+    if (status is WriteObjectResponseResource) {
+      return status.value;
+    }
+    throw new RpcError(13, `WriteObject ${name}: the response has no object`, response.protoView);
+  }
+
+  /** The contents of object `name`, or null when there is none. */
+  async read(name: String): Future<ByteArray | null> {
+    let data = new ByteBuffer();
+    try {
+      for await (let response in this.#storage.client.readObject({bucket: this.resource, object: name})) {
+        let chunk = response.checksummedData;
+        if (chunk != null) {
+          chunk.content.writeTo(data);
+        }
+      }
+    } catch (e) {
+      if (e is RpcError && e.code == CODE_NOT_FOUND) {
+        return null;
+      }
+      throw e;
+    }
+    return data.toByteArray();
+  }
+
+  /** The metadata of object `name`, or null when there is none. */
+  async stat(name: String): Future<Object | null> {
+    try {
+      return await this.#storage.client.getObject({bucket: this.resource, object: name});
+    } catch (e) {
+      if (e is RpcError && e.code == CODE_NOT_FOUND) {
+        return null;
+      }
+      throw e;
+    }
+  }
+
+  /** Deletes object `name`. Returns whether there was one to delete. */
+  async delete(name: String): Future<boolean> {
+    try {
+      await this.#storage.client.deleteObject({bucket: this.resource, object: name});
+      return true;
+    } catch (e) {
+      if (e is RpcError && e.code == CODE_NOT_FOUND) {
+        return false;
+      }
+      throw e;
+    }
+  }
+}
