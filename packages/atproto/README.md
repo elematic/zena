@@ -27,8 +27,10 @@ file outside a package can; a package lists
   CID.
 - `atproto:mst`: the Merkle search tree: key heights, nodes, building a
   tree, and looking a key up through the nodes of a proof.
-- `atproto:repo`: commits, and verifying `com.atproto.sync.getRecord`
-  proofs.
+- `atproto:repo`: commits, signing them, and verifying
+  `com.atproto.sync.getRecord` proofs.
+- `atproto:tid`: timestamp identifiers, and a clock that hands out
+  increasing ones.
 - `atproto:didkey`: public keys as multikeys, `did:key`s and DID document
   verification methods, and checking atproto signatures with them.
 - `atproto:did`: what atproto reads from a DID document: the signing key,

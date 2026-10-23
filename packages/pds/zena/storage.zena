@@ -1,0 +1,253 @@
+/**
+ * Where the PDS keeps its data, behind interfaces, so that storage can be
+ * memory in tests and a database in a deployment. The split follows
+ * pds.js's ports (`packages/core/src/ports.js`): what belongs to one
+ * account (`AccountStore`: its repository's blocks, the index of its
+ * records, its current commit and its blobs) and what the server shares
+ * (`Storage`: the accounts, by DID and by handle). Unlike pds.js's, every
+ * store is one account's from the start, since this server holds many.
+ *
+ * Every method is asynchronous, as a database's are. `MemoryStorage` keeps
+ * everything in memory.
+ */
+
+import {Future} from 'zena:async';
+import {HashMap} from 'zena:collections';
+import {BlockMap} from 'atproto:car';
+import {Cid} from 'atproto:cid';
+import {KeyType, PublicKey, curveOf, publicKeyFor} from 'atproto:didkey';
+import {compareKeys} from 'atproto:mst';
+
+/** A repository's current commit. */
+export final class Head {
+  cid: Cid;
+  /** The commit's revision, a TID. */
+  rev: String;
+
+  new(cid: Cid, rev: String) : cid = cid, rev = rev;
+}
+
+/** An account's repository signing key. */
+export final class SigningKey {
+  type: KeyType;
+  #privateKey: FixedArray<u8>;
+
+  new(type: KeyType, privateKey: FixedArray<u8>) : type = type, #privateKey = privateKey;
+
+  publicKey(): PublicKey {
+    return publicKeyFor(this.type, this.#privateKey);
+  }
+
+  /** The low-S signature of `bytes`, as commits carry it. */
+  sign(bytes: FixedArray<u8>): FixedArray<u8> {
+    return curveOf(this.type).sign(this.#privateKey, bytes);
+  }
+}
+
+/** An account the server holds. */
+export final class Account {
+  did: String;
+  var handle: String | null;
+  key: SigningKey;
+
+  new(did: String, handle: String | null, key: SigningKey) : did = did, handle = handle, key = key;
+}
+
+/** A record in a repository's index: where it is, and its CID. */
+export final class RecordEntry {
+  collection: String;
+  rkey: String;
+  cid: Cid;
+
+  new(collection: String, rkey: String, cid: Cid) : collection = collection, rkey = rkey, cid = cid;
+
+  /** Its key in the record tree, `<collection>/<rkey>`. */
+  key(): String {
+    return `${this.collection}/${this.rkey}`;
+  }
+}
+
+/** A blob and the MIME type it was uploaded with. */
+export final class StoredBlob {
+  mimeType: String;
+  bytes: FixedArray<u8>;
+
+  new(mimeType: String, bytes: FixedArray<u8>) : mimeType = mimeType, bytes = bytes;
+}
+
+/** One account's repository and blobs. */
+export interface AccountStore {
+  /** The block `cid` names, or null. */
+  getBlock(cid: Cid): Future<FixedArray<u8> | null>;
+  /** Stores every block in `blocks`. */
+  putBlocks(blocks: BlockMap): Future<void>;
+
+  /** The CID of the record at `collection/rkey`, or null. */
+  getRecord(collection: String, rkey: String): Future<Cid | null>;
+  putRecord(collection: String, rkey: String, cid: Cid): Future<void>;
+  deleteRecord(collection: String, rkey: String): Future<void>;
+  /**
+   * Up to `limit` records of `collection`, in record-key order, or the
+   * reverse with `descending`, starting after the record key `after`.
+   */
+  listRecords(collection: String, after: String | null, limit: i32, descending: boolean)
+      : Future<Array<RecordEntry>>;
+  /** Every record, in tree-key order. */
+  allRecords(): Future<Array<RecordEntry>>;
+
+  /** The current commit, or null before the first. */
+  getHead(): Future<Head | null>;
+  setHead(head: Head): Future<void>;
+
+  getBlob(cid: Cid): Future<StoredBlob | null>;
+  putBlob(cid: Cid, blob: StoredBlob): Future<void>;
+}
+
+/** The accounts a server holds, and each one's store. */
+export interface Storage {
+  getAccount(did: String): Future<Account | null>;
+  /** The account whose handle is `handle`, or null. */
+  accountByHandle(handle: String): Future<Account | null>;
+  putAccount(account: Account): Future<void>;
+  /** The store of the account `did`. */
+  store(did: String): AccountStore;
+}
+
+/** An account's store in memory. */
+export final class MemoryAccountStore implements AccountStore {
+  #blocks = new HashMap<String, FixedArray<u8>>();
+  /** Record CIDs by tree key, `<collection>/<rkey>`. */
+  #records = new HashMap<String, RecordEntry>();
+  var #head: Head | null = null;
+  #blobs = new HashMap<String, StoredBlob>();
+
+  async getBlock(cid: Cid): Future<FixedArray<u8> | null> {
+    if (let (true, bytes) = this.#blocks.get(cid.toString())) {
+      return bytes;
+    }
+    return null;
+  }
+
+  async putBlocks(blocks: BlockMap): Future<void> {
+    blocks.forEach((cid, bytes) => {
+      this.#blocks[cid.toString()] = bytes;
+    });
+  }
+
+  async getRecord(collection: String, rkey: String): Future<Cid | null> {
+    if (let (true, entry) = this.#records.get(`${collection}/${rkey}`)) {
+      return entry.cid;
+    }
+    return null;
+  }
+
+  async putRecord(collection: String, rkey: String, cid: Cid): Future<void> {
+    this.#records[`${collection}/${rkey}`] = new RecordEntry(collection, rkey, cid);
+  }
+
+  async deleteRecord(collection: String, rkey: String): Future<void> {
+    this.#records.delete(`${collection}/${rkey}`);
+  }
+
+  async listRecords(collection: String, after: String | null, limit: i32, descending: boolean)
+      : Future<Array<RecordEntry>> {
+    let matching = new GrowableArray<RecordEntry>();
+    this.#records.forEach((key, entry) => {
+      if (entry.collection != collection) {
+        return;
+      }
+      if (after != null) {
+        let order = compareKeys(entry.rkey, after as String);
+        if ((descending && order >= 0) || (!descending && order <= 0)) {
+          return;
+        }
+      }
+      matching.push(entry);
+    });
+    let sorted = sortEntries(matching, (a, b) => compareKeys(a.rkey, b.rkey) * (if (descending) -1 else 1));
+    let page = new GrowableArray<RecordEntry>();
+    for (var i = 0; i < sorted.length && i < limit; i += 1) {
+      page.push(sorted[i]);
+    }
+    return page;
+  }
+
+  async allRecords(): Future<Array<RecordEntry>> {
+    let all = new GrowableArray<RecordEntry>();
+    this.#records.forEach((key, entry) => {
+      all.push(entry);
+    });
+    return sortEntries(all, (a, b) => compareKeys(a.key(), b.key()));
+  }
+
+  async getHead(): Future<Head | null> {
+    return this.#head;
+  }
+
+  async setHead(head: Head): Future<void> {
+    this.#head = head;
+  }
+
+  async getBlob(cid: Cid): Future<StoredBlob | null> {
+    if (let (true, blob) = this.#blobs.get(cid.toString())) {
+      return blob;
+    }
+    return null;
+  }
+
+  async putBlob(cid: Cid, blob: StoredBlob): Future<void> {
+    this.#blobs[cid.toString()] = blob;
+  }
+}
+
+/** Every account's data in memory. */
+export final class MemoryStorage implements Storage {
+  #accounts = new HashMap<String, Account>();
+  #stores = new HashMap<String, MemoryAccountStore>();
+
+  async getAccount(did: String): Future<Account | null> {
+    if (let (true, account) = this.#accounts.get(did)) {
+      return account;
+    }
+    return null;
+  }
+
+  async accountByHandle(handle: String): Future<Account | null> {
+    var found: Account | null = null;
+    this.#accounts.forEach((did, account) => {
+      if (account.handle != null && account.handle as String == handle) {
+        found = account;
+      }
+    });
+    return found;
+  }
+
+  async putAccount(account: Account): Future<void> {
+    this.#accounts[account.did] = account;
+  }
+
+  store(did: String): AccountStore {
+    if (let (true, store) = this.#stores.get(did)) {
+      return store;
+    }
+    let store = new MemoryAccountStore();
+    this.#stores[did] = store;
+    return store;
+  }
+}
+
+// TODO(#450): use the standard library's sort once it has one.
+function sortEntries(entries: GrowableArray<RecordEntry>, compare: (a: RecordEntry, b: RecordEntry) => i32)
+    : GrowableArray<RecordEntry> {
+  let sorted = new GrowableArray<RecordEntry>();
+  for (let entry in entries) {
+    var i = sorted.length;
+    sorted.push(entry);
+    while (i > 0 && compare(sorted[i - 1], entry) > 0) {
+      sorted[i] = sorted[i - 1];
+      i -= 1;
+    }
+    sorted[i] = entry;
+  }
+  return sorted;
+}

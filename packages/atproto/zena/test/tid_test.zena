@@ -1,0 +1,38 @@
+import {suite, test} from 'zena:test';
+import {equal, isTrue} from 'zena:assert';
+import {isValidTid} from 'atproto:syntax';
+import {TidClock, formatTid, tidMicros} from 'atproto:tid';
+
+export let tests = suite('atproto:tid', () => {
+  test('writes the time and clock in sortable base32', (ctx) => {
+    equal(formatTid(0 as i64, 0), '2222222222222');
+    // 2026-10-22T00:00:00Z.
+    let micros = 1792627200000000 as i64;
+    let tid = formatTid(micros, 7);
+    isTrue(isValidTid(tid), tid);
+    equal(tidMicros(tid), micros);
+    // Clock identifiers above 1023 wrap into the 10 bits.
+    equal(formatTid(micros, 1024 + 7), tid);
+  });
+
+  test("reads and writes the spec's example", (ctx) => {
+    // https://atproto.com/specs/tid: 2023-06-30T15:03:01.887007Z, clock 6.
+    equal(tidMicros('3jzfcijpj2z2a'), 1688137381887007 as i64);
+    equal(formatTid(1688137381887007 as i64, 6), '3jzfcijpj2z2a');
+  });
+
+  test('sorts as strings in time order', (ctx) => {
+    let earlier = formatTid(1792627200000000 as i64, 1023);
+    let later = formatTid(1792627200000001 as i64, 0);
+    isTrue(earlier.compareTo(later) < 0, `${earlier} < ${later}`);
+  });
+
+  test('a clock always increases, even when its time stands still or steps back', (ctx) => {
+    let clock = new TidClock(3);
+    let a = clock.next(1792627200000000 as i64);
+    let b = clock.next(1792627200000000 as i64);
+    let c = clock.next(1792627100000000 as i64);
+    isTrue(a.compareTo(b) < 0 && b.compareTo(c) < 0, `${a} ${b} ${c}`);
+    equal(tidMicros(c), 1792627200000002 as i64);
+  });
+});

@@ -1,0 +1,60 @@
+/**
+ * Timestamp identifiers (https://atproto.com/specs/tid): the record keys
+ * of most records, and every commit's `rev`.
+ *
+ * A TID is a 64-bit number written as 13 characters of sortable base32
+ * (`234567abcdefghijklmnopqrstuvwxyz`), most significant bits first, so
+ * TIDs sort as strings in the order of their numbers. The top bit is zero,
+ * the next 53 are microseconds since the Unix epoch, and the last 10 are a
+ * clock identifier, which keeps apart TIDs two clocks make in the same
+ * microsecond.
+ *
+ * `TidClock` hands out TIDs that always increase, as a commit's `rev` must,
+ * even when the clock it is given stands still or steps back. This library
+ * reads no clock itself.
+ */
+
+import {StringBuilder} from 'zena:core';
+
+let ALPHABET = '234567abcdefghijklmnopqrstuvwxyz';
+
+/** The TID for `micros` since the Unix epoch and the clock `clockId`, 0 to 1023. */
+export function formatTid(micros: i64, clockId: i32): String {
+  let value = (micros << (10 as i64)) | ((clockId & 1023) as i64);
+  let sb = new StringBuilder(13);
+  for (var i = 0; i < 13; i += 1) {
+    let shift = (60 - 5 * i) as i64;
+    let digit = ((value >> shift) & (31 as i64)) as i32;
+    sb.appendByte(ALPHABET.getByteAt(digit));
+  }
+  return sb.toString();
+}
+
+/** The microseconds since the Unix epoch that `tid` records. */
+export function tidMicros(tid: String): i64 {
+  var value = 0 as i64;
+  for (var i = 0; i < tid.length; i += 1) {
+    let b = tid.getByteAt(i);
+    let digit = if (b >= 97) b - 97 + 6 else b - 50;
+    value = (value << (5 as i64)) | (digit as i64);
+  }
+  return value >> (10 as i64);
+}
+
+/** Hands out increasing TIDs for one clock identifier. */
+export final class TidClock {
+  #clockId: i32;
+  var #last = 0 as i64;
+
+  new(clockId: i32) : #clockId = clockId;
+
+  /**
+   * A TID for `nowMicros`, or for the microsecond after the last one this
+   * clock gave out, whichever is later.
+   */
+  next(nowMicros: i64): String {
+    let micros = if (nowMicros > this.#last) nowMicros else this.#last + 1;
+    this.#last = micros;
+    return formatTid(micros, this.#clockId);
+  }
+}

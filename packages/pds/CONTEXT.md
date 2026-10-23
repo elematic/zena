@@ -21,8 +21,7 @@ lexicons are in `packages/package-manager/lexicons`.
   `zena/test/fixtures/`, with their source and revision recorded beside
   them.
 - When the pinned pds.js revision changes, update docs/design/pds.md.
-- pds.js is MIT licensed. The first module ported from it adds its license
-  notice to this package.
+- pds.js is MIT licensed, and its notice is in `LICENSE-pds-js`.
 
 ## Where code goes
 

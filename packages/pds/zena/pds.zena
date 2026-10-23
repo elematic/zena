@@ -1,0 +1,49 @@
+/**
+ * The PDS: its storage, the accounts in it, and each account's repository.
+ * The HTTP routes (`pds:server`) answer from this, and tests drive it
+ * directly. pds.js builds one `PersonalDataServer` around one account
+ * (`packages/core/src/pds.js`); this finds the account for each request,
+ * since it holds many.
+ */
+
+import {Future} from 'zena:async';
+import {normalizeHandle} from 'atproto:syntax';
+import {TidClock} from 'atproto:tid';
+import {Repository} from './repository.zena';
+import {Account, SigningKey, Storage} from './storage.zena';
+
+export final class Pds {
+  storage: Storage;
+  /** Hands out every commit's `rev`. */
+  #clock: TidClock;
+
+  /**
+   * `clockId`, 0 to 1023, keeps this server's revisions apart from another's
+   * made in the same microsecond.
+   */
+  new(storage: Storage, clockId: i32 = 0) : storage = storage, #clock = new TidClock(clockId);
+
+  /**
+   * Adds an account and writes its repository's first commit. `nowMicros`
+   * is the time, in microseconds since the Unix epoch.
+   */
+  async createAccount(did: String, handle: String | null, key: SigningKey, nowMicros: i64)
+      : Future<Account> {
+    let account = new Account(did, handle, key);
+    await this.storage.putAccount(account);
+    await this.repositoryOf(account).initialize(nowMicros);
+    return account;
+  }
+
+  /** The account a DID or a handle names, or null. */
+  async findAccount(identifier: String): Future<Account | null> {
+    if (identifier.startsWith('did:')) {
+      return await this.storage.getAccount(identifier);
+    }
+    return await this.storage.accountByHandle(normalizeHandle(identifier));
+  }
+
+  repositoryOf(account: Account): Repository {
+    return new Repository(account, this.storage.store(account.did), this.#clock);
+  }
+}

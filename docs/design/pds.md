@@ -39,7 +39,13 @@ The single-account server is built so these do not require a rewrite; see
 
 ## Status
 
-The server answers `/` and `/xrpc/_health`. The atproto libraries it needs
+The server holds many accounts in memory (`MemoryStorage`). An account's
+repository applies writes and signs a commit for each batch, rebuilding the
+record tree from the record index; pds.js updates the tree along the changed
+paths, and porting that is still to do. The server answers `/`,
+`/xrpc/_health`, the `com.atproto.sync` reads `getRecord`, `getRepo`,
+`getLatestCommit` and `getBlob`, and the `com.atproto.repo` reads
+`getRecord`, `listRecords` and `describeRepo`. The atproto libraries it needs
 are in `packages/atproto`, because the package manager needed them first:
 the data model, DAG-CBOR, CIDs, CAR, the MST, commits and their proofs,
 P-256 and secp256k1 signatures and `did:key`, DID and handle resolution, an

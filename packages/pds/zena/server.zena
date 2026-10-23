@@ -1,22 +1,89 @@
 /**
  * The PDS's HTTP application.
  *
- * The routes follow pds.js `packages/core/src/handlers/server-meta.js`, at
- * the revision pinned in docs/porting-plan.md.
+ * The routes follow pds.js, at the revision pinned in docs/design/pds.md:
+ * `/` and `/xrpc/_health` from `packages/core/src/handlers/server-meta.js`,
+ * the `com.atproto.sync` reads from `handlers/xrpc-sync.js` and
+ * `handlers/xrpc-blob.js`, and the `com.atproto.repo` reads from
+ * `handlers/xrpc-repo.js`. pds.js serves one account and answers
+ * `RepoNotFound` for any other; this finds the account each request names.
  */
 
-import { App, Router } from 'zena:http';
-import { JsonBuilder } from 'zena:json';
+import {Future} from 'zena:async';
+import {App, Request, Response, Router} from 'zena:http';
+import {JsonArray, JsonBuilder, JsonObject, stringify} from 'zena:json';
+import {parseI32} from 'zena:core';
+import {decodeCbor} from 'atproto:cbor';
+import {Cid} from 'atproto:cid';
+import {toJson} from 'atproto:data';
+import {Pds} from './pds.zena';
+import {Repository, RepositoryError} from './repository.zena';
+import {Account} from './storage.zena';
 
 /** The version `/xrpc/_health` reports. */
 export let version = '0.0.1';
 
 let banner = 'An AT Protocol PDS written in Zena\n';
 
+/** `com.atproto.repo.listRecords`'s page size, when the request gives none, and its largest. */
+let DEFAULT_LIMIT = 50;
+let MAX_LIMIT = 100;
+
+/** Answers `res` with the XRPC error `error`. */
+function fail(res: Response, status: i32, error: String, message: String): void {
+  res.statusCode = status;
+  res.type = 'application/json';
+  let body = new JsonObject();
+  body['error'] = error;
+  body['message'] = message;
+  res.body = stringify(body);
+}
+
+function json(res: Response, body: JsonObject): void {
+  res.type = 'application/json';
+  res.body = stringify(body);
+}
+
 /**
- * Returns the application that serves every route.
+ * The query parameters `names`, all of them present and not empty; null,
+ * after answering `InvalidRequest`, when one is missing.
  */
-export function createApp(): App {
+function required(req: Request, res: Response, names: Array<String>): GrowableArray<String> | null {
+  let params = req.url.searchParams();
+  let values = new GrowableArray<String>();
+  for (let name in names) {
+    let value = params.get(name);
+    if (value == null || value == '') {
+      fail(res, 400, 'InvalidRequest', `Missing required parameter: ${name}`);
+      return null;
+    }
+    values.push(value as String);
+  }
+  return values;
+}
+
+function parseCid(text: String): Cid | null {
+  try {
+    return Cid.parse(text);
+  } catch (e) {
+    return null;
+  }
+}
+
+/** The account `identifier` names; null, after answering `RepoNotFound`, when there is none. */
+async function accountFor(pds: Pds, identifier: String, res: Response): Future<Account | null> {
+  let account = await pds.findAccount(identifier);
+  if (account == null) {
+    fail(res, 404, 'RepoNotFound', `Could not find repo: ${identifier}`);
+  }
+  return account;
+}
+
+/**
+ * Returns the application that serves every route, for the accounts in
+ * `pds`.
+ */
+export function createApp(pds: Pds): App {
   let app = new App();
   let router = new Router();
 
@@ -32,6 +99,165 @@ export function createApp(): App {
       .key('version').string(version)
       .endObject()
       .toString();
+  });
+
+  router.get('/xrpc/com.atproto.sync.getLatestCommit', async (req, res, next, params) => {
+    let given = required(req, res, ['did']);
+    if (given == null) {
+      return;
+    }
+    let account = await accountFor(pds, given[0], res);
+    if (account == null) {
+      return;
+    }
+    let head = await pds.storage.store(account.did).getHead();
+    if (head == null) {
+      fail(res, 404, 'RepoNotFound', `${account.did} has no commit`);
+      return;
+    }
+    let body = new JsonObject();
+    body['cid'] = head.cid.toString();
+    body['rev'] = head.rev;
+    json(res, body);
+  });
+
+  router.get('/xrpc/com.atproto.sync.getRecord', async (req, res, next, params) => {
+    let given = required(req, res, ['did', 'collection', 'rkey']);
+    if (given == null) {
+      return;
+    }
+    let account = await accountFor(pds, given[0], res);
+    if (account == null) {
+      return;
+    }
+    let car = await pds.repositoryOf(account).recordProof(given[1], given[2]);
+    if (car == null) {
+      fail(res, 404, 'RecordNotFound', 'Record not found');
+      return;
+    }
+    res.type = 'application/vnd.ipld.car';
+    res.body = car as FixedArray<u8>;
+  });
+
+  router.get('/xrpc/com.atproto.sync.getRepo', async (req, res, next, params) => {
+    let given = required(req, res, ['did']);
+    if (given == null) {
+      return;
+    }
+    let account = await accountFor(pds, given[0], res);
+    if (account == null) {
+      return;
+    }
+    res.type = 'application/vnd.ipld.car';
+    res.body = await pds.repositoryOf(account).exportCar();
+  });
+
+  router.get('/xrpc/com.atproto.sync.getBlob', async (req, res, next, params) => {
+    let given = required(req, res, ['did', 'cid']);
+    if (given == null) {
+      return;
+    }
+    let account = await accountFor(pds, given[0], res);
+    if (account == null) {
+      return;
+    }
+    let cid = parseCid(given[1]);
+    if (cid == null) {
+      fail(res, 400, 'InvalidRequest', `'${given[1]}' is not a CID`);
+      return;
+    }
+    let blob = await pds.storage.store(account.did).getBlob(cid as Cid);
+    if (blob == null) {
+      fail(res, 400, 'BlobNotFound', 'Blob not found');
+      return;
+    }
+    res.type = blob.mimeType;
+    res.body = blob.bytes;
+  });
+
+  router.get('/xrpc/com.atproto.repo.describeRepo', async (req, res, next, params) => {
+    let given = required(req, res, ['repo']);
+    if (given == null) {
+      return;
+    }
+    let account = await accountFor(pds, given[0], res);
+    if (account == null) {
+      return;
+    }
+    let collections = new JsonArray();
+    var last = '';
+    for (let entry in await pds.storage.store(account.did).allRecords()) {
+      // Records come in key order, so a collection's records are together.
+      if (entry.collection != last) {
+        collections.push(entry.collection);
+        last = entry.collection;
+      }
+    }
+    let body = new JsonObject();
+    body['handle'] = account.handle ?? account.did;
+    body['did'] = account.did;
+    body['didDoc'] = new JsonObject();
+    body['collections'] = collections;
+    body['handleIsCorrect'] = new Box<boolean>(account.handle != null);
+    json(res, body);
+  });
+
+  router.get('/xrpc/com.atproto.repo.getRecord', async (req, res, next, params) => {
+    let given = required(req, res, ['repo', 'collection', 'rkey']);
+    if (given == null) {
+      return;
+    }
+    let account = await accountFor(pds, given[0], res);
+    if (account == null) {
+      return;
+    }
+    let store = pds.storage.store(account.did);
+    let cid = await store.getRecord(given[1], given[2]);
+    if (cid == null) {
+      fail(res, 404, 'RecordNotFound', 'Record not found');
+      return;
+    }
+    let found = cid as Cid;
+    let bytes = await store.getBlock(found);
+    let body = new JsonObject();
+    body['uri'] = `at://${account.did}/${given[1]}/${given[2]}`;
+    body['cid'] = found.toString();
+    body['value'] = toJson(decodeCbor(bytes as FixedArray<u8>));
+    json(res, body);
+  });
+
+  router.get('/xrpc/com.atproto.repo.listRecords', async (req, res, next, params) => {
+    let given = required(req, res, ['repo', 'collection']);
+    if (given == null) {
+      return;
+    }
+    let account = await accountFor(pds, given[0], res);
+    if (account == null) {
+      return;
+    }
+    let query = req.url.searchParams();
+    var limit = DEFAULT_LIMIT;
+    if (let (true, asked) = parseI32(query.get('limit') ?? '')) {
+      limit = if (asked < 1) 1 else if (asked > MAX_LIMIT) MAX_LIMIT else asked;
+    }
+    // As the reference PDS does, newest record key first, unless `reverse`.
+    let descending = query.get('reverse') != 'true';
+    let store = pds.storage.store(account.did);
+    let page = await store.listRecords(given[1], query.get('cursor'), limit, descending);
+    let records = new JsonArray();
+    for (let entry in page) {
+      let record = new JsonObject();
+      record['uri'] = `at://${account.did}/${entry.collection}/${entry.rkey}`;
+      record['cid'] = entry.cid.toString();
+      record['value'] = toJson(decodeCbor((await store.getBlock(entry.cid)) as FixedArray<u8>));
+      records.push(record);
+    }
+    let body = new JsonObject();
+    body['records'] = records;
+    if (page.length == limit) {
+      body['cursor'] = page[page.length - 1].rkey;
+    }
+    json(res, body);
   });
 
   app.use(router.routes());

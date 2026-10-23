@@ -100,6 +100,32 @@ export function decodeCommit(bytes: FixedArray<u8>): Commit {
   );
 }
 
+/** A commit, signed and encoded, ready to store. */
+export final class SignedCommit {
+  cid: Cid;
+  bytes: FixedArray<u8>;
+
+  new(cid: Cid, bytes: FixedArray<u8>) : cid = cid, bytes = bytes;
+}
+
+/**
+ * A version 3 commit of `did`'s repository, whose record tree's root is
+ * `data`, at revision `rev`, after the commit `prev`, if any. `sign` signs
+ * the commit's encoding without `sig` with the repository's signing key.
+ */
+export function signCommit(did: String, data: Cid, rev: String, prev: Cid | null,
+    sign: (bytes: FixedArray<u8>) => FixedArray<u8>): SignedCommit {
+  let commit = newMap();
+  commit.entries['did'] = new StringValue(did);
+  commit.entries['version'] = new IntValue(3 as i64);
+  commit.entries['data'] = new LinkValue(data);
+  commit.entries['rev'] = new StringValue(rev);
+  commit.entries['prev'] = if (prev == null) new NullValue() else new LinkValue(prev as Cid);
+  commit.entries['sig'] = new BytesValue(sign(encodeCbor(commit)));
+  let bytes = encodeCbor(commit);
+  return new SignedCommit(Cid.forDagCbor(bytes), bytes);
+}
+
 /** A verified answer to `com.atproto.sync.getRecord`. */
 export final class RecordProof {
   commit: Commit;
