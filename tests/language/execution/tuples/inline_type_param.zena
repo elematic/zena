@@ -1,0 +1,126 @@
+// @mode: run
+// @result: 0
+// `inline? T` on a type parameter is unboxed when `T` is a tuple and is `T`
+// as it is otherwise, decided per specialization. As an element of an
+// inline union, a tuple argument's elements become the union's own slots.
+
+type Step<T> = inline (0, _, _) | (1, inline? T, _);
+
+class Cursor<T> {
+  #items: Array<T>;
+  var #index: i32 = 0;
+  new(items: Array<T>) : #items = items;
+
+  next(): Step<T> {
+    if (this.#index >= this.#items.length) {
+      return (0, _, _);
+    }
+    let item = this.#items[this.#index];
+    this.#index += 1;
+    return (1, item, _);
+  }
+}
+
+// A generic function returning `inline? T` directly.
+let first = <T>(items: Array<T>): inline? T => items[0];
+
+// Forwarded through another type parameter.
+class Wrap<U> {
+  #inner: Cursor<U>;
+  new(inner: Cursor<U>) : #inner = inner;
+  next(): Step<U> {
+    return this.#inner.next();
+  }
+}
+
+// Called through an interface.
+interface Source<T> {
+  next(): Step<T>;
+}
+
+class Counted<T> implements Source<T> {
+  #items: Array<T>;
+  var #index: i32 = 0;
+  new(items: Array<T>) : #items = items;
+  next(): Step<T> {
+    if (this.#index >= this.#items.length) {
+      return (0, _, _);
+    }
+    let item = this.#items[this.#index];
+    this.#index += 1;
+    return (1, item, _);
+  }
+}
+
+let drain = (source: Source<(i32, i32)>): i32 => {
+  var total = 0;
+  while (let (1, (a, b), _) = source.next()) {
+    total += a * b;
+  }
+  return total;
+};
+
+type Pair = (i32, i32);
+
+type Either = (true, i32) | (false, String);
+
+export let main = (): i32 => {
+  var failures = 0;
+
+  // A tuple argument: each step's pair arrives as two values.
+  let pairs = new Cursor<(i32, String)>([(1, 'a'), (2, 'bb')]);
+  var total = 0;
+  while (let (1, (n, s), _) = pairs.next()) {
+    total += n + s.length;
+  }
+  if (total != 6) { failures += 1; }
+
+  // A binding of the whole element holds the tuple boxed.
+  let again = new Cursor<(i32, String)>([(5, 'xyz')]);
+  if (let (1, pair, _) = again.next()) {
+    if (pair[0] != 5 || pair[1] != 'xyz') { failures += 2; }
+  } else {
+    failures += 2;
+  }
+
+  // Any other argument is as it is.
+  let ints = new Cursor<i32>([10, 20]);
+  var sum = 0;
+  while (let (1, v, _) = ints.next()) {
+    sum += v;
+  }
+  if (sum != 30) { failures += 4; }
+
+  let (a, b) = first<(i32, i32)>([(3, 4)]);
+  if (a + b != 7) { failures += 8; }
+  if (first<String>(['q']) != 'q') { failures += 16; }
+
+  // An alias for a tuple is a tuple.
+  let aliased = new Cursor<Pair>([(2, 3)]);
+  if (let (1, (x, y), _) = aliased.next()) {
+    if (x * y != 6) { failures += 32; }
+  } else {
+    failures += 32;
+  }
+
+  let wrapped = new Wrap<(i32, i32)>(new Cursor<(i32, i32)>([(4, 5), (1, 1)]));
+  var product = 0;
+  while (let (1, (p, q), _) = wrapped.next()) {
+    product += p * q;
+  }
+  if (product != 21) { failures += 64; }
+
+  if (drain(new Counted<(i32, i32)>([(2, 2), (3, 3)])) != 13) { failures += 128; }
+
+  // A union of tuples is not unboxed: it stays one boxed value.
+  let eithers = new Cursor<Either>([(true, 7), (false, 'no')]);
+  var seen = 0;
+  while (let (1, e, _) = eithers.next()) {
+    match (e) {
+      case (true, let n): { seen += n; }
+      case (false, let s): { seen += s.length; }
+    }
+  }
+  if (seen != 9) { failures += 256; }
+  return failures;
+};

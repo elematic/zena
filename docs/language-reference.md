@@ -4836,12 +4836,31 @@ reads the `String`.
 
 - a primitive (`inline i32`) or a class (`inline String`), which are already
   unboxed or are references by definition;
-- a type parameter (`inline T`), whose argument may not be a tuple;
 - `null`, including `inline (i32, i32)?`, because an inline value has no
   absent form;
 - an existential record type (`inline {x: i32, ...}`), whose shape is not
   known;
-- a record type, until inline records are implemented.
+- a record type, until inline records are implemented;
+- a type parameter (`inline T`), whose argument may not be inlinable. `inline`
+  always means the unboxed form is required; on a type parameter, that will be
+  a constraint on its argument once types other than tuples can be inline.
+
+`inline? T` is the form for a type parameter whose argument should be unboxed
+when it can be: `inline? T` is unboxed when `T` is a tuple, or a name for one,
+and is `T` as it is otherwise. So one generic declaration returns its tuples
+unboxed without boxing anything else:
+
+```zena
+type Step<T> = inline (0, _, _) | (1, inline? T, _);
+
+// Step<(i32, String)> is inline (0, _, _) | (1, inline (i32, String), _),
+// and Step<i32> is inline (0, _, _) | (1, i32, _).
+```
+
+`inline? T` follows the placement rules of any inline type. It applies only to
+a type parameter, since on a known type there is nothing to decide. It cannot
+be a member of an inline union, because a member has to start with a literal;
+and a union argument is not unboxed, since an inline union cannot nest yet.
 
 #### Boolean Literal Types
 

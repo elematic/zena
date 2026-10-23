@@ -15,8 +15,20 @@ export let primitive = (): inline i32 => 0; // @error: 'inline' applies to tuple
 // A class instance is a reference by definition.
 export let klass = (): inline String => ''; // @error: 'inline' applies to tuple types and unions of them, not 'String'.
 
-// A type parameter may stand for anything, including a class.
-export let param = <T>(x: T): inline T => x; // @error: 'inline' cannot apply to type parameter 'T': its argument may not be a tuple.
+// `inline` requires the unboxed form, which an argument for a type
+// parameter may not have (and, once classes can be inline, may not be
+// allowed to have).
+export let param = <T>(x: T): inline T => x; // @error: 'inline' cannot apply to type parameter 'T': its argument may not be inlinable. Write 'inline? T' to unbox it when it is a tuple.
+
+// `inline? T` unboxes the argument when it can be and leaves it as it is
+// otherwise (execution/tuples/inline_type_param.zena). It follows the
+// placement rules of an inline type, it cannot be an inline union's
+// member, which has to start with a literal, and on a known type there is
+// nothing to decide.
+export let paramIfPossible = <T>(x: T): inline? T => x;
+export let paramStored = <T>(x: T): Box<inline? T> => { throw new Error('unreachable'); }; // @error: Inline tuple types can only appear in function return types, not here.
+export let paramMember = <T>(x: T): inline (true, i32) | inline? T => (true, 1); // @error: Type parameter 'T' cannot be a member of an inline union.
+export let knownIfPossible = (): inline? (i32, i32) => (1, 2); // @error: 'inline?' applies to a type parameter: write 'inline' to unbox a known type.
 
 // Inline records are planned (#371).
 export let record = (): inline Point => ({x: 1, y: 2}); // @error: Inline record types are not supported yet.

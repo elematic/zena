@@ -4,7 +4,7 @@ import {
   U8Type, U16Type, I8Type, I16Type, V128Type,
   UnknownType, ErrorType, AnyRefType, EqRefType, ExternRefType, NeverType, HoleType,
   FieldInfo, MethodInfo, typeToString, TypeParameterType, ThisType,
-  UnionType, InlineTupleType, baseType, BoolLiteralType, NumLiteralType, StringLiteralType,
+  UnionType, InlineTupleType, InlineParamType, inlineOf, baseType, BoolLiteralType, NumLiteralType, StringLiteralType,
   RecordType, TupleType, MixinType, ErasedType, countCodegenFunctionType,
   countCodegenSubstitution, classShapeStamp, interfaceShapeStamp, internFunctionType, mergeRow, mergeTupleRow } from '../types.zena';
 import { 
@@ -127,6 +127,10 @@ function substituteTypeParamsInCodegenInner(
         return t;
       }
       new InlineTupleType(newElems)
+    }
+    case InlineParamType {param}: {
+      let sub = substituteTypeParamsInCodegenInner(wasm, typeParams, typeArgs, param);
+      if (sub === param) t else inlineOf(sub)
     }
     case UnionType {types}: {
       let newTypes = new Array<Type>(types.length);
@@ -1357,6 +1361,8 @@ export function eraseTypeParameters(wasm: WasmModule, t: Type): Type {
       if (!changed) { return t; }
       new InlineTupleType(newElems)
     }
+    // An erased element is a reference, never a tuple.
+    case InlineParamType {param}: eraseTypeParameters(wasm, param)
     case RecordType as rec: {
       let newProps = new Map<String, Type>();
       var changed = false;
@@ -2514,6 +2520,7 @@ export function containsMixinThis(type: Type): boolean {
     }
     found
   }
+  case InlineParamType: false
   case InlineTupleType {elementTypes}: {
     var found = false;
     for (let el in elementTypes) {
@@ -2626,6 +2633,7 @@ export function mapMixinThisInType(ct: ClassType, type: Type): Type {
       }
       new TupleType(newElems, row, rowIndex) as Type
     }
+    case InlineParamType: type
     case InlineTupleType {elementTypes}: {
       let newElems = new Array<Type>();
       for (let el in elementTypes) {

@@ -5,7 +5,7 @@ import {
   Type, I32Type, U32Type, I64Type, U64Type, F32Type, F64Type,
   U8Type, U16Type, I8Type, I16Type, V128Type, BooleanType, BoolLiteralType,
   NullType, VoidType, ClassType, InterfaceType, ArrayType, RecordType,
-  TupleType, InlineTupleType, UnionType, TypeParameterType, FunctionType, UnknownType, typeToString,
+  TupleType, InlineTupleType, InlineParamType, inlineOf, UnionType, TypeParameterType, FunctionType, UnknownType, typeToString,
   MixinType, MixinKey, instantiateClassType, TypeAliasType, EnumType, ErrorType, HoleType, NeverType, ThisType,
   AnyRefType, EqRefType, ExternRefType, StringLiteralType, NumLiteralType, baseType, ErasedType,
   MethodInfo, countTypeKey, countCodegenFunctionType, internFunctionType, mergeRow, mergeTupleRow,
@@ -288,6 +288,7 @@ export function isConcrete(t: Type): boolean {
       }
       concrete
     }
+    case InlineParamType: false
     case InlineTupleType {elementTypes}: {
       var concrete = true;
       for (let el in elementTypes) {
@@ -450,6 +451,7 @@ function getTypeKeyForSpecializationRaw(type: Type): String {
       }
       String.fromParts(parts)
     }
+    case InlineParamType {param}: getTypeKeyForSpecializationRaw(param)
     case InlineTupleType {elementTypes}: {
       let parts = new Array<String>.fixed(1 + 2 * elementTypes.length, "");
       parts[0] = "itup";
@@ -578,6 +580,7 @@ export function containsErasedType(t: Type): boolean {
       }
       false
     }
+    case InlineParamType {param}: containsErasedType(param)
     case InlineTupleType {elementTypes}: {
       for (let sub in elementTypes) {
         if (containsErasedType(sub)) { return true; }
@@ -738,6 +741,7 @@ export function getTypeKey(type: Type): String {
       (if (elementsMutable) "arr_" else "arrimm_") + getTypeKey(elementType)
     case RecordType: "rec"
     case TupleType {elementTypes}: `tup${i32ToString(elementTypes.length)}`
+    case InlineParamType {param}: getTypeKey(param)
     case InlineTupleType {elementTypes}: `tup${i32ToString(elementTypes.length)}`
     case UnionType: "union"
     // A type parameter and its erasure key the SAME — a specialization
@@ -1093,6 +1097,8 @@ export function substituteTypeParams(
       }
       new InlineTupleType(subElems)
     }
+    case InlineParamType {param}:
+      inlineOf(substituteTypeParams(typeParams, typeArgs, param))
     case RecordType as rec: {
       let subProps = new Map<String, Type>();
       for (let pair in rec.properties) {
@@ -1236,6 +1242,7 @@ function getTypeUniqueKeyRaw(t: Type): String {
       "[]"
     }
   }
+  case InlineParamType {param}: `inline ${getTypeUniqueKeyRaw(param)}`
   case InlineTupleType {elementTypes}: {
     let len = elementTypes.length;
     if (len > 0) {

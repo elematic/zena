@@ -97,7 +97,7 @@ import {
   BooleanType, VoidType, NullType, NeverType, HoleType, ErrorType, UnknownType,
   AnyRefType, EqRefType, ExternRefType,
   BoolLiteralType, StringLiteralType, NumLiteralType,
-  ArrayType, TupleType as TupleT, InlineTupleType as InlineTupleT,
+  ArrayType, TupleType as TupleT, InlineTupleType as InlineTupleT, InlineParamType, inlineOf,
   UnionType as UnionT, TypeInterner, RecordType as RecordT,
   FunctionType, ClassType, InterfaceType, MixinType, EnumType, MemberInfo, FieldInfo, MethodInfo,
   MemberTable, setMemberTypeSubstitution,
@@ -4517,6 +4517,8 @@ let maxAliasHops = 32;
 function isInlineType(t: Type, aliasHops: i32 = 0): boolean {
   return match (t) {
     case InlineTupleT {}: true
+    // It may be, so it follows the same placement rules.
+    case InlineParamType {}: true
     // Aliases are transparent here — `type Pair = inline (i32, i32)` is
     // legal to declare, so the restriction has to be enforced through the
     // name at each use. `resolving` means we are inside this alias's own
@@ -4577,6 +4579,7 @@ function boxedFormOf(t: Type): Type {
       }
       new TupleT(boxed, null, 0) as Type
     }
+    case InlineParamType {param}: param as Type
     case UnionT {types}: {
       if (!isInlineType(t)) {
         t
@@ -4616,7 +4619,9 @@ function resolveInlineOperand(ctx: CheckerContext, ann: TypeAnnotation): Type {
           // An inline tuple nests: its slots become the outer one's. A
           // union cannot be spliced into one list of positions, so a
           // nested inline union is not supported yet.
-          if (isInlineType(elType) && !(unwrapAliases(elType) is InlineTupleT)) {
+          let unwrapped = unwrapAliases(elType);
+          if (isInlineType(elType) && !(unwrapped is InlineTupleT) &&
+              !(unwrapped is InlineParamType)) {
             ctx.error(
               "An inline union inside an inline tuple is not supported yet.",
               DiagnosticCode.TypeMismatch,
@@ -4640,6 +4645,28 @@ function resolveInlineOperand(ctx: CheckerContext, ann: TypeAnnotation): Type {
 }
 
 /**
+ * `inline? T`: the argument for the type parameter `T` unboxed when it can
+ * be (a tuple, today), and as it is otherwise, decided per substitution
+ * (`InlineParamType`). On a type that is already known there is nothing
+ * to decide, so it is an error.
+ */
+function resolveInlineIfPossible(ctx: CheckerContext, ann: TypeAnnotation): Type {
+  let t = resolveTypeAnnotation(ctx, ann, true);
+  return match (t) {
+    case TypeParameterType as tp: new InlineParamType(tp) as Type
+    case ErrorType {}: t
+    case _: {
+      ctx.error(
+        "'inline?' applies to a type parameter: write 'inline' to unbox a known type.",
+        DiagnosticCode.TypeMismatch,
+        ann.loc,
+      );
+      new ErrorType() as Type
+    }
+  };
+}
+
+/**
  * The union of converted members, or an error type when a member could not
  * be converted: half an inline union would only produce follow-on errors.
  */
@@ -4651,6 +4678,16 @@ function unionOfInlineMembers(
   for (let member in members) {
     if (member is ErrorType) {
       return member;
+    }
+    if (let InlineParamType {param} = member) {
+      // A member has to start with a literal, which an argument for the
+      // parameter may not.
+      ctx.error(
+        `Type parameter '${param.name}' cannot be a member of an inline union.`,
+        DiagnosticCode.TypeMismatch,
+        loc,
+      );
+      return new ErrorType();
     }
   }
   return createUnionType(members, ctx, loc);
@@ -4697,14 +4734,18 @@ function inlineFormOf(ctx: CheckerContext, t: Type, loc: SourceLocation | null, 
       }
       unionOfInlineMembers(ctx, members, loc)
     }
+    // `inline` requires the unboxed form, and an argument for the
+    // parameter may not have one. Once types other than tuples can be
+    // inline, this becomes a constraint on the argument.
     case TypeParameterType as tp: {
       ctx.error(
-        `'inline' cannot apply to type parameter '${tp.name}': its argument may not be a tuple.`,
+        `'inline' cannot apply to type parameter '${tp.name}': its argument may not be inlinable. Write 'inline? ${tp.name}' to unbox it when it is a tuple.`,
         DiagnosticCode.TypeMismatch,
         loc,
       );
       new ErrorType() as Type
     }
+    case InlineParamType {}: t
     case RecordT as record: {
       ctx.error(
         if (record.isExistential) {
@@ -6312,7 +6353,13 @@ function resolveTypeAnnotationInner(ctx: CheckerContext, ann: TypeAnnotation): T
     }
     new TupleT(elTypes, row, rowIndex)
   }
-  case InlineTypeAnnotation {typeAnnotation}: resolveInlineOperand(ctx, typeAnnotation)
+  case InlineTypeAnnotation {typeAnnotation, ifPossible}: {
+    if (ifPossible) {
+      resolveInlineIfPossible(ctx, typeAnnotation)
+    } else {
+      resolveInlineOperand(ctx, typeAnnotation)
+    }
+  }
   case ThisTypeAnnotation {loc}: {
     let bound = ctx.bodyThisType;
     if (bound != null) {
@@ -6995,6 +7042,9 @@ function substituteTypeParams(
         subElems.push(substituteTypeParams(typeParams, typeArgs, elem));
       }
       return new InlineTupleT(subElems);
+    }
+    case InlineParamType {param}: {
+      return inlineOf(substituteTypeParams(typeParams, typeArgs, param));
     }
     case RecordT {properties, optionalProperties, row, isExistential}: {
       let subProps = new Map<String, Type>();
@@ -9394,6 +9444,14 @@ function isAssignableTo(ctx: CheckerContext, source: Type, target: Type): boolea
     }
     case _: {}
   }
+  // `inline? T` stands for `T` until a substitution decides: a value of
+  // `T` is unboxed there or not, and converts either way.
+  if (let InlineParamType {param} = source) {
+    return isAssignableTo(ctx, param, target);
+  }
+  if (let InlineParamType {param} = target) {
+    return isAssignableTo(ctx, source, param);
+  }
 
   // Borrowing at a call site is implicit: an `Own<R>` is accepted where a
   // `Borrow<R>` is expected, and borrowing does not consume. The reverse is
@@ -9974,6 +10032,9 @@ export function typesEqual(a: Type, b: Type): boolean {
       } else {
         false
       }
+    }
+    case InlineParamType {param as pa}: {
+      if (let InlineParamType {param as pb} = b) typesEqual(pa, pb) else false
     }
     case FunctionType as fa: {
       match (b) {
