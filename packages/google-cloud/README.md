@@ -190,7 +190,7 @@ npm run test:emulator -w @zena-lang/google-cloud
 ```
 
 runs the client against the Firestore emulator over gRPC
-(`zena/emulator/`). It depends on the repository's `emulators:start`
+(`zena/test/emulator/`). It depends on the repository's `emulators:start`
 script, a wireit service that starts the emulator on `127.0.0.1:8180`
 (`firebase.json`) before the tests and stops it after. The service
 enters the flake's `emulators` shell for firebase-tools and Java, which
