@@ -263,6 +263,12 @@ export class Request {
         return this.#bodyStream as Stream<u8>;
       }
       if (this.#source != null) {
+        // Taking the body consumes the wire request, after which the source
+        // can read nothing else from it, so read the rest first.
+        let method = this.method;
+        let path = this.path;
+        let url = this.url;
+        this.#ensureHeaders();
         let s = (this.#source as RequestSource).loadBody();
         this.#bodyStream = s;
         return s;
