@@ -7,15 +7,21 @@
  * `handlers/xrpc-blob.js`, and the `com.atproto.repo` reads from
  * `handlers/xrpc-repo.js`. pds.js serves one account and answers
  * `RepoNotFound` for any other; this finds the account each request names.
+ *
+ * With a `PackageHost`, it also serves the `dev.zena-lang.host.*` methods
+ * that host implements (`pds:host`).
  */
 
 import {Future} from 'zena:async';
 import {App, Request, Response, Router} from 'zena:http';
-import {JsonArray, JsonBuilder, JsonObject, stringify} from 'zena:json';
+import {JsonArray, JsonBuilder, JsonObject, JsonValue, parseJson, stringify} from 'zena:json';
+import {now} from 'wasi:clocks/system-clock';
 import {parseI32} from 'zena:core';
+import {div} from 'zena:math';
 import {decodeCbor} from 'atproto:cbor';
 import {Cid} from 'atproto:cid';
-import {toJson} from 'atproto:data';
+import {Value, fromJson, toJson} from 'atproto:data';
+import {Created, HostError, PackageHost} from './host.zena';
 import {Pds} from './pds.zena';
 import {Repository, RepositoryError} from './repository.zena';
 import {Account} from './storage.zena';
@@ -79,11 +85,173 @@ async function accountFor(pds: Pds, identifier: String, res: Response): Future<A
   return account;
 }
 
+/** The time, in microseconds since the Unix epoch. */
+function nowMicros(): i64 {
+  let instant = now();
+  return instant.seconds * (1000000 as i64) + div(instant.nanoseconds as i64, 1000 as i64);
+}
+
+/** The JSON object a request's body holds; null, after answering `InvalidRequest`, when it is not one. */
+async function jsonBody(req: Request, res: Response): Future<JsonObject | null> {
+  let text = await req.text();
+  let parsed = parseBody(text);
+  if (parsed == null) {
+    fail(res, 400, 'InvalidRequest', 'the body is not a JSON object');
+  }
+  return parsed;
+}
+
+function parseBody(text: String): JsonObject | null {
+  try {
+    let json = parseJson(text);
+    return if (json is JsonObject) json as JsonObject else null;
+  } catch (e) {
+    return null;
+  }
+}
+
+/** The strings of a JSON array member, or null when it is not one. */
+function strings(json: JsonObject, name: String): GrowableArray<String> | null {
+  let value = json[name];
+  if (!(value is JsonArray)) {
+    return null;
+  }
+  let list = value as JsonArray;
+  let out = new GrowableArray<String>();
+  for (var i = 0; i < list.length; i += 1) {
+    if (!(list[i] is String)) {
+      return null;
+    }
+    out.push(list[i] as String);
+  }
+  return out;
+}
+
+function createdJson(created: Created, recordName: String): JsonObject {
+  let ref = new JsonObject();
+  ref['uri'] = created.uri;
+  ref['cid'] = created.cid.toString();
+  let body = new JsonObject();
+  body['did'] = created.did;
+  body['handle'] = created.handle;
+  body[recordName] = ref;
+  return body;
+}
+
+/**
+ * Runs a host method: checks the caller's token for `method`, then calls
+ * `call` with the caller's DID, answering with what it returns, or with
+ * the error a `HostError` names.
+ */
+async function hostCall(host: PackageHost, req: Request, res: Response, method: String,
+    call: (caller: String) => Future<JsonObject | null>): Future<void> {
+  try {
+    let caller = await host.authenticate(req.getHeader('authorization'), method,
+        div(nowMicros(), 1000000 as i64));
+    let answer = await call(caller);
+    if (answer != null) {
+      json(res, answer as JsonObject);
+    }
+  } catch (e) {
+    if (e is HostError) {
+      let error = e as HostError;
+      fail(res, error.status, error.error, error.message);
+      return;
+    }
+    throw e;
+  }
+}
+
+/** Adds the routes of the `dev.zena-lang.host.*` methods `host` implements. */
+function hostRoutes(router: Router, host: PackageHost): void {
+  router.post('/xrpc/dev.zena-lang.host.createOrganization', async (req, res, next, params) => {
+    await hostCall(host, req, res, 'dev.zena-lang.host.createOrganization', async (caller): Future<JsonObject | null> => {
+      let body = await jsonBody(req, res);
+      if (body == null) {
+        return null;
+      }
+      let input = body as JsonObject;
+      let keys = strings(input, 'recoveryKeys');
+      if (!(input['name'] is String) || keys == null) {
+        fail(res, 400, 'InvalidRequest', 'name and recoveryKeys are required');
+        return null;
+      }
+      let created = await host.createOrganization(caller, input['name'] as String, keys as GrowableArray<String>,
+          nowMicros());
+      return createdJson(created, 'members');
+    });
+  });
+
+  router.post('/xrpc/dev.zena-lang.host.createPackage', async (req, res, next, params) => {
+    await hostCall(host, req, res, 'dev.zena-lang.host.createPackage', async (caller): Future<JsonObject | null> => {
+      let body = await jsonBody(req, res);
+      if (body == null) {
+        return null;
+      }
+      let input = body as JsonObject;
+      let keys = strings(input, 'recoveryKeys');
+      if (!(input['organization'] is String) || keys == null || input['profile'] == null ||
+          input['maintainers'] == null) {
+        fail(res, 400, 'InvalidRequest', 'organization, recoveryKeys, profile and maintainers are required');
+        return null;
+      }
+      let entries = new GrowableArray<Value>();
+      let given = input['entries'];
+      if (given is JsonArray) {
+        let list = given as JsonArray;
+        for (var i = 0; i < list.length; i += 1) {
+          entries.push(fromJson(list[i]));
+        }
+      }
+      let created = await host.createPackage(caller, input['organization'] as String,
+          keys as GrowableArray<String>, fromJson(input['profile']), fromJson(input['maintainers']),
+          entries, nowMicros());
+      return createdJson(created, 'maintainers');
+    });
+  });
+
+  router.post('/xrpc/dev.zena-lang.host.uploadArtifact', async (req, res, next, params) => {
+    await hostCall(host, req, res, 'dev.zena-lang.host.uploadArtifact', async (caller): Future<JsonObject | null> => {
+      let pkg = req.url.searchParams().get('package');
+      if (pkg == null || pkg == '') {
+        fail(res, 400, 'InvalidRequest', 'Missing required parameter: package');
+        return null;
+      }
+      let bytes = await req.bytes();
+      let mimeType = req.getHeader('content-type') ?? 'application/octet-stream';
+      let blob = await host.uploadArtifact(caller, pkg as String, mimeType, bytes);
+      let body = new JsonObject();
+      body['blob'] = toJson(blob.toValue());
+      return body;
+    });
+  });
+
+  router.post('/xrpc/dev.zena-lang.host.publish', async (req, res, next, params) => {
+    await hostCall(host, req, res, 'dev.zena-lang.host.publish', async (caller): Future<JsonObject | null> => {
+      let body = await jsonBody(req, res);
+      if (body == null) {
+        return null;
+      }
+      let input = body as JsonObject;
+      if (!(input['package'] is String) || input['release'] == null) {
+        fail(res, 400, 'InvalidRequest', 'package and release are required');
+        return null;
+      }
+      let created = await host.publish(caller, input['package'] as String, fromJson(input['release']),
+          nowMicros());
+      let answer = new JsonObject();
+      answer['uri'] = created.uri;
+      answer['cid'] = created.cid.toString();
+      return answer;
+    });
+  });
+}
+
 /**
  * Returns the application that serves every route, for the accounts in
- * `pds`.
+ * `pds`, and the host methods of `host` when there is one.
  */
-export function createApp(pds: Pds): App {
+export function createApp(pds: Pds, host: PackageHost | null = null): App {
   let app = new App();
   let router = new Router();
 
@@ -260,6 +428,9 @@ export function createApp(pds: Pds): App {
     json(res, body);
   });
 
+  if (host != null) {
+    hostRoutes(router, host as PackageHost);
+  }
   app.use(router.routes());
   return app;
 }

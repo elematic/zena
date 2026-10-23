@@ -1,7 +1,9 @@
 /**
  * The records a package's repository holds (docs/design/package-manager.md,
- * "Records"): one profile, a release per version, and a yank per yanked
- * version. Their lexicons are in `packages/package-manager/lexicons`.
+ * "Records"): one profile, a release per version, a yank per yanked
+ * version, and the maintainers record; and the private membership entries
+ * an organization's records commit to. Their lexicons are in
+ * `packages/package-manager/lexicons`.
  *
  * Each class reads its record from the data model with `fromValue`, which
  * checks it against the lexicon and throws `RecordError`, and writes it
@@ -10,9 +12,12 @@
  */
 
 import {HashSet} from 'zena:collections';
+import {encodeCbor} from 'atproto:cbor';
 import {CODEC_RAW, Cid} from 'atproto:cid';
 import {
   BlobRef,
+  BoolValue,
+  BytesValue,
   IntValue,
   ListValue,
   MapValue,
@@ -27,6 +32,8 @@ import {Version} from './version.zena';
 export let PROFILE_TYPE = 'dev.zena-lang.package.profile';
 export let RELEASE_TYPE = 'dev.zena-lang.package.release';
 export let YANK_TYPE = 'dev.zena-lang.package.yank';
+export let MAINTAINERS_TYPE = 'dev.zena-lang.package.maintainers';
+export let MEMBERS_TYPE = 'dev.zena-lang.org.members';
 
 /** The record key of a package's profile. */
 export let PROFILE_KEY = 'self';
@@ -393,6 +400,205 @@ function checkDependencies(dependencies: FixedArray<Dependency>): void {
     }
     packages.add(key);
   }
+}
+
+/** The roles a maintainers record gives. */
+export let PUBLISHER = 'publisher';
+export let OWNER = 'owner';
+
+/**
+ * One maintainer of a package: exactly one of a DID, a commitment to a
+ * private `MemberEntry`, or an organization's team.
+ */
+export final class Maintainer {
+  did: String | null;
+  commitment: Cid | null;
+  org: String | null;
+  team: String | null;
+  /** `publisher` or `owner`. */
+  role: String;
+  automation: boolean;
+
+  new(did: String | null, commitment: Cid | null, org: String | null, team: String | null,
+      role: String, automation: boolean = false)
+      : did = did, commitment = commitment, org = org, team = team, role = role,
+        automation = automation;
+
+  static ofDid(did: String, role: String): Maintainer {
+    return new Maintainer(did, null, null, null, role);
+  }
+}
+
+/** A package's maintainers record, at record key `self`. */
+export final class Maintainers {
+  maintainers: FixedArray<Maintainer>;
+  /** How many maintainers must attest a release. */
+  threshold: i64;
+  /** How many owners must attest a change to this record. */
+  ownerThreshold: i64;
+
+  new(maintainers: FixedArray<Maintainer>, threshold: i64 = 1 as i64, ownerThreshold: i64 = 1 as i64)
+      : maintainers = maintainers, threshold = threshold, ownerThreshold = ownerThreshold;
+
+  static fromValue(value: Value): Maintainers {
+    let what = 'maintainers record';
+    let map = recordMap(value, MAINTAINERS_TYPE, what);
+    let list = field(map, 'maintainers');
+    if (!(list is ListValue) || list.items.length == 0) {
+      throw new RecordError(`${what}: 'maintainers' is not a list of at least one`);
+    }
+    let maintainers = new FixedArray<Maintainer>(list.items.length, Maintainer.ofDid('', ''));
+    for (var i = 0; i < list.items.length; i += 1) {
+      let item = list.items[i];
+      if (!(item is MapValue)) {
+        throw new RecordError(`${what}: maintainer ${i} is not an object`);
+      }
+      let entry = item;
+      let did = optionalString(entry, 'did', what);
+      let commitmentText = optionalString(entry, 'commitment', what);
+      let org = optionalString(entry, 'org', what);
+      let team = optionalString(entry, 'team', what);
+      let role = requiredString(entry, 'role', what);
+      let forms = (if (did != null) 1 else 0) + (if (commitmentText != null) 1 else 0) +
+          (if (org != null) 1 else 0);
+      if (forms != 1 || (org == null) != (team == null)) {
+        throw new RecordError(`${what}: maintainer ${i} is not exactly one of a DID, a commitment, or an org with a team`);
+      }
+      if (did != null && !isValidDid(did)) {
+        throw new RecordError(`${what}: '${did}' is not a DID`);
+      }
+      if (role != PUBLISHER && role != OWNER) {
+        throw new RecordError(`${what}: '${role}' is not a role`);
+      }
+      var commitment: Cid | null = null;
+      if (commitmentText != null) {
+        commitment = readCid(commitmentText, what);
+      }
+      let automation = field(entry, 'automation');
+      maintainers[i] = new Maintainer(did, commitment, org, team, role,
+          automation is BoolValue && automation.value);
+    }
+    return new Maintainers(maintainers, positive(map, 'threshold', what),
+        positive(map, 'ownerThreshold', what));
+  }
+
+  toValue(): MapValue {
+    let map = typedMap(MAINTAINERS_TYPE);
+    let items = new FixedArray<Value>(this.maintainers.length, new StringValue(''));
+    for (var i = 0; i < this.maintainers.length; i += 1) {
+      let maintainer = this.maintainers[i];
+      let entry = newMap();
+      putString(entry, 'did', maintainer.did);
+      let commitment = maintainer.commitment;
+      if (commitment != null) {
+        entry.entries['commitment'] = new StringValue(commitment.toString());
+      }
+      putString(entry, 'org', maintainer.org);
+      putString(entry, 'team', maintainer.team);
+      entry.entries['role'] = new StringValue(maintainer.role);
+      if (maintainer.automation) {
+        entry.entries['automation'] = new BoolValue(true);
+      }
+      items[i] = entry;
+    }
+    map.entries['maintainers'] = new ListValue(items);
+    map.entries['threshold'] = new IntValue(this.threshold);
+    map.entries['ownerThreshold'] = new IntValue(this.ownerThreshold);
+    return map;
+  }
+}
+
+/**
+ * One member's private entry (`dev.zena-lang.org.defs#entry`). Records list
+ * its commitment, the CID of the entry's DAG-CBOR encoding, so the salt
+ * keeps anyone from finding a commitment by trying DIDs.
+ */
+export final class MemberEntry {
+  did: String;
+  /** The role the record that commits to the entry gives. */
+  role: String;
+  /** 32 random bytes. */
+  salt: FixedArray<u8>;
+  automation: boolean;
+
+  new(did: String, role: String, salt: FixedArray<u8>, automation: boolean = false)
+      : did = did, role = role, salt = salt, automation = automation;
+
+  static fromValue(value: Value): MemberEntry {
+    let what = 'membership entry';
+    if (!(value is MapValue)) {
+      throw new RecordError(`${what}: not an object`);
+    }
+    let map = value;
+    let did = requiredString(map, 'did', what);
+    if (!isValidDid(did)) {
+      throw new RecordError(`${what}: '${did}' is not a DID`);
+    }
+    let salt = field(map, 'salt');
+    if (!(salt is BytesValue) || salt.value.length != 32) {
+      throw new RecordError(`${what}: the salt is not 32 bytes`);
+    }
+    let automation = field(map, 'automation');
+    return new MemberEntry(did, requiredString(map, 'role', what), salt.value,
+        automation is BoolValue && automation.value);
+  }
+
+  toValue(): MapValue {
+    let map = newMap();
+    map.entries['did'] = new StringValue(this.did);
+    map.entries['role'] = new StringValue(this.role);
+    if (this.automation) {
+      map.entries['automation'] = new BoolValue(true);
+    }
+    map.entries['salt'] = new BytesValue(this.salt);
+    return map;
+  }
+
+  /** The CID records list in place of the entry. */
+  commitment(): Cid {
+    return Cid.forDagCbor(encodeCbor(this.toValue()));
+  }
+}
+
+/**
+ * An organization's members record, at record key `self`: commitments to
+ * its members' entries, and how many owners or admins must attest a change.
+ */
+export final class Members {
+  members: FixedArray<Cid>;
+  ownerThreshold: i64;
+  adminThreshold: i64;
+
+  new(members: FixedArray<Cid>, ownerThreshold: i64 = 1 as i64, adminThreshold: i64 = 1 as i64)
+      : members = members, ownerThreshold = ownerThreshold, adminThreshold = adminThreshold;
+
+  toValue(): MapValue {
+    let map = typedMap(MEMBERS_TYPE);
+    let items = new FixedArray<Value>(this.members.length, new StringValue(''));
+    for (var i = 0; i < this.members.length; i += 1) {
+      items[i] = new StringValue(this.members[i].toString());
+    }
+    map.entries['members'] = new ListValue(items);
+    map.entries['ownerThreshold'] = new IntValue(this.ownerThreshold);
+    map.entries['adminThreshold'] = new IntValue(this.adminThreshold);
+    return map;
+  }
+}
+
+function readCid(text: String, what: String): Cid {
+  try {
+    return Cid.parse(text);
+  } catch (e) {
+    throw new RecordError(`${what}: '${text}' is not a CID`);
+  }
+}
+
+function positive(map: MapValue, key: String, what: String): i64 {
+  let value = field(map, key);
+  if (!(value is IntValue) || value.value < 1) {
+    throw new RecordError(`${what}: '${key}' is not a positive integer`);
+  }
+  return value.value;
 }
 
 /** `value` as a record map whose `$type` is `type`. */

@@ -12,9 +12,11 @@ package in this repository's workspace or from a package that lists it in its
 
 - `package-manager:version`: semantic versions without build metadata, and
   their precedence.
-- `package-manager:records`: the profile, release and yank records, read
-  from the atproto data model with the checks their lexicons describe, and
-  written back. Also the rules for package names.
+- `package-manager:records`: the profile, release, yank and maintainers
+  records, an organization's members record and the private membership
+  entries it commits to, read from the atproto data model with the checks
+  their lexicons describe, and written back. Also the rules for package
+  names.
 - `package-manager:archive`: source archives, the CAR files that hold a
   release's source. Packing is deterministic, so the same files always have
   the same CID, and unpacking accepts only what packing writes.

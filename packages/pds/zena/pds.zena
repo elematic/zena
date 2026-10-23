@@ -10,7 +10,7 @@ import {Future} from 'zena:async';
 import {normalizeHandle} from 'atproto:syntax';
 import {TidClock} from 'atproto:tid';
 import {Repository} from './repository.zena';
-import {Account, SigningKey, Storage} from './storage.zena';
+import {Account, AccountKind, SigningKey, Storage} from './storage.zena';
 
 export final class Pds {
   storage: Storage;
@@ -27,9 +27,9 @@ export final class Pds {
    * Adds an account and writes its repository's first commit. `nowMicros`
    * is the time, in microseconds since the Unix epoch.
    */
-  async createAccount(did: String, handle: String | null, key: SigningKey, nowMicros: i64)
-      : Future<Account> {
-    let account = new Account(did, handle, key);
+  async createAccount(did: String, handle: String | null, key: SigningKey, nowMicros: i64,
+      kind: AccountKind = AccountKind.Person): Future<Account> {
+    let account = new Account(did, handle, key, kind);
     await this.storage.putAccount(account);
     await this.repositoryOf(account).initialize(nowMicros);
     return account;

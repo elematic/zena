@@ -1,0 +1,419 @@
+/**
+ * The package host: the `dev.zena-lang.host.*` extension
+ * (docs/design/package-manager.md, "Hosting, keys and maintainers", and the
+ * lexicons in `packages/package-manager/lexicons/dev/zena-lang/host`).
+ *
+ * Every call comes from a maintainer's own account, with a service-auth
+ * token their PDS signed for this host and the one method called. The host
+ * checks the token, and the caller's role in the records it holds, and then
+ * acts for the package or organization account, which no one signs in as.
+ *
+ * This implements creating organizations and packages, uploading artifacts
+ * and publishing releases. Teams, the limits on how many accounts a scope
+ * creates, and the other methods come later.
+ */
+
+import {Future} from 'zena:async';
+import {HashMap, HashSet} from 'zena:collections';
+import {decodeCbor} from 'atproto:cbor';
+import {BlobRef, MapValue, Value} from 'atproto:data';
+import {Cid} from 'atproto:cid';
+import {KeyType, PublicKey, parseDidKey} from 'atproto:didkey';
+import {PlcOperation, didOfGenesis, genesisOperation} from 'atproto:plc';
+import {ReplayGuard, ServiceAuthError, SigningKeyLookup, verifyServiceAuth} from 'atproto:service-auth';
+import {
+  MEMBERS_TYPE,
+  MAINTAINERS_TYPE,
+  Maintainers,
+  MemberEntry,
+  Members,
+  OWNER,
+  PROFILE_KEY,
+  PROFILE_TYPE,
+  Profile,
+  RELEASE_TYPE,
+  RecordError,
+  Release,
+  isValidPackageName
+} from 'package-manager:records';
+import {Pds} from './pds.zena';
+import {CreateRecord, RepositoryError, Write} from './repository.zena';
+import {Account, AccountKind, SigningKey, StoredBlob} from './storage.zena';
+
+/** A call the host refuses, with the XRPC error and HTTP status to answer with. */
+export class HostError extends Error {
+  status: i32;
+  /** Such as `AuthenticationRequired`, `Forbidden` or `NameTaken`. */
+  error: String;
+
+  new(status: i32, error: String, message: String) : status = status, error = error, super(message);
+}
+
+/** What the host keeps beside the accounts: scope names, and private entries. */
+export interface HostStore {
+  /** The organization whose scope is `scope`, or null. */
+  scopeOwner(scope: String): Future<String | null>;
+  putScope(scope: String, org: String): Future<void>;
+  /** The account named `name` in `scope`, or null. */
+  nameInScope(scope: String, name: String): Future<String | null>;
+  putName(scope: String, name: String, did: String): Future<void>;
+  /** The entries behind the commitments in `account`'s records. */
+  entries(account: String): Future<Array<MemberEntry>>;
+  addEntries(account: String, entries: Array<MemberEntry>): Future<void>;
+}
+
+/** The host's store in memory. */
+export final class MemoryHostStore implements HostStore {
+  #scopes = new HashMap<String, String>();
+  #names = new HashMap<String, String>();
+  #entries = new HashMap<String, GrowableArray<MemberEntry>>();
+
+  async scopeOwner(scope: String): Future<String | null> {
+    if (let (true, org) = this.#scopes.get(scope)) {
+      return org;
+    }
+    return null;
+  }
+
+  async putScope(scope: String, org: String): Future<void> {
+    this.#scopes[scope] = org;
+  }
+
+  async nameInScope(scope: String, name: String): Future<String | null> {
+    if (let (true, did) = this.#names.get(`${name}.${scope}`)) {
+      return did;
+    }
+    return null;
+  }
+
+  async putName(scope: String, name: String, did: String): Future<void> {
+    this.#names[`${name}.${scope}`] = did;
+  }
+
+  async entries(account: String): Future<Array<MemberEntry>> {
+    if (let (true, list) = this.#entries.get(account)) {
+      return list;
+    }
+    return new GrowableArray<MemberEntry>();
+  }
+
+  async addEntries(account: String, entries: Array<MemberEntry>): Future<void> {
+    var list = new GrowableArray<MemberEntry>();
+    if (let (true, existing) = this.#entries.get(account)) {
+      list = existing;
+    }
+    for (let entry in entries) {
+      list.push(entry);
+    }
+    this.#entries[account] = list;
+  }
+}
+
+/** How a host is set up. */
+export final class HostConfig {
+  /** The host's service DID, which callers' tokens are addressed to. */
+  serviceDid: String;
+  /** The domain its scopes are under, such as `pkg.zena-lang.dev`. */
+  domain: String;
+  /** Its PDS endpoint, which every account's DID document names. */
+  endpoint: String;
+  /** Its PLC rotation key, ranked below every account's recovery keys. */
+  rotationKey: SigningKey;
+  /** The largest blob `uploadArtifact` stores. */
+  var maxBlobSize: i64 = (50 * 1024 * 1024) as i64;
+  /** Scope names no one may take. */
+  reservedScopes = new HashSet<String>();
+
+  new(serviceDid: String, domain: String, endpoint: String, rotationKey: SigningKey)
+      : serviceDid = serviceDid, domain = domain, endpoint = endpoint, rotationKey = rotationKey {
+    for (let name in ['www', 'api', 'admin', 'zena', 'pkg', 'mail']) {
+      this.reservedScopes.add(name);
+    }
+  }
+}
+
+/** Sends a signed operation for a DID to the PLC directory. */
+export type PlcSubmitter = (did: String, operation: PlcOperation) => Future<void>;
+
+/** `count` random bytes. */
+export type RandomBytes = (count: i32) => FixedArray<u8>;
+
+/** An account the host created: its DID, handle, and the record the caller attests. */
+export final class Created {
+  did: String;
+  handle: String;
+  uri: String;
+  cid: Cid;
+
+  new(did: String, handle: String, uri: String, cid: Cid) : did = did, handle = handle, uri = uri, cid = cid;
+}
+
+/** The `dev.zena-lang.host.*` methods, over a PDS's accounts. */
+export final class PackageHost {
+  pds: Pds;
+  config: HostConfig;
+  #store: HostStore;
+  #keys: SigningKeyLookup;
+  #submit: PlcSubmitter;
+  #random: RandomBytes;
+  #replays = new ReplayGuard();
+
+  new(pds: Pds, config: HostConfig, store: HostStore, keys: SigningKeyLookup, submit: PlcSubmitter,
+      random: RandomBytes)
+      : pds = pds, config = config, #store = store, #keys = keys, #submit = submit, #random = random;
+
+  /**
+   * The DID of the account a call to `method` comes from, read from its
+   * `authorization` header: a service-auth token for this host and that
+   * method, not seen before. Throws `HostError`.
+   */
+  async authenticate(authorization: String | null, method: String, nowSeconds: i64): Future<String> {
+    if (authorization == null || !(authorization as String).startsWith('Bearer ')) {
+      throw new HostError(401, 'AuthenticationRequired', 'a service-auth token is required');
+    }
+    let header = authorization as String;
+    let token = header.sliceBytes(7, header.length);
+    try {
+      let claims = await verifyServiceAuth(token, this.config.serviceDid, method, nowSeconds, this.#keys);
+      this.#replays.accept(claims, nowSeconds);
+      return claims.iss;
+    } catch (e) {
+      if (e is ServiceAuthError) {
+        throw new HostError(401, 'InvalidToken', e.message);
+      }
+      throw e;
+    }
+  }
+
+  /**
+   * `createOrganization`: a scope named `name`, owned by `caller` alone.
+   * `recoveryKeys` are `did:key`s, ranked above the host's rotation key.
+   */
+  async createOrganization(caller: String, name: String, recoveryKeys: Array<String>, nowMicros: i64)
+      : Future<Created> {
+    if (!isValidPackageName(name) || this.config.reservedScopes.has(name)) {
+      throw new HostError(400, 'NameTaken', `'${name}' cannot be a scope`);
+    }
+    if ((await this.#store.scopeOwner(name)) != null) {
+      throw new HostError(400, 'NameTaken', `the scope '${name}' exists`);
+    }
+    let handle = `${name}.${this.config.domain}`;
+    let account = await this.#createAccount(handle, recoveryKeys, AccountKind.Organization, nowMicros);
+    await this.#store.putScope(name, account.did);
+    let owner = new MemberEntry(caller, OWNER, this.#random(32));
+    await this.#store.addEntries(account.did, [owner]);
+    let members = new Members(new FixedArray<Cid>(1, owner.commitment()));
+    let cid = await this.#write(account, MEMBERS_TYPE, 'self', members.toValue(), nowMicros);
+    return new Created(account.did, handle, `at://${account.did}/${MEMBERS_TYPE}/self`, cid);
+  }
+
+  /**
+   * `createPackage`: a package in `org`'s scope, named by its profile, with
+   * its maintainers record. The caller must be an owner or admin of `org`.
+   */
+  async createPackage(caller: String, org: String, recoveryKeys: Array<String>, profileValue: Value,
+      maintainersValue: Value, entryValues: Array<Value>, nowMicros: i64): Future<Created> {
+    let organization = await this.pds.storage.getAccount(org);
+    if (organization == null || organization.kind != AccountKind.Organization) {
+      throw new HostError(400, 'InvalidRequest', `${org} is not an organization on this host`);
+    }
+    if (!(await this.#hasRole(org, caller, ['owner', 'admin']))) {
+      throw new HostError(403, 'Forbidden', `${caller} is not an admin of ${org}`);
+    }
+    let profile = readRecord(() => Profile.fromValue(profileValue));
+    let maintainers = readRecord(() => Maintainers.fromValue(maintainersValue));
+    let committed = new HashSet<String>();
+    for (let maintainer in maintainers.maintainers) {
+      let commitment = maintainer.commitment;
+      if (commitment != null) {
+        committed.add(commitment.toString());
+      }
+    }
+    let entries = new GrowableArray<MemberEntry>();
+    for (let value in entryValues) {
+      let entry = readRecord(() => MemberEntry.fromValue(value));
+      if (!committed.has(entry.commitment().toString())) {
+        throw new HostError(400, 'InvalidRequest', 'an entry is not behind any commitment in the maintainers record');
+      }
+      entries.push(entry);
+    }
+    let scope = scopeOf(organization.handle as String, this.config.domain);
+    if ((await this.#store.nameInScope(scope, profile.name)) != null) {
+      throw new HostError(400, 'NameTaken', `the scope '${scope}' has '${profile.name}'`);
+    }
+    let handle = `${profile.name}.${scope}.${this.config.domain}`;
+    let account = await this.#createAccount(handle, recoveryKeys, AccountKind.Package, nowMicros);
+    await this.#store.putName(scope, profile.name, account.did);
+    await this.#store.addEntries(account.did, entries);
+    let repository = this.pds.repositoryOf(account);
+    await repository.applyWrites([
+      new CreateRecord(PROFILE_TYPE, PROFILE_KEY, asMap(profileValue)) as Write,
+      new CreateRecord(MAINTAINERS_TYPE, 'self', asMap(maintainersValue)) as Write,
+    ], nowMicros);
+    let cid = (await this.pds.storage.store(account.did).getRecord(MAINTAINERS_TYPE, 'self')) as Cid;
+    return new Created(account.did, handle, `at://${account.did}/${MAINTAINERS_TYPE}/self`, cid);
+  }
+
+  /** `uploadArtifact`: stores `bytes` as a blob of `pkg`, for a release. */
+  async uploadArtifact(caller: String, pkg: String, mimeType: String, bytes: FixedArray<u8>)
+      : Future<BlobRef> {
+    let account = await this.#maintainedPackage(caller, pkg);
+    if ((bytes.length as i64) > this.config.maxBlobSize) {
+      throw new HostError(400, 'TooLarge', `the blob is larger than ${this.config.maxBlobSize} bytes`);
+    }
+    let cid = Cid.forBlob(bytes);
+    await this.pds.storage.store(account.did).putBlob(cid, new StoredBlob(mimeType, bytes));
+    return new BlobRef(cid, mimeType, bytes.length as i64);
+  }
+
+  /**
+   * `publish`: writes a release of `pkg`, at the record key equal to its
+   * version. Every blob it references must have been uploaded.
+   */
+  async publish(caller: String, pkg: String, releaseValue: Value, nowMicros: i64): Future<Created> {
+    let account = await this.#maintainedPackage(caller, pkg);
+    let release = readRecord(() => Release.fromValue(releaseValue));
+    let store = this.pds.storage.store(account.did);
+    for (let artifact in release.artifacts) {
+      for (let blob in blobsOf(artifact.blob, artifact.parts, artifact.wit)) {
+        if ((await store.getBlob(blob.cid)) == null) {
+          throw new HostError(400, 'BlobNotFound', `${blob.cid.toString()} was not uploaded to ${pkg}`);
+        }
+      }
+    }
+    let version = release.version.toString();
+    if ((await store.getRecord(RELEASE_TYPE, version)) != null) {
+      throw new HostError(400, 'VersionExists', `${pkg} has a release ${version}`);
+    }
+    let cid = await this.#write(account, RELEASE_TYPE, version, asMap(releaseValue), nowMicros);
+    return new Created(account.did, account.handle ?? account.did,
+        `at://${account.did}/${RELEASE_TYPE}/${version}`, cid);
+  }
+
+  /**
+   * Creates an account named `handle` on this host: a new signing key, and
+   * a `did:plc` whose genesis operation ranks `recoveryKeys` above the
+   * host's rotation key, signed with that key and sent to the PLC directory.
+   */
+  async #createAccount(handle: String, recoveryKeys: Array<String>, kind: AccountKind, nowMicros: i64)
+      : Future<Account> {
+    if (recoveryKeys.length == 0 || recoveryKeys.length > 4) {
+      throw new HostError(400, 'InvalidRequest', 'give one to four recovery keys');
+    }
+    let rotation = new GrowableArray<PublicKey>();
+    for (let key in recoveryKeys) {
+      try {
+        rotation.push(parseDidKey(key));
+      } catch (e) {
+        throw new HostError(400, 'InvalidRequest', `'${key}' is not a did:key`);
+      }
+    }
+    rotation.push(this.config.rotationKey.publicKey());
+    let signing = new SigningKey(KeyType.Secp256k1, this.#random(32));
+    let hostKey = this.config.rotationKey;
+    let operation = genesisOperation(signing.publicKey(), rotation, handle, this.config.endpoint)
+      .signedWith((bytes) => hostKey.sign(bytes));
+    let did = didOfGenesis(operation);
+    await this.#submit(did, operation);
+    return await this.pds.createAccount(did, handle, signing, nowMicros, kind);
+  }
+
+  async #write(account: Account, collection: String, rkey: String, record: MapValue, nowMicros: i64)
+      : Future<Cid> {
+    try {
+      await this.pds.repositoryOf(account).applyWrites([new CreateRecord(collection, rkey, record) as Write], nowMicros);
+    } catch (e) {
+      if (e is RepositoryError) {
+        throw new HostError(400, (e as RepositoryError).error, e.message);
+      }
+      throw e;
+    }
+    return (await this.pds.storage.store(account.did).getRecord(collection, rkey)) as Cid;
+  }
+
+  /** Whether `caller`'s entry in `account` gives one of `roles`. */
+  async #hasRole(account: String, caller: String, roles: Array<String>): Future<boolean> {
+    for (let entry in await this.#store.entries(account)) {
+      for (let role in roles) {
+        if (entry.did == caller && entry.role == role) {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  /**
+   * The package `pkg`, when `caller` maintains it: listed in its maintainers
+   * record by DID, or by a commitment whose entry names them. Throws
+   * `HostError` otherwise.
+   */
+  async #maintainedPackage(caller: String, pkg: String): Future<Account> {
+    let account = await this.pds.storage.getAccount(pkg);
+    if (account == null || account.kind != AccountKind.Package) {
+      throw new HostError(400, 'InvalidRequest', `${pkg} is not a package on this host`);
+    }
+    let store = this.pds.storage.store(pkg);
+    let cid = await store.getRecord(MAINTAINERS_TYPE, 'self');
+    if (cid == null) {
+      throw new HostError(403, 'Forbidden', `${pkg} has no maintainers record`);
+    }
+    let bytes = (await store.getBlock(cid as Cid)) as FixedArray<u8>;
+    let maintainers = Maintainers.fromValue(decodeCbor(bytes));
+    let commitments = new HashSet<String>();
+    for (let entry in await this.#store.entries(pkg)) {
+      if (entry.did == caller) {
+        commitments.add(entry.commitment().toString());
+      }
+    }
+    for (let maintainer in maintainers.maintainers) {
+      let commitment = maintainer.commitment;
+      if ((maintainer.did != null && maintainer.did as String == caller) ||
+          (commitment != null && commitments.has(commitment.toString()))) {
+        return account as Account;
+      }
+    }
+    throw new HostError(403, 'Forbidden', `${caller} does not maintain ${pkg}`);
+  }
+}
+
+/** The scope of an organization whose handle is `<scope>.<domain>`. */
+function scopeOf(handle: String, domain: String): String {
+  return handle.sliceBytes(0, handle.length - domain.length - 1);
+}
+
+function asMap(value: Value): MapValue {
+  if (!(value is MapValue)) {
+    throw new HostError(400, 'InvalidRequest', 'a record is not an object');
+  }
+  return value as MapValue;
+}
+
+/** Reads a record with `read`, answering `InvalidRequest` when it is not one. */
+function readRecord<T>(read: () => T): T {
+  try {
+    return read();
+  } catch (e) {
+    if (e is RecordError) {
+      throw new HostError(400, 'InvalidRequest', e.message);
+    }
+    throw e;
+  }
+}
+
+function blobsOf(blob: BlobRef | null, parts: FixedArray<BlobRef> | null, wit: BlobRef | null)
+    : GrowableArray<BlobRef> {
+  let all = new GrowableArray<BlobRef>();
+  if (blob != null) {
+    all.push(blob as BlobRef);
+  }
+  if (parts != null) {
+    for (let part in parts as FixedArray<BlobRef>) {
+      all.push(part);
+    }
+  }
+  if (wit != null) {
+    all.push(wit as BlobRef);
+  }
+  return all;
+}

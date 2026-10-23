@@ -45,7 +45,14 @@ record tree from the record index; pds.js updates the tree along the changed
 paths, and porting that is still to do. The server answers `/`,
 `/xrpc/_health`, the `com.atproto.sync` reads `getRecord`, `getRepo`,
 `getLatestCommit` and `getBlob`, and the `com.atproto.repo` reads
-`getRecord`, `listRecords` and `describeRepo`. The atproto libraries it needs
+`getRecord`, `listRecords` and `describeRepo`. Of the package host
+(milestone 6), it has account kinds that confine package, organization and
+automation accounts to `dev.zena-lang.*` records, and the methods
+`createOrganization`, `createPackage` (which signs and submits each new
+account's `did:plc` genesis operation), `uploadArtifact` and `publish`,
+each checked with a service-auth token and the caller's role. Teams, the
+limits on creating accounts, sessions for automation accounts, and the other
+methods are still to do. The atproto libraries it needs
 are in `packages/atproto`, because the package manager needed them first:
 the data model, DAG-CBOR, CIDs, CAR, the MST, commits and their proofs,
 P-256 and secp256k1 signatures and `did:key`, DID and handle resolution, an

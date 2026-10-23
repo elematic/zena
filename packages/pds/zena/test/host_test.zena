@@ -1,0 +1,240 @@
+/**
+ * The package host's methods, through the HTTP routes, as the `zena`
+ * command will call them: each with a service-auth token from the
+ * caller's own PDS, which these tests sign with the caller's key.
+ */
+
+import {suite, test} from 'zena:test';
+import {equal, isTrue} from 'zena:assert';
+import {Future, runFuture} from 'zena:async';
+import {HashMap} from 'zena:collections';
+import {hex} from 'zena:encoding';
+import {App, Request, Response} from 'zena:http';
+import {JsonArray, JsonObject, parseJson, stringify} from 'zena:json';
+import {bytesStream} from 'zena:stream';
+import {now} from 'wasi:clocks/system-clock';
+import {readCar} from 'atproto:car';
+import {BlobRef, MapValue, fromJson, toJson} from 'atproto:data';
+import {Cid} from 'atproto:cid';
+import {KeyType, PublicKey, formatDidKey, parseDidKey, verifySignature} from 'atproto:didkey';
+import {PlcOperation, didOfGenesis} from 'atproto:plc';
+import {verifyRecordProof} from 'atproto:repo';
+import {ServiceAuthClaims, createServiceAuthToken} from 'atproto:service-auth';
+import {
+  Artifact, Dependency, Maintainer, Maintainers, OWNER, Profile, RELEASE_TYPE, Release, SOURCE
+} from 'package-manager:records';
+import {Version} from 'package-manager:version';
+import {HostConfig, MemoryHostStore, PackageHost} from 'pds:host';
+import {Pds} from 'pds:pds';
+import {CreateRecord, RepositoryError, Write} from 'pds:repository';
+import {createApp} from 'pds:server';
+import {Account, AccountKind, MemoryStorage, SigningKey} from 'pds:storage';
+
+let HOST = 'did:web:pkg.test';
+let ALICE = 'did:plc:alicealicealicealicealic';
+let BOB = 'did:plc:bobbobbobbobbobbobbobbob';
+let ALICE_KEY = hex.decode('c9afa9d845ba75166b5c215767b1d6934e50c3db36e89b127b8a622b120f6721');
+let BOB_KEY = hex.decode('9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60');
+
+/** A host on a PDS in memory, and the PLC operations it sent. */
+final class Fixture {
+  var app: App;
+  pds: Pds;
+  submitted = new HashMap<String, PlcOperation>();
+  var #jti = 0;
+  var #random = 0;
+
+  new() : pds = new Pds(new MemoryStorage()), app = new App() {
+    let rotation = new SigningKey(KeyType.Secp256k1, filled(200));
+    let config = new HostConfig(HOST, 'pkg.test', 'https://pkg.test', rotation);
+    let callers = new HashMap<String, PublicKey>();
+    callers[ALICE] = new SigningKey(KeyType.P256, ALICE_KEY).publicKey();
+    callers[BOB] = new SigningKey(KeyType.P256, BOB_KEY).publicKey();
+    let submitted = this.submitted;
+    let host = new PackageHost(this.pds, config, new MemoryHostStore(),
+        async (did: String, fresh: boolean): Future<PublicKey | null> => {
+          if (let (true, key) = callers.get(did)) {
+            return key;
+          }
+          return null;
+        },
+        async (did: String, operation: PlcOperation): Future<void> => {
+          submitted[did] = operation;
+        },
+        (count: i32) => {
+          this.#random += 1;
+          return filled(this.#random);
+        });
+    this.app = createApp(this.pds, host);
+  }
+
+  /** A token from `caller`'s PDS for `method`. */
+  token(caller: String, method: String): String {
+    this.#jti += 1;
+    let seconds = now().seconds;
+    let key = if (caller == ALICE) ALICE_KEY else BOB_KEY;
+    return createServiceAuthToken(new ServiceAuthClaims(caller, HOST, seconds + 60, seconds,
+        method, `jti-${this.#jti}`), KeyType.P256, key);
+  }
+
+  /** Calls the host method `name` as `caller` with a JSON body, or raw bytes. */
+  call(caller: String | null, name: String, body: String, query: String = '',
+      contentType: String = 'application/json', authorization: String | null = null): Response {
+    let method = `dev.zena-lang.host.${name}`;
+    let headers = new HashMap<String, String>();
+    headers['content-type'] = contentType;
+    if (authorization != null) {
+      headers['authorization'] = authorization as String;
+    } else if (caller != null) {
+      headers['authorization'] = `Bearer ${this.token(caller as String, method)}`;
+    }
+    let res = new Response();
+    let app = this.app;
+    runFuture((async () => {
+      let req = new Request.fromUrl(`http://localhost/xrpc/${method}${query}`, 'POST', headers,
+          bytesStream(body.toBytes()));
+      await app.handleRequest(req, res);
+    })());
+    return res;
+  }
+
+  get(path: String): Response {
+    let res = new Response();
+    let app = this.app;
+    runFuture((async () => {
+      let req = new Request.fromUrl(`http://localhost${path}`, 'GET', new HashMap<String, String>());
+      await app.handleRequest(req, res);
+    })());
+    return res;
+  }
+}
+
+function filled(value: i32): FixedArray<u8> {
+  return new FixedArray<u8>(32, value as u8);
+}
+
+function json(res: Response): JsonObject {
+  return parseJson(res.body as String) as JsonObject;
+}
+
+function ok(res: Response): JsonObject {
+  isTrue(res.statusCode == 200, `${res.statusCode}: ${res.body as String}`);
+  return json(res);
+}
+
+function errorOf(res: Response): String {
+  isTrue(res.statusCode >= 400, `${res.statusCode}`);
+  return json(res)['error'] as String;
+}
+
+let RECOVERY = formatDidKey(new SigningKey(KeyType.P256, ALICE_KEY).publicKey());
+
+function createOrganization(fixture: Fixture, caller: String, name: String): Response {
+  return fixture.call(caller, 'createOrganization', `{"name": "${name}", "recoveryKeys": ["${RECOVERY}"]}`);
+}
+
+function createPackage(fixture: Fixture, caller: String, org: String, name: String): Response {
+  let profile = stringify(toJson(new Profile(name).toValue()));
+  let maintainers = stringify(toJson(new Maintainers([Maintainer.ofDid(ALICE, OWNER)]).toValue()));
+  return fixture.call(caller, 'createPackage',
+      `{"organization": "${org}", "recoveryKeys": ["${RECOVERY}"], "profile": ${profile}, "maintainers": ${maintainers}}`);
+}
+
+function releaseJson(version: String, blob: BlobRef): String {
+  let release = new Release(Version.parse(version), '2026-10-23T00:00:00.000Z',
+      new FixedArray<Artifact>(1, Artifact.whole(SOURCE, blob)),
+      new FixedArray<Dependency>(0, new Dependency('', Version.parse('0.0.0'), '')));
+  return stringify(toJson(release.toValue()));
+}
+
+export let tests = suite('pds:host', () => {
+  test('creates an organization and a package, and publishes a release a client verifies', (ctx) => {
+    let fixture = new Fixture();
+    let org = ok(createOrganization(fixture, ALICE, 'acme'));
+    let orgDid = org['did'] as String;
+    equal(org['handle'] as String, 'acme.pkg.test');
+    // The host sent the organization's genesis operation, which makes its
+    // DID, with Alice's recovery key ranked above the host's key.
+    let orgOperation = fixture.submitted[orgDid];
+    equal(didOfGenesis(orgOperation), orgDid);
+    equal(orgOperation.rotationKeys[0], RECOVERY);
+    equal(orgOperation.rotationKeys.length, 2);
+    equal(orgOperation.services['atproto_pds'].endpoint, 'https://pkg.test');
+
+    let pkg = ok(createPackage(fixture, ALICE, orgDid, 'router'));
+    let pkgDid = pkg['did'] as String;
+    equal(pkg['handle'] as String, 'router.acme.pkg.test');
+    equal(((pkg['maintainers'] as JsonObject)['uri'] as String),
+        `at://${pkgDid}/dev.zena-lang.package.maintainers/self`);
+
+    let uploaded = ok(fixture.call(ALICE, 'uploadArtifact', 'the source archive', `?package=${pkgDid}`,
+        'application/vnd.ipld.car'));
+    let blobJson = uploaded['blob'] as JsonObject;
+    equal(blobJson['mimeType'] as String, 'application/vnd.ipld.car');
+    let blob = BlobRef.fromValue(fromJson(blobJson));
+
+    let published = ok(fixture.call(ALICE, 'publish',
+        `{"package": "${pkgDid}", "release": ${releaseJson('1.0.0', blob)}}`));
+    equal(published['uri'] as String, `at://${pkgDid}/${RELEASE_TYPE}/1.0.0`);
+
+    // The release can be fetched with a proof that verifies with the signing
+    // key the package's DID document names.
+    let signingKey = parseDidKey(fixture.submitted[pkgDid].verificationMethods['atproto']);
+    let proof = fixture.get(`/xrpc/com.atproto.sync.getRecord?did=${pkgDid}&collection=${RELEASE_TYPE}&rkey=1.0.0`);
+    let verified = verifyRecordProof(readCar(proof.body as FixedArray<u8>), pkgDid, RELEASE_TYPE, '1.0.0',
+        (signed, sig) => verifySignature(signingKey, signed, sig));
+    equal((verified.cid as Cid).toString(), published['cid'] as String);
+    let artifact = fixture.get(`/xrpc/com.atproto.sync.getBlob?did=${pkgDid}&cid=${blob.cid.toString()}`);
+    equal(String.fromBytes(artifact.body as FixedArray<u8>), 'the source archive');
+
+    // A package account holds package records only.
+    let account = runFuture(fixture.pds.storage.getAccount(pkgDid)) as Account;
+    equal(account.kind, AccountKind.Package);
+    var refused = '';
+    try {
+      runFuture(fixture.pds.repositoryOf(account).applyWrites([new CreateRecord('app.bsky.feed.post', 'x',
+          new Profile('x').toValue()) as Write], 0 as i64));
+    } catch (e) {
+      refused = if (e is RepositoryError) (e as RepositoryError).error else e.message;
+    }
+    equal(refused, 'InvalidRequest');
+  });
+
+  test('refuses calls without a valid, unused token for the method', (ctx) => {
+    let fixture = new Fixture();
+    let body = `{"name": "acme", "recoveryKeys": ["${RECOVERY}"]}`;
+    equal(errorOf(fixture.call(null, 'createOrganization', body)), 'AuthenticationRequired');
+    let wrongMethod = `Bearer ${fixture.token(ALICE, 'dev.zena-lang.host.publish')}`;
+    equal(errorOf(fixture.call(null, 'createOrganization', body, '', 'application/json', wrongMethod)),
+        'InvalidToken');
+    let once = `Bearer ${fixture.token(ALICE, 'dev.zena-lang.host.createOrganization')}`;
+    ok(fixture.call(null, 'createOrganization', body, '', 'application/json', once));
+    equal(errorOf(fixture.call(null, 'createOrganization',
+        `{"name": "other", "recoveryKeys": ["${RECOVERY}"]}`, '', 'application/json', once)), 'InvalidToken');
+  });
+
+  test('refuses names that are taken and callers without the role', (ctx) => {
+    let fixture = new Fixture();
+    let orgDid = ok(createOrganization(fixture, ALICE, 'acme'))['did'] as String;
+    equal(errorOf(createOrganization(fixture, BOB, 'acme')), 'NameTaken');
+    equal(errorOf(createOrganization(fixture, BOB, 'www')), 'NameTaken');
+    equal(errorOf(createOrganization(fixture, BOB, 'Not-A-Name')), 'NameTaken');
+    // Bob is not an admin of acme.
+    equal(errorOf(createPackage(fixture, BOB, orgDid, 'router')), 'Forbidden');
+    let pkgDid = ok(createPackage(fixture, ALICE, orgDid, 'router'))['did'] as String;
+    equal(errorOf(createPackage(fixture, ALICE, orgDid, 'router')), 'NameTaken');
+
+    // Bob does not maintain router.
+    equal(errorOf(fixture.call(BOB, 'uploadArtifact', 'bytes', `?package=${pkgDid}`, 'text/plain')), 'Forbidden');
+    let blob = BlobRef.fromValue(fromJson(ok(fixture.call(ALICE, 'uploadArtifact', 'bytes',
+        `?package=${pkgDid}`, 'text/plain'))['blob'] as JsonObject));
+    ok(fixture.call(ALICE, 'publish', `{"package": "${pkgDid}", "release": ${releaseJson('1.0.0', blob)}}`));
+    equal(errorOf(fixture.call(ALICE, 'publish', `{"package": "${pkgDid}", "release": ${releaseJson('1.0.0', blob)}}`)),
+        'VersionExists');
+    let missing = new BlobRef(Cid.forBlob('never uploaded'.toBytes()), 'text/plain', 14 as i64);
+    equal(errorOf(fixture.call(ALICE, 'publish', `{"package": "${pkgDid}", "release": ${releaseJson('1.1.0', missing)}}`)),
+        'BlobNotFound');
+    equal(errorOf(fixture.call(BOB, 'publish', `{"package": "${pkgDid}", "release": ${releaseJson('1.2.0', blob)}}`)),
+        'Forbidden');
+  });
+});

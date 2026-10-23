@@ -44,13 +44,39 @@ export final class SigningKey {
   }
 }
 
+/**
+ * What an account is for. A person's account is an ordinary atproto
+ * account. The others are the package host's (docs/design/package-manager.md,
+ * "Abuse and moderation"), and hold only Zena package records.
+ */
+export enum AccountKind {
+  Person,
+  Package,
+  Organization,
+  /** An organization's bot, which CI publishes as: it writes attestations only. */
+  Automation
+}
+
 /** An account the server holds. */
 export final class Account {
   did: String;
   var handle: String | null;
   key: SigningKey;
+  kind: AccountKind;
 
-  new(did: String, handle: String | null, key: SigningKey) : did = did, handle = handle, key = key;
+  new(did: String, handle: String | null, key: SigningKey, kind: AccountKind = AccountKind.Person)
+      : did = did, handle = handle, key = key, kind = kind;
+
+  /** Whether the account may hold records of `collection`. */
+  allows(collection: String): boolean {
+    if (this.kind == AccountKind.Person) {
+      return true;
+    }
+    if (this.kind == AccountKind.Automation) {
+      return collection == 'dev.zena-lang.package.attestation';
+    }
+    return collection.startsWith('dev.zena-lang.');
+  }
 }
 
 /** A record in a repository's index: where it is, and its CID. */
