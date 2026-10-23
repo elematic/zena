@@ -4884,7 +4884,7 @@ values, the type system automatically narrows the union based on the literal
 pattern. This enables ergonomic iteration with discriminated unions.
 
 ```zena
-// Iterator.next() returns Step<T>: inline (0, _, _) | inline (1, T, _)
+// Iterator.next() returns Step<T>: inline (0, _, _) | inline (1, inline? T, _)
 // When the pattern includes '1', only the (1, T, _) variant is considered
 while (let (1, elem, _) = iterator.next()) {
   // elem is narrowed to T (not T | _)
@@ -5382,8 +5382,8 @@ An `Iterator<T>` yields elements sequentially using inline tuples for zero-alloc
 
 ```zena
 export type Step<T> =
-    inline (0, _, _)    // Done
-  | inline (1, T, _);   // Ready
+    inline (0, _, _)            // Done
+  | inline (1, inline? T, _);   // Ready
 
 export interface Iterator<T> extends AsyncIterator<T> {
   next(): Step<T>;
@@ -5391,7 +5391,9 @@ export interface Iterator<T> extends AsyncIterator<T> {
 ```
 
 Calls to `next()` return `(1, value, _)` for each element until the
-iterator is exhausted, returning `(0, _, _)`. The third position is
+iterator is exhausted, returning `(0, _, _)`. When the element is a tuple,
+its elements are part of the step (`inline? T`), so an iterator of pairs, such
+as `zip`'s, allocates nothing per element. The third position is
 always empty: it is there so that a `Step<T>` is also an
 `AsyncStep<T>`, and every `Iterator<T>` an `AsyncIterator<T>`.
 
@@ -5405,7 +5407,7 @@ value, or the end, is still coming, and the future settles with
 ```zena
 export type AsyncStep<V> =
     inline (0, _, _)                    // Done
-  | inline (1, V, _)                    // Ready
+  | inline (1, inline? V, _)            // Ready
   | inline (2, _, Future<Option<V>>);   // Pending
 
 export interface AsyncIterator<T> {

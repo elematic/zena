@@ -523,6 +523,37 @@ export let tests = suite('WatGenerator', () => {
     equal(result.contains('(param v128) (param v128) (result v128)'), true);
   });
 
+  // `Step<T>` unboxes a tuple element (`(1, inline? T, _)`), so a step of
+  // pairs is four wasm results and neither the iterator nor a loop that
+  // destructures it allocates. Boxing would still type-check and run, so
+  // only the property says it regressed. (This compiler's standard
+  // library is a stub, so the step type is declared here as zena:core
+  // declares it.)
+  test('a step of tuples allocates nothing', (ctx) => {
+    let result = compileAndGenerateWat(`
+      type Step<T> = inline (0, _, _) | (1, inline? T, _);
+      function step(i: i32): Step<(i32, i32)> {
+        if (i > 2) {
+          return (0, _, _);
+        }
+        return (1, (i, i * 2), _);
+      }
+      export let main = (): i32 => {
+        var total = 0;
+        var i = 0;
+        while (let (1, (a, b), _) = step(i)) {
+          total += a + b;
+          i += 1;
+        }
+        return total;
+      };
+    `);
+    assertNoAllocation(result, '$step',
+        'a Step<(A, B)> returns A and B as results of their own');
+    assertNoAllocation(result, '$main',
+        "a tuple pattern reads the step's values without boxing them");
+  });
+
   // -- the wide-arithmetic proposal ------------------------------------
   //
   // `WasmModule.wideArithmetic` chooses between emitting the

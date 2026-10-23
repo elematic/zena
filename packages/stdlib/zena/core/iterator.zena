@@ -24,14 +24,18 @@ import { AsyncIterator } from 'zena:async';
  * - `Done` (discriminant 0): no more items.
  * - `Ready` (discriminant 1): a value, available now.
  *
+ * A tuple value is unboxed too (`inline? T`): `Step<(K, V)>` returns the
+ * key and the value as results of their own, so `zip` and similar
+ * iterators allocate nothing per step.
+ *
  * The third position is always empty. It is there so that every `Step`
  * is also an `AsyncStep` (zena:async), whose third arm carries a future:
  * a synchronous iterator can stand wherever an asynchronous one is
  * expected, and a `for await` drives both.
  */
 export type Step<T> =
-    inline (0, _, _)    // Done
-  | inline (1, T, _);   // Ready
+    inline (0, _, _)            // Done
+  | inline (1, inline? T, _);   // Ready
 
 export interface Iterator<T> extends AsyncIterator<T> {
   /**
