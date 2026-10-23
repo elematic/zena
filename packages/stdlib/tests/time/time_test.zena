@@ -4,7 +4,7 @@
 // because relational operators do not dispatch to operator methods.
 import {suite, test} from 'zena:test';
 import {equal, isTrue, isFalse} from 'zena:assert';
-import {monotonic, milliseconds, Instant} from 'zena:time';
+import {monotonic, milliseconds, formatTimestamp, Instant} from 'zena:time';
 
 export let tests = suite('time types', () => {
   test('milliseconds builds a nanosecond count', () => {
@@ -38,5 +38,16 @@ export let tests = suite('time types', () => {
     isFalse(d.isNegative());
     isFalse(milliseconds(0).isPositive());
     isFalse(milliseconds(0).isNegative());
+  });
+
+  test('formatTimestamp writes UTC with milliseconds', (ctx) => {
+    let at = (millis: i64) => formatTimestamp(millis * (1000000 as i64));
+    equal(at(0 as i64), '1970-01-01T00:00:00.000Z');
+    equal(at(951782400000 as i64), '2000-02-29T00:00:00.000Z');
+    equal(at(1792800000123 as i64), '2026-10-24T00:00:00.123Z');
+    equal(at(1735689599999 as i64), '2024-12-31T23:59:59.999Z');
+    equal(at(4102444800000 as i64), '2100-01-01T00:00:00.000Z');
+    // Below a millisecond is dropped.
+    equal(formatTimestamp(1999999 as i64), '1970-01-01T00:00:00.001Z');
   });
 });

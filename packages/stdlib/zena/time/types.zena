@@ -20,6 +20,8 @@
  */
 
 /** Nanoseconds per millisecond. */
+import {div} from 'zena:math';
+
 let NS_PER_MS = 1000000 as i64;
 
 /**
@@ -93,4 +95,44 @@ export function milliseconds(ms: i64): Duration {
 /** `ns` nanoseconds as a `Duration`. */
 export function nanoseconds(ns: i64): Duration {
   return ns as Duration;
+}
+
+/**
+ * The UTC time `epochNanos` nanoseconds after the Unix epoch, as an
+ * ISO 8601 / RFC 3339 timestamp with milliseconds:
+ * `2026-10-23T17:04:05.123Z`. It counts days the proleptic Gregorian way,
+ * with no leap seconds, as Unix time does. Times before the epoch are not
+ * supported.
+ */
+export function formatTimestamp(epochNanos: i64): String {
+  if (epochNanos < (0 as i64)) {
+    throw new Error('formatTimestamp: a time before 1970');
+  }
+  let millis = div(epochNanos, NS_PER_MS);
+  let seconds = div(millis, 1000 as i64);
+  let days = div(seconds, 86400 as i64);
+  let ofDay = seconds - days * (86400 as i64);
+  // Howard Hinnant's civil_from_days, over March-based 400-year eras.
+  let z = days + (719468 as i64);
+  let era = div(z, 146097 as i64);
+  let dayOfEra = z - era * (146097 as i64);
+  let yearOfEra = div(dayOfEra - div(dayOfEra, 1460 as i64) + div(dayOfEra, 36524 as i64)
+      - div(dayOfEra, 146096 as i64), 365 as i64);
+  let dayOfYear = dayOfEra - ((365 as i64) * yearOfEra + div(yearOfEra, 4 as i64) - div(yearOfEra, 100 as i64));
+  let monthIndex = div((5 as i64) * dayOfYear + (2 as i64), 153 as i64);
+  let day = dayOfYear - div((153 as i64) * monthIndex + (2 as i64), 5 as i64) + (1 as i64);
+  let month = if (monthIndex < (10 as i64)) monthIndex + (3 as i64) else monthIndex - (9 as i64);
+  let year = yearOfEra + era * (400 as i64) + (if (month <= (2 as i64)) 1 else 0) as i64;
+  return `${digits(year, 4)}-${digits(month, 2)}-${digits(day, 2)}T${digits(div(ofDay, 3600 as i64), 2)}:` +
+      `${digits(div(ofDay, 60 as i64) % (60 as i64), 2)}:${digits(ofDay % (60 as i64), 2)}.` +
+      `${digits(millis % (1000 as i64), 3)}Z`;
+}
+
+/** `value` in decimal, padded with zeros to `width` digits. */
+function digits(value: i64, width: i32): String {
+  var text = `${value}`;
+  while (text.length < width) {
+    text = `0${text}`;
+  }
+  return text;
 }
