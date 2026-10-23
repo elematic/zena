@@ -73,45 +73,52 @@ export function runDevirt(cx: DevirtContext, body: IrBody): i32 {
       if (body.op(inst) != IrOp.call_ref) {
         continue;
       }
-      let extraIdx = body.a[inst];
-      let callee = body.extra[extraIdx];
-      let calleeType = body.resultType(callee);
-      if (calleeType == null) {
-        continue;
+      let target = resolveCallee(cx, body, body.extra[body.a[inst]]);
+      if (target != null && rewriteToCall(body, inst, target)) {
+        count += 1;
       }
-      let slotSig = asWasmSignature(calleeType);
-      if (slotSig == null) {
-        continue;
-      }
-      let target = resolveCallee(cx, body, callee);
-      if (target == null) {
-        continue;
-      }
-      let targetSig = target.signature;
-      let slotKey = new SignatureKey(slotSig.params, slotSig.returns);
-      let targetKey = new SignatureKey(targetSig.params, targetSig.returns);
-      if (!(slotKey == targetKey)) {
-        continue;
-      }
-      // call_ref [callee, argc, args…] becomes call [argc, args…] with
-      // the function in the ref slot; the result type is unchanged
-      // because the signatures are.
-      let argc = body.extra[extraIdx + 1];
-      let newIdx = body.extra.length;
-      body.extra.push(argc);
-      var i = 0;
-      while (i < argc) {
-        body.extra.push(body.extra[extraIdx + 2 + i]);
-        i += 1;
-      }
-      body.refTable.push(new IrRefFunc(target));
-      body.opcode[inst] = IrOp.call as i32;
-      body.a[inst] = newIdx;
-      body.b[inst] = body.refTable.length - 1;
-      count += 1;
     }
   }
   return count;
+}
+
+/**
+ * Rewrites the `call_ref` at `inst` into a direct call of `target`, when
+ * `target`'s signature equals the callee's type exactly; returns whether
+ * it did.
+ */
+export function rewriteToCall(body: IrBody, inst: i32, target: WasmFunction): boolean {
+  let extraIdx = body.a[inst];
+  let calleeType = body.resultType(body.extra[extraIdx]);
+  if (calleeType == null) {
+    return false;
+  }
+  let slotSig = asWasmSignature(calleeType);
+  if (slotSig == null) {
+    return false;
+  }
+  let targetSig = target.signature;
+  let slotKey = new SignatureKey(slotSig.params, slotSig.returns);
+  let targetKey = new SignatureKey(targetSig.params, targetSig.returns);
+  if (!(slotKey == targetKey)) {
+    return false;
+  }
+  // call_ref [callee, argc, args…] becomes call [argc, args…] with
+  // the function in the ref slot; the result type is unchanged
+  // because the signatures are.
+  let argc = body.extra[extraIdx + 1];
+  let newIdx = body.extra.length;
+  body.extra.push(argc);
+  var i = 0;
+  while (i < argc) {
+    body.extra.push(body.extra[extraIdx + 2 + i]);
+    i += 1;
+  }
+  body.refTable.push(new IrRefFunc(target));
+  body.opcode[inst] = IrOp.call as i32;
+  body.a[inst] = newIdx;
+  body.b[inst] = body.refTable.length - 1;
+  return true;
 }
 
 /** Steps over the casts lowering wraps around vtable and slot loads. */

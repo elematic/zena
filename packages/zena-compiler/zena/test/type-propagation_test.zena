@@ -1,0 +1,98 @@
+/**
+ * Interprocedural type propagation (lib/codegen/ir/propagate.zena):
+ * with `ModuleGenerator.propagate` on, a `call_ref` whose callee only
+ * one function can reach becomes a direct call. In the fixture both
+ * dispatches load their receiver, one from a field and one from an
+ * array, and two classes implement the interface, so neither of
+ * devirt.zena's rules resolves them; the analysis does, because only
+ * Squares reach the field and only Circles reach the array.
+ * tests/language/execution/interfaces/propagation-field-and-array.zena
+ * is the same program, run.
+ */
+import { suite, test } from 'zena:test';
+import { WatGenerator } from '../lib/codegen/wat-generator.zena';
+import { Program, CompilationUnit } from '../lib/program.zena';
+import { makeStdlibCompiler, PlainHost, errorDiagnostics } from './test-utils.zena';
+import { checkCompilation } from '../lib/compiler.zena';
+import { assertFunctionUses, assertFunctionOmits } from './wat-invariants.zena';
+import { growable } from 'zena:core';
+
+function compileToWat(source: String, propagate: boolean) {
+  let host = new PlainHost();
+  host.addFile("test.zena", source);
+
+  let compiler = makeStdlibCompiler(host);
+  let compResult = compiler.compile({entry: "test.zena", target: 'freestanding'});
+  let checkRes = checkCompilation(compResult);
+  let errors = errorDiagnostics(checkRes.diagnostics);
+  if (errors.length > 0) {
+    throw new Error(`the fixture does not compile: ${errors[0].message}`);
+  }
+
+  let entryAst = compResult.entry.ast;
+  let units = new Array<CompilationUnit>();
+  var entryUnit: CompilationUnit | null = null;
+  for (let file in compResult.files) {
+    let res = checkRes.results[file.path];
+    if (res != null) {
+      let unit = {ast: file.ast, model: res.model};
+      units.push(unit);
+      if (file.ast.path == entryAst.path) {
+        entryUnit = unit;
+      }
+    }
+  }
+
+  let generator = new WatGenerator("freestanding", false, 2);
+  generator.propagate = propagate;
+  return generator.generate(new Program(units, entryUnit));
+}
+
+let source = `
+  interface Shape {
+    area(): i32;
+  }
+  class Square implements Shape {
+    side: i32;
+    new(this.side);
+    area(): i32 { return this.side * this.side; }
+  }
+  class Circle implements Shape {
+    r: i32;
+    new(this.r);
+    area(): i32 { return 3 * this.r * this.r; }
+  }
+  class Holder {
+    shape: Shape;
+    new(this.shape);
+  }
+  function total(holders: FixedArray<Holder>, others: FixedArray<Shape>): i32 {
+    var sum = 0;
+    for (var i = 0; i < holders.length; i += 1) {
+      sum += holders[i].shape.area();
+    }
+    for (var i = 0; i < others.length; i += 1) {
+      sum += others[i].area();
+    }
+    return sum;
+  }
+  export let run = (): i32 => {
+    let a = total([new Holder(new Square(2)), new Holder(new Square(3))], [new Circle(1)]);
+    let b = total([new Holder(new Square(4))], [new Circle(2), new Circle(3)]);
+    return a * 1000 + b;
+  };
+`;
+
+export let tests = suite('type propagation', () => {
+  test('the fixture needs propagation to resolve its dispatches', () => {
+    assertFunctionUses(compileToWat(source, false), '$total',
+        growable<String>(['call_ref']),
+        'without propagation, the field and array dispatches should stay indirect');
+  });
+
+  test('makes a dispatch only one class reaches direct', () => {
+    assertFunctionOmits(compileToWat(source, true), '$total',
+        growable<String>(['call_ref']),
+        'only Squares reach Holder.shape and only Circles reach the array');
+  });
+});

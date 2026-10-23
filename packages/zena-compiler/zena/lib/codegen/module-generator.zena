@@ -40,6 +40,7 @@ import { WasmEmitter, ImportItem } from './wasm-emitter.zena';
 import { performance, nowMs } from '../time.zena';
 import { TemplateStats } from './template-stats.zena';
 import { DiscoveryCounts, censusReport } from './ir/census.zena';
+import { propagationReport, runPropagationDevirt } from './ir/propagate.zena';
 import { dirName, normalizePath } from '../module-resolver.zena';
 import { lowerFunction, lowerWithTemplates } from './ir/lowering.zena';
 import { TemplateFamilies } from './ir/template.zena';
@@ -126,6 +127,14 @@ export final class ModuleGenerator {
 
   /** After `compile()`: the templates the module's bodies were made from, for tests. */
   var templateFamilies: TemplateFamilies | null = null;
+
+  /**
+   * At `-O2`, make the `call_ref`s whose callee interprocedural type
+   * propagation (ir/propagate.zena) narrows to one function direct
+   * (docs/design/type-propagation.md). `ZENA_PROPAGATE=0` turns it off,
+   * to measure it.
+   */
+  var propagate = true;
 
   /**
    * The checker's interned types, for the module to build unions
@@ -776,6 +785,7 @@ export final class ModuleGenerator {
     // rounds rather than by a topological order.
     var zirInlined = 0;
     var zirDevirtualized = 0;
+    var zirPropagationDevirtualized = 0;
     var zirHarvestedFunctions = 0;
     var zirHarvestedGlobals = 0;
     var zirHoisted = 0;
@@ -894,6 +904,19 @@ export final class ModuleGenerator {
       }
       };
       runRounds(6, devirtCx);
+      // Interprocedural type propagation: once the rounds have done
+      // what they can site by site, the call_refs whose callee only one
+      // function can reach become direct calls, and two more rounds
+      // inline through them.
+      if (this.propagate) {
+        let tProp = performance.start("codegen-propagate");
+        zirPropagationDevirtualized = runPropagationDevirt(wasm, bodies, roots, changed);
+        performance.end(tProp);
+        if (zirPropagationDevirtualized > 0) {
+          cleanupChanged("propagation");
+          runRounds(2, devirtCx);
+        }
+      }
       // Loop-invariant code motion, once the rounds have made the
       // loops what they will be; GVN then merges what hoisting made
       // adjacent.
@@ -1365,7 +1388,8 @@ export final class ModuleGenerator {
           " dead instructions removed");
       console.log(`zir inline: ${i32ToString(zirInlined)} call sites inlined`);
       console.log("zir devirt: " + i32ToString(zirDevirtualized) +
-          " call_ref sites made direct");
+          " call_ref sites made direct, " + i32ToString(zirPropagationDevirtualized) +
+          " more by type propagation");
       console.log("zir licm: " + i32ToString(zirHoisted) +
           " loop-invariant instructions hoisted");
       console.log("zir sccp: " + i32ToString(zirPropagated) +
@@ -1391,6 +1415,11 @@ export final class ModuleGenerator {
           console.log(line);
         }
       }
+      let tProp = nowMs();
+      for (let line in propagationReport(wasm, bodies, roots)) {
+        console.log(line);
+      }
+      console.log(`zir propagation: ${i32ToString((nowMs() - tProp) as i32)} ms`);
     }
     if (wasm.datas.length > 0) {
       this.emitter.emitDataCountSection(wasm.datas.length);
