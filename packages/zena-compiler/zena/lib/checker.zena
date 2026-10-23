@@ -4541,6 +4541,29 @@ function isInlineType(t: Type, aliasHops: i32 = 0): boolean {
 }
 
 /**
+ * The boxed form of an inline type: what a binding or an inferred type
+ * argument holds when an inline value is stored. A type that is not
+ * inline comes back unchanged.
+ */
+function boxedFormOf(t: Type): Type {
+  return match (unwrapAliases(t)) {
+    case InlineTupleT {elementTypes}: new TupleT(elementTypes, null, 0) as Type
+    case UnionT {types}: {
+      if (!isInlineType(t)) {
+        t
+      } else {
+        let members = new Array<Type>();
+        for (let member in types) {
+          members.push(boxedFormOf(member));
+        }
+        createUnionType(members)
+      }
+    }
+    case _: t
+  };
+}
+
+/**
  * Resolve the operand of `inline` to the unboxed form of its type.
  *
  * A tuple written in place has its elements resolved here, where they may
@@ -7594,9 +7617,10 @@ function findExtendedInterfaceTransitive(it: InterfaceType, name: String): Inter
 function inferTypeArg(paramType: Type, argType: Type, inferred: HashMap<String, Type>): void {
   match (paramType) {
     case TypeParameterType {name}: {
-      // Direct type parameter — infer from arg type.
+      // Direct type parameter — infer from arg type. A type argument
+      // is storage, so an inline argument infers its boxed form.
       if (!inferred.has(name)) {
-        inferred[name] = argType;
+        inferred[name] = boxedFormOf(argType);
       }
     }
     case ArrayType {elementType}: {
@@ -8893,7 +8917,7 @@ function adaptCoalescedArm(
 
 function inferTypeParameter(sourceType: Type, targetType: Type, tpName: String, inferred: HashMap<String, Type>): boolean {
   if (sourceType is TypeParameterType && sourceType.name == tpName) {
-    inferred[tpName] = targetType;
+    inferred[tpName] = boxedFormOf(targetType);
     return true;
   }
   if (sourceType is ArrayType) {
@@ -9211,6 +9235,11 @@ function isAssignableTo(ctx: CheckerContext, source: Type, target: Type): boolea
           if (finalSrcFunc.parameters.length > tgtFunc.parameters.length) { return false; }
           // Covariant return type
           if (!isAssignableTo(ctx, finalSrcFunc.returnType, tgtFunc.returnType)) { return false; }
+          // An inline result changes the wasm signature, and nothing
+          // adapts one function to the other yet.
+          if (isInlineType(finalSrcFunc.returnType) != isInlineType(tgtFunc.returnType)) {
+            return false;
+          }
           for (var i = 0; i < finalSrcFunc.parameters.length; i += 1) {
             // Contravariant parameter types
             if (!isAssignableTo(ctx, tgtFunc.parameters[i], finalSrcFunc.parameters[i])) { return false; }
@@ -9432,6 +9461,15 @@ function isAssignableTo(ctx: CheckerContext, source: Type, target: Type): boolea
           }
           return true;
         }
+        // A tuple converts to its inline form: its identity cannot be
+        // observed, so reading its fields into slots loses nothing.
+        case InlineTupleT {elementTypes as tgtElems}: {
+          if (srcRow != null || srcElems.length != tgtElems.length) { return false; }
+          for (var i = 0; i < srcElems.length; i += 1) {
+            if (!isAssignableTo(ctx, srcElems[i], tgtElems[i])) { return false; }
+          }
+          return true;
+        }
         // `(...R)` is R.
         case TypeParameterType as tgtParam: {
           if (srcRow === tgtParam && srcElems.length == 0) {
@@ -9444,6 +9482,14 @@ function isAssignableTo(ctx: CheckerContext, source: Type, target: Type): boolea
     case InlineTupleT {elementTypes as srcElems}: {
       if (let InlineTupleT {elementTypes as tgtElems} = target) {
         if (srcElems.length != tgtElems.length) { return false; }
+        for (var i = 0; i < srcElems.length; i += 1) {
+          if (!isAssignableTo(ctx, srcElems[i], tgtElems[i])) { return false; }
+        }
+        return true;
+      }
+      // An inline tuple converts to its boxed form by allocating it.
+      if (let TupleT {elementTypes as tgtElems, row as tgtRow} = target) {
+        if (tgtRow != null || srcElems.length != tgtElems.length) { return false; }
         for (var i = 0; i < srcElems.length; i += 1) {
           if (!isAssignableTo(ctx, srcElems[i], tgtElems[i])) { return false; }
         }
@@ -11325,6 +11371,11 @@ function checkVariableDeclaration(
   } else {
     initType
   };
+  // A name holds a stored value, so an inline initializer is boxed. A
+  // tuple pattern takes the inline value apart instead.
+  if (typeAnnotation == null && !(pattern is TuplePattern)) {
+    declType = boxedFormOf(declType);
+  }
 
   // If an explicit type annotation is present, validate assignability.
   if (expectedType != null) {

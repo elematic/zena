@@ -1,0 +1,23 @@
+// @mode: check
+// `T` and `inline T` convert to each other implicitly, except where the
+// conversion would change a function's signature: nothing adapts a
+// function with an inline result to one with a boxed result yet.
+
+type Pair = (i32, i32);
+
+let pair = (): inline Pair => (1, 2);
+let boxed = (): Pair => (1, 2);
+
+// Values convert both ways.
+export let store = (): Pair => pair();
+export let unbox = (): inline Pair => boxed();
+export let named = (): i32 => {
+  let p = pair();
+  let q: Pair = p;
+  let (a, b) = q;
+  return a + b;
+};
+
+// Function values do not.
+export let f: () => inline Pair = boxed; // @error: Type mismatch: '() => [i32, i32]' is not assignable to '() => (i32, i32)'.
+export let g: () => Pair = pair; // @error: Type mismatch: '() => (i32, i32)' is not assignable to '() => [i32, i32]'.

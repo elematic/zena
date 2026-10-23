@@ -224,8 +224,7 @@ and avoid garbage-collector overhead.
 
 ### Restrictions on inline tuples
 
-Inline tuples exist only in execution registers and on the WebAssembly stack.
-They cannot be stored as persistent values on the heap:
+Inline tuples exist only in execution registers and on the WebAssembly stack:
 
 1. **Return positions only**: An inline tuple type can appear only in function
    return type annotations (or in type aliases that expand to return types):
@@ -241,17 +240,18 @@ They cannot be stored as persistent values on the heap:
    type BadArray = Array<inline (i32, i32)>;        // @error
    ```
 
-2. **Immediate destructuring**: Calling a function that returns an inline tuple
-   requires immediate destructuring at the call site. The returned inline tuple
-   cannot be assigned as a whole to a variable:
+2. **Storing boxes**: destructuring the result at the call site uses the values
+   directly. Storing it as a whole, in a variable, field or array, or passing
+   it as an argument, allocates its boxed tuple. Returning a boxed tuple from a
+   function with an inline result reads its elements back out.
 
    ```zena
-   // Permitted:
-   let (lo, hi) = minMax(10, 20);
-
-   // Not permitted:
-   let result = minMax(10, 20); // @error
+   let (lo, hi) = minMax(10, 20);  // no allocation
+   let result = minMax(10, 20);    // result is a boxed (i32, i32)
    ```
+
+   A function value does not convert: `() => inline (i32, i32)` and
+   `() => (i32, i32)` have different signatures.
 
 3. **No direct element indexing**: Inline tuples cannot currently be indexed
    directly with `expr[i]`. Extracting a single element requires destructuring
@@ -365,9 +365,8 @@ time.
 
 ##### Storable counterparts
 
-Because inline tuples cannot be stored in fields, arrays, or long-lived
-variables, Zena provides class-based counterparts for storing values beyond
-return position:
+Zena also provides class-based counterparts, which predate the conversion
+between inline and boxed tuples:
 
 - `Option<T>` (`Some<T>` and `None`) in `zena:core`
 - `Outcome<T, E>` (`Ok<T, E>` and `Err<T, E>`) in `zena:core`

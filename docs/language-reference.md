@@ -4697,9 +4697,25 @@ let (quot, rem) = divide(17, 5);
 **Key differences from boxed tuples:**
 
 - Inline tuples use `inline (T1, T2)` in type position
-- They only exist in return position and destructuring - they cannot be stored
-  in variables or passed as arguments
+- An inline type is written only in return position
 - They compile to zero-allocation WASM multi-value returns
+- A value converts between the two forms where needed, since a tuple's identity
+  cannot be observed: storing an inline result allocates its boxed tuple, and
+  returning a boxed tuple from a function with an inline result reads its
+  elements out
+
+```zena
+type Pair = (i32, i32);
+let make = (): inline Pair => (1, 2);
+
+let (a, b) = make();             // destructured: no allocation
+let stored = make();             // a name holds the boxed (i32, i32)
+let all: Array<Pair> = [make()]; // so do arrays, fields and arguments
+let back = (): inline Pair => stored; // and back again
+```
+
+A function value is the exception: `() => inline Pair` and `() => Pair` have
+different signatures, and neither is assignable to the other.
 
 #### The `inline` Modifier
 

@@ -2930,7 +2930,22 @@ export final class FunctionLowerer {
       return flat;
     }
     if (!(arg is TupleLiteral)) {
-      this.#bail('multi-value return');
+      // A boxed tuple returned as an inline one: read its fields into
+      // slots, and move them into this function's.
+      let argType = this.#substitutedNodeType(arg);
+      if (argType == null || layout == null) {
+        this.#bail('multi-value return');
+      }
+      let unboxed = this.#unboxTuples(this.#lowerExpression(arg), argType as Type);
+      if (unboxed == null) {
+        this.#bail('multi-value return');
+      }
+      let mv = unboxed as MultiValues;
+      if (this.#slotsForwardDirectly(mv.values, sig.returns)) {
+        return mv.values;
+      }
+      return this.#convertInlineSlots(mv.values, mv.layout as InlineLayout,
+          layout as InlineLayout);
     }
     let nt = this.func.model.getNodeType(arg);
     if (nt == null || !(baseType(nt) is InlineTupleType)) {
@@ -4267,8 +4282,92 @@ export final class FunctionLowerer {
   // -- Expressions -----------------------------------------------------
 
   #lowerExpression(expr: Expression): i32 {
+    if (expr is CallExpression) {
+      // An inline result where one value is wanted: the checker allowed
+      // it because the value converts to its boxed form.
+      let t = this.#substitutedNodeType(expr);
+      if (t != null && inlineLayoutOf(this.wasm, t) != null) {
+        let source = this.#lowerMultiSource(expr);
+        return this.#applyAdaptations(expr, this.#boxInline(source));
+      }
+    }
     let value = this.#lowerExpressionDispatch(expr);
     return this.#applyAdaptations(expr, value);
+  }
+
+  /**
+   * An inline value's boxed form: the struct of the member it holds,
+   * built from that member's slots. With several members the tag in
+   * position 0 says which, so each member but the last is a branch on
+   * its literal, and a join block takes the reference.
+   */
+  #boxInline(source: MultiValues): i32 {
+    let layoutOpt = source.layout;
+    if (layoutOpt == null) {
+      return this.#bailValue('boxing a value with no slots');
+    }
+    let layout = layoutOpt as InlineLayout;
+    let boxedMembers = new Array<Type>();
+    let tuples = new Array<TupleType>();
+    for (let member in layout.members) {
+      let tuple = new TupleType(member.elementTypes, null, 0);
+      tuples.push(tuple);
+      boxedMembers.push(tuple);
+    }
+    if (tuples.length == 1) {
+      return this.#buildTupleFromSlots(source.values, layout, 0, tuples[0]);
+    }
+    let resultVt = typeToValTypeWithSub(this.wasm, new UnionType(boxedMembers),
+        this.func);
+    let join = this.b.newBlock();
+    let result = this.b.blockParam(join, resultVt);
+    let tag = source.values[layout.slotOf(0, 0)];
+    let i32Vt = new ValTypeI32() as ValType;
+    for (var m = 0; m < tuples.length; m += 1) {
+      if (m < tuples.length - 1) {
+        let hit = this.b.newBlock();
+        let next = this.b.newBlock();
+        let cond = match (layout.members[m].elementTypes[0]) {
+          case BoolLiteralType {value}:
+              if (value) tag else this.b.emit(IrOp.i32_eqz, i32Vt, tag, -1)
+          case NumLiteralType {raw}: {
+            if (let (true, parsed) = parseI64OrU64Literal(raw)) {
+              this.b.binary(IrOp.i32_eq, i32Vt, tag, this.b.constI32(parsed as i32, i32Vt))
+            } else {
+              this.#bailValue('unparseable tuple tag')
+            }
+          }
+          case _: this.#bailValue('tuple tag type')
+        };
+        this.b.brIf(cond, hit, this.#noArgs(), next, this.#noArgs());
+        this.b.switchTo(hit);
+        this.b.br(join, growable<i32>([
+          this.#buildTupleFromSlots(source.values, layout, m, tuples[m])]));
+        this.b.switchTo(next);
+      } else {
+        this.b.br(join, growable<i32>([
+          this.#buildTupleFromSlots(source.values, layout, m, tuples[m])]));
+      }
+    }
+    this.b.switchTo(join);
+    return result;
+  }
+
+  /** Member `m`'s boxed tuple, built from its slots. */
+  #buildTupleFromSlots(values: GrowableArray<i32>, layout: InlineLayout,
+      m: i32, tuple: TupleType): i32 {
+    let st = this.#tupleStruct(tuple);
+    let fields = new Array<i32>();
+    for (var k = 0; k < tuple.elementTypes.length; k += 1) {
+      let fieldVt = this.#fieldValType(st, i32ToString(k));
+      let slot = layout.slotOf(m, k);
+      let v = if (slot >= 0) values[slot] else this.#defaultValueOf(fieldVt);
+      // A slot is nullable when another member leaves it empty; this
+      // member always fills it.
+      fields.push(this.#cx().conformToSlot(v, fieldVt, 'boxing an inline slot'));
+    }
+    return this.b.emit(IrOp.struct_new, new ValTypeRef(st) as ValType,
+        this.b.pushArgList(fields), this.b.addRef(new IrRefType(st)));
   }
 
   /**

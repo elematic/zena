@@ -344,9 +344,9 @@ let (quot, rem) = divide(17, 5);
 // quot = 3, rem = 2
 ```
 
-Inline tuples exist only in return positions and must be destructured
-immediately at the call site. They cannot be stored in variables or passed as
-arguments.
+An inline tuple type is written only in return position. Destructuring the
+result at the call site uses the values directly; storing it in a variable,
+field or array, or passing it as an argument, allocates its boxed tuple.
 
 ### Contextual typing
 
