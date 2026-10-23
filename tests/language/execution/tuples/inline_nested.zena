@@ -1,12 +1,68 @@
 // @mode: run
-// @skip: the checker rejects a nested inline tuple until codegen flattens its slots into the outer tuple's (#371)
-// @result: 10
+// @result: 0
 // `inline` nests inside an inline value: the inner tuple's slots are part of
-// the outer one's, so nothing is allocated for either.
+// the outer one's, so nothing is allocated for either. A nested position
+// reads leaf by leaf through a nested tuple pattern, and boxes when a
+// binding takes it whole.
 
 let nested = (n: i32): inline (i32, inline (i32, i32)) => (n, (n + 1, n + 2));
 
+// Built from a variable holding the inner tuple boxed.
+let fromBoxed = (n: i32): inline (i32, inline (i32, i32)) => {
+  let inner = (n * 10, n * 100);
+  return (n, inner);
+};
+
+// Built from another inline result.
+let pair = (n: i32): inline (i32, i32) => (n, n + 1);
+let fromInline = (n: i32): inline (String, inline (i32, i32)) => ('x', pair(n));
+
+// Forwarded whole.
+let forwarded = (n: i32): inline (i32, inline (i32, i32)) => nested(n);
+
+// A union whose payload nests a tuple.
+type Step = inline (0, _, _) | (1, inline (i32, String), _);
+
+let step = (n: i32): Step => {
+  if (n == 0) {
+    return (0, _, _);
+  }
+  return (1, (n, `n${n}`), _);
+};
+
+let stepSum = (n: i32): i32 => match (step(n)) {
+  case (0, _, _): -1
+  case (1, (let x, let s), _): x + s.length
+};
+
+// The inner tuple whole, boxed for its binding.
+let whole = (n: i32): (i32, i32) => {
+  let (_, inner) = nested(n);
+  return inner;
+};
+
+// An inline value boxed whole, nested tuple and all.
+let boxed = (n: i32): (i32, (i32, i32)) => nested(n);
+
 export let main = (): i32 => {
+  var failures = 0;
   let (a, (b, c)) = nested(2);
-  return a + b + c + 1;
+  if (a + b + c != 9) { failures += 1; }
+  let (d, (e, f)) = fromBoxed(3);
+  if (d + e + f != 333) { failures += 2; }
+  let (g, (h, i)) = fromInline(4);
+  if (g != 'x' || h + i != 9) { failures += 4; }
+  let (j, (k, l)) = forwarded(5);
+  if (j + k + l != 18) { failures += 8; }
+  if (stepSum(0) != -1 || stepSum(7) != 9) { failures += 16; }
+  if (let (1, (x, s), _) = step(12)) {
+    if (x != 12 || s != 'n12') { failures += 32; }
+  } else {
+    failures += 32;
+  }
+  let w = whole(6);
+  if (w[0] != 7 || w[1] != 8) { failures += 64; }
+  let bx = boxed(1);
+  if (bx[0] != 1 || bx[1][0] != 2 || bx[1][1] != 3) { failures += 128; }
+  return failures;
 };

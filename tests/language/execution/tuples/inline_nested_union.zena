@@ -1,0 +1,58 @@
+// @mode: run
+// @result: 0
+// A nested inline tuple in a union's payload keeps its leaves in slots
+// through the conversions between unions: a narrower union forwarded as a
+// wider one, and a boxed union returned as an inline one, whose payload
+// tuple is read field by field into the leaves.
+
+type Narrow = inline (0, _, _) | (1, inline (i32, i32), _);
+type Wide = inline (0, _, _) | (1, inline (i32, i32), _) | (2, _, String);
+
+let narrow = (n: i32): Narrow => {
+  if (n == 0) {
+    return (0, _, _);
+  }
+  return (1, (n, n * 2), _);
+};
+
+let wide = (n: i32): Wide => {
+  if (n < 0) {
+    return (2, _, 'negative');
+  }
+  return narrow(n);
+};
+
+let sumWide = (n: i32): i32 => match (wide(n)) {
+  case (0, _, _): 0
+  case (1, (let a, let b), _): a + b
+  case (2, _, let why): why.length
+};
+
+type Boxed = (0, _, _) | (1, (i32, i32), _);
+
+let boxedStep = (n: i32): Boxed => if (n == 0) (0, _, _) else (1, (n, n + 1), _);
+
+let unboxed = (n: i32): Narrow => boxedStep(n);
+
+let sumNarrow = (n: i32): i32 => match (unboxed(n)) {
+  case (0, _, _): 0
+  case (1, (let a, let b), _): a * b
+};
+
+// A nested pattern with a literal inside it tests that literal too.
+let sevens = (n: i32): i32 => {
+  if (let (1, (7, b), _) = narrow(n)) {
+    return b;
+  }
+  return -1;
+};
+
+export let main = (): i32 => {
+  var failures = 0;
+  if (sumWide(0) != 0 || sumWide(3) != 9 || sumWide(-1) != 8) { failures += 1; }
+  if (sumNarrow(0) != 0 || sumNarrow(4) != 20) { failures += 2; }
+  if (sevens(7) != 14 || sevens(3) != -1) { failures += 4; }
+  // A discarded nested result.
+  narrow(5);
+  return failures;
+};

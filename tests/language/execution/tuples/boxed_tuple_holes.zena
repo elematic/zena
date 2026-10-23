@@ -1,0 +1,34 @@
+// @mode: run
+// @result: 0
+// A `_` in a boxed tuple literal holds nothing, and its field takes the
+// default. Members whose fields have the same wasm types share a struct,
+// so `(0, _)` and `(1, i32)` are both two `i32`s: reading one back through
+// a pattern takes field 1 for the member that has a value there.
+
+type Boxed = (0, _) | (1, i32);
+
+let boxedStep = (n: i32): Boxed => {
+  if (n == 0) {
+    return (0, _);
+  }
+  return (1, n);
+};
+
+let viaMatch = (n: i32): i32 => match (boxedStep(n)) {
+  case (0, _): 100
+  case (1, let p): p
+};
+
+let viaIfLet = (n: i32): i32 => {
+  if (let (1, p) = boxedStep(n)) {
+    return p;
+  }
+  return -1;
+};
+
+export let main = (): i32 => {
+  var failures = 0;
+  if (viaMatch(0) != 100 || viaMatch(3) != 3) { failures += 1; }
+  if (viaIfLet(0) != -1 || viaIfLet(4) != 4) { failures += 2; }
+  return failures;
+};

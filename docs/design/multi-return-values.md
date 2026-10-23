@@ -132,10 +132,10 @@ resolved as a position of its own and rejects one at its top: type
 arguments, record fields, function parameters and the elements of a
 boxed tuple. Union members and a `?` operand are not positions of their
 own; the enclosing type is checked as a whole. The elements of an inline
-tuple are the one place `inline` nests. Codegen does not flatten a nested
-inline tuple yet, so the checker reports it. The inner tuple's slots
-will become part of the outer tuple's once codegen derives an inline
-type's slot layout from its members (#371).
+tuple are the one place `inline` nests, and the inner tuple's slots are
+part of the outer tuple's (below). A nested inline union is still an
+error: its discriminant would have to be read before its payload, and
+no reader does that yet.
 
 Inline-ness is part of a function type. An unannotated arrow written
 where an inline result is expected takes that result type, because
@@ -191,6 +191,31 @@ candidate members agree on, and fills the rest with defaults.
 `return f()` forwards the callee's slots unchanged when they fit, and
 otherwise moves each slot to the slot of the corresponding member in
 the wider union (`#convertInlineSlots`).
+
+#### Nested Inline Tuples
+
+Slots are keyed by path rather than position: `"1"` for position 1,
+`"1.0"` for position 0 of an inline tuple at position 1. A member's
+leaves are its elements with every nested inline tuple replaced by its
+own elements, so `inline (0, _, _) | (1, inline (A, B), _)` has the
+paths `0`, `1.0`, `1.1` and `2`. `InlineLayout` keeps both forms of each
+member: `members` flattened to leaves, which is what drops and the wasm
+result list read, and `originals` as written, which is what patterns and
+literals are matched against. A hole at `"1"` does not get a `nullref`
+slot when another member nests a tuple there, so `Step<(A, B)>` and
+`AsyncStep<(A, B)>` keep the same slots, `[i32, A, B, nullref]` and
+`[i32, A, B, Future?]`.
+
+Readers take the elements of a pattern or literal against the member as
+written (`pathElements`). A nested tuple pattern or literal at a nested
+position contributes its own elements at their paths, so
+`(1, (x, y), _)` reads four leaves. Any other element stands for the
+inner tuple whole: a binding gets it boxed (`boxInlineAt`), and a
+returned value is read as a multi-value source and written leaf by
+leaf. Converting into a layout that holds a position inline where the
+source holds it boxed reads the struct's fields into the leaves
+(`#boxedLeaf`), and boxing an inline value builds the nested structs
+from the leaves (`#buildBoxedAt`).
 
 ### Destructuring at Call Sites
 

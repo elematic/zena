@@ -4546,13 +4546,37 @@ function isInlineType(t: Type, aliasHops: i32 = 0): boolean {
 }
 
 /**
+ * The type a tuple pattern's element binds at an element of type `t`. A
+ * nested inline tuple is taken apart by a tuple pattern in place; any
+ * other pattern holds it as a value, which is its boxed form.
+ */
+function tupleElementPatternType(element: Node, t: Type): Type {
+  var inner = element;
+  if (let BindingPattern {pattern} = inner) {
+    inner = pattern as Node;
+  }
+  if (inner is TuplePattern) {
+    return t;
+  }
+  return if (isInlineType(t)) boxedFormOf(t) else t;
+}
+
+/**
  * The boxed form of an inline type: what a binding or an inferred type
  * argument holds when an inline value is stored. A type that is not
  * inline comes back unchanged.
  */
 function boxedFormOf(t: Type): Type {
   return match (unwrapAliases(t)) {
-    case InlineTupleT {elementTypes}: new TupleT(elementTypes, null, 0) as Type
+    case InlineTupleT {elementTypes}: {
+      // A nested inline tuple is boxed too: a stored value holds no
+      // inline part.
+      let boxed = new Array<Type>();
+      for (let el in elementTypes) {
+        boxed.push(boxedFormOf(el));
+      }
+      new TupleT(boxed, null, 0) as Type
+    }
     case UnionT {types}: {
       if (!isInlineType(t)) {
         t
@@ -4589,11 +4613,12 @@ function resolveInlineOperand(ctx: CheckerContext, ann: TypeAnnotation): Type {
         let elTypes = new Array<Type>();
         for (let element in elementTypes) {
           let elType = resolveTypeAnnotation(ctx, element, true);
-          if (isInlineType(elType)) {
-            // Legal by design: the inner tuple's slots become the outer
-            // one's. Codegen does not flatten them yet.
+          // An inline tuple nests: its slots become the outer one's. A
+          // union cannot be spliced into one list of positions, so a
+          // nested inline union is not supported yet.
+          if (isInlineType(elType) && !(unwrapAliases(elType) is InlineTupleT)) {
             ctx.error(
-              "An inline tuple inside an inline tuple is not supported yet.",
+              "An inline union inside an inline tuple is not supported yet.",
               DiagnosticCode.TypeMismatch,
               element.loc,
             );
@@ -12834,7 +12859,8 @@ function bindPattern(ctx: CheckerContext, pattern: Pattern, t: Type): void {
         let element = elements[i];
         if (element != null) {
           if (i < elementTypes.length) {
-            bindPattern(ctx, element as Pattern, elementTypes[i]);
+            bindPattern(ctx, element as Pattern,
+                tupleElementPatternType(element as Node, elementTypes[i]));
           } else {
             bindPattern(ctx, element as Pattern, new ErrorType());
           }
@@ -23475,7 +23501,7 @@ function checkPattern(ctx: CheckerContext, pattern: Node, expectedType: Type): v
         let elem = elements[i];
         if (elem != null) {
           if (i < elementTypes.length) {
-            checkPattern(ctx, elem, elementTypes[i]);
+            checkPattern(ctx, elem, tupleElementPatternType(elem as Node, elementTypes[i]));
           } else {
             checkPattern(ctx, elem, new ErrorType());
           }
