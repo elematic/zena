@@ -1,0 +1,341 @@
+/**
+ * `zena publish` and `zena package create`: publishing the package the
+ * command is run in to a package host (docs/design/package-manager.md,
+ * "Creating a package" and "Publishing a release").
+ *
+ * Both act as the signed-in maintainer (`zena login`): each call to the
+ * host carries a service-auth token from the maintainer's own PDS. A
+ * package whose manifest has no `did` yet is created first, in the scope
+ * `--scope` names, once `--yes` says to; the scope's organization is
+ * created too when the host has none of that name. The new package's DID is
+ * written into `zena-package.json`.
+ *
+ * Publishing packs the package's files into a source archive, uploads it,
+ * writes the release for the manifest's `version`, and writes the
+ * maintainer's attestation of the release to their own repository.
+ *
+ * The host is `--host`, else `ZENA_PACKAGE_HOST`, else
+ * `https://pkg.zena-lang.dev`; its service DID and handle domain come from
+ * its `com.atproto.server.describeServer`.
+ */
+
+import { ParsedArgs } from 'zena:args';
+import { runFuture } from 'zena:async';
+import { getEnv } from 'zena:cli';
+import { OrderedHashMap } from 'zena:collections';
+import { FileType, existsSync, listDirSync, readFileBytesSync, readFileSync, writeFileSync } from 'zena:fs';
+import { hex } from 'zena:encoding';
+import { JsonArray, JsonObject } from 'zena:json';
+import { join2 } from 'zena:path';
+import { formatTimestamp } from 'zena:time';
+import { now } from 'wasi:clocks/system-clock';
+import { getRandomBytes } from 'wasi:random/random';
+import { Cid } from 'atproto:cid';
+import { BlobRef, fromJson, toJson } from 'atproto:data';
+import { KeyType, formatDidKey, publicKeyFor } from 'atproto:didkey';
+import { Session, getServiceAuth } from 'atproto:session';
+import { XrpcClient } from 'atproto:xrpc';
+import { packSource } from 'package-manager:archive';
+import { Manifest, readManifest, writeDid } from 'package-manager:manifest';
+import {
+  ATTESTATION_TYPE, Artifact, Attestation, Dependency, Maintainer, Maintainers, OWNER, Profile,
+  Release, SOURCE
+} from 'package-manager:records';
+import { Version } from 'package-manager:version';
+import { DiskFiles, WorkspacePackage, readWorkspace } from 'package-manager:workspace';
+import { Options, repoRoot, userCwd } from './env.zena';
+import { packageResolver } from './fetch.zena';
+import { configDir, currentSession, saveSession } from './login.zena';
+import { writePrivate } from 'zena-cli:host/secrets';
+
+let DEFAULT_HOST = 'https://pkg.zena-lang.dev';
+
+/** A package host, as its `describeServer` describes it. */
+final class Host {
+  origin: String;
+  /** The DID tokens for it are addressed to. */
+  did: String;
+  /** The domain its scopes' handles are under. */
+  domain: String;
+
+  new(origin: String, did: String, domain: String) : origin = origin, did = did, domain = domain;
+}
+
+/** A failure to report, with no stack: the command's own errors. */
+class PublishError extends Error {
+  new(message: String) : super(message);
+}
+
+export function publishCommand(args: ParsedArgs, options: Options): i32 {
+  return run(() => {
+    let target = currentPackage();
+    let session = signedIn();
+    let host = findHost(args);
+    var manifestText = target.text as String;
+    if (target.manifest.did == null) {
+      manifestText = createPackage(args, session, host, target);
+    }
+    let manifest = readManifest(manifestText);
+    publish(session, host, target, manifest);
+    saveIfRefreshed(session);
+  });
+}
+
+export function packageCreateCommand(args: ParsedArgs, options: Options): i32 {
+  return run(() => {
+    let target = currentPackage();
+    if (target.manifest.did != null) {
+      throw new PublishError(`${target.manifestPath()} already names its package: ${target.manifest.did as String}`);
+    }
+    let session = signedIn();
+    createPackage(args, session, findHost(args), target);
+    saveIfRefreshed(session);
+  });
+}
+
+/** Runs `body`, printing a `PublishError`'s message alone. */
+function run(body: () => void): i32 {
+  try {
+    body();
+    return 0;
+  } catch (e) {
+    if (e is PublishError) {
+      console.error(`Error: ${e.message}`);
+      return 1;
+    }
+    throw e;
+  }
+}
+
+function currentPackage(): WorkspacePackage {
+  let workspace = readWorkspace(repoRoot().value, new DiskFiles());
+  let target = workspace.packageAt(userCwd().value);
+  if (target.text == null || target.manifest.name == null) {
+    throw new PublishError('run this in a package: a directory whose zena-package.json has a name');
+  }
+  return target;
+}
+
+function signedIn(): Session {
+  let session = currentSession();
+  if (session == null) {
+    throw new PublishError('sign in first, with zena login');
+  }
+  return session as Session;
+}
+
+function saveIfRefreshed(session: Session): void {
+  if (session.refreshed) {
+    saveSession(session);
+  }
+}
+
+function findHost(args: ParsedArgs): Host {
+  var origin = getEnv('ZENA_PACKAGE_HOST') ?? DEFAULT_HOST;
+  if (let (true, given) = args.getOption('host')) {
+    origin = given;
+  }
+  let described = runFuture(new XrpcClient(origin).query('com.atproto.server.describeServer')) as JsonObject;
+  let domains = described['availableUserDomains'] as JsonArray;
+  let domain = domains[0] as String;
+  return new Host(origin, described['did'] as String,
+      if (domain.startsWith('.')) domain.sliceBytes(1, domain.length) else domain);
+}
+
+/** A client for `host` that calls `method` as the signed-in maintainer. */
+function hostClient(session: Session, host: Host, method: String): XrpcClient {
+  let token = runFuture(getServiceAuth(session, host.did, method));
+  let client = new XrpcClient(host.origin);
+  client.authorization = `Bearer ${token}`;
+  return client;
+}
+
+/**
+ * Creates the package `target` is on `host`, in the scope `--scope` names,
+ * and writes its DID into the manifest. Returns the manifest's new text.
+ */
+function createPackage(args: ParsedArgs, session: Session, host: Host, target: WorkspacePackage): String {
+  let name = target.manifest.name as String;
+  var scope = '';
+  if (let (true, given) = args.getOption('scope')) {
+    scope = given;
+  } else {
+    throw new PublishError(`${name} has no DID yet; give the scope to create it in, with --scope <name>`);
+  }
+  let handle = `${name}.${scope}.${host.domain}`;
+  if (!args.getFlag('yes')) {
+    throw new PublishError(
+        `${name} has no DID yet. Run again with --yes to create the package ${handle} on ${host.origin}, maintained by ${session.handle}.`);
+  }
+  let recoveryKey = recoveryDidKey();
+  let org = findOrCreateOrganization(session, host, scope, recoveryKey);
+
+  let input = new JsonObject();
+  input['organization'] = org;
+  input['recoveryKeys'] = strings([recoveryKey]);
+  input['profile'] = toJson(new Profile(name).toValue());
+  input['maintainers'] = toJson(new Maintainers([Maintainer.ofDid(session.did, OWNER)]).toValue());
+  let created = runFuture(hostClient(session, host, 'dev.zena-lang.host.createPackage')
+    .procedure('dev.zena-lang.host.createPackage', input)) as JsonObject;
+  let did = created['did'] as String;
+  let text = writeDid(target.text as String, did);
+  writeFileSync(target.manifestPath(), text);
+  console.log(`Created ${created['handle'] as String} (${did}), and wrote its DID into ${target.manifestPath()}.`);
+  return text;
+}
+
+/** The DID of the organization whose scope is `scope`, creating it when the host has none. */
+function findOrCreateOrganization(session: Session, host: Host, scope: String, recoveryKey: String): String {
+  let existing = scopeOwner(`${scope}.${host.domain}`);
+  if (existing != null) {
+    return existing as String;
+  }
+  let input = new JsonObject();
+  input['name'] = scope;
+  input['recoveryKeys'] = strings([recoveryKey]);
+  let created = runFuture(hostClient(session, host, 'dev.zena-lang.host.createOrganization')
+    .procedure('dev.zena-lang.host.createOrganization', input)) as JsonObject;
+  console.log(`Created the scope ${created['handle'] as String} (${created['did'] as String}), with you as its owner.`);
+  let members = created['members'] as JsonObject;
+  attest(session, members['uri'] as String, Cid.parse(members['cid'] as String));
+  return created['did'] as String;
+}
+
+/**
+ * The organization the handle of a scope names, or null when the handle
+ * does not resolve, as for a scope that does not exist yet. The host
+ * refuses to create a scope that does exist (`NameTaken`), so a lookup
+ * that fails for another reason does no harm.
+ */
+function scopeOwner(handle: String): String | null {
+  try {
+    return runFuture(packageResolver().resolveHandle(handle));
+  } catch (e) {
+    return null;
+  }
+}
+
+/**
+ * The maintainer's recovery key, as a `did:key`, creating it in the
+ * configuration directory the first time.
+ */
+function recoveryDidKey(): String {
+  let path = `${configDir()}/recovery-key`;
+  if (existsSync(path)) {
+    return formatDidKey(publicKeyFor(KeyType.Secp256k1, hex.decode(readFileSync(path).trim())));
+  }
+  let key = getRandomBytes(32);
+  match (writePrivate(path, hex.encode(key).toBytes())) {
+    case (true, _): {}
+    case (false, let why): {
+      throw new PublishError(`could not save a recovery key: ${why}`);
+    }
+  }
+  let didKey = formatDidKey(publicKeyFor(KeyType.Secp256k1, key));
+  console.log(`Created your recovery key, ${didKey}, in ${path}. Back it up: it can take your packages back if your account or the host is lost.`);
+  return didKey;
+}
+
+/** Packs, uploads and publishes `manifest`'s version of `target`, and attests it. */
+function publish(session: Session, host: Host, target: WorkspacePackage, manifest: Manifest): void {
+  let name = manifest.name as String;
+  let did = manifest.did as String;
+  if (manifest.version == null) {
+    throw new PublishError(`${target.manifestPath()} has no version to publish`);
+  }
+  let version = manifest.version as Version;
+  let archive = packSource(sourceFiles(target.dir));
+  let uploaded = runFuture(hostClient(session, host, 'dev.zena-lang.host.uploadArtifact')
+    .upload('dev.zena-lang.host.uploadArtifact', 'application/vnd.ipld.car', archive, [('package', did)]))
+    as JsonObject;
+  let blob = BlobRef.fromValue(fromJson(uploaded['blob']));
+
+  let release = new Release(version, formatTimestamp(nowNanos()),
+      new FixedArray<Artifact>(1, Artifact.whole(SOURCE, blob)), dependenciesOf(target, manifest));
+  let input = new JsonObject();
+  input['package'] = did;
+  input['release'] = toJson(release.toValue());
+  let published = runFuture(hostClient(session, host, 'dev.zena-lang.host.publish')
+    .procedure('dev.zena-lang.host.publish', input)) as JsonObject;
+  let uri = published['uri'] as String;
+  attest(session, uri, Cid.parse(published['cid'] as String));
+  console.log(`Published ${name} ${version.toString()}: ${uri}`);
+}
+
+/** Writes the maintainer's attestation of the record at `uri` to their own repository. */
+function attest(session: Session, uri: String, cid: Cid): void {
+  let attestation = new Attestation(uri, cid, formatTimestamp(nowNanos()));
+  let input = new JsonObject();
+  input['repo'] = session.did;
+  input['collection'] = ATTESTATION_TYPE;
+  input['rkey'] = attestation.recordKey();
+  input['record'] = toJson(attestation.toValue());
+  runFuture(session.client().procedure('com.atproto.repo.putRecord', input));
+}
+
+/**
+ * The release's dependencies: the manifest's published ones, and each path
+ * dependency as the DID and version its own manifest gives, so a package
+ * another depends on is published first.
+ */
+function dependenciesOf(target: WorkspacePackage, manifest: Manifest): FixedArray<Dependency> {
+  let all = new GrowableArray<Dependency>();
+  manifest.requirements.forEach((name, requirement) => {
+    all.push(new Dependency(requirement.did, requirement.version, name));
+  });
+  manifest.paths.forEach((name, path) => {
+    let dir = join2(target.dir, path);
+    let other = readManifest(readFileSync(`${dir}/zena-package.json`));
+    if (other.did == null || other.version == null) {
+      throw new PublishError(`${name} (${dir}) has no DID and version yet; publish it first`);
+    }
+    all.push(new Dependency(other.did as String, other.version as Version, name));
+  });
+  let fixed = new FixedArray<Dependency>(all.length, new Dependency('', Version.parse('0.0.0'), ''));
+  for (var i = 0; i < all.length; i += 1) {
+    fixed[i] = all[i];
+  }
+  return fixed;
+}
+
+/**
+ * The files of the package in `dir`, by path from it: every file but
+ * hidden ones, `node_modules`, `zena-lock.json`, and the files of packages
+ * nested in it, which are published on their own.
+ */
+function sourceFiles(dir: String): OrderedHashMap<String, FixedArray<u8>> {
+  let files = new OrderedHashMap<String, FixedArray<u8>>();
+  addFiles(dir, '', files);
+  return files;
+}
+
+function addFiles(dir: String, prefix: String, files: OrderedHashMap<String, FixedArray<u8>>): void {
+  for (let entry in listDirSync(dir)) {
+    let name = entry.name;
+    if (name.startsWith('.') || name == 'node_modules' || (prefix == '' && name == 'zena-lock.json')) {
+      continue;
+    }
+    let path = `${dir}/${name}`;
+    let relative = if (prefix == '') name else `${prefix}/${name}`;
+    if (entry.fileType == FileType.Directory) {
+      if (!existsSync(`${path}/zena-package.json`)) {
+        addFiles(path, relative, files);
+      }
+    } else if (entry.fileType == FileType.RegularFile) {
+      files[relative] = readFileBytesSync(path);
+    }
+  }
+}
+
+function nowNanos(): i64 {
+  let instant = now();
+  return instant.seconds * (1000000000 as i64) + (instant.nanoseconds as i64);
+}
+
+function strings(items: Array<String>): JsonArray {
+  let array = new JsonArray();
+  for (let item in items) {
+    array.push(item);
+  }
+  return array;
+}

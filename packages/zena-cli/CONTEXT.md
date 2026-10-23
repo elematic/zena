@@ -23,7 +23,10 @@ the `zena` command. The design is in
      `zena-package.json`, select versions (`package-manager:resolve`), pin
      them and fetch them, and `login.zena`, for `zena login` and
      `zena logout`, which keep the maintainer's atproto session
-     (`atproto:session`) in the configuration directory.
+     (`atproto:session`) in the configuration directory, and
+     `publish.zena`, for `zena publish` and `zena package create`, which
+     call a package host's `dev.zena-lang.host.*` methods with service-auth
+     tokens from that session.
    - It is built to `out/zena.wasm` by `build:module`, with the compiler
      (`zena-compiler:compile-file`), zb, zenadoc, the language service and
      the formatter linked

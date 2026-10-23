@@ -30,6 +30,7 @@ import { lintCommand } from './lint.zena';
 import { fetchCommand } from './fetch.zena';
 import { addCommand, updateCommand } from './add.zena';
 import { loginCommand, logoutCommand } from './login.zena';
+import { packageCreateCommand, publishCommand } from './publish.zena';
 
 /** The whole command line, described once. */
 function describe() {
@@ -176,6 +177,24 @@ function describe() {
         help: 'End the session zena login started',
         options: {'help' => help},
       },
+      'publish' => {
+        help: "Publish the package you are in, at its manifest's version",
+        options: {
+          'help' => help,
+          'host' => {help: 'The package host (default $ZENA_PACKAGE_HOST, else https://pkg.zena-lang.dev)'},
+          'scope' => {help: 'The scope to create a new package in'},
+          'yes' => {type: OptionType.Flag, help: 'Create the package if it has no DID yet'},
+        },
+      },
+      'package' => {
+        help: 'package create: create the package you are in on a host, without publishing',
+        options: {
+          'help' => help,
+          'host' => {help: 'The package host (default $ZENA_PACKAGE_HOST, else https://pkg.zena-lang.dev)'},
+          'scope' => {help: 'The scope to create the package in'},
+          'yes' => {type: OptionType.Flag, help: 'Create it'},
+        },
+      },
       'fmt' => {
         help: 'Format Zena files',
         options: {
@@ -296,6 +315,16 @@ function dispatch(parser: ArgParser, args: ParsedArgs): i32 {
   }
   if (name == 'logout') {
     return logoutCommand(sub, options);
+  }
+  if (name == 'publish') {
+    return publishCommand(sub, options);
+  }
+  if (name == 'package') {
+    if (sub.rest.length != 1 || sub.rest[0] != 'create') {
+      console.error('Error: the package command has one subcommand: zena package create');
+      return 2;
+    }
+    return packageCreateCommand(sub, options);
   }
   if (name == 'bench') {
     return benchCommand(sub, options);

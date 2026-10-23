@@ -1,0 +1,105 @@
+/**
+ * `zena publish` from end to end, against `tests/fixtures/publish-stack.zena`:
+ * a maintainer signs in, publishes a package to a package host, which
+ * creates its scope and its account, publishes a second version, and
+ * another workspace adds the package by its handle, fetches it and runs a
+ * program that imports it.
+ */
+
+import {suite, test} from 'zena:test';
+import {equal, isTrue} from 'zena:assert';
+import {runFuture} from 'zena:async';
+import {existsSync} from 'zena:fs';
+import {JsonArray, JsonObject, parseJson} from 'zena:json';
+import {run} from 'zena:process';
+import {httpRequest} from 'atproto:xrpc';
+import {
+  MAIN, Scratch, ZenaCommand, described, ensureDir, fakePdsOrigin, read, startFakePds, write
+} from './cli-support.zena';
+
+let ALICE = 'did:plc:alicealicealicealicealic';
+
+export let tests = suite('zena publish', () => {
+  test('publishes a package that another workspace adds and runs', (ctx) => {
+    let scratch = Scratch.create('publish');
+    let stack = startFakePds(scratch, 'publish-stack.zena');
+    try {
+      fakePdsOrigin(scratch, stack);
+      let addresses = parseJson(read(scratch.at('pds/stack.json'))) as JsonObject;
+      let zenaIn = (dir: String) =>
+        new ZenaCommand(scratch.host(dir), scratch.at(dir), scratch.host('cache'))
+          .set('ZENA_PLC_DIRECTORY', addresses['plc'] as String)
+          .set('ZENA_DNS_OVER_HTTPS', addresses['dns'] as String)
+          .set('ZENA_PACKAGE_HOST', addresses['host'] as String)
+          .set('ZENA_CONFIG_DIR', scratch.host('config'));
+
+      write(scratch.at('lib/zena-package.json'), '{"name": "greet", "version": "1.0.0"}\n');
+      write(scratch.at('lib/greet.zena'), 'export function answer(): i32 { return 42; }\n');
+      write(scratch.at('lib/.notes'), 'hidden files stay out of the archive\n');
+      let lib = zenaIn('lib');
+
+      let notSignedIn = lib.run(['publish']);
+      isTrue(!notSignedIn.succeeded() && notSignedIn.stderr.contains('zena login'), described(notSignedIn));
+      let login = lib.run(['login', ALICE, '--password-stdin'], 'app-password\n');
+      isTrue(login.succeeded(), described(login));
+
+      // A package with no DID needs a scope, and a yes, to be created.
+      let noScope = lib.run(['publish']);
+      isTrue(!noScope.succeeded() && noScope.stderr.contains('--scope'), described(noScope));
+      let noYes = lib.run(['publish', '--scope', 'acme']);
+      isTrue(!noYes.succeeded() && noYes.stderr.contains('--yes') &&
+          noYes.stderr.contains('greet.acme.pkg.test'), described(noYes));
+
+      let first = lib.run(['publish', '--scope', 'acme', '--yes']);
+      isTrue(first.succeeded(), described(first));
+      isTrue(first.stdout.contains('Created your recovery key'), described(first));
+      isTrue(first.stdout.contains('Created the scope acme.pkg.test'), described(first));
+      isTrue(first.stdout.contains('Created greet.acme.pkg.test'), described(first));
+      isTrue(first.stdout.contains('Published greet 1.0.0'), described(first));
+      let manifest = parseJson(read(scratch.at('lib/zena-package.json'))) as JsonObject;
+      let did = manifest['did'] as String;
+      isTrue(did.startsWith('did:plc:'), did);
+      let mode = run(['/bin/sh', '-c', 'stat -c %a "$1" 2>/dev/null || stat -f %Lp "$1"', 'sh',
+          scratch.host('config/recovery-key')]).stdout.trim();
+      equal(mode, '600');
+
+      // A version is published once.
+      let again = lib.run(['publish']);
+      isTrue(!again.succeeded() && again.stderr.contains('VersionExists'), described(again));
+      write(scratch.at('lib/zena-package.json'), `{"name": "greet", "did": "${did}", "version": "1.1.0"}\n`);
+      let second = lib.run(['publish']);
+      isTrue(second.succeeded() && second.stdout.contains('Published greet 1.1.0'), described(second));
+      isTrue(!second.stdout.contains('Created'), described(second));
+
+      // A second package in the scope finds its organization by handle, and
+      write(scratch.at('other/zena-package.json'), '{"name": "other", "version": "0.1.0"}\n');
+      write(scratch.at('other/other.zena'), 'export let x = 1;\n');
+      // `zena package create` only creates it.
+      let created = zenaIn('other').run(['package', 'create', '--scope', 'acme', '--yes']);
+      isTrue(created.succeeded() && created.stdout.contains('Created other.acme.pkg.test'), described(created));
+      isTrue(!created.stdout.contains('Created the scope') && !created.stdout.contains('Published'),
+          described(created));
+      let other = zenaIn('other').run(['publish']);
+      isTrue(other.succeeded() && other.stdout.contains('Published other 0.1.0'), described(other));
+
+      // Alice attested the scope's members record and the three releases, in
+      // her own repository.
+      let listed = runFuture(httpRequest('GET',
+          `${(addresses['plc'] as String).sliceBytes(0, (addresses['plc'] as String).length - 4)}/xrpc/com.atproto.repo.listRecords?repo=${ALICE}&collection=dev.zena-lang.package.attestation`,
+          [], null));
+      equal(((parseJson(String.fromBytes(listed.body)) as JsonObject)['records'] as JsonArray).length, 4);
+
+      // Another workspace adds the package by its handle and runs it.
+      write(scratch.at('app/prog.zena'), `import { answer } from 'greet:greet';\n${MAIN} {\n  return answer() - 42;\n}\n`);
+      let app = zenaIn('app');
+      let added = app.run(['add', 'greet.acme.pkg.test']);
+      isTrue(added.succeeded(), described(added));
+      isTrue(read(scratch.at('app/zena-package.json')).contains('1.1.0'), read(scratch.at('app/zena-package.json')));
+      let ran = app.run(['run', 'prog.zena']);
+      isTrue(ran.succeeded(), described(ran));
+    } finally {
+      stack.waitFor(1 as i64);
+      scratch.remove();
+    }
+  });
+});

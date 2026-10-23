@@ -300,6 +300,10 @@ Subcommands (`./target/release/zena-cli <subcommand>`):
   account with an app password, from stdin, `ZENA_APP_PASSWORD` or the
   terminal, keeping the session in `$ZENA_CONFIG_DIR/session.json` (default
   `~/.config/zena`), readable only by its owner. **`logout`** ends it.
+- **`publish [--scope <name> --yes] [--host <url>]`**: Publish the package
+  you are in at its manifest's `version` to a package host
+  (`ZENA_PACKAGE_HOST`), creating its account first when it has no `did`.
+  **`package create`** only creates it.
 - **`fetch`**: Fetch the published packages `zena-lock.json` pins into
   the package cache, checking each against its pins. `ZENA_PLC_DIRECTORY`
   and `ZENA_DNS_OVER_HTTPS` replace the PLC directory and the DNS resolver
