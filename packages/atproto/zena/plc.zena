@@ -1,0 +1,296 @@
+/**
+ * `did:plc` operations (https://web.plc.directory/spec/v0.1/did-plc): what
+ * a PLC directory records for a DID, and how a new DID is made.
+ *
+ * An operation sets the whole of a DID's state:
+ *
+ * ```json
+ * {
+ *   "type": "plc_operation",
+ *   "rotationKeys": ["did:key:zQ3sh...", "did:key:zDnae..."],
+ *   "verificationMethods": {"atproto": "did:key:zDnae..."},
+ *   "alsoKnownAs": ["at://router.acme.pkg.zena-lang.dev"],
+ *   "services": {
+ *     "atproto_pds": {"type": "AtprotoPersonalDataServer", "endpoint": "https://pkg.zena-lang.dev"}
+ *   },
+ *   "prev": null,
+ *   "sig": "..."
+ * }
+ * ```
+ *
+ * `rotationKeys` may sign the next operation, the first ranked highest.
+ * `prev` is the CID of the operation this one follows, as a string, or null
+ * for the first, the genesis operation. `sig` is the base64url signature,
+ * without padding, of the operation's DAG-CBOR encoding without `sig`, by
+ * one of the rotation keys: for a genesis operation one of its own, and
+ * otherwise one of the previous operation's.
+ *
+ * A DID is made by its genesis operation: `did:plc:` followed by the first
+ * 24 characters of the lowercase base32 SHA-256 hash of the signed
+ * operation's DAG-CBOR encoding. `submitPlcOperation` sends an operation
+ * to a PLC directory.
+ */
+
+import {Future} from 'zena:async';
+import {OrderedHashMap} from 'zena:collections';
+import {sha256} from 'zena:crypto';
+import {base32Lower, base64Url} from 'zena:encoding';
+import {JsonArray, JsonObject, JsonValue, stringify} from 'zena:json';
+import {encodeCbor} from './cbor.zena';
+import {Cid} from './cid.zena';
+import {ListValue, MapValue, NullValue, StringValue, Value, newMap} from './data.zena';
+import {PublicKey, formatDidKey, parseDidKey, verifySignature} from './didkey.zena';
+import {httpRequest} from './xrpc.zena';
+
+/** An operation that is malformed, or that a PLC directory refused. */
+export class PlcError extends Error {
+  new(message: String) : super(message);
+}
+
+/** A service a DID document lists, such as the account's PDS. */
+export final class PlcService {
+  /** Such as `AtprotoPersonalDataServer`. */
+  kind: String;
+  endpoint: String;
+
+  new(kind: String, endpoint: String) : kind = kind, endpoint = endpoint;
+}
+
+/** A `plc_operation`, signed or not. */
+export final class PlcOperation {
+  /** `did:key`s, highest ranked first. */
+  rotationKeys: Array<String>;
+  /** `did:key`s by name; `atproto` is the repository signing key. */
+  verificationMethods: OrderedHashMap<String, String>;
+  /** URIs such as `at://<handle>`. */
+  alsoKnownAs: Array<String>;
+  /** Services by name; `atproto_pds` is the account's PDS. */
+  services: OrderedHashMap<String, PlcService>;
+  /** The CID of the operation this follows, or null for a genesis operation. */
+  prev: String | null;
+  /** The base64url signature, or null before signing. */
+  sig: String | null;
+
+  new(rotationKeys: Array<String>, verificationMethods: OrderedHashMap<String, String>,
+      alsoKnownAs: Array<String>, services: OrderedHashMap<String, PlcService>,
+      prev: String | null, sig: String | null = null)
+      : rotationKeys = rotationKeys, verificationMethods = verificationMethods,
+        alsoKnownAs = alsoKnownAs, services = services, prev = prev, sig = sig;
+
+  /** The operation in the data model, with `sig` when it is signed. */
+  toValue(): MapValue {
+    let map = this.#unsigned();
+    let sig = this.sig;
+    if (sig != null) {
+      map.entries['sig'] = new StringValue(sig as String);
+    }
+    return map;
+  }
+
+  /** The operation signed by `sign`, which signs with a rotation key. */
+  signedWith(sign: (bytes: FixedArray<u8>) => FixedArray<u8>): PlcOperation {
+    let signature = sign(encodeCbor(this.#unsigned()));
+    return new PlcOperation(this.rotationKeys, this.verificationMethods, this.alsoKnownAs,
+        this.services, this.prev, base64Url.encode(signature, false));
+  }
+
+  /** Whether `key` made the operation's signature. */
+  isSignedBy(key: PublicKey): boolean {
+    let sig = this.sig;
+    if (sig == null) {
+      return false;
+    }
+    var signature = new FixedArray<u8>(0, 0 as u8);
+    try {
+      signature = base64Url.decode(sig as String);
+    } catch (e) {
+      return false;
+    }
+    return verifySignature(key, encodeCbor(this.#unsigned()), signature);
+  }
+
+  /** The CID of the signed operation, which the next operation names as `prev`. */
+  cid(): Cid {
+    return Cid.forDagCbor(encodeCbor(this.toValue()));
+  }
+
+  toJson(): JsonObject {
+    let json = new JsonObject();
+    json['type'] = 'plc_operation';
+    json['rotationKeys'] = stringArray(this.rotationKeys);
+    let methods = new JsonObject();
+    this.verificationMethods.forEach((name, key) => {
+      methods[name] = key;
+    });
+    json['verificationMethods'] = methods;
+    json['alsoKnownAs'] = stringArray(this.alsoKnownAs);
+    let services = new JsonObject();
+    this.services.forEach((name, service) => {
+      let entry = new JsonObject();
+      entry['type'] = service.kind;
+      entry['endpoint'] = service.endpoint;
+      services[name] = entry;
+    });
+    json['services'] = services;
+    json['prev'] = this.prev;
+    let sig = this.sig;
+    if (sig != null) {
+      json['sig'] = sig;
+    }
+    return json;
+  }
+
+  /** Reads an operation's JSON form. Throws `PlcError`. */
+  static fromJson(json: JsonValue): PlcOperation {
+    if (!(json is JsonObject)) {
+      throw new PlcError('an operation is not a JSON object');
+    }
+    let object = json as JsonObject;
+    if (object['type'] != 'plc_operation') {
+      throw new PlcError('the operation is not a plc_operation');
+    }
+    let methods = new OrderedHashMap<String, String>();
+    membersOf(object, 'verificationMethods').forEach((name, value) => {
+      methods[name] = stringOf(value, 'a verification method');
+    });
+    let services = new OrderedHashMap<String, PlcService>();
+    membersOf(object, 'services').forEach((name, value) => {
+      if (!(value is JsonObject)) {
+        throw new PlcError(`service ${name} is not an object`);
+      }
+      let entry = value as JsonObject;
+      services[name] = new PlcService(stringOf(entry['type'], 'a service type'),
+          stringOf(entry['endpoint'], 'a service endpoint'));
+    });
+    let prev = object['prev'];
+    let sig = object['sig'];
+    return new PlcOperation(
+        stringsOf(object, 'rotationKeys'), methods, stringsOf(object, 'alsoKnownAs'), services,
+        if (prev == null) null else stringOf(prev, 'prev'),
+        if (sig == null) null else stringOf(sig, 'sig'));
+  }
+
+  #unsigned(): MapValue {
+    let map = newMap();
+    map.entries['type'] = new StringValue('plc_operation');
+    map.entries['rotationKeys'] = stringList(this.rotationKeys);
+    let methods = newMap();
+    this.verificationMethods.forEach((name, key) => {
+      methods.entries[name] = new StringValue(key);
+    });
+    map.entries['verificationMethods'] = methods;
+    map.entries['alsoKnownAs'] = stringList(this.alsoKnownAs);
+    let services = newMap();
+    this.services.forEach((name, service) => {
+      let entry = newMap();
+      entry.entries['type'] = new StringValue(service.kind);
+      entry.entries['endpoint'] = new StringValue(service.endpoint);
+      services.entries[name] = entry;
+    });
+    map.entries['services'] = services;
+    let prev = this.prev;
+    map.entries['prev'] = if (prev == null) new NullValue() else new StringValue(prev as String);
+    return map;
+  }
+}
+
+/**
+ * An unsigned genesis operation for an account whose repository is signed
+ * by `signingKey`, named `handle`, at the PDS `pdsEndpoint`, which
+ * `rotationKeys` may change, the first ranked highest.
+ */
+export function genesisOperation(signingKey: PublicKey, rotationKeys: Array<PublicKey>,
+    handle: String, pdsEndpoint: String): PlcOperation {
+  let rotation = new GrowableArray<String>();
+  for (let key in rotationKeys) {
+    rotation.push(formatDidKey(key));
+  }
+  let methods = new OrderedHashMap<String, String>();
+  methods['atproto'] = formatDidKey(signingKey);
+  let services = new OrderedHashMap<String, PlcService>();
+  services['atproto_pds'] = new PlcService('AtprotoPersonalDataServer', pdsEndpoint);
+  let aka = new GrowableArray<String>();
+  aka.push(`at://${handle}`);
+  return new PlcOperation(rotation, methods, aka, services, null);
+}
+
+/**
+ * The DID a signed genesis operation makes. Throws `PlcError` when the
+ * operation is not a signed genesis operation, or no rotation key it lists
+ * signed it.
+ */
+export function didOfGenesis(operation: PlcOperation): String {
+  if (operation.prev != null) {
+    throw new PlcError('the operation follows another, so it makes no DID');
+  }
+  if (operation.sig == null) {
+    throw new PlcError('the operation is not signed');
+  }
+  var signed = false;
+  for (let key in operation.rotationKeys) {
+    signed = signed || operation.isSignedBy(parseDidKey(key));
+  }
+  if (!signed) {
+    throw new PlcError('none of the operation\'s rotation keys signed it');
+  }
+  let hash = sha256(encodeCbor(operation.toValue()));
+  return `did:plc:${base32Lower.encode(hash, false).sliceBytes(0, 24)}`;
+}
+
+/**
+ * Sends `operation` for `did` to the PLC directory at `directory`, such as
+ * `https://plc.directory`. Throws `PlcError` when the directory refuses it.
+ */
+export async function submitPlcOperation(directory: String, did: String, operation: PlcOperation)
+    : Future<void> {
+  let body = stringify(operation.toJson()).toBytes();
+  let response = await httpRequest('POST', `${directory}/${did}`,
+      [('content-type', 'application/json')], body);
+  if (response.status < 200 || response.status >= 300) {
+    throw new PlcError(`${directory} refused the operation for ${did}: HTTP ${response.status} ${String.fromBytes(response.body)}`);
+  }
+}
+
+function stringArray(items: Array<String>): JsonArray {
+  let array = new JsonArray();
+  for (let item in items) {
+    array.push(item);
+  }
+  return array;
+}
+
+function stringList(items: Array<String>): ListValue {
+  let values = new FixedArray<Value>(items.length, new NullValue());
+  for (var i = 0; i < items.length; i += 1) {
+    values[i] = new StringValue(items[i]);
+  }
+  return new ListValue(values);
+}
+
+function membersOf(object: JsonObject, name: String): JsonObject {
+  let value = object[name];
+  if (!(value is JsonObject)) {
+    throw new PlcError(`the operation's ${name} is not an object`);
+  }
+  return value as JsonObject;
+}
+
+function stringsOf(object: JsonObject, name: String): GrowableArray<String> {
+  let value = object[name];
+  if (!(value is JsonArray)) {
+    throw new PlcError(`the operation's ${name} is not a list`);
+  }
+  let list = value as JsonArray;
+  let strings = new GrowableArray<String>();
+  for (var i = 0; i < list.length; i += 1) {
+    strings.push(stringOf(list[i], name));
+  }
+  return strings;
+}
+
+function stringOf(value: JsonValue, what: String): String {
+  if (!(value is String)) {
+    throw new PlcError(`${what} is not a string`);
+  }
+  return value as String;
+}
