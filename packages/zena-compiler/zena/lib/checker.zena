@@ -4777,6 +4777,56 @@ function borrowWrapFieldRead(ctx: CheckerContext, t: Type): Type {
 
 
 /**
+ * A pattern that takes apart a tuple holding an owner moves it: the
+ * owners go to the pattern's bindings, so the tuple must not hold them
+ * too (#495). The move is recorded before the branch, so the binding is
+ * dead on the path where the pattern does not match as well.
+ */
+function moveDestructuredTuple(ctx: CheckerContext, source: Expression, t: Type): void {
+  if (isAffineTuple(t)) {
+    recordArgumentMove(ctx, source, t);
+  }
+}
+
+/**
+ * The type a read of a tuple element of type `t` yields. An owner reads
+ * as a borrow, as an owner field does, so the read does not mint a second
+ * owner (#495). An element that is itself a tuple holding an owner has no
+ * borrowed form, and a read would copy its owners, so it is an error:
+ * destructuring moves them out instead.
+ */
+function tupleElementRead(ctx: CheckerContext, t: Type, loc: SourceLocation | null): Type {
+  if (isAffineTuple(t)) {
+    ctx.error(
+      `An element of type '${typeToString(t)}' holds an owner, so reading it would copy the owner. Destructure the tuple to move it out.`,
+      DiagnosticCode.TypeMismatch,
+      loc,
+    );
+    return new ErrorType();
+  }
+  return borrowWrapFieldRead(ctx, t);
+}
+
+/**
+ * Whether `t` is a tuple, boxed or inline, or a union of them, that holds
+ * an owner. Such a tuple is affine itself (#495): building it moves the
+ * owner in, a binding of it moves like an `Own<R>`, and destructuring it
+ * moves the owners out.
+ */
+function isAffineTuple(t: Type): boolean {
+  let resolved = unwrapAliases(t);
+  if (resolved is TupleT || resolved is InlineTupleT) {
+    return typeCarriesOwner(resolved);
+  }
+  if (let UnionT {types} = resolved) {
+    for (let member in types) {
+      if (isAffineTuple(member)) { return true; }
+    }
+  }
+  return false;
+}
+
+/**
  * Whether a value of `t` can carry an owner — the general containment
  * test behind ownership.md's "types containing one". Aggressive on
  * purpose: it pierces distinct aliases and walks every union member,
@@ -4788,6 +4838,19 @@ function borrowWrapFieldRead(ctx: CheckerContext, t: Type): Type {
  */
 function typeCarriesOwner(t: Type): boolean {
   if (ownershipHandleName(t) == "Own") { return true; }
+  // A tuple holding an owner carries it (#495).
+  if (let TupleT {elementTypes} = t) {
+    for (let el in elementTypes) {
+      if (typeCarriesOwner(el)) { return true; }
+    }
+    return false;
+  }
+  if (let InlineTupleT {elementTypes} = t) {
+    for (let el in elementTypes) {
+      if (typeCarriesOwner(el)) { return true; }
+    }
+    return false;
+  }
   if (t is UnionT) {
     for (let m in t.types) {
       if (typeCarriesOwner(m)) { return true; }
@@ -5222,7 +5285,7 @@ function recordArgumentMove(ctx: CheckerContext, arg: Expression, paramType: Typ
   // null just means there may be nothing to own.
   let sinkType = soleNonNullMember(paramType) ?? paramType;
   let handle = ownershipHandleName(sinkType);
-  if (handle == "Own") {
+  if (handle == "Own" || isAffineTuple(sinkType)) {
     ctx.recordFlowMove(info.id, info.name, arg.loc);
     return;
   }
@@ -5241,7 +5304,7 @@ function recordArgumentMove(ctx: CheckerContext, arg: Expression, paramType: Typ
     // interface adaptation, an erased generic slot — escapes without a
     // recorded move, so implicit drop must leave the binding alone.
     let at = ctx.model.getNodeType(arg);
-    if (at != null && ownershipHandleName(at) == "Own") {
+    if (at != null && (ownershipHandleName(at) == "Own" || isAffineTuple(at))) {
       ctx.markUndroppable(info.id);
     }
   }
@@ -6064,7 +6127,6 @@ function resolveTypeAnnotationInner(ctx: CheckerContext, ann: TypeAnnotation): T
         }
       } else {
         rejectSecondClassStorage(ctx, resolved, "a tuple", elementTypes[i].loc);
-        rejectAffineStructuralMember(ctx, resolved, "a tuple element", elementTypes[i].loc);
         elTypes.push(resolved);
       }
       i += 1;
@@ -10867,6 +10929,7 @@ function checkStatement(ctx: CheckerContext, stmt: Statement): void {
       match (test) {
         case LetPatternCondition as lpc: {
           let initType = checkExpression(ctx, lpc.init, null);
+          moveDestructuredTuple(ctx, lpc.init, initType);
           let narrowedInitType = narrowTypeByPattern(ctx, lpc.pattern, initType);
           let preBranchFlow = ctx.currentFlow;
           ctx.enterScope();
@@ -10926,6 +10989,7 @@ case _: {
           ctx.enterFlowLoop();
           recordLoopAssignments(ctx, stmt);
           let initType = checkExpression(ctx, lpc.init, null);
+          moveDestructuredTuple(ctx, lpc.init, initType);
           let afterTest = ctx.currentFlow;
           let narrowedInitType = narrowTypeByPattern(ctx, lpc.pattern, initType);
           ctx.enterLoop();
@@ -13068,7 +13132,8 @@ function checkExpressionInner(ctx: CheckerContext, expr: Expression, expectedTyp
     if (resolved != null) {
       // An owned binding is dead after a move on any path to here, and
       // a scoped binding after the consumption that moved it.
-      if (ownershipHandleName(resolved) == "Own" || isScopedValueType(resolved)) {
+      if (ownershipHandleName(resolved) == "Own" || isScopedValueType(resolved) ||
+          isAffineTuple(resolved)) {
         let moveSym = ctx.model.resolve(expr);
         if (moveSym != null) {
           ctx.checkMoveUse(expr, moveSym);
@@ -13648,6 +13713,7 @@ function checkExpressionInner(ctx: CheckerContext, expr: Expression, expectedTyp
     match (test) {
       case LetPatternCondition as lpc: {
         let initType = checkExpression(ctx, lpc.init, null);
+        moveDestructuredTuple(ctx, lpc.init, initType);
         let narrowedInitType = narrowTypeByPattern(ctx, lpc.pattern, initType);
         let preBranchFlow = ctx.currentFlow;
         ctx.enterScope();
@@ -14200,6 +14266,8 @@ function checkExpressionInner(ctx: CheckerContext, expr: Expression, expectedTyp
         null
       };
       let elemType = checkExpression(ctx, elements[i], elemExpected);
+      // An owner, or a tuple holding one, moves into the tuple (#495).
+      recordArgumentMove(ctx, elements[i], elemType);
       elementTypes.push(elemType);
       i += 1;
     }
@@ -21065,6 +21133,8 @@ function checkTupleLiteralWithSpreads(
   var i = 0;
   for (let element in elements) {
     let elementType = checkExpression(ctx, element, null);
+    // Spread or not, an owner or a tuple holding one moves in (#495).
+    recordArgumentMove(ctx, element, elementType);
     if (spreadIndices.contains(i)) {
       match (baseType(elementType)) {
         case TupleT as tuple: {
@@ -21197,7 +21267,7 @@ function resolveIndexType(
         if (let NumberLiteral {raw} = index) {
           while (let (true, idx) = parseI32(raw)) {
             if (idx >= 0 && idx < rowIndex) {
-              return elementTypes[idx];
+              return tupleElementRead(ctx, elementTypes[idx], loc);
             }
             break;
           }
@@ -21214,7 +21284,7 @@ function resolveIndexType(
         case NumberLiteral {raw}: {
           while (let (true, idx) = parseI32(raw)) {
             if (idx >= 0 && idx < elementTypes.length) {
-              return elementTypes[idx];
+              return tupleElementRead(ctx, elementTypes[idx], loc);
             }
             break;
           }
@@ -21227,7 +21297,11 @@ function resolveIndexType(
         }
         case _: {
           // Non-literal index — return union of all element types.
-          return createUnionType(elementTypes);
+          let reads = new Array<Type>();
+          for (let el in elementTypes) {
+            reads.push(tupleElementRead(ctx, el, loc));
+          }
+          return createUnionType(reads);
         }
       }
     }
@@ -22335,6 +22409,7 @@ function checkMatchExpr(
   let {discriminant, cases, loc} = matchExpr;
   // Check the discriminant expression.
   let scrutineeType = checkExpression(ctx, discriminant, null);
+  moveDestructuredTuple(ctx, discriminant, scrutineeType);
 
   // Each arm branches from the flow after the discriminant; the arms
   // join again after the match. Arm-end flow nodes are kept, aligned

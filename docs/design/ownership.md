@@ -1724,12 +1724,35 @@ dispose: an override does not chain to the superclass's automatically,
 so how the two compose is the subclass's decision, and the override
 (possibly empty) is where it is written down.
 
-**Structural types reject affine members.** A record or tuple member of
-affine type is an error: structural values convert by adaptation,
-adaptation copies, and a copy would duplicate the obligation — and there is
-no dispose slot to hang glue on. This is the affine twin of the
+**Records reject affine members; tuples become affine.** A record member
+of affine type is an error: a record converts by adaptation, adaptation
+copies, and a copy would duplicate the obligation — and there is no
+dispose slot to hang glue on. This is the affine twin of the
 second-class storage rule: borrows are rejected from structural types for
 extent reasons, owns for duplication reasons.
+
+A tuple may hold an owner (#495). A tuple type, boxed or inline, with an
+element that carries an owner is affine itself (`isAffineTuple`;
+`typeCarriesOwner` sees through tuple elements):
+
+- A tuple literal moves its owner elements in (`recordArgumentMove` per
+  element, spreads included).
+- A binding of an affine tuple type is move-checked like an `Own<R>`
+  binding, and an affine tuple sink (a parameter, a rebinding) moves its
+  argument.
+- Destructuring moves the tuple, through the declaration's own move
+  of its initializer. `if let`, `while let` and `match` move the source
+  before the branch (`moveDestructuredTuple`), so it is dead on the
+  path where the pattern fails as well.
+- An index read of an owner element borrows it (`tupleElementRead`). An
+  element that is itself an affine tuple has no borrowed form, so an index
+  read of one is an error.
+
+The conversions between a tuple and its inline form, and the widening
+between unions, happen at sites that move their source, so they never
+leave two holders of one owner. Release at scope exit is the second half
+and is not implemented yet: an unmoved affine tuple, and an owner bound by
+destructuring, leak until it is.
 
 **Generic fields are the other half, and defer to `scoped T`.**
 `class Box<scoped T> { var value: T }` stays an ordinary class; the
