@@ -63,7 +63,7 @@ import { IrRefFunc } from './ir.zena';
 import { ReachabilityAnalysis } from '../reachability/analysis.zena';
 import { ExportKey } from '../codegen-utils.zena';
 import {
-  componentAbiModule, ComponentValType, toKebabName
+  componentAbiModule, ComponentValType, componentTypeNeedsMemory, toKebabName
 } from '../component-emitter.zena';
 import { componentTypeOf, declaredTypeOf } from '../component-shape.zena';
 import { ClassType, Type, VoidType } from '../../types.zena';
@@ -201,7 +201,18 @@ export function prepareComponentEntry(
       }
     } else {
       let result = componentTypeOf(wasm, ret);
-      if (result >= 0) {
+      if (result >= 0 && componentTypeNeedsMemory(result)) {
+        // A `string` is read out of linear memory, so its typed return
+        // takes the staged bytes, which the wrapper's `run` stages and
+        // returns; it marks the task returned itself.
+        let run = entryWrapperRun(wasm);
+        if (run != null) {
+          callee = run;
+          wasm.componentEntryResult = result;
+          pass.markFunctionReached(run);
+          accepted = true;
+        }
+      } else if (result >= 0) {
         wasm.componentEntryResult = result;
         syncReturn = mainTaskReturn(wasm, main);
         accepted = true;
@@ -210,10 +221,11 @@ export function prepareComponentEntry(
     if (!accepted) {
       throw new Error(
         'On this target `main` is lifted async, and an async lift ' +
-        'returns its result through task.return, which carries a flat ' +
-        'scalar. Declare it `main(): void`, `main(): T`, `async function ' +
-        'main(): Future<void>` or `async function main(): Future<T>`, ' +
-        'with T a flat scalar.'
+        'returns its result through task.return. Declare it ' +
+        '`main(): void`, `main(): T`, `async function main(): ' +
+        'Future<void>` or `async function main(): Future<T>`, with T a ' +
+        'flat scalar or `String`. A `String` result is returned by a ' +
+        'wrapper chosen from the annotation, so it must be written.'
       );
     }
   }

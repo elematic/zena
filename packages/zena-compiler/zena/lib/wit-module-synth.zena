@@ -78,7 +78,8 @@ import { withWasiPackages } from './codegen/wit-imports.zena';
 import {
   ComponentEntryWrapper, componentEntryPathFor,
   componentEntrySpecifierFor, componentExportSuffix, resourceWrapperBase,
-  mainScalarResultOf, hasAsyncMain, renderMainWrapper, renderWrapperHeader,
+  mainWrapperResultOf, mainWrapperAbiImports, hasAsyncMain, renderMainWrapper,
+  renderWrapperHeader,
   componentSyncExportSuffix
 } from './component-entry.zena';
 import { zena, emit, ZenaTemplate } from './code-template.zena';
@@ -3903,7 +3904,8 @@ export function synthesizeExportWrapper(
       }
     }
   }
-  let mainResult = mainScalarResultOf(entryAst);
+  let mainResult = mainWrapperResultOf(entryAst);
+  let mainIsAsync = hasAsyncMain(entryAst);
   if (exports.length == 0 && interfaceExports.length == 0 &&
       mainResult == "") {
     return null;
@@ -3929,7 +3931,11 @@ export function synthesizeExportWrapper(
   };
   if (mainResult != "") {
     imported.push("main");
-    renderMainWrapper(body, mainResult);
+    for (let name in mainWrapperAbiImports(mainResult, mainIsAsync)) {
+      // Every wrapper imports `finishTask` already.
+      if (name != "finishTask") { uses.useAbi(name); }
+    }
+    renderMainWrapper(body, mainResult, mainIsAsync);
   }
   for (let e in exports) {
     let target = e.target();

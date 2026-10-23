@@ -336,13 +336,20 @@ export function deriveImportsWit(
  * checked to actually exist in its interface, and its flattening
  * decides whether the lowering carries the canonical memory options.
  * An empty import list encodes to an empty world — no pieces, every
- * count zero — so the caller need not special-case it.
+ * count zero — so the caller need not special-case it. A typed
+ * `task.return` (a `return:` canon type) is still encoded then, against
+ * a world with no imports: an async `main` returning a `String` needs
+ * its `string` type whether or not the program imports anything.
  */
 export function encodeImportTypes(
   shape: ComponentShape,
   packagesWit: String = ""
 ): EncodedImports {
-  if (shape.imports.length == 0) {
+  var typedReturn = false;
+  for (let b in shape.builtins) {
+    if (b.canonType.startsWith("return:")) { typedReturn = true; }
+  }
+  if (shape.imports.length == 0 && !typedReturn) {
     return new EncodedImports();
   }
   let text = deriveImportsWit(shape, packagesWit);

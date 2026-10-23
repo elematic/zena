@@ -450,9 +450,14 @@ export final class ComponentExportFunc {
    *
    * Only a result needs one: it is allocated by the guest during the
    * call and nothing else can say when the host has finished copying it
-   * out. Arguments are the host's own buffers.
+   * out. Arguments are the host's own buffers. An async export never
+   * does: its result goes through `task.return`, which the host reads
+   * before the call returns, and an async lift may not name one.
    */
   needsPostReturn(): boolean {
+    if (this.callbackCoreName != "") {
+      return false;
+    }
     return this.needsPostReturnLift ||
         componentTypeNeedsMemory(this.signature.result);
   }

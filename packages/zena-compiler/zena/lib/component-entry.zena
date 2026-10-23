@@ -18,9 +18,12 @@
  * adapter (`codegen/ir/component-adapters.zena`) calls a wrapper in
  * place of the function.
  *
- * This file writes the wrapper for an async `main` returning a flat
- * scalar, decided from the entry's syntax alone, the annotation on
- * `main`, so it can be loaded in the same compile as the entry, before
+ * This file writes the wrapper for `main` when its value needs one: an
+ * async `main` returning a flat scalar or a `String`, and a synchronous
+ * `main` returning a `String`, which the entry cannot return itself
+ * because a `string` result is read out of linear memory. The choice
+ * is made from the entry's syntax alone, the annotation on `main`, so
+ * the wrapper can be loaded in the same compile as the entry, before
  * anything is checked. A declared world's async exports need the WIT,
  * which the compiler does not link: `wit-module-synth.zena` writes
  * those wrappers, with the same shape, and the driver injects it
@@ -29,7 +32,7 @@
  * See docs/design/component-async-exports.md.
  */
 
-import { StringBuilder } from 'zena:core';
+import { StringBuilder, join } from 'zena:core';
 import {
   Module, FunctionDeclaration, VariableDeclaration, FunctionExpression,
   IdentifierPattern, NamedTypeAnnotation
@@ -143,21 +146,30 @@ function isScalarResult(name: String): boolean {
 }
 
 /**
- * The scalar `T` of an `async` function annotated `Future<T>`, or the
- * empty string when the function is not that shape. A synchronous
- * main needs no wrapper: its value is known when it returns, and the
- * entry adapter returns it itself (ir/component-adapters.zena).
+ * The result `main` returns through the wrapper, as the wrapper spells
+ * its type: a flat scalar's name, `String`, or the empty string when
+ * `main` needs no wrapper.
+ *
+ * An async `main` annotated `Future<T>` needs one for a flat scalar or
+ * a `String` `T`. A synchronous `main` needs one only for `String`: a
+ * scalar is known when it returns, and the entry adapter returns it
+ * itself (ir/component-adapters.zena).
  */
-function scalarResultOf(func: FunctionExpression) {
+function wrapperResultOf(func: FunctionExpression) {
   let annotation = func.returnType;
   if (!(annotation is NamedTypeAnnotation)) { return ''; }
-  if (!func.isAsync) { return ''; }
+  if (!func.isAsync) {
+    return if (isStringResult(annotation)) 'String' else '';
+  }
   if (annotation.name == 'Future') {
     let args = annotation.typeArguments;
     if (args != null) {
       if (args.length == 1) {
         let arg = args[0];
         if (arg is NamedTypeAnnotation) {
+          if (isStringResult(arg)) {
+            return 'String';
+          }
           if (arg.typeArguments == null) {
             if (isScalarResult(arg.name)) {
               return arg.name;
@@ -170,15 +182,19 @@ function scalarResultOf(func: FunctionExpression) {
   return '';
 }
 
+/** Whether `annotation` is `String`. */
+function isStringResult(annotation: NamedTypeAnnotation) {
+  return annotation.name == 'String' && annotation.typeArguments == null;
+}
+
 /**
- * The scalar result of the module's exported async `main`, or the
- * empty string: the payload of a main annotated `Future<T>`. Both
- * spellings count: `export async function main()` and
- * `export let main = async () => ...`.
+ * The result the module's exported `main` returns through the wrapper,
+ * or the empty string: see `wrapperResultOf`. Both spellings count:
+ * `export async function main()` and `export let main = async () => ...`.
  */
-export function mainScalarResultOf(ast: Module): String {
+export function mainWrapperResultOf(ast: Module): String {
   let main = exportedMainOf(ast);
-  return if (main == null) '' else scalarResultOf(main as FunctionExpression);
+  return if (main == null) '' else wrapperResultOf(main as FunctionExpression);
 }
 
 /** Whether the module exports an async `main`: the entry the
@@ -242,20 +258,67 @@ export function renderWrapperHeader(sb: StringBuilder): void {
 }
 
 /**
- * The typed return for an async `main`'s scalar `result`, and `run`,
- * which starts main and hands the driver the return. Appended to a
- * wrapper whose imports already bring in `main` and `finishTask`.
+ * The names a main wrapper for `result` imports from `zena:wasi`.
+ * `finishTask` hands an async main's value to the driver; a `String`
+ * is staged into linear memory for the typed return to read, and a
+ * synchronous main's wrapper tells the driver it has returned.
  */
-export function renderMainWrapper(sb: StringBuilder, result: String): void {
-  sb.append('@external("canon", "task.return#main")\n');
-  sb.append('declare function taskReturnMain(value: ').append(result)
-      .append('): void;\n\n');
+export function mainWrapperAbiImports(result: String, isAsync: boolean): GrowableArray<String> {
+  let names = new Array<String>();
+  if (isAsync) {
+    names.push('finishTask');
+  }
+  if (result == 'String') {
+    names.push('stagedMark');
+    names.push('stageString');
+    names.push('releaseStagedFrom');
+    if (!isAsync) {
+      names.push('markReturned');
+    }
+  }
+  return names;
+}
+
+/**
+ * The typed return for `main`'s `result`, and `run`, which calls main
+ * and returns its value: through the driver for an async main, once
+ * the future settles, and at once for a synchronous one. Appended to a
+ * wrapper whose imports already bring in `main` and the names
+ * `mainWrapperAbiImports` lists.
+ *
+ * A scalar's `task.return` takes the value. A `String`'s is typed by
+ * the WIT `string`, so its parameters are the staged bytes' address and
+ * length, and the staging is freed once the return has read it.
+ */
+export function renderMainWrapper(sb: StringBuilder, result: String,
+    isAsync: boolean): void {
+  let isString = result == 'String';
+  if (isString) {
+    sb.append('@external("canon", "task.return#main", "return:#string")\n');
+    sb.append('declare function taskReturnMain(ptr: i32, len: i32): void;\n\n');
+    sb.append('function returnMain(value: String): void {\n');
+    sb.append('  let mark = stagedMark();\n');
+    sb.append('  let (ptr, len) = stageString(value);\n');
+    sb.append('  taskReturnMain(ptr, len);\n');
+    sb.append('  releaseStagedFrom(mark);\n');
+    sb.append('}\n\n');
+  } else {
+    sb.append('@external("canon", "task.return#main")\n');
+    sb.append('declare function taskReturnMain(value: ').append(result)
+        .append('): void;\n\n');
+  }
+  let returnFn = if (isString) 'returnMain' else 'taskReturnMain';
   sb.append('export function ').append(componentEntryRunName)
       .append('(): void {\n');
-  sb.append('  finishTask<').append(result).append('>(main(), (value: ')
-      .append(result).append('): void => {\n');
-  sb.append('    taskReturnMain(value);\n');
-  sb.append('  });\n');
+  if (isAsync) {
+    sb.append('  finishTask<').append(result).append('>(main(), (value: ')
+        .append(result).append('): void => {\n');
+    sb.append('    ').append(returnFn).append('(value);\n');
+    sb.append('  });\n');
+  } else {
+    sb.append('  ').append(returnFn).append('(main());\n');
+    sb.append('  markReturned();\n');
+  }
   sb.append('}\n');
 }
 
@@ -268,16 +331,19 @@ export function componentEntryWrapperFor(
   entryPath: String,
   ast: Module
 ): ComponentEntryWrapper | null {
-  let result = mainScalarResultOf(ast);
+  let result = mainWrapperResultOf(ast);
   if (result == '') {
     return null;
   }
+  let isAsync = hasAsyncMain(ast);
   let specifier = componentEntrySpecifierFor(entryPath);
   let sb = new StringBuilder();
   renderWrapperHeader(sb);
   sb.append('import { main } from \'').append(specifier).append('\';\n');
-  sb.append('import { finishTask } from \'zena:wasi\';\n\n');
-  renderMainWrapper(sb, result);
+  sb.append('import { ');
+  sb.append(join(mainWrapperAbiImports(result, isAsync), ', '));
+  sb.append(' } from \'zena:wasi\';\n\n');
+  renderMainWrapper(sb, result, isAsync);
   return new ComponentEntryWrapper(componentEntryPathFor(entryPath),
       sb.toString(), specifier, entryPath);
 }

@@ -1023,9 +1023,14 @@ the host's first call, and the entry returns its value through a
 `task.return` declared at `main`'s checked return type. No annotation is
 needed, and an enum or a distinct alias returns as the scalar under it.
 An async `main` returns its value through the entry wrapper's typed
-`task.return` once its future settles. A `main` exported async that
-returns a `String` is a compile error today, because those `task.return`
-declarations carry flat scalars only. The compiler also accepts a
+`task.return` once its future settles. A `String` result, from an async
+`main` or a synchronous one, goes through the wrapper too: a `string`
+is read out of linear memory, so its `task.return` is typed by the WIT
+`string` (`return:#string`), takes the staged bytes' address and
+length, and carries the memory option, as the lift does. The wrapper
+is chosen from `main`'s annotation, so an unannotated `main` returning
+a `String` is a compile error that asks for one. The compiler also
+accepts a
 declared world whose `main` is a synchronous function while exporting
 `main` async; whether the component model's type rules allow that has
 not been checked.
