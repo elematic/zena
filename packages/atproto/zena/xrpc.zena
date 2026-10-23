@@ -12,7 +12,7 @@
  */
 
 import {Completer} from 'zena:async';
-import {Err, Ok, Option, Outcome, StringBuilder} from 'zena:core';
+import {Option, StringBuilder, Result} from 'zena:core';
 import {JsonObject, JsonValue, parseJson, stringify} from 'zena:json';
 import {Stream, bytesStream, readAllBytes} from 'zena:stream';
 import {EncodeSet, URL, percentEncode} from 'zena:url';
@@ -92,7 +92,7 @@ export async function httpRequest(
   for (let (name, value) in headers) {
     fields.append(name, value.toBytes());
   }
-  let trailers = Future.of<Outcome<Option<Fields>, ErrorCode>>(new Ok<Option<Fields>, ErrorCode>(none));
+  let trailers = Future.of<Result<Option<Fields>, ErrorCode>>((true, none));
   let contents: Option<Stream<u8>> = if (body == null) none else some(bytesStream(body));
   let (request, transmitted) = Request.new_(fields, contents, trailers, none);
   if (method == 'POST') {
@@ -108,15 +108,15 @@ export async function httpRequest(
   request.setPathWithQuery(some(`${target.pathname}${target.search}`));
   let sent = await send(request);
   let response = match (sent) {
-    case Ok {value}: value
-    case Err: throw new HttpError(`no answer from ${target.host()}`)
+    case (true, let value): value
+    case (false, _): throw new HttpError(`no answer from ${target.host()}`)
   };
   let status = response.getStatusCode() as i32;
   let responseHeaders = response.getHeaders();
-  let received = new Completer<Outcome<void, ErrorCode>>();
+  let received = new Completer<Result<void, ErrorCode>>();
   let (responseBody, responseTrailers) = WireResponse.consumeBody(response, received.future);
   let bytes = await readAllBytes(responseBody);
-  received.tryComplete(new Ok<void, ErrorCode>(unit()));
+  received.tryComplete((true, unit()));
   return new HttpResponse(status, responseHeaders, bytes);
 }
 

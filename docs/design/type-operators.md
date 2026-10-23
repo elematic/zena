@@ -71,7 +71,7 @@ in substitution contexts that have no checker in reach.
 (a `Scoped` value, a restricted `Borrow`, or a `scoped` type parameter)
 and `R` otherwise. It exists for one shape: a generic whose result must
 be scoped exactly when an input is — `Future.allSettled<scoped T>`
-returns `ScopedFrom<T, Future<Array<Outcome<Awaited<T>, Error>>>>`, so
+returns `ScopedFrom<T, Future<Array<Result<Awaited<T>, Error>>>>`, so
 a call over scoped futures yields a scoped result the caller must
 consume, and a call over ordinary futures yields the ordinary future
 existing callers expect (ownership.md §"Combinator audit").

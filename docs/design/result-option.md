@@ -20,9 +20,9 @@ written `inline Result<T, E>` where it is returned unboxed. An inline union's
 slots are derived per position and wasm type (multi-return-values.md, "Slots
 of an Inline Union"), so `T` and `E` share position 1 without sharing a slot
 and the holes are no longer needed. A value converts between the boxed and
-inline forms implicitly. `Outcome` remains for a payload that is an owner,
-which a tuple cannot hold yet (#495), and for the WIT bindings of futures and
-async results.
+inline forms implicitly. The `Outcome` classes, which served a payload that
+is an owner and the WIT bindings of futures and async results, were removed
+once a tuple could hold an owner (#495).
 
 This doc answers the three questions that decision opens:
 

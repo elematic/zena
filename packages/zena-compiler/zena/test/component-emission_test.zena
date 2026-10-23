@@ -13,7 +13,7 @@
 import { suite, test, TestContext } from 'zena:test';
 import { isTrue, equal, throws } from 'zena:assert';
 import { readFileSync, existsSync, mkdirSync } from 'zena:fs';
-import { newByteArray, growable } from 'zena:core';
+import { newByteArray, growable, Result } from 'zena:core';
 import { CompilerHost } from '../lib/library-loader.zena';
 import {
   Compiler, createCompiler, CompileOptions, checkCompilation, withBuiltinPackages
@@ -32,7 +32,7 @@ import {
   deriveImportsWit, encodeImportTypes, makeImportEncoder
 } from '../lib/codegen/wit-imports.zena';
 import {
-  synthesizeWitModule, synthesizeExportWrapper, stdlibHasOutcome
+  synthesizeWitModule, synthesizeExportWrapper
 } from '../lib/wit-module-synth.zena';
 import { WitFile, joinWitFiles } from 'wit-parser:document';
 import { ComponentEntryWrapper } from '../lib/component-entry.zena';
@@ -380,30 +380,6 @@ export let tests = suite('Component emission', () => {
       'the typed task.return canon entry is missing');
   });
 
-  test('a stored result follows the standard library\'s Outcome classes',
-      (ctx) => {
-    // The synthesizer reads `zena:core/result.zena` to choose: `Outcome`
-    // while the library still declares it, `Result` once it does not
-    // (#495). The checked-in bootstrap and the compiler it builds then
-    // agree on the binding types across the change.
-    isTrue(stdlibHasOutcome(new PlainHost()),
-      'the standard library still declares Outcome');
-    let bare = new MockHost();
-    bare.addFile('zena:core/result.zena', 'export type Result<T, E> = (true, T) | (false, E);');
-    isTrue(!stdlibHasOutcome(bare), 'a library without Outcome reads as one');
-    let wit = readFileSync(`${fixtures}/service.wit`);
-    let entry = `${fixtures}/service.zena`;
-    let wrapperOpt = synthesizeExportWrapper(wit, 'service', entry,
-        parse(readFileSync(entry), entry), packagesWit(), false);
-    isTrue(wrapperOpt != null, 'the service world gets no wrapper');
-    let source = (wrapperOpt as ComponentEntryWrapper).source;
-    isTrue(source.contains('finishTask<Result<String, String>>(describe(a0), ' +
-        '(value: Result<String, String>): void => {'),
-      'without Outcome the future carries a Result:\n' + source);
-    isTrue(source.contains('if (value is (true, String)) {'),
-      'the Result is not lowered by its literal:\n' + source);
-  });
-
   test('a declared world\'s async exports lift through wrappers typed ' +
       'by the WIT', (ctx) => {
     // Each async function export of the world gets a `<name>_export`
@@ -426,10 +402,10 @@ export let tests = suite('Component emission', () => {
       'the typed return does not take the flattened result:\n' + source);
     isTrue(source.contains('export function describe_export(a0: u32): void {'),
       'the export wrapper is missing:\n' + source);
-    isTrue(source.contains('finishTask<Outcome<String, String>>(describe(a0), ' +
-        '(value: Outcome<String, String>): void => {'),
+    isTrue(source.contains('finishTask<Result<String, String>>(describe(a0), ' +
+        '(value: Result<String, String>): void => {'),
       'the wrapper does not hand the driver the future:\n' + source);
-    isTrue(source.contains('if (value is Ok<String, String>) {'),
+    isTrue(source.contains('if (value is (true, String)) {'),
       'the result is not lowered by case:\n' + source);
     isTrue(source.contains('let v0 = stringFromMemory(p0, l0);'),
       'a string parameter is not lifted from memory:\n' + source);
@@ -497,8 +473,8 @@ export let tests = suite('Component emission', () => {
       'the export wrapper is missing:\n' + source);
     isTrue(source.contains('let v0 = new Request(a0);'),
       'the request handle is not lifted into its class:\n' + source);
-    isTrue(source.contains('finishTask<Outcome<Response, ErrorCode>>(' +
-        'handle(v0), (value: Outcome<Response, ErrorCode>): void => {'),
+    isTrue(source.contains('finishTask<Result<Response, ErrorCode>>(' +
+        'handle(v0), (value: Result<Response, ErrorCode>): void => {'),
       'the wrapper does not hand the driver the future:\n' + source);
     isTrue(source.contains(" } from 'wasi:http/types';"),
       'the used types are not imported from the types module:\n' + source);
@@ -586,7 +562,7 @@ export let tests = suite('Component emission', () => {
       `the tuple is not built from its slots:\n${source}`);
     isTrue(source.contains(`if (s0 == 0) {\n    return none;\n  }\n  return some(takeStringArgument(s1, s2));`),
       `the option is not lifted from its discriminant and payload:\n${source}`);
-    isTrue(source.contains(`return new Err<u32, String>(takeStringArgument(s1, s2));`),
+    isTrue(source.contains(`return (false, takeStringArgument(s1, s2));`),
       `the result's string arm is not lifted from the shared payload slots:\n${source}`);
     isTrue(source.contains(`export function many_export_sync(args: i32): i32 {`),
       `seventeen core values should spill to one address:\n${source}`);
@@ -633,10 +609,10 @@ world provider {
 `;
     let entry = `${fixtures}/relay-provider.zena`;
     let program = parse(`
-export function forward(p: Packet): Outcome<Packet, Fault> { return new Ok<Packet, Fault>(p); }
+export function forward(p: Packet): Result<Packet, Fault> { return (true, p); }
 export function attach(c: Channel): u32 { return 1 as u32; }
 export function grade(): Level { return Level.High; }
-export async function confirm(): Future<Future<Outcome<void, Fault>>> { return Future.of<Outcome<void, Fault>>(new Ok<void, Fault>(witUnit())); }
+export async function confirm(): Future<Future<Result<void, Fault>>> { return Future.of<Result<void, Fault>>((true, witUnit())); }
 export function reset(): boolean { return true; }
 `, entry);
     let wrapperOpt = synthesizeExportWrapper(wit, 'provider', entry, program,
@@ -748,7 +724,7 @@ export function reset(): boolean { return true; }
     // `descriptor`'s `get-type` is `async func` on the resource: the
     // raw declaration is the async lowering with the implicit `self`
     // handle first and the return area last, and the member wrapper
-    // awaits the packed subtask, then lifts the result into Outcome.
+    // awaits the packed subtask, then lifts the result into a Result.
     // Refused as "waits on the interop stages" until now.
     let source = synthesizeWitModule(disk, 
         `wit:${stdlibRoot}/wit#wasi:filesystem/types`,
@@ -757,7 +733,7 @@ export function reset(): boolean { return true; }
       `the method is not declared with the async option:\n${source}`);
     isTrue(source.contains('declare function descriptorGetType_raw(self: i32, ret: i32): i32;'),
       `the raw declaration lacks self and the return area:\n${source}`);
-    isTrue(source.contains('  async getType(): Future<Outcome<DescriptorType, ErrorCode>> {'),
+    isTrue(source.contains('  async getType(): Future<Result<DescriptorType, ErrorCode>> {'),
       `the wrapper is not an async member:\n${source}`);
     isTrue(source.contains('await awaitPacked(packed);'),
       `the wrapper does not await the subtask:\n${source}`);
@@ -841,7 +817,7 @@ export function reset(): boolean { return true; }
         readWitSource(disk, `${stdlibRoot}/wit`));
     isTrue(source.contains('export resource class Descriptor {'),
       `descriptor is not a resource class:\n${source}`);
-    isTrue(source.contains('Outcome<Own<Descriptor>, ErrorCode>'),
+    isTrue(source.contains('Result<Own<Descriptor>, ErrorCode>'),
       `open-at's result does not carry an owner:\n${source}`);
     isTrue(source.contains('newDescriptor: Borrow<Descriptor>'),
       `rename-at's target is not a borrow:\n${source}`);
@@ -1436,8 +1412,7 @@ world only {
     // return-area address, and hands back the packed subtask. The
     // wrapper is an async function: stage, call, await the driver,
     // release its own staging range, then lift the result the host
-    // wrote — into Outcome, because a future's payload must be
-    // storable and the inline Result is return-position-only.
+    // wrote — into a stored Result, which a future's payload is.
     let source = synthesizeWitModule(disk, 
         `wit:${fixtures}/wit-pkg#fixture:geo/survey`);
     isTrue(source.contains(
@@ -1448,12 +1423,12 @@ world only {
       'the async raw signature is wrong:\n' + source);
     isTrue(source.contains(
         'export async function fetchPoint(name: String): ' +
-        'Future<Outcome<Point, Finding>> {'),
-      `the wrapper should be an async function returning an Outcome:\n${source}`);
+        'Future<Result<Point, Finding>> {'),
+      `the wrapper should be an async function returning a Result:\n${source}`);
     isTrue(source.contains('await awaitPacked(packed);'),
       'the wrapper does not await its subtask:\n' + source);
-    isTrue(source.contains('return new Ok<Point, Finding>(ok);'),
-      "the result's ok arm should be an Outcome:\n" + source);
+    isTrue(source.contains('return (true, ok);'),
+      "the result's ok arm should be a Result:\n" + source);
     // An async function with a rich parameter and no result also
     // rides the async wrapper, still Future<void>.
     isTrue(source.contains(
@@ -1629,8 +1604,8 @@ world only {
     // per-payload-type helpers: each payload type gets its own five
     // canon builtin declares — the field disambiguated `#k` so
     // several payload types coexist as distinct core imports — at
-    // the payload's own component type. A `result` payload rides
-    // `Outcome`, and a bare arm — in a future payload or a plain
+    // the payload's own component type. A `result` payload is a
+    // stored `Result`, and a bare arm — in a future payload or a plain
     // sync result — is a `void` lane filled by `witUnit()`.
     let source = synthesizeWitModule(disk, 
         `wit:${fixtures}/wit-pkg#fixture:pipe/pipes`);
@@ -1650,11 +1625,11 @@ world only {
         '@external("canon", "future.read#fixture:pipe/pipes@1.0.0.0", ' +
         '"future:fixture:pipe/pipes@1.0.0#u32,async")'),
       "the read builtin is not typed by the payload:\n" + source);
-    // The future parameter: an Outcome payload with a bare ok arm.
+    // The future parameter: a Result payload with a bare ok arm.
     isTrue(source.contains(
-        'export function deliver(done: Future<Outcome<void, ' +
+        'export function deliver(done: Future<Result<void, ' +
         'PipeError>>): u32 {'),
-      'a future parameter should carry Outcome with a void lane:\n' +
+      'a future parameter should carry a Result with a void lane:\n' +
       source);
     isTrue(source.contains('deliver_raw(lowerFuture1(done))'),
       'a future parameter should lower through its helper:\n' +
@@ -1663,19 +1638,19 @@ world only {
         '@external("canon", "future.write#fixture:pipe/pipes@1.0.0.1", ' +
         '"future:fixture:pipe/pipes@1.0.0#result<_, pipe-error>,async")'),
       "the write builtin is not typed by the payload:\n" + source);
-    isTrue(source.contains('return new Ok<void, PipeError>(witUnit());'),
+    isTrue(source.contains('return (true, witUnit());'),
       "the bare ok arm should lift as witUnit:\n" + source);
-    // The pump lowers the Outcome into the canonical variant layout.
+    // The pump lowers the Result into the canonical variant layout.
     isTrue(source.contains('async function pumpFuture1(value: ' +
-        'Future<Outcome<void, PipeError>>, end: i32): Future<void> {'),
+        'Future<Result<void, PipeError>>, end: i32): Future<void> {'),
       'the lower pump is missing:\n' + source);
-    isTrue(source.contains('if (v is Ok<void, PipeError>) {'),
-      'the pump should lower the Outcome by case:\n' + source);
+    isTrue(source.contains('if (v is (true, void)) {'),
+      'the pump should lower the Result by case:\n' + source);
     // A rich future inside a tuple lifts from memory by helper.
     isTrue(source.contains('liftFuture2(loadI32('),
       'a future in an aggregate should lift from memory:\n' + source);
     isTrue(source.contains(
-        'Future<Outcome<Option<String>, PipeError>>'),
+        'Future<Result<Option<String>, PipeError>>'),
       "the rich payload's Zena type is wrong:\n" + source);
     // A sync bare-arm result rides the inline Result's void lane.
     isTrue(source.contains(
@@ -1712,7 +1687,7 @@ world only {
       'a used variant must not be re-declared:\n' + source);
     isTrue(source.contains(
         'export async function forward(p: Packet): ' +
-        'Future<Outcome<Packet, Fault>> {'),
+        'Future<Result<Packet, Fault>> {'),
       'the used types should spell the signature:\n' + source);
     isTrue(source.contains('attach(c: Channel): u32'),
       'a used resource parameter is not rendered:\n' + source);

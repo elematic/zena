@@ -4,7 +4,7 @@ import { Stream, readAllText } from 'zena:stream';
 import { milliseconds } from 'zena:time';
 import { blockOn } from 'zena:wasi';
 import { Completer } from 'zena:async';
-import { Ok, Outcome } from 'zena:core';
+import { Result } from 'zena:core';
 import {
   App, ErrorCode, HttpError, Request, Response, SendOptions, WireResponse,
   httpDate, mimeType, send, serve, toWireResponse
@@ -288,10 +288,10 @@ export let tests = suite('zena:http static files', () => {
     let res = get('/hello.txt').res;
     let wire = toWireResponse(res);
     equal(wire.getStatusCode() as i32, 200);
-    let received = new Completer<Outcome<void, ErrorCode>>();
+    let received = new Completer<Result<void, ErrorCode>>();
     let (body, trailers) = WireResponse.consumeBody(wire, received.future);
     equal(blockOn(readAllText(body)), 'world\n');
-    received.complete(new Ok<void, ErrorCode>(unit()));
+    received.complete((true, unit()));
   });
 
   test('httpDate formats IMF-fixdate', (ctx) => {

@@ -32,9 +32,7 @@
  * ```
  */
 
-import {
-  Disposable, Ok, Err, Outcome, Some, Own, Unmanaged, adopt, disown
-} from 'zena:core';
+import {Disposable, Some, Own, Unmanaged, adopt, disown, Result} from 'zena:core';
 import { Stream, readAllBytes, bytesStream, textStream } from 'zena:stream';
 import { blockOn } from 'zena:wasi';
 import { GlobPattern, hasMagic } from 'zena:glob';
@@ -155,9 +153,9 @@ let fail = (code: ErrorCode, what: String): never => {
 };
 
 /** Throw for a failed `result<_, error-code>`. */
-let check = (outcome: Outcome<void, ErrorCode>, what: String) => {
-  if (outcome is Err<void, ErrorCode>) {
-    fail(outcome.error, what);
+let check = (outcome: Result<void, ErrorCode>, what: String) => {
+  if (outcome is (false, ErrorCode)) {
+    fail(outcome[1], what);
   }
 };
 
@@ -261,12 +259,12 @@ async function collectEntries(stream: Stream<DirectoryEntry>): Future<Array<DirE
  * pattern moves the owner out of the `Ok` arm.
  */
 let opened = (
-  outcome: Outcome<Own<WitDescriptor>, ErrorCode>,
+  outcome: Result<Own<WitDescriptor>, ErrorCode>,
   what: String
 ): Own<WitDescriptor> => {
   return match (outcome) {
-    case Ok {value}: value
-    case Err {error}: fail(error, what)
+    case (true, let value): value
+    case (false, let error): fail(error, what)
   };
 };
 
@@ -278,7 +276,7 @@ let opened = (
  */
 async function closeWhenRead(
   file: Own<WitDescriptor>,
-  done: Future<Outcome<void, ErrorCode>>
+  done: Future<Result<void, ErrorCode>>
 ): Future<void> {
   try {
     await done;
@@ -367,8 +365,8 @@ export resource class Descriptor {
   async stat(): Future<FileStat> {
     let outcome = await this.#inner.stat();
     return match (outcome) {
-      case Ok {value}: statOf(value)
-      case Err {error}: fail(error, 'stat')
+      case (true, let value): statOf(value)
+      case (false, let error): fail(error, 'stat')
     };
   }
 
@@ -376,15 +374,15 @@ export resource class Descriptor {
   async statAt(path: String): Future<FileStat> {
     let outcome = await this.#inner.statAt(pathFlagsSymlinkFollow, path);
     return match (outcome) {
-      case Ok {value}: statOf(value)
-      case Err {error}: fail(error, `stat '${path}'`)
+      case (true, let value): statOf(value)
+      case (false, let error): fail(error, `stat '${path}'`)
     };
   }
 
   /** Whether anything is at a path under this directory. */
   async existsAt(path: String): Future<boolean> {
     let outcome = await this.#inner.statAt(pathFlagsSymlinkFollow, path);
-    return outcome is Ok<DescriptorStat, ErrorCode>;
+    return outcome is (true, DescriptorStat);
   }
 
   /** The entries of this directory. `.` and `..` are not among them. */

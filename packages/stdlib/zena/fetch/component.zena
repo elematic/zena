@@ -18,7 +18,7 @@
 
 import { URL } from 'zena:url';
 import { Completer } from 'zena:async';
-import { Outcome, Ok, Err } from 'zena:core';
+import { Result } from 'zena:core';
 import { Stream, readAllBytes, readAllText } from 'zena:stream';
 import {
   Fields, Request, Response as WireResponse, ErrorCode, Scheme,
@@ -68,21 +68,21 @@ export class Response {
   /** The response body, decoded as text. */
   async text(): Future<String> {
     let text = await readAllText(this.#body());
-    this.#received.complete(new Ok<void, ErrorCode>(unit()));
+    this.#received.complete((true, unit()));
     return text;
   }
 
   /** The response body's bytes. */
   async bytes(): Future<FixedArray<u8>> {
     let bytes = await readAllBytes(this.#body());
-    this.#received.complete(new Ok<void, ErrorCode>(unit()));
+    this.#received.complete((true, unit()));
     return bytes;
   }
 
   /** The future the reader settles to say how receiving went, the
    * mirror of a request's trailers future: settled with success once
    * the stream has ended. */
-  #received = new Completer<Outcome<void, ErrorCode>>();
+  #received = new Completer<Result<void, ErrorCode>>();
 
   /** The body stream, consumed once: `consume-body` takes the
    * receiving future; the trailers future that comes back is left
@@ -127,8 +127,8 @@ export async function fetch(url: String | URL): Future<Response> {
   let request = requestFor(target);
   let sent = await send(request);
   let wire = match (sent) {
-    case Ok {value}: value
-    case Err {error}: throw new Error(`zena:fetch: ${describe(error)}: ${target.href}`)
+    case (true, let value): value
+    case (false, let error): throw new Error(`zena:fetch: ${describe(error)}: ${target.href}`)
   };
   return new Response(wire.getStatusCode() as i32, wire);
 }
@@ -142,8 +142,8 @@ let requestFor = (target: URL): Request => {
   // The trailers future is the sender's to settle, and the host does
   // not consider the request body finished until it is: this request
   // has no body and no trailers, so it settles now with "none".
-  let trailers = Future.of<Outcome<Option<Fields>, ErrorCode>>(
-      new Ok<Option<Fields>, ErrorCode>(none));
+  let trailers = Future.of<Result<Option<Fields>, ErrorCode>>(
+      (true, none));
   // `new` returns the request and a future that settles once it has
   // been transmitted; a client that wanted send errors ahead of the
   // response would await it. It goes unobserved here (#587).

@@ -24,6 +24,29 @@ let measure = (r: Reply): i32 => match (r) {
   case (false, let code): code
 };
 
+class Animal {
+  legs(): i32 {
+    return 4;
+  }
+}
+
+class Bird extends Animal {
+  legs(): i32 {
+    return 2;
+  }
+}
+
+type Found = (true, Animal) | (false, String);
+
+// A literal written against the union is the member its literal names:
+// the `Bird` goes into an `(true, Animal)`, the struct a reader tests for.
+let found = (): Found => (true, new Bird());
+
+let legsOf = (f: Found): i32 => match (f) {
+  case (true, let a): a.legs()
+  case (false, let why): why.length
+};
+
 export let main = (): i32 => {
   // Stored, so each is a boxed tuple.
   let events: Array<Event> = [(0, Color.Green), (1, Size.Small)];
@@ -46,6 +69,9 @@ export let main = (): i32 => {
   let sized = e as (1, Size);
   let (_, s) = sized;
   if (s != Size.Large) {
+    total += 1000;
+  }
+  if (legsOf(found()) != 2) {
     total += 1000;
   }
   return total;

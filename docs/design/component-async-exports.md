@@ -51,7 +51,7 @@ loads beside the entry: source, like a WIT-typed module, importing the
 program's function and any types module it needs, whose exported
 wrapper is what gets lifted. The host-facing wrapper is then ordinary
 Zena: lift the request handle into `Request`, call the program's
-`handle`, await it, lower the `Outcome` through `task.return`.
+`handle`, await it, lower the `Result` through `task.return`.
 
 **The mechanism is in place**, with the async entry as its first user
 (`lib/component-entry.zena`). `Compiler.compile` decides from the
@@ -286,7 +286,7 @@ yet and composition needs.
    level); the lift's and the return's memory options are one
    decision (`needsMemoryLift`). Parameters cross as flat scalars and
    strings; results as anything the import path lowers, a `result` as
-   `Outcome`. Named types wait on 5: at world level they need
+   a stored `Result`. Named types wait on 5: at world level they need
    world-level `use`, and the http world's come through its exported
    interface.
 5. Instance-grouped exports — landed: a world's `export

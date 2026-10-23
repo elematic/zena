@@ -35,7 +35,7 @@ only the LATEST run's outcome ever becomes the state.
 Cancellation is not a state. A run that completes cancelled was
 neither answered nor failed — the task returns to the state it held
 before that run (`Initial` if never settled, else the previous
-`Complete`/`Errored`). This is the same stance `Outcome` and the
+`Complete`/`Errored`). This is the same stance `Result` and the
 combinators take: cancellation propagates as an unwind, not as data,
 and a resilience policy or a state cell that recorded it would be
 recording the absence of an answer.
@@ -189,6 +189,6 @@ cell; no compiler support. The
 supersession test — run, run again before the first settles, assert
 the first attempt's `cancel` clause fired and the state took the
 second's value — is the load-bearing one. The state classes reuse the
-distributed-variant shape `Outcome` uses, including the zero-width
+distributed-variant shape the `Outcome` classes used, including the zero-width
 case field at `Complete<void>` that the case-constructor fix made
 compile.

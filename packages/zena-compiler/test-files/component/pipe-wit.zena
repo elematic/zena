@@ -14,7 +14,7 @@ import {
   PipeError, PipeErrorClosed,
 } from 'fixture:pipe/pipes';
 import { Stream, StreamWriter } from 'zena:stream';
-import { Some, Option, Outcome, Ok } from 'zena:core';
+import { Some, Option, Result } from 'zena:core';
 import { Completer, Future } from 'zena:async';
 
 export async function main(): Future<void> {
@@ -29,7 +29,7 @@ export async function main(): Future<void> {
     right.stop();
   }
   let counted = finish();
-  let done = new Completer<Outcome<void, PipeError>>();
+  let done = new Completer<Result<void, PipeError>>();
   deliver(done.future);
   let (accepted, confirmation) = submit('names');
   if (let (false, error) = commit()) {
@@ -43,11 +43,11 @@ export async function main(): Future<void> {
 async function consume(
   counted: Future<u32>,
   accepted: u32,
-  confirmation: Future<Outcome<Option<String>, PipeError>>
+  confirmation: Future<Result<Option<String>, PipeError>>
 ): Future<void> {
   let n = await counted;
   let got = await confirmation;
-  if (n == accepted && got is Ok<Option<String>, PipeError>) {
+  if (n == accepted && got is (true, Option<String>)) {
     return;
   }
 }

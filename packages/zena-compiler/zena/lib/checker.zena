@@ -7831,6 +7831,46 @@ function findExtendedInterfaceTransitive(it: InterfaceType, name: String): Inter
  * inferred: map to store inferred type params
  */
 /**
+ * The boxed tuple member of `expected`, a union, that a tuple literal
+ * starting with a boolean or integer literal is: the one with the same
+ * length that starts with the same value. Null when there is none, or
+ * `expected` is not a union.
+ */
+function tupleMemberForLiteral(expected: Type, elements: GrowableArray<Expression>): TupleT | null {
+  if (elements.length == 0) {
+    return null;
+  }
+  let resolved = unwrapAliases(expected);
+  if (!(resolved is UnionT)) {
+    return null;
+  }
+  let head: Type | null = match (elements[0]) {
+    case BooleanLiteral {value}: new BoolLiteralType(value) as Type
+    case NumberLiteral {raw}: new NumLiteralType(raw) as Type
+    case _: null
+  };
+  if (head == null) {
+    return null;
+  }
+  let tag = discriminantTag(head);
+  if (tag == null) {
+    return null;
+  }
+  for (let member in resolved.types) {
+    if (let TupleT {elementTypes, row} = member) {
+      if (row != null || elementTypes.length != elements.length) {
+        continue;
+      }
+      let memberTag = discriminantTag(elementTypes[0]);
+      if (memberTag != null && memberTag.value == tag.value) {
+        return member as TupleT;
+      }
+    }
+  }
+  return null;
+}
+
+/**
  * The tuple among `members` that starts with the same literal as the
  * tuple `t`, boxed or inline, or null when `t` is not such a tuple.
  */
@@ -14495,6 +14535,18 @@ function checkExpressionInner(ctx: CheckerContext, expr: Expression, expectedTyp
         case _: {}
       }
     }
+    // Written against a union of boxed tuples, the literal is the member
+    // its leading literal names, so it builds that member's struct, the
+    // one a reader of the union tests for: `(true, some(x))` against
+    // `(true, Option<X>) | (false, E)` is a `(true, Option<X>)`, not a
+    // `(true, Some<X>)`.
+    var memberExpected: TupleT | null = null;
+    if (expectedType != null && !useInlineTuple) {
+      memberExpected = tupleMemberForLiteral(expectedType, elements);
+      if (memberExpected != null) {
+        expectedElementTypes = memberExpected.elementTypes;
+      }
+    }
 
     // Check each element and collect their types.
     let elementTypes = new Array<Type>();
@@ -14522,6 +14574,9 @@ function checkExpressionInner(ctx: CheckerContext, expr: Expression, expectedTyp
       return inlineT;
     }
     let tupleT = new TupleT(elementTypes, null, 0);
+    if (memberExpected != null && isAssignableTo(ctx, tupleT, memberExpected)) {
+      return memberExpected;
+    }
     if (expectedType != null) {
       let baseExpected = baseType(expectedType);
       if (baseExpected is TupleT && isAssignableTo(ctx, tupleT, baseExpected)) {

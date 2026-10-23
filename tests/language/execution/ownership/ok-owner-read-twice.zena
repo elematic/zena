@@ -1,10 +1,13 @@
 // @mode: run
 // @result: 1
 // @skip: elematic/zena#379 — reading an owner out of a generic class's field twice mints two owners; released reads 2
-// Reading an owner out of an `Ok` twice. The first read moves the
-// owner out; a second read must not mint a second owner, so the
-// resource is released exactly once (or the second read is rejected).
-import { Own, Disposable, Ok, Outcome } from 'zena:core';
+// Reading an owner out of a generic class's field twice. A second read
+// must not mint a second owner, so the resource is released exactly once
+// (or the second read is rejected). The same reads out of a tuple borrow
+// (execution/ownership/tuple-owner-drops.zena).
+import { Own, Disposable } from 'zena:core';
+
+final class Holder<T>(value: T)
 
 var released = 0;
 
@@ -18,7 +21,7 @@ resource class Res {
 
 export let main = (): i32 => {
   if (true) {
-    let ok = new Ok<Own<Res>, String>(new Res(1));
+    let ok = new Holder<Own<Res>>(new Res(1));
     let a = ok.value;
     let b = ok.value;
   }

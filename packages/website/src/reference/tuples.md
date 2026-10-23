@@ -366,14 +366,10 @@ time.
 
 ##### Class-based counterparts
 
-`zena:core` also has class-based forms:
-
-- `Option<T>` (`Some<T>` and `None`)
-- `Outcome<T, E>` (`Ok<T, E>` and `Err<T, E>`), for a result whose payload is
-  an owned resource (`Own<R>`). A tuple cannot hold an owner yet
-  ([#495](https://github.com/elematic/zena/issues/495)); everything else uses
-  `Result`. The WIT bindings for futures and async results also still use
-  `Outcome`.
+`zena:core` also has a class-based `Option<T>` (`Some<T>` and `None`). A result
+is always a `Result`: a tuple can hold an owned resource, as an affine value
+([#495](https://github.com/elematic/zena/issues/495)), so the `Outcome`
+classes that once served that case are gone.
 
 #### Nullish coalescing with `??`
 

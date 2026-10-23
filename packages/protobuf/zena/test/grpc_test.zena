@@ -8,7 +8,7 @@
 import { suite, test } from 'zena:test';
 import { equal, isTrue } from 'zena:assert';
 import { AsyncIterable, AsyncIterator, Completer, runFuture } from 'zena:async';
-import { Ok, Option, Outcome } from 'zena:core';
+import { Option, Result } from 'zena:core';
 import { StreamWriter } from 'zena:stream';
 import { ErrorCode, Fields } from 'wasi:http/types';
 import { ProtoView, ProtoWriter, RpcError, RpcMethod } from '../runtime.zena';
@@ -37,11 +37,11 @@ function fieldsOf(pairs: Array<String>) {
 }
 
 function trailersOf(pairs: Array<String>) {
-  return Future.of<Outcome<Option<Fields>, ErrorCode>>(new Ok<Option<Fields>, ErrorCode>(some(fieldsOf(pairs))));
+  return Future.of<Result<Option<Fields>, ErrorCode>>((true, some(fieldsOf(pairs))));
 }
 
 function noTrailers() {
-  return Future.of<Outcome<Option<Fields>, ErrorCode>>(new Ok<Option<Fields>, ErrorCode>(none));
+  return Future.of<Result<Option<Fields>, ErrorCode>>((true, none));
 }
 
 let GRPC_HEADERS = ['content-type', 'application/grpc'];
@@ -99,7 +99,7 @@ async function readAll(reader: AsyncIterator<ProtoView>): Future<String> {
 }
 
 /** A response with `bytes` for a body, sent one byte at a time. */
-function respond(status: i32, headers: Array<String>, bytes: FixedArray<u8>, trailers: Future<Outcome<Option<Fields>, ErrorCode>>) {
+function respond(status: i32, headers: Array<String>, bytes: FixedArray<u8>, trailers: Future<Result<Option<Fields>, ErrorCode>>) {
   let writer = new StreamWriter<u8>();
   produce(writer, bytes);
   return readGrpcResponse(status, fieldsOf(headers), writer.stream, trailers);

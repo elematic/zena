@@ -15,14 +15,14 @@
 
 import { Request, Response, ErrorCode } from 'wasi:http/types';
 import { Future } from 'zena:async';
-import { Outcome, Ok } from 'zena:core';
+import { Result } from 'zena:core';
 import { textResponse } from 'zena:http';
 import { FallbackTransport, RpcError } from 'protobuf:fallback';
 import { FirestoreClient } from 'google-cloud:firestore-v1';
 
 let database = 'projects/zena-fallback-probe-does-not-exist/databases/(default)';
 
-export async function handle(request: Request): Future<Outcome<Response, ErrorCode>> {
+export async function handle(request: Request): Future<Result<Response, ErrorCode>> {
   let client = new FirestoreClient(new FallbackTransport('https://firestore.googleapis.com'));
   var report = '';
   try {
@@ -34,5 +34,5 @@ export async function handle(request: Request): Future<Outcome<Response, ErrorCo
   } catch (e) {
     report = if (e is RpcError) `runQuery failed with code ${(e as RpcError).code}: ${e.message}` else `error: ${e.message}`;
   }
-  return new Ok<Response, ErrorCode>(textResponse(`${report}\n`));
+  return (true, textResponse(`${report}\n`));
 }
