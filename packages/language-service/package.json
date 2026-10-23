@@ -56,7 +56,7 @@
     },
     "build:wasm": {
       "#command": "256MB of GC heap, not the 1536MB the compiler's own builds reserve: the reservation is an allocation, so it costs both startup time and resident memory, and this module's live set does not need it. Measured here — 128MB: 27s, 256MB: 6s/590MB, 512MB: 5s/1101MB, 1536MB: 6s/3150MB.",
-      "command": "ZENA_GC_RESERVE_MB=256 ../../target/release/zena-cli -g build zena/lsp.zena --target host -o lsp.wasm",
+      "command": "cd ../.. && ZENA_GC_RESERVE_MB=256 ./target/release/zena-run --dir .::. --dir packages/stdlib/zena::/stdlib packages/zena-compiler/zena/out/cli.wasm packages/language-service/zena/lsp.zena --target host -g -o packages/language-service/lsp.wasm",
       "#files": "The test directories are excluded: lsp.zena reaches the compiler and the formatter through their `lib/`, so their tests are not inputs, and a test that was one would rebuild this module and everything that runs against it.",
       "files": [
         "package.json",
@@ -69,15 +69,20 @@
         "../zena-lint/zena/**/*.zena",
         "!../zena-lint/zena/test/**",
         "../stdlib/zena/**/*.zena",
+        "../zena-compiler/zena/out/cli.wasm",
         "../../zena-package.json",
         "../*/zena/**/zena-package.json"
       ],
       "output": [
         "lsp.wasm"
       ],
+      "#dependencies": "Stage A on zena-run, the way the CLI module itself is built: this module is the compiler and the language service, and building it with the zena command would wait for that command's module and binary, neither of which it needs. `cascade: false` on build:cli: its output is an input here, so this rebuilds when the compiler's bytes change.",
       "dependencies": [
-        "../zena-cli:build",
-        "../zena-compiler:precompile:cli"
+        "../zena-run:build",
+        {
+          "script": "../zena-compiler:build:cli",
+          "cascade": false
+        }
       ]
     },
     "test": {

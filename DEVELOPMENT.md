@@ -33,7 +33,7 @@ prebuilt artifact in the repository.
 
 ```
 cargo build          → zena-cli, zena-run  (Rust/wasmtime hosts, from source)
-zena-cli + bootstrap → zena/out/cli.wasm   (the working compiler)
+zena-run + bootstrap → zena/out/cli.wasm   (the working compiler)
 zena/out/cli.wasm    → everything else     (stdlib tests, LSP, formatter, …)
 ```
 
