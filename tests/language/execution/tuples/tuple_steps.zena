@@ -1,0 +1,77 @@
+// @mode: run
+// @result: 0
+// An iterator of tuples returns each element's values as results of
+// `next()` of their own (`Step<T>` is `(1, inline T, _)`): a tuple pattern
+// in a `for` binds them directly, and a name takes the tuple boxed. The
+// same holds for `zip`, for adapters over it, for an array iterated
+// through `Iterable`, and for a generator, which yields the tuple boxed.
+
+import { zip } from 'zena:collections';
+
+class Pairs implements Iterator<(i32, String)> {
+  var #i: i32 = 0;
+  next(): Step<(i32, String)> {
+    if (this.#i >= 3) {
+      return (0, _, _);
+    }
+    this.#i += 1;
+    return (1, (this.#i, 'x'), _);
+  }
+}
+
+let pairs = gen (n: i32): Iterator<(i32, String)> => {
+  for (var i = 0; i < n; i += 1) {
+    yield (i, 'ab');
+  }
+};
+
+let ints = gen (): Iterator<i32> => {
+  yield 1;
+  yield 2;
+};
+
+export let main = (): i32 => {
+  var failures = 0;
+
+  var a = 0;
+  for (let (n, s) in new Pairs()) { a += n + s.length; }
+  if (a != 9) { failures += 1; }
+
+  var b = 0;
+  for (let p in new Pairs()) { b += p[0]; }
+  if (b != 6) { failures += 2; }
+
+  let arr = [(1, 'a'), (2, 'bb')];
+  let it: Iterable<(i32, String)> = arr;
+  var c = 0;
+  for (let (n, s) in it) { c += n * 10 + s.length; }
+  if (c != 33) { failures += 4; }
+
+  let xs = [1, 2, 3];
+  let ys = ['a', 'bb', 'ccc'];
+  var d = 0;
+  for (let (x, y) in zip(xs, ys)) { d += x * y.length; }
+  if (d != 14) { failures += 8; }
+
+  var e = 0;
+  for (let (x, y) in zip(xs, ys).filter((p) => p[0] > 1)) { e += x; }
+  if (e != 5) { failures += 16; }
+
+  var f = 0;
+  for (let (i, s) in pairs(3)) { f += i + s.length; }
+  if (f != 9) { failures += 32; }
+
+  // A step read by hand.
+  let step = new Pairs();
+  if (let (1, (n, s), _) = step.next()) {
+    if (n != 1 || s != 'x') { failures += 64; }
+  } else {
+    failures += 64;
+  }
+
+  // An element that is not a tuple is one value, as before.
+  var g = 0;
+  for (let i in ints()) { g += i; }
+  if (g != 3) { failures += 128; }
+  return failures;
+};

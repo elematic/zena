@@ -453,7 +453,7 @@ shallow: in `inline (i32, (i32, i32))` the inner tuple is still boxed, and
 The `Iterator` interface uses multi-value returns for efficient iteration:
 
 ```zena
-type Step<T> = inline (0, _, _) | (1, T, _);  // Done | Ready(value)
+type Step<T> = inline (0, _, _) | (1, inline? T, _);  // Done | Ready(value)
 
 interface Iterator<T> {
   next(): Step<T>;
@@ -462,7 +462,9 @@ interface Iterator<T> {
 
 This avoids the two-call pattern common in Java (`hasNext()` then `next()`) and
 the wrapper-object pattern in JavaScript (returning `{done, value}`). A single
-call returns both the status and the value with zero allocation overhead.
+call returns both the status and the value with zero allocation overhead. A
+tuple element is unboxed too, so `for (let (x, y) in zip(xs, ys))` allocates
+nothing per pair.
 
 An `AsyncIterator<T>` (from `zena:async`) may also answer `(2, _, future)`,
 a value that is still coming. `for await` consumes either kind; a plain `for`

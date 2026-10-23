@@ -184,7 +184,7 @@ results directly, did not change:
 - `_` takes no slot, and neither does a zero-width (`void`) element.
 - A position where every member writes `_` keeps one `nullref` slot
   (unless some member is zero-width there). `Step<T>`, written
-  `(0, _, _) | (1, T, _)`, therefore has the same three slots as
+  `(0, _, _) | (1, inline? T, _)`, therefore has the same three slots as
   `AsyncStep<T>`, which fills the last position with a `Future`, and
   forwards into it unchanged.
 - A `null` element shares the position's reference slot.

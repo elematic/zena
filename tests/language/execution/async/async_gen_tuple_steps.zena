@@ -1,0 +1,34 @@
+// @mode: run
+// @result: 614
+// An async generator of tuples: a step that yields without awaiting returns
+// the tuple's values as results of `next()` of their own, and a step that
+// awaits first settles its Pending future with the tuple boxed, which a
+// `for await` reads into the same values.
+
+import { Future, Completer, AsyncIterator, scheduleMicrotask } from 'zena:async';
+
+let delay = <T>(value: T): Future<T> => {
+  let c = new Completer<T>();
+  scheduleMicrotask(() => {
+    c.complete(value);
+  });
+  return c.future;
+};
+
+async gen function pairs(): AsyncIterator<(i32, String)> {
+  yield (1, 'a');
+  let n = await delay(2);
+  yield (n, 'bb');
+  yield (3, 'ccc');
+}
+
+export let main = async (): Future<i32> => {
+  var total = 0;
+  for await (let (n, s) in pairs()) {
+    total += n * s.length;
+  }
+  for await (let p in pairs()) {
+    total += p[0] * 100;
+  }
+  return total; // 1 + 4 + 9 + 600
+};

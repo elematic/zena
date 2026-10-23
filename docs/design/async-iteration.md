@@ -69,7 +69,7 @@ with one arm per disposition. The asynchronous form has three:
 ```zena
 type AsyncStep<V> =
     inline (0, _, _)                    // Done: no more items
-  | inline (1, V, _)                    // Ready: a value, available now
+  | inline (1, inline? V, _)            // Ready: a value, available now
   | inline (2, _, Future<Option<V>>);   // Pending: a value or the end,
                                         //   coming; await the future
 ```
@@ -78,8 +78,8 @@ and the synchronous form is its first two arms:
 
 ```zena
 type Step<V> =
-    inline (0, _, _)    // Done
-  | inline (1, V, _);   // Ready
+    inline (0, _, _)            // Done
+  | inline (1, inline? V, _);   // Ready
 ```
 
 `Step<V>` keeps the third position, always a hole, so that it is a
@@ -92,6 +92,16 @@ Ready, the future lane only by Pending; the other lanes are holes.
 Because it is an inline multi-value, a step is return-position only:
 `next()` returns it and the caller reads it at once, and Done and
 Ready allocate nothing.
+
+`inline? V` unboxes a tuple value as well, so the value lane is one
+lane per element when `V` is a tuple: `Step<(K, V)>` returns `[i32, K,
+V, nullref]`, and `zip` costs nothing per step
+(docs/design/multi-return-values.md, "Nested Inline Tuples"). For
+any other `V` it is the one lane. A `for` with a tuple pattern binds
+the element lanes directly; a name takes the tuple boxed. A
+generator still yields the tuple boxed, and the split pass returns
+its fields as the step's lanes. A Pending future settles with the
+tuple boxed, which `for await` reads into the same lanes.
 
 Each arm's payload is honestly typed: the value lane is `V | _` across
 the union — real in Ready, a hole elsewhere — so it is inaccessible
