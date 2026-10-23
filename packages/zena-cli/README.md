@@ -1,7 +1,8 @@
 # Zena CLI (`zena-cli`)
 
 The `zena` command: build, run and test Zena programs, build targets,
-extract API docs, format and benchmark.
+format and lint them, extract API docs, benchmark, serve a language server,
+and add and fetch published packages.
 
 The command is a Zena program. `zena/main.zena` and the files beside it
 are the **CLI module**, compiled to `out/zena.wasm` with the compiler,
@@ -32,7 +33,74 @@ zena-cli build main.zena -o main.wasm
 zena-cli test packages/stdlib/tests
 zena-cli build ./packages/zb:test      # a wireit target, run with zb
 zena-cli --help
+zena-cli <command> --help
 ```
+
+Global flags go before the command: `-g` / `--debug` names functions in
+compiled modules and turns off inlining, so traps name them; `-O <0|1|2|s>`
+sets the optimization level (default `1`); `-v` / `--verbose` prints more
+of what the command does.
+
+## Commands
+
+| Command                                      | What it does                                                                                                                      |
+| -------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| `build <file.zena> -o <out.wasm\|.wat>`      | Compiles a file. `--target` (`zena-cli`, `component`, `js`, `freestanding`), `--wit` and `--world` for components, `--time`.      |
+| `build [target]`                             | Runs a wireit build target with zb, such as `build test` or `build ./packages/zb:test`.                                           |
+| `run <file.zena\|file.wasm> [-- args...]`    | Compiles through the compile cache and runs. `--dir HOST[::GUEST]`, `--allow-spawn`, `--invoke <fn>`, `--no-cache`, `--time`.     |
+| `test [paths or globs...]`                   | Runs `*_test.zena` files in parallel. `-f` / `--filter`, `--exclude <glob>`.                                                      |
+| `fmt [--write \| --check] <files...>`        | Formats Zena files, printing the result, rewriting the files, or failing if any is not formatted.                                 |
+| `lint [--fix] <paths...>`                    | Reports what the lint rules find, or with `--fix` applies the fixes the type checker accepts. `--only`, `--skip`, `--list-rules`. |
+| `add <package>[@<version>] [--name <local>]` | Adds a published package to the current package's dependencies, pins versions in `zena-lock.json`, and fetches them.              |
+| `update [<name>...]`                         | Raises the current package's dependencies, or the named ones, to the latest version of their major version that is not yanked.    |
+| `fetch`                                      | Fetches the packages `zena-lock.json` pins into the package cache.                                                                |
+| `doc <path> [-o <out.json>]`                 | Extracts a package's public API as JSON.                                                                                          |
+| `bench <suite.json> [-o <out.json>]`         | Runs a benchmark suite.                                                                                                           |
+| `lsp`                                        | Runs the language server over stdin and stdout.                                                                                   |
+| `precompile <file.wasm>`                     | Compiles a module to machine code (`.cwasm`) ahead of its first run.                                                              |
+
+## Packages
+
+A workspace is a directory with a `zena-package.json`, and the packages it
+lists under `workspace.packages`, with one `zena-lock.json` beside the
+root's manifest. See
+[docs/design/package-manifest.md](../../docs/design/package-manifest.md)
+for the files and
+[docs/design/package-manager.md](../../docs/design/package-manager.md) for
+how packages are published on atproto.
+
+`zena add` takes a package by DID, by handle, or as `@scope/name`, which
+means `name.scope.pkg.zena-lang.dev` unless the root manifest's `scopes`
+maps the scope to another domain. Without a version it takes the latest
+that is not yanked, and without `--name` the name the package's profile
+suggests:
+
+```bash
+zena-cli add @acme/router@1.4.2
+zena-cli add router.acme.com --name routing
+zena-cli update            # every dependency of the current package
+zena-cli update router     # only router
+zena-cli fetch             # what zena-lock.json pins, e.g. in CI
+```
+
+`add` and `update` change the manifest of the package the command is run
+in: the workspace package whose directory holds the current directory, or
+else the root, whose manifest `add` creates if there is none. They then
+select versions for the whole workspace, so every package uses one
+version of each package and major version, write `zena-lock.json`, and
+fetch what it pins. `fetch` checks each release against the CIDs the
+lockfile pins and the signed proofs its package's PDS serves.
+
+The workspace's root is the repository root, `ZENA_REPO_ROOT`, which
+defaults to the checkout the binary was built in, or the current directory
+for a standalone binary.
+
+| Variable              | Effect                                                                                                                   |
+| --------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| `ZENA_CACHE_DIR`      | The cache directory, holding fetched packages under `packages/`. Defaults to `$XDG_CACHE_HOME/zena`, or `~/.cache/zena`. |
+| `ZENA_PROJECT_CACHE`  | When set, caches go in `.zena/` in the workspace.                                                                        |
+| `ZENA_PLC_DIRECTORY`  | The PLC directory DIDs are resolved with, in place of `https://plc.directory`, for mirrors and tests.                    |
+| `ZENA_DNS_OVER_HTTPS` | The DNS-over-HTTPS endpoint handles are resolved with, in place of Cloudflare's.                                         |
 
 ## Development and Architecture
 
