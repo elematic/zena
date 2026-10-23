@@ -1,0 +1,493 @@
+/**
+ * The PDS's storage in Firestore, with blob bytes in Cloud Storage, so
+ * that every server of a deployment shares it. Everything is a tenant's
+ * (docs/design/pds.md, "Accounts, organizations and tenants"): its
+ * documents are under `tenants/{tenant}`, and its blobs' objects under
+ * `{tenant}/`. Under `tenants/{tenant}`:
+ *
+ * - `accounts/{did}`: `handle` (absent for none), `kind`, `keyType` and
+ *   `privateKey`, the repository signing key's bytes.
+ * - `handles/{handle}`: `did`.
+ * - `heads/{did}`: `cid` and `rev`, the repository's current commit.
+ * - `accounts/{did}/blocks/{cid}`: `bytes`.
+ * - `accounts/{did}/collections/{nsid}`, written with the collection's
+ *   first record so the collections can be listed; and under it
+ *   `records/{rkey}`: `rkey` and `cid`. Lists order by the `rkey` field,
+ *   which needs only the indexes Firestore makes itself.
+ * - `accounts/{did}/blobs/{cid}`: `mimeType` and `size`. The bytes are
+ *   the object `{tenant}/{did}/{cid}` in a `BlobBytes`: a Cloud Storage
+ *   bucket, or memory in tests.
+ * - The package host's (`FirestoreHostStore`): `scopes/{scope}`: `org`;
+ *   `names/{name}.{scope}`: `did`; and `entries/{did}/list/{id}`: `cbor`,
+ *   a member entry's DAG-CBOR.
+ *
+ * Firestore keeps IDs of the form `__…__` for itself, and record keys may
+ * take that form, so such a key's document ID is prefixed with `%`, which
+ * no record key has.
+ *
+ * A commit is one transaction, checking the head it was built on. It
+ * writes one document for each changed record and each collection a
+ * record is put in, and the head; a transaction holds at most 500
+ * writes, which the 200 writes `com.atproto.repo.applyWrites` allows fit
+ * in. Blocks are written before it, in batches.
+ */
+
+import {Future} from 'zena:async';
+import {HashMap} from 'zena:collections';
+import {Fields, Firestore, Operator, Direction, DocumentReference, DocumentSnapshot, Transaction,
+  bytesValue, stringValue} from 'google-cloud:firestore';
+import {Bucket} from 'google-cloud:storage';
+import {BlockMap} from 'atproto:car';
+import {decodeCbor, encodeCbor} from 'atproto:cbor';
+import {Cid} from 'atproto:cid';
+import {KeyType} from 'atproto:didkey';
+import {compareKeys} from 'atproto:mst';
+import {MemberEntry} from 'package-manager:records';
+import {HostStore} from './host.zena';
+import {
+  Account, AccountKind, AccountStore, Head, RecordChange, RecordEntry, SigningKey, Storage, StoredBlob,
+  sameHead, sortRecordEntries
+} from './storage.zena';
+
+/** The most writes one batch of blocks holds. */
+let BATCH_WRITES = 500;
+
+/** Where blob bytes are kept, by object name. */
+export interface BlobBytes {
+  /** The bytes of object `name`, or null. */
+  read(name: String): Future<FixedArray<u8> | null>;
+  write(name: String, bytes: FixedArray<u8>, mimeType: String): Future<void>;
+}
+
+/** Blob bytes in a Cloud Storage bucket. */
+export final class CloudStorageBlobs implements BlobBytes {
+  #bucket: Bucket;
+
+  new(bucket: Bucket) : #bucket = bucket;
+
+  async read(name: String): Future<FixedArray<u8> | null> {
+    let bytes = await this.#bucket.read(name);
+    return if (bytes == null) null else bytes as FixedArray<u8>;
+  }
+
+  async write(name: String, bytes: FixedArray<u8>, mimeType: String): Future<void> {
+    await this.#bucket.write(name, bytes as ByteArray, mimeType);
+  }
+}
+
+/** Blob bytes in memory, for tests. */
+export final class MemoryBlobs implements BlobBytes {
+  #objects = new HashMap<String, FixedArray<u8>>();
+
+  async read(name: String): Future<FixedArray<u8> | null> {
+    if (let (true, bytes) = this.#objects.get(name)) {
+      return bytes;
+    }
+    return null;
+  }
+
+  async write(name: String, bytes: FixedArray<u8>, mimeType: String): Future<void> {
+    this.#objects[name] = bytes;
+  }
+}
+
+/** The tenant document all of `tenant`'s documents are under. */
+function tenantRoot(db: Firestore, tenant: String): DocumentReference {
+  return db.collection('tenants').doc(tenant);
+}
+
+/**
+ * A tenant's accounts and repositories in `db`, and their blobs' bytes in
+ * `blobs`.
+ */
+export final class FirestoreStorage implements Storage {
+  #db: Firestore;
+  #root: DocumentReference;
+  #tenant: String;
+  #blobs: BlobBytes;
+
+  new(db: Firestore, tenant: String, blobs: BlobBytes)
+    : #db = db, #root = tenantRoot(db, tenant), #tenant = tenant, #blobs = blobs;
+
+  async getAccount(did: String): Future<Account | null> {
+    return accountFrom(did, await this.#root.collection('accounts').doc(did).get());
+  }
+
+  async accountByHandle(handle: String): Future<Account | null> {
+    let snapshot = await this.#root.collection('handles').doc(handle).get();
+    if (let (true, did) = snapshot.getString('did')) {
+      let account = await this.getAccount(did);
+      // A handle the account has since left is not its.
+      if (account != null && account.handle != null && account.handle as String == handle) {
+        return account;
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Stores `account`, and points its handle at it, giving up the handle it
+   * had before. Throws when another account has the handle.
+   */
+  async putAccount(account: Account): Future<void> {
+    let root = this.#root;
+    await this.#db.runTransaction<boolean>(async (tx: Transaction): Future<boolean> => {
+      let ref = root.collection('accounts').doc(account.did);
+      let handle = account.handle;
+      var claim: DocumentReference | null = null;
+      if (handle != null) {
+        claim = root.collection('handles').doc(handle);
+      }
+      let before = await tx.get(ref);
+      let claimed = if (claim != null) await tx.get(claim) else null;
+      if (claimed != null && claimed.exists) {
+        if (let (true, owner) = claimed.getString('did')) {
+          if (owner != account.did) {
+            throw new Error(`${handle ?? ''} is the handle of ${owner}`);
+          }
+        }
+      }
+      if (let (true, previous) = before.getString('handle')) {
+        if (handle == null || previous != handle as String) {
+          tx.delete(root.collection('handles').doc(previous));
+        }
+      }
+      tx.set(ref, accountFields(account));
+      if (claim != null) {
+        tx.set(claim, new Fields().string('did', account.did));
+      }
+      return true;
+    });
+  }
+
+  store(did: String): AccountStore {
+    return new FirestoreAccountStore(this.#db, this.#root, did, `${this.#tenant}/${did}`, this.#blobs);
+  }
+}
+
+/**
+ * One account's repository and blobs in Firestore, under `root`, its
+ * tenant's document, with its blobs' bytes under `blobPrefix` in `blobs`.
+ */
+export final class FirestoreAccountStore implements AccountStore {
+  #db: Firestore;
+  #root: DocumentReference;
+  #did: String;
+  #blobPrefix: String;
+  #blobs: BlobBytes;
+
+  new(db: Firestore, root: DocumentReference, did: String, blobPrefix: String, blobs: BlobBytes)
+    : #db = db, #root = root, #did = did, #blobPrefix = blobPrefix, #blobs = blobs;
+
+  #account(): DocumentReference {
+    return this.#root.collection('accounts').doc(this.#did);
+  }
+
+  #head(): DocumentReference {
+    return this.#root.collection('heads').doc(this.#did);
+  }
+
+  #collection(collection: String): DocumentReference {
+    return this.#account().collection('collections').doc(collection);
+  }
+
+  #record(collection: String, rkey: String): DocumentReference {
+    return this.#collection(collection).collection('records').doc(recordId(rkey));
+  }
+
+  async getBlock(cid: Cid): Future<FixedArray<u8> | null> {
+    let snapshot = await this.#account().collection('blocks').doc(cid.toString()).get();
+    return bytesAt(snapshot, 'bytes');
+  }
+
+  async putBlocks(blocks: BlockMap): Future<void> {
+    let entries = new GrowableArray<(Cid, FixedArray<u8>)>();
+    blocks.forEach((cid, bytes) => {
+      entries.push((cid, bytes));
+    });
+    let collection = this.#account().collection('blocks');
+    var i = 0;
+    while (i < entries.length) {
+      let batch = this.#db.batch();
+      let end = if (entries.length - i > BATCH_WRITES) i + BATCH_WRITES else entries.length;
+      for (var j = i; j < end; j += 1) {
+        let (cid, bytes) = entries[j];
+        batch.set(collection.doc(cid.toString()), new Fields().set('bytes', bytesValue(bytes as ByteArray)));
+      }
+      await batch.commit();
+      i = end;
+    }
+  }
+
+  async getRecord(collection: String, rkey: String): Future<Cid | null> {
+    return cidAt(await this.#record(collection, rkey).get());
+  }
+
+  async listRecords(collection: String, after: String | null, limit: i32, descending: boolean)
+      : Future<Array<RecordEntry>> {
+    var query = this.#collection(collection).collection('records')
+      .orderBy('rkey', if (descending) Direction.Descending else Direction.Ascending)
+      .limit(limit);
+    if (after != null) {
+      query = query.where('rkey', if (descending) Operator.LessThan else Operator.GreaterThan,
+          stringValue(after as String));
+    }
+    let entries = new GrowableArray<RecordEntry>();
+    for (let snapshot in await query.get()) {
+      let entry = entryFrom(collection, snapshot);
+      if (entry != null) {
+        entries.push(entry as RecordEntry);
+      }
+    }
+    return entries;
+  }
+
+  async allRecords(): Future<Array<RecordEntry>> {
+    let entries = new GrowableArray<RecordEntry>();
+    for (let collection in await this.#account().collection('collections').get()) {
+      for (let snapshot in await this.#collection(collection.id).collection('records').get()) {
+        let entry = entryFrom(collection.id, snapshot);
+        if (entry != null) {
+          entries.push(entry as RecordEntry);
+        }
+      }
+    }
+    return sortRecordEntries(entries, (a, b) => compareKeys(a.key(), b.key()));
+  }
+
+  async getHead(): Future<Head | null> {
+    return headFrom(await this.#head().get());
+  }
+
+  async commit(previous: Head | null, head: Head, changes: Array<RecordChange>): Future<boolean> {
+    let db = this.#db;
+    let headRef = this.#head();
+    // The references are made before the transaction, whose body cannot
+    // call this store's private methods.
+    let records = new GrowableArray<DocumentReference>();
+    let collections = new HashMap<String, DocumentReference>();
+    for (let change in changes) {
+      records.push(this.#record(change.collection, change.rkey));
+      if (change.cid != null) {
+        collections[change.collection] = this.#collection(change.collection);
+      }
+    }
+    return await db.runTransaction<boolean>(async (tx: Transaction): Future<boolean> => {
+      if (!sameHead(headFrom(await tx.get(headRef)), previous)) {
+        return false;
+      }
+      for (var i = 0; i < changes.length; i += 1) {
+        let change = changes[i];
+        let cid = change.cid;
+        if (cid == null) {
+          tx.delete(records[i]);
+        } else {
+          tx.set(records[i], new Fields().string('rkey', change.rkey).string('cid', cid.toString()));
+        }
+      }
+      collections.forEach((name, ref) => {
+        tx.set(ref, new Fields().string('name', name));
+      });
+      tx.set(headRef, new Fields().string('cid', head.cid.toString()).string('rev', head.rev));
+      return true;
+    });
+  }
+
+  async getBlob(cid: Cid): Future<StoredBlob | null> {
+    let snapshot = await this.#account().collection('blobs').doc(cid.toString()).get();
+    if (let (true, mimeType) = snapshot.getString('mimeType')) {
+      let bytes = await this.#blobs.read(`${this.#blobPrefix}/${cid.toString()}`);
+      if (bytes != null) {
+        return new StoredBlob(mimeType, bytes as FixedArray<u8>);
+      }
+    }
+    return null;
+  }
+
+  /** Writes the bytes first, so a blob's document always has bytes behind it. */
+  async putBlob(cid: Cid, blob: StoredBlob): Future<void> {
+    await this.#blobs.write(`${this.#blobPrefix}/${cid.toString()}`, blob.bytes, blob.mimeType);
+    await this.#account().collection('blobs').doc(cid.toString())
+      .set(new Fields().string('mimeType', blob.mimeType).integer('size', blob.bytes.length as i64));
+  }
+}
+
+/** The package host's names and entries in Firestore, for `tenant`. */
+export final class FirestoreHostStore implements HostStore {
+  #db: Firestore;
+  #root: DocumentReference;
+
+  new(db: Firestore, tenant: String) : #db = db, #root = tenantRoot(db, tenant);
+
+  async scopeOwner(scope: String): Future<String | null> {
+    return stringAt(await this.#root.collection('scopes').doc(scope).get(), 'org');
+  }
+
+  async claimScope(scope: String, org: String): Future<boolean> {
+    return await claim(this.#db, this.#root.collection('scopes').doc(scope), 'org', org);
+  }
+
+  async releaseScope(scope: String, org: String): Future<void> {
+    await release(this.#db, this.#root.collection('scopes').doc(scope), 'org', org);
+  }
+
+  async nameInScope(scope: String, name: String): Future<String | null> {
+    return stringAt(await this.#root.collection('names').doc(`${name}.${scope}`).get(), 'did');
+  }
+
+  async claimName(scope: String, name: String, did: String): Future<boolean> {
+    return await claim(this.#db, this.#root.collection('names').doc(`${name}.${scope}`), 'did', did);
+  }
+
+  async releaseName(scope: String, name: String, did: String): Future<void> {
+    await release(this.#db, this.#root.collection('names').doc(`${name}.${scope}`), 'did', did);
+  }
+
+  async entries(account: String): Future<Array<MemberEntry>> {
+    let entries = new GrowableArray<MemberEntry>();
+    for (let snapshot in await this.#root.collection('entries').doc(account).collection('list').get()) {
+      let bytes = bytesAt(snapshot, 'cbor');
+      if (bytes != null) {
+        entries.push(MemberEntry.fromValue(decodeCbor(bytes as FixedArray<u8>)));
+      }
+    }
+    return entries;
+  }
+
+  /** Adds `entries`, each under the base32 CID of its DAG-CBOR, its commitment. */
+  async addEntries(account: String, entries: Array<MemberEntry>): Future<void> {
+    let list = this.#root.collection('entries').doc(account).collection('list');
+    let batch = this.#db.batch();
+    for (let entry in entries) {
+      let bytes = encodeCbor(entry.toValue());
+      batch.set(list.doc(entry.commitment().toString()), new Fields().set('cbor', bytesValue(bytes as ByteArray)));
+    }
+    await batch.commit();
+  }
+}
+
+/** Sets `field` of `ref` to `value` unless the document exists. Returns whether it did. */
+async function claim(db: Firestore, ref: DocumentReference, field: String, value: String): Future<boolean> {
+  return await db.runTransaction<boolean>(async (tx: Transaction): Future<boolean> => {
+    if ((await tx.get(ref)).exists) {
+      return false;
+    }
+    tx.create(ref, new Fields().string(field, value));
+    return true;
+  });
+}
+
+/** Deletes `ref` if its `field` is `value`. */
+async function release(db: Firestore, ref: DocumentReference, field: String, value: String): Future<void> {
+  await db.runTransaction<boolean>(async (tx: Transaction): Future<boolean> => {
+    if (stringAt(await tx.get(ref), field) == value) {
+      tx.delete(ref);
+    }
+    return true;
+  });
+}
+
+/** The document ID of record key `rkey`: itself, or `%` and itself when Firestore reserves it. */
+export function recordId(rkey: String): String {
+  return if (rkey.length >= 4 && rkey.startsWith('__') && rkey.endsWith('__')) `%${rkey}` else rkey;
+}
+
+function stringAt(snapshot: DocumentSnapshot, field: String): String | null {
+  if (let (true, value) = snapshot.getString(field)) {
+    return value;
+  }
+  return null;
+}
+
+function bytesAt(snapshot: DocumentSnapshot, field: String): FixedArray<u8> | null {
+  let value = snapshot.get(field);
+  if (value != null && value.hasBytesValue) {
+    return value.bytesValue.toByteArray() as FixedArray<u8>;
+  }
+  return null;
+}
+
+function cidAt(snapshot: DocumentSnapshot): Cid | null {
+  let text = stringAt(snapshot, 'cid');
+  return if (text == null) null else Cid.parse(text as String);
+}
+
+function headFrom(snapshot: DocumentSnapshot): Head | null {
+  let cid = cidAt(snapshot);
+  let rev = stringAt(snapshot, 'rev');
+  if (cid == null || rev == null) {
+    return null;
+  }
+  return new Head(cid as Cid, rev as String);
+}
+
+function entryFrom(collection: String, snapshot: DocumentSnapshot): RecordEntry | null {
+  let rkey = stringAt(snapshot, 'rkey');
+  let cid = cidAt(snapshot);
+  if (rkey == null || cid == null) {
+    return null;
+  }
+  return new RecordEntry(collection, rkey as String, cid as Cid);
+}
+
+function accountFields(account: Account): Fields {
+  let fields = new Fields()
+    .string('kind', kindName(account.kind))
+    .string('keyType', keyTypeName(account.key.type))
+    .set('privateKey', bytesValue(account.key.privateKey as ByteArray));
+  let handle = account.handle;
+  if (handle != null) {
+    fields.string('handle', handle);
+  }
+  return fields;
+}
+
+function accountFrom(did: String, snapshot: DocumentSnapshot): Account | null {
+  let kind = stringAt(snapshot, 'kind');
+  let keyType = stringAt(snapshot, 'keyType');
+  let privateKey = bytesAt(snapshot, 'privateKey');
+  if (kind == null || keyType == null || privateKey == null) {
+    return null;
+  }
+  let key = new SigningKey(keyTypeNamed(keyType as String), privateKey as FixedArray<u8>);
+  return new Account(did, stringAt(snapshot, 'handle'), key, kindNamed(kind as String));
+}
+
+function kindName(kind: AccountKind): String {
+  return match (kind) {
+    case AccountKind.Person: 'person'
+    case AccountKind.Package: 'package'
+    case AccountKind.Organization: 'organization'
+    case AccountKind.Automation: 'automation'
+  };
+}
+
+function kindNamed(name: String): AccountKind {
+  if (name == 'package') {
+    return AccountKind.Package;
+  }
+  if (name == 'organization') {
+    return AccountKind.Organization;
+  }
+  if (name == 'automation') {
+    return AccountKind.Automation;
+  }
+  if (name == 'person') {
+    return AccountKind.Person;
+  }
+  throw new Error(`an account of an unknown kind: ${name}`);
+}
+
+function keyTypeName(type: KeyType): String {
+  return if (type == KeyType.P256) 'p256' else 'secp256k1';
+}
+
+function keyTypeNamed(name: String): KeyType {
+  if (name == 'p256') {
+    return KeyType.P256;
+  }
+  if (name == 'secp256k1') {
+    return KeyType.Secp256k1;
+  }
+  throw new Error(`a signing key of an unknown type: ${name}`);
+}

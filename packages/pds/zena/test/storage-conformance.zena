@@ -1,0 +1,221 @@
+/**
+ * What every `Storage` and `HostStore` must do, as tests that run against
+ * any of them: `storage_test.zena` runs them in memory, and
+ * `emulator/firestore_test.zena` against the Firestore emulator.
+ */
+
+import {test} from 'zena:test';
+import {equal, isNull, isTrue} from 'zena:assert';
+import {runFuture} from 'zena:async';
+import {hex} from 'zena:encoding';
+import {BlockMap, readCar} from 'atproto:car';
+import {Cid} from 'atproto:cid';
+import {MapValue, StringValue, newMap} from 'atproto:data';
+import {KeyType} from 'atproto:didkey';
+import {decodeCommit} from 'atproto:repo';
+import {MemberEntry, OWNER} from 'package-manager:records';
+import {HostStore} from 'pds:host';
+import {Pds} from 'pds:pds';
+import {CreateRecord, DeleteRecord, UpdateRecord, Write} from 'pds:repository';
+import {Account, AccountKind, Head, RecordChange, RecordEntry, SigningKey, Storage, StoredBlob} from 'pds:storage';
+
+let ALICE = 'did:plc:alicealicealicealicealic';
+let BOB = 'did:plc:bobbobbobbobbobbobbobbob';
+let NOW = 1792800000000000 as i64;
+
+function key(type: KeyType = KeyType.P256): SigningKey {
+  return new SigningKey(type, hex.decode('c9afa9d845ba75166b5c215767b1d6934e50c3db36e89b127b8a622b120f6721'));
+}
+
+function cidOf(text: String): Cid {
+  return Cid.forDagCbor(text.toBytes() as FixedArray<u8>);
+}
+
+function record(collection: String, text: String): MapValue {
+  let value = newMap();
+  value.entries['$type'] = new StringValue(collection);
+  value.entries['text'] = new StringValue(text);
+  return value;
+}
+
+function keysOf(entries: Array<RecordEntry>): String {
+  var out = '';
+  for (let entry in entries) {
+    out = if (out.length == 0) entry.key() else `${out} ${entry.key()}`;
+  }
+  return out;
+}
+
+function sameBytes(a: FixedArray<u8>, b: FixedArray<u8>): boolean {
+  if (a.length != b.length) {
+    return false;
+  }
+  for (var i = 0; i < a.length; i += 1) {
+    if (a[i] != b[i]) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/** Registers the storage tests, each on a new storage from `make`. */
+export function storageConformance(make: () => Storage): void {
+  test('keeps accounts, by DID and by handle', (ctx) => {
+    let storage = make();
+    isNull(runFuture(storage.getAccount(ALICE)));
+    let alice = new Account(ALICE, 'alice.test', key(), AccountKind.Package);
+    runFuture(storage.putAccount(alice));
+    let read = runFuture(storage.getAccount(ALICE)) as Account;
+    equal(read.handle as String, 'alice.test');
+    isTrue(read.kind == AccountKind.Package, 'kind');
+    isTrue(read.key.type == KeyType.P256, 'key type');
+    isTrue(sameBytes(read.key.privateKey, alice.key.privateKey), 'private key');
+    equal((runFuture(storage.accountByHandle('alice.test')) as Account).did, ALICE);
+
+    // A new handle frees the old one.
+    alice.handle = 'alice2.test';
+    runFuture(storage.putAccount(alice));
+    isNull(runFuture(storage.accountByHandle('alice.test')));
+    equal((runFuture(storage.accountByHandle('alice2.test')) as Account).did, ALICE);
+    runFuture(storage.putAccount(new Account(BOB, 'alice.test', key(KeyType.Secp256k1))));
+    equal((runFuture(storage.accountByHandle('alice.test')) as Account).did, BOB);
+    isTrue((runFuture(storage.getAccount(BOB)) as Account).key.type == KeyType.Secp256k1, 'secp256k1');
+    isTrue((runFuture(storage.getAccount(BOB)) as Account).kind == AccountKind.Person, 'person');
+    runFuture(storage.putAccount(new Account('did:plc:nohandlenohandlenohandle', null, key())));
+    isNull((runFuture(storage.getAccount('did:plc:nohandlenohandlenohandle')) as Account).handle);
+  });
+
+  test('keeps blocks and blobs', (ctx) => {
+    let store = make().store(ALICE);
+    let blocks = new BlockMap();
+    // More than one batch's worth.
+    for (var i = 0; i < 600; i += 1) {
+      let bytes = `block ${i}`.toBytes() as FixedArray<u8>;
+      blocks.set(Cid.forDagCbor(bytes), bytes);
+    }
+    runFuture(store.putBlocks(blocks));
+    let last = 'block 599'.toBytes() as FixedArray<u8>;
+    isTrue(sameBytes(runFuture(store.getBlock(Cid.forDagCbor(last))) as FixedArray<u8>, last), 'block');
+    let first = 'block 0'.toBytes() as FixedArray<u8>;
+    isTrue(runFuture(store.getBlock(Cid.forDagCbor(first))) != null, 'first block');
+    isTrue(runFuture(store.getBlock(cidOf('never stored'))) == null, 'no block');
+
+    let bytes = 'a blob'.toBytes() as FixedArray<u8>;
+    let cid = Cid.forBlob(bytes);
+    isNull(runFuture(store.getBlob(cid)));
+    runFuture(store.putBlob(cid, new StoredBlob('text/plain', bytes)));
+    let blob = runFuture(store.getBlob(cid)) as StoredBlob;
+    equal(blob.mimeType, 'text/plain');
+    isTrue(sameBytes(blob.bytes, bytes), 'blob bytes');
+  });
+
+  test('commits only on the head it was built on', (ctx) => {
+    let store = make().store(ALICE);
+    isNull(runFuture(store.getHead()));
+    let first = new Head(cidOf('first'), '3l3qo2vutsw2a');
+    let second = new Head(cidOf('second'), '3l3qo2vutsw2b');
+    isTrue(runFuture(store.commit(null, first, [new RecordChange('com.example.post', 'a', cidOf('a'))])));
+    isTrue(!runFuture(store.commit(null, second, [new RecordChange('com.example.post', 'b', cidOf('b'))])),
+        'a second first commit');
+    isTrue(!runFuture(store.commit(second, second, [])), 'a commit after a head that is not');
+    isNull(runFuture(store.getRecord('com.example.post', 'b')));
+    let head = runFuture(store.getHead()) as Head;
+    isTrue(head.cid.equals(first.cid) && head.rev == first.rev, 'the first head');
+
+    isTrue(runFuture(store.commit(first, second, [
+      new RecordChange('com.example.post', 'a', null),
+      new RecordChange('com.example.post', 'b', cidOf('b')),
+    ])));
+    isNull(runFuture(store.getRecord('com.example.post', 'a')));
+    isTrue((runFuture(store.getRecord('com.example.post', 'b')) as Cid).equals(cidOf('b')), 'b');
+    isTrue((runFuture(store.getHead()) as Head).cid.equals(second.cid), 'the second head');
+  });
+
+  test('lists records in key order', (ctx) => {
+    let store = make().store(ALICE);
+    let changes = new GrowableArray<RecordChange>();
+    for (let rkey in ['3l3qo2vutsw2c', '3l3qo2vutsw2a', '__reserved__', '3l3qo2vutsw2b', 'self']) {
+      changes.push(new RecordChange('a.b', rkey, cidOf(rkey)));
+    }
+    // `a.b.c/…` sorts before `a.b/…`: `.` is below `/`.
+    changes.push(new RecordChange('a.b.c', 'x', cidOf('x')));
+    changes.push(new RecordChange('a.a', 'y', cidOf('y')));
+    isTrue(runFuture(store.commit(null, new Head(cidOf('h'), '3l3qo2vutsw2a'), changes)));
+    equal(keysOf(runFuture(store.allRecords())),
+        'a.a/y a.b.c/x a.b/3l3qo2vutsw2a a.b/3l3qo2vutsw2b a.b/3l3qo2vutsw2c a.b/__reserved__ a.b/self');
+    equal(keysOf(runFuture(store.listRecords('a.b', null, 2, false))), 'a.b/3l3qo2vutsw2a a.b/3l3qo2vutsw2b');
+    equal(keysOf(runFuture(store.listRecords('a.b', '3l3qo2vutsw2b', 10, false))),
+        'a.b/3l3qo2vutsw2c a.b/__reserved__ a.b/self');
+    equal(keysOf(runFuture(store.listRecords('a.b', null, 2, true))), 'a.b/self a.b/__reserved__');
+    equal(keysOf(runFuture(store.listRecords('a.b', '3l3qo2vutsw2b', 10, true))), 'a.b/3l3qo2vutsw2a');
+    equal(runFuture(store.listRecords('a.c', null, 10, false)).length, 0);
+    isTrue((runFuture(store.getRecord('a.b', '__reserved__')) as Cid).equals(cidOf('__reserved__')), 'reserved');
+  });
+
+  test('holds a repository a PDS writes and exports', (ctx) => {
+    let storage = make();
+    let pds = new Pds(storage);
+    let account = runFuture(pds.createAccount(ALICE, 'alice.test', key(), NOW));
+    let repository = pds.repositoryOf(account);
+    runFuture(repository.applyWrites([
+      new CreateRecord('com.example.post', 'one', record('com.example.post', 'one')),
+      new CreateRecord('com.example.post', 'two', record('com.example.post', 'two')),
+    ] as Array<Write>, NOW));
+    let head = runFuture(repository.applyWrites([
+      new UpdateRecord('com.example.post', 'one', record('com.example.post', 'edited')),
+      new DeleteRecord('com.example.post', 'two'),
+    ] as Array<Write>, NOW));
+    let car = readCar(runFuture(repository.exportCar()));
+    isTrue(car.roots[0].equals(head.cid), 'the export is of the head');
+    let commit = decodeCommit(car.blocks.get(car.roots[0]) as FixedArray<u8>);
+    equal(commit.rev, head.rev);
+    equal(keysOf(runFuture(storage.store(ALICE).allRecords())), 'com.example.post/one');
+    isTrue(runFuture(repository.recordProof('com.example.post', 'one')) != null, 'a proof');
+  });
+}
+
+/** Registers the host store tests, each on a new store from `make`. */
+export function hostStoreConformance(make: () => HostStore): void {
+  test('gives each scope and name to one account', (ctx) => {
+    let store = make();
+    isNull(runFuture(store.scopeOwner('acme')));
+    isTrue(runFuture(store.claimScope('acme', ALICE)), 'claimed');
+    isTrue(!runFuture(store.claimScope('acme', BOB)), 'taken');
+    equal(runFuture(store.scopeOwner('acme')) as String, ALICE);
+    // Only its owner gives it back.
+    runFuture(store.releaseScope('acme', BOB));
+    equal(runFuture(store.scopeOwner('acme')) as String, ALICE);
+    runFuture(store.releaseScope('acme', ALICE));
+    isNull(runFuture(store.scopeOwner('acme')));
+    isTrue(runFuture(store.claimScope('acme', BOB)), 'claimed again');
+
+    isNull(runFuture(store.nameInScope('acme', 'router')));
+    isTrue(runFuture(store.claimName('acme', 'router', ALICE)), 'claimed');
+    isTrue(!runFuture(store.claimName('acme', 'router', BOB)), 'taken');
+    isTrue(runFuture(store.claimName('other', 'router', BOB)), 'another scope');
+    equal(runFuture(store.nameInScope('acme', 'router')) as String, ALICE);
+    runFuture(store.releaseName('acme', 'router', BOB));
+    equal(runFuture(store.nameInScope('acme', 'router')) as String, ALICE);
+    runFuture(store.releaseName('acme', 'router', ALICE));
+    isNull(runFuture(store.nameInScope('acme', 'router')));
+  });
+
+  test('keeps member entries', (ctx) => {
+    let store = make();
+    equal(runFuture(store.entries(ALICE)).length, 0);
+    let owner = new MemberEntry(BOB, OWNER, new FixedArray<u8>(32, 1 as u8));
+    let bot = new MemberEntry('did:plc:botbotbotbotbotbotbotbotb', 'publisher', new FixedArray<u8>(32, 2 as u8), true);
+    runFuture(store.addEntries(ALICE, [owner]));
+    runFuture(store.addEntries(ALICE, [bot]));
+    let entries = runFuture(store.entries(ALICE));
+    equal(entries.length, 2);
+    var commitments = 0;
+    for (let entry in entries) {
+      if (entry.commitment().equals(owner.commitment()) || entry.commitment().equals(bot.commitment())) {
+        commitments += 1;
+      }
+    }
+    equal(commitments, 2);
+    equal(runFuture(store.entries(BOB)).length, 0);
+  });
+}

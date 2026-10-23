@@ -49,14 +49,24 @@ export class HostError extends Error {
   new(status: i32, error: String, message: String) : status = status, error = error, super(message);
 }
 
-/** What the host keeps beside the accounts: scope names, and private entries. */
+/**
+ * What the host keeps beside the accounts: scope names, and private
+ * entries. Several servers may share it, so a name is taken with one call
+ * that fails when someone has it (`claimScope`, `claimName`).
+ */
 export interface HostStore {
   /** The organization whose scope is `scope`, or null. */
   scopeOwner(scope: String): Future<String | null>;
-  putScope(scope: String, org: String): Future<void>;
+  /** Gives `scope` to `org` unless it has an owner. Returns whether it did. */
+  claimScope(scope: String, org: String): Future<boolean>;
+  /** Takes `scope` back from `org`, whose account could not be made. */
+  releaseScope(scope: String, org: String): Future<void>;
   /** The account named `name` in `scope`, or null. */
   nameInScope(scope: String, name: String): Future<String | null>;
-  putName(scope: String, name: String, did: String): Future<void>;
+  /** Gives `name` in `scope` to `did` unless it is taken. Returns whether it did. */
+  claimName(scope: String, name: String, did: String): Future<boolean>;
+  /** Takes `name` in `scope` back from `did`, whose account could not be made. */
+  releaseName(scope: String, name: String, did: String): Future<void>;
   /** The entries behind the commitments in `account`'s records. */
   entries(account: String): Future<Array<MemberEntry>>;
   addEntries(account: String, entries: Array<MemberEntry>): Future<void>;
@@ -75,8 +85,20 @@ export final class MemoryHostStore implements HostStore {
     return null;
   }
 
-  async putScope(scope: String, org: String): Future<void> {
+  async claimScope(scope: String, org: String): Future<boolean> {
+    if (this.#scopes.has(scope)) {
+      return false;
+    }
     this.#scopes[scope] = org;
+    return true;
+  }
+
+  async releaseScope(scope: String, org: String): Future<void> {
+    if (let (true, owner) = this.#scopes.get(scope)) {
+      if (owner == org) {
+        this.#scopes.delete(scope);
+      }
+    }
   }
 
   async nameInScope(scope: String, name: String): Future<String | null> {
@@ -86,8 +108,22 @@ export final class MemoryHostStore implements HostStore {
     return null;
   }
 
-  async putName(scope: String, name: String, did: String): Future<void> {
-    this.#names[`${name}.${scope}`] = did;
+  async claimName(scope: String, name: String, did: String): Future<boolean> {
+    let key = `${name}.${scope}`;
+    if (this.#names.has(key)) {
+      return false;
+    }
+    this.#names[key] = did;
+    return true;
+  }
+
+  async releaseName(scope: String, name: String, did: String): Future<void> {
+    let key = `${name}.${scope}`;
+    if (let (true, owner) = this.#names.get(key)) {
+      if (owner == did) {
+        this.#names.delete(key);
+      }
+    }
   }
 
   async entries(account: String): Future<Array<MemberEntry>> {
@@ -107,6 +143,16 @@ export final class MemoryHostStore implements HostStore {
     }
     this.#entries[account] = list;
   }
+}
+
+/** An account `#prepareAccount` made ready, with the DID it will have. */
+final class PreparedAccount {
+  did: String;
+  handle: String;
+  signing: SigningKey;
+  operation: PlcOperation;
+
+  new(this.did, this.handle, this.signing, this.operation);
 }
 
 /** How a host is set up. */
@@ -198,8 +244,14 @@ export final class PackageHost {
       throw new HostError(400, 'NameTaken', `the scope '${name}' exists`);
     }
     let handle = `${name}.${this.config.domain}`;
-    let account = await this.#createAccount(handle, recoveryKeys, AccountKind.Organization, nowMicros);
-    await this.#store.putScope(name, account.did);
+    let prepared = this.#prepareAccount(handle, recoveryKeys);
+    let did = prepared.did;
+    if (!(await this.#store.claimScope(name, did))) {
+      throw new HostError(400, 'NameTaken', `the scope '${name}' exists`);
+    }
+    let store = this.#store;
+    let account = await this.#createAccount(prepared, AccountKind.Organization, nowMicros,
+        async (): Future<void> => { await store.releaseScope(name, did); });
     let owner = new MemberEntry(caller, OWNER, this.#random(32));
     await this.#store.addEntries(account.did, [owner]);
     let members = new Members(new FixedArray<Cid>(1, owner.commitment()));
@@ -242,8 +294,15 @@ export final class PackageHost {
       throw new HostError(400, 'NameTaken', `the scope '${scope}' has '${profile.name}'`);
     }
     let handle = `${profile.name}.${scope}.${this.config.domain}`;
-    let account = await this.#createAccount(handle, recoveryKeys, AccountKind.Package, nowMicros);
-    await this.#store.putName(scope, profile.name, account.did);
+    let prepared = this.#prepareAccount(handle, recoveryKeys);
+    let did = prepared.did;
+    let name = profile.name;
+    if (!(await this.#store.claimName(scope, name, did))) {
+      throw new HostError(400, 'NameTaken', `the scope '${scope}' has '${name}'`);
+    }
+    let store = this.#store;
+    let account = await this.#createAccount(prepared, AccountKind.Package, nowMicros,
+        async (): Future<void> => { await store.releaseName(scope, name, did); });
     await this.#store.addEntries(account.did, entries);
     let repository = this.pds.repositoryOf(account);
     await repository.applyWrites([
@@ -291,12 +350,11 @@ export final class PackageHost {
   }
 
   /**
-   * Creates an account named `handle` on this host: a new signing key, and
-   * a `did:plc` whose genesis operation ranks `recoveryKeys` above the
-   * host's rotation key, signed with that key and sent to the PLC directory.
+   * An account named `handle` on this host, to be: a new signing key, and
+   * the genesis operation of a `did:plc` that ranks `recoveryKeys` above
+   * the host's rotation key, signed with that key.
    */
-  async #createAccount(handle: String, recoveryKeys: Array<String>, kind: AccountKind, nowMicros: i64)
-      : Future<Account> {
+  #prepareAccount(handle: String, recoveryKeys: Array<String>): PreparedAccount {
     if (recoveryKeys.length == 0 || recoveryKeys.length > 4) {
       throw new HostError(400, 'InvalidRequest', 'give one to four recovery keys');
     }
@@ -313,9 +371,23 @@ export final class PackageHost {
     let hostKey = this.config.rotationKey;
     let operation = genesisOperation(signing.publicKey(), rotation, handle, this.config.endpoint)
       .signedWith((bytes) => hostKey.sign(bytes));
-    let did = didOfGenesis(operation);
-    await this.#submit(did, operation);
-    return await this.pds.createAccount(did, handle, signing, nowMicros, kind);
+    return new PreparedAccount(didOfGenesis(operation), handle, signing, operation);
+  }
+
+  /**
+   * Sends `prepared`'s genesis operation to the PLC directory and adds the
+   * account. When either fails, runs `release`, to give up the name taken
+   * for it, and throws.
+   */
+  async #createAccount(prepared: PreparedAccount, kind: AccountKind, nowMicros: i64, release: () => Future<void>)
+      : Future<Account> {
+    try {
+      await this.#submit(prepared.did, prepared.operation);
+      return await this.pds.createAccount(prepared.did, prepared.handle, prepared.signing, nowMicros, kind);
+    } catch (e) {
+      await release();
+      throw e;
+    }
   }
 
   async #write(account: Account, collection: String, rkey: String, record: MapValue, nowMicros: i64)

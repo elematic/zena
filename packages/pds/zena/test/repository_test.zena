@@ -1,6 +1,6 @@
 import {suite, test} from 'zena:test';
 import {equal, isNull, isTrue} from 'zena:assert';
-import {runFuture} from 'zena:async';
+import {Future, runFuture} from 'zena:async';
 import {hex} from 'zena:encoding';
 import {readCar} from 'atproto:car';
 import {Cid} from 'atproto:cid';
@@ -9,9 +9,13 @@ import {KeyType, verifySignature} from 'atproto:didkey';
 import {mstWalk} from 'atproto:mst';
 import {decodeCommit, verifyRecordProof} from 'atproto:repo';
 import {isValidTid} from 'atproto:syntax';
+import {TidClock} from 'atproto:tid';
+import {BlockMap} from 'atproto:car';
 import {Pds} from 'pds:pds';
 import {CreateRecord, DeleteRecord, Repository, RepositoryError, UpdateRecord, Write} from 'pds:repository';
-import {Account, Head, MemoryStorage, SigningKey} from 'pds:storage';
+import {
+  Account, AccountStore, Head, MemoryStorage, RecordChange, RecordEntry, SigningKey, StoredBlob
+} from 'pds:storage';
 
 let DID = 'did:plc:alicealicealicealicealic';
 let NOW = 1792800000000000 as i64;
@@ -49,6 +53,42 @@ function refusal(repository: Repository, writes: Array<Write>): String {
     return if (e is RepositoryError) (e as RepositoryError).error else `another error: ${e.message}`;
   }
   return '';
+}
+
+/**
+ * A store that, at the next commit, first runs `interloper`: another
+ * server's write, landing between this one's start and its commit.
+ */
+final class RacingStore implements AccountStore {
+  #inner: AccountStore;
+  var interloper: (() => Future<void>) | null = null;
+  var commits: i32 = 0;
+
+  new(inner: AccountStore) : #inner = inner;
+
+  async getBlock(cid: Cid): Future<FixedArray<u8> | null> { return await this.#inner.getBlock(cid); }
+  async putBlocks(blocks: BlockMap): Future<void> { await this.#inner.putBlocks(blocks); }
+  async getRecord(collection: String, rkey: String): Future<Cid | null> {
+    return await this.#inner.getRecord(collection, rkey);
+  }
+  async listRecords(collection: String, after: String | null, limit: i32, descending: boolean)
+      : Future<Array<RecordEntry>> {
+    return await this.#inner.listRecords(collection, after, limit, descending);
+  }
+  async allRecords(): Future<Array<RecordEntry>> { return await this.#inner.allRecords(); }
+  async getHead(): Future<Head | null> { return await this.#inner.getHead(); }
+  async getBlob(cid: Cid): Future<StoredBlob | null> { return await this.#inner.getBlob(cid); }
+  async putBlob(cid: Cid, blob: StoredBlob): Future<void> { await this.#inner.putBlob(cid, blob); }
+
+  async commit(previous: Head | null, head: Head, changes: Array<RecordChange>): Future<boolean> {
+    this.commits += 1;
+    let interloper = this.interloper;
+    if (interloper != null) {
+      this.interloper = null;
+      await interloper();
+    }
+    return await this.#inner.commit(previous, head, changes);
+  }
 }
 
 export let tests = suite('pds:repository', () => {
@@ -103,6 +143,36 @@ export let tests = suite('pds:repository', () => {
     // A proof carries only the path to its record.
     let proof = readCar(runFuture(repository.recordProof(POST, 'record7')) as FixedArray<u8>);
     isTrue(proof.blocks.size < car.blocks.size, `${proof.blocks.size} of ${car.blocks.size} blocks`);
+  });
+
+  test('applies a write again on a head another server moved', (ctx) => {
+    let (pds, account, unused) = setUp();
+    let inner = pds.storage.store(DID);
+    let racing = new RacingStore(inner);
+    let repository = new Repository(account, racing, new TidClock(1));
+    // The other server's clock is an hour ahead.
+    let other = new Repository(account, inner, new TidClock(2));
+    var theirs: Head | null = null;
+    racing.interloper = async (): Future<void> => {
+      theirs = await other.applyWrites([new CreateRecord(POST, 'theirs', record(POST, 'theirs'))],
+          NOW + (3600000000 as i64));
+    };
+    let ours = runFuture(repository.applyWrites([new CreateRecord(POST, 'ours', record(POST, 'ours'))], NOW));
+    equal(racing.commits, 2);
+    isTrue(runFuture(inner.getRecord(POST, 'theirs')) != null, 'their record');
+    isTrue(runFuture(inner.getRecord(POST, 'ours')) != null, 'our record');
+    let theirHead = theirs as Head;
+    isTrue(theirHead.rev.compareTo(ours.rev) < 0, `${theirHead.rev} < ${ours.rev}`);
+    let car = readCar(runFuture(repository.exportCar()));
+    let commit = decodeCommit(car.blocks.get(car.roots[0]) as FixedArray<u8>);
+    isTrue((commit.prev as Cid).equals(theirHead.cid), 'our commit follows theirs');
+    equal(runFuture(inner.allRecords()).length, 2);
+
+    // A write that their record makes invalid fails when it is tried again.
+    racing.interloper = async (): Future<void> => {
+      await other.applyWrites([new DeleteRecord(POST, 'theirs')], NOW);
+    };
+    equal(refusal(repository, [new UpdateRecord(POST, 'theirs', record(POST, 'edited'))]), 'RecordNotFound');
   });
 
   test('refuses writes that do not fit the repository, and writes nothing', (ctx) => {
