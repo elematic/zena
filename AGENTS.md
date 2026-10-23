@@ -168,6 +168,7 @@ Directory-level orientation lives in `CONTEXT.md` files. Read the
 - [packages/zena-compiler/zena/lib/codegen/ir/CONTEXT.md](packages/zena-compiler/zena/lib/codegen/ir/CONTEXT.md) — ZIR backend (lowering, GVN, emit)
 - [packages/zena-compiler/zena/lib/codegen/reachability/CONTEXT.md](packages/zena-compiler/zena/lib/codegen/reachability/CONTEXT.md) — RTA and specialization
 - [packages/zena-cli/CONTEXT.md](packages/zena-cli/CONTEXT.md) — CLI module and Rust/wasmtime host
+- [packages/pds/CONTEXT.md](packages/pds/CONTEXT.md) — the PDS and package host, ported from pds.js
 
 ### Packages & Directories
 
@@ -185,6 +186,9 @@ Directory-level orientation lives in `CONTEXT.md` files. Read the
 - **`packages/protobuf`**: Protocol Buffers support for Zena (`@zena-lang/protobuf`).
 - **`packages/google-cloud`**: Google Cloud client libraries for Zena (`@zena-lang/google-cloud`).
 - **`packages/runtime`**: JS runtime helpers (`@zena-lang/runtime`).
+- **`packages/atproto`**: AT Protocol libraries: the data model, DAG-CBOR, CIDs, repositories and their proofs, keys and signatures, identity resolution, XRPC, service auth and sessions (`@zena-lang/atproto`).
+- **`packages/package-manager`**: The package manager's libraries: records, source archives, fetching, version selection, manifests and workspaces, and the host's lexicons (`@zena-lang/package-manager`).
+- **`packages/pds`**: An AT Protocol PDS written in Zena, ported from pds.js, and the base of the Zena package host (`@zena-lang/pds`). (See [pds.md](docs/design/pds.md)).
 - **`packages/language-service`**: Language service library, `lsp.zena` / `lsp.wasm`, and the JS API around it (`@zena-lang/language-service`). Published.
 - **`packages/zenadoc`**: API documentation extraction — reads a package's source and emits JSON describing its public API (`@zena-lang/zenadoc`). (See [zenadoc.md](docs/design/zenadoc.md)).
 - **`packages/codemirror`**: Zena support for CodeMirror 6 (`@zena-lang/codemirror`). Published.

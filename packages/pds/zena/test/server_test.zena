@@ -1,0 +1,33 @@
+import { suite, test } from 'zena:test';
+import { equal } from 'zena:assert';
+import { runFuture } from 'zena:async';
+import { Request, Response } from 'zena:http';
+import { createApp, version } from 'pds:server';
+
+let get = (path: String): Response => {
+  let res = new Response();
+  runFuture((async () => {
+    let req = new Request.fromUrl(`http://localhost${path}`, 'GET', new Map<String, String>());
+    await createApp().handleRequest(req, res);
+  })());
+  return res;
+};
+
+export let tests = suite('pds:server', () => {
+  test('GET / answers with a plain-text banner', (ctx) => {
+    let res = get('/');
+    equal(res.statusCode, 200);
+    equal(res.type as String, 'text/plain; charset=utf-8');
+  });
+
+  test('GET /xrpc/_health reports the version', (ctx) => {
+    let res = get('/xrpc/_health');
+    equal(res.statusCode, 200);
+    equal(res.type as String, 'application/json');
+    equal(res.body as String, `{"version":"${version}"}`);
+  });
+
+  test('an unknown route is a 404', (ctx) => {
+    equal(get('/xrpc/com.example.nothing').statusCode, 404);
+  });
+});

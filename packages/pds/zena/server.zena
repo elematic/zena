@@ -1,0 +1,39 @@
+/**
+ * The PDS's HTTP application.
+ *
+ * The routes follow pds.js `packages/core/src/handlers/server-meta.js`, at
+ * the revision pinned in docs/porting-plan.md.
+ */
+
+import { App, Router } from 'zena:http';
+import { JsonBuilder } from 'zena:json';
+
+/** The version `/xrpc/_health` reports. */
+export let version = '0.0.1';
+
+let banner = 'An AT Protocol PDS written in Zena\n';
+
+/**
+ * Returns the application that serves every route.
+ */
+export function createApp(): App {
+  let app = new App();
+  let router = new Router();
+
+  router.get('/', async (req, res, next, params) => {
+    res.type = 'text/plain; charset=utf-8';
+    res.body = banner;
+  });
+
+  router.get('/xrpc/_health', async (req, res, next, params) => {
+    res.type = 'application/json';
+    res.body = new JsonBuilder()
+      .beginObject()
+      .key('version').string(version)
+      .endObject()
+      .toString();
+  });
+
+  app.use(router.routes());
+  return app;
+}
