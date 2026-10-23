@@ -1,0 +1,132 @@
+/**
+ * Template lowering (docs/design/template-zir.md): the methods of a
+ * generic class are lowered for two specializations and copied for the
+ * rest, and the module comes out the same as with every body lowered
+ * directly. Each test compiles with templates on and check mode on
+ * (every copied body is also lowered directly and compared), then with
+ * templates off, and compares the two modules' text.
+ */
+import { suite, test } from 'zena:test';
+import { equal, isTrue } from 'zena:assert';
+import { WatGenerator } from '../lib/codegen/wat-generator.zena';
+import { TemplateFamilies } from '../lib/codegen/ir/template.zena';
+import { Program, CompilationUnit } from '../lib/program.zena';
+import { makeCompiler, MockHost, errorDiagnostics } from './test-utils.zena';
+import { checkCompilation } from '../lib/compiler.zena';
+
+/** The checked program for `source`. */
+function programOf(source: String): Program {
+  let host = new MockHost();
+  host.addFile("test.zena", source);
+  let compiler = makeCompiler(host);
+  let compResult = compiler.compile({entry: "test.zena", target: 'js'});
+  let checkRes = checkCompilation(compResult);
+  let errors = errorDiagnostics(checkRes.diagnostics);
+  if (errors.length > 0) {
+    throw new Error(`the fixture does not compile: ${errors[0].message}`);
+  }
+  let entryAst = compResult.entry.ast;
+  let units = new Array<CompilationUnit>();
+  var entryUnit: CompilationUnit | null = null;
+  for (let file in compResult.files) {
+    if (!file.isStdlib) {
+      let res = checkRes.results[file.path];
+      if (res != null) {
+        let unit = {ast: file.ast, model: res.model};
+        units.push(unit);
+        if (file.ast.path == entryAst.path) {
+          entryUnit = unit;
+        }
+      }
+    }
+  }
+  return new Program(units, entryUnit);
+}
+
+/**
+ * Compiles `source` with templates and check mode on, checks that the
+ * module equals the one compiled with templates off, and returns the
+ * families the first compile used.
+ */
+function compileBothWays(source: String): TemplateFamilies {
+  let withTemplates = new WatGenerator("freestanding", false, 1);
+  withTemplates.templateCheck = true;
+  let wat = withTemplates.generate(programOf(source));
+  let without = new WatGenerator("freestanding", false, 1);
+  without.templates = false;
+  equal(wat, without.generate(programOf(source)));
+  return withTemplates.templateFamilies as TemplateFamilies;
+}
+
+export let tests = suite('template lowering', () => {
+  test('methods of a class specialized at four classes copy from one template', () => {
+    let families = compileBothWays(`
+      class A { n: i32; new(this.n); }
+      class B { n: i32; new(this.n); }
+      class C { n: i32; new(this.n); }
+      class D { n: i32; new(this.n); }
+      class Slot<T> {
+        var #value: T;
+        var #writes: i32 = 0;
+        new(value: T) : #value = value;
+        get(): T { return this.#value; }
+        set(value: T): void {
+          this.#value = value;
+          this.#writes = this.#writes + 1;
+        }
+        writes(): i32 { return this.#writes; }
+      }
+      export let run = (): i32 => {
+        let a = new Slot<A>(new A(1));
+        let b = new Slot<B>(new B(2));
+        let c = new Slot<C>(new C(3));
+        let d = new Slot<D>(new D(4));
+        a.set(new A(5));
+        b.set(new B(6));
+        c.set(new C(7));
+        d.set(new D(8));
+        return a.get().n + b.get().n + c.get().n + d.get().n +
+            a.writes() + b.writes() + c.writes() + d.writes();
+      };
+    `);
+    isTrue(families.templates >= 3);
+    // Two of the four members of each family teach it; the other two copy.
+    isTrue(families.specialized >= 6);
+  });
+
+  test('a method overridden in one specialization is not copied into it', () => {
+    // Base<A> has a subclass that overrides `weight`, so `this.weight()`
+    // in Base<A>.score dispatches through the vtable; in Base<B>,
+    // Base<C> and Base<D> it is a direct call. Whichever members the
+    // template was learned from, Base<A>'s body must not be copied
+    // from the others: the guard on `memberProvidedBySubclass` declines
+    // it, or the two representatives disagree and there is no template.
+    let families = compileBothWays(`
+      class A { n: i32; new(this.n); }
+      class B { n: i32; new(this.n); }
+      class C { n: i32; new(this.n); }
+      class D { n: i32; new(this.n); }
+      class Base<T> {
+        value: T;
+        new(this.value);
+        weight(): i32 { return 1; }
+        score(): i32 { return this.weight() * 10; }
+      }
+      class Heavy extends Base<A> {
+        new(v: A) : super(v);
+        weight(): i32 { return 7; }
+      }
+      export let run = (): i32 => {
+        let plain = new Base<A>(new A(1));
+        let heavy: Base<A> = new Heavy(new A(2));
+        let b = new Base<B>(new B(30));
+        let c = new Base<C>(new C(1000));
+        let d = new Base<D>(new D(10000));
+        return plain.score() + heavy.score() + b.score() + c.score() + d.score();
+      };
+    `);
+    let declined = families.declined.format();
+    let stopped = families.stopped.format();
+    isTrue(declined.contains('guard') || stopped.contains('differ'));
+  });
+});

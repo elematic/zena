@@ -18,6 +18,7 @@ import { div } from 'zena:math';
 import { HashMap } from 'zena:collections';
 import { WasmFunction } from './wasm-module.zena';
 import { IrBody, IrOp, irOpName } from './ir/ir.zena';
+import { notCandidate } from './ir/template.zena';
 
 /** The bodies lowered from one source function in one role. */
 final class SourceGroup {
@@ -30,6 +31,7 @@ final class SourceGroup {
   var insts: i32 = 0;
   /** The first body, as lowering left it; null until it is compared. */
   var first: FirstBody | null = null;
+  var reason: String = '';
   new(this.name);
 }
 
@@ -122,6 +124,8 @@ export final class TemplateStats {
       return g;
     }
     let g = new SourceGroup(if (func.name != null) func.name as String else '<unnamed>');
+    let why = notCandidate(func);
+    g.reason = if (why == null) 'in families' else `not candidates (${why as String})`;
     this.#groups[key as String] = g;
     this.#order.push(g);
     return g;
@@ -232,6 +236,24 @@ export final class TemplateStats {
       lines.push(`  ${i32ToString(g.count)}× ${g.name}: ${ms(g.lowerMs)} ms lowering, ` +
           `${i32ToString(g.insts)} instructions`);
       shown += 1;
+    }
+    // Repeat time by why a group's bodies are not template candidates.
+    let reasonMs = new HashMap<String, f64>();
+    let reasonBodies = new HashMap<String, i32>();
+    let reasonOrder = new GrowableArray<String>();
+    for (let g in repeated) {
+      let rep = (g.lowerMs - g.firstLowerMs) + (g.cleanupMs - g.firstCleanupMs);
+      let r = g.reason;
+      if (!reasonMs.has(r)) {
+        reasonMs[r] = 0.0;
+        reasonBodies[r] = 0;
+        reasonOrder.push(r);
+      }
+      reasonMs[r] = reasonMs[r] + rep;
+      reasonBodies[r] = reasonBodies[r] + g.count - 1;
+    }
+    for (let r in reasonOrder) {
+      lines.push(`  repeats ${r}: ${i32ToString(reasonBodies[r])} bodies, ${ms(reasonMs[r])} ms`);
     }
     let ds = this.#divergenceOrder;
     sortByCount(ds, (d) => d.count);

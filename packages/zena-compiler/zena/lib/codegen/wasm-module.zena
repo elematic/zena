@@ -1936,6 +1936,34 @@ export final class WasmModule {
     return sig;
   }
 
+  /** The interned signature with these params and results, or null. Never creates one. */
+  findSignature(params: GrowableArray<ValType>, returns: GrowableArray<ValType>): WasmSignature | null {
+    if (let (true, cached) = this.#signatureCache.get(getSignatureKey(params, returns))) {
+      return cached;
+    }
+    return null;
+  }
+
+  /** The interned struct with this name and these fields, or null. Never creates one. */
+  findStruct(name: String | null, fields: GrowableArray<WasmField>): WasmStruct | null {
+    if (let (true, cached) = this.#structCache.get(getStructKey(name, fields))) {
+      return cached;
+    }
+    return null;
+  }
+
+  /**
+   * The interned array of this element type, or null. Never creates
+   * one. `elementType` is the stored element type, nullable for a
+   * reference (`getArray` stores it that way).
+   */
+  findArray(elementType: ValType, isMutable: boolean): WasmArray | null {
+    if (let (true, cached) = this.#arrayCache.get(getArrayKey(elementType, isMutable))) {
+      return cached;
+    }
+    return null;
+  }
+
   getStruct(name: String | null, fields: GrowableArray<WasmField>): WasmStruct {
     let key = getStructKey(name, fields);
     if (let (true, cached) = this.#structCache.get(key)) {

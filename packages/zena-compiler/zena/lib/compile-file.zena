@@ -629,6 +629,13 @@ export function compileFile(options: CompileFileOptions): i32 {
     // Opt-in because V8 does not implement the proposal yet.
     let wideArithmetic = getEnv("ZENA_WIDE_ARITHMETIC") != null;
 
+    // Template lowering (docs/design/template-zir.md) is on unless
+    // ZENA_TEMPLATES=0; ZENA_TEMPLATE_CHECK=1 lowers every templated
+    // body directly too and fails on any difference.
+    let templatesEnv = getEnv("ZENA_TEMPLATES");
+    let templates = templatesEnv == null || templatesEnv as String != "0";
+    let templateCheck = getEnv("ZENA_TEMPLATE_CHECK") != null;
+
     // `-o out.wat` emits the WAT text directly — the readable form of
     // exactly what the binary build would contain, for inspecting a
     // program's emitted shape (`zena build hello.zena -o hello.wat`).
@@ -637,6 +644,8 @@ export function compileFile(options: CompileFileOptions): i32 {
       watOnly.wideArithmetic = wideArithmetic;
       watOnly.importedStringConstants = importedStringConstants;
       watOnly.compactImports = compactImports;
+      watOnly.templates = templates;
+      watOnly.templateCheck = templateCheck;
       watOnly.interner = checkResults.sharedState.interner;
       writeFileSync(outPath, watOnly.generate(program));
       performance.end(tCodegen);
@@ -650,6 +659,8 @@ export function compileFile(options: CompileFileOptions): i32 {
     generator.wideArithmetic = wideArithmetic;
     generator.importedStringConstants = importedStringConstants;
     generator.compactImports = compactImports;
+    generator.templates = templates;
+    generator.templateCheck = templateCheck;
     // Codegen builds its unions through the checker's interner, so a
     // union means one object across the whole compile.
     generator.interner = checkResults.sharedState.interner;

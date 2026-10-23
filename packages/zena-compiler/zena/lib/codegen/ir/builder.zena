@@ -3,6 +3,7 @@ import {
 } from '../wasm.zena';
 import { IrBody, IrBlock, IrOp, IrRef, isIrTerminator } from './ir.zena';
 import { simdInstruction } from '../../simd.zena';
+import { TemplateRecorder } from './template.zena';
 import { growable } from 'zena:core';
 
 /**
@@ -42,6 +43,14 @@ export function valTypesStrictlyEqual(a: ValType, b: ValType): boolean {
 export final class IrBuilder {
   body = new IrBody();
   var #current: i32 = -1;
+  /**
+   * Template mode (template.zena): every `internType` call appends a
+   * type-table entry instead of interning, so two lowerings of one
+   * method name their types by call order and their tables line up
+   * entry for entry; the recorder collects lowering's guards. Null
+   * otherwise.
+   */
+  var recorder: TemplateRecorder | null = null;
 
   /** Total blocks created so far. */
   numBlocks(): i32 {
@@ -94,6 +103,10 @@ export final class IrBuilder {
 
   internType(type: ValType): i32 {
     let table = this.body.typeTable;
+    if (this.recorder != null) {
+      table.push(type);
+      return table.length - 1;
+    }
     var i = 0;
     while (i < table.length) {
       if (valTypesStrictlyEqual(table[i], type)) {
