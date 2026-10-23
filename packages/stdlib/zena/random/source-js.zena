@@ -1,0 +1,30 @@
+/**
+ * `zena:random`'s generator on the js target: the host's
+ * `crypto.getRandomValues`, one 32-bit word per call, so nothing crosses
+ * but a number.
+ */
+
+@external("zena:host:random", "u32")
+declare function __random_u32(): u32;
+
+/** `count` random bytes, four from each word. */
+export function hostRandomBytes(count: i32): FixedArray<u8> {
+  let bytes = new FixedArray<u8>(count, 0 as u8);
+  var i = 0;
+  while (i < count) {
+    var word = __random_u32();
+    for (var k = 0; k < 4 && i < count; k += 1) {
+      bytes[i] = (word & (0xff as u32)) as u8;
+      word = word >>> (8 as u32);
+      i += 1;
+    }
+  }
+  return bytes;
+}
+
+/** A random `u64`, from two words. */
+export function hostRandomU64(): u64 {
+  let high = __random_u32() as u64;
+  let low = __random_u32() as u64;
+  return (high << (32 as u64)) | low;
+}

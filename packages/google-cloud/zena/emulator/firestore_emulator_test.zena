@@ -13,7 +13,7 @@ import { equal, isTrue } from 'zena:assert';
 import { Future, runFuture } from 'zena:async';
 import { getEnv } from 'zena:cli';
 import { milliseconds, monotonic } from 'zena:time';
-import { getRandomU64 } from 'wasi:random/random';
+import { randomInt } from 'zena:random';
 import { GrpcTransport } from 'protobuf:grpc';
 import { AccessTokenCredentials } from '../auth.zena';
 import {
@@ -33,7 +33,7 @@ function emulatorHost() {
 /** A database in a new project on the emulator. */
 function freshDatabase() {
   return new Firestore({
-  projectId: `test-${getRandomU64() % (1000000000 as u64)}`,
+  projectId: `test-${randomInt(1000000000)}`,
   transport: new GrpcTransport(`http://${emulatorHost()}`, new AccessTokenCredentials('owner')),
 });
 }
@@ -305,7 +305,7 @@ async function pagesAndCounts(db: Firestore): Future<String> {
  * own lock timeout.
  */
 async function deadline(): Future<String> {
-  let projectId = `test-${getRandomU64() % (1000000000 as u64)}`;
+  let projectId = `test-${randomInt(1000000000)}`;
   let origin = `http://${emulatorHost()}`;
   let db = new Firestore({projectId, transport: new GrpcTransport(origin, new AccessTokenCredentials('owner'))});
   let hurried = new GrpcTransport(origin, new AccessTokenCredentials('owner'));
@@ -326,7 +326,7 @@ async function deadline(): Future<String> {
 
 async function connectToEmulator(): Future<String> {
   let db = await Firestore.connect();
-  let path = `connect/${getRandomU64() % (1000000000 as u64)}`;
+  let path = `connect/${randomInt(1000000000)}`;
   await db.doc(path).set(new Fields().string('via', 'connect'));
   let s = await db.doc(path).get();
   return `${db.projectId} ${str(s, 'via')}`;

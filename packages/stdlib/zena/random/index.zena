@@ -1,0 +1,68 @@
+/**
+ * Random numbers from the host's cryptographically secure generator:
+ * `wasi:random`'s `random` interface on the component targets, and
+ * `crypto.getRandomValues` on js.
+ *
+ * The values are unpredictable, so they are fit for keys, salts, nonces
+ * and identifiers. Nothing seeds the generator, so a sequence cannot be
+ * repeated.
+ *
+ * ## Examples
+ *
+ * ```zena
+ * import { randomBytes, randomInt, randomF64 } from 'zena:random';
+ *
+ * let salt = randomBytes(32);
+ * let roll = randomInt(6) + 1;
+ * let jitter = randomF64() * 50.0;
+ * ```
+ */
+
+import { hostRandomBytes, hostRandomU64 } from './source.zena';
+
+/**
+ * `count` random bytes. Throws when `count` is negative.
+ */
+export function randomBytes(count: i32): FixedArray<u8> {
+  if (count < 0) {
+    throw new Error(`zena:random: randomBytes(${count}) needs a count of zero or more`);
+  }
+  return hostRandomBytes(count);
+}
+
+/** A random `u64`. */
+export function randomU64(): u64 {
+  return hostRandomU64();
+}
+
+/**
+ * A random integer at least 0 and less than `bound`, each equally
+ * likely. Throws when `bound` is not positive.
+ */
+export function randomInt(bound: i32): i32 {
+  if (bound <= 0) {
+    throw new Error(`zena:random: randomInt(${bound}) needs a positive bound`);
+  }
+  let b = bound as u64;
+  // `x % b` over all 2^64 values of `x` gives the residues below
+  // 2^64 mod b once more often than the rest. Those extra values are
+  // the ones below `threshold`, so drawing again when one comes up
+  // leaves every residue equally likely. Fewer than one draw in 2^33
+  // is rejected, since `b` is below 2^31.
+  let threshold = ((0 as u64) - b) % b;
+  var x = hostRandomU64();
+  while (x < threshold) {
+    x = hostRandomU64();
+  }
+  return (x % b) as i32;
+}
+
+/**
+ * A random `f64` at least 0 and less than 1: one of the 2^53 multiples
+ * of 2^-53 in that range, each equally likely.
+ */
+export function randomF64(): f64 {
+  let bits = hostRandomU64() >> (11 as u64);
+  // 2^53, which divides exactly.
+  return (bits as f64) / 9007199254740992.0;
+}

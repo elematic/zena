@@ -26,8 +26,8 @@ import { AsyncIterable, AsyncIterator, AsyncStep } from 'zena:async';
 import { HashMap } from 'zena:collections';
 import { getEnv } from 'zena:cli';
 import { Option } from 'zena:core';
+import { randomInt } from 'zena:random';
 import { Duration, milliseconds, sleep } from 'zena:time';
-import { getRandomU64 } from 'wasi:random/random';
 import { Credentials, ProtoBytes, ProtoTransport, ProtoView, RpcError } from 'protobuf:runtime';
 import { FallbackTransport } from 'protobuf:fallback';
 import { GrpcTransport } from 'protobuf:grpc';
@@ -442,8 +442,10 @@ function isAborted(e: Error) {
  * contended do not meet again at once.
  */
 function retryDelay(attempt: i32) {
-  let limit = (50 as u64) << ((attempt - 1) as u64);
-  return milliseconds((getRandomU64() % limit) as i64);
+  // The doubling stops at 50 ms << 24, about nine days, where the next
+  // one would overflow an i32.
+  let doublings = if (attempt > 25) 24 else attempt - 1;
+  return milliseconds(randomInt(50 << doublings) as i64);
 }
 
 /** One Firestore database. */
@@ -1418,7 +1420,7 @@ function randomId(): String {
   let alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
   var id = '';
   for (var i = 0; i < 20; i += 1) {
-    let n = (getRandomU64() % (62 as u64)) as i32;
+    let n = randomInt(62);
     id = `${id}${alphabet.sliceBytes(n, n + 1)}`;
   }
   return id;
