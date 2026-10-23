@@ -19,7 +19,12 @@ import {
 import {
   Type, VoidType, NeverType, ClassType, InterfaceType, FunctionType, FieldInfo, MethodInfo, ArrayType, InlineTupleType, TupleType, RecordType, EnumType, TypeParameterType, UnionType, baseType, isVoidOrNeverType, isRefType, AnyRefType, EqRefType, arrayElementType, isSignedNarrowIntType, typeToString,
   ownershipHandleName, soleNonNullMember, NullType, BoolLiteralType, NumLiteralType, HoleType, isIntegerType,
+  typeContainsTypeParameter,
 } from '../../types.zena';
+import {
+  TemplateAbandon, TemplateFamilies, TemplateRecorder, internedCopy,
+} from './template.zena';
+import { nowMs } from '../../time.zena';
 import {
   RecordAdaptation, RecordUnionAdaptation, FunctionAdaptation, SemanticModel,
   memberKeyOf, accessKeyOf,
@@ -347,6 +352,65 @@ export function lowerFunction(wasm: WasmModule, func: WasmFunction): IrBody {
     throw new ZirUnsupported(failMsg);
   }
   return result as IrBody;
+}
+
+/**
+ * `func`'s body, lowered directly or made from its family's template
+ * (template.zena). A family's first two members lower in template mode
+ * and teach the family its template; every later member is specialized
+ * from it, or lowered directly when specialization declines.
+ */
+export function lowerWithTemplates(wasm: WasmModule, families: TemplateFamilies,
+    func: WasmFunction): IrBody {
+  let plan = families.plan(func);
+  if (plan == 2) {
+    let t0 = nowMs();
+    let made = families.specialize(func);
+    families.specializeMs += nowMs() - t0;
+    if (made != null) {
+      if (families.checkMode) {
+        families.compare(func, made, lowerFunction(wasm, func));
+      }
+      return made;
+    }
+    return lowerFunction(wasm, func);
+  }
+  if (plan == 0) {
+    return lowerFunction(wasm, func);
+  }
+  let t0 = nowMs();
+  let recorder = new TemplateRecorder();
+  let lowerer = new FunctionLowerer(wasm, func);
+  lowerer.b.recorder = recorder;
+  var abandoned: String | null = null;
+  // (A catch arm yields null rather than rethrowing directly — see
+  // lowerFunction.)
+  let raw = try {
+    lowerer.lower()
+  } catch (e) {
+    if (e is TemplateAbandon) {
+      abandoned = e.reason;
+      null
+    } else if (e is ZirUnsupported) {
+      // Lowering it directly reports the failure the usual way.
+      abandoned = 'unsupported';
+      null
+    } else {
+      throw e
+    }
+  };
+  if (raw == null) {
+    families.stop(func, abandoned as String);
+    families.abandonedMs += nowMs() - t0;
+    return lowerFunction(wasm, func);
+  }
+  let body = internedCopy(raw as IrBody);
+  families.observe(func, raw as IrBody, recorder.guards);
+  families.representativeMs += nowMs() - t0;
+  if (families.checkMode) {
+    families.compare(func, body, lowerFunction(wasm, func));
+  }
+  return body;
 }
 
 /** Entry block with one param per signature slot; leaves it current. */
@@ -4964,7 +5028,61 @@ export final class FunctionLowerer {
     return resultParam;
   }
 
+  /**
+   * Template mode (template.zena) abandons the template where an
+   * expression's lowering may depend on a type argument beyond what
+   * the template records: tests and casts against a type parameter,
+   * `match` on one, string conversion, equality, and calls to generic
+   * functions (`hash`, `equals`), all of which dispatch on the
+   * argument's class.
+   */
+  #templateGate(expr: Expression): void {
+    let model = this.func.model;
+    let mentions = (e: Node): boolean => {
+      let t = model.getNodeType(e);
+      return t != null && typeContainsTypeParameter(t as Type);
+    };
+    if (expr is IsExpression) {
+      if (mentions((expr as IsExpression).expression)) {
+        throw new TemplateAbandon('type test or cast');
+      }
+    } else if (expr is AsExpression) {
+      if (mentions(expr) || mentions((expr as AsExpression).expression)) {
+        throw new TemplateAbandon('type test or cast');
+      }
+    } else if (expr is MatchExpression) {
+      if (mentions(expr.discriminant)) {
+        throw new TemplateAbandon('match');
+      }
+    } else if (expr is TemplateLiteral) {
+      for (let e in expr.expressions) {
+        if (mentions(e)) {
+          throw new TemplateAbandon('template literal');
+        }
+      }
+    } else if (expr is TaggedTemplateExpression) {
+      throw new TemplateAbandon('tagged template');
+    } else if (expr is BinaryExpression) {
+      let op = expr.operator;
+      if ((op == '==' || op == '!=') && (mentions(expr.left) || mentions(expr.right))) {
+        throw new TemplateAbandon('equality');
+      }
+    } else if (expr is CallExpression) {
+      let ct = model.getNodeType(expr.callee);
+      if (ct is FunctionType) {
+        let ft = ct as FunctionType;
+        let targs = ft.typeArguments;
+        if (targs != null && targs.length > 0 && mentions(expr.callee)) {
+          throw new TemplateAbandon('generic call');
+        }
+      }
+    }
+  }
+
   #lowerExpressionDispatch(expr: Expression): i32 {
+    if (this.b.recorder != null) {
+      this.#templateGate(expr);
+    }
     return match (expr) {
       case NumberLiteral as lit: this.#lowerNumberLiteral(lit)
       case BooleanLiteral {value}: this.b.constI32(if (value) 1 else 0, new ValTypeI32())

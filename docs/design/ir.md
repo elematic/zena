@@ -708,6 +708,12 @@ discovery); v2 changes only how their bodies are produced. This is also the
 prerequisite for caching generic code on disk (§13) — you cannot cache what
 you can only produce whole-program-specialized.
 
+[template-zir.md](template-zir.md) measures what v2 can still save,
+lists what lowering decides from the type arguments (including facts
+about each specialization that RTA records, which the plan above does
+not account for), and describes the first step: templates learned from
+two lowered instantiations and copied for the rest.
+
 ## 9. Optimization pipeline
 
 The implementation plan for this section and §10 — per-pass designs,
@@ -1209,7 +1215,11 @@ until M4.
   table-substitution specialization. Success metric: cold-compile of
   `assert_test.zena` and `zena:test`-heavy files (the 47s case) drops by
   an order of magnitude class, not percent.
-  _Status: not started; tracked in #410._
+  _Status: in progress, tracked in #410. The 47s case is gone (0.46s
+  today), and repeated lowering is about 6.5% of a self-compile, so the
+  success metric no longer applies; the reasons left are §13 and IR
+  discovery. Methods of generic classes are copied from templates
+  ([template-zir.md](template-zir.md))._
 - **M6 — `.zir` on disk.** Serialization, cache directory, phase-1/phase-2
   CLI split per §13.
 

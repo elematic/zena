@@ -1,0 +1,1496 @@
+/**
+ * Template lowering (docs/design/template-zir.md): the bodies one
+ * source method lowers to across the specializations of its class are
+ * made, after the first two, by copying a template's instruction
+ * arrays and resolving its tables for each member.
+ *
+ * A family's first two members, its representatives, are lowered in
+ * template mode: the builder appends one type-table entry per
+ * `internType` call instead of interning, so both bodies name their
+ * types by call order, and the per-specialization queries lowering
+ * makes record their answers as guards. The two must lower to the same
+ * instruction arrays and guard answers. A table entry that is the same
+ * object in both is the same in every member; one that differs is
+ * learned as a recipe: the entity's specialization key with a hole
+ * wherever a type argument's key appears (`KeyPattern`). Resolving a
+ * recipe for another member fills the holes with its arguments' keys
+ * and looks the entity up in the module's tables; both representatives
+ * must resolve back to their own entries.
+ *
+ * Every specialized body equals what direct lowering produces for the
+ * same function: the type log is replayed through the builder's
+ * interning, so the type table and type operands come out the same.
+ * `checkMode` lowers every member directly as well and fails the
+ * compile on any difference.
+ */
+import { i32ToString } from 'zena:core';
+import { div } from 'zena:math';
+import { HashMap } from 'zena:collections';
+import { ValType, ValTypeRef, ValTypeRefNull, WasmType, isRefValType } from '../wasm.zena';
+import { typeToValType, getValTypeKey } from '../type-mapping.zena';
+import {
+  WasmModule, WasmFunction, WasmStruct, WasmArray, WasmSignature, WasmField,
+  ClassCodegenInfo,
+} from '../wasm-module.zena';
+import {
+  IrBody, IrBlock, IrOp, IrRef, IrRefFunc, IrRefGlobal, IrRefTag, IrRefType,
+  IrRefField, IrRefClassInterface, IrRefStringLit, irOpName,
+} from './ir.zena';
+import { valTypesStrictlyEqual } from './builder.zena';
+import { MethodDefinition } from '../../ast.zena';
+import {
+  ClassType, InterfaceType, Type, UnionType, RecordType, TupleType,
+} from '../../types.zena';
+import {
+  ClassKey, InterfaceKey, ClassMethodKey, ClassInterfaceKey, getClassKey,
+  getTypeKeyForSpecialization, compareStrings,
+} from '../codegen-utils.zena';
+
+/** The per-specialization queries lowering answers from RTA's tables. */
+export enum GuardKind {
+  AccessorOverridden,
+  MemberProvided,
+  VTableSlot,
+}
+
+/** One query's arguments and the answer it got. */
+export final class Guard {
+  kind: GuardKind;
+  classKey: String;
+  name: String;
+  field: String;
+  answer: i32;
+  new(this.kind, this.classKey, this.name, this.field, this.answer);
+}
+
+/**
+ * Template mode's state on the builder: the guards lowering records.
+ * Its presence is also what switches the builder to appending types.
+ */
+export final class TemplateRecorder {
+  guards = new GrowableArray<Guard>();
+
+  note(kind: GuardKind, info: ClassCodegenInfo, name: String, field: String,
+      answer: i32): void {
+    let ct = info.structType.classType;
+    let key = if (ct != null) getClassKey(ct) as String else '';
+    this.guards.push(new Guard(kind, key, name, field, answer));
+  }
+}
+
+/**
+ * Raised in template mode when lowering reaches a construct whose
+ * lowering may depend on the type arguments in a way recipes and
+ * guards do not cover. The member is then lowered directly.
+ */
+export final class TemplateAbandon extends Error {
+  reason: String;
+  new(reason: String) : reason = reason, super('template abandoned: ' + reason);
+}
+
+/**
+ * Text with holes for type-argument keys. `parts` has one more entry
+ * than `holes`: parts[0], key of argument holes[0], parts[1], ...
+ */
+final class KeyPattern {
+  parts: GrowableArray<String>;
+  holes: GrowableArray<i32>;
+  new(this.parts, this.holes);
+
+  apply(args: GrowableArray<String>): String {
+    var s = this.parts[0];
+    for (var i = 0; i < this.holes.length; i += 1) {
+      s = `${s}${args[this.holes[i]]}${this.parts[i + 1]}`;
+    }
+    return s;
+  }
+}
+
+/** One occurrence of a type argument's key in a key being generalized. */
+final class Occurrence {
+  at: i32;
+  length: i32;
+  arg: i32;
+  new(this.at, this.length, this.arg);
+}
+
+/** `part` occurs at `at` in `text` as a whole run of `_`-separated components. */
+function componentAt(text: String, at: i32, part: String): boolean {
+  let n = part.length;
+  if (at + n > text.length || text.sliceBytes(at, at + n) != part) {
+    return false;
+  }
+  let startOk = at == 0 || text.sliceBytes(at - 1, at) == '_' || text.sliceBytes(at - 1, at) == ':';
+  let endOk = at + n == text.length || text.sliceBytes(at + n, at + n + 1) == '_' ||
+      text.sliceBytes(at + n, at + n + 1) == ':';
+  return startOk && endOk;
+}
+
+/**
+ * The pattern that gives `k1` from the first representative's argument
+ * keys and `k2` from the second's, or null. Specialization keys join
+ * their arguments' keys with `_`, so a key derived from an argument
+ * contains that argument's key; an occurrence that is not a derivation
+ * (a literal mention of the same type) is told apart by the second
+ * representative, whose argument differs there. Arguments the two
+ * representatives share (`same[i]`) are never holes: the template is
+ * only used for members that share them too.
+ */
+function generalize(k1: String, k2: String, a1: GrowableArray<String>,
+    a2: GrowableArray<String>, same: GrowableArray<boolean>): KeyPattern | null {
+  let occ = new GrowableArray<Occurrence>();
+  var at = 0;
+  while (at < k1.length) {
+    var found = false;
+    for (var i = 0; i < a1.length; i += 1) {
+      if (!same[i] && componentAt(k1, at, a1[i])) {
+        occ.push(new Occurrence(at, a1[i].length, i));
+        at += a1[i].length;
+        found = true;
+        break;
+      }
+    }
+    if (!found) {
+      at += 1;
+    }
+  }
+  if (occ.length > 6) {
+    return null;
+  }
+  // Try every subset of the occurrences as holes, most holes first.
+  let n = occ.length;
+  var mask = (1 << n) - 1;
+  while (mask >= 0) {
+    let parts = new GrowableArray<String>();
+    let holes = new GrowableArray<i32>();
+    var from = 0;
+    for (var j = 0; j < n; j += 1) {
+      if ((mask & (1 << j)) != 0) {
+        parts.push(k1.sliceBytes(from, occ[j].at));
+        holes.push(occ[j].arg);
+        from = occ[j].at + occ[j].length;
+      }
+    }
+    parts.push(k1.sliceBytes(from, k1.length));
+    let p = new KeyPattern(parts, holes);
+    if (p.apply(a2) == k2) {
+      return p;
+    }
+    mask -= 1;
+  }
+  return null;
+}
+
+/** How to compute a value type for a member. */
+sealed class TypeRecipe {
+  case TSame(vt: ValType)
+  case TRef(nullable: boolean, target: WasmRecipe)
+}
+
+/** How to compute a heap type for a member. */
+sealed class WasmRecipe {
+  case WSame(t: WasmType)
+  case WClassStruct(key: KeyPattern)
+  case WClassVTable(key: KeyPattern)
+  case WIfaceStruct(key: KeyPattern)
+  case WIfaceVTable(key: KeyPattern)
+  case WArray(element: TypeRecipe, mutable: boolean)
+  case WSignature(params: GrowableArray<TypeRecipe>, results: GrowableArray<TypeRecipe>)
+  case WAnonStruct(names: GrowableArray<String | null>, types: GrowableArray<TypeRecipe>,
+      mutables: GrowableArray<boolean>)
+}
+
+/** How to compute a ref-table entry for a member. */
+sealed class RefRecipe {
+  case RSame(ref: IrRef)
+  case RMethod(classKey: KeyPattern, method: String)
+  case RClassVTableGlobal(classKey: KeyPattern)
+  case RSingletonGlobal(classKey: KeyPattern)
+  case RPairGlobal(classKey: KeyPattern, ifaceKey: KeyPattern)
+  case RType(target: WasmRecipe)
+  case RField(owner: WasmRecipe, name: KeyPattern)
+  case RPair(classStruct: WasmRecipe, ifaceStruct: WasmRecipe)
+}
+
+/** A guard whose keys are patterns, and the answer every member must get. */
+final class GuardRecipe {
+  kind: GuardKind;
+  classKey: KeyPattern;
+  name: KeyPattern;
+  field: KeyPattern;
+  answer: i32;
+  new(this.kind, this.classKey, this.name, this.field, this.answer);
+}
+
+/** What a heap type is to the module: which table it is registered in, under which key. */
+final class Role {
+  /** 0 class struct, 1 class vtable struct, 2 interface struct, 3 interface vtable struct. */
+  kind: i32;
+  key: String;
+  new(this.kind, this.key);
+}
+
+/** What a global is to the module. */
+final class GlobalRole {
+  /** 0 class vtable, 1 class singleton, 2 class-interface vtable. */
+  kind: i32;
+  classKey: String;
+  ifaceKey: String;
+  new(this.kind, this.classKey, this.ifaceKey);
+}
+
+/** A family's template: the first representative's body and what varies in it. */
+final class Template {
+  body: IrBody;
+  /** Keys of the class type arguments the two representatives share. */
+  shared: GrowableArray<String>;
+  same: GrowableArray<boolean>;
+  types: GrowableArray<TypeRecipe>;
+  refs: GrowableArray<RefRecipe>;
+  vars: GrowableArray<TypeRecipe>;
+  guards: GrowableArray<GuardRecipe>;
+  new(this.body, this.shared, this.same, this.types, this.refs, this.vars, this.guards);
+}
+
+/** A family's progress: its first representative, then its template, or why it has none. */
+final class Family {
+  var members: i32 = 0;
+  var name: String = '';
+  var reason: String = '';
+  var first: WasmFunction | null = null;
+  var firstBody: IrBody | null = null;
+  var firstGuards: GrowableArray<Guard> | null = null;
+  var template: Template | null = null;
+  var stopped: boolean = false;
+}
+
+/** Counts by reason, in first-seen order. */
+export final class ReasonCounts {
+  #counts = new HashMap<String, i32>();
+  #order = new GrowableArray<String>();
+  add(reason: String): void {
+    if (let (true, n) = this.#counts.get(reason)) {
+      this.#counts[reason] = n + 1;
+    } else {
+      this.#counts[reason] = 1;
+      this.#order.push(reason);
+    }
+  }
+  format(): String {
+    var s = '';
+    for (let r in this.#order) {
+      if (s.length > 0) {
+        s = `${s}, `;
+      }
+      s = `${s}${r}: ${i32ToString(this.#counts[r])}`;
+    }
+    return s;
+  }
+}
+
+/** Why `func` is not a template candidate, or null when it is one. */
+export function notCandidate(func: WasmFunction): String | null {
+  let node = func.node;
+  if (node == null || !(node is MethodDefinition)) {
+    return if (func.isClosure) 'closure' else 'not a method';
+  }
+  let md = node as MethodDefinition;
+  if (md.isConstructor) {
+    return 'constructor';
+  }
+  if (md.isStatic || func.isStatic) {
+    return 'static';
+  }
+  if (md.isGenerator || md.isAsync || func.isGeneratorRamp || func.isAsyncRamp) {
+    return 'generator or async';
+  }
+  let ct = func.classType;
+  if (ct == null) {
+    return 'no class';
+  }
+  if (ct.isExtension) {
+    return 'extension class';
+  }
+  let args = ct.typeArguments;
+  if (args == null || args.length == 0) {
+    return 'class not generic';
+  }
+  if (func.typeParameters != null || func.typeArguments != null) {
+    return 'generic method';
+  }
+  if (func.explosion != null) {
+    return 'exploded';
+  }
+  if (func.declaringType != null || func.privateScopeKey != null) {
+    return 'mixin';
+  }
+  if (func.isClosure || func.intrinsic != null || func.isImport ||
+      func.isCaseClassEq || func.isCaseClassHash || func.valueEqLeft != null ||
+      func.valueHashType != null || func.isSyntheticDispose ||
+      func.isVtableSlotStub || func.substitutionApplication != null ||
+      func.interfaceTrampolineTarget != null || func.importWrapperTarget != null ||
+      func.closureForwarder != null || func.decoratorAccessorTarget != null ||
+      func.isFunctionAdaptation || func.isClosureWrapper ||
+      func.isClosureTrampoline || func.methodName == null) {
+    return 'synthesized role';
+  }
+  return null;
+}
+
+/**
+ * How a type argument enters its family's key. A class or interface
+ * type varies within a family (`C`, `I`): its struct is its own, and
+ * the template learns it by key. Any other type whose value is a
+ * reference varies too, but the reference type it lowers to is part of
+ * the key (`R` and that type's key), so every member represents it the
+ * same way and a type the template copies unchanged is right for all
+ * of them. Anything else (numbers, `void`, `String`, multi-value
+ * types) is compared exactly.
+ */
+function pinOf(wasm: WasmModule, t: Type): String {
+  if (t is ClassType) {
+    let ct = t as ClassType;
+    if (!ct.isExtension && ct.name != 'String') {
+      return 'C';
+    }
+  } else if (t is InterfaceType) {
+    return 'I';
+  } else if (t is UnionType || t is RecordType || t is TupleType) {
+    // A type with no representation registered (a record whose fat
+    // pointer discovery never built, say) is compared exactly.
+    let vt: ValType | null = try {
+      typeToValType(wasm, t)
+    } catch (e) {
+      null
+    };
+    if (vt != null && isRefValType(vt as ValType)) {
+      return 'R' + getValTypeKey(vt as ValType);
+    }
+  }
+  return '=' + getTypeKeyForSpecialization(t);
+}
+
+/** The keys of a function's class type arguments. */
+function argKeys(func: WasmFunction): GrowableArray<String> {
+  let keys = new GrowableArray<String>();
+  let ct = func.classType;
+  if (ct != null) {
+    let args = ct.typeArguments;
+    if (args != null) {
+      for (let a in args) {
+        keys.push(getTypeKeyForSpecialization(a));
+      }
+    }
+  }
+  return keys;
+}
+
+function ms(v: f64): String {
+  let tenths = (v * 10.0) as i32;
+  return `${i32ToString(div(tenths, 10))}.${i32ToString(tenths % 10)}`;
+}
+
+/** Refs are the same entry: the same kind naming the same objects. */
+function sameRef(x: IrRef, y: IrRef): boolean {
+  return match (x) {
+    case IrRefFunc as a: y is IrRefFunc && (y as IrRefFunc).target === a.target
+    case IrRefGlobal as a: y is IrRefGlobal && (y as IrRefGlobal).target === a.target
+    case IrRefTag as a: y is IrRefTag && (y as IrRefTag).target === a.target
+    case IrRefType as a: y is IrRefType && (y as IrRefType).target === a.target
+    case IrRefField as a: y is IrRefField && (y as IrRefField).owner === a.owner &&
+        (y as IrRefField).fieldName == a.fieldName
+    case IrRefClassInterface as a: y is IrRefClassInterface &&
+        (y as IrRefClassInterface).classStruct === a.classStruct &&
+        (y as IrRefClassInterface).ifaceStruct === a.ifaceStruct
+    case IrRefStringLit as a: y is IrRefStringLit && (y as IrRefStringLit).value == a.value
+  };
+}
+
+/**
+ * The families of a module's functions and their templates. Lowering
+ * asks `lowerWithTemplates` (lowering.zena) for each function's body
+ * in `wasm.functions` order, which reports back through `observe`,
+ * `learn` and `specialize`.
+ */
+export final class TemplateFamilies {
+  wasm: WasmModule;
+  checkMode: boolean;
+  #families = new HashMap<String, Family>();
+  var #roles: HashMap<i32, Role> | null = null;
+  var #globalRoles: HashMap<String, GlobalRole> | null = null;
+  var specialized: i32 = 0;
+  var templates: i32 = 0;
+  declined = new ReasonCounts();
+  stopped = new ReasonCounts();
+  /** Time lowering representatives in template mode and learning templates. */
+  var representativeMs: f64 = 0.0;
+  /** Time spent in template mode on representatives that abandoned it. */
+  var abandonedMs: f64 = 0.0;
+  /** Time specializing members, declined attempts included. */
+  var specializeMs: f64 = 0.0;
+
+  /** Function uid → its family's key, or '' for a function that is not a candidate. */
+  #keys = new HashMap<i32, String>();
+
+  /** Counts every family's members, so families of one or two skip template mode. */
+  new(this.wasm, this.checkMode) {
+    for (let f in this.wasm.functions) {
+      let key = this.#keyOf(f);
+      if (key != null) {
+        this.#family(key as String).members += 1;
+      }
+    }
+  }
+
+  /**
+   * The family a function's body belongs to, or null when the function
+   * is not a candidate (`notCandidate`). The key names the method's
+   * node, the method, and each class type argument as `pinOf` enters
+   * it.
+   */
+  #keyOf(func: WasmFunction): String | null {
+    if (let (true, k) = this.#keys.get(func.uid)) {
+      return if (k.length == 0) null else k;
+    }
+    if (notCandidate(func) != null) {
+      this.#keys[func.uid] = '';
+      return null;
+    }
+    let md = func.node as MethodDefinition;
+    let args = (func.classType as ClassType).typeArguments as GrowableArray<Type>;
+    var key = `${i32ToString(md.id as i32)}|${func.methodName as String}`;
+    for (let arg in args) {
+      key = `${key}|${pinOf(this.wasm, arg)}`;
+    }
+    this.#keys[func.uid] = key;
+    return key;
+  }
+
+  #family(key: String): Family {
+    if (let (true, f) = this.#families.get(key)) {
+      return f;
+    }
+    let f = new Family();
+    this.#families[key] = f;
+    return f;
+  }
+
+  /**
+   * What to do with `func`: 0 lower directly, 1 lower in template mode
+   * as a representative, 2 specialize from the family's template.
+   */
+  plan(func: WasmFunction): i32 {
+    let key = this.#keyOf(func);
+    if (key == null) {
+      return 0;
+    }
+    let f = this.#family(key as String);
+    if (f.stopped || f.members < 3) {
+      return 0;
+    }
+    if (f.template != null) {
+      return 2;
+    }
+    return 1;
+  }
+
+  /** Stops a family's template, counting why. Its members are lowered directly. */
+  stop(func: WasmFunction, reason: String): void {
+    let key = this.#keyOf(func);
+    if (key == null) {
+      return;
+    }
+    let f = this.#family(key as String);
+    if (!f.stopped) {
+      f.stopped = true;
+      f.reason = reason;
+      f.name = if (func.name != null) func.name as String else '';
+      this.stopped.add(reason);
+    }
+  }
+
+  /**
+   * How pinning splits methods into families: per method with more than
+   * one family, its bodies, families, and largest family.
+   */
+  splitMethods(): GrowableArray<String> {
+    let byNode = new HashMap<String, GrowableArray<Family>>();
+    let order = new GrowableArray<String>();
+    for (let entry in this.#families) {
+      let k = entry.key;
+      var bar = 0;
+      var count = 0;
+      for (var i = 0; i < k.length; i += 1) {
+        if (k.sliceBytes(i, i + 1) == '|') {
+          count += 1;
+          if (count == 2) {
+            bar = i;
+            break;
+          }
+        }
+      }
+      let method = if (bar > 0) k.sliceBytes(0, bar) else k;
+      if (let (true, list) = byNode.get(method)) {
+        list.push(entry.value);
+      } else {
+        let list = new GrowableArray<Family>();
+        list.push(entry.value);
+        byNode[method] = list;
+        order.push(method);
+      }
+    }
+    let lines = new GrowableArray<String>();
+    var splitBodies = 0;
+    var splitFamilies = 0;
+    for (let m in order) {
+      let list = byNode[m];
+      if (list.length < 2) {
+        continue;
+      }
+      var bodies = 0;
+      var largest = 0;
+      for (let f in list) {
+        bodies += f.members;
+        if (f.members > largest) {
+          largest = f.members;
+        }
+      }
+      splitBodies += bodies;
+      splitFamilies += list.length;
+      if (bodies >= 100) {
+        lines.push(`  split ${m}: ${i32ToString(bodies)} bodies in ${i32ToString(list.length)} families, largest ${i32ToString(largest)}`);
+      }
+    }
+    lines.push(`zir templates: ${i32ToString(splitBodies)} bodies of methods split into ${i32ToString(splitFamilies)} families`);
+    return lines;
+  }
+
+  /** The families that stopped, most members first. */
+  stoppedFamilies(): GrowableArray<String> {
+    let list = new GrowableArray<Family>();
+    for (let entry in this.#families) {
+      if (entry.value.stopped && entry.value.reason.length > 0) {
+        list.push(entry.value);
+      }
+    }
+    var i = 1;
+    while (i < list.length) {
+      let f = list[i];
+      var j = i - 1;
+      while (j >= 0 && (list[j].members < f.members ||
+          (list[j].members == f.members && compareStrings(list[j].name, f.name) > 0))) {
+        list[j + 1] = list[j];
+        j -= 1;
+      }
+      list[j + 1] = f;
+      i += 1;
+    }
+    let lines = new GrowableArray<String>();
+    for (let f in list) {
+      if (lines.length >= 25) {
+        break;
+      }
+      lines.push(`  ${i32ToString(f.members)}× ${f.name}: ${f.reason}`);
+    }
+    return lines;
+  }
+
+  /**
+   * Takes a representative's template-mode body. The first is kept;
+   * the second is compared with it and, when they agree, turned into
+   * the family's template.
+   */
+  observe(func: WasmFunction, body: IrBody, guards: GrowableArray<Guard>): void {
+    let f = this.#family(this.#keyOf(func) as String);
+    let first = f.first;
+    if (first == null) {
+      f.first = func;
+      f.firstBody = body;
+      f.firstGuards = guards;
+      return;
+    }
+    let reason = this.#learn(f, first, f.firstBody as IrBody, f.firstGuards as GrowableArray<Guard>,
+        func, body, guards);
+    f.firstBody = null;
+    f.firstGuards = null;
+    if (reason != null) {
+      f.stopped = true;
+      f.reason = reason as String;
+      f.name = if (func.name != null) func.name as String else '';
+      this.stopped.add(reason as String);
+    } else {
+      this.templates += 1;
+    }
+  }
+
+  /** Builds `f`'s template from its two representatives; returns why not, or null. */
+  #learn(f: Family, f1: WasmFunction, b1: IrBody, g1: GrowableArray<Guard>,
+      f2: WasmFunction, b2: IrBody, g2: GrowableArray<Guard>): String | null {
+    let diff = arraysDifference(b1, b2);
+    if (diff != null) {
+      return `representatives differ: ${diff as String}`;
+    }
+    let a1 = argKeys(f1);
+    let a2 = argKeys(f2);
+    if (a1.length != a2.length) {
+      return 'argument count';
+    }
+    let same = new GrowableArray<boolean>();
+    let shared = new GrowableArray<String>();
+    for (var i = 0; i < a1.length; i += 1) {
+      same.push(a1[i] == a2[i]);
+      shared.push(a1[i]);
+    }
+    let learner = new Learner(this, a1, a2, same);
+    let types = new GrowableArray<TypeRecipe>();
+    for (var i = 0; i < b1.typeTable.length; i += 1) {
+      let r = learner.type(b1.typeTable[i], b2.typeTable[i]);
+      if (r == null) {
+        return `type: ${learner.why}`;
+      }
+      types.push(r as TypeRecipe);
+    }
+    let refs = new GrowableArray<RefRecipe>();
+    for (var i = 0; i < b1.refTable.length; i += 1) {
+      let r = learner.ref(b1.refTable[i], b2.refTable[i]);
+      if (r == null) {
+        return `ref: ${learner.why}`;
+      }
+      refs.push(r as RefRecipe);
+    }
+    let vars = new GrowableArray<TypeRecipe>();
+    for (var i = 0; i < b1.varTypes.length; i += 1) {
+      let r = learner.type(b1.varTypes[i], b2.varTypes[i]);
+      if (r == null) {
+        return `variable: ${learner.why}`;
+      }
+      vars.push(r as TypeRecipe);
+    }
+    if (g1.length != g2.length) {
+      return 'guard count';
+    }
+    let guards = new GrowableArray<GuardRecipe>();
+    for (var i = 0; i < g1.length; i += 1) {
+      let x = g1[i];
+      let y = g2[i];
+      if (x.kind != y.kind || x.answer != y.answer) {
+        return 'guard answers differ';
+      }
+      let ck = generalize(x.classKey, y.classKey, a1, a2, same);
+      let nk = generalize(x.name, y.name, a1, a2, same);
+      let fk = generalize(x.field, y.field, a1, a2, same);
+      if (ck == null || nk == null || fk == null) {
+        return 'guard keys';
+      }
+      guards.push(new GuardRecipe(x.kind, ck as KeyPattern, nk as KeyPattern,
+          fk as KeyPattern, x.answer));
+    }
+    let t = new Template(b1, shared, same, types, refs, vars, guards);
+    // Both representatives must resolve back to their own tables.
+    if (!this.#resolvesTo(t, a1, b1) || !this.#resolvesTo(t, a2, b2)) {
+      return 'self-check';
+    }
+    f.template = t;
+    return null;
+  }
+
+  #resolvesTo(t: Template, args: GrowableArray<String>, body: IrBody): boolean {
+    let r = new Resolver(this, args);
+    for (var i = 0; i < t.types.length; i += 1) {
+      let vt = r.type(t.types[i]);
+      if (vt == null || !valTypesStrictlyEqual(vt as ValType, body.typeTable[i])) {
+        return false;
+      }
+    }
+    for (var i = 0; i < t.refs.length; i += 1) {
+      let ref = r.ref(t.refs[i]);
+      if (ref == null || !sameRef(ref as IrRef, body.refTable[i])) {
+        return false;
+      }
+    }
+    for (var i = 0; i < t.vars.length; i += 1) {
+      let vt = r.type(t.vars[i]);
+      if (vt == null || !valTypesStrictlyEqual(vt as ValType, body.varTypes[i])) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  /**
+   * The template's body for `func`, or null when one of its guards gets
+   * a different answer or a recipe does not resolve (counted under
+   * `declined`).
+   */
+  specialize(func: WasmFunction): IrBody | null {
+    let f = this.#family(this.#keyOf(func) as String);
+    let t = f.template as Template;
+    let args = argKeys(func);
+    for (var i = 0; i < args.length; i += 1) {
+      if (t.same[i] && args[i] != t.shared[i]) {
+        this.declined.add('shared argument');
+        return null;
+      }
+    }
+    let r = new Resolver(this, args);
+    for (let g in t.guards) {
+      if (!r.guard(g)) {
+        this.declined.add('guard');
+        return null;
+      }
+    }
+    let types = new GrowableArray<ValType>();
+    for (let tr in t.types) {
+      let vt = r.type(tr);
+      if (vt == null) {
+        this.declined.add('type');
+        return null;
+      }
+      types.push(vt as ValType);
+    }
+    let refs = new GrowableArray<IrRef>();
+    for (let rr in t.refs) {
+      let ref = r.ref(rr);
+      if (ref == null) {
+        this.declined.add('ref');
+        return null;
+      }
+      refs.push(ref as IrRef);
+    }
+    let vars = new GrowableArray<ValType>();
+    for (let vr in t.vars) {
+      let vt = r.type(vr);
+      if (vt == null) {
+        this.declined.add('variable');
+        return null;
+      }
+      vars.push(vt as ValType);
+    }
+    this.specialized += 1;
+    return instantiate(t.body, types, refs, vars);
+  }
+
+  /**
+   * Fails the compile when a body made from a template differs from
+   * the body direct lowering produced for the same function.
+   */
+  compare(func: WasmFunction, made: IrBody, direct: IrBody): void {
+    let diff = bodyDifference(made, direct);
+    if (diff != null) {
+      let name = if (func.name != null) func.name as String else '<unnamed>';
+      throw new Error(`template check failed for ${name}: ${diff as String}`);
+    }
+  }
+
+  report(): GrowableArray<String> {
+    let lines = new GrowableArray<String>();
+    lines.push(`zir templates: ${i32ToString(this.templates)} templates, ` +
+        `${i32ToString(this.specialized)} bodies specialized from them`);
+    lines.push(`zir templates: ${ms(this.representativeMs)} ms representatives, ` +
+        `${ms(this.abandonedMs)} ms abandoned, ${ms(this.specializeMs)} ms specializing`);
+    let d = this.declined.format();
+    if (d.length > 0) {
+      lines.push(`zir templates: declined: ${d}`);
+    }
+    let s = this.stopped.format();
+    if (s.length > 0) {
+      lines.push(`zir templates: families without a template: ${s}`);
+    }
+    for (let l in this.stoppedFamilies()) {
+      lines.push(l);
+    }
+    for (let l in this.splitMethods()) {
+      lines.push(l);
+    }
+    return lines;
+  }
+
+  /** Heap type uid → its role, built on first use. */
+  roles(): HashMap<i32, Role> {
+    let existing = this.#roles;
+    if (existing != null) {
+      return existing;
+    }
+    let roles = new HashMap<i32, Role>();
+    for (let entry in this.wasm.classInfos) {
+      let key = entry.key as String;
+      roles[entry.value.structType.uid] = new Role(0, key);
+      let vst = entry.value.vtableStructType;
+      if (vst != null) {
+        roles[vst.uid] = new Role(1, key);
+      }
+    }
+    for (let entry in this.wasm.interfaceStructs) {
+      roles[entry.value.uid] = new Role(2, entry.key as String);
+    }
+    for (let entry in this.wasm.interfaceVTableStructs) {
+      roles[entry.value.uid] = new Role(3, entry.key as String);
+    }
+    this.#roles = roles;
+    return roles;
+  }
+
+  /** Global name → its role, built on first use. */
+  globalRoles(): HashMap<String, GlobalRole> {
+    let existing = this.#globalRoles;
+    if (existing != null) {
+      return existing;
+    }
+    let roles = new HashMap<String, GlobalRole>();
+    for (let entry in this.wasm.classInfos) {
+      let key = entry.key as String;
+      let vg = entry.value.vtableGlobal;
+      if (vg != null) {
+        roles[vg.name] = new GlobalRole(0, key, '');
+      }
+      let sg = entry.value.singletonGlobal;
+      if (sg != null) {
+        roles[sg.name] = new GlobalRole(1, key, '');
+      }
+    }
+    for (let entry in this.wasm.classInterfaceVTables) {
+      roles[entry.value.name] = new GlobalRole(2, entry.key.classKey as String,
+          entry.key.interfaceKey as String);
+    }
+    this.#globalRoles = roles;
+    return roles;
+  }
+}
+
+/**
+ * Learns recipes from the two representatives' entries at one table
+ * position. `why` says what stopped it when a method returns null.
+ */
+final class Learner {
+  families: TemplateFamilies;
+  a1: GrowableArray<String>;
+  a2: GrowableArray<String>;
+  same: GrowableArray<boolean>;
+  var why: String = '';
+  new(this.families, this.a1, this.a2, this.same);
+
+  #pattern(k1: String, k2: String): KeyPattern | null {
+    let p = generalize(k1, k2, this.a1, this.a2, this.same);
+    if (p == null) {
+      this.why = 'key';
+    }
+    return p;
+  }
+
+  type(v1: ValType, v2: ValType): TypeRecipe | null {
+    if (valTypesStrictlyEqual(v1, v2)) {
+      return new TSame(v1);
+    }
+    if (v1 is ValTypeRef && v2 is ValTypeRef) {
+      let w = this.wasm((v1 as ValTypeRef).target, (v2 as ValTypeRef).target);
+      return if (w == null) null else new TRef(false, w as WasmRecipe);
+    }
+    if (v1 is ValTypeRefNull && v2 is ValTypeRefNull) {
+      let w = this.wasm((v1 as ValTypeRefNull).target, (v2 as ValTypeRefNull).target);
+      return if (w == null) null else new TRef(true, w as WasmRecipe);
+    }
+    this.why = 'value types differ in kind';
+    return null;
+  }
+
+  wasm(t1: WasmType, t2: WasmType): WasmRecipe | null {
+    if (t1 === t2) {
+      return new WSame(t1);
+    }
+    let roles = this.families.roles();
+    if (let (true, r1) = roles.get(t1.uid)) {
+      if (let (true, r2) = roles.get(t2.uid)) {
+        if (r1.kind != r2.kind) {
+          this.why = 'heap type roles differ';
+          return null;
+        }
+        let p = this.#pattern(r1.key, r2.key);
+        if (p == null) {
+          return null;
+        }
+        let k = p as KeyPattern;
+        if (r1.kind == 0) {
+          return new WClassStruct(k);
+        }
+        if (r1.kind == 1) {
+          return new WClassVTable(k);
+        }
+        if (r1.kind == 2) {
+          return new WIfaceStruct(k);
+        }
+        return new WIfaceVTable(k);
+      }
+      this.why = 'heap type role';
+      return null;
+    }
+    if (t1 is WasmArray && t2 is WasmArray) {
+      let x1 = t1 as WasmArray;
+      let x2 = t2 as WasmArray;
+      if (x1.isMutable != x2.isMutable) {
+        this.why = 'array mutability';
+        return null;
+      }
+      let e = this.type(x1.elementType, x2.elementType);
+      return if (e == null) null else new WArray(e as TypeRecipe, x1.isMutable);
+    }
+    if (t1 is WasmSignature && t2 is WasmSignature) {
+      let s1 = t1 as WasmSignature;
+      let s2 = t2 as WasmSignature;
+      if (s1.params.length != s2.params.length || s1.returns.length != s2.returns.length) {
+        this.why = 'signature shape';
+        return null;
+      }
+      let params = new GrowableArray<TypeRecipe>();
+      for (var i = 0; i < s1.params.length; i += 1) {
+        let p = this.type(s1.params[i], s2.params[i]);
+        if (p == null) {
+          return null;
+        }
+        params.push(p as TypeRecipe);
+      }
+      let results = new GrowableArray<TypeRecipe>();
+      for (var i = 0; i < s1.returns.length; i += 1) {
+        let r = this.type(s1.returns[i], s2.returns[i]);
+        if (r == null) {
+          return null;
+        }
+        results.push(r as TypeRecipe);
+      }
+      return new WSignature(params, results);
+    }
+    if (!(t1 is WasmStruct) || !(t2 is WasmStruct)) {
+      this.why = 'heap types differ';
+      return null;
+    }
+    let st1 = t1 as WasmStruct;
+    let st2 = t2 as WasmStruct;
+    if (st1.name == null && st2.name == null && st1.classType == null &&
+        st2.classType == null && st1.fields.length == st2.fields.length) {
+      let names = new GrowableArray<String | null>();
+      let types = new GrowableArray<TypeRecipe>();
+      let mutables = new GrowableArray<boolean>();
+      for (var i = 0; i < st1.fields.length; i += 1) {
+        let x = st1.fields[i];
+        let y = st2.fields[i];
+        if (x.name != y.name || x.isMutable != y.isMutable) {
+          this.why = 'struct fields';
+          return null;
+        }
+        let ft = this.type(x.type, y.type);
+        if (ft == null) {
+          return null;
+        }
+        names.push(x.name);
+        types.push(ft as TypeRecipe);
+        mutables.push(x.isMutable);
+      }
+      return new WAnonStruct(names, types, mutables);
+    }
+    this.why = 'heap types differ';
+    return null;
+  }
+
+  ref(r1: IrRef, r2: IrRef): RefRecipe | null {
+    if (sameRef(r1, r2)) {
+      return new RSame(r1);
+    }
+    if (r1 is IrRefFunc && r2 is IrRefFunc) {
+      return this.#func((r1 as IrRefFunc).target, (r2 as IrRefFunc).target);
+    }
+    if (r1 is IrRefGlobal && r2 is IrRefGlobal) {
+      let roles = this.families.globalRoles();
+      if (let (true, g1) = roles.get((r1 as IrRefGlobal).target.name)) {
+        if (let (true, g2) = roles.get((r2 as IrRefGlobal).target.name)) {
+          if (g1.kind != g2.kind) {
+            this.why = 'global roles differ';
+            return null;
+          }
+          let ck = this.#pattern(g1.classKey, g2.classKey);
+          if (ck == null) {
+            return null;
+          }
+          if (g1.kind == 0) {
+            return new RClassVTableGlobal(ck as KeyPattern);
+          }
+          if (g1.kind == 1) {
+            return new RSingletonGlobal(ck as KeyPattern);
+          }
+          let ik = this.#pattern(g1.ifaceKey, g2.ifaceKey);
+          return if (ik == null) null else new RPairGlobal(ck as KeyPattern, ik as KeyPattern);
+        }
+      }
+      this.why = 'global role';
+      return null;
+    }
+    if (r1 is IrRefType && r2 is IrRefType) {
+      let w = this.wasm((r1 as IrRefType).target, (r2 as IrRefType).target);
+      return if (w == null) null else new RType(w as WasmRecipe);
+    }
+    if (r1 is IrRefField && r2 is IrRefField) {
+      let f1 = r1 as IrRefField;
+      let f2 = r2 as IrRefField;
+      let w = this.wasm(f1.owner, f2.owner);
+      if (w == null) {
+        return null;
+      }
+      let n = this.#pattern(f1.fieldName, f2.fieldName);
+      return if (n == null) null else new RField(w as WasmRecipe, n as KeyPattern);
+    }
+    if (r1 is IrRefClassInterface && r2 is IrRefClassInterface) {
+      let p1 = r1 as IrRefClassInterface;
+      let p2 = r2 as IrRefClassInterface;
+      let c = this.wasm(p1.classStruct, p2.classStruct);
+      let i = this.wasm(p1.ifaceStruct, p2.ifaceStruct);
+      if (c == null || i == null) {
+        return null;
+      }
+      return new RPair(c as WasmRecipe, i as WasmRecipe);
+    }
+    this.why = 'refs differ';
+    return null;
+  }
+
+  /** A method of the class specialization, found by key in `classMethodMap`. */
+  #func(f1: WasmFunction, f2: WasmFunction): RefRecipe | null {
+    let c1 = f1.classType;
+    let c2 = f2.classType;
+    let m1 = f1.methodName;
+    let m2 = f2.methodName;
+    if (c1 == null || c2 == null || m1 == null || m2 == null || m1 != m2) {
+      this.why = 'function is not a class method';
+      return null;
+    }
+    let k1 = getClassKey(c1 as ClassType);
+    let k2 = getClassKey(c2 as ClassType);
+    let map = this.families.wasm.classMethodMap;
+    if (let (true, g1) = map.get(new ClassMethodKey(k1, m1 as String))) {
+      if (let (true, g2) = map.get(new ClassMethodKey(k2, m2 as String))) {
+        if (g1 === f1 && g2 === f2) {
+          let p = this.#pattern(k1 as String, k2 as String);
+          return if (p == null) null else new RMethod(p as KeyPattern, m1 as String);
+        }
+      }
+    }
+    this.why = 'method not in classMethodMap';
+    return null;
+  }
+}
+
+/** Resolves recipes and guards for one member, from its arguments' keys. */
+final class Resolver {
+  families: TemplateFamilies;
+  args: GrowableArray<String>;
+  new(this.families, this.args);
+
+  #classInfo(p: KeyPattern): ClassCodegenInfo | null {
+    if (let (true, info) = this.families.wasm.classInfos.get(p.apply(this.args) as ClassKey)) {
+      return info;
+    }
+    return null;
+  }
+
+  type(r: TypeRecipe): ValType | null {
+    return match (r) {
+      case TSame as s: s.vt
+      case TRef as t: {
+        let w = this.wasm(t.target);
+        if (w == null) {
+          return null;
+        }
+        if (t.nullable) new ValTypeRefNull(w as WasmType) as ValType
+        else new ValTypeRef(w as WasmType) as ValType
+      }
+    };
+  }
+
+  wasm(r: WasmRecipe): WasmType | null {
+    let module = this.families.wasm;
+    return match (r) {
+      case WSame as s: s.t
+      case WClassStruct as c: {
+        let info = this.#classInfo(c.key);
+        if (info == null) null else (info as ClassCodegenInfo).structType as WasmType
+      }
+      case WClassVTable as c: {
+        let info = this.#classInfo(c.key);
+        if (info == null) {
+          return null;
+        }
+        let vst = (info as ClassCodegenInfo).vtableStructType;
+        if (vst == null) null else vst as WasmType
+      }
+      case WIfaceStruct as i: {
+        if (let (true, s) = module.interfaceStructs.get(i.key.apply(this.args) as InterfaceKey)) {
+          return s;
+        }
+        null
+      }
+      case WIfaceVTable as i: {
+        if (let (true, s) = module.interfaceVTableStructs.get(i.key.apply(this.args) as InterfaceKey)) {
+          return s;
+        }
+        null
+      }
+      case WArray as a: {
+        let e = this.type(a.element);
+        if (e == null) {
+          return null;
+        }
+        let found = module.findArray(e as ValType, a.mutable);
+        if (found == null) null else found as WasmType
+      }
+      case WSignature as s: {
+        let params = new GrowableArray<ValType>();
+        for (let p in s.params) {
+          let vt = this.type(p);
+          if (vt == null) {
+            return null;
+          }
+          params.push(vt as ValType);
+        }
+        let results = new GrowableArray<ValType>();
+        for (let q in s.results) {
+          let vt = this.type(q);
+          if (vt == null) {
+            return null;
+          }
+          results.push(vt as ValType);
+        }
+        let found = module.findSignature(params, results);
+        if (found == null) null else found as WasmType
+      }
+      case WAnonStruct as s: {
+        let fields = new GrowableArray<WasmField>();
+        for (var i = 0; i < s.types.length; i += 1) {
+          let vt = this.type(s.types[i]);
+          if (vt == null) {
+            return null;
+          }
+          fields.push(new WasmField(s.names[i], vt as ValType, s.mutables[i]));
+        }
+        let found = module.findStruct(null, fields);
+        if (found == null) null else found as WasmType
+      }
+    };
+  }
+
+  ref(r: RefRecipe): IrRef | null {
+    let module = this.families.wasm;
+    return match (r) {
+      case RSame as s: s.ref
+      case RMethod as m: {
+        let key = new ClassMethodKey(m.classKey.apply(this.args) as ClassKey, m.method);
+        if (let (true, f) = module.classMethodMap.get(key)) {
+          return new IrRefFunc(f);
+        }
+        null
+      }
+      case RClassVTableGlobal as g: {
+        let info = this.#classInfo(g.classKey);
+        if (info == null) {
+          return null;
+        }
+        let vg = (info as ClassCodegenInfo).vtableGlobal;
+        if (vg == null) null else new IrRefGlobal(vg) as IrRef
+      }
+      case RSingletonGlobal as g: {
+        let info = this.#classInfo(g.classKey);
+        if (info == null) {
+          return null;
+        }
+        let sg = (info as ClassCodegenInfo).singletonGlobal;
+        if (sg == null) null else new IrRefGlobal(sg) as IrRef
+      }
+      case RPairGlobal as g: {
+        let key = new ClassInterfaceKey(g.classKey.apply(this.args) as ClassKey,
+            g.ifaceKey.apply(this.args) as InterfaceKey);
+        if (let (true, pg) = module.classInterfaceVTables.get(key)) {
+          return new IrRefGlobal(pg);
+        }
+        null
+      }
+      case RType as t: {
+        let w = this.wasm(t.target);
+        if (w == null) null else new IrRefType(w as WasmType) as IrRef
+      }
+      case RField as f: {
+        let owner = this.wasm(f.owner);
+        if (owner == null || !(owner is WasmStruct)) {
+          return null;
+        }
+        let st = owner as WasmStruct;
+        let name = f.name.apply(this.args);
+        if (st.fieldIndexByName(name) < 0) {
+          return null;
+        }
+        new IrRefField(st, name) as IrRef
+      }
+      case RPair as p: {
+        let c = this.wasm(p.classStruct);
+        let i = this.wasm(p.ifaceStruct);
+        if (c == null || i == null || !(c is WasmStruct) || !(i is WasmStruct)) {
+          return null;
+        }
+        new IrRefClassInterface(c as WasmStruct, i as WasmStruct) as IrRef
+      }
+    };
+  }
+
+  guard(g: GuardRecipe): boolean {
+    let info = this.#classInfo(g.classKey);
+    if (info == null) {
+      return false;
+    }
+    let ci = info as ClassCodegenInfo;
+    let name = g.name.apply(this.args);
+    var answer = 0;
+    if (g.kind == GuardKind.AccessorOverridden) {
+      answer = if (accessorOverriddenIn(this.families.wasm, ci, name,
+          g.field.apply(this.args))) 1 else 0;
+    } else if (g.kind == GuardKind.MemberProvided) {
+      answer = if (memberProvidedIn(this.families.wasm, ci, name)) 1 else 0;
+    } else {
+      answer = vtableSlotIn(ci, name);
+    }
+    return answer == g.answer;
+  }
+}
+
+/**
+ * Whether a transitive subclass provides an accessor for `slotName`
+ * that differs from a direct read of `fieldName`
+ * (`LoweringContext.accessorOverriddenBySubclass` documents the rule).
+ */
+export function accessorOverriddenIn(wasm: WasmModule, classInfo: ClassCodegenInfo,
+    slotName: String, fieldName: String): boolean {
+  let subclasses = new GrowableArray<ClassCodegenInfo>();
+  classInfo.getTransitiveSubclasses(subclasses);
+  for (let sub in subclasses) {
+    let subClassType = sub.structType.classType;
+    if (subClassType != null) {
+      let key = new ClassMethodKey(getClassKey(subClassType), slotName);
+      if (let (true, f) = wasm.classMethodMap.get(key)) {
+        let isGetter = slotName.startsWith("get#");
+        let st = if (isGetter) f.getterStruct else f.setterStruct;
+        let idx = if (isGetter) f.getterFieldIndex else f.setterFieldIndex;
+        if (st == null || idx < 0) {
+          return true;
+        }
+        let {fields} = st;
+        if (idx >= fields.length || fields[idx].name != fieldName) {
+          return true;
+        }
+        if (idx != classInfo.structType.fieldIndexByName(fieldName)) {
+          return true;
+        }
+      }
+    }
+  }
+  return false;
+}
+
+/** Whether a transitive subclass provides its own `methodName`. */
+export function memberProvidedIn(wasm: WasmModule, classInfo: ClassCodegenInfo,
+    methodName: String): boolean {
+  let subclasses = new GrowableArray<ClassCodegenInfo>();
+  classInfo.getTransitiveSubclasses(subclasses);
+  for (let sub in subclasses) {
+    let subClassType = sub.structType.classType;
+    if (subClassType != null) {
+      if (wasm.classMethodMap.has(new ClassMethodKey(getClassKey(subClassType), methodName))) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+/** The index of `slotName` in the class's vtable struct, or -1. */
+export function vtableSlotIn(classInfo: ClassCodegenInfo, slotName: String): i32 {
+  let vtOpt = classInfo.vtableStructType;
+  if (vtOpt == null) {
+    return -1;
+  }
+  return vtOpt.fieldIndexByName(slotName);
+}
+
+/**
+ * A copy of a template-mode body with its tables replaced. The type
+ * log is interned in order, the way the builder interns as lowering
+ * runs, and every type operand is rewritten to the interned index.
+ */
+export function instantiate(src: IrBody, types: GrowableArray<ValType>,
+    refs: GrowableArray<IrRef>, vars: GrowableArray<ValType>): IrBody {
+  let body = new IrBody();
+  let index = new GrowableArray<i32>();
+  for (let vt in types) {
+    var found = -1;
+    for (var k = 0; k < body.typeTable.length; k += 1) {
+      if (valTypesStrictlyEqual(body.typeTable[k], vt)) {
+        found = k;
+        break;
+      }
+    }
+    if (found < 0) {
+      body.typeTable.push(vt);
+      found = body.typeTable.length - 1;
+    }
+    index.push(found);
+  }
+  let n = src.opcode.length;
+  for (var i = 0; i < n; i += 1) {
+    body.opcode.push(src.opcode[i]);
+    let tid = src.typeId[i];
+    body.typeId.push(if (tid < 0) tid else index[tid]);
+    body.a.push(src.a[i]);
+    body.b.push(src.b[i]);
+    body.instBlock.push(src.instBlock[i]);
+  }
+  for (let e in src.extra) {
+    body.extra.push(e);
+  }
+  for (var i = 0; i < n; i += 1) {
+    let op = src.opcode[i] as IrOp;
+    if (op == IrOp.ref_test || op == IrOp.ref_cast) {
+      body.b[i] = index[src.b[i]];
+    } else if (op == IrOp.br_on_cast || op == IrOp.br_on_cast_fail) {
+      let at = src.b[i];
+      body.extra[at] = index[src.extra[at]];
+    }
+  }
+  for (let blk in src.blocks) {
+    let copy = new IrBlock();
+    for (let p in blk.params) {
+      copy.params.push(p);
+    }
+    for (let inst in blk.insts) {
+      copy.insts.push(inst);
+    }
+    body.blocks.push(copy);
+  }
+  for (let r in refs) {
+    body.refTable.push(r);
+  }
+  for (let c in src.constI64) {
+    body.constI64.push(c);
+  }
+  for (let c in src.constF64) {
+    body.constF64.push(c);
+  }
+  for (let v in vars) {
+    body.varTypes.push(v);
+  }
+  for (let entry in src.tryJoin) {
+    body.tryJoin[entry.key] = entry.value;
+  }
+  for (let r in src.adoptReturns) {
+    body.adoptReturns.add(r);
+  }
+  return body;
+}
+
+/** A template-mode body as the body direct lowering would have produced. */
+export function internedCopy(src: IrBody): IrBody {
+  return instantiate(src, src.typeTable, src.refTable, src.varTypes);
+}
+
+function sameInts(x: GrowableArray<i32>, y: GrowableArray<i32>): boolean {
+  if (x.length != y.length) {
+    return false;
+  }
+  for (var i = 0; i < x.length; i += 1) {
+    if (x[i] != y[i]) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/**
+ * Where two template-mode bodies differ in anything but their tables'
+ * contents, or null.
+ */
+function arraysDifference(x: IrBody, y: IrBody): String | null {
+  if (!sameInts(x.opcode, y.opcode)) {
+    var at = 0;
+    while (at < x.opcode.length && at < y.opcode.length && x.opcode[at] == y.opcode[at]) {
+      at += 1;
+    }
+    let xo = if (at < x.opcode.length) irOpName(x.opcode[at] as IrOp) else '<end>';
+    let yo = if (at < y.opcode.length) irOpName(y.opcode[at] as IrOp) else '<end>';
+    return `${xo} vs ${yo}`;
+  }
+  if (!sameInts(x.typeId, y.typeId) || !sameInts(x.a, y.a) || !sameInts(x.b, y.b) ||
+      !sameInts(x.extra, y.extra) || !sameInts(x.instBlock, y.instBlock)) {
+    return 'operands';
+  }
+  if (x.blocks.length != y.blocks.length) {
+    return 'blocks';
+  }
+  for (var i = 0; i < x.blocks.length; i += 1) {
+    if (!sameInts(x.blocks[i].params, y.blocks[i].params) ||
+        !sameInts(x.blocks[i].insts, y.blocks[i].insts)) {
+      return 'blocks';
+    }
+  }
+  if (x.typeTable.length != y.typeTable.length || x.refTable.length != y.refTable.length ||
+      x.varTypes.length != y.varTypes.length) {
+    return 'table sizes';
+  }
+  if (x.constI64.length != y.constI64.length || x.constF64.length != y.constF64.length) {
+    return 'constant pools';
+  }
+  for (var i = 0; i < x.constI64.length; i += 1) {
+    if (x.constI64[i] != y.constI64[i]) {
+      return 'constant pools';
+    }
+  }
+  for (var i = 0; i < x.constF64.length; i += 1) {
+    // Bit patterns: a NaN constant equals itself here.
+    if (x.constF64[i] != y.constF64[i] && x.constF64[i] == x.constF64[i]) {
+      return 'constant pools';
+    }
+  }
+  if (x.tryJoin.size != y.tryJoin.size || x.adoptReturns.size != y.adoptReturns.size) {
+    return 'try regions';
+  }
+  for (let entry in x.tryJoin) {
+    if (let (true, v) = y.tryJoin.get(entry.key)) {
+      if (v != entry.value) {
+        return 'try regions';
+      }
+    } else {
+      return 'try regions';
+    }
+  }
+  for (let r in x.adoptReturns) {
+    if (!y.adoptReturns.has(r)) {
+      return 'adopting returns';
+    }
+  }
+  return null;
+}
+
+/** Where two bodies differ, arrays and table contents both, or null. */
+function bodyDifference(x: IrBody, y: IrBody): String | null {
+  let arrays = arraysDifference(x, y);
+  if (arrays != null) {
+    return arrays;
+  }
+  for (var i = 0; i < x.typeTable.length; i += 1) {
+    if (!valTypesStrictlyEqual(x.typeTable[i], y.typeTable[i])) {
+      return `type table entry ${i32ToString(i)}`;
+    }
+  }
+  for (var i = 0; i < x.refTable.length; i += 1) {
+    if (!sameRef(x.refTable[i], y.refTable[i])) {
+      return `ref table entry ${i32ToString(i)}`;
+    }
+  }
+  for (var i = 0; i < x.varTypes.length; i += 1) {
+    if (!valTypesStrictlyEqual(x.varTypes[i], y.varTypes[i])) {
+      return `variable ${i32ToString(i)}`;
+    }
+  }
+  return null;
+}

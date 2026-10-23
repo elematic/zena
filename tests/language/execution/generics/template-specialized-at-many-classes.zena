@@ -1,0 +1,63 @@
+// @mode: run
+// @result: 1164
+
+// A generic class's methods specialized at five classes: the first two
+// specializations are lowered and the rest are copied from their
+// template (docs/design/template-zir.md). The runner lowers every
+// copied body directly too and fails on any difference.
+
+class A { n: i32; new(this.n); }
+class B { n: i32; new(this.n); }
+class C { n: i32; new(this.n); }
+class D { n: i32; new(this.n); }
+class E { n: i32; new(this.n); }
+
+class Stack<T> {
+  var #items: FixedArray<T | null>;
+  var #size: i32 = 0;
+  new(capacity: i32) : #items = new FixedArray<T | null>(capacity, null);
+
+  push(item: T): void {
+    this.#items[this.#size] = item;
+    this.#size = this.#size + 1;
+  }
+
+  pop(): T {
+    this.#size = this.#size - 1;
+    return this.#items[this.#size] as T;
+  }
+
+  size(): i32 {
+    return this.#size;
+  }
+}
+
+class Pair<K, V> {
+  key: K;
+  value: V;
+  new(this.key, this.value);
+  rekeyed(key: K): Pair<K, V> {
+    return new Pair<K, V>(key, this.value);
+  }
+}
+
+export let main = (): i32 => {
+  let a = new Stack<A>(4);
+  let b = new Stack<B>(4);
+  let c = new Stack<C>(4);
+  let d = new Stack<D>(4);
+  let e = new Stack<E>(4);
+  a.push(new A(1));
+  b.push(new B(2));
+  c.push(new C(3));
+  d.push(new D(4));
+  e.push(new E(5));
+  a.push(new A(10));
+  var total = a.pop().n + b.pop().n + c.pop().n + d.pop().n + e.pop().n;
+  total = total + a.size() * 100;
+  let p1 = new Pair<A, B>(new A(1), new B(200)).rekeyed(new A(1000));
+  let p2 = new Pair<C, D>(new C(3), new D(40)).rekeyed(new C(30));
+  let p3 = new Pair<E, A>(new E(5), new A(50)).rekeyed(new E(60));
+  total = total + p1.key.n + p2.key.n + p3.key.n - p3.value.n;
+  return total;
+};

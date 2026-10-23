@@ -1,0 +1,44 @@
+// @mode: run
+// @result: 11143
+
+// `Base<A>` has a subclass that overrides `weight`, so `this.weight()`
+// in `Base<A>.score` dispatches through the vtable, while in `Base<B>`,
+// `Base<C>` and `Base<D>` it is a direct call. Template lowering
+// (docs/design/template-zir.md) records that decision as a guard, so
+// `Base<A>.score` is never copied from a body that calls directly.
+
+class A { n: i32; new(this.n); }
+class B { n: i32; new(this.n); }
+class C { n: i32; new(this.n); }
+class D { n: i32; new(this.n); }
+
+class Base<T> {
+  value: T;
+  new(this.value);
+  weight(): i32 {
+    return 1;
+  }
+  score(): i32 {
+    return this.weight() * 10;
+  }
+  get(): T {
+    return this.value;
+  }
+}
+
+class Heavy extends Base<A> {
+  new(v: A) : super(v);
+  weight(): i32 {
+    return 7;
+  }
+}
+
+export let main = (): i32 => {
+  let plain = new Base<A>(new A(1));
+  let heavy: Base<A> = new Heavy(new A(2));
+  let b = new Base<B>(new B(30));
+  let c = new Base<C>(new C(1000));
+  let d = new Base<D>(new D(10000));
+  return plain.score() + heavy.score() + b.score() + c.score() + d.score() +
+      plain.get().n + heavy.get().n + b.get().n + c.get().n + d.get().n;
+};

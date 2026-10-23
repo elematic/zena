@@ -41,7 +41,8 @@ import { performance, nowMs } from '../time.zena';
 import { TemplateStats } from './template-stats.zena';
 import { DiscoveryCounts, censusReport } from './ir/census.zena';
 import { dirName, normalizePath } from '../module-resolver.zena';
-import { lowerFunction } from './ir/lowering.zena';
+import { lowerFunction, lowerWithTemplates } from './ir/lowering.zena';
+import { TemplateFamilies } from './ir/template.zena';
 import { IrBody, IrScratch } from './ir/ir.zena';
 import { verifyIr } from './ir/verifier.zena';
 import { runGvn } from './ir/gvn.zena';
@@ -108,6 +109,23 @@ export final class ModuleGenerator {
    * and no engine ships them.
    */
   var compactImports = false;
+
+  /**
+   * Make the bodies of a generic class's methods from one template per
+   * family (ir/template.zena, docs/design/template-zir.md). The emitted
+   * module is the same either way; `ZENA_TEMPLATES=0` turns it off to
+   * measure it.
+   */
+  var templates = true;
+
+  /**
+   * Lower every body made from a template directly as well, and fail
+   * the compile on any difference (`ZENA_TEMPLATE_CHECK=1`).
+   */
+  var templateCheck = false;
+
+  /** After `compile()`: the templates the module's bodies were made from, for tests. */
+  var templateFamilies: TemplateFamilies | null = null;
 
   /**
    * The checker's interned types, for the module to build unions
@@ -688,11 +706,17 @@ export final class ModuleGenerator {
     let bodies = new Array<IrBody>();
     let templateStats = if (this.zirStats) new TemplateStats() else null;
     let discovered = if (this.zirStats) new DiscoveryCounts(wasm) else null;
+    let families = if (this.templates) new TemplateFamilies(wasm, this.templateCheck) else null;
+    this.templateFamilies = families;
     for (let wasmFunc in wasm.functions) {
       let tLowerStart = if (templateStats != null) nowMs() else 0.0;
       // Lowering failures throw: a bail is a compiler bug, not a
       // coverage gap.
-      let body = lowerFunction(wasm, wasmFunc);
+      let body = if (families != null) {
+        lowerWithTemplates(wasm, families, wasmFunc)
+      } else {
+        lowerFunction(wasm, wasmFunc)
+      };
       let tLowered = if (templateStats != null) nowMs() else 0.0;
       if (templateStats != null) {
         templateStats.compare(wasmFunc, body);
@@ -738,6 +762,11 @@ export final class ModuleGenerator {
     if (templateStats != null) {
       for (let line in templateStats.report()) {
         console.log(line);
+      }
+      if (families != null) {
+        for (let line in families.report()) {
+          console.log(line);
+        }
       }
     }
 
