@@ -12,7 +12,9 @@ reads of `com.atproto.sync` (`getRecord`, `getRepo`, `getLatestCommit`,
 `getBlob`) and `com.atproto.repo` (`getRecord`, `listRecords`,
 `describeRepo`). With a `PackageHost`, it also serves the package host's
 `createOrganization`, `createPackage`, `uploadArtifact` and `publish`, each
-checked with a service-auth token from the caller's PDS. pds.js's license is
+checked with a service-auth token from the caller's PDS, and
+`com.atproto.server.describeServer`, which tells `zena` its service DID and
+handle domain. pds.js's license is
 in `LICENSE-pds-js`.
 [docs/design/pds.md](../../docs/design/pds.md) describes the reference
 implementation, what is still missing, and the order of the work.

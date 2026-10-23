@@ -2,7 +2,7 @@ import {suite, test} from 'zena:test';
 import {equal, isNull, isTrue, jsonEqual} from 'zena:assert';
 import {OrderedHashMap} from 'zena:collections';
 import {parseJson} from 'zena:json';
-import {ManifestError, readManifest, writeDependencies} from 'package-manager:manifest';
+import {ManifestError, readManifest, writeDependencies, writeDid} from 'package-manager:manifest';
 import {Requirement} from 'package-manager:resolve';
 import {Version} from 'package-manager:version';
 
@@ -123,5 +123,26 @@ export let tests = suite('package-manager:manifest', () => {
       "router": {"did": "${ROUTER}", "version": "1.5.0"},
       "json": {"did": "did:web:json.example.com", "version": "2.1.0"}
     }}`));
+  });
+
+  test('reads the version a package publishes next', (ctx) => {
+    equal((readManifest('{"name": "router", "version": "1.4.2"}').version as Version).toString(), '1.4.2');
+    isTrue(readManifest('{"name": "router"}').version == null);
+    var message = '';
+    try {
+      readManifest('{"name": "router", "version": "one"}');
+    } catch (e) {
+      message = e.message;
+    }
+    isTrue(message.contains('version'), message);
+  });
+
+  test('writes the DID after the name, or where it was', (ctx) => {
+    let did = 'did:plc:routerrouterrouterrouter';
+    let written = writeDid('{"name": "router", "version": "1.0.0"}', did);
+    equal(written, '{\n  "name": "router",\n  "did": "did:plc:routerrouterrouterrouter",\n  "version": "1.0.0"\n}\n');
+    jsonEqual(parseJson(writeDid('{"did": "did:plc:old", "name": "router"}', did)),
+        parseJson(`{"did": "${did}", "name": "router"}`));
+    equal(readManifest(written).did as String, did);
   });
 });

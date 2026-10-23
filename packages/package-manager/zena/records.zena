@@ -13,6 +13,8 @@
 
 import {HashSet} from 'zena:collections';
 import {encodeCbor} from 'atproto:cbor';
+import {sha256} from 'zena:crypto';
+import {base32Lower} from 'zena:encoding';
 import {CODEC_RAW, Cid} from 'atproto:cid';
 import {
   BlobRef,
@@ -34,6 +36,7 @@ export let RELEASE_TYPE = 'dev.zena-lang.package.release';
 export let YANK_TYPE = 'dev.zena-lang.package.yank';
 export let MAINTAINERS_TYPE = 'dev.zena-lang.package.maintainers';
 export let MEMBERS_TYPE = 'dev.zena-lang.org.members';
+export let ATTESTATION_TYPE = 'dev.zena-lang.package.attestation';
 
 /** The record key of a package's profile. */
 export let PROFILE_KEY = 'self';
@@ -583,6 +586,57 @@ export final class Members {
     map.entries['adminThreshold'] = new IntValue(this.adminThreshold);
     return map;
   }
+}
+
+/**
+ * A maintainer's approval of a record in a package's or an organization's
+ * repository, written to the maintainer's own repository at
+ * `attestationKey(subject)`.
+ */
+export final class Attestation {
+  /** The AT-URI of the record approved. */
+  uri: String;
+  /** Its CID: the version of the record approved. */
+  cid: Cid;
+  createdAt: String;
+
+  new(uri: String, cid: Cid, createdAt: String) : uri = uri, cid = cid, createdAt = createdAt;
+
+  /** Its record key in the maintainer's repository. */
+  recordKey(): String {
+    return attestationKey(this.uri, this.cid);
+  }
+
+  toValue(): MapValue {
+    let map = typedMap(ATTESTATION_TYPE);
+    let subject = newMap();
+    subject.entries['uri'] = new StringValue(this.uri);
+    subject.entries['cid'] = new StringValue(this.cid.toString());
+    map.entries['subject'] = subject;
+    map.entries['createdAt'] = new StringValue(this.createdAt);
+    return map;
+  }
+
+  static fromValue(value: Value): Attestation {
+    let what = 'attestation';
+    let map = recordMap(value, ATTESTATION_TYPE, what);
+    let subject = field(map, 'subject');
+    if (!(subject is MapValue)) {
+      throw new RecordError(`${what}: 'subject' is not an object`);
+    }
+    return new Attestation(requiredString(subject, 'uri', what),
+        readCid(requiredString(subject, 'cid', what), what), requiredString(map, 'createdAt', what));
+  }
+}
+
+/**
+ * The record key of an attestation of the record at `uri` whose CID is
+ * `cid`: the SHA-256 hash of the AT-URI, a space and the CID, in lowercase
+ * base32 without padding. Successive versions of one record share a URI,
+ * and the CID keeps their attestations apart.
+ */
+export function attestationKey(uri: String, cid: Cid): String {
+  return base32Lower.encode(sha256(`${uri} ${cid.toString()}`.toBytes()), false);
 }
 
 function readCid(text: String, what: String): Cid {

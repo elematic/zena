@@ -19,9 +19,14 @@
  * `FakePds`'s own methods act on the account DID; `account` adds others.
  *
  * An account with a `password` can also sign in with
- * `com.atproto.server.createSession`, refresh and end the session, and
- * ask for service-auth tokens with `com.atproto.server.getServiceAuth`,
- * which are signed with KEY like everything else.
+ * `com.atproto.server.createSession`, refresh and end the session, ask
+ * for service-auth tokens with `com.atproto.server.getServiceAuth`, which
+ * are signed with KEY like everything else, and write records to its own
+ * repository with `com.atproto.repo.putRecord`.
+ *
+ * The PLC directory also takes operations, as `POST /plc/<did>`, which a
+ * package host sends for the accounts it creates elsewhere. It serves
+ * their DIDs' documents and answers for their handles.
  */
 
 import {Future} from 'zena:async';
@@ -35,9 +40,10 @@ import {now} from 'wasi:clocks/system-clock';
 import {BlockMap, writeCar} from 'atproto:car';
 import {encodeCbor} from 'atproto:cbor';
 import {Cid} from 'atproto:cid';
-import {BytesValue, IntValue, LinkValue, MapValue, NullValue, StringValue, newMap, toJson} from 'atproto:data';
-import {KeyType, formatMultikey, publicKeyFor} from 'atproto:didkey';
+import {BytesValue, IntValue, LinkValue, MapValue, NullValue, StringValue, fromJson, newMap, toJson} from 'atproto:data';
+import {KeyType, formatMultikey, parseDidKey, publicKeyFor} from 'atproto:didkey';
 import {IdentityResolver} from 'atproto:identity';
+import {PlcOperation, didOfGenesis} from 'atproto:plc';
 import {ServiceAuthClaims, createServiceAuthToken} from 'atproto:service-auth';
 import {buildMst, compareKeys} from 'atproto:mst';
 import {PROFILE_KEY, PROFILE_TYPE, Profile, RELEASE_TYPE, Release, YANK_TYPE, Yank} from '../records.zena';
@@ -171,6 +177,8 @@ export final class FakePds {
   accessTokens = new HashMap<String, String>();
   refreshTokens = new HashMap<String, String>();
   var #sessions = 0;
+  /** The latest operation the PLC directory took for each DID it was sent. */
+  operations = new OrderedHashMap<String, PlcOperation>();
   /** The `(aud, lxm)` of each service-auth token handed out, in order. */
   serviceAuthRequests = new GrowableArray<(String, String)>();
   var #server: Server | null = null;
@@ -294,9 +302,25 @@ function serve(pds: FakePds): Server {
     let params = req.url.searchParams();
     if (path.startsWith('/plc/')) {
       let did = path.sliceBytes(5, path.length);
+      if (req.method == 'POST') {
+        let operation = PlcOperation.fromJson(parseJson(await req.text()));
+        let refusal = plcRefusal(pds, did, operation);
+        if (refusal != null) {
+          res.statusCode = 400;
+          res.type = 'application/json';
+          res.body = stringify(errorJson(refusal as String));
+          return;
+        }
+        pds.operations[did] = operation;
+        res.body = '';
+        return;
+      }
       if (let (true, account) = pds.accounts.get(did)) {
         res.type = 'application/json';
         res.body = account.didDocument;
+      } else if (let (true, operation) = pds.operations.get(did)) {
+        res.type = 'application/json';
+        res.body = stringify(documentOf(did, operation));
       } else {
         res.statusCode = 404;
         res.body = 'no such DID';
@@ -312,6 +336,13 @@ function serve(pds: FakePds): Server {
           did = accountDid;
         }
       });
+      pds.operations.forEach((operationDid, operation) => {
+        for (let aka in operation.alsoKnownAs) {
+          if (name == `_atproto.${aka.sliceBytes(5, aka.length)}`) {
+            did = operationDid;
+          }
+        }
+      });
       let found = did;
       res.body = if (found == null) {
         '{"Status":3}'
@@ -322,6 +353,10 @@ function serve(pds: FakePds): Server {
     }
     if (path.startsWith('/xrpc/com.atproto.server.')) {
       await serveSession(pds, req, res);
+      return;
+    }
+    if (path == '/xrpc/com.atproto.repo.putRecord') {
+      await servePutRecord(pds, req, res);
       return;
     }
     let did = params.get('did') ?? params.get('repo') ?? '';
@@ -356,6 +391,94 @@ function serve(pds: FakePds): Server {
   let server = new Server(app, 0 as u16);
   server.start();
   return server;
+}
+
+/** Why the directory refuses `operation` for `did`, or null when it takes it. */
+function plcRefusal(pds: FakePds, did: String, operation: PlcOperation): String | null {
+  if (operation.prev == null) {
+    try {
+      if (didOfGenesis(operation) != did) {
+        return `the genesis operation makes another DID than ${did}`;
+      }
+    } catch (e) {
+      return e.message;
+    }
+    return null;
+  }
+  if (let (true, previous) = pds.operations.get(did)) {
+    if (previous.cid().toString() != operation.prev as String) {
+      return 'prev is not the latest operation';
+    }
+    for (let key in previous.rotationKeys) {
+      if (operation.isSignedBy(parseDidKey(key))) {
+        return null;
+      }
+    }
+    return 'no rotation key of the previous operation signed it';
+  }
+  return `${did} has no operation to follow`;
+}
+
+function errorJson(message: String): JsonObject {
+  let json = new JsonObject();
+  json['message'] = message;
+  return json;
+}
+
+/** The DID document the operation `operation` gives `did`. */
+function documentOf(did: String, operation: PlcOperation): JsonObject {
+  let doc = new JsonObject();
+  doc['id'] = did;
+  let aka = new JsonArray();
+  for (let uri in operation.alsoKnownAs) {
+    aka.push(uri);
+  }
+  doc['alsoKnownAs'] = aka;
+  let methods = new JsonArray();
+  operation.verificationMethods.forEach((name, key) => {
+    let method = new JsonObject();
+    method['id'] = `${did}#${name}`;
+    method['type'] = 'Multikey';
+    method['controller'] = did;
+    method['publicKeyMultibase'] = key.sliceBytes('did:key:'.length, key.length);
+    methods.push(method);
+  });
+  doc['verificationMethod'] = methods;
+  let services = new JsonArray();
+  operation.services.forEach((name, service) => {
+    let entry = new JsonObject();
+    entry['id'] = `#${name}`;
+    entry['type'] = service.kind;
+    entry['serviceEndpoint'] = service.endpoint;
+    services.push(entry);
+  });
+  doc['service'] = services;
+  return doc;
+}
+
+/** `com.atproto.repo.putRecord`, for a signed-in account's own repository. */
+async function servePutRecord(pds: FakePds, req: Request, res: Response): Future<void> {
+  let bearer = req.getHeader('authorization') ?? '';
+  let token = if (bearer.startsWith('Bearer ')) bearer.sliceBytes(7, bearer.length) else '';
+  let input = parseJson(await req.text()) as JsonObject;
+  res.type = 'application/json';
+  if (let (true, did) = pds.accessTokens.get(token)) {
+    if (input['repo'] as String != did) {
+      res.statusCode = 403;
+      res.body = '{"error":"Forbidden","message":"not your repository"}';
+      return;
+    }
+    let collection = input['collection'] as String;
+    let rkey = input['rkey'] as String;
+    let cid = pds.accounts[did].put(collection, rkey, fromJson(input['record']) as MapValue);
+    let answer = new JsonObject();
+    answer['uri'] = `at://${did}/${collection}/${rkey}`;
+    answer['cid'] = cid.toString();
+    res.body = stringify(answer);
+    return;
+  }
+  res.statusCode = 401;
+  res.body = '{"error":"AuthenticationRequired","message":"sign in first"}';
 }
 
 /** Answers the session methods of `com.atproto.server`. */
