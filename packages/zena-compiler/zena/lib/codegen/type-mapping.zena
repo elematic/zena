@@ -2743,3 +2743,72 @@ export function asyncIteratorPendingFuture(
   }
   return null;
 }
+
+/**
+ * The iterator interface whose `next()` drives iteration over `iface`:
+ * `iface` itself when it declares `next` (`Iterator<T>`,
+ * `AsyncIterator<T>`), or the interface a member of it returns that does
+ * (`Iterable<T>`'s `:iterator`). Null when there is neither.
+ */
+export function iteratorInterfaceOf(
+  wasm: WasmModule,
+  iface: InterfaceType
+): InterfaceType | null {
+  if (iface.members.has('next')) {
+    return iface;
+  }
+  let itParams = getInterfaceTypeParameters(iface);
+  for (let entry in iface.members) {
+    let mi = entry.value;
+    if (!(mi is MethodInfo) || !(mi.type is FunctionType)) {
+      continue;
+    }
+    let ft = substituteTypeParamsInCodegen(
+        wasm, itParams, iface.typeArguments, mi.type) as FunctionType;
+    let ret = unwrapAliases(ft.returnType);
+    if (ret is InterfaceType && ret.members.has('next')) {
+      return ret;
+    }
+  }
+  return null;
+}
+
+/**
+ * The Ready value of `iterType`'s `next()` step when it arrives unboxed,
+ * as its own values among the step's (`(1, inline T, _)` with a tuple
+ * for `T`); null when it is one value.
+ */
+export function stepInlineValue(
+  wasm: WasmModule,
+  iterType: InterfaceType
+): InlineTupleType | null {
+  if (!iterType.members.has('next')) {
+    return null;
+  }
+  let mi = iterType.members['next'];
+  if (!(mi is MethodInfo) || !(mi.type is FunctionType)) {
+    return null;
+  }
+  let itParams = getInterfaceTypeParameters(iterType);
+  let resolvedFt = substituteTypeParamsInCodegen(
+      wasm, itParams, iterType.typeArguments, mi.type) as FunctionType;
+  let stepT = unwrapAliases(resolvedFt.returnType);
+  if (!(stepT is UnionType)) {
+    return null;
+  }
+  for (let arm in (stepT as UnionType).types) {
+    let rawArm = unwrapAliases(arm);
+    if (let InlineTupleType {elementTypes} = rawArm) {
+      if (elementTypes.length < 2) {
+        continue;
+      }
+      // Ready is the arm with a value at position 1 (Done and Pending
+      // have `_`); its literal may already read as its base type here.
+      let value = unwrapAliases(elementTypes[1]);
+      if (!(value is HoleType)) {
+        return nestedInlineTuple(value);
+      }
+    }
+  }
+  return null;
+}

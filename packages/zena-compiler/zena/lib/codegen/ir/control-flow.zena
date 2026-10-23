@@ -34,11 +34,12 @@ import {
 import {
   eraseTypeParameters, findExtendedInterfaceTransitive,
   findImplementedInterfaceTransitive, getNonNullableType,
-  typeToValTypeWithSub, InlineLayout,
+  typeToValTypeWithSub, InlineLayout, inlineLayoutOf, iteratorInterfaceOf,
+  stepInlineValue,
 } from '../type-mapping.zena';
 import { IrBody, IrOp, IrRefField, IrRefFunc, IrRefGlobal, IrRefTag } from './ir.zena';
 import { emitGeneratorDispose } from './generators.zena';
-import { coalesceArmAdaptation, exactLiteralFields, inSuspensionBody, lowerExpr, lowerExprRaw, lowerStmt, multiSource, MultiValues, inlineMembersMatching, unboxTuples, optionalHit, packHeldRecord, returnSlotVt, suspendOnFuture, throwStmt, varDecl } from './lowering.zena';
+import { boxInline, coalesceArmAdaptation, exactLiteralFields, inSuspensionBody, lowerExpr, lowerExprRaw, lowerStmt, multiSource, MultiValues, inlineMembersMatching, tupleRestIndexOf, unboxTuples, optionalHit, packHeldRecord, returnSlotVt, suspendOnFuture, throwStmt, varDecl } from './lowering.zena';
 import {
   FinallyScope, LetCondBinds, LoopCtx, LoweringContext, MergeState, ZirUnsupported, noValues,
 } from './lowering-context.zena';
@@ -3064,6 +3065,8 @@ export function lowerNullishCoalesce(cx: LoweringContext, bin: BinaryExpression)
 export function lowerForInIterator(cx: LoweringContext, stmt: ForInStatement, iterableType: Type): void {
   let resolved = cx.resolveSelfType(iterableType);
   var iter = -1;
+  // The interface iterated, for the shape of its `next()` steps.
+  var protocol: InterfaceType | null = null;
   if (resolved is ClassType) {
     let ct = eraseTypeParameters(cx.wasm, resolved) as ClassType;
     let recv = lowerExprRaw(cx, stmt.iterable);
@@ -3074,14 +3077,18 @@ export function lowerForInIterator(cx: LoweringContext, stmt: ForInStatement, it
     if (iteratorIface != null) {
       // The iterable IS an iterator: no :iterator call.
       iter = cx.packInterface(recv, ct, iteratorIface);
+      protocol = iteratorIface;
     } else if (iterableIface != null) {
       let packed = cx.packInterface(recv, ct, iterableIface);
       iter = cx.slotCallSingle(packed, ':iterator');
+      protocol = iterableIface;
     } else if (asyncIteratorIface != null) {
       iter = cx.packInterface(recv, ct, asyncIteratorIface);
+      protocol = asyncIteratorIface;
     } else if (asyncIterableIface != null) {
       let packed = cx.packInterface(recv, ct, asyncIterableIface);
       iter = cx.slotCallSingle(packed, ':asyncIterator');
+      protocol = asyncIterableIface;
     } else {
       bail(cx, 'for-in iterable kind');
     }
@@ -3092,15 +3099,27 @@ export function lowerForInIterator(cx: LoweringContext, stmt: ForInStatement, it
         isWellKnown(WellKnown.AsyncIteratorInterface, resolved.name,
         resolved.sourcePath)) {
       iter = recv;
+      protocol = resolved;
     } else if (findExtendedInterfaceTransitive(cx.wasm, resolved, 'Iterable') != null) {
       iter = cx.slotCallSingle(recv, ':iterator');
+      protocol = findExtendedInterfaceTransitive(cx.wasm, resolved, 'Iterable');
     } else if (findExtendedInterfaceTransitive(cx.wasm, resolved, 'AsyncIterable') != null) {
       iter = cx.slotCallSingle(recv, ':asyncIterator');
+      protocol = findExtendedInterfaceTransitive(cx.wasm, resolved, 'AsyncIterable');
     } else {
       bail(cx, 'for-in iterable kind');
     }
   } else {
     bail(cx, 'for-in iterable kind');
+  }
+
+  // A tuple element arrives unboxed when the step says so.
+  var unboxedElem: InlineTupleType | null = null;
+  if (protocol != null) {
+    let iterIface = iteratorInterfaceOf(cx.wasm, protocol);
+    if (iterIface != null) {
+      unboxedElem = stepInlineValue(cx.wasm, iterIface);
+    }
   }
 
   var pat = stmt.pattern;
@@ -3144,13 +3163,13 @@ export function lowerForInIterator(cx: LoweringContext, stmt: ForInStatement, it
     cx.appendAssignedEnvSyms(stmt.body as Node, mirrored);
     lowerFinallyRegion(cx, mirrored, true, null,
         (scope, resultVar, saved) => {
-          lowerForInIteratorLoop(cx, stmt, iter, symOpt, bindVtOpt, pat);
+          lowerForInIteratorLoop(cx, stmt, iter, symOpt, bindVtOpt, pat, unboxedElem);
           finishProtectedArm(cx, scope, resultVar, -1);
         },
         (fscope) => { emitGeneratorDispose(cx, iter); });
     return;
   }
-  lowerForInIteratorLoop(cx, stmt, iter, symOpt, bindVtOpt, pat);
+  lowerForInIteratorLoop(cx, stmt, iter, symOpt, bindVtOpt, pat, unboxedElem);
 }
 
 /**
@@ -3162,7 +3181,8 @@ export function lowerForInIterator(cx: LoweringContext, stmt: ForInStatement, it
  */
 function lowerPendingStep(cx: LoweringContext, stmt: ForInStatement,
     future: i32, zeroWidthElem: boolean, bodyB: i32, exitB: i32,
-    exitArgs: GrowableArray<i32>) {
+    exitArgs: GrowableArray<i32>, unboxedElem: InlineTupleType | null,
+    laneVts: GrowableArray<ValType>) {
   let pendingT = cx.substitutedNodeType(stmt);
   if (pendingT == null || !(pendingT is ClassType)) {
     bail(cx, 'for await without a pending future type');
@@ -3198,16 +3218,68 @@ function lowerPendingStep(cx: LoweringContext, stmt: ForInStatement,
       bail(cx, 'for await Some has no value field');
     }
     let fieldRef = cx.b.addRef(new IrRefField(st, 'value'));
-    intoBody.push(cx.b.emit(IrOp.struct_get, st.fields[fieldIdx].type,
-        casted, fieldRef));
+    let value = cx.b.emit(IrOp.struct_get, st.fields[fieldIdx].type,
+        casted, fieldRef);
+    if (unboxedElem != null) {
+      // The future settles with the tuple boxed; the body takes its
+      // values as a Ready step gives them.
+      let boxed = new TupleType(unboxedElem.elementTypes, null, 0);
+      let unboxed = unboxTuples(cx, cx.stripNonNull(value), boxed);
+      if (unboxed == null || unboxed.values.length != laneVts.length) {
+        bail(cx, 'for await unboxed element');
+      }
+      for (var i = 0; i < laneVts.length; i += 1) {
+        intoBody.push(cx.conformToSlot(unboxed.values[i], laneVts[i],
+            'for await element'));
+      }
+    } else {
+      intoBody.push(value);
+    }
   }
   cx.b.br(bodyB, intoBody);
+}
+
+/**
+ * Binds a for-in pattern to an element that arrived unboxed, one value
+ * per slot of `layout`: a tuple pattern takes the values directly, and a
+ * name or any other pattern takes the tuple boxed.
+ */
+function bindUnboxedElement(cx: LoweringContext, lanes: GrowableArray<i32>,
+    layout: InlineLayout, symOpt: Symbol | null, bindVtOpt: ValType | null,
+    pat: Node): void {
+  // The step's slots are nullable where its Done member leaves them
+  // empty; a Ready step fills them.
+  let values = new Array<i32>();
+  for (var i = 0; i < lanes.length; i += 1) {
+    values.push(cx.conformToSlot(lanes[i], layout.slots[i], 'for-in element'));
+  }
+  let source = new MultiValues(values, layout);
+  if (pat is TuplePattern && tupleRestIndexOf(pat) < 0) {
+    let nodes = new Array<Node | null>();
+    let parts = source.patternValues(cx, pat.elements, null, nodes);
+    for (var i = 0; i < nodes.length; i += 1) {
+      let el = nodes[i];
+      if (el != null && patternBinds(cx, el)) {
+        lowerPatternBindings(cx, el, parts[i]);
+      }
+    }
+    return;
+  }
+  var boxed = boxInline(cx, source);
+  if (symOpt != null) {
+    if (bindVtOpt != null) {
+      boxed = cx.conformToSlot(boxed, bindVtOpt as ValType, 'for-in element type');
+    }
+    cx.bindPatternSym(symOpt, boxed);
+  } else {
+    lowerPatternBindings(cx, pat, boxed);
+  }
 }
 
 /** The protocol loop itself: next() in the header, bind, body, back. */
 function lowerForInIteratorLoop(cx: LoweringContext, stmt: ForInStatement,
     iter: i32, symOpt: Symbol | null, bindVtOpt: ValType | null,
-    pat: Node): void {
+    pat: Node, unboxedElem: InlineTupleType | null): void {
   let carried = cx.assignedEnvSyms(stmt.body);
   let header = cx.b.newBlock();
   let headerParams = cx.addParams(header, carried);
@@ -3224,19 +3296,37 @@ function lowerForInIteratorLoop(cx: LoweringContext, stmt: ForInStatement,
   // so its `next()` returns one more result. A synchronous Step's
   // future lane is `nullref`: it is there so the step fits an
   // AsyncStep slot, and no arm ever fills it.
-  let zeroWidthElem = bindVtOpt != null &&
+  // A tuple element the step unboxes (`(1, inline T, _)`) takes one
+  // lane per slot of its inline form.
+  let zeroWidthElem = unboxedElem == null && bindVtOpt != null &&
       (bindVtOpt as ValType) is ValTypeVoid;
-  let booleanLanes = if (zeroWidthElem) 1 else 2;
-  let stepLanes = if (zeroWidthElem) 2 else 3;
+  let elemLayout = if (unboxedElem != null) {
+    inlineLayoutOf(cx.wasm, unboxedElem as Type)
+  } else {
+    null
+  };
+  let valueLanes = if (elemLayout != null) {
+    elemLayout.slots.length
+  } else if (zeroWidthElem) {
+    0
+  } else {
+    1
+  };
+  let booleanLanes = 1 + valueLanes;
+  let stepLanes = 2 + valueLanes;
   if (results.length < 1 || !(cx.valueTypeOf(results[0]) is ValTypeI32)) {
     bail(cx, 'iterator next shape');
   }
   let isStep = results.length == stepLanes;
-  if (!isStep && results.length != booleanLanes) {
+  if (!isStep && (elemLayout != null || results.length != booleanLanes)) {
     bail(cx, 'iterator next shape');
   }
   let disc = results[0];
-  var elem = if (zeroWidthElem) -1 else results[1];
+  let lanes = new Array<i32>();
+  for (var i = 0; i < valueLanes; i += 1) {
+    lanes.push(results[1 + i]);
+  }
+  var elem = if (elemLayout == null && !zeroWidthElem) lanes[0] else -1;
 
   let bodyB = cx.b.newBlock();
   let exitB = cx.b.newBlock();
@@ -3253,9 +3343,14 @@ function lowerForInIteratorLoop(cx: LoweringContext, stmt: ForInStatement,
     // step whose future settled with a value — so the element arrives
     // as the body block's parameter.
     let elemIntoBody = new Array<i32>();
-    if (!zeroWidthElem) {
-      elemIntoBody.push(elem);
-      elem = cx.b.blockParam(bodyB, cx.valueTypeOf(elem));
+    let laneVts = new Array<ValType>();
+    for (var i = 0; i < lanes.length; i += 1) {
+      elemIntoBody.push(lanes[i]);
+      laneVts.push(cx.valueTypeOf(lanes[i]));
+      lanes[i] = cx.b.blockParam(bodyB, laneVts[i]);
+    }
+    if (elemLayout == null && !zeroWidthElem) {
+      elem = lanes[0];
     }
     // Step discriminant: 0 = Done (exit), 1 = Ready (bind + body),
     // 2 = Pending. `disc != 0` splits Done from the rest; a second test
@@ -3269,13 +3364,15 @@ function lowerForInIteratorLoop(cx: LoweringContext, stmt: ForInStatement,
     cx.b.brIf(isPending, pendingB, noValues(), bodyB, elemIntoBody);
     cx.b.switchTo(pendingB);
     lowerPendingStep(cx, stmt, results[results.length - 1], zeroWidthElem,
-        bodyB, exitB, cx.envValues(carried));
+        bodyB, exitB, cx.envValues(carried), unboxedElem, laneVts);
   } else {
     cx.b.brIf(disc, bodyB, noValues(), exitB, cx.envValues(carried));
   }
 
   cx.b.switchTo(bodyB);
-  if (zeroWidthElem) {
+  if (elemLayout != null) {
+    bindUnboxedElement(cx, lanes, elemLayout, symOpt, bindVtOpt, pat);
+  } else if (zeroWidthElem) {
     // bindPatternSym stores the zero-width binding (NO_VALUE) itself.
     cx.bindPatternSym(symOpt as Symbol, -1);
   } else if (symOpt != null) {

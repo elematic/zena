@@ -35,7 +35,7 @@ import {
 } from '../wasm.zena';
 import {
   WasmModule, WasmStruct, WasmField, WasmFunction, WasmGlobal,
-  WasmSignature, WasmTag, VTableInit,
+  WasmSignature, WasmTag, VTableInit, asWasmStruct,
 } from '../wasm-module.zena';
 import {
   IrOp, IrBody, IrBlock, IrRef, IrRefField, IrRefType, IrRefGlobal,
@@ -48,13 +48,14 @@ import { LoweringContext } from './lowering-context.zena';
 import { ReachabilityAnalysis } from '../reachability/analysis.zena';
 import {
   getInterfaceMemberSignature, getClassTypeParameters,
-  substituteTypeParamsInCodegen,
+  substituteTypeParamsInCodegen, stepInlineValue, inlineLayoutOf,
+  typeToValTypeWithSub,
 } from '../type-mapping.zena';
 import {
   ClassKey, getInterfaceKey, getClassInterfaceKey,
   getClassInterfaceVTableName, getInterfaceTrampolineName,
 } from '../codegen-utils.zena';
-import { Type, InterfaceType, FunctionType, isScopedType, scopedInner } from '../../types.zena';
+import { Type, InterfaceType, FunctionType, TupleType, isScopedType, scopedInner } from '../../types.zena';
 import { FunctionExpression, MethodDefinition, Node } from '../../ast.zena';
 import { growable } from 'zena:core';
 
@@ -596,6 +597,88 @@ export function rawDefaultOf(body: IrBody, vt: ValType): i32 {
   };
 }
 
+/**
+ * The Ready value of a step as `next()` returns it. It is one result,
+ * unless the step unboxes a tuple (`(1, inline T, _)` with a tuple for
+ * `T`): then the body still yields the tuple boxed, and each of the
+ * tuple's fields is a result of its own.
+ */
+export final class StepValue {
+  /** The boxed tuple a yield produces, when the value is unboxed. */
+  struct: WasmStruct | null;
+  /** The field of `struct` each value result reads. */
+  fields: GrowableArray<String>;
+
+  new(this.struct, this.fields);
+
+  lanes(): i32 {
+    return if (this.struct == null) 1 else this.fields.length;
+  }
+}
+
+/** The shape of `iface`'s Ready value (see `StepValue`). */
+export function stepValueOf(wasm: WasmModule, iface: InterfaceType,
+    func: WasmFunction): StepValue {
+  let inner = stepInlineValue(wasm, iface);
+  if (inner == null) {
+    return new StepValue(null, new Array<String>());
+  }
+  let boxed = new TupleType(inner.elementTypes, null, 0);
+  let st = asWasmStruct(typeToValTypeWithSub(wasm, boxed, func));
+  if (st == null) {
+    throw new Error('unboxed step value has no tuple struct');
+  }
+  let layout = inlineLayoutOf(wasm, inner as Type);
+  if (layout == null) {
+    throw new Error('unboxed step value has no layout');
+  }
+  let fields = new Array<String>();
+  for (let path in layout.slotPaths) {
+    fields.push(path);
+  }
+  return new StepValue(st, fields);
+}
+
+/**
+ * The value results of a step, unplaced: each at its default when
+ * `value` is -1 (Done), else `value` itself, or its fields when the
+ * step unboxes it. `returns` is the `next()` result list.
+ */
+export function rawValueLanes(body: IrBody, returns: GrowableArray<ValType>,
+    sv: StepValue, value: i32): GrowableArray<i32> {
+  let out = new Array<i32>();
+  let st = sv.struct;
+  for (var i = 0; i < sv.lanes(); i += 1) {
+    if (value < 0) {
+      out.push(rawDefaultOf(body, returns[1 + i]));
+    } else if (st == null) {
+      out.push(value);
+    } else {
+      let name = sv.fields[i];
+      let field = st.fields[st.fieldIndexByName(name)];
+      out.push(rawInst(body, IrOp.struct_get, internVt(body, field.type), value,
+          addRawRef(body, new IrRefField(st, name))));
+    }
+  }
+  return out;
+}
+
+/** A step's results as a `ret_multi` operand record: the flag, the
+ * value results, and the future when `future` is not -1. */
+export function rawStepResults(body: IrBody, flag: i32,
+    lanes: GrowableArray<i32>, future: i32): i32 {
+  let idx = body.extra.length;
+  body.extra.push(1 + lanes.length + (if (future >= 0) 1 else 0));
+  body.extra.push(flag);
+  for (let lane in lanes) {
+    body.extra.push(lane);
+  }
+  if (future >= 0) {
+    body.extra.push(future);
+  }
+  return idx;
+}
+
 // ---------------------------------------------------------------------------
 // Liveness on the presplit CFG (standard backward per-block dataflow).
 // ---------------------------------------------------------------------------
@@ -817,8 +900,10 @@ function prepareOne(
   // three-arm Step (discriminant, value, future). A `gen` produces only
   // Done and Ready, so under Step it fills the future lane with a
   // default (null) on every step (async-iteration.md, "a `gen` produces
-  // only Done and Ready").
-  if ((slotSig.returns.length != 2 && slotSig.returns.length != 3) ||
+  // only Done and Ready"). An unboxed tuple value is several results.
+  let stepValue = stepValueOf(wasm, iface, func);
+  let lanes = stepValue.lanes();
+  if ((slotSig.returns.length != 1 + lanes && slotSig.returns.length != 2 + lanes) ||
       !(slotSig.returns[0] is ValTypeI32)) {
     throw new Error('unexpected Iterator.next result shape for generator: ' +
         funcDisplayName(func));
@@ -829,7 +914,12 @@ function prepareOne(
   // (ZirUnsupported propagates; there is no fallback backend).
   let fl = new FunctionLowerer(wasm, func);
   fl.presplitGenerator = true;
-  fl.presplitYieldVt = slotSig.returns[1];
+  let yieldStruct = stepValue.struct;
+  fl.presplitYieldVt = if (yieldStruct != null) {
+    new ValTypeRef(yieldStruct) as ValType
+  } else {
+    slotSig.returns[1]
+  };
   let presplit = fl.lower();
   let cfg = new IrCfg(presplit);
 
@@ -983,7 +1073,7 @@ function prepareOne(
   // The two bodies.
   let rampBody = buildRamp(func, frame, fatPtr, vtableGlobal, entryParamIds);
   let nextBody = buildNextBody(presplit, cfg, frame, spilled, pcOfBlock,
-      dTargets, slotSig, resumeOf, dispatchRegions,
+      dTargets, slotSig, stepValue, resumeOf, dispatchRegions,
       if (disposal) wasm.cancellationTag else null);
   let artifacts = new GeneratorArtifacts(rampBody, nextBody);
   func.isGeneratorRamp = true;
@@ -1089,10 +1179,14 @@ function buildNextBody(
   pcOfBlockIn: HashMap<i32, i32>,
   dTargetsIn: GrowableArray<i32>,
   slotSig: WasmSignature,
+  stepValue: StepValue,
   resumeOf: GrowableArray<i32>,
   dispatchRegions: HashMap<i32, GrowableArray<TryRegion>>,
   cancelTag: WasmTag | null
 ): IrBody {
+  // Whether the step carries a future result after its value results.
+  let hasFuture = slotSig.returns.length == 2 + stepValue.lanes();
+  let futureVt = slotSig.returns[slotSig.returns.length - 1];
   let origCount = body.blocks.length;
   let stateRef = addRawRef(body, new IrRefField(frame, '$state'));
   let i32Vt: ValType = new ValTypeI32();
@@ -1218,21 +1312,16 @@ function buildNextBody(
 
   // done: politely exhausted forever: (false, default).
   let doneFlag = emitIn(doneBlock, IrOp.const_i32, i32Idx, 0, -1);
-  let doneDflt = rawDefaultOf(body, slotSig.returns[1]);
-  placeInst(body, doneBlock, doneDflt);
-  let doneExtra = body.extra.length;
-  if (slotSig.returns.length == 3) {
-    let doneFut = rawDefaultOf(body, slotSig.returns[2]);
-    placeInst(body, doneBlock, doneFut);
-    body.extra.push(3);
-    body.extra.push(doneFlag);
-    body.extra.push(doneDflt);
-    body.extra.push(doneFut);
-  } else {
-    body.extra.push(2);
-    body.extra.push(doneFlag);
-    body.extra.push(doneDflt);
+  let doneLanes = rawValueLanes(body, slotSig.returns, stepValue, -1);
+  for (let lane in doneLanes) {
+    placeInst(body, doneBlock, lane);
   }
+  var doneFut = -1;
+  if (hasFuture) {
+    doneFut = rawDefaultOf(body, futureVt);
+    placeInst(body, doneBlock, doneFut);
+  }
+  let doneExtra = rawStepResults(body, doneFlag, doneLanes, doneFut);
   let doneRet = rawInst(body, IrOp.ret_multi, -1, doneExtra, -1);
   placeInst(body, doneBlock, doneRet);
 
@@ -1260,21 +1349,16 @@ function buildNextBody(
     let rethrowB = newBlockId();
     brIfTo(cancelCatchB, dv, cancelDoneB, rethrowB);
     let cdFlag = emitIn(cancelDoneB, IrOp.const_i32, i32Idx, 0, -1);
-    let cdDflt = rawDefaultOf(body, slotSig.returns[1]);
-    placeInst(body, cancelDoneB, cdDflt);
-    let cdExtra = body.extra.length;
-    if (slotSig.returns.length == 3) {
-      let cdFut = rawDefaultOf(body, slotSig.returns[2]);
-      placeInst(body, cancelDoneB, cdFut);
-      body.extra.push(3);
-      body.extra.push(cdFlag);
-      body.extra.push(cdDflt);
-      body.extra.push(cdFut);
-    } else {
-      body.extra.push(2);
-      body.extra.push(cdFlag);
-      body.extra.push(cdDflt);
+    let cdLanes = rawValueLanes(body, slotSig.returns, stepValue, -1);
+    for (let lane in cdLanes) {
+      placeInst(body, cancelDoneB, lane);
     }
+    var cdFut = -1;
+    if (hasFuture) {
+      cdFut = rawDefaultOf(body, futureVt);
+      placeInst(body, cancelDoneB, cdFut);
+    }
+    let cdExtra = rawStepResults(body, cdFlag, cdLanes, cdFut);
     let cdRet = rawInst(body, IrOp.ret_multi, -1, cdExtra, -1);
     placeInst(body, cancelDoneB, cdRet);
     let rtIdx = body.extra.length;
@@ -1530,20 +1614,20 @@ function buildNextBody(
       let flag = rawInst(body, IrOp.const_i32, i32Idx, 1, -1);
       rebuilt.push(flag);
       body.instBlock[flag] = blockId;
-      let retIdx = body.extra.length;
-      if (slotSig.returns.length == 3) {
-        let yFut = rawDefaultOf(body, slotSig.returns[2]);
+      let yLanes = rawValueLanes(body, slotSig.returns, stepValue, yieldVal);
+      for (let lane in yLanes) {
+        if (body.instBlock[lane] < 0) {
+          rebuilt.push(lane);
+          body.instBlock[lane] = blockId;
+        }
+      }
+      var yFut = -1;
+      if (hasFuture) {
+        yFut = rawDefaultOf(body, futureVt);
         rebuilt.push(yFut);
         body.instBlock[yFut] = blockId;
-        body.extra.push(3);
-        body.extra.push(flag);
-        body.extra.push(yieldVal);
-        body.extra.push(yFut);
-      } else {
-        body.extra.push(2);
-        body.extra.push(flag);
-        body.extra.push(yieldVal);
       }
+      let retIdx = rawStepResults(body, flag, yLanes, yFut);
       body.opcode[term] = IrOp.ret_multi as i32;
       body.a[term] = retIdx;
       body.b[term] = -1;
@@ -1570,23 +1654,18 @@ function buildNextBody(
       let flag = rawInst(body, IrOp.const_i32, i32Idx, 0, -1);
       rebuilt.push(flag);
       body.instBlock[flag] = blockId;
-      let dflt = rawDefaultOf(body, slotSig.returns[1]);
-      rebuilt.push(dflt);
-      body.instBlock[dflt] = blockId;
-      let retIdx = body.extra.length;
-      if (slotSig.returns.length == 3) {
-        let rFut = rawDefaultOf(body, slotSig.returns[2]);
+      let rLanes = rawValueLanes(body, slotSig.returns, stepValue, -1);
+      for (let lane in rLanes) {
+        rebuilt.push(lane);
+        body.instBlock[lane] = blockId;
+      }
+      var rFut = -1;
+      if (hasFuture) {
+        rFut = rawDefaultOf(body, futureVt);
         rebuilt.push(rFut);
         body.instBlock[rFut] = blockId;
-        body.extra.push(3);
-        body.extra.push(flag);
-        body.extra.push(dflt);
-        body.extra.push(rFut);
-      } else {
-        body.extra.push(2);
-        body.extra.push(flag);
-        body.extra.push(dflt);
       }
+      let retIdx = rawStepResults(body, flag, rLanes, rFut);
       body.opcode[term] = IrOp.ret_multi as i32;
       body.a[term] = retIdx;
       body.b[term] = -1;
