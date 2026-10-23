@@ -277,7 +277,14 @@ fn start_fake_pds(scratch: &Scratch, fixture: &str) -> (KillOnDrop, String) {
     let mut server = KillOnDrop(child);
     let plc = out.join("plc.txt");
     let deadline = Instant::now() + Duration::from_secs(300);
-    while !plc.exists() {
+    // The file can be read between its creation and the write, so wait
+    // for the whole origin, which ends in "/plc".
+    loop {
+        if let Ok(origin) = fs::read_to_string(&plc)
+            && origin.ends_with("/plc")
+        {
+            return (server, origin);
+        }
         if let Ok(Some(status)) = server.0.try_wait() {
             panic!(
                 "the fake PDS exited ({status}):\n{}",
@@ -287,8 +294,6 @@ fn start_fake_pds(scratch: &Scratch, fixture: &str) -> (KillOnDrop, String) {
         assert!(Instant::now() < deadline, "the fake PDS did not start");
         std::thread::sleep(Duration::from_millis(200));
     }
-    let origin = fs::read_to_string(&plc).expect("the PLC directory's origin");
-    (server, origin)
 }
 
 #[test]
