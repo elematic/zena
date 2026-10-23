@@ -65,6 +65,19 @@ part from their group's first body at one of a few operations:
 | `struct.get` → `param`                                             | 4     | `Completer<void>` has no value to store                                         |
 | `array.get` → `array.get_u`                                        | 7     | a `u8` element is packed                                                        |
 
+Discovery repeats more than lowering does. RTA's queue walks one item
+per referrer, a member node or a symbol under one specialization's
+substitution. In the self-compile (13.7 s, measured with temporary
+timers around each item), items walking a node or symbol already walked
+for another specialization took 1.97 s, against 3.16 s for first walks.
+Of the 1.97 s, 1.27 s is the walk of the node itself
+(`registerInstantiations`, or `discoverNodeTypes` for a body without a
+dependency record), which a template's references could replace; 0.35 s
+is the traversal of the checker's dependency records. Lowering and
+discovery together repeat about 2.1 s of the compile, of which a
+template can save the part that is walking rather than registering what
+the walk finds.
+
 ## What lowering decides from the type arguments
 
 Lowering decides three kinds of things from the substitution.
@@ -293,5 +306,7 @@ cannot generalize (5).
    remain.
 3. More candidates: constructors, extension classes, closures, and
    generic functions and methods.
-4. Measure how much of discovery is repeated per instantiation, and
-   decide on discovery from templates.
+4. Discovery from templates. Measured (above): at most 1.27 s of the
+   self-compile's discovery walks a node again for another
+   specialization. Getting it needs templates that exist before
+   discovery, so it follows the representative-free templates above.
