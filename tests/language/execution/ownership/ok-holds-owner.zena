@@ -1,9 +1,10 @@
 // @mode: run
 // @result: 7
-// An owner inside an `Ok` arm, the shape a WIT `result<own<r>, e>`
-// lifts to: reading `.value` once moves the owner out, and the
-// resource is released exactly once at the local's scope exit.
-import { Own, Disposable, Ok, Err, Outcome } from 'zena:core';
+// An owner in a result's `true` member, the shape a WIT
+// `result<own<r>, e>` lifts to: a pattern moves the owner out of the
+// result, and the resource is released exactly once, at the end of the
+// branch that bound it.
+import { Own, Disposable, Result } from 'zena:core';
 
 var released = 0;
 
@@ -15,19 +16,18 @@ resource class Res {
   }
 }
 
-let open = (ok: boolean): Outcome<Own<Res>, String> => {
+let open = (ok: boolean): Result<Own<Res>, String> => {
   if (ok) {
-    return new Ok<Own<Res>, String>(new Res(7));
+    return (true, new Res(7));
   }
-  return new Err<Own<Res>, String>('nope');
+  return (false, 'nope');
 };
 
 export let main = (): i32 => {
   var seen = 0;
   if (true) {
     let outcome = open(true);
-    if (outcome is Ok<Own<Res>, String>) {
-      let r = (outcome as Ok<Own<Res>, String>).value;
+    if (let (true, r) = outcome) {
       seen = r.id;
     }
   }

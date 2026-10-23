@@ -14,7 +14,7 @@ import {
 } from 'wasi:http/types';
 import { Completer, DeferredFuture } from 'zena:async';
 import { HashMap } from 'zena:collections';
-import { Disposable, Outcome, Ok, Option, Some } from 'zena:core';
+import { Disposable, Option, Some, Result } from 'zena:core';
 import { Stream, bytesStream, textStream, readAllText } from 'zena:stream';
 import { URL } from 'zena:url';
 import { Request, RequestSource, placeholderUrl, placeholderHeaders, fallbackUrl } from './request.zena';
@@ -28,7 +28,7 @@ export { AppOptions } from './app.zena';
 function unit() {}
 
 let emptyTrailersFuture =
-    Future.of<Outcome<Option<Fields>, ErrorCode>>(new Ok<Option<Fields>, ErrorCode>(none));
+    Future.of<Result<Option<Fields>, ErrorCode>>((true, none));
 
 let bytesTextPlain = 'text/plain; charset=utf-8'.toBytes();
 let bytesTextHtml = 'text/html; charset=utf-8'.toBytes();
@@ -164,7 +164,7 @@ final class WireRequestSource implements RequestSource {
 
   loadBody(): Stream<u8> {
     this.#consumed = true;
-    let received = Future.of<Outcome<void, ErrorCode>>(new Ok<void, ErrorCode>(unit()));
+    let received = Future.of<Result<void, ErrorCode>>((true, unit()));
     let (bodyStream, trailers) = WireRequest.consumeBody(this.#wire, received);
     disposeDeferred(trailers);
     return bodyStream;
@@ -187,7 +187,7 @@ export function fromWireRequest(wire: WireRequest): Request {
 /**
  * Converts a Response into a low-level WASI WireResponse resource along with its transmitted future.
  */
-export function toWireResponseWithTransmitted(res: Response): (WireResponse, Future<Outcome<void, ErrorCode>>) {
+export function toWireResponseWithTransmitted(res: Response): (WireResponse, Future<Result<void, ErrorCode>>) {
   let fields = Fields.create();
   let ct = res.contentTypeHeader;
   var hasCt = ct != null;
@@ -260,19 +260,19 @@ export function toWireResponse(res: Response): WireResponse {
 /**
  * Dispatches an incoming WASI wire request through an App's middleware pipeline.
  */
-export async function handleWireRequest(app: BaseApp, wire: WireRequest): Future<Outcome<WireResponse, ErrorCode>> {
+export async function handleWireRequest(app: BaseApp, wire: WireRequest): Future<Result<WireResponse, ErrorCode>> {
   let req = fromWireRequest(wire);
   let res = new Response();
   await app.handleRequest(req, res);
   req.close();
-  return new Ok<WireResponse, ErrorCode>(toWireResponse(res));
+  return (true, toWireResponse(res));
 }
 
 /**
  * An HTTP application with native WASI handler integration.
  */
 export class App extends BaseApp {
-  async handle(wireRequest: WireRequest): Future<Outcome<WireResponse, ErrorCode>> {
+  async handle(wireRequest: WireRequest): Future<Result<WireResponse, ErrorCode>> {
     return handleWireRequest(this, wireRequest);
   }
 }
@@ -302,10 +302,10 @@ export function textResponse(
  * Reads a wire request's body to the end and decodes it as text.
  */
 export async function requestText(request: WireRequest): Future<String> {
-  let received = new Completer<Outcome<void, ErrorCode>>();
+  let received = new Completer<Result<void, ErrorCode>>();
   let (body, trailers) = WireRequest.consumeBody(request, received.future);
   disposeDeferred(trailers);
   let text = await readAllText(body);
-  received.complete(new Ok<void, ErrorCode>(unit()));
+  received.complete((true, unit()));
   return text;
 }

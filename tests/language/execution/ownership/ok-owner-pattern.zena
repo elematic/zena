@@ -1,36 +1,32 @@
 // @mode: run
 // @result: 21
-// A class pattern over a generic case class: `if (let Ok {value} =
-// outcome)` on an `Outcome<Own<Res>, String>` matches the
-// `Ok<Own<Res>, String>` it holds, the way `outcome is Ok<Own<Res>,
-// String>` does, taking the type arguments from the outcome's type. It
-// used to test the template `Ok<T, E>`, which no value is, and match
-// neither arm (elematic/zena#270).
-import { Own, Disposable, Ok, Err, Outcome } from 'zena:core';
+// A pattern over a result holding an owner matches the member it holds:
+// `if (let (true, value) = outcome)` on a `Result<Own<Res>, String>`.
+// Written for the `Outcome` classes, whose class pattern once tested the
+// template `Ok<T, E>`, which no value is, and matched neither arm
+// (elematic/zena#270).
+import { Own, Disposable, Result } from 'zena:core';
 
 resource class Res {
   new();
   [Disposable.dispose](this: Own<this>): void {}
 }
 
-let open = (ok: boolean): Outcome<Own<Res>, String> => {
+let open = (ok: boolean): Result<Own<Res>, String> => {
   if (ok) {
-    return new Ok<Own<Res>, String>(new Res());
+    return (true, new Res());
   }
-  return new Err<Own<Res>, String>('nope');
+  return (false, 'nope');
 };
 
-let armOf = (outcome: Outcome<Own<Res>, String>): i32 => {
-  if (let Ok {value} = outcome) {
-    return 1;
-  }
-  if (let Err {error} = outcome) {
-    return 20;
-  }
-  return 0 - 100;
+// One match, since a pattern moves the result: a second `if let` over it
+// would read a moved value.
+let armOf = (outcome: Result<Own<Res>, String>): i32 => match (outcome) {
+  case (true, let value): 1
+  case (false, let error): 20
 };
 
 export let main = (): i32 => {
-  // 1 for the ok arm plus 20 for the err arm; -200 when neither matches.
+  // 1 for the ok arm plus 20 for the err arm.
   return armOf(open(true)) + armOf(open(false));
 };

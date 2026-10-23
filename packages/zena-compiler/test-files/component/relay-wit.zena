@@ -5,18 +5,18 @@
 // module's classes and passes them through the other's functions.
 import { Packet, Level, Fault } from 'fixture:relay/data';
 import { forward, grade, confirm } from 'fixture:relay/forwarding';
-import { Ok } from 'zena:core';
+
 import { Future } from 'zena:async';
 
 async function go(): Future<u32> {
   let sent = new Packet(Level.High, 'payload');
   let got = await forward(sent);
   var acc = (grade() as i32) as u32;
-  if (got is Ok<Packet, Fault>) {
-    acc += (got as Ok<Packet, Fault>).value.body.length as u32;
+  if (got is (true, Packet)) {
+    acc += (got as (true, Packet))[1].body.length as u32;
   }
   let confirmed = await confirm();
-  if (confirmed is Ok<void, Fault>) {
+  if (confirmed is (true, void)) {
     acc += 1;
   }
   return acc;

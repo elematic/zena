@@ -1070,7 +1070,7 @@ body pays anyway — and substitution collapses it once `T` closes.
 
 ```zena
 static async allSettled<scoped T>(
-    futures: Array<T>): ScopedFrom<T, Future<Array<Outcome<Awaited<T>, Error>>>>
+    futures: Array<T>): ScopedFrom<T, Future<Array<Result<Awaited<T>, Error>>>>
 ```
 
 The second fact is which combinators may admit scoped inputs at all.

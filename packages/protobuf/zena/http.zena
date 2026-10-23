@@ -8,7 +8,7 @@
 
 import { Completer } from 'zena:async';
 import { HashMap } from 'zena:collections';
-import { Err, Ok, Option, Outcome } from 'zena:core';
+import { Option, Result } from 'zena:core';
 import { Stream, bytesStream } from 'zena:stream';
 import { URL } from 'zena:url';
 import {
@@ -27,7 +27,7 @@ let CODE_DEADLINE_EXCEEDED = 4;
 let CODE_UNAVAILABLE = 14;
 
 /** What a `wasi:http` request is sent with. */
-export type Trailers = Future<Outcome<Option<Fields>, ErrorCode>>;
+export type Trailers = Future<Result<Option<Fields>, ErrorCode>>;
 
 /** The scheme and authority of an origin such as `https://firestore.googleapis.com`. */
 export final class Origin {
@@ -88,14 +88,14 @@ export final class Exchange {
   headers: Fields;
   body: Stream<u8>;
   trailers: Trailers;
-  #received: Completer<Outcome<void, ErrorCode>>;
+  #received: Completer<Result<void, ErrorCode>>;
 
-  new(this.status, this.headers, this.body, this.trailers, received: Completer<Outcome<void, ErrorCode>>)
+  new(this.status, this.headers, this.body, this.trailers, received: Completer<Result<void, ErrorCode>>)
     : #received = received;
 
   /** A response made of the given parts, for reading a body that did not come from `post`. */
   static of(status: i32, headers: Fields, body: Stream<u8>, trailers: Trailers): Exchange {
-    return new Exchange(status, headers, body, trailers, new Completer<Outcome<void, ErrorCode>>());
+    return new Exchange(status, headers, body, trailers, new Completer<Result<void, ErrorCode>>());
   }
 
   /** Whether the `content-type` header starts with `prefix`. */
@@ -106,7 +106,7 @@ export final class Exchange {
 
   /** Tells the host the body has been read to its end. */
   finish(): void {
-    this.#received.tryComplete(new Ok<void, ErrorCode>(unit()));
+    this.#received.tryComplete((true, unit()));
   }
 }
 
@@ -127,8 +127,8 @@ export async function post(
 ): Future<Exchange> {
   // The trailers future is the sender's to settle, and the host does
   // not consider the request body finished until it is.
-  let trailers = Future.of<Outcome<Option<Fields>, ErrorCode>>(
-      new Ok<Option<Fields>, ErrorCode>(none));
+  let trailers = Future.of<Result<Option<Fields>, ErrorCode>>(
+      (true, none));
   var options: Option<RequestOptions> = none;
   if (firstByteTimeout >= 0) {
     let set = RequestOptions.create();
@@ -143,8 +143,8 @@ export async function post(
   wire.setPathWithQuery(some(path));
   let sent = await send(wire);
   let response = match (sent) {
-    case Ok {value}: value
-    case Err {error}: {
+    case (true, let value): value
+    case (false, let error): {
       if (error is ErrorCodeConnectionReadTimeout) {
         throw new RpcError(
           CODE_DEADLINE_EXCEEDED,
@@ -162,7 +162,7 @@ export async function post(
   // Read the status and headers first: `consumeBody` takes the response.
   let status = response.getStatusCode() as i32;
   let responseHeaders = response.getHeaders();
-  let received = new Completer<Outcome<void, ErrorCode>>();
+  let received = new Completer<Result<void, ErrorCode>>();
   let (responseBody, responseTrailers) = WireResponse.consumeBody(response, received.future);
   return new Exchange(status, responseHeaders, responseBody, responseTrailers, received);
 }

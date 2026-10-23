@@ -1430,8 +1430,7 @@ area, and the synthesized module carries generated lift helpers that
 read the canonical layout back out — sizes, alignments and offsets
 computed per the canonical ABI's rules, every host-written buffer
 freed as it is lifted. A top-level `result<T, E>` arrives as the
-inline `Result<T, E>` (zero allocation); a nested result waits on
-`Outcome` construction at void arms.
+inline `Result<T, E>` (zero allocation); a nested result waits.
 
 The lowering half followed: an aggregate parameter flattens into
 zero-initialized slot variables the wrapper fills — a record field by
@@ -1470,9 +1469,8 @@ them, a tighter limit than the synchronous sixteen), and the value
 is simply there once the subtask reports RETURNED. The synthesized
 wrapper is an async _function_: stage, call, `await` the driver's
 future, release its own staging, lift from the return area. A
-top-level `result<T, E>` arrives as `Outcome<T, E>` — a future's
-payload must be storable, and the inline `Result` is
-return-position-only. The staging arena became range-based
+top-level `result<T, E>` arrives as a stored `Result<T, E>`, the
+form a future's payload takes (an `Outcome<T, E>` until #495). The staging arena became range-based
 (`stagedMark`/`releaseStagedFrom`) in the same change: an async
 callee may lift its arguments _after_ the call returns, so a
 suspended wrapper still owns live staging, and a pop-all release
@@ -1573,11 +1571,10 @@ type it mentions — which is how a payload like
 `result<option<trailers>, error-code>` reaches types only an
 instance export can name. Read/write entries at such types carry
 `realloc` beside the memory, because lowering a rich payload into
-the guest allocates. A `result` payload rides `Outcome` (a future's
-value must be storable), and a bare result arm — in a future payload
-or a plain sync result — is a `void` lane filled by a generated
-`witUnit()`, which probing showed constructs and matches fine in
-both the inline `Result` and `Outcome`.
+the guest allocates. A `result` payload is a stored `Result` (an
+`Outcome` until #495), and a bare result arm — in a future payload or
+a plain sync result — is a `void` lane filled by a generated
+`witUnit()`.
 
 Still C6: non-u8 stream elements and the bare `future` (no payload).
 

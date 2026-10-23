@@ -1,7 +1,7 @@
 import { suite, test, TestContext } from 'zena:test';
 import { equal, isTrue } from 'zena:assert';
 import { runFuture, Completer, TaskGroup, drainMicrotasks } from 'zena:async';
-import { Some, None, Option, none, Outcome, Ok } from 'zena:core';
+import { Some, None, Option, none, Result } from 'zena:core';
 import {
   App, AppOptions, Request, Response, Router, Server,
   compose, mount, matchPath, HttpError, statusText, Middleware,
@@ -314,8 +314,8 @@ export let tests = suite('zena:http', () => {
   test('fromWireRequest correctly parses method and consumes body without error', (ctx) => {
     let fields = Fields.create();
     fields.append('user-agent', 'curl/8.0.0'.toBytes());
-    let trailers = new Completer<Outcome<Option<Fields>, ErrorCode>>();
-    trailers.complete(new Ok<Option<Fields>, ErrorCode>(none));
+    let trailers = new Completer<Result<Option<Fields>, ErrorCode>>();
+    trailers.complete((true, none));
     let (wireReq, _) = WireRequest.new_(fields, none, trailers.future, none);
     wireReq.setAuthority(some('127.0.0.1:8080'));
     let req = fromWireRequest(wireReq);
@@ -329,8 +329,8 @@ export let tests = suite('zena:http', () => {
     // nothing can be read from the wire request afterwards.
     let fields = Fields.create();
     fields.append('content-type', 'text/plain'.toBytes());
-    let trailers = new Completer<Outcome<Option<Fields>, ErrorCode>>();
-    trailers.complete(new Ok<Option<Fields>, ErrorCode>(none));
+    let trailers = new Completer<Result<Option<Fields>, ErrorCode>>();
+    trailers.complete((true, none));
     let (wireReq, _) = WireRequest.new_(fields, none, trailers.future, none);
     wireReq.setAuthority(some('127.0.0.1:8080'));
     wireReq.setPathWithQuery(some('/xrpc/com.example.method?x=1'));
