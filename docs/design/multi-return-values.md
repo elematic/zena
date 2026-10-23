@@ -467,35 +467,36 @@ call_ref (type $next_sig)
 
 Inline tuples have restrictions:
 
-- Cannot be stored in variables (only destructured immediately)
-- Cannot be fields in structs/classes
-- Cannot be elements in arrays
 - Can only appear as function return types
+- Convert to and from their boxed form implicitly (#371): a tuple has no
+  identity, so the conversion cannot be observed
 
 ```zena
-// Allowed
-let (a, b) = getTuple();
-
-// NOT allowed - inline tuples can't be stored
-let t = getTuple();  // Error: inline tuple must be destructured
-let t: (i32, i32) = getTuple();  // Error: same
+let (a, b) = getTuple();         // destructured: stack values only
+let t = getTuple();              // t is the boxed (i32, i32)
+let u: (i32, i32) = getTuple();  // the same
 ```
 
-This ensures they compile to stack values, not heap allocations.
+The checker makes `TupleType` and `InlineTupleType` assignable to each
+other element by element (`isAssignableTo`), and infers the boxed form
+for a name bound without a tuple pattern and for a type argument
+(`boxedFormOf`). In codegen, a call with an inline result lowered where
+one value is wanted is read as slots and then boxed (`#boxInline`): with
+several members, a branch on the tag at position 0 picks the member
+whose struct to allocate. A boxed value returned from a function with an
+inline result is read into slots by `#unboxTuples` and moved into the
+function's slots.
+
+Function types do not convert: an inline result changes the wasm
+signature, and nothing adapts one function to the other yet, so
+`isAssignableTo` rejects a function type whose result differs from the
+target's in inline-ness.
 
 ### Boxed Tuple Coercion
 
-An inline tuple can be explicitly boxed:
-
-```zena
-let boxed: (i32, i32) = (getTuple()...);  // Spread into boxed tuple
-```
-
-Or with a helper:
-
-```zena
-let boxed = box(getTuple());  // Returns (i32, i32)
-```
+Boxing is implicit (see above): `let boxed: (i32, i32) = getTuple();`
+allocates the tuple. The explicit forms this section once proposed, a
+spread `(getTuple()...)` or a `box()` helper, are not needed.
 
 ## Comparison with Alternatives
 

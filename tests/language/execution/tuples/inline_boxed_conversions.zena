@@ -1,0 +1,71 @@
+// @mode: run
+// @result: 0
+// A value converts between `T` and `inline T` implicitly, since a tuple's
+// identity cannot be observed. Inline into boxed allocates the member's
+// tuple; boxed into inline reads its fields into slots.
+
+type Checked = (true, i32) | (false, String);
+
+let parse = (s: String): inline Checked => {
+  if (s == '42') {
+    return (true, 42);
+  }
+  return (false, s);
+};
+
+let pair = (n: i32): inline (i32, i32) => (n, n + 1);
+
+// Boxed into inline: a stored value returned where an inline one is
+// expected.
+let stored: Array<Checked> = [(true, 7), (false, 'eight')];
+let fromStore = (i: i32): inline Checked => stored[i];
+
+let identity = <T>(x: T): T => x;
+
+let first = (c: Checked): i32 => match (c) {
+  case (true, let n): n
+  case (false, let s): s.length
+};
+
+export let main = (): i32 => {
+  var failures = 0;
+  // Inline into boxed: a local, an array element and an argument.
+  let boxed: (i32, i32) = pair(3);
+  let (a, b) = boxed;
+  if (a + b != 7) {
+    failures += 1;
+  }
+  let results: Array<Checked> = [parse('42'), parse('x')];
+  if (first(results[0]) != 42 || first(results[1]) != 1) {
+    failures += 1;
+  }
+  if (first(parse('hello')) != 5) {
+    failures += 1;
+  }
+  if (let (true, n) = fromStore(0)) {
+    if (n != 7) {
+      failures += 1;
+    }
+  } else {
+    failures += 1;
+  }
+  if (let (false, s) = fromStore(1)) {
+    if (s.length != 5) {
+      failures += 1;
+    }
+  } else {
+    failures += 1;
+  }
+  // A name or an inferred type argument holds the boxed form.
+  let named = pair(1);
+  let (n1, n2) = named;
+  if (n1 + n2 != 3) {
+    failures += 1;
+  }
+  let viaGeneric = identity(pair(5));
+  let (g1, g2) = viaGeneric;
+  if (g1 + g2 != 11) {
+    failures += 1;
+  }
+  return failures;
+};

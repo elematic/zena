@@ -423,8 +423,13 @@ let divide = (a: i32, b: i32): inline (i32, i32) => {
 let (quot, rem) = divide(17, 5);  // quot=3, rem=2
 ```
 
-Multi-value returns must be immediately destructured at the call site—you cannot
-store them in a variable.
+Destructuring a multi-value return uses the values directly. Storing it whole,
+in a variable, field or array, allocates its boxed tuple:
+
+```zena
+let (q, r) = divide(17, 5); // no allocation
+let both = divide(17, 5);   // both: (i32, i32), boxed
+```
 
 `inline` applies to a tuple type, a union of tuples, or a name for either, and
 takes the whole union to its right:
