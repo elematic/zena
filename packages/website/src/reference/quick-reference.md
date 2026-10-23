@@ -736,6 +736,9 @@ while (true) {
 }
 ```
 
+A `while (true)` or `for (;;)` with no `break` is left only by `return` or
+`throw`, so a function may end with one and need no `return` after it.
+
 ### Let-Pattern Conditions
 
 Combine pattern matching with conditionals using `if let` and `while let`. The

@@ -54,7 +54,7 @@ import {
   FlowUnreachable, FlowSuspend, FlowBodyState, PendingEdgeIf,
   PendingEdgeMatch, BorrowUseRec
 } from './analysis/flow.zena';
-import { walkEnter } from './visitor.zena';
+import { walk, walkEnter } from './visitor.zena';
 import {
   Node, Module, SourceLocation,
   // Expressions
@@ -2287,6 +2287,11 @@ final class CheckerContext {
 
   flowIsUnreachable(): boolean {
     return this.#currentFlow is FlowUnreachable;
+  }
+
+  /** The node for a position no path reaches. */
+  unreachableFlow(): FlowNode {
+    return this.#flowUnreachable;
   }
 
   newFlowJoin(): FlowJoin {
@@ -10006,8 +10011,13 @@ export function typesEqual(a: Type, b: Type): boolean {
  * Used to propagate narrowing past null-guard patterns like:
  *   if (x == null) { return; }
  *   // x is now non-null here
+ *
+ * `neverCompletingLoops` counts a loop that never completes
+ * (`loopNeverCompletes`) as exiting. The unreachable-code reports pass
+ * false until the bootstrap's checker knows the rule (#509).
  */
-function exprDefinitelyExits(expr: Expression, model: SemanticModel | null = null): boolean {
+function exprDefinitelyExits(expr: Expression, model: SemanticModel | null = null,
+    neverCompletingLoops: boolean = true): boolean {
   return match (expr) {
     case ThrowExpression {}: true
     case CallExpression as call: {
@@ -10024,9 +10034,9 @@ function exprDefinitelyExits(expr: Expression, model: SemanticModel | null = nul
       var allExit = true;
       for (let c in cases) {
         let caseExits = if (c.body is Statement) {
-          branchDefinitelyExits(c.body as Statement, model)
+          branchDefinitelyExits(c.body as Statement, model, neverCompletingLoops)
         } else {
-          exprDefinitelyExits(c.body as Expression, model)
+          exprDefinitelyExits(c.body as Expression, model, neverCompletingLoops)
         };
         if (!caseExits) { allExit = false; }
       }
@@ -10034,16 +10044,16 @@ function exprDefinitelyExits(expr: Expression, model: SemanticModel | null = nul
     }
     case IfExpression {consequent, alternate}: {
       let consExits = if (consequent is Statement) {
-        branchDefinitelyExits(consequent, model)
+        branchDefinitelyExits(consequent, model, neverCompletingLoops)
       } else {
-        exprDefinitelyExits(consequent as Expression, model)
+        exprDefinitelyExits(consequent as Expression, model, neverCompletingLoops)
       };
       let altExits = if (alternate == null) {
         false
       } else if (alternate is Statement) {
-        branchDefinitelyExits(alternate, model)
+        branchDefinitelyExits(alternate, model, neverCompletingLoops)
       } else {
-        exprDefinitelyExits(alternate as Expression, model)
+        exprDefinitelyExits(alternate as Expression, model, neverCompletingLoops)
       };
       consExits && altExits
     }
@@ -10051,22 +10061,86 @@ function exprDefinitelyExits(expr: Expression, model: SemanticModel | null = nul
   };
 }
 
-function branchDefinitelyExits(stmt: Statement, model: SemanticModel | null = null): boolean {
+function branchDefinitelyExits(stmt: Statement, model: SemanticModel | null = null,
+    neverCompletingLoops: boolean = true): boolean {
   return match (stmt) {
     case ReturnStatement {}: true
     case BreakStatement {}: true
     case ContinueStatement {}: true
-    case ExpressionStatement {expression}: exprDefinitelyExits(expression, model)
+    case ExpressionStatement {expression}:
+      exprDefinitelyExits(expression, model, neverCompletingLoops)
     case BlockStatement {body}: {
       if (body.length == 0) { false }
-      else { branchDefinitelyExits(body[body.length - 1], model) }
+      else { branchDefinitelyExits(body[body.length - 1], model, neverCompletingLoops) }
     }
     case IfStatement {consequent, alternate}: {
       if (alternate == null) { false }
-      else { branchDefinitelyExits(consequent, model) && branchDefinitelyExits(alternate, model) }
+      else {
+        branchDefinitelyExits(consequent, model, neverCompletingLoops) &&
+            branchDefinitelyExits(alternate, model, neverCompletingLoops)
+      }
     }
+    case WhileStatement {test, body}:
+      neverCompletingLoops && loopNeverCompletes(test, body)
+    case ForStatement {test, body}:
+      neverCompletingLoops && loopNeverCompletes(test, body)
     case _: false
   };
+}
+
+/** Whether `test` is the literal `true`. */
+function isTrueLiteral(test: Node): boolean {
+  if (let BooleanLiteral {value} = test) {
+    return value;
+  }
+  return false;
+}
+
+/**
+ * Whether a loop never completes normally: its condition is the literal
+ * `true`, or a `for` has none, and no `break` in its body leaves it. A
+ * `return` or a `throw` is the only way out.
+ */
+function loopNeverCompletes(test: Node | null, body: Statement): boolean {
+  if (test != null && !isTrueLiteral(test)) {
+    return false;
+  }
+  return !breaksOutOf(body);
+}
+
+/**
+ * Whether `node` holds a `break` for the loop around it: one outside
+ * every loop body and function nested in `node`. A nested loop's
+ * condition, initializer and update belong to the outer loop, so a
+ * `break` in one of them counts.
+ */
+function breaksOutOf(node: Node): boolean {
+  var found = false;
+  walk(node, (n) => {
+    if (found) { return false; }
+    if (n is BreakStatement) {
+      found = true;
+      return false;
+    }
+    if (let WhileStatement {test} = n) {
+      found = breaksOutOf(test);
+      return false;
+    }
+    if (let ForStatement {init, test, update} = n) {
+      found = (init != null && breaksOutOf(init)) ||
+          (test != null && breaksOutOf(test)) ||
+          (update != null && breaksOutOf(update));
+      return false;
+    }
+    if (let ForInStatement {iterable} = n) {
+      found = breaksOutOf(iterable);
+      return false;
+    }
+    // A function's breaks belong to its own loops, and a class holds
+    // only functions.
+    return !(n is FunctionExpression) && !(n is ClassDeclaration);
+  }, (_) => {});
+  return found;
 }
 
 /**
@@ -10882,7 +10956,9 @@ function checkStatement(ctx: CheckerContext, stmt: Statement): void {
         ctx.beginOwnStatement();
         checkStatement(ctx, stmtNode);
         ctx.endOwnStatement(i, stmtNode);
-        if (branchDefinitelyExits(stmtNode, ctx.model) && i < body.length - 1) {
+        // TODO(#509): report code after a loop that never completes too.
+        if (branchDefinitelyExits(stmtNode, ctx.model, false) &&
+            i < body.length - 1) {
           ctx.error(
             "Unreachable code detected.",
             DiagnosticCode.UnreachableCode,
@@ -11174,7 +11250,12 @@ case _: {
           let bodyEnd = ctx.currentFlow;
           ctx.setFlow(afterTest);
           applyFalseNarrowingFromCondition(ctx, testExpr);
-          let falseExit = ctx.currentFlow;
+          // `while (true)` is left only by a `break`.
+          let falseExit = if (isTrueLiteral(testExpr)) {
+            ctx.unreachableFlow()
+          } else {
+            ctx.currentFlow
+          };
           ctx.setFlow(bodyEnd);
           ctx.exitFlowLoop(falseExit);
         }
@@ -11212,6 +11293,10 @@ case _: {
         applyFalseNarrowingFromCondition(ctx, test);
         falseExit = ctx.currentFlow;
         ctx.setFlow(inBody);
+      }
+      // With no condition, or the literal `true`, only a `break` leaves.
+      if (test == null || isTrueLiteral(test)) {
+        falseExit = ctx.unreachableFlow();
       }
       if (update != null) {
         checkExpression(ctx, update, null);
@@ -24156,7 +24241,9 @@ function checkFunctionExpression(
           checkStatement(ctx, stmtNode);
         }
         ctx.endOwnStatement(j, stmtNode);
-        if (branchDefinitelyExits(stmtNode) && j < block.body.length - 1) {
+        // TODO(#509): report code after a loop that never completes too.
+        if (branchDefinitelyExits(stmtNode, null, false) &&
+            j < block.body.length - 1) {
           ctx.error(
             "Unreachable code detected.",
             DiagnosticCode.UnreachableCode,
