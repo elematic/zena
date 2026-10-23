@@ -1,0 +1,32 @@
+/**
+ * Asks a PDS for a service-auth token with the session `zena login` stored,
+ * and checks the token the way a package host would, for
+ * `tests/pds-js/run.js`. Its argument is the session file. It resolves DIDs
+ * and handles with `ZENA_PLC_DIRECTORY` and `ZENA_DNS_OVER_HTTPS`, and
+ * prints `verified <iss> <aud> <lxm>`.
+ */
+
+import {Future} from 'zena:async';
+import {getArguments, getEnv} from 'zena:cli';
+import {readFileSync} from 'zena:fs';
+import {parseJson} from 'zena:json';
+import {now} from 'wasi:clocks/system-clock';
+import {IdentityResolver} from 'atproto:identity';
+import {verifyServiceAuth} from 'atproto:service-auth';
+import {Session, getServiceAuth} from 'atproto:session';
+
+let HOST = 'did:web:pkg.zena-lang.dev';
+let PUBLISH = 'dev.zena-lang.host.publish';
+
+export async function main(): Future<i32> {
+  let args = getArguments();
+  let session = Session.fromJson(parseJson(readFileSync(args[args.length - 1])));
+  let resolver = new IdentityResolver();
+  resolver.plcDirectory = getEnv('ZENA_PLC_DIRECTORY') ?? resolver.plcDirectory;
+  resolver.dnsOverHttps = getEnv('ZENA_DNS_OVER_HTTPS') ?? resolver.dnsOverHttps;
+
+  let token = await getServiceAuth(session, HOST, PUBLISH);
+  let claims = await verifyServiceAuth(token, HOST, PUBLISH, now().seconds, resolver.signingKeys());
+  console.log(`verified ${claims.iss} ${claims.aud} ${claims.lxm as String}`);
+  return 0;
+}

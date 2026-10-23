@@ -89,6 +89,12 @@ the `zena` command. The design is in
      separate `zena run` processes, since waiting on a process blocks the
      test's event loop. `cargo test` (`test:cargo`) covers the Rust
      crates' own unit tests.
+   - `test:pds-js`, which `test` does not run because it needs the
+     network, signs in to pds.js, a PDS someone else wrote, with a real
+     app password (`tests/pds-js/`). `setup.mjs` fetches pds.js at the
+     revision docs/design/pds.md pins into the cache, and runs its server
+     on Node.js 24 from nixpkgs, or `PDS_JS_NODE`, since the
+     better-sqlite3 it locks does not build on Node.js 26.
 
 5. **The bootstrap and the build order**
    - `zena-run` runs the checked-in bootstrap to build the compiler

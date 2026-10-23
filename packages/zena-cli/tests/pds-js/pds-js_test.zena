@@ -1,0 +1,81 @@
+/**
+ * `zena login`, service auth and `zena logout` against pds.js, at the
+ * revision docs/design/pds.md pins: a PDS someone else wrote, with real app
+ * passwords. `setup.mjs` fetches and installs it, and `server.mjs` runs it
+ * with one account and a PLC directory and DNS resolver for it.
+ *
+ * Not part of `npm test`, since fetching pds.js needs the network:
+ * `npm run test:pds-js -w @zena-lang/zena-cli`.
+ */
+
+import {suite, test} from 'zena:test';
+import {isTrue} from 'zena:assert';
+import {existsSync} from 'zena:fs';
+import {JsonObject, parseJson} from 'zena:json';
+import {runWith, spawnWith} from 'zena:process';
+import {milliseconds, sleep} from 'zena:time';
+import {runFuture} from 'zena:async';
+import {Scratch, ZenaCommand, described, ensureDir, read, repoRoot} from '../cli-support.zena';
+
+let HERE = 'packages/zena-cli/tests/pds-js';
+let FIXTURE = 'packages/zena-cli/tests/fixtures/pds-service-auth.zena';
+
+function field(json: JsonObject, name: String): String {
+  return json[name] as String;
+}
+
+export let tests = suite('zena against pds.js', () => {
+  test('signs in with an app password, gets service auth that verifies, and signs out', (ctx) => {
+    let setup = runWith(['node', `${repoRoot()}/${HERE}/setup.mjs`], {});
+    isTrue(setup.succeeded(), described(setup));
+    let prepared = parseJson(setup.stdout) as JsonObject;
+
+    let scratch = Scratch.create('pds-js');
+    ensureDir(scratch.at('pds'));
+    let server = spawnWith([field(prepared, 'node'), `${repoRoot()}/${HERE}/server.mjs`,
+        field(prepared, 'dir'), scratch.host('pds')], {});
+    try {
+      let detailsPath = scratch.at('pds/pds-js.json');
+      for (var tries = 0; tries < 300 && !existsSync(detailsPath); tries += 1) {
+        runFuture(sleep(milliseconds(200 as i64)));
+      }
+      isTrue(existsSync(detailsPath), 'pds.js did not start');
+      let details = parseJson(read(detailsPath)) as JsonObject;
+      let did = field(details, 'did');
+      let handle = field(details, 'handle');
+
+      ensureDir(scratch.at('workspace'));
+      let zena = new ZenaCommand(scratch.host('workspace'), scratch.at('workspace'), scratch.host('cache'))
+        .set('ZENA_PLC_DIRECTORY', field(details, 'plcDirectory'))
+        .set('ZENA_DNS_OVER_HTTPS', field(details, 'dnsOverHttps'))
+        .set('ZENA_CONFIG_DIR', scratch.host('config'));
+      let session = scratch.at('config/session.json');
+
+      let wrong = zena.run(['login', handle, '--password-stdin'], 'aaaa-bbbb-cccc-dddd\n');
+      isTrue(!wrong.succeeded(), 'a wrong app password was accepted');
+      isTrue(!existsSync(session), 'a refused login stored a session');
+
+      let login = zena.run(['login', handle, '--password-stdin'],
+          `${field(details, 'appPassword')}\n`);
+      isTrue(login.succeeded() && login.stdout.contains(`Signed in as ${handle} (${did})`),
+          described(login));
+
+      // pds.js signs the token with the account's key, and the package
+      // host's check accepts it.
+      let auth = new ZenaCommand(repoRoot(), '.', scratch.host('cache'))
+        .set('ZENA_PLC_DIRECTORY', field(details, 'plcDirectory'))
+        .set('ZENA_DNS_OVER_HTTPS', field(details, 'dnsOverHttps'))
+        .run(['run', '--dir', `${scratch.host('config')}::/config`, FIXTURE, '/config/session.json']);
+      isTrue(auth.succeeded() &&
+          auth.stdout.contains(`verified ${did} did:web:pkg.zena-lang.dev dev.zena-lang.host.publish`),
+          described(auth));
+
+      let logout = zena.run(['logout']);
+      isTrue(logout.succeeded() && logout.stdout.contains(`Signed out ${handle}`), described(logout));
+      isTrue(!existsSync(session), 'zena logout kept the session');
+    } finally {
+      server.waitFor(1 as i64);
+      scratch.remove();
+    }
+  });
+});
