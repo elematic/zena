@@ -2604,6 +2604,24 @@ while (i < 3) {
 // count == 6 (2 iterations per outer loop × 3 outer loops)
 ```
 
+A loop whose condition is the literal `true`, or a `for` loop with no
+condition, never finishes unless a `break` in its body leaves it. With no such
+`break`, the only ways out are `return` and `throw`, so nothing needs to follow
+the loop, and code after it is unreachable:
+
+```zena
+let firstSquareAbove = (limit: i32): i32 => {
+  var i = 0;
+  while (true) {
+    if (i * i > limit) {
+      return i;
+    }
+    i = i + 1;
+  }
+  // No return needed here.
+};
+```
+
 ### Match Expression
 
 Zena supports pattern matching using the `match` expression.

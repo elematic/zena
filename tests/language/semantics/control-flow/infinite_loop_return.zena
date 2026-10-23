@@ -1,0 +1,149 @@
+// @mode: check
+// A loop that never completes normally ends the path: `while (true)`
+// or a `for` without a condition (or with the literal `true`), when no
+// `break` in its body leaves it. Only a `return` or a `throw` gets out,
+// so nothing has to follow it.
+
+class Item(val: String)
+
+export function whileTrue(n: i32): i32 {
+  var i = 0;
+  while (true) {
+    i += 1;
+    if (i == n) {
+      return i;
+    }
+  }
+}
+
+export function forEver(n: i32): i32 {
+  for (var i = 0; ; i += 1) {
+    if (i == n) {
+      return i;
+    }
+  }
+}
+
+export function forTrue(n: i32): i32 {
+  for (var i = 0; true; i += 1) {
+    if (i == n) {
+      return i;
+    }
+  }
+}
+
+export let arrow = (n: i32): i32 => {
+  while (true) {
+    if (n > 0) {
+      return n;
+    }
+    throw new Error('not positive');
+  }
+};
+
+// A `break` in a nested loop leaves that loop, not this one.
+export function nestedBreak(rows: i32): i32 {
+  var r = 0;
+  while (true) {
+    var c = 0;
+    while (c < 10) {
+      if (c == r) {
+        break;
+      }
+      c += 1;
+    }
+    for (let k in [1, 2, 3]) {
+      if (k == 2) {
+        break;
+      }
+    }
+    if (r == rows) {
+      return r;
+    }
+    r += 1;
+  }
+}
+
+// So does one in a closure's own loop.
+export function closureBreak(): i32 {
+  while (true) {
+    let f = () => {
+      while (true) {
+        break;
+      }
+    };
+    f();
+    return 1;
+  }
+}
+
+// After the guard, `x` is an `Item`: the null branch never comes back.
+export function narrowsAfter(x: Item | null): String {
+  if (x == null) {
+    while (true) {
+      throw new Error('null');
+    }
+  }
+  return x.val;
+}
+
+// An interface constructor may end in one too.
+interface Shape {
+  area(): f64;
+
+  new grown(side: f64) {
+    var s = side;
+    while (true) {
+      if (s >= 1.0) {
+        return new Square(s);
+      }
+      s = s * 2.0;
+    }
+  }
+}
+
+final class Square implements Shape {
+  side: f64;
+  new(this.side);
+  area(): f64 {
+    return this.side * this.side;
+  }
+}
+
+// The value of a match arm whose block never completes is `never`.
+export function armNever(n: i32): i32 {
+  let v = match (n) {
+    case 0: {
+      while (true) {
+        return 7;
+      }
+    }
+    case _: n
+  };
+  return v;
+}
+
+// A `break` that leaves the loop lets it complete, so a return is
+// still needed after it.
+// @error: A function with a non-void declared return type must return a value.
+export function breaks(n: i32): i32 {
+  var i = 0;
+  while (true) {
+    if (i == n) {
+      break;
+    }
+    i += 1;
+  }
+}
+
+// So does a condition other than the literal `true`.
+// @error: A function with a non-void declared return type must return a value.
+export function conditional(n: i32): i32 {
+  var i = 0;
+  while (i < 100) {
+    if (i == n) {
+      return i;
+    }
+    i += 1;
+  }
+}
