@@ -1,0 +1,61 @@
+// @mode: run
+// @result: 0
+// The shapes `Result` needs as a value union `(true, T) | (false, E)`: a
+// zero-width payload, a generic one, storage in a `Future`, and the inline
+// form returned and boxed.
+
+import {Completer} from 'zena:async';
+
+type Res<T, E> = (true, T) | (false, E);
+
+function unit() {}
+
+let ok = <T, E>(value: T): Res<T, E> => (true, value);
+let err = <T, E>(error: E): Res<T, E> => (false, error);
+
+let check = (n: i32): inline Res<i32, String> => {
+  if (n < 0) {
+    return (false, 'negative');
+  }
+  return (true, n * 2);
+};
+
+let describe = <T>(r: Res<T, String>): i32 => match (r) {
+  case (true, let _): 1
+  case (false, let message): message.length
+};
+
+export async function main(): Future<i32> {
+  var failures = 0;
+  // A void payload: the tuple has a zero-width element.
+  let done: Res<void, String> = (true, unit());
+  if (describe(done) != 1) {
+    failures += 1;
+  }
+  let failed: Res<void, String> = err<void, String>('nope');
+  if (describe(failed) != 4) {
+    failures += 1;
+  }
+  // Generic construction.
+  let made = ok<i32, String>(21);
+  if (let (true, v) = made) {
+    if (v != 21) {
+      failures += 1;
+    }
+  } else {
+    failures += 1;
+  }
+  // Through a Future.
+  let completer = new Completer<Res<void, String>>();
+  completer.complete((true, unit()));
+  let settled = await completer.future;
+  if (!(settled is (true, void))) {
+    failures += 1;
+  }
+  // Inline, boxed by storage.
+  let results: Array<Res<i32, String>> = [check(4), check(-1)];
+  if (describe(results[0]) + describe(results[1]) != 9) {
+    failures += 1;
+  }
+  return failures;
+}

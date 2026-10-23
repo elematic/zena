@@ -116,7 +116,9 @@ let tupleFieldRead = (cx: LoweringContext, value: i32, index: i32): i32 => {
   let fieldName = i32ToString(index);
   let fieldIdx = st.fieldIndexByName(fieldName);
   if (fieldIdx < 0) {
-    bail(cx, 'tuple pattern arity');
+    // A zero-width element (`void`) has no field, and no value; the
+    // checker has already matched the pattern's length to the type's.
+    return -1;
   }
   let fieldRef = cx.b.addRef(new IrRefField(st, fieldName));
   return cx.b.emit(IrOp.struct_get, st.fields[fieldIdx].type, value, fieldRef);
