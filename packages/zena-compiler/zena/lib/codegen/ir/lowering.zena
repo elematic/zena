@@ -5031,10 +5031,12 @@ export final class FunctionLowerer {
   /**
    * Template mode (template.zena) abandons the template where an
    * expression's lowering may depend on a type argument beyond what
-   * the template records: tests and casts against a type parameter,
-   * `match` on one, string conversion, equality, and calls to generic
-   * functions (`hash`, `equals`), all of which dispatch on the
-   * argument's class.
+   * the template records: a type test against or involving a type
+   * parameter, a cast to anything but a class, `match` on one, string
+   * conversion, and calls to intrinsics other than `eq` and `hash`. A
+   * cast to a class records whether it was needed, `==` on a class
+   * records that it was identity (`lowerClassEquality`), and a method
+   * found on a class's chain records where (`resolveDevirtualizedMethod`).
    */
   #templateGate(expr: Expression): void {
     let model = this.func.model;
@@ -5044,11 +5046,15 @@ export final class FunctionLowerer {
     };
     if (expr is IsExpression) {
       if (mentions((expr as IsExpression).expression)) {
-        throw new TemplateAbandon('type test or cast');
+        throw new TemplateAbandon('type test');
       }
     } else if (expr is AsExpression) {
       if (mentions(expr) || mentions((expr as AsExpression).expression)) {
-        throw new TemplateAbandon('type test or cast');
+        let target = this.#substitutedNodeType(expr);
+        if (target == null ||
+            !(getNonNullableType(baseType(target as Type)) is ClassType)) {
+          throw new TemplateAbandon('cast to a non-class');
+        }
       }
     } else if (expr is MatchExpression) {
       if (mentions(expr.discriminant)) {
@@ -5062,18 +5068,24 @@ export final class FunctionLowerer {
       }
     } else if (expr is TaggedTemplateExpression) {
       throw new TemplateAbandon('tagged template');
-    } else if (expr is BinaryExpression) {
-      let op = expr.operator;
-      if ((op == '==' || op == '!=') && (mentions(expr.left) || mentions(expr.right))) {
-        throw new TemplateAbandon('equality');
-      }
     } else if (expr is CallExpression) {
-      let ct = model.getNodeType(expr.callee);
-      if (ct is FunctionType) {
-        let ft = ct as FunctionType;
-        let targs = ft.typeArguments;
-        if (targs != null && targs.length > 0 && mentions(expr.callee)) {
-          throw new TemplateAbandon('generic call');
+      let callee = (expr as CallExpression).callee;
+      if (callee is Identifier && mentions(callee) &&
+          !isArrayIntrinsic((callee as Identifier).name)) {
+        let sym = model.resolve(callee);
+        let ct = model.getNodeType(callee);
+        if (sym != null && ct is FunctionType) {
+          let decl = findDeclaration(this.wasm, sym.resolveTarget(), ct as FunctionType);
+          if (decl != null) {
+            if (let (true, name) = this.wasm.intrinsics.get(decl.id)) {
+              // `eq` and `hash` on a class decide through
+              // `lowerClassEquality` and `resolveDevirtualizedMethod`,
+              // which record their answers.
+              if (name != 'eq' && name != 'hash') {
+                throw new TemplateAbandon(`intrinsic ${name}`);
+              }
+            }
+          }
         }
       }
     }

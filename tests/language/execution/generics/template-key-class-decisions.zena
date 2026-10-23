@@ -1,0 +1,87 @@
+// @mode: run
+// @result: 374047
+
+// Template lowering (docs/design/template-zir.md) records the
+// decisions a generic method makes from the class its type parameter
+// stands for. `A`, `B` and `C` inherit `hashCode` from `Keyed` and
+// compare by identity; `D` declares its own `hashCode` and `==`. A
+// template learned from two of the first three hashes through
+// `Keyed.hashCode` in both, so only the recorded owner of `hashCode`
+// keeps it from being copied into `Table<D>`, and only the recorded
+// identity comparison keeps `holds` and `same` from comparing `D`s by
+// identity. `key` casts to the type parameter and records that the cast
+// was needed.
+
+@intrinsic('hash')
+declare function hash<T>(value: T): i32;
+@intrinsic('eq')
+declare function equals<T>(a: T, b: T): boolean;
+
+class Keyed {
+  id: i32;
+  new(this.id);
+  hashCode(): i32 {
+    return this.id;
+  }
+}
+
+class A extends Keyed { new(id: i32) : super(id); }
+class B extends Keyed { new(id: i32) : super(id); }
+class C extends Keyed { new(id: i32) : super(id); }
+
+class D extends Keyed {
+  new(id: i32) : super(id);
+  hashCode(): i32 {
+    return this.id * 1000;
+  }
+  operator ==(other: D): boolean {
+    return this.id == other.id;
+  }
+}
+
+class Table<K extends Keyed> {
+  #key: K;
+  #raw: anyref;
+  new(key: K, raw: anyref) : #key = key, #raw = raw;
+  slot(): i32 {
+    return hash(this.#key);
+  }
+  same(other: K): boolean {
+    return equals(this.#key, other);
+  }
+  holds(other: K): boolean {
+    return this.#key == other;
+  }
+  key(): K {
+    return this.#raw as K;
+  }
+}
+
+export let main = (): i32 => {
+  let a = new A(1);
+  let b = new B(2);
+  let c = new C(3);
+  let d = new D(4);
+  let ta = new Table<A>(a, a);
+  let tb = new Table<B>(b, b);
+  let tc = new Table<C>(c, c);
+  let td = new Table<D>(d, d);
+  var total = ta.slot() + tb.slot() + tc.slot() + td.slot();
+  if (ta.same(a)) {
+    total += 10000;
+  }
+  if (!tb.same(new B(2))) {
+    total += 20000;
+  }
+  if (td.same(new D(4))) {
+    total += 40000;
+  }
+  if (tc.holds(c)) {
+    total += 100000;
+  }
+  if (td.holds(new D(4))) {
+    total += 200000;
+  }
+  total += ta.key().id + td.key().id * 10;
+  return total;
+};
