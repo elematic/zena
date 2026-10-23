@@ -191,6 +191,7 @@ fn cli_module(repo_root: Option<&Path>) -> Result<PathBuf> {
 }
 
 fn main() -> Result<()> {
+    zena_runtime::init_logging();
     let repo_root = repo_root()?;
     let stdlib_dir = resolve_stdlib_dir(repo_root.as_deref())?;
     let module_path = cli_module(repo_root.as_deref())?;

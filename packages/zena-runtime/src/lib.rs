@@ -42,6 +42,24 @@ pub mod engine;
 mod fs_read;
 pub mod http_client;
 
+/// Prints wasmtime's log records to stderr when `ZENA_RUST_LOG` is set, in
+/// `RUST_LOG` syntax. `ZENA_RUST_LOG=wasmtime::runtime::store::gc=trace`
+/// prints one line per collection and per heap growth, which is how a
+/// compile's collector work is counted (docs/design/compiler-memory.md).
+///
+/// Both binaries call this, which is also why the logger is set up here
+/// and not in each of them. `env_logger` turns on `log`'s `std` feature,
+/// and `log` is beneath wasmtime and Cranelift, so a binary without it
+/// resolves different features for them and cargo compiles it its own
+/// copy of both.
+pub fn init_logging() {
+    if std::env::var_os("ZENA_RUST_LOG").is_some() {
+        env_logger::Builder::from_env("ZENA_RUST_LOG")
+            .format_timestamp_micros()
+            .init();
+    }
+}
+
 /// Whether this invocation may spawn processes and run components. The
 /// `--allow-spawn` flag comes through here so that ZENA_ALLOW_SPAWN=1
 /// grants it too.

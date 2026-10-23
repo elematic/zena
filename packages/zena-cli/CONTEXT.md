@@ -37,16 +37,27 @@ the `zena` command. The design is in
 2. **The host binary: `src/main.rs`**
    - Loads the CLI module and runs its `main`, with WASI preview 1 and the
      `zena-runtime` imports. It has no command-line logic of its own.
-   - Built once, with `--features bundled`, which makes `build.rs` require
-     `out/stdlib_bundle.rs` — the standard library's sources and the CLI
-     module, for a copy that runs outside a repository. Without the feature
-     the bundle is a stub, which is all an in-repository binary needs:
-     `resolve_stdlib_dir` and `cli_module` prefer the repository's own
-     `packages/stdlib/zena` and `out/zena.wasm` and reach the embedded
-     copies only when there is no repository. So `cargo build -p zena-cli`
-     produces a binary that works in the repository, and a change to the
-     standard library or the compiler needs no Rust rebuild to take
-     effect.
+   - The repository's binary (`build:cargo`) is built without
+     `--features bundled`, so its bundle is a stub. That is all an
+     in-repository binary needs: `resolve_stdlib_dir` and `cli_module`
+     prefer the repository's own `packages/stdlib/zena` and `out/zena.wasm`
+     and reach the embedded copies only when there is no repository. So the
+     binary's inputs are Rust alone: cargo builds it while the bootstrap
+     builds the compiler, and a change to the standard library or the
+     compiler needs no Rust rebuild to take effect.
+   - `build:standalone` builds the copy that runs outside a repository.
+     `--features bundled` makes `build.rs` require `out/stdlib_bundle.rs`,
+     which `build:bundle-assets` generates from the standard library's
+     sources and the CLI module. It builds into `target/standalone`, so it
+     never replaces the repository's binary, and `build` does not run it,
+     since nothing in the repository runs that binary.
+   - `zena-run` and `zena-cli` share every compiled dependency only while
+     cargo resolves the same features for both. `zena_runtime::init_logging`
+     is in the shared crate for that reason: `env_logger` turns on `log`'s
+     `std` feature, `log` is beneath wasmtime, and when only `zena-run` had
+     it, a cold build compiled wasmtime and Cranelift twice. A dependency
+     added to one binary can split them again; compare the `wasmtime` rlib
+     names in `cargo build --message-format=json` for both.
    - Preopens the repository root as `.` (first, so relative paths mean the
      repository: the compiler reads the workspace's `zena-package.json` and
      `packages/stdlib/zena` relative to it) and `/` as `/`.
@@ -102,12 +113,15 @@ the `zena` command. The design is in
 5. **The bootstrap and the build order**
    - `zena-run` runs the checked-in bootstrap to build the compiler
      (`zena-compiler:build:cli`), and then that compiler to build the CLI
-     module. Neither step needs `zena-cli`, which needs the module.
-   - `build:bundle-assets` keeps that true: `zena-run` compiles
-     `dev/bundle.zena` with the compiler and runs the result, so the bundle
-     the binary embeds is produced without a binary. Precompiling the module
-     (`precompile:module`) comes after the binary, because wasmtime's version
-     is what decides whether a `.cwasm` loads.
+     module. Neither step needs `zena-cli`, which needs the module. The
+     language service's `lsp.wasm`, which the playground and the VS Code
+     extension load, is built the same way, so neither waits for the
+     `zena` command.
+   - `build:bundle-assets` keeps that true for the standalone binary:
+     `zena-run` compiles `dev/bundle.zena` with the compiler and runs the
+     result, so the bundle the binary embeds is produced without a binary.
+     Precompiling the module (`precompile:module`) comes after the binary,
+     because wasmtime's version is what decides whether a `.cwasm` loads.
 
 6. **Output Standardization (Silent by Default)**
    - Standard output is the program's own output only, so
@@ -127,6 +141,5 @@ the `zena` command. The design is in
   (`Cargo.toml` and `Cargo.lock` there); use `cargo build -p zena-cli`,
   `cargo check`, and `cargo clippy` from the root, and
   `cargo test -p zena-runtime -p zena-cli -p zena-run` for all three crates.
-  None of those pass `--features bundled`, so they build the stub binary and
-  overwrite the bundled one `npm run build` produces. That binary still works
-  in the repository; the next wireit build notices the change and rebuilds.
+  Add `--release` to reuse the artifacts `npm run build` compiled; without
+  it cargo builds wasmtime again in the dev profile.

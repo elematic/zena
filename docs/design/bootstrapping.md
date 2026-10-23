@@ -18,14 +18,13 @@ It is the base case that enables bootstrapping — the one artifact that
 exists before anything is built. Everything else compiles from source:
 
 ```
-cargo build          → zena-cli            (the Rust/wasmtime host, from source)
-zena-cli + bootstrap → zena/out/cli.wasm   (the working compiler, from source)
+cargo build          → zena-run, zena-cli  (the Rust/wasmtime hosts, from source)
+zena-run + bootstrap → zena/out/cli.wasm   (the working compiler, from source)
 zena/out/cli.wasm    → everything else     (stdlib tests, LSP, formatter, …)
 ```
 
 The `build:cli` wireit script in `packages/zena-compiler` is the
-second step: it runs the bootstrap through `zena-cli`
-(`ZENA_COMPILER_WASM=bootstrap/cli.wasm`) to compile
+second step: it runs the bootstrap on `zena-run` to compile
 `zena/cli/main.zena`. Only the _compiler_ is prebuilt; the host that
 executes it is built by cargo at HEAD, so the bootstrap can never pin
 a stale wasmtime configuration.
