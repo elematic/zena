@@ -323,6 +323,25 @@ export let tests = suite('zena:http', () => {
     equal(req.host, '127.0.0.1:8080');
     equal(req.getHeader('user-agent') as String, 'curl/8.0.0');
   });
+
+  test('a request still has its path, method and headers after its body is read', (ctx) => {
+    // Reading the body hands the wire request over to consume it, so
+    // nothing can be read from the wire request afterwards.
+    let fields = Fields.create();
+    fields.append('content-type', 'text/plain'.toBytes());
+    let trailers = new Completer<Outcome<Option<Fields>, ErrorCode>>();
+    trailers.complete(new Ok<Option<Fields>, ErrorCode>(none));
+    let (wireReq, _) = WireRequest.new_(fields, none, trailers.future, none);
+    wireReq.setAuthority(some('127.0.0.1:8080'));
+    wireReq.setPathWithQuery(some('/xrpc/com.example.method?x=1'));
+    let req = fromWireRequest(wireReq);
+    equal(runFuture(req.text()), '');
+    equal(req.path, '/xrpc/com.example.method');
+    equal(req.query, '?x=1');
+    equal(req.method, 'GET');
+    equal(req.host, '127.0.0.1:8080');
+    equal(req.getHeader('content-type') as String, 'text/plain');
+  });
 });
 
 
