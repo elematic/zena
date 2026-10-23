@@ -37,6 +37,9 @@ file outside a package can; a package lists
   so the account can call another service: creating them, checking them
   against the issuer's key, the audience, the method and the time, and
   refusing a token presented twice (`ReplayGuard`).
+- `atproto:session`: signing in to an account's PDS with a password, and
+  refreshing and ending the session, and asking the PDS for service-auth
+  tokens.
 - `atproto:xrpc`: HTTP requests and an XRPC client.
 - `atproto:identity`: resolving DIDs (`did:plc`, `did:web`) and handles
   (DNS over HTTPS, then HTTPS), checking handles in both directions.

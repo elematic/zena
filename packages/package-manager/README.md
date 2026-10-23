@@ -40,7 +40,8 @@ package in this repository's workspace or from a package that lists it in its
 - `package-manager:testing/fake-pds`: a PLC directory, DNS-over-HTTPS
   resolver and PDS for package accounts, served in the same program, for
   testing what finds and fetches packages. It signs what it serves, so the
-  proofs clients check are real.
+  proofs clients check are real. Accounts with a password can sign in and
+  get service-auth tokens.
 
 ## Lexicons
 

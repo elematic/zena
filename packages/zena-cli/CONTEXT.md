@@ -21,7 +21,9 @@ the `zena` command. The design is in
      cache with `package-manager:fetch`, and `add.zena`, for `zena add`
      and `zena update`, which change the dependencies in
      `zena-package.json`, select versions (`package-manager:resolve`), pin
-     them and fetch them.
+     them and fetch them, and `login.zena`, for `zena login` and
+     `zena logout`, which keep the maintainer's atproto session
+     (`atproto:session`) in the configuration directory.
    - It is built to `out/zena.wasm` by `build:module`, with the compiler
      (`zena-compiler:compile-file`), zb, zenadoc, the language service and
      the formatter linked

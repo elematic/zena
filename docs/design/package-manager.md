@@ -649,7 +649,10 @@ The first `zena publish` of a package creates its account, after asking.
    a port on localhost. It asks for one permission set,
    `dev.zena-lang.authPublish`, which allows writing attestation records
    and calling the package host's methods. The host's methods are `rpc`
-   permissions, which cover `com.atproto.server.getServiceAuth`.
+   permissions, which cover `com.atproto.server.getServiceAuth`. Until
+   the command implements OAuth, `zena login` signs in with an app
+   password instead, which allows the same calls and can be revoked on
+   its own.
 2. **A recovery key.** If the maintainer has none, `zena` generates one
    and asks them to back it up.
 3. **A token for the host.** `zena` asks the maintainer's PDS for a

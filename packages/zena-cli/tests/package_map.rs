@@ -9,8 +9,9 @@
 //! the package cache, where `zena fetch` unpacks the published packages
 //! `zena-lock.json` pins (docs/design/package-manifest.md).
 //!
-//! The fetch tests run `tests/fixtures/fetch-pds.zena` as the package's PLC
-//! directory and PDS.
+//! The fetch, add and login tests run a fixture under `tests/fixtures/` as
+//! the PLC directory and PDS. Signing in is here too, since what it varies
+//! is the command's configuration directory and its terminal.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -134,6 +135,10 @@ fn zena_command(workspace: &Path, cache: &Path, args: &[&str]) -> Command {
         "XDG_CACHE_HOME",
         "ZENA_OPT_LEVEL",
         "ZENA_PLC_DIRECTORY",
+        "ZENA_DNS_OVER_HTTPS",
+        "ZENA_CONFIG_DIR",
+        "XDG_CONFIG_HOME",
+        "ZENA_APP_PASSWORD",
     ] {
         command.env_remove(name);
     }
@@ -515,4 +520,141 @@ fn add_and_update_select_pin_and_fetch_dependencies() {
         "zena add accepted a package that does not exist"
     );
     assert_eq!(read(&manifest), text);
+}
+
+/// The zena command in a workspace of its own, signing in through the fake
+/// PDS whose PLC directory is `plc`, with its configuration in `config`.
+fn zena_login(scratch: &Scratch, plc: &str, config: &Path, args: &[&str]) -> Command {
+    let workspace = scratch.path().join("workspace");
+    fs::create_dir_all(&workspace).expect("a workspace directory");
+    let dns = format!("{}/dns-query", plc.trim_end_matches("/plc"));
+    let mut command = zena_command(&workspace, &scratch.path().join("cache"), args);
+    command
+        .env("ZENA_PLC_DIRECTORY", plc)
+        .env("ZENA_DNS_OVER_HTTPS", dns)
+        .env("ZENA_CONFIG_DIR", config);
+    command
+}
+
+/// Runs `command` with `input` as its stdin.
+fn with_stdin(mut command: Command, input: &str) -> Output {
+    use std::io::Write;
+    let mut child = command
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("the zena command to start");
+    child
+        .stdin
+        .take()
+        .expect("stdin")
+        .write_all(input.as_bytes())
+        .expect("the password written");
+    child
+        .wait_with_output()
+        .expect("the zena command to finish")
+}
+
+#[test]
+fn login_keeps_a_private_session_and_logout_ends_it() {
+    let scratch = Scratch::new("package-map-login");
+    let (_server, plc) = start_fake_pds(&scratch, "login-pds.zena");
+    let config = scratch.path().join("config");
+    let session = config.join("session.json");
+
+    // A wrong password is refused, and nothing is stored.
+    let wrong = with_stdin(
+        zena_login(
+            &scratch,
+            &plc,
+            &config,
+            &["login", "alice.test", "--password-stdin"],
+        ),
+        "not-it\n",
+    );
+    assert!(
+        !wrong.status.success(),
+        "zena login accepted a wrong password"
+    );
+    let stderr = String::from_utf8_lossy(&wrong.stderr);
+    assert!(
+        stderr.contains("AuthenticationRequired"),
+        "unexpected error:\n{stderr}"
+    );
+    assert!(!session.exists(), "a refused login stored a session");
+
+    // A session file left readable by others is made private.
+    fs::create_dir_all(&config).expect("a config directory");
+    fs::write(&session, "{}").expect("an old session");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&session, fs::Permissions::from_mode(0o644)).expect("mode 0644");
+    }
+
+    let login = with_stdin(
+        zena_login(
+            &scratch,
+            &plc,
+            &config,
+            &["login", "alice.test", "--password-stdin"],
+        ),
+        "app-password\n",
+    );
+    assert_success("zena login", &login);
+    let stdout = String::from_utf8_lossy(&login.stdout);
+    assert!(
+        stdout.contains("Signed in as alice.test (did:plc:alicealicealicealicealic)"),
+        "unexpected output:\n{stdout}"
+    );
+    let stored = read(&session);
+    assert!(
+        stored.contains("did:plc:alicealicealicealicealic") && stored.contains("refreshJwt"),
+        "{stored}"
+    );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = fs::metadata(&session)
+            .expect("the session")
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o600, "the session is readable by others");
+    }
+
+    // With no password given and no terminal, it says how to give one.
+    let no_terminal = with_stdin(
+        zena_login(&scratch, &plc, &config, &["login", "alice.test"]),
+        "",
+    );
+    assert!(!no_terminal.status.success());
+    let stderr = String::from_utf8_lossy(&no_terminal.stderr);
+    assert!(
+        stderr.contains("--password-stdin") && stderr.contains("ZENA_APP_PASSWORD"),
+        "unexpected error:\n{stderr}"
+    );
+
+    // The password can come from the environment.
+    let mut from_env = zena_login(
+        &scratch,
+        &plc,
+        &config,
+        &["login", "did:plc:alicealicealicealicealic"],
+    );
+    from_env.env("ZENA_APP_PASSWORD", "app-password");
+    assert_success(
+        "zena login with ZENA_APP_PASSWORD",
+        &from_env.output().expect("zena login"),
+    );
+
+    let logout = zena_login(&scratch, &plc, &config, &["logout"])
+        .output()
+        .expect("zena logout");
+    assert_success("zena logout", &logout);
+    assert!(
+        String::from_utf8_lossy(&logout.stdout).contains("Signed out alice.test"),
+        "unexpected output"
+    );
+    assert!(!session.exists(), "zena logout kept the session");
 }

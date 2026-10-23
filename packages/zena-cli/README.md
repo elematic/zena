@@ -54,6 +54,8 @@ of what the command does.
 | `add <package>[@<version>] [--name <local>]` | Adds a published package to the current package's dependencies, pins versions in `zena-lock.json`, and fetches them.              |
 | `update [<name>...]`                         | Raises the current package's dependencies, or the named ones, to the latest version of their major version that is not yanked.    |
 | `fetch`                                      | Fetches the packages `zena-lock.json` pins into the package cache.                                                                |
+| `login <handle or DID> [--password-stdin]`   | Signs in to your atproto account with an app password, to publish.                                                                |
+| `logout`                                     | Ends the session `login` started.                                                                                                 |
 | `doc <path> [-o <out.json>]`                 | Extracts a package's public API as JSON.                                                                                          |
 | `bench <suite.json> [-o <out.json>]`         | Runs a benchmark suite.                                                                                                           |
 | `lsp`                                        | Runs the language server over stdin and stdout.                                                                                   |
@@ -91,6 +93,19 @@ version of each package and major version, write `zena-lock.json`, and
 fetch what it pins. `fetch` checks each release against the CIDs the
 lockfile pins and the signed proofs its package's PDS serves.
 
+Publishing acts as you, through your own atproto account: the one you
+use for Bluesky or any other app. `zena login` signs in with an app
+password, which your PDS issues and can revoke on its own (on bsky.social:
+Settings, Privacy and security, App passwords). It reads the password from
+`--password-stdin`, then `ZENA_APP_PASSWORD`, then the terminal without
+showing it, and keeps the session in `session.json` in the configuration
+directory, readable only by you. `zena logout` ends the session.
+
+```bash
+zena-cli login alice.bsky.social
+echo "$APP_PASSWORD" | zena-cli login alice.bsky.social --password-stdin
+```
+
 The workspace's root is the repository root, `ZENA_REPO_ROOT`, which
 defaults to the checkout the binary was built in, or the current directory
 for a standalone binary.
@@ -101,6 +116,8 @@ for a standalone binary.
 | `ZENA_PROJECT_CACHE`  | When set, caches go in `.zena/` in the workspace.                                                                        |
 | `ZENA_PLC_DIRECTORY`  | The PLC directory DIDs are resolved with, in place of `https://plc.directory`, for mirrors and tests.                    |
 | `ZENA_DNS_OVER_HTTPS` | The DNS-over-HTTPS endpoint handles are resolved with, in place of Cloudflare's.                                         |
+| `ZENA_CONFIG_DIR`     | Where `login` keeps the session. Defaults to `$XDG_CONFIG_HOME/zena`, or `~/.config/zena`.                               |
+| `ZENA_APP_PASSWORD`   | The app password `login` uses when `--password-stdin` is not given.                                                      |
 
 ## Development and Architecture
 

@@ -1,0 +1,138 @@
+/**
+ * `zena login` and `zena logout`: signing in to the maintainer's own
+ * atproto account, which publishing needs (docs/design/package-manager.md,
+ * "Creating a package"). Until the command signs in with OAuth, it signs in
+ * with an app password, which the maintainer's PDS issues (on bsky.social:
+ * Settings, Privacy and security, App passwords) and can revoke on its own.
+ *
+ * The session, which holds the access and refresh tokens, is kept in
+ * `session.json` in the command's configuration directory, a file only its
+ * owner can read. `currentSession` reads it for the commands that act as
+ * the maintainer, and `saveSession` writes it again after a refresh.
+ */
+
+import { ParsedArgs } from 'zena:args';
+import { runFuture } from 'zena:async';
+import { getEnv, readStdinSync } from 'zena:cli';
+import { existsSync, readFileSync, unlinkSync } from 'zena:fs';
+import { parseJson, stringify } from 'zena:json';
+import { dirname } from 'zena:path';
+import { Session, createSession, deleteSession } from 'atproto:session';
+import { readHidden, writePrivate } from 'zena-cli:host/secrets';
+import { ensureDir } from './compile.zena';
+import { Options } from './env.zena';
+import { packageResolver } from './fetch.zena';
+
+/**
+ * The command's configuration directory: `$ZENA_CONFIG_DIR`, else
+ * `$XDG_CONFIG_HOME/zena`, else `~/.config/zena`.
+ */
+export function configDir(): String {
+  let custom = getEnv('ZENA_CONFIG_DIR');
+  if (custom != null && custom != '') {
+    return custom;
+  }
+  let xdg = getEnv('XDG_CONFIG_HOME');
+  if (xdg != null && xdg != '') {
+    return `${xdg}/zena`;
+  }
+  let home = getEnv('HOME');
+  if (home == null || home == '') {
+    throw new Error('there is no home directory to keep the session in; set ZENA_CONFIG_DIR');
+  }
+  return `${home}/.config/zena`;
+}
+
+function sessionPath(): String {
+  return `${configDir()}/session.json`;
+}
+
+/** The signed-in session, or null when no one is signed in. */
+export function currentSession(): Session | null {
+  let path = sessionPath();
+  if (!existsSync(path)) {
+    return null;
+  }
+  return Session.fromJson(parseJson(readFileSync(path)));
+}
+
+/** Writes `session` where `currentSession` reads it, readable only by its owner. */
+export function saveSession(session: Session): void {
+  let path = sessionPath();
+  ensureDir(dirname(path));
+  match (writePrivate(path, stringify(session.toJson(), '  ').toBytes())) {
+    case (true, _, _): {}
+    case (false, _, let why): {
+      throw new Error(`could not save the session: ${why}`);
+    }
+  }
+}
+
+/**
+ * `zena login <handle or DID>`. The app password comes from
+ * `--password-stdin`, then `ZENA_APP_PASSWORD`, then the terminal, with
+ * echo off.
+ */
+export function loginCommand(args: ParsedArgs, options: Options): i32 {
+  if (args.rest.length != 1) {
+    console.error('Error: zena login takes your handle or DID, such as alice.bsky.social.');
+    return 2;
+  }
+  let identifier = args.rest[0];
+  let password = readPassword(identifier, args.getFlag('password-stdin'));
+  if (password == null) {
+    return 1;
+  }
+  let session = runFuture(createSession(identifier, password as String, packageResolver()));
+  saveSession(session);
+  console.log(`Signed in as ${session.handle} (${session.did}) at ${session.pds}.`);
+  return 0;
+}
+
+/** `zena logout`: ends the session at the PDS and forgets it. */
+export function logoutCommand(args: ParsedArgs, options: Options): i32 {
+  let session = currentSession();
+  if (session == null) {
+    console.log('Not signed in.');
+    return 0;
+  }
+  let signedIn = session as Session;
+  try {
+    runFuture(deleteSession(signedIn));
+  } catch (e) {
+    // The session is forgotten either way; a PDS that cannot be reached,
+    // or that already ended it, leaves nothing to undo here.
+    console.error(`Warning: ${signedIn.pds} did not end the session: ${e.message}`);
+  }
+  unlinkSync(sessionPath());
+  console.log(`Signed out ${signedIn.handle}.`);
+  return 0;
+}
+
+function readPassword(identifier: String, fromStdin: boolean): String | null {
+  if (fromStdin) {
+    return trimLineEnd(readStdinSync());
+  }
+  let fromEnv = getEnv('ZENA_APP_PASSWORD');
+  if (fromEnv != null && fromEnv != '') {
+    return fromEnv;
+  }
+  match (readHidden(`App password for ${identifier}: `)) {
+    case (true, let password, _): {
+      return password;
+    }
+    case (false, _, let why): {
+      console.error(
+          `Error: could not read a password (${why}). Pipe it with --password-stdin, or set ZENA_APP_PASSWORD.`);
+      return null;
+    }
+  }
+}
+
+function trimLineEnd(text: String): String {
+  var end = text.length;
+  while (end > 0 && (text.getByteAt(end - 1) == 10 || text.getByteAt(end - 1) == 13)) {
+    end -= 1;
+  }
+  return text.sliceBytes(0, end);
+}

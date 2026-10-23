@@ -148,9 +148,25 @@ interface http-server {
 }
 
 /// The command's imports beyond WASI.
+/// Handling credentials: files only their owner may read, and reading a
+/// secret from the terminal without showing it. Granted with `process`.
+interface secrets {
+  /// Writes `contents` to `path`, in the caller's view of the file
+  /// system, as a file only its owner can read or write: on Unix,
+  /// created with mode 0600, or set to 0600 before it is truncated if it
+  /// exists. The error says why it could not.
+  write-private: func(path: string, contents: list<u8>) -> result<_, string>;
+
+  /// Writes `prompt` to the terminal and reads a line from it with echo
+  /// off, returning the line without its line ending. The error says why
+  /// it could not, such as stdin not being a terminal.
+  read-hidden: func(prompt: string) -> result<string, string>;
+}
+
 world command {
   import stack-trace;
   import process;
   import wasm;
   import http-server;
+  import secrets;
 }

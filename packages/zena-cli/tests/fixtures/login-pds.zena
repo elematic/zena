@@ -1,0 +1,21 @@
+/**
+ * A PLC directory, DNS-over-HTTPS resolver and PDS with one maintainer,
+ * `alice.test`, whose app password is `app-password`, for
+ * `tests/package_map.rs`. Run from the repository root with
+ * `--dir <scratch>::/out`, it writes the PLC directory's origin to
+ * `/out/plc.txt` and then serves until it is killed.
+ */
+
+import {Future} from 'zena:async';
+import {writeFileSync} from 'zena:fs';
+import {FakePds} from 'package-manager:testing/fake-pds';
+
+export async function main(): Future<i32> {
+  let pds = new FakePds();
+  pds.start();
+  let alice = pds.account('did:plc:alicealicealicealicealic', 'alice.test');
+  alice.password = 'app-password';
+  writeFileSync('/out/plc.txt', pds.plcDirectory);
+  await pds.done();
+  return 0;
+}
