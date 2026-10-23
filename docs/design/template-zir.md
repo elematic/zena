@@ -65,6 +65,19 @@ part from their group's first body at one of a few operations:
 | `struct.get` → `param`                                             | 4     | `Completer<void>` has no value to store                                         |
 | `array.get` → `array.get_u`                                        | 7     | a `u8` element is packed                                                        |
 
+Discovery repeats more than lowering does. RTA's queue walks one item
+per referrer, a member node or a symbol under one specialization's
+substitution. In the self-compile (13.7 s, measured with temporary
+timers around each item), items walking a node or symbol already walked
+for another specialization took 1.97 s, against 3.16 s for first walks.
+Of the 1.97 s, 1.27 s is the walk of the node itself
+(`registerInstantiations`, or `discoverNodeTypes` for a body without a
+dependency record), which a template's references could replace; 0.35 s
+is the traversal of the checker's dependency records. Lowering and
+discovery together repeat about 2.1 s of the compile, of which a
+template can save the part that is walking rather than registering what
+the walk finds.
+
 ## What lowering decides from the type arguments
 
 Lowering decides three kinds of things from the substitution.
@@ -152,25 +165,42 @@ share never become holes, and a later member must share them too.
 Both representatives must resolve every recipe back to their own entry
 before the template is kept.
 
-### Per-specialization queries
+### Recorded decisions
 
-`LoweringContext.accessorOverriddenBySubclass`,
-`memberProvidedBySubclass` and `vtableSlotIndex` answer the third kind
-of decision, and every lowering path that asks goes through them. In
-template mode each call is recorded with its class key, names and
-answer. The two representatives must agree on the answers; their keys
-are generalized like the tables' keys. A later member re-runs each query
-on its own specialization and is lowered directly when an answer
-differs.
+Template mode records the decisions lowering makes from the class a type
+argument is, or from a specialization's place in the module, with the
+answer each got:
+
+| decision                                      | where                                          |
+| --------------------------------------------- | ---------------------------------------------- |
+| does a subclass override this accessor        | `LoweringContext.accessorOverriddenBySubclass` |
+| does a subclass provide this method           | `LoweringContext.memberProvidedBySubclass`     |
+| does the vtable have this slot                | `LoweringContext.vtableSlotIndex`              |
+| which class in the chain provides this method | `LoweringContext.resolveDevirtualizedMethod`   |
+| is `==` on this class identity                | `lowerClassEquality`                           |
+| does a cast's operand already conform         | `lowerAs`                                      |
+
+The two representatives must agree on the answers; their class keys are
+generalized like the tables' keys, and a conformance decision's two
+value types are learned like table entries. A later member re-runs each
+decision for itself and is lowered directly when an answer differs. So
+`hash(k)` in a `HashMap<K, V>` method copies only into members whose key
+class finds `hashCode` where the representatives' did, and `==` on a key
+copies only into members whose key class compares by identity. A
+representative whose class has its own `==` abandons the template, as
+does a `hash` that has to dispatch through the vtable.
 
 ### The gate
 
 Template mode abandons a family where lowering dispatches on a type
-argument's class rather than its representation: a type test or cast
-whose operand or target mentions a type parameter, a `match` on one, a
-template literal interpolating one, `==` or `!=` with one, and a call to
-a generic function that mentions one (`hash`, `equals`). The family is
-then lowered directly (`families without a template` in the stats).
+argument's class in ways the recorded decisions do not cover: a type
+test involving a type parameter, a cast to anything but a class, a
+`match` on one, a template literal interpolating one, and a call to an
+intrinsic other than `eq` and `hash` whose types mention one. The family
+is then lowered directly (`families without a template` in the stats).
+Calls to other generic functions need no gate: a callee that differs
+between the representatives is not a class method, cannot be learned,
+and stops the family.
 
 ### Specialization
 
@@ -205,16 +235,16 @@ so its indices are the same in every member.
 
 ### What checks it
 
-- **Both representatives** must lower to the same arrays and query
+- **Both representatives** must lower to the same arrays and decision
   answers, and resolve every recipe to their own entries.
 - **Check mode** (`ZENA_TEMPLATE_CHECK=1`) lowers every specialized
   member directly too and fails the compile on any difference.
   `build:self-hosted`, which the fixpoint gate builds, sets it, and so
-  does the portable execution runner, so the compiler's own 6,000
+  does the portable execution runner, so the compiler's own 9,000
   specialized bodies and every execution test check each change.
 
-What these cannot catch is a decision outside the gate and the three
-queries that depends on a type argument, gets the same answer for both
+What these cannot catch is a decision outside the gate and the recorded
+decisions that depends on a type argument, gets the same answer for both
 representatives, and a different one for a later member that nothing in
 the test corpus specializes. The pins keep the representation fixed
 within a family, which is where the measured divergences came from.
@@ -228,8 +258,8 @@ representatives:
 
 - **Learning which entries vary.** Lowering with symbolic type
   arguments would record each entry's derivation as it makes it.
-- **Decisions.** The queries and the gated constructs become IR
-  operations that specialization resolves: a member read that is a
+- **Decisions.** The recorded decisions and the gated constructs become
+  IR operations that specialization resolves: a member read that is a
   field read or a virtual getter call, equality, hashing and casts on a
   type parameter. This is ir.md §8's `generic.op`; each one is also a
   gate removed.
@@ -248,34 +278,35 @@ valuable.
 
 Compiler self-compile at `-O1`, three runs each, idle machine:
 
-| templates | lowering and per-function cleanup | module                          |
-| --------- | --------------------------------- | ------------------------------- |
-| off       | 2.40 s                            |                                 |
-| on        | 2.33 s                            | byte-identical, `-O1` and `-O2` |
+| templates | lowering and per-function cleanup | whole compile | module                          |
+| --------- | --------------------------------- | ------------- | ------------------------------- |
+| off       | 2.68 s                            | 14.71 s       |                                 |
+| on        | 2.30 s                            | 14.33 s       | byte-identical, `-O1` and `-O2` |
 
-56 templates; 6,135 bodies specialized from them, in 47 ms. Of the
-self-compile's repeats, 10,903 (772 ms) belong to candidate families.
-The rest are not candidates: methods of extension classes such as
-`FixedArray<T>` (2,516, 105 ms), constructors (2,769, 61 ms), closures
-(1,219) and other functions (965).
+123 templates; 9,224 bodies specialized from them, in 79 ms; 34 members
+declined by a recorded decision. Of the self-compile's repeats, 10,903
+belong to candidate families. The rest are not candidates: methods of
+extension classes such as `FixedArray<T>` (2,516), constructors
+(2,769), closures (1,219) and other functions (965).
 
-The gate stops 91 families, among them the largest:
-
-| family                                | members | gate         |
-| ------------------------------------- | ------- | ------------ |
-| `Future<T>.#propagate`, `.:adoptFrom` | 517     | equality     |
-| `Future<T>.:valueOrThrow`             | 517     | cast         |
-| `GrowableArray<T>.#grow`              | 178     | cast         |
-| `GrowableArray<T>.contains`           | 178     | equality     |
-| `HashMap<K, V>.get`, `[]`, `delete`   | 63      | generic call |
+What stops the remaining families: a representative whose key class
+declares `==` (7, among them `GrowableArray<Diagnostic>.contains`, 178
+members), `match` on a type parameter (6, the map iterators),
+representatives that disagree (5, `HashMap<i32, Node>`, where only some
+specializations have an `OrderedHashMap` subclass), and keys the learner
+cannot generalize (5).
 
 ## Plan
 
 1. Methods of generic classes, learned from two representatives, with
-   the gate and the three queries. Done.
-2. Deferred operations for equality, hashing and casts on type
-   parameters, which lifts the gate for the families above.
+   the gate and the three per-specialization queries. Done.
+2. Equality, hashing, casts to a class and method lookup on a type
+   parameter's class, as recorded decisions. Done. Deferring them to
+   specialization instead, and covering classes with their own `==`,
+   remain.
 3. More candidates: constructors, extension classes, closures, and
    generic functions and methods.
-4. Measure how much of discovery is repeated per instantiation, and
-   decide on discovery from templates.
+4. Discovery from templates. Measured (above): at most 1.27 s of the
+   self-compile's discovery walks a node again for another
+   specialization. Getting it needs templates that exist before
+   discovery, so it follows the representative-free templates above.

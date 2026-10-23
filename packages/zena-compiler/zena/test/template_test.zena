@@ -11,8 +11,11 @@ import { equal, isTrue } from 'zena:assert';
 import { WatGenerator } from '../lib/codegen/wat-generator.zena';
 import { TemplateFamilies } from '../lib/codegen/ir/template.zena';
 import { Program, CompilationUnit } from '../lib/program.zena';
-import { makeCompiler, MockHost, errorDiagnostics } from './test-utils.zena';
+import {
+  makeCompiler, makeStdlibCompiler, MockHost, PlainHost, errorDiagnostics,
+} from './test-utils.zena';
 import { checkCompilation } from '../lib/compiler.zena';
+import { TypeInterner } from '../lib/types.zena';
 
 /** The checked program for `source`. */
 function programOf(source: String): Program {
@@ -44,6 +47,37 @@ function programOf(source: String): Program {
 }
 
 /**
+ * The checked program for `source` against the standard library on
+ * disk, every unit included, with the checker's interner: what `hash`
+ * on a class needs (it reaches the `String` helpers).
+ */
+function stdlibProgramOf(source: String): (Program, TypeInterner) {
+  let host = new PlainHost();
+  host.addFile("test.zena", source);
+  let compiler = makeStdlibCompiler(host);
+  let compResult = compiler.compile({entry: "test.zena", target: 'freestanding'});
+  let checkRes = checkCompilation(compResult);
+  let errors = errorDiagnostics(checkRes.diagnostics);
+  if (errors.length > 0) {
+    throw new Error(`the fixture does not compile: ${errors[0].message}`);
+  }
+  let entryAst = compResult.entry.ast;
+  let units = new Array<CompilationUnit>();
+  var entryUnit: CompilationUnit | null = null;
+  for (let file in compResult.files) {
+    let res = checkRes.results[file.path];
+    if (res != null) {
+      let unit = {ast: file.ast, model: res.model};
+      units.push(unit);
+      if (file.ast.path == entryAst.path) {
+        entryUnit = unit;
+      }
+    }
+  }
+  return (new Program(units, entryUnit), checkRes.sharedState.interner);
+}
+
+/**
  * Compiles `source` with templates and check mode on, checks that the
  * module equals the one compiled with templates off, and returns the
  * families the first compile used.
@@ -55,6 +89,21 @@ function compileBothWays(source: String): TemplateFamilies {
   let without = new WatGenerator("freestanding", false, 1);
   without.templates = false;
   equal(wat, without.generate(programOf(source)));
+  return withTemplates.templateFamilies as TemplateFamilies;
+}
+
+/** `compileBothWays` against the standard library. */
+function compileBothWaysWithStdlib(source: String): TemplateFamilies {
+  let (program, interner) = stdlibProgramOf(source);
+  let withTemplates = new WatGenerator("freestanding", false, 1);
+  withTemplates.templateCheck = true;
+  withTemplates.interner = interner;
+  let wat = withTemplates.generate(program);
+  let (program2, interner2) = stdlibProgramOf(source);
+  let without = new WatGenerator("freestanding", false, 1);
+  without.templates = false;
+  without.interner = interner2;
+  equal(wat, without.generate(program2));
   return withTemplates.templateFamilies as TemplateFamilies;
 }
 
@@ -128,5 +177,59 @@ export let tests = suite('template lowering', () => {
     let declined = families.declined.format();
     let stopped = families.stopped.format();
     isTrue(declined.contains('guard') || stopped.contains('differ'));
+  });
+
+  test('a key class with its own hashCode and == is not copied into', () => {
+    // A, B and C inherit hashCode from Keyed and compare by identity,
+    // so a template learned from two of them calls Keyed.hashCode and
+    // compares with ref.eq. D declares both, and the guards on the
+    // method's owner and on identity equality decline its copies.
+    let families = compileBothWaysWithStdlib(`
+      @intrinsic('hash')
+      declare function hash<T>(value: T): i32;
+      @intrinsic('eq')
+      declare function equals<T>(a: T, b: T): boolean;
+      class Keyed {
+        id: i32;
+        new(this.id);
+        hashCode(): i32 { return this.id; }
+      }
+      class A extends Keyed { new(id: i32) : super(id); }
+      class B extends Keyed { new(id: i32) : super(id); }
+      class C extends Keyed { new(id: i32) : super(id); }
+      class D extends Keyed {
+        new(id: i32) : super(id);
+        hashCode(): i32 { return this.id * 1000; }
+        operator ==(other: D): boolean { return this.id == other.id; }
+      }
+      class Table<K extends Keyed> {
+        #key: K;
+        new(key: K) : #key = key;
+        slot(): i32 { return hash(this.#key); }
+        same(other: K): boolean { return equals(this.#key, other); }
+        holds(other: K): boolean { return this.#key == other; }
+      }
+      export let run = (): i32 => {
+        let ta = new Table<A>(new A(1));
+        let tb = new Table<B>(new B(2));
+        let tc = new Table<C>(new C(3));
+        let td = new Table<D>(new D(4));
+        var n = ta.slot() + tb.slot() + tc.slot() + td.slot();
+        if (ta.same(new A(1)) || tb.same(new B(2)) || tc.same(new C(3)) ||
+            td.same(new D(4))) {
+          n += 1;
+        }
+        if (ta.holds(new A(1)) || tb.holds(new B(2)) || tc.holds(new C(3)) ||
+            td.holds(new D(4))) {
+          n += 1;
+        }
+        return n;
+      };
+    `);
+    isTrue(families.specialized >= 3);
+    let declined = families.declined.format();
+    let stopped = families.stopped.format();
+    isTrue(declined.contains('guard') || stopped.contains('differ') ||
+        stopped.contains('class equality'));
   });
 });

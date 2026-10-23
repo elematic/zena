@@ -16,9 +16,10 @@ import {
 } from '../wasm.zena';
 import { targetUsesJsStrings } from '../../targets.zena';
 import {
-  ClassCodegenInfo, RecordDispatchInfo, WasmField, WasmFunction, WasmSignature,
-  WasmStruct, isValSubtype, recordShapeFieldName,
+  ClassCodegenInfo, RecordDispatchInfo, WasmField, WasmFunction, WasmModule,
+  WasmSignature, WasmStruct, isValSubtype, recordShapeFieldName,
 } from '../wasm-module.zena';
+import { TemplateAbandon } from './template.zena';
 import {
   getClassKey, getClassMethodKey, getMemberRootClass, presentWordName,
 } from '../codegen-utils.zena';
@@ -300,19 +301,42 @@ export function exactClassTest(cx: LoweringContext, self: i32, other: i32,
  */
 function equalityIntroducers(cx: LoweringContext, info: ClassCodegenInfo,
     out: GrowableArray<ClassCodegenInfo>): void {
+  equalityIntroducersIn(cx.wasm, info, out);
+}
+
+function equalityIntroducersIn(wasm: WasmModule, info: ClassCodegenInfo,
+    out: GrowableArray<ClassCodegenInfo>): void {
   for (let sub in info.subclasses) {
     if (!laidOut(sub)) {
       continue;
     }
     let sct = sub.structType.classType;
     if (sct != null && sct.members.has("==")) {
-      if (cx.wasm.classMethodMap.has(getClassMethodKey(getClassKey(sct), "=="))) {
+      if (wasm.classMethodMap.has(getClassMethodKey(getClassKey(sct), "=="))) {
         out.push(sub);
       }
     } else {
-      equalityIntroducers(cx, sub, out);
+      equalityIntroducersIn(wasm, sub, out);
     }
   }
+}
+
+/**
+ * Whether `==` on class `ct` is identity: neither `ct` nor any class
+ * below it in the module declares or derives an operator. Template
+ * lowering (template.zena) records this for the classes a template
+ * compares, and asks it again of each specialization.
+ */
+export function identityEqualityIn(wasm: WasmModule, ct: ClassType): boolean {
+  if (ct.members.has("==")) {
+    return false;
+  }
+  if (let (true, info) = wasm.classInfos.get(getClassKey(ct))) {
+    let introducers = new GrowableArray<ClassCodegenInfo>();
+    equalityIntroducersIn(wasm, info, introducers);
+    return introducers.length == 0;
+  }
+  return false;
 }
 
 /**
@@ -397,6 +421,16 @@ function classEqNonNull(cx: LoweringContext, a: i32, b2: i32, ct: ClassType): i3
 export function lowerClassEquality(cx: LoweringContext, a: i32, b2: i32,
     ct: ClassType): i32 {
   let i32vt = new ValTypeI32() as ValType;
+  let recorder = cx.b.recorder;
+  if (recorder != null) {
+    // Template mode copies only identity comparisons: an operator, and
+    // the classes below `ct` that introduce one, differ between the
+    // classes a type parameter stands for.
+    if (!identityEqualityIn(cx.wasm, ct)) {
+      throw new TemplateAbandon('class equality');
+    }
+    recorder.noteIdentityEquality(ct);
+  }
   if (!ct.members.has("==")) {
     let introducers = new Array<ClassCodegenInfo>();
     equalityIntroducers(cx, equalityClassInfo(cx, ct), introducers);
@@ -1611,6 +1645,11 @@ function hashClassValue(cx: LoweringContext, ctV: ClassType, v: i32): i32 {
   let hashMethod = cx.resolveDevirtualizedMethod(ctV, "hashCode");
   if (hashMethod != null) {
     return callUnary(cx, hashMethod, v);
+  }
+  if (cx.b.recorder != null) {
+    // The dispatch below finds its slot's signature by its own walk of
+    // the class chain, which template mode does not record.
+    throw new TemplateAbandon('overridden hashCode');
   }
   // Overridden hashCode: dispatch through the vtable, like the
   // case-class hash synthesizer does for its fields.

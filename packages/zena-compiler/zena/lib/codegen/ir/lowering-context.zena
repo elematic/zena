@@ -36,12 +36,13 @@ import {
 import { getCellKey, getCellStruct } from '../type-mapping.zena';
 import {
   getClassInterfaceKey, getClassKey, getClassMethodKey, getInterfaceKey,
-  InterfaceKey,
+  ClassKey, InterfaceKey,
 } from '../codegen-utils.zena';
 import { IrRefField, IrRefFunc, IrRefGlobal, IrRefType } from './ir.zena';
 import { IrBuilder } from './builder.zena';
 import {
-  GuardKind, accessorOverriddenIn, memberProvidedIn, vtableSlotIn,
+  GuardKind, accessorOverriddenIn, memberProvidedIn, vtableSlotIn, refConformsTo,
+  methodOwnerIn,
 } from './template.zena';
 import { Symbol, SymbolId } from '../../scope/symbol.zena';
 import { walkEnter } from '../../visitor.zena';
@@ -216,13 +217,7 @@ export final class LoweringContext {
    * so the loose shortcut would silently skip required narrowing.
    */
   refConforms(have: ValType, want: ValType): boolean {
-    if (have is ValTypeRefNull && want is ValTypeRef) {
-      return false;
-    }
-    if (have is ValTypeExternRef && want is ValTypeRefExtern) {
-      return false;
-    }
-    return isValSubtype(have, want);
+    return refConformsTo(have, want);
   }
 
   /**
@@ -558,26 +553,18 @@ export final class LoweringContext {
    * when no transitive subclass overrides it: a direct call stands
    * in for virtual dispatch. */
   resolveDevirtualizedMethod(ct: ClassType, methName: String): WasmFunction | null {
-    var found: WasmFunction | null = null;
-    var c: ClassType | null = ct;
-    while (c != null) {
-      var g: ClassType | null = c;
-      while (g != null) {
-        let key = getClassMethodKey(getClassKey(g), methName);
-        if (let (true, m) = this.wasm.classMethodMap.get(key)) {
-          found = m;
-          break;
-        }
-        g = g.genericSource;
-      }
-      if (found != null) {
-        break;
-      }
-      c = c.superType;
+    // Which class in the chain provides the method is a fact about the
+    // class `ct` is, which a type parameter can stand for: template mode
+    // records it.
+    let owner = methodOwnerIn(this.wasm, ct, methName);
+    let recorder = this.b.recorder;
+    if (recorder != null) {
+      recorder.noteMethodOwner(ct, methName, owner);
     }
-    if (found == null) {
+    if (owner.length == 0) {
       return null;
     }
+    let found = this.wasm.classMethodMap[getClassMethodKey(owner as ClassKey, methName)];
     var infoOpt: ClassCodegenInfo | null = null;
     if (let (true, info) = this.wasm.classInfos.get(getClassKey(ct))) {
       infoOpt = info;

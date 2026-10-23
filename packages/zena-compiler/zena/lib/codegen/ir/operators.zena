@@ -966,7 +966,14 @@ export function lowerAs(cx: LoweringContext, expr: AsExpression): i32 {
     // ones (emission picks the form from the interned target type).
     // Conformance is nullability-STRICT: a nullable source `as` a
     // non-null target must emit the trapping cast, not pass through.
-    if (cx.refConforms(srcVt, dstVt)) {
+    let conforms = cx.refConforms(srcVt, dstVt);
+    let recorder = cx.b.recorder;
+    if (recorder != null) {
+      // Whether the cast is needed can differ between the classes a
+      // type parameter stands for (template.zena).
+      recorder.noteConforms(srcVt, dstVt, conforms);
+    }
+    if (conforms) {
       return value;
     }
     // The `extern` and `any` hierarchies are disjoint, so a cast between
