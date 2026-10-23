@@ -1,0 +1,56 @@
+// @mode: run
+// @result: 0
+// A class pattern names a generic class with its type arguments and
+// tests that instantiation, as `value is Box<f64>` does. Each arm binds
+// at the instantiation's field types.
+
+class Box<T>(value: T)
+
+class Pair<A, B>(first: A, second: B)
+
+let ofUnion = (v: Box<f64> | Box<String> | Box<i32>): i32 => {
+  return match (v) {
+    case Box<f64> as b: if (b.value > 1.0) 1 else 2
+    case Box<String> {value}: value.length + 10
+    case Box<i32> {value}: value + 100
+  };
+};
+
+let ofAnyref = (v: anyref): i32 => {
+  return match (v) {
+    case Box<i32> {value}: value
+    case Box<String> {value}: value.length + 10
+    case Pair<i32, String> {first, second}: first + second.length
+    case Box<f64>: 50
+    case _: 0 - 1
+  };
+};
+
+let viaLet = (v: anyref): i32 => {
+  if (let Box<String> {value} = v) {
+    return value.length;
+  }
+  if (let Pair<String, i32> {first, second: 3} = v) {
+    return first.length + 200;
+  }
+  return 0 - 1;
+};
+
+export let main = (): i32 => {
+  if (ofUnion(new Box<f64>(2.5)) != 1) return 1;
+  if (ofUnion(new Box<f64>(0.5)) != 2) return 2;
+  if (ofUnion(new Box<String>('abc')) != 13) return 3;
+  if (ofUnion(new Box<i32>(4)) != 104) return 4;
+
+  if (ofAnyref(new Box<i32>(7)) != 7) return 10;
+  if (ofAnyref(new Box<String>('ab')) != 12) return 11;
+  if (ofAnyref(new Pair<i32, String>(5, 'xyz')) != 8) return 12;
+  if (ofAnyref(new Box<f64>(1.0)) != 50) return 13;
+  if (ofAnyref(new Pair<String, i32>('no', 1)) != 0 - 1) return 14;
+
+  if (viaLet(new Box<String>('abcd')) != 4) return 20;
+  if (viaLet(new Box<i32>(4)) != 0 - 1) return 21;
+  if (viaLet(new Pair<String, i32>('xy', 3)) != 202) return 22;
+  if (viaLet(new Pair<String, i32>('xy', 4)) != 0 - 1) return 23;
+  return 0;
+};

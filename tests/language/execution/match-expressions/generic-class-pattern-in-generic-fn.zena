@@ -1,0 +1,22 @@
+// @mode: run
+// @result: 0
+// A class pattern in a generic function tests the specialization's
+// instantiation: in `unboxMatch<i32>`, `Box` (from the scrutinee's
+// `Box<T>`) is `Box<i32>`, and `value` binds as an i32. Lowering used to
+// test the unspecialized `Box<T>` and fail on the binding ("match binding
+// coercion").
+
+class Box<T>(value: T)
+
+let unboxMatch = <T>(v: Box<T> | String, fallback: T): T => {
+  return match (v) {
+    case Box {value}: value
+    case _: fallback
+  };
+};
+
+export let main = (): i32 => {
+  if (unboxMatch<i32>(new Box<i32>(3), 0) != 3) return 1;
+  if (unboxMatch<i32>('no', 9) != 9) return 2;
+  return 0;
+};

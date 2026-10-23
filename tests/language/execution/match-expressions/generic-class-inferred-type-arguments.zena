@@ -1,0 +1,60 @@
+// @mode: run
+// @result: 0
+// A class pattern that leaves out the type arguments of a generic class
+// takes them from the matched value's type: `Left {value}` against an
+// `Either<i32, String>` tests for `Left<i32, String>` and binds `value`
+// as an i32, through the supertype `Left` extends.
+
+sealed class Either<L, R> {
+  case Left, Right
+}
+
+final class Left<L, R>(value: L) extends Either<L, R>
+
+final class Right<L, R>(value: R) extends Either<L, R>
+
+class Box<T>(value: T)
+
+let ofMatch = (e: Either<i32, String>): i32 => {
+  return match (e) {
+    case Left {value}: value
+    case Right {value}: value.length + 100
+  };
+};
+
+let ofLet = (e: Either<i32, String>): i32 => {
+  if (let Left {value} = e) {
+    return value + 1;
+  }
+  if (let Right {value} = e) {
+    return value.length + 200;
+  }
+  return 0 - 1;
+};
+
+let ofAs = (e: Either<String, f64>): i32 => {
+  return match (e) {
+    case Left as l: l.value.length
+    case Right as r: if (r.value > 1.0) 300 else 301
+  };
+};
+
+// The scrutinee is the instantiation itself, inside a union.
+let ofUnion = (v: Box<String> | String): i32 => {
+  return match (v) {
+    case Box {value}: value.length
+    case _: 0 - 1
+  };
+};
+
+export let main = (): i32 => {
+  if (ofMatch(new Left<i32, String>(7)) != 7) return 1;
+  if (ofMatch(new Right<i32, String>('abc')) != 103) return 2;
+  if (ofLet(new Left<i32, String>(7)) != 8) return 3;
+  if (ofLet(new Right<i32, String>('ab')) != 202) return 4;
+  if (ofAs(new Left<String, f64>('abcd')) != 4) return 5;
+  if (ofAs(new Right<String, f64>(2.0)) != 300) return 6;
+  if (ofUnion(new Box<String>('xyz')) != 3) return 7;
+  if (ofUnion('xyz') != 0 - 1) return 8;
+  return 0;
+};

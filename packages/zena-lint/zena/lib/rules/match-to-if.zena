@@ -223,7 +223,7 @@ function conditionFor(ctx: RuleContext, pattern: Node, discriminant: Expression)
       } else if (properties.length == 0) {
         // `case Foo {}:` binds nothing but narrows the discriminant, which
         // is what `is` does and `if (let Foo {} = x)` does not.
-        `${subject} is ${ctx.text(pattern.name)}`
+        `${subject} is ${classPatternTypeText(ctx, pattern)}`
       } else {
         `let ${ctx.text(pattern)} = ${subject}`
       }
@@ -232,6 +232,20 @@ function conditionFor(ctx: RuleContext, pattern: Node, discriminant: Expression)
     case TuplePattern {}: if (nullable) null else `let ${ctx.text(pattern)} = ${subject}`
     case _: null
   };
+}
+
+/** The type a class pattern names, as source text: `Box<f64>` for `case Box<f64> {}:`. */
+function classPatternTypeText(ctx: RuleContext, pattern: ClassPattern): String {
+  let name = ctx.text(pattern.name);
+  let typeArguments = pattern.typeArguments;
+  if (typeArguments == null) {
+    return name;
+  }
+  var args = '';
+  for (let arg in typeArguments) {
+    args = if (args.length == 0) ctx.text(arg) else `${args}, ${ctx.text(arg)}`;
+  }
+  return `${name}<${args}>`;
 }
 
 /** Whether a `let`/`var` binding sits inside the pattern rather than at its top. */

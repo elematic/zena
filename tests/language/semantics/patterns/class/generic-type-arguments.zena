@@ -1,0 +1,116 @@
+// @mode: check
+// Class patterns over generic classes: written type arguments name one
+// instantiation, and a bare name takes them from the matched type or is
+// an error. Exhaustiveness counts instantiations separately.
+
+class Box<T>(value: T)
+
+class Point(x: i32, y: i32)
+
+sealed class Either<L, R> {
+  case Left, Right
+}
+
+final class Left<L, R>(value: L) extends Either<L, R>
+
+final class Right<L, R>(value: R) extends Either<L, R>
+
+class Base<T> {
+  value: T;
+  new(this.value);
+}
+
+class Tagged<T, U> extends Base<T> {
+  tag: U;
+  new(value: T, this.tag) : super(value);
+}
+
+let both = (v: Box<i32> | Box<String>): i32 => match (v) {
+  case Box<i32> {value}: value
+  case Box<String> {value}: value.length
+};
+
+// One instantiation leaves the other to the wildcard.
+let oneThenWildcard = (v: Box<i32> | Box<String>): i32 => match (v) {
+  case Box<i32>: 1
+  case _: 2
+};
+
+let bothThenWildcard = (v: Box<i32> | Box<String>): i32 => match (v) {
+  case Box<i32>: 1
+  case Box<String>: 2
+  case _: 3 // @error: Unreachable case.
+};
+
+let explicitVariants = (e: Either<i32, String>): i32 => match (e) {
+  case Left<i32, String> {value}: value
+  case Right<i32, String> {value}: value.length
+};
+
+let inferredVariants = (e: Either<i32, String>): i32 => match (e) {
+  case Left {value}: value
+  case Right {value}: value.length
+};
+
+let otherInstantiation = (e: Either<i32, String>): i32 => match (e) { // @error: Non-exhaustive match. Not all cases are covered.
+  case Left<f64, String>: 1
+  case Right {value}: value.length
+};
+
+let fieldAtInstantiation = (v: anyref): i32 => {
+  if (let Box<i32> {value} = v) {
+    let s: String = value; // @error: Type mismatch: 'i32' is not assignable to 'String'.
+    return s.length;
+  }
+  return 0;
+};
+
+let notGeneric = (v: anyref): i32 => match (v) {
+  case Point<i32> {x}: x // @error: Type 'Point' is not generic.
+  case _: 0
+};
+
+let tooMany = (v: anyref): i32 => match (v) {
+  case Box<i32, String>: 1 // @error: Expected 1 type arguments, but got 2.
+  case _: 0
+};
+
+let unknownArgument = (v: anyref): i32 => match (v) {
+  case Box<Nope>: 1 // @error: Type 'Nope' not found.
+  case _: 0
+};
+
+let uninferable = (v: anyref): i32 => match (v) {
+  case Box {value}: 1 // @error: Cannot infer the type arguments of 'Box' from 'anyref'. Write them after the class name: 'Box<...>'.
+  case _: 0
+};
+
+let uninferableBare = (v: anyref): i32 => match (v) {
+  case Box: 1 // @error: Cannot infer the type arguments of 'Box' from 'anyref'. Write them after the class name: 'Box<...>'.
+  case _: 0
+};
+
+let uninferableLet = (v: anyref): i32 => {
+  if (let Box {value} = v) { // @error: Cannot infer the type arguments of 'Box' from 'anyref'. Write them after the class name: 'Box<...>'.
+    return 1;
+  }
+  return 0;
+};
+
+let openArgument = (b: Base<i32>): i32 => match (b) {
+  case Tagged {value}: value // @error: Cannot infer the type arguments of 'Tagged' from 'Base<i32>'. Write them after the class name: 'Tagged<...>'.
+  case _: 0
+};
+
+let writtenArgument = (b: Base<i32>): i32 => match (b) {
+  case Tagged<i32, String> {value, tag}: value + tag.length
+  case _: 0
+};
+
+let ambiguous = (v: Box<i32> | Box<String>): i32 => match (v) {
+  case Box {value}: 1 // @error: 'Box' could be 'Box<i32>' or 'Box<String>' here. Write the type arguments after the class name: 'Box<...>'.
+};
+
+export let main = () => {
+  return both(new Box<i32>(1));
+};

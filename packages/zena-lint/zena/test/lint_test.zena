@@ -552,6 +552,31 @@ let tests = suite('lint', () => {
     `, 'match-to-if');
   });
 
+  test('a class pattern keeps its type arguments in the is test', (t) => {
+    check(t, dedentRaw`
+      class Box<T>(value: T)
+      function report(v: Box<i32> | Box<String>): void {
+        match (v) {
+          case Box<i32>: { console.log('ints'); }
+          case _: {}
+        }
+      }
+      export function run(): i32 {
+        report(new Box<i32>(1));
+        return 0;
+      }
+    `, dedentRaw`
+      class Box<T>(value: T)
+      function report(v: Box<i32> | Box<String>): void {
+        if (v is Box<i32>) { console.log('ints'); }
+      }
+      export function run(): i32 {
+        report(new Box<i32>(1));
+        return 0;
+      }
+    `, 'match-to-if');
+  });
+
   test('an else holding only an if becomes else if', (t) => {
     check(t, dedentRaw`
       function sign(n: i32): i32 {

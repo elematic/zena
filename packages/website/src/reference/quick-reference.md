@@ -803,6 +803,12 @@ case { x as first }: first
 // Class destructuring
 case let Point { x: 0, y }: "on y-axis"
 
+// A generic class's instantiation; without type arguments they come
+// from the matched value's type (`Left` of an `Either<i32, String>`)
+case Box<f64> as b: b.value
+case Box<String> { value }: value.length
+case Left { value }: value
+
 // Or patterns
 case 1 | 2 | 3: "small"
 

@@ -2652,6 +2652,40 @@ let result = match (x) {
   case let Point { x: 0, y }: ... // Matches Point with x=0, binds y
   ```
 
+  A class pattern can name an instantiation of a generic class, with or
+  without a field list. It matches instances of that instantiation, as
+  `value is Box<f64>` does, and binds fields at its type arguments.
+
+  ```zena
+  match (value) {
+    case Box<f64> as b: b.value
+    case Box<String> { value }: value.length
+    case Pair<i32, String> { first }: first
+  }
+  ```
+
+  Without type arguments, a generic class takes them from the type of the
+  matched value, through the supertypes the class extends:
+
+  ```zena
+  sealed class Either<L, R> {
+    case Left, Right
+  }
+  final class Left<L, R>(value: L) extends Either<L, R>
+  final class Right<L, R>(value: R) extends Either<L, R>
+
+  let size = (e: Either<i32, String>) => match (e) {
+    case Left { value }: value         // Left<i32, String>: value is an i32
+    case Right { value }: value.length // Right<i32, String>
+  };
+  ```
+
+  When the matched type leaves a type argument open (an `anyref`, or a
+  union holding `Box<i32>` and `Box<String>`), the pattern has to write
+  them, and leaving them out is an error. Exhaustiveness counts each
+  instantiation separately: `case Box<i32>` does not cover a
+  `Box<String>`.
+
 - **Record Patterns**: Match records and destructure fields.
 
   ```zena
