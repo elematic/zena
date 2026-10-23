@@ -3,7 +3,9 @@
 Status: **Proposed**, and partly built: the AT Protocol libraries
 (`packages/atproto`), the package records, source archives and fetching
 (`packages/package-manager`), the compiler's reading of pinned packages,
-and `zena add`, `zena update` and `zena fetch`.
+`zena add`, `zena update` and `zena fetch`, `zena login` with app
+passwords, `zena publish` and `zena package create`, and a package host in
+the PDS written in Zena (`packages/pds`), with the methods publishing needs.
 
 This document designs Zena's package manager. Packages are published on the
 AT Protocol (atproto), the protocol behind Bluesky. A package is an atproto
@@ -358,6 +360,11 @@ of the file's contents, and each file is a raw block:
 }
 ```
 
+An archive holds every file under the package's directory except hidden
+files (a name starting with `.`), `node_modules`, the workspace's
+`zena-lock.json`, and the directories of packages nested in it, which have
+their own `zena-package.json` and are published on their own.
+
 The format uses only what Zena's atproto support needs anyway, CAR and
 DAG-CBOR. It needs no compression library, which Zena does not have yet.
 Each file has its own CID, so the cache stores a file shared by two
@@ -641,8 +648,14 @@ design does not add one.
 
 ### Creating a package
 
-The first `zena publish` of a package creates its account, after asking.
-`zena package create` does only that, for scripts.
+The first `zena publish` of a package creates its account, after asking:
+it names the handle it would create and stops, and `--yes` creates it.
+`--scope` names the scope, which is created too when the host has no scope
+of that name. `zena package create` does only this, for scripts.
+
+The host is `--host`, else `ZENA_PACKAGE_HOST`, else the Zena project's.
+`zena` reads its service DID and the domain its handles are under from its
+`com.atproto.server.describeServer`.
 
 1. **Sign in.** Once per machine, `zena login` signs the maintainer in to
    their own PDS with atproto OAuth, through the browser and a redirect to
