@@ -827,6 +827,12 @@ final class FutureEntry {
 
 /** What one module's rendering pulled in, for its import lines. */
 final class SynthUses {
+  /**
+   * Whether a stored result (a future's payload, an async result) is an
+   * `Outcome` rather than a `Result`: true while the standard library
+   * still has the `Outcome` classes (`stdlibHasOutcome`).
+   */
+  var storedOutcome = true;
   var hasAsync = false;
   var fixedArray = false;
   var array = false;
@@ -1042,18 +1048,70 @@ function zenaTypeOf(ty: Ty, uses: SynthUses): String {
 }
 
 /**
- * The Zena spelling of a future's payload. A `result` payload rides
- * `Outcome` — a future's value must be storable, and the inline
- * `Result` is return-position-only — with `void` standing in for a
- * bare arm; everything else spells as itself.
+ * The Zena spelling of a future's payload. A `result` payload is a stored
+ * result (`storedResultType`), with `void` standing in for a bare arm;
+ * everything else spells as itself.
  */
 function futurePayloadZenaType(payload: Ty, uses: SynthUses): String {
   if (payload.kind == TyKind.ResultT) {
-    uses.outcome = true;
-    return "Outcome<" + zenaTypeOf(payload.children[0], uses) + ", " +
-        zenaTypeOf(payload.children[1], uses) + ">";
+    return storedResultType(payload, uses);
   }
   return zenaTypeOf(payload, uses);
+}
+
+/**
+ * Whether the standard library `host` reads still declares the `Outcome`
+ * classes. While it does, a stored result is an `Outcome`; once they are
+ * gone (#495), a `Result`. The synthesizer takes this from the library it
+ * compiles against, not from its own code, so that the checked-in
+ * bootstrap and the compiler it builds agree on the binding types across
+ * the change. An unreadable library keeps `Outcome`.
+ */
+export function stdlibHasOutcome(host: CompilerHost): boolean {
+  var source = "";
+  try {
+    source = host.readFile("zena:core/result.zena");
+  } catch (e) {
+    return true;
+  }
+  return source.contains("class Outcome");
+}
+
+/** A stored result's Zena type: `Outcome<T, E>`, or `Result<T, E>`. */
+function storedResultType(ty: Ty, uses: SynthUses): String {
+  let okZ = zenaTypeOf(ty.children[0], uses);
+  let errZ = zenaTypeOf(ty.children[1], uses);
+  if (uses.storedOutcome) {
+    uses.outcome = true;
+    return `Outcome<${okZ}, ${errZ}>`;
+  }
+  uses.result = true;
+  return `Result<${okZ}, ${errZ}>`;
+}
+
+/** The expression for a stored ok result holding `value`. */
+function okResultExpr(uses: SynthUses, okZ: String, errZ: String, value: String): String {
+  return if (uses.storedOutcome) `new Ok<${okZ}, ${errZ}>(${value})` else `(true, ${value})`;
+}
+
+/** The expression for a stored error result holding `value`. */
+function errResultExpr(uses: SynthUses, okZ: String, errZ: String, value: String): String {
+  return if (uses.storedOutcome) `new Err<${okZ}, ${errZ}>(${value})` else `(false, ${value})`;
+}
+
+/** The test that the stored result `value` is ok. */
+function isOkResultExpr(uses: SynthUses, okZ: String, errZ: String, value: String): String {
+  return if (uses.storedOutcome) `${value} is Ok<${okZ}, ${errZ}>` else `${value} is (true, ${okZ})`;
+}
+
+/** The ok payload of the stored result `value`, which is ok. */
+function okPayloadExpr(uses: SynthUses, okZ: String, errZ: String, value: String): String {
+  return if (uses.storedOutcome) `(${value} as Ok<${okZ}, ${errZ}>).value` else `(${value} as (true, ${okZ}))[1]`;
+}
+
+/** The error payload of the stored result `value`, which is an error. */
+function errPayloadExpr(uses: SynthUses, okZ: String, errZ: String, value: String): String {
+  return if (uses.storedOutcome) `(${value} as Err<${okZ}, ${errZ}>).error` else `(${value} as (false, ${errZ}))[1]`;
 }
 
 /** Whether `ty` (or anything inside it) cannot be lifted yet. */
@@ -1492,9 +1550,9 @@ function lowerMemStmts(ty: Ty, value: String, ptrExpr: String,
     `;
   }
   if (ty.kind == TyKind.ResultT) {
-    // Only reachable as a future payload: the value is an Outcome,
+    // Only reachable as a future payload: the value is a stored result,
     // and it lowers as the canonical two-case variant.
-    uses.outcome = true;
+    storedResultType(ty, uses);
     let okZ = zenaTypeOf(ty.children[0], uses);
     let errZ = zenaTypeOf(ty.children[1], uses);
     let payoff = payloadOffset(ty);
@@ -1503,19 +1561,20 @@ function lowerMemStmts(ty: Ty, value: String, ptrExpr: String,
     let okStmts = growable<ZenaTemplate>([zena`storeU8(${ptrExpr}, 0);`]);
     if (!isVoid(ty.children[0])) {
       okStmts.push(lowerMemStmts(ty.children[0],
-          `(${value} as Ok<${okZ}, ${errZ}>).value`,
+          okPayloadExpr(uses, okZ, errZ, value),
           displaced(ptrExpr, payoff), uses));
     }
 
     let errStmts = growable<ZenaTemplate>([zena`storeU8(${ptrExpr}, 1);`]);
     if (!isVoid(ty.children[1])) {
       errStmts.push(lowerMemStmts(ty.children[1],
-          `(${value} as Err<${okZ}, ${errZ}>).error`,
+          errPayloadExpr(uses, okZ, errZ, value),
           displaced(ptrExpr, payoff), uses));
     }
+    let isOk = isOkResultExpr(uses, okZ, errZ, value);
 
     return zena`
-      if (${value} is Ok<${okZ}, ${errZ}>) {
+      if (${isOk}) {
         ${okStmts}
       } else {
         ${errStmts}
@@ -1828,23 +1887,23 @@ function lowerFlatStmts(sb: StringBuilder, ty: Ty, value: String,
     return (total as GrowableArray<String>).length;
   }
   if (ty.kind == TyKind.ResultT) {
-    // Only reachable as an async export's result: the value is an
-    // Outcome, lowered as the canonical two-case variant.
-    uses.outcome = true;
+    // Only reachable as an async export's result: the value is a
+    // stored result, lowered as the canonical two-case variant.
+    storedResultType(ty, uses);
     let okZ = zenaTypeOf(ty.children[0], uses);
     let errZ = zenaTypeOf(ty.children[1], uses);
-    sb.append(indent).append(`if (${value} is Ok<${okZ}, ${errZ}>) {\n`);
+    sb.append(indent).append(`if (${isOkResultExpr(uses, okZ, errZ, value)}) {\n`);
     writeSlot(sb, indent + "  ", slots[base], base, "0", "i32");
     if (!isVoid(ty.children[0])) {
       lowerFlatStmts(sb, ty.children[0],
-          `(${value} as Ok<${okZ}, ${errZ}>).value`,
+          okPayloadExpr(uses, okZ, errZ, value),
           slots, base + 1, indent + "  ", uses);
     }
     sb.append(indent).append("} else {\n");
     writeSlot(sb, indent + "  ", slots[base], base, "1", "i32");
     if (!isVoid(ty.children[1])) {
       lowerFlatStmts(sb, ty.children[1],
-          `(${value} as Err<${okZ}, ${errZ}>).error`,
+          errPayloadExpr(uses, okZ, errZ, value),
           slots, base + 1, indent + "  ", uses);
     }
     sb.append(indent).append("}\n");
@@ -2123,7 +2182,7 @@ function emitFlatLiftHelper(entry: LiftEntry, uses: SynthUses) {
     `;
   }
   if (ty.kind == TyKind.ResultT) {
-    uses.outcome = true;
+    storedResultType(ty, uses);
     let okZ = futurePayloadZenaType(ty.children[0], uses);
     let errZ = futurePayloadZenaType(ty.children[1], uses);
     let arm = (child: Ty) => {
@@ -2138,9 +2197,9 @@ function emitFlatLiftHelper(entry: LiftEntry, uses: SynthUses) {
     return zena`
       function ${entry.name}(${params}): ${retType} {
         if (s0 == 0) {
-          return new Ok<${okZ}, ${errZ}>(${okArm});
+          return ${okResultExpr(uses, okZ, errZ, okArm)};
         }
-        return new Err<${okZ}, ${errZ}>(${errArm});
+        return ${errResultExpr(uses, okZ, errZ, errArm)};
       }
     `;
   }
@@ -2405,26 +2464,29 @@ function emitFutureHelpers(sb: StringBuilder, entry: FutureEntry,
       errExpr = "witUnit()";
     }
     let disc = discLoad(1, "ret", uses);
+    storedResultType(payload, uses);
+    let okValue = okResultExpr(uses, okZ, errZ, okExpr);
+    let errValue = errResultExpr(uses, okZ, errZ, errExpr);
     var okArm = zena`
       freeLifted(ret);
-      return new Ok<${okZ}, ${errZ}>(${okExpr});
+      return ${okValue};
     `;
     if (okExpr == "ok") {
       okArm = zena`
         let ok = ${liftExprOf(payload.children[0], `ret + ${payoff}`, uses)};
         freeLifted(ret);
-        return new Ok<${okZ}, ${errZ}>(${okExpr});
+        return ${okValue};
       `;
     }
     var errArm = zena`
       freeLifted(ret);
-      return new Err<${okZ}, ${errZ}>(${errExpr});
+      return ${errValue};
     `;
     if (errExpr == "err") {
       errArm = zena`
         let err = ${liftExprOf(payload.children[1], `ret + ${payoff}`, uses)};
         freeLifted(ret);
-        return new Err<${okZ}, ${errZ}>(${errExpr});
+        return ${errValue};
       `;
     }
     readPayload = zena`
@@ -2843,6 +2905,7 @@ export function synthesizeWitModule(host: CompilerHost, canonicalPath: String,
   let body = new StringBuilder();
   let skipped = new StringBuilder();
   let uses = new SynthUses();
+  uses.storedOutcome = stdlibHasOutcome(host);
   for (let item in iface.def.items) {
     if (item.tag != InterfaceItemTag.Func) {
       if (item.tag == InterfaceItemTag.TypeDef) {
@@ -3464,13 +3527,9 @@ function renderFuncIn(
       wrapResult = "boolean";
     } else if (resultTy.kind == TyKind.ResultT) {
       if (func.isAsync) {
-        // A future's payload must be storable, which the inline
-        // Result is not (return-position-only): the async form
-        // carries Outcome, its heap counterpart.
-        uses.outcome = true;
-        wrapResult = "Outcome<" +
-            zenaTypeOf(resultTy.children[0], uses) + ", " +
-            zenaTypeOf(resultTy.children[1], uses) + ">";
+        // A future's payload is stored, so the async form carries a
+        // stored result.
+        wrapResult = storedResultType(resultTy, uses);
       } else {
         uses.result = true;
         wrapResult = "inline Result<" +
@@ -3669,8 +3728,8 @@ function renderFuncIn(
       }
       sb.append("    freeLifted(ret);\n");
       if (func.isAsync) {
-        sb.append("    return new Ok<").append(okZ).append(", ")
-            .append(errZ).append(">(").append(okExpr).append(");\n  }\n");
+        sb.append("    return ").append(okResultExpr(uses, okZ, errZ, okExpr))
+            .append(";\n  }\n");
       } else {
         sb.append("    return (true, ").append(okExpr)
             .append(");\n  }\n");
@@ -3683,8 +3742,8 @@ function renderFuncIn(
       }
       sb.append("  freeLifted(ret);\n");
       if (func.isAsync) {
-        sb.append("  return new Err<").append(okZ).append(", ")
-            .append(errZ).append(">(").append(errExpr).append(");\n");
+        sb.append("  return ").append(errResultExpr(uses, okZ, errZ, errExpr))
+            .append(";\n");
       } else {
         sb.append("  return (false, ").append(errExpr).append(");\n");
       }
@@ -3792,7 +3851,8 @@ export function synthesizeExportWrapper(
   worldName: String,
   entryPath: String,
   entryAst: Module,
-  packagesWit: String = ""
+  packagesWit: String = "",
+  storedOutcome: boolean = true
 ): ComponentEntryWrapper | null {
   // With the compiler's WASI WIT and the program's WIT-backed packages
   // riding along, as the declared-world encoder parses it.
@@ -3919,6 +3979,7 @@ export function synthesizeExportWrapper(
   programResources = new Array<ProgramResource>();
   let noItems = new Array<InterfaceItem>();
   let uses = new SynthUses();
+  uses.storedOutcome = storedOutcome;
   let body = new StringBuilder();
   let imported = new Array<String>();
   let importFromEntry = (name: String) => {

@@ -32,7 +32,7 @@ import {
   deriveImportsWit, encodeImportTypes, makeImportEncoder
 } from '../lib/codegen/wit-imports.zena';
 import {
-  synthesizeWitModule, synthesizeExportWrapper
+  synthesizeWitModule, synthesizeExportWrapper, stdlibHasOutcome
 } from '../lib/wit-module-synth.zena';
 import { WitFile, joinWitFiles } from 'wit-parser:document';
 import { ComponentEntryWrapper } from '../lib/component-entry.zena';
@@ -378,6 +378,30 @@ export let tests = suite('Component emission', () => {
     let typedReturn = [0x09, 0x00, 0x79, 0x00];
     isTrue(containsBytes(bytes, typedReturn),
       'the typed task.return canon entry is missing');
+  });
+
+  test('a stored result follows the standard library\'s Outcome classes',
+      (ctx) => {
+    // The synthesizer reads `zena:core/result.zena` to choose: `Outcome`
+    // while the library still declares it, `Result` once it does not
+    // (#495). The checked-in bootstrap and the compiler it builds then
+    // agree on the binding types across the change.
+    isTrue(stdlibHasOutcome(new PlainHost()),
+      'the standard library still declares Outcome');
+    let bare = new MockHost();
+    bare.addFile('zena:core/result.zena', 'export type Result<T, E> = (true, T) | (false, E);');
+    isTrue(!stdlibHasOutcome(bare), 'a library without Outcome reads as one');
+    let wit = readFileSync(`${fixtures}/service.wit`);
+    let entry = `${fixtures}/service.zena`;
+    let wrapperOpt = synthesizeExportWrapper(wit, 'service', entry,
+        parse(readFileSync(entry), entry), packagesWit(), false);
+    isTrue(wrapperOpt != null, 'the service world gets no wrapper');
+    let source = (wrapperOpt as ComponentEntryWrapper).source;
+    isTrue(source.contains('finishTask<Result<String, String>>(describe(a0), ' +
+        '(value: Result<String, String>): void => {'),
+      'without Outcome the future carries a Result:\n' + source);
+    isTrue(source.contains('if (value is (true, String)) {'),
+      'the Result is not lowered by its literal:\n' + source);
   });
 
   test('a declared world\'s async exports lift through wrappers typed ' +
