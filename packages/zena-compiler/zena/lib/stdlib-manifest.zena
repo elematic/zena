@@ -211,6 +211,25 @@ export function buildStdlibConfig(stdlibRoot: String): PackageConfig {
   timeVirtual["component"] = "time/p3.zena";
   exports["time"] = new ModuleExport(timeVirtual);
 
+  // Virtual module: random → the host's cryptographically secure
+  // generator. The public file is the same on every target that has a
+  // generator; what differs is the internal `random/source.zena` it
+  // imports. A freestanding module has no host to ask, so it has no
+  // entry, and importing `zena:random` there reports the library
+  // unavailable on that target.
+  let randomVirtual: HashMap<String, String> = {
+    "js" => "random/index.zena",
+    "zena-cli" => "random/index.zena",
+    "component" => "random/index.zena",
+  };
+  exports["random"] = new ModuleExport(randomVirtual);
+  let randomSourceVirtual: HashMap<String, String> = {
+    "js" => "random/source-js.zena",
+    "zena-cli" => "random/source-wasi.zena",
+    "component" => "random/source-wasi.zena",
+  };
+  exports["random/source.zena"] = new ModuleExport(randomSourceVirtual, null, true);
+
 
   // Directory-based modules: entry file inside a library directory. The
   // sibling implementation files are private — reachable only via relative

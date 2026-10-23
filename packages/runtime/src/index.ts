@@ -31,6 +31,16 @@ for (const name of Object.getOwnPropertyNames(URL.prototype)) {
   };
 }
 
+/**
+ * `zena:host:random`: the host's `crypto.getRandomValues`, which a
+ * `--target js` module's `zena:random` draws from (stdlib
+ * `random/source-js.zena`), one 32-bit word per call.
+ */
+const randomWord = new Uint32Array(1);
+export const randomImports = {
+  u32: () => crypto.getRandomValues(randomWord)[0],
+};
+
 export interface ZenaImports {
   env?: Record<string, Function>;
   console?: Record<string, Function>;
@@ -1208,6 +1218,7 @@ export function createImports(userImports: ZenaImports = {}): ZenaImportObject {
     'zena:host:string': stringImports,
     'zena:host:number': numberImports,
     'zena:host:url': urlImports,
+    'zena:host:random': randomImports,
   };
   if (userImports.web !== false) {
     defaultImports.web = webHost.imports;
@@ -1245,6 +1256,10 @@ export function createImports(userImports: ZenaImports = {}): ZenaImportObject {
     'zena:host:url': {
       ...defaultImports['zena:host:url'],
       ...userImports['zena:host:url'],
+    },
+    'zena:host:random': {
+      ...defaultImports['zena:host:random'],
+      ...userImports['zena:host:random'],
     },
   };
   if (userImports.web !== false) {

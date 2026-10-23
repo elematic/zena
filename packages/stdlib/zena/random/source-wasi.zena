@@ -1,0 +1,36 @@
+/**
+ * `zena:random`'s generator on the component targets: `wasi:random`'s
+ * `random` interface, as the compiler synthesizes it from the vendored
+ * WIT.
+ */
+
+import { getRandomBytes, getRandomU64 } from 'wasi:random/random';
+
+/**
+ * `count` random bytes. `get-random-bytes` may return fewer than it was
+ * asked for, so this asks again for the rest until it has `count`.
+ */
+export function hostRandomBytes(count: i32): FixedArray<u8> {
+  let first = getRandomBytes(count as u64);
+  if (first.length == count) {
+    return first;
+  }
+  let bytes = new FixedArray<u8>(count, 0 as u8);
+  var filled = 0;
+  var chunk = first;
+  while (true) {
+    for (var i = 0; i < chunk.length && filled < count; i += 1) {
+      bytes[filled] = chunk[i];
+      filled += 1;
+    }
+    if (filled == count) {
+      return bytes;
+    }
+    chunk = getRandomBytes((count - filled) as u64);
+  }
+}
+
+/** A random `u64`. */
+export function hostRandomU64(): u64 {
+  return getRandomU64();
+}

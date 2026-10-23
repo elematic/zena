@@ -1,0 +1,84 @@
+import {suite, test} from 'zena:test';
+import {equal, isTrue, throws, notEqual} from 'zena:assert';
+import {randomBytes, randomU64, randomInt, randomF64} from 'zena:random';
+
+// The values are random, so each test asserts what holds for every
+// draw (lengths, ranges), or what fails only with a probability far
+// below one in 2^40.
+export let tests = suite('zena:random', () => {
+  test('randomBytes returns as many bytes as asked for', () => {
+    equal(randomBytes(0).length, 0);
+    equal(randomBytes(1).length, 1);
+    equal(randomBytes(7).length, 7);
+    equal(randomBytes(32).length, 32);
+    equal(randomBytes(100000).length, 100000);
+  });
+
+  test('randomBytes fills every byte', () => {
+    // 64 zero bytes at one position: 2^-512.
+    let bytes = randomBytes(64);
+    var nonZero = 0;
+    for (let b in bytes) {
+      if (b != (0 as u8)) {
+        nonZero += 1;
+      }
+    }
+    isTrue(nonZero > 32, `only ${nonZero} of 64 bytes are non-zero`);
+  });
+
+  test('randomBytes rejects a negative count', () => {
+    throws(() => {
+      randomBytes(-1);
+    });
+  });
+
+  test('randomU64 differs between draws', () => {
+    notEqual(randomU64(), randomU64());
+  });
+
+  test('randomInt stays below its bound', () => {
+    for (var i = 0; i < 1000; i += 1) {
+      let n = randomInt(10);
+      isTrue(n >= 0 && n < 10, `randomInt(10) returned ${n}`);
+    }
+    for (var i = 0; i < 100; i += 1) {
+      let n = randomInt(2147483647);
+      isTrue(n >= 0, `randomInt(2147483647) returned ${n}`);
+    }
+    equal(randomInt(1), 0);
+  });
+
+  test('randomInt reaches every value', () => {
+    // A face missing after 600 rolls: about 6 * (5/6)^600, or 2^-155.
+    let seen = new FixedArray<i32>(6, 0);
+    for (var i = 0; i < 600; i += 1) {
+      let n = randomInt(6);
+      seen[n] = seen[n] + 1;
+    }
+    for (var face = 0; face < 6; face += 1) {
+      isTrue(seen[face] > 0, `randomInt(6) never returned ${face}`);
+    }
+  });
+
+  test('randomInt rejects a bound that is not positive', () => {
+    throws(() => {
+      randomInt(0);
+    });
+    throws(() => {
+      randomInt(-5);
+    });
+  });
+
+  test('randomF64 is at least 0 and less than 1', () => {
+    var sum = 0.0;
+    for (var i = 0; i < 1000; i += 1) {
+      let x = randomF64();
+      isTrue(x >= 0.0 && x < 1.0, `randomF64 returned ${x}`);
+      sum += x;
+    }
+    // The mean of 1000 draws has a standard deviation of about 0.009,
+    // so 0.4 and 0.6 are eleven deviations out.
+    let mean = sum / 1000.0;
+    isTrue(mean > 0.4 && mean < 0.6, `the mean of 1000 draws is ${mean}`);
+  });
+});

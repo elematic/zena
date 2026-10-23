@@ -2578,6 +2578,21 @@ sha256HexOfString('abc'); // 'ba7816bf8f01cfea...'
 sha256Hex(readFileBytesSync(path) as ByteArray);
 ```
 
+### zena:random
+
+Random values from the host's cryptographically secure generator
+(`wasi:random` on the component targets, `crypto.getRandomValues` on
+`js`), fit for keys, salts and identifiers. `randomInt(bound)` is
+uniform over `0` to `bound - 1`, and `randomF64()` over `[0, 1)`.
+
+```zena
+import {randomBytes, randomInt, randomF64, randomU64} from 'zena:random';
+
+let salt = randomBytes(32);
+let roll = randomInt(6) + 1;
+let jitter = randomF64() * 50.0;
+```
+
 ### zena:json
 
 JSON parsing with typed accessors and optional comment support.
