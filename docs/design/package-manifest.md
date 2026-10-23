@@ -35,6 +35,7 @@ else moved.
 {
   "name": "app",
   "did": "did:plc:appappappappappappappapp",
+  "version": "1.4.2",
   "exports": {"server": {}},
   "dependencies": {
     "router": {"did": "did:plc:routerrouterrouterrouter", "version": "1.4.2"},
@@ -49,6 +50,7 @@ else moved.
 | -------------- | ------------------------------- | -------------- | ---------------------------------------------------------------------- |
 | `name`         | `string`                        | any package    | The package's own name, and the name it suggests to its dependents     |
 | `did`          | `string`                        | any package    | The package's DID, once it has been created on a package host          |
+| `version`      | `string`                        | any package    | The version `zena publish` publishes next                              |
 | `exports`      | `Record<string, LibraryExport>` | any package    | The libraries other packages may import                                |
 | `dependencies` | `Record<string, Dependency>`    | any package    | The packages this package's libraries import, by local name            |
 | `workspace`    | `{packages: string[]}`          | workspace root | The directories of the workspace's other packages                      |
@@ -70,6 +72,14 @@ unless they choose another name.
 `zena publish` writes the DID when it creates the package's account (see
 package-manager.md, "Creating a package"), so that later releases are
 published to the same package.
+
+### `version`
+
+The semantic version, without build metadata, that `zena publish` gives
+the next release: `1.4.2` or `2.0.0-rc.1`. Raising it is part of the change
+a release publishes, so it shows in review, and the source archive says
+which version it is. A version that has been published cannot be published
+again. The compiler does not read it.
 
 ### `exports`
 

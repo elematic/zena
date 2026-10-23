@@ -6,7 +6,10 @@ import {Cid} from 'atproto:cid';
 import {BlobRef, Value, fromJson, toJson} from 'atproto:data';
 import {isValidNsid} from 'atproto:syntax';
 import {
+  ATTESTATION_TYPE,
   Artifact,
+  Attestation,
+  attestationKey,
   COMPONENT,
   MAINTAINERS_TYPE,
   Maintainer,
@@ -88,7 +91,7 @@ function rejectsProfile(json: String) {
 
 export let tests = suite('package-manager:records', () => {
   test('names each record type after its lexicon', (ctx) => {
-    for (let type in [PROFILE_TYPE, RELEASE_TYPE, YANK_TYPE, MAINTAINERS_TYPE]) {
+    for (let type in [PROFILE_TYPE, RELEASE_TYPE, YANK_TYPE, MAINTAINERS_TYPE, ATTESTATION_TYPE]) {
       isTrue(isValidNsid(type), type);
       let parts = type.split('.');
       let path = `packages/package-manager/lexicons/dev/zena-lang/package/${parts[parts.length - 1]}.json`;
@@ -317,5 +320,18 @@ export let tests = suite('package-manager:records', () => {
     // Another salt, another commitment.
     isFalse(new MemberEntry(entry.did, OWNER, new FixedArray<u8>(32, 8 as u8)).commitment()
         .equals(entry.commitment()));
+  });
+
+  test('keys an attestation by its subject, version and all', (ctx) => {
+    let uri = 'at://did:plc:routerrouterrouterrouter/dev.zena-lang.package.release/1.4.2';
+    let cid = Cid.parse(SOURCE_CID);
+    let attestation = new Attestation(uri, cid, '2026-10-23T00:00:00.000Z');
+    let key = attestation.recordKey();
+    equal(key, attestationKey(uri, cid));
+    equal(key.length, 52);
+    let read = Attestation.fromValue(attestation.toValue());
+    equal(read.uri, uri);
+    isTrue(read.cid.equals(cid));
+    isTrue(attestationKey(uri, Cid.forBlob('another version'.toBytes())) != key);
   });
 });

@@ -164,6 +164,17 @@ async function hostCall(host: PackageHost, req: Request, res: Response, method: 
 
 /** Adds the routes of the `dev.zena-lang.host.*` methods `host` implements. */
 function hostRoutes(router: Router, host: PackageHost): void {
+  // What a client needs to call the host: its service DID, which tokens
+  // are addressed to, and the domain its handles are under.
+  router.get('/xrpc/com.atproto.server.describeServer', async (req, res, next, params) => {
+    let domains = new JsonArray();
+    domains.push(`.${host.config.domain}`);
+    let body = new JsonObject();
+    body['did'] = host.config.serviceDid;
+    body['availableUserDomains'] = domains;
+    json(res, body);
+  });
+
   router.post('/xrpc/dev.zena-lang.host.createOrganization', async (req, res, next, params) => {
     await hostCall(host, req, res, 'dev.zena-lang.host.createOrganization', async (caller): Future<JsonObject | null> => {
       let body = await jsonBody(req, res);
