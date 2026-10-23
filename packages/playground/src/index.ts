@@ -10,6 +10,7 @@ export {ZenaPlayground} from './zena-playground.js';
 export {ZenaFileEditor} from './zena-file-editor.js';
 export {ZenaConsole} from './zena-console.js';
 export {ZenaOutput} from './zena-output.js';
+export {ZenaPreview} from './zena-preview.js';
 export {ZenaTabBar} from './zena-tab-bar.js';
 export {ZenaCodeExportDialog} from './zena-code-export-dialog.js';
 export {ZenaThemeSelector, THEME_OPTIONS} from './zena-theme-selector.js';
@@ -42,3 +43,7 @@ export type {
   WorkerRequest,
   WorkerResponse,
 } from './types.js';
+export type {
+  HttpError,
+  VirtualFile,
+} from './preview-shared/service-worker-api.js';

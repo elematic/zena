@@ -38,11 +38,15 @@ const OPEN_TAG_RE = new RegExp(
   'i',
 );
 const CLOSE_TAG_RE = new RegExp(`</(${RAW_BLOCK_TAGS.join('|')})>`, 'i');
+const SAMPLE_SCRIPT_RE =
+  /<script\b[^>]*\btype=['"]sample\/[^'"]*['"][^>]*>[\s\S]*?<\/script>/gi;
+const SAMPLE_PLACEHOLDER_RE =
+  /<script data-zena-sample-placeholder="(\d+)"><\/script>/g;
 
 /**
- * Custom block rule to treat `<zena-playground>` and related components as
- * atomic raw HTML blocks (similar to `<script>` or `<pre>`), preventing
- * CommonMark from terminating the HTML block at blank lines and injecting `<p>`.
+ * Custom block rule to treat `<zena-playground>` and `<zena-project>` tags as
+ * atomic raw HTML blocks, preventing CommonMark from terminating the HTML block
+ * at blank lines and injecting `<p>` or `<pre><code>` around child elements.
  */
 const rawCustomElementBlock = (state, startLine, endLine, silent) => {
   let pos = state.bMarks[startLine] + state.tShift[startLine];
@@ -81,6 +85,44 @@ const rawCustomElementBlock = (state, startLine, endLine, silent) => {
 };
 
 /**
+ * Stashes `<script type="sample/...">...</script>` blocks as single-line
+ * `<script>` placeholders before CommonMark block parsing so inner `</style>`,
+ * `</pre>`, or blank lines never split the enclosing HTML block.
+ */
+const stashSampleScripts = (state) => {
+  const scripts = [];
+  state.src = state.src.replace(SAMPLE_SCRIPT_RE, (match) => {
+    const id = scripts.length;
+    scripts.push(match);
+    return `<script data-zena-sample-placeholder="${id}"></script>`;
+  });
+  state.env.__zenaSampleScripts = scripts;
+};
+
+const restoreSampleScriptsInTokens = (tokens, scripts) => {
+  for (const token of tokens) {
+    if (
+      token.content &&
+      token.content.includes('data-zena-sample-placeholder')
+    ) {
+      token.content = token.content.replace(
+        SAMPLE_PLACEHOLDER_RE,
+        (_, id) => scripts[Number(id)],
+      );
+    }
+    if (token.children) {
+      restoreSampleScriptsInTokens(token.children, scripts);
+    }
+  }
+};
+
+const restoreSampleScripts = (state) => {
+  const scripts = state.env.__zenaSampleScripts;
+  if (!scripts || scripts.length === 0) return;
+  restoreSampleScriptsInTokens(state.tokens, scripts);
+};
+
+/**
  * Applies the site's markdown conventions to Eleventy's markdown-it instance.
  *
  * @param {import('markdown-it')} md
@@ -88,6 +130,13 @@ const rawCustomElementBlock = (state, startLine, endLine, silent) => {
  */
 export const configureMarkdown = (md, highlighter) => {
   md.set({html: true, linkify: true, typographer: false});
+
+  md.core.ruler.after(
+    'normalize',
+    'zena_stash_sample_scripts',
+    stashSampleScripts,
+  );
+  md.core.ruler.push('zena_restore_sample_scripts', restoreSampleScripts);
 
   md.block.ruler.before(
     'html_block',

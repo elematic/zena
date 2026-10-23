@@ -99,12 +99,14 @@ export class PlaygroundConnectedElement extends LitElement {
         'status-changed',
         this._boundOnProjectUpdate,
       );
+      this.onProjectConnected(this._resolvedProject);
       this.requestUpdate();
     }
   }
 
   private cleanupProjectSubscription() {
     if (this._resolvedProject) {
+      this.onProjectDisconnected(this._resolvedProject);
       this._resolvedProject.removeEventListener(
         'files-changed',
         this._boundOnProjectUpdate,
@@ -131,4 +133,14 @@ export class PlaygroundConnectedElement extends LitElement {
   protected onProjectUpdate() {
     this.requestUpdate();
   }
+
+  /**
+   * Called when a `<zena-project>` instance is connected to this element.
+   */
+  protected onProjectConnected(_project: ZenaProject) {}
+
+  /**
+   * Called when a `<zena-project>` instance is disconnected from this element.
+   */
+  protected onProjectDisconnected(_project: ZenaProject) {}
 }

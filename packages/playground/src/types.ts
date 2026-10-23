@@ -59,8 +59,21 @@ export interface CompletionsRequest {
   files?: Record<string, string>;
 }
 
+/** Compiles a `.zena` document to `.wasm` bytes without running `main()`. */
+export interface CompileRequest {
+  type: 'compile';
+  id: number;
+  path: string;
+  source: string;
+  files?: Record<string, string>;
+}
+
 export type WorkerRequest =
-  InitRequest | CheckRequest | HoverRequest | CompletionsRequest;
+  | InitRequest
+  | CheckRequest
+  | HoverRequest
+  | CompletionsRequest
+  | CompileRequest;
 
 /** The compiler is loaded and initialized. */
 export interface ReadyResponse {
@@ -92,6 +105,13 @@ export interface CompletionsResponse {
   completions: CompletionItem[];
 }
 
+export interface CompileResponse {
+  type: 'compile';
+  id: number;
+  wasm: Uint8Array<ArrayBuffer> | null;
+  diagnostics: Diagnostic[];
+}
+
 /** The worker itself failed — bad Wasm, a compiler crash, a failed run. */
 export interface ErrorResponse {
   type: 'error';
@@ -105,6 +125,7 @@ export type WorkerResponse =
   | ConsoleResponse
   | HoverResponse
   | CompletionsResponse
+  | CompileResponse
   | ErrorResponse;
 
 export type PlaygroundStatus = 'loading' | 'ready' | 'checking' | 'error';

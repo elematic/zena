@@ -158,6 +158,9 @@ const server = createServer(async (req, res) => {
     vary: 'Accept-Encoding',
     'x-content-type-options': 'nosniff',
   };
+  if (urlPath.startsWith('/sandbox/')) {
+    headers['origin-agent-cluster'] = '?1';
+  }
 
   const acceptsGzip = (req.headers['accept-encoding'] ?? '').includes('gzip');
   const compress = acceptsGzip && COMPRESSIBLE.has(ext) && found.size > 1024;

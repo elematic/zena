@@ -22,6 +22,7 @@ import type {
   CheckRequest,
   HoverRequest,
   CompletionsRequest,
+  CompileRequest,
 } from '../types.js';
 
 /**
@@ -103,19 +104,25 @@ function withService(
 
 const openDocPaths = new Set<string>();
 
+const isZenaFile = (path: string): boolean =>
+  path.endsWith('.zena') || !/\.[a-z0-9]+$/i.test(path);
+
 function syncFiles(
   service: ZenaLanguageService,
   files?: Record<string, string>,
 ): void {
   if (files) {
-    const currentKeys = new Set(Object.keys(files));
+    const zenaEntries = Object.entries(files).filter(([path]) =>
+      isZenaFile(path),
+    );
+    const currentKeys = new Set(zenaEntries.map(([path]) => path));
     for (const oldPath of openDocPaths) {
       if (!currentKeys.has(oldPath)) {
         service.closeDocument(oldPath);
         openDocPaths.delete(oldPath);
       }
     }
-    for (const [path, source] of Object.entries(files)) {
+    for (const [path, source] of zenaEntries) {
       service.openDocument(path, source);
       openDocPaths.add(path);
     }
@@ -178,6 +185,26 @@ function completions(request: CompletionsRequest): void {
     } catch {
       post({type: 'completions', id: request.id, completions: []});
     }
+  });
+}
+
+function compile(request: CompileRequest): void {
+  withService(request.id, (service) => {
+    syncFiles(service, request.files);
+    const all = service.check(request.path, request.source);
+    const filtered = all.filter(
+      (d) => !d.file?.startsWith('zena:') || d.severity === 'error',
+    );
+    const hasErrors = all.some((d) => d.severity === 'error');
+    const wasm = hasErrors
+      ? null
+      : service.compileToWasm(request.path, request.source);
+    post({
+      type: 'compile',
+      id: request.id,
+      wasm,
+      diagnostics: filtered,
+    });
   });
 }
 
@@ -264,6 +291,9 @@ self.onmessage = (event: MessageEvent<WorkerRequest>) => {
       break;
     case 'completions':
       completions(request);
+      break;
+    case 'compile':
+      compile(request);
       break;
   }
 };
