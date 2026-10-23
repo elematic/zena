@@ -74,7 +74,7 @@ import {
   rawParam, rawDefaultOf, computeLiveIn, weakenToNullable, loopContainsSuspend,
   rerouteEdges, TryRegion, dispatchRegionsOf, addRegionMergeTargets,
   spillCatchLiveIns, varFieldsOf, rewriteVarsToFrame, iteratorInstantiationOf,
-  isExplosionForwarder,
+  isExplosionForwarder, StepValue, stepValueOf, rawValueLanes, rawStepResults,
 } from './generators.zena';
 import { ReachabilityAnalysis } from '../reachability/analysis.zena';
 import {
@@ -1671,7 +1671,12 @@ function prepareOneAsyncGen(
   let iterFatPtr = wasm.interfaceStructs[iterIKey];
   let iterVst = wasm.interfaceVTableStructs[iterIKey];
   let slotSig = getInterfaceMemberSignature(wasm, iterIface, 'next');
-  if ((slotSig.returns.length != 2 && slotSig.returns.length != 3) ||
+  // (discriminant, value, future), with no value result for a
+  // zero-width value and one per field for an unboxed tuple.
+  let stepValue = stepValueOf(wasm, iterIface, func);
+  let valueLanes = slotSig.returns.length - 2;
+  if (valueLanes < 0 || valueLanes > stepValue.lanes() ||
+      (stepValue.struct != null && valueLanes != stepValue.lanes()) ||
       !(slotSig.returns[0] is ValTypeI32)) {
     throw new Error('unexpected AsyncIterator.next result shape for ' + name);
   }
@@ -1737,7 +1742,7 @@ function prepareOneAsyncGen(
 
   let yieldVt = if (someCtor.signature.params.length == 1) {
     someCtor.signature.params[0]
-  } else if (slotSig.returns.length == 3) {
+  } else if (slotSig.returns.length >= 3) {
     slotSig.returns[1]
   } else {
     null
@@ -1985,7 +1990,7 @@ function prepareOneAsyncGen(
       childScopeCtor, iterFatPtr, iterVtableGlobal, taskFatPtr,
       taskVtableGlobal);
   let nextBody = buildAsyncGenNextBody(presplit, cfg, frame, futureStruct,
-      spilled, pcOfBlock, dTargets, slotSig, subscribeOf, subscribeCalleeOf,
+      spilled, pcOfBlock, dTargets, slotSig, stepValue, subscribeOf, subscribeCalleeOf,
       hopTerms, scheduleFn, completeFn, failFn, futureCtor, someCtor,
       noneCtor, sm, cancelScopeFn, disposal,
       if (disposal) wasm.cancellationTag else null,
@@ -2054,6 +2059,7 @@ function buildAsyncGenNextBody(
   pcOfBlockIn: HashMap<i32, i32>,
   dTargetsIn: GrowableArray<i32>,
   slotSig: WasmSignature,
+  stepValue: StepValue,
   subscribeOf: HashMap<i32, WasmFunction>,
   subscribeCalleeOf: HashMap<i32, i32>,
   hopTerms: HashSet<i32>,
@@ -2259,39 +2265,41 @@ function buildAsyncGenNextBody(
     let ignored = callValIn(blockId, m.installFn, restoreArgs, m.scopeVt);
   };
 
+  // The value results of a step, placed in `blockId`: none for a
+  // zero-width value, else `value` (its fields when the step unboxes
+  // it), or defaults when `value` is -1.
+  let valueLanesIn = (blockId: i32, value: i32) => {
+    if (slotSig.returns.length == 2) {
+      return new Array<i32>();
+    }
+    let lanes = rawValueLanes(body, slotSig.returns, stepValue, value);
+    for (let lane in lanes) {
+      if (body.instBlock[lane] < 0) {
+        placeInst(body, blockId, lane);
+      }
+    }
+    return lanes;
+  };
+
   let retStepIn = (
     blockId: i32,
     discVal: i32,
-    valInst: i32,
+    lanes: GrowableArray<i32>,
     futInst: i32
   ) => {
     restoreScopeIn(blockId);
-    let extraIdx = body.extra.length;
-    if (slotSig.returns.length == 3) {
-      body.extra.push(3);
-      body.extra.push(discVal);
-      body.extra.push(valInst);
-      body.extra.push(futInst);
-    } else {
-      body.extra.push(2);
-      body.extra.push(discVal);
-      body.extra.push(futInst);
-    }
+    let extraIdx = rawStepResults(body, discVal, lanes, futInst);
     let inst = rawInst(body, IrOp.ret_multi, -1, extraIdx, -1);
     placeInst(body, blockId, inst);
   };
 
   let retDoneIn = (blockId: i32) => {
     let disc = emitIn(blockId, IrOp.const_i32, i32Idx, 0, -1);
-    var dfltVal = -1;
-    if (slotSig.returns.length == 3) {
-      dfltVal = rawDefaultOf(body, slotSig.returns[1]);
-      placeInst(body, blockId, dfltVal);
-    }
+    let dfltLanes = valueLanesIn(blockId, -1);
     let dfltFut = rawDefaultOf(body,
         slotSig.returns[slotSig.returns.length - 1]);
     placeInst(body, blockId, dfltFut);
-    retStepIn(blockId, disc, dfltVal, dfltFut);
+    retStepIn(blockId, disc, dfltLanes, dfltFut);
   };
 
   if (hasCancelRegion) {
@@ -2639,10 +2647,11 @@ function buildAsyncGenNextBody(
       brIfTo(blockId, isSync, syncYieldB, asyncYieldB);
 
       let readyDisc = emitIn(syncYieldB, IrOp.const_i32, i32Idx, 1, -1);
+      let readyLanes = valueLanesIn(syncYieldB, yieldVal);
       let nullFut = rawDefaultOf(body,
           slotSig.returns[slotSig.returns.length - 1]);
       placeInst(body, syncYieldB, nullFut);
-      retStepIn(syncYieldB, readyDisc, yieldVal, nullFut);
+      retStepIn(syncYieldB, readyDisc, readyLanes, nullFut);
 
       let fut = emitIn(asyncYieldB, IrOp.ref_as_non_null,
           internVt(body, new ValTypeRef(futureStruct)), weakFut, -1);
@@ -2748,13 +2757,9 @@ function buildAsyncGenNextBody(
       placeInst(body, parkB, subCall);
 
       let pendingDisc = emitIn(parkB, IrOp.const_i32, i32Idx, 2, -1);
-      var dfltVal = -1;
-      if (slotSig.returns.length == 3) {
-        dfltVal = rawDefaultOf(body, slotSig.returns[1]);
-        placeInst(body, parkB, dfltVal);
-      }
+      let pendingLanes = valueLanesIn(parkB, -1);
       let pendingFut = loadFuture(parkB);
-      retStepIn(parkB, pendingDisc, dfltVal, pendingFut);
+      retStepIn(parkB, pendingDisc, pendingLanes, pendingFut);
     } else if (op == IrOp.ret) {
       let rebuilt = new Array<i32>(block.insts.length - 1);
       var k = 0;
