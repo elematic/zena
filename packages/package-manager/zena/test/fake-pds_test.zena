@@ -1,0 +1,39 @@
+import {suite, test} from 'zena:test';
+import {equal, isTrue} from 'zena:assert';
+import {runFuture} from 'zena:async';
+import {now} from 'wasi:clocks/system-clock';
+import {verifyServiceAuth} from 'atproto:service-auth';
+import {createSession, getServiceAuth} from 'atproto:session';
+import {XrpcError} from 'atproto:xrpc';
+import {FakePds} from 'package-manager:testing/fake-pds';
+
+let ALICE = 'did:plc:alicealicealicealicealic';
+let HOST = 'did:web:pkg.zena-lang.dev';
+let PUBLISH = 'dev.zena-lang.host.publish';
+
+export let tests = suite('package-manager:testing/fake-pds', () => {
+  test('signs a maintainer in and hands out service-auth tokens that verify', (ctx) => {
+    let pds = new FakePds();
+    pds.start();
+    let alice = pds.account(ALICE, 'alice.test');
+    alice.password = 'app-password';
+    let resolver = pds.resolver();
+
+    let session = runFuture(createSession('alice.test', 'app-password', resolver));
+    equal(session.did, ALICE);
+    let token = runFuture(getServiceAuth(session, HOST, PUBLISH));
+    let claims = runFuture(verifyServiceAuth(token, HOST, PUBLISH, now().seconds,
+        resolver.signingKeys()));
+    equal(claims.iss, ALICE);
+    equal(pds.serviceAuthRequests.length, 1);
+
+    var refused = '';
+    try {
+      runFuture(createSession(ALICE, 'wrong', resolver));
+    } catch (e) {
+      refused = if (e is XrpcError) (e as XrpcError).error else e.message;
+    }
+    equal(refused, 'AuthenticationRequired');
+    pds.close();
+  });
+});

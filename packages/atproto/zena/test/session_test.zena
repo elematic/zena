@@ -1,0 +1,191 @@
+/**
+ * Signing in and asking for service-auth tokens, against a `zena:http`
+ * server in the same program that plays the PLC directory, the DNS
+ * resolver and Alice's PDS.
+ */
+
+import {suite, test} from 'zena:test';
+import {equal, isTrue} from 'zena:assert';
+import {Future, runFuture} from 'zena:async';
+import {App, Server} from 'zena:http';
+import {JsonObject, parseJson, stringify} from 'zena:json';
+import {IdentityResolver} from 'atproto:identity';
+import {
+  Session,
+  SessionError,
+  createSession,
+  deleteSession,
+  getServiceAuth,
+  refreshSession
+} from 'atproto:session';
+import {XrpcError} from 'atproto:xrpc';
+
+let ALICE = 'did:plc:alicealicealicealicealic';
+let HOST = 'did:web:pkg.zena-lang.dev';
+let PUBLISH = 'dev.zena-lang.host.publish';
+
+/** Alice's PDS: her password, and the tokens it has handed out. */
+final class Pds {
+  var password = 'app-pass-word-1234';
+  /** The DID the PDS signs in, which a broken PDS could get wrong. */
+  var signsIn = ALICE;
+  var generation = 0;
+  /** Whether the next getServiceAuth answers that the access token expired. */
+  var expireNext = false;
+  var deleted = false;
+  var lastQuery = '';
+  /** The server's origin, which the DID document names as the PDS. */
+  var origin = '';
+
+  access(): String {
+    return `access-${this.generation}`;
+  }
+
+  refresh(): String {
+    return `refresh-${this.generation}`;
+  }
+
+  session(): String {
+    return `{"did":"${this.signsIn}","handle":"alice.test","accessJwt":"${this.access()}","refreshJwt":"${this.refresh()}"}`;
+  }
+}
+
+function startServer(pds: Pds): Server {
+  let app = new App();
+  app.use(async (req, res, next): Future<void> => {
+    let path = req.path;
+    let authorization = req.getHeader('authorization') ?? '';
+    res.type = 'application/json';
+    let fail = (status: i32, error: String) => {
+      res.statusCode = status;
+      res.body = `{"error":"${error}","message":"${error}"}`;
+    };
+    if (path == `/plc/${ALICE}`) {
+      res.body = `{"id":"${ALICE}","alsoKnownAs":["at://alice.test"],` +
+          `"service":[{"id":"#atproto_pds","type":"AtprotoPersonalDataServer","serviceEndpoint":"${pds.origin}"}]}`;
+    } else if (path == '/dns-query') {
+      res.type = 'application/dns-json';
+      res.body = `{"Status":0,"Answer":[{"name":"_atproto.alice.test.","type":16,"data":"\\"did=${ALICE}\\""}]}`;
+    } else if (path == '/xrpc/com.atproto.server.createSession') {
+      let input = parseJson(await req.text()) as JsonObject;
+      if (input['identifier'] as String != ALICE || input['password'] as String != pds.password) {
+        fail(401, 'AuthenticationRequired');
+      } else {
+        res.body = pds.session();
+      }
+    } else if (path == '/xrpc/com.atproto.server.refreshSession') {
+      if (authorization != `Bearer ${pds.refresh()}`) {
+        fail(400, 'ExpiredToken');
+      } else {
+        pds.generation += 1;
+        res.body = pds.session();
+      }
+    } else if (path == '/xrpc/com.atproto.server.getServiceAuth') {
+      pds.lastQuery = req.query;
+      if (pds.expireNext) {
+        pds.expireNext = false;
+        fail(400, 'ExpiredToken');
+      } else if (authorization != `Bearer ${pds.access()}`) {
+        fail(400, 'ExpiredToken');
+      } else {
+        res.body = '{"token":"service-token"}';
+      }
+    } else if (path == '/xrpc/com.atproto.server.deleteSession') {
+      pds.deleted = authorization == `Bearer ${pds.refresh()}`;
+      res.statusCode = 200;
+      res.body = '';
+    } else {
+      fail(400, 'InvalidRequest');
+    }
+  });
+  let server = new Server(app, 0 as u16);
+  server.start();
+  pds.origin = `http://127.0.0.1:${server.port as i32}`;
+  return server;
+}
+
+function resolverFor(server: Server) {
+  let origin = `http://127.0.0.1:${server.port as i32}`;
+  let resolver = new IdentityResolver();
+  resolver.plcDirectory = `${origin}/plc`;
+  resolver.dnsOverHttps = `${origin}/dns-query`;
+  resolver.originOf = (host) => origin;
+  return resolver;
+}
+
+async function failure(call: () => Future<Session>): Future<String> {
+  try {
+    await call();
+  } catch (e) {
+    if (e is XrpcError) {
+      return (e as XrpcError).error;
+    }
+    return if (e is SessionError) `SessionError: ${e.message}` else e.message;
+  }
+  return '';
+}
+
+export let tests = suite('atproto:session', () => {
+  test('signs in by handle at the PDS the DID document names', (ctx) => {
+    let pds = new Pds();
+    let server = startServer(pds);
+    let session = runFuture(createSession('alice.test', pds.password, resolverFor(server)));
+    equal(session.did, ALICE);
+    equal(session.handle, 'alice.test');
+    equal(session.pds, `http://127.0.0.1:${server.port as i32}`);
+    equal(session.accessJwt, 'access-0');
+    isTrue(!session.refreshed);
+    server.close();
+  });
+
+  test('refuses a wrong password, and a PDS that signs in someone else', (ctx) => {
+    let pds = new Pds();
+    let server = startServer(pds);
+    let resolver = resolverFor(server);
+    equal(runFuture(failure(() => createSession(ALICE, 'wrong', resolver))), 'AuthenticationRequired');
+    pds.signsIn = 'did:plc:bobbobbobbobbobbobbobbob';
+    isTrue(runFuture(failure(() => createSession(ALICE, pds.password, resolver)))
+        .startsWith('SessionError'));
+    server.close();
+  });
+
+  test('asks for a service-auth token, refreshing an expired session once', (ctx) => {
+    let pds = new Pds();
+    let server = startServer(pds);
+    let session = runFuture(createSession(ALICE, pds.password, resolverFor(server)));
+    equal(runFuture(getServiceAuth(session, HOST, PUBLISH, 1792800060 as i64)), 'service-token');
+    isTrue(pds.lastQuery.contains('aud=did%3Aweb%3Apkg.zena-lang.dev'), pds.lastQuery);
+    isTrue(pds.lastQuery.contains('lxm=dev.zena-lang.host.publish'), pds.lastQuery);
+    isTrue(pds.lastQuery.contains('exp=1792800060'), pds.lastQuery);
+
+    pds.expireNext = true;
+    equal(runFuture(getServiceAuth(session, HOST, PUBLISH)), 'service-token');
+    isTrue(session.refreshed);
+    equal(session.accessJwt, 'access-1');
+    equal(session.refreshJwt, 'refresh-1');
+    isTrue(!pds.lastQuery.contains('exp='), pds.lastQuery);
+    server.close();
+  });
+
+  test('stores a session and reads it back, and ends it', (ctx) => {
+    let pds = new Pds();
+    let server = startServer(pds);
+    let session = runFuture(createSession(ALICE, pds.password, resolverFor(server)));
+    let copy = Session.fromJson(parseJson(stringify(session.toJson())));
+    equal(copy.did, ALICE);
+    equal(copy.pds, session.pds);
+    equal(copy.refreshJwt, 'refresh-0');
+    runFuture(refreshSession(copy));
+    equal(copy.accessJwt, 'access-1');
+    runFuture(deleteSession(copy));
+    isTrue(pds.deleted);
+    var message = '';
+    try {
+      Session.fromJson(parseJson('{"did":"alice"}'));
+    } catch (e) {
+      message = e.message;
+    }
+    equal(message, 'a stored session has no DID');
+    server.close();
+  });
+});

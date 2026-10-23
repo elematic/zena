@@ -17,20 +17,28 @@
  * ```
  *
  * `FakePds`'s own methods act on the account DID; `account` adds others.
+ *
+ * An account with a `password` can also sign in with
+ * `com.atproto.server.createSession`, refresh and end the session, and
+ * ask for service-auth tokens with `com.atproto.server.getServiceAuth`,
+ * which are signed with KEY like everything else.
  */
 
 import {Future} from 'zena:async';
 import {HashMap, OrderedHashMap} from 'zena:collections';
 import {p256} from 'zena:crypto';
+import {parseI64} from 'zena:core';
 import {hex} from 'zena:encoding';
-import {App, Server} from 'zena:http';
-import {JsonArray, JsonObject, stringify} from 'zena:json';
+import {App, Request, Response, Server} from 'zena:http';
+import {JsonArray, JsonObject, parseJson, stringify} from 'zena:json';
+import {now} from 'wasi:clocks/system-clock';
 import {BlockMap, writeCar} from 'atproto:car';
 import {encodeCbor} from 'atproto:cbor';
 import {Cid} from 'atproto:cid';
 import {BytesValue, IntValue, LinkValue, MapValue, NullValue, StringValue, newMap, toJson} from 'atproto:data';
 import {KeyType, formatMultikey, publicKeyFor} from 'atproto:didkey';
 import {IdentityResolver} from 'atproto:identity';
+import {ServiceAuthClaims, createServiceAuthToken} from 'atproto:service-auth';
 import {buildMst, compareKeys} from 'atproto:mst';
 import {PROFILE_KEY, PROFILE_TYPE, Profile, RELEASE_TYPE, Release, YANK_TYPE, Yank} from '../records.zena';
 
@@ -70,6 +78,8 @@ export final class FakeAccount {
   records = new OrderedHashMap<String, MapValue>();
   /** The account's blobs, by CID. */
   blobs = new HashMap<String, FixedArray<u8>>();
+  /** The password `createSession` takes, or null when it refuses every one. */
+  var password: String | null = null;
 
   new(did: String, handle: String | null) : did = did, handle = handle;
 
@@ -154,10 +164,34 @@ export final class FakePds {
   var requests = 0;
   /** The server's origin, `http://127.0.0.1:<port>`, once it has started. */
   var origin = '';
+  /**
+   * The live sessions' tokens: each access token and refresh token
+   * mapped to its account's DID.
+   */
+  accessTokens = new HashMap<String, String>();
+  refreshTokens = new HashMap<String, String>();
+  var #sessions = 0;
+  /** The `(aud, lxm)` of each service-auth token handed out, in order. */
+  serviceAuthRequests = new GrowableArray<(String, String)>();
   var #server: Server | null = null;
 
   new() {
     this.accounts[DID] = new FakeAccount(DID, null);
+  }
+
+  /** A new session for `account`, as `createSession` answers with it. */
+  newSession(account: FakeAccount): String {
+    this.#sessions += 1;
+    let access = `access-${this.#sessions}`;
+    let refresh = `refresh-${this.#sessions}`;
+    this.accessTokens[access] = account.did;
+    this.refreshTokens[refresh] = account.did;
+    let session = new JsonObject();
+    session['did'] = account.did;
+    session['handle'] = account.handle ?? 'handle.invalid';
+    session['accessJwt'] = access;
+    session['refreshJwt'] = refresh;
+    return stringify(session);
   }
 
   /** Starts serving, on a port of the system's choosing. */
@@ -286,6 +320,10 @@ function serve(pds: FakePds): Server {
       };
       return;
     }
+    if (path.startsWith('/xrpc/com.atproto.server.')) {
+      await serveSession(pds, req, res);
+      return;
+    }
     let did = params.get('did') ?? params.get('repo') ?? '';
     if (let (true, account) = pds.accounts.get(did)) {
       if (path == '/xrpc/com.atproto.sync.getRecord') {
@@ -318,6 +356,72 @@ function serve(pds: FakePds): Server {
   let server = new Server(app, 0 as u16);
   server.start();
   return server;
+}
+
+/** Answers the session methods of `com.atproto.server`. */
+async function serveSession(pds: FakePds, req: Request, res: Response): Future<void> {
+  let path = req.path;
+  let bearer = req.getHeader('authorization') ?? '';
+  let token = if (bearer.startsWith('Bearer ')) bearer.sliceBytes(7, bearer.length) else '';
+  res.type = 'application/json';
+  let fail = (status: i32, error: String) => {
+    res.statusCode = status;
+    res.body = `{"error":"${error}","message":"${error}"}`;
+  };
+  if (path == '/xrpc/com.atproto.server.createSession') {
+    let input = parseJson(await req.text()) as JsonObject;
+    let identifier = input['identifier'] as String;
+    var found: FakeAccount | null = null;
+    pds.accounts.forEach((did, account) => {
+      if (did == identifier || (account.handle != null && account.handle as String == identifier)) {
+        found = account;
+      }
+    });
+    let account = found;
+    if (account == null || account.password == null ||
+        account.password as String != input['password'] as String) {
+      fail(401, 'AuthenticationRequired');
+      return;
+    }
+    res.body = pds.newSession(account as FakeAccount);
+    return;
+  }
+  if (path == '/xrpc/com.atproto.server.refreshSession') {
+    if (let (true, did) = pds.refreshTokens.get(token)) {
+      pds.refreshTokens.delete(token);
+      res.body = pds.newSession(pds.accounts[did]);
+      return;
+    }
+    fail(400, 'ExpiredToken');
+    return;
+  }
+  if (path == '/xrpc/com.atproto.server.deleteSession') {
+    pds.refreshTokens.delete(token);
+    res.body = '{}';
+    return;
+  }
+  if (path == '/xrpc/com.atproto.server.getServiceAuth') {
+    if (let (true, did) = pds.accessTokens.get(token)) {
+      let params = req.url.searchParams();
+      let aud = params.get('aud') ?? '';
+      let lxm = params.get('lxm') ?? '';
+      let seconds = now().seconds;
+      var expires = seconds + 60;
+      if (let (true, exp) = parseI64(params.get('exp') ?? '')) {
+        expires = exp;
+      }
+      pds.serviceAuthRequests.push((aud, lxm));
+      let claims = new ServiceAuthClaims(did, aud, expires, seconds, lxm,
+          `nonce-${pds.serviceAuthRequests.length}`);
+      let body = new JsonObject();
+      body['token'] = createServiceAuthToken(claims, KeyType.P256, KEY);
+      res.body = stringify(body);
+      return;
+    }
+    fail(400, 'ExpiredToken');
+    return;
+  }
+  fail(400, 'InvalidRequest');
 }
 
 /** `keys` sorted byte by byte, as the tree wants them. */

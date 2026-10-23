@@ -1,0 +1,172 @@
+/**
+ * Signing in to an account's PDS with a password, and asking it for
+ * service-auth tokens (https://atproto.com/specs/xrpc#authentication).
+ *
+ * `createSession` resolves the account's handle or DID to its PDS and
+ * calls `com.atproto.server.createSession` there, with the account's
+ * password or, better, an app password. The PDS answers with a short-lived
+ * access token and a longer-lived refresh token. `getServiceAuth` asks the
+ * PDS for a token another service accepts as coming from the account (see
+ * `atproto:service-auth`), refreshing the session once if the access token
+ * has expired.
+ *
+ * OAuth replaces passwords for apps that act for someone else's account;
+ * this is the password flow, which command-line tools still use.
+ */
+
+import {JsonObject, JsonValue} from 'zena:json';
+import {IdentityResolver} from './identity.zena';
+import {isValidDid} from './syntax.zena';
+import {XrpcClient, XrpcError} from './xrpc.zena';
+
+/** A session that cannot be created, read or used. */
+export class SessionError extends Error {
+  new(message: String) : super(message);
+}
+
+/** A signed-in account and its tokens. */
+export final class Session {
+  /** The account's DID. */
+  did: String;
+  /** The account's handle, as its PDS gave it. */
+  handle: String;
+  /** The PDS's origin. */
+  pds: String;
+  var accessJwt: String;
+  var refreshJwt: String;
+  /**
+   * Whether the tokens changed since the session was created or read, so
+   * that whoever stores it knows to store it again.
+   */
+  var refreshed = false;
+
+  new(did: String, handle: String, pds: String, accessJwt: String, refreshJwt: String)
+      : did = did, handle = handle, pds = pds, accessJwt = accessJwt, refreshJwt = refreshJwt;
+
+  /** An XRPC client for the PDS that sends the access token. */
+  client(): XrpcClient {
+    let client = new XrpcClient(this.pds);
+    client.authorization = `Bearer ${this.accessJwt}`;
+    return client;
+  }
+
+  /** The session as JSON, for storing. It holds the tokens, so it is a secret. */
+  toJson(): JsonObject {
+    let json = new JsonObject();
+    json['did'] = this.did;
+    json['handle'] = this.handle;
+    json['pds'] = this.pds;
+    json['accessJwt'] = this.accessJwt;
+    json['refreshJwt'] = this.refreshJwt;
+    return json;
+  }
+
+  /** Reads a session `toJson` wrote. Throws `SessionError`. */
+  static fromJson(json: JsonValue): Session {
+    if (!(json is JsonObject)) {
+      throw new SessionError('a stored session is not a JSON object');
+    }
+    let object = json as JsonObject;
+    let did = member(object, 'did');
+    if (!isValidDid(did)) {
+      throw new SessionError('a stored session has no DID');
+    }
+    return new Session(did, member(object, 'handle'), member(object, 'pds'),
+        member(object, 'accessJwt'), member(object, 'refreshJwt'));
+  }
+}
+
+/**
+ * Signs in to the account `identifier`, a handle or a DID, at its PDS.
+ * Throws `SessionError` when the account has no PDS or the PDS answers
+ * for another account, `IdentityError` when the identifier does not
+ * resolve, and `XrpcError` when the PDS refuses, as for a wrong password.
+ */
+export async function createSession(identifier: String, password: String,
+    resolver: IdentityResolver): Future<Session> {
+  let identity = await resolver.resolve(identifier);
+  let pds = identity.document.pds;
+  if (pds == null) {
+    throw new SessionError(`${identity.did} has no PDS`);
+  }
+  let input = new JsonObject();
+  input['identifier'] = identity.did;
+  input['password'] = password;
+  let answer = await new XrpcClient(pds as String).procedure('com.atproto.server.createSession', input);
+  let session = sessionFrom(answer, pds as String);
+  if (session.did != identity.did) {
+    throw new SessionError(`${pds} signed in ${session.did}, not ${identity.did}`);
+  }
+  return session;
+}
+
+/** Replaces the session's tokens with new ones from its PDS. */
+export async function refreshSession(session: Session): Future<void> {
+  let client = new XrpcClient(session.pds);
+  client.authorization = `Bearer ${session.refreshJwt}`;
+  let fresh = sessionFrom(await client.procedure('com.atproto.server.refreshSession', null),
+      session.pds);
+  if (fresh.did != session.did) {
+    throw new SessionError(`${session.pds} refreshed ${fresh.did}, not ${session.did}`);
+  }
+  session.accessJwt = fresh.accessJwt;
+  session.refreshJwt = fresh.refreshJwt;
+  session.refreshed = true;
+}
+
+/** Ends the session at its PDS, so that its refresh token stops working. */
+export async function deleteSession(session: Session): Future<void> {
+  let client = new XrpcClient(session.pds);
+  client.authorization = `Bearer ${session.refreshJwt}`;
+  await client.procedure('com.atproto.server.deleteSession', null);
+}
+
+/**
+ * A service-auth token from the session's PDS for the service `audience`,
+ * a DID, and the one method `method`. With `expiresAt`, in seconds since
+ * the epoch, the token lasts until then; PDSes allow up to an hour for a
+ * token bound to a method, and default to a minute.
+ */
+export async function getServiceAuth(session: Session, audience: String, method: String,
+    expiresAt: i64 = 0 as i64): Future<String> {
+  let params = new GrowableArray<(String, String)>();
+  params.push(('aud', audience));
+  params.push(('lxm', method));
+  if (expiresAt > 0) {
+    params.push(('exp', `${expiresAt}`));
+  }
+  var answer: JsonValue = null;
+  try {
+    answer = await session.client().query('com.atproto.server.getServiceAuth', params);
+  } catch (e) {
+    if (!(e is XrpcError) || (e as XrpcError).error != 'ExpiredToken') {
+      throw e;
+    }
+    await refreshSession(session);
+    answer = await session.client().query('com.atproto.server.getServiceAuth', params);
+  }
+  if (answer is JsonObject) {
+    let token = (answer as JsonObject)['token'];
+    if (token is String) {
+      return token;
+    }
+  }
+  throw new SessionError(`${session.pds} answered getServiceAuth without a token`);
+}
+
+function sessionFrom(answer: JsonValue, pds: String): Session {
+  if (!(answer is JsonObject)) {
+    throw new SessionError(`${pds} answered without a session`);
+  }
+  let object = answer as JsonObject;
+  return new Session(member(object, 'did'), member(object, 'handle'), pds,
+      member(object, 'accessJwt'), member(object, 'refreshJwt'));
+}
+
+function member(object: JsonObject, name: String): String {
+  let value = object[name];
+  if (!(value is String)) {
+    throw new SessionError(`a session has no "${name}"`);
+  }
+  return value as String;
+}

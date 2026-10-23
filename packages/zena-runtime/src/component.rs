@@ -50,7 +50,7 @@ mod bindings {
     });
 }
 
-use bindings::zena_cli::host::{http_server, process, wasm};
+use bindings::zena_cli::host::{http_server, process, secrets, wasm};
 
 /// The most output a captured run keeps from each stream.
 const CAPTURE_LIMIT: usize = 64 << 20;
@@ -121,6 +121,7 @@ pub fn linker(engine: &Engine) -> Result<Linker<ComponentState>> {
     process::add_to_linker::<_, HasSelf<_>>(&mut linker, |state| state)?;
     wasm::add_to_linker::<_, HasSelf<_>>(&mut linker, |state| state)?;
     http_server::add_to_linker::<_, HasSelf<_>>(&mut linker, |state| state)?;
+    secrets::add_to_linker::<_, HasSelf<_>>(&mut linker, |state| state)?;
     // `capture` needs the store, for the backtrace: linked by hand
     // rather than through the generated trait.
     linker
@@ -1054,6 +1055,93 @@ impl wasmtime::component::StreamProducer<ComponentState> for RequestStreamProduc
 }
 
 impl http_server::Host for ComponentState {}
+
+// ============================================================================
+// zena-cli:host/secrets
+// ============================================================================
+
+impl secrets::Host for ComponentState {
+    fn write_private(
+        &mut self,
+        path: String,
+        contents: Vec<u8>,
+    ) -> Result<std::result::Result<(), String>> {
+        let grant = self.granted("writing private files")?;
+        let Some(host) = translate(&path, &grant.path_map) else {
+            return Ok(Err(format!("{path} is outside the preopened directories")));
+        };
+        Ok(write_private(&host, &contents).map_err(|e| format!("{path}: {e}")))
+    }
+
+    fn read_hidden(&mut self, prompt: String) -> Result<std::result::Result<String, String>> {
+        self.granted("reading from the terminal")?;
+        Ok(read_hidden(&prompt).map_err(|e| e.to_string()))
+    }
+}
+
+/// Writes `contents` to `path` as a file only its owner can read or
+/// write. The mode is set before anything is written, so the contents
+/// are never readable by others, whether the file is new or not.
+#[cfg(unix)]
+fn write_private(path: &std::path::Path, contents: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .mode(0o600)
+        .open(path)?;
+    file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+    file.set_len(0)?;
+    file.write_all(contents)?;
+    file.sync_all()
+}
+
+/// Writes `contents` to `path`. Outside Unix the file keeps the
+/// permissions its directory gives it.
+#[cfg(not(unix))]
+fn write_private(path: &std::path::Path, contents: &[u8]) -> std::io::Result<()> {
+    std::fs::write(path, contents)
+}
+
+/// Writes `prompt` to stderr and reads a line from stdin with the
+/// terminal's echo off, restoring it afterwards.
+#[cfg(unix)]
+fn read_hidden(prompt: &str) -> std::io::Result<String> {
+    use std::io::{BufRead, Write};
+    // SAFETY: `isatty`, `tcgetattr` and `tcsetattr` only read and write
+    // the `termios` passed to them, which lives on this stack frame.
+    unsafe {
+        if libc::isatty(libc::STDIN_FILENO) != 1 {
+            return Err(std::io::Error::other("stdin is not a terminal"));
+        }
+        let mut saved: libc::termios = std::mem::zeroed();
+        if libc::tcgetattr(libc::STDIN_FILENO, &mut saved) != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        let mut hidden = saved;
+        hidden.c_lflag &= !libc::ECHO;
+        hidden.c_lflag |= libc::ECHONL;
+        if libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, &hidden) != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        eprint!("{prompt}");
+        let _ = std::io::stderr().flush();
+        let mut line = String::new();
+        let read = std::io::stdin().lock().read_line(&mut line);
+        libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, &saved);
+        read?;
+        Ok(line.trim_end_matches(['\r', '\n']).to_string())
+    }
+}
+
+#[cfg(not(unix))]
+fn read_hidden(_prompt: &str) -> std::io::Result<String> {
+    Err(std::io::Error::other(
+        "reading from the terminal without echo is not supported on this platform",
+    ))
+}
 
 impl http_server::HostResponseWriterWithStore<ComponentState> for HasSelf<ComponentState> {
     fn respond(
