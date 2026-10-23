@@ -1,0 +1,64 @@
+/**
+ * `zena fetch` against `tests/fixtures/fetch-pds.zena`, which serves one
+ * published package and writes a workspace root depending on it and the
+ * lockfile pinning it.
+ */
+
+import {suite, test} from 'zena:test';
+import {isTrue} from 'zena:assert';
+import {existsSync, listDirSync} from 'zena:fs';
+import {MAIN, Scratch, described, fakePdsOrigin, read, startFakePds, write, zenaIn} from './cli-support.zena';
+
+export let tests = suite('zena fetch', () => {
+  test('downloads the pinned packages, which the compiler then reads', (ctx) => {
+    let scratch = Scratch.create('fetch');
+    let pds = startFakePds(scratch, 'fetch-pds.zena');
+    try {
+      let plc = fakePdsOrigin(scratch, pds);
+      for (let file in ['zena-package.json', 'zena-lock.json']) {
+        write(scratch.at(`workspace/${file}`), read(scratch.at(`pds/${file}`)));
+      }
+      write(scratch.at('workspace/prog.zena'),
+          `import { route } from 'router:match';\n${MAIN} {\n  return route() - 42;\n}\n`);
+      let zena = zenaIn(scratch, 'workspace').set('ZENA_PLC_DIRECTORY', plc);
+
+      let first = zena.run(['fetch']);
+      isTrue(first.succeeded() && first.stdout.contains('1 fetched'), described(first));
+      let second = zena.run(['fetch']);
+      isTrue(second.succeeded() && second.stdout.contains('1 already in the cache'), described(second));
+      let ran = zena.run(['run', 'prog.zena']);
+      isTrue(ran.succeeded(), described(ran));
+    } finally {
+      pds.waitFor(1 as i64);
+      scratch.remove();
+    }
+  });
+
+  test('refuses a release that differs from its pin, and stores nothing', (ctx) => {
+    let scratch = Scratch.create('fetch-changed');
+    let pds = startFakePds(scratch, 'fetch-pds.zena');
+    try {
+      let plc = fakePdsOrigin(scratch, pds);
+      // Pin a release record CID the PDS does not serve.
+      let pinned = read(scratch.at('pds/zena-lock.json'));
+      let marker = '"release": "';
+      let parts = pinned.split(marker);
+      let tail = parts[1];
+      var end = 0;
+      while (tail.getByteAt(end) != 34) { // '"'
+        end += 1;
+      }
+      write(scratch.at('workspace/zena-lock.json'),
+          `${parts[0]}${marker}bafyreie5737gdxlw5i64vzichcalba3z2v5n6icifvx5xytvske7mr3hpm${tail.sliceBytes(end, tail.length)}`);
+      let fetched = zenaIn(scratch, 'workspace').set('ZENA_PLC_DIRECTORY', plc).run(['fetch']);
+      isTrue(!fetched.succeeded(), 'zena fetch accepted a changed release');
+      isTrue(fetched.stderr.contains('changed after it was pinned'), described(fetched));
+      let sources = scratch.at('cache/packages/sources');
+      isTrue(!existsSync(sources) || listDirSync(sources).length == 0,
+          'zena fetch stored a package it refused');
+    } finally {
+      pds.waitFor(1 as i64);
+      scratch.remove();
+    }
+  });
+});

@@ -1,0 +1,192 @@
+/**
+ * Running the `zena` command from a test, as a user would: the built
+ * binary, in a directory of the test's choosing, with the environment the
+ * test gives it. The tests in this directory vary what only the command
+ * supplies, such as the package cache, the configuration directory and
+ * the PLC directory it resolves DIDs with.
+ *
+ * A test module sees the repository as `.`, and the command it starts sees
+ * the host's file system, so scratch directories go under the repository's
+ * `.zena/` directory, whose host path is `ZENA_REPO_ROOT`'s. A `Scratch`
+ * names each path both ways.
+ */
+
+import {runFuture} from 'zena:async';
+import {Borrow, Own} from 'zena:core';
+import {getEnv} from 'zena:cli';
+import {existsSync, mkdirSync, readFileSync, writeFileSync} from 'zena:fs';
+import {dirname} from 'zena:path';
+import {Process, ProcessResult, run, spawnWith} from 'zena:process';
+import {milliseconds, sleep} from 'zena:time';
+import {getRandomU64} from 'wasi:random/random';
+
+/**
+ * A program's entry point, for the programs tests write. `zena test` takes
+ * a test file that has this text anywhere as one with its own entry point,
+ * so tests build it from two pieces.
+ */
+export let MAIN = 'export function ' + 'main(): i32';
+
+/** The repository's path on the host. */
+export function repoRoot(): String {
+  let root = getEnv('ZENA_REPO_ROOT');
+  if (root == null || root == '') {
+    throw new Error('ZENA_REPO_ROOT is not set; run this test with zena test');
+  }
+  return root as String;
+}
+
+/** The built `zena` binary. */
+export function zenaBinary(): String {
+  return `${repoRoot()}/target/release/zena-cli`;
+}
+
+/** Creates `dir` and the directories above it that are missing. */
+export function ensureDir(dir: String): void {
+  if (dir == '' || dir == '.' || existsSync(dir)) {
+    return;
+  }
+  ensureDir(dirname(dir));
+  mkdirSync(dir);
+}
+
+/** Writes `text` to `path`, creating its directory. */
+export function write(path: String, text: String): void {
+  ensureDir(dirname(path));
+  writeFileSync(path, text);
+}
+
+export function read(path: String): String {
+  return readFileSync(path);
+}
+
+/** A directory of a test's own, under `.zena/test-scratch` in the repository. */
+export final class Scratch {
+  /** The directory as the test names it, relative to the repository. */
+  path: String;
+
+  new(this.path);
+
+  static create(name: String): Scratch {
+    let suffix = (getRandomU64() >> (16 as u64)) as i64;
+    let scratch = new Scratch(`.zena/test-scratch/${name}-${suffix}`);
+    ensureDir(scratch.path);
+    return scratch;
+  }
+
+  /** `relative` within the directory, as the test names it. */
+  at(relative: String): String {
+    return `${this.path}/${relative}`;
+  }
+
+  /** `relative` within the directory, as the host names it. */
+  host(relative: String = ''): String {
+    let base = `${repoRoot()}/${this.path}`;
+    return if (relative == '') base else `${base}/${relative}`;
+  }
+
+  remove(): void {
+    run(['rm', '-rf', this.host()]);
+  }
+}
+
+/** Variables the command reads that a test must set itself, or not at all. */
+let INHERITED_SETTINGS = [
+  'ZENA_PROJECT_CACHE', 'ZENA_LOCAL_CACHE', 'ZENA_COMPILER_WASM', 'XDG_CACHE_HOME',
+  'ZENA_OPT_LEVEL', 'ZENA_PLC_DIRECTORY', 'ZENA_DNS_OVER_HTTPS', 'ZENA_CONFIG_DIR',
+  'XDG_CONFIG_HOME', 'ZENA_APP_PASSWORD',
+];
+
+/**
+ * The `zena` command, run as in a workspace of its own: `workspace` is its
+ * repository root and its directory, both as the host names them, and its
+ * caches are in `cache`. `set` adds variables, and `from` runs it in
+ * another directory, as the test names it.
+ */
+export final class ZenaCommand {
+  #workspace: String;
+  #cwd: String;
+  #env = new GrowableArray<(String, String)>();
+
+  new(workspace: String, cwd: String, cache: String)
+      : #workspace = workspace, #cwd = cwd {
+    this.#env.push(('ZENA_REPO_ROOT', workspace));
+    this.#env.push(('ZENA_CLI_MODULE', `${repoRoot()}/packages/zena-cli/out/zena.wasm`));
+    this.#env.push(('ZENA_STDLIB_DIR', `${repoRoot()}/packages/stdlib/zena`));
+    this.#env.push(('ZENA_CACHE_DIR', cache));
+  }
+
+  set(name: String, value: String): ZenaCommand {
+    this.#env.push((name, value));
+    return this;
+  }
+
+  /** Runs `args` and returns what the command printed and its status. */
+  run(args: Array<String>, input: String | null = null): ProcessResult {
+    return this.spawn(args, input).wait();
+  }
+
+  spawn(args: Array<String>, input: String | null = null): Own<Process> {
+    let argv = new GrowableArray<String>();
+    argv.push(zenaBinary());
+    for (let arg in args) {
+      argv.push(arg);
+    }
+    let env = this.#env;
+    if (input == null) {
+      return spawnWith(argv, {cwd: this.#cwd, env, envRemove: INHERITED_SETTINGS});
+    }
+    return spawnWith(argv, {cwd: this.#cwd, env, envRemove: INHERITED_SETTINGS,
+        input: input as String});
+  }
+}
+
+/** `zena` in `workspace`, a directory of `scratch`, with its cache in `cache/`. */
+export function zenaIn(scratch: Scratch, workspace: String): ZenaCommand {
+  return new ZenaCommand(scratch.host(workspace), scratch.at(workspace), scratch.host('cache'));
+}
+
+/** The command's output, for a failure message. */
+export function described(result: ProcessResult): String {
+  return `exit ${result.exitCode}\n--- stdout ---\n${result.stdout}\n--- stderr ---\n${result.stderr}`;
+}
+
+/**
+ * Starts `tests/fixtures/<fixture>` with `zena run` as the PLC directory
+ * and PDS, writing into `pds/` of `scratch`. Pass the process to
+ * `fakePdsOrigin`, and stop it with `waitFor(1)` when the test is done.
+ * The test holds the process itself: a resource class wrapping it fails
+ * to lower (elematic/zena#493).
+ */
+export function startFakePds(scratch: Scratch, fixture: String): Own<Process> {
+  ensureDir(scratch.at('pds'));
+  let command = new ZenaCommand(repoRoot(), '.', scratch.host('pds-cache'));
+  return command.spawn(['run', '--dir', `${scratch.host('pds')}::/out`,
+      `packages/zena-cli/tests/fixtures/${fixture}`]);
+}
+
+/**
+ * The PLC directory's origin, for `ZENA_PLC_DIRECTORY`, once the fake PDS
+ * in `scratch` has written it.
+ */
+export function fakePdsOrigin(scratch: Scratch, process: Borrow<Process>): String {
+  let plc = scratch.at('pds/plc.txt');
+  // The file can be read between its creation and the write, so wait for
+  // the whole origin, which ends in "/plc".
+  for (var tries = 0; tries < 1500; tries += 1) {
+    if (existsSync(plc)) {
+      let origin = readFileSync(plc);
+      if (origin.endsWith('/plc')) {
+        return origin;
+      }
+    }
+    runFuture(sleep(milliseconds(200 as i64)));
+  }
+  let result = process.waitFor(1 as i64);
+  throw new Error(`the fake PDS did not start:\n${described(result)}`);
+}
+
+/** The DNS-over-HTTPS endpoint beside the PLC directory at `plc`. */
+export function dnsBeside(plc: String): String {
+  return `${plc.sliceBytes(0, plc.length - '/plc'.length)}/dns-query`;
+}

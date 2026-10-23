@@ -1,0 +1,109 @@
+/**
+ * What a component build's cache entry depends on.
+ *
+ * A component embeds a second core module, the runtime memory module
+ * (`component-runtime/memory.zena` compiled `freestanding`), which the
+ * driver keeps between builds rather than compiling on every one. The
+ * program's own sources say nothing about that module. It is in neither
+ * standard library manifest, so nothing can import it, and it is the one
+ * source the runtime module reads that the program does not:
+ * `wasi/abi.zena`, which it imports, the program reads for itself. So that
+ * one path is what says whether the driver recorded anything.
+ *
+ * Recording the module's compiled output instead looks equivalent and is
+ * not. Nothing re-evaluates whether that output should change, so a
+ * program whose own sources were untouched reads fresh and is served
+ * embedding an allocator that no longer matches its source. These tests
+ * run the command against a copy of the standard library they may edit,
+ * so the second fails for that version and passes for this one.
+ */
+
+import {suite, test} from 'zena:test';
+import {isTrue} from 'zena:assert';
+import {listDirSync, readFileSync, statSync, writeFileSync} from 'zena:fs';
+import {run} from 'zena:process';
+import {MAIN, Scratch, ZenaCommand, described, repoRoot, write} from './cli-support.zena';
+
+/** A copy of the standard library the test may edit, and a program. */
+function fixture(name: String): Scratch {
+  let scratch = Scratch.create(name);
+  run(['cp', '-R', `${repoRoot()}/packages/stdlib/zena`, scratch.host('stdlib')]);
+  write(scratch.at('prog.zena'), `${MAIN} { return 0; }\n`);
+  return scratch;
+}
+
+/**
+ * Compiles and runs `prog.zena` through the cache, as `zena run` does,
+ * and returns the cache entry's module, as the test names it.
+ */
+function runProgram(scratch: Scratch): String {
+  let result = new ZenaCommand(scratch.host(), scratch.path, scratch.host('cache'))
+    .set('ZENA_STDLIB_DIR', scratch.host('stdlib'))
+    .run(['run', scratch.host('prog.zena')]);
+  isTrue(result.succeeded(), described(result));
+  var found: String | null = null;
+  for (let entry in listDirSync(scratch.at('cache/wasm_objects'))) {
+    if (entry.name.startsWith('prog_') && entry.name.endsWith('.wasm')) {
+      isTrue(found == null, 'two cache entries for one program');
+      found = scratch.at(`cache/wasm_objects/${entry.name}`);
+    }
+  }
+  if (found == null) {
+    throw new Error('no cache entry for prog.zena');
+  }
+  return found as String;
+}
+
+/** The source paths the `.deps` file beside `module` lists. */
+function dependencyPaths(module: String): GrowableArray<String> {
+  let deps = `${module.sliceBytes(0, module.length - '.wasm'.length)}.deps`;
+  let paths = new GrowableArray<String>();
+  for (let line in readFileSync(deps).split('\n')) {
+    if (line == '') {
+      continue;
+    }
+    // "<modified> <size> <path>"; the path may contain spaces.
+    let fields = line.split(' ');
+    isTrue(fields.length >= 3, `a .deps line without two spaces: ${line}`);
+    paths.push(line.sliceBytes(fields[0].length + fields[1].length + 2, line.length));
+  }
+  isTrue(paths.length > 0, 'the entry listed no sources at all');
+  return paths;
+}
+
+export let tests = suite('zena: the compile cache', () => {
+  test("a component's entry depends on the runtime memory module's sources", (ctx) => {
+    let scratch = fixture('cache-deps');
+    try {
+      let paths = dependencyPaths(runProgram(scratch));
+      var listed = false;
+      for (let path in paths) {
+        listed = listed || path.endsWith('/component-runtime/memory.zena');
+        isTrue(!path.endsWith('.wasm'),
+            `the entry lists a compiled module, ${path}, where it should list the sources behind it`);
+      }
+      isTrue(listed, "the entry does not list component-runtime/memory.zena, the runtime memory module's entry point");
+    } finally {
+      scratch.remove();
+    }
+  });
+
+  test('a change only the runtime memory module reads invalidates the program', (ctx) => {
+    let scratch = fixture('cache-stale');
+    try {
+      let module = runProgram(scratch);
+      let before = statSync(module).modified;
+
+      // Nothing a program can import reaches this file, so only the runtime
+      // memory module's own compile reads it.
+      let source = scratch.at('stdlib/component-runtime/memory.zena');
+      writeFileSync(source, `${readFileSync(source)}\n// A change the program cannot see.\n`);
+
+      isTrue(runProgram(scratch) == module, 'the cache key changed, which is not the point');
+      isTrue(statSync(module).modified != before,
+          'the program was served from the cache after a change to the allocator it embeds');
+    } finally {
+      scratch.remove();
+    }
+  });
+});

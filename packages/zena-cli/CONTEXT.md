@@ -75,14 +75,20 @@ the `zena` command. The design is in
      at a time. Each copy compiles its file in test mode and runs it with
      `zena:wasm`, with the repository as `.`, the stdlib as `/stdlib` and a
      temporary directory as `/tmp`.
-   - This package's own tests are `cargo test`'s, because what they need
-     to vary is the command's environment: the compile cache's directory
-     and which standard library it reads. A test module cannot — its
-     world is the repository as `.`, `/stdlib` and `/tmp`, and the cache
-     is in neither. So `tests/compile_cache.rs` runs the built binary
-     against a copy of the standard library it may edit, with
-     `ZENA_STDLIB_DIR` and `ZENA_CACHE_DIR` pointed at a scratch
-     directory and the variables that would redirect either one removed.
+   - This package's own tests run the built binary from Zena
+     (`tests/*_test.zena`, the `test:zena` script). What they vary is the
+     command's environment (the compile cache's directory, the standard
+     library it reads, the configuration directory, the PLC directory),
+     which a test module cannot change for itself. So each test starts
+     the `zena` command with `zena:process`, setting and removing
+     variables with `SpawnOptions.env` and `envRemove`
+     (`tests/cli-support.zena`). The test runner gives each test
+     `ZENA_REPO_ROOT`, the repository's host path, so a test can name its
+     scratch directories, under `.zena/test-scratch`, both ways. Servers a
+     test needs, such as the fake PDSes in `tests/fixtures/`, run as
+     separate `zena run` processes, since waiting on a process blocks the
+     test's event loop. `cargo test` (`test:cargo`) covers the Rust
+     crates' own unit tests.
 
 5. **The bootstrap and the build order**
    - `zena-run` runs the checked-in bootstrap to build the compiler

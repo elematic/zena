@@ -175,6 +175,9 @@ pub struct CommandState {
     inherit_stdio: bool,
     /// Written to the child's stdin, which is then closed.
     input: Option<Vec<u8>>,
+    /// Changes to the inherited environment, in order: a variable set to
+    /// a value, or removed.
+    env: Vec<(String, Option<String>)>,
 }
 
 /// How a child ended, and what it wrote; the host side of `finished`.
@@ -286,6 +289,7 @@ impl process::HostCommand for ComponentState {
                 cwd: None,
                 inherit_stdio: false,
                 input: None,
+                env: Vec::new(),
             })
             .context("failed to push the command resource")
     }
@@ -305,6 +309,18 @@ impl process::HostCommand for ComponentState {
         Ok(())
     }
 
+    fn env(&mut self, this: Resource<CommandState>, name: String, value: String) -> Result<()> {
+        let cmd = self.table.get_mut(&this).context("command")?;
+        cmd.env.push((name, Some(value)));
+        Ok(())
+    }
+
+    fn env_remove(&mut self, this: Resource<CommandState>, name: String) -> Result<()> {
+        let cmd = self.table.get_mut(&this).context("command")?;
+        cmd.env.push((name, None));
+        Ok(())
+    }
+
     fn spawn(
         &mut self,
         this: Resource<CommandState>,
@@ -315,6 +331,7 @@ impl process::HostCommand for ComponentState {
         let cwd = cmd.cwd.clone();
         let inherit_stdio = cmd.inherit_stdio;
         let input = cmd.input.clone();
+        let env = cmd.env.clone();
         // The child is spawned here rather than inside the worker
         // thread so its handle is reachable for a deadline to kill.
         // Both pipes are read on their own threads: a child that fills
@@ -340,6 +357,12 @@ impl process::HostCommand for ComponentState {
         }
         if let Some(cwd) = &cwd {
             command.current_dir(translate_cwd(cwd, &path_map));
+        }
+        for (name, value) in &env {
+            match value {
+                Some(value) => command.env(name, value),
+                None => command.env_remove(name),
+            };
         }
         let mut child = match command.spawn() {
             Ok(child) => child,

@@ -1,0 +1,82 @@
+/**
+ * `zena add` and `zena update` against `tests/fixtures/add-pds.zena`, which
+ * serves `@acme/router` (1.4.2 and 1.5.0, which need json 2.1.0, and a
+ * yanked 1.6.0) and `@acme/json` (2.0.0 and 2.1.0).
+ */
+
+import {suite, test} from 'zena:test';
+import {equal, isTrue} from 'zena:assert';
+import {ProcessResult} from 'zena:process';
+import {
+  MAIN, Scratch, ZenaCommand, described, dnsBeside, fakePdsOrigin, read, startFakePds, write
+} from './cli-support.zena';
+
+export let tests = suite('zena add and zena update', () => {
+  test('select versions for the whole workspace, pin them, and fetch them', (ctx) => {
+    let scratch = Scratch.create('add');
+    let pds = startFakePds(scratch, 'add-pds.zena');
+    try {
+      let plc = fakePdsOrigin(scratch, pds);
+      let zenaFrom = (dir: String) =>
+        new ZenaCommand(scratch.host('workspace'), scratch.at(dir), scratch.host('cache'))
+          .set('ZENA_PLC_DIRECTORY', plc)
+          .set('ZENA_DNS_OVER_HTTPS', dnsBeside(plc));
+      let zena = zenaFrom('workspace');
+      let manifest = scratch.at('workspace/zena-package.json');
+      let lockfile = scratch.at('workspace/zena-lock.json');
+      let succeeds = (what: String, result: ProcessResult) => {
+        isTrue(result.succeeded(), `${what}: ${described(result)}`);
+      };
+      write(scratch.at('workspace/prog.zena'),
+          `import { route } from 'router:match';\n${MAIN} {\n  return route() - 42;\n}\n`);
+
+      // Add router at a version, by its scoped name, to a workspace with no
+      // manifest yet. Its dependency, json, is selected and fetched with it.
+      let add = zena.run(['add', '@acme/router@1.4.2']);
+      succeeds('zena add', add);
+      isTrue(add.stdout.contains('2 fetched'), described(add));
+      let text = read(manifest);
+      isTrue(text.contains('"router"') && text.contains('1.4.2'), text);
+      let pins = read(lockfile);
+      isTrue(pins.contains('did:plc:routerrouterrouterrouter@1') &&
+          pins.contains('did:plc:jsonjsonjsonjsonjsonjson@2') && pins.contains('2.1.0'), pins);
+      succeeds('zena run', zena.run(['run', 'prog.zena']));
+
+      // Update to the latest version that is not yanked: 1.5.0, not 1.6.0.
+      let update = zena.run(['update']);
+      succeeds('zena update', update);
+      isTrue(update.stdout.contains('1.4.2 -> 1.5.0'), described(update));
+      let updated = read(manifest);
+      isTrue(updated.contains('1.5.0') && !updated.contains('1.6.0'), updated);
+      succeeds('zena run', zena.run(['run', 'prog.zena']));
+
+      // Give the workspace a package, lib, and add json 2.0.0 to it from its
+      // directory. Only lib's manifest changes, and the lockfile still pins
+      // json 2.1.0, which router needs: one version for the whole workspace.
+      write(manifest, `{"workspace": {"packages": ["packages/*"]},${updated.sliceBytes(1, updated.length)}`);
+      write(scratch.at('workspace/packages/lib/zena-package.json'), '{"name": "lib"}');
+      let before = read(manifest);
+      succeeds('zena add in a workspace package',
+          zenaFrom('workspace/packages/lib').run(['add', '@acme/json@2.0.0']));
+      let lib = read(scratch.at('workspace/packages/lib/zena-package.json'));
+      isTrue(lib.contains('"json"') && lib.contains('2.0.0'), lib);
+      equal(read(manifest), before);
+      let shared = read(lockfile);
+      isTrue(shared.contains('2.1.0') && !shared.contains('2.0.0'), shared);
+
+      // Add json to the root without a version: its latest, under the name
+      // its profile suggests.
+      succeeds('zena add without a version', zena.run(['add', '@acme/json']));
+      let root = read(manifest);
+      isTrue(root.contains('"json"') && root.contains('2.1.0'), root);
+
+      // A name that does not resolve is an error, and changes nothing.
+      isTrue(!zena.run(['add', '@acme/nothing']).succeeded(),
+          'zena add accepted a package that does not exist');
+      equal(read(manifest), root);
+    } finally {
+      pds.waitFor(1 as i64);
+      scratch.remove();
+    }
+  });
+});
