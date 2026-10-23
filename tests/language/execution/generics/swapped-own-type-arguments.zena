@@ -1,0 +1,29 @@
+// @mode: run
+// @result: 17
+
+// Inside `Pair<K, V>`, `new Pair<V, K>(...)` constructs the class at its
+// own type parameters in another order. The constructor's parameters
+// are `V` and `K` there, and the arguments check against them; they
+// used to be substituted a second time, which swapped them back to `K`
+// and `V`.
+
+class Pair<K, V> {
+  key: K;
+  value: V;
+  new(this.key, this.value);
+  new flipped(value: V, key: K) : key = key, value = value;
+
+  swapped(): Pair<V, K> {
+    return new Pair<V, K>(this.value, this.key);
+  }
+
+  swappedNamed(): Pair<V, K> {
+    return new Pair<V, K>.flipped(this.key, this.value);
+  }
+}
+
+export let main = (): i32 => {
+  let p = new Pair<i32, boolean>(7, true).swapped();
+  let q = new Pair<i32, boolean>(10, true).swappedNamed();
+  return (if (p.key) p.value else 0) + (if (q.key) q.value else 0);
+};
