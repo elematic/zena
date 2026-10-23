@@ -105,10 +105,10 @@ can include:
    ```
 3. **Null**: In combination with reference types or literals (`String?`, `'yes'
 | 'no' | null`).
-4. **Unboxed inline tuples**: Multi-value return types representing unboxed
-   discriminated results:
+4. **Tuples told apart by a leading literal**: discriminated results, boxed
+   when stored and unboxed when returned `inline`:
    ```zena
-   type Result<T, E> = inline (true, T, _) | inline (false, _, E);
+   type Result<T, E> = (true, T) | (false, E);
    ```
 
 ### Restrictions on indistinguishable types
@@ -495,8 +495,8 @@ Use union types when:
 - Expressing nullability on reference types (`String?`).
 - Restricting values to a set of exact literals (`'get' | 'post' | 'put'`). -
   Combining unrelated existing reference types without creating a common parent
-  class (`TextView | ImageView`). - Returning unboxed multi-value results via
-  inline tuples (`inline (true, T, _) | inline (false, _, E)`).
+  class (`TextView | ImageView`). - Returning discriminated results as tuples
+  (`(true, T) | (false, E)`), unboxed when returned `inline`.
 
 Use sealed classes when:
 

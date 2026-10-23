@@ -359,10 +359,10 @@ lightweight variants without heap allocation:
 
 ```zena
 // Multi-value return without allocating an object:
-type Result<T, E> = inline (true, T, _) | inline (false, _, E);
+type Lookup<T> = inline (true, T) | (false, _);
 
-let success = (): Result<i32, String> => (true, 42, _);
-let failure = (): Result<i32, String> => (false, _, 'not found');
+let found = (): Lookup<i32> => (true, 42);
+let missing = (): Lookup<i32> => (false, _);
 ```
 
 When destructuring inline tuples, an omitted position yields the `_` type,

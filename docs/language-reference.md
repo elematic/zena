@@ -4724,14 +4724,14 @@ of tuple types, or a name for either:
 
 ```zena
 type Pair = (i32, i32);
-type Checked<T, E> = (true, T, _) | (false, _, E);
+type Checked<T, E> = (true, T) | (false, E); // zena:core's Result
 
 let pair = (): inline Pair => (1, 2);
 let checkedSub = (a: i32, b: i32): inline Checked<i32, String> => {
   if (b > a) {
-    return (false, _, 'underflow');
+    return (false, 'underflow');
   }
-  return (true, a - b, _);
+  return (true, a - b);
 };
 ```
 

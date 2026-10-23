@@ -6,7 +6,7 @@
 // not abandon the one after it — and returns a scoped result the caller
 // awaits inside the owner's scope. Over ordinary futures the same
 // signature returns an ordinary, storable future.
-import {Own, Borrow, Scoped, Disposable, Outcome, Ok} from 'zena:core';
+import {Own, Borrow, Scoped, Disposable, Result} from 'zena:core';
 
 resource class Res {
   #n: i32;
@@ -33,14 +33,13 @@ export let main = async (): Future<i32> => {
   let outcomes = await Future.allSettled([read(owner), boom(), read(owner)]);
   var sum = 0;
   for (let o in outcomes) {
-    if (o is Ok<i32, Error>) {
-      let ok = o as Ok<i32, Error>;
-      sum += ok.value;
+    if (let (true, value) = o) {
+      sum += value;
     } else {
       sum += 100;
     }
   }
-  let plain: Future<Array<Outcome<i32, Error>>> = Future.allSettled([tick(), tick()]);
+  let plain: Future<Array<Result<i32, Error>>> = Future.allSettled([tick(), tick()]);
   let vals = await plain;
   // 31 + 100 + 31 = 162, plus 2 outcomes, plus 5.
   return sum + vals.length + 5;

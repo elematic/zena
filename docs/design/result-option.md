@@ -10,6 +10,20 @@ type Result<T, E> = inline (true, T, _) | inline (false, _, E);
 type Option<T> = inline (true, T) | inline (false, _);
 ```
 
+**Update (#371).** `Result` is now the value union
+
+```zena
+type Result<T, E> = (true, T) | (false, E);
+```
+
+written `inline Result<T, E>` where it is returned unboxed. An inline union's
+slots are derived per position and wasm type (multi-return-values.md, "Slots
+of an Inline Union"), so `T` and `E` share position 1 without sharing a slot
+and the holes are no longer needed. A value converts between the boxed and
+inline forms implicitly. `Outcome` remains for a payload that is an owner,
+which a tuple cannot hold yet (#495), and for the WIT bindings of futures and
+async results.
+
 This doc answers the three questions that decision opens:
 
 1. Why keep the boolean tag — why not discriminate on which slot is a hole?
@@ -51,7 +65,9 @@ allocation. It is also the shape the narrowing machinery already understands
 (`patternCanMatchType` handles `BooleanLiteral` refutation today) and the shape
 the iterator protocol already ships.
 
-**Why three slots, not two.** `inline (true, T) | inline (false, E)` would put
+**Why three slots, not two** (superseded: slots are now derived per position
+and wasm type, so `(true, T) | (false, E)` gets these three slots by itself).
+`inline (true, T) | inline (false, E)` would put
 `T` and `E` in the same lane. Lane merging assigns one wasm valtype per lane
 across all union members; `T` and `E` share a lane only if they share a
 representation (impossible for numeric-vs-reference, and a cast on every access

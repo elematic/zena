@@ -262,8 +262,8 @@ The `??` operator handles three distinct forms:
      tuple).
    - **Lazy fallback**: If the discriminant is `false`, `??` lazily evaluates
      and returns the right-hand default expression.
-   - **Error lane discarded**: For `Result<V, E>` shapes (`inline (true, V, _) |
-inline (false, _, E)`), the error payload in slot `2` is discarded (`??`
+   - **Error discarded**: For `Result<V, E>` (`(true, V) | (false, E)`), the
+     error payload in the `false` member is discarded (`??`
      means _"value or default, regardless of why"_). To inspect the error, use
      pattern matching (`if let` or `match`) instead.
    - **Contextual typing**: The fallback expression is typed contextually by the

@@ -1,47 +1,35 @@
 /**
  * Result<T, E> — a value that is either an ok payload or an error payload.
  *
- * Unlike Option<T>, this is an **inline multi-value union**, not a heap type:
- * it compiles to WebAssembly multi-value returns, so returning an ok or an
- * error costs no allocation. That is why it is a type alias rather than a
- * class hierarchy — see docs/design/result-option.md.
- *
- * There are three lanes, not two, so that each lane is type-homogeneous: the
- * discriminant, the ok payload, and the error payload. The unused payload in
- * each arm is a hole (`_`).
+ * A value union of two tuples, told apart by the literal in front: `(true,
+ * value)` or `(false, error)`. Returned as `inline Result<T, E>`, it is a
+ * WebAssembly multi-value return and costs no allocation; stored in a
+ * variable, field or collection, it is a boxed tuple. The two forms convert
+ * implicitly. See docs/design/result-option.md.
  *
  * ```zena
- * import { Result } from './result.zena';
+ * import { Result } from 'zena:core';
  *
- * let checkedSub = (a: i32, b: i32): Result<i32, String> => {
+ * let checkedSub = (a: i32, b: i32): inline Result<i32, String> => {
  *   if (b > a) {
- *     return (false, _, "underflow");
+ *     return (false, "underflow");
  *   }
- *   return (true, a - b, _);
+ *   return (true, a - b);
  * };
  *
- * if (let (true, v, _) = checkedSub(10, 4)) {
+ * if (let (true, v) = checkedSub(10, 4)) {
  *   // v is 6
  * }
+ * let kept: Array<Result<i32, String>> = [checkedSub(1, 2)];
  * ```
- *
- * Inline tuples are return-position-only, so `Result<T, E>` may name a
- * function's return type but cannot be stored in a variable, field, or
- * collection. To keep a result around, store it as an `Outcome` below,
- * or match it and store the payload.
  */
-export type Result<T, E> = inline (true, T, _) | inline (false, _, E);
+export type Result<T, E> = (true, T) | (false, E);
 
 /**
- * Result's storable counterpart: the same two arms as a sealed
- * reference type, for when a result must outlive return position —
- * an array of per-item outcomes, a field holding a deferred answer.
- * `Ok` carries what the inline form's `true` arm does, `Err` the
- * `false` arm's payload.
- *
- * Reach for the inline `Result<T, E>` first: it allocates nothing.
- * This type is for the positions inline tuples cannot occupy, and
- * costs one allocation per outcome.
+ * The class form of a result, for a payload a tuple cannot hold: a tuple
+ * cannot hold an owner (`Own<R>`), so a result carrying a resource handle
+ * is an `Outcome`. Everything else uses `Result`. See elematic/zena#495,
+ * after which this goes away.
  */
 export sealed class Outcome<T, E> {
   case Ok, Err

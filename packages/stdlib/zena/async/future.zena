@@ -19,7 +19,7 @@
  * and allocates nothing at all when a future settles.
  */
 
-import { Outcome, Ok, Err, ScopedFrom, Disposable, growable } from 'zena:core';
+import { ScopedFrom, Disposable, growable, Result } from 'zena:core';
 import { Waiter, scheduleTask, drainMicrotasks, parkBlocking } from './executor.zena';
 
 /**
@@ -489,21 +489,21 @@ export class Future<T> {
    * result is scoped exactly when an input is (`ScopedFrom`); over
    * ordinary futures it is the ordinary future it always was.
    *
-   * Cancellation is not an outcome (no `Err` is minted for it, and
-   * `Outcome` has no third arm): `catch` cannot observe the
+   * Cancellation is not a result (no `(false, e)` is made for it, and
+   * `Result` has no third member): `catch` cannot observe the
    * cancellation channel, so awaiting a cancelled input unwinds this
    * frame and the combined future completes cancelled — being
    * downstream of cancelled work is inside the blast radius
    * (docs/design/cancellation.md).
    */
   static async allSettled<scoped T>(
-      futures: Array<T>): ScopedFrom<T, Future<Array<Outcome<Awaited<T>, Error>>>> {
-    let out = new Array<Outcome<Awaited<T>, Error>>();
+      futures: Array<T>): ScopedFrom<T, Future<Array<Result<Awaited<T>, Error>>>> {
+    let out = new Array<Result<Awaited<T>, Error>>();
     for (let f in futures) {
       try {
-        out.push(new Ok<Awaited<T>, Error>(await f));
+        out.push((true, await f));
       } catch (e) {
-        out.push(new Err<Awaited<T>, Error>(e));
+        out.push((false, e));
       }
     }
     return out;

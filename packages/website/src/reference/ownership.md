@@ -375,7 +375,7 @@ values can be processed with standard collection and concurrency combinators:
 ```zena
 import { Future } from 'zena:async';
 
-Future.allSettled<scoped T>(futures: Array<T>): Future<Array<Outcome<T>>>;
+Future.allSettled<scoped T>(futures: Array<T>): Future<Array<Result<T, Error>>>;
 ```
 
 Combinators that operate over scoped values use `<scoped T>` to accept them

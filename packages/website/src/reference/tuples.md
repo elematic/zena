@@ -319,24 +319,25 @@ directly to WebAssembly multi-value returns with zero heap allocation:
   Used by standard library APIs such as `Map.get(key)` and `Iterator.next()`. A
   literal `true` tag indicates presence with payload `T`; a `false` tag
   indicates absence with an empty hole `_`.
-- **Result shape**: `inline (true, T, _) | inline (false, _, E)`
-  The standard library defines `Result<T, E>` in `zena:core` as a type alias
-  over this three-lane inline tuple union:
+- **Result shape**: `(true, T) | (false, E)`
+  The standard library defines `Result<T, E>` in `zena:core` as this union.
+  Returned as `inline Result<T, E>` it costs no allocation; stored, it is a
+  boxed tuple:
 
   ```zena
   import { Result } from 'zena:core';
 
-  let parsePort = (s: String): Result<i32, String> => {
+  let parsePort = (s: String): inline Result<i32, String> => {
     let n = parseInt(s);
     if (n >= 1 && n <= 65535) {
-      return (true, n, _);
+      return (true, n);
     }
-    return (false, _, "port out of range");
+    return (false, "port out of range");
   };
   ```
 
-The holes in `Result` are not needed any more: `(true, T) | (false, E)` gets
-the same slots (see below).
+  `T` and `E` share a position without holes: each type there gets a slot of
+  its own (see below).
 
 #### Slots of an inline union
 
@@ -363,31 +364,16 @@ let mixed = (): inline (true, i32) | (1, f64) => (true, 1); // @error
 The literals must share a type because `true` and `1` are the same value at run
 time.
 
-##### Storable counterparts
+##### Class-based counterparts
 
-Zena also provides class-based counterparts, which predate the conversion
-between inline and boxed tuples:
+`zena:core` also has class-based forms:
 
-- `Option<T>` (`Some<T>` and `None`) in `zena:core`
-- `Outcome<T, E>` (`Ok<T, E>` and `Err<T, E>`) in `zena:core`
-
-Use the zero-cost inline tuple form (`Result<T, E>` and `(true, T) | (false,
-_)`)
-for function return types, and convert to the boxed form only when persisting a
-value on the heap.
-
-::: note
-
-Unified Option and Result with value types Once the migration to true
-value types is complete, boxing will become an implementation detail rather than
-a type boundary. Zena will be able to unify each pair into a single `Option<T>`
-and `Result<T, E>` definition based on tuples (e.g. `(true, T) | (false, _)`).
-The compiler can then represent them inline on the WebAssembly stack for
-function returns, while automatically boxing or laying them out densely when
-stored on the heap in fields or collections. This will eliminate the need for
-separate storable classes (`Outcome` and boxed `Option`).
-
-:::
+- `Option<T>` (`Some<T>` and `None`)
+- `Outcome<T, E>` (`Ok<T, E>` and `Err<T, E>`), for a result whose payload is
+  an owned resource (`Own<R>`). A tuple cannot hold an owner yet
+  ([#495](https://github.com/elematic/zena/issues/495)); everything else uses
+  `Result`. The WIT bindings for futures and async results also still use
+  `Outcome`.
 
 #### Nullish coalescing with `??`
 
