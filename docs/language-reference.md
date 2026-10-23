@@ -5830,8 +5830,24 @@ dispose must declare an override (its body may be empty), because
 how its releases compose with the superclass's cleanup is its decision
 to write down.
 
-Records and tuples may not hold owners: structural values copy when
-they adapt, and a copy would duplicate the obligation.
+A tuple may hold an owner, and a tuple that does is affine itself:
+
+```zena
+let t = (true, open('a.txt'));  // the owner moves into the tuple
+take(t);                        // the tuple moves, like an Own<R>
+let (_, file) = t;              // error: 't' may have been moved
+```
+
+Building the tuple moves the owner in. Passing, returning, rebinding or
+storing the tuple moves it. Destructuring it, or matching it with a pattern
+(`if (let (true, file) = t)`), moves the owners out to the new bindings and
+the tuple with them. Reading an owner element by index (`t[1]`) borrows it,
+as reading an owner field does. Releasing an unmoved tuple, and an owner
+bound by destructuring, at scope exit is not implemented yet: until it is,
+such a value leaks unless it is moved (#495).
+
+A record may not hold an owner: a record converts by adaptation, which
+copies, and a copy would duplicate the obligation.
 
 The compiler releases a binding only when it still owns the value at every
 exit. A binding is left alone when anything moves it (a call taking

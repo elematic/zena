@@ -1,0 +1,96 @@
+// @mode: check
+// A tuple may hold an owner, and a tuple that does is affine itself (#495):
+// building it moves the owner in, the tuple moves like an `Own<R>`, and
+// destructuring it moves the owners out. Reading an owner element by index
+// borrows it, as reading an owner field does.
+
+import { Own, Borrow, Disposable } from 'zena:core';
+
+resource class File {
+  var #fd: i32;
+  new(fd: i32) : #fd = fd;
+  [Disposable.dispose](this: Own<this>): void {}
+  fd(): i32 { return this.#fd; }
+}
+
+function open(fd: i32): Own<File> {
+  return new File(fd);
+}
+
+function consume(f: Own<File>): void {}
+function take(t: (true, Own<File>)): void {}
+function borrow(f: Borrow<File>): i32 { return f.fd(); }
+
+// Building a tuple moves the owner into it.
+let buildMoves = (): i32 => {
+  let f = open(1);
+  let t = (true, f);
+  take(t);
+  return f.fd();  // @error: may have been moved
+};
+
+// The tuple is affine: a second move is a use of a dead binding.
+let tupleMovesOnce = (): void => {
+  let t = (true, open(2));
+  take(t);
+  take(t);  // @error: may have been moved
+};
+
+// Rebinding moves the tuple.
+let rebindMoves = (): void => {
+  let t = (true, open(3));
+  let u = t;
+  take(t);  // @error: may have been moved
+};
+
+// Destructuring moves the owners out, and the tuple with them.
+let destructureMoves = (): void => {
+  let t = (true, open(4));
+  let (_, file) = t;
+  consume(file);
+  take(t);  // @error: may have been moved
+};
+
+// An index read borrows the owner: it cannot be handed on as one.
+let indexBorrows = (t: (true, Own<File>)): i32 => {
+  let n = borrow(t[1]);
+  consume(t[1]);  // @error: Type mismatch
+  return n;
+};
+
+// A union of tuples holding owners is affine too.
+type Opened = (true, Own<File>) | (false, String);
+
+let openOrFail = (ok: boolean): Opened => {
+  if (ok) {
+    return (true, open(5));
+  }
+  return (false, 'no');
+};
+
+let unionMoves = (): void => {
+  let r = openOrFail(true);
+  let s = r;
+  let again = r;  // @error: may have been moved
+};
+
+// A pattern that takes the tuple apart moves it, as destructuring does.
+let ifLetMoves = (): void => {
+  let r = openOrFail(true);
+  if (let (true, file) = r) {
+    consume(file);
+  }
+  let again = r;  // @error: may have been moved
+};
+
+let matchMoves = (): void => {
+  let r = openOrFail(false);
+  match (r) {
+    case (true, let file): consume(file)
+    case (false, let why): {}
+  }
+  let again = r;  // @error: may have been moved
+};
+
+// A record member still may not be an owner.
+type Holder = {file: Own<File>};  // @error: may not be a record member
