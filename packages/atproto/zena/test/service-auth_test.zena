@@ -1,0 +1,204 @@
+import {suite, test} from 'zena:test';
+import {equal, isTrue} from 'zena:assert';
+import {Future, runFuture} from 'zena:async';
+import {base64Url, hex} from 'zena:encoding';
+import {readFileSync} from 'zena:fs';
+import {JsonArray, JsonObject, parseJson} from 'zena:json';
+import {KeyType, PublicKey, publicKeyFor} from 'atproto:didkey';
+import {
+  ReplayGuard,
+  ServiceAuthClaims,
+  ServiceAuthError,
+  SigningKeyLookup,
+  createServiceAuthToken,
+  verifyServiceAuth
+} from 'atproto:service-auth';
+
+let FIXTURES = 'packages/atproto/zena/test/fixtures/service-auth/tokens.json';
+let ALICE = 'did:plc:alicealicealicealicealic';
+let HOST = 'did:web:pkg.zena-lang.dev';
+let PUBLISH = 'dev.zena-lang.host.publish';
+let NOW: i64 = 1792800000 as i64;
+
+/** The P-256 key from RFC 6979, appendix A.2.5. */
+let P256_KEY = hex.decode('c9afa9d845ba75166b5c215767b1d6934e50c3db36e89b127b8a622b120f6721');
+/** A secp256k1 key. */
+let K256_KEY = hex.decode('9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60');
+
+/** A lookup that finds `key` for Alice, and counts the times it is asked. */
+final class Keys {
+  key: PublicKey | null;
+  /** The key a fresh lookup finds, when it differs. */
+  var rotated: PublicKey | null = null;
+  var lookups = 0;
+  var freshLookups = 0;
+
+  new(key: PublicKey | null) : key = key;
+
+  lookup(): SigningKeyLookup {
+    return async (did: String, fresh: boolean): Future<PublicKey | null> => {
+      this.lookups += 1;
+      if (did != ALICE) {
+        return null;
+      }
+      if (fresh) {
+        this.freshLookups += 1;
+        return this.rotated ?? this.key;
+      }
+      return this.key;
+    };
+  }
+}
+
+function claims(lxm: String | null = PUBLISH, exp: i64 = NOW + 60): ServiceAuthClaims {
+  return new ServiceAuthClaims(ALICE, HOST, exp, NOW, lxm, 'nonce-1');
+}
+
+function verify(token: String, keys: Keys, method: String | null = PUBLISH,
+    audience: String = HOST): ServiceAuthClaims {
+  return runFuture(verifyServiceAuth(token, audience, method, NOW, keys.lookup()));
+}
+
+/** The message `verify` fails with, or '' when it succeeds. */
+function failure(token: String, keys: Keys, method: String | null = PUBLISH,
+    audience: String = HOST): String {
+  try {
+    verify(token, keys, method, audience);
+  } catch (e) {
+    return if (e is ServiceAuthError) e.message else `another error: ${e.message}`;
+  }
+  return '';
+}
+
+/** `token` with its payload replaced by `payload`, keeping the signature. */
+function withPayload(token: String, payload: String): String {
+  let parts = token.split('.');
+  return `${parts[0]}.${base64Url.encode(payload.toBytes(), false)}.${parts[2]}`;
+}
+
+export let tests = suite('atproto:service-auth', () => {
+  test('verifies tokens it creates, on both curves', (ctx) => {
+    for (let (type, privateKey) in [(KeyType.P256, P256_KEY), (KeyType.Secp256k1, K256_KEY)]) {
+      let keys = new Keys(publicKeyFor(type, privateKey));
+      let token = createServiceAuthToken(claims(), type, privateKey);
+      let checked = verify(token, keys);
+      equal(checked.iss, ALICE);
+      equal(checked.aud, HOST);
+      equal(checked.exp, NOW + 60);
+      equal(checked.iat, NOW);
+      equal(checked.lxm as String, PUBLISH);
+      equal(checked.jti as String, 'nonce-1');
+      equal(keys.freshLookups, 0);
+    }
+  });
+
+  test('verifies tokens Node signed, and refuses their high-S twins', (ctx) => {
+    let fixtures = parseJson(readFileSync(FIXTURES)) as JsonObject;
+    let cases = fixtures['cases'] as JsonArray;
+    equal(cases.length, 2);
+    for (var i = 0; i < cases.length; i += 1) {
+      let c = cases[i] as JsonObject;
+      let type = if (c['curve'] as String == 'P-256') KeyType.P256 else KeyType.Secp256k1;
+      let keys = new Keys(new PublicKey(type, hex.decode(c['publicKeyHex'] as String)));
+      equal(verify(c['token'] as String, keys).jti as String, '9f2c4e7a1b3d5f60');
+      isTrue(failure(c['highSToken'] as String, keys).contains('does not verify'),
+          c['curve'] as String);
+    }
+  });
+
+  test('looks the key up again when the signature does not verify', (ctx) => {
+    let keys = new Keys(publicKeyFor(KeyType.Secp256k1, P256_KEY.slice(0, 32)));
+    keys.rotated = publicKeyFor(KeyType.Secp256k1, K256_KEY);
+    let token = createServiceAuthToken(claims(), KeyType.Secp256k1, K256_KEY);
+    equal(verify(token, keys).iss, ALICE);
+    equal(keys.freshLookups, 1);
+  });
+
+  test('refuses a token another key signed', (ctx) => {
+    let keys = new Keys(publicKeyFor(KeyType.P256, P256_KEY));
+    // A secp256k1 signature, said to be ES256.
+    let token = createServiceAuthToken(claims(), KeyType.Secp256k1, K256_KEY);
+    let parts = token.split('.');
+    let es256 = base64Url.encode('{"typ":"JWT","alg":"ES256"}'.toBytes(), false);
+    isTrue(failure(`${es256}.${parts[1]}.${parts[2]}`, keys).contains('does not verify'));
+    // A secp256k1 key, with a token said to be ES256.
+    let k256 = new Keys(publicKeyFor(KeyType.Secp256k1, K256_KEY));
+    isTrue(failure(`${es256}.${parts[1]}.${parts[2]}`, k256).contains('does not verify'));
+    // An issuer with no key.
+    isTrue(failure(token, new Keys(null)).contains('does not verify'));
+  });
+
+  test('refuses a changed payload', (ctx) => {
+    let keys = new Keys(publicKeyFor(KeyType.P256, P256_KEY));
+    let token = createServiceAuthToken(claims(), KeyType.P256, P256_KEY);
+    let changed = withPayload(token,
+        `{"iss":"${ALICE}","aud":"${HOST}","exp":${NOW + 60},"lxm":"dev.zena-lang.host.yank"}`);
+    equal(failure(changed, keys, 'dev.zena-lang.host.yank'),
+        "the signature does not verify with did:plc:alicealicealicealicealic's signing key");
+  });
+
+  test('checks the audience, the method and the times', (ctx) => {
+    let keys = new Keys(publicKeyFor(KeyType.P256, P256_KEY));
+    let sign = (c: ServiceAuthClaims) => createServiceAuthToken(c, KeyType.P256, P256_KEY);
+    let token = sign(claims());
+    isTrue(failure(token, keys, PUBLISH, 'did:web:other.example').contains('not did:web:other.example'));
+    isTrue(failure(token, keys, 'dev.zena-lang.host.yank').contains('not for dev.zena-lang.host.yank'));
+    // A token for any method passes only where no method is required.
+    let anyMethod = sign(claims(null));
+    isTrue(failure(anyMethod, keys).contains('not for'));
+    equal(failure(anyMethod, keys, null), '');
+    // An audience with a service fragment.
+    let fragment = sign(new ServiceAuthClaims(ALICE, `${HOST}#zena_package_host`, NOW + 60, NOW,
+        PUBLISH, 'n'));
+    equal(failure(fragment, keys), '');
+    isTrue(failure(sign(claims(PUBLISH, NOW)), keys).contains('expired'));
+    isTrue(failure(sign(claims(PUBLISH, NOW + 7200)), keys).contains('too far'));
+    let future = sign(new ServiceAuthClaims(ALICE, HOST, NOW + 3000, NOW + 1000, PUBLISH, 'n'));
+    isTrue(failure(future, keys).contains('issued in the future'));
+  });
+
+  test('refuses malformed tokens', (ctx) => {
+    let keys = new Keys(publicKeyFor(KeyType.P256, P256_KEY));
+    let token = createServiceAuthToken(claims(), KeyType.P256, P256_KEY);
+    let parts = token.split('.');
+    let header = (json: String) => base64Url.encode(json.toBytes(), false);
+    isTrue(failure('a.b', keys).contains('three parts'));
+    isTrue(failure(`!!.${parts[1]}.${parts[2]}`, keys).contains('header is not base64url JSON'));
+    isTrue(failure(`${header('{"alg":"none"}')}.${parts[1]}.`, keys).contains('ES256'));
+    isTrue(failure(`${header('{"alg":"HS256"}')}.${parts[1]}.${parts[2]}`, keys).contains('ES256'));
+    isTrue(failure(`${header('{"alg":"ES256","typ":"at+jwt"}')}.${parts[1]}.${parts[2]}`, keys)
+        .contains('not JWT'));
+    isTrue(failure(withPayload(token, '[]'), keys).contains('payload is not a JSON object'));
+    isTrue(failure(withPayload(token, `{"iss":"alice","aud":"${HOST}","exp":1}`), keys)
+        .contains('iss'));
+    isTrue(failure(withPayload(token, `{"iss":"${ALICE}","aud":"${HOST}"}`), keys).contains('exp'));
+    isTrue(failure(withPayload(token, `{"iss":"${ALICE}","aud":"${HOST}","exp":${NOW + 60},"lxm":"publish"}`),
+        keys).contains('lxm'));
+    isTrue(failure(`${parts[0]}.${parts[1]}.***`, keys).contains('signature is not base64url'));
+  });
+
+  test('accepts a token once until it expires', (ctx) => {
+    let guard = new ReplayGuard();
+    let first = claims();
+    guard.accept(first, NOW);
+    var message = '';
+    try {
+      guard.accept(claims(), NOW + 1);
+    } catch (e) {
+      message = e.message;
+    }
+    equal(message, 'the token was already used');
+    // Another issuer's token with the same nonce, and the same token after
+    // it expired, are accepted.
+    guard.accept(new ServiceAuthClaims('did:plc:bobbobbobbobbobbobbobbob', HOST, NOW + 60, NOW,
+        PUBLISH, 'nonce-1'), NOW);
+    guard.accept(claims(), NOW + 61);
+    var noNonce = '';
+    try {
+      guard.accept(new ServiceAuthClaims(ALICE, HOST, NOW + 60), NOW);
+    } catch (e) {
+      noNonce = e.message;
+    }
+    equal(noNonce, 'the token has no nonce');
+  });
+});

@@ -18,6 +18,8 @@
 import {StringBuilder} from 'zena:core';
 import {JsonArray, JsonObject} from 'zena:json';
 import {DidDocument, parseDidDocument} from './did.zena';
+import {PublicKey} from './didkey.zena';
+import {SigningKeyLookup} from './service-auth.zena';
 import {isValidDid, isValidHandle, normalizeHandle} from './syntax.zena';
 import {httpRequest} from './xrpc.zena';
 
@@ -105,6 +107,18 @@ export final class IdentityResolver {
       throw new IdentityError(`${did} did not resolve: HTTP ${response.status}`);
     }
     return parseDidDocument(response.json(), did);
+  }
+
+  /**
+   * Finds signing keys for `verifyServiceAuth` by resolving DIDs. This
+   * resolver keeps no cache, so every lookup is fresh. A DID that does not
+   * resolve throws `IdentityError`.
+   */
+  signingKeys(): SigningKeyLookup {
+    return async (did: String, fresh: boolean): Future<PublicKey | null> => {
+      let document = await this.resolveDid(did);
+      return document.signingKey;
+    };
   }
 
   /** The DID `handle` resolves to, or null when it resolves to none. */
