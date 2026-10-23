@@ -5,11 +5,14 @@ compute. The modules make requests through `wasi:http`, so they compile
 for component targets.
 
 - `google-cloud:firestore`: a Firestore client.
+- `google-cloud:storage`: a Cloud Storage client, for writing, reading
+  and deleting objects.
 - `google-cloud:auth`: access tokens and the project id, from the
   metadata server or the environment.
-- `google-cloud:firestore-v1`: the protobuf generator's output for
-  `google.firestore.v1`, which the client is built on. It is generated,
-  not edited; see [Regenerating](#regenerating).
+- `google-cloud:firestore-v1` and `google-cloud:storage-v2`: the protobuf
+  generator's output for `google.firestore.v1` and `google.storage.v2`,
+  which the clients are built on. They are generated, not edited; see
+  [Regenerating](#regenerating).
 
 The design is in [docs/design/protobuf.md](../../docs/design/protobuf.md).
 The package map needs `"google-cloud": "./packages/google-cloud/zena"`
@@ -125,6 +128,31 @@ production with no change: a development script sets
 `emulators:start` service, as `test:emulator` does, and production
 leaves it unset.
 
+## Cloud Storage
+
+```zena
+import { Storage } from 'google-cloud:storage';
+
+let bucket = Storage.connect().bucket('my-bucket');
+await bucket.write('notes/hello.txt', bytes, 'text/plain');
+let read = await bucket.read('notes/hello.txt'); // null when there is none
+let object = await bucket.stat('notes/hello.txt'); // its metadata, or null
+await bucket.delete('notes/hello.txt'); // whether there was one
+```
+
+`Storage.connect()` uses the default credentials (see
+[Credentials](#credentials)) and talks gRPC to the API, so it needs
+`zena-cli` or `zena-run`. An upload is a client-streaming call, which
+Google's fallback protocol cannot carry. `write` sends the data in
+chunks of at most 2 MiB, in one call, and replaces any object of the
+same name. Writes send no CRC32C checksums, and reads do not check the
+ones the server sends. `new Storage(transport)` takes any
+`ProtoTransport`, and `storage.client` is the generated `StorageClient`,
+for the calls the client does not wrap.
+
+There is no emulator for Cloud Storage's gRPC API here, so the tests run
+the client against an in-memory transport only.
+
 ## Credentials
 
 `defaultCredentials()`:
@@ -144,8 +172,8 @@ set, and the metadata server's answer otherwise.
 npm run generate -w @zena-lang/google-cloud
 ```
 
-The test fails when `firestore-v1.zena` differs from the generator's
-output.
+The test fails when `firestore-v1.zena` or `storage-v2.zena` differs
+from the generator's output.
 
 ## Testing
 
@@ -153,8 +181,8 @@ output.
 npm test -w @zena-lang/google-cloud
 ```
 
-The Firestore tests run the client against an in-memory Firestore
-transport; the credential tests run a local server that answers like
+The Firestore and Cloud Storage tests run the clients against in-memory
+transports; the credential tests run a local server that answers like
 the metadata server.
 
 ```sh

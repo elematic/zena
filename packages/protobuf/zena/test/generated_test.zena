@@ -39,7 +39,11 @@ import {
   ValueStringValue
 } from 'google-cloud:firestore-v1';
 
-/** Answers every call by echoing the request, and streams it back three times. */
+/**
+ * Answers every call by echoing the request, and streams it back three
+ * times. A stream of requests is answered with a node named by joining
+ * theirs.
+ */
 final class EchoTransport implements ProtoTransport {
   calls: GrowableArray<String> = new GrowableArray<String>();
   /** The routing header of each call, or '' when it had none. */
@@ -56,6 +60,17 @@ final class EchoTransport implements ProtoTransport {
     this.calls.push(`${method.service}/${method.name}`);
     this.routing.push(routingOf(metadata));
     return new Repeat(request, 3);
+  }
+
+  clientStream(method: RpcMethod, requests: Array<ProtoView>, metadata: RpcMetadata): Future<ProtoView> {
+    this.calls.push(`${method.service}/${method.name}`);
+    this.routing.push(routingOf(metadata));
+    var names = '';
+    for (let request in requests) {
+      let name = new Node(request).name;
+      names = if (names.length == 0) name else `${names},${name}`;
+    }
+    return Future.of(Node.of({name: names}).protoView);
   }
 }
 
@@ -309,6 +324,23 @@ export let tests = suite('generated protobuf code', () => {
     equal(runFuture(collect(client)), 6);
     equal(transport.calls[0], 'zena.test.v1.Things/GetNode');
     equal(transport.calls[1], 'zena.test.v1.Things/ListNodes');
+  });
+
+  test('calls a client-streaming method with all its requests', () => {
+    let transport = new EchoTransport();
+    let client = new ThingsClient(transport);
+    let joined = runFuture(client.upload([{name: 'nodes/1'}, {name: 'nodes/2'}, {name: 'nodes/3'}]));
+    equal(joined.name, 'nodes/1,nodes/2,nodes/3');
+    equal(transport.calls[0], 'zena.test.v1.Things/Upload');
+    // Routed by the first request, beside the caller's own headers.
+    let metadata = new RpcMetadata();
+    metadata.add('x-extra', 'yes');
+    runFuture(client.upload([{name: 'nodes/4'}, {name: 'other'}], metadata));
+    equal(transport.routing[0], 'node=nodes%2F1');
+    equal(transport.routing[1], 'node=nodes%2F4');
+    equal(metadata.name(0), 'x-extra');
+    equal(runFuture(client.upload([])).name, '');
+    equal(transport.routing[2], '');
   });
 
   test('routes calls by their HTTP rule or their routing annotation', () => {

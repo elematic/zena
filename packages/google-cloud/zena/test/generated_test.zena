@@ -1,7 +1,8 @@
 /**
- * `firestore-v1.zena` is the protobuf generator's output for the vendored
- * Firestore protos; this test fails when it no longer matches. Regenerate
- * it with `npm run generate -w @zena-lang/google-cloud`.
+ * `firestore-v1.zena` and `storage-v2.zena` are the protobuf generator's
+ * output for the vendored Firestore and Cloud Storage protos; these tests
+ * fail when they no longer match. Regenerate them with
+ * `npm run generate -w @zena-lang/google-cloud`.
  */
 
 import {suite, test} from 'zena:test';
@@ -11,19 +12,27 @@ import {generate} from 'protobuf:generator';
 
 /** Relative to the repository root, which is where a test runs. */
 let PROTOS = 'packages/protobuf/protos';
-let GENERATED = 'packages/google-cloud/zena/firestore-v1.zena';
 
 function readProto(path: String): String | null {
   let candidate = `${PROTOS}/${path}`;
   return if (existsSync(candidate)) readFileSync(candidate) else null;
 }
 
+/** Checks that `generated` is the generator's output for `proto`. */
+function isCurrent(proto: String, generated: String): void {
+  let source = generate({files: [proto], read: readProto});
+  isTrue(
+    readFileSync(generated) == source,
+    `${generated} does not match the generator's output; run npm run generate -w @zena-lang/google-cloud`
+  );
+}
+
 export let tests = suite('google-cloud generated code', () => {
   test('firestore-v1.zena is current', () => {
-    let source = generate({files: ['google/firestore/v1/firestore.proto'], read: readProto});
-    isTrue(
-      readFileSync(GENERATED) == source,
-      `${GENERATED} does not match the generator's output; run npm run generate -w @zena-lang/google-cloud`
-    );
+    isCurrent('google/firestore/v1/firestore.proto', 'packages/google-cloud/zena/firestore-v1.zena');
+  });
+
+  test('storage-v2.zena is current', () => {
+    isCurrent('google/storage/v2/storage.proto', 'packages/google-cloud/zena/storage-v2.zena');
   });
 });

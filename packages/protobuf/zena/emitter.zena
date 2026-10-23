@@ -858,17 +858,25 @@ final class Emitter {
 
   /**
    * Declares `metadata` for a call to `method`, with the routing header
-   * its request's fields give (see `routingParams`).
+   * its request's fields give (see `routingParams`). A method that streams
+   * requests takes `metadata` as a parameter, and routes by its first
+   * request.
    */
   #emitMetadata(method: MethodInfo): void {
     let out = this.#out;
     this.#use('RpcMetadata');
-    out.line('let metadata = new RpcMetadata();');
+    if (!method.decl.inputStream) {
+      out.line('let metadata = new RpcMetadata();');
+    }
     let params = routingParams(method.decl);
     if (params.length == 0) {
       return;
     }
     this.#use('RoutingHeader');
+    if (method.decl.inputStream) {
+      out.open('if (requests.length > 0) {');
+      out.line('let request = requests[0];');
+    }
     out.line('let routing = new RoutingHeader();');
     var temp = 0;
     for (let param in params) {
@@ -923,6 +931,9 @@ final class Emitter {
       }
     }
     out.line('routing.addTo(metadata);');
+    if (method.decl.inputStream) {
+      out.close('}');
+    }
   }
 
   #emitService(service: ServiceInfo): void {
@@ -933,13 +944,13 @@ final class Emitter {
     this.#use('RpcMethod');
     let skipped = new GrowableArray<String>();
     for (let method in service.methods) {
-      if (method.decl.inputStream) {
+      if (method.decl.inputStream && method.decl.outputStream) {
         skipped.push(`\`${method.decl.name}\``);
       }
     }
     var extra = `A client for \`${service.fullName}\`.`;
     if (skipped.length > 0) {
-      extra = `${extra} Not generated, because they stream requests: ${joinStrings(skipped, ', ')}.`;
+      extra = `${extra} Not generated, because they stream both ways: ${joinStrings(skipped, ', ')}.`;
     }
     out.line('');
     out.doc(service.decl.comment, extra);
@@ -949,7 +960,7 @@ final class Emitter {
     out.line('new(transport: ProtoTransport) : #transport = transport;');
     let taken = new HashSet<String>();
     for (let method in service.methods) {
-      if (method.decl.inputStream) {
+      if (method.decl.inputStream && method.decl.outputStream) {
         continue;
       }
       let methodName = claim(taken, memberName(lowerFirst(method.decl.name)));
@@ -966,6 +977,18 @@ final class Emitter {
         out.line(`this.#transport.serverStream(${rpc}, ${input}.of(request).protoView, metadata),`);
         out.line(`(view) => new ${output}(view)`);
         out.close(');');
+        out.close('}');
+      } else if (method.decl.inputStream) {
+        this.#use('ProtoView');
+        this.#use('RpcMetadata');
+        out.open(`async ${methodName}(requests: Array<${input}Init>, metadata: RpcMetadata = new RpcMetadata()): Future<${output}> {`);
+        this.#emitMetadata(method);
+        out.line('let views = new GrowableArray<ProtoView>();');
+        out.open('for (let request in requests) {');
+        out.line(`views.push(${input}.of(request).protoView);`);
+        out.close('}');
+        out.line(`let response = await this.#transport.clientStream(${rpc}, views, metadata);`);
+        out.line(`return new ${output}(response);`);
         out.close('}');
       } else {
         out.open(`async ${methodName}(request: ${input}Init): Future<${output}> {`);

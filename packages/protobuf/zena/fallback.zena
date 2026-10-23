@@ -30,8 +30,9 @@ import { Exchange, Origin, callHeaders, post } from './http.zena';
 
 export { RpcError } from './runtime.zena';
 
-/** `google.rpc.Code` UNKNOWN. */
+/** `google.rpc.Code` values this module produces itself. */
 let CODE_UNKNOWN = 2;
+let CODE_UNIMPLEMENTED = 12;
 
 /**
  * The `google.rpc.Code` for an HTTP status, as Google APIs map them, for
@@ -45,7 +46,7 @@ export function codeForHttpStatus(status: i32): i32 {
   if (status == 409) { return 10; }
   if (status == 429) { return 8; }
   if (status == 499) { return 1; }
-  if (status == 501) { return 12; }
+  if (status == 501) { return CODE_UNIMPLEMENTED; }
   if (status == 503) { return 14; }
   if (status == 504) { return 4; }
   if (status >= 500) { return 13; }
@@ -87,6 +88,12 @@ export final class FallbackTransport implements ProtoTransport {
 
   serverStream(method: RpcMethod, request: ProtoView, metadata: RpcMetadata): AsyncIterator<ProtoView> {
     return new StreamBodyReader(this.#post(method, request, metadata));
+  }
+
+  /** Fails with UNIMPLEMENTED: the fallback protocol has no streamed requests. */
+  async clientStream(method: RpcMethod, requests: Array<ProtoView>, metadata: RpcMetadata): Future<ProtoView> {
+    throw new RpcError(CODE_UNIMPLEMENTED,
+        `${method.service}/${method.name}: the gRPC fallback protocol cannot stream requests`, ProtoView.empty());
   }
 
   async #post(method: RpcMethod, request: ProtoView, metadata: RpcMetadata): Future<Exchange> {

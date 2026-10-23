@@ -1,0 +1,255 @@
+/**
+ * The Cloud Storage client against an in-memory Cloud Storage: a
+ * `ProtoTransport` that answers WriteObject, ReadObject, GetObject and
+ * DeleteObject, and checks that uploads arrive as the API expects them.
+ */
+
+import { suite, test } from 'zena:test';
+import { equal, isTrue, throws } from 'zena:assert';
+import { AsyncIterator, AsyncStep, Future, runFuture } from 'zena:async';
+import { HashMap } from 'zena:collections';
+import { ByteBuffer, newByteArray } from 'zena:core';
+import { ProtoTransport, ProtoView, ProtoWriter, RpcError, RpcMetadata, RpcMethod } from 'protobuf:runtime';
+import { MAX_WRITE_CHUNK, Storage } from '../storage.zena';
+import {
+  ChecksummedData,
+  DeleteObjectRequest,
+  GetObjectRequest,
+  Object,
+  ReadObjectRequest,
+  ReadObjectResponse,
+  WriteObjectRequest,
+  WriteObjectResponse
+} from '../storage-v2.zena';
+
+function rpcError(code: i32, message: String) {
+  return new RpcError(code, message, (new ProtoWriter()).finish());
+}
+
+/** The value of the `x-goog-request-params` header in `metadata`, or ''. */
+function routingOf(metadata: RpcMetadata): String {
+  for (var i = 0; i < metadata.length; i += 1) {
+    if (metadata.name(i) == 'x-goog-request-params') {
+      return metadata.value(i);
+    }
+  }
+  return '';
+}
+
+/** `length` bytes counting up from `seed`, wrapping at 256. */
+function bytesOf(length: i32, seed: i32): ByteArray {
+  let bytes = newByteArray(length);
+  for (var i = 0; i < length; i += 1) {
+    bytes[i] = ((seed + i) & 0xFF) as u8;
+  }
+  return bytes;
+}
+
+function sameBytes(a: ByteArray, b: ByteArray): boolean {
+  if (a.length != b.length) {
+    return false;
+  }
+  for (var i = 0; i < a.length; i += 1) {
+    if (a[i] != b[i]) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/** The views in `views`, one per `next()`, or `error` thrown at the first. */
+final class ViewStream implements AsyncIterator<ProtoView> {
+  #views: GrowableArray<ProtoView>;
+  #error: RpcError | null;
+  var #index: i32 = 0;
+
+  new(views: GrowableArray<ProtoView>, error: RpcError | null = null) : #views = views, #error = error;
+
+  next(): AsyncStep<ProtoView> {
+    let error = this.#error;
+    if (error != null) {
+      throw error;
+    }
+    if (this.#index < this.#views.length) {
+      this.#index += 1;
+      return (1, this.#views[this.#index - 1], _);
+    }
+    return (0, _, _);
+  }
+}
+
+/** The object the fake refuses every call on, with PERMISSION_DENIED. */
+let DENIED = 'denied';
+
+/** One stored object. */
+final class Stored {
+  data: ByteArray;
+  contentType: String;
+  generation: i64;
+  new(this.data, this.contentType, this.generation);
+}
+
+/** An in-memory Cloud Storage. */
+final class FakeStorage implements ProtoTransport {
+  /** Objects by `<bucket resource> <name>`. */
+  objects: HashMap<String, Stored> = new HashMap<String, Stored>();
+  /** One line per call: the method, and for some what it carried. */
+  log: GrowableArray<String> = new GrowableArray<String>();
+  /** The size of each response chunk ReadObject sends. */
+  var readChunk: i32 = 3;
+  var #generation: i64 = 0;
+
+  async unary(method: RpcMethod, request: ProtoView, metadata: RpcMetadata): Future<ProtoView> {
+    if (method.name == 'GetObject') {
+      let get = new GetObjectRequest(request);
+      this.log.push(`GetObject ${get.object}`);
+      if (get.object == DENIED) {
+        throw rpcError(7, 'denied');
+      }
+      if (let (true, stored) = this.objects.get(`${get.bucket} ${get.object}`)) {
+        return this.#describe(get.bucket, get.object, stored).protoView;
+      }
+      throw rpcError(5, `no object ${get.object}`);
+    }
+    if (method.name == 'DeleteObject') {
+      let delete = new DeleteObjectRequest(request);
+      this.log.push(`DeleteObject ${delete.object} ${routingOf(metadata)}`);
+      if (delete.object == DENIED) {
+        throw rpcError(7, 'denied');
+      }
+      if (this.objects.delete(`${delete.bucket} ${delete.object}`)) {
+        return (new ProtoWriter()).finish();
+      }
+      throw rpcError(5, `no object ${delete.object}`);
+    }
+    throw rpcError(12, `unimplemented: ${method.name}`);
+  }
+
+  serverStream(method: RpcMethod, request: ProtoView, metadata: RpcMetadata): AsyncIterator<ProtoView> {
+    let responses = new GrowableArray<ProtoView>();
+    if (method.name != 'ReadObject') {
+      return new ViewStream(responses, rpcError(12, `unimplemented: ${method.name}`));
+    }
+    let read = new ReadObjectRequest(request);
+    this.log.push(`ReadObject ${read.object}`);
+    if (read.object == DENIED) {
+      return new ViewStream(responses, rpcError(7, 'denied'));
+    }
+    if (let (true, stored) = this.objects.get(`${read.bucket} ${read.object}`)) {
+      var offset = 0;
+      while (offset < stored.data.length) {
+        let end = if (stored.data.length - offset > this.readChunk) offset + this.readChunk else stored.data.length;
+        let content = newByteArray(end - offset);
+        for (var i = offset; i < end; i += 1) {
+          content[i - offset] = stored.data[i];
+        }
+        responses.push(ReadObjectResponse.of({checksummedData: ChecksummedData.of({content})}).protoView);
+        offset = end;
+      }
+      return new ViewStream(responses);
+    }
+    return new ViewStream(responses, rpcError(5, `no object ${read.object}`));
+  }
+
+  async clientStream(method: RpcMethod, requests: Array<ProtoView>, metadata: RpcMetadata): Future<ProtoView> {
+    if (method.name != 'WriteObject') {
+      throw rpcError(12, `unimplemented: ${method.name}`);
+    }
+    if (requests.length == 0) {
+      throw rpcError(3, 'no requests');
+    }
+    let first = new WriteObjectRequest(requests[0]);
+    let spec = first.writeObjectSpec;
+    if (spec == null) {
+      throw rpcError(3, 'the first request has no write_object_spec');
+    }
+    let resource = spec.resource as Object;
+    if (routingOf(metadata) != `bucket=projects%2F_%2Fbuckets%2F${resource.bucket.sliceBytes(19, resource.bucket.length)}`) {
+      throw rpcError(3, `routed by ${routingOf(metadata)}`);
+    }
+    let data = new ByteBuffer();
+    var sizes = '';
+    for (var i = 0; i < requests.length; i += 1) {
+      let write = new WriteObjectRequest(requests[i]);
+      if (i > 0 && write.writeObjectSpec != null) {
+        throw rpcError(3, 'a write_object_spec after the first request');
+      }
+      if (write.writeOffset != data.length as i64) {
+        throw rpcError(11, `offset ${write.writeOffset}, expected ${data.length}`);
+      }
+      if (write.finishWrite != (i == requests.length - 1)) {
+        throw rpcError(3, 'finish_write is not on the last request alone');
+      }
+      let chunk = write.checksummedData;
+      let length = if (chunk != null) chunk.content.length else 0;
+      sizes = if (i == 0) `${length}` else `${sizes},${length}`;
+      if (chunk != null) {
+        chunk.content.writeTo(data);
+      }
+    }
+    if (spec.hasObjectSize && spec.objectSize != data.length as i64) {
+      throw rpcError(3, `object_size ${spec.objectSize}, but ${data.length} bytes arrived`);
+    }
+    this.log.push(`WriteObject ${resource.name} ${sizes}`);
+    this.#generation += 1;
+    let stored = new Stored(data.toByteArray(), resource.contentType, this.#generation);
+    this.objects[`${resource.bucket} ${resource.name}`] = stored;
+    return WriteObjectResponse.of({resource: this.#describe(resource.bucket, resource.name, stored)}).protoView;
+  }
+
+  /** `size` is output only, so has no place in `Object.of`. */
+  #describe(bucket: String, name: String, stored: Stored): Object {
+    return Object.of({bucket, name, contentType: stored.contentType, generation: stored.generation});
+  }
+}
+
+export let tests = suite('Cloud Storage', () => {
+  test('writes, reads, describes and deletes an object', () => {
+    let fake = new FakeStorage();
+    let bucket = new Storage(fake).bucket('blobs');
+    equal(bucket.resource, 'projects/_/buckets/blobs');
+    let data = bytesOf(10, 7);
+    let written = runFuture(bucket.write('a/b', data, 'image/png'));
+    equal(written.name, 'a/b');
+    equal(written.contentType, 'image/png');
+
+    let read = runFuture(bucket.read('a/b'));
+    isTrue(read != null && sameBytes(read as ByteArray, data), 'the bytes read are the bytes written');
+    let stat = runFuture(bucket.stat('a/b'));
+    isTrue(stat != null && (stat as Object).generation == written.generation, 'stat');
+
+    isTrue(runFuture(bucket.delete('a/b')), 'deleted');
+    isTrue(runFuture(bucket.read('a/b')) == null, 'gone');
+    isTrue(runFuture(bucket.stat('a/b')) == null, 'no metadata');
+    isTrue(!runFuture(bucket.delete('a/b')), 'nothing to delete');
+    equal(fake.log[0], 'WriteObject a/b 10');
+    equal(fake.log[3], 'DeleteObject a/b bucket=projects%2F_%2Fbuckets%2Fblobs');
+  });
+
+  test('uploads in chunks of at most 2 MiB', () => {
+    let fake = new FakeStorage();
+    fake.readChunk = MAX_WRITE_CHUNK;
+    let bucket = new Storage(fake).bucket('blobs');
+    let data = bytesOf(MAX_WRITE_CHUNK * 2 + 5, 1);
+    runFuture(bucket.write('big', data));
+    equal(fake.log[0], `WriteObject big ${MAX_WRITE_CHUNK},${MAX_WRITE_CHUNK},5`);
+    let read = runFuture(bucket.read('big'));
+    isTrue(read != null && sameBytes(read as ByteArray, data), 'the bytes read are the bytes written');
+  });
+
+  test('writes an empty object in one request', () => {
+    let fake = new FakeStorage();
+    let bucket = new Storage(fake).bucket('blobs');
+    let written = runFuture(bucket.write('empty', newByteArray(0)));
+    equal(written.contentType, 'application/octet-stream');
+    equal(fake.log[0], 'WriteObject empty 0');
+    equal((runFuture(bucket.read('empty')) as ByteArray).length, 0);
+  });
+
+  test('passes on errors other than NOT_FOUND', () => {
+    let bucket = new Storage(new FakeStorage()).bucket('blobs');
+    throws(() => { runFuture(bucket.read(DENIED)); });
+    throws(() => { runFuture(bucket.stat(DENIED)); });
+    throws(() => { runFuture(bucket.delete(DENIED)); });
+  });
+});
