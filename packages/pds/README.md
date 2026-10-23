@@ -10,7 +10,10 @@ It holds many accounts, with its data in memory so far. Each account's
 repository takes writes, which sign a new commit, and the server answers the
 reads of `com.atproto.sync` (`getRecord`, `getRepo`, `getLatestCommit`,
 `getBlob`) and `com.atproto.repo` (`getRecord`, `listRecords`,
-`describeRepo`). pds.js's license is in `LICENSE-pds-js`.
+`describeRepo`). With a `PackageHost`, it also serves the package host's
+`createOrganization`, `createPackage`, `uploadArtifact` and `publish`, each
+checked with a service-auth token from the caller's PDS. pds.js's license is
+in `LICENSE-pds-js`.
 [docs/design/pds.md](../../docs/design/pds.md) describes the reference
 implementation, what is still missing, and the order of the work.
 
@@ -33,5 +36,7 @@ npm test -w @zena-lang/pds                       # its tests, through wireit
   - `repository`: an account's repository: writes, commits, proofs and
     exports;
   - `pds`: the accounts and their repositories;
+  - `host`: the package host's methods, and what it keeps beside the
+    accounts: scopes, names in them, and private membership entries;
   - `server`: the HTTP routes.
 - `zena/test/`: its tests.

@@ -8,7 +8,13 @@ import {isValidNsid} from 'atproto:syntax';
 import {
   Artifact,
   COMPONENT,
+  MAINTAINERS_TYPE,
+  Maintainer,
+  Maintainers,
+  MemberEntry,
+  OWNER,
   PROFILE_TYPE,
+  PUBLISHER,
   Profile,
   RELEASE_TYPE,
   RecordError,
@@ -82,7 +88,7 @@ function rejectsProfile(json: String) {
 
 export let tests = suite('package-manager:records', () => {
   test('names each record type after its lexicon', (ctx) => {
-    for (let type in [PROFILE_TYPE, RELEASE_TYPE, YANK_TYPE]) {
+    for (let type in [PROFILE_TYPE, RELEASE_TYPE, YANK_TYPE, MAINTAINERS_TYPE]) {
       isTrue(isValidNsid(type), type);
       let parts = type.split('.');
       let path = `packages/package-manager/lexicons/dev/zena-lang/package/${parts[parts.length - 1]}.json`;
@@ -259,5 +265,57 @@ export let tests = suite('package-manager:records', () => {
     ]) {
       isFalse(isValidPackageName(name), name);
     }
+  });
+
+  test('reads a maintainers record and writes it back', (ctx) => {
+    let json = `{
+      "$type": "dev.zena-lang.package.maintainers",
+      "maintainers": [
+        {"did": "did:plc:alicealicealicealicealic", "role": "owner"},
+        {"commitment": "bafyreib2rxk3rh6kzwq4fhfuofkqmxyyn4b4fy3mvaz7t6zqbw4pt2bnim", "role": "publisher", "automation": true},
+        {"org": "did:plc:acmeacmeacmeacmeacmeacme", "team": "core", "role": "publisher"}
+      ],
+      "threshold": 2,
+      "ownerThreshold": 1
+    }`;
+    let record = Maintainers.fromValue(value(json));
+    equal(record.maintainers.length, 3);
+    equal(record.maintainers[0].did as String, 'did:plc:alicealicealicealicealic');
+    equal(record.maintainers[0].role, OWNER);
+    isTrue(record.maintainers[1].automation);
+    equal(record.maintainers[2].team as String, 'core');
+    equal(record.threshold, 2 as i64);
+    jsonEqual(toJson(record.toValue()), parseJson(json));
+  });
+
+  test('refuses a maintainers record that is not one', (ctx) => {
+    let rejects = (json: String) => {
+      var caught = false;
+      try {
+        Maintainers.fromValue(value(json));
+      } catch (e) {
+        caught = e is RecordError;
+      }
+      isTrue(caught, `accepted ${json}`);
+    };
+    let wrap = (maintainers: String, rest: String = '"threshold": 1, "ownerThreshold": 1') =>
+      `{"$type": "dev.zena-lang.package.maintainers", "maintainers": ${maintainers}, ${rest}}`;
+    rejects(wrap('[]'));
+    rejects(wrap('[{"did": "did:plc:alicealicealicealicealic", "role": "maintainer"}]'));
+    rejects(wrap('[{"role": "owner"}]'));
+    rejects(wrap('[{"did": "did:plc:alicealicealicealicealic", "org": "did:plc:acmeacmeacmeacmeacmeacme", "team": "x", "role": "owner"}]'));
+    rejects(wrap('[{"org": "did:plc:acmeacmeacmeacmeacmeacme", "role": "owner"}]'));
+    rejects(wrap('[{"did": "alice", "role": "owner"}]'));
+    rejects(wrap('[{"did": "did:plc:alicealicealicealicealic", "role": "owner"}]', '"threshold": 0, "ownerThreshold": 1'));
+  });
+
+  test("commits to a member's entry by its CID", (ctx) => {
+    let salt = new FixedArray<u8>(32, 7 as u8);
+    let entry = new MemberEntry('did:plc:alicealicealicealicealic', OWNER, salt);
+    let read = MemberEntry.fromValue(entry.toValue());
+    isTrue(read.commitment().equals(entry.commitment()));
+    // Another salt, another commitment.
+    isFalse(new MemberEntry(entry.did, OWNER, new FixedArray<u8>(32, 8 as u8)).commitment()
+        .equals(entry.commitment()));
   });
 });
