@@ -57,6 +57,15 @@ export let tests = suite('zena:process', () => {
     isTrue(res.stdout.endsWith('piped'), `cat printed ${res.stdout}`);
   });
 
+  test('runWith sets and removes environment variables', (ctx) => {
+    let res = runWith(['/bin/sh', '-c', 'printf "%s|%s" "$ZENA_TEST_SET" "${HOME-unset}"'],
+        {env: [('ZENA_TEST_SET', 'a value')], envRemove: ['HOME']});
+    equal(res.stdout, 'a value|unset');
+    // Without either, the host's environment comes through.
+    let inherited = runWith(['/bin/sh', '-c', 'printf "%s" "${HOME-unset}"'], {});
+    isTrue(inherited.stdout != 'unset', 'HOME is inherited');
+  });
+
   test('spawned processes run concurrently and wait() joins them', (ctx) => {
     // Two 0.2s sleeps in parallel should finish well under 0.4s of
     // combined wall time each; mostly this asserts both complete and

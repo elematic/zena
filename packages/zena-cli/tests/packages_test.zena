@@ -1,0 +1,110 @@
+/**
+ * Packages outside the workspace, as the `zena` command finds them.
+ *
+ * How a workspace's manifests and lockfile resolve imports is the
+ * compiler's, and tested with it (`zena-compiler/zena/test/workspace_test`
+ * and `package-manifest_test`). What these tests vary is what only the
+ * command supplies: the workspace's absolute path, which the CLI module
+ * gives the compiler so that a path dependency outside the workspace
+ * (`../zena/packages/google-cloud/zena`) is read by its absolute path, and
+ * the package cache, where `zena fetch` unpacks the published packages
+ * `zena-lock.json` pins (docs/design/package-manifest.md).
+ */
+
+import {suite, test} from 'zena:test';
+import {isTrue} from 'zena:assert';
+import {run} from 'zena:process';
+import {MAIN, Scratch, described, write, zenaIn} from './cli-support.zena';
+
+/**
+ * Lays out `scratch` as a workspace, `workspace/`, beside two packages:
+ * `libs/near` (a path dependency `../libs/near`) and `libs/far` (by its
+ * absolute path).
+ */
+function pathLayout(scratch: Scratch): void {
+  write(scratch.at('libs/near/zena-package.json'), '{"name": "near"}');
+  write(scratch.at('libs/near/numbers.zena'), 'export function two(): i32 { return 2; }\n');
+  write(scratch.at('libs/far/zena-package.json'), '{"name": "far"}');
+  write(scratch.at('libs/far/numbers.zena'), 'export function three(): i32 { return 3; }\n');
+  write(scratch.at('workspace/zena-package.json'),
+      `{"dependencies": {"near": {"path": "../libs/near"}, "far": {"path": "${scratch.host('libs/far')}"}}}\n`);
+  write(scratch.at('workspace/prog.zena'),
+      "import { two } from 'near:numbers';\nimport { three } from 'far:numbers';\n" +
+      `${MAIN} {\n  return two() * three() - 6;\n}\n`);
+  write(scratch.at('workspace/numbers_test.zena'),
+      "import { suite, test } from 'zena:test';\nimport { equal } from 'zena:assert';\n" +
+      "import { two } from 'near:numbers';\nimport { three } from 'far:numbers';\n\n" +
+      "export let tests = suite('numbers', () => {\n" +
+      "  test('both packages load', (ctx) => {\n    equal(two() + three(), 5);\n  });\n});\n");
+}
+
+/**
+ * Lays out `scratch` as a workspace that uses a published package,
+ * `router`, which uses another, `json`, by a name of its own. Both are
+ * pinned in `zena-lock.json` and in the package cache as `zena fetch`
+ * leaves them: each source archive unpacked under
+ * `cache/packages/sources/<CID>`.
+ */
+function publishedLayout(scratch: Scratch): void {
+  write(scratch.at('cache/packages/sources/bafkreirouter/match.zena'),
+      "import { parse } from 'json:parse';\nexport function route(): i32 { return parse() + 1; }\n");
+  write(scratch.at('cache/packages/sources/bafkreijson/parse.zena'),
+      'export function parse(): i32 { return 41; }\n');
+  write(scratch.at('workspace/zena-package.json'),
+      '{"dependencies": {"router": {"did": "did:plc:router", "version": "1.4.2"}}}');
+  write(scratch.at('workspace/zena-lock.json'), `{
+  "resolved": {
+    "did:plc:router@1": {
+      "version": "1.4.2",
+      "release": "bafyreirouter",
+      "source": "bafkreirouter",
+      "dependencies": {"json": "did:web:json.example.com@2"}
+    },
+    "did:web:json.example.com@2": {"version": "2.1.0", "release": "bafyreijson", "source": "bafkreijson"}
+  }
+}
+`);
+  write(scratch.at('workspace/prog.zena'),
+      `import { route } from 'router:match';\n${MAIN} {\n  return route() - 42;\n}\n`);
+}
+
+export let tests = suite('zena: packages outside the workspace', () => {
+  test('run and test read path dependencies outside the workspace and at absolute paths', (ctx) => {
+    let scratch = Scratch.create('packages-paths');
+    try {
+      pathLayout(scratch);
+      let zena = zenaIn(scratch, 'workspace');
+      let ran = zena.run(['run', 'prog.zena']);
+      isTrue(ran.succeeded(), described(ran));
+      let tested = zena.run(['test', 'numbers_test.zena']);
+      isTrue(tested.succeeded(), described(tested));
+    } finally {
+      scratch.remove();
+    }
+  });
+
+  test('run reads published packages from the package cache', (ctx) => {
+    let scratch = Scratch.create('packages-published');
+    try {
+      publishedLayout(scratch);
+      let ran = zenaIn(scratch, 'workspace').run(['run', 'prog.zena']);
+      isTrue(ran.succeeded(), described(ran));
+    } finally {
+      scratch.remove();
+    }
+  });
+
+  test('a package missing from the cache says to fetch it', (ctx) => {
+    let scratch = Scratch.create('packages-missing');
+    try {
+      publishedLayout(scratch);
+      run(['rm', '-r', scratch.host('cache/packages/sources/bafkreijson')]);
+      let compiled = zenaIn(scratch, 'workspace').run(['run', 'prog.zena']);
+      isTrue(!compiled.succeeded(), 'compiled without json in the cache');
+      isTrue(compiled.stderr.contains('did:web:json.example.com@2') &&
+          compiled.stderr.contains('zena fetch'), described(compiled));
+    } finally {
+      scratch.remove();
+    }
+  });
+});

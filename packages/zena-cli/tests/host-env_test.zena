@@ -1,0 +1,51 @@
+/**
+ * The variables the host sets for the CLI module, as against the shell's.
+ *
+ * The host gives the CLI module the shell's environment and then sets
+ * `ZENA_STDLIB_DIR`, `ZENA_REPO_ROOT` and others for it. WASI keeps every
+ * entry it is given, and a lookup returns the first. So when the shell has
+ * `ZENA_STDLIB_DIR` too, the module must still see the host's `/stdlib`,
+ * the directory the standard library is preopened as. If it sees the
+ * shell's path instead, it compiles against the standard library by that
+ * path, and `zena:http`'s `Response` resolves to a different class
+ * ("Expected 1 arguments, got 0").
+ *
+ * The same holds one level down: `zena test` runs each file in a copy of
+ * the CLI module, which gets the shell's environment and the variables the
+ * module passes on.
+ */
+
+import {suite, test} from 'zena:test';
+import {isTrue} from 'zena:assert';
+import {MAIN, Scratch, described, write, zenaIn} from './cli-support.zena';
+
+export let tests = suite("zena: the host's variables over the shell's", () => {
+  test('run compiles against the preopened standard library when the shell names one', (ctx) => {
+    let scratch = Scratch.create('host-env-run');
+    try {
+      write(scratch.at('project/prog.zena'),
+          `import { Response } from 'zena:http';\n${MAIN} {\n  return new Response().statusCode - 404;\n}\n`);
+      // `zenaIn` sets ZENA_STDLIB_DIR to this repository's standard library,
+      // as a shell in a repository outside this one does.
+      let ran = zenaIn(scratch, 'project').run(['run', 'prog.zena']);
+      isTrue(ran.succeeded(), described(ran));
+    } finally {
+      scratch.remove();
+    }
+  });
+
+  test("test's copies compile against the preopened standard library when the shell names one", (ctx) => {
+    let scratch = Scratch.create('host-env-test');
+    try {
+      write(scratch.at('project/http_test.zena'),
+          "import { suite, test } from 'zena:test';\nimport { equal } from 'zena:assert';\n" +
+          "import { Response } from 'zena:http';\n\n" +
+          "export let tests = suite('zena:http', () => {\n" +
+          "  test('a new Response is a 404', (ctx) => {\n    equal(new Response().statusCode, 404);\n  });\n});\n");
+      let tested = zenaIn(scratch, 'project').run(['test', 'http_test.zena']);
+      isTrue(tested.succeeded(), described(tested));
+    } finally {
+      scratch.remove();
+    }
+  });
+});

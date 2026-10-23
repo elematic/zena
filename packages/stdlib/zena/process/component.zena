@@ -98,6 +98,13 @@ export type SpawnOptions = {
    * reads end of input straight away if absent.
    */
   input?: String,
+  /**
+   * Environment variables to set in the process, which otherwise inherits
+   * this program's host's environment.
+   */
+  env?: Array<(String, String)>,
+  /** Environment variables to leave out of the process's environment. */
+  envRemove?: Array<String>,
 };
 
 /**
@@ -118,6 +125,16 @@ export let spawnWith = (argv: Array<String>, options: SpawnOptions): Own<Process
   }
   if (let {input} = options) {
     cmd.input(input.toBytes());
+  }
+  if (let {envRemove} = options) {
+    for (let name in envRemove) {
+      cmd.envRemove(name);
+    }
+  }
+  if (let {env} = options) {
+    for (let (name, value) in env) {
+      cmd.env(name, value);
+    }
   }
   match (cmd.spawn()) {
     case (true, let proc, _): { return new Process(proc); }

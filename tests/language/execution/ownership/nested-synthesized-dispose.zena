@@ -1,0 +1,38 @@
+// @mode: run
+// @skip: elematic/zena#493 — lowering Outer's synthesized dispose cannot find Middle's synthesized dispose
+// @result: 1
+// A resource class with no dispose method of its own, holding an owner
+// of another such class, which holds an owner of a class that does have
+// one. Releasing the outermost owner runs the field glue all the way
+// down, so the innermost dispose runs once.
+import {Own, Disposable} from 'zena:core';
+
+class Log {
+  var count: i32 = 0;
+}
+
+resource class Leaf {
+  #log: Log;
+  new(log: Log) : #log = log;
+  [Disposable.dispose](this: Own<this>): void {
+    this.#log.count += 1;
+  }
+}
+
+resource class Middle {
+  #leaf: Own<Leaf>;
+  new(leaf: Own<Leaf>) : #leaf = leaf;
+}
+
+resource class Outer {
+  #middle: Own<Middle>;
+  new(middle: Own<Middle>) : #middle = middle;
+}
+
+export let main = (): i32 => {
+  let log = new Log();
+  if (true) {
+    let outer = new Outer(new Middle(new Leaf(log)));
+  }
+  return log.count;
+};

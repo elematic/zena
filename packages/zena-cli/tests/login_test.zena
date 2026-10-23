@@ -1,0 +1,71 @@
+/**
+ * `zena login` and `zena logout` against `tests/fixtures/login-pds.zena`,
+ * whose one maintainer, `alice.test`, has the app password `app-password`.
+ * What they vary is the command's configuration directory and its stdin.
+ */
+
+import {suite, test} from 'zena:test';
+import {equal, isTrue} from 'zena:assert';
+import {existsSync} from 'zena:fs';
+import {run} from 'zena:process';
+import {
+  Scratch, ZenaCommand, described, dnsBeside, ensureDir, fakePdsOrigin, read, startFakePds, write
+} from './cli-support.zena';
+
+let ALICE = 'did:plc:alicealicealicealicealic';
+
+/** The permission bits of the file at `hostPath`, such as `600`. */
+function modeOf(hostPath: String): String {
+  let result = run(['/bin/sh', '-c', 'stat -c %a "$1" 2>/dev/null || stat -f %Lp "$1"', 'sh', hostPath]);
+  return result.stdout.trim();
+}
+
+export let tests = suite('zena login and zena logout', () => {
+  test('keep a session only its owner can read, and end it', (ctx) => {
+    let scratch = Scratch.create('login');
+    let pds = startFakePds(scratch, 'login-pds.zena');
+    try {
+      let plc = fakePdsOrigin(scratch, pds);
+      ensureDir(scratch.at('workspace'));
+      let zena = new ZenaCommand(scratch.host('workspace'), scratch.at('workspace'), scratch.host('cache'))
+        .set('ZENA_PLC_DIRECTORY', plc)
+        .set('ZENA_DNS_OVER_HTTPS', dnsBeside(plc))
+        .set('ZENA_CONFIG_DIR', scratch.host('config'));
+      let session = scratch.at('config/session.json');
+
+      // A wrong password is refused, and nothing is stored.
+      let wrong = zena.run(['login', 'alice.test', '--password-stdin'], 'not-it\n');
+      isTrue(!wrong.succeeded(), 'zena login accepted a wrong password');
+      isTrue(wrong.stderr.contains('AuthenticationRequired'), described(wrong));
+      isTrue(!existsSync(session), 'a refused login stored a session');
+
+      // A session file left readable by others is made private.
+      write(session, '{}');
+      run(['chmod', '644', scratch.host('config/session.json')]);
+
+      let login = zena.run(['login', 'alice.test', '--password-stdin'], 'app-password\n');
+      isTrue(login.succeeded(), described(login));
+      isTrue(login.stdout.contains(`Signed in as alice.test (${ALICE})`), described(login));
+      let stored = read(session);
+      isTrue(stored.contains(ALICE) && stored.contains('refreshJwt'), stored);
+      equal(modeOf(scratch.host('config/session.json')), '600');
+
+      // With no password given and no terminal, it says how to give one.
+      let noTerminal = zena.run(['login', 'alice.test'], '');
+      isTrue(!noTerminal.succeeded(), 'zena login signed in with no password');
+      isTrue(noTerminal.stderr.contains('--password-stdin') &&
+          noTerminal.stderr.contains('ZENA_APP_PASSWORD'), described(noTerminal));
+
+      // The password can come from the environment.
+      let fromEnv = zena.set('ZENA_APP_PASSWORD', 'app-password').run(['login', ALICE]);
+      isTrue(fromEnv.succeeded(), described(fromEnv));
+
+      let logout = zena.run(['logout']);
+      isTrue(logout.succeeded() && logout.stdout.contains('Signed out alice.test'), described(logout));
+      isTrue(!existsSync(session), 'zena logout kept the session');
+    } finally {
+      pds.waitFor(1 as i64);
+      scratch.remove();
+    }
+  });
+});
