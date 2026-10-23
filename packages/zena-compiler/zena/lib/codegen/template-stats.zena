@@ -1,0 +1,268 @@
+/**
+ * Repeat-lowering measurement for `ZENA_ZIR_STATS=1`. Every
+ * instantiation of a generic function, or of a generic class's method,
+ * is lowered from the same AST, once per instantiation. This counts
+ * those bodies by source function, times the second and later ones
+ * (the most that lowering a generic function once and specializing the
+ * copy, docs/design/ir.md §8, could save), and compares each with the
+ * first body lowered from the same source: whether only the type and
+ * ref tables differ, and where the instruction streams part when more
+ * than that does.
+ *
+ * Bodies group by source node and role: a constructor's phases, an
+ * explosion core and a closure's wrappers share their original's node
+ * without being instantiations of it.
+ */
+import { i32ToString } from 'zena:core';
+import { div } from 'zena:math';
+import { HashMap } from 'zena:collections';
+import { WasmFunction } from './wasm-module.zena';
+import { IrBody, IrOp, irOpName } from './ir/ir.zena';
+
+/** The bodies lowered from one source function in one role. */
+final class SourceGroup {
+  name: String;
+  var count: i32 = 0;
+  var lowerMs: f64 = 0.0;
+  var cleanupMs: f64 = 0.0;
+  var firstLowerMs: f64 = 0.0;
+  var firstCleanupMs: f64 = 0.0;
+  var insts: i32 = 0;
+  /** The first body, as lowering left it; null until it is compared. */
+  var first: FirstBody | null = null;
+  new(this.name);
+}
+
+/** A copy of a body's instruction arrays. */
+final class FirstBody {
+  opcode = new GrowableArray<i32>();
+  typeId = new GrowableArray<i32>();
+  a = new GrowableArray<i32>();
+  b = new GrowableArray<i32>();
+  extra = new GrowableArray<i32>();
+  blockSizes = new GrowableArray<i32>();
+  new(body: IrBody) {
+    copyInto(body.opcode, this.opcode);
+    copyInto(body.typeId, this.typeId);
+    copyInto(body.a, this.a);
+    copyInto(body.b, this.b);
+    copyInto(body.extra, this.extra);
+    for (let blk in body.blocks) {
+      this.blockSizes.push(blk.insts.length);
+    }
+  }
+}
+
+function copyInto(from: GrowableArray<i32>, to: GrowableArray<i32>): void {
+  for (let v in from) {
+    to.push(v);
+  }
+}
+
+function sameInts(x: GrowableArray<i32>, y: GrowableArray<i32>): boolean {
+  if (x.length != y.length) {
+    return false;
+  }
+  for (var i = 0; i < x.length; i += 1) {
+    if (x[i] != y[i]) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/** The repeat bodies whose instruction streams first part from their group's first at one pair of ops. */
+final class Divergence {
+  key: String;
+  example: String;
+  var count: i32 = 1;
+  new(this.key, this.example);
+}
+
+/**
+ * The group a function's body belongs to, or null for a function with
+ * no source node.
+ */
+function groupKey(func: WasmFunction): String | null {
+  let node = func.node;
+  if (node == null || (node.id as i32) == 0) {
+    return null;
+  }
+  let meth = if (func.methodName != null) func.methodName as String else '';
+  let explosion = func.explosion;
+  let role = if (explosion != null && explosion.core === func) 'core'
+      else if (func.isClosureWrapper) 'wrapper'
+      else if (func.isClosureTrampoline) 'trampoline'
+      else if (func.isClosure) 'closure'
+      else '';
+  return `${i32ToString(node.id as i32)}:${meth}:${role}`;
+}
+
+export final class TemplateStats {
+  #groups = new HashMap<String, SourceGroup>();
+  #order = new GrowableArray<SourceGroup>();
+  var #totalLowerMs: f64 = 0.0;
+  var #totalCleanupMs: f64 = 0.0;
+  var #bodies: i32 = 0;
+  /** Repeat bodies whose arrays equal the first body's: only the tables differ. */
+  var #tableOnly: i32 = 0;
+  /** Repeat bodies with the first body's opcodes and blocks but other operands. */
+  var #operandsDiffer: i32 = 0;
+  /** Repeat bodies whose opcodes or blocks differ from the first body's. */
+  var #shapeDiffers: i32 = 0;
+  #divergences = new HashMap<String, Divergence>();
+  #divergenceOrder = new GrowableArray<Divergence>();
+
+  #group(func: WasmFunction): SourceGroup | null {
+    let key = groupKey(func);
+    if (key == null) {
+      return null;
+    }
+    if (let (true, g) = this.#groups.get(key as String)) {
+      return g;
+    }
+    let g = new SourceGroup(if (func.name != null) func.name as String else '<unnamed>');
+    this.#groups[key as String] = g;
+    this.#order.push(g);
+    return g;
+  }
+
+  /**
+   * Compares a body, as lowering produced it, with the first body
+   * lowered in its group. Runs before `record` for the same body.
+   */
+  compare(func: WasmFunction, body: IrBody): void {
+    let group = this.#group(func);
+    if (group == null) {
+      return;
+    }
+    let first = group.first;
+    if (first == null) {
+      group.first = new FirstBody(body);
+      return;
+    }
+    var sameBlocks = first.blockSizes.length == body.blocks.length;
+    if (sameBlocks) {
+      for (var i = 0; i < body.blocks.length; i += 1) {
+        if (body.blocks[i].insts.length != first.blockSizes[i]) {
+          sameBlocks = false;
+          break;
+        }
+      }
+    }
+    if (sameBlocks && sameInts(first.opcode, body.opcode)) {
+      if (sameInts(first.typeId, body.typeId) && sameInts(first.a, body.a) &&
+          sameInts(first.b, body.b) && sameInts(first.extra, body.extra)) {
+        this.#tableOnly += 1;
+      } else {
+        this.#operandsDiffer += 1;
+      }
+      return;
+    }
+    this.#shapeDiffers += 1;
+    var at = 0;
+    let n = if (first.opcode.length < body.opcode.length) first.opcode.length else body.opcode.length;
+    while (at < n && first.opcode[at] == body.opcode[at]) {
+      at += 1;
+    }
+    let firstOp = if (at < first.opcode.length) irOpName(first.opcode[at] as IrOp) else '<end>';
+    let thisOp = if (at < body.opcode.length) irOpName(body.opcode[at] as IrOp) else '<end>';
+    let key = `${firstOp} -> ${thisOp}`;
+    if (let (true, d) = this.#divergences.get(key)) {
+      d.count += 1;
+    } else {
+      let name = if (func.name != null) func.name as String else '<unnamed>';
+      let d = new Divergence(key, `${group.name} vs ${name} at ${i32ToString(at)}`);
+      this.#divergences[key] = d;
+      this.#divergenceOrder.push(d);
+    }
+  }
+
+  /** Adds one body's lowering and cleanup time. */
+  record(func: WasmFunction, lowerMs: f64, cleanupMs: f64, insts: i32): void {
+    this.#bodies += 1;
+    this.#totalLowerMs += lowerMs;
+    this.#totalCleanupMs += cleanupMs;
+    let group = this.#group(func);
+    if (group == null) {
+      return;
+    }
+    if (group.count == 0) {
+      group.firstLowerMs = lowerMs;
+      group.firstCleanupMs = cleanupMs;
+    }
+    group.count += 1;
+    group.lowerMs += lowerMs;
+    group.cleanupMs += cleanupMs;
+    group.insts += insts;
+  }
+
+  report(): GrowableArray<String> {
+    let lines = new GrowableArray<String>();
+    var groups = 0;
+    var bodies = 0;
+    var repeatLower = 0.0;
+    var repeatCleanup = 0.0;
+    let repeated = new GrowableArray<SourceGroup>();
+    for (let g in this.#order) {
+      if (g.count < 2) {
+        continue;
+      }
+      repeated.push(g);
+      groups += 1;
+      bodies += g.count;
+      repeatLower += g.lowerMs - g.firstLowerMs;
+      repeatCleanup += g.cleanupMs - g.firstCleanupMs;
+    }
+    lines.push(`zir templates: ${i32ToString(this.#bodies)} bodies, ` +
+        `${i32ToString(this.#order.length)} source functions; ` +
+        `${i32ToString(groups)} lowered more than once, into ${i32ToString(bodies)} bodies`);
+    lines.push(`zir templates: lowering ${ms(this.#totalLowerMs)} ms, cleanup ${ms(this.#totalCleanupMs)} ms; ` +
+        `repeats ${ms(repeatLower)} ms lowering, ${ms(repeatCleanup)} ms cleanup`);
+    lines.push(`zir templates: repeat bodies against their group's first: ` +
+        `${i32ToString(this.#tableOnly)} differ only in tables, ` +
+        `${i32ToString(this.#operandsDiffer)} in operands, ` +
+        `${i32ToString(this.#shapeDiffers)} in opcodes or blocks`);
+    sortByCount(repeated, (g) => g.count);
+    var shown = 0;
+    for (let g in repeated) {
+      if (shown >= 15) {
+        break;
+      }
+      lines.push(`  ${i32ToString(g.count)}× ${g.name}: ${ms(g.lowerMs)} ms lowering, ` +
+          `${i32ToString(g.insts)} instructions`);
+      shown += 1;
+    }
+    let ds = this.#divergenceOrder;
+    sortByCount(ds, (d) => d.count);
+    shown = 0;
+    for (let d in ds) {
+      if (shown >= 15) {
+        break;
+      }
+      lines.push(`  parts at ${d.key}: ${i32ToString(d.count)}× (e.g. ${d.example})`);
+      shown += 1;
+    }
+    return lines;
+  }
+}
+
+/** Insertion sort, largest count first; ties keep their order. */
+function sortByCount<T>(items: GrowableArray<T>, count: (item: T) => i32): void {
+  var i = 1;
+  while (i < items.length) {
+    let item = items[i];
+    var j = i - 1;
+    while (j >= 0 && count(items[j]) < count(item)) {
+      items[j + 1] = items[j];
+      j -= 1;
+    }
+    items[j + 1] = item;
+    i += 1;
+  }
+}
+
+function ms(v: f64): String {
+  let tenths = (v * 10.0) as i32;
+  return `${i32ToString(div(tenths, 10))}.${i32ToString(tenths % 10)}`;
+}
