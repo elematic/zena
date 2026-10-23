@@ -36,6 +36,7 @@
  * Determinism: candidates scan wasm.globals in module order; no
  * iteration over hash containers.
  */
+import { HashSet } from 'zena:collections';
 import {
   IrBody, IrOp, IrRefField, IrRefFunc, IrRefGlobal, IrRefType,
 } from './ir.zena';
@@ -206,6 +207,29 @@ function resolveCallee(cx: DevirtContext, body: IrBody,
     }
   }
   return agreed;
+}
+
+/**
+ * How many distinct functions the vtable globals whose struct is
+ * `owner` or extends it install at field `slot` of `owner`: the
+ * implementations a dispatch through that slot can reach, as far as
+ * the module's globals say. -1 when some candidate has no function
+ * there.
+ */
+export function slotImplementationCount(cx: DevirtContext, owner: WasmStruct,
+    slot: i32): i32 {
+  let seen = new HashSet<i32>();
+  for (let cand in cx.candidates) {
+    if (!extendsStruct(cand.init.structType, owner)) {
+      continue;
+    }
+    let funcSlot = slot - leadingSlots(cand.init);
+    if (funcSlot < 0 || funcSlot >= cand.init.funcs.length) {
+      return -1;
+    }
+    seen.add(cand.init.funcs[funcSlot].uid);
+  }
+  return seen.size;
 }
 
 /** The fields before the functions in a vtable: its `<typeinfo>` pointer, if it has one. */

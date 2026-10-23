@@ -37,7 +37,9 @@ import {
 import { parseF64, parseI64, i32ToString } from 'zena:core';
 
 import { WasmEmitter, ImportItem } from './wasm-emitter.zena';
-import { performance } from '../time.zena';
+import { performance, nowMs } from '../time.zena';
+import { TemplateStats } from './template-stats.zena';
+import { DiscoveryCounts, censusReport } from './ir/census.zena';
 import { dirName, normalizePath } from '../module-resolver.zena';
 import { lowerFunction } from './ir/lowering.zena';
 import { IrBody, IrScratch } from './ir/ir.zena';
@@ -684,10 +686,18 @@ export final class ModuleGenerator {
     var zirBlocksRemoved = 0;
     var zirDceRemoved = 0;
     let bodies = new Array<IrBody>();
+    let templateStats = if (this.zirStats) new TemplateStats() else null;
+    let discovered = if (this.zirStats) new DiscoveryCounts(wasm) else null;
     for (let wasmFunc in wasm.functions) {
+      let tLowerStart = if (templateStats != null) nowMs() else 0.0;
       // Lowering failures throw: a bail is a compiler bug, not a
       // coverage gap.
       let body = lowerFunction(wasm, wasmFunc);
+      let tLowered = if (templateStats != null) nowMs() else 0.0;
+      if (templateStats != null) {
+        templateStats.compare(wasmFunc, body);
+      }
+      let tCleanupStart = if (templateStats != null) nowMs() else 0.0;
       // Cleanup order: simplify folds (and may strand blocks via
       // branch folding), block cleanup removes what it stranded,
       // GVN deduplicates the folded constants, DCE sweeps whatever
@@ -717,10 +727,19 @@ export final class ModuleGenerator {
         }
         throw new Error(message);
       }
+      if (templateStats != null) {
+        templateStats.record(wasmFunc, tLowered - tLowerStart,
+            nowMs() - tCleanupStart, body.instCount());
+      }
       bodies.push(body);
       zirLowered += 1;
     }
     performance.end(tLower);
+    if (templateStats != null) {
+      for (let line in templateStats.report()) {
+        console.log(line);
+      }
+    }
 
     // The module loop (-O2): inline sweeps to a fixpoint with a round
     // cap, re-running the cleanup passes on every caller a sweep
@@ -1338,6 +1357,11 @@ export final class ModuleGenerator {
       console.log("zir locals: " + i32ToString(zirGraduated) +
           " ref locals non-null, " + i32ToString(zirDemoted) +
           " kept nullable (init rollback)");
+      if (discovered != null) {
+        for (let line in censusReport(wasm, bodies, discovered)) {
+          console.log(line);
+        }
+      }
     }
     if (wasm.datas.length > 0) {
       this.emitter.emitDataCountSection(wasm.datas.length);
