@@ -43,15 +43,18 @@ file outside a package can; a package lists
   refreshing and ending the session, and asking the PDS for service-auth
   tokens.
 - `atproto:xrpc`: HTTP requests and an XRPC client.
+- `atproto:plc`: `did:plc` operations: building and signing them, the DID
+  a genesis operation makes, and sending an operation to a PLC directory.
 - `atproto:identity`: resolving DIDs (`did:plc`, `did:web`) and handles
   (DNS over HTTPS, then HTTPS), checking handles in both directions.
 - `atproto:sync`: fetching a record and checking its proof against the DID
   document's key, fetching a blob and checking it against its CID, and
   listing a collection's records, which comes with no proof.
 
-`atproto:xrpc`, `atproto:identity` and `atproto:sync` send requests with
-`wasi:http`, so they compile for the `zena-cli` and `component` targets
-only. The other libraries have no imports from the host.
+`atproto:xrpc`, `atproto:identity`, `atproto:sync`, `atproto:session` and
+`atproto:plc` send requests with `wasi:http`, so they compile for the
+`zena-cli` and `component` targets only. The other libraries have no imports
+from the host.
 
 ## Tests
 
