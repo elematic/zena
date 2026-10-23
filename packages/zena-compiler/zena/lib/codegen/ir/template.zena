@@ -26,11 +26,15 @@
 import { i32ToString } from 'zena:core';
 import { div } from 'zena:math';
 import { HashMap } from 'zena:collections';
-import { ValType, ValTypeRef, ValTypeRefNull, WasmType, isRefValType } from '../wasm.zena';
+import {
+  ValType, ValTypeRef, ValTypeRefNull, ValTypeExternRef, ValTypeRefExtern, WasmType,
+  isRefValType,
+} from '../wasm.zena';
+import { identityEqualityIn } from './equality.zena';
 import { typeToValType, getValTypeKey } from '../type-mapping.zena';
 import {
   WasmModule, WasmFunction, WasmStruct, WasmArray, WasmSignature, WasmField,
-  ClassCodegenInfo,
+  ClassCodegenInfo, isValSubtype,
 } from '../wasm-module.zena';
 import {
   IrBody, IrBlock, IrOp, IrRef, IrRefFunc, IrRefGlobal, IrRefTag, IrRefType,
@@ -46,20 +50,32 @@ import {
   getTypeKeyForSpecialization, compareStrings,
 } from '../codegen-utils.zena';
 
-/** The per-specialization queries lowering answers from RTA's tables. */
+/**
+ * The decisions lowering makes from a specialization that template mode
+ * records: three queries about the specialization's place in the module
+ * (its subclasses' overrides, its vtable), whether a cast's operand
+ * already conforms to its target, and whether `==` on a class is
+ * identity.
+ */
 export enum GuardKind {
   AccessorOverridden,
   MemberProvided,
   VTableSlot,
+  Conforms,
+  IdentityEquality,
+  MethodOwner,
 }
 
-/** One query's arguments and the answer it got. */
+/** One decision's arguments and the answer it got. */
 export final class Guard {
   kind: GuardKind;
   classKey: String;
   name: String;
   field: String;
   answer: i32;
+  /** The value types a `Conforms` decision compared; null otherwise. */
+  var have: ValType | null = null;
+  var want: ValType | null = null;
   new(this.kind, this.classKey, this.name, this.field, this.answer);
 }
 
@@ -75,6 +91,26 @@ export final class TemplateRecorder {
     let ct = info.structType.classType;
     let key = if (ct != null) getClassKey(ct) as String else '';
     this.guards.push(new Guard(kind, key, name, field, answer));
+  }
+
+  /** Records whether `have` conforms to `want` (`refConformsTo`). */
+  noteConforms(have: ValType, want: ValType, answer: boolean): void {
+    let g = new Guard(GuardKind.Conforms, '', '', '', if (answer) 1 else 0);
+    g.have = have;
+    g.want = want;
+    this.guards.push(g);
+  }
+
+  /** Records that `==` on class `ct` compared by identity. */
+  noteIdentityEquality(ct: ClassType): void {
+    this.guards.push(new Guard(GuardKind.IdentityEquality,
+        getClassKey(ct) as String, '', '', 1));
+  }
+
+  /** Records which class's `methName` serves `ct` (`methodOwnerIn`). */
+  noteMethodOwner(ct: ClassType, methName: String, owner: String): void {
+    this.guards.push(new Guard(GuardKind.MethodOwner,
+        getClassKey(ct) as String, methName, owner, 1));
   }
 }
 
@@ -219,6 +255,9 @@ final class GuardRecipe {
   name: KeyPattern;
   field: KeyPattern;
   answer: i32;
+  /** A `Conforms` guard's two types; null otherwise. */
+  var have: TypeRecipe | null = null;
+  var want: TypeRecipe | null = null;
   new(this.kind, this.classKey, this.name, this.field, this.answer);
 }
 
@@ -682,8 +721,22 @@ export final class TemplateFamilies {
       if (ck == null || nk == null || fk == null) {
         return 'guard keys';
       }
-      guards.push(new GuardRecipe(x.kind, ck as KeyPattern, nk as KeyPattern,
-          fk as KeyPattern, x.answer));
+      let recipe = new GuardRecipe(x.kind, ck as KeyPattern, nk as KeyPattern,
+          fk as KeyPattern, x.answer);
+      let xh = x.have;
+      let yh = y.have;
+      let xw = x.want;
+      let yw = y.want;
+      if (xh != null && yh != null && xw != null && yw != null) {
+        let h = learner.type(xh, yh);
+        let w = learner.type(xw, yw);
+        if (h == null || w == null) {
+          return `guard type: ${learner.why}`;
+        }
+        recipe.have = h;
+        recipe.want = w;
+      }
+      guards.push(recipe);
     }
     let t = new Template(b1, shared, same, types, refs, vars, guards);
     // Both representatives must resolve back to their own tables.
@@ -1237,11 +1290,35 @@ final class Resolver {
   }
 
   guard(g: GuardRecipe): boolean {
+    if (g.kind == GuardKind.Conforms) {
+      let hr = g.have;
+      let wr = g.want;
+      if (hr == null || wr == null) {
+        return false;
+      }
+      let have = this.type(hr as TypeRecipe);
+      let want = this.type(wr as TypeRecipe);
+      if (have == null || want == null) {
+        return false;
+      }
+      let conforms = refConformsTo(have as ValType, want as ValType);
+      return (if (conforms) 1 else 0) == g.answer;
+    }
     let info = this.#classInfo(g.classKey);
     if (info == null) {
       return false;
     }
     let ci = info as ClassCodegenInfo;
+    if (g.kind == GuardKind.IdentityEquality) {
+      let ct = ci.structType.classType;
+      return ct != null && identityEqualityIn(this.families.wasm, ct as ClassType);
+    }
+    if (g.kind == GuardKind.MethodOwner) {
+      let ct = ci.structType.classType;
+      return ct != null &&
+          methodOwnerIn(this.families.wasm, ct as ClassType, g.name.apply(this.args)) ==
+              g.field.apply(this.args);
+    }
     let name = g.name.apply(this.args);
     var answer = 0;
     if (g.kind == GuardKind.AccessorOverridden) {
@@ -1303,6 +1380,42 @@ export function memberProvidedIn(wasm: WasmModule, classInfo: ClassCodegenInfo,
     }
   }
   return false;
+}
+
+/**
+ * Whether a value of type `have` may stand where `want` is required
+ * without a cast (`LoweringContext.refConforms`): wasm subtyping, except
+ * that a nullable value never conforms to a non-null slot.
+ */
+export function refConformsTo(have: ValType, want: ValType): boolean {
+  if (have is ValTypeRefNull && want is ValTypeRef) {
+    return false;
+  }
+  if (have is ValTypeExternRef && want is ValTypeRefExtern) {
+    return false;
+  }
+  return isValSubtype(have, want);
+}
+
+/**
+ * The key of the class whose `methName` serves `ct`: `ct`, one of its
+ * generic sources, or a superclass, nearest first; '' when none has
+ * one registered.
+ */
+export function methodOwnerIn(wasm: WasmModule, ct: ClassType, methName: String): String {
+  var c: ClassType | null = ct;
+  while (c != null) {
+    var g: ClassType | null = c;
+    while (g != null) {
+      let key = getClassKey(g as ClassType);
+      if (wasm.classMethodMap.has(new ClassMethodKey(key, methName))) {
+        return key as String;
+      }
+      g = (g as ClassType).genericSource;
+    }
+    c = (c as ClassType).superType;
+  }
+  return '';
 }
 
 /** The index of `slotName` in the class's vtable struct, or -1. */
