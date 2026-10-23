@@ -5,18 +5,18 @@
 import {suite, test, TestContext} from 'zena:test';
 import {equal, isTrue, isFalse} from 'zena:assert';
 import {Completer, AggregateError, drainMicrotasks, runFuture} from 'zena:async';
-import { Outcome, Ok, Err, growable } from 'zena:core';
+import { growable, Result } from 'zena:core';
 
-let describe = (outcomes: Array<Outcome<i32, Error>>) => {
+let describe = (outcomes: Array<Result<i32, Error>>) => {
   var s = '';
   for (let o in outcomes) {
     // is/as rather than case patterns: a generic variant's type
     // arguments have no place in a pattern today, and the bare
     // pattern binds the field at the unsubstituted T.
-    s = s + (if (o is Ok<i32, Error>) {
-      'v' + i32ToString(o.value)
+    s = s + (if (o is (true, i32)) {
+      'v' + i32ToString(o[1])
     } else {
-      'e' + (o as Err<i32, Error>).error.message
+      'e' + (o as (false, Error))[1].message
     });
   }
   return s;
@@ -69,8 +69,8 @@ export let tests = suite('Future combinators', () => {
     b.fail(new Error('v'));
     let outcomes = runFuture(all);
     equal(outcomes.length, 2);
-    isTrue(outcomes[0] is Ok<void, Error>);
-    isTrue(outcomes[1] is Err<void, Error>);
+    isTrue(outcomes[0] is (true, void));
+    isTrue(outcomes[1] is (false, Error));
   });
 
   test('any settles with the first value, not the first settle', (ctx) => {

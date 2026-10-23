@@ -59,7 +59,7 @@ All forms of non-class type declarations can be parameterized by types:
   ```zena
   type Pair<T> = (T, T);
   type Transform<T, U> = (input: T) => U;
-  type Result<T, E> = inline (true, T, _) | inline (false, _, E);
+  type Result<T, E> = (true, T) | (false, E);
   ```
 - **Type aliases**:
   ```zena

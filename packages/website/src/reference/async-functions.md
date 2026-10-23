@@ -304,9 +304,9 @@ if (completer.tryComplete('First')) {
   that settles with the outcome (value or failure) of the first future to finish.
   Note that `Future.race` does not cancel losers; see [Task Groups](/reference/task-groups/)
   for loser-cancelling races.
-- **`Future.allSettled<T>(futures: Array<Future<T>>): Future<Array<Outcome<T, Error>>>`**:
-  Waits for all inputs to settle and produces an array of `Outcome` results,
-  recording successes (`Ok`) and failures (`Err`).
+- **`Future.allSettled<T>(futures: Array<Future<T>>): Future<Array<Result<T, Error>>>`**:
+  Waits for all inputs to settle and produces an array of results, recording
+  successes as `(true, value)` and failures as `(false, error)`.
 - **`Future.any<T>(futures: Array<Future<T>>): Future<T>`**: Returns the first
   input that settles with a value. If all inputs fail, it fails with an
   `AggregateError` containing all failures.

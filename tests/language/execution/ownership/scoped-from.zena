@@ -5,7 +5,7 @@
 // serves both populations — the body awaits every input inside a try,
 // so a failure never abandons the inputs behind it — and the plain
 // instantiation's result is an ordinary, storable future.
-import {Own, Borrow, Scoped, Disposable, Outcome, Ok, Err} from 'zena:core';
+import {Own, Borrow, Scoped, Disposable, Result} from 'zena:core';
 import {Awaited} from 'zena:async';
 
 @intrinsic('type.scopedFrom')
@@ -32,13 +32,13 @@ let read = async (r: Borrow<Res>): Scoped<Future<i32>> => {
 };
 
 let settleAll = async <scoped T>(
-    futures: Array<T>): ScopedFrom<T, Future<Array<Outcome<Awaited<T>, Error>>>> => {
-  let out = new GrowableArray<Outcome<Awaited<T>, Error>>();
+    futures: Array<T>): ScopedFrom<T, Future<Array<Result<Awaited<T>, Error>>>> => {
+  let out = new GrowableArray<Result<Awaited<T>, Error>>();
   for (let f in futures) {
     try {
-      out.push(new Ok<Awaited<T>, Error>(await f));
+      out.push((true, await f));
     } catch (e) {
-      out.push(new Err<Awaited<T>, Error>(e));
+      out.push((false, e));
     }
   }
   return out;
@@ -51,16 +51,15 @@ export let main = async (): Future<i32> => {
   let outcomes = await settleAll([read(owner), boom(), read(owner)]);
   var sum = 0;
   for (let o in outcomes) {
-    if (o is Ok<i32, Error>) {
-      let ok = o as Ok<i32, Error>;
-      sum += ok.value;
+    if (let (true, value) = o) {
+      sum += value;
     } else {
       sum += 100;
     }
   }
   // Plain inputs: the result collapses to a first-class future, so it
   // binds under an ordinary Future annotation.
-  let plain: Future<Array<Outcome<i32, Error>>> = settleAll([tick(), tick()]);
+  let plain: Future<Array<Result<i32, Error>>> = settleAll([tick(), tick()]);
   let vals = await plain;
   // 31 + 100 + 31 = 162, plus 2 outcomes, plus 5.
   return sum + vals.length + 5;

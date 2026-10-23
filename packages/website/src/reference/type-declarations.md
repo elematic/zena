@@ -167,17 +167,17 @@ type NamedContainer<T extends HasName> = {
 
 ### Inline tuple definitions for multi-value returns
 
-A type definition can name an unboxed `inline` tuple union, typically used for
-zero-cost multi-value or result returns:
+A type definition can name a tuple union, and `inline` on the name returns it
+unboxed, typically for zero-cost multi-value or result returns:
 
 ```zena
-type Result<T, E> = inline (true, T, _) | inline (false, _, E);
+type Result<T, E> = (true, T) | (false, E);
 
-export function checkedDivide(a: i32, b: i32): Result<i32, String> {
+export function checkedDivide(a: i32, b: i32): inline Result<i32, String> {
   if (b == 0) {
-    return (false, _, 'division by zero');
+    return (false, 'division by zero');
   }
-  return (true, a / b, _);
+  return (true, a / b);
 }
 ```
 
