@@ -1,0 +1,308 @@
+/**
+ * Service auth (https://atproto.com/specs/xrpc#inter-service-authentication-jwt):
+ * the short-lived JWT an account presents to a service other than its own
+ * PDS. The account's PDS signs it with the account's signing key, when the
+ * account asks with `com.atproto.server.getServiceAuth` or when the PDS
+ * forwards a call that names another service in `atproto-proxy`. The
+ * service checks it against the issuer's DID document.
+ *
+ * A token is `<header>.<payload>.<signature>`, each part base64url without
+ * padding:
+ *
+ * ```json
+ * {"typ": "JWT", "alg": "ES256K"}
+ * {
+ *   "iss": "did:plc:alicealicealicealicealic",
+ *   "aud": "did:web:pkg.zena-lang.dev",
+ *   "exp": 1792800060,
+ *   "iat": 1792800000,
+ *   "lxm": "dev.zena-lang.host.publish",
+ *   "jti": "9f2c4e7a1b3d5f60"
+ * }
+ * ```
+ *
+ * `alg` is `ES256K` for a secp256k1 key and `ES256` for a P-256 key, and the
+ * signature is the 64-byte low-S ECDSA signature of the first two parts.
+ * `lxm` names the one method the token is for, and `jti` is a nonce, so that
+ * a service can refuse a token presented twice (`ReplayGuard`).
+ *
+ * This library has no imports from the host: whoever creates a token
+ * supplies its nonce, and whoever checks one supplies the time and a way
+ * to find the issuer's key.
+ */
+
+import {HashMap} from 'zena:collections';
+import {base64Url} from 'zena:encoding';
+import {JsonObject, JsonValue, parseJson, stringify} from 'zena:json';
+import {KeyType, PublicKey, curveOf, verifySignature} from './didkey.zena';
+import {isValidDid, isValidNsid} from './syntax.zena';
+
+/** A token that is malformed, or that does not pass a check. */
+export class ServiceAuthError extends Error {
+  new(message: String) : super(message);
+}
+
+/** What a token says. Times are seconds since the Unix epoch. */
+export final class ServiceAuthClaims {
+  /** The account the token is from. */
+  iss: String;
+  /** The service it is for: a DID, with a service fragment or without. */
+  aud: String;
+  /** When it expires. */
+  exp: i64;
+  /** When it was issued, if it says. */
+  iat: i64;
+  /** The one XRPC method it is for, or null for any. */
+  lxm: String | null;
+  /** Its nonce, or null. */
+  jti: String | null;
+
+  new(iss: String, aud: String, exp: i64, iat: i64 = 0 as i64, lxm: String | null = null,
+      jti: String | null = null)
+      : iss = iss, aud = aud, exp = exp, iat = iat, lxm = lxm, jti = jti;
+}
+
+/**
+ * The longest a token may have left to live when it is checked, in
+ * seconds. `com.atproto.server.getServiceAuth` grants up to an hour for a
+ * token bound to a method.
+ */
+export let MAX_LIFETIME: i64 = 3600 as i64;
+
+/** How far ahead of the checker's clock a token's `iat` may be, in seconds. */
+export let CLOCK_SKEW: i64 = 300 as i64;
+
+/** A token for `claims`, signed with `privateKey`, a key of type `type`. */
+export function createServiceAuthToken(claims: ServiceAuthClaims, type: KeyType,
+    privateKey: FixedArray<u8>): String {
+  let header = new JsonObject();
+  header['typ'] = 'JWT';
+  header['alg'] = if (type == KeyType.P256) 'ES256' else 'ES256K';
+  let payload = new JsonObject();
+  payload['iss'] = claims.iss;
+  payload['aud'] = claims.aud;
+  payload['exp'] = new Box<f64>(claims.exp as f64);
+  if (claims.iat != 0) {
+    payload['iat'] = new Box<f64>(claims.iat as f64);
+  }
+  let lxm = claims.lxm;
+  if (lxm != null) {
+    payload['lxm'] = lxm;
+  }
+  let jti = claims.jti;
+  if (jti != null) {
+    payload['jti'] = jti;
+  }
+  let signingInput = `${encodePart(stringify(header))}.${encodePart(stringify(payload))}`;
+  let signature = curveOf(type).sign(privateKey, signingInput.toBytes());
+  return `${signingInput}.${base64Url.encode(signature, false)}`;
+}
+
+/**
+ * Finds the signing key in `did`'s DID document, or null when it has none.
+ * With `fresh`, it must not answer from a cache: the checker asks again
+ * that way when a signature does not verify, in case the key was rotated.
+ */
+export type SigningKeyLookup = (did: String, fresh: boolean) => Future<PublicKey | null>;
+
+/**
+ * Checks `token` and returns its claims. Throws `ServiceAuthError` unless:
+ *
+ * - its header names `ES256` or `ES256K`, and `typ`, if it has one, is `JWT`;
+ * - `iss` is a DID with no fragment, and `aud` is `audience` with or
+ *   without a service fragment;
+ * - it has not expired at `now`, expires within `MAX_LIFETIME`, and was
+ *   not issued more than `CLOCK_SKEW` ahead of `now`;
+ * - `lxm` is `method`, when `method` is given;
+ * - its signature verifies with the issuer's key, of the type `alg` names.
+ *
+ * It does not refuse a token presented twice; see `ReplayGuard`.
+ */
+export async function verifyServiceAuth(token: String, audience: String, method: String | null,
+    now: i64, lookup: SigningKeyLookup): Future<ServiceAuthClaims> {
+  let parts = token.split('.');
+  if (parts.length != 3) {
+    throw new ServiceAuthError('not a JWT: it does not have three parts');
+  }
+  let header = decodeObject(parts[0], 'header');
+  let alg = header['alg'];
+  if (!(alg is String) || (alg != 'ES256' && alg != 'ES256K')) {
+    throw new ServiceAuthError('the algorithm is not ES256 or ES256K');
+  }
+  let typ = header['typ'];
+  if (typ != null && typ != 'JWT') {
+    throw new ServiceAuthError('the token type is not JWT');
+  }
+
+  let claims = readClaims(decodeObject(parts[1], 'payload'));
+  if (claims.aud != audience && !claims.aud.startsWith(`${audience}#`)) {
+    throw new ServiceAuthError(`the token is for ${claims.aud}, not ${audience}`);
+  }
+  if (claims.exp <= now) {
+    throw new ServiceAuthError('the token has expired');
+  }
+  if (claims.exp - now > MAX_LIFETIME) {
+    throw new ServiceAuthError('the token expires too far in the future');
+  }
+  if (claims.iat > now + CLOCK_SKEW) {
+    throw new ServiceAuthError('the token was issued in the future');
+  }
+  if (method != null && claims.lxm != method) {
+    throw new ServiceAuthError(`the token is not for ${method}`);
+  }
+
+  let signingInput = `${parts[0]}.${parts[1]}`.toBytes();
+  var signature = new FixedArray<u8>(0, 0 as u8);
+  try {
+    signature = base64Url.decode(parts[2]);
+  } catch (e) {
+    throw new ServiceAuthError('the signature is not base64url');
+  }
+  let keyType = if (alg == 'ES256') KeyType.P256 else KeyType.Secp256k1;
+  let key = await lookup(claims.iss, false);
+  if (verifiesWith(key, keyType, signingInput, signature)) {
+    return claims;
+  }
+  let freshKey = await lookup(claims.iss, true);
+  if (freshKey != null && !sameKey(key, freshKey) &&
+      verifiesWith(freshKey, keyType, signingInput, signature)) {
+    return claims;
+  }
+  throw new ServiceAuthError(`the signature does not verify with ${claims.iss}'s signing key`);
+}
+
+/**
+ * The nonces of tokens a service has accepted, kept until the tokens
+ * expire, so that each token is accepted once.
+ */
+export final class ReplayGuard {
+  #expiries = new HashMap<String, i64>();
+  var #checks = 0;
+
+  /**
+   * Records `claims`' nonce. Throws `ServiceAuthError` when the token has
+   * no nonce, or when a token from the same issuer with the same nonce was
+   * accepted and has not expired.
+   */
+  accept(claims: ServiceAuthClaims, now: i64): void {
+    let jti = claims.jti;
+    if (jti == null) {
+      throw new ServiceAuthError('the token has no nonce');
+    }
+    this.#checks += 1;
+    if (this.#checks % 256 == 0) {
+      this.#prune(now);
+    }
+    let key = `${claims.iss} ${jti}`;
+    if (let (true, expiry) = this.#expiries.get(key)) {
+      if (expiry > now) {
+        throw new ServiceAuthError('the token was already used');
+      }
+    }
+    this.#expiries[key] = claims.exp;
+  }
+
+  #prune(now: i64): void {
+    let expired = new GrowableArray<String>();
+    this.#expiries.forEach((key, expiry) => {
+      if (expiry <= now) {
+        expired.push(key);
+      }
+    });
+    for (let key in expired) {
+      this.#expiries.delete(key);
+    }
+  }
+}
+
+function verifiesWith(key: PublicKey | null, type: KeyType, data: FixedArray<u8>,
+    signature: FixedArray<u8>): boolean {
+  if (key == null) {
+    return false;
+  }
+  let found = key as PublicKey;
+  return found.type == type && verifySignature(found, data, signature);
+}
+
+function sameKey(a: PublicKey | null, b: PublicKey): boolean {
+  if (a == null) {
+    return false;
+  }
+  let first = a as PublicKey;
+  if (first.type != b.type || first.bytes.length != b.bytes.length) {
+    return false;
+  }
+  for (var i = 0; i < b.bytes.length; i += 1) {
+    if (first.bytes[i] != b.bytes[i]) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function readClaims(payload: JsonObject): ServiceAuthClaims {
+  let iss = payload['iss'];
+  if (!(iss is String) || !isValidDid(iss)) {
+    throw new ServiceAuthError('iss is not a DID');
+  }
+  let aud = payload['aud'];
+  if (!(aud is String) || !isValidDid(didPart(aud))) {
+    throw new ServiceAuthError('aud is not a DID');
+  }
+  let exp = payload['exp'];
+  if (!(exp is Box<f64>)) {
+    throw new ServiceAuthError('exp is not a number');
+  }
+  var iat = 0 as i64;
+  let issued = payload['iat'];
+  if (issued != null) {
+    if (!(issued is Box<f64>)) {
+      throw new ServiceAuthError('iat is not a number');
+    }
+    iat = issued.value as i64;
+  }
+  var lxm: String | null = null;
+  let method = payload['lxm'];
+  if (method != null) {
+    if (!(method is String) || !isValidNsid(method)) {
+      throw new ServiceAuthError('lxm is not an NSID');
+    }
+    lxm = method;
+  }
+  var jti: String | null = null;
+  let nonce = payload['jti'];
+  if (nonce != null) {
+    if (!(nonce is String)) {
+      throw new ServiceAuthError('jti is not a string');
+    }
+    jti = nonce;
+  }
+  return new ServiceAuthClaims(iss, aud, exp.value as i64, iat, lxm, jti);
+}
+
+/** `did` without its fragment. */
+function didPart(did: String): String {
+  for (var i = 0; i < did.length; i += 1) {
+    if (did.getByteAt(i) == 35) { // '#'
+      return did.sliceBytes(0, i);
+    }
+  }
+  return did;
+}
+
+function decodeObject(part: String, what: String): JsonObject {
+  var json: JsonValue = null;
+  try {
+    json = parseJson(String.fromBytes(base64Url.decode(part)));
+  } catch (e) {
+    throw new ServiceAuthError(`the ${what} is not base64url JSON`);
+  }
+  if (!(json is JsonObject)) {
+    throw new ServiceAuthError(`the ${what} is not a JSON object`);
+  }
+  return json;
+}
+
+function encodePart(json: String): String {
+  return base64Url.encode(json.toBytes(), false);
+}

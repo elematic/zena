@@ -15,6 +15,7 @@ import {hex} from 'zena:encoding';
 import {Cid} from 'atproto:cid';
 import {MapValue, stringField} from 'atproto:data';
 import {DidDocument} from 'atproto:did';
+import {PublicKey, formatDidKey} from 'atproto:didkey';
 import {Identity, IdentityError, IdentityResolver} from 'atproto:identity';
 import {RecordProof} from 'atproto:repo';
 import {SyncError, getVerifiedBlob, getVerifiedRecord} from 'atproto:sync';
@@ -149,6 +150,25 @@ export let tests = suite('atproto:xrpc, atproto:identity and atproto:sync', () =
     let document = runFuture(resolverFor(originOf(server)).resolveDid(DID));
     equal(document.handle as String, 'atproto.com');
     equal(document.pds as String, originOf(server));
+    server.close();
+  });
+
+  test("finds a DID's signing key for checking service auth", (ctx) => {
+    let world = new World();
+    let server = startServer(world);
+    world.didDocument = didDocumentFor(originOf(server));
+    let resolver = resolverFor(originOf(server));
+    let lookup = resolver.signingKeys();
+    let key = runFuture(lookup(DID, false)) as PublicKey;
+    let expected = runFuture(resolver.resolveDid(DID)).signingKey as PublicKey;
+    equal(formatDidKey(key), formatDidKey(expected));
+    var error = '';
+    try {
+      runFuture(lookup('did:plc:nobodynobodynobodynobody', true));
+    } catch (e) {
+      error = if (e is IdentityError) 'IdentityError' else e.message;
+    }
+    equal(error, 'IdentityError');
     server.close();
   });
 

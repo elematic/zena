@@ -33,6 +33,10 @@ file outside a package can; a package lists
   verification methods, and checking atproto signatures with them.
 - `atproto:did`: what atproto reads from a DID document: the signing key,
   the PDS and the claimed handle.
+- `atproto:service-auth`: service-auth JWTs, which an account's PDS signs
+  so the account can call another service: creating them, checking them
+  against the issuer's key, the audience, the method and the time, and
+  refusing a token presented twice (`ReplayGuard`).
 - `atproto:xrpc`: HTTP requests and an XRPC client.
 - `atproto:identity`: resolving DIDs (`did:plc`, `did:web`) and handles
   (DNS over HTTPS, then HTTPS), checking handles in both directions.
