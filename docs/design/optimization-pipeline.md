@@ -429,6 +429,8 @@ Each step is one or a few PRs, lands green, and states its gate.
     self-compile decides the TFA-style interprocedural type
     propagation question ir.md §2.3 left open, and the
     partial-redundancy counters decide the PRE/edge-GVN question.
+    The first is answered in type-propagation.md: the analysis is
+    built, and its rewrite runs at `-O2`.
     Deferred vtable layout (harvest stage 3) is scheduled here against
     whatever binary-size headroom remains.
 

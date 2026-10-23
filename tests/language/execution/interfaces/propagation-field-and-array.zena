@@ -1,0 +1,48 @@
+// @mode: run
+// @result: 16055
+// Dispatches through a field only Squares reach and an array only
+// Circles reach, with both classes implementing the interface: the
+// shape interprocedural type propagation makes direct at -O2
+// (zena/test/type-propagation_test.zena).
+
+interface Shape {
+  area(): i32;
+}
+
+class Square implements Shape {
+  side: i32;
+  new(this.side);
+  area(): i32 {
+    return this.side * this.side;
+  }
+}
+
+class Circle implements Shape {
+  r: i32;
+  new(this.r);
+  area(): i32 {
+    return 3 * this.r * this.r;
+  }
+}
+
+class Holder {
+  shape: Shape;
+  new(this.shape);
+}
+
+function total(holders: FixedArray<Holder>, others: FixedArray<Shape>): i32 {
+  var sum = 0;
+  for (var i = 0; i < holders.length; i += 1) {
+    sum += holders[i].shape.area();
+  }
+  for (var i = 0; i < others.length; i += 1) {
+    sum += others[i].area();
+  }
+  return sum;
+}
+
+export let main = (): i32 => {
+  let a = total([new Holder(new Square(2)), new Holder(new Square(3))], [new Circle(1)]);
+  let b = total([new Holder(new Square(4))], [new Circle(2), new Circle(3)]);
+  return a * 1000 + b;
+};

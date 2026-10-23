@@ -18,7 +18,8 @@
 //   node scripts/heap-snapshot.mjs retainers <file.heapsnapshot> <class-regex> [--top N]
 //
 // Paths are relative to the repository root. `npm run build -w
-// @zena-lang/language-service` builds the module. The compiler's own
+// @zena-lang/language-service` builds the module; ZENA_LSP_WASM names
+// another build of it, to time two compilers against each other. The compiler's own
 // recursion overflows Node's default stack: run with
 // `--stack-size=200000` after `ulimit -s unlimited`, and give a large
 // compile `--max-old-space-size=20000`.
@@ -31,10 +32,14 @@ import {
   createStringReader,
   createStringWriter,
   createConsoleImports,
+  createImports,
+  compileOptions,
 } from '@zena-lang/runtime';
 
 const root = resolve(fileURLToPath(import.meta.url), '..', '..');
-const lspWasm = join(root, 'packages', 'language-service', 'lsp.wasm');
+const lspWasm =
+  process.env.ZENA_LSP_WASM ??
+  join(root, 'packages', 'language-service', 'lsp.wasm');
 const stdlibDir = join(root, 'packages', 'stdlib', 'zena');
 
 const args = process.argv.slice(2);
@@ -87,7 +92,13 @@ const instantiate = async (onClock) => {
     },
   };
   const bytes = readFileSync(lspWasm);
-  const {instance} = await WebAssembly.instantiate(bytes, imports);
+  const zena = createImports();
+  const {instance} = await WebAssembly.instantiate(
+    bytes,
+    {...zena.imports, ...imports},
+    compileOptions,
+  );
+  zena.attach(instance.exports);
   exports = instance.exports;
   readString = createStringReader(exports);
   writeString = createStringWriter(exports);

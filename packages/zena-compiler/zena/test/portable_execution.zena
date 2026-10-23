@@ -49,6 +49,7 @@
 import { Set } from 'zena:collections';
 import { ByteBuffer, StringBuilder, Unmanaged, disown, growable } from 'zena:core';
 import { Process, ProcessResult, spawn } from 'zena:process';
+import { getEnv } from 'zena:cli';
 import { readFileSync, readFileBytesSync, writeFileSync, writeFileBytesSync, mkdirSync, existsSync, unlinkSync } from 'zena:fs';
 import {
   Discovery,
@@ -441,7 +442,8 @@ function compileOne(
   compiler: Compiler,
   f: TestFile,
   previous: ProgramCheckResult | null,
-  settings: ComponentSettings
+  settings: ComponentSettings,
+  optLevel: i32
 ) {
   return try {
     let compResult = compiler.compile({entry: f.path, target: 'zena-cli'});
@@ -483,11 +485,12 @@ function compileOne(
       // Names on: a test that traps prints a wasmtime backtrace, and
       // `wasm-function[2621]` is not a diagnosis. Test artifacts are
       // throwaway, so the section costs nothing here.
-      let generator = new BinaryGenerator('zena-cli', false, true);
+      let generator = new BinaryGenerator('zena-cli', false, true, optLevel);
       // Every body made from a template is also lowered directly and
       // compared, so the suite checks template lowering
       // (docs/design/template-zir.md) on everything it compiles.
       generator.templateCheck = true;
+      generator.propagate = getEnv('ZENA_PROPAGATE') != '0';
       // The component's second core module and the WIT-typed import
       // encoder, as the CLI sets them up; both are shared across the
       // slice, since they do not depend on the program.
@@ -526,6 +529,16 @@ function compileSlice(args: Array<String>): i32 {
   let filter = args[4];
 
   let files = selectedTests(filter);
+  // ZENA_TEST_OPT_LEVEL=2 runs the suite through the -O2 module loop,
+  // which the default level skips; ZENA_PROPAGATE=0 leaves the type
+  // propagation rewrite out of it (ModuleGenerator.propagate).
+  var optLevel = 1;
+  let optEnv = getEnv('ZENA_TEST_OPT_LEVEL');
+  if (optEnv != null) {
+    if (let (true, n) = parseI64(optEnv as String)) {
+      optLevel = n as i32;
+    }
+  }
   let host = new FsHost();
   let packages = loadWorkspace(host, '.');
   let options: CompilerOptions = {stdlibRoot, packages};
@@ -557,7 +570,7 @@ function compileSlice(args: Array<String>): i32 {
       // the module beside it usable.
       let statusPath = statusPathOf(f.relPath);
       if (existsSync(statusPath)) { unlinkSync(statusPath); }
-      previous = compileOne(compiler, f, previous, settings);
+      previous = compileOne(compiler, f, previous, settings, optLevel);
     }
     pos += 1;
   }

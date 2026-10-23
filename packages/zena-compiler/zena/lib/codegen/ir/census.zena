@@ -16,7 +16,7 @@ import { i32ToString, growable } from 'zena:core';
 import { HashMap, HashSet } from 'zena:collections';
 import { IrBody, IrOp, IrRefField } from './ir.zena';
 import { DevirtContext, slotImplementationCount } from './devirt.zena';
-import { WasmModule } from '../wasm-module.zena';
+import { WasmModule, WasmStruct } from '../wasm-module.zena';
 import { ClassType, InterfaceType } from '../../types.zena';
 
 /** Sites by how many implementations their slot has: 1, 2, 3, 4, 5–8, 9+, unknown. */
@@ -80,6 +80,66 @@ function throughCasts(body: IrBody, v: i32): i32 {
   return c;
 }
 
+/** What a `call_ref` site dispatches through. */
+export enum CallKind {
+  ClassDispatch,
+  InterfaceDispatch,
+  Closure,
+  Other,
+}
+
+/** Classifies `call_ref` sites by the struct their callee is loaded from. */
+export final class CallKinds {
+  #interfaceVTables = new HashSet<i32>();
+  #classVTables = new HashSet<i32>();
+  #closures = new HashSet<i32>();
+
+  new(wasm: WasmModule) {
+    for (let entry in wasm.interfaceVTableStructs) {
+      this.#interfaceVTables.add(entry.value.uid);
+    }
+    for (let entry in wasm.classInfos) {
+      let vst = entry.value.vtableStructType;
+      if (vst != null) {
+        this.#classVTables.add(vst.uid);
+      }
+    }
+    for (let entry in wasm.closureStructs) {
+      this.#closures.add(entry.value.uid);
+    }
+  }
+
+  /** The `struct_get` that loads the callee of the call at `inst`, through casts, or -1. */
+  slotLoad(body: IrBody, inst: i32): i32 {
+    let v = throughCasts(body, body.extra[body.a[inst]]);
+    if (v < 0 || body.op(v) != IrOp.struct_get || !(body.refTable[body.b[v]] is IrRefField)) {
+      return -1;
+    }
+    return v;
+  }
+
+  ofOwner(owner: WasmStruct): CallKind {
+    if (this.#closures.has(owner.uid)) {
+      return CallKind.Closure;
+    }
+    if (this.#interfaceVTables.has(owner.uid)) {
+      return CallKind.InterfaceDispatch;
+    }
+    if (this.#classVTables.has(owner.uid)) {
+      return CallKind.ClassDispatch;
+    }
+    return CallKind.Other;
+  }
+
+  kindOf(body: IrBody, inst: i32): CallKind {
+    let v = this.slotLoad(body, inst);
+    if (v < 0) {
+      return CallKind.Other;
+    }
+    return this.ofOwner((body.refTable[body.b[v]] as IrRefField).owner);
+  }
+}
+
 /**
  * The census lines, for the module as it is about to be emitted:
  * `bodies` are the surviving functions' bodies after every pass.
@@ -90,17 +150,7 @@ export function censusReport(wasm: WasmModule, bodies: GrowableArray<IrBody>,
   for (let entry in wasm.interfaceVTableStructs) {
     interfaceVTables.add(entry.value.uid);
   }
-  let classVTables = new HashSet<i32>();
-  for (let entry in wasm.classInfos) {
-    let vst = entry.value.vtableStructType;
-    if (vst != null) {
-      classVTables.add(vst.uid);
-    }
-  }
-  let closures = new HashSet<i32>();
-  for (let entry in wasm.closureStructs) {
-    closures.add(entry.value.uid);
-  }
+  let kinds = new CallKinds(wasm);
   let cx = new DevirtContext(wasm);
   var total = 0;
   var closureCalls = 0;
@@ -119,26 +169,23 @@ export function censusReport(wasm: WasmModule, bodies: GrowableArray<IrBody>,
           continue;
         }
         total += 1;
-        let v = throughCasts(body, body.extra[body.a[inst]]);
-        if (v < 0 || body.op(v) != IrOp.struct_get) {
+        let v = kinds.slotLoad(body, inst);
+        if (v < 0) {
           otherCalls += 1;
           continue;
         }
-        let fieldRef = body.refTable[body.b[v]];
-        if (!(fieldRef is IrRefField)) {
-          otherCalls += 1;
-          continue;
-        }
+        let fieldRef = body.refTable[body.b[v]] as IrRefField;
         let owner = fieldRef.owner;
-        if (closures.has(owner.uid)) {
+        let kind = kinds.ofOwner(owner);
+        if (kind == CallKind.Closure) {
           closureCalls += 1;
           continue;
         }
-        let isInterface = interfaceVTables.has(owner.uid);
-        if (!isInterface && !classVTables.has(owner.uid)) {
+        if (kind == CallKind.Other) {
           otherCalls += 1;
           continue;
         }
+        let isInterface = kind == CallKind.InterfaceDispatch;
         let impls = slotImplementationCount(cx, owner,
             owner.fieldIndexByName(fieldRef.fieldName));
         if (isInterface) {

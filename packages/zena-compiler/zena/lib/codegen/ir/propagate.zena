@@ -1,0 +1,1237 @@
+/**
+ * Interprocedural type propagation (#421): for every reference value in
+ * the module's bodies, the set of things that can reach it, and from
+ * that, which `call_ref` sites can only ever call one function.
+ *
+ * The graph has a node per instruction of every body, per field (keyed
+ * by the struct that declares it and its name, so every subclass's
+ * struct shares its superclass's fields), per array element type (each
+ * flowing into its declared supertype's, since an immutable array is
+ * read through its supertype with no cast in between), per global, per
+ * function result and per mutable variable. Edges follow
+ * every flow ZIR names: branch arguments into block parameters, call
+ * arguments into the callee's entry parameters and its results back,
+ * stores into fields, arrays, globals and variables and loads out of
+ * them, casts. Sets hold **atoms**: a struct type allocated by
+ * `struct_new` (a class instance, a closure pair, a context), a global
+ * (a class vtable, a class-interface vtable), and a function named by
+ * `ref_func`.
+ *
+ * Three loads resolve through the atoms of their receiver rather than
+ * through a field node, which is where the precision comes from:
+ * `<vtable>` of an object is its class's vtable global, a slot of a
+ * vtable global is the function it installs, and a fat pointer's
+ * vtable and instance are the pair global and the instance it was
+ * packed from. A `call_ref` whose callee reaches a function atom adds
+ * that function's argument and result edges, so the call graph and the
+ * sets reach a fixpoint together.
+ *
+ * Only the bodies something reaches are in the graph: the exports and
+ * the start function, and then every function a reached body calls,
+ * a reached `call_ref` resolves to, or the host can be handed. A
+ * function a vtable installs is not reached until some dispatch loads
+ * it.
+ *
+ * Anything that comes from outside the program is **top**: an exported
+ * function's parameters, an import's results, `any_convert_extern`, an
+ * imported global, and the parameters of a function whose reference
+ * reaches an import. So is anything an unmodelled instruction produces.
+ * A site resolves only when its callee's set is one function and not
+ * top.
+ *
+ * `propagationReport` measures; `runPropagationDevirt` makes the
+ * resolved sites direct, at -O2 when `ModuleGenerator.propagate` is on.
+ * docs/design/type-propagation.md has the numbers. Determinism: bodies,
+ * instructions and atoms in module order, the node worklist first in
+ * first out, reached bodies built last in first out.
+ */
+import { i32ToString, growable } from 'zena:core';
+import { HashMap, HashSet } from 'zena:collections';
+import {
+  IrBody, IrOp, IrRef, IrRefFunc, IrRefGlobal, IrRefType, IrRefField,
+} from './ir.zena';
+import {
+  WasmModule, WasmFunction, WasmGlobal, WasmStruct, WasmArray, VTableInit,
+} from '../wasm-module.zena';
+import { ValType, isRefValType, refTargetOf } from '../wasm.zena';
+import { getClassKey } from '../codegen-utils.zena';
+import { CallKinds } from './census.zena';
+import { rewriteToCall } from './devirt.zena';
+
+/** What an atom stands for. */
+enum AtomKind {
+  Struct,
+  Global,
+  Function,
+}
+
+/** The flow graph and its sets. */
+final class Graph {
+  /** Per node: its atoms, sorted, or null when empty. */
+  sets = new GrowableArray<GrowableArray<i32> | null>();
+  /** Per node: reached by something from outside the program. */
+  top = new GrowableArray<boolean>();
+  /** Per node: the nodes it flows into. */
+  succ = new GrowableArray<GrowableArray<i32> | null>();
+  /** Per node: the constraints that read it. */
+  watchers = new GrowableArray<GrowableArray<i32> | null>();
+  queue = new GrowableArray<i32>();
+  var head: i32 = 0;
+  queued = new GrowableArray<boolean>();
+
+  newNode(): i32 {
+    this.sets.push(null);
+    this.top.push(false);
+    this.succ.push(null);
+    this.watchers.push(null);
+    this.queued.push(false);
+    return this.sets.length - 1;
+  }
+
+  #enqueue(n: i32): void {
+    if (!this.queued[n]) {
+      this.queued[n] = true;
+      this.queue.push(n);
+    }
+  }
+
+  edge(from: i32, to: i32): void {
+    var list = this.succ[from];
+    if (list == null) {
+      let fresh = new GrowableArray<i32>();
+      this.succ[from] = fresh;
+      list = fresh;
+    }
+    let l = list as GrowableArray<i32>;
+    for (let s in l) {
+      if (s == to) {
+        return;
+      }
+    }
+    l.push(to);
+    // What has already reached `from` reaches `to` too.
+    if (this.top[from] || this.sets[from] != null) {
+      this.#enqueue(from);
+    }
+  }
+
+  watch(n: i32, constraint: i32): void {
+    var list = this.watchers[n];
+    if (list == null) {
+      let fresh = new GrowableArray<i32>();
+      this.watchers[n] = fresh;
+      list = fresh;
+    }
+    (list as GrowableArray<i32>).push(constraint);
+    if (this.top[n] || this.sets[n] != null) {
+      this.#enqueue(n);
+    }
+  }
+
+  /** Adds `atom` to `n`; true when it was new. */
+  add(n: i32, atom: i32): boolean {
+    var set = this.sets[n];
+    if (set == null) {
+      let fresh = new GrowableArray<i32>();
+      this.sets[n] = fresh;
+      set = fresh;
+    }
+    let s = set as GrowableArray<i32>;
+    var lo = 0;
+    var hi = s.length;
+    while (lo < hi) {
+      let mid = (lo + hi) >> 1;
+      if (s[mid] < atom) {
+        lo = mid + 1;
+      } else {
+        hi = mid;
+      }
+    }
+    if (lo < s.length && s[lo] == atom) {
+      return false;
+    }
+    s.push(0);
+    var i = s.length - 1;
+    while (i > lo) {
+      s[i] = s[i - 1];
+      i -= 1;
+    }
+    s[lo] = atom;
+    this.#enqueue(n);
+    return true;
+  }
+
+  setTop(n: i32): void {
+    if (!this.top[n]) {
+      this.top[n] = true;
+      this.#enqueue(n);
+    }
+  }
+}
+
+/** A field's node and the struct that declares the field. */
+final class FieldNode {
+  node: i32;
+  owner: WasmStruct;
+  name: String;
+  new(this.node, this.owner, this.name);
+}
+
+/** An array type's element node. */
+final class ArrayNode {
+  node: i32;
+  array: WasmArray;
+  new(this.node, this.array);
+}
+
+/** A load or call whose result depends on the atoms reaching one node. */
+final class Constraint {
+  /** 0 `<vtable>` load, 1 vtable slot load, 2 fat pointer vtable, 3 fat pointer instance, 4 call_ref. */
+  kind: i32;
+  dst: i32;
+  /** For a slot load: the slot's field name. */
+  name: String;
+  /** For a call_ref: its body and instruction. */
+  body: i32;
+  inst: i32;
+  /** Atoms this constraint has handled already. */
+  done = new GrowableArray<i32>();
+  var sawTop: boolean = false;
+  new(this.kind, this.dst, this.name, this.body, this.inst);
+}
+
+/** The analysis over one module's bodies. */
+final class Propagation {
+  wasm: WasmModule;
+  bodies: GrowableArray<IrBody>;
+  g = new Graph();
+  /** Per body: the node id of its instruction 0. */
+  base = new GrowableArray<i32>();
+  /** Per function: its result nodes. */
+  results = new GrowableArray<GrowableArray<i32>>();
+  #fieldNodes = new HashMap<String, i32>();
+  #arrayNodes = new HashMap<i32, i32>();
+  #globalNodes = new HashMap<String, i32>();
+  #varNodes = new HashMap<String, i32>();
+  constraints = new GrowableArray<Constraint>();
+  // Atoms: kind and object, by id.
+  atomKind = new GrowableArray<AtomKind>();
+  atomStruct = new GrowableArray<WasmStruct | null>();
+  atomGlobal = new GrowableArray<WasmGlobal | null>();
+  atomFunc = new GrowableArray<WasmFunction | null>();
+  #structAtoms = new HashMap<i32, i32>();
+  #globalAtoms = new HashMap<String, i32>();
+  #funcAtoms = new HashMap<i32, i32>();
+  /** WasmFunction uid → index in wasm.functions. */
+  #funcIndex = new HashMap<i32, i32>();
+  /** Class struct uid → its class vtable global. */
+  #vtableOf = new HashMap<i32, WasmGlobal>();
+  /** Uids of the class and interface vtable structs. */
+  #vtableStructs = new HashSet<i32>();
+  /** The node values reach when they leave for the host. */
+  var hostNode: i32 = -1;
+  /** Per body: whether something reaches it, and so whether its instructions are in the graph. */
+  reached = new GrowableArray<boolean>();
+  /** Bodies reached but not built yet. */
+  #pending = new GrowableArray<i32>();
+
+  new(this.wasm, this.bodies) {
+    for (var i = 0; i < this.wasm.functions.length; i += 1) {
+      this.#funcIndex[this.wasm.functions[i].uid] = i;
+    }
+    for (let entry in this.wasm.classInfos) {
+      let vg = entry.value.vtableGlobal;
+      if (vg != null) {
+        this.#vtableOf[entry.value.structType.uid] = vg;
+      }
+      let vst = entry.value.vtableStructType;
+      if (vst != null) {
+        this.#vtableStructs.add(vst.uid);
+      }
+    }
+    for (let entry in this.wasm.interfaceVTableStructs) {
+      this.#vtableStructs.add(entry.value.uid);
+    }
+  }
+
+  structAtom(s: WasmStruct): i32 {
+    if (let (true, a) = this.#structAtoms.get(s.uid)) {
+      return a;
+    }
+    let a = this.#newAtom(AtomKind.Struct);
+    this.atomStruct[a] = s;
+    this.#structAtoms[s.uid] = a;
+    return a;
+  }
+
+  globalAtom(gl: WasmGlobal): i32 {
+    if (let (true, a) = this.#globalAtoms.get(gl.name)) {
+      return a;
+    }
+    let a = this.#newAtom(AtomKind.Global);
+    this.atomGlobal[a] = gl;
+    this.#globalAtoms[gl.name] = a;
+    return a;
+  }
+
+  funcAtom(f: WasmFunction): i32 {
+    if (let (true, a) = this.#funcAtoms.get(f.uid)) {
+      return a;
+    }
+    let a = this.#newAtom(AtomKind.Function);
+    this.atomFunc[a] = f;
+    this.#funcAtoms[f.uid] = a;
+    return a;
+  }
+
+  #newAtom(kind: AtomKind): i32 {
+    this.atomKind.push(kind);
+    this.atomStruct.push(null);
+    this.atomGlobal.push(null);
+    this.atomFunc.push(null);
+    return this.atomKind.length - 1;
+  }
+
+  value(b: i32, inst: i32): i32 {
+    return this.base[b] + inst;
+  }
+
+  /** The struct that declares field `name` of `owner`: the topmost one in its chain that has it. */
+  declaring(owner: WasmStruct, name: String): WasmStruct {
+    var top = owner;
+    var cur = owner.superStruct;
+    while (cur != null) {
+      let c = cur as WasmStruct;
+      if (c.fieldIndexByName(name) >= 0) {
+        top = c;
+      }
+      cur = c.superStruct;
+    }
+    return top;
+  }
+
+  fieldNode(owner: WasmStruct, name: String): i32 {
+    let decl = this.declaring(owner, name);
+    let key = `${i32ToString(decl.uid)}:${name}`;
+    if (let (true, n) = this.#fieldNodes.get(key)) {
+      return n;
+    }
+    let n = this.g.newNode();
+    this.#fieldNodes[key] = n;
+    this.fieldList.push(new FieldNode(n, decl, name));
+    return n;
+  }
+
+  /** Every field node, with the struct that declares it. */
+  fieldList = new GrowableArray<FieldNode>();
+  /** Every array element node, with its array type. */
+  arrayList = new GrowableArray<ArrayNode>();
+
+  arrayNode(arr: WasmArray): i32 {
+    if (let (true, n) = this.#arrayNodes.get(arr.uid)) {
+      return n;
+    }
+    let n = this.g.newNode();
+    this.#arrayNodes[arr.uid] = n;
+    this.arrayList.push(new ArrayNode(n, arr));
+    // An immutable array is a subtype of its element's supertype's
+    // array with no instruction between them, so a read through the
+    // supertype sees this array's elements.
+    let sup = arr.superArray;
+    if (sup != null) {
+      this.g.edge(n, this.arrayNode(sup as WasmArray));
+    }
+    return n;
+  }
+
+  globalNode(gl: WasmGlobal): i32 {
+    if (let (true, n) = this.#globalNodes.get(gl.name)) {
+      return n;
+    }
+    let n = this.g.newNode();
+    this.#globalNodes[gl.name] = n;
+    if (gl.isImport) {
+      this.g.setTop(n);
+    }
+    return n;
+  }
+
+  varNode(b: i32, v: i32): i32 {
+    let key = `${i32ToString(b)}:${i32ToString(v)}`;
+    if (let (true, n) = this.#varNodes.get(key)) {
+      return n;
+    }
+    let n = this.g.newNode();
+    this.#varNodes[key] = n;
+    return n;
+  }
+
+  #constrain(src: i32, c: Constraint): void {
+    this.constraints.push(c);
+    this.g.watch(src, this.constraints.length - 1);
+  }
+
+  #isRef(body: IrBody, inst: i32): boolean {
+    let t = body.resultType(inst);
+    return t != null && isRefValType(t as ValType);
+  }
+
+  /** The function a call instruction names, or null. */
+  #callee(body: IrBody, inst: i32): WasmFunction | null {
+    let r = body.refTable[body.b[inst]];
+    if (r is IrRefFunc) {
+      return r.target;
+    }
+    return null;
+  }
+
+  /** Index of `f` in wasm.functions (and so in `bodies`), or -1. */
+  funcIndex(f: WasmFunction): i32 {
+    if (let (true, i) = this.#funcIndex.get(f.uid)) {
+      return i;
+    }
+    return -1;
+  }
+
+  /** Wires a call to `f` with arguments at extra[argsAt .. argsAt + argc) and results into `out`. */
+  #wireCall(b: i32, f: WasmFunction, argsAt: i32, argc: i32, out: GrowableArray<i32>): void {
+    let body = this.bodies[b];
+    let fi = this.funcIndex(f);
+    if (f.isImport || fi < 0 || this.bodies[fi].blocks.length == 0) {
+      // The host: arguments leave, results come back as anything.
+      for (var k = 0; k < argc; k += 1) {
+        let arg = body.extra[argsAt + k];
+        if (arg >= 0 && this.#isRef(body, arg)) {
+          this.g.edge(this.value(b, arg), this.hostNode);
+        }
+      }
+      for (let r in out) {
+        this.g.setTop(r);
+      }
+      return;
+    }
+    let params = this.bodies[fi].blocks[0].params;
+    for (var k = 0; k < argc && k < params.length; k += 1) {
+      let arg = body.extra[argsAt + k];
+      if (arg >= 0 && this.#isRef(body, arg)) {
+        this.g.edge(this.value(b, arg), this.value(fi, params[k]));
+      }
+    }
+    let res = this.results[fi];
+    for (var k = 0; k < out.length && k < res.length; k += 1) {
+      this.g.edge(res[k], out[k]);
+    }
+    this.#reach(fi);
+  }
+
+  /** Marks body `fi` reached; its instructions join the graph before the next node is solved. */
+  #reach(fi: i32): void {
+    if (fi < 0 || this.reached[fi]) {
+      return;
+    }
+    this.reached[fi] = true;
+    this.#pending.push(fi);
+  }
+
+  /** Builds the bodies reached since the last call. */
+  #buildPending(): void {
+    while (this.#pending.length > 0) {
+      this.#buildBody(this.#pending.pop());
+    }
+  }
+
+  /** The nodes a call's results land in: the call itself, or its `mv_get` projections. */
+  #resultNodes(b: i32, inst: i32): GrowableArray<i32> {
+    let body = this.bodies[b];
+    let out = new GrowableArray<i32>();
+    if (body.producesValue(inst)) {
+      out.push(this.value(b, inst));
+      return out;
+    }
+    // Projections follow the call immediately, in result order.
+    var j = inst + 1;
+    while (j < body.instCount() && body.op(j) == IrOp.mv_get && body.a[j] == inst) {
+      out.push(this.value(b, j));
+      j += 1;
+    }
+    return out;
+  }
+
+  build(roots: GrowableArray<WasmFunction>): void {
+    var total = 0;
+    for (let body in this.bodies) {
+      this.base.push(total);
+      total += body.instCount();
+    }
+    for (var i = 0; i < total; i += 1) {
+      this.g.newNode();
+    }
+    this.hostNode = this.g.newNode();
+    for (var f = 0; f < this.bodies.length; f += 1) {
+      let row = new GrowableArray<i32>();
+      for (let _r in this.wasm.functions[f].signature.returns) {
+        row.push(this.g.newNode());
+      }
+      this.results.push(row);
+    }
+    for (var b = 0; b < this.bodies.length; b += 1) {
+      this.reached.push(false);
+    }
+    // Exported functions are called by the host with anything.
+    for (let root in roots) {
+      this.#callFromHost(this.funcIndex(root));
+    }
+    let start = this.wasm.startFunction;
+    if (start != null) {
+      this.#reach(this.funcIndex(start));
+    }
+    // The host can read an exported global.
+    for (let key in this.wasm.exportGlobalMap.keys()) {
+      this.g.edge(this.globalNode(this.wasm.exportGlobalMap[key]), this.hostNode);
+    }
+    this.#buildPending();
+  }
+
+  /** Body `fi` is called by the host, with anything. */
+  #callFromHost(fi: i32): void {
+    if (fi < 0 || this.bodies[fi].blocks.length == 0) {
+      return;
+    }
+    for (let p in this.bodies[fi].blocks[0].params) {
+      this.g.setTop(this.value(fi, p));
+    }
+    this.#reach(fi);
+  }
+
+  #buildBody(b: i32): void {
+    let body = this.bodies[b];
+    for (var blk = 0; blk < body.blocks.length; blk += 1) {
+      for (let inst in body.blocks[blk].insts) {
+        this.#buildInst(b, inst);
+      }
+    }
+  }
+
+  #buildInst(b: i32, inst: i32): void {
+    let body = this.bodies[b];
+    let op = body.op(inst);
+    let v = this.value(b, inst);
+    let a = body.a[inst];
+    if (op == IrOp.struct_new || op == IrOp.struct_new_default) {
+      let r = body.refTable[body.b[inst]];
+      let rt = if (r is IrRefType) (r as IrRefType).target else null;
+      if (rt != null && rt is WasmStruct) {
+        let st = rt as WasmStruct;
+        this.g.add(v, this.structAtom(st));
+        if (op == IrOp.struct_new) {
+          let argc = body.extra[a];
+          for (var k = 0; k < argc && k < st.fields.length; k += 1) {
+            let arg = body.extra[a + 1 + k];
+            let fname = st.fields[k].name;
+            if (arg >= 0 && fname != null && this.#isRef(body, arg)) {
+              this.g.edge(this.value(b, arg), this.fieldNode(st, fname as String));
+            }
+          }
+        }
+      } else {
+        this.g.setTop(v);
+      }
+      return;
+    }
+    if (op == IrOp.struct_get) {
+      if (!this.#isRef(body, inst)) {
+        return;
+      }
+      let r = body.refTable[body.b[inst]];
+      if (!(r is IrRefField)) {
+        this.g.setTop(v);
+        return;
+      }
+      let f = r as IrRefField;
+      if (f.fieldName == '<vtable>') {
+        this.#constrain(this.value(b, a), new Constraint(0, v, '', b, inst));
+      } else if (this.#isVTableStruct(f.owner)) {
+        this.#constrain(this.value(b, a), new Constraint(1, v, f.fieldName, b, inst));
+      } else {
+        this.g.edge(this.fieldNode(f.owner, f.fieldName), v);
+      }
+      return;
+    }
+    if (op == IrOp.struct_set) {
+      let value = body.extra[a + 1];
+      let r = body.refTable[body.b[inst]];
+      if (r is IrRefField && value >= 0 && this.#isRef(body, value)) {
+        let f = r as IrRefField;
+        this.g.edge(this.value(b, value), this.fieldNode(f.owner, f.fieldName));
+      }
+      return;
+    }
+    if (op == IrOp.array_new || op == IrOp.array_new_fixed) {
+      let r = body.refTable[body.b[inst]];
+      let rt = if (r is IrRefType) (r as IrRefType).target else null;
+      if (rt != null && rt is WasmArray) {
+        let arr = rt as WasmArray;
+        let n = this.arrayNode(arr);
+        if (op == IrOp.array_new) {
+          let init = body.extra[a + 1];
+          if (init >= 0 && this.#isRef(body, init)) {
+            this.g.edge(this.value(b, init), n);
+          }
+        } else {
+          let argc = body.extra[a];
+          for (var k = 0; k < argc; k += 1) {
+            let arg = body.extra[a + 1 + k];
+            if (arg >= 0 && this.#isRef(body, arg)) {
+              this.g.edge(this.value(b, arg), n);
+            }
+          }
+        }
+      }
+      return;
+    }
+    if (op == IrOp.array_get) {
+      if (!this.#isRef(body, inst)) {
+        return;
+      }
+      let arr = this.#arrayOf(body, a);
+      if (arr == null) {
+        this.g.setTop(v);
+        return;
+      }
+      this.g.edge(this.arrayNode(arr as WasmArray), v);
+      return;
+    }
+    if (op == IrOp.array_set) {
+      let arrV = body.extra[a];
+      let value = body.extra[a + 2];
+      if (value >= 0 && this.#isRef(body, value)) {
+        let arr = this.#arrayOf(body, arrV);
+        if (arr == null) {
+          this.g.edge(this.value(b, value), this.hostNode);
+        } else {
+          this.g.edge(this.value(b, value), this.arrayNode(arr as WasmArray));
+        }
+      }
+      return;
+    }
+    if (op == IrOp.array_copy) {
+      let dst = this.#arrayOf(body, body.extra[a]);
+      let src = this.#arrayOf(body, body.extra[a + 2]);
+      if (dst != null && src != null) {
+        this.g.edge(this.arrayNode(src as WasmArray), this.arrayNode(dst as WasmArray));
+      }
+      return;
+    }
+    if (op == IrOp.global_get) {
+      if (!this.#isRef(body, inst)) {
+        return;
+      }
+      let r = body.refTable[body.b[inst]];
+      if (!(r is IrRefGlobal)) {
+        this.g.setTop(v);
+        return;
+      }
+      let gl = (r as IrRefGlobal).target;
+      if (gl.initVTable != null) {
+        this.g.add(v, this.globalAtom(gl));
+      }
+      let single = gl.initSingletonStruct;
+      if (single != null) {
+        if (let (true, info) = this.wasm.classInfos.get(getClassKey(single))) {
+          this.g.add(v, this.structAtom(info.structType));
+        } else {
+          this.g.setTop(v);
+        }
+      }
+      this.g.edge(this.globalNode(gl), v);
+      return;
+    }
+    if (op == IrOp.global_set) {
+      let r = body.refTable[body.b[inst]];
+      if (r is IrRefGlobal && a >= 0 && this.#isRef(body, a)) {
+        let gl = (r as IrRefGlobal).target;
+        this.g.edge(this.value(b, a), this.globalNode(gl));
+        if (gl.isImport) {
+          this.g.edge(this.value(b, a), this.hostNode);
+        }
+      }
+      return;
+    }
+    if (op == IrOp.var_get) {
+      if (this.#isRef(body, inst)) {
+        this.g.edge(this.varNode(b, body.b[inst]), v);
+      }
+      return;
+    }
+    if (op == IrOp.var_set) {
+      if (a >= 0 && this.#isRef(body, a)) {
+        this.g.edge(this.value(b, a), this.varNode(b, body.b[inst]));
+      }
+      return;
+    }
+    if (op == IrOp.ref_func) {
+      let r = body.refTable[body.b[inst]];
+      if (r is IrRefFunc) {
+        this.g.add(v, this.funcAtom((r as IrRefFunc).target));
+      } else {
+        this.g.setTop(v);
+      }
+      return;
+    }
+    if (op == IrOp.str_lit) {
+      let sc = this.wasm.stringClass;
+      if (sc != null) {
+        if (let (true, info) = this.wasm.classInfos.get(getClassKey(sc))) {
+          this.g.add(v, this.structAtom(info.structType));
+          return;
+        }
+      }
+      this.g.setTop(v);
+      return;
+    }
+    if (op == IrOp.iface_pack) {
+      if (a >= 0) {
+        this.g.edge(this.value(b, a), v);
+      }
+      let r = body.refTable[body.b[inst]];
+      if (r is IrRefGlobal) {
+        this.g.add(v, this.globalAtom((r as IrRefGlobal).target));
+      } else {
+        this.g.setTop(v);
+      }
+      return;
+    }
+    if (op == IrOp.iface_vtable) {
+      this.#constrain(this.value(b, a), new Constraint(2, v, '', b, inst));
+      return;
+    }
+    if (op == IrOp.iface_instance) {
+      this.#constrain(this.value(b, a), new Constraint(3, v, '', b, inst));
+      return;
+    }
+    if (op == IrOp.ref_cast || op == IrOp.ref_as_non_null) {
+      if (this.#isRef(body, inst)) {
+        this.g.edge(this.value(b, a), v);
+      }
+      return;
+    }
+    if (op == IrOp.any_convert_extern) {
+      this.g.setTop(v);
+      return;
+    }
+    if (op == IrOp.extern_convert_any) {
+      if (a >= 0) {
+        this.g.edge(this.value(b, a), this.hostNode);
+      }
+      this.g.setTop(v);
+      return;
+    }
+    if (op == IrOp.call || op == IrOp.ret_call) {
+      let f = this.#callee(body, inst);
+      let out = if (op == IrOp.call) this.#resultNodes(b, inst) else this.results[b];
+      if (f == null) {
+        for (let o in out) {
+          this.g.setTop(o);
+        }
+        return;
+      }
+      this.#wireCall(b, f as WasmFunction, a + 1, body.extra[a], out);
+      return;
+    }
+    if (op == IrOp.call_ref || op == IrOp.ret_call_ref) {
+      let callee = body.extra[a];
+      this.#constrain(this.value(b, callee), new Constraint(4, v, '', b, inst));
+      return;
+    }
+    if (op == IrOp.ret) {
+      if (a >= 0 && this.#isRef(body, a) && this.results[b].length > 0) {
+        this.g.edge(this.value(b, a), this.results[b][0]);
+      }
+      return;
+    }
+    if (op == IrOp.ret_multi) {
+      let argc = body.extra[a];
+      let res = this.results[b];
+      for (var k = 0; k < argc && k < res.length; k += 1) {
+        let value = body.extra[a + 1 + k];
+        if (value >= 0 && this.#isRef(body, value)) {
+          this.g.edge(this.value(b, value), res[k]);
+        }
+      }
+      return;
+    }
+    if (op == IrOp.mv_get || op == IrOp.param) {
+      // Projections are wired by their call; block parameters by the
+      // branches into them (below); entry parameters by callers.
+      return;
+    }
+    if (op == IrOp.br || op == IrOp.br_if || op == IrOp.br_table ||
+        op == IrOp.br_on_cast || op == IrOp.br_on_cast_fail || op == IrOp.try_br) {
+      let n = body.successorCount(inst);
+      for (var k = 0; k < n; k += 1) {
+        let rec = body.successorRecord(inst, k);
+        let target = body.extra[rec];
+        let argc = body.extra[rec + 1];
+        let params = body.blocks[target].params;
+        for (var i = 0; i < params.length; i += 1) {
+          let arg = if (i < argc) body.extra[rec + 2 + i] else -1;
+          if (arg >= 0 && arg < body.instCount() && this.#isRef(body, arg)) {
+            this.g.edge(this.value(b, arg), this.value(b, params[i]));
+          } else if (this.#isRef(body, params[i])) {
+            // Includes a handler parameter a tag's payload fills, which
+            // no argument names. Zena's own throws carry no payload (it
+            // travels through the exception global), so this is only
+            // for a tag that something else throws.
+            this.g.setTop(this.value(b, params[i]));
+          }
+        }
+      }
+      return;
+    }
+    // Anything else that produces a reference is not modelled.
+    if (body.producesValue(inst) && this.#isRef(body, inst) &&
+        op != IrOp.ref_null) {
+      this.g.setTop(v);
+    }
+  }
+
+  /** A class or interface vtable struct: what a vtable global's initializer fills. */
+  #isVTableStruct(s: WasmStruct): boolean {
+    return this.#vtableStructs.has(s.uid);
+  }
+
+  #arrayOf(body: IrBody, v: i32): WasmArray | null {
+    if (v < 0) {
+      return null;
+    }
+    let t = body.resultType(v);
+    if (t == null) {
+      return null;
+    }
+    let target = refTargetOf(t as ValType);
+    if (target is WasmArray) {
+      return target as WasmArray;
+    }
+    return null;
+  }
+
+  /** Runs the worklist to a fixpoint. */
+  solve(): void {
+    let g = this.g;
+    while (true) {
+      this.#buildPending();
+      if (g.head >= g.queue.length) {
+        break;
+      }
+      let n = g.queue[g.head];
+      g.head += 1;
+      g.queued[n] = false;
+      let set = g.sets[n];
+      let isTop = g.top[n];
+      let succ = g.succ[n];
+      if (succ != null) {
+        for (let s in succ as GrowableArray<i32>) {
+          if (isTop) {
+            g.setTop(s);
+          }
+          if (set != null) {
+            for (let atom in set as GrowableArray<i32>) {
+              g.add(s, atom);
+            }
+          }
+        }
+      }
+      let watchers = g.watchers[n];
+      if (watchers != null) {
+        for (let c in watchers as GrowableArray<i32>) {
+          this.#apply(this.constraints[c], set, isTop);
+        }
+      }
+      if (n == this.hostNode && set != null) {
+        // A function whose reference leaves for the host can be called
+        // from there with anything.
+        for (let atom in set as GrowableArray<i32>) {
+          let f = this.atomFunc[atom];
+          if (f != null) {
+            this.#callFromHost(this.funcIndex(f as WasmFunction));
+          }
+        }
+      }
+    }
+  }
+
+  #apply(c: Constraint, set: GrowableArray<i32> | null, isTop: boolean): void {
+    let g = this.g;
+    if (isTop && !c.sawTop) {
+      c.sawTop = true;
+      if (c.kind == 4) {
+        for (let r in this.#callResults(c)) {
+          g.setTop(r);
+        }
+      } else {
+        g.setTop(c.dst);
+      }
+    }
+    if (set == null) {
+      return;
+    }
+    for (let atom in set as GrowableArray<i32>) {
+      if (c.done.contains(atom)) {
+        continue;
+      }
+      c.done.push(atom);
+      let kind = this.atomKind[atom];
+      if (c.kind == 0) {
+        // `<vtable>` of an object: its class's vtable global.
+        let st = this.atomStruct[atom];
+        if (st != null) {
+          if (let (true, vg) = this.#vtableOf.get((st as WasmStruct).uid)) {
+            g.add(c.dst, this.globalAtom(vg));
+          } else {
+            g.setTop(c.dst);
+          }
+        } else {
+          g.setTop(c.dst);
+        }
+      } else if (c.kind == 1) {
+        // A slot of a vtable global: the function it installs.
+        let gl = this.atomGlobal[atom];
+        let initOpt = if (gl != null) (gl as WasmGlobal).initVTable else null;
+        if (initOpt == null) {
+          g.setTop(c.dst);
+          continue;
+        }
+        let init = initOpt as VTableInit;
+        let slot = init.structType.fieldIndexByName(c.name);
+        // A `<typeinfo>` field leads the functions in a vtable that
+        // answers interface type tests (devirt.zena's leadingSlots).
+        let slotGlobals = init.slotGlobals;
+        let leading = if (slotGlobals != null) slotGlobals.length else 0;
+        let fs = slot - leading;
+        if (fs >= 0 && fs < init.funcs.length) {
+          g.add(c.dst, this.funcAtom(init.funcs[fs]));
+        } else {
+          g.setTop(c.dst);
+        }
+      } else if (c.kind == 2) {
+        if (kind == AtomKind.Global) {
+          g.add(c.dst, atom);
+        }
+      } else if (c.kind == 3) {
+        if (kind == AtomKind.Struct) {
+          g.add(c.dst, atom);
+        }
+      } else {
+        let f = this.atomFunc[atom];
+        if (f == null) {
+          for (let r in this.#callResults(c)) {
+            g.setTop(r);
+          }
+          continue;
+        }
+        let body = this.bodies[c.body];
+        let at = body.a[c.inst];
+        this.#wireCall(c.body, f as WasmFunction, at + 2, body.extra[at + 1],
+            this.#callResults(c));
+      }
+    }
+  }
+
+  #callResults(c: Constraint): GrowableArray<i32> {
+    let body = this.bodies[c.body];
+    if (body.op(c.inst) == IrOp.ret_call_ref) {
+      return this.results[c.body];
+    }
+    return this.#resultNodes(c.body, c.inst);
+  }
+
+  /**
+   * How many functions reach the callee of the `call_ref` at `inst` in
+   * body `b`, or -1 when something from outside the program does.
+   */
+  calleeCount(b: i32, inst: i32): i32 {
+    let body = this.bodies[b];
+    let callee = this.value(b, body.extra[body.a[inst]]);
+    if (this.g.top[callee]) {
+      return -1;
+    }
+    let set = this.g.sets[callee];
+    var funcs = 0;
+    if (set != null) {
+      for (let atom in set as GrowableArray<i32>) {
+        if (this.atomFunc[atom] != null) {
+          funcs += 1;
+        }
+      }
+    }
+    return funcs;
+  }
+
+  /** The one function the callee of the `call_ref` at `inst` can be, or null. */
+  onlyCallee(b: i32, inst: i32): WasmFunction | null {
+    if (this.calleeCount(b, inst) != 1) {
+      return null;
+    }
+    let body = this.bodies[b];
+    let set = this.g.sets[this.value(b, body.extra[body.a[inst]])] as GrowableArray<i32>;
+    for (let atom in set) {
+      let f = this.atomFunc[atom];
+      if (f != null) {
+        return f;
+      }
+    }
+    return null;
+  }
+}
+
+/**
+ * Runs the analysis and rewrites every reached `call_ref` whose callee
+ * can only be one function into a direct call of it, flagging the
+ * bodies it changes. Returns the number of sites rewritten.
+ */
+export function runPropagationDevirt(wasm: WasmModule, bodies: GrowableArray<IrBody>,
+    roots: GrowableArray<WasmFunction>, changed: GrowableArray<boolean>): i32 {
+  let p = new Propagation(wasm, bodies);
+  p.build(roots);
+  p.solve();
+  var count = 0;
+  for (var b = 0; b < bodies.length; b += 1) {
+    if (!p.reached[b]) {
+      continue;
+    }
+    let body = bodies[b];
+    for (let blk in body.blocks) {
+      for (let inst in blk.insts) {
+        if (body.op(inst) != IrOp.call_ref) {
+          continue;
+        }
+        let f = p.onlyCallee(b, inst);
+        if (f != null && rewriteToCall(body, inst, f as WasmFunction)) {
+          changed[b] = true;
+          count += 1;
+        }
+      }
+    }
+  }
+  return count;
+}
+
+/**
+ * The analysis's report for `ZENA_ZIR_STATS`, on the module as it is
+ * about to be emitted: the functions nothing reaches (and how many of
+ * them a vtable slot some body reads installs); per kind of `call_ref`,
+ * how many sites reach one function, several, something from outside or
+ * nothing; and how many interface-typed fields and array elements one
+ * class reaches.
+ */
+export function propagationReport(wasm: WasmModule, bodies: GrowableArray<IrBody>,
+    roots: GrowableArray<WasmFunction>): GrowableArray<String> {
+  let p = new Propagation(wasm, bodies);
+  p.build(roots);
+  p.solve();
+  let kinds = new CallKinds(wasm);
+  let tallies = growable<SiteTally>([
+    new SiteTally('class dispatch'), new SiteTally('interface dispatch'),
+    new SiteTally('closure'), new SiteTally('other'),
+  ]);
+  var unreached = 0;
+  var unreachedInsts = 0;
+  var unreachedSites = 0;
+  for (var b = 0; b < bodies.length; b += 1) {
+    let body = bodies[b];
+    if (body.blocks.length == 0) {
+      continue;
+    }
+    if (!p.reached[b]) {
+      unreached += 1;
+      unreachedInsts += body.instCount();
+    }
+    for (let blk in body.blocks) {
+      for (let inst in blk.insts) {
+        let op = body.op(inst);
+        if (op != IrOp.call_ref && op != IrOp.ret_call_ref) {
+          continue;
+        }
+        if (!p.reached[b]) {
+          unreachedSites += 1;
+          continue;
+        }
+        let tally = tallies[kinds.kindOf(body, inst) as i32];
+        let funcs = p.calleeCount(b, inst);
+        if (funcs < 0) {
+          tally.outside += 1;
+        } else if (funcs == 0) {
+          tally.nothing += 1;
+        } else if (funcs == 1) {
+          tally.one += 1;
+        } else {
+          tally.several += 1;
+        }
+      }
+    }
+  }
+  // Interface-typed fields and array elements, by how many
+  // class-interface pairs reach them: a slot only one pair reaches
+  // could hold the instance instead of a fat pointer.
+  let fatPtrs = new HashSet<i32>();
+  for (let entry in wasm.interfaceStructs) {
+    fatPtrs.add(entry.value.uid);
+  }
+  let pairVTables = new HashSet<i32>();
+  for (let entry in wasm.interfaceVTableStructs) {
+    pairVTables.add(entry.value.uid);
+  }
+  let fieldPairs = new PairTally('interface-typed fields');
+  for (let f in p.fieldList) {
+    let idx = f.owner.fieldIndexByName(f.name);
+    if (idx >= 0 && isFatPointer(f.owner.fields[idx].type, fatPtrs)) {
+      fieldPairs.add(p, f.node, pairVTables);
+    }
+  }
+  let elementPairs = new PairTally('interface-typed array elements');
+  for (let a in p.arrayList) {
+    if (isFatPointer(a.array.elementType, fatPtrs)) {
+      elementPairs.add(p, a.node, pairVTables);
+    }
+  }
+  // The functions nothing reaches, split by whether some vtable slot
+  // that installs them is read anywhere: one that only unread slots
+  // install would go with the slots, without this analysis.
+  let vtableStructs = new HashSet<i32>();
+  for (let u in pairVTables) {
+    vtableStructs.add(u);
+  }
+  for (let entry in wasm.classInfos) {
+    let vst = entry.value.vtableStructType;
+    if (vst != null) {
+      vtableStructs.add(vst.uid);
+    }
+  }
+  let readSlots = new HashSet<String>();
+  for (var b = 0; b < bodies.length; b += 1) {
+    if (!p.reached[b]) {
+      continue;
+    }
+    let body = bodies[b];
+    for (let blk in body.blocks) {
+      for (let inst in blk.insts) {
+        if (body.op(inst) != IrOp.struct_get) {
+          continue;
+        }
+        let r = body.refTable[body.b[inst]];
+        if (r is IrRefField) {
+          let f = r as IrRefField;
+          if (vtableStructs.has(f.owner.uid)) {
+            readSlots.add(`${i32ToString(p.declaring(f.owner, f.fieldName).uid)}:${f.fieldName}`);
+          }
+        }
+      }
+    }
+  }
+  let inReadSlot = new HashSet<i32>();
+  for (let gl in wasm.globals) {
+    let init = gl.initVTable;
+    if (init == null) {
+      continue;
+    }
+    let st = init.structType;
+    let slotGlobals = init.slotGlobals;
+    let leading = if (slotGlobals != null) slotGlobals.length else 0;
+    for (var k = 0; k < init.funcs.length; k += 1) {
+      let name = st.fields[leading + k].name;
+      if (name != null &&
+          readSlots.has(`${i32ToString(p.declaring(st, name as String).uid)}:${name as String}`)) {
+        inReadSlot.add(init.funcs[k].uid);
+      }
+    }
+  }
+  var unreachedInReadSlots = 0;
+  for (var b = 0; b < bodies.length; b += 1) {
+    if (bodies[b].blocks.length > 0 && !p.reached[b] && inReadSlot.has(wasm.functions[b].uid)) {
+      unreachedInReadSlots += 1;
+    }
+  }
+  let lines = new GrowableArray<String>();
+  lines.push(`zir propagation: of the functions nothing reaches, ${i32ToString(unreachedInReadSlots)} ` +
+      `are installed in a vtable slot some body reads`);
+  lines.push(`zir propagation: ${i32ToString(unreached)} functions nothing reaches ` +
+      `(${i32ToString(unreachedInsts)} instructions, ${i32ToString(unreachedSites)} call_ref sites); ` +
+      `${i32ToString(p.g.sets.length)} nodes, ${i32ToString(p.atomKind.length)} atoms`);
+  for (let t in tallies) {
+    lines.push(t.format());
+  }
+  lines.push(fieldPairs.format());
+  lines.push(elementPairs.format());
+  return lines;
+}
+
+function isFatPointer(t: ValType, fatPtrs: HashSet<i32>): boolean {
+  if (!isRefValType(t)) {
+    return false;
+  }
+  let target = refTargetOf(t);
+  return target is WasmStruct && fatPtrs.has((target as WasmStruct).uid);
+}
+
+/** Interface-typed slots by how many class-interface pairs reach them. */
+final class PairTally {
+  what: String;
+  var none: i32 = 0;
+  var one: i32 = 0;
+  var two: i32 = 0;
+  var more: i32 = 0;
+  var outside: i32 = 0;
+  new(this.what);
+
+  add(p: Propagation, node: i32, pairVTables: HashSet<i32>): void {
+    if (p.g.top[node]) {
+      this.outside += 1;
+      return;
+    }
+    var pairs = 0;
+    let set = p.g.sets[node];
+    if (set != null) {
+      for (let atom in set as GrowableArray<i32>) {
+        let gl = p.atomGlobal[atom];
+        if (gl == null) {
+          continue;
+        }
+        let init = (gl as WasmGlobal).initVTable;
+        if (init != null && pairVTables.has(init.structType.uid)) {
+          pairs += 1;
+        }
+      }
+    }
+    if (pairs == 0) {
+      this.none += 1;
+    } else if (pairs == 1) {
+      this.one += 1;
+    } else if (pairs == 2) {
+      this.two += 1;
+    } else {
+      this.more += 1;
+    }
+  }
+
+  format(): String {
+    return `zir propagation: ${this.what}: ${i32ToString(this.one)} reached by one class, ` +
+        `${i32ToString(this.two)} by two, ${i32ToString(this.more)} by more, ` +
+        `${i32ToString(this.outside)} by something from outside, ${i32ToString(this.none)} by none`;
+  }
+}
+
+/** How the reached `call_ref` sites of one kind resolved. */
+final class SiteTally {
+  what: String;
+  var one: i32 = 0;
+  var several: i32 = 0;
+  var outside: i32 = 0;
+  var nothing: i32 = 0;
+  new(this.what);
+
+  format(): String {
+    return `zir propagation: ${this.what}: ${i32ToString(this.one)} reach one function, ` +
+        `${i32ToString(this.several)} several, ${i32ToString(this.outside)} something from outside, ` +
+        `${i32ToString(this.nothing)} nothing`;
+  }
+}

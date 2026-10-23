@@ -1250,7 +1250,9 @@ until M4.
   do we keep AST-side usage analysis for check-time "unused" diagnostics?
   (Likely: keep for diagnostics, since post-optimization liveness is not
   what a "unused declaration" warning should reflect.)
-- **Open (measure after M3)**: how many `call_ref` sites survive the
-  optimization loop + harvest feedback on the compiler itself? That count
-  decides whether the TFA-style interprocedural type-propagation pass
-  (§2.3) is worth building.
+- **Measured**: how many `call_ref` sites survive the optimization loop
+  and harvest feedback on the compiler itself, and whether the TFA-style
+  interprocedural type-propagation pass (§2.3) is worth building. 830
+  survive; the pass resolves 214 of them, making those direct leaves
+  617 and a faster compiler of the same size, so it runs at `-O2`
+  ([type-propagation.md](type-propagation.md)).
