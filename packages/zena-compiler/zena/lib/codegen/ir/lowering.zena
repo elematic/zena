@@ -82,7 +82,7 @@ import {
   breakThroughFinally, continueThroughFinally, returnThroughFinally,
   returnMultiThroughFinally,
   collectAffineDropFields, emitMarkDropped, lowerFieldDropRegions,
-  lowerSyntheticDispose, disposeOwnerClasses, emitMaybeDispose, emitDrop, dropPlanOf,
+  lowerSyntheticDispose, disposeOwnerClasses, emitMaybeDispose, emitDrop, dropPlanOf, emitSlotsDrop,
   lowerLetCondition, lowerMatch, lowerParamDropRegions,
   lowerScopeDropRegion, lowerStatementRange, lowerTryExpression,
   lowerShieldedRegion, lowerUsingRegion, lowerValueNode, lowerWhile,
@@ -3373,7 +3373,11 @@ export final class FunctionLowerer {
       case ShieldedStatement as ss: {
         lowerShieldedRegion(this.#cx(), ss);
       }
-      case ExpressionStatement {expression}: {
+      case ExpressionStatement as es: {
+        let expression = es.expression;
+        // A result that owns something and is discarded: the checker
+        // marked the statement, and the owners are released here.
+        let releases = this.func.model.hasScopeExitDrop(es as Node);
         if (expression is ThrowExpression) {
           this.#lowerThrowStatement(expression);
         } else {
@@ -3393,7 +3397,19 @@ export final class FunctionLowerer {
             // A multi-value call as a statement — a `Result<T, E>`
             // returned for its effect: the values are produced as a
             // destructuring site would take them, and dropped.
-            this.#lowerMultiSource(expression);
+            let source = this.#lowerMultiSource(expression);
+            if (releases && this.#cx().reachable) {
+              emitSlotsDrop(this.#cx(), source);
+            }
+          } else if (releases) {
+            let value = this.#lowerExpression(expression);
+            let t = this.#substitutedNodeType(expression);
+            if (t == null) {
+              this.#bail('untyped discarded owner');
+            }
+            if (this.#cx().reachable) {
+              emitDrop(this.#cx(), value, dropPlanOf(this.#cx(), t as Type));
+            }
           } else {
             this.#lowerExpression(expression);
           }
