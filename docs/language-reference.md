@@ -5842,9 +5842,12 @@ Building the tuple moves the owner in. Passing, returning, rebinding or
 storing the tuple moves it. Destructuring it, or matching it with a pattern
 (`if (let (true, file) = t)`), moves the owners out to the new bindings and
 the tuple with them. Reading an owner element by index (`t[1]`) borrows it,
-as reading an owner field does. Releasing an unmoved tuple, and an owner
-bound by destructuring, at scope exit is not implemented yet: until it is,
-such a value leaks unless it is moved (#495).
+as reading an owner field does. An unmoved tuple is released at scope exit,
+each owner element in turn and the last first, and so is an owner bound by
+destructuring; a union of tuples releases the owners of the member it holds.
+An owner bound by an `if let` or `match` pattern, and a discarded result that
+holds one, are not released yet: until they are, they leak unless moved
+(#495).
 
 A record may not hold an owner: a record converts by adaptation, which
 copies, and a copy would duplicate the obligation.

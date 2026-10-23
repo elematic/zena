@@ -82,7 +82,7 @@ import {
   breakThroughFinally, continueThroughFinally, returnThroughFinally,
   returnMultiThroughFinally,
   collectAffineDropFields, emitMarkDropped, lowerFieldDropRegions,
-  lowerSyntheticDispose, disposeOwnerClasses, emitMaybeDispose,
+  lowerSyntheticDispose, disposeOwnerClasses, emitMaybeDispose, emitDrop, dropPlanOf,
   lowerLetCondition, lowerMatch, lowerParamDropRegions,
   lowerScopeDropRegion, lowerStatementRange, lowerTryExpression,
   lowerShieldedRegion, lowerUsingRegion, lowerValueNode, lowerWhile,
@@ -8998,6 +8998,10 @@ export final class FunctionLowerer {
   hostThrowStmt(thr: ThrowExpression): void {
     this.#lowerThrowStatement(thr);
   }
+  hostUnboxTuples(value: i32, t: Type): MultiValues | null {
+    return this.#unboxTuples(value, t);
+  }
+
   hostTupleTagTest(value: i32, tt: TupleType): i32 {
     return this.#tupleTagTest(value, tt);
   }
@@ -9799,7 +9803,7 @@ export final class FunctionLowerer {
       }
       let old = if (celled) this.#cellRead(this.#cx().env[resolved.id])
           else this.#cx().env[resolved.id];
-      emitMaybeDispose(this.#cx(), old, disposeOwnerClasses(this.#cx(), bt));
+      emitDrop(this.#cx(), old, dropPlanOf(this.#cx(), bt));
     }
     if (celled) {
       // Mutation goes through the heap cell; the env binding (the cell
@@ -10241,6 +10245,14 @@ export function packHeldRecord(cx: LoweringContext, d: RecordDispatchInfo,
 /** Lower a throw in statement position. */
 export function throwStmt(cx: LoweringContext, thr: ThrowExpression): void {
   hostOf(cx).hostThrowStmt(thr);
+}
+
+/**
+ * A boxed tuple, or a union of them, read into the slots its inline form
+ * occupies; null when `t` is not tuples. See `#unboxTuples`.
+ */
+export function unboxTuples(cx: LoweringContext, value: i32, t: Type): MultiValues | null {
+  return hostOf(cx).hostUnboxTuples(value, t);
 }
 
 /** Whether `value` is a tuple of type `tt`, which starts with a literal. */

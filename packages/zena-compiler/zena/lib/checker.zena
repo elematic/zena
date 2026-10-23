@@ -5509,14 +5509,97 @@ function registerOwnParamCandidates(
       }
     }
     let handleType = soleNonNullMember(t) ?? t;
-    if (ownershipHandleName(handleType) != "Own") { continue; }
-    let innerOpt = ownershipHandleInner(handleType);
-    if (innerOpt == null) { continue; }
-    let resources = ownedResourceClasses(innerOpt);
+    // An affine tuple parameter is released at exit too (#495).
+    let resources = ownedResourcesIn(t);
     if (resources == null) { continue; }
     let si = ctx.model.resolveDeclaration(param);
     if (si == null) { continue; }
     ctx.registerOwnCandidate(si, param as Node, resources);
+  }
+}
+
+/**
+ * The resource classes a value of `t` may own and so may release: those
+ * of an `Own<R>`, nullable or not, or of every owner in an affine tuple,
+ * nested tuples and unions included (#495). Null when `t` owns nothing,
+ * or owns something whose classes are not known resources; such a value
+ * is not a drop candidate and leaks, as before implicit drop.
+ */
+function ownedResourcesIn(t: Type): GrowableArray<ClassType> | null {
+  let result = new Array<ClassType>();
+  if (!collectOwnedResources(t, result) || result.length == 0) {
+    return null;
+  }
+  return result;
+}
+
+/**
+ * Adds the resource classes `t` may own to `result`; false when some
+ * owner's classes are not known resources.
+ */
+function collectOwnedResources(t: Type, result: GrowableArray<ClassType>): boolean {
+  let handleType = soleNonNullMember(t) ?? t;
+  if (ownershipHandleName(handleType) == "Own") {
+    let innerOpt = ownershipHandleInner(handleType);
+    if (innerOpt == null) { return false; }
+    let found = ownedResourceClasses(innerOpt);
+    if (found == null) { return false; }
+    for (let c in found) {
+      if (!result.contains(c)) {
+        result.push(c);
+      }
+    }
+    return true;
+  }
+  if (!isAffineTuple(handleType)) {
+    return true;
+  }
+  let resolved = unwrapAliases(handleType);
+  let tuples = if (let UnionT {types} = resolved) types else growable<Type>([resolved]);
+  for (let member in tuples) {
+    let elements = match (unwrapAliases(member)) {
+      case TupleT {elementTypes}: elementTypes
+      case InlineTupleT {elementTypes}: elementTypes
+      case _: null
+    };
+    if (elements != null) {
+      for (let element in elements) {
+        if (typeCarriesOwner(element) && !collectOwnedResources(element, result)) {
+          return false;
+        }
+      }
+    }
+  }
+  return true;
+}
+
+/** Register the owner bindings a tuple pattern declares as drop candidates. */
+function registerDestructuredOwners(ctx: CheckerContext, pattern: TuplePattern,
+    declNode: Node | null): void {
+  for (let element in pattern.elements) {
+    if (element == null) {
+      continue;
+    }
+    let el = element as Node;
+    if (el is TuplePattern) {
+      registerDestructuredOwners(ctx, el, declNode);
+      continue;
+    }
+    if (!(el is IdentifierPattern)) {
+      continue;
+    }
+    let symOpt = ctx.model.resolveDeclaration(el);
+    if (symOpt == null) {
+      continue;
+    }
+    let bindingType = ctx.model.getBindingType(symOpt);
+    if (bindingType == null) {
+      continue;
+    }
+    let resources = ownedResourcesIn(bindingType);
+    if (resources != null) {
+      ctx.registerOwnCandidate(symOpt, el, resources, false, declNode);
+    }
   }
 }
 
@@ -5547,6 +5630,8 @@ function classifyOwnUses(ctx: CheckerContext, scope: Node, ids: HashSet<i32>): v
     var safe = false;
     match (parent) {
       case MemberExpression as me: { safe = me.object.id == n.id; }
+      // An index read of a tuple's owner element borrows it.
+      case IndexExpression as ie: { safe = ie.object.id == n.id; }
       case CallExpression: { safe = true; }
       case NewExpression: { safe = true; }
       case BinaryExpression as be: {
@@ -11566,22 +11651,24 @@ function checkVariableDeclaration(
   // A `var` owner qualifies too, literal-null initializer included:
   // a store may fill it later, and its releases are decided per
   // statement rather than once for the block.
-  let dropHandleType = soleNonNullMember(declType) ?? declType;
+  // An affine tuple binding qualifies the same way (#495).
   let isVarOwner = kind == "var";
   if ((kind == "let" || isVarOwner) && pattern is IdentifierPattern &&
-      (isVarOwner || !(initType is NullType)) &&
-      ownershipHandleName(dropHandleType) == "Own") {
-    let innerOpt = ownershipHandleInner(dropHandleType);
-    if (innerOpt != null) {
-      let resources = ownedResourceClasses(innerOpt);
-      if (resources != null) {
-        let symOpt = ctx.model.resolveDeclaration(pattern);
-        if (symOpt != null) {
-          ctx.registerOwnCandidate(symOpt, pattern as Node, resources,
-              isVarOwner, ctx.model.getParent(pattern as Node));
-        }
+      (isVarOwner || !(initType is NullType))) {
+    let resources = ownedResourcesIn(declType);
+    if (resources != null) {
+      let symOpt = ctx.model.resolveDeclaration(pattern);
+      if (symOpt != null) {
+        ctx.registerOwnCandidate(symOpt, pattern as Node, resources,
+            isVarOwner, ctx.model.getParent(pattern as Node));
       }
     }
+  }
+  // Destructuring moves the owners out of a tuple into its bindings,
+  // and each binding is released at the block's exit unless something
+  // moves it.
+  if (kind == "let" && pattern is TuplePattern) {
+    registerDestructuredOwners(ctx, pattern, ctx.model.getParent(pattern as Node));
   }
 
   // An initializer of type `never` cannot complete.
