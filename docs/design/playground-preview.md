@@ -199,7 +199,7 @@ When `preview` is enabled on `<zena-playground>` (or `<zena-preview>`):
   iframe at `index.html` (falling back to the first `.html` file if `index.html`
   is not present).
 - The `.html` file content is served unmodified with `Content-Type: text/html;
-  charset=utf-8`.
+charset=utf-8`.
 
 ### 2. On-Demand `.zena` → `.wasm` Compilation
 
@@ -251,7 +251,7 @@ URL('./elements.wasm', import.meta.url))` or
 > target, which is the exact target `@zena-lang/runtime` and
 > `@zena-lang/wasm-web-ui` expect (`--target js`). And because the Service
 > Worker responds with `Content-Type: application/wasm`, both `fetch().then(r =>
-> r.arrayBuffer())` and `WebAssembly.instantiateStreaming(fetch(...))` work
+r.arrayBuffer())` and `WebAssembly.instantiateStreaming(fetch(...))` work
 > inside the iframe.
 
 ### 3. JavaScript Module Resolution & Specifier Rewriting (in Service Worker)

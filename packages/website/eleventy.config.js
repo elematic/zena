@@ -21,6 +21,12 @@ const CSS_ENTRY = './src/css/index.css';
 // The playground starts this with `new URL('./worker/compiler-worker.js',
 // import.meta.url)`, so it has to land next to the client bundle in `js/`.
 const WORKER_ENTRY = require.resolve('@zena-lang/playground/worker');
+const SW_ENTRY = require.resolve('@zena-lang/playground/service-worker');
+const SW_PROXY_ENTRY =
+  require.resolve('@zena-lang/playground/service-worker-proxy');
+const RUNTIME_ENTRY = require.resolve('@zena-lang/runtime');
+const WEB_UI_ENTRY = require.resolve('@zena-lang/wasm-web-ui');
+const LIT_HTML_ENTRY = require.resolve('lit-html');
 
 /** Held across rebuilds so esbuild's watcher is started exactly once. */
 let assetContext;
@@ -71,6 +77,11 @@ const bundleAssets = async () => {
     entryPoints: [
       {in: CLIENT_ENTRY, out: 'js/zena'},
       {in: WORKER_ENTRY, out: 'js/worker/compiler-worker'},
+      {in: SW_ENTRY, out: 'sandbox/service-worker'},
+      {in: SW_PROXY_ENTRY, out: 'sandbox/service-worker-proxy'},
+      {in: RUNTIME_ENTRY, out: 'sandbox/vendor/zena-runtime'},
+      {in: WEB_UI_ENTRY, out: 'sandbox/vendor/wasm-web-ui'},
+      {in: LIT_HTML_ENTRY, out: 'sandbox/vendor/lit-html'},
       {in: CSS_ENTRY, out: 'css/style'},
     ],
     outdir: '_site',

@@ -555,3 +555,231 @@ export let main = () => {
 
 </figure>
 
+<figure id="example-web-components" category="Web UI" preview allow-unused>
+<figcaption>Web Components</figcaption>
+
+<script type="sample/zena" filename="elements.zena" selected>
+import {
+  ZenaElement, property, state, defineElement, declareElement,
+  html, css, TemplateValue,
+} from 'zena:web-elements';
+
+class Counter extends ZenaElement {
+  @property var count: i32 = 0;
+  @property var step: i32 = 1;
+  @property var disabled: boolean = false;
+
+  styles() {
+    return css`
+      :host { display: inline-block; font: 16px system-ui, sans-serif; }
+      button { font: inherit; padding: 0.4em 0.8em; }`;
+  }
+
+  render() {
+    return html`
+      <button ?disabled=${this.disabled}
+          @click=${(e) => { this.count += this.step; }}>
+        Count: ${this.count}
+      </button>`;
+  }
+}
+
+export let counterElement = defineElement('x-counter', () => new Counter());
+
+class Todo {
+  text: String;
+  var done = false;
+
+  new(this.text);
+}
+
+class TodoList extends ZenaElement {
+  @state var draft: String = '';
+  @property var title: String = 'Todos';
+  var items = new GrowableArray<Todo>();
+
+  add(): void {
+    if (this.draft.length > 0) {
+      this.items.push(new Todo(this.draft));
+      this.draft = '';
+    }
+  }
+
+  toggle(item: Todo): void {
+    item.done = !item.done;
+    this.requestUpdate();
+  }
+
+  remaining(): i32 {
+    var n = 0;
+    for (let item in this.items) {
+      if (!item.done) {
+        n += 1;
+      }
+    }
+    return n;
+  }
+
+  styles() {
+    return css`
+      :host { display: block; font: 16px system-ui, sans-serif; max-width: 24em; }
+      ul { padding-left: 1.2em; }
+      .done { text-decoration: line-through; color: #888; }
+      input[type=text] { font: inherit; }`;
+  }
+
+  render() {
+    let rows = new GrowableArray<TemplateValue>();
+    for (let item in this.items) {
+      rows.push(html`
+        <li class=${if (item.done) 'done' else ''}>
+          <label>
+            <input type="checkbox" .checked=${item.done}
+                @change=${(e) => { this.toggle(item); }}>
+            ${item.text}
+          </label>
+        </li>`);
+    }
+    return html`
+      <h2>${this.title}</h2>
+      <input type="text" placeholder="What needs doing?" .value=${this.draft}
+          @input=${(e) => { this.draft = e.targetValue(); }}
+          @keydown=${(e) => { if (e.key() == 'Enter') { this.add(); } }}>
+      <button @click=${(e) => { this.add(); }}>Add</button>
+      <ul>${rows}</ul>
+      <p>${this.remaining()} of ${this.items.length} remaining</p>`;
+  }
+}
+
+export let todoElement = defineElement('x-todo', () => new TodoList());
+
+class Badge extends ZenaElement {
+  @property var text: String = 'badge';
+
+  styles() {
+    return css`
+      :host { display: inline-block; padding: 0.1em 0.5em; border-radius: 1em;
+              background: #246; color: white; font: 14px system-ui, sans-serif; }`;
+  }
+
+  render() {
+    return html`${this.text}`;
+  }
+}
+
+export let badgeElement = declareElement(() => new Badge());
+</script>
+<script type="sample/js" filename="demo.js">
+import {createImports, compileOptions} from '@zena-lang/runtime';
+import {ElementModule, webUiImports} from '@zena-lang/wasm-web-ui';
+
+const info = document.querySelector('#info');
+const bytes = await fetch(new URL('./elements.wasm', import.meta.url)).then(
+  (r) => r.arrayBuffer(),
+);
+
+const zena = createImports();
+const {module, instance} = await WebAssembly.instantiate(
+  bytes,
+  {...zena.imports, ...webUiImports()},
+  compileOptions,
+);
+zena.attach(instance.exports);
+
+const elements = new ElementModule(instance.exports);
+
+const tags = [];
+for (const definition of elements.definitions) {
+  if (definition.tag !== '') {
+    customElements.define(definition.tag, elements.classFor(definition));
+    tags.push(definition.tag);
+  }
+}
+const badge = elements.definitions.find((d) => d.tag === '');
+customElements.define('page-badge', elements.classFor(badge));
+
+const imports = WebAssembly.Module.imports(module).map(
+  (i) => `${i.module}.${i.name}`,
+);
+info.textContent =
+  `${bytes.byteLength} bytes\n` +
+  `module's own registry: ${elements.registry === null ? 'none (no scoped registries here)' : 'scoped'}\n` +
+  `defined by this page: ${tags.join(', ')}, page-badge\n` +
+  `imports: ${imports.join(', ') || 'none'}`;
+
+document.querySelector('#bump').addEventListener('click', () => {
+  document.querySelector('x-counter').count = 100;
+});
+</script>
+<script type="sample/html" filename="index.html">
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Wasm Web UI demo</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <style>
+      body {
+        font: 16px system-ui, sans-serif;
+        margin: 1.5em auto;
+        max-width: 40em;
+        padding: 0 1em;
+      }
+      pre {
+        background: #f4f4f4;
+        padding: 0.5em;
+        overflow-x: auto;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Wasm Web UI</h1>
+    <p>
+      Two custom elements whose state and templates live in a WebAssembly module
+      written in Zena.
+    </p>
+
+    <h2>&lt;x-counter&gt;</h2>
+    <x-counter count="10" step="5"></x-counter>
+    <x-counter disabled></x-counter>
+    <p>
+      <button id="bump">Set the first counter to 100 from JavaScript</button>
+    </p>
+
+    <h2>&lt;x-todo&gt;</h2>
+    <x-todo title="Things to do"></x-todo>
+
+    <h2>&lt;page-badge&gt;</h2>
+    <p>
+      Declared by the module without a tag name and registered by this page as
+      <code>page-badge</code>:
+      <page-badge text="named here"></page-badge>
+      <page-badge></page-badge>
+    </p>
+
+    <h2>Module</h2>
+    <pre id="info">loading…</pre>
+
+    <script type="module" src="./demo.js"><\/script>
+  </body>
+</html>
+</script>
+
+```zena
+class Counter extends ZenaElement {
+  @property var count: i32 = 0;
+  @property var step: i32 = 1;
+
+  render() {
+    return html`
+      <button @click=${(e) => { this.count += this.step; }}>
+        Count: ${this.count}
+      </button>`;
+  }
+}
+
+export let counterElement = defineElement('x-counter', () => new Counter());
+```
+
+</figure>
+

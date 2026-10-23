@@ -12,6 +12,7 @@ interface ExampleItem {
   files: Record<string, string>;
   currentFiles: Record<string, string>;
   allowUnused?: boolean;
+  preview?: boolean;
 }
 
 function unindent(text: string): string {
@@ -96,6 +97,7 @@ export class ZenaExamplePlayground extends BehaviorElement {
         figure.hasAttribute('allow-unused') ||
         figure.hasAttribute('allow-unused-variables') ||
         figure.hasAttribute('no-unused-warnings');
+      const preview = figure.hasAttribute('preview');
 
       const sampleScripts = Array.from(
         figure.querySelectorAll<HTMLScriptElement>('script[type^="sample/"]'),
@@ -108,7 +110,10 @@ export class ZenaExamplePlayground extends BehaviorElement {
           const filename =
             script.getAttribute('filename') ||
             (sIdx === 0 ? 'main.zena' : `file_${sIdx}.zena`);
-          files[filename] = unindent(script.textContent ?? '');
+          const rawText = (script.textContent ?? '')
+            .replace(/<\\\/script>/gi, '</script>')
+            .replace(/&lt;\\?\/script(?:>|&gt;)/gi, '</script>');
+          files[filename] = unindent(rawText);
         }
       } else {
         const codeEl =
@@ -135,9 +140,11 @@ export class ZenaExamplePlayground extends BehaviorElement {
         files: {...files},
         currentFiles: {...files},
         allowUnused,
+        preview,
       };
     });
 
+    const sandboxBaseUrl = this.getAttribute('sandbox-base-url');
     const wrapper = document.createElement('div');
     let tabs: HTMLButtonElement[] = [];
     let select: HTMLSelectElement | undefined;
@@ -244,6 +251,9 @@ export class ZenaExamplePlayground extends BehaviorElement {
       playground.id = `${id}-playground`;
       playground.setAttribute('tabs', 'always');
       playground.layout = 'horizontal';
+      if (sandboxBaseUrl) {
+        playground.sandboxBaseUrl = sandboxBaseUrl;
+      }
       playground.append(toggleBtn);
 
       playgroundPane.append(playground);
@@ -367,6 +377,9 @@ export class ZenaExamplePlayground extends BehaviorElement {
       playground.id = `${id}-playground`;
       playground.setAttribute('vertical', '');
       playground.setAttribute('tabs', 'auto');
+      if (sandboxBaseUrl) {
+        playground.sandboxBaseUrl = sandboxBaseUrl;
+      }
       playgroundPane.append(playground);
 
       wrapper.append(dropdownWrapper, tabsList, playgroundPane);
@@ -435,6 +448,7 @@ export class ZenaExamplePlayground extends BehaviorElement {
 
       const activeExample = this.examples[index];
       if (activeExample) {
+        playground.preview = !!activeExample.preview;
         playground.files = {...activeExample.currentFiles};
         playground.allowUnusedVariables = !!activeExample.allowUnused;
         playground.clearConsole();

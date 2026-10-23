@@ -41,7 +41,10 @@ export class ZenaPlayground extends PlaygroundConnectedElement {
   static override styles = css`
     :host {
       display: grid !important;
-      grid-template-columns: 1fr 380px;
+      grid-template-columns:
+        minmax(180px, 1fr)
+        auto
+        clamp(180px, var(--zena-output-width, 380px), calc(100% - 180px));
       grid-template-rows: 1fr;
       width: 100%;
       height: 560px;
@@ -61,6 +64,20 @@ export class ZenaPlayground extends PlaygroundConnectedElement {
       border: 1px solid var(--rad-neutral-stroke-faint);
     }
 
+    :host([preview]) {
+      --zena-output-width: 45%;
+    }
+
+    :host([resizing]) {
+      user-select: none;
+      -webkit-user-select: none;
+    }
+
+    :host([resizing]) .editor-pane,
+    :host([resizing]) .output-pane {
+      pointer-events: none;
+    }
+
     zena-project {
       display: none !important;
     }
@@ -73,8 +90,59 @@ export class ZenaPlayground extends PlaygroundConnectedElement {
       min-height: 0;
       height: 100%;
       background: var(--rad-surface-sunken);
-      border-right: 1px solid var(--rad-neutral-stroke-faint);
       overflow: hidden;
+    }
+
+    .pane-resizer {
+      position: relative;
+      z-index: 15;
+      width: 1px;
+      height: 100%;
+      background: var(--rad-neutral-stroke-faint, rgba(255, 255, 255, 0.12));
+      cursor: col-resize;
+      touch-action: none;
+      outline: none;
+      transition: background-color 0.15s ease;
+    }
+
+    .pane-resizer::before {
+      content: '';
+      position: absolute;
+      top: 0;
+      bottom: 0;
+      left: -4px;
+      width: 9px;
+    }
+
+    .pane-resizer::after {
+      content: '';
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      width: 3px;
+      height: 28px;
+      border-radius: 999px;
+      background: var(--rad-neutral-text-muted, #94a3b8);
+      opacity: 0;
+      transition:
+        opacity 0.15s ease,
+        background-color 0.15s ease,
+        transform 0.15s ease;
+      pointer-events: none;
+    }
+
+    .pane-resizer:hover,
+    .pane-resizer:focus-visible,
+    :host([resizing]) .pane-resizer {
+      background: var(--zena-c-brand-1, #38bdf8);
+    }
+
+    .pane-resizer:hover::after,
+    .pane-resizer:focus-visible::after,
+    :host([resizing]) .pane-resizer::after {
+      opacity: 1;
+      background: var(--zena-c-brand-1, #38bdf8);
     }
 
     .editor-floating-export {
@@ -143,7 +211,7 @@ export class ZenaPlayground extends PlaygroundConnectedElement {
     }
 
     .output-pane {
-      min-width: 280px;
+      min-width: 180px;
       min-height: 0;
       height: 100%;
       overflow: hidden;
@@ -159,26 +227,65 @@ export class ZenaPlayground extends PlaygroundConnectedElement {
     :host([vertical]),
     :host([layout='vertical']) {
       grid-template-columns: 1fr;
-      grid-template-rows: 1fr 200px;
+      grid-template-rows:
+        minmax(120px, 1fr)
+        auto
+        clamp(100px, var(--zena-output-height, 220px), calc(100% - 120px));
     }
 
-    :host([vertical]) .editor-pane,
-    :host([layout='vertical']) .editor-pane {
-      border-right: none;
-      border-bottom: 1px solid
-        var(--rad-neutral-stroke-faint, rgba(255, 255, 255, 0.08));
+    :host([vertical][preview]),
+    :host([layout='vertical'][preview]) {
+      --zena-output-height: 45%;
+    }
+
+    :host([vertical]) .pane-resizer,
+    :host([layout='vertical']) .pane-resizer {
+      width: 100%;
+      height: 1px;
+      cursor: row-resize;
+    }
+
+    :host([vertical]) .pane-resizer::before,
+    :host([layout='vertical']) .pane-resizer::before {
+      top: -4px;
+      bottom: auto;
+      left: 0;
+      right: 0;
+      width: 100%;
+      height: 9px;
+    }
+
+    :host([vertical]) .pane-resizer::after,
+    :host([layout='vertical']) .pane-resizer::after {
+      width: 28px;
+      height: 3px;
     }
 
     @media (max-width: 768px) {
       :host {
         grid-template-columns: 1fr;
-        grid-template-rows: 1fr 220px;
+        grid-template-rows:
+          minmax(120px, 1fr)
+          auto
+          clamp(100px, var(--zena-output-height, 220px), calc(100% - 120px));
         height: 640px;
       }
-      .editor-pane {
-        border-right: none;
-        border-bottom: 1px solid
-          var(--rad-neutral-stroke-faint, rgba(255, 255, 255, 0.1));
+      .pane-resizer {
+        width: 100%;
+        height: 1px;
+        cursor: row-resize;
+      }
+      .pane-resizer::before {
+        top: -4px;
+        bottom: auto;
+        left: 0;
+        right: 0;
+        width: 100%;
+        height: 9px;
+      }
+      .pane-resizer::after {
+        width: 28px;
+        height: 3px;
       }
     }
   `;
@@ -238,6 +345,14 @@ export class ZenaPlayground extends PlaygroundConnectedElement {
   @property({type: String, attribute: 'watermark-text'})
   watermarkText?: string;
 
+  /** Whether to show a sandboxed live web preview iframe in the output pane. */
+  @property({type: Boolean, reflect: true})
+  preview = false;
+
+  /** Base URL for the preview sandbox origin and service worker files. */
+  @property({type: String, attribute: 'sandbox-base-url'})
+  sandboxBaseUrl = '/sandbox/';
+
   @query('zena-project')
   private internalProjectEl?: ZenaProject;
 
@@ -286,6 +401,9 @@ export class ZenaPlayground extends PlaygroundConnectedElement {
     super.updated(changedProperties);
     const target = this.effectiveProject;
     if (target) {
+      if (changedProperties.has('preview')) {
+        target.preview = this.preview;
+      }
       if (changedProperties.has('files') && this.files) {
         target.files = this.files;
       } else if (changedProperties.has('value') && this.value !== undefined) {
@@ -297,11 +415,23 @@ export class ZenaPlayground extends PlaygroundConnectedElement {
       if (changedProperties.has('allowUnusedVariables')) {
         target.allowUnusedVariables = this.allowUnusedVariables;
       }
+      if (
+        this.preview &&
+        (changedProperties.has('files') || changedProperties.has('preview'))
+      ) {
+        target.run();
+      }
     }
   }
 
   /** Compiles and runs the current source, streaming output to console. */
   runProgram() {
+    if (this.isUpdatePending) {
+      void this.updateComplete.then(() => {
+        this.effectiveProject?.run();
+      });
+      return;
+    }
     this.effectiveProject?.run();
   }
 
@@ -377,11 +507,112 @@ export class ZenaPlayground extends PlaygroundConnectedElement {
     this.openExportDialog(e.detail?.filename);
   };
 
+  #isStackedLayout(): boolean {
+    const editorEl = this.shadowRoot?.querySelector('.editor-pane');
+    const outputEl = this.shadowRoot?.querySelector('.output-pane');
+    if (editorEl && outputEl) {
+      const editorRect = editorEl.getBoundingClientRect();
+      const outputRect = outputEl.getBoundingClientRect();
+      return outputRect.top >= editorRect.bottom - 4;
+    }
+    return this.vertical || this.layout === 'vertical';
+  }
+
+  #onResizerPointerDown = (e: PointerEvent) => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    const resizer = e.currentTarget as HTMLElement;
+    resizer.setPointerCapture(e.pointerId);
+    this.setAttribute('resizing', '');
+
+    const stacked = this.#isStackedLayout();
+    const hostRect = this.getBoundingClientRect();
+
+    const onPointerMove = (moveEvent: PointerEvent) => {
+      if (stacked) {
+        const minEditorHeight = 120;
+        const minOutputHeight = 100;
+        const maxOutputHeight = Math.max(
+          minOutputHeight,
+          hostRect.height - minEditorHeight,
+        );
+        const rawHeight = hostRect.bottom - moveEvent.clientY;
+        const clampedHeight = Math.min(
+          maxOutputHeight,
+          Math.max(minOutputHeight, rawHeight),
+        );
+        this.style.setProperty('--zena-output-height', `${clampedHeight}px`);
+      } else {
+        const minEditorWidth = 200;
+        const minOutputWidth = 180;
+        const maxOutputWidth = Math.max(
+          minOutputWidth,
+          hostRect.width - minEditorWidth,
+        );
+        const rawWidth = hostRect.right - moveEvent.clientX;
+        const clampedWidth = Math.min(
+          maxOutputWidth,
+          Math.max(minOutputWidth, rawWidth),
+        );
+        this.style.setProperty('--zena-output-width', `${clampedWidth}px`);
+      }
+    };
+
+    const stopResize = (endEvent: PointerEvent) => {
+      if (resizer.hasPointerCapture(endEvent.pointerId)) {
+        resizer.releasePointerCapture(endEvent.pointerId);
+      }
+      this.removeAttribute('resizing');
+      resizer.removeEventListener('pointermove', onPointerMove);
+      resizer.removeEventListener('pointerup', stopResize);
+      resizer.removeEventListener('pointercancel', stopResize);
+    };
+
+    resizer.addEventListener('pointermove', onPointerMove);
+    resizer.addEventListener('pointerup', stopResize);
+    resizer.addEventListener('pointercancel', stopResize);
+  };
+
+  #onResizerDoubleClick = () => {
+    this.style.removeProperty('--zena-output-width');
+    this.style.removeProperty('--zena-output-height');
+  };
+
+  #onResizerKeyDown = (e: KeyboardEvent) => {
+    const step = e.shiftKey ? 48 : 16;
+    const stacked = this.#isStackedLayout();
+    const hostRect = this.getBoundingClientRect();
+    const outputEl = this.shadowRoot?.querySelector(
+      '.output-pane',
+    ) as HTMLElement | null;
+    if (!outputEl) return;
+    const outputRect = outputEl.getBoundingClientRect();
+
+    if (!stacked && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')) {
+      e.preventDefault();
+      const delta = e.key === 'ArrowLeft' ? step : -step;
+      const next = Math.min(
+        Math.max(180, hostRect.width - 200),
+        Math.max(180, outputRect.width + delta),
+      );
+      this.style.setProperty('--zena-output-width', `${next}px`);
+    } else if (stacked && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) {
+      e.preventDefault();
+      const delta = e.key === 'ArrowUp' ? step : -step;
+      const next = Math.min(
+        Math.max(100, hostRect.height - 120),
+        Math.max(100, outputRect.height + delta),
+      );
+      this.style.setProperty('--zena-output-height', `${next}px`);
+    }
+  };
+
   override render() {
     const project = this.effectiveProject;
     const files = (project?.files ?? []).filter((f) => !f.hidden);
     const showTabs =
       this.tabs === 'always' || (this.tabs !== 'never' && files.length > 1);
+    const isVertical = this.vertical || this.layout === 'vertical';
 
     return html`
       <div class="editor-pane" @keydown=${this.onKeyDown}>
@@ -420,8 +651,24 @@ export class ZenaPlayground extends PlaygroundConnectedElement {
         ></zena-file-editor>
       </div>
 
+      <div
+        class="pane-resizer"
+        role="separator"
+        tabindex="0"
+        aria-orientation=${isVertical ? 'horizontal' : 'vertical'}
+        aria-label="Resize editor and output panes"
+        title="Drag to resize (double-click to reset)"
+        @pointerdown=${this.#onResizerPointerDown}
+        @dblclick=${this.#onResizerDoubleClick}
+        @keydown=${this.#onResizerKeyDown}
+      ></div>
+
       <div class="output-pane">
-        <zena-output .project=${project}>
+        <zena-output
+          .project=${project}
+          ?preview=${this.preview}
+          .sandboxBaseUrl=${this.sandboxBaseUrl}
+        >
           <slot name="output-actions" slot="actions"></slot>
         </zena-output>
       </div>
@@ -438,6 +685,7 @@ export class ZenaPlayground extends PlaygroundConnectedElement {
                 id="internal-project"
                 .wasmUrl=${this.wasmUrl}
                 ?allow-unused-variables=${this.allowUnusedVariables}
+                ?preview=${this.preview}
               >
                 <slot></slot>
               </zena-project>

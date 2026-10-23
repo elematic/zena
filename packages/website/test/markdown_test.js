@@ -51,6 +51,39 @@ describe('markdown custom element parsing', async () => {
     assert.match(html, /<script type="sample\/zena"/);
   });
 
+  it('preserves <script type="sample/html"> with </style>, </pre>, and <\\/script> verbatim', () => {
+    const input = [
+      '<zena-example-playground fullpage>',
+      '<figure id="example-web" preview>',
+      '<figcaption>Web</figcaption>',
+      '<script type="sample/html" filename="index.html">',
+      '<!doctype html>',
+      '<html>',
+      '  <head>',
+      '    <style>',
+      '      body { margin: 0; }',
+      '    </style>',
+      '  </head>',
+      '  <body>',
+      '    <h2>Counter</h2>',
+      '',
+      '    <pre id="info">loading</pre>',
+      '',
+      '    <script type="module" src="./demo.js"><\\/script>',
+      '  </body>',
+      '</html>',
+      '</script>',
+      '</figure>',
+      '</zena-example-playground>',
+    ].join('\n');
+
+    const html = md.render(input);
+
+    assert.doesNotMatch(html, /<p><h2>/);
+    assert.doesNotMatch(html, /&lt;\/script&gt;/);
+    assert.match(html, /<script type="module" src="\.\/demo\.js"><\\\/script>/);
+  });
+
   it('parses all figures in playground-examples.njk with zero unrendered fences', async () => {
     const {readFile} = await import('node:fs/promises');
     const examplesPath = new URL(

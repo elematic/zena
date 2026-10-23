@@ -1,8 +1,9 @@
-import {html, css} from 'lit';
-import {customElement, property} from 'lit/decorators.js';
+import {html, css, nothing} from 'lit';
+import {customElement, property, state} from 'lit/decorators.js';
 import '@radica/ui/components/button/button.js';
 import {PlaygroundConnectedElement} from './connected-element.js';
 import './zena-console.js';
+import './zena-preview.js';
 
 /**
  * An output console pane element with integrated status indicator and Run/Clear controls.
@@ -68,6 +69,50 @@ export class ZenaOutput extends PlaygroundConnectedElement {
       text-transform: uppercase;
       letter-spacing: 0.05em;
       color: var(--rad-neutral-text-muted);
+    }
+
+    .mode-tabs {
+      display: inline-flex;
+      align-items: center;
+      gap: 2px;
+      background: var(--rad-surface-sunken, rgba(0, 0, 0, 0.25));
+      padding: 2px;
+      border-radius: var(--rad-border-radius-small, 6px);
+      border: 1px solid
+        var(--rad-neutral-stroke-faint, rgba(255, 255, 255, 0.08));
+    }
+
+    .mode-tab {
+      appearance: none;
+      background: transparent;
+      border: none;
+      color: var(--rad-neutral-text-muted, #94a3b8);
+      font-family: var(
+        --rad-font-family-sans,
+        system-ui,
+        -apple-system,
+        sans-serif
+      );
+      font-size: 0.72rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      padding: 4px 10px;
+      border-radius: 4px;
+      cursor: pointer;
+      transition:
+        background 0.15s ease,
+        color 0.15s ease;
+    }
+
+    .mode-tab:hover {
+      color: var(--rad-neutral-text-normal, #f8fafc);
+    }
+
+    .mode-tab[aria-selected='true'] {
+      background: var(--rad-surface, rgba(255, 255, 255, 0.1));
+      color: var(--rad-neutral-text-normal, #f8fafc);
+      box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
     }
 
     .diag-badge {
@@ -167,18 +212,34 @@ export class ZenaOutput extends PlaygroundConnectedElement {
       box-sizing: border-box;
     }
 
-    .output-body zena-console {
+    .output-body zena-console,
+    .output-body zena-preview {
       flex: 1;
       height: 100%;
       min-height: 0;
       border: none;
       background: transparent;
     }
+
+    .output-body [hidden] {
+      display: none !important;
+    }
   `;
 
   /** If true, hides the top controls header bar. */
   @property({type: Boolean, attribute: 'hide-header'})
   hideHeader = false;
+
+  /** If true, shows the live web preview iframe with a Preview/Console toggle. */
+  @property({type: Boolean, reflect: true})
+  preview = false;
+
+  /** Base URL for the preview sandbox origin and service worker files. */
+  @property({type: String, attribute: 'sandbox-base-url'})
+  sandboxBaseUrl = '/sandbox/';
+
+  @state()
+  private activeTab: 'preview' | 'console' = 'preview';
 
   private get isMac(): boolean {
     return (
@@ -213,7 +274,36 @@ export class ZenaOutput extends PlaygroundConnectedElement {
           ? html`
               <div class="output-header">
                 <div class="output-title">
-                  <span>Output</span>
+                  ${
+                    this.preview
+                      ? html`
+                          <div class="mode-tabs" role="tablist">
+                            <button
+                              type="button"
+                              role="tab"
+                              class="mode-tab"
+                              aria-selected=${
+                                this.activeTab === 'preview' ? 'true' : 'false'
+                              }
+                              @click=${() => (this.activeTab = 'preview')}
+                            >
+                              Preview
+                            </button>
+                            <button
+                              type="button"
+                              role="tab"
+                              class="mode-tab"
+                              aria-selected=${
+                                this.activeTab === 'console' ? 'true' : 'false'
+                              }
+                              @click=${() => (this.activeTab = 'console')}
+                            >
+                              Console
+                            </button>
+                          </div>
+                        `
+                      : html`<span>Output</span>`
+                  }
                   ${
                     errorCount > 0
                       ? html`
@@ -260,7 +350,9 @@ export class ZenaOutput extends PlaygroundConnectedElement {
                     size="small"
                     variant="success"
                     @click=${() => this.runProgram()}
-                    title="Run Program (${shortcutLabel})"
+                    title="${
+                      this.preview ? 'Reload Preview' : 'Run Program'
+                    } (${shortcutLabel})"
                   >
                     <svg slot="prefix" class="run-icon" viewBox="0 0 24 24">
                       <path d="M8 5v14l11-7z" />
@@ -271,14 +363,20 @@ export class ZenaOutput extends PlaygroundConnectedElement {
                     >
                   </rad-button>
 
-                  <rad-button
-                    size="small"
-                    variant="neutral"
-                    outline
-                    @click=${() => this.clearConsole()}
-                  >
-                    Clear
-                  </rad-button>
+                  ${
+                    !this.preview || this.activeTab === 'console'
+                      ? html`
+                          <rad-button
+                            size="small"
+                            variant="neutral"
+                            outline
+                            @click=${() => this.clearConsole()}
+                          >
+                            Clear
+                          </rad-button>
+                        `
+                      : nothing
+                  }
 
                   <slot name="actions"></slot>
                 </div>
@@ -288,7 +386,21 @@ export class ZenaOutput extends PlaygroundConnectedElement {
       }
 
       <div class="output-body">
-        <zena-console .project=${project}></zena-console>
+        ${
+          this.preview
+            ? html`
+                <zena-preview
+                  .project=${project}
+                  .sandboxBaseUrl=${this.sandboxBaseUrl}
+                  ?hidden=${this.activeTab !== 'preview'}
+                ></zena-preview>
+                <zena-console
+                  .project=${project}
+                  ?hidden=${this.activeTab !== 'console'}
+                ></zena-console>
+              `
+            : html`<zena-console .project=${project}></zena-console>`
+        }
       </div>
     `;
   }

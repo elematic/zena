@@ -1,4 +1,4 @@
-import {html, css, type PropertyValues} from 'lit';
+import {html, css, nothing, type PropertyValues} from 'lit';
 import {customElement, property, query} from 'lit/decorators.js';
 import {
   autocompletion,
@@ -15,6 +15,10 @@ import {
 import {Prec} from '@codemirror/state';
 import {EditorView, keymap, type ViewUpdate} from '@codemirror/view';
 import 'codemirror-elements';
+import 'codemirror-elements/lib/cm-lang-html.js';
+import 'codemirror-elements/lib/cm-lang-javascript.js';
+import 'codemirror-elements/lib/cm-lang-css.js';
+import 'codemirror-elements/lib/cm-lang-json.js';
 import '@zena-lang/codemirror';
 import type {ZenaHoverProvider} from '@zena-lang/codemirror';
 import {PlaygroundConnectedElement} from './connected-element.js';
@@ -280,6 +284,7 @@ export class ZenaFileEditor extends PlaygroundConnectedElement {
     const zenaCompletions = async (
       context: CompletionContext,
     ): Promise<CompletionResult | null> => {
+      if (!this.effectiveFilename.endsWith('.zena')) return null;
       const project = this.projectElement;
       if (!project) return null;
 
@@ -319,6 +324,19 @@ export class ZenaFileEditor extends PlaygroundConnectedElement {
     };
 
     const gutterTheme = EditorView.theme({
+      '&': {
+        height: '100%',
+        display: 'flex',
+        flexDirection: 'column',
+        flex: '1 1 0%',
+        minHeight: '0',
+      },
+      '.cm-scroller': {
+        height: '100%',
+        flex: '1 1 0%',
+        minHeight: '0',
+        overflow: 'auto',
+      },
       '.cm-gutters': {
         borderRight:
           '1px solid var(--rad-neutral-stroke-faint, rgba(255, 255, 255, 0.12)) !important',
@@ -409,10 +427,20 @@ export class ZenaFileEditor extends PlaygroundConnectedElement {
   #updateDiagnostics() {
     const project = this.projectElement;
     if (!project || !this.codeMirrorEl?.editorView) return;
-    const diagnostics = project.getFileDiagnostics(this.effectiveFilename);
     const view = this.codeMirrorEl.editorView;
     const doc = view.state?.doc;
     if (!doc) return;
+
+    if (!this.effectiveFilename.endsWith('.zena')) {
+      try {
+        view.dispatch(setDiagnostics(view.state, []));
+      } catch {
+        // Ignore
+      }
+      return;
+    }
+
+    const diagnostics = project.getFileDiagnostics(this.effectiveFilename);
 
     const rawDiagnostics: CMLintDiagnostic[] = diagnostics.map((d) => {
       const lineNo = Math.min(Math.max(d.line, 1), doc.lines);
@@ -481,15 +509,38 @@ export class ZenaFileEditor extends PlaygroundConnectedElement {
     }
   }
 
+  private renderLanguageElement() {
+    const file = this.effectiveFilename.toLowerCase();
+    if (file.endsWith('.html')) {
+      return html`<cm-lang-html></cm-lang-html>`;
+    }
+    if (file.endsWith('.js') || file.endsWith('.mjs')) {
+      return html`<cm-lang-javascript></cm-lang-javascript>`;
+    }
+    if (file.endsWith('.css')) {
+      return html`<cm-lang-css></cm-lang-css>`;
+    }
+    if (file.endsWith('.json')) {
+      return html`<cm-lang-json></cm-lang-json>`;
+    }
+    return html`<cm-lang-zena></cm-lang-zena>`;
+  }
+
   override render() {
+    const isZena = this.effectiveFilename.endsWith('.zena');
     return html`
       <cm-editor
         @input=${this.onCodeInput}
         @codemirror-document-change=${this.onCodeInput}
       >
-        <cm-lang-zena></cm-lang-zena>
-        ${this.renderThemeElement()}
-        <cm-hover-zena .hoverProvider=${this.hoverProvider}></cm-hover-zena>
+        ${this.renderLanguageElement()} ${this.renderThemeElement()}
+        ${
+          isZena
+            ? html`<cm-hover-zena
+                .hoverProvider=${this.hoverProvider}
+              ></cm-hover-zena>`
+            : nothing
+        }
       </cm-editor>
     `;
   }

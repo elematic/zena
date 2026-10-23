@@ -13,9 +13,50 @@ import type {
   WorkerRequest,
   WorkerResponse,
 } from './types.js';
+import type {
+  HttpError,
+  VirtualFile,
+} from './preview-shared/service-worker-api.js';
 import {unindent} from './util.js';
 
 const CHECK_DEBOUNCE_MS = 250;
+
+const extensionToMimeType = (filename: string): string | undefined => {
+  const dotIndex = filename.lastIndexOf('.');
+  const ext =
+    dotIndex === -1 ? undefined : filename.slice(dotIndex + 1).toLowerCase();
+  switch (ext) {
+    case 'html':
+      return 'text/html; charset=utf-8';
+    case 'js':
+    case 'mjs':
+      return 'application/javascript; charset=utf-8';
+    case 'css':
+      return 'text/css; charset=utf-8';
+    case 'json':
+      return 'application/json; charset=utf-8';
+    case 'wasm':
+      return 'application/wasm';
+    case 'svg':
+      return 'image/svg+xml';
+    case 'png':
+      return 'image/png';
+    case 'jpg':
+    case 'jpeg':
+      return 'image/jpeg';
+    case 'gif':
+      return 'image/gif';
+    case 'webp':
+      return 'image/webp';
+    case 'ico':
+      return 'image/vnd.microsoft.icon';
+    case 'txt':
+    case 'zena':
+      return 'text/plain; charset=utf-8';
+    default:
+      return undefined;
+  }
+};
 
 /**
  * Coordinates project files, compilation worker lifecycle, diagnostics, and
@@ -123,6 +164,10 @@ export class ZenaProject extends LitElement {
   @property({type: Boolean, attribute: 'allow-unused-variables'})
   allowUnusedVariables = false;
 
+  /** Whether this project uses a web preview iframe instead of running `main()`. */
+  @property({type: Boolean})
+  preview = false;
+
   /** Current execution / compilation status. */
   @state()
   status: PlaygroundStatus = 'loading';
@@ -153,6 +198,15 @@ export class ZenaProject extends LitElement {
     number,
     (items: CompletionItem[]) => void
   >();
+  private pendingCompiles = new Map<
+    number,
+    (wasm: Uint8Array<ArrayBuffer> | null) => void
+  >();
+  private compiledWasmCache = new Map<
+    string,
+    Promise<Uint8Array<ArrayBuffer> | null>
+  >();
+  private workerReadyDeferred = Promise.withResolvers<void>();
 
   override connectedCallback() {
     super.connectedCallback();
@@ -196,12 +250,16 @@ export class ZenaProject extends LitElement {
     this._fileMap = Object.fromEntries(
       this._files.map((file) => [file.name, file.content]),
     );
+    this.compiledWasmCache.clear();
 
     if (this._files.length > 0) {
       const selectedFile = this._files.find((f) => f.selected)?.name;
       if (selectedFile) {
         this.activeFile = selectedFile;
-      } else if (!preserveActive || !this._fileMap[this.activeFile]) {
+      } else if (
+        !preserveActive ||
+        this._fileMap[this.activeFile] === undefined
+      ) {
         this.activeFile = this._files[0].name;
       }
     } else {
@@ -314,7 +372,13 @@ export class ZenaProject extends LitElement {
       const preserveWhitespace = script.hasAttribute('preserve-whitespace');
 
       if (!filename) {
-        if (scripts.length === 1) {
+        if (type === 'sample/html') {
+          filename = 'index.html';
+        } else if (type === 'sample/js' || type === 'sample/javascript') {
+          filename = 'index.js';
+        } else if (type === 'sample/css') {
+          filename = 'style.css';
+        } else if (scripts.length === 1) {
           filename = 'main.zena';
         } else if (type === 'sample/zena') {
           filename = i === 0 ? 'main.zena' : `module_${i}.zena`;
@@ -325,7 +389,9 @@ export class ZenaProject extends LitElement {
         }
       }
 
-      let rawContent = script.textContent ?? '';
+      let rawContent = (script.textContent ?? '')
+        .replace(/<\\\/script>/gi, '</script>')
+        .replace(/&lt;\\?\/script(?:>|&gt;)/gi, '</script>');
       const content = preserveWhitespace ? rawContent : unindent(rawContent);
 
       if (selected) {
@@ -346,13 +412,19 @@ export class ZenaProject extends LitElement {
     this._fileMap = Object.fromEntries(
       this._files.map((file) => [file.name, file.content]),
     );
+    this.compiledWasmCache.clear();
 
     if (explicitSelected) {
       this.activeFile = explicitSelected;
     } else if (this._fileMap['main.zena'] !== undefined) {
       this.activeFile = 'main.zena';
-    } else if (this._files.length > 0) {
-      this.activeFile = this._files[0].name;
+    } else {
+      const firstZena = this._files.find((f) => f.name.endsWith('.zena'));
+      if (firstZena) {
+        this.activeFile = firstZena.name;
+      } else if (this._files.length > 0) {
+        this.activeFile = this._files[0].name;
+      }
     }
 
     this.dispatchEvent(
@@ -367,6 +439,7 @@ export class ZenaProject extends LitElement {
   }
 
   #initWorker() {
+    this.workerReadyDeferred = Promise.withResolvers<void>();
     try {
       this.worker = new Worker(
         new URL('./worker/compiler-worker.js', import.meta.url),
@@ -402,6 +475,7 @@ export class ZenaProject extends LitElement {
     switch (res.type) {
       case 'ready':
         this.status = 'ready';
+        this.workerReadyDeferred.resolve();
         this.#dispatchStatusChanged();
         this.scheduleCheck(0, false);
         break;
@@ -430,7 +504,27 @@ export class ZenaProject extends LitElement {
         this.pendingCompletions.get(res.id)?.(res.completions);
         this.pendingCompletions.delete(res.id);
         break;
+      case 'compile':
+        this.status = res.diagnostics.some((d) => d.severity === 'error')
+          ? 'error'
+          : 'ready';
+        this.diagnostics = res.diagnostics;
+        this.#dispatchStatusChanged();
+        this.dispatchEvent(
+          new CustomEvent('diagnostics-changed', {
+            bubbles: true,
+            composed: true,
+            detail: {diagnostics: this.diagnostics},
+          }),
+        );
+        this.pendingCompiles.get(res.id)?.(res.wasm);
+        this.pendingCompiles.delete(res.id);
+        break;
       case 'error':
+        if (res.id !== undefined && this.pendingCompiles.has(res.id)) {
+          this.pendingCompiles.get(res.id)?.(null);
+          this.pendingCompiles.delete(res.id);
+        }
         this.status = 'error';
         this.#addLog('error', res.message);
         this.#dispatchStatusChanged();
@@ -449,6 +543,11 @@ export class ZenaProject extends LitElement {
   }
 
   #addLog(level: ConsoleLevel, message: string) {
+    this.addConsoleLog(level, message);
+  }
+
+  /** Appends an entry to the project console log. */
+  addConsoleLog(level: ConsoleLevel, message: string) {
     const entry: ConsoleEntry = {
       id: Date.now() + Math.random(),
       level,
@@ -515,6 +614,7 @@ export class ZenaProject extends LitElement {
   /** Updates the content of a project file. */
   setFileContent(filename: string, content: string) {
     this._fileMap[filename] = content;
+    this.compiledWasmCache.clear();
     const fileIndex = this._files.findIndex((f) => f.name === filename);
     if (fileIndex >= 0) {
       this._files[fileIndex] = {...this._files[fileIndex], content};
@@ -561,6 +661,7 @@ export class ZenaProject extends LitElement {
 
     this._files.push({name: candidate, content});
     this._fileMap[candidate] = content;
+    this.compiledWasmCache.clear();
     this.activeFile = candidate;
 
     this.dispatchEvent(
@@ -588,6 +689,7 @@ export class ZenaProject extends LitElement {
     delete this._fileMap[oldFilename];
     this._fileMap[newFilename] = content;
     this._files = nextFiles;
+    this.compiledWasmCache.clear();
 
     if (this.activeFile === oldFilename) {
       this.activeFile = newFilename;
@@ -608,10 +710,11 @@ export class ZenaProject extends LitElement {
   /** Deletes a project file. */
   deleteFile(filename: string): boolean {
     if (this._files.length <= 1) return false;
-    if (!this._fileMap[filename]) return false;
+    if (this._fileMap[filename] === undefined) return false;
 
     this._files = this._files.filter((f) => f.name !== filename);
     delete this._fileMap[filename];
+    this.compiledWasmCache.clear();
 
     if (this.activeFile === filename) {
       this.activeFile = this._files[0]?.name ?? 'main.zena';
@@ -629,10 +732,24 @@ export class ZenaProject extends LitElement {
     return true;
   }
 
-  private getEntryFile(): string {
+  private getEntryFile(): string | undefined {
     if (this._fileMap['main.zena'] !== undefined) return 'main.zena';
     if (this._fileMap['main'] !== undefined) return 'main';
-    return this._files[0]?.name ?? 'main.zena';
+    const firstZena = this._files.find((f) => f.name.endsWith('.zena'));
+    return firstZena?.name;
+  }
+
+  /**
+   * Resolves the entry `.html` file for preview mode:
+   * returns the single `.html` file if there is only one, or `index.html` if
+   * there are multiple `.html` files.
+   */
+  getPreviewHtmlFile(): string | undefined {
+    const htmlFiles = this._files.filter((f) => f.name.endsWith('.html'));
+    if (htmlFiles.length === 0) return undefined;
+    if (htmlFiles.length === 1) return htmlFiles[0].name;
+    const indexHtml = htmlFiles.find((f) => f.name === 'index.html');
+    return indexHtml ? indexHtml.name : htmlFiles[0].name;
   }
 
   /** Schedules a compiler type-check after debounce delay. */
@@ -650,6 +767,12 @@ export class ZenaProject extends LitElement {
 
     const files = this.getAllFiles();
     const entryPath = this.getEntryFile();
+    if (!entryPath) {
+      this.status = 'ready';
+      this.diagnostics = [];
+      this.#dispatchStatusChanged();
+      return;
+    }
     const entrySource = files[entryPath] ?? '';
 
     this.status = 'checking';
@@ -665,8 +788,101 @@ export class ZenaProject extends LitElement {
     } satisfies WorkerRequest);
   }
 
-  /** Compiles and runs the current source, streaming output to consoleLogs. */
+  /**
+   * Compiles a `.zena` file in the project to a WebAssembly binary (`Uint8Array`).
+   */
+  async compileFile(filename: string): Promise<Uint8Array<ArrayBuffer> | null> {
+    const cached = this.compiledWasmCache.get(filename);
+    if (cached !== undefined) {
+      return cached;
+    }
+    const promise = (async () => {
+      await this.workerReadyDeferred.promise;
+      if (!this.worker) return null;
+      const files = this.getAllFiles();
+      const source = files[filename];
+      if (source === undefined) return null;
+
+      const id = this.nextRequestId++;
+      return new Promise<Uint8Array<ArrayBuffer> | null>((resolve) => {
+        this.pendingCompiles.set(id, resolve);
+        this.worker!.postMessage({
+          type: 'compile',
+          id,
+          path: filename,
+          source,
+          files,
+        } satisfies WorkerRequest);
+      });
+    })();
+    this.compiledWasmCache.set(filename, promise);
+    return promise;
+  }
+
+  /**
+   * Serves a project file (or compiles `foo.zena` when `foo.wasm` is requested)
+   * for `<zena-preview>`'s Service Worker `FileAPI`.
+   */
+  async getFile(filename: string): Promise<VirtualFile | HttpError> {
+    let cleanName = filename;
+    while (cleanName.startsWith('./')) {
+      cleanName = cleanName.slice(2);
+    }
+    if (cleanName.startsWith('/')) {
+      cleanName = cleanName.slice(1);
+    }
+
+    const directContent = this._fileMap[cleanName];
+    if (directContent !== undefined) {
+      return {
+        name: cleanName,
+        content: directContent,
+        contentType: extensionToMimeType(cleanName),
+      };
+    }
+
+    if (cleanName.endsWith('.wasm')) {
+      const zenaName = cleanName.slice(0, -'.wasm'.length) + '.zena';
+      if (this._fileMap[zenaName] !== undefined) {
+        const wasm = await this.compileFile(zenaName);
+        if (wasm !== null) {
+          return {
+            name: cleanName,
+            content: wasm,
+            contentType: 'application/wasm',
+          };
+        }
+        const errors = this.diagnostics
+          .filter((d) => d.severity === 'error')
+          .map((d) => `${d.file}:${d.line}:${d.column}: ${d.message}`)
+          .join('\n');
+        const msg = errors || `Failed to compile ${zenaName}`;
+        this.#addLog('error', msg);
+        return {
+          status: 500,
+          body: msg,
+        };
+      }
+    }
+
+    return {
+      status: 404,
+      body: `Not found: ${cleanName}`,
+    };
+  }
+
+  /** Compiles and runs the current source (or reloads the preview iframe). */
   run() {
+    if (this.preview) {
+      this.scheduleCheck(0, false);
+      this.dispatchEvent(
+        new CustomEvent('reload-preview', {
+          bubbles: true,
+          composed: true,
+        }),
+      );
+      return;
+    }
     this.scheduleCheck(0, true);
   }
 
