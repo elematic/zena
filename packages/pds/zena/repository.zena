@@ -1,0 +1,270 @@
+/**
+ * An account's repository: applying writes, which signs a new commit each
+ * time, and reading it back as the proofs and archives `com.atproto.sync`
+ * serves. The write path follows pds.js `packages/core/src/pds.js`
+ * (`applyWrites`), and the reads `packages/core/src/handlers/xrpc-sync.js`.
+ *
+ * Each commit rebuilds the record tree from the record index, where pds.js
+ * updates it along the changed paths (`packages/core/src/mst.js`). The tree
+ * for a set of keys is unique, so both give the same root; rebuilding costs
+ * time in proportion to the repository, which is small for the package
+ * accounts this serves first. Porting the path updates is a later change.
+ * A `getRecord` proof holds the nodes on the path to the record, where
+ * pds.js sends every node.
+ */
+
+import {Future} from 'zena:async';
+import {HashMap} from 'zena:collections';
+import {BlockMap, writeCar} from 'atproto:car';
+import {Cid} from 'atproto:cid';
+import {MapValue, stringField} from 'atproto:data';
+import {MstNode, buildMst, compareKeys, decodeNode} from 'atproto:mst';
+import {decodeCommit, signCommit} from 'atproto:repo';
+import {isValidNsid, isValidRecordKey} from 'atproto:syntax';
+import {TidClock} from 'atproto:tid';
+import {Account, AccountStore, Head} from './storage.zena';
+
+/** A write the repository refuses, with the XRPC error name to answer with. */
+export class RepositoryError extends Error {
+  /** Such as `InvalidRequest` or `RecordNotFound`. */
+  error: String;
+
+  new(error: String, message: String) : error = error, super(message);
+}
+
+/** One change to a repository's records. */
+export sealed class Write {
+  case CreateRecord(collection: String, rkey: String, record: MapValue)
+  case UpdateRecord(collection: String, rkey: String, record: MapValue)
+  case DeleteRecord(collection: String, rkey: String)
+}
+
+/** An account's repository, over its store. */
+export final class Repository {
+  #account: Account;
+  #store: AccountStore;
+  #clock: TidClock;
+
+  new(account: Account, store: AccountStore, clock: TidClock)
+      : #account = account, #store = store, #clock = clock;
+
+  /**
+   * Writes the repository's first commit, of an empty tree, unless it has
+   * one. `nowMicros` is the time, in microseconds since the Unix epoch.
+   */
+  async initialize(nowMicros: i64): Future<Head> {
+    let head = await this.#store.getHead();
+    if (head != null) {
+      return head as Head;
+    }
+    return await this.#commit(new BlockMap(), nowMicros);
+  }
+
+  /**
+   * Applies `writes` in order and signs one commit for all of them. Throws
+   * `RepositoryError` for a write that is malformed, creates a record that
+   * exists, or updates or deletes one that does not; nothing is written
+   * then.
+   */
+  async applyWrites(writes: Array<Write>, nowMicros: i64): Future<Head> {
+    let blocks = new BlockMap();
+    let changes = new GrowableArray<(String, String, Cid | null)>();
+    // A record created and then deleted in the same batch, say, is checked
+    // against the batch's own earlier writes.
+    let pending = new HashMap<String, boolean>();
+    for (let write in writes) {
+      let collection = collectionOf(write);
+      let rkey = rkeyOf(write);
+      checkKey(collection, rkey);
+      let key = `${collection}/${rkey}`;
+      var exists = false;
+      if (let (true, present) = pending.get(key)) {
+        exists = present;
+      } else {
+        exists = (await this.#store.getRecord(collection, rkey)) != null;
+      }
+      match (write) {
+        case CreateRecord {record}: {
+          if (exists) {
+            throw new RepositoryError('InvalidRequest', `${key} already exists`);
+          }
+          changes.push((collection, rkey, addRecord(blocks, collection, record)));
+          pending[key] = true;
+        }
+        case UpdateRecord {record}: {
+          if (!exists) {
+            throw new RepositoryError('RecordNotFound', `${key} does not exist`);
+          }
+          changes.push((collection, rkey, addRecord(blocks, collection, record)));
+        }
+        case DeleteRecord {}: {
+          if (!exists) {
+            throw new RepositoryError('RecordNotFound', `${key} does not exist`);
+          }
+          changes.push((collection, rkey, null));
+          pending[key] = false;
+        }
+      }
+    }
+    await this.#store.putBlocks(blocks);
+    for (let (collection, rkey, cid) in changes) {
+      if (cid == null) {
+        await this.#store.deleteRecord(collection, rkey);
+      } else {
+        await this.#store.putRecord(collection, rkey, cid as Cid);
+      }
+    }
+    return await this.#commit(new BlockMap(), nowMicros);
+  }
+
+  /**
+   * The answer to `com.atproto.sync.getRecord` for `collection/rkey`: a CAR
+   * file whose root is the current commit, holding the tree's nodes on the
+   * path to the record and the record. Null when there is no such record.
+   */
+  async recordProof(collection: String, rkey: String): Future<FixedArray<u8> | null> {
+    let cid = await this.#store.getRecord(collection, rkey);
+    if (cid == null) {
+      return null;
+    }
+    let head = await this.#head();
+    let blocks = new BlockMap();
+    let commitBytes = await this.#block(head.cid);
+    blocks.set(head.cid, commitBytes);
+    let key = `${collection}/${rkey}`;
+    var next: Cid | null = decodeCommit(commitBytes).data;
+    while (next != null) {
+      let nodeCid = next as Cid;
+      let bytes = await this.#block(nodeCid);
+      blocks.set(nodeCid, bytes);
+      next = childToward(decodeNode(bytes), key);
+    }
+    let recordCid = cid as Cid;
+    blocks.set(recordCid, await this.#block(recordCid));
+    return writeCar(new FixedArray<Cid>(1, head.cid), blocks);
+  }
+
+  /**
+   * The whole repository as `com.atproto.sync.getRepo` answers with it: the
+   * current commit, every node of the tree and every record.
+   */
+  async exportCar(): Future<FixedArray<u8>> {
+    let head = await this.#head();
+    let blocks = new BlockMap();
+    let commitBytes = await this.#block(head.cid);
+    blocks.set(head.cid, commitBytes);
+    let pending = new GrowableArray<Cid>();
+    pending.push(decodeCommit(commitBytes).data);
+    while (pending.length > 0) {
+      let nodeCid = pending.pop();
+      let bytes = await this.#block(nodeCid);
+      blocks.set(nodeCid, bytes);
+      let node = decodeNode(bytes);
+      if (node.left != null) {
+        pending.push(node.left as Cid);
+      }
+      for (let entry in node.entries) {
+        blocks.set(entry.value, await this.#block(entry.value));
+        if (entry.right != null) {
+          pending.push(entry.right as Cid);
+        }
+      }
+    }
+    return writeCar(new FixedArray<Cid>(1, head.cid), blocks);
+  }
+
+  /**
+   * Builds the tree over the record index, stores its nodes and the commit
+   * over it, and makes that commit the head.
+   */
+  async #commit(blocks: BlockMap, nowMicros: i64): Future<Head> {
+    let records = await this.#store.allRecords();
+    let keys = new FixedArray<String>(records.length, '');
+    let values = new FixedArray<Cid>(records.length, Cid.forBlob(new FixedArray<u8>(0, 0 as u8)));
+    for (var i = 0; i < records.length; i += 1) {
+      keys[i] = records[i].key();
+      values[i] = records[i].cid;
+    }
+    let root = buildMst(keys, values, blocks);
+    let previous = await this.#store.getHead();
+    let rev = this.#clock.next(nowMicros);
+    let key = this.#account.key;
+    let commit = signCommit(this.#account.did, root, rev,
+        if (previous == null) null else (previous as Head).cid, (bytes) => key.sign(bytes));
+    blocks.set(commit.cid, commit.bytes);
+    await this.#store.putBlocks(blocks);
+    let head = new Head(commit.cid, rev);
+    await this.#store.setHead(head);
+    return head;
+  }
+
+  async #head(): Future<Head> {
+    let head = await this.#store.getHead();
+    if (head == null) {
+      throw new RepositoryError('RepoNotFound', `${this.#account.did} has no commit`);
+    }
+    return head as Head;
+  }
+
+  async #block(cid: Cid): Future<FixedArray<u8>> {
+    let bytes = await this.#store.getBlock(cid);
+    if (bytes == null) {
+      throw new Error(`${this.#account.did} is missing block ${cid.toString()}`);
+    }
+    return bytes as FixedArray<u8>;
+  }
+}
+
+function collectionOf(write: Write): String {
+  return match (write) {
+    case CreateRecord {collection}: collection
+    case UpdateRecord {collection}: collection
+    case DeleteRecord {collection}: collection
+  };
+}
+
+function rkeyOf(write: Write): String {
+  return match (write) {
+    case CreateRecord {rkey}: rkey
+    case UpdateRecord {rkey}: rkey
+    case DeleteRecord {rkey}: rkey
+  };
+}
+
+/** Stores `record` as a block and returns its CID, checking its `$type`. */
+function addRecord(blocks: BlockMap, collection: String, record: MapValue): Cid {
+  let type = stringField(record, '$type');
+  if (type == null || type as String != collection) {
+    throw new RepositoryError('InvalidRecord', `a record in ${collection} must have $type ${collection}`);
+  }
+  return blocks.add(record);
+}
+
+function checkKey(collection: String, rkey: String): void {
+  if (!isValidNsid(collection)) {
+    throw new RepositoryError('InvalidRequest', `'${collection}' is not a collection NSID`);
+  }
+  if (!isValidRecordKey(rkey)) {
+    throw new RepositoryError('InvalidRequest', `'${rkey}' is not a record key`);
+  }
+}
+
+/**
+ * The subtree of `node` that holds `key`, if the node does not: the one
+ * before the first entry whose key is greater. Null when there is none, or
+ * when the node holds the key itself.
+ */
+function childToward(node: MstNode, key: String): Cid | null {
+  var next = node.left;
+  for (let entry in node.entries) {
+    let order = compareKeys(key, entry.key);
+    if (order == 0) {
+      return null;
+    }
+    if (order < 0) {
+      break;
+    }
+    next = entry.right;
+  }
+  return next;
+}

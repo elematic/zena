@@ -1,0 +1,131 @@
+import {suite, test} from 'zena:test';
+import {equal, isNull, isTrue} from 'zena:assert';
+import {runFuture} from 'zena:async';
+import {hex} from 'zena:encoding';
+import {readCar} from 'atproto:car';
+import {Cid} from 'atproto:cid';
+import {MapValue, StringValue, newMap, stringField} from 'atproto:data';
+import {KeyType, verifySignature} from 'atproto:didkey';
+import {mstWalk} from 'atproto:mst';
+import {decodeCommit, verifyRecordProof} from 'atproto:repo';
+import {isValidTid} from 'atproto:syntax';
+import {Pds} from 'pds:pds';
+import {CreateRecord, DeleteRecord, Repository, RepositoryError, UpdateRecord, Write} from 'pds:repository';
+import {Account, Head, MemoryStorage, SigningKey} from 'pds:storage';
+
+let DID = 'did:plc:alicealicealicealicealic';
+let NOW = 1792800000000000 as i64;
+let POST = 'com.example.post';
+
+function key(): SigningKey {
+  return new SigningKey(KeyType.P256,
+      hex.decode('c9afa9d845ba75166b5c215767b1d6934e50c3db36e89b127b8a622b120f6721'));
+}
+
+function record(collection: String, text: String): MapValue {
+  let value = newMap();
+  value.entries['$type'] = new StringValue(collection);
+  value.entries['text'] = new StringValue(text);
+  return value;
+}
+
+/** A PDS with Alice's account, and her repository. */
+function setUp(): (Pds, Account, Repository) {
+  let pds = new Pds(new MemoryStorage(), 5);
+  let account = runFuture(pds.createAccount(DID, 'alice.test', key(), NOW));
+  return (pds, account, pds.repositoryOf(account));
+}
+
+function verifyWith(signing: SigningKey) {
+  let publicKey = signing.publicKey();
+  return (signed: FixedArray<u8>, sig: FixedArray<u8>) => verifySignature(publicKey, signed, sig);
+}
+
+/** The error name `write` fails with, or '' when it succeeds. */
+function refusal(repository: Repository, writes: Array<Write>): String {
+  try {
+    runFuture(repository.applyWrites(writes, NOW));
+  } catch (e) {
+    return if (e is RepositoryError) (e as RepositoryError).error else `another error: ${e.message}`;
+  }
+  return '';
+}
+
+export let tests = suite('pds:repository', () => {
+  test('starts an account with a signed commit of an empty tree', (ctx) => {
+    let (pds, account, repository) = setUp();
+    let head = runFuture(pds.storage.store(DID).getHead());
+    isTrue(head != null);
+    let car = readCar(runFuture(repository.exportCar()));
+    let commit = decodeCommit(car.blocks.get(car.roots[0]) as FixedArray<u8>);
+    equal(commit.did, DID);
+    isNull(commit.prev);
+    isTrue(isValidTid(commit.rev), commit.rev);
+    isTrue(verifyWith(account.key)(commit.signedBytes(), commit.sig));
+  });
+
+  test('commits writes, and proves each record against the new commit', (ctx) => {
+    let (pds, account, repository) = setUp();
+    let first = runFuture(repository.applyWrites([
+      new CreateRecord(POST, '3l3qo2vutsw2b', record(POST, 'one')),
+      new CreateRecord(POST, '3l3qo2vutsw2c', record(POST, 'two')),
+      new CreateRecord('com.example.profile', 'self', record('com.example.profile', 'me')),
+    ], NOW));
+    let second = runFuture(repository.applyWrites([
+      new UpdateRecord(POST, '3l3qo2vutsw2b', record(POST, 'one, edited')),
+      new DeleteRecord(POST, '3l3qo2vutsw2c'),
+    ], NOW));
+    isTrue(first.rev.compareTo(second.rev) < 0, `${first.rev} < ${second.rev}`);
+
+    let proof = verifyRecordProof(readCar(runFuture(repository.recordProof(POST, '3l3qo2vutsw2b')) as FixedArray<u8>),
+        DID, POST, '3l3qo2vutsw2b', verifyWith(account.key));
+    isTrue(proof.commit.rev == second.rev);
+    isTrue((proof.commit.prev as Cid).equals(first.cid));
+    equal(stringField(proof.record as MapValue, 'text') as String, 'one, edited');
+    isTrue(runFuture(repository.recordProof(POST, '3l3qo2vutsw2c')) == null);
+  });
+
+  test('exports every node and record under the current commit', (ctx) => {
+    let (pds, account, repository) = setUp();
+    let writes = new GrowableArray<Write>();
+    for (var i = 0; i < 40; i += 1) {
+      writes.push(new CreateRecord(POST, `record${i}`, record(POST, `${i}`)));
+    }
+    runFuture(repository.applyWrites(writes, NOW));
+    let car = readCar(runFuture(repository.exportCar()));
+    let commit = decodeCommit(car.blocks.get(car.roots[0]) as FixedArray<u8>);
+    var count = 0;
+    mstWalk(commit.data, car.blocks, (key, value) => {
+      isTrue(car.blocks.has(value), `the export lacks ${key}`);
+      count += 1;
+    });
+    equal(count, 40);
+    // A proof carries only the path to its record.
+    let proof = readCar(runFuture(repository.recordProof(POST, 'record7')) as FixedArray<u8>);
+    isTrue(proof.blocks.size < car.blocks.size, `${proof.blocks.size} of ${car.blocks.size} blocks`);
+  });
+
+  test('refuses writes that do not fit the repository, and writes nothing', (ctx) => {
+    let (pds, account, repository) = setUp();
+    runFuture(repository.applyWrites([new CreateRecord(POST, 'a', record(POST, 'a'))], NOW));
+    let before = runFuture(pds.storage.store(DID).getHead());
+    equal(refusal(repository, [new CreateRecord(POST, 'a', record(POST, 'again'))]), 'InvalidRequest');
+    equal(refusal(repository, [new UpdateRecord(POST, 'b', record(POST, 'b'))]), 'RecordNotFound');
+    equal(refusal(repository, [new DeleteRecord(POST, 'b')]), 'RecordNotFound');
+    equal(refusal(repository, [new CreateRecord(POST, 'c', record('com.example.other', 'c'))]), 'InvalidRecord');
+    equal(refusal(repository, [new CreateRecord('not an nsid', 'c', record('not an nsid', 'c'))]), 'InvalidRequest');
+    equal(refusal(repository, [new CreateRecord(POST, 'no/slash', record(POST, 'c'))]), 'InvalidRequest');
+    // A later write in a batch failing leaves the earlier ones unwritten.
+    equal(refusal(repository, [
+      new CreateRecord(POST, 'd', record(POST, 'd')),
+      new DeleteRecord(POST, 'missing'),
+    ]), 'RecordNotFound');
+    isNull(runFuture(pds.storage.store(DID).getRecord(POST, 'd')));
+    isTrue((runFuture(pds.storage.store(DID).getHead()) as Head).cid.equals((before as Head).cid));
+    // Within a batch, a write sees the ones before it.
+    equal(refusal(repository, [
+      new CreateRecord(POST, 'e', record(POST, 'e')),
+      new DeleteRecord(POST, 'e'),
+    ]), '');
+  });
+});

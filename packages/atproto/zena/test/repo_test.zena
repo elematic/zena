@@ -7,7 +7,9 @@ import {encodeCbor} from 'atproto:cbor';
 import {Cid} from 'atproto:cid';
 import {BytesValue, IntValue, LinkValue, MapValue, NullValue, StringValue, newMap, stringField} from 'atproto:data';
 import {buildMst} from 'atproto:mst';
-import {decodeCommit, verifyRecordProof} from 'atproto:repo';
+import {KeyType, publicKeyFor, verifySignature} from 'atproto:didkey';
+import {decodeCommit, signCommit, verifyRecordProof} from 'atproto:repo';
+import {p256} from 'zena:crypto';
 
 let NETWORK = 'packages/atproto/zena/test/fixtures/network';
 let DID = 'did:plc:ewvi7nxzyoun6zhxrhs64oiz';
@@ -45,6 +47,23 @@ function smallRepo(key: String) {
 }
 
 export let tests = suite('atproto:car and atproto:repo', () => {
+  test('signs a commit that decodes and verifies with the key', (ctx) => {
+    let key = hex.decode('c9afa9d845ba75166b5c215767b1d6934e50c3db36e89b127b8a622b120f6721');
+    let blocks = new BlockMap();
+    let data = buildMst(new FixedArray<String>(0, ''), new FixedArray<Cid>(0, Cid.forBlob(new FixedArray<u8>(0, 0 as u8))), blocks);
+    let first = signCommit(DID, data, '3l3qo2vutsw2b', null, (bytes) => p256.sign(key, bytes));
+    let commit = decodeCommit(first.bytes);
+    equal(commit.did, DID);
+    equal(commit.version, 3 as i64);
+    isTrue(commit.data.equals(data));
+    isNull(commit.prev);
+    isTrue(first.cid.equals(Cid.forDagCbor(first.bytes)));
+    isTrue(verifySignature(publicKeyFor(KeyType.P256, key), commit.signedBytes(), commit.sig));
+
+    let second = signCommit(DID, data, '3l3qo2vutsw2c', first.cid, (bytes) => p256.sign(key, bytes));
+    isTrue((decodeCommit(second.bytes).prev as Cid).equals(first.cid));
+  });
+
   test('reads a getRecord answer from the network', (ctx) => {
     let car = networkCar();
     equal(car.roots.length, 1);
