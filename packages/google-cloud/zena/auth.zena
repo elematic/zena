@@ -143,10 +143,10 @@ async function metadataGet(origin: String, path: String): Future<String> {
   request.setAuthority(some(parsed.host()));
   request.setPathWithQuery(some(path));
   let sent = await send(request);
-  if (sent is Err<WireResponse, ErrorCode>) {
-    throw new AuthError(`the metadata server at ${origin} could not be reached`);
-  }
-  let response = (sent as Ok<WireResponse, ErrorCode>).value;
+  let response = match (sent) {
+    case Ok {value}: value
+    case Err: throw new AuthError(`the metadata server at ${origin} could not be reached`)
+  };
   let status = response.getStatusCode() as i32;
   let received = new Completer<Outcome<void, ErrorCode>>();
   let (body, responseTrailers) = WireResponse.consumeBody(response, received.future);

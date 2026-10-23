@@ -142,21 +142,23 @@ export async function post(
   wire.setAuthority(some(origin.authority));
   wire.setPathWithQuery(some(path));
   let sent = await send(wire);
-  if (sent is Err<WireResponse, ErrorCode>) {
-    if (sent.error is ErrorCodeConnectionReadTimeout) {
+  let response = match (sent) {
+    case Ok {value}: value
+    case Err {error}: {
+      if (error is ErrorCodeConnectionReadTimeout) {
+        throw new RpcError(
+          CODE_DEADLINE_EXCEEDED,
+          `${method.service}/${method.name}: no response from ${origin.authority} within the deadline`,
+          ProtoView.empty()
+        );
+      }
       throw new RpcError(
-        CODE_DEADLINE_EXCEEDED,
-        `${method.service}/${method.name}: no response from ${origin.authority} within the deadline`,
+        CODE_UNAVAILABLE,
+        `${method.service}/${method.name}: no response from ${origin.authority}`,
         ProtoView.empty()
       );
     }
-    throw new RpcError(
-      CODE_UNAVAILABLE,
-      `${method.service}/${method.name}: no response from ${origin.authority}`,
-      ProtoView.empty()
-    );
-  }
-  let response = (sent as Ok<WireResponse, ErrorCode>).value;
+  };
   // Read the status and headers first: `consumeBody` takes the response.
   let status = response.getStatusCode() as i32;
   let responseHeaders = response.getHeaders();

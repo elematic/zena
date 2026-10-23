@@ -23,7 +23,7 @@
 
 import { AsyncIterator, AsyncStep } from 'zena:async';
 import { HashMap } from 'zena:collections';
-import { Err, Ok, Option, Outcome, copyBytes, newByteArray } from 'zena:core';
+import { Ok, Option, copyBytes, newByteArray } from 'zena:core';
 import { Stream } from 'zena:stream';
 import { div } from 'zena:math';
 import { Duration } from 'zena:time';
@@ -378,14 +378,13 @@ final class GrpcResponseReader implements AsyncIterator<ProtoView> {
   /** The error the trailers' status stands for, or null for OK. */
   async #trailerStatus(exchange: Exchange): Future<RpcError | null> {
     let trailers = await exchange.trailers;
-    if (trailers is Err<Option<Fields>, ErrorCode>) {
-      return new RpcError(CODE_UNAVAILABLE, 'the connection failed before the call\'s status arrived', ProtoView.empty());
+    if (let Ok {value as fields} = trailers) {
+      if (fields is Some<Fields>) {
+        return statusError(fields.value);
+      }
+      return new RpcError(CODE_INTERNAL, 'the response has no trailers', ProtoView.empty());
     }
-    let fields = (trailers as Ok<Option<Fields>, ErrorCode>).value;
-    if (fields is Some<Fields>) {
-      return statusError(fields.value);
-    }
-    return new RpcError(CODE_INTERNAL, 'the response has no trailers', ProtoView.empty());
+    return new RpcError(CODE_UNAVAILABLE, 'the connection failed before the call\'s status arrived', ProtoView.empty());
   }
 
   /** The next complete message in the buffer, or null when the buffer holds none. */
