@@ -1760,8 +1760,24 @@ binds (`registerDestructuredOwners`). In codegen every drop site takes a
 tuple reads its slots through the pattern reader, branches on the tag for a
 union, and releases its owner elements last first, nested tuples
 included. A declaration that releases several bindings gets one region per
-binding, the first outermost. An owner bound by an `if let` or `match`
-pattern, and a discarded result holding one, are not released yet.
+binding, the first outermost.
+
+A pattern's owner bindings are candidates of the branch they guard: the
+checker opens an own scope around an `if let` or `while let` consequent and
+a `match` arm's body (`registerPatternOwners`), so the release regions
+wrap the branch, after any guard, and cover its early exits
+(`lowerBranchStmt`, `lowerBranchValue`). A `match` arm whose record a core
+returns as fields has no region to carry the fields, so it releases with
+plain calls at its end (`emitPlainBranchDrops`). A call or `new` whose
+result owns something, used as a statement, is released where it is
+discarded (`releaseDiscardedOwner`, then `emitDrop` or `emitSlotsDrop` in
+lowering).
+
+Not released yet: when an `if let` or `while let` pattern does not match,
+its source holds a member the pattern did not take, and if that member
+holds an owner (`(true, Own<A>) | (false, Own<B>)` on the `false` side), it
+leaks. The source's slots would have to reach the fail path of each
+lowering.
 
 **Generic fields are the other half, and defer to `scoped T`.**
 `class Box<scoped T> { var value: T }` stays an ordinary class; the

@@ -34,6 +34,13 @@ function openOrFail(ok: boolean, fd: i32): Opened {
 // The parameter owns the tuple, so the function releases it.
 function take(t: (true, Own<File>)): void {}
 
+// Likewise for a plain owner.
+function consume(f: Own<File>): void {}
+
+function openInline(fd: i32): inline (true, Own<File>) | (false, String) {
+  return (true, open(fd));
+}
+
 function tupleReleased(): void {
   let t = (true, open(1));
 }
@@ -72,6 +79,44 @@ function reassigned(): void {
   t = (true, open(256));
 }
 
+// An owner bound by a pattern is released at the end of its branch.
+function ifLetReleased(): void {
+  if (let (true, f) = openOrFail(true, 512)) {
+    let n = f.fd();
+  }
+}
+
+function ifLetMoved(): void {
+  if (let (true, f) = openOrFail(true, 1024)) {
+    consume(f);
+  }
+}
+
+function ifLetEarlyExit(): i32 {
+  if (let (true, f) = openOrFail(true, 2048)) {
+    return 1;
+  }
+  return 0;
+}
+
+function matchReleased(): void {
+  match (openOrFail(true, 4096)) {
+    case (true, let f): {}
+    case (false, let why): {}
+  }
+}
+
+function ifLetInline(): void {
+  if (let (true, f) = openInline(8192)) {}
+}
+
+// A discarded result is released where it is discarded.
+function discarded(): void {
+  openOrFail(true, 16384);
+  open(32768);
+  openInline(65536);
+}
+
 function borrowed(): i32 {
   let t = (true, open(64));
   return t[1].fd();
@@ -86,6 +131,13 @@ export let main = (): i32 => {
   nested();
   earlyExit(true);
   reassigned();
+  ifLetReleased();
+  ifLetMoved();
+  ifLetEarlyExit();
+  matchReleased();
+  ifLetInline();
+  discarded();
   let n = borrowed();
-  return released - (1 + 2 + 4 + 8 + 16 + 32 + 64 + 128 + 256) + (n - 64);
+  return released - (1 + 2 + 4 + 8 + 16 + 32 + 64 + 128 + 256 + 512 + 1024 + 2048 +
+      4096 + 8192 + 16384 + 32768 + 65536) + (n - 64);
 };

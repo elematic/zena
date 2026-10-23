@@ -5573,6 +5573,70 @@ function collectOwnedResources(t: Type, result: GrowableArray<ClassType>): boole
   return true;
 }
 
+/**
+ * A call or `new` whose result owns something, used as a statement: no
+ * binding takes the owner, so it is released right there (#495). The
+ * statement is marked for lowering, and the release's `:dispose` rooted
+ * as an implicit drop's is.
+ */
+function releaseDiscardedOwner(ctx: CheckerContext, stmt: Node, expression: Expression,
+    exprType: Type): void {
+  if (!(expression is CallExpression) && !(expression is NewExpression)) {
+    return;
+  }
+  let resources = ownedResourcesIn(exprType);
+  if (resources == null) {
+    return;
+  }
+  ctx.model.setScopeExitDrop(stmt, true);
+  let deps = ctx.currentDependencies();
+  if (deps != null) {
+    deps.needsExceptionInfra = true;
+    for (let resource in resources) {
+      let classSymId = (resource.genericSource ?? resource).symbolId;
+      deps.referencedSymbols.add(classSymId);
+      deps.referencedClassMethods.add(
+          i32ToString(classSymId as i32) + ".:dispose");
+    }
+  }
+}
+
+/**
+ * Register the owner bindings an `if let`, `while let` or `match` pattern
+ * declares as drop candidates of the branch it guards, so they are
+ * released at the branch's end unless it moves them (#495).
+ */
+function registerPatternOwners(ctx: CheckerContext, pattern: Node): void {
+  match (pattern) {
+    case BindingPattern {pattern as inner}: registerPatternOwners(ctx, inner as Node)
+    case TuplePattern {elements}: {
+      for (let element in elements) {
+        if (element != null) {
+          registerPatternOwners(ctx, element as Node);
+        }
+      }
+    }
+    case Identifier {}: registerPatternOwner(ctx, pattern)
+    case IdentifierPattern {}: registerPatternOwner(ctx, pattern)
+    case _: {}
+  }
+}
+
+function registerPatternOwner(ctx: CheckerContext, node: Node): void {
+  let symOpt = ctx.model.resolveDeclaration(node);
+  if (symOpt == null) {
+    return;
+  }
+  let bindingType = ctx.model.getBindingType(symOpt);
+  if (bindingType == null) {
+    return;
+  }
+  let resources = ownedResourcesIn(bindingType);
+  if (resources != null) {
+    ctx.registerOwnCandidate(symOpt, node, resources);
+  }
+}
+
 /** Register the owner bindings a tuple pattern declares as drop candidates. */
 function registerDestructuredOwners(ctx: CheckerContext, pattern: TuplePattern,
     declNode: Node | null): void {
@@ -10805,6 +10869,7 @@ function checkStatement(ctx: CheckerContext, stmt: Statement): void {
       if (exprType is NeverType) {
         ctx.markFlowUnreachable();
       }
+      releaseDiscardedOwner(ctx, stmt, expression, exprType);
     }
     case BlockStatement {body}: {
       ctx.enterScope();
@@ -11019,7 +11084,10 @@ function checkStatement(ctx: CheckerContext, stmt: Statement): void {
           let preBranchFlow = ctx.currentFlow;
           ctx.enterScope();
           checkPattern(ctx, lpc.pattern, narrowedInitType);
+          ctx.enterOwnScope();
+          registerPatternOwners(ctx, lpc.pattern as Node);
           checkStatement(ctx, consequent);
+          ctx.exitOwnScope(consequent as Node);
           ctx.exitScope();
           let trueEnd = ctx.currentFlow;
           ctx.setFlow(preBranchFlow);
@@ -11080,7 +11148,10 @@ case _: {
           ctx.enterLoop();
           ctx.enterScope();
           checkPattern(ctx, lpc.pattern, narrowedInitType);
+          ctx.enterOwnScope();
+          registerPatternOwners(ctx, lpc.pattern as Node);
           checkStatement(ctx, body);
+          ctx.exitOwnScope(body as Node);
           ctx.exitScope();
           ctx.exitLoop();
           ctx.exitFlowLoop(afterTest);
@@ -13805,7 +13876,10 @@ function checkExpressionInner(ctx: CheckerContext, expr: Expression, expectedTyp
         let preBranchFlow = ctx.currentFlow;
         ctx.enterScope();
         checkPattern(ctx, lpc.pattern, narrowedInitType);
+        ctx.enterOwnScope();
+        registerPatternOwners(ctx, lpc.pattern as Node);
         let consType = checkIfBranchNode(ctx, consequent, expectedType);
+        ctx.exitOwnScope(consequent as Node);
         ctx.exitScope();
         let trueEnd = ctx.currentFlow;
         ctx.setFlow(preBranchFlow);
@@ -22646,8 +22720,13 @@ function checkMatchExpr(
       }
     }
 
-    // Check the body and collect its type.
+    // Check the body and collect its type. The owners the pattern bound
+    // are released at the body's end unless it moves them (#495); the
+    // guard has run by then, so a failed guard releases nothing.
+    ctx.enterOwnScope();
+    registerPatternOwners(ctx, matchCase.pattern);
     let bodyType = checkMatchCaseBody(ctx, matchCase.body, expectedType);
+    ctx.exitOwnScope(matchCase.body as Node);
     resultTypes.push(bodyType);
 
     ctx.exitScope();

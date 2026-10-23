@@ -568,11 +568,12 @@ export function lowerMatch(cx: LoweringContext, expr: MatchExpression): i32 {
     if (fieldsMode != null) {
       let values = lowerArmFields(cx, mc.body, fieldsMode, resultVt);
       if (cx.reachable) {
+        emitPlainBranchDrops(cx, mc.pattern);
         emitMatchArmDrops(cx, expr, i);
         cx.mergeArmFields(m, values);
       }
     } else {
-      let value = lowerValueNode(cx, mc.body, isVoid, resultVt);
+      let value = lowerBranchValue(cx, mc.pattern, mc.body, isVoid, resultVt);
       if (cx.reachable) {
         emitMatchArmDrops(cx, expr, i);
         cx.mergeArm(m, value, 'match arm type');
@@ -696,7 +697,7 @@ export function lowerIf(cx: LoweringContext, stmt: IfStatement): void {
         cx.b.switchTo(resumeB);
       }
     }
-    lowerStmt(cx, stmt.consequent);
+    lowerBranchStmt(cx, letPatternOf(stmt.test), stmt.consequent);
     if (cx.reachable) {
       emitEdgeDrops(cx, stmt, true);
       cx.b.br(mergeB, cx.envValues(mergeSyms));
@@ -723,7 +724,7 @@ export function lowerIf(cx: LoweringContext, stmt: IfStatement): void {
   if (letBinds != null) {
     applyLetBinds(cx, letBinds, elseB);
   }
-  lowerStmt(cx, stmt.consequent);
+  lowerBranchStmt(cx, letPatternOf(stmt.test), stmt.consequent);
   if (cx.reachable) {
     emitEdgeDrops(cx, stmt, true);
     cx.mergeArm(m, -1);
@@ -792,7 +793,8 @@ export function lowerIfExpression(cx: LoweringContext, expr: IfExpression): i32 
   if (letBinds != null) {
     applyLetBinds(cx, letBinds, elseB);
   }
-  mergeValueArm(cx, m, expr.consequent, isVoid, resultVt, 'if arm type');
+  mergeBranchArm(cx, m, letPatternOf(expr.test), expr.consequent, isVoid, resultVt,
+      'if arm type');
 
   cx.env = cx.copyOf(saved);
   cx.reachable = true;
@@ -808,6 +810,146 @@ export function lowerIfExpression(cx: LoweringContext, expr: IfExpression): i32 
 }
 
 /** Lowers one arm and branches to the merge with its value or its fields. */
+/** The pattern of an `if let` or `while let` test, or null. */
+function letPatternOf(test: Node): Node | null {
+  return if (let LetPatternCondition {pattern} = test) pattern as Node else null;
+}
+
+/**
+ * The owners a pattern bound that its branch releases, each marked by the
+ * checker (#495): released at the end of the branch unless it moved them.
+ */
+function patternBranchDrops(cx: LoweringContext, pattern: Node | null): ScopeDrops {
+  let syms = new Array<SymbolId>();
+  let plans = new Array<DropPlan>();
+  if (pattern != null) {
+    collectBranchDrops(cx, pattern, syms, plans);
+  }
+  return new ScopeDrops(syms, plans);
+}
+
+function collectBranchDrops(cx: LoweringContext, node: Node,
+    syms: GrowableArray<SymbolId>, plans: GrowableArray<DropPlan>): void {
+  match (node) {
+    case BindingPattern {pattern as inner}: collectBranchDrops(cx, inner as Node, syms, plans)
+    case TuplePattern {elements}: {
+      for (let element in elements) {
+        if (element != null) {
+          collectBranchDrops(cx, element as Node, syms, plans);
+        }
+      }
+    }
+    case _: {
+      if ((node is Identifier || node is IdentifierPattern) &&
+          cx.func.model.hasScopeExitDrop(node)) {
+        let symOpt = cx.func.model.resolveDeclaration(node);
+        if (symOpt == null) {
+          bail(cx, 'branch drop binding symbol');
+        }
+        let sym = symOpt as Symbol;
+        let bindingOpt = cx.func.model.getBindingTypeById(sym.id);
+        if (bindingOpt == null) {
+          bail(cx, 'untyped branch drop binding');
+        }
+        syms.push(sym.id);
+        plans.push(dropPlanOf(cx, bindingOpt as Type));
+      }
+    }
+  }
+}
+
+/**
+ * A branch's statement behind one release region per owner its pattern
+ * bound, so early exits and the unwind path release them too.
+ */
+function lowerBranchStmt(cx: LoweringContext, pattern: Node | null, body: Statement): void {
+  let drops = patternBranchDrops(cx, pattern);
+  if (drops.syms.length == 0) {
+    lowerStmt(cx, body);
+    return;
+  }
+  lowerBranchStmtDrops(cx, cx.envValues(drops.syms), drops.plans, 0, body);
+}
+
+function lowerBranchStmtDrops(cx: LoweringContext, values: GrowableArray<i32>,
+    plans: GrowableArray<DropPlan>, idx: i32, body: Statement): void {
+  if (idx >= values.length) {
+    lowerStmt(cx, body);
+    return;
+  }
+  let value = values[idx];
+  let plan = plans[idx];
+  lowerFinallyRegion(cx, cx.assignedEnvSyms(body as Node), true, null,
+      (scope, resultVar, saved) => {
+        lowerBranchStmtDrops(cx, values, plans, idx + 1, body);
+        finishProtectedArm(cx, scope, resultVar, -1);
+      },
+      (fscope) => { emitDrop(cx, value, plan); });
+}
+
+/** A branch's value behind the release regions its pattern's owners need. */
+function lowerBranchValue(cx: LoweringContext, pattern: Node | null, body: Node,
+    isVoid: boolean, resultVt: ValType | null): i32 {
+  let drops = patternBranchDrops(cx, pattern);
+  if (drops.syms.length == 0) {
+    return lowerValueNode(cx, body, isVoid, resultVt);
+  }
+  return lowerBranchValueDrops(cx, cx.envValues(drops.syms), drops.plans, 0, body,
+      isVoid, resultVt);
+}
+
+function lowerBranchValueDrops(cx: LoweringContext, values: GrowableArray<i32>,
+    plans: GrowableArray<DropPlan>, idx: i32, body: Node, isVoid: boolean,
+    resultVt: ValType | null): i32 {
+  if (idx >= values.length) {
+    return lowerValueNode(cx, body, isVoid, resultVt);
+  }
+  let value = values[idx];
+  let plan = plans[idx];
+  let carries = !isVoid && resultVt != null;
+  let v = lowerFinallyRegion(cx, cx.assignedEnvSyms(body), !carries,
+      if (carries) resultVt else null,
+      (scope, resultVar, saved) => {
+        let inner = lowerBranchValueDrops(cx, values, plans, idx + 1, body, isVoid, resultVt);
+        finishProtectedArm(cx, scope, resultVar, if (carries) inner else -1);
+      },
+      (fscope) => { emitDrop(cx, value, plan); });
+  return if (carries) v else -1;
+}
+
+/**
+ * The releases a branch owes, as plain calls at its end. For an arm whose
+ * record a core returns as fields, where no region carries the fields;
+ * an early exit from such an arm leaks its owners.
+ */
+function emitPlainBranchDrops(cx: LoweringContext, pattern: Node): void {
+  let drops = patternBranchDrops(cx, pattern);
+  let values = cx.envValues(drops.syms);
+  for (var i = values.length - 1; i >= 0; i -= 1) {
+    emitDrop(cx, values[i], drops.plans[i]);
+  }
+}
+
+/** `mergeValueArm` for a branch whose pattern bound owners. */
+function mergeBranchArm(cx: LoweringContext, m: MergeState, pattern: Node | null,
+    node: Node, isVoid: boolean, resultVt: ValType | null, armKind: String): void {
+  let fieldsMode = m.fields;
+  if (fieldsMode != null) {
+    let values = lowerArmFields(cx, node, fieldsMode, resultVt);
+    if (cx.reachable) {
+      if (pattern != null) {
+        emitPlainBranchDrops(cx, pattern);
+      }
+      cx.mergeArmFields(m, values);
+    }
+    return;
+  }
+  let value = lowerBranchValue(cx, pattern, node, isVoid, resultVt);
+  if (cx.reachable) {
+    cx.mergeArm(m, value, armKind);
+  }
+}
+
 function mergeValueArm(cx: LoweringContext, m: MergeState, node: Node,
     isVoid: boolean, resultVt: ValType | null, armKind: String): void {
   let fieldsMode = m.fields;
@@ -1883,7 +2025,14 @@ function emitTupleDrop(cx: LoweringContext, value: i32, t: Type): void {
   if (sourceOpt == null) {
     bail(cx, 'drop of a tuple that is not tuples');
   }
-  let source = sourceOpt as MultiValues;
+  emitSlotsDrop(cx, sourceOpt as MultiValues);
+}
+
+/**
+ * Releases the owners a tuple's slots hold: its boxed form read out, or
+ * an inline result discarded as a statement.
+ */
+export function emitSlotsDrop(cx: LoweringContext, source: MultiValues): void {
   let layout = source.layout;
   if (layout == null) {
     bail(cx, 'drop of a tuple with no slots');
@@ -2539,7 +2688,7 @@ export function lowerWhile(cx: LoweringContext, stmt: WhileStatement): void {
       cx.b.switchTo(resumeB);
     }
   }
-  lowerStmt(cx, stmt.body);
+  lowerBranchStmt(cx, letPatternOf(stmt.test), stmt.body);
   if (cx.reachable) {
     cx.b.br(header, cx.envValues(carried));
   }
