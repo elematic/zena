@@ -4784,8 +4784,19 @@ returns `inline Pair`.
 
 `inline` is shallow. It unboxes the value it is written on, and nothing
 inside it: in `inline (i32, (i32, i32))` the second element is a boxed tuple.
-An inline tuple inside an inline tuple is legal by design, but the compiler
-does not flatten it yet and reports an error.
+An element of an inline tuple may be an inline tuple itself, and then its
+values are part of the outer tuple's:
+
+```zena
+let spans = (n: i32): inline (String, inline (i32, i32)) => ('x', (n, n + 1));
+
+let (name, (first, last)) = spans(3); // no allocation
+let (_, span) = spans(3);            // span holds the boxed (i32, i32)
+```
+
+A nested tuple pattern reads the inner values one by one, and a name binding
+the inner tuple whole holds it boxed. The element may not be an inline union
+yet.
 
 The members of an inline union may put different types at the same position.
 Each position is returned as one WebAssembly value per type its members put

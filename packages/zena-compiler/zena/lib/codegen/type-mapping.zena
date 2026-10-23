@@ -1912,9 +1912,16 @@ export function inlineLaneValTypes(wasm: WasmModule, type: Type): GrowableArray<
  */
 export final class InlineLayout {
   slots: GrowableArray<ValType>;
+  /**
+   * The members with their nested inline tuples spliced in
+   * (`flattenInlineTuple`): positions below, and in `memberSlots`, are
+   * positions of these.
+   */
   members: GrowableArray<InlineTupleType>;
-  /** The position each slot belongs to, parallel to `slots`. */
-  slotPositions: GrowableArray<i32>;
+  /** The members as written, nested inline tuples and all. */
+  originals: GrowableArray<InlineTupleType>;
+  /** The path each slot belongs to, parallel to `slots`. */
+  slotPaths: GrowableArray<String>;
   /**
    * For member `m` and position `p`, the slot its element occupies, or
    * -1 when it occupies none (`_`, or a zero-width element).
@@ -1928,8 +1935,59 @@ export final class InlineLayout {
    */
   discriminant: i32;
 
-  new(this.slots, this.members, this.slotPositions, this.memberSlots, this.arity,
-      this.discriminant);
+  /**
+   * For member `m` and flat position `i`, the path of its leaf: "p" at a
+   * top-level position, "p.k" for the k-th leaf of a nested inline tuple
+   * at p. Slots are keyed by path, so a `Step` and an `AsyncStep` over
+   * the same tuple line up although their members flatten to different
+   * lengths.
+   */
+  memberPaths: GrowableArray<GrowableArray<String>>;
+
+  new(this.slots, this.members, this.originals, this.slotPaths, this.memberSlots,
+      this.memberPaths, this.arity, this.discriminant);
+
+  /** The slot member `m`'s leaf at `path` occupies, or -1. */
+  slotAt(m: i32, path: String): i32 {
+    let i = pathIndex(this.memberPaths[m], path);
+    return if (i >= 0) this.memberSlots[m][i] else -1;
+  }
+
+  /**
+   * The one slot `path` reads from for the members `allowed` keeps, as
+   * `positionSlot` does for a flat position: -1 when none has a value
+   * there, -2 when they use different slots.
+   */
+  pathSlot(path: String, allowed: GrowableArray<boolean> | null): i32 {
+    var found = -1;
+    for (var m = 0; m < this.members.length; m += 1) {
+      if (allowed != null && !allowed[m]) {
+        continue;
+      }
+      let s = this.slotAt(m, path);
+      if (s < 0) {
+        continue;
+      }
+      if (found == -1) {
+        found = s;
+      } else if (found != s) {
+        return -2;
+      }
+    }
+    return found;
+  }
+
+  /** Whether the layout has a nested inline tuple anywhere. */
+  isNested(): boolean {
+    for (let paths in this.memberPaths) {
+      for (let path in paths) {
+        if (path.contains(".")) {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
 
   /** The slot member `m`'s element at position `p` occupies, or -1. */
   slotOf(m: i32, p: i32): i32 {
@@ -1977,18 +2035,35 @@ export final class InlineLayout {
  * `type` is neither. See `InlineLayout`.
  */
 export function inlineLayoutOf(wasm: WasmModule, type: Type): InlineLayout | null {
-  let members = new Array<InlineTupleType>();
+  let originals = new Array<InlineTupleType>();
   if (type is InlineTupleType) {
-    members.push(type);
+    originals.push(type);
   } else if (type is UnionType) {
     for (let t in type.types) {
       if (t is InlineTupleType) {
-        members.push(t);
+        originals.push(t);
       }
     }
   }
-  if (members.length == 0) {
+  if (originals.length == 0) {
     return null;
+  }
+  // Each member's leaves, with the path of each: "p" for a top-level
+  // position, "p.k" for the k-th leaf of a nested inline tuple at p.
+  let members = new Array<InlineTupleType>();
+  let memberPaths = new Array<GrowableArray<String>>();
+  var origArity = 0;
+  for (let original in originals) {
+    let flat = new Array<Type>();
+    let paths = new Array<String>();
+    for (var p = 0; p < original.elementTypes.length; p += 1) {
+      appendLeaves(original.elementTypes[p], `${p}`, flat, paths);
+    }
+    members.push(new InlineTupleType(flat));
+    memberPaths.push(paths);
+    if (original.elementTypes.length > origArity) {
+      origArity = original.elementTypes.length;
+    }
   }
   var arity = 0;
   for (let member in members) {
@@ -1997,7 +2072,7 @@ export function inlineLayoutOf(wasm: WasmModule, type: Type): InlineLayout | nul
     }
   }
   let slots = new Array<ValType>();
-  let slotPositions = new Array<i32>();
+  let slotPaths = new Array<String>();
   let memberSlots = new Array<GrowableArray<i32>>();
   for (let member in members) {
     let row = new Array<i32>();
@@ -2006,18 +2081,31 @@ export function inlineLayoutOf(wasm: WasmModule, type: Type): InlineLayout | nul
     }
     memberSlots.push(row);
   }
-  for (var p = 0; p < arity; p += 1) {
+  // The paths in order: by position, then as the members first use them.
+  let order = new Array<String>();
+  for (var p = 0; p < origArity; p += 1) {
+    let top = `${p}`;
+    let nested = `${p}.`;
+    for (let paths in memberPaths) {
+      for (let path in paths) {
+        if ((path == top || path.startsWith(nested)) && !order.contains(path)) {
+          order.push(path);
+        }
+      }
+    }
+  }
+  for (let path in order) {
     let firstSlot = slots.length;
     var anyHole = false;
     var anyNull = false;
     var anyZeroWidth = false;
     // Values first: a slot per distinct wasm type, in member order.
     for (var m = 0; m < members.length; m += 1) {
-      let elements = members[m].elementTypes;
-      if (p >= elements.length) {
+      let i = pathIndex(memberPaths[m], path);
+      if (i < 0) {
         continue;
       }
-      let el = elements[p];
+      let el = members[m].elementTypes[i];
       if (el is HoleType) {
         anyHole = true;
         continue;
@@ -2041,13 +2129,13 @@ export function inlineLayoutOf(wasm: WasmModule, type: Type): InlineLayout | nul
       if (slot == -1) {
         slot = slots.length;
         slots.push(vt);
-        slotPositions.push(p);
+        slotPaths.push(path);
       } else if (isNullableValType(vt)) {
         slots[slot] = vt;
       }
-      memberSlots[m][p] = slot;
+      memberSlots[m][i] = slot;
     }
-    // `null` shares the position's first reference slot, or gets one.
+    // `null` shares the path's first reference slot, or gets one.
     if (anyNull) {
       var refSlot = -1;
       for (var s = firstSlot; s < slots.length; s += 1) {
@@ -2059,23 +2147,33 @@ export function inlineLayoutOf(wasm: WasmModule, type: Type): InlineLayout | nul
       if (refSlot == -1) {
         refSlot = slots.length;
         slots.push(typeToValType(wasm, new NullType()));
-        slotPositions.push(p);
+        slotPaths.push(path);
       }
       slots[refSlot] = nullableValType(slots[refSlot]);
       for (var m = 0; m < members.length; m += 1) {
-        let elements = members[m].elementTypes;
-        if (p < elements.length && elements[p] is NullType) {
-          memberSlots[m][p] = refSlot;
+        let i = pathIndex(memberPaths[m], path);
+        if (i >= 0 && members[m].elementTypes[i] is NullType) {
+          memberSlots[m][i] = refSlot;
         }
       }
     }
-    if (slots.length == firstSlot && anyHole && !anyZeroWidth) {
+    // A path every member leaves as `_` keeps a `nullref` slot, unless
+    // another member nests a tuple there: then the hole covers that
+    // tuple's leaves, which have slots of their own.
+    var covers = false;
+    let prefix = `${path}.`;
+    for (let other in order) {
+      if (other.startsWith(prefix)) {
+        covers = true;
+      }
+    }
+    if (slots.length == firstSlot && anyHole && !anyZeroWidth && !covers) {
       slots.push(new ValTypeNullRef());
-      slotPositions.push(p);
+      slotPaths.push(path);
       for (var m = 0; m < members.length; m += 1) {
-        let elements = members[m].elementTypes;
-        if (p < elements.length && elements[p] is HoleType) {
-          memberSlots[m][p] = firstSlot;
+        let i = pathIndex(memberPaths[m], path);
+        if (i >= 0 && members[m].elementTypes[i] is HoleType) {
+          memberSlots[m][i] = firstSlot;
         }
       }
     }
@@ -2083,7 +2181,8 @@ export function inlineLayoutOf(wasm: WasmModule, type: Type): InlineLayout | nul
     for (var s = firstSlot; s < slots.length; s += 1) {
       var allUse = true;
       for (var m = 0; m < members.length; m += 1) {
-        if (memberSlots[m].length <= p || memberSlots[m][p] != s) {
+        let i = pathIndex(memberPaths[m], path);
+        if (i < 0 || memberSlots[m][i] != s) {
           allUse = false;
         }
       }
@@ -2093,9 +2192,79 @@ export function inlineLayoutOf(wasm: WasmModule, type: Type): InlineLayout | nul
     }
   }
   // The checker requires a union of several to start each member with
-  // a distinct literal (`checkInlineUnionMembers`).
-  return new InlineLayout(slots, members, slotPositions, memberSlots, arity,
-      if (members.length < 2) -1 else 0);
+  // a distinct literal (`checkTupleUnionMembers`).
+  return new InlineLayout(slots, members, originals, slotPaths, memberSlots,
+      memberPaths, arity, if (members.length < 2) -1 else 0);
+}
+
+/** Where `path` is in `paths`, or -1. */
+export function pathIndex(paths: GrowableArray<String>, path: String): i32 {
+  for (var i = 0; i < paths.length; i += 1) {
+    if (paths[i] == path) {
+      return i;
+    }
+  }
+  return -1;
+}
+
+/** The leaves of an element at `path`: itself, or a nested inline tuple's
+ * leaves at `path.k`. */
+function appendLeaves(t: Type, path: String, flat: GrowableArray<Type>,
+    paths: GrowableArray<String>): void {
+  let inner = nestedInlineTuple(t);
+  if (inner == null) {
+    flat.push(t);
+    paths.push(path);
+    return;
+  }
+  for (var k = 0; k < inner.elementTypes.length; k += 1) {
+    appendLeaves(inner.elementTypes[k], `${path}.${k}`, flat, paths);
+  }
+}
+
+/**
+ * An inline tuple with its nested inline tuples spliced in, recursively:
+ * `inline (1, inline (A, B), _)` lays out as `(1, A, B, _)`, since the
+ * inner tuple's values are the outer one's.
+ */
+export function flattenInlineTuple(t: InlineTupleType): InlineTupleType {
+  var nested = false;
+  for (let el in t.elementTypes) {
+    if (nestedInlineTuple(el) != null) {
+      nested = true;
+    }
+  }
+  if (!nested) {
+    return t;
+  }
+  let flat = new Array<Type>();
+  for (let el in t.elementTypes) {
+    let inner = nestedInlineTuple(el);
+    if (inner != null) {
+      for (let e in flattenInlineTuple(inner).elementTypes) {
+        flat.push(e);
+      }
+    } else {
+      flat.push(el);
+    }
+  }
+  return new InlineTupleType(flat);
+}
+
+/** The inline tuple an element of an inline tuple is, or null. */
+export function nestedInlineTuple(t: Type): InlineTupleType | null {
+  var u = t;
+  while (u is TypeAliasType) {
+    u = (u as TypeAliasType).target;
+  }
+  return if (u is InlineTupleType) u else null;
+}
+
+/** How many positions a nested element takes once flattened: 1 for an
+ * element that is not an inline tuple. */
+export function flatWidth(t: Type): i32 {
+  let inner = nestedInlineTuple(t);
+  return if (inner != null) flattenInlineTuple(inner).elementTypes.length else 1;
 }
 
 function isNullableValType(vt: ValType): boolean {
@@ -2178,7 +2347,7 @@ export function mapReturnTypeToWasmResults(wasm: WasmModule, type: Type, returns
     return;
   }
   if (type is InlineTupleType) {
-    for (let el in type.elementTypes) {
+    for (let el in flattenInlineTuple(type).elementTypes) {
       let vt = typeToValType(wasm, el);
       if (!(vt is ValTypeVoid)) {
         returns.push(vt);

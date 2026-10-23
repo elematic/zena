@@ -38,7 +38,7 @@ import {
   noCaptures,
 } from '../wasm-module.zena';
 import {
-  typeToValType, typeToValTypeWithSub, eraseTypeParameters, substituteTypeParamsInClassContext, substituteTypeParamsInFunctionContext, InlineLayout, inlineLayoutOf, getClosureStruct, getClosureKey, getNonNullableType, recordWasmFields, sortedOptionalNames, interfaceCallSlotName,
+  typeToValType, typeToValTypeWithSub, eraseTypeParameters, substituteTypeParamsInClassContext, substituteTypeParamsInFunctionContext, InlineLayout, inlineLayoutOf, nestedInlineTuple, flattenInlineTuple, pathIndex, getClosureStruct, getClosureKey, getNonNullableType, recordWasmFields, sortedOptionalNames, interfaceCallSlotName,
 } from '../type-mapping.zena';
 
 import { IrBody, IrOp, IrRefFunc, IrRefGlobal, IrRefType, IrRefField, IrRefTag } from './ir.zena';
@@ -2902,12 +2902,34 @@ export final class FunctionLowerer {
       // narrower one than this function's (`Step<T>` into
       // `AsyncStep<T>`), with different slots.
       let outs = new Array<i32>();
-      this.#lowerCall(arg, outs);
-      let calleeLayout = this.#callResultLayout(arg);
+      let single = this.#lowerCall(arg, outs);
+      if (outs.length == 0 && single != NO_VALUE) {
+        // A single result: the tuple boxed.
+        outs.push(single);
+      }
+      var calleeLayout = this.#callResultLayout(arg);
       var flat = outs;
+      if (layout != null && outs.length == 1 && sig.returns.length != 1 &&
+          (calleeLayout == null || calleeLayout.slots.length != 1)) {
+        // The callee returns the tuple boxed: read its fields into slots.
+        // The call's type is the inline one it converts to, so the boxed
+        // type is the callee's.
+        let calleeType = this.func.model.getNodeType(arg.callee);
+        let boxedType = if (calleeType is FunctionType) {
+          substituteTypeParamsInFunctionContext(this.wasm, this.func,
+              calleeType.returnType)
+        } else {
+          null
+        };
+        let unboxed = if (boxedType != null) this.#unboxTuples(outs[0], boxedType) else null;
+        if (unboxed != null) {
+          flat = unboxed.values;
+          calleeLayout = unboxed.layout;
+        }
+      }
       if (layout != null && calleeLayout != null &&
-          !this.#slotsForwardDirectly(outs, sig.returns)) {
-        flat = this.#convertInlineSlots(outs, calleeLayout, layout);
+          !this.#slotsForwardDirectly(flat, sig.returns)) {
+        flat = this.#convertInlineSlots(flat, calleeLayout as InlineLayout, layout);
       }
       if (flat.length != sig.returns.length) {
         this.#bail('multi-value return arity');
@@ -2968,10 +2990,20 @@ export final class FunctionLowerer {
       for (var s = 0; s < shape.slots.length; s += 1) {
         values.push(NO_VALUE);
       }
-      for (var p = 0; p < arg.elements.length; p += 1) {
-        let el = arg.elements[p];
+      // Each element by the path it stands for: a nested tuple literal at
+      // a nested inline position is spliced in, and any other element
+      // there gives its leaves.
+      let entries = pathElements(
+          shape.originals[representativeMember(shape, candidates)], elements);
+      for (let entry in entries) {
+        let el = entry.node as Expression;
+        let nested = entry.nested;
+        if (nested != null) {
+          this.#writeNestedLeaves(el, nested, entry.path, shape, candidates, values);
+          continue;
+        }
         let isHole = el is Identifier && el.name == '_';
-        let slot = if (p < shape.arity) shape.positionSlot(p, candidates) else -1;
+        let slot = shape.pathSlot(entry.path, candidates);
         if (slot == -2) {
           this.#bail('inline union member of a returned tuple');
         }
@@ -3023,6 +3055,71 @@ export final class FunctionLowerer {
     return values;
   }
 
+  /**
+   * The leaves of `el`, a value of the nested inline tuple `inner` at
+   * `path`, written into their slots of `shape`. The value is read as a
+   * multi-value source: an inline result gives its slots, and a boxed
+   * tuple its fields, a field that is itself a tuple read field by field.
+   */
+  #writeNestedLeaves(el: Expression, inner: InlineTupleType, path: String,
+      shape: InlineLayout, candidates: GrowableArray<boolean>,
+      values: GrowableArray<i32>): void {
+    let source = this.#lowerMultiSource(el);
+    let relative = new Array<String>();
+    collectLeafPaths(inner, '', relative);
+    for (let rel in relative) {
+      let slot = shape.pathSlot(`${path}.${rel}`, candidates);
+      if (slot == -2) {
+        this.#bail('inline union member of a returned tuple');
+      }
+      let v = this.#leafOf(source, rel);
+      if (slot < 0 || v == NO_VALUE) {
+        continue;
+      }
+      values[slot] = this.#conformToSlot(v, shape.slots[slot], 'multi-value return type');
+    }
+  }
+
+  /** The leaf at `path` of a multi-value source: its slot, or a boxed
+   * tuple's field reached position by position. */
+  #leafOf(source: MultiValues, path: String): i32 {
+    let layout = source.layout;
+    if (layout != null) {
+      let slot = layout.pathSlot(path, null);
+      if (slot >= 0) {
+        return source.values[slot];
+      }
+    }
+    // A boxed tuple at the head of the path: read on through its fields.
+    let segments = path.split('.');
+    var head = 0;
+    var value = if (layout != null) {
+      let s = layout.pathSlot(segments[0], null);
+      if (s >= 0) source.values[s] else NO_VALUE
+    } else {
+      if (let (true, k) = parseI32(segments[0])) {
+        if (k < source.values.length) source.values[k] else NO_VALUE
+      } else {
+        NO_VALUE
+      }
+    };
+    head = 1;
+    while (head < segments.length && value != NO_VALUE) {
+      let st = asWasmStruct(this.#valueType(value));
+      if (st == null) {
+        return this.#bailValue('nested inline leaf of a non-tuple');
+      }
+      let name = segments[head];
+      if (st.fieldIndexByName(name) < 0) {
+        return NO_VALUE;
+      }
+      value = this.b.emit(IrOp.struct_get, this.#fieldValType(st, name), value,
+          this.b.addRef(new IrRefField(st, name)));
+      head += 1;
+    }
+    return value;
+  }
+
   /** Whether a call's results already fit this function's results slot
    * for slot: the same count, each a subtype or a `nullref` hole. */
   #slotsForwardDirectly(values: GrowableArray<i32>,
@@ -3051,21 +3148,44 @@ export final class FunctionLowerer {
   #convertInlineSlots(values: GrowableArray<i32>, from: InlineLayout,
       to: InlineLayout): GrowableArray<i32> {
     let target = new Array<i32>();
+    // A destination leaf of a nested inline tuple that `from` holds
+    // boxed: the source slot, and the path on into its fields.
+    let deepSource = new Array<i32>();
+    let deepPath = new Array<String>();
     for (var d = 0; d < to.slots.length; d += 1) {
       target.push(-1);
+      deepSource.push(-1);
+      deepPath.push('');
     }
     for (var m = 0; m < from.members.length; m += 1) {
-      let candidates = inlineMembersLike(to, from.members[m]);
-      for (var p = 0; p < from.members[m].elementTypes.length; p += 1) {
-        let s = from.slotOf(m, p);
-        if (s < 0 || p >= to.arity) {
+      let candidates = inlineMembersLike(to, from.originals[m]);
+      // By path, so a leaf of a nested inline tuple lands on the same
+      // leaf of the wider union's.
+      let paths = from.memberPaths[m];
+      for (var i = 0; i < paths.length; i += 1) {
+        let s = from.memberSlots[m][i];
+        if (s < 0) {
           continue;
         }
-        let d = to.positionSlot(p, candidates);
+        let d = to.pathSlot(paths[i], candidates);
         if (d == -2) {
           this.#bail('inline union conversion needs a branch');
         }
         if (d < 0) {
+          // `to` may hold this position inline where `from` boxes it.
+          let prefix = `${paths[i]}.`;
+          for (var dq = 0; dq < to.slots.length; dq += 1) {
+            let q = to.slotPaths[dq];
+            if (!q.startsWith(prefix) || to.pathSlot(q, candidates) != dq) {
+              continue;
+            }
+            if (deepSource[dq] == -1) {
+              deepSource[dq] = s;
+              deepPath[dq] = q;
+            } else if (deepSource[dq] != s) {
+              this.#bail('inline union conversion needs a branch');
+            }
+          }
           continue;
         }
         if (target[d] == -1) {
@@ -3078,9 +3198,56 @@ export final class FunctionLowerer {
     let out = new Array<i32>();
     for (var d = 0; d < to.slots.length; d += 1) {
       let s = target[d];
-      out.push(if (s >= 0) values[s] else this.#defaultValueOf(to.slots[d]));
+      if (s >= 0) {
+        out.push(values[s]);
+      } else if (deepSource[d] >= 0) {
+        out.push(this.#boxedLeaf(values[deepSource[d]], deepPath[d].split('.'),
+            to.slots[d]));
+      } else {
+        out.push(this.#defaultValueOf(to.slots[d]));
+      }
     }
     return out;
+  }
+
+  /**
+   * The field of the boxed tuple `value` that `segments`, past the
+   * first, lead to, conformed to `slotVt`. The tuple is null in a member
+   * that leaves its slot empty, and then the leaf takes its default.
+   */
+  #boxedLeaf(value: i32, segments: Array<String>, slotVt: ValType): i32 {
+    let have = this.#valueType(value);
+    if (have is ValTypeRefNull) {
+      let join = this.b.newBlock();
+      let result = this.b.blockParam(join, slotVt);
+      let isNull = this.b.emit(IrOp.ref_is_null, new ValTypeI32() as ValType,
+          value, -1);
+      let nullB = this.b.newBlock();
+      let readB = this.b.newBlock();
+      this.b.brIf(isNull, nullB, this.#noArgs(), readB, this.#noArgs());
+      this.b.switchTo(nullB);
+      this.b.br(join, this.#oneArg(this.#defaultValueOf(slotVt)));
+      this.b.switchTo(readB);
+      let nonNull = this.b.emit(IrOp.ref_as_non_null,
+          new ValTypeRef(have.target) as ValType, value, -1);
+      this.b.br(join, this.#oneArg(this.#boxedLeaf(nonNull, segments, slotVt)));
+      this.b.switchTo(join);
+      return result;
+    }
+    var current = value;
+    for (var i = 1; i < segments.length; i += 1) {
+      let st = asWasmStruct(this.#valueType(current));
+      if (st == null) {
+        return this.#bailValue('nested inline leaf of a non-tuple');
+      }
+      let name = segments[i];
+      if (st.fieldIndexByName(name) < 0) {
+        return this.#defaultValueOf(slotVt);
+      }
+      current = this.b.emit(IrOp.struct_get, this.#fieldValType(st, name),
+          current, this.b.addRef(new IrRefField(st, name)));
+    }
+    return this.#conformToSlot(current, slotVt, 'unboxing a nested tuple');
   }
 
   /** The slot layout of the current function's declared (substituted)
@@ -3700,27 +3867,29 @@ export final class FunctionLowerer {
       return null;
     }
     let layout = layoutOpt as InlineLayout;
-    // Each distinct struct, with the first member that has it.
+    // Each distinct struct, with the members that have it.
     let structs = new Array<WasmStruct>();
-    let firstMembers = new Array<i32>();
+    let structMembers = new Array<GrowableArray<i32>>();
     for (var m = 0; m < tuples.length; m += 1) {
       let st = this.#tupleStruct(tuples[m]);
-      var seen = false;
-      for (let other in structs) {
-        if (other === st) {
-          seen = true;
+      var seen = -1;
+      for (var i = 0; i < structs.length; i += 1) {
+        if (structs[i] === st) {
+          seen = i;
         }
       }
-      if (!seen) {
+      if (seen >= 0) {
+        structMembers[seen].push(m);
+      } else {
         structs.push(st);
-        firstMembers.push(m);
+        structMembers.push(growable<i32>([m]));
       }
     }
     let have = this.#valueType(value);
     if (structs.length == 1 &&
         isValSubtype(have, new ValTypeRef(structs[0]) as ValType)) {
       return new MultiValues(
-          this.#tupleFieldsToSlots(value, structs[0], layout, firstMembers[0]),
+          this.#tupleFieldsToSlots(value, structs[0], layout, structMembers[0]),
           layout);
     }
     let join = this.b.newBlock();
@@ -3744,7 +3913,7 @@ export final class FunctionLowerer {
       let cast = this.b.emit(IrOp.ref_cast, structVt, value,
           this.b.internType(structVt));
       this.b.br(join,
-          this.#tupleFieldsToSlots(cast, structs[i], layout, firstMembers[i]));
+          this.#tupleFieldsToSlots(cast, structs[i], layout, structMembers[i]));
       if (!isLast) {
         this.b.switchTo(next);
       }
@@ -3808,24 +3977,36 @@ export final class FunctionLowerer {
     return this.#bailValue('tuple tag type');
   }
 
-  /** A tuple struct's fields placed in member `m`'s slots of `layout`,
-   * with every other slot at its default. */
+  /**
+   * A tuple struct's fields placed in the slots of the members of
+   * `layout` that have the struct, with every other slot at its default.
+   * Members share a struct when their fields have the same wasm types,
+   * and a `_` in one can sit where another has a value: `(0, _)` and
+   * `(1, i32)` are both two `i32`s, and field 1 is the second's.
+   */
   #tupleFieldsToSlots(value: i32, st: WasmStruct, layout: InlineLayout,
-      m: i32): GrowableArray<i32> {
+      members: GrowableArray<i32>): GrowableArray<i32> {
     let slots = new Array<i32>();
     for (var s = 0; s < layout.slots.length; s += 1) {
       slots.push(NO_VALUE);
     }
-    let n = layout.members[m].elementTypes.length;
-    for (var k = 0; k < n; k += 1) {
-      let slot = layout.slotOf(m, k);
-      if (slot < 0) {
-        continue;
+    for (let m in members) {
+      let n = layout.members[m].elementTypes.length;
+      for (var k = 0; k < n; k += 1) {
+        let slot = layout.slotOf(m, k);
+        let fieldName = i32ToString(k);
+        // A `_` in every member is a `nullref` slot with nothing to read.
+        if (slot < 0 || slots[slot] != NO_VALUE ||
+            layout.slots[slot] is ValTypeNullRef ||
+            st.fieldIndexByName(fieldName) < 0) {
+          continue;
+        }
+        let fieldRef = this.b.addRef(new IrRefField(st, fieldName));
+        let field = this.b.emit(IrOp.struct_get,
+            this.#fieldValType(st, fieldName), value, fieldRef);
+        slots[slot] = this.#conformToSlot(field, layout.slots[slot],
+            'unboxing a tuple');
       }
-      let fieldName = i32ToString(k);
-      let fieldRef = this.b.addRef(new IrRefField(st, fieldName));
-      slots[slot] = this.b.emit(IrOp.struct_get,
-          this.#fieldValType(st, fieldName), value, fieldRef);
     }
     for (var s = 0; s < slots.length; s += 1) {
       if (slots[s] == NO_VALUE) {
@@ -3909,20 +4090,27 @@ export final class FunctionLowerer {
       return;
     }
     let source = this.#lowerMultiSource(vd.init);
-    var values = source.positions(this.#cx(), null);
+    // One value per element, a nested tuple pattern at a nested inline
+    // position read leaf by leaf.
+    var elements = new Array<Node | null>();
+    var values = source.patternValues(this.#cx(), tp.elements, null, elements);
     if (values.length == 1 && tp.elements.length != 1) {
       // A single value can still be a BOXED tuple (fields "0"..):
       // non-inline tuple returns arrive as one struct reference.
       let unboxed = this.#unboxTupleValue(values[0], tp.elements.length);
       if (unboxed != null) {
         values = unboxed;
+        elements = new Array<Node | null>();
+        for (let el in tp.elements) {
+          elements.push(el);
+        }
       }
     }
-    if (values.length != tp.elements.length) {
+    if (values.length != elements.length) {
       this.#bail('destructuring arity');
     }
-    for (var i = 0; i < tp.elements.length; i += 1) {
-      let el = tp.elements[i];
+    for (var i = 0; i < elements.length; i += 1) {
+      let el = elements[i];
       if (el == null || el is LiteralPattern || el is BooleanLiteral ||
           el is NumberLiteral || el is StringLiteral || el is NullLiteral) {
         continue;
@@ -4325,8 +4513,8 @@ export final class FunctionLowerer {
     let layout = layoutOpt as InlineLayout;
     let boxedMembers = new Array<Type>();
     let tuples = new Array<TupleType>();
-    for (let member in layout.members) {
-      let tuple = new TupleType(member.elementTypes, null, 0);
+    for (let member in layout.originals) {
+      let tuple = boxedTupleOf(member);
       tuples.push(tuple);
       boxedMembers.push(tuple);
     }
@@ -4372,16 +4560,45 @@ export final class FunctionLowerer {
   /** Member `m`'s boxed tuple, built from its slots. */
   #buildTupleFromSlots(values: GrowableArray<i32>, layout: InlineLayout,
       m: i32, tuple: TupleType): i32 {
+    return this.#buildBoxedAt(layout.originals[m], '', tuple,
+        (path) => {
+          let slot = layout.slotAt(m, path);
+          return if (slot >= 0) values[slot] else NO_VALUE;
+        });
+  }
+
+  hostBoxInlineAt(source: MultiValues, path: String, inner: InlineTupleType,
+      allowed: GrowableArray<boolean> | null): i32 {
+    let cx = this.#cx();
+    return this.#buildBoxedAt(inner, `${path}.`, boxedTupleOf(inner),
+        (leaf) => source.valueAt(cx, leaf, allowed));
+  }
+
+  /**
+   * The boxed tuple `tuple`, the boxed form of the inline tuple `shape`,
+   * built from leaf values: `leaf(path)` gives the value at `path`
+   * (`prefix` then the position, "k" or "k.j" for a nested tuple's), or
+   * NO_VALUE for a slot the member does not fill, which takes its
+   * default. A nested inline tuple becomes a nested boxed one.
+   */
+  #buildBoxedAt(shape: InlineTupleType, prefix: String, tuple: TupleType,
+      leaf: (path: String) => i32): i32 {
     let st = this.#tupleStruct(tuple);
     let fields = new Array<i32>();
     for (var k = 0; k < tuple.elementTypes.length; k += 1) {
-      if (st.fieldIndexByName(i32ToString(k)) < 0) {
+      let name = i32ToString(k);
+      if (st.fieldIndexByName(name) < 0) {
         // A zero-width element.
         continue;
       }
-      let fieldVt = this.#fieldValType(st, i32ToString(k));
-      let slot = layout.slotOf(m, k);
-      let v = if (slot >= 0) values[slot] else this.#defaultValueOf(fieldVt);
+      let fieldVt = this.#fieldValType(st, name);
+      let inner = if (k < shape.elementTypes.length) nestedInlineTuple(shape.elementTypes[k]) else null;
+      let v = if (inner != null) {
+        this.#buildBoxedAt(inner, `${prefix}${k}.`, tuple.elementTypes[k] as TupleType, leaf)
+      } else {
+        let found = leaf(`${prefix}${k}`);
+        if (found == NO_VALUE) this.#defaultValueOf(fieldVt) else found
+      };
       // A slot is nullable when another member leaves it empty; this
       // member always fills it.
       fields.push(this.#cx().conformToSlot(v, fieldVt, 'boxing an inline slot'));
@@ -5092,7 +5309,13 @@ export final class FunctionLowerer {
         this.#lowerExpression(tl.elements[i]);
         continue;
       }
-      var v = this.#lowerExpressionCtx(tl.elements[i], fieldVt);
+      let el = tl.elements[i];
+      if (el is Identifier && el.name == '_') {
+        // A hole holds nothing; its field takes the default.
+        args.push(this.#defaultValueOf(fieldVt));
+        continue;
+      }
+      var v = this.#lowerExpressionCtx(el, fieldVt);
       v = this.#conformToSlot(v, fieldVt, 'tuple literal element type');
       args.push(v);
     }
@@ -10311,25 +10534,183 @@ export final class MultiValues {
     if (layout == null) {
       return this.values;
     }
+    // One value per leaf of a member the reader can see: its paths are
+    // the positions when nothing is nested.
+    let rep = representativeMember(layout, allowed);
     let out = new Array<i32>();
-    for (var p = 0; p < layout.arity; p += 1) {
-      var s = layout.positionSlot(p, allowed);
-      if (s == -1 && allowed != null) {
-        // The kept members write `_` here. The slot the others use
-        // holds its default for them, which is as good as any value.
-        let other = layout.positionSlot(p, null);
-        if (other >= 0) {
-          s = other;
-        }
-      }
-      if (s == -2) {
-        out.push(joinInlinePosition(cx, layout, this.values, p, allowed));
-      } else {
-        out.push(if (s >= 0) this.values[s] else NO_VALUE);
-      }
+    for (let path in layout.memberPaths[rep]) {
+      out.push(this.valueAt(cx, path, allowed));
     }
     return out;
   }
+
+  /**
+   * The value at `path` for the members `allowed` keeps: the slot they
+   * put it in, NO_VALUE where none has a value, or a join on the
+   * discriminant where they use different slots.
+   */
+  valueAt(cx: LoweringContext, path: String,
+      allowed: GrowableArray<boolean> | null): i32 {
+    let layout = this.layout as InlineLayout;
+    var s = layout.pathSlot(path, allowed);
+    if (s == -1 && allowed != null) {
+      // The kept members write `_` here. The slot the others use
+      // holds its default for them, which is as good as any value.
+      let other = layout.pathSlot(path, null);
+      if (other >= 0) {
+        s = other;
+      }
+    }
+    if (s == -2) {
+      return joinInlinePosition(cx, layout, this.values, path, allowed);
+    }
+    return if (s >= 0) this.values[s] else NO_VALUE;
+  }
+
+  /**
+   * One value per element of a tuple pattern read against this source:
+   * a nested tuple pattern at a nested inline position is spliced in,
+   * so `(1, (x, y), _)` reads four leaves. `nodes` receives the element
+   * each value is for. An element that stands for a nested inline
+   * tuple whole gets the tuple boxed, which is what its binding holds.
+   */
+  patternValues(cx: LoweringContext, elements: GrowableArray<Node | null>,
+      allowed: GrowableArray<boolean> | null,
+      nodes: GrowableArray<Node | null>): GrowableArray<i32> {
+    let layout = this.layout;
+    if (layout == null || !layout.isNested()) {
+      for (let el in elements) {
+        nodes.push(el);
+      }
+      return this.positions(cx, allowed);
+    }
+    let rep = representativeMember(layout, allowed);
+    let entries = pathElements(layout.originals[rep], elements);
+    let out = new Array<i32>();
+    for (let entry in entries) {
+      nodes.push(entry.node);
+      let nested = entry.nested;
+      out.push(if (nested != null) {
+        boxInlineAt(cx, this, entry.path, nested, allowed)
+      } else {
+        this.valueAt(cx, entry.path, allowed)
+      });
+    }
+    return out;
+  }
+}
+
+/** The member a reader stands for: the first one `allowed` keeps. */
+function representativeMember(layout: InlineLayout,
+    allowed: GrowableArray<boolean> | null): i32 {
+  if (allowed != null) {
+    for (var m = 0; m < allowed.length; m += 1) {
+      if (allowed[m]) {
+        return m;
+      }
+    }
+  }
+  return 0;
+}
+
+/** A tuple pattern's or literal's element with the path it stands for. */
+export final class PathElement {
+  node: Node | null;
+  path: String;
+  /**
+   * The nested inline tuple the element stands for whole, or null when
+   * it stands for one leaf.
+   */
+  nested: InlineTupleType | null;
+
+  new(this.node, this.path, this.nested);
+}
+
+/**
+ * The elements of a tuple pattern or literal against `original`, each
+ * with the path of what it stands for: a nested tuple pattern or literal
+ * at a position where `original` nests an inline tuple contributes its
+ * own elements, at `p.k`; any other element stands for its position.
+ */
+export function pathElements(original: InlineTupleType,
+    elements: GrowableArray<Node | null>): GrowableArray<PathElement> {
+  let out = new Array<PathElement>();
+  appendPathElements(original.elementTypes, elements, '', out);
+  return out;
+}
+
+function appendPathElements(types: Array<Type>, elements: GrowableArray<Node | null>,
+    prefix: String, out: GrowableArray<PathElement>): void {
+  for (var p = 0; p < elements.length; p += 1) {
+    let el = elements[p];
+    let path = `${prefix}${p}`;
+    let inner = if (p < types.length) nestedInlineTuple(types[p]) else null;
+    if (inner == null) {
+      out.push(new PathElement(el, path, null));
+      continue;
+    }
+    let parts = tupleParts(el);
+    if (parts != null && parts.length == inner.elementTypes.length) {
+      appendPathElements(inner.elementTypes, parts, `${path}.`, out);
+    } else {
+      out.push(new PathElement(el, path, inner));
+    }
+  }
+}
+
+/** The boxed form of an inline tuple, nested inline tuples boxed too. */
+function boxedTupleOf(t: InlineTupleType): TupleType {
+  let elements = new Array<Type>();
+  for (let el in t.elementTypes) {
+    let inner = nestedInlineTuple(el);
+    elements.push(if (inner != null) boxedTupleOf(inner) as Type else el);
+  }
+  return new TupleType(elements, null, 0);
+}
+
+/** The paths of an inline tuple's leaves, relative to it: "0", "1.0"... */
+function collectLeafPaths(t: InlineTupleType, prefix: String,
+    out: GrowableArray<String>): void {
+  for (var k = 0; k < t.elementTypes.length; k += 1) {
+    let inner = nestedInlineTuple(t.elementTypes[k]);
+    if (inner != null) {
+      collectLeafPaths(inner, `${prefix}${k}.`, out);
+    } else {
+      out.push(`${prefix}${k}`);
+    }
+  }
+}
+
+/** The elements of a tuple pattern or a spread-free tuple literal, or
+ * null for anything else. */
+function tupleParts(node: Node | null): GrowableArray<Node | null> | null {
+  var n = node;
+  if (let BindingPattern {pattern} = n) {
+    n = pattern as Node;
+  }
+  if (let TuplePattern {elements} = n) {
+    return elements;
+  }
+  if (let TupleLiteral {elements, spreadIndices} = n) {
+    if (spreadIndices != null) {
+      return null;
+    }
+    let parts = new Array<Node | null>();
+    for (let e in elements) {
+      parts.push(e);
+    }
+    return parts;
+  }
+  return null;
+}
+
+/**
+ * The nested inline tuple at `path` of `source`, boxed: the struct of
+ * its boxed form, built from its leaves.
+ */
+export function boxInlineAt(cx: LoweringContext, source: MultiValues, path: String,
+    inner: InlineTupleType, allowed: GrowableArray<boolean> | null): i32 {
+  return hostOf(cx).hostBoxInlineAt(source, path, inner, allowed);
 }
 
 /** Bail with the lowering-side message shape (reason @function). */
@@ -10346,7 +10727,7 @@ function bail(cx: LoweringContext, reason: String): never {
  * like any erased slot.
  */
 function joinInlinePosition(cx: LoweringContext, layout: InlineLayout,
-    values: GrowableArray<i32>, p: i32,
+    values: GrowableArray<i32>, path: String,
     allowed: GrowableArray<boolean> | null): i32 {
   let d = layout.discriminant;
   let tagSlot = if (d >= 0) layout.positionSlot(d, null) else -1;
@@ -10363,9 +10744,9 @@ function joinInlinePosition(cx: LoweringContext, layout: InlineLayout,
     if (allowed != null && !allowed[m]) {
       continue;
     }
-    let s = layout.slotOf(m, p);
+    let s = layout.slotAt(m, path);
     if (s >= 0) {
-      elementTypes.push(layout.members[m].elementTypes[p]);
+      elementTypes.push(layout.members[m].elementTypes[pathIndex(layout.memberPaths[m], path)]);
       if (!slots.contains(s)) {
         slots.push(s);
       }
@@ -10391,7 +10772,7 @@ function joinInlinePosition(cx: LoweringContext, layout: InlineLayout,
     // Whether the discriminant names a member that uses this slot.
     var cond = -1;
     for (var m = 0; m < layout.members.length; m += 1) {
-      if (layout.slotOf(m, p) != slots[i]) {
+      if (layout.slotAt(m, path) != slots[i]) {
         continue;
       }
       let lit = layout.members[m].elementTypes[d];
@@ -10426,7 +10807,9 @@ function joinInlinePosition(cx: LoweringContext, layout: InlineLayout,
 export function inlineMembersMatching(layout: InlineLayout,
     elements: GrowableArray<Node | null>): GrowableArray<boolean> {
   let allowed = new Array<boolean>();
-  for (let member in layout.members) {
+  // Literals stand at top-level positions, which are the members' as
+  // written, nested inline tuples and all.
+  for (let member in layout.originals) {
     var ok = true;
     for (var p = 0; p < elements.length && p < member.elementTypes.length; p += 1) {
       var el = elements[p];
@@ -10461,7 +10844,7 @@ export function inlineMembersMatching(layout: InlineLayout,
 export function inlineMembersLike(layout: InlineLayout,
     member: InlineTupleType): GrowableArray<boolean> {
   let allowed = new Array<boolean>();
-  for (let other in layout.members) {
+  for (let other in layout.originals) {
     var ok = true;
     let n = if (member.elementTypes.length < other.elementTypes.length) {
       member.elementTypes.length

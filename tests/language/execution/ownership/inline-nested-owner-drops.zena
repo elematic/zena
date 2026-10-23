@@ -1,0 +1,47 @@
+// @mode: run
+// @result: 0
+// An owner in a nested inline tuple's slot is released like one in the
+// outer tuple: when the result is discarded, when a binding of it goes
+// out of scope, and not when it is moved on.
+
+import { Own, Disposable } from 'zena:core';
+
+var released = 0;
+
+resource class File {
+  var #fd: i32;
+  new(fd: i32) : #fd = fd;
+  [Disposable.dispose](this: Own<this>): void {
+    released += this.#fd;
+  }
+}
+
+function open(fd: i32): Own<File> {
+  return new File(fd);
+}
+
+function consume(f: Own<File>): void {}
+
+function opened(fd: i32): inline (i32, inline (boolean, Own<File>)) {
+  return (fd, (true, open(fd)));
+}
+
+function discarded(): void {
+  opened(1);
+}
+
+function bound(): void {
+  let (n, (ok, f)) = opened(2);
+}
+
+function moved(): void {
+  let (n, (ok, f)) = opened(4);
+  consume(f);
+}
+
+export let main = (): i32 => {
+  discarded();
+  bound();
+  moved();
+  return released - (1 + 2 + 4);
+};

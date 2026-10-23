@@ -84,8 +84,11 @@ export function lowerLetCondition(cx: LoweringContext, lpc: LetPatternCondition)
     return new LetCondBinds(cond, new Array<Symbol>(), new Array<i32>(),
         new Array<ValType>(), patterns, patternValues);
   }
-  let values = multiPositions(cx, multiSource(cx, lpc.init), pat);
-  if (values.length != pat.elements.length) {
+  // One value per element, a nested tuple pattern at a nested inline
+  // position read leaf by leaf.
+  let elements = new Array<Node | null>();
+  let values = multiPositions(cx, multiSource(cx, lpc.init), pat, elements);
+  if (values.length != elements.length) {
     bail(cx, 'let-condition arity');
   }
   var cond = values[0];
@@ -98,7 +101,7 @@ export function lowerLetCondition(cx: LoweringContext, lpc: LetPatternCondition)
   // compare against the literal value.
   // The `let` is explicit here, so the element is a LiteralPattern; the
   // bare-literal form is still accepted for patterns built elsewhere.
-  var first = pat.elements[0];
+  var first = elements[0];
   if (first is LiteralPattern) {
     first = first.value;
   }
@@ -119,9 +122,19 @@ export function lowerLetCondition(cx: LoweringContext, lpc: LetPatternCondition)
   let vts = new Array<ValType>();
   let patterns = new Array<Node>();
   let patternValues = new Array<i32>();
-  for (var i = 0; i < pat.elements.length; i += 1) {
-    let el = pat.elements[i];
-    if (el == null || el is LiteralPattern || el is BooleanLiteral ||
+  for (var i = 0; i < elements.length; i += 1) {
+    let el = elements[i];
+    if (el == null) {
+      continue;
+    }
+    if (i > 0 && el is LiteralPattern) {
+      // A literal inside a nested tuple pattern, spliced in: its test
+      // defers to the taken block like a nested pattern's.
+      patterns.push(el);
+      patternValues.push(values[i]);
+      continue;
+    }
+    if (el is LiteralPattern || el is BooleanLiteral ||
         el is NumberLiteral || el is StringLiteral || el is NullLiteral) {
       continue;
     }
@@ -435,14 +448,14 @@ function lowerValueRegionRestVar(cx: LoweringContext, plan: VarDropPlan,
  * read a position those members keep in a slot of their own.
  */
 function multiPositions(cx: LoweringContext, source: MultiValues,
-    pattern: TuplePattern): GrowableArray<i32> {
+    pattern: TuplePattern, nodes: GrowableArray<Node | null>): GrowableArray<i32> {
   let layout = source.layout;
   let allowed = if (layout != null) {
     inlineMembersMatching(layout, pattern.elements)
   } else {
     null
   };
-  return source.positions(cx, allowed);
+  return source.patternValues(cx, pattern.elements, allowed, nodes);
 }
 
 /**
@@ -478,18 +491,19 @@ function isTupleUnionSource(t: Type): boolean {
  */
 function lowerInlineTupleArm(cx: LoweringContext, pat: TuplePattern,
     source: MultiValues, failB: i32) {
-  let lanes = multiPositions(cx, source, pat);
-  if (lanes.length != pat.elements.length) {
+  let elements = new Array<Node | null>();
+  let lanes = multiPositions(cx, source, pat, elements);
+  if (lanes.length != elements.length) {
     bail(cx, 'match inline union arity');
   }
-  for (var i = 0; i < pat.elements.length; i += 1) {
-    let el = pat.elements[i];
+  for (var i = 0; i < elements.length; i += 1) {
+    let el = elements[i];
     if (el != null && patternRefutable(cx, el)) {
       lowerPatternTest(cx, el, lanes[i], failB);
     }
   }
-  for (var i = 0; i < pat.elements.length; i += 1) {
-    let el = pat.elements[i];
+  for (var i = 0; i < elements.length; i += 1) {
+    let el = elements[i];
     if (el != null && patternBinds(cx, el)) {
       lowerPatternBindings(cx, el, lanes[i]);
     }
