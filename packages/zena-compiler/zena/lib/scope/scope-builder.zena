@@ -1409,11 +1409,16 @@ export final class ScopeBuilder {
         this.#symbols.record(name, this.#current.getLocal(name.name) as Symbol);
         this.#declarePatternNode(pattern, kind, declaration);
       }
-      case ClassPattern {name, properties}: {
+      case ClassPattern {name, typeArguments, properties}: {
         let info = this.#current.resolve(name.name);
         if (info != null) {
           this.#symbols.record(name, info);
           this.#isRead[info.id] = true;
+        }
+        if (typeArguments != null) {
+          for (let arg in typeArguments) {
+            this.#processTypeAnnotation(arg);
+          }
         }
         for (let prop in properties) {
           this.#declarePatternNode(prop.value, kind, declaration);

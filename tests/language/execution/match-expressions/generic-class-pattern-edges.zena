@@ -1,0 +1,102 @@
+// @mode: run
+// @result: 0
+// Class patterns over generic classes in the places their type
+// arguments come from somewhere other than the pattern: the enclosing
+// generic function's own parameters, `this` in a generic class, a
+// subclass that fixes them, and a sealed hierarchy two levels deep.
+
+class Box<T>(value: T)
+
+class Cell<T> {
+  value: T;
+  new(this.value);
+}
+
+class IntCell extends Cell<i32> {
+  new(n: i32) : super(n);
+}
+
+sealed class Tree<T> {
+  case Leaf, Node
+}
+
+final class Leaf<T>(value: T) extends Tree<T>
+
+sealed class Node<T> extends Tree<T> {
+  case Pair, Many
+}
+
+final class Pair<T>(left: Tree<T>, right: Tree<T>) extends Node<T>
+
+final class Many<T>(kids: Array<Tree<T>>) extends Node<T>
+
+sealed class Opt<T> {
+  case Some, None
+
+  orElse(fallback: T): T {
+    return match (this) {
+      case Some {value}: value
+      case None: fallback
+    };
+  }
+}
+
+final class Some<T>(value: T) extends Opt<T>
+
+final class None<T> extends Opt<T> {}
+
+/** `Box<T>` names the specialization's own argument. */
+let unbox = <T>(v: Box<T> | String, fallback: T): T => {
+  return match (v) {
+    case Box<T> {value}: value
+    case _: fallback
+  };
+};
+
+/** The arguments come from `Box<T>` without being written. */
+let unboxInferred = <T>(v: Box<T> | String, fallback: T): T => {
+  if (let Box {value} = v) {
+    return value;
+  }
+  return fallback;
+};
+
+let ofSubclass = (v: IntCell | String): i32 => {
+  return match (v) {
+    case Cell {value}: value
+    case _: 0 - 1
+  };
+};
+
+let sum = (t: Tree<i32>): i32 => {
+  return match (t) {
+    case Leaf {value}: value
+    case Pair {left, right}: sum(left) + sum(right)
+    case Many {kids}: {
+      var total = 0;
+      for (let kid in kids) {
+        total += sum(kid);
+      }
+      total
+    }
+  };
+};
+
+export let main = (): i32 => {
+  if (unbox<i32>(new Box<i32>(3), 0) != 3) return 1;
+  if (unbox<i32>('no', 9) != 9) return 2;
+  if (unbox<String>(new Box<String>('ab'), '').length != 2) return 3;
+  if (unboxInferred<i32>(new Box<i32>(4), 0) != 4) return 4;
+  if (unboxInferred<i32>('no', 8) != 8) return 5;
+
+  if (ofSubclass(new IntCell(6)) != 6) return 10;
+  if (ofSubclass('x') != 0 - 1) return 11;
+
+  if (new Some<i32>(5).orElse(1) != 5) return 20;
+  if (new None<i32>().orElse(1) != 1) return 21;
+
+  let kids: Array<Tree<i32>> = [new Leaf<i32>(1), new Leaf<i32>(2)];
+  let tree = new Pair<i32>(new Leaf<i32>(10), new Many<i32>(kids));
+  if (sum(tree) != 13) return 30;
+  return 0;
+};

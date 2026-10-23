@@ -1237,7 +1237,10 @@ export final class Parser {
     // Identifier, wildcard, class pattern, or member expression pattern
     if (this.#isIdentifier()) {
       let ident = this.#parseIdentifier();
-      
+      // `Box<f64>` names an instantiation; a field list may follow.
+      let typeArguments: GrowableArray<TypeAnnotation> | null =
+          if (this.#check(TokenType.Less)) this.#parseTypeArguments() else null;
+
       // Class pattern: ClassName { ... }
       if (this.#check(TokenType.LBrace)) {
         this.#advance();
@@ -1270,9 +1273,13 @@ export final class Parser {
           }
         }
         this.#consume(TokenType.RBrace, "Expected '}' after class pattern");
-        return new ClassPattern(ident, properties, this.#makeLocation(startToken));
+        return new ClassPattern(ident, typeArguments, properties, this.#makeLocation(startToken));
       }
-      
+      if (typeArguments != null) {
+        return new ClassPattern(ident, typeArguments, new Array<BindingProperty>(),
+            this.#makeLocation(startToken));
+      }
+
       // Member expression pattern: Enum.Member or A.B.C
       if (this.#check(TokenType.Dot)) {
         var obj: Expression = ident;
@@ -1527,6 +1534,10 @@ export final class Parser {
     // Identifier or class pattern: Identifier or ClassName { fields }
     if (this.#isIdentifier()) {
       let ident = this.#parseIdentifier();
+      // `Box<f64>` names an instantiation, so it is a class pattern even
+      // without a field list; a bare name here is a binding.
+      let typeArguments: GrowableArray<TypeAnnotation> | null =
+          if (this.#check(TokenType.Less)) this.#parseTypeArguments() else null;
 
       // Class pattern: ClassName { ... }
       if (this.#check(TokenType.LBrace)) {
@@ -1560,7 +1571,11 @@ export final class Parser {
           }
         }
         this.#consume(TokenType.RBrace, "Expected '}' after class pattern");
-        return new ClassPattern(ident, properties, this.#makeLocation(startToken));
+        return new ClassPattern(ident, typeArguments, properties, this.#makeLocation(startToken));
+      }
+      if (typeArguments != null) {
+        return new ClassPattern(ident, typeArguments, new Array<BindingProperty>(),
+            this.#makeLocation(startToken));
       }
 
       return new IdentifierPattern(ident.name, ident.loc);

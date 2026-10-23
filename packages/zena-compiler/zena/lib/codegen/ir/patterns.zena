@@ -86,6 +86,33 @@ let classStructOf = (cx: LoweringContext, ct: ClassType): WasmStruct => {
   throw new ZirUnsupported('pattern class not discovered');
 };
 
+/**
+ * The type test of a pattern that names a class or interface: `case
+ * Foo:`, or `case Iterable<i32>:`. Branches to `failB` when `value` is
+ * not one.
+ */
+let lowerNamedTypeTest = (cx: LoweringContext, patType: Type, value: i32,
+    failB: i32): void => {
+  if (patType is ClassType) {
+    emitRefTest(cx, value, classStructOf(cx, patType), failB);
+  } else if (patType is InterfaceType) {
+    if (cx.typeTestHasSlot(patType)) {
+      // `case I:` means the value's class implements `I`
+      // (docs/design/interface-type-tests.md).
+      let cond = cx.typeTestImplements(value, patType);
+      branchUnless(cx, cond, failB);
+    } else {
+      let targetVt = typeToValTypeWithSub(cx.wasm, patType, cx.func);
+      let stOpt = asWasmStruct(targetVt);
+      if (stOpt == null) {
+        bail(cx, 'pattern interface not discovered');
+      } else {
+        emitRefTest(cx, value, stOpt, failB);
+      }
+    }
+  }
+};
+
 /** The struct behind a (boxed) tuple or class value; bails otherwise. */
 let structOfValue = (cx: LoweringContext, value: i32): WasmStruct => {
   let stOpt = asWasmStruct(cx.valueTypeOf(value));
@@ -594,25 +621,9 @@ export let lowerPatternTest = (cx: LoweringContext, pattern: Node,
         // `case Foo:` where Foo names a class or interface is a type test;
         // any other identifier is an irrefutable binding (mirrors
         // streaming's check emitter).
-        let patType = cx.func.model.getNodeType(pattern);
-        if (patType is ClassType) {
-          let st = classStructOf(cx, patType);
-          emitRefTest(cx, value, st, failB);
-        } else if (patType is InterfaceType) {
-          if (cx.typeTestHasSlot(patType)) {
-            // `case I:` means the value's class implements `I`
-            // (docs/design/interface-type-tests.md).
-            let cond = cx.typeTestImplements(value, patType);
-            branchUnless(cx, cond, failB);
-          } else {
-            let targetVt = typeToValTypeWithSub(cx.wasm, patType, cx.func);
-            let stOpt = asWasmStruct(targetVt);
-            if (stOpt == null) {
-              bail(cx, 'pattern interface not discovered');
-            } else {
-              emitRefTest(cx, value, stOpt, failB);
-            }
-          }
+        let patType = cx.substitutedNodeType(pattern);
+        if (patType != null) {
+          lowerNamedTypeTest(cx, patType, value, failB);
         }
       }
     }
@@ -626,7 +637,12 @@ export let lowerPatternTest = (cx: LoweringContext, pattern: Node,
       lowerPatternTest(cx, lp.value, value, failB);
     }
     case ClassPattern as cp: {
-      let ct = cx.func.model.getNodeType(cp.name);
+      let ct = cx.substitutedNodeType(cp.name);
+      if (ct is InterfaceType && cp.properties.length == 0) {
+        // `case Iterable<i32>:` names an interface instantiation.
+        lowerNamedTypeTest(cx, ct, value, failB);
+        return;
+      }
       if (!(ct is ClassType)) {
         bail(cx, 'untyped class pattern');
       }
@@ -886,7 +902,11 @@ export let lowerPatternBindings = (cx: LoweringContext, pattern: Node,
       lowerPatternBindings(cx, bp.pattern, value);
     }
     case ClassPattern as cp: {
-      let ct = cx.func.model.getNodeType(cp.name);
+      let ct = cx.substitutedNodeType(cp.name);
+      if (ct is InterfaceType && cp.properties.length == 0) {
+        // `case Iterable<i32>:` binds nothing.
+        return;
+      }
       if (!(ct is ClassType)) {
         bail(cx, 'untyped class pattern');
       }

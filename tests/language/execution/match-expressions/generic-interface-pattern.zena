@@ -1,0 +1,40 @@
+// @mode: run
+// @result: 0
+// A pattern naming an instantiation of a generic interface,
+// `case Measure<i32> as m:`, tests that the value's class implements it,
+// as `value is Measure<i32>` does.
+
+interface Measure<T> {
+  size(): T;
+}
+
+class Rope implements Measure<i32> {
+  n: i32;
+  new(this.n);
+  size(): i32 {
+    return this.n;
+  }
+}
+
+class Tank implements Measure<f64> {
+  litres: f64;
+  new(this.litres);
+  size(): f64 {
+    return this.litres;
+  }
+}
+
+let measure = (v: anyref): i32 => {
+  return match (v) {
+    case Measure<i32> as m: m.size()
+    case Measure<f64>: 100
+    case _: 0 - 1
+  };
+};
+
+export let main = (): i32 => {
+  if (measure(new Rope(7)) != 7) return 1;
+  if (measure(new Tank(2.5)) != 100) return 2;
+  if (measure('neither') != 0 - 1) return 3;
+  return 0;
+};
