@@ -3889,7 +3889,7 @@ export final class FunctionLowerer {
       }
       let st = this.#tupleStruct(bt);
       let value = this.#lowerExpressionCtx(init, new ValTypeRef(st) as ValType);
-      this.#bindTupleWithRest(tp, st, value);
+      this.#bindTupleWithRest(tp, st, value, bt.elementTypes.length);
       return;
     }
     let source = this.#lowerMultiSource(vd.init);
@@ -4359,6 +4359,10 @@ export final class FunctionLowerer {
     let st = this.#tupleStruct(tuple);
     let fields = new Array<i32>();
     for (var k = 0; k < tuple.elementTypes.length; k += 1) {
+      if (st.fieldIndexByName(i32ToString(k)) < 0) {
+        // A zero-width element.
+        continue;
+      }
       let fieldVt = this.#fieldValType(st, i32ToString(k));
       let slot = layout.slotOf(m, k);
       let v = if (slot >= 0) values[slot] else this.#defaultValueOf(fieldVt);
@@ -5035,39 +5039,48 @@ export final class FunctionLowerer {
     if (!(bt is TupleType)) {
       this.#bail('inline tuple in value position');
     }
-    let fields = new Array<WasmField>(bt.elementTypes.length);
-    for (var i = 0; i < bt.elementTypes.length; i += 1) {
-      fields.push(new WasmField(i32ToString(i),
-          typeToValTypeWithSub(this.wasm, bt.elementTypes[i], this.func),
-          false));
+    // One wasm type per element; a zero-width one has no field, and its
+    // value is lowered for its effects only.
+    let elementVts = new Array<ValType>();
+    for (let el in bt.elementTypes) {
+      elementVts.push(typeToValTypeWithSub(this.wasm, el, this.func));
     }
-    let st = this.wasm.getStruct(null, fields);
+    let st = this.#tupleStruct(bt);
     let spreadIndices = tl.spreadIndices;
-    if (spreadIndices == null && tl.elements.length != fields.length) {
+    if (spreadIndices == null && tl.elements.length != elementVts.length) {
       this.#bail('tuple literal arity');
     }
     let args = new Array<i32>();
+    var pos = 0;
     for (var i = 0; i < tl.elements.length; i += 1) {
       if (spreadIndices != null && spreadIndices.contains(i)) {
         // `...t`: t's elements, read off its struct in order.
         for (let v in this.#tupleElementValues(tl.elements[i])) {
-          if (args.length >= fields.length) {
+          if (pos >= elementVts.length) {
             this.#bail('tuple literal arity');
           }
-          let fieldVt = fields[args.length].type;
-          args.push(this.#conformToSlot(v, fieldVt, 'tuple literal element type'));
+          let fieldVt = elementVts[pos];
+          pos += 1;
+          if (!(fieldVt is ValTypeVoid)) {
+            args.push(this.#conformToSlot(v, fieldVt, 'tuple literal element type'));
+          }
         }
         continue;
       }
-      if (args.length >= fields.length) {
+      if (pos >= elementVts.length) {
         this.#bail('tuple literal arity');
       }
-      let fieldVt = fields[args.length].type;
+      let fieldVt = elementVts[pos];
+      pos += 1;
+      if (fieldVt is ValTypeVoid) {
+        this.#lowerExpression(tl.elements[i]);
+        continue;
+      }
       var v = this.#lowerExpressionCtx(tl.elements[i], fieldVt);
       v = this.#conformToSlot(v, fieldVt, 'tuple literal element type');
       args.push(v);
     }
-    if (args.length != fields.length) {
+    if (pos != elementVts.length || args.length != st.fields.length) {
       this.#bail('tuple literal arity');
     }
     return this.b.emit(IrOp.struct_new, new ValTypeRef(st) as ValType,
@@ -5080,9 +5093,10 @@ export final class FunctionLowerer {
    * after it a suffix, and the rest a new tuple of what is between, of
    * the type the checker recorded on the rest pattern.
    */
-  #bindTupleWithRest(tp: TuplePattern, st: WasmStruct, value: i32): void {
+  #bindTupleWithRest(tp: TuplePattern, st: WasmStruct, value: i32,
+      count: i32 = -1): void {
     let restIndex = tupleRestIndexOf(tp);
-    let all = this.#tupleFieldsOf(st, value);
+    let all = this.#tupleFieldsOf(st, value, count);
     let after = tp.elements.length - restIndex - 1;
     let length = all.length;
     if (restIndex + after > length) {
@@ -5107,7 +5121,14 @@ export final class FunctionLowerer {
         let restSt = this.#tupleStruct(restBase);
         let args = new Array<i32>();
         for (var j = restIndex; j < length - after; j += 1) {
-          args.push(this.#conformToSlot(all[j], restSt.fields[j - restIndex].type,
+          if (all[j] == NO_VALUE) {
+            continue;
+          }
+          let restField = restSt.fieldIndexByName(i32ToString(j - restIndex));
+          if (restField < 0) {
+            this.#bail('tuple rest element type');
+          }
+          args.push(this.#conformToSlot(all[j], restSt.fields[restField].type,
               'tuple rest element type'));
         }
         let rest = this.b.emit(IrOp.struct_new, new ValTypeRef(restSt) as ValType,
@@ -5129,13 +5150,15 @@ export final class FunctionLowerer {
     this.#bindTupleWithRest(tp, st as WasmStruct, value);
   }
 
-  /** The struct a (boxed) tuple type lowers to. */
+  /** The struct a (boxed) tuple type lowers to. A zero-width element
+   * (`void`) has no field; the others are named by their position. */
   #tupleStruct(tt: TupleType): WasmStruct {
     let fields = new Array<WasmField>(tt.elementTypes.length);
     for (var i = 0; i < tt.elementTypes.length; i += 1) {
-      fields.push(new WasmField(i32ToString(i),
-          typeToValTypeWithSub(this.wasm, tt.elementTypes[i], this.func),
-          false));
+      let vt = typeToValTypeWithSub(this.wasm, tt.elementTypes[i], this.func);
+      if (!(vt is ValTypeVoid)) {
+        fields.push(new WasmField(i32ToString(i), vt, false));
+      }
     }
     return this.wasm.getStruct(null, fields);
   }
@@ -5151,22 +5174,33 @@ export final class FunctionLowerer {
       this.#bail('tuple spread of a non-tuple');
     }
     let st = this.#tupleStruct(bt);
-    return this.#tupleFieldsOf(st, this.#lowerExpressionCtx(expr, new ValTypeRef(st) as ValType));
+    return this.#tupleFieldsOf(st,
+        this.#lowerExpressionCtx(expr, new ValTypeRef(st) as ValType),
+        bt.elementTypes.length);
   }
 
-  /** Reads fields `from` up to `to` (exclusive) of the tuple struct `st` off `value`. */
-  #tupleFieldsOf(st: WasmStruct, value: i32, from: i32 = 0, to: i32 = -1): GrowableArray<i32> {
-    let end = if (to < 0) st.fields.length else to;
+  /**
+   * The `count` elements of a tuple of struct `st`, read off `value` by
+   * position: NO_VALUE for a zero-width element, which has no field.
+   * A negative count means one per field (no zero-width elements).
+   */
+  #tupleFieldsOf(st: WasmStruct, value: i32, count: i32 = -1): GrowableArray<i32> {
+    let end = if (count < 0) st.fields.length else count;
     let stVt = new ValTypeRef(st) as ValType;
     var recv = value;
     if (!isValSubtype(this.#valueType(recv), stVt)) {
       recv = this.b.emit(IrOp.ref_cast, stVt, recv, this.b.internType(stVt));
     }
     let values = new Array<i32>();
-    for (var j = from; j < end; j += 1) {
-      let field = st.fields[j];
-      values.push(this.b.emit(IrOp.struct_get, field.type, recv,
-          this.b.addRef(new IrRefField(st, field.name as String))));
+    for (var j = 0; j < end; j += 1) {
+      let name = i32ToString(j);
+      let index = st.fieldIndexByName(name);
+      if (index < 0) {
+        values.push(NO_VALUE);
+        continue;
+      }
+      values.push(this.b.emit(IrOp.struct_get, st.fields[index].type, recv,
+          this.b.addRef(new IrRefField(st, name))));
     }
     return values;
   }
@@ -7831,7 +7865,8 @@ export final class FunctionLowerer {
       }
       let fieldName = i32ToString(elemIdx);
       if (st.fieldIndexByName(fieldName) < 0) {
-        this.#bail('tuple field not found');
+        // A zero-width element has no field, and no value.
+        return NO_VALUE;
       }
       let fieldRef = this.b.addRef(new IrRefField(st, fieldName));
       let read = this.b.emit(IrOp.struct_get,

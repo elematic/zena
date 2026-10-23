@@ -22,7 +22,7 @@ import {
 } from '../type-mapping.zena';
 import { SymbolId, Symbol, noSymbolId } from '../../scope/symbol.zena';
 import {
-  ValType, ValTypeI32, ValTypeRefNull, ValTypeAnyRef, ValTypeRef, ValTypeStructRef, WasmType, ValTypeFuncRef, valTypeToOpcode, refTargetOf,
+  ValType, ValTypeVoid, ValTypeI32, ValTypeRefNull, ValTypeAnyRef, ValTypeRef, ValTypeStructRef, WasmType, ValTypeFuncRef, valTypeToOpcode, refTargetOf,
 } from '../wasm.zena';
 import { Referrer, RecordResultCall, ReachabilityContext, SpecializerInterface, TypeLowererInterface, ReachabilityVisitorInterface, GenericInterfaceMethodDemand, GenericClassMethodDemand } from './context.zena';
 import { ClassHierarchyAnalysis } from './hierarchy.zena';
@@ -2156,7 +2156,10 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
       if (compT is TupleType) {
         let tFields = new Array<WasmField>();
         for (var ti = 0; ti < compT.elementTypes.length; ti += 1) {
-          tFields.push(new WasmField(i32ToString(ti), typeToValType(this.wasm, compT.elementTypes[ti]), false));
+          let vt = typeToValType(this.wasm, compT.elementTypes[ti]);
+          if (!(vt is ValTypeVoid)) {
+            tFields.push(new WasmField(i32ToString(ti), vt, false));
+          }
         }
         this.reachablyNamedAnonStructs.add(this.wasm.getStruct(null, tFields));
       } else if (compT is FunctionType) {

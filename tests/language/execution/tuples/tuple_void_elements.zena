@@ -1,0 +1,43 @@
+// @mode: run
+// @result: 0
+// A tuple element of type `void` is zero-width: the tuple's struct has no
+// field for it, and reading it gives nothing, as reading a `void` local
+// does.
+
+function unit() {}
+
+let wrap = <T>(value: T): (i32, T) => (7, value);
+
+export let main = (): i32 => {
+  var failures = 0;
+  let t: (i32, void) = (3, unit());
+  if (t[0] != 3) {
+    failures += 1;
+  }
+  let (a, _) = t;
+  if (a != 3) {
+    failures += 1;
+  }
+  let (b, v) = t;
+  if (b != 3) {
+    failures += 1;
+  }
+  // Generic code at a `void` argument.
+  let w = wrap<void>(unit());
+  if (w[0] != 7) {
+    failures += 1;
+  }
+  // Equality compares the elements that have values.
+  let same: (i32, void) = (3, unit());
+  if (!(t == same)) {
+    failures += 1;
+  }
+  // Spread and rest step over the zero-width element.
+  let longer: (i32, void, i32) = (...t, 9);
+  let (first, ...rest) = longer;
+  let (_, last) = rest;
+  if (first + last != 12) {
+    failures += 1;
+  }
+  return failures;
+};

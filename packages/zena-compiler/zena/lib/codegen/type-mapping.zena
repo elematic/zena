@@ -1654,10 +1654,14 @@ export function typeToValType(wasm: WasmModule, t: Type): ValType {
     }
   }
   case TupleType as tup: {
+    // A zero-width element (`void`) has no field; the others keep the
+    // name of their position, so `(true, void)` is one field named "0".
     let fields = new Array<WasmField>();
     for (var i = 0; i < tup.elementTypes.length; i += 1) {
-      let t_i = tup.elementTypes[i];
-      fields.push(new WasmField(i32ToString(i), typeToValType(wasm, t_i), false));
+      let vt = typeToValType(wasm, tup.elementTypes[i]);
+      if (!(vt is ValTypeVoid)) {
+        fields.push(new WasmField(i32ToString(i), vt, false));
+      }
     }
     let structDef = wasm.getStruct(null, fields);
     new ValTypeRef(structDef);

@@ -8,7 +8,7 @@
  */
 import { CallExpression, MemberExpression, Node } from '../ast.zena';
 import { SemanticModel, memberKeyOf } from '../semantic-model.zena';
-import { NullType, RecordType, TupleType, Type, UnionType, baseType } from '../types.zena';
+import { NullType, RecordType, TupleType, Type, UnionType, VoidType, baseType } from '../types.zena';
 import { compareStrings, getTypeUniqueKey } from './codegen-utils.zena';
 
 /**
@@ -80,6 +80,10 @@ export function valueEqFields(l: Type, r: Type): GrowableArray<ValueEqField> | n
       return null;
     }
     for (var i = 0; i < ls.length; i += 1) {
+      // A zero-width element has no field and nothing to compare.
+      if (ls[i] is VoidType && rs[i] is VoidType) {
+        continue;
+      }
       out.push(new ValueEqField(`${i}`, ls[i], rs[i], false, false));
     }
     return out;

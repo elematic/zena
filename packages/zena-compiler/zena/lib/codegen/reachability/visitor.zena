@@ -20,7 +20,7 @@ import {
   WasmStruct, WasmField, WasmGlobal, WasmFunction, RecordDispatchInfo, TypeTestSite,
 } from '../wasm-module.zena';
 import {
-  ValType, ValTypeRefNull, ValTypeAnyRef, ValTypeEqRef, ValTypeStructRef, ValTypeRef, ValTypeI32, ValTypeI64, ValTypeF32, ValTypeF64, ValTypeExternRef, ValTypeRefExtern, isRefValType,
+  ValType, ValTypeVoid, ValTypeRefNull, ValTypeAnyRef, ValTypeEqRef, ValTypeStructRef, ValTypeRef, ValTypeI32, ValTypeI64, ValTypeF32, ValTypeF64, ValTypeExternRef, ValTypeRefExtern, isRefValType,
 } from '../wasm.zena';
 import { SymbolId, Symbol, noSymbolId } from '../../scope/symbol.zena';
 import {
@@ -177,8 +177,10 @@ export final class TypeLowerer implements TypeLowererInterface {
       }
       let fields = new Array<WasmField>();
       for (var i = 0; i < t.elementTypes.length; i += 1) {
-        let type = t.elementTypes[i];
-        fields.push(new WasmField(i32ToString(i), typeToValType(this.pass.wasm, type), false));
+        let vt = typeToValType(this.pass.wasm, t.elementTypes[i]);
+        if (!(vt is ValTypeVoid)) {
+          fields.push(new WasmField(i32ToString(i), vt, false));
+        }
       }
       let st = this.pass.wasm.getStruct(null, fields);
       this.pass.markTypeReached(st);

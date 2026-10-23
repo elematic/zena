@@ -7614,6 +7614,38 @@ function findExtendedInterfaceTransitive(it: InterfaceType, name: String): Inter
  * argType: the actual argument type
  * inferred: map to store inferred type params
  */
+/**
+ * The tuple among `members` that starts with the same literal as the
+ * tuple `t`, boxed or inline, or null when `t` is not such a tuple.
+ */
+function tupleWithSameTag(members: Array<Type>, t: Type): Type | null {
+  let tag = tupleTagOf(t);
+  if (tag == null) {
+    return null;
+  }
+  for (let member in members) {
+    let memberTag = tupleTagOf(member);
+    if (memberTag != null && memberTag.type == tag.type &&
+        memberTag.value == tag.value) {
+      return member;
+    }
+  }
+  return null;
+}
+
+/** The discriminant literal a boxed or inline tuple starts with. */
+function tupleTagOf(t: Type): {type: String, value: String} | null {
+  let elements = match (t) {
+    case TupleT {elementTypes}: elementTypes
+    case InlineTupleT {elementTypes}: elementTypes
+    case _: null
+  };
+  if (elements == null || elements.length == 0) {
+    return null;
+  }
+  return discriminantTag(elements[0]);
+}
+
 function inferTypeArg(paramType: Type, argType: Type, inferred: HashMap<String, Type>): void {
   match (paramType) {
     case TypeParameterType {name}: {
@@ -7731,6 +7763,11 @@ function inferTypeArg(paramType: Type, argType: Type, inferred: HashMap<String, 
       }
     }
     case TupleT as pt: {
+      // An inline argument converts to its boxed form, element by element.
+      if (let InlineTupleT {elementTypes} = argType) {
+        inferTypeArg(paramType, new TupleT(elementTypes, null, 0), inferred);
+        return;
+      }
       // (T, ...R, U) against (i32, f64, bool, String) → infer T = i32,
       // U = String and R = (f64, bool): the elements before the row match
       // a prefix, the ones after it a suffix, and the row is the rest,
@@ -7779,6 +7816,19 @@ function inferTypeArg(paramType: Type, argType: Type, inferred: HashMap<String, 
           }
         }
         case _: {}
+      }
+    }
+    case UnionT as pt: {
+      // (true, T) | (false, E) against (true, i32) | (false, String) →
+      // T = i32, E = String. Each tuple in the argument pairs with the
+      // parameter's tuple that starts with the same literal, which the
+      // union rule makes unique (checkTupleUnionMembers).
+      let argMembers = if (argType is UnionT) argType.types else growable<Type>([argType]);
+      for (let argMember in argMembers) {
+        let paramMember = tupleWithSameTag(pt.types, argMember);
+        if (paramMember != null) {
+          inferTypeArg(paramMember, argMember, inferred);
+        }
       }
     }
     case FunctionType as pt: {
