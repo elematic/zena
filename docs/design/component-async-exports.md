@@ -75,7 +75,9 @@ builtins are) and calls the driver's `finishTask(main(), ret)`, which
 parks the typed return on the task until main's future settles and
 calls it from the task's own entry — see "One task per call". The
 result types the wrapper can name without importing anything are the
-flat scalars; a richer result waits on the types module import below.
+flat scalars and `String`, whose return is typed `return:#string` and
+reads the staged string out of linear memory; a richer result waits on
+the types module import below.
 
 `task.return` with a rich result is the remaining half: a
 `result<response, error-code>` result means the canon entry's type is

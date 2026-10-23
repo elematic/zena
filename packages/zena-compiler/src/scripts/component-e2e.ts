@@ -648,6 +648,37 @@ const FIXTURES: Fixture[] = [
     invocations: [{invoke: 'main()', expect: '42'}],
   },
   {
+    name: 'async-string-main',
+    wasi: ['p3=y'],
+    // An async main whose value is a string: the entry is lifted
+    // `async func() -> string`, and the typed `task.return` reads the
+    // string out of linear memory, so the lift and the return both
+    // carry the memory option.
+    invocations: [
+      {invoke: 'main()', expect: '"waited, then returned a string"'},
+    ],
+  },
+  {
+    name: 'sync-string-main',
+    wasi: ['p3=y'],
+    // A synchronous main returning a string, lifted async because it
+    // prints: its value goes back through the same typed `task.return`.
+    invocations: [
+      {
+        invoke: 'main()',
+        expect: '"then returned"',
+        expectOutput: ['printed first'],
+      },
+    ],
+  },
+  {
+    name: 'string-main-no-imports',
+    wasi: ['p3=y'],
+    // The typed return's `string` type is encoded even though the
+    // program imports no interface to encode it beside.
+    invocations: [{invoke: 'main()', expect: '"nothing imported"'}],
+  },
+  {
     name: 'clock',
     wasi: ['p3=y'],
     // A real monotonic reading, so the value is not predictable; that it
