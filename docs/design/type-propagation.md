@@ -241,10 +241,15 @@ dispatch can load. 518 of those are installed only in slots that no
 reached body reads at all. For example, every call to `some` on an
 `Array<Type>` was devirtualized and inlined, so the slot's trampoline
 and `GrowableArray<Type>.some` behind it remain only because the vtable
-global names them. Deleting the vtable slots no body reads after the
-module loop, the way `ir/deadfields.zena` deletes unread class fields,
-would remove these 518 without this analysis. In `minimal` the same
-count is 9 functions.
+global names them. In `minimal` the same count was 9 functions.
+
+`ir/deadslots.zena` now deletes the vtable slots no body reads after
+the module loop, without this analysis, the way `ir/deadfields.zena`
+deletes unread class fields. It removes 2,089 slots from the
+self-compile, which leaves 163 functions nothing reaches (1,200
+instructions). Only 2 of them are in a slot some body reads; the rest
+are in vtables the pass leaves alone, such as an abstract class's,
+which no global fills.
 
 ### Interface-typed fields
 
@@ -272,15 +277,13 @@ and faster under both engines. `ZENA_ZIR_STATS=1` prints what the
 analysis resolves, so the numbers above can be re-measured as the
 optimizer and the compiler's source change.
 
-Work the measurements point to that does not need the analysis:
+The measurements pointed to two pieces of work that do not need the
+analysis, both done: deleting the vtable slots no body reads after the
+module loop (`ir/deadslots.zena`), and fixing the five tests that
+failed at `-O2` ([#526](https://github.com/elematic/zena/issues/526))
+and running the execution suite at `-O2` in CI.
 
-1. Delete vtable slots that no body reads after the module loop. This
-   is a size change that needs only a scan for slot loads.
-2. Fix [#526](https://github.com/elematic/zena/issues/526) and run the
-   execution suite at `-O2` in CI, where nothing exercises the module
-   loop on small programs today.
-
-And for the analysis itself: a benchmark pair for a class with an
+For the analysis itself: a benchmark pair for a class with an
 interface-typed field, written by a user who did not follow the
 compiler's own rule of annotating with classes, would show whether
 holding the instance in such a field is worth building.

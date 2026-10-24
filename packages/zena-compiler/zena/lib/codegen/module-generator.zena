@@ -61,6 +61,7 @@ import { runJumpThreading } from './ir/thread.zena';
 import { runSpecialize } from './ir/specialize.zena';
 import { pruneTypes } from './ir/typeprune.zena';
 import { eliminateDeadFields, removeEmptyCalls } from './ir/deadfields.zena';
+import { eliminateDeadSlots } from './ir/deadslots.zena';
 import { printIr } from './ir/printer.zena';
 import { IrCfg } from './ir/cfg.zena';
 import { emitZirFunction } from './ir/emit.zena';
@@ -951,6 +952,29 @@ export final class ModuleGenerator {
       zirHarvestedGlobals = harvested.globals;
     }
 
+    // Vtable slots no surviving body reads go (ir/deadslots.zena): the
+    // module loop made their calls direct, and only the vtable globals
+    // still name the functions behind them, which the harvest after
+    // removes.
+    var zirSlotsRemoved = 0;
+    if (this.optLevel >= 1) {
+      let slotsChanged = new Array<boolean>();
+      for (var i = 0; i < bodies.length; i += 1) {
+        slotsChanged.push(false);
+      }
+      zirSlotsRemoved = eliminateDeadSlots(wasm, bodies, slotsChanged, scratch);
+      if (zirSlotsRemoved > 0) {
+        for (var i = 0; i < bodies.length; i += 1) {
+          if (slotsChanged[i]) {
+            zirDceRemoved += runDce(bodies[i], scratch);
+          }
+        }
+        let harvested = pruneUnreached(wasm, bodies, roots);
+        zirHarvestedFunctions += harvested.functions;
+        zirHarvestedGlobals += harvested.globals;
+      }
+    }
+
     // Class fields no surviving body reads go, with their writes
     // (ir/deadfields.zena). An allocation that loses its `<vtable>`
     // operand leaves the vtable global's read dead; DCE deletes it and
@@ -1403,6 +1427,7 @@ export final class ModuleGenerator {
       console.log("zir harvest: " + i32ToString(zirHarvestedFunctions) +
           " unreachable functions and " + i32ToString(zirHarvestedGlobals) +
           " globals removed");
+      console.log(`zir slots: ${i32ToString(zirSlotsRemoved)} vtable slots removed`);
       console.log("zir fields: " + i32ToString(zirFieldsRemoved) + " removed, " +
           i32ToString(zirEmptyCallsRemoved) + " calls to emptied functions removed");
       console.log("zir types: " + i32ToString(zirTypesRemoved) +

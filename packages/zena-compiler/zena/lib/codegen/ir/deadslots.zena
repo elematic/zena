@@ -1,0 +1,350 @@
+/**
+ * Dead vtable slots: a method slot of a class or interface vtable that
+ * no surviving function reads is deleted from the vtable struct and
+ * from every vtable global that fills it. Discovery keeps a slot when
+ * some call can dispatch through it; the module loop then makes calls
+ * direct, so after it a slot can be read by nothing, and harvest still
+ * keeps every function a live vtable global names. Deleting the slot is
+ * what lets the next harvest remove them.
+ *
+ * The pass runs where dead-field elimination does, after the module
+ * loop and its harvests: the bodies that will be emitted are known, and
+ * no pass after it resolves a call through a vtable's initializer.
+ *
+ * A vtable global's initializer stores the leading globals
+ * (`VTableInit.slotGlobals`, such as a `<typeinfo>` field), then one
+ * function per slot, then a record table's shape tag. Only the function
+ * slots are candidates, and only in class and interface vtables, whose
+ * layout is that and nothing else. A slot counts as read when some
+ * `struct_get` names it. A subclass's vtable struct starts with its
+ * superclass's fields, at the same positions (wasm subtyping requires
+ * it), so a slot is identified by the furthest ancestor that has its
+ * position, and a read through any struct in the hierarchy keeps it in
+ * all of them. A struct the pass cannot account for (one no global
+ * fills, or one some body allocates) keeps every field, and the structs
+ * below it keep those positions.
+ *
+ * Emission resolves field indices from the struct's field list by name,
+ * so the reads of the slots that stay need no change.
+ *
+ * Determinism: bodies and instructions in id order, structs in type
+ * order, globals in module order; the hash containers are only queried.
+ */
+import { HashMap, HashSet } from 'zena:collections';
+import {
+  IrBody, IrOp, IrRefField, IrRefType, IrScratch, IrUseLists, buildUseLists,
+} from './ir.zena';
+import { WasmModule, WasmStruct, WasmFunction, VTableInit } from '../wasm-module.zena';
+import { ValTypeRef } from '../wasm.zena';
+
+/** A slot load whose value nothing uses but casts nothing uses. */
+final class DeadLoad {
+  body: i32;
+  inst: i32;
+  owner: WasmStruct;
+  index: i32;
+  new(this.body, this.inst, this.owner, this.index);
+}
+
+/**
+ * Deletes the method slots of class and interface vtables that no body
+ * in `bodies` reads, from the structs and the vtable globals. Returns
+ * the number of slots deleted, counting an inherited slot once per
+ * struct it is deleted from.
+ *
+ * Devirtualization leaves its slot load behind, with the cast that
+ * typed the loaded `funcref` as the slot's signature. DCE keeps the
+ * cast, since a cast can trap, but this one cannot: a slot only ever
+ * holds a function of its signature. Such a load does not count as a
+ * read, and goes with its slot; the bodies it is deleted from are
+ * flagged in `changed`, for DCE to collect the receiver.
+ */
+export function eliminateDeadSlots(wasm: WasmModule, bodies: GrowableArray<IrBody>,
+    changed: GrowableArray<boolean>, scratch: IrScratch): i32 {
+  let vtables = new HashSet<WasmStruct>();
+  for (let entry in wasm.classInfos) {
+    let vst = entry.value.vtableStructType;
+    if (vst != null) {
+      vtables.add(vst);
+    }
+  }
+  for (let entry in wasm.interfaceVTableStructs) {
+    vtables.add(entry.value);
+  }
+
+  // How many leading fields each struct has, from the globals that fill
+  // it, and the structs whose layout is not leading fields then one
+  // function per remaining field.
+  let leading = new HashMap<WasmStruct, i32>();
+  let opaque = new HashSet<WasmStruct>();
+  for (let g in wasm.globals) {
+    let initOpt = g.initVTable;
+    if (initOpt == null) {
+      continue;
+    }
+    let init = initOpt as VTableInit;
+    let s = init.structType;
+    if (!vtables.has(s)) {
+      continue;
+    }
+    let lead = leadingOf(init);
+    if (init.shapeTag >= 0 || lead + init.funcs.length != s.fields.length) {
+      opaque.add(s);
+    }
+    if (let (true, seen) = leading.get(s)) {
+      if (seen != lead) {
+        opaque.add(s);
+      }
+    } else {
+      leading[s] = lead;
+    }
+  }
+
+  // Which declared fields some body reads, by declaring struct, and the
+  // vtable structs some body allocates.
+  let read = new HashMap<WasmStruct, GrowableArray<boolean>>();
+  let deadLoads = new GrowableArray<DeadLoad>();
+  for (var bi = 0; bi < bodies.length; bi += 1) {
+    let body = bodies[bi];
+    let count = body.instCount();
+    scratch.enter();
+    var users: IrUseLists | null = null;
+    for (var inst = 0; inst < count; inst += 1) {
+      let op = body.op(inst);
+      if (op == IrOp.struct_new || op == IrOp.struct_new_default) {
+        let ref = body.refTable[body.b[inst]];
+        if (ref is IrRefType) {
+          let target = (ref as IrRefType).target;
+          if (target is WasmStruct && vtables.has(target as WasmStruct)) {
+            opaque.add(target as WasmStruct);
+          }
+        }
+        continue;
+      }
+      if (op != IrOp.struct_get) {
+        continue;
+      }
+      let ref = body.refTable[body.b[inst]];
+      if (!(ref is IrRefField)) {
+        continue;
+      }
+      let field = ref as IrRefField;
+      let index = field.owner.fieldIndexByName(field.fieldName);
+      if (index < 0) {
+        continue;
+      }
+      // Every load counts against its position, whatever struct it
+      // names: a vtable's position can be read through a struct the
+      // pass does not treat as a vtable.
+      if (vtables.has(field.owner)) {
+        if (users == null) {
+          users = buildUseLists(body, scratch);
+        }
+        if (isDeadLoad(body, users as IrUseLists, inst)) {
+          deadLoads.push(new DeadLoad(bi, inst, field.owner, index));
+          continue;
+        }
+      }
+      flagsOf(read, declaringStruct(field.owner, index))[index] = true;
+    }
+    scratch.exit();
+  }
+
+  // Fields that stay whatever reads them: every field of a struct the
+  // pass cannot account for, and the leading fields of the rest. Kept
+  // by declaring struct, so a struct's fields stay in those below it.
+  let pinned = new HashMap<WasmStruct, GrowableArray<boolean>>();
+  for (let t in wasm.types) {
+    if (!(t is WasmStruct)) {
+      continue;
+    }
+    let s = t as WasmStruct;
+    if (!vtables.has(s)) {
+      continue;
+    }
+    var lead = s.fields.length;
+    if (!opaque.has(s)) {
+      if (let (true, l) = leading.get(s)) {
+        lead = l;
+      }
+    }
+    for (var i = 0; i < lead && i < s.fields.length; i += 1) {
+      flagsOf(pinned, declaringStruct(s, i))[i] = true;
+    }
+  }
+
+  // Which fields each vtable struct keeps, against its current layout.
+  let keep = new HashMap<WasmStruct, GrowableArray<boolean>>();
+  var removed = 0;
+  for (let t in wasm.types) {
+    if (!(t is WasmStruct)) {
+      continue;
+    }
+    let s = t as WasmStruct;
+    if (!vtables.has(s) || keep.has(s)) {
+      continue;
+    }
+    let flags = new GrowableArray<boolean>();
+    var anyDead = false;
+    for (var i = 0; i < s.fields.length; i += 1) {
+      let declaring = declaringStruct(s, i);
+      // A field an ancestor outside the candidates declares stays: that
+      // ancestor keeps it, and so must every subtype.
+      let live = !vtables.has(declaring) || flagAt(read, declaring, i) ||
+          flagAt(pinned, declaring, i);
+      flags.push(live);
+      if (!live) {
+        anyDead = true;
+        removed += 1;
+      }
+    }
+    if (anyDead) {
+      keep[s] = flags;
+    }
+  }
+  if (removed == 0) {
+    return 0;
+  }
+
+  // The dead loads of deleted slots go, with their casts. A load of a
+  // slot that stays is left for what it is.
+  var bodyOpen = -1;
+  var openUsers: IrUseLists | null = null;
+  for (let d in deadLoads) {
+    let flags = if (let (true, f) = keep.get(d.owner)) f else null;
+    if (flags == null || (flags as GrowableArray<boolean>)[d.index]) {
+      continue;
+    }
+    if (d.body != bodyOpen) {
+      if (bodyOpen >= 0) {
+        scratch.exit();
+      }
+      scratch.enter();
+      bodyOpen = d.body;
+      openUsers = buildUseLists(bodies[d.body], scratch);
+    }
+    deleteChain(bodies[d.body], openUsers as IrUseLists, d.inst);
+    changed[d.body] = true;
+  }
+  if (bodyOpen >= 0) {
+    scratch.exit();
+  }
+
+  // The globals first, while the field lists still have the layout the
+  // flags refer to.
+  for (let g in wasm.globals) {
+    let initOpt = g.initVTable;
+    if (initOpt == null) {
+      continue;
+    }
+    let init = initOpt as VTableInit;
+    if (let (true, flags) = keep.get(init.structType)) {
+      let lead = leadingOf(init);
+      let kept = new GrowableArray<WasmFunction>();
+      for (var k = 0; k < init.funcs.length; k += 1) {
+        if (flags[lead + k]) {
+          kept.push(init.funcs[k]);
+        }
+      }
+      while (init.funcs.length > 0) {
+        init.funcs.pop();
+      }
+      for (let f in kept) {
+        init.funcs.push(f);
+      }
+    }
+  }
+  for (let t in wasm.types) {
+    if (!(t is WasmStruct)) {
+      continue;
+    }
+    let s = t as WasmStruct;
+    if (let (true, flags) = keep.get(s)) {
+      s.retainFields(flags);
+    }
+  }
+  return removed;
+}
+
+/**
+ * Whether the slot load at `inst` is dead: its receiver is non-null, so
+ * deleting it removes no trap, and nothing uses its value but casts
+ * that nothing uses.
+ */
+function isDeadLoad(body: IrBody, users: IrUseLists, inst: i32): boolean {
+  let receiverType = body.resultType(body.a[inst]);
+  if (!(receiverType is ValTypeRef)) {
+    return false;
+  }
+  return feedsOnlyUnusedCasts(body, users, inst);
+}
+
+function feedsOnlyUnusedCasts(body: IrBody, users: IrUseLists, v: i32): boolean {
+  for (var k = 0; k < users.count(v); k += 1) {
+    let u = users.at(v, k);
+    let op = body.op(u);
+    if ((op == IrOp.ref_cast || op == IrOp.ref_as_non_null) && body.a[u] == v &&
+        feedsOnlyUnusedCasts(body, users, u)) {
+      continue;
+    }
+    return false;
+  }
+  return true;
+}
+
+/** Deletes `v` and the unused casts of it (`isDeadLoad` held). */
+function deleteChain(body: IrBody, users: IrUseLists, v: i32): void {
+  for (var k = 0; k < users.count(v); k += 1) {
+    deleteChain(body, users, users.at(v, k));
+  }
+  body.opcode[v] = IrOp.nop as i32;
+  body.typeId[v] = -1;
+  body.a[v] = -1;
+  body.b[v] = -1;
+}
+
+/** How many fields of `init`'s struct come before its functions. */
+function leadingOf(init: VTableInit): i32 {
+  let slots = init.slotGlobals;
+  return if (slots == null) 0 else slots.length;
+}
+
+/**
+ * The struct that declares field `index` of `s`: the furthest ancestor
+ * whose list reaches that index. A wasm subtype extends its supertype's
+ * fields, so a field's position is its identity across the hierarchy;
+ * a vtable struct need not share its parent's field objects.
+ */
+function declaringStruct(s: WasmStruct, index: i32): WasmStruct {
+  var d = s;
+  while (d.superStruct != null) {
+    let parent = d.superStruct as WasmStruct;
+    if (index >= parent.fields.length) {
+      break;
+    }
+    d = parent;
+  }
+  return d;
+}
+
+/** The flags for the fields `s` declares, made on first use. */
+function flagsOf(map: HashMap<WasmStruct, GrowableArray<boolean>>,
+    s: WasmStruct): GrowableArray<boolean> {
+  if (let (true, bits) = map.get(s)) {
+    return bits;
+  }
+  let bits = new GrowableArray<boolean>();
+  for (var i = 0; i < s.fields.length; i += 1) {
+    bits.push(false);
+  }
+  map[s] = bits;
+  return bits;
+}
+
+function flagAt(map: HashMap<WasmStruct, GrowableArray<boolean>>, s: WasmStruct,
+    index: i32): boolean {
+  if (let (true, bits) = map.get(s)) {
+    return index < bits.length && bits[index];
+  }
+  return false;
+}
