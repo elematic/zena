@@ -1566,9 +1566,10 @@ decides: `this` handed to an owning sink, or the receiver of another
 consuming call (its dispose included), is a move; `return this` and any
 other use the classifier does not affirm leave it alone; an `if` or
 `match` arm that kept it while another moved it gets the compensating
-drop. Lowering binds the symbol to `this` and wraps the body in its
-region outermost, so it releases after the parameters. A dispose is not
-a candidate: its exit is the release.
+drop. The moves are on the flow graph, so a use of `this` after one is
+the use-after-move error a binding gets. Lowering binds the symbol to
+`this` and wraps the body in its region outermost, so it releases after
+the parameters. A dispose is not a candidate: its exit is the release.
 
 **Value-producing blocks release too.** A `using` or implicit-drop
 binding in a `match` or `if` arm whose tail supplies the arm's value
