@@ -1,0 +1,328 @@
+/**
+ * The PDS as a server: its configuration, read from the environment by
+ * `configFromEnv`, and `serve`, which builds the storage, the PDS and the
+ * package host the configuration names and listens. `main.zena` is the
+ * two together.
+ *
+ * The variables:
+ *
+ * - `PORT`: the port to listen on, 2583 by default.
+ * - `PDS_STORAGE`: `memory` (the default), which forgets everything when
+ *   the server stops, or `firestore`.
+ * - With `firestore`:
+ *   - `PDS_TENANT`, the tenant whose documents these are;
+ *   - and either `PDS_BLOB_BUCKET`, the Cloud Storage bucket for blob bytes,
+ *     or `PDS_BLOB_DIR`, a directory for them, for a server on one machine.
+ *   - The project and credentials come from `google-cloud:firestore`'s
+ *     defaults, and `FIRESTORE_EMULATOR_HOST` points it at the emulator.
+ * - `PDS_HOST_DOMAIN`: the package host's domain, such as
+ *   `pkg.zena-lang.dev`. Without it the server is a PDS with no package
+ *   host. With it:
+ *   - `PDS_ROTATION_KEY`: the host's PLC rotation key, a secp256k1
+ *     private key in hex. Required with `firestore`, since the accounts it
+ *     creates outlive the server. With `memory`, a missing key is made up
+ *     at start.
+ *   - `PDS_SERVICE_DID`: the host's DID, `did:web:<domain>` by default.
+ *   - `PDS_PUBLIC_URL`: the origin the accounts' DID documents name as
+ *     their PDS, `https://<domain>` by default.
+ *   - `PDS_RESERVED_SCOPES`: scope names no one may take, comma-separated,
+ *     beside the host's own.
+ *   - `PDS_MAX_BLOB_BYTES`: the largest artifact the host stores.
+ * - `PDS_PLC_DIRECTORY` and `PDS_DNS_OVER_HTTPS`: where DIDs and handles
+ *   are resolved, `https://plc.directory` and Cloudflare's resolver by
+ *   default.
+ * - `PDS_CLOCK_ID`: 0 to 1023, which keeps this server's revisions apart
+ *   from another's made in the same microsecond. Random by default.
+ */
+
+import {Future} from 'zena:async';
+import {Option, Some, none, some} from 'zena:core';
+import {App, Server} from 'zena:http';
+import {hex} from 'zena:encoding';
+import {randomBytes, randomInt} from 'zena:random';
+import {Firestore} from 'google-cloud:firestore';
+import {Storage as CloudStorage} from 'google-cloud:storage';
+import {KeyType} from 'atproto:didkey';
+import {IdentityResolver} from 'atproto:identity';
+import {PlcOperation, submitPlcOperation} from 'atproto:plc';
+import {BlobBytes, CloudStorageBlobs, DirectoryBlobs, FirestoreHostStore, FirestoreStorage} from './firestore.zena';
+import {HostConfig, HostStore, MemoryHostStore, PackageHost} from './host.zena';
+import {Pds} from './pds.zena';
+import {createApp} from './server.zena';
+import {MemoryStorage, SigningKey, Storage} from './storage.zena';
+
+/** A configuration `configFromEnv` refuses, with every problem it found. */
+export class ConfigError extends Error {
+  new(message: String) : super(message);
+}
+
+/** Where the server keeps its data. */
+export sealed class StorageChoice {
+  case InMemory
+  /** Firestore, for `tenant`, with blob bytes in `blobs`. */
+  case InFirestore(tenant: String, blobs: BlobChoice)
+}
+
+/** Where blob bytes go beside Firestore. */
+export sealed class BlobChoice {
+  case InBucket(bucket: String)
+  case InDirectory(path: String)
+}
+
+/** The package host's settings. */
+export final class HostSettings {
+  domain: String;
+  serviceDid: String;
+  /** The accounts' PDS endpoint, or null for the server's own origin. */
+  publicUrl: String | null;
+  /** The host's PLC rotation key, or null to make one up at start. */
+  rotationKey: SigningKey | null;
+  reservedScopes: Array<String>;
+  /** The largest artifact the host stores, or none for the host's default. */
+  maxBlobSize: Option<i64>;
+
+  new(this.domain, this.serviceDid, this.publicUrl, this.rotationKey, this.reservedScopes, this.maxBlobSize);
+}
+
+/** What the server is to be. */
+export final class ServiceConfig {
+  port: u16;
+  storage: StorageChoice;
+  host: HostSettings | null;
+  plcDirectory: String;
+  dnsOverHttps: String;
+  clockId: i32;
+
+  new(this.port, this.storage, this.host, this.plcDirectory, this.dnsOverHttps, this.clockId);
+}
+
+/** A built server, not yet listening: its application, PDS and host. */
+export final class Service {
+  app: App;
+  pds: Pds;
+  host: PackageHost | null;
+
+  new(this.app, this.pds, this.host);
+}
+
+/**
+ * The configuration the variables `env` gives (see the module comment).
+ * Throws `ConfigError` naming every variable that is wrong.
+ */
+export function configFromEnv(env: (name: String) => String | null): ServiceConfig {
+  let problems = new GrowableArray<String>();
+  let value = (name: String): String | null => {
+    let text = env(name);
+    return if (text == null || text.trim().length == 0) null else text.trim();
+  };
+
+  var port = 2583 as u16;
+  let portText = value('PORT');
+  if (portText != null) {
+    if (let (true, parsed) = parseI32(portText)) {
+      if (parsed >= 0 && parsed <= 65535) {
+        port = parsed as u16;
+      } else {
+        problems.push(`PORT is out of range: ${portText}`);
+      }
+    } else {
+      problems.push(`PORT is not a number: ${portText}`);
+    }
+  }
+
+  var storage: StorageChoice = new InMemory();
+  let storageKind = value('PDS_STORAGE') ?? 'memory';
+  let bucket = value('PDS_BLOB_BUCKET');
+  let blobDir = value('PDS_BLOB_DIR');
+  if (storageKind == 'firestore') {
+    let tenant = value('PDS_TENANT');
+    if (tenant == null) {
+      problems.push('PDS_STORAGE=firestore needs PDS_TENANT');
+    }
+    if (bucket != null && blobDir != null) {
+      problems.push('give PDS_BLOB_BUCKET or PDS_BLOB_DIR, not both');
+    } else if (bucket == null && blobDir == null) {
+      problems.push('PDS_STORAGE=firestore needs PDS_BLOB_BUCKET or PDS_BLOB_DIR');
+    }
+    if (tenant != null && (bucket == null) != (blobDir == null)) {
+      let blobs: BlobChoice = if (bucket != null) new InBucket(bucket as String) else new InDirectory(blobDir as String);
+      storage = new InFirestore(tenant as String, blobs);
+    }
+  } else if (storageKind == 'memory') {
+    if (bucket != null || blobDir != null) {
+      problems.push('PDS_BLOB_BUCKET and PDS_BLOB_DIR need PDS_STORAGE=firestore');
+    }
+  } else {
+    problems.push(`PDS_STORAGE is memory or firestore, not ${storageKind}`);
+  }
+
+  var host: HostSettings | null = null;
+  let domain = value('PDS_HOST_DOMAIN');
+  if (domain != null) {
+    var rotationKey: SigningKey | null = null;
+    let keyText = value('PDS_ROTATION_KEY');
+    if (keyText != null) {
+      let bytes = decodeKey(keyText);
+      if (bytes == null) {
+        problems.push('PDS_ROTATION_KEY is not 32 bytes of hex');
+      } else {
+        rotationKey = new SigningKey(KeyType.Secp256k1, bytes as FixedArray<u8>);
+      }
+    } else if (storageKind == 'firestore') {
+      problems.push('PDS_HOST_DOMAIN with PDS_STORAGE=firestore needs PDS_ROTATION_KEY');
+    }
+    var maxBlobSize: Option<i64> = none;
+    let maxText = value('PDS_MAX_BLOB_BYTES');
+    if (maxText != null) {
+      if (let (true, parsed) = parseI32(maxText)) {
+        if (parsed > 0) {
+          maxBlobSize = some(parsed as i64);
+        } else {
+          problems.push(`PDS_MAX_BLOB_BYTES must be positive: ${maxText}`);
+        }
+      } else {
+        problems.push(`PDS_MAX_BLOB_BYTES is not a number: ${maxText}`);
+      }
+    }
+    let reserved = new GrowableArray<String>();
+    let reservedText = value('PDS_RESERVED_SCOPES');
+    if (reservedText != null) {
+      for (let name in reservedText.split(',')) {
+        let trimmed = name.trim();
+        if (trimmed.length > 0) {
+          reserved.push(trimmed);
+        }
+      }
+    }
+    host = new HostSettings(domain as String, value('PDS_SERVICE_DID') ?? `did:web:${domain}`,
+        value('PDS_PUBLIC_URL') ?? `https://${domain}`, rotationKey, reserved, maxBlobSize);
+  } else {
+    for (let name in ['PDS_ROTATION_KEY', 'PDS_SERVICE_DID', 'PDS_PUBLIC_URL', 'PDS_RESERVED_SCOPES',
+        'PDS_MAX_BLOB_BYTES']) {
+      if (value(name) != null) {
+        problems.push(`${name} needs PDS_HOST_DOMAIN`);
+      }
+    }
+  }
+
+  var clockId = randomInt(1024);
+  let clockText = value('PDS_CLOCK_ID');
+  if (clockText != null) {
+    if (let (true, parsed) = parseI32(clockText)) {
+      if (parsed >= 0 && parsed < 1024) {
+        clockId = parsed;
+      } else {
+        problems.push(`PDS_CLOCK_ID is 0 to 1023, not ${clockText}`);
+      }
+    } else {
+      problems.push(`PDS_CLOCK_ID is not a number: ${clockText}`);
+    }
+  }
+
+  if (problems.length > 0) {
+    var message = 'the configuration is not usable:';
+    for (let problem in problems) {
+      message = `${message}\n  ${problem}`;
+    }
+    throw new ConfigError(message);
+  }
+  return new ServiceConfig(port, storage, host, value('PDS_PLC_DIRECTORY') ?? 'https://plc.directory',
+      value('PDS_DNS_OVER_HTTPS') ?? 'https://cloudflare-dns.com/dns-query', clockId);
+}
+
+/** The 32 bytes `text` spells in hex, or null. */
+function decodeKey(text: String): FixedArray<u8> | null {
+  if (text.length != 64) {
+    return null;
+  }
+  try {
+    return hex.decode(text);
+  } catch (e) {
+    return null;
+  }
+}
+
+/**
+ * The server `config` describes, not yet listening, with `endpoint` as
+ * the package host's PDS endpoint when the configuration leaves it to the
+ * server.
+ */
+export async function buildService(config: ServiceConfig, endpoint: String): Future<Service> {
+  var storage: Storage = new MemoryStorage();
+  var hostStore: HostStore = new MemoryHostStore();
+  match (config.storage) {
+    case InMemory {}: {}
+    case InFirestore {tenant, blobs}: {
+      let db = await Firestore.connect();
+      storage = new FirestoreStorage(db, tenant, blobBytes(blobs));
+      hostStore = new FirestoreHostStore(db, tenant);
+    }
+  }
+  let pds = new Pds(storage, config.clockId);
+  let settings = config.host;
+  if (settings == null) {
+    return new Service(createApp(pds), pds, null);
+  }
+  let rotationKey = settings.rotationKey ?? new SigningKey(KeyType.Secp256k1, randomBytes(32));
+  let hostConfig = new HostConfig(settings.serviceDid, settings.domain, settings.publicUrl ?? endpoint, rotationKey);
+  for (let name in settings.reservedScopes) {
+    hostConfig.reservedScopes.add(name);
+  }
+  if (let Some {value} = settings.maxBlobSize) {
+    hostConfig.maxBlobSize = value;
+  }
+  let resolver = new IdentityResolver();
+  resolver.plcDirectory = config.plcDirectory;
+  resolver.dnsOverHttps = config.dnsOverHttps;
+  let plc = config.plcDirectory;
+  let host = new PackageHost(pds, hostConfig, hostStore, resolver.signingKeys(),
+      async (did: String, operation: PlcOperation): Future<void> => {
+        await submitPlcOperation(plc, did, operation);
+      },
+      (count: i32) => randomBytes(count));
+  return new Service(createApp(pds, host), pds, host);
+}
+
+function blobBytes(choice: BlobChoice): BlobBytes {
+  return match (choice) {
+    case InBucket {bucket}: new CloudStorageBlobs(CloudStorage.connect().bucket(bucket)) as BlobBytes
+    case InDirectory {path}: new DirectoryBlobs(path) as BlobBytes
+  };
+}
+
+/** A listening server, and the service it serves. */
+export final class Running {
+  server: Server;
+  service: Service;
+  /** The origin it listens on, `http://127.0.0.1:<port>`. */
+  origin: String;
+
+  new(this.server, this.service, this.origin);
+}
+
+/**
+ * Builds the server `config` describes and listens on its port. When the
+ * configuration leaves the host's endpoint to the server, it is the
+ * listening origin, known once the port is: the application then serves
+ * through one built after it listens.
+ */
+export async function serve(config: ServiceConfig): Future<Running> {
+  var inner: App | null = null;
+  let outer = new App();
+  outer.use(async (req, res, next): Future<void> => {
+    let app = inner;
+    if (app == null) {
+      res.statusCode = 503;
+      res.type = 'application/json';
+      res.body = '{"error": "Unavailable", "message": "the server is starting"}';
+      return;
+    }
+    await app.handleRequest(req, res);
+  });
+  let server = new Server(outer, config.port);
+  server.start();
+  let origin = `http://127.0.0.1:${server.port as i32}`;
+  let service = await buildService(config, origin);
+  inner = service.app;
+  return new Running(server, service, origin);
+}

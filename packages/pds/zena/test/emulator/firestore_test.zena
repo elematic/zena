@@ -19,6 +19,9 @@ import {Firestore} from 'google-cloud:firestore';
 import {GrpcTransport} from 'protobuf:grpc';
 import {FirestoreHostStore, FirestoreStorage, MemoryBlobs} from 'pds:firestore';
 import {HostStore} from 'pds:host';
+import {buildService, configFromEnv} from 'pds:service';
+import {HashMap} from 'zena:collections';
+import {Request, Response} from 'zena:http';
 import {Account, Head, RecordChange, SigningKey, Storage, StoredBlob} from 'pds:storage';
 import {Cid} from 'atproto:cid';
 import {KeyType} from 'atproto:didkey';
@@ -60,5 +63,31 @@ export let tests = suite('Firestore storage', () => {
     let hostOne = new FirestoreHostStore(db, 'one');
     isTrue(runFuture(hostOne.claimScope('acme', did)), 'claimed');
     isTrue(runFuture(new FirestoreHostStore(db, 'two').claimScope('acme', did)), 'claimed in the other tenant');
+  });
+
+  test('serves a PDS on Firestore, as PDS_STORAGE=firestore configures it', (ctx) => {
+    let env = new HashMap<String, String>();
+    env['PDS_STORAGE'] = 'firestore';
+    env['PDS_TENANT'] = `service-${getRandomU64() % (1000000000 as u64)}`;
+    env['PDS_BLOB_DIR'] = '/tmp/pds-service-blobs';
+    // TODO(#520): the return type is only for the compiler.
+    let config = configFromEnv((name: String): String | null => {
+      if (let (true, value) = env.get(name)) {
+        return value;
+      }
+      return null;
+    });
+    let service = runFuture(buildService(config, 'http://127.0.0.1:1'));
+    let did = 'did:plc:alicealicealicealicealic';
+    runFuture(service.pds.createAccount(did, 'alice.test', new SigningKey(KeyType.P256, new FixedArray<u8>(32, 7 as u8)),
+        1792800000000000 as i64));
+    let res = new Response();
+    let app = service.app;
+    runFuture((async () => {
+      await app.handleRequest(new Request.fromUrl(
+          `http://localhost/xrpc/com.atproto.repo.describeRepo?repo=${did}`, 'GET', new HashMap<String, String>()), res);
+    })());
+    equal(res.statusCode, 200);
+    isTrue((res.body as String).contains('alice.test'), res.body as String);
   });
 });

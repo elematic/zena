@@ -1,0 +1,167 @@
+/**
+ * `pds:service`: reading the configuration from the environment, and the
+ * server it builds, in memory. `zena-cli`'s publish test runs the server
+ * it builds with a package host, against `zena publish`.
+ */
+
+import {suite, test} from 'zena:test';
+import {equal, isTrue} from 'zena:assert';
+import {runFuture} from 'zena:async';
+import {HashMap} from 'zena:collections';
+import {App, Request, Response} from 'zena:http';
+import {JsonObject, parseJson} from 'zena:json';
+import {
+  ConfigError, InBucket, InDirectory, InFirestore, InMemory, ServiceConfig, buildService, configFromEnv
+} from 'pds:service';
+
+let KEY = 'c9afa9d845ba75166b5c215767b1d6934e50c3db36e89b127b8a622b120f6721';
+
+/** The environment `pairs` make. */
+function envOf(pairs: Array<(String, String)>): (name: String) => String | null {
+  let values = new HashMap<String, String>();
+  for (let (name, value) in pairs) {
+    values[name] = value;
+  }
+  // TODO(#520): the return type is only for the compiler.
+  return (name: String): String | null => {
+    if (let (true, value) = values.get(name)) {
+      return value;
+    }
+    return null;
+  };
+}
+
+/** The message `configFromEnv` refuses `pairs` with, or '' when it accepts them. */
+function refusal(pairs: Array<(String, String)>): String {
+  try {
+    configFromEnv(envOf(pairs));
+  } catch (e) {
+    return if (e is ConfigError) e.message else `another error: ${e.message}`;
+  }
+  return '';
+}
+
+function get(app: App, path: String): Response {
+  let res = new Response();
+  runFuture((async () => {
+    await app.handleRequest(new Request.fromUrl(`http://localhost${path}`, 'GET', new HashMap<String, String>()), res);
+  })());
+  return res;
+}
+
+export let tests = suite('pds:service', () => {
+  test('defaults to a PDS in memory on 2583', (ctx) => {
+    let config = configFromEnv(envOf([]));
+    equal(config.port as i32, 2583);
+    isTrue(config.storage is InMemory, 'in memory');
+    isTrue(config.host == null, 'no package host');
+    equal(config.plcDirectory, 'https://plc.directory');
+    isTrue(config.clockId >= 0 && config.clockId < 1024, `clock ${config.clockId}`);
+  });
+
+  test('reads a package host on Firestore', (ctx) => {
+    let config = configFromEnv(envOf([
+      ('PORT', '8080'),
+      ('PDS_STORAGE', 'firestore'),
+      ('PDS_TENANT', 'pkg'),
+      ('PDS_BLOB_BUCKET', 'zena-blobs'),
+      ('PDS_HOST_DOMAIN', 'pkg.example.dev'),
+      ('PDS_ROTATION_KEY', KEY),
+      ('PDS_RESERVED_SCOPES', 'std, core,,'),
+      ('PDS_MAX_BLOB_BYTES', '1000'),
+      ('PDS_CLOCK_ID', '7'),
+      ('PDS_PLC_DIRECTORY', 'http://plc.test'),
+    ]));
+    equal(config.port as i32, 8080);
+    equal(config.clockId, 7);
+    equal(config.plcDirectory, 'http://plc.test');
+    match (config.storage) {
+      case InFirestore {tenant, blobs}: {
+        equal(tenant, 'pkg');
+        isTrue(blobs is InBucket && (blobs as InBucket).bucket == 'zena-blobs', 'the bucket');
+      }
+      case InMemory {}: {
+        isTrue(false, 'not in memory');
+      }
+    }
+    let host = config.host;
+    if (host == null) {
+      isTrue(false, 'a package host');
+      return;
+    }
+    equal(host.domain, 'pkg.example.dev');
+    equal(host.serviceDid, 'did:web:pkg.example.dev');
+    equal(host.publicUrl as String, 'https://pkg.example.dev');
+    isTrue(host.rotationKey != null, 'the rotation key');
+    equal(host.reservedScopes.length, 2);
+    equal(host.reservedScopes[1], 'core');
+
+    let local = configFromEnv(envOf([
+      ('PDS_STORAGE', 'firestore'),
+      ('PDS_TENANT', 'dev'),
+      ('PDS_BLOB_DIR', '/var/pds/blobs'),
+      ('PDS_HOST_DOMAIN', 'pkg.test'),
+      ('PDS_ROTATION_KEY', KEY),
+      ('PDS_SERVICE_DID', 'did:web:other.test'),
+      ('PDS_PUBLIC_URL', 'http://localhost:2583'),
+    ]));
+    if (let InFirestore {blobs} = local.storage) {
+      isTrue(blobs is InDirectory && (blobs as InDirectory).path == '/var/pds/blobs', 'the directory');
+    }
+    let localHost = local.host;
+    isTrue(localHost != null && localHost.serviceDid == 'did:web:other.test' &&
+        localHost.publicUrl as String == 'http://localhost:2583', 'the DID and URL given');
+  });
+
+  test('makes up a rotation key for a host in memory', (ctx) => {
+    let host = configFromEnv(envOf([('PDS_HOST_DOMAIN', 'pkg.test')])).host;
+    isTrue(host != null && host.rotationKey == null, 'no key until the server starts');
+  });
+
+  test('names every problem in a configuration', (ctx) => {
+    let firestore = refusal([('PDS_STORAGE', 'firestore'), ('PDS_HOST_DOMAIN', 'pkg.test')]);
+    isTrue(firestore.contains('needs PDS_TENANT'), firestore);
+    isTrue(firestore.contains('needs PDS_BLOB_BUCKET or PDS_BLOB_DIR'), firestore);
+    isTrue(firestore.contains('needs PDS_ROTATION_KEY'), firestore);
+
+    let values = refusal([
+      ('PORT', 'eighty'),
+      ('PDS_STORAGE', 'disk'),
+      ('PDS_CLOCK_ID', '1024'),
+      ('PDS_HOST_DOMAIN', 'pkg.test'),
+      ('PDS_ROTATION_KEY', 'abcd'),
+      ('PDS_MAX_BLOB_BYTES', '-5'),
+    ]);
+    for (let expected in ['PORT is not a number', 'PDS_STORAGE is memory or firestore', 'PDS_CLOCK_ID is 0 to 1023',
+        'PDS_ROTATION_KEY is not 32 bytes of hex', 'PDS_MAX_BLOB_BYTES must be positive']) {
+      isTrue(values.contains(expected), `${expected} in: ${values}`);
+    }
+
+    let stray = refusal([('PDS_ROTATION_KEY', KEY), ('PDS_BLOB_DIR', '/tmp/x')]);
+    isTrue(stray.contains('PDS_ROTATION_KEY needs PDS_HOST_DOMAIN'), stray);
+    isTrue(stray.contains('need PDS_STORAGE=firestore'), stray);
+    let both = refusal([('PDS_STORAGE', 'firestore'), ('PDS_TENANT', 't'), ('PDS_BLOB_BUCKET', 'b'),
+        ('PDS_BLOB_DIR', '/d')]);
+    isTrue(both.contains('not both'), both);
+  });
+
+  test('builds a PDS, and a package host when it has a domain', (ctx) => {
+    let plain = runFuture(buildService(configFromEnv(envOf([])), 'http://127.0.0.1:1'));
+    isTrue(plain.host == null, 'no package host');
+    equal(get(plain.app, '/xrpc/_health').statusCode, 200);
+    equal(get(plain.app, '/xrpc/com.atproto.server.describeServer').statusCode, 404);
+
+    let config = configFromEnv(envOf([('PDS_HOST_DOMAIN', 'pkg.test'), ('PDS_RESERVED_SCOPES', 'std')]));
+    let hosted = runFuture(buildService(config, 'http://127.0.0.1:1'));
+    let host = hosted.host;
+    if (host == null) {
+      isTrue(false, 'a package host');
+      return;
+    }
+    equal(host.config.endpoint, 'https://pkg.test');
+    isTrue(host.config.reservedScopes.has('std') && host.config.reservedScopes.has('www'), 'the reserved scopes');
+    let res = get(hosted.app, '/xrpc/com.atproto.server.describeServer');
+    equal(res.statusCode, 200);
+    equal((parseJson(res.body as String) as JsonObject)['did'] as String, 'did:web:pkg.test');
+  });
+});

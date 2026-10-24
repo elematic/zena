@@ -5,8 +5,9 @@
  */
 
 import {suite, test} from 'zena:test';
-import {equal} from 'zena:assert';
-import {recordId} from 'pds:firestore';
+import {equal, isTrue} from 'zena:assert';
+import {runFuture} from 'zena:async';
+import {DirectoryBlobs, recordId} from 'pds:firestore';
 
 export let tests = suite('pds:firestore', () => {
   test('keeps record keys as document IDs, except the ones Firestore reserves', (ctx) => {
@@ -18,5 +19,19 @@ export let tests = suite('pds:firestore', () => {
     equal(recordId('___'), '___');
     equal(recordId('__open'), '__open');
     equal(recordId('_x_'), '_x_');
+  });
+
+  test('keeps blob bytes in a directory, making the directories it needs', (ctx) => {
+    let blobs = new DirectoryBlobs('/tmp/pds-blobs');
+    let name = 'tenant/did:plc:alicealicealicealicealic/bafkreiexample';
+    isTrue(runFuture(blobs.read(name)) == null, 'nothing yet');
+    let bytes = 'a blob'.toBytes() as FixedArray<u8>;
+    runFuture(blobs.write(name, bytes, 'text/plain'));
+    let read = runFuture(blobs.read(name));
+    isTrue(read != null, 'written');
+    equal(String.fromBytes((read as FixedArray<u8>) as ByteArray), 'a blob');
+    // A second write of the same object replaces it.
+    runFuture(blobs.write(name, 'again'.toBytes() as FixedArray<u8>, 'text/plain'));
+    equal(String.fromBytes((runFuture(blobs.read(name)) as FixedArray<u8>) as ByteArray), 'again');
   });
 });

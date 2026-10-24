@@ -205,8 +205,9 @@ grows. Milestones 1 to 4 are done.
    and a Cloud Run image running under `zena-cli`, with the host's DNS zone.
    Firestore documents are keyed by tenant and account from the start. The
    adapters are done, tested against the Firestore emulator with a suite
-   every storage passes (`zena/test/storage-conformance.zena`); the image,
-   the server's configuration and the DNS zone are not.
+   every storage passes (`zena/test/storage-conformance.zena`), and so is
+   the server's configuration (`pds:service`), read from the environment;
+   the image and the DNS zone are not.
 8. **Conformance.** The pds.js e2e suite, run against this server, with
    `com.atproto.repo.*` and AppView proxying for ordinary accounts.
 9. **Firehose.** `subscribeRepos`, after the Zena host can upgrade a request
