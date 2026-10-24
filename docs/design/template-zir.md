@@ -110,12 +110,17 @@ specialization time.
 
 ### Families
 
-A **candidate** is a non-static method of a generic class
-specialization, written in the class, that is not a constructor, a
-generator or async function, a closure, an explosion core or forwarder,
-a mixin method, or one of the roles lowering synthesizes
-(`notCandidate`). A **family** is the candidates lowered from one
-method node whose type arguments agree on their **pins**:
+A **candidate** is a non-static method or constructor of a generic
+class or extension class specialization, written in the class, that is
+not a generator or async function, a closure, an explosion core or
+forwarder, a mixin method, or one of the roles lowering synthesizes
+(`notCandidate`). A constructor's phases are candidates too: the value
+phase `<ctor-init>`, which returns the class's field values for a
+subclass to allocate with, and the written body `<ctor-body>`. Each
+lowers as its phase on the template path as it does directly
+(`ctorPhaseOf`). A **family** is the candidates lowered from one method
+node, with one method name, whose type arguments agree on their
+**pins**:
 
 | type argument                                       | pin                               | varies within a family? |
 | --------------------------------------------------- | --------------------------------- | ----------------------- |
@@ -289,6 +294,16 @@ belong to candidate families. The rest are not candidates: methods of
 extension classes such as `FixedArray<T>` (2,516), constructors
 (2,769), closures (1,219) and other functions (965).
 
+With extension classes' methods and constructors as candidates, on a
+later revision: 158 templates, 13,452 bodies specialized from them, 39
+members declined by a recorded decision, and the module still
+byte-identical at `-O1` and `-O2`. Lowering and per-function cleanup
+took 2,457 ms with templates and 2,631 ms without (medians of seven
+alternating runs, on a machine other work was loading, so the 174 ms
+difference is approximate). The repeats left are mixin methods (765),
+closures (1,257), other functions (997), roles lowering synthesizes
+(1,146), and functions with no class (302).
+
 What stops the remaining families: a representative whose key class
 declares `==` (7, among them `GrowableArray<Diagnostic>.contains`, 178
 members), `match` on a type parameter (6, the map iterators),
@@ -304,8 +319,9 @@ cannot generalize (5).
    parameter's class, as recorded decisions. Done. Deferring them to
    specialization instead, and covering classes with their own `==`,
    remain.
-3. More candidates: constructors, extension classes, closures, and
-   generic functions and methods.
+3. More candidates. Extension classes' methods and constructors, with
+   their phases: done. Closures, mixin methods, and generic functions
+   and methods remain.
 4. Discovery from templates. Measured (above): at most 1.27 s of the
    self-compile's discovery walks a node again for another
    specialization. Getting it needs templates that exist before
