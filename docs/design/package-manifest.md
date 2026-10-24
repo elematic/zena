@@ -212,7 +212,9 @@ entry `<did>@<major>`.
 
 1. It reads the `zena-package.json` in its working directory, the
    workspace root, expands `workspace.packages`, and reads each workspace
-   package's manifest.
+   package's manifest, whichever packages the compile reaches.
+   [workspace-loading.md](workspace-loading.md) designs reading only the
+   ones it reaches.
 2. It reads the pins from `zena-lock.json`.
 3. For an import `<name>:<library>` in a library of package P, it looks
    `<name>` up among P's dependencies:
