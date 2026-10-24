@@ -955,11 +955,13 @@ export function createWebHost(
     typeof options.fetch === 'function'
       ? options.fetch
       : options.fetch === true
-        ? (url: string) => {
+        ? (url: string, init?: RequestInit) => {
             if (typeof globalThis.fetch !== 'function') {
               throw new Error('globalThis.fetch is not available on this host');
             }
-            return globalThis.fetch(url);
+            return init !== undefined
+              ? globalThis.fetch(url, init)
+              : globalThis.fetch(url);
           }
         : () => {
             throw new Error(
@@ -970,9 +972,52 @@ export function createWebHost(
   return {
     imports: {
       fetch_start: hostAsync.wrap(
-        (ref: unknown, len: number) => fetchFn(readZena(ref, len)),
+        (ref: unknown, len: number, init?: RequestInit | null) =>
+          init != null
+            ? fetchFn(readZena(ref, len), init)
+            : fetchFn(readZena(ref, len)),
         'extern',
       ),
+      request_init: (): RequestInit => ({}),
+      request_method: (
+        init: RequestInit,
+        ref: unknown,
+        len: number,
+      ): void => {
+        init.method = readZena(ref, len);
+      },
+      request_header: (
+        init: RequestInit,
+        nameRef: unknown,
+        nameLen: number,
+        valueRef: unknown,
+        valueLen: number,
+      ): void => {
+        let headers = init.headers as [string, string][] | undefined;
+        if (!headers) {
+          headers = [];
+          init.headers = headers;
+        }
+        headers.push([
+          readZena(nameRef, nameLen),
+          readZena(valueRef, valueLen),
+        ]);
+      },
+      request_body_text: (
+        init: RequestInit,
+        ref: unknown,
+        len: number,
+      ): void => {
+        init.body = readZena(ref, len);
+      },
+      request_body_bytes: (init: RequestInit, len: number): Uint8Array => {
+        const bytes = new Uint8Array(len);
+        init.body = bytes as BodyInit;
+        return bytes;
+      },
+      bytes_set: (bytes: Uint8Array, index: number, value: number): void => {
+        bytes[index] = value & 0xff;
+      },
       response_status: (response: unknown): number =>
         (response as Response).status,
       response_header: (
@@ -988,6 +1033,13 @@ export function createWebHost(
         (response: unknown) => (response as Response).text(),
         'string',
       ),
+      response_bytes: hostAsync.wrap(
+        async (response: unknown) =>
+          new Uint8Array(await (response as Response).arrayBuffer()),
+        'extern',
+      ),
+      bytes_length: (bytes: Uint8Array): number => bytes.length,
+      bytes_get: (bytes: Uint8Array, index: number): number => bytes[index],
       ...options.overrides,
     },
     idle: work.idle,

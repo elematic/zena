@@ -1,8 +1,9 @@
 /**
  * HTTP client for making network requests.
  *
- * `fetch(url)` sends an HTTP request and completes with a `Response`. The response
- * provides the HTTP status and methods for asynchronously reading the response body.
+ * `fetch(url, init)` sends an HTTP request and completes with a `Response`.
+ * The response provides the HTTP status, headers, and methods for
+ * asynchronously reading the response body.
  *
  * ## Examples
  *
@@ -18,10 +19,12 @@
 
 import { URL } from 'zena:url';
 import { Completer } from 'zena:async';
-import { Result } from 'zena:core';
-import { Stream, readAllBytes, readAllText } from 'zena:stream';
+import { Option, Result } from 'zena:core';
+import { Stream, bytesStream, readAllBytes, readAllText, textStream } from 'zena:stream';
 import {
-  Fields, Request, Response as WireResponse, ErrorCode, Scheme,
+  Fields, Method, MethodConnect, MethodDelete, MethodGet, MethodHead,
+  MethodOptions, MethodOther, MethodPatch, MethodPost, MethodPut,
+  MethodTrace, Request, Response as WireResponse, ErrorCode, Scheme,
   SchemeHTTP, SchemeHTTPS, SchemeOther, ErrorCodeDNSError,
   ErrorCodeDNSTimeout, ErrorCodeDestinationNotFound,
   ErrorCodeDestinationUnavailable, ErrorCodeConnectionRefused,
@@ -29,6 +32,8 @@ import {
   ErrorCodeHTTPRequestURIInvalid, ErrorCodeInternalError
 } from 'wasi:http/types';
 import { send } from 'wasi:http/client';
+import { RequestInit } from './options.zena';
+export { RequestInit } from './options.zena';
 
 /** The one spellable value of type void, for a `result<_, e>` ok arm. */
 function unit() {}
@@ -100,11 +105,13 @@ export class Response {
 }
 
 /**
- * Starts fetching `url` with a GET request, returning a future that
- * resolves once the response is available.
+ * Starts fetching `url`, returning a future that resolves once the
+ * response is available.
  *
- * The future resolves to the `Response` for the request: its status
- * and headers are in, and its body is read from it afterwards.
+ * `init` sets the request method (default `'GET'`), headers, and body
+ * (`String` or `FixedArray<u8>`). The future resolves to the `Response`
+ * for the request: its status and headers are in, and its body is read
+ * from it afterwards.
  *
  * The future fails only when the request itself fails — a URL that
  * does not parse, a host the runtime could not resolve or reach, a
@@ -113,7 +120,7 @@ export class Response {
  * 504, and so on): that is a response like any other, and the caller
  * checks `ok` or `status`.
  */
-export async function fetch(url: String | URL): Future<Response> {
+export async function fetch(url: String | URL, init: RequestInit = {}): Future<Response> {
   var parsed: URL | null = null;
   if (url is URL) {
     parsed = url;
@@ -124,7 +131,7 @@ export async function fetch(url: String | URL): Future<Response> {
     }
   }
   let target = parsed;
-  let request = requestFor(target);
+  let request = requestFor(target, init);
   let sent = await send(request);
   let wire = match (sent) {
     case (true, let value): value
@@ -134,21 +141,39 @@ export async function fetch(url: String | URL): Future<Response> {
 }
 
 /**
- * A GET request for `target`: no body, no trailers, the scheme,
- * authority and path-with-query set from the URL. A p3 request has no
- * URL string; those three are its addressing.
+ * A request for `target` from `init`: no trailers, the method, headers,
+ * body, and the scheme, authority and path-with-query set from the URL.
+ * A p3 request has no URL string; those three are its addressing.
  */
-let requestFor = (target: URL): Request => {
+let requestFor = (target: URL, init: RequestInit): Request => {
+  let fields = Fields.create();
+  if (let {headers} = init) {
+    for (let (name, value) in headers) {
+      if (let (false, err) = fields.append(name, value.toBytes())) {
+        throw new Error(`zena:fetch: invalid header: ${name}`);
+      }
+    }
+  }
+  var contents: Option<Stream<u8>> = none;
+  if (let {body} = init) {
+    if (body is String) {
+      contents = some(textStream(body));
+    } else if (body is FixedArray<u8>) {
+      contents = some(bytesStream(body));
+    }
+  }
   // The trailers future is the sender's to settle, and the host does
   // not consider the request body finished until it is: this request
-  // has no body and no trailers, so it settles now with "none".
+  // has no trailers, so it settles now with "none".
   let trailers = Future.of<Result<Option<Fields>, ErrorCode>>(
       (true, none));
   // `new` returns the request and a future that settles once it has
   // been transmitted; a client that wanted send errors ahead of the
   // response would await it. It goes unobserved here (#587).
   let (request, transmitted) =
-      Request.new_(Fields.create(), none, trailers, none);
+      Request.new_(fields, contents, trailers, none);
+  let {method = 'GET'} = init;
+  request.setMethod(methodOf(method));
   request.setScheme(some(schemeOf(target.protocol)));
   request.setAuthority(some(target.host()));
   var path = target.pathname;
@@ -157,6 +182,21 @@ let requestFor = (target: URL): Request => {
   }
   request.setPathWithQuery(some(path + target.search));
   return request;
+};
+
+/** The WIT method for a method name such as `GET` or `POST`. */
+let methodOf = (method: String): Method => {
+  let upper = method.asciiUpperCase();
+  if (upper == 'GET') return new MethodGet();
+  if (upper == 'HEAD') return new MethodHead();
+  if (upper == 'POST') return new MethodPost();
+  if (upper == 'PUT') return new MethodPut();
+  if (upper == 'DELETE') return new MethodDelete();
+  if (upper == 'CONNECT') return new MethodConnect();
+  if (upper == 'OPTIONS') return new MethodOptions();
+  if (upper == 'TRACE') return new MethodTrace();
+  if (upper == 'PATCH') return new MethodPatch();
+  return new MethodOther(method);
 };
 
 /** The WIT scheme for a URL protocol such as `http:`. */

@@ -16,12 +16,12 @@
  */
 
 import {StringBuilder} from 'zena:core';
-import {JsonArray, JsonObject} from 'zena:json';
+import {fetch} from 'zena:fetch';
+import {JsonArray, JsonObject, parseJson} from 'zena:json';
 import {DidDocument, parseDidDocument} from './did.zena';
 import {PublicKey} from './didkey.zena';
 import {SigningKeyLookup} from './service-auth.zena';
 import {isValidDid, isValidHandle, normalizeHandle} from './syntax.zena';
-import {httpRequest} from './xrpc.zena';
 
 /** A DID or handle that does not resolve. */
 export class IdentityError extends Error {
@@ -102,11 +102,11 @@ export final class IdentityResolver {
     } else {
       throw new IdentityError(`unsupported DID method: ${did}`)
     };
-    let response = await httpRequest('GET', url, [('accept', 'application/json')], null);
+    let response = await fetch(url, {headers: [('accept', 'application/json')]});
     if (response.status != 200) {
       throw new IdentityError(`${did} did not resolve: HTTP ${response.status}`);
     }
-    return parseDidDocument(response.json(), did);
+    return parseDidDocument(parseJson(await response.text()), did);
   }
 
   /**
@@ -133,11 +133,11 @@ export final class IdentityResolver {
 
   async #resolveHandleDns(handle: String): Future<String | null> {
     let url = `${this.dnsOverHttps}?name=_atproto.${handle}&type=TXT`;
-    let response = await httpRequest('GET', url, [('accept', 'application/dns-json')], null);
+    let response = await fetch(url, {headers: [('accept', 'application/dns-json')]});
     if (response.status != 200) {
       return null;
     }
-    let json = response.json();
+    let json = parseJson(await response.text());
     if (!(json is JsonObject)) {
       return null;
     }
@@ -151,11 +151,11 @@ export final class IdentityResolver {
 
   async #resolveHandleHttps(handle: String): Future<String | null> {
     let url = `${this.originOf(handle)}/.well-known/atproto-did`;
-    let response = await httpRequest('GET', url, [], null);
+    let response = await fetch(url);
     if (response.status != 200) {
       return null;
     }
-    let did = response.text().trim();
+    let did = (await response.text()).trim();
     return if (isValidDid(did)) did else null;
   }
 

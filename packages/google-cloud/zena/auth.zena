@@ -7,22 +7,13 @@
  * one until shortly before it expires. For local runs, an access token
  * from `gcloud auth print-access-token` in `GOOGLE_OAUTH_ACCESS_TOKEN`
  * works through `AccessTokenCredentials`.
- *
- * This module makes requests through `wasi:http`, so it compiles for
- * component targets only.
  */
 
-import { Completer } from 'zena:async';
 import { getEnv } from 'zena:cli';
-import { Option, Result } from 'zena:core';
+import { fetch } from 'zena:fetch';
 import { JsonObject, parseJson } from 'zena:json';
-import { Stream, readAllBytes } from 'zena:stream';
 import { Duration, Instant, milliseconds, monotonic } from 'zena:time';
 import { URL } from 'zena:url';
-import {
-  ErrorCode, Fields, Request, Response as WireResponse, Scheme, SchemeHTTP, SchemeHTTPS
-} from 'wasi:http/types';
-import { send } from 'wasi:http/client';
 import { Credentials } from 'protobuf:runtime';
 
 /** The metadata server every Google compute instance can reach. */
@@ -124,37 +115,24 @@ function metadataOrigin(): String {
   return if (host != null && host.length > 0) `http://${host}` else METADATA_ORIGIN;
 }
 
-/** The one spellable value of type void, for a `result<_, e>` ok arm. */
-function unit() {}
-
 /** GETs `path` from the metadata server at `origin` and returns the body; throws unless it answers 200. */
 async function metadataGet(origin: String, path: String): Future<String> {
-  let url = URL.parse(origin);
-  if (url == null) {
+  if (URL.parse(origin) == null) {
     throw new AuthError(`not a URL: ${origin}`);
   }
-  let parsed = url;
-  let headers = Fields.create();
-  headers.append('metadata-flavor', 'Google'.toBytes());
-  let trailers = Future.of<Result<Option<Fields>, ErrorCode>>((true, none));
-  let (request, transmitted) = Request.new_(headers, none, trailers, none);
-  let scheme: Scheme = if (parsed.protocol == 'https:') new SchemeHTTPS() else new SchemeHTTP();
-  request.setScheme(some(scheme));
-  request.setAuthority(some(parsed.host()));
-  request.setPathWithQuery(some(path));
-  let sent = await send(request);
-  let response = match (sent) {
-    case (true, let value): value
-    case (false, _): throw new AuthError(`the metadata server at ${origin} could not be reached`)
-  };
-  let status = response.getStatusCode() as i32;
-  let received = new Completer<Result<void, ErrorCode>>();
-  let (body, responseTrailers) = WireResponse.consumeBody(response, received.future);
-  let bytes = await readAllBytes(body);
-  received.tryComplete((true, unit()));
-  let text = String.fromBytes(bytes);
-  if (status != 200) {
-    throw new AuthError(`the metadata server answered ${path} with HTTP ${status}: ${text}`);
+  try {
+    let response = await fetch(`${origin}${path}`, {
+      headers: [('metadata-flavor', 'Google')],
+    });
+    let text = await response.text();
+    if (response.status != 200) {
+      throw new AuthError(`the metadata server answered ${path} with HTTP ${response.status}: ${text}`);
+    }
+    return text;
+  } catch (e) {
+    if (e is AuthError) {
+      throw e;
+    }
+    throw new AuthError(`the metadata server at ${origin} could not be reached`);
   }
-  return text;
 }

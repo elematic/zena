@@ -1,0 +1,159 @@
+/**
+ * `zena:fetch` against a `zena:http` server in the same program: request
+ * methods, headers, text and byte bodies, and response reading.
+ */
+
+import { suite, test } from 'zena:test';
+import { equal, isNull, isTrue } from 'zena:assert';
+import { Future, runFuture } from 'zena:async';
+import { fetch } from 'zena:fetch';
+import { App, Server } from 'zena:http';
+import { URL } from 'zena:url';
+
+function startEchoServer(): Server {
+  let app = new App();
+  app.use(async (req, res, next): Future<void> => {
+    res.setHeader('x-method', req.method);
+    let auth = req.getHeader('authorization');
+    if (auth != null) {
+      res.setHeader('x-echo-auth', auth);
+    }
+    let custom = req.getHeader('x-custom');
+    if (custom != null) {
+      res.setHeader('x-echo-custom', custom);
+    }
+    if (req.path == '/bytes') {
+      let input = await req.bytes();
+      let out = new FixedArray<u8>(input.length, 0 as u8);
+      for (var i = 0; i < input.length; i += 1) {
+        out[i] = (input[i] ^ (0xff as u8)) as u8;
+      }
+      res.statusCode = 200;
+      res.type = 'application/octet-stream';
+      res.body = out;
+    } else if (req.path == '/status/404') {
+      res.statusCode = 404;
+      res.body = 'missing';
+    } else if (req.method == 'DELETE') {
+      res.statusCode = 204;
+      res.body = '';
+    } else {
+      let body = await req.text();
+      res.statusCode = if (req.method == 'POST') 201 else 200;
+      res.type = 'text/plain';
+      res.body = `${req.method} ${req.path}${req.query}: ${body}`;
+    }
+  });
+  let server = new Server(app, 0 as u16);
+  server.start();
+  return server;
+}
+
+function originOf(server: Server): String {
+  return `http://127.0.0.1:${server.port as i32}`;
+}
+
+export let tests = suite('zena:fetch', () => {
+  test('GET sends headers and reads status, headers, and text', () => {
+    let server = startEchoServer();
+    let response = runFuture(fetch(`${originOf(server)}/hello?a=1`, {
+      headers: [
+        ('authorization', 'Bearer secret'),
+        ('x-custom', 'two'),
+      ],
+    }));
+    equal(response.status, 200);
+    isTrue(response.ok);
+    equal(response.header('x-method') as String, 'GET');
+    equal(response.header('x-echo-auth') as String, 'Bearer secret');
+    equal(response.header('x-echo-custom') as String, 'two');
+    isNull(response.header('x-absent'));
+    equal(runFuture(response.text()), 'GET /hello?a=1: ');
+    server.close();
+  });
+
+  test('POST, PATCH, and DELETE send their methods and text bodies', () => {
+    let server = startEchoServer();
+    let origin = originOf(server);
+
+    let created = runFuture(fetch(`${origin}/items`, {
+      method: 'POST',
+      headers: [('content-type', 'application/json')],
+      body: '{"name":"box"}',
+    }));
+    equal(created.status, 201);
+    isTrue(created.ok);
+    equal(runFuture(created.text()), 'POST /items: {"name":"box"}');
+
+    let patched = runFuture(fetch(URL.parse(`${origin}/items/1`) as URL, {
+      method: 'PATCH',
+      body: '{"name":"crate"}',
+    }));
+    equal(patched.status, 200);
+    equal(runFuture(patched.text()), 'PATCH /items/1: {"name":"crate"}');
+
+    let deleted = runFuture(fetch(`${origin}/items/1`, {
+      method: 'DELETE',
+    }));
+    equal(deleted.status, 204);
+    isTrue(deleted.ok);
+    server.close();
+  });
+
+  test('sends a FixedArray<u8> body and reads response.bytes() once', () => {
+    let server = startEchoServer();
+    let payload = new FixedArray<u8>(3, 0 as u8);
+    payload[0] = 0x00 as u8;
+    payload[1] = 0x0f as u8;
+    payload[2] = 0xff as u8;
+    let response = runFuture(fetch(`${originOf(server)}/bytes`, {
+      method: 'PUT',
+      body: payload,
+    }));
+    equal(response.status, 200);
+    let out = runFuture(response.bytes());
+    equal(out.length, 3);
+    equal(out[0], 0xff as u8);
+    equal(out[1], 0xf0 as u8);
+    equal(out[2], 0x00 as u8);
+
+    var threw = false;
+    try {
+      runFuture(response.bytes());
+    } catch (e) {
+      threw = true;
+    }
+    isTrue(threw);
+    server.close();
+  });
+
+  test('non-2xx responses resolve with ok == false and a readable body', () => {
+    let server = startEchoServer();
+    let response = runFuture(fetch(`${originOf(server)}/status/404`));
+    equal(response.status, 404);
+    isTrue(!response.ok);
+    equal(runFuture(response.text()), 'missing');
+    server.close();
+  });
+
+  test('fails on an invalid URL or an unreachable server', () => {
+    var badUrl = false;
+    try {
+      runFuture(fetch('not a url'));
+    } catch (e) {
+      badUrl = true;
+    }
+    isTrue(badUrl);
+
+    let server = startEchoServer();
+    let origin = originOf(server);
+    server.close();
+    var unreachable = false;
+    try {
+      runFuture(fetch(origin));
+    } catch (e) {
+      unreachable = true;
+    }
+    isTrue(unreachable);
+  });
+});

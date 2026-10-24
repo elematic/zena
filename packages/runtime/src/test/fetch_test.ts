@@ -297,4 +297,95 @@ suite('Runtime - zena:fetch', () => {
     // Overridden response_status returns 999
     assert.strictEqual(await main(), 999);
   });
+
+  test('fetch sends method, headers, and a text body', async () => {
+    let seenUrl = '';
+    let seenMethod = '';
+    let seenAuth = '';
+    let seenCustom = '';
+    let seenBody = '';
+    const mockFetch = (async (
+      url: string | URL | Request,
+      init?: RequestInit,
+    ) => {
+      seenUrl = String(url);
+      seenMethod = init?.method ?? 'GET';
+      const headers = new Headers(init?.headers);
+      seenAuth = headers.get('authorization') ?? '';
+      seenCustom = headers.get('x-custom') ?? '';
+      seenBody = typeof init?.body === 'string' ? init.body : '';
+      return new Response('created', {status: 201});
+    }) as typeof fetch;
+
+    const {main} = await hosted(
+      `
+      import { Future } from 'zena:async';
+      import { fetch } from 'zena:fetch';
+
+      export async function main(): Future<i32> {
+        let response = await fetch('https://example.test/items', {
+          method: 'POST',
+          headers: [
+            ('authorization', 'Bearer tok'),
+            ('x-custom', 'val'),
+          ],
+          body: '{"name":"widget"}',
+        });
+        let text = await response.text();
+        return if (text == 'created') response.status else 0 - 1;
+      }
+    `,
+      {fetch: mockFetch},
+    );
+    assert.strictEqual(await main(), 201);
+    assert.strictEqual(seenUrl, 'https://example.test/items');
+    assert.strictEqual(seenMethod, 'POST');
+    assert.strictEqual(seenAuth, 'Bearer tok');
+    assert.strictEqual(seenCustom, 'val');
+    assert.strictEqual(seenBody, '{"name":"widget"}');
+  });
+
+  test('fetch sends a byte body and reads response.bytes() once', async () => {
+    let seenBytes: number[] = [];
+    const mockFetch = (async (
+      _url: string | URL | Request,
+      init?: RequestInit,
+    ) => {
+      if (init?.body instanceof Uint8Array) {
+        seenBytes = Array.from(init.body);
+      }
+      return new Response(new Uint8Array([10, 20, 255]));
+    }) as typeof fetch;
+
+    const {main} = await hosted(
+      `
+      import { Future } from 'zena:async';
+      import { fetch } from 'zena:fetch';
+
+      export async function main(): Future<i32> {
+        let payload = new FixedArray<u8>(3, 0 as u8);
+        payload[0] = 1 as u8;
+        payload[1] = 2 as u8;
+        payload[2] = 250 as u8;
+        let response = await fetch('https://example.test/bytes', {
+          method: 'PUT',
+          body: payload,
+        });
+        let out = await response.bytes();
+        if (out.length != 3 || out[0] != (10 as u8) || out[1] != (20 as u8) || out[2] != (255 as u8)) {
+          return 0 - 1;
+        }
+        try {
+          await response.bytes();
+          return 0 - 2;
+        } catch (e) {
+          return out.length;
+        }
+      }
+    `,
+      {fetch: mockFetch},
+    );
+    assert.strictEqual(await main(), 3);
+    assert.deepStrictEqual(seenBytes, [1, 2, 250]);
+  });
 });

@@ -36,12 +36,12 @@ import {Future} from 'zena:async';
 import {OrderedHashMap} from 'zena:collections';
 import {sha256} from 'zena:crypto';
 import {base32Lower, base64Url} from 'zena:encoding';
+import {fetch} from 'zena:fetch';
 import {JsonArray, JsonObject, JsonValue, stringify} from 'zena:json';
 import {encodeCbor} from './cbor.zena';
 import {Cid} from './cid.zena';
 import {ListValue, MapValue, NullValue, StringValue, Value, newMap} from './data.zena';
 import {PublicKey, formatDidKey, parseDidKey, verifySignature} from './didkey.zena';
-import {httpRequest} from './xrpc.zena';
 
 /** An operation that is malformed, or that a PLC directory refused. */
 export class PlcError extends Error {
@@ -307,11 +307,13 @@ export function didDocument(did: String, operation: PlcOperation): JsonObject {
  */
 export async function submitPlcOperation(directory: String, did: String, operation: PlcOperation)
     : Future<void> {
-  let body = stringify(operation.toJson()).toBytes();
-  let response = await httpRequest('POST', `${directory}/${did}`,
-      [('content-type', 'application/json')], body);
-  if (response.status < 200 || response.status >= 300) {
-    throw new PlcError(`${directory} refused the operation for ${did}: HTTP ${response.status} ${String.fromBytes(response.body)}`);
+  let response = await fetch(`${directory}/${did}`, {
+    method: 'POST',
+    headers: [('content-type', 'application/json')],
+    body: stringify(operation.toJson()),
+  });
+  if (!response.ok) {
+    throw new PlcError(`${directory} refused the operation for ${did}: HTTP ${response.status} ${await response.text()}`);
   }
 }
 

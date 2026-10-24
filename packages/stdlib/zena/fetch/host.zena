@@ -1,8 +1,9 @@
 /**
  * HTTP client for making network requests.
  *
- * `fetch(url)` sends an HTTP request and completes with a `Response`. The response
- * provides the HTTP status and methods for asynchronously reading the response body.
+ * `fetch(url, init)` sends an HTTP request and completes with a `Response`.
+ * The response provides the HTTP status, headers, and methods for
+ * asynchronously reading the response body.
  *
  * ## Examples
  *
@@ -18,14 +19,57 @@
 
 import { pending } from 'zena:js';
 import { URL } from 'zena:url';
+import { RequestInit } from './options.zena';
+export { RequestInit } from './options.zena';
 
 /** Opaque reference to the host's own response object. */
 distinct type JsResponse = anyref;
 
-/** Starts a GET of `url`; the host completes `handle` with a reference
- * to its response object once headers have arrived. */
+/** Opaque reference to a host `RequestInit` object being assembled. */
+distinct type JsRequestInit = anyref;
+
+/** Opaque reference to a host `Uint8Array`. */
+distinct type JsBytes = anyref;
+
+/** Starts fetching `url` with `init`; the host completes `handle` with a
+ * reference to its response object once headers have arrived. */
 @external("web", "fetch_start")
-declare function __fetch_start(handle: i32, url: String, len: i32): void;
+declare function __fetch_start(
+  handle: i32,
+  url: String,
+  len: i32,
+  init: JsRequestInit | null
+): void;
+
+/** Allocates an empty host `RequestInit` object. */
+@external("web", "request_init")
+declare function __request_init(): JsRequestInit;
+
+/** Sets `init.method` on the host `RequestInit`. */
+@external("web", "request_method")
+declare function __request_method(init: JsRequestInit, method: String, len: i32): void;
+
+/** Appends a `(name, value)` header pair on the host `RequestInit`. */
+@external("web", "request_header")
+declare function __request_header(
+  init: JsRequestInit,
+  name: String,
+  nameLen: i32,
+  value: String,
+  valueLen: i32
+): void;
+
+/** Sets `init.body` on the host `RequestInit` to a text string. */
+@external("web", "request_body_text")
+declare function __request_body_text(init: JsRequestInit, body: String, len: i32): void;
+
+/** Allocates a `Uint8Array(len)` as `init.body` on the host `RequestInit` and returns it. */
+@external("web", "request_body_bytes")
+declare function __request_body_bytes(init: JsRequestInit, len: i32): JsBytes;
+
+/** Sets `bytes[index] = value` on a host `Uint8Array`. */
+@external("web", "bytes_set")
+declare function __bytes_set(bytes: JsBytes, index: i32, value: i32): void;
 
 /** The HTTP status of the host response. */
 @external("web", "response_status")
@@ -36,6 +80,19 @@ declare function __response_status(response: JsResponse): i32;
 @external("web", "response_text")
 declare function __response_text(handle: i32, response: JsResponse): void;
 
+/** Reads the body of the host response as a `Uint8Array`; the host
+ * completes `handle` with the `Uint8Array` reference. */
+@external("web", "response_bytes")
+declare function __response_bytes(handle: i32, response: JsResponse): void;
+
+/** The byte length of a host `Uint8Array`. */
+@external("web", "bytes_length")
+declare function __bytes_length(bytes: JsBytes): i32;
+
+/** Reads `bytes[index]` from a host `Uint8Array`. */
+@external("web", "bytes_get")
+declare function __bytes_get(bytes: JsBytes, index: i32): i32;
+
 /** Retrieves the value of the named response header from the host,
  * or null if absent. */
 @external("web", "response_header")
@@ -44,9 +101,9 @@ declare function __response_header(response: JsResponse, name: String, len: i32)
 /**
  * An HTTP response: the status, and a one-shot handle on the body.
  *
- * The body lives on the host until `text()` reads it, so reading is
+ * The body lives on the host until it is read, so reading is
  * asynchronous and — as on the web — allowed once: a second `text()`
- * throws rather than handing back an empty body.
+ * or `bytes()` throws rather than handing back an empty body.
  */
 export class Response {
   /** The HTTP status code. */
@@ -82,15 +139,68 @@ export class Response {
     __response_text(p.handle, this.#response);
     return p.future;
   }
+
+  /** The response body's bytes. */
+  async bytes(): Future<FixedArray<u8>> {
+    if (this.#bodyUsed) {
+      throw new Error(
+        'zena:fetch: the response body has already been read');
+    }
+    this.#bodyUsed = true;
+    let p = pending<anyref>();
+    __response_bytes(p.handle, this.#response);
+    let raw = (await p.future) as JsBytes;
+    let len = __bytes_length(raw);
+    let out = new FixedArray<u8>(len, 0 as u8);
+    for (var i = 0; i < len; i += 1) {
+      out[i] = __bytes_get(raw, i) as u8;
+    }
+    return out;
+  }
 }
 
+let buildInit = (init: RequestInit): JsRequestInit | null => {
+  var jsInit: JsRequestInit | null = null;
+  let ensure = (): JsRequestInit => {
+    let existing = jsInit;
+    if (existing != null) {
+      return existing;
+    }
+    let created = __request_init();
+    jsInit = created;
+    return created;
+  };
+  if (let {method} = init) {
+    __request_method(ensure(), method, method.length);
+  }
+  if (let {headers} = init) {
+    let target = ensure();
+    for (let (name, value) in headers) {
+      __request_header(target, name, name.length, value, value.length);
+    }
+  }
+  if (let {body} = init) {
+    if (body is String) {
+      __request_body_text(ensure(), body, body.length);
+    } else if (body is FixedArray<u8>) {
+      let len = body.length;
+      let raw = __request_body_bytes(ensure(), len);
+      for (var i = 0; i < len; i += 1) {
+        __bytes_set(raw, i, body[i] as i32);
+      }
+    }
+  }
+  return jsInit;
+};
 
 /**
- * Starts fetching `url` with a GET request, returning a future that
- * resolves once the response is available.
+ * Starts fetching `url`, returning a future that resolves once the
+ * response is available.
  *
- * The future resolves to the `Response` for the request: its status
- * and headers are in, and its body is read from it afterwards.
+ * `init` sets the request method (default `'GET'`), headers, and body
+ * (`String` or `FixedArray<u8>`). The future resolves to the `Response`
+ * for the request: its status and headers are in, and its body is read
+ * from it afterwards.
  *
  * The future fails only when the request itself fails — a network
  * error, a CORS refusal, a host with no fetch(). It does not fail
@@ -98,10 +208,10 @@ export class Response {
  * 504, and so on): that is a response like any other, and the caller
  * checks `ok` or `status`.
  */
-export let fetch = async (url: String | URL): Future<Response> => {
-  let href = if (url is URL) url.href else url as String;
+export async function fetch(url: String | URL, init: RequestInit = {}): Future<Response> {
+  let href = if (url is URL) url.href else url;
   let p = pending<anyref>();
-  __fetch_start(p.handle, href, href.length);
+  __fetch_start(p.handle, href, href.length, buildInit(init));
   let response = (await p.future) as JsResponse;
   return new Response(__response_status(response), response);
-};
+}

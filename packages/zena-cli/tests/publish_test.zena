@@ -10,9 +10,9 @@ import {suite, test} from 'zena:test';
 import {equal, isTrue} from 'zena:assert';
 import {runFuture} from 'zena:async';
 import {existsSync} from 'zena:fs';
+import {fetch} from 'zena:fetch';
 import {JsonArray, JsonObject, parseJson} from 'zena:json';
 import {run} from 'zena:process';
-import {httpRequest} from 'atproto:xrpc';
 import {
   MAIN, Scratch, ZenaCommand, described, ensureDir, fakePdsOrigin, read, startFakePds, write
 } from './cli-support.zena';
@@ -84,10 +84,9 @@ export let tests = suite('zena publish', () => {
 
       // Alice attested the scope's members record and the three releases, in
       // her own repository.
-      let listed = runFuture(httpRequest('GET',
-          `${(addresses['plc'] as String).sliceBytes(0, (addresses['plc'] as String).length - 4)}/xrpc/com.atproto.repo.listRecords?repo=${ALICE}&collection=dev.zena-lang.package.attestation`,
-          [], null));
-      equal(((parseJson(String.fromBytes(listed.body)) as JsonObject)['records'] as JsonArray).length, 4);
+      let listed = runFuture(fetch(
+          `${(addresses['plc'] as String).sliceBytes(0, (addresses['plc'] as String).length - 4)}/xrpc/com.atproto.repo.listRecords?repo=${ALICE}&collection=dev.zena-lang.package.attestation`));
+      equal(((parseJson(runFuture(listed.text())) as JsonObject)['records'] as JsonArray).length, 4);
 
       // Another workspace adds the package by its handle and runs it.
       write(scratch.at('app/prog.zena'), `import { answer } from 'greet:greet';\n${MAIN} {\n  return answer() - 42;\n}\n`);
