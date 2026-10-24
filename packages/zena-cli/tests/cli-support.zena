@@ -152,6 +152,17 @@ export function described(result: ProcessResult): String {
 }
 
 /**
+ * Where the fixtures compile: one cache for every test and every run, so a
+ * fixture compiles again only when it, its imports or the compiler change.
+ * The cache's key covers the compiler and its entries record their
+ * sources, and concurrent writers rename their entries into place, so
+ * tests can share it.
+ */
+function fixtureCache(): String {
+  return `${repoRoot()}/.zena/test-fixture-cache`;
+}
+
+/**
  * Starts `tests/fixtures/<fixture>` with `zena run` as the PLC directory
  * and PDS, writing into `pds/` of `scratch`. Pass the process to
  * `fakePdsOrigin`, and stop it with `waitFor(1)` when the test is done.
@@ -160,7 +171,7 @@ export function described(result: ProcessResult): String {
  */
 export function startFakePds(scratch: Scratch, fixture: String): Own<Process> {
   ensureDir(scratch.at('pds'));
-  let command = new ZenaCommand(repoRoot(), '.', scratch.host('pds-cache'));
+  let command = new ZenaCommand(repoRoot(), '.', fixtureCache());
   return command.spawn(['run', '--dir', `${scratch.host('pds')}::/out`,
       `packages/zena-cli/tests/fixtures/${fixture}`]);
 }
