@@ -6,11 +6,17 @@
 
 import {suite, test} from 'zena:test';
 import {equal, isTrue} from 'zena:assert';
-import {runFuture} from 'zena:async';
+import {Future, runFuture} from 'zena:async';
 import {HashMap} from 'zena:collections';
-import {App, Request, Response} from 'zena:http';
-import {JsonObject, parseJson} from 'zena:json';
+import {App, Request, Response, Server} from 'zena:http';
+import {hex} from 'zena:encoding';
+import {now} from 'wasi:clocks/system-clock';
+import {KeyType, formatDidKey, publicKeyFor} from 'atproto:didkey';
+import {didDocument, genesisOperation} from 'atproto:plc';
+import {ServiceAuthClaims, createServiceAuthToken} from 'atproto:service-auth';
+import {JsonObject, parseJson, stringify} from 'zena:json';
 import {parseDidDocument} from 'atproto:did';
+import {PackageHost} from 'pds:host';
 import {
   ConfigError, InBucket, InCloudDns, InDirectory, InFirestore, InMemory, RecordsInMemory, ServiceConfig,
   buildService, configFromEnv
@@ -196,5 +202,65 @@ export let tests = suite('pds:service', () => {
     let parsed = parseDidDocument(parseJson(document.body as String), 'did:web:pkg.test');
     equal(parsed.pds as String, 'https://pkg.test');
     equal(get(plain.app, '/.well-known/did.json').statusCode, 404);
+  });
+
+  test('reads PDS_PLC', (ctx) => {
+    isTrue(!configFromEnv(envOf([])).plcStaging, 'public by default');
+    isTrue(configFromEnv(envOf([('PDS_PLC', 'staging')])).plcStaging, 'staging');
+    let wrong = refusal([('PDS_PLC', 'sandbox')]);
+    isTrue(wrong.contains('PDS_PLC is public or staging'), wrong);
+  });
+
+  test('is a staging PLC directory, reading other DIDs from upstream', (ctx) => {
+    // Upstream knows Alice, whose account is elsewhere, and counts what it
+    // is sent.
+    let alice = 'did:plc:alicealicealicealicealic';
+    let aliceKey = hex.decode('c9afa9d845ba75166b5c215767b1d6934e50c3db36e89b127b8a622b120f6721');
+    let aliceDocument = stringify(didDocument(alice, genesisOperation(publicKeyFor(KeyType.P256, aliceKey),
+        [publicKeyFor(KeyType.P256, aliceKey)], 'alice.test', 'https://elsewhere.test')));
+    var posted = 0;
+    let api = new App();
+    api.use(async (req, res, next): Future<void> => {
+      res.type = 'application/json';
+      if (req.method == 'POST') {
+        posted += 1;
+      }
+      if (req.path == `/${alice}`) {
+        res.statusCode = 200;
+        res.body = aliceDocument;
+      } else {
+        res.statusCode = 404;
+        res.body = '{"message":"DID not registered"}';
+      }
+    });
+    let upstream = new Server(api, 0 as u16);
+    upstream.start();
+    let config = configFromEnv(envOf([('PDS_HOST_DOMAIN', 'pkg.test'), ('PDS_PLC', 'staging'),
+        ('PDS_PLC_DIRECTORY', `http://127.0.0.1:${upstream.port as i32}`)]));
+    let service = runFuture(buildService(config, 'http://127.0.0.1:1'));
+    let host = service.host as PackageHost;
+
+    // Alice's token is checked with her key, read through from upstream.
+    let seconds = now().seconds;
+    let method = 'dev.zena-lang.host.createOrganization';
+    let token = createServiceAuthToken(new ServiceAuthClaims(alice, 'did:web:pkg.test', seconds + 60, seconds,
+        method, 'jti-1'), KeyType.P256, aliceKey);
+    equal(runFuture(host.authenticate(`Bearer ${token}`, method, seconds)), alice);
+
+    // The organization the host makes is recorded here, and served, and
+    // never sent upstream.
+    let created = runFuture(host.createOrganization(alice, 'acme',
+        [formatDidKey(publicKeyFor(KeyType.P256, aliceKey))], 1792800000000000 as i64));
+    let res = get(service.app, `/plc/${created.did}`);
+    equal(res.statusCode, 200);
+    let document = parseDidDocument(parseJson(res.body as String), created.did);
+    equal(document.handle as String, 'acme.pkg.test');
+    equal(document.pds as String, 'https://pkg.test');
+    equal(posted, 0);
+    // Alice reads through, from upstream.
+    equal(get(service.app, `/plc/${alice}`).statusCode, 200);
+    // The rest of the server is still there.
+    equal(get(service.app, '/xrpc/_health').statusCode, 200);
+    upstream.close();
   });
 });

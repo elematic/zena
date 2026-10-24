@@ -1,0 +1,197 @@
+/**
+ * A PLC directory for a staging host, so that the DIDs it makes never
+ * reach the public directory (docs/design/pds.md, "Staging"). It records
+ * the operations it is sent, in a `PlcLog`, and serves the DIDs it has
+ * recorded; every other DID is read from the directory upstream, so the
+ * accounts people sign in with, which live there, still resolve. It
+ * refuses operations for DIDs upstream.
+ *
+ * It answers, under its prefix (`/plc`), the requests `atproto:plc` and
+ * `atproto:identity` make, as `https://plc.directory` does: `GET /<did>`,
+ * the DID document; `GET /<did>/log`, the operations; `GET
+ * /<did>/log/last`; and `POST /<did>`, a new operation.
+ */
+
+import {Future} from 'zena:async';
+import {HashMap} from 'zena:collections';
+import {App, Request, Response} from 'zena:http';
+import {JsonArray, JsonObject, parseJson, stringify} from 'zena:json';
+import {PlcError, PlcOperation, checkNextOperation, didDocument} from 'atproto:plc';
+import {isValidDid} from 'atproto:syntax';
+import {httpRequest} from 'atproto:xrpc';
+
+/** How many times an operation is tried while others for the same DID land first. */
+let SUBMIT_ATTEMPTS = 5;
+
+/** Where a directory keeps the operations it has recorded. */
+export interface PlcLog {
+  /** The operations recorded for `did`, oldest first; empty when there are none. */
+  operations(did: String): Future<Array<PlcOperation>>;
+  /**
+   * Records `operation` as `did`'s operation at `index`, 0 for the genesis
+   * operation, if the log still has `index` operations. Returns false,
+   * recording nothing, when it does not.
+   */
+  append(did: String, index: i32, operation: PlcOperation): Future<boolean>;
+}
+
+/** Operations in memory. */
+export final class MemoryPlcLog implements PlcLog {
+  #logs = new HashMap<String, GrowableArray<PlcOperation>>();
+
+  async operations(did: String): Future<Array<PlcOperation>> {
+    if (let (true, log) = this.#logs.get(did)) {
+      return log;
+    }
+    return new GrowableArray<PlcOperation>();
+  }
+
+  async append(did: String, index: i32, operation: PlcOperation): Future<boolean> {
+    var log = new GrowableArray<PlcOperation>();
+    if (let (true, existing) = this.#logs.get(did)) {
+      log = existing;
+    }
+    if (log.length != index) {
+      return false;
+    }
+    log.push(operation);
+    this.#logs[did] = log;
+    return true;
+  }
+}
+
+/** A directory over `log`, reading the DIDs it has not recorded from `upstream`. */
+export final class PlcDirectory {
+  #log: PlcLog;
+  /** Such as `https://plc.directory`. */
+  upstream: String;
+
+  new(log: PlcLog, upstream: String) : #log = log, upstream = upstream;
+
+  /**
+   * Records `operation` for `did`, once it is checked to follow the
+   * operations recorded so far (`checkNextOperation`). Throws `PlcError`
+   * for an operation that may not follow them, and for a DID upstream.
+   */
+  async submit(did: String, operation: PlcOperation): Future<void> {
+    for (var attempt = 0; attempt < SUBMIT_ATTEMPTS; attempt += 1) {
+      let log = await this.#log.operations(did);
+      if (log.length == 0 && await this.#upstreamHas(did)) {
+        throw new PlcError(`${did} is in ${this.upstream}; this directory takes operations only for DIDs it records`);
+      }
+      checkNextOperation(did, log, operation);
+      if (await this.#log.append(did, log.length, operation)) {
+        return;
+      }
+    }
+    throw new PlcError(`${did}: other operations kept landing first`);
+  }
+
+  /** The DID document of `did`, recorded here or read from upstream, or null when neither has it. */
+  async document(did: String): Future<JsonObject | null> {
+    let log = await this.#log.operations(did);
+    if (log.length > 0) {
+      return didDocument(did, log[log.length - 1]);
+    }
+    let response = await httpRequest('GET', `${this.upstream}/${did}`, [('accept', 'application/json')], null);
+    if (response.status != 200) {
+      return null;
+    }
+    let json = response.json();
+    return if (json is JsonObject) json as JsonObject else null;
+  }
+
+  async #upstreamHas(did: String): Future<boolean> {
+    let response = await httpRequest('GET', `${this.upstream}/${did}`, [('accept', 'application/json')], null);
+    return response.status == 200;
+  }
+
+  /** An application that answers the directory's requests under `prefix`. */
+  app(prefix: String = '/plc'): App {
+    let directory = this;
+    let app = new App();
+    app.use(async (req, res, next): Future<void> => {
+      let path = req.path;
+      if (!path.startsWith(`${prefix}/`)) {
+        res.statusCode = 404;
+        res.body = 'not found';
+        return;
+      }
+      await directory.serveRequest(path.sliceBytes(prefix.length + 1, path.length), req, res);
+    });
+    return app;
+  }
+
+  /** Answers a request for `rest`, the path below the prefix: `<did>`, `<did>/log` or `<did>/log/last`. */
+  async serveRequest(rest: String, req: Request, res: Response): Future<void> {
+    let parts = rest.split('/');
+    let did = parts[0];
+    let what = if (parts.length == 1) '' else rest.sliceBytes(did.length + 1, rest.length);
+    res.type = 'application/json';
+    if (!isValidDid(did) || !did.startsWith('did:plc:') || (what != '' && what != 'log' && what != 'log/last')) {
+      fail(res, 404, `not a DID's path: ${rest}`);
+      return;
+    }
+    if (req.method == 'POST') {
+      if (what != '') {
+        fail(res, 405, 'operations are posted to /<did>');
+        return;
+      }
+      await this.#take(did, req, res);
+      return;
+    }
+    let log = await this.#log.operations(did);
+    if (log.length == 0) {
+      await this.#forward(rest, res);
+      return;
+    }
+    let last = log[log.length - 1];
+    if (what == '') {
+      res.body = stringify(didDocument(did, last));
+    } else if (what == 'log') {
+      let all = new JsonArray();
+      for (let operation in log) {
+        all.push(operation.toJson());
+      }
+      res.body = stringify(all);
+    } else {
+      res.body = stringify(last.toJson());
+    }
+  }
+
+  async #take(did: String, req: Request, res: Response): Future<void> {
+    let text = await req.text();
+    let refusal = await this.#submitText(did, text);
+    if (refusal != null) {
+      fail(res, 400, refusal as String);
+      return;
+    }
+    res.statusCode = 200;
+    res.body = '';
+  }
+
+  /** Submits the operation in `text`, and returns why it was refused, or null. */
+  async #submitText(did: String, text: String): Future<String | null> {
+    try {
+      await this.submit(did, PlcOperation.fromJson(parseJson(text)));
+    } catch (e) {
+      return e.message;
+    }
+    return null;
+  }
+
+  /** Answers with what upstream answers for `rest`. */
+  async #forward(rest: String, res: Response): Future<void> {
+    let response = await httpRequest('GET', `${this.upstream}/${rest}`, [('accept', 'application/json')], null);
+    res.statusCode = response.status;
+    res.body = response.text();
+  }
+}
+
+function fail(res: Response, status: i32, message: String): void {
+  res.statusCode = status;
+  res.type = 'application/json';
+  let body = new JsonObject();
+  body['message'] = message;
+  res.body = stringify(body);
+}

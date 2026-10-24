@@ -6,8 +6,11 @@ import {hex} from 'zena:encoding';
 import {readFileSync} from 'zena:fs';
 import {App, Server} from 'zena:http';
 import {JsonArray, JsonObject, parseJson, stringify} from 'zena:json';
-import {KeyType, formatDidKey, parseDidKey, publicKeyFor} from 'atproto:didkey';
-import {PlcError, PlcOperation, didOfGenesis, genesisOperation, submitPlcOperation} from 'atproto:plc';
+import {KeyType, PublicKey, formatDidKey, parseDidKey, publicKeyFor} from 'atproto:didkey';
+import {parseDidDocument} from 'atproto:did';
+import {
+  PlcError, PlcOperation, checkNextOperation, didDocument, didOfGenesis, genesisOperation, submitPlcOperation
+} from 'atproto:plc';
 
 let FIXTURES = 'packages/atproto/zena/test/fixtures/plc/operations.json';
 
@@ -67,6 +70,41 @@ export let tests = suite('atproto:plc', () => {
     let next = new PlcOperation(signed.rotationKeys, signed.verificationMethods, signed.alsoKnownAs,
         signed.services, signed.cid().toString()).signedWith((bytes) => p256.sign(rotation, bytes));
     isTrue(plcError(() => { didOfGenesis(next); }).contains('follows another'));
+  });
+
+  test('checks that an operation may follow a DID\'s log', (ctx) => {
+    let rotation = hex.decode((cases()[0] as JsonObject)['rotationPrivateKeyHex'] as String);
+    let other = hex.decode('c9afa9d845ba75166b5c215767b1d6934e50c3db36e89b127b8a622b120f6721');
+    let genesis = genesisOperation(publicKeyFor(KeyType.P256, other), [publicKeyFor(KeyType.P256, rotation)],
+        'router.acme.pkg.test', 'https://pkg.test').signedWith((bytes) => p256.sign(rotation, bytes));
+    let did = didOfGenesis(genesis);
+    let none = new GrowableArray<PlcOperation>();
+    equal(plcError(() => { checkNextOperation(did, none, genesis); }), '');
+    isTrue(plcError(() => { checkNextOperation('did:plc:aaaaaaaaaaaaaaaaaaaaaaaa', none, genesis); }).contains('makes'));
+
+    let log = new GrowableArray<PlcOperation>();
+    log.push(genesis);
+    isTrue(plcError(() => { checkNextOperation(did, log, genesis); }).contains('must follow'));
+    let aka = new GrowableArray<String>();
+    aka.push('at://renamed.acme.pkg.test');
+    let unsigned = new PlcOperation(genesis.rotationKeys, genesis.verificationMethods, aka, genesis.services,
+        genesis.cid().toString());
+    let next = unsigned.signedWith((bytes) => p256.sign(rotation, bytes));
+    equal(plcError(() => { checkNextOperation(did, log, next); }), '');
+    let stranger = unsigned.signedWith((bytes) => p256.sign(other, bytes));
+    isTrue(plcError(() => { checkNextOperation(did, log, stranger); }).contains('rotation keys'));
+  });
+
+  test('gives the DID document an operation describes', (ctx) => {
+    let rotation = hex.decode((cases()[0] as JsonObject)['rotationPrivateKeyHex'] as String);
+    let signing = publicKeyFor(KeyType.P256, hex.decode('c9afa9d845ba75166b5c215767b1d6934e50c3db36e89b127b8a622b120f6721'));
+    let genesis = genesisOperation(signing, [publicKeyFor(KeyType.P256, rotation)], 'router.acme.pkg.test',
+        'https://pkg.test').signedWith((bytes) => p256.sign(rotation, bytes));
+    let did = didOfGenesis(genesis);
+    let document = parseDidDocument(parseJson(stringify(didDocument(did, genesis))), did);
+    equal(document.handle as String, 'router.acme.pkg.test');
+    equal(document.pds as String, 'https://pkg.test');
+    equal(formatDidKey(document.signingKey as PublicKey), formatDidKey(signing));
   });
 
   test('refuses operations that are not plc_operations', (ctx) => {

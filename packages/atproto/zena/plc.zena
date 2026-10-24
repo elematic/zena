@@ -28,7 +28,8 @@
  * A DID is made by its genesis operation: `did:plc:` followed by the first
  * 24 characters of the lowercase base32 SHA-256 hash of the signed
  * operation's DAG-CBOR encoding. `submitPlcOperation` sends an operation
- * to a PLC directory.
+ * to a PLC directory. `checkNextOperation` is what a directory checks
+ * before it records one, and `didDocument` the document it serves.
  */
 
 import {Future} from 'zena:async';
@@ -235,6 +236,69 @@ export function didOfGenesis(operation: PlcOperation): String {
   }
   let hash = sha256(encodeCbor(operation.toValue()));
   return `did:plc:${base32Lower.encode(hash, false).sliceBytes(0, 24)}`;
+}
+
+/**
+ * Checks that `operation` may follow `log`, the operations a directory has
+ * recorded for `did`, oldest first. Throws `PlcError` when it may not.
+ *
+ * The first must be a genesis operation that makes `did`. Each after it
+ * must name the last as `prev` and be signed by one of the last one's
+ * rotation keys. The specification also lets a higher-ranked rotation key
+ * replace operations from the last 72 hours; this does not, so it suits a
+ * directory whose operations only go forward, such as a test's.
+ */
+export function checkNextOperation(did: String, log: Array<PlcOperation>, operation: PlcOperation): void {
+  if (log.length == 0) {
+    let made = didOfGenesis(operation);
+    if (made != did) {
+      throw new PlcError(`the genesis operation makes ${made}, not ${did}`);
+    }
+    return;
+  }
+  let last = log[log.length - 1];
+  let prev = operation.prev;
+  let lastCid = last.cid().toString();
+  if (prev == null || prev as String != lastCid) {
+    throw new PlcError(`the operation must follow ${lastCid}`);
+  }
+  for (let key in last.rotationKeys) {
+    if (operation.isSignedBy(parseDidKey(key))) {
+      return;
+    }
+  }
+  throw new PlcError('none of the previous operation\'s rotation keys signed the operation');
+}
+
+/** The DID document `operation` gives `did`, as a PLC directory serves it. */
+export function didDocument(did: String, operation: PlcOperation): JsonObject {
+  let doc = new JsonObject();
+  let context = new JsonArray();
+  context.push('https://www.w3.org/ns/did/v1');
+  context.push('https://w3id.org/security/multikey/v1');
+  doc['@context'] = context;
+  doc['id'] = did;
+  doc['alsoKnownAs'] = stringArray(operation.alsoKnownAs);
+  let methods = new JsonArray();
+  operation.verificationMethods.forEach((name, key) => {
+    let method = new JsonObject();
+    method['id'] = `${did}#${name}`;
+    method['type'] = 'Multikey';
+    method['controller'] = did;
+    method['publicKeyMultibase'] = key.sliceBytes('did:key:'.length, key.length);
+    methods.push(method);
+  });
+  doc['verificationMethod'] = methods;
+  let services = new JsonArray();
+  operation.services.forEach((name, service) => {
+    let entry = new JsonObject();
+    entry['id'] = `#${name}`;
+    entry['type'] = service.kind;
+    entry['serviceEndpoint'] = service.endpoint;
+    services.push(entry);
+  });
+  doc['service'] = services;
+  return doc;
 }
 
 /**

@@ -17,7 +17,8 @@ import {getRandomU64} from 'wasi:random/random';
 import {AccessTokenCredentials} from 'google-cloud:auth';
 import {Firestore} from 'google-cloud:firestore';
 import {GrpcTransport} from 'protobuf:grpc';
-import {FirestoreHostStore, FirestoreStorage, MemoryBlobs} from 'pds:firestore';
+import {FirestoreHostStore, FirestorePlcLog, FirestoreStorage, MemoryBlobs} from 'pds:firestore';
+import {PlcLog} from 'pds:plc-directory';
 import {HostStore} from 'pds:host';
 import {buildService, configFromEnv} from 'pds:service';
 import {HashMap} from 'zena:collections';
@@ -25,7 +26,7 @@ import {Request, Response} from 'zena:http';
 import {Account, Head, RecordChange, SigningKey, Storage, StoredBlob} from 'pds:storage';
 import {Cid} from 'atproto:cid';
 import {KeyType} from 'atproto:didkey';
-import {hostStoreConformance, storageConformance} from '../storage-conformance.zena';
+import {hostStoreConformance, plcLogConformance, storageConformance} from '../storage-conformance.zena';
 
 /** A database in a new project on the emulator. */
 function freshDatabase(): Firestore {
@@ -43,6 +44,7 @@ export let tests = suite('Firestore storage', () => {
   // TODO(#520): drop the return types.
   storageConformance((): Storage => new FirestoreStorage(freshDatabase(), 'test', new MemoryBlobs()));
   hostStoreConformance((): HostStore => new FirestoreHostStore(freshDatabase(), 'test'));
+  plcLogConformance((): PlcLog => new FirestorePlcLog(freshDatabase(), 'test'));
 
   test('keeps tenants apart', (ctx) => {
     let db = freshDatabase();
