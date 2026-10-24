@@ -29,7 +29,7 @@
  * Determinism: candidates in id order, blocks in id order, no hash
  * containers.
  */
-import { IrBody, IrOp, IrRefField, buildUseLists, IrScratch } from './ir.zena';
+import { IrBody, IrOp, IrRefField, IrUseLists, buildUseLists, IrScratch } from './ir.zena';
 import { IrCfg } from './cfg.zena';
 import { WasmStruct } from '../wasm-module.zena';
 import { allocatedStruct } from './simplify.zena';
@@ -92,6 +92,14 @@ function runSroaOn(body: IrBody, scratch: IrScratch): i32 {
   }
 
   let cfg = new IrCfg(body, scratch);
+  // The first block of every try body. Emission places the blocks it
+  // dominates inside the try_table, so they are the protected region.
+  let tryBodies = scratch.i32();
+  for (var i = 0; i < count; i += 1) {
+    if (body.op(i) == IrOp.try_br) {
+      tryBodies.push(body.extra[body.successorRecord(i, 0)]);
+    }
+  }
   let repl = scratch.i32();
   for (var i = 0; i < count; i += 1) {
     repl.push(i);
@@ -100,6 +108,9 @@ function runSroaOn(body: IrBody, scratch: IrScratch): i32 {
   for (let alloc in candidates) {
     let home = body.instBlock[alloc];
     if (home < 0 || !cfg.isReachable(home)) {
+      continue;
+    }
+    if (writtenInsideTryFromOutside(body, cfg, users, alloc, home, tryBodies)) {
       continue;
     }
     let s = allocatedStruct(body, alloc);
@@ -229,6 +240,31 @@ function runSroaOn(body: IrBody, scratch: IrScratch): i32 {
     }
   }
   return replaced;
+}
+
+/**
+ * Whether a write to `alloc`'s fields sits in a try body that `alloc`'s
+ * block is outside of. The try's handler edge carries the values at
+ * try entry, so a field the body wrote before throwing would read in
+ * the handler, and after it, as the value from before the write. In
+ * memory the write is there; as an SSA value it is not. An allocation
+ * made inside the try body is safe: the handler cannot reach it.
+ */
+function writtenInsideTryFromOutside(body: IrBody, cfg: IrCfg, users: IrUseLists,
+    alloc: i32, home: i32, tryBodies: GrowableArray<i32>): boolean {
+  for (var k = 0; k < users.count(alloc); k += 1) {
+    let u = users.at(alloc, k);
+    if (body.op(u) != IrOp.struct_set) {
+      continue;
+    }
+    let blk = body.instBlock[u];
+    for (let t in tryBodies) {
+      if (cfg.dominates(t, blk) && !cfg.dominates(t, home)) {
+        return true;
+      }
+    }
+  }
+  return false;
 }
 
 /** The index in `s` of the field a struct_get/struct_set names. */

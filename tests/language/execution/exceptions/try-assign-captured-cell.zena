@@ -1,0 +1,30 @@
+// @mode: run
+// @result: 1121
+// A variable a closure captures, which a try body also assigns before
+// it throws: the handler and the code after the try read the cell, so
+// they see the body's write.
+
+import { Error } from 'zena:core';
+
+let boom = (fail: boolean): i32 => {
+  if (fail) {
+    throw new Error("boom");
+  }
+  return 1;
+};
+let sink = (v: i32): void => {};
+
+export let main = (): i32 => {
+  var c = 1;
+  let bump = (): void => { c += 10; };
+  bump();
+  try {
+    c += 100;
+    sink(boom(true));
+    c = 0;
+  } catch (e) {
+    c += 1000;
+  }
+  bump();
+  return c;
+};
