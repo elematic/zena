@@ -1,0 +1,23 @@
+// @mode: run
+// @skip: the function-adaptation wrapper does not convert records (#543)
+// @result: 13
+// A function value whose result or parameter is a record of another
+// shape than the slot it is passed to. The record changes representation
+// on the way through the function-adaptation wrapper, as it does when an
+// expression of one record type is assigned to another.
+
+function measure(make: () => {x: i32}): i32 {
+  return make().x;
+}
+
+function apply(f: (r: {x: i32, y: i32}) => i32): i32 {
+  return f({x: 3, y: 4});
+}
+
+export let main = (): i32 => {
+  let mk = (): {x: i32, y: i32} => {
+    let r = {x: 10, y: 20};
+    return r;
+  };
+  return measure(mk) + apply((r: {x: i32}) => r.x);
+};

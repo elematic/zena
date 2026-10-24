@@ -1,0 +1,78 @@
+// @mode: run
+// @result: 283
+// A function value that returns a class instance or a sub-interface,
+// used where a function returning an interface is expected. The
+// function-adaptation wrapper packs the result on the way back, however
+// the value reaches the slot (#520).
+
+interface Shape {
+  area(): i32;
+}
+
+interface Named extends Shape {
+  name(): i32;
+}
+
+class Square implements Named {
+  side: i32;
+  new(this.side);
+  area(): i32 {
+    return this.side * this.side;
+  }
+  name(): i32 {
+    return 7;
+  }
+}
+
+function measure(make: () => Shape): i32 {
+  return make().area();
+}
+
+function measureOrNull(make: () => Shape | null): i32 {
+  let s = make();
+  if (s == null) {
+    return -1;
+  }
+  return s.area();
+}
+
+function makeSquare(): Square {
+  return new Square(3);
+}
+
+class Meter {
+  measure(make: () => Shape): i32 {
+    return make().area();
+  }
+}
+
+class Holder {
+  make: () => Shape;
+  new(this.make);
+}
+
+// The pack runs after the source returns, so the wrapper calls it rather
+// than tail-calling it. A tail call to the adapted value still works.
+function via(make: () => Shape): Shape {
+  tail return make();
+}
+
+export let main = (): i32 => {
+  let mk = () => new Square(2);
+  let holder = new Holder(() => new Square(5));
+  let fromField = holder.make;
+  let meter = new Meter();
+  return measure(() => new Square(1)) +
+      measure(mk) +
+      measure(makeSquare) +
+      meter.measure(() => new Square(4)) +
+      fromField().area() +
+      // A nullable result packs under a null guard: null stays null.
+      measureOrNull((): Square | null => new Square(6)) +
+      measureOrNull((): Square | null => null) +
+      // A sub-interface is upcast rather than packed.
+      measure((): Named => new Square(7)) +
+      via(() => new Square(8)).area() +
+      measureOrNull((): Named | null => new Square(9)) +
+      measureOrNull((): Named | null => null);
+};

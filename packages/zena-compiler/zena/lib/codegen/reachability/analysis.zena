@@ -1,6 +1,6 @@
 import { Program, CompilationUnit } from '../../program.zena';
 import {
-  WasmModule, WasmFunction, WasmSignature, WasmGlobal, WasmStruct, WasmField, WasmArray, VTableInit, ClassCodegenInfo, asWasmSignature, TrampolineParamWrap, ClosureForwarderSpec, ForwarderParamPack, isValSubtype, RecordDispatchInfo, existentialCastCandidates,
+  WasmModule, WasmFunction, WasmSignature, WasmGlobal, WasmStruct, WasmField, WasmArray, VTableInit, ClassCodegenInfo, asWasmSignature, TrampolineParamWrap, ClosureForwarderSpec, ForwarderParamPack, AdaptationPack, isValSubtype, RecordDispatchInfo, existentialCastCandidates,
   typeTestSlotName, rootStruct, prependField, typeTestChainMax,
 } from '../wasm-module.zena';
 import { SemanticModel, SymbolDependencies, memberKeyOf } from '../../semantic-model.zena';
@@ -134,6 +134,18 @@ function isGenericMethod(mi: MethodInfo): boolean {
     return typeParameters != null && typeParameters.length > 0;
   }
   return false;
+}
+
+/**
+ * The type a non-generic alias names. A generic alias keeps its
+ * unsubstituted target, so it stays as it is.
+ */
+function unwrapPlainAlias(t: Type): Type {
+  var u = t;
+  while (u is TypeAliasType && (u as TypeAliasType).typeParameters == null) {
+    u = (u as TypeAliasType).target;
+  }
+  return u;
 }
 
 export final class ReachabilityAnalysis implements ReachabilityContext {
@@ -3662,6 +3674,101 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
   }
 
   /**
+   * The interface packs a function-adaptation wrapper from `src` to
+   * `tgt` makes (AdaptationPack): an argument the target passes as a
+   * class or a sub-interface where the source takes an interface, and a
+   * result the source returns as one where the target returns an
+   * interface.
+   */
+  #functionAdaptationPacks(src: FunctionType, tgt: FunctionType): GrowableArray<AdaptationPack> {
+    let packs = new Array<AdaptationPack>();
+    // The source takes a prefix of the target's parameters (lowering
+    // forwards that many).
+    let shared = if (src.parameters.length < tgt.parameters.length) {
+      src.parameters.length
+    } else {
+      tgt.parameters.length
+    };
+    let lowered = growable<ValType>([new ValTypeStructRef()]); // ctx
+    for (var i = 0; i < shared; i += 1) {
+      let index = lowered.length;
+      mapParamTypeToWasmParams(this.wasm, src.parameters[i], lowered);
+      // An argument arrives as the target's type and leaves as the source's.
+      let pack = this.#adaptationPack(index, tgt.parameters[i], src.parameters[i]);
+      if (pack != null) {
+        packs.push(pack);
+      }
+    }
+    let result = this.#adaptationPack(-1, src.returnType, tgt.returnType);
+    if (result != null) {
+      packs.push(result);
+    }
+    return packs;
+  }
+
+  /**
+   * The pack that turns a value held as `from` into one held as `to`, or
+   * null when it passes as it is. The same choice the checker makes for
+   * an assignment (checkAndRegisterInterfaceAdaptation): null comes off
+   * the source and passes through, and a union target takes the first
+   * member the source converts to. Any other change of representation
+   * gets no pack, and lowering refuses it.
+   */
+  #adaptationPack(index: i32, from: Type, to: Type): AdaptationPack | null {
+    if (this.#sameLoweredType(from, to)) {
+      return null;
+    }
+    let fromType = unwrapPlainAlias(from);
+    let nonNull = getNonNullableType(fromType);
+    let nullable = nonNull !== fromType;
+    let source = unwrapPlainAlias(nonNull);
+    let target = unwrapPlainAlias(to);
+    let members = new Array<Type>();
+    if (let UnionType {types} = target) {
+      for (let t in types) {
+        members.push(t);
+      }
+    } else {
+      members.push(target);
+    }
+    for (let m in members) {
+      let member = unwrapPlainAlias(m);
+      if (source is ClassType) {
+        if (member is ClassType && this.cha.isSubclassOf(source, member)) {
+          return null;
+        }
+        if (member is InterfaceType && this.#classImplementsKey(source, getInterfaceKey(member))) {
+          this.#demandPackPair(source, member);
+          return new AdaptationPack(index,
+              getClassInterfaceKey(getClassKey(source), getInterfaceKey(member)),
+              null, getInterfaceKey(member), nullable);
+        }
+      } else if (source is InterfaceType && member is InterfaceType) {
+        let sourceKey = getInterfaceKey(source);
+        let memberKey = getInterfaceKey(member);
+        if (sourceKey == memberKey) {
+          return null;
+        }
+        if (this.#interfaceExtendsKey(source, memberKey)) {
+          return new AdaptationPack(index, null, sourceKey, memberKey, nullable);
+        }
+      }
+    }
+    return null;
+  }
+
+  #interfaceExtendsKey(it: InterfaceType, key: InterfaceKey): boolean {
+    let supers = new Array<InterfaceType>();
+    this.cha.addInterfaceToTransitiveList(it, supers, new Map<InterfaceKey, boolean>());
+    for (let s in supers) {
+      if (getInterfaceKey(s) == key) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /**
    * Computes the adaptations a generic-slot trampoline needs between
    * the interface-view slot signature and the class's monomorphized
    * copy: a class-typed covariant result packs into the interface fat
@@ -5000,7 +5107,11 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
         wrapperFunc.functionAdaptationTarget = tgt;
         wrapperFunc.functionAdaptationResolvedSourceStruct = actualClosureStruct;
         wrapperFunc.functionAdaptationResolvedTargetStruct = resolvedTargetStruct;
-        
+        let packs = this.#functionAdaptationPacks(src, tgt);
+        if (packs.length > 0) {
+          this.wasm.functionAdaptationPacks[wrapperFunc] = packs;
+        }
+
         this.wasm.addFunction(wrapperFunc);
         this.markFunctionReached(wrapperFunc);
         this.wasm.functionAdaptations[adaptKey] = wrapperFunc;

@@ -814,6 +814,27 @@ export final class ClosureForwarderSpec {
   new(this.sourceStruct, this.packs);
 }
 
+/**
+ * One value a function-adaptation wrapper packs into an interface: an
+ * argument on the way in, or the result on the way out. One side of the
+ * adaptation holds it as a class instance or as a sub-interface, the
+ * other as the interface, so the wrapper makes the pack or the upcast an
+ * assignment of the value would make.
+ */
+export final class AdaptationPack {
+  /** Parameter index in the source's impl signature (0 is the ctx), or -1 for the result. */
+  index: i32;
+  /** Set for a class instance: the class-interface pair whose vtable packs it. */
+  pair: ClassInterfaceKey | null;
+  /** Set for a fat pointer: the sub-interface it is held as. */
+  sourceIface: InterfaceKey | null;
+  /** The interface the value becomes. */
+  targetIface: InterfaceKey;
+  /** The value can be null, and null passes through as a null fat pointer. */
+  nullable: boolean;
+  new(this.index, this.pair, this.sourceIface, this.targetIface, this.nullable);
+}
+
 /** One forwarder argument to pack into an interface fat pointer. */
 export final class ForwarderParamPack {
   /** Parameter index in the closure impl signature (0 is the ctx). */
@@ -1547,6 +1568,13 @@ export final class WasmModule {
   classMethods = new Map<String, GrowableArray<WasmFunction>>();
   var stringHashHelper: WasmFunction | null = null;
   functionAdaptations = new Map<FunctionAdaptationKey, WasmFunction>();
+  /**
+   * The values each function-adaptation wrapper that needs any packs
+   * into an interface (see AdaptationPack). Kept off WasmFunction: few
+   * wrappers pack anything, and one more field there would make every
+   * function's object 16 bytes larger (docs/design/compiler-memory.md).
+   */
+  functionAdaptationPacks = new Map<WasmFunction, GrowableArray<AdaptationPack>>();
   var arrayMethods = new Array<WasmFunction>();
   
   /**
