@@ -1155,9 +1155,13 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
         // Populate global declarations
         let globalKeys = model.globalDeclarations.keys();
         for (let id in globalKeys) {
-          let decl = model.globalDeclarations[id];
-          this.nodeIdToNode[decl.id as i32] = decl;
-          this.nodeIdToModel[decl.id as i32] = model;
+          let decls = model.getGlobalDeclarations(id);
+          if (decls != null) {
+            for (let decl in (decls as GrowableArray<Node>)) {
+              this.nodeIdToNode[decl.id as i32] = decl;
+              this.nodeIdToModel[decl.id as i32] = model;
+            }
+          }
         }
       }
       
@@ -5155,19 +5159,23 @@ export final class ReachabilityAnalysis implements ReachabilityContext {
             }
 
             var funcExpr: Node | null = null;
-            if (let (true, decl) = model.globalDeclarations.get(symId)) {
+            let decls = model.getGlobalDeclarations(symId);
+            if (decls != null) {
               let {visitor} = this;
               let resolver = (t: Type) => t;
-              visitor.discoverNodeTypes(decl, model, resolver);
-              if (decl is FunctionDeclaration) {
-                visitor.discoverFunctionDeclaration(symId, decl, model);
-              } else if (decl is VariableDeclaration) {
-                visitor.discoverVariableDeclaration(symId, decl, model);
-                if (decl.init is FunctionExpression) {
-                  funcExpr = decl.init;
+              let declList = decls as GrowableArray<Node>;
+              for (let decl in declList) {
+                visitor.discoverNodeTypes(decl, model, resolver);
+                if (decl is FunctionDeclaration) {
+                  visitor.discoverFunctionDeclaration(symId, decl, model);
+                } else if (decl is VariableDeclaration) {
+                  visitor.discoverVariableDeclaration(symId, decl, model);
+                  if (decl.init is FunctionExpression) {
+                    funcExpr = decl.init;
+                  }
+                } else if (decl is DeclareFunction) {
+                  visitor.discoverDeclareFunction(decl, model);
                 }
-              } else if (decl is DeclareFunction) {
-                visitor.discoverDeclareFunction(decl, model);
               }
             }
             

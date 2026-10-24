@@ -763,6 +763,7 @@ final class CheckerContext {
    * annotations without waiting for the main pass to reach them.
    */
   #pendingFunctions = new Map<SymbolId, Node>();
+  #pendingFunctionOverloads = new Map<SymbolId, GrowableArray<Node>>();
 
   /**
    * Symbol IDs currently being lazily resolved.
@@ -785,7 +786,8 @@ final class CheckerContext {
   enterSymbolReferrer(symId: SymbolId): void {
     this.#referrerStack.push("sym");
     this.#referrerSymbolStack.push(symId);
-    this.#dependencyStack.push(new SymbolDependencies());
+    let existing = if (let (true, d) = this.model.symbolDependencies.get(symId)) d else new SymbolDependencies();
+    this.#dependencyStack.push(existing);
   }
 
   exitSymbolReferrer(symId: SymbolId): void {
@@ -1060,6 +1062,13 @@ final class CheckerContext {
         if (t is FunctionType) {
           t.functionSymbolId = resolvedSym.id;
           t.functionSymbolName = resolvedSym.name;
+          let {overloads} = t;
+          if (overloads != null) {
+            for (let ov in overloads) {
+              ov.functionSymbolId = resolvedSym.id;
+              ov.functionSymbolName = resolvedSym.name;
+            }
+          }
           let deps = this.currentDependencies();
           if (deps != null) {
             deps.referencedTypes.add(t);
@@ -1155,8 +1164,27 @@ final class CheckerContext {
    * Register a function declaration for lazy resolution.
    * Called during the checkModule pre-scan.
    */
-  registerPendingFunction(id: SymbolId, funcExpr: Node): void {
-    this.#pendingFunctions[id] = funcExpr;
+  registerPendingFunction(id: SymbolId, funcExpr: Node, isDeclaration: boolean = false): void {
+    if (!this.#pendingFunctions.has(id)) {
+      this.#pendingFunctions[id] = funcExpr;
+    }
+    if (isDeclaration) {
+      let list = if (let (true, l) = this.#pendingFunctionOverloads.get(id)) {
+        l
+      } else {
+        let nl = new Array<Node>();
+        this.#pendingFunctionOverloads[id] = nl;
+        nl
+      };
+      list.push(funcExpr);
+    }
+  }
+
+  pendingFunctionOverloads(id: SymbolId): GrowableArray<Node> | null {
+    if (let (true, l) = this.#pendingFunctionOverloads.get(id)) {
+      return l;
+    }
+    return null;
   }
 
   /**
@@ -1169,6 +1197,38 @@ final class CheckerContext {
    * cycle without a return type annotation, reports an error.
    */
   lazyResolveFunction(si: Symbol, funcNode: Node): Type | null {
+    if (let (true, overloads) = this.#pendingFunctionOverloads.get(si.id)) {
+      if (overloads.length > 1 && !this.#resolving.has(si.id)) {
+        this.#resolving.add(si.id);
+        let resolvedList = new Array<FunctionType>();
+        for (let ovNode in overloads) {
+          if (ovNode is FunctionExpression) {
+            let ovFe = ovNode as FunctionExpression;
+            let ovType = if (ovFe.returnType != null) {
+              this.resolveFunctionFromAnnotations(
+                  ovFe.typeParameters, ovFe.params, ovFe.returnType as TypeAnnotation, si)
+            } else {
+              checkFunctionExpression(this, ovFe, null)
+            };
+            this.setNodeType(ovFe as Node, ovType);
+            if (ovType is FunctionType) {
+              ovType.functionSymbolId = si.id;
+              ovType.functionSymbolName = si.name;
+              resolvedList.push(ovType);
+            }
+          }
+        }
+        this.#resolving.delete(si.id);
+        if (resolvedList.length > 0) {
+          let first = resolvedList[0];
+          if (resolvedList.length > 1) {
+            first.overloads = resolvedList;
+          }
+          this.declareBinding(si, first);
+          return first;
+        }
+      }
+    }
     match (funcNode) {
       case FunctionExpression as fe: {
         let {typeParameters} = fe;
@@ -3967,7 +4027,7 @@ function prescanPendingFunctions(ctx: CheckerContext, body: GrowableArray<Statem
       case FunctionDeclaration {name as namePat, func}: {
         let info = ctx.model.resolveDeclaration(namePat as Node);
         if (info != null) {
-          ctx.registerPendingFunction(info.id, func as Node);
+          ctx.registerPendingFunction(info.id, func as Node, true);
         }
       }
       case _: {}
@@ -4107,8 +4167,8 @@ function resolveDeferredSignature(
  */
 final class DeferredModule implements DeferredBodies {
   #ctx: CheckerContext;
-  /** The top-level statement that declares each deferred binding. */
-  #globals = new Map<SymbolId, Statement>();
+  /** The top-level statements that declare each deferred binding. */
+  #globals = new Map<SymbolId, GrowableArray<Statement>>();
   /** The top-level statement an arrow in value position belongs to. */
   #globalNodes = new Map<i32, Statement>();
   /** The class a deferred member body belongs to, by member node id. */
@@ -4121,7 +4181,14 @@ final class DeferredModule implements DeferredBodies {
   new(ctx: CheckerContext) : #ctx = ctx;
 
   addGlobal(symId: SymbolId, stmt: Statement): void {
-    this.#globals[symId] = stmt;
+    let list = if (let (true, l) = this.#globals.get(symId)) {
+      l
+    } else {
+      let nl = new Array<Statement>();
+      this.#globals[symId] = nl;
+      nl
+    };
+    list.push(stmt);
   }
 
   addGlobalNode(node: Node, stmt: Statement): void {
@@ -4156,8 +4223,10 @@ final class DeferredModule implements DeferredBodies {
   }
 
   checkGlobalBody(symId: SymbolId): void {
-    if (let (true, stmt) = this.#globals.get(symId)) {
-      this.#checkStatement(stmt);
+    if (let (true, stmts) = this.#globals.get(symId)) {
+      for (let stmt in stmts) {
+        this.#checkStatement(stmt);
+      }
     }
   }
 
@@ -11056,10 +11125,52 @@ function checkStatement(ctx: CheckerContext, stmt: Statement): void {
       }
     }
     case FunctionDeclaration {name as namePat, func}: {
-      // A `function` is a `let` binding of a function value that happens to
-      // be spelled with its name in front, so it checks the same way.
+      let info = ctx.model.resolveDeclaration(namePat);
+      let pendingOvs = if (info != null) ctx.pendingFunctionOverloads((info as Symbol).id) else null;
+      if (info != null && pendingOvs != null && (pendingOvs as GrowableArray<Node>).length > 1 &&
+          ctx.model.getBindingTypeDirect(info as Symbol) == null) {
+        ctx.lazyResolveFunction(info as Symbol, func as Node);
+      }
       let funcType = checkExpression(ctx, func as Expression, null);
-      bindPattern(ctx, namePat as Pattern, funcType);
+      if (info != null && pendingOvs != null && (pendingOvs as GrowableArray<Node>).length > 1) {
+        let sym = info as Symbol;
+        let {declaration} = sym;
+        if (declaration != null && declaration !== namePat &&
+            !(ctx.model.getParent(declaration) is FunctionDeclaration)) {
+          ctx.error(
+            `Variable '${namePat.name}' is already declared in this scope.`,
+            DiagnosticCode.DuplicateDeclaration,
+            namePat.loc
+          );
+        } else if (funcType is FunctionType) {
+          funcType.functionSymbolId = sym.id;
+          funcType.functionSymbolName = sym.name;
+          ctx.setNodeType(namePat, funcType);
+          let ovNodes = pendingOvs as GrowableArray<Node>;
+          var ovIdx = -1;
+          for (var oi = 0; oi < ovNodes.length; oi += 1) {
+            if (ovNodes[oi] === (func as Node)) {
+              ovIdx = oi;
+              break;
+            }
+          }
+          let existingType = ctx.model.getBindingTypeDirect(sym);
+          if (existingType is FunctionType) {
+            let ovs = existingType.overloads ?? growable<FunctionType>([existingType]);
+            existingType.overloads = ovs;
+            if (ovIdx >= 0 && ovIdx < ovs.length) {
+              ovs[ovIdx] = funcType;
+            } else {
+              ovs.push(funcType);
+            }
+            funcType.overloads = ovs;
+          } else {
+            ctx.declareBinding(sym, funcType);
+          }
+        }
+      } else {
+        bindPattern(ctx, namePat as Pattern, funcType);
+      }
     }
     case ExpressionStatement {expression}: {
       let exprType = checkExpression(ctx, expression, new VoidType());

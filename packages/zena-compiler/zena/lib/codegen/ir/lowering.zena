@@ -48,7 +48,7 @@ import {
 
 import { IrBody, IrOp, IrRefFunc, IrRefGlobal, IrRefType, IrRefField, IrRefTag } from './ir.zena';
 import {
-  getClassKey, getClassMethodKey, getClassPrivateFieldKey, getMemberRootClass, getInterfaceKey, getInterfaceConstructorBaseName, getClosureSpecializationKey, getSignatureKey, ClassKey, getTypeKeyForSpecialization, getTypeUniqueKey, collectMixinFields, findMixinDeclaration, mixinScopeOfNode, MixinKey, getSpecializedFunctionKey, getSpecializedName, getFunctionValueWrapperKey, parseI32WithHex, parseI64OrU64Literal, unwrapAliases, isPresentWordName, presentWordCount, presentWordName,
+  getClassKey, getClassMethodKey, getClassPrivateFieldKey, getMemberRootClass, getInterfaceKey, getInterfaceConstructorBaseName, getClosureSpecializationKey, getSignatureKey, ClassKey, getTypeKeyForSpecialization, getTypeUniqueKey, collectMixinFields, findMixinDeclaration, mixinScopeOfNode, MixinKey, getSpecializedFunctionKey, getSpecializedName, getFunctionValueWrapperKey, getOverloadedFunctionKey, parseI32WithHex, parseI64OrU64Literal, unwrapAliases, isPresentWordName, presentWordCount, presentWordName,
 } from '../codegen-utils.zena';
 import { IrBuilder } from './builder.zena';
 import { synthesizeScaffold } from './scaffold.zena';
@@ -9430,7 +9430,7 @@ export final class FunctionLowerer {
     if (orig == -1 || orig >= call.args.length) {
       return null;
     }
-    let ftNode = this.func.model.getNodeType(call.callee);
+    let ftNode = this.func.model.getResolvedOverload(call) ?? this.func.model.getNodeType(call.callee);
     let paramSyms = if (ftNode is FunctionType) {
       ftNode.parameterSymbols
     } else {
@@ -9598,7 +9598,19 @@ export final class FunctionLowerer {
       // callee's checked type: not a shape lowering models.
       this.#bail('generic call');
     }
-    let targetOpt = if (let (true, t) = this.wasm.functionMap.get(resolved.id)) t else null;
+    let chosenFt = this.func.model.getResolvedOverload(call) ?? calleeFt;
+    var targetOpt: WasmFunction | null = null;
+    if (chosenFt != null) {
+      let overKey = getOverloadedFunctionKey(resolved.id, chosenFt);
+      if (let (true, t) = this.wasm.overloadedFunctionMap.get(overKey)) {
+        targetOpt = t;
+      }
+    }
+    if (targetOpt == null) {
+      if (let (true, t) = this.wasm.functionMap.get(resolved.id)) {
+        targetOpt = t;
+      }
+    }
     if (targetOpt == null) {
       // Not a compiled function: a binding holding a closure value
       // (global function values still bail when the callee lowers).

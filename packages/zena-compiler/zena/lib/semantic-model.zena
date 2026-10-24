@@ -1242,6 +1242,7 @@ export final class SemanticModel {
   // whose preludes differ in size emitted the same program with its
   // functions permuted.
   #globalDeclarations = new Map<SymbolId, Node>.ordered();
+  #globalDeclarationOverloads = new Map<SymbolId, GrowableArray<Node>>();
 
   symbolDependencies: HashMap<SymbolId, SymbolDependencies> {
     get { return this.#symbolDependencies; }
@@ -1312,8 +1313,25 @@ export final class SemanticModel {
   }
 
   addDeclaredGlobal(id: SymbolId, node: Node): void {
-    this.#globalDeclarations[id] = node;
-    this.#declaredGlobals.push(id);
+    if (!this.#globalDeclarations.has(id)) {
+      this.#globalDeclarations[id] = node;
+      this.#declaredGlobals.push(id);
+    }
+    let list = if (let (true, l) = this.#globalDeclarationOverloads.get(id)) {
+      l
+    } else {
+      let nl = new Array<Node>();
+      this.#globalDeclarationOverloads[id] = nl;
+      nl
+    };
+    list.push(node);
+  }
+
+  getGlobalDeclarations(id: SymbolId): GrowableArray<Node> | null {
+    if (let (true, l) = this.#globalDeclarationOverloads.get(id)) {
+      return l;
+    }
+    return null;
   }
 
   setSymbolDependencies(id: SymbolId, deps: SymbolDependencies): void {
