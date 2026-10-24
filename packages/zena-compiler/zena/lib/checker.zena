@@ -752,6 +752,19 @@ final class CheckerContext {
   var #owningReceiver = false;
 
   /**
+   * The receiver's symbol in a method that declared `this: Own<this>`:
+   * the release bookkeeping tracks `this` there like an owned parameter
+   * (ownership.md §"Implicit drop"). Null in every other body.
+   */
+  var #receiverSymbol: Symbol | null = null;
+
+  /**
+   * Whether the body being checked is a `[Disposable.dispose]`, the one
+   * consuming method that may move a non-null owner field out.
+   */
+  var #inDispose = false;
+
+  /**
    * Loop nesting depth (for break/continue validation).
    */
   var #loopDepth = 0;
@@ -2311,6 +2324,14 @@ final class CheckerContext {
   /** Whether the method being checked consumes its receiver. */
   owningReceiver: boolean { get { return this.#owningReceiver; } }
 
+  receiverSymbol: Symbol | null { get { return this.#receiverSymbol; } }
+
+  setReceiverSymbol(s: Symbol | null): void { this.#receiverSymbol = s; }
+
+  inDispose: boolean { get { return this.#inDispose; } }
+
+  setInDispose(v: boolean): void { this.#inDispose = v; }
+
   setOwningReceiver(v: boolean): void { this.#owningReceiver = v; }
 
   /**
@@ -2523,8 +2544,23 @@ final class CheckerContext {
   }
 
   /**
+   * Record a store that revives a member path moved out on every path
+   * to it (ownership.md §Affine fields): the field holds a value again.
+   */
+  recordFlowPathRevive(pathKey: String): void {
+    let node = new FlowAssign(this.#currentFlow, noSymbolId, null);
+    node.pathKey = pathKey;
+    node.id = this.newFlowId();
+    if (this.#flowExceptionTargets.length > 0) {
+      this.#flowExceptionTargets[this.#flowExceptionTargets.length - 1]
+        .add(node);
+    }
+    this.#currentFlow = node;
+  }
+
+  /**
    * The live move of `pathKey` on some backward path from `from`, or
-   * null. Fields are immutable, so nothing revives a moved path.
+   * null. A store that revived the path ends the search on its path.
    */
   findLivePathMove(pathKey: String, from: FlowNode): FlowMove | null {
     let visited = new Set<i32>();
@@ -2542,7 +2578,9 @@ final class CheckerContext {
           if (mv.pathKey == pathKey) { return mv; }
           pending.push(mv.antecedent);
         }
-        case FlowAssign as assign: { pending.push(assign.antecedent); }
+        case FlowAssign as assign: {
+          if (assign.pathKey != pathKey) { pending.push(assign.antecedent); }
+        }
         case FlowJoin as join: {
           for (let a in join.antecedents) {
             pending.push(a);
@@ -2574,7 +2612,10 @@ final class CheckerContext {
       }
       case FlowStart: false
       case FlowUnreachable: true
-      case FlowAssign as assign: this.#mustMoveWalk(pathKey, assign.antecedent, memo)
+      case FlowAssign as assign: {
+        if (assign.pathKey == pathKey) { false }
+        else { this.#mustMoveWalk(pathKey, assign.antecedent, memo) }
+      }
       case FlowNarrowings as nw: this.#mustMoveWalk(pathKey, nw.antecedent, memo)
       case FlowSuspend as sp: this.#mustMoveWalk(pathKey, sp.antecedent, memo)
       case FlowJoin as join: {
@@ -2594,6 +2635,7 @@ final class CheckerContext {
    * exactly as binding use-after-move is.
    */
   checkPathMoveUse(expr: Node, pathKey: String, display: String): void {
+    if ((expr.id as i32) == this.#moveCheckSuppressedNode) { return; }
     if (this.#pathMoveErrorNodes.has(expr.id as i32)) { return; }
     let mv = this.findLivePathMove(pathKey, this.#currentFlow);
     if (mv == null) { return; }
@@ -2612,10 +2654,12 @@ final class CheckerContext {
   }
 
   /**
-   * Decide the body's field move-outs: each moved path must be moved
-   * on EVERY exit — return sites and the natural end — or the move is
-   * an error; the survivors are what dispose glue skips. Returns the
-   * verified field names (paths stripped of their "this." root).
+   * Decide the body's field move-outs: at each exit — return sites and
+   * the natural end — a moved path must be moved on every path to it, or
+   * revived by a store on every path to it, the same at all exits, or the
+   * move is an error. The paths moved at every exit are what dispose glue
+   * skips. Returns their field names (paths stripped of their "this."
+   * root).
    */
   finishBodyPathMoves(bodyEndReachable: boolean): GrowableArray<String> {
     let moved = new Array<String>();
@@ -2629,9 +2673,14 @@ final class CheckerContext {
       if (seen.has(pk)) { continue; }
       seen.add(pk);
       var everywhere = true;
+      var nowhere = true;
       for (let exit in exits) {
         if (!this.pathDefinitelyMoved(pk, exit)) { everywhere = false; }
+        if (this.findLivePathMove(pk, exit) != null) { nowhere = false; }
       }
+      // Revived on every path: the field holds a value at every exit,
+      // which the glue releases.
+      if (nowhere) { continue; }
       if (!everywhere) {
         this.error(
           "'" + mv.name + "' is moved out on some paths but still held " +
@@ -5397,6 +5446,21 @@ function rejectConsumingThroughNonOwner(
  * produced by an expression has no binding left behind to misuse.
  */
 function recordArgumentMove(ctx: CheckerContext, arg: Expression, paramType: Type) {
+  // A consuming method's `this` handed to an owning sink moves the
+  // receiver: whoever took it releases it, so the method's exit does not.
+  if (arg is ThisExpression) {
+    let rs = ctx.receiverSymbol;
+    if (rs == null) { return; }
+    let sinkCore = soleNonNullMember(paramType) ?? paramType;
+    if (ownershipHandleName(sinkCore) == "Own" || isAffineTuple(sinkCore)) {
+      ctx.recordFlowMove(rs.id, "this", arg.loc);
+    } else if (ownershipHandleName(sinkCore) == "") {
+      // An adaptation or an erased slot keeps the owner without a
+      // recorded move, so the exit must not release it.
+      ctx.markUndroppable(rs.id);
+    }
+    return;
+  }
   // `this.field` handed to an owning sink inside a consuming method is
   // the field's move-out (ownership.md §Affine fields); the read kept
   // its owner type only there, so an affine test on the checked type
@@ -5408,11 +5472,7 @@ function recordArgumentMove(ctx: CheckerContext, arg: Expression, paramType: Typ
       if (sink == "Own") {
         let at = ctx.model.getNodeType(arg);
         if (at != null && typeCarriesOwner(at)) {
-          let pathKey = getMemberPathKey(ctx, arg);
-          if (pathKey != null) {
-            let display = "this." + getMemberPropertyName(me.isSymbolAccess, me.property.name);
-            ctx.recordFlowPathMove(pathKey, display, arg.loc);
-          }
+          recordOwnerFieldMove(ctx, me, arg.loc);
         }
       }
     }
@@ -5562,6 +5622,12 @@ final class ScopedConsumeCandidate {
  * borrow a read of the field yields.
  */
 function affineOwnerFieldType(ctx: CheckerContext, lm: MemberExpression): Type | null {
+  let fi = ownerFieldInfo(ctx, lm);
+  return if (fi == null) null else fi.type;
+}
+
+/** The owner field `lm` names on a resource class, or null. */
+function ownerFieldInfo(ctx: CheckerContext, lm: MemberExpression): FieldInfo | null {
   let objT = ctx.model.getNodeType(lm.object);
   if (objT == null) { return null; }
   // The receiver reaches here as it is typed at the access: usually
@@ -5584,7 +5650,51 @@ function affineOwnerFieldType(ctx: CheckerContext, lm: MemberExpression): Type |
   if (!(m is FieldInfo)) { return null; }
   let fi = m as FieldInfo;
   if (!typeCarriesOwner(fi.type)) { return null; }
-  return fi.type;
+  return fi;
+}
+
+/**
+ * A move of `this.field` out of a consuming method (ownership.md
+ * §Affine fields). A nullable field is taken: the move leaves null in
+ * it, so the field must be `var`, and nothing goes on the flow graph,
+ * since the field then just holds null and the release glue skips null.
+ * A non-null field has nothing to leave behind, so only a dispose, the
+ * object's last act, may move it; there it is a path move, verified on
+ * every exit, that the glue skips.
+ */
+function recordOwnerFieldMove(ctx: CheckerContext, me: MemberExpression,
+    loc: SourceLocation | null) {
+  let pathKey = getMemberPathKey(ctx, me);
+  if (pathKey == null) { return; }
+  let name = getMemberPropertyName(me.isSymbolAccess, me.property.name);
+  let display = "this." + name;
+  let fi = ownerFieldInfo(ctx, me);
+  if (fi != null && isNullableType(fi.type)) {
+    if (!fi.isMutable) {
+      ctx.error(
+        "Moving '" + display + "' out leaves null in it, so the field " +
+          "must be declared 'var'.",
+        DiagnosticCode.InvalidAssignment,
+        loc
+      );
+      return;
+    }
+    ctx.model.setFieldTake(me as Node);
+    return;
+  }
+  if (!ctx.inDispose) {
+    let declared = if (fi == null) "..." else typeToString(fi.type);
+    ctx.error(
+      "'" + display + "' is not nullable, so only a dispose can move it " +
+        "out: anywhere else the move would leave the object without it. " +
+        "Declare it 'var " + name + ": " + declared + " | null' so the " +
+        "move leaves null in it.",
+      DiagnosticCode.UseAfterMove,
+      loc
+    );
+    return;
+  }
+  ctx.recordFlowPathMove(pathKey, display, loc);
 }
 
 /**
@@ -5656,6 +5766,39 @@ function registerOwnParamCandidates(
     if (si == null) { continue; }
     ctx.registerOwnCandidate(si, param as Node, resources);
   }
+}
+
+/**
+ * The receiver's symbol in a method that declared `this: Own<this>`, with
+ * its binding type recorded as `Own<C>` so the release machinery reads it
+ * like an owned parameter's. Null for every other method.
+ */
+function owningReceiverSymbol(ctx: CheckerContext, md: MethodDefinition,
+    classType: ClassType): Symbol | null {
+  let receiver = md.receiver;
+  if (receiver == null || !declaresOwningReceiver(md)) { return null; }
+  let sym = ctx.model.resolveDeclaration(receiver as Node);
+  if (sym == null) { return null; }
+  // The self type, a generic class at its own parameters, so lowering
+  // substitutes it per specialization as it does a parameter's.
+  ctx.model.setBindingType(sym,
+      wrapResourceInOwn(ctx, selfTypeOfClass(classType), md.loc));
+  return sym;
+}
+
+/**
+ * A consuming method owns its receiver, so a body that does not move
+ * `this` on releases it at exit, exactly as an owned parameter is
+ * released (registerOwnParamCandidates). Not a dispose: its exit is the
+ * release, and the release action cannot run itself.
+ */
+function registerReceiverCandidate(ctx: CheckerContext, md: MethodDefinition,
+    classType: ClassType, isDispose: boolean) {
+  if (isDispose) { return; }
+  let sym = ctx.receiverSymbol;
+  if (sym == null) { return; }
+  let resources = growable<ClassType>([classType]);
+  ctx.registerOwnCandidate(sym, md.receiver as Node, resources);
 }
 
 /**
@@ -5819,11 +5962,19 @@ function registerDestructuredOwners(ctx: CheckerContext, pattern: TuplePattern,
  * exactly as the language did before implicit drop.
  */
 function classifyOwnUses(ctx: CheckerContext, scope: Node, ids: HashSet<i32>): void {
+  // A consuming method's receiver is used as `this`, which resolves to
+  // no symbol; its uses are classified like an identifier's.
+  let rs = ctx.receiverSymbol;
+  let receiverId = if (rs != null && ids.has(rs.id as i32)) rs.id else noSymbolId;
   walkEnter(scope, (n) => {
-    if (!(n is Identifier)) { return; }
-    let info = ctx.model.resolve(n);
-    if (info == null) { return; }
-    let id = info.id;
+    var id = noSymbolId;
+    if (n is ThisExpression) {
+      id = receiverId;
+    } else if (n is Identifier) {
+      let info = ctx.model.resolve(n);
+      if (info != null) { id = info.id; }
+    }
+    if (id == noSymbolId) { return; }
     if (!ids.has(id as i32)) { return; }
     let parentOpt = ctx.model.getParent(n);
     if (parentOpt == null) {
@@ -11319,12 +11470,7 @@ function checkStatement(ctx: CheckerContext, stmt: Statement): void {
         if (me.object is ThisExpression) {
           let at = ctx.model.getNodeType(argument as Node);
           if (at != null && typeCarriesOwner(at)) {
-            let pathKey = getMemberPathKey(ctx, argument);
-            if (pathKey != null) {
-              let display = "this." +
-                  getMemberPropertyName(me.isSymbolAccess, me.property.name);
-              ctx.recordFlowPathMove(pathKey, display, loc);
-            }
+            recordOwnerFieldMove(ctx, me, loc);
           }
         }
       }
@@ -14052,7 +14198,14 @@ function checkExpressionInner(ctx: CheckerContext, expr: Expression, expectedTyp
     // A plain `=` writes without reading, so its identifier target is
     // exempt from the use-after-move check: writing to a dead owned
     // binding is the reinitialization that revives it.
-    if (operator == null && left is Identifier) {
+    // The same for a store into a field of a consuming method's `this`:
+    // whether the field held a value to release is decided once the
+    // right-hand side has run, below.
+    var receiverFieldTarget = false;
+    if (left is MemberExpression) {
+      receiverFieldTarget = left.object is ThisExpression && ctx.owningReceiver;
+    }
+    if (operator == null && (left is Identifier || receiverFieldTarget)) {
       ctx.setMoveCheckSuppressedNode(left.id as i32);
     }
     var leftType = checkExpression(ctx, left, null);
@@ -14071,12 +14224,9 @@ function checkExpressionInner(ctx: CheckerContext, expr: Expression, expectedTyp
         // A store into an owner field takes ownership: the sink is the
         // field's declared Own<R>, so the right-hand side is moved and
         // a borrow is rejected. The store releases the previous value
-        // (lowering), which roots the field's dispose here. In a
-        // consuming method a field already moved out on some path
-        // holds a dead value, and releasing it again would be a double
-        // release; checking the target as a read above already refuses
-        // that store as a use after move, so stores cannot yet revive a
-        // moved-out field.
+        // (lowering), which roots the field's dispose here, unless a
+        // dispose moved the field out, which the flow record below
+        // decides once the right-hand side has run.
         let ownerFieldType = affineOwnerFieldType(ctx, lm);
         if (ownerFieldType != null) {
           leftType = ownerFieldType;
@@ -14157,6 +14307,34 @@ function checkExpressionInner(ctx: CheckerContext, expr: Expression, expectedTyp
             ctx.noteOwnerStore(info.id, expr);
           }
           ctx.recordFlowAssignment(info.id, stored);
+        }
+      }
+      case MemberExpression as lm: {
+        // A store into an owner field that a dispose moved out on every
+        // path here, the right-hand side included, revives it and
+        // releases nothing. Moved on only some paths, the store could
+        // not tell whether it replaces a value to release.
+        if (operator == null && lm.object is ThisExpression &&
+            ctx.owningReceiver && affineOwnerFieldType(ctx, lm) != null) {
+          let pathKey = getMemberPathKey(ctx, lm);
+          if (pathKey != null &&
+              ctx.findLivePathMove(pathKey, ctx.currentFlow) != null) {
+            if (ctx.pathDefinitelyMoved(pathKey, ctx.currentFlow)) {
+              ctx.model.setRevivingStore(expr as Node);
+              ctx.recordFlowPathRevive(pathKey);
+            } else {
+              let display = "this." +
+                  getMemberPropertyName(lm.isSymbolAccess, lm.property.name);
+              ctx.error(
+                "'" + display + "' is moved out on some paths to this " +
+                  "store and not on others, so the store cannot tell " +
+                  "whether it replaces a value to release: move it on " +
+                  "every path, or on none.",
+                DiagnosticCode.UseAfterMove,
+                loc
+              );
+            }
+          }
         }
       }
       case _: {}
@@ -18677,6 +18855,11 @@ function checkMethodBody(
   // resource's `this` may not be captured at all.
   let prevOwningReceiver = ctx.owningReceiver;
   ctx.setOwningReceiver(declaresOwningReceiver(md));
+  let prevReceiverSymbol = ctx.receiverSymbol;
+  let prevInDispose = ctx.inDispose;
+  let isDispose = getMemberName(ctx, md.name) == ":dispose";
+  ctx.setInDispose(isDispose);
+  ctx.setReceiverSymbol(owningReceiverSymbol(ctx, md, classType));
   let prevFlowState = ctx.enterBodyFlow(false);
 
   if (md.isGenerator) {
@@ -18880,6 +19063,7 @@ function checkMethodBody(
     case BlockStatement as block: {
       ctx.enterOwnScope();
       if (!isCtor) {
+        registerReceiverCandidate(ctx, md, classType, isDispose);
         registerOwnParamCandidates(ctx, md.params, methodType.parameters);
       }
       prescanPendingFunctions(ctx, block.body);
@@ -18897,6 +19081,7 @@ function checkMethodBody(
       // Async expression bodies stay out: their lowering completes the
       // frame's future directly, before the parameter regions exist.
       if (!isCtor && ctx.asyncValueType == null) {
+        registerReceiverCandidate(ctx, md, classType, isDispose);
         registerOwnParamCandidates(ctx, md.params, methodType.parameters);
       }
       let bodyType = checkExpression(ctx, bodyExpr, effectiveReturnType);
@@ -18931,6 +19116,8 @@ function checkMethodBody(
   ctx.setAsyncFutureType(prevAsyncFuture);
   ctx.setSuspensionRelaxed(prevSuspensionRelaxed);
   ctx.setOwningReceiver(prevOwningReceiver);
+  ctx.setReceiverSymbol(prevReceiverSymbol);
+  ctx.setInDispose(prevInDispose);
   ctx.setUsingDepth(prevUsingDepth);
   ctx.setInConstructor(prevInConstructor);
   ctx.exitBodyFlow(prevFlowState);
@@ -20925,6 +21112,15 @@ function checkMemberExpression(
     let recvSym = ctx.model.resolve(object);
     if (recvSym != null) {
       ctx.recordFlowMove(recvSym.id, recvSym.name, object.loc);
+    }
+  }
+  // The same through a consuming method's own `this`: calling another
+  // consuming method on it, its dispose included, ends its life here.
+  if (object is ThisExpression && ownershipHandleName(objectType) == "Own" &&
+      memberConsumesReceiver(objectType, propName)) {
+    let rs = ctx.receiverSymbol;
+    if (rs != null) {
+      ctx.recordFlowMove(rs.id, "this", object.loc);
     }
   }
 

@@ -1,0 +1,111 @@
+// @mode: run
+// @result: 11111111
+// A consuming method (`this: Own<this>`) owns its receiver, so a body
+// that does not move `this` on releases it at exit, on normal
+// completion, early return and unwind, as an owned parameter is. Moving
+// it onward hands the release to whoever took it: an owning parameter,
+// another consuming method, the caller of a method that returns it.
+// Each case below must release the resource exactly once.
+import {Own, Disposable} from 'zena:core';
+
+var released = 0;
+
+resource class Res {
+  n: i32;
+  new(this.n);
+
+  // Reads, never moves: released at exit, after the value is read.
+  value(this: Own<this>): i32 {
+    return this.n;
+  }
+
+  // Early return releases too.
+  early(this: Own<this>, stop: boolean): i32 {
+    if (stop) {
+      return 1;
+    }
+    return 2;
+  }
+
+  // So does unwind.
+  fails(this: Own<this>): i32 {
+    throw new Error('fails');
+  }
+
+  // Handed to an owning parameter, which releases it.
+  handOff(this: Own<this>): void {
+    sink(this);
+  }
+
+  // Another consuming method ends its life.
+  chain(this: Own<this>): i32 {
+    return this.value();
+  }
+
+  // Returned: the caller owns it again.
+  back(this: Own<this>): Own<Res> {
+    return this;
+  }
+
+  // Moved on one path: the other path releases it at the if's end.
+  maybe(this: Own<this>, give: boolean): void {
+    if (give) {
+      sink(this);
+    } else {
+      released += 0;
+    }
+  }
+
+  [Disposable.dispose](this: Own<this>): void {
+    released += 1;
+  }
+}
+
+let sink = (r: Own<Res>): void => {};
+
+/** One digit per case: 1 when the case released exactly once. */
+function once(): i32 {
+  let ok = if (released == 1) 1 else 0;
+  released = 0;
+  return ok;
+}
+
+export let main = (): i32 => {
+  var digits = 0;
+  let a = new Res(5);
+  a.value();
+  digits = digits * 10 + once();
+  let b = new Res(5);
+  b.early(true);
+  digits = digits * 10 + once();
+  let c = new Res(5);
+  c.early(false);
+  digits = digits * 10 + once();
+  try {
+    let d = new Res(5);
+    d.fails();
+  } catch (e) {}
+  digits = digits * 10 + once();
+  let e = new Res(5);
+  e.handOff();
+  digits = digits * 10 + once();
+  let f = new Res(5);
+  f.chain();
+  digits = digits * 10 + once();
+  if (true) {
+    let g = new Res(5);
+    let back = g.back();
+    // Not released by `back`; `back` releases at the block's exit.
+    if (released != 0) {
+      return -1;
+    }
+  }
+  digits = digits * 10 + once();
+  let h = new Res(5);
+  h.maybe(true);
+  let i = new Res(5);
+  i.maybe(false);
+  // Two resources, each released once.
+  digits = digits * 10 + (if (released == 2) 1 else 0);
+  return digits;
+};

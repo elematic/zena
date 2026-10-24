@@ -296,6 +296,12 @@ export final class ModelIndex {
     let mfKeys = model.movedOutFields.map.keys();
     for (let k in mfKeys) { this.#claim(model, k); }
 
+    let ftKeys = model.fieldTakes.map.keys();
+    for (let k in ftKeys) { this.#claim(model, k); }
+
+    let rsKeys = model.revivingStores.map.keys();
+    for (let k in rsKeys) { this.#claim(model, k); }
+
     let symbols = model.symbols;
     if (symbols != null) {
       // Only the nodes outside the module's range need claiming; the
@@ -889,6 +895,71 @@ export final class SemanticModel {
   }
 
   assignmentReleases: NodeMap<boolean> { get { return this.#assignmentReleases; } }
+
+  /**
+   * Reads of a nullable owner field of `this` that move the owner out
+   * of a consuming method: a take, which stores null into the field
+   * after the read (ownership.md §Affine fields). Keyed by the member
+   * expression.
+   */
+  #fieldTakes = new NodeMap<boolean>();
+
+  setFieldTake(node: Node): void {
+    this.#fieldTakes[node] = true;
+  }
+
+  isFieldTakeDirect(node: Node): boolean {
+    if (let (true, d) = this.#fieldTakes.get(node)) {
+      return d;
+    }
+    return false;
+  }
+
+  isFieldTake(node: Node): boolean {
+    if (this.isFieldTakeDirect(node)) return true;
+    let {index} = this;
+    if (index != null) {
+      let owner = index.ownerOfNode(node.id);
+      if (owner != null && owner != this) {
+        return owner.isFieldTakeDirect(node);
+      }
+    }
+    return false;
+  }
+
+  fieldTakes: NodeMap<boolean> { get { return this.#fieldTakes; } }
+
+  /**
+   * Stores into an owner field of `this` that a dispose moved out on
+   * every path to the store: the field held nothing, so the store
+   * releases nothing and revives it. Keyed by the assignment node.
+   */
+  #revivingStores = new NodeMap<boolean>();
+
+  setRevivingStore(node: Node): void {
+    this.#revivingStores[node] = true;
+  }
+
+  isRevivingStoreDirect(node: Node): boolean {
+    if (let (true, d) = this.#revivingStores.get(node)) {
+      return d;
+    }
+    return false;
+  }
+
+  isRevivingStore(node: Node): boolean {
+    if (this.isRevivingStoreDirect(node)) return true;
+    let {index} = this;
+    if (index != null) {
+      let owner = index.ownerOfNode(node.id);
+      if (owner != null && owner != this) {
+        return owner.isRevivingStoreDirect(node);
+      }
+    }
+    return false;
+  }
+
+  revivingStores: NodeMap<boolean> { get { return this.#revivingStores; } }
 
   setScopeExitDrop(node: Node, drop: boolean): void {
     this.#scopeExitDrops[node] = drop;

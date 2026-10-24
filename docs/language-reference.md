@@ -5862,6 +5862,11 @@ the function received ownership, so the function releases unless its
 body moves the value onward. Passing a resource to `Own<R>` parameter
 is therefore a complete handoff — the caller's binding dies at the
 call, and the callee disposes what it was handed (or moves it further).
+A consuming method (one declaring `this: Own<this>`) owns its receiver
+the same way: unless the body moves `this` on — returns it, passes it to
+an `Own<R>` parameter, or calls another consuming method on it — the
+method releases it at exit. `[Disposable.dispose]` is the exception, since
+its exit is the release.
 Constructors and async expression bodies are not yet covered. In an
 `async` or `gen` body the release also runs on cancellation and on
 generator disposal — a consumer that stops iterating cancels the frame
@@ -5913,10 +5918,30 @@ Inside a consuming method (one declaring `this: Own<this>` —
 `[Disposable.dispose]`
 above all) `this.entry` keeps its owner type, so the field can be
 **moved out**: handed to a function taking `Own<File>`, moved into a
-local, or returned to the caller. A moved-out field is skipped by the
-release glue and dead for the rest of the method — using it again is a
-use-after-move error, and a move that happens on only some paths is an
-error too. Moving fields into locals is also how a dispose takes
+local, or returned to the caller. What the move leaves behind depends on
+the field:
+
+- A nullable `var` field (`var entry: Own<File> | null`) is **taken**: the
+  move leaves `null` in it, which the release skips. A take may happen on
+  any path, and a later store fills the field again. A nullable field that
+  is not `var` cannot be moved out.
+- A non-null field has nothing to leave behind, so only a dispose may
+  move it out. The release glue skips it, and it is dead for the rest of
+  the dispose: using it again is a use-after-move error, and so is a move
+  on only some paths. A store into it after the move revives it, and the
+  glue then releases what was stored.
+
+```zena
+resource class Slot {
+  var entry: Own<File> | null;
+  new(this.entry);
+  take(this: Own<this>): Own<File> | null {
+    return this.entry;   // a take: entry is null from here
+  }                      // the Slot is released here, entry skipped
+}
+```
+
+Moving fields into locals is also how a dispose takes
 control of release order: the locals' scope-exit releases replace the
 glue's. One case still
 asks for ceremony: a subclass with owner fields under an _inherited_

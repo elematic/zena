@@ -17,7 +17,10 @@ resource class File {
   var #fd: i32;
   new(fd: i32) : #fd = fd;
 
-  /** A consuming method is not always the release action, and takes args. */
+  /**
+   * A consuming method is not always the release action, and takes
+   * args. It does not move `this` on, so it releases it at exit.
+   */
   intoSum(this: Own<this>, addend: i32, scale: i32): i32 {
     return this.#fd * scale + addend;
   }
@@ -34,5 +37,6 @@ export function main(): i32 {
   let g = new File(1);
   g.[Disposable.dispose]();
 
-  return if (released == 1) n else 0;
+  // Once by intoSum's exit, once by the explicit dispose.
+  return if (released == 2) n else 0;
 }

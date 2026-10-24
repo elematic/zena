@@ -1660,6 +1660,15 @@ export final class FunctionLowerer {
       this.#cx().thisValue = this.b.emit(IrOp.ref_cast, castVt, this.#cx().thisValue,
           this.b.internType(castVt));
     }
+    // A consuming method's receiver is a binding to the release
+    // bookkeeping, like an owned parameter: bound to `this`, so its
+    // release region and a branch's compensating drop read it from the
+    // environment.
+    let receiverSym = this.#receiverSymbol();
+    if (receiverSym != null) {
+      this.#cx().env[receiverSym.id] = this.#cx().thisValue;
+      this.#cx().symbols[receiverSym.id] = receiverSym;
+    }
     if (paramOffset == 1 && ctorDef == null && !this.func.isClosure &&
         this.#methodName() == "==" && params.length == 1 &&
         paramSigIndex[0] >= 0 && (exploded == null || exploded[0] == null)) {
@@ -1717,8 +1726,15 @@ export final class FunctionLowerer {
 
     let body = bodyNode as Node;
     // Owned parameters the checker marked for release wrap the whole
-    // body in regions, first parameter outermost.
+    // body in regions, first parameter outermost. A consuming method's
+    // receiver comes first: it is released last.
     let dropParamSyms = new Array<Symbol>();
+    if (receiverSym != null) {
+      let receiverNode = (node as MethodDefinition).receiver as Node;
+      if (this.func.model.hasScopeExitDrop(receiverNode)) {
+        dropParamSyms.push(receiverSym);
+      }
+    }
     for (var pi = 0; pi < params.length; pi += 1) {
       if (this.func.model.hasScopeExitDrop(params[pi] as Node)) {
         let ds = this.func.model.resolveDeclaration(params[pi].name);
@@ -3020,6 +3036,19 @@ export final class FunctionLowerer {
    * core (explode.zena), which has none so that it never enters the class
    * method map, its forwarder's.
    */
+  /**
+   * The receiver's symbol when the lowered function is a method that
+   * declared one (`this: Own<this>`), which the checker tracks for
+   * release like an owned parameter.
+   */
+  #receiverSymbol(): Symbol | null {
+    let node = this.func.node;
+    if (node == null || !(node is MethodDefinition)) { return null; }
+    let receiver = (node as MethodDefinition).receiver;
+    if (receiver == null) { return null; }
+    return this.func.model.resolveDeclaration(receiver as Node);
+  }
+
   #methodName(): String | null {
     let own = this.func.methodName;
     if (own != null) {
@@ -7005,9 +7034,11 @@ export final class FunctionLowerer {
     // (ownership.md §Affine fields): the new value is computed first,
     // so a throwing right-hand side leaves the field intact, then the
     // old value is read and disposed — null-guarded for a nullable
-    // field — and the store lands. The checker rooted the dispose.
+    // field — and the store lands. The checker rooted the dispose. A
+    // store into a field a dispose moved out replaces nothing.
     if (assign.operator == null && receiverCt.isResource &&
-        receiverCt.members.has(propName)) {
+        receiverCt.members.has(propName) &&
+        !this.func.model.isRevivingStore(assign as Node)) {
       let fieldMember = receiverCt.members[propName];
       if (fieldMember is FieldInfo) {
         let fieldT = fieldMember.type;
@@ -7814,6 +7845,13 @@ export final class FunctionLowerer {
       // member's checked type may be narrower (non-null).
       let fieldVt = this.#fieldValType(target.owner, fieldName);
       let read = this.b.emit(IrOp.struct_get, fieldVt, receiver, fieldRef);
+      if (this.func.model.isFieldTake(member as Node)) {
+        // A take: the owner moves out and the field is left null, which
+        // the release glue skips (ownership.md §Affine fields).
+        let nullValue = this.b.emit(IrOp.ref_null, fieldVt, -1, -1);
+        let pairIdx = this.b.pushExtra(this.#twoValues(receiver, nullValue));
+        this.b.emitVoid(IrOp.struct_set, pairIdx, fieldRef);
+      }
       return this.#reassertNonNull(read, this.#exprValType(member));
     }
     let getter = target.getter as WasmFunction;

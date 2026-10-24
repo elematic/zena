@@ -2,8 +2,8 @@
 // @result: 888
 // Field move-out end to end: a field the dispose body forwards is the
 // sink's to release (the glue skips it); moving fields into locals
-// gives dispose a custom release order; a consuming extractor hands a
-// field's ownership to its caller.
+// gives dispose a custom release order; a consuming extractor takes a
+// nullable field out and hands its ownership to the caller.
 import {Own, Disposable} from 'zena:core';
 
 /** Records events as decimal digits, so ordering is observable. */
@@ -50,11 +50,12 @@ resource class Ord {
   }
 }
 
-/** Hands its field to the caller; nothing releases here. */
+/** Hands its field to the caller. The take leaves null, so releasing
+ * the extractor at take's exit releases nothing else. */
 resource class Ext {
-  a: Own<Res>;
+  var a: Own<Res> | null;
   new(this.a);
-  take(this: Own<this>): Own<Res> {
+  take(this: Own<this>): Own<Res> | null {
     return this.a;
   }
   [Disposable.dispose](this: Own<this>): void {}

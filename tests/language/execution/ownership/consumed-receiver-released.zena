@@ -1,10 +1,10 @@
 // @mode: run
 // @result: 3
-// @skip: elematic/zena#378 — a consuming method that neither moves nor disposes its receiver leaks it; outer reads 1 after readStream
 // A resource class wrapping an owned field, with borrowing methods
-// that reach the inner resource and a consuming method that gives the
-// inner one to a background task — `zena:fs`'s `Descriptor` over a WIT
-// descriptor. The consumed wrapper is released at the method's exit.
+// that reach the inner resource and a consuming method that takes the
+// inner one out and gives it to a background task. The take leaves
+// null in the field, and the consumed wrapper is released at the
+// method's exit, its glue skipping the field.
 import { Own, Borrow, Disposable } from 'zena:core';
 import { Completer, runFuture } from 'zena:async';
 
@@ -24,18 +24,23 @@ async function closeLater(inner: Own<Inner>, done: Future<void>): Future<void> {
 }
 
 resource class Outer {
-  #inner: Own<Inner>;
+  var #inner: Own<Inner> | null;
   new(inner: Own<Inner>) : #inner = inner;
 
   value(): i32 {
-    return this.#inner.n;
+    let inner = this.#inner;
+    return if (inner == null) 0 else inner.n;
   }
 
   /** Hands the inner resource to a task that releases it when `done`
    * settles; this wrapper is consumed. */
   readStream(this: Own<this>, done: Future<void>): i32 {
-    let n = this.#inner.n;
-    closeLater(this.#inner, done);
+    let inner = this.#inner;
+    if (inner == null) {
+      return 0;
+    }
+    let n = inner.n;
+    closeLater(inner, done);
     return n;
   }
 

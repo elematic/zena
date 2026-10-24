@@ -1,0 +1,89 @@
+// @mode: run
+// @result: 92
+// Moving an owner out of a nullable `var` field of `this` is a take: the
+// field holds null afterwards, so releasing the object later skips it,
+// and a store fills it again. In a dispose, a store after moving out a
+// non-null field revives it, and the glue releases the new value.
+// Events are decimal digits, so order and count are both observable.
+import {Own, Disposable} from 'zena:core';
+
+class Log {
+  var seq: i32 = 0;
+  add(d: i32): void {
+    this.seq = this.seq * 10 + d;
+  }
+}
+
+resource class Res {
+  #log: Log;
+  id: i32;
+  new(log: Log, this.id) : #log = log;
+  [Disposable.dispose](this: Own<this>): void {
+    this.#log.add(this.id);
+  }
+}
+
+let sink = (r: Own<Res>): void => {};
+
+resource class Box {
+  #log: Log;
+  var #inner: Own<Res> | null;
+  new(log: Log, inner: Own<Res>) : #log = log, #inner = inner;
+
+  /** Takes the inner resource out; the box is released at exit. */
+  takeInner(this: Own<this>): Own<Res> | null {
+    return this.#inner;
+  }
+
+  /** Takes the inner resource out and puts `next` in its place. */
+  swap(this: Own<this>, next: Own<Res>): Own<Res> | null {
+    let old = this.#inner;
+    this.#inner = next;
+    return old;
+  }
+
+  [Disposable.dispose](this: Own<this>): void {
+    this.#log.add(6);
+  }
+}
+
+/** Moves its non-null field out in dispose, then stores a new one. */
+resource class Refill {
+  #log: Log;
+  var a: Own<Res>;
+  new(log: Log, this.a) : #log = log;
+  [Disposable.dispose](this: Own<this>): void {
+    sink(this.a);
+    this.a = new Res(this.#log, 2);
+  }
+}
+
+export let main = (): i32 => {
+  let log = new Log();
+  if (true) {
+    let inner = new Box(log, new Res(log, 1)).takeInner();
+    log.add(4);
+  }
+  // takeInner's exit releases the box (6); its field was null by then,
+  // so the glue skipped it. Then 4, then `inner` (1) at the block's exit.
+  if (log.seq != 641) {
+    return log.seq;
+  }
+  log.seq = 0;
+  if (true) {
+    let old = new Box(log, new Res(log, 8)).swap(new Res(log, 3));
+    log.add(5);
+  }
+  // swap's exit releases the box (6), whose glue releases the stored 3.
+  // Then 5, then `old` (8) at the block's exit.
+  if (log.seq != 6358) {
+    return log.seq;
+  }
+  log.seq = 0;
+  if (true) {
+    let r = new Refill(log, new Res(log, 9));
+  }
+  // The dispose hands 9 to sink, which releases it; the glue then
+  // releases the 2 the dispose stored.
+  return log.seq;
+};

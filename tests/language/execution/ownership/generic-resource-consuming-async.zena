@@ -2,8 +2,8 @@
 // @result: 42
 // A generic resource class with a consuming async method — the shape
 // an owned WIT `future<T>` handle would take: `await h.read()`
-// consumes the handle, and a handle never read is released at scope
-// exit.
+// consumes the handle, which `read` releases at its exit, and a handle
+// never read is released at scope exit.
 import { Own, Disposable } from 'zena:core';
 import { Completer, runFuture } from 'zena:async';
 
@@ -36,7 +36,8 @@ export let main = (): i32 => {
     // Never read: released at scope exit.
     let unread = new Handle<i32>(0);
   }
-  // 40 read, plus 1 dropped unread, plus 1 for a read one that must
-  // NOT be dropped again (dropped should be exactly 1).
-  return if (dropped == 1) v + 2 else 0 - dropped;
+  // 40 read, plus 2: the read handle released once, by read's exit
+  // (useOne moved it into the call, so it does not release it again),
+  // and the unread one once, at scope exit.
+  return if (dropped == 2) v + 2 else 0 - dropped;
 };
