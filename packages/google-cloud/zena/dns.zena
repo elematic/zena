@@ -14,16 +14,10 @@
  * `ndev.clouddns.readwrite` scope.
  */
 
-import {Completer, Future} from 'zena:async';
-import {Option, Result} from 'zena:core';
+import {Future} from 'zena:async';
+import {fetch, Response} from 'zena:fetch';
 import {JsonArray, JsonObject, JsonValue, parseJson, stringify} from 'zena:json';
-import {Stream, bytesStream, readAllBytes} from 'zena:stream';
-import {EncodeSet, URL, percentEncode} from 'zena:url';
-import {
-  ErrorCode, Fields, Method, MethodDelete, MethodGet, MethodPatch, MethodPost, Request,
-  Response as WireResponse, Scheme, SchemeHTTP, SchemeHTTPS
-} from 'wasi:http/types';
-import {send} from 'wasi:http/client';
+import {EncodeSet, percentEncode} from 'zena:url';
 import {Credentials} from 'protobuf:runtime';
 import {defaultCredentials} from './auth.zena';
 
@@ -119,12 +113,12 @@ export final class CloudDns {
 
   /** The record set of `name` and `type`, or null when there is none. */
   async get(name: String, type: String): Future<RecordSet | null> {
-    let response = await this.#call(new MethodGet(), this.#recordPath(name, type), null);
+    let response = await this.#call('GET', this.#recordPath(name, type), null);
     if (response.status == 404) {
       return null;
     }
-    checked(response, `getting ${name} ${type}`);
-    return RecordSet.fromJson(parseJson(response.text));
+    let text = await checked(response, `getting ${name} ${type}`);
+    return RecordSet.fromJson(parseJson(text));
   }
 
   /**
@@ -133,26 +127,26 @@ export final class CloudDns {
    */
   async put(set: RecordSet): Future<void> {
     let body = stringify(set.toJson());
-    let created = await this.#call(new MethodPost(), `${this.#zonePath}/rrsets`, body);
+    let created = await this.#call('POST', `${this.#zonePath}/rrsets`, body);
     if (created.status != 409) {
-      checked(created, `creating ${set.name} ${set.type}`);
+      await checked(created, `creating ${set.name} ${set.type}`);
       return;
     }
-    let patched = await this.#call(new MethodPatch(), this.#recordPath(set.name, set.type), body);
-    checked(patched, `replacing ${set.name} ${set.type}`);
+    let patched = await this.#call('PATCH', this.#recordPath(set.name, set.type), body);
+    await checked(patched, `replacing ${set.name} ${set.type}`);
   }
 
   /** Deletes the record set of `name` and `type`. Returns whether there was one. */
   async delete(name: String, type: String): Future<boolean> {
-    let response = await this.#call(new MethodDelete(), this.#recordPath(name, type), null);
+    let response = await this.#call('DELETE', this.#recordPath(name, type), null);
     if (response.status == 404) {
       return false;
     }
-    checked(response, `deleting ${name} ${type}`);
+    await checked(response, `deleting ${name} ${type}`);
     return true;
   }
 
-  async #call(method: Method, path: String, body: String | null): Future<RestResponse> {
+  async #call(method: String, path: String, body: String | null): Future<Response> {
     let headers = new GrowableArray<(String, String)>();
     headers.push(('accept', 'application/json'));
     if (body != null) {
@@ -162,18 +156,23 @@ export final class CloudDns {
     if (authorization != null) {
       headers.push(('authorization', authorization));
     }
-    return await restRequest(method, `${this.#origin}${path}`, headers, body);
+    return try {
+      await fetch(`${this.#origin}${path}`, {method, headers, body})
+    } catch (e) {
+      throw new DnsError(0, e.message)
+    };
   }
 }
 
-/** Throws `DnsError` unless `response` is a success, naming what `doing` was. */
-function checked(response: RestResponse, doing: String): void {
+/** Returns `response`'s body text when it is a success, or throws `DnsError` naming what `doing` was. */
+async function checked(response: Response, doing: String): Future<String> {
+  let responseText = await response.text();
   if (response.status >= 200 && response.status < 300) {
-    return;
+    return responseText;
   }
-  var message = response.text;
+  var message = responseText;
   let json = try {
-    parseJson(response.text)
+    parseJson(responseText)
   } catch (e) {
     null
   };
@@ -187,52 +186,4 @@ function checked(response: RestResponse, doing: String): void {
     }
   }
   throw new DnsError(response.status, `Cloud DNS, ${doing}: HTTP ${response.status}: ${message}`);
-}
-
-/** An answer's status and body. */
-final class RestResponse {
-  status: i32;
-  text: String;
-
-  new(this.status, this.text);
-}
-
-/** The one spellable value of type void, for a `result<_, e>` ok arm. */
-function unit() {}
-
-/**
- * Sends one request and reads the whole answer. Throws `DnsError` when no
- * answer arrives.
- */
-// TODO(#551): use zena:fetch, once it takes methods, headers and bodies.
-async function restRequest(method: Method, url: String, headers: Array<(String, String)>, body: String | null)
-    : Future<RestResponse> {
-  let parsed = URL.parse(url);
-  if (parsed == null) {
-    throw new DnsError(0, `not a URL: ${url}`);
-  }
-  let target = parsed;
-  let fields = Fields.create();
-  for (let (name, value) in headers) {
-    fields.append(name, value.toBytes());
-  }
-  let trailers = Future.of<Result<Option<Fields>, ErrorCode>>((true, none));
-  let contents: Option<Stream<u8>> = if (body == null) none else some(bytesStream(body.toBytes()));
-  let (request, transmitted) = Request.new_(fields, contents, trailers, none);
-  request.setMethod(method);
-  let scheme: Scheme = if (target.protocol == 'http:') new SchemeHTTP() else new SchemeHTTPS();
-  request.setScheme(some(scheme));
-  request.setAuthority(some(target.host()));
-  request.setPathWithQuery(some(`${target.pathname}${target.search}`));
-  let sent = await send(request);
-  let response = match (sent) {
-    case (true, let value): value
-    case (false, _): throw new DnsError(0, `no answer from ${target.host()}`)
-  };
-  let status = response.getStatusCode() as i32;
-  let received = new Completer<Result<void, ErrorCode>>();
-  let (responseBody, responseTrailers) = WireResponse.consumeBody(response, received.future);
-  let bytes = await readAllBytes(responseBody);
-  received.tryComplete((true, unit()));
-  return new RestResponse(status, String.fromBytes(bytes));
 }

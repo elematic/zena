@@ -18,7 +18,7 @@ import {App, Request, Response} from 'zena:http';
 import {JsonArray, JsonObject, parseJson, stringify} from 'zena:json';
 import {PlcError, PlcOperation, checkNextOperation, didDocument} from 'atproto:plc';
 import {isValidDid} from 'atproto:syntax';
-import {httpRequest} from 'atproto:xrpc';
+import {fetch} from 'zena:fetch';
 
 /** How many times an operation is tried while others for the same DID land first. */
 let SUBMIT_ATTEMPTS = 5;
@@ -93,16 +93,16 @@ export final class PlcDirectory {
     if (log.length > 0) {
       return didDocument(did, log[log.length - 1]);
     }
-    let response = await httpRequest('GET', `${this.upstream}/${did}`, [('accept', 'application/json')], null);
+    let response = await fetch(`${this.upstream}/${did}`, {headers: [('accept', 'application/json')]});
     if (response.status != 200) {
       return null;
     }
-    let json = response.json();
+    let json = parseJson(await response.text());
     return if (json is JsonObject) json as JsonObject else null;
   }
 
   async #upstreamHas(did: String): Future<boolean> {
-    let response = await httpRequest('GET', `${this.upstream}/${did}`, [('accept', 'application/json')], null);
+    let response = await fetch(`${this.upstream}/${did}`, {headers: [('accept', 'application/json')]});
     return response.status == 200;
   }
 
@@ -182,9 +182,9 @@ export final class PlcDirectory {
 
   /** Answers with what upstream answers for `rest`. */
   async #forward(rest: String, res: Response): Future<void> {
-    let response = await httpRequest('GET', `${this.upstream}/${rest}`, [('accept', 'application/json')], null);
+    let response = await fetch(`${this.upstream}/${rest}`, {headers: [('accept', 'application/json')]});
     res.statusCode = response.status;
-    res.body = response.text();
+    res.body = await response.text();
   }
 }
 
