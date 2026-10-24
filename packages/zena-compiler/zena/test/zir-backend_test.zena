@@ -1637,6 +1637,30 @@ export let tests = suite('zir backend', () => {
         'the throwing block keeps its call and the return path inlines it');
   });
 
+  test('-O2 inlines a callee that only throws into a try body', (ctx) => {
+    // Once `boom` is inlined, the try body never completes, so the
+    // try's join block is unreachable. Block cleanup has to remove it
+    // along with the rest of the dead code, or the verifier rejects
+    // the function.
+    let result = compileWithZirStdlibAt(dedentRaw`
+        let boom = (): void => {
+          throw new Error('boom');
+        };
+        export let attempt = (): i32 => {
+          try {
+            boom();
+          } catch (e) {
+            return 1;
+          }
+          return 0;
+        };
+        export let run = (): i32 => attempt();
+        `, 2);
+    let absent = growable<String>(['call $boom']);
+    assertFunctionOmits(result, '$attempt', absent,
+        'boom is inlined into the try body');
+  });
+
   test('-O1 keeps a function that is still called', (ctx) => {
     let result = compileWithZir(dedentRaw`
         let inc = (x: i32): i32 => x + 1;

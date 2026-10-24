@@ -1,0 +1,32 @@
+// @mode: run
+// @result: 0
+// A v128.const and an i8x16.shuffle inside functions -O2 inlines. The
+// copy has to carry each one's whole immediate: the opcode and all
+// sixteen bytes. Copied one entry short, the sixteenth byte was lost
+// and the emitter read whatever entry followed the copy in its place,
+// or ran past the end of the list. Each immediate here is followed by
+// another inlined v128.const, so lane 15 shows a short copy.
+import { v128Const, i8x16ExtractLaneU, i8x16Shuffle } from 'zena:simd';
+
+/** Bytes 0x00..0x0F in lane order, so every byte names its own index. */
+let counting = (): v128 => v128Const(0x03020100, 0x07060504, 0x0B0A0908, 0x0F0E0D0C);
+
+/** Bytes 0x10..0x1F. */
+let countingHigh = (): v128 => v128Const(0x13121110, 0x17161514, 0x1B1A1918, 0x1F1E1D1C);
+
+/** The lanes of `v` in reverse order. */
+let reversed = (v: v128): v128 =>
+    i8x16Shuffle(v, v, 15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0);
+
+export let main = (): i32 => {
+  let c = counting();
+  let h = countingHigh();
+  if (i8x16ExtractLaneU(c, 15) != 15) { return 1; }
+  if (i8x16ExtractLaneU(h, 15) != 0x1F) { return 2; }
+  let r = reversed(c);
+  let again = counting();
+  if (i8x16ExtractLaneU(r, 0) != 15) { return 3; }
+  if (i8x16ExtractLaneU(r, 15) != 0) { return 4; }
+  if (i8x16ExtractLaneU(again, 0) != 0) { return 5; }
+  return 0;
+};
