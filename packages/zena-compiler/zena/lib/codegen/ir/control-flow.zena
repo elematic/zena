@@ -17,7 +17,7 @@ import {
 } from '../../ast.zena';
 import {
   ArrayType, BoolLiteralType, ClassType, InlineTupleType, InterfaceType, TupleType,
-  NumLiteralType, NullType, RecordType, Type, UnionType, VoidType, baseType,
+  NumLiteralType, NullType, I32Type, RecordType, Type, UnionType, VoidType, baseType,
   isVoidOrNeverType, NeverType, arrayElementType, isSignedNarrowIntType,
   isOwnershipWrapper, ownershipHandleInner, ownershipHandleName,
   soleNonNullMember, UnionType, isScopedType, scopedInner,
@@ -3581,8 +3581,10 @@ export function lowerForIn(cx: LoweringContext, stmt: ForInStatement): void {
     if (resolvedRange is ClassType) {
       let bounded = isWellKnown(WellKnown.BoundedRangeClass,
           resolvedRange.name, resolvedRange.sourcePath);
-      if (bounded || isWellKnown(WellKnown.FromRangeClass,
-              resolvedRange.name, resolvedRange.sourcePath)) {
+      let targs = resolvedRange.typeArguments;
+      let isI32Range = targs == null || (targs.length == 1 && targs[0] is I32Type);
+      if (isI32Range && (bounded || isWellKnown(WellKnown.FromRangeClass,
+              resolvedRange.name, resolvedRange.sourcePath))) {
         lowerForInRange(cx, stmt, resolvedRange, bounded);
         return;
       }

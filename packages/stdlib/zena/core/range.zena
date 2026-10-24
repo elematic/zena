@@ -7,7 +7,7 @@
  * counts from 0 up to and excluding n. A `for`-in over a range compiles
  * to the same counting loop as `for (var i = 0; i < n; i += 1)`.
  */
-import { IterableUtils } from './iterable-utils.zena';
+import { FilteredIterable } from './iterable-utils.zena';
 
 /**
  * Any range: `a..b`, `a..`, `..b` or `..`.
@@ -15,7 +15,7 @@ import { IterableUtils } from './iterable-utils.zena';
  * Each form is its own class, so a range literal has the type of its
  * form, and a parameter typed `Range` accepts all four.
  */
-export sealed class Range {
+export sealed class Range<T = i32> {
   case BoundedRange, FromRange, ToRange, FullRange
 
   /**
@@ -23,7 +23,12 @@ export sealed class Range {
    * `length` elements: a range with no start starts at 0, and one with
    * no end ends at `length`. The bounds are not clamped to the sequence.
    */
-  abstract bounds(length: i32): inline (i32, i32);
+  abstract bounds(length: T): inline (T, T);
+
+  /**
+   * Returns true if `value` falls within this range.
+   */
+  abstract contains(value: T): boolean;
 }
 
 /**
@@ -31,26 +36,72 @@ export sealed class Range {
  * Represents [start, end) - includes start, excludes end.
  * A range whose end is at or before its start is empty.
  */
-export final class BoundedRange extends Range with IterableUtils<i32> implements Iterable<i32> {
-  start: i32;
-  end: i32;
+export final class BoundedRange<T = i32> extends Range<T> implements Iterable<T> {
+  start: T;
+  end: T;
 
-  new(start: i32, end: i32) : start = start, end = end, super();
+  new(start: T, end: T) : start = start, end = end, super();
 
-  bounds(_length: i32): inline (i32, i32) {
+  bounds(_length: T): inline (T, T) {
     return (this.start, this.end);
   }
 
-  [Iterable.iterator](): Iterator<i32> {
-    return new BoundedRangeIterator(this.start, this.end);
+  [Iterable.iterator](): Iterator<T> {
+    return new BoundedRangeIterator<T>(this.start, this.end);
   }
 
   /**
-   * Returns true if `value` is in [start, end). Overrides the
-   * `IterableUtils` version, which would iterate.
+   * Returns true if `value` is in [start, end).
    */
-  contains(value: i32): boolean {
+  contains(value: T): boolean {
     return value >= this.start && value < this.end;
+  }
+
+  filter(predicate: (item: T) => boolean): Iterable<T> {
+    return new FilteredIterable<T>(this, predicate);
+  }
+
+  all(predicate: (item: T) => boolean): boolean {
+    var i = this.start;
+    while (i < this.end) {
+      if (!predicate(i)) {
+        return false;
+      }
+      i = i + 1;
+    }
+    return true;
+  }
+
+  some(predicate: (item: T) => boolean): boolean {
+    var i = this.start;
+    while (i < this.end) {
+      if (predicate(i)) {
+        return true;
+      }
+      i = i + 1;
+    }
+    return false;
+  }
+
+  fold<R>(initial: R, combine: (acc: R, item: T) => R): R {
+    var acc = initial;
+    var i = this.start;
+    while (i < this.end) {
+      acc = combine(acc, i);
+      i = i + 1;
+    }
+    return acc;
+  }
+
+  find(predicate: (item: T) => boolean): inline (true, T) | inline (false, _) {
+    var i = this.start;
+    while (i < this.end) {
+      if (predicate(i)) {
+        return (true, i);
+      }
+      i = i + 1;
+    }
+    return (false, _);
   }
 }
 
@@ -62,66 +113,139 @@ export final class BoundedRange extends Range with IterableUtils<i32> implements
  * largest i32, 2147483647, instead of wrapping around to negative
  * numbers.
  */
-export final class FromRange extends Range with IterableUtils<i32> implements Iterable<i32> {
-  start: i32;
+export final class FromRange<T = i32> extends Range<T> implements Iterable<T> {
+  start: T;
 
-  new(start: i32) : start = start, super();
+  new(start: T) : start = start, super();
 
-  bounds(length: i32): inline (i32, i32) {
+  bounds(length: T): inline (T, T) {
     return (this.start, length);
   }
 
-  [Iterable.iterator](): Iterator<i32> {
-    return new FromRangeIterator(this.start);
+  [Iterable.iterator](): Iterator<T> {
+    return new FromRangeIterator<T>(this.start);
   }
 
   /**
-   * Returns true if `value` is at least `start`. Overrides the
-   * `IterableUtils` version, which would iterate, and on a range with no
-   * end would not stop for a value below `start`.
+   * Returns true if `value` is at least `start`.
    */
-  contains(value: i32): boolean {
+  contains(value: T): boolean {
     return value >= this.start;
+  }
+
+  filter(predicate: (item: T) => boolean): Iterable<T> {
+    return new FilteredIterable<T>(this, predicate);
+  }
+
+  all(predicate: (item: T) => boolean): boolean {
+    var i = this.start;
+    var done = false;
+    while (!done) {
+      if (!predicate(i)) {
+        return false;
+      }
+      if (i >= 2147483647) {
+        done = true;
+      } else {
+        i = i + 1;
+      }
+    }
+    return true;
+  }
+
+  some(predicate: (item: T) => boolean): boolean {
+    var i = this.start;
+    var done = false;
+    while (!done) {
+      if (predicate(i)) {
+        return true;
+      }
+      if (i >= 2147483647) {
+        done = true;
+      } else {
+        i = i + 1;
+      }
+    }
+    return false;
+  }
+
+  fold<R>(initial: R, combine: (acc: R, item: T) => R): R {
+    var acc = initial;
+    var i = this.start;
+    var done = false;
+    while (!done) {
+      acc = combine(acc, i);
+      if (i >= 2147483647) {
+        done = true;
+      } else {
+        i = i + 1;
+      }
+    }
+    return acc;
+  }
+
+  find(predicate: (item: T) => boolean): inline (true, T) | inline (false, _) {
+    var i = this.start;
+    var done = false;
+    while (!done) {
+      if (predicate(i)) {
+        return (true, i);
+      }
+      if (i >= 2147483647) {
+        done = true;
+      } else {
+        i = i + 1;
+      }
+    }
+    return (false, _);
   }
 }
 
 /**
  * A range from zero to an end point (exclusive).
- * Represents [0, end).
+ * Represents [0, end) for indexing or (-∞, end) for membership.
  */
-export final class ToRange extends Range {
-  end: i32;
+export final class ToRange<T = i32> extends Range<T> {
+  end: T;
 
-  new(end: i32) : end = end, super();
+  new(end: T) : end = end, super();
 
-  bounds(_length: i32): inline (i32, i32) {
+  bounds(_length: T): inline (T, T) {
     return (0, this.end);
+  }
+
+  contains(value: T): boolean {
+    return value < this.end;
   }
 }
 
 /**
  * A full range representing all elements.
- * Represents [0, length).
+ * Represents [0, length) for indexing or (-∞, ∞) for membership.
  */
-export final class FullRange extends Range {
-  bounds(length: i32): inline (i32, i32) {
+export final class FullRange<T = i32> extends Range<T> {
+  bounds(length: T): inline (T, T) {
     return (0, length);
+  }
+
+  contains(_value: T): boolean {
+    return true;
   }
 }
 
 /**
  * An iterator over the integers of a `BoundedRange`.
  */
-final class BoundedRangeIterator implements Iterator<i32> {
-  var #next: i32;
-  #end: i32;
+final class BoundedRangeIterator<T = i32> implements Iterator<T> {
+  var #next: T;
+  #end: T;
 
-  new(start: i32, end: i32) : #next = start, #end = end;
+  new(start: T, end: T) : #next = start, #end = end;
 
-  next(): Step<i32> {
+  next(): Step<T> {
     if (this.#next < this.#end) {
       let value = this.#next;
-      this.#next += 1;
+      this.#next = value + 1;
       return (1, value, _);
     }
     return (0, _, _);
@@ -132,18 +256,18 @@ final class BoundedRangeIterator implements Iterator<i32> {
  * An iterator over the integers of a `FromRange`, ending after the
  * largest i32.
  */
-final class FromRangeIterator implements Iterator<i32> {
-  var #next: i32;
+final class FromRangeIterator<T = i32> implements Iterator<T> {
+  var #next: T;
   var #done = false;
 
-  new(start: i32) : #next = start;
+  new(start: T) : #next = start;
 
-  next(): Step<i32> {
+  next(): Step<T> {
     if (this.#done) {
       return (0, _, _);
     }
     let value = this.#next;
-    if (value == 2147483647) {
+    if (value >= 2147483647) {
       this.#done = true;
     } else {
       this.#next = value + 1;

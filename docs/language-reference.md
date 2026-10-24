@@ -2128,28 +2128,37 @@ let r = ..;  // FullRange (all elements)
 
 #### Range Type
 
-`Range` is a sealed class whose variants are the four range classes:
+`Range<T = i32>` is a generic sealed class whose variants are the four range
+classes (`BoundedRange<T = i32>`, `FromRange<T = i32>`, `ToRange<T = i32>`,
+`FullRange<T = i32>`). Unparameterized mentions (`Range`, `BoundedRange`, etc.)
+default to `T = i32`:
 
 ```zena
-sealed class Range {
+sealed class Range<T = i32> {
   case BoundedRange, FromRange, ToRange, FullRange
 
-  abstract bounds(length: i32): inline (i32, i32);
+  abstract bounds(length: T): inline (T, T);
+  abstract contains(value: T): boolean;
 }
 ```
 
-A parameter typed `Range` accepts any range, and a `match` over one is
-checked for exhaustiveness like any sealed class. `bounds(length)` gives the
+A parameter typed `Range<T>` accepts any range of `T`, and a `match` over one
+is checked for exhaustiveness like any sealed class. `bounds(length)` gives the
 start and end a range covers in a sequence of `length` elements: a range with
-no start starts at 0, and one with no end ends at `length`.
+no start starts at 0, and one with no end ends at `length`. `contains(value)`
+tests whether `value` falls within the half-open interval.
 
 ```zena
 let r: Range = 3..;
 let (start, end) = r.bounds(10);  // (3, 10)
+
+let unit = 0.0..1.0;              // BoundedRange<f64>
+unit.contains(0.5);               // true
+unit.contains(1.0);               // false
 ```
 
-Arrays take any range through one operator, `operator [](r: Range)`, which
-returns a copy of those elements with the bounds clamped to the array:
+Arrays take any `i32` range through one operator, `operator [](r: Range)`,
+which returns a copy of those elements with the bounds clamped to the array:
 
 ```zena
 let xs = [1, 2, 3, 4, 5];
@@ -2158,10 +2167,12 @@ let r: Range = ..2;
 xs[r];     // [1, 2]
 ```
 
-**Note**: Range bounds must have type `i32` (producing `BoundedRange`,
-`FromRange`, or `ToRange`) or `StringIndex` (producing `BoundedStringRange`,
-`FromStringRange`, or `ToStringRange`, subclasses of `StringRange`). Ranges
-with arithmetic expressions are evaluated at creation time:
+**Note**: Range bounds may be any numeric type (`i32`, `i64`, `f32`, `f64`,
+etc., producing `BoundedRange<T>`, `FromRange<T>`, or `ToRange<T>`) or
+`StringIndex` (producing `BoundedStringRange`, `FromStringRange`, or
+`ToStringRange`, subclasses of `StringRange`). Only `i32` ranges (`BoundedRange`
+and `FromRange`) are iterable in `for-in` loops. Ranges with arithmetic
+expressions are evaluated at creation time:
 
 ```zena
 let start = 5;

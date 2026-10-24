@@ -11,7 +11,7 @@ import {
 } from './context.zena';
 import { SemanticModel, memberKeyOf, accessKeyOf } from '../../semantic-model.zena';
 import {
-  Type, ClassType, InterfaceType, FunctionType, TypeParameterType, RecordType, TupleType, InlineTupleType, UnionType, TypeAliasType, EnumType, ArrayType, NullType, MethodInfo, FieldInfo, instantiateClassType, instantiateInterfaceType, ThisType, baseType, ErasedType, AnyRefType,
+  Type, ClassType, InterfaceType, FunctionType, TypeParameterType, RecordType, TupleType, InlineTupleType, UnionType, TypeAliasType, EnumType, ArrayType, NullType, I32Type, MethodInfo, FieldInfo, instantiateClassType, instantiateInterfaceType, ThisType, baseType, ErasedType, AnyRefType,
   isScopedType, scopedInner, internFunctionType } from '../../types.zena';
 import {
   Node, decoratorStringArg, AsExpression, IsExpression, MatchExpression, RecordLiteral, ClassPattern, MatchCase, LetPatternCondition, AsPattern, BindingPattern, LogicalPattern, TuplePattern, ArrayPattern, RestPattern, RecordPattern, AccessorDeclaration, BinaryExpression, LiteralPattern, NewExpression, MethodDefinition, SymbolPropertyName, RangeExpression, ArrayLiteral, MapLiteral, TupleLiteral, Expression, TemplateElement, TaggedTemplateExpression, ForInStatement, MemberExpression, AwaitExpression, IndexExpression, AssignmentExpression, Identifier, CallExpression, VariableDeclaration, FunctionDeclaration, Pattern, ImportDeclaration, DeclareFunction, ImportSpecifier, IdentifierPattern, FunctionExpression, MixinDeclaration, ClassDeclaration, Module, ThrowExpression, TryExpression, ShieldedStatement, StringLiteral, TemplateLiteral,
@@ -4122,10 +4122,14 @@ function forInLowersToIndexLoop(ct: ClassType): boolean {
   return targs != null && targs.length > 0;
 }
 
-/** True for the stdlib's BoundedRange and FromRange classes. */
+/** True for the stdlib's BoundedRange<i32> and FromRange<i32> classes. */
 function isIterableRangeClass(ct: ClassType): boolean {
-  return isWellKnown(WellKnown.BoundedRangeClass, ct.name, ct.sourcePath) ||
-      isWellKnown(WellKnown.FromRangeClass, ct.name, ct.sourcePath);
+  if (!isWellKnown(WellKnown.BoundedRangeClass, ct.name, ct.sourcePath) &&
+      !isWellKnown(WellKnown.FromRangeClass, ct.name, ct.sourcePath)) {
+    return false;
+  }
+  let targs = ct.typeArguments;
+  return targs == null || (targs.length == 1 && targs[0] is I32Type);
 }
 
 /**

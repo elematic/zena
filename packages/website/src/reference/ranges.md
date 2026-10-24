@@ -13,17 +13,22 @@ functions, and inspected at runtime.
 Range expressions construct instances of dedicated range classes defined in
 `zena:core` and included in the standard prelude:
 
-| Expression   | Type           | Mathematical Notation | Description                                                      |
-| :----------- | :------------- | :-------------------- | :--------------------------------------------------------------- |
-| `start..end` | `BoundedRange` | `[start, end)`        | Half-open interval from `start` (inclusive) to `end` (exclusive) |
-| `start..`    | `FromRange`    | `[start, ∞)`          | Range from `start` through the end of the collection             |
-| `..end`      | `ToRange`      | `[0, end)`            | Range from index 0 up to `end` (exclusive)                       |
-| `..`         | `FullRange`    | `[0, length)`         | Full range spanning all elements                                 |
+| Expression   | Type                    | Mathematical Notation | Description                                                      |
+| :----------- | :---------------------- | :-------------------- | :--------------------------------------------------------------- |
+| `start..end` | `BoundedRange<T = i32>` | `[start, end)`        | Half-open interval from `start` (inclusive) to `end` (exclusive) |
+| `start..`    | `FromRange<T = i32>`    | `[start, ∞)`          | Range from `start` through the end of the collection             |
+| `..end`      | `ToRange<T = i32>`      | `[0, end)`            | Range from 0 up to `end` (exclusive)                             |
+| `..`         | `FullRange<T = i32>`    | `[0, length)`         | Full range spanning all elements                                 |
 
-All four classes are part of the `Range` union type exported from `zena:core`:
+All four classes are variants of the sealed `Range<T = i32>` class exported from `zena:core`:
 
 ```zena
-type Range = BoundedRange | FromRange | ToRange | FullRange;
+sealed class Range<T = i32> {
+  case BoundedRange, FromRange, ToRange, FullRange
+
+  abstract bounds(length: T): inline (T, T);
+  abstract contains(value: T): boolean;
+}
 ```
 
 Because ranges are ordinary objects, they can be bound to variables, passed as
@@ -56,41 +61,31 @@ let bare = ..;       // FullRange
 
 ### Operand types
 
-Both the start and end operands of a range expression must evaluate to 32-bit
-signed integers (`i32`):
+The start and end operands of a range expression may be any numeric type
+(`i32`, `i64`, `f32`, `f64`, etc.) or `StringIndex`:
 
 ```zena
 let start = 2;
 let end = 7;
-let dynamicRange = start..end; // BoundedRange(2, 7)
+let dynamicRange = start..end; // BoundedRange<i32>(2, 7)
 
-// Non-i32 operands produce compile-time type errors:
-let invalid = 'a'..'z';
-//            ^^^^^^^^ error: Range start must be i32
+// Float ranges and mixed integer/float literal bounds:
+let unit = 0.0..1.0;           // BoundedRange<f64>
+let pct = 0..100.0;            // BoundedRange<f64>
+let f32Range: BoundedRange<f32> = 0.0..1.0;
+
+// Membership checks on any range:
+println(unit.contains(0.5));   // true
+println(unit.contains(1.0));   // false
+
+// Non-numeric operands (other than StringIndex) produce compile-time type errors:
+let invalid = 'a'..10;
+//            ^^^^^^^ error: Range start must be a numeric type or StringIndex
 ```
 
-::: note Planned support for generalized operand types
-
-Currently, range expressions require `i32` operands. Zena plans to relax this
-constraint to support generic range bounds `Range<T>`, drawing inspiration from
-range models in languages such as Swift and Rust:
-
-- **Discrete ordered types**: Types with a discrete ordering where every element
-  has a well-defined immediate successor (often termed _enumerable_,
-  _steppable_, or _discrete ordered_ types) can support range formation and
-  sequential iteration. A key candidate is a future Unicode-safe string index
-  type (similar to Swift's `String.Index`), enabling expressive string slicing
-  like `str[start..end]`. An interface (such as `Steppable<T>` or
-  `Enumerable<T>`) will allow ranges over any discrete type to be iterated
-  automatically.
-- **Continuous and non-iterable types**: Range expressions can also encompass
-  types that have an ordering but no discrete successor, such as floating-point
-  numbers (`f32`, `f64`). While continuous ranges cannot be iterated without an
-  explicit stride, they enable interval operations, containment checks
-  (`range.contains(val)`), clamping, and custom-stepped iteration (for example,
-  progressing through `0.0..1.0` by steps of `0.1` or `1.0`).
-
-:::
+Only `i32` ranges (`BoundedRange<i32>` and `FromRange<i32>`) are iterable in
+`for-in` loops; float ranges represent continuous intervals and are not
+iterable.
 
 ### Operator precedence
 

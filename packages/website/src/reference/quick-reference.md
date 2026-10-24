@@ -218,11 +218,11 @@ needed. They come from the _prelude_, which is implicitly imported.
 | `ImmutableArray<T>`     | Immutable array — what a `[1, 2, 3]` literal is              |
 | `Map<K, V>`             | Hash map (literal syntax: `{"a" => 1}`)                      |
 | `Box<T>`                | Wraps a primitive for use in a union or `anyref`             |
-| `Range`                 | Any range; sealed class over the four below (`xs[r]`)        |
-| `BoundedRange`          | Range with start and end (`1..10`)                           |
-| `FromRange`             | Range with start only (`5..`)                                |
-| `ToRange`               | Range with end only (`..10`)                                 |
-| `FullRange`             | Unbounded range (`..`)                                       |
+| `Range<T = i32>`        | Any range; sealed class over the four below (`xs[r]`)        |
+| `BoundedRange<T = i32>` | Range with start and end (`1..10`, `0.0..1.0`)               |
+| `FromRange<T = i32>`    | Range with start only (`5..`, `0.0..`)                       |
+| `ToRange<T = i32>`      | Range with end only (`..10`, `..1.0`)                        |
+| `FullRange<T = i32>`    | Unbounded range (`..`)                                       |
 | `console`               | Console output (`console.log(...)`)                          |
 
 Helper functions `some(value)` and `none()` are also available for creating
@@ -609,14 +609,16 @@ interface, or a union.
 
 ### Range Operators
 
-Ranges represent sequences of indices, primarily for array slicing and
-iteration. All ranges are half-open (exclusive end).
+Ranges represent half-open intervals (exclusive end) over `i32` (default),
+floats (`f64`, `f32`), other numeric types, or `StringIndex`.
 
 ```zena
-1..10     // BoundedRange [1, 10)
-5..       // FromRange (5 to end)
-..10      // ToRange (start to 10)
-..        // FullRange (all elements)
+1..10       // BoundedRange<i32> [1, 10)
+5..         // FromRange<i32> (5 to end)
+..10        // ToRange<i32> (start to 10)
+..          // FullRange<i32> (all elements)
+0.0..1.0    // BoundedRange<f64> [0.0, 1.0)
+(0.0..1.0).contains(0.5) // true
 ```
 
 ### Pipeline Operator
