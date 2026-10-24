@@ -394,6 +394,29 @@ already succeeded for the current inputs. **The cached result is correct.**
    configuration issue (missing input, output, or dependency in `package.json`).
    Check the `wireit` config before assuming the cache is stale.
 
+### Declaring inputs
+
+An input wider than what a script reads makes every edit to it rerun that
+script and everything after it, so keep inputs to what the script reads:
+
+- **Manifests.** A compile reads every `zena-package.json` in the
+  workspace, but its output depends only on the root manifest and the
+  manifests of the packages it reaches. List those
+  (`../atproto/zena/zena-package.json`), never a glob over all of them.
+  The root `check:workspace` script fails `npm test` when any manifest
+  cannot be read.
+- **Sources.** List the directories a compile's imports reach, such as a
+  package's `lib/`. A package's tests are inputs only of the script that
+  runs them.
+- **A dependency's output.** When a script reads a file another script
+  writes (`zena/out/cli.wasm`), list the file and depend on that script
+  with `"cascade": false`. It then reruns when the file's bytes change,
+  and not whenever the other script reruns. It no longer inherits that
+  script's inputs, so it lists everything else it reads itself.
+- **Generated files.** A file a script writes belongs in its `output`, and
+  out of every other script's inputs. Otherwise the run after the one
+  that wrote it sees a new input and rebuilds.
+
 ### `ERR_MODULE_NOT_FOUND` on a file whose source exists
 
 If something fails to import, say, `packages/runtime/lib/index.js` while

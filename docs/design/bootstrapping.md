@@ -142,12 +142,13 @@ syntax it just gained). Two options, in order of preference:
 
 The same holds for what the compiler reads besides source. The
 repository's packages are a workspace of `zena-package.json` manifests
-(package-manifest.md), and the compiler reads nothing else, but the
-checked-in bootstrap predates them: it reads `zena-packages.json`, the
-format they replaced, to find `wit-parser` when `build:cli` runs it. So
-the repository keeps a `zena-packages.json` for the bootstrap alone,
-and `build:cli` lists it as an input. It goes in the first change after
-a re-baseline.
+(package-manifest.md), and the bootstrap reads them with its own code
+when `build:cli` runs it. A change to the manifest format has to be one
+that code still reads, or it lands in two steps like a language change.
+The root `check:workspace` script compiles a file with the bootstrap
+for that reason: `build:cli` lists only the manifests the compiler's
+own imports reach, so it would not rebuild, and fail, when another
+package's manifest changed.
 
 ## Re-baselining
 

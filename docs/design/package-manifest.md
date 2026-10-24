@@ -306,7 +306,5 @@ my-app/
 ## `zena-packages.json`
 
 The format the manifests replaced: one file at the root mapping names
-to directories, which every file saw. The compiler no longer reads it.
-This repository keeps one only for the checked-in bootstrap compiler,
-which predates the manifests and reads it to build the compiler, until
-the next re-baseline (bootstrapping.md).
+to directories, which every file saw. Neither the compiler nor the
+checked-in bootstrap reads it, and the repository no longer has one.
