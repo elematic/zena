@@ -13,7 +13,13 @@
  */
 import {render, nothing, type RenderOptions} from 'lit-html';
 import {hydrate} from '@lit-labs/ssr-client';
-import {TemplateHost, ValueKind, type ModuleObject} from './templates.js';
+import {
+  TemplateHost,
+  ValueKind,
+  type ModuleObject,
+  type TemplateHostOptions,
+} from './templates.js';
+import type {LinearMemory} from './linear.js';
 
 /** The exports a module with element definitions provides. */
 export interface ElementExports {
@@ -127,11 +133,11 @@ export interface WasmElement extends HTMLElement {
  * object is unique to its instance, so one map serves every module on
  * the page, and the imports need no binding to a module.
  */
-const liveElements = new WeakMap<ModuleObject, WasmElement>();
+const liveElements = new WeakMap<object, WasmElement>();
 
 /** The element for a module instance, if one was constructed for it. */
 export const elementFor = (instance: ModuleObject): WasmElement | undefined =>
-  liveElements.get(instance);
+  liveElements.get(instance as object);
 
 /**
  * The imports the elements layer needs, under the `wasm-web-ui` module
@@ -173,7 +179,35 @@ export type Capability = keyof typeof capabilityImports;
 export interface WebUiImportOptions {
   /** The capability imports to grant. Defaults to all of them. */
   capabilities?: readonly Capability[];
+  /**
+   * For a module without Wasm GC: the `LinearMemory` the page made for
+   * it. The imports then take the module's integer ids, strings as
+   * bytes in its memory, and an event as an id into the host's table
+   * (`linear.ts`). A GC module needs nothing here.
+   */
+  linear?: LinearMemory;
 }
+
+const eventInit = (flags: number): EventInit => ({
+  bubbles: (flags & EventFlags.bubbles) !== 0,
+  composed: (flags & EventFlags.composed) !== 0,
+  cancelable: (flags & EventFlags.cancelable) !== 0,
+});
+
+const dispatch = (
+  element: WasmElement | undefined,
+  type: string,
+  flags: number,
+): number =>
+  element === undefined ||
+  element.dispatchEvent(new Event(type, eventInit(flags)))
+    ? 1
+    : 0;
+
+const grantedCapabilities = (
+  options: WebUiImportOptions,
+): readonly Capability[] =>
+  options.capabilities ?? (Object.keys(capabilityImports) as Capability[]);
 
 /**
  * The protocol's import module, `wasm-web-ui`, to spread into the import
@@ -194,34 +228,88 @@ export interface WebUiImportOptions {
 export const webUiImports = (
   options: WebUiImportOptions = {},
 ): {'wasm-web-ui': WebAssembly.ModuleImports} => {
+  if (options.linear !== undefined) {
+    return {'wasm-web-ui': linearImports(options.linear, options)};
+  }
   const imports: ElementImports = {
     request_update: (instance) => {
-      liveElements.get(instance)?.requestUpdate();
+      liveElements.get(instance as object)?.requestUpdate();
     },
-    dispatch_event: (instance, type, flags) => {
-      const element = liveElements.get(instance);
-      if (element === undefined) {
-        return 1;
-      }
-      return element.dispatchEvent(
-        new Event(type, {
-          bubbles: (flags & EventFlags.bubbles) !== 0,
-          composed: (flags & EventFlags.composed) !== 0,
-          cancelable: (flags & EventFlags.cancelable) !== 0,
-        }),
-      )
-        ? 1
-        : 0;
-    },
+    dispatch_event: (instance, type, flags) =>
+      dispatch(liveElements.get(instance as object), type, flags),
   };
   const granted: Record<string, unknown> = {};
-  for (const name of options.capabilities ??
-    (Object.keys(capabilityImports) as Capability[])) {
+  for (const name of grantedCapabilities(options)) {
     granted[name] = capabilityImports[name];
   }
   return {
     'wasm-web-ui': {...imports, ...granted} as WebAssembly.ModuleImports,
   };
+};
+
+/**
+ * The same import module for a linear-memory module: an instance is an
+ * id, an event type is bytes in the module's memory, an event is an id
+ * in the host's table, and a capability that returns a string writes it
+ * into a buffer the module provides and returns the full length, so a
+ * module whose buffer was too small calls again.
+ */
+const linearImports = (
+  linear: LinearMemory,
+  options: WebUiImportOptions,
+): WebAssembly.ModuleImports => {
+  const event = (id: number): Event => linear.extern(id) as Event;
+  const all = {
+    request_update: (instance: number) => {
+      const handle = linear.live(instance);
+      if (handle !== undefined) {
+        liveElements.get(handle)?.requestUpdate();
+      }
+    },
+    dispatch_event: (
+      instance: number,
+      ptr: number,
+      length: number,
+      flags: number,
+    ) => {
+      const handle = linear.live(instance);
+      return dispatch(
+        handle === undefined ? undefined : liveElements.get(handle),
+        linear.decode(ptr, length),
+        flags,
+      );
+    },
+    extern_release: (id: number) => {
+      linear.releaseExtern(id);
+    },
+    event_target_value: (id: number, buffer: number, capacity: number) =>
+      linear.writeInto(
+        capabilityImports.event_target_value(event(id)),
+        buffer,
+        capacity,
+      ),
+    event_key: (id: number, buffer: number, capacity: number) =>
+      linear.writeInto(
+        capabilityImports.event_key(event(id)),
+        buffer,
+        capacity,
+      ),
+    event_prevent_default: (id: number) => {
+      capabilityImports.event_prevent_default(event(id));
+    },
+    event_stop_propagation: (id: number) => {
+      capabilityImports.event_stop_propagation(event(id));
+    },
+  };
+  const imports: Record<string, unknown> = {
+    request_update: all.request_update,
+    dispatch_event: all.dispatch_event,
+    extern_release: all.extern_release,
+  };
+  for (const name of grantedCapabilities(options)) {
+    imports[name] = all[name];
+  }
+  return imports as WebAssembly.ModuleImports;
 };
 
 /**
@@ -234,7 +322,7 @@ export const scopedRegistriesSupported = (): boolean =>
   typeof ShadowRoot === 'function' &&
   'customElementRegistry' in ShadowRoot.prototype;
 
-export interface ElementModuleOptions {
+export interface ElementModuleOptions extends TemplateHostOptions {
   /**
    * The registry the module's elements resolve the tags in their own
    * templates from. Left out, where the platform has scoped custom
@@ -275,7 +363,9 @@ export class ElementModule {
     options: ElementModuleOptions = {},
   ) {
     this.host =
-      exports instanceof TemplateHost ? exports : new TemplateHost(exports);
+      exports instanceof TemplateHost
+        ? exports
+        : new TemplateHost(exports, {linear: options.linear});
     this.definitions = readDefinitions(this.host);
     if (options.registry === undefined && scopedRegistriesSupported()) {
       const registry = new CustomElementRegistry();
@@ -483,7 +573,7 @@ const buildElementClass = (
         renderBefore: existing === null ? adoptStyles(this.#root) : null,
         ...(scoped ? {creationScope: creationScope(registry)} : {}),
       };
-      liveElements.set(this.#instance.ref, this);
+      liveElements.set(this.#instance.ref as object, this);
     }
 
     connectedCallback(): void {
