@@ -135,6 +135,10 @@ jobs:
       - name: Date the Rust sources the cached build compiled
         run: scripts/ci-cargo-freshness.sh restore
 
+      - name: TEMP why cargo recompiles
+        run: |
+          nix develop --command bash -c 'CARGO_LOG=cargo::core::compiler::fingerprint=info cargo build --release -p zena-run -p zena-cli -p zenafx 2>&1 | grep -E "fingerprint dirty for|dirty:|stale:|Compiling" | sed -E "s/^ *[0-9.]+s +INFO [^:]*: cargo::core::compiler::fingerprint: //" | tail -120'
+
       - name: Check the workspace-hack crate
         run: nix develop --command bash -c 'cargo hakari generate --diff && cargo hakari manage-deps --dry-run'
 
