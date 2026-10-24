@@ -49,7 +49,7 @@ export async function getVerifiedRecord(document: DidDocument, collection: Strin
     ('collection', collection),
     ('rkey', rkey),
   ]);
-  let car = readCar(response.body);
+  let car = readCar(await response.bytes());
   return verifyRecordProof(car, document.id, collection, rkey, (signed, sig) => verifySignature(key, signed, sig));
 }
 
@@ -62,11 +62,12 @@ export async function getVerifiedBlob(document: DidDocument, cid: Cid): Future<F
     ('did', document.id),
     ('cid', cid.toString()),
   ]);
-  let actual = Cid.create(cid.codec, response.body);
+  let body = await response.bytes();
+  let actual = Cid.create(cid.codec, body);
   if (!actual.digest.contentEquals(cid.digest)) {
     throw new SyncError(`blob ${cid.toString()} does not match its CID`);
   }
-  return response.body;
+  return body;
 }
 
 /** A record as `com.atproto.repo.listRecords` lists it. */

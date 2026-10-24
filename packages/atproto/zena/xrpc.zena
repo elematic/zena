@@ -1,38 +1,17 @@
 /**
- * HTTP requests, and a client for XRPC, atproto's HTTP API convention
+ * A client for XRPC, atproto's HTTP API convention
  * (https://atproto.com/specs/xrpc).
  *
  * An XRPC method is named by an NSID and served at `/xrpc/<nsid>`. A query
  * is a GET with its parameters in the query string; a procedure is a POST
  * with a body. An error answer is JSON, `{"error": "<Name>", "message":
  * "..."}`, with a 4xx or 5xx status.
- *
- * This module sends requests with `wasi:http`, so it compiles for the
- * `zena-cli` and `component` targets.
  */
 
-import {Completer} from 'zena:async';
-import {Option, StringBuilder, Result} from 'zena:core';
+import {StringBuilder} from 'zena:core';
+import {Response, fetch} from 'zena:fetch';
 import {JsonObject, JsonValue, parseJson, stringify} from 'zena:json';
-import {Stream, bytesStream, readAllBytes} from 'zena:stream';
-import {EncodeSet, URL, percentEncode} from 'zena:url';
-import {
-  ErrorCode,
-  Fields,
-  MethodGet,
-  MethodPost,
-  Request,
-  Response as WireResponse,
-  Scheme,
-  SchemeHTTP,
-  SchemeHTTPS
-} from 'wasi:http/types';
-import {send} from 'wasi:http/client';
-
-/** A request that got no answer: the host could not be reached, or the URL is malformed. */
-export class HttpError extends Error {
-  new(message: String) : super(message);
-}
+import {EncodeSet, percentEncode} from 'zena:url';
 
 /** An XRPC call that was answered with an error. */
 export class XrpcError extends Error {
@@ -42,82 +21,6 @@ export class XrpcError extends Error {
   error: String;
 
   new(status: i32, error: String, message: String) : status = status, error = error, super(message);
-}
-
-/** An answer to a request: its status, headers and whole body. */
-export final class HttpResponse {
-  status: i32;
-  headers: Fields;
-  body: FixedArray<u8>;
-
-  new(status: i32, headers: Fields, body: FixedArray<u8>) : status = status, headers = headers, body = body;
-
-  /** The first value of header `name`, or null. */
-  header(name: String): String | null {
-    let values = this.headers.get(name);
-    return if (values.length > 0) String.fromBytes(values[0]) else null;
-  }
-
-  /** The body as text. */
-  text(): String {
-    return String.fromBytes(this.body);
-  }
-
-  /** The body parsed as JSON. */
-  json(): JsonValue {
-    return parseJson(this.text());
-  }
-}
-
-/** The one spellable value of type void, for a `result<_, e>` ok arm. */
-function unit() {}
-
-/**
- * Sends one request and reads the whole answer. `method` is `GET` or
- * `POST`; `headers` are name and value pairs. Throws `HttpError` when no
- * answer arrives.
- */
-export async function httpRequest(
-  method: String,
-  url: String,
-  headers: Array<(String, String)>,
-  body: FixedArray<u8> | null
-): Future<HttpResponse> {
-  let parsed = URL.parse(url);
-  if (parsed == null) {
-    throw new HttpError(`not a URL: ${url}`);
-  }
-  let target = parsed;
-  let fields = Fields.create();
-  for (let (name, value) in headers) {
-    fields.append(name, value.toBytes());
-  }
-  let trailers = Future.of<Result<Option<Fields>, ErrorCode>>((true, none));
-  let contents: Option<Stream<u8>> = if (body == null) none else some(bytesStream(body));
-  let (request, transmitted) = Request.new_(fields, contents, trailers, none);
-  if (method == 'POST') {
-    request.setMethod(new MethodPost());
-  } else if (method == 'GET') {
-    request.setMethod(new MethodGet());
-  } else {
-    throw new HttpError(`unsupported method ${method}`);
-  }
-  let scheme: Scheme = if (target.protocol == 'http:') new SchemeHTTP() else new SchemeHTTPS();
-  request.setScheme(some(scheme));
-  request.setAuthority(some(target.host()));
-  request.setPathWithQuery(some(`${target.pathname}${target.search}`));
-  let sent = await send(request);
-  let response = match (sent) {
-    case (true, let value): value
-    case (false, _): throw new HttpError(`no answer from ${target.host()}`)
-  };
-  let status = response.getStatusCode() as i32;
-  let responseHeaders = response.getHeaders();
-  let received = new Completer<Result<void, ErrorCode>>();
-  let (responseBody, responseTrailers) = WireResponse.consumeBody(response, received.future);
-  let bytes = await readAllBytes(responseBody);
-  received.tryComplete((true, unit()));
-  return new HttpResponse(status, responseHeaders, bytes);
 }
 
 /** A client for the XRPC methods of one service, such as a PDS. */
@@ -165,16 +68,16 @@ export final class XrpcClient {
    * something other than JSON, such as `com.atproto.sync.getRecord`.
    * Throws `XrpcError` for an error answer.
    */
-  async queryRaw(nsid: String, params: Array<(String, String)> | null = null): Future<HttpResponse> {
-    let response = await httpRequest('GET', this.#url(nsid, params), this.#headers(null), null);
-    checkAnswer(nsid, response);
+  async queryRaw(nsid: String, params: Array<(String, String)> | null = null): Future<Response> {
+    let response = await fetch(this.#url(nsid, params), {headers: this.#headers(null)});
+    await checkAnswer(nsid, response);
     return response;
   }
 
   /** Calls a query that answers with JSON. Throws `XrpcError` for an error answer. */
   async query(nsid: String, params: Array<(String, String)> | null = null): Future<JsonValue> {
     let response = await this.queryRaw(nsid, params);
-    return response.json();
+    return parseJson(await response.text());
   }
 
   /**
@@ -182,31 +85,40 @@ export final class XrpcClient {
    * returns its JSON answer, or null when it has none.
    */
   async procedure(nsid: String, input: JsonValue, params: Array<(String, String)> | null = null): Future<JsonValue> {
-    let body: FixedArray<u8> | null = if (input == null) null else stringify(input).toBytes();
+    let body: String | null = if (input == null) null else stringify(input);
     let contentType: String | null = if (input == null) null else 'application/json';
-    let response = await httpRequest('POST', this.#url(nsid, params), this.#headers(contentType), body);
-    checkAnswer(nsid, response);
-    return if (response.body.length == 0) null else response.json();
+    let response = await fetch(this.#url(nsid, params), {
+      method: 'POST',
+      headers: this.#headers(contentType),
+      body,
+    });
+    await checkAnswer(nsid, response);
+    let text = await response.text();
+    return if (text.length == 0) null else parseJson(text);
   }
 
   /** Calls a procedure whose body is bytes of type `mimeType`, such as `com.atproto.repo.uploadBlob`. */
   async upload(nsid: String, mimeType: String, bytes: FixedArray<u8>,
       params: Array<(String, String)> | null = null): Future<JsonValue> {
-    let response = await httpRequest('POST', this.#url(nsid, params), this.#headers(mimeType), bytes);
-    checkAnswer(nsid, response);
-    return response.json();
+    let response = await fetch(this.#url(nsid, params), {
+      method: 'POST',
+      headers: this.#headers(mimeType),
+      body: bytes,
+    });
+    await checkAnswer(nsid, response);
+    return parseJson(await response.text());
   }
 }
 
 /** Throws `XrpcError` unless `response` is a success. */
-function checkAnswer(nsid: String, response: HttpResponse): void {
-  if (response.status >= 200 && response.status < 300) {
+async function checkAnswer(nsid: String, response: Response): Future<void> {
+  if (response.ok) {
     return;
   }
   var error = '';
   var message = `${nsid} failed with HTTP ${response.status}`;
   try {
-    let json = response.json();
+    let json = parseJson(await response.text());
     if (json is JsonObject) {
       let name = json['error'];
       if (name is String) {
