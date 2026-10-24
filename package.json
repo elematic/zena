@@ -27,6 +27,7 @@
     "bench:compile": "ZENA_TIME_JSON=1 ./target/release/zena-cli run --allow-spawn --dir .::. benchmarks/zena/compile.zena",
     "test:smoke": "wireit",
     "test:others": "wireit",
+    "check:workspace": "wireit",
     "emulators:start": "wireit"
   },
   "wireit": {
@@ -62,8 +63,9 @@
       ]
     },
     "test:others": {
-      "#": "Every package but the compiler, so `test` and `test:smoke` differ only in which of the compiler's aggregates they name.",
+      "#": "Every package but the compiler, and the workspace check, so `test` and `test:smoke` differ only in which of the compiler's aggregates they name.",
       "dependencies": [
+        "check:workspace",
         "./packages/atproto:test",
         "./packages/google-cloud:test",
         "./packages/language-service:test",
@@ -84,6 +86,26 @@
         "./packages/zena-run:test",
         "./packages/zenadoc:test",
         "./packages/zenafx:test"
+      ]
+    },
+    "check:workspace": {
+      "#": "Whether the whole workspace loads. Every compile reads all of the workspace's zena-package.json manifests and fails when one cannot be read, but its output depends only on the manifests of the packages it reaches, so each script lists only those. This compiles scripts/workspace-check.zena, which imports nothing, with the zena command, whose compiler is stage A's source and which names the manifest at fault, and then with the checked-in bootstrap, which builds stage A and reads the manifests with its own code.",
+      "command": "mkdir -p .zena/workspace-check && ./target/release/zena-cli build scripts/workspace-check.zena -o .zena/workspace-check/zena.wasm && ./target/release/zena-run --dir .::. --dir packages/stdlib/zena::/stdlib packages/zena-compiler/bootstrap/cli.wasm scripts/workspace-check.zena -o .zena/workspace-check/bootstrap.wasm",
+      "files": [
+        "scripts/workspace-check.zena",
+        "zena-package.json",
+        "zena-lock.json",
+        "packages/*/zena/**/zena-package.json",
+        "packages/zena-compiler/bootstrap/cli.wasm"
+      ],
+      "output": [
+        ".zena/workspace-check/bootstrap.wasm",
+        ".zena/workspace-check/zena.wasm"
+      ],
+      "dependencies": [
+        "./packages/zena-run:build",
+        "./packages/zena-cli:build",
+        "./packages/stdlib:lib"
       ]
     },
     "emulators:start": {

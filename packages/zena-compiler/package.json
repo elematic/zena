@@ -37,14 +37,17 @@
       "#command": "The bootstrap compiles the compiler, run on zena-run with the preopens `zc` expects: the repository as `.` and the standard library as `/stdlib`. It cannot go through zena-cli, whose module this compiler builds. ZENA_OPT_LEVEL=2 (the env form, which a bootstrap that predates the -O flag ignores rather than misreads) makes the working compiler an -O2 build: it compiles the zena module in 20s where the -O1 build takes 27s, and every build and test step downstream of this one runs it (docs/design/compiler-memory.md).",
       "command": "mkdir -p zena/out && cd ../.. && ZENA_GC_RESERVE_MB=1536 ZENA_OPT_LEVEL=2 ./target/release/zena-run --dir .::. --dir packages/stdlib/zena::/stdlib packages/zena-compiler/bootstrap/cli.wasm packages/zena-compiler/zena/cli/main.zena -o packages/zena-compiler/zena/out/cli.wasm",
       "files": [
-        "zena/**/*.zena",
+        "zena/cli/**/*.zena",
+        "zena/lib/**/*.zena",
         "bootstrap/cli.wasm",
         "../stdlib/zena/**/*.zena",
         "../stdlib/zena/wit/*.wit",
         "../stdlib/zena/host-wit/*.wit",
         "../wit-parser/zena/**/*.zena",
         "!../wit-parser/zena/test/**",
-        "../../zena-packages.json"
+        "../../zena-package.json",
+        "zena/lib/zena-package.json",
+        "../wit-parser/zena/zena-package.json"
       ],
       "output": [
         "zena/out/cli.wasm"
@@ -63,27 +66,39 @@
         "zena/out/cli.cwasm"
       ],
       "dependencies": [
-        "build:cli",
+        {
+          "script": "build:cli",
+          "cascade": false
+        },
         "../zena-cli:build"
       ]
     },
     "build:self-hosted": {
       "command": "ZENA_GC_RESERVE_MB=1536 ZENA_TEMPLATE_CHECK=1 ZENA_COMPILER_WASM=zena/out/cli.wasm ../../target/release/zena-cli -g -O2 build zena/cli/main.zena -o zena/out/cli-self.wasm && ../../target/release/zena-cli precompile zena/out/cli-self.wasm",
       "files": [
-        "zena/**/*.zena",
+        "zena/cli/**/*.zena",
+        "zena/lib/**/*.zena",
         "zena/out/cli.wasm",
         "../wit-parser/zena/**/*.zena",
         "!../wit-parser/zena/test/**",
+        "../stdlib/zena/**/*.zena",
+        "../stdlib/zena/wit/*.wit",
+        "../stdlib/zena/host-wit/*.wit",
         "../../zena-package.json",
-        "../*/zena/**/zena-package.json"
+        "zena/lib/zena-package.json",
+        "../wit-parser/zena/zena-package.json"
       ],
       "output": [
         "zena/out/cli-self.wasm",
         "zena/out/cli-self.cwasm"
       ],
       "dependencies": [
-        "precompile:cli",
-        "../zena-cli:build"
+        {
+          "script": "precompile:cli",
+          "cascade": false
+        },
+        "../zena-cli:build",
+        "../stdlib:lib"
       ]
     },
     "build:scripts": {
@@ -104,21 +119,26 @@
     "build:tests": {
       "command": "node scripts/build-wasi-tests.js",
       "files": [
-        "zena/**/*.zena",
-        "!zena/**/*.__runner__.zena",
-        "zena/out/cli-self.wasm",
+        "zena/lib/**/*.zena",
+        "zena/test/**/*.zena",
+        "!zena/test/__all_tests__.zena",
+        "zena/out/cli.wasm",
         "../wit-parser/zena/**/*.zena",
         "!../wit-parser/zena/test/**",
         "../../zena-package.json",
-        "../*/zena/**/zena-package.json"
+        "zena/lib/zena-package.json",
+        "../wit-parser/zena/zena-package.json"
       ],
       "output": [
         "zena/out/test-self/__all_tests__.wasm",
-        "zena/**/*.__runner__.zena"
+        "zena/test/__all_tests__.zena"
       ],
       "dependencies": [
         "build:scripts",
-        "precompile:cli",
+        {
+          "script": "precompile:cli",
+          "cascade": false
+        },
         "../zena-cli:build",
         "../stdlib:lib"
       ],
@@ -135,6 +155,11 @@
       "command": "node scripts/run-wasmtime.js unit",
       "files": [
         "scripts/run-wasmtime.js",
+        "zena/out/test-self/__all_tests__.wasm",
+        "zena/cli/**/*.zena",
+        "zena/lib/**/*.zena",
+        "../wit-parser/zena/**/*.zena",
+        "!../wit-parser/zena/test/**",
         "test-files/snapshots/**/*.snap",
         "test-files/**/*.zena",
         "../stdlib/zena/**/*.zena",
@@ -142,12 +167,17 @@
         "../stdlib/zena/host-wit/*.wit",
         "../stdlib/stdlib-manifest.json",
         "../../zena-package.json",
-        "../*/zena/**/zena-package.json"
+        "zena/lib/zena-package.json",
+        "../wit-parser/zena/zena-package.json"
       ],
       "output": [],
       "dependencies": [
         "build:scripts",
-        "build:tests"
+        {
+          "script": "build:tests",
+          "cascade": false
+        },
+        "../zena-cli:build"
       ]
     },
     "test:syntax": {
@@ -156,6 +186,7 @@
         "../../tests/language/syntax/**/*.zena",
         "../../tests/language/syntax/**/*.ast.json",
         "scripts/run-wasmtime.js",
+        "zena/out/test-self/__all_tests__.wasm",
         "../stdlib/zena/**/*.zena",
         "../stdlib/zena/wit/*.wit",
         "../stdlib/zena/host-wit/*.wit",
@@ -164,7 +195,11 @@
       "output": [],
       "dependencies": [
         "build:scripts",
-        "build:tests"
+        {
+          "script": "build:tests",
+          "cascade": false
+        },
+        "../zena-cli:build"
       ]
     },
     "test:semantics": {
@@ -172,17 +207,21 @@
       "files": [
         "../../tests/language/semantics/**/*.zena",
         "scripts/run-wasmtime.js",
+        "zena/out/test-self/__all_tests__.wasm",
         "../stdlib/zena/**/*.zena",
         "../stdlib/zena/wit/*.wit",
         "../stdlib/zena/host-wit/*.wit",
         "../stdlib/stdlib-manifest.json",
-        "../../zena-package.json",
-        "../*/zena/**/zena-package.json"
+        "../../zena-package.json"
       ],
       "output": [],
       "dependencies": [
         "build:scripts",
-        "build:tests"
+        {
+          "script": "build:tests",
+          "cascade": false
+        },
+        "../zena-cli:build"
       ]
     },
     "test:execution": {
@@ -190,30 +229,39 @@
       "files": [
         "../../tests/language/execution/**/*.zena",
         "scripts/run-wasmtime.js",
+        "zena/out/test-self/__all_tests__.wasm",
         "../stdlib/zena/**/*.zena",
         "../stdlib/zena/wit/*.wit",
         "../stdlib/zena/host-wit/*.wit",
         "../stdlib/stdlib-manifest.json",
-        "../../zena-package.json",
-        "../*/zena/**/zena-package.json"
+        "../../zena-package.json"
       ],
       "output": [],
       "dependencies": [
         "build:scripts",
-        "build:tests"
+        {
+          "script": "build:tests",
+          "cascade": false
+        },
+        "../zena-cli:build"
       ]
     },
     "test:interop": {
       "command": "node scripts/external-functions-test.js",
       "files": [
-        "scripts/external-functions-test.js"
+        "scripts/external-functions-test.js",
+        "zena/out/cli.wasm"
       ],
       "output": [],
       "dependencies": [
         "build:scripts",
         "../zena-cli:build",
         "../runtime:build",
-        "precompile:cli"
+        {
+          "script": "precompile:cli",
+          "cascade": false
+        },
+        "../stdlib:lib"
       ]
     },
     "reseed": {
@@ -231,19 +279,30 @@
     "test:fixpoint": {
       "command": "node scripts/check-fixpoint.js",
       "files": [
-        "zena/**/*.zena",
+        "zena/cli/**/*.zena",
+        "zena/lib/**/*.zena",
+        "../wit-parser/zena/**/*.zena",
+        "!../wit-parser/zena/test/**",
+        "../stdlib/zena/**/*.zena",
+        "../stdlib/zena/wit/*.wit",
+        "../stdlib/zena/host-wit/*.wit",
         "zena/out/cli-self.wasm",
         "scripts/check-fixpoint.js",
         "../../zena-package.json",
-        "../*/zena/**/zena-package.json"
+        "zena/lib/zena-package.json",
+        "../wit-parser/zena/zena-package.json"
       ],
       "output": [
         "zena/out/cli-self2.wasm"
       ],
       "dependencies": [
         "build:scripts",
-        "build:self-hosted",
-        "../zena-cli:build"
+        {
+          "script": "build:self-hosted",
+          "cascade": false
+        },
+        "../zena-cli:build",
+        "../stdlib:lib"
       ]
     },
     "test:component": {
@@ -251,14 +310,18 @@
       "files": [
         "scripts/component-e2e.js",
         "test-files/component/**/*.zena",
-        "test-files/component/**/*.wit"
+        "test-files/component/**/*.wit",
+        "zena/out/cli.wasm"
       ],
       "output": [
         "zena/out/component/**/*.wasm"
       ],
       "dependencies": [
         "build:scripts",
-        "precompile:cli",
+        {
+          "script": "precompile:cli",
+          "cascade": false
+        },
         "../zena-cli:build",
         "../stdlib:lib"
       ]
