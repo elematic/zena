@@ -137,6 +137,25 @@ function cachedRuntimeMemoryModule(options: Options) {
 }
 
 /**
+ * The runtime memory module for a component build of `request`.
+ *
+ * It is compiled before the program, so it is the compile that meets a
+ * fault every compile shares first, such as a workspace whose manifests
+ * do not load. The compiler has printed the cause by then; what did not
+ * compile is `request`'s program, so that is the file the failure names.
+ */
+function runtimeMemoryModuleFor(request: CompileRequest, options: Options) {
+  try {
+    return cachedRuntimeMemoryModule(options);
+  } catch (e) {
+    if (e is CompileFailure) {
+      throw new CompileFailure(`${request.source.value} did not compile`);
+    }
+    throw e;
+  }
+}
+
+/**
  * The files a cached entry recorded reading, from its `.deps`.
  *
  * Empty when there is no `.deps` beside the module, which is what a
@@ -195,7 +214,7 @@ function compileRecording(
   let runtimeMemory = if (!targetEmitsComponent(target)) {
     ''
   } else {
-    let runtime = cachedRuntimeMemoryModule(options);
+    let runtime = runtimeMemoryModuleFor(request, options);
     // The sources behind those bytes are sources of *this* module: the
     // program embeds the runtime module's output, so a change to the
     // allocator changes the program. Recording the output's path

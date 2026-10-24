@@ -4,7 +4,7 @@
 // `PackageConfig`s, keyed by package. The standard library's manifest is
 // built in (`buildStdlibConfig`).
 
-import { parseJson, JsonArray, JsonValue, JsonObject } from 'zena:json';
+import { parseJson, JsonArray, JsonValue, JsonObject, JsonParseError } from 'zena:json';
 import { PackageConfig, ModuleExport } from './module-resolver.zena';
 import { CompilerHost } from './library-loader.zena';
 import { dirName, normalizePath } from './module-resolver.zena';
@@ -354,7 +354,19 @@ final class WorkspaceLoader {
   }
 
   #readJson(path: String): JsonObject {
-    let json = parseJson(this.#host.readFile(path));
+    let text = this.#host.readFile(path);
+    var json: JsonValue = null;
+    try {
+      json = parseJson(text);
+    } catch (e) {
+      // The parser knows where in the text it stopped, not which file the
+      // text came from.
+      if (e is JsonParseError) {
+        let fault = e as JsonParseError;
+        throw new Error(`${path}:${fault.line}:${fault.column}: ${fault.message}`);
+      }
+      throw e;
+    }
     if (!(json is JsonObject)) {
       throw new Error(`${path} is not a JSON object`);
     }
