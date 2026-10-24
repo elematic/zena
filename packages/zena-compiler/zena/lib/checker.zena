@@ -14507,6 +14507,11 @@ function checkExpressionInner(ctx: CheckerContext, expr: Expression, expectedTyp
   }
   case ThisExpression {loc}: {
     let cc = ctx.currentClass;
+    // A consuming method's `this` is dead once the body moves it on.
+    let receiver = ctx.receiverSymbol;
+    if (receiver != null) {
+      ctx.checkMoveUse(expr as Node, receiver);
+    }
     if (cc == null) {
       ctx.error("'this' used outside of a class.", DiagnosticCode.SymbolNotFound, loc);
       new ErrorType()

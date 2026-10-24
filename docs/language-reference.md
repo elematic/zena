@@ -5865,8 +5865,9 @@ call, and the callee disposes what it was handed (or moves it further).
 A consuming method (one declaring `this: Own<this>`) owns its receiver
 the same way: unless the body moves `this` on — returns it, passes it to
 an `Own<R>` parameter, or calls another consuming method on it — the
-method releases it at exit. `[Disposable.dispose]` is the exception, since
-its exit is the release.
+method releases it at exit, and once it has moved `this`, a later use of
+`this` is a use-after-move error. `[Disposable.dispose]` is the
+exception, since its exit is the release.
 Constructors and async expression bodies are not yet covered. In an
 `async` or `gen` body the release also runs on cancellation and on
 generator disposal — a consumer that stops iterating cancels the frame

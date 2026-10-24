@@ -1,0 +1,33 @@
+// @mode: check
+// A consuming method's `this` is dead once the body moves it on: handed
+// to an owning parameter, or the receiver of another consuming call, its
+// dispose included. A later use is a use after move, as for a binding.
+import {Own, Disposable} from 'zena:core';
+
+let sink = (r: Own<Res>): void => {};
+
+resource class Res {
+  n: i32;
+  new(this.n);
+
+  give(this: Own<this>): i32 {
+    sink(this);
+    return this.n; // @error: 'this' may have been moved
+  }
+
+  twice(this: Own<this>): void {
+    this.[Disposable.dispose]();
+    this.[Disposable.dispose](); // @error: 'this' may have been moved
+  }
+
+  // Moved on one path only: the other path may still use it.
+  sometimes(this: Own<this>, give: boolean): i32 {
+    if (give) {
+      sink(this);
+      return 0;
+    }
+    return this.n;
+  }
+
+  [Disposable.dispose](this: Own<this>): void {}
+}
