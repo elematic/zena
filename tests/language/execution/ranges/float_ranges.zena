@@ -1,0 +1,81 @@
+// @mode: run
+// @result: true
+
+import {BoundedRange, FromRange, ToRange, FullRange, Range} from 'zena:core';
+
+let checkRange = (r: Range<f64>, v: f64): boolean => r.contains(v);
+
+let describeSpan = (r: Range<f64>, len: f64): f64 => {
+  let (start, end) = r.bounds(len);
+  return start * 100.0 + end;
+};
+
+let matchRange = (r: Range<f64>): f64 => match (r) {
+  case BoundedRange {start, end}: end - start
+  case FromRange {start}: start
+  case ToRange {end}: end
+  case FullRange: 0.0
+};
+
+export let main = (): boolean => {
+  // Basic f64 BoundedRange
+  let r1 = 0.5..2.5;
+  if (!(r1 is BoundedRange<f64>)) { return false; }
+  if (r1.start != 0.5 || r1.end != 2.5) { return false; }
+  if (!r1.contains(0.5) || !r1.contains(1.5)) { return false; }
+  if (r1.contains(2.5) || r1.contains(0.4)) { return false; }
+
+  // Negative float bounds
+  let rNeg = -1.5..1.5;
+  if (rNeg.start != -1.5 || rNeg.end != 1.5) { return false; }
+  if (!rNeg.contains(-1.5) || !rNeg.contains(0.0) || rNeg.contains(1.5)) { return false; }
+
+  // Mixed int and float bounds
+  let rMix1 = 0..1.5;
+  if (rMix1.start != 0.0 || rMix1.end != 1.5) { return false; }
+  if (!rMix1.contains(0.75) || rMix1.contains(1.5)) { return false; }
+
+  let rMix2 = -2.5..3;
+  if (rMix2.start != -2.5 || rMix2.end != 3.0) { return false; }
+  if (!rMix2.contains(2.5) || rMix2.contains(3.0)) { return false; }
+
+  let xf = 4.5;
+  let rMix3 = 1..xf;
+  if (rMix3.start != 1.0 || rMix3.end != 4.5) { return false; }
+  let rMix4 = xf..10;
+  if (rMix4.start != 4.5 || rMix4.end != 10.0) { return false; }
+
+  // Contextual f32 BoundedRange
+  let rf32: BoundedRange<f32> = 0.25..0.75;
+  if (rf32.start != (0.25 as f32) || rf32.end != (0.75 as f32)) { return false; }
+  if (!rf32.contains(0.5) || rf32.contains(0.75)) { return false; }
+
+  // Half-open FromRange<f64> and ToRange<f64>
+  let rFrom = 1.5..;
+  if (!(rFrom is FromRange<f64>)) { return false; }
+  if (rFrom.start != 1.5) { return false; }
+  if (!rFrom.contains(1.5) || !rFrom.contains(100.0) || rFrom.contains(1.4)) { return false; }
+
+  let rTo = ..2.5;
+  if (!(rTo is ToRange<f64>)) { return false; }
+  if (rTo.end != 2.5) { return false; }
+  if (!rTo.contains(-10.0) || !rTo.contains(0.0) || !rTo.contains(2.4) || rTo.contains(2.5)) { return false; }
+
+  // Polymorphic Range<f64> dispatch, bounds(), and pattern matching
+  if (!checkRange(0.0..1.0, 0.5) || checkRange(0.0..1.0, 1.0)) { return false; }
+  if (!checkRange(1.5.., 2.0) || checkRange(1.5.., 1.0)) { return false; }
+  if (!checkRange(..2.5, 2.0) || checkRange(..2.5, 2.5)) { return false; }
+  if (!checkRange(.., 999.0)) { return false; }
+
+  if (describeSpan(2.0..5.0, 10.0) != 205.0) { return false; }
+  if (describeSpan(3.0.., 10.0) != 310.0) { return false; }
+  if (describeSpan(..4.0, 10.0) != 4.0) { return false; }
+  if (describeSpan(.., 10.0) != 10.0) { return false; }
+
+  if (matchRange(1.5..4.0) != 2.5) { return false; }
+  if (matchRange(3.25..) != 3.25) { return false; }
+  if (matchRange(..6.5) != 6.5) { return false; }
+  if (matchRange(..) != 0.0) { return false; }
+
+  return true;
+};
