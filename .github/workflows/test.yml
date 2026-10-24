@@ -60,6 +60,26 @@ jobs:
   test:
     name: Test
     runs-on: ubuntu-latest
+    env:
+      # What compiling the workspace's own crates leaves in target/, which
+      # rust-cache leaves out. See "Restore the workspace crates".
+      WORKSPACE_CRATES: |
+        target/zena-rust-sources.sha256
+        target/release/zena-run
+        target/release/zena-cli
+        target/release/zfx
+        target/release/*.d
+        target/release/.fingerprint/workspace-hack-*
+        target/release/.fingerprint/zena-*
+        target/release/.fingerprint/zenafx-*
+        target/release/build/workspace-hack-*
+        target/release/build/zena-*
+        target/release/deps/*workspace_hack*
+        target/release/deps/*zena_*
+        target/release/deps/zenafx-*
+        target/release/deps/zfx-*
+        target/release/deps/run-*
+        target/release/deps/counter-*
 
     steps:
       - name: Checkout repository
@@ -94,6 +114,26 @@ jobs:
       # three binaries share one wasmtime build (DEVELOPMENT.md, "Rust
       # dependencies"). A dependency change that leaves it stale still
       # builds, with a second copy of wasmtime, so nothing else would fail.
+      # rust-cache keeps the dependencies and leaves out the workspace's
+      # own crates, because cargo judges those by modification time and a
+      # checkout makes every file new. Recompiling them (zena-runtime, the
+      # three binaries and their links) took about two minutes of every run.
+      # This cache keeps them, keyed by their sources, and falls back to the
+      # newest entry. scripts/ci-cargo-freshness.sh then dates each source
+      # whose content matches the cached build to 2000, so cargo reuses what
+      # was compiled from it and recompiles what a change reaches. Only main
+      # saves an entry, after the suite (see "Save the workspace crates").
+      - name: Restore the workspace crates
+        id: workspace-crates
+        uses: actions/cache/restore@v6
+        with:
+          path: ${{ env.WORKSPACE_CRATES }}
+          key: rust-workspace-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'flake.lock', 'packages/workspace-hack/**', 'packages/zena-runtime/**', 'packages/zena-run/**', 'packages/zena-cli/Cargo.toml', 'packages/zena-cli/build.rs', 'packages/zena-cli/src/**', 'packages/zenafx/Cargo.toml', 'packages/zenafx/src/**', 'packages/zenafx/tests/**', 'packages/zenafx/wit/**', 'packages/stdlib/zena/host-wit/**') }}
+          restore-keys: rust-workspace-${{ runner.os }}-
+
+      - name: Date the Rust sources the cached build compiled
+        run: scripts/ci-cargo-freshness.sh restore
+
       - name: Check the workspace-hack crate
         run: nix develop --command bash -c 'cargo hakari generate --diff && cargo hakari manage-deps --dry-run'
 
@@ -148,6 +188,16 @@ jobs:
           trap 'kill "$sampler" 2>/dev/null || true' EXIT
           nix develop --command npm test
 
+      - name: Record the Rust sources this build compiled
+        if: github.ref == 'refs/heads/main' && steps.workspace-crates.outputs.cache-hit != 'true'
+        run: scripts/ci-cargo-freshness.sh record
+
+      - name: Save the workspace crates
+        if: github.ref == 'refs/heads/main' && steps.workspace-crates.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: ${{ env.WORKSPACE_CRATES }}
+          key: ${{ steps.workspace-crates.outputs.cache-primary-key }}
 
       - name: Compiler timings
         # Reported, never gated. A shared runner's numbers are too noisy
