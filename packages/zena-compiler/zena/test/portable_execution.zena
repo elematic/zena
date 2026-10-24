@@ -47,7 +47,7 @@
  */
 
 import { Set } from 'zena:collections';
-import { ByteBuffer, StringBuilder, Unmanaged, disown, growable } from 'zena:core';
+import { ByteBuffer, StringBuilder, Unmanaged, disown, growable, i32ToString } from 'zena:core';
 import { Process, ProcessResult, spawn } from 'zena:process';
 import { getEnv } from 'zena:cli';
 import { readFileSync, readFileBytesSync, writeFileSync, writeFileBytesSync, mkdirSync, existsSync, unlinkSync } from 'zena:fs';
@@ -82,11 +82,32 @@ let stdlibRoot = 'packages/stdlib/zena';
 let compileSliceCommand = 'compile-slice';
 
 /**
+ * The optimization level the suite compiles at: ZENA_TEST_OPT_LEVEL,
+ * else 1. `test:execution:o2` sets 2, to run the suite through the -O2
+ * module loop as well.
+ */
+function testOptLevel(): i32 {
+  let env = getEnv('ZENA_TEST_OPT_LEVEL');
+  if (env != null) {
+    if (let (true, n) = parseI64(env as String)) {
+      return n as i32;
+    }
+  }
+  return 1;
+}
+
+/**
  * Where the compile phase leaves the modules the run phase executes.
  * Under `zena/out`, which is git-ignored and which no wireit `output`
- * glob claims — `build:tests` owns `zena/out/test-self` alone.
+ * glob claims — `build:tests` owns `zena/out/test-self` alone. A level
+ * other than 1 gets a directory of its own, so the two runs `npm test`
+ * makes can run at once.
  */
-let outRoot = 'packages/zena-compiler/zena/out/test-exec';
+let outRoot = if (testOptLevel() == 1) {
+  'packages/zena-compiler/zena/out/test-exec'
+} else {
+  `packages/zena-compiler/zena/out/test-exec-O${i32ToString(testOptLevel())}`
+};
 
 /** ANSI SGR sequence (string literals have no escape for ESC). */
 function sgr(code: String) {
@@ -529,16 +550,9 @@ function compileSlice(args: Array<String>): i32 {
   let filter = args[4];
 
   let files = selectedTests(filter);
-  // ZENA_TEST_OPT_LEVEL=2 runs the suite through the -O2 module loop,
-  // which the default level skips; ZENA_PROPAGATE=0 leaves the type
-  // propagation rewrite out of it (ModuleGenerator.propagate).
-  var optLevel = 1;
-  let optEnv = getEnv('ZENA_TEST_OPT_LEVEL');
-  if (optEnv != null) {
-    if (let (true, n) = parseI64(optEnv as String)) {
-      optLevel = n as i32;
-    }
-  }
+  // ZENA_PROPAGATE=0 leaves the type propagation rewrite out of an -O2
+  // run (ModuleGenerator.propagate).
+  let optLevel = testOptLevel();
   let host = new FsHost();
   let packages = loadWorkspace(host, '.');
   let options: CompilerOptions = {stdlibRoot, packages};
@@ -686,7 +700,10 @@ export function runPortableExecution(args: Array<String>): i32 {
 
   // Report what was found before running anything, so a run that stalls
   // still says what it was going to do.
-  discovery.report('Execution', (s) => { console.log(s); });
+  let level = testOptLevel();
+  discovery.report(
+      if (level == 1) 'Execution' else `Execution at -O${i32ToString(level)}`,
+      (s) => { console.log(s); });
   if (filter.length > 0) {
     console.log(`${dim}(filter '${filter}': ${files.length} of ${discovery.tests.length} run)${reset}`);
   }
