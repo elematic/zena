@@ -218,6 +218,24 @@ function loadPackages(host: CompilerHost, projectRoot: String | null, packageCac
   return packages;
 }
 
+// `loadPackages`, or null after printing why the workspace did not load.
+// A manifest that cannot be read is a fault in the input, like a syntax
+// error, and its message names the manifest. Thrown, it escaped
+// `compileFile` before any of its handlers, so `zc` trapped with no
+// message at all (https://github.com/elematic/zena/issues/534).
+function loadPackagesOrReport(
+  host: CompilerHost,
+  projectRoot: String | null,
+  packageCache: String | null
+): HashMap<String, PackageConfig> | null {
+  try {
+    return loadPackages(host, projectRoot, packageCache);
+  } catch (e) {
+    console.error(`Error: ${e.message}`);
+    return null;
+  }
+}
+
 function reportDiagnosticLine(kind: String, file: String, line: i32, column: i32, message: String) {
   console.error(`${file}:${i32ToString(line)}:${i32ToString(column)} - ${kind}: ${message}`);
 }
@@ -479,8 +497,12 @@ export function compileFile(options: CompileFileOptions): i32 {
     witDoc = doc;
     witSource = doc.source;
   }
-  let packages = loadPackages(host, if (projectRoot == "") null else projectRoot,
+  let loaded = loadPackagesOrReport(host, if (projectRoot == "") null else projectRoot,
       if (packageCache == "") null else packageCache);
+  if (loaded == null) {
+    return 1;
+  }
+  let packages = loaded as HashMap<String, PackageConfig>;
   // A declared world's document answers for its own packages: the
   // program imports the world's interfaces by name (`test:app/oracle`
   // for a document declaring `package test:app`), and the resolver

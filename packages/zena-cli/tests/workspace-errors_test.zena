@@ -1,0 +1,65 @@
+/**
+ * A workspace whose manifests do not load, as the `zena` command reports
+ * it: by the manifest at fault, both from its own compiler and from a
+ * compiler module run with `ZENA_COMPILER_WASM`, and against the program
+ * being compiled rather than the runtime memory module a component build
+ * compiles first. See https://github.com/elematic/zena/issues/534.
+ */
+
+import {suite, test} from 'zena:test';
+import {isTrue} from 'zena:assert';
+import {MAIN, Scratch, described, repoRoot, write, zenaIn} from './cli-support.zena';
+
+/** A workspace of two packages, `a` and `b`, that are both named `twin`. */
+function twinLayout(scratch: Scratch): void {
+  write(scratch.at('workspace/zena-package.json'), '{"workspace": {"packages": ["a", "b"]}}');
+  write(scratch.at('workspace/a/zena-package.json'), '{"name": "twin"}');
+  write(scratch.at('workspace/b/zena-package.json'), '{"name": "twin"}');
+  write(scratch.at('workspace/prog.zena'), `${MAIN} {\n  return 0;\n}\n`);
+}
+
+export let tests = suite('zena: a workspace that does not load', () => {
+  test('build names the packages at fault and the program it was building', (ctx) => {
+    let scratch = Scratch.create('workspace-twins');
+    try {
+      twinLayout(scratch);
+      let built = zenaIn(scratch, 'workspace').run(['build', 'prog.zena', '-o', 'prog.wasm']);
+      isTrue(!built.succeeded(), 'built a workspace with two packages named twin');
+      isTrue(built.stderr.contains("are both packages named 'twin'"), described(built));
+      isTrue(built.stderr.contains('prog.zena did not compile'), described(built));
+      isTrue(!built.stderr.contains('component-runtime'), described(built));
+      isTrue(!built.stderr.contains('the compiler failed'), described(built));
+    } finally {
+      scratch.remove();
+    }
+  });
+
+  test('a compiler module says what is wrong instead of trapping', (ctx) => {
+    let scratch = Scratch.create('workspace-twins-zc');
+    try {
+      twinLayout(scratch);
+      let built = zenaIn(scratch, 'workspace')
+          .set('ZENA_COMPILER_WASM', `${repoRoot()}/packages/zena-compiler/zena/out/cli.wasm`)
+          .run(['build', 'prog.zena', '-o', 'prog.wasm']);
+      isTrue(!built.succeeded(), 'built a workspace with two packages named twin');
+      isTrue(built.stderr.contains("are both packages named 'twin'"), described(built));
+      isTrue(!built.stderr.contains('thrown Wasm exception'), described(built));
+    } finally {
+      scratch.remove();
+    }
+  });
+
+  test('malformed JSON names the manifest and where in it', (ctx) => {
+    let scratch = Scratch.create('workspace-malformed');
+    try {
+      write(scratch.at('workspace/zena-package.json'), '{"workspace": {"packages": ["a"]}}');
+      write(scratch.at('workspace/a/zena-package.json'), '{\n  "name": "a",,\n}\n');
+      write(scratch.at('workspace/prog.zena'), `${MAIN} {\n  return 0;\n}\n`);
+      let built = zenaIn(scratch, 'workspace').run(['build', 'prog.zena', '-o', 'prog.wasm']);
+      isTrue(!built.succeeded(), 'built a workspace with a malformed manifest');
+      isTrue(built.stderr.contains('a/zena-package.json:2:'), described(built));
+    } finally {
+      scratch.remove();
+    }
+  });
+});

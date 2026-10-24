@@ -231,8 +231,11 @@ The package cache is `packages` under the user's cache directory
 (`$ZENA_CACHE_DIR`, `$XDG_CACHE_HOME/zena` or `~/.cache/zena`), or
 `.zena/packages` in the workspace when `ZENA_PROJECT_CACHE` is set.
 
-The compiler reports:
+The compiler reports, as errors in the input that stop the compile before
+anything is resolved:
 
+- a manifest that is not valid JSON, by its path, line and column;
+- two workspace packages with the same name, by their directories;
 - a published dependency the lockfile does not pin, which `zena add` or
   `zena update` fixes;
 - a pinned package that is not in the cache, which `zena fetch` fixes;
