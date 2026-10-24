@@ -46,6 +46,7 @@ import {KeyType} from 'atproto:didkey';
 import {IdentityResolver} from 'atproto:identity';
 import {PlcOperation, submitPlcOperation} from 'atproto:plc';
 import {BlobBytes, CloudStorageBlobs, DirectoryBlobs, FirestoreHostStore, FirestoreStorage} from './firestore.zena';
+import {HandleRecords, MemoryHandleRecords} from './handles.zena';
 import {HostConfig, HostStore, MemoryHostStore, PackageHost} from './host.zena';
 import {Pds} from './pds.zena';
 import {createApp} from './server.zena';
@@ -96,13 +97,17 @@ export final class ServiceConfig {
   new(this.port, this.storage, this.host, this.plcDirectory, this.dnsOverHttps, this.clockId);
 }
 
-/** A built server, not yet listening: its application, PDS and host. */
+/**
+ * A built server, not yet listening: its application, PDS and host, and
+ * where the host writes its handles' DNS records.
+ */
 export final class Service {
   app: App;
   pds: Pds;
   host: PackageHost | null;
+  records: HandleRecords;
 
-  new(this.app, this.pds, this.host);
+  new(this.app, this.pds, this.host, this.records);
 }
 
 /**
@@ -259,9 +264,12 @@ export async function buildService(config: ServiceConfig, endpoint: String): Fut
     }
   }
   let pds = new Pds(storage, config.clockId);
+  // Handle records stay in memory: a deployment's go to its DNS zone, which
+  // nothing here writes yet.
+  let records = new MemoryHandleRecords();
   let settings = config.host;
   if (settings == null) {
-    return new Service(createApp(pds), pds, null);
+    return new Service(createApp(pds), pds, null, records);
   }
   let rotationKey = settings.rotationKey ?? new SigningKey(KeyType.Secp256k1, randomBytes(32));
   let hostConfig = new HostConfig(settings.serviceDid, settings.domain, settings.publicUrl ?? endpoint, rotationKey);
@@ -275,12 +283,12 @@ export async function buildService(config: ServiceConfig, endpoint: String): Fut
   resolver.plcDirectory = config.plcDirectory;
   resolver.dnsOverHttps = config.dnsOverHttps;
   let plc = config.plcDirectory;
-  let host = new PackageHost(pds, hostConfig, hostStore, resolver.signingKeys(),
+  let host = new PackageHost(pds, hostConfig, hostStore, records, resolver.signingKeys(),
       async (did: String, operation: PlcOperation): Future<void> => {
         await submitPlcOperation(plc, did, operation);
       },
       (count: i32) => randomBytes(count));
-  return new Service(createApp(pds, host), pds, host);
+  return new Service(createApp(pds, host), pds, host, records);
 }
 
 function blobBytes(choice: BlobChoice): BlobBytes {

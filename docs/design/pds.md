@@ -165,13 +165,13 @@ bytes, Firestore and Cloud Storage clients (`google-cloud:firestore`,
 `google-cloud:storage`) and the atproto libraries listed in
 [Status](#status). What is left:
 
-| Need                                                    | Status in Zena                                                                     | Plan                                                                                      |
-| ------------------------------------------------------- | ---------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------- |
-| PBKDF2 for passwords                                    | None                                                                               | Over HMAC-SHA256, in `zena:crypto`                                                        |
-| BLAKE3                                                  | None                                                                               | Port pds.js `packages/spaces/src/blake3.js`, for spaces                                   |
-| WebSocket server, for `com.atproto.sync.subscribeRepos` | None. The `zena-cli` host serves HTTP/1.1 and HTTP/2 through hyper with no upgrade | Add an upgrade API to the host                                                            |
-| A DNS server, for a package host's scope handles        | None                                                                               | Answer `_atproto` TXT queries for the host's zone (package-manager.md, "Serving handles") |
-| Wall-clock dates                                        | `wasi:clocks/system-clock` directly, and no ISO-8601 formatting                    | Add both to `zena:time`                                                                   |
+| Need                                                    | Status in Zena                                                                     | Plan                                                                                                                            |
+| ------------------------------------------------------- | ---------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| PBKDF2 for passwords                                    | None                                                                               | Over HMAC-SHA256, in `zena:crypto`                                                                                              |
+| BLAKE3                                                  | None                                                                               | Port pds.js `packages/spaces/src/blake3.js`, for spaces                                                                         |
+| WebSocket server, for `com.atproto.sync.subscribeRepos` | None. The `zena-cli` host serves HTTP/1.1 and HTTP/2 through hyper with no upgrade | Add an upgrade API to the host                                                                                                  |
+| Writing a package host's handle records                 | None                                                                               | A Cloud DNS client in `google-cloud`, which the host writes `_atproto` TXT records with (package-manager.md, "Serving handles") |
+| Wall-clock dates                                        | `wasi:clocks/system-clock` directly, and no ISO-8601 formatting                    | Add both to `zena:time`                                                                                                         |
 
 ## Milestones
 
@@ -202,12 +202,15 @@ grows. Milestones 1 to 4 are done.
    records; and the limits on accounts and storage. The `zena` command's
    publishing tests run against it, in memory.
 7. **Deployment.** A Firestore adapter for the storage ports, GCS for blobs,
-   and a Cloud Run image running under `zena-cli`, with the host's DNS zone.
+   and a Cloud Run image running under `zena-cli`, with the host's handle
+   records in its DNS zone.
    Firestore documents are keyed by tenant and account from the start. The
    adapters are done, tested against the Firestore emulator with a suite
    every storage passes (`zena/test/storage-conformance.zena`), and so is
-   the server's configuration (`pds:service`), read from the environment;
-   the image and the DNS zone are not.
+   the server's configuration (`pds:service`), read from the environment.
+   The host writes a TXT record for each handle it gives out, in memory so
+   far (`pds:handles`); the Cloud DNS client, the image and the zone are
+   not done.
 8. **Conformance.** The pds.js e2e suite, run against this server, with
    `com.atproto.repo.*` and AppView proxying for ordinary accounts.
 9. **Firehose.** `subscribeRepos`, after the Zena host can upgrade a request

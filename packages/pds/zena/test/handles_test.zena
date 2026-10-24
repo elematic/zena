@@ -1,0 +1,68 @@
+/**
+ * `pds:handles`: handle records in memory, and the DNS-over-HTTPS answers
+ * that make them resolve in tests and local runs.
+ */
+
+import {suite, test} from 'zena:test';
+import {equal, isTrue} from 'zena:assert';
+import {runFuture} from 'zena:async';
+import {HashMap} from 'zena:collections';
+import {App, Request, Response} from 'zena:http';
+import {JsonArray, JsonObject, parseJson} from 'zena:json';
+import {MemoryHandleRecords, dnsOverHttpsApp} from 'pds:handles';
+
+let DID = 'did:plc:alicealicealicealicealic';
+
+/** The JSON `app` answers a lookup of `name` and `type` with. */
+function query(app: App, name: String, type: String = 'TXT'): JsonObject {
+  let res = new Response();
+  runFuture((async () => {
+    await app.handleRequest(new Request.fromUrl(`http://localhost/dns-query?name=${name}&type=${type}`, 'GET',
+        new HashMap<String, String>()), res);
+  })());
+  equal(res.type as String, 'application/dns-json');
+  return parseJson(res.body as String) as JsonObject;
+}
+
+/** The number at `key` in `object`. */
+function numberAt(object: JsonObject, key: String): i32 {
+  return (object[key] as Box<f64>).value as i32;
+}
+
+export let tests = suite('pds:handles', () => {
+  test('keeps one record per handle, case-insensitively', (ctx) => {
+    let records = new MemoryHandleRecords();
+    runFuture(records.set('Router.Acme.pkg.test', DID));
+    equal(records.lookup('router.acme.pkg.test') as String, DID);
+    runFuture(records.set('router.acme.pkg.test', 'did:plc:bobbobbobbobbobbobbobbob'));
+    equal(records.lookup('ROUTER.acme.pkg.test') as String, 'did:plc:bobbobbobbobbobbobbobbob');
+    runFuture(records.remove('router.acme.pkg.test'));
+    isTrue(records.lookup('router.acme.pkg.test') == null, 'removed');
+    runFuture(records.remove('router.acme.pkg.test'));
+  });
+
+  test('answers TXT lookups as a DNS-over-HTTPS resolver does', (ctx) => {
+    let records = new MemoryHandleRecords();
+    runFuture(records.set('acme.pkg.test', DID));
+    let app = dnsOverHttpsApp(records);
+
+    let found = query(app, '_atproto.acme.pkg.test');
+    equal(numberAt(found, 'Status'), 0);
+    let answers = found['Answer'] as JsonArray;
+    equal(answers.length, 1);
+    let answer = answers[0] as JsonObject;
+    equal(answer['name'] as String, '_atproto.acme.pkg.test.');
+    equal(numberAt(answer, 'type'), 16);
+    equal(answer['data'] as String, `"did=${DID}"`);
+    // A trailing dot, another case, and the type by number.
+    equal(((query(app, '_atproto.ACME.pkg.test.', '16')['Answer'] as JsonArray)[0] as JsonObject)['data'] as String,
+        `"did=${DID}"`);
+
+    equal(numberAt(query(app, '_atproto.other.pkg.test'), 'Status'), 3);
+    equal(numberAt(query(app, 'acme.pkg.test'), 'Status'), 3);
+    // The name exists, but has no record of another type.
+    let a = query(app, '_atproto.acme.pkg.test', 'A');
+    equal(numberAt(a, 'Status'), 0);
+    equal((a['Answer'] as JsonArray).length, 0);
+  });
+});

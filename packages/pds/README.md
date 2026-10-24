@@ -70,6 +70,8 @@ the server cannot use stops it with every problem listed, and status 2.
   - `pds`: the accounts and their repositories;
   - `host`: the package host's methods, and what it keeps beside the
     accounts: scopes, names in them, and private membership entries;
+  - `handles`: the DNS records that make the host's handles resolve, in
+    memory, and a DNS-over-HTTPS resolver that answers from them;
   - `server`: the HTTP routes;
   - `service`: the configuration, read from the environment, and the
     server it describes; `main` is the two together.

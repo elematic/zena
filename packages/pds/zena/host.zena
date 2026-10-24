@@ -36,6 +36,7 @@ import {
   Release,
   isValidPackageName
 } from 'package-manager:records';
+import {HandleRecords} from './handles.zena';
 import {Pds} from './pds.zena';
 import {CreateRecord, RepositoryError, Write} from './repository.zena';
 import {Account, AccountKind, SigningKey, StoredBlob} from './storage.zena';
@@ -199,14 +200,20 @@ export final class PackageHost {
   pds: Pds;
   config: HostConfig;
   #store: HostStore;
+  #records: HandleRecords;
   #keys: SigningKeyLookup;
   #submit: PlcSubmitter;
   #random: RandomBytes;
   #replays = new ReplayGuard();
 
-  new(pds: Pds, config: HostConfig, store: HostStore, keys: SigningKeyLookup, submit: PlcSubmitter,
-      random: RandomBytes)
-      : pds = pds, config = config, #store = store, #keys = keys, #submit = submit, #random = random;
+  /**
+   * A host over `pds`, keeping its names in `store` and writing its
+   * handles' DNS records to `records`.
+   */
+  new(pds: Pds, config: HostConfig, store: HostStore, records: HandleRecords, keys: SigningKeyLookup,
+      submit: PlcSubmitter, random: RandomBytes)
+      : pds = pds, config = config, #store = store, #records = records, #keys = keys, #submit = submit,
+        #random = random;
 
   /**
    * The DID of the account a call to `method` comes from, read from its
@@ -234,6 +241,8 @@ export final class PackageHost {
   /**
    * `createOrganization`: a scope named `name`, owned by `caller` alone.
    * `recoveryKeys` are `did:key`s, ranked above the host's rotation key.
+   * The scope's handle record is written last, so the handle resolves only
+   * to an organization that is whole.
    */
   async createOrganization(caller: String, name: String, recoveryKeys: Array<String>, nowMicros: i64)
       : Future<Created> {
@@ -256,12 +265,14 @@ export final class PackageHost {
     await this.#store.addEntries(account.did, [owner]);
     let members = new Members(new FixedArray<Cid>(1, owner.commitment()));
     let cid = await this.#write(account, MEMBERS_TYPE, 'self', members.toValue(), nowMicros);
+    await this.#records.set(handle, account.did);
     return new Created(account.did, handle, `at://${account.did}/${MEMBERS_TYPE}/self`, cid);
   }
 
   /**
    * `createPackage`: a package in `org`'s scope, named by its profile, with
    * its maintainers record. The caller must be an owner or admin of `org`.
+   * As with an organization, its handle record is written last.
    */
   async createPackage(caller: String, org: String, recoveryKeys: Array<String>, profileValue: Value,
       maintainersValue: Value, entryValues: Array<Value>, nowMicros: i64): Future<Created> {
@@ -310,6 +321,7 @@ export final class PackageHost {
       new CreateRecord(MAINTAINERS_TYPE, 'self', asMap(maintainersValue)) as Write,
     ], nowMicros);
     let cid = (await this.pds.storage.store(account.did).getRecord(MAINTAINERS_TYPE, 'self')) as Cid;
+    await this.#records.set(handle, account.did);
     return new Created(account.did, handle, `at://${account.did}/${MAINTAINERS_TYPE}/self`, cid);
   }
 

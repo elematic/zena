@@ -209,9 +209,15 @@ working adds into errors, and not into adds of another package.
 and prefers DNS when the two disagree. A host's package handles are two
 labels below its domain, and a wildcard TLS certificate covers one label,
 so answering over HTTPS would need a certificate per scope. Let's Encrypt
-issues 50 per registered domain per week. The host answers DNS instead:
-its domain's zone is delegated to it, and it answers TXT queries from its
-scopes' records. A scope's admins decide which DID each of its names
+issues 50 per registered domain per week. The host answers with DNS
+instead, from a managed DNS service: its domain's zone is kept there,
+Cloud DNS for the Zena project's host, and the host writes a TXT record
+for a name when it gives the name to an account, and removes it when the
+name goes. A DNS server of the host's own would need machines that
+answer UDP, which Cloud Run cannot, in at least two places, and would make
+the host's uptime every handle's. The scopes and names the host
+keeps are the records' source, and it can write them again from those.
+A scope's admins decide which DID each of its names
 points to, and a handle is valid only when that DID's document names the
 handle back. So a scope's names need not belong to packages hosted there,
 and a package that moves to another host can keep its handle.
@@ -1480,8 +1486,8 @@ throttled. The host therefore limits who creates accounts and how many:
   and automation accounts without an email address, publishing, changing
   maintainers, members and teams, and moving packages. It checks
   service-auth tokens against roles, keeps membership entries and gives
-  them to those allowed to see them, and serves its domain's DNS zone to
-  answer for its scopes' handles. It confines package, organization and
+  them to those allowed to see them, and writes its handles' records to
+  its domain's DNS zone. It confines package, organization and
   automation accounts to `dev.zena-lang.*` records, enforces the limits on
   creating accounts and on storage, takes reports, and has the
   operator's tools for reviewing scopes and taking content down.

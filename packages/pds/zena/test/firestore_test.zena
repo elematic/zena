@@ -7,6 +7,7 @@
 import {suite, test} from 'zena:test';
 import {equal, isTrue} from 'zena:assert';
 import {runFuture} from 'zena:async';
+import {randomU64} from 'zena:random';
 import {DirectoryBlobs, recordId} from 'pds:firestore';
 
 export let tests = suite('pds:firestore', () => {
@@ -22,7 +23,8 @@ export let tests = suite('pds:firestore', () => {
   });
 
   test('keeps blob bytes in a directory, making the directories it needs', (ctx) => {
-    let blobs = new DirectoryBlobs('/tmp/pds-blobs');
+    // `/tmp` outlives a run, so each run writes under a name of its own.
+    let blobs = new DirectoryBlobs(`/tmp/pds-blobs-${randomU64()}`);
     let name = 'tenant/did:plc:alicealicealicealicealic/bafkreiexample';
     isTrue(runFuture(blobs.read(name)) == null, 'nothing yet');
     let bytes = 'a blob'.toBytes() as FixedArray<u8>;
