@@ -48,6 +48,15 @@ jobs:
       - name: Check Nix npm dependencies
         run: nix build --no-link .#zena.npmDeps
 
+      # `npm ci` accepts a lockfile whose record of a workspace's
+      # dependencies is out of date, and `npm install` then rewrites it.
+      # Wireit counts the lockfile as an input of every script, so that
+      # rewrite makes the next build rerun everything.
+      - name: Check package-lock.json matches the package.json files
+        run: |
+          nix develop .#format --command npm install --package-lock-only --ignore-scripts --no-audit --no-fund
+          git diff --exit-code package-lock.json
+
   test:
     name: Test
     runs-on: ubuntu-latest
