@@ -15,6 +15,9 @@ import {KeyType} from 'atproto:didkey';
 import {decodeCommit} from 'atproto:repo';
 import {MemberEntry, OWNER} from 'package-manager:records';
 import {HostStore} from 'pds:host';
+import {PlcLog} from 'pds:plc-directory';
+import {PlcOperation, didOfGenesis, genesisOperation} from 'atproto:plc';
+import {curveOf, publicKeyFor} from 'atproto:didkey';
 import {Pds} from 'pds:pds';
 import {CreateRecord, DeleteRecord, UpdateRecord, Write} from 'pds:repository';
 import {Account, AccountKind, Head, RecordChange, RecordEntry, SigningKey, Storage, StoredBlob} from 'pds:storage';
@@ -238,5 +241,37 @@ export function hostStoreConformance(make: () => HostStore): void {
     }
     equal(commitments, 2);
     equal(runFuture(store.entries(BOB)).length, 0);
+  });
+}
+
+/** Registers the PLC log tests, each on a new log from `make`. */
+export function plcLogConformance(make: () => PlcLog): void {
+  test('keeps each DID\'s operations in order, appending only at the end', (ctx) => {
+    let log = make();
+    let rotation = new FixedArray<u8>(32, 3 as u8);
+    let sign = (bytes: FixedArray<u8>) => curveOf(KeyType.P256).sign(rotation, bytes);
+    let first = genesisOperation(publicKeyFor(KeyType.P256, rotation), [publicKeyFor(KeyType.P256, rotation)],
+        'a.pkg.test', 'https://pkg.test').signedWith(sign);
+    let did = didOfGenesis(first);
+    equal(runFuture(log.operations(did)).length, 0);
+    isTrue(runFuture(log.append(did, 0, first)), 'the genesis operation');
+    isTrue(!runFuture(log.append(did, 0, first)), 'another at index 0');
+    var previous = first;
+    // More than nine, so the order is not the order of unpadded digits.
+    for (var i = 1; i < 12; i += 1) {
+      let aka = new GrowableArray<String>();
+      aka.push(`at://a${i}.pkg.test`);
+      let next = new PlcOperation(previous.rotationKeys, previous.verificationMethods, aka, previous.services,
+          previous.cid().toString()).signedWith(sign);
+      isTrue(runFuture(log.append(did, i, next)), `operation ${i}`);
+      previous = next;
+    }
+    isTrue(!runFuture(log.append(did, 20, first)), 'past the end');
+    let all = runFuture(log.operations(did));
+    equal(all.length, 12);
+    equal(all[0].alsoKnownAs[0], 'at://a.pkg.test');
+    equal(all[11].alsoKnownAs[0], 'at://a11.pkg.test');
+    equal(all[11].prev as String, all[10].cid().toString());
+    equal(runFuture(log.operations('did:plc:otherotherotherotherothe')).length, 0);
   });
 }

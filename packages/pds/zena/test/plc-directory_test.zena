@@ -1,0 +1,141 @@
+/**
+ * `pds:plc-directory`: a staging PLC directory over a log in memory, with
+ * an upstream directory in the same program that knows one other DID.
+ */
+
+import {suite, test} from 'zena:test';
+import {equal, isTrue} from 'zena:assert';
+import {Future, runFuture} from 'zena:async';
+import {HashMap} from 'zena:collections';
+import {hex} from 'zena:encoding';
+import {App, Request, Response, Server} from 'zena:http';
+import {JsonArray, JsonObject, parseJson, stringify} from 'zena:json';
+import {bytesStream} from 'zena:stream';
+import {parseDidDocument} from 'atproto:did';
+import {KeyType, publicKeyFor} from 'atproto:didkey';
+import {PlcOperation, didOfGenesis, genesisOperation} from 'atproto:plc';
+import {curveOf} from 'atproto:didkey';
+import {MemoryPlcLog, PlcDirectory} from 'pds:plc-directory';
+
+let ROTATION = hex.decode('c9afa9d845ba75166b5c215767b1d6934e50c3db36e89b127b8a622b120f6721');
+let SIGNING = hex.decode('9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60');
+let UPSTREAM_DID = 'did:plc:upstreamupstreamupstream';
+
+function sign(bytes: FixedArray<u8>): FixedArray<u8> {
+  return curveOf(KeyType.P256).sign(ROTATION, bytes);
+}
+
+function genesis(handle: String): PlcOperation {
+  return genesisOperation(publicKeyFor(KeyType.P256, SIGNING), [publicKeyFor(KeyType.P256, ROTATION)], handle,
+      'https://pkg.test').signedWith(sign);
+}
+
+/** An upstream directory that has `UPSTREAM_DID`, and counts its requests. */
+final class Upstream {
+  var requests = 0;
+  var server: Server | null = null;
+
+  start(): String {
+    let app = new App();
+    let upstream = this;
+    app.use(async (req, res, next): Future<void> => {
+      upstream.requests += 1;
+      res.type = 'application/json';
+      if (req.path == `/${UPSTREAM_DID}`) {
+        res.statusCode = 200;
+        res.body = `{"id":"${UPSTREAM_DID}","alsoKnownAs":["at://someone.example"]}`;
+      } else if (req.path == `/${UPSTREAM_DID}/log/last`) {
+        res.statusCode = 200;
+        res.body = '{"type":"plc_operation"}';
+      } else {
+        res.statusCode = 404;
+        res.body = '{"message":"DID not registered"}';
+      }
+    });
+    let server = new Server(app, 0 as u16);
+    server.start();
+    this.server = server;
+    return `http://127.0.0.1:${server.port as i32}`;
+  }
+}
+
+function call(app: App, method: String, path: String, body: String = ''): Response {
+  let res = new Response();
+  runFuture((async () => {
+    let req = if (method == 'POST') {
+      new Request.fromUrl(`http://localhost${path}`, 'POST', new HashMap<String, String>(), bytesStream(body.toBytes()))
+    } else {
+      new Request.fromUrl(`http://localhost${path}`, 'GET', new HashMap<String, String>())
+    };
+    await app.handleRequest(req, res);
+  })());
+  return res;
+}
+
+export let tests = suite('pds:plc-directory', () => {
+  test('records a DID it is sent, and serves its document and log', (ctx) => {
+    let upstream = new Upstream();
+    let app = new PlcDirectory(new MemoryPlcLog(), upstream.start()).app();
+    let first = genesis('router.acme.pkg.test');
+    let did = didOfGenesis(first);
+
+    equal(call(app, 'POST', `/plc/${did}`, stringify(first.toJson())).statusCode, 200);
+    let document = call(app, 'GET', `/plc/${did}`);
+    equal(document.statusCode, 200);
+    let parsed = parseDidDocument(parseJson(document.body as String), did);
+    equal(parsed.handle as String, 'router.acme.pkg.test');
+    equal(parsed.pds as String, 'https://pkg.test');
+
+    // A second operation follows the first, signed by its rotation key.
+    let aka = new GrowableArray<String>();
+    aka.push('at://renamed.acme.pkg.test');
+    let second = new PlcOperation(first.rotationKeys, first.verificationMethods, aka, first.services,
+        first.cid().toString()).signedWith(sign);
+    equal(call(app, 'POST', `/plc/${did}`, stringify(second.toJson())).statusCode, 200);
+    equal(parseDidDocument(parseJson(call(app, 'GET', `/plc/${did}`).body as String), did).handle as String,
+        'renamed.acme.pkg.test');
+    equal((parseJson(call(app, 'GET', `/plc/${did}/log`).body as String) as JsonArray).length, 2);
+    equal(((parseJson(call(app, 'GET', `/plc/${did}/log/last`).body as String) as JsonObject)['prev'] as String),
+        first.cid().toString());
+
+    // The same operation again does not follow the last.
+    let again = call(app, 'POST', `/plc/${did}`, stringify(second.toJson()));
+    equal(again.statusCode, 400);
+    isTrue((again.body as String).contains('must follow'), again.body as String);
+    (upstream.server as Server).close();
+  });
+
+  test('reads every other DID from upstream, and takes no operations for those', (ctx) => {
+    let upstream = new Upstream();
+    let app = new PlcDirectory(new MemoryPlcLog(), upstream.start()).app();
+    let forwarded = call(app, 'GET', `/plc/${UPSTREAM_DID}`);
+    equal(forwarded.statusCode, 200);
+    isTrue((forwarded.body as String).contains('someone.example'), forwarded.body as String);
+    equal(call(app, 'GET', `/plc/${UPSTREAM_DID}/log/last`).statusCode, 200);
+    equal(call(app, 'GET', '/plc/did:plc:nowherenowherenowherenow').statusCode, 404);
+
+    // A genesis operation for a DID upstream has, as one copied from its
+    // log would be, is refused.
+    let refused = call(app, 'POST', `/plc/${UPSTREAM_DID}`, stringify(genesis('a.pkg.test').toJson()));
+    equal(refused.statusCode, 400);
+    isTrue((refused.body as String).contains('takes operations only'), refused.body as String);
+    // An operation for a DID it does not make.
+    let made = call(app, 'POST', '/plc/did:plc:aaaaaaaaaaaaaaaaaaaaaaaa', stringify(genesis('b.pkg.test').toJson()));
+    equal(made.statusCode, 400);
+    isTrue((made.body as String).contains('makes'), made.body as String);
+    equal(call(app, 'POST', '/plc/did:plc:aaaaaaaaaaaaaaaaaaaaaaaa', 'not json').statusCode, 400);
+    equal(call(app, 'GET', '/plc/did:web:example.com').statusCode, 404);
+    equal(call(app, 'GET', '/plc/did:plc:aaaaaaaaaaaaaaaaaaaaaaaa/other').statusCode, 404);
+    (upstream.server as Server).close();
+  });
+
+  test('appends to a log only at its end', (ctx) => {
+    let log = new MemoryPlcLog();
+    let first = genesis('a.pkg.test');
+    let did = didOfGenesis(first);
+    isTrue(runFuture(log.append(did, 0, first)), 'the first');
+    isTrue(!runFuture(log.append(did, 0, first)), 'a second at index 0');
+    isTrue(!runFuture(log.append(did, 2, first)), 'past the end');
+    equal(runFuture(log.operations(did)).length, 1);
+  });
+});

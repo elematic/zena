@@ -240,6 +240,28 @@ would add a key to every DID document. When the port reaches spaces,
 compare pds.js against the reference branch of the day and port from
 whichever is newer.
 
+## Staging
+
+A staging host runs the same image as the real one, with nothing it makes
+reaching the public PLC directory. It has a domain of its own,
+`pkg-staging.zena-lang.dev`, not `staging.pkg.zena-lang.dev`, which a
+scope named `staging` would own. It also has its own Firestore database,
+blob prefix, rotation key and handle records.
+
+With `PDS_PLC=staging` the server is a PLC directory itself, at `/plc`
+(`pds:plc-directory`). It records the operations of the accounts the host
+makes, after checking that each follows the last (`checkNextOperation`
+in `atproto:plc`), and serves those DIDs' documents and logs. Every other
+DID it reads from the public directory, so maintainers sign in with
+their real accounts, and the host checks their service-auth tokens with
+their real keys. It refuses operations for DIDs the public directory
+has. `zena` uses staging with `ZENA_PACKAGE_HOST` and
+`ZENA_PLC_DIRECTORY` pointed at the staging host and its `/plc`.
+
+The directory takes operations only in order. The specification also
+lets a higher-ranked rotation key replace operations from the last 72
+hours, which a staging host does not need.
+
 ## Tests
 
 - **Unit tests** are `packages/pds/zena/test/*_test.zena`, and use the

@@ -63,6 +63,11 @@ PDS_HANDLE_RECORDS=cloud-dns PDS_DNS_ZONE=<managed zone> \
   ./target/release/zena-cli run packages/pds/zena/main.zena
 ```
 
+A staging host adds `PDS_PLC=staging`: the server is then a PLC directory
+itself, at `/plc`, that records the DIDs the host makes and reads every
+other DID from the public directory, so nothing it makes reaches the
+public one (docs/design/pds.md, "Staging").
+
 The same configuration with the argument `sync-handles`
 (`zena-cli run packages/pds/zena/main.zena -- sync-handles`) writes every
 handle record again from the host's store and exits, for after a record
@@ -86,6 +91,8 @@ the server cannot use stops it with every problem listed, and status 2.
     accounts: scopes, names in them, and private membership entries;
   - `handles`: the DNS records that make the host's handles resolve, in
     memory, and a DNS-over-HTTPS resolver that answers from them;
+  - `plc-directory`: the PLC directory a staging host is, which records
+    the DIDs it makes and reads the rest from the public directory;
   - `server`: the HTTP routes;
   - `service`: the configuration, read from the environment, and the
     server it describes; `main` is the two together.

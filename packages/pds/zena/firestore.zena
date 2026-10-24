@@ -17,6 +17,9 @@
  * - `accounts/{did}/blobs/{cid}`: `mimeType` and `size`. The bytes are
  *   the object `{tenant}/{did}/{cid}` in a `BlobBytes`: a Cloud Storage
  *   bucket, a directory, or memory in tests.
+ * - A staging PLC directory's (`FirestorePlcLog`): `plc/{did}`: `length`,
+ *   the number of operations; and under it `ops/{index}`: `json`, each
+ *   operation, with indexes padded to eight digits so they list in order.
  * - The package host's (`FirestoreHostStore`): `scopes/{scope}`: `org`;
  *   `names/{name}.{scope}`: `did`, `scope` and `name`; and
  *   `entries/{did}/list/{id}`: `cbor`, a member entry's DAG-CBOR.
@@ -45,7 +48,10 @@ import {Cid} from 'atproto:cid';
 import {KeyType} from 'atproto:didkey';
 import {compareKeys} from 'atproto:mst';
 import {MemberEntry} from 'package-manager:records';
+import {JsonValue, parseJson, stringify} from 'zena:json';
+import {PlcOperation} from 'atproto:plc';
 import {ClaimedName, ClaimedScope, HostStore} from './host.zena';
+import {PlcLog} from './plc-directory.zena';
 import {
   Account, AccountKind, AccountStore, Head, RecordChange, RecordEntry, SigningKey, Storage, StoredBlob,
   sameHead, sortRecordEntries
@@ -434,6 +440,52 @@ export final class FirestoreHostStore implements HostStore {
     }
     await batch.commit();
   }
+}
+
+/** A staging PLC directory's operations in Firestore, for `tenant`. */
+export final class FirestorePlcLog implements PlcLog {
+  #db: Firestore;
+  #root: DocumentReference;
+
+  new(db: Firestore, tenant: String) : #db = db, #root = tenantRoot(db, tenant);
+
+  async operations(did: String): Future<Array<PlcOperation>> {
+    let operations = new GrowableArray<PlcOperation>();
+    for (let snapshot in await this.#root.collection('plc').doc(did).collection('ops').get()) {
+      let text = stringAt(snapshot, 'json');
+      if (text != null) {
+        operations.push(PlcOperation.fromJson(parseJson(text as String)));
+      }
+    }
+    return operations;
+  }
+
+  async append(did: String, index: i32, operation: PlcOperation): Future<boolean> {
+    let head = this.#root.collection('plc').doc(did);
+    let entry = head.collection('ops').doc(padIndex(index));
+    let json = stringify(operation.toJson());
+    return await this.#db.runTransaction<boolean>(async (tx: Transaction): Future<boolean> => {
+      var length = 0 as i64;
+      if (let (true, recorded) = (await tx.get(head)).getInteger('length')) {
+        length = recorded;
+      }
+      if (length != index as i64) {
+        return false;
+      }
+      tx.set(entry, new Fields().string('json', json));
+      tx.set(head, new Fields().integer('length', (index + 1) as i64));
+      return true;
+    });
+  }
+}
+
+/** `index` with zeros before it, to eight digits. */
+function padIndex(index: i32): String {
+  var text = `${index}`;
+  while (text.length < 8) {
+    text = `0${text}`;
+  }
+  return text;
 }
 
 /** Creates `ref` with `fields` unless it exists. Returns whether it did. */

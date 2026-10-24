@@ -37,6 +37,11 @@
  * - `PDS_PLC_DIRECTORY` and `PDS_DNS_OVER_HTTPS`: where DIDs and handles
  *   are resolved, `https://plc.directory` and Cloudflare's resolver by
  *   default.
+ * - `PDS_PLC`: `public` (the default), where the host sends the operations
+ *   of the accounts it makes to `PDS_PLC_DIRECTORY`; or `staging`, where
+ *   the server is a PLC directory itself, at `/plc` (`pds:plc-directory`),
+ *   that records them in its storage and reads every other DID from
+ *   `PDS_PLC_DIRECTORY`, so nothing a staging host makes reaches it.
  * - `PDS_CLOCK_ID`: 0 to 1023, which keeps this server's revisions apart
  *   from another's made in the same microsecond. Random by default.
  */
@@ -53,8 +58,14 @@ import {Storage as CloudStorage} from 'google-cloud:storage';
 import {KeyType} from 'atproto:didkey';
 import {IdentityResolver} from 'atproto:identity';
 import {PlcOperation, submitPlcOperation} from 'atproto:plc';
-import {BlobBytes, CloudStorageBlobs, DirectoryBlobs, FirestoreHostStore, FirestoreStorage} from './firestore.zena';
+import {
+  BlobBytes, CloudStorageBlobs, DirectoryBlobs, FirestoreHostStore, FirestorePlcLog, FirestoreStorage
+} from './firestore.zena';
+import {parseDidDocument} from 'atproto:did';
+import {PublicKey} from 'atproto:didkey';
+import {SigningKeyLookup} from 'atproto:service-auth';
 import {CloudDnsRecords, HandleRecords, MemoryHandleRecords} from './handles.zena';
+import {MemoryPlcLog, PlcDirectory, PlcLog} from './plc-directory.zena';
 import {HostConfig, HostStore, MemoryHostStore, PackageHost} from './host.zena';
 import {Pds} from './pds.zena';
 import {createApp} from './server.zena';
@@ -110,21 +121,28 @@ export final class ServiceConfig {
   plcDirectory: String;
   dnsOverHttps: String;
   clockId: i32;
+  /**
+   * Whether the server is a staging PLC directory itself, reading the DIDs
+   * it has not recorded from `plcDirectory` (`PDS_PLC=staging`).
+   */
+  var plcStaging: boolean = false;
 
   new(this.port, this.storage, this.host, this.plcDirectory, this.dnsOverHttps, this.clockId);
 }
 
 /**
- * A built server, not yet listening: its application, PDS and host, and
- * where the host writes its handles' DNS records.
+ * A built server, not yet listening: its application, PDS and host, where
+ * the host writes its handles' DNS records, and the staging PLC directory
+ * it is, if it is one.
  */
 export final class Service {
   app: App;
   pds: Pds;
   host: PackageHost | null;
   records: HandleRecords;
+  plc: PlcDirectory | null;
 
-  new(this.app, this.pds, this.host, this.records);
+  new(this.app, this.pds, this.host, this.records, this.plc);
 }
 
 /**
@@ -261,6 +279,14 @@ export function configFromEnv(env: (name: String) => String | null): ServiceConf
     }
   }
 
+  var plcStaging = false;
+  let plcMode = value('PDS_PLC') ?? 'public';
+  if (plcMode == 'staging') {
+    plcStaging = true;
+  } else if (plcMode != 'public') {
+    problems.push(`PDS_PLC is public or staging, not ${plcMode}`);
+  }
+
   if (problems.length > 0) {
     var message = 'the configuration is not usable:';
     for (let problem in problems) {
@@ -268,8 +294,10 @@ export function configFromEnv(env: (name: String) => String | null): ServiceConf
     }
     throw new ConfigError(message);
   }
-  return new ServiceConfig(port, storage, host, value('PDS_PLC_DIRECTORY') ?? 'https://plc.directory',
+  let config = new ServiceConfig(port, storage, host, value('PDS_PLC_DIRECTORY') ?? 'https://plc.directory',
       value('PDS_DNS_OVER_HTTPS') ?? 'https://cloudflare-dns.com/dns-query', clockId);
+  config.plcStaging = plcStaging;
+  return config;
 }
 
 /** The 32 bytes `text` spells in hex, or null. */
@@ -292,18 +320,21 @@ function decodeKey(text: String): FixedArray<u8> | null {
 export async function buildService(config: ServiceConfig, endpoint: String): Future<Service> {
   var storage: Storage = new MemoryStorage();
   var hostStore: HostStore = new MemoryHostStore();
+  var plcLog: PlcLog = new MemoryPlcLog();
   match (config.storage) {
     case InMemory {}: {}
     case InFirestore {tenant, blobs}: {
       let db = await Firestore.connect();
       storage = new FirestoreStorage(db, tenant, blobBytes(blobs));
       hostStore = new FirestoreHostStore(db, tenant);
+      plcLog = new FirestorePlcLog(db, tenant);
     }
   }
+  let plc = if (config.plcStaging) new PlcDirectory(plcLog, config.plcDirectory) else null;
   let pds = new Pds(storage, config.clockId);
   let settings = config.host;
   if (settings == null) {
-    return new Service(createApp(pds), pds, null, new MemoryHandleRecords());
+    return new Service(withPlc(createApp(pds), plc), pds, null, new MemoryHandleRecords(), plc);
   }
   var records: HandleRecords = new MemoryHandleRecords();
   match (settings.records) {
@@ -324,13 +355,51 @@ export async function buildService(config: ServiceConfig, endpoint: String): Fut
   let resolver = new IdentityResolver();
   resolver.plcDirectory = config.plcDirectory;
   resolver.dnsOverHttps = config.dnsOverHttps;
-  let plc = config.plcDirectory;
-  let host = new PackageHost(pds, hostConfig, hostStore, records, resolver.signingKeys(),
-      async (did: String, operation: PlcOperation): Future<void> => {
-        await submitPlcOperation(plc, did, operation);
-      },
-      (count: i32) => randomBytes(count));
-  return new Service(createApp(pds, host), pds, host, records);
+  let upstream = config.plcDirectory;
+  var keys = resolver.signingKeys();
+  var submit = async (did: String, operation: PlcOperation): Future<void> => {
+    await submitPlcOperation(upstream, did, operation);
+  };
+  if (plc != null) {
+    keys = keysThrough(plc, keys);
+    submit = async (did: String, operation: PlcOperation): Future<void> => {
+      await plc.submit(did, operation);
+    };
+  }
+  let host = new PackageHost(pds, hostConfig, hostStore, records, keys, submit, (count: i32) => randomBytes(count));
+  return new Service(withPlc(createApp(pds, host), plc), pds, host, records, plc);
+}
+
+/** `app`, with `/plc/` answered by `plc` when there is one. */
+function withPlc(app: App, plc: PlcDirectory | null): App {
+  if (plc == null) {
+    return app;
+  }
+  let directory = plc.app();
+  let both = new App();
+  both.use(async (req, res, next): Future<void> => {
+    if (req.path.startsWith('/plc/')) {
+      await directory.handleRequest(req, res);
+    } else {
+      await app.handleRequest(req, res);
+    }
+  });
+  return both;
+}
+
+/**
+ * Signing keys for service auth that resolve a `did:plc` through `plc`,
+ * which reads the DIDs it has not recorded from upstream, and any other
+ * DID with `others`.
+ */
+function keysThrough(plc: PlcDirectory, others: SigningKeyLookup): SigningKeyLookup {
+  return async (did: String, fresh: boolean): Future<PublicKey | null> => {
+    if (!did.startsWith('did:plc:')) {
+      return await others(did, fresh);
+    }
+    let document = await plc.document(did);
+    return if (document == null) null else parseDidDocument(document, did).signingKey;
+  };
 }
 
 function blobBytes(choice: BlobChoice): BlobBytes {
