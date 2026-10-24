@@ -57,6 +57,24 @@ npm test                                     # rebuild + retest from the new boo
 
 Full design: [docs/design/bootstrapping.md](./docs/design/bootstrapping.md).
 
+## Rust dependencies
+
+The Rust crates (`zena-runtime`, and the `zena-run`, `zena-cli` and `zfx`
+binaries) each depend on `packages/workspace-hack`, which
+[cargo hakari](https://docs.rs/cargo-hakari) generates so that every
+crate resolves the same features for the dependencies they share. Without
+it, building one binary compiles its own copy of wasmtime and Cranelift
+when its features differ from another's by one. After adding, removing or
+changing a dependency:
+
+```bash
+cargo hakari generate      # rewrite workspace-hack/Cargo.toml
+cargo hakari manage-deps   # add workspace-hack to a new crate
+```
+
+CI runs both with `--diff`/`--dry-run` and fails when either would change
+something.
+
 ## CI
 
 `nix flake check` builds the whole monorepo hermetically in the Nix

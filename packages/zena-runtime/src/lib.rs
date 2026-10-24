@@ -47,11 +47,7 @@ pub mod http_client;
 /// prints one line per collection and per heap growth, which is how a
 /// compile's collector work is counted (docs/design/compiler-memory.md).
 ///
-/// Both binaries call this, which is also why the logger is set up here
-/// and not in each of them. `env_logger` turns on `log`'s `std` feature,
-/// and `log` is beneath wasmtime and Cranelift, so a binary without it
-/// resolves different features for them and cargo compiles it its own
-/// copy of both.
+/// Both binaries call this, so both read the same variable.
 pub fn init_logging() {
     if std::env::var_os("ZENA_RUST_LOG").is_some() {
         env_logger::Builder::from_env("ZENA_RUST_LOG")

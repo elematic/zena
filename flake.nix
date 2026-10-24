@@ -314,6 +314,10 @@
             pkgs.rustc
             pkgs.rustfmt
             pkgs.rust-analyzer
+            # Keeps packages/workspace-hack in step with Cargo.lock, so
+            # every binary resolves the same features for the crates they
+            # share (`cargo hakari generate`, see DEVELOPMENT.md).
+            pkgs.cargo-hakari
           ] ++ pkgs.lib.optionals pkgs.stdenv.isDarwin [
             pkgs.libiconv
             pkgs.zig_0_14
