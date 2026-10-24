@@ -1,0 +1,37 @@
+// @mode: run
+// @stdout: false\nfalse
+// Two `==` results passed straight to `console.log` through `btos`,
+// where -O2 folds the second comparison to a constant: the emitter
+// has to read the console before the call that turns the constant
+// into a string, or `log` receives its arguments in the wrong order.
+
+let btos = (b: boolean): String => if (b) "true" else "false";
+
+class Vector {
+  x: i32;
+  y: i32;
+  new(this.x, this.y);
+  operator ==(other: Vector): boolean {
+    return this.x == other.x && this.y == other.y;
+  }
+}
+
+class Vector3D extends Vector {
+  z: i32;
+  new(x: i32, y: i32, this.z) : super(x, y);
+  operator ==(other: Vector): boolean {
+    if (other is Vector3D) {
+      let o = other as Vector3D;
+      return this.x == o.x && this.y == o.y && this.z == o.z;
+    }
+    return false;
+  }
+}
+
+export let main = (): void => {
+  let w1: Vector = new Vector3D(1, 2, 3);
+  let w3: Vector = new Vector3D(1, 2, 4);
+  let w4: Vector = new Vector(1, 2);
+  console.log(btos(w1 == w3));
+  console.log(btos(w1 == w4));
+};
