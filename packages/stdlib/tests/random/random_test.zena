@@ -69,6 +69,47 @@ export let tests = suite('zena:random', () => {
     });
   });
 
+  test('randomInt(range) stays in [start, end) and reaches every value', () => {
+    for (var i = 0; i < 1000; i += 1) {
+      let n = randomInt(5..10);
+      isTrue(n >= 5 && n < 10, `randomInt(5..10) returned ${n}`);
+    }
+    for (var i = 0; i < 1000; i += 1) {
+      let n = randomInt(-5..3);
+      isTrue(n >= -5 && n < 3, `randomInt(-5..3) returned ${n}`);
+    }
+    equal(randomInt(7..8), 7);
+    equal(randomInt(-10..-9), -10);
+
+    // Wide span exceeding i32.max
+    for (var i = 0; i < 100; i += 1) {
+      let n = randomInt(-1000000000..1500000000);
+      isTrue(n >= -1000000000 && n < 1500000000, `wide randomInt returned ${n}`);
+    }
+
+    let seen = new FixedArray<i32>(6, 0);
+    for (var i = 0; i < 600; i += 1) {
+      let n = randomInt(1..7);
+      isTrue(n >= 1 && n < 7, `randomInt(1..7) returned ${n}`);
+      seen[n - 1] = seen[n - 1] + 1;
+    }
+    for (var face = 0; face < 6; face += 1) {
+      isTrue(seen[face] > 0, `randomInt(1..7) never returned ${face + 1}`);
+    }
+  });
+
+  test('randomInt(range) rejects an empty or inverted range', () => {
+    throws(() => {
+      randomInt(5..5);
+    });
+    throws(() => {
+      randomInt(6..5);
+    });
+    throws(() => {
+      randomInt(-2..-5);
+    });
+  });
+
   test('randomF64 is at least 0 and less than 1', () => {
     var sum = 0.0;
     for (var i = 0; i < 1000; i += 1) {
