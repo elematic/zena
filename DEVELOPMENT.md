@@ -73,7 +73,8 @@ cargo hakari manage-deps   # add workspace-hack to a new crate
 ```
 
 CI runs both with `--diff`/`--dry-run` and fails when either would change
-something.
+something. [packages/workspace-hack/README.md](./packages/workspace-hack/README.md)
+has more, including how to check that the binaries share their build.
 
 ## CI
 
