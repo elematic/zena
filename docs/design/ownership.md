@@ -1711,7 +1711,6 @@ explicit dispose, or, in a dispose, by its own glue.
 The glue reads each field when it runs, not at entry, since the body
 may have taken or revived it.
 
-
 **A `var` affine field takes a store as a move, and the store releases
 what it replaces.** The target of `this.current = next` is the field's
 declared `Own<R>` (or `Own<R> | null`), not the borrow a read of it
