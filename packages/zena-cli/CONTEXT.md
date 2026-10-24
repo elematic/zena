@@ -59,7 +59,7 @@ the `zena` command. The design is in
      and one feature apart is a separate copy of wasmtime: `log`'s `std`,
      which only `zena-run` turned on, was enough. After changing a Rust dependency, run
      `cargo hakari generate && cargo hakari manage-deps`; CI fails until
-     the crate matches.
+     the crate matches. See `packages/workspace-hack/CONTEXT.md`.
    - Preopens the repository root as `.` (first, so relative paths mean the
      repository: the compiler reads the workspace's `zena-package.json` and
      `packages/stdlib/zena` relative to it) and `/` as `/`.
