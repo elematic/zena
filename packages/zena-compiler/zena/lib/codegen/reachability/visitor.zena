@@ -24,7 +24,7 @@ import {
 } from '../wasm.zena';
 import { SymbolId, Symbol, noSymbolId } from '../../scope/symbol.zena';
 import {
-  getClassKey, getClassMethodKey, getInterfaceKey, getClassInterfaceKey, getMixinKeyFromSymbol, getSpecializedFunctionKey, getSpecializedName, getFunctionValueWrapperKey, getSignatureKey, collectMixinMembers, mixinScopeOfNode, MixinKey, isConcrete, ExportKey, ExportGlobalKey, getTypeUniqueKey, templateConvertHelperName, containsErasedType, pendingSomeClass, pendingNoneClass,
+  getClassKey, getClassMethodKey, getInterfaceKey, getClassInterfaceKey, getMixinKeyFromSymbol, getSpecializedFunctionKey, getSpecializedName, getFunctionValueWrapperKey, getOverloadedFunctionKey, getSignatureKey, collectMixinMembers, mixinScopeOfNode, MixinKey, isConcrete, ExportKey, ExportGlobalKey, getTypeUniqueKey, templateConvertHelperName, containsErasedType, pendingSomeClass, pendingNoneClass,
 } from '../codegen-utils.zena';
 import {
   typeToValType, typeToStorageValType, mapReturnTypeToWasmResults, mapParamTypeToWasmParams, substituteTypeParamsInCodegen, getClosureStruct, getClassTypeParameters, getInterfaceTypeParameters, substituteTypeParamsInClassContext, eraseTypeParameters, findImplementedInterfaceTransitive, findExtendedInterfaceTransitive, recordWasmFields, sortedOptionalNames, asyncIteratorPendingFuture, getNonNullableType,
@@ -242,7 +242,10 @@ export final class TypeLowerer implements TypeLowererInterface {
           }
         } else {
           keyName = i32ToString(targetSymId as i32);
-          if (let (true, f) = this.pass.wasm.functionMap.get(targetSymId)) {
+          let overKey = getOverloadedFunctionKey(targetSymId, t);
+          if (let (true, f) = this.pass.wasm.overloadedFunctionMap.get(overKey)) {
+            targetWasmFunc = f;
+          } else if (let (true, f) = this.pass.wasm.functionMap.get(targetSymId)) {
             targetWasmFunc = f;
           }
         }
@@ -3170,9 +3173,23 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
             if (isSpecialized && targetSymId != noSymbolId && this.pass.wasm.genericFunctions.has(targetSymId)) {
               let spec = this.pass.specializer.instantiateGenericFunction(targetSymId, resolvedArgs);
               this.#noteSpecializedCall(parentNode as CallExpression, model, spec);
-            } else if (targetSymId != noSymbolId && this.pass.wasm.functionMap.has(targetSymId)) {
-              let targetFunc = this.pass.wasm.functionMap[targetSymId];
-              this.pass.markFunctionReached(targetFunc);
+            } else if (targetSymId != noSymbolId) {
+              let resolvedOv = model.getResolvedOverload(parentNode as CallExpression);
+              var targetFunc: WasmFunction | null = null;
+              if (resolvedOv != null) {
+                let overKey = getOverloadedFunctionKey(targetSymId, resolvedOv);
+                if (let (true, f) = this.pass.wasm.overloadedFunctionMap.get(overKey)) {
+                  targetFunc = f;
+                }
+              }
+              if (targetFunc == null) {
+                if (let (true, f) = this.pass.wasm.functionMap.get(targetSymId)) {
+                  targetFunc = f;
+                }
+              }
+              if (targetFunc != null) {
+                this.pass.markFunctionReached(targetFunc);
+              }
             }
           }
         } else {
@@ -3234,20 +3251,31 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
       // up: an imported `function` used as a value has its own
       // specifier symbol, and a wrapper keyed by that is never found.
       keyName = i32ToString(sym.resolveTarget().id as i32);
-      if (let (true, f) = this.pass.wasm.functionMap.get(targetSymId)) {
+      let overKey = getOverloadedFunctionKey(targetSymId, nodeType);
+      if (let (true, f) = this.pass.wasm.overloadedFunctionMap.get(overKey)) {
+        targetWasmFunc = f;
+      } else if (let (true, f) = this.pass.wasm.functionMap.get(targetSymId)) {
         targetWasmFunc = f;
       } else if (!this.#discoveringOnDemand.has(targetSymId)) {
         this.#discoveringOnDemand.add(targetSymId);
         if (let (true, targetModel) = this.pass.symbolIdToModel.get(targetSymId)) {
-          if (let (true, decl) = targetModel.globalDeclarations.get(targetSymId)) {
+          let decls = targetModel.getGlobalDeclarations(targetSymId);
+          if (decls != null) {
             let resolver = (t: Type) => t;
-            this.discoverNodeTypes(decl, targetModel, resolver);
-            if (decl is VariableDeclaration) {
-              this.discoverVariableDeclaration(targetSymId, decl, targetModel);
-            } else if (decl is FunctionDeclaration) {
-              this.discoverFunctionDeclaration(targetSymId, decl, targetModel);
+            let declList = decls as GrowableArray<Node>;
+            for (let decl in declList) {
+              if (decl is VariableDeclaration) {
+                this.discoverVariableDeclaration(targetSymId, decl, targetModel);
+              } else if (decl is FunctionDeclaration) {
+                this.discoverFunctionDeclaration(targetSymId, decl, targetModel);
+              }
             }
-            if (let (true, f) = this.pass.wasm.functionMap.get(targetSymId)) {
+            for (let decl in declList) {
+              this.discoverNodeTypes(decl, targetModel, resolver);
+            }
+            if (let (true, f) = this.pass.wasm.overloadedFunctionMap.get(overKey)) {
+              targetWasmFunc = f;
+            } else if (let (true, f) = this.pass.wasm.functionMap.get(targetSymId)) {
               targetWasmFunc = f;
             }
           }
@@ -3340,20 +3368,31 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
       }
     } else {
       keyName = i32ToString(targetSymId as i32);
-      if (let (true, f) = this.pass.wasm.functionMap.get(targetSymId)) {
+      let overKey = getOverloadedFunctionKey(targetSymId, ft);
+      if (let (true, f) = this.pass.wasm.overloadedFunctionMap.get(overKey)) {
+        targetWasmFunc = f;
+      } else if (let (true, f) = this.pass.wasm.functionMap.get(targetSymId)) {
         targetWasmFunc = f;
       } else if (!this.#discoveringOnDemand.has(targetSymId)) {
         this.#discoveringOnDemand.add(targetSymId);
         if (let (true, targetModel) = this.pass.symbolIdToModel.get(targetSymId)) {
-          if (let (true, decl) = targetModel.globalDeclarations.get(targetSymId)) {
+          let decls = targetModel.getGlobalDeclarations(targetSymId);
+          if (decls != null) {
             let resolver = (t: Type) => t;
-            this.discoverNodeTypes(decl, targetModel, resolver);
-            if (decl is VariableDeclaration) {
-              this.discoverVariableDeclaration(targetSymId, decl, targetModel);
-            } else if (decl is FunctionDeclaration) {
-              this.discoverFunctionDeclaration(targetSymId, decl, targetModel);
+            let declList = decls as GrowableArray<Node>;
+            for (let decl in declList) {
+              if (decl is VariableDeclaration) {
+                this.discoverVariableDeclaration(targetSymId, decl, targetModel);
+              } else if (decl is FunctionDeclaration) {
+                this.discoverFunctionDeclaration(targetSymId, decl, targetModel);
+              }
             }
-            if (let (true, f) = this.pass.wasm.functionMap.get(targetSymId)) {
+            for (let decl in declList) {
+              this.discoverNodeTypes(decl, targetModel, resolver);
+            }
+            if (let (true, f) = this.pass.wasm.overloadedFunctionMap.get(overKey)) {
+              targetWasmFunc = f;
+            } else if (let (true, f) = this.pass.wasm.functionMap.get(targetSymId)) {
               targetWasmFunc = f;
             }
           }
@@ -3427,6 +3466,10 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
     if (varType != null) {
       typeLowerer.discoverType(varType, moduleModel);
     }
+    let patType = moduleModel.getNodeType(varDecl.pattern);
+    if (patType != null) {
+      typeLowerer.discoverType(patType, moduleModel);
+    }
     if (varDecl.init != null) {
       let initType = moduleModel.getNodeType(varDecl.init);
       if (initType != null) {
@@ -3485,7 +3528,20 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
         }
       }
     } else {
-      if (pattern is IdentifierPattern) {
+      let overKey = if (pattern is IdentifierPattern && funcTypeNode is FunctionType) {
+        let sym = moduleModel.resolveDeclaration(pattern);
+        if (sym != null) getOverloadedFunctionKey(sym.id, funcTypeNode) else ""
+      } else {
+        ""
+      };
+      if (overKey != "") {
+        if (let (true, existingFunc) = this.pass.wasm.overloadedFunctionMap.get(overKey)) {
+          if (this.pass.currentReachable) {
+            this.pass.markFunctionReached(existingFunc);
+          }
+          return;
+        }
+      } else if (pattern is IdentifierPattern) {
         let sym = moduleModel.resolveDeclaration(pattern);
         if (sym != null) {
           if (let (true, existingFunc) = this.pass.wasm.functionMap.get(sym.id)) {
@@ -3514,13 +3570,25 @@ export final class ReachabilityVisitor implements ReachabilityVisitorInterface {
       this.pass.wasm.addFunction(wasmFunc);
       
       if (pattern is IdentifierPattern) {
-        wasmFunc.name = pattern.name;
         let sym = moduleModel.resolveDeclaration(pattern);
+        let decls = if (sym != null) moduleModel.getGlobalDeclarations((sym as Symbol).id) else null;
+        let isOverloaded = decls != null && (decls as GrowableArray<Node>).length > 1;
+        wasmFunc.name = if (isOverloaded && funcTypeNode is FunctionType) {
+          pattern.name + getSignatureKey(funcTypeNode)
+        } else {
+          pattern.name
+        };
         if (sym != null) {
-          this.pass.wasm.functionMap[sym.id] = wasmFunc;
+          if (overKey != "") {
+            this.pass.wasm.overloadedFunctionMap[overKey] = wasmFunc;
+          }
+          if (!this.pass.wasm.functionMap.has(sym.id)) {
+            this.pass.wasm.functionMap[sym.id] = wasmFunc;
+          }
           let isEntry = this.pass.program.entryPoint != null && moduleModel.sourcePath == (this.pass.program.entryPoint as CompilationUnit).ast.path;
           if ((exported || pattern.name == "main") && isEntry) {
-            this.pass.wasm.exportMap[pattern.name as ExportKey] = wasmFunc;
+            let exportName = if (isOverloaded && wasmFunc.name != null) (wasmFunc.name as String) else pattern.name;
+            this.pass.wasm.exportMap[exportName as ExportKey] = wasmFunc;
           }
           if (this.pass.currentReachable) {
             this.pass.markFunctionReached(wasmFunc);
