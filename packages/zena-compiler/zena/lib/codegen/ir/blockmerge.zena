@@ -366,29 +366,13 @@ function removeUnreachable(body: IrBody, scratch: IrScratch): i32 {
   }
 
   // A try's join block (IrBody.tryJoin) is where emission ends the
-  // protected region; it can lose reachability when folding kills the
-  // body's normal exit while the try_br itself survives. Rewriting
-  // the region shape without its end marker is emission's dominance
-  // heuristic again — the bug tryJoin exists to fix — so leave such a
-  // function uncleaned rather than guess.
-  var blocked = false;
+  // protected region. It dies when folding or inlining leaves the try
+  // body no way to complete, as when the body calls a function that
+  // only throws; the try_br survives without it (renumbering drops
+  // the entry). No block is then reached through the body's normal
+  // exit, so nothing can be placed inside the try_table that belongs
+  // after it, which is what the join is there to prevent.
   let instCount = body.instCount();
-  for (var i = 0; i < instCount; i += 1) {
-    if (body.op(i) == IrOp.try_br) {
-      let ib = body.instBlock[i];
-      if (ib < 0 || ib >= nb || !reachable[ib]) {
-        continue; // a dead try goes down with its join
-      }
-      if (let (true, join) = body.tryJoin.get(i)) {
-        if (!reachable[join]) {
-          blocked = true;
-        }
-      }
-    }
-  }
-  if (blocked) {
-    return 0;
-  }
 
   let map = scratch.i32();
   var next = 0;
@@ -439,7 +423,9 @@ function removeUnreachable(body: IrBody, scratch: IrScratch): i32 {
   for (var i = 0; i < instCount; i += 1) {
     if (body.op(i) == IrOp.try_br) {
       if (let (true, join) = body.tryJoin.get(i)) {
-        newJoin[i] = map[join];
+        if (map[join] >= 0) {
+          newJoin[i] = map[join];
+        }
       }
     }
   }
