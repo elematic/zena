@@ -619,7 +619,7 @@ function emitMatchArmDrops(cx: LoweringContext, expr: MatchExpression, armIndex:
   if (dropsOpt == null) { return; }
   for (let d in dropsOpt) {
     if (d.armIndex != armIndex) { continue; }
-    let declType = cx.func.model.getBindingTypeById(d.symbolId);
+    let declType = cx.bindingTypeOf(d.symbolId);
     if (declType == null) {
       bail(cx, 'edge drop untyped binding');
     }
@@ -641,7 +641,7 @@ function emitEdgeDrops(cx: LoweringContext, stmt: IfStatement, onTrue: boolean) 
   if (dropsOpt == null) { return; }
   for (let d in dropsOpt) {
     if (d.onTrueArm != onTrue) { continue; }
-    let declType = cx.func.model.getBindingTypeById(d.symbolId);
+    let declType = cx.bindingTypeOf(d.symbolId);
     if (declType == null) {
       bail(cx, 'edge drop untyped binding');
     }
@@ -2447,8 +2447,8 @@ export function lowerSyntheticDispose(cx: LoweringContext): IrBody {
  * field releases after it, in reverse declaration order — first field
  * outermost, exactly like parameters (ownership.md §Affine fields).
  * Past the last field, owned parameters take their regions, then the
- * statements. Fields are immutable, so reading each once at region
- * entry reads the value the finalizer releases.
+ * statements. The finalizer reads the field when it runs: a `var`
+ * field may have been taken (left null) or revived by the body.
  */
 export function lowerFieldDropRegions(cx: LoweringContext,
     names: GrowableArray<String>, types: Array<Type>, idx: i32,
@@ -2484,8 +2484,7 @@ export function lowerFieldDropRegions(cx: LoweringContext,
     bail(cx, 'field drop slot missing');
   }
   let fieldRef = cx.b.addRef(new IrRefField(st, lookupName));
-  let value = cx.b.emit(IrOp.struct_get, st.fields[fieldIdx].type,
-      cx.thisValue, fieldRef);
+  let fieldVt = st.fields[fieldIdx].type;
   let owners = disposeOwnerClasses(cx, types[idx]);
 
   let mirrored = new Array<SymbolId>();
@@ -2498,7 +2497,10 @@ export function lowerFieldDropRegions(cx: LoweringContext,
             body, start, end);
         finishProtectedArm(cx, scope, resultVar, -1);
       },
-      () => { emitMaybeDispose(cx, value, owners); });
+      () => {
+        let value = cx.b.emit(IrOp.struct_get, fieldVt, cx.thisValue, fieldRef);
+        emitMaybeDispose(cx, value, owners);
+      });
 }
 
 /**
@@ -2517,7 +2519,7 @@ export function lowerParamDropRegions(cx: LoweringContext,
     lowerStatementRange(cx, body, start, end);
     return;
   }
-  let declType = cx.func.model.getBindingTypeById(dropSyms[idx].id);
+  let declType = cx.bindingTypeOf(dropSyms[idx].id);
   if (declType == null) {
     bail(cx, 'param drop untyped binding');
   }

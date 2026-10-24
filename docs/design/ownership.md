@@ -1552,8 +1552,23 @@ produces a value, so the value computes inside the region, before the
 release; a body that returns the parameter itself is a use the
 classifier does not affirm, so ownership flows out unreleased, to the
 caller. Excluded: constructors (their owned parameters feed fields and
-the super call, which are checked outside the body block), suspending
-bodies, the receiver, and `this.x` field parameters.
+the super call, which are checked outside the body block) and `this.x`
+field parameters.
+
+**A consuming method's receiver releases too.** A method declaring
+`this: Own<this>` was handed the owner, so a body that does not move
+`this` on releases it at exit, exactly as it would an owned parameter
+(#378). The scope builder gives a declared receiver a symbol of its own,
+recorded on the receiver's annotation; nothing resolves `this` to it, so
+it is invisible to everything but this bookkeeping. The checker registers
+it as a candidate in the body's own scope, and the parameter verdict
+decides: `this` handed to an owning sink, or the receiver of another
+consuming call (its dispose included), is a move; `return this` and any
+other use the classifier does not affirm leave it alone; an `if` or
+`match` arm that kept it while another moved it gets the compensating
+drop. Lowering binds the symbol to `this` and wraps the body in its
+region outermost, so it releases after the parameters. A dispose is not
+a candidate: its exit is the release.
 
 **Value-producing blocks release too.** A `using` or implicit-drop
 binding in a `match` or `if` arm whose tail supplies the arm's value
@@ -1669,14 +1684,32 @@ owner. This is §"Derived borrows" field projection applied to the receiver.
 Inside a consuming method (`this: Own<this>`, `[Disposable.dispose]`
 above all) `this.file` keeps its owner type instead, so it can be moved
 out — handed to an owning parameter, moved into a binding, or returned.
-Moves are tracked per field per path on the flow graph exactly as
-binding moves are: a second move or a read after one is the
-use-after-move error, and a field moved on some paths but held on others
-is an error outright, because the release glue is decided once for the
-whole method. The glue then skips every moved-out field — which is also
-how a dispose takes control of release order: move the fields into
-locals in the order wanted, and their scope-exit releases replace the
-glue's.
+What the object is left holding decides the rule, because the object is
+released afterwards: at the method's exit (§"Implicit drop"), by an
+explicit dispose, or, in a dispose, by its own glue.
+
+- A nullable `var` field is **taken**: the move stores null into it
+  (`SemanticModel.fieldTakes`, lowered as a `struct.set` after the read),
+  and the release glue skips a null field. Nothing goes on the flow
+  graph, since the field afterwards just holds null: a take may happen
+  on any path, a read after it is not a use after move, and a store
+  fills the field again. The field must be `var`, because a take
+  changes it.
+- A non-null field has nothing to leave behind, so only a dispose, the
+  object's last act, may move it out; in any other consuming method the
+  move is an error that names the nullable `var` declaration. In a
+  dispose, moves are tracked per field per path on the flow graph
+  exactly as binding moves are: a second move or a read after one is
+  the use-after-move error, and a field moved on some paths but held on
+  others is an error outright, because the release glue is decided once
+  for the whole method. The glue then skips every moved-out field —
+  which is also how a dispose takes control of release order: move the
+  fields into locals in the order wanted, and their scope-exit releases
+  replace the glue's.
+
+The glue reads each field when it runs, not at entry, since the body
+may have taken or revived it.
+
 
 **A `var` affine field takes a store as a move, and the store releases
 what it replaces.** The target of `this.current = next` is the field's
@@ -1686,10 +1719,14 @@ borrow on the right-hand side is a type error. Before the new value
 lands, the store disposes the old one (a null in a nullable field
 releases nothing), so at any moment the field holds exactly one live
 owner and the release glue at dispose only ever sees the current
-value. A store into a field already moved out in a consuming method is
-refused as a use after move, since the release the store would run has
-no live value to run on; letting a store revive a moved-out field is a
-possible extension. `??=` on an owner field is refused too — the
+value. A store into a field a dispose moved out on every path to the
+store, its own right-hand side included, revives it: the field held
+nothing, so the store releases nothing (`SemanticModel.revivingStores`),
+and the path is live again on the flow graph, so the glue releases what
+was stored. A store into a field moved out on only some paths is an
+error, since it could not tell whether there is a value to release. A
+taken field needs no revival: it holds null, which a store replaces
+like any other value. `??=` on an owner field is refused too — the
 conditional move it would perform is easier to reason about written as
 an `if`.
 

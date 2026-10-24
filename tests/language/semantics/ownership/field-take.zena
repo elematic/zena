@@ -1,0 +1,50 @@
+// @mode: check
+// A take (ownership.md §Affine fields): in a consuming method, moving an
+// owner out of a nullable field of `this` leaves null in it. The field
+// changes, so it must be `var`. Since the field then simply holds null,
+// a take may be conditional, a later read is not a use after move, and
+// a store fills the field again.
+import {Own, Disposable} from 'zena:core';
+
+resource class Res {
+  new();
+  [Disposable.dispose](this: Own<this>): void {}
+}
+
+let sink = (r: Own<Res>): void => {};
+
+resource class Fixed {
+  b: Own<Res> | null;
+  new(this.b);
+  take(this: Own<this>): Own<Res> | null {
+    return this.b; // @error: must be declared 'var'
+  }
+  [Disposable.dispose](this: Own<this>): void {}
+}
+
+resource class Slot {
+  var c: Own<Res> | null;
+  new(this.c);
+
+  take(this: Own<this>, keep: boolean): Own<Res> | null {
+    if (keep) {
+      return null;
+    }
+    let out = this.c;
+    let again = this.c;
+    this.c = new Res();
+    if (again != null) {
+      sink(again);
+    }
+    return out;
+  }
+
+  [Disposable.dispose](this: Own<this>): void {
+    if (this.c != null) {
+      let c = this.c;
+      if (c != null) {
+        sink(c);
+      }
+    }
+  }
+}

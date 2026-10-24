@@ -1,8 +1,10 @@
 // @mode: check
 // Field move-out (ownership.md §Affine fields): inside a consuming
-// method, `this.field` keeps its owner type and may be moved out — at
-// most once per field per path, on every path or none. Everywhere
-// else the read is a borrow.
+// method, `this.field` keeps its owner type. A dispose may move a
+// non-null owner field out, at most once per path and on every path or
+// none. Any other consuming method would leave the object without the
+// field, so it may only take a nullable `var` one (field-take.zena).
+// Everywhere else the read is a borrow.
 import {Own, Borrow, Disposable} from 'zena:core';
 
 resource class Res {
@@ -54,12 +56,16 @@ resource class Sometimes {
   }
 }
 
-// A consuming extractor hands the field's ownership to the caller.
+// Outside dispose, moving a non-null field out would leave the object
+// without it, and the object is released at the method's exit.
 resource class Extract {
   a: Own<Res>;
   new(this.a);
   take(this: Own<this>): Own<Res> {
-    return this.a;
+    return this.a; // @error: only a dispose
+  }
+  give(this: Own<this>): void {
+    sink(this.a); // @error: only a dispose
   }
   [Disposable.dispose](this: Own<this>): void {}
 }

@@ -1210,6 +1210,17 @@ export final class ScopeBuilder {
           if (md.typeParameters != null) {
             this.#declareTypeParameters(md.typeParameters);
           }
+          // A declared receiver gets a symbol of its own, recorded on its
+          // annotation, for the checker's release bookkeeping: a
+          // consuming method owns `this` the way it owns an `Own`
+          // parameter. Nothing resolves `this` to it, so it declares no
+          // name.
+          let {receiver} = md;
+          if (receiver != null) {
+            this.#symbols.record(receiver as Node, new Symbol("this",
+                receiver as Node, this.#modulePath, false,
+                this.#symbolIdGenerator.next()));
+          }
           for (let param in md.params) {
             this.#declareParameter(param);
             if (param.typeAnnotation != null) {

@@ -2,9 +2,9 @@
 // `var` owner fields (ownership.md §Affine fields): declared on a
 // resource class, a store moves the right-hand side into the field
 // and releases the previous value. The receiver of the store must be
-// an owner; a borrow cannot be stored; a store after moving the field
-// out in a consuming method is refused; and a plain class still may
-// not hold one.
+// an owner; a borrow cannot be stored; a non-null field cannot be
+// moved out except in dispose, where a store after the move revives
+// it; and a plain class still may not hold one.
 import {Own, Borrow, Disposable} from 'zena:core';
 
 resource class Res {
@@ -35,15 +35,21 @@ resource class Holder {
     return this;
   }
 
-  // Once moved out, the field holds nothing to release.
+  // A non-null field moved out would leave the holder without one.
   take(this: Own<this>): Own<Res> {
-    let out = this.current;
-    this.current = new Res(); // @error: may have been moved out
+    let out = this.current; // @error: only a dispose
     return out;
   }
 
-  [Disposable.dispose](this: Own<this>): void {}
+  // In a dispose, a store after the move revives the field, and the
+  // glue releases what was stored.
+  [Disposable.dispose](this: Own<this>): void {
+    sink(this.current);
+    this.current = new Res();
+  }
 }
+
+let sink = (r: Own<Res>): void => {};
 
 resource class Maybe {
   var slot: Own<Res> | null;
