@@ -109,14 +109,23 @@ jobs:
       - name: Install npm dependencies
         run: nix develop --command npm ci
 
-      # Two runs died mid-suite on 2026-10-04, at 16m28s and 21m24s, reporting
-      # only "The operation was canceled" with no diagnostics, and the same
-      # commit passed on retry. A kernel that kills the runner agent leaves it
-      # no chance to log the reason, so the memory trajectory has to be
-      # recorded as it goes. Wireit runs cpus * 2 scripts at once, 8 on a
-      # 4 CPU / 16 GB runner, and several start a wasm host with a 1.5 GB GC
-      # reservation. Remove the sampler once the cause is known.
+      # Runs died mid-suite reporting only "The operation was canceled" or
+      # "killed": the runner ran out of memory, and a kernel that kills the
+      # runner agent leaves it no chance to log why. The sampler below
+      # records the memory trajectory as it goes, which is how that was
+      # found.
+      #
+      # Wireit runs two scripts per CPU by default, 8 on this 4 CPU / 16 GB
+      # runner, and one script can hold 5 GiB: stage B, the compiler's test
+      # module, and `zena test`, whose workers all run in one process.
+      # Measured on 4 CPUs with every script rerunning (a standard library
+      # edit), summing the RSS of the suite's processes: 8 at once peaked
+      # at 19.5 GiB and spent 35s above 16 GiB; 4 at once peaked at 13.9 GiB,
+      # and the suite took 270s against 276s, since 4 CPUs are busy either
+      # way.
       - name: Run test suite
+        env:
+          WIREIT_PARALLEL: 4
         run: |
           (
             while true; do
