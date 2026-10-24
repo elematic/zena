@@ -1,25 +1,39 @@
 /**
- * Starts the PDS on `PORT` (default 2583, the reference PDS's port), with
- * its data in memory, so it starts empty and forgets everything when it
- * stops.
+ * Starts the PDS, and the package host when `PDS_HOST_DOMAIN` is set, as
+ * the environment configures them (see `pds:service`). With no
+ * configuration it is a PDS on port 2583, the reference PDS's port, with
+ * its data in memory.
  */
 
-import { getEnv } from 'zena:cli';
-import { Pds } from './pds.zena';
-import { createApp } from './server.zena';
-import { MemoryStorage } from './storage.zena';
+import {Future} from 'zena:async';
+import {exit, getEnv} from 'zena:cli';
+import {ConfigError, ServiceConfig, configFromEnv, serve} from './service.zena';
 
-function resolvePort(): u16 {
-  let envPort = getEnv('PORT');
-  if (envPort != null) {
-    if (let (true, p) = parseI32(envPort)) {
-      return p as u16;
+/** The configuration the environment gives, or null, having said why. */
+function readConfig(): ServiceConfig | null {
+  try {
+    return configFromEnv((name) => getEnv(name));
+  } catch (e) {
+    if (e is ConfigError) {
+      console.error(e.message);
+      return null;
     }
+    throw e;
   }
-  return 2583 as u16;
 }
 
-export async function main() {
-  let server = await createApp(new Pds(new MemoryStorage())).listen(resolvePort());
-  console.log(`PDS listening on http://localhost:${server.port}`);
+export async function main(): Future<void> {
+  let config = readConfig();
+  if (config == null) {
+    exit(2);
+    return;
+  }
+  let running = await serve(config as ServiceConfig);
+  let host = running.service.host;
+  if (host != null) {
+    console.log(`PDS and package host for ${host.config.domain} listening on ${running.origin}`);
+  } else {
+    console.log(`PDS listening on ${running.origin}`);
+  }
+  await running.server.done;
 }

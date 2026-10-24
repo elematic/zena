@@ -5,9 +5,9 @@
  *   and DNS-over-HTTPS resolver, and as the PDS of the maintainer,
  *   `did:plc:alicealicealicealicealic`, whose app password is
  *   `app-password`;
- * - the PDS written in Zena with its package host (`pds:host`), for the
- *   domain `pkg.test`, sending the operations of the accounts it creates to
- *   that PLC directory.
+ * - the PDS written in Zena with its package host, for the domain
+ *   `pkg.test`, as `pds:service` serves it, sending the operations of the
+ *   accounts it creates to that PLC directory.
  *
  * Run from the repository root with `--dir <scratch>::/out`, it writes
  * `/out/stack.json` (`{"plc", "dns", "host"}`), then `/out/plc.txt` (the PLC
@@ -15,17 +15,11 @@
  */
 
 import {Future} from 'zena:async';
+import {none} from 'zena:core';
 import {writeFileSync} from 'zena:fs';
-import {App, Server} from 'zena:http';
 import {JsonObject, stringify} from 'zena:json';
-import {getRandomBytes} from 'wasi:random/random';
-import {KeyType} from 'atproto:didkey';
-import {PlcOperation, submitPlcOperation} from 'atproto:plc';
 import {FakePds} from 'package-manager:testing/fake-pds';
-import {HostConfig, MemoryHostStore, PackageHost} from 'pds:host';
-import {Pds} from 'pds:pds';
-import {createApp} from 'pds:server';
-import {MemoryStorage, SigningKey} from 'pds:storage';
+import {HostSettings, InMemory, ServiceConfig, serve} from 'pds:service';
 
 export async function main(): Future<i32> {
   let world = new FakePds();
@@ -33,34 +27,19 @@ export async function main(): Future<i32> {
   let alice = world.account('did:plc:alicealicealicealicealic', null);
   alice.password = 'app-password';
 
-  // The host's endpoint is its own origin, known once it listens, so the
-  // server forwards to an application made after.
-  var inner: App | null = null;
-  let outer = new App();
-  outer.use(async (req, res, next): Future<void> => {
-    await (inner as App).handleRequest(req, res);
-  });
-  let server = new Server(outer, 0 as u16);
-  server.start();
-  let origin = `http://127.0.0.1:${server.port as i32}`;
-
-  let config = new HostConfig('did:web:pkg.test', 'pkg.test', origin,
-      new SigningKey(KeyType.Secp256k1, getRandomBytes(32)));
-  let plc = world.plcDirectory;
-  let host = new PackageHost(new Pds(new MemoryStorage()), config, new MemoryHostStore(),
-      world.resolver().signingKeys(),
-      async (did: String, operation: PlcOperation): Future<void> => {
-        await submitPlcOperation(plc, did, operation);
-      },
-      (count: i32) => getRandomBytes(count as u64));
-  inner = createApp(host.pds, host);
+  // The server `main.zena` runs, configured as the environment would,
+  // with its own origin as the host's endpoint and a rotation key made
+  // up at start.
+  let host = new HostSettings('pkg.test', 'did:web:pkg.test', null, null, new GrowableArray<String>(), none);
+  let running = await serve(new ServiceConfig(0 as u16, new InMemory(), host, world.plcDirectory,
+      world.dnsOverHttps, 0));
 
   let stack = new JsonObject();
-  stack['plc'] = plc;
+  stack['plc'] = world.plcDirectory;
   stack['dns'] = world.dnsOverHttps;
-  stack['host'] = origin;
+  stack['host'] = running.origin;
   writeFileSync('/out/stack.json', stringify(stack));
-  writeFileSync('/out/plc.txt', plc);
+  writeFileSync('/out/plc.txt', world.plcDirectory);
   await world.done();
   return 0;
 }

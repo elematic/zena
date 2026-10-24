@@ -16,7 +16,7 @@
  *   which needs only the indexes Firestore makes itself.
  * - `accounts/{did}/blobs/{cid}`: `mimeType` and `size`. The bytes are
  *   the object `{tenant}/{did}/{cid}` in a `BlobBytes`: a Cloud Storage
- *   bucket, or memory in tests.
+ *   bucket, a directory, or memory in tests.
  * - The package host's (`FirestoreHostStore`): `scopes/{scope}`: `org`;
  *   `names/{name}.{scope}`: `did`; and `entries/{did}/list/{id}`: `cbor`,
  *   a member entry's DAG-CBOR.
@@ -34,6 +34,8 @@
 
 import {Future} from 'zena:async';
 import {HashMap} from 'zena:collections';
+import {existsSync, mkdirSync, readFileBytesSync, renameSync, writeFileBytesSync} from 'zena:fs';
+import {randomU64} from 'zena:random';
 import {Fields, Firestore, Operator, Direction, DocumentReference, DocumentSnapshot, Transaction,
   bytesValue, stringValue} from 'google-cloud:firestore';
 import {Bucket} from 'google-cloud:storage';
@@ -73,6 +75,49 @@ export final class CloudStorageBlobs implements BlobBytes {
   async write(name: String, bytes: FixedArray<u8>, mimeType: String): Future<void> {
     await this.#bucket.write(name, bytes as ByteArray, mimeType);
   }
+}
+
+/**
+ * Blob bytes in files under `root`, one per object, for a server on one
+ * machine. A write goes to a temporary file that is renamed into place,
+ * so a reader never sees part of one.
+ */
+export final class DirectoryBlobs implements BlobBytes {
+  #root: String;
+
+  new(root: String) : #root = root;
+
+  async read(name: String): Future<FixedArray<u8> | null> {
+    let path = `${this.#root}/${name}`;
+    return if (existsSync(path)) readFileBytesSync(path) as FixedArray<u8> else null;
+  }
+
+  async write(name: String, bytes: FixedArray<u8>, mimeType: String): Future<void> {
+    let path = `${this.#root}/${name}`;
+    ensureDirectory(path.sliceBytes(0, lastSlash(path)));
+    let temp = `${path}.tmp-${randomU64()}`;
+    writeFileBytesSync(temp, bytes);
+    renameSync(temp, path);
+  }
+}
+
+/** Creates `path` and every directory above it that is missing. */
+// TODO(#540): use zena:fs's, once it has one.
+function ensureDirectory(path: String): void {
+  if (path.length == 0 || existsSync(path)) {
+    return;
+  }
+  ensureDirectory(path.sliceBytes(0, lastSlash(path)));
+  mkdirSync(path);
+}
+
+/** The index of the last `/` in `path`, or 0 when there is none. */
+function lastSlash(path: String): i32 {
+  var i = path.length - 1;
+  while (i > 0 && path.getByteAt(i) != 0x2F) {
+    i -= 1;
+  }
+  return i;
 }
 
 /** Blob bytes in memory, for tests. */
