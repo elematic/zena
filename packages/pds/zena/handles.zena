@@ -1,0 +1,95 @@
+/**
+ * The DNS records that make the host's handles resolve
+ * (docs/design/package-manager.md, "Serving handles"). atproto checks a
+ * handle with a TXT record at `_atproto.<handle>` holding `did=<did>`. The
+ * host's handles are names under its own domain, so it writes the record
+ * when it gives a name to an account, at the managed DNS service its zone
+ * is kept at.
+ *
+ * `MemoryHandleRecords` keeps them in memory, for tests and local runs, and
+ * `dnsOverHttpsApp` answers lookups from it as a DNS-over-HTTPS resolver
+ * does, so `zena` and `atproto:identity` can resolve the handles with
+ * `ZENA_DNS_OVER_HTTPS` pointed at it.
+ */
+
+import {Future} from 'zena:async';
+import {HashMap} from 'zena:collections';
+import {App, Router} from 'zena:http';
+import {JsonArray, JsonObject, stringify} from 'zena:json';
+import {normalizeHandle} from 'atproto:syntax';
+
+/** Where the host writes its handles' TXT records. */
+export interface HandleRecords {
+  /** Points `handle` at `did`, replacing any record it had. */
+  set(handle: String, did: String): Future<void>;
+  /** Removes `handle`'s record, if it has one. */
+  remove(handle: String): Future<void>;
+}
+
+/** Handle records in memory. */
+export final class MemoryHandleRecords implements HandleRecords {
+  #dids = new HashMap<String, String>();
+
+  async set(handle: String, did: String): Future<void> {
+    this.#dids[normalizeHandle(handle)] = did;
+  }
+
+  async remove(handle: String): Future<void> {
+    this.#dids.delete(normalizeHandle(handle));
+  }
+
+  /** The DID `handle`'s record points at, or null. */
+  lookup(handle: String): String | null {
+    if (let (true, did) = this.#dids.get(normalizeHandle(handle))) {
+      return did;
+    }
+    return null;
+  }
+}
+
+/** The DNS type number of TXT. */
+let TXT = 16;
+
+/**
+ * Answers `GET /dns-query?name=<name>&type=TXT` from `records` with the
+ * JSON Google's and Cloudflare's DNS-over-HTTPS resolvers answer with: the
+ * `_atproto.<handle>` TXT record of a handle that has one, and status 3
+ * (NXDOMAIN) for any other name.
+ */
+export function dnsOverHttpsApp(records: MemoryHandleRecords): App {
+  let app = new App();
+  let router = new Router();
+  router.get('/dns-query', async (req, res, next, params) => {
+    let query = req.url.searchParams();
+    var name = query.get('name') ?? '';
+    if (name.endsWith('.')) {
+      name = name.sliceBytes(0, name.length - 1);
+    }
+    let type = query.get('type') ?? 'A';
+    let prefix = '_atproto.';
+    var did: String | null = null;
+    if (name.asciiLowerCase().startsWith(prefix)) {
+      did = records.lookup(name.sliceBytes(prefix.length, name.length));
+    }
+    res.type = 'application/dns-json';
+    let body = new JsonObject();
+    let found = did;
+    if (found == null) {
+      body['Status'] = new Box<f64>(3.0);
+    } else {
+      body['Status'] = new Box<f64>(0.0);
+      let answers = new JsonArray();
+      if (type == 'TXT' || type == `${TXT}`) {
+        let answer = new JsonObject();
+        answer['name'] = `${name}.`;
+        answer['type'] = new Box<f64>(TXT as f64);
+        answer['data'] = `"did=${found}"`;
+        answers.push(answer);
+      }
+      body['Answer'] = answers;
+    }
+    res.body = stringify(body);
+  });
+  app.use(router.routes());
+  return app;
+}

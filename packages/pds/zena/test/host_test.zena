@@ -24,6 +24,7 @@ import {
   Artifact, Dependency, Maintainer, Maintainers, OWNER, Profile, RELEASE_TYPE, Release, SOURCE
 } from 'package-manager:records';
 import {Version} from 'package-manager:version';
+import {MemoryHandleRecords} from 'pds:handles';
 import {HostConfig, HostStore, MemoryHostStore, PackageHost} from 'pds:host';
 import {MemberEntry} from 'package-manager:records';
 import {Pds} from 'pds:pds';
@@ -42,6 +43,8 @@ final class Fixture {
   var app: App;
   pds: Pds;
   submitted = new HashMap<String, PlcOperation>();
+  /** The handles' DNS records the host wrote. */
+  records = new MemoryHandleRecords();
   /** Whether the PLC directory refuses operations. */
   var plcDown = false;
   var #jti = 0;
@@ -54,7 +57,7 @@ final class Fixture {
     callers[ALICE] = new SigningKey(KeyType.P256, ALICE_KEY).publicKey();
     callers[BOB] = new SigningKey(KeyType.P256, BOB_KEY).publicKey();
     let submitted = this.submitted;
-    let host = new PackageHost(this.pds, config, store,
+    let host = new PackageHost(this.pds, config, store, this.records,
         async (did: String, fresh: boolean): Future<PublicKey | null> => {
           if (let (true, key) = callers.get(did)) {
             return key;
@@ -193,6 +196,9 @@ export let tests = suite('pds:host', () => {
     let pkg = ok(createPackage(fixture, ALICE, orgDid, 'router'));
     let pkgDid = pkg['did'] as String;
     equal(pkg['handle'] as String, 'router.acme.pkg.test');
+    // Both handles resolve, by the TXT records the host wrote.
+    equal(fixture.records.lookup('acme.pkg.test') as String, orgDid);
+    equal(fixture.records.lookup('router.acme.pkg.test') as String, pkgDid);
     equal(((pkg['maintainers'] as JsonObject)['uri'] as String),
         `at://${pkgDid}/dev.zena-lang.package.maintainers/self`);
 
@@ -273,19 +279,24 @@ export let tests = suite('pds:host', () => {
     equal(errorOf(createOrganization(fixture, BOB, 'acme')), 'NameTaken');
     ok(createPackage(fixture, ALICE, orgDid, 'router'));
     equal(errorOf(createPackage(fixture, ALICE, orgDid, 'router')), 'NameTaken');
-    // Only the accounts that got their names were sent to the directory.
+    // Only the accounts that got their names were sent to the directory,
+    // and have records.
     equal(fixture.submitted.size, 2);
+    equal(fixture.records.lookup('acme.pkg.test') as String, orgDid);
   });
 
   test('gives a name back when its account cannot be made', (ctx) => {
     let fixture = new Fixture();
     fixture.plcDown = true;
     equal(createOrganization(fixture, ALICE, 'acme').statusCode, 500);
+    isTrue(fixture.records.lookup('acme.pkg.test') == null, 'no record for an account not made');
     fixture.plcDown = false;
     let orgDid = ok(createOrganization(fixture, ALICE, 'acme'))['did'] as String;
     fixture.plcDown = true;
     equal(createPackage(fixture, ALICE, orgDid, 'router').statusCode, 500);
+    isTrue(fixture.records.lookup('router.acme.pkg.test') == null, 'no record for an account not made');
     fixture.plcDown = false;
-    ok(createPackage(fixture, ALICE, orgDid, 'router'));
+    let pkgDid = ok(createPackage(fixture, ALICE, orgDid, 'router'))['did'] as String;
+    equal(fixture.records.lookup('router.acme.pkg.test') as String, pkgDid);
   });
 });

@@ -1,13 +1,15 @@
 /**
  * Everything `zena publish` talks to, for `tests/publish_test.zena`:
  *
- * - a fake PDS (`package-manager:testing/fake-pds`) as the PLC directory
- *   and DNS-over-HTTPS resolver, and as the PDS of the maintainer,
+ * - a fake PDS (`package-manager:testing/fake-pds`) as the PLC directory,
+ *   and as the PDS of the maintainer,
  *   `did:plc:alicealicealicealicealic`, whose app password is
  *   `app-password`;
  * - the PDS written in Zena with its package host, for the domain
  *   `pkg.test`, as `pds:service` serves it, sending the operations of the
- *   accounts it creates to that PLC directory.
+ *   accounts it creates to that PLC directory;
+ * - a DNS-over-HTTPS resolver that answers from the handle records the
+ *   host writes, so the host's handles resolve only by those.
  *
  * Run from the repository root with `--dir <scratch>::/out`, it writes
  * `/out/stack.json` (`{"plc", "dns", "host"}`), then `/out/plc.txt` (the PLC
@@ -17,7 +19,9 @@
 import {Future} from 'zena:async';
 import {none} from 'zena:core';
 import {writeFileSync} from 'zena:fs';
+import {Server} from 'zena:http';
 import {JsonObject, stringify} from 'zena:json';
+import {MemoryHandleRecords, dnsOverHttpsApp} from 'pds:handles';
 import {FakePds} from 'package-manager:testing/fake-pds';
 import {HostSettings, InMemory, ServiceConfig, serve} from 'pds:service';
 
@@ -33,10 +37,12 @@ export async function main(): Future<i32> {
   let host = new HostSettings('pkg.test', 'did:web:pkg.test', null, null, new GrowableArray<String>(), none);
   let running = await serve(new ServiceConfig(0 as u16, new InMemory(), host, world.plcDirectory,
       world.dnsOverHttps, 0));
+  let dns = new Server(dnsOverHttpsApp(running.service.records as MemoryHandleRecords), 0 as u16);
+  dns.start();
 
   let stack = new JsonObject();
   stack['plc'] = world.plcDirectory;
-  stack['dns'] = world.dnsOverHttps;
+  stack['dns'] = `http://127.0.0.1:${dns.port as i32}/dns-query`;
   stack['host'] = running.origin;
   writeFileSync('/out/stack.json', stringify(stack));
   writeFileSync('/out/plc.txt', world.plcDirectory);
