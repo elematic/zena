@@ -45,7 +45,7 @@ export final class String implements Iterable<String>, Hashable {
   }
 
   // Zero-copy slice between two validated StringIndex boundaries
-  operator [](r: StringRange): String {
+  operator [](r: Range<StringIndex>): String {
     let (start, end) = r.bounds(this.endIndex);
     return this.slice(start, end);
   }
@@ -312,8 +312,8 @@ contiguous Unicode block checks with zero static tables):
 
 ### Substring and Range Operations
 
-Range literals constructed with `StringIndex` endpoints produce `StringRange`
-values (`BoundedStringRange`, `FromStringRange`, `ToStringRange`), and `..`
+Range literals constructed with `StringIndex` endpoints produce `Range<StringIndex>`
+values (`BoundedRange<StringIndex>`, `FromRange<StringIndex>`, `ToRange<StringIndex>`), and `..`
 produces `FullRange`. Indexing a string with a `StringIndex` or range returns a
 zero-copy `String` slice:
 
