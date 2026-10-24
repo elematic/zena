@@ -143,6 +143,32 @@ export let tests = suite('template lowering', () => {
     isTrue(families.specialized >= 6);
   });
 
+  test('methods of an extension class specialized at four classes copy from one template', () => {
+    // `this` is an array whose element type is the type argument, so
+    // each member's receiver is a different array type, learned like a
+    // class's struct.
+    let families = compileBothWaysWithStdlib(`
+      class A { n: i32; new(this.n); }
+      class B { n: i32; new(this.n); }
+      class C { n: i32; new(this.n); }
+      class D { n: i32; new(this.n); }
+      extension class Ends<T> on array<var T> {
+        first(): T { return this[0]; }
+        last(): T { return this[this.length - 1]; }
+      }
+      export let run = (): i32 => {
+        let a = __array_new(2, new A(1)) as Ends<A>;
+        let b = __array_new(2, new B(2)) as Ends<B>;
+        let c = __array_new(2, new C(3)) as Ends<C>;
+        let d = __array_new(2, new D(4)) as Ends<D>;
+        return a.first().n + b.first().n + c.first().n + d.first().n +
+            a.last().n + b.last().n + c.last().n + d.last().n;
+      };
+    `);
+    isTrue(families.templates >= 2);
+    isTrue(families.specialized >= 4);
+  });
+
   test('a method overridden in one specialization is not copied into it', () => {
     // Base<A> has a subclass that overrides `weight`, so `this.weight()`
     // in Base<A>.score dispatches through the vtable; in Base<B>,
