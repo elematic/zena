@@ -1,0 +1,97 @@
+/**
+ * Dead vtable slots (lib/codegen/ir/deadslots.zena): a method slot no
+ * surviving function reads is deleted from its vtable struct, and from
+ * every vtable global that fills it, so the functions only those
+ * globals named are harvested. The behaviour the deletion must keep is
+ * covered by the execution tests in tests/language/execution/classes.
+ */
+import { suite, test } from 'zena:test';
+import { isTrue } from 'zena:assert';
+import { WatGenerator } from '../lib/codegen/wat-generator.zena';
+import { Program, CompilationUnit } from '../lib/program.zena';
+import { makeCompiler, MockHost, errorDiagnostics } from './test-utils.zena';
+import { checkCompilation } from '../lib/compiler.zena';
+
+function compileToWat(source: String, optLevel: i32) {
+  let host = new MockHost();
+  host.addFile("test.zena", source);
+
+  let compiler = makeCompiler(host);
+  let compResult = compiler.compile({entry: "test.zena", target: 'js'});
+  let checkRes = checkCompilation(compResult);
+  let errors = errorDiagnostics(checkRes.diagnostics);
+  if (errors.length > 0) {
+    throw new Error(`the fixture does not compile: ${errors[0].message}`);
+  }
+
+  let entryAst = compResult.entry.ast;
+  let units = new Array<CompilationUnit>();
+  var entryUnit: CompilationUnit | null = null;
+  for (let file in compResult.files) {
+    if (!file.isStdlib) {
+      let res = checkRes.results[file.path];
+      if (res != null) {
+        let unit = {ast: file.ast, model: res.model};
+        units.push(unit);
+        if (file.ast.path == entryAst.path) {
+          entryUnit = unit;
+        }
+      }
+    }
+  }
+
+  let generator = new WatGenerator("zena-cli", false, optLevel);
+  return generator.generate(new Program(units, entryUnit));
+}
+
+/**
+ * Whether the module defines method `method` of class `cls`. A method's
+ * function is named `$<class>_s<symbol id>.<method>`.
+ */
+function definesMethod(wat: String, cls: String, method: String): boolean {
+  for (let chunk in wat.split('(func $')) {
+    if (!chunk.startsWith(`${cls}_s`)) {
+      continue;
+    }
+    let name = chunk.split(' ')[0];
+    if (name.endsWith(`.${method}`)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+// `speakOf` dispatches `speak` on an `Animal`, so discovery keeps the
+// slot in both vtables. At -O2 `speakOf` inlines into `run`, where the
+// argument is a `Dog` allocation, and the call becomes a direct call of
+// `Dog.speak`. After that nothing reads the slot, and only `Animal`'s
+// vtable names `Animal.speak`. `kind` is dispatched on a value either
+// class can be, so its slot and the vtables stay.
+let source = `
+  class Animal {
+    speak(): i32 { return 1; }
+    kind(): i32 { return 10; }
+  }
+  class Dog extends Animal {
+    speak(): i32 { return 2; }
+    kind(): i32 { return 20; }
+  }
+  let pick = (i: i32): Animal => if (i > 0) new Dog() else new Animal();
+  let speakOf = (a: Animal): i32 => a.speak();
+  export let run = (i: i32): i32 => pick(i).kind() + speakOf(new Dog());
+`;
+
+export let tests = suite('dead vtable slots', () => {
+  test('-O1 keeps a slot that a dispatch reads', () => {
+    isTrue(definesMethod(compileToWat(source, 1), 'Animal', 'speak'),
+        'at -O1 speakOf still dispatches, so Animal.speak is installed and reachable');
+  });
+
+  test('-O2 deletes a slot only a devirtualized call named', () => {
+    let wat = compileToWat(source, 2);
+    isTrue(definesMethod(wat, 'Animal', 'kind'),
+        'kind is still dispatched, so its implementations stay');
+    isTrue(!definesMethod(wat, 'Animal', 'speak'),
+        'no body reads the speak slot, so Animal.speak goes with it');
+  });
+});
