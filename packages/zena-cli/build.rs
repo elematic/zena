@@ -21,22 +21,26 @@ pub static BUNDLED_CLI_MODULE: Option<&'static [u8]> = None;
 "#;
 
 fn main() {
-    println!("cargo:rerun-if-changed=out/stdlib_bundle.rs");
-
     let out_dir = PathBuf::from(std::env::var("OUT_DIR").unwrap());
     let target = out_dir.join("stdlib_bundle.rs");
 
+    // Only a bundled build reads out/stdlib_bundle.rs, so only it watches
+    // the file. Watching a file that does not exist reruns this script on
+    // every build, which is what a checkout that never built the bundle
+    // has: each `cargo build` recompiled and relinked the binary.
     if std::env::var_os("CARGO_FEATURE_BUNDLED").is_none() {
+        println!("cargo:rerun-if-changed=build.rs");
         std::fs::write(&target, STUB).expect("Failed to write stub stdlib_bundle.rs to OUT_DIR");
         return;
     }
 
+    println!("cargo:rerun-if-changed=out/stdlib_bundle.rs");
     let manifest_dir = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
     let bundle_file = manifest_dir.join("out/stdlib_bundle.rs");
     if !bundle_file.is_file() {
         panic!(
             "--features bundled needs {}, which bundle.zena generates. \
-             Build it with `npm run build -w @zena-lang/zena-cli`, or drop the \
+             Build it with `npm run build:standalone -w @zena-lang/zena-cli`, or drop the \
              feature for a binary that reads the standard library from the \
              repository.",
             bundle_file.display()
