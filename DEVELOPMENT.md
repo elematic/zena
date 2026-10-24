@@ -13,10 +13,15 @@ Rust toolchain; wasmtime and wasm-tools are only required for WASI
 testing and wasm debugging.
 
 ```bash
-npm install
+npm ci
 npm run build
 npm test
 ```
+
+`npm ci` installs what `package-lock.json` pins and never rewrites it.
+Wireit counts the lockfile as an input of every script, so an
+`npm install` that changes it reruns the whole build. To add or change a
+dependency, use `npm i <package>` and commit the lockfile it writes.
 
 Always drive builds and tests through `npm run` / `npm test` — they go
 through [Wireit](https://github.com/google/wireit), which builds

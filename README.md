@@ -112,7 +112,7 @@ Zena is implemented primarily through generative AI paired with human architectu
 ```bash
 git clone https://github.com/elematic/zena.git
 cd zena
-npm install
+npm ci
 npm run build
 npm test
 ```

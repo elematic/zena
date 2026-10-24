@@ -244,6 +244,12 @@ wasmtime, wasm-tools).
   and `zena-run` embed Wasmtime via Cargo, so `npm run build` and `npm test`
   work without standalone `wasmtime`; the standalone `wasmtime` and
   `wasm-tools` CLIs are only needed for direct WASM inspection and debugging.
+- **Installing npm dependencies**: `npm ci`, in a new checkout or worktree
+  and after pulling. It installs what `package-lock.json` pins and never
+  writes it. Wireit counts the lockfile as an input of every script, so an
+  `npm install` that rewrites it makes the next build rerun everything.
+  Use `npm i <package>` only to add or change a dependency, and commit the
+  lockfile with it.
 
 ### The `zena` CLI (`zena-cli`)
 
