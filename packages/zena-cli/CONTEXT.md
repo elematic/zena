@@ -101,7 +101,10 @@ the `zena` command. The design is in
      scratch directories, under `.zena/test-scratch`, both ways. Servers a
      test needs, such as the fake PDSes in `tests/fixtures/`, run as
      separate `zena run` processes, since waiting on a process blocks the
-     test's event loop. `cargo test` (`test:cargo`) covers the Rust
+     test's event loop. They compile into one cache that every test and
+     run shares (`.zena/test-fixture-cache`), so a fixture compiles again
+     only when it, its imports or the compiler change; the commands a test
+     runs get caches of their own in its scratch directory. `cargo test` (`test:cargo`) covers the Rust
      crates' own unit tests.
    - `test:pds-js`, which `test` does not run because it needs the
      network, signs in to pds.js, a PDS someone else wrote, with a real
