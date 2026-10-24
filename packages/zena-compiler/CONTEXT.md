@@ -322,3 +322,12 @@ Run one category, optionally filtered by path substring:
 ```bash
 npm run test:execution -w @zena-lang/zena-compiler -- variables
 ```
+
+**The execution suite runs twice**, at `-O1` (`test:execution`) and at
+`-O2` (`test:execution:o2`, which sets `ZENA_TEST_OPT_LEVEL=2` and writes
+to `zena/out/test-exec-O2`). The module loop — inlining,
+devirtualization, scalar replacement, type propagation — runs only at
+`-O2`, and before the second run nothing but the compiler's own build
+put it in front of a small program: five tests failed there unnoticed
+(#526). The `-O2` run follows the `-O1` one rather than running beside
+it, to keep CI's peak memory where it was.
