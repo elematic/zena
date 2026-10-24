@@ -979,11 +979,7 @@ export function createWebHost(
         'extern',
       ),
       request_init: (): RequestInit => ({}),
-      request_method: (
-        init: RequestInit,
-        ref: unknown,
-        len: number,
-      ): void => {
+      request_method: (init: RequestInit, ref: unknown, len: number): void => {
         init.method = readZena(ref, len);
       },
       request_header: (
