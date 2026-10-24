@@ -200,6 +200,27 @@ export function hostStoreConformance(make: () => HostStore): void {
     isNull(runFuture(store.nameInScope('acme', 'router')));
   });
 
+  test('lists every scope and name', (ctx) => {
+    let store = make();
+    runFuture(store.claimScope('acme', ALICE));
+    runFuture(store.claimScope('other', BOB));
+    runFuture(store.claimName('acme', 'router', BOB));
+    runFuture(store.claimName('other', 'router', ALICE));
+    runFuture(store.claimName('acme', 'gone', ALICE));
+    runFuture(store.releaseName('acme', 'gone', ALICE));
+    var scopes = '';
+    for (let claimed in runFuture(store.allScopes())) {
+      scopes = `${scopes}${claimed.scope}=${if (claimed.org == ALICE) 'alice' else 'bob'};`;
+    }
+    isTrue(scopes == 'acme=alice;other=bob;' || scopes == 'other=bob;acme=alice;', scopes);
+    let names = runFuture(store.allNames());
+    equal(names.length, 2);
+    for (let claimed in names) {
+      equal(claimed.name, 'router');
+      equal(claimed.did, if (claimed.scope == 'acme') BOB else ALICE);
+    }
+  });
+
   test('keeps member entries', (ctx) => {
     let store = make();
     equal(runFuture(store.entries(ALICE)).length, 0);

@@ -208,9 +208,9 @@ grows. Milestones 1 to 4 are done.
    adapters are done, tested against the Firestore emulator with a suite
    every storage passes (`zena/test/storage-conformance.zena`), and so is
    the server's configuration (`pds:service`), read from the environment.
-   The host writes a TXT record for each handle it gives out, in memory so
-   far (`pds:handles`); the Cloud DNS client, the image and the zone are
-   not done.
+   The host writes a TXT record for each handle it gives out, to a Cloud
+   DNS zone or in memory (`pds:handles`), and `npm run demo` runs it on
+   this machine. The image and the zone itself are not done.
 8. **Conformance.** The pds.js e2e suite, run against this server, with
    `com.atproto.repo.*` and AppView proxying for ordinary accounts.
 9. **Firehose.** `subscribeRepos`, after the Zena host can upgrade a request

@@ -28,6 +28,12 @@
  *   - `PDS_RESERVED_SCOPES`: scope names no one may take, comma-separated,
  *     beside the host's own.
  *   - `PDS_MAX_BLOB_BYTES`: the largest artifact the host stores.
+ *   - `PDS_HANDLE_RECORDS`: where the host writes its handles' DNS records
+ *     (`pds:handles`): `cloud-dns`, a Cloud DNS managed zone, or `memory`,
+ *     for local runs. `memory` by default, but required with `firestore`,
+ *     so that no deployment keeps them in memory by leaving it out. With
+ *     `cloud-dns`, `PDS_DNS_ZONE` names the zone, and `PDS_DNS_PROJECT`
+ *     its project, by default the one the server runs in.
  * - `PDS_PLC_DIRECTORY` and `PDS_DNS_OVER_HTTPS`: where DIDs and handles
  *   are resolved, `https://plc.directory` and Cloudflare's resolver by
  *   default.
@@ -40,13 +46,15 @@ import {Option, Some, none, some} from 'zena:core';
 import {App, Server} from 'zena:http';
 import {hex} from 'zena:encoding';
 import {randomBytes, randomInt} from 'zena:random';
+import {defaultProjectId} from 'google-cloud:auth';
+import {CloudDns} from 'google-cloud:dns';
 import {Firestore} from 'google-cloud:firestore';
 import {Storage as CloudStorage} from 'google-cloud:storage';
 import {KeyType} from 'atproto:didkey';
 import {IdentityResolver} from 'atproto:identity';
 import {PlcOperation, submitPlcOperation} from 'atproto:plc';
 import {BlobBytes, CloudStorageBlobs, DirectoryBlobs, FirestoreHostStore, FirestoreStorage} from './firestore.zena';
-import {HandleRecords, MemoryHandleRecords} from './handles.zena';
+import {CloudDnsRecords, HandleRecords, MemoryHandleRecords} from './handles.zena';
 import {HostConfig, HostStore, MemoryHostStore, PackageHost} from './host.zena';
 import {Pds} from './pds.zena';
 import {createApp} from './server.zena';
@@ -70,6 +78,13 @@ export sealed class BlobChoice {
   case InDirectory(path: String)
 }
 
+/** Where the package host writes its handles' DNS records. */
+export sealed class RecordsChoice {
+  case RecordsInMemory
+  /** A Cloud DNS managed zone, of `project`, or the server's own when null. */
+  case InCloudDns(project: String | null, zone: String)
+}
+
 /** The package host's settings. */
 export final class HostSettings {
   domain: String;
@@ -81,8 +96,10 @@ export final class HostSettings {
   reservedScopes: Array<String>;
   /** The largest artifact the host stores, or none for the host's default. */
   maxBlobSize: Option<i64>;
+  records: RecordsChoice;
 
-  new(this.domain, this.serviceDid, this.publicUrl, this.rotationKey, this.reservedScopes, this.maxBlobSize);
+  new(this.domain, this.serviceDid, this.publicUrl, this.rotationKey, this.reservedScopes, this.maxBlobSize,
+      this.records);
 }
 
 /** What the server is to be. */
@@ -199,11 +216,31 @@ export function configFromEnv(env: (name: String) => String | null): ServiceConf
         }
       }
     }
+    var records: RecordsChoice = new RecordsInMemory();
+    let recordsKind = value('PDS_HANDLE_RECORDS');
+    let zone = value('PDS_DNS_ZONE');
+    let project = value('PDS_DNS_PROJECT');
+    if (recordsKind == 'cloud-dns') {
+      if (zone == null) {
+        problems.push('PDS_HANDLE_RECORDS=cloud-dns needs PDS_DNS_ZONE');
+      } else {
+        records = new InCloudDns(project, zone as String);
+      }
+    } else if (recordsKind == null || recordsKind == 'memory') {
+      if (recordsKind == null && storageKind == 'firestore') {
+        problems.push('PDS_HOST_DOMAIN with PDS_STORAGE=firestore needs PDS_HANDLE_RECORDS: cloud-dns, or memory');
+      }
+      if (zone != null || project != null) {
+        problems.push('PDS_DNS_ZONE and PDS_DNS_PROJECT need PDS_HANDLE_RECORDS=cloud-dns');
+      }
+    } else {
+      problems.push(`PDS_HANDLE_RECORDS is cloud-dns or memory, not ${recordsKind}`);
+    }
     host = new HostSettings(domain as String, value('PDS_SERVICE_DID') ?? `did:web:${domain}`,
-        value('PDS_PUBLIC_URL') ?? `https://${domain}`, rotationKey, reserved, maxBlobSize);
+        value('PDS_PUBLIC_URL') ?? `https://${domain}`, rotationKey, reserved, maxBlobSize, records);
   } else {
     for (let name in ['PDS_ROTATION_KEY', 'PDS_SERVICE_DID', 'PDS_PUBLIC_URL', 'PDS_RESERVED_SCOPES',
-        'PDS_MAX_BLOB_BYTES']) {
+        'PDS_MAX_BLOB_BYTES', 'PDS_HANDLE_RECORDS', 'PDS_DNS_ZONE', 'PDS_DNS_PROJECT']) {
       if (value(name) != null) {
         problems.push(`${name} needs PDS_HOST_DOMAIN`);
       }
@@ -264,12 +301,17 @@ export async function buildService(config: ServiceConfig, endpoint: String): Fut
     }
   }
   let pds = new Pds(storage, config.clockId);
-  // Handle records stay in memory: a deployment's go to its DNS zone, which
-  // nothing here writes yet.
-  let records = new MemoryHandleRecords();
   let settings = config.host;
   if (settings == null) {
-    return new Service(createApp(pds), pds, null, records);
+    return new Service(createApp(pds), pds, null, new MemoryHandleRecords());
+  }
+  var records: HandleRecords = new MemoryHandleRecords();
+  match (settings.records) {
+    case RecordsInMemory {}: {}
+    case InCloudDns {project, zone}: {
+      let dnsProject = project ?? await defaultProjectId();
+      records = new CloudDnsRecords(CloudDns.connect(dnsProject, zone));
+    }
   }
   let rotationKey = settings.rotationKey ?? new SigningKey(KeyType.Secp256k1, randomBytes(32));
   let hostConfig = new HostConfig(settings.serviceDid, settings.domain, settings.publicUrl ?? endpoint, rotationKey);

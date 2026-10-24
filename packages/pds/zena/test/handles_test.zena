@@ -5,11 +5,13 @@
 
 import {suite, test} from 'zena:test';
 import {equal, isTrue} from 'zena:assert';
-import {runFuture} from 'zena:async';
+import {Future, runFuture} from 'zena:async';
 import {HashMap} from 'zena:collections';
-import {App, Request, Response} from 'zena:http';
+import {App, Request, Response, Server} from 'zena:http';
 import {JsonArray, JsonObject, parseJson} from 'zena:json';
-import {MemoryHandleRecords, dnsOverHttpsApp} from 'pds:handles';
+import {AccessTokenCredentials} from 'google-cloud:auth';
+import {CloudDns} from 'google-cloud:dns';
+import {CloudDnsRecords, MemoryHandleRecords, dnsOverHttpsApp} from 'pds:handles';
 
 let DID = 'did:plc:alicealicealicealicealic';
 
@@ -64,5 +66,27 @@ export let tests = suite('pds:handles', () => {
     let a = query(app, '_atproto.acme.pkg.test', 'A');
     equal(numberAt(a, 'Status'), 0);
     equal((a['Answer'] as JsonArray).length, 0);
+  });
+
+  test('writes a TXT record set to Cloud DNS for each handle', (ctx) => {
+    // Answers every request with success, and keeps one line per request.
+    let log = new GrowableArray<String>();
+    let api = new App();
+    api.use(async (req, res, next): Future<void> => {
+      let body = await req.text();
+      log.push(if (body.length == 0) `${req.method} ${req.path}` else `${req.method} ${req.path} ${body}`);
+      res.statusCode = 200;
+      res.type = 'application/json';
+      res.body = if (body.length == 0) '{}' else body;
+    });
+    let server = new Server(api, 0 as u16);
+    server.start();
+    let zone = new CloudDns('proj', 'zone', new AccessTokenCredentials('token'), `http://127.0.0.1:${server.port as i32}`);
+    let records = new CloudDnsRecords(zone);
+    runFuture(records.set('Router.Acme.pkg.test', DID));
+    runFuture(records.remove('router.acme.pkg.test'));
+    server.close();
+    equal(log[0], `POST /dns/v1/projects/proj/managedZones/zone/rrsets {"name":"_atproto.router.acme.pkg.test.","type":"TXT","ttl":300,"rrdatas":["\\"did=${DID}\\""]}`);
+    equal(log[1], 'DELETE /dns/v1/projects/proj/managedZones/zone/rrsets/_atproto.router.acme.pkg.test./TXT');
   });
 });

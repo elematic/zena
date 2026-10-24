@@ -1,0 +1,145 @@
+/**
+ * The Cloud DNS client against a `zena:http` server in the same program
+ * that answers like Cloud DNS's record-set methods.
+ */
+
+import {suite, test} from 'zena:test';
+import {equal, isTrue, throws} from 'zena:assert';
+import {Future, runFuture} from 'zena:async';
+import {HashMap} from 'zena:collections';
+import {App, Server} from 'zena:http';
+import {JsonObject, parseJson, stringify} from 'zena:json';
+import {AccessTokenCredentials} from '../auth.zena';
+import {CloudDns, DnsError, RecordSet} from '../dns.zena';
+
+let ZONE = '/dns/v1/projects/my-project/managedZones/pkg-zone';
+
+/** A fake zone: its record sets by `<name> <type>`, and one line per request. */
+final class FakeZone {
+  sets = new HashMap<String, String>();
+  log = new GrowableArray<String>();
+}
+
+function fakeDns(zone: FakeZone): Server {
+  let app = new App();
+  app.use(async (req, res, next): Future<void> => {
+    let path = req.path;
+    let method = req.method;
+    zone.log.push(`${method} ${path}`);
+    res.type = 'application/json';
+    if (req.getHeader('authorization') != 'Bearer token') {
+      res.statusCode = 401;
+      res.body = '{"error":{"code":401,"message":"no credentials"}}';
+      return;
+    }
+    if (method == 'POST' && path == `${ZONE}/rrsets`) {
+      let body = parseJson(await req.text()) as JsonObject;
+      let key = `${body['name'] as String} ${body['type'] as String}`;
+      if (zone.sets.has(key)) {
+        res.statusCode = 409;
+        res.body = '{"error":{"code":409,"message":"already exists"}}';
+        return;
+      }
+      zone.sets[key] = stringify(body);
+      res.statusCode = 200;
+      res.body = stringify(body);
+      return;
+    }
+    let prefix = `${ZONE}/rrsets/`;
+    if (path.startsWith(prefix)) {
+      let rest = path.sliceBytes(prefix.length, path.length).split('/');
+      let key = `${rest[0]} ${rest[1]}`;
+      let exists = zone.sets.has(key);
+      if (!exists) {
+        res.statusCode = 404;
+        res.body = '{"error":{"code":404,"message":"not found"}}';
+        return;
+      }
+      if (method == 'GET') {
+        res.statusCode = 200;
+        res.body = zone.sets.getOr(key, '');
+      } else if (method == 'PATCH') {
+        zone.sets[key] = await req.text();
+        res.statusCode = 200;
+        res.body = zone.sets.getOr(key, '');
+      } else if (method == 'DELETE') {
+        zone.sets.delete(key);
+        res.statusCode = 200;
+        res.body = '';
+      } else {
+        res.statusCode = 405;
+        res.body = '{}';
+      }
+      return;
+    }
+    res.statusCode = 404;
+    res.body = '{"error":{"code":404,"message":"no such method"}}';
+  });
+  let server = new Server(app, 0 as u16);
+  server.start();
+  return server;
+}
+
+function clientOf(server: Server, token: String = 'token'): CloudDns {
+  return new CloudDns('my-project', 'pkg-zone', new AccessTokenCredentials(token),
+      `http://127.0.0.1:${server.port as i32}`);
+}
+
+let NAME = '_atproto.acme.pkg.test.';
+
+export let tests = suite('Cloud DNS', () => {
+  test('creates, reads, replaces and deletes a record set', (ctx) => {
+    let zone = new FakeZone();
+    let server = fakeDns(zone);
+    let dns = clientOf(server);
+
+    isTrue(runFuture(dns.get(NAME, 'TXT')) == null, 'none yet');
+    runFuture(dns.put(new RecordSet(NAME, 'TXT', 300, ['"did=did:plc:one"'])));
+    let read = runFuture(dns.get(NAME, 'TXT')) as RecordSet;
+    equal(read.name, NAME);
+    equal(read.ttl, 300);
+    equal(read.rrdatas[0], '"did=did:plc:one"');
+
+    // A second put of the name replaces the set.
+    runFuture(dns.put(new RecordSet(NAME, 'TXT', 300, ['"did=did:plc:two"'])));
+    equal((runFuture(dns.get(NAME, 'TXT')) as RecordSet).rrdatas[0], '"did=did:plc:two"');
+
+    isTrue(runFuture(dns.delete(NAME, 'TXT')), 'deleted');
+    isTrue(!runFuture(dns.delete(NAME, 'TXT')), 'nothing to delete');
+    isTrue(runFuture(dns.get(NAME, 'TXT')) == null, 'gone');
+    server.close();
+
+    equal(zone.log[1], `POST ${ZONE}/rrsets`);
+    equal(zone.log[4], `PATCH ${ZONE}/rrsets/_atproto.acme.pkg.test./TXT`);
+    equal(zone.log[6], `DELETE ${ZONE}/rrsets/_atproto.acme.pkg.test./TXT`);
+  });
+
+  test('throws the API error, with its status and message', (ctx) => {
+    let zone = new FakeZone();
+    let server = fakeDns(zone);
+    let dns = clientOf(server, 'wrong');
+    var status = 0;
+    var message = '';
+    try {
+      runFuture(dns.put(new RecordSet(NAME, 'TXT', 300, ['"did=did:plc:one"'])));
+    } catch (e) {
+      if (e is DnsError) {
+        status = (e as DnsError).status;
+        message = e.message;
+      }
+    }
+    server.close();
+    equal(status, 401);
+    isTrue(message.contains('no credentials'), message);
+  });
+
+  test('sends a record set as Cloud DNS takes it', (ctx) => {
+    let json = new RecordSet(NAME, 'TXT', 60, ['"a"', '"b"']).toJson();
+    equal(stringify(json), '{"name":"_atproto.acme.pkg.test.","type":"TXT","ttl":60,"rrdatas":["\\"a\\"","\\"b\\""]}');
+    let back = RecordSet.fromJson(json);
+    equal(back.rrdatas.length, 2);
+    throws(() => {
+      RecordSet.fromJson(parseJson('[1]'));
+    });
+  });
+});

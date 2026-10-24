@@ -23,7 +23,7 @@ import {Server} from 'zena:http';
 import {JsonObject, stringify} from 'zena:json';
 import {MemoryHandleRecords, dnsOverHttpsApp} from 'pds:handles';
 import {FakePds} from 'package-manager:testing/fake-pds';
-import {HostSettings, InMemory, ServiceConfig, serve} from 'pds:service';
+import {HostSettings, InMemory, RecordsInMemory, ServiceConfig, serve} from 'pds:service';
 
 export async function main(): Future<i32> {
   let world = new FakePds();
@@ -34,7 +34,8 @@ export async function main(): Future<i32> {
   // The server `main.zena` runs, configured as the environment would,
   // with its own origin as the host's endpoint and a rotation key made
   // up at start.
-  let host = new HostSettings('pkg.test', 'did:web:pkg.test', null, null, new GrowableArray<String>(), none);
+  let host = new HostSettings('pkg.test', 'did:web:pkg.test', null, null, new GrowableArray<String>(), none,
+      new RecordsInMemory());
   let running = await serve(new ServiceConfig(0 as u16, new InMemory(), host, world.plcDirectory,
       world.dnsOverHttps, 0));
   let dns = new Server(dnsOverHttpsApp(running.service.records as MemoryHandleRecords), 0 as u16);

@@ -6,7 +6,9 @@
  * when it gives a name to an account, at the managed DNS service its zone
  * is kept at.
  *
- * `MemoryHandleRecords` keeps them in memory, for tests and local runs, and
+ * `CloudDnsRecords` writes them to a Cloud DNS managed zone, for a
+ * deployment. `MemoryHandleRecords` keeps them in memory, for tests and
+ * local runs, and
  * `dnsOverHttpsApp` answers lookups from it as a DNS-over-HTTPS resolver
  * does, so `zena` and `atproto:identity` can resolve the handles with
  * `ZENA_DNS_OVER_HTTPS` pointed at it.
@@ -16,6 +18,7 @@ import {Future} from 'zena:async';
 import {HashMap} from 'zena:collections';
 import {App, Router} from 'zena:http';
 import {JsonArray, JsonObject, stringify} from 'zena:json';
+import {CloudDns, RecordSet} from 'google-cloud:dns';
 import {normalizeHandle} from 'atproto:syntax';
 
 /** Where the host writes its handles' TXT records. */
@@ -24,6 +27,33 @@ export interface HandleRecords {
   set(handle: String, did: String): Future<void>;
   /** Removes `handle`'s record, if it has one. */
   remove(handle: String): Future<void>;
+}
+
+/** How long resolvers may keep a handle's record, in seconds. */
+let RECORD_TTL = 300;
+
+/**
+ * Handle records in a Cloud DNS managed zone that holds the host's domain:
+ * a TXT record set at `_atproto.<handle>.` with the one record
+ * `"did=<did>"`.
+ */
+export final class CloudDnsRecords implements HandleRecords {
+  #zone: CloudDns;
+
+  new(zone: CloudDns) : #zone = zone;
+
+  async set(handle: String, did: String): Future<void> {
+    await this.#zone.put(new RecordSet(recordName(handle), 'TXT', RECORD_TTL, [`"did=${did}"`]));
+  }
+
+  async remove(handle: String): Future<void> {
+    await this.#zone.delete(recordName(handle), 'TXT');
+  }
+}
+
+/** The fully qualified name of `handle`'s record. */
+function recordName(handle: String): String {
+  return `_atproto.${normalizeHandle(handle)}.`;
 }
 
 /** Handle records in memory. */

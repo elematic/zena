@@ -1,0 +1,79 @@
+/**
+ * A package host to try `zena` against on this machine, with nothing sent
+ * to the public PLC directory or to real DNS. It starts:
+ *
+ * - a stand-in PLC directory, and the PDS of a maintainer, with an app
+ *   password (`package-manager:testing/fake-pds`);
+ * - the package host for `pkg.test`, built from the environment as
+ *   `main.zena` builds it, so `PDS_STORAGE=firestore` and the rest work
+ *   here too, with the Firestore emulator. Its handle records are in
+ *   memory;
+ * - a DNS-over-HTTPS resolver that answers from those records.
+ *
+ * Then it prints the environment `zena` needs, and the commands of a
+ * first publish. Run from the repository root with
+ * `npm run demo -w @zena-lang/pds`, and stop it with Ctrl-C; everything in
+ * memory is gone then.
+ */
+
+import {Future} from 'zena:async';
+import {HashMap} from 'zena:collections';
+import {getEnv} from 'zena:cli';
+import {Server} from 'zena:http';
+import {FakePds} from 'package-manager:testing/fake-pds';
+import {MemoryHandleRecords, dnsOverHttpsApp} from 'pds:handles';
+import {configFromEnv, serve} from 'pds:service';
+
+let MAINTAINER = 'did:plc:maintainermaintainermain';
+let PASSWORD = 'demo-app-password';
+
+export async function main(): Future<void> {
+  let world = new FakePds();
+  world.start();
+  world.account(MAINTAINER, null).password = PASSWORD;
+
+  let port = getEnv('PORT') ?? '2583';
+  let defaults = new HashMap<String, String>();
+  defaults['PORT'] = port;
+  defaults['PDS_HOST_DOMAIN'] = 'pkg.test';
+  defaults['PDS_PUBLIC_URL'] = `http://127.0.0.1:${port}`;
+  defaults['PDS_PLC_DIRECTORY'] = world.plcDirectory;
+  // The resolver below answers from records in memory, wherever the
+  // accounts are kept.
+  defaults['PDS_HANDLE_RECORDS'] = 'memory';
+  // TODO(#520): the return type is only for the compiler.
+  let config = configFromEnv((name: String): String | null => {
+    let fixed = name == 'PDS_HANDLE_RECORDS' || name == 'PDS_PLC_DIRECTORY';
+    let given = if (fixed) null else getEnv(name);
+    if (given != null) {
+      return given;
+    }
+    if (let (true, value) = defaults.get(name)) {
+      return value;
+    }
+    return null;
+  });
+  let running = await serve(config);
+  let dns = new Server(dnsOverHttpsApp(running.service.records as MemoryHandleRecords), 0 as u16);
+  dns.start();
+
+  console.log(`A package host for pkg.test is listening on ${running.origin}.
+
+In another shell, with a zena that runs outside this repository (build one
+with \`npm run build:standalone -w @zena-lang/zena-cli\`: it is
+target/standalone/release/zena-cli), in a directory with a zena-package.json
+that has a name and a version:
+
+  export ZENA_REPO_ROOT=                # the directory you are in is the workspace (#552)
+  export ZENA_PLC_DIRECTORY=${world.plcDirectory}
+  export ZENA_DNS_OVER_HTTPS=http://127.0.0.1:${dns.port as i32}/dns-query
+  export ZENA_PACKAGE_HOST=${running.origin}
+  export ZENA_CONFIG_DIR=$(mktemp -d)   # keeps the demo's sign-in apart from yours
+
+  echo ${PASSWORD} | zena login ${MAINTAINER} --password-stdin
+  zena publish --scope acme --yes
+
+and in another workspace, \`zena add <name>.acme.pkg.test\` and \`zena run\`.
+Ctrl-C stops the host and forgets everything it held in memory.`);
+  await world.done();
+}

@@ -68,15 +68,37 @@ export interface HostStore {
   claimName(scope: String, name: String, did: String): Future<boolean>;
   /** Takes `name` in `scope` back from `did`, whose account could not be made. */
   releaseName(scope: String, name: String, did: String): Future<void>;
+  /** Every scope, and its organization. */
+  allScopes(): Future<Array<ClaimedScope>>;
+  /** Every name in every scope, and the account it is given to. */
+  allNames(): Future<Array<ClaimedName>>;
   /** The entries behind the commitments in `account`'s records. */
   entries(account: String): Future<Array<MemberEntry>>;
   addEntries(account: String, entries: Array<MemberEntry>): Future<void>;
 }
 
+/** A scope and the organization it belongs to. */
+export final class ClaimedScope {
+  scope: String;
+  org: String;
+
+  new(this.scope, this.org);
+}
+
+/** A name in a scope and the account it is given to. */
+export final class ClaimedName {
+  scope: String;
+  name: String;
+  did: String;
+
+  new(this.scope, this.name, this.did);
+}
+
 /** The host's store in memory. */
 export final class MemoryHostStore implements HostStore {
   #scopes = new HashMap<String, String>();
-  #names = new HashMap<String, String>();
+  /** Claimed names by `<name>.<scope>`. */
+  #names = new HashMap<String, ClaimedName>();
   #entries = new HashMap<String, GrowableArray<MemberEntry>>();
 
   async scopeOwner(scope: String): Future<String | null> {
@@ -103,8 +125,8 @@ export final class MemoryHostStore implements HostStore {
   }
 
   async nameInScope(scope: String, name: String): Future<String | null> {
-    if (let (true, did) = this.#names.get(`${name}.${scope}`)) {
-      return did;
+    if (let (true, claimed) = this.#names.get(`${name}.${scope}`)) {
+      return claimed.did;
     }
     return null;
   }
@@ -114,17 +136,33 @@ export final class MemoryHostStore implements HostStore {
     if (this.#names.has(key)) {
       return false;
     }
-    this.#names[key] = did;
+    this.#names[key] = new ClaimedName(scope, name, did);
     return true;
   }
 
   async releaseName(scope: String, name: String, did: String): Future<void> {
     let key = `${name}.${scope}`;
-    if (let (true, owner) = this.#names.get(key)) {
-      if (owner == did) {
+    if (let (true, claimed) = this.#names.get(key)) {
+      if (claimed.did == did) {
         this.#names.delete(key);
       }
     }
+  }
+
+  async allScopes(): Future<Array<ClaimedScope>> {
+    let all = new GrowableArray<ClaimedScope>();
+    this.#scopes.forEach((scope, org) => {
+      all.push(new ClaimedScope(scope, org));
+    });
+    return all;
+  }
+
+  async allNames(): Future<Array<ClaimedName>> {
+    let all = new GrowableArray<ClaimedName>();
+    this.#names.forEach((key, claimed) => {
+      all.push(claimed);
+    });
+    return all;
   }
 
   async entries(account: String): Future<Array<MemberEntry>> {
@@ -323,6 +361,28 @@ export final class PackageHost {
     let cid = (await this.pds.storage.store(account.did).getRecord(MAINTAINERS_TYPE, 'self')) as Cid;
     await this.#records.set(handle, account.did);
     return new Created(account.did, handle, `at://${account.did}/${MAINTAINERS_TYPE}/self`, cid);
+  }
+
+  /**
+   * Writes the handle record of every scope and name the host has given to
+   * an account that exists, from its store, as after records were lost or
+   * a write of one failed. Returns how many it wrote.
+   */
+  async syncHandles(): Future<i32> {
+    var written = 0;
+    for (let claimed in await this.#store.allScopes()) {
+      if ((await this.pds.storage.getAccount(claimed.org)) != null) {
+        await this.#records.set(`${claimed.scope}.${this.config.domain}`, claimed.org);
+        written += 1;
+      }
+    }
+    for (let claimed in await this.#store.allNames()) {
+      if ((await this.pds.storage.getAccount(claimed.did)) != null) {
+        await this.#records.set(`${claimed.name}.${claimed.scope}.${this.config.domain}`, claimed.did);
+        written += 1;
+      }
+    }
+    return written;
   }
 
   /** `uploadArtifact`: stores `bytes` as a blob of `pkg`, for a release. */
