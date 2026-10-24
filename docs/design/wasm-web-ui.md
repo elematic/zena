@@ -120,6 +120,9 @@ for custom elements. Nothing in the protocol names lit-html.
   on the DOM element and calls the lifecycle on.
 - **Projection**: a copy of host data, plain values only, that the host
   hands a module in place of a live object.
+- **Handle**: the host's object for a module object of a module without
+  Wasm GC, which names its objects with integers; one per id, released
+  to the module when the page drops it ([Other languages](#other-languages)).
 
 ## Prior art
 
@@ -214,11 +217,11 @@ compiles the module with `builtins: ['js-string']`, and its literals
 arrive through imported string constants, interned by the engine at
 instantiation. That is what `compileOptions` in the example above turns
 on; on the `js` target every Zena string is already such a handle, so
-nothing is copied. A module with linear memory and no GC decodes its
-bytes through one host import, `string_from_utf8(ptr, len)`, which the
-host implements with `TextDecoder` over the module's exported memory
-([Other languages](#other-languages)). Either way a template's strings
-are read once per template, so the cost falls on text values alone.
+nothing is copied. A module with linear memory and no GC returns a
+pointer to the bytes in its memory, and the host decodes them with
+`TextDecoder` ([Other languages](#other-languages)). Either way a
+template's strings are read once per template, so the cost falls on
+text values alone.
 
 ### Exports
 
@@ -1006,35 +1009,143 @@ exports.
 
 ## Other languages
 
-The protocol asks three things of a module: hand out references, keep one
-of them stable per template, and produce JS strings.
+The protocol asks three things of a module: hand out references the host
+can keep, keep one of them stable per template, and produce JavaScript
+strings. A language with Wasm GC, such as Kotlin/Wasm, Dart or OCaml, has
+all three the way Zena does: results and templates are objects, and
+strings are either JS strings already or convertible through
+`wasm:js-string`.
 
-A language with Wasm GC, such as Kotlin/Wasm, Dart or OCaml, has all three
-the way Zena does: results and templates are objects, and strings are either
-JS strings already or convertible through `wasm:js-string`.
+A language with linear memory and no GC, such as Rust or C, has none of
+the three, and the protocol has an extension for it: the host implements
+it in `linear.ts`, and a Rust module in `packages/wasm-web-ui/examples/rust`
+exercises it. The host detects the extension from two exports, `memory`
+and `webui_release`, and a GC module never reaches that code: the host it
+runs through is unchanged.
 
-A language with linear memory and no GC, such as Rust or C, has none of the
-three natively and gets each from the host at a small cost:
+### Ids and handles
 
-- **References.** The module keeps results in its own memory and names them
-  with integers. To hand one out it imports `wasm-web-ui.handle(id) ->
-externref`, which returns a JS object standing for the id, and to read one
-  back it imports `wasm-web-ui.handle_id(externref) -> i32`. The host
-  registers each handle object with a `FinalizationRegistry` and calls an
-  exported `webui_release(id)` when it is collected, so the module learns when
-  a result is dead without a release call in the protocol.
-- **Identity.** The module hands out one handle per template, made once and
-  kept in a static, and the WeakMap keying works as it does for a GC object.
-- **Strings.** The module exports its memory and imports
-  `wasm-web-ui.string_from_utf8(ptr, len) -> externref`, one call per
-  string, which the host decodes from that memory with `TextDecoder`.
-  Template strings pay this once; text values pay it per render, which is
-  the cost `wasm-bindgen` pays for every string today.
+The module names its objects with integers, nonzero, and the host keeps
+the identity. The objects the host holds across calls are **owned**: a
+template's strings, a listener, a definition, a property and an element
+instance. The host makes one `Handle` object per owned id, the same
+object for as long as anything on the page holds it, and registers it
+with a `FinalizationRegistry` whose callback calls the module's
+`webui_release(id)`. The module frees the object then, and may reuse the
+id after. A result and the lists in it are **transient**: the host reads
+a result completely before it calls into the module through anything
+but the accessors that read it, so the module keeps results in an arena
+it empties on entry to the next render, and their ids cross bare.
 
-So a Rust implementation adds three imports and one export to the protocol
-and is otherwise the same. None of them widens what a module can reach:
-`handle`, `handle_id` and `string_from_utf8` give the module nothing it did
-not already have.
+Two releases come sooner than the finalizer. A listener is held by the
+part that renders it and replaced on the next render, and a module that
+makes a closure per render would otherwise accumulate one per render
+until the engine collects. The host counts the parts holding a listener
+handle and calls `webui_release` when the count reaches zero, which for a
+listener is the next render. A listener id is therefore the host's once
+it is in a result: a module that wants one closure across renders makes
+a new id around a shared one each time. The second is the event in a
+listener call, which lasts for the call. An element instance is released
+when the DOM element is collected, which only the finalizer sees; the
+module's state for an element lives as long as the element, as a GC
+module's does.
+
+Finalization is not prompt, and it is not guaranteed before the page goes
+away. The module leaks until it runs, bounded by what the DOM holds,
+which is the bound `wasm-bindgen`'s weak-reference table accepts for
+Rust objects JavaScript holds. The host unregisters a handle it releases
+early, so `webui_release` is called once per id.
+
+### Strings and host values
+
+A string out of the module is a pointer to a `{ptr, len}` record of
+UTF-8 bytes in its memory, which the host decodes with `TextDecoder`; 0
+is null, or the empty string where the protocol has no null. A
+template's strings are decoded once per template; a text value is
+decoded per render, which is the cost `wasm-bindgen` pays for every
+string. A string into the module goes through the module's
+`webui_alloc(len)`: the host writes the bytes, passes the pointer and
+length, and the module owns them from then on. A capability import that
+returns a string writes it into a buffer the module passes with its
+capacity and returns the full length, so a module whose buffer was too
+small calls again with a larger one.
+
+A host value the module holds is an id into a table on the host's side:
+the event in a listener call, for the call, and a value the page set into
+a `host` property, until the module calls the `extern_release` import.
+
+The whole extension, beside the exports and imports above taking ids:
+
+| Module side                                                            | For                                                     |
+| ---------------------------------------------------------------------- | ------------------------------------------------------- |
+| export `memory`                                                        | the strings the host reads and writes                   |
+| export `webui_alloc(len) -> ptr`                                       | bytes for a string the host passes in                   |
+| export `webui_release(id)`                                             | the host dropped its last reference to an owned object  |
+| export `webui_element_attribute_changed(instance, property, ptr, len)` | the attribute's text as bytes, in place of a JS string  |
+| export `webui_element_set_text(instance, property, ptr, len)`          | a text property, in place of `webui_element_set_extern` |
+| import `dispatch_event(instance, ptr, len, flags)`                     | the event type as bytes                                 |
+| import `event_target_value(event, buf, cap) -> len`, `event_key`       | a string written into the module's buffer               |
+| import `extern_release(id)`                                            | the module dropped a host value                         |
+
+### A Rust module
+
+`examples/rust` is a counter element over the support code a
+`wasm-web-ui` crate would provide, `webui.rs`: the protocol's exports
+over a slab of objects, templates, values, listeners and the element
+trait. The element:
+
+```rust
+static COUNTER: Template = template!("<button ?disabled=", " @click=", ">", ": ", "</button>");
+
+struct Counter { count: i32, step: i32, label: String, disabled: bool }
+
+impl Element for Counter {
+    fn render(&mut self, cx: &Context) -> Option<TemplateResult> {
+        Some(html(&COUNTER, vec![
+            self.disabled.into(),
+            cx.on(|counter: &mut Counter, cx: &Context, _event: &Event| {
+                counter.count += counter.step;
+                cx.dispatch_event("count-changed", EventFlags { bubbles: true, ..Default::default() });
+            }),
+            self.label.clone().into(),
+            self.count.into(),
+        ]))
+    }
+}
+
+static DEFINITIONS: [Definition; 1] = [Definition {
+    tag: Some("x-rust-counter"),
+    styles: Some("button { font: inherit; }"),
+    properties: &[
+        property!(Counter, count: i32),
+        property!(Counter, step: i32),
+        property!(Counter, label: String),
+        property!(Counter, disabled: bool),
+    ],
+    create: new_counter,
+}];
+```
+
+Three things differ from the Zena version, and each names a piece of
+language support the Rust side lacks. A template is the list of strings
+around the holes, written out, because Rust has no tagged template
+literal; a procedural macro could split one literal at `${}` marks, and
+the support code's `template!` is where it would go. A property is
+declared beside the struct with `property!`, which writes the accessors
+by downcasting the element; a derive macro over the struct's fields
+would write them from attributes on the fields, as `@property` does in
+Zena through `context`. A listener takes the element as its first
+parameter, `cx.on(|counter: &mut Counter, cx, event| …)`, because a
+closure cannot borrow the element it is made in; the support code finds
+the element by the instance the listener was made for, and asks for a
+render after the listener ran. The support code is about 900 lines,
+most of it the exports, and would be a crate.
+
+The module imports three functions, `request_update`, `dispatch_event`
+and `extern_release`, the ones its code references; a capability import
+appears only when a listener calls it, as in Zena. Built with
+`opt-level = "z"`, `lto` and `panic = "abort"`, it is 32,794 bytes,
+most of it the standard library's allocator and number formatting.
 
 ## Implementation status
 
@@ -1062,6 +1173,9 @@ and `packages/stdlib/zena/web-elements`:
 - Server rendering: `renderResult` and `renderElement` on the server
   targets, hydration in the host, a Zena demo server, and the tests that
   hold the renderer to Lit's.
+- The linear-memory extension ([Other languages](#other-languages)) in
+  the host, and a Rust counter element over it, with tests that drive it
+  through the same host as the Zena modules.
 - The `externref` conversions and `ref.null extern`, with portable tests.
 - Tests under Node with a DOM (`happy-dom`) that compile Zena sources with
   the in-process compiler, instantiate them, and render through lit-html;
@@ -1142,7 +1256,8 @@ Found and not fixed, each with a reproduction:
   that only resolves on `js`.
 
 Not built: keyed repeats and other directives, the template manifest,
-decorator arguments, the handle extension for linear-memory languages.
+decorator arguments, a `host` value in a linear-memory module's template
+(the id crosses; the Rust support code has no value type for it yet).
 
 ## Measurements
 
@@ -1159,6 +1274,11 @@ The demo module imports `event_target_value` and `event_key` because its
 listeners read them, and not `event_prevent_default`,
 `event_stop_propagation` or `dispatch_event`, which nothing in it calls:
 the import list is the capability list.
+
+The Rust counter (`examples/rust`, release profile, no name section) is
+32,794 B and imports `request_update`, `dispatch_event` and
+`extern_release`; its size is the standard library's allocator and
+number formatting, not the protocol.
 
 Reading a result through the accessors, measured in
 `templates_test.ts` over 200 repetitions of a 100-item list (two export
@@ -1206,7 +1326,7 @@ the direction engines optimise less ([host-interop.md](host-interop.md),
 and the host could keep a map from id to prepared template. Ids need a
 registry on one side or both, a lifetime for entries, and a way to free
 them; the strings object's identity gives all three on a GC language, and
-the handle extension gives them to the others.
+the linear-memory extension gives them to the others.
 
 **Serializing results.** A result could cross as JSON or a byte buffer. A
 string value would then be copied at least once, template identity would

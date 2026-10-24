@@ -10,3 +10,4 @@
  */
 export * from './templates.js';
 export * from './elements.js';
+export * from './linear.js';

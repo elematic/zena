@@ -288,7 +288,7 @@ suite('wasm-web-ui: custom elements', () => {
     instance.updated(false);
     instance.set('count', 3);
     assert.equal(instance.get('count'), 3);
-    const statsOf = exports['statsOf'] as (inst: object) => number;
+    const statsOf = exports['statsOf'] as (inst: unknown) => number;
     assert.equal(statsOf(instance.ref), 1000 + 10 + 2);
   });
 
