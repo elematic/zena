@@ -465,6 +465,26 @@ export function lowerFunction(wasm: WasmModule, func: WasmFunction): IrBody {
 }
 
 /**
+ * Which constructor phase `func` is, by its method name: 1 for a value
+ * phase (`<ctor-init>`, returning its class's field values), 2 for a
+ * written-body phase (`<ctor-body>`), 0 for anything else.
+ */
+function ctorPhaseOf(func: WasmFunction): i32 {
+  let name = func.methodName;
+  if (name == null) {
+    return 0;
+  }
+  let m = name as String;
+  if (m == '<ctor-init>' || m.startsWith('<ctor-init>.')) {
+    return 1;
+  }
+  if (m == '<ctor-body>' || m.startsWith('<ctor-body>.')) {
+    return 2;
+  }
+  return 0;
+}
+
+/**
  * `func`'s body, lowered directly or made from its family's template
  * (template.zena). A family's first two members lower in template mode
  * and teach the family its template; every later member is specialized
@@ -491,6 +511,8 @@ export function lowerWithTemplates(wasm: WasmModule, families: TemplateFamilies,
   let t0 = nowMs();
   let recorder = new TemplateRecorder();
   let lowerer = new FunctionLowerer(wasm, func);
+  // A constructor phase lowers as its phase, as in lowerFunction.
+  lowerer.ctorPhase = ctorPhaseOf(func);
   lowerer.b.recorder = recorder;
   var abandoned: String | null = null;
   // (A catch arm yields null rather than rethrowing directly — see
@@ -1099,17 +1121,14 @@ function lowerFunctionOrThrow(wasm: WasmModule, func: WasmFunction): IrBody {
       }
     }
   }
-  if (func.methodName != null) {
-    let fMeth = func.methodName as String;
-    if (fMeth == '<ctor-init>' || fMeth.startsWith('<ctor-init>.') ||
-        fMeth == '<ctor-body>' || fMeth.startsWith('<ctor-body>.')) {
-      let lowerer = new FunctionLowerer(wasm, func);
-      lowerer.ctorPhase = if (fMeth == '<ctor-init>' || fMeth.startsWith('<ctor-init>.')) 1 else 2;
-      if (func.node == null) {
-        return lowerer.lowerSynthesizedConstructor();
-      }
-      return lowerer.lower();
+  let phase = ctorPhaseOf(func);
+  if (phase != 0) {
+    let lowerer = new FunctionLowerer(wasm, func);
+    lowerer.ctorPhase = phase;
+    if (func.node == null) {
+      return lowerer.lowerSynthesizedConstructor();
     }
+    return lowerer.lower();
   }
   if (func.node == null) {
     if (func.isGeneratorNext) {
