@@ -1859,6 +1859,20 @@ export final class ZirFunctionEmitter {
   }
 
   #emitInst(inst: i32): void {
+    // Early reads scheduled at this chain start: pushed before the
+    // chain's own code, owed to the consumers that read past them.
+    // They go first, before the checks below that let an instruction
+    // emit nothing: the reads belong at the chain start whether or not
+    // the instruction there emits code.
+    if (let (true, pre) = this.#prePush.get(inst)) {
+      this.#flushPendingReturn();
+      let owners = this.#prePushFor[inst];
+      for (var i = 0; i < pre.length; i += 1) {
+        this.#emitRead(pre[i]);
+        this.pendingStreamed.push(pre[i]);
+        this.pendingOwner.push(owners[i]);
+      }
+    }
     // A rematerialized constant emits at each USE (#emitConstInline),
     // nothing at its definition.
     if (this.remat[inst]) { return; }
@@ -1875,16 +1889,6 @@ export final class ZirFunctionEmitter {
     this.#flushPendingReturn();
     let {body} = this;
     let op = body.op(inst);
-    // Early reads scheduled at this chain start: pushed before the
-    // chain's own code, owed to the consumers that read past them.
-    if (let (true, pre) = this.#prePush.get(inst)) {
-      let owners = this.#prePushFor[inst];
-      for (var i = 0; i < pre.length; i += 1) {
-        this.#emitRead(pre[i]);
-        this.pendingStreamed.push(pre[i]);
-        this.pendingOwner.push(owners[i]);
-      }
-    }
     this.currentEmit = inst;
     match (op) {
       case IrOp.nop: { return; }
