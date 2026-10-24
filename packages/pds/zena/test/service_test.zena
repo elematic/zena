@@ -10,6 +10,7 @@ import {runFuture} from 'zena:async';
 import {HashMap} from 'zena:collections';
 import {App, Request, Response} from 'zena:http';
 import {JsonObject, parseJson} from 'zena:json';
+import {parseDidDocument} from 'atproto:did';
 import {
   ConfigError, InBucket, InCloudDns, InDirectory, InFirestore, InMemory, RecordsInMemory, ServiceConfig,
   buildService, configFromEnv
@@ -188,5 +189,12 @@ export let tests = suite('pds:service', () => {
     let res = get(hosted.app, '/xrpc/com.atproto.server.describeServer');
     equal(res.statusCode, 200);
     equal((parseJson(res.body as String) as JsonObject)['did'] as String, 'did:web:pkg.test');
+    // The service DID resolves, as atproto reads a did:web document, to the
+    // host as a PDS.
+    let document = get(hosted.app, '/.well-known/did.json');
+    equal(document.statusCode, 200);
+    let parsed = parseDidDocument(parseJson(document.body as String), 'did:web:pkg.test');
+    equal(parsed.pds as String, 'https://pkg.test');
+    equal(get(plain.app, '/.well-known/did.json').statusCode, 404);
   });
 });

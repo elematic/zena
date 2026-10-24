@@ -166,6 +166,28 @@ async function hostCall(host: PackageHost, req: Request, res: Response, method: 
 function hostRoutes(router: Router, host: PackageHost): void {
   // What a client needs to call the host: its service DID, which tokens
   // are addressed to, and the domain its handles are under.
+  // The host's own DID document, when its service DID is a `did:web`,
+  // which resolves to `https://<host>/.well-known/did.json`. It names the
+  // host as a PDS; the host signs nothing as itself, so the document has no
+  // keys.
+  if (host.config.serviceDid.startsWith('did:web:')) {
+    router.get('/.well-known/did.json', async (req, res, next, params) => {
+      let context = new JsonArray();
+      context.push('https://www.w3.org/ns/did/v1');
+      let service = new JsonObject();
+      service['id'] = '#atproto_pds';
+      service['type'] = 'AtprotoPersonalDataServer';
+      service['serviceEndpoint'] = host.config.endpoint;
+      let services = new JsonArray();
+      services.push(service);
+      let body = new JsonObject();
+      body['@context'] = context;
+      body['id'] = host.config.serviceDid;
+      body['service'] = services;
+      json(res, body);
+    });
+  }
+
   router.get('/xrpc/com.atproto.server.describeServer', async (req, res, next, params) => {
     let domains = new JsonArray();
     domains.push(`.${host.config.domain}`);
