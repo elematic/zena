@@ -73,6 +73,7 @@ export let tests = suite('pds:service', () => {
       ('PDS_STORAGE', 'firestore'),
       ('PDS_TENANT', 'pkg'),
       ('PDS_BLOB_BUCKET', 'zena-blobs'),
+      ('PDS_FIRESTORE_DATABASE', 'pkg'),
       ('PDS_HOST_DOMAIN', 'pkg.example.dev'),
       ('PDS_ROTATION_KEY', KEY),
       ('PDS_RESERVED_SCOPES', 'std, core,,'),
@@ -87,8 +88,9 @@ export let tests = suite('pds:service', () => {
     equal(config.clockId, 7);
     equal(config.plcDirectory, 'http://plc.test');
     match (config.storage) {
-      case InFirestore {tenant, blobs}: {
+      case InFirestore {tenant, blobs, database}: {
         equal(tenant, 'pkg');
+        equal(database as String, 'pkg');
         isTrue(blobs is InBucket && (blobs as InBucket).bucket == 'zena-blobs', 'the bucket');
       }
       case InMemory {}: {
@@ -134,6 +136,28 @@ export let tests = suite('pds:service', () => {
         localHost.publicUrl as String == 'http://localhost:2583', 'the DID and URL given');
   });
 
+  test('accepts the configuration deploy/deploy.sh gives staging', (ctx) => {
+    // As deploy.sh sets it on Cloud Run, with the secret's value.
+    let config = configFromEnv(envOf([
+      ('PORT', '8080'),
+      ('PDS_STORAGE', 'firestore'),
+      ('PDS_FIRESTORE_DATABASE', 'zena-pkg-staging'),
+      ('PDS_TENANT', 'pkg'),
+      ('PDS_BLOB_BUCKET', 'meta-garage-420114-zena-pkg-staging'),
+      ('PDS_HOST_DOMAIN', 'pkg-staging.zena-lang.dev'),
+      ('PDS_HANDLE_RECORDS', 'cloud-dns'),
+      ('PDS_DNS_ZONE', 'zena-pkg-staging'),
+      ('PDS_DNS_PROJECT', 'meta-garage-420114'),
+      ('PDS_PLC', 'staging'),
+      ('GOOGLE_CLOUD_PROJECT', 'meta-garage-420114'),
+      ('PDS_ROTATION_KEY', KEY),
+    ]));
+    isTrue(config.plcStaging, 'its own PLC directory');
+    let host = config.host;
+    isTrue(host != null && host.serviceDid == 'did:web:pkg-staging.zena-lang.dev' &&
+        host.publicUrl as String == 'https://pkg-staging.zena-lang.dev', 'the host');
+  });
+
   test('makes up a rotation key for a host in memory', (ctx) => {
     let host = configFromEnv(envOf([('PDS_HOST_DOMAIN', 'pkg.test')])).host;
     isTrue(host != null && host.rotationKey == null, 'no key until the server starts');
@@ -172,6 +196,8 @@ export let tests = suite('pds:service', () => {
     let stray = refusal([('PDS_ROTATION_KEY', KEY), ('PDS_BLOB_DIR', '/tmp/x')]);
     isTrue(stray.contains('PDS_ROTATION_KEY needs PDS_HOST_DOMAIN'), stray);
     isTrue(stray.contains('need PDS_STORAGE=firestore'), stray);
+    let strayDatabase = refusal([('PDS_FIRESTORE_DATABASE', 'pkg')]);
+    isTrue(strayDatabase.contains('need PDS_STORAGE=firestore'), strayDatabase);
     let both = refusal([('PDS_STORAGE', 'firestore'), ('PDS_TENANT', 't'), ('PDS_BLOB_BUCKET', 'b'),
         ('PDS_BLOB_DIR', '/d')]);
     isTrue(both.contains('not both'), both);

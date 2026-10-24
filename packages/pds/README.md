@@ -78,6 +78,37 @@ on one machine. `FIRESTORE_EMULATOR_HOST` points the server at the
 emulator, and `GOOGLE_CLOUD_PROJECT` names the project. A configuration
 the server cannot use stops it with every problem listed, and status 2.
 
+## Deploying
+
+The package host runs on Cloud Run, in two environments that `PDS_ENV`
+picks: `staging`, the default, at `pkg-staging.zena-lang.dev`, with its
+own PLC directory, so nothing it makes reaches `plc.directory`; and
+`production`, at `pkg.zena-lang.dev`. `deploy/env.sh` names what each one
+owns: a service, a Firestore database, a bucket, a service account with
+roles on those alone, a rotation-key secret, and a Cloud DNS zone
+delegated from `zena-lang.dev`'s for its handle records. With `gcloud`
+signed in to the project:
+
+```sh
+export ZENA_GCP_PROJECT=meta-garage-420114 PDS_ENV=staging
+npm run deploy:setup -w @zena-lang/pds    # once: the resources, the key and the zone
+npm run deploy -w @zena-lang/pds          # builds the image with Cloud Build, and deploys it
+npm run deploy:domain -w @zena-lang/pds   # once: maps the domain, with gcloud's beta component
+```
+
+`deploy:setup` is idempotent, and makes the rotation key only when there
+is none; back it up with
+`gcloud secrets versions access latest --secret zena-pkg-staging-rotation-key`.
+`deploy` checks that the new revision answers `describeServer`. The
+certificate for the domain can take a while after `deploy:domain`.
+
+`zena` uses staging with:
+
+```sh
+export ZENA_PACKAGE_HOST=https://pkg-staging.zena-lang.dev
+export ZENA_PLC_DIRECTORY=https://pkg-staging.zena-lang.dev/plc
+```
+
 ## Layout
 
 - `zena/`: the server, the Zena package `pds`, imported as `pds:<library>`:
@@ -97,3 +128,5 @@ the server cannot use stops it with every problem listed, and status 2.
   - `service`: the configuration, read from the environment, and the
     server it describes; `main` is the two together.
 - `zena/test/`: its tests.
+- `deploy/`: the image and the Cloud Run scripts.
+- `dev/demo.zena`: the demo.

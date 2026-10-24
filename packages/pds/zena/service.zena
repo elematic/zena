@@ -13,6 +13,7 @@
  *   - `PDS_TENANT`, the tenant whose documents these are;
  *   - and either `PDS_BLOB_BUCKET`, the Cloud Storage bucket for blob bytes,
  *     or `PDS_BLOB_DIR`, a directory for them, for a server on one machine.
+ *   - `PDS_FIRESTORE_DATABASE`, the database, `(default)` when unset.
  *   - The project and credentials come from `google-cloud:firestore`'s
  *     defaults, and `FIRESTORE_EMULATOR_HOST` points it at the emulator.
  * - `PDS_HOST_DOMAIN`: the package host's domain, such as
@@ -79,8 +80,11 @@ export class ConfigError extends Error {
 /** Where the server keeps its data. */
 export sealed class StorageChoice {
   case InMemory
-  /** Firestore, for `tenant`, with blob bytes in `blobs`. */
-  case InFirestore(tenant: String, blobs: BlobChoice)
+  /**
+   * Firestore, for `tenant`, in the database `database`, or the project's
+   * default one when null, with blob bytes in `blobs`.
+   */
+  case InFirestore(tenant: String, blobs: BlobChoice, database: String | null)
 }
 
 /** Where blob bytes go beside Firestore. */
@@ -186,11 +190,11 @@ export function configFromEnv(env: (name: String) => String | null): ServiceConf
     }
     if (tenant != null && (bucket == null) != (blobDir == null)) {
       let blobs: BlobChoice = if (bucket != null) new InBucket(bucket as String) else new InDirectory(blobDir as String);
-      storage = new InFirestore(tenant as String, blobs);
+      storage = new InFirestore(tenant as String, blobs, value('PDS_FIRESTORE_DATABASE'));
     }
   } else if (storageKind == 'memory') {
-    if (bucket != null || blobDir != null) {
-      problems.push('PDS_BLOB_BUCKET and PDS_BLOB_DIR need PDS_STORAGE=firestore');
+    if (bucket != null || blobDir != null || value('PDS_FIRESTORE_DATABASE') != null) {
+      problems.push('PDS_BLOB_BUCKET, PDS_BLOB_DIR and PDS_FIRESTORE_DATABASE need PDS_STORAGE=firestore');
     }
   } else {
     problems.push(`PDS_STORAGE is memory or firestore, not ${storageKind}`);
@@ -323,8 +327,8 @@ export async function buildService(config: ServiceConfig, endpoint: String): Fut
   var plcLog: PlcLog = new MemoryPlcLog();
   match (config.storage) {
     case InMemory {}: {}
-    case InFirestore {tenant, blobs}: {
-      let db = await Firestore.connect();
+    case InFirestore {tenant, blobs, database}: {
+      let db = if (database != null) await Firestore.connect({databaseId: database}) else await Firestore.connect();
       storage = new FirestoreStorage(db, tenant, blobBytes(blobs));
       hostStore = new FirestoreHostStore(db, tenant);
       plcLog = new FirestorePlcLog(db, tenant);

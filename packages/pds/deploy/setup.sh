@@ -1,0 +1,135 @@
+#!/usr/bin/env bash
+#
+# One-time Google Cloud setup for one environment of the package host
+# (env.sh). Idempotent: safe to re-run, and re-running is the fix when a
+# step failed part way. It never replaces the rotation key once made.
+#
+#   PDS_ENV=staging ZENA_GCP_PROJECT=meta-garage-420114 npm run deploy:setup -w @zena-lang/pds
+#
+# Then `npm run deploy` deploys the server, and `npm run deploy:domain`
+# maps the domain to it, once.
+#
+# Every prompt is answered by a flag, since this runs under wireit, which
+# gives gcloud no terminal to read an answer from.
+
+set -euo pipefail
+cd "$(dirname "$0")"
+# shellcheck source=env.sh
+source ./env.sh
+
+echo "==> Enabling APIs"
+gcloud services enable \
+  run.googleapis.com \
+  cloudbuild.googleapis.com \
+  artifactregistry.googleapis.com \
+  firestore.googleapis.com \
+  storage.googleapis.com \
+  dns.googleapis.com \
+  secretmanager.googleapis.com \
+  iam.googleapis.com \
+  --project "$PROJECT"
+
+echo "==> Artifact Registry repository $REPO"
+if gcloud artifacts repositories describe "$REPO" --location "$REGION" --project "$PROJECT" > /dev/null 2>&1; then
+  echo "    exists"
+else
+  gcloud artifacts repositories create "$REPO" --repository-format docker --location "$REGION" \
+    --project "$PROJECT" --description 'Cloud Run images' --quiet
+fi
+# A build pushes as Cloud Build's account, not as you (see the website's
+# scripts/gcp-setup.sh): grant whichever of the two it may be.
+PROJECT_NUMBER="$(gcloud projects describe "$PROJECT" --format='value(projectNumber)')"
+for builder in "${PROJECT_NUMBER}-compute@developer.gserviceaccount.com" \
+  "${PROJECT_NUMBER}@cloudbuild.gserviceaccount.com"; do
+  if gcloud iam service-accounts describe "$builder" --project "$PROJECT" > /dev/null 2>&1; then
+    gcloud artifacts repositories add-iam-policy-binding "$REPO" --location "$REGION" --project "$PROJECT" \
+      --member "serviceAccount:$builder" --role roles/artifactregistry.writer --quiet > /dev/null
+    echo "    $builder may push"
+  fi
+done
+
+echo "==> Service account $SERVICE_ACCOUNT_EMAIL"
+if gcloud iam service-accounts describe "$SERVICE_ACCOUNT_EMAIL" --project "$PROJECT" > /dev/null 2>&1; then
+  echo "    exists"
+else
+  gcloud iam service-accounts create "$SERVICE_ACCOUNT" --project "$PROJECT" \
+    --display-name "Zena package host ($PDS_ENV)" --quiet
+fi
+MEMBER="serviceAccount:$SERVICE_ACCOUNT_EMAIL"
+
+echo "==> Firestore database $DATABASE ($FIRESTORE_LOCATION)"
+if gcloud firestore databases describe --database "$DATABASE" --project "$PROJECT" > /dev/null 2>&1; then
+  echo "    exists"
+else
+  gcloud firestore databases create --database "$DATABASE" --location "$FIRESTORE_LOCATION" \
+    --type firestore-native --project "$PROJECT" --quiet
+fi
+# Read and write this database and no other.
+gcloud projects add-iam-policy-binding "$PROJECT" --member "$MEMBER" --role roles/datastore.user \
+  --condition "expression=resource.name==\"projects/${PROJECT}/databases/${DATABASE}\",title=${DATABASE}-only" \
+  --quiet > /dev/null
+echo "    $SERVICE_ACCOUNT may use it"
+
+echo "==> Bucket gs://$BUCKET"
+if gcloud storage buckets describe "gs://$BUCKET" --project "$PROJECT" > /dev/null 2>&1; then
+  echo "    exists"
+else
+  gcloud storage buckets create "gs://$BUCKET" --project "$PROJECT" --location "$REGION" \
+    --uniform-bucket-level-access --public-access-prevention --quiet
+fi
+gcloud storage buckets add-iam-policy-binding "gs://$BUCKET" --member "$MEMBER" \
+  --role roles/storage.objectAdmin --quiet > /dev/null
+echo "    $SERVICE_ACCOUNT may use it"
+
+echo "==> Rotation key $SECRET"
+if gcloud secrets describe "$SECRET" --project "$PROJECT" > /dev/null 2>&1; then
+  echo "    exists; left as it is"
+else
+  # 32 random bytes, a secp256k1 private key: below the curve's order but
+  # for a chance of about 2^-128. It goes straight to Secret Manager and is
+  # never written to disk.
+  od -An -tx1 -N32 /dev/urandom | tr -d ' \n' | gcloud secrets create "$SECRET" --project "$PROJECT" \
+    --replication-policy automatic --data-file - --quiet
+  echo "    made; back it up somewhere safe: it signs every package account's PLC operations"
+fi
+gcloud secrets add-iam-policy-binding "$SECRET" --project "$PROJECT" --member "$MEMBER" \
+  --role roles/secretmanager.secretAccessor --quiet > /dev/null
+echo "    $SERVICE_ACCOUNT may read it"
+
+echo "==> DNS zone $ZONE ($DOMAIN)"
+if gcloud dns managed-zones describe "$ZONE" --project "$PROJECT" > /dev/null 2>&1; then
+  echo "    exists"
+else
+  gcloud dns managed-zones create "$ZONE" --project "$PROJECT" --dns-name "${DOMAIN}." \
+    --description "Zena package host ($PDS_ENV): handle records" --quiet
+fi
+# The parent zone, zena-lang.dev's, delegates the domain to it.
+PARENT_ZONE="${ZENA_DNS_PARENT_ZONE:-$(gcloud dns managed-zones list --project "$PROJECT" \
+  --filter 'dnsName=zena-lang.dev.' --format 'value(name)')}"
+if [ -z "$PARENT_ZONE" ]; then
+  echo "    no zone for zena-lang.dev. in $PROJECT: set ZENA_DNS_PARENT_ZONE, or delegate ${DOMAIN} by hand" >&2
+  exit 1
+fi
+NAMESERVERS="$(gcloud dns managed-zones describe "$ZONE" --project "$PROJECT" \
+  --format 'value(nameServers.list())' | tr ';' ',')"
+if gcloud dns record-sets describe "${DOMAIN}." --type NS --zone "$PARENT_ZONE" --project "$PROJECT" \
+  > /dev/null 2>&1; then
+  echo "    delegated from $PARENT_ZONE"
+else
+  gcloud dns record-sets create "${DOMAIN}." --type NS --ttl 3600 --rrdatas "$NAMESERVERS" \
+    --zone "$PARENT_ZONE" --project "$PROJECT" --quiet > /dev/null
+  echo "    delegated from $PARENT_ZONE to $NAMESERVERS"
+fi
+# Cloud DNS has no add-iam-policy-binding for a zone, only a whole policy.
+# The zone is the environment's alone, so its policy is this one binding;
+# roles granted on the project still apply above it.
+POLICY="$(mktemp)"
+trap 'rm -f "$POLICY"' EXIT
+cat > "$POLICY" <<EOF
+{"bindings": [{"role": "roles/dns.admin", "members": ["$MEMBER"]}]}
+EOF
+gcloud dns managed-zones set-iam-policy "$ZONE" --project "$PROJECT" --policy-file "$POLICY" --quiet > /dev/null
+echo "    $SERVICE_ACCOUNT may write its records"
+
+echo
+echo "Done. Next: npm run deploy -w @zena-lang/pds, with the same PDS_ENV."

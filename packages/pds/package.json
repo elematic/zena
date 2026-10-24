@@ -7,7 +7,14 @@
   "scripts": {
     "test": "wireit",
     "test:emulator": "wireit",
-    "demo": "wireit"
+    "demo": "wireit",
+    "build:server": "wireit",
+    "stage:docker": "wireit",
+    "docker:build": "wireit",
+    "deploy:setup": "wireit",
+    "deploy:image": "wireit",
+    "deploy": "wireit",
+    "deploy:domain": "wireit"
   },
   "wireit": {
     "test": {
@@ -91,6 +98,86 @@
       "dependencies": [
         "../zena-cli:build"
       ]
+    },
+    "build:server": {
+      "#command": "Compiles zena/main.zena, the server, into deploy/pds.wasm, for the image.",
+      "command": "cd ../.. && ./target/release/zena-cli build packages/pds/zena/main.zena -o packages/pds/deploy/pds.wasm",
+      "files": [
+        "zena/*.zena",
+        "../atproto/zena/**/*.zena",
+        "../package-manager/zena/**/*.zena",
+        "../google-cloud/zena/*.zena",
+        "../protobuf/zena/*.zena",
+        "../stdlib/zena/**/*.zena",
+        "../stdlib/stdlib-manifest.json",
+        "../stdlib/zena/wit/*.wit",
+        "../stdlib/zena/host-wit/*.wit",
+        "../../zena-package.json",
+        "zena/zena-package.json",
+        "../atproto/zena/zena-package.json",
+        "../package-manager/zena/zena-package.json",
+        "../google-cloud/zena/zena-package.json",
+        "../protobuf/zena/zena-package.json"
+      ],
+      "output": [
+        "deploy/pds.wasm"
+      ],
+      "dependencies": [
+        "../zena-cli:build"
+      ]
+    },
+    "stage:docker": {
+      "#command": "Stages a Linux x86_64 zena-run into deploy/ for the image, with the website's resolving and patching (deploy/stage-docker.js).",
+      "command": "node deploy/stage-docker.js",
+      "files": [
+        "deploy/stage-docker.js",
+        "../website/lib/stage-docker.js",
+        "../../target/release/zena-run",
+        "../zena-run/Cargo.toml",
+        "../zena-run/src/**/*.rs",
+        "../zena-runtime/Cargo.toml",
+        "../zena-runtime/src/**/*.rs",
+        "../stdlib/zena/host-wit/*.wit",
+        "../../Cargo.toml",
+        "../../Cargo.lock"
+      ],
+      "output": [
+        "deploy/zena-run"
+      ],
+      "dependencies": [
+        "../zena-run:build"
+      ]
+    },
+    "docker:build": {
+      "#command": "Builds the image locally, for those with Docker; deploy:image builds it with Cloud Build instead.",
+      "command": "docker build --platform linux/amd64 --file deploy/Dockerfile --tag zena-pkg deploy",
+      "dependencies": [
+        "build:server",
+        "stage:docker"
+      ]
+    },
+    "deploy:setup": {
+      "#command": "One time, and idempotent: the Google Cloud resources of the environment PDS_ENV (staging by default) in ZENA_GCP_PROJECT. See deploy/setup.sh. No files, so it always runs: re-running is the fix when a step failed.",
+      "command": "bash deploy/setup.sh"
+    },
+    "deploy:image": {
+      "#command": "Builds the image with Cloud Build from deploy/, and pushes it. The same image serves both environments.",
+      "command": "bash -c 'source deploy/env.sh > /dev/null && gcloud builds submit --project \"$PROJECT\" --config deploy/cloudbuild.yaml --substitutions _IMAGE=\"$IMAGE\" deploy'",
+      "dependencies": [
+        "build:server",
+        "stage:docker"
+      ]
+    },
+    "deploy": {
+      "#command": "Deploys the image to the environment PDS_ENV (staging by default), and checks that it answers. See deploy/deploy.sh.",
+      "command": "bash deploy/deploy.sh",
+      "dependencies": [
+        "deploy:image"
+      ]
+    },
+    "deploy:domain": {
+      "#command": "Once, after the first deploy: maps the environment's domain to its service and writes the records it needs. Needs gcloud's beta component. See deploy/domain.sh.",
+      "command": "bash deploy/domain.sh"
     }
   },
   "devDependencies": {
