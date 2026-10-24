@@ -89,6 +89,14 @@ jobs:
         with:
           cache-on-failure: true
 
+      # Every Rust crate depends on packages/workspace-hack, which gives
+      # them one set of features for the dependencies they share, so the
+      # three binaries share one wasmtime build (DEVELOPMENT.md, "Rust
+      # dependencies"). A dependency change that leaves it stale still
+      # builds, with a second copy of wasmtime, so nothing else would fail.
+      - name: Check the workspace-hack crate
+        run: nix develop --command bash -c 'cargo hakari generate --diff && cargo hakari manage-deps --dry-run'
+
       # There is deliberately no nix store cache here. 154 of the dev shell's
       # 159 paths come from cache.nixos.org, which a GitHub runner reaches
       # through a Fastly edge, and the 5 that do not are 58.5 MB

@@ -51,13 +51,15 @@ the `zena` command. The design is in
      sources and the CLI module. It builds into `target/standalone`, so it
      never replaces the repository's binary, and `build` does not run it,
      since nothing in the repository runs that binary.
-   - `zena-run` and `zena-cli` share every compiled dependency only while
-     cargo resolves the same features for both. `zena_runtime::init_logging`
-     is in the shared crate for that reason: `env_logger` turns on `log`'s
-     `std` feature, `log` is beneath wasmtime, and when only `zena-run` had
-     it, a cold build compiled wasmtime and Cranelift twice. A dependency
-     added to one binary can split them again; compare the `wasmtime` rlib
-     names in `cargo build --message-format=json` for both.
+   - `zena-run`, `zena-cli` and `zfx` share every compiled dependency,
+     wasmtime and Cranelift included, because every crate depends on
+     `packages/workspace-hack`, which `cargo hakari` generates with the
+     union of the features the workspace turns on for each shared crate.
+     Without it each `cargo build -p <binary>` resolves its own features,
+     and one feature apart is a separate copy of wasmtime: `log`'s `std`,
+     which only `zena-run` turned on, was enough. After changing a Rust dependency, run
+     `cargo hakari generate && cargo hakari manage-deps`; CI fails until
+     the crate matches.
    - Preopens the repository root as `.` (first, so relative paths mean the
      repository: the compiler reads the workspace's `zena-package.json` and
      `packages/stdlib/zena` relative to it) and `/` as `/`.
