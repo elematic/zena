@@ -210,7 +210,9 @@ grows. Milestones 1 to 4 are done.
    the server's configuration (`pds:service`), read from the environment.
    The host writes a TXT record for each handle it gives out, to a Cloud
    DNS zone or in memory (`pds:handles`), and `npm run demo` runs it on
-   this machine. The image and the zone itself are not done.
+   this machine. The image, its Cloud Run scripts for a staging and a
+   production environment, and their zones are in `packages/pds/deploy`;
+   neither environment is up yet.
 8. **Conformance.** The pds.js e2e suite, run against this server, with
    `com.atproto.repo.*` and AppView proxying for ordinary accounts.
 9. **Firehose.** `subscribeRepos`, after the Zena host can upgrade a request
