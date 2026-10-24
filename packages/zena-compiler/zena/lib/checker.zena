@@ -5242,8 +5242,36 @@ function rejectSecondClassTypeArguments(
     // type then carries the restriction itself (ownership.md §"Scoped
     // containers and extent nesting").
     if (i < typeParams.length && typeParams[i].isScoped) { continue; }
+    let name = if (i < typeParams.length) typeParams[i].name else "T";
+    rejectOwnerTypeArgument(ctx, name, typeArgs[i], loc);
     rejectSecondClassStorage(ctx, typeArgs[i], "a container", loc);
   }
+}
+
+/**
+ * Rejects an owner bound to an unrestricted type parameter (ownership.md
+ * §"Affine type arguments", #379). The generic body was checked as if a
+ * `T` may be copied: a class may read its `T` field twice, a function may
+ * return its `T` twice, and each copy of an owner is another owner of the
+ * same resource, released again. `scoped T` admits an owner, and a
+ * generic over resources spells the handle around its parameter instead.
+ */
+function rejectOwnerTypeArgument(
+  ctx: CheckerContext,
+  name: String,
+  t: Type,
+  loc: SourceLocation | null
+) {
+  if (!typeCarriesOwner(t)) { return; }
+  ctx.error(
+    "Type '" + typeToString(t) + "' may not bind the unrestricted type " +
+    "parameter '" + name + "': the generic code may copy a '" + name +
+    "', and a copy of an owner is a second owner of the same resource. " +
+    "A generic over resources takes 'Own<" + name + ">' or 'Borrow<" +
+    name + ">', with '" + name + "' the resource class.",
+    DiagnosticCode.TypeMismatch,
+    loc
+  );
 }
 
 /**
@@ -5262,6 +5290,7 @@ function rejectSecondClassFunctionTypeArgs(
 ) {
   for (var i = 0; i < typeParams.length && i < typeArgs.length; i += 1) {
     if (typeParams[i].isScoped) { continue; }
+    rejectOwnerTypeArgument(ctx, typeParams[i].name, typeArgs[i], loc);
     if (!typeContainsSecondClass(typeArgs[i])) { continue; }
     ctx.error(
       "Type '" + typeToString(typeArgs[i]) + "' may not bind the unrestricted " +

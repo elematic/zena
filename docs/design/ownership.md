@@ -1862,6 +1862,15 @@ class Array<T> { … }                   // a restricted argument is rejected
 let discard = <affine T>(x: T) => {};  // NOT in v1: needs at-most-once
 ```
 
+Both halves are enforced where a generic is instantiated, explicitly or
+by inference (`rejectSecondClassTypeArguments`,
+`rejectSecondClassFunctionTypeArgs`): a borrowed or scoped argument is
+rejected as second-class storage, and an owner, or an affine tuple, as
+an argument the body may duplicate (#379). A `scoped T` cannot be held
+in a field, so a generic class has no way to hold an owner in a `T`
+field: an instance that holds owners is a resource class with `Own<T>`
+fields.
+
 The opt-in is **declared, not inferred**. Whole-program compilation would allow
 inferring it from bodies, but then errors land inside stdlib bodies at call sites
 the user did not write, a signature stops being the contract, and adding a second

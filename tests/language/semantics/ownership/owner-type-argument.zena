@@ -1,0 +1,51 @@
+// @mode: check
+// An owner may not bind an unrestricted type parameter (ownership.md
+// §"Affine type arguments"). The generic body was checked as if a `T`
+// could be copied, so a class could hand out its `T` field twice and a
+// function could return its `T` twice: two owners of one resource,
+// released twice (#379). `scoped T` is the opt-in for restricted
+// arguments; a generic over resources takes `Own<T>` or `Borrow<T>`
+// with `T` the resource class itself.
+import {Own, Borrow, Disposable} from 'zena:core';
+
+resource class Res {
+  new();
+  [Disposable.dispose](this: Own<this>): void {}
+}
+
+class Box<T> {
+  value: T;
+  new(this.value);
+}
+
+final class Holder<T>(value: T)
+
+let duplicate = <T>(x: T): (T, T) => (x, x);
+let hold = <T>(o: Own<T>): Own<T> => o;
+let peek = <T>(b: Borrow<T>): i32 => 1;
+
+let fromNew = (): i32 => {
+  let box = new Box<Own<Res>>(new Res()); // @error: may not bind
+  return 1;
+};
+
+let inferred = (): i32 => {
+  let holder = new Holder(new Res()); // @error: may not bind
+  return 1;
+};
+
+let inTuple = (): i32 => {
+  let box = new Box<(i32, Own<Res>)>((1, new Res())); // @error: may not bind
+  return 1;
+};
+
+let copied = (): i32 => {
+  let (a, b) = duplicate(new Res()); // @error: may not bind
+  return 1;
+};
+
+// The handle spelled around `T`, with `T` the resource class.
+let handles = (): i32 => {
+  let r = hold(new Res());
+  return peek(r);
+};
