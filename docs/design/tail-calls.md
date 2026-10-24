@@ -124,7 +124,8 @@ as a value has no context, so a wrapper supplies the calling convention
 a closure value has), the interface trampoline (which casts the erased
 receiver and arguments to the implementation's concrete types), and the
 function-adaptation wrapper (which drops the arguments a narrower
-function value does not take).
+function value does not take, and packs into an interface what one side
+holds as a class).
 
 Each was `call target; return`, so each kept a frame — and a chain of
 tail calls through one grew the stack a frame per hop, which is the
@@ -152,6 +153,26 @@ the WIT parser reaches it zero times, and a generic interface over
 several reference instantiations does not produce it either. If a
 program ever does, the fix is to widen the slot's result and cast at
 the call site, and the error message asks for that.
+
+Packing a result into an interface is the one conversion an adapter
+does make after the call. An interface trampoline makes it when the
+class's method returns a class and the slot returns an interface
+(`scaled(): Square` for `scaled(): Shape`). A function-adaptation
+wrapper makes it when the function value returns a class or a
+sub-interface and the slot's function type returns an interface (a
+`() => Square` passed as a `() => Shape`, #520). Either one calls,
+packs, returns, and keeps its frame while the target runs.
+
+Those frames cannot pile up. Rule 2 lets a `tail return` call only a
+function that returns exactly its own type, so a chain of tail calls
+that enters a packing adapter continues at the target's result type,
+which is a strict subtype of the adapter's. A chain at `Square` cannot
+tail-call a `() => Shape` again. Each packing adapter a chain enters
+narrows its type once more, so the chain keeps at most one frame per
+step down the class and interface hierarchy, however many hops it
+makes. A conversion of an _argument_ (the wrapper packing a `Square`
+for a function value that takes a `Shape`) runs before the call, and
+the wrapper still tail-calls.
 
 ## 5. Runtime support
 

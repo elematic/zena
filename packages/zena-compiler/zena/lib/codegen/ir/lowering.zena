@@ -39,7 +39,7 @@ import { dirName, normalizePath } from '../../module-resolver.zena';
 import { ValType, ValTypeVoid, ValTypeI32, ValTypeI64, ValTypeF32, ValTypeF64, ValTypeV128, ValTypeRef, ValTypeRefNull, ValTypeRefExtern, ValTypeAnyRef, ValTypeEqRef, ValTypeStructRef, ValTypeExternRef, ValTypeNullRef, ValTypeI8, ValTypeI16, valTypeEquals, isWasmSubtype, isRefValType, isNullableAnyRef, WasmType, refTargetOf } from '../wasm.zena';
 import { targetUsesJsStrings } from '../../targets.zena';
 import {
-  WasmModule, WasmFunction, WasmStruct, WasmField, WasmGlobal, WasmSignature, ClassCodegenInfo, isValSubtype, sortWasmFields, RecordDispatchInfo, asWasmStruct, asWasmSignature, asWasmArray, valTypeIdentical, ClosureForwarderSpec, ExplosionSpec,
+  WasmModule, WasmFunction, WasmStruct, WasmField, WasmGlobal, WasmSignature, ClassCodegenInfo, isValSubtype, sortWasmFields, RecordDispatchInfo, asWasmStruct, asWasmSignature, asWasmArray, valTypeIdentical, ClosureForwarderSpec, ExplosionSpec, AdaptationPack,
   noCaptures,
 } from '../wasm-module.zena';
 import {
@@ -48,7 +48,7 @@ import {
 
 import { IrBody, IrOp, IrRefFunc, IrRefGlobal, IrRefType, IrRefField, IrRefTag } from './ir.zena';
 import {
-  getClassKey, getClassMethodKey, getClassPrivateFieldKey, getMemberRootClass, getInterfaceKey, getInterfaceConstructorBaseName, getClosureSpecializationKey, getSignatureKey, ClassKey, getTypeKeyForSpecialization, getTypeUniqueKey, collectMixinFields, findMixinDeclaration, mixinScopeOfNode, MixinKey, getSpecializedFunctionKey, getSpecializedName, getFunctionValueWrapperKey, getOverloadedFunctionKey, parseI32WithHex, parseI64OrU64Literal, unwrapAliases, isPresentWordName, presentWordCount, presentWordName,
+  getClassKey, getClassMethodKey, getClassPrivateFieldKey, getMemberRootClass, getInterfaceKey, InterfaceKey, getInterfaceConstructorBaseName, getClosureSpecializationKey, getSignatureKey, ClassKey, getTypeKeyForSpecialization, getTypeUniqueKey, collectMixinFields, findMixinDeclaration, mixinScopeOfNode, MixinKey, getSpecializedFunctionKey, getSpecializedName, getFunctionValueWrapperKey, getOverloadedFunctionKey, parseI32WithHex, parseI64OrU64Literal, unwrapAliases, isPresentWordName, presentWordCount, presentWordName,
 } from '../codegen-utils.zena';
 import { IrBuilder } from './builder.zena';
 import { synthesizeScaffold } from './scaffold.zena';
@@ -60,7 +60,7 @@ import { lowerComponentAdapter } from './component-adapters.zena';
 import { lowerIntrinsic } from './intrinsics.zena';
 import {
   ExplodedRecord, LetCondBinds, LoweringContext, MergeState, ZirUnsupported,
-  noValues, oneValue,
+  noValues, oneValue, repackInterfaceValue,
 } from './lowering-context.zena';
 import { lowerStringLiteral, lowerTaggedTemplate, lowerTemplateLiteral } from './templates.zena';
 import {
@@ -215,6 +215,11 @@ function lowerImportWrapper(func: WasmFunction) {
  * worth of parameters (casting where the target declared a wider
  * type), and tail-call through the source pair's func field —
  * streaming's generateFunctionAdaptationBody.
+ *
+ * A value one side holds as a class or a sub-interface and the other
+ * as an interface is packed on the way through (AdaptationPack): an
+ * argument before the call, which keeps the tail call, and the result
+ * after it, which gives the tail call up.
  */
 function lowerFunctionAdaptation(wasm: WasmModule, func: WasmFunction) {
   let actualFt = func.functionAdaptationSource as FunctionType;
@@ -259,9 +264,22 @@ function lowerFunctionAdaptation(wasm: WasmModule, func: WasmFunction) {
   for (var i = 1; i < actualSig.params.length; i += 1) {
     var v = params[i];
     let want = actualSig.params[i];
-    if (!isValSubtype(b.body.resultType(v) as ValType, want)) {
+    let pack = adaptationPackAt(wasm, func, i);
+    if (pack != null) {
+      v = applyAdaptationPack(wasm, b, v, pack);
+    } else if (!isValSubtype(b.body.resultType(v) as ValType, want)) {
       if (!(want is ValTypeRef || want is ValTypeRefNull)) {
         throw new ZirUnsupported('adaptation param shape');
+      }
+      // The cast narrows a type the target declared wider, such as an
+      // erased type parameter. Between two types neither of which
+      // contains the other, the cast always fails: the argument has a
+      // different representation on each side (a record of another
+      // shape, a function value of another type) and needs converting.
+      if (!isValSubtype(want, b.body.resultType(v) as ValType)) {
+        throw new ZirUnsupported(
+            'function-adaptation wrapper cannot convert an argument: it ' +
+            'packs interfaces, not records or function values (#543)');
       }
       v = b.emit(IrOp.ref_cast, want, v, b.internType(want));
     }
@@ -272,12 +290,104 @@ function lowerFunctionAdaptation(wasm: WasmModule, func: WasmFunction) {
   if (actualSig.returns.length > 1) {
     throw new ZirUnsupported('adaptation result shape');
   }
-  // The fourth forwarding adapter, and a tail call for the same
-  // reason as the other three (see requireForwardableResults).
-  requireForwardableResultTypes(func.signature.returns, actualSig.returns,
-      'function-adaptation wrapper');
-  b.retCallRef(funcVal, args);
+  let resultPack = adaptationPackAt(wasm, func, -1);
+  if (resultPack == null) {
+    if (actualSig.returns.length == 1 && func.signature.returns.length == 1 &&
+        !isValSubtype(actualSig.returns[0], func.signature.returns[0])) {
+      throw new ZirUnsupported(
+          'function-adaptation wrapper cannot convert its result: it ' +
+          'packs interfaces, not records or function values (#543)');
+    }
+    // The fourth forwarding adapter, and a tail call for the same
+    // reason as the other three (see requireForwardableResults).
+    requireForwardableResultTypes(func.signature.returns, actualSig.returns,
+        'function-adaptation wrapper');
+    b.retCallRef(funcVal, args);
+    return b.finish();
+  }
+  // The pack runs after the source returns, so the source gets an
+  // ordinary call and this frame stays while it runs. Such frames
+  // cannot pile up in a chain of tail calls: see
+  // requireForwardableResults.
+  let raw = b.callRef(funcVal, args, actualSig.returns[0]);
+  b.ret(applyAdaptationPack(wasm, b, raw, resultPack));
   return b.finish();
+}
+
+/** The pack `func` makes at parameter `index` (-1: the result), if any. */
+function adaptationPackAt(wasm: WasmModule, func: WasmFunction,
+    index: i32): AdaptationPack | null {
+  if (let (true, packs) = wasm.functionAdaptationPacks.get(func)) {
+    for (let p in packs) {
+      if (p.index == index) {
+        return p;
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * Packs `value` into `pack`'s interface. A value that can be null
+ * branches around the pack, because packing null would build a fat
+ * pointer that is not itself null (as FunctionLowerer's
+ * #packInterfaceNullable does for an expression).
+ */
+function applyAdaptationPack(wasm: WasmModule, b: IrBuilder, value: i32,
+    pack: AdaptationPack): i32 {
+  if (!pack.nullable) {
+    return packAdaptedValue(wasm, b, value, pack);
+  }
+  let vt = b.body.resultType(value) as ValType;
+  let isNull = b.emit(IrOp.ref_is_null, new ValTypeI32() as ValType, value, -1);
+  let nullB = b.newBlock();
+  let packB = b.newBlock();
+  let mergeB = b.newBlock();
+  b.brIf(isNull, nullB, new Array<i32>(), packB, new Array<i32>());
+
+  b.switchTo(packB);
+  let nonNull = if (vt is ValTypeRefNull) {
+    b.emit(IrOp.ref_as_non_null, new ValTypeRef(vt.target) as ValType, value, -1)
+  } else {
+    value
+  };
+  let packed = packAdaptedValue(wasm, b, nonNull, pack);
+  let packedVt = b.body.resultType(packed) as ValType;
+  if (!(packedVt is ValTypeRef)) {
+    throw new ZirUnsupported('nullable adaptation pack result');
+  }
+  let mergedVt = new ValTypeRefNull(packedVt.target) as ValType;
+  let result = b.blockParam(mergeB, mergedVt);
+  b.br(mergeB, growable<i32>([packed]));
+
+  b.switchTo(nullB);
+  let nullValue = b.emit(IrOp.ref_null, mergedVt, -1, -1);
+  b.br(mergeB, growable<i32>([nullValue]));
+
+  b.switchTo(mergeB);
+  return result;
+}
+
+/**
+ * The pack itself: a class instance through its class-interface
+ * vtable, a sub-interface fat pointer by an upcast.
+ */
+function packAdaptedValue(wasm: WasmModule, b: IrBuilder, value: i32,
+    pack: AdaptationPack): i32 {
+  let {pair, sourceIface, targetIface} = pack;
+  if (pair == null) {
+    return repackInterfaceValue(wasm, b, value, sourceIface as InterfaceKey, targetIface);
+  }
+  let vtable = wasm.getClassInterfaceVTable(pair);
+  if (vtable == null) {
+    throw new ZirUnsupported('function-adaptation pack vtable missing');
+  }
+  let fatPtr = if (let (true, st) = wasm.interfaceStructs.get(targetIface)) st else null;
+  if (fatPtr == null) {
+    throw new ZirUnsupported('function-adaptation pack interface missing');
+  }
+  return b.emit(IrOp.iface_pack, new ValTypeRef(fatPtr) as ValType, value,
+      b.addRef(new IrRefGlobal(vtable)));
 }
 
 /**
@@ -782,6 +892,20 @@ function synthesizeAccessor(func: WasmFunction, isGetter: boolean) {
  * running all of it. If a program ever reaches it, the fix is to widen
  * the vtable slot's result and cast at the call site, and this message
  * is what asks for it.
+ *
+ * Packing a result into an interface is the exception, and two adapters
+ * make it without coming here: an interface trampoline whose method
+ * returns a class where the slot returns an interface, and a
+ * function-adaptation wrapper whose source returns a class or a
+ * sub-interface where its target returns an interface. Each calls,
+ * packs and returns, keeping its frame while the target runs, and those
+ * frames cannot pile up. A `tail return` calls only a function that
+ * returns exactly its own type (tail-calls.md §3), so a chain of tail
+ * calls that enters such an adapter continues at the target's result
+ * type, a strict subtype of the adapter's. Each packing adapter it
+ * enters narrows the type again, so the chain keeps at most one frame
+ * per step down the class and interface hierarchy, however many hops it
+ * makes.
  */
 function requireForwardableResults(func: WasmFunction, target: WasmFunction,
     what: String): void {

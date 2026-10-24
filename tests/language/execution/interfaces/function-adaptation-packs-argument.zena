@@ -1,0 +1,77 @@
+// @mode: run
+// @result: 164
+// A function value that takes an interface, used where a function taking
+// a class instance or a sub-interface is expected. The
+// function-adaptation wrapper packs the argument on the way in.
+
+interface Shape {
+  area(): i32;
+}
+
+interface Named extends Shape {
+  name(): i32;
+}
+
+class Square implements Named {
+  side: i32;
+  new(this.side);
+  area(): i32 {
+    return this.side * this.side;
+  }
+  name(): i32 {
+    return 7;
+  }
+}
+
+function apply(f: (s: Square) => i32): i32 {
+  return f(new Square(2));
+}
+
+function applyNullable(f: (s: Square | null) => i32): i32 {
+  return f(new Square(3)) + f(null);
+}
+
+function applyNamed(f: (s: Named) => i32): i32 {
+  return f(new Square(4));
+}
+
+// The source takes a prefix of the target's parameters, and the packed
+// one is not the first.
+function applyAmong(f: (a: i32, s: Square, extra: i32) => i32): i32 {
+  return f(10, new Square(5), 99);
+}
+
+// The pack runs before the call, so the wrapper still tail-calls. This
+// chain goes through it a million times, which overflows the stack if it
+// keeps a frame (docs/design/tail-calls.md).
+interface Countdown {
+  left(): i32;
+}
+
+class Step implements Countdown {
+  n: i32;
+  new(this.n);
+  left(): i32 {
+    return this.n;
+  }
+}
+
+function bounce(f: (s: Step) => i32, n: i32): i32 {
+  tail return f(new Step(n));
+}
+
+function down(c: Countdown): i32 {
+  if (c.left() == 0) {
+    return 0;
+  }
+  tail return bounce(down, c.left() - 1);
+}
+
+export let main = (): i32 =>
+  apply((s: Shape) => s.area()) +
+  // Null passes through as null.
+  applyNullable((s: Shape | null) => if (s == null) 100 else s.area()) +
+  // A sub-interface is upcast rather than packed.
+  applyNamed((s: Shape) => s.area()) +
+  applyAmong((a: i32, s: Shape) => a + s.area()) +
+  down(new Step(1000000));

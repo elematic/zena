@@ -1,0 +1,29 @@
+// @mode: run
+// @skip: the function-adaptation wrapper does not convert function values (#543)
+// @result: 25
+// A function value whose result or parameter is itself a function value
+// of another type than the slot it is passed to. The inner function
+// value needs an adapter of its own on the way through the outer one.
+
+interface Shape {
+  area(): i32;
+}
+
+class Square implements Shape {
+  side: i32;
+  new(this.side);
+  area(): i32 {
+    return this.side * this.side;
+  }
+}
+
+function measure(make: () => (() => Shape)): i32 {
+  return make()().area();
+}
+
+function apply(f: (g: () => Square) => i32): i32 {
+  return f(() => new Square(4));
+}
+
+export let main = (): i32 =>
+  measure(() => () => new Square(3)) + apply((g: () => Shape) => g().area());
