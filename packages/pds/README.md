@@ -29,30 +29,44 @@ From the repository root:
 ```sh
 npm test -w @zena-lang/pds                       # its tests, through wireit
 npm run test:emulator -w @zena-lang/pds          # the storage tests against the Firestore emulator
+npm run demo -w @zena-lang/pds                   # a package host to try zena against, on this machine
 ./target/release/zena-cli test "packages/pds/zena/test/*_test.zena"
 ./target/release/zena-cli run packages/pds/zena/main.zena   # serve on $PORT, default 2583
 ```
 
+## The demo
+
+`npm run demo -w @zena-lang/pds` starts a package host for `pkg.test`, a
+stand-in PLC directory with a maintainer who has an app password, and a
+DNS-over-HTTPS resolver that answers from the host's handle records, all
+on this machine (`dev/demo.zena`). It prints the environment to give
+`zena`, and the commands of a first `zena login` and `zena publish`; a
+package it publishes can then be added by its handle and run from another
+workspace. Nothing goes to the public PLC directory or to real DNS. It
+builds the host from the environment as `main.zena` does, so it runs on
+the Firestore emulator too, with `PDS_STORAGE=firestore` and the rest.
+
 ## Configuration
 
 `main.zena` reads its configuration from the environment (`pds:service`
-lists every variable). With none, it is a PDS in memory on port 2583. A
-package host for a domain, in memory, for trying `zena publish` against:
-
-```sh
-PORT=2583 PDS_HOST_DOMAIN=pkg.test PDS_PUBLIC_URL=http://localhost:2583 \
-  ./target/release/zena-cli run packages/pds/zena/main.zena
-```
+lists every variable). With none, it is a PDS in memory on port 2583.
 
 A deployment keeps its data in Firestore, for a tenant, with blob bytes in
-a Cloud Storage bucket, and gives the host's PLC rotation key, a secp256k1
-private key in hex, from a secret:
+a Cloud Storage bucket, writes its handles' TXT records to the Cloud DNS
+zone that holds its domain, and gives the host's PLC rotation key, a
+secp256k1 private key in hex, from a secret:
 
 ```sh
 PDS_STORAGE=firestore PDS_TENANT=pkg PDS_BLOB_BUCKET=<bucket> \
 PDS_HOST_DOMAIN=pkg.zena-lang.dev PDS_ROTATION_KEY=<hex> \
+PDS_HANDLE_RECORDS=cloud-dns PDS_DNS_ZONE=<managed zone> \
   ./target/release/zena-cli run packages/pds/zena/main.zena
 ```
+
+The same configuration with the argument `sync-handles`
+(`zena-cli run packages/pds/zena/main.zena -- sync-handles`) writes every
+handle record again from the host's store and exits, for after a record
+write failed or records were lost.
 
 `PDS_BLOB_DIR=<dir>` keeps blob bytes in a directory instead, for a server
 on one machine. `FIRESTORE_EMULATOR_HOST` points the server at the

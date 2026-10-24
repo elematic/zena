@@ -7,6 +7,8 @@ for component targets.
 - `google-cloud:firestore`: a Firestore client.
 - `google-cloud:storage`: a Cloud Storage client, for writing, reading
   and deleting objects.
+- `google-cloud:dns`: a Cloud DNS client for one managed zone's record
+  sets.
 - `google-cloud:auth`: access tokens and the project id, from the
   metadata server or the environment.
 - `google-cloud:firestore-v1` and `google-cloud:storage-v2`: the protobuf
@@ -152,6 +154,24 @@ for the calls the client does not wrap.
 
 There is no emulator for Cloud Storage's gRPC API here, so the tests run
 the client against an in-memory transport only.
+
+## Cloud DNS
+
+```zena
+import { CloudDns, RecordSet } from 'google-cloud:dns';
+
+let zone = CloudDns.connect('my-project', 'my-zone');
+await zone.put(new RecordSet('_atproto.alice.example.com.', 'TXT', 300, ['"did=did:plc:..."']));
+let set = await zone.get('_atproto.alice.example.com.', 'TXT'); // null when there is none
+await zone.delete('_atproto.alice.example.com.', 'TXT'); // whether there was one
+```
+
+Cloud DNS has no gRPC API, so this client uses the REST one
+(`https://dns.googleapis.com/dns/v1`), with the default credentials, which
+need the `cloud-platform` or `ndev.clouddns.readwrite` scope. `put` creates
+the record set, or replaces the one of that name and type. Names are fully
+qualified, ending in a dot, and a TXT record's data is a quoted string. Its
+tests run it against a local server that answers like the API.
 
 ## Credentials
 

@@ -11,7 +11,8 @@ import {HashMap} from 'zena:collections';
 import {App, Request, Response} from 'zena:http';
 import {JsonObject, parseJson} from 'zena:json';
 import {
-  ConfigError, InBucket, InDirectory, InFirestore, InMemory, ServiceConfig, buildService, configFromEnv
+  ConfigError, InBucket, InCloudDns, InDirectory, InFirestore, InMemory, RecordsInMemory, ServiceConfig,
+  buildService, configFromEnv
 } from 'pds:service';
 
 let KEY = 'c9afa9d845ba75166b5c215767b1d6934e50c3db36e89b127b8a622b120f6721';
@@ -71,6 +72,9 @@ export let tests = suite('pds:service', () => {
       ('PDS_MAX_BLOB_BYTES', '1000'),
       ('PDS_CLOCK_ID', '7'),
       ('PDS_PLC_DIRECTORY', 'http://plc.test'),
+      ('PDS_HANDLE_RECORDS', 'cloud-dns'),
+      ('PDS_DNS_ZONE', 'pkg-zone'),
+      ('PDS_DNS_PROJECT', 'dns-project'),
     ]));
     equal(config.port as i32, 8080);
     equal(config.clockId, 7);
@@ -95,6 +99,15 @@ export let tests = suite('pds:service', () => {
     isTrue(host.rotationKey != null, 'the rotation key');
     equal(host.reservedScopes.length, 2);
     equal(host.reservedScopes[1], 'core');
+    match (host.records) {
+      case InCloudDns {project, zone}: {
+        equal(project as String, 'dns-project');
+        equal(zone, 'pkg-zone');
+      }
+      case RecordsInMemory {}: {
+        isTrue(false, 'in Cloud DNS');
+      }
+    }
 
     let local = configFromEnv(envOf([
       ('PDS_STORAGE', 'firestore'),
@@ -104,6 +117,7 @@ export let tests = suite('pds:service', () => {
       ('PDS_ROTATION_KEY', KEY),
       ('PDS_SERVICE_DID', 'did:web:other.test'),
       ('PDS_PUBLIC_URL', 'http://localhost:2583'),
+      ('PDS_HANDLE_RECORDS', 'memory'),
     ]));
     if (let InFirestore {blobs} = local.storage) {
       isTrue(blobs is InDirectory && (blobs as InDirectory).path == '/var/pds/blobs', 'the directory');
@@ -116,6 +130,7 @@ export let tests = suite('pds:service', () => {
   test('makes up a rotation key for a host in memory', (ctx) => {
     let host = configFromEnv(envOf([('PDS_HOST_DOMAIN', 'pkg.test')])).host;
     isTrue(host != null && host.rotationKey == null, 'no key until the server starts');
+    isTrue(host != null && host.records is RecordsInMemory, 'records in memory');
   });
 
   test('names every problem in a configuration', (ctx) => {
@@ -123,6 +138,16 @@ export let tests = suite('pds:service', () => {
     isTrue(firestore.contains('needs PDS_TENANT'), firestore);
     isTrue(firestore.contains('needs PDS_BLOB_BUCKET or PDS_BLOB_DIR'), firestore);
     isTrue(firestore.contains('needs PDS_ROTATION_KEY'), firestore);
+    isTrue(firestore.contains('needs PDS_HANDLE_RECORDS'), firestore);
+    let records = refusal([('PDS_HOST_DOMAIN', 'pkg.test'), ('PDS_HANDLE_RECORDS', 'cloud-dns')]);
+    isTrue(records.contains('needs PDS_DNS_ZONE'), records);
+    let unknown = refusal([('PDS_HOST_DOMAIN', 'pkg.test'), ('PDS_HANDLE_RECORDS', 'route53'),
+        ('PDS_DNS_ZONE', 'z')]);
+    isTrue(unknown.contains('PDS_HANDLE_RECORDS is cloud-dns or memory'), unknown);
+    let zoneAlone = refusal([('PDS_HOST_DOMAIN', 'pkg.test'), ('PDS_DNS_ZONE', 'z')]);
+    isTrue(zoneAlone.contains('need PDS_HANDLE_RECORDS=cloud-dns'), zoneAlone);
+    let noHost = refusal([('PDS_HANDLE_RECORDS', 'memory')]);
+    isTrue(noHost.contains('PDS_HANDLE_RECORDS needs PDS_HOST_DOMAIN'), noHost);
 
     let values = refusal([
       ('PORT', 'eighty'),

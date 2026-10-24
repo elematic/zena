@@ -3,11 +3,15 @@
  * the environment configures them (see `pds:service`). With no
  * configuration it is a PDS on port 2583, the reference PDS's port, with
  * its data in memory.
+ *
+ * With the argument `sync-handles`, it writes the DNS record of every
+ * handle the host has given out instead, from its store, and exits: for
+ * after records were lost, or a write of one failed.
  */
 
 import {Future} from 'zena:async';
-import {exit, getEnv} from 'zena:cli';
-import {ConfigError, ServiceConfig, configFromEnv, serve} from './service.zena';
+import {exit, getArguments, getEnv} from 'zena:cli';
+import {ConfigError, ServiceConfig, buildService, configFromEnv, serve} from './service.zena';
 
 /** The configuration the environment gives, or null, having said why. */
 function readConfig(): ServiceConfig | null {
@@ -28,6 +32,10 @@ export async function main(): Future<void> {
     exit(2);
     return;
   }
+  if (hasArgument('sync-handles')) {
+    await syncHandles(config as ServiceConfig);
+    return;
+  }
   let running = await serve(config as ServiceConfig);
   let host = running.service.host;
   if (host != null) {
@@ -36,4 +44,33 @@ export async function main(): Future<void> {
     console.log(`PDS listening on ${running.origin}`);
   }
   await running.server.done;
+}
+
+/**
+ * Whether the command line, after the program, holds `name`. `zena run`
+ * passes on the `--` before a program's arguments, and a module run by
+ * itself has none, so the position varies.
+ */
+function hasArgument(name: String): boolean {
+  let args = getArguments();
+  for (var i = 1; i < args.length; i += 1) {
+    if (args[i] == name) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/** Writes every handle record from the host's store, and exits. */
+async function syncHandles(config: ServiceConfig): Future<void> {
+  let service = await buildService(config, '');
+  let host = service.host;
+  if (host == null) {
+    console.error('sync-handles needs a package host: set PDS_HOST_DOMAIN');
+    exit(2);
+    return;
+  }
+  let written = await host.syncHandles();
+  console.log(`wrote ${written} handle records for ${host.config.domain}`);
+  exit(0);
 }

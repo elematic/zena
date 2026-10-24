@@ -25,7 +25,7 @@ import {
 } from 'package-manager:records';
 import {Version} from 'package-manager:version';
 import {MemoryHandleRecords} from 'pds:handles';
-import {HostConfig, HostStore, MemoryHostStore, PackageHost} from 'pds:host';
+import {ClaimedName, ClaimedScope, HostConfig, HostStore, MemoryHostStore, PackageHost} from 'pds:host';
 import {MemberEntry} from 'package-manager:records';
 import {Pds} from 'pds:pds';
 import {CreateRecord, RepositoryError, Write} from 'pds:repository';
@@ -41,6 +41,7 @@ let BOB_KEY = hex.decode('9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac
 /** A host on a PDS in memory, and the PLC operations it sent. */
 final class Fixture {
   var app: App;
+  var host: PackageHost | null = null;
   pds: Pds;
   submitted = new HashMap<String, PlcOperation>();
   /** The handles' DNS records the host wrote. */
@@ -74,6 +75,7 @@ final class Fixture {
           this.#random += 1;
           return filled(this.#random);
         });
+    this.host = host;
     this.app = createApp(this.pds, host);
   }
 
@@ -135,6 +137,8 @@ final class StaleHostStore implements HostStore {
   async releaseName(scope: String, name: String, did: String): Future<void> {
     await this.#inner.releaseName(scope, name, did);
   }
+  async allScopes(): Future<Array<ClaimedScope>> { return await this.#inner.allScopes(); }
+  async allNames(): Future<Array<ClaimedName>> { return await this.#inner.allNames(); }
   async entries(account: String): Future<Array<MemberEntry>> { return await this.#inner.entries(account); }
   async addEntries(account: String, entries: Array<MemberEntry>): Future<void> {
     await this.#inner.addEntries(account, entries);
@@ -298,5 +302,22 @@ export let tests = suite('pds:host', () => {
     fixture.plcDown = false;
     let pkgDid = ok(createPackage(fixture, ALICE, orgDid, 'router'))['did'] as String;
     equal(fixture.records.lookup('router.acme.pkg.test') as String, pkgDid);
+  });
+
+  test('writes every handle record again from its store', (ctx) => {
+    let store = new MemoryHostStore();
+    let fixture = new Fixture(store);
+    let orgDid = ok(createOrganization(fixture, ALICE, 'acme'))['did'] as String;
+    let pkgDid = ok(createPackage(fixture, ALICE, orgDid, 'router'))['did'] as String;
+    // The records are lost, and a name was claimed for an account that was
+    // never made, as a crash between the two would leave it.
+    runFuture(fixture.records.remove('acme.pkg.test'));
+    runFuture(fixture.records.remove('router.acme.pkg.test'));
+    runFuture(store.claimName('acme', 'ghost', 'did:plc:ghostghostghostghostghos'));
+
+    equal(runFuture((fixture.host as PackageHost).syncHandles()), 2);
+    equal(fixture.records.lookup('acme.pkg.test') as String, orgDid);
+    equal(fixture.records.lookup('router.acme.pkg.test') as String, pkgDid);
+    isTrue(fixture.records.lookup('ghost.acme.pkg.test') == null, 'no record for an account that does not exist');
   });
 });

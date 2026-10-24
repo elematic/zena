@@ -18,8 +18,8 @@
  *   the object `{tenant}/{did}/{cid}` in a `BlobBytes`: a Cloud Storage
  *   bucket, a directory, or memory in tests.
  * - The package host's (`FirestoreHostStore`): `scopes/{scope}`: `org`;
- *   `names/{name}.{scope}`: `did`; and `entries/{did}/list/{id}`: `cbor`,
- *   a member entry's DAG-CBOR.
+ *   `names/{name}.{scope}`: `did`, `scope` and `name`; and
+ *   `entries/{did}/list/{id}`: `cbor`, a member entry's DAG-CBOR.
  *
  * Firestore keeps IDs of the form `__…__` for itself, and record keys may
  * take that form, so such a key's document ID is prefixed with `%`, which
@@ -45,7 +45,7 @@ import {Cid} from 'atproto:cid';
 import {KeyType} from 'atproto:didkey';
 import {compareKeys} from 'atproto:mst';
 import {MemberEntry} from 'package-manager:records';
-import {HostStore} from './host.zena';
+import {ClaimedName, ClaimedScope, HostStore} from './host.zena';
 import {
   Account, AccountKind, AccountStore, Head, RecordChange, RecordEntry, SigningKey, Storage, StoredBlob,
   sameHead, sortRecordEntries
@@ -369,7 +369,7 @@ export final class FirestoreHostStore implements HostStore {
   }
 
   async claimScope(scope: String, org: String): Future<boolean> {
-    return await claim(this.#db, this.#root.collection('scopes').doc(scope), 'org', org);
+    return await claim(this.#db, this.#root.collection('scopes').doc(scope), new Fields().string('org', org));
   }
 
   async releaseScope(scope: String, org: String): Future<void> {
@@ -381,11 +381,36 @@ export final class FirestoreHostStore implements HostStore {
   }
 
   async claimName(scope: String, name: String, did: String): Future<boolean> {
-    return await claim(this.#db, this.#root.collection('names').doc(`${name}.${scope}`), 'did', did);
+    return await claim(this.#db, this.#root.collection('names').doc(`${name}.${scope}`),
+        new Fields().string('did', did).string('scope', scope).string('name', name));
   }
 
   async releaseName(scope: String, name: String, did: String): Future<void> {
     await release(this.#db, this.#root.collection('names').doc(`${name}.${scope}`), 'did', did);
+  }
+
+  async allScopes(): Future<Array<ClaimedScope>> {
+    let all = new GrowableArray<ClaimedScope>();
+    for (let snapshot in await this.#root.collection('scopes').get()) {
+      let org = stringAt(snapshot, 'org');
+      if (org != null) {
+        all.push(new ClaimedScope(snapshot.id, org as String));
+      }
+    }
+    return all;
+  }
+
+  async allNames(): Future<Array<ClaimedName>> {
+    let all = new GrowableArray<ClaimedName>();
+    for (let snapshot in await this.#root.collection('names').get()) {
+      let scope = stringAt(snapshot, 'scope');
+      let name = stringAt(snapshot, 'name');
+      let did = stringAt(snapshot, 'did');
+      if (scope != null && name != null && did != null) {
+        all.push(new ClaimedName(scope as String, name as String, did as String));
+      }
+    }
+    return all;
   }
 
   async entries(account: String): Future<Array<MemberEntry>> {
@@ -411,13 +436,13 @@ export final class FirestoreHostStore implements HostStore {
   }
 }
 
-/** Sets `field` of `ref` to `value` unless the document exists. Returns whether it did. */
-async function claim(db: Firestore, ref: DocumentReference, field: String, value: String): Future<boolean> {
+/** Creates `ref` with `fields` unless it exists. Returns whether it did. */
+async function claim(db: Firestore, ref: DocumentReference, fields: Fields): Future<boolean> {
   return await db.runTransaction<boolean>(async (tx: Transaction): Future<boolean> => {
     if ((await tx.get(ref)).exists) {
       return false;
     }
-    tx.create(ref, new Fields().string(field, value));
+    tx.create(ref, fields);
     return true;
   });
 }

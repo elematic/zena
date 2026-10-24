@@ -1,0 +1,238 @@
+/**
+ * A Cloud DNS client for one managed zone's record sets, over the REST
+ * API (`https://dns.googleapis.com/dns/v1`), since Cloud DNS has no gRPC
+ * API.
+ *
+ *     let zone = CloudDns.connect('my-project', 'my-zone');
+ *     await zone.put(new RecordSet('_atproto.alice.example.com.', 'TXT', 300, ['"did=did:plc:..."']));
+ *     let set = await zone.get('_atproto.alice.example.com.', 'TXT');
+ *     await zone.delete('_atproto.alice.example.com.', 'TXT');
+ *
+ * Names are fully qualified, ending in a dot, and a TXT record's data is a
+ * quoted string, as Cloud DNS takes them. Each call asks its `Credentials`
+ * for an access token, with the `cloud-platform` or
+ * `ndev.clouddns.readwrite` scope.
+ */
+
+import {Completer, Future} from 'zena:async';
+import {Option, Result} from 'zena:core';
+import {JsonArray, JsonObject, JsonValue, parseJson, stringify} from 'zena:json';
+import {Stream, bytesStream, readAllBytes} from 'zena:stream';
+import {EncodeSet, URL, percentEncode} from 'zena:url';
+import {
+  ErrorCode, Fields, Method, MethodDelete, MethodGet, MethodPatch, MethodPost, Request,
+  Response as WireResponse, Scheme, SchemeHTTP, SchemeHTTPS
+} from 'wasi:http/types';
+import {send} from 'wasi:http/client';
+import {Credentials} from 'protobuf:runtime';
+import {defaultCredentials} from './auth.zena';
+
+/** The origin of the Cloud DNS API. */
+export let DNS_ORIGIN = 'https://dns.googleapis.com';
+
+/** An answer from Cloud DNS that is an error, with its HTTP status. */
+export class DnsError extends Error {
+  status: i32;
+
+  new(status: i32, message: String) : status = status, super(message);
+}
+
+/** A record set: every record of one name and type. */
+export final class RecordSet {
+  /** Fully qualified, ending in a dot. */
+  name: String;
+  /** Such as `TXT` or `A`. */
+  type: String;
+  /** How long resolvers may keep the records, in seconds. */
+  ttl: i32;
+  /** The records' data, as the zone file writes them: a TXT record's quoted. */
+  rrdatas: Array<String>;
+
+  new(this.name, this.type, this.ttl, this.rrdatas);
+
+  /** The record set as Cloud DNS takes it. */
+  toJson(): JsonObject {
+    let json = new JsonObject();
+    json['name'] = this.name;
+    json['type'] = this.type;
+    json['ttl'] = new Box<f64>(this.ttl as f64);
+    let rrdatas = new JsonArray();
+    for (let data in this.rrdatas) {
+      rrdatas.push(data);
+    }
+    json['rrdatas'] = rrdatas;
+    return json;
+  }
+
+  /** The record set in Cloud DNS's `json`. Throws `DnsError` when it is not one. */
+  static fromJson(json: JsonValue): RecordSet {
+    if (!(json is JsonObject)) {
+      throw new DnsError(0, 'the answer is not a record set');
+    }
+    let object = json as JsonObject;
+    let name = object['name'];
+    let type = object['type'];
+    let ttl = object['ttl'];
+    let rrdatas = object['rrdatas'];
+    if (!(name is String) || !(type is String)) {
+      throw new DnsError(0, 'the record set has no name or type');
+    }
+    let datas = new GrowableArray<String>();
+    if (rrdatas is JsonArray) {
+      let array = rrdatas as JsonArray;
+      for (var i = 0; i < array.length; i += 1) {
+        let data = array[i];
+        if (data is String) {
+          datas.push(data as String);
+        }
+      }
+    }
+    let seconds = if (ttl is Box<f64>) (ttl as Box<f64>).value as i32 else 0;
+    return new RecordSet(name as String, type as String, seconds, datas);
+  }
+}
+
+/** One managed zone's record sets. */
+export final class CloudDns {
+  #origin: String;
+  #credentials: Credentials;
+  /** `/dns/v1/projects/<project>/managedZones/<zone>`. */
+  #zonePath: String;
+
+  /**
+   * The managed zone `zone`, a name or ID, of `project`, at `origin`,
+   * the API's own (`DNS_ORIGIN`) unless a test serves it.
+   */
+  new(project: String, zone: String, credentials: Credentials, origin: String = 'https://dns.googleapis.com')
+    : #origin = origin,
+      #credentials = credentials,
+      #zonePath = `/dns/v1/projects/${percentEncode(project, EncodeSet.Component)}/managedZones/${percentEncode(zone, EncodeSet.Component)}`;
+
+  /** The managed zone with the default credentials (see `defaultCredentials`). */
+  static connect(project: String, zone: String): CloudDns {
+    return new CloudDns(project, zone, defaultCredentials());
+  }
+
+  #recordPath(name: String, type: String): String {
+    return `${this.#zonePath}/rrsets/${percentEncode(name, EncodeSet.Component)}/${percentEncode(type, EncodeSet.Component)}`;
+  }
+
+  /** The record set of `name` and `type`, or null when there is none. */
+  async get(name: String, type: String): Future<RecordSet | null> {
+    let response = await this.#call(new MethodGet(), this.#recordPath(name, type), null);
+    if (response.status == 404) {
+      return null;
+    }
+    checked(response, `getting ${name} ${type}`);
+    return RecordSet.fromJson(parseJson(response.text));
+  }
+
+  /**
+   * Creates `set`, or replaces the record set of its name and type when
+   * there is one.
+   */
+  async put(set: RecordSet): Future<void> {
+    let body = stringify(set.toJson());
+    let created = await this.#call(new MethodPost(), `${this.#zonePath}/rrsets`, body);
+    if (created.status != 409) {
+      checked(created, `creating ${set.name} ${set.type}`);
+      return;
+    }
+    let patched = await this.#call(new MethodPatch(), this.#recordPath(set.name, set.type), body);
+    checked(patched, `replacing ${set.name} ${set.type}`);
+  }
+
+  /** Deletes the record set of `name` and `type`. Returns whether there was one. */
+  async delete(name: String, type: String): Future<boolean> {
+    let response = await this.#call(new MethodDelete(), this.#recordPath(name, type), null);
+    if (response.status == 404) {
+      return false;
+    }
+    checked(response, `deleting ${name} ${type}`);
+    return true;
+  }
+
+  async #call(method: Method, path: String, body: String | null): Future<RestResponse> {
+    let headers = new GrowableArray<(String, String)>();
+    headers.push(('accept', 'application/json'));
+    if (body != null) {
+      headers.push(('content-type', 'application/json'));
+    }
+    let authorization = await this.#credentials.authorization();
+    if (authorization != null) {
+      headers.push(('authorization', authorization));
+    }
+    return await restRequest(method, `${this.#origin}${path}`, headers, body);
+  }
+}
+
+/** Throws `DnsError` unless `response` is a success, naming what `doing` was. */
+function checked(response: RestResponse, doing: String): void {
+  if (response.status >= 200 && response.status < 300) {
+    return;
+  }
+  var message = response.text;
+  let json = try {
+    parseJson(response.text)
+  } catch (e) {
+    null
+  };
+  if (json is JsonObject) {
+    let error = (json as JsonObject)['error'];
+    if (error is JsonObject) {
+      let text = (error as JsonObject)['message'];
+      if (text is String) {
+        message = text as String;
+      }
+    }
+  }
+  throw new DnsError(response.status, `Cloud DNS, ${doing}: HTTP ${response.status}: ${message}`);
+}
+
+/** An answer's status and body. */
+final class RestResponse {
+  status: i32;
+  text: String;
+
+  new(this.status, this.text);
+}
+
+/** The one spellable value of type void, for a `result<_, e>` ok arm. */
+function unit() {}
+
+/**
+ * Sends one request and reads the whole answer. Throws `DnsError` when no
+ * answer arrives.
+ */
+// TODO(#551): use zena:fetch, once it takes methods, headers and bodies.
+async function restRequest(method: Method, url: String, headers: Array<(String, String)>, body: String | null)
+    : Future<RestResponse> {
+  let parsed = URL.parse(url);
+  if (parsed == null) {
+    throw new DnsError(0, `not a URL: ${url}`);
+  }
+  let target = parsed;
+  let fields = Fields.create();
+  for (let (name, value) in headers) {
+    fields.append(name, value.toBytes());
+  }
+  let trailers = Future.of<Result<Option<Fields>, ErrorCode>>((true, none));
+  let contents: Option<Stream<u8>> = if (body == null) none else some(bytesStream(body.toBytes()));
+  let (request, transmitted) = Request.new_(fields, contents, trailers, none);
+  request.setMethod(method);
+  let scheme: Scheme = if (target.protocol == 'http:') new SchemeHTTP() else new SchemeHTTPS();
+  request.setScheme(some(scheme));
+  request.setAuthority(some(target.host()));
+  request.setPathWithQuery(some(`${target.pathname}${target.search}`));
+  let sent = await send(request);
+  let response = match (sent) {
+    case (true, let value): value
+    case (false, _): throw new DnsError(0, `no answer from ${target.host()}`)
+  };
+  let status = response.getStatusCode() as i32;
+  let received = new Completer<Result<void, ErrorCode>>();
+  let (responseBody, responseTrailers) = WireResponse.consumeBody(response, received.future);
+  let bytes = await readAllBytes(responseBody);
+  received.tryComplete((true, unit()));
+  return new RestResponse(status, String.fromBytes(bytes));
+}
