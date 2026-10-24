@@ -105,43 +105,6 @@ let hangulSyllableType = (cp: i32): i32 => {
 
 export opaque type StringIndex = i32;
 
-export sealed class StringRange {
-  case BoundedStringRange, FromStringRange, ToStringRange
-
-  abstract bounds(endIndex: StringIndex): inline (StringIndex, StringIndex);
-}
-
-export final class BoundedStringRange extends StringRange {
-  start: StringIndex;
-  end: StringIndex;
-
-  new(start: StringIndex, end: StringIndex) : start = start, end = end, super();
-
-  bounds(_endIndex: StringIndex): inline (StringIndex, StringIndex) {
-    return (this.start, this.end);
-  }
-}
-
-export final class FromStringRange extends StringRange {
-  start: StringIndex;
-
-  new(start: StringIndex) : start = start, super();
-
-  bounds(endIndex: StringIndex): inline (StringIndex, StringIndex) {
-    return (this.start, endIndex);
-  }
-}
-
-export final class ToStringRange extends StringRange {
-  end: StringIndex;
-
-  new(end: StringIndex) : end = end, super();
-
-  bounds(_endIndex: StringIndex): inline (StringIndex, StringIndex) {
-    return (0 as StringIndex, this.end);
-  }
-}
-
 // Host delegate functions for Unicode case mapping
 @external("zena:host:string", "toLowerCase")
 declare function __js_string_to_lower(s: externref): externref;
@@ -464,7 +427,7 @@ export final class String implements Hashable, Stringable, Iterable<String> {
     return new String.#fromHandle(__js_string_substring(this.#handle, index as i32, next as i32));
   }
 
-  operator [](r: StringRange): String {
+  operator [](r: Range<StringIndex>): String {
     let (start, end) = r.bounds(this.endIndex);
     return this.slice(start, end);
   }

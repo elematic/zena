@@ -2168,10 +2168,9 @@ xs[r];     // [1, 2]
 ```
 
 **Note**: Range bounds may be any numeric type (`i32`, `i64`, `f32`, `f64`,
-etc., producing `BoundedRange<T>`, `FromRange<T>`, or `ToRange<T>`) or
-`StringIndex` (producing `BoundedStringRange`, `FromStringRange`, or
-`ToStringRange`, subclasses of `StringRange`). Only `i32` ranges (`BoundedRange`
-and `FromRange`) are iterable in `for-in` loops. Ranges with arithmetic
+etc.) or `StringIndex` (producing `BoundedRange<T>`, `FromRange<T>`, or
+`ToRange<T>`, subclasses of `Range<T>`). Only `i32` ranges (`BoundedRange<i32>`
+and `FromRange<i32>`) are iterable in `for-in` loops. Ranges with arithmetic
 expressions are evaluated at creation time:
 
 ```zena

@@ -13416,8 +13416,7 @@ function extractContextualRangeBoundType(expectedType: Type | null): Type | null
       if ((ect.name == "Range" || ect.name == "BoundedRange" ||
            ect.name == "FromRange" || ect.name == "ToRange" ||
            ect.name == "FullRange") &&
-          targs != null && targs.length == 1 &&
-          isNumericType(targs[0])) {
+          targs != null && targs.length == 1) {
         return targs[0];
       }
     }
@@ -15166,6 +15165,12 @@ function checkExpressionInner(ctx: CheckerContext, expr: Expression, expectedTyp
     // Check start/end are a numeric type or StringIndex.
     let stringIndexType = ctx.resolveTypeName("StringIndex");
     let contextualBoundType = extractContextualRangeBoundType(expectedType);
+    let numericContextualBound: Type | null = if (contextualBoundType != null &&
+        isNumericType(contextualBoundType as Type)) {
+      contextualBoundType
+    } else {
+      null
+    };
     var startIsStringIndex = false;
     var endIsStringIndex = false;
     var startType: Type | null = null;
@@ -15175,22 +15180,22 @@ function checkExpressionInner(ctx: CheckerContext, expr: Expression, expectedTyp
       let eExpr = end as Expression;
       if ((isContextTypedNumber(sExpr) && !isContextTypedNumber(eExpr)) ||
           (isIntLiteralExpr(sExpr) && !isIntLiteralExpr(eExpr))) {
-        let et = checkExpression(ctx, eExpr, contextualBoundType);
+        let et = checkExpression(ctx, eExpr, numericContextualBound);
         endType = et;
-        let stContext = if (isNumericType(et)) et else contextualBoundType;
+        let stContext = if (isNumericType(et)) et else numericContextualBound;
         let st = checkExpression(ctx, sExpr, stContext);
         startType = st;
       } else {
-        let st = checkExpression(ctx, sExpr, contextualBoundType);
+        let st = checkExpression(ctx, sExpr, numericContextualBound);
         startType = st;
-        let etContext = if (isNumericType(st)) st else contextualBoundType;
+        let etContext = if (isNumericType(st)) st else numericContextualBound;
         let et = checkExpression(ctx, eExpr, etContext);
         endType = et;
       }
     } else if (start != null) {
-      startType = checkExpression(ctx, start, contextualBoundType);
+      startType = checkExpression(ctx, start, numericContextualBound);
     } else if (end != null) {
-      endType = checkExpression(ctx, end, contextualBoundType);
+      endType = checkExpression(ctx, end, numericContextualBound);
     }
 
     if (startType != null) {
@@ -15229,43 +15234,39 @@ function checkExpressionInner(ctx: CheckerContext, expr: Expression, expectedTyp
         }
       }
     }
-    // Determine which range variant to return.
-    let isStringRange = startIsStringIndex || endIsStringIndex;
-    if (isStringRange) {
-      let rangeTypeName = if (start != null && end != null) { "BoundedStringRange" }
-        else if (start != null) { "FromStringRange" }
-        else { "ToStringRange" };
-      let rangeType = ctx.resolveTypeName(rangeTypeName);
-      if (rangeType != null) { rangeType }
-      else { new ErrorType() }
+    // Determine the bound type and range variant to return.
+    let boundType: Type = if (startIsStringIndex && stringIndexType != null) {
+      stringIndexType as Type
+    } else if (endIsStringIndex && stringIndexType != null) {
+      stringIndexType as Type
+    } else if (startType != null && isNumericType(startType as Type)) {
+      baseType(startType as Type)
+    } else if (endType != null && isNumericType(endType as Type)) {
+      baseType(endType as Type)
+    } else if (contextualBoundType != null &&
+               (isNumericType(contextualBoundType as Type) ||
+                (stringIndexType != null && isAssignableTo(ctx, contextualBoundType as Type, stringIndexType)))) {
+      contextualBoundType as Type
     } else {
-      let boundType: Type = if (startType != null && isNumericType(startType as Type)) {
-        baseType(startType as Type)
-      } else if (endType != null && isNumericType(endType as Type)) {
-        baseType(endType as Type)
-      } else if (contextualBoundType != null) {
-        contextualBoundType as Type
+      new I32Type()
+    };
+    let rangeTypeName = if (start != null && end != null) { "BoundedRange" }
+      else if (start != null) { "FromRange" }
+      else if (end != null) { "ToRange" }
+      else { "FullRange" };
+    let rangeType = ctx.resolveTypeName(rangeTypeName);
+    if (rangeType is ClassType) {
+      let ct = rangeType as ClassType;
+      let tparams = ct.typeParameters;
+      if (tparams != null && tparams.length == 1) {
+        instantiateClassType(ct, [boundType])
       } else {
-        new I32Type()
-      };
-      let rangeTypeName = if (start != null && end != null) { "BoundedRange" }
-        else if (start != null) { "FromRange" }
-        else if (end != null) { "ToRange" }
-        else { "FullRange" };
-      let rangeType = ctx.resolveTypeName(rangeTypeName);
-      if (rangeType is ClassType) {
-        let ct = rangeType as ClassType;
-        let tparams = ct.typeParameters;
-        if (tparams != null && tparams.length == 1) {
-          instantiateClassType(ct, [boundType])
-        } else {
-          ct
-        }
-      } else if (rangeType != null) {
-        rangeType
-      } else {
-        new ErrorType()
+        ct
       }
+    } else if (rangeType != null) {
+      rangeType
+    } else {
+      new ErrorType()
     }
   }
   case PipelineExpression {left, right, loc}: {
