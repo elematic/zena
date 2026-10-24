@@ -18,7 +18,12 @@ class Plain {
   new(this.v);
 }
 
-let onlyResources = <T extends Resource>(x: T): i32 => 1;
+// `scoped`, because the argument is a handle: an unrestricted parameter
+// may not hold an owner (owner-type-argument.zena). The body hands it
+// back, which is the one use a scoped value must have.
+let onlyResources = <scoped T extends Resource>(x: T): T => {
+  return x;
+};
 
 // A resource satisfies the bound whether it arrives as the class or as a
 // handle to it. A caller can only ever name the handle.
@@ -30,7 +35,9 @@ let raw: Unmanaged<Handle> = disown(new Handle());
 let back: Own<Handle> = adopt(raw);
 
 // A constrained type parameter passes its own bound along.
-let relay = <U extends Resource>(x: U): i32 => onlyResources(x);
+let relay = <scoped U extends Resource>(x: U): U => {
+  return onlyResources(x);
+};
 
 // An ordinary class has no release obligation, so it is not a resource.
 let bad1 = onlyResources(new Plain(1));        // @error: does not satisfy constraint

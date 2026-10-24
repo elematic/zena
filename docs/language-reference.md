@@ -6031,6 +6031,14 @@ not bind an ordinary generic type parameter: the generic body may
 store, copy, or capture a `T`, and a second-class value may do none of
 those, so `box(fut)` for `box = <T>(x: T) => …` is an error.
 
+An owner (`Own<R>`, or a tuple holding one) may not bind an ordinary
+type parameter either: the generic body may copy a `T`, and a copy of
+an owner is a second owner of the same resource, released twice. So
+`new Box<Own<File>>(f)` and `duplicate(file)` for
+`duplicate = <T>(x: T): (T, T) => (x, x)` are errors. A generic over
+resources spells the handle around its parameter instead, with `T` the
+resource class: `hold = <T>(o: Own<T>): Own<T> => o`.
+
 Declaring the parameter `scoped` admits such arguments:
 
 ```zena
