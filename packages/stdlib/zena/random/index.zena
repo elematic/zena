@@ -13,7 +13,7 @@
  * import { randomBytes, randomInt, randomF64 } from 'zena:random';
  *
  * let salt = randomBytes(32);
- * let roll = randomInt(6) + 1;
+ * let roll = randomInt(1..7);
  * let jitter = randomF64() * 50.0;
  * ```
  */
@@ -36,6 +36,40 @@ export function randomU64(): u64 {
 }
 
 /**
+ * A random integer in `[0, span)` (`0 < span <= 2^32`), with every
+ * value equally likely.
+ */
+function randomBelow(span: u64): u32 {
+  // The 2^64 possible values of a `u64` split into floor(2^64 / span)
+  // complete groups of size `span`, plus one partial group of size
+  // `threshold = 2^64 % span` left over. Taking `x % span` across all
+  // 2^64 values would give remainders `0..threshold` one extra hit from
+  // that partial group.
+  //
+  // In 64-bit unsigned wraparound arithmetic, `0 - span` is
+  // `2^64 - span`, which has the same remainder modulo `span` as `2^64`
+  // itself. So `((0 as u64) - span) % span` computes `2^64 % span`
+  // without needing a 65-bit integer.
+  //
+  // When `x < threshold`, `x` falls in the first `threshold` values
+  // (`0..threshold`), so we discard it and draw again. The accepted
+  // range `[threshold, 2^64)` has `2^64 - threshold` values — an exact
+  // multiple of `span`. Because any contiguous integer range of length
+  // `k * span` covers every remainder `0..span` exactly `k` times
+  // regardless of where it starts, `x % span` on an accepted `x` is
+  // completely uniform.
+  //
+  // Since `threshold < span <= 2^32`, `x < threshold` is true on fewer
+  // than 2^32 / 2^64 = 1 in 2^32 (~4.3 billion) draws.
+  let threshold = ((0 as u64) - span) % span;
+  var x = hostRandomU64();
+  while (x < threshold) {
+    x = hostRandomU64();
+  }
+  return (x % span) as u32;
+}
+
+/**
  * A random integer at least 0 and less than `bound`, each equally
  * likely. Throws when `bound` is not positive.
  */
@@ -43,18 +77,23 @@ export function randomInt(bound: i32): i32 {
   if (bound <= 0) {
     throw new Error(`zena:random: randomInt(${bound}) needs a positive bound`);
   }
-  let b = bound as u64;
-  // `x % b` over all 2^64 values of `x` gives the residues below
-  // 2^64 mod b once more often than the rest. Those extra values are
-  // the ones below `threshold`, so drawing again when one comes up
-  // leaves every residue equally likely. Fewer than one draw in 2^33
-  // is rejected, since `b` is below 2^31.
-  let threshold = ((0 as u64) - b) % b;
-  var x = hostRandomU64();
-  while (x < threshold) {
-    x = hostRandomU64();
+  return randomBelow(bound as u64) as i32;
+}
+
+/**
+ * A random integer in the half-open `range` `[range.start, range.end)`,
+ * each equally likely. Throws when `range.start >= range.end`.
+ */
+export function randomInt(range: BoundedRange): i32 {
+  let min = range.start;
+  let max = range.end;
+  if (min >= max) {
+    throw new Error(`zena:random: randomInt(${min}..${max}) needs a non-empty range`);
   }
-  return (x % b) as i32;
+  // Subtract in i64 so spans wider than i32.max (e.g. -10..i32.max) do
+  // not overflow i32.
+  let span = ((max as i64) - (min as i64)) as u64;
+  return ((min as u32) + randomBelow(span)) as i32;
 }
 
 /**
