@@ -318,6 +318,9 @@
             # every binary resolves the same features for the crates they
             # share (`cargo hakari generate`, see DEVELOPMENT.md).
             pkgs.cargo-hakari
+            # The linker rustc's wasm32-unknown-unknown target invokes, for
+            # packages/wasm-web-ui's Rust example module.
+            pkgs.lld
           ] ++ pkgs.lib.optionals pkgs.stdenv.isDarwin [
             pkgs.libiconv
             pkgs.zig_0_14
