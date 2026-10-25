@@ -1,0 +1,22 @@
+// @mode: check
+// A future that holds an owner is consumed by its await
+// (docs/design/owner-futures.md): a second await would mint a second
+// owner of the same resource, released twice. Not reported yet; a run
+// releases the resource twice.
+import {Own, Disposable} from 'zena:core';
+
+resource class Res {
+  new();
+  [Disposable.dispose](this: Own<this>): void {}
+}
+
+async function make(): Future<Own<Res>> {
+  return new Res();
+}
+
+async function twice(): Future<i32> {
+  let f = make();
+  let a = await f;
+  let b = await f; // @missing-error: 'f' may have been moved
+  return 1;
+}
