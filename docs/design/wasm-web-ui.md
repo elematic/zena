@@ -1095,21 +1095,18 @@ over a slab of objects, templates, values, listeners and the element
 trait. The element:
 
 ```rust
-static COUNTER: Template = template!("<button ?disabled=", " @click=", ">", ": ", "</button>");
-
 struct Counter { count: i32, step: i32, label: String, disabled: bool }
 
 impl Element for Counter {
     fn render(&mut self, cx: &Context) -> Option<TemplateResult> {
-        Some(html(&COUNTER, vec![
-            self.disabled.into(),
-            cx.on(|counter: &mut Counter, cx: &Context, _event: &Event| {
+        Some(html!(
+            "<button ?disabled=" {self.disabled}
+            " @click=" {cx.on(|counter: &mut Counter, cx: &Context, _event: &Event| {
                 counter.count += counter.step;
                 cx.dispatch_event("count-changed", EventFlags { bubbles: true, ..Default::default() });
-            }),
-            self.label.clone().into(),
-            self.count.into(),
-        ]))
+            })}
+            ">" {self.label.clone()} ": " {self.count} "</button>"
+        ))
     }
 }
 
@@ -1126,25 +1123,32 @@ static DEFINITIONS: [Definition; 1] = [Definition {
 }];
 ```
 
-Three things differ from the Zena version, and each names a piece of
-language support the Rust side lacks. A template is the list of strings
-around the holes, written out, because Rust has no tagged template
-literal; a procedural macro could split one literal at `${}` marks, and
-the support code's `template!` is where it would go. A property is
-declared beside the struct with `property!`, which writes the accessors
-by downcasting the element; a derive macro over the struct's fields
-would write them from attributes on the fields, as `@property` does in
-Zena through `context`. A listener takes the element as its first
-parameter, `cx.on(|counter: &mut Counter, cx, event| …)`, because a
-closure cannot borrow the element it is made in; the support code finds
-the element by the instance the listener was made for, and asks for a
-render after the listener ran. The support code is about 900 lines,
-most of it the exports, and would be a crate.
+`html!` is a tagged template literal as a declarative macro: strings and
+holes interleaved, an expression in braces at each hole. The expansion
+puts the strings in a `static` of its own, so the call site is the
+template's identity as it is in JavaScript, builds the values beside
+them, and keeps the raw strings through `stringify!`. The expressions
+stay tokens, so errors and completion inside a hole work; a procedural
+macro splitting one literal at `${}` marks would read closer to
+JavaScript and lose that, which is the trade Leptos and Yew made the
+same way. Two adjacent holes take an empty string between them.
+
+Two things still differ from the Zena version, and each names a piece
+of language support. A property is declared beside the struct with
+`property!`, which writes the accessors by downcasting the element; a
+derive macro over the struct's fields would write them from attributes
+on the fields, as `@property` does in Zena through `context`. A
+listener takes the element as its first parameter,
+`cx.on(|counter: &mut Counter, cx, event| …)`, because a closure cannot
+borrow the element it is made in; the support code finds the element by
+the instance the listener was made for, and asks for a render after the
+listener ran. The support code is about 950 lines, most of it the
+exports, and would be a crate.
 
 The module imports three functions, `request_update`, `dispatch_event`
 and `extern_release`, the ones its code references; a capability import
 appears only when a listener calls it, as in Zena. Built with
-`opt-level = "z"`, `lto` and `panic = "abort"`, it is 32,794 bytes,
+`opt-level = "z"`, `lto` and `panic = "abort"`, it is 33,421 bytes,
 most of it the standard library's allocator and number formatting.
 
 ## Implementation status
@@ -1276,7 +1280,7 @@ listeners read them, and not `event_prevent_default`,
 the import list is the capability list.
 
 The Rust counter (`examples/rust`, release profile, no name section) is
-32,794 B and imports `request_update`, `dispatch_event` and
+33,421 B and imports `request_update`, `dispatch_event` and
 `extern_release`; its size is the standard library's allocator and
 number formatting, not the protocol.
 
