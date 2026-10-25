@@ -91,6 +91,18 @@ the `zena` command. The design is in
      at a time. Each copy compiles its file in test mode and runs it with
      `zena:wasm`, with the repository as `.`, the stdlib as `/stdlib` and a
      temporary directory as `/tmp`.
+   - When more files are stale in the compile cache than copies run at
+     once, they are compiled first, in that many copies
+     (`zena test --compile <files...>`), each compiling its share in file
+     order on one `CompileSession` (`zena-compiler:compile-file`), so the
+     standard library and shared packages are checked once per copy.
+     `compileIntoCache` stores each module with the files its program is
+     made of (`CompileSession.sources`), not the files its compile read,
+     since a shared compiler reads each file once; `tests/test-batch_test.zena`
+     checks that an edit still makes such a module stale. A file that did
+     not compile is compiled again by its `--single` copy, which reports
+     why. With no more stale files than copies, nothing would be shared, and
+     the copies compile their own files as before.
    - This package's own tests run the built binary from Zena
      (`tests/*_test.zena`, the `test:zena` script). What they vary is the
      command's environment (the compile cache's directory, the standard

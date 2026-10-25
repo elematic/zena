@@ -16,7 +16,7 @@
  */
 
 import { getEnv } from 'zena:cli';
-import { HashSet } from 'zena:collections';
+import { HashMap, HashSet } from 'zena:collections';
 import {
   existsSync, isDirectorySync, isFileSync, mkdirSync, readFileSync, readFileBytesSync, renameSync, statSync, unlinkSync,
   writeFileSync, writeFileBytesSync
@@ -25,7 +25,8 @@ import { AbsolutePath, basename, dirname, extname } from 'zena:path';
 import { monotonic } from 'zena:time';
 import { runModule } from 'zena:wasm';
 import {
-  CompileFileOptions, compileFile, defaultOptLevel, defaultTarget, parseOptLevel
+  CompileFileOptions, CompileSession, compileFile, defaultOptLevel, defaultTarget,
+  openCompileSession, parseOptLevel
 } from 'zena-compiler:compile-file';
 import { targetEmitsComponent } from 'zena-compiler:targets';
 import { sha256HexOfString } from 'zena:crypto';
@@ -195,6 +196,34 @@ function compileRecording(
     compileWith(compiler, request, options, out, quiet);
     return;
   }
+  var status = 1;
+  try {
+    status = compileFile(compileFileOptions(request, options, out, onRead));
+  } catch (e) {
+    if (e is CompileFailure) {
+      throw e;
+    }
+    // compileFile printed the error and its stack on the way out; the
+    // message rides along for the cases where it did not get to.
+    throw new CompileFailure(
+        `the compiler failed on ${request.source.value}: ${e.message}`);
+  }
+  if (status != 0) {
+    throw new CompileFailure(`${request.source.value} did not compile`);
+  }
+}
+
+/**
+ * What the compiler is told for `request`, writing to `out` and reporting
+ * each file it reads to `onRead`. A component's runtime memory module is
+ * built (or found in the cache) here, and its sources are reported too.
+ */
+function compileFileOptions(
+  request: CompileRequest,
+  options: Options,
+  out: AbsolutePath,
+  onRead: (path: String) => void,
+): CompileFileOptions {
   let level = optLevelText(options);
   let optLevel = if (level == '') {
     defaultOptLevel
@@ -246,23 +275,11 @@ function compileRecording(
     compactImports: request.compactImports,
   };
   let stringConstants = request.importedStringConstants;
-  let compileOptions: CompileFileOptions = if (stringConstants == null) {
+  return if (stringConstants == null) {
     baseOptions
   } else {
     {...baseOptions, importedStringConstants: stringConstants}
   };
-  var status = 1;
-  try {
-    status = compileFile(compileOptions);
-  } catch (e) {
-    // compileFile printed the error and its stack on the way out; the
-    // message rides along for the cases where it did not get to.
-    throw new CompileFailure(
-        `the compiler failed on ${request.source.value}: ${e.message}`);
-  }
-  if (status != 0) {
-    throw new CompileFailure(`${request.source.value} did not compile`);
-  }
 }
 
 /**
@@ -488,6 +505,21 @@ function entryIsFresh(depsPath: String, modulePath: String): boolean {
   return checked > 0;
 }
 
+/** The name of `request`'s entry in the cache, before `.wasm` and `.deps`. */
+function cacheName(request: CompileRequest, options: Options) {
+  let stem = basename(request.source.value, extname(request.source.value));
+  return `${stem}_${cacheKey(request, options)}`;
+}
+
+/** Whether the cache holds a fresh module for `request`. */
+export function isCached(request: CompileRequest, options: Options): boolean {
+  if (getEnv('ZENA_COMPILER_WASM') != null) {
+    return false;
+  }
+  let name = `${cacheDir()}/${cacheName(request, options)}`;
+  return entryIsFresh(`${name}.deps`, `${name}.wasm`);
+}
+
 /**
  * Compiles through the cache and returns the cached module's path.
  * A module that is already there and fresh is not compiled again.
@@ -500,8 +532,7 @@ export function compileCached(
 ): AbsolutePath {
   let dir = cacheDir();
   ensureDir(dir);
-  let stem = basename(request.source.value, extname(request.source.value));
-  let name = `${stem}_${cacheKey(request, options)}`;
+  let name = cacheName(request, options);
   let modulePath = `${dir}/${name}.wasm`;
   let depsPath = `${dir}/${name}.deps`;
   if (!noCache && getEnv('ZENA_COMPILER_WASM') == null &&
@@ -538,4 +569,114 @@ export function compileCached(
   writeFileSync(tempDeps, joinLines(deps));
   renameSync(tempDeps, depsPath);
   return new AbsolutePath(modulePath);
+}
+
+/**
+ * Compiles each of `requests` the cache does not already hold fresh, all
+ * with one compiler session, and stores each module where
+ * `compileCached` finds it. The requests may differ only in their
+ * source: the session is opened with the first one's settings.
+ *
+ * From the second compile on, what the entries share is loaded, parsed
+ * and checked once (`CompileSession`), so the files a compile reads are
+ * no longer the files it depends on. Each entry's `.deps` lists instead
+ * what the session read before its first compile (the workspace's
+ * manifests, the WIT, the runtime memory module's sources) and the files
+ * its own program is made of (`CompileSession.sources`), each with its
+ * identity from when the compiler read it, so an edit made since leaves
+ * the entry stale and never wrongly fresh.
+ *
+ * A request that does not compile is left out of the cache, and
+ * `compileCached` compiles it again, alone, for whoever asks next and
+ * reports why. Nothing can be shared with the compiler module
+ * ZENA_COMPILER_WASM names, so with it set nothing is compiled here.
+ */
+export function compileIntoCache(requests: Array<CompileRequest>, options: Options): void {
+  if (requests.length == 0 || getEnv('ZENA_COMPILER_WASM') != null) {
+    return;
+  }
+  let dir = cacheDir();
+  ensureDir(dir);
+  let stale = new GrowableArray<CompileRequest>();
+  for (let request in requests) {
+    if (!isCached(request, options)) {
+      stale.push(request);
+    }
+  }
+  if (stale.length == 0) {
+    return;
+  }
+  // Each file's identity when the compiler last read it, and the files
+  // the session read before its first compile.
+  let identities = new HashMap<String, String>();
+  let setup = new GrowableArray<String>();
+  var opened = false;
+  let onRead = (path: String) => {
+    try {
+      identities[path] = identity(path);
+    } catch (e) {
+      // A file that cannot be read fails the compile anyway.
+    }
+    if (!opened) {
+      setup.push(path);
+    }
+  };
+  let unique = i64ToString(monotonic() as i64);
+  let first = stale[0];
+  var opening: CompileSession | null = null;
+  try {
+    let out = new AbsolutePath(`${dir}/${cacheName(first, options)}.tmp-${unique}.wasm`);
+    opening = openCompileSession(compileFileOptions(first, options, out, onRead));
+  } catch (e) {
+    // The compile `compileCached` runs for each of them reports it.
+  }
+  opened = true;
+  if (opening == null) {
+    return;
+  }
+  let session = opening as CompileSession;
+  for (let request in stale) {
+    let name = cacheName(request, options);
+    let tempModule = `${dir}/${name}.tmp-${unique}.wasm`;
+    var status = 1;
+    try {
+      status = session.compile(repoRelative(request.source), tempModule);
+    } catch (e) {
+      // A throw out of the compiler belongs to this entry alone; the
+      // compile `compileCached` runs for it meets it again.
+    }
+    if (status != 0 || !isFileSync(tempModule)) {
+      if (existsSync(tempModule)) {
+        unlinkSync(tempModule);
+      }
+      continue;
+    }
+    let seen = new HashSet<String>();
+    let deps = new GrowableArray<String>();
+    for (let path in setup) {
+      recordDep(path, identities, seen, deps);
+    }
+    for (let path in session.sources) {
+      recordDep(path, identities, seen, deps);
+    }
+    renameSync(tempModule, `${dir}/${name}.wasm`);
+    let tempDeps = `${dir}/${name}.tmp-${unique}.deps`;
+    writeFileSync(tempDeps, joinLines(deps));
+    renameSync(tempDeps, `${dir}/${name}.deps`);
+  }
+}
+
+/** Adds `path`'s `.deps` line, with the identity it was read with, once. */
+function recordDep(
+  path: String,
+  identities: HashMap<String, String>,
+  seen: HashSet<String>,
+  deps: GrowableArray<String>,
+): void {
+  if (!seen.add(path)) {
+    return;
+  }
+  if (let (true, recorded) = identities.get(path)) {
+    deps.push(`${recorded} ${path}`);
+  }
 }
