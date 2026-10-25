@@ -34,15 +34,39 @@ extern "C" {
 /// template on every render.
 pub struct Template {
     strings: &'static [&'static str],
+    /// The literals' source text, quotes included, as `stringify!` gives it.
+    raw: &'static [&'static str],
     id: AtomicU32,
 }
 
 impl Template {
-    pub const fn new(strings: &'static [&'static str]) -> Template {
+    pub const fn new(strings: &'static [&'static str], raw: &'static [&'static str]) -> Template {
         Template {
             strings,
+            raw,
             id: AtomicU32::new(0),
         }
+    }
+
+    /// The raw string at `index`: the literal's source between its quotes.
+    fn raw_at(&self, index: usize) -> &'static str {
+        // `"…"` or `r#"…"#`: drop the prefix and the quotes.
+        let source = self.raw[index];
+        let bytes = source.as_bytes();
+        let mut start = 0;
+        if bytes[start] == b'r' {
+            start += 1;
+        }
+        let mut hashes = 0;
+        while bytes[start] == b'#' {
+            start += 1;
+            hashes += 1;
+        }
+        // `get`, not a slice: the slice's panic path formats the string,
+        // which costs 8 KB of unicode tables.
+        source
+            .get(start + 1..bytes.len() - 1 - hashes)
+            .unwrap_or("")
     }
 
     fn id(&'static self) -> u32 {
@@ -56,13 +80,31 @@ impl Template {
     }
 }
 
-/// `template!("<p>", "</p>")`: the strings around the holes, as a tagged
-/// template literal would split them.
+/// A tagged template literal: `html!("<p>" {name} ", " {count} "</p>")`,
+/// strings and holes interleaved, with an expression in braces at each
+/// hole. The expansion puts the strings in a `static` of its own, so the
+/// call site is the template's identity as it is in JavaScript, and
+/// builds the values beside it; the raw strings are the literals' source
+/// text, through `stringify!`. Two adjacent holes take an empty string
+/// between them.
 #[macro_export]
-macro_rules! template {
-    ($($s:literal),+ $(,)?) => {
-        $crate::webui::Template::new(&[$($s),+])
+macro_rules! html {
+    ($($t:tt)*) => { $crate::html_impl!(@acc [] [] [] $($t)*) };
+}
+
+#[doc(hidden)]
+#[macro_export]
+macro_rules! html_impl {
+    // A string, then a hole.
+    (@acc [$($s:expr),*] [$($r:expr),*] [$($v:expr),*] $lit:literal { $e:expr } $($rest:tt)*) => {
+        $crate::html_impl!(@acc [$($s,)* $lit] [$($r,)* stringify!($lit)] [$($v,)* $crate::webui::Value::from($e)] $($rest)*)
     };
+    // The last string.
+    (@acc [$($s:expr),*] [$($r:expr),*] [$($v:expr),*] $lit:literal) => {{
+        static TEMPLATE: $crate::webui::Template =
+            $crate::webui::Template::new(&[$($s,)* $lit], &[$($r,)* stringify!($lit)]);
+        $crate::webui::html(&TEMPLATE, vec![$($v),*])
+    }};
 }
 
 /// A value for a hole.
@@ -654,8 +696,13 @@ pub extern "C" fn webui_strings_at(strings: u32, index: i32) -> u32 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn webui_strings_raw_at(strings: u32, index: i32) -> u32 {
-    // Rust string literals are the source text; nothing is cooked.
-    webui_strings_at(strings, index)
+    with_state(|s| match s.get(strings) {
+        Some(Object::Template(t)) => {
+            let text = t.raw_at(index as usize);
+            s.string(text)
+        }
+        _ => 0,
+    })
 }
 
 #[unsafe(no_mangle)]

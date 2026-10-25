@@ -5,9 +5,7 @@
 
 pub mod webui;
 
-use webui::{html, Context, Definition, Element, Event, EventFlags, Template, TemplateResult};
-
-static COUNTER: Template = template!("<button ?disabled=", " @click=", ">", ": ", "</button>",);
+use webui::{Context, Definition, Element, Event, EventFlags, TemplateResult};
 
 struct Counter {
     count: i32,
@@ -18,23 +16,13 @@ struct Counter {
 
 impl Element for Counter {
     fn render(&mut self, cx: &Context) -> Option<TemplateResult> {
-        Some(html(
-            &COUNTER,
-            vec![
-                self.disabled.into(),
-                cx.on(|counter: &mut Counter, cx: &Context, _event: &Event| {
-                    counter.count += counter.step;
-                    cx.dispatch_event(
-                        "count-changed",
-                        EventFlags {
-                            bubbles: true,
-                            ..Default::default()
-                        },
-                    );
-                }),
-                self.label.clone().into(),
-                self.count.into(),
-            ],
+        Some(html!(
+            "<button ?disabled=" {self.disabled}
+            " @click=" {cx.on(|counter: &mut Counter, cx: &Context, _event: &Event| {
+                counter.count += counter.step;
+                cx.dispatch_event("count-changed", EventFlags { bubbles: true, ..Default::default() });
+            })}
+            ">" {self.label.clone()} ": " {self.count} "</button>"
         ))
     }
 }
@@ -65,10 +53,8 @@ pub fn definitions() -> &'static [Definition] {
     &DEFINITIONS
 }
 
-static GREETING: Template = template!("<p>Hello ", ", you have ", " messages.</p>");
-
 /// A template-only export: a result the page renders where it likes.
 #[unsafe(no_mangle)]
 pub extern "C" fn greeting(unread: i32) -> u32 {
-    webui::result(html(&GREETING, vec!["Ada".into(), unread.into()]))
+    webui::result(html!("<p>Hello " {"Ada"} ", you have " {unread} " messages.</p>"))
 }
