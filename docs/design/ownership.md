@@ -1866,10 +1866,11 @@ Both halves are enforced where a generic is instantiated, explicitly or
 by inference (`rejectSecondClassTypeArguments`,
 `rejectSecondClassFunctionTypeArgs`): a borrowed or scoped argument is
 rejected as second-class storage, and an owner, or an affine tuple, as
-an argument the body may duplicate (#379). A `scoped T` cannot be held
-in a field, so a generic class has no way to hold an owner in a `T`
-field: an instance that holds owners is a resource class with `Own<T>`
-fields.
+an argument the body may duplicate (#379). The class half of `scoped T`
+(§"Scoped type arguments": `T`-typed fields in a `scoped T` class) is
+not implemented yet; until it is, a `T` field rejects a `scoped T`, so
+no generic class holds an owner in a `T` field, and an object that holds
+owners is a resource class with `Own<T>` fields.
 
 The opt-in is **declared, not inferred**. Whole-program compilation would allow
 inferring it from bodies, but then errors land inside stdlib bodies at call sites
