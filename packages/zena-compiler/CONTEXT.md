@@ -281,6 +281,10 @@ nothing cached, 3.5s → 7.0s on a repeat run — the repeat costs more
 because it genuinely recompiles all 465 rather than serving `zena-cli`'s
 cache.
 
+`CompileSession` (`zena/lib/compile-file.zena`) packages the same
+arrangement for other drivers, with the same cap; `zena test` compiles
+its files through it (`packages/zena-cli/CONTEXT.md`, "Tests").
+
 Batching needed one compiler fix first, and it was not a codegen bug:
 generic instantiations are interned on the generic source, and the key
 was the type argument's _name_, so two entry points that each declared a

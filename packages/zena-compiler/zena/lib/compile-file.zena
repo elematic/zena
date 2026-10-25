@@ -17,8 +17,8 @@ import { CompilerHost } from './library-loader.zena';
 import { PackageConfig, stdlibIdToRelativeFile } from './module-resolver.zena';
 import { loadWorkspace } from './package-manifest.zena';
 import {
-  createCompiler, CompileOptions, checkCompilation, withBuiltinPackages,
-  setCheckAllBodies
+  Compiler, CompilerOptions, ProgramCheckResult, createCompiler, CompileOptions,
+  checkCompilation, withBuiltinPackages, setCheckAllBodies
 } from './compiler.zena';
 import { DiagnosticSeverity, SourceSpan, SyntaxError } from './diagnostics.zena';
 import { BinaryGenerator } from './codegen/binary-generator.zena';
@@ -150,12 +150,28 @@ function ignoreRead(path: String) {}
  */
 class FileHost implements CompilerHost {
   testMode: boolean;
-  entryPath: String;
   stdlibRoot: String;
   onRead: (path: String) => void;
+  /**
+   * The entry of the compile in progress: in test mode, the one file
+   * that gets a `main`.
+   */
+  var entryPath = "";
   /** The WIT-backed packages' source, once it has been read. */
   var packagesWit = "";
-  new(this.testMode, this.entryPath, this.stdlibRoot, this.onRead);
+  new(this.testMode, this.stdlibRoot, this.onRead);
+
+  /**
+   * The file a module's source is read from, as `onRead` names it: a
+   * `zena:` module is a file under the standard library's root.
+   */
+  fileOf(path: String): String {
+    return if (path.startsWith("zena:")) {
+      `${this.stdlibRoot}/${stdlibIdToRelativeFile(path)}`
+    } else {
+      path
+    };
+  }
 
   readFile(path: String): String {
     // A WIT-backed package's module: no file exists — the source is
@@ -163,11 +179,7 @@ class FileHost implements CompilerHost {
     if (isWitModulePath(path)) {
       return synthesizeWitModule(this, path, this.packagesWit);
     }
-    let actualPath = if (path.startsWith("zena:")) {
-      `${this.stdlibRoot}/${stdlibIdToRelativeFile(path)}`
-    } else {
-      path
-    };
+    let actualPath = this.fileOf(path);
     let onRead = this.onRead;
     onRead(actualPath);
     let content = readFileSync(actualPath);
@@ -407,7 +419,25 @@ function printTimingReport() {
  * program it prints the diagnostics to stderr and returns 1; it never
  * ends the process, so a caller can compile again.
  */
-export function compileFile(options: CompileFileOptions): i32 {
+/**
+ * How many compiles a session runs on one compiler before it starts a new
+ * one. What a compiler accumulates per entry point (nominal types, model
+ * nodes, instantiations interned on the standard library's own generic
+ * types) is never released while it lives, so past a couple of dozen
+ * entries it costs more than sharing the standard library saves. The
+ * portable execution tests measured the whole saving by eight entries
+ * and settled on 16; see "Portable Tests" in ../CONTEXT.md.
+ */
+let entriesPerCompiler = 16;
+
+/**
+ * Opens a session for compiles with `options`, or prints why it cannot
+ * and returns null. `entry` and `outPath` are ignored: each compile names
+ * its own. The workspace's manifests and the WIT-backed packages' source
+ * are read here, once for every compile the session runs, and `onRead`
+ * hears about them first.
+ */
+export function openCompileSession(options: CompileFileOptions): CompileSession | null {
   // ZENA_CHECK_ALL_BODIES=1 checks every loaded module's bodies when
   // its module is checked, instead of leaving a dependency's for
   // reachability to ask for. See docs/design/lazy-body-checking.md.
@@ -416,7 +446,6 @@ export function compileFile(options: CompileFileOptions): i32 {
   // it is gathered only when the report is wanted.
   setCensusEnabled(getEnv("ZENA_CENSUS") != null);
 
-  let {entry: filename, outPath} = options;
   let {
     witPath = "",
     worldName = "",
@@ -424,26 +453,19 @@ export function compileFile(options: CompileFileOptions): i32 {
     projectRoot = "",
     packageCache = "",
     testMode = false,
-    time = false,
-    debugNames = false,
     compactImports = false,
     warnUnnecessaryCasts = false,
-    progress = false,
   } = options;
   // Read with `??` rather than a destructuring default: a default in a
   // destructuring pattern does not see module-level bindings, and these
   // name theirs rather than writing it out.
   let target = options.target ?? defaultTarget;
-  let runtimeMemoryPath = options.runtimeMemoryPath ?? "";
-  let optLevel = options.optLevel ?? defaultOptLevel;
   let onRead = options.onRead ?? ignoreRead;
-  let importedStringConstants =
-      options.importedStringConstants ?? defaultImportedStringConstants;
 
   if (!isKnownTarget(target)) {
     console.error("Error: invalid target '" + target + "' (expected " +
         knownTargetsDescription() + ")");
-    return 1;
+    return null;
   }
   // A declared world (docs/design/component-emission.md, Part 3): the
   // WIT becomes the authority the program is compiled against, and
@@ -452,35 +474,35 @@ export function compileFile(options: CompileFileOptions): i32 {
     console.error(
         "Error: --wit/--world declare a component's world, and the " +
         "target is '" + target + "'. Use --target component.");
-    return 1;
+    return null;
   }
   if (worldName != "" && witPath == "") {
     console.error("Error: --world names a world in a --wit document, " +
         "and no --wit was given.");
-    return 1;
+    return null;
   }
   if (let {importedStringConstants: given} = options) {
     if (given == "") {
       console.error("Error: --imported-string-constants names a module, " +
           "and the name is empty.");
-      return 1;
+      return null;
     }
     if (!targetUsesJsStrings(target)) {
       console.error(
           "Error: --imported-string-constants names the module string " +
           "literals are imported from, and the target is '" + target +
           "', which imports none. Use --target js.");
-      return 1;
+      return null;
     }
   }
   if (compactImports && targetEmitsComponent(target)) {
     console.error("Error: --compact-imports writes a core module's imports " +
         `in an encoding wasmtime does not read, and the target is '${target}', ` +
         "which emits a component.");
-    return 1;
+    return null;
   }
 
-  let host = new FileHost(testMode, filename, stdlibRoot, onRead);
+  let host = new FileHost(testMode, stdlibRoot, onRead);
   // The declared world's WIT: one file, or a directory whose *.wit
   // files are concatenated in name order into one document.
   var witSource = "";
@@ -491,7 +513,7 @@ export function compileFile(options: CompileFileOptions): i32 {
   if (witPath != "") {
     if (!existsSync(witPath)) {
       console.error("Error: --wit path does not exist: " + witPath);
-      return 1;
+      return null;
     }
     let doc = readWitDocument(host, witPath);
     witDoc = doc;
@@ -500,7 +522,7 @@ export function compileFile(options: CompileFileOptions): i32 {
   let loaded = loadPackagesOrReport(host, if (projectRoot == "") null else projectRoot,
       if (packageCache == "") null else packageCache);
   if (loaded == null) {
-    return 1;
+    return null;
   }
   let packages = loaded as HashMap<String, PackageConfig>;
   // A declared world's document answers for its own packages: the
@@ -522,12 +544,11 @@ export function compileFile(options: CompileFileOptions): i32 {
       }
     } catch (e) {
       if (e is Error && reportWitFailure(witDoc, e)) {
-        return 1;
+        return null;
       }
       throw e;
     }
   }
-  let compiler = createCompiler(host, {stdlibRoot, packages, warnUnnecessaryCasts});
   // The WIT-backed packages' real source, so the encoder emits their
   // interfaces' true types rather than deriving them from the
   // synthesized declarations (which are flattened core shapes), and so
@@ -573,213 +594,345 @@ export function compileFile(options: CompileFileOptions): i32 {
     }
     host.packagesWit = packagesWit;
   }
-  // Against a declared world the entry wrapper also implements the
-  // world's async exports, which takes the WIT the compiler itself does
-  // not link. Without a declared world the compiler writes its own.
-  let declaredWit = witSource;
-  let declaredWorld = worldName;
-  let declaredPackages = packagesWit;
-  let compileOptions: CompileOptions = if (witSource == "") {
-    {entry: filename, target}
-  } else {
-    {
-      entry: filename,
-      target,
-      componentWrapperSynth:
-          (entryPath: String, ast: Module) =>
-              synthesizeExportWrapper(declaredWit, declaredWorld, entryPath,
-                  ast, declaredPackages),
-    }
-  };
+  return new CompileSession(
+      options, host, {stdlibRoot, packages, warnUnnecessaryCasts}, witSource, witDoc);
+}
 
-  if (progress) {
-    console.log(`Compiling ${filename}...`);
+/**
+ * Compiles entry points one after another on one compiler, so what they
+ * share, the standard library and the packages they import, is loaded,
+ * parsed and checked once: each compile carries the previous one's check
+ * forward for every file whose source has not changed. What every compile
+ * needs is read once, by `openCompileSession`; the runtime memory module a
+ * component embeds is built by the first compile that needs it.
+ *
+ * Every option but `entry` and `outPath` belongs to the session, and
+ * `compile` takes those two. `compileFile` is a session of one compile.
+ */
+export final class CompileSession {
+  #options: CompileFileOptions;
+  #host: FileHost;
+  #compilerOptions: CompilerOptions;
+  var #compiler: Compiler;
+  #witSource: String;
+  #witDoc: WitDocument | null;
+  var #previous: ProgramCheckResult | null = null;
+  var #compiles = 0;
+  var #runtimeMemory: ByteBuffer | null = null;
+  var #sources = new GrowableArray<String>();
+
+  new(
+    options: CompileFileOptions,
+    host: FileHost,
+    compilerOptions: CompilerOptions,
+    witSource: String,
+    witDoc: WitDocument | null
+  ) : #options = options,
+      #host = host,
+      #compilerOptions = compilerOptions,
+      #compiler = createCompiler(host, compilerOptions),
+      #witSource = witSource,
+      #witDoc = witDoc;
+
+  /**
+   * The files the last compile's program is made of, as `onRead` names
+   * them: its entry and everything that reaches, the standard library
+   * included, whether this compile read them or an earlier one did.
+   * WIT-backed modules have no file; their WIT is read when the session
+   * opens. Empty when the last compile failed before it had a program.
+   */
+  sources: GrowableArray<String> {
+    get { return this.#sources; }
   }
-  try {
-    let compResult = compiler.compile(compileOptions);
 
-    let checkResults = checkCompilation(compResult);
-    let {diagnostics} = checkResults;
-    var hasError = false;
-    for (let diag in diagnostics) {
-      if (diag.severity == DiagnosticSeverity.Error) {
-        if (diag.location != null) {
-          let loc = diag.location as SourceSpan;
-          reportDiagnosticLine("Error", loc.file, loc.line, loc.column, diag.message);
-        } else {
-          console.error("Error: " + diag.message);
-        }
-        hasError = true;
-      } else if (warnUnnecessaryCasts && diag.severity == DiagnosticSeverity.Warning) {
-        if (diag.location != null) {
-          let loc = diag.location as SourceSpan;
-          reportDiagnosticLine("Warning", loc.file, loc.line, loc.column, diag.message);
-        } else {
-          console.error("Warning: " + diag.message);
+  /** The runtime memory module, built or read on first use. */
+  #runtimeMemoryModule(compiler: Compiler, stdlibRoot: String, runtimeMemoryPath: String): ByteBuffer {
+    let built = this.#runtimeMemory;
+    if (built != null) {
+      return built as ByteBuffer;
+    }
+    let module = if (runtimeMemoryPath == "") {
+      compileComponentRuntimeModule(compiler, stdlibRoot)
+    } else {
+      // Already built, by a driver that keeps them between builds.
+      new ByteBuffer().writeBytes(readFileBytesSync(runtimeMemoryPath) as ByteArray)
+    };
+    this.#runtimeMemory = module;
+    return module;
+  }
+
+  /**
+   * Compiles `entry`, a source file relative to the working directory,
+   * and writes its module to `outPath`. Returns 0, or 1 after printing the
+   * diagnostics.
+   */
+  compile(entry: String, outPath: String): i32 {
+    let options = this.#options;
+    let {
+      stdlibRoot = "/stdlib",
+      testMode = false,
+      time = false,
+      debugNames = false,
+      compactImports = false,
+      warnUnnecessaryCasts = false,
+      progress = false,
+      witPath = "",
+      worldName = "",
+    } = options;
+    let target = options.target ?? defaultTarget;
+    let runtimeMemoryPath = options.runtimeMemoryPath ?? "";
+    let optLevel = options.optLevel ?? defaultOptLevel;
+    let importedStringConstants =
+        options.importedStringConstants ?? defaultImportedStringConstants;
+    let filename = entry;
+    let witSource = this.#witSource;
+    let witDoc = this.#witDoc;
+
+    if (this.#compiles == entriesPerCompiler) {
+      // Nothing to release selectively: the instantiations a compile
+      // adds are interned on the standard library's own types, so the
+      // shared part is what grows. Replacing the compiler is the disposal.
+      this.#compiler = createCompiler(this.#host, this.#compilerOptions);
+      this.#previous = null;
+      this.#compiles = 0;
+    }
+    this.#compiles += 1;
+    this.#sources = new GrowableArray<String>();
+    let compiler = this.#compiler;
+    let host = this.#host;
+    host.entryPath = filename;
+    if (testMode) {
+      // Test mode gives the entry a `main`, so its source as an entry
+      // differs from its source as another file's import. Dropping it from
+      // the compiler's cache before and after keeps either version from
+      // serving a compile it does not belong to.
+      compiler.delete(filename);
+    }
+
+    // Against a declared world the entry wrapper also implements the
+    // world's async exports, which takes the WIT the compiler itself does
+    // not link. Without a declared world the compiler writes its own.
+    let declaredWit = witSource;
+    let declaredWorld = worldName;
+    let declaredPackages = host.packagesWit;
+    let compileOptions: CompileOptions = if (witSource == "") {
+      {entry: filename, target}
+    } else {
+      {
+        entry: filename,
+        target,
+        componentWrapperSynth:
+            (entryPath: String, ast: Module) =>
+                synthesizeExportWrapper(declaredWit, declaredWorld, entryPath,
+                    ast, declaredPackages),
+      }
+    };
+
+    if (progress) {
+      console.log(`Compiling ${filename}...`);
+    }
+    try {
+      let compResult = compiler.compile(compileOptions);
+      let sources = new GrowableArray<String>();
+      for (let file in compResult.files) {
+        if (!isWitModulePath(file.path)) {
+          sources.push(host.fileOf(file.path));
         }
       }
-    }
+      this.#sources = sources;
 
-    if (hasError) {
-      return 1;
-    }
-
-    checkResults.results[filename].model;
-    let entryAst = compResult.entry.ast;
-    let units = new Array<CompilationUnit>();
-    var entryUnit: CompilationUnit | null = null;
-    for (let file in compResult.files) {
-      let res = checkResults.results[file.path];
-      if (res != null) {
-        let unit = {ast: file.ast, model: res.model};
-        units.push(unit);
-        if (file.ast.path == entryAst.path) {
-          entryUnit = unit;
+      let checkResults = checkCompilation(compResult, this.#previous);
+      this.#previous = checkResults;
+      let {diagnostics} = checkResults;
+      var hasError = false;
+      for (let diag in diagnostics) {
+        if (diag.severity == DiagnosticSeverity.Error) {
+          if (diag.location != null) {
+            let loc = diag.location as SourceSpan;
+            reportDiagnosticLine("Error", loc.file, loc.line, loc.column, diag.message);
+          } else {
+            console.error("Error: " + diag.message);
+          }
+          hasError = true;
+        } else if (warnUnnecessaryCasts && diag.severity == DiagnosticSeverity.Warning) {
+          if (diag.location != null) {
+            let loc = diag.location as SourceSpan;
+            reportDiagnosticLine("Warning", loc.file, loc.line, loc.column, diag.message);
+          } else {
+            console.error("Warning: " + diag.message);
+          }
         }
       }
-    }
-    markTypes("check");
-    let tCodegen = performance.start("codegen");
-    let program = new Program(units, entryUnit);
 
-    // Every compile goes AST -> ZIR -> wasm; a lowering bail is a
-    // fatal error. ZENA_ZIR_STATS=1 prints the lowered count.
-    let zirStats = getEnv("ZENA_ZIR_STATS") != null;
+      if (hasError) {
+        return 1;
+      }
 
-    // ZENA_WIDE_ARITHMETIC=1 emits the wide-arithmetic proposal's
-    // instructions instead of the sequences that mean the same thing.
-    // Opt-in because V8 does not implement the proposal yet.
-    let wideArithmetic = getEnv("ZENA_WIDE_ARITHMETIC") != null;
+      checkResults.results[filename].model;
+      let entryAst = compResult.entry.ast;
+      let units = new Array<CompilationUnit>();
+      var entryUnit: CompilationUnit | null = null;
+      for (let file in compResult.files) {
+        let res = checkResults.results[file.path];
+        if (res != null) {
+          let unit = {ast: file.ast, model: res.model};
+          units.push(unit);
+          if (file.ast.path == entryAst.path) {
+            entryUnit = unit;
+          }
+        }
+      }
+      markTypes("check");
+      let tCodegen = performance.start("codegen");
+      let program = new Program(units, entryUnit);
 
-    // Template lowering (docs/design/template-zir.md) is on unless
-    // ZENA_TEMPLATES=0; ZENA_TEMPLATE_CHECK=1 lowers every templated
-    // body directly too and fails on any difference.
-    let templatesEnv = getEnv("ZENA_TEMPLATES");
-    let templates = templatesEnv == null || templatesEnv as String != "0";
-    let templateCheck = getEnv("ZENA_TEMPLATE_CHECK") != null;
+      // Every compile goes AST -> ZIR -> wasm; a lowering bail is a
+      // fatal error. ZENA_ZIR_STATS=1 prints the lowered count.
+      let zirStats = getEnv("ZENA_ZIR_STATS") != null;
 
-    // `-o out.wat` emits the WAT text directly — the readable form of
-    // exactly what the binary build would contain, for inspecting a
-    // program's emitted shape (`zena build hello.zena -o hello.wat`).
-    if (outPath.endsWith(".wat")) {
-      let watOnly = new WatGenerator(target, zirStats, optLevel);
-      watOnly.wideArithmetic = wideArithmetic;
-      watOnly.importedStringConstants = importedStringConstants;
-      watOnly.compactImports = compactImports;
-      watOnly.templates = templates;
-      watOnly.templateCheck = templateCheck;
-      watOnly.interner = checkResults.sharedState.interner;
-      writeFileSync(outPath, watOnly.generate(program));
+      // ZENA_WIDE_ARITHMETIC=1 emits the wide-arithmetic proposal's
+      // instructions instead of the sequences that mean the same thing.
+      // Opt-in because V8 does not implement the proposal yet.
+      let wideArithmetic = getEnv("ZENA_WIDE_ARITHMETIC") != null;
+
+      // Template lowering (docs/design/template-zir.md) is on unless
+      // ZENA_TEMPLATES=0; ZENA_TEMPLATE_CHECK=1 lowers every templated
+      // body directly too and fails on any difference.
+      let templatesEnv = getEnv("ZENA_TEMPLATES");
+      let templates = templatesEnv == null || templatesEnv as String != "0";
+      let templateCheck = getEnv("ZENA_TEMPLATE_CHECK") != null;
+
+      // `-o out.wat` emits the WAT text directly — the readable form of
+      // exactly what the binary build would contain, for inspecting a
+      // program's emitted shape (`zena build hello.zena -o hello.wat`).
+      if (outPath.endsWith(".wat")) {
+        let watOnly = new WatGenerator(target, zirStats, optLevel);
+        watOnly.wideArithmetic = wideArithmetic;
+        watOnly.importedStringConstants = importedStringConstants;
+        watOnly.compactImports = compactImports;
+        watOnly.templates = templates;
+        watOnly.templateCheck = templateCheck;
+        watOnly.interner = checkResults.sharedState.interner;
+        writeFileSync(outPath, watOnly.generate(program));
+        performance.end(tCodegen);
+        if (progress) {
+          console.log("Success: wrote " + outPath);
+        }
+        return 0;
+      }
+
+      let generator = new BinaryGenerator(target, zirStats, debugNames, optLevel);
+      generator.wideArithmetic = wideArithmetic;
+      generator.importedStringConstants = importedStringConstants;
+      generator.compactImports = compactImports;
+      generator.templates = templates;
+      generator.templateCheck = templateCheck;
+      generator.propagate = getEnv("ZENA_PROPAGATE") != "0";
+      // Codegen builds its unions through the checker's interner, so a
+      // union means one object across the whole compile.
+      generator.interner = checkResults.sharedState.interner;
+      if (targetEmitsComponent(target)) {
+        // The component's second core module, owning linear memory and
+        // the allocator. Compiled up front — whether the program needs it
+        // is only known after its own compile, and this one is small.
+        //
+        // The module emits few bytes and still costs a whole compile, with
+        // its own load, parse, scope and check of the standard library it
+        // draws on, which land in the same phase totals as the program's
+        // own. Timed separately so the report says how much of a component
+        // build is this module.
+        let tRuntimeModule = nowMs();
+        // Suspended: this is a compile of its own, and its load, parse,
+        // scope and check would otherwise be added to this program's,
+        // which made the report's total exceed wall-clock time by the
+        // whole nested compile.
+        performance.suspend();
+        generator.runtimeMemoryModule =
+            this.#runtimeMemoryModule(compiler, stdlibRoot, runtimeMemoryPath);
+        performance.resume();
+        performance.add("codegen-runtime-module", nowMs() - tRuntimeModule);
+        // A declared world compiles against its own document, with the
+        // WIT-backed packages spliced in so it can import their
+        // interfaces by name; without one, each interface's WIT is
+        // derived from the program, except for the packages' own.
+        generator.importEncoder = if (witPath != "") {
+          makeImportEncoder(witSource, worldName, host.packagesWit)
+        } else {
+          makeImportEncoder(null, "", host.packagesWit)
+        };
+      }
+      let wasmBytes = generator.generate(program).toByteArray();
+      markTypes("emit");
+      writeFileBytesSync(outPath, wasmBytes as FixedArray<u8>);
+
+      // The WAT dump runs a SECOND full generator pass and its text
+      // dwarfs the binary (~30x — the tests module's dump is ~135 MB),
+      // so it is opt-in for debugging.
+      if (getEnv("ZENA_EMIT_WAT") != null) {
+        let watGenerator = new WatGenerator(target, false, optLevel);
+        watGenerator.importedStringConstants = importedStringConstants;
+        watGenerator.compactImports = compactImports;
+        let watString = watGenerator.generate(program);
+        writeFileSync(outPath + ".wat", watString);
+      }
       performance.end(tCodegen);
+
       if (progress) {
         console.log("Success: wrote " + outPath);
       }
-      return 0;
-    }
 
-    let generator = new BinaryGenerator(target, zirStats, debugNames, optLevel);
-    generator.wideArithmetic = wideArithmetic;
-    generator.importedStringConstants = importedStringConstants;
-    generator.compactImports = compactImports;
-    generator.templates = templates;
-    generator.templateCheck = templateCheck;
-    generator.propagate = getEnv("ZENA_PROPAGATE") != "0";
-    // Codegen builds its unions through the checker's interner, so a
-    // union means one object across the whole compile.
-    generator.interner = checkResults.sharedState.interner;
-    if (targetEmitsComponent(target)) {
-      // The component's second core module, owning linear memory and
-      // the allocator. Compiled up front — whether the program needs it
-      // is only known after its own compile, and this one is small.
-      //
-      // The module emits few bytes and still costs a whole compile, with
-      // its own load, parse, scope and check of the standard library it
-      // draws on, which land in the same phase totals as the program's
-      // own. Timed separately so the report says how much of a component
-      // build is this module.
-      let tRuntimeModule = nowMs();
-      // Suspended: this is a compile of its own, and its load, parse,
-      // scope and check would otherwise be added to this program's,
-      // which made the report's total exceed wall-clock time by the
-      // whole nested compile.
-      performance.suspend();
-      generator.runtimeMemoryModule = if (runtimeMemoryPath == "") {
-        compileComponentRuntimeModule(compiler, stdlibRoot)
-      } else {
-        // Already built, by a driver that keeps them between builds.
-        new ByteBuffer().writeBytes(readFileBytesSync(runtimeMemoryPath) as ByteArray)
-      };
-      performance.resume();
-      performance.add("codegen-runtime-module", nowMs() - tRuntimeModule);
-      // A declared world compiles against its own document, with the
-      // WIT-backed packages spliced in so it can import their
-      // interfaces by name; without one, each interface's WIT is
-      // derived from the program, except for the packages' own.
-      generator.importEncoder = if (witPath != "") {
-        makeImportEncoder(witSource, worldName, packagesWit)
-      } else {
-        makeImportEncoder(null, "", packagesWit)
-      };
-    }
-    let wasmBytes = generator.generate(program).toByteArray();
-    markTypes("emit");
-    writeFileBytesSync(outPath, wasmBytes as FixedArray<u8>);
+      // ZENA_CENSUS=1 prints what the compile retained, by object kind
+      // (census.zena). After codegen, so the type-key counters have
+      // everything the generator interned.
+      if (getEnv("ZENA_CENSUS") != null) {
+        reportCensus(program);
+      }
 
-    // The WAT dump runs a SECOND full generator pass and its text
-    // dwarfs the binary (~30x — the tests module's dump is ~135 MB),
-    // so it is opt-in for debugging.
-    if (getEnv("ZENA_EMIT_WAT") != null) {
-      let watGenerator = new WatGenerator(target, false, optLevel);
-      watGenerator.importedStringConstants = importedStringConstants;
-      watGenerator.compactImports = compactImports;
-      let watString = watGenerator.generate(program);
-      writeFileSync(outPath + ".wat", watString);
-    }
-    performance.end(tCodegen);
-
-    if (progress) {
-      console.log("Success: wrote " + outPath);
-    }
-
-    // ZENA_CENSUS=1 prints what the compile retained, by object kind
-    // (census.zena). After codegen, so the type-key counters have
-    // everything the generator interned.
-    if (getEnv("ZENA_CENSUS") != null) {
-      reportCensus(program);
-    }
-
-    if (time) {
-      if (getEnv("ZENA_TIME_JSON") != null) {
-        printTimingJson();
-      } else {
-        printTimingReport();
+      if (time) {
+        if (getEnv("ZENA_TIME_JSON") != null) {
+          printTimingJson();
+        } else {
+          printTimingReport();
+        }
+      }
+    } catch (e) {
+      // A syntax error is a fault in the input, and the parser has already
+      // formatted it with its file, line, column and an underline. Report
+      // it the way a type error is reported and fail: the banner and the
+      // wasm backtrace below are for a fault in the compiler itself, and
+      // printing them here says the wrong thing about whose bug it is.
+      if (e is SyntaxError) {
+        console.error(e.message);
+        return 1;
+      }
+      // The same for a fault in the declared world's WIT, which the
+      // encoder and the wrapper synthesizer reach only here.
+      if (e is Error && reportWitFailure(witDoc, e)) {
+        return 1;
+      }
+      console.log("Exception caught in CLI compiler!");
+      if (e is Error) {
+        console.log("Error message: " + e.message);
+        let stack = e.getStackTrace();
+        if (stack != null) {
+          console.log("Stack Trace: \n" + stack);
+        }
+      }
+      throw e;
+    } finally {
+      if (testMode) {
+        compiler.delete(filename);
       }
     }
-  } catch (e) {
-    // A syntax error is a fault in the input, and the parser has already
-    // formatted it with its file, line, column and an underline. Report
-    // it the way a type error is reported and fail: the banner and the
-    // wasm backtrace below are for a fault in the compiler itself, and
-    // printing them here says the wrong thing about whose bug it is.
-    if (e is SyntaxError) {
-      console.error(e.message);
-      return 1;
-    }
-    // The same for a fault in the declared world's WIT, which the
-    // encoder and the wrapper synthesizer reach only here.
-    if (e is Error && reportWitFailure(witDoc, e)) {
-      return 1;
-    }
-    console.log("Exception caught in CLI compiler!");
-    if (e is Error) {
-      console.log("Error message: " + e.message);
-      let stack = e.getStackTrace();
-      if (stack != null) {
-        console.log("Stack Trace: \n" + stack);
-      }
-    }
-    throw e;
+
+    return 0;
   }
+}
 
-  return 0;
+export function compileFile(options: CompileFileOptions): i32 {
+  let session = openCompileSession(options);
+  if (session == null) {
+    return 1;
+  }
+  return (session as CompileSession).compile(options.entry, options.outPath);
 }

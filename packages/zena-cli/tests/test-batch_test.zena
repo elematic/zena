@@ -1,0 +1,65 @@
+/**
+ * `zena test` compiles the files it runs on a shared compiler first
+ * (`compileIntoCache`), and caches each module with the files its program
+ * is made of. These check what that must not change: a cached module goes
+ * stale when any file it reaches changes, including one that an earlier
+ * compile on the same compiler read, which its own compile then found
+ * loaded and never read; and a file that does not compile fails with its
+ * own errors while the files beside it pass.
+ */
+
+import {suite, test} from 'zena:test';
+import {isTrue} from 'zena:assert';
+import {Scratch, described, write, zenaIn} from './cli-support.zena';
+
+/** A test file asserting that `value()`, from `./<lib>.zena`, is 1. */
+function valueTest(lib: String): String {
+  return "import { suite, test } from 'zena:test';\n" +
+    "import { equal } from 'zena:assert';\n" +
+    `import { value } from './${lib}.zena';\n\n` +
+    "export let tests = suite('value', () => {\n" +
+    "  test('is one', (ctx) => {\n    equal(value(), 1);\n  });\n});\n";
+}
+
+export let tests = suite('zena test: files compiled together', () => {
+  test('a test goes stale when a file an earlier compile read changes', (ctx) => {
+    let scratch = Scratch.create('test-batch-shared');
+    try {
+      write(scratch.at('ws/shared.zena'), 'export function value(): i32 { return 1; }\n');
+      write(scratch.at('ws/a_test.zena'), valueTest('shared'));
+      write(scratch.at('ws/b_test.zena'), valueTest('shared'));
+      // One copy compiles both, so the second compile finds shared.zena
+      // already loaded and does not read it.
+      let zena = zenaIn(scratch, 'ws').set('ZENA_TEST_PARALLELISM', '1');
+      let first = zena.run(['test', '*_test.zena']);
+      isTrue(first.succeeded(), described(first));
+      // A different size, so the edit shows even within the same second.
+      write(scratch.at('ws/shared.zena'), 'export function value(): i32 { return 10; }\n');
+      let second = zena.run(['test', '*_test.zena']);
+      isTrue(!second.succeeded(), described(second));
+      isTrue(second.stdout.contains('a_test.zena') && second.stdout.contains('b_test.zena') &&
+          !second.stdout.contains('PASS'), described(second));
+    } finally {
+      scratch.remove();
+    }
+  });
+
+  test('a file that does not compile fails with its errors, and the rest pass', (ctx) => {
+    let scratch = Scratch.create('test-batch-error');
+    try {
+      write(scratch.at('ws/one.zena'), 'export function value(): i32 { return 1; }\n');
+      write(scratch.at('ws/a_test.zena'), valueTest('one'));
+      write(scratch.at('ws/b_test.zena'), valueTest('missing'));
+      write(scratch.at('ws/c_test.zena'), valueTest('one'));
+      let zena = zenaIn(scratch, 'ws').set('ZENA_TEST_PARALLELISM', '1');
+      let result = zena.run(['test', '*_test.zena']);
+      isTrue(!result.succeeded(), described(result));
+      isTrue(result.stdout.contains('PASS') && result.stdout.contains('a_test.zena') &&
+          result.stdout.contains('c_test.zena'), described(result));
+      isTrue(result.stdout.contains('FAIL') && result.stdout.contains('missing.zena'), described(result));
+      isTrue(result.stdout.contains('Test Summary: 2 passed, 1 failed'), described(result));
+    } finally {
+      scratch.remove();
+    }
+  });
+});
