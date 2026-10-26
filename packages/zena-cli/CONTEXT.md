@@ -70,9 +70,15 @@ the `zena` command. The design is in
      `ZENA_AVAILABLE_PARALLELISM` and `ZENA_STDLIB_DIR` (`/stdlib`), in
      place of any values the shell has for them
      (`zena_runtime::inherited_env_with`).
-   - `ZENA_REPO_ROOT` defaults to the checkout the binary was built in;
-     `ZENA_CLI_MODULE` defaults to `packages/zena-cli/out/zena.wasm` under
-     it.
+   - The repository root, preopened as `.` and the workspace the commands
+     act on, is `ZENA_REPO_ROOT` when it is set, and none when it is set
+     empty. Otherwise it is the checkout the binary was built in when the
+     command runs inside that checkout. Anywhere else there is none, and
+     the directory the command runs in is the workspace, as for a binary
+     built elsewhere (#552). The standard library and `ZENA_CLI_MODULE`
+     (`packages/zena-cli/out/zena.wasm`) come from the repository root
+     when it has them, and otherwise from the checkout, wherever the
+     command runs (`repo_root_for`, `source_root` in `src/main.rs`).
 
 3. **Compiling**
    - In-process by default: the compiler is part of the module. With

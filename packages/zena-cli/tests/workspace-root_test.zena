@@ -1,0 +1,51 @@
+/**
+ * The workspace a `zena` built in this checkout works in when nothing says
+ * which (#552): the checkout, inside it, and the directory it runs in
+ * anywhere else, with the checkout's standard library and CLI module
+ * either way. The other tests set `ZENA_REPO_ROOT`; this one leaves it,
+ * and the variables that place the standard library and the module, unset.
+ */
+
+import {suite, test} from 'zena:test';
+import {isTrue} from 'zena:assert';
+import {run} from 'zena:process';
+import {MAIN, described, repoRoot, zenaBinary} from './cli-support.zena';
+
+/** Everything that would choose for the command. */
+let CHOOSERS = [
+  'ZENA_REPO_ROOT', 'ZENA_CLI_MODULE', 'ZENA_STDLIB_DIR', 'ZENA_PROJECT_CACHE', 'ZENA_LOCAL_CACHE',
+  'ZENA_COMPILER_WASM',
+];
+
+export let tests = suite('the workspace zena works in', () => {
+  test('is the directory it runs in, outside the checkout it was built in', (ctx) => {
+    // A directory outside the checkout, as the host names it. The test
+    // module reaches only the repository and its own /tmp, so the shell
+    // writes the project.
+    let outside = run(['mktemp', '-d']).stdout.trim();
+    isTrue(!outside.startsWith(repoRoot()), outside);
+    try {
+      let setUp = run(['/bin/sh', '-c', `mkdir -p "$1/lib" &&
+printf '%s\\n' '{"name": "app", "dependencies": {"lib": {"path": "./lib"}}}' > "$1/zena-package.json" &&
+printf '%s\\n' '{"name": "lib"}' > "$1/lib/zena-package.json" &&
+printf '%s\\n' 'export function answer(): i32 { return 42; }' > "$1/lib/answer.zena" &&
+printf '%s\\n' "import { answer } from 'lib:answer';" '${MAIN} { return answer() - 42; }' > "$1/prog.zena"`,
+          'sh', outside]);
+      isTrue(setUp.succeeded(), described(setUp));
+      // The program imports lib by the path in the project's own
+      // manifest, so it compiles only when the project is the workspace.
+      // The shell goes into the directory, since a working directory the
+      // test names would be read in its own namespace, where /tmp can be
+      // another directory (ZENA_PROJECT_CACHE).
+      var unset = '';
+      for (let name in CHOOSERS) {
+        unset = `${unset} -u ${name}`;
+      }
+      let ran = run(['/bin/sh', '-c', `cd "$1" && exec env${unset} ZENA_CACHE_DIR="$1/.cache" "$2" run prog.zena`,
+          'sh', outside, zenaBinary()]);
+      isTrue(ran.succeeded(), described(ran));
+    } finally {
+      run(['rm', '-rf', outside]);
+    }
+  });
+});
