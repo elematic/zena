@@ -20,15 +20,18 @@ holds most of it, and `pds:server`, `pds:storage`, `pds:repository` and
 
 The goal is a PDS whose core does what any PDS does, with everything
 specific to Zena packages in extensions: WebAssembly components the PDS
-loads, which implement interfaces the PDS defines. A deployment that is
-not a package host would leave the package extension out. Someone else
-could write an extension for their own record types, with the same
-interfaces.
+loads at run time, which implement interfaces the PDS defines. The
+operator installs some for the whole host, as the package host would be.
+An organization or a person with an account on the PDS installs others
+for their own accounts, without the operator building or deploying
+anything. A deployment that is not a package host leaves the package
+extension out.
 
 This document lists what the package host adds to the PDS, the extension
-point each piece needs, and how extensions could be loaded. It proposes
-an order of work that starts inside the current source tree, before any
-Wasm is involved.
+point each piece needs, who may install an extension and what it can
+reach, and what the runtime needs to load one. It proposes an order of
+work that starts inside the current source tree, before any Wasm is
+involved.
 
 ## What the package host adds
 
@@ -68,11 +71,36 @@ plus the general pieces from the table above:
   their operations, and the staging PLC directory;
 - handle records in a DNS zone;
 - checking service-auth tokens;
+- installing, loading and calling extensions;
 - configuration, and the server.
 
 The core holds every secret: the rotation key, storage credentials, DNS
 credentials. An extension asks the core to act with them and never sees
 them.
+
+## Who installs an extension
+
+An extension is installed at one of two levels, and the level decides
+what it can reach.
+
+- **Host extensions** are installed by the operator, in the server's
+  configuration. They see every account, and can ask the core to create
+  accounts. The package host is one.
+- **Account extensions** are installed by an account, for itself: a
+  person, or an organization, which installs one for its own account. An
+  account extension sees only the account that installed it: that
+  account's writes, the requests addressed to it, and a storage area of
+  its own. It cannot create accounts.
+
+Each installation is an extension at a version, installed by one account
+or by the operator. The same extension installed by two accounts is two
+installations, with separate storage, and neither sees the other's data.
+
+An extension is a published Zena package whose release carries a Wasm
+component as an artifact ([package-manager.md](./package-manager.md),
+"Artifacts"). Installing one names its DID and version. The core fetches
+and checks the release as `zena fetch` does, and compiles the component
+once, caching the result.
 
 ## Extension points
 
@@ -83,28 +111,31 @@ which part of the package host uses it.
 
 ### Methods and routes
 
-The core routes a request to the extension that declared its path or
+The core routes a request to the installation that declared its path or
 XRPC method. For a method that requires service auth, the core checks
 the token first, against the method's NSID, and passes the caller's DID
 to the extension with the request. The extension answers with a status,
 headers and a body.
 
-The package host declares the `dev.zena-lang.host.*` methods. An
-extension that serves pages, such as an admin page (#582), declares
-paths.
+The package host declares the `dev.zena-lang.host.*` methods, as a host
+extension. An admin page (#582) declares paths. An account extension's
+methods are served only for requests about its account; how a request
+names that account is an open question.
 
 ### Record write policy
 
-Before a commit, the core asks each extension that registered for write
-policy whether a write may happen: the account, the collection, the
-record key and the record, or a deletion. The extension answers yes, or
-no with an XRPC error name and a message. A refused write refuses the
-whole commit, as `Repository.applyWrites` does today.
+Before a commit, the core asks each installation that registered for
+write policy, and that can see the account, whether a write may happen:
+the account, the collection, the record key and the record, or a
+deletion. The extension answers yes, or no with an XRPC error name and a
+message. A refused write refuses the whole commit, as
+`Repository.applyWrites` does today.
 
 The package host uses this for its account kinds: a package account may
 hold only `dev.zena-lang.*` records, and an automation account only
 attestations. The kind of an account is the extension's own data, kept in
-its storage (below), keyed by DID.
+its storage (below), keyed by DID. An account extension can enforce rules
+on its own account, such as a schema for a collection it defines.
 
 ### Record validation with access to the account
 
@@ -113,17 +144,17 @@ account's profile record and the blob the release names. So the write
 policy hook can read the account it is asked about: its records by
 collection and key, and its blobs by CID, through an interface the core
 provides. It cannot write through that interface; writes go through the
-core's commit, so every write passes every extension's policy.
+core's commit, so every write passes every policy that applies to it.
 
 ### Accounts and identity
 
-The core creates accounts. An extension asks it to create one with a
-handle and a kind, and gets back the DID. For a `did:plc`, the extension
-can add rotation keys ranked above the host's, which is how the package
-host puts the maintainers' recovery keys first. The core makes the
-signing key, signs the genesis operation with the rotation key, and sends
-it to the configured PLC directory, which is the staging directory on a
-staging host.
+Host extensions only. The core creates accounts. An extension asks it to
+create one with a handle and a kind, and gets back the DID. For a
+`did:plc`, the extension can add rotation keys ranked above the host's,
+which is how the package host puts the maintainers' recovery keys first.
+The core makes the signing key, signs the genesis operation with the
+rotation key, and sends it to the configured PLC directory, which is the
+staging directory on a staging host.
 
 The core writes the new handle's DNS record, so the package host does
 not need its own `pds:handles` calls. Taking a name in a scope stays the
@@ -133,71 +164,94 @@ account, and releases it if the core fails to create one, as
 
 ### Extension storage
 
-Each extension has a namespace in the PDS's storage, which no other
-extension can read: documents by key, a create-if-absent operation for
-claims, and transactions that read and write several documents. The core
-implements it on each of its storages: in memory, and in Firestore under
-`tenants/{tenant}/extensions/{extension}/`.
+Each installation has a storage area that no other installation can
+read: documents by key, a create-if-absent operation for claims, and
+transactions that read and write several documents. The core implements
+it on each of its storages: in memory, and in Firestore under the
+deployment's `tenants/{tenant}/` with one collection per installation.
+Account extensions have a quota.
 
 The package host keeps its scope and name claims, its membership entries
 and its account kinds there. Today these are `pds:host`'s `HostStore` and
-its Firestore implementation, which this namespace replaces.
+its Firestore implementation, which this storage replaces.
 
 ### Jobs
 
-An extension can export named jobs that the operator runs: from the
+A host extension can export named jobs that the operator runs: from the
 command line with the server's configuration, from the admin page, or on
 a schedule. The package host has none of its own once handle records are
 in the core: `sync-handles` becomes a core job.
 
 ## Loading extensions
 
-There are three ways to put an extension into a PDS. They differ in when
-the extension is chosen and in what Zena has to support first.
+The core loads each installation's component at run time, and calls it
+through the runtime that hosts the PDS, `zena-run` in a deployment.
+`zena-runtime` can already start a component (`zena:wasm`'s `run`), but
+only as a program: it calls one export with no arguments, returns its
+result as text, and drops the instance, and the child's imports are a
+fixed set. #593 adds what extensions need:
 
-**Composition at build time.** The core is a component whose world
-imports one interface per extension point, as named import slots
-([component-model.md](./component-model.md), "Named import slots" and
-Part 4). Each extension is a component that exports those interfaces. A
-composition tool such as wac links them into one component, which runs
-on `zena-run` as the server does today. Adding or removing an extension means composing
-and deploying again, without compiling the core again. Calls between the
-core and an extension are ordinary component calls inside one process.
+- **Long-lived instances**: a component loaded and type-checked once, and
+  called many times, per request or per write.
+- **Calls with arguments and results**: a generic call that carries
+  component values. The compiler generates typed wrappers over it from
+  the extension WIT, so the core calls `policy.checkWrite(...)` and never
+  handles raw values.
+- **Imports the core chooses**: each installation's linker is built from
+  an allow list, the extension interfaces and perhaps outgoing HTTP. A
+  component that imports anything else fails to load, and one that does
+  not export the interfaces it claims to fails too.
+- **Imports the core serves**: an extension's storage and its reads of
+  the account are implemented by the core, in Zena, and are called while
+  the core waits on the extension's call. Calling back into the core
+  would re-enter a component instance already in a call, which the
+  component model forbids. Instead the extension's call gives the core a
+  stream of import requests, which the core answers until the call ends.
+- **Limits**: memory and time per call, so that a trap or an overrun
+  fails that call and nothing else.
+- **A grant of its own**, apart from process spawning, so that the PDS
+  can load extensions without being allowed to spawn processes.
 
-**Loading at run time.** The core loads extension components when it
-starts, from paths in its configuration, and calls them through the
-host. The `zena:wasm` module runs whole programs and has no way to
-instantiate a component and call its exports with typed arguments, so
-this needs a new host interface in `zena-runtime`, and support for
-calling a component's exports in the code the compiler generates.
-
-**Separate services.** An extension runs as its own server, and the core
-calls it over HTTP with signed requests, as atproto services call each
-other. This needs nothing new from Zena, but every hook becomes a network
-call. A write policy check on every commit would add the latency of one
-round trip, and an extension that is down would stop writes.
-
-Composition at build time is the one to start with. It gives the package
-host its own component with the interfaces above, and it uses what Zena
-already has: components that declare named import slots, emitted by the
-compiler, and composed by tools outside it. Loading at run time can follow
-once the host can instantiate components, with the same interfaces.
-
-Each interface has to stay within the types Zena's components can carry
-across a call. Scalars, strings, `list<u8>` and records cross today; a
-variant whose cases carry payloads of different core types does not yet,
-and the general canonical ABI for rich types is still to come
+Each extension interface has to stay within the types Zena's components
+can carry across a call. Scalars, strings, `list<u8>` and records cross
+today; a variant whose cases carry payloads of different core types does
+not yet, and the general canonical ABI for rich types is still to come
 ([component-model.md](./component-model.md), "What exists today"). The
-WIT for the extension points is written to that, and grows with it.
+extension WIT is written to that, and grows with it.
+
+Two other ways were considered:
+
+- **Composition at build time.** The core imports one interface per
+  extension point, as named import slots
+  ([component-model.md](./component-model.md), "Named import slots" and
+  Part 4), and a tool such as wac links the extensions in before
+  deployment. It needs nothing new from the runtime, but every install
+  would be a build and a deployment by the operator, so accounts could
+  not install extensions. It could still serve host extensions, if
+  calling across the runtime turns out to be slow.
+- **Separate services.** An extension runs as its own server, and the
+  core calls it over HTTP with signed requests, as atproto services call
+  each other. Every hook becomes a network round trip, a write policy
+  that is down stops writes, and an account would have to run a server
+  to install one.
 
 ## Trust and limits
 
-An extension runs inside the PDS's process, so the interfaces are its
-only reach. It sees its own storage namespace, the records and blobs of
-the account it is asked about, and the requests routed to it. It cannot
-read secrets: it asks the core to sign or to send. The host can bound an
-extension's execution time with wasmtime's fuel or epochs, and a trap in
-an extension fails that one request or write.
+An account extension is code the operator has not reviewed, run inside
+the PDS's process. What it can reach is what the core gives it:
+
+- **Its imports**, from the allow list. No file system, no process
+  spawning, no secrets and no loading of components.
+- **Its own data**: its installation's storage, and the records and blobs
+  of the account that installed it.
+- **No secrets.** The core holds the rotation key and every credential,
+  and an extension asks the core to act.
+- **Bounded time and memory**, per call, with a cap on how many instances
+  one account's installations hold.
+
+A trap or an overrun fails that call. For a write policy, that refuses
+the write, and the error names the installation, so an extension that
+breaks hurts only the accounts that installed it.
 
 ## Order of work
 
@@ -211,14 +265,28 @@ an extension fails that one request or write.
 2. **Write the WIT.** Turn those Zena interfaces into a WIT package for
    the extension points, and check that each type crosses a component
    boundary with the compiler of the day.
-3. **Build the package host as a component** that exports the extension
-   interfaces, and compose it with the core at build time. The deploy
-   scripts (`packages/pds/deploy`) build the composed component.
-4. **Load extensions at run time**, once `zena-runtime` can instantiate a
-   component from a path and the compiler can call its exports.
+3. **The runtime (#593).** Long-lived instances, calls with values,
+   chosen imports, imports the caller serves, limits and the grant,
+   starting with a spike of the served imports, which decide the rest.
+4. **The package host as a host extension**, built as a component,
+   published as a package, and loaded by the core from configuration.
+5. **Account extensions**: installing and removing one, the storage
+   quota and instance cap, and the routing of requests to an account's
+   installations.
 
 ## Open questions
 
+- How a request names the account whose extension should answer it: a
+  parameter, the service-auth token's audience, or a path under the
+  account.
+- Where an account's installations are kept: in the core's storage, or
+  as a public record in the account's repository, which would let other
+  services see what an account runs.
+- Whether an installation moves to a newer release of its extension on
+  its own, and how it is told about the new release.
+- Where compiled components are cached on Cloud Run, where the local
+  disk does not outlive an instance: compiling on every cold start, or a
+  cache in the bucket keyed by the engine's version.
 - Whether an extension may register more than one write policy, for
   instance per collection, or one hook that sees every write.
 - How an extension declares the configuration it reads, so the core can
