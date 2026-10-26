@@ -33,6 +33,13 @@ function bytesOf(text: String) {
 /** Publishes `version` of `account`, with these files and dependencies. */
 function publish(account: FakeAccount, version: String, files: OrderedHashMap<String, FixedArray<u8>>,
     dependencies: FixedArray<Dependency>) {
+  // The archive's manifest agrees with the release, as fetching checks.
+  var listed = '';
+  for (let dependency in dependencies) {
+    let entry = `"${dependency.name}": {"did": "${dependency.did}", "version": "${dependency.version.toString()}"}`;
+    listed = if (listed.length == 0) entry else `${listed}, ${entry}`;
+  }
+  files['zena-package.json'] = bytesOf(`{"name": "pkg", "version": "${version}", "dependencies": {${listed}}}`);
   let archive = packSource(files);
   let source = account.addBlob(archive);
   let artifact = Artifact.whole(SOURCE, new BlobRef(source, 'application/vnd.ipld.car', archive.length as i64));

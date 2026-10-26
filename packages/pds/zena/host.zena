@@ -20,7 +20,9 @@ import {BlobRef, MapValue, Value} from 'atproto:data';
 import {Cid} from 'atproto:cid';
 import {KeyType, PublicKey, parseDidKey} from 'atproto:didkey';
 import {PlcOperation, didOfGenesis, genesisOperation} from 'atproto:plc';
+import {IdentityResolver} from 'atproto:identity';
 import {ReplayGuard, ServiceAuthError, SigningKeyLookup, verifyServiceAuth} from 'atproto:service-auth';
+import {validateRelease} from 'package-manager:validate';
 import {
   MEMBERS_TYPE,
   MAINTAINERS_TYPE,
@@ -34,6 +36,7 @@ import {
   RELEASE_TYPE,
   RecordError,
   Release,
+  SOURCE,
   isValidPackageName
 } from 'package-manager:records';
 import {HandleRecords} from './handles.zena';
@@ -242,16 +245,19 @@ export final class PackageHost {
   #keys: SigningKeyLookup;
   #submit: PlcSubmitter;
   #random: RandomBytes;
+  /** Resolves the DIDs of a release's dependencies, to check them. */
+  #resolver: IdentityResolver;
   #replays = new ReplayGuard();
 
   /**
-   * A host over `pds`, keeping its names in `store` and writing its
-   * handles' DNS records to `records`.
+   * A host over `pds`, keeping its names in `store`, writing its handles'
+   * DNS records to `records`, and resolving the dependencies of the
+   * releases it checks with `resolver`.
    */
   new(pds: Pds, config: HostConfig, store: HostStore, records: HandleRecords, keys: SigningKeyLookup,
-      submit: PlcSubmitter, random: RandomBytes)
+      submit: PlcSubmitter, random: RandomBytes, resolver: IdentityResolver)
       : pds = pds, config = config, #store = store, #records = records, #keys = keys, #submit = submit,
-        #random = random;
+        #random = random, #resolver = resolver;
 
   /**
    * The DID of the account a call to `method` comes from, read from its
@@ -416,6 +422,20 @@ export final class PackageHost {
     if ((await store.getRecord(RELEASE_TYPE, version)) != null) {
       throw new HostError(400, 'VersionExists', `${pkg} has a release ${version}`);
     }
+    // The host checks the release as every fetch will, against the archive
+    // it holds and the name its own profile record gives, and trusts
+    // nothing the client checked.
+    let source = release.artifact(SOURCE);
+    let held = if (source != null && source.blob != null) await store.getBlob((source.blob as BlobRef).cid) else null;
+    let problems = await validateRelease(release, pkg, if (held != null) held.bytes else new FixedArray<u8>(0, 0 as u8),
+        await this.#profileName(pkg), this.#resolver);
+    if (problems.length > 0) {
+      var message = `release ${version} of ${pkg} is not valid:`;
+      for (let problem in problems) {
+        message = `${message}\n  ${problem}`;
+      }
+      throw new HostError(400, 'InvalidRelease', message);
+    }
     let cid = await this.#write(account, RELEASE_TYPE, version, asMap(releaseValue), nowMicros);
     return new Created(account.did, account.handle ?? account.did,
         `at://${account.did}/${RELEASE_TYPE}/${version}`, cid);
@@ -492,6 +512,17 @@ export final class PackageHost {
    * record by DID, or by a commitment whose entry names them. Throws
    * `HostError` otherwise.
    */
+  /** The name `pkg`'s profile record gives. */
+  async #profileName(pkg: String): Future<String> {
+    let store = this.pds.storage.store(pkg);
+    let cid = await store.getRecord(PROFILE_TYPE, PROFILE_KEY);
+    if (cid == null) {
+      throw new HostError(400, 'InvalidRequest', `${pkg} has no profile`);
+    }
+    let bytes = (await store.getBlock(cid as Cid)) as FixedArray<u8>;
+    return Profile.fromValue(decodeCbor(bytes)).name;
+  }
+
   async #maintainedPackage(caller: String, pkg: String): Future<Account> {
     let account = await this.pds.storage.getAccount(pkg);
     if (account == null || account.kind != AccountKind.Package) {

@@ -18,6 +18,8 @@ import {BlobRef, MapValue, fromJson, toJson} from 'atproto:data';
 import {Cid} from 'atproto:cid';
 import {KeyType, PublicKey, formatDidKey, parseDidKey, verifySignature} from 'atproto:didkey';
 import {PlcOperation, didOfGenesis} from 'atproto:plc';
+import {IdentityResolver} from 'atproto:identity';
+import {packSource} from 'package-manager:archive';
 import {verifyRecordProof} from 'atproto:repo';
 import {ServiceAuthClaims, createServiceAuthToken} from 'atproto:service-auth';
 import {
@@ -74,7 +76,8 @@ final class Fixture {
         (count: i32) => {
           this.#random += 1;
           return filled(this.#random);
-        });
+        },
+        unreachableResolver());
     this.host = host;
     this.app = createApp(this.pds, host);
   }
@@ -89,7 +92,7 @@ final class Fixture {
   }
 
   /** Calls the host method `name` as `caller` with a JSON body, or raw bytes. */
-  call(caller: String | null, name: String, body: String, query: String = '',
+  call(caller: String | null, name: String, body: String | FixedArray<u8>, query: String = '',
       contentType: String = 'application/json', authorization: String | null = null): Response {
     let method = `dev.zena-lang.host.${name}`;
     let headers = new HashMap<String, String>();
@@ -103,7 +106,7 @@ final class Fixture {
     let app = this.app;
     runFuture((async () => {
       let req = new Request.fromUrl(`http://localhost/xrpc/${method}${query}`, 'POST', headers,
-          bytesStream(body.toBytes()));
+          bytesStream(if (body is String) body.toBytes() else body as FixedArray<u8>));
       await app.handleRequest(req, res);
     })());
     return res;
@@ -176,6 +179,32 @@ function createPackage(fixture: Fixture, caller: String, org: String, name: Stri
       `{"organization": "${org}", "recoveryKeys": ["${RECOVERY}"], "profile": ${profile}, "maintainers": ${maintainers}}`);
 }
 
+/**
+ * A resolver whose directory is a closed port, so a release's dependencies
+ * are never found and the tests reach no network.
+ */
+function unreachableResolver(): IdentityResolver {
+  let resolver = new IdentityResolver();
+  resolver.plcDirectory = 'http://127.0.0.1:1';
+  resolver.dnsOverHttps = 'http://127.0.0.1:1';
+  return resolver;
+}
+
+/** A source archive of `router` `version`, the package `did`, as `zena publish` packs one. */
+function archiveOf(did: String, version: String, manifest: String | null = null): FixedArray<u8> {
+  let files = new HashMap<String, FixedArray<u8>>();
+  files['zena-package.json'] = (manifest ?? `{"name": "router", "did": "${did}", "version": "${version}"}`)
+    .toBytes() as FixedArray<u8>;
+  files['router.zena'] = 'export let route = 1;\n'.toBytes() as FixedArray<u8>;
+  return packSource(files);
+}
+
+/** Uploads `archive` to `pkg` as Alice, and returns its blob. */
+function upload(fixture: Fixture, pkg: String, archive: FixedArray<u8>): BlobRef {
+  return BlobRef.fromValue(fromJson(ok(fixture.call(ALICE, 'uploadArtifact', archive, `?package=${pkg}`,
+      'application/vnd.ipld.car'))['blob'] as JsonObject));
+}
+
 function releaseJson(version: String, blob: BlobRef): String {
   let release = new Release(Version.parse(version), '2026-10-23T00:00:00.000Z',
       new FixedArray<Artifact>(1, Artifact.whole(SOURCE, blob)),
@@ -206,7 +235,8 @@ export let tests = suite('pds:host', () => {
     equal(((pkg['maintainers'] as JsonObject)['uri'] as String),
         `at://${pkgDid}/dev.zena-lang.package.maintainers/self`);
 
-    let uploaded = ok(fixture.call(ALICE, 'uploadArtifact', 'the source archive', `?package=${pkgDid}`,
+    let archive = archiveOf(pkgDid, '1.0.0');
+    let uploaded = ok(fixture.call(ALICE, 'uploadArtifact', archive, `?package=${pkgDid}`,
         'application/vnd.ipld.car'));
     let blobJson = uploaded['blob'] as JsonObject;
     equal(blobJson['mimeType'] as String, 'application/vnd.ipld.car');
@@ -224,7 +254,7 @@ export let tests = suite('pds:host', () => {
         (signed, sig) => verifySignature(signingKey, signed, sig));
     equal((verified.cid as Cid).toString(), published['cid'] as String);
     let artifact = fixture.get(`/xrpc/com.atproto.sync.getBlob?did=${pkgDid}&cid=${blob.cid.toString()}`);
-    equal(String.fromBytes(artifact.body as FixedArray<u8>), 'the source archive');
+    equal(Cid.forBlob(artifact.body as FixedArray<u8>).toString(), Cid.forBlob(archive).toString());
 
     // A package account holds package records only.
     let account = runFuture(fixture.pds.storage.getAccount(pkgDid)) as Account;
@@ -265,8 +295,7 @@ export let tests = suite('pds:host', () => {
 
     // Bob does not maintain router.
     equal(errorOf(fixture.call(BOB, 'uploadArtifact', 'bytes', `?package=${pkgDid}`, 'text/plain')), 'Forbidden');
-    let blob = BlobRef.fromValue(fromJson(ok(fixture.call(ALICE, 'uploadArtifact', 'bytes',
-        `?package=${pkgDid}`, 'text/plain'))['blob'] as JsonObject));
+    let blob = upload(fixture, pkgDid, archiveOf(pkgDid, '1.0.0'));
     ok(fixture.call(ALICE, 'publish', `{"package": "${pkgDid}", "release": ${releaseJson('1.0.0', blob)}}`));
     equal(errorOf(fixture.call(ALICE, 'publish', `{"package": "${pkgDid}", "release": ${releaseJson('1.0.0', blob)}}`)),
         'VersionExists');
@@ -319,5 +348,49 @@ export let tests = suite('pds:host', () => {
     equal(fixture.records.lookup('acme.pkg.test') as String, orgDid);
     equal(fixture.records.lookup('router.acme.pkg.test') as String, pkgDid);
     isTrue(fixture.records.lookup('ghost.acme.pkg.test') == null, 'no record for an account that does not exist');
+  });
+
+  test('refuses a release that does not agree with its archive, or depends on what is not there', (ctx) => {
+    let fixture = new Fixture();
+    let orgDid = ok(createOrganization(fixture, ALICE, 'acme'))['did'] as String;
+    let pkgDid = ok(createPackage(fixture, ALICE, orgDid, 'router'))['did'] as String;
+    let publish = (version: String, blob: BlobRef): Response => fixture.call(ALICE, 'publish',
+        `{"package": "${pkgDid}", "release": ${releaseJson(version, blob)}}`);
+    let refusal = (res: Response): String => {
+      isTrue(res.statusCode == 400, `${res.statusCode}: ${res.body as String}`);
+      let body = json(res);
+      equal(body['error'] as String, 'InvalidRelease');
+      return body['message'] as String;
+    };
+
+    // The archive is 2.0.0, and the release says 2.1.0.
+    let mismatched = refusal(publish('2.1.0', upload(fixture, pkgDid, archiveOf(pkgDid, '2.0.0'))));
+    isTrue(mismatched.contains('is version 2.0.0, not 2.1.0'), mismatched);
+    // The archive names another package than the profile.
+    let renamed = refusal(publish('2.2.0', upload(fixture, pkgDid,
+        archiveOf(pkgDid, '2.2.0', `{"name": "routing", "version": "2.2.0"}`))));
+    isTrue(renamed.contains('names routing, not router'), renamed);
+    // Not an archive at all.
+    let text = BlobRef.fromValue(fromJson(ok(fixture.call(ALICE, 'uploadArtifact', 'just text',
+        `?package=${pkgDid}`, 'application/vnd.ipld.car'))['blob'] as JsonObject));
+    let junk = refusal(publish('2.3.0', text));
+    isTrue(junk.contains('does not unpack'), junk);
+    // The archive depends on json, which the release names at a DID that
+    // cannot be found.
+    let dependent = archiveOf(pkgDid, '2.4.0',
+        `{"name": "router", "version": "2.4.0", "dependencies": {"json": {"did": "did:plc:jsonjsonjsonjsonjsonjson", "version": "1.0.0"}}}`);
+    let blob = upload(fixture, pkgDid, dependent);
+    let release = new Release(Version.parse('2.4.0'), '2026-10-26T00:00:00.000Z',
+        new FixedArray<Artifact>(1, Artifact.whole(SOURCE, blob)),
+        new FixedArray<Dependency>(1, new Dependency('did:plc:jsonjsonjsonjsonjsonjson', Version.parse('1.0.0'), 'json')));
+    let missing = refusal(fixture.call(ALICE, 'publish',
+        `{"package": "${pkgDid}", "release": ${stringify(toJson(release.toValue()))}}`));
+    isTrue(missing.contains('json 1.0.0') && missing.contains('cannot be found'), missing);
+
+    // None of them was recorded.
+    let store = fixture.pds.storage.store(pkgDid);
+    for (let version in ['2.1.0', '2.2.0', '2.3.0', '2.4.0']) {
+      isTrue(runFuture(store.getRecord(RELEASE_TYPE, version)) == null, version);
+    }
   });
 });
