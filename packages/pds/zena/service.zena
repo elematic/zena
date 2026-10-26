@@ -364,13 +364,20 @@ export async function buildService(config: ServiceConfig, endpoint: String): Fut
   var submit = async (did: String, operation: PlcOperation): Future<void> => {
     await submitPlcOperation(upstream, did, operation);
   };
+  // A release's dependencies are resolved as a fetch of it would resolve
+  // them: a staging host's through its own directory, since they are its.
+  var dependencies = resolver;
   if (plc != null) {
     keys = keysThrough(plc, keys);
     submit = async (did: String, operation: PlcOperation): Future<void> => {
       await plc.submit(did, operation);
     };
+    dependencies = new IdentityResolver();
+    dependencies.plcDirectory = `${hostConfig.endpoint}/plc`;
+    dependencies.dnsOverHttps = config.dnsOverHttps;
   }
-  let host = new PackageHost(pds, hostConfig, hostStore, records, keys, submit, (count: i32) => randomBytes(count));
+  let host = new PackageHost(pds, hostConfig, hostStore, records, keys, submit, (count: i32) => randomBytes(count),
+      dependencies);
   return new Service(withPlc(createApp(pds, host), plc), pds, host, records, plc);
 }
 

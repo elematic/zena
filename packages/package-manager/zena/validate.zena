@@ -1,0 +1,177 @@
+/**
+ * What makes a release one to publish or to use
+ * (docs/design/package-manager.md, "Validating releases"). The same rules
+ * are checked by `zena publish` before it uploads anything, by a package
+ * host before it records a release, since it trusts no client, and by
+ * `zena fetch`, since a package can be kept on any PDS, where nothing
+ * checked what was written.
+ *
+ * `checkSource` checks a release against its source archive: that the
+ * archive is the artifact the release names and unpacks, and that the
+ * manifest in it agrees with the release. `checkDependencies` checks that
+ * each dependency is a release that exists and is not yanked, which a
+ * fetch need not repeat, since resolving fails on a missing one.
+ * `validateRelease` is both, for publishing. Each returns every problem it
+ * finds, so one attempt reports them all.
+ */
+
+import {Future} from 'zena:async';
+import {HashSet} from 'zena:collections';
+import {Cid} from 'atproto:cid';
+import {IdentityResolver} from 'atproto:identity';
+import {SourceFile, unpackSource} from './archive.zena';
+import {readManifest} from './manifest.zena';
+import {Dependency, Release, SOURCE} from './records.zena';
+import {Versions, listVersions} from './registry.zena';
+import {MANIFEST} from './workspace.zena';
+
+/** The MIME type of a source archive, a CAR file. */
+export let SOURCE_MIME_TYPE = 'application/vnd.ipld.car';
+
+/**
+ * The problems with `release`, a release of the package `did`, and
+ * `source`, the bytes of its source artifact: empty when there are none.
+ * `profileName`, given when publishing, is the name the package's profile
+ * gives, which its manifest must have too. A fetch leaves it out, since a
+ * package renamed later keeps its older releases.
+ */
+export function checkSource(release: Release, did: String, source: FixedArray<u8>,
+    profileName: String | null = null): GrowableArray<String> {
+  let problems = new GrowableArray<String>();
+  let version = release.version.toString();
+  let artifact = release.artifact(SOURCE);
+  if (artifact == null) {
+    problems.push(`release ${version} has no source artifact`);
+    return problems;
+  }
+  if (artifact.size != source.length as i64) {
+    problems.push(`the source artifact is ${artifact.size} bytes, but the archive is ${source.length}`);
+  }
+  if (!Cid.forBlob(source).equals(artifact.cid)) {
+    problems.push(`the archive is not the source artifact ${artifact.cid.toString()}`);
+  }
+  let blob = artifact.blob;
+  if (blob != null && blob.mimeType != SOURCE_MIME_TYPE) {
+    problems.push(`the source artifact is ${blob.mimeType}, not ${SOURCE_MIME_TYPE}`);
+  }
+
+  let files = unpacked(source, problems);
+  if (files == null) {
+    return problems;
+  }
+  var text: String | null = null;
+  for (let file in files as FixedArray<SourceFile>) {
+    if (file.path == MANIFEST) {
+      text = String.fromBytes(file.contents as ByteArray);
+    }
+  }
+  if (text == null) {
+    problems.push(`the archive has no ${MANIFEST}`);
+    return problems;
+  }
+  let manifest = try {
+    readManifest(text)
+  } catch (e) {
+    problems.push(`the archive's ${MANIFEST} cannot be read: ${e.message}`);
+    null
+  };
+  if (manifest == null) {
+    return problems;
+  }
+
+  let manifestVersion = manifest.version;
+  if (manifestVersion == null) {
+    problems.push(`the archive's ${MANIFEST} has no version`);
+  } else if (manifestVersion.compareTo(release.version) != 0) {
+    problems.push(`the archive's ${MANIFEST} is version ${manifestVersion.toString()}, not ${version}`);
+  }
+  let manifestDid = manifest.did;
+  if (manifestDid != null && manifestDid != did) {
+    problems.push(`the archive's ${MANIFEST} is the package ${manifestDid}, not ${did}`);
+  }
+  if (profileName != null && (manifest.name == null || manifest.name as String != profileName)) {
+    problems.push(`the archive's ${MANIFEST} names ${manifest.name ?? 'no package'}, not ${profileName}`);
+  }
+  manifest.wits.forEach((name, wit) => {
+    problems.push(`the archive depends on the WIT in ${wit}, as ${name}, which a published package cannot`);
+  });
+
+  // The release's dependencies are the manifest's, each by its local name:
+  // a path dependency appears in the release as the DID it has.
+  let declared = new HashSet<String>();
+  for (let name in manifest.requirements.keys()) {
+    declared.add(name);
+  }
+  for (let name in manifest.paths.keys()) {
+    declared.add(name);
+  }
+  let listed = new HashSet<String>();
+  for (let dependency in release.dependencies) {
+    listed.add(dependency.name);
+    if (!declared.has(dependency.name)) {
+      problems.push(`the release depends on ${dependency.name}, which the archive's ${MANIFEST} does not`);
+    }
+  }
+  for (let name in declared) {
+    if (!listed.has(name)) {
+      problems.push(`the archive's ${MANIFEST} depends on ${name}, which the release does not list`);
+    }
+  }
+  return problems;
+}
+
+/** The files in `source`, or null, with why added to `problems`. */
+function unpacked(source: FixedArray<u8>, problems: GrowableArray<String>): FixedArray<SourceFile> | null {
+  try {
+    return unpackSource(source);
+  } catch (e) {
+    problems.push(`the archive does not unpack: ${e.message}`);
+    return null;
+  }
+}
+
+/**
+ * The problems with `dependencies`: each must be a release its package has
+ * published and not yanked, or the release that names it could never be
+ * resolved. Empty when there are none.
+ */
+export async function checkDependencies(dependencies: Array<Dependency>, resolver: IdentityResolver)
+    : Future<GrowableArray<String>> {
+  let problems = new GrowableArray<String>();
+  for (let dependency in dependencies) {
+    let text = dependency.version.toString();
+    let named = `${dependency.name} ${text} (${dependency.did})`;
+    let found = await versionsOf(dependency, resolver);
+    if (found is String) {
+      problems.push(`${named} cannot be found: ${found as String}`);
+    } else if (!(found as Versions).has(dependency.version)) {
+      problems.push(`${named} is not published: publish it first, or depend on a version that is`);
+    } else if ((found as Versions).yanked.has(text)) {
+      problems.push(`${named} is yanked: depend on another version`);
+    }
+  }
+  return problems;
+}
+
+/** The versions `dependency`'s package lists, or why they could not be read. */
+async function versionsOf(dependency: Dependency, resolver: IdentityResolver): Future<Versions | String> {
+  try {
+    return await listVersions(await resolver.resolveDid(dependency.did));
+  } catch (e) {
+    return e.message;
+  }
+}
+
+/**
+ * Every problem with publishing `release` of the package `did`, with
+ * `source` as its source archive and `profileName` as its profile's name:
+ * `checkSource`'s and `checkDependencies`'.
+ */
+export async function validateRelease(release: Release, did: String, source: FixedArray<u8>,
+    profileName: String, resolver: IdentityResolver): Future<GrowableArray<String>> {
+  let problems = checkSource(release, did, source, profileName);
+  for (let problem in await checkDependencies(release.dependencies, resolver)) {
+    problems.push(problem);
+  }
+  return problems;
+}

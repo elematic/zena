@@ -498,7 +498,33 @@ To fetch a release, the client:
 3. Checks the release against the checksum log (see below).
 4. Downloads each artifact it needs with `com.atproto.sync.getBlob` and
    checks it against its CID.
-5. Stores everything in the local cache.
+5. Checks the release against its source archive (see below).
+6. Stores everything in the local cache.
+
+### Validating releases
+
+A release is checked in three places, by one set of rules
+(`package-manager:validate`). `zena publish` checks before it uploads
+anything. The package host checks before it records a release, since it
+trusts no client. A fetch checks too, since a package can be kept on any
+PDS, where nothing checked what was written. The rules:
+
+- **The archive is the artifact.** It is the size and CID the release's
+  source artifact gives, with the MIME type `application/vnd.ipld.car`,
+  and it unpacks under the archive rules (see Source archives).
+- **Its manifest agrees with the release.** It has a `zena-package.json`
+  with the release's version, no `wit` dependencies, and the same
+  dependencies by local name as the release; a path dependency is in the
+  release as the DID and version its package has. A `did`, when the
+  manifest has one, is the package's.
+- **When publishing, the manifest has the profile's name.** A fetch does
+  not check this, since a package renamed later keeps its older releases.
+- **When publishing, every dependency is a release that exists and is not
+  yanked.** A fetch does not repeat it: resolving the release's
+  dependencies already fails on one that does not.
+
+The host answers a release that breaks one with `InvalidRelease`, listing
+every problem.
 
 ## Immutability
 

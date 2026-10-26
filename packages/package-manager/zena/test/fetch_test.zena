@@ -40,8 +40,13 @@ function startedPds() {
 }
 
 /** The package's source files. */
-function sourceFiles() {
+/**
+ * The files of router 1.4.2, with its manifest, which depends on what
+ * `dependencies` adds to it.
+ */
+function sourceFiles(dependencies: String = '') {
   let files = new OrderedHashMap<String, FixedArray<u8>>();
+  files['zena-package.json'] = bytesOf(`{"name": "router", "version": "1.4.2"${dependencies}}`);
   files['match.zena'] = bytesOf('export function route(): i32 { return 42; }\n');
   files['util/strings.zena'] = bytesOf("export let name = 'router';\n");
   return files;
@@ -129,6 +134,25 @@ export let tests = suite('package-manager:fetch', () => {
     pds.close();
   });
 
+  test('refuses a release that does not agree with its source archive', (ctx) => {
+    let pds = startedPds();
+    // The archive's manifest says 1.4.2 and no dependencies; the release
+    // lists one, as a PDS that checks nothing would keep it.
+    let archive = packSource(sourceFiles());
+    pds.addBlob(archive);
+    let json = new Dependency('did:web:json.example.com', Version.parse('2.1.0'), 'json');
+    let recordCid = pds.publish(release(new FixedArray<Artifact>(1, sourceArtifact(archive)),
+        new FixedArray<Dependency>(1, json)));
+    let cache = freshCache();
+
+    let message = failure(pinFor(recordCid, Cid.forBlob(archive), '1.4.2',
+        ', "dependencies": {"json": "did:web:json.example.com@2"}'), cache, pds);
+    isTrue(message.startsWith('FetchError: ') && message.contains('does not agree with its source archive') &&
+        message.contains('depends on json, which the archive'), message);
+    isFalse(existsSync(cache.sourceDir(Cid.forBlob(archive))));
+    pds.close();
+  });
+
   test('refuses a release that changed after it was pinned', (ctx) => {
     let pds = startedPds();
     let archive = packSource(sourceFiles());
@@ -193,7 +217,8 @@ export let tests = suite('package-manager:fetch', () => {
 
   test('refuses dependencies the lockfile maps differently', (ctx) => {
     let pds = startedPds();
-    let archive = packSource(sourceFiles());
+    let archive = packSource(sourceFiles(
+        ', "dependencies": {"json": {"did": "did:web:json.example.com", "version": "2.1.0"}}'));
     pds.addBlob(archive);
     let json = new Dependency('did:web:json.example.com', Version.parse('2.1.0'), 'json');
     let recordCid = pds.publish(release(new FixedArray<Artifact>(1, sourceArtifact(archive)),
