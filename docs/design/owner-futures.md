@@ -2,12 +2,9 @@
 
 ## Status
 
-Draft, 2026-10-25. Part of elematic/zena#284: switching `wasi:http` and
-`zena-cli:host/http-server` to resource classes needs it, and so does the
-open "lifted `future<T>` ownership" item there. Builds on ownership.md
-§"Scoped type arguments", which already anticipates the class half of
-`scoped T` (`class Channel<scoped T>`, "Fields typed in `T` are legal
-inside such a class") but leaves it unimplemented.
+Draft, revised 2026-10-26. Part of elematic/zena#284: switching
+`wasi:http` and `zena-cli:host/http-server` to resource classes needs it,
+and so does the open "lifted `future<T>` ownership" item there.
 
 ## Overview
 
@@ -35,10 +32,11 @@ async function never(): Future<void> {
 ```
 
 Run on 2026-10-25, `twice` releases the resource twice and `never`
-releases it zero times. The same two holes exist for streams:
-`Stream.stop()` drops elements it has not delivered without releasing
-them, and the pump that lifts a typed WIT stream abandons elements it
-lifted but could not deliver.
+releases it zero times (`semantics/ownership/future-owner-consumed.zena`
+and `execution/ownership/future-owner-abandoned.zena` record both). The
+same two holes exist for streams: `Stream.stop()` drops elements it has
+not delivered without releasing them, and the pump that lifts a typed
+WIT stream abandons elements it lifted but could not deliver.
 
 Nothing in the tree depends on either hole yet, but the next step of
 #284 does. `zena-cli:host/http-server`'s `listen` yields a
@@ -73,6 +71,9 @@ From a survey of `zena:async`, `zena:stream` and the synthesizer
 - `Stream<T>` delivers each element once through its cursor, but holds
   the writer's buffer, not its own. `stop()` discards the undelivered
   part of that buffer.
+- `FutureClaim<T>` (`zena:async`, cancellation.md) is a future plus a
+  counted claim on the work producing it. `split()` adds a holder;
+  releasing the last claim cancels the work one queue turn later.
 - The checker records a move for `await` only on scoped operands.
   `typeCarriesOwner` does not look into class types, so a binding of
   type `Future<Own<R>>` is not affine and may be copied, stored and
@@ -82,26 +83,27 @@ From a survey of `zena:async`, `zena:stream` and the synthesizer
   `new Future<T>()`, and the generic bodies of `zena:async` specialized
   at an owner never pass through them.
 
-## The rule
+## Affine instantiations
 
-**A `Future`, `Completer`, `DeferredFuture` or `Stream` instantiated at
-a type that carries an owner is affine.** "Carries an owner" is the
-containment walk the tuple rule already uses (`typeCarriesOwner`), so
+**A `Future`, `Completer`, `DeferredFuture`, `Stream` or `FutureClaim`
+instantiated at a type that carries an owner is affine.** "Carries an
+owner" is the containment walk the tuple rule already uses
+(`typeCarriesOwner`), extended into these classes' type arguments, so
 `Future<Own<R>>`, `Future<Result<Own<R>, E>>` and
-`Stream<(Own<A>, Own<B>)>` all qualify. The walk now looks inside these
-four classes' type arguments. A first-class instantiation,
+`Stream<(Own<A>, Own<B>)>` all qualify. A first-class instantiation,
 `Future<i32>` say, is unchanged: copyable, awaitable any number of
 times.
 
-These classes declare their parameter `scoped T`, which is what admits
-an owner argument past the #379 check. That is the class half of the
-modifier ownership.md describes; how their bodies are checked is under
-"Checking the container bodies" below.
+The classes are polymorphic in affineness: one source serves both kinds
+of instantiation. They say so on the type parameter (§"Declaring the
+classes"), which is also what admits an owner argument past the #379
+check.
 
 An affine future binding is move-checked like an `Own<R>` binding:
 
-- **`await f` consumes `f`.** The awaiting frame is the one consumer,
-  and the value it receives is an owner like any other.
+- **`await f` consumes `f`.** The awaiting frame is the one consumer:
+  the future is moved into the await, and its value moves out when the
+  frame resumes.
 - Passing it to an owning or `scoped` parameter, returning it, storing
   it, or capturing it moves it. A use after any of these is the
   use-after-move error, so the second `await` in `twice` above is
@@ -109,14 +111,116 @@ An affine future binding is move-checked like an `Own<R>` binding:
 - A binding that nothing moves is released at scope exit
   (§"Releasing what nobody took").
 
-Members that read the value without consuming the future are not
-available on an affine instantiation: `then`, and the combinators
-`all`, `race` and `any`, whose type parameters stay unrestricted and so
-already reject an owner argument under #379. `Future.allSettled<scoped T>`
-awaits each input once and is available. `runFuture<T>` reads once but
-is unrestricted today; it can opt in when a program needs it.
+A future of an owner therefore has at most one waiter. Members that hand
+the value to anyone but that one waiter are not available on an affine
+instantiation: `then`, and the combinators `all`, `race` and `any`,
+whose type parameters stay unrestricted and so already reject an owner
+argument under #379. `Future.allSettled<scoped T>` awaits each input
+once and is available. `runFuture<T>` reads once but is unrestricted
+today; it can opt in when a program needs it.
 
-### Completer
+## Runtime state
+
+Static tracking covers the program's bindings. It does not reach every
+place a future travels: the executor's queues, the waiter list, adoption
+chains, combinator waiters, and standard-library bodies specialized at
+an owner without being checked again. Resources already have a backstop
+for the place their static tracking stops. `Resource` keeps a runtime
+`#state`, and `adopt` throws `ResourceStateError` on a resource that was
+not disowned. An affine container gets the same kind of check: a second
+consumer throws instead of releasing the value twice.
+
+A container needs no new field for this when its own contents can say
+"taken". `Future`'s can. For an owner instantiation, the read that
+resumes the waiter takes the value and clears `#value`, and the existing
+fields encode every state:
+
+| `#state` | waiters and box | meaning for an owner future | a further await or read |
+| -------- | --------------- | --------------------------- | ----------------------- |
+| pending  | no waiter       | unclaimed                   | becomes the one waiter  |
+| pending  | one waiter      | claimed                     | throws: a second claim  |
+| settled  | box full        | available                   | takes the value         |
+| settled  | box empty       | taken                       | throws: already taken   |
+
+Both columns are needed. A future awaited after it settles never
+registers a waiter, since `[subscribe]` schedules the frame at once, so
+the box is the only mark that its value has gone.
+
+A class whose `T` field is non-null has no empty value to leave behind
+after a take. If such a class became affine at owner instantiations and
+needed this check, it would need a hidden flag per object, the analogue
+of `Resource`'s `#state`. The rule is the same either way: an affine
+container carries a runtime check where values leave static tracking,
+and uses its own fields as the state when they can show "taken".
+
+## Specialization
+
+The two kinds of instantiation need different behavior from one source:
+`Future<Own<R>>` must take rather than copy and refuse a second claim,
+while `Future<i32>` must keep its several awaits. Zena compiles each
+specialization of a generic class separately, so the source can branch
+on a question the compiler answers per specialization, and the branch
+folds away. Two intrinsics carry it:
+
+- **`carriesOwner<T>(): boolean`**, a constant in each specialization:
+  `true` for `Future<Own<R>>`, `false` for `Future<i32>`.
+- **`releaseValue<T>(value: T): void`**, which lowers to `T`'s drop plan
+  (a resource's dispose, a tuple's per-element releases) and to nothing
+  at a first-class `T`. A container body calls it wherever it drops a
+  `T`, so the release is written down where it happens.
+
+With them, `Future`'s read becomes:
+
+```zena
+[valueOrThrow](): T {
+  // ... rejected, cancelled and pending, as today ...
+  let stored = this.#value as Box<T>;
+  if (carriesOwner<T>()) {
+    this.#value = null;     // taken: a later read throws
+  }
+  return stored.value;
+}
+```
+
+and `tryComplete` releases a value that lost the race:
+
+```zena
+[tryComplete](value: T): boolean {
+  if (!(this.#state == FutureState.Pending)) {
+    releaseValue(value);    // nowhere to go
+    return false;
+  }
+  // ... as today ...
+}
+```
+
+`[subscribe]` throws on a second waiter when `carriesOwner<T>()`, and
+`[adoptFrom]` moves the box when it is, clearing the source. The checks
+in the table are these branches.
+
+## Releasing what nobody took
+
+An affine future released unconsumed still owns its value, which may
+not exist yet. The release glue, a `DropPlan` like a tuple's, registers
+a **releasing waiter** in the one waiter slot. When the future settles,
+or at once if it already has, the waiter takes the value and calls
+`releaseValue`. A future that settles with an error, or is cancelled,
+leaves it nothing to do. The producing frame keeps running: a `Future`
+cannot cancel the work behind it, since that work may have started
+other work or had other effects. Cancelling it is what a `FutureClaim`
+is for (below).
+
+`DeferredFuture` handles the waiter differently:
+
+- **Never subscribed:** drop the host's readable end
+  (`future.drop-readable`). A value the host wrote is never transferred,
+  so there is nothing on the guest side to release. This is what its
+  `[Disposable.dispose]` does today, now called by the glue rather than
+  by hand.
+- **Read in flight:** behave as a pending `Future`. The lifted value is
+  released when the read completes.
+
+## Completer
 
 A `Completer<T>` holds no value; its future does. Two things change at
 an owner `T`:
@@ -125,17 +229,13 @@ an owner `T`:
   two handles to one affine future. At an owner `T` the field is not
   readable; the pair is created together instead, by a static
   `Completer.create<T>(): (Completer<T>, Future<T>)` whose result is an
-  affine tuple. The completer half stays copyable, since several
-  writers racing to settle is a supported pattern.
-- **A value that loses the race is released.** `complete(v)` moves `v`
-  in. When the future is already settled, `tryComplete` releases `v`
-  before returning false; `complete` goes through `tryComplete`, then
-  throws. `Future`'s generic code cannot release a `T` by itself, so the
-  release function comes from where `T` is concrete: the
-  `Completer.create<T>()` call, which the compiler gives the same
-  synthesized callback `[abandon]` takes (below). Open question 3.
+  affine tuple. The completer half stays copyable, since several writers
+  racing to settle is a supported pattern.
+- **A value that loses the race is released**, by `tryComplete`'s
+  `releaseValue` above. `complete` goes through `tryComplete` and then
+  throws.
 
-### Streams
+## Streams
 
 A `Stream<T>` at an owner `T` is affine: it has one reader, and moving
 the stream moves that reader. Elements reach the reader in two ways:
@@ -149,74 +249,46 @@ the stream moves that reader. Elements reach the reader in two ways:
 array of owners, which #379 rejects; it is not available at an owner
 `T`.
 
-## Releasing what nobody took
+A stream released unconsumed releases its pending read through a
+releasing waiter, and the undelivered part of the writer's slice
+through `releaseValue`. `stop()` releases them the same way. The typed
+WIT stream pump releases what it lifted but could not deliver, and
+drops the readable end so the host releases what it never sent.
 
-An affine future released unconsumed has to release its value, and the
-value may not exist yet. The release glue (a `DropPlan`, like a tuple's)
-calls one new member of `Future`:
+## FutureClaim
 
-```zena
-[abandon](release: (value: T) => void): void
-```
+`split()` exists so several holders can await one result. With an owner
+each of them would receive it, so at an owner `T` a `FutureClaim` is
+single-holder: `split()` is unavailable. Releasing it releases the last
+claim, which cancels the work, and its future is released like any
+other: if a value arrives anyway, the releasing waiter releases it.
 
-It records that nothing will read the future again:
+## Declaring the classes
 
-- **Settled with a value:** `release(value)` runs at once, and the box
-  is cleared.
-- **Settled with an error, or cancelled:** nothing to release.
-- **Pending:** the callback is stored. The settle path (`tryComplete`)
-  sees it and calls `release(value)` in place of storing the value, so
-  nothing ever reads it. The producing frame keeps running; abandoning
-  a first-class future does not cancel its producer.
+ownership.md's `scoped T` admits owners too, but it checks the body at
+the strictest discipline (every `T` consumed exactly once per path, and
+no `T` in a field), which `Future`'s body cannot pass: it stores the
+value in a field and copies it for each waiter of a first-class
+instantiation. What these classes need is narrower, so they declare a
+modifier of their own on the type parameter, proposed as `affine T`:
 
-The callback is synthesized at the release site, where `T` is concrete:
-it applies `T`'s drop plan to the value, as the tuple glue does. That
-keeps `Future`'s own code generic and leaves per-instantiation glue
-where the compiler already generates it.
+- an owner argument is admitted (#379's rejection does not apply), and
+  so is any first-class argument; borrowed and scoped arguments are
+  still rejected, since they need `scoped T`;
+- an instantiation whose argument carries an owner is affine (§"Affine
+  instantiations");
+- the body may store `T` in fields, and uses `carriesOwner<T>()` and
+  `releaseValue` where the two kinds of instantiation differ.
 
-`DeferredFuture` overrides `[abandon]`:
+The body's handling of `T` is not checked statically; the runtime state
+above is what makes an owner specialization safe. Checking it is a
+later step: the checker could treat `T` as first-class inside a branch
+on `carriesOwner<T>()` being false, and require a take everywhere else.
 
-- **Never subscribed:** drop the host's readable end
-  (`future.drop-readable`). A value the host wrote is never transferred,
-  so there is nothing on the guest side to release. This is what its
-  `[Disposable.dispose]` does today, now called by the glue rather than
-  by hand.
-- **Read in flight:** behave as a pending `Future`. The lifted value is
-  released when the read completes.
-
-A `Stream` released unconsumed calls the same member on its pending
-read, if there is one, and releases the undelivered part of the
-writer's slice through a `release` callback of its own. `stop()` takes
-that callback so an explicit stop releases them too. The typed WIT
-stream pump releases what it lifted but could not deliver, and drops
-the readable end so the host releases what it never sent.
-
-## Checking the container bodies
-
-ownership.md checks a `scoped T` body at the strictest discipline: every
-`T` value consumed exactly once per path. `Future`'s body cannot pass
-that check as written, because it reads `#value` once per waiter. For
-an affine instantiation that body is still correct, because the affine
-binding guarantees one consumer and so at most one read. But that
-argument rests on use sites, which the body's checker cannot see.
-
-Two ways to resolve it:
-
-- **Trust the four classes.** A class-level marker, valid only in
-  `zena:async` and `zena:stream`, exempts
-  their bodies from the discipline while their instantiations follow
-  the rule above. Soundness then rests on reviewed library code, the
-  way intrinsics already do.
-- **Restructure the bodies to pass.** Separate first-class and affine
-  read paths, with the affine path consuming the box on its one read.
-  This is checkable, but it duplicates `Future`'s read path, and it
-  needs member-level conditions ("available only when `T` is
-  first-class") that do not exist yet. Member-level `where` bounds
-  (equality.md) are the planned mechanism.
-
-The trusted marker is the proposal: four classes, all in the standard
-library, each with a single read per consumer that is easy to audit,
-and the restructuring can replace it once member-level bounds exist.
+ownership.md had reserved the word `affine T` for an at-most-once
+variant that the fold into `scoped T` made unnecessary. This is a
+different meaning, and ownership.md §"Affine type arguments" points
+here.
 
 ## The WIT bindings
 
@@ -239,44 +311,53 @@ The synthesizer changes in three places:
 `zena:fetch` and the protobuf transports, go away. A trailers future
 nobody reads is released by the glue.
 
+## What the `wasi:http` switch builds on this
+
+With futures and streams of owners in place, #284's switch makes the
+`wasi:http` and `zena-cli:host/http-server` bindings resource classes,
+and with them:
+
+- `zena:fetch`'s `Response`, which holds the wire response: a resource
+  class whose body readers consume it (`text(this: Own<this>)`).
+- `zena:http`'s `Request` and `Server`, resource classes. A handler owns
+  the request: middleware moves it down the chain with `next(req)`, so
+  calling `next` twice is a use-after-move error rather than the runtime
+  "next() called more than once", and code after `next` reads what it
+  needs from the request before handing it on. Whoever holds the request
+  last consumes or releases its body.
+- `zena:http`'s server `Response` holds no handle (its body is text,
+  bytes or a `Stream<u8>`), so it stays an ordinary class.
+
 ## Staging
 
 1. **Affinity and consumption (checker).** The containment walk looks
-   inside the four classes. `await` and the moves above consume an
-   affine future, a second use is the use-after-move error, and the
-   value-reading members are rejected on affine instantiations. `twice`
-   becomes a compile error.
-2. **Release glue.** `[abandon]` in `Future`, `DeferredFuture` and
-   `Stream`, and drop plans for affine futures and streams, everywhere
-   implicit drop already runs: locals, parameters, fields, tuple
-   elements, discarded results. `never` releases its resource.
-3. **`Completer` at an owner `T`.** `Completer.create`, and release of a
-   value that loses the race.
-4. **Loop-variable release** for `for await` over a stream of owners.
+   inside `affine T` classes, the modifier admits owner arguments, and
+   `await` and the moves above consume an affine future. A second use is
+   the use-after-move error, and the members that hand out the value
+   twice are rejected on affine instantiations. `twice` becomes a
+   compile error.
+2. **The two intrinsics** and the owner paths in `Future`: the take, the
+   second-claim and taken checks, adoption moving the box, and
+   `tryComplete`'s release.
+3. **Release glue.** Drop plans for affine futures and streams that
+   register the releasing waiter, everywhere implicit drop already
+   runs: locals, parameters, fields, tuple elements, discarded results.
+   `never` releases its resource. `DeferredFuture`'s readable-end drop
+   moves into the glue.
+4. **`Completer.create`, streams, and `FutureClaim`** at owner types,
+   with loop-variable release for `for await`.
 5. **WIT.** Tuple members as `Own`; the manual disposal in `zena:http`,
    `zena:fetch` and the protobuf transports removed.
 
-Then #284's `wasi:http` switch: the bindings, `zena:http`'s `Request`
-and `Server`, and `zena:fetch`'s `Response`, as resource classes.
+Then the `wasi:http` switch above.
 
 ## Open questions
 
-1. **The trust marker or the restructured bodies** (above). The proposal
-   is the marker.
-2. **Abandoning a pending future.** The proposal releases the value when
-   it arrives and lets the producer run. Cancelling the producer as well
-   is the other choice; for a scoped future ownership.md records
-   cancel-plus-detach as a direction, not adopted, and for a first-class
-   one the producer may have side effects the program still wants.
-3. **How a losing `complete` gets its release function.** The proposal
-   is an argument the compiler supplies at `Completer.create<T>()` when
-   `T` carries an owner, the same callback `[abandon]` takes. The
-   alternative is a member only an owner instantiation has
-   (`tryComplete` returning the value it could not store), which waits
-   on member-level conditions.
-4. **The server's `Request` body (for #284, not this note).** A handler
-   receives the request as a borrow, since middleware shares it, while
-   reading the body consumes the wire request, which needs its owner.
-   Either the server consumes the body when the request arrives and the
-   `Request` holds the resulting stream, or handlers take ownership.
-   The first keeps today's middleware shape.
+1. **The spelling `affine T`**, and whether user code may declare it or
+   only `zena:async` and `zena:stream` may. Its safety comes from the
+   runtime checks, which the declaring class has to write, so a user
+   class that declares it and forgets them is unsound in the way a
+   wrong `@external` signature is.
+2. **Checking the bodies statically** (§"Declaring the classes"). Not
+   needed for the five classes, whose owner paths are short and
+   reviewed, but needed before user code declares the modifier.
