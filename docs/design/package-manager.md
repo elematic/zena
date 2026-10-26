@@ -666,10 +666,9 @@ organization's packages in a scope its owners share.
 
 **Creating a scope.** `zena scope create acme` asks the host for the
 organization, with `dev.zena-lang.host.createOrganization`, with the
-caller as its only owner and their recovery key ranked above the host's
-rotation key. Like `zena publish`, it names the handle it would create,
-`acme.pkg.zena-lang.dev`, and stops, and `--yes` creates it. It prints the
-scope's DID and handle.
+caller as its only owner. Like `zena publish`, it names the handle it
+would create, `acme.pkg.zena-lang.dev`, and stops, and `--yes` creates
+it. It prints the scope's DID and handle.
 
 Publishing does not create scopes. A publish that names a scope the host
 does not have stops, and says to create it with `zena scope create`. If
