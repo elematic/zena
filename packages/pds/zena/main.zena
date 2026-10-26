@@ -7,10 +7,17 @@
  * With the argument `sync-handles`, it writes the DNS record of every
  * handle the host has given out instead, from its store, and exits: for
  * after records were lost, or a write of one failed.
+ *
+ * With `create-scope <name> --owner <did> [--recovery-key <did:key>]...`,
+ * it creates a scope owned by `<did>` alone, as the host's operator, and
+ * exits. Unlike `zena scope create`, it may take a name the host reserves
+ * (package-manager.md, "Scopes").
  */
 
 import {Future} from 'zena:async';
 import {exit, getArguments, getEnv} from 'zena:cli';
+import {HostError} from './host.zena';
+import {nowMicros} from './server.zena';
 import {ConfigError, ServiceConfig, buildService, configFromEnv, serve} from './service.zena';
 
 /** The configuration the environment gives, or null, having said why. */
@@ -36,6 +43,10 @@ export async function main(): Future<void> {
     await syncHandles(config as ServiceConfig);
     return;
   }
+  if (hasArgument('create-scope')) {
+    await createScope(config as ServiceConfig);
+    return;
+  }
   let running = await serve(config as ServiceConfig);
   let host = running.service.host;
   if (host != null) {
@@ -59,6 +70,73 @@ function hasArgument(name: String): boolean {
     }
   }
   return false;
+}
+
+/** The arguments after `name`, or null when the command line has no `name`. */
+function argumentsAfter(name: String): Array<String> | null {
+  let args = getArguments();
+  for (var i = 1; i < args.length; i += 1) {
+    if (args[i] == name) {
+      let rest = new GrowableArray<String>();
+      for (var j = i + 1; j < args.length; j += 1) {
+        rest.push(args[j]);
+      }
+      return rest;
+    }
+  }
+  return null;
+}
+
+/** Creates the scope `create-scope` names, as the operator, and exits. */
+async function createScope(config: ServiceConfig): Future<void> {
+  let usage = 'usage: create-scope <name> --owner <did> [--recovery-key <did:key>]...';
+  let args = argumentsAfter('create-scope') as Array<String>;
+  var name: String | null = null;
+  var owner: String | null = null;
+  let recoveryKeys = new GrowableArray<String>();
+  var i = 0;
+  while (i < args.length) {
+    let arg = args[i];
+    if ((arg == '--owner' || arg == '--recovery-key') && i + 1 < args.length) {
+      if (arg == '--owner') {
+        owner = args[i + 1];
+      } else {
+        recoveryKeys.push(args[i + 1]);
+      }
+      i += 2;
+    } else if (name == null && !arg.startsWith('-')) {
+      name = arg;
+      i += 1;
+    } else {
+      console.error(usage);
+      exit(2);
+      return;
+    }
+  }
+  if (name == null || owner == null || !(owner as String).startsWith('did:')) {
+    console.error(usage);
+    exit(2);
+    return;
+  }
+  let service = await buildService(config, '');
+  let host = service.host;
+  if (host == null) {
+    console.error('create-scope needs a package host: set PDS_HOST_DOMAIN');
+    exit(2);
+    return;
+  }
+  try {
+    let created = await host.createScopeAsOperator(owner as String, name as String, recoveryKeys, nowMicros());
+    console.log(`created the scope ${created.handle} (${created.did}), owned by ${owner as String}`);
+  } catch (e) {
+    if (e is HostError) {
+      console.error(`create-scope: ${e.message}`);
+      exit(1);
+      return;
+    }
+    throw e;
+  }
+  exit(0);
 }
 
 /** Writes every handle record from the host's store, and exits. */

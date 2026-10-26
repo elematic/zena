@@ -73,6 +73,11 @@ The same configuration with the argument `sync-handles`
 handle record again from the host's store and exits, for after a record
 write failed or records were lost.
 
+With `create-scope <name> --owner <did> [--recovery-key <did:key>]...`, it
+creates a scope owned by that DID and exits. This is how the operator
+takes a name the host reserves (`www`, `api`, `admin`, `zena`, `pkg`,
+`mail`, and `PDS_RESERVED_SCOPES`), which no `zena scope create` can.
+
 `PDS_BLOB_DIR=<dir>` keeps blob bytes in a directory instead, for a server
 on one machine. `FIRESTORE_EMULATOR_HOST` points the server at the
 emulator, and `GOOGLE_CLOUD_PROJECT` names the project. A configuration

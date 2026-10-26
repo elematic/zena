@@ -84,6 +84,8 @@ export let tests = suite('package-manager:manifest', () => {
     rejects('{"dependencies": {"lib": {"path": 3}}}');
     rejects('{"workspace": {"packages": "packages/*"}}');
     rejects('{"scopes": {"widgets": "widgets.alt-pkg.org"}}');
+    rejects('{"scope": "Acme"}');
+    rejects('{"scope": 3}');
   });
 
   test('reads and keeps a WIT dependency, which it has nothing to fetch for', (ctx) => {
@@ -173,5 +175,18 @@ export let tests = suite('package-manager:manifest', () => {
     jsonEqual(parseJson(writeDid('{"did": "did:plc:old", "name": "router"}', did)),
         parseJson(`{"did": "${did}", "name": "router"}`));
     equal(readManifest(written).did as String, did);
+  });
+
+  test('reads the scope, and writes it after the DID', (ctx) => {
+    equal(readManifest('{"name": "router", "scope": "acme"}').scope as String, 'acme');
+    isTrue(readManifest('{"name": "router"}').scope == null, 'no scope');
+    let did = 'did:plc:routerrouterrouterrouter';
+    let written = writeDid('{"name": "router", "version": "1.0.0"}', did, 'acme');
+    equal(written,
+        '{\n  "name": "router",\n  "did": "did:plc:routerrouterrouterrouter",\n  "scope": "acme",\n  "version": "1.0.0"\n}\n');
+    equal(readManifest(written).scope as String, 'acme');
+    // A scope already there keeps its place.
+    jsonEqual(parseJson(writeDid('{"scope": "old", "name": "router"}', did, 'acme')),
+        parseJson(`{"scope": "acme", "name": "router", "did": "${did}"}`));
   });
 });

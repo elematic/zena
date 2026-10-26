@@ -310,8 +310,12 @@ Subcommands (`./target/release/zena-cli <subcommand>`):
   `~/.config/zena`), readable only by its owner. **`logout`** ends it.
 - **`publish [--scope <name> --yes] [--host <url>]`**: Publish the package
   you are in at its manifest's `version` to a package host
-  (`ZENA_PACKAGE_HOST`), creating its account first when it has no `did`.
+  (`ZENA_PACKAGE_HOST`), creating its account first when it has no `did`,
+  in the scope its manifest's `scope` or `--scope` names.
   **`package create`** only creates it.
+- **`scope create <name> [--yes]`**, **`scope info <scope>`**: Create a
+  scope on a package host, with you as its owner, or describe one.
+  Publishing never creates a scope.
 - **`fetch`**: Fetch the published packages `zena-lock.json` pins into
   the package cache, checking each against its pins. `ZENA_PLC_DIRECTORY`
   and `ZENA_DNS_OVER_HTTPS` replace the PLC directory and the DNS resolver
