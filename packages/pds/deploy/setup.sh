@@ -103,21 +103,31 @@ else
   gcloud dns managed-zones create "$ZONE" --project "$PROJECT" --dns-name "${DOMAIN}." \
     --description "Zena package host ($PDS_ENV): handle records" --quiet
 fi
-# The parent zone, zena-lang.dev's, delegates the domain to it.
-PARENT_ZONE="${ZENA_DNS_PARENT_ZONE:-$(gcloud dns managed-zones list --project "$PROJECT" \
-  --filter 'dnsName=zena-lang.dev.' --format 'value(name)')}"
-if [ -z "$PARENT_ZONE" ]; then
-  echo "    no zone for zena-lang.dev. in $PROJECT: set ZENA_DNS_PARENT_ZONE, or delegate ${DOMAIN} by hand" >&2
-  exit 1
-fi
 NAMESERVERS="$(gcloud dns managed-zones describe "$ZONE" --project "$PROJECT" \
   --format 'value(nameServers.list())' | tr ';' ',')"
-if gcloud dns record-sets describe "${DOMAIN}." --type NS --zone "$PARENT_ZONE" --project "$PROJECT" \
-  > /dev/null 2>&1; then
+# zena-lang.dev's zone delegates the domain to this one: NS records for
+# the domain, naming this zone's nameservers. When that zone is a Cloud
+# DNS zone, in this project or ZENA_DNS_PARENT_PROJECT, they are written
+# here. When zena-lang.dev's DNS is elsewhere, such as at the registrar,
+# they are printed for you to add there.
+PARENT_PROJECT="${ZENA_DNS_PARENT_PROJECT:-$PROJECT}"
+PARENT_ZONE="${ZENA_DNS_PARENT_ZONE:-$(gcloud dns managed-zones list --project "$PARENT_PROJECT" \
+  --filter 'dnsName=zena-lang.dev.' --format 'value(name)')}"
+DELEGATE_BY_HAND=
+if [ -z "$PARENT_ZONE" ]; then
+  DELEGATE_BY_HAND=1
+  echo "    zena-lang.dev. is not a Cloud DNS zone in $PARENT_PROJECT, so delegate ${DOMAIN} where"
+  echo "    zena-lang.dev's DNS is kept, with these NS records (or set ZENA_DNS_PARENT_PROJECT"
+  echo "    and ZENA_DNS_PARENT_ZONE, and run this again):"
+  for ns in ${NAMESERVERS//,/ }; do
+    echo "      ${DOMAIN}.  NS  ${ns}"
+  done
+elif gcloud dns record-sets describe "${DOMAIN}." --type NS --zone "$PARENT_ZONE" \
+  --project "$PARENT_PROJECT" > /dev/null 2>&1; then
   echo "    delegated from $PARENT_ZONE"
 else
   gcloud dns record-sets create "${DOMAIN}." --type NS --ttl 3600 --rrdatas "$NAMESERVERS" \
-    --zone "$PARENT_ZONE" --project "$PROJECT" --quiet > /dev/null
+    --zone "$PARENT_ZONE" --project "$PARENT_PROJECT" --quiet > /dev/null
   echo "    delegated from $PARENT_ZONE to $NAMESERVERS"
 fi
 # Cloud DNS has no add-iam-policy-binding for a zone, only a whole policy.
@@ -132,4 +142,9 @@ gcloud dns managed-zones set-iam-policy "$ZONE" --project "$PROJECT" --policy-fi
 echo "    $SERVICE_ACCOUNT may write its records"
 
 echo
-echo "Done. Next: npm run deploy -w @zena-lang/pds, with the same PDS_ENV."
+if [ -n "$DELEGATE_BY_HAND" ]; then
+  echo "Done, but for the NS records above. Once they are in, \`dig +short NS ${DOMAIN}\` lists them."
+else
+  echo "Done."
+fi
+echo "Next: npm run deploy -w @zena-lang/pds, with the same PDS_ENV."

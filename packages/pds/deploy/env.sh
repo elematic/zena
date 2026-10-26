@@ -50,7 +50,10 @@ SERVICE_ACCOUNT="zena-pkg${SUFFIX}"
 SERVICE_ACCOUNT_EMAIL="${SERVICE_ACCOUNT}@${PROJECT}.iam.gserviceaccount.com"
 SECRET="zena-pkg${SUFFIX}-rotation-key"
 # The environment's own zone, delegated from zena-lang.dev's, so the
-# service account can write handle records there and nowhere else.
+# service account can write handle records there and nowhere else. setup.sh
+# writes the delegation when zena-lang.dev is a Cloud DNS zone, in the
+# project or ZENA_DNS_PARENT_PROJECT (ZENA_DNS_PARENT_ZONE names it), and
+# otherwise prints the NS records to add where its DNS is kept.
 ZONE="zena-pkg${SUFFIX}"
 # The tenant within the database (docs/design/pds.md, "Accounts,
 # organizations and tenants"). Each environment has a database of its own,
