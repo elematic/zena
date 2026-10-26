@@ -35,6 +35,7 @@ else moved.
 {
   "name": "app",
   "did": "did:plc:appappappappappappappapp",
+  "scope": "acme",
   "version": "1.4.2",
   "exports": {"server": {}},
   "dependencies": {
@@ -50,6 +51,7 @@ else moved.
 | -------------- | ------------------------------- | -------------- | ---------------------------------------------------------------------- |
 | `name`         | `string`                        | any package    | The package's own name, and the name it suggests to its dependents     |
 | `did`          | `string`                        | any package    | The package's DID, once it has been created on a package host          |
+| `scope`        | `string`                        | any package    | The scope on a package host the package is created in                  |
 | `version`      | `string`                        | any package    | The version `zena publish` publishes next                              |
 | `exports`      | `Record<string, LibraryExport>` | any package    | The libraries other packages may import                                |
 | `dependencies` | `Record<string, Dependency>`    | any package    | The packages this package's libraries import, by local name            |
@@ -72,6 +74,21 @@ unless they choose another name.
 `zena publish` writes the DID when it creates the package's account (see
 package-manager.md, "Creating a package"), so that later releases are
 published to the same package.
+
+### `scope`
+
+The scope on a package host that the package's first `zena publish`
+creates it in, such as `acme` for `router.acme.pkg.zena-lang.dev`
+(package-manager.md, "Scopes"). The scope must exist on the host. Once the
+package has a `did`, `zena publish` refuses when the package's handle is
+not in this scope, since the manifest and the package then disagree about
+where it is. A workspace root's `scope` is also the scope of each
+workspace package that has none of its own. A package whose handle is on
+its maintainers' own domain has no `scope`. The compiler does not read
+it.
+
+`scope` is unrelated to `scopes`, below, which says where `zena add`
+looks up the packages of other scopes.
 
 ### `version`
 

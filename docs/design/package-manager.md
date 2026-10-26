@@ -233,7 +233,8 @@ label: lowercase ASCII letters, digits and `-`, starting with a letter,
 not ending with `-`, without `--` as its third and fourth characters,
 which internationalized domain names reserve, and at most 63 characters.
 `zena` names the standard library and no package. Scope names follow the
-same rules, and a host reserves some, such as `www`.
+same rules, and a host reserves some, such as `www` (see
+[Scopes](#scopes)).
 
 ## Records
 
@@ -652,12 +653,81 @@ There is no maintainer's own key for signing releases. In atproto an
 account's signing key is held by its PDS, not by the person, and this
 design does not add one.
 
+### Scopes
+
+Today a scope is created by the first `zena publish --scope` that names
+it, and nothing records a package's scope but its handle. This section is
+the design that replaces that; #575 and #576 track it.
+
+A scope is an organization account on a package host, whose handle is one
+label below the host's domain (see [Names and scopes](#names-and-scopes)).
+A person's packages go in a scope with them as its only owner, and an
+organization's packages in a scope its owners share.
+
+**Creating a scope.** `zena scope create acme` asks the host for the
+organization, with `dev.zena-lang.host.createOrganization`, with the
+caller as its only owner and their recovery key ranked above the host's
+rotation key. Like `zena publish`, it names the handle it would create,
+`acme.pkg.zena-lang.dev`, and stops, and `--yes` creates it. It prints the
+scope's DID and handle.
+
+Publishing does not create scopes. A publish that names a scope the host
+does not have stops, and says to create it with `zena scope create`. If
+publishing created it, a mistyped `--scope` would make a scope no one
+meant to have, and take its name.
+
+**Which scope a package is in.** The manifest's `scope` names it:
+
+```json
+{"name": "router", "scope": "acme", "version": "1.4.2"}
+```
+
+The first publish creates the package in that scope, and `--scope` gives
+one for a manifest without it. A workspace root's `scope` is the default
+for its workspace packages (see
+[package-manifest.md](package-manifest.md#scope)). The manifest's `name`
+stays the package's own name, without the scope, since it is also the
+name dependents import it by, and a DNS label. `@acme/router` is only
+`zena add`'s shorthand for a handle.
+
+Once the package exists, its DID decides where it is, and `scope` is a
+check. `zena publish` resolves the DID's handle, and refuses when it is
+not `<name>.<scope>.<host domain>`, naming both. That catches a manifest
+copied from another package, and a package renamed or moved without its
+manifest following. A package whose handle is on a domain its maintainers
+control has no `scope`.
+
+**Seeing a scope.** `zena scope info <scope>` takes the scope's name,
+handle or DID, and prints its DID, its handle, the thresholds of its
+members record, and the caller's role in it. `zena scope members` prints
+the members the caller may see (see
+[Adding and removing people](#adding-and-removing-people)). The index
+lists the packages in a scope, by their handles.
+
+**Reserved scopes.** A host keeps some scope names from everyone: `www`,
+`api`, `admin`, `zena`, `pkg` and `mail`, and those its operator adds. The
+operator creates a scope with one of those names, for the project that
+runs the host, with a command run with the host's own configuration, as
+`sync-handles` is:
+
+```sh
+zena run packages/pds/zena/main.zena -- create-scope zena \
+  --owner did:plc:... --recovery-key did:key:...
+```
+
+The command is not an XRPC method, so nothing a caller can send takes a
+reserved name, and it needs no credentials the server does not already
+have. The scope's owner then manages it as any other. Which reserved
+scopes the Zena project's host creates, and which packages go in `zena`,
+is still open.
+
 ### Creating a package
 
 The first `zena publish` of a package creates its account, after asking:
 it names the handle it would create and stops, and `--yes` creates it.
-`--scope` names the scope, which is created too when the host has no scope
-of that name. `zena package create` does only this, for scripts.
+The package is created in the scope the manifest's `scope` or `--scope`
+names, which must exist (see [Scopes](#scopes)). `zena package create`
+does only this, for scripts.
 
 The host is `--host`, else `ZENA_PACKAGE_HOST`, else the Zena project's.
 `zena` reads its service DID and the domain its handles are under from its
@@ -683,12 +753,9 @@ The host is `--host`, else `ZENA_PACKAGE_HOST`, else the Zena project's.
    Every later call to the host is made the same way.
 4. **The DID.** `zena` calls `dev.zena-lang.host.createPackage` with the
    scope's organization, the recovery key's public key, the profile and
-   the maintainers record. A maintainer with no scope on the host yet
-   creates one first, with `dev.zena-lang.host.createOrganization`: an
-   organization with them as its only owner, under a scope name they
-   choose. The host generates the
-   package's signing key, writes the genesis operation, signs it with its
-   rotation key and submits it to the PLC directory:
+   the maintainers record. The host generates the package's signing key,
+   writes the genesis operation, signs it with its rotation key and
+   submits it to the PLC directory:
 
    ```json
    {
@@ -933,17 +1000,53 @@ one in particular.
 
 #### Adding and removing people
 
-`zena owner add <package> <handle or DID>` and `zena owner remove` write a
-new maintainers record through the host. `zena org add` and
-`zena org remove` do the same to an organization's members, and
-`zena team add` and `zena team remove` to a team. A change counts once
-the roles and threshold of the record before it have attested it: the
-owners for a maintainers or members record, and the admins, owners or the
-team's maintainers for a team. So one owner of a package whose
-`ownerThreshold` is 2 cannot replace the others. The log records each
-change that counts. A release counts under the maintainers record the log
-held when it recorded the release, so someone who leaves cannot attest
-new releases, and the releases they attested stay valid.
+Each command names a person by handle or DID, and changes one record
+through the host:
+
+| Command                                                 | Record                    | Host method      |
+| ------------------------------------------------------- | ------------------------- | ---------------- |
+| `zena scope add <scope> <person> --role <role>`         | the scope's members       | `putMembers`     |
+| `zena scope remove <scope> <person>`                    | the scope's members       | `putMembers`     |
+| `zena team create <scope>/<team>`                       | a new team                | `putTeam`        |
+| `zena team add <scope>/<team> <person> --role <role>`   | the team                  | `putTeam`        |
+| `zena team remove <scope>/<team> <person>`              | the team                  | `putTeam`        |
+| `zena team delete <scope>/<team>`                       | the team                  | `deleteTeam`     |
+| `zena owner add <person> --role <role>`                 | the package's maintainers | `putMaintainers` |
+| `zena owner add --team <scope>/<team> --role publisher` | the package's maintainers | `putMaintainers` |
+| `zena owner remove <person>`                            | the package's maintainers | `putMaintainers` |
+
+The roles are those of [Roles](#roles), and `member` or `publisher` when
+`--role` is left out. The `owner` commands act on the package in the
+current directory, or on the one `--package` names by DID, handle or
+`@scope/name`. `zena scope members <scope>`, `zena team members` and
+`zena owner list` print the entries the caller may see.
+
+Each change takes the same steps:
+
+1. `zena` reads the record and its CID from the account's repository, and
+   the entries behind its commitments from `getEntries`.
+2. It makes the new person's entry, with a new salt and no approval keys,
+   or leaves out the one being removed, and builds the new record from
+   the entries' commitments.
+3. It calls the host's method with the new record, the entries, and the
+   CID it read. The host refuses when the record has changed since, so
+   two owners editing at once do not overwrite each other unseen.
+4. It writes an attestation of the new record to the caller's own
+   repository.
+
+A new member adds their own approval keys later, in the management
+interface.
+
+A change counts once the roles and threshold of the record before it have
+attested it: the owners for a maintainers or members record, and the
+admins, owners or the team's maintainers for a team. So one owner of a
+package whose `ownerThreshold` is 2 cannot replace the others. The others
+attest a waiting change with `zena approve @acme` or
+`zena approve <package>`, which shows the entries added and removed
+first. The log records each change that counts. A release counts under
+the maintainers record the log held when it recorded the release, so
+someone who leaves cannot attest new releases, and the releases they
+attested stay valid.
 
 Someone who leaves and holds a recovery key must also lose the key: the
 remaining holders remove it from the DID's rotation keys with a PLC
@@ -952,6 +1055,14 @@ lower-ranked one within 72 hours, so the removal is signed with a recovery
 key ranked above the departing one, not with the host's key, which ranks
 last. The first rotation key should be the one trusted most, such as an
 organization's offline key.
+
+Nothing records which rotation key is whose, so `zena scope remove` and
+`zena owner remove` cannot yet tell whether the person removed holds one.
+Recording the holder's recovery key in their private entry would let the
+command find it, and prepare the PLC operation for each DID it is on, for
+a holder ranked above it to sign. `zena` signs it with that holder's key
+and submits it to the PLC directory itself, since the host never holds a
+recovery key.
 
 ### Thresholds
 
@@ -1476,7 +1587,7 @@ throttled. The host therefore limits who creates accounts and how many:
 - **Outgoing HTTP** with methods and headers on the `zena-cli` target,
   which `wasi:http` provides directly.
 - **The `zena` command**: `login`, `add`, `update`, `fetch`, `publish`,
-  `approve`, `yank`, `owner`, `team`, `package create` and
+  `approve`, `yank`, `scope`, `owner`, `team`, `package create` and
   `package move`, and the `@scope/name` shorthand with its `scopes`
   mapping. Signing in needs OAuth with a loopback redirect, a
   client metadata document at `zena-lang.dev`, and the
