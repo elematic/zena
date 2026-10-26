@@ -1862,6 +1862,11 @@ class Array<T> { … }                   // a restricted argument is rejected
 let discard = <affine T>(x: T) => {};  // NOT in v1: needs at-most-once
 ```
 
+owner-futures.md proposes `affine T` with a different meaning, for the
+async containers: a class polymorphic in affineness, whose
+instantiations at an owner are affine and check their single consumer
+at run time, and whose body is not held to the exactly-once discipline.
+
 The opt-in is **declared, not inferred**. Whole-program compilation would allow
 inferring it from bodies, but then errors land inside stdlib bodies at call sites
 the user did not write, a signature stops being the contract, and adding a second
