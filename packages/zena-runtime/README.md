@@ -106,6 +106,12 @@ runs one compiled component or core module and nothing else;
 [`zena-cli`](../zena-cli) adds the compiler and the test and benchmark
 runners.
 
+`examples/components_spike.rs` is the spike for loading components as
+long-lived instances (#593): one Zena component calls another through
+its own imports, and the other calls back while that call is in flight.
+[docs/design/runtime-components.md](../../docs/design/runtime-components.md)
+says how to build its two components and what it shows.
+
 ## Tests
 
 ```bash
