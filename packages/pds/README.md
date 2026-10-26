@@ -104,12 +104,16 @@ the environment's domain, to add where that DNS is kept. Back up the key with
 `deploy` checks that the new revision answers `describeServer`. The
 certificate for the domain can take a while after `deploy:domain`.
 
-`zena` uses staging with:
+`zena` uses staging with two variables, which `deploy/staging.env` sets:
 
 ```sh
-export ZENA_PACKAGE_HOST=https://pkg-staging.zena-lang.dev
-export ZENA_PLC_DIRECTORY=https://pkg-staging.zena-lang.dev/plc
+source packages/pds/deploy/staging.env    # ZENA_PACKAGE_HOST and ZENA_PLC_DIRECTORY
+export ZENA_CONFIG_DIR=$(mktemp -d)       # optional: a staging sign-in apart from your usual one
 ```
+
+Every shell that runs `zena` against staging needs them, `zena add` and
+`zena fetch` included: without `ZENA_PLC_DIRECTORY`, a staging package's
+DID is looked up in `plc.directory`, which has never heard of it.
 
 ## Layout
 

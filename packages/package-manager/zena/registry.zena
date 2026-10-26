@@ -10,7 +10,7 @@ import {DidDocument} from 'atproto:did';
 import {IdentityResolver} from 'atproto:identity';
 import {getVerifiedRecord, listRecords} from 'atproto:sync';
 import {isValidDid, isValidHandle} from 'atproto:syntax';
-import {PROFILE_KEY, PROFILE_TYPE, Profile, RELEASE_TYPE, Release, YANK_TYPE} from './records.zena';
+import {Dependency, PROFILE_KEY, PROFILE_TYPE, Profile, RELEASE_TYPE, Release, YANK_TYPE} from './records.zena';
 import {CheckedRelease, ReleaseSource} from './resolve.zena';
 import {Version} from './version.zena';
 
@@ -128,6 +128,27 @@ export async function listVersions(document: DidDocument): Future<Versions> {
     yanked.add(record.rkey);
   }
   return new Versions(releases, yanked);
+}
+
+/**
+ * Throws `RegistryError` unless each of `dependencies` names a release its
+ * package has published and not yanked: what `zena publish` checks before
+ * it publishes a release that depends on them, since nothing else would
+ * stop one that cannot be resolved.
+ */
+export async function checkDependencies(dependencies: Array<Dependency>, resolver: IdentityResolver)
+    : Future<void> {
+  for (let dependency in dependencies) {
+    let versions = await listVersions(await resolver.resolveDid(dependency.did));
+    let text = dependency.version.toString();
+    if (!versions.has(dependency.version)) {
+      throw new RegistryError(
+          `${dependency.name} ${text} (${dependency.did}) is not published: publish it first, or depend on a version that is`);
+    }
+    if (versions.yanked.has(text)) {
+      throw new RegistryError(`${dependency.name} ${text} (${dependency.did}) is yanked: depend on another version`);
+    }
+  }
 }
 
 /** The package's profile, with its proof, or null when it has none. */

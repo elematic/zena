@@ -92,6 +92,26 @@ export let tests = suite('zena publish', () => {
       let other = zenaIn('other').run(['publish']);
       isTrue(other.succeeded() && other.stdout.contains('Published other 0.1.0'), described(other));
 
+      // A release whose dependencies cannot be resolved is refused before
+      // anything is made for it: greet has no 9.9.0, and other's manifest
+      // names 0.2.0, which it has not published.
+      write(scratch.at('uses/zena-package.json'),
+          `{"name": "uses", "version": "1.0.0", "dependencies": {"greet": {"did": "${did}", "version": "9.9.0"}}}\n`);
+      let missing = zenaIn('uses').run(['publish', '--scope', 'acme', '--yes']);
+      isTrue(!missing.succeeded() && missing.stderr.contains('greet 9.9.0') &&
+          missing.stderr.contains('is not published') && !missing.stdout.contains('Created'), described(missing));
+      let otherManifest = read(scratch.at('other/zena-package.json'));
+      let otherDid = (parseJson(otherManifest) as JsonObject)['did'] as String;
+      write(scratch.at('other/zena-package.json'),
+          `{"name": "other", "did": "${otherDid}", "version": "0.2.0"}\n`);
+      write(scratch.at('uses/zena-package.json'),
+          '{"name": "uses", "version": "1.0.0", "dependencies": {"other": {"path": "../other"}}}\n');
+      let unpublished = zenaIn('uses').run(['publish', '--scope', 'acme', '--yes']);
+      isTrue(!unpublished.succeeded() && unpublished.stderr.contains('other 0.2.0') &&
+          !unpublished.stdout.contains('Created'), described(unpublished));
+      isTrue(!read(scratch.at('uses/zena-package.json')).contains('"did"'), 'no DID was written');
+      write(scratch.at('other/zena-package.json'), otherManifest);
+
       // Alice attested the scope's members record and the three releases, in
       // her own repository.
       let listed = runFuture(fetch(
