@@ -97,7 +97,9 @@ npm run deploy:domain -w @zena-lang/pds   # once: maps the domain, with gcloud's
 ```
 
 `deploy:setup` is idempotent, and makes the rotation key only when there
-is none; back it up with
+is none. When `zena-lang.dev`'s DNS is not a Cloud DNS zone in the project,
+or in `ZENA_DNS_PARENT_PROJECT`, it prints the `NS` records that delegate
+the environment's domain, to add where that DNS is kept. Back up the key with
 `gcloud secrets versions access latest --secret zena-pkg-staging-rotation-key`.
 `deploy` checks that the new revision answers `describeServer`. The
 certificate for the domain can take a while after `deploy:domain`.
