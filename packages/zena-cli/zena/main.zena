@@ -31,6 +31,7 @@ import { fetchCommand } from './fetch.zena';
 import { addCommand, updateCommand } from './add.zena';
 import { loginCommand, logoutCommand } from './login.zena';
 import { packageCreateCommand, publishCommand } from './publish.zena';
+import { scopeCreateCommand, scopeInfoCommand } from './scope.zena';
 
 /** The whole command line, described once. */
 function describe() {
@@ -186,8 +187,16 @@ function describe() {
         options: {
           'help' => help,
           'host' => {help: 'The package host (default $ZENA_PACKAGE_HOST, else https://pkg.zena-lang.dev)'},
-          'scope' => {help: 'The scope to create a new package in'},
+          'scope' => {help: 'The scope to create a new package in, when its manifest names none'},
           'yes' => {type: OptionType.Flag, help: 'Create the package if it has no DID yet'},
+        },
+      },
+      'scope' => {
+        help: 'scope create <name>: create a scope on a host; scope info <scope>: describe one',
+        options: {
+          'help' => help,
+          'host' => {help: 'The package host (default $ZENA_PACKAGE_HOST, else https://pkg.zena-lang.dev)'},
+          'yes' => {type: OptionType.Flag, help: 'Create it'},
         },
       },
       'package' => {
@@ -195,7 +204,7 @@ function describe() {
         options: {
           'help' => help,
           'host' => {help: 'The package host (default $ZENA_PACKAGE_HOST, else https://pkg.zena-lang.dev)'},
-          'scope' => {help: 'The scope to create the package in'},
+          'scope' => {help: 'The scope to create the package in, when its manifest names none'},
           'yes' => {type: OptionType.Flag, help: 'Create it'},
         },
       },
@@ -329,6 +338,16 @@ function dispatch(parser: ArgParser, args: ParsedArgs): i32 {
       return 2;
     }
     return packageCreateCommand(sub, options);
+  }
+  if (name == 'scope') {
+    if (sub.rest.length > 0 && sub.rest[0] == 'create') {
+      return scopeCreateCommand(sub, options);
+    }
+    if (sub.rest.length > 0 && sub.rest[0] == 'info') {
+      return scopeInfoCommand(sub, options);
+    }
+    console.error('Error: the scope command has two subcommands: zena scope create <name>, zena scope info <scope>');
+    return 2;
   }
   if (name == 'bench') {
     return benchCommand(sub, options);

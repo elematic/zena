@@ -26,7 +26,8 @@ the `zena` command. The design is in
      (`atproto:session`) in the configuration directory, and
      `publish.zena`, for `zena publish` and `zena package create`, which
      call a package host's `dev.zena-lang.host.*` methods with service-auth
-     tokens from that session.
+     tokens from that session, and `scope.zena`, for `zena scope create`
+     and `zena scope info`.
    - It is built to `out/zena.wasm` by `build:module`, with the compiler
      (`zena-compiler:compile-file`), zb, zenadoc, the language service and
      the formatter linked
