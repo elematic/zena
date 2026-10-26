@@ -14,7 +14,7 @@
 import {runFuture} from 'zena:async';
 import {Borrow, Own} from 'zena:core';
 import {getEnv} from 'zena:cli';
-import {existsSync, mkdirSync, readFileSync, writeFileSync} from 'zena:fs';
+import {existsSync, isDirectorySync, mkdirSync, readFileSync, writeFileSync} from 'zena:fs';
 import {dirname} from 'zena:path';
 import {Process, ProcessResult, run, spawnWith} from 'zena:process';
 import {milliseconds, sleep} from 'zena:time';
@@ -47,7 +47,17 @@ export function ensureDir(dir: String): void {
     return;
   }
   ensureDir(dirname(dir));
-  mkdirSync(dir);
+  try {
+    mkdirSync(dir);
+  } catch (e) {
+    // Another test file may have made it since `existsSync` said no:
+    // `zena test` runs files in parallel, and every scratch directory is
+    // under `.zena/test-scratch`.
+    // TODO(#540): use a recursive mkdir from zena:fs.
+    if (!isDirectorySync(dir)) {
+      throw e;
+    }
+  }
 }
 
 /** Writes `text` to `path`, creating its directory. */
