@@ -269,6 +269,24 @@ export let tests = suite('pds:host', () => {
     equal(refused, 'InvalidRequest');
   });
 
+  test('holds an account alone when its owners give no recovery keys', (ctx) => {
+    let fixture = new Fixture();
+    let host = (fixture.host as PackageHost).config.rotationKey.publicKey();
+    let org = ok(fixture.call(ALICE, 'createOrganization', '{"name": "acme"}'));
+    let operation = fixture.submitted[org['did'] as String];
+    equal(operation.rotationKeys.length, 1);
+    equal(operation.rotationKeys[0], formatDidKey(host));
+    let none = ok(fixture.call(ALICE, 'createOrganization', '{"name": "acme2", "recoveryKeys": []}'));
+    equal(fixture.submitted[none['did'] as String].rotationKeys.length, 1);
+
+    // The host keeps two of PLC's five rotation keys for itself (#597).
+    let four = `"${RECOVERY}", "${RECOVERY}", "${RECOVERY}", "${RECOVERY}"`;
+    equal(errorOf(fixture.call(ALICE, 'createOrganization', `{"name": "acme3", "recoveryKeys": [${four}]}`)),
+        'InvalidRequest');
+    equal(errorOf(fixture.call(ALICE, 'createOrganization', '{"name": "acme3", "recoveryKeys": "no"}')),
+        'InvalidRequest');
+  });
+
   test('refuses calls without a valid, unused token for the method', (ctx) => {
     let fixture = new Fixture();
     let body = `{"name": "acme", "recoveryKeys": ["${RECOVERY}"]}`;

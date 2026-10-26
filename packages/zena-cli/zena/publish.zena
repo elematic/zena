@@ -29,7 +29,6 @@ import { JsonArray, JsonObject } from 'zena:json';
 import { join2 } from 'zena:path';
 import { formatTimestamp } from 'zena:time';
 import { now } from 'wasi:clocks/system-clock';
-import { getRandomBytes } from 'wasi:random/random';
 import { Cid } from 'atproto:cid';
 import { BlobRef, fromJson, toJson } from 'atproto:data';
 import { KeyType, formatDidKey, publicKeyFor } from 'atproto:didkey';
@@ -47,7 +46,6 @@ import { DiskFiles, WorkspacePackage, readWorkspace } from 'package-manager:work
 import { Options, repoRoot, userCwd } from './env.zena';
 import { packageResolver } from './fetch.zena';
 import { configDir, currentSession, saveSession } from './login.zena';
-import { writePrivate } from 'zena-cli:host/secrets';
 
 let DEFAULT_HOST = 'https://pkg.zena-lang.dev';
 
@@ -203,12 +201,12 @@ function createPackage(args: ParsedArgs, session: Session, host: Host, target: W
     throw new PublishError(
         `${name} has no DID yet. Run again with --yes to create the package ${handle} on ${host.origin}, maintained by ${session.handle}.`);
   }
-  let recoveryKey = recoveryDidKey();
-  let org = findOrCreateOrganization(session, host, scope, recoveryKey);
+  let recoveryKeys = recoveryDidKeys();
+  let org = findOrCreateOrganization(session, host, scope, recoveryKeys);
 
   let input = new JsonObject();
   input['organization'] = org;
-  input['recoveryKeys'] = strings([recoveryKey]);
+  input['recoveryKeys'] = strings(recoveryKeys);
   input['profile'] = toJson(new Profile(name).toValue());
   input['maintainers'] = toJson(new Maintainers([Maintainer.ofDid(session.did, OWNER)]).toValue());
   let created = runFuture(hostClient(session, host, 'dev.zena-lang.host.createPackage')
@@ -221,14 +219,14 @@ function createPackage(args: ParsedArgs, session: Session, host: Host, target: W
 }
 
 /** The DID of the organization whose scope is `scope`, creating it when the host has none. */
-function findOrCreateOrganization(session: Session, host: Host, scope: String, recoveryKey: String): String {
+function findOrCreateOrganization(session: Session, host: Host, scope: String, recoveryKeys: Array<String>): String {
   let existing = scopeOwner(`${scope}.${host.domain}`);
   if (existing != null) {
     return existing as String;
   }
   let input = new JsonObject();
   input['name'] = scope;
-  input['recoveryKeys'] = strings([recoveryKey]);
+  input['recoveryKeys'] = strings(recoveryKeys);
   let created = runFuture(hostClient(session, host, 'dev.zena-lang.host.createOrganization')
     .procedure('dev.zena-lang.host.createOrganization', input)) as JsonObject;
   console.log(`Created the scope ${created['handle'] as String} (${created['did'] as String}), with you as its owner.`);
@@ -252,24 +250,18 @@ function scopeOwner(handle: String): String | null {
 }
 
 /**
- * The maintainer's recovery key, as a `did:key`, creating it in the
- * configuration directory the first time.
+ * The recovery keys to rank above the host's, as `did:key`s: the
+ * maintainer's, when they keep one in the configuration directory, and
+ * none otherwise. None is never made here: the host holds the accounts it
+ * creates, and a recovery key is for owners who choose to keep one
+ * (package-manager.md, "Keys").
  */
-function recoveryDidKey(): String {
+function recoveryDidKeys(): Array<String> {
   let path = `${configDir()}/recovery-key`;
-  if (existsSync(path)) {
-    return formatDidKey(publicKeyFor(KeyType.Secp256k1, hex.decode(readFileSync(path).trim())));
+  if (!existsSync(path)) {
+    return [];
   }
-  let key = getRandomBytes(32);
-  match (writePrivate(path, hex.encode(key).toBytes())) {
-    case (true, _): {}
-    case (false, let why): {
-      throw new PublishError(`could not save a recovery key: ${why}`);
-    }
-  }
-  let didKey = formatDidKey(publicKeyFor(KeyType.Secp256k1, key));
-  console.log(`Created your recovery key, ${didKey}, in ${path}. Back it up: it can take your packages back if your account or the host is lost.`);
-  return didKey;
+  return [formatDidKey(publicKeyFor(KeyType.Secp256k1, hex.decode(readFileSync(path).trim())))];
 }
 
 /** Packs, uploads and publishes `manifest`'s version of `target`, and attests it. */

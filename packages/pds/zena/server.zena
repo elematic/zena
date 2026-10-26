@@ -127,6 +127,14 @@ function strings(json: JsonObject, name: String): GrowableArray<String> | null {
   return out;
 }
 
+/** The optional `recoveryKeys`: empty when absent, null when not a list of strings. */
+function recoveryKeys(input: JsonObject): GrowableArray<String> | null {
+  if (input['recoveryKeys'] == null) {
+    return new GrowableArray<String>();
+  }
+  return strings(input, 'recoveryKeys');
+}
+
 function createdJson(created: Created, recordName: String): JsonObject {
   let ref = new JsonObject();
   ref['uri'] = created.uri;
@@ -204,9 +212,9 @@ function hostRoutes(router: Router, host: PackageHost): void {
         return null;
       }
       let input = body as JsonObject;
-      let keys = strings(input, 'recoveryKeys');
+      let keys = recoveryKeys(input);
       if (!(input['name'] is String) || keys == null) {
-        fail(res, 400, 'InvalidRequest', 'name and recoveryKeys are required');
+        fail(res, 400, 'InvalidRequest', 'name is required, and recoveryKeys must be a list of strings');
         return null;
       }
       let created = await host.createOrganization(caller, input['name'] as String, keys as GrowableArray<String>,
@@ -222,10 +230,11 @@ function hostRoutes(router: Router, host: PackageHost): void {
         return null;
       }
       let input = body as JsonObject;
-      let keys = strings(input, 'recoveryKeys');
+      let keys = recoveryKeys(input);
       if (!(input['organization'] is String) || keys == null || input['profile'] == null ||
           input['maintainers'] == null) {
-        fail(res, 400, 'InvalidRequest', 'organization, recoveryKeys, profile and maintainers are required');
+        fail(res, 400, 'InvalidRequest',
+            'organization, profile and maintainers are required, and recoveryKeys must be a list of strings');
         return null;
       }
       let entries = new GrowableArray<Value>();
