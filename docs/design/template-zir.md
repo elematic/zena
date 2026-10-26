@@ -269,6 +269,10 @@ representatives:
   type parameter. This is ir.md §8's `generic.op`; each one is also a
   gate removed.
 
+The addendum below revises the discovery half: discovery runs before
+layout, so it cannot read a ZIR template, and gets a summary of its own
+walk instead.
+
 ### Interprocedural type propagation (#421)
 
 Independent of this design. Propagation runs per instantiation either
@@ -311,6 +315,152 @@ representatives that disagree (5, `HashMap<i32, Node>`, where only some
 specializations have an `OrderedHashMap` subclass), and keys the learner
 cannot generalize (5).
 
+## Addendum: the rest of #410
+
+Written after step 3 above. What the plan below still lists:
+deferring decisions to specialization, classes with their own `==`,
+the remaining candidates, templates without representatives, and
+discovery from templates. This section takes them in the order their
+value and their dependencies suggest, and changes the design of the
+last one.
+
+### Discovery's place in the compile
+
+A compile runs discovery, then layout, then lowering. Lowering, and so
+a ZIR template, reads what layout decides: struct field lists, vtable
+slots, signatures. Even a template without representatives names
+concrete types besides its type parameters, the standard library
+classes it calls and the signatures it uses, and those are laid out
+only after discovery. So no ZIR template can exist while discovery
+runs, and "discovery from templates" needs a template of the discovery
+walk itself rather than of lowering.
+
+### Repeated discovery walks
+
+RTA walks a node once per **referrer**: the node under one
+specialization's substitution. A body with a dependency record gets
+`registerLiterals` and `registerInstantiations`; one without gets
+`discoverNodeTypes`. Measured on the self-compile at `-O1`, with
+temporary timers around each walk and around each `resolveType` call
+inside a repeat walk (two runs on an idle machine, revision 95086941):
+
+| walk                                                | walks  | time   |
+| --------------------------------------------------- | ------ | ------ |
+| a node's first walk                                 | 6,456  | 1.6 s  |
+| a node walked again under another specialization    | 28,132 | 1.9 s  |
+| of the repeat walks: `resolveType`                  |        | ~0.2 s |
+| discovery in all, with registration and the linkers |        | 6.5 s  |
+
+A repeat walk calls `resolveType` 12 times on average, 344,524 times in
+all, but only 68,064 of those calls are on a type the same walk had
+not already resolved. The rest of a repeat walk's 1.9 s is the
+traversal, the side-table lookups of each node's type, the tests of
+each node's kind, and the calls into the analysis; the measurement does
+not separate them.
+
+### Discovery summaries
+
+Both walks visit every node under their root, in an order that does
+not depend on the substitution: `walkEnter` with a callback that never
+prunes. What depends on the substitution is what each node's handler
+does with the types it resolves: whether a receiver is an interface,
+which class a `new` instantiates, which equality an `==` needs. So
+each handler splits in two:
+
+- **Extraction**, which does not resolve anything: which node, which
+  kind of handler, and the unresolved types it would resolve (the
+  node's type from the checker, a type annotation, explicit type
+  arguments). A **summary** is the ordered list of these entries for
+  one root.
+- **Replay**, which resolves the entry's types under one referrer's
+  substitution and makes the handler's calls into the analysis:
+  `discoverType`, `instantiateClassType`, `noteInterfaceDispatch`,
+  `noteTypeTestSites`, `registerTemplateLiteral` and the rest.
+
+A root is extracted on its first walk and its summary kept. Every
+referrer then replays it, the first one included, so there is one
+path. Replay memoizes `resolveType` per referrer, which takes the
+344,524 resolutions to 68,064, and calls the analysis in the walk's
+order. A call a replay makes again for a type it already registered is
+dropped only where the analysis treats it as a no-op; any other call is
+replayed per entry, so the analysis sees the same calls in the same
+order and the module stays byte-identical.
+
+What checks it:
+
+- **Byte identity.** The module with summaries on equals the module
+  with them off, over the test corpus and the self-compile, as for
+  templates.
+- **A check mode** (`ZENA_DISCOVERY_CHECK=1`) walks and replays each
+  referrer against a pass that records its calls, and fails on any
+  difference. `build:self-hosted` and the execution runner would set
+  it, as they set the template check.
+
+What it costs is memory: a summary entry per node a handler acts on,
+for every root walked. The entries hold references to nodes and types
+the checker already keeps, so the cost is the list itself.
+
+What it leaves: the traversal of the checker's dependency records (0.35
+s in the earlier measurement), which is symbol-level and already
+substitution-free, and the first walks, which extraction makes slightly
+slower.
+
+The saving is bounded by the 1.9 s of repeat walks, about 12% of the
+self-compile, less what replay keeps: the calls into the analysis and
+the 68,064 resolutions. The first step separates those from the
+traversal, so the bound is known before the analysis depends on
+summaries.
+
+A summary depends only on a file's AST and its checker results, not on
+which specializations the program has, so a per-file cache could hold
+summaries as it would hold templates (ir.md §13).
+
+### Templates without representatives
+
+With constructors and extension classes in, templates make 13,452
+bodies, and the repeats lowered directly because they are not
+candidates take about 75 ms of the self-compile (Results). A template
+without representatives no longer has a compile-time case.
+What it would still buy is per-file caching of lowered code. That
+needs a cache design first: what an artifact holds, what keys it, and
+what invalidates it. Until that exists, lowering with symbolic type
+arguments would trade a working design, two representatives and a
+check mode that compares every made body against direct lowering, for
+one with no user.
+
+If per-file caching comes, a template without representatives needs:
+
+- **A symbolic type table.** Lowering with a type parameter's pin
+  rather than a type argument, recording each entry's derivation (the
+  key patterns the learner now infers) as it makes the entry.
+- **Generic operations** for the six recorded decisions and the gated
+  constructs: a member read that is a field read or a virtual getter, a
+  call that is direct or through the vtable, equality, hashing, casts
+  and type tests on a type parameter. This is ir.md §8's `generic.op`.
+  Specialization resolves each one against the member's class.
+- **The generic class's own layout.** A template reads its class's
+  struct and vtable, which layout builds per specialization. The
+  struct's fields come in the same order in every member of a family,
+  so the template can name the member's struct by recipe, as the
+  learner does now. The vtable's slots can differ, since discovery
+  prunes the slots nothing dispatches through per specialization; that
+  is already a recorded decision (does the vtable have this slot) and
+  would become a generic operation like the rest.
+
+### Smaller items
+
+- **Classes with their own `==`** (7 families; `GrowableArray<Diagnostic>.contains`
+  alone has 178 members). Equality on a type parameter whose class
+  declares `==` calls that method. A recorded decision naming the class
+  that provides `==`, like the method-owner decision, would let these
+  families have templates.
+- **`match` on a type parameter** (6 families, the map iterators): a
+  recorded decision per case pattern, answered from the member's class.
+- **The remaining candidates**: mixin methods (765 repeats), closures
+  (1,257), other functions (997) and synthesized roles (1,146), each
+  tens of milliseconds. Worth taking only where one family turns out
+  large.
+
 ## Plan
 
 1. Methods of generic classes, learned from two representatives, with
@@ -322,7 +472,10 @@ cannot generalize (5).
 3. More candidates. Extension classes' methods and constructors, with
    their phases: done. Closures, mixin methods, and generic functions
    and methods remain.
-4. Discovery from templates. Measured (above): at most 1.27 s of the
-   self-compile's discovery walks a node again for another
-   specialization. Getting it needs templates that exist before
-   discovery, so it follows the representative-free templates above.
+4. Discovery summaries (Addendum): extraction and replay of RTA's
+   walks, behind a check mode, measured against the 1.9 s of repeat
+   walks before anything depends on them.
+5. Equality on classes with their own `==`, and `match` on a type
+   parameter, as recorded decisions.
+6. Templates without representatives, once per-file caching has a
+   design that needs them.
