@@ -69,6 +69,7 @@ class PublishError extends Error {
 export function publishCommand(args: ParsedArgs, options: Options): i32 {
   return run(() => {
     let target = currentPackage();
+    refuseWitDependencies(target.manifest);
     let session = signedIn();
     let host = findHost(args);
     var manifestText = target.text as String;
@@ -114,6 +115,18 @@ function currentPackage(): WorkspacePackage {
     throw new PublishError('run this in a package: a directory whose zena-package.json has a name');
   }
   return target;
+}
+
+/**
+ * Throws for a WIT dependency, which a published package cannot have: its
+ * path is on this disk (docs/design/package-manifest.md). Checked before
+ * anything is created on the host.
+ */
+function refuseWitDependencies(manifest: Manifest): void {
+  manifest.wits.forEach((name, wit) => {
+    throw new PublishError(
+        `${name} is the WIT in ${wit}, which a published package cannot depend on; publish the WIT as a package of its own`);
+  });
 }
 
 function signedIn(): Session {
