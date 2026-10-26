@@ -234,7 +234,11 @@ fn drain<R: std::io::Read + Send + 'static>(
 fn translate_cwd(cwd: &str, map: &PathMap) -> PathBuf {
     if !cwd.starts_with('/') {
         if let Some((_, host)) = map.iter().find(|(guest, _)| guest == ".") {
-            return if cwd == "." { host.clone() } else { host.join(cwd) };
+            return if cwd == "." {
+                host.clone()
+            } else {
+                host.join(cwd)
+            };
         }
         return PathBuf::from(cwd);
     }
@@ -255,7 +259,11 @@ fn translate(path: &str, map: &PathMap) -> Option<PathBuf> {
     }
     if !path.starts_with('/') {
         let (_, host) = map.iter().find(|(guest, _)| guest == ".")?;
-        return Some(if path == "." { host.clone() } else { host.join(path) });
+        return Some(if path == "." {
+            host.clone()
+        } else {
+            host.join(path)
+        });
     }
     let mut best: Option<(usize, &PathBuf)> = None;
     for (guest, host) in map {
@@ -272,7 +280,11 @@ fn translate(path: &str, map: &PathMap) -> Option<PathBuf> {
     }
     let (len, host) = best?;
     let rest = path[len..].trim_start_matches('/');
-    Some(if rest.is_empty() { host.clone() } else { host.join(rest) })
+    Some(if rest.is_empty() {
+        host.clone()
+    } else {
+        host.join(rest)
+    })
 }
 
 impl process::Host for ComponentState {}
@@ -503,7 +515,9 @@ impl process::HostProcess for ComponentState {
             None
         };
         let state = self.table.get_mut(&this).context("process")?;
-        let fin = state.finish(timeout).map_err(|msg| format_err!("wait: {msg}"))?;
+        let fin = state
+            .finish(timeout)
+            .map_err(|msg| format_err!("wait: {msg}"))?;
         Ok(process::Finished {
             exit_code: fin.exit_code,
             stdout: fin.stdout.clone(),
@@ -636,7 +650,9 @@ impl wasm::HostRun for ComponentState {
         let mut refused: Option<String> = None;
         let module_path = translate(&path, &grant.path_map);
         if module_path.is_none() {
-            refused = Some(format!("{path} is outside every directory this program can reach"));
+            refused = Some(format!(
+                "{path} is outside every directory this program can reach"
+            ));
         }
         let mut dirs: PathMap = Vec::new();
         for mapping in &options.dirs {
@@ -705,9 +721,10 @@ impl wasm::HostRun for ComponentState {
     fn wait(&mut self, this: Resource<RunState>) -> Result<wasm::RunResult> {
         let state = self.table.get_mut(&this).context("run")?;
         if let Some(rx) = state.rx.take() {
-            state.done = Some(rx.recv().unwrap_or_else(|_| {
-                RunFinished::failed("the run's thread vanished".to_string())
-            }));
+            state.done =
+                Some(rx.recv().unwrap_or_else(|_| {
+                    RunFinished::failed("the run's thread vanished".to_string())
+                }));
         }
         Ok(state
             .done
@@ -974,9 +991,13 @@ impl Drop for ResponseWriterState {
             let err_resp = http::Response::builder()
                 .status(http::StatusCode::INTERNAL_SERVER_ERROR)
                 .body(
-                    http_body_util::Full::new(bytes::Bytes::from_static(b"request handler aborted"))
-                        .map_err(|e: std::convert::Infallible| -> wasmtime_wasi_http::Error { match e {} })
-                        .boxed_unsync(),
+                    http_body_util::Full::new(bytes::Bytes::from_static(
+                        b"request handler aborted",
+                    ))
+                    .map_err(|e: std::convert::Infallible| -> wasmtime_wasi_http::Error {
+                        match e {}
+                    })
+                    .boxed_unsync(),
                 )
                 .unwrap();
             let _ = sender.send(err_resp);
@@ -1054,14 +1075,13 @@ impl wasmtime::component::StreamProducer<ComponentState> for RequestStreamProduc
         let push_item = |store: &mut StoreContextMut<'_, ComponentState>,
                          IncomingRequest { req, res_tx }|
          -> Result<Self::Item> {
-            let (wasi_req, _body_fut) = wasmtime_wasi_http::p3::Request::from_http(
-                &mut store.data_mut().http_hooks,
-                req,
-            );
+            let (wasi_req, _body_fut) =
+                wasmtime_wasi_http::p3::Request::from_http(&mut store.data_mut().http_hooks, req);
             let req_res = store.data_mut().table.push(wasi_req)?;
-            let writer_res = store.data_mut().table.push(ResponseWriterState {
-                tx: Some(res_tx),
-            })?;
+            let writer_res = store
+                .data_mut()
+                .table
+                .push(ResponseWriterState { tx: Some(res_tx) })?;
             Ok((req_res, writer_res))
         };
         batch.push(push_item(&mut store, first)?);
@@ -1199,8 +1219,7 @@ impl http_server::HostResponseWriter for ComponentState {
         let mut writer_state = self.table.delete(writer)?;
         if let Some(sender) = writer_state.tx.take() {
             use http_body_util::BodyExt as _;
-            let status_code =
-                http::StatusCode::from_u16(status).unwrap_or(http::StatusCode::OK);
+            let status_code = http::StatusCode::from_u16(status).unwrap_or(http::StatusCode::OK);
             let body_bytes = bytes::Bytes::from(body.into_bytes());
             let body_len = body_bytes.len();
             let mut resp = http::Response::new(
@@ -1217,9 +1236,7 @@ impl http_server::HostResponseWriter for ComponentState {
                     "application/json; charset=utf-8" => Some(http::HeaderValue::from_static(
                         "application/json; charset=utf-8",
                     )),
-                    "application/json" => {
-                        Some(http::HeaderValue::from_static("application/json"))
-                    }
+                    "application/json" => Some(http::HeaderValue::from_static("application/json")),
                     "text/plain; charset=utf-8" => {
                         Some(http::HeaderValue::from_static("text/plain; charset=utf-8"))
                     }
@@ -1270,7 +1287,9 @@ impl http_server::HostResponseWriter for ComponentState {
                 .status(http::StatusCode::BAD_GATEWAY)
                 .body(
                     http_body_util::Full::new(bytes::Bytes::from_static(b"gateway error"))
-                        .map_err(|e: std::convert::Infallible| -> wasmtime_wasi_http::Error { match e {} })
+                        .map_err(|e: std::convert::Infallible| -> wasmtime_wasi_http::Error {
+                            match e {}
+                        })
                         .boxed_unsync(),
                 )
                 .unwrap();
@@ -1305,10 +1324,7 @@ impl http_server::HostServerWithStore<ComponentState> for HasSelf<ComponentState
 }
 
 impl http_server::HostServer for ComponentState {
-    fn create(
-        &mut self,
-        port: u16,
-    ) -> Result<std::result::Result<Resource<ServerState>, String>> {
+    fn create(&mut self, port: u16) -> Result<std::result::Result<Resource<ServerState>, String>> {
         let host = std::env::var("HOST")
             .ok()
             .filter(|s| !s.is_empty())
@@ -1471,6 +1487,3 @@ impl http_server::HostServer for ComponentState {
         Ok(())
     }
 }
-
-
-

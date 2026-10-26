@@ -22,8 +22,8 @@ use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot};
 use wasmtime::component::types::ComponentItem;
 use wasmtime::component::{
-    Accessor, AccessorTask, Component, ComponentExportIndex, Func, Instance, Linker,
-    ResourceTable, Val,
+    Accessor, AccessorTask, Component, ComponentExportIndex, Func, Instance, Linker, ResourceTable,
+    Val,
 };
 use wasmtime::{AsContextMut, Engine, Result, Store, bail, format_err};
 use wasmtime_wasi::{WasiCtx, WasiCtxBuilder, WasiCtxView, WasiView};
@@ -198,7 +198,9 @@ impl AccessorTask<CallerState> for ServeCallback {
             full.push(Val::U32(self.installation));
             full.extend(params);
             let mut results = vec![Val::Bool(false); count];
-            callee.call_concurrent(accessor, &full, &mut results).await?;
+            callee
+                .call_concurrent(accessor, &full, &mut results)
+                .await?;
             Ok(results)
         }
         .await;
@@ -212,7 +214,8 @@ fn main() -> Result<()> {
     let [_, caller_path, child_path] = args.as_slice() else {
         bail!("usage: components_spike <caller.wasm> <child.wasm>");
     };
-    let engine = zena_runtime::engine::shared_component_engine(false).map_err(|e| format_err!("{e:#}"))?;
+    let engine =
+        zena_runtime::engine::shared_component_engine(false).map_err(|e| format_err!("{e:#}"))?;
     let caller = Component::from_file(&engine, caller_path)?;
     let child = Component::from_file(&engine, child_path)?;
     let child_tx = start_child(engine.clone(), child)?;

@@ -121,11 +121,15 @@ pub fn format_val(val: &Val) -> String {
 /// module has no stdio to write to.
 pub(crate) fn run(engine: &Engine, config: &RunConfig) -> RunFinished {
     let interruptible = crate::engine::is_interruptible(engine);
-    let module =
-        match crate::cache::load_module_variant(engine, &config.path, config.debug, interruptible) {
-            Ok(m) => m,
-            Err(e) => return RunFinished::failed(format!("{e:#}")),
-        };
+    let module = match crate::cache::load_module_variant(
+        engine,
+        &config.path,
+        config.debug,
+        interruptible,
+    ) {
+        Ok(m) => m,
+        Err(e) => return RunFinished::failed(format!("{e:#}")),
+    };
     let mut store = Store::new(engine, ());
     if interruptible {
         let ticks = match config.timeout {
@@ -184,7 +188,10 @@ mod tests {
     fn the_first_form_names_the_kind() {
         assert_eq!(first_form("(module)"), Some("module"));
         assert_eq!(first_form("  ;; a comment\n(component)"), Some("component"));
-        assert_eq!(first_form("(; block (; nested ;) ;)\n(module)"), Some("module"));
+        assert_eq!(
+            first_form("(; block (; nested ;) ;)\n(module)"),
+            Some("module")
+        );
         assert_eq!(first_form("not wat"), None);
     }
 }
