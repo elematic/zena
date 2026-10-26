@@ -4,8 +4,9 @@ Status: **Proposed**, and partly built: the AT Protocol libraries
 (`packages/atproto`), the package records, source archives and fetching
 (`packages/package-manager`), the compiler's reading of pinned packages,
 `zena add`, `zena update` and `zena fetch`, `zena login` with app
-passwords, `zena publish` and `zena package create`, and a package host in
-the PDS written in Zena (`packages/pds`), with the methods publishing needs.
+passwords, `zena publish`, `zena package create` and `zena scope`, and a
+package host in the PDS written in Zena (`packages/pds`), with the methods
+publishing needs.
 
 This document designs Zena's package manager. Packages are published on the
 AT Protocol (atproto), the protocol behind Bluesky. A package is an atproto
@@ -703,9 +704,9 @@ design does not add one.
 
 ### Scopes
 
-Today a scope is created by the first `zena publish --scope` that names
-it, and nothing records a package's scope but its handle. This section is
-the design that replaces that; #575 and #576 track it.
+`zena scope create`, `zena scope info`, the manifest's `scope` and the
+operator's `create-scope` are built (#575). `zena scope members` and the
+membership commands are #576.
 
 A scope is an organization account on a package host, whose handle is one
 label below the host's domain (see [Names and scopes](#names-and-scopes)).

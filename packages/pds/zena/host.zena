@@ -37,7 +37,7 @@ import {
   RecordError,
   Release,
   SOURCE,
-  isValidPackageName
+  isValidScopeName
 } from 'package-manager:records';
 import {HandleRecords} from './handles.zena';
 import {Pds} from './pds.zena';
@@ -293,12 +293,32 @@ export final class PackageHost {
   /**
    * `createOrganization`: a scope named `name`, owned by `caller` alone.
    * `recoveryKeys`, which may be none, are `did:key`s, ranked above the
-   * host's rotation key. The scope's handle record is written last, so the handle resolves only
-   * to an organization that is whole.
+   * host's rotation key. The scope's handle record is written last, so the
+   * handle resolves only to an organization that is whole. A reserved name
+   * is refused: only the operator takes one (`createScopeAsOperator`).
    */
   async createOrganization(caller: String, name: String, recoveryKeys: Array<String>, nowMicros: i64)
       : Future<Created> {
-    if (!isValidPackageName(name) || this.config.reservedScopes.has(name)) {
+    if (this.config.reservedScopes.has(name)) {
+      throw new HostError(400, 'NameTaken', `'${name}' cannot be a scope`);
+    }
+    return await this.#createOrganization(caller, name, recoveryKeys, nowMicros);
+  }
+
+  /**
+   * A scope named `name`, owned by `owner` alone, created by the host's
+   * operator: as `createOrganization`, but a reserved name may be taken.
+   * No XRPC method reaches it; `main.zena -- create-scope` calls it with
+   * the server's own configuration (package-manager.md, "Scopes").
+   */
+  async createScopeAsOperator(owner: String, name: String, recoveryKeys: Array<String>, nowMicros: i64)
+      : Future<Created> {
+    return await this.#createOrganization(owner, name, recoveryKeys, nowMicros);
+  }
+
+  async #createOrganization(caller: String, name: String, recoveryKeys: Array<String>, nowMicros: i64)
+      : Future<Created> {
+    if (!isValidScopeName(name)) {
       throw new HostError(400, 'NameTaken', `'${name}' cannot be a scope`);
     }
     if ((await this.#store.scopeOwner(name)) != null) {

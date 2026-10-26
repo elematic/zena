@@ -27,7 +27,7 @@ import {
 } from 'package-manager:records';
 import {Version} from 'package-manager:version';
 import {MemoryHandleRecords} from 'pds:handles';
-import {ClaimedName, ClaimedScope, HostConfig, HostStore, MemoryHostStore, PackageHost} from 'pds:host';
+import {ClaimedName, ClaimedScope, HostConfig, HostError, HostStore, MemoryHostStore, PackageHost} from 'pds:host';
 import {MemberEntry} from 'package-manager:records';
 import {Pds} from 'pds:pds';
 import {CreateRecord, RepositoryError, Write} from 'pds:repository';
@@ -285,6 +285,25 @@ export let tests = suite('pds:host', () => {
         'InvalidRequest');
     equal(errorOf(fixture.call(ALICE, 'createOrganization', '{"name": "acme3", "recoveryKeys": "no"}')),
         'InvalidRequest');
+  });
+
+  test('lets the operator create a reserved scope, which no caller can', (ctx) => {
+    let fixture = new Fixture();
+    let host = fixture.host as PackageHost;
+    equal(errorOf(createOrganization(fixture, ALICE, 'zena')), 'NameTaken');
+    let created = runFuture(host.createScopeAsOperator(ALICE, 'zena', [], 0 as i64));
+    equal(created.handle, 'zena.pkg.test');
+    equal(fixture.submitted[created.did].rotationKeys.length, 1);
+    // Its owner is Alice, who can create packages in it.
+    ok(createPackage(fixture, ALICE, created.did, 'wit-parser'));
+    // Taken once, as any scope.
+    var taken = '';
+    try {
+      runFuture(host.createScopeAsOperator(BOB, 'zena', [], 0 as i64));
+    } catch (e) {
+      taken = if (e is HostError) (e as HostError).error else e.message;
+    }
+    equal(taken, 'NameTaken');
   });
 
   test('refuses calls without a valid, unused token for the method', (ctx) => {

@@ -1,8 +1,8 @@
 /**
  * A package's manifest, `zena-package.json`
  * (docs/design/package-manifest.md): its name, its DID, its dependencies,
- * and at a workspace's root, the workspace's other packages and the
- * domains of `@scope/name`.
+ * the scope on a package host it is created in, and at a workspace's root,
+ * the workspace's other packages and the domains of `@scope/name`.
  *
  * ```json
  * {
@@ -26,7 +26,7 @@
 import {HashSet, OrderedHashMap} from 'zena:collections';
 import {JsonArray, JsonObject, JsonValue, parseJson, stringify} from 'zena:json';
 import {isValidDid} from 'atproto:syntax';
-import {isValidPackageName} from './records.zena';
+import {isValidPackageName, isValidScopeName} from './records.zena';
 import {Requirement} from './resolve.zena';
 import {Version} from './version.zena';
 
@@ -41,6 +41,12 @@ export final class Manifest {
   name: String | null;
   /** The package's DID, once it has been created on a package host. */
   did: String | null;
+  /**
+   * The scope on a package host the package is created in, or null. At a
+   * workspace's root, also the scope of each workspace package that names
+   * none (package-manifest.md, "scope").
+   */
+  var scope: String | null = null;
   /** The version `zena publish` publishes next, or null. */
   version: Version | null;
   /** The published packages it depends on, by local name, in file order. */
@@ -166,8 +172,13 @@ export function readManifest(text: String | null): Manifest {
       scopes[scope] = domain;
     });
   }
+  let scope = optionalString(root, 'scope');
+  if (scope != null && !isValidScopeName(scope)) {
+    throw new ManifestError(`zena-package.json: '${scope}' is not a valid scope name`);
+  }
   let manifest = new Manifest(name, did, requirements, paths, workspacePackages, scopes, version);
   manifest.wits = wits;
+  manifest.scope = scope;
   return manifest;
 }
 
@@ -222,27 +233,41 @@ export function writeDependencies(text: String | null, requirements: OrderedHash
 }
 
 /**
- * `zena-package.json` text with its `did` set to `did`, as `zena publish`
- * writes it when it creates the package. A new key goes after `name`, and
- * every other key stays where it was.
+ * `zena-package.json` text with its `did` set to `did`, and its `scope` to
+ * `scope` when one is given, as `zena publish` writes it when it creates
+ * the package. A new `did` goes after `name`, a new `scope` after `did`,
+ * and every other key stays where it was.
  */
-export function writeDid(text: String, did: String): String {
+export function writeDid(text: String, did: String, scope: String | null = null): String {
   let root = parse(text);
   if (root.has('did')) {
     root['did'] = did;
-    return stringify(root, '  ');
+  } else {
+    root = insertAfter(root, 'name', 'did', did);
   }
+  if (scope != null) {
+    if (root.has('scope')) {
+      root['scope'] = scope;
+    } else {
+      root = insertAfter(root, 'did', 'scope', scope);
+    }
+  }
+  return stringify(root, '  ');
+}
+
+/** `root` with `key` set to `value` just after `after`, or last when it has no `after`. */
+function insertAfter(root: JsonObject, after: String, key: String, value: String): JsonObject {
   let written = new JsonObject();
-  root.forEach((key, value) => {
-    written[key] = value;
-    if (key == 'name') {
-      written['did'] = did;
+  root.forEach((existing, existingValue) => {
+    written[existing] = existingValue;
+    if (existing == after) {
+      written[key] = value;
     }
   });
-  if (!written.has('did')) {
-    written['did'] = did;
+  if (!written.has(key)) {
+    written[key] = value;
   }
-  return stringify(written, '  ');
+  return written;
 }
 
 function parse(text: String | null): JsonObject {

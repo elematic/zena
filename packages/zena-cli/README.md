@@ -108,20 +108,30 @@ zena-cli login alice.bsky.social
 echo "$APP_PASSWORD" | zena-cli login alice.bsky.social --password-stdin
 ```
 
+Packages on a package host are in scopes: `router.acme.<host domain>` is
+the package `router` in the scope `acme`. `zena scope create acme --yes`
+creates a scope, with you as its only owner, and `zena scope info acme`
+describes one. Publishing never creates a scope.
+
 `zena publish` publishes the package you are in, at the `version` its
 `zena-package.json` gives. The first time, the package has no `did`, and
-`zena publish --scope acme --yes` creates it on the package host as
-`<name>.acme.<host domain>`, creating the scope too when the host has none
-of that name, and writes its DID into the manifest. The host holds the
-package's keys, as a PDS holds its users'. If you keep a recovery key, a
-secp256k1 private key in hex in `recovery-key` in the configuration
-directory, it is ranked above the host's, so you can move the package
-without the host. None is made for you. Each publish uploads the package's source archive, writes the release, and
-writes your attestation of it to your own repository. Raise `version` to
-publish again.
+`zena publish --yes` creates it on the package host in the scope its
+manifest's `"scope"` names, else its workspace root's, else `--scope`.
+It writes the DID into the manifest, with the scope when only `--scope`
+gave it. Later publishes check that the package's handle is still in that
+scope.
+
+The host holds the package's keys, as a PDS holds its users'. If you keep
+a recovery key, a secp256k1 private key in hex in `recovery-key` in the
+configuration directory, it is ranked above the host's, so you can move
+the package without the host. None is made for you. Each publish uploads
+the package's source archive, writes the release, and writes your
+attestation of it to your own repository. Raise `version` to publish
+again.
 
 ```bash
-zena-cli publish --scope acme --yes   # the first time
+zena-cli scope create acme --yes       # once per scope
+zena-cli publish --scope acme --yes    # the first time, or with "scope": "acme"
 zena-cli publish                       # after raising "version"
 ```
 
