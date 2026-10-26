@@ -193,31 +193,40 @@ fixed set. #593 adds what extensions need:
 
 - **Long-lived instances**: a component loaded and type-checked once, and
   called many times, per request or per write.
-- **Calls with arguments and results**: a generic call that carries
-  component values. The compiler generates typed wrappers over it from
-  the extension WIT, so the core calls `policy.checkWrite(...)` and never
-  handles raw values.
+- **Typed calls, forwarded by the runtime.** The PDS's own world declares
+  both sides in WIT: it imports each extension interface, with an
+  installation handle added, and exports each interface extensions
+  import, with the handle added. To the compiler these are ordinary WIT
+  imports and exports, so the core calls
+  `policy.checkWrite(installation, ...)` with typed arguments. At load,
+  the runtime checks that the extension's exports match the PDS's
+  imports, and forwards each call to that installation's instance,
+  holding the values as wasmtime values, and never encoding them.
 - **Imports the core chooses**: each installation's linker is built from
-  an allow list, the extension interfaces and perhaps outgoing HTTP. A
-  component that imports anything else fails to load, and one that does
-  not export the interfaces it claims to fails too.
+  an allow list: host interfaces such as outgoing HTTP, and the
+  interfaces the PDS exports. A component that imports anything else
+  fails to load.
 - **Imports the core serves**: an extension's storage and its reads of
   the account are implemented by the core, in Zena, and are called while
-  the core waits on the extension's call. Calling back into the core
-  would re-enter a component instance already in a call, which the
-  component model forbids. Instead the extension's call gives the core a
-  stream of import requests, which the core answers until the call ends.
+  the core waits on the extension's call. A synchronous call back into
+  the PDS would re-enter a component instance already in a call, which
+  the component model forbids. With p3 async, the PDS's call is
+  async-lowered, so the call back starts a new task in the PDS's
+  instance, as a concurrent request does. #593 starts by proving this.
 - **Limits**: memory and time per call, so that a trap or an overrun
   fails that call and nothing else.
 - **A grant of its own**, apart from process spawning, so that the PDS
   can load extensions without being allowed to spawn processes.
 
-Each extension interface has to stay within the types Zena's components
-can carry across a call. Scalars, strings, `list<u8>` and records cross
-today; a variant whose cases carry payloads of different core types does
-not yet, and the general canonical ABI for rich types is still to come
-([component-model.md](./component-model.md), "What exists today"). The
-extension WIT is written to that, and grows with it.
+Records and request bodies cross as bytes: a record as its DAG-CBOR
+encoding, which the core already has, since a record's CID is its hash,
+and an XRPC request or response as its method, headers and body. The
+extension decodes them with `atproto`'s libraries. Lexicons never become
+WIT types, so the extension WIT stays small and fixed: strings, DIDs,
+`list<u8>`, and a few records and results. Zena's components carry all of
+those today ([component-model.md](./component-model.md), "What exists
+today"). Resources, streams and futures between the PDS and an extension
+would need the runtime to map them, so the extension WIT leaves them out.
 
 Two other ways were considered:
 
@@ -265,9 +274,9 @@ breaks hurts only the accounts that installed it.
 2. **Write the WIT.** Turn those Zena interfaces into a WIT package for
    the extension points, and check that each type crosses a component
    boundary with the compiler of the day.
-3. **The runtime (#593).** Long-lived instances, calls with values,
-   chosen imports, imports the caller serves, limits and the grant,
-   starting with a spike of the served imports, which decide the rest.
+3. **The runtime (#593).** Long-lived instances, typed calls forwarded
+   in both directions, chosen imports, limits and the grant, starting
+   with a spike of the calls back into the PDS, which decide the rest.
 4. **The package host as a host extension**, built as a component,
    published as a package, and loaded by the core from configuration.
 5. **Account extensions**: installing and removing one, the storage
