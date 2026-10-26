@@ -44,6 +44,9 @@ import {Pds} from './pds.zena';
 import {CreateRecord, RepositoryError, Write} from './repository.zena';
 import {Account, AccountKind, SigningKey, StoredBlob} from './storage.zena';
 
+/** The most recovery keys an account's genesis operation ranks above the host's keys. */
+let MAX_RECOVERY_KEYS = 3;
+
 /** A call the host refuses, with the XRPC error and HTTP status to answer with. */
 export class HostError extends Error {
   status: i32;
@@ -205,7 +208,12 @@ export final class HostConfig {
   domain: String;
   /** Its PDS endpoint, which every account's DID document names. */
   endpoint: String;
-  /** Its PLC rotation key, ranked below every account's recovery keys. */
+  /**
+   * Its PLC rotation key, ranked below any recovery keys an account's
+   * owners give. Without them, it is the account's only rotation key: the
+   * host holds the account, as a PDS holds its users' (package-manager.md,
+   * "Keys").
+   */
   rotationKey: SigningKey;
   /** The largest blob `uploadArtifact` stores. */
   var maxBlobSize: i64 = (50 * 1024 * 1024) as i64;
@@ -284,8 +292,8 @@ export final class PackageHost {
 
   /**
    * `createOrganization`: a scope named `name`, owned by `caller` alone.
-   * `recoveryKeys` are `did:key`s, ranked above the host's rotation key.
-   * The scope's handle record is written last, so the handle resolves only
+   * `recoveryKeys`, which may be none, are `did:key`s, ranked above the
+   * host's rotation key. The scope's handle record is written last, so the handle resolves only
    * to an organization that is whole.
    */
   async createOrganization(caller: String, name: String, recoveryKeys: Array<String>, nowMicros: i64)
@@ -444,11 +452,13 @@ export final class PackageHost {
   /**
    * An account named `handle` on this host, to be: a new signing key, and
    * the genesis operation of a `did:plc` that ranks `recoveryKeys` above
-   * the host's rotation key, signed with that key.
+   * the host's rotation key, signed with that key. A PLC operation lists at
+   * most five rotation keys, and the host keeps two of them for its own: the
+   * online key, and the operator's offline key (#597).
    */
   #prepareAccount(handle: String, recoveryKeys: Array<String>): PreparedAccount {
-    if (recoveryKeys.length == 0 || recoveryKeys.length > 4) {
-      throw new HostError(400, 'InvalidRequest', 'give one to four recovery keys');
+    if (recoveryKeys.length > MAX_RECOVERY_KEYS) {
+      throw new HostError(400, 'InvalidRequest', `give at most ${MAX_RECOVERY_KEYS} recovery keys`);
     }
     let rotation = new GrowableArray<PublicKey>();
     for (let key in recoveryKeys) {

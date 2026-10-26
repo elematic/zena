@@ -12,7 +12,6 @@ import {runFuture} from 'zena:async';
 import {existsSync} from 'zena:fs';
 import {fetch} from 'zena:fetch';
 import {JsonArray, JsonObject, parseJson} from 'zena:json';
-import {run} from 'zena:process';
 import {
   MAIN, Scratch, ZenaCommand, described, ensureDir, fakePdsOrigin, read, startFakePds, write
 } from './cli-support.zena';
@@ -62,16 +61,14 @@ export let tests = suite('zena publish', () => {
 
       let first = lib.run(['publish', '--scope', 'acme', '--yes']);
       isTrue(first.succeeded(), described(first));
-      isTrue(first.stdout.contains('Created your recovery key'), described(first));
       isTrue(first.stdout.contains('Created the scope acme.pkg.test'), described(first));
       isTrue(first.stdout.contains('Created greet.acme.pkg.test'), described(first));
       isTrue(first.stdout.contains('Published greet 1.0.0'), described(first));
       let manifest = parseJson(read(scratch.at('lib/zena-package.json'))) as JsonObject;
       let did = manifest['did'] as String;
       isTrue(did.startsWith('did:plc:'), did);
-      let mode = run(['/bin/sh', '-c', 'stat -c %a "$1" 2>/dev/null || stat -f %Lp "$1"', 'sh',
-          scratch.host('config/recovery-key')]).stdout.trim();
-      equal(mode, '600');
+      // The host holds the accounts it creates: no recovery key is made.
+      isTrue(!existsSync(scratch.at('config/recovery-key')), 'no recovery key was created');
 
       // A version is published once.
       let again = lib.run(['publish']);
