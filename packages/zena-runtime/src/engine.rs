@@ -137,7 +137,8 @@ pub fn interruptible_component_engine(debug: bool) -> Result<Engine> {
 
 static COMPONENT_SHARED_RELEASE: std::sync::OnceLock<Engine> = std::sync::OnceLock::new();
 static COMPONENT_SHARED_DEBUG: std::sync::OnceLock<Engine> = std::sync::OnceLock::new();
-static COMPONENT_INTERRUPTIBLE_RELEASE: std::sync::OnceLock<Engine> = std::sync::OnceLock::new();
+static COMPONENT_INTERRUPTIBLE_RELEASE: std::sync::OnceLock<Engine> =
+    std::sync::OnceLock::new();
 static COMPONENT_INTERRUPTIBLE_DEBUG: std::sync::OnceLock<Engine> = std::sync::OnceLock::new();
 
 /// Selects the wasmtime GC collector via the ZENA_GC env var
