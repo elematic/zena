@@ -86,6 +86,35 @@ export let tests = suite('package-manager:manifest', () => {
     rejects('{"scopes": {"widgets": "widgets.alt-pkg.org"}}');
   });
 
+  test('reads and keeps a WIT dependency, which it has nothing to fetch for', (ctx) => {
+    let text = `{
+      "name": "app",
+      "dependencies": {
+        "gfx": {"wit": "./wit/gfx.wit"},
+        "router": {"did": "${ROUTER}", "version": "1.4.2"}
+      }
+    }`;
+    let manifest = readManifest(text);
+    equal(manifest.wits.size, 1);
+    equal(manifest.wits['gfx'], './wit/gfx.wit');
+    isTrue(!manifest.requirements.has('gfx') && !manifest.paths.has('gfx'), 'not a package to fetch');
+    rejects(`{"dependencies": {"gfx": {"wit": "./wit", "did": "${ROUTER}"}}}`);
+    rejects('{"dependencies": {"gfx": {"wit": "./wit", "path": "./lib"}}}');
+    rejects('{"dependencies": {"gfx": {"wit": 3}}}');
+
+    // Writing the published dependencies keeps it, where it was.
+    manifest.requirements['router'] = new Requirement(ROUTER, Version.parse('1.5.0'));
+    let written = writeDependencies(text, manifest.requirements, manifest.paths);
+    jsonEqual(parseJson(written), parseJson(`{
+      "name": "app",
+      "dependencies": {
+        "gfx": {"wit": "./wit/gfx.wit"},
+        "router": {"did": "${ROUTER}", "version": "1.5.0"}
+      }
+    }`));
+    isTrue(offsetOf(written, '"gfx"') < offsetOf(written, '"router"'));
+  });
+
   test('writes dependencies in place, keeping the rest of the manifest', (ctx) => {
     let manifest = readManifest(`{
       "name": "app",

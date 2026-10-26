@@ -79,4 +79,29 @@ export let tests = suite('zena add and zena update', () => {
       scratch.remove();
     }
   });
+
+  test('keep a WIT dependency, and its name', (ctx) => {
+    let scratch = Scratch.create('add-wit');
+    let pds = startFakePds(scratch, 'add-pds.zena');
+    try {
+      let plc = fakePdsOrigin(scratch, pds);
+      let zena = new ZenaCommand(scratch.host('workspace'), scratch.at('workspace'), scratch.host('cache'))
+        .set('ZENA_PLC_DIRECTORY', plc)
+        .set('ZENA_DNS_OVER_HTTPS', dnsBeside(plc));
+      let manifest = scratch.at('workspace/zena-package.json');
+      write(manifest, '{"dependencies": {"gfx": {"wit": "./wit"}}}\n');
+
+      let add = zena.run(['add', '@acme/router@1.4.2']);
+      isTrue(add.succeeded(), described(add));
+      let text = read(manifest);
+      isTrue(text.contains('"gfx"') && text.contains('"wit": "./wit"') && text.contains('"router"'), text);
+
+      let taken = zena.run(['add', '@acme/json', '--name', 'gfx']);
+      isTrue(!taken.succeeded() && taken.stderr.contains('the WIT in ./wit'), described(taken));
+      equal(read(manifest), text);
+    } finally {
+      pds.waitFor(1 as i64);
+      scratch.remove();
+    }
+  });
 });

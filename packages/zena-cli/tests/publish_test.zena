@@ -43,6 +43,16 @@ export let tests = suite('zena publish', () => {
       let login = lib.run(['login', ALICE, '--password-stdin'], 'app-password\n');
       isTrue(login.succeeded(), described(login));
 
+      // A package that depends on a WIT is refused before anything is made
+      // for it on the host.
+      write(scratch.at('lib/zena-package.json'),
+          '{"name": "greet", "version": "1.0.0", "dependencies": {"gfx": {"wit": "./wit"}}}\n');
+      let wit = lib.run(['publish', '--scope', 'acme', '--yes']);
+      isTrue(!wit.succeeded() && wit.stderr.contains('the WIT in ./wit') && !wit.stdout.contains('Created'),
+          described(wit));
+      isTrue(!read(scratch.at('lib/zena-package.json')).contains('"did"'), 'no DID was written');
+      write(scratch.at('lib/zena-package.json'), '{"name": "greet", "version": "1.0.0"}\n');
+
       // A package with no DID needs a scope, and a yes, to be created.
       let noScope = lib.run(['publish']);
       isTrue(!noScope.succeeded() && noScope.stderr.contains('--scope'), described(noScope));
