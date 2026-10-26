@@ -12,6 +12,7 @@ import {BlobRef} from 'atproto:data';
 import {Artifact, Dependency, Profile, Release, SOURCE, Yank} from 'package-manager:records';
 import {
   RegistryError,
+  checkDependencies,
   fetchProfile,
   listVersions,
   networkReleases,
@@ -138,6 +139,32 @@ export let tests = suite('package-manager:registry', () => {
       message = e.message;
     }
     isTrue(message.contains('has no release 2.9.0'), message);
+    pds.close();
+  });
+
+  test('checks that each dependency names a release that is published and not yanked', (ctx) => {
+    let pds = started();
+    let json = pds.account(JSON_DID, 'json.acme.pkg.zena-lang.dev');
+    publish(json, '2.0.0');
+    publish(json, '2.1.0');
+    json.yank(new Yank(Version.parse('2.1.0'), 'broken'));
+    let resolver = pds.resolver();
+    let on = (version: String) => {
+      let dependencies = new GrowableArray<Dependency>();
+      dependencies.push(new Dependency(JSON_DID, Version.parse(version), 'json'));
+      try {
+        runFuture(checkDependencies(dependencies, resolver));
+      } catch (e) {
+        return if (e is RegistryError) e.message else `another error: ${e.message}`;
+      }
+      return '';
+    };
+    equal(on('2.0.0'), '');
+    let missing = on('3.0.0');
+    isTrue(missing.contains('json 3.0.0') && missing.contains('is not published'), missing);
+    let yanked = on('2.1.0');
+    isTrue(yanked.contains('json 2.1.0') && yanked.contains('is yanked'), yanked);
+    equal(on('2.0.0'), '');
     pds.close();
   });
 });
