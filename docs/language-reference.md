@@ -6037,7 +6037,10 @@ an owner is a second owner of the same resource, released twice. So
 `new Box<Own<File>>(f)` and `duplicate(file)` for
 `duplicate = <T>(x: T): (T, T) => (x, x)` are errors. A generic over
 resources spells the handle around its parameter instead, with `T` the
-resource class: `hold = <T>(o: Own<T>): Own<T> => o`.
+resource class: `hold = <T>(o: Own<T>): Own<T> => o`. An array or map
+literal instantiates its collection as `new` does, so
+`[open(a), open(b)]` and `{'a' => open(a)}` are errors too, except as
+the argument of a `scoped T` parameter's `Array<T>` (below).
 
 Declaring the parameter `scoped` admits such arguments:
 
@@ -6124,6 +6127,22 @@ let read = async (f: Borrow<File>): Scoped<Future<i32>> => {
 
 let fut = read(file);   // fut: Scoped<Future<i32>>
 let n = await fut;      // consumed inside file's extent
+```
+
+### Futures of owners
+
+A future whose value holds an owner, such as `Future<Own<File>>`, moves
+like the owner it will deliver. `await f` consumes `f`: a second await
+would deliver a second owner of the same resource, so awaiting `f`
+again, or after passing it on or binding it to another name, is a
+use-after-move error. `then` is rejected on such a future, because it
+would hand the owner to a callback while the future still holds it. A
+future of a first-class value may be awaited any number of times.
+
+```zena
+let f = load(path);   // f: Future<Own<File>>
+let a = await f;
+let b = await f;      // error: 'f' may have been moved
 ```
 
 ## 13. Compilation
