@@ -1,0 +1,83 @@
+/**
+ * Publishing from CI, from end to end, against
+ * `tests/fixtures/publish-stack.zena`: Alice creates an automation account
+ * in her scope and adds it to a package, and the account signs in with its
+ * app password, as CI would, and publishes.
+ */
+
+import {suite, test} from 'zena:test';
+import {isTrue} from 'zena:assert';
+import {runFuture} from 'zena:async';
+import {fetch} from 'zena:fetch';
+import {JsonArray, JsonObject, parseJson} from 'zena:json';
+import {Scratch, ZenaCommand, described, fakePdsOrigin, read, startFakePds, write} from './cli-support.zena';
+
+let ALICE = 'did:plc:alicealicealicealicealic';
+
+/** The text after `label` on its line of `text`. */
+function after(text: String, label: String): String {
+  for (let line in text.split('\n')) {
+    if (line.startsWith(label)) {
+      return line.sliceBytes(label.length, line.length).trim();
+    }
+  }
+  return '';
+}
+
+export let tests = suite('zena ci', () => {
+  test('creates an automation account that CI signs in as and publishes with', (ctx) => {
+    let scratch = Scratch.create('ci');
+    let stack = startFakePds(scratch, 'publish-stack.zena');
+    try {
+      fakePdsOrigin(scratch, stack);
+      let addresses = parseJson(read(scratch.at('pds/stack.json'))) as JsonObject;
+      let person = (who: String) =>
+        new ZenaCommand(scratch.host('lib'), scratch.at('lib'), scratch.host('cache'))
+          .set('ZENA_PLC_DIRECTORY', addresses['plc'] as String)
+          .set('ZENA_DNS_OVER_HTTPS', addresses['dns'] as String)
+          .set('ZENA_PACKAGE_HOST', addresses['host'] as String)
+          .set('ZENA_CONFIG_DIR', scratch.host(`config-${who}`));
+      write(scratch.at('lib/zena-package.json'), '{"name": "greet", "scope": "acme", "version": "1.0.0"}\n');
+      write(scratch.at('lib/greet.zena'), 'export function answer(): i32 { return 42; }\n');
+      let alice = person('alice');
+      isTrue(alice.run(['login', ALICE, '--password-stdin'], 'app-password\n').succeeded(), 'alice signs in');
+      isTrue(alice.run(['scope', 'create', 'acme', '--yes']).succeeded(), 'the scope');
+      let published = alice.run(['publish', '--yes']);
+      isTrue(published.succeeded(), described(published));
+
+      let created = alice.run(['ci', 'create', 'acme/ci']);
+      isTrue(created.succeeded() && created.stdout.contains('Created the automation account ci.acme.pkg.test'),
+          described(created));
+      let password = after(created.stdout, 'Its app password, which is not shown again:');
+      isTrue(password.length == 19, described(created));
+      let again = alice.run(['ci', 'create', 'acme/ci']);
+      isTrue(!again.succeeded() && again.stderr.contains('NameTaken'), described(again));
+
+      // CI signs in with the password from its secrets, and can publish
+      // nothing until an owner adds it, marked as automation.
+      let bot = person('bot').set('ZENA_APP_PASSWORD', password);
+      let login = bot.run(['login', 'ci.acme.pkg.test']);
+      isTrue(login.succeeded(), described(login));
+      let did = (parseJson(read(scratch.at('lib/zena-package.json'))) as JsonObject)['did'] as String;
+      write(scratch.at('lib/zena-package.json'),
+          `{"name": "greet", "did": "${did}", "scope": "acme", "version": "1.1.0"}\n`);
+      let notYet = bot.run(['publish']);
+      isTrue(!notYet.succeeded() && notYet.stderr.contains('Forbidden'), described(notYet));
+      let unmarked = alice.run(['owner', 'add', 'ci.acme.pkg.test']);
+      isTrue(!unmarked.succeeded() && unmarked.stderr.contains('automation account'), described(unmarked));
+      let added = alice.run(['owner', 'add', 'ci.acme.pkg.test', '--automation']);
+      isTrue(added.succeeded(), described(added));
+      let byBot = bot.run(['publish']);
+      isTrue(byBot.succeeded() && byBot.stdout.contains('Published greet 1.1.0'), described(byBot));
+
+      // Its attestation of the release is in its own repository, on the host.
+      let listed = runFuture(fetch(
+          `${addresses['host'] as String}/xrpc/com.atproto.repo.listRecords?repo=ci.acme.pkg.test&collection=dev.zena-lang.package.attestation`));
+      let records = (parseJson(runFuture(listed.text())) as JsonObject)['records'] as JsonArray;
+      isTrue(records.length == 1, `${records.length} attestations`);
+    } finally {
+      stack.waitFor(1 as i64);
+      scratch.remove();
+    }
+  });
+});

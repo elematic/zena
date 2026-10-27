@@ -61,9 +61,9 @@ accounts to `dev.zena-lang.*` records, and the methods
 `createOrganization`, `createPackage` (which signs and submits each new
 account's `did:plc` genesis operation), `uploadArtifact`, `publish`,
 `retract`, and those that change members, teams and maintainers, each
-checked with a service-auth token and the caller's role. Automation
-accounts, the limits on creating accounts, and the other methods are
-still to do. The atproto libraries it needs
+checked with a service-auth token and the caller's role, and
+`createAutomationAccount`, whose accounts sign in with their app password.
+The limits on creating accounts, and the other methods, are still to do. The atproto libraries it needs
 are in `packages/atproto`, because the package manager needed them first:
 the data model, DAG-CBOR, CIDs, CAR, the MST, commits and their proofs,
 P-256 and secp256k1 signatures and `did:key`, DID and handle resolution, an

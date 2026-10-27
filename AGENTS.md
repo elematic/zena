@@ -314,6 +314,8 @@ Subcommands (`./target/release/zena-cli <subcommand>`):
   in the scope its manifest's `scope` or `--scope` names.
   **`package create`** only creates it. **`retract <version> [--reason]`**
   marks a release so that choosing a version skips it.
+  **`ci create <scope>/<name>`** makes an automation account for CI to
+  publish as.
 - **`scope create <name> [--yes]`**, **`scope info <scope>`**: Create a
   scope on a package host, with you as its owner, or describe one.
   Publishing never creates a scope. **`scope add|remove <scope> <person>`**,

@@ -878,9 +878,13 @@ the management interface, and whose app password is a CI secret. The host
 holds that account, so its attestation is one the host could make itself.
 The log therefore counts an automation account on the package's own host
 only together with at least one person's attestation; an automation
-account on another PDS counts like any maintainer. Publishing from CI
-with no stored secret, as npm and PyPI allow with GitHub's OIDC tokens,
-is an open question.
+account on another PDS counts like any maintainer. A package's owners add
+it with `zena owner add <handle> --automation`, as a publisher: the host
+refuses an automation account that is not marked as one, or that is an
+owner, since an owner chooses the maintainers. CI signs in to it with
+`zena login <handle>` and the password in `ZENA_APP_PASSWORD`, at the
+host, which is its PDS. Publishing from CI with no stored secret, as npm
+and PyPI allow with GitHub's OIDC tokens, is an open question.
 
 ### Who signs what
 

@@ -55,6 +55,8 @@ import {
 import {HandleRecords} from './handles.zena';
 import {Pds} from './pds.zena';
 import {CreateRecord, DeleteRecord, RepositoryError, UpdateRecord, Write} from './repository.zena';
+import {Sessions} from './sessions.zena';
+import {formatTimestamp} from 'zena:time';
 import {Account, AccountKind, SigningKey, StoredBlob} from './storage.zena';
 
 /** The most recovery keys an account's genesis operation ranks above the host's keys. */
@@ -259,6 +261,11 @@ export final class Created {
 
 /** The `dev.zena-lang.host.*` methods, over a PDS's accounts. */
 export final class PackageHost {
+  /**
+   * Signs accounts in, and gives automation accounts their app passwords;
+   * without it, `createAutomationAccount` is not offered.
+   */
+  var sessions: Sessions | null = null;
   pds: Pds;
   config: HostConfig;
   #store: HostStore;
@@ -352,6 +359,47 @@ export final class PackageHost {
     let cid = await this.#write(account, MEMBERS_TYPE, 'self', members.toValue(), nowMicros);
     await this.#records.set(handle, account.did);
     return new Created(account.did, handle, `at://${account.did}/${MEMBERS_TYPE}/self`, cid);
+  }
+
+  /**
+   * `createAutomationAccount`: an account named `name` in `org`'s scope,
+   * for CI to publish as, with an app password, which is returned and
+   * never shown again. The caller must be an owner or admin of `org`. The
+   * account is a maintainer of nothing until a package's owners add it,
+   * marked `automation`; it can sign in, write attestations to its own
+   * repository, and call the host's methods, and nothing else. Its name
+   * is taken in the scope as a package's would be. It has no recovery
+   * keys: the host holds it, as it holds the organization.
+   */
+  async createAutomationAccount(caller: String, org: String, name: String, nowMicros: i64): Future<Automation> {
+    let sessions = this.sessions;
+    if (sessions == null) {
+      throw new HostError(501, 'MethodNotImplemented', 'this host has no sessions to sign automation accounts in');
+    }
+    let organization = await this.#account(org, AccountKind.Organization, 'an organization');
+    if (!isAdmin(await this.#orgRole(org, caller))) {
+      throw new HostError(403, 'Forbidden', `${caller} is not an admin of ${org}`);
+    }
+    if (!isValidPackageName(name)) {
+      throw new HostError(400, 'InvalidRequest', `'${name}' cannot name an account`);
+    }
+    let scope = scopeOf(organization.handle as String, this.config.domain);
+    if ((await this.#store.nameInScope(scope, name)) != null) {
+      throw new HostError(400, 'NameTaken', `the scope '${scope}' has '${name}'`);
+    }
+    let handle = `${name}.${scope}.${this.config.domain}`;
+    let prepared = this.#prepareAccount(handle, []);
+    let did = prepared.did;
+    if (!(await this.#store.claimName(scope, name, did))) {
+      throw new HostError(400, 'NameTaken', `the scope '${scope}' has '${name}'`);
+    }
+    let store = this.#store;
+    let account = await this.#createAccount(prepared, AccountKind.Automation, nowMicros,
+        async (): Future<void> => { await store.releaseName(scope, name, did); });
+    let password = await (sessions as Sessions).addAppPassword(account.did, 'ci',
+        formatTimestamp(nowMicros * (1000 as i64)));
+    await this.#records.set(handle, account.did);
+    return new Automation(account.did, handle, password);
   }
 
   /**
@@ -705,6 +753,24 @@ export final class PackageHost {
       if (maintainer.role == OWNER) {
         owners += 1;
       }
+      // A bot is marked as one, in the record and its entry, so that the
+      // log can count it only together with a person.
+      let did = if (commitment != null) entries.byCommitment[commitment.toString()].did else maintainer.did;
+      if (did != null) {
+        let held = await this.pds.storage.getAccount(did as String);
+        let marked = maintainer.automation &&
+            (commitment == null || entries.byCommitment[commitment.toString()].automation);
+        if (held != null && held.kind == AccountKind.Automation) {
+          if (!marked) {
+            throw new HostError(400, 'InvalidRequest',
+                `${did as String} is an automation account: mark it as one, with automation: true`);
+          }
+          // An owner chooses the maintainers, which no bot should.
+          if (maintainer.role == OWNER) {
+            throw new HostError(400, 'InvalidRequest', `${did as String} is an automation account, which only publishes`);
+          }
+        }
+      }
     }
     if ((owners as i64) < maintainers.ownerThreshold || (maintainers.maintainers.length as i64) < maintainers.threshold) {
       throw new HostError(400, 'InvalidRequest',
@@ -930,6 +996,15 @@ export final class PackageHost {
       throw e;
     }
   }
+}
+
+/** An automation account `createAutomationAccount` made, with its app password. */
+export final class Automation {
+  did: String;
+  handle: String;
+  appPassword: String;
+
+  new(this.did, this.handle, this.appPassword);
 }
 
 /** A record as it is now, and its CID. */
