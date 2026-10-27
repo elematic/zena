@@ -138,19 +138,19 @@ second consumer throws instead of releasing the value twice.
 
 A container needs no new field for this when its own contents can say
 "taken". `Future`'s can. For a restricted instantiation, the read that
-resumes the waiter takes the value and clears `#value`, and the existing
-fields encode every state:
+resumes the waiter takes the value and clears the value slot (§"The
+value slot"), and the existing fields encode every state:
 
-| `#state` | waiters and box | meaning for an owner future | a further await or read |
-| -------- | --------------- | --------------------------- | ----------------------- |
-| pending  | no waiter       | unclaimed                   | becomes the one waiter  |
-| pending  | one waiter      | claimed                     | throws: a second claim  |
-| settled  | box full        | available                   | takes the value         |
-| settled  | box empty       | taken                       | throws: already taken   |
+| `#state` | waiters and slot | meaning for an owner future | a further await or read |
+| -------- | ---------------- | --------------------------- | ----------------------- |
+| pending  | no waiter        | unclaimed                   | becomes the one waiter  |
+| pending  | one waiter       | claimed                     | throws: a second claim  |
+| settled  | slot full        | available                   | takes the value         |
+| settled  | slot empty       | taken                       | throws: already taken   |
 
 Both columns are needed. A future awaited after it settles never
 registers a waiter, since `[subscribe]` schedules the frame at once, so
-the box is the only mark that its value has gone.
+the slot is the only mark that its value has gone.
 
 Every `scoped T` class has such an empty state. The body rules
 (§"The class half of `scoped T`") let a field whose type carries `T` be
@@ -177,14 +177,11 @@ folds away. One intrinsic carries it:
 ```zena
 [valueOrThrow](): T {
   // ... rejected, cancelled and pending, as today ...
-  if (isFirstClass<T>()) {
-    return (this.#value as Box<T>).value;   // a copy: several awaits
+  let value = this.#value;              // WithDefault<T>
+  if (!isFirstClass<T>()) {
+    this.#value = defaultValue<T>();    // a take: null at a restricted T
   }
-  let stored = this.#value;    // a take: the field is left null
-  if (stored == null) {
-    throw new Error('the value of this future was already taken');
-  }
-  return stored.value;
+  return value as T;    // at a non-null restricted T, a taken slot fails here
 }
 ```
 
@@ -196,9 +193,9 @@ if (!isFirstClass<T>() && this.#waiters != null) {
 }
 ```
 
-and `[adoptFrom]` takes the source's box instead of sharing it. In
-`Future<i32>`, `isFirstClass` is the constant `true`, so the take, the
-null test and the waiter check all fold away.
+and `[adoptFrom]` takes the source's value instead of sharing it. In
+`Future<i32>`, `isFirstClass` is the constant `true`, so the take and
+the waiter check fold away, and `as T` is the identity.
 
 The body never drops a `T`. The one place it did, `tryComplete`'s losing
 path, hands the value back instead, as tokio's `oneshot::Sender::send`
@@ -210,7 +207,7 @@ returns `Err(value)`:
     return (false, value);     // the caller decides
   }
   this.#state = FutureState.Resolved;
-  this.#value = new Box<T>(value);
+  this.#value = value;
   // ... as today ...
   return (true, _);
 }
@@ -222,6 +219,31 @@ a must-consume value has to be consumed, so racing writers with one is
 an error where the race is written. The callers in `zena:async` that
 test the boolean today (`race` and `any` waiters, `TaskGroup`) match on
 the tag instead.
+
+## The value slot
+
+`Future` keeps its value in `#value: Box<T> | null` today, so that a
+settled future with a null value can be told from a pending one. The
+`Box` costs an allocation per settle, and `#state` already makes that
+distinction. The slot becomes `var #value: WithDefault<T>`, the type
+operator type-operators.md plans for exactly this ("De-boxes
+`Future`'s value slot"): `T` at a primitive, `T | null` at a reference.
+
+That is enough for the take because **every restricted type is a
+reference**: an owner, a borrow, a scoped future, and a `Result` that
+holds an owner, which as a type argument is the boxed tuple
+(core/result.zena: "stored in a variable, field or collection, it is a
+boxed tuple"). So at every instantiation that takes, the slot is
+nullable, and `defaultValue<T>()`, the operator's companion intrinsic,
+is null there. A primitive is always first-class and never takes, so it
+never needs an empty state.
+
+The take is checked by the cast in `valueOrThrow`: at a non-null
+restricted `T`, a slot that was already taken holds null, and `as T`
+fails. At a nullable restricted `T` (`Future<Own<R> | null>`), null is a
+legitimate value, so a second read returns null instead of failing.
+Nothing is duplicated, since null owns nothing; only the error message
+is lost.
 
 ## Releasing what nobody took
 
@@ -320,9 +342,11 @@ This note defines it, with one addition, the `isFirstClass<T>()` branch:
   the required-consumption error. A value with nowhere to go is handed
   back to the caller, as `tryComplete` and `stop()` do.
 - **Field reads are takes.** Outside the first-class branch, a read of
-  a field whose type carries `T` is a take: the field must be a nullable
-  `var`, and the read leaves null. This is the rule #563 gave owner
-  fields. It is why `valueOrThrow` above has to handle a null box: the
+  a field whose type carries `T` is a take: the field must be a `var`
+  that is nullable at every restricted `T`, and the read leaves null.
+  A `WithDefault<T>` field qualifies, since every restricted type is a
+  reference (§"The value slot"). This is the rule #563 gave owner
+  fields, and it is why `valueOrThrow` casts with `as T`: the taken
   check in the runtime state table is required by the types.
 
 One runtime check is not required by these rules: the second waiter in
@@ -383,9 +407,11 @@ T` admits restricted arguments to classes, and the containment walks
    members that hand out the value twice are rejected on restricted
    instantiations. `twice` becomes a compile error.
 2. **The body rules:** `isFirstClass<T>()` and its branch, exactly-once
-   use of `T` elsewhere, and field reads as takes. Then `Future`'s
+   use of `T` elsewhere, and field reads as takes; the `WithDefault<T>`
+   operator and `defaultValue<T>()`, with `Future`'s slot de-boxed onto
+   them. Then `Future`'s
    restricted paths written under them: the take, the second-waiter
-   check, adoption taking the box, and `tryComplete` returning its loser
+   check, adoption taking the value, and `tryComplete` returning its loser
    (with `zena:async`'s callers matching on it).
 3. **Release glue.** Drop plans for owner futures and streams that
    register the releasing waiter, everywhere implicit drop already
@@ -399,15 +425,3 @@ T` admits restricted arguments to classes, and the containment walks
    `zena:fetch` and the protobuf transports removed.
 
 Then the `wasi:http` switch above.
-
-## Open questions
-
-1. **The value slot.** A take leaves the slot empty, so the slot must
-   have an empty state. Today it is `#value: Box<T> | null`. Taking the
-   box is a take of a nullable field. Reading the `T` out of the taken
-   box is then a move out of a box the read owns, which needs `Box` to
-   declare `scoped T` and a rule that moving a box's one field out
-   consumes the box. The alternative is a value union in place of the
-   box (`(true, T) | (false, _)`), which uses the tuple moves #495
-   already has. The cost is to `Future`'s allocation-free await path,
-   which should be measured before choosing.
