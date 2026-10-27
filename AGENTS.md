@@ -312,7 +312,8 @@ Subcommands (`./target/release/zena-cli <subcommand>`):
   you are in at its manifest's `version` to a package host
   (`ZENA_PACKAGE_HOST`), creating its account first when it has no `did`,
   in the scope its manifest's `scope` or `--scope` names.
-  **`package create`** only creates it.
+  **`package create`** only creates it. **`retract <version> [--reason]`**
+  marks a release so that choosing a version skips it.
 - **`scope create <name> [--yes]`**, **`scope info <scope>`**: Create a
   scope on a package host, with you as its owner, or describe one.
   Publishing never creates a scope. **`scope add|remove <scope> <person>`**,

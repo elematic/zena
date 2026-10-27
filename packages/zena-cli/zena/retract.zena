@@ -1,0 +1,45 @@
+/**
+ * `zena retract <version>`: marks a release as retracted
+ * (docs/design/package-manager.md, "Retraction"). The release stays, for
+ * the builds that pin it, and choosing a version skips it. Any maintainer
+ * may retract a release; the command writes the retraction through the
+ * host and attests it in the maintainer's own repository, as `zena
+ * publish` does a release.
+ */
+
+import { ParsedArgs } from 'zena:args';
+import { runFuture } from 'zena:async';
+import { JsonObject } from 'zena:json';
+import { Cid } from 'atproto:cid';
+import { Version } from 'package-manager:version';
+import { Options } from './env.zena';
+import { packageDid } from './members.zena';
+import { PublishError, attest, findHost, hostClient, runCommand, saveIfRefreshed, signedIn } from './publish.zena';
+
+export function retractCommand(args: ParsedArgs, options: Options): i32 {
+  return runCommand(() => {
+    if (args.rest.length != 1) {
+      throw new PublishError('give the version: zena retract <version> [--reason <why>] [--package <package>]');
+    }
+    let version = args.rest[0];
+    try {
+      Version.parse(version);
+    } catch (e) {
+      throw new PublishError(`'${version}' is not a version`);
+    }
+    let session = signedIn();
+    let host = findHost(args);
+    let pkg = packageDid(host, args);
+    let input = new JsonObject();
+    input['package'] = pkg;
+    input['version'] = version;
+    if (let (true, reason) = args.getOption('reason')) {
+      input['reason'] = reason;
+    }
+    let written = runFuture(hostClient(session, host, 'dev.zena-lang.host.retract')
+      .procedure('dev.zena-lang.host.retract', input)) as JsonObject;
+    attest(session, written['uri'] as String, Cid.parse(written['cid'] as String));
+    console.log(`Retracted ${version} of ${pkg}. Builds that pin it still use it; choosing a version skips it.`);
+    saveIfRefreshed(session);
+  });
+}

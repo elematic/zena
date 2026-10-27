@@ -277,6 +277,22 @@ function hostRoutes(router: Router, host: PackageHost): void {
     });
   });
 
+  router.post('/xrpc/dev.zena-lang.host.retract', async (req, res, next, params) => {
+    await hostCall(host, req, res, 'dev.zena-lang.host.retract', async (caller): Future<JsonObject | null> => {
+      let input = await jsonBody(req, res);
+      if (input == null) {
+        return null;
+      }
+      let reason = input['reason'];
+      if (!(input['package'] is String) || !(input['version'] is String) || (reason != null && !(reason is String))) {
+        fail(res, 400, 'InvalidRequest', 'package and version are required, and reason must be a string');
+        return null;
+      }
+      return writtenJson(await host.retract(caller, input['package'] as String, input['version'] as String,
+          if (reason is String) reason as String else null, nowMicros()));
+    });
+  });
+
   router.post('/xrpc/dev.zena-lang.host.putMembers', async (req, res, next, params) => {
     await hostCall(host, req, res, 'dev.zena-lang.host.putMembers', async (caller): Future<JsonObject | null> => {
       let input = await jsonBody(req, res);

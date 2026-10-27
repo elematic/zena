@@ -29,7 +29,8 @@ the `zena` command. The design is in
      tokens from that session, `scope.zena`, for `zena scope create` and
      `zena scope info`, and `members.zena`, for `zena scope add`, `remove`
      and `members`, `zena team` and `zena owner`, which change who belongs
-     through the host's `put*` methods.
+     through the host's `put*` methods, and `retract.zena`, for
+     `zena retract`.
    - It is built to `out/zena.wasm` by `build:module`, with the compiler
      (`zena-compiler:compile-file`), zb, zenadoc, the language service and
      the formatter linked
