@@ -1352,26 +1352,6 @@ final class CheckerContext {
       }
       if (isOptional) {
         hasOptionals = true;
-        if (param.optional && param.defaultValue == null) {
-          var alreadyNullable = false;
-          match (paramType) {
-            case NullType: { alreadyNullable = true; }
-            case UnionT {types}: {
-              for (let member in types) {
-                if (member is NullType) { alreadyNullable = true; }
-              }
-            }
-            case _: {}
-          }
-          if (!alreadyNullable) {
-            let unionTypes = growable<Type>([paramType, new NullType()]);
-            // Every argument spelled out: this is a forward reference to
-            // a function with defaults, which is exactly what this
-            // change teaches the checker — but the bootstrap compiling
-            // this file does not know it yet.
-            paramType = createUnionType(unionTypes, null, null);
-          }
-        }
       }
       paramTypes.push(paramType);
     }
@@ -12154,7 +12134,15 @@ function checkVariableDeclaration(
 
   // If an explicit type annotation is present, validate assignability.
   if (expectedType != null) {
-    if (!isAssignableTo(ctx, initType, expectedType)) {
+    if (init is NullLiteral && init.loc == null) {
+      if (!(expectedType is ErrorType) && !isNullableType(expectedType)) {
+        ctx.error(
+          `Variable of non-nullable type '${typeToString(expectedType)}' must be initialized.`,
+          DiagnosticCode.TypeMismatch,
+          loc
+        );
+      }
+    } else if (!isAssignableTo(ctx, initType, expectedType)) {
       ctx.error(
         `Type mismatch: '${typeToString(initType)}' is not assignable to '${typeToString(expectedType)}'.`,
         DiagnosticCode.TypeMismatch,
@@ -16846,6 +16834,8 @@ function registerClassDeclaration(ctx: CheckerContext, cd: ClassDeclaration): vo
     let ctorParamTypes = new Array<Type>();
     let ctorParamNames = new Array<String>();
     let ctorOptionalParams = new Array<boolean>();
+    let ctorInitializers = new Array<Expression | null>();
+    var hasCtorInitializers = false;
 
     var cpi = 0;
     while (cpi < caseParams.length) {
@@ -16854,10 +16844,24 @@ function registerClassDeclaration(ctx: CheckerContext, cd: ClassDeclaration): vo
       var fieldType = resolveTypeAnnotation(ctx, cp.typeAnnotation);
       rejectSecondClassStorage(ctx, fieldType, "a field", cp.typeAnnotation.loc);
 
-      // Optional case params get nullable field type
-      if (cp.optional) {
-        let unionTypes = growable<Type>([fieldType, new NullType()]);
-        fieldType = createUnionType(unionTypes);
+      if (cp.defaultValue != null) {
+        hasCtorInitializers = true;
+        let initExp = cp.defaultValue as Expression;
+        let initType = checkExpression(ctx, initExp, fieldType);
+        if (!isAssignableTo(ctx, initType, fieldType)) {
+          ctx.error(
+            "Type mismatch: default value of type '" + typeToString(initType) +
+            "' is not assignable to parameter type '" + typeToString(fieldType) + "'.",
+            DiagnosticCode.TypeMismatch,
+            initExp.loc
+          );
+        } else {
+          let instantiatedVal = tryInstantiateGenericFunction(ctx, initType, fieldType);
+          if (instantiatedVal !== initType) {
+            ctx.setNodeType(initExp, instantiatedVal);
+          }
+          checkAndRegisterInterfaceAdaptation(ctx, initExp, instantiatedVal, fieldType);
+        }
       }
 
       // Check for duplicate fields (but allow implementing abstract fields).
@@ -16883,12 +16887,22 @@ function registerClassDeclaration(ctx: CheckerContext, cd: ClassDeclaration): vo
 
       ctorParamTypes.push(fieldType);
       ctorParamNames.push(fieldName);
-      ctorOptionalParams.push(cp.optional);
+      ctorOptionalParams.push(cp.defaultValue != null);
+      ctorInitializers.push(cp.defaultValue);
       cpi = cpi + 1;
     }
 
     // Auto-generate constructor type.
-    let ctorType = new FunctionType(ctorParamTypes, classType, new FunctionDeclInfo(ctorParamNames, null, null, ctorOptionalParams));
+    let ctorType = new FunctionType(
+      ctorParamTypes,
+      classType,
+      new FunctionDeclInfo(
+        ctorParamNames,
+        null,
+        if (hasCtorInitializers) ctorInitializers else null,
+        ctorOptionalParams
+      )
+    );
     classType.constructorType = ctorType;
     classType.constructors["<constructor>"] = ctorType;
   }
@@ -17598,24 +17612,51 @@ function registerClassDeclaration(ctx: CheckerContext, cd: ClassDeclaration): vo
         let vCtorParams = new Array<Type>();
         let vCtorNames = new Array<String>();
         let vCtorOptionalParams = new Array<boolean>();
+        let vCtorInitializers = new Array<Expression | null>();
+        var hasVCtorInitializers = false;
         var vpi = 0;
         while (vpi < vParams.length) {
           let vp = vParams[vpi];
           var vpType = resolveTypeAnnotation(ctx, vp.typeAnnotation);
 
-          if (vp.optional) {
-            let unionTypes = growable<Type>([vpType, new NullType()]);
-            vpType = createUnionType(unionTypes);
+          if (vp.defaultValue != null) {
+            hasVCtorInitializers = true;
+            let initExp = vp.defaultValue as Expression;
+            let initType = checkExpression(ctx, initExp, vpType);
+            if (!isAssignableTo(ctx, initType, vpType)) {
+              ctx.error(
+                "Type mismatch: default value of type '" + typeToString(initType) +
+                "' is not assignable to parameter type '" + typeToString(vpType) + "'.",
+                DiagnosticCode.TypeMismatch,
+                initExp.loc
+              );
+            } else {
+              let instantiatedVal = tryInstantiateGenericFunction(ctx, initType, vpType);
+              if (instantiatedVal !== initType) {
+                ctx.setNodeType(initExp, instantiatedVal);
+              }
+              checkAndRegisterInterfaceAdaptation(ctx, initExp, instantiatedVal, vpType);
+            }
           }
 
           let isMut = vp.mutability != null && vp.mutability == "var";
           variantType.members[vp.name.name] = new FieldInfo(vpType, isMut, false, false, false, false);
           vCtorParams.push(vpType);
           vCtorNames.push(vp.name.name);
-          vCtorOptionalParams.push(vp.optional);
+          vCtorOptionalParams.push(vp.defaultValue != null);
+          vCtorInitializers.push(vp.defaultValue);
           vpi = vpi + 1;
         }
-        let vCtorType = new FunctionType(vCtorParams, variantType, new FunctionDeclInfo(vCtorNames, null, null, vCtorOptionalParams));
+        let vCtorType = new FunctionType(
+          vCtorParams,
+          variantType,
+          new FunctionDeclInfo(
+            vCtorNames,
+            null,
+            if (hasVCtorInitializers) vCtorInitializers else null,
+            vCtorOptionalParams
+          )
+        );
         variantType.constructorType = vCtorType;
         variantType.constructors["<constructor>"] = vCtorType;
         synthesizeCaseClassMembers(ctx, variantType, null);
@@ -18332,6 +18373,52 @@ function checkClassBodies(
         }
       }
     }
+
+    // When a concrete class has no explicit constructor of its own,
+    // checkMethodBody never runs for a constructor, so validate here that
+    // every own non-nullable field has an inline initializer.
+    if (!cd.isExtension && !classType.isCaseClass) {
+      var hasOwnConstructor = false;
+      for (let member in cd.body) {
+        if (member is MethodDefinition && (member as MethodDefinition).isConstructor) {
+          hasOwnConstructor = true;
+        }
+      }
+      if (!hasOwnConstructor) {
+        for (let member in cd.body) {
+          if (member is FieldDefinition) {
+            let fd = member as FieldDefinition;
+            if (fd.isStatic || fd.isAbstract || fd.isDeclare || fd.value != null ||
+                isSymbolFieldDeclaration(fd)) {
+              continue;
+            }
+            let declared = fieldDeclaredName(ctx, fd);
+            var lookupField = declared;
+            let fsn = classType.fieldSetterNames;
+            if (fsn != null) {
+              if (let (true, mapped) = fsn.get(declared)) {
+                lookupField = mapped;
+              }
+            }
+            let fType = if (classType.members.has(lookupField) &&
+                classType.members[lookupField] is FieldInfo) {
+              (classType.members[lookupField] as FieldInfo).type
+            } else {
+              let dec = decoratedFieldOf(classType, declared);
+              if (dec != null) dec.fieldType else (new ErrorType() as Type)
+            };
+            if (isNullableType(fType)) {
+              continue;
+            }
+            ctx.error(
+              `Field '${displayMemberName(declared)}' must be initialized. Add an initializer or a constructor.`,
+              DiagnosticCode.UninitializedField,
+              fd.loc
+            );
+          }
+        }
+      }
+    }
   }
 
   exitClassBodyScope(ctx, prevBodyThis);
@@ -18479,26 +18566,6 @@ function checkMethodSignature(
     initializers.push(param.defaultValue);
     if (isOptional) {
       hasOptionals = true;
-      // Only widen to T | null for ?-style optionals without a default value.
-      // Params with default values keep their declared type.
-      if (param.optional && param.defaultValue == null) {
-        var alreadyNullable = false;
-        match (paramType) {
-          case NullType: { alreadyNullable = true; }
-          case UnionT {types}: {
-            var ui = 0;
-            while (ui < types.length) {
-              if (types[ui] is NullType) { alreadyNullable = true; }
-              ui += 1;
-            }
-          }
-          case _: {}
-        }
-        if (!alreadyNullable) {
-          let unionTypes = growable<Type>([paramType, new NullType()]);
-          paramType = createUnionType(unionTypes);
-        }
-      }
     }
 
     paramTypes.push(paramType);
@@ -24623,26 +24690,6 @@ function checkFunctionExpression(
     initializers.push(param.defaultValue);
     if (isOptional) {
       hasOptionals = true;
-      // Only widen to T | null for ?-style optionals without a default value.
-      // Params with default values keep their declared type.
-      if (param.optional && param.defaultValue == null) {
-        var alreadyNullable = false;
-        match (paramType) {
-          case NullType: { alreadyNullable = true; }
-          case UnionT {types}: {
-            var ui = 0;
-            while (ui < types.length) {
-              if (types[ui] is NullType) { alreadyNullable = true; }
-              ui += 1;
-            }
-          }
-          case _: {}
-        }
-        if (!alreadyNullable) {
-          let unionTypes = growable<Type>([paramType, new NullType()]);
-          paramType = createUnionType(unionTypes);
-        }
-      }
     }
 
     paramTypes.push(paramType);

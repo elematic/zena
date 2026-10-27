@@ -1154,6 +1154,29 @@ let tests = suite('formatter', () => {
   test('keeps a top-level symbol declaration', (t) => {
     checkStable('top-level symbol', 'export symbol shared;');
   });
+
+  test('does not add ? to parameters with default values', (t) => {
+    checkStable('function default param', dedentRaw`
+      function greet(name: String, prefix: String = 'Hello'): String {
+        return prefix + ', ' + name;
+      }
+    `);
+    checkStable('arrow default param', "let greet = (name: String, prefix: String? = null) => name;");
+  });
+
+  test('formats case class parameters with default values', (t) => {
+    checkStable('case class default param', 'class Node(value: i32, label: String? = null)');
+    checkStable('sealed variant default param', dedentRaw`
+      sealed class Expr {
+        case Lit(value: i32, label: String? = null)
+      }
+    `);
+  });
+
+  test('formats var declarations with and without initializers', (t) => {
+    checkStable('var without initializer', 'var x: String?;');
+    checkStable('var with explicit null initializer', 'var x: String? = null;');
+  });
 });
 
 // Entry point - returns number of failed tests (0 = success)

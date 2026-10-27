@@ -308,11 +308,11 @@ let p2 = new Point(1.0, 2.0);
 let same = p1 == p2; // true (structural equality)
 ```
 
-Case class parameters can include `var` for mutable fields or `?` for optional
-fields:
+Case class parameters can include `var` for mutable fields or `= default` for
+default parameter values:
 
 ```zena
-class Task(title: String, var completed: boolean, priority?: i32)
+class Task(title: String, var completed: boolean = false, priority: i32 = 0)
 ```
 
 ### Sealed class hierarchies

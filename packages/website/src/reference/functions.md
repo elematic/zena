@@ -183,13 +183,14 @@ class Cursor {
 }
 ```
 
-### Optional parameters
+### Nullable parameters with `null` defaults
 
-A parameter marked with `?` is optional and must follow all required parameters.
-When no default value is provided, its type becomes nullable (`T?`):
+Parameters cannot be marked optional with `?` (`title?: String` is a syntax
+error). Every optional parameter specifies a default value with `=`. For a
+nullable parameter that defaults to `null`, write `name: T? = null`:
 
 ```zena
-let greet = (name: String, title?: String): String => {
+let greet = (name: String, title: String? = null): String => {
   if (title != null) {
     return `Hello, ${title} ${name}`;
   }
@@ -198,15 +199,6 @@ let greet = (name: String, title?: String): String => {
 
 greet('Alice');        // "Hello, Alice"
 greet('Bob', 'Dr.');   // "Hello, Dr. Bob"
-```
-
-Because WebAssembly primitives cannot hold `null` without boxing, **primitive
-optional parameters must provide a default value** or be explicitly wrapped in
-`Box<T>`:
-
-```zena
-let scale = (value: f64, factor: f64 = 1.0): f64 => value * factor; // Valid
-let wrap = (value: f64, factor?: Box<f64>): f64 => value;           // Valid
 ```
 
 ### Destructured parameters
