@@ -304,18 +304,32 @@ let x: Box<i32> | null = new Box(10);
 
 **Status: Enforced at declaration**
 
-Unions containing unbounded type parameters mixed with reference types
-(including `null`) are **not allowed**. This prevents APIs from being defined
-that cannot work with primitive type arguments.
+A type parameter that is not constrained to references may be bound to a
+primitive, and a primitive cannot share a union with other types. So such a
+parameter may be in a union only alone: with `null`, with a reference type,
+with a primitive, or with another type parameter, the union is **not
+allowed**. This prevents APIs from being defined that cannot work with
+primitive type arguments.
+
+The TypeScript compiler enforced this; the self-hosted checker lost it until
+#614, where `T | null` at `i32` passed the checker and failed in lowering.
+The rule covers inferred unions too, at the same places as the
+primitive-and-reference rule: `if (c) x else null` with `x: T` is an error.
+A union a default resolves before anything stores it is not checked as a
+value, so `o?.value ?? d` with `value: T` is legal, as `o?.x ?? 0` is with
+`x: i32`.
 
 ```zena
-// ❌ Error: Unbounded type parameter 'T' cannot appear in union with reference types
+// ❌ Error: Type parameter 'T' is not constrained to references
 class Container<T> {
   value: T | null;
 }
 
 // ❌ Error: Same issue - will fail if T is instantiated with a primitive
 type Nullable<T> = T | null;
+
+// ❌ Error: either parameter may be a primitive
+let pair = <T, U>(x: T | U): i32 => 0;
 
 // ✅ OK: T is constrained to reference types via anyref
 class Container<T extends anyref> {
@@ -331,7 +345,17 @@ class Container<T> {
 class Container<T> {
   find(): Option<T>;
 }
+
+// ✅ OK: a slot that may be empty, `T` at a primitive and `T | null` at a
+// reference (type-operators.md §"`type.withDefault`")
+class Container<T> {
+  var value: WithDefault<T> = defaultValue<T>();
+}
 ```
+
+An owner (`Own<R>`) does not satisfy `anyref`, since an `anyref` slot would
+escape ownership tracking, so a `scoped T` class that holds owners keeps
+its slot as `WithDefault<T>`.
 
 ##### Rationale
 
