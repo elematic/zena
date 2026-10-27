@@ -4,7 +4,8 @@
 
 - **Status**: Implemented, 2026-10-27: `zena-runtime`'s `extensions`
   module, the `extensions` host interface, `zena:extensions`, and the
-  `--allow-extensions` grant
+  `--allow-extensions` grant; resources across the boundary the same
+  day
 - **Issue**: #593
 - **For**: a PDS written in Zena that loads extensions at run time
   ([pds-extensions.md](./pds-extensions.md))
@@ -124,18 +125,21 @@ interface storage {
   resource storage {
     get: func(key: string) -> option<list<u8>>;
     put: func(key: string, value: list<u8>);
+    create: static func(extension: u32) -> own<storage>;
   }
-  create: func(extension: u32) -> own<storage>;
 }
 ```
 
-The rule: one resource, whose methods are the extension's free
-functions with the same parameters after `self` and the same results;
-and `create`, which the runtime calls once, the first time the
-extension calls on that interface, to make the object for that
-extension. Every later call from that extension lands on that object.
-In Zena the resource is an exported `Disposable` class and `create` is
-an exported function, as any exported resource is written:
+The rule: one resource of the program's own, whose methods are the
+extension's free functions with the same parameters after `self` and
+the same results, and whose static `create` the runtime calls once,
+the first time the extension calls on that interface, to make the
+object for that extension. Every later call from that extension lands
+on that object. The factory is a static rather than a free function so
+that a program serving several interfaces has a `create` on each
+resource, where a module's exported functions share one namespace. In
+Zena the resource is an exported `Disposable` class, as any exported
+resource is written:
 
 ```zena
 export class Storage implements Disposable {
@@ -143,11 +147,8 @@ export class Storage implements Disposable {
   new(ext: u32) : #extension = ext;
   get(key: String): Option<FixedArray<u8>> { ... }
   put(key: String, value: FixedArray<u8>): void { ... }
+  static create(ext: u32): Storage { return new Storage(ext); }
   [Disposable.dispose](): void {}
-}
-
-export function create(ext: u32): Storage {
-  return new Storage(ext);
 }
 ```
 
@@ -165,23 +166,24 @@ the program imports, under the same name,
 interface policy {
   resource policy {
     check-write: async func(record: list<u8>) -> result<result<_, string>, string>;
+    attach: static func(extension: u32) -> own<policy>;
   }
-  attach: func(extension: u32) -> own<policy>;
 }
 ```
 
-The rule: one resource, whose methods are the extension's functions
-with the same parameters after `self` and each result wrapped in
-`result<T, string>` (or `result<_, string>` where the extension returns
-nothing); and `attach`, which the runtime serves with an object whose
-method calls go to that extension's export. The wrapper is where a
+The rule: one resource of the program's own, whose methods are the
+extension's functions with the same parameters after `self` and each
+result wrapped in `result<T, string>` (or `result<_, string>` where the
+extension returns nothing), and whose static `attach` the runtime
+serves with an object whose method calls go to that extension's
+export. The wrapper is where a
 failed call is reported: a trap in the extension, its time limit, or
 an extension that was dropped. A failed call is a value the program
 inspects, because a host function that returns an error traps the
 instance that called it, and a failing extension must not take the
 program down. In Zena the resource is the imported class the compiler
 synthesizes, so the program writes
-`let policy = attach(ext.handle); await policy.checkWrite(bytes)`.
+`let policy = Policy.attach(ext.handle); await policy.checkWrite(bytes)`.
 
 **Between two extensions.** An import bound to another extension is
 checked against that extension's export exactly, functions to
@@ -189,14 +191,43 @@ functions, since nothing the program wrote is in between. A failure of
 the serving extension traps the calling one, because there is no
 wrapper to carry it.
 
+**Resources the interface declares.** Given the extension's import
+
+```wit
+interface store {
+  resource txn { put: func(key: string, value: u32); commit: func() -> u32; }
+  begin: func() -> own<txn>;
+  size: func(txn: borrow<txn>) -> u32;
+}
+```
+
+the program's export keeps `txn` as it is, beside its own resource:
+
+```wit
+interface store {
+  resource txn { put: func(key: string, value: u32); commit: func() -> u32; }
+  resource store {
+    begin: func() -> own<txn>;
+    size: func(txn: borrow<txn>) -> u32;
+    create: static func(extension: u32) -> own<store>;
+  }
+}
+```
+
+The rule: every resource the extension's interface declares is
+declared on the program's side under the same name with the same
+methods, and the two stand for each other wherever they appear in a
+type. On the program's side the resource is a class the program
+exports, so `begin` returns a `Txn` of the program's. An interface the
+program calls is the same the other way: the extension's resources
+appear in the program's view with their methods, results wrapped,
+since a call on one goes to the extension. Constructors and statics on
+such a resource are refused, having no object to serve them, and so
+are resources from outside the interface, streams and futures.
+
 Whether a function is `async` is not compared: the forwarder calls the
-other side through wasmtime's concurrent API either way. Types are
-compared with wasmtime's `types::Type`, which compares structurally
-across components. Resources, streams and futures in the functions
-themselves are refused at load with a message naming the function: a
-resource an extension returns lives in its own table and cannot be
-handed to another instance as it is. The shape that would carry them
-is in "Open questions".
+other side either way. Types are compared with wasmtime's
+`types::Type`, structurally, with paired resources taken as the same.
 
 ### Calls back into the program
 
@@ -210,6 +241,14 @@ the calling task's chain of parents (`may_enter` in its
 `concurrent.rs`), and a task spawned in the program's store
 (`Accessor::spawn`) has no parent, so the runtime serves every call
 back by spawning one.
+
+Two more rules of wasmtime's shape the forwarders. A synchronous import
+cannot be satisfied with a concurrent host function, so a forwarder for
+a function that is not `async` is a blocking host function, which holds
+the store while it waits; a call back during that time cannot be served,
+and is answered with an error saying so. And lending a host-held handle
+as a borrow needs a call in progress, so the proxies a call receives are
+made before it as owned handles and released after it.
 
 A consequence the program's code has to respect: a call on an attached
 object must be awaited. A program that blocks on it, with `blockOn`,
@@ -247,9 +286,41 @@ An import bound to another extension sends the call to that extension's
 thread, with the program's call-back channel along, so that the serving
 extension's own calls to the program land in the forwarder that is
 waiting. Dropping an extension ends its thread even while another is
-bound to it, and the other's calls on that interface then fail.
+bound to it, and the other's calls on that interface then fail. The
+objects the program made for the dropped extension through `create`
+are dropped as tasks of the program's store, which run when the
+program next yields, since their destructors are the program's own
+code and cannot run inside the `drop` call.
 
-Values cross as `wasmtime::component::Val`, unchanged.
+Values cross as `wasmtime::component::Val`, with one translation for
+resources. A handle is an index into one instance's table, so it
+cannot be given to another instance as it is. What crosses instead is
+a _proxy_: a construction of `zena-runtime`, in Rust, out of a wasmtime
+host-defined resource type. The resource the receiving component
+imports, `txn` say, is defined in its linker as a host type, so every
+`txn` handle that component holds is a host-defined resource whose
+representation is an index into a table the runtime keeps per store,
+naming the owner (the program, or an extension by handle) and the
+owner's own handle; the resource's methods are host functions that
+forward. Neither WIT nor Zena has anything to add: the component
+declares and uses `txn` as any imported resource, and the Zena compiler
+gives it the usual class with the usual methods. Concretely:
+
+- The sender walks a call's arguments (or results) by type. A proxy of
+  the receiver's resource becomes the receiver's own handle, and an
+  owned one leaves the sender's table, since the handle goes back for
+  good. A handle the sender owns itself is sent as it is, with its
+  position among the call's resources noted.
+- The receiver makes a proxy for each noted handle and keeps the rest,
+  which are its own. A proxy for a borrowed argument is released once
+  the call returns.
+- A method call on a proxy is forwarded to the owner with the mapped
+  handle as `self`, through the same channel as any other call.
+  Dropping a proxy forwards the drop: to an extension's thread, which
+  drops the handle in its store, or to the program's forwarder waiting
+  on the call in flight, which drops it before the call returns, so
+  the program's destructor has run by the time the program sees the
+  result.
 
 ### Isolation
 
@@ -280,7 +351,8 @@ can be made when the old one is lost.
   extension's store, so the instance is dropped and the next call
   instantiates the component again, with fresh state. The failed call
   returns its error value; the handle stays valid, and so do the
-  objects the program made for it.
+  objects the program made for it. Proxies the program holds to the
+  lost instance's resources point at nothing, and a call on one fails.
 
 ### The host interface
 
@@ -367,8 +439,10 @@ a fixture program built with `--wit` and `--world` by the package's
 prints: calls with arguments and results, calls back served on the
 object made for the extension, a trap and a time limit failing one call
 and the next call succeeding, a memory limit, dropping, an export the
-program lacks a binding for, a type mismatch, and two extensions wired
-together with the second's calls back reaching the program.
+program lacks a binding for, a type mismatch, two extensions wired
+together with the second's calls back reaching the program, and
+resources crossing both ways, with a borrow and with drops that reach
+their owners.
 
 ## Alternatives considered
 
@@ -399,26 +473,16 @@ together with the second's calls back reaching the program.
 
 ## Open questions
 
-- **Resources inside the shared interfaces.** An extension's import
-  `begin: func() -> own<txn>` would have the runtime proxy `txn`: a
-  host-defined resource in the extension's linker whose representation
-  maps to the program's handle, methods forwarded with the mapped
-  handle as `self`, drops forwarded too, and the same the other way for
-  resources an extension exports. The type check already walks every
-  value's type, so lifting the refusal is contained; it is the next
-  piece.
 - **Validating the program's world against the extension WIT it
   declares.** The load-time check is against the real extension. A
   static check, when the program is built, would read the extension's
   WIT and compare each of the program's views with the rules above, so
   a mismatch is a build error naming the interface. It needs the
   compiler to read a second WIT file alongside the world.
-- **Releasing objects made by `create`.** The runtime holds an own
-  handle to each, and dropping a guest-owned handle from the host runs
-  the guest's destructor through the async call path, which has no
-  variant usable from a host function's accessor yet. The objects are
-  released when the run ends; a program that needs them gone sooner
-  keeps a reference and disposes it itself.
+- **Resources shared across three parties.** A proxy can only be
+  passed back to its owner: an extension handing the program a proxy of
+  another extension's resource, or the other way, fails the call. Routing
+  such a handle would need the receiver to proxy a proxy.
 - Concurrent calls into one extension: one at a time is enough for
   write policy hooks, and a request handler extension may want more.
   Wasmtime's event loop can run several tasks in one store; the thread

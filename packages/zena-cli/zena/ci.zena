@@ -1,0 +1,50 @@
+/**
+ * `zena ci create <scope>/<name>`: an automation account for CI to publish
+ * as (docs/design/package-manager.md, "Publishing a release"). The host
+ * creates it in the scope and gives it an app password, which this prints
+ * once: CI keeps it as a secret and signs in with it. The account
+ * publishes a package once the package's owners add it, with
+ * `zena owner add <handle> --automation`.
+ */
+
+import { ParsedArgs } from 'zena:args';
+import { runFuture } from 'zena:async';
+import { JsonObject } from 'zena:json';
+import { Options } from './env.zena';
+import { PublishError, findHost, hostClient, runCommand, saveIfRefreshed, scopeOrganization, signedIn } from './publish.zena';
+
+export function ciCommand(args: ParsedArgs, options: Options): i32 {
+  return runCommand(() => {
+    if (args.rest.length != 2 || args.rest[0] != 'create') {
+      throw new PublishError('usage: zena ci create <scope>/<name>');
+    }
+    let parts = args.rest[1].split('/');
+    if (parts.length != 2 || parts[0] == '' || parts[1] == '') {
+      throw new PublishError(`'${args.rest[1]}' is not <scope>/<name>`);
+    }
+    let scope = parts[0];
+    let name = parts[1];
+    let session = signedIn();
+    let host = findHost(args);
+    let org = scopeOrganization(`${scope}.${host.domain}`);
+    if (org == null) {
+      throw new PublishError(`${host.origin} has no scope ${scope}`);
+    }
+    let input = new JsonObject();
+    input['organization'] = org as String;
+    input['name'] = name;
+    let made = runFuture(hostClient(session, host, 'dev.zena-lang.host.createAutomationAccount')
+      .procedure('dev.zena-lang.host.createAutomationAccount', input)) as JsonObject;
+    let handle = made['handle'] as String;
+    console.log(`Created the automation account ${handle} (${made['did'] as String}).`);
+    console.log('');
+    console.log(`Its app password, which is not shown again: ${made['appPassword'] as String}`);
+    console.log('');
+    console.log('Keep it as a CI secret, ZENA_APP_PASSWORD, and in CI run:');
+    console.log(`  zena login ${handle}`);
+    console.log('  zena publish');
+    console.log('In each package it publishes, an owner runs:');
+    console.log(`  zena owner add ${handle} --automation`);
+    saveIfRefreshed(session);
+  });
+}

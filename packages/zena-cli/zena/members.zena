@@ -177,11 +177,12 @@ export function teamCommand(args: ParsedArgs, options: Options): i32 {
  * `zena owner add|remove|list`: a package's maintainers, for the package
  * in the current directory or the one `--package` names. A person is added
  * by commitment, so the record does not name them; `--team <scope>/<team>`
- * adds or removes a team.
+ * adds or removes a team, and `--automation` marks an automation account
+ * (`zena ci create`), which the host requires of one, as a publisher.
  */
 export function ownerCommand(args: ParsedArgs, options: Options): i32 {
   return runCommand(() => {
-    let usage = 'zena owner add|remove <handle or DID> [--role publisher|owner], zena owner add|remove --team <scope>/<team>, or zena owner list';
+    let usage = 'zena owner add|remove <handle or DID> [--role publisher|owner] [--automation], zena owner add|remove --team <scope>/<team>, or zena owner list';
     if (args.rest.length == 0) {
       throw new PublishError(usage);
     }
@@ -244,9 +245,10 @@ export function ownerCommand(args: ParsedArgs, options: Options): i32 {
       if (teamOrg != null) {
         kept.push(new Maintainer(null, null, teamOrg, teamLabel, role));
       } else {
-        let added = newEntry(did as String, role);
+        let automation = args.getFlag('automation');
+        let added = new MemberEntry(did as String, role, getRandomBytes(32), automation);
         fresh.push(added);
-        kept.push(new Maintainer(null, added.commitment(), null, null, role));
+        kept.push(new Maintainer(null, added.commitment(), null, null, role, automation));
       }
     } else if (kept.length == record.maintainers.length) {
       throw new PublishError(`${who} does not maintain ${pkg}`);

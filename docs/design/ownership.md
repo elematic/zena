@@ -999,6 +999,30 @@ are legal inside such a class; they are the container's substance,
 and the instantiated container type is what carries the restriction
 out (§"Scoped containers and extent nesting").
 
+What the checker enforces for that half:
+
+- **Fields.** A field may hold a `scoped T` bare, nullable (`T | null`),
+  or as the argument of another class's `scoped` parameter
+  (`Future<T>`). Inside an unrestricted container (`Array<T>`) it is
+  rejected, since an index read would copy it.
+- **Instances.** A `Channel<Own<R>>` moves like the owner it holds
+  (`typeCarriesOwner` looks into a `scoped` parameter's argument), and a
+  `Channel<Borrow<R>>` is second-class, as any container of a borrow is.
+- **Takes.** Moving a `T` field's value out (returning it, binding it,
+  passing it on) is a take, the rule #563 gave owner fields: the field
+  must be a nullable `var`, and the move leaves null behind. Codegen
+  stores the null only where the specialization's `T` may be
+  restricted, so at a first-class `T` the read is a copy. It judges
+  that from the representation the specialization is keyed by, where
+  `Own<R>`, `Borrow<R>` and `Unmanaged<R>` share one body, so an
+  `Unmanaged<R>` instantiation is taken from too.
+- **Returns.** A method returning its class's `T` counts `this` as the
+  source the value derives from.
+
+Releasing an instance nobody consumed, and a store into a `T` field
+that still holds a value, are left to release glue
+(owner-futures.md): today the old value is not released.
+
 Alternatives considered for the spelling: keeping two modifiers with
 `<affine scoped T>` as their composition (the fold above removes the
 need); a new discipline-named word such as `once T` (a second keyword
@@ -1866,14 +1890,12 @@ Both halves are enforced where a generic is instantiated, explicitly or
 by inference (`rejectSecondClassTypeArguments`,
 `rejectSecondClassFunctionTypeArgs`): a borrowed or scoped argument is
 rejected as second-class storage, and an owner, or an affine tuple, as
-an argument the body may duplicate (#379). The class half of `scoped T`
-(§"Scoped type arguments": `T`-typed fields in a `scoped T` class) is
-not implemented yet; until it is, a `T` field rejects a `scoped T`, so
-no generic class holds an owner in a `T` field, and an object that holds
-owners is a resource class with `Own<T>` fields.
+an argument the body may duplicate (#379). A class holds an owner in a
+`T` field only under `scoped T` (§"Scoped type arguments"), which moves
+the value out of the field with a take.
 
-owner-futures.md defines the class half of `scoped T` for the async
-containers, with an `isFirstClass<T>()` branch for behavior only a
+owner-futures.md applies the class half of `scoped T` to the async
+containers and adds an `isFirstClass<T>()` branch for behavior only a
 first-class instantiation has. It needs no at-most-once variant: the
 drops `Future` seemed to need, of an abandoned future and of a lost
 `tryComplete` race, belong to the use site, where an owner is released

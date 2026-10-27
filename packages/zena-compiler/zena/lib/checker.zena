@@ -115,7 +115,8 @@ import {
   isOwnershipWrapper, ownershipHandleName, ownershipHandleInner, soleNonNullMember,
   isScopedType, scopedInner,
   isSecondClass, typeContainsSecondClass, typeContainsScoped,
-  typeContainsConcreteSecondClass, borrowInnerRestricts
+  typeContainsConcreteSecondClass, borrowInnerRestricts,
+  typeCarriesOwner, isAffineContainer, isScopedClassParam
 , ErasedType, FunctionDeclInfo, internFunctionType, mergeRow, mergeTupleRow } from './types.zena';
 import { SemanticModel, ModelIndex, InterfaceAdaptation, SymbolDependencies, ClosureDependency, FunctionAdaptationDependency, EdgeDrop, DeferredBodies } from './semantic-model.zena';
 import {
@@ -4987,43 +4988,21 @@ function tupleElementRead(ctx: CheckerContext, t: Type, loc: SourceLocation | nu
 }
 
 /**
- * Whether `t` is a tuple, boxed or inline, or a union of them, that holds
- * an owner. Such a tuple is affine itself (#495): building it moves the
- * owner in, a binding of it moves like an `Own<R>`, and destructuring it
- * moves the owners out.
- */
-/**
- * Whether `t` is a future whose value carries an owner
- * (docs/design/owner-futures.md). Such a future is affine: moved rather
- * than copied, and consumed by its `await`, whose frame is its one
- * consumer. `Future` and its subclasses are recognized by identity until
- * the async containers declare `scoped T` and the rule follows the
- * declaration.
- */
-function isAffineContainer(t: Type): boolean {
-  let resolved = unwrapAliases(t);
-  if (!(resolved is ClassType)) { return false; }
-  var c: ClassType | null = resolved;
-  while (c != null) {
-    let cls = c as ClassType;
-    if (isFutureClassType(cls) || isFutureClassType(cls.genericSource ?? cls)) {
-      let args = cls.typeArguments;
-      return args != null && args.length == 1 && typeCarriesOwner(args[0]);
-    }
-    c = cls.superType;
-  }
-  return false;
-}
-
-/**
  * Whether a binding of type `t` is move-checked like an owner: a tuple
- * holding an owner (#495), or a future of one.
+ * holding an owner (#495), or an instance of a container of one, such
+ * as a `Future<Own<R>>`, which its `await` consumes.
  */
 function isAffineValue(t: Type): boolean {
   if (isAffineTuple(t)) { return true; }
   return isAffineContainer(soleNonNullMember(t) ?? t);
 }
 
+/**
+ * Whether `t` is a tuple, boxed or inline, or a union of them, that holds
+ * an owner. Such a tuple is affine itself (#495): building it moves the
+ * owner in, a binding of it moves like an `Own<R>`, and destructuring it
+ * moves the owners out.
+ */
 function isAffineTuple(t: Type): boolean {
   let resolved = unwrapAliases(t);
   if (resolved is TupleT || resolved is InlineTupleT) {
@@ -5033,50 +5012,6 @@ function isAffineTuple(t: Type): boolean {
     for (let member in types) {
       if (isAffineTuple(member)) { return true; }
     }
-  }
-  return false;
-}
-
-/**
- * Whether a value of `t` can carry an owner — the general containment
- * test behind ownership.md's "types containing one". Aggressive on
- * purpose: it pierces distinct aliases and walks every union member,
- * so the affine-field and structural-member rules stay accurate
- * however the formation rules for owner-containing types loosen later.
- * `Borrow` and `Unmanaged` carry no obligation, and a class type never
- * appears bare while carrying one — a resource class has no unwrapped
- * form, and a class holding an owner is forced to be a resource.
- */
-function typeCarriesOwner(t: Type): boolean {
-  if (ownershipHandleName(t) == "Own") { return true; }
-  // A future of an owner carries it too (docs/design/owner-futures.md).
-  if (isAffineContainer(t)) { return true; }
-  // A tuple holding an owner carries it (#495).
-  if (let TupleT {elementTypes} = t) {
-    for (let el in elementTypes) {
-      if (typeCarriesOwner(el)) { return true; }
-    }
-    return false;
-  }
-  if (let InlineTupleT {elementTypes} = t) {
-    for (let el in elementTypes) {
-      if (typeCarriesOwner(el)) { return true; }
-    }
-    return false;
-  }
-  if (t is UnionT) {
-    for (let m in t.types) {
-      if (typeCarriesOwner(m)) { return true; }
-    }
-    return false;
-  }
-  if (t is TypeAliasType) {
-    if (isOwnershipWrapper(t)) { return false; }
-    if (t.resolving) { return false; }
-    t.resolving = true;
-    let res = typeCarriesOwner(t.target);
-    t.resolving = false;
-    return res;
   }
   return false;
 }
@@ -5228,6 +5163,16 @@ function rejectSecondClassStorage(
   loc: SourceLocation | null
 ): void {
   if (!typeContainsSecondClass(t)) { return; }
+  if (!typeContainsConcreteSecondClass(t)) {
+    ctx.error(
+      `A '${typeToString(t)}' may not be stored in ${where}. A 'scoped' type parameter ` +
+      "may be bound to a borrow or a scoped value, which may not outlive its extent, " +
+      "or to an owner, which may not be copied.",
+      DiagnosticCode.TypeMismatch,
+      loc
+    );
+    return;
+  }
   if (typeContainsScoped(t)) {
     ctx.error(
       "A '" + typeToString(t) + "' may not be stored in " + where + ". A scoped value " +
@@ -5244,6 +5189,63 @@ function rejectSecondClassStorage(
     DiagnosticCode.TypeMismatch,
     loc
   );
+}
+
+/** The type parameters `ct` declares `scoped`. */
+function scopedTypeParamsOf(ct: ClassType): Array<TypeParameterType> {
+  let scoped = new GrowableArray<TypeParameterType>();
+  let params = ct.typeParameters;
+  if (params != null) {
+    for (let p in params) {
+      if (p.isScoped) { scoped.push(p); }
+    }
+  }
+  return scoped;
+}
+
+/**
+ * The storage rule for a field. A `scoped T` class may hold its `T`
+ * (ownership.md §"Scoped type arguments"); every other second-class
+ * type is rejected as for any storage.
+ */
+function rejectFieldStorage(ctx: CheckerContext, t: Type, loc: SourceLocation | null) {
+  if (scopedParamsFieldHeld(t)) {
+    rejectConcreteSecondClassStorage(ctx, t, "a field", loc);
+    return;
+  }
+  rejectSecondClassStorage(ctx, t, "a field", loc);
+}
+
+/**
+ * Whether every `scoped` type parameter `t` mentions is where a field
+ * may hold one: bare, as a union member (`T | null`), or as the
+ * argument of another class's `scoped` parameter (`Future<T>`). Each of
+ * those is moved out with a take. Inside anything else, such as an
+ * `Array<T>` whose index reads would copy it, a `T` is second-class
+ * storage like a borrow.
+ */
+function scopedParamsFieldHeld(t: Type): boolean {
+  if (t is TypeParameterType) { return true; }
+  if (t is UnionT) {
+    for (let m in t.types) {
+      if (!scopedParamsFieldHeld(m)) { return false; }
+    }
+    return true;
+  }
+  if (t is ClassType) {
+    let args = t.typeArguments;
+    if (args == null) { return true; }
+    for (var i = 0; i < args.length; i += 1) {
+      let held = if (isScopedClassParam(t, i)) {
+        scopedParamsFieldHeld(args[i])
+      } else {
+        !typeContainsSecondClass(args[i])
+      };
+      if (!held) { return false; }
+    }
+    return true;
+  }
+  return !typeContainsSecondClass(t);
 }
 
 /**
@@ -5543,6 +5545,19 @@ function recordArgumentMove(ctx: CheckerContext, arg: Expression, paramType: Typ
   // is what scopes this to that context.
   if (arg is MemberExpression) {
     let me = arg;
+    // A `scoped T` field's value handed to a restricted sink (a `T`
+    // parameter, a binding, a `Future<T>`) moves out of the field. A
+    // borrow of it moves nothing.
+    let sfi = scopedFieldInfo(ctx, me);
+    if (sfi != null) {
+      let sinkCore = soleNonNullMember(paramType) ?? paramType;
+      let sinkHandle = ownershipHandleName(sinkCore);
+      if (sinkHandle != "Borrow" && sinkHandle != "Unmanaged" &&
+          typeContainsSecondClass(sinkCore)) {
+        recordScopedFieldTake(ctx, me, sfi as FieldInfo, arg.loc);
+      }
+      return;
+    }
     if (me.object is ThisExpression && ctx.owningReceiver) {
       let sink = ownershipHandleName(soleNonNullMember(paramType) ?? paramType);
       if (sink == "Own") {
@@ -5727,6 +5742,60 @@ function ownerFieldInfo(ctx: CheckerContext, lm: MemberExpression): FieldInfo | 
   let fi = m as FieldInfo;
   if (!typeCarriesOwner(fi.type)) { return null; }
   return fi;
+}
+
+/**
+ * The field `me` names on `this` when its type holds its class's
+ * `scoped T`, or null.
+ */
+function scopedFieldInfo(ctx: CheckerContext, me: MemberExpression): FieldInfo | null {
+  if (!(me.object is ThisExpression)) { return null; }
+  let objT = ctx.model.getNodeType(me.object);
+  if (objT == null) { return null; }
+  let recvT = ownershipHandleInner(objT) ?? objT;
+  if (!(recvT is ClassType)) { return null; }
+  let ct = recvT as ClassType;
+  let scoped = scopedTypeParamsOf(ct.genericSource ?? ct);
+  if (scoped.length == 0) { return null; }
+  let propName = getMemberPropertyName(me.isSymbolAccess, me.property.name);
+  if (!ct.members.has(propName)) { return null; }
+  let m = ct.members[propName];
+  if (!(m is FieldInfo)) { return null; }
+  let fi = m as FieldInfo;
+  if (!mentionsTypeParams(fi.type, scoped)) { return null; }
+  return fi;
+}
+
+/**
+ * A move of a `scoped T` field's value out of the object
+ * (owner-futures.md §"The class half of `scoped T`"). It is a take, as
+ * for an owner field: the move leaves null behind, so the field must be
+ * a nullable `var`. Whether the take stores the null is decided per
+ * specialization: at a first-class `T` the read is a copy.
+ */
+function recordScopedFieldTake(ctx: CheckerContext, me: MemberExpression,
+    fi: FieldInfo, loc: SourceLocation | null) {
+  let name = getMemberPropertyName(me.isSymbolAccess, me.property.name);
+  let display = "this." + name;
+  if (!isNullableType(fi.type)) {
+    ctx.error(
+      `'${display}' is not nullable, so moving its value out would leave the ` +
+        `object without one. Declare it 'var ${name}: ${typeToString(fi.type)} | null' ` +
+        "so the move leaves null in it.",
+      DiagnosticCode.UseAfterMove,
+      loc
+    );
+    return;
+  }
+  if (!fi.isMutable) {
+    ctx.error(
+      `Moving '${display}' out leaves null in it, so the field must be declared 'var'.`,
+      DiagnosticCode.InvalidAssignment,
+      loc
+    );
+    return;
+  }
+  ctx.model.setFieldTake(me as Node);
 }
 
 /**
@@ -11541,6 +11610,14 @@ function checkStatement(ctx: CheckerContext, stmt: Statement): void {
       // `return this.field` in a consuming method hands the field's
       // ownership to the caller — a move-out, or the dispose glue
       // would release what was just returned.
+      // `return this.field` of a `scoped T` field hands its value to
+      // the caller: a take.
+      if (argument != null && argument is MemberExpression) {
+        let sfi = scopedFieldInfo(ctx, argument);
+        if (sfi != null) {
+          recordScopedFieldTake(ctx, argument, sfi as FieldInfo, loc);
+        }
+      }
       if (argument != null && ctx.owningReceiver && argument is MemberExpression) {
         let me = argument;
         if (me.object is ThisExpression) {
@@ -16893,7 +16970,7 @@ function registerClassDeclaration(ctx: CheckerContext, cd: ClassDeclaration): vo
       let cp = caseParams[cpi];
       let fieldName = cp.name.name;
       var fieldType = resolveTypeAnnotation(ctx, cp.typeAnnotation);
-      rejectSecondClassStorage(ctx, fieldType, "a field", cp.typeAnnotation.loc);
+      rejectFieldStorage(ctx, fieldType, cp.typeAnnotation.loc);
 
       if (cp.defaultValue != null) {
         hasCtorInitializers = true;
@@ -16994,7 +17071,7 @@ function registerClassDeclaration(ctx: CheckerContext, cd: ClassDeclaration): vo
         let fieldName = getMemberName(ctx, fd.name as Node);
         let fieldType = if (fd.typeAnnotation != null) {
           let resolved = resolveTypeAnnotation(ctx, fd.typeAnnotation as TypeAnnotation);
-          rejectSecondClassStorage(ctx, resolved, "a field", fd.loc);
+          rejectFieldStorage(ctx, resolved, fd.loc);
           resolved
         } else {
           new ErrorType() as Type
@@ -17351,9 +17428,15 @@ function registerClassDeclaration(ctx: CheckerContext, cd: ClassDeclaration): vo
           // projection like `f.name` derives from; counting it is what
           // keeps the rule from rejecting the accessors that motivate
           // borrows in the first place.
+          // A `scoped T` class's `T` comes out of `this`, so the
+          // receiver is the source a returned `T` derives from: the
+          // instance carries the restriction out (ownership.md §"Scoped
+          // type arguments").
           checkBorrowDerivation(
             ctx, methodType.parameters, methodType.returnType,
-            classType.isResource, md.loc);
+            classType.isResource ||
+                mentionsTypeParams(methodType.returnType, scopedTypeParamsOf(classType)),
+            md.loc);
 
           if (ownMethodNames.has(methodName)) {
             let existingInfo = classType.members[methodName];

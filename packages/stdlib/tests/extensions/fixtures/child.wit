@@ -17,6 +17,30 @@ interface ops {
   grow: async func(mebibytes: u32) -> u32;
   /// Counts the calls since the instance started.
   count: async func() -> u32;
+  /// A transaction on the caller's store: begin, put, commit, drop.
+  transact: async func(key: string, value: u32) -> u32;
+}
+
+/// What the caller serves: a store with transactions, a resource the
+/// caller owns and the child holds through a proxy.
+interface store {
+  resource txn {
+    put: func(key: string, value: u32);
+    commit: func() -> u32;
+  }
+  begin: func() -> own<txn>;
+  /// How many puts `txn` holds: a borrow across the boundary.
+  size: func(txn: borrow<txn>) -> u32;
+}
+
+/// What the child exports and the caller holds through proxies.
+interface sessions {
+  resource session {
+    bump: async func() -> u32;
+  }
+  open: async func(name: string) -> own<session>;
+  /// How many sessions have been dropped.
+  disposed: async func() -> u32;
 }
 
 interface callbacks {
@@ -36,7 +60,9 @@ interface plain {
 
 world child {
   import callbacks;
+  import store;
   export ops;
+  export sessions;
 }
 
 world relay-world {

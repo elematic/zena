@@ -33,6 +33,7 @@ import {MemberEntry} from 'package-manager:records';
 import {Pds} from 'pds:pds';
 import {CreateRecord, RepositoryError, Write} from 'pds:repository';
 import {createApp} from 'pds:server';
+import {MemoryCredentialStore, Sessions} from 'pds:sessions';
 import {Account, AccountKind, MemoryStorage, SigningKey} from 'pds:storage';
 
 let HOST = 'did:web:pkg.test';
@@ -61,12 +62,15 @@ final class Fixture {
     callers[ALICE] = new SigningKey(KeyType.P256, ALICE_KEY).publicKey();
     callers[BOB] = new SigningKey(KeyType.P256, BOB_KEY).publicKey();
     let submitted = this.submitted;
+    let pds = this.pds;
     let host = new PackageHost(this.pds, config, store, this.records,
         async (did: String, fresh: boolean): Future<PublicKey | null> => {
           if (let (true, key) = callers.get(did)) {
             return key;
           }
-          return null;
+          // An account this PDS holds, such as an automation account.
+          let held = await pds.storage.getAccount(did);
+          return if (held != null) held.key.publicKey() else null;
         },
         async (did: String, operation: PlcOperation): Future<void> => {
           if (this.plcDown) {
@@ -80,7 +84,13 @@ final class Fixture {
         },
         unreachableResolver());
     this.host = host;
-    this.app = createApp(this.pds, host);
+    var counter = 0;
+    let sessions = new Sessions(this.pds.storage, new MemoryCredentialStore(), filled(77), (count: i32) => {
+      counter += 1;
+      return new FixedArray<u8>(count, (counter + 100) as u8);
+    });
+    host.sessions = sessions;
+    this.app = createApp(this.pds, host, sessions);
   }
 
   /** A token from `caller`'s PDS for `method`. */
@@ -122,6 +132,35 @@ final class Fixture {
     let app = this.app;
     runFuture((async () => {
       let req = new Request.fromUrl(`http://localhost/xrpc/${method}${query}`, 'GET', headers);
+      await app.handleRequest(req, res);
+    })());
+    return res;
+  }
+
+  /** POSTs JSON to `path`, with `token` as a Bearer token when there is one. */
+  post(path: String, body: String, token: String | null): Response {
+    let headers = new HashMap<String, String>();
+    headers['content-type'] = 'application/json';
+    if (token != null) {
+      headers['authorization'] = `Bearer ${token as String}`;
+    }
+    let res = new Response();
+    let app = this.app;
+    runFuture((async () => {
+      let req = new Request.fromUrl(`http://localhost${path}`, 'POST', headers, bytesStream(body.toBytes()));
+      await app.handleRequest(req, res);
+    })());
+    return res;
+  }
+
+  /** GETs `path` with `token` as a Bearer token. */
+  getWith(path: String, token: String): Response {
+    let headers = new HashMap<String, String>();
+    headers['authorization'] = `Bearer ${token}`;
+    let res = new Response();
+    let app = this.app;
+    runFuture((async () => {
+      let req = new Request.fromUrl(`http://localhost${path}`, 'GET', headers);
       await app.handleRequest(req, res);
     })());
     return res;
@@ -491,6 +530,60 @@ export let tests = suite('pds:host', () => {
     ok(putMaintainers(fixture, BOB, pkgDid, new Maintainers([Maintainer.ofDid(ALICE, OWNER),
         new Maintainer(null, bob.commitment(), null, null, OWNER)], 2 as i64), [], swap));
     ok(upload(fixture, BOB, pkgDid));
+  });
+
+  test('creates an automation account that signs in and publishes, as a publisher only', (ctx) => {
+    let fixture = new Fixture();
+    let org = ok(createOrganization(fixture, ALICE, 'acme'));
+    let orgDid = org['did'] as String;
+    let pkg = ok(createPackage(fixture, ALICE, orgDid, 'router'));
+    let pkgDid = pkg['did'] as String;
+    var swap = (pkg['maintainers'] as JsonObject)['cid'] as String;
+
+    let body = `{"organization": "${orgDid}", "name": "ci"}`;
+    equal(errorOf(fixture.call(BOB, 'createAutomationAccount', body)), 'Forbidden');
+    let bot = ok(fixture.call(ALICE, 'createAutomationAccount', body));
+    let botDid = bot['did'] as String;
+    equal(bot['handle'] as String, 'ci.acme.pkg.test');
+    equal(fixture.records.lookup('ci.acme.pkg.test') as String, botDid);
+    equal(fixture.submitted[botDid].rotationKeys.length, 1);
+    equal((runFuture(fixture.pds.storage.getAccount(botDid)) as Account).kind, AccountKind.Automation);
+    // Its name is taken in the scope, as a package's would be.
+    equal(errorOf(fixture.call(ALICE, 'createAutomationAccount', body)), 'NameTaken');
+    equal(errorOf(createPackage(fixture, ALICE, orgDid, 'ci')), 'NameTaken');
+
+    // It signs in with its app password, and gets a token for the host
+    // from its PDS, which is this one.
+    let session = ok(fixture.post('/xrpc/com.atproto.server.createSession',
+        `{"identifier": "ci.acme.pkg.test", "password": "${bot['appPassword'] as String}"}`, null));
+    let access = session['accessJwt'] as String;
+    let serviceAuth = (method: String): String => ok(fixture.getWith(
+        `/xrpc/com.atproto.server.getServiceAuth?aud=${HOST}&lxm=${method}`, access))['token'] as String;
+    let upload = 'dev.zena-lang.host.uploadArtifact';
+    equal(errorOf(fixture.call(null, 'uploadArtifact', new FixedArray<u8>(4, 1 as u8), `?package=${pkgDid}`,
+        'application/octet-stream', `Bearer ${serviceAuth(upload)}`)), 'Forbidden');
+
+    // A package's owners add it as a publisher, marked as automation.
+    let entry = new MemberEntry(botDid, PUBLISHER, filled(180), true);
+    let unmarked = new MemberEntry(botDid, PUBLISHER, filled(181));
+    let asBot = (role: String, marked: boolean, behind: MemberEntry): Maintainers => new Maintainers([
+        Maintainer.ofDid(ALICE, OWNER), new Maintainer(null, behind.commitment(), null, null, role, marked)]);
+    equal(errorOf(putMaintainers(fixture, ALICE, pkgDid, asBot(PUBLISHER, false, unmarked), [unmarked], swap)),
+        'InvalidRequest');
+    let ownerEntry = new MemberEntry(botDid, OWNER, filled(182), true);
+    equal(errorOf(putMaintainers(fixture, ALICE, pkgDid, asBot(OWNER, true, ownerEntry), [ownerEntry], swap)),
+        'InvalidRequest');
+    swap = ok(putMaintainers(fixture, ALICE, pkgDid, asBot(PUBLISHER, true, entry), [entry], swap))['cid'] as String;
+    ok(fixture.call(null, 'uploadArtifact', new FixedArray<u8>(4, 1 as u8), `?package=${pkgDid}`,
+        'application/octet-stream', `Bearer ${serviceAuth(upload)}`));
+    // It writes attestations to its own repository, and nothing else.
+    let attestation = `{"$type": "dev.zena-lang.package.attestation", "subject": {"uri": "at://${pkgDid}/dev.zena-lang.package.release/1.0.0", "cid": "${swap}"}, "createdAt": "2026-10-27T00:00:00.000Z"}`;
+    ok(fixture.post('/xrpc/com.atproto.repo.putRecord',
+        `{"repo": "${botDid}", "collection": "dev.zena-lang.package.attestation", "rkey": "one", "record": ${attestation}}`,
+        access));
+    equal(errorOf(fixture.post('/xrpc/com.atproto.repo.putRecord',
+        `{"repo": "${botDid}", "collection": "app.bsky.feed.post", "rkey": "x", "record": {"$type": "app.bsky.feed.post"}}`,
+        access)), 'InvalidRequest');
   });
 
   test('refuses calls without a valid, unused token for the method', (ctx) => {

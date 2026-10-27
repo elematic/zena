@@ -38,6 +38,7 @@ pub(crate) mod bindings {
             default: trappable,
             "zena-cli:host/http-server.[method]server.listen": async | trappable | store,
             "zena-cli:host/http-server.[method]response-writer.respond": trappable | store,
+            "zena-cli:host/extensions.drop": trappable | store,
         },
         with: {
             "zena-cli:host/process.command": super::CommandState,
@@ -80,6 +81,11 @@ pub struct ComponentState {
     /// In an extension's store: where its calls to the program go while
     /// a call from the program is in flight.
     pub(crate) callbacks: Option<crate::extensions::CallbackSender>,
+    /// In an extension's store: its own channel, which a call it makes
+    /// to another extension names as the caller.
+    pub(crate) my_calls: Option<crate::extensions::ExtensionSender>,
+    /// This store's proxies to other stores' resources.
+    pub(crate) proxies: crate::extensions::Proxies,
     /// In an extension's store: its memory limit, when it has one.
     pub(crate) limits: wasmtime::StoreLimits,
 }
@@ -97,6 +103,8 @@ impl ComponentState {
             instance: None,
             extensions: Vec::new(),
             callbacks: None,
+            my_calls: None,
+            proxies: Default::default(),
             limits: wasmtime::StoreLimits::default(),
         }
     }

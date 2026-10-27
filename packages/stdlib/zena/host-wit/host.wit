@@ -128,16 +128,22 @@ interface wasm {
 /// docs/design/runtime-components.md:
 ///
 /// - An interface the program serves is exported as a resource whose
-///   methods are the extension's free functions, plus
-///   `create: func(extension: u32) -> own<resource>`. The first call from
-///   an extension on that interface makes its object through `create`,
-///   and every later call lands on that object, so the object is the
-///   extension's identity.
+///   methods are the extension's free functions, with a static
+///   `create: static func(extension: u32) -> own<resource>`. The first
+///   call from an extension on that interface makes its object through
+///   `create`, and every later call lands on that object, so the object
+///   is the extension's identity.
 /// - An interface the program calls is imported as a resource whose
 ///   methods are the extension's exported functions, each result wrapped
-///   in `result<_, string>` (the string says why a call failed), plus
-///   `attach: func(extension: u32) -> own<resource>`, which the host
-///   serves with an object whose method calls go to that extension.
+///   in `result<_, string>` (the string says why a call failed), with a
+///   static `attach: static func(extension: u32) -> own<resource>`, which
+///   the host serves with an object whose method calls go to that
+///   extension.
+/// - A resource the shared interface declares crosses as a proxy: a
+///   method call on it goes to its owner, and dropping it drops the
+///   owner's handle. Its methods are declared the same on both sides,
+///   with the results wrapped on the program's side when the extension
+///   owns it.
 ///
 /// A call on an attached object must be awaited: a program that blocks
 /// on it keeps its instance entered, so the extension's calls back
@@ -184,8 +190,9 @@ interface extensions {
 
   /// Drops the extension and its memory. Calls already made complete;
   /// later calls on an object attached to it fail. Its handle is not
-  /// reused. Objects the program made for it through `create` are
-  /// released when the program's run ends.
+  /// reused. The objects the program made for it through `create` are
+  /// dropped when the program next yields to the host, since their
+  /// destructors are the program's own code.
   drop: func(extension: u32);
 }
 
