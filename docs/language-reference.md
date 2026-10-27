@@ -6058,7 +6058,6 @@ first-class `T` the read is a copy and the field keeps its value.
 ```zena
 class Slot<scoped T> {
   var #value: T | null = null;
-  new();
   put(value: T): void {
     this.#value = value;   // consumes value
   }
