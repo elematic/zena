@@ -430,6 +430,16 @@ final class CheckerContext {
   var resourceMentionOk: boolean = false;
 
   /**
+   * The argument a call is checking against a `scoped T` parameter's
+   * container (`Array<T>`), when the parameter type it passes as
+   * expected has had `T` substituted away. A literal there is the
+   * call-site temporary the storage rules sanction, but once `T` is
+   * `Own<R>` the substituted `Array<Own<R>>` no longer says so
+   * (ownership.md §"Scoped containers and extent nesting").
+   */
+  var scopedArgument: Node | null = null;
+
+  /**
    * Bindings and member paths some FlowNarrowings node has ever
    * mentioned, and bindings some FlowAssign has ever stored to. These
    * gate the flow-type walk: a reference to a binding no condition ever
@@ -5091,6 +5101,29 @@ function mentionsParamDerived(ctx: CheckerContext, e: Node) {
 
 
 /**
+ * The `HashMap<K, V>` a map literal builds. The literal instantiates it
+ * as `new HashMap<K, V>()` would, so its arguments meet the same rules:
+ * no borrow stored, no owner bound to an unrestricted parameter.
+ */
+function mapLiteralType(
+  ctx: CheckerContext,
+  keyType: Type,
+  valueType: Type,
+  loc: SourceLocation | null
+): Type {
+  let hashMapType = ctx.resolveTypeName("HashMap");
+  if (hashMapType is ClassType) {
+    let typeArgs = growable<Type>([keyType, valueType]);
+    let typeParams = hashMapType.typeParameters;
+    if (typeParams != null) {
+      rejectSecondClassTypeArguments(ctx, typeParams, typeArgs, loc);
+    }
+    return instantiateClassType(hashMapType, typeArgs);
+  }
+  return new ErrorType();
+}
+
+/**
  * Whether `expected` is a container type whose element type is
  * second-class — the shape a `scoped T` parameter presents to an
  * argument literal, raw (`Array<T>`) or substituted
@@ -5263,15 +5296,15 @@ function rejectOwnerTypeArgument(
   loc: SourceLocation | null
 ) {
   if (!typeCarriesOwner(t)) { return; }
-  ctx.error(
-    "Type '" + typeToString(t) + "' may not bind the unrestricted type " +
+  ctx.error(ownerTypeArgumentMessage(name, t), DiagnosticCode.TypeMismatch, loc);
+}
+
+function ownerTypeArgumentMessage(name: String, t: Type): String {
+  return "Type '" + typeToString(t) + "' may not bind the unrestricted type " +
     "parameter '" + name + "': the generic code may copy a '" + name +
     "', and a copy of an owner is a second owner of the same resource. " +
     "A generic over resources takes 'Own<" + name + ">' or 'Borrow<" +
-    name + ">', with '" + name + "' the resource class.",
-    DiagnosticCode.TypeMismatch,
-    loc
-  );
+    name + ">', with '" + name + "' the resource class.";
 }
 
 /**
@@ -14783,8 +14816,17 @@ function checkExpressionInner(ctx: CheckerContext, expr: Expression, expectedTyp
     // extent nesting"). Spelling such a type in an annotation is
     // rejected at the annotation, so a binding cannot reach here with
     // one.
-    if (!scopedElementsExpected(expectedType)) {
+    if (!scopedElementsExpected(expectedType) && ctx.scopedArgument !== expr) {
       rejectSecondClassStorage(ctx, inferredElementType, "an array", loc);
+      // A literal instantiates its array as `new` would, so an owner
+      // element meets the rule a `new FixedArray<Own<R>>` does: the
+      // array's `T` is unrestricted, and an index read copies it
+      // (ownership.md §"Affine type arguments"). Once, because a call
+      // checks its arguments twice.
+      if (typeCarriesOwner(inferredElementType)) {
+        ctx.errorOnce(expr, ownerTypeArgumentMessage("T", inferredElementType),
+            DiagnosticCode.TypeMismatch);
+      }
     }
 
     // A literal is an ImmutableArray unless the context demands mutable
@@ -15083,20 +15125,7 @@ function checkExpressionInner(ctx: CheckerContext, expr: Expression, expectedTyp
     }
     if (entries.length == 0) {
       if (expectedKeyType != null && expectedValType != null) {
-        let hashMapType = ctx.resolveTypeName("HashMap");
-        if (hashMapType != null) {
-          match (hashMapType) {
-            case ClassType as hm: {
-              let typeArgs = new GrowableArray<Type>();
-              typeArgs.push(expectedKeyType as Type);
-              typeArgs.push(expectedValType as Type);
-              instantiateClassType(hm, typeArgs) as Type
-            }
-            case _: new ErrorType()
-          }
-        } else {
-          new ErrorType()
-        }
+        mapLiteralType(ctx, expectedKeyType as Type, expectedValType as Type, loc)
       } else {
         ctx.error("Empty map literal requires type annotation. Use 'new HashMap<K, V>()' instead.", DiagnosticCode.TypeMismatch, loc);
         new ErrorType()
@@ -15135,19 +15164,7 @@ function checkExpressionInner(ctx: CheckerContext, expr: Expression, expectedTyp
         }
         ei += 1;
       }
-      // Return Map<K, V> if available, otherwise ErrorType.
-      let hashMapType = ctx.resolveTypeName("HashMap");
-      if (hashMapType != null) {
-        match (hashMapType) {
-          case ClassType as hm: {
-            let typeArgs = growable<Type>([targetKeyType, targetValType]);
-            instantiateClassType(hm, typeArgs) as Type
-          }
-          case _: new ErrorType()
-        }
-      } else {
-        new ErrorType()
-      }
+      mapLiteralType(ctx, targetKeyType, targetValType, loc)
     }
   }
   case TemplateLiteral {expressions, loc}: {
@@ -25383,6 +25400,10 @@ function checkCallExpressionInner(
         }
       }
 
+      // The parameters as declared, before a generic call substitutes
+      // its type arguments into them.
+      let declaredParams = effectiveFt.parameters;
+
       // Handle generic function calls.
       let typeParams = effectiveFt.typeParameters;
       if (typeParams != null) {
@@ -25582,11 +25603,16 @@ function checkCallExpressionInner(
         } else {
           null
         };
+        let outerScopedArgument = ctx.scopedArgument;
+        if (j < declaredParams.length && scopedElementsExpected(declaredParams[j])) {
+          ctx.scopedArgument = args[j];
+        }
         let argType = if (roundTwoType != null) {
           roundTwoType
         } else {
           checkExpression(ctx, args[j], expectedParamType)
         };
+        ctx.scopedArgument = outerScopedArgument;
         if (!isAssignableTo(ctx, argType, expectedParamType)) {
           ctx.error(
             "Type mismatch: argument '" + typeToString(argType) +
