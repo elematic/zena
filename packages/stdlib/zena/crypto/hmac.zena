@@ -1,6 +1,7 @@
 /**
  * HMAC-SHA256 (RFC 2104) and HKDF-SHA256 (RFC 5869). ECDSA signing
- * derives its nonces with HMAC-SHA256 (RFC 6979).
+ * derives its nonces with HMAC-SHA256 (RFC 6979). `constantTimeEquals`
+ * compares a MAC or a secret's hash with the one expected.
  */
 
 import {copyBytes, newByteArray} from 'zena:core';
@@ -30,6 +31,23 @@ export function hmacSha256(key: FixedArray<u8>, message: FixedArray<u8>): FixedA
   copyBytes(inner, BLOCK_SIZE, message as ByteArray, 0, message.length);
   copyBytes(outer, BLOCK_SIZE, sha256(inner as FixedArray<u8>) as ByteArray, 0, HASH_SIZE);
   return sha256(outer as FixedArray<u8>);
+}
+
+/**
+ * Whether `a` and `b` hold the same bytes, taking as long whichever byte
+ * differs, so that comparing a MAC or a secret's hash with the expected
+ * one does not show, by its timing, how much of it was right. Only the
+ * lengths, which are not secret, end it early.
+ */
+export function constantTimeEquals(a: FixedArray<u8>, b: FixedArray<u8>): boolean {
+  if (a.length != b.length) {
+    return false;
+  }
+  var difference = 0;
+  for (var i = 0; i < a.length; i += 1) {
+    difference = difference | ((a[i] as i32) ^ (b[i] as i32));
+  }
+  return difference == 0;
 }
 
 /**

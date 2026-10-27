@@ -96,6 +96,20 @@ gcloud secrets add-iam-policy-binding "$SECRET" --project "$PROJECT" --member "$
   --role roles/secretmanager.secretAccessor --quiet > /dev/null
 echo "    $SERVICE_ACCOUNT may read it"
 
+echo "==> Session secret $JWT_SECRET"
+if gcloud secrets describe "$JWT_SECRET" --project "$PROJECT" > /dev/null 2>&1; then
+  echo "    exists; left as it is"
+else
+  # 32 random bytes, which sign the access and refresh tokens of sessions,
+  # such as CI's. Replacing it signs every session out, and nothing else.
+  od -An -tx1 -N32 /dev/urandom | tr -d ' \n' | gcloud secrets create "$JWT_SECRET" --project "$PROJECT" \
+    --replication-policy automatic --data-file - --quiet
+  echo "    made"
+fi
+gcloud secrets add-iam-policy-binding "$JWT_SECRET" --project "$PROJECT" --member "$MEMBER" \
+  --role roles/secretmanager.secretAccessor --quiet > /dev/null
+echo "    $SERVICE_ACCOUNT may read it"
+
 echo "==> DNS zone $ZONE ($DOMAIN)"
 if gcloud dns managed-zones describe "$ZONE" --project "$PROJECT" > /dev/null 2>&1; then
   echo "    exists"

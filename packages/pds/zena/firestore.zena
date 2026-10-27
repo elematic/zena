@@ -23,6 +23,9 @@
  * - The package host's (`FirestoreHostStore`): `scopes/{scope}`: `org`;
  *   `names/{name}.{scope}`: `did`, `scope` and `name`; and
  *   `entries/{did}/list/{id}`: `cbor`, a member entry's DAG-CBOR.
+ * - Sessions' (`FirestoreCredentialStore`): `accounts/{did}/appPasswords/{name}`:
+ *   `hash` and `createdAt`; and `sessions/{jti}`: `did`, `scope`,
+ *   `expiresAt` and `appPassword`, a refresh token not yet spent.
  *
  * Firestore keeps IDs of the form `__…__` for itself, and record keys may
  * take that form, so such a key's document ID is prefixed with `%`, which
@@ -52,6 +55,7 @@ import {JsonValue, parseJson, stringify} from 'zena:json';
 import {PlcOperation} from 'atproto:plc';
 import {ClaimedName, ClaimedScope, HostStore} from './host.zena';
 import {PlcLog} from './plc-directory.zena';
+import {AppPassword, CredentialStore, RefreshSession} from './sessions.zena';
 import {
   Account, AccountKind, AccountStore, Head, RecordChange, RecordEntry, SigningKey, Storage, StoredBlob,
   sameHead, sortRecordEntries
@@ -440,6 +444,66 @@ export final class FirestoreHostStore implements HostStore {
     }
     await batch.commit();
   }
+}
+
+/** App passwords and refresh sessions in Firestore, for `tenant`. */
+export final class FirestoreCredentialStore implements CredentialStore {
+  #db: Firestore;
+  #root: DocumentReference;
+
+  new(db: Firestore, tenant: String) : #db = db, #root = tenantRoot(db, tenant);
+
+  async appPasswords(did: String): Future<Array<AppPassword>> {
+    let passwords = new GrowableArray<AppPassword>();
+    for (let snapshot in await this.#root.collection('accounts').doc(did).collection('appPasswords').get()) {
+      let hash = stringAt(snapshot, 'hash');
+      if (hash != null) {
+        passwords.push(new AppPassword(snapshot.id, hash as String, stringAt(snapshot, 'createdAt') ?? ''));
+      }
+    }
+    return passwords;
+  }
+
+  async addAppPassword(did: String, password: AppPassword): Future<boolean> {
+    return await claim(this.#db, this.#root.collection('accounts').doc(did).collection('appPasswords').doc(password.name),
+        new Fields().string('hash', password.hash).string('createdAt', password.createdAt));
+  }
+
+  async putSession(session: RefreshSession): Future<void> {
+    await this.#root.collection('sessions').doc(session.jti).set(new Fields().string('did', session.did)
+      .string('scope', session.scope).integer('expiresAt', session.expiresAt).string('appPassword', session.appPassword));
+  }
+
+  async getSession(jti: String): Future<RefreshSession | null> {
+    return sessionFrom(jti, await this.#root.collection('sessions').doc(jti).get());
+  }
+
+  async takeSession(jti: String): Future<RefreshSession | null> {
+    let ref = this.#root.collection('sessions').doc(jti);
+    var taken: RefreshSession | null = null;
+    await this.#db.runTransaction<boolean>(async (tx: Transaction): Future<boolean> => {
+      taken = sessionFrom(jti, await tx.get(ref));
+      if (taken != null) {
+        tx.delete(ref);
+      }
+      return true;
+    });
+    return taken;
+  }
+}
+
+/** The refresh session `snapshot` holds, or null. */
+function sessionFrom(jti: String, snapshot: DocumentSnapshot): RefreshSession | null {
+  let did = stringAt(snapshot, 'did');
+  let scope = stringAt(snapshot, 'scope');
+  if (did == null || scope == null) {
+    return null;
+  }
+  var expiresAt = 0 as i64;
+  if (let (true, value) = snapshot.getInteger('expiresAt')) {
+    expiresAt = value;
+  }
+  return new RefreshSession(jti, did as String, scope as String, expiresAt, stringAt(snapshot, 'appPassword') ?? '');
 }
 
 /** A staging PLC directory's operations in Firestore, for `tenant`. */

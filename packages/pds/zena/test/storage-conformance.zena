@@ -16,6 +16,7 @@ import {decodeCommit} from 'atproto:repo';
 import {MemberEntry, OWNER} from 'package-manager:records';
 import {HostStore} from 'pds:host';
 import {PlcLog} from 'pds:plc-directory';
+import {AppPassword, CredentialStore, RefreshSession} from 'pds:sessions';
 import {PlcOperation, didOfGenesis, genesisOperation} from 'atproto:plc';
 import {curveOf, publicKeyFor} from 'atproto:didkey';
 import {Pds} from 'pds:pds';
@@ -245,6 +246,45 @@ export function hostStoreConformance(make: () => HostStore): void {
 }
 
 /** Registers the PLC log tests, each on a new log from `make`. */
+/** What every `CredentialStore` must do. */
+export function credentialStoreConformance(make: () => CredentialStore): void {
+  test('keeps app passwords by name, once each', (ctx) => {
+    let store = make();
+    let did = 'did:plc:botbotbotbotbotbotbotbotb';
+    equal(runFuture(store.appPasswords(did)).length, 0);
+    isTrue(runFuture(store.addAppPassword(did, new AppPassword('ci', 'aa', '2026-10-27T00:00:00.000Z'))), 'added');
+    isTrue(!runFuture(store.addAppPassword(did, new AppPassword('ci', 'bb', '2026-10-27T00:00:01.000Z'))),
+        'a second of the same name');
+    isTrue(runFuture(store.addAppPassword(did, new AppPassword('deploy', 'cc', '2026-10-27T00:00:02.000Z'))), 'another');
+    isTrue(runFuture(store.addAppPassword('did:plc:otherotherotherotherothe', new AppPassword('ci', 'dd', 'x'))),
+        'the same name on another account');
+    let held = runFuture(store.appPasswords(did));
+    equal(held.length, 2);
+    var hashes = '';
+    for (let password in held) {
+      hashes = `${hashes}${password.name}=${password.hash} `;
+    }
+    isTrue(hashes.contains('ci=aa') && hashes.contains('deploy=cc'), hashes);
+  });
+
+  test('gives a refresh session to one taker', (ctx) => {
+    let store = make();
+    let session = new RefreshSession('jti1', 'did:plc:botbotbotbotbotbotbotbotb', 'com.atproto.appPass',
+        1790000000 as i64, 'ci');
+    runFuture(store.putSession(session));
+    let read = runFuture(store.getSession('jti1')) as RefreshSession;
+    equal(read.did, session.did);
+    equal(read.scope, session.scope);
+    equal(read.expiresAt, session.expiresAt);
+    equal(read.appPassword, 'ci');
+    let taken = runFuture(store.takeSession('jti1')) as RefreshSession;
+    equal(taken.did, session.did);
+    isNull(runFuture(store.takeSession('jti1')));
+    isNull(runFuture(store.getSession('jti1')));
+    isNull(runFuture(store.getSession('never')));
+  });
+}
+
 export function plcLogConformance(make: () => PlcLog): void {
   test('keeps each DID\'s operations in order, appending only at the end', (ctx) => {
     let log = make();

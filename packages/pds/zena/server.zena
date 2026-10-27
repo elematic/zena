@@ -8,6 +8,13 @@
  * `handlers/xrpc-repo.js`. pds.js serves one account and answers
  * `RepoNotFound` for any other; this finds the account each request names.
  *
+ * With `Sessions`, it serves password sessions, from
+ * `handlers/xrpc-server.js`: `com.atproto.server.createSession`,
+ * `refreshSession`, `getSession`, `deleteSession` and `getServiceAuth`;
+ * and an account's writes to its own repository, from
+ * `handlers/xrpc-repo.js`: `com.atproto.repo.putRecord` and
+ * `deleteRecord`.
+ *
  * With a `PackageHost`, it also serves the `dev.zena-lang.host.*` methods
  * that host implements (`pds:host`).
  */
@@ -20,11 +27,16 @@ import {parseI32} from 'zena:core';
 import {div} from 'zena:math';
 import {decodeCbor} from 'atproto:cbor';
 import {Cid} from 'atproto:cid';
-import {Value, fromJson, toJson} from 'atproto:data';
+import {MapValue, Value, fromJson, toJson} from 'atproto:data';
 import {Created, HostError, PackageHost} from './host.zena';
 import {Pds} from './pds.zena';
-import {Repository, RepositoryError} from './repository.zena';
+import {CreateRecord, DeleteRecord, Repository, RepositoryError, UpdateRecord, Write} from './repository.zena';
+import {SessionError, Sessions, Tokens} from './sessions.zena';
 import {Account} from './storage.zena';
+import {ServiceAuthClaims, createServiceAuthToken} from 'atproto:service-auth';
+import {isValidDid} from 'atproto:syntax';
+import {hex} from 'zena:encoding';
+import {randomBytes} from 'zena:random';
 
 /** The version `/xrpc/_health` reports. */
 export let version = '0.0.1';
@@ -376,6 +388,209 @@ function hostRoutes(router: Router, host: PackageHost): void {
   });
 }
 
+/** The time, in seconds since the Unix epoch. */
+function nowSeconds(): i64 {
+  return now().seconds;
+}
+
+/** Answers with `call`'s JSON, or with the error a session or repository refused with. */
+async function sessionCall(res: Response, call: () => Future<JsonObject | null>): Future<void> {
+  try {
+    let answer = await call();
+    if (answer != null) {
+      json(res, answer as JsonObject);
+    }
+  } catch (e) {
+    if (e is SessionError) {
+      let error = e as SessionError;
+      fail(res, error.status, error.error, error.message);
+      return;
+    }
+    if (e is RepositoryError) {
+      fail(res, 400, (e as RepositoryError).error, e.message);
+      return;
+    }
+    throw e;
+  }
+}
+
+/** A session's answer: its account and tokens. */
+function sessionJson(tokens: Tokens): JsonObject {
+  let answer = new JsonObject();
+  answer['did'] = tokens.account.did;
+  answer['handle'] = tokens.account.handle ?? 'handle.invalid';
+  answer['accessJwt'] = tokens.accessJwt;
+  answer['refreshJwt'] = tokens.refreshJwt;
+  answer['active'] = new Box<boolean>(true);
+  return answer;
+}
+
+/**
+ * The account a write names as its `repo`, which must be the caller's:
+ * an account writes its own repository only.
+ */
+async function ownRepository(pds: Pds, caller: Account, repo: JsonValue): Future<Account> {
+  let named = if (repo is String) await pds.findAccount(repo as String) else null;
+  if (named == null || named.did != caller.did) {
+    throw new SessionError(403, 'Forbidden', `${caller.did} may write only its own repository`);
+  }
+  return caller;
+}
+
+/** Adds the routes of password sessions, and of writes to one's own repository. */
+function sessionRoutes(router: Router, pds: Pds, sessions: Sessions): void {
+  router.post('/xrpc/com.atproto.server.createSession', async (req, res, next, params) => {
+    await sessionCall(res, async (): Future<JsonObject | null> => {
+      let input = await jsonBody(req, res);
+      if (input == null) {
+        return null;
+      }
+      if (!(input['identifier'] is String) || !(input['password'] is String)) {
+        fail(res, 400, 'InvalidRequest', 'identifier and password are required');
+        return null;
+      }
+      return sessionJson(await sessions.create(input['identifier'] as String, input['password'] as String,
+          nowSeconds()));
+    });
+  });
+
+  router.post('/xrpc/com.atproto.server.refreshSession', async (req, res, next, params) => {
+    await sessionCall(res, async (): Future<JsonObject | null> => {
+      return sessionJson(await sessions.refresh(req.getHeader('authorization'), nowSeconds()));
+    });
+  });
+
+  router.get('/xrpc/com.atproto.server.getSession', async (req, res, next, params) => {
+    await sessionCall(res, async (): Future<JsonObject | null> => {
+      let caller = await sessions.authenticate(req.getHeader('authorization'), nowSeconds());
+      let answer = new JsonObject();
+      answer['did'] = caller.account.did;
+      answer['handle'] = caller.account.handle ?? 'handle.invalid';
+      answer['active'] = new Box<boolean>(true);
+      return answer;
+    });
+  });
+
+  router.post('/xrpc/com.atproto.server.deleteSession', async (req, res, next, params) => {
+    await sessionCall(res, async (): Future<JsonObject | null> => {
+      await sessions.delete(req.getHeader('authorization'), nowSeconds());
+      return new JsonObject();
+    });
+  });
+
+  // A token for another service, signed with the account's own key, which
+  // the service checks against the account's DID document. One bound to a
+  // method lasts at most an hour, and one that is not, a minute, as the
+  // reference PDS allows.
+  router.get('/xrpc/com.atproto.server.getServiceAuth', async (req, res, next, params) => {
+    await sessionCall(res, async (): Future<JsonObject | null> => {
+      let caller = await sessions.authenticate(req.getHeader('authorization'), nowSeconds());
+      let query = req.url.searchParams();
+      let aud = query.get('aud');
+      if (aud == null || !isValidDid(aud as String)) {
+        fail(res, 400, 'InvalidRequest', 'aud must be a DID');
+        return null;
+      }
+      let lxm = query.get('lxm');
+      let method: String | null = if (lxm == null || lxm == '') null else lxm;
+      let issued = nowSeconds();
+      var exp = issued + (60 as i64);
+      let expText = query.get('exp');
+      if (expText != null && expText != '') {
+        if (let (true, parsed) = parseI32(expText as String)) {
+          exp = parsed as i64;
+        } else {
+          fail(res, 400, 'BadExpiration', 'exp is not a number');
+          return null;
+        }
+      }
+      let limit = if (method == null) (60 as i64) else (3600 as i64);
+      if (exp <= issued || exp - issued > limit) {
+        fail(res, 400, 'BadExpiration', `exp must be within ${limit} seconds from now`);
+        return null;
+      }
+      let key = caller.account.key;
+      let claims = new ServiceAuthClaims(caller.account.did, aud as String, exp, issued, method,
+          hex.encode(randomBytes(16)));
+      let answer = new JsonObject();
+      answer['token'] = createServiceAuthToken(claims, key.type, key.privateKey);
+      return answer;
+    });
+  });
+
+  router.post('/xrpc/com.atproto.repo.putRecord', async (req, res, next, params) => {
+    await sessionCall(res, async (): Future<JsonObject | null> => {
+      let caller = await sessions.authenticate(req.getHeader('authorization'), nowSeconds());
+      let input = await jsonBody(req, res);
+      if (input == null) {
+        return null;
+      }
+      if (!(input['collection'] is String) || !(input['rkey'] is String) || !(input['record'] is JsonObject)) {
+        fail(res, 400, 'InvalidRequest', 'repo, collection, rkey and record are required');
+        return null;
+      }
+      let account = await ownRepository(pds, caller.account, input['repo']);
+      let collection = input['collection'] as String;
+      let rkey = input['rkey'] as String;
+      let record = fromJson(input['record']);
+      if (!(record is MapValue)) {
+        fail(res, 400, 'InvalidRequest', 'the record is not an object');
+        return null;
+      }
+      let swap = swapCidOf(input);
+      let store = pds.storage.store(account.did);
+      let exists = (await store.getRecord(collection, rkey)) != null;
+      if (!exists && swap != null) {
+        fail(res, 400, 'InvalidSwap', `${collection}/${rkey} does not exist`);
+        return null;
+      }
+      let write = if (exists) new UpdateRecord(collection, rkey, record as MapValue, swap) as Write
+          else new CreateRecord(collection, rkey, record as MapValue) as Write;
+      await pds.repositoryOf(account).applyWrites([write], nowMicros());
+      let answer = new JsonObject();
+      answer['uri'] = `at://${account.did}/${collection}/${rkey}`;
+      answer['cid'] = ((await store.getRecord(collection, rkey)) as Cid).toString();
+      return answer;
+    });
+  });
+
+  router.post('/xrpc/com.atproto.repo.deleteRecord', async (req, res, next, params) => {
+    await sessionCall(res, async (): Future<JsonObject | null> => {
+      let caller = await sessions.authenticate(req.getHeader('authorization'), nowSeconds());
+      let input = await jsonBody(req, res);
+      if (input == null) {
+        return null;
+      }
+      if (!(input['collection'] is String) || !(input['rkey'] is String)) {
+        fail(res, 400, 'InvalidRequest', 'repo, collection and rkey are required');
+        return null;
+      }
+      let account = await ownRepository(pds, caller.account, input['repo']);
+      let collection = input['collection'] as String;
+      let rkey = input['rkey'] as String;
+      // Deleting a record that is not there is done already.
+      if ((await pds.storage.store(account.did).getRecord(collection, rkey)) != null) {
+        await pds.repositoryOf(account).applyWrites([new DeleteRecord(collection, rkey, swapCidOf(input))],
+            nowMicros());
+      }
+      return new JsonObject();
+    });
+  });
+}
+
+/** The `swapRecord` CID a write gives, or null; one that is not a CID is refused. */
+function swapCidOf(input: JsonObject): Cid | null {
+  let swap = input['swapRecord'];
+  if (!(swap is String)) {
+    return null;
+  }
+  let cid = parseCid(swap as String);
+  if (cid == null) {
+    throw new SessionError(400, 'InvalidRequest', `swapRecord '${swap as String}' is not a CID`);
+  }
+  return cid;
+}
+
 /** The `entries` a call gives, as values; none when it gives none. */
 function entriesOf(input: JsonObject): Array<Value> {
   let entries = new GrowableArray<Value>();
@@ -407,7 +622,7 @@ function writtenJson(created: Created): JsonObject {
  * Returns the application that serves every route, for the accounts in
  * `pds`, and the host methods of `host` when there is one.
  */
-export function createApp(pds: Pds, host: PackageHost | null = null): App {
+export function createApp(pds: Pds, host: PackageHost | null = null, sessions: Sessions | null = null): App {
   let app = new App();
   let router = new Router();
 
@@ -586,6 +801,9 @@ export function createApp(pds: Pds, host: PackageHost | null = null): App {
 
   if (host != null) {
     hostRoutes(router, host as PackageHost);
+  }
+  if (sessions != null) {
+    sessionRoutes(router, pds, sessions as Sessions);
   }
   app.use(router.routes());
   return app;

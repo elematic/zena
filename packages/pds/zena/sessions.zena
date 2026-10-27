@@ -1,0 +1,335 @@
+/**
+ * Password sessions for the accounts the server holds:
+ * `com.atproto.server.createSession`, `refreshSession`, `getSession` and
+ * `deleteSession`, and the access tokens other calls carry. Ported from
+ * pds.js: `packages/core/src/auth.js` (the access and refresh tokens),
+ * `packages/core/src/app-password.js` and `packages/core/src/session.js`.
+ *
+ * An account signs in with an app password: the server keeps no other
+ * password for the accounts it creates, which no one signs in to but the
+ * automation accounts CI publishes as (docs/design/package-manager.md,
+ * "Publishing a release"). An app password is 80 random bits the server
+ * generates, so it is kept as its HMAC-SHA256 keyed by the account's DID:
+ * a slow hash defends a password someone chose, which this is not. pds.js
+ * uses PBKDF2, which WebCrypto offers it; nothing here needs it.
+ *
+ * Access and refresh tokens are JWTs signed with HMAC-SHA256 under the
+ * server's secret, as pds.js and the reference PDS sign them. An access
+ * token lasts two hours. A refresh token lasts 90 days, and is recorded by
+ * its `jti`: refreshing spends it, so a stolen refresh token works once,
+ * for whoever is first, and deleting the session ends it. pds.js keeps a
+ * spent token usable for two hours of grace, for a client whose answer was
+ * lost; this does not yet.
+ */
+
+import {Future} from 'zena:async';
+import {HashMap} from 'zena:collections';
+import {constantTimeEquals, hmacSha256} from 'zena:crypto';
+import {base32, base64Url, hex} from 'zena:encoding';
+import {JsonObject, JsonValue, parseJson, stringify} from 'zena:json';
+import {Account, Storage} from './storage.zena';
+
+/** The scope of a session opened with an app password. */
+export let SCOPE_APP_PASS = 'com.atproto.appPass';
+/** The scope of a refresh token. */
+let SCOPE_REFRESH = 'com.atproto.refresh';
+
+/** How long an access token lasts, in seconds. */
+export let ACCESS_SECONDS: i64 = 7200 as i64;
+/** How long a refresh token lasts, in seconds. */
+export let REFRESH_SECONDS: i64 = (90 * 24 * 60 * 60) as i64;
+
+/** A call refused, with the XRPC error and HTTP status to answer with. */
+export class SessionError extends Error {
+  status: i32;
+  /** Such as `AuthenticationRequired`, `InvalidToken` or `ExpiredToken`. */
+  error: String;
+
+  new(status: i32, error: String, message: String) : status = status, error = error, super(message);
+}
+
+/** An app password of an account, as the server keeps it: by name, and hashed. */
+export final class AppPassword {
+  name: String;
+  /** The password's HMAC-SHA256 keyed by the account's DID, in hex. */
+  hash: String;
+  createdAt: String;
+
+  new(this.name, this.hash, this.createdAt);
+}
+
+/** A refresh token the server issued and has not seen spent. */
+export final class RefreshSession {
+  jti: String;
+  did: String;
+  /** The scope access tokens from it carry. */
+  scope: String;
+  /** When it stops working, in seconds since the epoch. */
+  expiresAt: i64;
+  /** The app password it was opened with. */
+  appPassword: String;
+
+  new(this.jti, this.did, this.scope, this.expiresAt, this.appPassword);
+}
+
+/** Where app passwords and refresh sessions are kept. Several servers may share it. */
+export interface CredentialStore {
+  /** `did`'s app passwords. */
+  appPasswords(did: String): Future<Array<AppPassword>>;
+  /** Keeps `password` for `did` unless it has one of that name. Returns whether it did. */
+  addAppPassword(did: String, password: AppPassword): Future<boolean>;
+  putSession(session: RefreshSession): Future<void>;
+  getSession(jti: String): Future<RefreshSession | null>;
+  /**
+   * Deletes the session `jti` and returns it, or returns null when it is
+   * gone. Of two calls at once, only one gets it.
+   */
+  takeSession(jti: String): Future<RefreshSession | null>;
+}
+
+/** Credentials in memory, for tests and a server on its own. */
+export final class MemoryCredentialStore implements CredentialStore {
+  #passwords = new HashMap<String, GrowableArray<AppPassword>>();
+  #sessions = new HashMap<String, RefreshSession>();
+
+  new();
+
+  async appPasswords(did: String): Future<Array<AppPassword>> {
+    if (let (true, list) = this.#passwords.get(did)) {
+      return list;
+    }
+    return new GrowableArray<AppPassword>();
+  }
+
+  async addAppPassword(did: String, password: AppPassword): Future<boolean> {
+    var list = new GrowableArray<AppPassword>();
+    if (let (true, existing) = this.#passwords.get(did)) {
+      list = existing;
+    }
+    for (let held in list) {
+      if (held.name == password.name) {
+        return false;
+      }
+    }
+    list.push(password);
+    this.#passwords[did] = list;
+    return true;
+  }
+
+  async putSession(session: RefreshSession): Future<void> {
+    this.#sessions[session.jti] = session;
+  }
+
+  async getSession(jti: String): Future<RefreshSession | null> {
+    if (let (true, session) = this.#sessions.get(jti)) {
+      return session;
+    }
+    return null;
+  }
+
+  async takeSession(jti: String): Future<RefreshSession | null> {
+    if (let (true, session) = this.#sessions.get(jti)) {
+      this.#sessions.delete(jti);
+      return session;
+    }
+    return null;
+  }
+}
+
+/**
+ * A new app password, in atproto's `xxxx-xxxx-xxxx-xxxx` form: 16 base32
+ * characters, 80 bits from `random`.
+ */
+export function generateAppPassword(random: (count: i32) => FixedArray<u8>): String {
+  let text = base32.encode(random(10), false).asciiLowerCase();
+  return `${text.sliceBytes(0, 4)}-${text.sliceBytes(4, 8)}-${text.sliceBytes(8, 12)}-${text.sliceBytes(12, 16)}`;
+}
+
+/** How the server keeps `password` of `did`. */
+export function hashAppPassword(did: String, password: String): String {
+  return hex.encode(hmacSha256(did.toBytes() as FixedArray<u8>, password.toBytes() as FixedArray<u8>));
+}
+
+/** The account a request's access token is for, and the token's scope. */
+export final class Caller {
+  account: Account;
+  scope: String;
+
+  new(this.account, this.scope);
+}
+
+/** A session's tokens, and the account they are for. */
+export final class Tokens {
+  account: Account;
+  accessJwt: String;
+  refreshJwt: String;
+
+  new(this.account, this.accessJwt, this.refreshJwt);
+}
+
+/** Opens, refreshes and checks sessions for the accounts in `storage`. */
+export final class Sessions {
+  #storage: Storage;
+  #credentials: CredentialStore;
+  #secret: FixedArray<u8>;
+  #random: (count: i32) => FixedArray<u8>;
+
+  new(storage: Storage, credentials: CredentialStore, secret: FixedArray<u8>, random: (count: i32) => FixedArray<u8>)
+      : #storage = storage, #credentials = credentials, #secret = secret, #random = random;
+
+  /**
+   * Gives `did` a new app password named `name`, and returns it: the
+   * server keeps only its hash, so this is the one time it is seen.
+   */
+  async addAppPassword(did: String, name: String, createdAt: String): Future<String> {
+    let password = generateAppPassword(this.#random);
+    if (!(await this.#credentials.addAppPassword(did, new AppPassword(name, hashAppPassword(did, password), createdAt)))) {
+      throw new SessionError(400, 'DuplicateAppPassword', `${did} has an app password named ${name}`);
+    }
+    return password;
+  }
+
+  /**
+   * `createSession`: signs in to the account `identifier`, a DID or a
+   * handle, with one of its app passwords. Refuses in one way for an
+   * account that does not exist and a wrong password, so that the answer
+   * does not tell them apart.
+   */
+  async create(identifier: String, password: String, nowSeconds: i64): Future<Tokens> {
+    let refused = new SessionError(401, 'AuthenticationRequired', 'Invalid identifier or password');
+    let account = if (identifier.startsWith('did:')) await this.#storage.getAccount(identifier)
+        else await this.#storage.accountByHandle(identifier.asciiLowerCase());
+    if (account == null) {
+      throw refused;
+    }
+    let did = (account as Account).did;
+    let hash = hex.decode(hashAppPassword(did, password));
+    for (let held in await this.#credentials.appPasswords(did)) {
+      if (constantTimeEquals(hex.decode(held.hash), hash)) {
+        return await this.#open(account as Account, SCOPE_APP_PASS, held.name, nowSeconds);
+      }
+    }
+    throw refused;
+  }
+
+  /**
+   * `refreshSession`: spends the refresh token in `authorization` for new
+   * tokens. A token already spent, or deleted, is refused.
+   */
+  async refresh(authorization: String | null, nowSeconds: i64): Future<Tokens> {
+    let claims = this.#verify(bearer(authorization), 'refresh+jwt', nowSeconds);
+    let session = await this.#credentials.takeSession(stringClaim(claims, 'jti'));
+    if (session == null) {
+      throw new SessionError(400, 'ExpiredToken', 'the refresh token was spent or ended');
+    }
+    let found = session as RefreshSession;
+    let account = await this.#storage.getAccount(found.did);
+    if (account == null || found.expiresAt < nowSeconds) {
+      throw new SessionError(400, 'ExpiredToken', 'the session has ended');
+    }
+    return await this.#open(account as Account, found.scope, found.appPassword, nowSeconds);
+  }
+
+  /** `deleteSession`: ends the session whose refresh token is in `authorization`. */
+  async delete(authorization: String | null, nowSeconds: i64): Future<void> {
+    let claims = this.#verify(bearer(authorization), 'refresh+jwt', nowSeconds);
+    await this.#credentials.takeSession(stringClaim(claims, 'jti'));
+  }
+
+  /** The account whose access token is in `authorization`. */
+  async authenticate(authorization: String | null, nowSeconds: i64): Future<Caller> {
+    let claims = this.#verify(bearer(authorization), 'at+jwt', nowSeconds);
+    let account = await this.#storage.getAccount(stringClaim(claims, 'sub'));
+    if (account == null) {
+      throw new SessionError(401, 'InvalidToken', 'the account is gone');
+    }
+    return new Caller(account as Account, stringClaim(claims, 'scope'));
+  }
+
+  async #open(account: Account, scope: String, appPassword: String, nowSeconds: i64): Future<Tokens> {
+    let jti = base32.encode(this.#random(16), false).asciiLowerCase();
+    let access = new JsonObject();
+    access['scope'] = scope;
+    access['sub'] = account.did;
+    access['aud'] = account.did;
+    access['iat'] = new Box<f64>(nowSeconds as f64);
+    access['exp'] = new Box<f64>((nowSeconds + ACCESS_SECONDS) as f64);
+    let refresh = new JsonObject();
+    refresh['scope'] = SCOPE_REFRESH;
+    refresh['sub'] = account.did;
+    refresh['aud'] = account.did;
+    refresh['jti'] = jti;
+    refresh['iat'] = new Box<f64>(nowSeconds as f64);
+    refresh['exp'] = new Box<f64>((nowSeconds + REFRESH_SECONDS) as f64);
+    await this.#credentials.putSession(
+        new RefreshSession(jti, account.did, scope, nowSeconds + REFRESH_SECONDS, appPassword));
+    return new Tokens(account, this.#sign('at+jwt', access), this.#sign('refresh+jwt', refresh));
+  }
+
+  #sign(type: String, payload: JsonObject): String {
+    let header = new JsonObject();
+    header['typ'] = type;
+    header['alg'] = 'HS256';
+    let input = `${encodePart(stringify(header))}.${encodePart(stringify(payload))}`;
+    return `${input}.${base64Url.encode(hmacSha256(this.#secret, input.toBytes() as FixedArray<u8>), false)}`;
+  }
+
+  /** The claims of `token`, a JWT of type `type` this server signed, that has not expired. */
+  #verify(token: String, type: String, nowSeconds: i64): JsonObject {
+    let invalid = new SessionError(400, 'InvalidToken', 'the token is not one this server issued');
+    let parts = token.split('.');
+    if (parts.length != 3) {
+      throw invalid;
+    }
+    let input = `${parts[0]}.${parts[1]}`;
+    var signature = new FixedArray<u8>(0, 0 as u8);
+    try {
+      signature = base64Url.decode(parts[2]);
+    } catch (e) {
+      throw invalid;
+    }
+    if (!constantTimeEquals(hmacSha256(this.#secret, input.toBytes() as FixedArray<u8>), signature)) {
+      throw invalid;
+    }
+    let header = decodePart(parts[0]);
+    let claims = decodePart(parts[1]);
+    if (header == null || claims == null || (header as JsonObject)['typ'] != type) {
+      throw invalid;
+    }
+    let exp = (claims as JsonObject)['exp'];
+    if (!(exp is Box<f64>) || ((exp as Box<f64>).value as i64) < nowSeconds) {
+      throw new SessionError(400, 'ExpiredToken', 'the token has expired');
+    }
+    return claims as JsonObject;
+  }
+}
+
+/** The token in a `Bearer` authorization header. */
+function bearer(authorization: String | null): String {
+  if (authorization == null || !(authorization as String).startsWith('Bearer ')) {
+    throw new SessionError(401, 'AuthenticationRequired', 'a Bearer token is required');
+  }
+  let header = authorization as String;
+  return header.sliceBytes(7, header.length);
+}
+
+function stringClaim(claims: JsonObject, name: String): String {
+  let value = claims[name];
+  if (!(value is String)) {
+    throw new SessionError(400, 'InvalidToken', `the token has no ${name}`);
+  }
+  return value as String;
+}
+
+function encodePart(json: String): String {
+  return base64Url.encode(json.toBytes() as FixedArray<u8>, false);
+}
+
+function decodePart(part: String): JsonObject | null {
+  try {
+    let json = parseJson(String.fromBytes(base64Url.decode(part)));
+    return if (json is JsonObject) json as JsonObject else null;
+  } catch (e) {
+    return null;
+  }
+}
