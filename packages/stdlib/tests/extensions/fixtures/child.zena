@@ -2,9 +2,45 @@
 // child.wit, calling back through `callbacks`. Compiled by the
 // package's `build:fixtures` script.
 import { lookup } from 'test:ext/callbacks';
+import { begin, size } from 'test:ext/store';
 import { Future } from 'zena:async';
+import { Disposable } from 'zena:core';
 
 var calls = 0 as u32;
+var sessionsDropped = 0 as u32;
+
+/** A resource of the child's, held by the caller through a proxy. */
+export class Session implements Disposable {
+  #name: String;
+  var #count = 0 as u32;
+
+  new(name: String) : #name = name;
+
+  async bump(): Future<u32> {
+    this.#count += 1 as u32;
+    return this.#count;
+  }
+
+  [Disposable.dispose](): void {
+    sessionsDropped += 1 as u32;
+  }
+}
+
+export async function open(name: String): Future<Session> {
+  return new Session(name);
+}
+
+export async function disposed(): Future<u32> {
+  return sessionsDropped;
+}
+
+export async function transact(key: String, value: u32): Future<u32> {
+  using txn = begin();
+  txn.put(key, value);
+  txn.put(`${key}2`, value + (1 as u32));
+  let held = size(txn);
+  return txn.commit() + held * (100 as u32);
+}
 
 export async function compute(x: i32): Future<i32> {
   let mapped = await lookup(x);

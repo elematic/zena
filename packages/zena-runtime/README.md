@@ -53,7 +53,10 @@ it:
     a load binds every import the extension has to the host, to a
     resource the program exports (one object per extension, made by
     its `create`), or to another extension, and checks the two sides'
-    types. Each extension has a store on a thread of its own, with a
+    types. A resource the shared interface declares crosses as a proxy
+    in the other store's table, with its method calls and its drop
+    forwarded to the owner. Each extension has a store on a thread of
+    its own, with a
     memory limit and a per-call time limit when asked for, and a trap
     fails one call and restarts the instance. It is granted on its own
     (`Grant::extensions`, `--allow-extensions`).
