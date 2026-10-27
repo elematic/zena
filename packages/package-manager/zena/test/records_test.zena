@@ -27,6 +27,7 @@ import {
   Team,
   RETRACTION_TYPE,
   Retraction,
+  isValidLicenseExpression,
   isValidPackageName,
   isValidScopeName
 } from 'package-manager:records';
@@ -270,6 +271,18 @@ export let tests = suite('package-manager:records', () => {
       'rout er', 'ab--cd', 'xn--router', tooLong
     ]) {
       isFalse(isValidPackageName(name), name);
+    }
+  });
+
+  test('accepts SPDX license expressions', (ctx) => {
+    for (let text in ['MIT', 'Apache-2.0', 'GPL-2.0+', '(MIT OR Apache-2.0)', 'MIT AND BSD-3-Clause',
+        '(Apache-2.0 OR MIT) AND BSD-3-Clause', 'GPL-2.0-only WITH Classpath-exception-2.0',
+        'LicenseRef-Proprietary', 'DocumentRef-spdx-tool-1.2:LicenseRef-MIT-Style-2']) {
+      isTrue(isValidLicenseExpression(text), text);
+    }
+    for (let text in ['', 'MIT OR', 'AND MIT', '(MIT', 'MIT)', 'MIT Apache-2.0', 'MIT WITH', 'WITH MIT',
+        'MIT/Apache', 'GPL-2.0 WITH Exception+', 'MIT OR OR Apache-2.0']) {
+      isFalse(isValidLicenseExpression(text), text);
     }
   });
 

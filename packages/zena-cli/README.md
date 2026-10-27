@@ -114,7 +114,8 @@ creates a scope, with you as its only owner, and `zena scope info acme`
 describes one. Publishing never creates a scope.
 
 `zena publish` publishes the package you are in, at the `version` its
-`zena-package.json` gives. The first time, the package has no `did`, and
+`zena-package.json` gives, which needs a `description` and an SPDX
+`license`, such as `"MIT"`. The first time, the package has no `did`, and
 `zena publish --yes` creates it on the package host in the scope its
 manifest's `"scope"` names, else its workspace root's, else `--scope`.
 It writes the DID into the manifest, with the scope when only `--scope`
