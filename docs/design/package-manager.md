@@ -6,7 +6,7 @@ Status: **Proposed**, and partly built: the AT Protocol libraries
 `zena add`, `zena update` and `zena fetch`, `zena login` with app
 passwords, `zena publish`, `zena package create` and `zena scope`, and a
 package host in the PDS written in Zena (`packages/pds`), with the methods
-publishing needs.
+for publishing and for changing members, teams and maintainers.
 
 This document designs Zena's package manager. Packages are published on the
 AT Protocol (atproto), the protocol behind Bluesky. A package is an atproto

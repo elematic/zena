@@ -112,8 +112,8 @@ export let tests = suite('pds:repository', () => {
       new CreateRecord('com.example.profile', 'self', record('com.example.profile', 'me')),
     ], NOW));
     let second = runFuture(repository.applyWrites([
-      new UpdateRecord(POST, '3l3qo2vutsw2b', record(POST, 'one, edited')),
-      new DeleteRecord(POST, '3l3qo2vutsw2c'),
+      new UpdateRecord(POST, '3l3qo2vutsw2b', record(POST, 'one, edited'), null),
+      new DeleteRecord(POST, '3l3qo2vutsw2c', null),
     ], NOW));
     isTrue(first.rev.compareTo(second.rev) < 0, `${first.rev} < ${second.rev}`);
 
@@ -170,9 +170,36 @@ export let tests = suite('pds:repository', () => {
 
     // A write that their record makes invalid fails when it is tried again.
     racing.interloper = async (): Future<void> => {
-      await other.applyWrites([new DeleteRecord(POST, 'theirs')], NOW);
+      await other.applyWrites([new DeleteRecord(POST, 'theirs', null)], NOW);
     };
-    equal(refusal(repository, [new UpdateRecord(POST, 'theirs', record(POST, 'edited'))]), 'RecordNotFound');
+    equal(refusal(repository, [new UpdateRecord(POST, 'theirs', record(POST, 'edited'), null)]), 'RecordNotFound');
+  });
+
+  test('updates and deletes only the record a swap names, even when a change races it', (ctx) => {
+    let (pds, account, repository) = setUp();
+    runFuture(repository.applyWrites([new CreateRecord(POST, 'a', record(POST, 'one'))], NOW));
+    let first = runFuture(pds.storage.store(DID).getRecord(POST, 'a')) as Cid;
+    runFuture(repository.applyWrites([new UpdateRecord(POST, 'a', record(POST, 'two'), first)], NOW));
+    let second = runFuture(pds.storage.store(DID).getRecord(POST, 'a')) as Cid;
+    isTrue(!second.equals(first), 'updated');
+    // The first CID is no longer the record's.
+    equal(refusal(repository, [new UpdateRecord(POST, 'a', record(POST, 'three'), first)]), 'InvalidSwap');
+    equal(refusal(repository, [new DeleteRecord(POST, 'a', first)]), 'InvalidSwap');
+    equal(refusal(repository, [new UpdateRecord(POST, 'missing', record(POST, 'x'), first)]), 'InvalidSwap');
+
+    // A change that lands between the check and the commit is not
+    // overwritten: the swap is checked again when the commit is tried again.
+    let inner = pds.storage.store(DID);
+    let racing = new RacingStore(inner);
+    let raced = new Repository(account, racing, new TidClock(3));
+    let other = new Repository(account, inner, new TidClock(4));
+    racing.interloper = async (): Future<void> => {
+      await other.applyWrites([new UpdateRecord(POST, 'a', record(POST, 'theirs'), null)], NOW + (3600000000 as i64));
+    };
+    equal(refusal(raced, [new UpdateRecord(POST, 'a', record(POST, 'ours'), second)]), 'InvalidSwap');
+    isTrue(!(runFuture(inner.getRecord(POST, 'a')) as Cid).equals(second), 'their change stands');
+    runFuture(repository.applyWrites([new DeleteRecord(POST, 'a', runFuture(inner.getRecord(POST, 'a')))], NOW));
+    isNull(runFuture(inner.getRecord(POST, 'a')));
   });
 
   test('refuses writes that do not fit the repository, and writes nothing', (ctx) => {
@@ -180,22 +207,22 @@ export let tests = suite('pds:repository', () => {
     runFuture(repository.applyWrites([new CreateRecord(POST, 'a', record(POST, 'a'))], NOW));
     let before = runFuture(pds.storage.store(DID).getHead());
     equal(refusal(repository, [new CreateRecord(POST, 'a', record(POST, 'again'))]), 'InvalidRequest');
-    equal(refusal(repository, [new UpdateRecord(POST, 'b', record(POST, 'b'))]), 'RecordNotFound');
-    equal(refusal(repository, [new DeleteRecord(POST, 'b')]), 'RecordNotFound');
+    equal(refusal(repository, [new UpdateRecord(POST, 'b', record(POST, 'b'), null)]), 'RecordNotFound');
+    equal(refusal(repository, [new DeleteRecord(POST, 'b', null)]), 'RecordNotFound');
     equal(refusal(repository, [new CreateRecord(POST, 'c', record('com.example.other', 'c'))]), 'InvalidRecord');
     equal(refusal(repository, [new CreateRecord('not an nsid', 'c', record('not an nsid', 'c'))]), 'InvalidRequest');
     equal(refusal(repository, [new CreateRecord(POST, 'no/slash', record(POST, 'c'))]), 'InvalidRequest');
     // A later write in a batch failing leaves the earlier ones unwritten.
     equal(refusal(repository, [
       new CreateRecord(POST, 'd', record(POST, 'd')),
-      new DeleteRecord(POST, 'missing'),
+      new DeleteRecord(POST, 'missing', null),
     ]), 'RecordNotFound');
     isNull(runFuture(pds.storage.store(DID).getRecord(POST, 'd')));
     isTrue((runFuture(pds.storage.store(DID).getHead()) as Head).cid.equals((before as Head).cid));
     // Within a batch, a write sees the ones before it.
     equal(refusal(repository, [
       new CreateRecord(POST, 'e', record(POST, 'e')),
-      new DeleteRecord(POST, 'e'),
+      new DeleteRecord(POST, 'e', null),
     ]), '');
   });
 });

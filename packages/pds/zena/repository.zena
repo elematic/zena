@@ -41,11 +41,18 @@ export class RepositoryError extends Error {
   new(error: String, message: String) : error = error, super(message);
 }
 
-/** One change to a repository's records. */
+/**
+ * One change to a repository's records. An update or a deletion with a
+ * non-null `swapRecord` happens only while the record's CID is that one, and is
+ * refused with `InvalidSwap` otherwise, as `com.atproto.repo.putRecord`'s
+ * `swapRecord` is: the check is made again on every attempt to commit, so
+ * a change that lands between the check and the commit is not overwritten.
+ */
+// TODO(#603): default `swapRecord` to null once variants take defaults.
 export sealed class Write {
   case CreateRecord(collection: String, rkey: String, record: MapValue)
-  case UpdateRecord(collection: String, rkey: String, record: MapValue)
-  case DeleteRecord(collection: String, rkey: String)
+  case UpdateRecord(collection: String, rkey: String, record: MapValue, swapRecord: Cid | null)
+  case DeleteRecord(collection: String, rkey: String, swapRecord: Cid | null)
 }
 
 /** An account's repository, over its store. */
@@ -113,10 +120,16 @@ export final class Repository {
       }
       let key = `${collection}/${rkey}`;
       var exists = false;
+      var current: Cid | null = null;
       if (let (true, present) = pending.get(key)) {
         exists = present;
       } else {
-        exists = (await this.#store.getRecord(collection, rkey)) != null;
+        current = await this.#store.getRecord(collection, rkey);
+        exists = current != null;
+      }
+      let swap = swapOf(write);
+      if (swap != null && (current == null || !(current as Cid).equals(swap as Cid))) {
+        throw new RepositoryError('InvalidSwap', `${key} is not ${(swap as Cid).toString()}`);
       }
       match (write) {
         case CreateRecord {record}: {
@@ -277,6 +290,15 @@ function collectionOf(write: Write): String {
     case CreateRecord {collection}: collection
     case UpdateRecord {collection}: collection
     case DeleteRecord {collection}: collection
+  };
+}
+
+/** The CID an update or deletion requires the record to have, or null. */
+function swapOf(write: Write): Cid | null {
+  return match (write) {
+    case CreateRecord {}: null
+    case UpdateRecord {swapRecord}: swapRecord
+    case DeleteRecord {swapRecord}: swapRecord
   };
 }
 
