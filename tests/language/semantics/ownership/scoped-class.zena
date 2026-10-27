@@ -4,19 +4,27 @@
 // may hold `T` in its fields, and an instance carries its argument's
 // restriction: at an owner it moves like the owner. In the body a `T`
 // is consumed exactly once, and moving a `T` field out is a take, so
-// the field must be a nullable `var`.
+// the field must be a `var` that can be empty, such as `WithDefault<T>`.
+// (`T | null` would need `T` constrained to references, which an owner
+// does not satisfy.)
 import {Own, Borrow, Disposable} from 'zena:core';
+
+@intrinsic('type.withDefault')
+declare type WithDefault<T>;
+
+@intrinsic('default_value')
+declare function defaultValue<scoped T>(): WithDefault<T>;
 
 resource class Res {
   [Disposable.dispose](this: Own<this>): void {}
 }
 
 class Slot<scoped T> {
-  var #value: T | null = null;
+  var #value: WithDefault<T> = defaultValue<T>();
   put(value: T): void {
     this.#value = value;
   }
-  take(): T | null {
+  take(): WithDefault<T> {
     return this.#value;
   }
 }
@@ -31,8 +39,8 @@ class Fixed<scoped T> {
 }
 
 class Kept<scoped T> {
-  #value: T | null = null;
-  get(): T | null {
+  #value: WithDefault<T> = defaultValue<T>();
+  get(): WithDefault<T> {
     return this.#value; // @error: must be declared 'var'
   }
 }

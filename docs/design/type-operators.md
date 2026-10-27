@@ -148,14 +148,14 @@ field of such a class is taken from like a nullable one
 (ownership.md §"Scoped type arguments").
 
 The rule that makes the operator necessary is enforced too (#614): a
-type parameter its declaration writes in a union with a reference type
-(`T | null`, `T | String`) may not be bound to a primitive. The checker
-marks such a parameter where it resolves the written union and rejects
-the instantiation, as it rejects an owner bound to an unrestricted
-parameter. Unions inferred inside a body are not marked: a dependency's
-body may be checked after its instantiations, so marking from it would
-make the diagnostic depend on check order. Such a body still fails in
-lowering at a primitive.
+type parameter not constrained to references may not be in a union with
+anything else, `T | null` included (types.md §"Unbounded Type Parameters
+in Unions"). Such a parameter can be bound to a primitive, and a
+primitive's union with another type has no representation.
+`WithDefault<T>` is the slot for an unconstrained `T`, and
+`T extends anyref` the alternative for a parameter that is never a
+primitive. An owner does not satisfy `anyref`, so a `scoped T` class that
+holds owners uses `WithDefault<T>`.
 
 Not yet implemented: a field of type `WithDefault<T>` still needs its
 `= defaultValue<T>()` initializer, where a nullable `var` field may

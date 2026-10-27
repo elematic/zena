@@ -116,7 +116,7 @@ import {
   isScopedType, scopedInner,
   isSecondClass, typeContainsSecondClass, typeContainsScoped,
   typeContainsConcreteSecondClass, borrowInnerRestricts,
-  typeCarriesOwner, isAffineContainer, isScopedClassParam, hasPrimitiveRepresentation
+  typeCarriesOwner, isAffineContainer, isScopedClassParam
 , ErasedType, FunctionDeclInfo, internFunctionType, mergeRow, mergeTupleRow } from './types.zena';
 import { SemanticModel, ModelIndex, InterfaceAdaptation, SymbolDependencies, ClosureDependency, FunctionAdaptationDependency, EdgeDrop, DeferredBodies } from './semantic-model.zena';
 import {
@@ -636,6 +636,9 @@ final class CheckerContext {
 
   /** Nodes that already reported an `errorOnce`, for the same reason. */
   #onceErrorNodes = new Set<i32>();
+
+  /** Locations and messages that already reported an `errorOnceAt`. */
+  #onceErrorSites = new Set<String>();
 
   /**
    * Second-class borrow reads of the current suspending body, decided
@@ -3799,6 +3802,21 @@ final class CheckerContext {
     this.diagnostics.reportError(message, code, node.loc);
   }
 
+  /**
+   * An error reported at most once per location and message, for a rule
+   * about a type that is resolved more than once: a method's signature
+   * is resolved again for its body.
+   */
+  errorOnceAt(message: String, code: DiagnosticCode, loc: SourceLocation | null): void {
+    if (this.#diagnosticsSuppressed) { return; }
+    if (loc != null) {
+      let site = `${i32ToString(loc.start)}:${i32ToString(loc.end)}:${message}`;
+      if (this.#onceErrorSites.has(site)) { return; }
+      this.#onceErrorSites.add(site);
+    }
+    this.diagnostics.reportError(message, code, loc);
+  }
+
   warning(message: String, code: DiagnosticCode, loc: SourceLocation | null): void {
     if (this.#diagnosticsSuppressed) { return; }
     this.diagnostics.reportWarning(message, code, loc);
@@ -5278,44 +5296,88 @@ function rejectAffineStructuralMember(
 }
 
 /**
- * Marks the type parameters a written union puts beside a reference
- * type (`T | null`, `T | String`). Only written unions: one inferred
- * in a body would be seen only once that body is checked, which for a
- * dependency may be after its instantiations were.
+ * The type parameter whose representation `t` has, when that parameter
+ * is not constrained to references and may therefore be bound to a
+ * primitive: `T` itself, a handle on it (`Own<T>`), or an open
+ * operator over it (`WithDefault<T>`). Null when `t`'s representation
+ * does not depend on such a parameter.
  */
-function markReferenceUnionParams(members: Array<Type>) {
-  var hasReference = false;
-  for (let m in members) {
-    if (!(m is TypeParameterType) && !hasPrimitiveRepresentation(m)) {
-      hasReference = true;
-    }
+function unconstrainedTypeParamOf(t: Type): TypeParameterType | null {
+  if (t is TypeParameterType) {
+    return if (isGuaranteedReference(t)) null else t;
   }
-  if (!hasReference) { return; }
-  for (let m in members) {
-    if (m is TypeParameterType) { m.inReferenceUnion = true; }
+  if (!(t is TypeAliasType)) { return null; }
+  let alias = t as TypeAliasType;
+  if (isOwnershipWrapper(alias)) {
+    let inner = ownershipHandleInner(alias);
+    return if (inner == null) null else unconstrainedTypeParamOf(inner as Type);
   }
+  if (isScopedType(alias)) {
+    let inner = scopedInner(alias);
+    return if (inner == null) null else unconstrainedTypeParamOf(inner as Type);
+  }
+  if (alias.intrinsicName != null) {
+    // `ScopedFrom<T, R>` is represented as `R`; the other operators as
+    // their argument.
+    let args = alias.typeArguments;
+    if (args == null || args.length == 0) { return null; }
+    let at = if (alias.intrinsicName == 'type.scopedFrom' && args.length == 2) 1 else 0;
+    return unconstrainedTypeParamOf(args[at]);
+  }
+  if (alias.resolving) { return null; }
+  alias.resolving = true;
+  let res = unconstrainedTypeParamOf(alias.target);
+  alias.resolving = false;
+  return res;
 }
 
 /**
- * Rejects a primitive bound to a type parameter its declaration writes
- * in a union with a reference type (#614). `i32 | null` has no
- * representation, so the instantiation could not be compiled.
+ * Whether every value of `t` is a reference, so `t` may be in a union
+ * with other references: a class (unless it is an extension on a
+ * primitive), an interface, an array, a tuple, a record, a function,
+ * `anyref`, `null`, a union of them, or a type parameter constrained to
+ * one.
  */
-function rejectPrimitiveInReferenceUnion(
-  ctx: CheckerContext,
-  param: TypeParameterType,
-  arg: Type,
-  loc: SourceLocation | null
-) {
-  if (!param.inReferenceUnion || !hasPrimitiveRepresentation(arg)) { return; }
-  let name = param.name;
-  ctx.error(
-    `Type '${typeToString(arg)}' may not bind '${name}': the declaration writes ` +
-    `'${name}' in a union with a reference type, such as '${name} | null', and a ` +
-    `primitive has no such union. A slot that may be empty is 'WithDefault<${name}>'.`,
-    DiagnosticCode.TypeMismatch,
-    loc
-  );
+function isGuaranteedReference(t: Type): boolean {
+  return match (t) {
+    case ClassType as ct: {
+      let onType = ct.onType;
+      if (ct.isExtension && onType != null) isGuaranteedReference(onType) else true
+    }
+    case InterfaceType: true
+    case ArrayType: true
+    case TupleT: true
+    case RecordT: true
+    case FunctionType: true
+    case AnyRefType: true
+    case EqRefType: true
+    case ExternRefType: true
+    case NullType: true
+    case UnionT {types}: {
+      for (let m in types) {
+        if (!isGuaranteedReference(m)) { return false; }
+      }
+      true
+    }
+    case TypeParameterType as tp: {
+      let c = tp.constraint;
+      c != null && isGuaranteedReference(c)
+    }
+    case TypeAliasType as ta: {
+      if (isOwnershipWrapper(ta)) {
+        let inner = ownershipHandleInner(ta);
+        inner != null && isGuaranteedReference(inner)
+      } else if (ta.resolving) {
+        false
+      } else {
+        ta.resolving = true;
+        let res = isGuaranteedReference(ta.target);
+        ta.resolving = false;
+        res
+      }
+    }
+    case _: false
+  };
 }
 
 /**
@@ -5332,9 +5394,6 @@ function rejectSecondClassTypeArguments(
   loc: SourceLocation | null
 ) {
   for (var i = 0; i < typeArgs.length; i += 1) {
-    if (i < typeParams.length) {
-      rejectPrimitiveInReferenceUnion(ctx, typeParams[i], typeArgs[i], loc);
-    }
     // A `scoped` class parameter admits the argument; the instantiated
     // type then carries the restriction itself (ownership.md §"Scoped
     // containers and extent nesting").
@@ -5386,7 +5445,6 @@ function rejectSecondClassFunctionTypeArgs(
   loc: SourceLocation | null
 ) {
   for (var i = 0; i < typeParams.length && i < typeArgs.length; i += 1) {
-    rejectPrimitiveInReferenceUnion(ctx, typeParams[i], typeArgs[i], loc);
     if (typeParams[i].isScoped) { continue; }
     rejectOwnerTypeArgument(ctx, typeParams[i].name, typeArgs[i], loc);
     if (!typeContainsSecondClass(typeArgs[i])) { continue; }
@@ -6641,7 +6699,6 @@ function resolveTypeAnnotationInner(ctx: CheckerContext, ann: TypeAnnotation): T
       ei += 1;
     }
 
-    markReferenceUnionParams(resolved);
     createUnionType(resolved, ctx, ann.loc)
   }
   case NullableTypeAnnotation {typeAnnotation}: {
@@ -6656,7 +6713,6 @@ function resolveTypeAnnotationInner(ctx: CheckerContext, ann: TypeAnnotation): T
       new ErrorType() as Type
     } else {
       let arms = growable<Type>([inner, new NullType()]);
-      markReferenceUnionParams(arms);
       createUnionType(arms, ctx, ann.loc)
     }
   }
@@ -7066,7 +7122,26 @@ function createUnionType(types: Array<Type>, ctx: CheckerContext | null = null, 
     var hasPrimitive = false;
     var hasReference = false;
     var hasInlineTuple = false;
+    var hasErrorMember = false;
+    var represented = 0;
     let primitiveBases = new Array<String>();
+    let unconstrained = new Array<String>();
+
+    // A type parameter not constrained to references may be bound to a
+    // primitive, so no other member is guaranteed to share its
+    // representation (types.md §"Unbounded Type Parameters in Unions").
+    for (let t in deduped) {
+      if (t is ErrorType) {
+        hasErrorMember = true;
+      }
+      if (!(t is VoidType || t is NeverType || t is ErrorType || t is UnknownType || t is HoleType)) {
+        represented += 1;
+      }
+      let param = unconstrainedTypeParamOf(t);
+      if (param != null && !unconstrained.contains(param.name)) {
+        unconstrained.push(param.name);
+      }
+    }
 
     for (let t in deduped) {
       if (t is InlineTupleT) {
@@ -7099,12 +7174,29 @@ function createUnionType(types: Array<Type>, ctx: CheckerContext | null = null, 
       }      
     }
 
-    if (hasInlineTuple && (hasPrimitive || hasReference)) {
-      ctx.error("cannot mix inline tuple types with other representations", DiagnosticCode.TypeMismatch, loc);
+    if (unconstrained.length > 0 && represented > 1) {
+      if (!hasErrorMember) {
+        var names = "";
+        for (let n in unconstrained) {
+          names = if (names.length == 0) `'${n}'` else `${names}, '${n}'`;
+        }
+        let first = unconstrained[0];
+        let which = if (unconstrained.length == 1) `Type parameter ${names} is` else `Type parameters ${names} are`;
+        ctx.errorOnceAt(
+          `${which} not constrained to references, so ${if (unconstrained.length == 1) "it" else "they"} may be ` +
+          "bound to a primitive, which cannot be in a union with other types. " +
+          `Constrain it ('${first} extends anyref'), or keep a slot that may be empty as ` +
+          `'WithDefault<${first}>'.`,
+          DiagnosticCode.TypeMismatch,
+          loc
+        );
+      }
+    } else if (hasInlineTuple && (hasPrimitive || hasReference)) {
+      ctx.errorOnceAt("cannot mix inline tuple types with other representations", DiagnosticCode.TypeMismatch, loc);
     } else if (hasPrimitive && hasReference) {
-      ctx.error("Union types cannot mix primitive types with reference types", DiagnosticCode.TypeMismatch, loc);
+      ctx.errorOnceAt("Union types cannot mix primitive types with reference types", DiagnosticCode.TypeMismatch, loc);
     } else if (primitiveBases.length > 1) {
-      ctx.error("Union types cannot mix primitives of different base types", DiagnosticCode.TypeMismatch, loc);
+      ctx.errorOnceAt("Union types cannot mix primitives of different base types", DiagnosticCode.TypeMismatch, loc);
     } else {
       checkTupleUnionMembers(ctx, deduped, loc);
     }

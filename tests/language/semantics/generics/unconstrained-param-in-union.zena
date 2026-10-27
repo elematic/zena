@@ -1,0 +1,51 @@
+// @mode: check
+// A type parameter not constrained to references may be bound to a
+// primitive, and a primitive cannot be in a union with other types, so
+// a union may hold such a parameter only alone (types.md §"Unbounded
+// Type Parameters in Unions", #614). `T | null` at `i32` would be
+// `i32 | null`, which is not a type. Constraining the parameter to
+// references makes the union legal; `WithDefault<T>` is the slot that
+// may be empty at any `T`.
+
+class Plain<T> {
+  var value: T | null = null; // @error: Type parameter 'T' is not constrained to references
+}
+
+class Short<T> {
+  var value: T? = null; // @error: Type parameter 'T' is not constrained to references
+}
+
+class Either<T> {
+  var value: T | String | null = null; // @error: Type parameter 'T' is not constrained to references
+}
+
+let first = <T>(x: T | null): i32 => 0; // @error: Type parameter 'T' is not constrained to references
+
+let pair = <T, U>(x: T | U): i32 => 0; // @error: Type parameters 'T', 'U' are not constrained to references
+
+type Maybe<T> = T | null; // @error: Type parameter 'T' is not constrained to references
+
+// An inferred union is the same type.
+let pick = <T>(c: boolean, x: T): i32 => {
+  let v = if (c) x else null; // @error: Type parameter 'T' is not constrained to references
+  return 0;
+};
+
+// Constrained to references, the unions are legal.
+class Box2<T extends anyref> {
+  var value: T | null = null;
+}
+
+class Animal {}
+
+let either = <T extends Animal, U extends anyref>(x: T | U | null): i32 => 0;
+
+// A union that a default resolves before anything stores it is not a
+// value of its own: an optional chain defaulted by `??` is legal at
+// any `T`, as `o?.x ?? 0` is at `i32`.
+class Holder<T> {
+  value: T;
+  new(this.value);
+}
+
+let orDefault = <T>(o: Holder<T> | null, d: T): T => o?.value ?? d;
