@@ -271,6 +271,9 @@ Subcommands (`./target/release/zena-cli <subcommand>`):
     alias), or `freestanding` (core module with no host imports beyond
     `@external`).
   - `--wit <path>`, `--world <name>`: WIT world for `component` builds.
+  - `--extension-wit <path>`: An extension's WIT, which the world's views
+    of its interfaces are checked against; repeatable, and needs `--wit`
+    and `--world` (`docs/design/runtime-components.md`).
   - `--imported-string-constants <module>`: The module `js` builds import
     string literals from (default `_`; WebAssembly ESM integration uses
     `wasm:js/string-constants`).

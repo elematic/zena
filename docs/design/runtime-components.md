@@ -5,7 +5,8 @@
 - **Status**: Implemented, 2026-10-27: `zena-runtime`'s `extensions`
   module, the `extensions` host interface, `zena:extensions`, and the
   `--allow-extensions` grant; resources across the boundary the same
-  day
+  day; the build-time check of a program's world against its
+  extensions' WIT (`--extension-wit`) the same day
 - **Issue**: #593
 - **For**: a PDS written in Zena that loads extensions at run time
   ([pds-extensions.md](./pds-extensions.md))
@@ -229,6 +230,37 @@ Whether a function is `async` is not compared: the forwarder calls the
 other side either way. Types are compared with wasmtime's
 `types::Type`, structurally, with paired resources taken as the same.
 
+### Checking the program's world when it is built
+
+The load-time check is against the real extension. The program's
+world is also checked when the program is built, against the WIT its
+extensions are written to:
+
+```
+zena build app.zena -o app.wasm --target component \
+  --wit app.wit --world app --extension-wit ext.wit
+```
+
+The compiler reads the extension document and compares each interface
+it declares that the world imports or exports with the program's view
+of it, by the rules above. A view that differs is a build error naming
+the interface, the method and what differs, so the two documents
+drifting apart is found before anything is loaded. Interfaces the
+world does not mention are not checked. The flag repeats, one
+document per extension.
+
+The check compares the two documents as parsed, without resolving
+them: a type both sides define is compared by structure (records,
+variants, enums, flags and aliases), and a type a `use` brings in is
+compared by name. Whether a function is `async` is not compared, as
+the runtime does not compare it. The check is
+`packages/zena-compiler/zena/lib/extension-views.zena`.
+
+An extension written in Zena is checked against the same document
+when it is built, by `--wit` and `--world`, so its exports and imports
+match the document the program was checked against. An extension
+built with other tools is checked when it is loaded.
+
 ### Calls back into the program
 
 The program's calls into an extension are async-lowered, so the
@@ -442,7 +474,9 @@ and the next call succeeding, a memory limit, dropping, an export the
 program lacks a binding for, a type mismatch, two extensions wired
 together with the second's calls back reaching the program, and
 resources crossing both ways, with a borrow and with drops that reach
-their owners.
+their owners. The fixture program is built with `--extension-wit`
+against the extensions' document, and the compiler's
+`extension-views_test.zena` covers the build-time check rule by rule.
 
 ## Alternatives considered
 
@@ -473,12 +507,6 @@ their owners.
 
 ## Open questions
 
-- **Validating the program's world against the extension WIT it
-  declares.** The load-time check is against the real extension. A
-  static check, when the program is built, would read the extension's
-  WIT and compare each of the program's views with the rules above, so
-  a mismatch is a build error naming the interface. It needs the
-  compiler to read a second WIT file alongside the world.
 - **Resources shared across three parties.** A proxy can only be
   passed back to its owner: an extension handing the program a proxy of
   another extension's resource, or the other way, fails the call. Routing
