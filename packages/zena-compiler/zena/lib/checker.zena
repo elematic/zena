@@ -4975,7 +4975,7 @@ function moveDestructuredTuple(ctx: CheckerContext, source: Expression, t: Type)
  * destructuring moves them out instead.
  */
 function tupleElementRead(ctx: CheckerContext, t: Type, loc: SourceLocation | null): Type {
-  if (isAffineTuple(t)) {
+  if (isAffineValue(t)) {
     ctx.error(
       `An element of type '${typeToString(t)}' holds an owner, so reading it would copy the owner. Destructure the tuple to move it out.`,
       DiagnosticCode.TypeMismatch,
@@ -4992,6 +4992,38 @@ function tupleElementRead(ctx: CheckerContext, t: Type, loc: SourceLocation | nu
  * owner in, a binding of it moves like an `Own<R>`, and destructuring it
  * moves the owners out.
  */
+/**
+ * Whether `t` is a future whose value carries an owner
+ * (docs/design/owner-futures.md). Such a future is affine: moved rather
+ * than copied, and consumed by its `await`, whose frame is its one
+ * consumer. `Future` and its subclasses are recognized by identity until
+ * the async containers declare `scoped T` and the rule follows the
+ * declaration.
+ */
+function isAffineContainer(t: Type): boolean {
+  let resolved = unwrapAliases(t);
+  if (!(resolved is ClassType)) { return false; }
+  var c: ClassType | null = resolved;
+  while (c != null) {
+    let cls = c as ClassType;
+    if (isFutureClassType(cls) || isFutureClassType(cls.genericSource ?? cls)) {
+      let args = cls.typeArguments;
+      return args != null && args.length == 1 && typeCarriesOwner(args[0]);
+    }
+    c = cls.superType;
+  }
+  return false;
+}
+
+/**
+ * Whether a binding of type `t` is move-checked like an owner: a tuple
+ * holding an owner (#495), or a future of one.
+ */
+function isAffineValue(t: Type): boolean {
+  if (isAffineTuple(t)) { return true; }
+  return isAffineContainer(soleNonNullMember(t) ?? t);
+}
+
 function isAffineTuple(t: Type): boolean {
   let resolved = unwrapAliases(t);
   if (resolved is TupleT || resolved is InlineTupleT) {
@@ -5017,6 +5049,8 @@ function isAffineTuple(t: Type): boolean {
  */
 function typeCarriesOwner(t: Type): boolean {
   if (ownershipHandleName(t) == "Own") { return true; }
+  // A future of an owner carries it too (docs/design/owner-futures.md).
+  if (isAffineContainer(t)) { return true; }
   // A tuple holding an owner carries it (#495).
   if (let TupleT {elementTypes} = t) {
     for (let el in elementTypes) {
@@ -5494,7 +5528,7 @@ function recordArgumentMove(ctx: CheckerContext, arg: Expression, paramType: Typ
     let rs = ctx.receiverSymbol;
     if (rs == null) { return; }
     let sinkCore = soleNonNullMember(paramType) ?? paramType;
-    if (ownershipHandleName(sinkCore) == "Own" || isAffineTuple(sinkCore)) {
+    if (ownershipHandleName(sinkCore) == "Own" || isAffineValue(sinkCore)) {
       ctx.recordFlowMove(rs.id, "this", arg.loc);
     } else if (ownershipHandleName(sinkCore) == "") {
       // An adaptation or an erased slot keeps the owner without a
@@ -5527,7 +5561,7 @@ function recordArgumentMove(ctx: CheckerContext, arg: Expression, paramType: Typ
   // null just means there may be nothing to own.
   let sinkType = soleNonNullMember(paramType) ?? paramType;
   let handle = ownershipHandleName(sinkType);
-  if (handle == "Own" || isAffineTuple(sinkType)) {
+  if (handle == "Own" || isAffineValue(sinkType)) {
     ctx.recordFlowMove(info.id, info.name, arg.loc);
     return;
   }
@@ -5546,7 +5580,7 @@ function recordArgumentMove(ctx: CheckerContext, arg: Expression, paramType: Typ
     // interface adaptation, an erased generic slot — escapes without a
     // recorded move, so implicit drop must leave the binding alone.
     let at = ctx.model.getNodeType(arg);
-    if (at != null && (ownershipHandleName(at) == "Own" || isAffineTuple(at))) {
+    if (at != null && (ownershipHandleName(at) == "Own" || isAffineValue(at))) {
       ctx.markUndroppable(info.id);
     }
   }
@@ -13863,7 +13897,7 @@ function checkExpressionInner(ctx: CheckerContext, expr: Expression, expectedTyp
       // An owned binding is dead after a move on any path to here, and
       // a scoped binding after the consumption that moved it.
       if (ownershipHandleName(resolved) == "Own" || isScopedValueType(resolved) ||
-          isAffineTuple(resolved)) {
+          isAffineValue(resolved)) {
         let moveSym = ctx.model.resolve(expr);
         if (moveSym != null) {
           ctx.checkMoveUse(expr, moveSym);
@@ -21221,6 +21255,19 @@ function checkMemberExpression(
   let propName = accessMemberKey(
       ctx, expr as Node, isSymbolAccess, property, expr.symbolPath);
 
+  // `then` hands a future's value to a callback while the future keeps
+  // it, so on a future of an owner it would mint a second owner; such a
+  // future is consumed by its `await` (docs/design/owner-futures.md).
+  if (!isSymbolAccess && propName == "then" && isAffineValue(objectType)) {
+    ctx.error(
+      "A future whose value holds an owner is consumed by 'await': " +
+        "'then' would hand the owner to a callback while the future " +
+        "still holds it.",
+      DiagnosticCode.TypeMismatch,
+      loc
+    );
+  }
+
   // Reaching a `this: Own<this>` method through an owned binding moves
   // the binding: the call ends the receiver's life on this path. The
   // move is recorded at the access — the caller-side counterpart of
@@ -24421,6 +24468,15 @@ function makeFutureType(
  */
 function checkAwaitExpression(ctx: CheckerContext, aw: AwaitExpression): Type {
   var operandType = checkExpression(ctx, aw.argument, null);
+  // Awaiting a future of an owner consumes it: the awaiting frame is its
+  // one consumer, so the binding is dead afterwards
+  // (docs/design/owner-futures.md).
+  if (isAffineValue(operandType) && aw.argument is Identifier) {
+    let affineSym = ctx.model.resolve(aw.argument);
+    if (affineSym != null) {
+      ctx.recordFlowMove(affineSym.id, affineSym.name, aw.argument.loc);
+    }
+  }
   // Awaiting is a scoped future's consumption (ownership.md §"Required
   // consumption"): the binding is moved into the await, and the rest of
   // the check sees the future behind the wrapper.
