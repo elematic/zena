@@ -13,9 +13,10 @@
 //! child — blocks inside that call, which the Component Model allows a
 //! call to an async export to do.
 //!
-//! Spawning processes and running programs are granted together
-//! ([`crate::Grant`]); without the grant, the guest's calls trap with an
-//! explanation.
+//! Spawning processes and running programs are granted together, and
+//! loading extensions ([`crate::extensions`]) on its
+//! own ([`crate::Grant`]); without a grant, the guest's calls trap with
+//! an explanation.
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -29,7 +30,7 @@ use wasmtime_wasi::{FsPerms, WasiCtx, WasiCtxBuilder, WasiCtxView, WasiView};
 use crate::engine::{EPOCH_TICK, NO_DEADLINE};
 use crate::{Grant, PathMap};
 
-mod bindings {
+pub(crate) mod bindings {
     wasmtime::component::bindgen!({
         path: "wit",
         world: "zena:runtime/command",
@@ -50,14 +51,15 @@ mod bindings {
     });
 }
 
-use bindings::zena_cli::host::{http_server, process, secrets, wasm};
+use bindings::zena_cli::host::{extensions, http_server, process, secrets, wasm};
 
 /// The most output a captured run keeps from each stream.
 const CAPTURE_LIMIT: usize = 64 << 20;
 
 /// The store data of every component this crate runs: the WASI context
 /// and resource table `wasmtime-wasi` reads, the grant the host
-/// interfaces check, and the engine a granted run starts children on.
+/// interfaces check, the engine a granted run starts children on, and
+/// what `zena:extensions` keeps on each side of a load.
 pub struct ComponentState {
     pub wasi: WasiCtx,
     pub http: wasmtime_wasi_http::WasiHttpCtx,
@@ -67,6 +69,19 @@ pub struct ComponentState {
     pub table: ResourceTable,
     grant: Option<Grant>,
     engine: Engine,
+    /// The component and instance this store runs, once [`run_main`]
+    /// has them: what a load checks types against and what a call back
+    /// enters.
+    pub(crate) component: Option<Component>,
+    pub(crate) instance: Option<Instance>,
+    /// The extensions this program loaded, by handle minus one; a
+    /// dropped one leaves its slot empty so handles are never reused.
+    pub(crate) extensions: Vec<Option<crate::extensions::Extension>>,
+    /// In an extension's store: where its calls to the program go while
+    /// a call from the program is in flight.
+    pub(crate) callbacks: Option<crate::extensions::CallbackSender>,
+    /// In an extension's store: its memory limit, when it has one.
+    pub(crate) limits: wasmtime::StoreLimits,
 }
 
 impl ComponentState {
@@ -78,17 +93,36 @@ impl ComponentState {
             table: ResourceTable::new(),
             grant,
             engine: engine.clone(),
+            component: None,
+            instance: None,
+            extensions: Vec::new(),
+            callbacks: None,
+            limits: wasmtime::StoreLimits::default(),
         }
     }
 
+    /// The grant, when spawning is granted.
     fn granted(&self, what: &str) -> Result<&Grant> {
-        self.grant.as_ref().ok_or_else(|| {
-            format_err!(
+        match &self.grant {
+            Some(grant) if grant.spawn => Ok(grant),
+            _ => Err(format_err!(
                 "{what} is not enabled for this invocation; zena:process and \
                  zena:wasm need an explicit grant from the host (pass \
                  --allow-spawn or set ZENA_ALLOW_SPAWN=1 to opt in)"
-            )
-        })
+            )),
+        }
+    }
+
+    /// The grant, when loading extensions is granted.
+    pub(crate) fn extensions_granted(&self) -> Result<&Grant> {
+        match &self.grant {
+            Some(grant) if grant.extensions => Ok(grant),
+            _ => Err(format_err!(
+                "loading extensions is not enabled for this invocation; \
+                 zena:extensions needs an explicit grant from the host (pass \
+                 --allow-extensions or set ZENA_ALLOW_EXTENSIONS=1 to opt in)"
+            )),
+        }
     }
 }
 
@@ -122,6 +156,7 @@ pub fn linker(engine: &Engine) -> Result<Linker<ComponentState>> {
     wasm::add_to_linker::<_, HasSelf<_>>(&mut linker, |state| state)?;
     http_server::add_to_linker::<_, HasSelf<_>>(&mut linker, |state| state)?;
     secrets::add_to_linker::<_, HasSelf<_>>(&mut linker, |state| state)?;
+    extensions::add_to_linker::<_, HasSelf<_>>(&mut linker, |state| state)?;
     // `capture` needs the store, for the backtrace: linked by hand
     // rather than through the generated trait.
     linker
@@ -132,6 +167,16 @@ pub fn linker(engine: &Engine) -> Result<Linker<ComponentState>> {
                 Ok((format!("{}", wasmtime::WasmBacktrace::capture(&store)),))
             },
         )?;
+    Ok(linker)
+}
+
+/// [`linker`], plus a forwarder for every function of every extension
+/// interface `component` imports: an interface that is neither WASI's
+/// nor this host's, through which a program calls an extension it loaded
+/// with `zena:extensions` ([`crate::extensions`]).
+pub fn linker_for(engine: &Engine, component: &Component) -> Result<Linker<ComponentState>> {
+    let mut linker = linker(engine)?;
+    crate::extensions::define_extension_imports(&mut linker, engine, component)?;
     Ok(linker)
 }
 
@@ -154,6 +199,8 @@ pub fn run_main(
     let _ = crate::engine::reserve_gc_heap(&engine, store);
     runtime.block_on(async {
         let instance: Instance = linker.instantiate_async(&mut *store, component).await?;
+        store.data_mut().component = Some(component.clone());
+        store.data_mut().instance = Some(instance);
         let func = instance
             .get_func(&mut *store, name)
             .ok_or_else(|| format_err!("failed to find `{name}` export"))?;
@@ -249,7 +296,7 @@ fn translate_cwd(cwd: &str, map: &PathMap) -> PathBuf {
 /// absolute path takes its longest matching preopen. A path outside
 /// every preopen is refused, and so is any path with a `..` segment,
 /// which could climb out of the preopen it starts in.
-fn translate(path: &str, map: &PathMap) -> Option<PathBuf> {
+pub(crate) fn translate(path: &str, map: &PathMap) -> Option<PathBuf> {
     if path.split('/').any(|segment| segment == "..") {
         return None;
     }
@@ -599,7 +646,9 @@ pub struct RunConfig {
     pub dirs: PathMap,
     pub invoke: String,
     pub inherit_stdio: bool,
-    pub grant: bool,
+    /// What the run is granted: spawning, and loading extensions.
+    pub spawn: bool,
+    pub extensions: bool,
     pub timeout: Option<Duration>,
     /// Run on a debug engine: no inlining, so backtraces name every
     /// function.
@@ -660,7 +709,10 @@ impl wasm::HostRun for ComponentState {
             dirs,
             invoke: options.invoke,
             inherit_stdio: options.inherit_stdio,
-            grant: options.grant,
+            // A run gets what its caller holds, and only what it asks
+            // to pass on.
+            spawn: options.grant && grant.spawn,
+            extensions: options.grant_extensions && grant.extensions,
             timeout: if options.timeout_nanos > 0 {
                 Some(Duration::from_nanos(options.timeout_nanos as u64))
             } else {
@@ -762,10 +814,12 @@ fn run(engine: &Engine, config: &RunConfig) -> RunFinished {
         wasi.stderr(err.clone());
         Some((out, err))
     };
-    let grant = if config.grant {
+    let grant = if config.spawn || config.extensions {
         Some(Grant {
             path_map: config.dirs.clone(),
             debug: config.debug,
+            spawn: config.spawn,
+            extensions: config.extensions,
         })
     } else {
         None
@@ -781,7 +835,7 @@ fn run(engine: &Engine, config: &RunConfig) -> RunFinished {
         store.set_epoch_deadline(ticks);
         store.epoch_deadline_trap();
     }
-    let linker = match linker(engine) {
+    let linker = match linker_for(engine, &component) {
         Ok(l) => l,
         Err(e) => return RunFinished::failed(format!("{e:#}")),
     };

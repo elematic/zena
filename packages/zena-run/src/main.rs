@@ -4,9 +4,10 @@
 //! This is the smallest host a component built for the `zena-cli` target
 //! can run under: wasmtime configured for Zena's output, WASI 0.3, and
 //! the `zena-cli:host` interfaces from `zena-runtime` (stack traces, and
-//! `zena:process` and `zena:wasm` when granted). A core module — a
-//! `freestanding` build, hand-written `.wat` — runs with no imports, so
-//! `--dir`, `--allow-spawn` and the arguments do not reach it. It does
+//! `zena:process`, `zena:wasm` and `zena:extensions` when granted). A
+//! core module — a `freestanding` build, hand-written `.wat` — runs with
+//! no imports, so `--dir`, `--allow-spawn`, `--allow-extensions` and the
+//! arguments do not reach it. It does
 //! not compile Zena source; `zena-cli` bundles the compiler and hands
 //! programs it builds to the same runtime crate.
 
@@ -40,6 +41,12 @@ struct Cli {
     /// ZENA_ALLOW_SPAWN=1 also works)
     #[arg(long = "allow-spawn")]
     allow_spawn: bool,
+
+    /// Allow the program to instantiate other components, keeping them, via
+    /// zena:extensions, which run in this process (ZENA_ALLOW_EXTENSIONS=1
+    /// also works)
+    #[arg(long = "allow-extensions")]
+    allow_extensions: bool,
 
     /// Compile the component in memory instead of reading or writing the
     /// ahead-of-time compiled `.cwasm` kept beside it
@@ -97,10 +104,14 @@ fn main() -> Result<()> {
         path_map.push((mapping.guest, host));
     }
 
-    let grant = if zena_runtime::spawn_allowed(cli.allow_spawn) {
+    let spawn = zena_runtime::spawn_allowed(cli.allow_spawn);
+    let extensions = zena_runtime::extensions_allowed(cli.allow_extensions);
+    let grant = if spawn || extensions {
         Some(Grant {
             path_map,
             debug: cli.debug,
+            spawn,
+            extensions,
         })
     } else {
         None
@@ -111,7 +122,7 @@ fn main() -> Result<()> {
     } else {
         zena_runtime::cache::load_component_variant(&engine, path, cli.debug, false)?
     };
-    let linker = zena_runtime::component::linker(&engine)?;
+    let linker = zena_runtime::component::linker_for(&engine, &component)?;
     let mut store = Store::new(
         &engine,
         ComponentState::new(&engine, wasi_builder.build(), grant),

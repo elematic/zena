@@ -43,25 +43,25 @@ of what the command does.
 
 ## Commands
 
-| Command                                              | What it does                                                                                                                                     |
-| ---------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `build <file.zena> -o <out.wasm\|.wat>`              | Compiles a file. `--target` (`zena-cli`, `component`, `js`, `freestanding`), `--wit` and `--world` for components, `--time`.                     |
-| `build [target]`                                     | Runs a wireit build target with zb, such as `build test` or `build ./packages/zb:test`.                                                          |
-| `run <file.zena\|file.wasm> [-- args...]`            | Compiles through the compile cache and runs. `--dir HOST[::GUEST]`, `--allow-spawn`, `--invoke <fn>`, `--no-cache`, `--time`.                    |
-| `test [paths or globs...]`                           | Runs `*_test.zena` files in parallel. `-f` / `--filter`, `--exclude <glob>`.                                                                     |
-| `fmt [--write \| --check] <files...>`                | Formats Zena files, printing the result, rewriting the files, or failing if any is not formatted.                                                |
-| `lint [--fix] <paths...>`                            | Reports what the lint rules find, or with `--fix` applies the fixes the type checker accepts. `--only`, `--skip`, `--list-rules`.                |
-| `add <package>[@<version>] [--name <local>]`         | Adds a published package to the current package's dependencies, pins versions in `zena-lock.json`, and fetches them.                             |
-| `update [<name>...]`                                 | Raises the current package's dependencies, or the named ones, to the latest version of their major version that is not yanked.                   |
-| `fetch`                                              | Fetches the packages `zena-lock.json` pins into the package cache.                                                                               |
-| `login <handle or DID> [--password-stdin]`           | Signs in to your atproto account with an app password, to publish.                                                                               |
-| `logout`                                             | Ends the session `login` started.                                                                                                                |
-| `publish [--scope <name> --yes] [--host <url>]`      | Publishes the package you are in at its manifest's `version`, creating it on the host first, in the scope `--scope` names, when it has no `did`. |
-| `package create --scope <name> --yes [--host <url>]` | Creates the package you are in on the host, and writes its DID into `zena-package.json`, without publishing.                                     |
-| `doc <path> [-o <out.json>]`                         | Extracts a package's public API as JSON.                                                                                                         |
-| `bench <suite.json> [-o <out.json>]`                 | Runs a benchmark suite.                                                                                                                          |
-| `lsp`                                                | Runs the language server over stdin and stdout.                                                                                                  |
-| `precompile <file.wasm>`                             | Compiles a module to machine code (`.cwasm`) ahead of its first run.                                                                             |
+| Command                                              | What it does                                                                                                                                        |
+| ---------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `build <file.zena> -o <out.wasm\|.wat>`              | Compiles a file. `--target` (`zena-cli`, `component`, `js`, `freestanding`), `--wit` and `--world` for components, `--time`.                        |
+| `build [target]`                                     | Runs a wireit build target with zb, such as `build test` or `build ./packages/zb:test`.                                                             |
+| `run <file.zena\|file.wasm> [-- args...]`            | Compiles through the compile cache and runs. `--dir HOST[::GUEST]`, `--allow-spawn`, `--allow-extensions`, `--invoke <fn>`, `--no-cache`, `--time`. |
+| `test [paths or globs...]`                           | Runs `*_test.zena` files in parallel. `-f` / `--filter`, `--exclude <glob>`.                                                                        |
+| `fmt [--write \| --check] <files...>`                | Formats Zena files, printing the result, rewriting the files, or failing if any is not formatted.                                                   |
+| `lint [--fix] <paths...>`                            | Reports what the lint rules find, or with `--fix` applies the fixes the type checker accepts. `--only`, `--skip`, `--list-rules`.                   |
+| `add <package>[@<version>] [--name <local>]`         | Adds a published package to the current package's dependencies, pins versions in `zena-lock.json`, and fetches them.                                |
+| `update [<name>...]`                                 | Raises the current package's dependencies, or the named ones, to the latest version of their major version that is not yanked.                      |
+| `fetch`                                              | Fetches the packages `zena-lock.json` pins into the package cache.                                                                                  |
+| `login <handle or DID> [--password-stdin]`           | Signs in to your atproto account with an app password, to publish.                                                                                  |
+| `logout`                                             | Ends the session `login` started.                                                                                                                   |
+| `publish [--scope <name> --yes] [--host <url>]`      | Publishes the package you are in at its manifest's `version`, creating it on the host first, in the scope `--scope` names, when it has no `did`.    |
+| `package create --scope <name> --yes [--host <url>]` | Creates the package you are in on the host, and writes its DID into `zena-package.json`, without publishing.                                        |
+| `doc <path> [-o <out.json>]`                         | Extracts a package's public API as JSON.                                                                                                            |
+| `bench <suite.json> [-o <out.json>]`                 | Runs a benchmark suite.                                                                                                                             |
+| `lsp`                                                | Runs the language server over stdin and stdout.                                                                                                     |
+| `precompile <file.wasm>`                             | Compiles a module to machine code (`.cwasm`) ahead of its first run.                                                                                |
 
 ## Packages
 

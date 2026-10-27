@@ -11,8 +11,8 @@ interface stack-trace {
   capture: func() -> string;
 }
 
-/// Spawning host processes. Granted to the command; a component without
-/// the grant gets stubs that trap.
+/// Spawning host processes. Granted to the command (`--allow-spawn`); a
+/// component without the grant gets stubs that trap.
 interface process {
   /// How a process ended, and what it wrote.
   record finished {
@@ -71,7 +71,10 @@ interface wasm {
     dirs: list<dir-mapping>,
     invoke: string,
     inherit-stdio: bool,
+    /// Pass on the caller's grant to spawn processes.
     grant: bool,
+    /// Pass on the caller's grant to instantiate components.
+    grant-extensions: bool,
     debug: bool,
     /// A time limit in nanoseconds; none when not positive.
     timeout-nanos: s64,
@@ -111,6 +114,79 @@ interface wasm {
   /// Write a component's ahead-of-time compiled form beside it; '' on
   /// success, else why not.
   precompile: func(path: string, debug: bool) -> string;
+}
+
+/// Loading components as extensions: long-lived instances the program
+/// calls through objects, and which call the program through objects
+/// the program made for each of them. Granted on its own
+/// (`--allow-extensions`).
+///
+/// The program decides what an extension gets: `load` takes a binding
+/// for every interface the extension may import, and an import without
+/// one fails the load. The program's own WIT declares its side of each
+/// interface in a shape the host pairs with the extension's, in full in
+/// docs/design/runtime-components.md:
+///
+/// - An interface the program serves is exported as a resource whose
+///   methods are the extension's free functions, plus
+///   `create: func(extension: u32) -> own<resource>`. The first call from
+///   an extension on that interface makes its object through `create`,
+///   and every later call lands on that object, so the object is the
+///   extension's identity.
+/// - An interface the program calls is imported as a resource whose
+///   methods are the extension's exported functions, each result wrapped
+///   in `result<_, string>` (the string says why a call failed), plus
+///   `attach: func(extension: u32) -> own<resource>`, which the host
+///   serves with an object whose method calls go to that extension.
+///
+/// A call on an attached object must be awaited: a program that blocks
+/// on it keeps its instance entered, so the extension's calls back
+/// cannot start, and both sides wait on each other.
+interface extensions {
+  /// Where one of an extension's imports comes from.
+  variant source {
+    /// This host: a WASI or `zena-cli:host` interface.
+    host,
+    /// This program's export of the given name.
+    program(string),
+    /// Another loaded extension's export of the same name, by handle.
+    extension(u32),
+  }
+
+  record binding {
+    /// The import, by name with version: `wasi:clocks/monotonic-clock@0.3.0`.
+    name: string,
+    served-by: source,
+  }
+
+  record load-options {
+    /// The most memory the instance may hold, linear memory and GC heap
+    /// together, in bytes; no limit when 0.
+    memory-limit: u64,
+    /// The most time one call may take, in nanoseconds; no limit when
+    /// not positive.
+    call-timeout-nanos: s64,
+    /// Run with inlining off, so a trap's backtrace names every
+    /// function.
+    debug: bool,
+  }
+
+  /// Loads `path`, in the caller's view of the file system, with
+  /// `bindings` as everything it may import, checks its types against
+  /// this program's, and instantiates it. The result is the extension's
+  /// handle, or why it could not be loaded.
+  load: func(path: string, bindings: list<binding>, options: load-options) -> result<u32, string>;
+
+  /// `load` for a component the program trusts as it trusts itself: it
+  /// may import every interface this host serves, and every interface
+  /// this program exports, by the same name.
+  load-trusted: func(path: string, options: load-options) -> result<u32, string>;
+
+  /// Drops the extension and its memory. Calls already made complete;
+  /// later calls on an object attached to it fail. Its handle is not
+  /// reused. Objects the program made for it through `create` are
+  /// released when the program's run ends.
+  drop: func(extension: u32);
 }
 
 /// Running an HTTP server for zena-cli.
@@ -173,6 +249,7 @@ world command {
   import stack-trace;
   import process;
   import wasm;
+  import extensions;
   import http-server;
   import secrets;
 }

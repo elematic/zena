@@ -277,14 +277,18 @@ fn main() -> Result<()> {
         ("/".to_string(), PathBuf::from("/")),
     ];
 
+    // The CLI module holds every grant, and passes on to the programs it
+    // runs what their flags ask for.
     let grant = Grant {
         path_map: grant_path_map,
         debug: false,
+        spawn: true,
+        extensions: true,
     };
     let engine = zena_runtime::engine::shared_component_engine(false)?;
     let component =
         zena_runtime::cache::load_component_variant(&engine, &module_path, false, false)?;
-    let linker = zena_runtime::component::linker(&engine)?;
+    let linker = zena_runtime::component::linker_for(&engine, &component)?;
     let mut store = Store::new(
         &engine,
         ComponentState::new(&engine, wasi.build(), Some(grant)),
