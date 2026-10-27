@@ -53,7 +53,7 @@
 
 use std::collections::HashMap;
 use std::future::Future;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -70,6 +70,7 @@ use wasmtime::{
     format_err,
 };
 use wasmtime_wasi::WasiCtxBuilder;
+use wit_parser::{ManglingAndAbi, Resolve};
 
 use crate::component::bindings::zena_cli::host::extensions;
 use crate::component::{ComponentState, linker, translate};
@@ -1900,6 +1901,283 @@ fn bind_imports(
 }
 
 // ============================================================================
+// A component against a WIT world
+// ============================================================================
+
+/// Checks the component at `path` against `world` of the WIT document
+/// at `wit`, as an extension: it must export every interface the world
+/// exports, with the world's functions and resources, and import
+/// nothing but interfaces the world imports, the same way, and
+/// interfaces the host serves. `deps` are WIT files and directories
+/// whose packages the document may use. Returns what differs, one line
+/// each, or nothing when the component fits.
+///
+/// The world's side is a stand-in component wit-component builds for
+/// the world, with no code behind its exports, compiled on the same
+/// engine, so both sides are wasmtime types and the comparison is the
+/// one a load makes. Whether a function is `async` is not compared, as
+/// a load does not compare it.
+pub fn check_world(
+    engine: &Engine,
+    path: &Path,
+    wit: &Path,
+    world: &str,
+    deps: &[PathBuf],
+) -> anyhow::Result<Vec<String>> {
+    use anyhow::Context;
+    let mut resolve = Resolve::default();
+    push_deps(&mut resolve, deps)?;
+    let (package, _) = resolve
+        .push_path(wit)
+        .with_context(|| format!("could not read the WIT at {}", wit.display()))?;
+    let world_id = resolve
+        .select_world(&[package], Some(world))
+        .with_context(|| format!("{} has no world {world}", wit.display()))?;
+    let mut module = wit_component::dummy_module(&resolve, world_id, ManglingAndAbi::Standard32);
+    wit_component::embed_component_metadata(
+        &mut module,
+        &resolve,
+        world_id,
+        wit_component::StringEncoding::UTF8,
+    )?;
+    let stand_in = wit_component::ComponentEncoder::default()
+        .module(&module)?
+        .validate(true)
+        .encode()
+        .with_context(|| format!("could not encode world {world} as a component"))?;
+    let stand_in = Component::new(engine, &stand_in)
+        .map_err(anyhow::Error::from)
+        .with_context(|| format!("could not compile world {world} as a component"))?;
+    let tested = crate::cache::compile_component_uncached(engine, path)?;
+    Ok(compare_to_world(engine, &stand_in, &tested, world))
+}
+
+/// Pushes the packages in `deps` into `resolve`: each file, and each
+/// `.wit` file of each directory, is a package. A package may use
+/// another from the same list, so the files are pushed in rounds,
+/// each round taking the files whose packages are now resolvable,
+/// until none is left or none can be pushed. A push that fails leaves
+/// its package registered, so each is tried on a copy.
+fn push_deps(resolve: &mut Resolve, deps: &[PathBuf]) -> anyhow::Result<()> {
+    use anyhow::Context;
+    let mut pending = Vec::new();
+    for dep in deps {
+        if dep.is_dir() {
+            let entries = std::fs::read_dir(dep)
+                .with_context(|| format!("could not read {}", dep.display()))?;
+            let mut files: Vec<PathBuf> = entries
+                .filter_map(|e| e.ok().map(|e| e.path()))
+                .filter(|p| p.extension().is_some_and(|x| x == "wit"))
+                .collect();
+            files.sort();
+            pending.extend(files);
+        } else {
+            pending.push(dep.clone());
+        }
+    }
+    while !pending.is_empty() {
+        let before = pending.len();
+        let mut remaining = Vec::new();
+        let mut first_failure = None;
+        for path in pending {
+            let mut trial = resolve.clone();
+            match trial.push_path(&path) {
+                Ok(_) => *resolve = trial,
+                Err(e) => {
+                    if first_failure.is_none() {
+                        first_failure = Some((path.clone(), e));
+                    }
+                    remaining.push(path);
+                }
+            }
+        }
+        if remaining.len() == before {
+            let (path, e) = first_failure.expect("a round without progress has a failure");
+            return Err(e).with_context(|| format!("could not read the WIT at {}", path.display()));
+        }
+        pending = remaining;
+    }
+    Ok(())
+}
+
+/// Which side of a comparison declares what the other must have.
+#[derive(Clone, Copy)]
+enum Expected {
+    /// The world's export, which the component must export.
+    Export,
+    /// The component's import, which the world must import.
+    Import,
+}
+
+/// `tested` against `stand_in`, a component of the world's type, as
+/// [`check_world`] says.
+fn compare_to_world(
+    engine: &Engine,
+    stand_in: &Component,
+    tested: &Component,
+    world: &str,
+) -> Vec<String> {
+    let want = stand_in.component_type();
+    let have = tested.component_type();
+    let mut comparison = Comparison {
+        engine,
+        pairs: Vec::new(),
+        world,
+        problems: Vec::new(),
+    };
+    // Resources the two sides declare under one name in one interface
+    // stand for each other.
+    for (name, item) in want.exports(engine) {
+        if let (ComponentItem::ComponentInstance(w), Some(ComponentItem::ComponentInstance(h))) =
+            (item.ty, have.get_export(engine, name).map(|e| e.ty))
+        {
+            comparison.pair_resources(&w, &h);
+        }
+    }
+    for (name, item) in want.imports(engine) {
+        if let (ComponentItem::ComponentInstance(w), Some(ComponentItem::ComponentInstance(h))) =
+            (item.ty, have.get_import(engine, name).map(|e| e.ty))
+        {
+            comparison.pair_resources(&w, &h);
+        }
+    }
+    for (name, item) in want.exports(engine) {
+        match (item.ty, have.get_export(engine, name).map(|e| e.ty)) {
+            (ComponentItem::ComponentInstance(w), Some(ComponentItem::ComponentInstance(h))) => {
+                comparison.interface(name, &w, &h, Expected::Export);
+            }
+            (ComponentItem::ComponentFunc(w), Some(ComponentItem::ComponentFunc(h))) => {
+                comparison.function(name, None, &w, &h, Expected::Export);
+            }
+            (ComponentItem::ComponentInstance(_), _) => comparison.problems.push(format!(
+                "does not export {name}, which world {world} exports"
+            )),
+            (ComponentItem::ComponentFunc(_), _) => comparison.problems.push(format!(
+                "does not export the function {name}, which world {world} exports"
+            )),
+            _ => {}
+        }
+    }
+    for (name, item) in have.imports(engine) {
+        match (item.ty, want.get_import(engine, name).map(|e| e.ty)) {
+            (ComponentItem::ComponentInstance(h), Some(ComponentItem::ComponentInstance(w))) => {
+                comparison.interface(name, &h, &w, Expected::Import);
+            }
+            (ComponentItem::ComponentFunc(h), Some(ComponentItem::ComponentFunc(w))) => {
+                comparison.function(name, None, &h, &w, Expected::Import);
+            }
+            (_, None) if is_host_interface(name) => {}
+            (_, None) => comparison.problems.push(format!(
+                "imports {name}, which world {world} does not import and the host does not serve"
+            )),
+            _ => comparison.problems.push(format!(
+                "imports {name} as a different kind of item than world {world} imports"
+            )),
+        }
+    }
+    comparison.problems
+}
+
+/// A component against a world: the resources paired so far, and what
+/// differs.
+struct Comparison<'a> {
+    engine: &'a Engine,
+    pairs: Pairs,
+    world: &'a str,
+    problems: Vec<String>,
+}
+
+impl Comparison<'_> {
+    /// Pairs the resources `a` and `b` declare under the same name.
+    fn pair_resources(&mut self, a: &InterfaceType, b: &InterfaceType) {
+        let theirs = resources(self.engine, b);
+        for (name, r) in resources(self.engine, a) {
+            if let Some((_, other)) = theirs.iter().find(|(n, _)| *n == name) {
+                self.pairs.push((r, other.clone()));
+            }
+        }
+    }
+
+    /// Every function and resource `declared` has, `found` must have,
+    /// with the same types.
+    fn interface(
+        &mut self,
+        name: &str,
+        declared: &InterfaceType,
+        found: &InterfaceType,
+        expected: Expected,
+    ) {
+        let world = self.world;
+        let have = resources(self.engine, found);
+        for (rname, _) in resources(self.engine, declared) {
+            if !have.iter().any(|(n, _)| *n == rname) {
+                self.problems.push(match expected {
+                    Expected::Export => format!(
+                        "{name} does not export the resource {rname}, which world {world}'s does"
+                    ),
+                    Expected::Import => format!(
+                        "imports {name}'s resource {rname}, which world {world}'s does not declare"
+                    ),
+                });
+            }
+        }
+        let have = functions(self.engine, found);
+        for (fname, f) in functions(self.engine, declared) {
+            match have.iter().find(|(n, _)| *n == fname) {
+                Some((_, g)) => self.function(name, Some(&fname), &f, g, expected),
+                None => self.problems.push(match expected {
+                    Expected::Export => {
+                        format!("{name} does not export {fname}, which world {world}'s does")
+                    }
+                    Expected::Import => format!(
+                        "imports {name}#{fname}, which world {world}'s {name} does not declare"
+                    ),
+                }),
+            }
+        }
+    }
+
+    /// `declared` and `found` must take and return the same types.
+    fn function(
+        &mut self,
+        name: &str,
+        fname: Option<&str>,
+        declared: &ComponentFunc,
+        found: &ComponentFunc,
+        expected: Expected,
+    ) {
+        let declared_results: Vec<Type> = declared.results().collect();
+        let found_results: Vec<Type> = found.results().collect();
+        if same_types(&params_of(declared), &params_of(found), &self.pairs)
+            && same_types(&declared_results, &found_results, &self.pairs)
+        {
+            return;
+        }
+        let world = self.world;
+        let label = match fname {
+            Some(f) => format!("{name}#{f}"),
+            None => name.to_string(),
+        };
+        self.problems.push(match expected {
+            Expected::Export => format!(
+                "{label} is ({}) -> {}, where world {world}'s is ({}) -> {}",
+                describe(&params_of(found)),
+                describe(&found_results),
+                describe(&params_of(declared)),
+                describe(&declared_results)
+            ),
+            Expected::Import => format!(
+                "imports {label} as ({}) -> {}, where world {world}'s is ({}) -> {}",
+                describe(&params_of(declared)),
+                describe(&declared_results),
+                describe(&params_of(found)),
+                describe(&found_results)
+            ),
+        });
+    }
+}
+
+// ============================================================================
 // The host interface
 // ============================================================================
 
@@ -2009,6 +2287,44 @@ impl extensions::Host for ComponentState {
         self.load_extension(path, Imports::Trusted, options)
     }
 
+    fn check(
+        &mut self,
+        path: String,
+        wit_path: String,
+        world_name: String,
+        deps: Vec<String>,
+    ) -> Result<std::result::Result<(), String>> {
+        let grant = self.extensions_granted()?;
+        let Some(host_path) = translate(&path, &grant.path_map) else {
+            return Ok(Err(format!(
+                "{path} is outside every directory this program can reach"
+            )));
+        };
+        let Some(host_wit) = translate(&wit_path, &grant.path_map) else {
+            return Ok(Err(format!(
+                "{wit_path} is outside every directory this program can reach"
+            )));
+        };
+        let mut host_deps = Vec::new();
+        for dep in &deps {
+            let Some(host_dep) = translate(dep, &grant.path_map) else {
+                return Ok(Err(format!(
+                    "{dep} is outside every directory this program can reach"
+                )));
+            };
+            host_deps.push(host_dep);
+        }
+        let engine = match crate::engine::shared_component_engine(grant.debug) {
+            Ok(engine) => engine,
+            Err(e) => return Ok(Err(format!("{e:#}"))),
+        };
+        let checked = check_world(&engine, &host_path, &host_wit, &world_name, &host_deps);
+        Ok(match checked {
+            Ok(problems) if problems.is_empty() => Ok(()),
+            Ok(problems) => Err(problems.join("\n")),
+            Err(e) => Err(format!("{e:#}")),
+        })
+    }
 }
 
 impl extensions::HostWithStore<ComponentState> for wasmtime::component::HasSelf<ComponentState> {

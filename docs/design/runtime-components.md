@@ -6,7 +6,8 @@
   module, the `extensions` host interface, `zena:extensions`, and the
   `--allow-extensions` grant; resources across the boundary the same
   day; the build-time check of a program's world against its
-  extensions' WIT (`--extension-wit`) the same day
+  extensions' WIT (`--extension-wit`) and the check of a component
+  against that WIT (`checkExtension`) the same day
 - **Issue**: #593
 - **For**: a PDS written in Zena that loads extensions at run time
   ([pds-extensions.md](./pds-extensions.md))
@@ -258,8 +259,22 @@ the runtime does not compare it. The check is
 
 An extension written in Zena is checked against the same document
 when it is built, by `--wit` and `--world`, so its exports and imports
-match the document the program was checked against. An extension
-built with other tools is checked when it is loaded.
+match the document the program was checked against. A component built
+with other tools is checked against the document before it is loaded,
+by `checkExtension` in `zena:extensions`, which a program calls when
+an extension is installed; from the command line, `wasm-tools component
+targets` answers the same question, less the imports the host serves.
+The component must export every
+interface the world exports, with the world's functions and resources,
+and import nothing but interfaces the world imports, the same way, and
+interfaces the host serves. What differs is reported one line each.
+The runtime (`check_world` in `extensions.rs`) builds a stand-in
+component for the world with wit-component, with no code behind its
+exports, and compares the two components' wasmtime types the way a
+load does, so a component that passes loads. The WIT document may use
+packages from other files, the WASI packages the standard library
+carries by default (`$ZENA_STDLIB_DIR/wit`), or the files and
+directories the caller names.
 
 ### Calls back into the program
 
@@ -412,6 +427,7 @@ interface extensions {
 
   load: func(path: string, bindings: list<binding>, options: load-options) -> result<u32, string>;
   load-trusted: func(path: string, options: load-options) -> result<u32, string>;
+  check: func(path: string, wit-path: string, world-name: string, deps: list<string>) -> result<_, string>;
   drop: func(extension: u32);
 }
 ```
@@ -452,6 +468,8 @@ export let loadExtension = (path: String, bindings: Array<Binding>,
     options: LoadOptions = {}): Result<Extension, String>;
 export let loadTrustedExtension = (path: String, options: LoadOptions = {}):
     Result<Extension, String>;
+export let checkExtension = (path: String, witPath: String, world: String,
+    deps: Array<String> | null = null): Array<String>;
 ```
 
 The program's side of the extension interfaces is ordinary WIT interop:
@@ -477,6 +495,8 @@ resources crossing both ways, with a borrow and with drops that reach
 their owners. The fixture program is built with `--extension-wit`
 against the extensions' document, and the compiler's
 `extension-views_test.zena` covers the build-time check rule by rule.
+`checkExtension` is tested on the fixtures against the worlds they were
+built for and against others.
 
 ## Alternatives considered
 

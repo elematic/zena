@@ -40,7 +40,7 @@ it:
     with a time limit uses a second engine with epoch interruption on
     (`engine::interruptible_component_engine`), so programs that never
     ask for a limit do not pay for its checks.
-  - `extensions`: `load`, `load-trusted` and `drop` behind
+  - `extensions`: `load`, `load-trusted`, `check` and `drop` behind
     `zena:extensions`, which loads a component as an extension: a
     long-lived instance the program calls through objects, and which
     calls the program through objects the program made for it
