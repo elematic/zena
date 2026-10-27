@@ -20,14 +20,16 @@
  * shape the host pairs with the extension's, in full in
  * docs/design/runtime-components.md. An interface this program serves
  * is exported as a resource whose methods are the extension's free
- * functions, plus `create: func(extension: u32) -> own<resource>`; the
+ * functions, with a static `create(extension: u32) -> own<resource>`; the
  * first call from an extension makes its object through `create`, and
  * every later call lands on that object, so the object is the
  * extension's identity. An interface this program calls is imported as
  * a resource whose methods are the extension's functions with their
- * results wrapped in `result<_, string>`, plus
- * `attach: func(extension: u32) -> own<resource>`, which the host serves
- * with an object whose method calls go to that extension.
+ * results wrapped in `result<_, string>`, with a static
+ * `attach(extension: u32) -> own<resource>`, which the host serves with
+ * an object whose method calls go to that extension. A resource the
+ * shared interface declares crosses as a proxy, whose method calls go to
+ * its owner and whose drop drops the owner's handle.
  *
  * A call on an attached object must be awaited: a program that blocks
  * on it, with `blockOn`, keeps its instance entered, so the extension's
@@ -37,14 +39,14 @@
  *
  * ```zena
  * import { fromHost, fromProgram, loadExtension } from 'zena:extensions';
- * import { attach } from 'pds:extension/policy';
+ * import { Policy } from 'pds:extension/policy';
  *
  * let loaded = loadExtension('extensions/policy.wasm', [
  *   fromHost('wasi:clocks/monotonic-clock@0.3.0'),
  *   fromProgram('pds:extension/storage@1.0.0'),
  * ], {memoryLimit: 64 * 1024 * 1024, callTimeout: milliseconds(200)});
  * if (loaded is (true, Extension)) {
- *   let policy = attach(loaded[1].handle);
+ *   let policy = Policy.attach(loaded[1].handle);
  *   let verdict = await policy.checkWrite(record);
  * }
  * ```
@@ -83,7 +85,7 @@ export type LoadOptions = {
 
 /**
  * A loaded extension. `handle` is what `attach` takes, and what this
- * program's `create` functions receive. Disposing it drops it; so does
+ * program's `create` statics receive. Disposing it drops it; so does
  * the end of this program's run.
  */
 export final class Extension implements Disposable {
@@ -95,8 +97,10 @@ export final class Extension implements Disposable {
   /**
    * Drops the extension and its memory. Calls already made complete;
    * later calls on an object attached to it fail. Dropping again does
-   * nothing. Objects this program made for it through `create` are
-   * released when the run ends.
+   * nothing. The objects this program made for it through `create` are
+   * disposed when this program next yields to the host, since their
+   * disposal is this program's own code, which cannot run inside this
+   * call.
    */
   drop(): void {
     if (this.#loaded) {

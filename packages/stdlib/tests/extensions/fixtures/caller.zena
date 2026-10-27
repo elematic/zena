@@ -8,9 +8,10 @@ import { Disposable, Result } from 'zena:core';
 import {
   Extension, fromExtension, fromProgram, loadExtension,
 } from 'zena:extensions';
-import { Duration, milliseconds } from 'zena:time';
-import { Ops, attach } from 'test:ext/ops';
-import { Relay, attach as attachRelay } from 'test:ext/relay';
+import { Duration, milliseconds, sleep } from 'zena:time';
+import { Ops } from 'test:ext/ops';
+import { Relay } from 'test:ext/relay';
+import { Session, Sessions } from 'test:ext/sessions';
 
 let fixtures = 'packages/stdlib/tests/extensions/fixtures';
 
@@ -28,13 +29,60 @@ export class Callbacks implements Disposable {
     return key + 100;
   }
 
+  static create(ext: u32): Callbacks {
+    return new Callbacks(ext);
+  }
+
   [Disposable.dispose](): void {
     console.log(`callbacks ${this.#extension} disposed`);
   }
 }
 
-export function create(ext: u32): Callbacks {
-  return new Callbacks(ext);
+/** A transaction: the caller's resource, which the extension holds. */
+export class Txn implements Disposable {
+  var #sum = 0 as u32;
+  var #puts = 0 as u32;
+
+  put(key: String, value: u32): void {
+    console.log(`put ${key} ${value}`);
+    this.#sum += value;
+    this.#puts += 1 as u32;
+  }
+
+  commit(): u32 {
+    console.log(`commit ${this.#sum}`);
+    return this.#sum;
+  }
+
+  puts(): u32 {
+    return this.#puts;
+  }
+
+  [Disposable.dispose](): void {
+    console.log('txn dropped');
+  }
+}
+
+/** The store served to one extension. */
+export class Store implements Disposable {
+  #extension: u32;
+
+  new(ext: u32) : #extension = ext;
+
+  begin(): Txn {
+    console.log(`begin for ${this.#extension}`);
+    return new Txn();
+  }
+
+  size(txn: Txn): u32 {
+    return txn.puts();
+  }
+
+  static create(ext: u32): Store {
+    return new Store(ext);
+  }
+
+  [Disposable.dispose](): void {}
 }
 
 /** Loads `name`, which may import this program's `callbacks`. */
@@ -42,7 +90,8 @@ let load = (name: String, options: {
   memoryLimit?: i64, callTimeout?: Duration,
 } = {}): Extension => {
   let loaded = loadExtension(`${fixtures}/${name}`,
-      [fromProgram('test:ext/callbacks@1.0.0')], options);
+      [fromProgram('test:ext/callbacks@1.0.0'), fromProgram('test:ext/store@1.0.0')],
+      options);
   if (loaded is (true, Extension)) {
     return loaded[1];
   }
@@ -85,14 +134,14 @@ let showVoid = (label: String, r: Result<void, String>) => {
 
 async function calls(): Future<void> {
   let ext = load('child.wasm');
-  let ops = attach(ext.handle);
+  let ops = Ops.attach(ext.handle);
   showI32('compute(5)', await ops.compute(5));
   showI32('compute(7)', await ops.compute(7));
   showString('describe', await ops.describe('ab', [1 as u32, 2 as u32, 3 as u32]));
 }
 
 async function traps(): Future<void> {
-  let ops = attach(load('child.wasm').handle);
+  let ops = Ops.attach(load('child.wasm').handle);
   showU32('count', await ops.count());
   showU32('count', await ops.count());
   showVoid('trap', await ops.trap());
@@ -101,13 +150,13 @@ async function traps(): Future<void> {
 }
 
 async function timeout(): Future<void> {
-  let ops = attach(load('child.wasm', {callTimeout: milliseconds(100)}).handle);
+  let ops = Ops.attach(load('child.wasm', {callTimeout: milliseconds(100)}).handle);
   showVoid('spin', await ops.spin());
   showI32('compute(1)', await ops.compute(1));
 }
 
 async function memory(): Future<void> {
-  let ops = attach(load('child.wasm',
+  let ops = Ops.attach(load('child.wasm',
       {memoryLimit: (8 as i64) * (1024 as i64) * (1024 as i64)}).handle);
   showU32('grow(64)', await ops.grow(64 as u32));
   showU32('grow(1)', await ops.grow(1 as u32));
@@ -115,12 +164,14 @@ async function memory(): Future<void> {
 
 async function drops(): Future<void> {
   let ext = load('child.wasm');
-  let ops = attach(ext.handle);
+  let ops = Ops.attach(ext.handle);
   showI32('compute(1)', await ops.compute(1));
   ext.drop();
   ext.drop();
+  // The objects made for it are disposed once this program yields.
+  await sleep(milliseconds(1));
   showI32('after drop', await ops.compute(1));
-  showI32('no such handle', await attach(99 as u32).compute(1));
+  showI32('no such handle', await Ops.attach(99 as u32).compute(1));
 }
 
 async function mismatch(): Future<void> {
@@ -142,6 +193,26 @@ async function unbound(): Future<void> {
   }
 }
 
+/** Resources both ways: the caller's transactions, the child's sessions. */
+async function resources(): Future<void> {
+  let ext = load('child.wasm');
+  let ops = Ops.attach(ext.handle);
+  showU32('transact', await ops.transact('k', 7 as u32));
+  let sessions = Sessions.attach(ext.handle);
+  let opened = await sessions.open('a');
+  if (opened is (false, String)) {
+    console.log(`open failed: ${opened[1]}`);
+    return;
+  }
+  let a = opened[1];
+  showU32('a.bump', await a.bump());
+  showU32('a.bump', await a.bump());
+  let b = (await sessions.open('b') as (true, Session))[1];
+  showU32('b.bump', await b.bump());
+  a.[Disposable.dispose]();
+  showU32('disposed', await sessions.disposed());
+}
+
 /** Two extensions: the relay's `ops` is the child's export. */
 async function relays(): Future<void> {
   let child = load('child.wasm');
@@ -151,10 +222,11 @@ async function relays(): Future<void> {
     console.log(`relay failed: ${loaded[1]}`);
     return;
   }
-  let relay = attachRelay((loaded as (true, Extension))[1].handle);
+  let relay = Relay.attach((loaded as (true, Extension))[1].handle);
   showI32('twice(5)', await relay.twice(5));
   // Dropping the child leaves the relay's calls on it failing.
   child.drop();
+  await sleep(milliseconds(1));
   showI32('twice after drop', await relay.twice(5));
 }
 
@@ -177,6 +249,8 @@ export async function main(): Future<void> {
     await unbound();
   } else if (scenario == 'relay') {
     await relays();
+  } else if (scenario == 'resources') {
+    await resources();
   } else {
     console.log(`unknown scenario: ${scenario}`);
   }

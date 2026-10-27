@@ -123,9 +123,12 @@ export let tests = suite('extensions', () => {
   });
 
   test('a dropped extension, or an unknown handle, fails calls', () => {
+    // Dropping also releases the object `create` made, which runs its
+    // destructor.
     equal(run('drop').trim(),
       'lookup 1 1\n' +
       'compute(1) = 202\n' +
+      'callbacks 1 disposed\n' +
       'after drop failed: extension 1 is dropped\n' +
       'no such handle failed: no extension 99');
   });
@@ -152,6 +155,20 @@ export let tests = suite('extensions', () => {
     isTrue(out.contains('S64'), out);
   });
 
+  test('resources cross both ways as proxies, and drops reach their owner', () => {
+    equal(run('resources').trim(),
+      'begin for 1\n' +
+      'put k 7\n' +
+      'put k2 8\n' +
+      'commit 15\n' +
+      'txn dropped\n' +
+      'transact = 215\n' +
+      'a.bump = 1\n' +
+      'a.bump = 2\n' +
+      'b.bump = 1\n' +
+      'disposed = 1');
+  });
+
   test('an extension bound to another calls it, and it calls the program', () => {
     let text = run('relay');
     let out = lines(text);
@@ -159,7 +176,8 @@ export let tests = suite('extensions', () => {
     // waits on the relay, extension 2.
     equal(out[0], 'lookup 1 5');
     equal(out[1], 'twice(5) = 420');
-    isTrue(out[2].startsWith('twice after drop failed: '), out[2]);
+    equal(out[2], 'callbacks 1 disposed');
+    isTrue(out[3].startsWith('twice after drop failed: '), out[3]);
     isTrue(text.contains('is dropped'), text);
   });
 });

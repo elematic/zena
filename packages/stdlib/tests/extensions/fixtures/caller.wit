@@ -1,9 +1,10 @@
 // The caller's side of child.wit's interfaces, in the shape the host
 // pairs with the extension's (docs/design/runtime-components.md):
 // `ops`, which the caller calls, as a resource whose methods are the
-// extension's functions with their results wrapped, plus `attach`;
-// `callbacks`, which the caller serves, as a resource whose methods are
-// the extension's functions, plus `create`.
+// extension's functions with their results wrapped, and a static
+// `attach`; `callbacks` and `store`, which the caller serves, as
+// resources whose methods are the extension's functions, and a static
+// `create`, with the resources the extension's side declares kept.
 package test:ext@1.0.0;
 
 interface ops {
@@ -14,31 +15,58 @@ interface ops {
     spin: async func() -> result<_, string>;
     grow: async func(mebibytes: u32) -> result<u32, string>;
     count: async func() -> result<u32, string>;
+    transact: async func(key: string, value: u32) -> result<u32, string>;
+    attach: static func(extension: u32) -> own<ops>;
   }
-  attach: func(extension: u32) -> own<ops>;
+}
+
+interface store {
+  resource txn {
+    put: func(key: string, value: u32);
+    commit: func() -> u32;
+  }
+  resource store {
+    begin: func() -> own<txn>;
+    size: func(txn: borrow<txn>) -> u32;
+    create: static func(extension: u32) -> own<store>;
+  }
+}
+
+interface sessions {
+  resource session {
+    bump: async func() -> result<u32, string>;
+  }
+  resource sessions {
+    open: async func(name: string) -> result<own<session>, string>;
+    disposed: async func() -> result<u32, string>;
+    attach: static func(extension: u32) -> own<sessions>;
+  }
 }
 
 interface relay {
   resource relay {
     twice: async func(x: s32) -> result<s32, string>;
+    attach: static func(extension: u32) -> own<relay>;
   }
-  attach: func(extension: u32) -> own<relay>;
 }
 
 interface callbacks {
   resource callbacks {
     lookup: async func(key: s32) -> s32;
+    create: static func(extension: u32) -> own<callbacks>;
   }
-  create: func(extension: u32) -> own<callbacks>;
 }
 
 world caller {
   import wasi:cli/environment@0.3.0;
   import wasi:cli/stdout@0.3.0;
   import wasi:cli/stderr@0.3.0;
+  import wasi:clocks/monotonic-clock@0.3.0;
   import zena-cli:host/extensions@1.0.0;
   import ops;
   import relay;
+  import sessions;
   export callbacks;
+  export store;
   export main: async func();
 }
