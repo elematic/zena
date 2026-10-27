@@ -36,7 +36,7 @@ import { Cid } from 'atproto:cid';
 import { BlobRef, fromJson, toJson } from 'atproto:data';
 import { KeyType, formatDidKey, publicKeyFor } from 'atproto:didkey';
 import { Session, getServiceAuth } from 'atproto:session';
-import { XrpcClient } from 'atproto:xrpc';
+import { XrpcClient, XrpcError } from 'atproto:xrpc';
 import { packSource } from 'package-manager:archive';
 import { SOURCE_MIME_TYPE, checkDependencies, validateRelease } from 'package-manager:validate';
 import { Manifest, readManifest, writeDid } from 'package-manager:manifest';
@@ -99,14 +99,19 @@ export function packageCreateCommand(args: ParsedArgs, options: Options): i32 {
   });
 }
 
-/** Runs `body`, printing a `PublishError`'s message alone. */
+/**
+ * Runs `body`, printing the message alone for a `PublishError`, or for a
+ * call the host or a PDS refused (`XrpcError`, which names the error).
+ */
 export function runCommand(body: () => void): i32 {
   try {
     body();
     return 0;
   } catch (e) {
-    if (e is PublishError) {
-      console.error(`Error: ${e.message}`);
+    // TODO(#99): read `message` on the narrowed union.
+    let message = e.message;
+    if (e is PublishError || e is XrpcError) {
+      console.error(`Error: ${message}`);
       return 1;
     }
     throw e;
@@ -350,7 +355,7 @@ function publish(session: Session, host: Host, target: WorkspacePackage, manifes
 }
 
 /** Writes the maintainer's attestation of the record at `uri` to their own repository. */
-function attest(session: Session, uri: String, cid: Cid): void {
+export function attest(session: Session, uri: String, cid: Cid): void {
   let attestation = new Attestation(uri, cid, formatTimestamp(nowNanos()));
   let input = new JsonObject();
   input['repo'] = session.did;

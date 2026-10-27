@@ -315,7 +315,10 @@ Subcommands (`./target/release/zena-cli <subcommand>`):
   **`package create`** only creates it.
 - **`scope create <name> [--yes]`**, **`scope info <scope>`**: Create a
   scope on a package host, with you as its owner, or describe one.
-  Publishing never creates a scope.
+  Publishing never creates a scope. **`scope add|remove <scope> <person>`**,
+  **`scope members`**, **`team create|add|remove|delete|members`** and
+  **`owner add|remove|list`** change and show who belongs to a scope, a
+  team and a package.
 - **`fetch`**: Fetch the published packages `zena-lock.json` pins into
   the package cache, checking each against its pins. `ZENA_PLC_DIRECTORY`
   and `ZENA_DNS_OVER_HTTPS` replace the PLC directory and the DNS resolver

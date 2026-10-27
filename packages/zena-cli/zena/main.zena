@@ -32,6 +32,7 @@ import { addCommand, updateCommand } from './add.zena';
 import { loginCommand, logoutCommand } from './login.zena';
 import { packageCreateCommand, publishCommand } from './publish.zena';
 import { scopeCreateCommand, scopeInfoCommand } from './scope.zena';
+import { ownerCommand, scopeAddCommand, scopeMembersCommand, scopeRemoveCommand, teamCommand } from './members.zena';
 
 /** The whole command line, described once. */
 function describe() {
@@ -196,11 +197,30 @@ function describe() {
         },
       },
       'scope' => {
-        help: 'scope create <name>: create a scope on a host; scope info <scope>: describe one',
+        help: 'scope create <name> | info <scope> | members <scope> | add <scope> <person> | remove <scope> <person>',
         options: {
           'help' => help,
           'host' => {help: 'The package host (default $ZENA_PACKAGE_HOST, else https://pkg.zena-lang.dev)'},
           'yes' => {type: OptionType.Flag, help: 'Create it'},
+          'role' => {help: 'With add: member (the default), admin or owner'},
+        },
+      },
+      'team' => {
+        help: 'team create|delete|members <scope>/<team> | add|remove <scope>/<team> <person>',
+        options: {
+          'help' => help,
+          'host' => {help: 'The package host (default $ZENA_PACKAGE_HOST, else https://pkg.zena-lang.dev)'},
+          'role' => {help: 'With add: member (the default) or maintainer'},
+        },
+      },
+      'owner' => {
+        help: "owner add|remove <person> | add|remove --team <scope>/<team> | list: a package's maintainers",
+        options: {
+          'help' => help,
+          'host' => {help: 'The package host (default $ZENA_PACKAGE_HOST, else https://pkg.zena-lang.dev)'},
+          'role' => {help: 'With add: publisher (the default) or owner'},
+          'team' => {help: 'A team, <scope>/<team>, in place of a person'},
+          'package' => {help: 'The package, by DID, handle or @scope/name (default: the one you are in)'},
         },
       },
       'package' => {
@@ -350,8 +370,23 @@ function dispatch(parser: ArgParser, args: ParsedArgs): i32 {
     if (sub.rest.length > 0 && sub.rest[0] == 'info') {
       return scopeInfoCommand(sub, options);
     }
-    console.error('Error: the scope command has two subcommands: zena scope create <name>, zena scope info <scope>');
+    if (sub.rest.length > 0 && sub.rest[0] == 'members') {
+      return scopeMembersCommand(sub, options);
+    }
+    if (sub.rest.length > 0 && sub.rest[0] == 'add') {
+      return scopeAddCommand(sub, options);
+    }
+    if (sub.rest.length > 0 && sub.rest[0] == 'remove') {
+      return scopeRemoveCommand(sub, options);
+    }
+    console.error('Error: zena scope create <name> | info <scope> | members <scope> | add <scope> <person> | remove <scope> <person>');
     return 2;
+  }
+  if (name == 'team') {
+    return teamCommand(sub, options);
+  }
+  if (name == 'owner') {
+    return ownerCommand(sub, options);
   }
   if (name == 'bench') {
     return benchCommand(sub, options);

@@ -705,8 +705,8 @@ design does not add one.
 ### Scopes
 
 `zena scope create`, `zena scope info`, the manifest's `scope` and the
-operator's `create-scope` are built (#575). `zena scope members` and the
-membership commands are #576.
+operator's `create-scope` are built (#575), and so are the membership
+commands below (#576).
 
 A scope is an organization account on a package host, whose handle is one
 label below the host's domain (see [Names and scopes](#names-and-scopes)).
