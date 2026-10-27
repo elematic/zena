@@ -524,6 +524,12 @@ PDS, where nothing checked what was written. The rules:
 - **When publishing, every dependency is a release that exists and is not
   retracted.** A fetch does not repeat it: resolving the release's
   dependencies already fails on one that does not.
+- **When publishing, the manifest has a description and a license**, an
+  SPDX expression such as `MIT` or `(MIT OR Apache-2.0)`, as crates.io
+  requires: every package states what it is for and on what terms it may
+  be used. `zena publish` checks this before it creates a package, whose
+  profile then carries both. A fetch does not, so releases published
+  before the rule stay usable.
 
 The host answers a release that breaks one with `InvalidRelease`, listing
 every problem.

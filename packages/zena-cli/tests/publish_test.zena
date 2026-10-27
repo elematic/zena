@@ -32,7 +32,7 @@ export let tests = suite('zena publish', () => {
           .set('ZENA_PACKAGE_HOST', addresses['host'] as String)
           .set('ZENA_CONFIG_DIR', scratch.host('config'));
 
-      write(scratch.at('lib/zena-package.json'), '{"name": "greet", "version": "1.0.0"}\n');
+      write(scratch.at('lib/zena-package.json'), '{"name": "greet", "description": "A package for tests", "license": "MIT", "version": "1.0.0"}\n');
       write(scratch.at('lib/greet.zena'), 'export function answer(): i32 { return 42; }\n');
       write(scratch.at('lib/.notes'), 'hidden files stay out of the archive\n');
       let lib = zenaIn('lib');
@@ -42,15 +42,21 @@ export let tests = suite('zena publish', () => {
       let login = lib.run(['login', ALICE, '--password-stdin'], 'app-password\n');
       isTrue(login.succeeded(), described(login));
 
+      // A package without a license is refused before anything is made for it.
+      write(scratch.at('lib/zena-package.json'), '{"name": "greet", "description": "Greets", "version": "1.0.0"}\n');
+      let unlicensed = lib.run(['publish', '--scope', 'acme', '--yes']);
+      isTrue(!unlicensed.succeeded() && unlicensed.stderr.contains('has no license') &&
+          !unlicensed.stdout.contains('Created'), described(unlicensed));
+
       // A package that depends on a WIT is refused before anything is made
       // for it on the host.
       write(scratch.at('lib/zena-package.json'),
-          '{"name": "greet", "version": "1.0.0", "dependencies": {"gfx": {"wit": "./wit"}}}\n');
+          '{"name": "greet", "description": "A package for tests", "license": "MIT", "version": "1.0.0", "dependencies": {"gfx": {"wit": "./wit"}}}\n');
       let wit = lib.run(['publish', '--scope', 'acme', '--yes']);
       isTrue(!wit.succeeded() && wit.stderr.contains('the WIT in ./wit') && !wit.stdout.contains('Created'),
           described(wit));
       isTrue(!read(scratch.at('lib/zena-package.json')).contains('"did"'), 'no DID was written');
-      write(scratch.at('lib/zena-package.json'), '{"name": "greet", "version": "1.0.0"}\n');
+      write(scratch.at('lib/zena-package.json'), '{"name": "greet", "description": "A package for tests", "license": "MIT", "version": "1.0.0"}\n');
 
       // A package with no DID needs a scope, which publishing never
       // creates, and a yes, to be created.
@@ -98,12 +104,12 @@ export let tests = suite('zena publish', () => {
       // A manifest whose scope is not the package's is refused, and so is a
       // --scope that disagrees with the manifest.
       write(scratch.at('lib/zena-package.json'),
-          `{"name": "greet", "did": "${did}", "scope": "other", "version": "1.1.0"}\n`);
+          `{"name": "greet", "description": "A package for tests", "license": "MIT", "did": "${did}", "scope": "other", "version": "1.1.0"}\n`);
       let wrongScope = lib.run(['publish']);
       isTrue(!wrongScope.succeeded() && wrongScope.stderr.contains('not greet.other.pkg.test') &&
           wrongScope.stderr.contains('greet.acme.pkg.test'), described(wrongScope));
       write(scratch.at('lib/zena-package.json'),
-          `{"name": "greet", "did": "${did}", "scope": "acme", "version": "1.1.0"}\n`);
+          `{"name": "greet", "description": "A package for tests", "license": "MIT", "did": "${did}", "scope": "acme", "version": "1.1.0"}\n`);
       let disagrees = lib.run(['publish', '--scope', 'beta']);
       isTrue(!disagrees.succeeded() && disagrees.stderr.contains('in the scope acme, not beta'), described(disagrees));
       let second = lib.run(['publish']);
@@ -112,7 +118,7 @@ export let tests = suite('zena publish', () => {
 
       // A second package names its scope in its manifest, and `zena package
       // create` only creates it.
-      write(scratch.at('other/zena-package.json'), '{"name": "other", "scope": "acme", "version": "0.1.0"}\n');
+      write(scratch.at('other/zena-package.json'), '{"name": "other", "description": "A package for tests", "license": "MIT", "scope": "acme", "version": "0.1.0"}\n');
       write(scratch.at('other/other.zena'), 'export let x = 1;\n');
       let created = zenaIn('other').run(['package', 'create', '--yes']);
       isTrue(created.succeeded() && created.stdout.contains('Created other.acme.pkg.test'), described(created));
@@ -120,7 +126,7 @@ export let tests = suite('zena publish', () => {
 
       // A workspace's root names the scope of its packages.
       write(scratch.at('ws/zena-package.json'), '{"workspace": {"packages": ["pkgs/*"]}, "scope": "acme"}\n');
-      write(scratch.at('ws/pkgs/third/zena-package.json'), '{"name": "third", "version": "0.1.0"}\n');
+      write(scratch.at('ws/pkgs/third/zena-package.json'), '{"name": "third", "description": "A package for tests", "license": "MIT", "version": "0.1.0"}\n');
       write(scratch.at('ws/pkgs/third/third.zena'), 'export let y = 2;\n');
       let third = new ZenaCommand(scratch.host('ws'), scratch.at('ws/pkgs/third'), scratch.host('cache'))
         .set('ZENA_PLC_DIRECTORY', addresses['plc'] as String)
@@ -138,16 +144,16 @@ export let tests = suite('zena publish', () => {
       // anything is made for it: greet has no 9.9.0, and other's manifest
       // names 0.2.0, which it has not published.
       write(scratch.at('uses/zena-package.json'),
-          `{"name": "uses", "version": "1.0.0", "dependencies": {"greet": {"did": "${did}", "version": "9.9.0"}}}\n`);
+          `{"name": "uses", "description": "A package for tests", "license": "MIT", "version": "1.0.0", "dependencies": {"greet": {"did": "${did}", "version": "9.9.0"}}}\n`);
       let missing = zenaIn('uses').run(['publish', '--scope', 'acme', '--yes']);
       isTrue(!missing.succeeded() && missing.stderr.contains('greet 9.9.0') &&
           missing.stderr.contains('is not published') && !missing.stdout.contains('Created'), described(missing));
       let otherManifest = read(scratch.at('other/zena-package.json'));
       let otherDid = (parseJson(otherManifest) as JsonObject)['did'] as String;
       write(scratch.at('other/zena-package.json'),
-          `{"name": "other", "did": "${otherDid}", "version": "0.2.0"}\n`);
+          `{"name": "other", "description": "A package for tests", "license": "MIT", "did": "${otherDid}", "version": "0.2.0"}\n`);
       write(scratch.at('uses/zena-package.json'),
-          '{"name": "uses", "version": "1.0.0", "dependencies": {"other": {"path": "../other"}}}\n');
+          '{"name": "uses", "description": "A package for tests", "license": "MIT", "version": "1.0.0", "dependencies": {"other": {"path": "../other"}}}\n');
       let unpublished = zenaIn('uses').run(['publish', '--scope', 'acme', '--yes']);
       isTrue(!unpublished.succeeded() && unpublished.stderr.contains('other 0.2.0') &&
           !unpublished.stdout.contains('Created'), described(unpublished));
