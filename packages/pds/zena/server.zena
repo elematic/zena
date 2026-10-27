@@ -28,7 +28,7 @@ import {div} from 'zena:math';
 import {decodeCbor} from 'atproto:cbor';
 import {Cid} from 'atproto:cid';
 import {MapValue, Value, fromJson, toJson} from 'atproto:data';
-import {Created, HostError, PackageHost} from './host.zena';
+import {Automation, Created, HostError, PackageHost} from './host.zena';
 import {Pds} from './pds.zena';
 import {CreateRecord, DeleteRecord, Repository, RepositoryError, UpdateRecord, Write} from './repository.zena';
 import {SessionError, Sessions, Tokens} from './sessions.zena';
@@ -286,6 +286,26 @@ function hostRoutes(router: Router, host: PackageHost): void {
       let created = await host.publish(caller, input['package'] as String, fromJson(input['release']),
           nowMicros());
       return writtenJson(created);
+    });
+  });
+
+  router.post('/xrpc/dev.zena-lang.host.createAutomationAccount', async (req, res, next, params) => {
+    await hostCall(host, req, res, 'dev.zena-lang.host.createAutomationAccount', async (caller): Future<JsonObject | null> => {
+      let input = await jsonBody(req, res);
+      if (input == null) {
+        return null;
+      }
+      if (!(input['organization'] is String) || !(input['name'] is String)) {
+        fail(res, 400, 'InvalidRequest', 'organization and name are required');
+        return null;
+      }
+      let made = await host.createAutomationAccount(caller, input['organization'] as String, input['name'] as String,
+          nowMicros());
+      let answer = new JsonObject();
+      answer['did'] = made.did;
+      answer['handle'] = made.handle;
+      answer['appPassword'] = made.appPassword;
+      return answer;
     });
   });
 

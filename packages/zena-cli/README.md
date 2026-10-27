@@ -136,6 +136,16 @@ zena-cli publish                       # after raising "version"
 zena-cli retract 1.4.1 --reason "Routes with a trailing slash matched the wrong handler"
 ```
 
+To publish from CI, a scope's admin creates an automation account, and a
+package's owner adds it as a publisher. CI keeps its app password as the
+secret `ZENA_APP_PASSWORD`, and runs `zena login <handle>` and
+`zena publish`:
+
+```bash
+zena-cli ci create acme/ci                          # prints the app password, once
+zena-cli owner add ci.acme.pkg.zena-lang.dev --automation
+```
+
 `zena retract <version>` marks a release as retracted. Builds whose
 lockfiles pin it keep using it, and `zena add` and `zena update` skip it.
 Any maintainer may retract a release.
