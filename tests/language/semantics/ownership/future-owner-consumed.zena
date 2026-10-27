@@ -1,0 +1,87 @@
+// @mode: check
+// A future whose value carries an owner is affine, and its await
+// consumes it (docs/design/owner-futures.md): a second await would mint
+// a second owner of the same resource, released twice. The future moves
+// like an owner when it is passed on or stored. A future of a
+// first-class value is unchanged.
+import {Own, Disposable} from 'zena:core';
+
+resource class Res {
+  new();
+  [Disposable.dispose](this: Own<this>): void {}
+}
+
+async function make(): Future<Own<Res>> {
+  return new Res();
+}
+
+async function count(): Future<i32> {
+  return 1;
+}
+
+async function take(f: Future<Own<Res>>): Future<i32> {
+  let r = await f;
+  return 1;
+}
+
+async function twice(): Future<i32> {
+  let f = make();
+  let a = await f;
+  let b = await f; // @error: 'f' may have been moved
+  return 1;
+}
+
+async function passedOn(): Future<i32> {
+  let f = make();
+  let n = await take(f);
+  let r = await f; // @error: 'f' may have been moved
+  return n;
+}
+
+// Binding it to another name moves it, as it moves an owner.
+async function rebound(): Future<i32> {
+  let f = make();
+  let g = f;
+  let r = await f; // @error: 'f' may have been moved
+  let s = await g;
+  return 1;
+}
+
+async function inLoop(): Future<i32> {
+  let f = make();
+  var i = 0;
+  while (i < 2) {
+    let r = await f; // @error: not reinitialized before the next iteration
+    i += 1;
+  }
+  return i;
+}
+
+// `then` would hand the owner to a callback while the future still
+// holds it.
+async function viaThen(): Future<i32> {
+  let f = make();
+  let g = f.then((r) => 1); // @error: consumed by 'await'
+  return await g;
+}
+
+// A future of an owner is a value the generic code may copy.
+let several = (): i32 => {
+  let futures = [make(), make()]; // @error: may not bind
+  return 0;
+};
+
+// A first-class future may be awaited any number of times.
+async function plain(): Future<i32> {
+  let f = count();
+  let a = await f;
+  let b = await f;
+  return a + b;
+}
+
+// Each await of a fresh call is its own future.
+async function fresh(): Future<i32> {
+  let a = await make();
+  let b = await make();
+  return 2;
+}
