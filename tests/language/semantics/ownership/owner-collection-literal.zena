@@ -1,0 +1,49 @@
+// @mode: check
+// A collection literal instantiates its collection as `new` would, so
+// an owner element meets the rule `new FixedArray<Own<R>>` does
+// (ownership.md §"Affine type arguments"): the element type parameter
+// is unrestricted, and each index read would be another owner of the
+// same resource, released again. The one sanctioned shape is the
+// call-site temporary flowing into a `scoped T` parameter.
+import {Own, Borrow, Disposable} from 'zena:core';
+
+resource class Res {
+  new();
+  [Disposable.dispose](this: Own<this>): void {}
+}
+
+let all = <scoped T>(xs: Array<T>): i32 => xs.length;
+let param = (xs: Array<Own<Res>>): i32 => xs.length;
+
+let bound = (): i32 => {
+  let rs = [new Res(), new Res()]; // @error: may not bind
+  return 0;
+};
+
+let annotated = (): i32 => {
+  let rs: Array<Own<Res>> = [new Res()]; // @error: may not bind
+  return 0;
+};
+
+let empty = (): i32 => {
+  let rs: FixedArray<Own<Res>> = []; // @error: may not bind
+  return 0;
+};
+
+// Reported once, though a call checks its arguments twice.
+let passed = (): i32 => param([new Res()]); // @error: may not bind
+
+let mapped = (): i32 => {
+  let m = {'a' => new Res()}; // @error: may not bind
+  return 0;
+};
+
+// The map half of the borrow storage rule, which map literals skipped
+// the same way.
+let borrowed = (b: Borrow<Res>): i32 => {
+  let m = {'a' => b}; // @error: may not be stored in a container
+  return 0;
+};
+
+// The call-site temporary into a `scoped T` parameter.
+let scoped = (): i32 => all([new Res(), new Res()]);
