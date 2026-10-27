@@ -229,7 +229,7 @@ function classDeclaration(
   let caseParams = decl.caseParams;
   if (caseParams != null) {
     sb.append('(');
-    sb.append(caseParamText(caseParams));
+    sb.append(caseParamText(walk, caseParams));
     sb.append(')');
   }
   let superClass = decl.superClass;
@@ -786,11 +786,16 @@ function caseParamMember(
     sb.append(' ');
   }
   sb.append(name);
-  if (param.optional) {
-    sb.append('?');
-  }
   sb.append(': ');
   sb.append(type.text);
+  let defaultValue = param.defaultValue;
+  if (defaultValue != null) {
+    let fallback = walk.textOf(defaultValue.loc);
+    if (fallback != null) {
+      sb.append(' = ');
+      sb.append(fallback);
+    }
+  }
 
   let out = startMember(walk, owner, MemberKind.Field, name, sb.toString());
   out.mutability = param.mutability;
@@ -813,7 +818,7 @@ function variantMember(
   let params = variant.params;
   if (params != null) {
     sb.append('(');
-    sb.append(caseParamText(params));
+    sb.append(caseParamText(walk, params));
     sb.append(')');
   }
   let out = startMember(walk, owner, MemberKind.Variant, name, sb.toString());
@@ -929,7 +934,7 @@ function returnText(returns: TypeRef | null): String {
   return ': ' + returns.text;
 }
 
-function caseParamText(params: Array<CaseClassParam>): String {
+function caseParamText(walk: Walk, params: Array<CaseClassParam>): String {
   let sb = new StringBuilder(48);
   var i = 0;
   while (i < params.length) {
@@ -943,11 +948,16 @@ function caseParamText(params: Array<CaseClassParam>): String {
       sb.append(' ');
     }
     sb.append(param.name.name);
-    if (param.optional) {
-      sb.append('?');
-    }
     sb.append(': ');
     sb.append(annotationText(param.typeAnnotation));
+    let defaultValue = param.defaultValue;
+    if (defaultValue != null) {
+      let fallback = walk.textOf(defaultValue.loc);
+      if (fallback != null) {
+        sb.append(' = ');
+        sb.append(fallback);
+      }
+    }
     i += 1;
   }
   return sb.toString();

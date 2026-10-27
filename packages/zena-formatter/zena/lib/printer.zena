@@ -368,8 +368,10 @@ function printVariableDeclarator(decl: VariableDeclaration) {
     parts.push(text(': '));
     parts.push(printTypeAnnotation(decl.typeAnnotation as TypeAnnotation));
   }
-  parts.push(text(' = '));
-  parts.push(printExpression(decl.init));
+  if (!(decl.init is NullLiteral && decl.init.loc == null)) {
+    parts.push(text(' = '));
+    parts.push(printExpression(decl.init));
+  }
   return concat(parts);
 }
 
@@ -684,9 +686,12 @@ function printCaseClassParam(param: CaseClassParam): Doc {
     parts.push(text(' '));
   }
   parts.push(text(param.name.name));
-  if (param.optional) { parts.push(text('?')); }
   parts.push(text(': '));
   parts.push(printTypeAnnotation(param.typeAnnotation));
+  if (param.defaultValue != null) {
+    parts.push(text(' = '));
+    parts.push(printExpression(param.defaultValue as Expression));
+  }
   return concat(parts);
 }
 
@@ -1683,7 +1688,6 @@ function printParam(param: Parameter): Doc {
   // initializer entry; `printConstructorInitializers` leaves that entry out.
   if (param.isThisParam) { parts.push(text('this.')); }
   parts.push(text(param.name.name));
-  if (param.optional) { parts.push(text('?')); }
   if (param.typeAnnotation != null) {
     parts.push(text(': '));
     parts.push(printTypeAnnotation(param.typeAnnotation as TypeAnnotation));

@@ -150,13 +150,14 @@ Default parameters follow these rules:
   greet(null); // "Hello, null" (null passed explicitly)
   ```
 
-### Optional parameters
+### Nullable parameters with `null` defaults
 
-A parameter marked with `?` is optional and must follow all required parameters.
-Its type becomes nullable (`T?`):
+Parameters cannot be marked optional with `?` (`title?: String` is a syntax
+error). To make a nullable parameter optional at call sites, give it a `null`
+default value:
 
 ```zena
-let greet = (name: String, title?: String): String => {
+let greet = (name: String, title: String? = null): String => {
   if (title != null) {
     return `Hello, ${title} ${name}`;
   }
@@ -165,15 +166,6 @@ let greet = (name: String, title?: String): String => {
 
 greet('Alice');        // "Hello, Alice"
 greet('Bob', 'Dr.');   // "Hello, Dr. Bob"
-```
-
-Because WebAssembly primitives cannot hold `null` without boxing, **primitive
-optional parameters must have a default value** or be explicitly boxed with
-`Box<T>`:
-
-```zena
-let scale = (value: f64, factor: f64 = 1.0): f64 => value * factor; // OK
-// let invalid = (value: f64, factor?: f64) => ...; // Error: primitive cannot be optional without default
 ```
 
 ### Destructured parameters

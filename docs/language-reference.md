@@ -912,7 +912,12 @@ Variables are declared using `let` or `var`.
 ```zena
 let name = expression;
 var name = expression;
+var maybeName: Type?; // Mutable nullable variable; defaults to null
 ```
+
+A `let` binding and any non-nullable `var` binding must be initialized when
+declared. A `var` binding with a nullable type annotation (`T?` or `T | null`)
+may omit `= expression` and defaults to `null`.
 
 ### Scoping
 
@@ -1306,33 +1311,20 @@ This adaptation incurs a small performance overhead (allocation of a wrapper
 closure) and is only applied when the arity mismatch is detected at compile
 time.
 
-### Optional Parameters
+### Default Parameter Values
 
-Function parameters can be marked as optional using `?`. Optional parameters
-must come after required parameters.
-
-When a parameter is optional and has no default value, its type becomes
-nullable (e.g., `String?`). Because unions cannot contain primitive types,
-**optional primitive parameters must have a default value** or be wrapped in
-`Box<T>`.
+Parameters are made optional by giving them a default value with `=`, which is
+used when the caller omits the argument. Parameters cannot be marked optional
+with `?` (`x?: T` is a syntax error); for an optional parameter that defaults
+to `null`, use a nullable type with `= null`:
 
 ```zena
-// ✅ Valid: Reference type (String?)
-let greet = (name?: String) => { ... };
+let increment = (x: i32, amount: i32 = 1) => x + amount;
 
-// ✅ Valid: Primitive with default value (type is i32)
-let increment = (amount: i32 = 1) => { ... };
+increment(10); // 11
+increment(10, 5); // 15
 
-// ✅ Valid: Boxed primitive (Box<i32>?)
-let process = (val?: Box<i32>) => { ... };
-
-// ❌ Invalid: Primitive without default (would be i32?)
-// let invalid = (amount?: i32) => { ... };
-```
-
-```zena
-let greet = (name: String, greeting?: String) => {
-  // greeting is inferred as String?
+let greet = (name: String, greeting: String? = null): String => {
   if (greeting == null) {
     return `Hello, ${name}`;
   }
@@ -1341,17 +1333,6 @@ let greet = (name: String, greeting?: String) => {
 
 greet('Alice'); // "Hello, Alice"
 greet('Bob', 'Hi'); // "Hi, Bob"
-```
-
-### Default Parameter Values
-
-Parameters can have default values that are used when the caller omits the argument.
-
-```zena
-let increment = (x: i32, amount: i32 = 1) => x + amount;
-
-increment(10); // 11
-increment(10, 5); // 15
 ```
 
 **Key semantics:**
@@ -2898,7 +2879,7 @@ class TreeNode {
 ```
 
 Fields themselves cannot be marked optional: `bar?: Bar` is an error. `?`
-after a name means "may be absent" (as on record properties and parameters),
+after a name means "may be absent" (as on record properties),
 and a constructed object's fields are never absent. Nullable fields work in
 classes, interfaces, and mixins:
 
@@ -2972,7 +2953,7 @@ to start from when changing it:
 ```zena
 import { hash } from 'zena:core';
 
-class Line(from: Pos, label: (i32, String), note?: String) {
+class Line(from: Pos, label: (i32, String), note: String? = null) {
   operator ==(other: Line): boolean {
     return this.from == other.from && this.label == other.label &&
         this.note == other.note;
@@ -2994,7 +2975,7 @@ class Line(from: Pos, label: (i32, String), note?: String) {
 - `hashCode()` starts from the first field's `hash()` and folds in the rest in
   declaration order, as `h * 31 + hash(field)`. A case class with no fields
   hashes to 0.
-- `hash()` takes no nullable value, so an optional field hashes null as 0
+- `hash()` takes no nullable value, so a nullable field hashes null as 0
   explicitly.
 - A field whose type has no hash, such as a class without `hashCode()`, an
   array or a function, adds 0.
@@ -3009,23 +2990,22 @@ class Counter(name: String, var count: i32)
 // name is immutable, count is mutable
 ```
 
-#### Optional parameters
+#### Default parameter values
 
-Case class parameters can be marked optional with `?`. Optional parameters
-become nullable fields (`T?`) and can be omitted in the constructor call:
+Case class parameters can specify a default value with `=`, allowing trailing
+arguments to be omitted in `new` calls:
 
 ```zena
-class Node(value: i32, label?: String)
-// label has type `String?`
+class Node(value: i32, label: String? = null, weight: i32 = 1)
 
-let a = new Node(1);          // label defaults to null
-let b = new Node(1, 'hello'); // label is 'hello'
+let a = new Node(1);          // label is null, weight is 1
+let b = new Node(1, 'hello'); // label is 'hello', weight is 1
 ```
 
-Optional and mutable can be combined:
+Default values and `var` can be combined:
 
 ```zena
-class Config(name: String, var cache?: Cache)
+class Config(name: String, var cache: Cache? = null)
 ```
 
 #### Generic case classes
