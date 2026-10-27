@@ -241,7 +241,7 @@ same rules, and a host reserves some, such as `www` (see
 
 The record schemas are named under `dev.zena-lang.package`, after the
 Zena project's domain, `zena-lang.dev`. They are published as lexicons at
-that domain. The profile, releases and yanks are below. The maintainers
+that domain. The profile, releases and retractions are below. The maintainers
 record, attestations, and an organization's records are in
 [Hosting, keys and maintainers](#hosting-keys-and-maintainers).
 
@@ -317,15 +317,15 @@ overwriting it. Each dependency names a DID, the minimum version the
 release needs, and the local name it uses for that package in its own
 imports.
 
-### Yank
+### Retraction
 
-A yanked version stays available. `zena add` and `zena update` skip it
+A retracted version stays available. `zena add` and `zena update` skip it
 when they pick the newest version, and a build whose dependencies require
-it still uses it, with a warning. Yanking writes a record:
+it still uses it, with a warning. Retracting writes a record:
 
 ```json
 {
-  "$type": "dev.zena-lang.package.yank",
+  "$type": "dev.zena-lang.package.retraction",
   "version": "1.4.1",
   "reason": "Routes with a trailing slash matched the wrong handler"
 }
@@ -522,7 +522,7 @@ PDS, where nothing checked what was written. The rules:
 - **When publishing, the manifest has the profile's name.** A fetch does
   not check this, since a package renamed later keeps its older releases.
 - **When publishing, every dependency is a release that exists and is not
-  yanked.** A fetch does not repeat it: resolving the release's
+  retracted.** A fetch does not repeat it: resolving the release's
   dependencies already fails on one that does not.
 
 The host answers a release that breaks one with `InvalidRelease`, listing
@@ -865,7 +865,7 @@ maintainer asked for. See [Names and scopes](#names-and-scopes).
    repository.
 4. It looks the version up in the checksum log, which records it.
 
-`zena yank <version>` writes a yank record the same way.
+`zena retract <version>` writes a retraction record the same way.
 
 Publishing changes the package's repository and not its DID document. The
 DID document changes only when the package moves to another host, its
@@ -965,7 +965,7 @@ A package's repository has a maintainers record at record key `self`:
 
 | Record                    | Role       | Can                                                                                              |
 | ------------------------- | ---------- | ------------------------------------------------------------------------------------------------ |
-| a package's maintainers   | publisher  | attest releases, and yank them                                                                   |
+| a package's maintainers   | publisher  | attest releases, and retract them                                                                |
 |                           | owner      | also attest changes to the maintainers record, and edit the profile, rename and move the package |
 | an organization's members | member     | be put on teams                                                                                  |
 |                           | admin      | also create packages in the organization's scope, create teams, and attest changes to them       |
@@ -975,7 +975,7 @@ A package's repository has a maintainers record at record key `self`:
 
 The log checks roles for everything that decides which releases count:
 releases, and changes to maintainers, members and teams. The host checks
-the same records for the rest: profile edits, renames, moves, yanks,
+the same records for the rest: profile edits, renames, moves, retractions,
 creating packages in a scope, and its own settings.
 
 #### Private membership
@@ -1201,7 +1201,7 @@ once the attestations the previous record requires reach the log.
 | `createAutomationAccount` | an organization's admins                                        | creates an account for CI and returns its app password once          |
 | `uploadArtifact`          | a package's maintainers                                         | stores an artifact, or one part of it, as a blob of the package      |
 | `publish`                 | a package's maintainers                                         | writes a release record, refusing a version that exists              |
-| `yank`                    | a package's maintainers                                         | writes a yank record                                                 |
+| `retract`                 | a package's maintainers                                         | writes a retraction record                                           |
 | `putProfile`              | a package's owners                                              | replaces the profile                                                 |
 | `renamePackage`           | a package's owners                                              | changes the handle, with a PLC operation, and the profile's name     |
 | `putMaintainers`          | a package's owners                                              | writes a maintainers record, with the entries behind its commitments |
@@ -1457,7 +1457,7 @@ seven days give the maintainers time to answer if it is misused.
 
 | If this is taken                  | The attacker can                                                                | What stops them                                                                                                                                                                 | Recovery                                                                                                                      |
 | --------------------------------- | ------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
-| A maintainer's session or account | attest as the maintainer, and ask the host for what the maintainer can          | the threshold, `humans` and approval keys; the other maintainers are told                                                                                                       | revoke the session or recover the account; the other maintainers remove the person if needed, and yank what was published     |
+| A maintainer's session or account | attest as the maintainer, and ask the host for what the maintainer can          | the threshold, `humans` and approval keys; the other maintainers are told                                                                                                       | revoke the session or recover the account; the other maintainers remove the person if needed, and retract what was published  |
 | A CI secret                       | attest as the bot                                                               | `humans`; an automation account on the package's host counts only with a person's attestation                                                                                   | replace the app password                                                                                                      |
 | An approval key                   | nothing alone                                                                   | it signs only together with the maintainer's account                                                                                                                            | remove it from the maintainers record                                                                                         |
 | The package's signing key         | write records to the repository                                                 | the log, which records nothing unattested                                                                                                                                       | the host replaces the key with a PLC operation                                                                                |
@@ -1524,7 +1524,7 @@ noticing:
 
 - Minimal version selection takes a new release only when someone raises
   a minimum, so a malicious release reaches the workspaces that update,
-  not every build. A release found out in that time can be yanked and
+  not every build. A release found out in that time can be retracted and
   labeled before most workspaces take it.
 - Labelers mark malicious releases `malware`, and clients that follow
   them refuse those releases, pinned ones included.
@@ -1653,7 +1653,7 @@ throttled. The host therefore limits who creates accounts and how many:
 - **Outgoing HTTP** with methods and headers on the `zena-cli` target,
   which `wasi:http` provides directly.
 - **The `zena` command**: `login`, `add`, `update`, `fetch`, `publish`,
-  `approve`, `yank`, `scope`, `owner`, `team`, `package create` and
+  `approve`, `retract`, `scope`, `owner`, `team`, `package create` and
   `package move`, and the `@scope/name` shorthand with its `scopes`
   mapping. Signing in needs OAuth with a loopback redirect, a
   client metadata document at `zena-lang.dev`, and the

@@ -9,7 +9,7 @@ import {runFuture} from 'zena:async';
 import {OrderedHashMap} from 'zena:collections';
 import {Cid} from 'atproto:cid';
 import {BlobRef} from 'atproto:data';
-import {Artifact, Dependency, Profile, Release, SOURCE, Yank} from 'package-manager:records';
+import {Artifact, Dependency, Profile, Release, SOURCE, Retraction} from 'package-manager:records';
 import {
   RegistryError,
   fetchProfile,
@@ -87,13 +87,13 @@ export let tests = suite('package-manager:registry', () => {
     pds.close();
   });
 
-  test('lists versions, and picks the latest that is not yanked', (ctx) => {
+  test('lists versions, and picks the latest that is not retracted', (ctx) => {
     let pds = started();
     let account = pds.main;
     for (let version in ['1.0.0', '1.4.2', '1.5.0', '2.0.0-rc.1', '2.0.0', '2.1.0']) {
       publish(account, version);
     }
-    account.yank(new Yank(Version.parse('2.1.0'), 'broken'));
+    account.retract(new Retraction(Version.parse('2.1.0'), 'broken'));
     let document = runFuture(pds.resolver().resolveDid(DID));
     let versions = runFuture(listVersions(document));
     equal(versions.releases.length, 6);

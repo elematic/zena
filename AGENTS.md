@@ -303,7 +303,7 @@ Subcommands (`./target/release/zena-cli <subcommand>`):
   for everything it leads to, pin them in `zena-lock.json`, and fetch
   them.
 - **`update [names...]`**: Raise dependencies to the latest version of their
-  major version that is not yanked, then pin and fetch as `add` does.
+  major version that is not retracted, then pin and fetch as `add` does.
 - **`login <handle or DID> [--password-stdin]`**: Sign in to an atproto
   account with an app password, from stdin, `ZENA_APP_PASSWORD` or the
   terminal, keeping the session in `$ZENA_CONFIG_DIR/session.json` (default

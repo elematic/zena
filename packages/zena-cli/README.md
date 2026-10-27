@@ -52,7 +52,7 @@ of what the command does.
 | `fmt [--write \| --check] <files...>`                | Formats Zena files, printing the result, rewriting the files, or failing if any is not formatted.                                                   |
 | `lint [--fix] <paths...>`                            | Reports what the lint rules find, or with `--fix` applies the fixes the type checker accepts. `--only`, `--skip`, `--list-rules`.                   |
 | `add <package>[@<version>] [--name <local>]`         | Adds a published package to the current package's dependencies, pins versions in `zena-lock.json`, and fetches them.                                |
-| `update [<name>...]`                                 | Raises the current package's dependencies, or the named ones, to the latest version of their major version that is not yanked.                      |
+| `update [<name>...]`                                 | Raises the current package's dependencies, or the named ones, to the latest version of their major version that is not retracted.                   |
 | `fetch`                                              | Fetches the packages `zena-lock.json` pins into the package cache.                                                                                  |
 | `login <handle or DID> [--password-stdin]`           | Signs in to your atproto account with an app password, to publish.                                                                                  |
 | `logout`                                             | Ends the session `login` started.                                                                                                                   |
@@ -76,7 +76,7 @@ how packages are published on atproto.
 `zena add` takes a package by DID, by handle, or as `@scope/name`, which
 means `name.scope.pkg.zena-lang.dev` unless the root manifest's `scopes`
 maps the scope to another domain. Without a version it takes the latest
-that is not yanked, and without `--name` the name the package's profile
+that is not retracted, and without `--name` the name the package's profile
 suggests:
 
 ```bash

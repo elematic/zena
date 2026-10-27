@@ -12,7 +12,7 @@ package in this repository's workspace or from a package that lists it in its
 
 - `package-manager:version`: semantic versions without build metadata, and
   their precedence.
-- `package-manager:records`: the profile, release, yank and maintainers
+- `package-manager:records`: the profile, release, retraction and maintainers
   records, an organization's members record and the private membership
   entries it commits to, read from the atproto data model with the checks
   their lexicons describe, and written back. Also the rules for package
@@ -37,7 +37,7 @@ package in this repository's workspace or from a package that lists it in its
 - `package-manager:manifest`: reading a package's `zena-package.json`, and
   rewriting its dependencies while keeping the rest of the file.
 - `package-manager:registry`: finding packages: a DID, a handle or
-  `@scope/name` to a DID, a package's versions and yanks, its profile, and
+  `@scope/name` to a DID, a package's versions and retractions, its profile, and
   its releases with their proofs.
 - `package-manager:testing/fake-pds`: a PLC directory, DNS-over-HTTPS
   resolver and PDS for package accounts, served in the same program, for
@@ -50,7 +50,7 @@ package in this repository's workspace or from a package that lists it in its
 `lexicons/dev/zena-lang/` holds the lexicons, to be published at
 `zena-lang.dev`:
 
-- `package/`: a package's records: profile, releases, yanks, the
+- `package/`: a package's records: profile, releases, retractions, the
   maintainers record, and attestations, which maintainers write to their
   own repositories. `package-manager:records` reads and checks the first
   three, and their lexicons state only constraints it checks.

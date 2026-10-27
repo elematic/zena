@@ -1,6 +1,6 @@
 /**
  * The records a package's repository holds (docs/design/package-manager.md,
- * "Records"): one profile, a release per version, a yank per yanked
+ * "Records"): one profile, a release per version, a retraction per retracted
  * version, and the maintainers record; and the private membership entries
  * an organization's records commit to. Their lexicons are in
  * `packages/package-manager/lexicons`.
@@ -33,7 +33,7 @@ import {Version} from './version.zena';
 
 export let PROFILE_TYPE = 'dev.zena-lang.package.profile';
 export let RELEASE_TYPE = 'dev.zena-lang.package.release';
-export let YANK_TYPE = 'dev.zena-lang.package.yank';
+export let RETRACTION_TYPE = 'dev.zena-lang.package.retraction';
 export let MAINTAINERS_TYPE = 'dev.zena-lang.package.maintainers';
 export let MEMBERS_TYPE = 'dev.zena-lang.org.members';
 export let TEAM_TYPE = 'dev.zena-lang.org.team';
@@ -367,30 +367,30 @@ export final class Release {
   }
 }
 
-/** A yanked version, at record key equal to the version. */
-export final class Yank {
+/** A retracted version, at record key equal to the version. */
+export final class Retraction {
   version: Version;
-  /** Why the version was yanked. */
+  /** Why the version was retracted. */
   reason: String | null;
 
   new(version: Version, reason: String | null = null) : version = version, reason = reason;
 
   /**
-   * Reads a yank record. Given the record key `key`, also checks that the
+   * Reads a retraction record. Given the record key `key`, also checks that the
    * version repeats it.
    */
-  static fromValue(value: Value, key: String | null = null): Yank {
-    let map = recordMap(value, YANK_TYPE, 'yank');
-    let versionText = requiredString(map, 'version', 'yank');
-    let version = readVersion(versionText, 'yank');
+  static fromValue(value: Value, key: String | null = null): Retraction {
+    let map = recordMap(value, RETRACTION_TYPE, 'retraction');
+    let versionText = requiredString(map, 'version', 'retraction');
+    let version = readVersion(versionText, 'retraction');
     if (key != null && key != versionText) {
-      throw new RecordError(`yank: version ${versionText} is not its record key, '${key}'`);
+      throw new RecordError(`retraction: version ${versionText} is not its record key, '${key}'`);
     }
-    return new Yank(version, optionalString(map, 'reason', 'yank'));
+    return new Retraction(version, optionalString(map, 'reason', 'retraction'));
   }
 
   toValue(): MapValue {
-    let map = typedMap(YANK_TYPE);
+    let map = typedMap(RETRACTION_TYPE);
     map.entries['version'] = new StringValue(this.version.toString());
     putString(map, 'reason', this.reason);
     return map;
