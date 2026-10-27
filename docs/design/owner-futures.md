@@ -2,7 +2,7 @@
 
 ## Status
 
-Draft, revised 2026-10-27. Part of elematic/zena#284: switching
+Draft, revised 2026-10-27 (third revision). Part of elematic/zena#284: switching
 `wasi:http` and `zena-cli:host/http-server` to resource classes needs it,
 and so does the open "lifted `future<T>` ownership" item there.
 
@@ -83,23 +83,27 @@ From a survey of `zena:async`, `zena:stream` and the synthesizer
   `new Future<T>()`, and the generic bodies of `zena:async` specialized
   at an owner never pass through them.
 
-## Affine instantiations
+## Restricted instantiations
 
-**A `Future`, `Completer`, `DeferredFuture`, `Stream` or `FutureClaim`
-instantiated at a type that carries an owner is affine.** "Carries an
-owner" is the containment walk the tuple rule already uses
-(`typeCarriesOwner`), extended into these classes' type arguments, so
-`Future<Own<R>>`, `Future<Result<Own<R>, E>>` and
-`Stream<(Own<A>, Own<B>)>` all qualify. A first-class instantiation,
-`Future<i32>` say, is unchanged: copyable, awaitable any number of
-times.
+The containers declare `scoped T`, ownership.md's one opt-in for
+restricted type arguments, and this note defines the half of it that
+classes need (§"The class half of `scoped T`"). An instantiation carries
+the restriction of its argument, decided by the containment walk the
+tuple rule and the scoped-container rule already use
+(`typeCarriesOwner`, `typeContainsSecondClass`), now extended into these
+classes' type arguments:
 
-The classes are polymorphic in affineness: one source serves both kinds
-of instantiation. They say so with `affine T` on the type parameter
-(§"The `affine T` modifier"), which is also what admits an owner
-argument past the #379 check.
+- **At an owner** (`Future<Own<R>>`, `Future<Result<Own<R>, E>>`,
+  `Stream<(Own<A>, Own<B>)>`), the instantiation is affine: moved, not
+  copied, and released if nothing consumes it.
+- **At a must-consume value** (`Future<Scoped<F>>`), it is
+  must-consume itself, as a scoped container already is: consumed
+  exactly once, never dropped.
+- **At a borrow**, it is second-class, as any container of a borrow is.
+- **At a first-class type** (`Future<i32>`), nothing changes: copyable,
+  awaitable any number of times.
 
-An affine future binding is move-checked like an `Own<R>` binding:
+A restricted future binding is move-checked like an `Own<R>` binding:
 
 - **`await f` consumes `f`.** The awaiting frame is the one consumer:
   the future is moved into the await, and its value moves out when the
@@ -109,13 +113,15 @@ An affine future binding is move-checked like an `Own<R>` binding:
   use-after-move error, so the second `await` in `twice` above is
   rejected.
 - A binding that nothing moves is released at scope exit
-  (§"Releasing what nobody took").
+  (§"Releasing what nobody took"). A must-consume future gets no such
+  release: leaving it unconsumed is the error ownership.md's
+  required-consumption rule already reports.
 
-A future of an owner therefore has at most one waiter. Members that hand
-the value to anyone but that one waiter are not available on an affine
-instantiation: `then`, and the combinators `all`, `race` and `any`,
-whose type parameters stay unrestricted and so already reject an owner
-argument under #379. `Future.allSettled<scoped T>` awaits each input
+A restricted future therefore has at most one waiter. Members that hand
+the value to anyone but that one waiter are not available on a
+restricted instantiation: `then`, and the combinators `all`, `race` and
+`any`, whose type parameters stay unrestricted and so already reject a
+restricted argument. `Future.allSettled<scoped T>` awaits each input
 once and is available. `runFuture<T>` reads once but is unrestricted
 today; it can opt in when a program needs it.
 
@@ -127,11 +133,11 @@ chains, combinator waiters, and standard-library bodies specialized at
 an owner without being checked again. Resources already have a backstop
 for the place their static tracking stops. `Resource` keeps a runtime
 `#state`, and `adopt` throws `ResourceStateError` on a resource that was
-not disowned. An affine container gets the same kind of check: a second
-consumer throws instead of releasing the value twice.
+not disowned. A restricted container gets the same kind of check: a
+second consumer throws instead of releasing the value twice.
 
 A container needs no new field for this when its own contents can say
-"taken". `Future`'s can. For an owner instantiation, the read that
+"taken". `Future`'s can. For a restricted instantiation, the read that
 resumes the waiter takes the value and clears `#value`, and the existing
 fields encode every state:
 
@@ -146,12 +152,12 @@ Both columns are needed. A future awaited after it settles never
 registers a waiter, since `[subscribe]` schedules the frame at once, so
 the box is the only mark that its value has gone.
 
-Every `affine T` class has such an empty state. The body rules
-(§"The `affine T` modifier") let a field whose type carries `T` be read
-at an owner instantiation only as a take, which needs a nullable field,
-so a taken value always leaves a null behind for the check to find. No
-class needs a hidden flag, the analogue of `Resource`'s `#state`,
-beside its own fields.
+Every `scoped T` class has such an empty state. The body rules
+(§"The class half of `scoped T`") let a field whose type carries `T` be
+read at a restricted instantiation only as a take, which needs a
+nullable field, so a taken value always leaves a null behind for the
+check to find. No class needs a hidden flag, the analogue of
+`Resource`'s `#state`, beside its own fields.
 
 ## Specialization
 
@@ -163,12 +169,10 @@ on a question the compiler answers per specialization, and the branch
 folds away. One intrinsic carries it:
 
 - **`isFirstClass<T>(): boolean`**, a constant in each specialization:
-  `true` for `Future<i32>`, `false` for `Future<Own<R>>`.
+  `true` for `Future<i32>`, `false` for `Future<Own<R>>`,
+  `Future<Borrow<R>>` and `Future<Scoped<F>>`.
 
-A `T` the body drops needs no intrinsic: it is released where it goes
-out of scope, as an owned parameter or local is, in the specializations
-where `T` carries an owner, and nothing happens at a first-class `T`
-(§"The `affine T` modifier"). With that, `Future`'s read becomes:
+`Future`'s read becomes:
 
 ```zena
 [valueOrThrow](): T {
@@ -184,42 +188,55 @@ where `T` carries an owner, and nothing happens at a first-class `T`
 }
 ```
 
-`tryComplete`'s losing path releases the value by not using it:
-
-```zena
-[tryComplete](value: T): boolean {
-  if (!(this.#state == FutureState.Pending)) {
-    return false;              // `value` is released here at an owner T
-  }
-  this.#state = FutureState.Resolved;
-  this.#value = new Box<T>(value);   // the one use on this path
-  // ... as today ...
-}
-```
-
-and `[subscribe]` refuses a second waiter:
+`[subscribe]` refuses a second waiter:
 
 ```zena
 if (!isFirstClass<T>() && this.#waiters != null) {
-  throw new Error('a future of an owner has one waiter');
+  throw new Error('a future of a restricted value has one waiter');
 }
 ```
 
-`[adoptFrom]` takes the source's box instead of sharing it. In
+and `[adoptFrom]` takes the source's box instead of sharing it. In
 `Future<i32>`, `isFirstClass` is the constant `true`, so the take, the
 null test and the waiter check all fold away.
 
+The body never drops a `T`. The one place it did, `tryComplete`'s losing
+path, hands the value back instead, as tokio's `oneshot::Sender::send`
+returns `Err(value)`:
+
+```zena
+[tryComplete](value: T): inline (true, _) | inline (false, T) {
+  if (!(this.#state == FutureState.Pending)) {
+    return (false, value);     // the caller decides
+  }
+  this.#state = FutureState.Resolved;
+  this.#value = new Box<T>(value);
+  // ... as today ...
+  return (true, _);
+}
+```
+
+The caller holds the losing value under its own rules. An owner is
+released by the existing release of a discarded owner result, or kept;
+a must-consume value has to be consumed, so racing writers with one is
+an error where the race is written. The callers in `zena:async` that
+test the boolean today (`race` and `any` waiters, `TaskGroup`) match on
+the tag instead.
+
 ## Releasing what nobody took
 
-An affine future released unconsumed still owns its value, which may
-not exist yet. The release glue, a `DropPlan` like a tuple's, registers
-a **releasing waiter** in the one waiter slot. When the future settles,
-or at once if it already has, the waiter takes the value into a local
-and lets it go out of scope, which releases it. A future that settles
-with an error, or is cancelled, leaves it nothing to do. The producing
-frame keeps running: a `Future` cannot cancel the work behind it, since
-that work may have started other work or had other effects. Cancelling
-it is what a `FutureClaim` is for (below).
+Dropping a restricted future is decided at the use site, never in the
+container's body. Where the drop is legal, at an owner instantiation,
+the future's drop plan (a `DropPlan`, like a tuple's) registers a
+**releasing waiter** in the one waiter slot. When the future settles, or
+at once if it already has, the waiter takes the value and releases it.
+A future that settles with an error, or is cancelled, leaves it nothing
+to do. At a must-consume instantiation no drop plan exists, because the
+drop it would serve is already an error.
+
+The producing frame keeps running: a `Future` cannot cancel the work
+behind it, since that work may have started other work or had other
+effects. Cancelling it is what a `FutureClaim` is for (below).
 
 `DeferredFuture` handles the waiter differently:
 
@@ -233,104 +250,97 @@ it is what a `FutureClaim` is for (below).
 
 ## Completer
 
-A `Completer<T>` holds no value; its future does. Two things change at
-an owner `T`:
+A `Completer<T>` holds no value; its future does. At a restricted `T`:
 
 - **The future is handed out once.** `c.future` read twice would give
-  two handles to one affine future. At an owner `T` the field is not
-  readable; the pair is created together instead, by a static
-  `Completer.create<T>(): (Completer<T>, Future<T>)` whose result is an
-  affine tuple. The completer half stays copyable, since several writers
-  racing to settle is a supported pattern.
-- **A value that loses the race is released** at `tryComplete`'s exit,
-  above. `complete` goes through `tryComplete` and then throws.
+  two handles to one restricted future. At a restricted `T` the field is
+  not readable; the pair is created together instead, by a static
+  `Completer.create<T>(): (Completer<T>, Future<T>)` whose result is a
+  restricted tuple. The completer half stays copyable, since several
+  writers racing to settle is a supported pattern.
+- **A value that loses the race comes back** from `tryComplete`, above.
+  `complete(v)` on a settled future still throws while it holds `v`.
+  That is a programming error, and it falls in the gap ownership.md
+  already records for an exception raised while a must-consume value is
+  live (§"Required consumption").
 
 ## Streams
 
-A `Stream<T>` at an owner `T` is affine: it has one reader, and moving
-the stream moves that reader. Elements reach the reader in two ways:
+A `Stream<T>` at a restricted `T` has one reader, and moving the stream
+moves that reader. Elements reach the reader in two ways:
 
-- `readOne()` returns an affine `Future<Option<T>>`, consumed by its
+- `readOne()` returns a restricted `Future<Option<T>>`, consumed by its
   await.
-- `for await (let x in stream)` binds each element to `x`, an owner
-  released at the end of the iteration unless the body moves it.
+- `for await (let x in stream)` binds each element to `x`, consumed or
+  released by the iteration's body as any binding is.
 
 `read(buf)`, the bulk copy into a caller's `FixedArray<T>`, needs an
-array of owners, which #379 rejects; it is not available at an owner
-`T`.
+array of restricted values, which #379 rejects; it is not available at a
+restricted `T`.
 
-A stream released unconsumed releases its pending read through a
-releasing waiter, and the undelivered part of the writer's slice by
-taking each element and letting it go out of scope. `stop()` releases
-them the same way. The typed WIT stream pump releases what it lifted but
-could not deliver, and drops the readable end so the host releases what
-it never sent.
+The stream's body does not drop elements either. `stop()` at a restricted
+`T` returns the elements it has not delivered, as `tryComplete` returns
+its loser. Dropping a whole `Stream<Own<R>>` is use-site glue again: its
+drop plan releases the pending read through a releasing waiter and the
+undelivered elements one by one. A stream of must-consume values is
+must-consume itself, so it has to be read to the end. The typed WIT
+stream pump releases what it lifted but could not deliver, and drops the
+readable end so the host releases what it never sent.
 
 ## FutureClaim
 
-`split()` exists so several holders can await one result. With an owner
-each of them would receive it, so at an owner `T` a `FutureClaim` is
-single-holder: `split()` is unavailable. Releasing it releases the last
-claim, which cancels the work, and its future is released like any
-other: if a value arrives anyway, the releasing waiter releases it.
+`split()` exists so several holders can await one result. With a
+restricted value each of them would receive it, so at a restricted `T`
+a `FutureClaim` is single-holder: `split()` is unavailable. At an owner,
+releasing the claim releases the last claim, which cancels the work, and
+its future is dropped like any other: if a value arrives anyway, the
+releasing waiter releases it. At a must-consume `T` the claim's future
+must be awaited, so the claim cannot be released early.
 
-## The `affine T` modifier
+## The class half of `scoped T`
 
-ownership.md (§"The two axes, side by side") folds the opt-ins for
-restricted type arguments into one modifier, `scoped T`, which admits
-every universe and checks the body at the strictest discipline: each
-`T` consumed exactly once per path. It records what the fold costs:
+ownership.md (§"Scoped type arguments") makes `scoped T` the one
+modifier for restricted type arguments, and says it applies to class
+type parameters: "Fields typed in `T` are legal inside such a class;
+they are the container's substance, and the instantiated container type
+is what carries the restriction out." It leaves that half unimplemented.
+This note defines it, with one addition, the `isFirstClass<T>()` branch:
 
-> exactly-once forbids a body that deliberately does nothing with a `T`
-> so implicit drop releases it. … If a generic drop-style helper is
-> ever needed, an at-most-once variant admitting only droppable
-> universes can be added then.
-
-`Future` needs exactly that. It drops a value in two places, an
-abandoned future and the loser of a `tryComplete` race, and a scoped
-value has no release, so a `scoped T` body cannot drop one. The
-classes here declare the at-most-once variant, `affine T`:
-
-- **Admitted arguments:** first-class types and owners, the universes
-  that can be dropped. Borrowed and scoped arguments are rejected; they
-  need `scoped T`.
-- **Instantiations:** one whose argument carries an owner is affine
-  (§"Affine instantiations").
-
-The body is checked statically:
-
-- **Fields:** `T` may be stored in fields.
+- **Fields:** `T` may be stored in fields. The instance carries its
+  argument's restriction (§"Restricted instantiations").
 - **The first-class branch:** where `isFirstClass<T>()` is known `true`,
   `T` is unrestricted, so copies and repeated reads are fine. A
   first-class instantiation's behavior, such as several awaits of one
   `Future<i32>`, is written there.
-- **At most once:** everywhere else, a `T` value is used at most once
-  per path: stored in a field, returned, passed to an owning, `affine` or
-  `scoped` parameter, or moved into a binding. A second use is the
-  use-after-move error.
-- **Unused values are released.** A `T` value a path does not use is
-  released where it goes out of scope, in the specializations where `T`
-  carries an owner. The checker decides this on the generic body, as it
-  does for an owned parameter. Lowering emits the release only where
-  `T` is concrete and carries an owner.
+- **Exactly once elsewhere:** outside that branch, the body is checked at
+  ownership.md's strictest discipline. Each `T` value is consumed
+  exactly once per path: stored in a field, returned, passed to an
+  owning or `scoped` parameter, or moved into a binding. A second use is
+  the use-after-move error, and a path that leaves a `T` unconsumed is
+  the required-consumption error. A value with nowhere to go is handed
+  back to the caller, as `tryComplete` and `stop()` do.
 - **Field reads are takes.** Outside the first-class branch, a read of
   a field whose type carries `T` is a take: the field must be a nullable
   `var`, and the read leaves null. This is the rule #563 gave owner
   fields. It is why `valueOrThrow` above has to handle a null box: the
-  check the runtime state table describes is required by the types.
+  check in the runtime state table is required by the types.
 
 One runtime check is not required by these rules: the second waiter in
 `[subscribe]`. Two subscriptions can only come from callers the checker
 does not see, the executor and the combinators among them, so it guards
 those.
 
-Since the body is checked, a user class may declare `affine T` as well.
+No second modifier is needed. Dropping a restricted value, which an
+at-most-once variant (ownership.md's reserved `affine T`) would have
+permitted, happens only at use sites, where each kind of value already
+has a rule: an owner is released by glue, and a must-consume value
+cannot be dropped at all.
 
 ## The WIT bindings
 
 The synthesizer changes in three places:
 
-- **Lifted futures and streams** become affine instantiations
+- **Lifted futures and streams** become restricted instantiations
   automatically, through the containment walk. The `readFuture` helper
   lifts the payload once and hands it to the one consumer. The stream
   pump releases undelivered elements as above.
@@ -366,24 +376,25 @@ and with them:
 
 ## Staging
 
-1. **The `affine T` modifier and affinity (checker).** The modifier
-   admits owner arguments, and the containment walk looks inside
-   `affine T` classes. `await` and the moves above consume an affine
-   future, a second use is the use-after-move error, and the members
-   that hand out the value twice are rejected on affine instantiations.
-   `twice` becomes a compile error.
-2. **The body rules:** `isFirstClass<T>()` and its branch, at-most-once
-   use of `T`, release of an unused `T` per specialization, and field
-   reads as takes. Then `Future`'s owner paths written under them: the
-   take, the second-waiter check, adoption taking the box, and
-   `tryComplete`'s release.
-3. **Release glue.** Drop plans for affine futures and streams that
+1. **Restricted instantiations (checker).** The class half of `scoped
+T` admits restricted arguments to classes, and the containment walks
+   look inside `scoped T` classes. `await` and the moves above consume a
+   restricted future, a second use is the use-after-move error, and the
+   members that hand out the value twice are rejected on restricted
+   instantiations. `twice` becomes a compile error.
+2. **The body rules:** `isFirstClass<T>()` and its branch, exactly-once
+   use of `T` elsewhere, and field reads as takes. Then `Future`'s
+   restricted paths written under them: the take, the second-waiter
+   check, adoption taking the box, and `tryComplete` returning its loser
+   (with `zena:async`'s callers matching on it).
+3. **Release glue.** Drop plans for owner futures and streams that
    register the releasing waiter, everywhere implicit drop already
    runs: locals, parameters, fields, tuple elements, discarded results.
    `never` releases its resource. `DeferredFuture`'s readable-end drop
    moves into the glue.
-4. **`Completer.create`, streams, and `FutureClaim`** at owner types,
-   with loop-variable release for `for await`.
+4. **`Completer.create`, streams (`stop()` returning what it has not
+   delivered), and `FutureClaim`** at restricted types, with
+   loop-variable release for `for await`.
 5. **WIT.** Tuple members as `Own`; the manual disposal in `zena:http`,
    `zena:fetch` and the protobuf transports removed.
 
@@ -395,7 +406,7 @@ Then the `wasi:http` switch above.
    have an empty state. Today it is `#value: Box<T> | null`. Taking the
    box is a take of a nullable field. Reading the `T` out of the taken
    box is then a move out of a box the read owns, which needs `Box` to
-   declare `affine T` and a rule that moving a box's one field out
+   declare `scoped T` and a rule that moving a box's one field out
    consumes the box. The alternative is a value union in place of the
    box (`(true, T) | (false, _)`), which uses the tuple moves #495
    already has. The cost is to `Future`'s allocation-free await path,
