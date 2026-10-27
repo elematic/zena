@@ -237,17 +237,9 @@ function hostRoutes(router: Router, host: PackageHost): void {
             'organization, profile and maintainers are required, and recoveryKeys must be a list of strings');
         return null;
       }
-      let entries = new GrowableArray<Value>();
-      let given = input['entries'];
-      if (given is JsonArray) {
-        let list = given as JsonArray;
-        for (var i = 0; i < list.length; i += 1) {
-          entries.push(fromJson(list[i]));
-        }
-      }
       let created = await host.createPackage(caller, input['organization'] as String,
           keys as GrowableArray<String>, fromJson(input['profile']), fromJson(input['maintainers']),
-          entries, nowMicros());
+          entriesOf(input), nowMicros());
       return createdJson(created, 'maintainers');
     });
   });
@@ -281,12 +273,118 @@ function hostRoutes(router: Router, host: PackageHost): void {
       }
       let created = await host.publish(caller, input['package'] as String, fromJson(input['release']),
           nowMicros());
+      return writtenJson(created);
+    });
+  });
+
+  router.post('/xrpc/dev.zena-lang.host.putMembers', async (req, res, next, params) => {
+    await hostCall(host, req, res, 'dev.zena-lang.host.putMembers', async (caller): Future<JsonObject | null> => {
+      let input = await jsonBody(req, res);
+      if (input == null) {
+        return null;
+      }
+      if (!(input['organization'] is String) || input['members'] == null || !(input['entries'] is JsonArray)) {
+        fail(res, 400, 'InvalidRequest', 'organization, members and entries are required');
+        return null;
+      }
+      return writtenJson(await host.putMembers(caller, input['organization'] as String, fromJson(input['members']),
+          entriesOf(input), swapOf(input), nowMicros()));
+    });
+  });
+
+  router.post('/xrpc/dev.zena-lang.host.putTeam', async (req, res, next, params) => {
+    await hostCall(host, req, res, 'dev.zena-lang.host.putTeam', async (caller): Future<JsonObject | null> => {
+      let input = await jsonBody(req, res);
+      if (input == null) {
+        return null;
+      }
+      if (!(input['organization'] is String) || !(input['name'] is String) || input['team'] == null ||
+          !(input['entries'] is JsonArray)) {
+        fail(res, 400, 'InvalidRequest', 'organization, name, team and entries are required');
+        return null;
+      }
+      return writtenJson(await host.putTeam(caller, input['organization'] as String, input['name'] as String,
+          fromJson(input['team']), entriesOf(input), swapOf(input), nowMicros()));
+    });
+  });
+
+  router.post('/xrpc/dev.zena-lang.host.deleteTeam', async (req, res, next, params) => {
+    await hostCall(host, req, res, 'dev.zena-lang.host.deleteTeam', async (caller): Future<JsonObject | null> => {
+      let input = await jsonBody(req, res);
+      if (input == null) {
+        return null;
+      }
+      if (!(input['organization'] is String) || !(input['name'] is String)) {
+        fail(res, 400, 'InvalidRequest', 'organization and name are required');
+        return null;
+      }
+      await host.deleteTeam(caller, input['organization'] as String, input['name'] as String, swapOf(input),
+          nowMicros());
+      return new JsonObject();
+    });
+  });
+
+  router.post('/xrpc/dev.zena-lang.host.putMaintainers', async (req, res, next, params) => {
+    await hostCall(host, req, res, 'dev.zena-lang.host.putMaintainers', async (caller): Future<JsonObject | null> => {
+      let input = await jsonBody(req, res);
+      if (input == null) {
+        return null;
+      }
+      if (!(input['package'] is String) || input['maintainers'] == null) {
+        fail(res, 400, 'InvalidRequest', 'package and maintainers are required');
+        return null;
+      }
+      return writtenJson(await host.putMaintainers(caller, input['package'] as String,
+          fromJson(input['maintainers']), entriesOf(input), swapOf(input), nowMicros()));
+    });
+  });
+
+  router.get('/xrpc/dev.zena-lang.host.getEntries', async (req, res, next, params) => {
+    await hostCall(host, req, res, 'dev.zena-lang.host.getEntries', async (caller): Future<JsonObject | null> => {
+      let query = req.url.searchParams();
+      let account = query.get('account');
+      if (account == null || account == '') {
+        fail(res, 400, 'InvalidRequest', 'Missing required parameter: account');
+        return null;
+      }
+      let team = query.get('team');
+      let entries = await host.getEntries(caller, account as String, if (team == '') null else team);
+      let list = new JsonArray();
+      for (let entry in entries) {
+        list.push(toJson(entry.toValue()));
+      }
       let answer = new JsonObject();
-      answer['uri'] = created.uri;
-      answer['cid'] = created.cid.toString();
+      answer['entries'] = list;
       return answer;
     });
   });
+}
+
+/** The `entries` a call gives, as values; none when it gives none. */
+function entriesOf(input: JsonObject): Array<Value> {
+  let entries = new GrowableArray<Value>();
+  let given = input['entries'];
+  if (given is JsonArray) {
+    let list = given as JsonArray;
+    for (var i = 0; i < list.length; i += 1) {
+      entries.push(fromJson(list[i]));
+    }
+  }
+  return entries;
+}
+
+/** The `swapRecord` a call gives, or null. */
+function swapOf(input: JsonObject): String | null {
+  let swap = input['swapRecord'];
+  return if (swap is String) swap as String else null;
+}
+
+/** The answer to a call that wrote a record: its AT-URI and CID. */
+function writtenJson(created: Created): JsonObject {
+  let answer = new JsonObject();
+  answer['uri'] = created.uri;
+  answer['cid'] = created.cid.toString();
+  return answer;
 }
 
 /**

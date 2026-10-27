@@ -36,6 +36,7 @@ export let RELEASE_TYPE = 'dev.zena-lang.package.release';
 export let YANK_TYPE = 'dev.zena-lang.package.yank';
 export let MAINTAINERS_TYPE = 'dev.zena-lang.package.maintainers';
 export let MEMBERS_TYPE = 'dev.zena-lang.org.members';
+export let TEAM_TYPE = 'dev.zena-lang.org.team';
 export let ATTESTATION_TYPE = 'dev.zena-lang.package.attestation';
 
 /** The record key of a package's profile. */
@@ -419,6 +420,11 @@ function checkDependencies(dependencies: FixedArray<Dependency>): void {
 /** The roles a maintainers record gives. */
 export let PUBLISHER = 'publisher';
 export let OWNER = 'owner';
+/** A role in an organization's members: `member`, `admin` or `owner`. */
+export let ADMIN = 'admin';
+/** A role in an organization's members or a team: `member`, or a team's `maintainer`. */
+export let MEMBER = 'member';
+export let MAINTAINER = 'maintainer';
 
 /**
  * One maintainer of a package: exactly one of a DID, a commitment to a
@@ -534,6 +540,8 @@ export final class MemberEntry {
   /** 32 random bytes. */
   salt: FixedArray<u8>;
   automation: boolean;
+  /** The member's passkeys or security keys, as `did:key`s. */
+  var approvalKeys: Array<String> = [];
 
   new(did: String, role: String, salt: FixedArray<u8>, automation: boolean = false)
       : did = did, role = role, salt = salt, automation = automation;
@@ -553,8 +561,23 @@ export final class MemberEntry {
       throw new RecordError(`${what}: the salt is not 32 bytes`);
     }
     let automation = field(map, 'automation');
-    return new MemberEntry(did, requiredString(map, 'role', what), salt.value,
+    let entry = new MemberEntry(did, requiredString(map, 'role', what), salt.value,
         automation is BoolValue && automation.value);
+    let keys = field(map, 'approvalKeys');
+    if (keys != null) {
+      if (!(keys is ListValue)) {
+        throw new RecordError(`${what}: 'approvalKeys' is not a list`);
+      }
+      let list = new GrowableArray<String>();
+      for (let key in keys.items) {
+        if (!(key is StringValue)) {
+          throw new RecordError(`${what}: an approval key is not a string`);
+        }
+        list.push(key.value);
+      }
+      entry.approvalKeys = list;
+    }
+    return entry;
   }
 
   toValue(): MapValue {
@@ -563,6 +586,13 @@ export final class MemberEntry {
     map.entries['role'] = new StringValue(this.role);
     if (this.automation) {
       map.entries['automation'] = new BoolValue(true);
+    }
+    if (this.approvalKeys.length > 0) {
+      let keys = new FixedArray<Value>(this.approvalKeys.length, new StringValue(''));
+      for (var i = 0; i < this.approvalKeys.length; i += 1) {
+        keys[i] = new StringValue(this.approvalKeys[i]);
+      }
+      map.entries['approvalKeys'] = new ListValue(keys);
     }
     map.entries['salt'] = new BytesValue(this.salt);
     return map;
@@ -586,6 +616,16 @@ export final class Members {
   new(members: FixedArray<Cid>, ownerThreshold: i64 = 1 as i64, adminThreshold: i64 = 1 as i64)
       : members = members, ownerThreshold = ownerThreshold, adminThreshold = adminThreshold;
 
+  static fromValue(value: Value): Members {
+    let what = 'members record';
+    let map = recordMap(value, MEMBERS_TYPE, what);
+    let members = commitments(map, what);
+    if (members.length == 0) {
+      throw new RecordError(`${what}: 'members' is empty`);
+    }
+    return new Members(members, positive(map, 'ownerThreshold', what), positive(map, 'adminThreshold', what));
+  }
+
   toValue(): MapValue {
     let map = typedMap(MEMBERS_TYPE);
     let items = new FixedArray<Value>(this.members.length, new StringValue(''));
@@ -597,6 +637,53 @@ export final class Members {
     map.entries['adminThreshold'] = new IntValue(this.adminThreshold);
     return map;
   }
+}
+
+/**
+ * A team of an organization, at the record key equal to the team's name:
+ * commitments to its members' entries, whose roles are `member` or
+ * `maintainer`, and how many maintainers, or the organization's admins,
+ * must attest a change.
+ */
+export final class Team {
+  members: FixedArray<Cid>;
+  threshold: i64;
+
+  new(members: FixedArray<Cid>, threshold: i64 = 1 as i64) : members = members, threshold = threshold;
+
+  static fromValue(value: Value): Team {
+    let what = 'team record';
+    let map = recordMap(value, TEAM_TYPE, what);
+    return new Team(commitments(map, what), positive(map, 'threshold', what));
+  }
+
+  toValue(): MapValue {
+    let map = typedMap(TEAM_TYPE);
+    let items = new FixedArray<Value>(this.members.length, new StringValue(''));
+    for (var i = 0; i < this.members.length; i += 1) {
+      items[i] = new StringValue(this.members[i].toString());
+    }
+    map.entries['members'] = new ListValue(items);
+    map.entries['threshold'] = new IntValue(this.threshold);
+    return map;
+  }
+}
+
+/** The commitments a members or team record lists under `members`. */
+function commitments(map: MapValue, what: String): FixedArray<Cid> {
+  let list = field(map, 'members');
+  if (!(list is ListValue)) {
+    throw new RecordError(`${what}: 'members' is not a list`);
+  }
+  let out = new FixedArray<Cid>(list.items.length, Cid.forDagCbor(new FixedArray<u8>(0, 0 as u8)));
+  for (var i = 0; i < list.items.length; i += 1) {
+    let item = list.items[i];
+    if (!(item is StringValue)) {
+      throw new RecordError(`${what}: member ${i} is not a CID`);
+    }
+    out[i] = readCid(item.value, what);
+  }
+  return out;
 }
 
 /**
