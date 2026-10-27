@@ -38,7 +38,7 @@ gcloud run deploy "$SERVICE" \
   --image "$IMAGE" \
   --service-account "$SERVICE_ACCOUNT_EMAIL" \
   --set-env-vars "$ENV_VARS" \
-  --set-secrets "PDS_ROTATION_KEY=${SECRET}:latest" \
+  --set-secrets "PDS_ROTATION_KEY=${SECRET}:latest,PDS_JWT_SECRET=${JWT_SECRET}:latest" \
   --memory 1Gi \
   --cpu 1 \
   --max-instances 4 \

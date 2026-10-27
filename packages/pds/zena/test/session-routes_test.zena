@@ -1,0 +1,163 @@
+/**
+ * The routes of password sessions, and of an account's writes to its own
+ * repository, through the HTTP application as a client calls them.
+ */
+
+import {suite, test} from 'zena:test';
+import {equal, isTrue} from 'zena:assert';
+import {Future, runFuture} from 'zena:async';
+import {HashMap} from 'zena:collections';
+import {App, Request, Response} from 'zena:http';
+import {JsonObject, parseJson} from 'zena:json';
+import {bytesStream} from 'zena:stream';
+import {now} from 'wasi:clocks/system-clock';
+import {KeyType, PublicKey} from 'atproto:didkey';
+import {verifyServiceAuth} from 'atproto:service-auth';
+import {Pds} from 'pds:pds';
+import {createApp} from 'pds:server';
+import {MemoryCredentialStore, Sessions} from 'pds:sessions';
+import {AccountKind, MemoryStorage, SigningKey} from 'pds:storage';
+
+let ALICE = 'did:plc:alicealicealicealicealic';
+let BOT = 'did:plc:botbotbotbotbotbotbotbotb';
+let ATTESTATION = 'dev.zena-lang.package.attestation';
+
+/** A server holding Alice, a person, and a bot, an automation account, each with an app password. */
+final class Server {
+  var app: App;
+  pds: Pds;
+  var alicePassword: String;
+  var botPassword: String;
+
+  new() : pds = new Pds(new MemoryStorage()), app = new App(), alicePassword = '', botPassword = '' {
+    let micros = now().seconds * (1000000 as i64);
+    runFuture(this.pds.createAccount(ALICE, 'alice.test', new SigningKey(KeyType.Secp256k1, new FixedArray<u8>(32, 7 as u8)),
+        micros));
+    runFuture(this.pds.createAccount(BOT, 'ci.acme.pkg.test', new SigningKey(KeyType.Secp256k1, new FixedArray<u8>(32, 8 as u8)),
+        micros, AccountKind.Automation));
+    var counter = 0;
+    let sessions = new Sessions(this.pds.storage, new MemoryCredentialStore(), new FixedArray<u8>(32, 1 as u8),
+        (count: i32) => {
+          counter += 1;
+          return new FixedArray<u8>(count, counter as u8);
+        });
+    this.alicePassword = runFuture(sessions.addAppPassword(ALICE, 'tests', '2026-10-27T00:00:00.000Z'));
+    this.botPassword = runFuture(sessions.addAppPassword(BOT, 'ci', '2026-10-27T00:00:00.000Z'));
+    this.app = createApp(this.pds, null, sessions);
+  }
+
+  call(method: String, httpMethod: String, token: String | null, body: String | null, query: String = ''): Response {
+    let headers = new HashMap<String, String>();
+    if (token != null) {
+      headers['authorization'] = `Bearer ${token as String}`;
+    }
+    var req = new Request.fromUrl(`http://localhost/xrpc/${method}${query}`, httpMethod, headers);
+    if (body != null) {
+      headers['content-type'] = 'application/json';
+      req = new Request.fromUrl(`http://localhost/xrpc/${method}${query}`, httpMethod, headers,
+          bytesStream((body as String).toBytes()));
+    }
+    let res = new Response();
+    let app = this.app;
+    let request = req;
+    runFuture((async () => {
+      await app.handleRequest(request, res);
+    })());
+    return res;
+  }
+
+  signIn(identifier: String, password: String): JsonObject {
+    return ok(this.call('com.atproto.server.createSession', 'POST', null,
+        `{"identifier": "${identifier}", "password": "${password}"}`));
+  }
+}
+
+function ok(res: Response): JsonObject {
+  isTrue(res.statusCode == 200, `${res.statusCode}: ${res.body as String}`);
+  return parseJson(res.body as String) as JsonObject;
+}
+
+function errorOf(res: Response): String {
+  isTrue(res.statusCode >= 400, `${res.statusCode}: ${res.body as String}`);
+  return (parseJson(res.body as String) as JsonObject)['error'] as String;
+}
+
+function attestationJson(): String {
+  return `{"$type": "${ATTESTATION}", "subject": {"uri": "at://did:plc:routerrouterrouterrouter/dev.zena-lang.package.release/1.0.0", "cid": "bafyreie5737gdxlw5i64vzichcalba3z2v5n6icifvx5xytvske7mr3hpm"}, "createdAt": "2026-10-27T00:00:00.000Z"}`;
+}
+
+export let tests = suite('session routes', () => {
+  test('signs in, checks, refreshes and ends a session', (ctx) => {
+    let server = new Server();
+    equal(errorOf(server.call('com.atproto.server.createSession', 'POST', null,
+        `{"identifier": "${ALICE}", "password": "wrong-wrong-wrong-wron"}`)), 'AuthenticationRequired');
+    let session = server.signIn('alice.test', server.alicePassword);
+    equal(session['did'] as String, ALICE);
+    equal(session['handle'] as String, 'alice.test');
+    let access = session['accessJwt'] as String;
+    let refresh = session['refreshJwt'] as String;
+
+    equal(ok(server.call('com.atproto.server.getSession', 'GET', access, null))['did'] as String, ALICE);
+    equal(errorOf(server.call('com.atproto.server.getSession', 'GET', null, null)), 'AuthenticationRequired');
+    equal(errorOf(server.call('com.atproto.server.getSession', 'GET', refresh, null)), 'InvalidToken');
+
+    let fresh = ok(server.call('com.atproto.server.refreshSession', 'POST', refresh, null));
+    equal(fresh['did'] as String, ALICE);
+    equal(errorOf(server.call('com.atproto.server.refreshSession', 'POST', refresh, null)), 'ExpiredToken');
+    ok(server.call('com.atproto.server.deleteSession', 'POST', fresh['refreshJwt'] as String, null));
+    equal(errorOf(server.call('com.atproto.server.refreshSession', 'POST', fresh['refreshJwt'] as String, null)),
+        'ExpiredToken');
+  });
+
+  test("signs service-auth tokens with the account's own key", (ctx) => {
+    let server = new Server();
+    let access = server.signIn(ALICE, server.alicePassword)['accessJwt'] as String;
+    let method = 'dev.zena-lang.host.publish';
+    let token = ok(server.call('com.atproto.server.getServiceAuth', 'GET', access, null,
+        `?aud=did:web:pkg.test&lxm=${method}`))['token'] as String;
+    let key = new SigningKey(KeyType.Secp256k1, new FixedArray<u8>(32, 7 as u8)).publicKey();
+    let claims = runFuture(verifyServiceAuth(token, 'did:web:pkg.test', method, now().seconds,
+        async (did: String, fresh: boolean): Future<PublicKey | null> => if (did == ALICE) key else null));
+    equal(claims.iss, ALICE);
+    // An hour at most with a method, a minute without, and an audience that
+    // is a DID.
+    let later = now().seconds + (7200 as i64);
+    equal(errorOf(server.call('com.atproto.server.getServiceAuth', 'GET', access, null,
+        `?aud=did:web:pkg.test&lxm=${method}&exp=${later}`)), 'BadExpiration');
+    equal(errorOf(server.call('com.atproto.server.getServiceAuth', 'GET', access, null,
+        `?aud=did:web:pkg.test&exp=${now().seconds + (600 as i64)}`)), 'BadExpiration');
+    equal(errorOf(server.call('com.atproto.server.getServiceAuth', 'GET', access, null, '?aud=pkg.test')),
+        'InvalidRequest');
+  });
+
+  test("writes only to the caller's own repository, in the collections its account allows", (ctx) => {
+    let server = new Server();
+    let bot = server.signIn(BOT, server.botPassword)['accessJwt'] as String;
+    let written = ok(server.call('com.atproto.repo.putRecord', 'POST', bot,
+        `{"repo": "${BOT}", "collection": "${ATTESTATION}", "rkey": "one", "record": ${attestationJson()}}`));
+    equal(written['uri'] as String, `at://${BOT}/${ATTESTATION}/one`);
+    // Another account's repository, a collection the account may not hold,
+    // and no token are refused.
+    equal(errorOf(server.call('com.atproto.repo.putRecord', 'POST', bot,
+        `{"repo": "${ALICE}", "collection": "${ATTESTATION}", "rkey": "two", "record": ${attestationJson()}}`)),
+        'Forbidden');
+    equal(errorOf(server.call('com.atproto.repo.putRecord', 'POST', bot,
+        `{"repo": "${BOT}", "collection": "com.example.post", "rkey": "x", "record": {"$type": "com.example.post"}}`)),
+        'InvalidRequest');
+    equal(errorOf(server.call('com.atproto.repo.putRecord', 'POST', null,
+        `{"repo": "${BOT}", "collection": "${ATTESTATION}", "rkey": "two", "record": ${attestationJson()}}`)),
+        'AuthenticationRequired');
+    // A swap on a stale CID is refused; deleting works, and again does nothing.
+    let cid = written['cid'] as String;
+    ok(server.call('com.atproto.repo.putRecord', 'POST', bot,
+        `{"repo": "${BOT}", "collection": "${ATTESTATION}", "rkey": "one", "record": ${attestationJson()}, "swapRecord": "${cid}"}`));
+    equal(errorOf(server.call('com.atproto.repo.putRecord', 'POST', bot,
+        `{"repo": "${BOT}", "collection": "${ATTESTATION}", "rkey": "one", "record": ${attestationJson()}, "swapRecord": "bafyreie5737gdxlw5i64vzichcalba3z2v5n6icifvx5xytvske7mr3hpm"}`)),
+        'InvalidSwap');
+    ok(server.call('com.atproto.repo.deleteRecord', 'POST', bot,
+        `{"repo": "${BOT}", "collection": "${ATTESTATION}", "rkey": "one"}`));
+    isTrue(runFuture(server.pds.storage.store(BOT).getRecord(ATTESTATION, 'one')) == null, 'deleted');
+    ok(server.call('com.atproto.repo.deleteRecord', 'POST', bot,
+        `{"repo": "${BOT}", "collection": "${ATTESTATION}", "rkey": "one"}`));
+  });
+});

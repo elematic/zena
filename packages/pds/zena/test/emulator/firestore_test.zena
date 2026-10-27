@@ -17,7 +17,8 @@ import {getRandomU64} from 'wasi:random/random';
 import {AccessTokenCredentials} from 'google-cloud:auth';
 import {Firestore} from 'google-cloud:firestore';
 import {GrpcTransport} from 'protobuf:grpc';
-import {FirestoreHostStore, FirestorePlcLog, FirestoreStorage, MemoryBlobs} from 'pds:firestore';
+import {FirestoreCredentialStore, FirestoreHostStore, FirestorePlcLog, FirestoreStorage, MemoryBlobs} from 'pds:firestore';
+import {CredentialStore} from 'pds:sessions';
 import {PlcLog} from 'pds:plc-directory';
 import {HostStore} from 'pds:host';
 import {buildService, configFromEnv} from 'pds:service';
@@ -26,7 +27,9 @@ import {Request, Response} from 'zena:http';
 import {Account, Head, RecordChange, SigningKey, Storage, StoredBlob} from 'pds:storage';
 import {Cid} from 'atproto:cid';
 import {KeyType} from 'atproto:didkey';
-import {hostStoreConformance, plcLogConformance, storageConformance} from '../storage-conformance.zena';
+import {
+  credentialStoreConformance, hostStoreConformance, plcLogConformance, storageConformance
+} from '../storage-conformance.zena';
 
 /** A database in a new project on the emulator. */
 function freshDatabase(): Firestore {
@@ -45,6 +48,7 @@ export let tests = suite('Firestore storage', () => {
   storageConformance((): Storage => new FirestoreStorage(freshDatabase(), 'test', new MemoryBlobs()));
   hostStoreConformance((): HostStore => new FirestoreHostStore(freshDatabase(), 'test'));
   plcLogConformance((): PlcLog => new FirestorePlcLog(freshDatabase(), 'test'));
+  credentialStoreConformance((): CredentialStore => new FirestoreCredentialStore(freshDatabase(), 'test'));
 
   test('keeps tenants apart', (ctx) => {
     let db = freshDatabase();
@@ -72,6 +76,7 @@ export let tests = suite('Firestore storage', () => {
     env['PDS_STORAGE'] = 'firestore';
     env['PDS_TENANT'] = `service-${getRandomU64() % (1000000000 as u64)}`;
     env['PDS_BLOB_DIR'] = '/tmp/pds-service-blobs';
+    env['PDS_JWT_SECRET'] = '0101010101010101010101010101010101010101010101010101010101010101';
     // TODO(#520): the return type is only for the compiler.
     let config = configFromEnv((name: String): String | null => {
       if (let (true, value) = env.get(name)) {

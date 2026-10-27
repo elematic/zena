@@ -43,6 +43,10 @@
  *   the server is a PLC directory itself, at `/plc` (`pds:plc-directory`),
  *   that records them in its storage and reads every other DID from
  *   `PDS_PLC_DIRECTORY`, so nothing a staging host makes reaches it.
+ * - `PDS_JWT_SECRET`: 32 bytes in hex, which signs the access and refresh
+ *   tokens of sessions (`pds:sessions`). Required with `firestore`, since
+ *   sessions outlive the server and every server of a deployment checks
+ *   them. With `memory`, a missing secret is made up at start.
  * - `PDS_CLOCK_ID`: 0 to 1023, which keeps this server's revisions apart
  *   from another's made in the same microsecond. Random by default.
  */
@@ -60,7 +64,8 @@ import {KeyType} from 'atproto:didkey';
 import {IdentityResolver} from 'atproto:identity';
 import {PlcOperation, submitPlcOperation} from 'atproto:plc';
 import {
-  BlobBytes, CloudStorageBlobs, DirectoryBlobs, FirestoreHostStore, FirestorePlcLog, FirestoreStorage
+  BlobBytes, CloudStorageBlobs, DirectoryBlobs, FirestoreCredentialStore, FirestoreHostStore, FirestorePlcLog,
+  FirestoreStorage
 } from './firestore.zena';
 import {parseDidDocument} from 'atproto:did';
 import {PublicKey} from 'atproto:didkey';
@@ -70,6 +75,7 @@ import {MemoryPlcLog, PlcDirectory, PlcLog} from './plc-directory.zena';
 import {HostConfig, HostStore, MemoryHostStore, PackageHost} from './host.zena';
 import {Pds} from './pds.zena';
 import {createApp} from './server.zena';
+import {CredentialStore, MemoryCredentialStore, Sessions} from './sessions.zena';
 import {MemoryStorage, SigningKey, Storage} from './storage.zena';
 
 /** A configuration `configFromEnv` refuses, with every problem it found. */
@@ -130,6 +136,8 @@ export final class ServiceConfig {
    * it has not recorded from `plcDirectory` (`PDS_PLC=staging`).
    */
   var plcStaging: boolean = false;
+  /** The secret sessions' tokens are signed with, or null to make one up at start. */
+  var jwtSecret: FixedArray<u8> | null = null;
 
   new(this.port, this.storage, this.host, this.plcDirectory, this.dnsOverHttps, this.clockId);
 }
@@ -145,8 +153,9 @@ export final class Service {
   host: PackageHost | null;
   records: HandleRecords;
   plc: PlcDirectory | null;
+  sessions: Sessions;
 
-  new(this.app, this.pds, this.host, this.records, this.plc);
+  new(this.app, this.pds, this.host, this.records, this.plc, this.sessions);
 }
 
 /**
@@ -269,6 +278,17 @@ export function configFromEnv(env: (name: String) => String | null): ServiceConf
     }
   }
 
+  var jwtSecret: FixedArray<u8> | null = null;
+  let secretText = value('PDS_JWT_SECRET');
+  if (secretText != null) {
+    jwtSecret = decodeKey(secretText);
+    if (jwtSecret == null) {
+      problems.push('PDS_JWT_SECRET is not 32 bytes of hex');
+    }
+  } else if (storageKind == 'firestore') {
+    problems.push('PDS_STORAGE=firestore needs PDS_JWT_SECRET');
+  }
+
   var clockId = randomInt(1024);
   let clockText = value('PDS_CLOCK_ID');
   if (clockText != null) {
@@ -301,6 +321,7 @@ export function configFromEnv(env: (name: String) => String | null): ServiceConf
   let config = new ServiceConfig(port, storage, host, value('PDS_PLC_DIRECTORY') ?? 'https://plc.directory',
       value('PDS_DNS_OVER_HTTPS') ?? 'https://cloudflare-dns.com/dns-query', clockId);
   config.plcStaging = plcStaging;
+  config.jwtSecret = jwtSecret;
   return config;
 }
 
@@ -325,6 +346,7 @@ export async function buildService(config: ServiceConfig, endpoint: String): Fut
   var storage: Storage = new MemoryStorage();
   var hostStore: HostStore = new MemoryHostStore();
   var plcLog: PlcLog = new MemoryPlcLog();
+  var credentials: CredentialStore = new MemoryCredentialStore();
   match (config.storage) {
     case InMemory {}: {}
     case InFirestore {tenant, blobs, database}: {
@@ -332,13 +354,17 @@ export async function buildService(config: ServiceConfig, endpoint: String): Fut
       storage = new FirestoreStorage(db, tenant, blobBytes(blobs));
       hostStore = new FirestoreHostStore(db, tenant);
       plcLog = new FirestorePlcLog(db, tenant);
+      credentials = new FirestoreCredentialStore(db, tenant);
     }
   }
   let plc = if (config.plcStaging) new PlcDirectory(plcLog, config.plcDirectory) else null;
   let pds = new Pds(storage, config.clockId);
+  let sessions = new Sessions(storage, credentials, config.jwtSecret ?? randomBytes(32),
+      (count: i32) => randomBytes(count));
   let settings = config.host;
   if (settings == null) {
-    return new Service(withPlc(createApp(pds), plc), pds, null, new MemoryHandleRecords(), plc);
+    return new Service(withPlc(createApp(pds, null, sessions), plc), pds, null, new MemoryHandleRecords(), plc,
+        sessions);
   }
   var records: HandleRecords = new MemoryHandleRecords();
   match (settings.records) {
@@ -378,7 +404,7 @@ export async function buildService(config: ServiceConfig, endpoint: String): Fut
   }
   let host = new PackageHost(pds, hostConfig, hostStore, records, keys, submit, (count: i32) => randomBytes(count),
       dependencies);
-  return new Service(withPlc(createApp(pds, host), plc), pds, host, records, plc);
+  return new Service(withPlc(createApp(pds, host, sessions), plc), pds, host, records, plc, sessions);
 }
 
 /** `app`, with `/plc/` answered by `plc` when there is one. */

@@ -49,6 +49,7 @@ BUCKET="${PROJECT}-zena-pkg${SUFFIX}"
 SERVICE_ACCOUNT="zena-pkg${SUFFIX}"
 SERVICE_ACCOUNT_EMAIL="${SERVICE_ACCOUNT}@${PROJECT}.iam.gserviceaccount.com"
 SECRET="zena-pkg${SUFFIX}-rotation-key"
+JWT_SECRET="zena-pkg${SUFFIX}-jwt-secret"
 # The environment's own zone, delegated from zena-lang.dev's, so the
 # service account can write handle records there and nowhere else. setup.sh
 # writes the delegation when zena-lang.dev is a Cloud DNS zone, in the

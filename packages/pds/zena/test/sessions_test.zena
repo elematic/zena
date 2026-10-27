@@ -1,0 +1,95 @@
+/**
+ * Password sessions (`pds:sessions`): app passwords, and the access and
+ * refresh tokens a session is made of.
+ */
+
+import {suite, test} from 'zena:test';
+import {equal, isTrue} from 'zena:assert';
+import {runFuture} from 'zena:async';
+import {KeyType} from 'atproto:didkey';
+import {Pds} from 'pds:pds';
+import {MemoryCredentialStore, SessionError, Sessions, Tokens} from 'pds:sessions';
+import {MemoryStorage, SigningKey} from 'pds:storage';
+
+let DID = 'did:plc:botbotbotbotbotbotbotbotb';
+let NOW: i64 = 1790000000 as i64;
+
+function sessionsWith(secret: i32, pds: Pds, credentials: MemoryCredentialStore): Sessions {
+  var counter = 0;
+  return new Sessions(pds.storage, credentials, new FixedArray<u8>(32, secret as u8), (count: i32) => {
+    counter += 1;
+    return new FixedArray<u8>(count, counter as u8);
+  });
+}
+
+/** The error a call refused with, or `''`. */
+function refusal(call: () => void): String {
+  try {
+    call();
+  } catch (e) {
+    return if (e is SessionError) (e as SessionError).error else `another error: ${e.message}`;
+  }
+  return '';
+}
+
+export let tests = suite('pds:sessions', () => {
+  test('signs in with an app password, and refuses anything else alike', (ctx) => {
+    let pds = new Pds(new MemoryStorage());
+    runFuture(pds.createAccount(DID, 'ci.acme.pkg.test', new SigningKey(KeyType.Secp256k1, new FixedArray<u8>(32, 9 as u8)),
+        NOW * (1000000 as i64)));
+    let credentials = new MemoryCredentialStore();
+    let sessions = sessionsWith(1, pds, credentials);
+    let password = runFuture(sessions.addAppPassword(DID, 'ci', '2026-10-27T00:00:00.000Z'));
+    equal(password.length, 19);
+    equal(password.split('-').length, 4);
+    // The server keeps the hash alone.
+    let held = runFuture(credentials.appPasswords(DID));
+    equal(held.length, 1);
+    isTrue(held[0].hash != password && !held[0].hash.contains(password), 'only the hash is kept');
+    equal(refusal(() => { runFuture(sessions.addAppPassword(DID, 'ci', 'later')); }), 'DuplicateAppPassword');
+
+    let byDid = runFuture(sessions.create(DID, password, NOW));
+    equal(byDid.account.did, DID);
+    let byHandle = runFuture(sessions.create('CI.acme.pkg.test', password, NOW));
+    equal(byHandle.account.did, DID);
+    equal(refusal(() => { runFuture(sessions.create(DID, 'aaaa-bbbb-cccc-dddd', NOW)); }), 'AuthenticationRequired');
+    equal(refusal(() => { runFuture(sessions.create('did:plc:nobodynobodynobodynobod', password, NOW)); }),
+        'AuthenticationRequired');
+  });
+
+  test('checks access tokens, and spends each refresh token once', (ctx) => {
+    let pds = new Pds(new MemoryStorage());
+    runFuture(pds.createAccount(DID, 'ci.acme.pkg.test', new SigningKey(KeyType.Secp256k1, new FixedArray<u8>(32, 9 as u8)),
+        NOW * (1000000 as i64)));
+    let credentials = new MemoryCredentialStore();
+    let sessions = sessionsWith(1, pds, credentials);
+    let password = runFuture(sessions.addAppPassword(DID, 'ci', '2026-10-27T00:00:00.000Z'));
+    let tokens = runFuture(sessions.create(DID, password, NOW));
+
+    let caller = runFuture(sessions.authenticate(`Bearer ${tokens.accessJwt}`, NOW + (60 as i64)));
+    equal(caller.account.did, DID);
+    equal(caller.scope, 'com.atproto.appPass');
+    // An expired token, a refresh token in its place, another server's
+    // token, a changed one, and none at all are each refused.
+    equal(refusal(() => { runFuture(sessions.authenticate(`Bearer ${tokens.accessJwt}`, NOW + (7201 as i64))); }),
+        'ExpiredToken');
+    equal(refusal(() => { runFuture(sessions.authenticate(`Bearer ${tokens.refreshJwt}`, NOW)); }), 'InvalidToken');
+    let other = sessionsWith(2, pds, credentials);
+    equal(refusal(() => { runFuture(other.authenticate(`Bearer ${tokens.accessJwt}`, NOW)); }), 'InvalidToken');
+    let parts = tokens.accessJwt.split('.');
+    let changed = `${parts[0]}.${parts[1]}x.${parts[2]}`;
+    equal(refusal(() => { runFuture(sessions.authenticate(`Bearer ${changed}`, NOW)); }), 'InvalidToken');
+    equal(refusal(() => { runFuture(sessions.authenticate(null, NOW)); }), 'AuthenticationRequired');
+
+    // Refreshing gives new tokens and spends the old refresh token.
+    let fresh = runFuture(sessions.refresh(`Bearer ${tokens.refreshJwt}`, NOW + (60 as i64)));
+    isTrue(fresh.refreshJwt != tokens.refreshJwt, 'a new refresh token');
+    equal(runFuture(sessions.authenticate(`Bearer ${fresh.accessJwt}`, NOW + (60 as i64))).scope, 'com.atproto.appPass');
+    equal(refusal(() => { runFuture(sessions.refresh(`Bearer ${tokens.refreshJwt}`, NOW + (61 as i64))); }),
+        'ExpiredToken');
+    // Deleting the session ends its refresh token.
+    runFuture(sessions.delete(`Bearer ${fresh.refreshJwt}`, NOW + (62 as i64)));
+    equal(refusal(() => { runFuture(sessions.refresh(`Bearer ${fresh.refreshJwt}`, NOW + (63 as i64))); }),
+        'ExpiredToken');
+  });
+});

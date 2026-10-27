@@ -71,6 +71,7 @@ export let tests = suite('pds:service', () => {
     let config = configFromEnv(envOf([
       ('PORT', '8080'),
       ('PDS_STORAGE', 'firestore'),
+      ('PDS_JWT_SECRET', KEY),
       ('PDS_TENANT', 'pkg'),
       ('PDS_BLOB_BUCKET', 'zena-blobs'),
       ('PDS_FIRESTORE_DATABASE', 'pkg'),
@@ -120,6 +121,7 @@ export let tests = suite('pds:service', () => {
 
     let local = configFromEnv(envOf([
       ('PDS_STORAGE', 'firestore'),
+      ('PDS_JWT_SECRET', KEY),
       ('PDS_TENANT', 'dev'),
       ('PDS_BLOB_DIR', '/var/pds/blobs'),
       ('PDS_HOST_DOMAIN', 'pkg.test'),
@@ -141,6 +143,7 @@ export let tests = suite('pds:service', () => {
     let config = configFromEnv(envOf([
       ('PORT', '8080'),
       ('PDS_STORAGE', 'firestore'),
+      ('PDS_JWT_SECRET', KEY),
       ('PDS_FIRESTORE_DATABASE', 'zena-pkg-staging'),
       ('PDS_TENANT', 'pkg'),
       ('PDS_BLOB_BUCKET', 'meta-garage-420114-zena-pkg-staging'),
@@ -170,6 +173,7 @@ export let tests = suite('pds:service', () => {
     isTrue(firestore.contains('needs PDS_BLOB_BUCKET or PDS_BLOB_DIR'), firestore);
     isTrue(firestore.contains('needs PDS_ROTATION_KEY'), firestore);
     isTrue(firestore.contains('needs PDS_HANDLE_RECORDS'), firestore);
+    isTrue(firestore.contains('needs PDS_JWT_SECRET'), firestore);
     let records = refusal([('PDS_HOST_DOMAIN', 'pkg.test'), ('PDS_HANDLE_RECORDS', 'cloud-dns')]);
     isTrue(records.contains('needs PDS_DNS_ZONE'), records);
     let unknown = refusal([('PDS_HOST_DOMAIN', 'pkg.test'), ('PDS_HANDLE_RECORDS', 'route53'),
@@ -187,9 +191,11 @@ export let tests = suite('pds:service', () => {
       ('PDS_HOST_DOMAIN', 'pkg.test'),
       ('PDS_ROTATION_KEY', 'abcd'),
       ('PDS_MAX_BLOB_BYTES', '-5'),
+      ('PDS_JWT_SECRET', 'not hex'),
     ]);
     for (let expected in ['PORT is not a number', 'PDS_STORAGE is memory or firestore', 'PDS_CLOCK_ID is 0 to 1023',
-        'PDS_ROTATION_KEY is not 32 bytes of hex', 'PDS_MAX_BLOB_BYTES must be positive']) {
+        'PDS_ROTATION_KEY is not 32 bytes of hex', 'PDS_MAX_BLOB_BYTES must be positive',
+        'PDS_JWT_SECRET is not 32 bytes of hex']) {
       isTrue(values.contains(expected), `${expected} in: ${values}`);
     }
 
