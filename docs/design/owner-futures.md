@@ -2,7 +2,7 @@
 
 ## Status
 
-Draft, revised 2026-10-27 (third revision). Part of elematic/zena#284: switching
+Draft, revised 2026-10-27 (fourth revision). Part of elematic/zena#284: switching
 `wasi:http` and `zena-cli:host/http-server` to resource classes needs it,
 and so does the open "lifted `future<T>` ownership" item there.
 
@@ -167,23 +167,30 @@ The two kinds of instantiation need different behavior from one source:
 while `Future<i32>` must keep its several awaits. Zena compiles each
 specialization of a generic class separately, so the source can branch
 on a question the compiler answers per specialization, and the branch
-folds away. One intrinsic carries it:
+folds away.
+
+A specialization is keyed by representation, though, and a handle
+erases to its resource class. `Future<Own<R>>`, `Future<Borrow<R>>` and
+`Future<Unmanaged<R>>` share one body, and `Future<Scoped<F>>` shares
+`Future<F>`'s. So the compiler answers for the body: a body whose type
+arguments include a resource class serves a restricted instantiation,
+and behaves as one (`representsRestricted` in types.zena, which #615's
+takes already use). One intrinsic carries the answer:
 
 - **`isFirstClass<T>(): boolean`**, a constant in each specialization:
-  `true` for `Future<i32>`, `false` for `Future<Own<R>>`,
-  `Future<Borrow<R>>` and `Future<Scoped<F>>`.
+  `true` for `Future<i32>` and `Future<Scoped<F>>`, whose restriction
+  the static rules carry alone, and `false` for `Future<Own<R>>`,
+  `Future<Borrow<R>>` and, since it shares their body,
+  `Future<Unmanaged<R>>`.
 
-`Future`'s read becomes:
+`Future`'s read becomes a take, since a read of a field holding `T` is
+one (§"The class half of `scoped T`"):
 
 ```zena
 [valueOrThrow](): T {
   // ... rejected, cancelled and pending, as today ...
-  let value = this.#value;              // WithDefault<T>
-  if (!isFirstClass<T>()) {
-    this.#value = defaultValue<T>();    // a take: null at a restricted T
-  }
-  return value as T;    // at a non-null restricted T, a taken slot fails here
-}
+  return this.#value as T;   // a take; at a non-null restricted T, a
+}                            // taken slot fails the cast
 ```
 
 `[subscribe]` refuses a second waiter:
@@ -195,8 +202,10 @@ if (!isFirstClass<T>() && this.#waiters != null) {
 ```
 
 and `[adoptFrom]` takes the source's value instead of sharing it. In
-`Future<i32>`, `isFirstClass` is the constant `true`, so the take and
-the waiter check fold away, and `as T` is the identity.
+`Future<i32>`, `isFirstClass` is the constant `true`, so the waiter
+check folds away. The read is a copy there, since codegen stores a
+take's null only in a restricted specialization, and `as T` is the
+identity.
 
 The body never drops a `T`. The one place it did, `tryComplete`'s losing
 path, hands the value back instead, as tokio's `oneshot::Sender::send`
@@ -260,6 +269,13 @@ drop it would serve is already an error.
 The producing frame keeps running: a `Future` cannot cancel the work
 behind it, since that work may have started other work or had other
 effects. Cancelling it is what a `FutureClaim` is for (below).
+
+A store into a `T` field that still holds a value would drop the old
+value inside the body. At an owner the glue releases it before the
+store, as a store into an owner field already does. At a must-consume
+`T` the old value can be neither released nor kept, so the store
+throws, a backstop like the second-waiter check. `Future` never stores
+over a full slot, since it settles once.
 
 `DeferredFuture` handles the waiter differently:
 
@@ -326,11 +342,14 @@ ownership.md (§"Scoped type arguments") makes `scoped T` the one
 modifier for restricted type arguments, and says it applies to class
 type parameters: "Fields typed in `T` are legal inside such a class;
 they are the container's substance, and the instantiated container type
-is what carries the restriction out." It leaves that half unimplemented.
-This note defines it, with one addition, the `isFirstClass<T>()` branch:
+is what carries the restriction out." #615 implements the fields, the
+instance restriction, the takes, and returns of a `T` derived from
+`this`; ownership.md lists them. This note adds the `isFirstClass<T>()`
+branch:
 
-- **Fields:** `T` may be stored in fields. The instance carries its
-  argument's restriction (§"Restricted instantiations").
+- **Fields:** `T` may be stored in fields, bare, nullable, or as another
+  `scoped` class's argument. The instance carries its argument's
+  restriction (§"Restricted instantiations").
 - **The first-class branch:** where `isFirstClass<T>()` is known `true`,
   `T` is unrestricted, so copies and repeated reads are fine. A
   first-class instantiation's behavior, such as several awaits of one
@@ -342,13 +361,16 @@ This note defines it, with one addition, the `isFirstClass<T>()` branch:
   the use-after-move error, and a path that leaves a `T` unconsumed is
   the required-consumption error. A value with nowhere to go is handed
   back to the caller, as `tryComplete` and `stop()` do.
-- **Field reads are takes.** Outside the first-class branch, a read of
-  a field whose type carries `T` is a take: the field must be a `var`
-  that is nullable at every restricted `T`, and the read leaves null.
-  A `WithDefault<T>` field qualifies, since every restricted type is a
-  reference (§"The value slot"). This is the rule #563 gave owner
-  fields, and it is why `valueOrThrow` casts with `as T`: the taken
-  check in the runtime state table is required by the types.
+- **Moving a field's value out is a take.** Returning, binding or
+  passing on the value of a field whose type holds `T` takes it: the
+  field must be a `var` that is nullable at every restricted `T`, and
+  the move leaves null. Reading it for a test such as `!= null` takes
+  nothing. Codegen stores the null only in a restricted specialization,
+  so at a first-class `T` the move is a copy. A `WithDefault<T>` field
+  qualifies, since every restricted type is a reference (§"The value
+  slot"). This is the rule #563 gave owner fields, and it is why
+  `valueOrThrow` casts with `as T`: the taken check in the runtime state
+  table is required by the types.
 
 One runtime check is not required by these rules: the second waiter in
 `[subscribe]`. Two subscriptions can only come from callers the checker
@@ -405,22 +427,23 @@ and with them:
    `Future`: `await` and the moves above consume a future of an owner, a
    second use is the use-after-move error, `then` is rejected on it, and
    so is binding it to an unrestricted type parameter, including through
-   an array or map literal. `twice` is a compile error. What remains is
-   the class half of `scoped T`, which admits restricted arguments to
-   classes and makes the containment walks look inside `scoped T`
-   classes, replacing #613's check that names `Future`.
-2. **The body rules:** `isFirstClass<T>()` and its branch, exactly-once
-   use of `T` elsewhere, and field reads as takes; the `WithDefault<T>`
-   operator and `defaultValue<T>()`, with `Future`'s slot de-boxed onto
-   them. Then `Future`'s
-   restricted paths written under them: the take, the second-waiter
-   check, adoption taking the value, and `tryComplete` returning its loser
-   (with `zena:async`'s callers matching on it).
+   an array or map literal. `twice` is a compile error. #615 did the
+   class half of `scoped T`: `T` fields, instances that carry their
+   argument's restriction, takes, and returns derived from `this`.
+2. **The body rules and `Future`:** `isFirstClass<T>()` and its branch;
+   the `WithDefault<T>` operator and `defaultValue<T>()` (#614, since
+   `T | null` at a primitive does not lower), with `Future`'s slot
+   de-boxed onto them. Then `Future` declares `scoped T`, replacing
+   #613's check that names it, and its restricted paths are written
+   under the rules: the take, the second-waiter check, adoption taking
+   the value, and `tryComplete` returning its loser (with `zena:async`'s
+   callers matching on it).
 3. **Release glue.** Drop plans for owner futures and streams that
    register the releasing waiter, everywhere implicit drop already
    runs: locals, parameters, fields, tuple elements, discarded results.
    `never` releases its resource. `DeferredFuture`'s readable-end drop
-   moves into the glue.
+   moves into the glue, and so does the release before a store into a
+   full `T` field.
 4. **`Completer.create`, streams (`stop()` returning what it has not
    delivered), and `FutureClaim`** at restricted types, with
    loop-variable release for `for await`.
