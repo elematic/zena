@@ -6,8 +6,9 @@
 // them. Repo tests run with both grants.
 import { suite, test } from 'zena:test';
 import { equal, isTrue } from 'zena:assert';
+import { StringBuilder } from 'zena:core';
 import {
-  Binding, Extension, fromHost, fromProgram, loadExtension,
+  Binding, Extension, checkExtension, fromHost, fromProgram, loadExtension,
   loadTrustedExtension,
 } from 'zena:extensions';
 import { RunOutcome, runModule } from 'zena:wasm';
@@ -38,6 +39,15 @@ let run = (scenario: String): String => {
 };
 
 let lines = (text: String) => text.trim().split('\n');
+
+/** What `checkExtension` found with `name` against `world` of child.wit, one per line. */
+let checked = (name: String, world: String, wit: String = 'child.wit'): String => {
+  let sb = new StringBuilder();
+  for (let problem in checkExtension(fixture(name), fixture(wit), world)) {
+    sb.append(problem).append('\n');
+  }
+  return sb.toString();
+};
 
 export let tests = suite('extensions', () => {
   test('a component with no imports loads and drops', () => {
@@ -85,6 +95,29 @@ export let tests = suite('extensions', () => {
     isTrue(asHost.contains('not a host interface'), asHost);
     let trusted = loadTrustedExtension(fixture('child.wasm'));
     isTrue(trusted is (false, String));
+  });
+
+  test('a component is checked against a world as a load would check it', () => {
+    equal(checked('child.wasm', 'child'), '');
+    // An import the world does not have, and the host does not serve,
+    // is a problem; an export the world does not need is not.
+    let other = checked('child.wasm', 'plain-world');
+    isTrue(other.contains('does not export test:ext/plain@1.0.0, which world plain-world exports'),
+        other);
+    isTrue(other.contains('imports test:ext/callbacks@1.0.0, which world plain-world does not ' +
+        'import and the host does not serve'), other);
+    isTrue(!other.contains('test:ext/ops'), other);
+    // A host interface the world does not mention is allowed.
+    equal(checked('random.wasm', 'plain-world'), '');
+    let mismatch = checked('mismatch.wasm', 'child');
+    isTrue(mismatch.contains("test:ext/ops@1.0.0#compute is (S64) -> S32, where world child's " +
+        'is (S32) -> S32'), mismatch);
+    isTrue(mismatch.contains('test:ext/ops@1.0.0 does not export describe'), mismatch);
+    isTrue(mismatch.contains('does not export test:ext/sessions@1.0.0'), mismatch);
+    isTrue(checked('child.wasm', 'nowhere').contains('has no world nowhere'));
+    isTrue(checked('no-such.wasm', 'child').contains('no-such.wasm'));
+    let noWit = checked('child.wasm', 'child', 'no-such.wit');
+    isTrue(noWit.contains('no-such.wit'), noWit);
   });
 
   test('calls cross with their arguments and results, and call back', () => {

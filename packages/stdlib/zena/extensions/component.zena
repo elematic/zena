@@ -52,11 +52,12 @@
  * ```
  */
 
+import { getEnv } from 'zena:cli';
 import { Disposable, Result } from 'zena:core';
 import { Duration } from 'zena:time';
 import {
   Binding, LoadOptions as HostLoadOptions, SourceExtension, SourceHost,
-  SourceProgram, drop, load, loadTrusted,
+  SourceProgram, check, drop, load, loadTrusted,
 } from 'zena-cli:host/extensions';
 
 export { Binding } from 'zena-cli:host/extensions';
@@ -183,3 +184,46 @@ export let loadTrustedExtension = (
   options: LoadOptions = {},
 ): Result<Extension, String> =>
   extensionOf(loadTrusted(path, configure(options)));
+
+/**
+ * What keeps the component at `path` from being loaded as an extension
+ * written to `world` of the WIT document at `witPath`, one line each,
+ * or nothing when it fits: it must export every interface the world
+ * exports, with the world's functions and resources, and import nothing
+ * but interfaces the world imports, the same way, and interfaces the
+ * host serves. A document the program's world was checked against with
+ * `--extension-wit` is the one to check the extension against here, so
+ * a component that fits loads. A component written in Zena fits by
+ * construction, since `zena build --wit --world` checks it against the
+ * same document; this is for one built with other tools, before it is
+ * loaded, or at install time. The check reads the files, and so needs
+ * the grant that loading does.
+ *
+ * `deps` are WIT files and directories whose packages the document may
+ * use; when absent, the WASI packages the standard library carries, in
+ * `wit/` under `$ZENA_STDLIB_DIR`, or under `/stdlib`, where the `zena`
+ * command's hosts preopen it.
+ */
+export let checkExtension = (
+  path: String,
+  witPath: String,
+  world: String,
+  deps: Array<String> | null = null,
+): Array<String> => {
+  let list = new Array<String>();
+  if (deps != null) {
+    for (let dep in deps as Array<String>) {
+      list.push(dep);
+    }
+  } else {
+    list.push(`${getEnv('ZENA_STDLIB_DIR') ?? '/stdlib'}/wit`);
+  }
+  match (check(path, witPath, world, list)) {
+    case (true, _): {
+      return new Array<String>();
+    }
+    case (false, let why): {
+      return why.split('\n');
+    }
+  }
+};
