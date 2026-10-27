@@ -10,7 +10,7 @@ import {DidDocument} from 'atproto:did';
 import {IdentityResolver} from 'atproto:identity';
 import {getVerifiedRecord, listRecords} from 'atproto:sync';
 import {isValidDid, isValidHandle} from 'atproto:syntax';
-import {PROFILE_KEY, PROFILE_TYPE, Profile, RELEASE_TYPE, Release, YANK_TYPE} from './records.zena';
+import {PROFILE_KEY, PROFILE_TYPE, Profile, RELEASE_TYPE, Release, RETRACTION_TYPE} from './records.zena';
 import {CheckedRelease, ReleaseSource} from './resolve.zena';
 import {Version} from './version.zena';
 
@@ -67,22 +67,22 @@ export async function resolveIdentifier(identifier: String, scopes: OrderedHashM
   return identity.did;
 }
 
-/** The versions a package's repository lists, and which of them are yanked. */
+/** The versions a package's repository lists, and which of them are retracted. */
 export final class Versions {
   releases: GrowableArray<Version>;
-  /** The yanked versions, as text. */
-  yanked: HashSet<String>;
+  /** The retracted versions, as text. */
+  retracted: HashSet<String>;
 
-  new(releases: GrowableArray<Version>, yanked: HashSet<String>) : releases = releases, yanked = yanked;
+  new(releases: GrowableArray<Version>, retracted: HashSet<String>) : releases = releases, retracted = retracted;
 
   /**
-   * The highest version that is not yanked, in major version `major` when
+   * The highest version that is not retracted, in major version `major` when
    * it is given. Pre-releases count only with `prereleases`.
    */
   latest(major: i64 = -1, prereleases: boolean = false): Version | null {
     var best: Version | null = null;
     for (let version in this.releases) {
-      if (this.yanked.has(version.toString())) {
+      if (this.retracted.has(version.toString())) {
         continue;
       }
       if (major >= 0 && version.major != major) {
@@ -123,11 +123,11 @@ export async function listVersions(document: DidDocument): Future<Versions> {
       // Not a version: no client publishes such a record.
     }
   }
-  let yanked = new HashSet<String>();
-  for (let record in await listRecords(document, YANK_TYPE)) {
-    yanked.add(record.rkey);
+  let retracted = new HashSet<String>();
+  for (let record in await listRecords(document, RETRACTION_TYPE)) {
+    retracted.add(record.rkey);
   }
-  return new Versions(releases, yanked);
+  return new Versions(releases, retracted);
 }
 
 /** The package's profile, with its proof, or null when it has none. */

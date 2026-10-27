@@ -25,8 +25,8 @@ import {
   Release,
   SOURCE,
   Team,
-  YANK_TYPE,
-  Yank,
+  RETRACTION_TYPE,
+  Retraction,
   isValidPackageName,
   isValidScopeName
 } from 'package-manager:records';
@@ -94,7 +94,7 @@ function rejectsProfile(json: String) {
 
 export let tests = suite('package-manager:records', () => {
   test('names each record type after its lexicon', (ctx) => {
-    for (let type in [PROFILE_TYPE, RELEASE_TYPE, YANK_TYPE, MAINTAINERS_TYPE, ATTESTATION_TYPE]) {
+    for (let type in [PROFILE_TYPE, RELEASE_TYPE, RETRACTION_TYPE, MAINTAINERS_TYPE, ATTESTATION_TYPE]) {
       isTrue(isValidNsid(type), type);
       let parts = type.split('.');
       let path = `packages/package-manager/lexicons/dev/zena-lang/package/${parts[parts.length - 1]}.json`;
@@ -176,7 +176,7 @@ export let tests = suite('package-manager:records', () => {
   test('rejects releases outside the lexicon', (ctx) => {
     // The record itself.
     rejectsRelease(`{"version": "1.4.2", "createdAt": "2026-10-21T00:00:00.000Z", "artifacts": [${SOURCE_ARTIFACT}]}`);
-    rejectsRelease(`{"$type": "dev.zena-lang.package.yank", "version": "1.4.2", "createdAt": "2026-10-21T00:00:00.000Z", "artifacts": [${SOURCE_ARTIFACT}]}`);
+    rejectsRelease(`{"$type": "dev.zena-lang.package.retraction", "version": "1.4.2", "createdAt": "2026-10-21T00:00:00.000Z", "artifacts": [${SOURCE_ARTIFACT}]}`);
     rejectsRelease(release(), '1.4.3');
     rejectsRelease(release(`[${SOURCE_ARTIFACT}]`, '[]', '1.4'), '1.4');
     rejectsRelease(release(`[${SOURCE_ARTIFACT}]`, '[]', '1.4.2', 'yesterday'));
@@ -239,19 +239,19 @@ export let tests = suite('package-manager:records', () => {
     rejectsProfile('{"$type": "dev.zena-lang.package.release", "name": "router"}');
   });
 
-  test('reads yanks', (ctx) => {
+  test('reads retractions', (ctx) => {
     let json = `{
-      "$type": "dev.zena-lang.package.yank",
+      "$type": "dev.zena-lang.package.retraction",
       "version": "1.4.1",
       "reason": "Routes with a trailing slash matched the wrong handler"
     }`;
-    let yank = Yank.fromValue(value(json), '1.4.1');
-    equal(yank.version.toString(), '1.4.1');
-    jsonEqual(toJson(yank.toValue()), parseJson(json));
+    let retraction = Retraction.fromValue(value(json), '1.4.1');
+    equal(retraction.version.toString(), '1.4.1');
+    jsonEqual(toJson(retraction.toValue()), parseJson(json));
 
     var caught = false;
     try {
-      Yank.fromValue(value(json), '1.4.2');
+      Retraction.fromValue(value(json), '1.4.2');
     } catch (e) {
       caught = e is RecordError;
     }

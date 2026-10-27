@@ -9,7 +9,7 @@
  * `checkSource` checks a release against its source archive: that the
  * archive is the artifact the release names and unpacks, and that the
  * manifest in it agrees with the release. `checkDependencies` checks that
- * each dependency is a release that exists and is not yanked, which a
+ * each dependency is a release that exists and is not retracted, which a
  * fetch need not repeat, since resolving fails on a missing one.
  * `validateRelease` is both, for publishing. Each returns every problem it
  * finds, so one attempt reports them all.
@@ -132,7 +132,7 @@ function unpacked(source: FixedArray<u8>, problems: GrowableArray<String>): Fixe
 
 /**
  * The problems with `dependencies`: each must be a release its package has
- * published and not yanked, or the release that names it could never be
+ * published and not retracted, or the release that names it could never be
  * resolved. Empty when there are none.
  */
 export async function checkDependencies(dependencies: Array<Dependency>, resolver: IdentityResolver)
@@ -146,8 +146,8 @@ export async function checkDependencies(dependencies: Array<Dependency>, resolve
       problems.push(`${named} cannot be found: ${found as String}`);
     } else if (!(found as Versions).has(dependency.version)) {
       problems.push(`${named} is not published: publish it first, or depend on a version that is`);
-    } else if ((found as Versions).yanked.has(text)) {
-      problems.push(`${named} is yanked: depend on another version`);
+    } else if ((found as Versions).retracted.has(text)) {
+      problems.push(`${named} is retracted: depend on another version`);
     }
   }
   return problems;

@@ -10,7 +10,7 @@ import {HashMap} from 'zena:collections';
 import {Cid} from 'atproto:cid';
 import {BlobRef} from 'atproto:data';
 import {packSource} from 'package-manager:archive';
-import {Artifact, Dependency, Release, SOURCE, Yank} from 'package-manager:records';
+import {Artifact, Dependency, Release, SOURCE, Retraction} from 'package-manager:records';
 import {FakeAccount, FakePds} from 'package-manager:testing/fake-pds';
 import {SOURCE_MIME_TYPE, checkDependencies, checkSource, validateRelease} from 'package-manager:validate';
 import {Version} from 'package-manager:version';
@@ -119,19 +119,19 @@ export let tests = suite('package-manager:validate', () => {
     isTrue(has(checkSource(none, PACKAGE, source), 'has no source artifact'));
   });
 
-  test('checks that each dependency is published and not yanked', (ctx) => {
+  test('checks that each dependency is published and not retracted', (ctx) => {
     let pds = new FakePds();
     pds.start();
     let package = pds.account(JSON_DID, 'json.acme.pkg.zena-lang.dev');
     publish(package, '2.0.0');
     publish(package, '2.1.0');
-    package.yank(new Yank(Version.parse('2.1.0'), 'broken'));
+    package.retract(new Retraction(Version.parse('2.1.0'), 'broken'));
     let resolver = pds.resolver();
 
     equal(runFuture(checkDependencies(json('2.0.0'), resolver)).length, 0);
     isTrue(has(runFuture(checkDependencies(json('3.0.0'), resolver)), 'json 3.0.0'));
     isTrue(has(runFuture(checkDependencies(json('3.0.0'), resolver)), 'is not published'));
-    isTrue(has(runFuture(checkDependencies(json('2.1.0'), resolver)), 'is yanked'));
+    isTrue(has(runFuture(checkDependencies(json('2.1.0'), resolver)), 'is retracted'));
     let nowhere = new GrowableArray<Dependency>();
     nowhere.push(new Dependency('did:plc:nowherenowherenowherenow', Version.parse('1.0.0'), 'nowhere'));
     isTrue(has(runFuture(checkDependencies(nowhere, resolver)), 'cannot be found'));
