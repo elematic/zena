@@ -1862,10 +1862,12 @@ class Array<T> { … }                   // a restricted argument is rejected
 let discard = <affine T>(x: T) => {};  // NOT in v1: needs at-most-once
 ```
 
-owner-futures.md proposes `affine T` with a different meaning, for the
-async containers: a class polymorphic in affineness, whose
-instantiations at an owner are affine and check their single consumer
-at run time, and whose body is not held to the exactly-once discipline.
+owner-futures.md is the program that needs the at-most-once variant:
+`Future` drops a value an abandoned future or a lost `tryComplete` race
+leaves behind. It defines `affine T` as that variant, admitting
+first-class types and owners, together with the class half (`T`
+fields) and a branch on `isFirstClass<T>()` for behavior only a
+first-class instantiation has.
 
 The opt-in is **declared, not inferred**. Whole-program compilation would allow
 inferring it from bodies, but then errors land inside stdlib bodies at call sites
